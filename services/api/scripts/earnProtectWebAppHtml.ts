@@ -61,18 +61,22 @@ export const EP_WEB_APP_HTML = `<!doctype html>
   .muted{color:var(--muted)} .small{font-size:12.5px} a{color:var(--accent);text-decoration:none}
   .pos-head{font-weight:700;font-size:14.5px} .pos-head small{color:var(--muted);font-weight:400}
   .pos-head .long{color:var(--good)} .pos-head .short{color:var(--bad)}
-  .switch{width:44px;height:24px;border-radius:999px;background:#1e3d45;position:relative;cursor:pointer;transition:background .25s;flex:none}
-  .switch .knob{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#8fa6a3;transition:all .25s}
+  .switch{width:44px;height:24px;border-radius:999px;background:#1e3d45;position:relative;cursor:pointer;transition:background .15s ease-out;flex:none}
+  .switch .knob{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#8fa6a3;transition:left .15s cubic-bezier(.3,1.4,.6,1),background .15s ease-out}
   .switch.on{background:var(--accent)} .switch.on .knob{left:23px;background:var(--accent-ink)}
-  .switch.busy{opacity:.55;pointer-events:none}
+  .switch.busy{pointer-events:none}
+  .switch.busy .knob{animation:pulse 1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(80,210,193,.25);border-top-color:var(--accent);border-radius:50%;margin-right:7px;vertical-align:-1.5px;animation:spinr .7s linear infinite}
+  @keyframes spinr{to{transform:rotate(360deg)}}
   .chip{margin-top:12px;border-radius:6px;padding:10px 12px;font-size:13px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);transition:all .3s}
   .chip.on{border-color:rgba(80,210,193,.45);color:var(--text)} .chip.bad{border-color:rgba(237,112,136,.45)} .chip b{color:var(--accent)}
   .terms{margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:12px;color:var(--muted)}
   .term{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
   .term b{display:block;color:var(--text);font-size:13px}
   .term b em{font-style:normal;color:var(--muted);font-size:11px;font-weight:500;margin-left:4px}
-  .bar{background:#132e35;border-radius:999px;height:8px;overflow:hidden;margin-top:10px}
-  .bar>div{background:linear-gradient(90deg,#1b7f74,var(--accent));height:100%;width:0;transition:width .8s}
+  .bar{background:#132e35;border:1px solid var(--line);border-radius:999px;height:10px;overflow:hidden;margin-top:10px}
+  .bar>div{background:linear-gradient(90deg,#1b7f74,var(--accent));height:100%;width:0;min-width:7px;border-radius:999px;transition:width .8s;box-shadow:0 0 6px rgba(80,210,193,.5)}
   .unlock{margin-top:6px;font-size:12px;color:var(--muted)}
   .trust{margin-top:10px;font-size:11.5px;color:var(--muted)}
   /* Tap/hover tooltips (mobile-safe — no title attributes) */
@@ -255,7 +259,10 @@ const render = (positions, state) => {
         if (note) coverage = '<div class="coverage">' + esc(note) + '</div>';
         trust = '<div class="trust">Priced live from listed options. When the market can\\u2019t fund a credit, we refuse and say why.</div>';
       } else if (w.status === "quoting" || w.status === "executing") {
-        chip = '<div class="chip on">Wrapping… pricing the live options book</div>';
+        // Spinner + live seconds counter (server-truth: elapsed since the wrap request landed).
+        chip = '<div class="chip on"><span class="spin"></span>Wrapping… ' +
+          (w.status === "executing" ? "placing hedge legs" : "pricing the live options book") +
+          ' <span class="els" data-ts="' + (w.createdAtMs || Date.now()) + '"></span></div>';
       } else if (w.status === "knocked_out") {
         const ko = w.knockout || {};
         chip = '<div class="chip">Cap $' + (ko.capStrike ?? "?") + ' touched — cycle over. You kept every gain to the cap' + (v ? ' + ' + fmt$(v.vestedUsdc) + ' credit' : '') + '. Re-arms automatically while the toggle is on.</div>';
@@ -286,6 +293,14 @@ document.addEventListener("click", (ev) => {
   if (wrap) wrap.classList.toggle("open");
 });
 
+// 1s ticker for the wrapping counter — reads server timestamps, never invents time.
+setInterval(() => {
+  for (const el of document.querySelectorAll(".els")) {
+    const ts = Number(el.dataset.ts || 0);
+    if (ts > 0) el.textContent = "· " + Math.max(0, Math.round((Date.now() - ts) / 1000)) + "s";
+  }
+}, 1000);
+
 const renderPayouts = (state) => {
   const rows = (state && state.payouts || []).slice().reverse();
   $("payouts").innerHTML = rows.length
@@ -304,12 +319,16 @@ const onToggle = async (ev) => {
     if (!window.confirm(msg)) return;
   }
   busy = true;
+  // Immediate knob feedback: flip for the ATTEMPT, pulse while working; the next state render
+  // corrects it if the engine refuses. A toggle that only moves on success reads as stuck.
+  sw.classList.toggle("on", !isOn);
   sw.classList.add("busy");
   try {
     if (isOn) {
       const j = await api("/api/close", { method: "POST" });
       $("connectMsg").textContent = j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off." : humanChip(j.message || j.error);
     } else {
+      $("connectMsg").textContent = "Wrapping — pricing the live options book…";
       // Client-supplied idempotency key: a flaky network can never double-wrap.
       const idem = "web-" + account.slice(2, 10) + "-" + Date.now().toString(36);
       const j = await api("/api/wrap", { method: "POST", headers: { "Idempotency-Key": idem } });

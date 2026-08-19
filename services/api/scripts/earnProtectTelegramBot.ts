@@ -18,6 +18,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolveWritablePath } from "../src/singleSide/twoSided/creditCollar/shadowStore";
 import {
+  BOT_COMMANDS,
   diffCycleEvents,
   HELP_TEXT,
   humanRefusal,
@@ -81,11 +82,12 @@ const tg = async (method: string, body: Record<string, unknown>): Promise<{ ok: 
   }
 };
 
+// HTML parse mode: Markdown corrupts on underscores in addresses/instrument ids.
 const send = (chatId: string | number, text: string, keyboard?: unknown): Promise<{ ok: boolean }> =>
   tg("sendMessage", {
     chat_id: chatId,
     text,
-    parse_mode: "Markdown",
+    parse_mode: "HTML",
     disable_web_page_preview: true,
     ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {})
   });
@@ -140,7 +142,7 @@ const handleMessage = async (chats: ChatStore, chatId: string | number, text: st
   if (cmd.kind === "address") {
     chats[key] = { address: cmd.address, snapshot: null };
     saveChats(chats);
-    await send(chatId, `Connected \`${cmd.address.slice(0, 6)}…${cmd.address.slice(-4)}\` (read-only — we can see positions, never touch them).`);
+    await send(chatId, `🔗 Connected <code>${cmd.address.slice(0, 6)}…${cmd.address.slice(-4)}</code> — read-only. We can see positions, never touch them.`);
     if (await promptTosIfNeeded(chatId, cmd.address)) return;
     await showPositions(chatId, cmd.address);
     return;
@@ -166,9 +168,12 @@ const handleMessage = async (chats: ChatStore, chatId: string | number, text: st
     await send(
       chatId,
       [
-        `*Protection:* ${prot?.on ? "ON — auto-renews daily" : "off"}${prot?.founding ? " · founding rate" : ""}`,
-        `*Credits paid to date:* $${paid.toFixed(2)}`,
-        `Use /positions to toggle.`
+        "🛡 <b>Earn &amp; Protect</b> · <i>status</i>",
+        "",
+        `Protection: <b>${prot?.on ? "ON — auto-renews daily" : "off"}</b>${prot?.founding ? " · 🏅 founding rate" : ""}`,
+        `Credits paid to date: <b>$${paid.toFixed(2)}</b>`,
+        "",
+        "<i>Use /positions to toggle.</i>"
       ].join("\n")
     );
     return;
@@ -200,7 +205,17 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
     if (out.ok === true) {
       const wrap = out.wrap as { quote?: { creditUsdc?: number; floorStrike?: number; capStrike?: number } };
       const q = wrap?.quote;
-      await send(chatId, `🛡 *Protection live* — floor $${q?.floorStrike ?? "?"} / cap $${q?.capStrike ?? "?"} · credit $${q?.creditUsdc ?? "?"} (pays at the cycle's close). Auto-renews while on.`);
+      await send(
+        chatId,
+        [
+          "🛡 <b>Protection live</b>",
+          "",
+          `Today's credit: <b>$${q?.creditUsdc ?? "?"}</b> — unlocks through the day, pays at the cycle's close`,
+          `Hard floor: <b>$${(q?.floorStrike ?? 0).toLocaleString("en-US")}</b> · Cap: <b>$${(q?.capStrike ?? 0).toLocaleString("en-US")}</b> (touch ends the cycle — you keep gains to the cap + unlocked credit)`,
+          "",
+          "<i>Auto-renews daily while the toggle stays on.</i>"
+        ].join("\n")
+      );
     } else {
       await send(chatId, `🚫 ${humanRefusal(String(out.message ?? out.error ?? ""))}`);
     }
@@ -211,7 +226,7 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
     const out = await ep("/api/close", chat.address, "POST");
     if (out.ok === true) {
       const v = out.vested as { vestedUsdc?: number; fullCreditUsdc?: number };
-      await send(chatId, `✋ Closed early — kept $${(v?.vestedUsdc ?? 0).toFixed(2)} of $${(v?.fullCreditUsdc ?? 0).toFixed(2)} vested. Auto-renew off.`);
+      await send(chatId, `✋ Closed early — you keep <b>$${(v?.vestedUsdc ?? 0).toFixed(2)}</b> of $${(v?.fullCreditUsdc ?? 0).toFixed(2)} unlocked. Auto-renew off.`);
     } else {
       await send(chatId, `🚫 ${humanRefusal(String(out.message ?? out.error ?? ""))}`);
     }
@@ -277,5 +292,7 @@ const pollLoop = async (): Promise<void> => {
 };
 
 console.error(`[ep-bot] Earn & Protect bot up — API ${apiBase} · notifier every ${Math.round(notifyMs / 1000)}s`);
+// Register the "/" command menu (the professional touch traders expect).
+void tg("setMyCommands", { commands: BOT_COMMANDS });
 setInterval(() => void notifyTick(), notifyMs);
 void pollLoop();

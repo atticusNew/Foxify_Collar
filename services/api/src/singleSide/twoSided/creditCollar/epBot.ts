@@ -30,23 +30,43 @@ export const parseBotMessage = (text: string): BotCommand => {
   return { kind: "unknown", text: t };
 };
 
+// All bot copy is HTML parse-mode (Markdown breaks on addresses with underscores) and follows the
+// venue-affiliated brand line: "Earn & Protect · for Hyperliquid — by Atticus".
+
+export const BOT_COMMANDS = [
+  { command: "positions", description: "Your positions with protect buttons" },
+  { command: "status", description: "Protection state + credits paid" },
+  { command: "help", description: "How it works" }
+];
+
 export const WELCOME_TEXT = [
-  "*Atticus — Earn & Protect*",
+  "🛡 <b>Earn &amp; Protect</b> · <i>for Hyperliquid — by Atticus</i>",
   "",
-  "One toggle puts a hard floor under your Hyperliquid position — and PAYS you a credit, funded by the live options market.",
+  "One toggle puts a <b>hard floor</b> under your position — and <b>pays you</b> a credit, funded by the live options market. Never upfront, never fake: paid at each daily cycle's close.",
   "",
-  "Paste your Hyperliquid address (0x…) to begin. We only *read* positions — no signing, no deposits, no keys.",
+  "<b>Getting started</b>",
+  "1️⃣  Paste your Hyperliquid address (<code>0x…</code>) — read-only: no keys, no signing, no deposits",
+  "2️⃣  Tap 🛡 next to a position to protect it",
+  "3️⃣  Credits unlock through the day and land automatically",
   "",
-  "Credits vest through each daily cycle and pay at its close. If price touches your cap, the cycle ends: you keep every gain to the cap plus the vested credit, and protection re-arms while the toggle stays on."
+  "⚡ If price touches your cap, that cycle ends early — you keep your position, every gain to the cap, and the unlocked credit. Protection re-arms on its own while the toggle stays on.",
+  "",
+  "<i>Honest by design: when the market can't fund a credit, we refuse and tell you why.</i>"
 ].join("\n");
 
 export const HELP_TEXT = [
-  "*Commands*",
-  "`0x…` — connect your Hyperliquid address (read-only)",
-  "/positions — your open positions with protect buttons",
-  "/status — current protection + payout history",
+  "🛡 <b>Earn &amp; Protect</b> — commands",
   "",
-  "Protection is honest: when the market can't fund a credit, we refuse and say why."
+  "<code>0x…</code> — connect your Hyperliquid address (read-only)",
+  "/positions — your positions with protect buttons",
+  "/status — protection state + credits paid",
+  "",
+  "<b>The mechanics, honestly</b>",
+  "• A hard floor under your position; a cap above it funds your credit",
+  "• Credit unlocks through the day, pays at the cycle's close",
+  "• Cap touched ⟹ cycle ends: keep gains to the cap + unlocked credit; auto re-arms",
+  "• Toggle off anytime: keep what's unlocked, the rest returns to the market",
+  "• When the market can't fund a credit, we refuse and say why"
 ].join("\n");
 
 // ── Honest refusal copy (same rules as the web chip; Markdown-safe) ───────────
@@ -76,9 +96,9 @@ export const humanRefusal = (raw: string | null | undefined): string => {
 /** Inline ToS acceptance prompt (Phase 3): shown after address connect until the current version is accepted. */
 export const tosPrompt = (version: string, baseUrl: string): { text: string; keyboard: InlineButton[][] } => ({
   text: [
-    "*One step before protection* — please review and accept the Terms of Service.",
+    "📋 <b>One step before protection</b> — please review and accept the Terms of Service.",
     `${baseUrl.replace(/\/$/, "")}/tos (version ${version})`,
-    "Recorded once per wallet per version."
+    "<i>Recorded once per wallet per version.</i>"
   ].join("\n"),
   keyboard: [[{ text: `✅ I accept the Terms (${version})`, callback_data: "tos" }]]
 });
@@ -101,13 +121,19 @@ export const positionsKeyboard = (positions: BotPosition[], protectionOn: boolea
         : { text: `🛡 Earn & Protect ${p.side.toUpperCase()} ${p.szBase} ${p.coin} (${fmt$(p.notionalUsdc)})`, callback_data: "wrap" }
     ]);
 
+const escHtml = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
 export const positionsText = (positions: BotPosition[]): string => {
   if (positions.length === 0) return "No open perp positions on this address.";
   return [
-    "*Your positions*",
+    "📊 <b>Your positions</b>",
+    "",
     ...positions.map(
-      (p) => `${p.side.toUpperCase()} ${p.szBase} ${p.coin} · ${fmt$(p.notionalUsdc)}${p.wrappable ? "" : " · protection coming soon"}`
-    )
+      (p) =>
+        `${p.side === "long" ? "🟢" : "🔴"} <b>${p.side.toUpperCase()}</b> ${p.szBase} ${escHtml(p.coin)} · ${fmt$(p.notionalUsdc)}${p.wrappable ? "" : " · <i>coming soon</i>"}`
+    ),
+    "",
+    "<i>Tap a button below to protect / unprotect.</i>"
   ].join("\n");
 };
 
