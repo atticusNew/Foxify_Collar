@@ -80,7 +80,8 @@ export const EP_WEB_APP_HTML = `<!doctype html>
   .tipwrap .tip{display:none;position:absolute;bottom:135%;left:50%;transform:translateX(-50%);width:240px;background:#081418;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12px;font-weight:400;color:var(--text);line-height:1.5;z-index:30;box-shadow:0 10px 28px rgba(0,0,0,.55);text-align:left;text-transform:none;letter-spacing:0;white-space:normal}
   .tipwrap.tip-right .tip{left:auto;right:0;transform:none}
   .tipwrap:hover .tip,.tipwrap.open .tip{display:block}
-  .info{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid var(--line);color:var(--muted);font-size:9.5px;margin-left:5px;vertical-align:1px}
+  .info{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid rgba(80,210,193,.55);color:var(--accent);font-size:9.5px;margin-left:5px;vertical-align:1px}
+  .brand-img{height:20px;margin-right:9px;vertical-align:-4px;border-radius:4px}
   .mode-pill{font-size:11px;font-weight:700;letter-spacing:.6px;border-radius:999px;padding:3.5px 11px;margin-right:8px}
   .mode-paper{background:rgba(217,171,1,.14);color:#e3c34c;border:1px solid rgba(217,171,1,.4)}
   .mode-demo{background:rgba(80,210,193,.1);color:var(--accent);border:1px solid rgba(80,210,193,.35)}
@@ -98,7 +99,10 @@ export const EP_WEB_APP_HTML = `<!doctype html>
 </head>
 <body>
 <nav><div class="nav-in">
-  <div class="logo">Earn &amp; Protect <span class="by">by <b>ATTICUS</b></span></div>
+  <!-- Venue affiliation is DESCRIPTIVE ("for Hyperliquid" — where your positions live), not a
+       partnership claim; swap the venue name per integration. __BRAND_LOGO__ is injected by the
+       service when EP_BRAND_LOGO_URL is set. -->
+  <div class="logo">__BRAND_LOGO__Earn &amp; Protect <span class="by">for <b>HYPERLIQUID</b> · by <b>ATTICUS</b></span></div>
   <div style="display:flex;align-items:center">
     <span class="mode-pill tipwrap" id="modePill" style="display:none"></span>
     <div class="pill" id="connPill">not connected</div>
@@ -152,6 +156,7 @@ export const EP_WEB_APP_HTML = `<!doctype html>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt$ = (x) => x == null ? "—" : (x < 0 ? "−$" : "$") + Math.abs(x).toFixed(2);
+const fmtPx = (x) => x == null ? "—" : "$" + Number(x).toLocaleString("en-US", { maximumFractionDigits: 1 });
 const short = (a) => a ? a.slice(0,6) + "…" + a.slice(-4) : "";
 
 // Honest refusal copy: ≤8 human words on the chip, the full engine string on hover.
@@ -233,16 +238,19 @@ const render = (positions, state) => {
         const floorSign = p.side === "long" ? "−" : "+", capSign = p.side === "long" ? "+" : "−";
         const foundingBadge = founding && caps
           ? tip('<span class="badge founding">FOUNDING RATE</span>',
-              "First-" + caps.foundingWallets + " wallet: we keep " + (caps.foundingTakeRatePct * 100).toFixed(0) + "% of the credit we source instead of " + (caps.takeRatePct * 100).toFixed(0) + "%, locked 12 months from your first wrap. Cuts under $0.05 a cycle are waived entirely.")
+              "You're one of our first " + caps.foundingWallets + " wallets, so you keep " + (100 - caps.foundingTakeRatePct * 100).toFixed(0) + "% of every credit instead of " + (100 - caps.takeRatePct * 100).toFixed(0) + "% — locked in for 12 months. And when our cut would be under 5\\u00a2, we skip it: you keep it all.")
           : "";
         chip = '<div class="chip on">EARNING · <b>' + fmt$(v.vestedUsdc) + '</b> of ' + fmt$(v.fullCreditUsdc) + ' unlocked' + foundingBadge + '</div>';
         terms = '<div class="terms">' +
           '<div class="term"><b>' + fmt$(q.creditUsdc) + '</b>today\\u2019s credit' + infoTip("Funded by the options market, not by us. Unlocks through the day and pays to this wallet automatically at the cycle's close — never upfront.") + '</div>' +
-          '<div class="term"><b>$' + floorStrike + ' <em>' + floorSign + (q.floorPct * 100).toFixed(1) + '%</em></b>hard floor' + infoTip("Losses stop here. Struck " + floorSign + (q.floorPct * 100).toFixed(1) + "% from the price when protection started ($" + q.spot + "), not from your entry.") + '</div>' +
-          '<div class="term"><b>$' + capStrike + ' <em>' + capSign + (q.capPct * 100).toFixed(1) + '%</em></b>cap — ends cycle' + infoTip("If the price touches $" + capStrike + ", this cycle ends early: you keep your position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically at the new price while the toggle stays on. You never owe anything.", true) + '</div>' +
+          '<div class="term"><b>' + fmtPx(floorStrike) + ' <em>' + floorSign + (q.floorPct * 100).toFixed(1) + '%</em></b>hard floor' + infoTip("Losses stop here. Struck " + floorSign + (q.floorPct * 100).toFixed(1) + "% from the price when protection started (" + fmtPx(q.spot) + "), not from your entry.") + '</div>' +
+          '<div class="term"><b>' + fmtPx(capStrike) + ' <em>' + capSign + (q.capPct * 100).toFixed(1) + '%</em></b>cap — ends cycle' + infoTip("If the price touches " + fmtPx(capStrike) + ", this cycle ends early: you keep your position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically at the new price while the toggle stays on. You never owe anything.", true) + '</div>' +
           '</div>';
+        const settleIso = w.vesting && w.vesting.endMs ? new Date(w.vesting.endMs).toUTCString().replace(":00 GMT", " UTC") : null;
         bar = '<div class="bar"><div style="width:' + (v.fraction * 100).toFixed(1) + '%"></div></div>' +
-          '<div class="unlock">unlocks through the day · ' + (v.fullyVested ? "fully unlocked — pays at settlement" : "pays in " + fmtDur(v.remainingMs)) + '</div>';
+          '<div class="unlock">unlocks through the day · ' +
+          tip(v.fullyVested ? "fully unlocked — pays at settlement" : "pays in " + fmtDur(v.remainingMs), settleIso ? "Settles at the listed expiry: " + settleIso + ". The credit lands in the payouts table below, then protection renews automatically." : "Pays at the cycle's close.") +
+          '</div>';
         const note = w.hedge && w.hedge.sizeNote;
         if (note) coverage = '<div class="coverage">' + esc(note) + '</div>';
         trust = '<div class="trust">Priced live from listed options. When the market can\\u2019t fund a credit, we refuse and say why.</div>';
@@ -265,7 +273,7 @@ const render = (positions, state) => {
         ' role="switch" aria-checked="' + (active ? "true" : "false") + '"><div class="knob"></div></div>'
       : '<span class="small muted">protection for ' + esc(p.coin) + ' coming soon</span>';
     return '<div class="card" title="' + esc(tooltip) + '">' +
-      '<div class="row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + p.szBase + ' ' + esc(p.coin) + ' <small>· ' + fmt$(p.notionalUsdc) + (p.entryPx ? ' · entry $' + p.entryPx : '') + '</small></div>' + toggle + '</div>' +
+      '<div class="row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + p.szBase + ' ' + esc(p.coin) + ' <small>· ' + fmt$(p.notionalUsdc) + (p.entryPx ? ' · entry ' + fmtPx(p.entryPx) : '') + '</small></div>' + toggle + '</div>' +
       chip + terms + bar + coverage + trust + '</div>';
   }).join("");
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
