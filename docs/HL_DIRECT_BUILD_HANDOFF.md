@@ -20,8 +20,9 @@ Business context: distribution is dual-track. Track 1 is our own thin web app (c
 
 ## 2. Economics (context for correctness decisions)
 
-- Gross credit sourced: ~10–30 bps of wrapped notional per 24h wrap (volatility-dependent; live fills to date are at the low end due to 1-lot minimums in thin strikes).
-- Atticus take: **25% of gross credit** (spread between executable credit and quoted credit). Trader gets the rest.
+- Gross credit sourced: theory says ~10–30 bps of wrapped notional per 24h wrap; live fills to date came in far lower (cents per lot) due to 1-lot minimums, thin weekend strikes, and the tick floor. **Do not publish credit expectations to traders until the week-one live calibration gate (Phase 3) measures realized per-lot credit across a full week of market hours.** Safe interim framing: "typically cents to a few dollars per day, paid daily, scaling with size and volatility."
+- Atticus take: **20% of gross credit standard; 10% founding rate, locked 12 months, for the first 50 wallets; de minimis rule: if our cut would be under $0.05 on a cycle, we take $0.** The take is the spread between executable credit and quoted credit. Publish the numbers honestly ("we keep X% of the credit we source").
+- Position sizing: typical retail HL positions cluster ~$500–$10k. Positions above the per-wrap cap are wrapped **partially** — wrap min(position notional, remaining per-wrap cap), rounded DOWN to whole OKX lots (0.01 BTC ≈ $630; rounding up would over-hedge and create naked exposure). UI must state partial coverage plainly: "Protected: $2,500 of your $31,000 position — coverage limits rise as capacity grows."
 - Capital: user has an OKX institutional account, onboarded; $10k deposit unlocks portfolio margin (PM) and RFQ. Under PM each wrap consumes ~10–15% of notional as margin → $10k supports a ~$70–100k book, recycling daily.
 - Investor (Albert) gets read-only API access to the OKX sub-account. Investor capital never touches our servers or wallets.
 
@@ -29,9 +30,11 @@ Business context: distribution is dual-track. Track 1 is our own thin web app (c
 
 1. **Design B — knockout collar.** If mark price touches the cap, protection ends for that cycle: close/settle both OKX legs immediately, mark the wrap `knocked_out`, re-arm at new spot on the next renewal tick (if toggle still on). Trader keeps their perp and all gains to the cap. No trader ever owes us money. Trigger is **mark-price touch of the cap, no buffer**.
 2. **Credit is paid at each 24h cycle's conclusion** (expiry, knockout, or early close pro-rata via the existing vesting logic) — NOT upfront. This kills the abuse vector (wrap → collect → instantly close perp). Marketing copy: "credit paid daily."
-3. **Spread take: 25% of gross credit**, published honestly ("we keep X% of the credit we source").
+3. **Spread take: 20% standard / 10% founding rate (first 50 wallets, locked 12 months) / $0 when the cut would be under $0.05 per cycle.** Published honestly. Do not go to 0% (it anchors "free" and removes the breach-slippage buffer entirely).
 4. **Soft-launch caps: 50 wallets (waitlist beyond), $2,500 per-wrap notional cap, $75,000 total book cap** for the first $10k of capital. Plus: auto-pause new wraps above ~60% margin utilization of the OKX sub-account so renewals and breach unwinds always have headroom.
 5. Payouts go ONLY to the wallet address that owns the HL position (verified against the position read). The system must be structurally unable to pay a third party.
+6. **Partial wraps for oversized positions**: never refuse a position for being too big; wrap up to the cap, round down to whole lots, display honest partial coverage (see section 2).
+7. **Two trader-facing clients, one API: web app first, Telegram bot in the same phase.** Both are thin clients over the identical JSON API. Web app is canonical (URL for partners/investors, cleaner geofence + ToS enforcement, demo surface). The Telegram bot is the retention/virality channel: push notifications for cycle events ("Credit paid: $2.10", "Cap touched — protection re-armed at $64,100"), positions + toggle via inline buttons after the user pastes their HL address. Both live before public launch.
 
 ## 4. What already exists (file map — trust this, don't re-derive)
 
@@ -59,12 +62,13 @@ Run the demo service: `DEMO_ENABLED=true npx tsx services/api/scripts/creditColl
 - **USDC payout rail**: pay ledger entries to the position-owner's address. Chain: Arbitrum USDC (simplest; HL accounts are EVM addresses). Implement as a small isolated module with a hot-wallet key, per-day outflow cap, and idempotent sends (never double-pay a ledger entry). In paper mode, payouts are simulated entries.
 - Gate: unit tests for knockout (touch → legs closed → re-arm), settlement math (long+short), ledger idempotency; a paper-mode wrap demonstrably knocks out and "pays."
 
-### Phase 2 — Production hardening + trader web app
+### Phase 2 — Production hardening + trader clients (web app + Telegram bot)
 
 - **Persistence**: move wrap records, protection prefs, payout ledger from JSON files to Postgres (Render Postgres is fine). Migration script for the existing JSON state. On boot, reconcile open wraps against live OKX positions.
 - **Auth & safety**: admin auth on the control room; rate limiting; idempotent wrap requests (client-supplied idempotency key); structured logs; alerting on: renewal loop stalled, margin utilization > threshold, payout failures, OKX connectivity loss, any unwind event.
 - **Caps**: add global user cap (waitlist beyond 50 wallets) and margin-utilization auto-pause to `DemoGuardsConfig`/`assessDemoWrap`. All caps env-configurable. A single kill switch env/endpoint pauses all new wraps and renewals while leaving conclusions/payouts running.
-- **Trader web app** (thin; this is a positions page and a toggle, not a platform): connect/paste wallet address (read-only, no signing) → list HL perp positions → Earn & Protect toggle per position → live wrap card (reuse the state machine + stage feed the extension renders) → history with payout tx links. Quote display follows the existing one-number rule (post-fill, show realized credit only). Honest refusal copy (reuse the human-chip mapping in `demo/hl-protect-extension/content.js`). Brand: Atticus, yellow accent — match `site/index.html`.
+- **Trader web app** (thin; this is a positions page and a toggle, not a platform): connect/paste wallet address (read-only, no signing) → list HL perp positions → Earn & Protect toggle per position → live wrap card (reuse the state machine + stage feed the extension renders) → history with payout tx links. Partial-coverage display per section 3.6. Quote display follows the existing one-number rule (post-fill, show realized credit only). Honest refusal copy (reuse the human-chip mapping in `demo/hl-protect-extension/content.js`). Brand: Atticus, yellow accent — match `site/index.html`.
+- **Telegram bot** (second thin client on the same API; small — a few hundred lines against the Telegram bot API): paste HL address once → positions with inline Earn & Protect buttons → push notifications on every cycle event (credit paid, renewed, knocked out + re-armed, refusal). Same caps, same one-number rule, same refusal copy. Ships in this phase so both clients exist before public launch; expect it to drive retention and group-chat referrals.
 - **Partner-ready API**: the web app must consume the same JSON API a partner would (wrap/close/state/protection/quote endpoints + auth). Write a short `docs/earn-protect-api.md` as you go. No partner-specific work beyond cleanliness.
 - Gate: 10 whitelisted wallets running concurrent auto-renewing wraps for a week without manual intervention (user will coordinate the live portion).
 
@@ -73,6 +77,7 @@ Run the demo service: `DEMO_ENABLED=true npx tsx services/api/scripts/creditColl
 - Geofence (block US + sanctioned IPs) and a ToS acceptance step. (User handles legal counsel; you implement the gates.)
 - Public live-book dashboard (read-only aggregate stats: wraps, notional, credits paid — no per-user data).
 - OKX PM/RFQ: verify both legs margin as a netted spread under PM; add an RFQ path for wraps above a size threshold (crossover sized empirically). This needs the funded account, so it lands here.
+- **Credit calibration gate**: run live wraps across a full week of market hours and measure realized per-lot credit (by hour, by strike distance, order book vs RFQ). Only after this may trader-facing credit expectations be published; update section 2 and `docs/earn-protect-spec.md` with the measured numbers.
 
 ### Security requirements (apply throughout)
 
