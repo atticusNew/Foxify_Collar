@@ -8,13 +8,13 @@
 
 ## Abstract
 
-Earn & Protect is a protection layer for exchange positions, delivered as a single toggle inside the venue's own interface. When a trader activates it on an open position, the system buys a protective option below the position (a hard floor), sells an option above it (a cap), and pays the trader the difference as an upfront cash credit. Protection re-prices and renews itself at each daily fixing for as long as the toggle stays on. Every leg is a real order on a listed options venue, every credit is auditable to an exchange fill, and when the market cannot fund a credit the system declines and states the reason. This document specifies the product's guarantees, records its first live executions, and states the claims we believe are novel.
+Earn & Protect is a protection layer for exchange positions, delivered as a single toggle inside the venue's own interface. When a trader activates it on an open position, the system buys a protective option below the position (a hard floor), sells an option above it (a cap), and pays the trader the difference as a cash credit at each daily cycle's conclusion. Protection re-prices and renews itself at each daily fixing for as long as the toggle stays on. Every leg is a real order on a listed options venue, every credit is auditable to an exchange fill, and when the market cannot fund a credit the system declines and states the reason. This document specifies the product's guarantees, records its first live executions, and states the claims we believe are novel.
 
 ## The mechanic, in one sentence
 
-Sell a call above the position, buy a put below it, pay the trader the difference up front, and re-strike both every morning.
+Sell a call above the position, buy a put below it, pay the trader the difference daily, and re-strike both every morning.
 
-The trader's economics: a hard floor roughly 6% below entry (losses stop there), an upfront credit that vests through the day, and a cap on that single day's upside, roughly 1.5 to 2% above. Because the structure re-strikes daily, the cap ratchets upward in rising markets: the trader sells only each individual day's tail, never the whole rally. The credit is funded entirely by the options market. The trader pays nothing, deposits nothing, moves nothing, and keeps custody throughout.
+The trader's economics: a hard floor roughly 6% below entry (losses stop there), a credit that vests through the day and pays at the cycle's conclusion, and a cap on that single day's upside, roughly 1.5 to 2% above. If the market touches the cap, protection ends for that cycle — the hedge closes, the trader keeps the position and every gain to the cap plus the credit vested to the touch, and protection re-arms at the new price on the next renewal while the toggle stays on. No trader ever owes anything. Because the structure re-strikes daily, the cap ratchets upward in rising markets: the trader sells only each individual day's tail, never the whole rally. The credit is funded entirely by the options market. The trader pays nothing, deposits nothing, moves nothing, and keeps custody throughout.
 
 ## The guarantees
 
@@ -47,6 +47,15 @@ A venue adapter reads positions (exchange API or integration); a pricing engine 
 ## Claims
 
 We believe the following, in combination, are first: (1) one-tap collar protection embedded in a live exchange interface, executed with real listed options; (2) autonomous daily re-strike of retail position protection, demonstrated live; (3) a contractual never-worse-than-quoted execution guarantee enforced by automatic unwind; (4) refusal-as-a-feature: protection that declines transparently when the market cannot fund it; (5) pass-through pricing with zero spread embedded in the trader's terms. This document and its timestamps stand as the record.
+
+## Build record — direct-to-trader engine (Phase 1, Aug 2026)
+
+Shipped on top of the demo engine, all covered by unit tests and exercised end-to-end in paper mode:
+
+- **Knockout cycle (Design B).** A mark-price monitor watches every active wrap; a touch of the cap (no buffer, side-aware) closes both hedge legs — the existing order-book unwind path in live lanes — marks the cycle `knocked_out`, and re-arms at the new spot on the next renewal tick while the toggle stays on.
+- **Credit paid at conclusion.** Every cycle end (expiry, knockout, voluntary early close) settles through one path: full credit at expiry plus the protective payout if the fixing landed through the floor; vested-to-touch on knockout; vested-to-close on early close.
+- **Payout ledger + USDC rail.** Each concluded cycle accrues exactly one ledger entry (`accrued → queued → paid → confirmed`, with a manual-verification lane for failures) payable only to the verified position-owner's address, structurally. Sends are idempotent — an entry can never pay twice — and bounded by a per-day outflow cap. Rail: Arbitrum USDC behind an explicit arming chain; simulated in paper mode.
+- **Staggered renewals.** Daily options share one fixing, so each account re-wraps at its own deterministic anchor inside a configurable window, landing renewals on different strikes as spot moves instead of stacking the book on one.
 
 ## Roadmap
 
