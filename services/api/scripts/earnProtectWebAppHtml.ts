@@ -69,6 +69,10 @@ export const EP_WEB_APP_HTML = `<!doctype html>
   <h1>One toggle. A hard floor. And it pays.</h1>
   <p class="sub">Paste your Hyperliquid address — we only <b>read</b> your positions (no signing, no deposits, no keys). Flip protection on and the credit the options market funds is paid to your wallet at each daily cycle's close.</p>
 
+  <div class="card" id="geoBanner" style="display:none;border-color:rgba(248,81,73,.45)">
+    <b>Not available in your region.</b> <span class="muted small" id="geoMsg"></span>
+  </div>
+
   <div class="card" id="connectCard">
     <div class="row">
       <input type="text" id="addrInput" placeholder="0x… your Hyperliquid address (read-only)" spellcheck="false">
@@ -76,6 +80,14 @@ export const EP_WEB_APP_HTML = `<!doctype html>
       <button class="btn ghost" id="forgetBtn" style="display:none">Forget</button>
     </div>
     <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card" id="tosCard" style="display:none;border-color:rgba(217,171,1,.45)">
+    <b>One step before protection:</b> <span class="muted small">accept the <a href="/tos" target="_blank" rel="noopener">Terms of Service</a> (<span id="tosVer"></span>). Recorded once per wallet per version.</span>
+    <div class="row" style="margin-top:10px">
+      <label class="small muted" style="flex:1;min-width:240px"><input type="checkbox" id="tosCheck"> I have read and accept the Terms of Service.</label>
+      <button class="btn" id="tosBtn" disabled>Accept &amp; continue</button>
+    </div>
   </div>
 
   <h2>Your positions</h2>
@@ -118,6 +130,8 @@ const humanChip = (raw) => {
   if (/already active|in flight|in_flight|being processed/i.test(s)) return "Already protected";
   if (/no open .* position|no live position|no_position/i.test(s)) return "No open position to protect";
   if (/allow-list|account_refused|not an address/i.test(s)) return "Account not enabled yet";
+  if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first";
+  if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
   if (/kill switch|demo disabled|paused/i.test(s)) return "Protection paused";
   if (/rate_limited/i.test(s)) return "Slow down a moment";
   return "Couldn't complete · nothing opened";
@@ -221,6 +235,31 @@ const onToggle = async (ev) => {
   poll();
 };
 
+// Launch gates: geofence banner (reads stay open, actions are blocked server-side) + ToS card.
+const checkGates = async () => {
+  try {
+    const geo = await (await fetch("/api/geo")).json();
+    if (geo.ok && geo.enabled && !geo.allowed) {
+      $("geoBanner").style.display = "";
+      $("geoMsg").textContent = geo.message || "Protection actions are unavailable from your location.";
+    } else $("geoBanner").style.display = "none";
+  } catch (e) { /* leave as-is */ }
+  if (!account) { $("tosCard").style.display = "none"; return; }
+  try {
+    const tos = await api("/api/tos");
+    if (tos.ok && tos.required && !tos.accepted) {
+      $("tosVer").textContent = tos.version;
+      $("tosCard").style.display = "";
+    } else $("tosCard").style.display = "none";
+  } catch (e) { /* leave as-is */ }
+};
+$("tosCheck").onchange = () => { $("tosBtn").disabled = !$("tosCheck").checked; };
+$("tosBtn").onclick = async () => {
+  const j = await api("/api/tos/accept", { method: "POST" });
+  $("connectMsg").textContent = j.ok ? "Terms accepted (" + j.version + ") — you're set." : humanChip(j.message || j.error);
+  checkGates();
+};
+
 let pollTimer = null;
 const poll = async () => {
   if (!account) return;
@@ -239,6 +278,7 @@ $("connectBtn").onclick = () => {
   localStorage.setItem("ep_account", a);
   $("connectMsg").textContent = "Connected read-only. We can see positions, never touch them.";
   setConn();
+  checkGates();
   poll();
 };
 $("forgetBtn").onclick = () => {
@@ -252,8 +292,10 @@ $("forgetBtn").onclick = () => {
 };
 
 setConn();
+checkGates();
 if (account) poll();
 pollTimer = setInterval(poll, 5000);
+setInterval(checkGates, 30000);
 </script>
 </body>
 </html>`;

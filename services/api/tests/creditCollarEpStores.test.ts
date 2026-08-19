@@ -25,7 +25,8 @@ const tmpPaths = (): EpStorePaths => {
     protection: join(dir, "protection.json"),
     ledger: join(dir, "ledger.json"),
     registry: join(dir, "wallets.json"),
-    runtime: join(dir, "runtime.json")
+    runtime: join(dir, "runtime.json"),
+    tos: join(dir, "tos.json")
   };
 };
 
@@ -102,6 +103,12 @@ const contract = (name: string, build: () => Promise<EpStores>) => {
     const rt = await s.loadRuntime();
     assert.equal(rt.paused, true);
     assert.equal(rt.pausedReason, "test");
+    // ToS acceptances (versioned — a new version requires re-acceptance)
+    assert.deepEqual(await s.loadTos(), {});
+    await s.saveTos({ ["0x" + "a".repeat(40)]: { version: "2026-08-draft", acceptedAtMs: NOW, country: "SG" } });
+    const tos = await s.loadTos();
+    assert.equal(tos["0x" + "a".repeat(40)].version, "2026-08-draft");
+    assert.equal(tos["0x" + "a".repeat(40)].country, "SG");
   });
 
   test(`${name}: clearAll empties everything`, async () => {

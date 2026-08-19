@@ -24,6 +24,7 @@ import {
   parseBotMessage,
   positionsKeyboard,
   positionsText,
+  tosPrompt,
   WELCOME_TEXT,
   type BotPosition,
   type ChatSnapshot
@@ -114,6 +115,17 @@ const showPositions = async (chatId: string | number, address: string): Promise<
   await send(chatId, positionsText(positions), positionsKeyboard(positions, prot.on === true));
 };
 
+/** ToS gate (Phase 3): prompt with the inline accept button when the current version is unaccepted. */
+const promptTosIfNeeded = async (chatId: string | number, address: string): Promise<boolean> => {
+  const tos = await ep("/api/tos", address);
+  if (tos.ok === true && tos.required === true && tos.accepted !== true) {
+    const p = tosPrompt(String(tos.version ?? "?"), apiBase);
+    await send(chatId, p.text, p.keyboard);
+    return true;
+  }
+  return false;
+};
+
 const handleMessage = async (chats: ChatStore, chatId: string | number, text: string): Promise<void> => {
   const key = String(chatId);
   const cmd = parseBotMessage(text);
@@ -129,6 +141,7 @@ const handleMessage = async (chats: ChatStore, chatId: string | number, text: st
     chats[key] = { address: cmd.address, snapshot: null };
     saveChats(chats);
     await send(chatId, `Connected \`${cmd.address.slice(0, 6)}…${cmd.address.slice(-4)}\` (read-only — we can see positions, never touch them).`);
+    if (await promptTosIfNeeded(chatId, cmd.address)) return;
     await showPositions(chatId, cmd.address);
     return;
   }
@@ -168,6 +181,17 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
   const chat = chatId != null ? chats[String(chatId)] : undefined;
   if (chatId == null || !chat) {
     await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Paste your address first (0x…)" });
+    return;
+  }
+  if (cb.data === "tos") {
+    const out = await ep("/api/tos/accept", chat.address, "POST");
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.ok === true ? "Terms accepted" : "Could not record acceptance" });
+    if (out.ok === true) {
+      await send(chatId, `✅ Terms accepted (${out.version}). You're set.`);
+      await showPositions(chatId, chat.address);
+    } else {
+      await send(chatId, `🚫 ${humanRefusal(String(out.message ?? out.error ?? ""))}`);
+    }
     return;
   }
   if (cb.data === "wrap") {

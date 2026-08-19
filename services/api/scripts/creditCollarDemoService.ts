@@ -87,7 +87,9 @@ import {
   tokenBucketLimiter,
   type LoopPulse
 } from "../src/singleSide/twoSided/creditCollar/epSafety";
+import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
 import { EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
+import { EP_PUBLIC_DASHBOARD_HTML, EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
 import { Pool } from "pg";
 import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regimeGate";
@@ -131,7 +133,8 @@ const storePaths: EpStorePaths = {
   protection: process.env.DEMO_PROTECTION_STORE_PATH ?? "./logs/demo-protection.json",
   ledger: process.env.DEMO_PAYOUT_LEDGER_PATH ?? "./logs/demo-payout-ledger.json",
   registry: process.env.EP_WALLET_REGISTRY_PATH ?? "./logs/ep-wallets.json",
-  runtime: process.env.EP_RUNTIME_PATH ?? "./logs/ep-runtime.json"
+  runtime: process.env.EP_RUNTIME_PATH ?? "./logs/ep-runtime.json",
+  tos: process.env.EP_TOS_STORE_PATH ?? "./logs/ep-tos.json"
 };
 const pgPool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, max: 5 }) : null;
 const stores: EpStores = pgPool ? postgresStores(pgPool) : jsonStores(storePaths);
@@ -152,6 +155,13 @@ let okxQuoteFailStreak = 0;
 // Both pause NEW wraps + renewals only — conclusions, knockouts, and payouts always keep running.
 let runtimePaused = false;
 let runtimePausedReason: string | null = null;
+
+// Phase 3 launch gates: geofence (blocks ACTIONS from US + sanctioned IPs, fail-closed) and the
+// versioned ToS acceptance step. Both default OFF for dev; production turns them on via env.
+const geofence = parseGeofenceFromEnv(process.env);
+const resolveCountry = buildCountryResolver(geofence);
+const tosVersion = process.env.EP_TOS_VERSION ?? "2026-08-draft";
+const tosRequired = String(process.env.EP_TOS_REQUIRED ?? "false").toLowerCase() === "true";
 const setProtection = async (account: string, on: boolean): Promise<void> => {
   const prefs = await stores.loadPrefs();
   const key = account.toLowerCase();
@@ -264,6 +274,17 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
   // Kill switch (env) + runtime pause (admin endpoint): new wraps stop; conclusions/payouts don't.
   if (runtimePaused) {
     return { status: 409, body: { ok: false, error: "paused", message: `protection paused${runtimePausedReason ? ` — ${runtimePausedReason}` : ""} — existing wraps conclude and pay normally` } };
+  }
+
+  // ToS gate (Phase 3): the CURRENT terms version must be accepted before anything opens.
+  // Renewals ride the acceptance given at wrap time — a ToS bump stops renewals too (honest:
+  // the trader re-accepts once in any client and renewals resume).
+  if (tosRequired) {
+    const tos = await stores.loadTos();
+    const acc = tos[account.toLowerCase()];
+    if (!acc || acc.version !== tosVersion) {
+      return { status: 409, body: { ok: false, error: "tos_required", message: `please accept the Terms of Service (version ${tosVersion}) before protecting — see /tos` } };
+    }
   }
 
   let position: HlPositionRead | null;
@@ -1056,11 +1077,113 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/tos") {
+      sendHtml(res, EP_TOS_HTML.replace(/__TOS_VERSION__/g, tosVersion));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/public") {
+      sendHtml(res, EP_PUBLIC_DASHBOARD_HTML);
+      return;
+    }
+
     // ── Rate limits: reads generous, actions tight; admin exempt ──
-    const isAction = req.method === "POST" && /^\/api\/(wrap|close|protection)$/.test(route);
+    const isAction = req.method === "POST" && /^\/api\/(wrap|close|protection|tos\/accept)$/.test(route);
     const isRead = req.method === "GET" && route.startsWith("/api/");
     if (!isAdmin && ((isAction && !actionLimiter.allow(ip, Date.now())) || (isRead && !readLimiter.allow(ip, Date.now())))) {
       sendJson(res, 429, { ok: false, error: "rate_limited", message: "too many requests — slow down" });
+      return;
+    }
+
+    // ── Geofence (Phase 3): trading ACTIONS are blocked for US + sanctioned IPs, fail-closed
+    // when the location cannot be verified. Reads stay open.
+    let geoCountry: string | null = null;
+    if (geofence.enabled && (isAction || route === "/api/geo")) {
+      geoCountry = await resolveCountry(req.headers, ip);
+      if (isAction) {
+        const verdict = assessGeofence(geofence, geoCountry);
+        if (!verdict.allowed) {
+          sendJson(res, 451, { ok: false, error: "geo_blocked", message: verdict.reason });
+          return;
+        }
+      }
+    }
+    if (req.method === "GET" && route === "/api/geo") {
+      const verdict = assessGeofence(geofence, geofence.enabled ? geoCountry : null);
+      sendJson(res, 200, { ok: true, enabled: geofence.enabled, allowed: verdict.allowed, country: verdict.country, ...(verdict.allowed ? {} : { message: (verdict as { reason: string }).reason }) });
+      return;
+    }
+
+    // ── ToS (Phase 3): versioned acceptance; wrap refuses without the CURRENT version ──
+    if (req.method === "GET" && route === "/api/tos") {
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      const tos = await stores.loadTos();
+      const acc = tos[acct.account.toLowerCase()];
+      sendJson(res, 200, {
+        ok: true,
+        required: tosRequired,
+        version: tosVersion,
+        accepted: acc?.version === tosVersion,
+        acceptedVersion: acc?.version ?? null,
+        acceptedAtMs: acc?.acceptedAtMs ?? null,
+        url: "/tos"
+      });
+      return;
+    }
+    if (req.method === "POST" && route === "/api/tos/accept") {
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      const tos = await stores.loadTos();
+      tos[acct.account.toLowerCase()] = {
+        version: tosVersion,
+        acceptedAtMs: Date.now(),
+        country: geofence.enabled ? geoCountry ?? (await resolveCountry(req.headers, ip)) : null
+      };
+      await stores.saveTos(tos);
+      sendJson(res, 200, { ok: true, version: tosVersion, accepted: true });
+      return;
+    }
+
+    // ── Public live-book stats (aggregates only — never per-user data) ──
+    if (req.method === "GET" && route === "/api/stats") {
+      const [records, ledger, registry] = await Promise.all([stores.loadWraps(), stores.loadLedger(), stores.loadRegistry()]);
+      const open = records.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
+      const paid = ledger.filter((e) => e.status === "paid" || e.status === "confirmed");
+      const spotRef = open.find((r) => r.quote)?.quote?.spot ?? records.slice().reverse().find((r) => r.quote)?.quote?.spot ?? 0;
+      const derived = deriveCaps(capsInputs, spotRef);
+      const priced = records.filter((r) => r.quote != null && (r.hedge?.contracts ?? 0) > 0);
+      sendJson(res, 200, {
+        ok: true,
+        executionMode: guards.executionMode,
+        wraps: {
+          total: priced.length,
+          active: open.length,
+          expiries: records.filter((r) => r.status === "concluded" && r.concludedAtMs != null && r.vesting != null && r.concludedAtMs >= r.vesting.endMs).length,
+          knockouts: records.filter((r) => r.status === "knocked_out").length,
+          earlyCloses: records.filter((r) => r.status === "concluded" && r.concludedAtMs != null && r.vesting != null && r.concludedAtMs < r.vesting.endMs).length
+        },
+        notional: {
+          openUsdc: round2(open.reduce((s, r) => s + wrapExposureUsdc(r), 0)),
+          lifetimeWrappedUsdc: round2(priced.reduce((s, r) => s + wrapExposureUsdc(r), 0))
+        },
+        credits: {
+          paidUsdc: round2(paid.reduce((s, e) => s + e.amountUsdc, 0)),
+          paidCount: paid.length
+        },
+        capacity: {
+          bookCapUsdc: derived.bookCapUsdc,
+          utilizationPct: derived.bookCapUsdc > 0 ? +((open.reduce((s, r) => s + wrapExposureUsdc(r), 0) / derived.bookCapUsdc) * 100).toFixed(1) : 0,
+          foundingWallets: capsInputs.foundingWallets,
+          walletsJoined: Object.keys(registry).length
+        },
+        generatedAtIso: new Date().toISOString()
+      });
       return;
     }
 
@@ -1309,6 +1432,10 @@ server.listen(port, () => {
         ` · take ${(capsInputs.takeRatePct * 100).toFixed(0)}%/${(capsInputs.foundingTakeRatePct * 100).toFixed(0)}% founding, $0 under $${capsInputs.deMinimisUsdc.toFixed(2)}`
     );
     console.error(`[demo] admin: ${adminAuth.token ? "token auth ON" : adminAuth.enabled ? "DEV MODE (no token)" : "DISABLED — set EP_ADMIN_TOKEN"} · rate limits: reads ${num(process.env.EP_RATE_READS_PER_MIN, 120)}/min, actions ${num(process.env.EP_RATE_ACTIONS_PER_MIN, 12)}/min per IP`);
+    console.error(
+      `[demo] launch gates: geofence ${geofence.enabled ? `ON (blocked: ${geofence.blockedCountries.join(",")}; unknown ⟹ ${geofence.failOpen ? "allow" : "REFUSE"})` : "off (EP_GEOFENCE=true to arm)"}` +
+        ` · ToS ${tosRequired ? `REQUIRED v${tosVersion}` : `off (EP_TOS_REQUIRED=true to arm; v${tosVersion})`} · public dashboard /public`
+    );
     if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
     console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m, stagger window ${Math.round(renewStaggerMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
     if (autoRenew) setInterval(() => void renewalTick(), renewCheckMs);

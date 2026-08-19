@@ -74,6 +74,26 @@ stats. `?all=1` (whole book) requires the admin token.
 
 `{ ok, on }` — the auto-renew toggle state.
 
+### Launch gates (Phase 3)
+
+- `GET /api/geo` — `{ enabled, allowed, country }` for the caller's IP. When the geofence is armed
+  (`EP_GEOFENCE=true`), trading ACTIONS from blocked jurisdictions (default `US,CU,IR,KP,SY`) —
+  or from unverifiable locations (fail-closed) — return `451 { error: "geo_blocked" }`. Reads stay
+  open. Country resolution: trusted proxy header (`cf-ipcountry` / `x-vercel-ip-country` /
+  `EP_GEO_HEADER`) → cached IP lookup.
+- `GET /api/tos?account=0x…` — `{ required, version, accepted, acceptedVersion }`. When
+  `EP_TOS_REQUIRED=true`, wraps refuse with `tos_required` until the CURRENT `EP_TOS_VERSION` is
+  accepted (a version bump forces re-acceptance; renewals stop until re-accepted once).
+- `POST /api/tos/accept?account=0x…` — records `{ version, acceptedAtMs, country }` for the wallet.
+- `GET /tos` — the terms page (version-stamped; DRAFT pending counsel).
+
+### Public live book
+
+- `GET /api/stats` — read-only aggregates, never per-user data: wraps (total/active/expiries/
+  knockouts/early closes), notional (open + lifetime, HEDGED), credits paid, capacity
+  (book cap, utilization, founding-cohort fill).
+- `GET /public` — the live-book dashboard page rendering `/api/stats`.
+
 ## Admin routes (require `EP_ADMIN_TOKEN` via `Authorization: Bearer`, `X-Admin-Token`, or `?token=`)
 
 - `POST /api/admin/pause?paused=true|false&reason=…` — kill switch: pauses new wraps + renewals;

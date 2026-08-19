@@ -67,9 +67,21 @@ export const humanRefusal = (raw: string | null | undefined): string => {
   if (/already active|in flight|in_flight|being processed/i.test(s)) return "Already protected";
   if (/no open .* position|no live position|no_position/i.test(s)) return "No open position to protect";
   if (/allow-list|account_refused|not an address/i.test(s)) return "Account not enabled yet";
+  if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first — tap the button above";
+  if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
   if (/kill switch|demo disabled|paused/i.test(s)) return "Protection paused";
   return "Couldn't complete · nothing opened";
 };
+
+/** Inline ToS acceptance prompt (Phase 3): shown after address connect until the current version is accepted. */
+export const tosPrompt = (version: string, baseUrl: string): { text: string; keyboard: InlineButton[][] } => ({
+  text: [
+    "*One step before protection* — please review and accept the Terms of Service.",
+    `${baseUrl.replace(/\/$/, "")}/tos (version ${version})`,
+    "Recorded once per wallet per version."
+  ].join("\n"),
+  keyboard: [[{ text: `✅ I accept the Terms (${version})`, callback_data: "tos" }]]
+});
 
 // ── Inline keyboards ──────────────────────────────────────────────────────────
 
