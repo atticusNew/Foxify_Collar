@@ -3,7 +3,13 @@
  *
  * Deliberately thin: a positions page and a toggle, not a platform. Served by the demo service at
  * GET /app and consuming ONLY the public JSON API (the same routes a partner integration would
- * use — that is the point). Brand matches site/index.html (dark, yellow accent).
+ * use — that is the point).
+ *
+ * BRANDING (white-label by design): Atticus is the engine behind the exchange, so this surface
+ * dresses like the VENUE, not like us — today that means Hyperliquid's dark teal/mint look so the
+ * page reads as an extension of the HL UI, with one subtle "Earn & Protect · by Atticus" mark.
+ * Every brand decision lives in the :root CSS tokens below; skinning this for another exchange is
+ * a variable swap, nothing more.
  *
  * Product rules enforced in this UI:
  *   - read-only wallet connect: paste an address; no signing, no deposits, no keys
@@ -19,57 +25,74 @@ export const EP_WEB_APP_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Atticus — Earn & Protect</title>
 <style>
-  :root{--bg:#0b0f14;--panel:#111722;--panel2:#0e141d;--line:#1f2937;--text:#e8edf4;--muted:#8b98a9;--accent:#d9ab01;--good:#2ea043;--bad:#f85149;--radius:14px}
+  /* ── VENUE THEME TOKENS ──────────────────────────────────────────────────
+     Skinned to feel native inside Hyperliquid (dark teal surfaces, mint
+     accent, HL long/short green/red). White-labeling for another exchange =
+     swap these values. The only Atticus mark is the subtle "by Atticus" tag. */
+  :root{
+    --bg:#0b1d23;           /* HL app background: deep blue-teal            */
+    --panel:#0f2a31;        /* card surface                                  */
+    --panel2:#0c232a;       /* inset surface                                 */
+    --line:#1c3b43;         /* hairlines                                     */
+    --text:#f1f6f4;--muted:#8fa6a3;
+    --accent:#50d2c1;       /* HL mint — actions, highlights                 */
+    --accent-ink:#04211d;   /* text on mint                                  */
+    --good:#2ebd85;         /* HL long green                                 */
+    --bad:#ed7088;          /* HL short red                                  */
+    --radius:8px            /* HL uses tighter corners than our site         */
+  }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--text);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;-webkit-font-smoothing:antialiased}
+  body{background:var(--bg);color:var(--text);font:14.5px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
   .wrap{max-width:760px;margin:0 auto;padding:0 20px 60px}
-  nav{position:sticky;top:0;z-index:10;background:rgba(11,15,20,.85);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
-  .nav-in{max-width:760px;margin:0 auto;padding:0 20px;display:flex;align-items:center;justify-content:space-between;height:58px}
-  .logo{font-weight:800;letter-spacing:2.5px;font-size:15px}.logo b{color:var(--accent)}
-  .kicker{color:var(--accent);font-weight:700;font-size:11.5px;letter-spacing:2px;text-transform:uppercase}
+  nav{position:sticky;top:0;z-index:10;background:rgba(11,29,35,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .nav-in{max-width:760px;margin:0 auto;padding:0 20px;display:flex;align-items:center;justify-content:space-between;height:54px}
+  .logo{font-weight:700;font-size:15px;letter-spacing:.2px}
+  .logo .by{color:var(--muted);font-weight:500;font-size:11.5px;letter-spacing:.6px;margin-left:8px}
+  .logo .by b{color:var(--accent);font-weight:600}
   .pill{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 12px}
-  h1{font-size:26px;font-weight:800;letter-spacing:-.3px;margin:30px 0 6px}
-  .sub{color:var(--muted);font-size:14.5px;margin-bottom:24px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;margin-bottom:14px}
+  h1{font-size:24px;font-weight:700;letter-spacing:-.2px;margin:28px 0 6px}
+  .sub{color:var(--muted);font-size:14px;margin-bottom:22px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:12px}
   .row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-  input[type=text]{flex:1;min-width:240px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:11px 14px;font:inherit;font-size:14px}
+  input[type=text]{flex:1;min-width:240px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:10px 13px;font:inherit;font-size:13.5px}
   input[type=text]:focus{outline:none;border-color:var(--accent)}
-  .btn{background:var(--accent);color:#171200;font-weight:700;padding:10px 18px;border-radius:10px;font-size:14px;border:0;cursor:pointer}
+  .btn{background:var(--accent);color:var(--accent-ink);font-weight:700;padding:9px 17px;border-radius:6px;font-size:13.5px;border:0;cursor:pointer}
   .btn:hover{filter:brightness(1.08)} .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
   .muted{color:var(--muted)} .small{font-size:12.5px} a{color:var(--accent);text-decoration:none}
-  .pos-head{font-weight:700;font-size:15px} .pos-head small{color:var(--muted);font-weight:400}
-  .switch{width:46px;height:26px;border-radius:999px;background:#26303e;position:relative;cursor:pointer;transition:background .25s;flex:none}
-  .switch .knob{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#98a3b3;transition:all .25s}
-  .switch.on{background:var(--accent)} .switch.on .knob{left:23px;background:#171200}
+  .pos-head{font-weight:700;font-size:14.5px} .pos-head small{color:var(--muted);font-weight:400}
+  .pos-head .long{color:var(--good)} .pos-head .short{color:var(--bad)}
+  .switch{width:44px;height:24px;border-radius:999px;background:#1e3d45;position:relative;cursor:pointer;transition:background .25s;flex:none}
+  .switch .knob{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#8fa6a3;transition:all .25s}
+  .switch.on{background:var(--accent)} .switch.on .knob{left:23px;background:var(--accent-ink)}
   .switch.busy{opacity:.55;pointer-events:none}
-  .chip{margin-top:12px;border-radius:10px;padding:11px 13px;font-size:13.5px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);transition:all .3s}
-  .chip.on{border-color:rgba(217,171,1,.45);color:var(--text)} .chip.bad{border-color:rgba(248,81,73,.4)} .chip b{color:var(--accent)}
-  .terms{margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:12.5px;color:var(--muted)}
-  .term{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
-  .term b{display:block;color:var(--text);font-size:13.5px}
-  .bar{background:#1a212d;border-radius:999px;height:10px;overflow:hidden;margin-top:10px}
-  .bar>div{background:linear-gradient(90deg,#8a6d00,var(--accent));height:100%;width:0;transition:width .8s}
+  .chip{margin-top:12px;border-radius:6px;padding:10px 12px;font-size:13px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);transition:all .3s}
+  .chip.on{border-color:rgba(80,210,193,.45);color:var(--text)} .chip.bad{border-color:rgba(237,112,136,.45)} .chip b{color:var(--accent)}
+  .terms{margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:12px;color:var(--muted)}
+  .term{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+  .term b{display:block;color:var(--text);font-size:13px}
+  .bar{background:#132e35;border-radius:999px;height:8px;overflow:hidden;margin-top:10px}
+  .bar>div{background:linear-gradient(90deg,#1b7f74,var(--accent));height:100%;width:0;transition:width .8s}
   .coverage{margin-top:10px;font-size:12.5px;color:var(--accent)}
   table{width:100%;border-collapse:collapse;margin-top:6px;font-size:13px}
-  th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)} th{color:var(--muted);font-weight:600;font-size:12px}
+  th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)} th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px}
   .status-paid{color:var(--good);font-weight:600} .status-accrued{color:var(--accent)} .status-failed{color:var(--bad)}
-  h2{font-size:15px;font-weight:700;margin:26px 0 8px}
-  .foot{color:var(--muted);font-size:11.5px;margin-top:34px;border-top:1px solid var(--line);padding-top:16px}
-  .badge{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:2.5px 10px;margin-left:8px;vertical-align:2px}
-  .badge.founding{background:rgba(217,171,1,.15);color:var(--accent);border:1px solid rgba(217,171,1,.4)}
+  h2{font-size:14px;font-weight:700;margin:24px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  .foot{color:var(--muted);font-size:11.5px;margin-top:32px;border-top:1px solid var(--line);padding-top:16px}
+  .badge{display:inline-block;font-size:10.5px;font-weight:700;border-radius:999px;padding:2.5px 9px;margin-left:8px;vertical-align:2px}
+  .badge.founding{background:rgba(80,210,193,.12);color:var(--accent);border:1px solid rgba(80,210,193,.4)}
   .empty{color:var(--muted);font-size:13.5px;padding:6px 0}
 </style>
 </head>
 <body>
 <nav><div class="nav-in">
-  <div class="logo">ATTICUS <b>·</b> <span class="kicker">Earn &amp; Protect</span></div>
+  <div class="logo">Earn &amp; Protect <span class="by">by <b>ATTICUS</b></span></div>
   <div class="pill" id="connPill">not connected</div>
 </div></nav>
 <div class="wrap">
   <h1>One toggle. A hard floor. And it pays.</h1>
   <p class="sub">Paste your Hyperliquid address — we only <b>read</b> your positions (no signing, no deposits, no keys). Flip protection on and the credit the options market funds is paid to your wallet at each daily cycle's close.</p>
 
-  <div class="card" id="geoBanner" style="display:none;border-color:rgba(248,81,73,.45)">
+  <div class="card" id="geoBanner" style="display:none;border-color:rgba(237,112,136,.45)">
     <b>Not available in your region.</b> <span class="muted small" id="geoMsg"></span>
   </div>
 
@@ -82,7 +105,7 @@ export const EP_WEB_APP_HTML = `<!doctype html>
     <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
   </div>
 
-  <div class="card" id="tosCard" style="display:none;border-color:rgba(217,171,1,.45)">
+  <div class="card" id="tosCard" style="display:none;border-color:rgba(80,210,193,.45)">
     <b>One step before protection:</b> <span class="muted small">accept the <a href="/tos" target="_blank" rel="noopener">Terms of Service</a> (<span id="tosVer"></span>). Recorded once per wallet per version.</span>
     <div class="row" style="margin-top:10px">
       <label class="small muted" style="flex:1;min-width:240px"><input type="checkbox" id="tosCheck"> I have read and accept the Terms of Service.</label>
@@ -198,7 +221,7 @@ const render = (positions, state) => {
       ? '<div class="switch' + (active ? " on" : "") + (busy ? " busy" : "") + '" data-coin="' + esc(p.coin) + '" data-active="' + (active ? "1" : "0") + '" role="switch" aria-checked="' + (active ? "true" : "false") + '"><div class="knob"></div></div>'
       : '<span class="small muted">protection for ' + esc(p.coin) + ' coming soon</span>';
     return '<div class="card" title="' + esc(tooltip) + '">' +
-      '<div class="row"><div class="pos-head">' + p.side.toUpperCase() + ' ' + p.szBase + ' ' + esc(p.coin) + ' <small>· ' + fmt$(p.notionalUsdc) + (p.entryPx ? ' · entry $' + p.entryPx : '') + '</small></div>' + toggle + '</div>' +
+      '<div class="row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + p.szBase + ' ' + esc(p.coin) + ' <small>· ' + fmt$(p.notionalUsdc) + (p.entryPx ? ' · entry $' + p.entryPx : '') + '</small></div>' + toggle + '</div>' +
       chip + terms + bar + coverage + '</div>';
   }).join("");
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
