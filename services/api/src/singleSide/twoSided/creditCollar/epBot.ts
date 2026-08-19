@@ -61,7 +61,7 @@ export const humanRefusal = (raw: string | null | undefined): string => {
   if (/minimum one lot|0\.01 BTC lots|below_min_lot/i.test(s)) return "Below the 0.01 BTC minimum";
   if (/waitlist|founding cohort/i.test(s)) return "Founding cohort full · you're on the waitlist";
   if (/capacity.*in use|wallet_cap/i.test(s)) return "Your capacity is in use this cycle";
-  if (/strike.*concentration|strike_concentration/i.test(s)) return "That strike is crowded · try again shortly";
+  if (/strike_concentration|already carries|unwindable|strike.*concentration/i.test(s)) return "That strike is crowded · try again shortly";
   if (/quota reached/i.test(s)) return "Daily limit reached";
   if (/hard cap|book notional cap|book is full/i.test(s)) return "Above the current cap · nothing opened";
   if (/already active|in flight|in_flight|being processed/i.test(s)) return "Already protected";

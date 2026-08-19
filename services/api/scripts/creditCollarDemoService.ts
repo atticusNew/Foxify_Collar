@@ -45,6 +45,7 @@ import {
   pushStage,
   renewalStaggerOffsetMs,
   wrapCapStrike,
+  wrapExposureUsdc,
   wrapRefuseFromLive,
   concludeAtExpiry,
   renewalDecision,
@@ -286,7 +287,7 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
   const isOpenRec = (r: DemoWrapRecord) => r.status === "quoting" || r.status === "executing" || r.status === "active";
   const walletOpenNotionalUsdc = records
     .filter((r) => r.account.toLowerCase() === account.toLowerCase() && isOpenRec(r))
-    .reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0);
+    .reduce((s, r) => s + wrapExposureUsdc(r), 0);
   const sizing = partialWrapSizing(position.szBase, position.notionalUsdc, derived.perWalletCapUsdc, walletOpenNotionalUsdc, position.markPx);
   if (!sizing.ok) {
     const err = /minimum one lot/.test(sizing.reason) ? "below_min_lot" : "wallet_cap";
@@ -315,6 +316,7 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
   const rec = newDemoWrap(`wrap-${nowMs}`, nowMs, "hyperliquid", account, position);
   if (renewal) rec.stages[0].note = "auto-renewal — protection stayed on through expiry";
   if (idempotencyKey) rec.idempotencyKey = idempotencyKey;
+  rec.wrappedNotionalUsdc = coveredNotionalUsdc; // the book carries the HEDGED exposure, not the raw position
   records.push(rec);
   await stores.saveWraps(records);
   const persist = () => stores.saveWraps(records);
@@ -346,7 +348,7 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
   const capStrikeListed = position.side === "long" ? listed.callStrike : listed.putStrike;
   const openExposures: StrikeExposure[] = records
     .filter((r) => r.id !== rec.id && isOpenRec(r) && r.quote != null)
-    .map((r) => ({ capStrike: wrapCapStrike(r)!, notionalUsdc: r.position?.notionalUsdc ?? 0 }));
+    .map((r) => ({ capStrike: wrapCapStrike(r)!, notionalUsdc: wrapExposureUsdc(r) }));
   const conc = assessStrikeConcentration(
     openExposures,
     { capStrike: capStrikeListed, notionalUsdc: coveredNotionalUsdc },
@@ -617,7 +619,7 @@ const buildState = async (account?: string, all = false) => {
     book: {
       accounts: [...new Set(allWraps.map((r) => r.account))].length,
       openWraps: open.length,
-      openNotionalUsdc: round2(open.reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0)),
+      openNotionalUsdc: round2(open.reduce((s, r) => s + wrapExposureUsdc(r), 0)),
       totalWraps: allWraps.length,
       creditsPaidUsdc: round2(ledger.filter((e) => paidStatuses.has(e.status)).reduce((s, e) => s + e.amountUsdc, 0))
     },
@@ -841,7 +843,7 @@ const watchdogTick = async (): Promise<void> => {
     // the configured line — conclusions and payouts keep running.
     const records = await stores.loadWraps();
     const open = records.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
-    const openNotional = open.reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0);
+    const openNotional = open.reduce((s, r) => s + wrapExposureUsdc(r), 0);
     const spotRef = open.find((r) => r.quote)?.quote?.spot ?? 0;
     const derived = deriveCaps(capsInputs, spotRef);
     const utilization = derived.bookCapUsdc > 0 ? openNotional / derived.bookCapUsdc : 0;
@@ -1239,7 +1241,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         pausedReason: runtimePausedReason,
         executionMode: guards.executionMode,
         openWraps: open.length,
-        openNotionalUsdc: round2(open.reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0)),
+        openNotionalUsdc: round2(open.reduce((s, r) => s + wrapExposureUsdc(r), 0)),
         wallets: Object.keys(registry).length,
         payoutBacklog: ledger.filter((e) => e.status === "accrued" || e.status === "queued").length,
         payoutFailures: ledger.filter((e) => e.status === "failed").length,

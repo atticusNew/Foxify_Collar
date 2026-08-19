@@ -128,7 +128,11 @@ test("bot: keyboard — protect button when off, unprotect when on, only wrappab
 test("bot: refusal copy stays human", () => {
   assert.equal(humanRefusal("wrap refused: the founding cohort (50 wallets) is full — you're on the waitlist"), "Founding cohort full · you're on the waitlist");
   assert.equal(humanRefusal("listed_credit_nonpositive — call bid under put ask"), "No honest credit right now · nothing opened");
-  assert.equal(humanRefusal("cap strike $65500 already carries…strike_concentration"), "That strike is crowded · try again shortly");
+  // The engine's REAL strike-concentration reason (regression: it does not contain "concentration")
+  assert.equal(
+    humanRefusal("wrap refused: cap strike $70500 already carries $1364.29 of the book (limit 30% of $2047.64) — a knockout there must stay unwindable on the screen; try again shortly"),
+    "That strike is crowded · try again shortly"
+  );
 });
 
 // ── Bot: cycle-event differ (the notification engine) ─────────────────────────
