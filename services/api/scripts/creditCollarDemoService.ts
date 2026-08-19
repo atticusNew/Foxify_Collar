@@ -1060,10 +1060,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
     // ── Pages ──
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app" || url.pathname === "/miniapp")) {
-      // Brand logo slot: set EP_BRAND_LOGO_URL to render the mark next to the wordmark.
+      // Brand logo slot: set EP_BRAND_LOGO_URL to render the mark next to "by ATTICUS".
+      // replaceAll — the placeholder may legitimately appear in comments too (bug caught live:
+      // .replace() hit a comment first and left the visible slot as literal text).
       const logoUrl = process.env.EP_BRAND_LOGO_URL?.trim();
       const logoTag = logoUrl && /^https?:\/\//.test(logoUrl) ? `<img class="brand-img" src="${logoUrl.replace(/"/g, "")}" alt="">` : "";
-      sendHtml(res, (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML).replace("__BRAND_LOGO__", logoTag));
+      sendHtml(res, (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML).replaceAll("__BRAND_LOGO__", logoTag));
       return;
     }
     if (req.method === "GET" && url.pathname === "/demo") {

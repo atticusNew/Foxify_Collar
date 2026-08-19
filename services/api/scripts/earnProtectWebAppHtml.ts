@@ -96,7 +96,31 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .tipwrap.tip-right .tip{left:auto;right:0;transform:none}
   .tipwrap:hover .tip,.tipwrap.open .tip{display:block}
   .info{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid rgba(80,210,193,.55);color:var(--accent);font-size:9.5px;margin-left:5px;vertical-align:1px}
-  .brand-img{height:20px;margin-right:9px;vertical-align:-4px;border-radius:4px}
+  .brand-img{height:15px;margin-right:4px;vertical-align:-3px;border-radius:3px}
+  /* Hedge receipt: the proof the protection is real — legs, fills, order refs */
+  details.receipt{margin-top:10px}
+  details.receipt summary{cursor:pointer;font-size:12px;color:var(--muted);list-style:none;display:inline-flex;align-items:center;gap:6px}
+  details.receipt summary::-webkit-details-marker{display:none}
+  details.receipt summary:before{content:"▸";color:var(--accent);font-size:10px;transition:transform .15s}
+  details.receipt[open] summary:before{transform:rotate(90deg)}
+  .receipt-tbl{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px}
+  .receipt-tbl td,.receipt-tbl th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
+  .receipt-tbl th{color:var(--muted);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px}
+  .receipt-tbl code{font-size:11px;color:var(--text)}
+  .tag-real{color:var(--good);font-weight:700;font-size:10.5px} .tag-sim{color:#e3c34c;font-weight:700;font-size:10.5px}
+  /* Narrow screens (Telegram WebView, phones): stack the header, keep cards breathing */
+  @media (max-width:560px){
+    .nav-in{height:auto;min-height:48px;padding:8px 14px;flex-wrap:wrap;gap:6px}
+    .logo{font-size:13.5px} .logo .by{font-size:10.5px;margin-left:5px}
+    .pill{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;padding:3px 9px}
+    .mode-pill{font-size:10px;padding:3px 8px;margin-right:5px}
+    .wrap{padding:0 12px 44px}
+    h1{font-size:20px} .sub{font-size:13px}
+    .card{padding:13px 14px}
+    .terms{grid-template-columns:1fr 1fr;gap:6px}
+    .terms .term:first-child{grid-column:1 / -1}
+    th,td{padding:6px 4px;font-size:12px}
+  }
   .mode-pill{font-size:11px;font-weight:700;letter-spacing:.6px;border-radius:999px;padding:3.5px 11px;margin-right:8px}
   .mode-paper{background:rgba(217,171,1,.14);color:#e3c34c;border:1px solid rgba(217,171,1,.4)}
   .mode-demo{background:rgba(80,210,193,.1);color:var(--accent);border:1px solid rgba(80,210,193,.35)}
@@ -115,9 +139,9 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <body>
 <nav><div class="nav-in">
   <!-- Venue affiliation is DESCRIPTIVE ("for Hyperliquid" — where your positions live), not a
-       partnership claim; swap the venue name per integration. __BRAND_LOGO__ is injected by the
-       service when EP_BRAND_LOGO_URL is set. -->
-  <div class="logo">__BRAND_LOGO__Earn &amp; Protect <span class="by">for <b>HYPERLIQUID</b> · by <b>ATTICUS</b></span></div>
+       partnership claim; swap the venue name per integration. The brand-logo slot next to "by"
+       is injected by the service when EP_BRAND_LOGO_URL is set. -->
+  <div class="logo">Earn &amp; Protect <span class="by">for <b>HYPERLIQUID</b> · by __BRAND_LOGO__<b>ATTICUS</b></span></div>
   <div style="display:flex;align-items:center">
     <span class="mode-pill tipwrap" id="modePill" style="display:none"></span>
     <div class="pill" id="connPill">not connected</div>
@@ -266,7 +290,18 @@ const render = (positions, state) => {
     const active = isWrapCoin && w && (w.status === "active" || w.status === "quoting" || w.status === "executing");
     const v = w && w.vestingStatus;
     const q = w && w.quote;
-    let chip = "", terms = "", bar = "", coverage = "", trust = "", tooltip = "";
+    let chip = "", terms = "", bar = "", coverage = "", trust = "", receipt = "", tooltip = "";
+    const legLabel = { sell_call_cap: "SELL call (cap)", buy_put_floor: "BUY put (floor)", sell_put_cap: "SELL put (cap)", buy_call_floor: "BUY call (floor)" };
+    if (isWrapCoin && w && w.legs && w.legs.length && (w.status === "active" || w.status === "knocked_out")) {
+      // Hedge receipt — the proof: real instruments, premiums, order refs. REAL = a venue order
+      // stands behind the row; SIMULATED = a live-book model quote (paper lane), labeled honestly.
+      receipt = '<details class="receipt"><summary>Hedge receipt — how this protection is built</summary><table class="receipt-tbl">' +
+        '<thead><tr><th>leg</th><th>listed instrument</th><th>premium</th><th>order ref</th><th></th></tr></thead><tbody>' +
+        w.legs.map((l) =>
+          '<tr><td>' + (legLabel[l.role] || esc(l.role)) + '</td><td><code>' + esc((l.instId || "—").replace(" (model)", "")) + '</code></td><td>' + fmt$(l.premiumUsdc) + '</td><td><code>' + esc(l.orderId || "—") + '</code></td><td class="' + (l.real ? "tag-real" : "tag-sim") + '">' + (l.real ? "REAL" : "SIMULATED") + '</td></tr>'
+        ).join("") +
+        '</tbody></table><div class="trust" style="margin-top:6px">Sold premium funds the bought floor; the surplus is your credit. Every row reconciles against the venue\\u2019s own fill and settlement records.</div></details>';
+    }
     if (isWrapCoin && w) {
       if (w.status === "active" && v && q) {
         const capStrike = q.capStrike ?? q.callStrike, floorStrike = q.floorStrike ?? q.putStrike;
@@ -313,7 +348,7 @@ const render = (positions, state) => {
       : '<span class="small muted">protection for ' + esc(p.coin) + ' coming soon</span>';
     return '<div class="card" title="' + esc(tooltip) + '">' +
       '<div class="row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + p.szBase + ' ' + esc(p.coin) + ' <small>· ' + fmt$(p.notionalUsdc) + (p.entryPx ? ' · entry ' + fmtPx(p.entryPx) : '') + '</small></div>' + toggle + '</div>' +
-      chip + terms + bar + coverage + trust + '</div>';
+      chip + terms + bar + coverage + receipt + trust + '</div>';
   }).join("");
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
 };
