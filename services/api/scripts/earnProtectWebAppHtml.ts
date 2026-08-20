@@ -96,8 +96,10 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .tipwrap.tip-right .tip{left:auto;right:0;transform:none}
   .tipwrap:hover .tip,.tipwrap.open .tip{display:block}
   .info{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid rgba(80,210,193,.55);color:var(--accent);font-size:9.5px;margin-left:5px;vertical-align:1px}
-  .atticus-serif{font-family:"Times New Roman",Times,serif;font-weight:700;font-size:12.5px;letter-spacing:.8px;color:var(--accent)}
-  .brand-img{height:15px;margin-left:4px;vertical-align:-3px}
+  /* The Atticus lockup: title-case serif in Atticus gold, finch mark sized to the text (matches
+     the brand asset: "Atticus" + finch outline, both #d9ab01). */
+  .atticus-serif{font-family:"Times New Roman",Times,serif;font-weight:400;font-size:14px;letter-spacing:.2px;color:#d9ab01}
+  .brand-img{height:13px;margin-left:5px;vertical-align:-1.5px}
   /* Hedge receipt: the proof the protection is real — a quiet chip that reads as actionable */
   details.receipt{margin-top:10px}
   details.receipt summary{cursor:pointer;font-size:12px;color:var(--muted);list-style:none;display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:6px;padding:5px 11px;transition:border-color .15s,color .15s}

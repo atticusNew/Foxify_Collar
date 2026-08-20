@@ -1066,7 +1066,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // .replace() hit a comment first and left the visible slot as literal text).
       const logoUrl = (process.env.EP_BRAND_LOGO_URL ?? "https://i.ibb.co/Sw0KQJYV/finchsmall.png").trim();
       const finch = /^https:\/\//.test(logoUrl) ? `<img class="brand-img" src="${logoUrl.replace(/"/g, "")}" alt="">` : "";
-      const brandMark = `<span class="atticus-serif">ATTICUS</span>${finch}`;
+      const brandMark = `<span class="atticus-serif">Atticus</span>${finch}`;
       sendHtml(res, (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML).replaceAll("__BRAND_MARK__", brandMark));
       return;
     }
