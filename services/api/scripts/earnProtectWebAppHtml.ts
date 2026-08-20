@@ -96,7 +96,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .tipwrap.tip-right .tip{left:auto;right:0;transform:none}
   .tipwrap:hover .tip,.tipwrap.open .tip{display:block}
   .info{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid rgba(80,210,193,.55);color:var(--accent);font-size:9.5px;margin-left:5px;vertical-align:1px}
-  .brand-img{height:15px;margin-right:4px;vertical-align:-3px;border-radius:3px}
+  .brand-img{height:16px;margin-left:2px;vertical-align:-4px}
   /* Hedge receipt: the proof the protection is real — legs, fills, order refs */
   details.receipt{margin-top:10px}
   details.receipt summary{cursor:pointer;font-size:12px;color:var(--muted);list-style:none;display:inline-flex;align-items:center;gap:6px}
@@ -139,9 +139,9 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <body>
 <nav><div class="nav-in">
   <!-- Venue affiliation is DESCRIPTIVE ("for Hyperliquid" — where your positions live), not a
-       partnership claim; swap the venue name per integration. The brand-logo slot next to "by"
-       is injected by the service when EP_BRAND_LOGO_URL is set. -->
-  <div class="logo">Earn &amp; Protect <span class="by">for <b>HYPERLIQUID</b> · by __BRAND_LOGO__<b>ATTICUS</b></span></div>
+       partnership claim; swap the venue name per integration. The brand mark after "by" is
+       injected by the service: the Atticus logo (EP_BRAND_LOGO_URL) or the wordmark fallback. -->
+  <div class="logo">Earn &amp; Protect <span class="by">for <b>HYPERLIQUID</b> · by __BRAND_MARK__</span></div>
   <div style="display:flex;align-items:center">
     <span class="mode-pill tipwrap" id="modePill" style="display:none"></span>
     <div class="pill" id="connPill">not connected</div>

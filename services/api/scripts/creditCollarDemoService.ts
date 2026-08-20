@@ -1060,12 +1060,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
     // ── Pages ──
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app" || url.pathname === "/miniapp")) {
-      // Brand logo slot: set EP_BRAND_LOGO_URL to render the mark next to "by ATTICUS".
+      // Brand mark after "by": the Atticus logo image, or the ATTICUS wordmark when no asset.
+      // EP_BRAND_LOGO_URL overrides the default (e.g. when the asset moves to atticustrade.com).
       // replaceAll — the placeholder may legitimately appear in comments too (bug caught live:
       // .replace() hit a comment first and left the visible slot as literal text).
-      const logoUrl = process.env.EP_BRAND_LOGO_URL?.trim();
-      const logoTag = logoUrl && /^https?:\/\//.test(logoUrl) ? `<img class="brand-img" src="${logoUrl.replace(/"/g, "")}" alt="">` : "";
-      sendHtml(res, (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML).replaceAll("__BRAND_LOGO__", logoTag));
+      const logoUrl = (process.env.EP_BRAND_LOGO_URL ?? "https://i.ibb.co/GQCTbY13/atlogo.png").trim();
+      const brandMark = /^https:\/\//.test(logoUrl) ? `<img class="brand-img" src="${logoUrl.replace(/"/g, "")}" alt="Atticus">` : "<b>ATTICUS</b>";
+      sendHtml(res, (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML).replaceAll("__BRAND_MARK__", brandMark));
       return;
     }
     if (req.method === "GET" && url.pathname === "/demo") {
