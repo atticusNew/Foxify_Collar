@@ -100,6 +100,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
      the brand asset: "Atticus" + finch outline, both #d9ab01). */
   .atticus-serif{font-family:"Times New Roman",Times,serif;font-weight:400;font-size:14px;letter-spacing:.2px;color:#d9ab01}
   .brand-img{height:13px;margin-left:5px;vertical-align:-1.5px}
+  .brand-lockup{height:17px;margin-left:2px;vertical-align:-4px}
   /* Hedge receipt: the proof the protection is real — a quiet chip that reads as actionable */
   details.receipt{margin-top:10px}
   details.receipt summary{cursor:pointer;font-size:12px;color:var(--muted);list-style:none;display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:6px;padding:5px 11px;transition:border-color .15s,color .15s}

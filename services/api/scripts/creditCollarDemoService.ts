@@ -25,6 +25,9 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { HyperliquidClient } from "../src/singleSide/twoSided/creditCollar/execution/perpVenues/hyperliquidClient";
 import {
   assessDemoWrap,
@@ -102,6 +105,8 @@ const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(
 const round2 = (x: number) => +x.toFixed(2);
 
 const port = num(process.env.DEMO_PORT ?? process.env.PORT, 8788); // PORT: hosted platforms (Render) inject it
+/** The single-SVG brand lockup (drop-in — see scripts/assets/README.md). */
+const BRAND_LOCKUP_PATH = join(dirname(fileURLToPath(import.meta.url)), "assets", "atticus-lockup.svg");
 const guards = parseDemoGuardsFromEnv(process.env);
 const storePath = process.env.DEMO_STORE_PATH ?? "./logs/demo-wraps.json";
 const allowReset = String(process.env.DEMO_ALLOW_RESET ?? "true").toLowerCase() === "true";
@@ -1060,14 +1065,30 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
     // ── Pages ──
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app" || url.pathname === "/miniapp")) {
-      // Brand mark after "by": ATTICUS in serif + the finch mark after it. EP_BRAND_LOGO_URL
-      // overrides the finch asset (e.g. when it moves to atticustrade.com); non-https ⟹ text only.
+      // Brand mark after "by": the single-SVG Atticus lockup when the asset exists (pixel-perfect
+      // brand file, served by us at /assets/atticus-lockup.svg — no third-party host), otherwise
+      // the live-text fallback: "Atticus" in gold serif + the finch image (EP_BRAND_LOGO_URL
+      // overrides the finch; non-https ⟹ text only).
       // replaceAll — the placeholder may legitimately appear in comments too (bug caught live:
       // .replace() hit a comment first and left the visible slot as literal text).
-      const logoUrl = (process.env.EP_BRAND_LOGO_URL ?? "https://i.ibb.co/Sw0KQJYV/finchsmall.png").trim();
-      const finch = /^https:\/\//.test(logoUrl) ? `<img class="brand-img" src="${logoUrl.replace(/"/g, "")}" alt="">` : "";
-      const brandMark = `<span class="atticus-serif">Atticus</span>${finch}`;
+      let brandMark: string;
+      if (existsSync(BRAND_LOCKUP_PATH)) {
+        brandMark = `<img class="brand-lockup" src="/assets/atticus-lockup.svg" alt="Atticus">`;
+      } else {
+        const logoUrl = (process.env.EP_BRAND_LOGO_URL ?? "https://i.ibb.co/Sw0KQJYV/finchsmall.png").trim();
+        const finch = /^https:\/\//.test(logoUrl) ? `<img class="brand-img" src="${logoUrl.replace(/"/g, "")}" alt="">` : "";
+        brandMark = `<span class="atticus-serif">Atticus</span>${finch}`;
+      }
       sendHtml(res, (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML).replaceAll("__BRAND_MARK__", brandMark));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/assets/atticus-lockup.svg") {
+      if (!existsSync(BRAND_LOCKUP_PATH)) {
+        sendJson(res, 404, { ok: false, error: "not_found" });
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600", ...CORS_HEADERS });
+      res.end(readFileSync(BRAND_LOCKUP_PATH));
       return;
     }
     if (req.method === "GET" && url.pathname === "/demo") {
