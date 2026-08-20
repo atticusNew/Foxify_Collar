@@ -96,13 +96,25 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .tipwrap.tip-right .tip{left:auto;right:0;transform:none}
   .tipwrap:hover .tip,.tipwrap.open .tip{display:block}
   .info{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid rgba(80,210,193,.55);color:var(--accent);font-size:9.5px;margin-left:5px;vertical-align:1px}
-  .brand-img{height:16px;margin-left:2px;vertical-align:-4px}
-  /* Hedge receipt: the proof the protection is real — legs, fills, order refs */
+  .atticus-serif{font-family:"Times New Roman",Times,serif;font-weight:700;font-size:12.5px;letter-spacing:.8px;color:var(--accent)}
+  .brand-img{height:15px;margin-left:4px;vertical-align:-3px}
+  /* Hedge receipt: the proof the protection is real — a quiet chip that reads as actionable */
   details.receipt{margin-top:10px}
-  details.receipt summary{cursor:pointer;font-size:12px;color:var(--muted);list-style:none;display:inline-flex;align-items:center;gap:6px}
+  details.receipt summary{cursor:pointer;font-size:12px;color:var(--muted);list-style:none;display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:6px;padding:5px 11px;transition:border-color .15s,color .15s}
+  details.receipt summary:hover,details.receipt[open] summary{border-color:rgba(80,210,193,.5);color:var(--text)}
   details.receipt summary::-webkit-details-marker{display:none}
   details.receipt summary:before{content:"▸";color:var(--accent);font-size:10px;transition:transform .15s}
   details.receipt[open] summary:before{transform:rotate(90deg)}
+  /* How-it-works modal (keeps the page clean; the honest print is one tap away) */
+  .modal-veil{display:none;position:fixed;inset:0;background:rgba(4,14,17,.7);backdrop-filter:blur(3px);z-index:50}
+  .modal-veil.open{display:flex;align-items:center;justify-content:center;padding:18px}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:460px;width:100%;padding:20px 22px;max-height:80vh;overflow-y:auto}
+  .modal h3{font-size:15px;margin-bottom:12px}
+  .modal ul{list-style:none;margin:0;padding:0}
+  .modal li{padding:7px 0 7px 22px;position:relative;color:var(--muted);font-size:13px;line-height:1.5}
+  .modal li:before{content:"";position:absolute;left:2px;top:13px;width:6px;height:6px;border-radius:2px;background:var(--accent)}
+  .modal li b{color:var(--text)}
+  .modal .btn{margin-top:14px}
   .receipt-tbl{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px}
   .receipt-tbl td,.receipt-tbl th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
   .receipt-tbl th{color:var(--muted);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px}
@@ -150,7 +162,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <div class="wrap">
   <header id="hero">
     <h1>One toggle. A hard floor. And it pays.</h1>
-    <p class="sub">Paste your Hyperliquid address — we only <b>read</b> your positions (no signing, no deposits, no keys). Flip protection on and the credit the options market funds is paid to your wallet at each daily cycle's close.</p>
+    <p class="sub">Paste your Hyperliquid address — read-only. Flip protection on; the options market pays you a daily credit.${""/* the no-keys detail lives on the input tooltip */}</p>
   </header>
 
   <div class="card" id="geoBanner" style="display:none;border-color:rgba(237,112,136,.45)">
@@ -159,7 +171,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 
   <div class="card" id="connectCard">
     <div class="row">
-      <input type="text" id="addrInput" placeholder="0x… your Hyperliquid address (read-only)" spellcheck="false">
+      <input type="text" id="addrInput" placeholder="0x… your Hyperliquid address (read-only)" title="We only read positions from Hyperliquid's public API — no signing, no deposits, no keys. Payouts go only to this address." spellcheck="false">
       <button class="btn" id="connectBtn">View positions</button>
       <button class="btn ghost" id="forgetBtn" style="display:none">Forget</button>
     </div>
@@ -186,13 +198,22 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   </div>
 
   <div class="foot">
-    Protection terms are quoted from live listed order books at the moment of the toggle and refused honestly when the market can't fund them.
-    Credits vest through each daily cycle and are paid at its conclusion. If the market touches your cap, that cycle ends — you keep your position,
-    every gain to the cap, and the credit vested to the touch; protection re-arms at the new price while the toggle stays on.
-    We keep a published share of the credit we source (waived when tiny); founding wallets keep a reduced rate<span id="rateNote"></span>.
-    Derivatives involve risk. Nothing here is investment advice.
+    Priced live from listed markets · refused honestly when unfundable · <a href="#" id="howLink">How it works</a> · <a href="/tos" target="_blank" rel="noopener">Terms</a>
   </div>
 </div>
+
+<div class="modal-veil" id="howVeil"><div class="modal">
+  <h3>How Earn &amp; Protect works</h3>
+  <ul>
+    <li><b>Read-only.</b> We read your positions from Hyperliquid's public API — no signing, no deposits, no keys. Payouts go only to your own wallet.</li>
+    <li><b>Live-market pricing.</b> Every protection cycle is quoted from listed option order books at the moment you toggle. When the market can't fund a credit, we refuse and say why.</li>
+    <li><b>Paid daily, never upfront.</b> Your credit unlocks through each daily cycle and pays automatically at its close.</li>
+    <li><b>The cap ends the cycle, not your trade.</b> If price touches your cap, that cycle ends — you keep your position, every gain, and the unlocked credit; protection re-arms at the new price while the toggle stays on. You never owe anything.</li>
+    <li><b>Honest economics.</b> We keep a published share of the credit we source (waived when tiny); founding wallets keep a reduced rate<span id="rateNote"></span>.</li>
+    <li>Derivatives involve risk. Nothing here is investment advice.</li>
+  </ul>
+  <button class="btn ghost" id="howClose">Close</button>
+</div></div>
 <script>
 const MINIAPP = ${miniapp ? "true" : "false"};
 const TG = MINIAPP && window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
@@ -249,10 +270,11 @@ let busy = false;
 
 // One status writer: the connect-card line on web; a visible flash strip in the Mini App
 // (where the connect card is hidden once an account is bound).
-const setMsg = (t, isErr) => {
-  $("connectMsg").textContent = t || "";
+const setMsg = (t, isErr, working) => {
+  const html = t ? (working ? '<span class="spin"></span>' : "") + esc(t) : "";
+  $("connectMsg").innerHTML = html;
   const f = $("flash");
-  if (MINIAPP) { f.textContent = t || ""; f.style.display = t ? "" : "none"; f.className = "flash" + (isErr ? " bad" : ""); }
+  if (MINIAPP) { f.innerHTML = html; f.style.display = t ? "" : "none"; f.className = "flash" + (isErr ? " bad" : ""); }
 };
 
 const setConn = () => {
@@ -290,7 +312,7 @@ const render = (positions, state) => {
     const active = isWrapCoin && w && (w.status === "active" || w.status === "quoting" || w.status === "executing");
     const v = w && w.vestingStatus;
     const q = w && w.quote;
-    let chip = "", terms = "", bar = "", coverage = "", trust = "", receipt = "", tooltip = "";
+    let chip = "", terms = "", bar = "", coverage = "", receipt = "", tooltip = "";
     const legLabel = { sell_call_cap: "SELL call (cap)", buy_put_floor: "BUY put (floor)", sell_put_cap: "SELL put (cap)", buy_call_floor: "BUY call (floor)" };
     if (isWrapCoin && w && w.legs && w.legs.length && (w.status === "active" || w.status === "knocked_out")) {
       // Hedge receipt — the proof: real instruments, premiums, order refs. REAL = a venue order
@@ -324,7 +346,6 @@ const render = (positions, state) => {
           '</div>';
         const note = w.hedge && w.hedge.sizeNote;
         if (note) coverage = '<div class="coverage">' + esc(note) + '</div>';
-        trust = '<div class="trust">Priced live from listed options. When the market can\\u2019t fund a credit, we refuse and say why.</div>';
       } else if (w.status === "quoting" || w.status === "executing") {
         // Spinner + live seconds counter (server-truth: elapsed since the wrap request landed).
         chip = '<div class="chip on"><span class="spin"></span>Wrapping… ' +
@@ -348,7 +369,7 @@ const render = (positions, state) => {
       : '<span class="small muted">protection for ' + esc(p.coin) + ' coming soon</span>';
     return '<div class="card" title="' + esc(tooltip) + '">' +
       '<div class="row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + p.szBase + ' ' + esc(p.coin) + ' <small>· ' + fmt$(p.notionalUsdc) + (p.entryPx ? ' · entry ' + fmtPx(p.entryPx) : '') + '</small></div>' + toggle + '</div>' +
-      chip + terms + bar + coverage + receipt + trust + '</div>';
+      chip + terms + bar + coverage + receipt + '</div>';
   }).join("");
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
 };
@@ -359,6 +380,10 @@ document.addEventListener("click", (ev) => {
   for (const t of document.querySelectorAll(".tipwrap.open")) if (t !== wrap) t.classList.remove("open");
   if (wrap) wrap.classList.toggle("open");
 });
+
+$("howLink").onclick = (e) => { e.preventDefault(); $("howVeil").classList.add("open"); };
+$("howClose").onclick = () => $("howVeil").classList.remove("open");
+$("howVeil").addEventListener("click", (e) => { if (e.target === $("howVeil")) $("howVeil").classList.remove("open"); });
 
 // 1s ticker for the wrapping counter — reads server timestamps, never invents time.
 setInterval(() => {
@@ -387,6 +412,7 @@ const onToggle = async (ev) => {
   }
   busy = true;
   haptic("impact");
+  if (isOn) setMsg("Closing early — collecting what's unlocked…", false, true);
   // Immediate knob feedback: flip for the ATTEMPT, pulse while working; the next state render
   // corrects it if the engine refuses. A toggle that only moves on success reads as stuck.
   sw.classList.toggle("on", !isOn);
@@ -396,7 +422,7 @@ const onToggle = async (ev) => {
       const j = await api("/api/close", { method: "POST" });
       setMsg(j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off." : humanChip(j.message || j.error), !j.ok);
     } else {
-      setMsg("Wrapping — pricing the live options book…", false);
+      setMsg("Wrapping — pricing the live options book…", false, true);
       // Client-supplied idempotency key: a flaky network can never double-wrap.
       const idem = (MINIAPP ? "tma-" : "web-") + account.slice(2, 10) + "-" + Date.now().toString(36);
       const j = await api("/api/wrap", { method: "POST", headers: { "Idempotency-Key": idem } });
