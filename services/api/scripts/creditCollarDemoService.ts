@@ -1141,7 +1141,15 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         const finch = /^https:\/\//.test(logoUrl) ? `<img class="brand-img" src="${logoUrl.replace(/"/g, "")}" alt="">` : "";
         brandMark = `<span class="atticus-serif">Atticus</span>${finch}`;
       }
-      sendHtml(res, (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML).replaceAll("__BRAND_MARK__", brandMark));
+      const tgLink = (process.env.EP_SUPPORT_TELEGRAM ?? "").trim();
+      const xLink = (process.env.EP_SOCIAL_X ?? "").trim();
+      sendHtml(
+        res,
+        (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML)
+          .replaceAll("__BRAND_MARK__", brandMark)
+          .replaceAll("__LINK_TG__", /^https:\/\//.test(tgLink) ? `<a href="${tgLink.replace(/"/g, "")}" target="_blank" rel="noopener">Support / Telegram</a> · ` : "")
+          .replaceAll("__LINK_X__", /^https:\/\//.test(xLink) ? `<a href="${xLink.replace(/"/g, "")}" target="_blank" rel="noopener">X</a> · ` : "")
+      );
       return;
     }
     if (req.method === "GET" && url.pathname === "/assets/atticus-lockup.svg") {
@@ -1189,7 +1197,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     let geoCountry: string | null = null;
     if (geofence.enabled && (isAction || route === "/api/geo")) {
       geoCountry = await resolveCountry(req.headers, ip);
-      if (isAction) {
+      // notice mode: banner only (demo posture); enforce mode: actions actually block.
+      if (isAction && geofence.mode === "enforce") {
         const verdict = assessGeofence(geofence, geoCountry);
         if (!verdict.allowed) {
           sendJson(res, 451, { ok: false, error: "geo_blocked", message: verdict.reason });
@@ -1199,7 +1208,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (req.method === "GET" && route === "/api/geo") {
       const verdict = assessGeofence(geofence, geofence.enabled ? geoCountry : null);
-      sendJson(res, 200, { ok: true, enabled: geofence.enabled, allowed: verdict.allowed, country: verdict.country, ...(verdict.allowed ? {} : { message: (verdict as { reason: string }).reason }) });
+      sendJson(res, 200, { ok: true, enabled: geofence.enabled, mode: geofence.mode, allowed: verdict.allowed, country: verdict.country, ...(verdict.allowed ? {} : { message: (verdict as { reason: string }).reason }) });
       return;
     }
 

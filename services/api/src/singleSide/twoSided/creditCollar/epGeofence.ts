@@ -16,9 +16,13 @@
 
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
 
+export type GeofenceMode = "off" | "notice" | "enforce";
+
 export type GeofenceConfig = {
-  /** Master switch (EP_GEOFENCE). Off ⟹ every check allows (dev default). */
+  /** Master switch (EP_GEOFENCE / EP_GEOFENCE_MODE). Off ⟹ every check allows (dev default). */
   enabled: boolean;
+  /** notice = banner only (demo posture); enforce = actions blocked with 451 (live posture). */
+  mode: GeofenceMode;
   /** ISO-3166 alpha-2 codes, uppercase (EP_GEO_BLOCKED). */
   blockedCountries: string[];
   /** Trusted proxy headers, checked in order (first match wins). */
@@ -31,8 +35,12 @@ export type GeofenceConfig = {
   cacheTtlMs: number;
 };
 
-export const parseGeofenceFromEnv = (env: Record<string, string | undefined>): GeofenceConfig => ({
-  enabled: String(env.EP_GEOFENCE ?? "false").toLowerCase() === "true",
+export const parseGeofenceFromEnv = (env: Record<string, string | undefined>): GeofenceConfig => {
+  const rawMode = (env.EP_GEOFENCE_MODE ?? (String(env.EP_GEOFENCE ?? "false").toLowerCase() === "true" ? "enforce" : "off")).toLowerCase();
+  const mode: GeofenceMode = rawMode === "enforce" ? "enforce" : rawMode === "notice" ? "notice" : "off";
+  return {
+  enabled: mode !== "off",
+  mode,
   blockedCountries: (env.EP_GEO_BLOCKED ?? "US,CU,IR,KP,SY")
     .split(",")
     .map((s) => s.trim().toUpperCase())
@@ -41,7 +49,8 @@ export const parseGeofenceFromEnv = (env: Record<string, string | undefined>): G
   lookupUrlTemplate: env.EP_GEO_LOOKUP_URL === "" ? null : env.EP_GEO_LOOKUP_URL ?? "https://ipapi.co/{ip}/country/",
   failOpen: String(env.EP_GEO_FAIL_OPEN ?? "false").toLowerCase() === "true",
   cacheTtlMs: num(env.EP_GEO_CACHE_TTL_MS, 6 * 3_600_000)
-});
+  };
+};
 
 /** Loopback / RFC-1918 / link-local — the operator's own machine, not a routable client. */
 export const isPrivateIp = (ip: string): boolean =>

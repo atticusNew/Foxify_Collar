@@ -168,8 +168,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <p class="sub">Paste your Hyperliquid address — read-only. Flip protection on; the options market pays you a daily credit.${""/* the no-keys detail lives on the input tooltip */}</p>
   </header>
 
-  <div class="card" id="geoBanner" style="display:none;border-color:rgba(237,112,136,.45)">
-    <b>Not available in your region.</b> <span class="muted small" id="geoMsg"></span>
+  <div class="card" id="geoBanner" style="display:none">
+    <b id="geoTitle">Not available in your region.</b> <span class="muted small" id="geoMsg"></span>
   </div>
 
   <div class="card" id="connectCard">
@@ -209,7 +209,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   </div>
 
   <div class="foot">
-    Priced live from listed markets · refused honestly when unfundable · <a href="#" id="howLink">How it works</a> · <a href="/tos" target="_blank" rel="noopener">Terms</a>
+    Priced live from listed markets · refused honestly when unfundable · __LINK_TG____LINK_X__<a href="#" id="howLink">How it works</a> · <a href="/tos" target="_blank" rel="noopener">Terms</a>
   </div>
 </div>
 
@@ -469,7 +469,15 @@ const checkGates = async () => {
     const geo = await (await fetch("/api/geo")).json();
     if (geo.ok && geo.enabled && !geo.allowed) {
       $("geoBanner").style.display = "";
-      $("geoMsg").textContent = geo.message || "Protection actions are unavailable from your location.";
+      if (geo.mode === "notice") {
+        $("geoBanner").style.borderColor = "rgba(217,171,1,.5)";
+        $("geoTitle").textContent = "Restricted region notice.";
+        $("geoMsg").textContent = "You appear to be accessing from a restricted region" + (geo.country && geo.country !== "LOCAL" ? " (" + geo.country + ")" : "") + ". The live product will not be available there; the demo is open to explore.";
+      } else {
+        $("geoBanner").style.borderColor = "rgba(237,112,136,.45)";
+        $("geoTitle").textContent = "Not available in your region.";
+        $("geoMsg").textContent = geo.message || "Protection actions are unavailable from your location.";
+      }
     } else $("geoBanner").style.display = "none";
   } catch (e) { /* leave as-is */ }
   if (!account) { $("tosCard").style.display = "none"; $("verifyCard").style.display = "none"; return; }

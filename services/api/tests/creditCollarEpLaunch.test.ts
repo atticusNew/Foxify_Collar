@@ -37,8 +37,17 @@ const geoCfg = (over: Partial<GeofenceConfig> = {}): GeofenceConfig => ({
 test("geofence: env defaults — off in dev, US+OFAC blocklist, FAIL-CLOSED on unknown", () => {
   const off = parseGeofenceFromEnv({});
   assert.equal(off.enabled, false);
+  assert.equal(off.mode, "off");
   assert.deepEqual(off.blockedCountries, ["US", "CU", "IR", "KP", "SY"]);
   assert.equal(off.failOpen, false);
+});
+
+test("geofence: three modes — notice (banner only) vs enforce (blocks); EP_GEOFENCE=true stays enforce", () => {
+  assert.equal(parseGeofenceFromEnv({ EP_GEOFENCE_MODE: "notice" }).mode, "notice");
+  assert.equal(parseGeofenceFromEnv({ EP_GEOFENCE_MODE: "notice" }).enabled, true);
+  assert.equal(parseGeofenceFromEnv({ EP_GEOFENCE_MODE: "enforce" }).mode, "enforce");
+  assert.equal(parseGeofenceFromEnv({ EP_GEOFENCE: "true" }).mode, "enforce"); // backward compat
+  assert.equal(parseGeofenceFromEnv({ EP_GEOFENCE_MODE: "garbage" }).mode, "off"); // typo ⟹ safe lane
 });
 
 test("geofence: blocked countries refuse with honest copy; others pass; disabled allows all", () => {
