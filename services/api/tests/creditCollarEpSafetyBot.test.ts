@@ -78,6 +78,43 @@ test("alerts: fan out to disk + webhook, dedupe repeats inside the window", asyn
   assert.ok(calls.some((u) => u.includes("api.telegram.org")));
 });
 
+test("alerts: dedupeKey suppresses repeats whose MESSAGE changes (attempt counters, order ids)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ep-alerts-"));
+  const calls: string[] = [];
+  const fakeFetch = (async (url: unknown) => {
+    calls.push(String(url));
+    return { ok: true } as Response;
+  }) as unknown as typeof fetch;
+  const raise = buildAlertRaiser(
+    { path: join(dir, "alerts.jsonl"), webhookUrl: "https://hook.example/x", telegram: null, dedupeMs: 600_000 },
+    fakeFetch
+  );
+  // The live incident: every retry attempt has a fresh message, so message-keyed dedupe never fired.
+  raise("unwind_event", "knockout unwind INCOMPLETE for wrap-1 (attempt 1) — order o1 canceled", undefined, { dedupeKey: "unwind_incomplete:wrap-1" });
+  raise("unwind_event", "knockout unwind INCOMPLETE for wrap-1 (attempt 2) — order o2 canceled", undefined, { dedupeKey: "unwind_incomplete:wrap-1" });
+  raise("unwind_event", "knockout unwind INCOMPLETE for wrap-1 (attempt 3) — order o3 canceled", undefined, { dedupeKey: "unwind_incomplete:wrap-1" });
+  raise("unwind_event", "knockout unwind INCOMPLETE for wrap-2 (attempt 1) — order o9 canceled", undefined, { dedupeKey: "unwind_incomplete:wrap-2" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(calls.length, 2); // one page per wrap, not one per attempt
+});
+
+test("alerts: per-call dedupeMs override — a 0ms window lets every alert through", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ep-alerts-"));
+  const calls: string[] = [];
+  const fakeFetch = (async (url: unknown) => {
+    calls.push(String(url));
+    return { ok: true } as Response;
+  }) as unknown as typeof fetch;
+  const raise = buildAlertRaiser(
+    { path: join(dir, "alerts.jsonl"), webhookUrl: "https://hook.example/x", telegram: null, dedupeMs: 600_000 },
+    fakeFetch
+  );
+  raise("payout_failed", "same message", undefined, { dedupeMs: 0 });
+  raise("payout_failed", "same message", undefined, { dedupeMs: 0 });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(calls.length, 2);
+});
+
 test("alerts: env parsing — no webhook/telegram unless configured", () => {
   const cfg = parseAlertSinkFromEnv({});
   assert.equal(cfg.webhookUrl, null);

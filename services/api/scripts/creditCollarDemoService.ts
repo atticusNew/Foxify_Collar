@@ -409,7 +409,8 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
   });
   if (!listed.ok) {
     okxQuoteFailStreak = /listed_book_empty|chain|fetch|network/i.test(listed.error) ? okxQuoteFailStreak + 1 : 0;
-    if (okxQuoteFailStreak >= 3) raiseAlert("okx_connectivity", `OKX quote path failing (${okxQuoteFailStreak} consecutive): ${listed.error}`);
+    if (okxQuoteFailStreak >= 3)
+      raiseAlert("okx_connectivity", `OKX quote path failing (${okxQuoteFailStreak} consecutive): ${listed.error}`, undefined, { dedupeKey: "okx_quote_path" });
     failWrap(rec, Date.now(), `wrap refused: ${listed.error} — ${listed.message}`);
     await persist();
     return { status: 409, body: { ok: false, error: listed.error, message: listed.message, wrap: rec } };
@@ -837,16 +838,26 @@ const knockoutUnwindLegs = async (rec: DemoWrapRecord, markPx: number): Promise<
     { side: rec.position.side, putInstId, callInstId, contracts, ctValBtc: OKX_OPTION_LOT_BTC },
     // checkVenueFirst: this is a RETRY context — never re-close an already-flat leg (live
     // incident: unconfirmed fills + reduceOnly not binding on options ⟹ accumulated longs).
-    { spotUsd: markPx, clOrdPrefix: `ko${Date.now().toString(36)}`, checkVenueFirst: true }
+    // dust/fire-sale lines: a near-worthless long protective residue with no bid is written off
+    // (bounded at zero, settles at expiry) instead of paging the operator every retry forever.
+    {
+      spotUsd: markPx,
+      clOrdPrefix: `ko${Date.now().toString(36)}`,
+      checkVenueFirst: true,
+      dustMaxUsd: num(process.env.EP_UNWIND_DUST_MAX_USD, 20),
+      fireSaleMaxUsd: num(process.env.EP_UNWIND_FIRESALE_MAX_USD, 50)
+    }
   );
   return { ok: rep.complete, valueUsdc: rep.unwindValueUsdc, note: rep.notes.join("; ") || rep.outcome };
 };
 
-// Knockout unwind retry budget: fast for the first attempts, then 15-minute backoff + loud
-// alerts — a wedged unwind must page the operator, not machine-gun the venue.
+// Knockout unwind retry budget: fast for the first attempts, then 15-minute backoff. Retries are
+// idempotent and quiet; the ALERT for a wedged unwind fires once per wrap per cooldown (below),
+// not once per attempt — a stuck condition pages the operator, it does not machine-gun them.
 const knockoutTries = new Map<string, { n: number; lastMs: number }>();
 const KNOCKOUT_FAST_TRIES = 3;
 const KNOCKOUT_BACKOFF_MS = 15 * 60_000;
+const UNWIND_ALERT_COOLDOWN_MS = num(process.env.EP_UNWIND_ALERT_COOLDOWN_MS, 6 * 60 * 60_000);
 const knockoutRetryDue = (wrapId: string, nowMs: number): boolean => {
   const t = knockoutTries.get(wrapId);
   if (!t || t.n < KNOCKOUT_FAST_TRIES) return true;
@@ -872,8 +883,14 @@ const monitorTick = async (): Promise<void> => {
         const unwound = await knockoutUnwindLegs(rec, mark);
         if (!unwound.ok) {
           // Legs could not be fully closed: the wrap stays as-is; venue-truth checks make the
-          // retry idempotent; after the fast tries it backs off to 15m and keeps alerting.
-          raiseAlert("unwind_event", `knockout unwind INCOMPLETE for ${rec.id} (attempt ${tries.n + 1}) — ${unwound.note}`);
+          // retry idempotent; after the fast tries it backs off to 15m and keeps retrying
+          // QUIETLY — the alert fires once per wrap per cooldown, not once per attempt.
+          raiseAlert(
+            "unwind_event",
+            `knockout unwind INCOMPLETE for ${rec.id} (attempt ${tries.n + 1}) — ${unwound.note}`,
+            { wrapId: rec.id },
+            { dedupeKey: `unwind_incomplete:${rec.id}`, dedupeMs: UNWIND_ALERT_COOLDOWN_MS }
+          );
           continue;
         }
         knockoutTries.delete(rec.id);
@@ -922,7 +939,9 @@ const payoutTick = async (): Promise<void> => {
       );
     }
     if (summary.failed > 0 || summary.skippedStale > 0) {
-      raiseAlert("payout_failed", `${summary.failed} payout send(s) failed, ${summary.skippedStale} stale-parked — check the ledger`);
+      raiseAlert("payout_failed", `${summary.failed} payout send(s) failed, ${summary.skippedStale} stale-parked — check the ledger`, undefined, {
+        dedupeKey: "payout_failures" // counts change per tick — one page per window, the ledger holds the detail
+      });
     }
   } catch (e) {
     console.error(`[demo] payout tick error: ${(e as Error).message}`);
@@ -938,7 +957,12 @@ const utilizationWarnPct = num(process.env.EP_UTILIZATION_WARN_PCT, 0.8);
 const watchdogTick = async (): Promise<void> => {
   try {
     for (const p of stalledLoops(Object.values(loopPulses), Date.now())) {
-      raiseAlert("loop_stalled", `${p.name} loop has not run for ${Math.round((Date.now() - p.lastRunMs) / 1000)}s (interval ${Math.round(p.intervalMs / 1000)}s)`);
+      raiseAlert(
+        "loop_stalled",
+        `${p.name} loop has not run for ${Math.round((Date.now() - p.lastRunMs) / 1000)}s (interval ${Math.round(p.intervalMs / 1000)}s)`,
+        undefined,
+        { dedupeKey: `loop:${p.name}` } // the seconds counter changes every tick — key on the loop, not the message
+      );
     }
     // Margin utilization: modeled as open notional × margin rate vs usable margin (the real PM
     // per-wrap margin is measured in Phase 3 and recalibrates this). Warn at 80%, auto-pause at
@@ -955,7 +979,12 @@ const watchdogTick = async (): Promise<void> => {
       await stores.saveRuntime({ paused: true, pausedReason: runtimePausedReason, updatedAtMs: Date.now() });
       raiseAlert("margin_utilization", `AUTO-PAUSED new wraps: ${runtimePausedReason}`);
     } else if (utilization >= utilizationWarnPct) {
-      raiseAlert("margin_utilization", `margin utilization at ${(utilization * 100).toFixed(0)}% of the book cap ($${round2(openNotional)} / $${derived.bookCapUsdc})`);
+      raiseAlert(
+        "margin_utilization",
+        `margin utilization at ${(utilization * 100).toFixed(0)}% of the book cap ($${round2(openNotional)} / $${derived.bookCapUsdc})`,
+        undefined,
+        { dedupeKey: "utilization_warn" } // the percentage moves every tick — one warning per window
+      );
     }
   } catch (e) {
     console.error(`[demo] watchdog tick error: ${(e as Error).message}`);
@@ -1544,7 +1573,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         const unwound = await knockoutUnwindLegs(active, mark);
         if (!unwound.ok) {
           await setProtection(acct.account, true); // don't strand auto-renew off on a failed close
-          raiseAlert("unwind_event", `early-close unwind INCOMPLETE for ${active.id}: ${unwound.note}`);
+          raiseAlert(
+            "unwind_event",
+            `early-close unwind INCOMPLETE for ${active.id}: ${unwound.note}`,
+            { wrapId: active.id },
+            { dedupeKey: `unwind_incomplete:${active.id}`, dedupeMs: UNWIND_ALERT_COOLDOWN_MS }
+          );
           sendJson(res, 502, { ok: false, error: "close_unwind_failed", message: "couldn't close the hedge cleanly right now — you're still protected; try again in a minute or let the cycle conclude on its own" });
           return;
         }

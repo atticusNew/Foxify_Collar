@@ -170,6 +170,77 @@ test("unwind idempotency: default (no flag) keeps the original single-shot behav
   assert.deepEqual(placed, ["buy:C1", "sell:P1"]); // unchanged legacy sequence
 });
 
+// ── Price ladder + dust abandonment (live incident, Aug 21 #2) ────────────────
+// A ~$1 OTM put with an EMPTY bid side canceled bid- and mark-referenced IOCs forever, paging the
+// operator every retry. Sells of near-worthless legs now walk mark×0.9 → mark×0.5 → the minimum
+// tick (an IOC limit still fills AT the best bid — the limit only floors the price); a residue
+// that still can't find a bid and is worth ≤ dustMaxUsd is ABANDONED (long option, risk-free,
+// settles itself at expiry) and the unwind reports complete so the retry/alert loop ends.
+
+const ladderClient = (markPx: string, fillSellAt: string | null, positionsAfter: Array<{ instId: string; pos: string }> = []) => {
+  const placed: Array<{ side: string; px: string }> = [];
+  const pxByOrd = new Map<string, string>();
+  let n = 0;
+  const client = {
+    getBookTop: async () => ({ ok: true, data: [{ bids: [["0.001", "1"]], asks: [["0.02", "1"]] }] }),
+    getMarkPrice: async () => ({ ok: true, data: [{ markPx }] }),
+    placeOrder: async (o: { side: string; px: string }) => {
+      placed.push({ side: o.side, px: o.px });
+      pxByOrd.set(`o${++n}`, o.px);
+      return { ok: true, data: [{ ordId: `o${n}` }] };
+    },
+    getOrder: async (_i: string, ordId: string) => {
+      const px = pxByOrd.get(ordId) ?? "";
+      const isSell = placed.some((p) => p.side === "sell" && p.px === px);
+      if (isSell && px !== fillSellAt) return { ok: true, data: [{ state: "canceled", accFillSz: "0" }] };
+      return { ok: true, data: [{ state: "filled", accFillSz: "1", avgPx: px, fee: "0" }] };
+    },
+    getPositions: async () => ({ ok: true, data: positionsAfter })
+  } as never;
+  return { client, placed };
+};
+
+const smallTarget = { side: "long" as const, putInstId: "P1", callInstId: "C1", contracts: 1, ctValBtc: 0.01 };
+
+test("unwind ladder: empty bid side ⟹ sell walks mark×0.9 → mark×0.5 → min tick and fills at the tick rung", async () => {
+  // mark 0.015 ⟹ leg value $10.50 at spot 70k — inside the fire-sale line, deep rungs allowed
+  const { client, placed } = ladderClient("0.015", "0.0001");
+  const rep = await unwindLiveCollar(client, smallTarget, { spotUsd: 70_000, sleep: async () => undefined });
+  const sells = placed.filter((p) => p.side === "sell").map((p) => p.px);
+  assert.deepEqual(sells, ["0.0009", "0.0135", "0.0075", "0.0001"]); // book, mark×0.9, mark×0.5, tick
+  assert.equal(rep.protectiveClose.closedContracts, 1);
+  assert.equal(rep.outcome, "closed");
+});
+
+test("unwind dust: sell finds NO bid at any rung, residue ≤ dust line ⟹ ABANDONED, unwind reports complete", async () => {
+  // mark 0.015 ⟹ residue ≈ $10.50 ≤ default dust line $20; venue keeps showing the put
+  const { client } = ladderClient("0.015", null, [{ instId: "P1", pos: "1" }]);
+  const rep = await unwindLiveCollar(client, smallTarget, { spotUsd: 70_000, sleep: async () => undefined });
+  assert.equal(rep.outcome, "closed");
+  assert.equal(rep.complete, true, "dusted residue must END the retry/alert loop");
+  assert.match(rep.notes.join(" "), /ABANDONED AS DUST/);
+  assert.ok(!rep.notes.join(" ").includes("LONG RESIDUE"));
+});
+
+test("unwind dust: residue worth MORE than the dust line is never abandoned — still long_residue", async () => {
+  // mark 0.5 ⟹ leg value $350: above the fire-sale line (no deep rungs) and above the dust line
+  const { client, placed } = ladderClient("0.5", null, [{ instId: "P1", pos: "1" }]);
+  const rep = await unwindLiveCollar(client, smallTarget, { spotUsd: 70_000, sleep: async () => undefined });
+  const sells = placed.filter((p) => p.side === "sell").map((p) => p.px);
+  assert.ok(!sells.includes("0.0001"), "no fire-sale rung for a leg with real value");
+  assert.ok(!sells.includes("0.25"), "no half-mark rung for a leg with real value");
+  assert.equal(rep.outcome, "long_residue");
+  assert.equal(rep.complete, false);
+  assert.match(rep.notes.join(" "), /LONG RESIDUE/);
+});
+
+test("unwind dust: dustMaxUsd 0 disables abandonment entirely", async () => {
+  const { client } = ladderClient("0.015", null, [{ instId: "P1", pos: "1" }]);
+  const rep = await unwindLiveCollar(client, smallTarget, { spotUsd: 70_000, sleep: async () => undefined, dustMaxUsd: 0 });
+  assert.equal(rep.outcome, "long_residue");
+  assert.equal(rep.complete, false);
+});
+
 test("unwind pricing: bid-referenced IOC cancels unfilled ⟹ mark-referenced retry fills (thin-book fix)", async () => {
   const placed: Array<{ side: string; px: string }> = [];
   const pxByOrd = new Map<string, string>();

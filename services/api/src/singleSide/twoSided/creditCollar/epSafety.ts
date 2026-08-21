@@ -92,21 +92,33 @@ export const parseAlertSinkFromEnv = (env: Record<string, string | undefined>): 
   dedupeMs: num(env.EP_ALERT_DEDUPE_MS, 600_000)
 });
 
-export type AlertRaiser = (kind: EpAlertKind, message: string, data?: Record<string, unknown>) => void;
+export type AlertRaiseOpts = {
+  /**
+   * Dedupe on this key instead of the message text. Retrying conditions embed attempt counters and
+   * order ids in the message, so message-keyed dedupe never fires and a wedged loop pages the
+   * operator every tick (live incident, Aug 21). Key such alerts by condition + subject
+   * (e.g. `unwind_incomplete:<wrapId>`) so a stuck condition alerts ONCE per cooldown.
+   */
+  dedupeKey?: string;
+  /** Per-alert cooldown override (ms); defaults to the sink-wide dedupeMs. */
+  dedupeMs?: number;
+};
+
+export type AlertRaiser = (kind: EpAlertKind, message: string, data?: Record<string, unknown>, opts?: AlertRaiseOpts) => void;
 
 /**
  * Build the alert raiser. Disk + console are synchronous and never throw outward; webhook/Telegram
  * are fire-and-forget with their own error swallowing (an alert path must never take the engine
- * down). Duplicate (kind, message) pairs are suppressed inside the dedupe window so a stuck
- * condition alerts once, not once per tick.
+ * down). Duplicate (kind, message) pairs — or (kind, dedupeKey) pairs when a key is supplied —
+ * are suppressed inside the dedupe window so a stuck condition alerts once, not once per tick.
  */
 export const buildAlertRaiser = (cfg: AlertSinkConfig, fetchImpl: typeof fetch = fetch): AlertRaiser => {
   const lastSent = new Map<string, number>();
-  return (kind, message, data) => {
+  return (kind, message, data, opts) => {
     const tsMs = Date.now();
-    const key = `${kind}:${message}`;
+    const key = `${kind}:${opts?.dedupeKey ?? message}`;
     const prev = lastSent.get(key);
-    if (prev != null && tsMs - prev < cfg.dedupeMs) return;
+    if (prev != null && tsMs - prev < (opts?.dedupeMs ?? cfg.dedupeMs)) return;
     lastSent.set(key, tsMs);
     const alert: EpAlert = { kind, message, data, tsMs };
     console.error(`[ep-alert] ${kind}: ${message}`);
