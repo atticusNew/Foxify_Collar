@@ -104,48 +104,72 @@ export const unwindLiveCollar = async (
 
   const closeLeg = async (instId: string, action: "buy" | "sell", tag: string): Promise<UnwindLegClose> => {
     const out: UnwindLegClose = { instId, action, closedContracts: 0, avgPxBtc: null, feeBtc: 0 };
-    // OKX options reject market orders — price an aggressive IOC limit off the live book.
+    // OKX options reject market orders — price an aggressive IOC limit off the live book, and
+    // FALL BACK to the venue's mark price when the book side is empty or the book-priced IOC
+    // cancels unfilled (live finding: thin ITM/OTM books cancel bid-referenced IOCs forever —
+    // mark-referenced pricing stays inside the venue's price bands and fills against makers).
+    const pxCandidates: number[] = [];
     const top = await client.getBookTop(instId);
     const book = top.data?.[0];
-    const px = iocClosePxBtc(action, { bidPxBtc: parseNum(book?.bids?.[0]?.[0]), askPxBtc: parseNum(book?.asks?.[0]?.[0]) }, 0.05);
-    if (px == null) {
-      notes.push(`close ${action} ${instId}: EMPTY BOOK — no safe IOC reference; not closed`);
+    const bookPx = iocClosePxBtc(action, { bidPxBtc: parseNum(book?.bids?.[0]?.[0]), askPxBtc: parseNum(book?.asks?.[0]?.[0]) }, 0.05);
+    if (bookPx != null) pxCandidates.push(bookPx);
+    const getMark = (client as { getMarkPrice?: (i: string) => Promise<{ data?: Array<{ markPx?: string }> }> }).getMarkPrice;
+    if (typeof getMark === "function") {
+      try {
+        const mk = await getMark.call(client, instId);
+        const mark = parseNum(mk.data?.[0]?.markPx);
+        if (mark != null && mark > 0) {
+          const markPx = +(action === "sell" ? mark * 0.9 : mark * 1.1).toFixed(6);
+          if (bookPx == null || Math.abs(markPx - bookPx) / mark > 1e-6) pxCandidates.push(markPx);
+        }
+      } catch {
+        /* mark unavailable — book price only */
+      }
+    }
+    if (pxCandidates.length === 0) {
+      notes.push(`close ${action} ${instId}: EMPTY BOOK and no mark — no safe IOC reference; not closed`);
       return out;
     }
-    const res = await client.placeOrder({
-      instId,
-      side: action,
-      ordType: "ioc",
-      px: String(px),
-      sz: String(target.contracts),
-      tdMode: "cross",
-      reduceOnly: true,
-      clOrdId: opts.clOrdPrefix ? `${opts.clOrdPrefix}${tag}` : undefined
-    });
-    const ordId = res.data?.[0]?.ordId;
-    if (!res.ok || !ordId) {
-      notes.push(`close ${action} ${instId} REJECTED: ${res.code} ${res.data?.[0]?.sMsg ?? res.msg}`);
-      return out;
-    }
-    for (let i = 0; i < pollTries; i++) {
-      const q = await client.getOrder(instId, ordId);
-      const snap = q.data?.[0];
-      if (snap?.state === "filled") {
-        out.closedContracts = parseNum(snap.accFillSz) ?? target.contracts;
-        out.avgPxBtc = parseNum(snap.avgPx);
-        const fee = parseNum(snap.fee);
-        if (fee != null) out.feeBtc = -fee;
-        return out;
+    for (let attempt = 0; attempt < pxCandidates.length; attempt++) {
+      const px = pxCandidates[attempt];
+      const res = await client.placeOrder({
+        instId,
+        side: action,
+        ordType: "ioc",
+        px: String(px),
+        sz: String(target.contracts),
+        tdMode: "cross",
+        reduceOnly: true,
+        clOrdId: opts.clOrdPrefix ? `${opts.clOrdPrefix}${tag}${attempt === 0 ? "" : "m"}` : undefined
+      });
+      const ordId = res.data?.[0]?.ordId;
+      if (!res.ok || !ordId) {
+        notes.push(`close ${action} ${instId} REJECTED at ${px}: ${res.code} ${res.data?.[0]?.sMsg ?? res.msg}`);
+        continue; // try the next price reference
       }
-      if (snap?.state === "canceled") {
-        out.closedContracts = parseNum(snap.accFillSz) ?? 0;
-        out.avgPxBtc = parseNum(snap.avgPx);
-        notes.push(`close order ${ordId} on ${instId} canceled at ${out.closedContracts}/${target.contracts}`);
-        return out;
+      for (let i = 0; i < pollTries; i++) {
+        const q = await client.getOrder(instId, ordId);
+        const snap = q.data?.[0];
+        if (snap?.state === "filled") {
+          out.closedContracts = parseNum(snap.accFillSz) ?? target.contracts;
+          out.avgPxBtc = parseNum(snap.avgPx);
+          const fee = parseNum(snap.fee);
+          if (fee != null) out.feeBtc = -fee;
+          return out;
+        }
+        if (snap?.state === "canceled") {
+          out.closedContracts = parseNum(snap.accFillSz) ?? 0;
+          out.avgPxBtc = parseNum(snap.avgPx);
+          notes.push(`close order ${ordId} on ${instId} canceled at ${out.closedContracts}/${target.contracts}${attempt < pxCandidates.length - 1 && out.closedContracts === 0 ? " — retrying at mark-referenced price" : ""}`);
+          break; // 0-filled cancel ⟹ try the next price; partial fill ⟹ report and stop
+        }
+        await sleep(pollDelayMs);
       }
-      await sleep(pollDelayMs);
+      if (out.closedContracts > 0) return out;
+      if (out.avgPxBtc == null && out.closedContracts === 0 && attempt === pxCandidates.length - 1) {
+        notes.push(`close order on ${instId} did not fill at any price reference this pass`);
+      }
     }
-    notes.push(`close order ${ordId} on ${instId} did not confirm within ${pollTries} polls`);
     return out;
   };
 

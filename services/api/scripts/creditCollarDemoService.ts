@@ -1536,6 +1536,19 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: "nothing_active", message: `no active wrap to close on ${acct.account} (auto-renew off)` });
         return;
       }
+      // LIVE lanes: the venue legs must actually unwind BEFORE the books settle (live finding:
+      // early close settled the ledger but left real option legs open). Incomplete unwind ⟹
+      // honest refusal — the wrap stays fully hedged and can be closed again or ride to expiry.
+      if (active.hedge && active.hedge.mode !== "paper") {
+        const mark = await hl.midPx(coin).catch(() => active.quote?.spot ?? 0);
+        const unwound = await knockoutUnwindLegs(active, mark);
+        if (!unwound.ok) {
+          await setProtection(acct.account, true); // don't strand auto-renew off on a failed close
+          raiseAlert("unwind_event", `early-close unwind INCOMPLETE for ${active.id}: ${unwound.note}`);
+          sendJson(res, 502, { ok: false, error: "close_unwind_failed", message: "couldn't close the hedge cleanly right now — you're still protected; try again in a minute or let the cycle conclude on its own" });
+          return;
+        }
+      }
       const v = concludeWrapEarly(active, Date.now());
       await stores.saveWraps(records);
       // Early close is a cycle conclusion: the vested credit accrues to the payout ledger.

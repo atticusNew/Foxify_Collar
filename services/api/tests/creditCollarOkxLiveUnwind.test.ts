@@ -169,3 +169,36 @@ test("unwind idempotency: default (no flag) keeps the original single-shot behav
   );
   assert.deepEqual(placed, ["buy:C1", "sell:P1"]); // unchanged legacy sequence
 });
+
+test("unwind pricing: bid-referenced IOC cancels unfilled ⟹ mark-referenced retry fills (thin-book fix)", async () => {
+  const placed: Array<{ side: string; px: string }> = [];
+  const pxByOrd = new Map<string, string>();
+  let orderCount = 0;
+  const client = {
+    getBookTop: async () => ({ ok: true, data: [{ bids: [["0.001", "1"]], asks: [["0.02", "1"]] }] }),
+    getMarkPrice: async () => ({ ok: true, data: [{ markPx: "0.015" }] }),
+    placeOrder: async (o: { side: string; px: string }) => {
+      placed.push({ side: o.side, px: o.px });
+      orderCount++;
+      pxByOrd.set(`o${orderCount}`, o.px);
+      return { ok: true, data: [{ ordId: `o${orderCount}` }] };
+    },
+    // the BID-referenced sell (0.001 × 0.95, tick-floored to 0.0009) cancels unfilled; everything else fills
+    getOrder: async (_i: string, ordId: string) =>
+      pxByOrd.get(ordId) === "0.0009"
+        ? { ok: true, data: [{ state: "canceled", accFillSz: "0" }] }
+        : { ok: true, data: [{ state: "filled", accFillSz: "1", avgPx: pxByOrd.get(ordId) ?? "0", fee: "0" }] },
+    getPositions: async () => ({ ok: true, data: [] })
+  } as never;
+  const rep = await unwindLiveCollar(
+    client,
+    { side: "long", putInstId: "P1", callInstId: "C1", contracts: 1, ctValBtc: 0.01 },
+    { spotUsd: 70_000, sleep: async () => undefined }
+  );
+  // funding (buy C1): bid path priced off ask; assume filled via first candidate — the PUT (sell)
+  // leg is the thin one: bid-priced sell canceled, mark×0.9 retry filled.
+  const sells = placed.filter((p) => p.side === "sell");
+  assert.equal(sells.length, 2); // bid-priced attempt + mark-priced retry
+  assert.equal(sells[1].px, "0.0135"); // 0.015 × 0.9
+  assert.equal(rep.protectiveClose.closedContracts, 1);
+});

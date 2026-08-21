@@ -256,6 +256,7 @@ const humanChip = (raw) => {
   if (/allow-list|account_refused|not an address/i.test(s)) return "Account not enabled yet";
   if (/verify_required/i.test(s)) return "Verify your wallet first — one signature, one time";
   if (/close_locked/i.test(s)) return "Turn off from the device that turned protection on — it pays out on its own either way";
+  if (/close_unwind_failed|couldn't close the hedge cleanly/i.test(s)) return "Couldn't close cleanly right now — you're still protected; try again shortly";
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first";
   if (/waitlisted|#\d+ in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full — you're #" + m[1] + " in line" : "Founding cohort full — you're on the waitlist"; }
   if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
