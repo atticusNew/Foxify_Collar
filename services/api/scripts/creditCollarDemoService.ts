@@ -28,20 +28,26 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { HyperliquidClient } from "../src/singleSide/twoSided/creditCollar/execution/perpVenues/hyperliquidClient";
 import {
   assessDemoWrap,
+  capTouched,
   concludeWrapEarly,
   coverOkxLots,
+  cyclePayable,
   demoPlanStrikes,
   demoVestingStatus,
   DEMO_CAP_PCT,
   DEMO_FLOOR_PCT,
   failWrap,
+  knockoutWrap,
   loadDemoWraps,
   newDemoWrap,
+  OKX_OPTION_LOT_BTC,
   paperLegsFromQuote,
   parseDemoGuardsFromEnv,
   pushStage,
+  renewalStaggerOffsetMs,
   saveDemoWraps,
   uncoveredSizeNote,
+  wrapCapStrike,
   wrapRefuseFromLive,
   concludeAtExpiry,
   loadProtectionPrefs,
@@ -50,6 +56,15 @@ import {
   type DemoLeg,
   type DemoWrapRecord
 } from "../src/singleSide/twoSided/creditCollar/demoWrap";
+import {
+  accrueWrapPayout,
+  loadPayoutLedger,
+  processPayoutLedger,
+  savePayoutLedger,
+  type PayoutSender
+} from "../src/singleSide/twoSided/creditCollar/settlement/payoutLedger";
+import { buildPayoutSender, parsePayoutRailFromEnv } from "../src/singleSide/twoSided/creditCollar/settlement/usdcPayout";
+import { unwindLiveCollar } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveUnwind";
 import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regimeGate";
 import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
@@ -71,6 +86,14 @@ const coin = process.env.DEMO_COIN ?? "BTC";
 const autoRenew = String(process.env.DEMO_AUTO_RENEW ?? "true").toLowerCase() === "true";
 const renewRetryMs = num(process.env.DEMO_RENEW_RETRY_MS, 900_000); // skip-day retry throttle (15 min)
 const renewCheckMs = num(process.env.DEMO_RENEW_CHECK_MS, 60_000);
+// Staggered renewals (decision 7): every daily option shares one fixing, so renewals are spread
+// across a per-account anchor window instead of batching the whole book onto one tick/strike.
+const renewStaggerMs = num(process.env.DEMO_RENEW_STAGGER_MS, 1_800_000); // 30 min window
+// Design B knockout monitor + payout rail.
+const knockoutCheckMs = num(process.env.DEMO_KNOCKOUT_CHECK_MS, 15_000);
+const payoutCheckMs = num(process.env.DEMO_PAYOUT_CHECK_MS, 60_000);
+const payoutLedgerPath = process.env.DEMO_PAYOUT_LEDGER_PATH ?? "./logs/demo-payout-ledger.json";
+const payoutRail = parsePayoutRailFromEnv(process.env);
 const protectionPath = process.env.DEMO_PROTECTION_STORE_PATH ?? "./logs/demo-protection.json";
 const setProtection = (account: string, on: boolean): void => {
   const prefs = loadProtectionPrefs(protectionPath);
@@ -398,6 +421,8 @@ const buildState = async (account?: string, all = false) => {
   // client's wrap). ?all=1 = the whole book for the ops view.
   const wraps = all ? allWraps : allWraps.filter((r) => r.account.toLowerCase() === (acct ?? "").toLowerCase());
   const open = allWraps.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
+  const ledger = loadPayoutLedger(payoutLedgerPath);
+  const paidStatuses = new Set(["paid", "confirmed"]);
   return {
     ok: true,
     guards: {
@@ -418,8 +443,13 @@ const buildState = async (account?: string, all = false) => {
       accounts: [...new Set(allWraps.map((r) => r.account))].length,
       openWraps: open.length,
       openNotionalUsdc: round2(open.reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0)),
-      totalWraps: allWraps.length
+      totalWraps: allWraps.length,
+      creditsPaidUsdc: round2(ledger.filter((e) => paidStatuses.has(e.status)).reduce((s, e) => s + e.amountUsdc, 0))
     },
+    // The account's payout history — amounts, cycle reason, status, tx reference.
+    payouts: ledger
+      .filter((e) => e.account.toLowerCase() === (acct ?? "").toLowerCase())
+      .map((e) => ({ id: e.id, amountUsdc: e.amountUsdc, reason: e.reason, status: e.status, txHash: e.txHash, createdAtMs: e.createdAtMs, paidAtMs: e.paidAtMs })),
     protection: (() => {
       const prefs = loadProtectionPrefs(protectionPath);
       return {
@@ -447,11 +477,18 @@ const renewalTick = async (): Promise<void> => {
       const mine = records.filter((r) => r.account.toLowerCase() === key);
       const latest = mine.length ? mine[mine.length - 1] : null;
       const nowMs = Date.now();
-      const action = renewalDecision(pref, latest, nowMs, renewRetryMs);
+      // Staggered renewals (decision 7): each account re-wraps at its own anchor after the fixing.
+      const action = renewalDecision(pref, latest, nowMs, renewRetryMs, renewalStaggerOffsetMs(key, renewStaggerMs));
       if (action === "none") continue;
 
       if (action === "expire_and_renew" && latest && concludeAtExpiry(latest, nowMs)) {
         saveDemoWraps(records, storePath);
+        // Settle the concluded cycle (idempotent — the monitor loop may have beaten us to it).
+        try {
+          accrueConclusion(latest, await hl.midPx(coin));
+        } catch {
+          accrueConclusion(latest, null);
+        }
         console.error(`[demo] auto-renew: ${latest.id} expired fully vested — re-wrapping ${key}`);
       }
 
@@ -494,6 +531,117 @@ const renewalTick = async (): Promise<void> => {
     } catch (e) {
       console.error(`[demo] auto-renew error for ${key}: ${(e as Error).message}`);
     }
+  }
+};
+
+// ── Cycle settlement → payout ledger ──────────────────────────────────────────
+// Every concluded cycle (expiry / knockout / early close) accrues exactly one ledger entry for the
+// verified position owner. Credit is paid at conclusion, never upfront (decision 2).
+
+const accrueConclusion = (rec: DemoWrapRecord, settlePx: number | null): void => {
+  const payable = cyclePayable(rec, settlePx);
+  if (!payable) return;
+  const ledger = loadPayoutLedger(payoutLedgerPath);
+  const res = accrueWrapPayout(ledger, rec, payable, Date.now());
+  if (!res.ok) {
+    console.error(`[demo] payout not accrued for ${rec.id}: ${res.reason}`);
+    return;
+  }
+  if (res.created) {
+    savePayoutLedger(ledger, payoutLedgerPath);
+    console.error(`[demo] payout accrued: ${rec.id} → $${res.entry.amountUsdc} (${payable.kind}) to ${rec.account}`);
+  }
+};
+
+// ── Design B knockout monitor ─────────────────────────────────────────────────
+// Mark-price watcher over every active wrap: a TOUCH of the cap (no buffer) closes both hedge legs
+// (okx lanes: the existing order-book unwind; paper: bookkeeping), marks the wrap knocked_out, and
+// settles vested-to-touch. Re-arm happens on the next renewal tick while the toggle stays on.
+// Runs even when the kill switch is off — conclusions and payouts never pause.
+
+type KnockoutUnwind = { ok: boolean; valueUsdc: number | null; note: string };
+
+const knockoutUnwindLegs = async (rec: DemoWrapRecord, markPx: number): Promise<KnockoutUnwind> => {
+  if (guards.executionMode === "paper") return { ok: true, valueUsdc: null, note: "paper — no venue legs to unwind" };
+  const { OKX_API_KEY: k, OKX_API_SECRET: s, OKX_API_PASSPHRASE: p } = process.env;
+  if (!k || !s || !p) return { ok: false, valueUsdc: null, note: "missing OKX credentials for the knockout unwind" };
+  const putInstId = rec.legs.find((l) => l.role === "buy_put_floor" || l.role === "sell_put_cap")?.instId;
+  const callInstId = rec.legs.find((l) => l.role === "sell_call_cap" || l.role === "buy_call_floor")?.instId;
+  const contracts = rec.hedge?.contracts;
+  if (!putInstId || !callInstId || contracts == null) {
+    return { ok: false, valueUsdc: null, note: "wrap record is missing leg instruments/contracts — cannot unwind blindly" };
+  }
+  const rep = await unwindLiveCollar(
+    new OkxExecutionClient({ apiKey: k, secret: s, passphrase: p, mode: parseLiveGuardsFromEnv(process.env, "okx").mode }),
+    { side: rec.position.side, putInstId, callInstId, contracts, ctValBtc: OKX_OPTION_LOT_BTC },
+    { spotUsd: markPx, clOrdPrefix: `ko${Date.now().toString(36)}` }
+  );
+  return { ok: rep.complete, valueUsdc: rep.unwindValueUsdc, note: rep.notes.join("; ") || rep.outcome };
+};
+
+const monitorTick = async (): Promise<void> => {
+  try {
+    // Read the mark BEFORE loading the store so no other tick can mutate records mid-await.
+    const mark = await hl.midPx(coin);
+    const nowMs = Date.now();
+    const records = loadDemoWraps(storePath);
+    let dirty = false;
+    for (const rec of records) {
+      if (rec.status !== "active" || !rec.vesting) continue;
+      const cap = wrapCapStrike(rec);
+      // Knockout only while the option lives — past the fixing it is expiry settlement instead.
+      if (cap != null && nowMs < rec.vesting.endMs && capTouched(rec.position.side, cap, mark)) {
+        const unwound = await knockoutUnwindLegs(rec, mark);
+        if (!unwound.ok) {
+          // Legs could not be fully closed: the wrap is still a complete hedge — stay active,
+          // alert, retry next tick (mark is at/through the cap, so the retry fires immediately).
+          console.error(`[demo] KNOCKOUT UNWIND INCOMPLETE for ${rec.id} — retrying next tick: ${unwound.note}`);
+          continue;
+        }
+        knockoutWrap(rec, nowMs, mark, unwound.valueUsdc);
+        dirty = true;
+        accrueConclusion(rec, null);
+        console.error(`[demo] KNOCKOUT ${rec.id}: cap $${cap} touched at mark $${mark} — cycle over, re-arms at new spot on the next renewal tick`);
+        continue;
+      }
+      // Staggered natural expiry: conclude + settle once past the fixing plus this account's anchor.
+      if (nowMs >= rec.vesting.endMs + renewalStaggerOffsetMs(rec.account, renewStaggerMs) && concludeAtExpiry(rec, nowMs)) {
+        dirty = true;
+        accrueConclusion(rec, mark);
+        console.error(`[demo] expiry settled: ${rec.id} — payable accrued to the ledger`);
+      }
+    }
+    if (dirty) saveDemoWraps(records, storePath);
+  } catch (e) {
+    console.error(`[demo] knockout/settlement tick error: ${(e as Error).message}`);
+  }
+};
+
+// ── Payout loop ───────────────────────────────────────────────────────────────
+// Pays accrued ledger entries through the configured rail (simulated by default; Arbitrum USDC only
+// behind the full PAYOUT_MODE=arbitrum arming chain). Idempotency + the per-day outflow cap live in
+// processPayoutLedger; this loop only feeds it.
+
+let payoutSender: PayoutSender | null = null;
+
+const payoutTick = async (): Promise<void> => {
+  if (!payoutRail.ok) return; // refused at boot, logged there
+  try {
+    const ledger = loadPayoutLedger(payoutLedgerPath);
+    if (!ledger.some((e) => e.status === "accrued" || e.status === "queued" || (e.status === "failed" && e.retriable))) return;
+    payoutSender ??= await buildPayoutSender(payoutRail.cfg);
+    const summary = await processPayoutLedger(ledger, payoutSender, Date.now(), {
+      dailyCapUsdc: payoutRail.cfg.dailyCapUsdc,
+      persist: (es) => savePayoutLedger(es, payoutLedgerPath)
+    });
+    if (summary.sent || summary.failed || summary.deferred || summary.skippedStale) {
+      console.error(
+        `[demo] payouts: ${summary.sent} sent (${summary.confirmed} confirmed) · ${summary.deferred} deferred (daily cap) · ` +
+          `${summary.failed} failed · ${summary.skippedStale} stale-parked`
+      );
+    }
+  } catch (e) {
+    console.error(`[demo] payout tick error: ${(e as Error).message}`);
   }
 };
 
@@ -556,7 +704,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",
 const badge = (t, c) => '<span class="badge" style="background:'+c+'">'+esc(t)+'</span>';
 const card = (k, v, s) => '<div class="card"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'</div><div class="s">'+esc(s||"")+'</div></div>';
 const fmt$ = (x) => (x==null?"—":(x<0?"−$":"$")+Math.abs(x).toFixed(2));
-const stageLabel = {wrap_requested:"Wrap requested (toggle)",position_read:"Venue position read",quoted:"Collar priced (live OKX book)",hedge_executing:"Hedge legs executing",hedge_locked:"Hedge locked",green_light:"GREEN LIGHT — protection live",vesting:"Credit vesting",failed:"FAILED",concluded:"Concluded"};
+const stageLabel = {wrap_requested:"Wrap requested (toggle)",position_read:"Venue position read",quoted:"Collar priced (live OKX book)",hedge_executing:"Hedge legs executing",hedge_locked:"Hedge locked",green_light:"GREEN LIGHT — protection live",vesting:"Credit vesting",failed:"FAILED",knocked_out:"KNOCKED OUT — cap touched, cycle over",concluded:"Concluded"};
 
 const render = (st) => {
   const g = st.guards;
@@ -713,6 +861,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       const v = concludeWrapEarly(active, Date.now());
       saveDemoWraps(records, storePath);
+      // Early close is a cycle conclusion: the vested credit accrues to the payout ledger.
+      accrueConclusion(active, null);
       sendJson(res, 200, { ok: true, wrap: active, vested: v });
       return;
     }
@@ -723,7 +873,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       saveDemoWraps([], storePath);
       saveProtectionPrefs({}, protectionPath);
-      sendJson(res, 200, { ok: true, message: "demo store cleared (wraps + auto-renew prefs)" });
+      savePayoutLedger([], payoutLedgerPath);
+      sendJson(res, 200, { ok: true, message: "demo store cleared (wraps + auto-renew prefs + payout ledger)" });
       return;
     }
     sendJson(res, 404, { ok: false, error: "not_found" });
@@ -736,8 +887,18 @@ server.listen(port, () => {
   console.error(`[demo] Wrap Control Room on http://localhost:${port}/demo`);
   console.error(`[demo] mode ${guards.executionMode.toUpperCase()} · kill switch ${guards.enabled ? "ARMED" : "OFF"} · per-wrap cap $${guards.maxPositionNotionalUsdc} · book cap $${guards.maxBookNotionalUsdc} / ${guards.maxActiveWraps} wraps · account ${hlAccount() ?? "UNSET (set DEMO_HL_ADDRESS)"}`);
   if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
-  console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
+  console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m, stagger window ${Math.round(renewStaggerMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
   if (autoRenew) setInterval(() => void renewalTick(), renewCheckMs);
+  console.error(`[demo] knockout monitor ON — mark-touch of the cap ends the cycle (check every ${Math.round(knockoutCheckMs / 1000)}s; runs through the kill switch)`);
+  setInterval(() => void monitorTick(), knockoutCheckMs);
+  if (!payoutRail.ok) {
+    console.error(`[demo] payout rail REFUSED — ${payoutRail.error}; accrued entries will queue until the rail is armed`);
+  } else if (payoutRail.cfg.mode === "arbitrum" && guards.executionMode === "paper") {
+    console.error(`[demo] payout rail REFUSED — PAYOUT_MODE=arbitrum with DEMO_EXECUTION=paper would pay real USDC for paper wraps; use the simulated rail`);
+  } else {
+    console.error(`[demo] payout rail ${payoutRail.cfg.mode.toUpperCase()} — daily outflow cap $${payoutRail.cfg.dailyCapUsdc} (check every ${Math.round(payoutCheckMs / 1000)}s)`);
+    setInterval(() => void payoutTick(), payoutCheckMs);
+  }
   if (guards.executionMode !== "paper") {
     const armed = executionArmed(parseLiveGuardsFromEnv(process.env, "okx"));
     console.error(`[demo] okx lane: ${armed.armed ? armed.reason : `NOT ARMED — ${armed.reason}`}`);

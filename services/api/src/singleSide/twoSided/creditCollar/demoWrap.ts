@@ -64,6 +64,7 @@ export type DemoStageName =
   | "green_light"      // client may rely on the wrap from here
   | "vesting"          // credit vesting over the tenor
   | "failed"
+  | "knocked_out"      // Design B: mark touched the cap — legs closed, cycle over, re-arms at new spot
   | "concluded";
 
 export type DemoStage = { stage: DemoStageName; tsMs: number; note?: string };
@@ -120,10 +121,21 @@ export type DemoWrapRecord = {
   legs: DemoLeg[];
   vesting: { fullCreditUsdc: number; startMs: number; endMs: number } | null;
   stages: DemoStage[];
-  status: "quoting" | "executing" | "active" | "failed" | "concluded";
+  status: "quoting" | "executing" | "active" | "failed" | "knocked_out" | "concluded";
   failReason: string | null;
   /** Set on a voluntary early close (toggle off): vesting freezes here — vested collected, rest clawed back. */
   concludedAtMs?: number | null;
+  /** Design B knockout record: set when mark touched the cap and the cycle ended early. */
+  knockout?: KnockoutInfo | null;
+};
+
+export type KnockoutInfo = {
+  touchedAtMs: number;
+  /** The mark print that touched the cap. */
+  markPx: number;
+  capStrike: number;
+  /** Net USD realized closing both hedge legs (okx lanes); null in paper (no venue legs). House-side bookkeeping. */
+  unwindValueUsdc: number | null;
 };
 
 export const newDemoWrap = (
@@ -379,6 +391,98 @@ export const concludeAtExpiry = (rec: DemoWrapRecord, nowMs: number): boolean =>
   return true;
 };
 
+// ── Design B knockout (approved decision 1) ───────────────────────────────────
+// If mark TOUCHES the cap (no buffer), protection ends for that cycle: both hedge legs close
+// immediately, the wrap is marked knocked_out, and the account re-arms at new spot on the next
+// renewal tick while the toggle stays on. The trader keeps the perp and every gain to the cap;
+// the credit realizes vested-to-touch (paid at cycle conclusion, decision 2 — never upfront).
+
+/** Side-aware cap strike of a quoted wrap: the SOLD wing on the profit side. */
+export const wrapCapStrike = (rec: DemoWrapRecord): number | null =>
+  rec.quote == null ? null : rec.quote.capStrike ?? (rec.position.side === "long" ? rec.quote.callStrike : rec.quote.putStrike);
+
+/** Side-aware floor strike of a quoted wrap: the BOUGHT protective wing on the loss side. */
+export const wrapFloorStrike = (rec: DemoWrapRecord): number | null =>
+  rec.quote == null ? null : rec.quote.floorStrike ?? (rec.position.side === "long" ? rec.quote.putStrike : rec.quote.callStrike);
+
+/** Mark-price TOUCH of the cap, no buffer: at-or-through counts. Long caps above; short caps below. */
+export const capTouched = (side: PerpSide, capStrike: number, markPx: number): boolean =>
+  side === "long" ? markPx >= capStrike : markPx <= capStrike;
+
+/**
+ * Knock the wrap out at the touch: terminal state, vesting frozen at the touch (credit realizes
+ * vested-to-touch), knockout metadata recorded. The caller is responsible for having closed the
+ * venue legs FIRST (okx lanes) — this function is pure bookkeeping. Returns the frozen vesting
+ * readout, or null when there is nothing active to knock out.
+ */
+export const knockoutWrap = (
+  rec: DemoWrapRecord,
+  nowMs: number,
+  markPx: number,
+  unwindValueUsdc: number | null = null
+): DemoVestingStatus | null => {
+  if (rec.status !== "active" || !rec.vesting) return null;
+  const capStrike = wrapCapStrike(rec);
+  if (capStrike == null) return null;
+  rec.status = "knocked_out";
+  rec.concludedAtMs = nowMs;
+  rec.knockout = { touchedAtMs: nowMs, markPx: round2(markPx), capStrike, unwindValueUsdc };
+  const v = demoVestingStatus(rec, nowMs)!;
+  pushStage(
+    rec,
+    "knocked_out",
+    nowMs,
+    `cap $${capStrike} touched at mark $${round2(markPx)} — protection ended for this cycle; hedge legs closed; ` +
+      `credit $${v.vestedUsdc.toFixed(2)} vested-to-touch of $${v.fullCreditUsdc.toFixed(2)} · re-arms at new spot if protection stays on`
+  );
+  return v;
+};
+
+// ── Cycle settlement (what the trader is OWED at conclusion) ──────────────────
+
+/**
+ * Floor payout at natural expiry: the protective wing expired in the money — the loss below the
+ * floor (long) / above it (short) is covered on the wrapped size. Zero when the settle print
+ * stayed inside the floor.
+ */
+export const floorPayoutUsdc = (side: PerpSide, floorStrike: number, settlePx: number, coveredBtc: number): number => {
+  if (!(coveredBtc > 0) || !(floorStrike > 0) || !(settlePx > 0)) return 0;
+  const perBtc = side === "long" ? Math.max(0, floorStrike - settlePx) : Math.max(0, settlePx - floorStrike);
+  return round2(perBtc * coveredBtc);
+};
+
+export type CyclePayable = {
+  kind: "expiry" | "knockout" | "early_close";
+  /** Vested credit owed for the cycle (full at expiry, vested-to-touch on knockout, vested-to-close early). */
+  creditUsdc: number;
+  /** Protective-wing payout when the cycle expired through the floor (natural expiry only). */
+  floorPayoutUsdc: number;
+  totalUsdc: number;
+};
+
+/**
+ * What is the trader owed for a CONCLUDED cycle? Pure. Returns null while the wrap is still open
+ * (credit is paid at conclusion, never upfront) or when it failed before vesting existed.
+ * `settlePx` is the expiry settle print (mark proxy in paper mode) used for the floor payout.
+ */
+export const cyclePayable = (rec: DemoWrapRecord, settlePx?: number | null): CyclePayable | null => {
+  if (!rec.vesting) return null;
+  const v = demoVestingStatus(rec, rec.concludedAtMs ?? rec.vesting.endMs);
+  if (!v) return null;
+  if (rec.status === "knocked_out") {
+    return { kind: "knockout", creditUsdc: v.vestedUsdc, floorPayoutUsdc: 0, totalUsdc: v.vestedUsdc };
+  }
+  if (rec.status !== "concluded" || rec.concludedAtMs == null) return null;
+  const natural = rec.concludedAtMs >= rec.vesting.endMs;
+  if (!natural) {
+    return { kind: "early_close", creditUsdc: v.vestedUsdc, floorPayoutUsdc: 0, totalUsdc: v.vestedUsdc };
+  }
+  const floorStrike = wrapFloorStrike(rec);
+  const coveredBtc = (rec.hedge?.contracts ?? 0) * OKX_OPTION_LOT_BTC;
+  const floorUsdc = floorStrike != null && settlePx != null ? floorPayoutUsdc(rec.position.side, floorStrike, settlePx, coveredBtc) : 0;
+  return { kind: "expiry", creditUsdc: v.fullCreditUsdc, floorPayoutUsdc: floorUsdc, totalUsdc: round2(v.fullCreditUsdc + floorUsdc) };
+};
+
 // ── Auto-renew (protection is a STATE, not a button) ─────────────────────────
 // The toggle ON persists a per-account preference; while it is on, an expired wrap re-quotes at
 // the morning book and re-wraps (fresh record, fresh terms, same guard chain). A book that can't
@@ -413,22 +517,50 @@ export const saveProtectionPrefs = (prefs: ProtectionPrefs, path = DEFAULT_PROTE
 export type RenewalAction = "expire_and_renew" | "retry_wrap" | "none";
 
 /**
+ * Deterministic per-account renewal anchor inside [0, windowMs): every wrapped account expires at
+ * the SAME listed fixing (daily options share one expiry), so an unstaggered loop would batch every
+ * renewal onto one tick and stack the whole book on one strike. Spreading re-wraps across the
+ * window lands them on different strikes as spot moves — the natural de-concentration the
+ * per-strike cap relies on (approved decision 7). FNV-1a over the lowercased account.
+ */
+export const renewalStaggerOffsetMs = (account: string, windowMs: number): number => {
+  if (!(windowMs > 0)) return 0;
+  let h = 0x811c9dc5;
+  for (const ch of account.toLowerCase()) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h % Math.floor(windowMs);
+};
+
+/**
  * What should the renewal loop do for one account right now? Pure.
- *   expire_and_renew — the active wrap ran past its listed expiry: conclude it, re-wrap now.
- *   retry_wrap       — protection is on but nothing is open (a skip-day refuse or a cleared store):
- *                      try again, throttled so quote probes don't hammer the venue.
- *   none             — off, in flight, still vesting, or inside the retry throttle.
+ *   expire_and_renew — the active wrap ran past its listed expiry PLUS this account's stagger
+ *                      anchor: conclude it, settle it, re-wrap now.
+ *   retry_wrap       — protection is on but nothing is open (a knockout, a skip-day refuse, or a
+ *                      cleared store): try again. Knockouts re-arm on the very next tick (the
+ *                      touch already de-staggered them — spot moved); other retries throttle so
+ *                      quote probes don't hammer the venue.
+ *   none             — off, in flight, still vesting, or inside the stagger window / retry throttle.
  */
 export const renewalDecision = (
   pref: ProtectionPref | undefined,
   latest: DemoWrapRecord | null,
   nowMs: number,
-  retryMs: number
+  retryMs: number,
+  staggerOffsetMs = 0
 ): RenewalAction => {
   if (!pref?.on) return "none";
   if (latest && (latest.status === "quoting" || latest.status === "executing")) return "none";
   if (latest && latest.status === "active") {
-    return latest.vesting != null && nowMs >= latest.vesting.endMs ? "expire_and_renew" : "none";
+    return latest.vesting != null && nowMs >= latest.vesting.endMs + staggerOffsetMs ? "expire_and_renew" : "none";
+  }
+  if (latest && latest.status === "knocked_out") {
+    // Re-arm at new spot on the next tick. The first attempt after the touch skips the throttle
+    // (lastRenewAttemptMs predates the knockout); a refused re-arm then throttles like any skip-day.
+    return pref.lastRenewAttemptMs == null || pref.lastRenewAttemptMs < (latest.concludedAtMs ?? 0) || nowMs - pref.lastRenewAttemptMs >= retryMs
+      ? "retry_wrap"
+      : "none";
   }
   // failed / concluded / nothing yet — retry on the throttle
   return pref.lastRenewAttemptMs == null || nowMs - pref.lastRenewAttemptMs >= retryMs ? "retry_wrap" : "none";
