@@ -65,6 +65,28 @@ test("verify: actionCleared — gates off ⟹ cleared; each gate demands exactly
   assert.ok(actionCleared(signed, ACCOUNT, TOS_V, true, false).ok);
 });
 
+// ── close gate (soft owner check, no wallet popup) ────────────────────────────
+
+test("closeAllowed: verified wallet always; token holder yes; stranger no; legacy wraps never stranded", async () => {
+  const { closeAllowed } = await import("../src/singleSide/twoSided/creditCollar/epVerify");
+  const pref = { controlToken: "tok-abc" };
+  const verified = { version: TOS_V, acceptedAtMs: NOW, country: null, signature: "0xsig", signerVerified: true };
+  const checkbox = { version: TOS_V, acceptedAtMs: NOW, country: null };
+  // the cryptographic owner may always close, token or not
+  assert.equal(closeAllowed(pref, verified, TOS_V, ""), true);
+  // the opening client's token works
+  assert.equal(closeAllowed(pref, checkbox, TOS_V, "tok-abc"), true);
+  assert.equal(closeAllowed(pref, undefined, TOS_V, "tok-abc"), true);
+  // a stranger with just the address is refused
+  assert.equal(closeAllowed(pref, checkbox, TOS_V, ""), false);
+  assert.equal(closeAllowed(pref, undefined, TOS_V, "wrong-token"), false);
+  // a stale-version verified signature does NOT bypass (must re-accept first)
+  assert.equal(closeAllowed(pref, { ...verified, version: "old" }, TOS_V, ""), false);
+  // wraps opened before the gate existed (no token issued) stay closable
+  assert.equal(closeAllowed({}, undefined, TOS_V, ""), true);
+  assert.equal(closeAllowed(undefined, undefined, TOS_V, ""), true);
+});
+
 // ── per-wallet daily quota + global breaker (public-demo fix) ─────────────────
 
 const guards = (over: Partial<DemoGuardsConfig> = {}): DemoGuardsConfig => ({

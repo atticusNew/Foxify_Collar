@@ -25,6 +25,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,7 +92,7 @@ import {
   type LoopPulse
 } from "../src/singleSide/twoSided/creditCollar/epSafety";
 import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
-import { actionCleared, verifyMessageText, verifyWalletSignature } from "../src/singleSide/twoSided/creditCollar/epVerify";
+import { actionCleared, closeAllowed, verifyMessageText, verifyWalletSignature } from "../src/singleSide/twoSided/creditCollar/epVerify";
 import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
 import { EP_PUBLIC_DASHBOARD_HTML, EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
 import { Pool } from "pg";
@@ -172,6 +173,9 @@ const tosRequired = String(process.env.EP_TOS_REQUIRED ?? "false").toLowerCase()
 // Public-demo hardening: actions (wrap/close/protection) require a one-time wallet signature
 // that doubles as SIGNED ToS acceptance. Viewing never requires anything.
 const requireActionSig = String(process.env.EP_REQUIRE_ACTION_SIG ?? "false").toLowerCase() === "true";
+// Close gate (default ON, zero friction): early close needs the control token issued to the
+// client that opened protection — or a signer-verified wallet, or the admin. EP_CLOSE_GATE=false disarms.
+const closeGate = String(process.env.EP_CLOSE_GATE ?? "true").toLowerCase() === "true";
 const setProtection = async (account: string, on: boolean): Promise<void> => {
   const prefs = await stores.loadPrefs();
   const key = account.toLowerCase();
@@ -1323,12 +1327,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
     // ── Trader API (account-scoped) ──
     if (req.method === "GET" && route === "/api/state") {
+      const wantAll = url.searchParams.get("all") === "1";
       const acct = resolveAccount(url.searchParams.get("account"));
       if (!acct.ok) {
+        // The ADMIN whole-book view needs no account (production bug: the control room rendered
+        // empty on deploys without a default DEMO_HL_ADDRESS because this 403'd first).
+        if (wantAll && isAdmin) {
+          sendJson(res, 200, await buildState(undefined, true));
+          return;
+        }
         sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
         return;
       }
-      const wantAll = url.searchParams.get("all") === "1";
       if (wantAll && !isAdmin && adminAuth.token != null) {
         sendJson(res, 403, { ok: false, error: "admin_required", message: "whole-book state requires the admin token" });
         return;
@@ -1444,7 +1454,17 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         );
         // Toggle ON is a state: a SUCCESSFUL wrap arms auto-renew for this account (refusals don't —
         // the daily quota can't be laundered through the renewal lane by toggling once).
-        if ((out.body as { ok?: boolean }).ok === true) await setProtection(acct.account, true);
+        if ((out.body as { ok?: boolean }).ok === true) {
+          await setProtection(acct.account, true);
+          // Issue (or re-issue to the wrapping client) the account's close-gate control token.
+          const prefs = await stores.loadPrefs();
+          const pk = acct.account.toLowerCase();
+          if (!prefs[pk]?.controlToken) {
+            prefs[pk] = { ...(prefs[pk] ?? { on: true, sinceMs: Date.now() }), controlToken: randomUUID() };
+            await stores.savePrefs(prefs);
+          }
+          (out.body as Record<string, unknown>).controlToken = prefs[pk].controlToken;
+        }
         sendJson(res, out.status, out.body);
       } finally {
         wrapsInFlight.delete(key);
@@ -1465,6 +1485,17 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         if (!cleared.ok) {
           const err = cleared.error.startsWith("verify_required") ? "verify_required" : "tos_required";
           sendJson(res, 409, { ok: false, error: err, message: cleared.error });
+          return;
+        }
+      }
+      // Close gate: only the opening client (control token), a verified wallet, or the admin may
+      // force an early close — a stranger with the address cannot trigger a clawback.
+      if (closeGate && !isAdmin) {
+        const [prefsG, tosG] = await Promise.all([stores.loadPrefs(), stores.loadTos()]);
+        const kG = acct.account.toLowerCase();
+        const provided = String(req.headers["x-ep-control"] ?? url.searchParams.get("ctl") ?? "").trim();
+        if (!closeAllowed(prefsG[kG], tosG[kG], tosVersion, provided)) {
+          sendJson(res, 403, { ok: false, error: "close_locked", message: "protection can only be turned off from the device that turned it on (or a verified wallet) — it concludes and pays on its own at the cycle's close" });
           return;
         }
       }

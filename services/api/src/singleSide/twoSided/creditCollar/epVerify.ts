@@ -14,7 +14,7 @@
  */
 
 import { verifyMessage } from "viem";
-import type { TosRegistry } from "./store/epStores";
+import type { TosAcceptance, TosRegistry } from "./store/epStores";
 
 /** The exact message the wallet signs — versioned so a ToS bump forces a fresh signature. */
 export const verifyMessageText = (account: string, tosVersion: string): string =>
@@ -66,4 +66,24 @@ export const actionCleared = (
     return { ok: false, error: "verify_required — verify wallet ownership with a one-time signature before protecting (viewing needs nothing)" };
   }
   return { ok: true };
+};
+
+/**
+ * May this caller CLOSE protection early? The soft owner-check (no wallet popup):
+ *   1. a signer-verified wallet (current ToS version) always may — the cryptographic owner
+ *   2. the holder of the account's control token may — issued to whichever client opened
+ *      protection, so "the device that turned it on can turn it off"
+ *   3. accounts with no token yet (wraps opened before the gate existed) stay closable —
+ *      never strand a legacy wrap
+ * Everyone else is refused: a stranger who knows the address cannot force a clawback.
+ */
+export const closeAllowed = (
+  pref: { controlToken?: string } | undefined,
+  acceptance: TosAcceptance | undefined,
+  tosVersion: string,
+  providedToken: string
+): boolean => {
+  if (acceptance?.version === tosVersion && acceptance.signerVerified === true) return true;
+  if (!pref?.controlToken) return true; // legacy — no token was ever issued to demand
+  return providedToken.length > 0 && providedToken === pref.controlToken;
 };

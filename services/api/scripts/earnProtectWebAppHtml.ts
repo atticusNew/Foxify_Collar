@@ -255,6 +255,7 @@ const humanChip = (raw) => {
   if (/no open .* position|no live position|no_position/i.test(s)) return "No open position to protect";
   if (/allow-list|account_refused|not an address/i.test(s)) return "Account not enabled yet";
   if (/verify_required/i.test(s)) return "Verify your wallet first — one signature, one time";
+  if (/close_locked/i.test(s)) return "Turn off from the device that turned protection on — it pays out on its own either way";
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first";
   if (/waitlisted|#\d+ in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full — you're #" + m[1] + " in line" : "Founding cohort full — you're on the waitlist"; }
   if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
@@ -432,13 +433,15 @@ const onToggle = async (ev) => {
   sw.classList.add("busy");
   try {
     if (isOn) {
-      const j = await api("/api/close", { method: "POST" });
+      const ctl = localStorage.getItem("ep_ctl_" + account.toLowerCase()) || "";
+      const j = await api("/api/close?ctl=" + encodeURIComponent(ctl), { method: "POST" });
       setMsg(j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off." : humanChip(j.message || j.error), !j.ok);
     } else {
       setMsg("Wrapping — pricing the live options book…", false, true);
       // Client-supplied idempotency key: a flaky network can never double-wrap.
       const idem = (MINIAPP ? "tma-" : "web-") + account.slice(2, 10) + "-" + Date.now().toString(36);
       const j = await api("/api/wrap", { method: "POST", headers: { "Idempotency-Key": idem } });
+      if (j.ok && j.controlToken) localStorage.setItem("ep_ctl_" + account.toLowerCase(), j.controlToken);
       setMsg(j.ok ? "Protection live — credit pays at the cycle's close." : humanChip(j.message || j.error), !j.ok);
       if (!j.ok) $("connectMsg").title = String(j.message || j.error || "");
       haptic(j.ok ? "success" : "error");

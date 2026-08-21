@@ -520,7 +520,17 @@ export const cyclePayable = (rec: DemoWrapRecord, settlePx?: number | null): Cyc
 
 export const DEFAULT_PROTECTION_STORE_PATH = process.env.DEMO_PROTECTION_STORE_PATH ?? "./logs/demo-protection.json";
 
-export type ProtectionPref = { on: boolean; sinceMs: number; lastRenewAttemptMs?: number };
+export type ProtectionPref = {
+  on: boolean;
+  sinceMs: number;
+  lastRenewAttemptMs?: number;
+  /**
+   * Close-gate control token (public-demo hardening): issued to the client that OPENS protection
+   * and required to close it early — a stranger who merely knows the address cannot force a
+   * clawback. Stable per account so auto-renewed wraps stay closable by the opening client.
+   */
+  controlToken?: string;
+};
 export type ProtectionPrefs = Record<string, ProtectionPref>; // key = account, lowercase
 
 export const loadProtectionPrefs = (path = DEFAULT_PROTECTION_STORE_PATH): ProtectionPrefs => {

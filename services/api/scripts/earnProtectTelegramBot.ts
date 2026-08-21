@@ -51,7 +51,7 @@ const miniAppFor = (address: string): string | null => (miniAppUrl ? `${miniAppU
 
 // ── Chat store (chatId → address + notification snapshot) ─────────────────────
 
-type ChatRecord = { address: string; snapshot: ChatSnapshot | null };
+type ChatRecord = { address: string; snapshot: ChatSnapshot | null; controlToken?: string };
 type ChatStore = Record<string, ChatRecord>;
 
 const loadChats = (): ChatStore => {
@@ -208,6 +208,10 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
   if (cb.data === "wrap") {
     await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Wrapping — pricing the live book…" });
     const out = await ep("/api/wrap", chat.address, "POST");
+    if (out.ok === true && typeof out.controlToken === "string") {
+      chat.controlToken = out.controlToken;
+      saveChats(chats);
+    }
     if (out.ok !== true && out.error === "verify_required" && miniAppUrl) {
       await send(chatId, `🔐 ${humanRefusal(String(out.message ?? ""))}`, [[{ text: "🔐 Verify in the app (one signature)", web_app: { url: miniAppFor(chat.address)! } }]]);
       return;
@@ -233,7 +237,7 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
   }
   if (cb.data === "close") {
     await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Closing early…" });
-    const out = await ep("/api/close", chat.address, "POST");
+    const out = await ep("/api/close?ctl=" + encodeURIComponent(chat.controlToken ?? ""), chat.address, "POST");
     if (out.ok === true) {
       const v = out.vested as { vestedUsdc?: number; fullCreditUsdc?: number };
       await send(chatId, `✋ Closed early — you keep <b>$${(v?.vestedUsdc ?? 0).toFixed(2)}</b> of $${(v?.fullCreditUsdc ?? 0).toFixed(2)} unlocked. Auto-renew off.`);
