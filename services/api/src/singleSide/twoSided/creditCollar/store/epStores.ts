@@ -32,7 +32,21 @@ export type EpStorePaths = {
   ledger: string;
   registry: string;
   runtime: string; // kill-switch / pause flag
+  tos: string; // per-account Terms acceptances
+  waitlist: string; // wallets queued beyond the founding cohort
 };
+
+/**
+ * One wallet's Terms-of-Service acceptance (versioned — a new ToS version requires re-acceptance).
+ * When the public-demo signature gate is armed, `signature` holds the wallet's EIP-191 signature
+ * over the canonical accept message and `signerVerified` records that it recovered to the account
+ * — one signature is both proof-of-control and a signed ToS acceptance.
+ */
+export type TosAcceptance = { version: string; acceptedAtMs: number; country: string | null; signature?: string | null; signerVerified?: boolean };
+export type TosRegistry = Record<string, TosAcceptance>; // key = account, lowercase
+
+/** First-come waitlist beyond the founding cohort. */
+export type WaitlistEntry = { account: string; joinedAtMs: number };
 
 /** Runtime flags an admin can flip without redeploying (pause survives restarts). */
 export type EpRuntimeFlags = { paused: boolean; pausedReason: string | null; updatedAtMs: number };
@@ -49,6 +63,10 @@ export type EpStores = {
   saveRegistry: (registry: WalletRegistry) => Promise<void>;
   loadRuntime: () => Promise<EpRuntimeFlags>;
   saveRuntime: (flags: EpRuntimeFlags) => Promise<void>;
+  loadTos: () => Promise<TosRegistry>;
+  saveTos: (tos: TosRegistry) => Promise<void>;
+  loadWaitlist: () => Promise<WaitlistEntry[]>;
+  saveWaitlist: (entries: WaitlistEntry[]) => Promise<void>;
   /** Demo affordance: clear everything (guarded by DEMO_ALLOW_RESET upstream). */
   clearAll: () => Promise<void>;
 };
@@ -88,12 +106,33 @@ export const jsonStores = (paths: EpStorePaths): EpStores => ({
   saveRegistry: async (registry) => saveJsonObject(paths.registry, registry),
   loadRuntime: async () => loadJsonObject<EpRuntimeFlags>(paths.runtime, DEFAULT_RUNTIME),
   saveRuntime: async (flags) => saveJsonObject(paths.runtime, flags),
+  loadTos: async () => loadJsonObject<TosRegistry>(paths.tos, {}),
+  saveTos: async (tos) => saveJsonObject(paths.tos, tos),
+  loadWaitlist: async () => {
+    const eff = resolveWritablePath(paths.waitlist);
+    if (!existsSync(eff)) return [];
+    try {
+      const parsed = JSON.parse(readFileSync(eff, "utf8")) as unknown;
+      return Array.isArray(parsed) ? (parsed as WaitlistEntry[]) : [];
+    } catch {
+      return [];
+    }
+  },
+  saveWaitlist: async (entries) => {
+    try {
+      writeFileSync(resolveWritablePath(paths.waitlist), JSON.stringify(entries, null, 1), "utf8");
+    } catch (e) {
+      console.error(`[ep-store] waitlist save failed: ${(e as Error).message}`);
+    }
+  },
   clearAll: async () => {
     saveDemoWraps([], paths.wraps);
     saveProtectionPrefs({}, paths.protection);
     savePayoutLedger([], paths.ledger);
     saveJsonObject(paths.registry, {});
     saveJsonObject(paths.runtime, DEFAULT_RUNTIME);
+    saveJsonObject(paths.tos, {});
+    saveJsonObject(paths.waitlist, []);
   }
 });
 
@@ -135,6 +174,14 @@ export const ensureEpSchema = async (pool: Queryable): Promise<void> => {
     CREATE TABLE IF NOT EXISTS ep_runtime (
       k TEXT PRIMARY KEY,
       v JSONB NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ep_tos (
+      account TEXT PRIMARY KEY,
+      acceptance JSONB NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ep_waitlist (
+      account TEXT PRIMARY KEY,
+      joined_at_ms BIGINT NOT NULL
     );
   `);
 };
@@ -214,8 +261,30 @@ export const postgresStores = (pool: Queryable): EpStores => ({
     return res.rows.length ? parseJsonb<EpRuntimeFlags>(res.rows[0].v) : DEFAULT_RUNTIME;
   },
   saveRuntime: async (flags) => replaceAll(pool, "ep_runtime", [{ cols: ["k", "v"], vals: ["flags", JSON.stringify(flags)] }]),
+  loadTos: async () => {
+    const res = await pool.query("SELECT account, acceptance FROM ep_tos");
+    const out: TosRegistry = {};
+    for (const row of res.rows as Array<{ account: string; acceptance: unknown }>) out[row.account] = parseJsonb(row.acceptance);
+    return out;
+  },
+  saveTos: async (tos) =>
+    replaceAll(
+      pool,
+      "ep_tos",
+      Object.entries(tos).map(([account, a]) => ({ cols: ["account", "acceptance"], vals: [account.toLowerCase(), JSON.stringify(a)] }))
+    ),
+  loadWaitlist: async () => {
+    const res = await pool.query("SELECT account, joined_at_ms FROM ep_waitlist ORDER BY joined_at_ms ASC");
+    return (res.rows as Array<{ account: string; joined_at_ms: string | number }>).map((r) => ({ account: r.account, joinedAtMs: Number(r.joined_at_ms) }));
+  },
+  saveWaitlist: async (entries) =>
+    replaceAll(
+      pool,
+      "ep_waitlist",
+      entries.map((e) => ({ cols: ["account", "joined_at_ms"], vals: [e.account.toLowerCase(), e.joinedAtMs] }))
+    ),
   clearAll: async () => {
-    for (const t of ["ep_wraps", "ep_protection", "ep_payouts", "ep_wallets", "ep_runtime"]) await pool.query(`DELETE FROM ${t}`);
+    for (const t of ["ep_wraps", "ep_protection", "ep_payouts", "ep_wallets", "ep_runtime", "ep_tos", "ep_waitlist"]) await pool.query(`DELETE FROM ${t}`);
   }
 });
 
@@ -232,18 +301,22 @@ export const migrateJsonToPostgres = async (paths: EpStorePaths, pool: Queryable
     if (existing.length > 0) throw new Error(`postgres already holds ${existing.length} wraps — pass force to replace`);
   }
   const json = jsonStores(paths);
-  const [wraps, prefs, ledger, registry, runtime] = await Promise.all([
+  const [wraps, prefs, ledger, registry, runtime, tos, waitlist] = await Promise.all([
     json.loadWraps(),
     json.loadPrefs(),
     json.loadLedger(),
     json.loadRegistry(),
-    json.loadRuntime()
+    json.loadRuntime(),
+    json.loadTos(),
+    json.loadWaitlist()
   ]);
   await pg.saveWraps(wraps);
   await pg.savePrefs(prefs);
   await pg.saveLedger(ledger);
   await pg.saveRegistry(registry);
   await pg.saveRuntime(runtime);
+  await pg.saveTos(tos);
+  await pg.saveWaitlist(waitlist);
   return { wraps: wraps.length, prefs: Object.keys(prefs).length, payouts: ledger.length, wallets: Object.keys(registry).length };
 };
 

@@ -25,6 +25,9 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { HyperliquidClient } from "../src/singleSide/twoSided/creditCollar/execution/perpVenues/hyperliquidClient";
 import {
   assessDemoWrap,
@@ -87,7 +90,10 @@ import {
   tokenBucketLimiter,
   type LoopPulse
 } from "../src/singleSide/twoSided/creditCollar/epSafety";
-import { EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
+import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
+import { actionCleared, verifyMessageText, verifyWalletSignature } from "../src/singleSide/twoSided/creditCollar/epVerify";
+import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
+import { EP_PUBLIC_DASHBOARD_HTML, EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
 import { Pool } from "pg";
 import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regimeGate";
@@ -99,7 +105,9 @@ import { executionArmed, parseLiveGuardsFromEnv } from "../src/singleSide/twoSid
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
 const round2 = (x: number) => +x.toFixed(2);
 
-const port = num(process.env.DEMO_PORT, 8788);
+const port = num(process.env.DEMO_PORT ?? process.env.PORT, 8788); // PORT: hosted platforms (Render) inject it
+/** The single-SVG brand lockup (drop-in — see scripts/assets/README.md). */
+const BRAND_LOCKUP_PATH = join(dirname(fileURLToPath(import.meta.url)), "assets", "atticus-lockup.svg");
 const guards = parseDemoGuardsFromEnv(process.env);
 const storePath = process.env.DEMO_STORE_PATH ?? "./logs/demo-wraps.json";
 const allowReset = String(process.env.DEMO_ALLOW_RESET ?? "true").toLowerCase() === "true";
@@ -131,7 +139,9 @@ const storePaths: EpStorePaths = {
   protection: process.env.DEMO_PROTECTION_STORE_PATH ?? "./logs/demo-protection.json",
   ledger: process.env.DEMO_PAYOUT_LEDGER_PATH ?? "./logs/demo-payout-ledger.json",
   registry: process.env.EP_WALLET_REGISTRY_PATH ?? "./logs/ep-wallets.json",
-  runtime: process.env.EP_RUNTIME_PATH ?? "./logs/ep-runtime.json"
+  runtime: process.env.EP_RUNTIME_PATH ?? "./logs/ep-runtime.json",
+  tos: process.env.EP_TOS_STORE_PATH ?? "./logs/ep-tos.json",
+  waitlist: process.env.EP_WAITLIST_PATH ?? "./logs/ep-waitlist.json"
 };
 const pgPool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, max: 5 }) : null;
 const stores: EpStores = pgPool ? postgresStores(pgPool) : jsonStores(storePaths);
@@ -152,6 +162,16 @@ let okxQuoteFailStreak = 0;
 // Both pause NEW wraps + renewals only — conclusions, knockouts, and payouts always keep running.
 let runtimePaused = false;
 let runtimePausedReason: string | null = null;
+
+// Phase 3 launch gates: geofence (blocks ACTIONS from US + sanctioned IPs, fail-closed) and the
+// versioned ToS acceptance step. Both default OFF for dev; production turns them on via env.
+const geofence = parseGeofenceFromEnv(process.env);
+const resolveCountry = buildCountryResolver(geofence);
+const tosVersion = process.env.EP_TOS_VERSION ?? "2026-08-draft";
+const tosRequired = String(process.env.EP_TOS_REQUIRED ?? "false").toLowerCase() === "true";
+// Public-demo hardening: actions (wrap/close/protection) require a one-time wallet signature
+// that doubles as SIGNED ToS acceptance. Viewing never requires anything.
+const requireActionSig = String(process.env.EP_REQUIRE_ACTION_SIG ?? "false").toLowerCase() === "true";
 const setProtection = async (account: string, on: boolean): Promise<void> => {
   const prefs = await stores.loadPrefs();
   const key = account.toLowerCase();
@@ -266,6 +286,18 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
     return { status: 409, body: { ok: false, error: "paused", message: `protection paused${runtimePausedReason ? ` — ${runtimePausedReason}` : ""} — existing wraps conclude and pay normally` } };
   }
 
+  // Action gate (Phase 3 + public-demo hardening): current ToS version accepted, and — when the
+  // signature gate is armed — proven by a one-time wallet signature. A ToS bump stops renewals
+  // until one re-acceptance in any client (honest: renewals resume immediately after).
+  if (tosRequired || requireActionSig) {
+    const tos = await stores.loadTos();
+    const cleared = actionCleared(tos, account, tosVersion, requireActionSig, tosRequired);
+    if (!cleared.ok) {
+      const err = cleared.error.startsWith("verify_required") ? "verify_required" : "tos_required";
+      return { status: 409, body: { ok: false, error: err, message: cleared.error } };
+    }
+  }
+
   let position: HlPositionRead | null;
   try {
     position = await readHlPosition(account);
@@ -280,7 +312,17 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
   const { guards: guardsEff, derived } = effectiveGuards(position.markPx);
   const registry = await stores.loadRegistry();
   const cohort = assessCohort(registry, account, derived.maxWallets);
-  if (!cohort.ok) return { status: 409, body: { ok: false, error: "waitlisted", message: cohort.reason } };
+  if (!cohort.ok) {
+    // Cohort full: enroll first-come on the waitlist (idempotent) and say WHERE they stand.
+    const waitlist = await stores.loadWaitlist();
+    let pos = waitlist.findIndex((w) => w.account.toLowerCase() === account.toLowerCase());
+    if (pos < 0) {
+      waitlist.push({ account: account.toLowerCase(), joinedAtMs: nowMs });
+      await stores.saveWaitlist(waitlist);
+      pos = waitlist.length - 1;
+    }
+    return { status: 409, body: { ok: false, error: "waitlisted", message: `${cohort.reason} — you're #${pos + 1} in line; capacity grows with capital`, waitlistPosition: pos + 1 } };
+  }
 
   // Partial wraps (decision 6): wrap min(position, remaining per-wallet cap), floored to whole
   // lots — an oversized position is covered partially with honest copy, never refused.
@@ -581,7 +623,7 @@ const buildState = async (account?: string, all = false) => {
   // client's wrap). ?all=1 = the whole book for the ops view.
   const wraps = all ? allWraps : allWraps.filter((r) => r.account.toLowerCase() === (acct ?? "").toLowerCase());
   const open = allWraps.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
-  const [ledger, prefs, registry] = await Promise.all([stores.loadLedger(), stores.loadPrefs(), stores.loadRegistry()]);
+  const [ledger, prefs, registry, waitlist, tosReg] = await Promise.all([stores.loadLedger(), stores.loadPrefs(), stores.loadRegistry(), stores.loadWaitlist(), stores.loadTos()]);
   const paidStatuses = new Set(["paid", "confirmed"]);
   const refSpot = position?.markPx ?? open.find((r) => r.quote)?.quote?.spot ?? 0;
   const derived = deriveCaps(capsInputs, refSpot);
@@ -608,6 +650,7 @@ const buildState = async (account?: string, all = false) => {
       perStrikeCapPct: derived.perStrikeCapPct,
       foundingWallets: capsInputs.foundingWallets,
       walletsJoined: Object.keys(registry).length,
+      waitlistLength: waitlist.length,
       takeRatePct: capsInputs.takeRatePct,
       foundingTakeRatePct: capsInputs.foundingTakeRatePct
     },
@@ -631,7 +674,14 @@ const buildState = async (account?: string, all = false) => {
       autoRenew,
       on: acct != null ? prefs[acct.toLowerCase()]?.on === true : false,
       accountsOn: Object.values(prefs).filter((p) => p.on).length,
-      founding: acct != null ? registry[acct.toLowerCase()] != null : false
+      founding: acct != null ? registry[acct.toLowerCase()] != null : false,
+      waitlistPosition: acct != null ? (() => { const i = waitlist.findIndex((w) => w.account === acct.toLowerCase()); return i < 0 ? null : i + 1; })() : null
+    },
+    // Gate status so clients render the right prompt (checkbox vs signature) without guessing.
+    gates: {
+      tosRequired,
+      signatureRequired: requireActionSig,
+      cleared: acct != null ? actionCleared(tosReg, acct, tosVersion, requireActionSig, tosRequired).ok : false
     },
     generatedAtIso: new Date(nowMs).toISOString()
   };
@@ -1038,8 +1088,31 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
 
     // ── Pages ──
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app")) {
-      sendHtml(res, EP_WEB_APP_HTML);
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app" || url.pathname === "/miniapp")) {
+      // Brand mark after "by": the single-SVG Atticus lockup when the asset exists (pixel-perfect
+      // brand file, served by us at /assets/atticus-lockup.svg — no third-party host), otherwise
+      // the live-text fallback: "Atticus" in gold serif + the finch image (EP_BRAND_LOGO_URL
+      // overrides the finch; non-https ⟹ text only).
+      // replaceAll — the placeholder may legitimately appear in comments too (bug caught live:
+      // .replace() hit a comment first and left the visible slot as literal text).
+      let brandMark: string;
+      if (existsSync(BRAND_LOCKUP_PATH)) {
+        brandMark = `<img class="brand-lockup" src="/assets/atticus-lockup.svg" alt="Atticus">`;
+      } else {
+        const logoUrl = (process.env.EP_BRAND_LOGO_URL ?? "https://i.ibb.co/Sw0KQJYV/finchsmall.png").trim();
+        const finch = /^https:\/\//.test(logoUrl) ? `<img class="brand-img" src="${logoUrl.replace(/"/g, "")}" alt="">` : "";
+        brandMark = `<span class="atticus-serif">Atticus</span>${finch}`;
+      }
+      sendHtml(res, (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML).replaceAll("__BRAND_MARK__", brandMark));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/assets/atticus-lockup.svg") {
+      if (!existsSync(BRAND_LOCKUP_PATH)) {
+        sendJson(res, 404, { ok: false, error: "not_found" });
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600", ...CORS_HEADERS });
+      res.end(readFileSync(BRAND_LOCKUP_PATH));
       return;
     }
     if (req.method === "GET" && url.pathname === "/demo") {
@@ -1056,11 +1129,164 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/tos") {
+      sendHtml(res, EP_TOS_HTML.replace(/__TOS_VERSION__/g, tosVersion));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/public") {
+      sendHtml(res, EP_PUBLIC_DASHBOARD_HTML);
+      return;
+    }
+
     // ── Rate limits: reads generous, actions tight; admin exempt ──
-    const isAction = req.method === "POST" && /^\/api\/(wrap|close|protection)$/.test(route);
+    const isAction = req.method === "POST" && /^\/api\/(wrap|close|protection|tos\/accept)$/.test(route);
     const isRead = req.method === "GET" && route.startsWith("/api/");
     if (!isAdmin && ((isAction && !actionLimiter.allow(ip, Date.now())) || (isRead && !readLimiter.allow(ip, Date.now())))) {
       sendJson(res, 429, { ok: false, error: "rate_limited", message: "too many requests — slow down" });
+      return;
+    }
+
+    // ── Geofence (Phase 3): trading ACTIONS are blocked for US + sanctioned IPs, fail-closed
+    // when the location cannot be verified. Reads stay open.
+    let geoCountry: string | null = null;
+    if (geofence.enabled && (isAction || route === "/api/geo")) {
+      geoCountry = await resolveCountry(req.headers, ip);
+      if (isAction) {
+        const verdict = assessGeofence(geofence, geoCountry);
+        if (!verdict.allowed) {
+          sendJson(res, 451, { ok: false, error: "geo_blocked", message: verdict.reason });
+          return;
+        }
+      }
+    }
+    if (req.method === "GET" && route === "/api/geo") {
+      const verdict = assessGeofence(geofence, geofence.enabled ? geoCountry : null);
+      sendJson(res, 200, { ok: true, enabled: geofence.enabled, allowed: verdict.allowed, country: verdict.country, ...(verdict.allowed ? {} : { message: (verdict as { reason: string }).reason }) });
+      return;
+    }
+
+    // ── ToS (Phase 3): versioned acceptance; wrap refuses without the CURRENT version ──
+    if (req.method === "GET" && route === "/api/tos") {
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      const tos = await stores.loadTos();
+      const acc = tos[acct.account.toLowerCase()];
+      sendJson(res, 200, {
+        ok: true,
+        required: tosRequired,
+        version: tosVersion,
+        accepted: acc?.version === tosVersion,
+        acceptedVersion: acc?.version ?? null,
+        acceptedAtMs: acc?.acceptedAtMs ?? null,
+        url: "/tos"
+      });
+      return;
+    }
+    if (req.method === "POST" && route === "/api/tos/accept") {
+      // Checkbox acceptance — enough when only the ToS gate is armed. When the SIGNATURE gate is
+      // armed, actions additionally need /api/verify (checkbox acceptance is preserved, not lost).
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      const tos = await stores.loadTos();
+      const prior = tos[acct.account.toLowerCase()];
+      tos[acct.account.toLowerCase()] = {
+        version: tosVersion,
+        acceptedAtMs: Date.now(),
+        country: geofence.enabled ? geoCountry ?? (await resolveCountry(req.headers, ip)) : null,
+        signature: prior?.version === tosVersion ? prior.signature ?? null : null,
+        signerVerified: prior?.version === tosVersion ? prior.signerVerified === true : false
+      };
+      await stores.saveTos(tos);
+      sendJson(res, 200, { ok: true, version: tosVersion, accepted: true, signatureRequired: requireActionSig });
+      return;
+    }
+    if (req.method === "GET" && route === "/api/verify") {
+      // The canonical message the wallet must sign + this wallet's verification status.
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      const tos = await stores.loadTos();
+      const acc = tos[acct.account.toLowerCase()];
+      sendJson(res, 200, {
+        ok: true,
+        required: requireActionSig,
+        verified: acc?.version === tosVersion && acc.signerVerified === true,
+        version: tosVersion,
+        message: verifyMessageText(acct.account, tosVersion)
+      });
+      return;
+    }
+    if (req.method === "POST" && route === "/api/verify") {
+      // One-time wallet verification: EIP-191 signature over the canonical message = proof of
+      // control + SIGNED ToS acceptance. Wallet-scoped and stored server-side, so the Telegram
+      // bot works for this wallet afterwards without ever signing again.
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      const signature = String(url.searchParams.get("signature") ?? "").trim();
+      const verdict = await verifyWalletSignature(acct.account, tosVersion, signature);
+      if (!verdict.ok) {
+        sendJson(res, 400, { ok: false, error: "bad_signature", message: verdict.error });
+        return;
+      }
+      const tos = await stores.loadTos();
+      tos[acct.account.toLowerCase()] = {
+        version: tosVersion,
+        acceptedAtMs: Date.now(),
+        country: geofence.enabled ? geoCountry ?? (await resolveCountry(req.headers, ip)) : null,
+        signature,
+        signerVerified: true
+      };
+      await stores.saveTos(tos);
+      sendJson(res, 200, { ok: true, verified: true, version: tosVersion });
+      return;
+    }
+
+    // ── Public live-book stats (aggregates only — never per-user data) ──
+    if (req.method === "GET" && route === "/api/stats") {
+      const [records, ledger, registry] = await Promise.all([stores.loadWraps(), stores.loadLedger(), stores.loadRegistry()]);
+      const open = records.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
+      const paid = ledger.filter((e) => e.status === "paid" || e.status === "confirmed");
+      const spotRef = open.find((r) => r.quote)?.quote?.spot ?? records.slice().reverse().find((r) => r.quote)?.quote?.spot ?? 0;
+      const derived = deriveCaps(capsInputs, spotRef);
+      const priced = records.filter((r) => r.quote != null && (r.hedge?.contracts ?? 0) > 0);
+      sendJson(res, 200, {
+        ok: true,
+        executionMode: guards.executionMode,
+        wraps: {
+          total: priced.length,
+          active: open.length,
+          expiries: records.filter((r) => r.status === "concluded" && r.concludedAtMs != null && r.vesting != null && r.concludedAtMs >= r.vesting.endMs).length,
+          knockouts: records.filter((r) => r.status === "knocked_out").length,
+          earlyCloses: records.filter((r) => r.status === "concluded" && r.concludedAtMs != null && r.vesting != null && r.concludedAtMs < r.vesting.endMs).length
+        },
+        notional: {
+          openUsdc: round2(open.reduce((s, r) => s + wrapExposureUsdc(r), 0)),
+          lifetimeWrappedUsdc: round2(priced.reduce((s, r) => s + wrapExposureUsdc(r), 0))
+        },
+        credits: {
+          paidUsdc: round2(paid.reduce((s, e) => s + e.amountUsdc, 0)),
+          paidCount: paid.length
+        },
+        capacity: {
+          bookCapUsdc: derived.bookCapUsdc,
+          utilizationPct: derived.bookCapUsdc > 0 ? +((open.reduce((s, r) => s + wrapExposureUsdc(r), 0) / derived.bookCapUsdc) * 100).toFixed(1) : 0,
+          foundingWallets: capsInputs.foundingWallets,
+          walletsJoined: Object.keys(registry).length,
+          waitlistLength: (await stores.loadWaitlist()).length
+        },
+        generatedAtIso: new Date().toISOString()
+      });
       return;
     }
 
@@ -1197,6 +1423,16 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
         return;
       }
+      // Owner-only when the signature gate is armed: a stranger must never force someone's
+      // early close (clawback griefing) just by knowing their address.
+      if (requireActionSig || tosRequired) {
+        const cleared = actionCleared(await stores.loadTos(), acct.account, tosVersion, requireActionSig, tosRequired);
+        if (!cleared.ok) {
+          const err = cleared.error.startsWith("verify_required") ? "verify_required" : "tos_required";
+          sendJson(res, 409, { ok: false, error: err, message: cleared.error });
+          return;
+        }
+      }
       // Toggle OFF always disarms auto-renew, whether or not something is active right now.
       await setProtection(acct.account, false);
       const records = await stores.loadWraps();
@@ -1309,6 +1545,11 @@ server.listen(port, () => {
         ` · take ${(capsInputs.takeRatePct * 100).toFixed(0)}%/${(capsInputs.foundingTakeRatePct * 100).toFixed(0)}% founding, $0 under $${capsInputs.deMinimisUsdc.toFixed(2)}`
     );
     console.error(`[demo] admin: ${adminAuth.token ? "token auth ON" : adminAuth.enabled ? "DEV MODE (no token)" : "DISABLED — set EP_ADMIN_TOKEN"} · rate limits: reads ${num(process.env.EP_RATE_READS_PER_MIN, 120)}/min, actions ${num(process.env.EP_RATE_ACTIONS_PER_MIN, 12)}/min per IP`);
+    console.error(
+      `[demo] launch gates: geofence ${geofence.enabled ? `ON (blocked: ${geofence.blockedCountries.join(",")}; unknown ⟹ ${geofence.failOpen ? "allow" : "REFUSE"})` : "off (EP_GEOFENCE=true to arm)"}` +
+        ` · ToS ${tosRequired ? `REQUIRED v${tosVersion}` : `off (EP_TOS_REQUIRED=true to arm; v${tosVersion})`}` +
+        ` · action signature ${requireActionSig ? "REQUIRED (owner-only actions)" : "off (EP_REQUIRE_ACTION_SIG=true to arm)"} · public dashboard /public`
+    );
     if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
     console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m, stagger window ${Math.round(renewStaggerMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
     if (autoRenew) setInterval(() => void renewalTick(), renewCheckMs);

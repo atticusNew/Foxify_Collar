@@ -41,6 +41,7 @@ const guards = (over: Partial<DemoGuardsConfig> = {}): DemoGuardsConfig => ({
   executionMode: "paper",
   maxPositionNotionalUsdc: 1_000,
   maxWrapsPerDay: 3,
+  maxWrapsPerDayGlobal: 500,
   cooldownMs: 30_000,
   maxBookNotionalUsdc: 25_000,
   maxActiveWraps: 25,

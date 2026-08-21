@@ -64,6 +64,14 @@ Shipped on top of the demo engine, all covered by unit tests and exercised end-t
 - **Production spine.** Postgres persistence behind one store interface (JSON files remain the dev default) with a one-shot migration; boot reconciliation of open wraps against live OKX option positions; fail-closed admin auth; per-IP rate limits; idempotent wrap requests; alert fan-out (disk, webhook, Telegram) for stalled loops, payout failures, venue connectivity, unwinds, and margin utilization; a persisted kill switch (manual or margin-triggered) that pauses new wraps and renewals while conclusions and payouts keep running.
 - **Two thin clients, one API.** A canonical JSON API (documented in `earn-protect-api.md`) serves the trader web app (read-only address connect, positions, one toggle, live wrap card, payout history with tx links) and the Telegram bot (address once, inline protect buttons, push notifications for every cycle event). A partner integration consumes exactly the same routes.
 
+## Build record — launch support (Phase 3, Aug 2026)
+
+- **Jurisdiction gates.** Geofence on trading actions (US + OFAC list, env-owned by counsel; fail-closed when a location cannot be verified; reads stay open) and a versioned ToS acceptance step recorded per wallet — a terms bump halts new cycles until one re-acceptance in any client.
+- **Public live book.** A read-only dashboard (`/public`) of aggregates only — credits paid, active/lifetime wrapped notional, cycle outcomes, capacity utilization, cohort fill. No per-user data, ever.
+- **Margin measurement.** A probe against OKX's position-builder simulates the two collar legs as one netted spread under portfolio margin and reads the real IMR per wrapped dollar (plus a live mode over the running book); the output is the single input that re-derives every cap.
+- **Credit calibration gate.** A report over the wrap store measuring realized per-lot gross credit by market hour, cap distance, and execution lane — with an explicit publish gate (≥30 live wraps, ≥18 distinct hours, ≥7 days) that refuses to bless trader-facing numbers until the coverage bar is met. Until then the approved interim framing stands.
+- **RFQ netting (decision 7).** A book-level planning calculator that nets the book's aggregate hedge needs (longs offset shorts, same-strike wraps combine) and routes net deltas ≥ the block minimum to RFQ — entries only; knockout unwinds always stay on the order book. Exact OKX block minimums pending BD confirmation.
+
 ## Roadmap
 
 Pooled activation: many positions netted internally, residual risk hedged as institutional blocks, with block economics inherited by every participating position. Additional venues, the US-regulated hedge stack, lending-collateral protection, and multi-asset extension via listed options.

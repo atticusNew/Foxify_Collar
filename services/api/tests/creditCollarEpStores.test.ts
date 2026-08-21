@@ -25,7 +25,9 @@ const tmpPaths = (): EpStorePaths => {
     protection: join(dir, "protection.json"),
     ledger: join(dir, "ledger.json"),
     registry: join(dir, "wallets.json"),
-    runtime: join(dir, "runtime.json")
+    runtime: join(dir, "runtime.json"),
+    tos: join(dir, "tos.json"),
+    waitlist: join(dir, "waitlist.json")
   };
 };
 
@@ -102,6 +104,21 @@ const contract = (name: string, build: () => Promise<EpStores>) => {
     const rt = await s.loadRuntime();
     assert.equal(rt.paused, true);
     assert.equal(rt.pausedReason, "test");
+    // ToS acceptances (versioned — a new version requires re-acceptance)
+    assert.deepEqual(await s.loadTos(), {});
+    await s.saveTos({ ["0x" + "a".repeat(40)]: { version: "2026-08-draft", acceptedAtMs: NOW, country: "SG" } });
+    const tos = await s.loadTos();
+    assert.equal(tos["0x" + "a".repeat(40)].version, "2026-08-draft");
+    assert.equal(tos["0x" + "a".repeat(40)].country, "SG");
+    // signed acceptance round-trips (the public-demo verification artifact)
+    await s.saveTos({ ["0x" + "b".repeat(40)]: { version: "v2", acceptedAtMs: NOW, country: null, signature: "0xsig", signerVerified: true } });
+    assert.equal((await s.loadTos())["0x" + "b".repeat(40)].signerVerified, true);
+    // waitlist: ordered, round-trips
+    assert.deepEqual(await s.loadWaitlist(), []);
+    await s.saveWaitlist([{ account: "0x" + "c".repeat(40), joinedAtMs: NOW }, { account: "0x" + "d".repeat(40), joinedAtMs: NOW + 1 }]);
+    const wl = await s.loadWaitlist();
+    assert.equal(wl.length, 2);
+    assert.equal(wl[0].account, "0x" + "c".repeat(40)); // first-come order preserved
   });
 
   test(`${name}: clearAll empties everything`, async () => {

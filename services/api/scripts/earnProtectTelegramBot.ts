@@ -18,12 +18,14 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolveWritablePath } from "../src/singleSide/twoSided/creditCollar/shadowStore";
 import {
+  BOT_COMMANDS,
   diffCycleEvents,
   HELP_TEXT,
   humanRefusal,
   parseBotMessage,
   positionsKeyboard,
   positionsText,
+  tosPrompt,
   WELCOME_TEXT,
   type BotPosition,
   type ChatSnapshot
@@ -40,6 +42,12 @@ const tgBase = `${process.env.TELEGRAM_API_BASE ?? "https://api.telegram.org"}/b
 const apiBase = process.env.EP_API_BASE ?? "http://localhost:8788";
 const storePath = process.env.EP_BOT_STORE_PATH ?? "./logs/ep-bot-chats.json";
 const notifyMs = num(process.env.EP_BOT_NOTIFY_MS, 30_000);
+// Telegram Mini App home (must be public HTTPS — Telegram refuses http/localhost web_app URLs).
+// The service serves it at <public-base>/miniapp; unset ⟹ buttons/menu are simply omitted.
+const rawMiniApp = process.env.EP_MINIAPP_URL?.trim() ?? "";
+const miniAppUrl = /^https:\/\//.test(rawMiniApp) ? rawMiniApp.replace(/\/$/, "") : null;
+if (rawMiniApp && !miniAppUrl) console.error("[ep-bot] EP_MINIAPP_URL ignored — Telegram requires an https:// URL");
+const miniAppFor = (address: string): string | null => (miniAppUrl ? `${miniAppUrl}?account=${address}` : null);
 
 // ── Chat store (chatId → address + notification snapshot) ─────────────────────
 
@@ -80,11 +88,12 @@ const tg = async (method: string, body: Record<string, unknown>): Promise<{ ok: 
   }
 };
 
+// HTML parse mode: Markdown corrupts on underscores in addresses/instrument ids.
 const send = (chatId: string | number, text: string, keyboard?: unknown): Promise<{ ok: boolean }> =>
   tg("sendMessage", {
     chat_id: chatId,
     text,
-    parse_mode: "Markdown",
+    parse_mode: "HTML",
     disable_web_page_preview: true,
     ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {})
   });
@@ -111,7 +120,18 @@ const showPositions = async (chatId: string | number, address: string): Promise<
     return;
   }
   const positions = (pos.positions as BotPosition[]) ?? [];
-  await send(chatId, positionsText(positions), positionsKeyboard(positions, prot.on === true));
+  await send(chatId, positionsText(positions), positionsKeyboard(positions, prot.on === true, miniAppFor(address)));
+};
+
+/** ToS gate (Phase 3): prompt with the inline accept button when the current version is unaccepted. */
+const promptTosIfNeeded = async (chatId: string | number, address: string): Promise<boolean> => {
+  const tos = await ep("/api/tos", address);
+  if (tos.ok === true && tos.required === true && tos.accepted !== true) {
+    const p = tosPrompt(String(tos.version ?? "?"), apiBase);
+    await send(chatId, p.text, p.keyboard);
+    return true;
+  }
+  return false;
 };
 
 const handleMessage = async (chats: ChatStore, chatId: string | number, text: string): Promise<void> => {
@@ -128,7 +148,8 @@ const handleMessage = async (chats: ChatStore, chatId: string | number, text: st
   if (cmd.kind === "address") {
     chats[key] = { address: cmd.address, snapshot: null };
     saveChats(chats);
-    await send(chatId, `Connected \`${cmd.address.slice(0, 6)}…${cmd.address.slice(-4)}\` (read-only — we can see positions, never touch them).`);
+    await send(chatId, `🔗 Connected <code>${cmd.address.slice(0, 6)}…${cmd.address.slice(-4)}</code> — read-only. We can see positions, never touch them.`);
+    if (await promptTosIfNeeded(chatId, cmd.address)) return;
     await showPositions(chatId, cmd.address);
     return;
   }
@@ -153,9 +174,12 @@ const handleMessage = async (chats: ChatStore, chatId: string | number, text: st
     await send(
       chatId,
       [
-        `*Protection:* ${prot?.on ? "ON — auto-renews daily" : "off"}${prot?.founding ? " · founding rate" : ""}`,
-        `*Credits paid to date:* $${paid.toFixed(2)}`,
-        `Use /positions to toggle.`
+        "🛡 <b>Earn &amp; Protect</b> · <i>status</i>",
+        "",
+        `Protection: <b>${prot?.on ? "ON — auto-renews daily" : "off"}</b>${prot?.founding ? " · 🏅 founding rate" : ""}`,
+        `Credits paid to date: <b>$${paid.toFixed(2)}</b>`,
+        "",
+        "<i>Use /positions to toggle.</i>"
       ].join("\n")
     );
     return;
@@ -170,13 +194,38 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
     await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Paste your address first (0x…)" });
     return;
   }
+  if (cb.data === "tos") {
+    const out = await ep("/api/tos/accept", chat.address, "POST");
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.ok === true ? "Terms accepted" : "Could not record acceptance" });
+    if (out.ok === true) {
+      await send(chatId, `✅ Terms accepted (${out.version}). You're set.`);
+      await showPositions(chatId, chat.address);
+    } else {
+      await send(chatId, `🚫 ${humanRefusal(String(out.message ?? out.error ?? ""))}`);
+    }
+    return;
+  }
   if (cb.data === "wrap") {
     await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Wrapping — pricing the live book…" });
     const out = await ep("/api/wrap", chat.address, "POST");
+    if (out.ok !== true && out.error === "verify_required" && miniAppUrl) {
+      await send(chatId, `🔐 ${humanRefusal(String(out.message ?? ""))}`, [[{ text: "🔐 Verify in the app (one signature)", web_app: { url: miniAppFor(chat.address)! } }]]);
+      return;
+    }
     if (out.ok === true) {
       const wrap = out.wrap as { quote?: { creditUsdc?: number; floorStrike?: number; capStrike?: number } };
       const q = wrap?.quote;
-      await send(chatId, `🛡 *Protection live* — floor $${q?.floorStrike ?? "?"} / cap $${q?.capStrike ?? "?"} · credit $${q?.creditUsdc ?? "?"} (pays at the cycle's close). Auto-renews while on.`);
+      await send(
+        chatId,
+        [
+          "🛡 <b>Protection live</b>",
+          "",
+          `Today's credit: <b>$${q?.creditUsdc ?? "?"}</b> — unlocks through the day, pays at the cycle's close`,
+          `Hard floor: <b>$${(q?.floorStrike ?? 0).toLocaleString("en-US")}</b> · Cap: <b>$${(q?.capStrike ?? 0).toLocaleString("en-US")}</b> (touch ends the cycle — you keep gains to the cap + unlocked credit)`,
+          "",
+          "<i>Auto-renews daily while the toggle stays on.</i>"
+        ].join("\n")
+      );
     } else {
       await send(chatId, `🚫 ${humanRefusal(String(out.message ?? out.error ?? ""))}`);
     }
@@ -187,7 +236,7 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
     const out = await ep("/api/close", chat.address, "POST");
     if (out.ok === true) {
       const v = out.vested as { vestedUsdc?: number; fullCreditUsdc?: number };
-      await send(chatId, `✋ Closed early — kept $${(v?.vestedUsdc ?? 0).toFixed(2)} of $${(v?.fullCreditUsdc ?? 0).toFixed(2)} vested. Auto-renew off.`);
+      await send(chatId, `✋ Closed early — you keep <b>$${(v?.vestedUsdc ?? 0).toFixed(2)}</b> of $${(v?.fullCreditUsdc ?? 0).toFixed(2)} unlocked. Auto-renew off.`);
     } else {
       await send(chatId, `🚫 ${humanRefusal(String(out.message ?? out.error ?? ""))}`);
     }
@@ -252,6 +301,11 @@ const pollLoop = async (): Promise<void> => {
   }
 };
 
-console.error(`[ep-bot] Earn & Protect bot up — API ${apiBase} · notifier every ${Math.round(notifyMs / 1000)}s`);
+console.error(`[ep-bot] Earn & Protect bot up — API ${apiBase} · notifier every ${Math.round(notifyMs / 1000)}s${miniAppUrl ? ` · mini app ${miniAppUrl}` : " · mini app OFF (set EP_MINIAPP_URL)"}`);
+// Register the "/" command menu (the professional touch traders expect).
+void tg("setMyCommands", { commands: BOT_COMMANDS });
+// The chat menu button opens the Mini App (global — the app resolves the account from
+// localStorage inside Telegram's WebView, or the paste flow on first open).
+if (miniAppUrl) void tg("setChatMenuButton", { menu_button: { type: "web_app", text: "Earn & Protect", web_app: { url: miniAppUrl } } });
 setInterval(() => void notifyTick(), notifyMs);
 void pollLoop();

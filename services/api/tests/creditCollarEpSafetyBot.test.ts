@@ -125,6 +125,17 @@ test("bot: keyboard — protect button when off, unprotect when on, only wrappab
   assert.equal(on[0][0].callback_data, "close");
 });
 
+test("bot: keyboard — a Mini App URL adds the launch row with the account handed off", () => {
+  const positions = [{ coin: "BTC", side: "long", szBase: 0.01, notionalUsdc: 686, wrappable: true }];
+  const rows = positionsKeyboard(positions, false, "https://ep.example.com/miniapp?account=0xabc");
+  assert.equal(rows.length, 2);
+  assert.match(rows[1][0].text, /Open the app/);
+  assert.equal(rows[1][0].web_app!.url, "https://ep.example.com/miniapp?account=0xabc");
+  assert.equal(rows[1][0].callback_data, undefined);
+  // no URL ⟹ no launch row (dev mode)
+  assert.equal(positionsKeyboard(positions, false, null).length, 1);
+});
+
 test("bot: refusal copy stays human", () => {
   assert.equal(humanRefusal("wrap refused: the founding cohort (50 wallets) is full — you're on the waitlist"), "Founding cohort full · you're on the waitlist");
   assert.equal(humanRefusal("listed_credit_nonpositive — call bid under put ask"), "No honest credit right now · nothing opened");
