@@ -182,7 +182,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   </div>
 
   <div class="card" id="verifyCard" style="display:none;border-color:rgba(80,210,193,.45)">
-    <b>Verify your wallet</b> <span class="muted small">— one signature proves you own this address and signs the <a href="/tos" target="_blank" rel="noopener">Terms</a>. It cannot move funds. Needed once; then every surface (including Telegram) works.</span>
+    <b>Verify your wallet</b> <span class="muted small">— one signature proves you own this address and signs the <a href="/tos" target="_blank" rel="noopener">Terms</a>. It cannot move funds. Needed once; then you can manage protection from any device (including Telegram).</span>
     <div class="row" style="margin-top:10px">
       <button class="btn" id="verifyBtn">Verify with wallet</button>
       <span class="small muted" id="verifyMsg"></span>
@@ -281,6 +281,7 @@ const urlAccount = new URLSearchParams(location.search).get("account");
 let account = (urlAccount && /^0x[0-9a-fA-F]{40}$/.test(urlAccount) ? urlAccount : "") || localStorage.getItem("ep_account") || "";
 if (account) localStorage.setItem("ep_account", account);
 let busy = false;
+let verifyOffered = false; // surfaced when a close is refused cross-device — optional path to manage from anywhere
 
 // One status writer: the connect-card line on web; a visible flash strip in the Mini App
 // (where the connect card is hidden once an account is bound).
@@ -439,6 +440,11 @@ const onToggle = async (ev) => {
       const closeFail = humanChip(j.message || j.error);
       setMsg(j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off."
         : (closeFail === "Couldn't complete · nothing opened" ? "Couldn't turn off — nothing changed. It pays out on its own at the cycle's close." : closeFail), !j.ok);
+      if (!j.ok && (j.error || "") === "close_locked") {
+        // Cross-device close: offer the optional one-time wallet verification as the owner's path.
+        verifyOffered = true;
+        checkGates();
+      }
     } else {
       setMsg("Wrapping — pricing the live options book…", false, true);
       // Client-supplied idempotency key: a flaky network can never double-wrap.
@@ -469,7 +475,7 @@ const checkGates = async () => {
   if (!account) { $("tosCard").style.display = "none"; $("verifyCard").style.display = "none"; return; }
   try {
     const [tos, ver] = await Promise.all([api("/api/tos"), api("/api/verify")]);
-    const needsSig = ver.ok && ver.required && !ver.verified;
+    const needsSig = ver.ok && !ver.verified && (ver.required || verifyOffered);
     // Signature covers ToS too — never show both prompts.
     $("verifyCard").style.display = needsSig ? "" : "none";
     if (tos.ok && tos.required && !tos.accepted && !needsSig) {
