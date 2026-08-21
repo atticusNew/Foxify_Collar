@@ -160,8 +160,8 @@ export type PayoutProcessOptions = {
   /** Hard per-day outflow cap in USDC — a compromised or runaway loop drains at most this. */
   dailyCapUsdc: number;
   maxAttempts?: number; // default 10
-  /** Persist callback fired after an entry is marked queued and after every terminal update. */
-  persist?: (entries: PayoutEntry[]) => void;
+  /** Persist callback fired (and AWAITED) after an entry is marked queued and after every terminal update. */
+  persist?: (entries: PayoutEntry[]) => void | Promise<void>;
 };
 
 export type PayoutProcessSummary = { sent: number; confirmed: number; deferred: number; failed: number; skippedStale: number };
@@ -195,7 +195,7 @@ export const processPayoutLedger = async (
       summary.skippedStale++;
     }
   }
-  if (summary.skippedStale > 0) persist(entries);
+  if (summary.skippedStale > 0) await persist(entries);
 
   let outflow = dailyOutflowUsdc(entries, nowMs);
   for (const e of entries) {
@@ -214,7 +214,7 @@ export const processPayoutLedger = async (
     if (e.status === "failed") transitionPayout(e, "queued", nowMs, `retry ${e.attempts + 1}/${maxAttempts}`);
     else transitionPayout(e, "queued", nowMs);
     e.attempts += 1;
-    persist(entries);
+    await persist(entries);
 
     let res: PayoutSendResult;
     try {
@@ -239,7 +239,7 @@ export const processPayoutLedger = async (
       e.retriable = res.retriable;
       summary.failed++;
     }
-    persist(entries);
+    await persist(entries);
   }
   return summary;
 };

@@ -38,33 +38,57 @@ import {
   DEMO_FLOOR_PCT,
   failWrap,
   knockoutWrap,
-  loadDemoWraps,
   newDemoWrap,
   OKX_OPTION_LOT_BTC,
   paperLegsFromQuote,
   parseDemoGuardsFromEnv,
   pushStage,
   renewalStaggerOffsetMs,
-  saveDemoWraps,
-  uncoveredSizeNote,
   wrapCapStrike,
+  wrapExposureUsdc,
   wrapRefuseFromLive,
   concludeAtExpiry,
-  loadProtectionPrefs,
-  saveProtectionPrefs,
   renewalDecision,
   type DemoLeg,
   type DemoWrapRecord
 } from "../src/singleSide/twoSided/creditCollar/demoWrap";
 import {
   accrueWrapPayout,
-  loadPayoutLedger,
   processPayoutLedger,
-  savePayoutLedger,
   type PayoutSender
 } from "../src/singleSide/twoSided/creditCollar/settlement/payoutLedger";
 import { buildPayoutSender, parsePayoutRailFromEnv } from "../src/singleSide/twoSided/creditCollar/settlement/usdcPayout";
 import { unwindLiveCollar } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveUnwind";
+import {
+  applyTake,
+  assessCohort,
+  assessStrikeConcentration,
+  deriveCaps,
+  parseCapsInputsFromEnv,
+  partialWrapSizing,
+  registerWallet,
+  takeRateFor,
+  type StrikeExposure
+} from "../src/singleSide/twoSided/creditCollar/capsConfig";
+import {
+  ensureEpSchema,
+  jsonStores,
+  postgresStores,
+  reconcileOpenWraps,
+  type EpStores,
+  type EpStorePaths
+} from "../src/singleSide/twoSided/creditCollar/store/epStores";
+import {
+  adminAuthorized,
+  buildAlertRaiser,
+  parseAdminAuthFromEnv,
+  parseAlertSinkFromEnv,
+  stalledLoops,
+  tokenBucketLimiter,
+  type LoopPulse
+} from "../src/singleSide/twoSided/creditCollar/epSafety";
+import { EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
+import { Pool } from "pg";
 import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regimeGate";
 import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
@@ -92,15 +116,64 @@ const renewStaggerMs = num(process.env.DEMO_RENEW_STAGGER_MS, 1_800_000); // 30 
 // Design B knockout monitor + payout rail.
 const knockoutCheckMs = num(process.env.DEMO_KNOCKOUT_CHECK_MS, 15_000);
 const payoutCheckMs = num(process.env.DEMO_PAYOUT_CHECK_MS, 60_000);
-const payoutLedgerPath = process.env.DEMO_PAYOUT_LEDGER_PATH ?? "./logs/demo-payout-ledger.json";
 const payoutRail = parsePayoutRailFromEnv(process.env);
-const protectionPath = process.env.DEMO_PROTECTION_STORE_PATH ?? "./logs/demo-protection.json";
-const setProtection = (account: string, on: boolean): void => {
-  const prefs = loadProtectionPrefs(protectionPath);
+
+// ── Phase 2: caps-as-formulas, stores, safety ─────────────────────────────────
+
+// Formula-derived caps (decision 4). Explicit DEMO_MAX_* envs still override for dev pinning.
+const capsInputs = parseCapsInputsFromEnv(process.env);
+const bookCapOverridden = process.env.DEMO_MAX_BOOK_NOTIONAL_USDC != null;
+const walletCapOverridden = process.env.DEMO_MAX_NOTIONAL_USDC != null;
+
+// Storage: DATABASE_URL ⟹ Postgres (production); otherwise the Phase 1 JSON files (dev default).
+const storePaths: EpStorePaths = {
+  wraps: storePath,
+  protection: process.env.DEMO_PROTECTION_STORE_PATH ?? "./logs/demo-protection.json",
+  ledger: process.env.DEMO_PAYOUT_LEDGER_PATH ?? "./logs/demo-payout-ledger.json",
+  registry: process.env.EP_WALLET_REGISTRY_PATH ?? "./logs/ep-wallets.json",
+  runtime: process.env.EP_RUNTIME_PATH ?? "./logs/ep-runtime.json"
+};
+const pgPool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, max: 5 }) : null;
+const stores: EpStores = pgPool ? postgresStores(pgPool) : jsonStores(storePaths);
+
+// Safety rails: admin auth, per-IP rate limits, alert fan-out, loop watchdog.
+const adminAuth = parseAdminAuthFromEnv(process.env);
+const raiseAlert = buildAlertRaiser(parseAlertSinkFromEnv(process.env));
+const readLimiter = tokenBucketLimiter(num(process.env.EP_RATE_READS_PER_MIN, 120), 60_000);
+const actionLimiter = tokenBucketLimiter(num(process.env.EP_RATE_ACTIONS_PER_MIN, 12), 60_000);
+const loopPulses: Record<string, LoopPulse> = {
+  renewal: { name: "renewal", lastRunMs: 0, intervalMs: renewCheckMs },
+  monitor: { name: "monitor", lastRunMs: 0, intervalMs: knockoutCheckMs },
+  payout: { name: "payout", lastRunMs: 0, intervalMs: payoutCheckMs }
+};
+let okxQuoteFailStreak = 0;
+
+// Kill switch: DEMO_ENABLED (env, boot-time) AND the runtime pause flag (admin endpoint, persisted).
+// Both pause NEW wraps + renewals only — conclusions, knockouts, and payouts always keep running.
+let runtimePaused = false;
+let runtimePausedReason: string | null = null;
+const setProtection = async (account: string, on: boolean): Promise<void> => {
+  const prefs = await stores.loadPrefs();
   const key = account.toLowerCase();
   if (on) prefs[key] = { ...(prefs[key] ?? { sinceMs: Date.now() }), on: true, sinceMs: prefs[key]?.on ? prefs[key].sinceMs : Date.now() };
   else if (prefs[key]) prefs[key] = { ...prefs[key], on: false };
-  saveProtectionPrefs(prefs, protectionPath);
+  await stores.savePrefs(prefs);
+};
+
+/**
+ * Effective guards for a wrap at the current spot: book + per-wallet caps come from the caps
+ * formulas (decision 4) unless the legacy DEMO_MAX_* envs pin them explicitly (dev).
+ */
+const effectiveGuards = (spotUsd: number) => {
+  const derived = deriveCaps(capsInputs, spotUsd);
+  return {
+    guards: {
+      ...guards,
+      maxBookNotionalUsdc: bookCapOverridden ? guards.maxBookNotionalUsdc : derived.bookCapUsdc,
+      maxPositionNotionalUsdc: walletCapOverridden ? guards.maxPositionNotionalUsdc : derived.perWalletCapUsdc
+    },
+    derived
+  };
 };
 
 // The account whose position is wrapped: explicit demo address > master address > the key's own.
@@ -173,9 +246,25 @@ const readHlPosition = async (account?: string | null): Promise<HlPositionRead |
 // Per-account in-flight lock: different clients may wrap concurrently; one client is serialized.
 const wrapsInFlight = new Set<string>();
 
-const doWrap = async (account: string, renewal = false): Promise<{ status: number; body: unknown }> => {
+const doWrap = async (account: string, renewal = false, idempotencyKey: string | null = null): Promise<{ status: number; body: unknown }> => {
   const nowMs = Date.now();
-  const records = loadDemoWraps(storePath);
+  const records = await stores.loadWraps();
+
+  // Idempotent wrap requests: a client retry with the same key returns the ORIGINAL outcome —
+  // a flaky network can never open two wraps.
+  if (idempotencyKey) {
+    const prior = records.find((r) => r.account.toLowerCase() === account.toLowerCase() && r.idempotencyKey === idempotencyKey);
+    if (prior) {
+      return prior.status === "failed"
+        ? { status: 409, body: { ok: false, error: "refused", message: prior.failReason, wrap: prior, idempotentReplay: true } }
+        : { status: 200, body: { ok: true, wrap: prior, idempotentReplay: true } };
+    }
+  }
+
+  // Kill switch (env) + runtime pause (admin endpoint): new wraps stop; conclusions/payouts don't.
+  if (runtimePaused) {
+    return { status: 409, body: { ok: false, error: "paused", message: `protection paused${runtimePausedReason ? ` — ${runtimePausedReason}` : ""} — existing wraps conclude and pay normally` } };
+  }
 
   let position: HlPositionRead | null;
   try {
@@ -187,12 +276,28 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
     return { status: 409, body: { ok: false, error: "no_position", message: `no open ${coin} position on ${account}` } };
   }
 
-  const cover = coverOkxLots(position.szBase);
-  if (!cover.ok) return { status: 409, body: { ok: false, error: "below_min_lot", message: cover.reason } };
-  const coveredNotionalUsdc = round2(cover.coveredBtc * position.markPx);
-  const sizeNote = uncoveredSizeNote(position.szBase, cover);
+  // Formula caps at this spot (decision 4) + founding cohort / waitlist (50 wallets).
+  const { guards: guardsEff, derived } = effectiveGuards(position.markPx);
+  const registry = await stores.loadRegistry();
+  const cohort = assessCohort(registry, account, derived.maxWallets);
+  if (!cohort.ok) return { status: 409, body: { ok: false, error: "waitlisted", message: cohort.reason } };
 
-  const permit = assessDemoWrap(guards, nowMs, coveredNotionalUsdc, records, account, renewal);
+  // Partial wraps (decision 6): wrap min(position, remaining per-wallet cap), floored to whole
+  // lots — an oversized position is covered partially with honest copy, never refused.
+  const isOpenRec = (r: DemoWrapRecord) => r.status === "quoting" || r.status === "executing" || r.status === "active";
+  const walletOpenNotionalUsdc = records
+    .filter((r) => r.account.toLowerCase() === account.toLowerCase() && isOpenRec(r))
+    .reduce((s, r) => s + wrapExposureUsdc(r), 0);
+  const sizing = partialWrapSizing(position.szBase, position.notionalUsdc, derived.perWalletCapUsdc, walletOpenNotionalUsdc, position.markPx);
+  if (!sizing.ok) {
+    const err = /minimum one lot/.test(sizing.reason) ? "below_min_lot" : "wallet_cap";
+    return { status: 409, body: { ok: false, error: err, message: sizing.reason } };
+  }
+  const cover = { ok: true as const, coveredBtc: sizing.coveredBtc, lots: sizing.lots, remainderBtc: +Math.max(0, position.szBase - sizing.coveredBtc).toFixed(8) };
+  const coveredNotionalUsdc = sizing.coveredNotionalUsdc;
+  const sizeNote = sizing.coverageNote;
+
+  const permit = assessDemoWrap(guardsEff, nowMs, coveredNotionalUsdc, records, account, renewal);
   if (!permit.ok) return { status: 409, body: { ok: false, error: "refused", message: permit.reason } };
 
   // okx lanes must clear the SAME arming chain as the canary before anything else happens.
@@ -210,9 +315,11 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
 
   const rec = newDemoWrap(`wrap-${nowMs}`, nowMs, "hyperliquid", account, position);
   if (renewal) rec.stages[0].note = "auto-renewal — protection stayed on through expiry";
+  if (idempotencyKey) rec.idempotencyKey = idempotencyKey;
+  rec.wrappedNotionalUsdc = coveredNotionalUsdc; // the book carries the HEDGED exposure, not the raw position
   records.push(rec);
-  saveDemoWraps(records, storePath);
-  const persist = () => saveDemoWraps(records, storePath);
+  await stores.saveWraps(records);
+  const persist = () => stores.saveWraps(records);
 
   // 2) QUOTE — listed OKX lots. Credit = executable touch net of OKX fees. No $80/$50k target.
   const spot = position.markPx;
@@ -228,10 +335,37 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
     nowMs: Date.now()
   });
   if (!listed.ok) {
+    okxQuoteFailStreak = /listed_book_empty|chain|fetch|network/i.test(listed.error) ? okxQuoteFailStreak + 1 : 0;
+    if (okxQuoteFailStreak >= 3) raiseAlert("okx_connectivity", `OKX quote path failing (${okxQuoteFailStreak} consecutive): ${listed.error}`);
     failWrap(rec, Date.now(), `wrap refused: ${listed.error} — ${listed.message}`);
-    persist();
+    await persist();
     return { status: 409, body: { ok: false, error: listed.error, message: listed.message, wrap: rec } };
   }
+  okxQuoteFailStreak = 0;
+
+  // Per-strike concentration (decision 4): the sold wing must stay unwindable on the screen if a
+  // cluster of same-strike wraps knocks out together.
+  const capStrikeListed = position.side === "long" ? listed.callStrike : listed.putStrike;
+  const openExposures: StrikeExposure[] = records
+    .filter((r) => r.id !== rec.id && isOpenRec(r) && r.quote != null)
+    .map((r) => ({ capStrike: wrapCapStrike(r)!, notionalUsdc: wrapExposureUsdc(r) }));
+  const conc = assessStrikeConcentration(
+    openExposures,
+    { capStrike: capStrikeListed, notionalUsdc: coveredNotionalUsdc },
+    capsInputs.perStrikeCapPct,
+    capsInputs.perStrikeFloorLots,
+    spot
+  );
+  if (!conc.ok) {
+    failWrap(rec, Date.now(), conc.reason);
+    await persist();
+    return { status: 409, body: { ok: false, error: "strike_concentration", message: conc.reason, wrap: rec } };
+  }
+
+  // Spread take (decision 3): the trader is quoted and paid the NET credit; the split is recorded
+  // and published honestly. Founding wallets keep their locked rate for 12 months.
+  const joinedAtMs = cohort.joinedAtMs ?? nowMs; // a new wallet joins the cohort with THIS wrap
+  const rate = takeRateFor(capsInputs, joinedAtMs, nowMs);
   const q = {
     legs: {
       putStrike: listed.putStrike,
@@ -248,28 +382,40 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
   const capStrike = position.side === "long" ? listed.callStrike : listed.putStrike;
   const floorUsedPct = listed.floorPct;
   const tenorDays = Math.max(1 / 24, (listed.expiryMs - Date.now()) / DAY_MS);
+  // The trader is quoted the NET credit (gross minus the published take). One-number rule: every
+  // surface shows this number; the gross/split lives in rec.economics for the honest breakdown.
+  const quotedSplit = applyTake(q.economics.foxify_credit_usdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding);
   rec.quote = {
     spot: round2(spot),
     putStrike: q.legs.putStrike,
     callStrike: q.legs.callStrike,
     floorPct: q.legs.floor_pct,
     capPct: q.legs.cap_pct,
-    creditUsdc: q.economics.foxify_credit_usdc,
-    quotedCreditUsdc: q.economics.foxify_credit_usdc, // kept as labeled history once the fill lands
+    creditUsdc: quotedSplit.traderCreditUsdc,
+    quotedCreditUsdc: quotedSplit.traderCreditUsdc, // kept as labeled history once the fill lands
     floorStrike,
     capStrike,
     floorPctUsed: floorUsedPct,
     tenorDays: +tenorDays.toFixed(2)
   };
+  rec.economics = {
+    grossCreditUsdc: q.economics.foxify_credit_usdc,
+    atticusTakeUsdc: quotedSplit.atticusTakeUsdc,
+    takeRatePct: quotedSplit.appliedRatePct,
+    founding: rate.founding
+  };
   pushStage(
     rec,
     "quoted",
     Date.now(),
-    `floor $${floorStrike} / cap $${capStrike} · credit $${q.economics.foxify_credit_usdc}` +
+    `floor $${floorStrike} / cap $${capStrike} · credit $${quotedSplit.traderCreditUsdc}` +
+      (quotedSplit.atticusTakeUsdc > 0
+        ? ` (market sourced $${q.economics.foxify_credit_usdc}; we keep ${(quotedSplit.appliedRatePct * 100).toFixed(0)}%${rate.founding ? " founding rate" : ""})`
+        : ` (market sourced $${q.economics.foxify_credit_usdc}; our cut waived under $${capsInputs.deMinimisUsdc.toFixed(2)})`) +
       ` · listed OKX ${listed.putInstId} / ${listed.callInstId} touch` +
       (sizeNote ? ` · ${sizeNote}` : "")
   );
-  persist();
+  await persist();
 
   // 3) EXECUTE.
   if (guards.executionMode === "paper") {
@@ -278,21 +424,23 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
     rec.hedge = { venue: "okx_model", mode: "paper", netCreditUsdc: q.economics.foxify_credit_usdc, venueFeeUsdc: listed.venueFeeUsdc, contracts: cover.lots, sizeNote };
     pushStage(rec, "hedge_locked", Date.now(), "PAPER lane — listed OKX touch quote, no venue orders");
     pushStage(rec, "green_light", Date.now());
-    rec.vesting = { fullCreditUsdc: q.economics.foxify_credit_usdc, startMs: Date.now(), endMs: expiresAtMs };
-    pushStage(rec, "vesting", Date.now(), `$${q.economics.foxify_credit_usdc} vests linearly to ${new Date(expiresAtMs).toISOString()}`);
+    rec.vesting = { fullCreditUsdc: quotedSplit.traderCreditUsdc, startMs: Date.now(), endMs: expiresAtMs };
+    pushStage(rec, "vesting", Date.now(), `$${quotedSplit.traderCreditUsdc} vests linearly to ${new Date(expiresAtMs).toISOString()}`);
     rec.status = "active";
-    persist();
+    registerWallet(registry, account, nowMs);
+    await stores.saveRegistry(registry);
+    await persist();
     return { status: 200, body: { ok: true, wrap: rec } };
   }
 
   // okx_demo / okx_live — real hedge legs; size is FLOORED lots (never round up).
   rec.status = "executing";
   pushStage(rec, "hedge_executing", Date.now(), `real ${guards.executionMode.replace("okx_", "OKX ")} legs going out`);
-  persist();
+  await persist();
   const { OKX_API_KEY: k, OKX_API_SECRET: s, OKX_API_PASSPHRASE: p } = process.env;
   if (!k || !s || !p) {
     failWrap(rec, Date.now(), "missing OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE");
-    persist();
+    await persist();
     return { status: 409, body: { ok: false, error: "missing_credentials", message: rec.failReason, wrap: rec } };
   }
   const liveGuards = {
@@ -347,7 +495,10 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
   });
   if (res.newOpens.length === 0) {
     failWrap(rec, Date.now(), wrapRefuseFromLive(String(res.summary ?? "hedge did not fill"), res.venueErrors ?? []));
-    persist();
+    if (/unwound|unwind/i.test(String(res.summary ?? ""))) {
+      raiseAlert("unwind_event", `wrap ${rec.id} aborted with an unwind: ${rec.failReason}`);
+    }
+    await persist();
     return { status: 502, body: { ok: false, error: "hedge_not_filled", message: rec.failReason, wrap: rec } };
   }
   const pos = res.newOpens[0];
@@ -376,24 +527,33 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
         ? `protecting ${cover.coveredBtc} of ${position.szBase} BTC (${cover.lots} × 0.01)`
         : null)
   };
-  // ONE-NUMBER RULE: after the fill, every surface shows the REALIZED credit; the quote survives
-  // only as labeled history ("quoted → filled"). Two unlabeled numbers read as a glitch.
-  const quotedCredit = rec.quote?.creditUsdc ?? pos.foxifyCreditUsdc;
-  if (rec.quote) rec.quote.creditUsdc = pos.foxifyCreditUsdc;
-  const beatQuote = pos.foxifyCreditUsdc > quotedCredit + 0.005;
+  // ONE-NUMBER RULE: after the fill, every surface shows the trader's REALIZED credit (net of the
+  // published take); the quote survives only as labeled history ("quoted → filled").
+  const realizedSplit = applyTake(pos.foxifyCreditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding);
+  const quotedCredit = rec.quote?.creditUsdc ?? realizedSplit.traderCreditUsdc;
+  if (rec.quote) rec.quote.creditUsdc = realizedSplit.traderCreditUsdc;
+  rec.economics = {
+    grossCreditUsdc: pos.foxifyCreditUsdc,
+    atticusTakeUsdc: realizedSplit.atticusTakeUsdc,
+    takeRatePct: realizedSplit.appliedRatePct,
+    founding: rate.founding
+  };
+  const beatQuote = realizedSplit.traderCreditUsdc > quotedCredit + 0.005;
   pushStage(
     rec,
     "hedge_locked",
     Date.now(),
     beatQuote
-      ? `filled — net credit $${pos.foxifyCreditUsdc} (quoted $${quotedCredit}, price improvement passed through) · fees $${pos.liveMeta?.venueFeeUsdc ?? 0}`
-      : `filled — net credit $${pos.foxifyCreditUsdc} · fees $${pos.liveMeta?.venueFeeUsdc ?? 0}`
+      ? `filled — net credit $${realizedSplit.traderCreditUsdc} (quoted $${quotedCredit}, price improvement passed through) · fees $${pos.liveMeta?.venueFeeUsdc ?? 0}`
+      : `filled — net credit $${realizedSplit.traderCreditUsdc} · fees $${pos.liveMeta?.venueFeeUsdc ?? 0}`
   );
   pushStage(rec, "green_light", Date.now());
-  rec.vesting = { fullCreditUsdc: pos.foxifyCreditUsdc, startMs: Date.now(), endMs: pos.expiresAtMs };
-  pushStage(rec, "vesting", Date.now(), `$${pos.foxifyCreditUsdc} vests linearly to ${new Date(pos.expiresAtMs).toISOString()}`);
+  rec.vesting = { fullCreditUsdc: realizedSplit.traderCreditUsdc, startMs: Date.now(), endMs: pos.expiresAtMs };
+  pushStage(rec, "vesting", Date.now(), `$${realizedSplit.traderCreditUsdc} vests linearly to ${new Date(pos.expiresAtMs).toISOString()}`);
   rec.status = "active";
-  persist();
+  registerWallet(registry, account, nowMs);
+  await stores.saveRegistry(registry);
+  await persist();
   return { status: 200, body: { ok: true, wrap: rec } };
 };
 
@@ -409,30 +569,47 @@ const buildState = async (account?: string, all = false) => {
   } catch (e) {
     positionError = (e as Error).message;
   }
-  const decorate = (r: ReturnType<typeof loadDemoWraps>[number]) => {
+  const decorate = (r: DemoWrapRecord) => {
     if (r.status === "active" && r.vesting && r.concludedAtMs == null && nowMs >= r.vesting.endMs) {
       // Display-only conclusion: the tenor has run — fully vested.
       return { ...r, status: "concluded" as const, vestingStatus: demoVestingStatus(r, nowMs) };
     }
     return { ...r, vestingStatus: demoVestingStatus(r, nowMs) };
   };
-  const allWraps = loadDemoWraps(storePath).map(decorate);
+  const allWraps = (await stores.loadWraps()).map(decorate);
   // Default view = the requested account only (the extension's chip must never show another
   // client's wrap). ?all=1 = the whole book for the ops view.
   const wraps = all ? allWraps : allWraps.filter((r) => r.account.toLowerCase() === (acct ?? "").toLowerCase());
   const open = allWraps.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
-  const ledger = loadPayoutLedger(payoutLedgerPath);
+  const [ledger, prefs, registry] = await Promise.all([stores.loadLedger(), stores.loadPrefs(), stores.loadRegistry()]);
   const paidStatuses = new Set(["paid", "confirmed"]);
+  const refSpot = position?.markPx ?? open.find((r) => r.quote)?.quote?.spot ?? 0;
+  const derived = deriveCaps(capsInputs, refSpot);
   return {
     ok: true,
     guards: {
-      enabled: guards.enabled,
+      enabled: guards.enabled && !runtimePaused,
+      paused: runtimePaused,
+      pausedReason: runtimePausedReason,
       executionMode: guards.executionMode,
-      maxPositionNotionalUsdc: guards.maxPositionNotionalUsdc,
+      maxPositionNotionalUsdc: walletCapOverridden ? guards.maxPositionNotionalUsdc : derived.perWalletCapUsdc,
       maxWrapsPerDay: guards.maxWrapsPerDay,
       cooldownMs: guards.cooldownMs,
-      maxBookNotionalUsdc: guards.maxBookNotionalUsdc,
+      maxBookNotionalUsdc: bookCapOverridden ? guards.maxBookNotionalUsdc : derived.bookCapUsdc,
       maxActiveWraps: guards.maxActiveWraps
+    },
+    // Formula-derived capacity (decision 4) — published so every client shows the same truth.
+    caps: {
+      subAccountCapitalUsdc: capsInputs.subAccountCapitalUsdc,
+      marginPerWrapRate: capsInputs.marginPerWrapRate,
+      usableMarginUsdc: derived.usableMarginUsdc,
+      bookCapUsdc: derived.bookCapUsdc,
+      perWalletCapUsdc: derived.perWalletCapUsdc,
+      perStrikeCapPct: derived.perStrikeCapPct,
+      foundingWallets: capsInputs.foundingWallets,
+      walletsJoined: Object.keys(registry).length,
+      takeRatePct: capsInputs.takeRatePct,
+      foundingTakeRatePct: capsInputs.foundingTakeRatePct
     },
     account: acct,
     coin,
@@ -442,7 +619,7 @@ const buildState = async (account?: string, all = false) => {
     book: {
       accounts: [...new Set(allWraps.map((r) => r.account))].length,
       openWraps: open.length,
-      openNotionalUsdc: round2(open.reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0)),
+      openNotionalUsdc: round2(open.reduce((s, r) => s + wrapExposureUsdc(r), 0)),
       totalWraps: allWraps.length,
       creditsPaidUsdc: round2(ledger.filter((e) => paidStatuses.has(e.status)).reduce((s, e) => s + e.amountUsdc, 0))
     },
@@ -450,14 +627,12 @@ const buildState = async (account?: string, all = false) => {
     payouts: ledger
       .filter((e) => e.account.toLowerCase() === (acct ?? "").toLowerCase())
       .map((e) => ({ id: e.id, amountUsdc: e.amountUsdc, reason: e.reason, status: e.status, txHash: e.txHash, createdAtMs: e.createdAtMs, paidAtMs: e.paidAtMs })),
-    protection: (() => {
-      const prefs = loadProtectionPrefs(protectionPath);
-      return {
-        autoRenew,
-        on: acct != null ? prefs[acct.toLowerCase()]?.on === true : false,
-        accountsOn: Object.values(prefs).filter((p) => p.on).length
-      };
-    })(),
+    protection: {
+      autoRenew,
+      on: acct != null ? prefs[acct.toLowerCase()]?.on === true : false,
+      accountsOn: Object.values(prefs).filter((p) => p.on).length,
+      founding: acct != null ? registry[acct.toLowerCase()] != null : false
+    },
     generatedAtIso: new Date(nowMs).toISOString()
   };
 };
@@ -468,12 +643,13 @@ const buildState = async (account?: string, all = false) => {
 // only a real wrap attempt (quote said yes) writes to the store.
 
 const renewalTick = async (): Promise<void> => {
-  if (!autoRenew || !guards.enabled) return;
-  const prefs = loadProtectionPrefs(protectionPath);
+  loopPulses.renewal.lastRunMs = Date.now();
+  if (!autoRenew || !guards.enabled || runtimePaused) return; // pause stops renewals; conclusions run in the monitor
+  const prefs = await stores.loadPrefs();
   for (const [key, pref] of Object.entries(prefs)) {
     if (!pref.on || wrapsInFlight.has(key)) continue;
     try {
-      const records = loadDemoWraps(storePath);
+      const records = await stores.loadWraps();
       const mine = records.filter((r) => r.account.toLowerCase() === key);
       const latest = mine.length ? mine[mine.length - 1] : null;
       const nowMs = Date.now();
@@ -482,25 +658,25 @@ const renewalTick = async (): Promise<void> => {
       if (action === "none") continue;
 
       if (action === "expire_and_renew" && latest && concludeAtExpiry(latest, nowMs)) {
-        saveDemoWraps(records, storePath);
+        await stores.saveWraps(records);
         // Settle the concluded cycle (idempotent — the monitor loop may have beaten us to it).
         try {
-          accrueConclusion(latest, await hl.midPx(coin));
+          await accrueConclusion(latest, await hl.midPx(coin));
         } catch {
-          accrueConclusion(latest, null);
+          await accrueConclusion(latest, null);
         }
         console.error(`[demo] auto-renew: ${latest.id} expired fully vested — re-wrapping ${key}`);
       }
 
       // Throttle stamp before the attempt so a crash can't hot-loop the venue.
       prefs[key] = { ...pref, lastRenewAttemptMs: nowMs };
-      saveProtectionPrefs(prefs, protectionPath);
+      await stores.savePrefs(prefs);
 
       const position = await readHlPosition(key);
       if (!position) {
         // Position is gone — protection has nothing to attach to. Disarm and say so.
         prefs[key] = { ...prefs[key], on: false };
-        saveProtectionPrefs(prefs, protectionPath);
+        await stores.savePrefs(prefs);
         console.error(`[demo] auto-renew: no open ${coin} position on ${key} — protection off`);
         continue;
       }
@@ -538,17 +714,17 @@ const renewalTick = async (): Promise<void> => {
 // Every concluded cycle (expiry / knockout / early close) accrues exactly one ledger entry for the
 // verified position owner. Credit is paid at conclusion, never upfront (decision 2).
 
-const accrueConclusion = (rec: DemoWrapRecord, settlePx: number | null): void => {
+const accrueConclusion = async (rec: DemoWrapRecord, settlePx: number | null): Promise<void> => {
   const payable = cyclePayable(rec, settlePx);
   if (!payable) return;
-  const ledger = loadPayoutLedger(payoutLedgerPath);
+  const ledger = await stores.loadLedger();
   const res = accrueWrapPayout(ledger, rec, payable, Date.now());
   if (!res.ok) {
     console.error(`[demo] payout not accrued for ${rec.id}: ${res.reason}`);
     return;
   }
   if (res.created) {
-    savePayoutLedger(ledger, payoutLedgerPath);
+    await stores.saveLedger(ledger);
     console.error(`[demo] payout accrued: ${rec.id} → $${res.entry.amountUsdc} (${payable.kind}) to ${rec.account}`);
   }
 };
@@ -580,11 +756,12 @@ const knockoutUnwindLegs = async (rec: DemoWrapRecord, markPx: number): Promise<
 };
 
 const monitorTick = async (): Promise<void> => {
+  loopPulses.monitor.lastRunMs = Date.now();
   try {
     // Read the mark BEFORE loading the store so no other tick can mutate records mid-await.
     const mark = await hl.midPx(coin);
     const nowMs = Date.now();
-    const records = loadDemoWraps(storePath);
+    const records = await stores.loadWraps();
     let dirty = false;
     for (const rec of records) {
       if (rec.status !== "active" || !rec.vesting) continue;
@@ -595,12 +772,13 @@ const monitorTick = async (): Promise<void> => {
         if (!unwound.ok) {
           // Legs could not be fully closed: the wrap is still a complete hedge — stay active,
           // alert, retry next tick (mark is at/through the cap, so the retry fires immediately).
-          console.error(`[demo] KNOCKOUT UNWIND INCOMPLETE for ${rec.id} — retrying next tick: ${unwound.note}`);
+          raiseAlert("unwind_event", `knockout unwind INCOMPLETE for ${rec.id} — retrying next tick: ${unwound.note}`);
           continue;
         }
         knockoutWrap(rec, nowMs, mark, unwound.valueUsdc);
         dirty = true;
-        accrueConclusion(rec, null);
+        await accrueConclusion(rec, null);
+        raiseAlert("unwind_event", `KNOCKOUT ${rec.id}: cap $${cap} touched at mark $${mark} — legs closed, cycle settled`, { wrapId: rec.id });
         console.error(`[demo] KNOCKOUT ${rec.id}: cap $${cap} touched at mark $${mark} — cycle over, re-arms at new spot on the next renewal tick`);
         continue;
       }
@@ -611,7 +789,7 @@ const monitorTick = async (): Promise<void> => {
         console.error(`[demo] expiry settled: ${rec.id} — payable accrued to the ledger`);
       }
     }
-    if (dirty) saveDemoWraps(records, storePath);
+    if (dirty) await stores.saveWraps(records);
   } catch (e) {
     console.error(`[demo] knockout/settlement tick error: ${(e as Error).message}`);
   }
@@ -625,14 +803,15 @@ const monitorTick = async (): Promise<void> => {
 let payoutSender: PayoutSender | null = null;
 
 const payoutTick = async (): Promise<void> => {
+  loopPulses.payout.lastRunMs = Date.now();
   if (!payoutRail.ok) return; // refused at boot, logged there
   try {
-    const ledger = loadPayoutLedger(payoutLedgerPath);
+    const ledger = await stores.loadLedger();
     if (!ledger.some((e) => e.status === "accrued" || e.status === "queued" || (e.status === "failed" && e.retriable))) return;
     payoutSender ??= await buildPayoutSender(payoutRail.cfg);
     const summary = await processPayoutLedger(ledger, payoutSender, Date.now(), {
       dailyCapUsdc: payoutRail.cfg.dailyCapUsdc,
-      persist: (es) => savePayoutLedger(es, payoutLedgerPath)
+      persist: (es) => stores.saveLedger(es)
     });
     if (summary.sent || summary.failed || summary.deferred || summary.skippedStale) {
       console.error(
@@ -640,8 +819,44 @@ const payoutTick = async (): Promise<void> => {
           `${summary.failed} failed · ${summary.skippedStale} stale-parked`
       );
     }
+    if (summary.failed > 0 || summary.skippedStale > 0) {
+      raiseAlert("payout_failed", `${summary.failed} payout send(s) failed, ${summary.skippedStale} stale-parked — check the ledger`);
+    }
   } catch (e) {
     console.error(`[demo] payout tick error: ${(e as Error).message}`);
+    raiseAlert("payout_failed", `payout tick threw: ${(e as Error).message}`);
+  }
+};
+
+// ── Watchdog + margin-utilization pause ───────────────────────────────────────
+
+const utilizationPausePct = num(process.env.EP_UTILIZATION_PAUSE_PCT, 1.0); // 1.0 = the book cap itself
+const utilizationWarnPct = num(process.env.EP_UTILIZATION_WARN_PCT, 0.8);
+
+const watchdogTick = async (): Promise<void> => {
+  try {
+    for (const p of stalledLoops(Object.values(loopPulses), Date.now())) {
+      raiseAlert("loop_stalled", `${p.name} loop has not run for ${Math.round((Date.now() - p.lastRunMs) / 1000)}s (interval ${Math.round(p.intervalMs / 1000)}s)`);
+    }
+    // Margin utilization: modeled as open notional × margin rate vs usable margin (the real PM
+    // per-wrap margin is measured in Phase 3 and recalibrates this). Warn at 80%, auto-pause at
+    // the configured line — conclusions and payouts keep running.
+    const records = await stores.loadWraps();
+    const open = records.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
+    const openNotional = open.reduce((s, r) => s + wrapExposureUsdc(r), 0);
+    const spotRef = open.find((r) => r.quote)?.quote?.spot ?? 0;
+    const derived = deriveCaps(capsInputs, spotRef);
+    const utilization = derived.bookCapUsdc > 0 ? openNotional / derived.bookCapUsdc : 0;
+    if (utilization >= utilizationPausePct && !runtimePaused) {
+      runtimePaused = true;
+      runtimePausedReason = `margin utilization ${(utilization * 100).toFixed(0)}% ≥ pause line ${(utilizationPausePct * 100).toFixed(0)}%`;
+      await stores.saveRuntime({ paused: true, pausedReason: runtimePausedReason, updatedAtMs: Date.now() });
+      raiseAlert("margin_utilization", `AUTO-PAUSED new wraps: ${runtimePausedReason}`);
+    } else if (utilization >= utilizationWarnPct) {
+      raiseAlert("margin_utilization", `margin utilization at ${(utilization * 100).toFixed(0)}% of the book cap ($${round2(openNotional)} / $${derived.bookCapUsdc})`);
+    }
+  } catch (e) {
+    console.error(`[demo] watchdog tick error: ${(e as Error).message}`);
   }
 };
 
@@ -755,26 +970,29 @@ const latestWrap = (st) => {
   return mine.length ? mine[mine.length-1] : null;
 };
 
+// Admin token rides the page URL (?token=…) and is forwarded on every call.
+const tok = new URLSearchParams(location.search).get("token");
+const withTok = (p) => tok ? p + (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok) : p;
 const poll = async () => {
-  try { render(await (await fetch("/demo/api/state?all=1")).json()); } catch (e) { /* keep last render */ }
+  try { render(await (await fetch(withTok("/demo/api/state?all=1"))).json()); } catch (e) { /* keep last render */ }
 };
 $("wrapBtn").onclick = async () => {
   $("wrapBtn").disabled = true; $("actionMsg").textContent = "wrapping…";
   try {
-    const r = await fetch("/demo/api/wrap", { method: "POST" });
+    const r = await fetch(withTok("/demo/api/wrap"), { method: "POST" });
     const j = await r.json();
     $("actionMsg").textContent = j.ok ? "wrap active" : (j.message || j.error || "refused");
   } catch (e) { $("actionMsg").textContent = "request failed: "+e; }
   $("wrapBtn").disabled = false; poll();
 };
 $("closeBtn").onclick = async () => {
-  const r = await fetch("/demo/api/close", { method: "POST" });
+  const r = await fetch(withTok("/demo/api/close"), { method: "POST" });
   const j = await r.json();
   $("actionMsg").textContent = j.ok ? "closed early — collected $"+j.vested.vestedUsdc.toFixed(2)+" vested" : (j.message || "nothing to close");
   poll();
 };
 $("resetBtn").onclick = async () => {
-  const r = await fetch("/demo/api/reset", { method: "POST" });
+  const r = await fetch(withTok("/demo/api/reset"), { method: "POST" });
   const j = await r.json();
   $("actionMsg").textContent = j.ok ? "demo reset" : (j.message || "reset refused");
   poll();
@@ -783,11 +1001,14 @@ poll(); setInterval(poll, 2000);
 </script></body></html>`;
 
 // ── HTTP server (permissive CORS — the extension's background worker calls in) ──
+// ONE JSON API for every client (decision 8 + partner-ready): the web app, the Telegram bot, the
+// extension, and a future partner all consume the same routes. `/api/*` is canonical;
+// `/demo/api/*` is a permanent alias so existing surfaces keep working. See docs/earn-protect-api.md.
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type"
+  "Access-Control-Allow-Headers": "Content-Type, Idempotency-Key, X-Admin-Token, Authorization"
 };
 
 const sendJson = (res: ServerResponse, status: number, body: unknown) => {
@@ -795,33 +1016,157 @@ const sendJson = (res: ServerResponse, status: number, body: unknown) => {
   res.end(JSON.stringify(body, null, 2));
 };
 
+const sendHtml = (res: ServerResponse, html: string) => {
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...CORS_HEADERS });
+  res.end(html);
+};
+
+const clientIp = (req: IncomingMessage): string =>
+  String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() || req.socket.remoteAddress || "unknown";
+
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+  // Canonical route: /demo/api/X → /api/X (alias kept for the extension + Phase 1 surfaces).
+  const route = url.pathname.replace(/^\/demo\/api\//, "/api/");
+  const ip = clientIp(req);
+  const isAdmin = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
   try {
     if (req.method === "OPTIONS") {
       res.writeHead(204, CORS_HEADERS);
       res.end();
       return;
     }
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/demo")) {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...CORS_HEADERS });
-      res.end(CONTROL_ROOM_HTML);
+
+    // ── Pages ──
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app")) {
+      sendHtml(res, EP_WEB_APP_HTML);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/demo") {
+      // Ops surface: admin-gated (open ?token=… links keep working for the recording browser).
+      if (!isAdmin) {
+        sendJson(res, 403, { ok: false, error: "admin_required", message: "control room requires EP_ADMIN_TOKEN (pass ?token=…)" });
+        return;
+      }
+      sendHtml(res, CONTROL_ROOM_HTML);
       return;
     }
     if (req.method === "GET" && url.pathname === "/healthz") {
       sendJson(res, 200, { ok: true });
       return;
     }
-    if (req.method === "GET" && url.pathname === "/demo/api/state") {
+
+    // ── Rate limits: reads generous, actions tight; admin exempt ──
+    const isAction = req.method === "POST" && /^\/api\/(wrap|close|protection)$/.test(route);
+    const isRead = req.method === "GET" && route.startsWith("/api/");
+    if (!isAdmin && ((isAction && !actionLimiter.allow(ip, Date.now())) || (isRead && !readLimiter.allow(ip, Date.now())))) {
+      sendJson(res, 429, { ok: false, error: "rate_limited", message: "too many requests — slow down" });
+      return;
+    }
+
+    // ── Trader API (account-scoped) ──
+    if (req.method === "GET" && route === "/api/state") {
       const acct = resolveAccount(url.searchParams.get("account"));
       if (!acct.ok) {
         sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
         return;
       }
-      sendJson(res, 200, await buildState(acct.account, url.searchParams.get("all") === "1"));
+      const wantAll = url.searchParams.get("all") === "1";
+      if (wantAll && !isAdmin && adminAuth.token != null) {
+        sendJson(res, 403, { ok: false, error: "admin_required", message: "whole-book state requires the admin token" });
+        return;
+      }
+      sendJson(res, 200, await buildState(acct.account, wantAll));
       return;
     }
-    if (req.method === "POST" && url.pathname === "/demo/api/wrap") {
+    if (req.method === "GET" && route === "/api/positions") {
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      const [positions, mids] = await Promise.all([hl.allPositions(acct.account), hl.allMids()]);
+      sendJson(res, 200, {
+        ok: true,
+        account: acct.account,
+        positions: positions.map((p) => {
+          const mark = Number(mids[p.coin]);
+          return {
+            coin: p.coin,
+            side: p.szi > 0 ? "long" : "short",
+            szBase: Math.abs(p.szi),
+            entryPx: p.entryPx,
+            markPx: Number.isFinite(mark) ? mark : null,
+            notionalUsdc: round2(p.positionValueUsd ?? Math.abs(p.szi) * (Number.isFinite(mark) ? mark : 0)),
+            // Only the service coin is wrappable today (OKX listed BTC options).
+            wrappable: p.coin === coin
+          };
+        })
+      });
+      return;
+    }
+    if (req.method === "GET" && route === "/api/quote") {
+      // Indicative pre-wrap quote (probe only, nothing opens, nothing is stored).
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      const position = await readHlPosition(acct.account);
+      if (!position) {
+        sendJson(res, 409, { ok: false, error: "no_position", message: `no open ${coin} position on ${acct.account}` });
+        return;
+      }
+      const { derived } = effectiveGuards(position.markPx);
+      const sizing = partialWrapSizing(position.szBase, position.notionalUsdc, derived.perWalletCapUsdc, 0, position.markPx);
+      if (!sizing.ok) {
+        sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
+        return;
+      }
+      const plan = demoPlanStrikes(position.markPx, position.side, floorPct, capPct);
+      const probe = await fetchOkxListedTouchQuote({
+        side: position.side,
+        spot: position.markPx,
+        planPutStrike: plan.putStrike,
+        planCallStrike: plan.callStrike,
+        notionalUsdc: sizing.coveredNotionalUsdc,
+        contractsBtc: sizing.coveredBtc,
+        nowMs: Date.now()
+      });
+      if (!probe.ok) {
+        sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
+        return;
+      }
+      const registry = await stores.loadRegistry();
+      const rate = takeRateFor(capsInputs, registry[acct.account.toLowerCase()]?.joinedAtMs ?? Date.now(), Date.now());
+      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding);
+      sendJson(res, 200, {
+        ok: true,
+        indicative: true, // executable truth is the post-fill number (one-number rule)
+        side: position.side,
+        creditUsdc: split.traderCreditUsdc,
+        grossCreditUsdc: probe.creditUsdc,
+        takeRatePct: split.appliedRatePct,
+        founding: rate.founding,
+        floorStrike: position.side === "long" ? probe.putStrike : probe.callStrike,
+        capStrike: position.side === "long" ? probe.callStrike : probe.putStrike,
+        expiryMs: probe.expiryMs,
+        coveredBtc: sizing.coveredBtc,
+        coverageNote: sizing.coverageNote
+      });
+      return;
+    }
+    if (req.method === "GET" && route === "/api/protection") {
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      const prefs = await stores.loadPrefs();
+      sendJson(res, 200, { ok: true, account: acct.account, on: prefs[acct.account.toLowerCase()]?.on === true });
+      return;
+    }
+    if (req.method === "POST" && route === "/api/wrap") {
       const acct = resolveAccount(url.searchParams.get("account"));
       if (!acct.ok) {
         sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
@@ -832,19 +1177,20 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: "in_flight", message: `a wrap for ${acct.account} is already being processed` });
         return;
       }
+      const idem = String(req.headers["idempotency-key"] ?? url.searchParams.get("idem") ?? "").trim() || null;
       wrapsInFlight.add(key);
       try {
-        const out = await doWrap(acct.account);
+        const out = await doWrap(acct.account, false, idem);
         // Toggle ON is a state: a SUCCESSFUL wrap arms auto-renew for this account (refusals don't —
         // the daily quota can't be laundered through the renewal lane by toggling once).
-        if ((out.body as { ok?: boolean }).ok === true) setProtection(acct.account, true);
+        if ((out.body as { ok?: boolean }).ok === true) await setProtection(acct.account, true);
         sendJson(res, out.status, out.body);
       } finally {
         wrapsInFlight.delete(key);
       }
       return;
     }
-    if (req.method === "POST" && url.pathname === "/demo/api/close") {
+    if (req.method === "POST" && route === "/api/close") {
       // Voluntary early close (toggle OFF): collect vested-to-now, claw back the rest, unwind.
       const acct = resolveAccount(url.searchParams.get("account"));
       if (!acct.ok) {
@@ -852,29 +1198,66 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         return;
       }
       // Toggle OFF always disarms auto-renew, whether or not something is active right now.
-      setProtection(acct.account, false);
-      const records = loadDemoWraps(storePath);
+      await setProtection(acct.account, false);
+      const records = await stores.loadWraps();
       const active = records.find((r) => r.status === "active" && r.account.toLowerCase() === acct.account.toLowerCase());
       if (!active) {
         sendJson(res, 409, { ok: false, error: "nothing_active", message: `no active wrap to close on ${acct.account} (auto-renew off)` });
         return;
       }
       const v = concludeWrapEarly(active, Date.now());
-      saveDemoWraps(records, storePath);
+      await stores.saveWraps(records);
       // Early close is a cycle conclusion: the vested credit accrues to the payout ledger.
-      accrueConclusion(active, null);
+      await accrueConclusion(active, null);
       sendJson(res, 200, { ok: true, wrap: active, vested: v });
       return;
     }
-    if (req.method === "POST" && url.pathname === "/demo/api/reset") {
+
+    // ── Admin API ──
+    if (route.startsWith("/api/admin/") || route === "/api/reset") {
+      if (!isAdmin) {
+        sendJson(res, 403, { ok: false, error: "admin_required", message: adminAuth.enabled ? "bad admin token" : "admin surfaces disabled — set EP_ADMIN_TOKEN" });
+        return;
+      }
+    }
+    if (req.method === "POST" && route === "/api/admin/pause") {
+      // The runtime kill switch: pauses NEW wraps + renewals; conclusions/knockouts/payouts run on.
+      const paused = url.searchParams.get("paused") !== "false";
+      runtimePaused = paused;
+      runtimePausedReason = paused ? url.searchParams.get("reason") ?? "paused by admin" : null;
+      await stores.saveRuntime({ paused, pausedReason: runtimePausedReason, updatedAtMs: Date.now() });
+      if (paused) raiseAlert("paused", `new wraps + renewals PAUSED: ${runtimePausedReason}`);
+      else console.error(`[demo] admin: resumed new wraps + renewals`);
+      sendJson(res, 200, { ok: true, paused, reason: runtimePausedReason });
+      return;
+    }
+    if (req.method === "GET" && route === "/api/admin/status") {
+      const [records, ledger, registry] = await Promise.all([stores.loadWraps(), stores.loadLedger(), stores.loadRegistry()]);
+      const open = records.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
+      sendJson(res, 200, {
+        ok: true,
+        stores: stores.kind,
+        paused: runtimePaused,
+        pausedReason: runtimePausedReason,
+        executionMode: guards.executionMode,
+        openWraps: open.length,
+        openNotionalUsdc: round2(open.reduce((s, r) => s + wrapExposureUsdc(r), 0)),
+        wallets: Object.keys(registry).length,
+        payoutBacklog: ledger.filter((e) => e.status === "accrued" || e.status === "queued").length,
+        payoutFailures: ledger.filter((e) => e.status === "failed").length,
+        loops: Object.values(loopPulses).map((p) => ({ name: p.name, lastRunMs: p.lastRunMs, intervalMs: p.intervalMs }))
+      });
+      return;
+    }
+    if (req.method === "POST" && (route === "/api/reset" || route === "/api/admin/reset")) {
       if (!allowReset) {
         sendJson(res, 403, { ok: false, message: "reset disabled (DEMO_ALLOW_RESET=false)" });
         return;
       }
-      saveDemoWraps([], storePath);
-      saveProtectionPrefs({}, protectionPath);
-      savePayoutLedger([], payoutLedgerPath);
-      sendJson(res, 200, { ok: true, message: "demo store cleared (wraps + auto-renew prefs + payout ledger)" });
+      await stores.clearAll();
+      runtimePaused = false;
+      runtimePausedReason = null;
+      sendJson(res, 200, { ok: true, message: "store cleared (wraps + prefs + payout ledger + wallet registry + runtime flags)" });
       return;
     }
     sendJson(res, 404, { ok: false, error: "not_found" });
@@ -883,24 +1266,66 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   }
 });
 
+// ── Boot ──────────────────────────────────────────────────────────────────────
+
+const bootReconcile = async (): Promise<void> => {
+  // Reconcile open wraps against live OKX option positions (okx lanes with credentials only —
+  // paper wraps have no venue legs). Mismatches alert; a human decides what they mean.
+  const { OKX_API_KEY: k, OKX_API_SECRET: s, OKX_API_PASSPHRASE: p } = process.env;
+  if (guards.executionMode === "paper" || !k || !s || !p) return;
+  try {
+    const client = new OkxExecutionClient({ apiKey: k, secret: s, passphrase: p, mode: parseLiveGuardsFromEnv(process.env, "okx").mode });
+    const [records, venue] = await Promise.all([stores.loadWraps(), client.getPositions("OPTION")]);
+    const venuePositions = (venue.data ?? []).map((v: { instId?: string; pos?: string }) => ({ instId: String(v.instId ?? ""), pos: Number(v.pos ?? 0) }));
+    const issues = reconcileOpenWraps(records, venuePositions);
+    if (issues.length === 0) console.error(`[demo] boot reconcile: store and venue agree (${venuePositions.length} venue option position(s))`);
+    else for (const issue of issues) raiseAlert("reconcile_mismatch", issue);
+  } catch (e) {
+    raiseAlert("okx_connectivity", `boot reconcile failed: ${(e as Error).message}`);
+  }
+};
+
 server.listen(port, () => {
-  console.error(`[demo] Wrap Control Room on http://localhost:${port}/demo`);
-  console.error(`[demo] mode ${guards.executionMode.toUpperCase()} · kill switch ${guards.enabled ? "ARMED" : "OFF"} · per-wrap cap $${guards.maxPositionNotionalUsdc} · book cap $${guards.maxBookNotionalUsdc} / ${guards.maxActiveWraps} wraps · account ${hlAccount() ?? "UNSET (set DEMO_HL_ADDRESS)"}`);
-  if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
-  console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m, stagger window ${Math.round(renewStaggerMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
-  if (autoRenew) setInterval(() => void renewalTick(), renewCheckMs);
-  console.error(`[demo] knockout monitor ON — mark-touch of the cap ends the cycle (check every ${Math.round(knockoutCheckMs / 1000)}s; runs through the kill switch)`);
-  setInterval(() => void monitorTick(), knockoutCheckMs);
-  if (!payoutRail.ok) {
-    console.error(`[demo] payout rail REFUSED — ${payoutRail.error}; accrued entries will queue until the rail is armed`);
-  } else if (payoutRail.cfg.mode === "arbitrum" && guards.executionMode === "paper") {
-    console.error(`[demo] payout rail REFUSED — PAYOUT_MODE=arbitrum with DEMO_EXECUTION=paper would pay real USDC for paper wraps; use the simulated rail`);
-  } else {
-    console.error(`[demo] payout rail ${payoutRail.cfg.mode.toUpperCase()} — daily outflow cap $${payoutRail.cfg.dailyCapUsdc} (check every ${Math.round(payoutCheckMs / 1000)}s)`);
-    setInterval(() => void payoutTick(), payoutCheckMs);
-  }
-  if (guards.executionMode !== "paper") {
-    const armed = executionArmed(parseLiveGuardsFromEnv(process.env, "okx"));
-    console.error(`[demo] okx lane: ${armed.armed ? armed.reason : `NOT ARMED — ${armed.reason}`}`);
-  }
+  void (async () => {
+    if (pgPool) {
+      await ensureEpSchema(pgPool);
+      console.error(`[demo] stores: POSTGRES (DATABASE_URL)`);
+    } else {
+      console.error(`[demo] stores: JSON files (set DATABASE_URL for Postgres)`);
+    }
+    // Restore the persisted pause flag so a restart can't silently re-open a paused book.
+    const runtime = await stores.loadRuntime();
+    runtimePaused = runtime.paused;
+    runtimePausedReason = runtime.pausedReason;
+    if (runtimePaused) console.error(`[demo] runtime: PAUSED — ${runtimePausedReason ?? "no reason recorded"}`);
+    await bootReconcile();
+
+    const refCaps = deriveCaps(capsInputs, 0);
+    console.error(`[demo] Trader app on http://localhost:${port}/app · Control Room on http://localhost:${port}/demo${adminAuth.token ? "?token=…" : ""}`);
+    console.error(`[demo] mode ${guards.executionMode.toUpperCase()} · kill switch ${guards.enabled ? "ARMED" : "OFF"} · account ${hlAccount() ?? "UNSET (set DEMO_HL_ADDRESS)"}`);
+    console.error(
+      `[demo] caps (formulas): capital $${capsInputs.subAccountCapitalUsdc} × ${(1 - capsInputs.headroomPct) * 100}% usable ÷ ${(capsInputs.marginPerWrapRate * 100).toFixed(0)}% margin ⟹ book cap $${refCaps.bookCapUsdc}` +
+        ` · per-wallet $${round2(refCaps.bookCapUsdc / capsInputs.targetWallets)} (floor 1 lot) · per-strike ≤${(capsInputs.perStrikeCapPct * 100).toFixed(0)}% · cohort ${capsInputs.foundingWallets} wallets` +
+        ` · take ${(capsInputs.takeRatePct * 100).toFixed(0)}%/${(capsInputs.foundingTakeRatePct * 100).toFixed(0)}% founding, $0 under $${capsInputs.deMinimisUsdc.toFixed(2)}`
+    );
+    console.error(`[demo] admin: ${adminAuth.token ? "token auth ON" : adminAuth.enabled ? "DEV MODE (no token)" : "DISABLED — set EP_ADMIN_TOKEN"} · rate limits: reads ${num(process.env.EP_RATE_READS_PER_MIN, 120)}/min, actions ${num(process.env.EP_RATE_ACTIONS_PER_MIN, 12)}/min per IP`);
+    if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
+    console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m, stagger window ${Math.round(renewStaggerMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
+    if (autoRenew) setInterval(() => void renewalTick(), renewCheckMs);
+    console.error(`[demo] knockout monitor ON — mark-touch of the cap ends the cycle (check every ${Math.round(knockoutCheckMs / 1000)}s; runs through the kill switch)`);
+    setInterval(() => void monitorTick(), knockoutCheckMs);
+    setInterval(() => void watchdogTick(), Math.max(30_000, knockoutCheckMs * 2));
+    if (!payoutRail.ok) {
+      console.error(`[demo] payout rail REFUSED — ${payoutRail.error}; accrued entries will queue until the rail is armed`);
+    } else if (payoutRail.cfg.mode === "arbitrum" && guards.executionMode === "paper") {
+      console.error(`[demo] payout rail REFUSED — PAYOUT_MODE=arbitrum with DEMO_EXECUTION=paper would pay real USDC for paper wraps; use the simulated rail`);
+    } else {
+      console.error(`[demo] payout rail ${payoutRail.cfg.mode.toUpperCase()} — daily outflow cap $${payoutRail.cfg.dailyCapUsdc} (check every ${Math.round(payoutCheckMs / 1000)}s)`);
+      setInterval(() => void payoutTick(), payoutCheckMs);
+    }
+    if (guards.executionMode !== "paper") {
+      const armed = executionArmed(parseLiveGuardsFromEnv(process.env, "okx"));
+      console.error(`[demo] okx lane: ${armed.armed ? armed.reason : `NOT ARMED — ${armed.reason}`}`);
+    }
+  })();
 });

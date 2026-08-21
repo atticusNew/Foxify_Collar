@@ -127,7 +127,20 @@ export type DemoWrapRecord = {
   concludedAtMs?: number | null;
   /** Design B knockout record: set when mark touched the cap and the cycle ended early. */
   knockout?: KnockoutInfo | null;
+  /** Client-supplied idempotency key: a retry with the same key replays the original outcome. */
+  idempotencyKey?: string | null;
+  /** The honest credit split (decision 3): gross the market paid, our published take, the trader's net. */
+  economics?: { grossCreditUsdc: number; atticusTakeUsdc: number; takeRatePct: number; founding: boolean } | null;
+  /**
+   * The HEDGED exposure (covered lots × spot at entry). With partial wraps this is what the book
+   * carries — a $1.6M position wrapped for 2 lots consumes ~$1.4k of capacity, not $1.6M. Absent
+   * on pre-partial records: fall back to the full position notional (they were fully covered).
+   */
+  wrappedNotionalUsdc?: number | null;
 };
+
+/** The book exposure one wrap contributes: hedged notional, falling back for legacy records. */
+export const wrapExposureUsdc = (rec: DemoWrapRecord): number => rec.wrappedNotionalUsdc ?? rec.position?.notionalUsdc ?? 0;
 
 export type KnockoutInfo = {
   touchedAtMs: number;
@@ -229,7 +242,8 @@ export const assessDemoWrap = (
   if (open.length >= cfg.maxActiveWraps) {
     return { ok: false, reason: `book is full — ${open.length} open wraps (cap ${cfg.maxActiveWraps})` };
   }
-  const openNotional = open.reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0);
+  // Book exposure = HEDGED notional (partial wraps consume only what they cover).
+  const openNotional = open.reduce((s, r) => s + wrapExposureUsdc(r), 0);
   if (openNotional + positionNotionalUsdc > cfg.maxBookNotionalUsdc) {
     return { ok: false, reason: `book notional cap — $${round2(openNotional)} open + $${round2(positionNotionalUsdc)} would exceed $${cfg.maxBookNotionalUsdc}` };
   }

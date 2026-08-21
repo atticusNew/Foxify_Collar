@@ -27,6 +27,7 @@ import {
   pushStage,
   saveDemoWraps,
   scaledCreditTarget,
+  wrapExposureUsdc,
   wrapRefuseFromLive,
   type DemoGuardsConfig,
   type DemoWrapRecord
@@ -138,6 +139,24 @@ test("book cap: total open notional is bounded across accounts", () => {
   const res = assessDemoWrap(guards({ maxBookNotionalUsdc: 1_000, maxWrapsPerDay: 10 }), NOW, 200, [openBig], "0xbbb");
   assert.equal(res.ok, false);
   assert.match((res as { reason: string }).reason, /book notional cap/);
+});
+
+test("book cap: a PARTIAL wrap consumes only its HEDGED notional, not the raw position", () => {
+  // Regression (caught live): a $1.6M position wrapped for ~$1.4k must not blow the book cap.
+  const whale = wrap({
+    account: "0xaaa",
+    status: "active",
+    createdAtMs: NOW - DAY,
+    position: { ...wrap().position, notionalUsdc: 1_625_000 },
+    wrappedNotionalUsdc: 1_367
+  });
+  assert.equal(wrapExposureUsdc(whale), 1_367);
+  const res = assessDemoWrap(guards({ maxBookNotionalUsdc: 50_000, maxWrapsPerDay: 10 }), NOW, 700, [whale], "0xbbb");
+  assert.deepEqual(res, { ok: true });
+  // Legacy records (no wrappedNotionalUsdc) still count their full position — they were fully covered.
+  const legacy = wrap({ account: "0xccc", status: "active", createdAtMs: NOW - DAY, position: { ...wrap().position, notionalUsdc: 49_500 } });
+  const blocked = assessDemoWrap(guards({ maxBookNotionalUsdc: 50_000, maxWrapsPerDay: 10 }), NOW, 700, [legacy], "0xbbb");
+  assert.equal(blocked.ok, false);
 });
 
 test("book cap: open-wrap count is bounded across accounts", () => {
