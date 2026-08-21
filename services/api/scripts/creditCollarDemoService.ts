@@ -264,7 +264,34 @@ const readHlPosition = async (account?: string | null): Promise<HlPositionRead |
 // ── Wrap flow ─────────────────────────────────────────────────────────────────
 
 // Per-account in-flight lock: different clients may wrap concurrently; one client is serialized.
-const wrapsInFlight = new Set<string>();
+// Timestamped + self-healing: an upstream hang (venue fetch without a response) must never brick
+// a wallet forever (production incident: a stuck lock refused every wrap as "already processed"
+// with nothing in the store). Stale locks are ignored after WRAP_LOCK_STALE_MS, and the wrap
+// request itself is raced against a hard timeout so the client always gets an honest answer.
+const wrapsInFlight = new Map<string, number>();
+const WRAP_LOCK_STALE_MS = 3 * 60_000;
+const WRAP_REQUEST_TIMEOUT_MS = num(process.env.EP_WRAP_TIMEOUT_MS, 150_000);
+const wrapLocked = (key: string): boolean => {
+  const t = wrapsInFlight.get(key);
+  if (t == null) return false;
+  if (Date.now() - t >= WRAP_LOCK_STALE_MS) {
+    console.error(`[demo] clearing STALE wrap lock for ${key} (held ${Math.round((Date.now() - t) / 1000)}s)`);
+    wrapsInFlight.delete(key);
+    return false;
+  }
+  return true;
+};
+const withTimeout = async <T>(work: Promise<T>, ms: number, onTimeout: T): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(onTimeout), ms);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 const doWrap = async (account: string, renewal = false, idempotencyKey: string | null = null): Promise<{ status: number; body: unknown }> => {
   const nowMs = Date.now();
@@ -697,7 +724,7 @@ const renewalTick = async (): Promise<void> => {
   if (!autoRenew || !guards.enabled || runtimePaused) return; // pause stops renewals; conclusions run in the monitor
   const prefs = await stores.loadPrefs();
   for (const [key, pref] of Object.entries(prefs)) {
-    if (!pref.on || wrapsInFlight.has(key)) continue;
+    if (!pref.on || wrapLocked(key)) continue;
     try {
       const records = await stores.loadWraps();
       const mine = records.filter((r) => r.account.toLowerCase() === key);
@@ -746,9 +773,13 @@ const renewalTick = async (): Promise<void> => {
         console.error(`[demo] auto-renew: ${key} skip-day — ${probe.error} (retry in ${Math.round(renewRetryMs / 60000)}m)`);
         continue;
       }
-      wrapsInFlight.add(key);
+      wrapsInFlight.set(key, Date.now());
       try {
-        const out = await doWrap(key, true);
+        const out = await withTimeout(
+          doWrap(key, true),
+          WRAP_REQUEST_TIMEOUT_MS,
+          { status: 504, body: { ok: false, error: "wrap_timeout", message: "renewal attempt timed out — retrying next tick" } }
+        );
         const ok = (out.body as { ok?: boolean }).ok === true;
         console.error(`[demo] auto-renew: ${key} ${ok ? "re-wrapped" : `refused — ${(out.body as { message?: string }).message ?? "?"}`}`);
       } finally {
@@ -1399,14 +1430,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         return;
       }
       const key = acct.account.toLowerCase();
-      if (wrapsInFlight.has(key)) {
+      if (wrapLocked(key)) {
         sendJson(res, 409, { ok: false, error: "in_flight", message: `a wrap for ${acct.account} is already being processed` });
         return;
       }
       const idem = String(req.headers["idempotency-key"] ?? url.searchParams.get("idem") ?? "").trim() || null;
-      wrapsInFlight.add(key);
+      wrapsInFlight.set(key, Date.now());
       try {
-        const out = await doWrap(acct.account, false, idem);
+        const out = await withTimeout(
+          doWrap(acct.account, false, idem),
+          WRAP_REQUEST_TIMEOUT_MS,
+          { status: 504, body: { ok: false, error: "wrap_timeout", message: "the venue did not answer in time — nothing opened; try again in a minute" } }
+        );
         // Toggle ON is a state: a SUCCESSFUL wrap arms auto-renew for this account (refusals don't —
         // the daily quota can't be laundered through the renewal lane by toggling once).
         if ((out.body as { ok?: boolean }).ok === true) await setProtection(acct.account, true);
