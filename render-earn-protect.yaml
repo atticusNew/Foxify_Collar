@@ -33,7 +33,7 @@ services:
     runtime: node
     plan: starter
     region: singapore
-    branch: cursor/hl-direct-phase3-launch-2108
+    branch: cursor/hl-toggle-demo-9151
     autoDeploy: true
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/creditCollarDemoService.ts
@@ -80,7 +80,7 @@ services:
     runtime: node
     plan: starter
     region: singapore
-    branch: cursor/hl-direct-phase3-launch-2108
+    branch: cursor/hl-toggle-demo-9151
     autoDeploy: true
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/earnProtectTelegramBot.ts
