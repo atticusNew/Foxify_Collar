@@ -48,7 +48,19 @@ const parseNum = (v: string | undefined | null): number | null => {
 export const unwindLiveCollar = async (
   client: LiveExecClient,
   target: UnwindTarget,
-  opts: { spotUsd: number; pollTries?: number; pollDelayMs?: number; sleep?: (ms: number) => Promise<void>; clOrdPrefix?: string }
+  opts: {
+    spotUsd: number;
+    pollTries?: number;
+    pollDelayMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    clOrdPrefix?: string;
+    /**
+     * RETRY contexts (the knockout monitor) MUST set this: reads the venue's actual positions
+     * first and never re-closes an already-flat leg. Single-shot contexts (pair-atomicity abort,
+     * quote-floor breach) keep the original behavior unchanged.
+     */
+    checkVenueFirst?: boolean;
+  }
 ): Promise<UnwindReport> => {
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const pollTries = opts.pollTries ?? 10;
@@ -58,6 +70,37 @@ export const unwindLiveCollar = async (
   // Long-perp hedge: long put (protective), short call (funding). Short-perp: mirror.
   const fundingInstId = target.side === "long" ? target.callInstId : target.putInstId;
   const protectiveInstId = target.side === "long" ? target.putInstId : target.callInstId;
+
+  // ── IDEMPOTENCY GUARD (live incident, Aug 21): the unwind must read the VENUE's positions
+  // before placing anything. A retry loop whose previous attempt actually filled — but whose
+  // fill confirmation failed — must NOT re-close an already-flat leg: OKX does not honor
+  // reduceOnly on options, so a repeated "close" buy OPENS a fresh long instead of rejecting
+  // (five accumulated calls on the canary account before the laptop slept). Venue truth first;
+  // if the venue can't be read, we proceed on the caller's belief exactly as before.
+  let venueFundingOpen: number | null = null;
+  let venueProtectiveOpen: number | null = null;
+  if (opts.checkVenueFirst) {
+    try {
+      const pos = await client.getPositions("OPTION");
+      const find = (instId: string) => (pos.data ?? []).find((p) => p.instId === instId);
+      venueFundingOpen = Math.abs(Number(find(fundingInstId)?.pos ?? 0));
+      venueProtectiveOpen = Math.abs(Number(find(protectiveInstId)?.pos ?? 0));
+    } catch (e) {
+      notes.push(`pre-unwind position check failed (${(e as Error).message}) — proceeding on caller state`);
+    }
+  }
+  if (venueFundingOpen === 0 && venueProtectiveOpen === 0) {
+    notes.push("venue already FLAT on both legs — nothing to unwind (a previous attempt completed)");
+    return {
+      outcome: "closed",
+      complete: true,
+      fundingClose: { instId: fundingInstId, action: "buy", closedContracts: 0, avgPxBtc: null, feeBtc: 0 },
+      protectiveClose: { instId: protectiveInstId, action: "sell", closedContracts: 0, avgPxBtc: null, feeBtc: 0 },
+      verifiedFlat: true,
+      unwindValueUsdc: 0,
+      notes
+    };
+  }
 
   const closeLeg = async (instId: string, action: "buy" | "sell", tag: string): Promise<UnwindLegClose> => {
     const out: UnwindLegClose = { instId, action, closedContracts: 0, avgPxBtc: null, feeBtc: 0 };
@@ -106,8 +149,17 @@ export const unwindLiveCollar = async (
     return out;
   };
 
-  // 1) Buy back the SHORT (funding) leg first.
-  const fundingClose = await closeLeg(fundingInstId, "buy", "UF");
+  // 1) Buy back the SHORT (funding) leg first — unless the venue says it is already flat
+  //    (a prior attempt's fill that we failed to confirm). Never re-buy a closed short.
+  let fundingClose: UnwindLegClose;
+  if (venueFundingOpen === 0) {
+    notes.push(`funding leg ${fundingInstId} already flat at the venue — skipping buy-back`);
+    fundingClose = { instId: fundingInstId, action: "buy", closedContracts: target.contracts, avgPxBtc: null, feeBtc: 0 };
+  } else {
+    const closeQty = venueFundingOpen != null ? Math.min(target.contracts, venueFundingOpen) : target.contracts;
+    if (closeQty !== target.contracts) notes.push(`funding leg shows ${venueFundingOpen} open at the venue — closing ${closeQty}, not ${target.contracts}`);
+    fundingClose = await closeLeg(fundingInstId, "buy", "UF");
+  }
   if (fundingClose.closedContracts < target.contracts) {
     notes.push("short-leg buy-back incomplete — ABORTING unwind before touching the long leg; position stays fully hedged and rides to expiry");
     return {
@@ -121,8 +173,15 @@ export const unwindLiveCollar = async (
     };
   }
 
-  // 2) Sell the LONG (protective) leg.
-  const protectiveClose = await closeLeg(protectiveInstId, "sell", "UP");
+  // 2) Sell the LONG (protective) leg — same venue-truth guard (selling an already-sold long
+  //    would open a naked short, which is worse than the re-buy case).
+  let protectiveClose: UnwindLegClose;
+  if (venueProtectiveOpen === 0) {
+    notes.push(`protective leg ${protectiveInstId} already flat at the venue — skipping sale`);
+    protectiveClose = { instId: protectiveInstId, action: "sell", closedContracts: target.contracts, avgPxBtc: null, feeBtc: 0 };
+  } else {
+    protectiveClose = await closeLeg(protectiveInstId, "sell", "UP");
+  }
   const longResidue = protectiveClose.closedContracts < target.contracts;
 
   // 3) Verify flat at the venue.

@@ -835,9 +835,22 @@ const knockoutUnwindLegs = async (rec: DemoWrapRecord, markPx: number): Promise<
   const rep = await unwindLiveCollar(
     new OkxExecutionClient({ apiKey: k, secret: s, passphrase: p, mode: parseLiveGuardsFromEnv(process.env, "okx").mode }),
     { side: rec.position.side, putInstId, callInstId, contracts, ctValBtc: OKX_OPTION_LOT_BTC },
-    { spotUsd: markPx, clOrdPrefix: `ko${Date.now().toString(36)}` }
+    // checkVenueFirst: this is a RETRY context — never re-close an already-flat leg (live
+    // incident: unconfirmed fills + reduceOnly not binding on options ⟹ accumulated longs).
+    { spotUsd: markPx, clOrdPrefix: `ko${Date.now().toString(36)}`, checkVenueFirst: true }
   );
   return { ok: rep.complete, valueUsdc: rep.unwindValueUsdc, note: rep.notes.join("; ") || rep.outcome };
+};
+
+// Knockout unwind retry budget: fast for the first attempts, then 15-minute backoff + loud
+// alerts — a wedged unwind must page the operator, not machine-gun the venue.
+const knockoutTries = new Map<string, { n: number; lastMs: number }>();
+const KNOCKOUT_FAST_TRIES = 3;
+const KNOCKOUT_BACKOFF_MS = 15 * 60_000;
+const knockoutRetryDue = (wrapId: string, nowMs: number): boolean => {
+  const t = knockoutTries.get(wrapId);
+  if (!t || t.n < KNOCKOUT_FAST_TRIES) return true;
+  return nowMs - t.lastMs >= KNOCKOUT_BACKOFF_MS;
 };
 
 const monitorTick = async (): Promise<void> => {
@@ -853,13 +866,17 @@ const monitorTick = async (): Promise<void> => {
       const cap = wrapCapStrike(rec);
       // Knockout only while the option lives — past the fixing it is expiry settlement instead.
       if (cap != null && nowMs < rec.vesting.endMs && capTouched(rec.position.side, cap, mark)) {
+        if (!knockoutRetryDue(rec.id, nowMs)) continue; // backoff window — operator is paged
+        const tries = knockoutTries.get(rec.id) ?? { n: 0, lastMs: 0 };
+        knockoutTries.set(rec.id, { n: tries.n + 1, lastMs: nowMs });
         const unwound = await knockoutUnwindLegs(rec, mark);
         if (!unwound.ok) {
-          // Legs could not be fully closed: the wrap is still a complete hedge — stay active,
-          // alert, retry next tick (mark is at/through the cap, so the retry fires immediately).
-          raiseAlert("unwind_event", `knockout unwind INCOMPLETE for ${rec.id} — retrying next tick: ${unwound.note}`);
+          // Legs could not be fully closed: the wrap stays as-is; venue-truth checks make the
+          // retry idempotent; after the fast tries it backs off to 15m and keeps alerting.
+          raiseAlert("unwind_event", `knockout unwind INCOMPLETE for ${rec.id} (attempt ${tries.n + 1}) — ${unwound.note}`);
           continue;
         }
+        knockoutTries.delete(rec.id);
         knockoutWrap(rec, nowMs, mark, unwound.valueUsdc);
         dirty = true;
         await accrueConclusion(rec, null);

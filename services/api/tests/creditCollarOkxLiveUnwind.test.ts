@@ -104,3 +104,68 @@ test("unwind: long-leg sale incomplete ⟹ long_residue (bounded risk), flagged"
   assert.equal(r.complete, false);
   assert.ok(r.notes.some((n) => n.includes("LONG RESIDUE")));
 });
+
+// ── Idempotency guard (live incident, Aug 21) ─────────────────────────────────
+// A retry whose previous attempt actually filled must never re-close a flat leg: OKX ignores
+// reduceOnly on options, so a repeated close-buy OPENS a fresh long. checkVenueFirst reads the
+// venue's positions before placing anything; single-shot callers keep the original behavior.
+
+test("unwind idempotency: venue flat on both legs ⟹ complete immediately, ZERO orders placed", async () => {
+  let orders = 0;
+  const client = {
+    getBookTop: async () => ({ ok: true, data: [{ bids: [["0.01", "1"]], asks: [["0.012", "1"]] }] }),
+    placeOrder: async () => {
+      orders++;
+      return { ok: true, data: [{ ordId: "x" }] };
+    },
+    getOrder: async () => ({ ok: true, data: [{ state: "filled", accFillSz: "1", avgPx: "0.01", fee: "0" }] }),
+    getPositions: async () => ({ ok: true, data: [] }) // venue: FLAT
+  } as never;
+  const rep = await unwindLiveCollar(
+    client,
+    { side: "long", putInstId: "P1", callInstId: "C1", contracts: 1, ctValBtc: 0.01 },
+    { spotUsd: 70_000, checkVenueFirst: true, sleep: async () => undefined }
+  );
+  assert.equal(rep.complete, true);
+  assert.equal(orders, 0); // the whole point: nothing re-placed
+  assert.match(rep.notes.join(" "), /already FLAT/);
+});
+
+test("unwind idempotency: funding already flat, protective still open ⟹ only the SELL goes out", async () => {
+  const placed: string[] = [];
+  const client = {
+    getBookTop: async () => ({ ok: true, data: [{ bids: [["0.01", "1"]], asks: [["0.012", "1"]] }] }),
+    placeOrder: async (o: { instId: string; side: string }) => {
+      placed.push(`${o.side}:${o.instId}`);
+      return { ok: true, data: [{ ordId: "x" }] };
+    },
+    getOrder: async () => ({ ok: true, data: [{ state: "filled", accFillSz: "1", avgPx: "0.01", fee: "0" }] }),
+    getPositions: async () => ({ ok: true, data: [{ instId: "P1", pos: "1" }] }) // put open, call flat
+  } as never;
+  const rep = await unwindLiveCollar(
+    client,
+    { side: "long", putInstId: "P1", callInstId: "C1", contracts: 1, ctValBtc: 0.01 },
+    { spotUsd: 70_000, checkVenueFirst: true, sleep: async () => undefined }
+  );
+  assert.deepEqual(placed, ["sell:P1"]); // no re-buy of the closed call
+  assert.equal(rep.complete, false); // put row remains at the venue read taken BEFORE the sell — flat check reports honestly
+});
+
+test("unwind idempotency: default (no flag) keeps the original single-shot behavior", async () => {
+  const placed: string[] = [];
+  const client = {
+    getBookTop: async () => ({ ok: true, data: [{ bids: [["0.01", "1"]], asks: [["0.012", "1"]] }] }),
+    placeOrder: async (o: { instId: string; side: string }) => {
+      placed.push(`${o.side}:${o.instId}`);
+      return { ok: true, data: [{ ordId: "x" }] };
+    },
+    getOrder: async () => ({ ok: true, data: [{ state: "filled", accFillSz: "1", avgPx: "0.01", fee: "0" }] }),
+    getPositions: async () => ({ ok: true, data: [] })
+  } as never;
+  await unwindLiveCollar(
+    client,
+    { side: "long", putInstId: "P1", callInstId: "C1", contracts: 1, ctValBtc: 0.01 },
+    { spotUsd: 70_000, sleep: async () => undefined }
+  );
+  assert.deepEqual(placed, ["buy:C1", "sell:P1"]); // unchanged legacy sequence
+});
