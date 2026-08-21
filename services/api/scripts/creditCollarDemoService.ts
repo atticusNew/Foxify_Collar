@@ -1102,7 +1102,10 @@ const sendJson = (res: ServerResponse, status: number, body: unknown) => {
 };
 
 const sendHtml = (res: ServerResponse, html: string) => {
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...CORS_HEADERS });
+  // no-store: app pages must NEVER be cached — a stale client after a deploy sends stale
+  // requests and misreads new errors (production bug: cached JS lost the close token AND
+  // showed the wrong refusal copy).
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...CORS_HEADERS });
   res.end(html);
 };
 

@@ -435,7 +435,10 @@ const onToggle = async (ev) => {
     if (isOn) {
       const ctl = localStorage.getItem("ep_ctl_" + account.toLowerCase()) || "";
       const j = await api("/api/close?ctl=" + encodeURIComponent(ctl), { method: "POST" });
-      setMsg(j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off." : humanChip(j.message || j.error), !j.ok);
+      // Context-aware fallback: a failed CLOSE must never read like a failed open.
+      const closeFail = humanChip(j.message || j.error);
+      setMsg(j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off."
+        : (closeFail === "Couldn't complete · nothing opened" ? "Couldn't turn off — nothing changed. It pays out on its own at the cycle's close." : closeFail), !j.ok);
     } else {
       setMsg("Wrapping — pricing the live options book…", false, true);
       // Client-supplied idempotency key: a flaky network can never double-wrap.
