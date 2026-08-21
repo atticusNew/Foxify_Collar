@@ -30,6 +30,10 @@
 | Options desk seeding ask | Ask OKX BD contact (and any desk relationship): "seed the margin sub-account / sponsor fees against committed flow" | $10k seeded | a real yes/no | Days 5–7 | If no: ask the same person "who funds flow-origination like this?" — a referral from a no is still a win |
 | Albert update | Short email: launch metrics so far + "cohort filling, collateral is the only gate" | $10k | reply | Day 7 | The metrics ARE the follow-up; send the Day-14 numbers without commentary |
 
+## Partner outreach (parallel track, ~2–3 hrs/week)
+
+Lenders, wallets/trackers, and newer exchanges run on their own playbook — cadence, role-targeting rules, three one-pagers, and full email sequences (initial + 2 follow-ups per audience, plus the intro-ask reply for off-target responders and the Variantial re-engage) live in **`docs/earn-protect-partner-outreach.md`**. Monday batch of ~10 sends, Thursday follow-ups, Friday log. Every send carries the live link and real dashboard numbers.
+
 ## Phase 2 — React (Days 7–14)
 
 - **Daily, non-negotiable:** one receipts post on X (cycle concluded, credit paid, knockout re-armed, or an honest refusal — screenshots from the dashboard/app). This compounds; missing days kills it.
