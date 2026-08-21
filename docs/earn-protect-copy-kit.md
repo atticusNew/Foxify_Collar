@@ -10,7 +10,7 @@
 
 We built the opposite: get paid to take risk OFF.
 
-One toggle on your Hyperliquid position → a hard floor underneath it → and the options market pays YOU a credit. Live now: [link]
+One toggle on your Hyperliquid position → a hard floor underneath it → and the options market pays YOU a credit. Demo is live now — real positions, real market pricing, simulated hedges until the founding book funds: [link]
 
 **2/** How: when you toggle, we buy a put ~6% below price (your floor) and sell a call above it on listed options markets. The call pays more than the put costs. The difference is your credit — real premium, paid to your wallet daily.
 
@@ -20,11 +20,11 @@ Read-only. No deposit. No keys. Ten seconds.
 
 You never owe anything. Ever.
 
-**4/** Honest numbers, because nobody else posts them: a 0.01 BTC position earns ~$0.50–0.85/day right now. Small and real — here's the app card next to the actual exchange fills that funded it. [screenshot pair]
+**4/** This isn't vapor: the engine has already run real money. Here's a real wrap — actual OKX option fills next to the app card they funded. ~$0.85/day on a 0.01 BTC position, at the worst pricing tier that exists. [canary screenshot pair, labeled "live test, real fills"]
 
-It scales with position size, and jumps 2–5× when volume unlocks block execution.
+Scales with position size; jumps 2–5× when volume unlocks block execution.
 
-**5/** First 50 wallets lock the founding rate (we keep 10% of your credit instead of 20%) for 12 months. Demo wraps count.
+**5/** The public book goes live the moment the founding collateral lands. Until then the demo runs the full engine in simulation — and the first 50 wallets to wrap (demo counts) lock the founding rate: we keep 10% of your credit instead of 20%, for 12 months.
 
 [X]/50 slots taken → [link]
 
@@ -40,11 +40,15 @@ Tag him neutrally in a reply if not the QT. Never mention any outreach.
 
 ## 3. Daily receipt posts (rotate; one per day, minimum)
 
-**Cycle paid:** "Cycle #[N] settled. [wallet short] earned $[X] on a $[Y] [LONG/SHORT] — floor held at $[F], never touched. Credit paid. Protection renewed itself at the new price. [screenshot]"
+*(Label every demo-mode post "demo" — the SIMULATED pill in the screenshots does it for you; never crop it out. When the book goes live, "first live cycle" becomes its own post.)*
 
-**Knockout:** "BTC touched $[cap] today. [wallet short]'s cycle ended: kept the position, kept every gain to the cap, kept $[X] unlocked credit. Re-armed at $[new cap] within a minute — automatically. This is what 'no cap on your trade' means. [screenshot]"
+**Cycle paid (demo):** "Demo cycle #[N] settled. [wallet short] earned $[X] on a $[Y] [LONG/SHORT] — floor held at $[F], never touched. Credit credited. Protection renewed itself at the new price. Same engine that runs our live tests. [screenshot with SIMULATED pill visible]"
+
+**Knockout (demo):** "BTC touched $[cap] today. [wallet short]'s demo cycle ended: kept the position, kept every gain to the cap, kept $[X] unlocked credit. Re-armed at $[new cap] within a minute — automatically. This is what 'no cap on your trade' means. [screenshot]"
 
 **Honest refusal:** "The market couldn't fund a positive credit at [time] today, so we refused to open protection and said why. No manufactured yield, ever. It re-quoted fundable [N] minutes later. [screenshot]"
+
+**Go-live day (save it):** "The founding book is funded. Demo's over — hedges are real option fills on [venue] from today, auditable to the exchange's own records. Founding wallets: your rate is locked. [first live receipt]"
 
 **Cohort scarcity (max 2×/week):** "[X]/50 founding slots taken · [Y] on the waitlist. Founding wallets keep 90% of every credit for 12 months. [link]"
 
@@ -90,4 +94,4 @@ Subject: **White-label "Earn & Protect" for [App] users — 4 endpoints, rev-sha
 
 ---
 
-**Rules for all of it:** never say APY/yield-farming language; never round numbers up; label demo as demo; screenshots over claims; every post links the app or the public book; typos fine, hype not.
+**Rules for all of it:** never say APY/yield-farming language; never round numbers up; **label demo as demo every single time** (the in-app SIMULATED pill must be visible in demo screenshots; the real-fill canary screenshots get labeled "live test"); screenshots over claims; every post links the app or the public book; typos fine, hype not. The one unforgivable post is the one that lets a reader believe simulated fills are live.
