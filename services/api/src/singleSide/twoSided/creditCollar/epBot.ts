@@ -87,7 +87,9 @@ export const humanRefusal = (raw: string | null | undefined): string => {
   if (/already active|in flight|in_flight|being processed/i.test(s)) return "Already protected";
   if (/no open .* position|no live position|no_position/i.test(s)) return "No open position to protect";
   if (/allow-list|account_refused|not an address/i.test(s)) return "Account not enabled yet";
+  if (/verify_required/i.test(s)) return "Verify your wallet once in the app first — one signature, then Telegram works too";
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first — tap the button above";
+  if (/waitlisted|in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full — you're #" + m[1] + " in line" : "Founding cohort full — you're on the waitlist"; }
   if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
   if (/kill switch|demo disabled|paused/i.test(s)) return "Protection paused";
   return "Couldn't complete · nothing opened";

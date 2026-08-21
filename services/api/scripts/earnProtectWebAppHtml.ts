@@ -181,6 +181,14 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
   </div>
 
+  <div class="card" id="verifyCard" style="display:none;border-color:rgba(80,210,193,.45)">
+    <b>Verify your wallet</b> <span class="muted small">— one signature proves you own this address and signs the <a href="/tos" target="_blank" rel="noopener">Terms</a>. It cannot move funds. Needed once; then every surface (including Telegram) works.</span>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="verifyBtn">Verify with wallet</button>
+      <span class="small muted" id="verifyMsg"></span>
+    </div>
+  </div>
+
   <div class="flash" id="flash"></div>
 
   <div class="card" id="tosCard" style="display:none;border-color:rgba(80,210,193,.45)">
@@ -191,7 +199,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     </div>
   </div>
 
-  <h2>Your positions</h2>
+  <h2>Your positions <span class="small muted" id="cohortLine" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
   <div id="positions"><div class="empty">Connect an address to see your open positions.</div></div>
 
   <h2>Payouts</h2>
@@ -246,7 +254,9 @@ const humanChip = (raw) => {
   if (/already active|in flight|in_flight|being processed/i.test(s)) return "Already protected";
   if (/no open .* position|no live position|no_position/i.test(s)) return "No open position to protect";
   if (/allow-list|account_refused|not an address/i.test(s)) return "Account not enabled yet";
+  if (/verify_required/i.test(s)) return "Verify your wallet first — one signature, one time";
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first";
+  if (/waitlisted|#\d+ in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full — you're #" + m[1] + " in line" : "Founding cohort full — you're on the waitlist"; }
   if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
   if (/kill switch|demo disabled|paused/i.test(s)) return "Protection paused";
   if (/rate_limited/i.test(s)) return "Slow down a moment";
@@ -450,14 +460,39 @@ const checkGates = async () => {
       $("geoMsg").textContent = geo.message || "Protection actions are unavailable from your location.";
     } else $("geoBanner").style.display = "none";
   } catch (e) { /* leave as-is */ }
-  if (!account) { $("tosCard").style.display = "none"; return; }
+  if (!account) { $("tosCard").style.display = "none"; $("verifyCard").style.display = "none"; return; }
   try {
-    const tos = await api("/api/tos");
-    if (tos.ok && tos.required && !tos.accepted) {
+    const [tos, ver] = await Promise.all([api("/api/tos"), api("/api/verify")]);
+    const needsSig = ver.ok && ver.required && !ver.verified;
+    // Signature covers ToS too — never show both prompts.
+    $("verifyCard").style.display = needsSig ? "" : "none";
+    if (tos.ok && tos.required && !tos.accepted && !needsSig) {
       $("tosVer").textContent = tos.version;
       $("tosCard").style.display = "";
     } else $("tosCard").style.display = "none";
   } catch (e) { /* leave as-is */ }
+};
+
+// One-time wallet verification: personal_sign of the server's canonical message.
+$("verifyBtn").onclick = async () => {
+  if (!account) return;
+  const eth = window.ethereum;
+  if (!eth) { $("verifyMsg").textContent = "No wallet found — open this page inside your wallet's browser (MetaMask/Rabby), or use the Terms checkbox flow if signatures aren't required."; return; }
+  try {
+    $("verifyMsg").textContent = "Check your wallet…";
+    const info = await api("/api/verify");
+    if (!info.ok) { $("verifyMsg").textContent = humanChip(info.message || info.error); return; }
+    const accounts = await eth.request({ method: "eth_requestAccounts" });
+    const signer = (accounts && accounts[0] || "").toLowerCase();
+    if (signer !== account.toLowerCase()) { $("verifyMsg").textContent = "Your wallet is on " + short(signer) + " — switch to " + short(account) + " and retry."; return; }
+    const sig = await eth.request({ method: "personal_sign", params: [info.message, accounts[0]] });
+    const out = await api("/api/verify?signature=" + encodeURIComponent(sig), { method: "POST" });
+    $("verifyMsg").textContent = out.ok ? "Verified — you're set on every surface." : humanChip(out.message || out.error);
+    haptic(out.ok ? "success" : "error");
+    checkGates();
+  } catch (e) {
+    $("verifyMsg").textContent = (e && e.code === 4001) ? "Signature declined — nothing happened." : "Wallet error — try again.";
+  }
 };
 $("tosCheck").onchange = () => { $("tosBtn").disabled = !$("tosCheck").checked; };
 $("tosBtn").onclick = async () => {
@@ -484,7 +519,12 @@ const poll = async () => {
   if (!account) return;
   try {
     const [pos, st] = await Promise.all([api("/api/positions"), api("/api/state")]);
-    if (st && st.caps) $("rateNote").textContent = " (" + (st.caps.foundingTakeRatePct * 100).toFixed(0) + "% vs " + (st.caps.takeRatePct * 100).toFixed(0) + "%, locked 12 months)";
+    if (st && st.caps) {
+      $("rateNote").textContent = " (" + (st.caps.foundingTakeRatePct * 100).toFixed(0) + "% vs " + (st.caps.takeRatePct * 100).toFixed(0) + "%, locked 12 months)";
+      const wl = st.caps.waitlistLength ? " · waitlist " + st.caps.waitlistLength : "";
+      const mine = st.protection && st.protection.waitlistPosition ? " · you're #" + st.protection.waitlistPosition + " in line" : "";
+      $("cohortLine").textContent = "· founding cohort " + st.caps.walletsJoined + "/" + st.caps.foundingWallets + wl + mine;
+    }
     if (st && st.guards) setModePill(st.guards.executionMode);
     $("hero").style.display = "none"; // connected: the app gets denser, the pitch gets out of the way
     render(pos.ok ? pos.positions : [], st.ok ? st : null);

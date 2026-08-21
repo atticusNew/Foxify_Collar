@@ -208,6 +208,10 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
   if (cb.data === "wrap") {
     await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Wrapping — pricing the live book…" });
     const out = await ep("/api/wrap", chat.address, "POST");
+    if (out.ok !== true && out.error === "verify_required" && miniAppUrl) {
+      await send(chatId, `🔐 ${humanRefusal(String(out.message ?? ""))}`, [[{ text: "🔐 Verify in the app (one signature)", web_app: { url: miniAppFor(chat.address)! } }]]);
+      return;
+    }
     if (out.ok === true) {
       const wrap = out.wrap as { quote?: { creditUsdc?: number; floorStrike?: number; capStrike?: number } };
       const q = wrap?.quote;

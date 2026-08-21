@@ -32,7 +32,10 @@ export type DemoGuardsConfig = {
   executionMode: DemoExecutionMode;
   /** HARD micro cap on ONE wrap's notional — a fat-fingered demo cannot scale. */
   maxPositionNotionalUsdc: number;
+  /** PER-WALLET daily quota (anti-churn). One user's testing must never ration everyone else. */
   maxWrapsPerDay: number;
+  /** GLOBAL daily circuit breaker — the true runaway fuse across all wallets. */
+  maxWrapsPerDayGlobal: number;
   /** Minimum gap between wrap attempts PER ACCOUNT (multi-take recording ≠ rapid-fire opens). */
   cooldownMs: number;
   /** Pilot book cap: total notional across all open (in-flight + active) wraps. */
@@ -47,7 +50,8 @@ export const parseDemoGuardsFromEnv = (env: Record<string, string | undefined>):
   enabled: String(env.DEMO_ENABLED ?? "true").toLowerCase() === "true",
   executionMode: env.DEMO_EXECUTION === "okx_live" ? "okx_live" : env.DEMO_EXECUTION === "okx_demo" ? "okx_demo" : "paper",
   maxPositionNotionalUsdc: num(env.DEMO_MAX_NOTIONAL_USDC, 1_000),
-  maxWrapsPerDay: num(env.DEMO_MAX_WRAPS_PER_DAY, 6),
+  maxWrapsPerDay: num(env.DEMO_MAX_WRAPS_PER_DAY, 10),
+  maxWrapsPerDayGlobal: num(env.DEMO_MAX_WRAPS_PER_DAY_GLOBAL, 500),
   cooldownMs: num(env.DEMO_COOLDOWN_MS, 30_000),
   maxBookNotionalUsdc: num(env.DEMO_MAX_BOOK_NOTIONAL_USDC, 25_000),
   maxActiveWraps: num(env.DEMO_MAX_ACTIVE_WRAPS, 25)
@@ -247,8 +251,18 @@ export const assessDemoWrap = (
   if (openNotional + positionNotionalUsdc > cfg.maxBookNotionalUsdc) {
     return { ok: false, reason: `book notional cap — $${round2(openNotional)} open + $${round2(positionNotionalUsdc)} would exceed $${cfg.maxBookNotionalUsdc}` };
   }
-  const today = existing.filter((r) => dayUtcOf(r.createdAtMs) === dayUtcOf(nowMs));
-  if (!renewal && today.length >= cfg.maxWrapsPerDay) return { ok: false, reason: `daily demo quota reached (${cfg.maxWrapsPerDay}/day)` };
+  // Daily quotas (skipped for renewals): PER-WALLET first — one user's churn rations only that
+  // user — then the GLOBAL circuit breaker, the true runaway fuse across the whole platform.
+  if (!renewal) {
+    const today = existing.filter((r) => dayUtcOf(r.createdAtMs) === dayUtcOf(nowMs));
+    const mineToday = account != null ? today.filter((r) => r.account.toLowerCase() === account.toLowerCase()) : today;
+    if (mineToday.length >= cfg.maxWrapsPerDay) {
+      return { ok: false, reason: `daily quota reached for this wallet (${cfg.maxWrapsPerDay}/day) — resets at 00:00 UTC` };
+    }
+    if (today.length >= cfg.maxWrapsPerDayGlobal) {
+      return { ok: false, reason: `platform daily circuit breaker tripped (${cfg.maxWrapsPerDayGlobal} wraps/day) — back tomorrow` };
+    }
+  }
   const last = mine[mine.length - 1];
   if (last && nowMs - last.createdAtMs < cfg.cooldownMs) {
     return { ok: false, reason: `cooldown — ${Math.ceil((cfg.cooldownMs - (nowMs - last.createdAtMs)) / 1000)}s until the next wrap` };

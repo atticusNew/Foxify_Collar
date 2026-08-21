@@ -62,7 +62,8 @@ const poll = async () => {
       card("Cycles concluded", st.wraps.expiries + st.wraps.knockouts + st.wraps.earlyCloses,
            st.wraps.expiries + " expiries · " + st.wraps.knockouts + " cap touches · " + st.wraps.earlyCloses + " early closes") +
       card("Book utilization", st.capacity.utilizationPct + "%", "of " + fmt$(st.capacity.bookCapUsdc) + " capacity") +
-      card("Founding cohort", st.capacity.walletsJoined + " / " + st.capacity.foundingWallets, "wallets joined — capacity grows with capital");
+      card("Founding cohort", st.capacity.walletsJoined + " / " + st.capacity.foundingWallets,
+           (st.capacity.waitlistLength ? st.capacity.waitlistLength + " on the waitlist — " : "") + "capacity grows with capital");
   } catch (e) { /* keep last render */ }
 };
 poll(); setInterval(poll, 5000);
