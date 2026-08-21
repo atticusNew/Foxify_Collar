@@ -140,50 +140,31 @@ export const jsonStores = (paths: EpStorePaths): EpStores => ({
 
 type Queryable = Pick<Pool, "query">;
 
+/** Every table with its own DDL — the schema must EVOLVE per table, not all-or-nothing. */
+const EP_TABLES: Array<{ name: string; ddl: string }> = [
+  { name: "ep_wraps", ddl: "CREATE TABLE ep_wraps (id TEXT PRIMARY KEY, account TEXT NOT NULL, status TEXT NOT NULL, created_at_ms BIGINT NOT NULL, record JSONB NOT NULL)" },
+  { name: "ep_protection", ddl: "CREATE TABLE ep_protection (account TEXT PRIMARY KEY, pref JSONB NOT NULL)" },
+  { name: "ep_payouts", ddl: "CREATE TABLE ep_payouts (id TEXT PRIMARY KEY, account TEXT NOT NULL, status TEXT NOT NULL, entry JSONB NOT NULL)" },
+  { name: "ep_wallets", ddl: "CREATE TABLE ep_wallets (account TEXT PRIMARY KEY, joined_at_ms BIGINT NOT NULL)" },
+  { name: "ep_runtime", ddl: "CREATE TABLE ep_runtime (k TEXT PRIMARY KEY, v JSONB NOT NULL)" },
+  { name: "ep_tos", ddl: "CREATE TABLE ep_tos (account TEXT PRIMARY KEY, acceptance JSONB NOT NULL)" },
+  { name: "ep_waitlist", ddl: "CREATE TABLE ep_waitlist (account TEXT PRIMARY KEY, joined_at_ms BIGINT NOT NULL)" }
+];
+
+/**
+ * Probe-then-create PER TABLE: a database created by an older deploy gets any newly added tables
+ * on the next boot (production regression: an all-or-nothing probe on ep_wraps skipped creating
+ * ep_waitlist on an existing database). Individual probes also keep pg-mem (tests) happy — it
+ * trips on CREATE TABLE IF NOT EXISTS against existing tables.
+ */
 export const ensureEpSchema = async (pool: Queryable): Promise<void> => {
-  // Probe first: re-running CREATE TABLE IF NOT EXISTS against an existing schema is a no-op on
-  // real Postgres but trips pg-mem (tests), so skip the DDL when the tables are already there.
-  try {
-    await pool.query("SELECT 1 FROM ep_wraps LIMIT 1");
-    return;
-  } catch {
-    /* tables missing — create below */
+  for (const t of EP_TABLES) {
+    try {
+      await pool.query(`SELECT 1 FROM ${t.name} LIMIT 1`);
+    } catch {
+      await pool.query(t.ddl);
+    }
   }
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ep_wraps (
-      id TEXT PRIMARY KEY,
-      account TEXT NOT NULL,
-      status TEXT NOT NULL,
-      created_at_ms BIGINT NOT NULL,
-      record JSONB NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS ep_protection (
-      account TEXT PRIMARY KEY,
-      pref JSONB NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS ep_payouts (
-      id TEXT PRIMARY KEY,
-      account TEXT NOT NULL,
-      status TEXT NOT NULL,
-      entry JSONB NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS ep_wallets (
-      account TEXT PRIMARY KEY,
-      joined_at_ms BIGINT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS ep_runtime (
-      k TEXT PRIMARY KEY,
-      v JSONB NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS ep_tos (
-      account TEXT PRIMARY KEY,
-      acceptance JSONB NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS ep_waitlist (
-      account TEXT PRIMARY KEY,
-      joined_at_ms BIGINT NOT NULL
-    );
-  `);
 };
 
 /** DELETE + INSERT the full set in one transaction (see module header for why). */

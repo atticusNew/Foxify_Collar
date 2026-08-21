@@ -136,6 +136,27 @@ const contract = (name: string, build: () => Promise<EpStores>) => {
 contract("json stores", async () => jsonStores(tmpPaths()));
 contract("postgres stores", async () => postgresStores(await memPool()));
 
+// ── Schema evolution ──────────────────────────────────────────────────────────
+
+test("schema: a database from an OLDER deploy gains newly added tables on the next boot", async () => {
+  // Production regression: the schema probe checked only ep_wraps and skipped everything else,
+  // so a pre-waitlist database never got ep_waitlist ('relation \"ep_waitlist\" does not exist').
+  const db = newDb({ autoCreateForeignKeyIndices: true });
+  const adapter = db.adapters.createPg();
+  const pool = new adapter.Pool();
+  // simulate the old deploy: only the original table exists
+  await pool.query("CREATE TABLE ep_wraps (id TEXT PRIMARY KEY, account TEXT NOT NULL, status TEXT NOT NULL, created_at_ms BIGINT NOT NULL, record JSONB NOT NULL)");
+  await pool.query("INSERT INTO ep_wraps (id, account, status, created_at_ms, record) VALUES ('w-old', '0xabc', 'concluded', 1, '{}')");
+  await ensureEpSchema(pool); // the new boot
+  const s = postgresStores(pool);
+  assert.deepEqual(await s.loadWaitlist(), []); // new table exists and works
+  await s.saveWaitlist([{ account: "0x" + "e".repeat(40), joinedAtMs: NOW }]);
+  assert.equal((await s.loadWaitlist()).length, 1);
+  // and the old data survived untouched
+  const wraps = await pool.query("SELECT id FROM ep_wraps");
+  assert.equal(wraps.rows[0].id, "w-old");
+});
+
 // ── Migration ─────────────────────────────────────────────────────────────────
 
 test("migration: JSON state lands in Postgres; refuses a non-empty target without force", async () => {
