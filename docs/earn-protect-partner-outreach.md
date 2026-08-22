@@ -231,7 +231,43 @@
 
 ---
 
-## 6. Tracker (one row per target — keep in this file or a sheet, whichever you'll actually update)
+## 6. Trader acquisition — personal-voice drafts (X / Discord / DMs)
+
+*Principle: credentials as origin story, never as authority. The ask is "break it," not "try it." DMs convert; threads build the backdrop. Ten personal DMs a day beats one thread a week.*
+
+### 6.1 Intro thread (post 1–2 days after the launch thread, quote-tweeting it)
+
+> I've been a humanities professor, a hedge fund founder, and the creator of Sonic for Hire (yes, the YouTube series). Weird path. It ends at a toggle on Hyperliquid. Quick story —
+>
+> The fund taught me something retail never sees up close: institutions don't ride naked exposure. They collar it — floor under the position, cap above, and the structure often *pays them*. Retail can't do this. Too many legs, too much capital, no access.
+>
+> So I built it into one tap. Toggle on: your HL position gets a hard floor and starts earning a daily credit, priced live off listed option books, hedged leg-for-leg. Toggle off whenever. You never owe anything.
+>
+> The part I'm proudest of: when the market can't fund your credit, it refuses and tells you why. I tested it with my own money and published everything that broke. Receipts over promises.
+>
+> First 50 wallets keep the founding rate (10% vs 20%, locked 12 months). The demo is read-only — paste your address, no keys, no deposit, 10 seconds: earnandprotect.xyz. Roast it. I answer every reply.
+
+### 6.2 Trader DM (personalize line 1; 10/day to active HL posters)
+
+> Hey — saw your [specific post/position]. I built a toggle for HL positions: hard floor + a daily credit, hedged on listed options. Live now, I run my own money through it. Before I push it wider I want sharp traders to roast it — read-only demo, no keys, 10 seconds: earnandprotect.xyz. If you find something dumb I'll fix it and credit you. Founding slot (10% rate, 12mo lock) is yours either way.
+
+### 6.3 Roast post (fire if the launch thread stalls by day 3–4)
+
+> HL traders: I'll pay you to break my product. It puts a hard floor under your perp position and pays you a daily credit — which sounds fake, so come find the catch. Paper mode is read-only, zero risk. First 10 useful roasts get $25 USDC and a founding slot. earnandprotect.xyz
+
+### 6.4 The incident-story post (any time — strongest trust asset we have)
+
+> My product had a live incident last week, with my own money in it. A deep-OTM put had zero bids and the unwind retried into an alert storm. Here's exactly what happened, the venue receipts, and the three fixes that shipped within hours. This is what "hedged for real" maintenance looks like: [screenshots]
+
+### 6.5 Daily rhythm while cohort < 10 wallets
+
+- 10 personal DMs (6.2) — the actual growth engine.
+- 30 min replying usefully in HL traders' threads (options math, hedging takes) — become "the collar person."
+- 1 receipts post (per launch plan Phase 2).
+- Offer a 5-min walkthrough call to every reply; every call is user research.
+- Optional beta bounty: $10–25 USDC for the first 10 wallets that wrap a paper position and send real feedback — payment for QA, not fake traction.
+
+## 7. Tracker (one row per target — keep in this file or a sheet, whichever you'll actually update)
 
 | Company | Class | Person / role | T1 sent | T2 (+4d) | T3 (+10d) | Reply? | State (active / parked / call) | Notes |
 |---|---|---|---|---|---|---|---|---|
