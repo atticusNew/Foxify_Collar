@@ -59,6 +59,10 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .logo .by{color:var(--muted);font-weight:500;font-size:11.5px;letter-spacing:.6px;margin-left:8px}
   .logo .by b{color:var(--accent);font-weight:600}
   .pill{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 12px}
+  /* Live venue price — HL-native texture: always-visible mark, quiet tick color on change */
+  .px{font-size:12px;color:var(--muted);margin-right:10px;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .px b{color:var(--text);font-weight:600;transition:color .5s}
+  .px.up b{color:var(--good)} .px.down b{color:var(--bad)}
   h1{font-size:24px;font-weight:700;letter-spacing:-.2px;margin:28px 0 6px}
   .sub{color:var(--muted);font-size:14px;margin-bottom:22px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:12px}
@@ -158,6 +162,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
        injected by the service: the Atticus logo (EP_BRAND_LOGO_URL) or the wordmark fallback. -->
   <div class="logo">Earn &amp; Protect <span class="by">for <b>HYPERLIQUID</b> · by __BRAND_MARK__</span></div>
   <div style="display:flex;align-items:center">
+    <span class="px" id="pxPill" style="display:none">BTC <b id="pxVal">—</b></span>
     <span class="mode-pill tipwrap" id="modePill" style="display:none"></span>
     <div class="pill" id="connPill">not connected</div>
   </div>
@@ -536,15 +541,38 @@ const setModePill = (mode) => {
 };
 
 let pollTimer = null;
+let lastMarkPx = null;
+const setMarkPx = (px) => {
+  if (px == null) return;
+  const el = $("pxPill");
+  el.style.display = "";
+  $("pxVal").textContent = fmtPx(px);
+  if (lastMarkPx != null && px !== lastMarkPx) {
+    el.classList.remove("up", "down");
+    void el.offsetWidth; // restart the color transition
+    el.classList.add(px > lastMarkPx ? "up" : "down");
+  }
+  lastMarkPx = px;
+};
 const poll = async () => {
   if (!account) return;
   try {
     const [pos, st] = await Promise.all([api("/api/positions"), api("/api/state")]);
+    if (st) setMarkPx(st.marketPxUsd);
     if (st && st.caps) {
       $("rateNote").textContent = " (" + (st.caps.foundingTakeRatePct * 100).toFixed(0) + "% vs " + (st.caps.takeRatePct * 100).toFixed(0) + "%, locked 12 months)";
       const wl = st.caps.waitlistLength ? " · waitlist " + st.caps.waitlistLength : "";
       const mine = st.protection && st.protection.waitlistPosition ? " · you're #" + st.protection.waitlistPosition + " in line" : "";
-      $("cohortLine").textContent = "· founding cohort " + st.caps.walletsJoined + "/" + st.caps.foundingWallets + wl + mine;
+      // Cohort framing: a founding wallet sees its own member number (a badge, not a gauge);
+      // everyone else sees the live count only when the server says it reads as momentum
+      // (EP_SHOW_COHORT_COUNT), otherwise the honest scarcity line without a numerator.
+      const rank = st.protection && st.protection.foundingRank;
+      const cohort = rank
+        ? "· founding member #" + rank + " — rate locked 12 months"
+        : st.caps.showCohortCount
+          ? "· founding cohort " + st.caps.walletsJoined + "/" + st.caps.foundingWallets
+          : "· founding rate — limited to the first " + st.caps.foundingWallets + " wallets";
+      $("cohortLine").textContent = cohort + wl + mine;
     }
     if (st && st.guards) setModePill(st.guards.executionMode);
     $("hero").style.display = "none"; // connected: the app gets denser, the pitch gets out of the way
@@ -571,6 +599,8 @@ $("forgetBtn").onclick = () => {
   setConn();
   $("hero").style.display = "";
   $("modePill").style.display = "none";
+  $("pxPill").style.display = "none";
+  lastMarkPx = null;
   $("positions").innerHTML = '<div class="empty">Connect an address to see your open positions.</div>';
   renderPayouts(null);
 };

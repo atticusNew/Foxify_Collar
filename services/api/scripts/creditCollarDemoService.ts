@@ -176,6 +176,10 @@ const requireActionSig = String(process.env.EP_REQUIRE_ACTION_SIG ?? "false").to
 // Close gate (default ON, zero friction): early close needs the control token issued to the
 // client that opened protection — or a signer-verified wallet, or the admin. EP_CLOSE_GATE=false disarms.
 const closeGate = String(process.env.EP_CLOSE_GATE ?? "true").toLowerCase() === "true";
+// Cohort count display: OFF by default — clients show the scarcity line ("first N wallets")
+// without the live numerator until the fill reads as momentum. The real count stays in the
+// payload (never faked, just not headlined); flip EP_SHOW_COHORT_COUNT=true to display it.
+const showCohortCount = String(process.env.EP_SHOW_COHORT_COUNT ?? "false").toLowerCase() === "true";
 const setProtection = async (account: string, on: boolean): Promise<void> => {
   const prefs = await stores.loadPrefs();
   const key = account.toLowerCase();
@@ -249,10 +253,15 @@ type HlPositionRead = {
   notionalUsdc: number;
 };
 
+// Freshest HL mark seen by any loop — lets /api/state carry a live price even when the account
+// has no open position (the header ticker). Refreshed by position reads and the 15s monitor tick.
+let lastHlMark: number | null = null;
+
 const readHlPosition = async (account?: string | null): Promise<HlPositionRead | null> => {
   const acct = account ?? hlAccount();
   if (!acct) return null;
   const [detail, mark] = await Promise.all([hl.positionDetail(acct, coin), hl.midPx(coin)]);
+  if (Number.isFinite(mark) && mark > 0) lastHlMark = mark;
   if (!detail) return null;
   const szBase = Math.abs(detail.szi);
   return {
@@ -684,10 +693,14 @@ const buildState = async (account?: string, all = false) => {
       walletsJoined: Object.keys(registry).length,
       waitlistLength: waitlist.length,
       takeRatePct: capsInputs.takeRatePct,
-      foundingTakeRatePct: capsInputs.foundingTakeRatePct
+      foundingTakeRatePct: capsInputs.foundingTakeRatePct,
+      showCohortCount
     },
     account: acct,
     coin,
+    // Live venue mark for the header ticker — the account's own read when present, else the
+    // freshest mark any loop has seen. Null only before the first successful HL read.
+    marketPxUsd: position?.markPx ?? lastHlMark,
     position,
     positionError,
     wraps,
@@ -707,6 +720,14 @@ const buildState = async (account?: string, all = false) => {
       on: acct != null ? prefs[acct.toLowerCase()]?.on === true : false,
       accountsOn: Object.values(prefs).filter((p) => p.on).length,
       founding: acct != null ? registry[acct.toLowerCase()] != null : false,
+      // Join order within the cohort ("founding member #N") — personal, shown regardless of the
+      // public count flag: #1 is a badge, not a fill gauge.
+      foundingRank: (() => {
+        const key = acct?.toLowerCase();
+        const mine = key != null ? registry[key] : undefined;
+        if (key == null || mine == null) return null;
+        return 1 + Object.entries(registry).filter(([k, v]) => v.joinedAtMs < mine.joinedAtMs || (v.joinedAtMs === mine.joinedAtMs && k < key)).length;
+      })(),
       waitlistPosition: acct != null ? (() => { const i = waitlist.findIndex((w) => w.account === acct.toLowerCase()); return i < 0 ? null : i + 1; })() : null
     },
     // Gate status so clients render the right prompt (checkbox vs signature) without guessing.
@@ -869,6 +890,7 @@ const monitorTick = async (): Promise<void> => {
   try {
     // Read the mark BEFORE loading the store so no other tick can mutate records mid-await.
     const mark = await hl.midPx(coin);
+    if (Number.isFinite(mark) && mark > 0) lastHlMark = mark;
     const nowMs = Date.now();
     const records = await stores.loadWraps();
     let dirty = false;
@@ -1376,7 +1398,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           utilizationPct: derived.bookCapUsdc > 0 ? +((open.reduce((s, r) => s + wrapExposureUsdc(r), 0) / derived.bookCapUsdc) * 100).toFixed(1) : 0,
           foundingWallets: capsInputs.foundingWallets,
           walletsJoined: Object.keys(registry).length,
-          waitlistLength: (await stores.loadWaitlist()).length
+          waitlistLength: (await stores.loadWaitlist()).length,
+          showCohortCount
         },
         generatedAtIso: new Date().toISOString()
       });
