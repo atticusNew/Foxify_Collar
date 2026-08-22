@@ -194,7 +194,10 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <!-- No-address preview: the full value proposition off the live book before typing anything.
          Preview-only by construction — wrapping always requires a live venue-read position. -->
     <div id="previewBlock" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
-      <div class="small muted" style="text-transform:uppercase;letter-spacing:.6px;font-weight:700;font-size:11px;margin-bottom:10px">Try it first — no address needed</div>
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px">
+        <span class="small muted" style="text-transform:uppercase;letter-spacing:.6px;font-weight:700;font-size:11px">Try it first — no address needed</span>
+        <a href="#" id="pvClear" class="small" style="display:none;color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--line)">clear</a>
+      </div>
       <div class="row" style="align-items:center">
         <div class="seg" id="pvSeg"><button type="button" class="on" data-side="long">Long</button><button type="button" data-side="short">Short</button></div>
         <div class="pv-amt"><span>$</span><input id="pvUsd" value="10,000" inputmode="numeric" title="Position size in USD" aria-label="Position size in USD"></div>
@@ -603,18 +606,27 @@ const poll = async () => {
 };
 
 let pvSide = "long";
+const pvSetSide = (side) => {
+  pvSide = side;
+  for (const x of document.querySelectorAll("#pvSeg button")) x.classList.toggle("on", x.dataset.side === side);
+};
 for (const b of document.querySelectorAll("#pvSeg button")) {
-  b.onclick = () => {
-    pvSide = b.dataset.side;
-    for (const x of document.querySelectorAll("#pvSeg button")) x.classList.toggle("on", x === b);
-  };
+  b.onclick = () => pvSetSide(b.dataset.side);
 }
+$("pvClear").onclick = (e) => {
+  e.preventDefault();
+  $("pvOut").innerHTML = "";
+  $("pvUsd").value = "10,000";
+  pvSetSide("long");
+  $("pvClear").style.display = "none";
+};
 $("pvBtn").onclick = async () => {
   const usd = parseFloat($("pvUsd").value.replace(/[$,\\s]/g, ""));
   if (!(usd > 0)) { $("pvOut").innerHTML = '<div class="small muted" style="margin-top:8px">Enter a position size in dollars, e.g. 2,000.</div>'; return; }
   $("pvOut").innerHTML = '<div class="small muted" style="margin-top:10px"><span class="spin"></span>Pricing off the live option book…</div>';
   try {
     const j = await api("/api/preview?side=" + pvSide + "&usd=" + encodeURIComponent(usd));
+    $("pvClear").style.display = "";
     if (!j.ok) { $("pvOut").innerHTML = '<div class="chip bad">' + esc(humanChip(j.message || j.error)) + '</div>'; return; }
     // Same terms grid as the real position card — the preview should look like the product.
     const fPct = ((j.floorStrike - j.spot) / j.spot) * 100;
@@ -631,6 +643,7 @@ $("pvBtn").onclick = async () => {
         (j.exceedsCurrentCap ? ' Early access may protect part of this at first \\u2014 capacity grows with the book.' : '') +
       '</div>';
   } catch (e) {
+    $("pvClear").style.display = "";
     $("pvOut").innerHTML = '<div class="small muted" style="margin-top:8px">Couldn\\u2019t reach the pricer \\u2014 try again in a moment.</div>';
   }
 };
