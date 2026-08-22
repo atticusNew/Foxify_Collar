@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import {
   assessDemoWrap,
+  assessUnderlying,
   concludeAtExpiry,
   concludeWrapEarly,
   demoVestingStatus,
@@ -393,6 +394,26 @@ test("wrapRefuseFromLive: 50111 is an API key reject, not a missing option", () 
 });
 
 // ── env parsing ───────────────────────────────────────────────────────────────
+
+// ── Underlying-gone guard (anti-farming): protection ends when there's nothing left to protect ──
+
+test("underlying gone: position closed ⟹ streak builds, confirmed on the 2nd consecutive reading", () => {
+  const first = assessUnderlying("long", null, 0);
+  assert.equal(first.gone, true);
+  assert.equal(first.streak, 1);
+  assert.equal(first.confirmed, false, "one flaky venue read must never end a real cycle");
+  const second = assessUnderlying("long", null, first.streak);
+  assert.equal(second.confirmed, true);
+});
+
+test("underlying gone: a live position resets the streak; a FLIPPED side counts as gone", () => {
+  const afterMiss = assessUnderlying("long", { side: "long" }, 1);
+  assert.equal(afterMiss.gone, false);
+  assert.equal(afterMiss.streak, 0, "recovered read resets the streak");
+  const flipped = assessUnderlying("long", { side: "short" }, 1);
+  assert.equal(flipped.gone, true, "the wrapped long no longer exists — a short is a different trade");
+  assert.equal(flipped.confirmed, true);
+});
 
 test("guards from env: safe defaults (paper, enabled, $1k cap)", () => {
   const g = parseDemoGuardsFromEnv({});

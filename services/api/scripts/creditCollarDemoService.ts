@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { HyperliquidClient } from "../src/singleSide/twoSided/creditCollar/execution/perpVenues/hyperliquidClient";
 import {
   assessDemoWrap,
+  assessUnderlying,
   capTouched,
   concludeWrapEarly,
   coverOkxLots,
@@ -885,6 +886,9 @@ const knockoutUnwindLegs = async (rec: DemoWrapRecord, markPx: number): Promise<
 // idempotent and quiet; the ALERT for a wedged unwind fires once per wrap per cooldown (below),
 // not once per attempt — a stuck condition pages the operator, it does not machine-gun them.
 const knockoutTries = new Map<string, { n: number; lastMs: number }>();
+// Underlying-gone guard state: wrapId → consecutive gone readings; checked once a minute.
+const underlyingGoneStreak = new Map<string, number>();
+let lastUnderlyingCheckMs = 0;
 const KNOCKOUT_FAST_TRIES = 3;
 const KNOCKOUT_BACKOFF_MS = 15 * 60_000;
 const UNWIND_ALERT_COOLDOWN_MS = num(process.env.EP_UNWIND_ALERT_COOLDOWN_MS, 6 * 60 * 60_000);
@@ -937,6 +941,56 @@ const monitorTick = async (): Promise<void> => {
         dirty = true;
         accrueConclusion(rec, mark);
         console.error(`[demo] expiry settled: ${rec.id} — payable accrued to the ledger`);
+      }
+    }
+    // ── Underlying-gone guard (once a minute): protection ends when there is nothing left to
+    // protect. Closing the HL position mid-cycle concludes the wrap with VESTED-ONLY credit —
+    // otherwise "open minimal position → wrap → close position" farms credits risk-free. Two
+    // consecutive gone readings are required (one flaky venue read never ends a real cycle).
+    if (nowMs - lastUnderlyingCheckMs >= 60_000) {
+      lastUnderlyingCheckMs = nowMs;
+      const activeAccounts = [...new Set(records.filter((r) => r.status === "active" && r.vesting).map((r) => r.account.toLowerCase()))];
+      for (const account of activeAccounts) {
+        let venuePos: HlPositionRead | null;
+        try {
+          venuePos = await readHlPosition(account);
+        } catch {
+          continue; // HL read failed — never advance the streak on an error
+        }
+        for (const rec of records) {
+          if (rec.status !== "active" || !rec.vesting || rec.account.toLowerCase() !== account) continue;
+          const check = assessUnderlying(rec.position.side, venuePos, underlyingGoneStreak.get(rec.id) ?? 0);
+          if (!check.gone) {
+            underlyingGoneStreak.delete(rec.id);
+            continue;
+          }
+          underlyingGoneStreak.set(rec.id, check.streak);
+          if (!check.confirmed) continue;
+          // Live lanes: real legs must unwind BEFORE the books settle (same rule as early close);
+          // reuse the knockout retry budget so a wedged unwind backs off instead of hammering.
+          if (rec.hedge && rec.hedge.mode !== "paper") {
+            if (!knockoutRetryDue(rec.id, nowMs)) continue;
+            const tries = knockoutTries.get(rec.id) ?? { n: 0, lastMs: 0 };
+            knockoutTries.set(rec.id, { n: tries.n + 1, lastMs: nowMs });
+            const unwound = await knockoutUnwindLegs(rec, mark);
+            if (!unwound.ok) {
+              raiseAlert(
+                "unwind_event",
+                `underlying-gone unwind INCOMPLETE for ${rec.id} — ${unwound.note}`,
+                { wrapId: rec.id },
+                { dedupeKey: `unwind_incomplete:${rec.id}`, dedupeMs: UNWIND_ALERT_COOLDOWN_MS }
+              );
+              continue;
+            }
+            knockoutTries.delete(rec.id);
+          }
+          concludeWrapEarly(rec, nowMs);
+          underlyingGoneStreak.delete(rec.id);
+          dirty = true;
+          await accrueConclusion(rec, null);
+          raiseAlert("unwind_event", `UNDERLYING GONE ${rec.id}: HL position closed mid-cycle — wrap concluded early, vested credit accrued`, { wrapId: rec.id });
+          console.error(`[demo] underlying gone: ${rec.id} — position closed on HL mid-cycle; concluded with vested-only credit`);
+        }
       }
     }
     if (dirty) await stores.saveWraps(records);
@@ -1517,6 +1571,63 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         capStrike: position.side === "long" ? probe.callStrike : probe.putStrike,
         expiryMs: probe.expiryMs,
         coveredBtc: sizing.coveredBtc,
+        coverageNote: sizing.coverageNote
+      });
+      return;
+    }
+    if (req.method === "GET" && route === "/api/preview") {
+      // No-address preview: the full value proposition (credit, floor, cap) priced off the REAL
+      // listed book for a hypothetical position — value first, wallet second. Preview-only by
+      // construction: wrapping still requires a live venue-read position (anti-fraud foundation).
+      const side: PerpSide = url.searchParams.get("side") === "short" ? "short" : "long";
+      const sizeBtc = Number(url.searchParams.get("sizeBtc") ?? "0.05");
+      if (!Number.isFinite(sizeBtc) || sizeBtc <= 0 || sizeBtc > 100) {
+        sendJson(res, 400, { ok: false, error: "invalid_size", message: "sizeBtc must be a positive number of BTC (≤100)" });
+        return;
+      }
+      const mark = lastHlMark ?? (await hl.midPx(coin).catch(() => null));
+      if (mark == null || !(mark > 0)) {
+        sendJson(res, 503, { ok: false, error: "no_price", message: "live price unavailable — try again in a moment" });
+        return;
+      }
+      const { derived } = effectiveGuards(mark);
+      const sizing = partialWrapSizing(sizeBtc, round2(sizeBtc * mark), derived.perWalletCapUsdc, 0, mark);
+      if (!sizing.ok) {
+        sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
+        return;
+      }
+      const plan = demoPlanStrikes(mark, side, floorPct, capPct);
+      const probe = await fetchOkxListedTouchQuote({
+        side,
+        spot: mark,
+        planPutStrike: plan.putStrike,
+        planCallStrike: plan.callStrike,
+        notionalUsdc: sizing.coveredNotionalUsdc,
+        contractsBtc: sizing.coveredBtc,
+        nowMs: Date.now()
+      });
+      if (!probe.ok) {
+        sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
+        return;
+      }
+      // A fresh wallet joining now gets the founding rate while the cohort has room — mirror /api/quote.
+      const rate = takeRateFor(capsInputs, Date.now(), Date.now());
+      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding);
+      recordPageLoad(funnelState, "preview", Date.now());
+      funnelDirty = true;
+      sendJson(res, 200, {
+        ok: true,
+        preview: true, // hypothetical position — nothing opens, nothing is stored
+        indicative: true,
+        side,
+        sizeBtc: sizing.coveredBtc,
+        spot: mark,
+        creditUsdc: split.traderCreditUsdc,
+        takeRatePct: split.appliedRatePct,
+        founding: rate.founding,
+        floorStrike: side === "long" ? probe.putStrike : probe.callStrike,
+        capStrike: side === "long" ? probe.callStrike : probe.putStrike,
+        expiryMs: probe.expiryMs,
         coverageNote: sizing.coverageNote
       });
       return;

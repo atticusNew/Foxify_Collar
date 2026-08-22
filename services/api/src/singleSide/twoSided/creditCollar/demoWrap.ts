@@ -388,6 +388,27 @@ export const demoVestingStatus = (rec: DemoWrapRecord, nowMs: number): DemoVesti
 };
 
 /**
+ * Underlying-gone check (anti-farming + correct semantics): protection ends when there is nothing
+ * left to protect. A wrap whose HL position has been closed (or flipped sides) mid-cycle must
+ * conclude early with VESTED-ONLY credit — otherwise "open a minimal position → wrap → close the
+ * position" farms a full day's credit while holding zero risk. `confirmAfter` consecutive gone
+ * readings are required before concluding, so one flaky venue read can never end a real cycle.
+ * Pure — the monitor owns the streak map and the actual conclusion.
+ */
+export type UnderlyingCheck = { gone: boolean; streak: number; confirmed: boolean };
+
+export const assessUnderlying = (
+  wrapSide: PerpSide,
+  venuePosition: { side: PerpSide } | null,
+  prevStreak: number,
+  confirmAfter = 2
+): UnderlyingCheck => {
+  const gone = venuePosition == null || venuePosition.side !== wrapSide;
+  const streak = gone ? prevStreak + 1 : 0;
+  return { gone, streak, confirmed: gone && streak >= confirmAfter };
+};
+
+/**
  * Voluntary early close (the toggle flipped OFF): conclude the wrap NOW — the client collects the
  * credit vested to this moment, the unvested remainder is clawed back, and the hedge unwinds
  * (paper lane: bookkeeping only; okx lanes surface the unwind in their own ledgers).

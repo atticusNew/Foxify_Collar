@@ -184,6 +184,19 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
       <button class="btn ghost" id="forgetBtn" style="display:none">Forget</button>
     </div>
     <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
+    <!-- No-address preview: the full value proposition off the live book before typing anything.
+         Preview-only by construction — wrapping always requires a live venue-read position. -->
+    <div id="previewBlock" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+      <div class="row" style="align-items:center">
+        <span class="small muted">No address handy? Preview what a position would earn:</span>
+        <select id="pvSide" style="background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:13px">
+          <option value="long">Long</option><option value="short">Short</option>
+        </select>
+        <input type="text" id="pvSize" value="0.05" inputmode="decimal" style="max-width:80px;text-align:right" title="Position size in BTC"> <span class="small muted">BTC</span>
+        <button class="btn ghost" id="pvBtn">Preview</button>
+      </div>
+      <div class="small muted" id="pvOut" style="margin-top:8px"></div>
+    </div>
   </div>
 
   <div class="card" id="verifyCard" style="display:none;border-color:rgba(80,210,193,.45)">
@@ -304,6 +317,8 @@ const setConn = () => {
   if (account) $("addrInput").value = account;
   // Mini App with a connected account: the connect card is noise — the pill carries the identity.
   if (MINIAPP) $("connectCard").style.display = account ? "none" : "";
+  // The preview is for the not-yet-connected: once an address is in, the real card takes over.
+  $("previewBlock").style.display = account ? "none" : "";
 };
 
 const api = async (path, opts) => {
@@ -579,6 +594,23 @@ const poll = async () => {
     render(pos.ok ? pos.positions : [], st.ok ? st : null);
     renderPayouts(st.ok ? st : null);
   } catch (e) { /* keep last render */ }
+};
+
+$("pvBtn").onclick = async () => {
+  const size = parseFloat($("pvSize").value);
+  if (!(size > 0)) { $("pvOut").textContent = "Enter a size in BTC (e.g. 0.05)."; return; }
+  $("pvOut").innerHTML = '<span class="spin"></span> Pricing off the live option book…';
+  try {
+    const j = await api("/api/preview?side=" + $("pvSide").value + "&sizeBtc=" + encodeURIComponent(size));
+    if (!j.ok) { $("pvOut").textContent = humanChip(j.message || j.error); return; }
+    $("pvOut").innerHTML =
+      'A ' + esc(j.side) + ' ' + esc(String(j.sizeBtc)) + ' BTC position would earn <b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b> today' +
+      ' · hard floor ' + fmtPx(j.floorStrike) + ' · cap ' + fmtPx(j.capStrike) +
+      (j.founding ? ' · founding rate' : '') +
+      '<br>Live market quote — nothing opens, nothing is stored. Paste your address above to make it real.';
+  } catch (e) {
+    $("pvOut").textContent = "Couldn't reach the pricer — try again in a moment.";
+  }
 };
 
 $("connectBtn").onclick = () => {
