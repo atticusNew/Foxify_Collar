@@ -197,7 +197,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
       <div class="small muted" style="text-transform:uppercase;letter-spacing:.6px;font-weight:700;font-size:11px;margin-bottom:10px">Try it first — no address needed</div>
       <div class="row" style="align-items:center">
         <div class="seg" id="pvSeg"><button type="button" class="on" data-side="long">Long</button><button type="button" data-side="short">Short</button></div>
-        <div class="pv-amt"><span>$</span><input id="pvUsd" value="2,000" inputmode="numeric" title="Position size in USD" aria-label="Position size in USD"></div>
+        <div class="pv-amt"><span>$</span><input id="pvUsd" value="10,000" inputmode="numeric" title="Position size in USD" aria-label="Position size in USD"></div>
         <span class="small muted">position</span>
         <button class="btn" id="pvBtn">Preview credit</button>
       </div>
@@ -620,7 +620,6 @@ $("pvBtn").onclick = async () => {
     const fPct = ((j.floorStrike - j.spot) / j.spot) * 100;
     const cPct = ((j.capStrike - j.spot) / j.spot) * 100;
     const sign = (x) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(1) + "%";
-    const clipped = j.protectedUsd < j.requestedUsd - 1;
     $("pvOut").innerHTML =
       '<div class="terms">' +
         '<div class="term"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit' + (j.founding ? ' <span class="badge founding">FOUNDING RATE</span>' : '') + '</div>' +
@@ -628,10 +627,8 @@ $("pvBtn").onclick = async () => {
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
       '<div class="small muted" style="margin-top:8px">' +
-        (clipped
-          ? 'Protects <b style="color:var(--text)">' + fmt$(j.protectedUsd) + '</b> of your ' + fmt$(j.requestedUsd) + ' \\u2014 today\\u2019s per-wallet capacity; grows with the book. '
-          : 'Protects your ' + fmt$(j.protectedUsd) + ' (\\u2248 ' + esc(String(j.coveredBtc)) + ' BTC). ') +
-        'Live market quote \\u2014 nothing opens, nothing is stored.' +
+        'For a ' + fmt$(j.protectedUsd) + ' ' + esc(j.side) + ' \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
+        (j.exceedsCurrentCap ? ' Early access may protect part of this at first \\u2014 capacity grows with the book.' : '') +
       '</div>';
   } catch (e) {
     $("pvOut").innerHTML = '<div class="small muted" style="margin-top:8px">Couldn\\u2019t reach the pricer \\u2014 try again in a moment.</div>';

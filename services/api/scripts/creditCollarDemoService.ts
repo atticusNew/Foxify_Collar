@@ -1579,10 +1579,11 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // No-address preview: the full value proposition (credit, floor, cap) priced off the REAL
       // listed book for a hypothetical position — value first, wallet second. Preview-only by
       // construction: wrapping still requires a live venue-read position (anti-fraud foundation).
-      // IDENTICAL code path to /api/quote (guards → partial sizing → listed probe → take) so the
-      // number a visitor previews is the number a wrap would quote — including the per-wallet
-      // capacity clip, which the response spells out (protectedUsd vs requestedUsd) so a big
-      // position's small credit reads as "capacity" and never as broken math.
+      // Pricing is the SAME live-book path a wrap uses (plan → listed probe → take) but for the
+      // FULL requested size — the preview sells the product's true economics, not today's book
+      // capital. The per-wallet capacity clip still applies to REAL wraps; when the previewed
+      // size exceeds it, the response flags it so the client can add one soft, numberless line
+      // (never a math lesson, never a silent clip that reads as broken pricing — both were tried).
       const side: PerpSide = url.searchParams.get("side") === "short" ? "short" : "long";
       const mark = lastHlMark ?? (await hl.midPx(coin).catch(() => null));
       if (mark == null || !(mark > 0)) {
@@ -1598,7 +1599,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         return;
       }
       const { derived } = effectiveGuards(mark);
-      const sizing = partialWrapSizing(sizeBtc, requestedUsd, derived.perWalletCapUsdc, 0, mark);
+      // Full size, whole lots only (requestedUsd as its own cap ⟹ lot rounding is the only trim).
+      const sizing = partialWrapSizing(sizeBtc, requestedUsd, requestedUsd, 0, mark);
       if (!sizing.ok) {
         sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
         return;
@@ -1631,6 +1633,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         protectedUsd: sizing.coveredNotionalUsdc,
         coveredBtc: sizing.coveredBtc,
         perWalletCapUsdc: derived.perWalletCapUsdc,
+        // True ⟹ a real wrap today would protect part of this while early capacity fills.
+        exceedsCurrentCap: sizing.coveredNotionalUsdc > derived.perWalletCapUsdc,
         spot: mark,
         creditUsdc: split.traderCreditUsdc,
         takeRatePct: split.appliedRatePct,
