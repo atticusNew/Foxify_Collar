@@ -249,7 +249,13 @@
 
 ### 6.2 Trader DM (personalize line 1; 10/day to active HL posters)
 
-> Hey — saw your [specific post/position]. I built a toggle for HL positions: hard floor + a daily credit, hedged on listed options. Live now, I run my own money through it. Before I push it wider I want sharp traders to roast it — read-only demo, no keys, 10 seconds: earnandprotect.xyz. If you find something dumb I'll fix it and credit you. Founding slot (10% rate, 12mo lock) is yours either way.
+*Rules baked into this draft: founder self-ID + naming the structure (credibility with sharp traders); mechanics instead of safety claims ("read-only, no keys" — never "no risk", which is both scam-cadence and factually wrong); volunteer the catch before they hunt for it; concrete offer at the close.*
+
+> Hey {name} — founder of Atticus here. Saw your [specific post/position].
+>
+> We built Earn & Protect: a toggle for HL positions. Flip it on and your position gets a hard floor and pays you a daily credit — an institutional knockout collar, hedged leg-for-leg on listed options. The catch, so you don't have to hunt for it: there's a cap, and touching it ends the cycle (you keep the gains, the credit, and it re-arms).
+>
+> It's live and my own money runs through it. Before I push it wider I want sharp traders to roast it. Read-only — paste your address, no keys, nothing to deposit, 10 seconds: earnandprotect.xyz. Find something dumb and I'll fix it, credit you publicly, and hold you a founding slot (10% rate, locked 12 months).
 
 ### 6.3 Roast post (fire if the launch thread stalls by day 3–4)
 
