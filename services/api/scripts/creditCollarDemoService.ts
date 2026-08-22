@@ -92,6 +92,7 @@ import {
   type LoopPulse
 } from "../src/singleSide/twoSided/creditCollar/epSafety";
 import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
+import { emptyFunnel, funnelSummary, recordLooker, recordPageLoad, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
 import { actionCleared, closeAllowed, verifyMessageText, verifyWalletSignature } from "../src/singleSide/twoSided/creditCollar/epVerify";
 import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
 import { EP_PUBLIC_DASHBOARD_HTML, EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
@@ -142,10 +143,16 @@ const storePaths: EpStorePaths = {
   registry: process.env.EP_WALLET_REGISTRY_PATH ?? "./logs/ep-wallets.json",
   runtime: process.env.EP_RUNTIME_PATH ?? "./logs/ep-runtime.json",
   tos: process.env.EP_TOS_STORE_PATH ?? "./logs/ep-tos.json",
-  waitlist: process.env.EP_WAITLIST_PATH ?? "./logs/ep-waitlist.json"
+  waitlist: process.env.EP_WAITLIST_PATH ?? "./logs/ep-waitlist.json",
+  funnel: process.env.EP_FUNNEL_PATH ?? "./logs/ep-funnel.json"
 };
 const pgPool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, max: 5 }) : null;
 const stores: EpStores = pgPool ? postgresStores(pgPool) : jsonStores(storePaths);
+
+// Top-of-funnel counters (who LOOKED, not just who wrapped) — in-memory, flushed by a boot-started
+// timer. Distinguishes a reach problem from a conversion problem during launch.
+let funnelState: FunnelState = emptyFunnel();
+let funnelDirty = false;
 
 // Safety rails: admin auth, per-IP rate limits, alert fan-out, loop watchdog.
 const adminAuth = parseAdminAuthFromEnv(process.env);
@@ -1195,6 +1202,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
     // ── Pages ──
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app" || url.pathname === "/miniapp")) {
+      recordPageLoad(funnelState, url.pathname === "/miniapp" ? "miniapp" : "app", Date.now());
+      funnelDirty = true;
       // Brand mark after "by": the single-SVG Atticus lockup when the asset exists (pixel-perfect
       // brand file, served by us at /assets/atticus-lockup.svg — no third-party host), otherwise
       // the live-text fallback: "Atticus" in gold serif + the finch image (EP_BRAND_LOGO_URL
@@ -1248,6 +1257,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
     if (req.method === "GET" && url.pathname === "/public") {
+      recordPageLoad(funnelState, "public", Date.now());
+      funnelDirty = true;
       sendHtml(res, EP_PUBLIC_DASHBOARD_HTML);
       return;
     }
@@ -1424,6 +1435,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 403, { ok: false, error: "admin_required", message: "whole-book state requires the admin token" });
         return;
       }
+      // Funnel: only EXPLICIT account params count as a look — the env-default account (control
+      // room, extension fallback) polling itself is not a visitor.
+      if (url.searchParams.get("account") && recordLooker(funnelState, acct.account, Date.now())) funnelDirty = true;
       sendJson(res, 200, await buildState(acct.account, wantAll));
       return;
     }
@@ -1433,6 +1447,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
         return;
       }
+      if (url.searchParams.get("account") && recordLooker(funnelState, acct.account, Date.now())) funnelDirty = true;
       const [positions, mids] = await Promise.all([hl.allPositions(acct.account), hl.allMids()]);
       sendJson(res, 200, {
         ok: true,
@@ -1646,7 +1661,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         wallets: Object.keys(registry).length,
         payoutBacklog: ledger.filter((e) => e.status === "accrued" || e.status === "queued").length,
         payoutFailures: ledger.filter((e) => e.status === "failed").length,
-        loops: Object.values(loopPulses).map((p) => ({ name: p.name, lastRunMs: p.lastRunMs, intervalMs: p.intervalMs }))
+        loops: Object.values(loopPulses).map((p) => ({ name: p.name, lastRunMs: p.lastRunMs, intervalMs: p.intervalMs })),
+        // Top of funnel: who LOOKED (distinct addresses that viewed positions/state) vs who
+        // wrapped — tells reach problems apart from conversion problems. Admin-only.
+        funnel: funnelSummary(funnelState, new Set(Object.keys(registry)), Date.now())
       });
       return;
     }
@@ -1699,6 +1717,13 @@ server.listen(port, () => {
     runtimePaused = runtime.paused;
     runtimePausedReason = runtime.pausedReason;
     if (runtimePaused) console.error(`[demo] runtime: PAUSED — ${runtimePausedReason ?? "no reason recorded"}`);
+    // Top-of-funnel counters: restore, then flush at most once a minute when dirty.
+    funnelState = await stores.loadFunnel();
+    setInterval(() => {
+      if (!funnelDirty) return;
+      funnelDirty = false;
+      void stores.saveFunnel(funnelState).catch((e) => console.error(`[demo] funnel save failed: ${(e as Error).message}`));
+    }, 60_000);
     await bootReconcile();
 
     const refCaps = deriveCaps(capsInputs, 0);

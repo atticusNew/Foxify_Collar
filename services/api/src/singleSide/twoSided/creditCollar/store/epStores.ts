@@ -23,6 +23,7 @@ import {
 } from "../demoWrap";
 import { loadPayoutLedger, savePayoutLedger, type PayoutEntry } from "../settlement/payoutLedger";
 import type { WalletRegistry } from "../capsConfig";
+import { emptyFunnel, type FunnelState } from "../epFunnel";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolveWritablePath } from "../shadowStore";
 
@@ -34,6 +35,7 @@ export type EpStorePaths = {
   runtime: string; // kill-switch / pause flag
   tos: string; // per-account Terms acceptances
   waitlist: string; // wallets queued beyond the founding cohort
+  funnel: string; // top-of-funnel counters (lookers + page loads)
 };
 
 /**
@@ -67,6 +69,8 @@ export type EpStores = {
   saveTos: (tos: TosRegistry) => Promise<void>;
   loadWaitlist: () => Promise<WaitlistEntry[]>;
   saveWaitlist: (entries: WaitlistEntry[]) => Promise<void>;
+  loadFunnel: () => Promise<FunnelState>;
+  saveFunnel: (funnel: FunnelState) => Promise<void>;
   /** Demo affordance: clear everything (guarded by DEMO_ALLOW_RESET upstream). */
   clearAll: () => Promise<void>;
 };
@@ -125,6 +129,8 @@ export const jsonStores = (paths: EpStorePaths): EpStores => ({
       console.error(`[ep-store] waitlist save failed: ${(e as Error).message}`);
     }
   },
+  loadFunnel: async () => loadJsonObject<FunnelState>(paths.funnel, emptyFunnel()),
+  saveFunnel: async (funnel) => saveJsonObject(paths.funnel, funnel),
   clearAll: async () => {
     saveDemoWraps([], paths.wraps);
     saveProtectionPrefs({}, paths.protection);
@@ -133,6 +139,7 @@ export const jsonStores = (paths: EpStorePaths): EpStores => ({
     saveJsonObject(paths.runtime, DEFAULT_RUNTIME);
     saveJsonObject(paths.tos, {});
     saveJsonObject(paths.waitlist, []);
+    saveJsonObject(paths.funnel, emptyFunnel());
   }
 });
 
@@ -148,7 +155,8 @@ const EP_TABLES: Array<{ name: string; ddl: string }> = [
   { name: "ep_wallets", ddl: "CREATE TABLE ep_wallets (account TEXT PRIMARY KEY, joined_at_ms BIGINT NOT NULL)" },
   { name: "ep_runtime", ddl: "CREATE TABLE ep_runtime (k TEXT PRIMARY KEY, v JSONB NOT NULL)" },
   { name: "ep_tos", ddl: "CREATE TABLE ep_tos (account TEXT PRIMARY KEY, acceptance JSONB NOT NULL)" },
-  { name: "ep_waitlist", ddl: "CREATE TABLE ep_waitlist (account TEXT PRIMARY KEY, joined_at_ms BIGINT NOT NULL)" }
+  { name: "ep_waitlist", ddl: "CREATE TABLE ep_waitlist (account TEXT PRIMARY KEY, joined_at_ms BIGINT NOT NULL)" },
+  { name: "ep_funnel", ddl: "CREATE TABLE ep_funnel (k TEXT PRIMARY KEY, v JSONB NOT NULL)" }
 ];
 
 /**
@@ -264,8 +272,13 @@ export const postgresStores = (pool: Queryable): EpStores => ({
       "ep_waitlist",
       entries.map((e) => ({ cols: ["account", "joined_at_ms"], vals: [e.account.toLowerCase(), e.joinedAtMs] }))
     ),
+  loadFunnel: async () => {
+    const res = await pool.query("SELECT v FROM ep_funnel WHERE k = 'state'");
+    return res.rows.length ? parseJsonb<FunnelState>(res.rows[0].v) : emptyFunnel();
+  },
+  saveFunnel: async (funnel) => replaceAll(pool, "ep_funnel", [{ cols: ["k", "v"], vals: ["state", JSON.stringify(funnel)] }]),
   clearAll: async () => {
-    for (const t of ["ep_wraps", "ep_protection", "ep_payouts", "ep_wallets", "ep_runtime", "ep_tos", "ep_waitlist"]) await pool.query(`DELETE FROM ${t}`);
+    for (const t of ["ep_wraps", "ep_protection", "ep_payouts", "ep_wallets", "ep_runtime", "ep_tos", "ep_waitlist", "ep_funnel"]) await pool.query(`DELETE FROM ${t}`);
   }
 });
 
@@ -282,14 +295,15 @@ export const migrateJsonToPostgres = async (paths: EpStorePaths, pool: Queryable
     if (existing.length > 0) throw new Error(`postgres already holds ${existing.length} wraps — pass force to replace`);
   }
   const json = jsonStores(paths);
-  const [wraps, prefs, ledger, registry, runtime, tos, waitlist] = await Promise.all([
+  const [wraps, prefs, ledger, registry, runtime, tos, waitlist, funnel] = await Promise.all([
     json.loadWraps(),
     json.loadPrefs(),
     json.loadLedger(),
     json.loadRegistry(),
     json.loadRuntime(),
     json.loadTos(),
-    json.loadWaitlist()
+    json.loadWaitlist(),
+    json.loadFunnel()
   ]);
   await pg.saveWraps(wraps);
   await pg.savePrefs(prefs);
@@ -298,6 +312,7 @@ export const migrateJsonToPostgres = async (paths: EpStorePaths, pool: Queryable
   await pg.saveRuntime(runtime);
   await pg.saveTos(tos);
   await pg.saveWaitlist(waitlist);
+  await pg.saveFunnel(funnel);
   return { wraps: wraps.length, prefs: Object.keys(prefs).length, payouts: ledger.length, wallets: Object.keys(registry).length };
 };
 

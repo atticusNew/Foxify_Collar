@@ -27,7 +27,8 @@ const tmpPaths = (): EpStorePaths => {
     registry: join(dir, "wallets.json"),
     runtime: join(dir, "runtime.json"),
     tos: join(dir, "tos.json"),
-    waitlist: join(dir, "waitlist.json")
+    waitlist: join(dir, "waitlist.json"),
+    funnel: join(dir, "funnel.json")
   };
 };
 

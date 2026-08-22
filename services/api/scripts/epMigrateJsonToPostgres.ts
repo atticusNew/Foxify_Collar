@@ -24,7 +24,9 @@ const main = async (): Promise<void> => {
     ledger: process.env.DEMO_PAYOUT_LEDGER_PATH ?? "./logs/demo-payout-ledger.json",
     registry: process.env.EP_WALLET_REGISTRY_PATH ?? "./logs/ep-wallets.json",
     runtime: process.env.EP_RUNTIME_PATH ?? "./logs/ep-runtime.json",
-    tos: process.env.EP_TOS_STORE_PATH ?? "./logs/ep-tos.json"
+    tos: process.env.EP_TOS_STORE_PATH ?? "./logs/ep-tos.json",
+    waitlist: process.env.EP_WAITLIST_PATH ?? "./logs/ep-waitlist.json",
+    funnel: process.env.EP_FUNNEL_PATH ?? "./logs/ep-funnel.json"
   };
   const pool = new Pool({ connectionString: url, max: 2 });
   try {
