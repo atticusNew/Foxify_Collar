@@ -257,7 +257,7 @@ const haptic = (kind) => { if (TG && TG.HapticFeedback) { try { kind === "impact
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const fmt$ = (x) => x == null ? "—" : (x < 0 ? "−$" : "$") + Math.abs(x).toFixed(2);
+const fmt$ = (x) => x == null ? "—" : (x < 0 ? "−$" : "$") + Math.abs(x).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtPx = (x) => x == null ? "—" : "$" + Number(x).toLocaleString("en-US", { maximumFractionDigits: 1 });
 const short = (a) => a ? a.slice(0,6) + "…" + a.slice(-4) : "";
 
@@ -627,7 +627,7 @@ $("pvBtn").onclick = async () => {
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
       '<div class="small muted" style="margin-top:8px">' +
-        'For a ' + fmt$(j.protectedUsd) + ' ' + esc(j.side) + ' \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
+        'For a ' + fmt$(j.protectedUsd) + ' ' + esc(j.side) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ') \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
         (j.exceedsCurrentCap ? ' Early access may protect part of this at first \\u2014 capacity grows with the book.' : '') +
       '</div>';
   } catch (e) {
@@ -658,6 +658,18 @@ $("forgetBtn").onclick = () => {
   $("positions").innerHTML = '<div class="empty">Connect an address to see your open positions.</div>';
   renderPayouts(null);
 };
+
+// Live HL mark in the header from the FIRST paint — no address required. Once an account
+// connects, the state poll owns the ticker and this quietly stands down.
+const pollPx = async () => {
+  if (account) return;
+  try {
+    const j = await api("/api/px");
+    if (j.ok) setMarkPx(j.pxUsd);
+  } catch (e) { /* keep last value */ }
+};
+pollPx();
+setInterval(pollPx, 15000);
 
 setConn();
 checkGates();

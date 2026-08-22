@@ -1575,6 +1575,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       });
       return;
     }
+    if (req.method === "GET" && route === "/api/px") {
+      // Public live mark for the header ticker — visible BEFORE any address is connected (the
+      // pre-connect visitor reading floor/cap percentages is exactly who needs the reference).
+      const mark = lastHlMark ?? (await hl.midPx(coin).catch(() => null));
+      sendJson(res, mark != null && mark > 0 ? 200 : 503, { ok: mark != null && mark > 0, coin, pxUsd: mark });
+      return;
+    }
     if (req.method === "GET" && route === "/api/preview") {
       // No-address preview: the full value proposition (credit, floor, cap) priced off the REAL
       // listed book for a hypothetical position — value first, wallet second. Preview-only by
