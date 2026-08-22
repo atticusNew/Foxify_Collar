@@ -1579,19 +1579,26 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // No-address preview: the full value proposition (credit, floor, cap) priced off the REAL
       // listed book for a hypothetical position — value first, wallet second. Preview-only by
       // construction: wrapping still requires a live venue-read position (anti-fraud foundation).
+      // IDENTICAL code path to /api/quote (guards → partial sizing → listed probe → take) so the
+      // number a visitor previews is the number a wrap would quote — including the per-wallet
+      // capacity clip, which the response spells out (protectedUsd vs requestedUsd) so a big
+      // position's small credit reads as "capacity" and never as broken math.
       const side: PerpSide = url.searchParams.get("side") === "short" ? "short" : "long";
-      const sizeBtc = Number(url.searchParams.get("sizeBtc") ?? "0.05");
-      if (!Number.isFinite(sizeBtc) || sizeBtc <= 0 || sizeBtc > 100) {
-        sendJson(res, 400, { ok: false, error: "invalid_size", message: "sizeBtc must be a positive number of BTC (≤100)" });
-        return;
-      }
       const mark = lastHlMark ?? (await hl.midPx(coin).catch(() => null));
       if (mark == null || !(mark > 0)) {
         sendJson(res, 503, { ok: false, error: "no_price", message: "live price unavailable — try again in a moment" });
         return;
       }
+      // USD notional is the native input (traders think in $); sizeBtc kept as a legacy alias.
+      const usdParam = url.searchParams.get("usd");
+      const sizeBtc = usdParam != null ? Number(usdParam) / mark : Number(url.searchParams.get("sizeBtc") ?? "0.02");
+      const requestedUsd = round2(sizeBtc * mark);
+      if (!Number.isFinite(sizeBtc) || sizeBtc <= 0 || requestedUsd > 100_000_000) {
+        sendJson(res, 400, { ok: false, error: "invalid_size", message: "position size must be a positive USD amount (≤ $100M)" });
+        return;
+      }
       const { derived } = effectiveGuards(mark);
-      const sizing = partialWrapSizing(sizeBtc, round2(sizeBtc * mark), derived.perWalletCapUsdc, 0, mark);
+      const sizing = partialWrapSizing(sizeBtc, requestedUsd, derived.perWalletCapUsdc, 0, mark);
       if (!sizing.ok) {
         sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
         return;
@@ -1620,7 +1627,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         preview: true, // hypothetical position — nothing opens, nothing is stored
         indicative: true,
         side,
-        sizeBtc: sizing.coveredBtc,
+        requestedUsd,
+        protectedUsd: sizing.coveredNotionalUsdc,
+        coveredBtc: sizing.coveredBtc,
+        perWalletCapUsdc: derived.perWalletCapUsdc,
         spot: mark,
         creditUsdc: split.traderCreditUsdc,
         takeRatePct: split.appliedRatePct,

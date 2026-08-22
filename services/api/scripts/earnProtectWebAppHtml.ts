@@ -82,6 +82,13 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
   .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(80,210,193,.25);border-top-color:var(--accent);border-radius:50%;margin-right:7px;vertical-align:-1.5px;animation:spinr .7s linear infinite}
   @keyframes spinr{to{transform:rotate(360deg)}}
+  /* Preview controls — same texture as the position card (segmented side, $ amount, terms grid) */
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{background:var(--panel2);color:var(--muted);border:0;padding:8px 16px;font-size:12.5px;font-weight:700;cursor:pointer;letter-spacing:.3px}
+  .seg button.on{background:rgba(80,210,193,.14);color:var(--accent)}
+  .pv-amt{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:8px;background:var(--panel2);padding:0 4px 0 12px}
+  .pv-amt>span{color:var(--muted);font-size:13.5px}
+  .pv-amt input{background:transparent;border:0;outline:0;color:var(--text);font-size:13.5px;font-weight:600;padding:8px 8px 8px 3px;width:88px}
   .chip{margin-top:12px;border-radius:6px;padding:10px 12px;font-size:13px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);transition:all .3s}
   .chip.on{border-color:rgba(80,210,193,.45);color:var(--text)} .chip.bad{border-color:rgba(237,112,136,.45)} .chip b{color:var(--accent)}
   .terms{margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:12px;color:var(--muted)}
@@ -186,16 +193,15 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
     <!-- No-address preview: the full value proposition off the live book before typing anything.
          Preview-only by construction — wrapping always requires a live venue-read position. -->
-    <div id="previewBlock" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+    <div id="previewBlock" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+      <div class="small muted" style="text-transform:uppercase;letter-spacing:.6px;font-weight:700;font-size:11px;margin-bottom:10px">Try it first — no address needed</div>
       <div class="row" style="align-items:center">
-        <span class="small muted">No address handy? Preview what a position would earn:</span>
-        <select id="pvSide" style="background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:13px">
-          <option value="long">Long</option><option value="short">Short</option>
-        </select>
-        <input type="text" id="pvSize" value="0.05" inputmode="decimal" style="max-width:80px;text-align:right" title="Position size in BTC"> <span class="small muted">BTC</span>
-        <button class="btn ghost" id="pvBtn">Preview</button>
+        <div class="seg" id="pvSeg"><button type="button" class="on" data-side="long">Long</button><button type="button" data-side="short">Short</button></div>
+        <div class="pv-amt"><span>$</span><input id="pvUsd" value="2,000" inputmode="numeric" title="Position size in USD" aria-label="Position size in USD"></div>
+        <span class="small muted">position</span>
+        <button class="btn" id="pvBtn">Preview credit</button>
       </div>
-      <div class="small muted" id="pvOut" style="margin-top:8px"></div>
+      <div id="pvOut"></div>
     </div>
   </div>
 
@@ -596,20 +602,39 @@ const poll = async () => {
   } catch (e) { /* keep last render */ }
 };
 
+let pvSide = "long";
+for (const b of document.querySelectorAll("#pvSeg button")) {
+  b.onclick = () => {
+    pvSide = b.dataset.side;
+    for (const x of document.querySelectorAll("#pvSeg button")) x.classList.toggle("on", x === b);
+  };
+}
 $("pvBtn").onclick = async () => {
-  const size = parseFloat($("pvSize").value);
-  if (!(size > 0)) { $("pvOut").textContent = "Enter a size in BTC (e.g. 0.05)."; return; }
-  $("pvOut").innerHTML = '<span class="spin"></span> Pricing off the live option book…';
+  const usd = parseFloat($("pvUsd").value.replace(/[$,\\s]/g, ""));
+  if (!(usd > 0)) { $("pvOut").innerHTML = '<div class="small muted" style="margin-top:8px">Enter a position size in dollars, e.g. 2,000.</div>'; return; }
+  $("pvOut").innerHTML = '<div class="small muted" style="margin-top:10px"><span class="spin"></span>Pricing off the live option book…</div>';
   try {
-    const j = await api("/api/preview?side=" + $("pvSide").value + "&sizeBtc=" + encodeURIComponent(size));
-    if (!j.ok) { $("pvOut").textContent = humanChip(j.message || j.error); return; }
+    const j = await api("/api/preview?side=" + pvSide + "&usd=" + encodeURIComponent(usd));
+    if (!j.ok) { $("pvOut").innerHTML = '<div class="chip bad">' + esc(humanChip(j.message || j.error)) + '</div>'; return; }
+    // Same terms grid as the real position card — the preview should look like the product.
+    const fPct = ((j.floorStrike - j.spot) / j.spot) * 100;
+    const cPct = ((j.capStrike - j.spot) / j.spot) * 100;
+    const sign = (x) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(1) + "%";
+    const clipped = j.protectedUsd < j.requestedUsd - 1;
     $("pvOut").innerHTML =
-      'A ' + esc(j.side) + ' ' + esc(String(j.sizeBtc)) + ' BTC position would earn <b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b> today' +
-      ' · hard floor ' + fmtPx(j.floorStrike) + ' · cap ' + fmtPx(j.capStrike) +
-      (j.founding ? ' · founding rate' : '') +
-      '<br>Live market quote — nothing opens, nothing is stored. Paste your address above to make it real.';
+      '<div class="terms">' +
+        '<div class="term"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit' + (j.founding ? ' <span class="badge founding">FOUNDING RATE</span>' : '') + '</div>' +
+        '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + sign(fPct) + '</em></b>hard floor</div>' +
+        '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
+      '</div>' +
+      '<div class="small muted" style="margin-top:8px">' +
+        (clipped
+          ? 'Protects <b style="color:var(--text)">' + fmt$(j.protectedUsd) + '</b> of your ' + fmt$(j.requestedUsd) + ' \\u2014 today\\u2019s per-wallet capacity; grows with the book. '
+          : 'Protects your ' + fmt$(j.protectedUsd) + ' (\\u2248 ' + esc(String(j.coveredBtc)) + ' BTC). ') +
+        'Live market quote \\u2014 nothing opens, nothing is stored.' +
+      '</div>';
   } catch (e) {
-    $("pvOut").textContent = "Couldn't reach the pricer — try again in a moment.";
+    $("pvOut").innerHTML = '<div class="small muted" style="margin-top:8px">Couldn\\u2019t reach the pricer \\u2014 try again in a moment.</div>';
   }
 };
 
