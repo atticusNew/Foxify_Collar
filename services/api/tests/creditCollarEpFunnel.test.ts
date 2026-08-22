@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { newDb } from "pg-mem";
-import { emptyFunnel, funnelSummary, recordLooker, recordPageLoad, dayKey } from "../src/singleSide/twoSided/creditCollar/epFunnel";
+import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, recordPageLoad, dayKey } from "../src/singleSide/twoSided/creditCollar/epFunnel";
 import { ensureEpSchema, jsonStores, postgresStores, type EpStorePaths } from "../src/singleSide/twoSided/creditCollar/store/epStores";
 
 const NOW = 1_800_000_000_000;
@@ -36,6 +36,23 @@ test("funnel: summary separates lookers from wrappers — the conversion gap", (
   assert.equal(s.recentLookers[0].account, ADDR_B); // newest first
   assert.equal(s.recentLookers[0].wrapped, false);
   assert.equal(s.recentLookers[1].wrapped, true);
+});
+
+test("funnel: internal accounts (operator's own wallets) are flagged and excluded from headline counts", () => {
+  const f = emptyFunnel();
+  recordLooker(f, ADDR_A, NOW - 1000); // the operator, testing constantly
+  recordLooker(f, ADDR_A, NOW - 500);
+  recordLooker(f, ADDR_B, NOW); // a real visitor
+  const internal = parseInternalAccounts(` ${ADDR_A.toUpperCase()} , not-an-address `); // messy env input
+  assert.deepEqual([...internal], [ADDR_A]);
+  const s = funnelSummary(f, new Set([ADDR_A]), NOW, internal);
+  assert.equal(s.distinctLookers, 1, "operator excluded from the headline");
+  assert.equal(s.lookers24h, 1);
+  assert.equal(s.lookedNeverWrapped, 1, "the real visitor hasn't wrapped");
+  assert.equal(s.internalLookers, 1);
+  const mine = s.recentLookers.find((r) => r.account === ADDR_A);
+  assert.equal(mine?.internal, true, "still visible in the log, flagged");
+  assert.equal(s.recentLookers.find((r) => r.account === ADDR_B)?.internal, false);
 });
 
 test("funnel: page loads bucket by UTC day, summarize the last 7, prune beyond 30", () => {

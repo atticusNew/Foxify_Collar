@@ -48,25 +48,40 @@ export const recordPageLoad = (f: FunnelState, page: "app" | "miniapp" | "public
 };
 
 export type FunnelSummary = {
+  /** Headline counts EXCLUDE internal accounts (the operator's own test wallets). */
   distinctLookers: number;
   lookers24h: number;
   lookers7d: number;
-  /** The conversion gap: looked at positions but never wrapped. */
+  /** The conversion gap: looked at positions but never wrapped (external only). */
   lookedNeverWrapped: number;
-  /** Most recent lookers (≤20), newest first — the operator's "who came by" view. */
-  recentLookers: Array<{ account: string; views: number; firstMs: number; lastMs: number; wrapped: boolean }>;
-  /** Last 7 UTC days of page loads, oldest first, with per-page counts. */
+  /** How many of the recorded lookers are the operator's own accounts. */
+  internalLookers: number;
+  /** Most recent lookers (≤20), newest first — internal rows flagged, not hidden. */
+  recentLookers: Array<{ account: string; views: number; firstMs: number; lastMs: number; wrapped: boolean; internal: boolean }>;
+  /** Last 7 UTC days of page loads, oldest first, with per-page counts. Page loads happen before
+   *  an address is typed, so they CANNOT be attributed to a wallet — internal visits included. */
   pageLoads7d: Array<{ day: string; total: number; byPage: Record<string, number> }>;
 };
 
-export const funnelSummary = (f: FunnelState, wrappedAccounts: Set<string>, nowMs: number): FunnelSummary => {
+/** Parse EP_INTERNAL_ACCOUNTS (comma-separated addresses) — the operator's own test wallets. */
+export const parseInternalAccounts = (raw: string | undefined): Set<string> =>
+  new Set(
+    (raw ?? "")
+      .split(",")
+      .map((a) => a.trim().toLowerCase())
+      .filter((a) => /^0x[0-9a-f]{40}$/.test(a))
+  );
+
+export const funnelSummary = (f: FunnelState, wrappedAccounts: Set<string>, nowMs: number, internalAccounts: Set<string> = new Set()): FunnelSummary => {
   const rows = Object.entries(f.lookers);
   const wrapped = new Set([...wrappedAccounts].map((a) => a.toLowerCase()));
+  const internal = new Set([...internalAccounts].map((a) => a.toLowerCase()));
+  const external = rows.filter(([a]) => !internal.has(a));
   const within = (row: LookerRow, ms: number) => nowMs - row.lastMs <= ms;
   const recent = rows
     .sort((a, b) => b[1].lastMs - a[1].lastMs)
     .slice(0, 20)
-    .map(([account, r]) => ({ account, views: r.views, firstMs: r.firstMs, lastMs: r.lastMs, wrapped: wrapped.has(account) }));
+    .map(([account, r]) => ({ account, views: r.views, firstMs: r.firstMs, lastMs: r.lastMs, wrapped: wrapped.has(account), internal: internal.has(account) }));
   const days: Array<{ day: string; total: number; byPage: Record<string, number> }> = [];
   for (let i = 6; i >= 0; i--) {
     const day = dayKey(nowMs - i * DAY_MS);
@@ -74,10 +89,11 @@ export const funnelSummary = (f: FunnelState, wrappedAccounts: Set<string>, nowM
     days.push({ day, total: Object.values(byPage).reduce((s, n) => s + n, 0), byPage });
   }
   return {
-    distinctLookers: rows.length,
-    lookers24h: rows.filter(([, r]) => within(r, DAY_MS)).length,
-    lookers7d: rows.filter(([, r]) => within(r, 7 * DAY_MS)).length,
-    lookedNeverWrapped: rows.filter(([a]) => !wrapped.has(a)).length,
+    distinctLookers: external.length,
+    lookers24h: external.filter(([, r]) => within(r, DAY_MS)).length,
+    lookers7d: external.filter(([, r]) => within(r, 7 * DAY_MS)).length,
+    lookedNeverWrapped: external.filter(([a]) => !wrapped.has(a)).length,
+    internalLookers: rows.length - external.length,
     recentLookers: recent,
     pageLoads7d: days
   };

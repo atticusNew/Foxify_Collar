@@ -92,7 +92,7 @@ import {
   type LoopPulse
 } from "../src/singleSide/twoSided/creditCollar/epSafety";
 import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
-import { emptyFunnel, funnelSummary, recordLooker, recordPageLoad, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
+import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, recordPageLoad, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
 import { actionCleared, closeAllowed, verifyMessageText, verifyWalletSignature } from "../src/singleSide/twoSided/creditCollar/epVerify";
 import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
 import { EP_PUBLIC_DASHBOARD_HTML, EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
@@ -150,9 +150,11 @@ const pgPool = process.env.DATABASE_URL ? new Pool({ connectionString: process.e
 const stores: EpStores = pgPool ? postgresStores(pgPool) : jsonStores(storePaths);
 
 // Top-of-funnel counters (who LOOKED, not just who wrapped) — in-memory, flushed by a boot-started
-// timer. Distinguishes a reach problem from a conversion problem during launch.
+// timer. Distinguishes a reach problem from a conversion problem during launch. The operator's own
+// test wallets (EP_INTERNAL_ACCOUNTS, comma-separated) are flagged and kept OUT of headline counts.
 let funnelState: FunnelState = emptyFunnel();
 let funnelDirty = false;
+const internalAccounts = parseInternalAccounts(process.env.EP_INTERNAL_ACCOUNTS);
 
 // Safety rails: admin auth, per-IP rate limits, alert fan-out, loop watchdog.
 const adminAuth = parseAdminAuthFromEnv(process.env);
@@ -1663,8 +1665,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         payoutFailures: ledger.filter((e) => e.status === "failed").length,
         loops: Object.values(loopPulses).map((p) => ({ name: p.name, lastRunMs: p.lastRunMs, intervalMs: p.intervalMs })),
         // Top of funnel: who LOOKED (distinct addresses that viewed positions/state) vs who
-        // wrapped — tells reach problems apart from conversion problems. Admin-only.
-        funnel: funnelSummary(funnelState, new Set(Object.keys(registry)), Date.now())
+        // wrapped — tells reach problems apart from conversion problems. Admin-only. Headline
+        // counts exclude EP_INTERNAL_ACCOUNTS (the operator's own testing).
+        funnel: funnelSummary(funnelState, new Set(Object.keys(registry)), Date.now(), internalAccounts)
       });
       return;
     }
