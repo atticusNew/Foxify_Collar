@@ -267,6 +267,17 @@
 - Offer a 5-min walkthrough call to every reply; every call is user research.
 - Optional beta bounty: $10–25 USDC for the first 10 wallets that wrap a paper position and send real feedback — payment for QA, not fake traction.
 
+## 6.6 Where the traders are — target list + sourcing loop
+
+The named list (traders, KOLs, communities, trackers, builder apps — with handles, links, value notes, approach, and confidence flags) lives in **`docs/earn-protect-trader-targets.csv`**. Re-verify any handle marked "re-verify" before DMing — accounts move.
+
+**The self-refilling sourcing loop (10 fresh DM targets a day, forever):**
+1. Open a whale-alert account (Lookonchain, OnChainLens, Beacon signals TG) — they identify HL wallets AND tag the trader's X handle. Every tagged trader is a warm-context DM ("saw Lookonchain flag your position…").
+2. Open a graded tracker (LiquidWhales, HyperStats, HyperTracker) — mine S/A-grade wallets; profiles often link socials.
+3. The official leaderboard (app.hyperliquid.xyz/leaderboard) + Hypurrscan wallet nicknames for cross-reference.
+4. Kaito's Hyperliquid leaderboard ranks the loudest HL voices — the top 30 is the reply-guy roster.
+5. Liquidation posts are the moment: a trader who just got liquidated is the most receptive audience a floor product will ever have. Respectful, never gloating.
+
 ## 7. Tracker (one row per target — keep in this file or a sheet, whichever you'll actually update)
 
 | Company | Class | Person / role | T1 sent | T2 (+4d) | T3 (+10d) | Reply? | State (active / parked / call) | Notes |
