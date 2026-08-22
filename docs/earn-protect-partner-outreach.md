@@ -267,6 +267,18 @@
 - Offer a 5-min walkthrough call to every reply; every call is user research.
 - Optional beta bounty: $10–25 USDC for the first 10 wallets that wrap a paper position and send real feedback — payment for QA, not fake traction.
 
+## 6.5b Katana (chain partner — high structural fit, small venue today)
+
+Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partner: an entire chain whose brand is "productive TVL" — capital that works. That's our pitch in their vocabulary. Why it ranks above the generic exchange tier:
+
+- **Build-on-top is their stated policy.** No grants; discretionary support for projects that compose with core apps and don't compete with them. A protection/yield overlay competes with nothing and touches two primitives at once (Katana Perps positions, Morpho collateral).
+- **Builder codes on Katana Perps** — the HL mechanism we already understand. Engine lift = a Katana Perps position reader; hedging stays on listed options; payouts are EVM-trivial.
+- **The emissions angle nobody else offers:** vKAT voting is expanding to structured-yield products (2026) — a protection overlay driving productive activity could receive directed KAT emissions, i.e. the chain partially subsidizes user credits.
+- **GSR halo:** a Katana conversation is quietly a GSR relationship — relevant to the future RFQ/block-hedging rail.
+- **Caveat:** ~$6M/day perp volume, TVL well off its $500M peak. Second venue, not a focus shift. One Monday-batch touch via the dev Telegram + Foundation support process; revisit seriously once the HL cohort has receipts.
+
+**One-line pitch:** "Earn & Protect makes Katana Perps positions productive TVL — one toggle pays the trader a daily credit with a hard floor, hedged off-chain, integrated via builder codes, zero new risk on the chain."
+
 ## 6.6 Where the traders are — target list + sourcing loop
 
 The named list (traders, KOLs, communities, trackers, builder apps — with handles, links, value notes, approach, and confidence flags) lives in **`docs/earn-protect-trader-targets.csv`**. Re-verify any handle marked "re-verify" before DMing — accounts move.
