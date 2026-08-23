@@ -756,6 +756,9 @@ const buildState = async (account?: string, all = false) => {
     },
     account: acct,
     coin,
+    // Server truth for WATCH mode: a showcased address is watching no matter how it was entered
+    // (chip, paste, URL, storage) — the client must never infer ownership from the entry path.
+    showcase: acct != null ? isShowcase(acct) : false,
     // Live venue mark for the header ticker — the account's own read when present, else the
     // freshest mark any loop has seen. Null only before the first successful HL read.
     marketPxUsd: position?.markPx ?? lastHlMark,
