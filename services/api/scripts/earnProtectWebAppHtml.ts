@@ -82,15 +82,10 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
   .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(80,210,193,.25);border-top-color:var(--accent);border-radius:50%;margin-right:7px;vertical-align:-1.5px;animation:spinr .7s linear infinite}
   @keyframes spinr{to{transform:rotate(360deg)}}
-  /* The quiet aids line — the only trace of the acquisition tools until clicked */
-  #aidsLine a{color:var(--accent);text-decoration:none}
-  #aidsLine a:hover{border-bottom:1px solid var(--accent)}
-  /* Watch chips — live public wallets from the leaderboard, side-colored like HL */
-  .wchips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-  .wchip{flex:1;min-width:170px;text-align:left;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer;font-size:13px;color:var(--text);font-weight:600}
-  .wchip:hover{border-color:rgba(80,210,193,.45)}
-  .wchip .side-l{color:var(--good)} .wchip .side-s{color:var(--bad)}
-  .wchip small{display:block;color:var(--muted);font-weight:400;font-size:11.5px;margin-top:2px}
+  /* Aid pills — the only trace of the acquisition tools: quiet until hovered, gone once connected */
+  .aid{background:none;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:12px;font-weight:600;padding:5.5px 13px;cursor:pointer;margin-right:8px}
+  .aid:hover{border-color:rgba(80,210,193,.5);color:var(--accent)}
+  .aid:disabled{opacity:.7;cursor:default}
   /* Preview controls — same texture as the position card (segmented side, $ amount, terms grid) */
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
   .seg button{background:var(--panel2);color:var(--muted);border:0;padding:8px 16px;font-size:12.5px;font-weight:700;cursor:pointer;letter-spacing:.3px}
@@ -198,21 +193,19 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
        an explicit click on the quiet line below. -->
   <div class="card" id="connectCard">
     <div class="row">
-      <input type="text" id="addrInput" placeholder="0x… any Hyperliquid address" title="An address is public data — the same thing you'd paste into an explorer. We read positions, never touch them." spellcheck="false">
+      <input type="text" id="addrInput" placeholder="0x… any Hyperliquid address" title="An address is public data — the same thing you'd paste into an explorer. We read positions, never touch them. Find yours in the Hyperliquid app: top right, starts with 0x." spellcheck="false">
       <button class="btn" id="connectBtn">Look up</button>
       <button class="btn ghost" id="forgetBtn" style="display:none">Forget</button>
     </div>
     <div class="small muted" style="margin-top:8px">Public data, read-only. No keys, no signing, no deposits — payouts only ever flow to the address.
-      <span class="tipwrap"><span class="info">i</span><span class="tip">Hyperliquid&#39;s safety docs are right: never share keys or sign unknown transactions. We ask for neither — an address is public data, the same thing you&#39;d paste into Hypurrscan.</span></span>
+      <span class="tipwrap"><span class="info">i</span><span class="tip">Hyperliquid&#39;s safety docs are right: never share keys or sign unknown transactions. We ask for neither — an address is public data, the same thing you&#39;d paste into Hypurrscan. Find yours in the Hyperliquid app: top right, starts with 0x.</span></span>
     </div>
     <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
   </div>
 
-  <div class="small muted" id="aidsLine" style="display:none;margin:-2px 4px 14px">New here? <a href="#" id="watchLink">Watch a live wallet</a> · <a href="#" id="previewLink">Preview a size</a></div>
-
-  <div class="card" id="watchCard" style="display:none">
-    <div class="small muted">Live wallets from Hyperliquid&#39;s public leaderboard — tap one to see protection priced on a real position.</div>
-    <div class="wchips" id="wchips"><span class="small muted"><span class="spin"></span>finding live wallets…</span></div>
+  <div id="aidsLine" style="display:none;margin:-2px 2px 14px">
+    <button type="button" class="aid" id="watchLink">See it on a whale</button>
+    <button type="button" class="aid" id="previewLink">Preview a size</button>
   </div>
 
   <!-- Preview: a hypothetical size off the live book. Preview-only by construction —
@@ -252,6 +245,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <h2><span id="posTitle">Your positions</span> <span class="small muted" id="cohortLine" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
     <b>Watching a public wallet</b> <span class="muted small">— read-only, live pricing on a real position. Look up your own address to protect it.</span>
+    <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">show another whale →</a>
   </div>
   <div id="positions"><div class="empty">Look up an address to see its open positions.</div></div>
 
@@ -354,15 +348,6 @@ const setMsg = (t, isErr, working) => {
   if (MINIAPP) { f.innerHTML = html; f.style.display = t ? "" : "none"; f.className = "flash" + (isErr ? " bad" : ""); }
 };
 
-// The aids (watch chips / preview) exist only when summoned — one open at a time, click to close.
-const showAid = (which) => {
-  const openWatch = which === "watch" && $("watchCard").style.display === "none";
-  const openPreview = which === "preview" && $("previewCard").style.display === "none";
-  $("watchCard").style.display = openWatch ? "" : "none";
-  $("previewCard").style.display = openPreview ? "" : "none";
-  if (openWatch) loadShowcase(0);
-};
-
 const setConn = () => {
   $("connPill").textContent = watching
     ? short(account) + " · watching · public data"
@@ -374,12 +359,13 @@ const setConn = () => {
   if (MINIAPP) $("connectCard").style.display = account && !watching ? "none" : "";
   // Acquisition aids are for the not-yet-connected; an owner sees the product, not the pitch.
   $("aidsLine").style.display = DEMO_AIDS && !account ? "" : "none";
-  if (account) { $("watchCard").style.display = "none"; $("previewCard").style.display = "none"; }
+  if (account) $("previewCard").style.display = "none";
   // WATCH chrome: the whole page states the mode — header, strip, and no owner-only sections
   // (payouts/consent are meaningless for a wallet that isn't yours).
   $("posTitle").textContent = watching ? "Watching · " + short(account) + " · public leaderboard" : "Your positions";
   $("cohortLine").style.display = watching ? "none" : "";
   $("watchStrip").style.display = watching ? "" : "none";
+  $("nextWhale").style.display = watching && watchWallets.length > 1 ? "" : "none";
   $("payoutsH").style.display = watching ? "none" : "";
   $("payoutsCard").style.display = watching ? "none" : "";
 };
@@ -806,43 +792,55 @@ $("forgetBtn").onclick = () => {
   renderPayouts(null);
 };
 
-// Watch chips: live public wallets from HL's leaderboard — loaded ON DEMAND (the aids line
-// click), never on page load. Retries through the server's ~30s post-deploy warmup.
-const loadShowcase = async (attempt) => {
-  if (!DEMO_AIDS || account || $("watchCard").style.display === "none") return;
+// "See it on a whale": ONE click renders a real leaderboard wallet as a normal position card
+// with its would-be protection terms — no intermediate menu; positions are only ever displayed
+// one way in the whole product. "Show another whale" cycles through the validated set.
+const fetchShowcase = async (attempt) => {
   try {
     const j = await api("/api/showcase");
-    if (j.ok && j.wallets && j.wallets.length) {
-      watchWallets = j.wallets;
-      $("wchips").innerHTML = watchWallets.map((w, i) =>
-        '<button type="button" class="wchip" data-i="' + i + '">' +
-          '<span class="' + (w.side === "long" ? "side-l" : "side-s") + '">' + esc(w.side.toUpperCase()) + '</span> ' + esc(String(w.szBase)) + ' BTC · ' + fmt$(w.notionalUsdc) +
-          '<small>' + esc(short(w.address)) + ' · public leaderboard</small>' +
-        '</button>'
-      ).join("");
-      for (const b of $("wchips").querySelectorAll(".wchip")) {
-        b.onclick = async () => {
-          const w = watchWallets[Number(b.dataset.i)];
-          userEntered = true;
-          watching = true;
-          account = w.address;
-          $("hero").style.display = "none";
-          setConn();
-          checkGates();
-          await poll();
-          // Motion cue: the result renders below the fold — take the visitor to it.
-          $("positions").scrollIntoView({ behavior: "smooth", block: "start" });
-        };
-      }
-      return;
-    }
-  } catch (e) { /* fall through to retry */ }
-  const n = (attempt || 0) + 1;
-  if (n <= 3) setTimeout(() => loadShowcase(n), n * 6000);
-  else $("wchips").innerHTML = '<span class="small muted">No live wallets available right now — try again shortly.</span>';
+    if (j.ok && j.wallets && j.wallets.length) { watchWallets = j.wallets; return true; }
+  } catch (e) { /* retry below */ }
+  if ((attempt || 0) < 3) {
+    await new Promise((r) => setTimeout(r, ((attempt || 0) + 1) * 5000));
+    return fetchShowcase((attempt || 0) + 1);
+  }
+  return false;
 };
-$("watchLink").onclick = (e) => { e.preventDefault(); showAid("watch"); };
-$("previewLink").onclick = (e) => { e.preventDefault(); showAid("preview"); };
+let watchIdx = 0;
+const watchWallet = async (i) => {
+  watchIdx = i;
+  userEntered = true;
+  watching = true;
+  account = watchWallets[i].address;
+  $("hero").style.display = "none";
+  $("previewCard").style.display = "none";
+  setConn();
+  checkGates();
+  await poll();
+  // Motion cue: the result renders below the fold — take the visitor to it.
+  $("positions").scrollIntoView({ behavior: "smooth", block: "start" });
+};
+$("watchLink").onclick = async () => {
+  const btn = $("watchLink");
+  if (btn.disabled) return;
+  if (watchWallets.length === 0) {
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spin"></span>finding a whale…';
+    btn.disabled = true;
+    const ok = await fetchShowcase(0);
+    btn.innerHTML = orig;
+    btn.disabled = false;
+    if (!ok) { setMsg("No live wallets available right now — try again shortly.", true); return; }
+  }
+  watchWallet(0);
+};
+$("nextWhale").onclick = (e) => {
+  e.preventDefault();
+  if (watchWallets.length > 1) watchWallet((watchIdx + 1) % watchWallets.length);
+};
+$("previewLink").onclick = () => {
+  $("previewCard").style.display = $("previewCard").style.display === "none" ? "" : "none";
+};
 
 // Live HL mark in the header from the FIRST paint — no address required. Once an account
 // connects, the state poll owns the ticker and this quietly stands down.
