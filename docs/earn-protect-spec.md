@@ -72,6 +72,14 @@ Shipped on top of the demo engine, all covered by unit tests and exercised end-t
 - **Credit calibration gate.** A report over the wrap store measuring realized per-lot gross credit by market hour, cap distance, and execution lane — with an explicit publish gate (≥30 live wraps, ≥18 distinct hours, ≥7 days) that refuses to bless trader-facing numbers until the coverage bar is met. Until then the approved interim framing stands.
 - **RFQ netting (decision 7).** A book-level planning calculator that nets the book's aggregate hedge needs (longs offset shorts, same-strike wraps combine) and routes net deltas ≥ the block minimum to RFQ — entries only; knockout unwinds always stay on the order book. Exact OKX block minimums pending BD confirmation.
 
+## Build record — acquisition surface (post-launch iteration, Aug 2026)
+
+- **Lookup grammar.** The app asks for an *address* (public data), never a "wallet": explorer-style copy, a one-line safety statement (no keys, no signing, no deposits; payouts only flow to the address), and a tooltip that cites HL's own safety guidance instead of fighting it.
+- **Watch mode.** Live public wallets from HL's leaderboard (validated against open BTC positions, cached, curated override via `EP_SHOWCASE_ADDRESSES`) render as one-click chips — the full product on a real whale position, read-only. A central server gate refuses every action on a showcased address: watching is a lookup, never ownership.
+- **No-address preview.** Full-size live-book quote for a hypothetical USD position behind a card tab; the per-wallet capacity clip stays on real wraps with one soft early-access line.
+- **Funnel instrumentation.** Persistent lookers-vs-wrappers split (internal operator wallets flagged and excluded from headlines via `EP_INTERNAL_ACCOUNTS`), daily page loads, preview and watch counters — reach problems and conversion problems are now distinguishable in `/api/admin/status`.
+- **Demo aids are seasonal.** Preview tab + watch chips sit behind `EP_DEMO_AIDS` (default on); the mature platform sheds them with one env flip. The lookup grammar and safety copy are permanent.
+
 ## Roadmap
 
 Pooled activation: many positions netted internally, residual risk hedged as institutional blocks, with block economics inherited by every participating position. Additional venues, the US-regulated hedge stack, lending-collateral protection, and multi-asset extension via listed options.

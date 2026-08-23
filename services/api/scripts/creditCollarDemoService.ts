@@ -94,6 +94,7 @@ import {
 } from "../src/singleSide/twoSided/creditCollar/epSafety";
 import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
 import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, recordPageLoad, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
+import { parseLeaderboardTop, parseShowcaseOverride, type ShowcaseWallet } from "../src/singleSide/twoSided/creditCollar/epShowcase";
 import { actionCleared, closeAllowed, verifyMessageText, verifyWalletSignature } from "../src/singleSide/twoSided/creditCollar/epVerify";
 import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
 import { EP_PUBLIC_DASHBOARD_HTML, EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
@@ -157,6 +158,50 @@ let funnelState: FunnelState = emptyFunnel();
 let funnelDirty = false;
 const internalAccounts = parseInternalAccounts(process.env.EP_INTERNAL_ACCOUNTS);
 
+// ── Showcase (watch mode): live public wallets from HL's leaderboard ─────────
+// Candidates come from EP_SHOWCASE_ADDRESSES (curated) or the public leaderboard (top account
+// values), validated against LIVE open BTC positions, cached, and — critically — action-guarded:
+// a showcased address can be WATCHED by anyone but never wrapped/closed/toggled by anyone.
+const SHOWCASE_TTL_MS = 30 * 60_000;
+let showcaseCache: { atMs: number; wallets: ShowcaseWallet[] } = { atMs: 0, wallets: [] };
+let showcaseRefreshing = false;
+const showcaseSet = new Set<string>(); // lowercase addresses currently on display
+
+const refreshShowcase = async (): Promise<void> => {
+  if (showcaseRefreshing) return;
+  showcaseRefreshing = true;
+  try {
+    let candidates = parseShowcaseOverride(process.env.EP_SHOWCASE_ADDRESSES);
+    if (candidates.length === 0) {
+      const res = await fetch("https://stats-data.hyperliquid.xyz/Mainnet/leaderboard");
+      if (res.ok) candidates = parseLeaderboardTop(await res.text(), 25).map((c) => c.address);
+    }
+    const wallets: ShowcaseWallet[] = [];
+    for (const addr of candidates) {
+      if (wallets.length >= 3) break;
+      try {
+        const pos = await readHlPosition(addr);
+        if (pos) wallets.push({ address: addr, side: pos.side, szBase: pos.szBase, notionalUsdc: pos.notionalUsdc });
+      } catch {
+        /* unreadable candidate — skip */
+      }
+    }
+    // Empty result keeps the PREVIOUS set (serve stale over serving nothing) unless we never had one.
+    if (wallets.length > 0 || showcaseCache.wallets.length === 0) {
+      showcaseCache = { atMs: Date.now(), wallets };
+      showcaseSet.clear();
+      for (const w of wallets) showcaseSet.add(w.address);
+    } else {
+      showcaseCache = { ...showcaseCache, atMs: Date.now() };
+    }
+  } catch (e) {
+    console.error(`[demo] showcase refresh failed: ${(e as Error).message}`);
+  } finally {
+    showcaseRefreshing = false;
+  }
+};
+const isShowcase = (account: string): boolean => showcaseSet.has(account.toLowerCase());
+
 // Safety rails: admin auth, per-IP rate limits, alert fan-out, loop watchdog.
 const adminAuth = parseAdminAuthFromEnv(process.env);
 const raiseAlert = buildAlertRaiser(parseAlertSinkFromEnv(process.env));
@@ -190,6 +235,9 @@ const closeGate = String(process.env.EP_CLOSE_GATE ?? "true").toLowerCase() === 
 // without the live numerator until the fill reads as momentum. The real count stays in the
 // payload (never faked, just not headlined); flip EP_SHOW_COHORT_COUNT=true to display it.
 const showCohortCount = String(process.env.EP_SHOW_COHORT_COUNT ?? "false").toLowerCase() === "true";
+// Acquisition aids (preview tab + watch chips): ON for the demo phase, one env flip removes them
+// when the platform matures. Grammar (lookup copy, safety line) is permanent; aids are seasonal.
+const demoAids = String(process.env.EP_DEMO_AIDS ?? "true").toLowerCase() === "true";
 const setProtection = async (account: string, on: boolean): Promise<void> => {
   const prefs = await stores.loadPrefs();
   const key = account.toLowerCase();
@@ -1280,6 +1328,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         res,
         (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML)
           .replaceAll("__BRAND_MARK__", brandMark)
+          .replaceAll("__DEMO_AIDS__", demoAids ? "true" : "false")
           .replaceAll("__LINK_TG__", /^https:\/\//.test(tgLink) ? `<a href="${tgLink.replace(/"/g, "")}" target="_blank" rel="noopener">Support / Telegram</a> · ` : "")
           .replaceAll("__LINK_X__", /^https:\/\//.test(xLink) ? `<a href="${xLink.replace(/"/g, "")}" target="_blank" rel="noopener">X</a> · ` : "")
       );
@@ -1325,6 +1374,17 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     if (!isAdmin && ((isAction && !actionLimiter.allow(ip, Date.now())) || (isRead && !readLimiter.allow(ip, Date.now())))) {
       sendJson(res, 429, { ok: false, error: "rate_limited", message: "too many requests — slow down" });
       return;
+    }
+
+    // WATCH-mode guard (one gate for every action): a showcased public wallet can be viewed by
+    // anyone and acted on by NO ONE — wrapping a stranger's position would spend real hedge
+    // capital nobody asked for. Watching is a lookup, never ownership.
+    if (isAction) {
+      const acctParam = url.searchParams.get("account");
+      if (acctParam && isShowcase(acctParam)) {
+        sendJson(res, 403, { ok: false, error: "showcase_wallet", message: "this is a public wallet on watch — look up your own address to protect it" });
+        return;
+      }
     }
 
     // ── Geofence (Phase 3): trading ACTIONS are blocked for US + sanctioned IPs, fail-closed
@@ -1492,8 +1552,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         return;
       }
       // Funnel: only EXPLICIT account params count as a look — the env-default account (control
-      // room, extension fallback) polling itself is not a visitor.
-      if (url.searchParams.get("account") && recordLooker(funnelState, acct.account, Date.now())) funnelDirty = true;
+      // room, extension fallback) polling itself is not a visitor. A showcased wallet being
+      // viewed is a WATCH, never a looker: watching a whale is not a wallet we reached.
+      if (url.searchParams.get("account")) {
+        if (isShowcase(acct.account)) recordPageLoad(funnelState, "watch", Date.now());
+        else if (!recordLooker(funnelState, acct.account, Date.now())) { /* invalid address — ignored */ }
+        funnelDirty = true;
+      }
       sendJson(res, 200, await buildState(acct.account, wantAll));
       return;
     }
@@ -1503,7 +1568,11 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
         return;
       }
-      if (url.searchParams.get("account") && recordLooker(funnelState, acct.account, Date.now())) funnelDirty = true;
+      if (url.searchParams.get("account")) {
+        if (isShowcase(acct.account)) recordPageLoad(funnelState, "watch", Date.now());
+        else if (!recordLooker(funnelState, acct.account, Date.now())) { /* invalid address — ignored */ }
+        funnelDirty = true;
+      }
       const [positions, mids] = await Promise.all([hl.allPositions(acct.account), hl.allMids()]);
       sendJson(res, 200, {
         ok: true,
@@ -1573,6 +1642,17 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         coveredBtc: sizing.coveredBtc,
         coverageNote: sizing.coverageNote
       });
+      return;
+    }
+    if (req.method === "GET" && route === "/api/showcase") {
+      // Watch-mode chips: up to 3 live public wallets. Stale-while-revalidate — never block a
+      // page render on a 36MB leaderboard fetch.
+      if (!demoAids) {
+        sendJson(res, 200, { ok: true, wallets: [] });
+        return;
+      }
+      if (Date.now() - showcaseCache.atMs > SHOWCASE_TTL_MS) void refreshShowcase();
+      sendJson(res, 200, { ok: true, wallets: showcaseCache.wallets });
       return;
     }
     if (req.method === "GET" && route === "/api/px") {
@@ -1854,6 +1934,8 @@ server.listen(port, () => {
     if (runtimePaused) console.error(`[demo] runtime: PAUSED — ${runtimePausedReason ?? "no reason recorded"}`);
     // Top-of-funnel counters: restore, then flush at most once a minute when dirty.
     funnelState = await stores.loadFunnel();
+    // Showcase prefetch (non-blocking): the first visitor should see chips, not a spinner.
+    if (demoAids) void refreshShowcase();
     setInterval(() => {
       if (!funnelDirty) return;
       funnelDirty = false;

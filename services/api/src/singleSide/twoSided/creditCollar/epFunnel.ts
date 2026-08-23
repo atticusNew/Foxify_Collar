@@ -38,8 +38,8 @@ export const recordLooker = (f: FunnelState, account: string, nowMs: number): bo
   return true;
 };
 
-/** Record a page load (app/miniapp/public) or a no-address preview quote. Mutates; prunes days beyond retention. */
-export const recordPageLoad = (f: FunnelState, page: "app" | "miniapp" | "public" | "preview", nowMs: number): void => {
+/** Record a page load (app/miniapp/public), a no-address preview quote, or a watch-mode view. Mutates; prunes days beyond retention. */
+export const recordPageLoad = (f: FunnelState, page: "app" | "miniapp" | "public" | "preview" | "watch", nowMs: number): void => {
   const day = dayKey(nowMs);
   const bucket = (f.pageLoads[day] ??= {});
   bucket[page] = (bucket[page] ?? 0) + 1;
