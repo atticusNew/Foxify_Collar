@@ -65,7 +65,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .px.up b{color:var(--good)} .px.down b{color:var(--bad)}
   h1{font-size:24px;font-weight:700;letter-spacing:-.2px;margin:28px 0 6px}
   .sub{color:var(--muted);font-size:14px;margin-bottom:22px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:12px;transition:border-color .25s}
+  .card:hover{border-color:rgba(80,210,193,.28)}
   .row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
   input[type=text]{flex:1;min-width:240px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:10px 13px;font:inherit;font-size:13.5px}
   input[type=text]:focus{outline:none;border-color:var(--accent)}
@@ -83,8 +84,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(80,210,193,.25);border-top-color:var(--accent);border-radius:50%;margin-right:7px;vertical-align:-1.5px;animation:spinr .7s linear infinite}
   @keyframes spinr{to{transform:rotate(360deg)}}
   /* Aid pills — the only trace of the acquisition tools: quiet until hovered, gone once connected */
-  .aid{background:none;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:12px;font-weight:600;padding:5.5px 13px;cursor:pointer;margin-right:8px}
-  .aid:hover{border-color:rgba(80,210,193,.5);color:var(--accent)}
+  .aid{background:none;border:1px solid rgba(80,210,193,.45);border-radius:999px;color:var(--accent);font-size:12px;font-weight:600;padding:5.5px 13px;cursor:pointer;margin-right:8px;transition:background .2s,border-color .2s}
+  .aid:hover{background:rgba(80,210,193,.1);border-color:var(--accent)}
   .aid:disabled{opacity:.7;cursor:default}
   /* Preview controls — same texture as the position card (segmented side, $ amount, terms grid) */
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
@@ -160,6 +161,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)} th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px}
   .status-paid{color:var(--good);font-weight:600} .status-accrued{color:var(--accent)} .status-failed{color:var(--bad)}
   h2{font-size:14px;font-weight:700;margin:24px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  /* HL grammar: chrome stays muted, brand pulses in small strokes — a mint dash, not colored text */
+  h2:before{content:"";display:inline-block;width:12px;height:3px;border-radius:2px;background:var(--accent);margin-right:8px;vertical-align:3px}
   .foot{color:var(--muted);font-size:11.5px;margin-top:32px;border-top:1px solid var(--line);padding-top:16px}
   .badge{display:inline-block;font-size:10.5px;font-weight:700;border-radius:999px;padding:2.5px 9px;margin-left:8px;vertical-align:2px}
   .badge.founding{background:rgba(80,210,193,.12);color:var(--accent);border:1px solid rgba(80,210,193,.4)}
@@ -180,7 +183,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 </div></nav>
 <div class="wrap">
   <header id="hero">
-    <h1>One toggle. A hard floor. And it pays.</h1>
+    <h1>One toggle. A hard floor. <span style="color:var(--accent)">And it pays.</span></h1>
     <p class="sub">Look up any Hyperliquid address — public data, read-only. Flip protection on; the options market pays a daily credit.</p>
   </header>
 
@@ -527,7 +530,7 @@ setInterval(() => {
 const renderPayouts = (state) => {
   const rows = (state && state.payouts || []).slice().reverse();
   $("payouts").innerHTML = rows.length
-    ? rows.map((e) => '<tr><td>' + new Date(e.createdAtMs).toISOString().slice(0,16).replace("T"," ") + '</td><td>' + esc(e.reason.replace("_"," ")) + '</td><td><b>' + fmt$(e.amountUsdc) + '</b></td><td class="status-' + (e.status === "confirmed" || e.status === "paid" ? "paid" : e.status === "failed" ? "failed" : "accrued") + '">' + esc(e.status) + '</td><td>' + txLink(e.txHash) + '</td></tr>').join("")
+    ? rows.map((e) => '<tr><td>' + new Date(e.createdAtMs).toISOString().slice(0,16).replace("T"," ") + '</td><td>' + esc(e.reason.replace("_"," ")) + '</td><td><b style="color:var(--accent)">' + fmt$(e.amountUsdc) + '</b></td><td class="status-' + (e.status === "confirmed" || e.status === "paid" ? "paid" : e.status === "failed" ? "failed" : "accrued") + '">' + esc(e.status) + '</td><td>' + txLink(e.txHash) + '</td></tr>').join("")
     : '<tr><td colspan="5" class="empty">No payouts yet — credits land here at each cycle\\u2019s conclusion.</td></tr>';
 };
 
