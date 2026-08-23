@@ -72,6 +72,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   input[type=text]:focus{outline:none;border-color:var(--accent)}
   .btn{background:var(--accent);color:var(--accent-ink);font-weight:700;padding:9px 17px;border-radius:6px;font-size:13.5px;border:0;cursor:pointer}
   .btn:hover{filter:brightness(1.08)} .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+  /* Stop watching joins the mint watch-family — findable, never alarming (red stays data-only) */
+  .btn.ghost.stopw{color:var(--accent);border-color:rgba(80,210,193,.55)}
   .muted{color:var(--muted)} .small{font-size:12.5px} a{color:var(--accent);text-decoration:none}
   .pos-head{font-weight:700;font-size:14.5px} .pos-head small{color:var(--muted);font-weight:400}
   .pos-head .long{color:var(--good)} .pos-head .short{color:var(--bad)}
@@ -160,9 +162,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   table{width:100%;border-collapse:collapse;margin-top:6px;font-size:13px}
   th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)} th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px}
   .status-paid{color:var(--good);font-weight:600} .status-accrued{color:var(--accent)} .status-failed{color:var(--bad)}
-  h2{font-size:14px;font-weight:700;margin:24px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
-  /* HL grammar: chrome stays muted, brand pulses in small strokes — a mint dash, not colored text */
-  h2:before{content:"";display:inline-block;width:12px;height:3px;border-radius:2px;background:var(--accent);margin-right:8px;vertical-align:3px}
+  /* HL grammar: chrome stays muted, brand pulses in small strokes — a vertical mint bar, not colored text */
+  h2{font-size:14px;font-weight:700;margin:24px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;border-left:3px solid var(--accent);padding-left:9px}
   .foot{color:var(--muted);font-size:11.5px;margin-top:32px;border-top:1px solid var(--line);padding-top:16px}
   .badge{display:inline-block;font-size:10.5px;font-weight:700;border-radius:999px;padding:2.5px 9px;margin-left:8px;vertical-align:2px}
   .badge.founding{background:rgba(80,210,193,.12);color:var(--accent);border:1px solid rgba(80,210,193,.4)}
@@ -357,6 +358,7 @@ const setConn = () => {
     : account ? short(account) + " · read-only" : "not connected";
   $("forgetBtn").style.display = account ? "" : "none";
   $("forgetBtn").textContent = watching ? "Stop watching" : "Forget";
+  $("forgetBtn").className = watching ? "btn ghost stopw" : "btn ghost";
   if (account) $("addrInput").value = account;
   // Mini App with a connected account: the connect card is noise — the pill carries the identity.
   if (MINIAPP) $("connectCard").style.display = account && !watching ? "none" : "";
