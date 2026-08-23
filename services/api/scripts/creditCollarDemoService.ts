@@ -1886,6 +1886,14 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       });
       return;
     }
+    if (req.method === "POST" && route === "/api/admin/funnel/reset") {
+      // Targeted counter reset for a clean measurement window — wraps/ledger/registry untouched.
+      funnelState = emptyFunnel();
+      funnelDirty = false;
+      await stores.saveFunnel(funnelState);
+      sendJson(res, 200, { ok: true, message: "funnel counters cleared (lookers + page loads + previews + watches)" });
+      return;
+    }
     if (req.method === "POST" && (route === "/api/reset" || route === "/api/admin/reset")) {
       if (!allowReset) {
         sendJson(res, 403, { ok: false, message: "reset disabled (DEMO_ALLOW_RESET=false)" });
