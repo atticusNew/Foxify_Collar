@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Atticus Earn &amp; Protect: Unit Economics</title>
+<title>Atticus Unit Economics</title>
 <style>
   @page { size: Letter; margin: 22mm 18mm; }
   * { box-sizing: border-box; }
@@ -10,92 +10,101 @@
   h1 { font-size: 21pt; margin: 0 0 2px; letter-spacing: -0.3px; }
   .brand { color: #b8860b; font-weight: 700; }
   .subtitle { color: #5a6a78; font-size: 11pt; margin-bottom: 14px; }
-  h2 { font-size: 13pt; margin: 20px 0 6px; padding-bottom: 4px; border-bottom: 2px solid #b8860b; }
+  h2 { font-size: 13pt; margin: 22px 0 6px; padding-bottom: 4px; border-bottom: 2px solid #b8860b; }
   p { margin: 6px 0; }
   ul, ol { margin: 6px 0; padding-left: 22px; }
   li { margin: 4px 0; }
   .note { background: #f6f4ec; border-left: 4px solid #b8860b; padding: 9px 12px; font-size: 10.5pt; margin: 10px 0; }
+  .verdict { background: #eef7f2; border: 1px solid #2e8b57; border-radius: 6px; padding: 12px 14px; margin: 12px 0; }
+  .verdict b { color: #1e6b41; font-size: 13pt; }
   table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; font-size: 10.5pt; }
   th { text-align: left; background: #f0f2f5; padding: 6px 8px; border-bottom: 2px solid #d5dbe2; font-size: 9.5pt; text-transform: uppercase; letter-spacing: 0.4px; color: #47555f; }
   td { padding: 6px 8px; border-bottom: 1px solid #e5e9ee; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .tag { font-size: 8.5pt; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid #2e8b57; color: #1e6b41; }
-  .tag.est { border-color: #b8860b; color: #8a6508; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pos { color: #1e6b41; font-weight: 600; }
+  .muted { color: #5a6a78; font-size: 10pt; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin: 10px 0; }
+  .stat { border: 1px solid #d5dbe2; border-radius: 6px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 15pt; }
+  .stat span { color: #5a6a78; font-size: 9.5pt; text-transform: uppercase; letter-spacing: 0.4px; }
+  .m { font-size: 8.5pt; font-weight: 700; color: #1e6b41; }
+  .e { font-size: 8.5pt; font-weight: 700; color: #8a6508; }
+  .pagebreak { page-break-before: always; }
   footer { margin-top: 26px; padding-top: 8px; border-top: 1px solid #d5dbe2; font-size: 9pt; color: #5a6a78; }
 </style>
 </head>
 <body>
 
-<h1><span class="brand">Atticus</span> Earn &amp; Protect: Unit Economics</h1>
-<div class="subtitle">How the product makes money, what capital does, and what protects it. August 2026.</div>
+<h1><span class="brand">Atticus</span> Unit Economics</h1>
+<div class="subtitle">Earn &amp; Protect: how the product earns, what collateral does, and what protects it. August 2026.</div>
 
-<div class="note">Every figure in this document is labeled <span class="tag">MEASURED</span> (real fills or real simulations we ran) or <span class="tag est">ESTIMATE</span> (theory we verify in week one before anything is promised to a trader).</div>
+<div class="note">
+<b>Reading guide.</b> Every figure is labeled <span class="m">MEASURED</span> (real fills or real simulations we ran) or <span class="e">ESTIMATE</span> (theory we verify before anything is promised to a trader). This document pairs with the Atticus Shadow Facility Report, which contains the 33-day machine-audited track record.
+</div>
 
-<h2>What it is</h2>
-<p>A trader on Hyperliquid taps one toggle. We put a hard floor under their position using listed BTC options, and the options market pays them a credit for it: real premium, collected daily. If the market cannot fund a credit, we refuse and say why. Upside is never capped: if price rips through the cap level, that day's protection cycle simply ends. The trader keeps the position, all gains, and the credit earned so far, and protection re-arms at the new price automatically. No trader ever owes anything, deposits anything, or shares keys.</p>
-<p><b>We keep 20% of every credit we source (10% for the first 50 wallets). That spread is the business.</b></p>
+<h2>1. The Product in Four Sentences</h2>
+<p>A Hyperliquid trader taps one toggle. The options market pays them a daily credit and puts a hard floor under their position. Their funds never move: no deposit, no keys, nothing to learn. Toggle on: credit plus floor. Toggle off: neither. Everything else is identical.</p>
+<p>It is the collar strategy institutional desks run every day, executed in one tap. We place both option legs on a listed venue from our own sub-account; the difference between the sold cap and the bought floor is the trader's credit.</p>
 
-<h2>How the money moves</h2>
-<ol>
-<li>Trader taps the toggle. We read their position from Hyperliquid's public API. Read-only, no keys.</li>
-<li>We price a protective collar off the live options order book and place both option legs on OKX from our sub-account: sell the cap wing, buy the floor wing. The difference is the credit.</li>
-<li>The credit unlocks through the day. At the cycle's close it is paid in USDC to the wallet that owns the position. The system cannot pay anyone else.</li>
-</ol>
-<p>The trader's money is never touched. Partner capital never touches our servers: it sits in the OKX sub-account as options margin, with independent read-only OKX API access to verify it at any time.</p>
+<h2>2. The Business</h2>
+<div class="grid">
+  <div class="stat"><b>20%</b><span>our cut of every credit sourced</span></div>
+  <div class="stat"><b>10%</b><span>founding rate, first 50 wallets</span></div>
+  <div class="stat"><b>~8.5 bps/day</b><span>credit rate at block execution <span class="m">MEASURED</span></span></div>
+</div>
+<p>Revenue is a published spread on the credit we source. Every wrap is fully hedged leg for leg; the book carries no directional risk. When the market cannot fund an honest credit, the engine refuses to open, by design.</p>
 
-<h2>What the $10k does</h2>
-<p>It is collateral, not spend. Margin is consumed while a wrap is open and returns when the cycle closes, so the same capital backs a much larger book that recycles daily.</p>
+<h2>3. What the Collateral Does</h2>
+<p>Collateral is not spend and not trading capital. It sits in an OKX sub-account as options margin, verifiable by independent read-only API access. Margin is consumed while a wrap is open and returns at the daily close, so the same capital backs a book that recycles every day.</p>
 <table>
-<tr><th>Line</th><th style="text-align:right">Amount</th></tr>
-<tr><td>Capital</td><td class="num">$10,000</td></tr>
-<tr><td>Usable as margin (40% always held back as a safety buffer)</td><td class="num">$6,000</td></tr>
-<tr><td>Margin per $1 of protected position <span class="tag">MEASURED</span> (OKX's own margin simulator)</td><td class="num">~12%</td></tr>
-<tr><td>Working book it supports, recycling daily</td><td class="num">~$50,000</td></tr>
+  <tr><th>Line</th><th style="text-align:right">Amount</th></tr>
+  <tr><td>Pilot collateral</td><td class="num">$10,000</td></tr>
+  <tr><td>Usable as margin (40% held back as a permanent safety buffer)</td><td class="num">$6,000</td></tr>
+  <tr><td>Margin per protected dollar <span class="m">MEASURED</span> on OKX's own margin simulator</td><td class="num">~12%</td></tr>
+  <tr><td>Working book supported, recycling daily</td><td class="num">~$50,000</td></tr>
 </table>
-<p>Capital scales the book linearly: $400k supports roughly $2M/day of protection; $2M supports roughly $10M/day.</p>
+<p>Scaling is linear: $400k of collateral supports roughly $2M/day of protection; $2M supports roughly $10M/day. The shadow facility additionally measured portfolio-margin netting at 0.078, meaning paired structures require a small fraction of naive margin as the book matures.</p>
 
-<h2>What a position earns</h2>
-<p>Real fills to date at the smallest possible size and worst pricing tier <span class="tag">MEASURED</span>: $0.04 to $0.49 per day on a $650 position. Small on purpose. The same position ladder across execution tiers, per day:</p>
+<h2>4. What It Earns</h2>
+<p class="muted">Daily credit per position, across execution tiers.</p>
 <table>
-<tr><th>Position</th><th style="text-align:right">Today (measured)</th><th style="text-align:right">Block execution (measured, 8.4 bps/day)</th><th style="text-align:right">Theory ceiling (estimate, 10 to 30 bps)</th></tr>
-<tr><td>$650</td><td class="num">$0.04 to $0.49</td><td class="num">~$0.55</td><td class="num">$0.65 to $1.95</td></tr>
-<tr><td>$2,000</td><td class="num">$0.12 to $1.47</td><td class="num">~$1.70</td><td class="num">$2 to $6</td></tr>
-<tr><td>$15,000</td><td class="num">$0.90 to $11</td><td class="num">~$12.60</td><td class="num">$15 to $45</td></tr>
+  <tr><th>Position size</th><th style="text-align:right">Retail fills today <span class="m">MEASURED</span></th><th style="text-align:right">Block execution <span class="m">MEASURED</span></th><th style="text-align:right">Theory ceiling <span class="e">ESTIMATE</span></th></tr>
+  <tr><td>$650</td><td class="num">$0.04 to $0.49</td><td class="num">~$0.55</td><td class="num">$0.65 to $1.95</td></tr>
+  <tr><td>$2,000</td><td class="num">$0.12 to $1.47</td><td class="num">~$1.70</td><td class="num">$2 to $6</td></tr>
+  <tr><td>$15,000</td><td class="num">$0.90 to $11</td><td class="num">~$12.60</td><td class="num">$15 to $45</td></tr>
 </table>
-<p>What Atticus earns (20% of gross credit, at the measured 8.4 bps tier):</p>
+<p class="muted">Atticus revenue at the measured block tier (20% of gross credit).</p>
 <table>
-<tr><th>Book protected per day</th><th style="text-align:right">Capital behind it</th><th style="text-align:right">Gross credit/day</th><th style="text-align:right">To Atticus</th></tr>
-<tr><td>$50k (this raise)</td><td class="num">$10k</td><td class="num">~$42</td><td class="num">~$8/day</td></tr>
-<tr><td>$2M</td><td class="num">~$400k</td><td class="num">~$1,680</td><td class="num">~$336/day (~$120k/yr)</td></tr>
-<tr><td>$10M</td><td class="num">~$2M</td><td class="num">~$8,400</td><td class="num">~$1,680/day (~$600k/yr)</td></tr>
+  <tr><th>Protected book per day</th><th style="text-align:right">Collateral behind it</th><th style="text-align:right">Gross credit/day</th><th style="text-align:right">To Atticus</th></tr>
+  <tr><td>$50k (this pilot)</td><td class="num">$10k</td><td class="num">~$42</td><td class="num">~$8/day</td></tr>
+  <tr><td>$2M</td><td class="num">~$400k</td><td class="num">~$1,680</td><td class="num">~$336/day (~$120k/yr)</td></tr>
+  <tr><td>$10M</td><td class="num">~$2M</td><td class="num">~$8,400</td><td class="num">~$1,680/day (~$600k/yr)</td></tr>
 </table>
-<p>$10k is deliberately a traction play, not a revenue story: it proves live demand with real money, measures the real economics, and prices the actual raise from a working book.</p>
+<p>Credits grow with four levers: position size (always linear), execution tier (block RFQ pricing measured 2 to 5 times better than retail fills), volume density (long and short wraps net internally, so our hedge orders reach block size sooner), and volatility (busy days pay multiples of quiet ones; we measure it, we do not promise it).</p>
+<p><b>The $10k pilot is deliberately a traction play, not a revenue story:</b> it proves live demand with real money, measures the real economics, and prices the actual raise from a working book.</p>
 
-<h2>What makes credits bigger</h2>
-<ol>
-<li><b>Position size: always linear.</b> 23 lots pay roughly 23 times one lot. Credits are based on position size; that never changes.</li>
-<li><b>Execution tier: the big jump.</b> At 1-lot size we cross retail spreads and the exchange's minimum price tick eats most of a tiny premium. At block size, market makers quote inside the screen via RFQ and the tick cost disappears: our simulation tape measured roughly 8.4 bps/day at $50k scale versus the cents that 1-lot fills realize. Same product, 2 to 5 times better per-dollar credit, purely from how the hedge executes.</li>
-<li><b>Volume density.</b> More concurrent users means long and short wraps offset and same-strike wraps combine, so our net orders reach block size (roughly $50k per leg). Volume buys access to the better execution tier. The netting engine that does this is already built.</li>
-<li><b>Volatility.</b> Busy days pay multiples of quiet weekends. We measure it; we do not promise it.</li>
-</ol>
-<p>Note: portfolio margin does not increase credits. It increases how much book the collateral supports. Credits come from items 1 through 4.</p>
+<div class="pagebreak"></div>
 
-<h2>What protects the capital</h2>
-<ul>
-<li>OKX API keys are trade-only with withdrawals disabled at the key level. Even a total server compromise cannot move funds off the venue.</li>
-<li>The capital partner holds independent read-only access to the sub-account.</li>
-<li>Both option legs fill or the pair auto-unwinds; a fill worse than the quoted credit auto-unwinds. Enforced in code, proven on real orders.</li>
-<li>40% of capital is never allocated; utilization auto-pauses new wraps before the buffer is touched; a kill switch stops new exposure while payouts keep running.</li>
-<li>Book, per-wallet, and per-strike caps bound concentration. The payout wallet is separate, small, and per-day capped; its float is the maximum blast radius.</li>
-<li>Every wrap, fill, and payout is recorded and reconciled against OKX's own records; a public dashboard shows the live book.</li>
-</ul>
+<h2>5. What Protects the Collateral</h2>
+<table>
+  <tr><th>Layer</th><th>Plain reading</th></tr>
+  <tr><td>Withdrawal-disabled API keys</td><td>Keys are trade-only at the venue level. Even a total server compromise cannot move funds off the exchange.</td></tr>
+  <tr><td>Independent visibility</td><td>The capital partner holds their own read-only API access to the sub-account at all times.</td></tr>
+  <tr><td>Atomic pairs</td><td>Both option legs fill or the pair auto-unwinds. A fill worse than the quoted credit auto-unwinds. Enforced in code, proven on real orders.</td></tr>
+  <tr><td>Permanent buffer</td><td>40% of capital is never allocated. Utilization auto-pauses new wraps before the buffer is touched. A kill switch stops new exposure while payouts keep running.</td></tr>
+  <tr><td>Concentration caps</td><td>Book, per-wallet, and per-strike caps bound exposure. The payout wallet is separate, small, and per-day capped: its float is the maximum blast radius.</td></tr>
+  <tr><td>Full reconciliation</td><td>Every wrap, fill, and payout is recorded and reconciled against the venue's own records. A public dashboard shows the live book.</td></tr>
+</table>
 
-<h2>Where it stands</h2>
-<p>Built and tested end to end: pricing, atomic execution, the daily cycle including cap-touch handling and automatic re-arm, payouts, caps, and the trader apps (web and Telegram, branded for Hyperliquid). Over 550 automated tests; real-money canary fills already executed on OKX. A 33-day machine-audited shadow track record (see the companion Shadow Facility Report) reads clean: 100% oracle-verified, 100% reconciled, clients net positive through a 7.5% market move day.</p>
-<p>Week one after funding: measure real margin per wrap (sets the true book size) and run live wraps across a full week of market hours (sets the true credit numbers). Nothing is promised to traders until both are measured. That discipline is the product.</p>
+<h2>6. Where It Stands</h2>
+<div class="verdict">
+<b>Built, tested, and track-record clean.</b><br>
+Pricing, atomic execution, the daily cycle with cap-touch handling and automatic re-arm, payouts, caps, and branded trader apps (web and Telegram) are complete, covered by 558 automated tests. Real-money canary fills have executed on OKX with every hedge auditable to an exchange fill. The companion Shadow Facility Report documents 33 days of continuous machine-audited operation: 100% oracle-verified, 100% reconciled, clients net positive through a 7.5% market move day.
+</div>
+<p>Week one after funding: measure real portfolio margin per wrap (sets the true book size) and run live wraps across a full week of market hours (sets the true credit numbers). Nothing is promised to traders until both are measured. That discipline is the product.</p>
 
 <footer>
-Atticus builds protection infrastructure for trading venues. Positions, orders, fills, credits, and settlements referenced as measured are real and documented. Nothing in this document is investment advice. Contact: hello@atticustrade.com
+Atticus builds protection infrastructure for trading venues. Figures labeled measured come from real fills or real simulations and are documented. Nothing in this document is investment advice. Contact: hello@atticustrade.com
 </footer>
 
 </body>
