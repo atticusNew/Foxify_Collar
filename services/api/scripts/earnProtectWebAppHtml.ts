@@ -63,8 +63,10 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   body.inst .wrap{display:flex;flex-direction:column}
   body.inst #hero{order:-40}
   body.inst #previewCard{order:-30}
-  body.inst #aidsLine{order:-20;margin:0 2px 14px}
-  body.inst #connectCard{order:-10}
+  /* INST is model-first and minimal: no address lookup, no pills row (proof lives as a quiet
+     link under the model result; viewing mode is reachable only through it). */
+  body.inst #connectCard{display:none}
+  body.inst #aidsLine{display:none}
   body{background:var(--bg);color:var(--text);font:14.5px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
   .wrap{max-width:760px;margin:0 auto;padding:0 20px 60px}
   nav{position:sticky;top:0;z-index:10;background:rgba(11,29,35,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
@@ -241,6 +243,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
       <button class="btn" id="pvBtn">Preview credit</button>
     </div>
     <div id="pvOut"></div>
+    <div class="small muted" id="refRow" style="display:none;margin-top:12px"><a href="#" id="refLink" style="color:var(--accent);text-decoration:none">The same engine is pricing a live nine-figure reference position right now. View it →</a></div>
   </div>
 
   <div class="card" id="verifyCard" style="display:none;border-color:rgba(80,210,193,.45)">
@@ -265,6 +268,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
     <b id="wsTitle">Watching a public wallet</b> <span class="muted small" id="wsBody">— read-only, live pricing on a real position. Look up your own address to protect it.</span>
     <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">show another whale →</a>
+    <a href="#" id="stopViewing" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:10px">stop viewing ×</a>
   </div>
   <div id="positions"><div class="empty">Look up an address to see its open positions.</div></div>
 
@@ -370,12 +374,24 @@ if (INST) {
   $("pvHeader").textContent = "Model a holding — live market pricing. Nothing opens, nothing is stored.";
   $("pvUsd").value = "10,000,000";
   $("pvNoun").textContent = "holding";
-  $("watchLink").textContent = "Price a live reference position";
-  $("previewLink").style.display = "none"; // redundant: the model card is already open
-  // Trading-address lookup demotes to lane two, honestly labeled.
-  $("lookupCaption").textContent = "Or look up a live trading position (Hyperliquid) — this lane runs today, unmodified:";
-  $("lookupCaption").style.display = "";
-  $("addrInput").placeholder = "0x… a live trading address (Hyperliquid)";
+  // Proof lives as one quiet link under the model result; loading/errors surface on the link itself.
+  $("refRow").style.display = "";
+  $("refLink").onclick = async (e) => {
+    e.preventDefault();
+    const l = $("refLink");
+    const orig = l.textContent;
+    if (watchWallets.length === 0) {
+      l.textContent = "pricing a live reference position…";
+      const ok = await fetchShowcase(0);
+      if (!ok) {
+        l.textContent = "No live reference available right now — try again shortly.";
+        setTimeout(() => { l.textContent = orig; }, 4000);
+        return;
+      }
+      l.textContent = orig;
+    }
+    watchWallet(0);
+  };
   $("wsTitle").textContent = "Viewing a public reference position";
   $("wsBody").textContent = "— read-only, live pricing on a real position. Look up a client address to see theirs.";
   $("nextWhale").textContent = "view another position →";
@@ -410,8 +426,10 @@ const setConn = () => {
   // Mini App with a connected account: the connect card is noise — the pill carries the identity.
   if (MINIAPP) $("connectCard").style.display = account && !watching ? "none" : "";
   // Acquisition aids are for the not-yet-connected; an owner sees the product, not the pitch.
-  $("aidsLine").style.display = DEMO_AIDS && !account ? "" : "none";
-  if (account) $("previewCard").style.display = "none";
+  $("aidsLine").style.display = !INST && DEMO_AIDS && !account ? "" : "none";
+  // INST: the model card IS the home screen — visible whenever not in viewing mode.
+  if (INST) $("previewCard").style.display = watching ? "none" : "";
+  else if (account) $("previewCard").style.display = "none";
   // WATCH chrome: the whole page states the mode — header, strip, and no owner-only sections
   // (payouts/consent are meaningless for a wallet that isn't yours).
   $("posTitle").textContent = watching
@@ -420,8 +438,12 @@ const setConn = () => {
   $("cohortLine").style.display = watching || INST ? "none" : "";
   $("watchStrip").style.display = watching ? "" : "none";
   $("nextWhale").style.display = watching && watchWallets.length > 1 ? "" : "none";
-  $("payoutsH").style.display = watching ? "none" : "";
-  $("payoutsCard").style.display = watching ? "none" : "";
+  $("stopViewing").style.display = INST && watching ? "" : "none";
+  // INST idle state has no lookup, so the positions/payouts sections exist only while viewing.
+  $("posTitle").parentElement.style.display = INST && !watching ? "none" : "";
+  $("positions").style.display = INST && !watching ? "none" : "";
+  $("payoutsH").style.display = watching || INST ? "none" : "";
+  $("payoutsCard").style.display = watching || INST ? "none" : "";
 };
 
 const api = async (path, opts) => {
@@ -815,6 +837,26 @@ $("pvBtn").onclick = async () => {
         'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ') \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
         (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this at first \\u2014 capacity grows with the book.') : '') +
       '</div>';
+    // INST: the demonstration toggle — the one-action moment, experienced rather than described.
+    // Clearly labeled a demonstration; nothing opens, nothing is claimed.
+    if (INST) {
+      $("pvOut").insertAdjacentHTML("beforeend",
+        '<div class="row" style="margin-top:14px;align-items:center">' +
+          '<div class="switch" id="demoSwitch" role="switch" aria-checked="false"><div class="knob"></div></div>' +
+          '<span class="small muted" style="flex:1;min-width:240px">In production this is the entire workflow: one action. Vault integration in the design-partner pilot enables it for custodied holdings.</span>' +
+        '</div>' +
+        '<div id="demoActive" style="display:none">' +
+          '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration)</span> \\u00b7 the credit vests through the cycle and settles at its close</div>' +
+          '<div class="bar"><div style="width:28%"></div></div>' +
+          '<div class="unlock">unlocks through the day \\u00b7 pays automatically at the cycle\\u2019s close (demonstration)</div>' +
+        '</div>');
+      $("demoSwitch").onclick = () => {
+        const on = $("demoSwitch").classList.toggle("on");
+        $("demoSwitch").setAttribute("aria-checked", String(on));
+        $("demoActive").style.display = on ? "" : "none";
+        haptic("impact");
+      };
+    }
   } catch (e) {
     $("pvClear").style.display = "";
     $("pvOut").innerHTML = '<div class="small muted" style="margin-top:8px">Couldn\\u2019t reach the pricer \\u2014 try again in a moment.</div>';
@@ -896,6 +938,18 @@ $("watchLink").onclick = async () => {
 $("nextWhale").onclick = (e) => {
   e.preventDefault();
   if (watchWallets.length > 1) watchWallet((watchIdx + 1) % watchWallets.length);
+};
+// INST viewing exit: back to the model-first home state (no lookup card exists on this skin).
+$("stopViewing").onclick = (e) => {
+  e.preventDefault();
+  watching = false;
+  account = "";
+  setConn();
+  $("hero").style.display = "";
+  $("modePill").style.display = "none";
+  $("positions").innerHTML = '<div class="empty">Look up an address to see its open positions.</div>';
+  renderPayouts(null);
+  window.scrollTo({ top: 0, behavior: "smooth" });
 };
 $("previewLink").onclick = () => {
   $("previewCard").style.display = $("previewCard").style.display === "none" ? "" : "none";
