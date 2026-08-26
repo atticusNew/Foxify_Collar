@@ -58,6 +58,13 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     --muted:#8b9ab5;--accent:#4f8df9;--accent-ink:#061225
   }
   body.inst nav{background:rgba(10,18,32,.92)}
+  /* INST layout: the MODEL-A-HOLDING card leads (treasury lane); the trading-address lookup demotes.
+     Flex ordering only — DOM (and the retail skin) untouched. */
+  body.inst .wrap{display:flex;flex-direction:column}
+  body.inst #hero{order:-40}
+  body.inst #previewCard{order:-30}
+  body.inst #aidsLine{order:-20;margin:0 2px 14px}
+  body.inst #connectCard{order:-10}
   body{background:var(--bg);color:var(--text);font:14.5px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
   .wrap{max-width:760px;margin:0 auto;padding:0 20px 60px}
   nav{position:sticky;top:0;z-index:10;background:rgba(11,29,35,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
@@ -203,6 +210,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
        grammar: an ADDRESS is public data, never a "wallet"). Every acquisition aid lives behind
        an explicit click on the quiet line below. -->
   <div class="card" id="connectCard">
+    <div class="small muted" id="lookupCaption" style="display:none;margin-bottom:8px"></div>
     <div class="row">
       <input type="text" id="addrInput" placeholder="0x… any Hyperliquid address" title="An address is public data — the same thing you'd paste into an explorer. We read positions, never touch them. Find yours in the Hyperliquid app: top right, starts with 0x." spellcheck="false">
       <button class="btn" id="connectBtn">Look up</button>
@@ -223,13 +231,13 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
        wrapping always requires a live venue-read position. -->
   <div class="card" id="previewCard" style="display:none">
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px">
-      <span class="small muted">What a position would earn — live market quote, nothing opens.</span>
+      <span class="small muted" id="pvHeader">What a position would earn — live market quote, nothing opens.</span>
       <a href="#" id="pvClear" class="small" style="display:none;color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--line)">clear</a>
     </div>
     <div class="row" style="align-items:center">
       <div class="seg" id="pvSeg"><button type="button" class="on" data-side="long">Long</button><button type="button" data-side="short">Short</button></div>
       <div class="pv-amt"><span>$</span><input id="pvUsd" value="10,000" inputmode="numeric" title="Position size in USD" aria-label="Position size in USD"></div>
-      <span class="small muted">position</span>
+      <span class="small muted" id="pvNoun">position</span>
       <button class="btn" id="pvBtn">Preview credit</button>
     </div>
     <div id="pvOut"></div>
@@ -273,7 +281,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 
 <div class="modal-veil" id="howVeil"><div class="modal">
   <h3>How Earn &amp; Protect works</h3>
-  <ul>
+  <ul id="howList">
     <li><b>Read-only.</b> We read your positions from Hyperliquid's public API — no signing, no deposits, no keys. Payouts go only to your own wallet.</li>
     <li><b>Live-market pricing.</b> Every protection cycle is quoted from listed option order books at the moment you toggle. When the market can't fund a credit, we refuse and say why.</li>
     <li><b>Paid daily, never upfront.</b> Your credit unlocks through each daily cycle and pays automatically at its close.</li>
@@ -355,13 +363,30 @@ const SKIN = "__SKIN__";
 const INST = SKIN === "institutional";
 if (INST) {
   document.body.classList.add("inst");
-  $("heroH1").innerHTML = 'Institutional position protection. <span style="color:var(--accent)">One action.</span>';
-  $("heroSub").textContent = "A hard floor and a daily credit on custodied positions. Read-only: assets never move.";
-  $("watchLink").textContent = "Price a live position";
-  $("previewLink").textContent = "Model a position";
+  $("heroH1").innerHTML = 'Institutional asset protection. <span style="color:var(--accent)">One action.</span>';
+  $("heroSub").textContent = "A hard floor and a daily credit on custodied holdings and trading positions. Read-only: assets never move.";
+  // Treasury lane leads: the model card is the primary, always-open flow at treasury scale.
+  $("previewCard").style.display = "";
+  $("pvHeader").textContent = "Model a holding — live market pricing. Nothing opens, nothing is stored.";
+  $("pvUsd").value = "10,000,000";
+  $("pvNoun").textContent = "holding";
+  $("watchLink").textContent = "Price a live reference position";
+  $("previewLink").style.display = "none"; // redundant: the model card is already open
+  // Trading-address lookup demotes to lane two, honestly labeled.
+  $("lookupCaption").textContent = "Or look up a live trading position (Hyperliquid) — this lane runs today, unmodified:";
+  $("lookupCaption").style.display = "";
+  $("addrInput").placeholder = "0x… a live trading address (Hyperliquid)";
   $("wsTitle").textContent = "Viewing a public reference position";
   $("wsBody").textContent = "— read-only, live pricing on a real position. Look up a client address to see theirs.";
   $("nextWhale").textContent = "view another position →";
+  // Institutional How-it-works: exposure sources stated honestly (vault-side reads = the pilot).
+  $("howList").innerHTML =
+    '<li><b>Read-only.</b> Exposure is read from public venue APIs — no keys, no deposits, no custody movement. Direct vault-side balance integration is scoped in the design-partner pilot.</li>' +
+    '<li><b>Live-market pricing.</b> Every protection cycle is priced from listed option order books at the moment of activation. When the market cannot fund a credit, we refuse and say why.</li>' +
+    '<li><b>Delta neutral by construction.</b> Every protection is hedged leg for leg on listed options (OKX today; FalconX block execution as volume nets up). Revenue is a published fee on credits, never trading P&amp;L.</li>' +
+    '<li><b>Paid daily, never upfront.</b> The credit vests through each cycle and settles automatically at its close, only to the holder\\u2019s address.</li>' +
+    '<li><b>The cap ends the cycle, not the holding.</b> A cap touch concludes that cycle — the holder keeps the assets, gains, and vested credit; protection re-arms automatically.<span id="rateNote" style="display:none"></span></li>' +
+    '<li>Derivatives involve risk. Nothing here is investment advice.</li>';
 }
 let verifyOffered = false; // surfaced when a close is refused cross-device — optional path to manage from anywhere
 
@@ -764,7 +789,7 @@ for (const b of document.querySelectorAll("#pvSeg button")) {
 $("pvClear").onclick = (e) => {
   e.preventDefault();
   $("pvOut").innerHTML = "";
-  $("pvUsd").value = "10,000";
+  $("pvUsd").value = INST ? "10,000,000" : "10,000";
   pvSetSide("long");
   $("pvClear").style.display = "none";
 };
@@ -782,13 +807,13 @@ $("pvBtn").onclick = async () => {
     const sign = (x) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(1) + "%";
     $("pvOut").innerHTML =
       '<div class="terms">' +
-        '<div class="term"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit' + (j.founding ? ' <span class="badge founding">FOUNDING RATE</span>' : '') + '</div>' +
+        '<div class="term"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit' + (j.founding && !INST ? ' <span class="badge founding">FOUNDING RATE</span>' : '') + '</div>' +
         '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + sign(fPct) + '</em></b>hard floor</div>' +
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
       '<div class="small muted" style="margin-top:8px">' +
-        'For a ' + fmt$(j.protectedUsd) + ' ' + esc(j.side) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ') \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
-        (j.exceedsCurrentCap ? ' Early access may protect part of this at first \\u2014 capacity grows with the book.' : '') +
+        'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ') \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
+        (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this at first \\u2014 capacity grows with the book.') : '') +
       '</div>';
   } catch (e) {
     $("pvClear").style.display = "";
