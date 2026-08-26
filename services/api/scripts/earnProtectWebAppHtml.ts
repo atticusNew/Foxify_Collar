@@ -51,6 +51,13 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     --radius:8px            /* HL uses tighter corners than our site         */
   }
   *{box-sizing:border-box;margin:0;padding:0}
+  /* INSTITUTIONAL skin (EP_SKIN=institutional): deep navy + fresh blue, harmonizing with an
+     enterprise-custody world without copying anyone's exact brand hexes. Retail (HL) is default. */
+  body.inst{
+    --bg:#0a1220;--panel:#101b30;--panel2:#0d1728;--line:#1e2c47;
+    --muted:#8b9ab5;--accent:#4f8df9;--accent-ink:#061225
+  }
+  body.inst nav{background:rgba(10,18,32,.92)}
   body{background:var(--bg);color:var(--text);font:14.5px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
   .wrap{max-width:760px;margin:0 auto;padding:0 20px 60px}
   nav{position:sticky;top:0;z-index:10;background:rgba(11,29,35,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
@@ -184,8 +191,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 </div></nav>
 <div class="wrap">
   <header id="hero">
-    <h1>One toggle. A hard floor. <span style="color:var(--accent)">And it pays.</span></h1>
-    <p class="sub">Look up any Hyperliquid address — public data, read-only. Flip protection on; the options market pays a daily credit.</p>
+    <h1 id="heroH1">One toggle. A hard floor. <span style="color:var(--accent)">And it pays.</span></h1>
+    <p class="sub" id="heroSub">Look up any Hyperliquid address — public data, read-only. Flip protection on; the options market pays a daily credit.</p>
   </header>
 
   <div class="card" id="geoBanner" style="display:none">
@@ -248,7 +255,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 
   <h2><span id="posTitle">Your positions</span> <span class="small muted" id="cohortLine" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
-    <b>Watching a public wallet</b> <span class="muted small">— read-only, live pricing on a real position. Look up your own address to protect it.</span>
+    <b id="wsTitle">Watching a public wallet</b> <span class="muted small" id="wsBody">— read-only, live pricing on a real position. Look up your own address to protect it.</span>
     <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">show another whale →</a>
   </div>
   <div id="positions"><div class="empty">Look up an address to see its open positions.</div></div>
@@ -342,6 +349,20 @@ let watching = false;
 let watchWallets = [];
 let userEntered = false; // an address typed or chip-clicked in this session (vs restored storage)
 const DEMO_AIDS = __DEMO_AIDS__; // acquisition aids (watch chips + preview) — env-flagged
+// SKIN: "retail" (HL, default) or "institutional" (partner demo instances). The institutional
+// register: counterparties and treasuries, never whales; viewing, never watching; no retail promos.
+const SKIN = "__SKIN__";
+const INST = SKIN === "institutional";
+if (INST) {
+  document.body.classList.add("inst");
+  $("heroH1").innerHTML = 'Institutional position protection. <span style="color:var(--accent)">One action.</span>';
+  $("heroSub").textContent = "A hard floor and a daily credit on custodied positions. Read-only: assets never move.";
+  $("watchLink").textContent = "Price a live position";
+  $("previewLink").textContent = "Model a position";
+  $("wsTitle").textContent = "Viewing a public reference position";
+  $("wsBody").textContent = "— read-only, live pricing on a real position. Look up a client address to see theirs.";
+  $("nextWhale").textContent = "view another position →";
+}
 let verifyOffered = false; // surfaced when a close is refused cross-device — optional path to manage from anywhere
 
 // One status writer: the connect-card line on web; a visible flash strip in the Mini App
@@ -355,7 +376,7 @@ const setMsg = (t, isErr, working) => {
 
 const setConn = () => {
   $("connPill").textContent = watching
-    ? short(account) + " · watching · public data"
+    ? short(account) + (INST ? " · viewing · public data" : " · watching · public data")
     : account ? short(account) + " · read-only" : "not connected";
   $("forgetBtn").style.display = account ? "" : "none";
   $("forgetBtn").textContent = watching ? "Stop watching" : "Forget";
@@ -368,8 +389,10 @@ const setConn = () => {
   if (account) $("previewCard").style.display = "none";
   // WATCH chrome: the whole page states the mode — header, strip, and no owner-only sections
   // (payouts/consent are meaningless for a wallet that isn't yours).
-  $("posTitle").textContent = watching ? "Watching · " + short(account) + " · public leaderboard" : "Your positions";
-  $("cohortLine").style.display = watching ? "none" : "";
+  $("posTitle").textContent = watching
+    ? (INST ? "Viewing · " + short(account) + " · public reference" : "Watching · " + short(account) + " · public leaderboard")
+    : "Your positions";
+  $("cohortLine").style.display = watching || INST ? "none" : "";
   $("watchStrip").style.display = watching ? "" : "none";
   $("nextWhale").style.display = watching && watchWallets.length > 1 ? "" : "none";
   $("payoutsH").style.display = watching ? "none" : "";
@@ -426,7 +449,7 @@ const render = (positions, state) => {
         const capStrike = q.capStrike ?? q.callStrike, floorStrike = q.floorStrike ?? q.putStrike;
         // Side-aware signs: a long's floor is below / cap above; a short mirrors.
         const floorSign = p.side === "long" ? "−" : "+", capSign = p.side === "long" ? "+" : "−";
-        const foundingBadge = founding && caps
+        const foundingBadge = founding && caps && !INST
           ? tip('<span class="badge founding">FOUNDING RATE</span>',
               "You're one of our first " + caps.foundingWallets + " wallets, so you keep " + (100 - caps.foundingTakeRatePct * 100).toFixed(0) + "% of every credit instead of " + (100 - caps.takeRatePct * 100).toFixed(0) + "% — locked in for 12 months. And when our cut would be under 5\\u00a2, we skip it: you keep it all.")
           : "";
@@ -463,7 +486,7 @@ const render = (positions, state) => {
     // card instead carries the would-be protection terms (filled async by renderWatchTerms).
     if (watching) terms = '<div id="watchTerms"><div class="small muted" style="margin-top:10px"><span class="spin"></span>pricing protection on this position…</div></div>';
     const toggle = watching
-      ? '<span class="small muted">Watching</span>'
+      ? '<span class="small muted">' + (INST ? "Viewing" : "Watching") + '</span>'
       : isWrapCoin
       ? '<div class="switch' + (active ? " on" : "") + (busy ? " busy" : "") + '" data-coin="' + esc(p.coin) + '" data-active="' + (active ? "1" : "0") + '"' +
         (active && v ? ' data-vested="' + v.vestedUsdc + '" data-full="' + v.fullCreditUsdc + '"' : "") +
@@ -506,7 +529,7 @@ const renderWatchTerms = async (p) => {
         '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + pctSign(fPct) + '</em></b>hard floor</div>' +
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + pctSign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
-      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u2014 nothing opens, nothing is stored. Look up your own address to see yours.</div>';
+      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u2014 nothing opens, nothing is stored. ' + (INST ? 'Look up a client address to see theirs.' : 'Look up your own address to see yours.') + '</div>';
     watchQuoteCache = { addr: account, atMs: Date.now(), html };
     const boxNow = $("watchTerms");
     if (boxNow) boxNow.innerHTML = html;

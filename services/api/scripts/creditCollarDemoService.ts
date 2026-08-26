@@ -1336,6 +1336,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           // partner names never appear on the public instance.
           .replaceAll("__BRAND_FOR__", (process.env.EP_BRAND_FOR ?? "HYPERLIQUID").replace(/[<>&"]/g, ""))
           .replaceAll("__BRAND_LINE__", (process.env.EP_BRAND_LINE ?? "for").replace(/[<>&"]/g, ""))
+          .replaceAll("__SKIN__", process.env.EP_SKIN === "institutional" ? "institutional" : "retail")
           .replaceAll("__DEMO_AIDS__", demoAids ? "true" : "false")
           .replaceAll("__LINK_TG__", /^https:\/\//.test(tgLink) ? `<a href="${tgLink.replace(/"/g, "")}" target="_blank" rel="noopener">Support / Telegram</a> · ` : "")
           .replaceAll("__LINK_X__", /^https:\/\//.test(xLink) ? `<a href="${xLink.replace(/"/g, "")}" target="_blank" rel="noopener">X</a> · ` : "")
