@@ -311,6 +311,7 @@ const humanChip = (raw) => {
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first";
   if (/waitlisted|#\d+ in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full — you're #" + m[1] + " in line" : "Founding cohort full — you're on the waitlist"; }
   if (/showcase_wallet|public wallet on watch/i.test(s)) return "Public wallet — watching only";
+  if (/invalid_size/i.test(s)) return "Preview sizes up to $500M — try a smaller amount";
   if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
   if (/kill switch|demo disabled|paused/i.test(s)) return "Protection paused";
   if (/rate_limited/i.test(s)) return "Slow down a moment";
@@ -489,7 +490,12 @@ const renderWatchTerms = async (p) => {
     return;
   }
   try {
-    const j = await api("/api/preview?side=" + encodeURIComponent(p.side) + "&usd=" + Math.round(p.notionalUsdc));
+    // Mirror of the server's preview sanity ceiling: a position larger than the cap gets its
+    // first $500M priced with an honest label — watch mode must never error for being impressive.
+    const PV_MAX_USD = 500000000;
+    const reqUsd = Math.min(Math.round(p.notionalUsdc), PV_MAX_USD);
+    const clamped = p.notionalUsdc > PV_MAX_USD;
+    const j = await api("/api/preview?side=" + encodeURIComponent(p.side) + "&usd=" + reqUsd);
     if (!j.ok) { box.innerHTML = '<div class="small muted" style="margin-top:10px">' + esc(humanChip(j.message || j.error)) + '</div>'; return; }
     const fPct = ((j.floorStrike - j.spot) / j.spot) * 100, cPct = ((j.capStrike - j.spot) / j.spot) * 100;
     const pctSign = (x) => (x >= 0 ? "+" : "\\u2212") + Math.abs(x).toFixed(1) + "%";
@@ -500,7 +506,7 @@ const renderWatchTerms = async (p) => {
         '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + pctSign(fPct) + '</em></b>hard floor</div>' +
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + pctSign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
-      '<div class="small muted" style="margin-top:8px">Live market quote \\u2014 nothing opens, nothing is stored. Look up your own address to see yours.</div>';
+      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u2014 nothing opens, nothing is stored. Look up your own address to see yours.</div>';
     watchQuoteCache = { addr: account, atMs: Date.now(), html };
     const boxNow = $("watchTerms");
     if (boxNow) boxNow.innerHTML = html;

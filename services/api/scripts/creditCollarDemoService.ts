@@ -1684,8 +1684,11 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const usdParam = url.searchParams.get("usd");
       const sizeBtc = usdParam != null ? Number(usdParam) / mark : Number(url.searchParams.get("sizeBtc") ?? "0.02");
       const requestedUsd = round2(sizeBtc * mark);
-      if (!Number.isFinite(sizeBtc) || sizeBtc <= 0 || requestedUsd > 100_000_000) {
-        sendJson(res, 400, { ok: false, error: "invalid_size", message: "position size must be a positive USD amount (≤ $100M)" });
+      // Sanity ceiling only (typo protection for the typed preview) — NOT a risk limit: quotes are
+      // indicative and open nothing. Set above any realistic leaderboard position after a live
+      // $124M whale tripped the old $100M cap and watch mode showed a failure on the first click.
+      if (!Number.isFinite(sizeBtc) || sizeBtc <= 0 || requestedUsd > 500_000_000) {
+        sendJson(res, 400, { ok: false, error: "invalid_size", message: "position size must be a positive USD amount (≤ $500M)" });
         return;
       }
       const { derived } = effectiveGuards(mark);
