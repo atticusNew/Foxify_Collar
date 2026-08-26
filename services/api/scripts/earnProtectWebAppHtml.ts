@@ -837,19 +837,26 @@ $("pvBtn").onclick = async () => {
         'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ') \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
         (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this at first \\u2014 capacity grows with the book.') : '') +
       '</div>';
-    // INST: the demonstration toggle — the one-action moment, experienced rather than described.
-    // Clearly labeled a demonstration; nothing opens, nothing is claimed.
+    // INST: the one-action moment, framed as a MOCK CLIENT-INTERFACE PANEL so it is unmistakable
+    // that this widget is what appears in the partner's product. Clearly labeled a demonstration.
     if (INST) {
+      const brandName = (document.querySelector(".logo b") || { textContent: "PARTNER" }).textContent;
       $("pvOut").insertAdjacentHTML("beforeend",
-        '<div class="row" style="margin-top:14px;align-items:center">' +
-          '<div class="switch" id="demoSwitch" role="switch" aria-checked="false"><div class="knob"></div></div>' +
-          '<span class="small muted" style="flex:1;min-width:240px">In production this is the entire workflow: one action. Vault integration in the design-partner pilot enables it for custodied holdings.</span>' +
+        '<div style="margin-top:14px;border:1px solid var(--line);border-radius:8px;overflow:hidden">' +
+          '<div style="background:var(--panel2);padding:6px 12px;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)">How this appears in a ' + esc(brandName) + ' client interface \\u00b7 demonstration</div>' +
+          '<div style="padding:12px 14px">' +
+            '<div class="row" style="align-items:center;justify-content:space-between">' +
+              '<div><b>Protect &amp; Earn</b><div class="small muted">BTC holding \\u00b7 ' + fmt$(j.protectedUsd) + '</div></div>' +
+              '<div class="switch" id="demoSwitch" role="switch" aria-checked="false"><div class="knob"></div></div>' +
+            '</div>' +
+            '<div id="demoActive" style="display:none">' +
+              '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration)</span> \\u00b7 the credit vests through the cycle and settles at its close</div>' +
+              '<div class="bar"><div style="width:28%"></div></div>' +
+              '<div class="unlock">unlocks through the day \\u00b7 pays automatically at the cycle\\u2019s close</div>' +
+            '</div>' +
+          '</div>' +
         '</div>' +
-        '<div id="demoActive" style="display:none">' +
-          '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration)</span> \\u00b7 the credit vests through the cycle and settles at its close</div>' +
-          '<div class="bar"><div style="width:28%"></div></div>' +
-          '<div class="unlock">unlocks through the day \\u00b7 pays automatically at the cycle\\u2019s close (demonstration)</div>' +
-        '</div>');
+        '<div class="small muted" style="margin-top:8px">One action in production. Vault integration in the design-partner pilot enables this for custodied holdings.</div>');
       $("demoSwitch").onclick = () => {
         const on = $("demoSwitch").classList.toggle("on");
         $("demoSwitch").setAttribute("aria-checked", String(on));

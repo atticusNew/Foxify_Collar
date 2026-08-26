@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <title>Atticus Client Profile Simulation</title>
 <style>
-  @page { size: Letter; margin: 20mm 17mm; }
+  @page { size: Letter; margin: 14mm 15mm; }
   * { box-sizing: border-box; }
-  body { font: 10.5pt/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #16202a; margin: 0; }
+  body { font: 9.8pt/1.42 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #16202a; margin: 0; }
   h1 { font-size: 18pt; margin: 0 0 2px; letter-spacing: -0.3px; }
   .brand { color: #b8860b; font-weight: 700; }
   .subtitle { color: #5a6a78; font-size: 10pt; margin-bottom: 12px; }
-  h2 { font-size: 12pt; margin: 18px 0 6px; padding-bottom: 3px; border-bottom: 2px solid #b8860b; page-break-after: avoid; }
+  h2 { font-size: 11pt; margin: 12px 0 4px; padding-bottom: 3px; border-bottom: 2px solid #b8860b; page-break-after: avoid; }
   p { margin: 5px 0; }
   table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; font-size: 9.5pt; }
   th { text-align: left; background: #f0f2f5; padding: 5px 7px; border-bottom: 2px solid #d5dbe2; font-size: 8.5pt; text-transform: uppercase; letter-spacing: 0.4px; color: #47555f; }
@@ -42,7 +42,7 @@
 </table>
 
 <h2>2. Active Sleeve: Daily Protection Cycles</h2>
-<p>Each day the active book is wrapped in one tap: a hard floor about 5 to 6% below spot, a daily credit funded by the options market, automatic re-arm after any cap touch. Read-only: positions read from public data, hedges placed from Atticus accounts, credits paid to the client's address.</p>
+<p>Each day the active book is wrapped in ONE ACTION: a hard floor about 5 to 6% below spot, a daily credit funded by the options market, automatic re-arm after any cap touch. Read-only: positions read from public data, hedges placed from Atticus accounts, credits paid to the client's address. The workflow is live at institutions.earnandprotect.xyz.</p>
 <table>
   <tr><th>Line (90-day horizon)</th><th class="r">Value</th><th>Basis</th></tr>
   <tr><td>Average protected notional</td><td class="r">$2,000,000</td><td><span class="e">MODELED</span> (profile input)</td></tr>
@@ -78,7 +78,7 @@
 <p>The $10M treasury sleeve calls for rolling monthly collars rather than daily cycles. The engine supports the structure (tenor is a parameter; strikes and expiries come from the same listed chain), but we have not yet run a measured monthly-tenor tape, and our operating rule is that nothing is shown to a client before it is measured. Term pricing for this sleeve is exactly what the design-partner phase produces: two weeks of dedicated, machine-audited shadow operation against this profile, treasury sleeve included. That run is available on request.</p>
 
 <h2>6. Next Step</h2>
-<p>Name the real client and their requirements. We configure this simulation to their actual book, run it live in the shadow facility with full audit output, and present the results alongside the working branded demo. From a green light, a funded design-partner pilot is live inside weeks on the OKX plus FalconX execution stack.</p>
+<p>Try the workflow at institutions.earnandprotect.xyz, then name the real client and their requirements. We configure this simulation to their actual book, run it live in the shadow facility with full audit output, and present the results alongside the working branded demo. From a green light, a funded design-partner pilot is live inside weeks on the OKX plus FalconX execution stack.</p>
 
 <footer>Atticus Trade, Inc. Measured figures come from a 35-day machine-audited shadow facility operating at real market prices with zero capital at risk, and from real executed fills on listed options venues. Modeled figures apply measured rates to the stated composite profile. Nothing in this document is investment advice or an offer of any financial product. Contact: hello@atticustrade.com</footer>
 
