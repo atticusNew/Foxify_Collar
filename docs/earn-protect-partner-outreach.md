@@ -285,6 +285,38 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 
 **One-line pitch:** "Earn & Protect makes Katana Perps positions productive TVL — one toggle pays the trader a daily credit with a hard floor, hedged off-chain, integrated via builder codes, zero new risk on the chain."
 
+## 6.5c Fireblocks follow-up email (Aug 26 — deliverables cover note)
+
+*Principles: the email is a cover note, not the pitch — he asked for these deliverables and the attachments do the persuading. One ask only. No rev-share numbers in the body (they live in the one-sheet, labeled indicative). Echo his own OKX + FalconX plan back to him so he advocates for it internally. Written to be forwarded: the subject identifies the deal on sight and the body stands alone without meeting context.*
+
+**Subject:** Atticus x Fireblocks: one-sheet, client simulation, live demo (ahead of Friday)
+
+> Hi {name},
+>
+> Thanks for the time Tuesday. Everything you asked for is below, ahead of the Friday date we discussed.
+>
+> **One-sheet (attached).** What it is, why it fits custody (read-only; assets never leave your vaults), the audited track record, and indicative partnership economics, open to structure.
+>
+> **Client-profile simulation (attached).** A composite Fireblocks client: crypto-native fund, $10M BTC treasury in custody, $2M active perp book, run against our measured rates. Daily credits, floor and cap events, and behavior on the August 19 stress day.
+>
+> **Live demo: {institutions.earnandprotect.xyz}.** Model a $10M holding, see live market terms, and flip the toggle as it would appear in a client interface. The brand slot is a placeholder; say the word and we will skin it Fireblocks for your internal walkthrough.
+>
+> The execution stack is the one you pointed us to: OKX live and production-proven today, FalconX for block execution as volume nets up. No new venue builds required.
+>
+> Next step when you are ready: a design-partner pilot. One named client, requirements defined by your team, live inside weeks of a green light. Does Tuesday or Wednesday next week work for a short call with whoever owns that client relationship?
+>
+> Best,
+> Natalie
+> Atticus Trade, Inc.
+
+**Pre-send checklist:**
+
+1. The demo URL must resolve and show the institutional skin (`EP_SKIN=institutional` instance deployed) — rule zero applies; a dead link kills the send.
+2. Attach the final PDFs from `docs/reports/submission/` (one-sheet + client profile), not the HTML.
+3. Confirm the meeting day referenced ("Tuesday") matches the actual second-meeting date.
+4. Replace the proposed call days with two concrete options, London-friendly times (contact is London-based).
+5. Send morning London time.
+
 ## 6.6 Where the traders are — target list + sourcing loop
 
 The named list (traders, KOLs, communities, trackers, builder apps — with handles, links, value notes, approach, and confidence flags) lives in **`docs/earn-protect-trader-targets.csv`**. Re-verify any handle marked "re-verify" before DMing — accounts move.
