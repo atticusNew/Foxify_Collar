@@ -175,7 +175,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <!-- Venue affiliation is DESCRIPTIVE ("for Hyperliquid" — where your positions live), not a
        partnership claim; swap the venue name per integration. The brand mark after "by" is
        injected by the service: the Atticus logo (EP_BRAND_LOGO_URL) or the wordmark fallback. -->
-  <div class="logo">Earn &amp; Protect <span class="by">for <b>HYPERLIQUID</b> · by __BRAND_MARK__</span></div>
+  <div class="logo">Earn &amp; Protect <span class="by">__BRAND_LINE__ <b>__BRAND_FOR__</b> · by __BRAND_MARK__</span></div>
   <div style="display:flex;align-items:center">
     <span class="px" id="pxPill" style="display:none">BTC <b id="pxVal">—</b></span>
     <span class="mode-pill tipwrap" id="modePill" style="display:none"></span>
