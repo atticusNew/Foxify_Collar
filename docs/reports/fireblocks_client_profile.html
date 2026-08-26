@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Atticus Client Profile Simulation</title>
+<style>
+  @page { size: Letter; margin: 20mm 17mm; }
+  * { box-sizing: border-box; }
+  body { font: 10.5pt/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #16202a; margin: 0; }
+  h1 { font-size: 18pt; margin: 0 0 2px; letter-spacing: -0.3px; }
+  .brand { color: #b8860b; font-weight: 700; }
+  .subtitle { color: #5a6a78; font-size: 10pt; margin-bottom: 12px; }
+  h2 { font-size: 12pt; margin: 18px 0 6px; padding-bottom: 3px; border-bottom: 2px solid #b8860b; page-break-after: avoid; }
+  p { margin: 5px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; font-size: 9.5pt; }
+  th { text-align: left; background: #f0f2f5; padding: 5px 7px; border-bottom: 2px solid #d5dbe2; font-size: 8.5pt; text-transform: uppercase; letter-spacing: 0.4px; color: #47555f; }
+  th.r, td.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td { padding: 5px 7px; border-bottom: 1px solid #e5e9ee; vertical-align: top; }
+  tr.total td { font-weight: 700; border-top: 2px solid #d5dbe2; }
+  .m { font-size: 8pt; font-weight: 700; color: #1e6b41; }
+  .e { font-size: 8pt; font-weight: 700; color: #8a6508; }
+  .muted { color: #5a6a78; font-size: 9pt; }
+  .note { background: #f6f4ec; border-left: 4px solid #b8860b; padding: 8px 11px; font-size: 9.5pt; margin: 8px 0; }
+  .pos { color: #1e6b41; font-weight: 600; } .neg { color: #a03030; font-weight: 600; }
+  footer { margin-top: 18px; padding-top: 6px; border-top: 1px solid #d5dbe2; font-size: 8pt; color: #5a6a78; }
+</style>
+</head>
+<body>
+
+<h1><span class="brand">Atticus</span> Client Profile Simulation</h1>
+<div class="subtitle">Earn &amp; Protect applied to a composite Fireblocks client. Prepared for Fireblocks, August 2026.</div>
+
+<div class="note"><b>Reading guide.</b> Every figure is tagged <span class="m">MEASURED</span> (from our 35-day machine-audited facility record or real fills) or <span class="e">MODELED</span> (measured rates applied to this profile). Where we have no measured basis, we say so rather than estimate. A dedicated live shadow run of this exact profile, machine-audited over two weeks, is available on request.</div>
+
+<h2>1. The Client Profile (composite)</h2>
+<table>
+  <tr><th>Attribute</th><th>Value</th></tr>
+  <tr><td>Type</td><td>Crypto-native fund, BTC treasury custodied at Fireblocks</td></tr>
+  <tr><td>Treasury sleeve</td><td>$10,000,000 BTC, held long-term in qualified custody</td></tr>
+  <tr><td>Active sleeve</td><td>$2,000,000 average directional perp exposure on Hyperliquid, both directions</td></tr>
+  <tr><td>Objective</td><td>Yield on protected exposure without principal drawdown, zero custody movement</td></tr>
+</table>
+
+<h2>2. Active Sleeve: Daily Protection Cycles</h2>
+<p>Each day the active book is wrapped in one tap: a hard floor about 5 to 6% below spot, a daily credit funded by the options market, automatic re-arm after any cap touch. Read-only: positions read from public data, hedges placed from Atticus accounts, credits paid to the client's address.</p>
+<table>
+  <tr><th>Line (90-day horizon)</th><th class="r">Value</th><th>Basis</th></tr>
+  <tr><td>Average protected notional</td><td class="r">$2,000,000</td><td><span class="e">MODELED</span> (profile input)</td></tr>
+  <tr><td>Gross credit rate at block execution</td><td class="r">8.5 bps/day</td><td><span class="m">MEASURED</span> (facility, $50k-scale tape)</td></tr>
+  <tr><td>Gross credits, 90 days</td><td class="r">$153,000</td><td><span class="e">MODELED</span> = $2M x 8.5 bps x 90</td></tr>
+  <tr><td>Client share (80% or better)</td><td class="r">$122,400+</td><td><span class="e">MODELED</span> (published take, institutional tiers)</td></tr>
+  <tr><td>Expected floor events</td><td class="r">~1 of 90 cycles</td><td><span class="m">MEASURED</span> frequency 1.12% of positions</td></tr>
+  <tr><td>Expected cap touches (auto re-arm, credit kept)</td><td class="r">~4 of 90 cycles</td><td><span class="m">MEASURED</span> frequency 4.49% of positions</td></tr>
+  <tr><td>Days positive for clients across the measured window</td><td class="r">79%</td><td><span class="m">MEASURED</span> (89 settled positions)</td></tr>
+  <tr class="total"><td>Client all-in result across the full measured window</td><td class="r">+4.5 bps on notional</td><td><span class="m">MEASURED</span> (credits + protection + funding, net)</td></tr>
+</table>
+
+<h2>3. The Stress Exhibit: a Real 7.5% Day (measured, August 19, 2026)</h2>
+<p>The facility lived through a 7.5% single-session move during the measured window. Below is what actually happened, per $50,000 position, both directions. For this profile's $2M active sleeve, multiply by 40.</p>
+<table>
+  <tr><th>Direction</th><th class="r">Position P&amp;L</th><th class="r">Collar settlement</th><th class="r">Credit</th><th class="r">Client net</th><th>What the structure did</th></tr>
+  <tr><td>Long $50k (price rose 7.5%)</td><td class="r pos">+$3,796</td><td class="r neg">-$2,886</td><td class="r pos">+$29</td><td class="r pos">+$921</td><td>Cap engaged above the knockout: client kept gains to the cap plus vested credit; cycle re-armed at the new spot</td></tr>
+  <tr><td>Short $50k (price moved 7.5% against)</td><td class="r neg">-$3,774</td><td class="r pos">+$950</td><td class="r pos">+$48</td><td class="r neg">-$2,776</td><td>Floor engaged: the collar paid out and absorbed the loss beyond the floor; without protection the loss is the full -$3,774</td></tr>
+</table>
+<p class="muted">The point of the exhibit: on the worst day in the window, floors paid, caps behaved, no manual intervention occurred, and the facility's cumulative result remained positive. Protection is measured on the day it is needed, not the days it is not.</p>
+
+<h2>4. Controls and Audit (all measured, entire window)</h2>
+<table>
+  <tr><th>Control</th><th class="r">Result</th></tr>
+  <tr><td>Independent oracle verification of every position</td><td class="r">100%</td></tr>
+  <tr><td>Reconciliation against venue records, sessions with drift</td><td class="r">100% / 0</td></tr>
+  <tr><td>Peak net market exposure of the Atticus book</td><td class="r">0</td></tr>
+  <tr><td>Lifecycle completion without intervention</td><td class="r">99.97%</td></tr>
+  <tr><td>Honest refusals (market could not fund a credit)</td><td class="r">1 of 94 attempts</td></tr>
+</table>
+
+<h2>5. Treasury Sleeve: Stated Honestly</h2>
+<p>The $10M treasury sleeve calls for rolling monthly collars rather than daily cycles. The engine supports the structure (tenor is a parameter; strikes and expiries come from the same listed chain), but we have not yet run a measured monthly-tenor tape, and our operating rule is that nothing is shown to a client before it is measured. Term pricing for this sleeve is exactly what the design-partner phase produces: two weeks of dedicated, machine-audited shadow operation against this profile, treasury sleeve included. That run is available on request.</p>
+
+<h2>6. Next Step</h2>
+<p>Name the real client and their requirements. We configure this simulation to their actual book, run it live in the shadow facility with full audit output, and present the results alongside the working branded demo. From a green light, a funded design-partner pilot is live inside weeks on the OKX plus FalconX execution stack.</p>
+
+<footer>Atticus Trade, Inc. Measured figures come from a 35-day machine-audited shadow facility operating at real market prices with zero capital at risk, and from real executed fills on listed options venues. Modeled figures apply measured rates to the stated composite profile. Nothing in this document is investment advice or an offer of any financial product. Contact: hello@atticustrade.com</footer>
+
+</body>
+</html>
