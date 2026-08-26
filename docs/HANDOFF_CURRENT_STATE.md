@@ -1,0 +1,47 @@
+# ATTICUS / EARN & PROTECT — AGENT HANDOFF (Aug 26, 2026)
+
+Read this in full before acting. It is the single source of truth for product state, business state, active threads, and operating rules. The founder (operates as Natalie; the legal entity is Atticus Trade, Inc., cap table holder Michael William) directs all work; ask before assuming.
+
+## 1. What the product is
+
+Earn & Protect: one-tap position protection for Hyperliquid perp traders. A short-dated (daily) KNOCKOUT COLLAR behind a toggle: the pricer sets a hard floor ~5-6% below spot, sells the cap wing and buys the floor wing on listed BTC options (OKX), and the net premium is a CREDIT paid to the trader. Credit vests through the day; the holder can close anytime and keep what vested; if price touches the cap, the wrap auto-unwinds (holder keeps position, gains, vested credit) and re-arms at the new spot. Read-only by design: no keys, no deposits, no custody — positions are read from HL's public API and payouts flow only TO the holder's address. When markets cannot fund an honest credit, the engine refuses to open. Revenue: published 20% of credit sourced (10% for first 50 founding wallets). The book is delta-neutral by construction (leg-for-leg hedged); Atticus is a fee business, never a prop desk (locked rebuttal: "a prop desk takes risk to make money; we charge a fee to remove it; 35 audited days, peak net exposure zero").
+
+## 2. Live surfaces and repo map
+
+- Production: https://earnandprotect.xyz (Render service `atticus-earn-protect`, branch `cursor/hl-toggle-demo-9151`, Postgres-backed). Render auto-deploy is FLAKY: after pushing, verify the deployed commit; often needs dashboard "Manual Deploy → latest commit".
+- Web app + Telegram mini app + partner JSON API. Key UX: opens clean (address input + safety line); acquisition aids behind ghost pills ("See it on a whale" = watch mode pricing live leaderboard whale positions via the preview engine, uncapped to $500M; "Preview a size"); gates (ToS/verify) appear at the ACTION, not on lookup; watching is address-based, server-guarded (`showcase_wallet` refusals), never from storage.
+- Key paths: service = `services/api/scripts/creditCollarDemoService.ts`; app HTML = `services/api/scripts/earnProtectWebAppHtml.ts`; core domain = `services/api/src/singleSide/twoSided/creditCollar/` (demoWrap, capsConfig, epSafety, epVerify, epFunnel, epShowcase, epGeofence, epRfqNetting, epCalibration, epMarginMeasure, settlement/, execution/, store/epStores). Tests: `cd services/api && npx tsx --test tests/creditCollar*.test.ts` — 558 passing; keep green.
+- Admin: `/api/admin/status` (funnel: lookers vs wrappers, internal wallets excluded via EP_INTERNAL_ACCOUNTS; watch/preview counters), `/api/admin/funnel/reset`. Cohort count hidden behind EP_SHOW_COHORT_COUNT (off). Demo aids behind EP_DEMO_AIDS (on).
+- Execution layer: OKX production-proven (live fills, knockout unwinds with price-ladder + dust abandonment, venue-truth idempotency). FalconX + Bullish adapters SCAFFOLDED from pilot work (activation = funding + config + testing, not architecture). RFQ netting calculator + OKX RFQ executor built (needs account tier). PM margin measured (netting factor 0.078 via OKX position-builder probe) but not flipped (account tier + config). NO Deribit adapter yet — now a priority (see Fireblocks thread).
+- Separate system: the SHADOW FACILITY (earlier pilot infra) runs 24h collar cycles continuously across dYdX/Bluefin/Hyperliquid in shadow mode. Its scorecard is the investor-grade track record: 35 days, 89 settled one-sided wraps (paired only to keep the test book neutral), $4.45M notional, client all-in +4.5bps, 79% days positive, 100% oracle-verified/reconciled, TRACK_RECORD_CLEAN. The 7.5% move day (Aug 19) is the stress-test exhibit.
+
+## 3. Operating rules (hard)
+
+- NEVER run okx_live or anything spending real funds without the founder's explicit confirmation in-session. Never commit secrets. Keep test suites green.
+- Honesty is the brand: label figures MEASURED vs ESTIMATE; shadow results are never "revenue"; no "guaranteed"/"risk-free"; the cap tradeoff is volunteered, not hidden; every public number must be checkable. Credits vest and pay at cycle close — never "upfront".
+- Never name Foxify in customer-facing copy. US persons are geofenced; posture = infrastructure for venues. Do not leak private threads (there is a private Discord DM thread with an HL co-founder — never mention publicly or to partners).
+- Style: no em dashes in founder-facing documents (PDFs/reports). Copy grammar: ask for an "address" (public data), never a "wallet".
+
+## 4. Financial/business state
+
+- Founder-funded (~$50k in, ~$44k spent, ~$6k cash). Pre-revenue. Raising $25k collateral pilot on a post-money SAFE, $4M cap / 20% discount. Deadline stated to counterparties: reconciled within two weeks (self-fund $2-3k is the committed fallback).
+- Unit economics (MEASURED): ~8.5bps/day gross credit at block execution; take ~1.7bps/day; $25k supports ~$125k book at 1:1 margin (12%), ~$400k+ under PM. Max-exposure framing: frictions <$500/day normal; ~$2.3k per 10%-crash day on $50k book if ALL controls ignored (floor absorbs first ~5.5%); tail = venue credit risk (Off-Exchange custody compresses it).
+- Submission packet (final PDFs): `docs/reports/submission/` — projections, statements, cap table, 33-day shadow report, unit economics. Empire State application answers drafted (chat history); financials reconciled to $44k spend.
+
+## 5. Active threads (status → next action)
+
+- FIREBLOCKS (hottest): 2nd meeting done Aug 26, went well. Contact wants (a) a ONE-SHEET and (b) a shadow pilot/demo — founder committed both. He liked our OKX usage (Fireblocks has OKX partnerships) BUT Fireblocks Off-Exchange currently supports DERIBIT AND BYBIT ONLY (not OKX) — hence Deribit adapter = custody-compatible execution path + deepest BTC options liquidity; include in one-sheet as roadmap. No straight answer on ideal client → WE define it: crypto-native fund custodying BTC at Fireblocks + active HL perp book (~$10M treasury, $1-3M directional); build a client-profile shadow report in the facility-report format. Founder pitched: delta-neutral, ~8.5bps to client, ~1.7bps take, TIERED VOLUME-BASED REV SHARE (tiers not yet formalized — do so in one-sheet). Deliverables: follow-up email immediately; one-sheet by Friday; shadow report ≤2 weeks.
+- Capital: Albert (three-door email sent, deadline framing); Cian Cotter/Insight (personal angel-referral note drafted — send NOW with "in technical evaluation with Fireblocks"); Dan Von Kohorn + Paul Taylor (referral asks; Taylor = polite park with re-entry hook); Mike Jarmuz/Lightning Ventures (bitcoin-only thesis; pitch drafted framing Atticus as bitcoin options infra; his rule: capped notes only — we comply); Empire State seed application (submit); NYC fund-finder meetings.
+- Venues: OKX = live venue; message drafted asking PM/institutional pricing route + OKX Ventures intro (ventures@okx.com fallback). FalconX + Bullish: deep relationships, blocked on collateral/committed volume; race-framed update messages sent; two-week clock stated — MUST send them an update at/before deadline regardless of outcome.
+- Ecosystem: listed on HypurrCollective ecosystem map (@AtticusTradeBTC) — follow through with Kirby (assets), screenshot receipts. Katana: head of growth connected on LinkedIn (message sent); Andrew Beher (GSR MD) intro requested for Katana Foundation. Insilico Terminal: embed pitch sent. Phantom builder form submitted. Lenders: Felix + HyperLend (HL-native, UBTC collateral) = top targets; then Morpho, Gauntlet/Steakhouse, Ledn/Unchained/Arch/Maple. Cashen (Canton/Cumberland orbit) = network-tier only.
+- Docs for outreach: `docs/earn-protect-partner-outreach.md` (playbook + drafts + tracker), `docs/earn-protect-trader-targets.csv`, spec/build records in `docs/earn-protect-spec.md`.
+
+## 6. Immediate deliverables queue
+
+1. Fireblocks follow-up email (today) with committed dates.
+2. Fireblocks ONE-SHEET (PDF, house style like docs/reports: gold-ruled headers, no em dashes): what it is, custody-fit architecture (read-only; assets never move; Deribit path for Off-Exchange compatibility), track-record numbers, tiered rev-share table, ideal-client profile + shadow-pilot proposal.
+3. Client-profile SHADOW REPORT (configure facility run against the defined archetype; render in facility-report PDF format).
+4. Send Cian note; submit Empire State; Felix/HyperLend sends; two-week FalconX/Bullish follow-through.
+5. Keep daily trader DMs / receipts cadence per launch plan (`docs/earn-protect-launch-plan.md`).
+
+PDF generation on this VM: write styled HTML, render via `timeout 25 google-chrome --headless=new --disable-gpu --no-sandbox --disable-dev-shm-usage --user-data-dir=/tmp/<fresh> --print-to-pdf=<out> --no-pdf-header-footer <file>` (Chrome writes the PDF then hangs; the timeout is expected — verify the output file). Artifact preview can cache stale conversions — copy to a fresh filename if a PDF "reads" wrong.
