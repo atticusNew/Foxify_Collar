@@ -334,6 +334,22 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 
 **If they answer "we can't help on capital":** "Understood — we're raising it externally; whichever venue's economics work first is where the book scales, and we'd rather it be OKX since the integration is already proven." (Fallback contact: ventures@okx.com.)
 
+**Their reply (Aug 27): "1. What would the Ventures intro be for? 2. Confirm exactly what you mean [on desk flexibility]?" — qualifying questions; the answer below is what gets forwarded internally, so exact numbers, no hedging:**
+
+> Happy to be specific on both.
+>
+> 1. OKX Ventures: a strategic pilot investment — $25k on a post-money SAFE ($4M cap, 20% discount), which we're raising now. The proceeds capitalize our hedge collateral account here at OKX. Every credit we originate is hedged leg-for-leg on OKX listed options, so the check converts directly into recurring options volume on your book, and it makes OKX the anchor venue as we scale. If a larger check makes more sense on your side, we're open — more collateral means more flow.
+>
+> 2. Two specific things on the desk side:
+>
+> (a) Portfolio margin access for our corporate options account. We've measured our book's netting through your position-builder API — the paired collar structure nets to roughly a 0.08 margin factor — and under PM the same collateral supports roughly 3x the protected notional versus 1:1 margining. What's the qualification path at our account size?
+>
+> (b) The $25k minimum balance for new corporate accounts on the options desk: is there flexibility for an integrated partner with an audited, machine-verified track record — or an institutional route with different requirements?
+>
+> Answer either and we'll commit a start date.
+
+**Number lock (use these in every OKX thread):** $25k SAFE, $4M cap / 20% discount, ~0.08 measured netting factor, ~3x notional under PM vs 1:1.
+
 ## 6.6 Where the traders are — target list + sourcing loop
 
 The named list (traders, KOLs, communities, trackers, builder apps — with handles, links, value notes, approach, and confidence flags) lives in **`docs/earn-protect-trader-targets.csv`**. Re-verify any handle marked "re-verify" before DMing — accounts move.
