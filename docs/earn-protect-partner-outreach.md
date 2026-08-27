@@ -317,6 +317,23 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 4. Replace the proposed call days with two concrete options, London-friendly times (contact is London-based).
 5. Send morning London time.
 
+## 6.5d OKX follow-up (reply to their "when do we start?" check-in)
+
+*Principles: answer their question with a concrete condition, not "soon". Two specific asks, each answerable yes/no. Lead with the aligned incentive (our flow = their options volume), never with need. Do NOT play the "another exchange could fund us" card while they are leaning in; hold the honest version ("whichever venue's economics work first is where the book scales") for a stall only.*
+
+> Good timing — we're ready on the engine side. Live fills, knockout unwinds, and full reconciliation are all proven on OKX production over the past month; the audit packet is available if useful.
+>
+> One gate before we scale: collateral sizing. Running the book properly means portfolio margin, and that means capitalizing the account at $25k+ rather than the $10k we originally scoped. We're closing that now.
+>
+> Two ways OKX could accelerate it, if there's appetite:
+>
+> 1. An intro to OKX Ventures. A pilot-sized check puts the book live on your options desk within weeks — and every dollar of credit we originate is hedged leg-for-leg as OKX options volume, so the flow lands on your book by construction.
+> 2. Desk flexibility: an institutional/PM route or reduced minimum for a new entity with an audited, machine-verified track record.
+>
+> If either is workable, we'll commit to a start date on that call.
+
+**If they answer "we can't help on capital":** "Understood — we're raising it externally; whichever venue's economics work first is where the book scales, and we'd rather it be OKX since the integration is already proven." (Fallback contact: ventures@okx.com.)
+
 ## 6.6 Where the traders are — target list + sourcing loop
 
 The named list (traders, KOLs, communities, trackers, builder apps — with handles, links, value notes, approach, and confidence flags) lives in **`docs/earn-protect-trader-targets.csv`**. Re-verify any handle marked "re-verify" before DMing — accounts move.
