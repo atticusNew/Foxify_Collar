@@ -34,6 +34,18 @@
 
 ---
 
+## 1.5 Locked pitch lines (perp exchanges)
+
+**Two-line elevator (use verbatim):**
+
+> One toggle gives every trader a hard floor under their position and pays them a daily credit that offsets funding. No out-of-pocket cost — the options market funds it.
+
+**Follow-on (the "what is it really" answer):**
+
+> Under the hood it's a collar — the institutional structure desks have run for decades — hedged leg-for-leg on listed options, compressed into one tap. Your traders survive drawdowns and keep trading; you keep the volume.
+
+**Language rules:** never "eliminates liquidations" (the liquidation engine is mechanical; protection settles at cycle close — a CTO finds the exception in minutes and discounts everything after). The floor claim is "a hard floor under every position"; the liquidation claim belongs to the exchange's business ("fewer blown-up accounts, longer trader lifetime"), not the mechanism. Never "a proven financial technique" — vague reassurance pattern-matches to scams; NAME the structure (a collar) and let them verify. Pitch = one sentence + the live link; the demo does the explaining.
+
 ## 2. One-pager — LENDERS / MARGIN DESKS
 
 *(Half page. Send as PDF or paste into email body below the signature when they ask for detail.)*
