@@ -338,7 +338,7 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 
 > Happy to be specific on both.
 >
-> 1. OKX Ventures: a strategic pilot investment — $25k on a post-money SAFE ($4M cap, 20% discount), which we're raising now. The proceeds capitalize our hedge collateral account here at OKX. Every credit we originate is hedged leg-for-leg on OKX listed options, so the check converts directly into recurring options volume on your book, and it makes OKX the anchor venue as we scale. If a larger check makes more sense on your side, we're open — more collateral means more flow.
+> 1. OKX Ventures: we're raising a pre-seed of up to $250k on a post-money SAFE ($4M cap, 20% discount), first close happening now, and we'd welcome OKX Ventures at whatever size fits your mandate. Deployment scales with the check: the first tranche capitalizes our hedge collateral account here at OKX — $25k of collateral supports a ~$125k protected book at standard margin, $400k+ under portfolio margin, scaling linearly from there — and the remainder funds operations as the book grows. The strategic logic: every credit we originate is hedged leg-for-leg on OKX listed options, so your capital sits on your own venue converting directly into recurring options volume.
 >
 > 2. Two specific things on the desk side:
 >
@@ -348,7 +348,7 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 >
 > Answer either and we'll commit a start date.
 
-**Number lock (use these in every OKX thread):** $25k SAFE, $4M cap / 20% discount, ~0.08 measured netting factor, ~3x notional under PM vs 1:1.
+**Number lock (use these in every OKX and investor thread):** pre-seed up to $250k (founder to confirm the ceiling — never name a bare $25k check to a fund), post-money SAFE $4M cap / 20% discount, $25k = collateral minimum that unlocks the pilot (~$125k book at standard margin, $400k+ under PM, linear from there), ~0.08 measured netting factor, max exposure ~$2.3k. Use-of-funds ladder for angels: "first $25k is venue collateral — a deposit, not spend — everything above is runway."
 
 ## 6.6 Where the traders are — target list + sourcing loop
 
