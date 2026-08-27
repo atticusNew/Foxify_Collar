@@ -30,6 +30,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HyperliquidClient } from "../src/singleSide/twoSided/creditCollar/execution/perpVenues/hyperliquidClient";
+import { parseBrandAllowlist, resolveBrandFor } from "../src/singleSide/twoSided/creditCollar/epBranding";
 import {
   assessDemoWrap,
   assessUnderlying,
@@ -1332,9 +1333,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML)
           .replaceAll("__BRAND_MARK__", brandMark)
           // White-label venue slot: "for HYPERLIQUID" by default; a partner demo instance sets
-          // EP_BRAND_FOR=FIREBLOCKS (and optionally EP_BRAND_LINE="built for") — env-only, so
-          // partner names never appear on the public instance.
-          .replaceAll("__BRAND_FOR__", (process.env.EP_BRAND_FOR ?? "HYPERLIQUID").replace(/[<>&"]/g, ""))
+          // EP_BRAND_FOR=FIREBLOCKS (and optionally EP_BRAND_LINE="built for"). Per-recipient
+          // demo links can override with ?brand=… but ONLY for names pre-approved in
+          // EP_BRAND_ALLOWLIST (fail closed to the env default) — partner names never appear
+          // on the public instance unless the founder configured them.
+          .replaceAll(
+            "__BRAND_FOR__",
+            resolveBrandFor(
+              process.env.EP_BRAND_FOR ?? "HYPERLIQUID",
+              url.searchParams.get("brand"),
+              parseBrandAllowlist(process.env.EP_BRAND_ALLOWLIST)
+            ).replace(/[<>&"]/g, "")
+          )
           .replaceAll("__BRAND_LINE__", (process.env.EP_BRAND_LINE ?? "for").replace(/[<>&"]/g, ""))
           .replaceAll("__SKIN__", process.env.EP_SKIN === "institutional" ? "institutional" : "retail")
           .replaceAll("__DEMO_AIDS__", demoAids ? "true" : "false")
