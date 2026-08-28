@@ -368,6 +368,33 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 
 **Number lock (use these in every OKX and investor thread):** pre-seed up to $250k (founder to confirm the ceiling — never name a bare $25k check to a fund), post-money SAFE $4M cap / 20% discount, $25k = collateral minimum that unlocks the pilot (~$125k book at standard margin, $400k+ under PM, linear from there), ~0.08 measured netting factor, max exposure ~$2.3k. Use-of-funds ladder for angels: "first $25k is venue collateral — a deposit, not spend — everything above is runway."
 
+## 6.5e Investor intro emails v2 (post-Kraken, assertive — Aug 28)
+
+*Rules: assertiveness = specificity. Dated facts, one named institution (Fireblocks technical evaluation — true and strong), stated terms, close underway. Never "Kraken CEO" (it was the head of derivatives). Never OKX Ventures as a "discussion" in investor emails until the intro is real. No grievance, no told-you-so. Batch per the Monday cadence; personalize first line only; log in tracker.*
+
+**Core email (named contacts):** Subject: "We built what Kraken just announced — 18 months early, live today"
+
+> Hi {name} — {one line of personalization}.
+>
+> Eighteen months ago we started building one-tap options protection for retail traders, against a consensus that options would never go mainstream. That consensus flipped this summer: Kraken launched simplified options, saying the market's constraint is "a product design problem, not a demand problem." We're the end state of that thesis, and we're past the thesis stage:
+>
+> - Live on Hyperliquid: a hard floor plus a daily credit, behind one toggle — earnandprotect.xyz
+> - Machine-audited: 35 days, 89 settled positions, $4.45M notional, zero peak net exposure — every hedge reconciles to an exchange fill
+> - In technical evaluation with Fireblocks; live execution on OKX
+> - A fee business by construction: published fee on credits sourced, never trading P&L
+>
+> Raising up to $250k on a post-money SAFE ($4M cap, 20% discount); first close underway. Proceeds are hedge collateral, not burn — at most ~$2.3k ever exposed, by structure.
+>
+> Worth 20 minutes this week? The product does most of the talking.
+
+**DM version (Twitter/Telegram):** "We built one-tap options protection 18 months before Kraken declared simple options the future. Live on Hyperliquid now — hard floor + daily credit, one toggle — machine-audited, zero peak net exposure, in technical evaluation with Fireblocks. First close on a $4M cap SAFE underway. Demo: earnandprotect.xyz. Worth 20 min?"
+
+**Web-form version:** "Atticus built one-tap options protection for retail traders 18 months before Kraken's simplified-options launch declared the category's arrival. Live on Hyperliquid: hard floor + daily credit behind one toggle, hedged leg-for-leg on listed options. Machine-audited track record (35 days, $4.45M notional, zero peak net exposure); in technical evaluation with Fireblocks. Raising up to $250k, post-money SAFE, $4M cap, first close underway — proceeds are venue collateral, not burn. Demo: earnandprotect.xyz. Contact: {email}."
+
+**Cosmo Jiang / Pantera (send first; HL-led):** "Cosmo — you've been the most public HL bull in the room, so this should land. We built one-tap protection plus daily yield for Hyperliquid positions — live now, hedged leg-for-leg on listed options, 35 audited days at zero peak net exposure. Kraken just called simplified options the future; we're the end state of that thesis, running on the chain you called first. In technical evaluation with Fireblocks. First close on a $4M cap SAFE underway — 20 minutes?"
+
+**Supporting artifact:** post + pin the RECEIPTS THREAD (dated build log vs. the market's arrival) and link it in sends as "the 18-month build log" — converts "we were early" into a checkable artifact.
+
 ## 6.6 Where the traders are — target list + sourcing loop
 
 The named list (traders, KOLs, communities, trackers, builder apps — with handles, links, value notes, approach, and confidence flags) lives in **`docs/earn-protect-trader-targets.csv`**. Re-verify any handle marked "re-verify" before DMing — accounts move.
