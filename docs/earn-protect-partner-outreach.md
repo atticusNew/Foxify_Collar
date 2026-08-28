@@ -372,7 +372,7 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 
 *Rules: assertiveness = specificity. Dated facts, one named institution (Fireblocks technical evaluation — true and strong), stated terms, close underway. Never "Kraken CEO" (it was the head of derivatives). Never OKX Ventures as a "discussion" in investor emails until the intro is real. No grievance, no told-you-so. Batch per the Monday cadence; personalize first line only; log in tracker.*
 
-**Core email (named contacts):** Subject: "We built what Kraken just announced — 18 months early, live today"
+**Core email (named contacts):** Subject: "We built what Kraken just announced — 18 months early, live today" (approved alternate, equally strong and more literal: "Kraken announced the thesis. We built the product." — use either; Kraken's name stays in the subject because the known brand drives the open, Atticus belongs in the signature)
 
 > Hi {name} — {one line of personalization}.
 >
