@@ -44,6 +44,12 @@
 
 > Under the hood it's a collar — the institutional structure desks have run for decades — hedged leg-for-leg on listed options, compressed into one tap. Your traders survive drawdowns and keep trading; you keep the volume.
 
+**Market-signal citation (July 2026 — use while fresh):** Kraken launched simplified European-style BTC/ETH options; their HEAD OF DERIVATIVES (Alexia Theodorou — NOT the CEO; cite precisely, recipients click links) told CoinDesk the options market's constraint is "less a demand problem than a product design problem." Locked uses:
+- Exchanges (the pressure line): "Kraken just moved on exactly this thesis — simplified options for people who'll never trade a chain. We're the white-label version, live today — worth 20 minutes before your competitors have it?"
+- Investors (the timing line): "We built through the eighteen months when consensus said options would never be retail. That consensus flipped this summer — Kraken's launch is the flag. We're standing where the market turned, live, with a machine-audited record." Never frame past rejections as grievance.
+- The moat answer (when asked "why won't Kraken crush you?"): Kraken built simpler CONTRACTS for professionals behind RFQ; we built OUTCOMES — no chain, no strike, one toggle — white-label and venue-agnostic. Every non-Kraken venue now needs an answer to Kraken's move, and none will license it from a competitor.
+- The Kemet differential (when the $1B bar comes up): Kemet sold execution tools into EXISTING institutional demand; we're creating a new consumer behavior — different curve, and the Kraken signal says the curve just turned. Our constraint was never demand; it's collateral to serve it.
+
 **Language rules:** never "eliminates liquidations" (the liquidation engine is mechanical; protection settles at cycle close — a CTO finds the exception in minutes and discounts everything after). The floor claim is "a hard floor under every position"; the liquidation claim belongs to the exchange's business ("fewer blown-up accounts, longer trader lifetime"), not the mechanism. Never "a proven financial technique" — vague reassurance pattern-matches to scams; NAME the structure (a collar) and let them verify. Pitch = one sentence + the live link; the demo does the explaining.
 
 ## 2. One-pager — LENDERS / MARGIN DESKS
