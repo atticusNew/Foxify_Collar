@@ -184,6 +184,11 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .badge{display:inline-block;font-size:10.5px;font-weight:700;border-radius:999px;padding:2.5px 9px;margin-left:8px;vertical-align:2px}
   .badge.founding{background:rgba(80,210,193,.12);color:var(--accent);border:1px solid rgba(80,210,193,.4)}
   .empty{color:var(--muted);font-size:13.5px;padding:6px 0}
+  /* Pre-connect intro trio + demonstration toggle panel (retail) */
+  .trio{color:var(--muted);font-size:13px;padding:4px 0}
+  .trio b{color:var(--text)}
+  .credit-hero b{font-size:19px;letter-spacing:-.3px}
+  .demo-vest div{transition:width 2.4s cubic-bezier(.2,.7,.3,1)}
 </style>
 </head>
 <body>
@@ -229,6 +234,14 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <button type="button" class="aid" id="previewLink">Preview a size</button>
   </div>
 
+  <!-- Pre-connect intro (retail): replaces the empty positions/payouts tables — a visitor with no
+       address should see what the product does, not what their absent account hasn't done. -->
+  <div class="card" id="introTrio" style="display:none">
+    <div class="trio"><b>The floor.</b> A hard price under the position, built from listed options.</div>
+    <div class="trio"><b>The credit.</b> Funded by selling the capped upside — vests through each day, pays automatically.</div>
+    <div class="trio"><b>Read-only.</b> An address is public data. No keys, no deposits — nothing can be moved.</div>
+  </div>
+
   <!-- Preview: a hypothetical size off the live book. Preview-only by construction —
        wrapping always requires a live venue-read position. -->
   <div class="card" id="previewCard" style="display:none">
@@ -238,7 +251,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     </div>
     <div class="row" style="align-items:center">
       <div class="seg" id="pvSeg"><button type="button" class="on" data-side="long">Long</button><button type="button" data-side="short">Short</button></div>
-      <div class="pv-amt"><span>$</span><input id="pvUsd" value="10,000" inputmode="numeric" title="Position size in USD" aria-label="Position size in USD"></div>
+      <div class="pv-amt"><span>$</span><input id="pvUsd" value="100,000" inputmode="numeric" title="Position size in USD" aria-label="Position size in USD"></div>
       <span class="small muted" id="pvNoun">position</span>
       <button class="btn" id="pvBtn">Preview credit</button>
     </div>
@@ -416,8 +429,10 @@ const setMsg = (t, isErr, working) => {
 };
 
 const setConn = () => {
+  // Watch-mode pill stays short — the watch strip below states the mode in full, and a long
+  // pill wraps the header into two crowded lines on laptop widths.
   $("connPill").textContent = watching
-    ? short(account) + (INST ? " · viewing · public data" : " · watching · public data")
+    ? short(account) + (INST ? " · viewing" : " · watching")
     : account ? short(account) + " · read-only" : "not connected";
   $("forgetBtn").style.display = account ? "" : "none";
   $("forgetBtn").textContent = watching ? "Stop watching" : "Forget";
@@ -439,11 +454,15 @@ const setConn = () => {
   $("watchStrip").style.display = watching ? "" : "none";
   $("nextWhale").style.display = watching && watchWallets.length > 1 ? "" : "none";
   $("stopViewing").style.display = INST && watching ? "" : "none";
-  // INST idle state has no lookup, so the positions/payouts sections exist only while viewing.
-  $("posTitle").parentElement.style.display = INST && !watching ? "none" : "";
-  $("positions").style.display = INST && !watching ? "none" : "";
-  $("payoutsH").style.display = watching || INST ? "none" : "";
-  $("payoutsCard").style.display = watching || INST ? "none" : "";
+  // Empty owner sections never show to a visitor: INST idle has no lookup at all, and retail
+  // pre-connect shows the intro trio instead — empty "your positions/payouts" tables read as a
+  // dead platform, and "No payouts yet" misreads as the BOOK having paid nothing.
+  const noOwnerSections = (INST && !watching) || (!INST && !account);
+  $("posTitle").parentElement.style.display = noOwnerSections ? "none" : "";
+  $("positions").style.display = noOwnerSections ? "none" : "";
+  $("payoutsH").style.display = watching || INST || !account ? "none" : "";
+  $("payoutsCard").style.display = watching || INST || !account ? "none" : "";
+  $("introTrio").style.display = !INST && !account ? "" : "none";
 };
 
 const api = async (path, opts) => {
@@ -547,6 +566,62 @@ const render = (positions, state) => {
   if (watching && positions[0]) void renderWatchTerms(positions[0]);
 };
 
+// The one-action moment for visitors (retail): a demonstration toggle inside whale/preview
+// results. The product IS the toggle — anonymous visitors must get to FEEL the action, not just
+// read numbers. Clearly labeled a demonstration; wired by delegation because these panels are
+// injected into innerHTML after render.
+const demoPanel = (usd) =>
+  '<div class="demo-panel" style="margin-top:12px;border:1px solid var(--line);border-radius:8px;overflow:hidden">' +
+    '<div style="background:var(--panel2);padding:6px 12px;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)">What flipping it on looks like \\u00b7 demonstration</div>' +
+    '<div style="padding:12px 14px">' +
+      '<div class="row" style="align-items:center;justify-content:space-between">' +
+        '<div><b>Protect &amp; Earn</b><div class="small muted">BTC position \\u00b7 ' + fmt$(usd) + '</div></div>' +
+        '<div class="switch demo-switch" role="switch" aria-checked="false" title="Demonstration — nothing opens"><div class="knob"></div></div>' +
+      '</div>' +
+      '<div class="demo-active" style="display:none">' +
+        '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration)</span> \\u00b7 the credit vests through the day and pays at the cycle\\u2019s close</div>' +
+        '<div class="bar demo-vest"><div style="width:6%"></div></div>' +
+        '<div class="unlock">unlocks through the day \\u00b7 pays automatically at the cycle\\u2019s close</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+// The watch card is rebuilt by every 5s poll — the flipped state must survive re-render, or the
+// demonstration undoes itself mid-look. Remembered per address, reapplied after each insert.
+let demoFlippedFor = "";
+document.addEventListener("click", (ev) => {
+  const sw = ev.target.closest ? ev.target.closest(".demo-switch") : null;
+  if (!sw) return;
+  const on = sw.classList.toggle("on");
+  sw.setAttribute("aria-checked", String(on));
+  demoFlippedFor = on ? account : "";
+  const panel = sw.closest(".demo-panel");
+  const act = panel.querySelector(".demo-active");
+  act.style.display = on ? "" : "none";
+  const vest = panel.querySelector(".demo-vest div");
+  if (on && vest) { vest.style.width = "6%"; requestAnimationFrame(() => { vest.style.width = "38%"; }); }
+  haptic("impact");
+});
+const applyDemoState = (root) => {
+  if (!root || demoFlippedFor !== account || !account) return;
+  const sw = root.querySelector(".demo-switch");
+  if (!sw) return;
+  sw.classList.add("on");
+  sw.setAttribute("aria-checked", "true");
+  const act = root.querySelector(".demo-active");
+  if (act) act.style.display = "";
+  const vest = root.querySelector(".demo-vest div");
+  if (vest) vest.style.width = "38%";
+};
+// "see how" microlinks (next to any credit figure) open the how-it-works modal in place.
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest ? ev.target.closest(".howMini") : null;
+  if (!a) return;
+  ev.preventDefault();
+  $("howVeil").classList.add("open");
+});
+// Why the credit exists, adjacent to where skepticism fires: at the credit number itself.
+const whyLine = '<div class="small muted" style="margin-top:6px">The credit is the options market paying for the capped upside \\u2014 <a href="#" class="howMini" style="color:var(--accent);text-decoration:none">see how</a>.</div>';
+
 // The watch card's whole point: what Earn & Protect WOULD pay on this real position, right now.
 // Priced full-size through the preview engine (no capacity clip — same rule as the preview, so a
 // $95M position never renders a $1 credit). Quotes are free; cached so the 5s poll never spams
@@ -557,6 +632,7 @@ const renderWatchTerms = async (p) => {
   if (!box) return;
   if (watchQuoteCache.addr === account && Date.now() - watchQuoteCache.atMs < 60000) {
     box.innerHTML = watchQuoteCache.html;
+    applyDemoState(box);
     return;
   }
   try {
@@ -570,16 +646,18 @@ const renderWatchTerms = async (p) => {
     const fPct = ((j.floorStrike - j.spot) / j.spot) * 100, cPct = ((j.capStrike - j.spot) / j.spot) * 100;
     const pctSign = (x) => (x >= 0 ? "+" : "\\u2212") + Math.abs(x).toFixed(1) + "%";
     const html =
-      '<div class="small muted" style="margin-top:10px">What protection would pay on this position today:</div>' +
+      '<div class="small muted" style="margin-top:10px">' + (INST ? 'What protection would pay on this position today:' : 'If this trader flipped the toggle right now:') + '</div>' +
       '<div class="terms">' +
-        '<div class="term"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit</div>' +
+        '<div class="term credit-hero"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>credit today \\u2014 every day the toggle is on</div>' +
         '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + pctSign(fPct) + '</em></b>hard floor</div>' +
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + pctSign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
-      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u2014 nothing opens, nothing is stored. ' + (INST ? 'Look up a client address to see theirs.' : 'Look up your own address to see yours.') + '</div>';
+      whyLine +
+      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u2014 nothing opens, nothing is stored. ' + (INST ? 'Look up a client address to see theirs.' : 'Look up your own address to see yours.') + '</div>' +
+      (INST ? '' : demoPanel(Math.min(Math.round(p.notionalUsdc), PV_MAX_USD)));
     watchQuoteCache = { addr: account, atMs: Date.now(), html };
     const boxNow = $("watchTerms");
-    if (boxNow) boxNow.innerHTML = html;
+    if (boxNow) { boxNow.innerHTML = html; applyDemoState(boxNow); }
   } catch (e) {
     const boxNow = $("watchTerms");
     if (boxNow) boxNow.innerHTML = "";
@@ -793,7 +871,9 @@ const poll = async () => {
           : "· founding rate — limited to the first " + st.caps.foundingWallets + " wallets";
       $("cohortLine").textContent = cohort + wl + mine;
     }
-    if (st && st.guards) setModePill(st.guards.executionMode);
+    // Watch mode never shows the execution-mode badge: nothing can execute for a watched wallet,
+    // and "SIMULATED" next to a live quote tars real pricing as fake.
+    if (st && st.guards) setModePill(watching ? null : st.guards.executionMode);
     $("hero").style.display = "none"; // connected: the app gets denser, the pitch gets out of the way
     render(pos.ok ? pos.positions : [], st.ok ? st : null);
     renderPayouts(st.ok ? st : null);
@@ -811,7 +891,7 @@ for (const b of document.querySelectorAll("#pvSeg button")) {
 $("pvClear").onclick = (e) => {
   e.preventDefault();
   $("pvOut").innerHTML = "";
-  $("pvUsd").value = INST ? "10,000,000" : "10,000";
+  $("pvUsd").value = INST ? "10,000,000" : "100,000";
   pvSetSide("long");
   $("pvClear").style.display = "none";
 };
@@ -829,14 +909,16 @@ $("pvBtn").onclick = async () => {
     const sign = (x) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(1) + "%";
     $("pvOut").innerHTML =
       '<div class="terms">' +
-        '<div class="term"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit' + (j.founding && !INST ? ' <span class="badge founding">FOUNDING RATE</span>' : '') + '</div>' +
+        '<div class="term credit-hero"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit' + (j.founding && !INST ? ' <span class="badge founding">FOUNDING RATE</span>' : '') + '</div>' +
         '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + sign(fPct) + '</em></b>hard floor</div>' +
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
+      whyLine +
       '<div class="small muted" style="margin-top:8px">' +
-        'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ') \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
+        'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ' \\u2014 sized to whole option lots) \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
         (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this at first \\u2014 capacity grows with the book.') : '') +
-      '</div>';
+      '</div>' +
+      (INST ? '' : demoPanel(j.protectedUsd));
     // INST: the one-action moment, framed as a MOCK CLIENT-INTERFACE PANEL so it is unmistakable
     // that this widget is what appears in the partner's product. Clearly labeled a demonstration.
     if (INST) {
