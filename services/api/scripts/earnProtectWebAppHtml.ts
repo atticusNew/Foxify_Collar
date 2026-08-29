@@ -206,7 +206,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <div class="wrap">
   <header id="hero">
     <h1 id="heroH1">One toggle. A hard floor. <span style="color:var(--accent)">And it pays.</span></h1>
-    <p class="sub" id="heroSub">Look up any Hyperliquid address. Flip protection on — the options market pays a daily credit.</p>
+    <p class="sub" id="heroSub">Look up any Hyperliquid address. Flip protection on. Get paid daily.</p>
   </header>
 
   <div class="card" id="geoBanner" style="display:none">
@@ -223,7 +223,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
       <button class="btn" id="connectBtn">Look up</button>
       <button class="btn ghost" id="forgetBtn" style="display:none">Forget</button>
     </div>
-    <div class="small muted" style="margin-top:8px">Public data, read-only. No keys, no signing, no deposits — payouts only ever flow to the address.
+    <div class="small muted" style="margin-top:8px">Public data. Read-only. No keys, no signing, no deposits. Payouts only ever to the address.
       <span class="tipwrap"><span class="info">i</span><span class="tip">Hyperliquid&#39;s safety docs are right: never share keys or sign unknown transactions. We ask for neither — an address is public data, the same thing you&#39;d paste into Hypurrscan. Find yours in the Hyperliquid app: top right, starts with 0x.</span></span>
     </div>
     <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
@@ -237,16 +237,16 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <!-- Pre-connect intro (retail): replaces the empty positions/payouts tables — a visitor with no
        address should see what the product does, not what their absent account hasn't done. -->
   <div class="card" id="introTrio" style="display:none">
-    <div class="trio"><b>Floor</b> — a hard price under your position.</div>
-    <div class="trio"><b>Credit</b> — paid daily by the options market.</div>
-    <div class="trio"><b>Cap</b> — the tradeoff; a touch ends the cycle, not your trade.</div>
+    <div class="trio"><b>Floor</b> — hard price under your position.</div>
+    <div class="trio"><b>Credit</b> — funded by the options market, never by you.</div>
+    <div class="trio"><b>Cap</b> — a touch pays vested credit, re-arms. New floor. New credit.</div>
   </div>
 
   <!-- Preview: a hypothetical size off the live book. Preview-only by construction —
        wrapping always requires a live venue-read position. -->
   <div class="card" id="previewCard" style="display:none">
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px">
-      <span class="small muted" id="pvHeader">What a position would earn — live market quote, nothing opens.</span>
+      <span class="small muted" id="pvHeader">What a position would earn. Live quote — nothing opens.</span>
       <a href="#" id="pvClear" class="small" style="display:none;color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--line)">clear</a>
     </div>
     <div class="row" style="align-items:center">
@@ -279,7 +279,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 
   <h2><span id="posTitle">Your positions</span> <span class="small muted" id="cohortLine" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
-    <b id="wsTitle">Watching a public wallet</b> <span class="muted small" id="wsBody">— read-only, live pricing on a real position.</span>
+    <b id="wsTitle">Watching a public wallet</b> <span class="muted small" id="wsBody">— read-only. Live pricing, real position.</span>
     <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">show another whale →</a>
     <a href="#" id="stopViewing" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:10px">stop viewing ×</a>
   </div>
@@ -288,7 +288,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <h2 id="payoutsH">Payouts</h2>
   <div class="card" id="payoutsCard" style="padding-top:10px">
     <table><thead><tr><th>when</th><th>cycle</th><th>credit</th><th>status</th><th>tx</th></tr></thead>
-    <tbody id="payouts"><tr><td colspan="5" class="empty">No payouts yet — credits land here at each cycle's conclusion.</td></tr></tbody></table>
+    <tbody id="payouts"><tr><td colspan="5" class="empty">Credits land here at each cycle's close.</td></tr></tbody></table>
   </div>
 
   <div class="foot">
@@ -581,7 +581,7 @@ const demoPanel = (usd) =>
       '<div class="demo-active" style="display:none">' +
         '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration)</span></div>' +
         '<div class="bar demo-vest"><div style="width:6%"></div></div>' +
-        '<div class="unlock">the credit unlocks through the day \\u00b7 pays automatically at the cycle\\u2019s close</div>' +
+        '<div class="unlock">unlocks through the day \\u00b7 pays automatically at the close</div>' +
       '</div>' +
     '</div>' +
   '</div>';
@@ -620,7 +620,7 @@ document.addEventListener("click", (ev) => {
   $("howVeil").classList.add("open");
 });
 // Why the credit exists, adjacent to where skepticism fires: at the credit number itself.
-const whyLine = '<div class="small muted" style="margin-top:6px">The credit is the options market paying for the capped upside \\u2014 <a href="#" class="howMini" style="color:var(--accent);text-decoration:none">see how</a>.</div>';
+const whyLine = '<div class="small muted" style="margin-top:6px">The options market pays for the capped upside \\u2014 <a href="#" class="howMini" style="color:var(--accent);text-decoration:none">see how</a>.</div>';
 
 // The watch card's whole point: what Earn & Protect WOULD pay on this real position, right now.
 // Priced full-size through the preview engine (no capacity clip — same rule as the preview, so a
@@ -653,7 +653,7 @@ const renderWatchTerms = async (p) => {
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + pctSign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
       whyLine +
-      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u2014 nothing opens, nothing is stored. ' + (INST ? 'Look up a client address to see theirs.' : 'Look up your own address to see yours.') + '</div>' +
+      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + (INST ? 'Live market quote \\u2014 nothing opens, nothing is stored. Look up a client address to see theirs.' : 'Live quote. Nothing opens, nothing stored. Look up your address to see yours.') + '</div>' +
       (INST ? '' : demoPanel(Math.min(Math.round(p.notionalUsdc), PV_MAX_USD)));
     watchQuoteCache = { addr: account, atMs: Date.now(), html };
     const boxNow = $("watchTerms");
@@ -687,7 +687,7 @@ const renderPayouts = (state) => {
   const rows = (state && state.payouts || []).slice().reverse();
   $("payouts").innerHTML = rows.length
     ? rows.map((e) => '<tr><td>' + new Date(e.createdAtMs).toISOString().slice(0,16).replace("T"," ") + '</td><td>' + esc(e.reason.replace("_"," ")) + '</td><td><b style="color:var(--accent)">' + fmt$(e.amountUsdc) + '</b></td><td class="status-' + (e.status === "confirmed" || e.status === "paid" ? "paid" : e.status === "failed" ? "failed" : "accrued") + '">' + esc(e.status) + '</td><td>' + txLink(e.txHash) + '</td></tr>').join("")
-    : '<tr><td colspan="5" class="empty">No payouts yet — credits land here at each cycle\\u2019s conclusion.</td></tr>';
+    : '<tr><td colspan="5" class="empty">Credits land here at each cycle\\u2019s close.</td></tr>';
 };
 
 const onToggle = async (ev) => {
@@ -916,7 +916,7 @@ $("pvBtn").onclick = async () => {
       whyLine +
       '<div class="small muted" style="margin-top:8px">' +
         'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ' \\u2014 sized to whole option lots).' +
-        (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this at first \\u2014 capacity grows with the book.') : '') +
+        (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this \\u2014 capacity grows with the book.') : '') +
       '</div>' +
       (INST ? '' : demoPanel(j.protectedUsd));
     // INST: the one-action moment, framed as a MOCK CLIENT-INTERFACE PANEL so it is unmistakable
