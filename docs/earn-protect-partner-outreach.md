@@ -22,7 +22,7 @@
 - **Three touches, then park.** Initial → +4 days → +10 days with something *new* (a shipped feature, a fresh metric, a receipt screenshot). Never a naked "bumping this." Parked targets get one re-touch per quarter when there's a real milestone.
 - **Any reply is a door — even the "wrong" person.** A reply from marketing/promotion/community means the message is interesting but landed outside the buying seat. Answer within a day with the intro ask (template 5.1). An internal forward beats ten cold emails.
 - **Personalize the first line only.** One sentence proving you know their product ("saw you shipped X", "your users hold perps on Y"). The rest is the template. Personalizing more than that doesn't raise reply rates enough to justify the time.
-- **Metrics format, everywhere:** "Live on Hyperliquid: {N} wallets wrapped, ${notional} protected, {credits paid} in credits paid, 0 client losses below floor." Small real numbers beat big claims.
+- **Metrics format, everywhere:** "In production on Hyperliquid: {N} wallets wrapped, ${notional} protected, {credits paid} in credits paid, 0 client losses below floor." Small real numbers beat big claims. (Use only once the numbers are real; see the LIVE language rule in 6.5e.)
 
 ### What each audience is actually buying
 
@@ -45,7 +45,7 @@
 > Under the hood it's a collar — the institutional structure desks have run for decades — hedged leg-for-leg on listed options, compressed into one tap. Your traders survive drawdowns and keep trading; you keep the volume.
 
 **Market-signal citation (July 2026 — use while fresh):** Kraken launched simplified European-style BTC/ETH options; their HEAD OF DERIVATIVES (Alexia Theodorou — NOT the CEO; cite precisely, recipients click links) told CoinDesk the options market's constraint is "less a demand problem than a product design problem." Locked uses:
-- Exchanges (the pressure line): "Kraken just moved on exactly this thesis — simplified options for people who'll never trade a chain. We're the white-label version, live today — worth 20 minutes before your competitors have it?"
+- Exchanges (the pressure line): "Kraken just moved on exactly this thesis — simplified options for people who'll never trade a chain. We're the white-label version, in production today — worth 20 minutes before your competitors have it?"
 - Investors (the timing line): "We built through the eighteen months when consensus said options would never be retail. That consensus flipped this summer — Kraken's launch is the flag. We're standing where the market turned, live, with a machine-audited record." Never frame past rejections as grievance.
 - The moat answer (when asked "why won't Kraken crush you?"): Kraken built simpler CONTRACTS for professionals behind RFQ; we built OUTCOMES — no chain, no strike, one toggle — white-label and venue-agnostic. Every non-Kraken venue now needs an answer to Kraken's move, and none will license it from a competitor.
 - The Kemet differential (when the $1B bar comes up): Kemet sold execution tools into EXISTING institutional demand; we're creating a new consumer behavior — different curve, and the Kraken signal says the curve just turned. Our constraint was never demand; it's collateral to serve it.
@@ -177,7 +177,7 @@
 >
 > It runs white-label — your brand, our hedging engine, rev-share on every credit. Integration is 4 JSON endpoints.
 >
-> Live on Hyperliquid: earnandprotect.xyz ({N} wallets, ${notional} wrapped). Try it with any HL address, takes 10 seconds.
+> In production on Hyperliquid: earnandprotect.xyz ({N} wallets, ${notional} wrapped). Try it with any HL address, takes 10 seconds.
 >
 > Open to one integration conversation? I'll bring a demo in your brand.
 >
@@ -372,28 +372,30 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 
 *Rules: assertiveness = specificity. Dated facts, one named institution (Fireblocks technical evaluation — true and strong), stated terms, close underway. Never "Kraken CEO" (it was the head of derivatives). Never OKX Ventures as a "discussion" in investor emails until the intro is real. No grievance, no told-you-so. Batch per the Monday cadence; personalize first line only; log in tracker.*
 
-**Core email (named contacts):** Subject: "We built what Kraken just announced — 18 months early, live today" (approved alternate, equally strong and more literal: "Kraken announced the thesis. We built the product." — use either; Kraken's name stays in the subject because the known brand drives the open, Atticus belongs in the signature)
+**Core email (named contacts):** Subject: "We built what Kraken just announced — 18 months early, in production today" (approved alternate, equally strong and making no state claim at all: "Kraken announced the thesis. We built the product." — use either; Kraken's name stays in the subject because the known brand drives the open, Atticus belongs in the signature)
+
+**"LIVE" LANGUAGE RULE (hard):** never make a claim the reader can falsify inside the product. "Live" is reserved for what is observably live on a click: live pricing, live positions, the live demo. The software is "in production"; execution is "production-proven on OKX (real fills)" — past tense, documented; the hedge book "activates at first close — that's what this raise funds." The check-is-the-switch framing is STRONGER than "we're live": it gives the investment an observable consequence.
 
 > Hi {name} — {one line of personalization}.
 >
 > Eighteen months ago we started building one-tap options protection for retail traders, against a consensus that options would never go mainstream. That consensus flipped this summer: Kraken launched simplified options, saying the market's constraint is "a product design problem, not a demand problem." We're the end state of that thesis, and we're past the thesis stage:
 >
-> - Live on Hyperliquid: a hard floor plus a daily credit, behind one toggle — earnandprotect.xyz
+> - In production on Hyperliquid: a hard floor plus a daily credit behind one toggle, priced live from listed options — earnandprotect.xyz
 > - Machine-audited: 37 days, 95 settled positions, $4.75M notional, client all-in +4.8 bps, 81% of days positive, zero peak net exposure — every hedge reconciles to an exchange fill
-> - In technical evaluation with Fireblocks; live execution on OKX
+> - In technical evaluation with Fireblocks; execution production-proven on OKX (real fills); the pilot hedge book activates at first close — that's what this raise funds
 > - A fee business by construction: published fee on credits sourced, never trading P&L
 >
 > Raising up to $250k on a post-money SAFE ($4M cap, 20% discount); first close underway. Proceeds are hedge collateral, not burn — at most ~$2.3k ever exposed, by structure.
 >
 > Worth 20 minutes this week? The product does most of the talking.
 
-**DM version (Twitter/Telegram):** "We built one-tap options protection 18 months before Kraken declared simple options the future. Live on Hyperliquid now — hard floor + daily credit, one toggle — machine-audited, zero peak net exposure, in technical evaluation with Fireblocks. First close on a $4M cap SAFE underway. Demo: earnandprotect.xyz. Worth 20 min?"
+**DM version (Twitter/Telegram):** "We built one-tap options protection 18 months before Kraken declared simple options the future. In production on Hyperliquid — hard floor + daily credit, one toggle, live pricing — machine-audited, zero peak net exposure, in technical evaluation with Fireblocks. First close on a $4M cap SAFE activates the hedge book. Demo: earnandprotect.xyz. Worth 20 min?"
 
-**Web-form version:** "Atticus built one-tap options protection for retail traders 18 months before Kraken's simplified-options launch declared the category's arrival. Live on Hyperliquid: hard floor + daily credit behind one toggle, hedged leg-for-leg on listed options. Machine-audited track record (37 days, 95 settled, $4.75M notional, zero peak net exposure); in technical evaluation with Fireblocks. Raising up to $250k, post-money SAFE, $4M cap, first close underway — proceeds are venue collateral, not burn. Demo: earnandprotect.xyz. Contact: {email}."
+**Web-form version:** "Atticus built one-tap options protection for retail traders 18 months before Kraken's simplified-options launch declared the category's arrival. In production on Hyperliquid: hard floor + daily credit behind one toggle, priced live from listed options, hedged leg-for-leg by design (execution production-proven on OKX). Machine-audited track record (37 days, 95 settled, $4.75M notional, zero peak net exposure); in technical evaluation with Fireblocks. Raising up to $250k, post-money SAFE, $4M cap, first close underway — proceeds are venue collateral, not burn. Demo: earnandprotect.xyz. Contact: {email}."
 
-**Cosmo Jiang / Pantera (send first; HL-led):** "Cosmo — you've made the public case for Hyperliquid better than anyone, so I'll skip the preamble: we built one-tap protection plus daily yield for HL positions — live now, hedged leg-for-leg on listed options, 37 audited days at zero peak net exposure. Kraken just called simplified options the future; we're the end state of that thesis, running on the chain you called first. In technical evaluation with Fireblocks. First close on a $4M cap SAFE underway — 20 minutes?"
+**Cosmo Jiang / Pantera (send first; HL-led):** "Cosmo — you've made the public case for Hyperliquid better than anyone, so I'll skip the preamble: we built one-tap protection plus daily yield for HL positions — in production now with live pricing, execution proven on OKX, 37 audited days at zero peak net exposure. Kraken just called simplified options the future; we're the end state of that thesis, running on the chain you called first. In technical evaluation with Fireblocks. First close on a $4M cap SAFE underway — 20 minutes?"
 
-**Mantis VC (Chainsmokers' fund — entertainment-crossover variant):** Subject: "Entertainment to fintech — and what I built in the 18 months since". Opener: "I came out of the entertainment industry, so I watched you two do what I'm attempting now: cross into a field that assumes you don't belong, and out-execute the skepticism. That's the only parallel I'll draw — here's the work." Then the standard v2 body (Kraken flip, live/audited bullets, terms), plus the fit line: "Where Mantis specifically fits: this is a retail product that wins on distribution and simplicity, not financial engineering the user ever sees — your portfolio's home turf." Rules: the crossover parallel gets ONE line; no music references, no fandom; send to the fund's investing partner (historically Milan Koch), not the celebrity founders — choosing the non-celebrity route is itself the signal.
+**Mantis VC (Chainsmokers' fund — entertainment-crossover variant):** Subject: "Entertainment to fintech — and what I built in the 18 months since". Opener: "I came out of the entertainment industry, so I watched you two do what I'm attempting now: cross into a field that assumes you don't belong, and out-execute the skepticism. That's the only parallel I'll draw — here's the work." Then the standard v2 body (Kraken flip, production/audited bullets, terms), plus the fit line: "Where Mantis specifically fits: this is a retail product that wins on distribution and simplicity, not financial engineering the user ever sees — your portfolio's home turf." Rules: the crossover parallel gets ONE line; no music references, no fandom; send to the fund's investing partner (historically Milan Koch), not the celebrity founders — choosing the non-celebrity route is itself the signal.
 
 **Supporting artifact — the RECEIPTS THREAD (post + pin; link in sends as "the 18-month build log").** A receipt = a dated artifact, not a claim. Redact accounts; label shadow vs live; NEVER name the first pilot partner; no revenue claims from shadow. Order: (1) hook — "18 months ago, against consensus…"; (2) first commit / dated architecture doc screenshot; (3) first exchange pilot, unnamed — $400k notional, ~$11k credits, 6 weeks, hedged 1:1; (4) shadow facility start + scorecard verdict screenshot (37d, 95 settled, $4.75M, 100% reconciled, zero peak net exposure — "shadow, zero capital at risk"); (5) the Aug 19 stress day — post the LOSING day (−$1,858) next to cumulative (+$2,429); (6) first live OKX fills (IDs redacted); (7) earnandprotect.xyz launch; (8) Kraken July 2026 launch + derivatives-head quote — "we've been building the end state since [date]"; (9) close: one toggle, demo link, design partners + first close open.
 
