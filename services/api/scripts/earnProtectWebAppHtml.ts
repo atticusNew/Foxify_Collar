@@ -237,9 +237,9 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <!-- Pre-connect intro (retail): replaces the empty positions/payouts tables — a visitor with no
        address should see what the product does, not what their absent account hasn't done. -->
   <div class="card" id="introTrio" style="display:none">
-    <div class="trio"><b>The floor.</b> A hard price under the position, built from listed options.</div>
-    <div class="trio"><b>The credit.</b> Funded by selling the capped upside — vests through each day, pays automatically.</div>
-    <div class="trio"><b>The cap.</b> The tradeoff funding the credit — a touch just ends that day's cycle; you keep position, gains, and credit.</div>
+    <div class="trio"><b>Floor</b> — a hard price under your position.</div>
+    <div class="trio"><b>Credit</b> — paid daily by the options market.</div>
+    <div class="trio"><b>Cap</b> — the tradeoff; a touch ends the cycle, not your trade.</div>
   </div>
 
   <!-- Preview: a hypothetical size off the live book. Preview-only by construction —
@@ -648,7 +648,7 @@ const renderWatchTerms = async (p) => {
     const html =
       '<div class="small muted" style="margin-top:10px">' + (INST ? 'What protection would pay on this position today:' : 'If this trader flipped the toggle right now:') + '</div>' +
       '<div class="terms">' +
-        '<div class="term credit-hero"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>credit today \\u2014 every day the toggle is on</div>' +
+        '<div class="term credit-hero"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit \\u00b7 repeats while on</div>' +
         '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + pctSign(fPct) + '</em></b>hard floor</div>' +
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + pctSign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
