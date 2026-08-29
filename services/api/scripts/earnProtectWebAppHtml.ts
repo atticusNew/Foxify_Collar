@@ -206,7 +206,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <div class="wrap">
   <header id="hero">
     <h1 id="heroH1">One toggle. A hard floor. <span style="color:var(--accent)">And it pays.</span></h1>
-    <p class="sub" id="heroSub">Look up any Hyperliquid address — public data, read-only. Flip protection on; the options market pays a daily credit.</p>
+    <p class="sub" id="heroSub">Look up any Hyperliquid address. Flip protection on — the options market pays a daily credit.</p>
   </header>
 
   <div class="card" id="geoBanner" style="display:none">
@@ -239,7 +239,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <div class="card" id="introTrio" style="display:none">
     <div class="trio"><b>The floor.</b> A hard price under the position, built from listed options.</div>
     <div class="trio"><b>The credit.</b> Funded by selling the capped upside — vests through each day, pays automatically.</div>
-    <div class="trio"><b>Read-only.</b> An address is public data. No keys, no deposits — nothing can be moved.</div>
+    <div class="trio"><b>The cap.</b> The tradeoff funding the credit — a touch just ends that day's cycle; you keep position, gains, and credit.</div>
   </div>
 
   <!-- Preview: a hypothetical size off the live book. Preview-only by construction —
@@ -279,7 +279,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 
   <h2><span id="posTitle">Your positions</span> <span class="small muted" id="cohortLine" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
-    <b id="wsTitle">Watching a public wallet</b> <span class="muted small" id="wsBody">— read-only, live pricing on a real position. Look up your own address to protect it.</span>
+    <b id="wsTitle">Watching a public wallet</b> <span class="muted small" id="wsBody">— read-only, live pricing on a real position.</span>
     <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">show another whale →</a>
     <a href="#" id="stopViewing" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:10px">stop viewing ×</a>
   </div>
@@ -579,9 +579,9 @@ const demoPanel = (usd) =>
         '<div class="switch demo-switch" role="switch" aria-checked="false" title="Demonstration — nothing opens"><div class="knob"></div></div>' +
       '</div>' +
       '<div class="demo-active" style="display:none">' +
-        '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration)</span> \\u00b7 the credit vests through the day and pays at the cycle\\u2019s close</div>' +
+        '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration)</span></div>' +
         '<div class="bar demo-vest"><div style="width:6%"></div></div>' +
-        '<div class="unlock">unlocks through the day \\u00b7 pays automatically at the cycle\\u2019s close</div>' +
+        '<div class="unlock">the credit unlocks through the day \\u00b7 pays automatically at the cycle\\u2019s close</div>' +
       '</div>' +
     '</div>' +
   '</div>';
@@ -915,7 +915,7 @@ $("pvBtn").onclick = async () => {
       '</div>' +
       whyLine +
       '<div class="small muted" style="margin-top:8px">' +
-        'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ' \\u2014 sized to whole option lots) \\u00b7 live market quote \\u2014 nothing opens, nothing is stored.' +
+        'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ' \\u2014 sized to whole option lots).' +
         (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this at first \\u2014 capacity grows with the book.') : '') +
       '</div>' +
       (INST ? '' : demoPanel(j.protectedUsd));
