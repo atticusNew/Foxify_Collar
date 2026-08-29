@@ -621,6 +621,12 @@ document.addEventListener("click", (ev) => {
 });
 // Why the credit exists, adjacent to where skepticism fires: at the credit number itself.
 const whyLine = '<div class="small muted" style="margin-top:6px">The options market pays for the capped upside \\u2014 <a href="#" class="howMini" style="color:var(--accent);text-decoration:none">see how</a>.</div>';
+// Thin-market honesty note: when the live book funds under 2 bps/day, say why the number is small
+// — otherwise an honest quote on a cheap-vol weekend reads as a broken product.
+const thinNote = (creditUsdc, protectedUsd) =>
+  protectedUsd > 0 && (creditUsdc / protectedUsd) * 10000 < 2
+    ? '<div class="small muted" style="margin-top:6px">Quiet options market right now \\u2014 credits are thin. Quotes re-price continuously.</div>'
+    : '';
 
 // The watch card's whole point: what Earn & Protect WOULD pay on this real position, right now.
 // Priced full-size through the preview engine (no capacity clip — same rule as the preview, so a
@@ -653,6 +659,7 @@ const renderWatchTerms = async (p) => {
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + pctSign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
       whyLine +
+      thinNote(j.creditUsdc, Math.min(p.notionalUsdc, PV_MAX_USD)) +
       '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + (INST ? 'Live market quote \\u2014 nothing opens, nothing is stored. Look up a client address to see theirs.' : 'Live quote. Nothing opens, nothing stored. Look up your address to see yours.') + '</div>' +
       (INST ? '' : demoPanel(Math.min(Math.round(p.notionalUsdc), PV_MAX_USD)));
     watchQuoteCache = { addr: account, atMs: Date.now(), html };
@@ -914,6 +921,7 @@ $("pvBtn").onclick = async () => {
         '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
       '</div>' +
       whyLine +
+      thinNote(j.creditUsdc, j.protectedUsd) +
       '<div class="small muted" style="margin-top:8px">' +
         'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ' \\u2014 sized to whole option lots).' +
         (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this \\u2014 capacity grows with the book.') : '') +
