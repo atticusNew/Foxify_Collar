@@ -40,20 +40,26 @@ test("simulation lane: full lifecycle including the unwind and knockout states",
     assert.ok(html.includes("placing hedge legs"), "executing phase");
     assert.ok(html.includes("Simulation — turn protection off now?"), "unwind states the consequence first");
     assert.ok(html.includes("Closing — unwinding hedge legs"), "unwind walks the close visuals");
-    assert.ok(html.includes("Closed early — kept"), "concluded chip after the unwind");
+    assert.ok(html.includes("Closed early"), "settlement ticket after the unwind");
+    assert.ok(html.includes("returned to the market"), "ticket states the returned figure");
     assert.ok(html.includes("touched — cycle over"), "knockout on a real cap touch");
-    assert.ok(html.includes("Re-arming at the new price"), "knockout re-arms like the live product");
+    assert.ok(html.includes("re-arming at the new price"), "knockout re-arms like the live product");
   }
 });
 
-test("design system: credit hero, price rail, coach mark, conversion CTA, compact numbers", () => {
+test("design system: credit hero, price rail, coach bubble, conversion CTA, compact numbers", () => {
   for (const html of [web, mini]) {
     assert.ok(html.includes('class="cred-num'), "credit hero number");
     assert.ok(html.includes("rail-track") && html.includes("rail-ends"), "floor–price–cap rail");
-    assert.ok(html.includes("Flip it — simulation, nothing opens"), "one-time coach mark");
+    assert.ok(html.includes("rail-tick") && html.includes("tfloor") && html.includes("tcap"), "floor/cap end ticks");
+    assert.ok(html.includes("rail-pxval") && html.includes("<em>live</em>"), "live tag on the rail marker");
+    assert.ok(html.includes("Try it — nothing opens"), "one-time coach bubble");
     assert.ok(html.includes('class="btn cta connOpen"'), "full-width connect CTA at the payoff moment");
     assert.ok(html.includes("const fmtC"), "compact notional formatter");
     assert.ok(html.includes('class="pos-row"'), "position row never wraps the toggle");
+    assert.ok(html.includes("minibar"), "vesting is an inline mini-bar — the rail is the one full-width picture");
+    assert.ok(html.includes("ghosted"), "nav Connect demotes while the card CTA is up");
+    assert.ok(!html.includes("BTC position shown — protection covers BTC today"), "orphan footnote deleted");
   }
 });
 

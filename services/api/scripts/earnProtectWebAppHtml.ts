@@ -108,22 +108,40 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .switch.on{background:var(--accent);box-shadow:0 0 14px rgba(80,210,193,.35)} .switch.on .knob{left:27px;background:var(--accent-ink)}
   .switch.busy{pointer-events:none}
   .switch.busy .knob{animation:pulse 1s ease-in-out infinite}
-  /* One-time coach mark: points at the toggle, dies on first flip, never returns. */
-  .coach{display:flex;justify-content:flex-end;align-items:center;gap:7px;margin-top:8px;color:var(--accent);font-size:12.5px}
-  .coach .coach-x{color:var(--muted);cursor:pointer;padding:2px 7px;font-size:14px;line-height:1}
+  /* One-time coach bubble: standard product-tour grammar — caret points up at the toggle,
+     right-aligned beneath it. Dies on first flip, never returns. */
+  .coach{position:relative;display:flex;align-items:center;gap:8px;margin:12px 0 2px auto;width:max-content;background:#081418;border:1px solid var(--line);border-radius:8px;padding:8px 6px 8px 13px;font-size:12.5px;color:var(--text);box-shadow:0 10px 26px rgba(0,0,0,.5)}
+  .coach:before{content:"";position:absolute;top:-6px;right:19px;width:10px;height:10px;background:#081418;border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
+  .coach .coach-x{color:var(--muted);cursor:pointer;padding:2px 8px;font-size:14px;line-height:1}
   /* Credit hero: one number owns the active card. */
   .cred{margin-top:12px}
   .cred .cred-num{display:block;font-size:26px;font-weight:700;letter-spacing:-.4px;color:var(--accent);font-variant-numeric:tabular-nums}
   .cred .cred-sub{font-size:12px;color:var(--muted)}
-  /* Price rail: floor — live price — cap in one picture. Marker rides the live mark. */
+  /* Price rail — a RANGE INSTRUMENT, not a bar: end ticks mark floor (loss end, red) and cap
+     (upside end, mint); the live mark is a white dot with its price + "live" tag riding it. */
   .rail{margin-top:14px}
-  .rail-track{position:relative;height:6px;border-radius:999px;background:#132e35;border:1px solid var(--line);margin-top:26px}
-  .rail-px{position:absolute;top:-6px;width:2px;height:16px;background:var(--text);border-radius:1px;transform:translateX(-1px);transition:left 1.2s linear}
-  .rail-pxlab{position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-size:11px;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
-  .rail-ends{display:flex;justify-content:space-between;margin-top:8px;font-size:11.5px;color:var(--muted)}
+  .rail-track{position:relative;height:10px;border-radius:999px;background:#132e35;border:1px solid var(--line);margin-top:28px}
+  .rail-tick{position:absolute;top:-5px;width:3px;height:20px;border-radius:2px}
+  .rail-tick.tfloor{background:var(--bad)} .rail-tick.tcap{background:var(--accent)}
+  .rail-px{position:absolute;top:0;width:10px;height:10px;border-radius:50%;background:#fff;transform:translateX(-5px);box-shadow:0 0 8px rgba(255,255,255,.55);transition:left 1.2s linear}
+  .rail-pxlab{position:absolute;top:-24px;left:50%;transform:translateX(-50%);font-size:11px;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .rail-pxlab em{font-style:normal;color:var(--accent);font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin-left:3px}
+  .rail-ends{display:flex;justify-content:space-between;margin-top:9px;font-size:11.5px;color:var(--muted)}
   .rail-ends b{color:var(--text);font-size:12.5px}
+  /* Inline mini vesting bar: exactly one full-width horizontal element on the card (the rail). */
+  .minibar{display:inline-block;width:56px;height:6px;border-radius:999px;background:#132e35;border:1px solid var(--line);vertical-align:1px;margin-right:8px;overflow:hidden}
+  .minibar>span{display:block;height:100%;background:linear-gradient(90deg,#1b7f74,var(--accent));border-radius:999px}
+  /* Settlement ticket: numbers over sentences when a cycle concludes. */
+  .ticket{margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--panel2)}
+  .ticket .t-title{font-size:12px;color:var(--muted);margin-bottom:8px}
+  .ticket .t-figs{display:flex;gap:28px}
+  .ticket .t-fig b{display:block;font-size:17px;font-variant-numeric:tabular-nums}
+  .ticket .t-fig span{font-size:11px;color:var(--muted)}
+  .ticket .t-sub{font-size:11.5px;color:var(--muted);margin-top:8px}
   /* Full-width conversion CTA under the simulation payoff moment. */
   .cta{display:block;width:100%;margin-top:14px;padding:12px;font-size:14px;border-radius:8px;text-align:center}
+  /* Accent discipline: while the card CTA is on screen, the nav Connect demotes to outline. */
+  .connbtn.ghosted{background:transparent;color:var(--accent);border:1px solid rgba(80,210,193,.5)}
   /* Dismissible geo notice. */
   .geo-x{float:right;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;padding:0 2px 4px 10px}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
@@ -223,7 +241,6 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   /* HL grammar: chrome stays muted, brand pulses in small strokes — a vertical mint bar, not
      colored text. Sentence case: the honesty label is the only element allowed to shout. */
   h2{font-size:14.5px;font-weight:700;margin:24px 0 8px;color:var(--text);border-left:3px solid var(--accent);padding-left:9px}
-  .idchip{display:inline-block;font-size:11px;font-weight:600;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:2.5px 10px;margin-left:8px;vertical-align:1px}
   .foot{color:var(--muted);font-size:11.5px;margin-top:32px;border-top:1px solid var(--line);padding-top:16px}
   .badge{display:inline-block;font-size:10.5px;font-weight:700;border-radius:999px;padding:2.5px 9px;margin-left:8px;vertical-align:2px}
   .badge.founding{background:rgba(80,210,193,.12);color:var(--accent);border:1px solid rgba(80,210,193,.4)}
@@ -301,7 +318,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     </div>
   </div>
 
-  <h2><span id="posTitle">Your positions</span><span class="idchip" id="idChip" style="display:none"></span> <span class="small muted" id="cohortLine" style="font-weight:400"></span></h2>
+  <h2><span id="posTitle">Your positions</span> <span class="small muted" id="cohortLine" style="font-weight:400"></span></h2>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
     <b id="wsTitle">Live position · public address</b> <span class="muted small" id="wsBody">— read-only, live pricing. Flip the toggle to see protection at work (simulation — nothing opens). Connect your address to see your own positions.</span>
     <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">view another position →</a>
@@ -500,6 +517,7 @@ const setConn = () => {
   // swapping in the visitor's own address IS the conversion action. INST keeps a quiet status pill.
   const pill = $("connPill");
   pill.classList.remove("connected");
+  pill.classList.remove("ghosted");
   if (INST) pill.textContent = watching ? short(account) + " · viewing" : "not connected";
   else if (account && !watching) {
     pill.textContent = short(account) + " · read-only";
@@ -511,13 +529,9 @@ const setConn = () => {
   if (INST) $("previewCard").style.display = watching ? "none" : "";
   // WATCH chrome: header + strip state the mode; no owner-only sections for a public address
   // (payouts/consent are meaningless for a wallet that isn't yours).
-  // One element carries identity: "Positions" + a quiet chip. No repeated paragraphs.
   $("posTitle").textContent = watching
     ? (INST ? "Viewing · " + short(account) + " · public reference" : "Positions")
     : booting && !account ? "Positions" : "Your positions";
-  const chipEl = $("idChip");
-  if (!INST && watching) { chipEl.textContent = short(account) + " · public · read-only"; chipEl.style.display = ""; }
-  else chipEl.style.display = "none";
   $("cohortLine").style.display = watching || INST ? "none" : "";
   $("watchStrip").style.display = INST && watching ? "" : "none";
   $("nextWhale").style.display = INST && watching && watchWallets.length > 1 ? "" : "none";
@@ -526,7 +540,9 @@ const setConn = () => {
   // block from the first paint (skeleton, then the live showcase card) — never an empty gate;
   // the intro trio survives only as the fallback when no live showcase is available.
   const noOwnerSections = (INST && !watching) || (!INST && !account && !booting);
-  $("posTitle").parentElement.style.display = noOwnerSections ? "none" : "";
+  // The showcase landing drops the section heading entirely — the card is self-describing
+  // (identity rides its eyebrow); a heading over one card is furniture.
+  $("posTitle").parentElement.style.display = noOwnerSections || (!INST && watching) ? "none" : "";
   $("positions").style.display = noOwnerSections ? "none" : "";
   $("payoutsH").style.display = watching || INST || !account ? "none" : "";
   $("payoutsCard").style.display = watching || INST || !account ? "none" : "";
@@ -558,23 +574,29 @@ const activeBody = (o) => {
   const pctOf = (strike) => ((strike - o.quoteSpot) / o.quoteSpot) * 100;
   const sign = (x) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(1) + "%";
   const startWord = o.sim ? "when this simulation started" : "when protection started";
-  const floorLab = '<span><b>' + fmtPx(o.floorStrike) + '</b> floor ' + sign(pctOf(o.floorStrike)) +
+  // Dollar strikes are what people scan; the struck-% detail lives in the tooltips.
+  const floorLab = '<span><b>' + fmtPx(o.floorStrike) + '</b> floor' +
     infoTip("Losses stop here. Struck " + sign(pctOf(o.floorStrike)) + " from the live price " + startWord + " (" + fmtPx(o.quoteSpot) + ").") + '</span>';
-  const capLab = '<span><b>' + fmtPx(o.capStrike) + '</b> cap ' + sign(pctOf(o.capStrike)) +
-    infoTip("Touching " + fmtPx(o.capStrike) + " ends the cycle early: " + (o.sim ? "the holder keeps" : "you keep") + " the position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically while the toggle stays on.", true) + '</span>';
+  const capLab = '<span><b>' + fmtPx(o.capStrike) + '</b> cap' +
+    infoTip("Touching " + fmtPx(o.capStrike) + " (" + sign(pctOf(o.capStrike)) + ") ends the cycle early: " + (o.sim ? "the holder keeps" : "you keep") + " the position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically while the toggle stays on.", true) + '</span>';
   const leftIsFloor = o.floorStrike <= o.capStrike;
   const px = o.livePx != null ? o.livePx : o.quoteSpot;
   const creditTip = o.sim
     ? "Funded by the options market, never by the holder. In the live product the credit unlocks through the day and pays automatically at the cycle's close — never upfront."
     : "Funded by the options market, not by us. Unlocks through the day and pays to this wallet automatically at the cycle's close — never upfront.";
+  // Floor tick = loss end (red), cap tick = upside end (mint) — the only color on the rail.
+  const tickL = '<div class="rail-tick ' + (leftIsFloor ? "tfloor" : "tcap") + '" style="left:-1px"></div>';
+  const tickR = '<div class="rail-tick ' + (leftIsFloor ? "tcap" : "tfloor") + '" style="right:-1px"></div>';
   return '<div class="cred"><b class="cred-num' + (o.sim ? ' sim-cred' : '') + '">' + fmt$(o.creditUsdc) + '</b>' +
       '<span class="cred-sub">today\\u2019s credit' + infoTip(creditTip) + (o.badge || "") + '</span></div>' +
     '<div class="rail" data-lo="' + lo + '" data-hi="' + hi + '">' +
-      '<div class="rail-track"><div class="rail-px" style="left:' + railPos(px) + '%"><span class="rail-pxlab">' + fmtPx(px) + '</span></div></div>' +
+      '<div class="rail-track">' + tickL + tickR +
+        '<div class="rail-px" style="left:' + railPos(px) + '%"><span class="rail-pxlab"><span class="rail-pxval">' + fmtPx(px) + '</span><em>live</em></span></div>' +
+      '</div>' +
       '<div class="rail-ends">' + (leftIsFloor ? floorLab + capLab : capLab + floorLab) + '</div>' +
     '</div>' +
-    '<div class="bar"><div class="' + (o.sim ? "sim-fill" : "") + '" style="width:' + (o.fraction * 100).toFixed(2) + '%"></div></div>' +
-    '<div class="unlock"><b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--text)">' + fmt$(o.vestedUsdc) + '</b> unlocked · ' +
+    '<div class="unlock" style="margin-top:12px"><span class="minibar"><span class="' + (o.sim ? "sim-fill" : "") + '" style="width:' + (o.fraction * 100).toFixed(2) + '%"></span></span>' +
+      '<b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--accent)">' + fmt$(o.vestedUsdc) + '</b> unlocked · ' +
       tip(o.fullyVested ? "fully unlocked — pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">pays in ' + fmtDur(o.remainingMs) + '</span>', o.settleTip) +
     '</div>';
 };
@@ -658,9 +680,15 @@ const render = (positions, state) => {
       } else if (s.phase === "closing") {
         chip = simLabel + '<div class="chip on"><span class="spin"></span>Closing — unwinding hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
       } else if (s.phase === "closed") {
-        chip = simLabel + '<div class="chip">Closed early — kept ' + fmt$(s.keptUsdc) + ' of ' + fmt$(s.fullUsdc) + '. In the live product the unlocked credit pays out; the rest returns to the market.</div>';
+        // Settlement ticket: numbers over sentences — the result, trade-close style.
+        chip = simLabel + '<div class="ticket"><div class="t-title">Closed early</div><div class="t-figs">' +
+          '<div class="t-fig"><b style="color:var(--accent)">' + fmt$(s.keptUsdc) + '</b><span>kept — unlocked credit</span></div>' +
+          '<div class="t-fig"><b style="color:var(--muted)">' + fmt$(Math.max(0, s.fullUsdc - s.keptUsdc)) + '</b><span>returned to the market</span></div>' +
+          '</div></div>';
       } else if (s.phase === "knocked") {
-        chip = simLabel + '<div class="chip">Cap ' + fmtPx(s.capStrike) + ' touched — cycle over. The holder keeps every gain to the cap + ' + fmt$(s.keptUsdc) + ' credit. Re-arming at the new price…</div>';
+        chip = simLabel + '<div class="ticket"><div class="t-title">Cap ' + fmtPx(s.capStrike) + ' touched — cycle over</div><div class="t-figs">' +
+          '<div class="t-fig"><b style="color:var(--accent)">' + fmt$(s.keptUsdc) + '</b><span>credit kept + every gain to the cap</span></div>' +
+          '</div><div class="t-sub"><span class="spin"></span>re-arming at the new price…</div></div>';
       } else if (s.phase === "active" && s.quote) {
         const sq = s.quote;
         const vsim = simVest(s);
@@ -689,15 +717,23 @@ const render = (positions, state) => {
         (active && v ? ' data-vested="' + v.vestedUsdc + '" data-full="' + v.fullCreditUsdc + '"' : "") +
         ' role="switch" aria-checked="' + (active ? "true" : "false") + '"><div class="knob"></div></div>'
       : '<span class="small muted">protection for ' + esc(p.coin) + ' coming soon</span>';
-    // One-time coach mark: the toggle is self-evident after the first flip; until then, one line.
+    // One-time coach bubble: caret points at the toggle; gone forever after the first flip.
     const coach = !INST && watching && !s && !coachDone()
-      ? '<div class="coach"><span>↑</span> Flip it — simulation, nothing opens <span class="coach-x" role="button" aria-label="dismiss">×</span></div>'
+      ? '<div class="coach">Try it — nothing opens <span class="coach-x" role="button" aria-label="dismiss">×</span></div>'
       : "";
-    return '<div class="card" title="' + esc(tooltip) + '">' +
+    // The card is self-describing on the landing: identity rides a quiet eyebrow, not a heading.
+    const eyebrow = !INST && watching
+      ? '<div class="small muted" style="margin-bottom:9px">' + short(account) + ' · public · read-only</div>'
+      : "";
+    return '<div class="card" title="' + esc(tooltip) + '">' + eyebrow +
       '<div class="pos-row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + esc(p.coin) + ' · ' + fmtC(p.notionalUsdc) +
       '<div class="pos-sub">' + fmtSz(p.szBase) + ' ' + esc(p.coin) + (p.entryPx ? ' · entry ' + fmtPx(p.entryPx) : '') + '</div></div>' + toggle + '</div>' +
       coach + chip + terms + bar + coverage + receipt + '</div>';
-  }).join("") + (watching ? '<div class="small muted" style="margin:2px 4px 0">BTC position shown — protection covers BTC today.</div>' : "");
+  }).join("");
+  // Accent discipline: one accent-filled control per screen — while the card CTA is up, the
+  // nav Connect demotes to outline.
+  const sAct = !INST && watching && (() => { const ss = simFor(account); return ss != null && ss.phase === "active"; })();
+  if (!INST) $("connPill").classList.toggle("ghosted", !!sAct);
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
   if (watching && INST && positions[0]) void renderWatchTerms(positions[0]);
 };
@@ -721,7 +757,7 @@ document.addEventListener("click", (ev) => {
 const countUp = (el, target) => {
   const t0 = performance.now();
   const step = (t) => {
-    const k = Math.min(1, (t - t0) / 700);
+    const k = Math.min(1, (t - t0) / 500);
     el.textContent = fmt$(target * (1 - Math.pow(1 - k, 3)));
     if (k < 1) requestAnimationFrame(step);
   };
@@ -878,7 +914,7 @@ setInterval(() => {
       if (!(hi > lo)) continue;
       const m = r.querySelector(".rail-px");
       if (m) m.style.left = Math.min(94, Math.max(6, ((lastMarkPx - lo) / (hi - lo)) * 100)).toFixed(1) + "%";
-      const lab = r.querySelector(".rail-pxlab");
+      const lab = r.querySelector(".rail-pxval");
       if (lab) lab.textContent = fmtPx(lastMarkPx);
     }
   }
