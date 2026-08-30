@@ -57,7 +57,8 @@ test("design system: credit hero, price rail, coach bubble, conversion CTA, comp
     assert.ok(html.includes("Try it · nothing opens"), "one-time coach bubble");
     assert.ok(html.includes("livedot"), "live-data dot on the card eyebrow");
     assert.ok(html.includes("positionTips"), "tooltips are pre-positioned inside the viewport");
-    assert.ok(html.includes("min-width:' + fmt$(o.creditUsdc).length + 'ch"), "vested amount counts up in a reserved-width slot");
+    assert.ok(html.includes("justify-content:space-between"), "vesting line: static text left, amount pinned right");
+    assert.ok(html.includes("infoTip(") && html.includes(", leftIsFloor)") && html.includes(", !leftIsFloor)"), "rail tooltip direction follows geometry, not a hardcoded side");
     assert.ok(html.includes('class="btn cta connOpen"'), "full-width connect CTA at the payoff moment");
     assert.ok(html.includes("const fmtC"), "compact notional formatter");
     assert.ok(html.includes('class="pos-row"'), "position row never wraps the toggle");

@@ -580,12 +580,14 @@ const activeBody = (o) => {
   const pctOf = (strike) => ((strike - o.quoteSpot) / o.quoteSpot) * 100;
   const sign = (x) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(1) + "%";
   const startWord = o.sim ? "when this simulation started" : "when protection started";
-  // Dollar strikes are what people scan; the struck-% detail lives in the tooltips.
-  const floorLab = '<span><b>' + fmtPx(o.floorStrike) + '</b> floor' +
-    infoTip("Losses stop here. Struck " + sign(pctOf(o.floorStrike)) + " from the live price " + startWord + " (" + fmtPx(o.quoteSpot) + ").") + '</span>';
-  const capLab = '<span><b>' + fmtPx(o.capStrike) + '</b> cap' +
-    infoTip("Touching " + fmtPx(o.capStrike) + " (" + sign(pctOf(o.capStrike)) + ") ends the cycle early: " + (o.sim ? "the holder keeps" : "you keep") + " the position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically while the toggle stays on.", true) + '</span>';
   const leftIsFloor = o.floorStrike <= o.capStrike;
+  // Dollar strikes are what people scan; the struck-% detail lives in the tooltips. A tooltip's
+  // direction follows the rail's GEOMETRY: the right-end label opens leftward, the left-end
+  // label opens centered — for longs and shorts alike (shorts put the cap on the left).
+  const floorLab = '<span><b>' + fmtPx(o.floorStrike) + '</b> floor' +
+    infoTip("Losses stop here. Struck " + sign(pctOf(o.floorStrike)) + " from the live price " + startWord + " (" + fmtPx(o.quoteSpot) + ").", !leftIsFloor) + '</span>';
+  const capLab = '<span><b>' + fmtPx(o.capStrike) + '</b> cap' +
+    infoTip("Touching " + fmtPx(o.capStrike) + " (" + sign(pctOf(o.capStrike)) + ") ends the cycle early: " + (o.sim ? "the holder keeps" : "you keep") + " the position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically while the toggle stays on.", leftIsFloor) + '</span>';
   const px = o.livePx != null ? o.livePx : o.quoteSpot;
   const creditTip = o.sim
     ? "Funded by the options market, never by the holder. In the live product the credit unlocks through the day and pays automatically at the cycle's close, never upfront."
@@ -601,11 +603,13 @@ const activeBody = (o) => {
       '</div>' +
       '<div class="rail-ends">' + (leftIsFloor ? floorLab + capLab : capLab + floorLab) + '</div>' +
     '</div>' +
-    // The vested amount counts up inside a slot reserved to the FULL credit's width (tabular
-    // digits), so the "unlocked · pays in…" text never moves as digits are added.
-    '<div class="unlock" style="margin-top:12px"><span class="minibar"><span class="' + (o.sim ? "sim-fill" : "") + '" style="width:' + (o.fraction * 100).toFixed(2) + '%"></span></span>' +
-      '<b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--accent);display:inline-block;min-width:' + fmt$(o.creditUsdc).length + 'ch;font-variant-numeric:tabular-nums">' + fmt$(o.vestedUsdc) + '</b> unlocked · ' +
-      tip(o.fullyVested ? "fully unlocked · pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">pays in ' + fmtDur(o.remainingMs) + '</span>', o.settleTip) +
+    // Two anchored sides: static text left, the amount pinned right ("$7.22 unlocked"). A
+    // right-aligned number grows LEFTWARD into the empty middle, so nothing on the line ever
+    // moves as the credit vests — no reserved gap, one line at 390px.
+    '<div class="unlock" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;white-space:nowrap">' +
+      '<span><span class="minibar"><span class="' + (o.sim ? "sim-fill" : "") + '" style="width:' + (o.fraction * 100).toFixed(2) + '%"></span></span>' +
+        tip(o.fullyVested ? "pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">pays in ' + fmtDur(o.remainingMs) + '</span>', o.settleTip) + '</span>' +
+      '<span><b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--accent);font-variant-numeric:tabular-nums">' + fmt$(o.vestedUsdc) + '</b> unlocked</span>' +
     '</div>';
 };
 
@@ -920,6 +924,7 @@ const positionTips = (root) => {
     const tipEl = wrap.querySelector(".tip");
     if (!tipEl) continue;
     tipEl.style.marginLeft = "";
+    tipEl.style.right = "";
     tipEl.style.visibility = "hidden";
     tipEl.style.display = "block";
     const r = tipEl.getBoundingClientRect();
@@ -930,7 +935,11 @@ const positionTips = (root) => {
     let dx = 0;
     if (r.left < pad) dx = pad - r.left;
     else if (r.right > window.innerWidth - pad) dx = window.innerWidth - pad - r.right;
-    if (dx) tipEl.style.marginLeft = dx + "px";
+    if (dx) {
+      // Right-anchored tips ignore margin-left; shift them via their right offset instead.
+      if (wrap.classList.contains("tip-right")) tipEl.style.right = -dx + "px";
+      else tipEl.style.marginLeft = dx + "px";
+    }
   }
 };
 window.addEventListener("resize", () => positionTips(document));
