@@ -96,13 +96,36 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .btn{background:var(--accent);color:var(--accent-ink);font-weight:700;padding:9px 17px;border-radius:6px;font-size:13.5px;border:0;cursor:pointer}
   .btn:hover{filter:brightness(1.08)} .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
   .muted{color:var(--muted)} .small{font-size:12.5px} a{color:var(--accent);text-decoration:none}
-  .pos-head{font-weight:700;font-size:14.5px} .pos-head small{color:var(--muted);font-weight:400}
+  /* Position header: side + compact notional lead; the raw size/entry demote to a quiet sub-line.
+     The row NEVER wraps — the toggle is the product and it owns the top-right, always. */
+  .pos-row{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:nowrap}
+  .pos-head{font-weight:700;font-size:15.5px;min-width:0}
   .pos-head .long{color:var(--good)} .pos-head .short{color:var(--bad)}
-  .switch{width:44px;height:24px;border-radius:999px;background:#1e3d45;position:relative;cursor:pointer;transition:background .15s ease-out;flex:none}
-  .switch .knob{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#8fa6a3;transition:left .15s cubic-bezier(.3,1.4,.6,1),background .15s ease-out}
-  .switch.on{background:var(--accent)} .switch.on .knob{left:23px;background:var(--accent-ink)}
+  .pos-sub{color:var(--muted);font-weight:400;font-size:12px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* The toggle is the one accent-colored control on the card — sized like the key feature it is. */
+  .switch{width:52px;height:28px;border-radius:999px;background:#1e3d45;position:relative;cursor:pointer;transition:background .15s ease-out,box-shadow .2s;flex:none}
+  .switch .knob{position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#8fa6a3;transition:left .15s cubic-bezier(.3,1.4,.6,1),background .15s ease-out}
+  .switch.on{background:var(--accent);box-shadow:0 0 14px rgba(80,210,193,.35)} .switch.on .knob{left:27px;background:var(--accent-ink)}
   .switch.busy{pointer-events:none}
   .switch.busy .knob{animation:pulse 1s ease-in-out infinite}
+  /* One-time coach mark: points at the toggle, dies on first flip, never returns. */
+  .coach{display:flex;justify-content:flex-end;align-items:center;gap:7px;margin-top:8px;color:var(--accent);font-size:12.5px}
+  .coach .coach-x{color:var(--muted);cursor:pointer;padding:2px 7px;font-size:14px;line-height:1}
+  /* Credit hero: one number owns the active card. */
+  .cred{margin-top:12px}
+  .cred .cred-num{display:block;font-size:26px;font-weight:700;letter-spacing:-.4px;color:var(--accent);font-variant-numeric:tabular-nums}
+  .cred .cred-sub{font-size:12px;color:var(--muted)}
+  /* Price rail: floor — live price — cap in one picture. Marker rides the live mark. */
+  .rail{margin-top:14px}
+  .rail-track{position:relative;height:6px;border-radius:999px;background:#132e35;border:1px solid var(--line);margin-top:26px}
+  .rail-px{position:absolute;top:-6px;width:2px;height:16px;background:var(--text);border-radius:1px;transform:translateX(-1px);transition:left 1.2s linear}
+  .rail-pxlab{position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-size:11px;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .rail-ends{display:flex;justify-content:space-between;margin-top:8px;font-size:11.5px;color:var(--muted)}
+  .rail-ends b{color:var(--text);font-size:12.5px}
+  /* Full-width conversion CTA under the simulation payoff moment. */
+  .cta{display:block;width:100%;margin-top:14px;padding:12px;font-size:14px;border-radius:8px;text-align:center}
+  /* Dismissible geo notice. */
+  .geo-x{float:right;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;padding:0 2px 4px 10px}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
   .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(80,210,193,.25);border-top-color:var(--accent);border-radius:50%;margin-right:7px;vertical-align:-1.5px;animation:spinr .7s linear infinite}
   @keyframes spinr{to{transform:rotate(360deg)}}
@@ -197,8 +220,10 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   table{width:100%;border-collapse:collapse;margin-top:6px;font-size:13px}
   th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)} th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px}
   .status-paid{color:var(--good);font-weight:600} .status-accrued{color:var(--accent)} .status-failed{color:var(--bad)}
-  /* HL grammar: chrome stays muted, brand pulses in small strokes — a vertical mint bar, not colored text */
-  h2{font-size:14px;font-weight:700;margin:24px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;border-left:3px solid var(--accent);padding-left:9px}
+  /* HL grammar: chrome stays muted, brand pulses in small strokes — a vertical mint bar, not
+     colored text. Sentence case: the honesty label is the only element allowed to shout. */
+  h2{font-size:14.5px;font-weight:700;margin:24px 0 8px;color:var(--text);border-left:3px solid var(--accent);padding-left:9px}
+  .idchip{display:inline-block;font-size:11px;font-weight:600;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:2.5px 10px;margin-left:8px;vertical-align:1px}
   .foot{color:var(--muted);font-size:11.5px;margin-top:32px;border-top:1px solid var(--line);padding-top:16px}
   .badge{display:inline-block;font-size:10.5px;font-weight:700;border-radius:999px;padding:2.5px 9px;margin-left:8px;vertical-align:2px}
   .badge.founding{background:rgba(80,210,193,.12);color:var(--accent);border:1px solid rgba(80,210,193,.4)}
@@ -229,6 +254,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   </header>
 
   <div class="card" id="geoBanner" style="display:none">
+    <span class="geo-x" id="geoX" role="button" aria-label="dismiss">×</span>
     <b id="geoTitle">Not available in your region.</b> <span class="muted small" id="geoMsg"></span>
   </div>
 
@@ -275,7 +301,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     </div>
   </div>
 
-  <h2><span id="posTitle">Your positions</span> <span class="small muted" id="cohortLine" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+  <h2><span id="posTitle">Your positions</span><span class="idchip" id="idChip" style="display:none"></span> <span class="small muted" id="cohortLine" style="font-weight:400"></span></h2>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
     <b id="wsTitle">Live position · public address</b> <span class="muted small" id="wsBody">— read-only, live pricing. Flip the toggle to see protection at work (simulation — nothing opens). Connect your address to see your own positions.</span>
     <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">view another position →</a>
@@ -332,7 +358,13 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt$ = (x) => x == null ? "—" : (x < 0 ? "−$" : "$") + Math.abs(x).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtPx = (x) => x == null ? "—" : "$" + Number(x).toLocaleString("en-US", { maximumFractionDigits: 1 });
+// Compact notional: whale numbers never wrap the position row ($132.4M, not $132,421,439.09).
+const fmtC = (x) => x == null ? "—" : x >= 1e9 ? "$" + (x / 1e9).toFixed(2) + "B" : x >= 1e6 ? "$" + (x / 1e6).toFixed(1) + "M" : "$" + Math.round(x).toLocaleString("en-US");
+const fmtSz = (x) => Number(x).toLocaleString("en-US", { maximumFractionDigits: 2 });
 const short = (a) => a ? a.slice(0,6) + "…" + a.slice(-4) : "";
+// One-time coach mark state: dies on first flip (or explicit dismiss), never returns.
+const coachDone = () => { try { return localStorage.getItem("ep_coach_v1") === "1"; } catch (e) { return true; } };
+const markCoachDone = () => { try { localStorage.setItem("ep_coach_v1", "1"); } catch (e) { /* private mode */ } };
 
 // Honest refusal copy: ≤8 human words on the chip, the full engine string on hover.
 const humanChip = (raw) => {
@@ -479,11 +511,15 @@ const setConn = () => {
   if (INST) $("previewCard").style.display = watching ? "none" : "";
   // WATCH chrome: header + strip state the mode; no owner-only sections for a public address
   // (payouts/consent are meaningless for a wallet that isn't yours).
+  // One element carries identity: "Positions" + a quiet chip. No repeated paragraphs.
   $("posTitle").textContent = watching
-    ? (INST ? "Viewing · " + short(account) + " · public reference" : "Positions · " + short(account) + " · public address")
+    ? (INST ? "Viewing · " + short(account) + " · public reference" : "Positions")
     : booting && !account ? "Positions" : "Your positions";
+  const chipEl = $("idChip");
+  if (!INST && watching) { chipEl.textContent = short(account) + " · public · read-only"; chipEl.style.display = ""; }
+  else chipEl.style.display = "none";
   $("cohortLine").style.display = watching || INST ? "none" : "";
-  $("watchStrip").style.display = watching ? "" : "none";
+  $("watchStrip").style.display = INST && watching ? "" : "none";
   $("nextWhale").style.display = INST && watching && watchWallets.length > 1 ? "" : "none";
   $("stopViewing").style.display = INST && watching ? "" : "none";
   // Owner-only sections never show empty to a visitor. The retail landing shows the positions
@@ -511,6 +547,37 @@ const txLink = (h) => {
 
 // The latest wrap drives the position card chip; state is the engine's, never the click's.
 const latestFor = (wraps) => wraps.length ? wraps[wraps.length - 1] : null;
+
+// ONE builder for the ACTIVE protection card — the simulation is a live replica, so the real
+// wrap and the sim render identical markup: a credit hero (one number owns the card), the
+// floor–price–cap rail (one picture answers "where am I protected, where's price now"), and the
+// vesting line. o.sim only changes tooltip wording and the ticker hooks.
+const activeBody = (o) => {
+  const lo = Math.min(o.floorStrike, o.capStrike), hi = Math.max(o.floorStrike, o.capStrike);
+  const railPos = (px) => Math.min(94, Math.max(6, ((px - lo) / Math.max(1, hi - lo)) * 100)).toFixed(1);
+  const pctOf = (strike) => ((strike - o.quoteSpot) / o.quoteSpot) * 100;
+  const sign = (x) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(1) + "%";
+  const startWord = o.sim ? "when this simulation started" : "when protection started";
+  const floorLab = '<span><b>' + fmtPx(o.floorStrike) + '</b> floor ' + sign(pctOf(o.floorStrike)) +
+    infoTip("Losses stop here. Struck " + sign(pctOf(o.floorStrike)) + " from the live price " + startWord + " (" + fmtPx(o.quoteSpot) + ").") + '</span>';
+  const capLab = '<span><b>' + fmtPx(o.capStrike) + '</b> cap ' + sign(pctOf(o.capStrike)) +
+    infoTip("Touching " + fmtPx(o.capStrike) + " ends the cycle early: " + (o.sim ? "the holder keeps" : "you keep") + " the position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically while the toggle stays on.", true) + '</span>';
+  const leftIsFloor = o.floorStrike <= o.capStrike;
+  const px = o.livePx != null ? o.livePx : o.quoteSpot;
+  const creditTip = o.sim
+    ? "Funded by the options market, never by the holder. In the live product the credit unlocks through the day and pays automatically at the cycle's close — never upfront."
+    : "Funded by the options market, not by us. Unlocks through the day and pays to this wallet automatically at the cycle's close — never upfront.";
+  return '<div class="cred"><b class="cred-num' + (o.sim ? ' sim-cred' : '') + '">' + fmt$(o.creditUsdc) + '</b>' +
+      '<span class="cred-sub">today\\u2019s credit' + infoTip(creditTip) + (o.badge || "") + '</span></div>' +
+    '<div class="rail" data-lo="' + lo + '" data-hi="' + hi + '">' +
+      '<div class="rail-track"><div class="rail-px" style="left:' + railPos(px) + '%"><span class="rail-pxlab">' + fmtPx(px) + '</span></div></div>' +
+      '<div class="rail-ends">' + (leftIsFloor ? floorLab + capLab : capLab + floorLab) + '</div>' +
+    '</div>' +
+    '<div class="bar"><div class="' + (o.sim ? "sim-fill" : "") + '" style="width:' + (o.fraction * 100).toFixed(2) + '%"></div></div>' +
+    '<div class="unlock"><b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--text)">' + fmt$(o.vestedUsdc) + '</b> unlocked · ' +
+      tip(o.fullyVested ? "fully unlocked — pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">pays in ' + fmtDur(o.remainingMs) + '</span>', o.settleTip) +
+    '</div>';
+};
 
 const render = (positions, state) => {
   const el = $("positions");
@@ -545,23 +612,17 @@ const render = (positions, state) => {
     if (isWrapCoin && w) {
       if (w.status === "active" && v && q) {
         const capStrike = q.capStrike ?? q.callStrike, floorStrike = q.floorStrike ?? q.putStrike;
-        // Side-aware signs: a long's floor is below / cap above; a short mirrors.
-        const floorSign = p.side === "long" ? "−" : "+", capSign = p.side === "long" ? "+" : "−";
         const foundingBadge = founding && caps && !INST
-          ? tip('<span class="badge founding">FOUNDING RATE</span>',
+          ? " " + tip('<span class="badge founding">FOUNDING RATE</span>',
               "You're one of our first " + caps.foundingWallets + " wallets, so you keep " + (100 - caps.foundingTakeRatePct * 100).toFixed(0) + "% of every credit instead of " + (100 - caps.takeRatePct * 100).toFixed(0) + "% — locked in for 12 months. And when our cut would be under 5\\u00a2, we skip it: you keep it all.")
           : "";
-        chip = '<div class="chip on">EARNING · <b>' + fmt$(v.vestedUsdc) + '</b> of ' + fmt$(v.fullCreditUsdc) + ' unlocked' + foundingBadge + '</div>';
-        terms = '<div class="terms">' +
-          '<div class="term"><b>' + fmt$(q.creditUsdc) + '</b>today\\u2019s credit' + infoTip("Funded by the options market, not by us. Unlocks through the day and pays to this wallet automatically at the cycle's close — never upfront.") + '</div>' +
-          '<div class="term"><b>' + fmtPx(floorStrike) + ' <em>' + floorSign + (q.floorPct * 100).toFixed(1) + '%</em></b>hard floor' + infoTip("Losses stop here. Struck " + floorSign + (q.floorPct * 100).toFixed(1) + "% from the price when protection started (" + fmtPx(q.spot) + "), not from your entry.") + '</div>' +
-          '<div class="term"><b>' + fmtPx(capStrike) + ' <em>' + capSign + (q.capPct * 100).toFixed(1) + '%</em></b>cap — ends cycle' + infoTip("If the price touches " + fmtPx(capStrike) + ", this cycle ends early: you keep your position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically at the new price while the toggle stays on. You never owe anything.", true) + '</div>' +
-          '</div>';
         const settleIso = w.vesting && w.vesting.endMs ? new Date(w.vesting.endMs).toUTCString().replace(":00 GMT", " UTC") : null;
-        bar = '<div class="bar"><div style="width:' + (v.fraction * 100).toFixed(1) + '%"></div></div>' +
-          '<div class="unlock">unlocks through the day · ' +
-          tip(v.fullyVested ? "fully unlocked — pays at settlement" : "pays in " + fmtDur(v.remainingMs), settleIso ? "Settles at the listed expiry: " + settleIso + ". The credit lands in the payouts table below, then protection renews automatically." : "Pays at the cycle's close.") +
-          '</div>';
+        terms = activeBody({
+          creditUsdc: q.creditUsdc, floorStrike, capStrike, quoteSpot: q.spot, livePx: p.markPx,
+          vestedUsdc: v.vestedUsdc, fraction: v.fraction, remainingMs: v.remainingMs, fullyVested: v.fullyVested,
+          settleTip: settleIso ? "Settles at the listed expiry: " + settleIso + ". The credit lands in the payouts table below, then protection renews automatically." : "Pays at the cycle's close.",
+          sim: false, badge: foundingBadge
+        });
         const note = w.hedge && w.hedge.sizeNote;
         if (note) coverage = '<div class="coverage">' + esc(note) + '</div>';
       } else if (w.status === "quoting" || w.status === "executing") {
@@ -594,28 +655,30 @@ const render = (positions, state) => {
       } else if (s.phase === "refused") {
         // The refusal is REAL — the live pricing engine declined; no simulation label needed.
         chip = '<div class="chip bad" title="' + esc(s.reason || "") + '">' + esc(humanChip(s.reason)) + '</div>';
+      } else if (s.phase === "closing") {
+        chip = simLabel + '<div class="chip on"><span class="spin"></span>Closing — unwinding hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
+      } else if (s.phase === "closed") {
+        chip = simLabel + '<div class="chip">Closed early — kept ' + fmt$(s.keptUsdc) + ' of ' + fmt$(s.fullUsdc) + '. In the live product the unlocked credit pays out; the rest returns to the market.</div>';
+      } else if (s.phase === "knocked") {
+        chip = simLabel + '<div class="chip">Cap ' + fmtPx(s.capStrike) + ' touched — cycle over. The holder keeps every gain to the cap + ' + fmt$(s.keptUsdc) + ' credit. Re-arming at the new price…</div>';
       } else if (s.phase === "active" && s.quote) {
         const sq = s.quote;
-        const fPctS = Math.abs(sq.floorStrike - sq.spot) / sq.spot * 100;
-        const cPctS = Math.abs(sq.capStrike - sq.spot) / sq.spot * 100;
-        const floorSignS = p.side === "long" ? "−" : "+", capSignS = p.side === "long" ? "+" : "−";
         const vsim = simVest(s);
-        chip = simLabel + '<div class="chip on">EARNING · <b class="sim-vested">' + fmt$(vsim.vestedUsdc) + '</b> of ' + fmt$(sq.creditUsdc) + ' unlocked</div>';
-        terms = '<div class="terms">' +
-          '<div class="term"><b>' + fmt$(sq.creditUsdc) + '</b>today\\u2019s credit' + infoTip("Funded by the options market, never by the holder. In the live product the credit unlocks through the day and pays automatically at the cycle's close — never upfront.") + '</div>' +
-          '<div class="term"><b>' + fmtPx(sq.floorStrike) + ' <em>' + floorSignS + fPctS.toFixed(1) + '%</em></b>hard floor' + infoTip("Losses stop here. Struck " + floorSignS + fPctS.toFixed(1) + "% from the live price when this simulation started (" + fmtPx(sq.spot) + ").") + '</div>' +
-          '<div class="term"><b>' + fmtPx(sq.capStrike) + ' <em>' + capSignS + cPctS.toFixed(1) + '%</em></b>cap — ends cycle' + infoTip("If the price touches " + fmtPx(sq.capStrike) + ", the cycle ends early: the holder keeps the position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically while the toggle stays on.", true) + '</div>' +
-          '</div>';
         const settleIsoS = s.endMs ? new Date(s.endMs).toUTCString().replace(":00 GMT", " UTC") : null;
-        bar = '<div class="bar"><div class="sim-fill" style="width:' + (vsim.fraction * 100).toFixed(2) + '%"></div></div>' +
-          '<div class="unlock">unlocks through the day · ' +
-          tip('<span class="sim-eta">pays in ' + fmtDur(vsim.remainingMs) + '</span>', settleIsoS ? "The live cycle settles at the listed expiry: " + settleIsoS + "." : "Pays at the cycle's close.") +
-          '</div>';
-        coverage = '<div class="small muted" style="margin-top:10px">Your position works the same way. <a href="#" class="connOpen" style="color:var(--accent);text-decoration:none">Connect your address →</a></div>';
+        chip = simLabel;
+        terms = activeBody({
+          creditUsdc: sq.creditUsdc, floorStrike: sq.floorStrike, capStrike: sq.capStrike,
+          quoteSpot: sq.spot, livePx: lastMarkPx != null ? lastMarkPx : p.markPx,
+          vestedUsdc: vsim.vestedUsdc, fraction: vsim.fraction, remainingMs: vsim.remainingMs, fullyVested: false,
+          settleTip: settleIsoS ? "The live cycle settles at the listed expiry: " + settleIsoS + "." : "Pays at the cycle's close.",
+          sim: true, badge: ""
+        });
+        coverage = '<button type="button" class="btn cta connOpen">Connect your address</button>' +
+          '<div class="small muted" style="margin-top:7px;text-align:center">Your position works the same way. Public data — no keys, no signing.</div>';
       }
     }
-    const simOn = s != null && (s.phase === "quoting" || s.phase === "executing" || s.phase === "active");
-    const simBusy = s != null && (s.phase === "quoting" || s.phase === "executing");
+    const simOn = s != null && (s.phase === "quoting" || s.phase === "executing" || s.phase === "active" || s.phase === "knocked");
+    const simBusy = s != null && (s.phase === "quoting" || s.phase === "executing" || s.phase === "closing");
     // The active toggle carries its unlocked/full numbers so turning OFF can state the consequence.
     const toggle = watching
       ? (INST
@@ -626,9 +689,14 @@ const render = (positions, state) => {
         (active && v ? ' data-vested="' + v.vestedUsdc + '" data-full="' + v.fullCreditUsdc + '"' : "") +
         ' role="switch" aria-checked="' + (active ? "true" : "false") + '"><div class="knob"></div></div>'
       : '<span class="small muted">protection for ' + esc(p.coin) + ' coming soon</span>';
+    // One-time coach mark: the toggle is self-evident after the first flip; until then, one line.
+    const coach = !INST && watching && !s && !coachDone()
+      ? '<div class="coach"><span>↑</span> Flip it — simulation, nothing opens <span class="coach-x" role="button" aria-label="dismiss">×</span></div>'
+      : "";
     return '<div class="card" title="' + esc(tooltip) + '">' +
-      '<div class="row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + p.szBase + ' ' + esc(p.coin) + ' <small>· ' + fmt$(p.notionalUsdc) + (p.entryPx ? ' · entry ' + fmtPx(p.entryPx) : '') + '</small></div>' + toggle + '</div>' +
-      chip + terms + bar + coverage + receipt + '</div>';
+      '<div class="pos-row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + esc(p.coin) + ' · ' + fmtC(p.notionalUsdc) +
+      '<div class="pos-sub">' + fmtSz(p.szBase) + ' ' + esc(p.coin) + (p.entryPx ? ' · entry ' + fmtPx(p.entryPx) : '') + '</div></div>' + toggle + '</div>' +
+      coach + chip + terms + bar + coverage + receipt + '</div>';
   }).join("") + (watching ? '<div class="small muted" style="margin:2px 4px 0">BTC position shown — protection covers BTC today.</div>' : "");
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
   if (watching && INST && positions[0]) void renderWatchTerms(positions[0]);
@@ -649,14 +717,22 @@ document.addEventListener("click", (ev) => {
   ev.preventDefault();
   openConnect();
 });
+// Fast count-up when the credit first lands — one micro-interaction; the number is the star.
+const countUp = (el, target) => {
+  const t0 = performance.now();
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / 700);
+    el.textContent = fmt$(target * (1 - Math.pow(1 - k, 3)));
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+};
 // The simulation lane driver: same lifecycle the live engine walks, priced by the REAL live
 // preview quote (/api/preview) — the wrap path is never touched, and the server refuses every
 // action on a showcased address regardless.
-const simToggle = async () => {
+const simStart = async () => {
   const key = account.toLowerCase();
-  const s = sims[key];
-  if (s && (s.phase === "quoting" || s.phase === "executing")) return;
-  if (s) { delete sims[key]; renderNow(); return; }
+  markCoachDone();
   const p = (lastPos || []).find((x) => x.wrappable);
   if (!p) return;
   sims[key] = { phase: "quoting", startedMs: Date.now() };
@@ -679,6 +755,8 @@ const simToggle = async () => {
       if (!cur || cur.phase !== "executing") return;
       sims[key] = { phase: "active", quote: j, vestStartMs: Date.now(), endMs: j.expiryMs && j.expiryMs > Date.now() ? j.expiryMs : Date.now() + 86400000 };
       renderNow();
+      const heroNum = document.querySelector(".sim-cred");
+      if (heroNum) countUp(heroNum, j.creditUsdc);
       haptic("success");
     }, 1400);
   } catch (e) {
@@ -687,6 +765,39 @@ const simToggle = async () => {
     setTimeout(() => { if (sims[key] && sims[key].phase === "refused") { delete sims[key]; renderNow(); } }, 8000);
   }
 };
+const simToggle = async () => {
+  const key = account.toLowerCase();
+  const s = sims[key];
+  if (s && (s.phase === "quoting" || s.phase === "executing" || s.phase === "closing")) return;
+  if (s && (s.phase === "refused" || s.phase === "closed" || s.phase === "knocked")) { delete sims[key]; renderNow(); return; }
+  if (s && s.phase === "active" && s.quote) {
+    // The UNWIND lane: turning off early has real consequences in the live product — state them,
+    // then walk the same close path visuals (unwinding → concluded chip → clean card).
+    const vs = simVest(s);
+    const kept = vs.vestedUsdc, full = s.quote.creditUsdc;
+    const msg = "Simulation — turn protection off now?\\n\\nYou keep " + fmt$(kept) + " already unlocked; the remaining " + fmt$(Math.max(0, full - kept)) + " returns to the market. Auto-renew turns off.";
+    if (!window.confirm(msg)) return;
+    sims[key] = { phase: "closing", startedMs: Date.now(), keptUsdc: kept, fullUsdc: full };
+    renderNow();
+    haptic("impact");
+    setTimeout(() => {
+      const cur = sims[key];
+      if (!cur || cur.phase !== "closing") return;
+      sims[key] = { phase: "closed", keptUsdc: kept, fullUsdc: full };
+      renderNow();
+      setTimeout(() => { const c2 = sims[key]; if (c2 && c2.phase === "closed") { delete sims[key]; renderNow(); } }, 7000);
+    }, 1600);
+    return;
+  }
+  void simStart();
+};
+// Coach mark dismiss (delegated — the mark is re-rendered by every poll until dismissed).
+document.addEventListener("click", (ev) => {
+  const x = ev.target.closest ? ev.target.closest(".coach-x") : null;
+  if (!x) return;
+  markCoachDone();
+  renderNow();
+});
 // "see how" microlinks (next to any credit figure) open the how-it-works modal in place.
 document.addEventListener("click", (ev) => {
   const a = ev.target.closest ? ev.target.closest(".howMini") : null;
@@ -760,6 +871,17 @@ setInterval(() => {
     const ts = Number(el.dataset.ts || 0);
     if (ts > 0) el.textContent = "· " + Math.max(0, Math.round((Date.now() - ts) / 1000)) + "s";
   }
+  // Every price rail's marker rides the freshest live mark (sim and real cards alike).
+  if (lastMarkPx != null) {
+    for (const r of document.querySelectorAll(".rail")) {
+      const lo = Number(r.dataset.lo), hi = Number(r.dataset.hi);
+      if (!(hi > lo)) continue;
+      const m = r.querySelector(".rail-px");
+      if (m) m.style.left = Math.min(94, Math.max(6, ((lastMarkPx - lo) / (hi - lo)) * 100)).toFixed(1) + "%";
+      const lab = r.querySelector(".rail-pxlab");
+      if (lab) lab.textContent = fmtPx(lastMarkPx);
+    }
+  }
   // An active simulation vests in real time, exactly as the live card does — same clock, same math.
   const s = simFor(account);
   if (s && s.phase === "active" && s.quote) {
@@ -770,6 +892,20 @@ setInterval(() => {
     if (f) f.style.width = (vsim.fraction * 100).toFixed(2) + "%";
     const e2 = document.querySelector(".sim-eta");
     if (e2) e2.textContent = "pays in " + fmtDur(vsim.remainingMs);
+    // KNOCKOUT on a REAL cap touch: only actual market motion triggers it — the most
+    // misunderstood mechanic, demonstrated honestly, then re-armed like the live product.
+    if (lastMarkPx != null) {
+      const touched = s.quote.side === "long" ? lastMarkPx >= s.quote.capStrike : lastMarkPx <= s.quote.capStrike;
+      if (touched) {
+        sims[account.toLowerCase()] = { phase: "knocked", capStrike: s.quote.capStrike, keptUsdc: vsim.vestedUsdc };
+        renderNow();
+        haptic("success");
+        setTimeout(() => {
+          const c = simFor(account);
+          if (c && c.phase === "knocked") void simStart();
+        }, 6000);
+      }
+    }
   }
 }, 1000);
 
@@ -834,11 +970,20 @@ const onToggle = async (ev) => {
 };
 
 // Launch gates: geofence banner (reads stay open, actions are blocked server-side) + ToS card.
+// The banner is informational, so it is dismissible; the acknowledgment persists per
+// mode+country, and enforcement stays server-side at the moment of action regardless.
+let geoAckKey = "";
+const geoAcked = (k) => { try { return localStorage.getItem(k) === "1"; } catch (e) { return false; } };
+$("geoX").onclick = () => {
+  try { if (geoAckKey) localStorage.setItem(geoAckKey, "1"); } catch (e) { /* private mode */ }
+  $("geoBanner").style.display = "none";
+};
 const checkGates = async () => {
   try {
     const geo = await (await fetch("/api/geo")).json();
     if (geo.ok && geo.enabled && !geo.allowed) {
-      $("geoBanner").style.display = "";
+      geoAckKey = "ep_geo_ack_" + String(geo.mode || "") + "_" + String(geo.country || "");
+      $("geoBanner").style.display = geoAcked(geoAckKey) ? "none" : "";
       if (geo.mode === "notice") {
         $("geoBanner").style.borderColor = "rgba(217,171,1,.5)";
         $("geoTitle").textContent = "Restricted region notice.";
@@ -915,6 +1060,7 @@ const setModePill = (mode) => {
 
 let pollTimer = null;
 let lastMarkPx = null;
+let pxFlashT = null;
 const setMarkPx = (px) => {
   if (px == null) return;
   const el = $("pxPill");
@@ -924,6 +1070,9 @@ const setMarkPx = (px) => {
     el.classList.remove("up", "down");
     void el.offsetWidth; // restart the color transition
     el.classList.add(px > lastMarkPx ? "up" : "down");
+    // Flash, then settle back to neutral — a persistent red mark reads as an alert, not a tick.
+    clearTimeout(pxFlashT);
+    pxFlashT = setTimeout(() => el.classList.remove("up", "down"), 900);
   }
   lastMarkPx = px;
 };

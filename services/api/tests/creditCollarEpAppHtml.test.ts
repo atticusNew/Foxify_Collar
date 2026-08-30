@@ -25,11 +25,42 @@ test("simulation lane: toggle is marked data-sim and priced by the live preview 
   for (const html of [web, mini]) {
     assert.ok(html.includes('data-sim="1"'), "showcase toggle must carry the sim marker");
     assert.ok(html.includes('"/api/preview?side="'), "sim quote must come from the live preview endpoint");
-    // The sim driver never posts to the wrap path: simToggle's body references only /api/preview.
-    const simBody = html.slice(html.indexOf("const simToggle"), html.indexOf("// Mobile-safe tooltips"));
-    assert.ok(simBody.length > 0, "simToggle block must exist");
+    // The sim drivers never post to the wrap path: the block from simStart through the watch
+    // terms references only /api/preview.
+    const simBody = html.slice(html.indexOf("const simStart"), html.indexOf("// Mobile-safe tooltips"));
+    assert.ok(simBody.length > 0, "sim driver block must exist");
     assert.ok(!simBody.includes("/api/wrap"), "the simulation lane must never touch the wrap path");
     assert.ok(!simBody.includes("/api/close"), "the simulation lane must never touch the close path");
+  }
+});
+
+test("simulation lane: full lifecycle including the unwind and knockout states", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes("pricing the live options book"), "quoting phase");
+    assert.ok(html.includes("placing hedge legs"), "executing phase");
+    assert.ok(html.includes("Simulation — turn protection off now?"), "unwind states the consequence first");
+    assert.ok(html.includes("Closing — unwinding hedge legs"), "unwind walks the close visuals");
+    assert.ok(html.includes("Closed early — kept"), "concluded chip after the unwind");
+    assert.ok(html.includes("touched — cycle over"), "knockout on a real cap touch");
+    assert.ok(html.includes("Re-arming at the new price"), "knockout re-arms like the live product");
+  }
+});
+
+test("design system: credit hero, price rail, coach mark, conversion CTA, compact numbers", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes('class="cred-num'), "credit hero number");
+    assert.ok(html.includes("rail-track") && html.includes("rail-ends"), "floor–price–cap rail");
+    assert.ok(html.includes("Flip it — simulation, nothing opens"), "one-time coach mark");
+    assert.ok(html.includes('class="btn cta connOpen"'), "full-width connect CTA at the payoff moment");
+    assert.ok(html.includes("const fmtC"), "compact notional formatter");
+    assert.ok(html.includes('class="pos-row"'), "position row never wraps the toggle");
+  }
+});
+
+test("geo notice: dismissible with persisted acknowledgment; enforcement stays server-side", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes('id="geoX"'), "dismiss control");
+    assert.ok(html.includes("ep_geo_ack_"), "acknowledgment persistence key");
   }
 });
 
