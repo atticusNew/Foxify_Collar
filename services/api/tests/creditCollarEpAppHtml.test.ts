@@ -36,10 +36,11 @@ test("simulation lane: toggle is marked data-sim and priced by the live preview 
 
 test("simulation lane: full lifecycle including the unwind and knockout states", () => {
   for (const html of [web, mini]) {
-    assert.ok(html.includes("pricing the live options book"), "quoting phase");
-    assert.ok(html.includes("placing hedge legs"), "executing phase");
+    assert.ok(html.includes("Pricing the live book"), "quoting phase");
+    assert.ok(html.includes("Placing hedge legs"), "executing phase");
+    assert.ok(html.includes('chip on oneline'), "status chips never wrap to a second line");
     assert.ok(html.includes("Simulation: turn protection off now?"), "unwind states the consequence first");
-    assert.ok(html.includes("Closing · unwinding hedge legs"), "unwind walks the close visuals");
+    assert.ok(html.includes("Unwinding hedge legs"), "unwind walks the close visuals");
     assert.ok(html.includes("Closed early"), "settlement ticket after the unwind");
     assert.ok(html.includes("returned to the market"), "ticket states the returned figure");
     assert.ok(html.includes("touched · cycle over"), "knockout on a real cap touch");
@@ -55,7 +56,8 @@ test("design system: credit hero, price rail, coach bubble, conversion CTA, comp
     assert.ok(html.includes("rail-pxval") && html.includes("<em>live</em>"), "live tag on the rail marker");
     assert.ok(html.includes("Try it · nothing opens"), "one-time coach bubble");
     assert.ok(html.includes("livedot"), "live-data dot on the card eyebrow");
-    assert.ok(html.includes("clampTip"), "tooltips clamp to the viewport");
+    assert.ok(html.includes("positionTips"), "tooltips are pre-positioned inside the viewport");
+    assert.ok(html.includes("min-width:' + fmt$(o.creditUsdc).length + 'ch"), "vested amount counts up in a reserved-width slot");
     assert.ok(html.includes('class="btn cta connOpen"'), "full-width connect CTA at the payoff moment");
     assert.ok(html.includes("const fmtC"), "compact notional formatter");
     assert.ok(html.includes('class="pos-row"'), "position row never wraps the toggle");

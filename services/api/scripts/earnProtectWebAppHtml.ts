@@ -170,6 +170,9 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .pv-amt>span{color:var(--muted);font-size:13.5px}
   .pv-amt input{background:transparent;border:0;outline:0;color:var(--text);font-size:13.5px;font-weight:600;padding:8px 8px 8px 3px;width:88px}
   .chip{margin-top:12px;border-radius:6px;padding:10px 12px;font-size:13px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);transition:all .3s}
+  /* Lifecycle status chips: one line always — parallel copy plus a nowrap belt, so the card
+     never jumps between one- and two-line states as the message changes. */
+  .chip.oneline{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .chip.on{border-color:rgba(80,210,193,.45);color:var(--text)} .chip.bad{border-color:rgba(237,112,136,.45)} .chip b{color:var(--accent)}
   .terms{margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:12px;color:var(--muted)}
   .term{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
@@ -598,8 +601,10 @@ const activeBody = (o) => {
       '</div>' +
       '<div class="rail-ends">' + (leftIsFloor ? floorLab + capLab : capLab + floorLab) + '</div>' +
     '</div>' +
+    // The vested amount counts up inside a slot reserved to the FULL credit's width (tabular
+    // digits), so the "unlocked · pays in…" text never moves as digits are added.
     '<div class="unlock" style="margin-top:12px"><span class="minibar"><span class="' + (o.sim ? "sim-fill" : "") + '" style="width:' + (o.fraction * 100).toFixed(2) + '%"></span></span>' +
-      '<b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--accent)">' + fmt$(o.vestedUsdc) + '</b> unlocked · ' +
+      '<b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--accent);display:inline-block;min-width:' + fmt$(o.creditUsdc).length + 'ch;font-variant-numeric:tabular-nums">' + fmt$(o.vestedUsdc) + '</b> unlocked · ' +
       tip(o.fullyVested ? "fully unlocked · pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">pays in ' + fmtDur(o.remainingMs) + '</span>', o.settleTip) +
     '</div>';
 };
@@ -656,8 +661,8 @@ const render = (positions, state) => {
         if (note) coverage = '<div class="coverage">' + esc(note) + '</div>';
       } else if (w.status === "quoting" || w.status === "executing") {
         // Spinner + live seconds counter (server-truth: elapsed since the wrap request landed).
-        chip = '<div class="chip on"><span class="spin"></span>Wrapping… ' +
-          (w.status === "executing" ? "placing hedge legs" : "pricing the live options book") +
+        chip = '<div class="chip on oneline"><span class="spin"></span>' +
+          (w.status === "executing" ? "Placing hedge legs" : "Pricing the live book") +
           ' <span class="els" data-ts="' + (w.createdAtMs || Date.now()) + '"></span></div>';
       } else if (w.status === "knocked_out") {
         const ko = w.knockout || {};
@@ -678,14 +683,14 @@ const render = (positions, state) => {
     if (s) {
       const simLabel = '<div class="simlabel">simulation · live pricing</div>';
       if (s.phase === "quoting") {
-        chip = simLabel + '<div class="chip on"><span class="spin"></span>Wrapping… pricing the live options book <span class="els" data-ts="' + s.startedMs + '"></span></div>';
+        chip = simLabel + '<div class="chip on oneline"><span class="spin"></span>Pricing the live book <span class="els" data-ts="' + s.startedMs + '"></span></div>';
       } else if (s.phase === "executing") {
-        chip = simLabel + '<div class="chip on"><span class="spin"></span>Wrapping… placing hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
+        chip = simLabel + '<div class="chip on oneline"><span class="spin"></span>Placing hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
       } else if (s.phase === "refused") {
         // The refusal is REAL — the live pricing engine declined; no simulation label needed.
         chip = '<div class="chip bad" title="' + esc(s.reason || "") + '">' + esc(humanChip(s.reason)) + '</div>';
       } else if (s.phase === "closing") {
-        chip = simLabel + '<div class="chip on"><span class="spin"></span>Closing · unwinding hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
+        chip = simLabel + '<div class="chip on oneline"><span class="spin"></span>Unwinding hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
       } else if (s.phase === "closed") {
         // Settlement ticket: numbers over sentences — the result, trade-close style.
         chip = simLabel + '<div class="ticket"><div class="t-title">Closed early</div><div class="t-figs">' +
@@ -743,10 +748,11 @@ const render = (positions, state) => {
   const sAct = !INST && watching && (() => { const ss = simFor(account); return ss != null && ss.phase === "active"; })();
   if (!INST) $("connPill").classList.toggle("ghosted", !!sAct);
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
+  positionTips(el);
   if (prevOpenText) {
     for (const wrp of el.querySelectorAll(".tipwrap")) {
       const t = wrp.querySelector(".tip");
-      if (t && t.textContent === prevOpenText) { wrp.classList.add("open"); clampTip(wrp); break; }
+      if (t && t.textContent === prevOpenText) { wrp.classList.add("open"); break; }
     }
   }
   if (watching && INST && positions[0]) void renderWatchTerms(positions[0]);
@@ -759,6 +765,7 @@ const renderNow = () => { if (account && (lastPos.length || lastState)) render(l
 const openConnect = () => {
   if (INST) return;
   $("connVeil").classList.add("open");
+  positionTips($("connectCard"));
   setTimeout(() => $("addrInput").focus(), 60);
 };
 document.addEventListener("click", (ev) => {
@@ -874,6 +881,7 @@ const renderWatchTerms = async (p) => {
   if (!box) return;
   if (watchQuoteCache.addr === account && Date.now() - watchQuoteCache.atMs < 60000) {
     box.innerHTML = watchQuoteCache.html;
+    positionTips(box);
     return;
   }
   try {
@@ -897,38 +905,39 @@ const renderWatchTerms = async (p) => {
       '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u00b7 nothing opens, nothing is stored. Look up a client address to see theirs.</div>';
     watchQuoteCache = { addr: account, atMs: Date.now(), html };
     const boxNow = $("watchTerms");
-    if (boxNow) boxNow.innerHTML = html;
+    if (boxNow) { boxNow.innerHTML = html; positionTips(boxNow); }
   } catch (e) {
     const boxNow = $("watchTerms");
     if (boxNow) boxNow.innerHTML = "";
   }
 };
 
-// Mobile-safe tooltips: tap toggles, tapping elsewhere closes. Every shown tip is clamped to
-// the viewport (a 240px bubble centered on an edge-adjacent trigger runs off screen otherwise).
-const clampTip = (wrap) => {
-  const tipEl = wrap.querySelector(".tip");
-  if (!tipEl) return;
-  tipEl.style.marginLeft = "";
-  const r = tipEl.getBoundingClientRect();
-  if (!r.width) return;
-  const pad = 12;
-  let dx = 0;
-  if (r.left < pad) dx = pad - r.left;
-  else if (r.right > window.innerWidth - pad) dx = window.innerWidth - pad - r.right;
-  if (dx) tipEl.style.marginLeft = dx + "px";
+// Mobile-safe tooltips: tap toggles, tapping elsewhere closes. Every tip is PRE-POSITIONED
+// while still invisible (measured with visibility:hidden after each render), so the moment
+// hover or tap reveals it, it is already fully on screen — no flash, no jump, ever.
+const positionTips = (root) => {
+  for (const wrap of (root || document).querySelectorAll(".tipwrap")) {
+    const tipEl = wrap.querySelector(".tip");
+    if (!tipEl) continue;
+    tipEl.style.marginLeft = "";
+    tipEl.style.visibility = "hidden";
+    tipEl.style.display = "block";
+    const r = tipEl.getBoundingClientRect();
+    tipEl.style.display = "";
+    tipEl.style.visibility = "";
+    if (!r.width) continue; // hidden ancestor (e.g. closed modal): position when it opens
+    const pad = 14;
+    let dx = 0;
+    if (r.left < pad) dx = pad - r.left;
+    else if (r.right > window.innerWidth - pad) dx = window.innerWidth - pad - r.right;
+    if (dx) tipEl.style.marginLeft = dx + "px";
+  }
 };
+window.addEventListener("resize", () => positionTips(document));
 document.addEventListener("click", (ev) => {
   const wrap = ev.target.closest ? ev.target.closest(".tipwrap") : null;
   for (const t of document.querySelectorAll(".tipwrap.open")) if (t !== wrap) t.classList.remove("open");
-  if (wrap) {
-    wrap.classList.toggle("open");
-    if (wrap.classList.contains("open")) clampTip(wrap);
-  }
-});
-document.addEventListener("mouseover", (ev) => {
-  const wrap = ev.target.closest ? ev.target.closest(".tipwrap") : null;
-  if (wrap) clampTip(wrap);
+  if (wrap) wrap.classList.toggle("open");
 });
 
 $("howLink").onclick = (e) => { e.preventDefault(); $("howVeil").classList.add("open"); };
