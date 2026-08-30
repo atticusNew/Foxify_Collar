@@ -606,6 +606,10 @@ const activeBody = (o) => {
 
 const render = (positions, state) => {
   const el = $("positions");
+  // The 5s poll rebuilds this HTML; an open tooltip must survive the rebuild or every tip dies
+  // mid-read (worst on phones, where reading takes longer than the poll interval).
+  const prevOpenTip = el.querySelector(".tipwrap.open .tip");
+  const prevOpenText = prevOpenTip ? prevOpenTip.textContent : null;
   if (!account) { el.innerHTML = '<div class="empty">Look up an address to see its open positions.</div>'; return; }
   // WATCH mode shows only the wrappable (BTC) position — the one the chip advertised. A fund
   // wallet's dozen other coins are noise around the demo.
@@ -739,6 +743,12 @@ const render = (positions, state) => {
   const sAct = !INST && watching && (() => { const ss = simFor(account); return ss != null && ss.phase === "active"; })();
   if (!INST) $("connPill").classList.toggle("ghosted", !!sAct);
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
+  if (prevOpenText) {
+    for (const wrp of el.querySelectorAll(".tipwrap")) {
+      const t = wrp.querySelector(".tip");
+      if (t && t.textContent === prevOpenText) { wrp.classList.add("open"); clampTip(wrp); break; }
+    }
+  }
   if (watching && INST && positions[0]) void renderWatchTerms(positions[0]);
 };
 
