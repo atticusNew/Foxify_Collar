@@ -80,6 +80,15 @@ Shipped on top of the demo engine, all covered by unit tests and exercised end-t
 - **Funnel instrumentation.** Persistent lookers-vs-wrappers split (internal operator wallets flagged and excluded from headlines via `EP_INTERNAL_ACCOUNTS`), daily page loads, preview and watch counters — reach problems and conversion problems are now distinguishable in `/api/admin/status`.
 - **Demo aids are seasonal.** Preview tab + watch chips sit behind `EP_DEMO_AIDS` (default on); the mature platform sheds them with one env flip. The lookup grammar and safety copy are permanent.
 
+## Build record — live-replica landing (Aug 30, 2026)
+
+Retail surface rebuilt from brochure to operating product, motivated by funnel data (high reach, zero external address pastes):
+
+- **Land operating.** A showcase whale address (curated via `EP_SHOWCASE_ADDRESSES`, leaderboard fallback, revalidated every 30 min) loads on arrival: BTC position card, live pricing ticking, skeleton boot, dead-position failover. No empty entry gate. `EP_DEMO_AIDS` retired; the showcase is core surface.
+- **Simulation lane.** The card's toggle (dApp visitors' first flip) walks the real lifecycle — quote (live `/api/preview`), executing, active, vesting — plus an unwind lane (consequence dialog, closing, settlement ticket) and a knockout that fires only on a REAL cap touch, then re-arms. The wrap path is never called; server-side showcase guards unchanged. One persistent honesty label: "simulation · live pricing".
+- **Conversion chrome.** Nav "Connect" (upper right, dApp standard) opens the address-paste modal; a full-width CTA appears under the sim payoff. Swapping in the visitor's own address is the measured conversion (funnel lookers vs app loads).
+- **Design system.** One accent element per screen state; credit hero with inline label and 0.5s count-up; floor–price–cap rail (red/mint end ticks, live-tagged white dot); inline mini vesting bar; settlement tickets (numbers over sentences); one-time coach bubble; compact whale numbers; identity eyebrow with pulsing live dot; viewport-clamped tooltips; dismissible geo notice (enforcement stays server-side); sentence case everywhere — the honesty label is the only uppercase; no em dashes in user-visible copy. Mobile-first at 390px. Institutional skin untouched.
+
 ## Roadmap
 
 Pooled activation: many positions netted internally, residual risk hedged as institutional blocks, with block economics inherited by every participating position. Additional venues, the US-regulated hedge stack, lending-collateral protection, and multi-asset extension via listed options.

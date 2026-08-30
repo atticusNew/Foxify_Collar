@@ -40,7 +40,7 @@ export const buildEpAppHtml = (variant: "web" | "miniapp"): string => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${miniapp ? "Earn & Protect" : "Atticus — Earn & Protect"}</title>
+<title>${miniapp ? "Earn & Protect" : "Atticus · Earn & Protect"}</title>
 ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>' : ""}
 <style>
   /* ── VENUE THEME TOKENS ──────────────────────────────────────────────────
@@ -113,10 +113,13 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .coach{position:relative;display:flex;align-items:center;gap:8px;margin:12px 0 2px auto;width:max-content;background:#081418;border:1px solid var(--line);border-radius:8px;padding:8px 6px 8px 13px;font-size:12.5px;color:var(--text);box-shadow:0 10px 26px rgba(0,0,0,.5)}
   .coach:before{content:"";position:absolute;top:-6px;right:19px;width:10px;height:10px;background:#081418;border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
   .coach .coach-x{color:var(--muted);cursor:pointer;padding:2px 8px;font-size:14px;line-height:1}
-  /* Credit hero: one number owns the active card. */
-  .cred{margin-top:12px}
-  .cred .cred-num{display:block;font-size:26px;font-weight:700;letter-spacing:-.4px;color:var(--accent);font-variant-numeric:tabular-nums}
+  /* Credit hero: one number owns the active card; its label rides the blank space beside it. */
+  .cred{margin-top:12px;display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+  .cred .cred-num{font-size:26px;font-weight:700;letter-spacing:-.4px;color:var(--accent);font-variant-numeric:tabular-nums}
   .cred .cred-sub{font-size:12px;color:var(--muted)}
+  /* Live-data dot on the card eyebrow: this is a live position on this address, wordlessly. */
+  .livedot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:7px;vertical-align:1px;animation:lpulse 2s ease-in-out infinite}
+  @keyframes lpulse{0%,100%{opacity:1}50%{opacity:.35}}
   /* Price rail — a RANGE INSTRUMENT, not a bar: end ticks mark floor (loss end, red) and cap
      (upside end, mint); the live mark is a white dot with its price + "live" tag riding it. */
   .rail{margin-top:14px}
@@ -180,7 +183,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .flash.bad{border-color:rgba(237,112,136,.45)}
   /* Tap/hover tooltips (mobile-safe — no title attributes) */
   .tipwrap{position:relative;cursor:help}
-  .tipwrap .tip{display:none;position:absolute;bottom:135%;left:50%;transform:translateX(-50%);width:240px;background:#081418;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12px;font-weight:400;color:var(--text);line-height:1.5;z-index:30;box-shadow:0 10px 28px rgba(0,0,0,.55);text-align:left;text-transform:none;letter-spacing:0;white-space:normal}
+  .tipwrap .tip{display:none;position:absolute;bottom:135%;left:50%;transform:translateX(-50%);width:240px;max-width:70vw;background:#081418;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12px;font-weight:400;color:var(--text);line-height:1.5;z-index:30;box-shadow:0 10px 28px rgba(0,0,0,.55);text-align:left;text-transform:none;letter-spacing:0;white-space:normal}
   .tipwrap.tip-right .tip{left:auto;right:0;transform:none}
   .tipwrap:hover .tip,.tipwrap.open .tip{display:block}
   .info{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid rgba(80,210,193,.55);color:var(--accent);font-size:9.5px;margin-left:5px;vertical-align:1px}
@@ -278,16 +281,16 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <!-- Pre-connect intro (retail fallback only): shown when the operating landing cannot load —
        a visitor should land inside the product, not on a brochure. -->
   <div class="card" id="introTrio" style="display:none">
-    <div class="trio"><b>Floor</b> — hard price under your position.</div>
-    <div class="trio"><b>Credit</b> — funded by the options market, never by you.</div>
-    <div class="trio"><b>Cap</b> — a touch pays vested credit, re-arms. New floor. New credit.</div>
+    <div class="trio"><b>Floor</b> · hard price under your position.</div>
+    <div class="trio"><b>Credit</b> · funded by the options market, never by you.</div>
+    <div class="trio"><b>Cap</b> · a touch pays vested credit, re-arms. New floor. New credit.</div>
   </div>
 
   <!-- Preview: a hypothetical size off the live book. Preview-only by construction —
        wrapping always requires a live venue-read position. -->
   <div class="card" id="previewCard" style="display:none">
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px">
-      <span class="small muted" id="pvHeader">What a position would earn. Live quote — nothing opens.</span>
+      <span class="small muted" id="pvHeader">What a position would earn. Live quote · nothing opens.</span>
       <a href="#" id="pvClear" class="small" style="display:none;color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--line)">clear</a>
     </div>
     <div class="row" style="align-items:center">
@@ -301,7 +304,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   </div>
 
   <div class="card" id="verifyCard" style="display:none;border-color:rgba(80,210,193,.45)">
-    <b>Verify your wallet</b> <span class="muted small">— one signature proves you own this address and signs the <a href="/tos" target="_blank" rel="noopener">Terms</a>. It cannot move funds. Needed once; then you can manage protection from any device (including Telegram).</span>
+    <b>Verify your wallet</b> <span class="muted small">One signature proves you own this address and signs the <a href="/tos" target="_blank" rel="noopener">Terms</a>. It cannot move funds. Needed once; then you can manage protection from any device (including Telegram).</span>
     <div class="row" style="margin-top:10px">
       <button class="btn" id="verifyBtn">Verify with wallet</button>
       <span class="small muted" id="verifyMsg"></span>
@@ -320,7 +323,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 
   <h2><span id="posTitle">Your positions</span> <span class="small muted" id="cohortLine" style="font-weight:400"></span></h2>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
-    <b id="wsTitle">Live position · public address</b> <span class="muted small" id="wsBody">— read-only, live pricing. Flip the toggle to see protection at work (simulation — nothing opens). Connect your address to see your own positions.</span>
+    <b id="wsTitle">Live position · public address</b> <span class="muted small" id="wsBody">Read-only, live pricing. Flip the toggle to see protection at work (simulation · nothing opens). Connect your address to see your own positions.</span>
     <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">view another position →</a>
     <a href="#" id="stopViewing" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:10px">stop viewing ×</a>
   </div>
@@ -340,10 +343,10 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <div class="modal-veil" id="howVeil"><div class="modal">
   <h3>How Earn &amp; Protect works</h3>
   <ul id="howList">
-    <li><b>Read-only.</b> We read your positions from Hyperliquid's public API — no signing, no deposits, no keys. Payouts go only to your own wallet.</li>
+    <li><b>Read-only.</b> We read your positions from Hyperliquid's public API. No signing, no deposits, no keys. Payouts go only to your own wallet.</li>
     <li><b>Live-market pricing.</b> Every protection cycle is quoted from listed option order books at the moment you toggle. When the market can't fund a credit, we refuse and say why.</li>
     <li><b>Paid daily, never upfront.</b> Your credit unlocks through each daily cycle and pays automatically at its close.</li>
-    <li><b>The cap ends the cycle, not your trade.</b> If price touches your cap, that cycle ends — you keep your position, every gain, and the unlocked credit; protection re-arms at the new price while the toggle stays on. You never owe anything.</li>
+    <li><b>The cap ends the cycle, not your trade.</b> If price touches your cap, that cycle ends: you keep your position, every gain, and the unlocked credit; protection re-arms at the new price while the toggle stays on. You never owe anything.</li>
     <li><b>Honest economics.</b> We keep a published share of the credit we source (waived when tiny); founding wallets keep a reduced rate<span id="rateNote"></span>.</li>
     <li>Derivatives involve risk. Nothing here is investment advice.</li>
   </ul>
@@ -353,14 +356,14 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <!-- Connect modal (retail): the address-paste flow behind the nav's Connect chrome. HL's own
      lookup grammar — an ADDRESS is public data, never a "wallet". No keys, no signing. -->
 <div class="modal-veil" id="connVeil"><div class="modal" id="connectCard">
-  <h3>Connect — read-only</h3>
+  <h3>Connect · read-only</h3>
   <div class="row">
-    <input type="text" id="addrInput" placeholder="0x… your Hyperliquid address" title="An address is public data — the same thing you'd paste into an explorer. We read positions, never touch them. Find yours in the Hyperliquid app: top right, starts with 0x." spellcheck="false">
+    <input type="text" id="addrInput" placeholder="0x… your Hyperliquid address" title="An address is public data: the same thing you'd paste into an explorer. We read positions, never touch them. Find yours in the Hyperliquid app: top right, starts with 0x." spellcheck="false">
     <button class="btn" id="connectBtn">Look up</button>
     <button class="btn ghost" id="forgetBtn" style="display:none">Disconnect</button>
   </div>
   <div class="small muted" style="margin-top:10px">Public data. Read-only. No keys, no signing, no deposits. Payouts only ever to the address.
-    <span class="tipwrap"><span class="info">i</span><span class="tip">Hyperliquid&#39;s safety docs are right: never share keys or sign unknown transactions. We ask for neither — an address is public data, the same thing you&#39;d paste into Hypurrscan. Find yours in the Hyperliquid app: top right, starts with 0x.</span></span>
+    <span class="tipwrap"><span class="info">i</span><span class="tip">Hyperliquid&#39;s safety docs are right: never share keys or sign unknown transactions. We ask for neither. An address is public data, the same thing you&#39;d paste into Hypurrscan. Find yours in the Hyperliquid app: top right, starts with 0x.</span></span>
   </div>
   <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
   <button class="btn ghost" id="connClose" style="margin-top:14px">Close</button>
@@ -400,20 +403,20 @@ const humanChip = (raw) => {
   if (/already active|in flight|in_flight|being processed/i.test(s)) return "Already protected";
   if (/no open .* position|no live position|no_position/i.test(s)) return "No open position to protect";
   if (/allow-list|account_refused|not an address/i.test(s)) return "Account not enabled yet";
-  if (/verify_required/i.test(s)) return "Verify your wallet first — one signature, one time";
-  if (/close_locked/i.test(s)) return "Turn off from the device that turned protection on — it pays out on its own either way";
-  if (/close_unwind_failed|couldn't close the hedge cleanly/i.test(s)) return "Couldn't close cleanly right now — you're still protected; try again shortly";
+  if (/verify_required/i.test(s)) return "Verify your wallet first · one signature, one time";
+  if (/close_locked/i.test(s)) return "Turn off from the device that turned protection on · it pays out on its own either way";
+  if (/close_unwind_failed|couldn't close the hedge cleanly/i.test(s)) return "Couldn't close cleanly right now · you're still protected · try again shortly";
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first";
-  if (/waitlisted|#\d+ in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full — you're #" + m[1] + " in line" : "Founding cohort full — you're on the waitlist"; }
-  if (/showcase_wallet|public wallet on watch/i.test(s)) return "Public wallet — watching only";
-  if (/invalid_size/i.test(s)) return "Preview sizes up to $500M — try a smaller amount";
+  if (/waitlisted|#\d+ in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full · you're #" + m[1] + " in line" : "Founding cohort full · you're on the waitlist"; }
+  if (/showcase_wallet|public wallet on watch/i.test(s)) return "Public wallet · watching only";
+  if (/invalid_size/i.test(s)) return "Preview sizes up to $500M · try a smaller amount";
   if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
   if (/kill switch|demo disabled|paused/i.test(s)) return "Protection paused";
   if (/rate_limited/i.test(s)) return "Slow down a moment";
   return "Couldn't complete · nothing opened";
 };
 
-const stageLabel = {wrap_requested:"Requested",position_read:"Position read",quoted:"Priced off the live book",hedge_executing:"Hedge executing",hedge_locked:"Hedge locked",green_light:"Protection live",vesting:"Credit vesting",failed:"Refused",knocked_out:"Cap touched — cycle over",concluded:"Concluded"};
+const stageLabel = {wrap_requested:"Requested",position_read:"Position read",quoted:"Priced off the live book",hedge_executing:"Hedge executing",hedge_locked:"Hedge locked",green_light:"Protection live",vesting:"Credit vesting",failed:"Refused",knocked_out:"Cap touched · cycle over",concluded:"Concluded"};
 
 // "pays in 11h 26m" — the vesting bar's time axis.
 const fmtDur = (ms) => {
@@ -466,7 +469,7 @@ if (INST) {
   $("heroSub").textContent = "A hard floor and a daily credit on custodied holdings and trading positions. Read-only: assets never move.";
   // Treasury lane leads: the model card is the primary, always-open flow at treasury scale.
   $("previewCard").style.display = "";
-  $("pvHeader").textContent = "Model a holding — live market pricing. Nothing opens, nothing is stored.";
+  $("pvHeader").textContent = "Model a holding · live market pricing. Nothing opens, nothing is stored.";
   $("pvUsd").value = "10,000,000";
   $("pvNoun").textContent = "holding";
   // Proof lives as one quiet link under the model result; loading/errors surface on the link itself.
@@ -479,7 +482,7 @@ if (INST) {
       l.textContent = "pricing a live reference position…";
       const ok = await fetchShowcase(0);
       if (!ok) {
-        l.textContent = "No live reference available right now — try again shortly.";
+        l.textContent = "No live reference available right now · try again shortly.";
         setTimeout(() => { l.textContent = orig; }, 4000);
         return;
       }
@@ -488,15 +491,15 @@ if (INST) {
     watchWallet(0);
   };
   $("wsTitle").textContent = "Viewing a public reference position";
-  $("wsBody").textContent = "— read-only, live pricing on a real position. Look up a client address to see theirs.";
+  $("wsBody").textContent = "Read-only, live pricing on a real position. Look up a client address to see theirs.";
   $("nextWhale").textContent = "view another position →";
   // Institutional How-it-works: exposure sources stated honestly (vault-side reads = the pilot).
   $("howList").innerHTML =
-    '<li><b>Read-only.</b> Exposure is read from public venue APIs — no keys, no deposits, no custody movement. Direct vault-side balance integration is scoped in the design-partner pilot.</li>' +
+    '<li><b>Read-only.</b> Exposure is read from public venue APIs. No keys, no deposits, no custody movement. Direct vault-side balance integration is scoped in the design-partner pilot.</li>' +
     '<li><b>Live-market pricing.</b> Every protection cycle is priced from listed option order books at the moment of activation. When the market cannot fund a credit, we refuse and say why.</li>' +
     '<li><b>Delta neutral by construction.</b> Every protection is hedged leg for leg on listed options (OKX today; FalconX block execution as volume nets up). Revenue is a published fee on credits, never trading P&amp;L.</li>' +
     '<li><b>Paid daily, never upfront.</b> The credit vests through each cycle and settles automatically at its close, only to the holder\\u2019s address.</li>' +
-    '<li><b>The cap ends the cycle, not the holding.</b> A cap touch concludes that cycle — the holder keeps the assets, gains, and vested credit; protection re-arms automatically.<span id="rateNote" style="display:none"></span></li>' +
+    '<li><b>The cap ends the cycle, not the holding.</b> A cap touch concludes that cycle: the holder keeps the assets, gains, and vested credit; protection re-arms automatically.<span id="rateNote" style="display:none"></span></li>' +
     '<li>Derivatives involve risk. Nothing here is investment advice.</li>';
 }
 let verifyOffered = false; // surfaced when a close is refused cross-device — optional path to manage from anywhere
@@ -582,8 +585,8 @@ const activeBody = (o) => {
   const leftIsFloor = o.floorStrike <= o.capStrike;
   const px = o.livePx != null ? o.livePx : o.quoteSpot;
   const creditTip = o.sim
-    ? "Funded by the options market, never by the holder. In the live product the credit unlocks through the day and pays automatically at the cycle's close — never upfront."
-    : "Funded by the options market, not by us. Unlocks through the day and pays to this wallet automatically at the cycle's close — never upfront.";
+    ? "Funded by the options market, never by the holder. In the live product the credit unlocks through the day and pays automatically at the cycle's close, never upfront."
+    : "Funded by the options market, not by us. Unlocks through the day and pays to this wallet automatically at the cycle's close, never upfront.";
   // Floor tick = loss end (red), cap tick = upside end (mint) — the only color on the rail.
   const tickL = '<div class="rail-tick ' + (leftIsFloor ? "tfloor" : "tcap") + '" style="left:-1px"></div>';
   const tickR = '<div class="rail-tick ' + (leftIsFloor ? "tcap" : "tfloor") + '" style="right:-1px"></div>';
@@ -597,7 +600,7 @@ const activeBody = (o) => {
     '</div>' +
     '<div class="unlock" style="margin-top:12px"><span class="minibar"><span class="' + (o.sim ? "sim-fill" : "") + '" style="width:' + (o.fraction * 100).toFixed(2) + '%"></span></span>' +
       '<b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--accent)">' + fmt$(o.vestedUsdc) + '</b> unlocked · ' +
-      tip(o.fullyVested ? "fully unlocked — pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">pays in ' + fmtDur(o.remainingMs) + '</span>', o.settleTip) +
+      tip(o.fullyVested ? "fully unlocked · pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">pays in ' + fmtDur(o.remainingMs) + '</span>', o.settleTip) +
     '</div>';
 };
 
@@ -624,7 +627,7 @@ const render = (positions, state) => {
     if (isWrapCoin && w && w.legs && w.legs.length && (w.status === "active" || w.status === "knocked_out")) {
       // Hedge receipt — the proof: real instruments, premiums, order refs. REAL = a venue order
       // stands behind the row; SIMULATED = a live-book model quote (paper lane), labeled honestly.
-      receipt = '<details class="receipt"><summary>Hedge receipt — how this protection is built</summary><table class="receipt-tbl">' +
+      receipt = '<details class="receipt"><summary>Hedge receipt · how this protection is built</summary><table class="receipt-tbl">' +
         '<thead><tr><th>leg</th><th>listed instrument</th><th>premium</th><th>order ref</th><th></th></tr></thead><tbody>' +
         w.legs.map((l) =>
           '<tr><td>' + (legLabel[l.role] || esc(l.role)) + '</td><td><code>' + esc((l.instId || "—").replace(" (model)", "")) + '</code></td><td>' + fmt$(l.premiumUsdc) + '</td><td><code>' + esc(l.orderId || "—") + '</code></td><td class="' + (l.real ? "tag-real" : "tag-sim") + '">' + (l.real ? "REAL" : "SIMULATED") + '</td></tr>'
@@ -636,7 +639,7 @@ const render = (positions, state) => {
         const capStrike = q.capStrike ?? q.callStrike, floorStrike = q.floorStrike ?? q.putStrike;
         const foundingBadge = founding && caps && !INST
           ? " " + tip('<span class="badge founding">FOUNDING RATE</span>',
-              "You're one of our first " + caps.foundingWallets + " wallets, so you keep " + (100 - caps.foundingTakeRatePct * 100).toFixed(0) + "% of every credit instead of " + (100 - caps.takeRatePct * 100).toFixed(0) + "% — locked in for 12 months. And when our cut would be under 5\\u00a2, we skip it: you keep it all.")
+              "You're one of our first " + caps.foundingWallets + " wallets, so you keep " + (100 - caps.foundingTakeRatePct * 100).toFixed(0) + "% of every credit instead of " + (100 - caps.takeRatePct * 100).toFixed(0) + "%, locked in for 12 months. And when our cut would be under 5\\u00a2, we skip it: you keep it all.")
           : "";
         const settleIso = w.vesting && w.vesting.endMs ? new Date(w.vesting.endMs).toUTCString().replace(":00 GMT", " UTC") : null;
         terms = activeBody({
@@ -654,9 +657,9 @@ const render = (positions, state) => {
           ' <span class="els" data-ts="' + (w.createdAtMs || Date.now()) + '"></span></div>';
       } else if (w.status === "knocked_out") {
         const ko = w.knockout || {};
-        chip = '<div class="chip">Cap $' + (ko.capStrike ?? "?") + ' touched — cycle over. You kept every gain to the cap' + (v ? ' + ' + fmt$(v.vestedUsdc) + ' credit' : '') + '. Re-arms automatically while the toggle is on.</div>';
+        chip = '<div class="chip">Cap $' + (ko.capStrike ?? "?") + ' touched · cycle over. You kept every gain to the cap' + (v ? ' + ' + fmt$(v.vestedUsdc) + ' credit' : '') + '. Re-arms automatically while the toggle is on.</div>';
       } else if (w.status === "concluded" && v) {
-        chip = '<div class="chip">' + (v.fullyVested ? "Cycle complete — earned " + fmt$(v.fullCreditUsdc) + " in full" : "Closed early — kept " + fmt$(v.vestedUsdc) + " of " + fmt$(v.fullCreditUsdc)) + '</div>';
+        chip = '<div class="chip">' + (v.fullyVested ? "Cycle complete · earned " + fmt$(v.fullCreditUsdc) + " in full" : "Closed early · kept " + fmt$(v.vestedUsdc) + " of " + fmt$(v.fullCreditUsdc)) + '</div>';
       } else if (w.status === "failed" && w.failReason) {
         chip = '<div class="chip bad" title="' + esc(w.failReason) + '">' + esc(humanChip(w.failReason)) + '</div>';
         tooltip = w.failReason;
@@ -678,15 +681,15 @@ const render = (positions, state) => {
         // The refusal is REAL — the live pricing engine declined; no simulation label needed.
         chip = '<div class="chip bad" title="' + esc(s.reason || "") + '">' + esc(humanChip(s.reason)) + '</div>';
       } else if (s.phase === "closing") {
-        chip = simLabel + '<div class="chip on"><span class="spin"></span>Closing — unwinding hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
+        chip = simLabel + '<div class="chip on"><span class="spin"></span>Closing · unwinding hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
       } else if (s.phase === "closed") {
         // Settlement ticket: numbers over sentences — the result, trade-close style.
         chip = simLabel + '<div class="ticket"><div class="t-title">Closed early</div><div class="t-figs">' +
-          '<div class="t-fig"><b style="color:var(--accent)">' + fmt$(s.keptUsdc) + '</b><span>kept — unlocked credit</span></div>' +
+          '<div class="t-fig"><b style="color:var(--accent)">' + fmt$(s.keptUsdc) + '</b><span>kept · unlocked credit</span></div>' +
           '<div class="t-fig"><b style="color:var(--muted)">' + fmt$(Math.max(0, s.fullUsdc - s.keptUsdc)) + '</b><span>returned to the market</span></div>' +
           '</div></div>';
       } else if (s.phase === "knocked") {
-        chip = simLabel + '<div class="ticket"><div class="t-title">Cap ' + fmtPx(s.capStrike) + ' touched — cycle over</div><div class="t-figs">' +
+        chip = simLabel + '<div class="ticket"><div class="t-title">Cap ' + fmtPx(s.capStrike) + ' touched · cycle over</div><div class="t-figs">' +
           '<div class="t-fig"><b style="color:var(--accent)">' + fmt$(s.keptUsdc) + '</b><span>credit kept + every gain to the cap</span></div>' +
           '</div><div class="t-sub"><span class="spin"></span>re-arming at the new price…</div></div>';
       } else if (s.phase === "active" && s.quote) {
@@ -702,7 +705,7 @@ const render = (positions, state) => {
           sim: true, badge: ""
         });
         coverage = '<button type="button" class="btn cta connOpen">Connect your address</button>' +
-          '<div class="small muted" style="margin-top:7px;text-align:center">Your position works the same way. Public data — no keys, no signing.</div>';
+          '<div class="small muted" style="margin-top:7px;text-align:center">Your position works the same way. Public data · no keys · no signing.</div>';
       }
     }
     const simOn = s != null && (s.phase === "quoting" || s.phase === "executing" || s.phase === "active" || s.phase === "knocked");
@@ -719,11 +722,12 @@ const render = (positions, state) => {
       : '<span class="small muted">protection for ' + esc(p.coin) + ' coming soon</span>';
     // One-time coach bubble: caret points at the toggle; gone forever after the first flip.
     const coach = !INST && watching && !s && !coachDone()
-      ? '<div class="coach">Try it — nothing opens <span class="coach-x" role="button" aria-label="dismiss">×</span></div>'
+      ? '<div class="coach">Try it · nothing opens <span class="coach-x" role="button" aria-label="dismiss">×</span></div>'
       : "";
-    // The card is self-describing on the landing: identity rides a quiet eyebrow, not a heading.
+    // The card is self-describing on the landing: identity rides a quiet eyebrow, not a heading;
+    // the pulsing dot says "live position on this address" without a word.
     const eyebrow = !INST && watching
-      ? '<div class="small muted" style="margin-bottom:9px">' + short(account) + ' · public · read-only</div>'
+      ? '<div class="small muted" style="margin-bottom:9px"><span class="livedot"></span>' + short(account) + ' · public · read-only</div>'
       : "";
     return '<div class="card" title="' + esc(tooltip) + '">' + eyebrow +
       '<div class="pos-row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + esc(p.coin) + ' · ' + fmtC(p.notionalUsdc) +
@@ -811,7 +815,7 @@ const simToggle = async () => {
     // then walk the same close path visuals (unwinding → concluded chip → clean card).
     const vs = simVest(s);
     const kept = vs.vestedUsdc, full = s.quote.creditUsdc;
-    const msg = "Simulation — turn protection off now?\\n\\nYou keep " + fmt$(kept) + " already unlocked; the remaining " + fmt$(Math.max(0, full - kept)) + " returns to the market. Auto-renew turns off.";
+    const msg = "Simulation: turn protection off now?\\n\\nYou keep " + fmt$(kept) + " already unlocked; the remaining " + fmt$(Math.max(0, full - kept)) + " returns to the market. Auto-renew turns off.";
     if (!window.confirm(msg)) return;
     sims[key] = { phase: "closing", startedMs: Date.now(), keptUsdc: kept, fullUsdc: full };
     renderNow();
@@ -842,12 +846,12 @@ document.addEventListener("click", (ev) => {
   $("howVeil").classList.add("open");
 });
 // Why the credit exists, adjacent to where skepticism fires: at the credit number itself.
-const whyLine = '<div class="small muted" style="margin-top:6px">The options market pays for the capped upside \\u2014 <a href="#" class="howMini" style="color:var(--accent);text-decoration:none">see how</a>.</div>';
+const whyLine = '<div class="small muted" style="margin-top:6px">The options market pays for the capped upside · <a href="#" class="howMini" style="color:var(--accent);text-decoration:none">see how</a>.</div>';
 // Thin-market honesty note: when the live book funds under 2 bps/day, say why the number is small
 // — otherwise an honest quote on a cheap-vol weekend reads as a broken product.
 const thinNote = (creditUsdc, protectedUsd) =>
   protectedUsd > 0 && (creditUsdc / protectedUsd) * 10000 < 2
-    ? '<div class="small muted" style="margin-top:6px">Quiet options market right now \\u2014 credits are thin. Quotes re-price continuously.</div>'
+    ? '<div class="small muted" style="margin-top:6px">Quiet options market right now · credits are thin. Quotes re-price continuously.</div>'
     : '';
 
 // The watch card's whole point: what Earn & Protect WOULD pay on this real position, right now.
@@ -876,11 +880,11 @@ const renderWatchTerms = async (p) => {
       '<div class="terms">' +
         '<div class="term credit-hero"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit \\u00b7 repeats while on</div>' +
         '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + pctSign(fPct) + '</em></b>hard floor</div>' +
-        '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + pctSign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
+        '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + pctSign(cPct) + '</em></b>cap \\u00b7 ends cycle</div>' +
       '</div>' +
       whyLine +
       thinNote(j.creditUsdc, Math.min(p.notionalUsdc, PV_MAX_USD)) +
-      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u2014 nothing opens, nothing is stored. Look up a client address to see theirs.</div>';
+      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u00b7 nothing opens, nothing is stored. Look up a client address to see theirs.</div>';
     watchQuoteCache = { addr: account, atMs: Date.now(), html };
     const boxNow = $("watchTerms");
     if (boxNow) boxNow.innerHTML = html;
@@ -890,11 +894,31 @@ const renderWatchTerms = async (p) => {
   }
 };
 
-// Mobile-safe tooltips: tap toggles, tapping elsewhere closes.
+// Mobile-safe tooltips: tap toggles, tapping elsewhere closes. Every shown tip is clamped to
+// the viewport (a 240px bubble centered on an edge-adjacent trigger runs off screen otherwise).
+const clampTip = (wrap) => {
+  const tipEl = wrap.querySelector(".tip");
+  if (!tipEl) return;
+  tipEl.style.marginLeft = "";
+  const r = tipEl.getBoundingClientRect();
+  if (!r.width) return;
+  const pad = 12;
+  let dx = 0;
+  if (r.left < pad) dx = pad - r.left;
+  else if (r.right > window.innerWidth - pad) dx = window.innerWidth - pad - r.right;
+  if (dx) tipEl.style.marginLeft = dx + "px";
+};
 document.addEventListener("click", (ev) => {
   const wrap = ev.target.closest ? ev.target.closest(".tipwrap") : null;
   for (const t of document.querySelectorAll(".tipwrap.open")) if (t !== wrap) t.classList.remove("open");
-  if (wrap) wrap.classList.toggle("open");
+  if (wrap) {
+    wrap.classList.toggle("open");
+    if (wrap.classList.contains("open")) clampTip(wrap);
+  }
+});
+document.addEventListener("mouseover", (ev) => {
+  const wrap = ev.target.closest ? ev.target.closest(".tipwrap") : null;
+  if (wrap) clampTip(wrap);
 });
 
 $("howLink").onclick = (e) => { e.preventDefault(); $("howVeil").classList.add("open"); };
@@ -966,7 +990,7 @@ const onToggle = async (ev) => {
   }
   busy = true;
   haptic("impact");
-  if (isOn) setMsg("Closing early — collecting what's unlocked…", false, true);
+  if (isOn) setMsg("Closing early · collecting what's unlocked…", false, true);
   // Immediate knob feedback: flip for the ATTEMPT, pulse while working; the next state render
   // corrects it if the engine refuses. A toggle that only moves on success reads as stuck.
   sw.classList.toggle("on", !isOn);
@@ -977,20 +1001,20 @@ const onToggle = async (ev) => {
       const j = await api("/api/close?ctl=" + encodeURIComponent(ctl), { method: "POST" });
       // Context-aware fallback: a failed CLOSE must never read like a failed open.
       const closeFail = humanChip(j.message || j.error);
-      setMsg(j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off."
-        : (closeFail === "Couldn't complete · nothing opened" ? "Couldn't turn off — nothing changed. It pays out on its own at the cycle's close." : closeFail), !j.ok);
+      setMsg(j.ok ? "Closed early · kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off."
+        : (closeFail === "Couldn't complete · nothing opened" ? "Couldn't turn off · nothing changed. It pays out on its own at the cycle's close." : closeFail), !j.ok);
       if (!j.ok && (j.error || "") === "close_locked") {
         // Cross-device close: offer the optional one-time wallet verification as the owner's path.
         verifyOffered = true;
         revealGate("verify");
       }
     } else {
-      setMsg("Wrapping — pricing the live options book…", false, true);
+      setMsg("Wrapping · pricing the live options book…", false, true);
       // Client-supplied idempotency key: a flaky network can never double-wrap.
       const idem = (MINIAPP ? "tma-" : "web-") + account.slice(2, 10) + "-" + Date.now().toString(36);
       const j = await api("/api/wrap", { method: "POST", headers: { "Idempotency-Key": idem } });
       if (j.ok && j.controlToken) localStorage.setItem("ep_ctl_" + account.toLowerCase(), j.controlToken);
-      setMsg(j.ok ? "Protection live — credit pays at the cycle's close." : humanChip(j.message || j.error), !j.ok);
+      setMsg(j.ok ? "Protection live · credit pays at the cycle's close." : humanChip(j.message || j.error), !j.ok);
       if (!j.ok) $("connectMsg").title = String(j.message || j.error || "");
       // Gate-at-action: the engine said what it needs — surface exactly that card, right now.
       if (!j.ok && /tos_required/i.test(String(j.error || ""))) revealGate("tos");
@@ -1057,27 +1081,27 @@ const revealGate = async (kind) => {
 $("verifyBtn").onclick = async () => {
   if (!account) return;
   const eth = window.ethereum;
-  if (!eth) { $("verifyMsg").textContent = "No wallet found — open this page inside your wallet's browser (MetaMask/Rabby), or use the Terms checkbox flow if signatures aren't required."; return; }
+  if (!eth) { $("verifyMsg").textContent = "No wallet found · open this page inside your wallet's browser (MetaMask/Rabby), or use the Terms checkbox flow if signatures aren't required."; return; }
   try {
     $("verifyMsg").textContent = "Check your wallet…";
     const info = await api("/api/verify");
     if (!info.ok) { $("verifyMsg").textContent = humanChip(info.message || info.error); return; }
     const accounts = await eth.request({ method: "eth_requestAccounts" });
     const signer = (accounts && accounts[0] || "").toLowerCase();
-    if (signer !== account.toLowerCase()) { $("verifyMsg").textContent = "Your wallet is on " + short(signer) + " — switch to " + short(account) + " and retry."; return; }
+    if (signer !== account.toLowerCase()) { $("verifyMsg").textContent = "Your wallet is on " + short(signer) + " · switch to " + short(account) + " and retry."; return; }
     const sig = await eth.request({ method: "personal_sign", params: [info.message, accounts[0]] });
     const out = await api("/api/verify?signature=" + encodeURIComponent(sig), { method: "POST" });
-    $("verifyMsg").textContent = out.ok ? "Verified — you're set on every surface." : humanChip(out.message || out.error);
+    $("verifyMsg").textContent = out.ok ? "Verified · you're set on every surface." : humanChip(out.message || out.error);
     haptic(out.ok ? "success" : "error");
     if (out.ok) $("verifyCard").style.display = "none";
   } catch (e) {
-    $("verifyMsg").textContent = (e && e.code === 4001) ? "Signature declined — nothing happened." : "Wallet error — try again.";
+    $("verifyMsg").textContent = (e && e.code === 4001) ? "Signature declined · nothing happened." : "Wallet error · try again.";
   }
 };
 $("tosCheck").onchange = () => { $("tosBtn").disabled = !$("tosCheck").checked; };
 $("tosBtn").onclick = async () => {
   const j = await api("/api/tos/accept", { method: "POST" });
-  setMsg(j.ok ? "Terms accepted (" + j.version + ") — flip protection on." : humanChip(j.message || j.error), !j.ok);
+  setMsg(j.ok ? "Terms accepted (" + j.version + ") · flip protection on." : humanChip(j.message || j.error), !j.ok);
   if (j.ok) $("tosCard").style.display = "none";
 };
 
@@ -1087,7 +1111,7 @@ const setModePill = (mode) => {
   const el = $("modePill");
   if (!mode) { el.style.display = "none"; return; }
   const m = mode === "okx_live" ? ["LIVE", "mode-live", "Real hedge orders on the listed venue. Credits are real."]
-    : mode === "okx_demo" ? ["DEMO VENUE", "mode-demo", "Real order flow against the venue's demo environment — no real money."]
+    : mode === "okx_demo" ? ["DEMO VENUE", "mode-demo", "Real order flow against the venue's demo environment · no real money."]
     : ["SIMULATED", "mode-paper", "Paper mode: quotes are live market prices, but no venue orders are placed and payouts are simulated."];
   el.style.display = "";
   el.className = "mode-pill tipwrap " + m[1];
@@ -1153,10 +1177,10 @@ const poll = async () => {
       // (EP_SHOW_COHORT_COUNT), otherwise the honest scarcity line without a numerator.
       const rank = st.protection && st.protection.foundingRank;
       const cohort = rank
-        ? "· founding member #" + rank + " — rate locked 12 months"
+        ? "· founding member #" + rank + " · rate locked 12 months"
         : st.caps.showCohortCount
           ? "· founding cohort " + st.caps.walletsJoined + "/" + st.caps.foundingWallets
-          : "· founding rate — limited to the first " + st.caps.foundingWallets + " wallets";
+          : "· founding rate · limited to the first " + st.caps.foundingWallets + " wallets";
       $("cohortLine").textContent = cohort + wl + mine;
     }
     // Watch mode never shows the execution-mode badge: nothing can execute for a watched wallet,
@@ -1199,13 +1223,13 @@ $("pvBtn").onclick = async () => {
       '<div class="terms">' +
         '<div class="term credit-hero"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>today\\u2019s credit' + (j.founding && !INST ? ' <span class="badge founding">FOUNDING RATE</span>' : '') + '</div>' +
         '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + sign(fPct) + '</em></b>hard floor</div>' +
-        '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sign(cPct) + '</em></b>cap \\u2014 ends cycle</div>' +
+        '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sign(cPct) + '</em></b>cap \\u00b7 ends cycle</div>' +
       '</div>' +
       whyLine +
       thinNote(j.creditUsdc, j.protectedUsd) +
       '<div class="small muted" style="margin-top:8px">' +
-        'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ' \\u2014 sized to whole option lots).' +
-        (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this \\u2014 capacity grows with the book.') : '') +
+        'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ', sized to whole option lots).' +
+        (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this \\u00b7 capacity grows with the book.') : '') +
       '</div>';
     // INST: the one-action moment, framed as a MOCK CLIENT-INTERFACE PANEL so it is unmistakable
     // that this widget is what appears in the partner's product. Clearly labeled a demonstration.
@@ -1236,7 +1260,7 @@ $("pvBtn").onclick = async () => {
     }
   } catch (e) {
     $("pvClear").style.display = "";
-    $("pvOut").innerHTML = '<div class="small muted" style="margin-top:8px">Couldn\\u2019t reach the pricer \\u2014 try again in a moment.</div>';
+    $("pvOut").innerHTML = '<div class="small muted" style="margin-top:8px">Couldn\\u2019t reach the pricer \\u00b7 try again in a moment.</div>';
   }
 };
 

@@ -38,11 +38,11 @@ test("simulation lane: full lifecycle including the unwind and knockout states",
   for (const html of [web, mini]) {
     assert.ok(html.includes("pricing the live options book"), "quoting phase");
     assert.ok(html.includes("placing hedge legs"), "executing phase");
-    assert.ok(html.includes("Simulation — turn protection off now?"), "unwind states the consequence first");
-    assert.ok(html.includes("Closing — unwinding hedge legs"), "unwind walks the close visuals");
+    assert.ok(html.includes("Simulation: turn protection off now?"), "unwind states the consequence first");
+    assert.ok(html.includes("Closing · unwinding hedge legs"), "unwind walks the close visuals");
     assert.ok(html.includes("Closed early"), "settlement ticket after the unwind");
     assert.ok(html.includes("returned to the market"), "ticket states the returned figure");
-    assert.ok(html.includes("touched — cycle over"), "knockout on a real cap touch");
+    assert.ok(html.includes("touched · cycle over"), "knockout on a real cap touch");
     assert.ok(html.includes("re-arming at the new price"), "knockout re-arms like the live product");
   }
 });
@@ -53,7 +53,9 @@ test("design system: credit hero, price rail, coach bubble, conversion CTA, comp
     assert.ok(html.includes("rail-track") && html.includes("rail-ends"), "floor–price–cap rail");
     assert.ok(html.includes("rail-tick") && html.includes("tfloor") && html.includes("tcap"), "floor/cap end ticks");
     assert.ok(html.includes("rail-pxval") && html.includes("<em>live</em>"), "live tag on the rail marker");
-    assert.ok(html.includes("Try it — nothing opens"), "one-time coach bubble");
+    assert.ok(html.includes("Try it · nothing opens"), "one-time coach bubble");
+    assert.ok(html.includes("livedot"), "live-data dot on the card eyebrow");
+    assert.ok(html.includes("clampTip"), "tooltips clamp to the viewport");
     assert.ok(html.includes('class="btn cta connOpen"'), "full-width connect CTA at the payoff moment");
     assert.ok(html.includes("const fmtC"), "compact notional formatter");
     assert.ok(html.includes('class="pos-row"'), "position row never wraps the toggle");
@@ -95,6 +97,17 @@ test("honesty: no 'guaranteed' or 'risk-free' anywhere in the surface", () => {
   for (const html of [web, mini]) {
     assert.ok(!/guaranteed/i.test(html), "never 'guaranteed'");
     assert.ok(!/risk[- ]free/i.test(html), "never 'risk-free'");
+  }
+});
+
+test("copy: no em dashes in user-visible text (placeholder '—' for missing values excepted)", () => {
+  for (const html of [web, mini]) {
+    const withoutComments = html
+      .replace(/\/\*[\s\S]*?\*\//g, "")   // CSS/JS block comments
+      .replace(/<!--[\s\S]*?-->/g, "")    // HTML comments
+      .replace(/\/\/[^\n]*/g, "");        // JS line comments
+    assert.ok(!withoutComments.includes(" — "), "no prose em dashes in visible copy");
+    assert.ok(!withoutComments.includes("\\u2014"), "no escaped em dashes in generated strings");
   }
 });
 
