@@ -356,6 +356,18 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <button class="btn ghost" id="howClose">Close</button>
 </div></div>
 
+<!-- Close confirmation (in-app, both real and sim paths): the native browser confirm is
+     off-brand and lets Chrome inject its own "suppress dialogs" control. This dialog is the
+     money-consequence moment, so it always shows and always states the numbers. -->
+<div class="modal-veil" id="cfmVeil"><div class="modal">
+  <h3>Turn protection off?</h3>
+  <div class="small muted" id="cfmBody" style="line-height:1.6"></div>
+  <div class="row" style="margin-top:16px">
+    <button class="btn" id="cfmYes">Turn off</button>
+    <button class="btn ghost" id="cfmNo">Keep protection</button>
+  </div>
+</div></div>
+
 <!-- Connect modal (retail): the address-paste flow behind the nav's Connect chrome. HL's own
      lookup grammar — an ADDRESS is public data, never a "wallet". No keys, no signing. -->
 <div class="modal-veil" id="connVeil"><div class="modal" id="connectCard">
@@ -778,6 +790,22 @@ document.addEventListener("click", (ev) => {
   ev.preventDefault();
   openConnect();
 });
+// In-app close confirmation (shared by the real close and the sim unwind): our visual language,
+// our copy, and no browser-injected "suppress dialogs" chrome. Resolves true on "Turn off".
+const confirmClose = (bodyHtml) => new Promise((resolve) => {
+  $("cfmBody").innerHTML = bodyHtml;
+  $("cfmVeil").classList.add("open");
+  const done = (v) => {
+    $("cfmVeil").classList.remove("open");
+    $("cfmYes").onclick = null;
+    $("cfmNo").onclick = null;
+    $("cfmVeil").onclick = null;
+    resolve(v);
+  };
+  $("cfmYes").onclick = () => done(true);
+  $("cfmNo").onclick = () => done(false);
+  $("cfmVeil").onclick = (e) => { if (e.target === $("cfmVeil")) done(false); };
+});
 // Fast count-up when the credit first lands — one micro-interaction; the number is the star.
 const countUp = (el, target) => {
   const t0 = performance.now();
@@ -833,11 +861,18 @@ const simToggle = async () => {
   if (s && (s.phase === "refused" || s.phase === "closed" || s.phase === "knocked")) { delete sims[key]; renderNow(); return; }
   if (s && s.phase === "active" && s.quote) {
     // The UNWIND lane: turning off early has real consequences in the live product — state them,
-    // then walk the same close path visuals (unwinding → concluded chip → clean card).
-    const vs = simVest(s);
-    const kept = vs.vestedUsdc, full = s.quote.creditUsdc;
-    const msg = "Simulation: turn protection off now?\\n\\nYou keep " + fmt$(kept) + " already unlocked; the remaining " + fmt$(Math.max(0, full - kept)) + " returns to the market. Auto-renew turns off.";
-    if (!window.confirm(msg)) return;
+    // then walk the same close path visuals (unwinding → settlement ticket → clean card).
+    const preview = simVest(s);
+    const ok = await confirmClose(
+      'You keep <b style="color:var(--accent)">' + fmt$(preview.vestedUsdc) + '</b> already unlocked · the remaining ' + fmt$(Math.max(0, s.quote.creditUsdc - preview.vestedUsdc)) + ' returns to the market · auto-renew turns off.' +
+      '<div class="simlabel" style="margin-top:12px">simulation · live pricing</div>'
+    );
+    if (!ok) return;
+    // Re-read after the dialog: the sim may have knocked out or been cleared while it was open.
+    const cur = sims[key];
+    if (!cur || cur.phase !== "active" || !cur.quote) return;
+    const vs = simVest(cur);
+    const kept = vs.vestedUsdc, full = cur.quote.creditUsdc;
     sims[key] = { phase: "closing", startedMs: Date.now(), keptUsdc: kept, fullUsdc: full };
     renderNow();
     haptic("impact");
@@ -1013,8 +1048,10 @@ const onToggle = async (ev) => {
   // Turning OFF is an early close with consequences — state them before acting.
   if (isOn) {
     const kept = Number(sw.dataset.vested || 0), full = Number(sw.dataset.full || 0);
-    const msg = "Turn protection off now?\\n\\nYou keep " + fmt$(kept) + " already unlocked; the remaining " + fmt$(Math.max(0, full - kept)) + " returns to the market. Auto-renew turns off.";
-    if (!window.confirm(msg)) return;
+    const ok = await confirmClose(
+      'You keep <b style="color:var(--accent)">' + fmt$(kept) + '</b> already unlocked · the remaining ' + fmt$(Math.max(0, full - kept)) + ' returns to the market · auto-renew turns off.'
+    );
+    if (!ok) return;
   }
   busy = true;
   haptic("impact");

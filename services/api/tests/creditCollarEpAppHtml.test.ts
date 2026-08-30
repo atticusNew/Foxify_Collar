@@ -39,7 +39,9 @@ test("simulation lane: full lifecycle including the unwind and knockout states",
     assert.ok(html.includes("Pricing the live book"), "quoting phase");
     assert.ok(html.includes("Placing hedge legs"), "executing phase");
     assert.ok(html.includes('chip on oneline'), "status chips never wrap to a second line");
-    assert.ok(html.includes("Simulation: turn protection off now?"), "unwind states the consequence first");
+    assert.ok(html.includes("Turn protection off?"), "in-app close confirmation states the consequence first");
+    assert.ok(html.includes("Keep protection"), "close confirmation offers the safe exit");
+    assert.ok(!html.includes("window.confirm"), "no native browser dialogs (Chrome injects suppress-dialogs chrome into them)");
     assert.ok(html.includes("Unwinding hedge legs"), "unwind walks the close visuals");
     assert.ok(html.includes("Closed early"), "settlement ticket after the unwind");
     assert.ok(html.includes("returned to the market"), "ticket states the returned figure");
