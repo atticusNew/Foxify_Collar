@@ -17,6 +17,15 @@
  *   - honest refusal copy (human line; full engine string on hover) — port of the extension chip
  *   - partial coverage stated plainly; payout history links to the tx
  *
+ * LIVE-REPLICA LANDING (retail): the visitor lands INSIDE the operating product — a live public
+ * (showcase) BTC position loads on arrival with live pricing ticking; the protection toggle
+ * renders on the position card exactly as the live product. Flipping it runs a SIMULATION LANE:
+ * the full lifecycle (quote → executing → active → vesting) fed by a real live preview quote,
+ * never the real wrap path (server-side showcase guards stay armed). One quiet persistent
+ * honesty label: "simulation · live pricing". The nav carries dApp-standard Connect chrome —
+ * swapping in the visitor's own address (public data, no signing) is the conversion action the
+ * funnel measures (lookers). Mobile-first: designed at 390px, expands up.
+ *
  * TWO VARIANTS from one template (buildEpAppHtml):
  *   web      — the standalone page at /app
  *   miniapp  — the Telegram Mini App at /miniapp: telegram-web-app.js, ready()/expand(), haptic
@@ -63,10 +72,9 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   body.inst .wrap{display:flex;flex-direction:column}
   body.inst #hero{order:-40}
   body.inst #previewCard{order:-30}
-  /* INST is model-first and minimal: no address lookup, no pills row (proof lives as a quiet
-     link under the model result; viewing mode is reachable only through it). */
+  /* INST is model-first and minimal: no address lookup (proof lives as a quiet link under the
+     model result; viewing mode is reachable only through it). The connect modal never opens. */
   body.inst #connectCard{display:none}
-  body.inst #aidsLine{display:none}
   body{background:var(--bg);color:var(--text);font:14.5px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
   .wrap{max-width:760px;margin:0 auto;padding:0 20px 60px}
   nav{position:sticky;top:0;z-index:10;background:rgba(11,29,35,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
@@ -74,7 +82,6 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .logo{font-weight:700;font-size:15px;letter-spacing:.2px}
   .logo .by{color:var(--muted);font-weight:500;font-size:11.5px;letter-spacing:.6px;margin-left:8px}
   .logo .by b{color:var(--accent);font-weight:600}
-  .pill{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 12px}
   /* Live venue price — HL-native texture: always-visible mark, quiet tick color on change */
   .px{font-size:12px;color:var(--muted);margin-right:10px;font-variant-numeric:tabular-nums;white-space:nowrap}
   .px b{color:var(--text);font-weight:600;transition:color .5s}
@@ -88,8 +95,6 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   input[type=text]:focus{outline:none;border-color:var(--accent)}
   .btn{background:var(--accent);color:var(--accent-ink);font-weight:700;padding:9px 17px;border-radius:6px;font-size:13.5px;border:0;cursor:pointer}
   .btn:hover{filter:brightness(1.08)} .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
-  /* Stop watching joins the mint watch-family — findable, never alarming (red stays data-only) */
-  .btn.ghost.stopw{color:var(--accent);border-color:rgba(80,210,193,.55)}
   .muted{color:var(--muted)} .small{font-size:12.5px} a{color:var(--accent);text-decoration:none}
   .pos-head{font-weight:700;font-size:14.5px} .pos-head small{color:var(--muted);font-weight:400}
   .pos-head .long{color:var(--good)} .pos-head .short{color:var(--bad)}
@@ -101,10 +106,18 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
   .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(80,210,193,.25);border-top-color:var(--accent);border-radius:50%;margin-right:7px;vertical-align:-1.5px;animation:spinr .7s linear infinite}
   @keyframes spinr{to{transform:rotate(360deg)}}
-  /* Aid pills — the only trace of the acquisition tools: quiet until hovered, gone once connected */
-  .aid{background:none;border:1px solid rgba(80,210,193,.45);border-radius:999px;color:var(--accent);font-size:12px;font-weight:600;padding:5.5px 13px;cursor:pointer;margin-right:8px;transition:background .2s,border-color .2s}
-  .aid:hover{background:rgba(80,210,193,.1);border-color:var(--accent)}
-  .aid:disabled{opacity:.7;cursor:default}
+  /* Nav connect — dApp-standard upper-right chrome. Opens the address flow (public data, no
+     signing); swapping in the visitor's own address is the conversion action. */
+  .connbtn{background:var(--accent);color:var(--accent-ink);font-weight:700;font-size:12.5px;border:0;border-radius:999px;padding:6.5px 15px;cursor:pointer;white-space:nowrap}
+  .connbtn:hover{filter:brightness(1.08)}
+  .connbtn.connected{background:transparent;color:var(--muted);border:1px solid var(--line);font-weight:600;font-size:12px;padding:5.5px 13px}
+  body.inst #connPill{background:transparent;color:var(--muted);border:1px solid var(--line);font-weight:600;font-size:12px;cursor:default}
+  /* The simulation lane's one honesty label: quiet, persistent, unmistakable. */
+  .simlabel{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);margin-top:12px}
+  .simlabel:before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#e3c34c;margin-right:6px;vertical-align:1px}
+  /* Landing skeleton — the app boots into a live position, never an empty entry gate. */
+  .skl{height:12px;border-radius:6px;background:linear-gradient(90deg,var(--panel2) 25%,#16333b 50%,var(--panel2) 75%);background-size:200% 100%;animation:shim 1.2s linear infinite;margin:12px 0}
+  @keyframes shim{to{background-position:-200% 0}}
   /* Preview controls — same texture as the position card (segmented side, $ amount, terms grid) */
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
   .seg button{background:var(--panel2);color:var(--muted);border:0;padding:8px 16px;font-size:12.5px;font-weight:700;cursor:pointer;letter-spacing:.3px}
@@ -161,7 +174,6 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   @media (max-width:560px){
     .nav-in{height:auto;min-height:48px;padding:8px 14px;flex-wrap:wrap;gap:6px}
     .logo{font-size:13.5px} .logo .by{font-size:10.5px;margin-left:5px}
-    .pill{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;padding:3px 9px}
     .mode-pill{font-size:10px;padding:3px 8px;margin-right:5px}
     .wrap{padding:0 12px 44px}
     h1{font-size:20px} .sub{font-size:13px}
@@ -169,6 +181,13 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     .terms{grid-template-columns:1fr 1fr;gap:6px}
     .terms .term:first-child{grid-column:1 / -1}
     th,td{padding:6px 4px;font-size:12px}
+  }
+  /* 390px-first: the header must hold logo · live mark · Connect on ONE line. */
+  @media (max-width:420px){
+    .logo .by{display:none}
+    .nav-in{flex-wrap:nowrap}
+    .px{margin-right:7px}
+    .connbtn{padding:6px 12px;font-size:12px}
   }
   .mode-pill{font-size:11px;font-weight:700;letter-spacing:.6px;border-radius:999px;padding:3.5px 11px;margin-right:8px}
   .mode-paper{background:rgba(217,171,1,.14);color:#e3c34c;border:1px solid rgba(217,171,1,.4)}
@@ -200,7 +219,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <div style="display:flex;align-items:center">
     <span class="px" id="pxPill" style="display:none">BTC <b id="pxVal">—</b></span>
     <span class="mode-pill tipwrap" id="modePill" style="display:none"></span>
-    <div class="pill" id="connPill">not connected</div>
+    <button type="button" class="connbtn" id="connPill">Connect</button>
   </div>
 </div></nav>
 <div class="wrap">
@@ -213,29 +232,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <b id="geoTitle">Not available in your region.</b> <span class="muted small" id="geoMsg"></span>
   </div>
 
-  <!-- OPENS CLEAN: one card, one thing to understand — the address input (HL's own lookup
-       grammar: an ADDRESS is public data, never a "wallet"). Every acquisition aid lives behind
-       an explicit click on the quiet line below. -->
-  <div class="card" id="connectCard">
-    <div class="small muted" id="lookupCaption" style="display:none;margin-bottom:8px"></div>
-    <div class="row">
-      <input type="text" id="addrInput" placeholder="0x… any Hyperliquid address" title="An address is public data — the same thing you'd paste into an explorer. We read positions, never touch them. Find yours in the Hyperliquid app: top right, starts with 0x." spellcheck="false">
-      <button class="btn" id="connectBtn">Look up</button>
-      <button class="btn ghost" id="forgetBtn" style="display:none">Forget</button>
-    </div>
-    <div class="small muted" style="margin-top:8px">Public data. Read-only. No keys, no signing, no deposits. Payouts only ever to the address.
-      <span class="tipwrap"><span class="info">i</span><span class="tip">Hyperliquid&#39;s safety docs are right: never share keys or sign unknown transactions. We ask for neither — an address is public data, the same thing you&#39;d paste into Hypurrscan. Find yours in the Hyperliquid app: top right, starts with 0x.</span></span>
-    </div>
-    <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
-  </div>
-
-  <div id="aidsLine" style="display:none;margin:-2px 2px 14px">
-    <button type="button" class="aid" id="watchLink">See it on a whale</button>
-    <button type="button" class="aid" id="previewLink">Preview a size</button>
-  </div>
-
-  <!-- Pre-connect intro (retail): replaces the empty positions/payouts tables — a visitor with no
-       address should see what the product does, not what their absent account hasn't done. -->
+  <!-- Pre-connect intro (retail fallback only): shown when the operating landing cannot load —
+       a visitor should land inside the product, not on a brochure. -->
   <div class="card" id="introTrio" style="display:none">
     <div class="trio"><b>Floor</b> — hard price under your position.</div>
     <div class="trio"><b>Credit</b> — funded by the options market, never by you.</div>
@@ -279,8 +277,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 
   <h2><span id="posTitle">Your positions</span> <span class="small muted" id="cohortLine" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
-    <b id="wsTitle">Watching a public wallet</b> <span class="muted small" id="wsBody">— read-only. Live pricing, real position.</span>
-    <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">show another whale →</a>
+    <b id="wsTitle">Live position · public address</b> <span class="muted small" id="wsBody">— read-only, live pricing. Flip the toggle to see protection at work (simulation — nothing opens). Connect your address to see your own positions.</span>
+    <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">view another position →</a>
     <a href="#" id="stopViewing" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:10px">stop viewing ×</a>
   </div>
   <div id="positions"><div class="empty">Look up an address to see its open positions.</div></div>
@@ -307,6 +305,22 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <li>Derivatives involve risk. Nothing here is investment advice.</li>
   </ul>
   <button class="btn ghost" id="howClose">Close</button>
+</div></div>
+
+<!-- Connect modal (retail): the address-paste flow behind the nav's Connect chrome. HL's own
+     lookup grammar — an ADDRESS is public data, never a "wallet". No keys, no signing. -->
+<div class="modal-veil" id="connVeil"><div class="modal" id="connectCard">
+  <h3>Connect — read-only</h3>
+  <div class="row">
+    <input type="text" id="addrInput" placeholder="0x… your Hyperliquid address" title="An address is public data — the same thing you'd paste into an explorer. We read positions, never touch them. Find yours in the Hyperliquid app: top right, starts with 0x." spellcheck="false">
+    <button class="btn" id="connectBtn">Look up</button>
+    <button class="btn ghost" id="forgetBtn" style="display:none">Disconnect</button>
+  </div>
+  <div class="small muted" style="margin-top:10px">Public data. Read-only. No keys, no signing, no deposits. Payouts only ever to the address.
+    <span class="tipwrap"><span class="info">i</span><span class="tip">Hyperliquid&#39;s safety docs are right: never share keys or sign unknown transactions. We ask for neither — an address is public data, the same thing you&#39;d paste into Hypurrscan. Find yours in the Hyperliquid app: top right, starts with 0x.</span></span>
+  </div>
+  <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
+  <button class="btn ghost" id="connClose" style="margin-top:14px">Close</button>
 </div></div>
 <script>
 const MINIAPP = ${miniapp ? "true" : "false"};
@@ -373,7 +387,26 @@ let busy = false;
 let watching = false;
 let watchWallets = [];
 let userEntered = false; // an address typed or chip-clicked in this session (vs restored storage)
-const DEMO_AIDS = __DEMO_AIDS__; // acquisition aids (watch chips + preview) — env-flagged
+// LANDING (retail): the visitor arrives inside the operating product — a live public BTC
+// position with the toggle — never an empty address gate. Their own stored address always wins.
+let booting = false;        // skeleton phase: showcase set loading on first paint
+let landingFailed = false;  // no live showcase available — fall back to the connect-first page
+let autoLanded = false;     // this session landed on the showcase address automatically
+let landTried = 0;          // showcase wallets tried this session (dead-position failover)
+// SIMULATION LANE state: full lifecycle visuals (quote → executing → active → vesting) fed by a
+// REAL live preview quote — never the real wrap path (server guards on showcase wallets stay
+// armed regardless). Keyed by address so the 5s poll re-render can't undo a running simulation.
+const sims = {};
+const simFor = (a) => (a && sims[a.toLowerCase()]) || null;
+const simVest = (s) => {
+  const now = Date.now();
+  const total = Math.max(1, s.endMs - s.vestStartMs);
+  const fraction = Math.min(1, Math.max(0, (now - s.vestStartMs) / total));
+  return { fraction, vestedUsdc: (s.quote ? s.quote.creditUsdc : 0) * fraction, remainingMs: Math.max(0, s.endMs - now) };
+};
+const PV_MAX_USD = 500000000; // server's preview sanity ceiling — mirrored for whale-size requests
+let lastPos = [];      // freshest poll payloads — instant re-renders for the simulation lane
+let lastState = null;
 // SKIN: "retail" (HL, default) or "institutional" (partner demo instances). The institutional
 // register: counterparties and treasuries, never whales; viewing, never watching; no retail promos.
 const SKIN = "__SKIN__";
@@ -419,50 +452,49 @@ if (INST) {
 }
 let verifyOffered = false; // surfaced when a close is refused cross-device — optional path to manage from anywhere
 
-// One status writer: the connect-card line on web; a visible flash strip in the Mini App
-// (where the connect card is hidden once an account is bound).
+// One status writer: the flash strip in the main flow (the connect flow now lives in a modal,
+// so action feedback must land on the page itself), mirrored into the modal's message line.
 const setMsg = (t, isErr, working) => {
   const html = t ? (working ? '<span class="spin"></span>' : "") + esc(t) : "";
   $("connectMsg").innerHTML = html;
   const f = $("flash");
-  if (MINIAPP) { f.innerHTML = html; f.style.display = t ? "" : "none"; f.className = "flash" + (isErr ? " bad" : ""); }
+  f.innerHTML = html;
+  f.style.display = t ? "" : "none";
+  f.className = "flash" + (isErr ? " bad" : "");
 };
 
 const setConn = () => {
-  // Watch-mode pill stays short — the watch strip below states the mode in full, and a long
-  // pill wraps the header into two crowded lines on laptop widths.
-  $("connPill").textContent = watching
-    ? short(account) + (INST ? " · viewing" : " · watching")
-    : account ? short(account) + " · read-only" : "not connected";
-  $("forgetBtn").style.display = account ? "" : "none";
-  $("forgetBtn").textContent = watching ? "Stop watching" : "Forget";
-  $("forgetBtn").className = watching ? "btn ghost stopw" : "btn ghost";
-  if (account) $("addrInput").value = account;
-  // Mini App with a connected account: the connect card is noise — the pill carries the identity.
-  if (MINIAPP) $("connectCard").style.display = account && !watching ? "none" : "";
-  // Acquisition aids are for the not-yet-connected; an owner sees the product, not the pitch.
-  $("aidsLine").style.display = !INST && DEMO_AIDS && !account ? "" : "none";
+  // Nav chrome: dApp-standard Connect, upper right. The showcase landing still reads "Connect" —
+  // swapping in the visitor's own address IS the conversion action. INST keeps a quiet status pill.
+  const pill = $("connPill");
+  pill.classList.remove("connected");
+  if (INST) pill.textContent = watching ? short(account) + " · viewing" : "not connected";
+  else if (account && !watching) {
+    pill.textContent = short(account) + " · read-only";
+    pill.classList.add("connected");
+  } else pill.textContent = "Connect";
+  $("forgetBtn").style.display = account && !watching ? "" : "none";
+  if (account && !watching) $("addrInput").value = account;
   // INST: the model card IS the home screen — visible whenever not in viewing mode.
   if (INST) $("previewCard").style.display = watching ? "none" : "";
-  else if (account) $("previewCard").style.display = "none";
-  // WATCH chrome: the whole page states the mode — header, strip, and no owner-only sections
+  // WATCH chrome: header + strip state the mode; no owner-only sections for a public address
   // (payouts/consent are meaningless for a wallet that isn't yours).
   $("posTitle").textContent = watching
-    ? (INST ? "Viewing · " + short(account) + " · public reference" : "Watching · " + short(account) + " · public leaderboard")
-    : "Your positions";
+    ? (INST ? "Viewing · " + short(account) + " · public reference" : "Positions · " + short(account) + " · public address")
+    : booting && !account ? "Positions" : "Your positions";
   $("cohortLine").style.display = watching || INST ? "none" : "";
   $("watchStrip").style.display = watching ? "" : "none";
-  $("nextWhale").style.display = watching && watchWallets.length > 1 ? "" : "none";
+  $("nextWhale").style.display = INST && watching && watchWallets.length > 1 ? "" : "none";
   $("stopViewing").style.display = INST && watching ? "" : "none";
-  // Empty owner sections never show to a visitor: INST idle has no lookup at all, and retail
-  // pre-connect shows the intro trio instead — empty "your positions/payouts" tables read as a
-  // dead platform, and "No payouts yet" misreads as the BOOK having paid nothing.
-  const noOwnerSections = (INST && !watching) || (!INST && !account);
+  // Owner-only sections never show empty to a visitor. The retail landing shows the positions
+  // block from the first paint (skeleton, then the live showcase card) — never an empty gate;
+  // the intro trio survives only as the fallback when no live showcase is available.
+  const noOwnerSections = (INST && !watching) || (!INST && !account && !booting);
   $("posTitle").parentElement.style.display = noOwnerSections ? "none" : "";
   $("positions").style.display = noOwnerSections ? "none" : "";
   $("payoutsH").style.display = watching || INST || !account ? "none" : "";
   $("payoutsCard").style.display = watching || INST || !account ? "none" : "";
-  $("introTrio").style.display = !INST && !account ? "" : "none";
+  $("introTrio").style.display = !INST && !account && landingFailed ? "" : "none";
 };
 
 const api = async (path, opts) => {
@@ -487,7 +519,7 @@ const render = (positions, state) => {
   // wallet's dozen other coins are noise around the demo.
   if (watching) positions = (positions || []).filter((p) => p.wrappable);
   if (!positions || positions.length === 0) {
-    el.innerHTML = '<div class="empty">' + (watching ? "No open BTC position on this wallet right now." : "No open perp positions on " + esc(short(account)) + ".") + '</div>';
+    el.innerHTML = '<div class="empty">' + (watching ? "No open BTC position on this address right now." : "No open perp positions on " + esc(short(account)) + ".") + '</div>';
     return;
   }
   const w = state ? latestFor(state.wraps || []) : null;
@@ -547,12 +579,48 @@ const render = (positions, state) => {
         tooltip = w.failReason;
       }
     }
+    // INST viewing keeps the would-be protection terms panel (filled async by renderWatchTerms).
+    if (watching && INST) terms = '<div id="watchTerms"><div class="small muted" style="margin-top:10px"><span class="spin"></span>pricing protection on this position…</div></div>';
+    // SIMULATION LANE (retail showcase): the toggle renders and behaves exactly as the live
+    // product — flipping it walks the full lifecycle (quote → executing → active → vesting) on a
+    // REAL live preview quote, never the wrap path. One quiet persistent honesty label.
+    const s = !INST && watching && isWrapCoin ? simFor(account) : null;
+    if (s) {
+      const simLabel = '<div class="simlabel">simulation · live pricing</div>';
+      if (s.phase === "quoting") {
+        chip = simLabel + '<div class="chip on"><span class="spin"></span>Wrapping… pricing the live options book <span class="els" data-ts="' + s.startedMs + '"></span></div>';
+      } else if (s.phase === "executing") {
+        chip = simLabel + '<div class="chip on"><span class="spin"></span>Wrapping… placing hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
+      } else if (s.phase === "refused") {
+        // The refusal is REAL — the live pricing engine declined; no simulation label needed.
+        chip = '<div class="chip bad" title="' + esc(s.reason || "") + '">' + esc(humanChip(s.reason)) + '</div>';
+      } else if (s.phase === "active" && s.quote) {
+        const sq = s.quote;
+        const fPctS = Math.abs(sq.floorStrike - sq.spot) / sq.spot * 100;
+        const cPctS = Math.abs(sq.capStrike - sq.spot) / sq.spot * 100;
+        const floorSignS = p.side === "long" ? "−" : "+", capSignS = p.side === "long" ? "+" : "−";
+        const vsim = simVest(s);
+        chip = simLabel + '<div class="chip on">EARNING · <b class="sim-vested">' + fmt$(vsim.vestedUsdc) + '</b> of ' + fmt$(sq.creditUsdc) + ' unlocked</div>';
+        terms = '<div class="terms">' +
+          '<div class="term"><b>' + fmt$(sq.creditUsdc) + '</b>today\\u2019s credit' + infoTip("Funded by the options market, never by the holder. In the live product the credit unlocks through the day and pays automatically at the cycle's close — never upfront.") + '</div>' +
+          '<div class="term"><b>' + fmtPx(sq.floorStrike) + ' <em>' + floorSignS + fPctS.toFixed(1) + '%</em></b>hard floor' + infoTip("Losses stop here. Struck " + floorSignS + fPctS.toFixed(1) + "% from the live price when this simulation started (" + fmtPx(sq.spot) + ").") + '</div>' +
+          '<div class="term"><b>' + fmtPx(sq.capStrike) + ' <em>' + capSignS + cPctS.toFixed(1) + '%</em></b>cap — ends cycle' + infoTip("If the price touches " + fmtPx(sq.capStrike) + ", the cycle ends early: the holder keeps the position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically while the toggle stays on.", true) + '</div>' +
+          '</div>';
+        const settleIsoS = s.endMs ? new Date(s.endMs).toUTCString().replace(":00 GMT", " UTC") : null;
+        bar = '<div class="bar"><div class="sim-fill" style="width:' + (vsim.fraction * 100).toFixed(2) + '%"></div></div>' +
+          '<div class="unlock">unlocks through the day · ' +
+          tip('<span class="sim-eta">pays in ' + fmtDur(vsim.remainingMs) + '</span>', settleIsoS ? "The live cycle settles at the listed expiry: " + settleIsoS + "." : "Pays at the cycle's close.") +
+          '</div>';
+        coverage = '<div class="small muted" style="margin-top:10px">Your position works the same way. <a href="#" class="connOpen" style="color:var(--accent);text-decoration:none">Connect your address →</a></div>';
+      }
+    }
+    const simOn = s != null && (s.phase === "quoting" || s.phase === "executing" || s.phase === "active");
+    const simBusy = s != null && (s.phase === "quoting" || s.phase === "executing");
     // The active toggle carries its unlocked/full numbers so turning OFF can state the consequence.
-    // WATCH mode never gets a toggle: viewing a public wallet is a lookup, not ownership. Its
-    // card instead carries the would-be protection terms (filled async by renderWatchTerms).
-    if (watching) terms = '<div id="watchTerms"><div class="small muted" style="margin-top:10px"><span class="spin"></span>pricing protection on this position…</div></div>';
     const toggle = watching
-      ? '<span class="small muted">' + (INST ? "Viewing" : "Watching") + '</span>'
+      ? (INST
+        ? '<span class="small muted">Viewing</span>'
+        : '<div class="switch' + (simOn ? " on" : "") + (simBusy ? " busy" : "") + '" data-sim="1" role="switch" aria-checked="' + (simOn ? "true" : "false") + '"><div class="knob"></div></div>')
       : isWrapCoin
       ? '<div class="switch' + (active ? " on" : "") + (busy ? " busy" : "") + '" data-coin="' + esc(p.coin) + '" data-active="' + (active ? "1" : "0") + '"' +
         (active && v ? ' data-vested="' + v.vestedUsdc + '" data-full="' + v.fullCreditUsdc + '"' : "") +
@@ -563,54 +631,61 @@ const render = (positions, state) => {
       chip + terms + bar + coverage + receipt + '</div>';
   }).join("") + (watching ? '<div class="small muted" style="margin:2px 4px 0">BTC position shown — protection covers BTC today.</div>' : "");
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
-  if (watching && positions[0]) void renderWatchTerms(positions[0]);
+  if (watching && INST && positions[0]) void renderWatchTerms(positions[0]);
 };
 
-// The one-action moment for visitors (retail): a demonstration toggle inside whale/preview
-// results. The product IS the toggle — anonymous visitors must get to FEEL the action, not just
-// read numbers. Clearly labeled a demonstration; wired by delegation because these panels are
-// injected into innerHTML after render.
-const demoPanel = (usd) =>
-  '<div class="demo-panel" style="margin-top:12px;border:1px solid var(--line);border-radius:8px;overflow:hidden">' +
-    '<div style="background:var(--panel2);padding:6px 12px;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)">What flipping it on looks like \\u00b7 demonstration</div>' +
-    '<div style="padding:12px 14px">' +
-      '<div class="row" style="align-items:center;justify-content:space-between">' +
-        '<div><b>Protect &amp; Earn</b><div class="small muted">BTC position \\u00b7 ' + fmt$(usd) + '</div></div>' +
-        '<div class="switch demo-switch" role="switch" aria-checked="false" title="Demonstration — nothing opens"><div class="knob"></div></div>' +
-      '</div>' +
-      '<div class="demo-active" style="display:none">' +
-        '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration)</span></div>' +
-        '<div class="bar demo-vest"><div style="width:6%"></div></div>' +
-        '<div class="unlock">unlocks through the day \\u00b7 pays automatically at the close</div>' +
-      '</div>' +
-    '</div>' +
-  '</div>';
-// The watch card is rebuilt by every 5s poll — the flipped state must survive re-render, or the
-// demonstration undoes itself mid-look. Remembered per address, reapplied after each insert.
-let demoFlippedFor = "";
+// Instant re-render from the freshest poll payload — the simulation lane must move the moment
+// the visitor acts, never on the next 5s tick.
+const renderNow = () => { if (account && (lastPos.length || lastState)) render(lastPos, lastState); };
+// Connect modal: the address-paste flow behind the nav chrome and every "Connect your address" link.
+const openConnect = () => {
+  if (INST) return;
+  $("connVeil").classList.add("open");
+  setTimeout(() => $("addrInput").focus(), 60);
+};
 document.addEventListener("click", (ev) => {
-  const sw = ev.target.closest ? ev.target.closest(".demo-switch") : null;
-  if (!sw) return;
-  const on = sw.classList.toggle("on");
-  sw.setAttribute("aria-checked", String(on));
-  demoFlippedFor = on ? account : "";
-  const panel = sw.closest(".demo-panel");
-  const act = panel.querySelector(".demo-active");
-  act.style.display = on ? "" : "none";
-  const vest = panel.querySelector(".demo-vest div");
-  if (on && vest) { vest.style.width = "6%"; requestAnimationFrame(() => { vest.style.width = "38%"; }); }
-  haptic("impact");
+  const a = ev.target.closest ? ev.target.closest(".connOpen") : null;
+  if (!a) return;
+  ev.preventDefault();
+  openConnect();
 });
-const applyDemoState = (root) => {
-  if (!root || demoFlippedFor !== account || !account) return;
-  const sw = root.querySelector(".demo-switch");
-  if (!sw) return;
-  sw.classList.add("on");
-  sw.setAttribute("aria-checked", "true");
-  const act = root.querySelector(".demo-active");
-  if (act) act.style.display = "";
-  const vest = root.querySelector(".demo-vest div");
-  if (vest) vest.style.width = "38%";
+// The simulation lane driver: same lifecycle the live engine walks, priced by the REAL live
+// preview quote (/api/preview) — the wrap path is never touched, and the server refuses every
+// action on a showcased address regardless.
+const simToggle = async () => {
+  const key = account.toLowerCase();
+  const s = sims[key];
+  if (s && (s.phase === "quoting" || s.phase === "executing")) return;
+  if (s) { delete sims[key]; renderNow(); return; }
+  const p = (lastPos || []).find((x) => x.wrappable);
+  if (!p) return;
+  sims[key] = { phase: "quoting", startedMs: Date.now() };
+  renderNow();
+  haptic("impact");
+  try {
+    const usd = Math.min(Math.round(p.notionalUsdc), PV_MAX_USD);
+    const j = await api("/api/preview?side=" + encodeURIComponent(p.side) + "&usd=" + usd);
+    if (!sims[key] || sims[key].phase !== "quoting") return; // toggled off mid-quote
+    if (!j.ok) {
+      sims[key] = { phase: "refused", reason: String(j.message || j.error || "") };
+      renderNow();
+      setTimeout(() => { if (sims[key] && sims[key].phase === "refused") { delete sims[key]; renderNow(); } }, 8000);
+      return;
+    }
+    sims[key] = { phase: "executing", startedMs: sims[key].startedMs, quote: j };
+    renderNow();
+    setTimeout(() => {
+      const cur = sims[key];
+      if (!cur || cur.phase !== "executing") return;
+      sims[key] = { phase: "active", quote: j, vestStartMs: Date.now(), endMs: j.expiryMs && j.expiryMs > Date.now() ? j.expiryMs : Date.now() + 86400000 };
+      renderNow();
+      haptic("success");
+    }, 1400);
+  } catch (e) {
+    sims[key] = { phase: "refused", reason: "network error" };
+    renderNow();
+    setTimeout(() => { if (sims[key] && sims[key].phase === "refused") { delete sims[key]; renderNow(); } }, 8000);
+  }
 };
 // "see how" microlinks (next to any credit figure) open the how-it-works modal in place.
 document.addEventListener("click", (ev) => {
@@ -638,13 +713,11 @@ const renderWatchTerms = async (p) => {
   if (!box) return;
   if (watchQuoteCache.addr === account && Date.now() - watchQuoteCache.atMs < 60000) {
     box.innerHTML = watchQuoteCache.html;
-    applyDemoState(box);
     return;
   }
   try {
     // Mirror of the server's preview sanity ceiling: a position larger than the cap gets its
-    // first $500M priced with an honest label — watch mode must never error for being impressive.
-    const PV_MAX_USD = 500000000;
+    // first $500M priced with an honest label — viewing must never error for being impressive.
     const reqUsd = Math.min(Math.round(p.notionalUsdc), PV_MAX_USD);
     const clamped = p.notionalUsdc > PV_MAX_USD;
     const j = await api("/api/preview?side=" + encodeURIComponent(p.side) + "&usd=" + reqUsd);
@@ -660,11 +733,10 @@ const renderWatchTerms = async (p) => {
       '</div>' +
       whyLine +
       thinNote(j.creditUsdc, Math.min(p.notionalUsdc, PV_MAX_USD)) +
-      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + (INST ? 'Live market quote \\u2014 nothing opens, nothing is stored. Look up a client address to see theirs.' : 'Live quote. Nothing opens, nothing stored. Look up your address to see yours.') + '</div>' +
-      (INST ? '' : demoPanel(Math.min(Math.round(p.notionalUsdc), PV_MAX_USD)));
+      '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + 'Live market quote \\u2014 nothing opens, nothing is stored. Look up a client address to see theirs.</div>';
     watchQuoteCache = { addr: account, atMs: Date.now(), html };
     const boxNow = $("watchTerms");
-    if (boxNow) { boxNow.innerHTML = html; applyDemoState(boxNow); }
+    if (boxNow) boxNow.innerHTML = html;
   } catch (e) {
     const boxNow = $("watchTerms");
     if (boxNow) boxNow.innerHTML = "";
@@ -688,6 +760,17 @@ setInterval(() => {
     const ts = Number(el.dataset.ts || 0);
     if (ts > 0) el.textContent = "· " + Math.max(0, Math.round((Date.now() - ts) / 1000)) + "s";
   }
+  // An active simulation vests in real time, exactly as the live card does — same clock, same math.
+  const s = simFor(account);
+  if (s && s.phase === "active" && s.quote) {
+    const vsim = simVest(s);
+    const v = document.querySelector(".sim-vested");
+    if (v) v.textContent = fmt$(vsim.vestedUsdc);
+    const f = document.querySelector(".sim-fill");
+    if (f) f.style.width = (vsim.fraction * 100).toFixed(2) + "%";
+    const e2 = document.querySelector(".sim-eta");
+    if (e2) e2.textContent = "pays in " + fmtDur(vsim.remainingMs);
+  }
 }, 1000);
 
 const renderPayouts = (state) => {
@@ -698,6 +781,8 @@ const renderPayouts = (state) => {
 };
 
 const onToggle = async (ev) => {
+  const swSim = ev.currentTarget;
+  if (swSim.dataset.sim === "1") { void simToggle(); return; }
   if (busy || !account || watching) return;
   const sw = ev.currentTarget;
   const isOn = sw.dataset.active === "1";
@@ -847,8 +932,8 @@ const poll = async () => {
   try {
     const [pos, st] = await Promise.all([api("/api/positions"), api("/api/state")]);
     if (st) setMarkPx(st.marketPxUsd);
-    // Server truth: a showcased address entered THIS session (paste/chip) is WATCHING. The same
-    // address restored from storage opens CLEAN instead — watching is never an ambient state.
+    // Server truth: a showcased address entered THIS session (paste/landing) is WATCHING. The
+    // same address restored from storage lands fresh instead — watching is never ambient state.
     if (st && st.showcase === true && !watching) {
       if (userEntered) {
         watching = true;
@@ -858,10 +943,21 @@ const poll = async () => {
         localStorage.removeItem("ep_account");
         account = "";
         setConn();
+        if (!INST) { void landShowcase(); return; }
         $("hero").style.display = "";
         $("positions").innerHTML = '<div class="empty">Look up an address to see its open positions.</div>';
         return;
       }
+    }
+    if (pos && pos.ok) lastPos = pos.positions || [];
+    if (st && st.ok) lastState = st;
+    // Landing failover: a showcase wallet whose BTC position just closed is a dead landing —
+    // advance to the next validated wallet (once each) instead of parking on an empty card.
+    if (!INST && watching && autoLanded && pos && pos.ok && lastPos.filter((x) => x.wrappable).length === 0 && landTried < watchWallets.length) {
+      const next = landTried;
+      landTried += 1;
+      void watchWallet(next, false);
+      return;
     }
     if (st && st.caps && !watching) {
       $("rateNote").textContent = " (" + (st.caps.foundingTakeRatePct * 100).toFixed(0) + "% vs " + (st.caps.takeRatePct * 100).toFixed(0) + "%, locked 12 months)";
@@ -925,8 +1021,7 @@ $("pvBtn").onclick = async () => {
       '<div class="small muted" style="margin-top:8px">' +
         'For a ' + fmt$(j.protectedUsd) + ' ' + (INST && j.side === "long" ? "holding" : esc(j.side)) + ' (' + esc(String(j.coveredBtc)) + ' BTC at ' + fmtPx(j.spot) + ' \\u2014 sized to whole option lots).' +
         (j.exceedsCurrentCap ? (INST ? ' Executable size is established in the design-partner pilot.' : ' Early access may protect part of this \\u2014 capacity grows with the book.') : '') +
-      '</div>' +
-      (INST ? '' : demoPanel(j.protectedUsd));
+      '</div>';
     // INST: the one-action moment, framed as a MOCK CLIENT-INTERFACE PANEL so it is unmistakable
     // that this widget is what appears in the partner's product. Clearly labeled a demonstration.
     if (INST) {
@@ -960,39 +1055,49 @@ $("pvBtn").onclick = async () => {
   }
 };
 
+// Connect modal chrome: the nav button opens the paste flow; connecting an own address exits
+// the showcase landing — that swap is the conversion action the funnel measures.
+$("connPill").onclick = () => { if (!INST) openConnect(); };
+$("connClose").onclick = () => $("connVeil").classList.remove("open");
+$("connVeil").addEventListener("click", (e) => { if (e.target === $("connVeil")) $("connVeil").classList.remove("open"); });
+$("addrInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("connectBtn").click(); });
 $("connectBtn").onclick = () => {
   const a = $("addrInput").value.trim();
   if (!/^0x[0-9a-fA-F]{40}$/.test(a)) { $("connectMsg").textContent = "That's not an EVM address."; return; }
   // A pasted showcased address is still WATCHING (mode follows the address, not the entry path);
-  // the server's state payload confirms on the first poll for addresses the chips didn't load.
+  // the server's state payload confirms on the first poll for addresses the landing didn't load.
   userEntered = true;
+  autoLanded = false;
   watching = watchWallets.some((w) => w.address.toLowerCase() === a.toLowerCase());
   account = a;
   if (!watching) localStorage.setItem("ep_account", a); // never store someone else's wallet as "yours"
   $("connectMsg").textContent = watching ? "" : "Read-only. We can see positions, never touch them.";
+  $("connVeil").classList.remove("open");
   setConn();
   checkGates();
   poll();
 };
 $("forgetBtn").onclick = () => {
-  const wasWatching = watching;
   watching = false;
   account = "";
-  if (!wasWatching) localStorage.removeItem("ep_account"); // stop-watching never wipes a stored own address
+  localStorage.removeItem("ep_account");
   $("addrInput").value = "";
   $("connectMsg").textContent = "";
-  setConn();
-  $("hero").style.display = "";
+  $("connVeil").classList.remove("open");
   $("modePill").style.display = "none";
-  $("pxPill").style.display = "none";
-  lastMarkPx = null;
-  $("positions").innerHTML = '<div class="empty">Look up an address to see its open positions.</div>';
+  lastPos = [];
+  lastState = null;
   renderPayouts(null);
+  setConn();
+  // Disconnecting returns the visitor to the operating landing, never to an empty gate.
+  if (!INST) void landShowcase();
+  else {
+    $("hero").style.display = "";
+    $("positions").innerHTML = '<div class="empty">Look up an address to see its open positions.</div>';
+  }
 };
 
-// "See it on a whale": ONE click renders a real leaderboard wallet as a normal position card
-// with its would-be protection terms — no intermediate menu; positions are only ever displayed
-// one way in the whole product. "Show another whale" cycles through the validated set.
+// Showcase set: live public wallets validated by the server against open BTC positions.
 const fetchShowcase = async (attempt) => {
   try {
     const j = await api("/api/showcase");
@@ -1005,32 +1110,18 @@ const fetchShowcase = async (attempt) => {
   return false;
 };
 let watchIdx = 0;
-const watchWallet = async (i) => {
+const watchWallet = async (i, scroll) => {
   watchIdx = i;
   userEntered = true;
   watching = true;
   account = watchWallets[i].address;
   $("hero").style.display = "none";
-  $("previewCard").style.display = "none";
+  if (INST) $("previewCard").style.display = "none";
   setConn();
   checkGates();
   await poll();
-  // Motion cue: the result renders below the fold — take the visitor to it.
-  $("positions").scrollIntoView({ behavior: "smooth", block: "start" });
-};
-$("watchLink").onclick = async () => {
-  const btn = $("watchLink");
-  if (btn.disabled) return;
-  if (watchWallets.length === 0) {
-    const orig = btn.innerHTML;
-    btn.innerHTML = '<span class="spin"></span>finding a whale…';
-    btn.disabled = true;
-    const ok = await fetchShowcase(0);
-    btn.innerHTML = orig;
-    btn.disabled = false;
-    if (!ok) { setMsg("No live wallets available right now — try again shortly.", true); return; }
-  }
-  watchWallet(0);
+  // Motion cue (explicit navigation only): the result renders below the fold — go to it.
+  if (scroll !== false) $("positions").scrollIntoView({ behavior: "smooth", block: "start" });
 };
 $("nextWhale").onclick = (e) => {
   e.preventDefault();
@@ -1048,8 +1139,29 @@ $("stopViewing").onclick = (e) => {
   renderPayouts(null);
   window.scrollTo({ top: 0, behavior: "smooth" });
 };
-$("previewLink").onclick = () => {
-  $("previewCard").style.display = $("previewCard").style.display === "none" ? "" : "none";
+
+// LAND OPERATING (retail): boot straight into a live public BTC position — skeleton first,
+// showcase card seconds later. A visitor's own stored address always wins over the landing.
+const landShowcase = async () => {
+  if (account || INST) return;
+  booting = true;
+  landingFailed = false;
+  setConn();
+  $("hero").style.display = "none";
+  $("positions").innerHTML = '<div class="card"><div class="skl" style="width:45%"></div><div class="skl" style="width:75%"></div><div class="skl" style="width:60%"></div></div>';
+  const ok = await fetchShowcase(0);
+  booting = false;
+  if (account) return; // the visitor connected while the landing loaded
+  if (!ok || watchWallets.length === 0) {
+    // No live showcase — fall back to the connect-first page rather than a dead card.
+    landingFailed = true;
+    $("hero").style.display = "";
+    setConn();
+    return;
+  }
+  autoLanded = true;
+  landTried = 1;
+  await watchWallet(0, false);
 };
 
 // Live HL mark in the header from the FIRST paint — no address required. Once an account
@@ -1067,6 +1179,7 @@ setInterval(pollPx, 15000);
 setConn();
 checkGates();
 if (account) poll();
+else void landShowcase();
 pollTimer = setInterval(poll, 5000);
 setInterval(checkGates, 30000);
 </script>

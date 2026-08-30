@@ -236,9 +236,8 @@ const closeGate = String(process.env.EP_CLOSE_GATE ?? "true").toLowerCase() === 
 // without the live numerator until the fill reads as momentum. The real count stays in the
 // payload (never faked, just not headlined); flip EP_SHOW_COHORT_COUNT=true to display it.
 const showCohortCount = String(process.env.EP_SHOW_COHORT_COUNT ?? "false").toLowerCase() === "true";
-// Acquisition aids (preview tab + watch chips): ON for the demo phase, one env flip removes them
-// when the platform matures. Grammar (lookup copy, safety line) is permanent; aids are seasonal.
-const demoAids = String(process.env.EP_DEMO_AIDS ?? "true").toLowerCase() === "true";
+// The showcase set is core surface now (the retail landing boots into it; the institutional
+// skin's reference-position view reads it too) — no seasonal EP_DEMO_AIDS flag anymore.
 const setProtection = async (account: string, on: boolean): Promise<void> => {
   const prefs = await stores.loadPrefs();
   const key = account.toLowerCase();
@@ -1347,7 +1346,6 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           )
           .replaceAll("__BRAND_LINE__", (process.env.EP_BRAND_LINE ?? "for").replace(/[<>&"]/g, ""))
           .replaceAll("__SKIN__", process.env.EP_SKIN === "institutional" ? "institutional" : "retail")
-          .replaceAll("__DEMO_AIDS__", demoAids ? "true" : "false")
           .replaceAll("__LINK_TG__", /^https:\/\//.test(tgLink) ? `<a href="${tgLink.replace(/"/g, "")}" target="_blank" rel="noopener">Support / Telegram</a> · ` : "")
           .replaceAll("__LINK_X__", /^https:\/\//.test(xLink) ? `<a href="${xLink.replace(/"/g, "")}" target="_blank" rel="noopener">X</a> · ` : "")
       );
@@ -1664,12 +1662,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
     if (req.method === "GET" && route === "/api/showcase") {
-      // Watch-mode chips: up to 3 live public wallets. Stale-while-revalidate — never block a
-      // page render on a 36MB leaderboard fetch.
-      if (!demoAids) {
-        sendJson(res, 200, { ok: true, wallets: [] });
-        return;
-      }
+      // The showcase set (retail landing + INST reference view): up to 3 live public wallets.
+      // Stale-while-revalidate — never block a page render on a 36MB leaderboard fetch.
       if (Date.now() - showcaseCache.atMs > SHOWCASE_TTL_MS) void refreshShowcase();
       sendJson(res, 200, { ok: true, wallets: showcaseCache.wallets });
       return;
@@ -1964,8 +1958,8 @@ server.listen(port, () => {
     if (runtimePaused) console.error(`[demo] runtime: PAUSED — ${runtimePausedReason ?? "no reason recorded"}`);
     // Top-of-funnel counters: restore, then flush at most once a minute when dirty.
     funnelState = await stores.loadFunnel();
-    // Showcase prefetch (non-blocking): the first visitor should see chips, not a spinner.
-    if (demoAids) void refreshShowcase();
+    // Showcase prefetch (non-blocking): the first visitor lands on a live position, not a skeleton.
+    void refreshShowcase();
     setInterval(() => {
       if (!funnelDirty) return;
       funnelDirty = false;
