@@ -28,9 +28,9 @@ Earn & Protect: one-tap protection for Hyperliquid perp positions. A daily knock
 - LIVE-LANGUAGE RULE: never claim what a click can falsify. Software is "in production"; execution is "production-proven on OKX (real fills)"; the hedge book "activates at first close — that's what the raise funds". "Live" only for live pricing/positions/demo.
 - Never name Foxify in customer-facing copy (first pilot partner stays unnamed). US persons geofenced. Never leak private threads (incl. an HL co-founder DM thread). No em dashes in founder-facing PDFs/reports. Copy grammar: "address", never "wallet" (for the public-data thing being pasted).
 
-## 4. Number lock (Aug 28 scorecard — use everywhere, refresh from scorecard before big sends)
+## 4. Number lock (Aug 31 scorecard — use everywhere, refresh from scorecard before big sends)
 
-37 days · 95 settled · $4.75M notional · client all-in +4.8 bps · 81% days positive · 100% oracle-verified/reconciled · zero peak net exposure · 1 of 98 opens refused (not priceable) · capital drag 0.036 bps/day vs ~1.7 bps/day production fee. Pilot: ~$11k credits on $400k notional, 6 weeks, zero take by design. Raise: pre-seed up to $250k, post-money SAFE $4M cap / 20% discount, first close now; $25k = collateral minimum (~$125k book standard margin, $400k+ under PM, ~0.08 measured netting factor, max exposure ~$2.3k). Regime gate may be in HALT during trends — a quiet dashboard IS the discipline exhibit; say so.
+38 days · 97 settled · $4.85M notional · client all-in +4.9 bps · 82% days positive · 100% oracle-verified/reconciled · zero peak net exposure · 1 of 102 opens refused (not priceable) · capital drag 0.036 bps/day vs ~1.7 bps/day production fee. Pilot: ~$11k credits on $400k notional, 6 weeks, zero take by design. Raise: pre-seed up to $250k, post-money SAFE $4M cap / 20% discount, first close now; $25k = collateral minimum (~$125k book standard margin, $400k+ under PM, ~0.08 measured netting factor, max exposure ~$2.3k). Regime gate may be in HALT during trends — a quiet dashboard IS the discipline exhibit; say so.
 
 ## 5. Current status (Aug 30)
 
