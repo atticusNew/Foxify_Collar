@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Atticus Shadow Facility Report</title>
+<style>
+  @page { size: Letter; margin: 22mm 18mm; }
+  * { box-sizing: border-box; }
+  body { font: 11.5pt/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #16202a; margin: 0; }
+  h1 { font-size: 21pt; margin: 0 0 2px; letter-spacing: -0.3px; }
+  .brand { color: #b8860b; font-weight: 700; }
+  .subtitle { color: #5a6a78; font-size: 11pt; margin-bottom: 14px; }
+  h2 { font-size: 13pt; margin: 22px 0 6px; padding-bottom: 4px; border-bottom: 2px solid #b8860b; }
+  h3 { font-size: 11.5pt; margin: 14px 0 4px; }
+  p { margin: 6px 0; }
+  .note { background: #f6f4ec; border-left: 4px solid #b8860b; padding: 9px 12px; font-size: 10.5pt; margin: 10px 0; }
+  .verdict { background: #eef7f2; border: 1px solid #2e8b57; border-radius: 6px; padding: 12px 14px; margin: 12px 0; }
+  .verdict b { color: #1e6b41; font-size: 13pt; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; font-size: 10.5pt; }
+  th { text-align: left; background: #f0f2f5; padding: 6px 8px; border-bottom: 2px solid #d5dbe2; font-size: 9.5pt; text-transform: uppercase; letter-spacing: 0.4px; color: #47555f; }
+  td { padding: 6px 8px; border-bottom: 1px solid #e5e9ee; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pos { color: #1e6b41; font-weight: 600; } .neg { color: #a03030; font-weight: 600; }
+  .muted { color: #5a6a78; font-size: 10pt; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin: 10px 0; }
+  .stat { border: 1px solid #d5dbe2; border-radius: 6px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 15pt; }
+  .stat span { color: #5a6a78; font-size: 9.5pt; text-transform: uppercase; letter-spacing: 0.4px; }
+  .pagebreak { page-break-before: always; }
+  footer { margin-top: 26px; padding-top: 8px; border-top: 1px solid #d5dbe2; font-size: 9pt; color: #5a6a78; }
+</style>
+</head>
+<body>
+
+<h1><span class="brand">Atticus</span> Shadow Facility Report</h1>
+<div class="subtitle">Automated collar protection engine. Continuous operation, machine audited. Report generated August 24, 2026.</div>
+
+<div class="note">
+<b>What this report is.</b> The Atticus shadow facility runs the Earn &amp; Protect collar strategy continuously against real, live market prices, with settlement simulated instead of funded. Zero capital is at risk in shadow mode. Every position is priced from live markets, verified against an independent oracle, and reconciled by machine. The purpose of the facility is to build an auditable track record that gates the decision to activate funded trading. All figures below are produced by the facility itself, not compiled by hand.
+</div>
+
+<div class="verdict">
+<b>Verdict: TRACK RECORD CLEAN</b><br>
+This grade requires all of the following, measured across the full window: 100% of positions verified by an independent price oracle, 100% of sessions reconciled with zero drift, at least 95% of position lifecycles completed without intervention, exposure held within its risk band at all times, and a sufficient sample of sessions. The facility currently meets every requirement with no flags raised.
+</div>
+
+<h2>1. Operating Summary</h2>
+<div class="grid">
+  <div class="stat"><b>3,333</b><span>sessions since July 19, 2026</span></div>
+  <div class="stat"><b>87</b><span>positions settled (33 trading days)</span></div>
+  <div class="stat"><b>$4.35M</b><span>notional settled</span></div>
+  <div class="stat"><b>100%</b><span>oracle verified</span></div>
+  <div class="stat"><b>100%</b><span>reconciled, zero drift</span></div>
+  <div class="stat"><b>99.97%</b><span>lifecycle complete</span></div>
+</div>
+<p>The facility monitor runs a full cycle every 15 minutes and has completed 1,334 cycles in its current run without a missed beat. Positions are opened in matched long and short pairs across three venues (dYdX, Bluefin, Hyperliquid), each held roughly 24 hours, each wrapped in the collar structure: a hard floor that limits loss and a cap that funds a daily credit.</p>
+<p>Of 92 position attempts, 91 opened and 1 was refused by the pricing engine because the market could not fund an honest credit at that moment. Refusing rather than mispricing is designed behavior: the engine never opens a position it cannot price cleanly.</p>
+
+<h2>2. Client Outcome</h2>
+<p class="muted">All figures are totals across the 87 settled positions. "Client" means the holder of the protected position.</p>
+<table>
+  <tr><th>Measure</th><th style="text-align:right">Amount</th><th>Plain reading</th></tr>
+  <tr><td>Credits paid to clients</td><td class="num pos">+$3,682.58</td><td>Daily income earned for holding protection</td></tr>
+  <tr><td>Collar settlements (net)</td><td class="num neg">-$2,447.42</td><td>Value returned to the market when caps engaged</td></tr>
+  <tr><td>Perp trading profit and loss (net)</td><td class="num pos">+$774.67</td><td>The clients' own positions, both directions combined</td></tr>
+  <tr><td>Funding payments (net)</td><td class="num neg">-$99.35</td><td>Standard perp funding costs</td></tr>
+  <tr><td><b>Client all-in net result</b></td><td class="num pos"><b>+$1,910.48</b></td><td><b>+4.39 basis points on settled notional</b></td></tr>
+</table>
+<div class="grid">
+  <div class="stat"><b>78.8%</b><span>of days positive for clients</span></div>
+  <div class="stat"><b>Yes</b><span>credits covered all carry costs</span></div>
+  <div class="stat"><b>24.1h</b><span>average hold per position</span></div>
+</div>
+<p>The headline in plain language: across 33 days that included both quiet markets and one violent one, protected positions came out ahead of unprotected equivalents, the daily credits more than covered the cost of carrying protection, and nearly four out of five days ended positive.</p>
+
+<h2>3. The Stress Test: August 19, 2026</h2>
+<p>On August 19 the market moved 7.5% in a single session, the largest move in the window. This is the day protection products exist for, and the day most fail quietly. The facility record shows:</p>
+<table>
+  <tr><th>What happened</th><th style="text-align:right">Number</th></tr>
+  <tr><td>Average position move that day</td><td class="num">+7.56%</td></tr>
+  <tr><td>Floors and caps engaged as designed</td><td class="num">Yes</td></tr>
+  <tr><td>Largest single collar settlement paid out</td><td class="num pos">+$950.46</td></tr>
+  <tr><td>Largest single collar settlement returned</td><td class="num neg">-$2,885.59</td></tr>
+  <tr><td>Worst single day for the book, net</td><td class="num neg">-$2,110.52</td></tr>
+  <tr><td>Cumulative net across the full window, including that day</td><td class="num pos">+$2,053.53</td></tr>
+</table>
+<p>Floors were breached on 1.15% of positions and caps on 4.6%, both within design expectations. The structure absorbed the shock exactly as specified, and the book recovered to a positive cumulative result. No manual intervention was required at any point.</p>
+
+<div class="pagebreak"></div>
+
+<h2>4. Risk and Capital Discipline</h2>
+<table>
+  <tr><th>Control</th><th style="text-align:right">Measured</th><th>Plain reading</th></tr>
+  <tr><td>Peak net market exposure</td><td class="num">0%</td><td>The book is built market neutral: longs and shorts pair off</td></tr>
+  <tr><td>Floor budget used (max / average)</td><td class="num">10% / 6.25%</td><td>Protection depth stayed well inside its allowance</td></tr>
+  <tr><td>Margin required, measured</td><td class="num">1.09% of notional</td><td>About one cent of capital per protected dollar, under portfolio margin</td></tr>
+  <tr><td>Portfolio margin netting factor</td><td class="num">0.078</td><td>Paired structures require a small fraction of naive margin</td></tr>
+  <tr><td>Capital cost drag</td><td class="num">0.036 bps/day</td><td>Cost of capital at 12% per year, measured, not estimated</td></tr>
+  <tr><td>Halted sessions</td><td class="num">0</td><td>No emergency stops in the entire window</td></tr>
+</table>
+<p>The facility also runs a live volatility regime gate. During the elevated-volatility stretch it automatically widened protection floors and confirmed open throttles, with a 70% directional hit rate over the trailing ten days. Risk posture adapts to the market by rule, not by judgment calls.</p>
+
+<h2>5. Venue Coverage</h2>
+<table>
+  <tr><th>Venue</th><th style="text-align:right">Positions</th><th style="text-align:right">Client net result</th></tr>
+  <tr><td>Bluefin</td><td class="num">31</td><td class="num pos">+$1,107.92</td></tr>
+  <tr><td>Hyperliquid</td><td class="num">27</td><td class="num pos">+$739.67</td></tr>
+  <tr><td>dYdX</td><td class="num">29</td><td class="num pos">+$62.89</td></tr>
+</table>
+<p>The engine is venue neutral by construction: the same pricing, protection, and audit pipeline ran identically across all three venues, and clients netted positive on each.</p>
+
+<h2>6. Recent Daily Record</h2>
+<p class="muted">Most recent settled days, as recorded by the facility. Net = credits plus collar settlements for that day's positions.</p>
+<table>
+  <tr><th>Day</th><th style="text-align:right">Positions</th><th style="text-align:right">Credits</th><th style="text-align:right">Collar</th><th style="text-align:right">Net</th></tr>
+  <tr><td>2026-08-23</td><td class="num">2</td><td class="num">$135.72</td><td class="num">$0.00</td><td class="num pos">+$135.72</td></tr>
+  <tr><td>2026-08-22</td><td class="num">2</td><td class="num">$128.76</td><td class="num">$0.00</td><td class="num pos">+$128.76</td></tr>
+  <tr><td>2026-08-19</td><td class="num">2</td><td class="num">$77.07</td><td class="num">-$1,935.13</td><td class="num neg">-$1,858.06</td></tr>
+  <tr><td>2026-08-18</td><td class="num">2</td><td class="num">$55.40</td><td class="num">$0.00</td><td class="num pos">+$55.40</td></tr>
+  <tr><td>2026-08-17</td><td class="num">2</td><td class="num">$55.80</td><td class="num">-$80.41</td><td class="num neg">-$24.61</td></tr>
+  <tr><td>2026-08-16</td><td class="num">2</td><td class="num">$60.34</td><td class="num">$0.00</td><td class="num pos">+$60.34</td></tr>
+  <tr><td>2026-08-15</td><td class="num">2</td><td class="num">$34.34</td><td class="num">$0.00</td><td class="num pos">+$34.34</td></tr>
+  <tr><td>2026-08-14</td><td class="num">2</td><td class="num">$64.70</td><td class="num">$0.00</td><td class="num pos">+$64.70</td></tr>
+  <tr><td>2026-08-13</td><td class="num">2</td><td class="num">$94.93</td><td class="num">$0.00</td><td class="num pos">+$94.93</td></tr>
+  <tr><td>2026-08-12</td><td class="num">2</td><td class="num">$108.37</td><td class="num">$0.00</td><td class="num pos">+$108.37</td></tr>
+  <tr><td>2026-08-11</td><td class="num">2</td><td class="num">$102.52</td><td class="num">$0.00</td><td class="num pos">+$102.52</td></tr>
+  <tr><td>2026-08-10</td><td class="num">2</td><td class="num">$111.23</td><td class="num">$0.00</td><td class="num pos">+$111.23</td></tr>
+  <tr><td>2026-08-09</td><td class="num">2</td><td class="num">$53.51</td><td class="num">$0.00</td><td class="num pos">+$53.51</td></tr>
+  <tr><td>2026-08-08</td><td class="num">2</td><td class="num">$31.81</td><td class="num">$0.00</td><td class="num pos">+$31.81</td></tr>
+</table>
+
+<h2>7. What Shadow Mode Does and Does Not Prove</h2>
+<p><b>It proves:</b> the pricing engine works against real markets, the protection structure behaves as designed under stress, the audit pipeline (oracle verification and reconciliation) runs clean at 100%, the risk controls hold without human intervention, and clients come out ahead across a full month that included a violent market day.</p>
+<p><b>It does not prove:</b> funded settlement. Money did not move in shadow mode; that is its definition. Live execution has been separately proven by the operator with real capital on listed options venues, with every hedge auditable to an exchange fill. The shadow track record exists to gate the activation of funded trading, and it currently reads clean.</p>
+
+<footer>
+Atticus builds protection infrastructure for trading venues. All figures in this report are generated by the shadow facility's own monitoring and reconciliation systems. Shadow mode operates with zero capital at risk; settlement values are computed at real market prices and simulated. Nothing in this document is investment advice. Contact: hello@atticustrade.com
+</footer>
+
+</body>
+</html>

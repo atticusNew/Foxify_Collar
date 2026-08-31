@@ -69,6 +69,8 @@ export type LiveWindowResult = {
   rejected: number;
   rejectionsByReason: Record<string, number>;
   summary: string;
+  /** Venue place/fill errors from the last execute attempt (demo wrap surfaces these). */
+  venueErrors?: string[];
 };
 
 export type WatcherUnwindResult = {
@@ -230,9 +232,9 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
     let rejected = 0;
     let summary = "";
 
-    const finish = (outcome: string, s: string): LiveWindowResult => {
+    const finish = (outcome: string, s: string, venueErrors?: string[]): LiveWindowResult => {
       saveWindowState({ lastAttemptDayUtc: window.dayUtc, lastAttemptTsMs: ctx.nowMs, lastOutcome: outcome }, paths.windowState);
-      return { attempted: sides.length, newOpens, rejected, rejectionsByReason, summary: s };
+      return { attempted: sides.length, newOpens, rejected, rejectionsByReason, summary: s, ...(venueErrors?.length ? { venueErrors } : {}) };
     };
 
     // Pair atomicity on ABORT: unwind every already-booked collar of this window.
@@ -326,7 +328,13 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
           raiseLiveAlert({ tsMs: ctx.nowMs, level: "critical", code: "naked_leg", message: `UNSAFE EXECUTION STATE on ${solved.ref} (${exec.outcome}) — manual intervention required NOW`, data: exec.detail }, paths.alerts);
         }
         if (newOpens.length > 0 && pairAtomic) await unwindFilled(`sibling ${side} did not fill (${exec.outcome})`);
-        return finish(exec.safe ? "fill_failed_skip" : "NAKED_LEG", `execution ${exec.outcome} on ${side} — day skipped${pairAtomic && newOpens.length === 0 ? "" : " (pair unwound)"}`);
+        const detail = exec.detail as { errors?: unknown } | undefined;
+        const venueErrors = Array.isArray(detail?.errors) ? detail.errors.map((e) => String(e)) : [];
+        return finish(
+          exec.safe ? "fill_failed_skip" : "NAKED_LEG",
+          `execution ${exec.outcome} on ${side} — day skipped${pairAtomic && newOpens.length === 0 ? "" : " (pair unwound)"}`,
+          venueErrors
+        );
       }
 
       newOpens.push(exec.pos);

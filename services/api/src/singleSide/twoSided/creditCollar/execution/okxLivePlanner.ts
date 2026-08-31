@@ -95,6 +95,17 @@ const ceilToTick = (px: number, tickSz: number): number => (tickSz > 0 ? Math.ce
 const roundPx = (px: number) => +px.toFixed(8);
 
 /**
+ * Slippage-band anchor in BTC per BTC underlying. A 1-lot deep OTM put often has a model mid of
+ * cents or less; round2 of that USDC total is $0.00, and a sub-tick px cannot be a % band (OKX
+ * will not list below 1 tick). Floor at tick so the limit price and fillWithinBand agree.
+ */
+export const bandAnchorPxBtc = (modelPxBtc: number, tickSz: number): number => {
+  const tick = tickSz > 0 ? tickSz : 0;
+  if (modelPxBtc > 0) return Math.max(modelPxBtc, tick);
+  return tick;
+};
+
+/**
  * Band-capped marketable limit price (BTC per BTC underlying). Crosses to the touch but NEVER beyond
  * modelMid × (1 ± band): a buy pays at most modelMid×(1+band); a sell receives at least modelMid×(1−band).
  * If the touch sits outside the band the order rests at the band edge (⟹ timeout → retry → abort, never
@@ -234,10 +245,17 @@ export const planLiveCollar = (chain: OkxChainInstrument[], input: PlanInput): P
   if (size.contracts < 1) return { ok: false, error: "size_rounds_to_zero", message: `notional ${input.notionalUsdc} rounds to 0 contracts of ${prot.ctValBtc} BTC` };
 
   // Model USDC totals → px in BTC per BTC underlying (size-independent, so rounding contracts is safe).
+  // 1-lot cheap puts often round to $0.00 in the pricer; the listed tick is then the honest band floor.
   const toPxBtc = (midUsdc: number) => (input.modelContractsBtc > 0 && input.spot > 0 ? midUsdc / input.modelContractsBtc / input.spot : 0);
-  const protMidPxBtc = toPxBtc(input.protectiveMidUsdc);
-  const fundMidPxBtc = toPxBtc(input.fundingMidUsdc);
-  if (!(protMidPxBtc > 0) || !(fundMidPxBtc > 0)) return { ok: false, error: "model_mid_invalid", message: "model mids must be positive to anchor the slippage band" };
+  const protMidPxBtc = bandAnchorPxBtc(toPxBtc(input.protectiveMidUsdc), prot.tickSz);
+  const fundMidPxBtc = bandAnchorPxBtc(toPxBtc(input.fundingMidUsdc), fund.tickSz);
+  if (!(protMidPxBtc > 0) || !(fundMidPxBtc > 0)) {
+    return {
+      ok: false,
+      error: "model_mid_invalid",
+      message: "model mids must be positive to anchor the slippage band (and the listed tick is missing, so there is no 1-tick floor)"
+    };
+  }
 
   const leg = (inst: OkxChainInstrument, action: "buy" | "sell", role: "protective" | "funding", solverStrike: number, drift: number, midPxBtc: number): PlannedLeg => ({
     instId: inst.instId,

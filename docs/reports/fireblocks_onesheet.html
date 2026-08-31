@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Atticus x Fireblocks One-Sheet</title>
+<style>
+  @page { size: Letter; margin: 10mm 12mm; }
+  * { box-sizing: border-box; }
+  body { font: 9pt/1.34 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #16202a; margin: 0; }
+  h1 { font-size: 16pt; margin: 0; letter-spacing: -0.3px; }
+  .brand { color: #b8860b; font-weight: 700; }
+  .subtitle { color: #5a6a78; font-size: 9pt; margin: 2px 0 7px; }
+  h2 { font-size: 9.3pt; margin: 7px 0 3px; padding-bottom: 2px; border-bottom: 2px solid #b8860b; text-transform: uppercase; letter-spacing: 0.4px; }
+  p { margin: 4px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 4px 0 6px; font-size: 8.8pt; }
+  th { text-align: left; background: #f0f2f5; padding: 3.5px 6px; border-bottom: 2px solid #d5dbe2; font-size: 7.8pt; text-transform: uppercase; letter-spacing: 0.3px; color: #47555f; }
+  th.r, td.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td { padding: 3.5px 6px; border-bottom: 1px solid #e5e9ee; vertical-align: top; }
+  .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 6px 0; }
+  .stat { border: 1px solid #d5dbe2; border-radius: 5px; padding: 6px 8px; }
+  .stat b { display: block; font-size: 11pt; }
+  .stat span { color: #5a6a78; font-size: 7.2pt; text-transform: uppercase; letter-spacing: 0.3px; }
+  .muted { color: #5a6a78; font-size: 8.5pt; }
+  .fit { background: #f6f4ec; border-left: 3px solid #b8860b; padding: 7px 10px; margin: 6px 0; font-size: 9pt; }
+  footer { margin-top: 10px; padding-top: 5px; border-top: 1px solid #d5dbe2; font-size: 7.5pt; color: #5a6a78; }
+</style>
+</head>
+<body>
+
+<h1><span class="brand">Atticus</span> Earn &amp; Protect</h1>
+<div class="subtitle">One-tap institutional collar protection for custodied trading positions. Prepared for Fireblocks, August 2026.</div>
+
+<h2>What it is</h2>
+<p>A client taps one toggle. Their position gets a hard price floor (about 5 to 6% below spot) and pays them a daily cash credit, funded by the options market: we sell the capped upside and buy the floor on listed BTC options, and the net premium is the client's credit. The credit vests through the day; the client can close anytime and keep what vested. If price touches the cap, the cycle auto-unwinds (client keeps position, gains, and vested credit) and re-arms at the new spot. When the market cannot fund an honest credit, the engine refuses to open.</p>
+<p><b>Toggle on: credit plus floor. Toggle off: neither. Everything else identical.</b></p>
+
+<div class="fit"><b>Why it fits Fireblocks:</b> the entire product is read-only. No keys, no deposits, no custody change: positions are read from public data, hedged externally from our own account, and credits pay only to the client's address. A Fireblocks client gets downside protection and daily yield while every asset stays exactly where it is: in your vaults. Protection with zero custody movement is a feature your account teams can sell on day one.</div>
+
+<h2>Track record (machine-audited shadow facility, real market prices)</h2>
+<div class="grid">
+  <div class="stat"><b>35 days</b><span>continuous operation</span></div>
+  <div class="stat"><b>89</b><span>positions settled</span></div>
+  <div class="stat"><b>$4.45M</b><span>notional settled</span></div>
+  <div class="stat"><b>+4.5 bps</b><span>client all-in net</span></div>
+  <div class="stat"><b>100%</b><span>oracle verified and reconciled</span></div>
+  <div class="stat"><b>0</b><span>peak net exposure</span></div>
+</div>
+<p class="muted">Verdict: TRACK RECORD CLEAN. Includes a 7.5% single-day move where floors and caps engaged as designed with no manual intervention and the book recovered to a positive cumulative result. Live execution separately proven with founder capital on OKX listed options; every hedge auditable to an exchange fill. Full report available.</p>
+
+<h2>Structure and execution</h2>
+<table>
+  <tr><th>Element</th><th>Detail</th></tr>
+  <tr><td>Risk posture</td><td>Delta neutral by construction. Every wrap is hedged leg for leg at open; both legs fill or the pair auto-unwinds. Atticus revenue is a published fee on credits sourced, never trading P&amp;L.</td></tr>
+  <tr><td>Execution stack</td><td>OKX listed options, live and production-proven today. FalconX onboarded for block and RFQ execution as volume nets up (adapter built). The stack aligns with Fireblocks' existing OKX and FalconX relationships.</td></tr>
+  <tr><td>Client economics</td><td>Approximately 8.5 bps/day gross credit on protected notional at block execution (measured). Client keeps 80%+ of every credit.</td></tr>
+  <tr><td>Controls</td><td>Withdrawal-disabled venue keys, 40% collateral buffer never allocated, auto-pause at utilization line, kill switch that stops new exposure while payouts continue, concentration caps, full reconciliation against venue records.</td></tr>
+</table>
+
+<h2>Partnership economics (indicative, open to structure)</h2>
+<table>
+  <tr><th>Monthly credits originated via Fireblocks clients</th><th class="r">Partner share of Atticus take</th></tr>
+  <tr><td>Up to $250k</td><td class="r">30%</td></tr>
+  <tr><td>$250k to $1M</td><td class="r">40%</td></tr>
+  <tr><td>Above $1M</td><td class="r">50%</td></tr>
+</table>
+<p class="muted">Atticus take is approximately 20% of credits sourced (about 1.7 bps/day of protected notional). Tiers reward scale; all terms open to discussion. White-label available: the product ships under your brand, powered by Atticus.</p>
+
+<h2>Proposed next step</h2>
+<p><b>1. Client-profile simulation (attached):</b> a composite Fireblocks client: crypto-native fund with BTC treasury in custody and an active perp book, run against our measured rates, showing credits, floor events, and stress-day behavior. <b>2. Live branded demo</b> at institutions.earnandprotect.xyz: model a $10M holding, see live terms, and flip the one-action toggle as it would appear in a Fireblocks client interface. <b>3. Design-partner pilot:</b> one named client, requirements defined by your team, live inside weeks of a green light.</p>
+
+<footer>Atticus Trade, Inc. All measured figures come from real fills or machine-audited simulations at real market prices and are documented. Shadow results involve zero capital at risk. Nothing in this document is investment advice or an offer of any financial product. Contact: hello@atticustrade.com</footer>
+
+</body>
+</html>

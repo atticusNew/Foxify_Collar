@@ -1,0 +1,100 @@
+/* Atticus Protect toggle — sits in Hyperliquid's dark theme without shouting. */
+
+.atticus-protect {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  font: 12px/1 -apple-system, "Segoe UI", Roboto, sans-serif;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.atticus-protect .ap-label {
+  color: #949e9c;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.atticus-protect .ap-switch {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  border-radius: 999px;
+  background: #22302e;
+  border: 1px solid #3a4a47;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+  flex: none;
+}
+
+.atticus-protect .ap-switch .ap-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #949e9c;
+  transition: left 0.2s, background 0.2s;
+}
+
+.atticus-protect .ap-switch.ap-on {
+  background: #123832;
+  border-color: #50d2c1;
+}
+
+.atticus-protect .ap-switch.ap-on .ap-knob {
+  left: 15px;
+  background: #50d2c1;
+}
+
+.atticus-protect .ap-chip {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums; /* counter digits don't wiggle */
+  min-width: 76px; /* "Wrapping… 12s" fits without width jumps */
+  text-align: center;
+}
+
+.atticus-protect .ap-chip.ap-idle { background: #1c2624; color: #949e9c; }
+.atticus-protect .ap-chip.ap-good { background: #0f2e24; color: #50d2c1; }
+.atticus-protect .ap-chip.ap-warn { background: #2e2a12; color: #e3b341; }
+.atticus-protect .ap-chip.ap-bad  { background: #331a1a; color: #ff8080; }
+
+/* Primary placement: fixed overlay glued to the position row (top/left set by the script) —
+   compact so it sits inside the row height, backed so it reads as part of the row. */
+.atticus-protect.ap-row-overlay {
+  position: fixed;
+  z-index: 2147483000;
+  background: rgba(15, 26, 28, 0.97);
+  /* Teal outline (venue accent) — discoverable in under a second without looking bolted-on. */
+  border: 1px solid rgba(80, 210, 193, 0.55);
+  box-shadow: 0 0 0 1px rgba(80, 210, 193, 0.15), 0 2px 10px rgba(0, 0, 0, 0.4);
+  border-radius: 8px;
+  padding: 2px 8px;
+  margin-left: 0;
+  font-size: 11px;
+}
+
+.atticus-protect.ap-row-overlay .ap-chip {
+  max-width: 240px;
+}
+
+/* Fallback placement when the positions row can't be located: slim docked pill. */
+.atticus-protect.ap-docked {
+  position: fixed;
+  right: 16px;
+  bottom: 72px; /* clear the venue's footer links */
+  z-index: 2147483000;
+  background: #0f1a1c;
+  border: 1px solid rgba(80, 210, 193, 0.55);
+  box-shadow: 0 0 0 1px rgba(80, 210, 193, 0.15), 0 4px 16px rgba(0, 0, 0, 0.5);
+  border-radius: 10px;
+  padding: 8px 12px;
+}

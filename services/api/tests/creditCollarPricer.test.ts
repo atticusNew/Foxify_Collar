@@ -266,6 +266,43 @@ test("σ-floor: in low vol the cap holds at the σ-floor and the credit floats D
   assert.ok(on.economics.foxify_credit_usdc > 0, "floated credit is still positive");
 });
 
+test("pass_through float: 1-lot OKX clip takes executable credit when 16bps target is not fundable", () => {
+  const micro = baseParams({ notionalUsdc: 630, targetCreditUsdc: 1.01, maxFloorPct: 0.1 });
+  const q = solveAndPriceCreditCollar(micro, SKEW, {
+    fillMode: "touch",
+    pricingModel: "pass_through",
+    feeVenue: "okx",
+    minCapSigmaMult: 1.1,
+    operationFeeBps: 0,
+    minOperationFeeUsdc: 0
+  });
+  assert.equal(q.ok, true, q.ok ? "" : q.message);
+  if (!q.ok) return;
+  assert.ok(q.economics.foxify_credit_usdc > 0, "floated credit is positive");
+  assert.ok(q.economics.foxify_credit_usdc <= 1.01 + 1e-6, "does not invent credit above the scaled target");
+  assert.equal(q.economics.operation_fee_usdc, 0);
+  assert.ok(q.legs.funding_leg_mid_usdc > 0, "funding mid survives 1-lot scale");
+  // Sub-cent puts must not be rounded to 0.00 (that zeros the live slippage-band reconstruction).
+  if (q.legs.floor_leg_mid_usdc > 0 && q.legs.floor_leg_mid_usdc < 0.005) {
+    assert.notEqual(+q.legs.floor_leg_mid_usdc.toFixed(2), 0);
+  }
+});
+
+test("pass_through infeasible copy names OKX fees when feeVenue is okx, never Bullish", () => {
+  const q = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 100 }), SKEW, {
+    fillMode: "touch",
+    pricingModel: "pass_through",
+    feeVenue: "okx",
+    relativeHalfSpreadPct: 0.99,
+    absHalfSpreadUsdcPerBtc: 50_000
+  });
+  assert.equal(q.ok, false);
+  if (q.ok) return;
+  assert.equal(q.error, "credit_infeasible_at_floor");
+  assert.match(q.message, /OKX open fee/);
+  assert.doesNotMatch(q.message, /Bullish/);
+});
+
 test("symmetric retention bound: Atticus retention net of fees is capped; excess passes to Foxify", () => {
   // Coarse grid + low ceiling ⟹ big overshoot the ceiling would hand to Atticus; the bound stops that.
   const unbounded = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 80 }), SKEW, { fillMode: "touch", pricingModel: "pass_through", strikeGridUsdc: 1000, maxFoxifyCreditUsdc: 85 });

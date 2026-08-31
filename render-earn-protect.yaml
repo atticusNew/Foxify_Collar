@@ -1,0 +1,106 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-earn-protect.yaml — Earn & Protect, deployed publicly (beta-ready).
+#
+# Deploys THREE things:
+#   1. the service (web app /app, Telegram Mini App /miniapp, public book
+#      /public, control room /demo, JSON API) — public HTTPS, which the
+#      Telegram Mini App requires
+#   2. Postgres (Render's filesystem is ephemeral — JSON stores would reset
+#      on every deploy)
+#   3. the Telegram bot as a background worker (it must outlive laptops)
+#
+# Deploy: Render dashboard → New → Blueprint → select this file.
+# Fill in the sync:false env vars when prompted (marked below).
+#
+# After deploy:
+#   - trader app:   https://<service>.onrender.com/app
+#   - mini app:     https://<service>.onrender.com/miniapp
+#   - public book:  https://<service>.onrender.com/public
+#   - control room: https://<service>.onrender.com/demo?token=<EP_ADMIN_TOKEN>
+#     (EP_ADMIN_TOKEN is generated — read it in the dashboard → Environment)
+#
+# Going LIVE later (real OKX legs) — set manually on the service, never here:
+#   DEMO_EXECUTION=okx_live LIVE_ENABLED=true OKX_EXECUTION_MODE=live
+#   OKX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY + OKX_API_KEY/SECRET/PASSPHRASE
+#   (fresh keys: trade-only, withdrawals OFF, IP-whitelist Render Singapore).
+#   Region is singapore ⟹ same outbound IP pool as the OKX whitelist, so the
+#   egress proxy is NOT needed when running here. Do an admin reset before
+#   flipping so the live book starts clean of paper history.
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: atticus-earn-protect
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/hl-toggle-demo-9151
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/creditCollarDemoService.ts
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DEMO_ENABLED
+        value: "true"
+      - key: DEMO_EXECUTION
+        value: paper # beta lane; flip to okx_live manually with the full arming chain
+      # BETA ALLOW-LIST (fill at deploy): comma-separated tester wallets. This is the guard
+      # against third parties acting on others' addresses (and against strangers filling the
+      # founding cohort). "*" opens it to any address — only do that deliberately at launch.
+      - key: DEMO_ALLOWED_ACCOUNTS
+        sync: false
+      - key: EP_ADMIN_TOKEN
+        generateValue: true # control room / admin API token — read it from the dashboard
+      - key: DATABASE_URL
+        fromDatabase:
+          name: atticus-earn-protect-db
+          property: connectionString
+      # Launch gates: ToS ON for beta (normalizes the flow, records acceptances);
+      # geofence off until counsel signs the list — flip EP_GEOFENCE=true at launch.
+      - key: EP_TOS_REQUIRED
+        value: "true"
+      - key: EP_TOS_VERSION
+        value: 2026-08-draft
+      - key: EP_GEOFENCE
+        value: "false"
+      # Ops alerting (fill at deploy): knockouts, payout failures, stalled loops, reconcile
+      # mismatches land in this private Telegram chat. Use the SAME bot token as the worker;
+      # get your chat id by messaging @userinfobot.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ALERT_CHAT_ID
+        sync: false
+      # Brand mark (finch) — set when the asset URL exists; renders next to "by ATTICUS".
+      - key: EP_BRAND_LOGO_URL
+        sync: false
+
+  - type: worker
+    name: atticus-earn-protect-bot
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/hl-toggle-demo-9151
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/earnProtectTelegramBot.ts
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The bot's token from @BotFather (rotate any token that was ever pasted in a chat).
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      # Public base of the service above, e.g. https://atticus-earn-protect.onrender.com
+      - key: EP_API_BASE
+        sync: false
+      # Mini App URL = EP_API_BASE + /miniapp (must be https; drives buttons + chat menu).
+      - key: EP_MINIAPP_URL
+        sync: false
+      # NOTE: the worker filesystem is ephemeral — chat→address bindings reset on redeploys
+      # (users just re-paste once; notifications never replay). Postgres-backed chat store is
+      # on the leftover list before public launch.
+
+databases:
+  - name: atticus-earn-protect-db
+    plan: basic-256mb
+    region: singapore
