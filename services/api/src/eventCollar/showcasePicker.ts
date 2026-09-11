@@ -39,11 +39,17 @@ export const DEFAULT_PICK_CONFIG: ShowcasePickConfig = {
   maxMinutesToResolution: 24 * 60,
 };
 
-export function pickShowcaseMarket(
+/**
+ * All quotable-band candidates, best first. The service walks this list until
+ * one actually quotes a positive credit, so a market whose books cannot fund a
+ * credit right now (or is running out of time) rotates to the next best one
+ * instead of pinning the page to a refusal.
+ */
+export function rankShowcaseCandidates(
   markets: KalshiMarket[],
   now: Date,
   cfg: ShowcasePickConfig = DEFAULT_PICK_CONFIG,
-): ShowcaseSelection | null {
+): ShowcaseSelection[] {
   const candidates = markets
     .filter((m) => m.status === "active")
     .map((m) => ({ m, mark: midCents(m) }))
@@ -58,7 +64,6 @@ export function pickShowcaseMarket(
         m.yesAskCents < 100
       );
     });
-  if (candidates.length === 0) return null;
   candidates.sort((a, b) => {
     // liquidity first, then tighter spread, then nearer resolution
     if (b.m.volume !== a.m.volume) return b.m.volume - a.m.volume;
@@ -67,8 +72,15 @@ export function pickShowcaseMarket(
     if (spreadA !== spreadB) return spreadA - spreadB;
     return new Date(a.m.closeTime).getTime() - new Date(b.m.closeTime).getTime();
   });
-  const top = candidates[0];
-  return { market: top.m, markCents: top.mark };
+  return candidates.map(({ m, mark }) => ({ market: m, markCents: mark }));
+}
+
+export function pickShowcaseMarket(
+  markets: KalshiMarket[],
+  now: Date,
+  cfg: ShowcasePickConfig = DEFAULT_PICK_CONFIG,
+): ShowcaseSelection | null {
+  return rankShowcaseCandidates(markets, now, cfg)[0] ?? null;
 }
 
 /**

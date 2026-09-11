@@ -270,7 +270,7 @@ footer b{color:var(--dim);font-weight:600}
     var p=S.payload; if(!p)return;
     $('err').classList.remove('show');
     $('loading').style.display='none';
-    if(!p.ok||!p.market){ $('eyeline').textContent='no quotable market open right now'; $('main').style.display='none'; return; }
+    if(!p.ok||!p.market){ $('eyeline').textContent=p.error||'no quotable market open right now'; $('main').style.display='none'; return; }
     $('main').style.display='block';
     var mk=p.market,pos=p.position,q=p.quote;
     if(S.marketTicker&&S.marketTicker!==mk.ticker&&S.phase!=='idle'){ resetSim(); }

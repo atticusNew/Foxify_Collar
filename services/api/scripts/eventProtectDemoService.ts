@@ -33,13 +33,14 @@ import {
 import { quoteWrap } from "../src/eventCollar/eventCollarPricer";
 import {
   buildShowcasePosition,
-  pickShowcaseMarket,
+  rankShowcaseCandidates,
+  type ShowcaseSelection,
 } from "../src/eventCollar/showcasePicker";
 import { appendLedger } from "../src/eventCollar/quoteLedger";
 import { DEFAULT_SEARCH_CONFIG, type WrapQuoteResult, type WrapSearchConfig } from "../src/eventCollar/types";
 import { renderEventAppHtml } from "./eventProtectAppHtml";
 
-const PORT = Number(process.env.EVENT_DEMO_PORT || 8791);
+const PORT = Number(process.env.EVENT_DEMO_PORT || process.env.PORT || 8791);
 const SERIES = process.env.KALSHI_SERIES || "KXBTCD";
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_DEMO_CONTRACTS || 150);
 
@@ -82,29 +83,24 @@ export interface ShowcasePayload {
 
 let cache: { at: number; payload: ShowcasePayload } | null = null;
 const CACHE_TTL_MS = 10_000;
+/** How far down the ranked market list to look for one that actually quotes. */
+const MAX_QUOTE_ATTEMPTS = 6;
 
-async function buildShowcasePayload(): Promise<ShowcasePayload> {
-  const now = new Date();
-  const [markets, instruments, spotUsd] = await Promise.all([
-    getOpenMarkets(SERIES),
-    getBtcOptionInstruments(),
-    getBtcIndexUsd(),
-  ]);
+interface CandidateResult {
+  market: ShowcaseSelection["market"];
+  markCents: number;
+  position: ReturnType<typeof buildShowcasePosition>;
+  quote: WrapQuoteResult;
+  hedge: ShowcasePayload["hedge"];
+}
 
-  const picked = pickShowcaseMarket(markets, now);
-  if (!picked) {
-    return {
-      ok: false,
-      at: now.toISOString(),
-      spotUsd,
-      market: null,
-      position: null,
-      quote: null,
-      hedge: null,
-      error: "no quotable market is open right now",
-    };
-  }
-  const { market, markCents } = picked;
+async function quoteCandidate(
+  sel: ShowcaseSelection,
+  instruments: Awaited<ReturnType<typeof getBtcOptionInstruments>>,
+  spotUsd: number,
+  now: Date,
+): Promise<CandidateResult> {
+  const { market, markCents } = sel;
 
   let trades: Awaited<ReturnType<typeof getRecentTrades>> = [];
   try {
@@ -158,6 +154,69 @@ async function buildShowcasePayload(): Promise<ShowcasePayload> {
       });
     }
   }
+  return { market, markCents, position, quote, hedge };
+}
+
+async function buildShowcasePayload(): Promise<ShowcasePayload> {
+  const now = new Date();
+  const [markets, instruments, spotUsd] = await Promise.all([
+    getOpenMarkets(SERIES),
+    getBtcOptionInstruments(),
+    getBtcIndexUsd(),
+  ]);
+
+  const candidates = rankShowcaseCandidates(markets, now);
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      at: now.toISOString(),
+      spotUsd,
+      market: null,
+      position: null,
+      quote: null,
+      hedge: null,
+      error: "no quotable market is open right now",
+    };
+  }
+
+  // Walk the ranked list: showcase the first market whose books fund a
+  // positive credit. When none can, fall back to the most liquid candidate's
+  // honest refusal.
+  let chosen: CandidateResult | null = null;
+  let fallback: CandidateResult | null = null;
+  let fetchFailures = 0;
+  // Two strikes and out: fetchJsonWithRetry already retries each call, so a
+  // second candidate-level failure means the venue is unreachable, not flaky.
+  const FETCH_FAILURE_LIMIT = 2;
+  for (const sel of candidates.slice(0, MAX_QUOTE_ATTEMPTS)) {
+    let result: CandidateResult;
+    try {
+      result = await quoteCandidate(sel, instruments, spotUsd, now);
+    } catch {
+      fetchFailures += 1;
+      if (fetchFailures >= FETCH_FAILURE_LIMIT) break;
+      continue;
+    }
+    if (!fallback) fallback = result;
+    if (result.quote.ok) {
+      chosen = result;
+      break;
+    }
+  }
+  const use = chosen ?? fallback;
+  if (!use) {
+    return {
+      ok: false,
+      at: now.toISOString(),
+      spotUsd,
+      market: null,
+      position: null,
+      quote: null,
+      hedge: null,
+      error: "the hedge venue is unreachable from this machine right now (OKX is blocked on some networks; a relay via OKX_REST_BASE fixes it)",
+    };
+  }
+  const { market, markCents, position, quote, hedge } = use;
 
   appendLedger({
     at: now.toISOString(),
@@ -258,7 +317,9 @@ if (process.env.NODE_ENV !== "test") {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`[event-protect-demo] listening on :${PORT} (series ${SERIES})`);
-    void getShowcaseCached(); // prewarm so the first visitor is not the one paying for venue round-trips
+    // prewarm so the first visitor is not the one paying for venue round-trips;
+    // a failed prewarm must never crash the process (retried on first request)
+    getShowcaseCached().catch(() => {});
   });
 }
 

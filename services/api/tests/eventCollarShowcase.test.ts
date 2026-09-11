@@ -4,6 +4,7 @@ import {
   buildShowcasePosition,
   DEFAULT_PICK_CONFIG,
   pickShowcaseMarket,
+  rankShowcaseCandidates,
 } from "../src/eventCollar/showcasePicker";
 import type { KalshiMarket, KalshiTrade } from "../src/eventCollar/types";
 
@@ -44,6 +45,24 @@ test("pickShowcaseMarket: liquidity first, inside the quotable band", () => {
   assert.ok(picked);
   assert.equal(picked.market.ticker, "liquid");
   assert.equal(picked.markCents, 61);
+});
+
+test("rankShowcaseCandidates: full ranked list so the service can rotate to a quotable market", () => {
+  const ranked = rankShowcaseCandidates(
+    [
+      market({ ticker: "thin", volume: 5 }),
+      market({ ticker: "liquid", volume: 900 }),
+      market({ ticker: "mid", volume: 400 }),
+      market({ ticker: "closed", status: "closed", volume: 9999 }),
+    ],
+    NOW,
+  );
+  assert.deepEqual(
+    ranked.map((r) => r.market.ticker),
+    ["liquid", "mid", "thin"],
+  );
+  // pickShowcaseMarket stays the head of the same ranking
+  assert.equal(ranked[0].market.ticker, "liquid");
 });
 
 test("pickShowcaseMarket: null when nothing is quotable", () => {
