@@ -13,6 +13,15 @@ export function kalshiBase(): string {
 
 const RETRY_DELAYS_MS = [500, 1500, 4000];
 
+/**
+ * Per-attempt timeout: blocked networks (ISP-level filtering of some venues)
+ * drop packets silently, and the OS connect timeout is ~75s per attempt. A
+ * hard cap keeps a blocked venue an honest, bounded refusal instead of a hang.
+ */
+function attemptTimeoutMs(): number {
+  return Number(process.env.EVENT_FETCH_TIMEOUT_MS || 8000);
+}
+
 export async function fetchJsonWithRetry(
   url: string,
   fetchImpl: typeof fetch = fetch,
@@ -22,6 +31,7 @@ export async function fetchJsonWithRetry(
     try {
       const res = await fetchImpl(url, {
         headers: { accept: "application/json", "user-agent": "atticus-event-demo" },
+        signal: AbortSignal.timeout(attemptTimeoutMs()),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
       return await res.json();
