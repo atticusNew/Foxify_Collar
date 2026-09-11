@@ -1,14 +1,18 @@
 #!/usr/bin/env tsx
 /**
- * EARN & PROTECT — EVENTS, CROSS-VENUE (Tier 2 demonstration service)
+ * EARN & PROTECT — EVENTS, CROSS-VENUE ROUTER (Tier 2 demonstration service)
  *
  * A self-contained, read-only demo of one-tap protection on a Kalshi sports
- * market, hedged leg-for-leg with the SAME game listed on Polymarket: the
- * opposing outcome token pays $1 exactly when the protected side loses.
+ * market. Every game is priced on TWO hedge routes and the holder gets the
+ * cheaper one:
+ *   - polymarket:  the SAME game listed on Polymarket; the opposing outcome
+ *                  token pays $1 exactly when the protected side loses.
+ *   - kalshi_self: the protected market's own No side (buy No contracts);
+ *                  same instrument, same settlement, zero basis risk.
  *
  * What is real: both venues' markets and live prices, the resolution-whitelist
- * pairing, the executable hedge (walked through Polymarket's live CLOB book),
- * and every credit/refusal quoted from them.
+ * pairing, the executable hedges (walked through each venue's live book), and
+ * every credit/refusal quoted from them.
  * What is simulated: the holder's position and the wrap lifecycle. No venue
  * credentials, no wallet; only public market-data endpoints - this service is
  * structurally unable to trade, deposit, or pay.
@@ -25,19 +29,22 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { getOpenMarkets, getRecentTrades, midCents } from "../src/eventCollar/kalshiPublic";
 import { buildShowcasePosition } from "../src/eventCollar/showcasePicker";
-import { appendCrossLedger } from "../src/eventCollar/crossVenue/crossLedger";
+import { appendCrossLedger, summarizeCrossLedger } from "../src/eventCollar/crossVenue/crossLedger";
 import type { KalshiMarket } from "../src/eventCollar/types";
 import { LEAGUE_TEMPLATES } from "../src/eventCollar/crossVenue/resolutionWhitelist";
 import { matchKalshiMarket } from "../src/eventCollar/crossVenue/eventMatcher";
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
+import { getNoAsks, quoteLadderWrap } from "../src/eventCollar/crossVenue/kalshiLadder";
 import {
   DEFAULT_CROSS_CONFIG,
   type CrossQuoteResult,
   type CrossSearchConfig,
+  type HedgeRoute,
   type MatchedPair,
+  type RouteCheck,
 } from "../src/eventCollar/crossVenue/types";
-import { renderEventXAppHtml } from "./eventProtectXAppHtml";
+import { renderEventXAppHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
 
 const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
@@ -58,6 +65,8 @@ export interface BoardRow {
   league: string;
   kalshiTicker: string;
   kalshiSide: string;
+  /** full display name of the protected side (from the venue pairing) */
+  sideName: string;
   pmEventTitle: string;
   pmEventSlug: string;
   gameStartTime: string;
@@ -67,6 +76,8 @@ export interface BoardRow {
   creditCents: number;
   /** cost of the protection in bps of the naked position's EV (negative = protection beats naked) */
   evCostBps: number;
+  /** which hedge route won this game's quote */
+  route: HedgeRoute;
 }
 
 export interface CrossShowcasePayload {
@@ -77,6 +88,8 @@ export interface CrossShowcasePayload {
     kalshiTicker: string;
     kalshiTitle: string;
     kalshiSide: string;
+    /** full display name of the protected side */
+    sideName: string;
     pmEventSlug: string;
     pmEventTitle: string;
     pmQuestion: string;
@@ -97,13 +110,17 @@ export interface CrossShowcasePayload {
     entryTime: string | null;
   } | null;
   quote: CrossQuoteResult | null;
+  /** which hedge route funded the showcased quote (null on refusals) */
+  route: HedgeRoute | null;
+  /** every route examined for the showcased game */
+  routesChecked: RouteCheck[];
+  /** true EV cost of the showcased quote, bps (null on refusals) */
+  evCostBps: number | null;
   /** every quotable whitelisted game, ranked by what the protection really costs */
   board: BoardRow[];
   error?: string;
 }
 
-let cache: { at: number; payload: CrossShowcasePayload } | null = null;
-const CACHE_TTL_MS = 10_000;
 /** Verified pairings are stable for a game; cache them to spare the Gamma API. */
 const pairCache = new Map<string, MatchedPair | null>();
 
@@ -137,9 +154,19 @@ interface CandidateResult {
   markCents: number;
   position: ReturnType<typeof buildShowcasePosition>;
   quote: CrossQuoteResult;
+  /** winning route (null when both routes refused) */
+  route: HedgeRoute | null;
+  /** EV cost of the winning quote (null when both routes refused) */
+  evBps: number | null;
+  routesChecked: RouteCheck[];
 }
 
-/** Quote one verified pairing: position from real prints, hedge from the live book. */
+/**
+ * Quote one verified pairing on BOTH hedge routes and keep the cheaper one.
+ * Position from real prints; each hedge walked through its venue's live book.
+ * Throws only when both venues are unreachable (counts toward the breaker);
+ * a single unreachable venue becomes that route's honest refusal.
+ */
 async function quoteCandidate(pair: MatchedPair, markCents: number, now: Date): Promise<CandidateResult> {
   let trades: Awaited<ReturnType<typeof getRecentTrades>> = [];
   try {
@@ -148,28 +175,111 @@ async function quoteCandidate(pair: MatchedPair, markCents: number, now: Date): 
     trades = [];
   }
   const position = buildShowcasePosition(trades, markCents, SHOWCASE_CONTRACTS);
-  const noBook = await getPmBook(pair.pm.tokenIds[pair.pmNoOutcomeIndex]);
-  const quote = quoteCrossWrap({
+
+  const [pmRes, ladderRes] = await Promise.allSettled([
+    getPmBook(pair.pm.tokenIds[pair.pmNoOutcomeIndex]),
+    getNoAsks(pair.kalshi.ticker),
+  ]);
+  if (pmRes.status === "rejected" && ladderRes.status === "rejected") {
+    throw new Error("both hedge venues unreachable");
+  }
+
+  const base = {
     pair,
     markCents,
     entryCents: position.entryCents,
     contracts: position.contracts,
     now,
-    noBook,
     config: searchConfig(),
-  });
-  return { pair, markCents, position, quote };
+  };
+  const pmQuote: CrossQuoteResult =
+    pmRes.status === "fulfilled"
+      ? quoteCrossWrap({ ...base, noBook: pmRes.value })
+      : {
+          ok: false,
+          code: "pm_book_empty",
+          detail: "Polymarket's book API is unreachable from this machine right now",
+        };
+  const ladderQuote: CrossQuoteResult =
+    ladderRes.status === "fulfilled"
+      ? quoteLadderWrap({ ...base, noAsks: ladderRes.value })
+      : {
+          ok: false,
+          code: "kalshi_book_empty",
+          detail: "Kalshi's orderbook API is unreachable right now",
+        };
+
+  const bpsOf = (q: CrossQuoteResult): number | null =>
+    q.ok ? evCostBps(markCents, q.floorCents, q.capCents, q.creditCents, position.contracts) : null;
+  const pmBps = bpsOf(pmQuote);
+  const ladderBps = bpsOf(ladderQuote);
+  const routesChecked: RouteCheck[] = [
+    {
+      route: "polymarket",
+      ok: pmQuote.ok,
+      evCostBps: pmBps,
+      creditCents: pmQuote.ok ? pmQuote.creditCents : null,
+      ...(pmQuote.ok ? {} : { detail: pmQuote.detail }),
+    },
+    {
+      route: "kalshi_self",
+      ok: ladderQuote.ok,
+      evCostBps: ladderBps,
+      creditCents: ladderQuote.ok ? ladderQuote.creditCents : null,
+      ...(ladderQuote.ok ? {} : { detail: ladderQuote.detail }),
+    },
+  ];
+
+  // Route selection: the holder gets the cheaper protection in true EV terms.
+  // Ties go to the self-hedge route (same instrument, zero basis risk).
+  let route: HedgeRoute | null;
+  let quote: CrossQuoteResult;
+  let evBps: number | null;
+  if (pmQuote.ok && ladderQuote.ok) {
+    const ladderWins = (ladderBps as number) <= (pmBps as number);
+    route = ladderWins ? "kalshi_self" : "polymarket";
+    quote = ladderWins ? ladderQuote : pmQuote;
+    evBps = ladderWins ? ladderBps : pmBps;
+  } else if (pmQuote.ok) {
+    route = "polymarket";
+    quote = pmQuote;
+    evBps = pmBps;
+  } else if (ladderQuote.ok) {
+    route = "kalshi_self";
+    quote = ladderQuote;
+    evBps = ladderBps;
+  } else {
+    route = null;
+    evBps = null;
+    // Show the more informative refusal: a real pricing refusal beats an
+    // unreachable-venue placeholder.
+    quote =
+      pmQuote.code === "pm_book_empty" && ladderQuote.code !== "kalshi_book_empty"
+        ? ladderQuote
+        : pmQuote;
+  }
+
+  return { pair, markCents, position, quote, route, evBps, routesChecked };
 }
 
-async function buildPayload(): Promise<CrossShowcasePayload> {
+/** One refresh's full result: ranked quotable rows plus the best honest refusal. */
+interface ScanState {
+  atIso: string;
+  /** quotable candidates, cheapest true insurance cost first */
+  rows: Array<{ res: CandidateResult; evBps: number }>;
+  fallback: CandidateResult | null;
+  fetchFailures: number;
+}
+
+async function buildScan(): Promise<ScanState> {
   const now = new Date();
 
   // The scanner: walk the whitelisted leagues and their ranked games, quote
-  // EVERY verified pairing (up to the board cap), and rank the results by what
-  // the protection really costs in expected-value terms. The best-value row is
-  // the showcase. When nothing funds a credit, fall back to the best pairing's
-  // honest refusal. Any single fetch failure skips that candidate instead of
-  // taking the service down.
+  // EVERY verified pairing on both routes (up to the board cap), and rank the
+  // results by what the protection really costs in expected-value terms. The
+  // best-value row is the default showcase. When nothing funds a credit, fall
+  // back to the best pairing's honest refusal. Any single fetch failure skips
+  // that candidate instead of taking the service down.
   const scanned: Array<{ res: CandidateResult; evBps: number }> = [];
   let fallback: CandidateResult | null = null;
   let fetchFailures = 0;
@@ -215,17 +325,8 @@ async function buildPayload(): Promise<CrossShowcasePayload> {
         continue;
       }
       if (!fallback) fallback = result;
-      if (result.quote.ok) {
-        scanned.push({
-          res: result,
-          evBps: evCostBps(
-            result.markCents,
-            result.quote.floorCents,
-            result.quote.capCents,
-            result.quote.creditCents,
-            result.position.contracts,
-          ),
-        });
+      if (result.quote.ok && result.evBps !== null) {
+        scanned.push({ res: result, evBps: result.evBps });
       }
     }
   }
@@ -238,67 +339,83 @@ async function buildPayload(): Promise<CrossShowcasePayload> {
     return cb - ca;
   });
 
-  const board: BoardRow[] = scanned
-    .filter((s) => s.res.quote.ok)
-    .map((s) => {
-      const q = s.res.quote as Extract<CrossQuoteResult, { ok: true }>;
-      return {
-        league: s.res.pair.league,
-        kalshiTicker: s.res.pair.kalshi.ticker,
-        kalshiSide: s.res.pair.kalshi.subtitle,
-        pmEventTitle: s.res.pair.pm.eventTitle,
-        pmEventSlug: s.res.pair.pm.eventSlug,
-        gameStartTime: s.res.pair.gameStartTime,
-        markCents: s.res.markCents,
-        floorCents: q.floorCents,
-        capCents: q.capCents,
-        creditCents: q.creditCents,
-        evCostBps: s.evBps,
-      };
-    });
-
   const use = scanned[0]?.res ?? fallback;
+  if (use) {
+    appendCrossLedger(
+      {
+        at: now.toISOString(),
+        kind: "cross_venue_quote",
+        kalshiTicker: use.pair.kalshi.ticker,
+        pmEventSlug: use.pair.pm.eventSlug,
+        fingerprint: use.pair.fingerprint,
+        markCents: use.markCents,
+        entryCents: use.position.entryCents,
+        contracts: use.position.contracts,
+        result: use.quote,
+        ...(use.route ? { route: use.route } : {}),
+        ...(use.evBps !== null ? { evCostBps: use.evBps } : {}),
+        routesChecked: use.routesChecked,
+      },
+      LEDGER_PATH,
+    );
+  }
+
+  return { atIso: now.toISOString(), rows: scanned, fallback, fetchFailures };
+}
+
+/**
+ * Render one scan into the payload. When `ticker` names a quotable board row,
+ * that row is the showcase (tap-to-showcase); otherwise the best-value row.
+ */
+export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcasePayload {
+  const board: BoardRow[] = state.rows.map((s) => {
+    const q = s.res.quote as Extract<CrossQuoteResult, { ok: true }>;
+    return {
+      league: s.res.pair.league,
+      kalshiTicker: s.res.pair.kalshi.ticker,
+      kalshiSide: s.res.pair.kalshi.subtitle,
+      sideName: s.res.pair.pm.outcomes[s.res.pair.pmYesOutcomeIndex] ?? s.res.pair.kalshi.subtitle,
+      pmEventTitle: s.res.pair.pm.eventTitle,
+      pmEventSlug: s.res.pair.pm.eventSlug,
+      gameStartTime: s.res.pair.gameStartTime,
+      markCents: s.res.markCents,
+      floorCents: q.floorCents,
+      capCents: q.capCents,
+      creditCents: q.creditCents,
+      evCostBps: s.evBps,
+      route: s.res.route ?? "polymarket",
+    };
+  });
+
+  const tapped = ticker ? state.rows.find((s) => s.res.pair.kalshi.ticker === ticker) : undefined;
+  const use = tapped?.res ?? state.rows[0]?.res ?? state.fallback;
   if (!use) {
     return {
       ok: false,
-      at: now.toISOString(),
+      at: state.atIso,
       pair: null,
       position: null,
       quote: null,
+      route: null,
+      routesChecked: [],
+      evCostBps: null,
       board: [],
-      error: fetchFailures > 0
+      error: state.fetchFailures > 0
         ? "a venue is unreachable from this machine right now (Polymarket's book API is blocked on some networks; a relay via PM_CLOB_REST_BASE fixes it)"
         : "no whitelisted cross-venue pair is quotable right now",
     };
   }
   const matched = use.pair;
-  const markCents = use.markCents;
-  const position = use.position;
-  const quote = use.quote;
-
-  appendCrossLedger(
-    {
-      at: now.toISOString(),
-      kind: "cross_venue_quote",
-      kalshiTicker: matched.kalshi.ticker,
-      pmEventSlug: matched.pm.eventSlug,
-      fingerprint: matched.fingerprint,
-      markCents,
-      entryCents: position.entryCents,
-      contracts: position.contracts,
-      result: quote,
-    },
-    LEDGER_PATH,
-  );
 
   return {
     ok: true,
-    at: now.toISOString(),
+    at: state.atIso,
     pair: {
       league: matched.league,
       kalshiTicker: matched.kalshi.ticker,
       kalshiTitle: matched.kalshi.title,
       kalshiSide: matched.kalshi.subtitle,
+      sideName: matched.pm.outcomes[matched.pmYesOutcomeIndex] ?? matched.kalshi.subtitle,
       pmEventSlug: matched.pm.eventSlug,
       pmEventTitle: matched.pm.eventTitle,
       pmQuestion: matched.pm.question,
@@ -309,25 +426,30 @@ async function buildPayload(): Promise<CrossShowcasePayload> {
       parityNote: matched.parityNote,
       yesBidCents: matched.kalshi.yesBidCents,
       yesAskCents: matched.kalshi.yesAskCents,
-      markCents,
+      markCents: use.markCents,
       pmYesPriceMilli: matched.pm.outcomePricesMilli[matched.pmYesOutcomeIndex] ?? -1,
     },
-    position,
-    quote,
+    position: use.position,
+    quote: use.quote,
+    route: use.route,
+    routesChecked: use.routesChecked,
+    evCostBps: use.evBps,
     board,
   };
 }
 
+let cache: { at: number; state: ScanState } | null = null;
+const CACHE_TTL_MS = 10_000;
 let refreshing: Promise<void> | null = null;
 
 function refreshInBackground(): void {
   if (refreshing) return;
-  refreshing = buildPayload()
-    .then((payload) => {
-      cache = { at: Date.now(), payload };
+  refreshing = buildScan()
+    .then((state) => {
+      cache = { at: Date.now(), state };
     })
     .catch(() => {
-      /* keep serving the last good payload; next poll retries */
+      /* keep serving the last good scan; next poll retries */
     })
     .finally(() => {
       refreshing = null;
@@ -336,18 +458,23 @@ function refreshInBackground(): void {
 
 /**
  * Stale-while-revalidate: visitors always get an instant answer from the last
- * good payload while a background refresh keeps it current. Only the very
- * first request after boot (cold cache) has to wait for the venue round-trips,
- * and prewarming at startup usually removes even that.
+ * good scan while a background refresh keeps it current. Only the very first
+ * request after boot (cold cache) has to wait for the venue round-trips, and
+ * prewarming at startup usually removes even that.
  */
-async function getCached(): Promise<CrossShowcasePayload> {
+async function getCachedScan(): Promise<ScanState> {
   if (cache) {
     if (Date.now() - cache.at >= CACHE_TTL_MS) refreshInBackground();
-    return cache.payload;
+    return cache.state;
   }
-  const payload = await buildPayload();
-  cache = { at: Date.now(), payload };
-  return payload;
+  const state = await buildScan();
+  cache = { at: Date.now(), state };
+  return state;
+}
+
+/** Back-compat with tests and callers that want the default payload directly. */
+async function buildPayload(): Promise<CrossShowcasePayload> {
+  return payloadFromScan(await buildScan());
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -366,7 +493,21 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
     if (url.pathname === "/api/showcase") {
-      sendJson(res, 200, await getCached());
+      const ticker = url.searchParams.get("ticker") || undefined;
+      sendJson(res, 200, payloadFromScan(await getCachedScan(), ticker));
+      return;
+    }
+    if (url.pathname === "/api/receipts") {
+      sendJson(res, 200, {
+        ok: true,
+        at: new Date().toISOString(),
+        ...summarizeCrossLedger(LEDGER_PATH),
+      });
+      return;
+    }
+    if (url.pathname === "/receipts") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderReceiptsHtml(summarizeCrossLedger(LEDGER_PATH)));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -383,10 +524,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 if (process.env.NODE_ENV !== "test") {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
-    console.log(`[event-protect-x] listening on :${PORT} (cross-venue tier 2)`);
+    console.log(`[event-protect-x] listening on :${PORT} (cross-venue tier 2 router)`);
     // prewarm so the first visitor is not the one paying for venue round-trips;
     // a failed prewarm must never crash the process (retried on first request)
-    getCached().catch(() => {});
+    getCachedScan().catch(() => {});
   });
 }
 
