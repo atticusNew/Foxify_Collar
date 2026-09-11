@@ -31,6 +31,10 @@ export function renderEventAppHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
 <title>Earn &amp; Protect · events</title>
+<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit, hedged on live listed option books. Demonstration with live pricing from Kalshi and OKX." />
+<meta property="og:title" content="Earn &amp; Protect · events" />
+<meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, hedged on live listed option books. Demonstration, live venue pricing." />
+<meta property="og:type" content="website" />
 <style>
 :root{
   --bg:#f6f7f7; --card:#ffffff; --card2:#f2f4f4; --line:#e4e7e7;
@@ -110,6 +114,11 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
 footer b{color:var(--dim);font-weight:600}
 .err{color:var(--loss);font-size:13px;padding:8px 2px;display:none}
 .err.show{display:block}
+.refreshed{color:var(--faint);font-size:11px;text-align:right;margin-top:10px;font-variant-numeric:tabular-nums}
+.loading{display:flex;flex-direction:column;align-items:center;gap:12px;padding:34px 0 30px;color:var(--dim);font-size:13px;text-align:center}
+.loading .note{color:var(--faint);font-size:12px}
+.spinner{width:26px;height:26px;border-radius:50%;border:3px solid var(--green-wash);border-top-color:var(--green);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 @media(min-width:700px){.wrap,.topbar .in{max-width:480px}}
 </style>
 </head>
@@ -120,7 +129,13 @@ footer b{color:var(--dim);font-weight:600}
 </div></div>
 <div class="wrap">
   <div class="card" id="hero">
-    <div class="eyebrow"><span class="dot"></span><span id="eyeline">loading live market…</span><span class="simlabel">simulation · live pricing</span></div>
+    <div class="eyebrow"><span class="dot"></span><span id="eyeline">live from Kalshi</span><span class="simlabel">simulation · live pricing</span></div>
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <div>quoting live protection from Kalshi and the options market…</div>
+      <div class="note">live books, executable depth, rounded against us</div>
+    </div>
+    <div id="main" style="display:none">
     <h1 id="title">&nbsp;</h1>
     <div class="chancerow">
       <span class="chance" id="chance">–</span>
@@ -163,6 +178,8 @@ footer b{color:var(--dim);font-weight:600}
 
       <div class="ticket" id="ticket"></div>
     </div>
+    <div class="refreshed" id="refreshed">&nbsp;</div>
+    </div>
   </div>
 
   <div class="card how">
@@ -187,15 +204,25 @@ footer b{color:var(--dim);font-weight:600}
 
 <script>
 (function(){
-  var S={payload:null,phase:'idle',terms:null,marketTicker:null};
+  var S={payload:null,phase:'idle',terms:null,marketTicker:null,closeIso:null,fetchedAt:0};
   var $=function(id){return document.getElementById(id)};
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
 
   function fmtCountdown(iso){
     var ms=new Date(iso).getTime()-Date.now();
     if(ms<=0)return 'now';
-    var m=Math.floor(ms/60000),h=Math.floor(m/60);
-    return h>0?(h+'h '+(m%60)+'m'):(m+'m');
+    var s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60);
+    if(h>0)return h+'h '+(m%60)+'m';
+    return m+'m '+(s%60)+'s';
+  }
+  function tick(){
+    if(S.closeIso){
+      $('countd').textContent='closes in '+fmtCountdown(S.closeIso);
+    }
+    if(S.fetchedAt){
+      var age=Math.max(0,Math.round((Date.now()-S.fetchedAt)/1000));
+      $('refreshed').textContent=age<2?'quotes refreshed just now':'quotes refreshed '+age+'s ago';
+    }
   }
   function fmtEt(iso){
     try{
@@ -242,7 +269,9 @@ footer b{color:var(--dim);font-weight:600}
   function render(){
     var p=S.payload; if(!p)return;
     $('err').classList.remove('show');
-    if(!p.ok||!p.market){ $('eyeline').textContent='no quotable market open right now'; return; }
+    $('loading').style.display='none';
+    if(!p.ok||!p.market){ $('eyeline').textContent='no quotable market open right now'; $('main').style.display='none'; return; }
+    $('main').style.display='block';
     var mk=p.market,pos=p.position,q=p.quote;
     if(S.marketTicker&&S.marketTicker!==mk.ticker&&S.phase!=='idle'){ resetSim(); }
     S.marketTicker=mk.ticker;
@@ -250,6 +279,7 @@ footer b{color:var(--dim);font-weight:600}
     $('eyeline').textContent='live from Kalshi · BTC '+Number(p.spotUsd).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0});
     $('title').textContent='Bitcoin '+mk.subtitle.toLowerCase()+' by '+fmtEt(mk.closeTime)+'?';
     $('chance').textContent=mk.markCents+'%';
+    S.closeIso=mk.closeTime;
     $('countd').textContent='closes in '+fmtCountdown(mk.closeTime);
 
     var val=mk.markCents*pos.contracts, cost=pos.entryCents*pos.contracts, pnl=val-cost;
@@ -322,13 +352,13 @@ footer b{color:var(--dim);font-weight:600}
 
   function poll(){
     fetch('/api/showcase').then(function(r){return r.json()}).then(function(p){
-      S.payload=p; render();
+      S.payload=p; S.fetchedAt=Date.now(); render();
     }).catch(function(){
       $('err').textContent='live feed unreachable; retrying…';
       $('err').classList.add('show');
     });
   }
-  poll(); setInterval(poll,10000); setInterval(render,30000);
+  poll(); setInterval(poll,10000); setInterval(render,30000); setInterval(tick,1000);
 })();
 </script>
 </body>

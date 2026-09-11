@@ -11,6 +11,8 @@ test("event app html: honesty label, gating line, and structure", () => {
   assert.ok(html.includes("/api/showcase"), "polls the live endpoint");
   assert.ok(html.includes("width=device-width"), "mobile viewport");
   assert.ok(html.includes("Protect this position"));
+  assert.ok(html.includes('id="loading"'), "loading state while venues are quoted");
+  assert.ok(html.includes('id="refreshed"'), "quote freshness microtext");
 });
 
 test("event app html: outcomes-first, percent framing, one-tap grammar", () => {
