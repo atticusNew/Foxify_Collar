@@ -78,6 +78,8 @@ export type CrossRefusalCode =
   | "mark_out_of_range"
   | "pm_book_empty"
   | "pm_book_too_thin"
+  | "kalshi_book_empty"
+  | "kalshi_book_too_thin"
   | "credit_nonpositive";
 
 export interface CrossRefusal {
@@ -98,6 +100,38 @@ export interface CrossHedgeLeg {
   costCents: number; // rounded up
 }
 
+/**
+ * The same-venue route: buy No contracts on the very market being protected.
+ * A No contract pays exactly $1 in the NO state — same instrument, same
+ * settlement, zero basis. Depth comes from the market's live yes bids
+ * (buying No crosses them at 100c minus the bid).
+ */
+export interface KalshiSelfHedgeLeg {
+  action: "buy";
+  venue: "kalshi";
+  outcome: "No";
+  ticker: string;
+  contractsMilli: number; // 1000 = 1 contract, rounded UP (never under-hedged)
+  avgPriceCents: number; // walked average, rounded up
+  worstPriceCents: number;
+  costCents: number; // rounded up
+}
+
+export type HedgeLeg = CrossHedgeLeg | KalshiSelfHedgeLeg;
+
+/** Which hedge route funded the quote. */
+export type HedgeRoute = "polymarket" | "kalshi_self";
+
+/** One route's outcome in a dual-route scan: quotable (with its true EV cost) or an honest refusal. */
+export interface RouteCheck {
+  route: HedgeRoute;
+  ok: boolean;
+  /** cost of the protection in EV bps when quotable, null when refused */
+  evCostBps: number | null;
+  creditCents: number | null;
+  detail?: string;
+}
+
 export interface CrossQuote {
   ok: true;
   kalshiTicker: string;
@@ -112,7 +146,7 @@ export interface CrossQuote {
   takeCents: number;
   takeBps: number;
   takeWaived: boolean;
-  hedge: CrossHedgeLeg;
+  hedge: HedgeLeg;
   feesCents: number;
   parityNote: string;
   quotedAt: string;
