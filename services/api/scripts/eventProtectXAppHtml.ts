@@ -20,10 +20,10 @@ export function renderEventXAppHtml(): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
-<title>Earn &amp; Protect · events · cross venue</title>
-<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit, hedged with the same game on another venue. Demonstration with live pricing from Kalshi and Polymarket." />
-<meta property="og:title" content="Earn &amp; Protect · events · cross venue" />
-<meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, hedged with the same game on Polymarket. Demonstration, live venue pricing." />
+<title>Earn &amp; Protect · events</title>
+<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit. Games and crypto on one board, each priced on every hedge route that is structurally safe for it. Demonstration with live pricing from Kalshi and Polymarket." />
+<meta property="og:title" content="Earn &amp; Protect · events" />
+<meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, games and crypto, hedged on the cheapest safe route. Demonstration, live venue pricing." />
 <meta property="og:type" content="website" />
 <style>
 :root{
@@ -53,6 +53,7 @@ h1{font-size:19px;line-height:1.3;font-weight:650;letter-spacing:-.01em}
 .chancelbl{color:var(--dim);font-size:13px}
 .countd{margin-left:auto;color:var(--dim);font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
 .settleline{color:var(--faint);font-size:12px;margin-top:2px}
+.whyline{color:var(--green-deep);font-size:11.5px;margin-top:6px;font-weight:600}
 .pos{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
 .pos .side{font-weight:650;font-size:15px}
 .pos .side .yes{color:var(--green-deep);background:var(--green-wash);border-radius:6px;padding:1px 7px;margin-right:6px;font-size:13px;font-weight:700}
@@ -144,8 +145,8 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     <div class="eyebrow"><span class="dot"></span><span id="eyeline">live from Kalshi + Polymarket</span><span class="simlabel">simulation · live pricing</span></div>
     <div class="loading" id="loading">
       <div class="spinner"></div>
-      <div>pairing the same game across Kalshi and Polymarket…</div>
-      <div class="note">verifying both venues settle on the identical official result</div>
+      <div>scanning games and crypto across Kalshi and Polymarket…</div>
+      <div class="note">pricing every event on each hedge route that is structurally safe for it</div>
     </div>
     <div id="main" style="display:none">
     <h1 id="title">&nbsp;</h1>
@@ -155,7 +156,8 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       <span class="chancelbl">chance</span>
       <span class="countd" id="countd">–</span>
     </div>
-    <div class="settleline">settled by the official final score</div>
+    <div class="settleline" id="settleline">settled by the official final score</div>
+    <div class="whyline" id="whyline">&nbsp;</div>
 
     <div class="pos">
       <div>
@@ -197,7 +199,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
   <div class="card board" id="boardcard" style="display:none">
     <div class="bt">Best protection right now</div>
-    <div class="bs">each game priced on two hedge routes, live; the cheaper protection wins · tap a game to load it</div>
+    <div class="bs">games and crypto, each priced live on every safe hedge route; the cheapest protection wins · tap an event to load it</div>
     <div id="boardrows"></div>
   </div>
 
@@ -205,7 +207,8 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     <details>
       <summary>How this works</summary>
       <ul>
-        <li><b>Real markets, two hedge routes.</b> The game and its prices are live from Kalshi's and Polymarket's public data. Every protection is priced two ways at executable depth: the same game's opposing side on Polymarket, and the protected market's own No side on Kalshi. You get the cheaper one.</li>
+        <li><b>Real markets, competing hedge routes.</b> Every event and its prices are live from Kalshi's and Polymarket's public data. Each protection is priced at executable depth on every route that is structurally safe for it: the same game's opposing side on Polymarket, and the protected market's own No side on Kalshi. You get the cheapest one.</li>
+        <li><b>Crypto quotes one route on purpose.</b> The venues settle crypto on different index feeds, so a cross-venue hedge would not be the same trade; crypto strike markets therefore quote only the self-hedge route, and the board says so.</li>
         <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The market prices that downside risk; when a route prices it cheaper than the cap slice you sold, the difference is your credit.</li>
         <li><b>The hedge is the same game.</b> Protection is backed by buying the side that pays exactly when yours loses - on the other venue or on the very same market. Cross-venue pairs quote only from a curated whitelist where both venues verifiably settle on the identical official result; the self-hedge route is the same instrument by construction.</li>
         <li><b>Honest economics.</b> We keep a published share of the credit we source, waived when tiny. Nothing is embedded in your terms. When the venues cannot fund a credit, we refuse and say why.</li>
@@ -224,7 +227,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
 <script>
 (function(){
-  var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,fetchedAt:0,sel:null,boardOpen:false};
+  var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,kind:'sports',fetchedAt:0,sel:null,boardOpen:false};
   var $=function(id){return document.getElementById(id)};
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
   function shares(milli){var s=milli/1000;return (Math.round(s*10)/10).toLocaleString('en-US')}
@@ -241,9 +244,13 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
   function inPlay(){
     return S.startIso&&new Date(S.startIso).getTime()<=Date.now();
   }
+  function countdLabel(){
+    if(S.kind==='crypto')return inPlay()?'settling':'settles in '+fmtCountdown(S.startIso);
+    return inPlay()?'in play':'starts in '+fmtCountdown(S.startIso);
+  }
   function tick(){
     if(S.startIso){
-      $('countd').textContent=inPlay()?'in play':'starts in '+fmtCountdown(S.startIso);
+      $('countd').textContent=countdLabel();
     }
     if(S.fetchedAt){
       var age=Math.max(0,Math.round((Date.now()-S.fetchedAt)/1000));
@@ -295,9 +302,13 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     for(var i=0;i<rc.length;i++){
       var r=rc[i];
       var nm=r.route==='kalshi_self'?'Kalshi self-hedge':'Polymarket';
-      parts.push(nm+' '+(r.ok?(Math.abs(r.evCostBps/100).toFixed(1)+'%'+(r.evCostBps<0?' rebate':'')):'no quote'));
+      var v;
+      if(r.ok){ v=Math.abs(r.evCostBps/100).toFixed(1)+'%'+(r.evCostBps<0?' rebate':''); }
+      else if(r.detail&&r.detail.indexOf('not offered')===0){ v='not offered'; }
+      else { v='no quote'; }
+      parts.push(nm+' '+v);
     }
-    return parts.join(' · ')+' · cheaper route wins';
+    return parts.join(' · ')+' · cheapest safe route wins';
   }
 
   function paintOffer(q){
@@ -353,13 +364,21 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     var key=pr.kalshiTicker;
     if(S.pairKey&&S.pairKey!==key&&S.phase!=='idle'){ resetSim(); }
     S.pairKey=key;
+    S.kind=pr.kind||'sports';
+    var crypto=S.kind==='crypto';
 
-    $('eyeline').textContent='live from Kalshi + Polymarket · '+pr.league.toUpperCase();
-    $('title').textContent=(pr.sideName||pr.kalshiSide)+' to win?';
-    $('matchline').textContent=pr.pmEventTitle+' · starts '+fmtEt(pr.gameStartTime);
+    $('eyeline').textContent=(crypto?'live from Kalshi':'live from Kalshi + Polymarket')+' · '+pr.league.toUpperCase();
+    $('title').textContent=(pr.sideName||pr.kalshiSide)+(crypto?'?':' to win?');
+    $('matchline').textContent=pr.eventTitle+(crypto?' · settles ':' · starts ')+fmtEt(pr.eventTimeIso);
+    $('settleline').textContent=crypto?'settled by the official index price at the close':'settled by the official final score';
     $('chance').textContent=pr.markCents+'%';
-    S.startIso=pr.gameStartTime;
-    $('countd').textContent=inPlay()?'in play':'starts in '+fmtCountdown(pr.gameStartTime);
+    S.startIso=pr.eventTimeIso;
+    $('countd').textContent=countdLabel();
+    if(q&&q.ok&&p.route){
+      $('whyline').textContent=(S.sel?'your pick from the board':'best value on the board right now')+' · hedged via '+routeName(p.route);
+    } else {
+      $('whyline').innerHTML='&nbsp;';
+    }
 
     var val=pr.markCents*pos.contracts, cost=pos.entryCents*pos.contracts, pnl=val-cost;
     var src=pos.entrySource==='real_print'?'entry from a real Kalshi trade':'entered now';
@@ -375,7 +394,9 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       if(inPlay()){
         t.disabled=true; t.checked=false;
         hideOffer();
-        $('refusal').innerHTML='<b>In play.</b> Protection locks before the game starts; from here the position rides to the official final score.';
+        $('refusal').innerHTML=S.kind==='crypto'
+          ?'<b>At the close.</b> Protection locks before this market settles; from here the position rides to the official index print.'
+          :'<b>In play.</b> Protection locks before the game starts; from here the position rides to the official final score.';
         $('refusal').classList.add('show');
       } else if(q&&q.ok){
         t.disabled=false;
@@ -406,9 +427,10 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     for(var i=0;i<shown.length;i++){
       var r=shown[i];
       var chip=(p.pair&&r.kalshiTicker===p.pair.kalshiTicker)?'<span class="now">showing</span>':'';
+      var rowTitle=(r.sideName||r.kalshiSide)+(r.kind==='crypto'?'?':' to win?');
       html+='<div class="brow" data-ticker="'+r.kalshiTicker+'">'+
-        '<div><div class="g">'+(r.sideName||r.kalshiSide)+' to win?<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
-        '<div class="m">'+r.pmEventTitle+' · '+fmtEt(r.gameStartTime)+' · '+r.markCents+'% chance</div>'+
+        '<div><div class="g">'+rowTitle+'<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
+        '<div class="m">'+r.eventTitle+' · '+fmtEt(r.eventTimeIso)+' · '+r.markCents+'% chance</div>'+
         '<div class="m">floor '+r.floorCents+'\\u00A2 · cap '+r.capCents+'\\u00A2 · credit '+usd(r.creditCents)+' · via '+routeName(r.route)+'</div></div>'+
         '<div class="rv"><div class="gr '+evClass(r.evCostBps)+'">'+gradeWord(r.evCostBps)+'</div>'+
         '<div class="ev '+evClass(r.evCostBps)+'">'+evLine(r.evCostBps)+'</div></div>'+

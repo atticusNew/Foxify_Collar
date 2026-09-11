@@ -16,7 +16,7 @@ test("cross-venue app html: honesty label, gating line, and structure", () => {
   assert.ok(html.includes("width=device-width"), "mobile viewport");
   assert.ok(html.includes("Protect this position"));
   assert.ok(html.includes('id="loading"'), "loading state while venues are paired");
-  assert.ok(html.includes("pairing the same game across Kalshi and Polymarket"));
+  assert.ok(html.includes("scanning games and crypto across Kalshi and Polymarket"));
 });
 
 test("cross-venue app html: pairing is explicit and honest", () => {
@@ -36,8 +36,8 @@ test("cross-venue app html: pairing is explicit and honest", () => {
 test("cross-venue app html: the scanner board ranks protection by its true cost", () => {
   const html = renderEventXAppHtml();
   assert.ok(html.includes("Best protection right now"), "board card present");
-  assert.ok(html.includes("the cheaper protection wins"), "route competition is the pitch");
-  assert.ok(html.includes("tap a game to load it"), "rows are invitations, not decoration");
+  assert.ok(html.includes("the cheapest protection wins"), "route competition is the pitch");
+  assert.ok(html.includes("tap an event to load it"), "rows are invitations, not decoration");
   assert.ok(html.includes('id="boardrows"'), "board rows container");
   assert.ok(html.includes("cost of protection"), "EV honesty line in the drawer");
   assert.ok(html.includes("% of expected value"), "EV framing in plain words");
@@ -51,11 +51,24 @@ test("cross-venue app html: grades, tappable rows, and route competition", () =>
   assert.ok(html.includes("'cheap'"), "grade word for cheap protection");
   assert.ok(html.includes("'rich'"), "grade word for rich protection");
   assert.ok(html.includes("routes checked"), "both routes disclosed in the drawer");
-  assert.ok(html.includes("cheaper route wins"), "selection rule stated plainly");
+  assert.ok(html.includes("cheapest safe route wins"), "selection rule stated plainly");
   assert.ok(html.includes("its own No side"), "self-hedge route named for the holder");
   assert.ok(html.includes("sideName"), "full team names from the venue pairing");
   assert.ok(html.includes("guaranteed "), "protected banner states the locked range");
   assert.ok(html.includes('href="/receipts"'), "receipts page linked from the footer");
+});
+
+test("cross-venue app html: one board for games and crypto, honestly worded", () => {
+  const html = renderEventXAppHtml();
+  assert.ok(html.includes("games and crypto"), "the unified board is the pitch");
+  assert.ok(html.includes("settles in "), "crypto countdown wording");
+  assert.ok(html.includes("official index price at the close"), "crypto settlement line");
+  assert.ok(html.includes("'not offered'"), "structurally unsafe routes disclosed, not hidden");
+  assert.ok(html.includes("different index feeds"), "the crypto cross-venue exclusion is explained");
+  assert.ok(html.includes('id="whyline"'), "the showcase says why it was chosen");
+  assert.ok(html.includes("best value on the board right now"), "default showcase reason");
+  assert.ok(html.includes("your pick from the board"), "tapped showcase reason");
+  assert.ok(html.includes("At the close."), "crypto in-play state has its own words");
 });
 
 test("cross-venue app html: board previews three rows with an expand control, undo honesty", () => {

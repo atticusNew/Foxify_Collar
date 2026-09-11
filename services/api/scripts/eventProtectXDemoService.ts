@@ -1,18 +1,24 @@
 #!/usr/bin/env tsx
 /**
- * EARN & PROTECT — EVENTS, CROSS-VENUE ROUTER (Tier 2 demonstration service)
+ * EARN & PROTECT — EVENTS, PROTECTION ROUTER (Tier 2 demonstration service)
  *
- * A self-contained, read-only demo of one-tap protection on a Kalshi sports
- * market. Every game is priced on TWO hedge routes and the holder gets the
- * cheaper one:
- *   - polymarket:  the SAME game listed on Polymarket; the opposing outcome
- *                  token pays $1 exactly when the protected side loses.
- *   - kalshi_self: the protected market's own No side (buy No contracts);
- *                  same instrument, same settlement, zero basis risk.
+ * A self-contained, read-only demo of one-tap protection on Kalshi event
+ * markets — GAMES AND CRYPTO on one board. Every event is priced on every
+ * hedge route that is structurally safe for it, and the holder gets the
+ * cheapest one:
+ *   - polymarket:  (sports only) the SAME game listed on Polymarket; the
+ *                  opposing outcome token pays $1 exactly when the protected
+ *                  side loses. Quotes only from the curated whitelist where
+ *                  both venues verifiably settle on the identical result.
+ *   - kalshi_self: (every market) the protected market's own No side; same
+ *                  instrument, same settlement, zero basis risk.
+ * Crypto strike markets quote ONLY the self-hedge route: the venues settle
+ * crypto on different index feeds, so a cross-venue hedge would not be the
+ * same trade. That refusal is disclosed, not hidden.
  *
- * What is real: both venues' markets and live prices, the resolution-whitelist
- * pairing, the executable hedges (walked through each venue's live book), and
- * every credit/refusal quoted from them.
+ * What is real: the venues' markets and live prices, the whitelist pairing,
+ * the executable hedges (walked through each venue's live book), and every
+ * credit/refusal quoted from them.
  * What is simulated: the holder's position and the wrap lifecycle. No venue
  * credentials, no wallet; only public market-data endpoints - this service is
  * structurally unable to trade, deposit, or pay.
@@ -22,13 +28,18 @@
  *
  * Run: npx tsx services/api/scripts/eventProtectXDemoService.ts
  * Env: EVENT_X_PORT (default 8792) · EVENT_X_CONTRACTS (default 150)
- *      EVENT_X_TAKE_BPS · EVENT_X_LEDGER_PATH
+ *      EVENT_X_TAKE_BPS · EVENT_X_LEDGER_PATH · EVENT_X_BOARD_ROWS
+ *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { getOpenMarkets, getRecentTrades, midCents } from "../src/eventCollar/kalshiPublic";
-import { buildShowcasePosition } from "../src/eventCollar/showcasePicker";
+import {
+  buildShowcasePosition,
+  rankShowcaseCandidates,
+  type ShowcaseSelection,
+} from "../src/eventCollar/showcasePicker";
 import { appendCrossLedger, summarizeCrossLedger } from "../src/eventCollar/crossVenue/crossLedger";
 import type { KalshiMarket } from "../src/eventCollar/types";
 import { LEAGUE_TEMPLATES } from "../src/eventCollar/crossVenue/resolutionWhitelist";
@@ -50,8 +61,22 @@ const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
 const LEDGER_PATH = process.env.EVENT_X_LEDGER_PATH || "/tmp/event-demo/cross-quotes.jsonl";
 const MAX_MATCH_ATTEMPTS = 10;
-/** Scanner board cap: how many pairings get live-quoted per refresh. */
+/** Scanner board caps: how many pairings get live-quoted per refresh. */
 const MAX_BOARD_ROWS = Number(process.env.EVENT_X_BOARD_ROWS || 6);
+const MAX_CRYPTO_ROWS = Number(process.env.EVENT_X_CRYPTO_ROWS || 2);
+/** Kalshi crypto strike series admitted to the board (self-hedge route only). */
+const CRYPTO_SERIES = (process.env.EVENT_X_CRYPTO_SERIES || "KXBTCD,KXETHD")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const CRYPTO_ASSET_NAMES: Record<string, string> = {
+  KXBTCD: "Bitcoin",
+  KXETHD: "Ethereum",
+};
+const CRYPTO_PARITY_NOTE =
+  "the hedge is the protected market's own No side; settlement is identical by construction";
+const CRYPTO_PM_NOT_OFFERED =
+  "not offered for crypto: the venues settle on different index feeds, so a cross-venue hedge would not be the same trade";
 
 function searchConfig(): CrossSearchConfig {
   return {
@@ -60,23 +85,24 @@ function searchConfig(): CrossSearchConfig {
   };
 }
 
-/** One scanner-board row: a live-quoted protection across the venue pair. */
+/** One scanner-board row: a live-quoted protection on one event. */
 export interface BoardRow {
+  kind: "sports" | "crypto";
   league: string;
   kalshiTicker: string;
   kalshiSide: string;
-  /** full display name of the protected side (from the venue pairing) */
+  /** full display name of the protected side */
   sideName: string;
-  pmEventTitle: string;
-  pmEventSlug: string;
-  gameStartTime: string;
+  eventTitle: string;
+  /** when protection locks: game start (sports) or market close (crypto), ISO */
+  eventTimeIso: string;
   markCents: number;
   floorCents: number;
   capCents: number;
   creditCents: number;
   /** cost of the protection in bps of the naked position's EV (negative = protection beats naked) */
   evCostBps: number;
-  /** which hedge route won this game's quote */
+  /** which hedge route won this event's quote */
   route: HedgeRoute;
 }
 
@@ -84,23 +110,22 @@ export interface CrossShowcasePayload {
   ok: boolean;
   at: string;
   pair: {
+    kind: "sports" | "crypto";
     league: string;
     kalshiTicker: string;
     kalshiTitle: string;
     kalshiSide: string;
     /** full display name of the protected side */
     sideName: string;
-    pmEventSlug: string;
-    pmEventTitle: string;
-    pmQuestion: string;
-    pmOutcomes: string[];
-    pmYesOutcome: string;
-    pmNoOutcome: string;
-    gameStartTime: string;
+    eventTitle: string;
+    /** when protection locks: game start (sports) or market close (crypto), ISO */
+    eventTimeIso: string;
     parityNote: string;
     yesBidCents: number;
     yesAskCents: number;
     markCents: number;
+    /** cross-venue pairing details; null for self-hedge-only events */
+    pmEventSlug: string | null;
     pmYesPriceMilli: number;
   } | null;
   position: {
@@ -112,11 +137,11 @@ export interface CrossShowcasePayload {
   quote: CrossQuoteResult | null;
   /** which hedge route funded the showcased quote (null on refusals) */
   route: HedgeRoute | null;
-  /** every route examined for the showcased game */
+  /** every route examined for the showcased event */
   routesChecked: RouteCheck[];
   /** true EV cost of the showcased quote, bps (null on refusals) */
   evCostBps: number | null;
-  /** every quotable whitelisted game, ranked by what the protection really costs */
+  /** every quotable event, ranked by what the protection really costs */
   board: BoardRow[];
   error?: string;
 }
@@ -149,32 +174,47 @@ function rankCandidates(markets: KalshiMarket[]): Array<{ m: KalshiMarket; mark:
     });
 }
 
+/** One fully-quoted event candidate, sports or crypto, display-ready. */
 interface CandidateResult {
-  pair: MatchedPair;
+  kind: "sports" | "crypto";
+  league: string;
+  /** the protected Kalshi market with live prices */
+  market: KalshiMarket;
+  /** cross-venue pairing (sports only) */
+  pair: MatchedPair | null;
+  sideName: string;
+  eventTitle: string;
+  eventTimeIso: string;
+  parityNote: string;
+  fingerprint: string;
   markCents: number;
   position: ReturnType<typeof buildShowcasePosition>;
   quote: CrossQuoteResult;
-  /** winning route (null when both routes refused) */
+  /** winning route (null when every route refused) */
   route: HedgeRoute | null;
-  /** EV cost of the winning quote (null when both routes refused) */
+  /** EV cost of the winning quote (null when every route refused) */
   evBps: number | null;
   routesChecked: RouteCheck[];
 }
 
+async function showcasePositionFor(ticker: string, markCents: number) {
+  let trades: Awaited<ReturnType<typeof getRecentTrades>> = [];
+  try {
+    trades = await getRecentTrades(ticker);
+  } catch {
+    trades = [];
+  }
+  return buildShowcasePosition(trades, markCents, SHOWCASE_CONTRACTS);
+}
+
 /**
- * Quote one verified pairing on BOTH hedge routes and keep the cheaper one.
+ * Quote one verified sports pairing on BOTH hedge routes and keep the cheaper.
  * Position from real prints; each hedge walked through its venue's live book.
  * Throws only when both venues are unreachable (counts toward the breaker);
  * a single unreachable venue becomes that route's honest refusal.
  */
-async function quoteCandidate(pair: MatchedPair, markCents: number, now: Date): Promise<CandidateResult> {
-  let trades: Awaited<ReturnType<typeof getRecentTrades>> = [];
-  try {
-    trades = await getRecentTrades(pair.kalshi.ticker);
-  } catch {
-    trades = [];
-  }
-  const position = buildShowcasePosition(trades, markCents, SHOWCASE_CONTRACTS);
+async function quoteSportsCandidate(pair: MatchedPair, markCents: number, now: Date): Promise<CandidateResult> {
+  const position = await showcasePositionFor(pair.kalshi.ticker, markCents);
 
   const [pmRes, ladderRes] = await Promise.allSettled([
     getPmBook(pair.pm.tokenIds[pair.pmNoOutcomeIndex]),
@@ -259,7 +299,83 @@ async function quoteCandidate(pair: MatchedPair, markCents: number, now: Date): 
         : pmQuote;
   }
 
-  return { pair, markCents, position, quote, route, evBps, routesChecked };
+  return {
+    kind: "sports",
+    league: pair.league,
+    market: pair.kalshi,
+    pair,
+    sideName: pair.pm.outcomes[pair.pmYesOutcomeIndex] ?? pair.kalshi.subtitle,
+    eventTitle: pair.pm.eventTitle,
+    eventTimeIso: pair.gameStartTime,
+    parityNote: pair.parityNote,
+    fingerprint: pair.fingerprint,
+    markCents,
+    position,
+    quote,
+    route,
+    evBps,
+    routesChecked,
+  };
+}
+
+/**
+ * Quote one crypto strike market on its only structurally safe route: the
+ * market's own No side. The cross-venue route is disclosed as not offered
+ * (different settlement feeds across venues), never silently skipped.
+ */
+async function quoteCryptoCandidate(series: string, sel: ShowcaseSelection, now: Date): Promise<CandidateResult> {
+  const m = sel.market;
+  const markCents = sel.markCents;
+  const position = await showcasePositionFor(m.ticker, markCents);
+  const noAsks = await getNoAsks(m.ticker); // unreachable venue throws -> breaker
+
+  const ladderQuote = quoteLadderWrap({
+    pair: { kalshi: { ticker: m.ticker }, gameStartTime: m.closeTime },
+    markCents,
+    entryCents: position.entryCents,
+    contracts: position.contracts,
+    now,
+    noAsks,
+    config: searchConfig(),
+  });
+  const evBps = ladderQuote.ok
+    ? evCostBps(markCents, ladderQuote.floorCents, ladderQuote.capCents, ladderQuote.creditCents, position.contracts)
+    : null;
+  const routesChecked: RouteCheck[] = [
+    {
+      route: "polymarket",
+      ok: false,
+      evCostBps: null,
+      creditCents: null,
+      detail: CRYPTO_PM_NOT_OFFERED,
+    },
+    {
+      route: "kalshi_self",
+      ok: ladderQuote.ok,
+      evCostBps: evBps,
+      creditCents: ladderQuote.ok ? ladderQuote.creditCents : null,
+      ...(ladderQuote.ok ? {} : { detail: ladderQuote.detail }),
+    },
+  ];
+
+  const asset = CRYPTO_ASSET_NAMES[series] ?? series;
+  return {
+    kind: "crypto",
+    league: "crypto",
+    market: m,
+    pair: null,
+    sideName: `${asset} ${m.subtitle}`,
+    eventTitle: m.title.replace(/\?$/, ""),
+    eventTimeIso: m.closeTime,
+    parityNote: CRYPTO_PARITY_NOTE,
+    fingerprint: `crypto:${m.ticker}`,
+    markCents,
+    position,
+    quote: ladderQuote,
+    route: ladderQuote.ok ? "kalshi_self" : null,
+    evBps,
+    routesChecked,
+  };
 }
 
 /** One refresh's full result: ranked quotable rows plus the best honest refusal. */
@@ -275,24 +391,30 @@ async function buildScan(): Promise<ScanState> {
   const now = new Date();
 
   // The scanner: walk the whitelisted leagues and their ranked games, quote
-  // EVERY verified pairing on both routes (up to the board cap), and rank the
-  // results by what the protection really costs in expected-value terms. The
-  // best-value row is the default showcase. When nothing funds a credit, fall
-  // back to the best pairing's honest refusal. Any single fetch failure skips
-  // that candidate instead of taking the service down.
+  // EVERY verified pairing on both routes (up to the board cap), then admit
+  // the best crypto strike markets on the self-hedge route. Everything is
+  // ranked together by what the protection really costs in expected-value
+  // terms; the best-value row is the default showcase. When nothing funds a
+  // credit, fall back to the best pairing's honest refusal. Any single fetch
+  // failure skips that candidate instead of taking the service down.
   const scanned: Array<{ res: CandidateResult; evBps: number }> = [];
   let fallback: CandidateResult | null = null;
   let fetchFailures = 0;
   // Two strikes and out: fetchJsonWithRetry already retries each call, so a
   // second candidate-level failure means the venue is unreachable, not flaky.
   const FETCH_FAILURE_LIMIT = 2;
+  let breakerTripped = false;
+
   outer: for (const template of LEAGUE_TEMPLATES) {
     let markets: KalshiMarket[];
     try {
       markets = await getOpenMarkets(template.kalshiSeries);
     } catch {
       fetchFailures += 1;
-      if (fetchFailures >= FETCH_FAILURE_LIMIT) break;
+      if (fetchFailures >= FETCH_FAILURE_LIMIT) {
+        breakerTripped = true;
+        break;
+      }
       continue;
     }
     const ranked = rankCandidates(markets);
@@ -312,21 +434,62 @@ async function buildScan(): Promise<ScanState> {
         }
       } catch {
         fetchFailures += 1;
-        if (fetchFailures >= FETCH_FAILURE_LIMIT) break outer;
+        if (fetchFailures >= FETCH_FAILURE_LIMIT) {
+          breakerTripped = true;
+          break outer;
+        }
         continue;
       }
       if (!pair || !showcaseWindowOk(pair, now)) continue;
       let result: CandidateResult;
       try {
-        result = await quoteCandidate(pair, cand.mark, now);
+        result = await quoteSportsCandidate(pair, cand.mark, now);
       } catch {
         fetchFailures += 1;
-        if (fetchFailures >= FETCH_FAILURE_LIMIT) break outer;
+        if (fetchFailures >= FETCH_FAILURE_LIMIT) {
+          breakerTripped = true;
+          break outer;
+        }
         continue;
       }
       if (!fallback) fallback = result;
       if (result.quote.ok && result.evBps !== null) {
         scanned.push({ res: result, evBps: result.evBps });
+      }
+    }
+  }
+
+  // Crypto leg: the self-hedge route works for any Kalshi market, so the
+  // board carries the best strike markets too (liquidity-ranked, capped).
+  let cryptoRows = 0;
+  crypto: for (const series of CRYPTO_SERIES) {
+    if (breakerTripped || cryptoRows >= MAX_CRYPTO_ROWS) break;
+    let markets: KalshiMarket[];
+    try {
+      markets = await getOpenMarkets(series);
+    } catch {
+      fetchFailures += 1;
+      if (fetchFailures >= FETCH_FAILURE_LIMIT) break;
+      continue;
+    }
+    const ranked = rankShowcaseCandidates(markets, now);
+    let attempts = 0;
+    for (const sel of ranked) {
+      if (cryptoRows >= MAX_CRYPTO_ROWS) break;
+      if (attempts >= MAX_MATCH_ATTEMPTS) break;
+      attempts += 1;
+      let result: CandidateResult;
+      try {
+        result = await quoteCryptoCandidate(series, sel, now);
+      } catch {
+        fetchFailures += 1;
+        if (fetchFailures >= FETCH_FAILURE_LIMIT) break crypto;
+        continue;
+      }
+      if (!fallback) fallback = result;
+      if (result.quote.ok && result.evBps !== null) {
+        scanned.push({ res: result, evBps: result.evBps });
+        cryptoRows += 1;
       }
     }
   }
@@ -345,9 +508,9 @@ async function buildScan(): Promise<ScanState> {
       {
         at: now.toISOString(),
         kind: "cross_venue_quote",
-        kalshiTicker: use.pair.kalshi.ticker,
-        pmEventSlug: use.pair.pm.eventSlug,
-        fingerprint: use.pair.fingerprint,
+        kalshiTicker: use.market.ticker,
+        pmEventSlug: use.pair?.pm.eventSlug ?? "",
+        fingerprint: use.fingerprint,
         markCents: use.markCents,
         entryCents: use.position.entryCents,
         contracts: use.position.contracts,
@@ -371,13 +534,13 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
   const board: BoardRow[] = state.rows.map((s) => {
     const q = s.res.quote as Extract<CrossQuoteResult, { ok: true }>;
     return {
-      league: s.res.pair.league,
-      kalshiTicker: s.res.pair.kalshi.ticker,
-      kalshiSide: s.res.pair.kalshi.subtitle,
-      sideName: s.res.pair.pm.outcomes[s.res.pair.pmYesOutcomeIndex] ?? s.res.pair.kalshi.subtitle,
-      pmEventTitle: s.res.pair.pm.eventTitle,
-      pmEventSlug: s.res.pair.pm.eventSlug,
-      gameStartTime: s.res.pair.gameStartTime,
+      kind: s.res.kind,
+      league: s.res.league,
+      kalshiTicker: s.res.market.ticker,
+      kalshiSide: s.res.market.subtitle,
+      sideName: s.res.sideName,
+      eventTitle: s.res.eventTitle,
+      eventTimeIso: s.res.eventTimeIso,
       markCents: s.res.markCents,
       floorCents: q.floorCents,
       capCents: q.capCents,
@@ -387,7 +550,7 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
     };
   });
 
-  const tapped = ticker ? state.rows.find((s) => s.res.pair.kalshi.ticker === ticker) : undefined;
+  const tapped = ticker ? state.rows.find((s) => s.res.market.ticker === ticker) : undefined;
   const use = tapped?.res ?? state.rows[0]?.res ?? state.fallback;
   if (!use) {
     return {
@@ -402,32 +565,30 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
       board: [],
       error: state.fetchFailures > 0
         ? "a venue is unreachable from this machine right now (Polymarket's book API is blocked on some networks; a relay via PM_CLOB_REST_BASE fixes it)"
-        : "no whitelisted cross-venue pair is quotable right now",
+        : "no whitelisted event is quotable right now",
     };
   }
-  const matched = use.pair;
 
   return {
     ok: true,
     at: state.atIso,
     pair: {
-      league: matched.league,
-      kalshiTicker: matched.kalshi.ticker,
-      kalshiTitle: matched.kalshi.title,
-      kalshiSide: matched.kalshi.subtitle,
-      sideName: matched.pm.outcomes[matched.pmYesOutcomeIndex] ?? matched.kalshi.subtitle,
-      pmEventSlug: matched.pm.eventSlug,
-      pmEventTitle: matched.pm.eventTitle,
-      pmQuestion: matched.pm.question,
-      pmOutcomes: matched.pm.outcomes,
-      pmYesOutcome: matched.pm.outcomes[matched.pmYesOutcomeIndex],
-      pmNoOutcome: matched.pm.outcomes[matched.pmNoOutcomeIndex],
-      gameStartTime: matched.gameStartTime,
-      parityNote: matched.parityNote,
-      yesBidCents: matched.kalshi.yesBidCents,
-      yesAskCents: matched.kalshi.yesAskCents,
+      kind: use.kind,
+      league: use.league,
+      kalshiTicker: use.market.ticker,
+      kalshiTitle: use.market.title,
+      kalshiSide: use.market.subtitle,
+      sideName: use.sideName,
+      eventTitle: use.eventTitle,
+      eventTimeIso: use.eventTimeIso,
+      parityNote: use.parityNote,
+      yesBidCents: use.market.yesBidCents,
+      yesAskCents: use.market.yesAskCents,
       markCents: use.markCents,
-      pmYesPriceMilli: matched.pm.outcomePricesMilli[matched.pmYesOutcomeIndex] ?? -1,
+      pmEventSlug: use.pair?.pm.eventSlug ?? null,
+      pmYesPriceMilli: use.pair
+        ? use.pair.pm.outcomePricesMilli[use.pair.pmYesOutcomeIndex] ?? -1
+        : -1,
     },
     position: use.position,
     quote: use.quote,
@@ -524,7 +685,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 if (process.env.NODE_ENV !== "test") {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
-    console.log(`[event-protect-x] listening on :${PORT} (cross-venue tier 2 router)`);
+    console.log(`[event-protect-x] listening on :${PORT} (protection router: games + crypto)`);
     // prewarm so the first visitor is not the one paying for venue round-trips;
     // a failed prewarm must never crash the process (retried on first request)
     getCachedScan().catch(() => {});
