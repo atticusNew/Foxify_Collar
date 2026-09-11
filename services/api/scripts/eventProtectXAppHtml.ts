@@ -20,6 +20,10 @@ export function renderEventXAppHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
 <title>Earn &amp; Protect · events · cross venue</title>
+<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit, hedged with the same game on another venue. Demonstration with live pricing from Kalshi and Polymarket." />
+<meta property="og:title" content="Earn &amp; Protect · events · cross venue" />
+<meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, hedged with the same game on Polymarket. Demonstration, live venue pricing." />
+<meta property="og:type" content="website" />
 <style>
 :root{
   --bg:#f6f7f7; --card:#ffffff; --card2:#f2f4f4; --line:#e4e7e7;
@@ -100,6 +104,7 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
 footer b{color:var(--dim);font-weight:600}
 .err{color:var(--loss);font-size:13px;padding:8px 2px;display:none}
 .err.show{display:block}
+.refreshed{color:var(--faint);font-size:11px;text-align:right;margin-top:10px;font-variant-numeric:tabular-nums}
 .loading{display:flex;flex-direction:column;align-items:center;gap:12px;padding:34px 0 30px;color:var(--dim);font-size:13px;text-align:center}
 .loading .note{color:var(--faint);font-size:12px}
 .spinner{width:26px;height:26px;border-radius:50%;border:3px solid var(--green-wash);border-top-color:var(--green);animation:spin .8s linear infinite}
@@ -164,6 +169,7 @@ footer b{color:var(--dim);font-weight:600}
 
       <div class="ticket" id="ticket"></div>
     </div>
+    <div class="refreshed" id="refreshed">&nbsp;</div>
     </div>
   </div>
 
@@ -189,7 +195,7 @@ footer b{color:var(--dim);font-weight:600}
 
 <script>
 (function(){
-  var S={payload:null,phase:'idle',terms:null,pairKey:null};
+  var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,fetchedAt:0};
   var $=function(id){return document.getElementById(id)};
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
   function shares(milli){var s=milli/1000;return (Math.round(s*10)/10).toLocaleString('en-US')}
@@ -198,9 +204,22 @@ footer b{color:var(--dim);font-weight:600}
   function fmtCountdown(iso){
     var ms=new Date(iso).getTime()-Date.now();
     if(ms<=0)return 'now';
-    var m=Math.floor(ms/60000),h=Math.floor(m/60),d=Math.floor(h/24);
+    var s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);
     if(d>0)return d+'d '+(h%24)+'h';
-    return h>0?(h+'h '+(m%60)+'m'):(m+'m');
+    if(h>0)return h+'h '+(m%60)+'m';
+    return m+'m '+(s%60)+'s';
+  }
+  function inPlay(){
+    return S.startIso&&new Date(S.startIso).getTime()<=Date.now();
+  }
+  function tick(){
+    if(S.startIso){
+      $('countd').textContent=inPlay()?'in play':'starts in '+fmtCountdown(S.startIso);
+    }
+    if(S.fetchedAt){
+      var age=Math.max(0,Math.round((Date.now()-S.fetchedAt)/1000));
+      $('refreshed').textContent=age<2?'quotes refreshed just now':'quotes refreshed '+age+'s ago';
+    }
   }
   function fmtEt(iso){
     try{
@@ -229,10 +248,16 @@ footer b{color:var(--dim);font-weight:600}
     $('offer').style.display='block';
     var takeLine=q.takeWaived?'take waived (de minimis)':('published take '+usd(q.takeCents)+' ('+(q.takeBps/100)+'% of credit sourced)');
     var parityShort=(pr.parityNote||'').split(';')[0];
+    var gapRow='';
+    if(pr.pmYesPriceMilli>0){
+      var pmYes=centsFromMilli(pr.pmYesPriceMilli);
+      gapRow='<div class="row"><span>same game, two prices</span><b>Kalshi '+q.markCents+'\\u00A2 · Polymarket '+pmYes+'\\u00A2 · the gap funds your credit</b></div>';
+    }
     $('legs').innerHTML=
       '<div class="row"><span>protected on</span><b>Kalshi '+pr.kalshiTicker+'</b></div>'+
       '<div class="row"><span>hedged on</span><b>Polymarket '+pr.pmEventSlug+'</b></div>'+
       '<div class="row"><span>same result</span><b>'+parityShort+'</b></div>'+
+      gapRow+
       '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2 · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
       '<div class="row"><span>without protection</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
       '<div class="row"><span>buy '+shares(q.hedge.sharesMilli)+' shares</span><b>'+q.hedge.outcome+' @ avg '+centsFromMilli(q.hedge.avgPriceMilli)+'\\u00A2 · Polymarket</b></div>'+
@@ -263,7 +288,8 @@ footer b{color:var(--dim);font-weight:600}
     $('title').textContent=pr.kalshiSide+' to win?';
     $('matchline').textContent=pr.pmEventTitle+' · starts '+fmtEt(pr.gameStartTime);
     $('chance').textContent=pr.markCents+'%';
-    $('countd').textContent='starts in '+fmtCountdown(pr.gameStartTime);
+    S.startIso=pr.gameStartTime;
+    $('countd').textContent=inPlay()?'in play':'starts in '+fmtCountdown(pr.gameStartTime);
 
     var val=pr.markCents*pos.contracts, cost=pos.entryCents*pos.contracts, pnl=val-cost;
     var src=pos.entrySource==='real_print'?'entry from a real Kalshi trade':'entered now';
@@ -276,7 +302,12 @@ footer b{color:var(--dim);font-weight:600}
 
     var t=$('toggle');
     if(S.phase==='idle'){
-      if(q&&q.ok){
+      if(inPlay()){
+        t.disabled=true; t.checked=false;
+        hideOffer();
+        $('refusal').innerHTML='<b>In play.</b> Protection locks before the game starts; from here the position rides to the official final score.';
+        $('refusal').classList.add('show');
+      } else if(q&&q.ok){
         t.disabled=false;
         $('refusal').classList.remove('show');
         paintOffer(q); // the live offer is visible BEFORE the flip
@@ -288,8 +319,8 @@ footer b{color:var(--dim);font-weight:600}
         $('refusal').classList.add('show');
       }
     }
-    if(S.phase==='protected'&&S.terms){
-      if(new Date(pr.gameStartTime).getTime()<=Date.now()){ /* in play: hold to settlement */ }
+    if(S.phase==='protected'&&S.terms&&inPlay()){
+      $('paysline').textContent='payout at the final score';
     }
   }
 
@@ -321,13 +352,13 @@ footer b{color:var(--dim);font-weight:600}
 
   function poll(){
     fetch('/api/showcase').then(function(r){return r.json()}).then(function(p){
-      S.payload=p; render();
+      S.payload=p; S.fetchedAt=Date.now(); render();
     }).catch(function(){
       $('err').textContent='live feed unreachable; retrying…';
       $('err').classList.add('show');
     });
   }
-  poll(); setInterval(poll,10000); setInterval(render,30000);
+  poll(); setInterval(poll,10000); setInterval(render,30000); setInterval(tick,1000);
 })();
 </script>
 </body>

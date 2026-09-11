@@ -23,6 +23,10 @@ test("cross-venue app html: pairing is explicit and honest", () => {
   assert.ok(html.includes("settled by the official final score"), "plain settlement line");
   assert.ok(html.includes("whitelist"), "whitelist discipline explained");
   assert.ok(html.includes("simulated fills at live quotes"));
+  assert.ok(html.includes("same game, two prices"), "venue gap row makes the credit source legible");
+  assert.ok(html.includes("the gap funds your credit"));
+  assert.ok(html.includes('id="refreshed"'), "quote freshness microtext");
+  assert.ok(html.includes("In play."), "graceful in-play state");
 });
 
 test("cross-venue app html: kalshi-native vocabulary, total dollars, one-tap", () => {
