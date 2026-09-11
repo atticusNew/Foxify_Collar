@@ -71,6 +71,30 @@ export function walkPmAsks(
   };
 }
 
+/**
+ * The true cost of the protection in expected-value terms at the market's own
+ * odds, in basis points of the naked position's expected value. Exact integer
+ * math in centi-cent units; positive = the insurance costs EV, negative = the
+ * venue gap is fat enough that the protected position beats the naked one.
+ *
+ *   nakedEV     = mark * N                      (per contract: 100c w.p. mark/100)
+ *   protectedEV = (cap*N + credit) * mark/100 + (floor*N + credit) * (100-mark)/100
+ */
+export function evCostBps(
+  markCents: number,
+  floorCents: number,
+  capCents: number,
+  creditCents: number,
+  contracts: number,
+): number {
+  const nakedX = 100 * contracts * markCents; // centi-cents
+  if (nakedX <= 0) return 0;
+  const protX =
+    (capCents * contracts + creditCents) * markCents +
+    (floorCents * contracts + creditCents) * (100 - markCents);
+  return Math.round(((nakedX - protX) * 10_000) / nakedX);
+}
+
 export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
   const { config: cfg, contracts, markCents, entryCents, pair } = inputs;
 

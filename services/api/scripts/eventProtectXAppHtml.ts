@@ -105,6 +105,20 @@ footer b{color:var(--dim);font-weight:600}
 .err{color:var(--loss);font-size:13px;padding:8px 2px;display:none}
 .err.show{display:block}
 .refreshed{color:var(--faint);font-size:11px;text-align:right;margin-top:10px;font-variant-numeric:tabular-nums}
+.board .bt{font-weight:650;font-size:15px}
+.board .bs{color:var(--faint);font-size:12px;margin-top:2px}
+.brow{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:flex-start}
+#boardrows .brow:first-child{margin-top:10px}
+.brow .g{font-weight:600;font-size:13.5px}
+.brow .g .lg{color:var(--faint);font-weight:500;font-size:10.5px;margin-left:6px;text-transform:uppercase;letter-spacing:.04em}
+.brow .g .now{color:var(--green-deep);background:var(--green-wash);font-size:10.5px;border-radius:5px;padding:1px 6px;margin-left:6px;font-weight:650}
+.brow .m{color:var(--faint);font-size:11.5px;margin-top:2px}
+.brow .rv{text-align:right;font-variant-numeric:tabular-nums;flex:none}
+.brow .terms{font-size:12.5px;font-weight:600}
+.brow .ev{font-size:11.5px;margin-top:2px;font-weight:600}
+.ev.good{color:var(--green)}
+.ev.fair{color:var(--dim)}
+.ev.rich{color:var(--warn)}
 .loading{display:flex;flex-direction:column;align-items:center;gap:12px;padding:34px 0 30px;color:var(--dim);font-size:13px;text-align:center}
 .loading .note{color:var(--faint);font-size:12px}
 .spinner{width:26px;height:26px;border-radius:50%;border:3px solid var(--green-wash);border-top-color:var(--green);animation:spin .8s linear infinite}
@@ -173,6 +187,12 @@ footer b{color:var(--dim);font-weight:600}
     </div>
   </div>
 
+  <div class="card board" id="boardcard" style="display:none">
+    <div class="bt">Best protection right now</div>
+    <div class="bs">every whitelisted game, quoted live on both venues, ranked by what the protection really costs</div>
+    <div id="boardrows"></div>
+  </div>
+
   <div class="card how">
     <details>
       <summary>How this works</summary>
@@ -239,6 +259,20 @@ footer b{color:var(--dim);font-weight:600}
     };
   }
 
+  function evCostBps(mark,floor,cap,credit,n){
+    var naked=100*n*mark;
+    if(naked<=0)return 0;
+    var prot=(cap*n+credit)*mark+(floor*n+credit)*(100-mark);
+    return Math.round((naked-prot)*10000/naked);
+  }
+  function evLine(bps){
+    var pct=Math.abs(bps/100).toFixed(1);
+    return bps<0?('pays '+pct+'% above expected value'):('costs '+pct+'% of expected value');
+  }
+  function evClass(bps){
+    return bps<500?'good':(bps<=1500?'fair':'rich');
+  }
+
   function paintOffer(q){
     var p=S.payload,pr=p.pair,pos=p.position;
     var o=outcomeTotals(q);
@@ -264,6 +298,7 @@ footer b{color:var(--dim);font-weight:600}
       '<div class="row"><span>hedge cost</span><b>'+usd(q.hedge.costCents)+'</b></div>'+
       '<div class="row"><span>venue fees</span><b>'+usd(q.feesCents)+'</b></div>'+
       '<div class="row"><span>economics</span><b>'+takeLine+'</b></div>'+
+      '<div class="row"><span>cost of protection</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+' at current odds</b></div>'+
       '<div class="row"><span>fills</span><b>simulated fills at live quotes</b></div>';
     $('hedge').style.display='block';
   }
@@ -277,7 +312,7 @@ footer b{color:var(--dim);font-weight:600}
     var p=S.payload; if(!p)return;
     $('err').classList.remove('show');
     $('loading').style.display='none';
-    if(!p.ok||!p.pair){ $('eyeline').textContent=p.error||'no whitelisted pair quotable right now'; $('main').style.display='none'; return; }
+    if(!p.ok||!p.pair){ $('eyeline').textContent=p.error||'no whitelisted pair quotable right now'; $('main').style.display='none'; $('boardcard').style.display='none'; return; }
     $('main').style.display='block';
     var pr=p.pair,pos=p.position,q=p.quote;
     var key=pr.kalshiTicker;
@@ -322,6 +357,26 @@ footer b{color:var(--dim);font-weight:600}
     if(S.phase==='protected'&&S.terms&&inPlay()){
       $('paysline').textContent='payout at the final score';
     }
+
+    renderBoard(p);
+  }
+
+  function renderBoard(p){
+    var b=p.board||[];
+    if(!b.length){ $('boardcard').style.display='none'; return; }
+    var html='';
+    for(var i=0;i<b.length;i++){
+      var r=b[i];
+      var chip=(p.pair&&r.kalshiTicker===p.pair.kalshiTicker)?'<span class="now">showcased</span>':'';
+      html+='<div class="brow">'+
+        '<div><div class="g">'+r.kalshiSide+' to win?<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
+        '<div class="m">'+r.pmEventTitle+' · '+fmtEt(r.gameStartTime)+' · '+r.markCents+'% chance</div></div>'+
+        '<div class="rv"><div class="terms">floor '+r.floorCents+'\\u00A2 · cap '+r.capCents+'\\u00A2 · credit '+usd(r.creditCents)+'</div>'+
+        '<div class="ev '+evClass(r.evCostBps)+'">'+evLine(r.evCostBps)+'</div></div>'+
+        '</div>';
+    }
+    $('boardrows').innerHTML=html;
+    $('boardcard').style.display='block';
   }
 
   function resetSim(){

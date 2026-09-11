@@ -29,6 +29,16 @@ test("cross-venue app html: pairing is explicit and honest", () => {
   assert.ok(html.includes("In play."), "graceful in-play state");
 });
 
+test("cross-venue app html: the scanner board ranks protection by its true cost", () => {
+  const html = renderEventXAppHtml();
+  assert.ok(html.includes("Best protection right now"), "board card present");
+  assert.ok(html.includes("ranked by what the protection really costs"));
+  assert.ok(html.includes('id="boardrows"'), "board rows container");
+  assert.ok(html.includes("cost of protection"), "EV honesty line in the drawer");
+  assert.ok(html.includes("% of expected value"), "EV framing in plain words");
+  assert.ok(html.includes("pays "), "negative EV cost (venue-gap edge) has its own wording");
+});
+
 test("cross-venue app html: kalshi-native vocabulary, total dollars, one-tap", () => {
   const html = renderEventXAppHtml();
   assert.ok(html.includes("your minimum payout"), "minimum payout is the hero");

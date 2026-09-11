@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  evCostBps,
   quoteCrossWrap,
   walkPmAsks,
   type CrossPricerInputs,
@@ -26,6 +27,25 @@ import {
   type PmBook,
 } from "../src/eventCollar/crossVenue/types";
 import type { KalshiMarket } from "../src/eventCollar/types";
+
+// ── EV cost of protection (the scanner's honesty number) ──
+
+test("evCostBps: hand-computed against the live SEA and BTC examples", () => {
+  // Mariners quote: mark 60, floor 52 / cap 63, credit 69c on 150 contracts.
+  // nakedEV = 900000 centi-cents; protectedEV = 9519*60 + 7869*40 = 885900
+  // -> cost 14100/900000 = 156.7 bps (~1.6% of EV: cheap insurance)
+  assert.equal(evCostBps(60, 52, 63, 69, 150), 157);
+
+  // The founder's OKX screenshot: mark 42, floor 12 / cap 47, credit $3.81.
+  // -> 3038 bps (~30.4% of EV: expensive insurance, honestly displayed)
+  assert.equal(evCostBps(42, 12, 47, 381, 150), 3038);
+
+  // Fat venue gap: a credit large enough that protection BEATS the naked hold.
+  assert.equal(evCostBps(50, 48, 55, 500, 150), -967);
+
+  // Degenerate mark never divides by zero.
+  assert.equal(evCostBps(0, 10, 20, 5, 150), 0);
+});
 
 // ── exact decimal parsing ──
 

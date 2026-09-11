@@ -30,7 +30,7 @@ import type { KalshiMarket } from "../src/eventCollar/types";
 import { LEAGUE_TEMPLATES } from "../src/eventCollar/crossVenue/resolutionWhitelist";
 import { matchKalshiMarket } from "../src/eventCollar/crossVenue/eventMatcher";
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
-import { quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
+import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import {
   DEFAULT_CROSS_CONFIG,
   type CrossQuoteResult,
@@ -43,12 +43,30 @@ const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
 const LEDGER_PATH = process.env.EVENT_X_LEDGER_PATH || "/tmp/event-demo/cross-quotes.jsonl";
 const MAX_MATCH_ATTEMPTS = 10;
+/** Scanner board cap: how many pairings get live-quoted per refresh. */
+const MAX_BOARD_ROWS = Number(process.env.EVENT_X_BOARD_ROWS || 6);
 
 function searchConfig(): CrossSearchConfig {
   return {
     ...DEFAULT_CROSS_CONFIG,
     takeBps: Number(process.env.EVENT_X_TAKE_BPS || DEFAULT_CROSS_CONFIG.takeBps),
   };
+}
+
+/** One scanner-board row: a live-quoted protection across the venue pair. */
+export interface BoardRow {
+  league: string;
+  kalshiTicker: string;
+  kalshiSide: string;
+  pmEventTitle: string;
+  pmEventSlug: string;
+  gameStartTime: string;
+  markCents: number;
+  floorCents: number;
+  capCents: number;
+  creditCents: number;
+  /** cost of the protection in bps of the naked position's EV (negative = protection beats naked) */
+  evCostBps: number;
 }
 
 export interface CrossShowcasePayload {
@@ -79,6 +97,8 @@ export interface CrossShowcasePayload {
     entryTime: string | null;
   } | null;
   quote: CrossQuoteResult | null;
+  /** every quotable whitelisted game, ranked by what the protection really costs */
+  board: BoardRow[];
   error?: string;
 }
 
@@ -144,11 +164,13 @@ async function quoteCandidate(pair: MatchedPair, markCents: number, now: Date): 
 async function buildPayload(): Promise<CrossShowcasePayload> {
   const now = new Date();
 
-  // Walk the whitelisted leagues and their ranked games: showcase the first
-  // verified pairing whose venues fund a positive credit. When none can, fall
-  // back to the best pairing's honest refusal. Any single fetch failure skips
-  // that candidate instead of taking the service down.
-  let chosen: CandidateResult | null = null;
+  // The scanner: walk the whitelisted leagues and their ranked games, quote
+  // EVERY verified pairing (up to the board cap), and rank the results by what
+  // the protection really costs in expected-value terms. The best-value row is
+  // the showcase. When nothing funds a credit, fall back to the best pairing's
+  // honest refusal. Any single fetch failure skips that candidate instead of
+  // taking the service down.
+  const scanned: Array<{ res: CandidateResult; evBps: number }> = [];
   let fallback: CandidateResult | null = null;
   let fetchFailures = 0;
   // Two strikes and out: fetchJsonWithRetry already retries each call, so a
@@ -166,6 +188,7 @@ async function buildPayload(): Promise<CrossShowcasePayload> {
     const ranked = rankCandidates(markets);
     let attempts = 0;
     for (const cand of ranked) {
+      if (scanned.length >= MAX_BOARD_ROWS) break outer;
       if (attempts >= MAX_MATCH_ATTEMPTS) break;
       attempts += 1;
       let pair: MatchedPair | null;
@@ -193,13 +216,48 @@ async function buildPayload(): Promise<CrossShowcasePayload> {
       }
       if (!fallback) fallback = result;
       if (result.quote.ok) {
-        chosen = result;
-        break outer;
+        scanned.push({
+          res: result,
+          evBps: evCostBps(
+            result.markCents,
+            result.quote.floorCents,
+            result.quote.capCents,
+            result.quote.creditCents,
+            result.position.contracts,
+          ),
+        });
       }
     }
   }
 
-  const use = chosen ?? fallback;
+  // Cheapest true insurance cost first; bigger credit breaks ties.
+  scanned.sort((a, b) => {
+    if (a.evBps !== b.evBps) return a.evBps - b.evBps;
+    const ca = a.res.quote.ok ? a.res.quote.creditCents : 0;
+    const cb = b.res.quote.ok ? b.res.quote.creditCents : 0;
+    return cb - ca;
+  });
+
+  const board: BoardRow[] = scanned
+    .filter((s) => s.res.quote.ok)
+    .map((s) => {
+      const q = s.res.quote as Extract<CrossQuoteResult, { ok: true }>;
+      return {
+        league: s.res.pair.league,
+        kalshiTicker: s.res.pair.kalshi.ticker,
+        kalshiSide: s.res.pair.kalshi.subtitle,
+        pmEventTitle: s.res.pair.pm.eventTitle,
+        pmEventSlug: s.res.pair.pm.eventSlug,
+        gameStartTime: s.res.pair.gameStartTime,
+        markCents: s.res.markCents,
+        floorCents: q.floorCents,
+        capCents: q.capCents,
+        creditCents: q.creditCents,
+        evCostBps: s.evBps,
+      };
+    });
+
+  const use = scanned[0]?.res ?? fallback;
   if (!use) {
     return {
       ok: false,
@@ -207,6 +265,7 @@ async function buildPayload(): Promise<CrossShowcasePayload> {
       pair: null,
       position: null,
       quote: null,
+      board: [],
       error: fetchFailures > 0
         ? "a venue is unreachable from this machine right now (Polymarket's book API is blocked on some networks; a relay via PM_CLOB_REST_BASE fixes it)"
         : "no whitelisted cross-venue pair is quotable right now",
@@ -255,6 +314,7 @@ async function buildPayload(): Promise<CrossShowcasePayload> {
     },
     position,
     quote,
+    board,
   };
 }
 
