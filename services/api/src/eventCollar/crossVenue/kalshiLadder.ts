@@ -21,7 +21,6 @@ import type {
   CrossQuoteResult,
   CrossSearchConfig,
   KalshiSelfHedgeLeg,
-  MatchedPair,
 } from "./types";
 
 /** One level of No-side executable depth (derived from a yes bid). */
@@ -109,8 +108,18 @@ export function walkNoAsks(
   };
 }
 
+/**
+ * The self-hedge route needs no cross-venue pairing, so it accepts a minimal
+ * structural subset of MatchedPair: the protected market's ticker, the moment
+ * protection must lock (game start for sports, market close for crypto), and
+ * the Polymarket slug only when one exists.
+ */
 export interface LadderPricerInputs {
-  pair: MatchedPair;
+  pair: {
+    kalshi: { ticker: string };
+    gameStartTime: string;
+    pm?: { eventSlug: string };
+  };
   markCents: number;
   entryCents: number;
   contracts: number;
@@ -130,7 +139,7 @@ export function quoteLadderWrap(inputs: LadderPricerInputs): CrossQuoteResult {
     return {
       ok: false,
       code: "market_too_close_to_start",
-      detail: `the game starts in ${Math.max(0, Math.round(minutesToStart))}m; pre-game protection needs at least ${cfg.minMinutesToStart}m`,
+      detail: `this market locks in ${Math.max(0, Math.round(minutesToStart))}m; protection needs at least ${cfg.minMinutesToStart}m`,
     };
   }
   if (markCents < cfg.markLowerBoundCents || markCents > cfg.markUpperBoundCents) {
@@ -269,7 +278,7 @@ export function quoteLadderWrap(inputs: LadderPricerInputs): CrossQuoteResult {
   return {
     ok: true,
     kalshiTicker: pair.kalshi.ticker,
-    pmEventSlug: pair.pm.eventSlug,
+    pmEventSlug: pair.pm?.eventSlug ?? "",
     contracts,
     markCents,
     entryCents,

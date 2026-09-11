@@ -192,6 +192,20 @@ test("quoteLadderWrap: hedge is never under-sized (venue minimum clamp)", () => 
   assert.equal(result.creditCents, 3);
 });
 
+test("quoteLadderWrap: quotes without a cross-venue pairing (crypto strike markets)", () => {
+  // The self-hedge route needs no Polymarket listing: a minimal pair shape
+  // (ticker + lock time) must quote identically to the full MatchedPair.
+  const result = quoteLadderWrap(
+    baseInputs({
+      pair: { kalshi: { ticker: "KXBTCD-26SEP1217-T86749.99" }, gameStartTime: GAME_START.toISOString() },
+    }),
+  );
+  assert.ok(result.ok, JSON.stringify(result));
+  assert.equal(result.kalshiTicker, "KXBTCD-26SEP1217-T86749.99");
+  assert.equal(result.pmEventSlug, "");
+  assert.equal(result.creditCents, 731);
+});
+
 test("quoteLadderWrap: refusal codes", () => {
   const tooClose = quoteLadderWrap(
     baseInputs({ now: new Date(GAME_START.getTime() - 5 * 60_000) }),
