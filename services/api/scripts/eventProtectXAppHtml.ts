@@ -11,6 +11,7 @@
  */
 
 import { ATTICUS_LOGO_DATA_URI } from "./eventProtectLogo";
+import type { CrossLedgerSummary } from "../src/eventCollar/crossVenue/crossLedger";
 
 export function renderEventXAppHtml(): string {
   return `<!doctype html>
@@ -107,18 +108,23 @@ footer b{color:var(--dim);font-weight:600}
 .refreshed{color:var(--faint);font-size:11px;text-align:right;margin-top:10px;font-variant-numeric:tabular-nums}
 .board .bt{font-weight:650;font-size:15px}
 .board .bs{color:var(--faint);font-size:12px;margin-top:2px}
-.brow{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:flex-start}
+.brow{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:flex-start;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.brow:active{background:var(--card2)}
 #boardrows .brow:first-child{margin-top:10px}
 .brow .g{font-weight:600;font-size:13.5px}
 .brow .g .lg{color:var(--faint);font-weight:500;font-size:10.5px;margin-left:6px;text-transform:uppercase;letter-spacing:.04em}
 .brow .g .now{color:var(--green-deep);background:var(--green-wash);font-size:10.5px;border-radius:5px;padding:1px 6px;margin-left:6px;font-weight:650}
 .brow .m{color:var(--faint);font-size:11.5px;margin-top:2px}
 .brow .rv{text-align:right;font-variant-numeric:tabular-nums;flex:none}
-.brow .terms{font-size:12.5px;font-weight:600}
+.brow .gr{font-size:13.5px;font-weight:700}
+.gr.good{color:var(--green)}
+.gr.fair{color:var(--dim)}
+.gr.rich{color:var(--warn)}
 .brow .ev{font-size:11.5px;margin-top:2px;font-weight:600}
 .ev.good{color:var(--green)}
 .ev.fair{color:var(--dim)}
 .ev.rich{color:var(--warn)}
+footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 .loading{display:flex;flex-direction:column;align-items:center;gap:12px;padding:34px 0 30px;color:var(--dim);font-size:13px;text-align:center}
 .loading .note{color:var(--faint);font-size:12px}
 .spinner{width:26px;height:26px;border-radius:50%;border:3px solid var(--green-wash);border-top-color:var(--green);animation:spin .8s linear infinite}
@@ -189,7 +195,7 @@ footer b{color:var(--dim);font-weight:600}
 
   <div class="card board" id="boardcard" style="display:none">
     <div class="bt">Best protection right now</div>
-    <div class="bs">every whitelisted game, quoted live on both venues, ranked by what the protection really costs</div>
+    <div class="bs">each game priced on two hedge routes, live; the cheaper protection wins · tap a game to load it</div>
     <div id="boardrows"></div>
   </div>
 
@@ -197,9 +203,9 @@ footer b{color:var(--dim);font-weight:600}
     <details>
       <summary>How this works</summary>
       <ul>
-        <li><b>Real markets on two venues.</b> The game and its prices are live from Kalshi's and Polymarket's public data. The protection terms are quoted from Polymarket's live order book at executable depth.</li>
-        <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The same game on the other venue prices that risk differently; the difference is your credit.</li>
-        <li><b>The hedge is the same game.</b> Protection is backed by buying the opposing outcome on the other venue, which pays exactly when your side loses. Pairs quote only from a curated whitelist where both venues verifiably settle on the identical official result.</li>
+        <li><b>Real markets, two hedge routes.</b> The game and its prices are live from Kalshi's and Polymarket's public data. Every protection is priced two ways at executable depth: the same game's opposing side on Polymarket, and the protected market's own No side on Kalshi. You get the cheaper one.</li>
+        <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The market prices that downside risk; when a route prices it cheaper than the cap slice you sold, the difference is your credit.</li>
+        <li><b>The hedge is the same game.</b> Protection is backed by buying the side that pays exactly when yours loses - on the other venue or on the very same market. Cross-venue pairs quote only from a curated whitelist where both venues verifiably settle on the identical official result; the self-hedge route is the same instrument by construction.</li>
         <li><b>Honest economics.</b> We keep a published share of the credit we source, waived when tiny. Nothing is embedded in your terms. When the venues cannot fund a credit, we refuse and say why.</li>
         <li><b>Read only.</b> This demonstration holds no keys or wallets, places no orders (hedge fills are simulated at live quotes), and cannot move funds.</li>
       </ul>
@@ -209,13 +215,13 @@ footer b{color:var(--dim);font-weight:600}
   <div class="err" id="err"></div>
 
   <footer>
-    <b>Demonstration, not an offer.</b> The position and lifecycle above are simulated; market prices and hedge quotes are live from both venues. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice.
+    <b>Demonstration, not an offer.</b> The position and lifecycle above are simulated; market prices and hedge quotes are live from both venues. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice. Every quote and refusal is logged: <a href="/receipts">see the receipts</a>.
   </footer>
 </div>
 
 <script>
 (function(){
-  var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,fetchedAt:0};
+  var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,fetchedAt:0,sel:null};
   var $=function(id){return document.getElementById(id)};
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
   function shares(milli){var s=milli/1000;return (Math.round(s*10)/10).toLocaleString('en-US')}
@@ -272,6 +278,24 @@ footer b{color:var(--dim);font-weight:600}
   function evClass(bps){
     return bps<500?'good':(bps<=1500?'fair':'rich');
   }
+  function gradeWord(bps){
+    if(bps<0)return 'pays you';
+    return bps<500?'cheap':(bps<=1500?'fair':'rich');
+  }
+  function routeName(r){
+    return r==='kalshi_self'?'Kalshi':'Polymarket';
+  }
+  function routesLine(p){
+    var rc=p.routesChecked||[];
+    if(!rc.length)return '';
+    var parts=[];
+    for(var i=0;i<rc.length;i++){
+      var r=rc[i];
+      var nm=r.route==='kalshi_self'?'Kalshi self-hedge':'Polymarket';
+      parts.push(nm+' '+(r.ok?(Math.abs(r.evCostBps/100).toFixed(1)+'%'+(r.evCostBps<0?' rebate':'')):'no quote'));
+    }
+    return parts.join(' · ')+' · cheaper route wins';
+  }
 
   function paintOffer(q){
     var p=S.payload,pr=p.pair,pos=p.position;
@@ -281,24 +305,31 @@ footer b{color:var(--dim);font-weight:600}
     $('creditout').textContent=usd(q.creditCents);
     $('offer').style.display='block';
     var takeLine=q.takeWaived?'take waived (de minimis)':('published take '+usd(q.takeCents)+' ('+(q.takeBps/100)+'% of credit sourced)');
-    var parityShort=(pr.parityNote||'').split(';')[0];
+    var parityShort=(q.parityNote||pr.parityNote||'').split(';')[0];
+    var selfHedge=p.route==='kalshi_self';
+    var hedgedOn=selfHedge?('Kalshi '+pr.kalshiTicker+' · its own No side'):('Polymarket '+pr.pmEventSlug);
     var gapRow='';
-    if(pr.pmYesPriceMilli>0){
+    if(!selfHedge&&pr.pmYesPriceMilli>0){
       var pmYes=centsFromMilli(pr.pmYesPriceMilli);
       gapRow='<div class="row"><span>same game, two prices</span><b>Kalshi '+q.markCents+'\\u00A2 · Polymarket '+pmYes+'\\u00A2 · the gap funds your credit</b></div>';
     }
+    var buyRow=selfHedge
+      ?('<div class="row"><span>buy '+shares(q.hedge.contractsMilli)+' contracts</span><b>No @ avg '+q.hedge.avgPriceCents+'\\u00A2 · Kalshi, same market</b></div>')
+      :('<div class="row"><span>buy '+shares(q.hedge.sharesMilli)+' shares</span><b>'+q.hedge.outcome+' @ avg '+centsFromMilli(q.hedge.avgPriceMilli)+'\\u00A2 · Polymarket</b></div>');
+    var routesRow=routesLine(p);
     $('legs').innerHTML=
       '<div class="row"><span>protected on</span><b>Kalshi '+pr.kalshiTicker+'</b></div>'+
-      '<div class="row"><span>hedged on</span><b>Polymarket '+pr.pmEventSlug+'</b></div>'+
+      '<div class="row"><span>hedged on</span><b>'+hedgedOn+'</b></div>'+
       '<div class="row"><span>same result</span><b>'+parityShort+'</b></div>'+
       gapRow+
       '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2 · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
       '<div class="row"><span>without protection</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
-      '<div class="row"><span>buy '+shares(q.hedge.sharesMilli)+' shares</span><b>'+q.hedge.outcome+' @ avg '+centsFromMilli(q.hedge.avgPriceMilli)+'\\u00A2 · Polymarket</b></div>'+
+      buyRow+
       '<div class="row"><span>hedge cost</span><b>'+usd(q.hedge.costCents)+'</b></div>'+
       '<div class="row"><span>venue fees</span><b>'+usd(q.feesCents)+'</b></div>'+
       '<div class="row"><span>economics</span><b>'+takeLine+'</b></div>'+
       '<div class="row"><span>cost of protection</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+' at current odds</b></div>'+
+      (routesRow?('<div class="row"><span>routes checked</span><b>'+routesRow+'</b></div>'):'')+
       '<div class="row"><span>fills</span><b>simulated fills at live quotes</b></div>';
     $('hedge').style.display='block';
   }
@@ -315,12 +346,13 @@ footer b{color:var(--dim);font-weight:600}
     if(!p.ok||!p.pair){ $('eyeline').textContent=p.error||'no whitelisted pair quotable right now'; $('main').style.display='none'; $('boardcard').style.display='none'; return; }
     $('main').style.display='block';
     var pr=p.pair,pos=p.position,q=p.quote;
+    if(S.sel&&pr.kalshiTicker!==S.sel){ S.sel=null; }
     var key=pr.kalshiTicker;
     if(S.pairKey&&S.pairKey!==key&&S.phase!=='idle'){ resetSim(); }
     S.pairKey=key;
 
     $('eyeline').textContent='live from Kalshi + Polymarket · '+pr.league.toUpperCase();
-    $('title').textContent=pr.kalshiSide+' to win?';
+    $('title').textContent=(pr.sideName||pr.kalshiSide)+' to win?';
     $('matchline').textContent=pr.pmEventTitle+' · starts '+fmtEt(pr.gameStartTime);
     $('chance').textContent=pr.markCents+'%';
     S.startIso=pr.gameStartTime;
@@ -355,7 +387,7 @@ footer b{color:var(--dim);font-weight:600}
       }
     }
     if(S.phase==='protected'&&S.terms&&inPlay()){
-      $('paysline').textContent='payout at the final score';
+      $('toggledesc').textContent='in play · terms locked, rides to the final score';
     }
 
     renderBoard(p);
@@ -367,11 +399,12 @@ footer b{color:var(--dim);font-weight:600}
     var html='';
     for(var i=0;i<b.length;i++){
       var r=b[i];
-      var chip=(p.pair&&r.kalshiTicker===p.pair.kalshiTicker)?'<span class="now">showcased</span>':'';
-      html+='<div class="brow">'+
-        '<div><div class="g">'+r.kalshiSide+' to win?<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
-        '<div class="m">'+r.pmEventTitle+' · '+fmtEt(r.gameStartTime)+' · '+r.markCents+'% chance</div></div>'+
-        '<div class="rv"><div class="terms">floor '+r.floorCents+'\\u00A2 · cap '+r.capCents+'\\u00A2 · credit '+usd(r.creditCents)+'</div>'+
+      var chip=(p.pair&&r.kalshiTicker===p.pair.kalshiTicker)?'<span class="now">showing</span>':'';
+      html+='<div class="brow" data-ticker="'+r.kalshiTicker+'">'+
+        '<div><div class="g">'+(r.sideName||r.kalshiSide)+' to win?<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
+        '<div class="m">'+r.pmEventTitle+' · '+fmtEt(r.gameStartTime)+' · '+r.markCents+'% chance</div>'+
+        '<div class="m">floor '+r.floorCents+'\\u00A2 · cap '+r.capCents+'\\u00A2 · credit '+usd(r.creditCents)+' · via '+routeName(r.route)+'</div></div>'+
+        '<div class="rv"><div class="gr '+evClass(r.evCostBps)+'">'+gradeWord(r.evCostBps)+'</div>'+
         '<div class="ev '+evClass(r.evCostBps)+'">'+evLine(r.evCostBps)+'</div></div>'+
         '</div>';
     }
@@ -395,18 +428,30 @@ footer b{color:var(--dim);font-weight:600}
     // one tap: the visible offer becomes the locked terms immediately
     S.phase='protected'; S.terms=q;
     paintOffer(q);
-    $('paysline').textContent='payout when the game settles';
+    var ot=outcomeTotals(q);
+    $('paysline').textContent='guaranteed '+usd(ot.no)+' to '+usd(ot.yes);
     $('protectedline').classList.add('show');
     $('toggledesc').textContent='terms locked at your tap';
   });
 
   document.addEventListener('click',function(ev){
     var el=ev.target;
-    while(el&&el!==document){ if(el.id==='undo'){ ev.preventDefault(); resetSim(); return; } el=el.parentNode; }
+    while(el&&el!==document){
+      if(el.id==='undo'){ ev.preventDefault(); resetSim(); return; }
+      if(el.getAttribute&&el.getAttribute('data-ticker')){
+        var t=el.getAttribute('data-ticker');
+        if(S.payload&&S.payload.pair&&S.payload.pair.kalshiTicker===t)return;
+        S.sel=t; poll();
+        try{window.scrollTo({top:0,behavior:'smooth'})}catch(e){window.scrollTo(0,0)}
+        return;
+      }
+      el=el.parentNode;
+    }
   });
 
   function poll(){
-    fetch('/api/showcase').then(function(r){return r.json()}).then(function(p){
+    var u='/api/showcase'+(S.sel?('?ticker='+encodeURIComponent(S.sel)):'');
+    fetch(u).then(function(r){return r.json()}).then(function(p){
       S.payload=p; S.fetchedAt=Date.now(); render();
     }).catch(function(){
       $('err').textContent='live feed unreachable; retrying…';
@@ -416,6 +461,131 @@ footer b{color:var(--dim);font-weight:600}
   poll(); setInterval(poll,10000); setInterval(render,30000); setInterval(tick,1000);
 })();
 </script>
+</body>
+</html>`;
+}
+
+const REFUSAL_LABELS: Record<string, string> = {
+  credit_nonpositive: "the venues could not fund a positive credit",
+  market_too_close_to_start: "the game was too close to starting",
+  mark_out_of_range: "the odds were outside the quotable band",
+  pm_book_empty: "no executable depth on the Polymarket book",
+  pm_book_too_thin: "the Polymarket book was too thin for the size",
+  kalshi_book_empty: "no executable depth on the market's No side",
+  kalshi_book_too_thin: "the market's No side was too thin for the size",
+  no_matched_market: "no verified same-game listing on the other venue",
+  resolution_mismatch: "the venues' settlement rules did not verifiably match",
+};
+
+function usdFromCents(cents: number): string {
+  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * The public receipts page: the quote ledger aggregated into a plain-spoken
+ * scorecard. Every number is recomputed from the JSONL ledger on each request;
+ * nothing is stored or editable, which is the point.
+ */
+export function renderReceiptsHtml(s: CrossLedgerSummary): string {
+  const avgLine =
+    s.avgEvCostBps === null
+      ? "not yet recorded"
+      : s.avgEvCostBps < 0
+        ? `${Math.abs(s.avgEvCostBps / 100).toFixed(1)}% BETTER than the naked position, on average`
+        : `${(s.avgEvCostBps / 100).toFixed(1)}% of expected value, on average`;
+  const routeRows = Object.entries(s.routeSplit)
+    .sort((a, b) => b[1] - a[1])
+    .map(
+      ([route, n]) =>
+        `<div class="row"><span>${route === "kalshi_self" ? "hedged on the market's own No side (Kalshi)" : "hedged cross-venue (Polymarket)"}</span><b>${n}</b></div>`,
+    )
+    .join("");
+  const refusalRows = Object.entries(s.refusalsByCode)
+    .sort((a, b) => b[1] - a[1])
+    .map(
+      ([code, n]) =>
+        `<div class="row"><span>${escapeHtml(REFUSAL_LABELS[code] ?? code)}</span><b>${n}</b></div>`,
+    )
+    .join("");
+  const windowLine =
+    s.firstAt && s.lastAt
+      ? `Ledger window: ${escapeHtml(s.firstAt.slice(0, 16).replace("T", " "))} to ${escapeHtml(s.lastAt.slice(0, 16).replace("T", " "))} UTC.`
+      : "The ledger is empty; it fills as quotes are made.";
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="data:," />
+<title>Receipts · Earn &amp; Protect · events</title>
+<meta name="description" content="Every protection quote and every honest refusal this demo has made, aggregated from its append-only ledger." />
+<style>
+:root{
+  --bg:#f6f7f7; --card:#ffffff; --card2:#f2f4f4; --line:#e4e7e7;
+  --ink:#050d0a; --dim:#5c6a64; --faint:#98a49e;
+  --green:#00b67a; --green-deep:#014737; --green-wash:#e9f8f2; --warn:#b9862f;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
+.topbar{background:#050d0a}
+.topbar .in{max-width:430px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:10px 16px}
+.topbar .wordmark{color:#fff;font-weight:650;font-size:14px}
+.topbar .wordmark span{color:#8f9c96;font-weight:400}
+.topbar img{height:22px;display:block}
+.wrap{max-width:430px;margin:0 auto;padding:14px 14px 40px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 1px 2px rgba(5,13,10,.04)}
+h1{font-size:19px;font-weight:650;letter-spacing:-.01em}
+.sub{color:var(--dim);font-size:13px;margin-top:4px}
+.bignums{display:flex;gap:10px;margin-top:14px}
+.bignum{flex:1;background:var(--card2);border-radius:10px;padding:12px;text-align:center}
+.bignum .n{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.bignum .n.green{color:var(--green)}
+.bignum .l{color:var(--dim);font-size:11.5px;margin-top:2px}
+h2{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+.row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:13.5px;color:var(--dim);font-variant-numeric:tabular-nums;border-top:1px solid var(--line)}
+.row:first-of-type{border-top:0}
+.row b{color:var(--ink);font-weight:650;text-align:right}
+.back{display:inline-block;margin-top:2px;color:var(--green-deep);font-weight:600;font-size:13px;text-decoration:underline}
+footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
+footer b{color:var(--dim);font-weight:600}
+@media(min-width:700px){.wrap,.topbar .in{max-width:480px}}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="wordmark">Earn &amp; Protect <span>· receipts</span></div>
+  <img src="${ATTICUS_LOGO_DATA_URI}" alt="Atticus" />
+</div></div>
+<div class="wrap">
+  <div class="card">
+    <h1>Receipts</h1>
+    <div class="sub">Every quote this demo has priced and every one it refused, recomputed from the append-only ledger on each visit. Refusing honestly beats mispricing.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n green">${s.priced}</div><div class="l">quotes priced</div></div>
+      <div class="bignum"><div class="n">${s.refused}</div><div class="l">honest refusals</div></div>
+      <div class="bignum"><div class="n green">${usdFromCents(s.creditsSourcedCents)}</div><div class="l">credits sourced</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>What the protection really cost</h2>
+    <div class="row"><span>true cost of priced protection</span><b>${escapeHtml(avgLine)}</b></div>
+    <div class="row"><span>published take kept</span><b>${usdFromCents(s.takeKeptCents)}</b></div>
+  </div>
+  ${routeRows ? `<div class="card"><h2>Which route won</h2>${routeRows}</div>` : ""}
+  ${refusalRows ? `<div class="card"><h2>Why quotes were refused</h2>${refusalRows}</div>` : ""}
+  <div class="card">
+    <h2>Honesty notes</h2>
+    <div class="sub">${windowLine} The ledger lives on this instance's disk, so a redeploy starts a fresh window. Positions are simulated; every quote and refusal in these numbers came from live venue books at the moment it was made.</div>
+    <a class="back" href="/">back to the live board</a>
+  </div>
+  <footer>
+    <b>Demonstration, not an offer.</b> Aggregates cover simulated protection quotes priced from live public market data. Nothing here is investment advice.
+  </footer>
+</div>
 </body>
 </html>`;
 }
