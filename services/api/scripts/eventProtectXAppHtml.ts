@@ -42,7 +42,8 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .topbar img{height:22px;display:block}
 .wrap{max-width:430px;margin:0 auto;padding:14px 14px 40px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 1px 2px rgba(5,13,10,.04)}
-.eyebrow{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);margin-bottom:8px}
+.eyebrow{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);margin-bottom:8px;flex-wrap:wrap;row-gap:5px}
+.eyebrow #eyeline{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;flex:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .simlabel{margin-left:auto;font-size:9.5px;letter-spacing:.07em;color:var(--faint);border:1px solid var(--line);border-radius:99px;padding:3px 8px;text-transform:uppercase;white-space:nowrap}
@@ -79,7 +80,7 @@ h1{font-size:19px;line-height:1.3;font-weight:650;letter-spacing:-.01em}
 input:checked + .slider{background:var(--green)}
 input:checked + .slider:before{transform:translateX(22px)}
 input:disabled + .slider{opacity:.45;cursor:default}
-.protectedline{display:none;margin-top:12px;background:var(--green-wash);border:1px solid #cdeee0;border-radius:10px;padding:11px 13px;font-size:14px;align-items:center;justify-content:space-between}
+.protectedline{display:none;margin-top:12px;background:var(--green-wash);border:1px solid #cdeee0;border-radius:10px;padding:11px 13px;font-size:14px;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .protectedline.show{display:flex}
 .protectedline b{color:var(--green-deep);font-weight:650}
 .undo{background:#fff;border:1px solid var(--green);color:var(--green-deep);border-radius:9px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;min-width:72px}
@@ -87,9 +88,11 @@ input:disabled + .slider{opacity:.45;cursor:default}
 .hedge summary{cursor:pointer;color:var(--dim);font-size:13px;padding:7px 0;list-style:none}
 .hedge summary::before{content:"\\25B8";margin-right:6px;font-size:11px}
 .hedge[open] summary::before{content:"\\25BE"}
-.legs{background:var(--card2);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--dim)}
-.legs .row{display:flex;justify-content:space-between;padding:3px 0;font-variant-numeric:tabular-nums;gap:12px}
-.legs .row b{color:var(--ink);font-weight:600;text-align:right}
+.legs{background:var(--card2);border-radius:10px;padding:6px 12px;font-size:12px;color:var(--dim)}
+.legs .row{display:block;padding:7px 0;font-variant-numeric:tabular-nums;border-top:1px solid var(--line)}
+.legs .row:first-child{border-top:0}
+.legs .row span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
+.legs .row b{display:block;color:var(--ink);font-weight:600;margin-top:2px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere}
 .refusal{display:none;margin-top:12px;background:var(--warn-wash);border-left:3px solid var(--warn);border-radius:8px;padding:11px 13px;font-size:13px;color:var(--dim)}
 .refusal.show{display:block}
 .refusal b{color:var(--ink)}
@@ -109,19 +112,20 @@ footer b{color:var(--dim);font-weight:600}
 .refreshed{color:var(--faint);font-size:11px;text-align:right;margin-top:10px;font-variant-numeric:tabular-nums}
 .board .bt{font-weight:650;font-size:15px}
 .board .bs{color:var(--faint);font-size:12px;margin-top:2px}
-.brow{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:flex-start;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.brow{display:block;padding:11px 0;border-top:1px solid var(--line);cursor:pointer;-webkit-tap-highlight-color:transparent}
 .brow:active{background:var(--card2)}
 #boardrows .brow:first-child{margin-top:10px}
-.brow .g{font-weight:600;font-size:13.5px}
-.brow .g .lg{color:var(--faint);font-weight:500;font-size:10.5px;margin-left:6px;text-transform:uppercase;letter-spacing:.04em}
-.brow .g .now{color:var(--green-deep);background:var(--green-wash);font-size:10.5px;border-radius:5px;padding:1px 6px;margin-left:6px;font-weight:650}
-.brow .m{color:var(--faint);font-size:11.5px;margin-top:2px}
+.brow .btop{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.brow .g{font-weight:600;font-size:13.5px;min-width:0}
+.brow .g .lg{color:var(--faint);font-weight:500;font-size:10.5px;margin-left:6px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+.brow .g .now{color:var(--green-deep);background:var(--green-wash);font-size:10.5px;border-radius:5px;padding:1px 6px;margin-left:6px;font-weight:650;white-space:nowrap}
+.brow .m{color:var(--faint);font-size:11.5px;margin-top:3px}
 .brow .rv{text-align:right;font-variant-numeric:tabular-nums;flex:none}
-.brow .gr{font-size:13.5px;font-weight:700}
+.brow .gr{font-size:13.5px;font-weight:700;white-space:nowrap}
 .gr.good{color:var(--green)}
 .gr.fair{color:var(--dim)}
 .gr.rich{color:var(--warn)}
-.brow .ev{font-size:11.5px;margin-top:2px;font-weight:600}
+.brow .ev{font-size:11.5px;margin-top:2px;font-weight:600;white-space:nowrap}
 .ev.good{color:var(--green)}
 .ev.fair{color:var(--dim)}
 .ev.rich{color:var(--warn)}
@@ -137,12 +141,12 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 </head>
 <body>
 <div class="topbar"><div class="in">
-  <div class="wordmark">Earn &amp; Protect <span>· events · cross venue</span></div>
+  <div class="wordmark">Earn &amp; Protect <span>· events</span></div>
   <img src="${ATTICUS_LOGO_DATA_URI}" alt="Atticus" />
 </div></div>
 <div class="wrap">
   <div class="card" id="hero">
-    <div class="eyebrow"><span class="dot"></span><span id="eyeline">live from Kalshi + Polymarket</span><span class="simlabel">simulation · live pricing</span></div>
+    <div class="eyebrow"><span class="dot"></span><span id="eyeline">Kalshi + Polymarket</span><span class="simlabel">simulation · live pricing</span></div>
     <div class="loading" id="loading">
       <div class="spinner"></div>
       <div>scanning games and crypto across Kalshi and Polymarket…</div>
@@ -285,6 +289,10 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     var pct=Math.abs(bps/100).toFixed(1);
     return bps<0?('pays '+pct+'% above expected value'):('costs '+pct+'% of expected value');
   }
+  function evShort(bps){
+    var pct=Math.abs(bps/100).toFixed(1);
+    return bps<0?('pays '+pct+'%'):('costs '+pct+'%');
+  }
   function evClass(bps){
     return bps<500?'good':(bps<=1500?'fair':'rich');
   }
@@ -367,7 +375,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     S.kind=pr.kind||'sports';
     var crypto=S.kind==='crypto';
 
-    $('eyeline').textContent=(crypto?'live from Kalshi':'live from Kalshi + Polymarket')+' · '+pr.league.toUpperCase();
+    $('eyeline').textContent=(crypto?'Kalshi':'Kalshi + Polymarket')+' · '+pr.league.toUpperCase();
     $('title').textContent=(pr.sideName||pr.kalshiSide)+(crypto?'?':' to win?');
     $('matchline').textContent=pr.eventTitle+(crypto?' · settles ':' · starts ')+fmtEt(pr.eventTimeIso);
     $('settleline').textContent=crypto?'settled by the official index price at the close':'settled by the official final score';
@@ -429,11 +437,11 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       var chip=(p.pair&&r.kalshiTicker===p.pair.kalshiTicker)?'<span class="now">showing</span>':'';
       var rowTitle=(r.sideName||r.kalshiSide)+(r.kind==='crypto'?'?':' to win?');
       html+='<div class="brow" data-ticker="'+r.kalshiTicker+'">'+
-        '<div><div class="g">'+rowTitle+'<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
-        '<div class="m">'+r.eventTitle+' · '+fmtEt(r.eventTimeIso)+' · '+r.markCents+'% chance</div>'+
-        '<div class="m">floor '+r.floorCents+'\\u00A2 · cap '+r.capCents+'\\u00A2 · credit '+usd(r.creditCents)+' · via '+routeName(r.route)+'</div></div>'+
+        '<div class="btop"><div class="g">'+rowTitle+'<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
         '<div class="rv"><div class="gr '+evClass(r.evCostBps)+'">'+gradeWord(r.evCostBps)+'</div>'+
-        '<div class="ev '+evClass(r.evCostBps)+'">'+evLine(r.evCostBps)+'</div></div>'+
+        '<div class="ev '+evClass(r.evCostBps)+'">'+evShort(r.evCostBps)+'</div></div></div>'+
+        '<div class="m">'+r.eventTitle+' · '+fmtEt(r.eventTimeIso)+' · '+r.markCents+'% chance</div>'+
+        '<div class="m">floor '+r.floorCents+'\\u00A2 · cap '+r.capCents+'\\u00A2 · credit '+usd(r.creditCents)+' · via '+routeName(r.route)+'</div>'+
         '</div>';
     }
     if(b.length>LIMIT){
