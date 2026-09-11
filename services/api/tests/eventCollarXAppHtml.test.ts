@@ -11,6 +11,8 @@ test("cross-venue app html: honesty label, gating line, and structure", () => {
   assert.ok(html.includes("/api/showcase"), "polls the live endpoint");
   assert.ok(html.includes("width=device-width"), "mobile viewport");
   assert.ok(html.includes("Protect this position"));
+  assert.ok(html.includes('id="loading"'), "loading state while venues are paired");
+  assert.ok(html.includes("pairing the same game across Kalshi and Polymarket"));
 });
 
 test("cross-venue app html: pairing is explicit and honest", () => {

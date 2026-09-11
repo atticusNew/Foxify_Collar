@@ -217,8 +217,33 @@ async function buildPayload(): Promise<CrossShowcasePayload> {
   };
 }
 
+let refreshing: Promise<void> | null = null;
+
+function refreshInBackground(): void {
+  if (refreshing) return;
+  refreshing = buildPayload()
+    .then((payload) => {
+      cache = { at: Date.now(), payload };
+    })
+    .catch(() => {
+      /* keep serving the last good payload; next poll retries */
+    })
+    .finally(() => {
+      refreshing = null;
+    });
+}
+
+/**
+ * Stale-while-revalidate: visitors always get an instant answer from the last
+ * good payload while a background refresh keeps it current. Only the very
+ * first request after boot (cold cache) has to wait for the venue round-trips,
+ * and prewarming at startup usually removes even that.
+ */
 async function getCached(): Promise<CrossShowcasePayload> {
-  if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.payload;
+  if (cache) {
+    if (Date.now() - cache.at >= CACHE_TTL_MS) refreshInBackground();
+    return cache.payload;
+  }
   const payload = await buildPayload();
   cache = { at: Date.now(), payload };
   return payload;
@@ -258,6 +283,7 @@ if (process.env.NODE_ENV !== "test") {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`[event-protect-x] listening on :${PORT} (cross-venue tier 2)`);
+    void getCached(); // prewarm so the first visitor is not the one paying for venue round-trips
   });
 }
 

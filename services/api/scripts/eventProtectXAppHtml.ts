@@ -100,6 +100,10 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
 footer b{color:var(--dim);font-weight:600}
 .err{color:var(--loss);font-size:13px;padding:8px 2px;display:none}
 .err.show{display:block}
+.loading{display:flex;flex-direction:column;align-items:center;gap:12px;padding:34px 0 30px;color:var(--dim);font-size:13px;text-align:center}
+.loading .note{color:var(--faint);font-size:12px}
+.spinner{width:26px;height:26px;border-radius:50%;border:3px solid var(--green-wash);border-top-color:var(--green);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 @media(min-width:700px){.wrap,.topbar .in{max-width:480px}}
 </style>
 </head>
@@ -110,7 +114,13 @@ footer b{color:var(--dim);font-weight:600}
 </div></div>
 <div class="wrap">
   <div class="card" id="hero">
-    <div class="eyebrow"><span class="dot"></span><span id="eyeline">loading live markets…</span><span class="simlabel">simulation · live pricing</span></div>
+    <div class="eyebrow"><span class="dot"></span><span id="eyeline">live from Kalshi + Polymarket</span><span class="simlabel">simulation · live pricing</span></div>
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <div>pairing the same game across Kalshi and Polymarket…</div>
+      <div class="note">verifying both venues settle on the identical official result</div>
+    </div>
+    <div id="main" style="display:none">
     <h1 id="title">&nbsp;</h1>
     <div class="matchline" id="matchline">&nbsp;</div>
     <div class="chancerow">
@@ -153,6 +163,7 @@ footer b{color:var(--dim);font-weight:600}
       </details>
 
       <div class="ticket" id="ticket"></div>
+    </div>
     </div>
   </div>
 
@@ -240,7 +251,9 @@ footer b{color:var(--dim);font-weight:600}
   function render(){
     var p=S.payload; if(!p)return;
     $('err').classList.remove('show');
-    if(!p.ok||!p.pair){ $('eyeline').textContent='no whitelisted pair quotable right now'; return; }
+    $('loading').style.display='none';
+    if(!p.ok||!p.pair){ $('eyeline').textContent='no whitelisted pair quotable right now'; $('main').style.display='none'; return; }
+    $('main').style.display='block';
     var pr=p.pair,pos=p.position,q=p.quote;
     var key=pr.kalshiTicker;
     if(S.pairKey&&S.pairKey!==key&&S.phase!=='idle'){ resetSim(); }
