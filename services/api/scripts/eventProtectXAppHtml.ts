@@ -150,7 +150,6 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     <div class="loading" id="loading">
       <div class="spinner"></div>
       <div>scanning games and crypto across Kalshi and Polymarket…</div>
-      <div class="note">pricing every event on each hedge route that is structurally safe for it</div>
     </div>
     <div id="main" style="display:none">
     <h1 id="title">&nbsp;</h1>
@@ -160,7 +159,6 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       <span class="chancelbl">chance</span>
       <span class="countd" id="countd">–</span>
     </div>
-    <div class="settleline" id="settleline">settled by the official final score</div>
     <div class="whyline" id="whyline">&nbsp;</div>
 
     <div class="pos">
@@ -176,13 +174,13 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
     <div class="protect">
       <div class="hero" id="offer" style="display:none">
-        <div class="lbl">your minimum payout</div>
+        <div class="lbl">guaranteed minimum</div>
         <div class="min" id="minout">–</div>
-        <div class="sweet">up to <b id="maxout">–</b> if Yes · includes a <b id="creditout">–</b> credit paid Yes or No</div>
+        <div class="sweet">up to <b id="maxout">–</b> · <b id="creditout">–</b> credit either way</div>
       </div>
 
       <div class="togglerow">
-        <div><div class="t">Protect this position</div><div class="d" id="toggledesc">one tap · protected instantly</div></div>
+        <div><div class="t">Protect this position</div><div class="d" id="toggledesc">one tap</div></div>
         <label class="switch"><input type="checkbox" id="toggle" disabled /><span class="slider"></span></label>
       </div>
 
@@ -203,7 +201,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
   <div class="card board" id="boardcard" style="display:none">
     <div class="bt">Best protection right now</div>
-    <div class="bs">games and crypto, each priced live on every safe hedge route; the cheapest protection wins · tap an event to load it</div>
+    <div class="bs">ranked by true cost · tap to load</div>
     <div id="boardrows"></div>
   </div>
 
@@ -225,7 +223,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
   <div class="err" id="err"></div>
 
   <footer>
-    <b>Demonstration, not an offer.</b> The position and lifecycle above are simulated; market prices and hedge quotes are live from both venues. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice. Every quote and refusal is logged: <a href="/receipts">see the receipts</a>.
+    <b>Demonstration, not an offer.</b> Positions are simulated; prices and hedge quotes are live from both venues. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice. <a href="/receipts">See the receipts</a>.
   </footer>
 </div>
 
@@ -326,33 +324,29 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     $('maxout').textContent=usd(o.yes);
     $('creditout').textContent=usd(q.creditCents);
     $('offer').style.display='block';
-    var takeLine=q.takeWaived?'take waived (de minimis)':('published take '+usd(q.takeCents)+' ('+(q.takeBps/100)+'% of credit sourced)');
+    var takeLine=q.takeWaived?'take waived (de minimis)':(usd(q.takeCents)+' ('+(q.takeBps/100)+'% of credit sourced)');
     var parityShort=(q.parityNote||pr.parityNote||'').split(';')[0];
     var selfHedge=p.route==='kalshi_self';
-    var hedgedOn=selfHedge?('Kalshi '+pr.kalshiTicker+' · its own No side'):('Polymarket '+pr.pmEventSlug);
     var gapRow='';
     if(!selfHedge&&pr.pmYesPriceMilli>0){
       var pmYes=centsFromMilli(pr.pmYesPriceMilli);
       gapRow='<div class="row"><span>same game, two prices</span><b>Kalshi '+q.markCents+'\\u00A2 · Polymarket '+pmYes+'\\u00A2 · the gap funds your credit</b></div>';
     }
+    var entryTag=pos.entrySource==='real_print'?' (real print)':'';
     var buyRow=selfHedge
-      ?('<div class="row"><span>buy '+shares(q.hedge.contractsMilli)+' contracts</span><b>No @ avg '+q.hedge.avgPriceCents+'\\u00A2 · Kalshi, same market</b></div>')
-      :('<div class="row"><span>buy '+shares(q.hedge.sharesMilli)+' shares</span><b>'+q.hedge.outcome+' @ avg '+centsFromMilli(q.hedge.avgPriceMilli)+'\\u00A2 · Polymarket</b></div>');
+      ?('<div class="row"><span>the hedge</span><b>buy '+shares(q.hedge.contractsMilli)+' No contracts @ avg '+q.hedge.avgPriceCents+'\\u00A2 · Kalshi, same market</b></div>')
+      :('<div class="row"><span>the hedge</span><b>buy '+shares(q.hedge.sharesMilli)+' '+q.hedge.outcome+' shares @ avg '+centsFromMilli(q.hedge.avgPriceMilli)+'\\u00A2 · Polymarket</b></div>');
     var routesRow=routesLine(p);
     $('legs').innerHTML=
-      '<div class="row"><span>protected on</span><b>Kalshi '+pr.kalshiTicker+'</b></div>'+
-      '<div class="row"><span>hedged on</span><b>'+hedgedOn+'</b></div>'+
       '<div class="row"><span>same result</span><b>'+parityShort+'</b></div>'+
       gapRow+
-      '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2 · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
+      '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2'+entryTag+' · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
       '<div class="row"><span>without protection</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
       buyRow+
-      '<div class="row"><span>hedge cost</span><b>'+usd(q.hedge.costCents)+'</b></div>'+
-      '<div class="row"><span>venue fees</span><b>'+usd(q.feesCents)+'</b></div>'+
-      '<div class="row"><span>economics</span><b>'+takeLine+'</b></div>'+
-      '<div class="row"><span>cost of protection</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+' at current odds</b></div>'+
-      (routesRow?('<div class="row"><span>routes checked</span><b>'+routesRow+'</b></div>'):'')+
-      '<div class="row"><span>fills</span><b>simulated fills at live quotes</b></div>';
+      '<div class="row"><span>hedge cost</span><b>'+usd(q.hedge.costCents)+' · fees '+usd(q.feesCents)+'</b></div>'+
+      '<div class="row"><span>our take</span><b>'+takeLine+'</b></div>'+
+      '<div class="row"><span>cost of protection</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+'</b></div>'+
+      (routesRow?('<div class="row"><span>routes checked</span><b>'+routesRow+'</b></div>'):'');
     $('hedge').style.display='block';
   }
 
@@ -375,23 +369,21 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     S.kind=pr.kind||'sports';
     var crypto=S.kind==='crypto';
 
-    $('eyeline').textContent=(crypto?'Kalshi':'Kalshi + Polymarket')+' · '+pr.league.toUpperCase();
+    $('eyeline').textContent=crypto?'Kalshi':'Kalshi + Polymarket';
     $('title').textContent=(pr.sideName||pr.kalshiSide)+(crypto?'?':' to win?');
-    $('matchline').textContent=pr.eventTitle+(crypto?' · settles ':' · starts ')+fmtEt(pr.eventTimeIso);
-    $('settleline').textContent=crypto?'settled by the official index price at the close':'settled by the official final score';
+    $('matchline').textContent=(crypto?'':(pr.opponent?('vs. '+pr.opponent+' · '):''))+pr.league.toUpperCase()+' · '+(crypto?'settles ':'')+fmtEt(pr.eventTimeIso);
     $('chance').textContent=pr.markCents+'%';
     S.startIso=pr.eventTimeIso;
     $('countd').textContent=countdLabel();
     if(q&&q.ok&&p.route){
-      $('whyline').textContent=(S.sel?'your pick from the board':'best value on the board right now')+' · hedged via '+routeName(p.route);
+      $('whyline').textContent=(S.sel?'your pick':'best value right now')+' · via '+routeName(p.route);
     } else {
       $('whyline').innerHTML='&nbsp;';
     }
 
     var val=pr.markCents*pos.contracts, cost=pos.entryCents*pos.contracts, pnl=val-cost;
-    var src=pos.entrySource==='real_print'?'entry from a real Kalshi trade':'entered now';
     $('poscount').textContent=pos.contracts+' contracts';
-    $('possub').textContent='avg '+pos.entryCents+'\\u00A2 · simulated · '+src;
+    $('possub').textContent='avg '+pos.entryCents+'\\u00A2 · simulated';
     $('posval').textContent=usd(val);
     var pe=$('pospnl');
     pe.textContent=(pnl>=0?'+':'')+usd(pnl);
@@ -403,14 +395,14 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         t.disabled=true; t.checked=false;
         hideOffer();
         $('refusal').innerHTML=S.kind==='crypto'
-          ?'<b>At the close.</b> Protection locks before this market settles; from here the position rides to the official index print.'
-          :'<b>In play.</b> Protection locks before the game starts; from here the position rides to the official final score.';
+          ?'<b>At the close.</b> Protection locks before this market settles; the position now rides to the official index print.'
+          :'<b>In play.</b> Protection locks before the game starts; the position now rides to the final score.';
         $('refusal').classList.add('show');
       } else if(q&&q.ok){
         t.disabled=false;
         $('refusal').classList.remove('show');
         paintOffer(q); // the live offer is visible BEFORE the flip
-        $('toggledesc').textContent='one tap · protected instantly';
+        $('toggledesc').textContent='one tap';
       } else if(q){
         t.disabled=true; t.checked=false;
         hideOffer();
@@ -419,7 +411,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       }
     }
     if(S.phase==='protected'&&S.terms&&inPlay()){
-      $('toggledesc').textContent='in play · terms locked, rides to the final score';
+      $('toggledesc').textContent='in play · terms locked';
     }
 
     renderBoard(p);
@@ -440,8 +432,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         '<div class="btop"><div class="g">'+rowTitle+'<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
         '<div class="rv"><div class="gr '+evClass(r.evCostBps)+'">'+gradeWord(r.evCostBps)+'</div>'+
         '<div class="ev '+evClass(r.evCostBps)+'">'+evShort(r.evCostBps)+'</div></div></div>'+
-        '<div class="m">'+r.eventTitle+' · '+fmtEt(r.eventTimeIso)+' · '+r.markCents+'% chance</div>'+
-        '<div class="m">floor '+r.floorCents+'\\u00A2 · cap '+r.capCents+'\\u00A2 · credit '+usd(r.creditCents)+' · via '+routeName(r.route)+'</div>'+
+        '<div class="m">'+fmtEt(r.eventTimeIso)+' · '+r.markCents+'% · '+usd(r.creditCents)+' credit · via '+routeName(r.route)+'</div>'+
         '</div>';
     }
     if(b.length>LIMIT){
@@ -457,7 +448,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     $('toggle').checked=false;
     $('protectedline').classList.remove('show');
     $('ticket').classList.remove('show');
-    $('toggledesc').textContent='one tap · protected instantly';
+    $('toggledesc').textContent='one tap';
     render();
   }
 

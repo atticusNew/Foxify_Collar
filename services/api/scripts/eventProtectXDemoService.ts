@@ -117,6 +117,8 @@ export interface CrossShowcasePayload {
     kalshiSide: string;
     /** full display name of the protected side */
     sideName: string;
+    /** the other side of the event (sports opponent); null when not applicable */
+    opponent: string | null;
     eventTitle: string;
     /** when protection locks: game start (sports) or market close (crypto), ISO */
     eventTimeIso: string;
@@ -579,6 +581,9 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
       kalshiTitle: use.market.title,
       kalshiSide: use.market.subtitle,
       sideName: use.sideName,
+      opponent: use.pair
+        ? use.pair.pm.outcomes[use.pair.pmNoOutcomeIndex] ?? null
+        : null,
       eventTitle: use.eventTitle,
       eventTimeIso: use.eventTimeIso,
       parityNote: use.parityNote,
