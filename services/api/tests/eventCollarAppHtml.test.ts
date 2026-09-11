@@ -34,6 +34,8 @@ test("event app html: total dollars on the main screen, cents in the drawer", ()
   // per-contract cents are demoted to the hedge drawer
   assert.ok(html.includes("per contract"));
   assert.ok(html.includes("without protection"), "capped upside disclosed honestly");
+  assert.ok(html.includes("cost of protection"), "EV honesty line in the drawer");
+  assert.ok(html.includes("% of expected value"), "EV framing in plain words");
   // the probability rail and its jargon are gone from the main screen
   assert.ok(!html.includes("railbox") && !html.includes("markdot"), "no probability rail");
   // the hero number is all-in: the credit is included, not double-counted

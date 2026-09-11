@@ -239,6 +239,17 @@ footer b{color:var(--dim);font-weight:600}
     };
   }
 
+  function evCostBps(mark,floor,cap,credit,n){
+    var naked=100*n*mark;
+    if(naked<=0)return 0;
+    var prot=(cap*n+credit)*mark+(floor*n+credit)*(100-mark);
+    return Math.round((naked-prot)*10000/naked);
+  }
+  function evLine(bps){
+    var pct=Math.abs(bps/100).toFixed(1);
+    return bps<0?('pays '+pct+'% above expected value'):('costs '+pct+'% of expected value');
+  }
+
   function paintOffer(q){
     var p=S.payload,mk=p.market,pos=p.position;
     var o=outcomeTotals(q);
@@ -257,6 +268,7 @@ footer b{color:var(--dim);font-weight:600}
       '<div class="row"><span>hedge tenor</span><b>'+(q.alignment==='expiry_aligned'?'expiry aligned':'unwound at close (estimate)')+'</b></div>'+
       '<div class="row"><span>venue fees</span><b>'+usd(q.feesCents)+'</b></div>'+
       '<div class="row"><span>economics</span><b>'+takeLine+'</b></div>'+
+      '<div class="row"><span>cost of protection</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+' at current odds</b></div>'+
       '<div class="row"><span>fills</span><b>simulated fills at live quotes</b></div>';
     $('hedge').style.display='block';
   }
