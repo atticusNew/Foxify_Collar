@@ -277,7 +277,7 @@ footer b{color:var(--dim);font-weight:600}
     var p=S.payload; if(!p)return;
     $('err').classList.remove('show');
     $('loading').style.display='none';
-    if(!p.ok||!p.pair){ $('eyeline').textContent='no whitelisted pair quotable right now'; $('main').style.display='none'; return; }
+    if(!p.ok||!p.pair){ $('eyeline').textContent=p.error||'no whitelisted pair quotable right now'; $('main').style.display='none'; return; }
     $('main').style.display='block';
     var pr=p.pair,pos=p.position,q=p.quote;
     var key=pr.kalshiTicker;

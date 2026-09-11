@@ -39,7 +39,7 @@ import {
 } from "../src/eventCollar/crossVenue/types";
 import { renderEventXAppHtml } from "./eventProtectXAppHtml";
 
-const PORT = Number(process.env.EVENT_X_PORT || 8792);
+const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
 const LEDGER_PATH = process.env.EVENT_X_LEDGER_PATH || "/tmp/event-demo/cross-quotes.jsonl";
 const MAX_MATCH_ATTEMPTS = 10;
@@ -112,16 +112,55 @@ function rankCandidates(markets: KalshiMarket[]): Array<{ m: KalshiMarket; mark:
     });
 }
 
+interface CandidateResult {
+  pair: MatchedPair;
+  markCents: number;
+  position: ReturnType<typeof buildShowcasePosition>;
+  quote: CrossQuoteResult;
+}
+
+/** Quote one verified pairing: position from real prints, hedge from the live book. */
+async function quoteCandidate(pair: MatchedPair, markCents: number, now: Date): Promise<CandidateResult> {
+  let trades: Awaited<ReturnType<typeof getRecentTrades>> = [];
+  try {
+    trades = await getRecentTrades(pair.kalshi.ticker);
+  } catch {
+    trades = [];
+  }
+  const position = buildShowcasePosition(trades, markCents, SHOWCASE_CONTRACTS);
+  const noBook = await getPmBook(pair.pm.tokenIds[pair.pmNoOutcomeIndex]);
+  const quote = quoteCrossWrap({
+    pair,
+    markCents,
+    entryCents: position.entryCents,
+    contracts: position.contracts,
+    now,
+    noBook,
+    config: searchConfig(),
+  });
+  return { pair, markCents, position, quote };
+}
+
 async function buildPayload(): Promise<CrossShowcasePayload> {
   const now = new Date();
 
-  let matched: MatchedPair | null = null;
-  let markCents = 0;
-  for (const template of LEAGUE_TEMPLATES) {
+  // Walk the whitelisted leagues and their ranked games: showcase the first
+  // verified pairing whose venues fund a positive credit. When none can, fall
+  // back to the best pairing's honest refusal. Any single fetch failure skips
+  // that candidate instead of taking the service down.
+  let chosen: CandidateResult | null = null;
+  let fallback: CandidateResult | null = null;
+  let fetchFailures = 0;
+  // Two strikes and out: fetchJsonWithRetry already retries each call, so a
+  // second candidate-level failure means the venue is unreachable, not flaky.
+  const FETCH_FAILURE_LIMIT = 2;
+  outer: for (const template of LEAGUE_TEMPLATES) {
     let markets: KalshiMarket[];
     try {
       markets = await getOpenMarkets(template.kalshiSeries);
     } catch {
+      fetchFailures += 1;
+      if (fetchFailures >= FETCH_FAILURE_LIMIT) break;
       continue;
     }
     const ranked = rankCandidates(markets);
@@ -130,51 +169,53 @@ async function buildPayload(): Promise<CrossShowcasePayload> {
       if (attempts >= MAX_MATCH_ATTEMPTS) break;
       attempts += 1;
       let pair: MatchedPair | null;
-      if (pairCache.has(cand.m.ticker)) {
-        pair = pairCache.get(cand.m.ticker) ?? null;
-        if (pair) pair = { ...pair, kalshi: cand.m }; // refresh live prices
-      } else {
-        pair = await matchKalshiMarket(cand.m, template);
-        pairCache.set(cand.m.ticker, pair);
+      try {
+        if (pairCache.has(cand.m.ticker)) {
+          pair = pairCache.get(cand.m.ticker) ?? null;
+          if (pair) pair = { ...pair, kalshi: cand.m }; // refresh live prices
+        } else {
+          pair = await matchKalshiMarket(cand.m, template);
+          pairCache.set(cand.m.ticker, pair);
+        }
+      } catch {
+        fetchFailures += 1;
+        if (fetchFailures >= FETCH_FAILURE_LIMIT) break outer;
+        continue;
       }
-      if (pair && showcaseWindowOk(pair, now)) {
-        matched = pair;
-        markCents = cand.mark;
-        break;
+      if (!pair || !showcaseWindowOk(pair, now)) continue;
+      let result: CandidateResult;
+      try {
+        result = await quoteCandidate(pair, cand.mark, now);
+      } catch {
+        fetchFailures += 1;
+        if (fetchFailures >= FETCH_FAILURE_LIMIT) break outer;
+        continue;
+      }
+      if (!fallback) fallback = result;
+      if (result.quote.ok) {
+        chosen = result;
+        break outer;
       }
     }
-    if (matched) break;
   }
 
-  if (!matched) {
+  const use = chosen ?? fallback;
+  if (!use) {
     return {
       ok: false,
       at: now.toISOString(),
       pair: null,
       position: null,
       quote: null,
-      error: "no whitelisted cross-venue pair is quotable right now",
+      error: fetchFailures > 0
+        ? "a venue is unreachable from this machine right now (Polymarket's book API is blocked on some networks; a relay via PM_CLOB_REST_BASE fixes it)"
+        : "no whitelisted cross-venue pair is quotable right now",
     };
   }
-
-  let trades: Awaited<ReturnType<typeof getRecentTrades>> = [];
-  try {
-    trades = await getRecentTrades(matched.kalshi.ticker);
-  } catch {
-    trades = [];
-  }
-  const position = buildShowcasePosition(trades, markCents, SHOWCASE_CONTRACTS);
-
-  const noBook = await getPmBook(matched.pm.tokenIds[matched.pmNoOutcomeIndex]);
-  const quote = quoteCrossWrap({
-    pair: matched,
-    markCents,
-    entryCents: position.entryCents,
-    contracts: position.contracts,
-    now,
-    noBook,
-    config: searchConfig(),
-  });
+  const matched = use.pair;
+  const markCents = use.markCents;
+  const position = use.position;
+  const quote = use.quote;
 
   appendCrossLedger(
     {
@@ -283,7 +324,9 @@ if (process.env.NODE_ENV !== "test") {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`[event-protect-x] listening on :${PORT} (cross-venue tier 2)`);
-    void getCached(); // prewarm so the first visitor is not the one paying for venue round-trips
+    // prewarm so the first visitor is not the one paying for venue round-trips;
+    // a failed prewarm must never crash the process (retried on first request)
+    getCached().catch(() => {});
   });
 }
 
