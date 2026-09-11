@@ -13,6 +13,17 @@ test("event app html: honesty label, gating line, and structure", () => {
   assert.ok(html.includes("Protect into resolution"));
 });
 
+test("event app html: outcomes-first, percent framing, one-tap grammar", () => {
+  const html = renderEventAppHtml();
+  assert.ok(html.includes("leave with at least"), "guaranteed minimum is the hero");
+  assert.ok(html.includes("chance of yes"), "percent framing for the market");
+  assert.ok(html.includes("if yes") && html.includes("if no"), "outcomes panel");
+  assert.ok(html.includes("one tap · protected instantly"), "one-tap grammar");
+  assert.ok(html.includes('id="undo"'), "undo window after the tap");
+  assert.ok(html.includes("see the hedge"), "machinery behind one disclosure");
+  assert.ok(html.includes("terms locked at your tap"));
+});
+
 test("event app html: no em dashes in visible copy", () => {
   const html = renderEventAppHtml();
   assert.ok(!html.includes("\u2014"), "no em dash anywhere in the rendered page");
