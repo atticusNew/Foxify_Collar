@@ -58,6 +58,15 @@ test("cross-venue app html: grades, tappable rows, and route competition", () =>
   assert.ok(html.includes('href="/receipts"'), "receipts page linked from the footer");
 });
 
+test("cross-venue app html: board previews three rows with an expand control, undo honesty", () => {
+  const html = renderEventXAppHtml();
+  assert.ok(html.includes("boardmore"), "expand/collapse control for the board");
+  assert.ok(html.includes("show all "), "expand label counts the games");
+  assert.ok(html.includes("show fewer games"), "collapse label");
+  assert.ok(html.includes("Undo is free only here."), "undo honesty stated in plain words");
+  assert.ok(html.includes("never a free reversal"), "real-product unwind economics disclosed");
+});
+
 test("receipts html: honest aggregates from a real ledger file", () => {
   const dir = mkdtempSync(join(tmpdir(), "xledger-"));
   const path = join(dir, "quotes.jsonl");

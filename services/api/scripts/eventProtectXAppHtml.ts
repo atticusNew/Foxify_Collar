@@ -124,6 +124,8 @@ footer b{color:var(--dim);font-weight:600}
 .ev.good{color:var(--green)}
 .ev.fair{color:var(--dim)}
 .ev.rich{color:var(--warn)}
+.boardmore{display:block;width:100%;margin-top:10px;background:var(--card2);border:1px solid var(--line);color:var(--dim);border-radius:9px;padding:9px;font-size:13px;font-weight:600;cursor:pointer}
+.boardmore:active{background:var(--line)}
 footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 .loading{display:flex;flex-direction:column;align-items:center;gap:12px;padding:34px 0 30px;color:var(--dim);font-size:13px;text-align:center}
 .loading .note{color:var(--faint);font-size:12px}
@@ -207,6 +209,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The market prices that downside risk; when a route prices it cheaper than the cap slice you sold, the difference is your credit.</li>
         <li><b>The hedge is the same game.</b> Protection is backed by buying the side that pays exactly when yours loses - on the other venue or on the very same market. Cross-venue pairs quote only from a curated whitelist where both venues verifiably settle on the identical official result; the self-hedge route is the same instrument by construction.</li>
         <li><b>Honest economics.</b> We keep a published share of the credit we source, waived when tiny. Nothing is embedded in your terms. When the venues cannot fund a credit, we refuse and say why.</li>
+        <li><b>Undo is free only here.</b> Nothing is bought in this simulation, so undo simply resets it. In the real product, terms lock at your tap and the hedge is placed immediately; unwinding early would be a new trade quoted from the live books at that moment, never a free reversal.</li>
         <li><b>Read only.</b> This demonstration holds no keys or wallets, places no orders (hedge fills are simulated at live quotes), and cannot move funds.</li>
       </ul>
     </details>
@@ -221,7 +224,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
 <script>
 (function(){
-  var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,fetchedAt:0,sel:null};
+  var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,fetchedAt:0,sel:null,boardOpen:false};
   var $=function(id){return document.getElementById(id)};
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
   function shares(milli){var s=milli/1000;return (Math.round(s*10)/10).toLocaleString('en-US')}
@@ -396,9 +399,12 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
   function renderBoard(p){
     var b=p.board||[];
     if(!b.length){ $('boardcard').style.display='none'; return; }
+    var LIMIT=3;
+    var expanded=!!S.boardOpen||b.length<=LIMIT;
+    var shown=expanded?b:b.slice(0,LIMIT);
     var html='';
-    for(var i=0;i<b.length;i++){
-      var r=b[i];
+    for(var i=0;i<shown.length;i++){
+      var r=shown[i];
       var chip=(p.pair&&r.kalshiTicker===p.pair.kalshiTicker)?'<span class="now">showing</span>':'';
       html+='<div class="brow" data-ticker="'+r.kalshiTicker+'">'+
         '<div><div class="g">'+(r.sideName||r.kalshiSide)+' to win?<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
@@ -407,6 +413,10 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         '<div class="rv"><div class="gr '+evClass(r.evCostBps)+'">'+gradeWord(r.evCostBps)+'</div>'+
         '<div class="ev '+evClass(r.evCostBps)+'">'+evLine(r.evCostBps)+'</div></div>'+
         '</div>';
+    }
+    if(b.length>LIMIT){
+      html+='<button type="button" class="boardmore" id="boardmore">'+
+        (S.boardOpen?'show fewer games':('show all '+b.length+' games'))+'</button>';
     }
     $('boardrows').innerHTML=html;
     $('boardcard').style.display='block';
@@ -438,6 +448,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     var el=ev.target;
     while(el&&el!==document){
       if(el.id==='undo'){ ev.preventDefault(); resetSim(); return; }
+      if(el.id==='boardmore'){ ev.preventDefault(); S.boardOpen=!S.boardOpen; if(S.payload)renderBoard(S.payload); return; }
       if(el.getAttribute&&el.getAttribute('data-ticker')){
         var t=el.getAttribute('data-ticker');
         if(S.payload&&S.payload.pair&&S.payload.pair.kalshiTicker===t)return;
