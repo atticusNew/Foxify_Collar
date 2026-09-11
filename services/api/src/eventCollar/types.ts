@@ -168,7 +168,7 @@ export const DEFAULT_SEARCH_CONFIG: WrapSearchConfig = {
   minMinutesToResolution: 10,
   markLowerBoundCents: 10,
   markUpperBoundCents: 92,
-  takeBps: 2000,
+  takeBps: 1000,
   deMinimisTakeCents: 5,
   feeCentsPerSpread: 50,
   unalignedHaircutBps: 500,

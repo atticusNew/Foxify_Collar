@@ -1,16 +1,15 @@
 /**
  * Earn & Protect - events: the showcase page.
  *
- * Event-native presentation: the market reads like an event listing (question,
- * percent chance, countdown), the product reads as outcomes in dollars ("leave
- * with at least ..."), and execution is one tap with an undo window. All desk
- * language (strikes, verticals, cents terms, fees, take, tenor) lives behind
- * one "see the hedge" disclosure.
+ * Stripped to one question answered in total dollars: "leave with at least $X,
+ * up to $Y if yes, including a $Z credit paid win or lose." Everything else
+ * (per-contract cents, tickers, hedge legs, fees, take, tenor, the BRTI
+ * settlement mechanics) lives behind one "see the hedge" disclosure.
  *
  * Design rules inherited from the retail surface: one accent per screen state,
  * sentence case everywhere except the honesty label, no em dashes in visible
  * copy, mobile-first at 390px, the toggle is the feature, one number owns the
- * card (the guaranteed minimum).
+ * card (the all-in guaranteed minimum), no desk jargon on the main screen.
  *
  * Everything financial on this page is quoted live by the server; the position
  * and lifecycle are simulated and labeled.
@@ -29,7 +28,7 @@ export function renderEventAppHtml(): string {
   --bg:#0b0e11; --card:#12161b; --card2:#171c22; --line:#232a32;
   --ink:#e8edf2; --dim:#8a95a1; --faint:#5a6470;
   --accent:#50d2c1; --accent-ink:#04211d;
-  --floor:#e2695e; --cap:#d9a441; --live:#ffffff;
+  --warn:#d9a441; --down:#e2695e;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
@@ -44,35 +43,21 @@ header{display:flex;align-items:center;justify-content:space-between;padding:6px
 .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:pulse 2s infinite;flex:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 h1{font-size:19px;line-height:1.3;font-weight:650}
-.chancerow{display:flex;align-items:baseline;gap:10px;margin:10px 0 2px}
+.chancerow{display:flex;align-items:baseline;gap:10px;margin:10px 0 0}
 .chance{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums}
 .chancelbl{color:var(--dim);font-size:13px}
 .countd{margin-left:auto;color:var(--dim);font-size:12px;text-align:right}
-.railbox{padding:18px 6px 2px;position:relative}
-.rail{height:4px;border-radius:2px;background:var(--line);position:relative}
-.tick{position:absolute;top:-7px;width:2px;height:18px;border-radius:1px}
-.tick.entry{background:var(--faint)}
-.tick.floor{background:var(--floor)}
-.tick.cap{background:var(--cap)}
-.mark{position:absolute;top:-4px;width:12px;height:12px;border-radius:50%;background:var(--live);box-shadow:0 0 0 3px rgba(255,255,255,.15);transform:translateX(-6px);transition:left .6s ease}
-.raillabels{display:flex;justify-content:space-between;color:var(--faint);font-size:11px;margin-top:9px}
-.legend{display:flex;gap:14px;font-size:11px;color:var(--dim);margin-top:7px;flex-wrap:wrap}
-.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.settleline{color:var(--faint);font-size:12px;margin-top:2px}
 .posline{color:var(--dim);font-size:13px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .posline b{color:var(--ink);font-weight:600}
 .posline .gain{color:var(--accent);font-weight:600}
-.posline .loss{color:var(--floor);font-weight:600}
+.posline .loss{color:var(--down);font-weight:600}
 .protect{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
 .hero{text-align:center;padding:2px 0 4px}
-.hero .min{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums}
-.hero .min b{color:var(--accent)}
-.hero .sweet{color:var(--dim);font-size:13px;margin-top:3px}
-.hero .sweet b{color:var(--accent);font-weight:650}
-.outcomes{display:flex;gap:8px;margin-top:12px}
-.outcomes div{flex:1;background:var(--card2);border-radius:10px;padding:10px 10px;text-align:center}
-.outcomes .n{font-weight:650;font-variant-numeric:tabular-nums;font-size:16px}
-.outcomes .was{color:var(--faint);font-size:11px;text-decoration:line-through;margin-top:1px}
-.outcomes .l{color:var(--dim);font-size:11px;margin-top:2px}
+.hero .lbl{color:var(--dim);font-size:13px}
+.hero .min{font-size:38px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent);margin:2px 0}
+.hero .sweet{color:var(--dim);font-size:13px}
+.hero .sweet b{color:var(--ink);font-weight:650}
 .togglerow{display:flex;justify-content:space-between;align-items:center;margin-top:14px}
 .togglerow .t{font-weight:650}
 .togglerow .d{color:var(--dim);font-size:12px;margin-top:2px}
@@ -94,7 +79,7 @@ input:disabled + .slider{opacity:.45;cursor:default}
 .legs{background:var(--card2);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--dim)}
 .legs .row{display:flex;justify-content:space-between;padding:3px 0;font-variant-numeric:tabular-nums;gap:12px}
 .legs .row b{color:var(--ink);font-weight:600;text-align:right}
-.refusal{display:none;margin-top:12px;background:var(--card2);border-left:3px solid var(--cap);border-radius:8px;padding:11px 13px;font-size:13px;color:var(--dim)}
+.refusal{display:none;margin-top:12px;background:var(--card2);border-left:3px solid var(--warn);border-radius:8px;padding:11px 13px;font-size:13px;color:var(--dim)}
 .refusal.show{display:block}
 .refusal b{color:var(--ink)}
 .ticket{display:none;margin-top:12px;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:14px}
@@ -108,7 +93,7 @@ input:disabled + .slider{opacity:.45;cursor:default}
 .how li b{color:var(--ink);font-weight:600}
 footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
 footer b{color:var(--dim);font-weight:600}
-.err{color:var(--floor);font-size:13px;padding:8px 2px;display:none}
+.err{color:var(--down);font-size:13px;padding:8px 2px;display:none}
 .err.show{display:block}
 @media(min-width:700px){.wrap{max-width:480px}}
 </style>
@@ -128,29 +113,15 @@ footer b{color:var(--dim);font-weight:600}
       <span class="chancelbl">chance of yes</span>
       <span class="countd" id="countd">–</span>
     </div>
-
-    <div class="railbox">
-      <div class="rail" id="rail">
-        <div class="tick entry" id="tickentry" style="left:0%"></div>
-        <div class="tick floor" id="tickfloor" style="display:none"></div>
-        <div class="tick cap" id="tickcap" style="display:none"></div>
-        <div class="mark" id="markdot" style="left:0%"></div>
-      </div>
-      <div class="raillabels"><span>0%</span><span>100%</span></div>
-      <div class="legend"><span><i style="background:var(--faint)"></i>your entry</span><span><i style="background:var(--live)"></i>now</span><span id="lgfloor" style="display:none"><i style="background:var(--floor)"></i>floor</span><span id="lgcap" style="display:none"><i style="background:var(--cap)"></i>cap</span></div>
-    </div>
+    <div class="settleline">settles on Bitcoin's official reference price</div>
 
     <div class="posline" id="posline">&nbsp;</div>
 
     <div class="protect">
       <div class="hero" id="offer" style="display:none">
-        <div class="min">leave with at least <b id="minout">–</b></div>
-        <div class="sweet">plus a <b id="creditout">–</b> credit paid at resolution, win or lose</div>
-      </div>
-
-      <div class="outcomes" id="outcomes" style="display:none">
-        <div><div class="n" id="oyes">–</div><div class="was" id="oyeswas">–</div><div class="l">if yes</div></div>
-        <div><div class="n" id="ono">–</div><div class="was" id="onowas">–</div><div class="l">if no</div></div>
+        <div class="lbl">leave with at least</div>
+        <div class="min" id="minout">–</div>
+        <div class="sweet">up to <b id="maxout">–</b> if it resolves yes · includes a <b id="creditout">–</b> credit paid win or lose</div>
       </div>
 
       <div class="togglerow">
@@ -177,7 +148,7 @@ footer b{color:var(--dim);font-weight:600}
       <ul>
         <li><b>Real market, real hedge prices.</b> The event and its prices are live from Kalshi's public data. The protection terms are quoted from live listed OKX option books at executable depth.</li>
         <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The options market pays more for that slice than your floor costs; the difference is your credit.</li>
-        <li><b>At resolution.</b> Win or lose, you get your outcome plus the credit. In an embedded deployment the venue's settlement rails net the cap the way funding payments already work.</li>
+        <li><b>How it settles.</b> The market resolves on the BRTI, the Bitcoin reference index published by CF Benchmarks: an average across major exchanges, read over the final 60 seconds. Win or lose, you get your outcome plus the credit.</li>
         <li><b>Honest economics.</b> We keep a published share of the credit we source, waived when tiny. Nothing is embedded in your terms. When the books cannot fund a credit, we refuse and say why.</li>
         <li><b>Read only.</b> This demonstration holds no keys, places no orders (hedge fills are simulated at live quotes), and cannot move funds.</li>
       </ul>
@@ -196,7 +167,6 @@ footer b{color:var(--dim);font-weight:600}
   var S={payload:null,phase:'idle',terms:null,marketTicker:null};
   var $=function(id){return document.getElementById(id)};
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
-  function pctpos(c){return Math.max(0,Math.min(100,c))+'%'}
 
   function fmtCountdown(iso){
     var ms=new Date(iso).getTime()-Date.now();
@@ -220,21 +190,18 @@ footer b{color:var(--dim);font-weight:600}
   }
 
   function paintOffer(q){
+    var p=S.payload,mk=p.market,pos=p.position;
     var o=outcomeTotals(q);
     $('minout').textContent=usd(o.no);
+    $('maxout').textContent=usd(o.yes);
     $('creditout').textContent=usd(q.creditCents);
-    $('oyes').textContent=usd(o.yes);
-    $('oyeswas').textContent='was '+usd(o.nakedYes);
-    $('ono').textContent=usd(o.no);
-    $('onowas').textContent='was '+usd(o.nakedNo);
     $('offer').style.display='block';
-    $('outcomes').style.display='flex';
-    $('tickfloor').style.left=pctpos(q.floorCents);$('tickfloor').style.display='block';
-    $('tickcap').style.left=pctpos(q.capCents);$('tickcap').style.display='block';
-    $('lgfloor').style.display='inline';$('lgcap').style.display='inline';
     var takeLine=q.takeWaived?'take waived (de minimis)':('published take '+usd(q.takeCents)+' ('+(q.takeBps/100)+'% of credit sourced)');
     $('legs').innerHTML=
-      '<div class="row"><span>terms</span><b>floor '+q.floorCents+'% · cap '+q.capCents+'% · credit '+usd(q.creditCents)+'</b></div>'+
+      '<div class="row"><span>market</span><b>Kalshi '+mk.ticker+'</b></div>'+
+      '<div class="row"><span>settles on</span><b>60s average of the BRTI (CF Benchmarks) vs '+Number(mk.strike).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0})+'</b></div>'+
+      '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2 · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
+      '<div class="row"><span>without protection</span><b>'+usd(o.nakedYes)+' if yes · '+usd(o.nakedNo)+' if no</b></div>'+
       '<div class="row"><span>buy '+q.legs[0].contracts+'x</span><b>'+q.legs[0].instId+'</b></div>'+
       '<div class="row"><span>sell '+q.legs[1].contracts+'x</span><b>'+q.legs[1].instId+'</b></div>'+
       '<div class="row"><span>hedge tenor</span><b>'+(q.alignment==='expiry_aligned'?'expiry aligned':'unwound at resolution (estimate)')+'</b></div>'+
@@ -246,10 +213,7 @@ footer b{color:var(--dim);font-weight:600}
 
   function hideOffer(){
     $('offer').style.display='none';
-    $('outcomes').style.display='none';
     $('hedge').style.display='none';
-    $('tickfloor').style.display='none';$('tickcap').style.display='none';
-    $('lgfloor').style.display='none';$('lgcap').style.display='none';
   }
 
   function render(){
@@ -260,16 +224,14 @@ footer b{color:var(--dim);font-weight:600}
     if(S.marketTicker&&S.marketTicker!==mk.ticker&&S.phase!=='idle'){ resetSim(); }
     S.marketTicker=mk.ticker;
 
-    $('eyeline').textContent='live · Kalshi '+mk.ticker+' · BTC '+Number(p.spotUsd).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0});
+    $('eyeline').textContent='live from Kalshi · BTC '+Number(p.spotUsd).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0});
     $('title').textContent='Bitcoin '+mk.subtitle.toLowerCase()+' by '+fmtEt(mk.closeTime)+'?';
     $('chance').textContent=mk.markCents+'%';
     $('countd').textContent='resolves in '+fmtCountdown(mk.closeTime);
-    $('tickentry').style.left=pctpos(pos.entryCents);
-    $('markdot').style.left=pctpos(mk.markCents);
 
     var val=mk.markCents*pos.contracts, cost=pos.entryCents*pos.contracts, pnl=val-cost;
     var src=pos.entrySource==='real_print'?'entry from a real print':'entered now';
-    $('posline').innerHTML='Your position (simulated · '+src+'): <b>'+pos.contracts+' yes</b> · in at <b>'+pos.entryCents+'%</b> · worth <b>'+usd(val)+'</b> <span class="'+(pnl>=0?'gain':'loss')+'">('+(pnl>=0?'+':'')+usd(pnl)+')</span>';
+    $('posline').innerHTML='Your position (simulated · '+src+'): <b>'+pos.contracts+' contracts</b> · worth <b>'+usd(val)+'</b> <span class="'+(pnl>=0?'gain':'loss')+'">('+(pnl>=0?'+':'')+usd(pnl)+')</span>';
 
     var t=$('toggle');
     if(S.phase==='idle'){

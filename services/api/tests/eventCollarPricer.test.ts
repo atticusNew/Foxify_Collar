@@ -76,14 +76,14 @@ test("quoteWrap: exact integer credit math on the hand-computed fixture", () => 
   // floor 57 (mark-5), best cap at that floor:
   //   c=66: digitalNeeded=(57+34)*100=9100 => 37 verticals (ceil 9100/250)
   //   hedge = 37*40 + 37*10 = 1850; funding = 34*100 = 3400; gross = 1550
-  //   take 20% = 310; credit = 1240
+  //   take 10% = 155; credit = 1395
   assert.equal(result.floorCents, 57);
   assert.equal(result.capCents, 66);
   assert.equal(result.spreads, 37);
   assert.equal(result.grossCreditCents, 1550);
-  assert.equal(result.takeCents, 310);
+  assert.equal(result.takeCents, 155);
   assert.equal(result.takeWaived, false);
-  assert.equal(result.creditCents, 1240);
+  assert.equal(result.creditCents, 1395);
   assert.equal(result.digitalPutMicro, 160_000);
   assert.equal(result.alignment, "unwind_at_resolution");
   assert.equal(result.feesCents, 370);
@@ -169,7 +169,7 @@ test("quoteWrap: honest refusal with shortfall when books cannot fund a credit",
 
 test("quoteWrap: de minimis take is waived", () => {
   // 2 contracts: floor 57 / cap 66 needs 182 digital cents => 1 vertical (over-
-  // hedged, cost 40+10=50) against funding 68 => gross 18, take 3 (< 5) waived.
+  // hedged, cost 40+10=50) against funding 68 => gross 18, take 1 (< 5) waived.
   const result = quoteWrap(baseInputs({ contracts: 2, config: baseConfig({ deMinimisTakeCents: 5 }) }));
   assert.ok(result.ok, JSON.stringify(result));
   if (result.ok) {

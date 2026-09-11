@@ -17,11 +17,25 @@ test("event app html: outcomes-first, percent framing, one-tap grammar", () => {
   const html = renderEventAppHtml();
   assert.ok(html.includes("leave with at least"), "guaranteed minimum is the hero");
   assert.ok(html.includes("chance of yes"), "percent framing for the market");
-  assert.ok(html.includes("if yes") && html.includes("if no"), "outcomes panel");
+  assert.ok(html.includes("credit paid win or lose"), "credit framing is all-in");
   assert.ok(html.includes("one tap · protected instantly"), "one-tap grammar");
   assert.ok(html.includes('id="undo"'), "undo window after the tap");
   assert.ok(html.includes("see the hedge"), "machinery behind one disclosure");
   assert.ok(html.includes("terms locked at your tap"));
+});
+
+test("event app html: total dollars on the main screen, cents in the drawer", () => {
+  const html = renderEventAppHtml();
+  // plain-language settlement line on the main screen; BRTI jargon only in disclosures
+  assert.ok(html.includes("settles on Bitcoin's official reference price"));
+  assert.ok(html.includes("BRTI (CF Benchmarks)"), "settlement mechanics in the drawer");
+  // per-contract cents are demoted to the hedge drawer
+  assert.ok(html.includes("per contract"));
+  assert.ok(html.includes("without protection"), "capped upside disclosed honestly");
+  // the probability rail and its jargon are gone from the main screen
+  assert.ok(!html.includes("railbox") && !html.includes("markdot"), "no probability rail");
+  // the hero number is all-in: the credit is included, not double-counted
+  assert.ok(html.includes("includes a"), "no 'plus credit' double counting");
 });
 
 test("event app html: no em dashes in visible copy", () => {
