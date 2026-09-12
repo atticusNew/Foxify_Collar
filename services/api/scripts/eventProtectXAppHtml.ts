@@ -13,6 +13,11 @@
 import { ATTICUS_LOGO_DATA_URI } from "./eventProtectLogo";
 import type { CrossLedgerSummary } from "../src/eventCollar/crossVenue/crossLedger";
 
+/** Public URL of the shadow record service (its own deploy, so the track record outlives demo restarts). */
+function shadowUrl(): string {
+  return process.env.EVENT_X_SHADOW_URL || "https://atticus-event-shadow.onrender.com";
+}
+
 export function renderEventXAppHtml(): string {
   return `<!doctype html>
 <html lang="en">
@@ -223,7 +228,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
   <div class="err" id="err"></div>
 
   <footer>
-    <b>Demonstration, not an offer.</b> Positions are simulated; prices and hedge quotes are live from both venues. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice. <a href="/receipts">See the receipts</a>.
+    <b>Demonstration, not an offer.</b> Positions are simulated; prices and hedge quotes are live from both venues. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice. <a href="/receipts">See the receipts</a>. <a href="${shadowUrl()}">See the shadow record</a>.
   </footer>
 </div>
 
@@ -616,7 +621,7 @@ footer b{color:var(--dim);font-weight:600}
     <a class="back" href="/">back to the live board</a>
   </div>
   <footer>
-    <b>Demonstration, not an offer.</b> Aggregates cover simulated protection quotes priced from live public market data. Nothing here is investment advice.
+    <b>Demonstration, not an offer.</b> Aggregates cover simulated protection quotes priced from live public market data. Nothing here is investment advice. <a href="${shadowUrl()}">See the shadow record</a>.
   </footer>
 </div>
 </body>

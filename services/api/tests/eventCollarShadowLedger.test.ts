@@ -157,4 +157,5 @@ test("shadow: page renders the honest record", () => {
   assert.ok(html.includes("Demonstration, not an offer."), "not an offer");
   assert.ok(!html.includes("\u2014"), "no em dashes in visible copy");
   assert.ok(!/resolution/i.test(html), "banned vocabulary");
+  assert.ok(html.includes("Try the demo"), "cross-link back to the interactive demo");
 });

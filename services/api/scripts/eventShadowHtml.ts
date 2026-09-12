@@ -9,6 +9,11 @@
 
 import type { ShadowPosition, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
 
+/** Public URL of the interactive demo, for the cross-link. */
+function demoUrl(): string {
+  return process.env.EVENT_SHADOW_DEMO_URL || "https://event.earnandprotect.xyz";
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -157,7 +162,7 @@ footer b{color:var(--dim);font-weight:600}
     ${openRows || '<div class="row"><span>no open positions</span><b>next scan fills the board</b></div>'}
   </div>
   <footer>
-    <b>What is real:</b> the venues' live prices, the quoted terms, and the official results. <b>What is simulated:</b> the positions; no venue credentials, no wallets. Protection usually costs a little; the floor saves are what it buys. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a>
+    <b>What is real:</b> the venues' live prices, the quoted terms, and the official results. <b>What is simulated:</b> the positions; no venue credentials, no wallets. Protection usually costs a little; the floor saves are what it buys. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="${demoUrl()}">Try the demo</a> · <a class="back" href="/api/shadow">Raw JSON</a>
   </footer>
 </div>
 </body>
