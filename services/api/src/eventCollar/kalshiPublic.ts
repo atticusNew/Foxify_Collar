@@ -119,6 +119,31 @@ export async function getRecentTrades(
   return (data.trades ?? []).map(parseKalshiTrade);
 }
 
+export interface KalshiMarketResult {
+  ticker: string;
+  status: string;
+  /** "yes" | "no" once finalized, "" while the result is not yet official */
+  result: "yes" | "no" | "";
+}
+
+/** Official settlement result for one market (empty result until finalized). */
+export async function getMarketResult(
+  ticker: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<KalshiMarketResult> {
+  const data = (await fetchJsonWithRetry(
+    `${kalshiBase()}/markets/${encodeURIComponent(ticker)}`,
+    fetchImpl,
+  )) as { market?: Record<string, unknown> };
+  const m = data.market ?? {};
+  const raw = String(m.result ?? "");
+  return {
+    ticker: String(m.ticker ?? ticker),
+    status: String(m.status ?? ""),
+    result: raw === "yes" || raw === "no" ? raw : "",
+  };
+}
+
 export function midCents(m: KalshiMarket): number {
   if (m.yesBidCents > 0 && m.yesAskCents > 0 && m.yesAskCents < 100) {
     return Math.round((m.yesBidCents + m.yesAskCents) / 2);

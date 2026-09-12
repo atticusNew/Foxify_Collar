@@ -1,0 +1,101 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-event-demos.yaml — the two Earn & Protect EVENT demos + a relay
+#
+# All three services are READ-ONLY demonstrations: no venue credentials, no
+# wallets, public market-data endpoints only. Nothing here touches the live
+# production Earn & Protect deploy (isolation: src/eventCollar/** only).
+#
+#   atticus-event-demo-btc          Tier 1: Kalshi BTC price event, hedged on
+#                                   live OKX option books. Region singapore:
+#                                   OKX is reliably reachable there (same
+#                                   region as the existing OKX services).
+#
+#   atticus-event-demo-cross-venue  Tier 2: Kalshi sports market, hedged with
+#                                   the SAME game on Polymarket. Region oregon:
+#                                   Kalshi + Polymarket public APIs are proven
+#                                   reachable from US networks.
+#
+#   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com,
+#                                   for operator machines whose ISP blocks it
+#                                   (observed: silent connect timeouts). Local
+#                                   use: PM_CLOB_REST_BASE=
+#                                   https://<service>.onrender.com/t/<PROXY_TOKEN>
+#                                   Holds no credentials; path allowlist /book.
+#
+# Deploy: Render dashboard → New → Blueprint → select this file on branch
+# cursor/tier2-cross-venue-2bfa. autoDeploy keeps the demos on the branch tip.
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: atticus-event-demo-btc
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/eventProtectDemoService.ts
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+  - type: web
+    name: atticus-event-demo-cross-venue
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/eventProtectXDemoService.ts
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+  # Shadow run: the cross-venue router quoted continuously, every position
+  # marked against official results as events settle. The persistent disk is
+  # the point — the track record must survive deploys. Read-only like the
+  # demos: public market data only, nothing is bought.
+  - type: web
+    name: atticus-event-shadow
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/eventShadowWorker.ts
+    healthCheckPath: /healthz
+    disk:
+      name: event-shadow-ledger
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: EVENT_SHADOW_LEDGER_PATH
+        value: /var/data/event-shadow-ledger.jsonl
+
+  - type: web
+    name: atticus-pm-clob-egress-proxy
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/eventEgressProxy.ts
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: UPSTREAM
+        value: https://clob.polymarket.com
+      - key: ALLOWED_PREFIXES
+        value: /book
+      # URL token — the only gate on the relay. Copy its generated value into the
+      # operator machine's PM_CLOB_REST_BASE. Rotate by editing here.
+      - key: PROXY_TOKEN
+        generateValue: true
