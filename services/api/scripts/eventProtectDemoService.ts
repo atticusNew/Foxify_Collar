@@ -251,6 +251,18 @@ async function buildShowcasePayload(): Promise<ShowcasePayload> {
 
 let refreshing: Promise<void> | null = null;
 
+// Deploy warm-gate: report unhealthy until the prewarm scan lands so the host
+// keeps routing traffic to the old instance during a swap. The grace cap keeps
+// a venue outage from ever blocking a deploy (after it, we boot cold exactly as
+// before). Once warm, health never flips red again; SWR absorbs later failures.
+const BOOT_AT = Date.now();
+const WARM_GRACE_MS = 60_000;
+
+function healthReady(): { ready: boolean; warm: boolean } {
+  const warm = cache !== null;
+  return { ready: warm || Date.now() - BOOT_AT >= WARM_GRACE_MS, warm };
+}
+
 function refreshInBackground(): void {
   if (refreshing) return;
   refreshing = buildShowcasePayload()
@@ -294,7 +306,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
   try {
     if (url.pathname === "/healthz") {
-      sendJson(res, 200, { ok: true, service: "event-protect-demo" });
+      const h = healthReady();
+      sendJson(res, h.ready ? 200 : 503, { ok: h.ready, warm: h.warm, service: "event-protect-demo" });
       return;
     }
     if (url.pathname === "/api/showcase") {
