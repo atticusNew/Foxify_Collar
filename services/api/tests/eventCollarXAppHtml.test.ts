@@ -22,6 +22,8 @@ test("cross-venue app html: honesty label, gating line, and structure", () => {
 test("cross-venue app html: pairing is explicit and honest", () => {
   const html = renderEventXAppHtml();
   assert.ok(html.includes("the hedge"), "the hedge leg named in the drawer");
+  assert.ok(html.includes("without protection"), "naked outcome row in the drawer");
+  assert.ok(html.includes("with protection</span>"), "protected outcome row mirrors the naked row");
   assert.ok(html.includes("same result"), "settlement parity shown to the holder");
   assert.ok(html.includes("verifiably settle on the identical official result"), "settlement honesty lives in the disclosure");
   assert.ok(html.includes("whitelist"), "whitelist discipline explained");

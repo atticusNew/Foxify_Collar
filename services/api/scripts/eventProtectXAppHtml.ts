@@ -342,6 +342,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       gapRow+
       '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2'+entryTag+' · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
       '<div class="row"><span>without protection</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
+      '<div class="row"><span>with protection</span><b>'+usd(o.yes)+' if Yes · '+usd(o.no)+' if No</b></div>'+
       buyRow+
       '<div class="row"><span>hedge cost</span><b>'+usd(q.hedge.costCents)+' · fees '+usd(q.feesCents)+'</b></div>'+
       '<div class="row"><span>our take</span><b>'+takeLine+'</b></div>'+
