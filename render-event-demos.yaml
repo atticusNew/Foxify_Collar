@@ -54,6 +54,30 @@ services:
       - key: NODE_ENV
         value: production
 
+  # Shadow run: the cross-venue router quoted continuously, every position
+  # marked against official results as events settle. The persistent disk is
+  # the point — the track record must survive deploys. Read-only like the
+  # demos: public market data only, nothing is bought.
+  - type: web
+    name: atticus-event-shadow
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/eventShadowWorker.ts
+    healthCheckPath: /healthz
+    disk:
+      name: event-shadow-ledger
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: EVENT_SHADOW_LEDGER_PATH
+        value: /var/data/event-shadow-ledger.jsonl
+
   - type: web
     name: atticus-pm-clob-egress-proxy
     runtime: node

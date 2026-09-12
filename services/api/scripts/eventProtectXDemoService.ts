@@ -177,7 +177,7 @@ function rankCandidates(markets: KalshiMarket[]): Array<{ m: KalshiMarket; mark:
 }
 
 /** One fully-quoted event candidate, sports or crypto, display-ready. */
-interface CandidateResult {
+export interface CandidateResult {
   kind: "sports" | "crypto";
   league: string;
   /** the protected Kalshi market with live prices */
@@ -381,7 +381,7 @@ async function quoteCryptoCandidate(series: string, sel: ShowcaseSelection, now:
 }
 
 /** One refresh's full result: ranked quotable rows plus the best honest refusal. */
-interface ScanState {
+export interface ScanState {
   atIso: string;
   /** quotable candidates, cheapest true insurance cost first */
   rows: Array<{ res: CandidateResult; evBps: number }>;
@@ -700,7 +700,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   }
 });
 
-if (process.env.NODE_ENV !== "test") {
+// EVENT_X_EMBED=1 lets the shadow worker import buildScan without starting this
+// server. The live demo never sets it, so its boot behavior is unchanged.
+if (process.env.NODE_ENV !== "test" && process.env.EVENT_X_EMBED !== "1") {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`[event-protect-x] listening on :${PORT} (protection router: games + crypto)`);
@@ -710,4 +712,4 @@ if (process.env.NODE_ENV !== "test") {
   });
 }
 
-export { server, buildPayload };
+export { server, buildPayload, buildScan };
