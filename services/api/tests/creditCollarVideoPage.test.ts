@@ -37,7 +37,8 @@ test("video page: player, ladder copy, live-product links, honesty line", () => 
   assert.ok(EP_VIDEO_PAGE_HTML.includes("hard floor and a daily credit"), "ladder copy");
   assert.ok(EP_VIDEO_PAGE_HTML.includes("Everything else stays exactly the same"), "ladder copy");
   assert.ok(EP_VIDEO_PAGE_HTML.includes('href="/"'), "link into the live app");
-  assert.ok(EP_VIDEO_PAGE_HTML.includes('href="/public"'), "link to the live book");
+  assert.ok(EP_VIDEO_PAGE_HTML.includes("facility.atticustrade.com"), "link to the facility track record");
+  assert.ok(EP_VIDEO_PAGE_HTML.includes('target="_blank"'), "facility opens in a new tab (video page stays open)");
   assert.ok(EP_VIDEO_PAGE_HTML.includes("browser extension"), "disclaimer: not venue-embedded");
   assert.ok(EP_VIDEO_PAGE_HTML.includes("credits scale with position size"), "disclaimer: small credit");
 });

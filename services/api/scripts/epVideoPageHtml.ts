@@ -75,7 +75,7 @@ export const EP_VIDEO_PAGE_HTML = `<!doctype html>
   </div>
   <div class="cta">
     <a class="primary" href="/">Open the live demo</a>
-    <a class="ghost" href="/public">See the live book</a>
+    <a class="ghost" href="https://facility.atticustrade.com/" target="_blank" rel="noopener">See the track record</a>
   </div>
   <div class="foot">This demo runs as a browser extension over Hyperliquid on a small live position — embedded venue-side it is the same API, and credits scale with position size. Every credit is auditable to an exchange fill. Nothing on this page is investment advice.</div>
 </div>
