@@ -26,7 +26,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HyperliquidClient } from "../src/singleSide/twoSided/creditCollar/execution/perpVenues/hyperliquidClient";
@@ -99,6 +99,7 @@ import { parseLeaderboardTop, parseShowcaseOverride, type ShowcaseWallet } from 
 import { actionCleared, closeAllowed, verifyMessageText, verifyWalletSignature } from "../src/singleSide/twoSided/creditCollar/epVerify";
 import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
 import { EP_PUBLIC_DASHBOARD_HTML, EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
+import { EP_VIDEO_PAGE_HTML, parseByteRange } from "./epVideoPageHtml";
 import { Pool } from "pg";
 import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regimeGate";
@@ -113,6 +114,8 @@ const round2 = (x: number) => +x.toFixed(2);
 const port = num(process.env.DEMO_PORT ?? process.env.PORT, 8788); // PORT: hosted platforms (Render) inject it
 /** The single-SVG brand lockup (drop-in — see scripts/assets/README.md). */
 const BRAND_LOCKUP_PATH = join(dirname(fileURLToPath(import.meta.url)), "assets", "atticus-lockup.svg");
+/** The 28-second toggle demo video (drop-in like the lockup): /video 404s until this file exists. */
+const DEMO_VIDEO_PATH = join(dirname(fileURLToPath(import.meta.url)), "assets", "hl-toggle-demo.mp4");
 const guards = parseDemoGuardsFromEnv(process.env);
 const storePath = process.env.DEMO_STORE_PATH ?? "./logs/demo-wraps.json";
 const allowReset = String(process.env.DEMO_ALLOW_RESET ?? "true").toLowerCase() === "true";
@@ -1358,6 +1361,48 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       res.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600", ...CORS_HEADERS });
       res.end(readFileSync(BRAND_LOCKUP_PATH));
+      return;
+    }
+    // ── /video: the 28-second toggle demo page (outreach link target). 404 until the mp4 asset
+    // is checked in, so this route can ship ahead of the video without a broken page live. ──
+    if (req.method === "GET" && url.pathname === "/video") {
+      if (!existsSync(DEMO_VIDEO_PATH)) {
+        sendJson(res, 404, { ok: false, error: "not_found", message: "demo video not published yet" });
+        return;
+      }
+      recordPageLoad(funnelState, "video", Date.now());
+      funnelDirty = true;
+      sendHtml(res, EP_VIDEO_PAGE_HTML);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/assets/hl-toggle-demo.mp4") {
+      if (!existsSync(DEMO_VIDEO_PATH)) {
+        sendJson(res, 404, { ok: false, error: "not_found" });
+        return;
+      }
+      // Byte-range support: Safari/iOS require 206 responses to play <video> at all.
+      const size = statSync(DEMO_VIDEO_PATH).size;
+      const range = parseByteRange(Array.isArray(req.headers.range) ? req.headers.range[0] : req.headers.range, size);
+      if (range) {
+        res.writeHead(206, {
+          "Content-Type": "video/mp4",
+          "Content-Length": range.end - range.start + 1,
+          "Content-Range": `bytes ${range.start}-${range.end}/${size}`,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "public, max-age=3600",
+          ...CORS_HEADERS
+        });
+        createReadStream(DEMO_VIDEO_PATH, { start: range.start, end: range.end }).pipe(res);
+      } else {
+        res.writeHead(200, {
+          "Content-Type": "video/mp4",
+          "Content-Length": size,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "public, max-age=3600",
+          ...CORS_HEADERS
+        });
+        createReadStream(DEMO_VIDEO_PATH).pipe(res);
+      }
       return;
     }
     if (req.method === "GET" && url.pathname === "/demo") {
