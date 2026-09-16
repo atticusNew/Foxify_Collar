@@ -67,7 +67,7 @@ export const EP_VIDEO_PAGE_HTML = `<!doctype html>
 <div class="wrap">
   <h1>A live collar on Hyperliquid. One toggle.</h1>
   <p class="sub">Real position, live venue pricing, executed end to end.</p>
-  <video controls autoplay muted playsinline preload="metadata" src="/assets/hl-toggle-demo.mp4"></video>
+  <video controls autoplay muted playsinline preload="metadata" src="/assets/hl-toggle-demo.mp4?v=2"></video>
   <div class="ladder">
     <div class="row"><b>4</b> JSON endpoints give a venue <b>1</b> white-label toggle.</div>
     <div class="row"><b>1</b> tap gives the trader a hard floor and a daily credit.</div>
