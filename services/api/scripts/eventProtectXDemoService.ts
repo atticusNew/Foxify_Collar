@@ -67,7 +67,7 @@ import {
 import { appendCrossLedger, summarizeCrossLedger } from "../src/eventCollar/crossVenue/crossLedger";
 import type { KalshiMarket } from "../src/eventCollar/types";
 import { LEAGUE_TEMPLATES } from "../src/eventCollar/crossVenue/resolutionWhitelist";
-import { matchKalshiMarket } from "../src/eventCollar/crossVenue/eventMatcher";
+import { matchKalshiMarket, parseGameTicker } from "../src/eventCollar/crossVenue/eventMatcher";
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import { getNoAsks, quoteLadderWrap } from "../src/eventCollar/crossVenue/kalshiLadder";
@@ -243,10 +243,36 @@ function showcaseWindowOk(pair: MatchedPair, now: Date): boolean {
   return minutes >= 45 && minutes <= 7 * 24 * 60;
 }
 
+/**
+ * Cheap horizon pre-filter from the game date in the Kalshi ticker: a league
+ * that plays weekly lists next week's slate too, and those games would burn
+ * match attempts only to fail the showcase window afterwards. Unparseable
+ * tickers pass through (the matcher decides). One day of slack covers ET vs
+ * UTC and the 7-day edge.
+ */
+export function gameDateWithinHorizon(
+  ticker: string,
+  template: (typeof LEAGUE_TEMPLATES)[number],
+  now: Date,
+  horizonDays = 7,
+): boolean {
+  const parsed = parseGameTicker(ticker, template);
+  if (!parsed) return true;
+  const gameMs = Date.parse(`${parsed.dateIso}T00:00:00Z`);
+  if (!Number.isFinite(gameMs)) return true;
+  const days = (gameMs - now.getTime()) / 86_400_000;
+  return days >= -1 && days <= horizonDays + 1;
+}
+
 /** Candidate ordering: quotable band first, moderately-favored side, tight spread. */
-function rankCandidates(markets: KalshiMarket[]): Array<{ m: KalshiMarket; mark: number }> {
+function rankCandidates(
+  markets: KalshiMarket[],
+  template?: (typeof LEAGUE_TEMPLATES)[number],
+  now: Date = new Date(),
+): Array<{ m: KalshiMarket; mark: number }> {
   return markets
     .filter((m) => m.status === "active")
+    .filter((m) => !template || gameDateWithinHorizon(m.ticker, template, now))
     .map((m) => ({ m, mark: midCents(m) }))
     .filter(
       ({ m, mark }) =>
@@ -532,7 +558,7 @@ async function buildScan(): Promise<ScanState> {
       countFailure();
       continue;
     }
-    const ranked = rankCandidates(markets);
+    const ranked = rankCandidates(markets, template, now);
     if (ranked.length > 0) cursors.push({ template, ranked, next: 0, attempts: 0, rows: 0 });
   }
   const quota = leagueRowQuota(cursors.length, MAX_BOARD_ROWS);

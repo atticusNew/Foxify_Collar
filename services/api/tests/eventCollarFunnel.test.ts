@@ -193,6 +193,18 @@ test("board budget: rows split evenly across leagues with games on", async () =>
   assert.equal(leagueRowQuota(7, 6), 1);
 });
 
+test("board budget: next week's slate is skipped before it burns match attempts", async () => {
+  const { gameDateWithinHorizon } = await import("../scripts/eventProtectXDemoService");
+  const { templateForSeries } = await import("../src/eventCollar/crossVenue/resolutionWhitelist");
+  const nfl = templateForSeries("KXNFLGAME")!;
+  const now = new Date("2026-09-18T19:00:00Z");
+  assert.equal(gameDateWithinHorizon("KXNFLGAME-26SEP20INDKC-KC", nfl, now), true, "this Sunday");
+  assert.equal(gameDateWithinHorizon("KXNFLGAME-26SEP24ATLGB-GB", nfl, now), true, "Thursday night, day 6");
+  assert.equal(gameDateWithinHorizon("KXNFLGAME-26SEP27LVNO-NO", nfl, now), false, "next Sunday, day 9");
+  assert.equal(gameDateWithinHorizon("KXNFLGAME-26SEP18XXYY-XX", nfl, now), true, "unparseable teams pass through to the matcher");
+  assert.equal(gameDateWithinHorizon("KXNFLGAME-26SEP10INDKC-KC", nfl, now), false, "already played");
+});
+
 test("demo service: page loads count, beacons record, admin funnel is gated and persists", async () => {
   const funnelPath = FUNNEL_PATH;
   const { server, flushFunnel } = await import("../scripts/eventProtectXDemoService");
