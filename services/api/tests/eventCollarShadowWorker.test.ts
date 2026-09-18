@@ -229,6 +229,28 @@ test("shadow worker: /healthz carries ledger stats and failure counters; /api/sh
     assert.ok(page.includes('href="/api/shadow/export"'), "the page links the full ledger download");
     assert.ok(page.includes('href="/api/shadow/positions.csv"'), "and the spreadsheet form");
     assert.ok(page.includes("writer P&amp;L, settled"));
+    assert.ok(page.includes('href="/report"'), "and the rule comparison");
+
+    // the rule comparison: JSON carries the rule books plus the plain-language rules; HTML renders them
+    const report = (await (await fetch(`${base}/api/shadow/report`)).json()) as {
+      ok: boolean;
+      period: { recordedSince: string | null };
+      rules: { tiers: Record<string, string>; feeRules: Record<string, { name: string }> };
+      counterfactuals: { positionsWithCounterfactuals: number; baseline: { quoted: number }; capacity: Array<{ mult: number }> };
+    };
+    assert.equal(report.ok, true);
+    assert.equal(report.counterfactuals.positionsWithCounterfactuals, 0, "a legacy open carries no counterfactuals");
+    assert.equal(report.period.recordedSince, null);
+    assert.ok(report.rules.tiers.tight && report.rules.tiers.balanced && report.rules.tiers.wide);
+    assert.equal(report.rules.feeRules.min_25bps.name, "share or 0.25% of stake");
+    assert.deepEqual(report.counterfactuals.capacity.map((c) => c.mult), [1, 5, 20]);
+    const reportPage = await fetch(`${base}/report`);
+    assert.equal(reportPage.status, 200);
+    assert.match(reportPage.headers.get("content-type") ?? "", /text\/html/);
+    const reportHtml = await reportPage.text();
+    assert.ok(reportHtml.includes("What each rule would have done"));
+    assert.ok(reportHtml.includes("not started"), "no v2 positions yet: the period says so");
+    assert.ok(!reportHtml.includes("NaN"));
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }

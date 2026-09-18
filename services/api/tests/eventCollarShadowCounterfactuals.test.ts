@@ -27,6 +27,7 @@ import {
   writerPayouts,
   type ShadowOpenRecord,
 } from "../src/eventCollar/crossVenue/shadowLedger";
+import { renderShadowReportHtml } from "../scripts/eventShadowHtml";
 
 const LOCK = "2026-09-20T17:00:00.000Z";
 const NOW = new Date("2026-09-20T11:00:00.000Z");
@@ -276,4 +277,23 @@ test("summarizeCounterfactuals: rule books fold quoted, refused and settled; leg
   assert.equal(cells[header.indexOf("x5_refused")], "0");
   assert.equal(cells[header.indexOf("min_25bps_take_c")], "38");
   assert.equal(cells[header.indexOf("wide_writer_pnl_c")], String(altOutcome(cf.alternatives.wide!, 150, "no")?.writerCents));
+
+  // the report page: every rule as a row, the live book marked as the base, plain-language rules
+  const html = renderShadowReportHtml({ atIso: "2026-09-24T12:00:00.000Z", summary: full });
+  assert.ok(html.includes("What each rule would have done"));
+  assert.ok(html.includes("2026-09-20 to 2026-09-24 UTC"), "the recording period, first counterfactual to render time");
+  assert.ok(html.includes('<tr class="base"><td>live book'), "the live book heads each comparison");
+  for (const tier of PROTECTION_TIERS) assert.ok(html.includes(`<td>${tier} tier</td>`), `${tier} row present`);
+  assert.ok(html.includes("<td>share only</td>"));
+  assert.ok(html.includes("<td>share or 0.25% of stake</td>"));
+  assert.ok(html.includes("<td>20× size</td>"));
+  assert.ok(html.includes("the venues&#39; books did not fund a single collar") || html.includes("the venues' books did not fund a single collar"), "capacity line explains the 20x refusals");
+  assert.ok(html.includes(`The minimum adds $${((s.feeRules.min_25bps.takeCents - s.feeRules.share_only.takeCents) / 100).toFixed(2)}`));
+  assert.ok(html.includes('href="/api/shadow/report"'));
+  assert.ok(!html.includes("undefined") && !html.includes("NaN"));
+
+  // an empty book renders without a period and without dividing by zero
+  const empty = renderShadowReportHtml({ atIso: "2026-09-24T12:00:00.000Z", summary: summarizeShadow([]) });
+  assert.ok(empty.includes("not started"));
+  assert.ok(!empty.includes("NaN") && !empty.includes("undefined"));
 });

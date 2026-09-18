@@ -54,7 +54,8 @@ import {
 } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
 import { DEFAULT_CROSS_CONFIG, type CrossSearchConfig } from "../src/eventCollar/crossVenue/types";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
-import { renderShadowHtml } from "./eventShadowHtml";
+import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
+import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml } from "./eventShadowHtml";
 import type { ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -305,6 +306,25 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         .filter((p) => p.status === "open")
         .sort((a, b) => a.eventTimeIso.localeCompare(b.eventTimeIso));
       sendJson(res, 200, { ok: true, at: atIso, summary: summarizeShadow(positions), settled, open });
+      return;
+    }
+    if (url.pathname === "/api/shadow/report") {
+      // The rule comparison alone: what every proposed rule would have done on the same positions.
+      const { atIso, positions } = pageData();
+      const summary = summarizeShadow(positions);
+      sendJson(res, 200, {
+        ok: true,
+        at: atIso,
+        period: { recordedSince: summary.counterfactuals.recordedSince, renderedAt: atIso },
+        rules: { tiers: TIER_RULES, feeRules: FEE_RULE_TEXT },
+        counterfactuals: summary.counterfactuals,
+      });
+      return;
+    }
+    if (url.pathname === "/report") {
+      const { atIso, positions } = pageData();
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderShadowReportHtml({ atIso, summary: summarizeShadow(positions) }));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
