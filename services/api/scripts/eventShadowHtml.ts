@@ -8,6 +8,7 @@
  */
 
 import type { RuleBook, ShadowPosition, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
+import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 
@@ -45,6 +46,37 @@ export interface ShadowPageInput {
   summary: ShadowSummary;
   open: ShadowPosition[];
   settled: ShadowPosition[];
+  /** the hedge trail, when the worker keeps one */
+  hedges?: { strategy: HedgeStrategy; rfqVenues: string[]; summary: HedgeReceiptSummary };
+}
+
+function hedgeCard(h: NonNullable<ShadowPageInput["hedges"]>): string {
+  const s = h.summary;
+  const how =
+    h.strategy === "rfq"
+      ? `RFQ first on ${h.rfqVenues.length ? h.rfqVenues.join(" and ") : "no venue yet"}, book fallback`
+      : "the visible book, at the terms the holder was quoted";
+  const rfqLine =
+    s.byOutcome.filled_rfq > 0
+      ? `${s.byOutcome.filled_rfq} filled by RFQ, ${usd(s.rfqSavedCents)} kept versus the walk`
+      : h.strategy === "rfq"
+        ? `none filled by RFQ yet; ${s.byOutcome.filled_book} fell back to the book`
+        : "not asked; RFQ is off";
+  const fallbackRows = Object.entries(s.fallbackReasons)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([reason, n]) => `<div class="row"><span>${escapeHtml(reason)}</span><b>${n}</b></div>`)
+    .join("");
+  return `<div class="card">
+    <h2>How the hedge leg is filled</h2>
+    <div class="sub" style="margin-bottom:8px">Pricing walks the visible book; filling does not have to. An RFQ asks the venue's makers for one price on the whole size and is taken only when it is at or inside the walk. Every hedge leaves a receipt either way.</div>
+    <div class="row"><span>strategy</span><b>${escapeHtml(how)}</b></div>
+    <div class="row"><span>hedges recorded</span><b>${s.receipts}${s.simulated > 0 ? ` <i>${s.simulated} simulated</i>` : ""}</b></div>
+    <div class="row"><span>cost of walking the book</span><b>${usd(s.bookWalkPenaltyCents)} <i>over one price at the top</i></b></div>
+    <div class="row"><span>RFQ</span><b>${escapeHtml(rfqLine)}</b></div>
+    ${fallbackRows}
+    <a class="back" href="/api/shadow/hedges">Hedge receipts (JSON)</a>
+  </div>`;
 }
 
 const signedUsd = (c: number): string => (c < 0 ? `-${usd(-c)}` : usd(c));
@@ -218,6 +250,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     ).join("")}
     <a class="back" href="/report">Read the full comparison</a>
   </div>
+  ${input.hedges ? hedgeCard(input.hedges) : ""}
   <div class="card">
     <h2>Settled, most recent first</h2>
     ${settledRows || '<div class="row"><span>nothing settled yet</span><b>the book is young</b></div>'}

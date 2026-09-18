@@ -34,6 +34,7 @@
 
 import { createReadStream, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { dirname, join } from "node:path";
 import {
   appendShadowRecord,
   ledgerStats,
@@ -52,9 +53,22 @@ import {
   counterfactualsFor,
   type ShadowCounterfactuals,
 } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
-import { DEFAULT_CROSS_CONFIG, type CrossSearchConfig } from "../src/eventCollar/crossVenue/types";
+import {
+  DEFAULT_CROSS_CONFIG,
+  type CrossSearchConfig,
+  type HedgeLeg,
+  type PmBook,
+} from "../src/eventCollar/crossVenue/types";
+import type { NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
+import {
+  appendHedgeReceipt,
+  intentFromHedge,
+  loadHedgeReceipts,
+  summarizeHedgeReceipts,
+} from "../src/eventCollar/crossVenue/hedgeExecutor";
+import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml } from "./eventShadowHtml";
 import type { ScanState } from "./eventProtectXDemoService";
 
@@ -66,6 +80,10 @@ const SETTLE_MS = Number(process.env.EVENT_SHADOW_SETTLE_MS || 10 * 60_000);
 const SETTLE_GRACE_MS = Number(process.env.EVENT_SHADOW_SETTLE_GRACE_MS || 3 * 3_600_000);
 /** an event with no official result after this long is voided (postponed, rebooked) */
 const VOID_AFTER_MS = Number(process.env.EVENT_SHADOW_VOID_AFTER_MS || 72 * 3_600_000);
+
+/** one line per hedge: which strategy filled it, at what, and why the other did not */
+const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDGER_PATH), "hedge-receipts.jsonl");
+const hedgeChoice = hedgeExecutorFromEnv(process.env);
 
 const alertCfg = parseShadowAlertsFromEnv(process.env);
 const alerter: ShadowAlerter = buildShadowAlerter(alertCfg);
@@ -94,6 +112,26 @@ function appendOrAlert(record: Parameters<typeof appendShadowRecord>[1]): boolea
       message: `could not append ${record.type} for ${record.ticker} to ${LEDGER_PATH}: ${String(err instanceof Error ? err.message : err)}`,
     });
     return false;
+  }
+}
+
+/**
+ * Fill the hedge leg through the configured executor and keep the receipt.
+ * The position is already on the ledger; a hedge failure is recorded, never
+ * allowed to lose the record or stop the scan.
+ */
+async function fillHedge(ticker: string, hedge: HedgeLeg, books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[] }): Promise<void> {
+  try {
+    const best =
+      hedge.venue === "kalshi"
+        ? books.noAsks?.[0]
+          ? books.noAsks[0].priceCents * 10
+          : hedge.avgPriceCents * 10
+        : books.pmNoBook?.asks[0]?.priceMilli ?? hedge.avgPriceMilli;
+    const receipt = await hedgeChoice.executor.execute(intentFromHedge(hedge, best), ticker);
+    appendHedgeReceipt(RECEIPTS_PATH, receipt);
+  } catch (err) {
+    lastScanError = `hedge for ${ticker}: ${String(err instanceof Error ? err.message : err)}`;
   }
 }
 
@@ -156,6 +194,7 @@ async function scanTick(): Promise<void> {
         ...(counterfactuals ? { counterfactuals } : {}),
       });
       seen.add(res.market.ticker);
+      await fillHedge(res.market.ticker, q.hedge, res.books);
     }
     lastScanAt = new Date().toISOString();
     lastScanOkMs = Date.now();
@@ -246,6 +285,12 @@ function healthBody(): Record<string, unknown> {
     settleFailuresLastTick,
     settleDueLastTick,
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
+    hedge: {
+      strategy: hedgeChoice.strategy,
+      rfqVenues: hedgeChoice.rfqVenues,
+      notes: hedgeChoice.notes,
+      receipts: { path: RECEIPTS_PATH, ...ledgerStats(RECEIPTS_PATH) },
+    },
   };
 }
 
@@ -321,6 +366,21 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       });
       return;
     }
+    if (url.pathname === "/api/shadow/hedges") {
+      // The hedge trail: how each hedge leg was filled, and what the RFQ path did or would have done.
+      const receipts = loadHedgeReceipts(RECEIPTS_PATH);
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") || 50)));
+      sendJson(res, 200, {
+        ok: true,
+        at: new Date().toISOString(),
+        strategy: hedgeChoice.strategy,
+        rfqVenues: hedgeChoice.rfqVenues,
+        notes: hedgeChoice.notes,
+        summary: summarizeHedgeReceipts(receipts),
+        recent: receipts.slice(-limit).reverse(),
+      });
+      return;
+    }
     if (url.pathname === "/report") {
       const { atIso, positions } = pageData();
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -336,7 +396,19 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         .filter((p) => p.status === "open")
         .sort((a, b) => a.eventTimeIso.localeCompare(b.eventTimeIso));
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderShadowHtml({ atIso, summary: summarizeShadow(positions), open, settled }));
+      res.end(
+        renderShadowHtml({
+          atIso,
+          summary: summarizeShadow(positions),
+          open,
+          settled,
+          hedges: {
+            strategy: hedgeChoice.strategy,
+            rfqVenues: hedgeChoice.rfqVenues,
+            summary: summarizeHedgeReceipts(loadHedgeReceipts(RECEIPTS_PATH)),
+          },
+        }),
+      );
       return;
     }
     sendJson(res, 404, { ok: false, error: "not found" });

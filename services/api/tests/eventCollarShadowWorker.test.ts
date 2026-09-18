@@ -251,6 +251,24 @@ test("shadow worker: /healthz carries ledger stats and failure counters; /api/sh
     assert.ok(reportHtml.includes("What each rule would have done"));
     assert.ok(reportHtml.includes("not started"), "no v2 positions yet: the period says so");
     assert.ok(!reportHtml.includes("NaN"));
+
+    // the hedge trail: book by default, receipts next to the ledger, surfaced on healthz, JSON and the page
+    const h = health as { hedge: { strategy: string; rfqVenues: string[]; notes: string[]; receipts: { path: string; exists: boolean } } };
+    assert.equal(h.hedge.strategy, "book");
+    assert.deepEqual(h.hedge.rfqVenues, []);
+    assert.equal(h.hedge.receipts.path, join(dir, "hedge-receipts.jsonl"));
+    const hedges = (await (await fetch(`${base}/api/shadow/hedges?limit=5`)).json()) as {
+      ok: boolean;
+      strategy: string;
+      summary: { receipts: number; byOutcome: Record<string, number> };
+      recent: unknown[];
+    };
+    assert.equal(hedges.ok, true);
+    assert.equal(hedges.strategy, "book");
+    assert.equal(hedges.summary.receipts, 0, "positions appended by hand carry no hedge receipt; the scanner writes those");
+    assert.deepEqual(hedges.recent, []);
+    assert.ok(page.includes("How the hedge leg is filled"));
+    assert.ok(page.includes('href="/api/shadow/hedges"'));
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
