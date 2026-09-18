@@ -146,7 +146,9 @@ function baseInputs(overrides: Partial<LadderPricerInputs> = {}): LadderPricerIn
       { priceCents: 30, qtyMilli: 200_000 },
       { priceCents: 32, qtyMilli: 500_000 },
     ],
-    config: { ...DEFAULT_CROSS_CONFIG } as CrossSearchConfig,
+    // These fixtures hand-compute the highest-floor collar, which is the
+    // `tight` tier; pin it as the default so the top-level terms are that collar.
+    config: { ...DEFAULT_CROSS_CONFIG, defaultTier: "tight" } as CrossSearchConfig,
     ...overrides,
   };
 }

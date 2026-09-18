@@ -456,7 +456,9 @@ function baseInputs(overrides: Partial<CrossPricerInputs> = {}): CrossPricerInpu
     contracts: 150,
     now: NOW,
     noBook: fixtureBook(),
-    config: { ...DEFAULT_CROSS_CONFIG } as CrossSearchConfig,
+    // These fixtures hand-compute the highest-floor collar, which is the
+    // `tight` tier; pin it as the default so the top-level terms are that collar.
+    config: { ...DEFAULT_CROSS_CONFIG, defaultTier: "tight" } as CrossSearchConfig,
     ...overrides,
   };
 }
@@ -505,7 +507,7 @@ test("quoteCrossWrap: hedge is never under-sized (rounded up, min order clamped)
     baseInputs({
       contracts: 2,
       noBook: fixtureBook({ asks: [{ priceMilli: 10, sizeMilli: 100_000 }] }),
-      config: { ...DEFAULT_CROSS_CONFIG, deMinimisTakeCents: 10 },
+      config: { ...DEFAULT_CROSS_CONFIG, defaultTier: "tight", deMinimisTakeCents: 10 },
     }),
   );
   assert.ok(small.ok, JSON.stringify(small));

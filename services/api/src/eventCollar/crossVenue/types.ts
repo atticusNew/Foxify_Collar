@@ -132,22 +132,61 @@ export interface RouteCheck {
   detail?: string;
 }
 
-export interface CrossQuote {
+/**
+ * Protection tiers. In a credit collar the floor and the cap are tied: a
+ * higher floor needs more hedge, which only a lower cap can fund. So the
+ * fundable collars line up along one axis and the tiers are three named
+ * points on it, each with a stated selection rule:
+ *   - tight:    most protection — the highest fundable floor, largest credit
+ *               at it (today's rule; the shadow baseline)
+ *   - wide:     most upside — the lowest floor offered, highest fundable cap
+ *   - balanced: the middle — the floor nearest halfway between the two,
+ *               priced at its lowest true cost
+ * Tiers that resolve to the same collar collapse; the holder never sees two
+ * chips with identical terms.
+ */
+export type ProtectionTier = "tight" | "balanced" | "wide";
+export const PROTECTION_TIERS: readonly ProtectionTier[] = ["tight", "balanced", "wide"] as const;
+
+/** Which component of the fee rule set the published take. */
+export type TakeRule = "share" | "minimum" | "waived";
+
+/** One priced collar: the terms the holder locks plus the leg that backs them. */
+export interface CollarTerms {
+  floorCents: number;
+  capCents: number;
+  creditCents: number;
+  grossCreditCents: number;
+  /** the published take actually charged (0 when waived) */
+  takeCents: number;
+  /** what the share-of-credit component alone would charge */
+  takeShareCents: number;
+  /** what the minimum-fee-on-notional component alone would charge */
+  takeMinimumCents: number;
+  takeRule: TakeRule;
+  takeWaived: boolean;
+  hedge: HedgeLeg;
+  feesCents: number;
+  /** true cost of this protection at the market's own odds, bps of naked EV */
+  evCostBps: number;
+}
+
+export interface CrossQuote extends CollarTerms {
   ok: true;
   kalshiTicker: string;
   pmEventSlug: string;
   contracts: number;
   markCents: number;
   entryCents: number;
-  floorCents: number;
-  capCents: number;
-  creditCents: number;
-  grossCreditCents: number;
-  takeCents: number;
   takeBps: number;
-  takeWaived: boolean;
-  hedge: HedgeLeg;
-  feesCents: number;
+  /** the fee rule's notional minimum, bps of stake (100c x contracts) */
+  minTakeBpsOfStake: number;
+  /** which tier the top-level terms are; the others sit in `tiers` */
+  tier: ProtectionTier;
+  /** every distinct tier the venues funded, each with its own selection rule */
+  tiers: Partial<Record<ProtectionTier, CollarTerms>>;
+  /** how many fundable (floor, cap) collars the search saw before choosing */
+  candidatesConsidered: number;
   parityNote: string;
   quotedAt: string;
 }
@@ -164,12 +203,21 @@ export interface CrossSearchConfig {
   minMinutesToStart: number;
   markLowerBoundCents: number;
   markUpperBoundCents: number;
+  /** the writer's share of the gross credit, bps */
   takeBps: number;
+  /**
+   * The writer's minimum fee, bps of stake (100c x contracts). The take is
+   * max(share, minimum); a fee on notional pays for balance sheet and
+   * execution even when the venues barely disagree. 0 disables it.
+   */
+  minTakeBpsOfStake: number;
   deMinimisTakeCents: number;
   /** venue fee on hedge notional, bps (Polymarket taker fee is 0 today) */
   hedgeFeeBps: number;
   /** flat per-quote fee buffer, cents */
   hedgeFeeFlatCents: number;
+  /** the tier whose terms become the top-level quote (the others ride along) */
+  defaultTier: ProtectionTier;
 }
 
 export const DEFAULT_CROSS_CONFIG: CrossSearchConfig = {
@@ -182,7 +230,9 @@ export const DEFAULT_CROSS_CONFIG: CrossSearchConfig = {
   markLowerBoundCents: 10,
   markUpperBoundCents: 92,
   takeBps: 1000,
+  minTakeBpsOfStake: 25,
   deMinimisTakeCents: 5,
   hedgeFeeBps: 0,
   hedgeFeeFlatCents: 0,
+  defaultTier: "balanced",
 };

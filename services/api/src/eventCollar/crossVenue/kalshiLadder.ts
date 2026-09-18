@@ -22,6 +22,7 @@ import type {
   CrossSearchConfig,
   KalshiSelfHedgeLeg,
 } from "./types";
+import { enumerateCollars, refuseUnfunded, selectTiers } from "./collarSearch";
 
 /** One level of No-side executable depth (derived from a yes bid). */
 export interface NoAskLevel {
@@ -159,122 +160,46 @@ export function quoteLadderWrap(inputs: LadderPricerInputs): CrossQuoteResult {
 
   const MIN_CONTRACTS_MILLI = 1000; // Kalshi minimum order: 1 contract
 
-  interface Candidate {
-    floorCents: number;
-    capCents: number;
-    creditCents: number;
-    grossCreditCents: number;
-    takeCents: number;
-    takeWaived: boolean;
-    feesCents: number;
-    hedge: KalshiSelfHedgeLeg;
-  }
-
-  let best: Candidate | null = null;
-  let bestShortfall = Number.POSITIVE_INFINITY;
-  let sawThinBook = false;
-
-  const floors = cfg.floorOffsetsCents
-    .map((off) => markCents - off)
-    .filter((f) => f >= cfg.minFloorCents && f < markCents);
-  const caps = cfg.capOffsetsCents
-    .map((off) => markCents + off)
-    .filter((c) => c <= cfg.maxCapCents && c >= markCents + cfg.minCapHeadroomCents);
-
-  for (const floorCents of floors) {
-    for (const capCents of caps) {
-      const digitalCents = (floorCents + 100 - capCents) * contracts;
-      if (digitalCents <= 0) continue;
+  const search = enumerateCollars({
+    markCents,
+    contracts,
+    config: cfg,
+    hedgeFor: (digitalCents) => {
       // digitalCents cents of NO-state payout = digitalCents * 10 milli
       // contracts ($1 per contract in the NO state). Rounded up via integer
       // construction, clamped to the venue minimum - never under-hedged.
       const contractsMilli = Math.max(digitalCents * 10, MIN_CONTRACTS_MILLI);
-
       const walk = walkNoAsks(inputs.noAsks, contractsMilli);
-      if (!walk) {
-        sawThinBook = true;
-        continue;
-      }
+      if (!walk) return { ok: false };
       const feesCents =
         walk.feeCents +
         cfg.hedgeFeeFlatCents +
         Math.ceil((walk.costCents * cfg.hedgeFeeBps) / 10_000);
-
-      const fundingCents = (100 - capCents) * contracts;
-      const grossCreditCents = fundingCents - walk.costCents - feesCents;
-      if (grossCreditCents <= 0) {
-        bestShortfall = Math.min(bestShortfall, -grossCreditCents);
-        continue;
-      }
-      let takeCents = Math.floor((grossCreditCents * cfg.takeBps) / 10_000);
-      const takeWaived = takeCents < cfg.deMinimisTakeCents;
-      if (takeWaived) takeCents = 0;
-      const creditCents = grossCreditCents - takeCents;
-      if (creditCents <= 0) {
-        bestShortfall = Math.min(bestShortfall, 1);
-        continue;
-      }
-
-      const candidate: Candidate = {
-        floorCents,
-        capCents,
-        creditCents,
-        grossCreditCents,
-        takeCents,
-        takeWaived,
-        feesCents,
-        hedge: {
-          action: "buy",
-          venue: "kalshi",
-          outcome: "No",
-          ticker: pair.kalshi.ticker,
-          contractsMilli,
-          avgPriceCents: walk.avgPriceCents,
-          worstPriceCents: walk.worstPriceCents,
-          costCents: walk.costCents,
-        },
+      const hedge: KalshiSelfHedgeLeg = {
+        action: "buy",
+        venue: "kalshi",
+        outcome: "No",
+        ticker: pair.kalshi.ticker,
+        contractsMilli,
+        avgPriceCents: walk.avgPriceCents,
+        worstPriceCents: walk.worstPriceCents,
+        costCents: walk.costCents,
       };
+      return { ok: true, costCents: walk.costCents, feesCents, hedge };
+    },
+  });
 
-      // Same selection discipline as the cross-venue route: protect the
-      // holder's gains first, then the largest credit at that floor.
-      const better = (() => {
-        if (!best) return true;
-        const candProtectsEntry = candidate.floorCents >= entryCents ? 1 : 0;
-        const bestProtectsEntry = best.floorCents >= entryCents ? 1 : 0;
-        if (candProtectsEntry !== bestProtectsEntry) return candProtectsEntry > bestProtectsEntry;
-        if (candidate.floorCents !== best.floorCents) {
-          return candidate.floorCents > best.floorCents;
-        }
-        return candidate.creditCents > best.creditCents;
-      })();
-      if (better) best = candidate;
-    }
+  if (search.candidates.length === 0) {
+    return refuseUnfunded(search, cfg, {
+      shortfall:
+        "this market's own No side cannot fund a positive credit on any quotable floor/cap right now",
+      thin: "kalshi_book_too_thin",
+      thinDetail: "this market's No side lacks the depth to hedge this size leg-for-leg",
+      none: "no quotable floor/cap combination on the self-hedge route",
+    });
   }
 
-  if (!best) {
-    if (Number.isFinite(bestShortfall)) {
-      return {
-        ok: false,
-        code: "credit_nonpositive",
-        detail:
-          "this market's own No side cannot fund a positive credit on any quotable floor/cap right now",
-        bestShortfallCents: bestShortfall,
-      };
-    }
-    if (sawThinBook) {
-      return {
-        ok: false,
-        code: "kalshi_book_too_thin",
-        detail: "this market's No side lacks the depth to hedge this size leg-for-leg",
-      };
-    }
-    return {
-      ok: false,
-      code: "credit_nonpositive",
-      detail: "no quotable floor/cap combination on the self-hedge route",
-    };
-  }
-
+  const sel = selectTiers(search.candidates, entryCents, cfg.defaultTier);
   return {
     ok: true,
     kalshiTicker: pair.kalshi.ticker,
@@ -282,15 +207,12 @@ export function quoteLadderWrap(inputs: LadderPricerInputs): CrossQuoteResult {
     contracts,
     markCents,
     entryCents,
-    floorCents: best.floorCents,
-    capCents: best.capCents,
-    creditCents: best.creditCents,
-    grossCreditCents: best.grossCreditCents,
-    takeCents: best.takeCents,
+    ...sel.terms,
     takeBps: cfg.takeBps,
-    takeWaived: best.takeWaived,
-    hedge: best.hedge,
-    feesCents: best.feesCents,
+    minTakeBpsOfStake: cfg.minTakeBpsOfStake,
+    tier: sel.tier,
+    tiers: sel.tiers,
+    candidatesConsidered: search.candidates.length,
     parityNote: "the hedge is the protected market's own No side; settlement is identical by construction",
     quotedAt: inputs.now.toISOString(),
   };
