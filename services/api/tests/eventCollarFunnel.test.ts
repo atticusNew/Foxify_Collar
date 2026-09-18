@@ -40,6 +40,7 @@ const CTX: ProtectContext = {
   league: "nfl",
   kind: "sports",
   route: "polymarket",
+  tier: "balanced",
   creditCents: 1234,
   contracts: 150,
   markCents: 58,
@@ -89,8 +90,11 @@ test("funnel: protect taps are attributed from the server context, never the cli
 
   assert.deepEqual(f.protectsByLeague, { nfl: 1, unknown: 1 });
   assert.deepEqual(f.protectsByRoute, { polymarket: 1, unknown: 1 });
+  assert.deepEqual(f.protectsByTier, { balanced: 1, unknown: 1 });
   assert.equal(f.recentProtects.length, 2);
   const first = f.recentProtects[0];
+  assert.equal(first.tier, "balanced");
+  assert.equal(f.recentProtects[1].tier, null);
   assert.equal(first.creditCents, 1234);
   assert.equal(first.contracts, 150);
   assert.equal(first.evCostBps, -37, "bps stored as an integer");
@@ -300,4 +304,58 @@ test("demo service: page loads count, beacons record, admin funnel is gated and 
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
+});
+
+test("protectContextFor: attributes the tier the holder locked, falls back to the row's default", async () => {
+  const { protectContextFor } = await import("../scripts/eventProtectXDemoService");
+  const { quoteLadderWrap } = await import("../src/eventCollar/crossVenue/kalshiLadder");
+  const { DEFAULT_CROSS_CONFIG } = await import("../src/eventCollar/crossVenue/types");
+  const start = new Date(T0 + 6 * 3_600_000).toISOString();
+  const quote = quoteLadderWrap({
+    pair: { kalshi: { ticker: "KXMLBGAME-26SEP18NYYBOS-NYY" }, gameStartTime: start },
+    markCents: 60,
+    entryCents: 55,
+    contracts: 150,
+    now: new Date(T0),
+    noAsks: [
+      { priceCents: 41, qtyMilli: 100_000 },
+      { priceCents: 42, qtyMilli: 300_000 },
+      { priceCents: 43, qtyMilli: 900_000 },
+    ],
+    config: DEFAULT_CROSS_CONFIG,
+  });
+  assert.ok(quote.ok);
+  const res = {
+    kind: "sports" as const,
+    league: "mlb",
+    market: { ticker: "KXMLBGAME-26SEP18NYYBOS-NYY" },
+    route: "kalshi_self" as const,
+    position: { contracts: 150 },
+    markCents: 60,
+    quote,
+  };
+  const state = { atIso: new Date(T0).toISOString(), rows: [{ res, evBps: quote.evCostBps }], fallback: null, fetchFailures: 0 };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const s = state as any;
+
+  const wide = protectContextFor(res.market.ticker, "wide", s);
+  assert.ok(wide);
+  assert.equal(wide.tier, "wide");
+  assert.equal(wide.floorCents, quote.tiers.wide?.floorCents);
+  assert.equal(wide.creditCents, quote.tiers.wide?.creditCents);
+  assert.equal(wide.evCostBps, quote.tiers.wide?.evCostBps);
+
+  const dflt = protectContextFor(res.market.ticker, undefined, s);
+  assert.ok(dflt);
+  assert.equal(dflt.tier, quote.tier);
+  assert.equal(dflt.floorCents, quote.floorCents);
+
+  // an unknown tier name from the browser cannot invent terms: the default is attributed
+  const bogus = protectContextFor(res.market.ticker, "platinum", s);
+  assert.ok(bogus);
+  assert.equal(bogus.tier, quote.tier);
+  assert.equal(bogus.creditCents, quote.creditCents);
+
+  assert.equal(protectContextFor("KXMLBGAME-ROLLED-OFF", "wide", s), null);
+  assert.equal(protectContextFor(res.market.ticker, "wide", null), null);
 });
