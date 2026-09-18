@@ -174,17 +174,28 @@ test("shadow ledger: stats count bytes and non-empty lines; missing file is empt
   assert.equal(s.bytes, Buffer.byteLength(readFileSync(path, "utf8")));
 });
 
-test("shadow worker: /healthz carries ledger stats and failure counters; /api/shadow/export streams the raw ledger", async () => {
+test("shadow worker: public record vs operator views; /api/shadow/export streams the raw ledger to the operator", async () => {
   const dir = mkdtempSync(join(tmpdir(), "shadow-worker-"));
   const path = join(dir, "ledger.jsonl");
   process.env.NODE_ENV = "test";
   process.env.EVENT_SHADOW_LEDGER_PATH = path;
+  process.env.EVENT_X_ADMIN_TOKEN = "op-secret";
   const { server } = await import("../scripts/eventShadowWorker");
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const op = { headers: { "x-admin-token": "op-secret" } };
   try {
+    // operator views are gated: no token, wrong token -> 403; the public record is unaffected
+    for (const p of ["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export"]) {
+      assert.equal((await fetch(`${base}${p}`)).status, 403, `${p} without a token`);
+      assert.equal((await fetch(`${base}${p}?token=wrong`)).status, 403, `${p} with the wrong token`);
+    }
+    assert.equal((await fetch(`${base}/`)).status, 200);
+    assert.equal((await fetch(`${base}/api/shadow`)).status, 200);
+    assert.equal((await fetch(`${base}/api/shadow/positions.csv`)).status, 200);
+
     // empty ledger: export is an empty 200, health reports no file
-    const emptyExport = await fetch(`${base}/api/shadow/export`);
+    const emptyExport = await fetch(`${base}/api/shadow/export`, op);
     assert.equal(emptyExport.status, 200);
     assert.equal(await emptyExport.text(), "");
     let health = (await (await fetch(`${base}/healthz`)).json()) as Record<string, unknown>;
@@ -197,7 +208,7 @@ test("shadow worker: /healthz carries ledger stats and failure counters; /api/sh
     appendShadowRecord(path, { type: "settle", at: "2026-09-21T04:00:00.000Z", ticker: OPEN.ticker, result: "no" });
     const raw = readFileSync(path, "utf8");
 
-    const exp = await fetch(`${base}/api/shadow/export`);
+    const exp = await fetch(`${base}/api/shadow/export?token=op-secret`);
     assert.equal(exp.status, 200);
     assert.match(exp.headers.get("content-type") ?? "", /x-ndjson/);
     assert.match(exp.headers.get("content-disposition") ?? "", /event-shadow-ledger-\d{4}-\d{2}-\d{2}\.jsonl/);
@@ -209,13 +220,24 @@ test("shadow worker: /healthz carries ledger stats and failure counters; /api/sh
     assert.equal(health.positions, 1);
 
     const api = (await (await fetch(`${base}/api/shadow`)).json()) as {
-      summary: { settledCount: number; floorSaves: number; writer: { settledPnlCents: number; takeBookedCents: number } };
+      summary: {
+        settledCount: number;
+        floorSaves: number;
+        writer: { settledPnlCents: number; takeBookedCents: number };
+        counterfactuals: Record<string, unknown>;
+      };
     };
     assert.equal(api.summary.settledCount, 1);
     assert.equal(api.summary.floorSaves, 1);
     assert.equal(api.summary.writer.settledPnlCents, OPEN.takeCents, "writer realized the published take");
     assert.equal(api.summary.writer.takeBookedCents, OPEN.takeCents);
+    assert.deepEqual(
+      Object.keys(api.summary.counterfactuals).sort(),
+      ["positionsWithCounterfactuals", "recordedSince"],
+      "the public JSON says the comparison exists; the rule books stay with the operator",
+    );
 
+    // public CSV: what was quoted and settled, no counterfactual columns; the operator's ?scope=full has them all
     const csv = await fetch(`${base}/api/shadow/positions.csv`);
     assert.equal(csv.status, 200);
     assert.match(csv.headers.get("content-type") ?? "", /text\/csv/);
@@ -223,16 +245,27 @@ test("shadow worker: /healthz carries ledger stats and failure counters; /api/sh
     const csvLines = (await csv.text()).trimEnd().split("\n");
     assert.equal(csvLines.length, 2, "header + the one position");
     assert.ok(csvLines[0].startsWith("ticker,league,kind,"));
+    assert.ok(csvLines[0].endsWith(",ev_cost_bps,tier"));
+    assert.ok(!csvLines[0].includes("wide_floor_c") && !csvLines[0].includes("x20_refused"));
     assert.ok(csvLines[1].startsWith(`${OPEN.ticker},`));
+    const publicAsksFull = await fetch(`${base}/api/shadow/positions.csv?scope=full`);
+    assert.ok(!(await publicAsksFull.text()).includes("wide_floor_c"), "scope=full without the token is the public CSV");
+    const fullCsv = await fetch(`${base}/api/shadow/positions.csv?scope=full&token=op-secret`);
+    assert.match(fullCsv.headers.get("content-disposition") ?? "", /event-shadow-positions-full-/);
+    const fullHeader = (await fullCsv.text()).split("\n")[0];
+    assert.ok(fullHeader.includes("wide_floor_c") && fullHeader.includes("x20_refused") && fullHeader.includes("min_25bps_take_c"));
 
+    // the public page: outcomes and the live book's receipts; no operator links, one line saying the comparison exists
     const page = await (await fetch(`${base}/`)).text();
-    assert.ok(page.includes('href="/api/shadow/export"'), "the page links the full ledger download");
-    assert.ok(page.includes('href="/api/shadow/positions.csv"'), "and the spreadsheet form");
+    assert.ok(page.includes('href="/api/shadow/positions.csv"'), "the spreadsheet form");
     assert.ok(page.includes("writer P&amp;L, settled"));
-    assert.ok(page.includes('href="/report"'), "and the rule comparison");
+    assert.ok(!page.includes('href="/report"') && !page.includes('href="/api/shadow/export"') && !page.includes('href="/api/shadow/hedges"'));
+    assert.ok(!page.includes("What each rule would have done") && !page.includes("How the hedge leg is filled"));
+    assert.ok(page.includes("rule comparison") && page.includes("report on request"));
+    assert.ok(page.includes("hedge fills"));
 
-    // the rule comparison: JSON carries the rule books plus the plain-language rules; HTML renders them
-    const report = (await (await fetch(`${base}/api/shadow/report`)).json()) as {
+    // the rule comparison (operator): JSON carries the rule books plus the plain-language rules; HTML renders them
+    const report = (await (await fetch(`${base}/api/shadow/report`, op)).json()) as {
       ok: boolean;
       period: { recordedSince: string | null };
       rules: { tiers: Record<string, string>; feeRules: Record<string, { name: string }> };
@@ -244,20 +277,22 @@ test("shadow worker: /healthz carries ledger stats and failure counters; /api/sh
     assert.ok(report.rules.tiers.tight && report.rules.tiers.balanced && report.rules.tiers.wide);
     assert.equal(report.rules.feeRules.min_25bps.name, "share or 0.25% of stake");
     assert.deepEqual(report.counterfactuals.capacity.map((c) => c.mult), [1, 5, 20]);
-    const reportPage = await fetch(`${base}/report`);
+    const reportPage = await fetch(`${base}/report?token=op-secret`);
     assert.equal(reportPage.status, 200);
     assert.match(reportPage.headers.get("content-type") ?? "", /text\/html/);
     const reportHtml = await reportPage.text();
     assert.ok(reportHtml.includes("What each rule would have done"));
     assert.ok(reportHtml.includes("not started"), "no v2 positions yet: the period says so");
     assert.ok(!reportHtml.includes("NaN"));
+    assert.ok(reportHtml.includes('href="/api/shadow/export?token=op-secret"'), "operator links carry the token");
+    assert.ok(reportHtml.includes('href="/api/shadow/positions.csv?scope=full&token=op-secret"'));
 
     // the hedge trail: book by default, receipts next to the ledger, surfaced on healthz, JSON and the page
     const h = health as { hedge: { strategy: string; rfqVenues: string[]; notes: string[]; receipts: { path: string; exists: boolean } } };
     assert.equal(h.hedge.strategy, "book");
     assert.deepEqual(h.hedge.rfqVenues, []);
     assert.equal(h.hedge.receipts.path, join(dir, "hedge-receipts.jsonl"));
-    const hedges = (await (await fetch(`${base}/api/shadow/hedges?limit=5`)).json()) as {
+    const hedges = (await (await fetch(`${base}/api/shadow/hedges?limit=5`, op)).json()) as {
       ok: boolean;
       strategy: string;
       summary: { receipts: number; byOutcome: Record<string, number> };
@@ -267,9 +302,8 @@ test("shadow worker: /healthz carries ledger stats and failure counters; /api/sh
     assert.equal(hedges.strategy, "book");
     assert.equal(hedges.summary.receipts, 0, "positions appended by hand carry no hedge receipt; the scanner writes those");
     assert.deepEqual(hedges.recent, []);
-    assert.ok(page.includes("How the hedge leg is filled"));
-    assert.ok(page.includes('href="/api/shadow/hedges"'));
   } finally {
+    delete process.env.EVENT_X_ADMIN_TOKEN;
     await new Promise<void>((r) => server.close(() => r()));
   }
 });

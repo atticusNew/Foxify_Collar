@@ -50,33 +50,12 @@ export interface ShadowPageInput {
   hedges?: { strategy: HedgeStrategy; rfqVenues: string[]; summary: HedgeReceiptSummary };
 }
 
-function hedgeCard(h: NonNullable<ShadowPageInput["hedges"]>): string {
+/** One public line on hedge fills: how they are filled and how many. The receipts themselves are the operator's. */
+function hedgeLine(h: NonNullable<ShadowPageInput["hedges"]>): string {
   const s = h.summary;
-  const how =
-    h.strategy === "rfq"
-      ? `RFQ first on ${h.rfqVenues.length ? h.rfqVenues.join(" and ") : "no venue yet"}, book fallback`
-      : "the visible book, at the terms the holder was quoted";
-  const rfqLine =
-    s.byOutcome.filled_rfq > 0
-      ? `${s.byOutcome.filled_rfq} filled by RFQ, ${usd(s.rfqSavedCents)} kept versus the walk`
-      : h.strategy === "rfq"
-        ? `none filled by RFQ yet; ${s.byOutcome.filled_book} fell back to the book`
-        : "not asked; RFQ is off";
-  const fallbackRows = Object.entries(s.fallbackReasons)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4)
-    .map(([reason, n]) => `<div class="row"><span>${escapeHtml(reason)}</span><b>${n}</b></div>`)
-    .join("");
-  return `<div class="card">
-    <h2>How the hedge leg is filled</h2>
-    <div class="sub" style="margin-bottom:8px">Pricing walks the visible book; filling does not have to. An RFQ asks the venue's makers for one price on the whole size and is taken only when it is at or inside the walk. Every hedge leaves a receipt either way.</div>
-    <div class="row"><span>strategy</span><b>${escapeHtml(how)}</b></div>
-    <div class="row"><span>hedges recorded</span><b>${s.receipts}${s.simulated > 0 ? ` <i>${s.simulated} simulated</i>` : ""}</b></div>
-    <div class="row"><span>cost of walking the book</span><b>${usd(s.bookWalkPenaltyCents)} <i>over one price at the top</i></b></div>
-    <div class="row"><span>RFQ</span><b>${escapeHtml(rfqLine)}</b></div>
-    ${fallbackRows}
-    <a class="back" href="/api/shadow/hedges">Hedge receipts (JSON)</a>
-  </div>`;
+  const how = h.strategy === "rfq" ? "RFQ first, visible book as the fallback" : "at the visible book, at the terms quoted";
+  const sim = s.receipts > 0 && s.simulated === s.receipts ? ", all simulated" : s.simulated > 0 ? `, ${s.simulated} simulated` : "";
+  return `<div class="row"><span>hedge fills</span><b>${escapeHtml(how)} <i>${s.receipts} recorded${sim}</i></b></div>`;
 }
 
 const signedUsd = (c: number): string => (c < 0 ? `-${usd(-c)}` : usd(c));
@@ -174,6 +153,10 @@ export function renderShadowHtml(input: ShadowPageInput): string {
 
   const w = s.writer;
   const cf = s.counterfactuals;
+  // Every position since shadow v2 also records what the other rules would have written; the comparison itself is the operator's.
+  const cfLine = cf.recordedSince
+    ? `${cf.positionsWithCounterfactuals} positions since ${utcDay(cf.recordedSince)} also record the alternative terms`
+    : "starts with the next quoted event";
   const periodLine =
     s.firstOpenedAt && s.lastSettledAt
       ? `${utcDay(s.firstOpenedAt)} to ${utcDay(s.lastSettledAt)} UTC, first position opened to last settlement`
@@ -241,17 +224,6 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     ${leagueRows}
   </div>
   <div class="card">
-    <h2>What each rule would have done</h2>
-    <div class="sub" style="margin-bottom:8px">Since ${escapeHtml(cf.recordedSince ? utcDay(cf.recordedSince) : "the next scan")} every position also records what the other tiers, the other fee rule, and larger sizes would have written from the same books at the same moment. ${cf.positionsWithCounterfactuals} positions carry it so far.</div>
-    <div class="row"><span>live book on those positions</span><b>${signedUsd(cf.baseline.writerPnlCents)} writer <i>${cf.baseline.settled} settled</i></b></div>
-    ${PROTECTION_TIERS.map(
-      (t) =>
-        `<div class="row"><span>${t} tier</span><b>${signedUsd(cf.tiers[t].writerPnlCents)} writer <i>${cf.tiers[t].quoted} quoted · ${escapeHtml(bpsPct(cf.tiers[t].quotedAvgEvBps, 1))} EV cost</i></b></div>`,
-    ).join("")}
-    <a class="back" href="/report">Read the full comparison</a>
-  </div>
-  ${input.hedges ? hedgeCard(input.hedges) : ""}
-  <div class="card">
     <h2>Settled, most recent first</h2>
     ${settledRows || '<div class="row"><span>nothing settled yet</span><b>the book is young</b></div>'}
   </div>
@@ -263,6 +235,8 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     <div class="row"><span>quoted cost of protection</span><b>${escapeHtml(quotedLine)}</b></div>
     ${routeRows}
     ${s.voidCount > 0 ? `<div class="row"><span>voided (no official result)</span><b>${s.voidCount}</b></div>` : ""}
+    ${input.hedges ? hedgeLine(input.hedges) : ""}
+    <div class="row"><span>rule comparison</span><b>${escapeHtml(cfLine)} <i>report on request</i></b></div>
   </div>
   <div class="card">
     <h2>Open book</h2>
@@ -270,7 +244,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     <a class="back" href="${demoUrl()}">back to the live board</a>
   </div>
   <footer>
-    <b>What is real:</b> the venues' live prices, the quoted terms, and the official results. <b>What is simulated:</b> the positions; no venue credentials, no wallets. Protection usually costs a little; the floor saves are what it buys. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/report">Rule comparison</a> <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a> <a class="back" href="/api/shadow/export">Full ledger (JSONL)</a>
+    <b>What is real:</b> the venues' live prices, the quoted terms, and the official results. <b>What is simulated:</b> the positions; no venue credentials, no wallets. Protection usually costs a little; the floor saves are what it buys. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>
   </footer>
 </div>
 </body>
@@ -292,6 +266,8 @@ export const FEE_RULE_TEXT: Record<string, { name: string; rule: string }> = {
 export interface ShadowReportInput {
   atIso: string;
   summary: ShadowSummary;
+  /** the operator token the page was opened with, carried on its own links */
+  token?: string | null;
 }
 
 /** One rule's line in a comparison table. `hi` marks the columns a reader compares first. */
@@ -324,6 +300,7 @@ const RULE_HEAD =
  */
 export function renderShadowReportHtml(input: ShadowReportInput): string {
   const s = input.summary;
+  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
   const cf = s.counterfactuals;
   const period = cf.recordedSince
     ? `${utcDay(cf.recordedSince)} to ${utcDay(input.atIso)} UTC`
@@ -446,7 +423,7 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
   <div class="card">
     <h2>How to read it</h2>
     <div class="read"><b>Holder Δ</b> is what protection did for the holder against holding naked: negative is the usual cost of protection, positive means the floor paid more than the cap gave up. <b>Writer P&amp;L</b> is what selling that protection and carrying the hedge netted; leg-for-leg it should not depend on who won. <b>EV cost</b> is the quoted expected cost of the collar as a share of stake, before anything settles. A rule that lifts writer P&amp;L without moving holder Δ much is a better rule; one that only shifts money from one column to the other is a fee.</div>
-    <a class="back" href="/">Back to the shadow record</a> <a class="back" href="/api/shadow/report">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>
+    <a class="back" href="/">Back to the shadow record</a> <a class="back" href="/api/shadow/report${tq}">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full${tq ? `&token=${encodeURIComponent(input.token as string)}` : ""}">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/hedges${tq}">Hedge receipts (JSON)</a> <a class="back" href="/api/shadow/export${tq}">Full ledger (JSONL)</a>
   </div>
   <footer>
     Counterfactuals are computed at open from the venue books retained on the position and settled against the same official result as the live book. Nothing in the alternatives was traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer.

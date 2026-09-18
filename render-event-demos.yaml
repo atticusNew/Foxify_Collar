@@ -90,6 +90,11 @@ services:
         value: production
       - key: EVENT_SHADOW_LEDGER_PATH
         value: /var/data/event-shadow-ledger.jsonl
+      # Gates the operator views: /report, /api/shadow/report, /api/shadow/hedges,
+      # /api/shadow/export and the full positions CSV (?token=... or x-admin-token).
+      # Fail-closed: without it those routes answer 403 and the public record stays up.
+      - key: EVENT_X_ADMIN_TOKEN
+        generateValue: true
 
   - type: web
     name: atticus-pm-clob-egress-proxy

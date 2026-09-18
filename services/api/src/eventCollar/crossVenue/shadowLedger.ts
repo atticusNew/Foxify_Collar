@@ -550,7 +550,12 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
 }
 
 /** Column order of the positions CSV; stable so downstream sheets do not break. */
-export const POSITIONS_CSV_COLUMNS = [
+/**
+ * The public spreadsheet: what was quoted, what settled, both sides' money.
+ * Enough for a reviewer to recompute every row; nothing about the rules
+ * under evaluation.
+ */
+export const POSITIONS_CSV_PUBLIC_COLUMNS = [
   "ticker",
   "league",
   "kind",
@@ -577,8 +582,12 @@ export const POSITIONS_CSV_COLUMNS = [
   "holder_delta_c",
   "writer_pnl_c",
   "ev_cost_bps",
-  // shadow v2: the recorded tier and fee rule, then every counterfactual
   "tier",
+] as const;
+
+/** Every column: the public set, then the recorded fee rule and every counterfactual (operator export). */
+export const POSITIONS_CSV_COLUMNS = [
+  ...POSITIONS_CSV_PUBLIC_COLUMNS,
   "take_rule",
   "take_share_c",
   "take_min_c",
@@ -606,7 +615,10 @@ function csvCell(v: string | number | null | undefined): string {
  * the spreadsheet form of the ledger: what a reviewer opens to recompute the
  * writer's P&L row by row.
  */
-export function positionsCsv(positions: ShadowPosition[]): string {
+export type PositionsCsvScope = "public" | "full";
+
+export function positionsCsv(positions: ShadowPosition[], scope: PositionsCsvScope = "full"): string {
+  const columns = scope === "public" ? POSITIONS_CSV_PUBLIC_COLUMNS : POSITIONS_CSV_COLUMNS;
   const rows = [...positions]
     .sort((a, b) => a.at.localeCompare(b.at))
     .map((p) => {
@@ -638,19 +650,20 @@ export function positionsCsv(positions: ShadowPosition[]): string {
         settled ? (p.deltaCents ?? 0) : "",
         settled ? (p.writerCents ?? 0) : "",
         p.evCostBps,
-        ...counterfactualCells(p),
+        p.tier ?? "",
+        ...(scope === "full" ? counterfactualCells(p) : []),
       ]
         .map(csvCell)
         .join(",");
     });
-  return [POSITIONS_CSV_COLUMNS.join(","), ...rows].join("\n") + "\n";
+  return [columns.join(","), ...rows].join("\n") + "\n";
 }
 
-/** The shadow v2 columns for one row; blanks when the record predates counterfactuals. */
+/** The operator-only columns for one row; blanks when the record predates counterfactuals. */
 function counterfactualCells(p: ShadowPosition): Array<string | number> {
   const cf = p.counterfactuals;
   const result = p.status === "settled" ? p.result : undefined;
-  const head: Array<string | number> = [p.tier ?? "", p.takeRule ?? "", p.takeShareCents ?? "", p.takeMinimumCents ?? ""];
+  const head: Array<string | number> = [p.takeRule ?? "", p.takeShareCents ?? "", p.takeMinimumCents ?? ""];
   const tierCells = PROTECTION_TIERS.flatMap((t) => {
     const alt = cf?.alternatives?.[t];
     if (!alt || !alt.ok) return ["", "", "", "", "", "", ""];
