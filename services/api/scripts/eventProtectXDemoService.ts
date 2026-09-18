@@ -79,7 +79,7 @@ import {
   type MatchedPair,
   type RouteCheck,
 } from "../src/eventCollar/crossVenue/types";
-import { renderEventXAppHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
+import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
 
 const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
@@ -887,7 +887,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       await handleMetrics(req, res);
       return;
     }
-    if (url.pathname.startsWith("/api/admin/")) {
+    if (url.pathname.startsWith("/api/admin/") || url.pathname === "/admin/funnel") {
       if (!adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"))) {
         sendJson(res, 403, {
           ok: false,
@@ -896,14 +896,35 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         });
         return;
       }
+      if (url.pathname === "/admin/funnel" && req.method === "GET") {
+        const nowIso = new Date().toISOString();
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.end(
+          renderFunnelHtml(eventFunnelSummary(funnelState, Date.now()), {
+            atIso: nowIso,
+            funnelPath: FUNNEL_PATH,
+            token: url.searchParams.get("token"),
+          }),
+        );
+        return;
+      }
       if (url.pathname === "/api/admin/funnel" && req.method === "GET") {
-        sendJson(res, 200, {
-          ok: true,
-          at: new Date().toISOString(),
-          service: "event-protect-cross-venue-demo",
-          funnelPath: FUNNEL_PATH,
-          funnel: eventFunnelSummary(funnelState, Date.now()),
-        });
+        // Pretty-printed: operators read this in a browser tab.
+        res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        res.end(
+          JSON.stringify(
+            {
+              ok: true,
+              at: new Date().toISOString(),
+              service: "event-protect-cross-venue-demo",
+              funnelPath: FUNNEL_PATH,
+              readable: `/admin/funnel${url.search}`,
+              funnel: eventFunnelSummary(funnelState, Date.now()),
+            },
+            null,
+            2,
+          ),
+        );
         return;
       }
       if (url.pathname === "/api/admin/funnel/reset" && req.method === "POST") {

@@ -12,6 +12,7 @@
 
 import { ATTICUS_LOGO_DATA_URI } from "./eventProtectLogo";
 import type { CrossLedgerSummary } from "../src/eventCollar/crossVenue/crossLedger";
+import type { EventFunnelSummary } from "../src/eventCollar/crossVenue/eventFunnel";
 
 /** Public URL of the shadow record service (its own deploy, so the track record outlives demo restarts). */
 function shadowUrl(): string {
@@ -537,6 +538,220 @@ const REFUSAL_LABELS: Record<string, string> = {
 
 function usdFromCents(cents: number): string {
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+const ROUTE_LABELS: Record<string, string> = {
+  polymarket: "cross-venue (Polymarket)",
+  kalshi_self: "market's own No side (Kalshi)",
+  unknown: "unattributed",
+};
+
+const ACTION_LABELS: Record<string, string> = {
+  row_tap: "board taps",
+  protect_on: "Protect taps",
+  protect_undo: "undos",
+  board_expand: "board expands",
+};
+
+/** Operator-only funnel page: the admin JSON, laid out so a human can read it in ten seconds. */
+export function renderFunnelHtml(
+  s: EventFunnelSummary,
+  meta: { atIso: string; funnelPath: string; token: string | null },
+): string {
+  const pct = (num: number, den: number): string => (den > 0 ? `${((100 * num) / den).toFixed(0)}%` : "–");
+  const utc = (ms: number): string => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+  const dayLabel = (day: string): string => {
+    const d = new Date(`${day}T00:00:00Z`);
+    return `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getUTCDay()]} ${day.slice(5)}`;
+  };
+  const tokenQs = meta.token ? `?token=${encodeURIComponent(meta.token)}` : "";
+
+  const kv = (rows: Array<[string, string | number]>): string =>
+    rows.map(([k, v]) => `<div class="row"><span>${escapeHtml(k)}</span><b>${escapeHtml(String(v))}</b></div>`).join("");
+  const countRows = (src: Record<string, number>, labels: Record<string, string>, upper = false): string =>
+    Object.entries(src)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `<div class="row"><span>${escapeHtml(labels[k] ?? (upper ? k.toUpperCase() : k))}</span><b>${n}</b></div>`)
+      .join("");
+
+  const days = s.pageLoads7d.map((d, i) => {
+    const a = s.actions7d[i]?.byAction ?? {};
+    return `<tr>
+      <td>${escapeHtml(dayLabel(d.day))}</td>
+      <td>${d.byPage.app ?? 0}</td>
+      <td>${d.byPage.receipts ?? 0}</td>
+      <td>${a.row_tap ?? 0}</td>
+      <td class="hi">${a.protect_on ?? 0}</td>
+      <td>${a.protect_undo ?? 0}</td>
+      <td>${a.board_expand ?? 0}</td>
+    </tr>`;
+  });
+  const totals = {
+    app: s.pageLoads7d.reduce((n, d) => n + (d.byPage.app ?? 0), 0),
+    receipts: s.pageLoads7d.reduce((n, d) => n + (d.byPage.receipts ?? 0), 0),
+    taps: s.actions7d.reduce((n, d) => n + (d.byAction.row_tap ?? 0), 0),
+    protects: s.actions7d.reduce((n, d) => n + (d.byAction.protect_on ?? 0), 0),
+    undos: s.actions7d.reduce((n, d) => n + (d.byAction.protect_undo ?? 0), 0),
+    expands: s.actions7d.reduce((n, d) => n + (d.byAction.board_expand ?? 0), 0),
+  };
+
+  const recent = s.recentProtects.map(
+    (p) => `<tr>
+      <td>${escapeHtml(utc(p.atMs))}</td>
+      <td class="mono">${escapeHtml(p.ticker || "–")}</td>
+      <td>${escapeHtml(p.league === "unknown" ? "–" : p.league.toUpperCase())}</td>
+      <td>${escapeHtml(p.route ? (ROUTE_LABELS[p.route] ?? p.route) : "–")}</td>
+      <td class="hi">${p.creditCents === null ? "–" : usdFromCents(p.creditCents)}</td>
+      <td>${p.floorCents === null || p.capCents === null ? "–" : `${p.floorCents}¢ → ${p.capCents}¢`}</td>
+      <td>${p.contracts ?? "–"}</td>
+    </tr>`,
+  );
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<link rel="icon" href="data:," />
+<title>Funnel · Earn &amp; Protect · events</title>
+<style>
+:root{
+  --bg:#f6f7f7; --card:#ffffff; --card2:#f2f4f4; --line:#e4e7e7;
+  --ink:#050d0a; --dim:#5c6a64; --faint:#98a49e;
+  --green:#00b67a; --green-deep:#014737; --warn:#b9862f;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
+.topbar{background:#050d0a}
+.topbar .in{max-width:880px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:10px 16px}
+.topbar .wordmark{color:#fff;font-weight:650;font-size:14px}
+.topbar .wordmark span{color:#8f9c96;font-weight:400}
+.topbar img{height:22px;display:block}
+.wrap{max-width:880px;margin:0 auto;padding:14px 14px 40px}
+.grid{display:grid;grid-template-columns:1fr;gap:12px}
+@media(min-width:700px){.grid.two{grid-template-columns:1fr 1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 1px 2px rgba(5,13,10,.04)}
+.grid .card{margin-bottom:0}
+h1{font-size:19px;font-weight:650;letter-spacing:-.01em}
+.sub{color:var(--dim);font-size:13px;margin-top:4px}
+.bignums{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.bignum{flex:1;min-width:120px;background:var(--card2);border-radius:10px;padding:12px;text-align:center}
+.bignum .n{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.bignum .n.green{color:var(--green)}
+.bignum .l{color:var(--dim);font-size:11.5px;margin-top:2px}
+h2{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+.row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:13.5px;color:var(--dim);font-variant-numeric:tabular-nums;border-top:1px solid var(--line)}
+.row:first-of-type{border-top:0}
+.row b{color:var(--ink);font-weight:650;text-align:right}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:6px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:7px 6px;border-bottom:1px solid var(--line);color:var(--dim);white-space:nowrap}
+td.hi{color:var(--ink);font-weight:650}
+td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--ink)}
+tr.total td{color:var(--ink);font-weight:650;border-bottom:0}
+.tablewrap{overflow-x:auto}
+.empty{color:var(--faint);font-size:13px;padding:8px 0}
+.actions{display:flex;gap:14px;align-items:center;margin-top:10px;flex-wrap:wrap}
+.actions a,.actions button{color:var(--green-deep);font-weight:600;font-size:13px;text-decoration:underline;background:none;border:0;cursor:pointer;font-family:inherit;padding:0}
+.actions button.danger{color:var(--warn)}
+footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="wordmark">Earn &amp; Protect <span>· funnel</span></div>
+  <img src="${ATTICUS_LOGO_DATA_URI}" alt="Atticus" />
+</div></div>
+<div class="wrap">
+  <div class="card">
+    <h1>Who looked, who tapped, who protected</h1>
+    <div class="sub">Anonymous per-tab sessions. Every dollar figure below came from the server's own live quote at the moment of the tap, not from the browser. Updated ${escapeHtml(meta.atIso.slice(0, 16).replace("T", " "))} UTC.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n">${s.sessions.active7d}</div><div class="l">sessions, 7 days</div></div>
+      <div class="bignum"><div class="n green">${s.protects.last7d}</div><div class="l">Protect taps, 7 days</div></div>
+      <div class="bignum"><div class="n green">${escapeHtml(pct(s.sessions.protected, s.sessions.distinct))}</div><div class="l">sessions that protected</div></div>
+      <div class="bignum"><div class="n">${usdFromCents(s.protects.creditCentsTotal)}</div><div class="l">credits on protected taps</div></div>
+    </div>
+  </div>
+
+  <div class="grid two">
+    <div class="card">
+      <h2>Sessions</h2>
+      ${kv([
+        ["distinct, all time", s.sessions.distinct],
+        ["active in the last 24h", s.sessions.active24h],
+        ["active in the last 7 days", s.sessions.active7d],
+        ["protected at least once", s.sessions.protected],
+        ["tapped a game but never protected", s.sessions.tappedNeverProtected],
+      ])}
+    </div>
+    <div class="card">
+      <h2>Protect taps</h2>
+      ${kv([
+        ["all time", s.protects.total],
+        ["last 24h", s.protects.last24h],
+        ["last 7 days", s.protects.last7d],
+        ["contracts protected", s.protects.contractsTotal.toLocaleString("en-US")],
+        ["credits paid", usdFromCents(s.protects.creditCentsTotal)],
+      ])}
+    </div>
+  </div>
+
+  <div class="grid two" style="margin-top:12px">
+    <div class="card">
+      <h2>By league</h2>
+      ${countRows(s.protects.byLeague, { unknown: "unattributed" }, true) || '<div class="empty">no Protect taps yet</div>'}
+    </div>
+    <div class="card">
+      <h2>By hedge route</h2>
+      ${countRows(s.protects.byRoute, ROUTE_LABELS) || '<div class="empty">no Protect taps yet</div>'}
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <h2>Last 7 days, UTC</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>day</th><th>board loads</th><th>receipts loads</th><th>${escapeHtml(ACTION_LABELS.row_tap)}</th><th>${escapeHtml(ACTION_LABELS.protect_on)}</th><th>${escapeHtml(ACTION_LABELS.protect_undo)}</th><th>${escapeHtml(ACTION_LABELS.board_expand)}</th></tr></thead>
+      <tbody>
+        ${days.join("")}
+        <tr class="total"><td>7-day total</td><td>${totals.app}</td><td>${totals.receipts}</td><td>${totals.taps}</td><td>${totals.protects}</td><td>${totals.undos}</td><td>${totals.expands}</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h2>Most recent Protect taps</h2>
+    ${
+      recent.length
+        ? `<div class="tablewrap"><table>
+      <thead><tr><th>when (UTC)</th><th>market</th><th>league</th><th>route</th><th>credit</th><th>floor → cap</th><th>contracts</th></tr></thead>
+      <tbody>${recent.join("")}</tbody>
+    </table></div>`
+        : '<div class="empty">none yet. A tap on a game that has already rolled off the board still counts, shown unattributed.</div>'
+    }
+  </div>
+
+  <div class="card">
+    <h2>Operator</h2>
+    <div class="sub">Counters live at <span class="mono">${escapeHtml(meta.funnelPath)}</span> on this instance and are flushed once a minute. Without a persistent disk a redeploy starts a fresh window.</div>
+    <div class="actions">
+      <a href="/api/admin/funnel${escapeHtml(tokenQs)}">raw JSON</a>
+      <a href="/">live board</a>
+      <a href="/receipts">receipts</a>
+      <button type="button" class="danger" id="reset">reset counters</button>
+    </div>
+  </div>
+  <footer>Operator view. Not linked from the public pages; the token in this URL is the only key.</footer>
+</div>
+<script>
+document.getElementById('reset').addEventListener('click',function(){
+  if(!confirm('Clear every funnel counter on this instance? The quote receipts ledger is not touched.'))return;
+  fetch('/api/admin/funnel/reset'+location.search,{method:'POST'}).then(function(){location.reload()});
+});
+</script>
+</body>
+</html>`;
 }
 
 function escapeHtml(s: string): string {
