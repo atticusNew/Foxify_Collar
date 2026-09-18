@@ -1,0 +1,16 @@
+{
+  "name": "@atticus-research/foxify-day-rate-deep-analysis",
+  "version": "0.1.0",
+  "description": "Foxify day-rate deep analysis: per-tier sustainability, TP recovery, premium pool dynamics. Standalone, no pilot deps.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sim": "npx tsx src/main.ts",
+    "project": "npx tsx src/projectMain.ts",
+    "cost-vs-gain": "npx tsx src/costVsGainMain.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.5"
+  }
+}
