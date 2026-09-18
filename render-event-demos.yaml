@@ -50,9 +50,22 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/eventProtectXDemoService.ts
     healthCheckPath: /healthz
+    # Funnel counters and the quote-receipts ledger live on a small disk so a
+    # deploy does not zero them (without it both restart from /tmp, empty).
+    disk:
+      name: event-demo-cross-venue-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
+      # Gates GET /api/admin/funnel (read with ?token=... or x-admin-token).
+      - key: EVENT_X_ADMIN_TOKEN
+        generateValue: true
+      - key: EVENT_X_FUNNEL_PATH
+        value: /var/data/event-demo-funnel.json
+      - key: EVENT_X_LEDGER_PATH
+        value: /var/data/cross-quotes.jsonl
 
   # Shadow run: the cross-venue router quoted continuously, every position
   # marked against official results as events settle. The persistent disk is

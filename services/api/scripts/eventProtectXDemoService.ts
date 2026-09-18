@@ -26,14 +26,38 @@
  * ISOLATION: imports only from src/eventCollar/**. Nothing here touches the
  * production Earn & Protect service, stores, or deploy.
  *
+ * Funnel (mirrors the perp demo's admin funnel): page loads are counted when
+ * served; board taps and Protect toggles arrive as tiny beacons on
+ * POST /api/metrics carrying only an anonymous per-tab session id and the
+ * tapped ticker — every financial field is filled in from the server's own
+ * scan. Read it at GET /api/admin/funnel (EVENT_X_ADMIN_TOKEN), reset with
+ * POST /api/admin/funnel/reset. Persisted as one JSON file, flushed each
+ * minute when dirty.
+ *
  * Run: npx tsx services/api/scripts/eventProtectXDemoService.ts
  * Env: EVENT_X_PORT (default 8792) · EVENT_X_CONTRACTS (default 150)
  *      EVENT_X_TAKE_BPS · EVENT_X_LEDGER_PATH · EVENT_X_BOARD_ROWS
  *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
+ *      EVENT_X_FUNNEL_PATH · EVENT_X_ADMIN_TOKEN (or EVENT_X_DEV_NO_ADMIN=true)
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import {
+  adminAuthorized,
+  coerceEventFunnel,
+  emptyEventFunnel,
+  eventFunnelSummary,
+  isEventAction,
+  parseAdminAuthFromEnv,
+  recordAction,
+  recordPageLoad,
+  tokenBucketLimiter,
+  type EventFunnelState,
+  type ProtectContext,
+} from "../src/eventCollar/crossVenue/eventFunnel";
 import { getOpenMarkets, getRecentTrades, midCents } from "../src/eventCollar/kalshiPublic";
 import {
   buildShowcasePosition,
@@ -43,7 +67,7 @@ import {
 import { appendCrossLedger, summarizeCrossLedger } from "../src/eventCollar/crossVenue/crossLedger";
 import type { KalshiMarket } from "../src/eventCollar/types";
 import { LEAGUE_TEMPLATES } from "../src/eventCollar/crossVenue/resolutionWhitelist";
-import { matchKalshiMarket } from "../src/eventCollar/crossVenue/eventMatcher";
+import { matchKalshiMarket, parseGameTicker } from "../src/eventCollar/crossVenue/eventMatcher";
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import { getNoAsks, quoteLadderWrap } from "../src/eventCollar/crossVenue/kalshiLadder";
@@ -77,6 +101,69 @@ const CRYPTO_PARITY_NOTE =
   "the hedge is the protected market's own No side; settlement is identical by construction";
 const CRYPTO_PM_NOT_OFFERED =
   "not offered for crypto: the venues settle on different index feeds, so a cross-venue hedge would not be the same trade";
+
+// Funnel counters: in-memory, restored from one JSON file at boot, flushed at
+// most once a minute when dirty (same rhythm as the perp demo). Admin-only to
+// read; fail-closed when no token is configured.
+const FUNNEL_PATH = process.env.EVENT_X_FUNNEL_PATH || "/tmp/event-demo/funnel.json";
+const adminAuth = parseAdminAuthFromEnv(process.env);
+const metricsLimiter = tokenBucketLimiter(Number(process.env.EVENT_X_RATE_METRICS_PER_MIN || 30), 60_000);
+const METRICS_BODY_LIMIT = 2_048;
+let funnelState: EventFunnelState = loadFunnel();
+let funnelDirty = false;
+
+function loadFunnel(): EventFunnelState {
+  try {
+    if (!existsSync(FUNNEL_PATH)) return emptyEventFunnel();
+    return coerceEventFunnel(JSON.parse(readFileSync(FUNNEL_PATH, "utf8")));
+  } catch (err) {
+    // A corrupt counter file must never keep the demo from booting.
+    console.error(`[event-protect-x] funnel load failed, starting empty: ${(err as Error).message}`);
+    return emptyEventFunnel();
+  }
+}
+
+/** Atomic write (temp + rename) so a crash mid-flush cannot leave a torn file. */
+function flushFunnel(): void {
+  if (!funnelDirty) return;
+  funnelDirty = false;
+  try {
+    mkdirSync(dirname(FUNNEL_PATH), { recursive: true });
+    const tmp = `${FUNNEL_PATH}.tmp`;
+    writeFileSync(tmp, JSON.stringify(funnelState));
+    renameSync(tmp, FUNNEL_PATH);
+  } catch (err) {
+    funnelDirty = true;
+    console.error(`[event-protect-x] funnel save failed: ${(err as Error).message}`);
+  }
+}
+
+function clientIp(req: IncomingMessage): string {
+  const fwd = req.headers["x-forwarded-for"];
+  const first = Array.isArray(fwd) ? fwd[0] : fwd;
+  return (first ?? "").split(",")[0].trim() || req.socket.remoteAddress || "unknown";
+}
+
+/** Read a small body; null when it exceeds `limit`. Oversize input is drained so the 413 still lands. */
+function readBody(req: IncomingMessage, limit: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    let size = 0;
+    let over = false;
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (over) return;
+      if (size > limit) {
+        over = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(over ? null : Buffer.concat(chunks).toString("utf8")));
+    req.on("error", () => resolve(null));
+  });
+}
 
 function searchConfig(): CrossSearchConfig {
   return {
@@ -156,10 +243,36 @@ function showcaseWindowOk(pair: MatchedPair, now: Date): boolean {
   return minutes >= 45 && minutes <= 7 * 24 * 60;
 }
 
+/**
+ * Cheap horizon pre-filter from the game date in the Kalshi ticker: a league
+ * that plays weekly lists next week's slate too, and those games would burn
+ * match attempts only to fail the showcase window afterwards. Unparseable
+ * tickers pass through (the matcher decides). One day of slack covers ET vs
+ * UTC and the 7-day edge.
+ */
+export function gameDateWithinHorizon(
+  ticker: string,
+  template: (typeof LEAGUE_TEMPLATES)[number],
+  now: Date,
+  horizonDays = 7,
+): boolean {
+  const parsed = parseGameTicker(ticker, template);
+  if (!parsed) return true;
+  const gameMs = Date.parse(`${parsed.dateIso}T00:00:00Z`);
+  if (!Number.isFinite(gameMs)) return true;
+  const days = (gameMs - now.getTime()) / 86_400_000;
+  return days >= -1 && days <= horizonDays + 1;
+}
+
 /** Candidate ordering: quotable band first, moderately-favored side, tight spread. */
-function rankCandidates(markets: KalshiMarket[]): Array<{ m: KalshiMarket; mark: number }> {
+function rankCandidates(
+  markets: KalshiMarket[],
+  template?: (typeof LEAGUE_TEMPLATES)[number],
+  now: Date = new Date(),
+): Array<{ m: KalshiMarket; mark: number }> {
   return markets
     .filter((m) => m.status === "active")
+    .filter((m) => !template || gameDateWithinHorizon(m.ticker, template, now))
     .map((m) => ({ m, mark: midCents(m) }))
     .filter(
       ({ m, mark }) =>
@@ -389,6 +502,27 @@ export interface ScanState {
   fetchFailures: number;
 }
 
+/**
+ * Per-league row budget. The board is shared by every league that has games
+ * on: split the cap evenly (rounding up) so an in-season league with a game
+ * every day cannot starve the others. Leagues with nothing listed do not
+ * consume a share. A top-up pass afterwards fills any rows a league left
+ * unused, so the board is never shorter than it has to be.
+ */
+export function leagueRowQuota(activeLeagues: number, maxRows: number): number {
+  if (activeLeagues <= 0) return 0;
+  return Math.max(1, Math.ceil(maxRows / activeLeagues));
+}
+
+/** Per-league scanner cursor: the ranked candidates and how far we have walked them. */
+interface LeagueCursor {
+  template: (typeof LEAGUE_TEMPLATES)[number];
+  ranked: Array<{ m: KalshiMarket; mark: number }>;
+  next: number;
+  attempts: number;
+  rows: number;
+}
+
 async function buildScan(): Promise<ScanState> {
   const now = new Date();
 
@@ -406,57 +540,71 @@ async function buildScan(): Promise<ScanState> {
   // second candidate-level failure means the venue is unreachable, not flaky.
   const FETCH_FAILURE_LIMIT = 2;
   let breakerTripped = false;
+  const countFailure = (): boolean => {
+    fetchFailures += 1;
+    if (fetchFailures >= FETCH_FAILURE_LIMIT) breakerTripped = true;
+    return breakerTripped;
+  };
 
-  outer: for (const template of LEAGUE_TEMPLATES) {
+  // Sports leg, step 1: list every league's open markets so the row budget
+  // is split only among leagues that actually have games on.
+  const cursors: LeagueCursor[] = [];
+  for (const template of LEAGUE_TEMPLATES) {
+    if (breakerTripped) break;
     let markets: KalshiMarket[];
     try {
       markets = await getOpenMarkets(template.kalshiSeries);
     } catch {
-      fetchFailures += 1;
-      if (fetchFailures >= FETCH_FAILURE_LIMIT) {
-        breakerTripped = true;
-        break;
-      }
+      countFailure();
       continue;
     }
-    const ranked = rankCandidates(markets);
-    let attempts = 0;
-    for (const cand of ranked) {
-      if (scanned.length >= MAX_BOARD_ROWS) break outer;
-      if (attempts >= MAX_MATCH_ATTEMPTS) break;
-      attempts += 1;
-      let pair: MatchedPair | null;
-      try {
-        if (pairCache.has(cand.m.ticker)) {
-          pair = pairCache.get(cand.m.ticker) ?? null;
-          if (pair) pair = { ...pair, kalshi: cand.m }; // refresh live prices
-        } else {
-          pair = await matchKalshiMarket(cand.m, template);
-          pairCache.set(cand.m.ticker, pair);
-        }
-      } catch {
-        fetchFailures += 1;
-        if (fetchFailures >= FETCH_FAILURE_LIMIT) {
-          breakerTripped = true;
-          break outer;
-        }
-        continue;
+    const ranked = rankCandidates(markets, template, now);
+    if (ranked.length > 0) cursors.push({ template, ranked, next: 0, attempts: 0, rows: 0 });
+  }
+  const quota = leagueRowQuota(cursors.length, MAX_BOARD_ROWS);
+
+  /** Match and quote one league's next candidate; true when the cursor still has work. */
+  const step = async (c: LeagueCursor): Promise<boolean> => {
+    if (c.next >= c.ranked.length || c.attempts >= MAX_MATCH_ATTEMPTS) return false;
+    const cand = c.ranked[c.next++];
+    c.attempts += 1;
+    let pair: MatchedPair | null;
+    try {
+      if (pairCache.has(cand.m.ticker)) {
+        pair = pairCache.get(cand.m.ticker) ?? null;
+        if (pair) pair = { ...pair, kalshi: cand.m }; // refresh live prices
+      } else {
+        pair = await matchKalshiMarket(cand.m, c.template);
+        pairCache.set(cand.m.ticker, pair);
       }
-      if (!pair || !showcaseWindowOk(pair, now)) continue;
-      let result: CandidateResult;
-      try {
-        result = await quoteSportsCandidate(pair, cand.mark, now);
-      } catch {
-        fetchFailures += 1;
-        if (fetchFailures >= FETCH_FAILURE_LIMIT) {
-          breakerTripped = true;
-          break outer;
-        }
-        continue;
-      }
-      if (!fallback) fallback = result;
-      if (result.quote.ok && result.evBps !== null) {
-        scanned.push({ res: result, evBps: result.evBps });
+    } catch {
+      return !countFailure();
+    }
+    if (!pair || !showcaseWindowOk(pair, now)) return true;
+    let result: CandidateResult;
+    try {
+      result = await quoteSportsCandidate(pair, cand.mark, now);
+    } catch {
+      return !countFailure();
+    }
+    if (!fallback) fallback = result;
+    if (result.quote.ok && result.evBps !== null) {
+      scanned.push({ res: result, evBps: result.evBps });
+      c.rows += 1;
+    }
+    return true;
+  };
+
+  // Step 2: round-robin across leagues up to each league's quota, then a
+  // top-up round with the quota lifted so unused shares are not wasted.
+  for (const cap of [quota, MAX_BOARD_ROWS]) {
+    let progressed = true;
+    while (progressed && !breakerTripped && scanned.length < MAX_BOARD_ROWS) {
+      progressed = false;
+      for (const c of cursors) {
+        if (breakerTripped || scanned.length >= MAX_BOARD_ROWS) break;
+        if (c.rows >= cap) continue;
+        if (await step(c)) progressed = true;
       }
     }
   }
@@ -663,6 +811,65 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/** The server's own view of a board row, for attributing a Protect tap. Null once it rolls off. */
+function protectContextFor(ticker: string | null): ProtectContext | null {
+  if (!ticker || !cache) return null;
+  const row = cache.state.rows.find((s) => s.res.market.ticker === ticker);
+  if (!row || !row.res.quote.ok) return null;
+  const q = row.res.quote;
+  return {
+    league: row.res.league,
+    kind: row.res.kind,
+    route: row.res.route,
+    creditCents: q.creditCents,
+    contracts: row.res.position.contracts,
+    markCents: row.res.markCents,
+    floorCents: q.floorCents,
+    capCents: q.capCents,
+    evCostBps: row.evBps,
+  };
+}
+
+/**
+ * Beacon from the page: {sid, action, ticker?}. Anything else in the body is
+ * ignored; the financial facts about the row come from our own scan. Always
+ * answers 204 on accepted input so the page never has to care.
+ */
+async function handleMetrics(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!metricsLimiter.allow(clientIp(req), Date.now())) {
+    sendJson(res, 429, { ok: false, error: "rate_limited" });
+    return;
+  }
+  const raw = await readBody(req, METRICS_BODY_LIMIT);
+  if (raw === null) {
+    sendJson(res, 413, { ok: false, error: "body_too_large" });
+    return;
+  }
+  let body: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") throw new Error("not an object");
+    body = parsed as Record<string, unknown>;
+  } catch {
+    sendJson(res, 400, { ok: false, error: "bad_json" });
+    return;
+  }
+  if (!isEventAction(body.action)) {
+    sendJson(res, 400, { ok: false, error: "bad_action" });
+    return;
+  }
+  const ticker = typeof body.ticker === "string" ? body.ticker : null;
+  const ctx = body.action === "protect_on" ? protectContextFor(ticker) : null;
+  const ok = recordAction(funnelState, { sid: body.sid, action: body.action, ticker }, Date.now(), ctx);
+  if (!ok) {
+    sendJson(res, 400, { ok: false, error: "bad_input" });
+    return;
+  }
+  funnelDirty = true;
+  res.writeHead(204, { "cache-control": "no-store" });
+  res.end();
+}
+
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
   try {
@@ -676,6 +883,40 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       sendJson(res, 200, payloadFromScan(await getCachedScan(), ticker));
       return;
     }
+    if (url.pathname === "/api/metrics" && req.method === "POST") {
+      await handleMetrics(req, res);
+      return;
+    }
+    if (url.pathname.startsWith("/api/admin/")) {
+      if (!adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"))) {
+        sendJson(res, 403, {
+          ok: false,
+          error: "admin_required",
+          message: adminAuth.enabled ? "bad admin token" : "admin surfaces disabled — set EVENT_X_ADMIN_TOKEN",
+        });
+        return;
+      }
+      if (url.pathname === "/api/admin/funnel" && req.method === "GET") {
+        sendJson(res, 200, {
+          ok: true,
+          at: new Date().toISOString(),
+          service: "event-protect-cross-venue-demo",
+          funnelPath: FUNNEL_PATH,
+          funnel: eventFunnelSummary(funnelState, Date.now()),
+        });
+        return;
+      }
+      if (url.pathname === "/api/admin/funnel/reset" && req.method === "POST") {
+        // Counter reset for a clean measurement window; the quote ledger is untouched.
+        funnelState = emptyEventFunnel();
+        funnelDirty = true;
+        flushFunnel();
+        sendJson(res, 200, { ok: true, message: "funnel counters cleared (page loads + actions + sessions + protects)" });
+        return;
+      }
+      sendJson(res, 404, { ok: false, error: "not found" });
+      return;
+    }
     if (url.pathname === "/api/receipts") {
       sendJson(res, 200, {
         ok: true,
@@ -685,11 +926,15 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
     if (url.pathname === "/receipts") {
+      recordPageLoad(funnelState, "receipts", Date.now());
+      funnelDirty = true;
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(renderReceiptsHtml(summarizeCrossLedger(LEDGER_PATH)));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
+      recordPageLoad(funnelState, "app", Date.now());
+      funnelDirty = true;
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(renderEventXAppHtml());
       return;
@@ -709,7 +954,15 @@ if (process.env.NODE_ENV !== "test" && process.env.EVENT_X_EMBED !== "1") {
     // prewarm so the first visitor is not the one paying for venue round-trips;
     // a failed prewarm must never crash the process (retried on first request)
     getCachedScan().catch(() => {});
+    setInterval(flushFunnel, 60_000).unref();
   });
+  // Best-effort flush on shutdown so a deploy does not drop the last minute of counters.
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.once(sig, () => {
+      flushFunnel();
+      process.exit(0);
+    });
+  }
 }
 
-export { server, buildPayload, buildScan };
+export { server, buildPayload, buildScan, flushFunnel };

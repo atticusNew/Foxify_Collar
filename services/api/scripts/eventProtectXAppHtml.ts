@@ -236,6 +236,24 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 (function(){
   var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,kind:'sports',fetchedAt:0,sel:null,boardOpen:false};
   var $=function(id){return document.getElementById(id)};
+  // Funnel beacon. The session id is random, per tab, and never leaves
+  // sessionStorage; the server fills in every financial field itself.
+  var SID=(function(){
+    try{
+      var k='epx_sid',v=sessionStorage.getItem(k);
+      if(v&&/^[a-z0-9]{8,32}$/.test(v))return v;
+      var a=new Uint8Array(12);(window.crypto||{}).getRandomValues?crypto.getRandomValues(a):a.forEach(function(_,i){a[i]=Math.floor(Math.random()*256)});
+      v='';for(var i=0;i<a.length;i++)v+=(a[i]%36).toString(36);
+      sessionStorage.setItem(k,v);return v;
+    }catch(e){return 'anon'+Math.random().toString(36).slice(2,14)}
+  })();
+  function track(action,ticker){
+    try{
+      var body=JSON.stringify({sid:SID,action:action,ticker:ticker||null});
+      if(navigator.sendBeacon&&navigator.sendBeacon('/api/metrics',new Blob([body],{type:'application/json'})))return;
+      fetch('/api/metrics',{method:'POST',body:body,keepalive:true,headers:{'content-type':'application/json'}}).catch(function(){});
+    }catch(e){}
+  }
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
   function shares(milli){var s=milli/1000;return (Math.round(s*10)/10).toLocaleString('en-US')}
   function centsFromMilli(m){return (Math.round(m/10*10)/10)/1}
@@ -462,6 +480,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     if(!e.target.checked){ resetSim(); return; }
     var q=S.payload&&S.payload.quote;
     if(!(q&&q.ok)){ e.target.checked=false; return; }
+    track('protect_on',S.payload.pair&&S.payload.pair.kalshiTicker);
     // one tap: the visible offer becomes the locked terms immediately
     S.phase='protected'; S.terms=q;
     paintOffer(q);
@@ -474,11 +493,12 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
   document.addEventListener('click',function(ev){
     var el=ev.target;
     while(el&&el!==document){
-      if(el.id==='undo'){ ev.preventDefault(); resetSim(); return; }
-      if(el.id==='boardmore'){ ev.preventDefault(); S.boardOpen=!S.boardOpen; if(S.payload)renderBoard(S.payload); return; }
+      if(el.id==='undo'){ ev.preventDefault(); track('protect_undo',S.payload&&S.payload.pair&&S.payload.pair.kalshiTicker); resetSim(); return; }
+      if(el.id==='boardmore'){ ev.preventDefault(); S.boardOpen=!S.boardOpen; if(S.boardOpen)track('board_expand'); if(S.payload)renderBoard(S.payload); return; }
       if(el.getAttribute&&el.getAttribute('data-ticker')){
         var t=el.getAttribute('data-ticker');
         if(S.payload&&S.payload.pair&&S.payload.pair.kalshiTicker===t)return;
+        track('row_tap',t);
         S.sel=t; poll();
         try{window.scrollTo({top:0,behavior:'smooth'})}catch(e){window.scrollTo(0,0)}
         return;
