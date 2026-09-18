@@ -48,6 +48,11 @@ import {
   parseShadowAlertsFromEnv,
   type ShadowAlerter,
 } from "../src/eventCollar/crossVenue/shadowAlerts";
+import {
+  counterfactualsFor,
+  type ShadowCounterfactuals,
+} from "../src/eventCollar/crossVenue/shadowCounterfactuals";
+import { DEFAULT_CROSS_CONFIG, type CrossSearchConfig } from "../src/eventCollar/crossVenue/types";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
 import { renderShadowHtml } from "./eventShadowHtml";
 import type { ScanState } from "./eventProtectXDemoService";
@@ -66,6 +71,7 @@ const alerter: ShadowAlerter = buildShadowAlerter(alertCfg);
 const BOOT_MS = Date.now();
 
 let scan: (() => Promise<ScanState>) | null = null;
+let searchConfig: () => CrossSearchConfig = () => DEFAULT_CROSS_CONFIG;
 let lastScanAt: string | null = null;
 let lastScanOkMs: number | null = null;
 let lastSettleAt: string | null = null;
@@ -99,6 +105,29 @@ async function scanTick(): Promise<void> {
     for (const { res, evBps } of state.rows) {
       const q = res.quote;
       if (!q.ok || seen.has(res.market.ticker)) continue;
+      const route = res.route ?? "kalshi_self";
+      // Same books, same instant: what every other rule would have written.
+      let counterfactuals: ShadowCounterfactuals | undefined;
+      try {
+        counterfactuals = counterfactualsFor(
+          {
+            route,
+            ticker: res.market.ticker,
+            lockTimeIso: res.eventTimeIso,
+            pair: res.pair,
+            markCents: res.markCents,
+            entryCents: res.position.entryCents,
+            contracts: q.contracts,
+            now: new Date(state.atIso),
+            config: searchConfig(),
+            books: res.books,
+          },
+          q,
+        );
+      } catch (err) {
+        // The live record must never be lost to a counterfactual failure.
+        lastScanError = `counterfactuals for ${res.market.ticker}: ${String(err instanceof Error ? err.message : err)}`;
+      }
       appendOrAlert({
         type: "open",
         at: new Date().toISOString(),
@@ -114,11 +143,16 @@ async function scanTick(): Promise<void> {
         capCents: q.capCents,
         creditCents: q.creditCents,
         evCostBps: evBps,
-        route: res.route ?? "kalshi_self",
+        route,
         feesCents: q.feesCents,
         takeCents: q.takeCents,
-        hedgeCostCents: q.hedge.costCents,
+        hedgeCostCents: q.hedge.costCents + q.feesCents,
         hedgeUnitsMilli: "sharesMilli" in q.hedge ? q.hedge.sharesMilli : q.hedge.contractsMilli,
+        tier: q.tier,
+        takeRule: q.takeRule,
+        takeShareCents: q.takeShareCents,
+        takeMinimumCents: q.takeMinimumCents,
+        ...(counterfactuals ? { counterfactuals } : {}),
       });
       seen.add(res.market.ticker);
     }
@@ -297,6 +331,7 @@ async function main(): Promise<void> {
   process.env.EVENT_X_EMBED = "1";
   const demo = await import("./eventProtectXDemoService");
   scan = demo.buildScan;
+  searchConfig = demo.searchConfig;
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(

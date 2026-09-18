@@ -229,7 +229,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         <li><b>Crypto quotes one route on purpose.</b> The venues settle crypto on different index feeds, so a cross-venue hedge would not be the same trade; crypto strike markets therefore quote only the self-hedge route, and the board says so.</li>
         <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The market prices that downside risk; when a route prices it cheaper than the cap slice you sold, the difference is your credit.</li>
         <li><b>The hedge is the same game.</b> Protection is backed by buying the side that pays exactly when yours loses - on the other venue or on the very same market. Cross-venue pairs quote only from a curated whitelist where both venues verifiably settle on the identical official result; the self-hedge route is the same instrument by construction.</li>
-        <li><b>Three tiers, one rule each.</b> Tight is the highest floor the venues fund; wide is the lowest floor with the most upside kept; balanced is the floor halfway between, priced at its lowest true cost. They are shown side by side with the same styling; you pick, we do not.</li>
+        <li><b>Three tiers, one rule each.</b> Tight is the highest floor the venues fund; wide is the lowest floor with the most upside kept; balanced is the floor halfway between, with a cap halfway between the least and the most the venues fund there. They are shown side by side with the same styling; you pick, we do not.</li>
         <li><b>Honest economics.</b> Our fee is the larger of a published share of the credit we source and a small minimum on the position (so execution and balance sheet are paid for even when the venues barely disagree), waived when tiny. Both numbers are on the receipt. Nothing is embedded in your terms. When the venues cannot fund a credit that covers the fee, we refuse and say why.</li>
         <li><b>Undo is free only here.</b> Nothing is bought in this simulation, so undo simply resets it. In the real product, terms lock at your tap and the hedge is placed immediately; unwinding early would be a new trade quoted from the live books at that moment, never a free reversal.</li>
         <li><b>Read only.</b> This demonstration holds no keys or wallets, places no orders (hedge fills are simulated at live quotes), and cannot move funds.</li>
@@ -251,7 +251,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
   var TIER_WORDS={tight:'most protection',balanced:'balanced',wide:'most upside'};
   var TIER_RULES={
     tight:'the highest floor the venues fund, with the largest credit at it',
-    balanced:'a floor halfway between tight and wide, priced at its lowest true cost',
+    balanced:'a floor halfway between tight and wide, and a cap halfway between the least and the most the venues fund there',
     wide:'the lowest floor offered, with the highest cap the venues fund at it'
   };
   var $=function(id){return document.getElementById(id)};

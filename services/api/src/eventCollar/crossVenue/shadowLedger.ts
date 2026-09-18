@@ -15,7 +15,15 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { HedgeRoute } from "./types";
+import type { HedgeRoute, ProtectionTier, TakeRule } from "./types";
+import { PROTECTION_TIERS } from "./types";
+import {
+  FEE_RULE_LABELS,
+  SIZE_LADDER_MULTS,
+  type FeeRuleLabel,
+  type ShadowAltTerms,
+  type ShadowCounterfactuals,
+} from "./shadowCounterfactuals";
 
 /** One simulated position opened from a live board quote. */
 export interface ShadowOpenRecord {
@@ -40,13 +48,25 @@ export interface ShadowOpenRecord {
   feesCents: number;
   takeCents: number;
   /**
-   * The hedge leg as quoted: walked cost in cents (fees included) and the NO
-   * units bought, in milli (1000 = one $1-paying share/contract). Optional
-   * because early ledgers predate these fields; both are recoverable from
-   * the credit identity when absent (see writerPayouts).
+   * The hedge leg as quoted: walked cost in cents, venue fees included, and
+   * the NO units bought, in milli (1000 = one $1-paying share/contract).
+   * Optional because early ledgers predate these fields. The cost is
+   * informational: the writer's book derives it from the credit identity
+   * (see hedgeCostOf), so a record cannot misstate it.
    */
   hedgeCostCents?: number;
   hedgeUnitsMilli?: number;
+  /** which protection tier the recorded terms are (absent on records before tiers existed: the tight rule) */
+  tier?: ProtectionTier;
+  takeRule?: TakeRule;
+  takeShareCents?: number;
+  takeMinimumCents?: number;
+  /**
+   * Counterfactuals priced from the same books at the same instant: every
+   * tier the venues funded, the default tier under each fee rule, and the
+   * default tier at larger sizes. Absent on records before shadow v2.
+   */
+  counterfactuals?: ShadowCounterfactuals;
 }
 
 /** The market finalized on Kalshi with an official result. */
@@ -105,12 +125,14 @@ export function fundingOf(p: Pick<ShadowOpenRecord, "contracts" | "capCents">): 
 }
 
 /**
- * Hedge cost as quoted (fees included). Older records lack the field; the
- * pricer's credit identity recovers it exactly: gross = funding - hedgeCost
- * and credit = gross - take, so hedgeCost = funding - credit - take.
+ * Hedge cost as quoted, venue fees included. Always derived from the pricer's
+ * credit identity, which is exact by construction: gross = funding - hedgeCost
+ * - fees and credit = gross - take, so hedgeCost + fees = funding - credit -
+ * take. The stored `hedgeCostCents` is informational; deriving here means a
+ * record that stored the leg without its fee cannot overstate the writer.
  */
 export function hedgeCostOf(p: WriterInputs): number {
-  return p.hedgeCostCents ?? fundingOf(p) - p.creditCents - p.takeCents;
+  return fundingOf(p) - p.creditCents - p.takeCents;
 }
 
 /** NO units the hedge bought, milli. Older records: the pricer's sizing rule, rounded up. */
@@ -145,6 +167,25 @@ export function writerPayouts(
     hedgeCostCents: hedgeCost,
     fundingCents: funding,
   };
+}
+
+/**
+ * Mark one counterfactual collar against the same official result the live
+ * position settled on: the holder's delta versus naked and the writer's net.
+ */
+export function altOutcome(
+  alt: ShadowAltTerms,
+  contracts: number,
+  result: "yes" | "no",
+): { deltaCents: number; writerCents: number } | null {
+  if (!alt.ok) return null;
+  const terms = { contracts, floorCents: alt.floorCents, capCents: alt.capCents, creditCents: alt.creditCents };
+  const { deltaCents } = settlePayouts(terms, result);
+  const { writerCents } = writerPayouts(
+    { ...terms, takeCents: alt.takeCents, hedgeCostCents: alt.hedgeCostCents, hedgeUnitsMilli: alt.hedgeUnitsMilli },
+    result,
+  );
+  return { deltaCents, writerCents };
 }
 
 export function appendShadowRecord(path: string, record: ShadowRecord): void {
@@ -224,6 +265,174 @@ export interface ShadowSummary {
   lastSettledAt: string | null;
   /** the protection writer's side of the same settled events */
   writer: ShadowWriterSummary;
+  /** what each proposed rule would have done on the same events (shadow v2 records only) */
+  counterfactuals: ShadowCounterfactualSummary;
+}
+
+/** One rule's book: quoted, settled, and what it would have paid each side. */
+export interface RuleBook {
+  /** positions where this rule produced a quote */
+  quoted: number;
+  /** positions where this rule refused (the live quote existed; this rule declined) */
+  refused: number;
+  settled: number;
+  /** stake across settled positions this rule quoted, cents */
+  stakeSettledCents: number;
+  /** credits this rule would have paid on quoted positions */
+  creditsCents: number;
+  /** take this rule would have booked on quoted positions */
+  takeCents: number;
+  /** average quoted EV cost across quoted positions, bps */
+  quotedAvgEvBps: number | null;
+  /** across settled: holder's protected minus naked */
+  holderDeltaCents: number;
+  /** across settled: writer's net */
+  writerPnlCents: number;
+}
+
+export interface ShadowCounterfactualSummary {
+  /** first open that carried counterfactuals; null when none do yet */
+  recordedSince: string | null;
+  positionsWithCounterfactuals: number;
+  /** the live book restricted to the same positions, for a like-for-like baseline */
+  baseline: RuleBook;
+  tiers: Record<ProtectionTier, RuleBook>;
+  feeRules: Record<FeeRuleLabel, RuleBook>;
+  /** capacity curve: the default tier at each size multiple, same books */
+  capacity: Array<
+    RuleBook & {
+      mult: number;
+      /** gross credit summed over quoted probes, cents */
+      grossCreditCents: number;
+      /** stake summed over quoted probes (100c x contracts at that size) */
+      stakeQuotedCents: number;
+      /** gross credit as bps of stake, quoted probes */
+      grossBpsOfStake: number | null;
+    }
+  >;
+}
+
+function emptyRuleBook(): RuleBook {
+  return {
+    quoted: 0,
+    refused: 0,
+    settled: 0,
+    stakeSettledCents: 0,
+    creditsCents: 0,
+    takeCents: 0,
+    quotedAvgEvBps: null,
+    holderDeltaCents: 0,
+    writerPnlCents: 0,
+  };
+}
+
+/** Fold one alternative (or the live terms) into a rule book; `evSum` accumulates for the average. */
+function foldRule(
+  book: RuleBook & { evSum?: number },
+  alt: ShadowAltTerms,
+  contracts: number,
+  result: "yes" | "no" | undefined,
+): void {
+  if (!alt.ok) {
+    book.refused += 1;
+    return;
+  }
+  book.quoted += 1;
+  book.creditsCents += alt.creditCents;
+  book.takeCents += alt.takeCents;
+  book.evSum = (book.evSum ?? 0) + alt.evCostBps;
+  if (result) {
+    const out = altOutcome(alt, contracts, result);
+    if (out) {
+      book.settled += 1;
+      book.stakeSettledCents += 100 * contracts;
+      book.holderDeltaCents += out.deltaCents;
+      book.writerPnlCents += out.writerCents;
+    }
+  }
+}
+
+function finishRule<T extends RuleBook & { evSum?: number }>(book: T): T {
+  book.quotedAvgEvBps = book.quoted > 0 ? Math.round((book.evSum ?? 0) / book.quoted) : null;
+  delete book.evSum;
+  return book;
+}
+
+/** The live position's own terms in the alternative shape, so the baseline folds through the same code. */
+function liveAsAlt(p: ShadowPosition): ShadowAltTerms {
+  return {
+    ok: true,
+    floorCents: p.floorCents,
+    capCents: p.capCents,
+    creditCents: p.creditCents,
+    grossCreditCents: p.creditCents + p.takeCents,
+    takeCents: p.takeCents,
+    takeRule: p.takeRule ?? (p.takeCents === 0 ? "waived" : "share"),
+    feesCents: p.feesCents,
+    hedgeCostCents: hedgeCostOf(p),
+    hedgeUnitsMilli: hedgeUnitsOf(p),
+    evCostBps: p.evCostBps,
+  };
+}
+
+export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCounterfactualSummary {
+  const withCf = positions.filter((p) => p.counterfactuals && p.status !== "void");
+  const baseline: RuleBook & { evSum?: number } = emptyRuleBook();
+  const tiers = Object.fromEntries(PROTECTION_TIERS.map((t) => [t, emptyRuleBook()])) as Record<
+    ProtectionTier,
+    RuleBook & { evSum?: number }
+  >;
+  const feeRules = Object.fromEntries(FEE_RULE_LABELS.map((l) => [l, emptyRuleBook()])) as Record<
+    FeeRuleLabel,
+    RuleBook & { evSum?: number }
+  >;
+  const capacity = SIZE_LADDER_MULTS.map((mult) => ({
+    ...emptyRuleBook(),
+    mult,
+    grossCreditCents: 0,
+    stakeQuotedCents: 0,
+    grossBpsOfStake: null as number | null,
+    evSum: 0,
+  }));
+  let recordedSince: string | null = null;
+
+  for (const p of withCf) {
+    const cf = p.counterfactuals as ShadowCounterfactuals;
+    if (!recordedSince || p.at < recordedSince) recordedSince = p.at;
+    const result = p.status === "settled" ? p.result : undefined;
+    foldRule(baseline, liveAsAlt(p), p.contracts, result);
+    for (const tier of PROTECTION_TIERS) {
+      const alt = cf.alternatives?.[tier];
+      // A tier the venues did not fund distinctly collapsed into another; it is not a refusal.
+      if (alt) foldRule(tiers[tier], alt, p.contracts, result);
+    }
+    for (const label of FEE_RULE_LABELS) {
+      const alt = cf.feeRules?.[label];
+      if (alt) foldRule(feeRules[label], alt, p.contracts, result);
+    }
+    for (const probe of cf.sizeLadder ?? []) {
+      const row = capacity.find((c) => c.mult === probe.mult);
+      if (!row) continue;
+      foldRule(row, probe.terms, probe.contracts, result);
+      if (probe.terms.ok) {
+        row.grossCreditCents += probe.terms.grossCreditCents;
+        row.stakeQuotedCents += 100 * probe.contracts;
+      }
+    }
+  }
+
+  for (const row of capacity) {
+    row.grossBpsOfStake =
+      row.stakeQuotedCents > 0 ? Math.round((row.grossCreditCents / row.stakeQuotedCents) * 10_000) : null;
+  }
+  return {
+    recordedSince,
+    positionsWithCounterfactuals: withCf.length,
+    baseline: finishRule(baseline),
+    tiers: Object.fromEntries(PROTECTION_TIERS.map((t) => [t, finishRule(tiers[t])])) as Record<ProtectionTier, RuleBook>,
+    feeRules: Object.fromEntries(FEE_RULE_LABELS.map((l) => [l, finishRule(feeRules[l])])) as Record<FeeRuleLabel, RuleBook>,
+    capacity: capacity.map((row) => finishRule(row)),
+  };
 }
 
 /**
@@ -336,6 +545,7 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
     firstOpenedAt,
     lastSettledAt,
     writer: w,
+    counterfactuals: summarizeCounterfactuals(positions),
   };
 }
 
@@ -367,6 +577,22 @@ export const POSITIONS_CSV_COLUMNS = [
   "holder_delta_c",
   "writer_pnl_c",
   "ev_cost_bps",
+  // shadow v2: the recorded tier and fee rule, then every counterfactual
+  "tier",
+  "take_rule",
+  "take_share_c",
+  "take_min_c",
+  ...PROTECTION_TIERS.flatMap((t) => [
+    `${t}_floor_c`,
+    `${t}_cap_c`,
+    `${t}_credit_c`,
+    `${t}_take_c`,
+    `${t}_ev_bps`,
+    `${t}_holder_delta_c`,
+    `${t}_writer_pnl_c`,
+  ]),
+  ...FEE_RULE_LABELS.flatMap((l) => [`${l}_take_c`, `${l}_credit_c`, `${l}_refused`]),
+  ...SIZE_LADDER_MULTS.filter((m) => m > 1).flatMap((m) => [`x${m}_contracts`, `x${m}_gross_c`, `x${m}_credit_c`, `x${m}_refused`]),
 ] as const;
 
 function csvCell(v: string | number | null | undefined): string {
@@ -412,9 +638,36 @@ export function positionsCsv(positions: ShadowPosition[]): string {
         settled ? (p.deltaCents ?? 0) : "",
         settled ? (p.writerCents ?? 0) : "",
         p.evCostBps,
+        ...counterfactualCells(p),
       ]
         .map(csvCell)
         .join(",");
     });
   return [POSITIONS_CSV_COLUMNS.join(","), ...rows].join("\n") + "\n";
+}
+
+/** The shadow v2 columns for one row; blanks when the record predates counterfactuals. */
+function counterfactualCells(p: ShadowPosition): Array<string | number> {
+  const cf = p.counterfactuals;
+  const result = p.status === "settled" ? p.result : undefined;
+  const head: Array<string | number> = [p.tier ?? "", p.takeRule ?? "", p.takeShareCents ?? "", p.takeMinimumCents ?? ""];
+  const tierCells = PROTECTION_TIERS.flatMap((t) => {
+    const alt = cf?.alternatives?.[t];
+    if (!alt || !alt.ok) return ["", "", "", "", "", "", ""];
+    const out = result ? altOutcome(alt, p.contracts, result) : null;
+    return [alt.floorCents, alt.capCents, alt.creditCents, alt.takeCents, alt.evCostBps, out?.deltaCents ?? "", out?.writerCents ?? ""];
+  });
+  const feeCells = FEE_RULE_LABELS.flatMap((l) => {
+    const alt = cf?.feeRules?.[l];
+    if (!alt) return ["", "", ""];
+    return alt.ok ? [alt.takeCents, alt.creditCents, 0] : ["", "", 1];
+  });
+  const sizeCells = SIZE_LADDER_MULTS.filter((m) => m > 1).flatMap((m) => {
+    const probe = cf?.sizeLadder?.find((s) => s.mult === m);
+    if (!probe) return ["", "", "", ""];
+    return probe.terms.ok
+      ? [probe.contracts, probe.terms.grossCreditCents, probe.terms.creditCents, 0]
+      : [probe.contracts, "", "", 1];
+  });
+  return [...head, ...tierCells, ...feeCells, ...sizeCells];
 }

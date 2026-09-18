@@ -157,16 +157,21 @@ test("tiers on a production-like No side: three distinct collars on the floor ax
   assert.equal(w.creditCents, 189);
   assert.ok(w.evCostBps < b.evCostBps && b.evCostBps < t.evCostBps, "cheaper as the collar widens");
 
-  // balanced = the fundable floor nearest the midpoint (39 -> 40), cheapest true cost at it
+  // balanced = the fundable floor nearest the midpoint (39 -> 40); at it the venues fund caps
+  // 63..68, midpoint 65.5 -> 65 (tie toward the larger credit). Share rule binds: 10% of 433 = 43 > 38.
   assert.equal(b.floorCents, 40);
-  assert.equal(b.capCents, 68);
-  assert.equal(b.creditCents, 142);
+  assert.equal(b.capCents, 65);
+  assert.equal(b.grossCreditCents, 433);
+  assert.equal(b.takeCents, 43);
+  assert.equal(b.takeRule, "share");
+  assert.equal(b.creditCents, 390);
+  assert.equal(b.evCostBps, 400);
 
   // the top-level terms ARE the default tier's terms
   assert.equal(q.floorCents, b.floorCents);
   assert.equal(q.capCents, b.capCents);
   assert.equal(q.creditCents, b.creditCents);
-  assert.equal(q.takeRule, "minimum");
+  assert.equal(q.takeRule, "share");
   assert.equal(q.minTakeBpsOfStake, 25);
 
   // every tier is a real, fully hedged collar: never under-hedged, credit positive
@@ -217,20 +222,20 @@ test("tiers collapse when they resolve to the same collar; the default still res
   assert.deepEqual(Object.keys(sel.tiers), ["tight"]);
   assert.equal(sel.terms.floorCents, 50);
 
-  // Two caps at one floor: tight takes the larger credit (lower cap); balanced (cheapest at
-  // that floor) and wide (highest cap) both land on cap 66. Dedupe keeps the first name in
-  // tier order, so balanced survives and wide collapses into it.
+  // Two caps at one floor: tight takes the larger credit (cap 63), wide the higher cap (66);
+  // balanced's midpoint 64.5 ties and resolves toward the larger credit -> cap 63, the same
+  // collar as tight, so it collapses into tight.
   const twoCaps: CollarTerms[] = [
     cands[0],
     { ...cands[0], capCents: 66, creditCents: 60, grossCreditCents: 98, evCostBps: 90 },
   ];
   const sel2 = selectTiers(twoCaps, 55, "balanced");
   assert.equal(sel2.tiers.tight?.capCents, 63);
-  assert.equal(sel2.tiers.balanced?.capCents, 66);
-  assert.equal(sel2.tiers.wide, undefined);
-  assert.equal(sel2.tier, "balanced");
-  // asking for the collapsed name resolves to its owner
-  assert.equal(selectTiers(twoCaps, 55, "wide").tier, "balanced");
+  assert.equal(sel2.tiers.wide?.capCents, 66);
+  assert.equal(sel2.tiers.balanced, undefined);
+  assert.equal(sel2.tier, "tight");
+  // asking for a surviving name resolves to itself
+  assert.equal(selectTiers(twoCaps, 55, "wide").tier, "wide");
 });
 
 test("tight tier still prefers a floor at or above entry when the venues fund one", () => {
@@ -277,6 +282,7 @@ test("cross-venue route carries tiers with the same rules (fat-gap fixture)", ()
   assert.ok((q.tiers.wide?.capCents ?? 0) > (q.tiers.tight?.capCents ?? 0));
   // balanced floor is the grid floor nearest the midpoint of 59 and 32 (45.5 -> 47, toward protection)
   assert.equal(q.tiers.balanced?.floorCents, 47);
+  assert.equal(q.tiers.balanced?.capCents, 70);
   assert.equal(q.floorCents, 47);
   assert.equal(q.hedge.venue, "polymarket");
 });

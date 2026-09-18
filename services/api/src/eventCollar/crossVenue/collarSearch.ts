@@ -168,22 +168,25 @@ function wideBetter(cand: CollarTerms, best: CollarTerms): boolean {
   return cand.creditCents > best.creditCents;
 }
 
-/** At one floor: the cheapest true cost, then more upside, then the larger credit. */
-function cheapestAtFloorBetter(cand: CollarTerms, best: CollarTerms): boolean {
-  if (cand.evCostBps !== best.evCostBps) return cand.evCostBps < best.evCostBps;
-  if (cand.capCents !== best.capCents) return cand.capCents > best.capCents;
-  return cand.creditCents > best.creditCents;
-}
-
 function pick(cands: CollarTerms[], better: (c: CollarTerms, b: CollarTerms) => boolean): CollarTerms | null {
   let best: CollarTerms | null = null;
   for (const c of cands) if (!best || better(c, best)) best = c;
   return best;
 }
 
+/** The value in `values` nearest `target`; ties resolved by `preferLower`. */
+function nearest(values: number[], target: number, preferLower: boolean): number {
+  return values.reduce((best, v) => {
+    const d = Math.abs(v - target);
+    const bd = Math.abs(best - target);
+    if (d !== bd) return d < bd ? v : best;
+    return preferLower ? Math.min(v, best) : Math.max(v, best);
+  }, values[0]);
+}
+
 export const TIER_RULES: Record<ProtectionTier, string> = {
   tight: "most protection: the highest floor the venues fund, and the largest credit at it",
-  balanced: "the middle: a floor halfway between tight and wide, priced at its lowest true cost",
+  balanced: "the middle: a floor halfway between tight and wide, and a cap halfway between the least and the most the venues fund at that floor",
   wide: "most upside: the lowest floor offered, with the highest cap the venues fund at it",
 };
 
@@ -212,18 +215,17 @@ export function selectTiers(
   if (candidates.length === 0) throw new Error("selectTiers needs at least one candidate");
   const tight = pick(candidates, (c, b) => tightBetter(c, b, entryCents)) as CollarTerms;
   const wide = pick(candidates, wideBetter) as CollarTerms;
-  // The fundable floor nearest the midpoint, rounding toward more protection.
-  const midpoint = (tight.floorCents + wide.floorCents) / 2;
+  // Balanced: the fundable floor nearest the midpoint of tight's and wide's
+  // (ties toward more protection), then the fundable cap at that floor nearest
+  // the midpoint of the least and the most the venues fund there (ties toward
+  // the larger credit). A midpoint on both axes, so it is a real middle rather
+  // than a rule that quietly slides to one pole.
   const floors = [...new Set(candidates.map((c) => c.floorCents))];
-  const midFloor = floors.reduce((best, f) => {
-    const d = Math.abs(f - midpoint);
-    const bd = Math.abs(best - midpoint);
-    return d < bd || (d === bd && f > best) ? f : best;
-  }, floors[0]);
-  const balanced = pick(
-    candidates.filter((c) => c.floorCents === midFloor),
-    cheapestAtFloorBetter,
-  ) as CollarTerms;
+  const midFloor = nearest(floors, (tight.floorCents + wide.floorCents) / 2, false);
+  const atFloor = candidates.filter((c) => c.floorCents === midFloor);
+  const caps = atFloor.map((c) => c.capCents);
+  const midCap = nearest(caps, (Math.min(...caps) + Math.max(...caps)) / 2, true);
+  const balanced = atFloor.find((c) => c.capCents === midCap) as CollarTerms;
 
   const all: Record<ProtectionTier, CollarTerms> = { tight, balanced, wide };
   const sameCollar = (a: CollarTerms, b: CollarTerms): boolean =>

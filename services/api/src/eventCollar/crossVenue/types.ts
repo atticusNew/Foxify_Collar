@@ -140,8 +140,9 @@ export interface RouteCheck {
  *   - tight:    most protection — the highest fundable floor, largest credit
  *               at it (today's rule; the shadow baseline)
  *   - wide:     most upside — the lowest floor offered, highest fundable cap
- *   - balanced: the middle — the floor nearest halfway between the two,
- *               priced at its lowest true cost
+ *   - balanced: the middle — the floor nearest halfway between the two, and
+ *               the cap nearest halfway between the least and the most the
+ *               venues fund at that floor
  * Tiers that resolve to the same collar collapse; the holder never sees two
  * chips with identical terms.
  */
