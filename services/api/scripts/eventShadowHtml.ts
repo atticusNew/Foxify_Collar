@@ -88,6 +88,36 @@ export function renderShadowHtml(input: ShadowPageInput): string {
   const windowLine = s.firstOpenedAt
     ? `Recording since ${escapeHtml(s.firstOpenedAt.slice(0, 16).replace("T", " "))} UTC. Append-only; positions are never edited, only opened and settled.`
     : "The book is empty; it fills as the scanner finds quotable events.";
+
+  const w = s.writer;
+  const signedUsd = (c: number): string => (c < 0 ? `-${usd(-c)}` : usd(c));
+  const utcDay = (iso: string): string => iso.slice(0, 10);
+  const periodLine =
+    s.firstOpenedAt && s.lastSettledAt
+      ? `${utcDay(s.firstOpenedAt)} to ${utcDay(s.lastSettledAt)} UTC, first position opened to last settlement`
+      : s.firstOpenedAt
+        ? `since ${utcDay(s.firstOpenedAt)} UTC; nothing settled yet`
+        : "no positions yet";
+  const pnlBpsLine =
+    w.settledPnlBpsOfStake === null
+      ? "–"
+      : `${(w.settledPnlBpsOfStake / 100).toFixed(2)}% of settled stake`;
+  const evenLine =
+    w.settledWhenHolderWon > 0 && w.settledWhenHolderLost > 0
+      ? `${signedUsd(w.pnlWhenHolderWonCents)} on ${w.settledWhenHolderWon} holder wins · ${signedUsd(w.pnlWhenHolderLostCents)} on ${w.settledWhenHolderLost} holder losses`
+      : w.settledWhenHolderWon > 0
+        ? `${signedUsd(w.pnlWhenHolderWonCents)} on ${w.settledWhenHolderWon} holder wins; no losses settled yet`
+        : w.settledWhenHolderLost > 0
+          ? `${signedUsd(w.pnlWhenHolderLostCents)} on ${w.settledWhenHolderLost} holder losses; no wins settled yet`
+          : "nothing settled yet";
+  const leagueRows = Object.entries(w.byLeague)
+    .sort((a, b) => b[1].settled + b[1].open - (a[1].settled + a[1].open))
+    .map(
+      ([league, r]) =>
+        `<div class="row"><span>${escapeHtml(league.toUpperCase())} · ${r.settled} settled, ${r.open} open</span>` +
+        `<b>${signedUsd(r.pnlCents)}${r.stakeCents > 0 ? ` <i>${((r.pnlCents / r.stakeCents) * 100).toFixed(2)}% of stake</i>` : ""}</b></div>`,
+    )
+    .join("");
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -112,8 +142,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 1px 2px rgba(5,13,10,.04)}
 h1{font-size:19px;font-weight:650;letter-spacing:-.01em}
 .sub{color:var(--dim);font-size:13px;margin-top:4px}
-.bignums{display:flex;gap:10px;margin-top:14px}
-.bignum{flex:1;background:var(--card2);border-radius:10px;padding:12px;text-align:center}
+.bignums{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.bignum{flex:1;min-width:calc(50% - 5px);background:var(--card2);border-radius:10px;padding:12px;text-align:center}
+.period{color:var(--dim);font-size:12px;margin-top:10px;font-variant-numeric:tabular-nums}
 .bignum .n{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .bignum .n.green{color:var(--green)}
 .bignum .l{color:var(--dim);font-size:11.5px;margin-top:2px}
@@ -142,7 +173,23 @@ footer b{color:var(--dim);font-weight:600}
       <div class="bignum"><div class="n green">${s.settledCount}</div><div class="l">events settled</div></div>
       <div class="bignum"><div class="n">${s.floorSaves}</div><div class="l">floor saves</div></div>
       <div class="bignum"><div class="n green">${s.openCount}</div><div class="l">open now</div></div>
+      <div class="bignum"><div class="n ${w.settledPnlCents >= 0 ? "green" : ""}">${signedUsd(w.settledPnlCents)}</div><div class="l">writer P&amp;L, settled</div></div>
     </div>
+    <div class="period">${escapeHtml(periodLine)}</div>
+  </div>
+  <div class="card">
+    <h2>The writer's book</h2>
+    <div class="sub" style="margin-bottom:8px">The other side of every settled event: what selling the protection and carrying the hedge netted. Leg-for-leg means the answer should not depend on who won.</div>
+    <div class="row"><span>realized, settled events</span><b>${signedUsd(w.settledPnlCents)} <i>${escapeHtml(pnlBpsLine)}</i></b></div>
+    <div class="row"><span>split by outcome</span><b>${escapeHtml(evenLine)}</b></div>
+    <div class="row"><span>published take booked on those events</span><b>${usd(w.takeBookedCents)}</b></div>
+    <div class="row"><span>cap slices kept (holder won)</span><b>${usd(w.capSlicesKeptCents)}</b></div>
+    <div class="row"><span>floors paid (holder lost)</span><b>${signedUsd(-w.floorsPaidCents)}</b></div>
+    <div class="row"><span>hedge payouts received</span><b>${usd(w.hedgePayoutsCents)}</b></div>
+    <div class="row"><span>hedge cost paid</span><b>${signedUsd(-w.hedgeCostCents)}</b></div>
+    <div class="row"><span>credits paid to holders</span><b>${signedUsd(-w.creditsPaidCents)}</b></div>
+    <div class="row"><span>take locked on open positions</span><b>${usd(w.takeLockedOpenCents)} <i>realizes as they settle</i></b></div>
+    ${leagueRows}
   </div>
   <div class="card">
     <h2>Settled, most recent first</h2>
@@ -163,7 +210,7 @@ footer b{color:var(--dim);font-weight:600}
     <a class="back" href="${demoUrl()}">back to the live board</a>
   </div>
   <footer>
-    <b>What is real:</b> the venues' live prices, the quoted terms, and the official results. <b>What is simulated:</b> the positions; no venue credentials, no wallets. Protection usually costs a little; the floor saves are what it buys. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/export">Full ledger (JSONL)</a>
+    <b>What is real:</b> the venues' live prices, the quoted terms, and the official results. <b>What is simulated:</b> the positions; no venue credentials, no wallets. Protection usually costs a little; the floor saves are what it buys. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a> <a class="back" href="/api/shadow/export">Full ledger (JSONL)</a>
   </footer>
 </div>
 </body>

@@ -38,6 +38,7 @@ import {
   appendShadowRecord,
   ledgerStats,
   loadShadowPositions,
+  positionsCsv,
   summarizeShadow,
   type ShadowPosition,
 } from "../src/eventCollar/crossVenue/shadowLedger";
@@ -116,6 +117,8 @@ async function scanTick(): Promise<void> {
         route: res.route ?? "kalshi_self",
         feesCents: q.feesCents,
         takeCents: q.takeCents,
+        hedgeCostCents: q.hedge.costCents,
+        hedgeUnitsMilli: "sharesMilli" in q.hedge ? q.hedge.sharesMilli : q.hedge.contractsMilli,
       });
       seen.add(res.market.ticker);
     }
@@ -246,6 +249,17 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         "cache-control": "no-store",
       });
       createReadStream(LEDGER_PATH).pipe(res);
+      return;
+    }
+    if (url.pathname === "/api/shadow/positions.csv") {
+      // Spreadsheet form: one row per position, every leg in integer cents.
+      const csv = positionsCsv(loadShadowPositions(LEDGER_PATH));
+      res.writeHead(200, {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="event-shadow-positions-${new Date().toISOString().slice(0, 10)}.csv"`,
+        "cache-control": "no-store",
+      });
+      res.end(csv);
       return;
     }
     if (url.pathname === "/api/shadow") {
