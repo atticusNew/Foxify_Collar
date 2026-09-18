@@ -237,17 +237,44 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
 
     async sellOptionLeg(params): Promise<{
       venue: HedgeVenueChoice;
+      filled: boolean;
       fillPriceUsdcPerBtc: number;
       totalProceedsUsdc: number;
       orderId: string;
     }> {
+      const wantLimit = params.orderType === "limit_ioc";
+
       if (opts.mockFills) {
-        // Mock sell: ~95% recovery of buy price
-        const unitProceeds = (params.optionKind === "call" ? 90 : 95) * 0.95;
+        // Mock sell economics:
+        //   • mockMid = base recovery (95% of buy reference) — kept
+        //     simple and deterministic so shadow stress tests are
+        //     reproducible.
+        //   • If a floor is provided AND mockMid < floor, mock returns
+        //     "unfilled" so the manager's defer path is exercised.
+        const baseUnit = (params.optionKind === "call" ? 90 : 95) * 0.95;
+        const mockRecoveryRatio = Number(process.env.VC_TP_MOCK_RECOVERY_RATIO ?? "1.0");
+        const mockMid = baseUnit * (Number.isFinite(mockRecoveryRatio) && mockRecoveryRatio > 0
+          ? mockRecoveryRatio
+          : 1.0);
+        if (
+          wantLimit &&
+          Number.isFinite(params.floorPriceUsdcPerBtc) &&
+          (params.floorPriceUsdcPerBtc as number) > 0 &&
+          mockMid < (params.floorPriceUsdcPerBtc as number)
+        ) {
+          return {
+            venue: params.venue,
+            filled: false,
+            fillPriceUsdcPerBtc: 0,
+            totalProceedsUsdc: 0,
+            orderId: `MOCK-SELL-UNFILLED-${randomUUID().slice(0, 8)}`
+          };
+        }
         return {
           venue: params.venue,
-          fillPriceUsdcPerBtc: unitProceeds,
-          totalProceedsUsdc: unitProceeds * params.contractsBtc,
+          filled: true,
+          fillPriceUsdcPerBtc: mockMid,
+          totalProceedsUsdc: mockMid * params.contractsBtc,
           orderId: `MOCK-SELL-${randomUUID().slice(0, 8)}`
         };
       }
@@ -262,8 +289,23 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
           : buildDeribitOptionInstrumentId(params);
       const result = await adapter.sellOption({
         instrumentId,
-        quantity: params.contractsBtc
+        quantity: params.contractsBtc,
+        orderType: params.orderType,
+        floorPriceUsdcPerBtc: params.floorPriceUsdcPerBtc
       });
+      // 2026-05-21: distinguish three outcomes:
+      //   • "sold"     → success
+      //   • "unfilled" → limit IOC didn't cross; caller defers (NOT an error)
+      //   • "failed"   → genuine error; throw
+      if (result.status === "unfilled") {
+        return {
+          venue: params.venue,
+          filled: false,
+          fillPriceUsdcPerBtc: 0,
+          totalProceedsUsdc: 0,
+          orderId: result.orderId ?? `vc-sell-unfilled-${randomUUID().slice(0, 8)}`
+        };
+      }
       if (result.status !== "sold") {
         throw new Error(
           `sell_option_failed:${params.venue}:${(result.details as any)?.reason ?? "unknown"}`
@@ -271,6 +313,7 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
       }
       return {
         venue: params.venue,
+        filled: true,
         fillPriceUsdcPerBtc: result.fillPrice,
         totalProceedsUsdc: result.totalProceeds,
         orderId: result.orderId ?? `vc-sell-${randomUUID().slice(0, 8)}`

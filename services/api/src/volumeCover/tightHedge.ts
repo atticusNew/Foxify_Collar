@@ -408,8 +408,22 @@ export interface HedgeExecutor {
     strikeUsdc: number;
     expiryIso: string;
     contractsBtc: number;
+    // 2026-05-21: TP slippage-floor params. When orderType="limit_ioc"
+    // is set, the adapter places a limit IOC sell at floorPriceUsdcPerBtc.
+    // If the book doesn't cross, the adapter returns filled:false (and
+    // totalProceedsUsdc:0) — the caller must NOT treat this as an
+    // error. Legacy callers (rollback, etc.) omit these and get the
+    // historical market-sell behavior.
+    orderType?: "market" | "limit_ioc";
+    floorPriceUsdcPerBtc?: number;
   }): Promise<{
     venue: HedgeVenueChoice;
+    // 2026-05-21: filled is true on a successful sell, false when a
+    // limit IOC didn't cross. fillPrice/totalProceeds are 0 when not
+    // filled. Existing callers can ignore this and continue to read
+    // proceeds; new callers (VC hedge manager) check filled to decide
+    // defer vs error.
+    filled: boolean;
     fillPriceUsdcPerBtc: number;
     totalProceedsUsdc: number;
     orderId: string;
