@@ -71,19 +71,21 @@ h1{font-size:19px;line-height:1.3;font-weight:650;letter-spacing:-.01em}
 .pnl.gain{color:var(--green)}
 .pnl.loss{color:var(--loss)}
 .protect{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
-.hero{text-align:center;padding:2px 0 4px}
-.hero .lbl{color:var(--dim);font-size:13px}
-.hero .min{font-size:40px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--green);letter-spacing:-.02em;margin:2px 0}
-.hero .sweet{color:var(--dim);font-size:13px}
+.hero{padding:2px 0 4px}
+.hero .two{display:flex;gap:10px}
+.hero .big{flex:1;min-width:0;text-align:center}
+.hero .lbl{color:var(--dim);font-size:12.5px}
+.hero .min{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--green);letter-spacing:-.02em;margin:1px 0;white-space:nowrap}
+.hero .big.cash .min{color:var(--green-deep)}
+.hero .sweet{color:var(--dim);font-size:12.5px;text-align:center;margin-top:4px}
 .hero .sweet b{color:var(--ink);font-weight:650}
 .tiers{display:flex;gap:6px;margin-top:12px}
 .tier{flex:1;min-width:0;background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 5px;text-align:center;cursor:pointer;font:inherit;color:var(--ink);-webkit-tap-highlight-color:transparent}
 .tier.on{border-color:var(--green);background:var(--green-wash)}
 .tier:disabled{cursor:default;opacity:.7}
-.tier .tn{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:650}
-.tier .tf{font-size:13px;font-weight:650;margin-top:3px;font-variant-numeric:tabular-nums;white-space:nowrap}
-.tier .tc{font-size:10.5px;color:var(--dim);margin-top:2px;font-variant-numeric:tabular-nums;white-space:nowrap}
-.tierrule{color:var(--faint);font-size:11px;margin-top:6px;text-align:center;line-height:1.4}
+.tier .tn{font-size:11px;color:var(--dim);font-weight:650;white-space:nowrap}
+.tier .tf{font-size:14px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tier .tc{font-size:10px;color:var(--faint);margin-top:1px;white-space:nowrap}
 .togglerow{display:flex;justify-content:space-between;align-items:center;margin-top:14px}
 .togglerow .t{font-weight:650}
 .togglerow .d{color:var(--faint);font-size:12px;margin-top:2px}
@@ -119,6 +121,7 @@ input:disabled + .slider{opacity:.45;cursor:default}
 .how summary{cursor:pointer;color:var(--dim);font-size:13px;padding:8px 0}
 .how li{margin:7px 0 7px 18px;color:var(--dim);font-size:13px}
 .how li b{color:var(--ink);font-weight:600}
+.how li a{color:var(--dim);font-weight:600;text-decoration:underline}
 footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
 footer b{color:var(--dim);font-weight:600}
 .err{color:var(--loss);font-size:13px;padding:8px 2px;display:none}
@@ -188,11 +191,12 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
     <div class="protect">
       <div class="hero" id="offer" style="display:none">
-        <div class="lbl">guaranteed minimum</div>
-        <div class="min" id="minout">–</div>
-        <div class="sweet">up to <b id="maxout">–</b> · <b id="creditout">–</b> credit either way</div>
+        <div class="two">
+          <div class="big"><div class="lbl">you keep at least</div><div class="min" id="minout">–</div></div>
+          <div class="big cash"><div class="lbl">cash now</div><div class="min" id="creditout">–</div></div>
+        </div>
+        <div class="sweet">up to <b id="maxout">–</b> if you win · the cash is yours either way</div>
         <div class="tiers" id="tiers"></div>
-        <div class="tierrule" id="tierrule"></div>
       </div>
 
       <div class="togglerow">
@@ -217,7 +221,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
   <div class="card board" id="boardcard" style="display:none">
     <div class="bt">Best protection right now</div>
-    <div class="bs">ranked by true cost · tap to load</div>
+    <div class="bs">best value first · tap any game</div>
     <div id="boardrows"></div>
   </div>
 
@@ -225,14 +229,10 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     <details>
       <summary>How this works</summary>
       <ul>
-        <li><b>Real markets, competing hedge routes.</b> Every event and its prices are live from Kalshi's and Polymarket's public data. Each protection is priced at executable depth on every route that is structurally safe for it: the same game's opposing side on Polymarket, and the protected market's own No side on Kalshi. You get the cheapest one.</li>
-        <li><b>Crypto quotes one route on purpose.</b> The venues settle crypto on different index feeds, so a cross-venue hedge would not be the same trade; crypto strike markets therefore quote only the self-hedge route, and the board says so.</li>
-        <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The market prices that downside risk; when a route prices it cheaper than the cap slice you sold, the difference is your credit.</li>
-        <li><b>The hedge is the same game.</b> Protection is backed by buying the side that pays exactly when yours loses - on the other venue or on the very same market. Cross-venue pairs quote only from a curated whitelist where both venues verifiably settle on the identical official result; the self-hedge route is the same instrument by construction.</li>
-        <li><b>Three tiers, one rule each.</b> Tight is the highest floor the venues fund; wide is the lowest floor with the most upside kept; balanced is the floor halfway between, with a cap halfway between the least and the most the venues fund there. They are shown side by side with the same styling; you pick, we do not.</li>
-        <li><b>Honest economics.</b> Our fee is the larger of a published share of the credit we source and a small minimum on the position (so execution and balance sheet are paid for even when the venues barely disagree), waived when tiny. Both numbers are on the receipt. Nothing is embedded in your terms. When the venues cannot fund a credit that covers the fee, we refuse and say why.</li>
-        <li><b>Undo is free only here.</b> Nothing is bought in this simulation, so undo simply resets it. In the real product, terms lock at your tap and the hedge is placed immediately; unwinding early would be a new trade quoted from the live books at that moment, never a free reversal.</li>
-        <li><b>Read only.</b> This demonstration holds no keys or wallets, places no orders (hedge fills are simulated at live quotes), and cannot move funds.</li>
+        <li><b>The trade.</b> You give up the top slice of your win so you never leave empty-handed. The market prices that risk live; when it prices it cheaper than the slice you sold, the difference is paid to you as cash.</li>
+        <li><b>The hedge is the same game.</b> Protection is backed by buying the side that pays exactly when yours loses, on the other venue or on the very same market, only where both venues verifiably settle on the identical official result. See the hedge on any quote.</li>
+        <li><b>Three ways to protect.</b> Safest keeps the most no matter what; Most upside keeps the most if you win; Balanced sits between. You pick; nothing is pre-chosen for you but a starting point.</li>
+        <li><b>Nothing hidden.</b> Our fee is a published share of the cash we source, with a small minimum, shown on every quote. When the venues cannot fund a credit that covers it, we refuse and say why. This is a demonstration: prices and hedges are live, the position is simulated, no funds can move, and undo simply resets it; in the real product, terms lock at your tap. <a href="/receipts">How the terms are built</a>.</li>
       </ul>
     </details>
   </div>
@@ -248,12 +248,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 (function(){
   var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,kind:'sports',fetchedAt:0,sel:null,boardOpen:false,tier:null};
   var TIER_ORDER=['tight','balanced','wide'];
-  var TIER_WORDS={tight:'most protection',balanced:'balanced',wide:'most upside'};
-  var TIER_RULES={
-    tight:'the highest floor the venues fund, with the largest credit at it',
-    balanced:'a floor halfway between tight and wide, and a cap halfway between the least and the most the venues fund there',
-    wide:'the lowest floor offered, with the highest cap the venues fund at it'
-  };
+  var TIER_WORDS={tight:'Safest',balanced:'Balanced',wide:'Most upside'};
   var $=function(id){return document.getElementById(id)};
   // Funnel beacon. The session id is random, per tab, and never leaves
   // sessionStorage; the server fills in every financial field itself.
@@ -340,9 +335,6 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     if(bps<0)return 'pays you';
     return bps<500?'cheap':(bps<=1500?'fair':'rich');
   }
-  function routeName(r){
-    return r==='kalshi_self'?'Kalshi':'Polymarket';
-  }
   function routesLine(p){
     var rc=p.routesChecked||[];
     if(!rc.length)return '';
@@ -359,11 +351,12 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     return parts.join(' · ')+' · cheapest safe route wins';
   }
 
-  // The quote's top-level terms are its default tier; the holder may pick
-  // another. Each tier is a complete, separately hedged collar.
+  // The quote's top-level terms are its default tier (Balanced when the venues
+  // fund it); the holder may pick another. Each tier is a complete,
+  // separately hedged collar.
   function termsFor(q){
     var tiers=q.tiers||{};
-    if(!S.tier||!tiers[S.tier])S.tier=q.tier||null;
+    if(!S.tier||!tiers[S.tier])S.tier=tiers.balanced?'balanced':(q.tier||null);
     var t=S.tier&&tiers[S.tier]?tiers[S.tier]:q;
     var out={};for(var k in q)out[k]=q[k];for(var j in t)out[j]=t[j];
     return out;
@@ -374,15 +367,14 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       var name=TIER_ORDER[i],t=tiers[name];
       if(!t)continue; n++;
       var o=outcomeTotals({floorCents:t.floorCents,capCents:t.capCents,creditCents:t.creditCents,contracts:q.contracts});
-      html+='<button type="button" class="tier'+(name===S.tier?' on':'')+'" data-tier="'+name+'"'+(locked?' disabled':'')+'>'+
-        '<div class="tn">'+name+'</div>'+
-        '<div class="tf">floor '+usd(o.no)+'</div>'+
-        '<div class="tc">up to '+usd(o.yes)+' · '+usd(t.creditCents)+'</div></button>';
+      // one number per tile: the floor is what each tier is about; the selected tier's full terms are the hero
+      html+='<button type="button" class="tier'+(name===S.tier?' on':'')+'" data-tier="'+name+'"'+(locked?' disabled':'')+' aria-pressed="'+(name===S.tier?'true':'false')+'">'+
+        '<div class="tn">'+TIER_WORDS[name]+'</div>'+
+        '<div class="tf">'+usd(o.no)+'</div>'+
+        '<div class="tc">at least</div></button>';
     }
     $('tiers').innerHTML=n>1?html:'';
     $('tiers').style.display=n>1?'flex':'none';
-    $('tierrule').textContent=S.tier&&TIER_RULES[S.tier]?(TIER_WORDS[S.tier]+': '+TIER_RULES[S.tier]):'';
-    $('tierrule').style.display=n>1?'block':'none';
   }
 
   function paintOffer(q0){
@@ -395,9 +387,9 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     $('creditout').textContent=usd(q.creditCents);
     $('offer').style.display='block';
     var takeLine;
-    if(q.takeWaived){ takeLine='waived (de minimis)'; }
-    else if(q.takeRule==='minimum'){ takeLine=usd(q.takeCents)+' · minimum fee, '+((q.minTakeBpsOfStake||0)/100).toFixed(2)+'% of the position (the '+(q.takeBps/100)+'% share would be '+usd(q.takeShareCents||0)+')'; }
-    else { takeLine=usd(q.takeCents)+' · '+(q.takeBps/100)+'% share of credit sourced'+(q.takeMinimumCents?(' (minimum fee '+usd(q.takeMinimumCents)+' not binding)'):''); }
+    if(q.takeWaived){ takeLine='waived · too small to charge'; }
+    else if(q.takeRule==='minimum'){ takeLine=usd(q.takeCents)+' · minimum fee, '+((q.minTakeBpsOfStake||0)/100).toFixed(2)+'% of the position'; }
+    else { takeLine=usd(q.takeCents)+' · '+(q.takeBps/100)+'% of the credit sourced'; }
     var parityShort=(q.parityNote||pr.parityNote||'').split(';')[0];
     var selfHedge=p.route==='kalshi_self';
     var gapRow='';
@@ -450,14 +442,14 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     S.startIso=pr.eventTimeIso;
     $('countd').textContent=countdLabel();
     if(q&&q.ok&&p.route){
-      $('whyline').textContent=(S.sel?'your pick':'best value right now')+' · via '+routeName(p.route);
+      $('whyline').textContent=S.sel?'your pick':'best value right now';
     } else {
       $('whyline').innerHTML='&nbsp;';
     }
 
     var val=pr.markCents*pos.contracts, cost=pos.entryCents*pos.contracts, pnl=val-cost;
     $('poscount').textContent=pos.contracts+' contracts';
-    $('possub').textContent='avg '+pos.entryCents+'\\u00A2 · simulated';
+    $('possub').textContent='in at '+pos.entryCents+'\\u00A2 a contract';
     $('posval').textContent=usd(val);
     var pe=$('pospnl');
     pe.textContent=(pnl>=0?'+':'')+usd(pnl);
@@ -506,7 +498,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         '<div class="btop"><div class="g">'+rowTitle+'<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
         '<div class="rv"><div class="gr '+evClass(r.evCostBps)+'">'+gradeWord(r.evCostBps)+'</div>'+
         '<div class="ev '+evClass(r.evCostBps)+'">'+evShort(r.evCostBps)+'</div></div></div>'+
-        '<div class="m">'+fmtEt(r.eventTimeIso)+' · '+r.markCents+'% · '+usd(r.creditCents)+' credit · via '+routeName(r.route)+(r.tierCount>1?(' · '+r.tierCount+' tiers'):'')+'</div>'+
+        '<div class="m">'+fmtEt(r.eventTimeIso)+' · '+r.markCents+'% · keep at least '+usd(r.floorTotalCents)+' · '+usd(r.creditCents)+' cash</div>'+
         '</div>';
     }
     if(b.length>LIMIT){
@@ -614,9 +606,9 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 const TIER_LABELS: Record<string, string> = {
-  tight: "tight (most protection)",
-  balanced: "balanced",
-  wide: "wide (most upside)",
+  tight: "Safest (tight)",
+  balanced: "Balanced",
+  wide: "Most upside (wide)",
   unknown: "unattributed",
 };
 
@@ -896,6 +888,9 @@ h2{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;lett
 .row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:13.5px;color:var(--dim);font-variant-numeric:tabular-nums;border-top:1px solid var(--line)}
 .row:first-of-type{border-top:0}
 .row b{color:var(--ink);font-weight:650;text-align:right}
+.rules .row{display:block}
+.rules .row span{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
+.rules .row b{display:block;text-align:left;font-weight:500;margin-top:2px;line-height:1.45}
 .back{display:inline-block;margin-top:2px;color:var(--green-deep);font-weight:600;font-size:13px;text-decoration:underline}
 footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
 footer b{color:var(--dim);font-weight:600}
@@ -924,6 +919,16 @@ footer b{color:var(--dim);font-weight:600}
   </div>
   ${routeRows ? `<div class="card"><h2>Which route won</h2>${routeRows}</div>` : ""}
   ${refusalRows ? `<div class="card"><h2>Why quotes were refused</h2>${refusalRows}</div>` : ""}
+  <div class="card rules">
+    <h2>How the terms are built</h2>
+    <div class="sub">Every protection is priced at executable depth on each hedge route that is structurally safe for the event: the same game's opposing side on Polymarket, and the market's own No side on Kalshi. The cheapest safe route wins. Crypto quotes the self-hedge route only, because the venues settle crypto on different index feeds.</div>
+    <div class="row"><span>Safest</span><b>the highest floor the venues fund, with the largest credit at it</b></div>
+    <div class="row"><span>Balanced</span><b>a floor halfway between Safest and Most upside, with a cap halfway between the least and the most the venues fund there</b></div>
+    <div class="row"><span>Most upside</span><b>the lowest floor offered, with the highest cap the venues fund at it</b></div>
+    <div class="row"><span>our fee</span><b>the larger of a published share of the credit we source and a small minimum on the position, waived when tiny; both numbers are on every quote and nothing is embedded in the terms</b></div>
+    <div class="row"><span>refusals</span><b>when the venues cannot fund a credit that covers the fee, we refuse and say why</b></div>
+    <div class="row"><span>undo</span><b>free only in the demonstration, where nothing is bought; in the real product terms lock at your tap and the hedge is placed immediately, so an early unwind is a new trade quoted from the live books, never a free reversal</b></div>
+  </div>
   <div class="card">
     <h2>Honesty notes</h2>
     <div class="sub">${windowLine} The ledger lives on this instance's disk, so a redeploy starts a fresh window. Positions are simulated; every quote and refusal in these numbers came from live venue books at the moment it was made.</div>
