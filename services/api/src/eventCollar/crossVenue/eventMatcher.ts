@@ -97,17 +97,46 @@ export function startTimesAgree(
   return Math.abs(pmUtc - tickerUtc) / 60_000 <= toleranceMinutes;
 }
 
-/** Candidate Polymarket slugs for a parsed game (alias order preserved). */
+/** ISO date + n days (pure calendar arithmetic on the UTC clock). */
+export function shiftIsoDate(dateIso: string, days: number): string {
+  return new Date(new Date(`${dateIso}T00:00:00Z`).getTime() + days * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * Candidate Polymarket slugs for a parsed game (alias order preserved).
+ * Kalshi encodes the ET calendar date; Polymarket's slug date is the ET date
+ * for some leagues (MLB, NBA) and the UTC date for others (NFL, verified live:
+ * Kalshi 26SEP20 INDKC ⇄ nfl-ind-kc-2026-09-21 for an 8:20pm ET kickoff), so
+ * an evening game can sit one day later in the slug. Both dates are tried;
+ * `gameDateAgrees` then pins the pairing to the ticker's actual game date.
+ */
 export function candidateSlugs(parsed: ParsedGameTicker, template: LeagueTemplate): string[] {
   const aways = template.teamCodeAliases[parsed.awayCode] ?? [];
   const homes = template.teamCodeAliases[parsed.homeCode] ?? [];
   const slugs: string[] = [];
-  for (const a of aways) {
-    for (const h of homes) {
-      slugs.push(`${template.pmSlugPrefix}-${a}-${h}-${parsed.dateIso}`);
+  for (const date of [parsed.dateIso, shiftIsoDate(parsed.dateIso, 1)]) {
+    for (const a of aways) {
+      for (const h of homes) {
+        slugs.push(`${template.pmSlugPrefix}-${a}-${h}-${date}`);
+      }
     }
   }
   return slugs;
+}
+
+/**
+ * The Polymarket game must fall on the ticker's ET calendar date. UTC-5 is
+ * used year-round: it is exact in winter and, in summer, only shifts a game
+ * that tips after 11pm EDT onto the previous date - no US league schedules
+ * one. This is what makes the two-date slug search safe: a same-matchup game
+ * on the neighbouring day (back-to-backs, series) is rejected here.
+ */
+export function gameDateAgrees(parsed: ParsedGameTicker, pmGameStartIso: string): boolean {
+  const pmUtc = new Date(pmGameStartIso).getTime();
+  if (Number.isNaN(pmUtc)) return false;
+  return new Date(pmUtc - 5 * 3_600_000).toISOString().slice(0, 10) === parsed.dateIso;
 }
 
 const normalize = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
@@ -132,6 +161,25 @@ export function outcomeNameMatches(kalshiSubtitle: string, pmOutcome: string): b
   const pWords = p.split(/\s+/);
   const pDistinguishing = new Set(pWords.slice(1));
   return kTokens.some((t) => pDistinguishing.has(t));
+}
+
+/**
+ * Verify one side of the pairing against the club's canonical name. The two
+ * venues abbreviate differently (Kalshi subtitle "Philadelphia" / "Los Angeles
+ * R"; Polymarket outcome "Eagles" or "Philadelphia Phillies"), so comparing
+ * them to each other rejects valid pairs. Each is compared to the full name
+ * instead; a template without names falls back to the direct comparison.
+ */
+export function sideNameVerified(
+  template: LeagueTemplate,
+  code: string,
+  kalshiSubtitle: string | null,
+  pmOutcome: string,
+): boolean {
+  const full = template.teamNames?.[code];
+  if (!full) return kalshiSubtitle == null ? true : outcomeNameMatches(kalshiSubtitle, pmOutcome);
+  if (kalshiSubtitle != null && !outcomeNameMatches(kalshiSubtitle, full)) return false;
+  return outcomeNameMatches(pmOutcome, full);
 }
 
 /** Pick the winner (moneyline) market from an event's markets. */
@@ -169,13 +217,17 @@ export async function matchKalshiMarket(
     const pm = pickMoneyline(markets, template);
     if (!pm) continue;
     if (!pm.gameStartTime) continue;
+    if (!gameDateAgrees(parsed, pm.gameStartTime)) continue;
     if (!startTimesAgree(parsed, pm.gameStartTime)) continue;
 
     // Positional mapping: slug and Kalshi event code are both away-then-home,
-    // and Polymarket sports outcomes list away first.
+    // and Polymarket sports outcomes list away first. Both outcomes are then
+    // verified by name against the club each position is supposed to be.
     const yesIndex = parsed.sideCode === parsed.awayCode ? 0 : 1;
     const noIndex = 1 - yesIndex;
-    if (!outcomeNameMatches(kalshi.subtitle, pm.outcomes[yesIndex])) return null;
+    const otherCode = parsed.sideCode === parsed.awayCode ? parsed.homeCode : parsed.awayCode;
+    if (!sideNameVerified(template, parsed.sideCode, kalshi.subtitle, pm.outcomes[yesIndex])) return null;
+    if (!sideNameVerified(template, otherCode, null, pm.outcomes[noIndex])) return null;
 
     return {
       league: template.league,
