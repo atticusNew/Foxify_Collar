@@ -36,7 +36,9 @@
  *
  * Run: npx tsx services/api/scripts/eventProtectXDemoService.ts
  * Env: EVENT_X_PORT (default 8792) · EVENT_X_CONTRACTS (default 150)
- *      EVENT_X_TAKE_BPS · EVENT_X_LEDGER_PATH · EVENT_X_BOARD_ROWS
+ *      EVENT_X_TAKE_BPS (share of gross, default 1000) · EVENT_X_MIN_TAKE_BPS
+ *      (minimum fee, bps of stake, default 25; 0 disables) · EVENT_X_DEFAULT_TIER
+ *      (tight|balanced|wide, default balanced) · EVENT_X_LEDGER_PATH · EVENT_X_BOARD_ROWS
  *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
  *      EVENT_X_FUNNEL_PATH · EVENT_X_ADMIN_TOKEN (or EVENT_X_DEV_NO_ADMIN=true)
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
@@ -70,13 +72,16 @@ import { LEAGUE_TEMPLATES } from "../src/eventCollar/crossVenue/resolutionWhitel
 import { matchKalshiMarket, parseGameTicker } from "../src/eventCollar/crossVenue/eventMatcher";
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
-import { getNoAsks, quoteLadderWrap } from "../src/eventCollar/crossVenue/kalshiLadder";
+import { getNoAsks, quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import {
   DEFAULT_CROSS_CONFIG,
+  type CollarTerms,
   type CrossQuoteResult,
   type CrossSearchConfig,
   type HedgeRoute,
   type MatchedPair,
+  type PmBook,
+  type ProtectionTier,
   type RouteCheck,
 } from "../src/eventCollar/crossVenue/types";
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
@@ -165,10 +170,18 @@ function readBody(req: IncomingMessage, limit: number): Promise<string | null> {
   });
 }
 
-function searchConfig(): CrossSearchConfig {
+function parseTier(v: string | undefined): ProtectionTier {
+  return v === "tight" || v === "balanced" || v === "wide" ? v : DEFAULT_CROSS_CONFIG.defaultTier;
+}
+
+export function searchConfig(): CrossSearchConfig {
+  const minTake = process.env.EVENT_X_MIN_TAKE_BPS;
   return {
     ...DEFAULT_CROSS_CONFIG,
     takeBps: Number(process.env.EVENT_X_TAKE_BPS || DEFAULT_CROSS_CONFIG.takeBps),
+    minTakeBpsOfStake:
+      minTake !== undefined && minTake !== "" ? Math.max(0, Number(minTake)) : DEFAULT_CROSS_CONFIG.minTakeBpsOfStake,
+    defaultTier: parseTier(process.env.EVENT_X_DEFAULT_TIER),
   };
 }
 
@@ -191,6 +204,10 @@ export interface BoardRow {
   evCostBps: number;
   /** which hedge route won this event's quote */
   route: HedgeRoute;
+  /** which protection tier the row's terms are (the default tier) */
+  tier: ProtectionTier;
+  /** how many distinct tiers the venues funded for this event */
+  tierCount: number;
 }
 
 export interface CrossShowcasePayload {
@@ -310,6 +327,12 @@ export interface CandidateResult {
   /** EV cost of the winning quote (null when every route refused) */
   evBps: number | null;
   routesChecked: RouteCheck[];
+  /**
+   * The live books each route was priced from, kept so the shadow run can
+   * re-price the same moment under other rules or sizes (counterfactuals)
+   * without another venue call. Absent when the venue was unreachable.
+   */
+  books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[] };
 }
 
 async function showcasePositionFor(ticker: string, markCents: number) {
@@ -430,6 +453,10 @@ async function quoteSportsCandidate(pair: MatchedPair, markCents: number, now: D
     route,
     evBps,
     routesChecked,
+    books: {
+      ...(pmRes.status === "fulfilled" ? { pmNoBook: pmRes.value } : {}),
+      ...(ladderRes.status === "fulfilled" ? { noAsks: ladderRes.value } : {}),
+    },
   };
 }
 
@@ -490,6 +517,7 @@ async function quoteCryptoCandidate(series: string, sel: ShowcaseSelection, now:
     route: ladderQuote.ok ? "kalshi_self" : null,
     evBps,
     routesChecked,
+    books: { noAsks },
   };
 }
 
@@ -697,6 +725,8 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
       creditCents: q.creditCents,
       evCostBps: s.evBps,
       route: s.res.route ?? "polymarket",
+      tier: q.tier,
+      tierCount: Object.keys(q.tiers).length,
     };
   });
 
@@ -811,28 +841,37 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-/** The server's own view of a board row, for attributing a Protect tap. Null once it rolls off. */
-function protectContextFor(ticker: string | null): ProtectContext | null {
-  if (!ticker || !cache) return null;
-  const row = cache.state.rows.find((s) => s.res.market.ticker === ticker);
+/**
+ * The server's own view of a board row, for attributing a Protect tap. Null
+ * once it rolls off. `tier` names which of the row's tiers the holder locked;
+ * an unknown or missing tier attributes the row's default terms.
+ */
+export function protectContextFor(ticker: string | null, tier: unknown, state: ScanState | null): ProtectContext | null {
+  if (!ticker || !state) return null;
+  const row = state.rows.find((s) => s.res.market.ticker === ticker);
   if (!row || !row.res.quote.ok) return null;
   const q = row.res.quote;
+  const wanted = typeof tier === "string" ? (q.tiers[tier as ProtectionTier] ? (tier as ProtectionTier) : null) : null;
+  const terms: CollarTerms = (wanted && q.tiers[wanted]) || q;
+  const contracts = row.res.position.contracts;
   return {
     league: row.res.league,
     kind: row.res.kind,
     route: row.res.route,
-    creditCents: q.creditCents,
-    contracts: row.res.position.contracts,
+    tier: wanted ?? q.tier,
+    creditCents: terms.creditCents,
+    contracts,
     markCents: row.res.markCents,
-    floorCents: q.floorCents,
-    capCents: q.capCents,
-    evCostBps: row.evBps,
+    floorCents: terms.floorCents,
+    capCents: terms.capCents,
+    evCostBps: wanted ? terms.evCostBps : row.evBps,
   };
 }
 
 /**
- * Beacon from the page: {sid, action, ticker?}. Anything else in the body is
- * ignored; the financial facts about the row come from our own scan. Always
+ * Beacon from the page: {sid, action, ticker?, tier?}. Anything else in the
+ * body is ignored; the financial facts about the row come from our own scan
+ * (the tier only selects which of the row's own tiers to attribute). Always
  * answers 204 on accepted input so the page never has to care.
  */
 async function handleMetrics(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -859,7 +898,7 @@ async function handleMetrics(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
   const ticker = typeof body.ticker === "string" ? body.ticker : null;
-  const ctx = body.action === "protect_on" ? protectContextFor(ticker) : null;
+  const ctx = body.action === "protect_on" ? protectContextFor(ticker, body.tier, cache?.state ?? null) : null;
   const ok = recordAction(funnelState, { sid: body.sid, action: body.action, ticker }, Date.now(), ctx);
   if (!ok) {
     sendJson(res, 400, { ok: false, error: "bad_input" });

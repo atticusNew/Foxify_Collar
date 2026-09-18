@@ -76,6 +76,14 @@ h1{font-size:19px;line-height:1.3;font-weight:650;letter-spacing:-.01em}
 .hero .min{font-size:40px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--green);letter-spacing:-.02em;margin:2px 0}
 .hero .sweet{color:var(--dim);font-size:13px}
 .hero .sweet b{color:var(--ink);font-weight:650}
+.tiers{display:flex;gap:6px;margin-top:12px}
+.tier{flex:1;min-width:0;background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 5px;text-align:center;cursor:pointer;font:inherit;color:var(--ink);-webkit-tap-highlight-color:transparent}
+.tier.on{border-color:var(--green);background:var(--green-wash)}
+.tier:disabled{cursor:default;opacity:.7}
+.tier .tn{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:650}
+.tier .tf{font-size:13px;font-weight:650;margin-top:3px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tier .tc{font-size:10.5px;color:var(--dim);margin-top:2px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tierrule{color:var(--faint);font-size:11px;margin-top:6px;text-align:center;line-height:1.4}
 .togglerow{display:flex;justify-content:space-between;align-items:center;margin-top:14px}
 .togglerow .t{font-weight:650}
 .togglerow .d{color:var(--faint);font-size:12px;margin-top:2px}
@@ -183,6 +191,8 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         <div class="lbl">guaranteed minimum</div>
         <div class="min" id="minout">–</div>
         <div class="sweet">up to <b id="maxout">–</b> · <b id="creditout">–</b> credit either way</div>
+        <div class="tiers" id="tiers"></div>
+        <div class="tierrule" id="tierrule"></div>
       </div>
 
       <div class="togglerow">
@@ -219,7 +229,8 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         <li><b>Crypto quotes one route on purpose.</b> The venues settle crypto on different index feeds, so a cross-venue hedge would not be the same trade; crypto strike markets therefore quote only the self-hedge route, and the board says so.</li>
         <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The market prices that downside risk; when a route prices it cheaper than the cap slice you sold, the difference is your credit.</li>
         <li><b>The hedge is the same game.</b> Protection is backed by buying the side that pays exactly when yours loses - on the other venue or on the very same market. Cross-venue pairs quote only from a curated whitelist where both venues verifiably settle on the identical official result; the self-hedge route is the same instrument by construction.</li>
-        <li><b>Honest economics.</b> We keep a published share of the credit we source, waived when tiny. Nothing is embedded in your terms. When the venues cannot fund a credit, we refuse and say why.</li>
+        <li><b>Three tiers, one rule each.</b> Tight is the highest floor the venues fund; wide is the lowest floor with the most upside kept; balanced is the floor halfway between, with a cap halfway between the least and the most the venues fund there. They are shown side by side with the same styling; you pick, we do not.</li>
+        <li><b>Honest economics.</b> Our fee is the larger of a published share of the credit we source and a small minimum on the position (so execution and balance sheet are paid for even when the venues barely disagree), waived when tiny. Both numbers are on the receipt. Nothing is embedded in your terms. When the venues cannot fund a credit that covers the fee, we refuse and say why.</li>
         <li><b>Undo is free only here.</b> Nothing is bought in this simulation, so undo simply resets it. In the real product, terms lock at your tap and the hedge is placed immediately; unwinding early would be a new trade quoted from the live books at that moment, never a free reversal.</li>
         <li><b>Read only.</b> This demonstration holds no keys or wallets, places no orders (hedge fills are simulated at live quotes), and cannot move funds.</li>
       </ul>
@@ -235,7 +246,14 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
 <script>
 (function(){
-  var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,kind:'sports',fetchedAt:0,sel:null,boardOpen:false};
+  var S={payload:null,phase:'idle',terms:null,pairKey:null,startIso:null,kind:'sports',fetchedAt:0,sel:null,boardOpen:false,tier:null};
+  var TIER_ORDER=['tight','balanced','wide'];
+  var TIER_WORDS={tight:'most protection',balanced:'balanced',wide:'most upside'};
+  var TIER_RULES={
+    tight:'the highest floor the venues fund, with the largest credit at it',
+    balanced:'a floor halfway between tight and wide, and a cap halfway between the least and the most the venues fund there',
+    wide:'the lowest floor offered, with the highest cap the venues fund at it'
+  };
   var $=function(id){return document.getElementById(id)};
   // Funnel beacon. The session id is random, per tab, and never leaves
   // sessionStorage; the server fills in every financial field itself.
@@ -248,9 +266,9 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       sessionStorage.setItem(k,v);return v;
     }catch(e){return 'anon'+Math.random().toString(36).slice(2,14)}
   })();
-  function track(action,ticker){
+  function track(action,ticker,tier){
     try{
-      var body=JSON.stringify({sid:SID,action:action,ticker:ticker||null});
+      var body=JSON.stringify({sid:SID,action:action,ticker:ticker||null,tier:tier||null});
       if(navigator.sendBeacon&&navigator.sendBeacon('/api/metrics',new Blob([body],{type:'application/json'})))return;
       fetch('/api/metrics',{method:'POST',body:body,keepalive:true,headers:{'content-type':'application/json'}}).catch(function(){});
     }catch(e){}
@@ -341,14 +359,45 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     return parts.join(' · ')+' · cheapest safe route wins';
   }
 
-  function paintOffer(q){
+  // The quote's top-level terms are its default tier; the holder may pick
+  // another. Each tier is a complete, separately hedged collar.
+  function termsFor(q){
+    var tiers=q.tiers||{};
+    if(!S.tier||!tiers[S.tier])S.tier=q.tier||null;
+    var t=S.tier&&tiers[S.tier]?tiers[S.tier]:q;
+    var out={};for(var k in q)out[k]=q[k];for(var j in t)out[j]=t[j];
+    return out;
+  }
+  function paintTiers(q,locked){
+    var tiers=q.tiers||{},html='',n=0;
+    for(var i=0;i<TIER_ORDER.length;i++){
+      var name=TIER_ORDER[i],t=tiers[name];
+      if(!t)continue; n++;
+      var o=outcomeTotals({floorCents:t.floorCents,capCents:t.capCents,creditCents:t.creditCents,contracts:q.contracts});
+      html+='<button type="button" class="tier'+(name===S.tier?' on':'')+'" data-tier="'+name+'"'+(locked?' disabled':'')+'>'+
+        '<div class="tn">'+name+'</div>'+
+        '<div class="tf">floor '+usd(o.no)+'</div>'+
+        '<div class="tc">up to '+usd(o.yes)+' · '+usd(t.creditCents)+'</div></button>';
+    }
+    $('tiers').innerHTML=n>1?html:'';
+    $('tiers').style.display=n>1?'flex':'none';
+    $('tierrule').textContent=S.tier&&TIER_RULES[S.tier]?(TIER_WORDS[S.tier]+': '+TIER_RULES[S.tier]):'';
+    $('tierrule').style.display=n>1?'block':'none';
+  }
+
+  function paintOffer(q0){
+    var q=S.phase==='protected'&&S.terms?S.terms:termsFor(q0);
     var p=S.payload,pr=p.pair,pos=p.position;
     var o=outcomeTotals(q);
+    paintTiers(q0,S.phase==='protected');
     $('minout').textContent=usd(o.no);
     $('maxout').textContent=usd(o.yes);
     $('creditout').textContent=usd(q.creditCents);
     $('offer').style.display='block';
-    var takeLine=q.takeWaived?'take waived (de minimis)':(usd(q.takeCents)+' ('+(q.takeBps/100)+'% of credit sourced)');
+    var takeLine;
+    if(q.takeWaived){ takeLine='waived (de minimis)'; }
+    else if(q.takeRule==='minimum'){ takeLine=usd(q.takeCents)+' · minimum fee, '+((q.minTakeBpsOfStake||0)/100).toFixed(2)+'% of the position (the '+(q.takeBps/100)+'% share would be '+usd(q.takeShareCents||0)+')'; }
+    else { takeLine=usd(q.takeCents)+' · '+(q.takeBps/100)+'% share of credit sourced'+(q.takeMinimumCents?(' (minimum fee '+usd(q.takeMinimumCents)+' not binding)'):''); }
     var parityShort=(q.parityNote||pr.parityNote||'').split(';')[0];
     var selfHedge=p.route==='kalshi_self';
     var gapRow='';
@@ -389,7 +438,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     var pr=p.pair,pos=p.position,q=p.quote;
     if(S.sel&&pr.kalshiTicker!==S.sel){ S.sel=null; }
     var key=pr.kalshiTicker;
-    if(S.pairKey&&S.pairKey!==key&&S.phase!=='idle'){ resetSim(); }
+    if(S.pairKey&&S.pairKey!==key){ S.tier=null; if(S.phase!=='idle')resetSim(); }
     S.pairKey=key;
     S.kind=pr.kind||'sports';
     var crypto=S.kind==='crypto';
@@ -457,7 +506,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         '<div class="btop"><div class="g">'+rowTitle+'<span class="lg">'+r.league.toUpperCase()+'</span>'+chip+'</div>'+
         '<div class="rv"><div class="gr '+evClass(r.evCostBps)+'">'+gradeWord(r.evCostBps)+'</div>'+
         '<div class="ev '+evClass(r.evCostBps)+'">'+evShort(r.evCostBps)+'</div></div></div>'+
-        '<div class="m">'+fmtEt(r.eventTimeIso)+' · '+r.markCents+'% · '+usd(r.creditCents)+' credit · via '+routeName(r.route)+'</div>'+
+        '<div class="m">'+fmtEt(r.eventTimeIso)+' · '+r.markCents+'% · '+usd(r.creditCents)+' credit · via '+routeName(r.route)+(r.tierCount>1?(' · '+r.tierCount+' tiers'):'')+'</div>'+
         '</div>';
     }
     if(b.length>LIMIT){
@@ -481,11 +530,12 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     if(!e.target.checked){ resetSim(); return; }
     var q=S.payload&&S.payload.quote;
     if(!(q&&q.ok)){ e.target.checked=false; return; }
-    track('protect_on',S.payload.pair&&S.payload.pair.kalshiTicker);
-    // one tap: the visible offer becomes the locked terms immediately
-    S.phase='protected'; S.terms=q;
+    var locked=termsFor(q);
+    track('protect_on',S.payload.pair&&S.payload.pair.kalshiTicker,S.tier);
+    // one tap: the visible offer (the selected tier) becomes the locked terms immediately
+    S.phase='protected'; S.terms=locked;
     paintOffer(q);
-    var ot=outcomeTotals(q);
+    var ot=outcomeTotals(locked);
     $('paysline').textContent='guaranteed '+usd(ot.no)+' to '+usd(ot.yes);
     $('protectedline').classList.add('show');
     $('toggledesc').textContent='terms locked at your tap';
@@ -495,6 +545,15 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     var el=ev.target;
     while(el&&el!==document){
       if(el.id==='undo'){ ev.preventDefault(); track('protect_undo',S.payload&&S.payload.pair&&S.payload.pair.kalshiTicker); resetSim(); return; }
+      if(el.getAttribute&&el.getAttribute('data-tier')){
+        ev.preventDefault();
+        if(S.phase!=='idle')return;
+        var tn=el.getAttribute('data-tier');
+        if(tn===S.tier)return;
+        S.tier=tn; track('tier_pick',S.payload&&S.payload.pair&&S.payload.pair.kalshiTicker,tn);
+        if(S.payload&&S.payload.quote&&S.payload.quote.ok)paintOffer(S.payload.quote);
+        return;
+      }
       if(el.id==='boardmore'){ ev.preventDefault(); S.boardOpen=!S.boardOpen; if(S.boardOpen)track('board_expand'); if(S.payload)renderBoard(S.payload); return; }
       if(el.getAttribute&&el.getAttribute('data-ticker')){
         var t=el.getAttribute('data-ticker');
@@ -551,6 +610,14 @@ const ACTION_LABELS: Record<string, string> = {
   protect_on: "Protect taps",
   protect_undo: "undos",
   board_expand: "board expands",
+  tier_pick: "tier picks",
+};
+
+const TIER_LABELS: Record<string, string> = {
+  tight: "tight (most protection)",
+  balanced: "balanced",
+  wide: "wide (most upside)",
+  unknown: "unattributed",
 };
 
 /** Operator-only funnel page: the admin JSON, laid out so a human can read it in ten seconds. */
@@ -583,6 +650,7 @@ export function renderFunnelHtml(
       <td>${a.row_tap ?? 0}</td>
       <td class="hi">${a.protect_on ?? 0}</td>
       <td>${a.protect_undo ?? 0}</td>
+      <td>${a.tier_pick ?? 0}</td>
       <td>${a.board_expand ?? 0}</td>
     </tr>`;
   });
@@ -592,6 +660,7 @@ export function renderFunnelHtml(
     taps: s.actions7d.reduce((n, d) => n + (d.byAction.row_tap ?? 0), 0),
     protects: s.actions7d.reduce((n, d) => n + (d.byAction.protect_on ?? 0), 0),
     undos: s.actions7d.reduce((n, d) => n + (d.byAction.protect_undo ?? 0), 0),
+    tierPicks: s.actions7d.reduce((n, d) => n + (d.byAction.tier_pick ?? 0), 0),
     expands: s.actions7d.reduce((n, d) => n + (d.byAction.board_expand ?? 0), 0),
   };
 
@@ -601,6 +670,7 @@ export function renderFunnelHtml(
       <td class="mono">${escapeHtml(p.ticker || "–")}</td>
       <td>${escapeHtml(p.league === "unknown" ? "–" : p.league.toUpperCase())}</td>
       <td>${escapeHtml(p.route ? (ROUTE_LABELS[p.route] ?? p.route) : "–")}</td>
+      <td>${escapeHtml(p.tier ?? "–")}</td>
       <td class="hi">${p.creditCents === null ? "–" : usdFromCents(p.creditCents)}</td>
       <td>${p.floorCents === null || p.capCents === null ? "–" : `${p.floorCents}¢ → ${p.capCents}¢`}</td>
       <td>${p.contracts ?? "–"}</td>
@@ -707,15 +777,19 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
       <h2>By hedge route</h2>
       ${countRows(s.protects.byRoute, ROUTE_LABELS) || '<div class="empty">no Protect taps yet</div>'}
     </div>
+    <div class="card">
+      <h2>By protection tier</h2>
+      ${countRows(s.protects.byTier ?? {}, TIER_LABELS) || '<div class="empty">no Protect taps yet</div>'}
+    </div>
   </div>
 
   <div class="card" style="margin-top:12px">
     <h2>Last 7 days, UTC</h2>
     <div class="tablewrap"><table>
-      <thead><tr><th>day</th><th>board loads</th><th>receipts loads</th><th>${escapeHtml(ACTION_LABELS.row_tap)}</th><th>${escapeHtml(ACTION_LABELS.protect_on)}</th><th>${escapeHtml(ACTION_LABELS.protect_undo)}</th><th>${escapeHtml(ACTION_LABELS.board_expand)}</th></tr></thead>
+      <thead><tr><th>day</th><th>board loads</th><th>receipts loads</th><th>${escapeHtml(ACTION_LABELS.row_tap)}</th><th>${escapeHtml(ACTION_LABELS.protect_on)}</th><th>${escapeHtml(ACTION_LABELS.protect_undo)}</th><th>${escapeHtml(ACTION_LABELS.tier_pick)}</th><th>${escapeHtml(ACTION_LABELS.board_expand)}</th></tr></thead>
       <tbody>
         ${days.join("")}
-        <tr class="total"><td>7-day total</td><td>${totals.app}</td><td>${totals.receipts}</td><td>${totals.taps}</td><td>${totals.protects}</td><td>${totals.undos}</td><td>${totals.expands}</td></tr>
+        <tr class="total"><td>7-day total</td><td>${totals.app}</td><td>${totals.receipts}</td><td>${totals.taps}</td><td>${totals.protects}</td><td>${totals.undos}</td><td>${totals.tierPicks}</td><td>${totals.expands}</td></tr>
       </tbody>
     </table></div>
   </div>
@@ -725,7 +799,7 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
     ${
       recent.length
         ? `<div class="tablewrap"><table>
-      <thead><tr><th>when (UTC)</th><th>market</th><th>league</th><th>route</th><th>credit</th><th>floor → cap</th><th>contracts</th></tr></thead>
+      <thead><tr><th>when (UTC)</th><th>market</th><th>league</th><th>route</th><th>tier</th><th>credit</th><th>floor → cap</th><th>contracts</th></tr></thead>
       <tbody>${recent.join("")}</tbody>
     </table></div>`
         : '<div class="empty">none yet. A tap on a game that has already rolled off the board still counts, shown unattributed.</div>'

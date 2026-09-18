@@ -17,8 +17,10 @@
  *   funding   = (100 - c) * N cents        (the cap slice the holder sells)
  *   hedgeCost = walked NO-token ask, micro dollars -> cents rounded up, + fees
  *   gross     = funding - hedgeCost
- *   credit    = gross - take               (take waived when de minimis)
+ *   credit    = gross - take               (take = max(share, minimum), waived when tiny)
  * Quotes refuse honestly when gross <= 0: the venues did not fund a credit.
+ * The grid walk, fee rule and tier selection are shared with the self-hedge
+ * route (collarSearch.ts); this file only knows how to price the hedge.
  *
  * Unit discipline: prices and sizes in integer milli units; their product is
  * exact micro dollars; one conversion to cents, rounded against the credit.
@@ -32,6 +34,7 @@ import type {
   PmBookLevel,
 } from "./types";
 import type { MatchedPair } from "./types";
+import { enumerateCollars, evCostBps, refuseUnfunded, selectTiers } from "./collarSearch";
 
 export interface CrossPricerInputs {
   pair: MatchedPair;
@@ -71,29 +74,7 @@ export function walkPmAsks(
   };
 }
 
-/**
- * The true cost of the protection in expected-value terms at the market's own
- * odds, in basis points of the naked position's expected value. Exact integer
- * math in centi-cent units; positive = the insurance costs EV, negative = the
- * venue gap is fat enough that the protected position beats the naked one.
- *
- *   nakedEV     = mark * N                      (per contract: 100c w.p. mark/100)
- *   protectedEV = (cap*N + credit) * mark/100 + (floor*N + credit) * (100-mark)/100
- */
-export function evCostBps(
-  markCents: number,
-  floorCents: number,
-  capCents: number,
-  creditCents: number,
-  contracts: number,
-): number {
-  const nakedX = 100 * contracts * markCents; // centi-cents
-  if (nakedX <= 0) return 0;
-  const protX =
-    (capCents * contracts + creditCents) * markCents +
-    (floorCents * contracts + creditCents) * (100 - markCents);
-  return Math.round(((nakedX - protX) * 10_000) / nakedX);
-}
+export { evCostBps };
 
 export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
   const { config: cfg, contracts, markCents, entryCents, pair } = inputs;
@@ -125,121 +106,45 @@ export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
 
   const minSharesMilli = Math.max(1, noBook.minOrderSizeShares) * 1000;
 
-  interface Candidate {
-    floorCents: number;
-    capCents: number;
-    creditCents: number;
-    grossCreditCents: number;
-    takeCents: number;
-    takeWaived: boolean;
-    feesCents: number;
-    hedge: CrossHedgeLeg;
-  }
-
-  let best: Candidate | null = null;
-  let bestShortfall = Number.POSITIVE_INFINITY;
-  let sawThinBook = false;
-
-  const floors = cfg.floorOffsetsCents
-    .map((off) => markCents - off)
-    .filter((f) => f >= cfg.minFloorCents && f < markCents);
-  const caps = cfg.capOffsetsCents
-    .map((off) => markCents + off)
-    .filter((c) => c <= cfg.maxCapCents && c >= markCents + cfg.minCapHeadroomCents);
-
-  for (const floorCents of floors) {
-    for (const capCents of caps) {
-      const digitalCents = (floorCents + 100 - capCents) * contracts;
-      if (digitalCents <= 0) continue;
+  const search = enumerateCollars({
+    markCents,
+    contracts,
+    config: cfg,
+    hedgeFor: (digitalCents) => {
       // digitalCents cents of NO-state payout = digitalCents * 10 milli-shares
       // ($1 per share in the NO state). Rounded up via integer construction,
       // clamped to the venue minimum order size - never under-hedged.
       const sharesMilli = Math.max(digitalCents * 10, minSharesMilli);
-
       const walk = walkPmAsks(noBook.asks, sharesMilli);
-      if (!walk) {
-        sawThinBook = true;
-        continue;
-      }
+      if (!walk) return { ok: false };
       const hedgeCostCents = Math.ceil(walk.costMicroUsd / 10_000);
       const feesCents =
         cfg.hedgeFeeFlatCents + Math.ceil((hedgeCostCents * cfg.hedgeFeeBps) / 10_000);
-
-      const fundingCents = (100 - capCents) * contracts;
-      const grossCreditCents = fundingCents - hedgeCostCents - feesCents;
-      if (grossCreditCents <= 0) {
-        bestShortfall = Math.min(bestShortfall, -grossCreditCents);
-        continue;
-      }
-      let takeCents = Math.floor((grossCreditCents * cfg.takeBps) / 10_000);
-      const takeWaived = takeCents < cfg.deMinimisTakeCents;
-      if (takeWaived) takeCents = 0;
-      const creditCents = grossCreditCents - takeCents;
-      if (creditCents <= 0) {
-        bestShortfall = Math.min(bestShortfall, 1);
-        continue;
-      }
-
-      const candidate: Candidate = {
-        floorCents,
-        capCents,
-        creditCents,
-        grossCreditCents,
-        takeCents,
-        takeWaived,
-        feesCents,
-        hedge: {
-          action: "buy",
-          venue: "polymarket",
-          outcome: pair.pm.outcomes[pair.pmNoOutcomeIndex],
-          tokenId: pair.pm.tokenIds[pair.pmNoOutcomeIndex],
-          sharesMilli,
-          avgPriceMilli: walk.avgPriceMilli,
-          worstPriceMilli: walk.worstPriceMilli,
-          costCents: hedgeCostCents,
-        },
+      const hedge: CrossHedgeLeg = {
+        action: "buy",
+        venue: "polymarket",
+        outcome: pair.pm.outcomes[pair.pmNoOutcomeIndex],
+        tokenId: pair.pm.tokenIds[pair.pmNoOutcomeIndex],
+        sharesMilli,
+        avgPriceMilli: walk.avgPriceMilli,
+        worstPriceMilli: walk.worstPriceMilli,
+        costCents: hedgeCostCents,
       };
+      return { ok: true, costCents: hedgeCostCents, feesCents, hedge };
+    },
+  });
 
-      // Selection: protect the holder's gains first (highest floor at or above
-      // entry when the market funds it), then the largest credit at that floor.
-      const better = (() => {
-        if (!best) return true;
-        const candProtectsEntry = candidate.floorCents >= entryCents ? 1 : 0;
-        const bestProtectsEntry = best.floorCents >= entryCents ? 1 : 0;
-        if (candProtectsEntry !== bestProtectsEntry) return candProtectsEntry > bestProtectsEntry;
-        if (candidate.floorCents !== best.floorCents) {
-          return candidate.floorCents > best.floorCents;
-        }
-        return candidate.creditCents > best.creditCents;
-      })();
-      if (better) best = candidate;
-    }
+  if (search.candidates.length === 0) {
+    return refuseUnfunded(search, cfg, {
+      shortfall:
+        "the opposing venue's live book cannot fund a positive credit on any quotable floor/cap right now",
+      thin: "pm_book_too_thin",
+      thinDetail: "the opposing venue's book lacks the depth to hedge this size leg-for-leg",
+      none: "no quotable floor/cap combination for this pair",
+    });
   }
 
-  if (!best) {
-    if (Number.isFinite(bestShortfall)) {
-      return {
-        ok: false,
-        code: "credit_nonpositive",
-        detail:
-          "the opposing venue's live book cannot fund a positive credit on any quotable floor/cap right now",
-        bestShortfallCents: bestShortfall,
-      };
-    }
-    if (sawThinBook) {
-      return {
-        ok: false,
-        code: "pm_book_too_thin",
-        detail: "the opposing venue's book lacks the depth to hedge this size leg-for-leg",
-      };
-    }
-    return {
-      ok: false,
-      code: "credit_nonpositive",
-      detail: "no quotable floor/cap combination for this pair",
-    };
-  }
-
+  const sel = selectTiers(search.candidates, entryCents, cfg.defaultTier);
   return {
     ok: true,
     kalshiTicker: pair.kalshi.ticker,
@@ -247,15 +152,12 @@ export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
     contracts,
     markCents,
     entryCents,
-    floorCents: best.floorCents,
-    capCents: best.capCents,
-    creditCents: best.creditCents,
-    grossCreditCents: best.grossCreditCents,
-    takeCents: best.takeCents,
+    ...sel.terms,
     takeBps: cfg.takeBps,
-    takeWaived: best.takeWaived,
-    hedge: best.hedge,
-    feesCents: best.feesCents,
+    minTakeBpsOfStake: cfg.minTakeBpsOfStake,
+    tier: sel.tier,
+    tiers: sel.tiers,
+    candidatesConsidered: search.candidates.length,
     parityNote: pair.parityNote,
     quotedAt: inputs.now.toISOString(),
   };

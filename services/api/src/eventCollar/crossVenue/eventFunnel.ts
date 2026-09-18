@@ -17,7 +17,7 @@
 export const EVENT_PAGES = ["app", "receipts"] as const;
 export type EventPage = (typeof EVENT_PAGES)[number];
 
-export const EVENT_ACTIONS = ["row_tap", "protect_on", "protect_undo", "board_expand"] as const;
+export const EVENT_ACTIONS = ["row_tap", "protect_on", "protect_undo", "board_expand", "tier_pick"] as const;
 export type EventAction = (typeof EVENT_ACTIONS)[number];
 
 export interface SessionRow {
@@ -37,6 +37,8 @@ export interface ProtectRecord {
   league: string;
   kind: "sports" | "crypto" | "unknown";
   route: string | null;
+  /** which protection tier was locked; null when unattributed */
+  tier: string | null;
   creditCents: number | null;
   contracts: number | null;
   markCents: number | null;
@@ -52,9 +54,10 @@ export interface EventFunnelState {
   actions: Record<string, Record<string, number>>;
   /** anonymous session id -> activity. Bounded by MAX_SESSIONS (oldest evicted). */
   sessions: Record<string, SessionRow>;
-  /** lifetime Protect taps by league / hedge route. */
+  /** lifetime Protect taps by league / hedge route / protection tier. */
   protectsByLeague: Record<string, number>;
   protectsByRoute: Record<string, number>;
+  protectsByTier: Record<string, number>;
   /** newest-last ring of Protect taps, capped at MAX_RECENT_PROTECTS. */
   recentProtects: ProtectRecord[];
 }
@@ -70,6 +73,7 @@ export const emptyEventFunnel = (): EventFunnelState => ({
   sessions: {},
   protectsByLeague: {},
   protectsByRoute: {},
+  protectsByTier: {},
   recentProtects: [],
 });
 
@@ -124,6 +128,8 @@ export interface ProtectContext {
   league: string;
   kind: "sports" | "crypto";
   route: string | null;
+  /** the tier whose terms these are (the one the holder locked) */
+  tier: string | null;
   creditCents: number;
   contracts: number;
   markCents: number;
@@ -161,6 +167,8 @@ export const recordAction = (
     const route = ctx?.route ?? null;
     f.protectsByLeague[league] = (f.protectsByLeague[league] ?? 0) + 1;
     f.protectsByRoute[route ?? "unknown"] = (f.protectsByRoute[route ?? "unknown"] ?? 0) + 1;
+    const tier = ctx?.tier ?? null;
+    f.protectsByTier[tier ?? "unknown"] = (f.protectsByTier[tier ?? "unknown"] ?? 0) + 1;
     f.recentProtects.push({
       atMs: nowMs,
       sid: input.sid,
@@ -168,6 +176,7 @@ export const recordAction = (
       league,
       kind: ctx?.kind ?? "unknown",
       route,
+      tier,
       creditCents: ctx ? Math.round(ctx.creditCents) : null,
       contracts: ctx ? Math.round(ctx.contracts) : null,
       markCents: ctx ? Math.round(ctx.markCents) : null,
@@ -199,6 +208,7 @@ export interface EventFunnelSummary {
     last7d: number;
     byLeague: Record<string, number>;
     byRoute: Record<string, number>;
+    byTier: Record<string, number>;
     /** sum of credits paid on recorded Protect taps, integer cents (attributed rows only) */
     creditCentsTotal: number;
     /** sum of contracts protected on recorded Protect taps (attributed rows only) */
@@ -240,6 +250,7 @@ export const eventFunnelSummary = (f: EventFunnelState, nowMs: number): EventFun
       last7d: protects.filter((p) => within(p.atMs, 7 * DAY_MS)).length,
       byLeague: { ...f.protectsByLeague },
       byRoute: { ...f.protectsByRoute },
+      byTier: { ...f.protectsByTier },
       creditCentsTotal: attributed.reduce((s, p) => s + (p.creditCents as number), 0),
       contractsTotal: attributed.reduce((s, p) => s + (p.contracts as number), 0),
     },
@@ -259,6 +270,7 @@ export const coerceEventFunnel = (raw: unknown): EventFunnelState => {
   if (r.sessions && typeof r.sessions === "object") f.sessions = r.sessions;
   if (r.protectsByLeague && typeof r.protectsByLeague === "object") f.protectsByLeague = r.protectsByLeague;
   if (r.protectsByRoute && typeof r.protectsByRoute === "object") f.protectsByRoute = r.protectsByRoute;
+  if (r.protectsByTier && typeof r.protectsByTier === "object") f.protectsByTier = r.protectsByTier;
   if (Array.isArray(r.recentProtects)) f.recentProtects = r.recentProtects.slice(-MAX_RECENT_PROTECTS);
   return f;
 };

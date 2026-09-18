@@ -161,3 +161,17 @@ test("cross-venue app html: no em dashes, never claims live execution, logo inli
   assert.ok(html.includes("data:image/jpeg;base64,"), "logo is inlined");
   assert.ok(!html.includes("i.ibb.co"), "no hotlinked assets");
 });
+
+test("cross-venue app html: tiers are offered side by side with stated rules; the fee is disclosed both ways", () => {
+  const html = renderEventXAppHtml();
+  assert.ok(html.includes('id="tiers"'), "tier chips container in the offer");
+  assert.ok(html.includes("data-tier="), "chips carry the tier name the server understands");
+  assert.ok(html.includes("Three tiers, one rule each."), "the rule for each tier is disclosed");
+  assert.ok(html.includes("you pick, we do not"), "neutrality: no default is pushed");
+  for (const tier of ["tight", "balanced", "wide"]) assert.ok(html.includes(`${tier}:`), `${tier} rule text`);
+  assert.ok(html.includes("minimum fee"), "the fee on notional is named");
+  assert.ok(html.includes("share would be"), "the share component is shown when the minimum binds");
+  assert.ok(html.includes("not binding"), "the minimum is shown when the share binds");
+  assert.ok(html.includes("'tier_pick'"), "tier picks are counted in the funnel");
+  assert.ok(html.includes("track('protect_on',S.payload.pair&&S.payload.pair.kalshiTicker,S.tier)"), "Protect beacons carry the locked tier");
+});

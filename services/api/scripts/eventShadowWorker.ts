@@ -34,6 +34,7 @@
 
 import { createReadStream, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { dirname, join } from "node:path";
 import {
   appendShadowRecord,
   ledgerStats,
@@ -48,8 +49,27 @@ import {
   parseShadowAlertsFromEnv,
   type ShadowAlerter,
 } from "../src/eventCollar/crossVenue/shadowAlerts";
+import {
+  counterfactualsFor,
+  type ShadowCounterfactuals,
+} from "../src/eventCollar/crossVenue/shadowCounterfactuals";
+import {
+  DEFAULT_CROSS_CONFIG,
+  type CrossSearchConfig,
+  type HedgeLeg,
+  type PmBook,
+} from "../src/eventCollar/crossVenue/types";
+import type { NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
-import { renderShadowHtml } from "./eventShadowHtml";
+import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
+import {
+  appendHedgeReceipt,
+  intentFromHedge,
+  loadHedgeReceipts,
+  summarizeHedgeReceipts,
+} from "../src/eventCollar/crossVenue/hedgeExecutor";
+import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
+import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml } from "./eventShadowHtml";
 import type { ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -61,11 +81,16 @@ const SETTLE_GRACE_MS = Number(process.env.EVENT_SHADOW_SETTLE_GRACE_MS || 3 * 3
 /** an event with no official result after this long is voided (postponed, rebooked) */
 const VOID_AFTER_MS = Number(process.env.EVENT_SHADOW_VOID_AFTER_MS || 72 * 3_600_000);
 
+/** one line per hedge: which strategy filled it, at what, and why the other did not */
+const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDGER_PATH), "hedge-receipts.jsonl");
+const hedgeChoice = hedgeExecutorFromEnv(process.env);
+
 const alertCfg = parseShadowAlertsFromEnv(process.env);
 const alerter: ShadowAlerter = buildShadowAlerter(alertCfg);
 const BOOT_MS = Date.now();
 
 let scan: (() => Promise<ScanState>) | null = null;
+let searchConfig: () => CrossSearchConfig = () => DEFAULT_CROSS_CONFIG;
 let lastScanAt: string | null = null;
 let lastScanOkMs: number | null = null;
 let lastSettleAt: string | null = null;
@@ -90,6 +115,26 @@ function appendOrAlert(record: Parameters<typeof appendShadowRecord>[1]): boolea
   }
 }
 
+/**
+ * Fill the hedge leg through the configured executor and keep the receipt.
+ * The position is already on the ledger; a hedge failure is recorded, never
+ * allowed to lose the record or stop the scan.
+ */
+async function fillHedge(ticker: string, hedge: HedgeLeg, books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[] }): Promise<void> {
+  try {
+    const best =
+      hedge.venue === "kalshi"
+        ? books.noAsks?.[0]
+          ? books.noAsks[0].priceCents * 10
+          : hedge.avgPriceCents * 10
+        : books.pmNoBook?.asks[0]?.priceMilli ?? hedge.avgPriceMilli;
+    const receipt = await hedgeChoice.executor.execute(intentFromHedge(hedge, best), ticker);
+    appendHedgeReceipt(RECEIPTS_PATH, receipt);
+  } catch (err) {
+    lastScanError = `hedge for ${ticker}: ${String(err instanceof Error ? err.message : err)}`;
+  }
+}
+
 /** Open one simulated position for every quotable board row we have not seen. */
 async function scanTick(): Promise<void> {
   if (!scan) return;
@@ -99,6 +144,29 @@ async function scanTick(): Promise<void> {
     for (const { res, evBps } of state.rows) {
       const q = res.quote;
       if (!q.ok || seen.has(res.market.ticker)) continue;
+      const route = res.route ?? "kalshi_self";
+      // Same books, same instant: what every other rule would have written.
+      let counterfactuals: ShadowCounterfactuals | undefined;
+      try {
+        counterfactuals = counterfactualsFor(
+          {
+            route,
+            ticker: res.market.ticker,
+            lockTimeIso: res.eventTimeIso,
+            pair: res.pair,
+            markCents: res.markCents,
+            entryCents: res.position.entryCents,
+            contracts: q.contracts,
+            now: new Date(state.atIso),
+            config: searchConfig(),
+            books: res.books,
+          },
+          q,
+        );
+      } catch (err) {
+        // The live record must never be lost to a counterfactual failure.
+        lastScanError = `counterfactuals for ${res.market.ticker}: ${String(err instanceof Error ? err.message : err)}`;
+      }
       appendOrAlert({
         type: "open",
         at: new Date().toISOString(),
@@ -114,13 +182,19 @@ async function scanTick(): Promise<void> {
         capCents: q.capCents,
         creditCents: q.creditCents,
         evCostBps: evBps,
-        route: res.route ?? "kalshi_self",
+        route,
         feesCents: q.feesCents,
         takeCents: q.takeCents,
-        hedgeCostCents: q.hedge.costCents,
+        hedgeCostCents: q.hedge.costCents + q.feesCents,
         hedgeUnitsMilli: "sharesMilli" in q.hedge ? q.hedge.sharesMilli : q.hedge.contractsMilli,
+        tier: q.tier,
+        takeRule: q.takeRule,
+        takeShareCents: q.takeShareCents,
+        takeMinimumCents: q.takeMinimumCents,
+        ...(counterfactuals ? { counterfactuals } : {}),
       });
       seen.add(res.market.ticker);
+      await fillHedge(res.market.ticker, q.hedge, res.books);
     }
     lastScanAt = new Date().toISOString();
     lastScanOkMs = Date.now();
@@ -211,6 +285,12 @@ function healthBody(): Record<string, unknown> {
     settleFailuresLastTick,
     settleDueLastTick,
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
+    hedge: {
+      strategy: hedgeChoice.strategy,
+      rfqVenues: hedgeChoice.rfqVenues,
+      notes: hedgeChoice.notes,
+      receipts: { path: RECEIPTS_PATH, ...ledgerStats(RECEIPTS_PATH) },
+    },
   };
 }
 
@@ -273,6 +353,40 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       sendJson(res, 200, { ok: true, at: atIso, summary: summarizeShadow(positions), settled, open });
       return;
     }
+    if (url.pathname === "/api/shadow/report") {
+      // The rule comparison alone: what every proposed rule would have done on the same positions.
+      const { atIso, positions } = pageData();
+      const summary = summarizeShadow(positions);
+      sendJson(res, 200, {
+        ok: true,
+        at: atIso,
+        period: { recordedSince: summary.counterfactuals.recordedSince, renderedAt: atIso },
+        rules: { tiers: TIER_RULES, feeRules: FEE_RULE_TEXT },
+        counterfactuals: summary.counterfactuals,
+      });
+      return;
+    }
+    if (url.pathname === "/api/shadow/hedges") {
+      // The hedge trail: how each hedge leg was filled, and what the RFQ path did or would have done.
+      const receipts = loadHedgeReceipts(RECEIPTS_PATH);
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") || 50)));
+      sendJson(res, 200, {
+        ok: true,
+        at: new Date().toISOString(),
+        strategy: hedgeChoice.strategy,
+        rfqVenues: hedgeChoice.rfqVenues,
+        notes: hedgeChoice.notes,
+        summary: summarizeHedgeReceipts(receipts),
+        recent: receipts.slice(-limit).reverse(),
+      });
+      return;
+    }
+    if (url.pathname === "/report") {
+      const { atIso, positions } = pageData();
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderShadowReportHtml({ atIso, summary: summarizeShadow(positions) }));
+      return;
+    }
     if (url.pathname === "/" || url.pathname === "/index.html") {
       const { atIso, positions } = pageData();
       const settled = positions
@@ -282,7 +396,19 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         .filter((p) => p.status === "open")
         .sort((a, b) => a.eventTimeIso.localeCompare(b.eventTimeIso));
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderShadowHtml({ atIso, summary: summarizeShadow(positions), open, settled }));
+      res.end(
+        renderShadowHtml({
+          atIso,
+          summary: summarizeShadow(positions),
+          open,
+          settled,
+          hedges: {
+            strategy: hedgeChoice.strategy,
+            rfqVenues: hedgeChoice.rfqVenues,
+            summary: summarizeHedgeReceipts(loadHedgeReceipts(RECEIPTS_PATH)),
+          },
+        }),
+      );
       return;
     }
     sendJson(res, 404, { ok: false, error: "not found" });
@@ -297,6 +423,7 @@ async function main(): Promise<void> {
   process.env.EVENT_X_EMBED = "1";
   const demo = await import("./eventProtectXDemoService");
   scan = demo.buildScan;
+  searchConfig = demo.searchConfig;
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
