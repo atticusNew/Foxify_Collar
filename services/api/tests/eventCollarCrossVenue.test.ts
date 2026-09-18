@@ -14,12 +14,16 @@ import {
 } from "../src/eventCollar/crossVenue/polymarketPublic";
 import {
   candidateSlugs,
+  gameDateAgrees,
+  matchKalshiMarket,
   outcomeNameMatches,
   parseGameTicker,
+  shiftIsoDate,
+  sideNameVerified,
   splitTeamCodes,
   startTimesAgree,
 } from "../src/eventCollar/crossVenue/eventMatcher";
-import { templateForSeries } from "../src/eventCollar/crossVenue/resolutionWhitelist";
+import { LEAGUE_TEMPLATES, templateForSeries } from "../src/eventCollar/crossVenue/resolutionWhitelist";
 import {
   DEFAULT_CROSS_CONFIG,
   type CrossSearchConfig,
@@ -163,7 +167,7 @@ test("splitTeamCodes: unique split or refuse", () => {
   assert.equal(splitTeamCodes("ABB", ["A", "AB", "B", "BB"]), null);
 });
 
-test("candidateSlugs expands venue code aliases in order", () => {
+test("candidateSlugs expands venue code aliases in order, on the ticker date then the next UTC date", () => {
   const mlb = templateForSeries("KXMLBGAME");
   assert.ok(mlb);
   const parsed = parseGameTicker("KXMLBGAME-26SEP131610TEXAZ-AZ", mlb);
@@ -171,7 +175,26 @@ test("candidateSlugs expands venue code aliases in order", () => {
   assert.deepEqual(candidateSlugs(parsed, mlb), [
     "mlb-tex-az-2026-09-13",
     "mlb-tex-ari-2026-09-13",
+    "mlb-tex-az-2026-09-14",
+    "mlb-tex-ari-2026-09-14",
   ]);
+  assert.equal(shiftIsoDate("2026-09-30", 1), "2026-10-01");
+  assert.equal(shiftIsoDate("2026-12-31", 1), "2027-01-01");
+});
+
+test("gameDateAgrees: the Polymarket game must fall on the ticker's ET date", () => {
+  const nfl = templateForSeries("KXNFLGAME");
+  assert.ok(nfl);
+  // Sunday-night kickoff 8:20pm ET Sep 20 = 00:20Z Sep 21 (Polymarket slugs it 09-21)
+  const snf = parseGameTicker("KXNFLGAME-26SEP20INDKC-KC", nfl);
+  assert.ok(snf);
+  assert.ok(gameDateAgrees(snf, "2026-09-21T00:20:00.000Z"));
+  // 1pm ET same day
+  assert.ok(gameDateAgrees(snf, "2026-09-20T17:00:00.000Z"));
+  // the same matchup a day later must NOT pair through the two-date slug search
+  assert.ok(!gameDateAgrees(snf, "2026-09-21T17:00:00.000Z"));
+  assert.ok(!gameDateAgrees(snf, "2026-09-19T23:00:00.000Z"));
+  assert.ok(!gameDateAgrees(snf, "not a date"));
 });
 
 test("outcomeNameMatches: prefix, token, and unverifiable-short cases", () => {
@@ -181,6 +204,164 @@ test("outcomeNameMatches: prefix, token, and unverifiable-short cases", () => {
   assert.ok(outcomeNameMatches("Pittsburgh", "Pittsburgh Pirates"));
   // too short to verify (normalizes to "as"): defer to positional mapping
   assert.ok(outcomeNameMatches("A's", "Athletics"));
+});
+
+test("sideNameVerified: city-style Kalshi subtitles and nickname-style Polymarket outcomes both verify against the club name", () => {
+  const mlb = templateForSeries("KXMLBGAME");
+  const nfl = templateForSeries("KXNFLGAME");
+  const nba = templateForSeries("KXNBAGAME");
+  assert.ok(mlb && nfl && nba);
+  // MLB: Polymarket uses full names (live 2026-09-20: "Milwaukee Brewers")
+  assert.ok(sideNameVerified(mlb, "MIL", "Milwaukee", "Milwaukee Brewers"));
+  assert.ok(sideNameVerified(mlb, "LAA", "Los Angeles A", "Los Angeles Angels"));
+  assert.ok(sideNameVerified(mlb, "ATH", "A's", "Athletics"));
+  assert.ok(!sideNameVerified(mlb, "CHC", "Chicago C", "Chicago White Sox"));
+  // NFL: Polymarket uses nicknames (live 2026-09-29: "Eagles" / "Bears") - the
+  // direct subtitle-vs-outcome comparison rejected every NFL pair
+  assert.ok(!outcomeNameMatches("Philadelphia", "Eagles"));
+  assert.ok(sideNameVerified(nfl, "PHI", "Philadelphia", "Eagles"));
+  assert.ok(sideNameVerified(nfl, "LAR", "Los Angeles R", "Rams"));
+  assert.ok(sideNameVerified(nfl, "SF", "San Francisco", "49ers"));
+  assert.ok(sideNameVerified(nfl, "WAS", "Washington", "Commanders"));
+  assert.ok(!sideNameVerified(nfl, "PHI", "Philadelphia", "Bears"));
+  assert.ok(!sideNameVerified(nfl, "PHI", "Chicago", "Eagles"));
+  // NBA: nicknames on Polymarket ("Thunder", "76ers", "Trail Blazers"), cities on Kalshi
+  assert.ok(sideNameVerified(nba, "OKC", "Oklahoma City", "Thunder"));
+  assert.ok(sideNameVerified(nba, "PHI", "Philadelphia", "76ers"));
+  assert.ok(sideNameVerified(nba, "POR", "Portland", "Trail Blazers"));
+  assert.ok(sideNameVerified(nba, "NYK", "New York", "Knicks"));
+  assert.ok(sideNameVerified(nba, "LAC", "LA Clippers", "Clippers"));
+  assert.ok(!sideNameVerified(nba, "LAL", "Los Angeles L", "Clippers"));
+  // opponent side (no Kalshi subtitle available): outcome alone against the club name
+  assert.ok(sideNameVerified(nba, "SAS", null, "Spurs"));
+  assert.ok(!sideNameVerified(nba, "SAS", null, "Thunder"));
+  // a template without names falls back to the direct comparison
+  const bare = { ...mlb, teamNames: {} };
+  assert.ok(sideNameVerified(bare, "PIT", "Pittsburgh", "Pittsburgh Pirates"));
+  assert.ok(!sideNameVerified(bare, "PHI", "Philadelphia", "Eagles"));
+});
+
+test("NBA template: Kalshi opening-slate ticker parses; NFL WAS/JAC tickers parse", () => {
+  const nba = templateForSeries("KXNBAGAME");
+  assert.ok(nba);
+  // live 2026-09-18: KXNBAGAME-26OCT20OKCSAS-SAS, subtitle "San Antonio", no start time
+  const p = parseGameTicker("KXNBAGAME-26OCT20OKCSAS-SAS", nba);
+  assert.ok(p);
+  assert.equal(p.dateIso, "2026-10-20");
+  assert.equal(p.hhmm, null);
+  assert.equal(p.awayCode, "OKC");
+  assert.equal(p.homeCode, "SAS");
+  assert.equal(p.sideCode, "SAS");
+  assert.deepEqual(candidateSlugs(p, nba), ["nba-okc-sas-2026-10-20", "nba-okc-sas-2026-10-21"]);
+  // every club has a slug code and a canonical name
+  for (const code of Object.keys(nba.teamCodeAliases)) {
+    assert.ok(nba.teamCodeAliases[code].length > 0, code);
+    assert.ok(nba.teamNames[code], code);
+  }
+  assert.equal(new Set(Object.values(nba.teamNames)).size, 30);
+
+  const nfl = templateForSeries("KXNFLGAME");
+  assert.ok(nfl);
+  // live 2026-09-18: Kalshi writes WAS and JAC (the table previously only knew WSH/JAX)
+  const was = parseGameTicker("KXNFLGAME-26SEP20WASDAL-WAS", nfl);
+  assert.ok(was);
+  assert.equal(was.awayCode, "WAS");
+  assert.deepEqual(candidateSlugs(was, nfl).slice(0, 2), ["nfl-was-dal-2026-09-20", "nfl-wsh-dal-2026-09-20"]);
+  const jac = parseGameTicker("KXNFLGAME-26SEP20JACDEN-JAC", nfl);
+  assert.ok(jac);
+  assert.equal(jac.awayCode, "JAC");
+  assert.equal(candidateSlugs(jac, nfl)[0], "nfl-jax-den-2026-09-20");
+});
+
+test("every whitelist team table splits unambiguously for every ordered pair of codes", () => {
+  for (const t of LEAGUE_TEMPLATES) {
+    const codes = Object.keys(t.teamCodeAliases);
+    for (const away of codes) {
+      for (const home of codes) {
+        if (away === home) continue;
+        const split = splitTeamCodes(`${away}${home}`, codes);
+        assert.deepEqual(split, { away, home }, `${t.league}: ${away}${home}`);
+      }
+    }
+  }
+});
+
+test("matchKalshiMarket: NFL Sunday-night game pairs through the next-day slug with nickname outcomes", async () => {
+  const nfl = templateForSeries("KXNFLGAME");
+  assert.ok(nfl);
+  const kalshi: KalshiMarket = {
+    ticker: "KXNFLGAME-26SEP20INDKC-KC",
+    eventTicker: "KXNFLGAME-26SEP20INDKC",
+    title: "Kansas City wins",
+    subtitle: "Kansas City",
+    strike: 0,
+    strikeType: "",
+    status: "active",
+    openTime: "2026-09-14T00:00:00Z",
+    closeTime: "2026-09-23T00:20:00Z",
+    yesBidCents: 60,
+    yesAskCents: 62,
+    lastPriceCents: 61,
+    volume: 1000,
+    openInterest: 500,
+    rulesPrimary: "",
+  };
+  const gammaEvent = (slug: string, outcomes: string[], gameStartTime: string) => [
+    {
+      slug,
+      title: `${outcomes[0]} vs. ${outcomes[1]}`,
+      markets: [
+        {
+          question: `${outcomes[0]} vs. ${outcomes[1]}`,
+          conditionId: "0xdef",
+          outcomes: JSON.stringify(outcomes),
+          clobTokenIds: '["111", "222"]',
+          outcomePrices: '["0.40", "0.60"]',
+          gameStartTime,
+          sportsMarketType: "moneyline",
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          negRisk: false,
+          orderMinSize: 5,
+        },
+      ],
+    },
+  ];
+  const requested: string[] = [];
+  const fakeFetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    requested.push(url);
+    const slug = new URL(url).searchParams.get("slug") ?? "";
+    // Polymarket lists this 8:20pm ET Sep 20 game under the UTC date, Sep 21
+    const body = slug === "nfl-ind-kc-2026-09-21" ? gammaEvent(slug, ["Colts", "Chiefs"], "2026-09-21 00:20:00+00") : [];
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+
+  const pair = await matchKalshiMarket(kalshi, nfl, fakeFetch);
+  assert.ok(pair, "the pair must be found via the next-day slug");
+  assert.equal(pair.pm.eventSlug, "nfl-ind-kc-2026-09-21");
+  assert.equal(pair.pmYesOutcomeIndex, 1); // KC is home ⇒ second outcome
+  assert.equal(pair.pm.outcomes[pair.pmYesOutcomeIndex], "Chiefs");
+  assert.equal(pair.pm.outcomes[pair.pmNoOutcomeIndex], "Colts");
+  assert.equal(pair.fingerprint, "nfl:IND:KC:2026-09-20");
+  assert.ok(requested.some((u) => u.includes("nfl-ind-kc-2026-09-20")), "the ticker date is tried first");
+
+  // the same matchup listed for the NEXT ET day is a different game: refuse
+  const wrongDay = (async () =>
+    new Response(JSON.stringify(gammaEvent("nfl-ind-kc-2026-09-21", ["Colts", "Chiefs"], "2026-09-21 17:00:00+00")), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+  assert.equal(await matchKalshiMarket(kalshi, nfl, wrongDay), null);
+
+  // outcomes that are not these clubs (a mis-ordered or wrong listing) refuse
+  const wrongClubs = (async () =>
+    new Response(JSON.stringify(gammaEvent("nfl-ind-kc-2026-09-20", ["Chiefs", "Colts"], "2026-09-21 00:20:00+00")), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+  assert.equal(await matchKalshiMarket(kalshi, nfl, wrongClubs), null);
 });
 
 test("startTimesAgree: the doubleheader guard", () => {
