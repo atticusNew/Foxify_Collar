@@ -2,7 +2,7 @@
 
 > **You are a new agent picking up an active, production-adjacent codebase.** Read this fully, explore only what it points you to, then STOP and confirm comprehension. Do not make any changes until directed.
 >
-> **Last updated:** 2026-09-17. Everything before September 2026 in `docs/` (Foxify pilot era, Deribit 1-day/biweekly product) is historical context only — that pilot concluded and is NOT the current product surface.
+> **Last updated:** 2026-09-18. Everything before September 2026 in `docs/` (Foxify pilot era, Deribit 1-day/biweekly product) is historical context only — that pilot concluded and is NOT the current product surface.
 
 ---
 
@@ -46,13 +46,30 @@ Operate as a single agent with these combined competencies. Do not perform work 
 
 | Branch | What lives there | Deployed |
 |---|---|---|
-| `cursor/hl-toggle-demo-9151` | **Current working branch.** Perp Protect demo service (`services/api/scripts/creditCollarDemoService.ts`), `/video` page (`epVideoPageHtml.ts` + `assets/hl-toggle-demo.mp4`), funnel tracking (`src/singleSide/twoSided/creditCollar/epFunnel.ts`) | earnandprotect.xyz (Render) |
-| `cursor/kalshi-event-demo-2bfa` | Event Protect demo v1 (`eventProtectDemoService.ts`, `src/eventCollar/*`: Kalshi/OKX connectors, pricer, showcase picker, quote ledger) | event demo (Render) |
-| `cursor/tier2-cross-venue-2bfa` | Cross-venue Tier 2 (`src/eventCollar/crossVenue/*`: resolution whitelist, event matcher, Polymarket connector, cross-venue pricer, shadow ledger, `eventShadowWorker.ts`) | facility.atticustrade.com shadow tape |
+| `cursor/hl-toggle-demo-9151` | **Current working branch (docs + perp demo).** Perp Protect demo service (`services/api/scripts/creditCollarDemoService.ts`), `/video` page (`epVideoPageHtml.ts` + `assets/hl-toggle-demo.mp4`), funnel tracking (`src/singleSide/twoSided/creditCollar/epFunnel.ts`) | earnandprotect.xyz via `render-earn-protect.yaml` (service `atticus-earn-protect` + bot worker + Postgres) |
+| `cursor/tier2-cross-venue-2bfa` | **The single event-stack branch.** Tier 1 (`eventProtectDemoService.ts`, `src/eventCollar/*`) AND Tier 2 (`eventProtectXDemoService.ts`, `src/eventCollar/crossVenue/*`: resolution whitelist, event matcher, Polymarket connector, cross-venue + Kalshi-ladder pricers, quote ledgers, shadow ledger, `eventShadowWorker.ts`) | all four event services via `render-event-demos.yaml`: `atticus-event-demo-btc` (Tier 1), `atticus-event-demo-cross-venue` (Tier 2 board), `atticus-event-shadow` (event shadow record, 1 GB disk), `atticus-pm-clob-egress-proxy` |
+| `cursor/kalshi-event-demo-2bfa` | Event Protect v1 lineage. Historical only: `render-event-demos.yaml` deploys the Tier 1 demo from the tier2 branch, not from here. **Do not land fixes here.** | nothing |
+| `cursor/bullish-fees-hedge-receipt-9151` | Perp volume-facility shadow runner (`src/singleSide/twoSided/creditCollar/shadowRunner.ts` + `shadowDashboard.ts`) | facility.atticustrade.com via `render-integration-shadow.yaml` (service `atticus-product-shadow`); founder to confirm the domain mapping in the Render dashboard |
 
-**Key live surfaces:** `earnandprotect.xyz` (perp demo, `/video`, `/public`, `/metrics` funnel), `facility.atticustrade.com` (event shadow scorecard). All on Render; `render-*.yaml` files define services. A healthz warm-gate pattern protects against cold-window swaps.
+**Key live surfaces:** `earnandprotect.xyz` (perp demo, `/video`, `/public`, `/metrics` funnel), `facility.atticustrade.com` (**perp** volume-facility shadow scorecard: 53 days / 127 settled / 100% reconciled as of 2026-09-18; the `/video` page's "track record" CTA points here), the event shadow record (`atticus-event-shadow` on Render, `/`, `/api/shadow`, `/api/shadow/export`). All on Render; `render-*.yaml` files define services. A healthz warm-gate pattern protects against cold-window swaps.
+
+**Deploys are manual.** The blueprints say `autoDeploy: true` but the founder deploys by hand from the Render dashboard ("Manual Deploy → latest commit") after merging; auto-deploy has been unreliable. A push to a deployed branch is therefore not itself a production change, but treat it as one anyway: whatever is on the branch tip is what the next manual deploy ships.
+
+**Event-stack rule (decided 2026-09-18):** every event change lands on `cursor/tier2-cross-venue-2bfa` via a PR based on it. Its `eventCollar` tree is a strict superset of the kalshi branch's. Do not push to `cursor/kalshi-event-demo-2bfa`.
 
 **Numbers you should know (do not restate without checking freshness):** netting factor 0.078 = portfolio-margin IM vs. sum of isolated IMs on a hedged book; fee = ~10% of the trader credit; event demo EV shown in bps with venue-vs-venue route competition.
+
+**Open PRs / recent work (2026-09-18):**
+
+| PR | Base | What | Status |
+|---|---|---|---|
+| #167 | tier2 | Event matcher: verify both sides against canonical club names, next-day slug + ET-date guard, Kalshi `WAS`/`JAC`; **NBA whitelist template**. Live probe showed the Polymarket NFL route paired 0/32 games before, 32/32 after; MLB unchanged 50/50. NBA pairs once Polymarket lists the Oct 20 games. | open, awaiting merge + manual redeploy of `atticus-event-demo-cross-venue` and `atticus-event-shadow` |
+| #168 | tier2 | Event shadow worker: `GET /api/shadow/export` (raw JSONL, mirror off-box), operator alerts (`EVENT_SHADOW_ALERT_*`, Telegram/webhook, deduped, off by default), richer `/healthz`. | open, awaiting merge + manual redeploy of `atticus-event-shadow` |
+| #169 | hl-toggle | `docs/VAULT_DESIGN.md`: the vault is a margin pool behind a flat book, not an options-writing strategy; waterfall, risk table, three shapes, phasing from a zero-capital shadow NAV. | open |
+| #170 | hl-toggle | `docs/REGULATORY_PASSIVITY_MAP.md`: component-by-component discretion inventory for counsel; Atticus is a principal, so Letter 26-25 may not be the operative frame. | open |
+| (this PR) | hl-toggle | This branch-map correction (facility = perp shadow, event stack = tier2 only, fourth deployed branch named) and the manual-deploy note. | open |
+
+Known, not yet done: college football whitelist (deliberately deferred: 130+ schools, inconsistent Polymarket slugs, neutral sites); mirroring the event shadow ledger off Render on a schedule (the export endpoint exists, the cron does not).
 
 ## 5. Engineering standards
 
