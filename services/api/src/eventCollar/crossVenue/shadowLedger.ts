@@ -39,6 +39,14 @@ export interface ShadowOpenRecord {
   route: HedgeRoute;
   feesCents: number;
   takeCents: number;
+  /**
+   * The hedge leg as quoted: walked cost in cents (fees included) and the NO
+   * units bought, in milli (1000 = one $1-paying share/contract). Optional
+   * because early ledgers predate these fields; both are recoverable from
+   * the credit identity when absent (see writerPayouts).
+   */
+  hedgeCostCents?: number;
+  hedgeUnitsMilli?: number;
 }
 
 /** The market finalized on Kalshi with an official result. */
@@ -70,6 +78,9 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   nakedCents?: number;
   /** protected minus naked; positive = protection paid off on this event */
   deltaCents?: number;
+  /** writer side, settled only: what the protection writer netted after hedge and credit */
+  writerCents?: number;
+  hedgePayoutCents?: number;
 }
 
 /** Outcome math for one settled position — the same totals the app banner shows. */
@@ -81,6 +92,59 @@ export function settlePayouts(
     (result === "yes" ? p.capCents : p.floorCents) * p.contracts + p.creditCents;
   const nakedCents = result === "yes" ? 100 * p.contracts : 0;
   return { protectedCents, nakedCents, deltaCents: protectedCents - nakedCents };
+}
+
+type WriterInputs = Pick<
+  ShadowOpenRecord,
+  "contracts" | "floorCents" | "capCents" | "creditCents" | "takeCents" | "hedgeCostCents" | "hedgeUnitsMilli"
+>;
+
+/** The cap slice the holder sells: (100 - cap) x N cents, received by the writer in the YES state. */
+export function fundingOf(p: Pick<ShadowOpenRecord, "contracts" | "capCents">): number {
+  return (100 - p.capCents) * p.contracts;
+}
+
+/**
+ * Hedge cost as quoted (fees included). Older records lack the field; the
+ * pricer's credit identity recovers it exactly: gross = funding - hedgeCost
+ * and credit = gross - take, so hedgeCost = funding - credit - take.
+ */
+export function hedgeCostOf(p: WriterInputs): number {
+  return p.hedgeCostCents ?? fundingOf(p) - p.creditCents - p.takeCents;
+}
+
+/** NO units the hedge bought, milli. Older records: the pricer's sizing rule, rounded up. */
+export function hedgeUnitsOf(p: WriterInputs): number {
+  return p.hedgeUnitsMilli ?? Math.ceil(((p.floorCents + 100 - p.capCents) * p.contracts * 1000) / 100);
+}
+
+/**
+ * Writer-side cash flows for one settled position, integer cents.
+ *
+ *   YES: writer keeps the cap slice (100 - cap) x N, hedge pays nothing.
+ *   NO:  writer pays the floor x N, hedge pays $1 per unit bought.
+ *   Both: writer paid the hedge at open and the credit at settlement.
+ *
+ * Because the hedge is sized to (floor + 100 - cap) x N, the two states net
+ * to the same number: the published take (plus the round-up on NO). That is
+ * the whole point of leg-for-leg: the writer's result does not depend on who
+ * won. This function computes both legs explicitly so the record can be
+ * checked rather than believed.
+ */
+export function writerPayouts(
+  p: WriterInputs,
+  result: "yes" | "no",
+): { writerCents: number; hedgePayoutCents: number; hedgeCostCents: number; fundingCents: number } {
+  const funding = fundingOf(p);
+  const hedgeCost = hedgeCostOf(p);
+  const hedgePayout = result === "no" ? Math.round(hedgeUnitsOf(p) / 10) : 0;
+  const holderLeg = result === "yes" ? funding : -p.floorCents * p.contracts;
+  return {
+    writerCents: holderLeg + hedgePayout - p.creditCents - hedgeCost,
+    hedgePayoutCents: hedgePayout,
+    hedgeCostCents: hedgeCost,
+    fundingCents: funding,
+  };
 }
 
 export function appendShadowRecord(path: string, record: ShadowRecord): void {
@@ -120,12 +184,15 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
       const pos = byTicker.get(rec.ticker);
       if (!pos || pos.status !== "open") continue;
       const pay = settlePayouts(pos, rec.result);
+      const writer = writerPayouts(pos, rec.result);
       byTicker.set(rec.ticker, {
         ...pos,
         status: "settled",
         result: rec.result,
         settledAt: rec.at,
         ...pay,
+        writerCents: writer.writerCents,
+        hedgePayoutCents: writer.hedgePayoutCents,
       });
     } else if (rec.type === "void") {
       const pos = byTicker.get(rec.ticker);
@@ -155,6 +222,36 @@ export interface ShadowSummary {
   routeSplit: Record<string, number>;
   firstOpenedAt: string | null;
   lastSettledAt: string | null;
+  /** the protection writer's side of the same settled events */
+  writer: ShadowWriterSummary;
+}
+
+/**
+ * The writer's book: what selling the protection and carrying the hedge
+ * actually netted, in integer cents, split so a desk can check the claim
+ * that the result does not depend on who won.
+ */
+export interface ShadowWriterSummary {
+  /** realized across settled events: cap slices kept + hedge payouts - floors paid - credits - hedge cost */
+  settledPnlCents: number;
+  /** realized as bps of settled stake (100c x contracts per event) */
+  settledPnlBpsOfStake: number | null;
+  /** the same P&L split by outcome; leg-for-leg means these are the published take either way */
+  pnlWhenHolderWonCents: number;
+  pnlWhenHolderLostCents: number;
+  settledWhenHolderWon: number;
+  settledWhenHolderLost: number;
+  /** gross legs across settled events */
+  capSlicesKeptCents: number;
+  floorsPaidCents: number;
+  creditsPaidCents: number;
+  hedgeCostCents: number;
+  hedgePayoutsCents: number;
+  /** published take booked on settled events (what P&L should equal, before round-up) */
+  takeBookedCents: number;
+  /** published take locked on still-open positions, realized when they settle */
+  takeLockedOpenCents: number;
+  byLeague: Record<string, { settled: number; open: number; pnlCents: number; stakeCents: number }>;
 }
 
 export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
@@ -162,21 +259,66 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
   const routeSplit: Record<string, number> = {};
   let quotedBpsSum = 0;
   let firstOpenedAt: string | null = null;
+  const byLeague: ShadowWriterSummary["byLeague"] = {};
+  let takeLockedOpenCents = 0;
   for (const p of positions) {
     routeSplit[p.route] = (routeSplit[p.route] ?? 0) + 1;
     quotedBpsSum += p.evCostBps;
     if (!firstOpenedAt || p.at < firstOpenedAt) firstOpenedAt = p.at;
+    const lg = (byLeague[p.league] ??= { settled: 0, open: 0, pnlCents: 0, stakeCents: 0 });
+    if (p.status === "open") {
+      lg.open += 1;
+      takeLockedOpenCents += p.takeCents;
+    }
   }
   let protectedTotalCents = 0;
   let nakedTotalCents = 0;
   let stakeCents = 0;
   let lastSettledAt: string | null = null;
+  const w: ShadowWriterSummary = {
+    settledPnlCents: 0,
+    settledPnlBpsOfStake: null,
+    pnlWhenHolderWonCents: 0,
+    pnlWhenHolderLostCents: 0,
+    settledWhenHolderWon: 0,
+    settledWhenHolderLost: 0,
+    capSlicesKeptCents: 0,
+    floorsPaidCents: 0,
+    creditsPaidCents: 0,
+    hedgeCostCents: 0,
+    hedgePayoutsCents: 0,
+    takeBookedCents: 0,
+    takeLockedOpenCents,
+    byLeague,
+  };
   for (const p of settled) {
     protectedTotalCents += p.protectedCents ?? 0;
     nakedTotalCents += p.nakedCents ?? 0;
     stakeCents += 100 * p.contracts;
     if (p.settledAt && (!lastSettledAt || p.settledAt > lastSettledAt)) lastSettledAt = p.settledAt;
+
+    const result = p.result ?? "no";
+    const wp = writerPayouts(p, result);
+    w.settledPnlCents += wp.writerCents;
+    w.creditsPaidCents += p.creditCents;
+    w.hedgeCostCents += wp.hedgeCostCents;
+    w.hedgePayoutsCents += wp.hedgePayoutCents;
+    w.takeBookedCents += p.takeCents;
+    if (result === "yes") {
+      w.pnlWhenHolderWonCents += wp.writerCents;
+      w.settledWhenHolderWon += 1;
+      w.capSlicesKeptCents += wp.fundingCents;
+    } else {
+      w.pnlWhenHolderLostCents += wp.writerCents;
+      w.settledWhenHolderLost += 1;
+      w.floorsPaidCents += p.floorCents * p.contracts;
+    }
+    const lg = byLeague[p.league];
+    lg.settled += 1;
+    lg.pnlCents += wp.writerCents;
+    lg.stakeCents += 100 * p.contracts;
   }
+  w.settledPnlBpsOfStake = stakeCents > 0 ? Math.round((w.settledPnlCents / stakeCents) * 10_000) : null;
   const deltaTotalCents = protectedTotalCents - nakedTotalCents;
   return {
     openCount: positions.filter((p) => p.status === "open").length,
@@ -193,5 +335,86 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
     routeSplit,
     firstOpenedAt,
     lastSettledAt,
+    writer: w,
   };
+}
+
+/** Column order of the positions CSV; stable so downstream sheets do not break. */
+export const POSITIONS_CSV_COLUMNS = [
+  "ticker",
+  "league",
+  "kind",
+  "side",
+  "event",
+  "event_time_utc",
+  "opened_at_utc",
+  "status",
+  "result",
+  "settled_at_utc",
+  "route",
+  "contracts",
+  "mark_c",
+  "floor_c",
+  "cap_c",
+  "credit_c",
+  "take_c",
+  "fees_c",
+  "hedge_units_milli",
+  "hedge_cost_c",
+  "hedge_payout_c",
+  "holder_protected_c",
+  "holder_naked_c",
+  "holder_delta_c",
+  "writer_pnl_c",
+  "ev_cost_bps",
+] as const;
+
+function csvCell(v: string | number | null | undefined): string {
+  if (v === null || v === undefined) return "";
+  const s = String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * One row per position, every status, all money in integer cents. This is
+ * the spreadsheet form of the ledger: what a reviewer opens to recompute the
+ * writer's P&L row by row.
+ */
+export function positionsCsv(positions: ShadowPosition[]): string {
+  const rows = [...positions]
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .map((p) => {
+      const settled = p.status === "settled";
+      return [
+        p.ticker,
+        p.league,
+        p.kind,
+        p.sideName,
+        p.eventTitle,
+        p.eventTimeIso,
+        p.at,
+        p.status,
+        p.result ?? "",
+        p.settledAt ?? "",
+        p.route,
+        p.contracts,
+        p.markCents,
+        p.floorCents,
+        p.capCents,
+        p.creditCents,
+        p.takeCents,
+        p.feesCents,
+        hedgeUnitsOf(p),
+        hedgeCostOf(p),
+        settled ? (p.hedgePayoutCents ?? 0) : "",
+        settled ? (p.protectedCents ?? 0) : "",
+        settled ? (p.nakedCents ?? 0) : "",
+        settled ? (p.deltaCents ?? 0) : "",
+        settled ? (p.writerCents ?? 0) : "",
+        p.evCostBps,
+      ]
+        .map(csvCell)
+        .join(",");
+    });
+  return [POSITIONS_CSV_COLUMNS.join(","), ...rows].join("\n") + "\n";
 }

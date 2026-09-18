@@ -8,10 +8,15 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  POSITIONS_CSV_COLUMNS,
   appendShadowRecord,
+  hedgeCostOf,
+  hedgeUnitsOf,
   loadShadowPositions,
+  positionsCsv,
   settlePayouts,
   summarizeShadow,
+  writerPayouts,
   type ShadowOpenRecord,
 } from "../src/eventCollar/crossVenue/shadowLedger";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
@@ -47,6 +52,93 @@ test("shadow: settle payouts match the app's outcome totals", () => {
   assert.equal(no.protectedCents, 52 * 150 + 112); // 7912
   assert.equal(no.nakedCents, 0);
   assert.equal(no.deltaCents, 7912); // the floor save
+});
+
+test("shadow: writer nets the published take whether the holder won or lost", () => {
+  // Fixture identity: funding (100-63)*150 = 5550; credit 112 + take 12 => hedge cost 5426.
+  assert.equal(hedgeCostOf(OPEN_FIXTURE), 5426, "legacy record: hedge cost recovered from the credit identity");
+  // Hedge sizing rule: (floor + 100 - cap) * N / 100 = (52+100-63)*150/100 = 133.5 -> 133,500 milli
+  assert.equal(hedgeUnitsOf(OPEN_FIXTURE), 133_500);
+
+  const yes = writerPayouts(OPEN_FIXTURE, "yes");
+  assert.equal(yes.fundingCents, 5550);
+  assert.equal(yes.hedgePayoutCents, 0);
+  assert.equal(yes.writerCents, 5550 - 112 - 5426, "cap slice kept minus credit minus hedge = take");
+  assert.equal(yes.writerCents, OPEN_FIXTURE.takeCents);
+
+  const no = writerPayouts(OPEN_FIXTURE, "no");
+  assert.equal(no.hedgePayoutCents, 13_350, "133.5 units pay $1 each");
+  assert.equal(no.writerCents, -52 * 150 + 13_350 - 112 - 5426, "floor paid, hedge collected, credit and hedge cost out");
+  assert.equal(no.writerCents, OPEN_FIXTURE.takeCents, "same number as the YES state: leg-for-leg");
+
+  // New records carry the quoted hedge leg; the round-up on units shows as a small NO-state surplus.
+  const withLeg: ShadowOpenRecord = { ...OPEN_FIXTURE, hedgeCostCents: 5426, hedgeUnitsMilli: 134_000 };
+  assert.equal(writerPayouts(withLeg, "yes").writerCents, 12);
+  assert.equal(writerPayouts(withLeg, "no").writerCents, 12 + 50, "half a unit rounded up pays 50c extra on NO");
+});
+
+test("shadow: replay carries writer P&L; summary splits it by outcome and league; CSV is one row per position", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shadow-writer-"));
+  const path = join(dir, "ledger.jsonl");
+  appendShadowRecord(path, OPEN_FIXTURE);
+  appendShadowRecord(path, { ...OPEN_FIXTURE, ticker: "KXNFLGAME-TEST-KC", league: "nfl", sideName: "Chiefs", at: "2026-09-13T16:00:00.000Z", takeCents: 20, creditCents: 104 });
+  appendShadowRecord(path, { ...OPEN_FIXTURE, ticker: "KXNFLGAME-TEST-OPEN", league: "nfl", sideName: "Bills", at: "2026-09-14T16:00:00.000Z", takeCents: 7 });
+  appendShadowRecord(path, { type: "settle", at: "2026-09-13T21:00:00.000Z", ticker: OPEN_FIXTURE.ticker, result: "no" });
+  appendShadowRecord(path, { type: "settle", at: "2026-09-14T04:00:00.000Z", ticker: "KXNFLGAME-TEST-KC", result: "yes" });
+
+  const positions = loadShadowPositions(path);
+  const rays = positions.find((p) => p.ticker === OPEN_FIXTURE.ticker)!;
+  assert.equal(rays.writerCents, 12);
+  assert.equal(rays.hedgePayoutCents, 13_350);
+  const kc = positions.find((p) => p.ticker === "KXNFLGAME-TEST-KC")!;
+  assert.equal(kc.writerCents, 20);
+  assert.equal(positions.find((p) => p.ticker === "KXNFLGAME-TEST-OPEN")!.writerCents, undefined, "open positions carry no realized P&L");
+
+  const s = summarizeShadow(positions);
+  const w = s.writer;
+  assert.equal(w.settledPnlCents, 32);
+  assert.equal(w.takeBookedCents, 32, "realized equals the published take, before round-up");
+  assert.equal(w.pnlWhenHolderLostCents, 12);
+  assert.equal(w.pnlWhenHolderWonCents, 20);
+  assert.equal(w.settledWhenHolderLost, 1);
+  assert.equal(w.settledWhenHolderWon, 1);
+  assert.equal(w.floorsPaidCents, 52 * 150);
+  assert.equal(w.capSlicesKeptCents, 37 * 150);
+  assert.equal(w.creditsPaidCents, 112 + 104);
+  assert.equal(w.hedgePayoutsCents, 13_350);
+  assert.equal(w.hedgeCostCents, 5426 + (5550 - 104 - 20));
+  assert.equal(w.takeLockedOpenCents, 7);
+  assert.equal(w.settledPnlBpsOfStake, Math.round((32 / 30_000) * 10_000));
+  assert.deepEqual(w.byLeague.mlb, { settled: 1, open: 0, pnlCents: 12, stakeCents: 15_000 });
+  assert.deepEqual(w.byLeague.nfl, { settled: 1, open: 1, pnlCents: 20, stakeCents: 15_000 });
+
+  const csv = positionsCsv(positions);
+  const lines = csv.trimEnd().split("\n");
+  assert.equal(lines[0], POSITIONS_CSV_COLUMNS.join(","));
+  assert.equal(lines.length, 4, "header + one row per position");
+  const cols = lines[1].split(",");
+  assert.equal(cols[0], OPEN_FIXTURE.ticker, "oldest open first");
+  const idx = (name: (typeof POSITIONS_CSV_COLUMNS)[number]) => POSITIONS_CSV_COLUMNS.indexOf(name);
+  assert.equal(cols[idx("status")], "settled");
+  assert.equal(cols[idx("result")], "no");
+  assert.equal(cols[idx("hedge_cost_c")], "5426");
+  assert.equal(cols[idx("hedge_payout_c")], "13350");
+  assert.equal(cols[idx("writer_pnl_c")], "12");
+  assert.equal(cols[idx("holder_delta_c")], "7912");
+  const openCols = lines[3].split(",");
+  assert.equal(openCols[idx("status")], "open");
+  assert.equal(openCols[idx("writer_pnl_c")], "", "no realized P&L on open rows");
+  assert.equal(openCols[idx("hedge_cost_c")], String(5550 - 112 - 7), "hedge cost is known at open");
+
+  // quoting: a side name with a comma survives the round trip
+  const quoted = positionsCsv([{ ...positions[0], sideName: 'Rays, "the" team' }]);
+  assert.ok(quoted.includes('"Rays, ""the"" team"'));
+
+  const html = renderShadowHtml({ atIso: "2026-09-15T00:00:00.000Z", summary: s, open: positions.filter((p) => p.status === "open"), settled: positions.filter((p) => p.status === "settled") });
+  assert.ok(html.includes("The writer&#39;s book") || html.includes("The writer's book"));
+  assert.ok(html.includes("$0.32"), "writer P&L shows in dollars");
+  assert.ok(html.includes("2026-09-12 to 2026-09-14 UTC"), "the period line names the window");
+  assert.ok(html.includes('href="/api/shadow/positions.csv"'));
 });
 
 test("shadow: replay opens once per ticker, settles, voids, skips bad lines", () => {

@@ -208,12 +208,27 @@ test("shadow worker: /healthz carries ledger stats and failure counters; /api/sh
     assert.deepEqual(health.ledger, { path, exists: true, bytes: Buffer.byteLength(raw), records: 2 });
     assert.equal(health.positions, 1);
 
-    const api = (await (await fetch(`${base}/api/shadow`)).json()) as { summary: { settledCount: number; floorSaves: number } };
+    const api = (await (await fetch(`${base}/api/shadow`)).json()) as {
+      summary: { settledCount: number; floorSaves: number; writer: { settledPnlCents: number; takeBookedCents: number } };
+    };
     assert.equal(api.summary.settledCount, 1);
     assert.equal(api.summary.floorSaves, 1);
+    assert.equal(api.summary.writer.settledPnlCents, OPEN.takeCents, "writer realized the published take");
+    assert.equal(api.summary.writer.takeBookedCents, OPEN.takeCents);
+
+    const csv = await fetch(`${base}/api/shadow/positions.csv`);
+    assert.equal(csv.status, 200);
+    assert.match(csv.headers.get("content-type") ?? "", /text\/csv/);
+    assert.match(csv.headers.get("content-disposition") ?? "", /event-shadow-positions-\d{4}-\d{2}-\d{2}\.csv/);
+    const csvLines = (await csv.text()).trimEnd().split("\n");
+    assert.equal(csvLines.length, 2, "header + the one position");
+    assert.ok(csvLines[0].startsWith("ticker,league,kind,"));
+    assert.ok(csvLines[1].startsWith(`${OPEN.ticker},`));
 
     const page = await (await fetch(`${base}/`)).text();
     assert.ok(page.includes('href="/api/shadow/export"'), "the page links the full ledger download");
+    assert.ok(page.includes('href="/api/shadow/positions.csv"'), "and the spreadsheet form");
+    assert.ok(page.includes("writer P&amp;L, settled"));
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
