@@ -1,0 +1,299 @@
+#!/usr/bin/env tsx
+/**
+ * EARN & PROTECT — PERP SHADOW RUN (track-record service)
+ *
+ * Quotes the live product's collar from the OKX listed book at the demo's
+ * own terms, continuously, and turns it into an auditable history:
+ *   - every SCAN interval, one simulated position per side (long, short) at a
+ *     fixed size, priced exactly as /api/preview prices it (nearest in-band
+ *     protective wing with an ask; widest in-band funding wing whose credit
+ *     clears OKX fees), plus what every other rule would have written from
+ *     the same snapshot (tiers, fee rule, larger sizes walked down the depth),
+ *   - every SETTLE interval, positions past expiry are marked against OKX's
+ *     official delivery price for that expiry,
+ *   - the append-only JSONL ledger is replayed on every page view.
+ *
+ * What is real: OKX option prices and fees, Hyperliquid marks and funding,
+ * delivery prints. What is simulated: the positions. No credentials, no
+ * wallets; structurally unable to trade.
+ *
+ * Run: npx tsx services/api/scripts/perpShadowWorker.ts
+ * Env: PERP_SHADOW_PORT (default 8795) · PERP_SHADOW_LEDGER_PATH
+ *      PERP_SHADOW_SCAN_MS (default 60m) · PERP_SHADOW_SETTLE_MS (default 15m)
+ *      PERP_SHADOW_SIZE_BTC (default 0.03 = 3 OKX lots) · PERP_SHADOW_SIDES (long,short)
+ *      PERP_SHADOW_TIER (default balanced = the live 6% / 1.5% geometry)
+ *      EP_TAKE_RATE (default 0.20) · EP_DE_MINIMIS_USDC (default 0.05)
+ *      PERP_SHADOW_MIN_TAKE_BPS (live minimum, default 0 = none, as the product today)
+ *      PERP_SHADOW_CF_MIN_TAKE_BPS (the fee-floor counterfactual, default 5)
+ *      PERP_SHADOW_SETTLE_GRACE_MS (default 20m past expiry) · PERP_SHADOW_VOID_AFTER_MS (default 72h)
+ *      EP_ADMIN_TOKEN (the demo's admin token) gates /report, /api/shadow/report, /api/shadow/export
+ *      and the full CSV; fail-closed when unset.
+ */
+
+import { createReadStream, statSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
+import { fetchOkxListedSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
+import {
+  appendPerpShadowRecord,
+  loadPerpShadow,
+  perpLedgerStats,
+  perpPositionsCsv,
+  summarizePerpShadow,
+  PERP_TIER_RULES,
+  type PerpShadowPosition,
+  type PerpShadowSummary,
+  type PerpTier,
+} from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowLedger";
+import {
+  fetchHlContext,
+  fetchOkxDeliveryPrice,
+  fetchOkxIndex,
+} from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowMarket";
+import { feeRuleText, perpShadowQuote, type PerpTakeConfig } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowQuote";
+import { adminAuthorized, parseAdminAuthFromEnv } from "../src/singleSide/twoSided/creditCollar/epSafety";
+import { renderPerpShadowHtml, renderPerpShadowReportHtml } from "./perpShadowHtml";
+
+const PORT = Number(process.env.PERP_SHADOW_PORT || process.env.PORT || 8795);
+const LEDGER_PATH = process.env.PERP_SHADOW_LEDGER_PATH || "/tmp/perp-shadow/ledger.jsonl";
+const SCAN_MS = Number(process.env.PERP_SHADOW_SCAN_MS || 60 * 60_000);
+const SETTLE_MS = Number(process.env.PERP_SHADOW_SETTLE_MS || 15 * 60_000);
+const SETTLE_GRACE_MS = Number(process.env.PERP_SHADOW_SETTLE_GRACE_MS || 20 * 60_000);
+const VOID_AFTER_MS = Number(process.env.PERP_SHADOW_VOID_AFTER_MS || 72 * 3_600_000);
+const SIZE_BTC = Number(process.env.PERP_SHADOW_SIZE_BTC || 0.03);
+const OKX_LOT_BTC = 0.01;
+const CONTRACTS = Math.max(1, Math.round(SIZE_BTC / OKX_LOT_BTC));
+const SIDES: PerpSide[] = String(process.env.PERP_SHADOW_SIDES || "long,short")
+  .split(",")
+  .map((s) => s.trim())
+  .filter((s): s is PerpSide => s === "long" || s === "short");
+const parseTier = (v: string | undefined): PerpTier => (v === "tight" || v === "wide" ? v : "balanced");
+const LIVE_TIER = parseTier(process.env.PERP_SHADOW_TIER);
+const COIN = process.env.PERP_SHADOW_COIN || "BTC";
+const TAKE: PerpTakeConfig = {
+  shareRate: Number(process.env.EP_TAKE_RATE || 0.2),
+  minTakeBpsOfNotional: Number(process.env.PERP_SHADOW_MIN_TAKE_BPS || 0),
+  deMinimisCents: Math.round(Number(process.env.EP_DE_MINIMIS_USDC || 0.05) * 100),
+};
+const CF_MIN_TAKE_BPS = Number(process.env.PERP_SHADOW_CF_MIN_TAKE_BPS || 5);
+
+const adminAuth = parseAdminAuthFromEnv(process.env);
+const OPERATOR_PATHS = new Set(["/report", "/api/shadow/report", "/api/shadow/export"]);
+const BOOT_MS = Date.now();
+
+let lastScanAt: string | null = null;
+let lastSettleAt: string | null = null;
+let lastScanError: string | null = null;
+let lastSettleError: string | null = null;
+let consecutiveScanFailures = 0;
+let scanning = false;
+
+/** One quote per side from one snapshot; refusals are recorded, never hidden. */
+async function scanTick(): Promise<void> {
+  if (scanning) return;
+  scanning = true;
+  try {
+    const nowMs = Date.now();
+    const hl = await fetchHlContext(COIN);
+    if (!hl) throw new Error(`Hyperliquid returned no ${COIN} context`);
+    const okxIndex = await fetchOkxIndex().catch(() => null);
+    const snap = await fetchOkxListedSnapshot({ spot: hl.markPx, nowMs });
+    if (snap.chain.length === 0) throw new Error("OKX chain has no live in-band options at the next daily expiry");
+    const nowIso = new Date(nowMs).toISOString();
+    for (const side of SIDES) {
+      const rec = perpShadowQuote(
+        {
+          side,
+          spot: hl.markPx,
+          contracts: CONTRACTS,
+          liveTier: LIVE_TIER,
+          take: TAKE,
+          counterfactualMinTakeBps: CF_MIN_TAKE_BPS,
+          okxIndex,
+          fundingBpsPer8h: hl.fundingBpsPer8h,
+          nowIso,
+          id: `${nowIso.slice(0, 16).replace(/[-:T]/g, "")}-${side}`,
+        },
+        snap,
+      );
+      appendPerpShadowRecord(LEDGER_PATH, rec);
+    }
+    lastScanAt = nowIso;
+    lastScanError = null;
+    consecutiveScanFailures = 0;
+  } catch (err) {
+    lastScanError = String(err instanceof Error ? err.message : err);
+    consecutiveScanFailures += 1;
+  } finally {
+    scanning = false;
+  }
+}
+
+/** Mark every expired position against the official delivery print; void what never prints. */
+async function settleTick(): Promise<void> {
+  try {
+    const nowMs = Date.now();
+    const { positions } = loadPerpShadow(LEDGER_PATH);
+    const due = positions.filter((p) => p.status === "open" && Date.parse(p.expiryIso) + SETTLE_GRACE_MS <= nowMs);
+    const byExpiry = new Map<string, PerpShadowPosition[]>();
+    for (const p of due) byExpiry.set(p.expiryIso, [...(byExpiry.get(p.expiryIso) ?? []), p]);
+    const nowIso = new Date(nowMs).toISOString();
+    for (const [expiryIso, group] of byExpiry) {
+      const expiryMs = Date.parse(expiryIso);
+      const px = await fetchOkxDeliveryPrice(expiryMs);
+      if (px == null) {
+        if (nowMs - expiryMs > VOID_AFTER_MS) {
+          for (const p of group) appendPerpShadowRecord(LEDGER_PATH, { type: "void", at: nowIso, id: p.id, reason: "no delivery price published" });
+        }
+        continue;
+      }
+      for (const p of group) {
+        appendPerpShadowRecord(LEDGER_PATH, { type: "settle", at: nowIso, id: p.id, settleCents: Math.round(px * 100), source: "okx_delivery" });
+      }
+    }
+    lastSettleAt = nowIso;
+    lastSettleError = null;
+  } catch (err) {
+    lastSettleError = String(err instanceof Error ? err.message : err);
+  }
+}
+
+function pageData(): { atIso: string; positions: PerpShadowPosition[]; summary: PerpShadowSummary } {
+  const { positions, refusals } = loadPerpShadow(LEDGER_PATH);
+  return { atIso: new Date().toISOString(), positions, summary: summarizePerpShadow(positions, refusals) };
+}
+
+function publicSummary(s: PerpShadowSummary): Omit<PerpShadowSummary, "counterfactuals"> & {
+  counterfactuals: { recordedSince: string | null; positionsWithCounterfactuals: number };
+} {
+  const { counterfactuals, ...rest } = s;
+  return {
+    ...rest,
+    counterfactuals: { recordedSince: counterfactuals.recordedSince, positionsWithCounterfactuals: counterfactuals.positionsWithCounterfactuals },
+  };
+}
+
+function healthBody(): Record<string, unknown> {
+  const { positions } = loadPerpShadow(LEDGER_PATH);
+  return {
+    ok: true,
+    service: "earn-protect-perp-shadow",
+    uptimeMs: Date.now() - BOOT_MS,
+    positions: positions.length,
+    open: positions.filter((p) => p.status === "open").length,
+    ledger: { path: LEDGER_PATH, ...perpLedgerStats(LEDGER_PATH) },
+    terms: { tier: LIVE_TIER, contracts: CONTRACTS, sizeBtc: CONTRACTS * OKX_LOT_BTC, sides: SIDES, take: TAKE, counterfactualMinTakeBps: CF_MIN_TAKE_BPS },
+    lastScanAt,
+    lastSettleAt,
+    lastScanError,
+    lastSettleError,
+    consecutiveScanFailures,
+    operatorViews: adminAuth.enabled,
+  };
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  res.end(JSON.stringify(body));
+}
+
+const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+  const url = new URL(req.url || "/", `http://localhost:${PORT}`);
+  const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
+  try {
+    if (OPERATOR_PATHS.has(url.pathname) && !operator) {
+      sendJson(res, 403, { ok: false, error: adminAuth.enabled ? "bad admin token" : "operator views disabled — set EP_ADMIN_TOKEN" });
+      return;
+    }
+    if (url.pathname === "/healthz") {
+      sendJson(res, 200, healthBody());
+      return;
+    }
+    if (url.pathname === "/api/shadow/export") {
+      const stats = perpLedgerStats(LEDGER_PATH);
+      if (!stats.exists) {
+        res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "content-length": 0, "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, {
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "content-length": statSync(LEDGER_PATH).size,
+        "content-disposition": `attachment; filename="perp-shadow-ledger-${new Date().toISOString().slice(0, 10)}.jsonl"`,
+        "cache-control": "no-store",
+      });
+      createReadStream(LEDGER_PATH).pipe(res);
+      return;
+    }
+    if (url.pathname === "/api/shadow/positions.csv") {
+      const full = operator && url.searchParams.get("scope") === "full";
+      const csv = perpPositionsCsv(loadPerpShadow(LEDGER_PATH).positions, full ? "full" : "public");
+      res.writeHead(200, {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="perp-shadow-positions${full ? "-full" : ""}-${new Date().toISOString().slice(0, 10)}.csv"`,
+        "cache-control": "no-store",
+      });
+      res.end(csv);
+      return;
+    }
+    if (url.pathname === "/api/shadow") {
+      const { atIso, positions, summary } = pageData();
+      const settled = positions.filter((p) => p.status === "settled").sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
+      const open = positions.filter((p) => p.status === "open").sort((a, b) => a.expiryIso.localeCompare(b.expiryIso) || a.at.localeCompare(b.at));
+      const strip = (p: PerpShadowPosition) => {
+        const { counterfactuals: _cf, ...rest } = p;
+        return rest;
+      };
+      sendJson(res, 200, { ok: true, at: atIso, summary: publicSummary(summary), settled: settled.map(strip), open: open.map(strip) });
+      return;
+    }
+    if (url.pathname === "/api/shadow/report") {
+      const { atIso, summary } = pageData();
+      sendJson(res, 200, {
+        ok: true,
+        at: atIso,
+        period: { recordedSince: summary.counterfactuals.recordedSince, renderedAt: atIso },
+        rules: {
+          tiers: PERP_TIER_RULES,
+          feeRules: Object.fromEntries(Object.keys(summary.counterfactuals.feeRules).map((l) => [l, feeRuleText(l)])),
+        },
+        counterfactuals: summary.counterfactuals,
+      });
+      return;
+    }
+    if (url.pathname === "/report") {
+      const { atIso, summary } = pageData();
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token") }));
+      return;
+    }
+    if (url.pathname === "/" || url.pathname === "/index.html") {
+      const { atIso, positions, summary } = pageData();
+      const settled = positions.filter((p) => p.status === "settled").sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
+      const open = positions.filter((p) => p.status === "open").sort((a, b) => a.expiryIso.localeCompare(b.expiryIso) || a.at.localeCompare(b.at));
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderPerpShadowHtml({ atIso, summary, open, settled, sizeBtc: CONTRACTS * OKX_LOT_BTC }));
+      return;
+    }
+    sendJson(res, 404, { ok: false, error: "not found" });
+  } catch (err) {
+    sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) });
+  }
+});
+
+function main(): void {
+  server.listen(PORT, () => {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[perp-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · ${CONTRACTS} lots ${SIDES.join("+")} · tier ${LIVE_TIER} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m`,
+    );
+    void scanTick();
+    void settleTick();
+    setInterval(() => void scanTick(), SCAN_MS);
+    setInterval(() => void settleTick(), SETTLE_MS);
+  });
+}
+
+if (process.env.NODE_ENV !== "test") main();
+
+export { server, scanTick, settleTick };
