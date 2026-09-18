@@ -261,6 +261,19 @@ test("demo service: page loads count, beacons record, admin funnel is gated and 
     assert.equal(body.funnel.recentProtects[0].ticker, "KXNFLGAME-26SEP20INDKC-KC");
     assert.equal(body.funnel.recentProtects[0].creditCents, null);
 
+    // readable page: same gate, renders the same numbers, never leaks the token into script
+    assert.equal((await fetch(`${base}/admin/funnel`)).status, 403);
+    const pageRes = await fetch(`${base}/admin/funnel?token=t0ken`);
+    assert.equal(pageRes.status, 200);
+    assert.match(pageRes.headers.get("content-type") ?? "", /text\/html/);
+    const page = await pageRes.text();
+    assert.ok(page.includes("Who looked, who tapped, who protected"));
+    assert.ok(page.includes("KXNFLGAME-26SEP20INDKC-KC"), "recent Protect taps are listed");
+    assert.ok(page.includes('href="/api/admin/funnel?token=t0ken"'), "links the raw JSON with the same token");
+    assert.ok(page.includes("'/api/admin/funnel/reset'+location.search"), "reset reuses the URL token, not an inlined one");
+    const rawJson = await (await fetch(`${base}/api/admin/funnel?token=t0ken`)).text();
+    assert.ok(rawJson.includes("\n  \"funnel\": {"), "JSON is pretty-printed for a browser tab");
+
     // persistence: flush writes the file (creating the directory), reset clears it
     assert.equal(existsSync(funnelPath), false);
     flushFunnel();
