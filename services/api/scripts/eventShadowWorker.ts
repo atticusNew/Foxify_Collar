@@ -24,15 +24,29 @@
  *      EVENT_SHADOW_SCAN_MS (default 5m) · EVENT_SHADOW_SETTLE_MS (default 10m)
  *      EVENT_SHADOW_SETTLE_GRACE_MS (default 3h) · EVENT_SHADOW_VOID_AFTER_MS (default 72h)
  *      plus the demo's EVENT_X_* scanner knobs (contracts, board rows, series)
+ * Alerts (optional, see crossVenue/shadowAlerts.ts): EVENT_SHADOW_ALERT_BOT_TOKEN +
+ *      EVENT_SHADOW_ALERT_CHAT_ID (Telegram) and/or EVENT_SHADOW_ALERT_WEBHOOK_URL
+ *
+ * Durability: the ledger lives on one Render disk. GET /api/shadow/export streams
+ * the raw JSONL so it can be mirrored off-box on a schedule
+ * (`curl -s https://<service>/api/shadow/export > backup-$(date +%F).jsonl`).
  */
 
+import { createReadStream, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   appendShadowRecord,
+  ledgerStats,
   loadShadowPositions,
   summarizeShadow,
   type ShadowPosition,
 } from "../src/eventCollar/crossVenue/shadowLedger";
+import {
+  buildShadowAlerter,
+  evaluateShadowHealth,
+  parseShadowAlertsFromEnv,
+  type ShadowAlerter,
+} from "../src/eventCollar/crossVenue/shadowAlerts";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
 import { renderShadowHtml } from "./eventShadowHtml";
 import type { ScanState } from "./eventProtectXDemoService";
@@ -46,10 +60,34 @@ const SETTLE_GRACE_MS = Number(process.env.EVENT_SHADOW_SETTLE_GRACE_MS || 3 * 3
 /** an event with no official result after this long is voided (postponed, rebooked) */
 const VOID_AFTER_MS = Number(process.env.EVENT_SHADOW_VOID_AFTER_MS || 72 * 3_600_000);
 
+const alertCfg = parseShadowAlertsFromEnv(process.env);
+const alerter: ShadowAlerter = buildShadowAlerter(alertCfg);
+const BOOT_MS = Date.now();
+
 let scan: (() => Promise<ScanState>) | null = null;
 let lastScanAt: string | null = null;
+let lastScanOkMs: number | null = null;
 let lastSettleAt: string | null = null;
 let lastScanError: string | null = null;
+let lastSettleError: string | null = null;
+let consecutiveScanFailures = 0;
+let scanFailingRaised = false;
+let settleFailuresLastTick = 0;
+let settleDueLastTick = 0;
+
+/** Append with the failure surfaced: a ledger that cannot be written is the one fault that must page. */
+function appendOrAlert(record: Parameters<typeof appendShadowRecord>[1]): boolean {
+  try {
+    appendShadowRecord(LEDGER_PATH, record);
+    return true;
+  } catch (err) {
+    void alerter({
+      kind: "ledger_write_failed",
+      message: `could not append ${record.type} for ${record.ticker} to ${LEDGER_PATH}: ${String(err instanceof Error ? err.message : err)}`,
+    });
+    return false;
+  }
+}
 
 /** Open one simulated position for every quotable board row we have not seen. */
 async function scanTick(): Promise<void> {
@@ -60,7 +98,7 @@ async function scanTick(): Promise<void> {
     for (const { res, evBps } of state.rows) {
       const q = res.quote;
       if (!q.ok || seen.has(res.market.ticker)) continue;
-      appendShadowRecord(LEDGER_PATH, {
+      appendOrAlert({
         type: "open",
         at: new Date().toISOString(),
         ticker: res.market.ticker,
@@ -82,42 +120,95 @@ async function scanTick(): Promise<void> {
       seen.add(res.market.ticker);
     }
     lastScanAt = new Date().toISOString();
+    lastScanOkMs = Date.now();
     lastScanError = null;
+    consecutiveScanFailures = 0;
   } catch (err) {
     // a failed scan skips one tick; the next one retries from scratch
     lastScanError = String(err instanceof Error ? err.message : err);
+    consecutiveScanFailures += 1;
   }
+  await healthTick();
 }
 
 /** Mark past events against their official results; void the unresolvable. */
 async function settleTick(): Promise<void> {
   const now = Date.now();
+  let due = 0;
+  let failed = 0;
   for (const p of loadShadowPositions(LEDGER_PATH)) {
     if (p.status !== "open") continue;
     const eventMs = Date.parse(p.eventTimeIso);
     if (!Number.isFinite(eventMs) || now < eventMs + SETTLE_GRACE_MS) continue;
+    due += 1;
     try {
       const r = await getMarketResult(p.ticker);
       if (r.result === "yes" || r.result === "no") {
-        appendShadowRecord(LEDGER_PATH, {
+        appendOrAlert({
           type: "settle",
           at: new Date().toISOString(),
           ticker: p.ticker,
           result: r.result,
         });
       } else if (now > eventMs + VOID_AFTER_MS) {
-        appendShadowRecord(LEDGER_PATH, {
-          type: "void",
-          at: new Date().toISOString(),
-          ticker: p.ticker,
-          reason: `no official result ${Math.round(VOID_AFTER_MS / 3_600_000)}h after the event`,
-        });
+        const reason = `no official result ${Math.round(VOID_AFTER_MS / 3_600_000)}h after the event`;
+        if (appendOrAlert({ type: "void", at: new Date().toISOString(), ticker: p.ticker, reason })) {
+          // A void is rare and worth a human look (postponement, ticker change, result feed gap).
+          void alerter({ kind: "position_voided", message: `${p.ticker} (${p.eventTitle}) voided: ${reason}` });
+        }
       }
-    } catch {
-      /* venue unreachable for this ticker; retried next tick */
+    } catch (err) {
+      // venue unreachable for this ticker; retried next tick
+      failed += 1;
+      lastSettleError = String(err instanceof Error ? err.message : err);
     }
   }
+  if (failed === 0) lastSettleError = null;
+  settleDueLastTick = due;
+  settleFailuresLastTick = failed;
   lastSettleAt = new Date().toISOString();
+  await healthTick();
+}
+
+/** Evaluate the counters against the alert thresholds; runs after every tick. */
+async function healthTick(): Promise<void> {
+  const alerts = evaluateShadowHealth(
+    {
+      nowMs: Date.now(),
+      scanMs: SCAN_MS,
+      lastScanOkMs,
+      bootMs: BOOT_MS,
+      consecutiveScanFailures,
+      lastScanError,
+      settleFailuresLastTick,
+      settleDueLastTick,
+      scanFailingRaised,
+    },
+    alertCfg,
+  );
+  for (const a of alerts) {
+    if (a.kind === "scan_failing") scanFailingRaised = true;
+    if (a.kind === "scan_recovered") scanFailingRaised = false;
+    await alerter(a);
+  }
+}
+
+function healthBody(): Record<string, unknown> {
+  const stats = ledgerStats(LEDGER_PATH);
+  return {
+    ok: true,
+    service: "event-protect-shadow",
+    positions: loadShadowPositions(LEDGER_PATH).length,
+    ledger: { path: LEDGER_PATH, ...stats },
+    lastScanAt,
+    lastSettleAt,
+    lastScanError,
+    lastSettleError,
+    consecutiveScanFailures,
+    settleFailuresLastTick,
+    settleDueLastTick,
+    alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
+  };
 }
 
 function pageData(): { atIso: string; positions: ShadowPosition[] } {
@@ -136,14 +227,25 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
   try {
     if (url.pathname === "/healthz") {
-      sendJson(res, 200, {
-        ok: true,
-        service: "event-protect-shadow",
-        positions: loadShadowPositions(LEDGER_PATH).length,
-        lastScanAt,
-        lastSettleAt,
-        lastScanError,
+      sendJson(res, 200, healthBody());
+      return;
+    }
+    if (url.pathname === "/api/shadow/export") {
+      // The raw append-only ledger, byte for byte: the artifact to mirror off-box.
+      const stats = ledgerStats(LEDGER_PATH);
+      if (!stats.exists) {
+        res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "content-length": 0, "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+      const size = statSync(LEDGER_PATH).size;
+      res.writeHead(200, {
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "content-length": size,
+        "content-disposition": `attachment; filename="event-shadow-ledger-${new Date().toISOString().slice(0, 10)}.jsonl"`,
+        "cache-control": "no-store",
       });
+      createReadStream(LEDGER_PATH).pipe(res);
       return;
     }
     if (url.pathname === "/api/shadow") {

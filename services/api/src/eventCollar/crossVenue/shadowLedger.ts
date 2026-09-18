@@ -88,6 +88,17 @@ export function appendShadowRecord(path: string, record: ShadowRecord): void {
   appendFileSync(path, `${JSON.stringify(record)}\n`, "utf8");
 }
 
+/** Size and line count of the raw ledger, for healthz and the export endpoint. */
+export function ledgerStats(path: string): { exists: boolean; bytes: number; records: number } {
+  if (!existsSync(path)) return { exists: false, bytes: 0, records: 0 };
+  const raw = readFileSync(path, "utf8");
+  return {
+    exists: true,
+    bytes: Buffer.byteLength(raw, "utf8"),
+    records: raw.split("\n").filter((l) => l.trim().length > 0).length,
+  };
+}
+
 /** Replay the JSONL into current positions. Unreadable lines are skipped, never fatal. */
 export function loadShadowPositions(path: string): ShadowPosition[] {
   if (!existsSync(path)) return [];
