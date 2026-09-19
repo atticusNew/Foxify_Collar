@@ -7,21 +7,27 @@
  *   - every SCAN interval, one simulated position per side (long, short) at a
  *     fixed size, priced exactly as /api/preview prices it (nearest in-band
  *     protective wing with an ask; widest in-band funding wing whose credit
- *     clears OKX fees), plus what every other rule would have written from
- *     the same snapshot (tiers, fee rule, larger sizes walked down the depth),
- *   - every SETTLE interval, positions past expiry are marked against OKX's
- *     official delivery price for that expiry,
+ *     clears OKX fees, refused under the cap guard), plus what every other
+ *     rule would have written from the same snapshot (every listed cap
+ *     distance, fee rule, larger sizes walked down the depth, the weekly),
+ *   - every SETTLE interval, positions past expiry are settled on the PATH:
+ *     Hyperliquid candles from open to expiry say whether and when each cap
+ *     (the live one and every rung's) was touched — the collar is a
+ *     knock-out — and OKX index candles around each touch say whether the
+ *     hedge venue's clock saw it too; the print is OKX's official delivery
+ *     price for that expiry,
  *   - the append-only JSONL ledger is replayed on every page view.
  *
- * What is real: OKX option prices and fees, Hyperliquid marks and funding,
- * delivery prints. What is simulated: the positions. No credentials, no
- * wallets; structurally unable to trade.
+ * What is real: OKX option prices and fees, Hyperliquid marks, candles and
+ * funding, delivery prints. What is simulated: the positions. No credentials,
+ * no wallets; structurally unable to trade.
  *
  * Run: npx tsx services/api/scripts/perpShadowWorker.ts
  * Env: PERP_SHADOW_PORT (default 8795) · PERP_SHADOW_LEDGER_PATH
  *      PERP_SHADOW_SCAN_MS (default 60m) · PERP_SHADOW_SETTLE_MS (default 15m)
  *      PERP_SHADOW_SIZE_BTC (default 0.03 = 3 OKX lots) · PERP_SHADOW_SIDES (long,short)
- *      PERP_SHADOW_TIER (default balanced = the live 6% / 1.5% geometry)
+ *      DEMO_FLOOR_PCT / DEMO_CAP_PCT (the live shape, default 0.06 / 0.015)
+ *      EP_TENOR (daily default) · EP_MIN_CAP_PCT / EP_CAP_MAX_PCT (+ _WEEKLY): the cap guard, as the demo
  *      EP_TAKE_RATE (default 0.20) · EP_DE_MINIMIS_USDC (default 0.05)
  *      PERP_SHADOW_MIN_TAKE_BPS (live minimum, default 0 = none, as the product today)
  *      PERP_SHADOW_CF_MIN_TAKE_BPS (the fee-floor counterfactual, default 5)
@@ -33,6 +39,8 @@
 import { createReadStream, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
+import { DEMO_CAP_PCT, DEMO_FLOOR_PCT } from "../src/singleSide/twoSided/creditCollar/demoWrap";
+import { capGuardFor, parseTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import { fetchOkxListedSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
 import {
   appendPerpShadowRecord,
@@ -40,16 +48,19 @@ import {
   perpLedgerStats,
   perpPositionsCsv,
   summarizePerpShadow,
-  PERP_TIER_RULES,
+  type PerpPath,
+  type PerpPathTouch,
   type PerpShadowPosition,
   type PerpShadowSummary,
-  type PerpTier,
 } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowLedger";
 import {
+  fetchHlCandles,
   fetchHlContext,
   fetchOkxDeliveryPrice,
   fetchOkxIndex,
+  fetchOkxIndexCandlesAround,
 } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowMarket";
+import { candleIntervalFor, firstTouches, okxConfirms, pathRange, type Candle } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowPath";
 import { feeRuleText, perpShadowQuote, type PerpTakeConfig } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowQuote";
 import { adminAuthorized, parseAdminAuthFromEnv } from "../src/singleSide/twoSided/creditCollar/epSafety";
 import { renderPerpShadowHtml, renderPerpShadowReportHtml } from "./perpShadowHtml";
@@ -67,8 +78,17 @@ const SIDES: PerpSide[] = String(process.env.PERP_SHADOW_SIDES || "long,short")
   .split(",")
   .map((s) => s.trim())
   .filter((s): s is PerpSide => s === "long" || s === "short");
-const parseTier = (v: string | undefined): PerpTier => (v === "tight" || v === "wide" ? v : "balanced");
-const LIVE_TIER = parseTier(process.env.PERP_SHADOW_TIER);
+const numEnv = (v: string | undefined, d: number): number => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : d;
+};
+// The live shape and guard, read the way the demo reads them so the shadow prices the product.
+const GEOMETRY = { floorPct: numEnv(process.env.DEMO_FLOOR_PCT, DEMO_FLOOR_PCT), capPct: numEnv(process.env.DEMO_CAP_PCT, DEMO_CAP_PCT) };
+const TENOR = parseTenor(process.env.EP_TENOR);
+const CAP_GUARD = capGuardFor(TENOR, process.env);
+const WEEKLY_CAP_GUARD = capGuardFor("weekly", process.env);
+const CAP_LADDER_RULE =
+  "the live floor held fixed, the funding wing moved to every listed strike in the band; each rung settled on the same Hyperliquid path, so it shows its own knock-out rate and buyback cost";
 const COIN = process.env.PERP_SHADOW_COIN || "BTC";
 const TAKE: PerpTakeConfig = {
   shareRate: Number(process.env.EP_TAKE_RATE || 0.2),
@@ -106,7 +126,9 @@ async function scanTick(): Promise<void> {
           side,
           spot: hl.markPx,
           contracts: CONTRACTS,
-          liveTier: LIVE_TIER,
+          geometry: GEOMETRY,
+          capGuard: CAP_GUARD,
+          weeklyCapGuard: WEEKLY_CAP_GUARD,
           take: TAKE,
           counterfactualMinTakeBps: CF_MIN_TAKE_BPS,
           okxIndex,
@@ -129,8 +151,40 @@ async function scanTick(): Promise<void> {
   }
 }
 
-/** Mark every expired position against the official delivery print; void what never prints. */
-async function settleTick(): Promise<void> {
+/**
+ * The path a group of positions at one expiry ran on: Hyperliquid candles
+ * from the earliest open to expiry, once per expiry, then each position's
+ * caps (live + every rung) checked for a first touch. Each touch asks the
+ * OKX index around that minute whether the hedge venue saw it too.
+ */
+const buildPath = async (p: PerpShadowPosition, candles: Candle[], interval: "1m" | "5m", okxFetch: typeof fetchOkxIndexCandlesAround): Promise<PerpPath | null> => {
+  const openMs = Date.parse(p.at);
+  const expiryMs = Date.parse(p.expiryIso);
+  const range = pathRange(candles, openMs, expiryMs);
+  if (!range) return null;
+  const caps = [p.capStrikeCents, ...(p.counterfactuals?.capLadder ?? []).map((r) => r.capStrikeCents)];
+  const touches: PerpPathTouch[] = [];
+  for (const t of firstTouches(candles, p.side, caps, openMs, expiryMs)) {
+    let okx = { okxPxCents: null as number | null, confirmed: null as boolean | null, gapBps: null as number | null };
+    try {
+      okx = okxConfirms(await okxFetch(t.atMs), p.side, t.capStrikeCents, t.atMs);
+    } catch {
+      // unknown stays unknown
+    }
+    touches.push({
+      capStrikeCents: t.capStrikeCents,
+      atIso: new Date(t.atMs).toISOString(),
+      hlPxCents: t.hlPxCents,
+      okxPxCents: okx.okxPxCents,
+      okxConfirmed: okx.confirmed,
+      okxGapBps: okx.gapBps,
+    });
+  }
+  return { source: "hl_candles", interval, candles: range.candles, hiCents: range.hiCents, loCents: range.loCents, touches };
+};
+
+/** Settle every expired position on its path and the official delivery print; void what never prints. */
+async function settleTick(deps: { candles?: typeof fetchHlCandles; okxAround?: typeof fetchOkxIndexCandlesAround; delivery?: typeof fetchOkxDeliveryPrice } = {}): Promise<void> {
   try {
     const nowMs = Date.now();
     const { positions } = loadPerpShadow(LEDGER_PATH);
@@ -140,19 +194,28 @@ async function settleTick(): Promise<void> {
     const nowIso = new Date(nowMs).toISOString();
     for (const [expiryIso, group] of byExpiry) {
       const expiryMs = Date.parse(expiryIso);
-      const px = await fetchOkxDeliveryPrice(expiryMs);
+      const px = await (deps.delivery ?? fetchOkxDeliveryPrice)(expiryMs);
       if (px == null) {
         if (nowMs - expiryMs > VOID_AFTER_MS) {
           for (const p of group) appendPerpShadowRecord(LEDGER_PATH, { type: "void", at: nowIso, id: p.id, reason: "no delivery price published" });
         }
         continue;
       }
+      const startMs = Math.min(...group.map((p) => Date.parse(p.at)));
+      const interval = candleIntervalFor(expiryMs - startMs);
+      let candles: Candle[] = [];
+      try {
+        candles = await (deps.candles ?? fetchHlCandles)(COIN, startMs, expiryMs, interval);
+      } catch (err) {
+        lastSettleError = `candles: ${String(err instanceof Error ? err.message : err)}`;
+      }
       for (const p of group) {
-        appendPerpShadowRecord(LEDGER_PATH, { type: "settle", at: nowIso, id: p.id, settleCents: Math.round(px * 100), source: "okx_delivery" });
+        const path = candles.length ? await buildPath(p, candles, interval, deps.okxAround ?? fetchOkxIndexCandlesAround) : null;
+        appendPerpShadowRecord(LEDGER_PATH, { type: "settle", at: nowIso, id: p.id, settleCents: Math.round(px * 100), source: "okx_delivery", path });
       }
     }
     lastSettleAt = nowIso;
-    lastSettleError = null;
+    if (!lastSettleError?.startsWith("candles:")) lastSettleError = null;
   } catch (err) {
     lastSettleError = String(err instanceof Error ? err.message : err);
   }
@@ -182,7 +245,7 @@ function healthBody(): Record<string, unknown> {
     positions: positions.length,
     open: positions.filter((p) => p.status === "open").length,
     ledger: { path: LEDGER_PATH, ...perpLedgerStats(LEDGER_PATH) },
-    terms: { tier: LIVE_TIER, contracts: CONTRACTS, sizeBtc: CONTRACTS * OKX_LOT_BTC, sides: SIDES, take: TAKE, counterfactualMinTakeBps: CF_MIN_TAKE_BPS },
+    terms: { geometry: GEOMETRY, tenor: TENOR, capGuard: CAP_GUARD, contracts: CONTRACTS, sizeBtc: CONTRACTS * OKX_LOT_BTC, sides: SIDES, take: TAKE, counterfactualMinTakeBps: CF_MIN_TAKE_BPS },
     lastScanAt,
     lastSettleAt,
     lastScanError,
@@ -254,7 +317,9 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         at: atIso,
         period: { recordedSince: summary.counterfactuals.recordedSince, renderedAt: atIso },
         rules: {
-          tiers: PERP_TIER_RULES,
+          capLadder: CAP_LADDER_RULE,
+          capGuard: CAP_GUARD,
+          fundingRule: "the credit must clear what holding the perp costs over the cycle at the funding rate seen at open",
           feeRules: Object.fromEntries(Object.keys(summary.counterfactuals.feeRules).map((l) => [l, feeRuleText(l)])),
         },
         counterfactuals: summary.counterfactuals,
@@ -264,7 +329,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/report") {
       const { atIso, summary } = pageData();
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token") }));
+      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token"), capGuard: CAP_GUARD }));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -285,7 +350,7 @@ function main(): void {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
-      `[perp-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · ${CONTRACTS} lots ${SIDES.join("+")} · tier ${LIVE_TIER} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m`,
+      `[perp-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · ${CONTRACTS} lots ${SIDES.join("+")} · floor ${GEOMETRY.floorPct} · cap guard ${CAP_GUARD.minCapPct}–${CAP_GUARD.maxCapPct} · ${TENOR} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m`,
     );
     void scanTick();
     void settleTick();

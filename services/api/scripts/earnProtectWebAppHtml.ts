@@ -256,20 +256,6 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .trio b{color:var(--text)}
   .credit-hero b{font-size:19px;letter-spacing:-.3px}
   .demo-vest div{transition:width 2.4s cubic-bezier(.2,.7,.3,1)}
-  /* Three shapes, one book: outcome-named tiles (Safest / Balanced / Most upside). One number
-     per tile — the credit — with the floor distance riding under it. The selected tile is the
-     quote on the card; a locked set (protection already live) shows the chosen shape only. */
-  .tiers{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
-  .tier{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:9px 10px 8px;text-align:left;color:var(--muted);font:inherit;cursor:pointer;transition:border-color .15s,background .15s}
-  .tier:hover{border-color:rgba(80,210,193,.4)}
-  .tier.on{border-color:var(--accent);background:rgba(80,210,193,.08);color:var(--text)}
-  .tier:disabled{cursor:default}
-  .tier .tn{font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
-  .tier .tf{font-size:16px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;margin-top:3px}
-  .tier.on .tf{color:var(--accent)}
-  .tier .tc{font-size:11px;margin-top:2px}
-  .tier.busy .tf{animation:pulse 1s ease-in-out infinite}
-  @media (max-width:420px){.tier{padding:8px 8px 7px}.tier .tf{font-size:14.5px}}
   .carry{font-size:12px;color:var(--muted);margin-top:8px}
   .carry b{color:var(--text);font-weight:600}
 </style>
@@ -364,7 +350,6 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <ul id="howList">
     <li><b>Read-only.</b> We read your positions from Hyperliquid's public API. No signing, no deposits, no keys. Payouts go only to your own wallet.</li>
     <li><b>Live-market pricing.</b> Every protection cycle is quoted from listed option order books at the moment you toggle. When the market can't fund a credit, we refuse and say why.</li>
-    <li><b>Three shapes, one book.</b> Safest, Balanced and Most upside are the same market at a different floor: a closer floor gives up more upside, a deeper floor keeps more of it. Pick before you flip; the number on each tile is what the market pays for that shape right now.</li>
     <li><b>Paid daily, never upfront.</b> Your credit unlocks through each daily cycle and pays automatically at its close.</li>
     <li><b>The cap ends the cycle, not your trade.</b> If price touches your cap, that cycle ends: you keep your position, every gain, and the unlocked credit; protection re-arms at the new price while the toggle stays on. You never owe anything.</li>
     <li><b>Honest economics.</b> We keep a published share of the credit we source (waived when tiny); founding wallets keep a reduced rate<span id="rateNote"></span>.</li>
@@ -460,33 +445,11 @@ const fmtDur = (ms) => {
 const tip = (trigger, text, right) => '<span class="tipwrap' + (right ? " tip-right" : "") + '">' + trigger + '<span class="tip">' + esc(text) + '</span></span>';
 const infoTip = (text, right) => tip('<span class="info">i</span>', text, right);
 
-// THREE SHAPES, ONE BOOK. The engine prices Safest / Balanced / Most upside from the same listed
-// book at the same expiry; each tile carries the credit that shape pays. The pick rides every
-// surface (preview, the simulation, the real wrap via ?tier=) and a live protection locks it.
-const TIER_ORDER = ["tight", "balanced", "wide"];
-const TIER_WORDS = { tight: "Safest", balanced: "Balanced", wide: "Most upside" };
-let pickedTier = (() => { try { const t = localStorage.getItem("ep_tier"); return TIER_ORDER.includes(t) ? t : "balanced"; } catch (e) { return "balanced"; } })();
-const setPickedTier = (t) => { if (!TIER_ORDER.includes(t)) return; pickedTier = t; try { localStorage.setItem("ep_tier", t); } catch (e) { /* private mode */ } };
-const tierWord = (t, j) => ((j && j.tierWords) || TIER_WORDS)[t] || t;
+// ONE SHAPE. A hard floor ~6% out and the WIDEST listed cap that still pays, because a cap touch
+// ends the cycle (both legs unwind, protection re-arms) — the trader never gives up upside, so the
+// cap is placed to be far, not to be rich. No tiers: the number on the card is the number.
 // The credit label follows the tenor the quote was written to (daily today; weekly when flagged).
 const tenorWord = (j) => (j && j.tenor === "weekly" ? "this week\\u2019s" : "today\\u2019s");
-const pctTxt = (x) => (Math.abs(Number(x) || 0) * 100).toFixed(1) + "%";
-// The tiles. ctx names the surface a tap re-prices (pv · watch · sim · real); locked renders the
-// chosen shape without controls. Fewer than two fundable shapes = no tiles at all.
-const tierTiles = (j, ctx, locked) => {
-  if (!j || !j.tiers) return "";
-  const names = TIER_ORDER.filter((t) => j.tiers[t]);
-  if (names.length < 2) return "";
-  const where = j.side === "short" ? "above" : "below";
-  return '<div class="tiers" data-ctx="' + esc(ctx) + '">' + names.map((t) => {
-    const o = j.tiers[t];
-    const on = t === j.tier;
-    return '<button type="button" class="tier' + (on ? " on" : "") + '" data-tier="' + t + '"' + (locked ? " disabled" : "") + ' aria-pressed="' + (on ? "true" : "false") + '">' +
-      '<div class="tn">' + esc(tierWord(t, j)) + '</div>' +
-      '<div class="tf">' + fmt$(o.creditUsdc) + '</div>' +
-      '<div class="tc">floor ' + pctTxt(o.floorPct) + ' ' + where + '</div></button>';
-  }).join("") + '</div>';
-};
 // Carry, stated beside the credit so it reads net: what the perp's funding costs (a long pays a
 // positive rate) or pays (a short receives it) over this cycle, from Hyperliquid's live rate.
 const carryLine = (j) => {
@@ -548,7 +511,7 @@ const simVest = (s) => {
 const PV_MAX_USD = 500000000; // server's preview sanity ceiling — mirrored for whale-size requests
 let lastPos = [];      // freshest poll payloads — instant re-renders for the simulation lane
 let lastState = null;
-let realQuoteCache = { addr: "", tier: "", atMs: 0, html: "", inflight: "" }; // the pre-flip quote
+let realQuoteCache = { addr: "", atMs: 0, html: "", inflight: "" }; // the pre-flip quote
 // SKIN: "retail" (HL, default) or "institutional" (partner demo instances). The institutional
 // register: counterparties and treasuries, never whales; viewing, never watching; no retail promos.
 const SKIN = "__SKIN__";
@@ -587,8 +550,7 @@ if (INST) {
   $("howList").innerHTML =
     '<li><b>Read-only.</b> Exposure is read from public venue APIs. No keys, no deposits, no custody movement. Direct vault-side balance integration is scoped in the design-partner pilot.</li>' +
     '<li><b>Live-market pricing.</b> Every protection cycle is priced from listed option order books at the moment of activation. When the market cannot fund a credit, we refuse and say why.</li>' +
-    '<li><b>Three shapes, one book.</b> Safest, Balanced and Most upside are the same market at a different floor: a closer floor gives up more upside, a deeper floor keeps more of it. The credit on each tile is what the market pays for that shape right now.</li>' +
-    '<li><b>Delta neutral by construction.</b> Every protection is hedged leg for leg on listed options (OKX today; FalconX block execution as volume nets up). Revenue is a published fee on credits, never trading P&amp;L.</li>' +
+    '<li><b>Hedged, not carried.</b> The floor is hedged leg for leg on listed options (OKX today; FalconX block execution as volume nets up); the cap leg is closed at its strike when price touches it. Revenue is a published fee on credits, never trading P&amp;L.</li>' +
     '<li><b>Paid daily, never upfront.</b> The credit vests through each cycle and settles automatically at its close, only to the holder\\u2019s address.</li>' +
     '<li><b>The cap ends the cycle, not the holding.</b> A cap touch concludes that cycle: the holder keeps the assets, gains, and vested credit; protection re-arms automatically.<span id="rateNote" style="display:none"></span></li>' +
     '<li>Derivatives involve risk. Nothing here is investment advice.</li>';
@@ -683,11 +645,8 @@ const activeBody = (o) => {
   // Floor tick = loss end (red), cap tick = upside end (mint) — the only color on the rail.
   const tickL = '<div class="rail-tick ' + (leftIsFloor ? "tfloor" : "tcap") + '" style="left:-1px"></div>';
   const tickR = '<div class="rail-tick ' + (leftIsFloor ? "tcap" : "tfloor") + '" style="right:-1px"></div>';
-  // The shape rides the label once protection is live (the tiles are gone; the pick is locked).
-  const shape = o.shape && o.shape !== "balanced" ? ' \\u00b7 ' + esc(tierWord(o.shape, null)) : "";
   return '<div class="cred"><b class="cred-num' + (o.sim ? ' sim-cred' : '') + '">' + fmt$(o.creditUsdc) + '</b>' +
-      '<span class="cred-sub">' + tenorWord(o) + ' credit' + shape + infoTip(creditTip) + (o.badge || "") + '</span></div>' +
-    (o.tiles || "") +
+      '<span class="cred-sub">' + tenorWord(o) + ' credit' + infoTip(creditTip) + (o.badge || "") + '</span></div>' +
     '<div class="rail" data-lo="' + lo + '" data-hi="' + hi + '">' +
       '<div class="rail-track">' + tickL + tickR +
         '<div class="rail-px" style="left:' + railPos(px) + '%"><span class="rail-pxlab"><span class="rail-pxval">' + fmtPx(px) + '</span><em>live</em></span></div>' +
@@ -750,7 +709,7 @@ const render = (positions, state) => {
           creditUsdc: q.creditUsdc, floorStrike, capStrike, quoteSpot: q.spot, livePx: p.markPx,
           vestedUsdc: v.vestedUsdc, fraction: v.fraction, remainingMs: v.remainingMs, fullyVested: v.fullyVested,
           settleTip: settleIso ? "Settles at the listed expiry: " + settleIso + ". The credit lands in the payouts table below, then protection renews automatically." : "Pays at the cycle's close.",
-          sim: false, badge: foundingBadge, tenor: q.tenor, shape: q.tier
+          sim: false, badge: foundingBadge, tenor: q.tenor
         });
         const note = w.hedge && w.hedge.sizeNote;
         if (note) coverage = '<div class="coverage">' + esc(note) + '</div>';
@@ -771,8 +730,8 @@ const render = (positions, state) => {
     }
     // INST viewing keeps the would-be protection terms panel (filled async by renderWatchTerms).
     if (watching && INST) terms = '<div id="watchTerms"><div class="small muted" style="margin-top:10px"><span class="spin"></span>pricing protection on this position…</div></div>';
-    // THE PRE-FLIP QUOTE (own address, protection off): what flipping it on pays right now, with
-    // the three shapes to pick from. Value before the commit; the toggle stays the only action.
+    // THE PRE-FLIP QUOTE (own address, protection off): what flipping it on pays right now.
+    // Value before the commit; the toggle stays the only action.
     // Stale-while-revalidate from a small cache so the 5s poll never spams the pricer.
     if (isWrapCoin && !watching && !active) {
       terms = '<div id="realQuote">' + (realQuoteCache.addr === account && realQuoteCache.html
@@ -814,9 +773,8 @@ const render = (positions, state) => {
           quoteSpot: sq.spot, livePx: lastMarkPx != null ? lastMarkPx : p.markPx,
           vestedUsdc: vsim.vestedUsdc, fraction: vsim.fraction, remainingMs: vsim.remainingMs, fullyVested: false,
           settleTip: settleIsoS ? "The live cycle settles at the listed expiry: " + settleIsoS + "." : "Pays at the cycle's close.",
-          sim: true, badge: "", tenor: sq.tenor, tiles: tierTiles(sq, "sim", false)
+          sim: true, badge: "", tenor: sq.tenor
         });
-        if (s.repricing) { const b = document.createElement("div"); b.innerHTML = terms; const t = b.querySelector('.tier[data-tier="' + s.repricing + '"]'); if (t) t.classList.add("busy"); terms = b.innerHTML; }
         coverage = carryLine(sq) + '<button type="button" class="btn cta connOpen">Connect your address</button>' +
           '<div class="small muted" style="margin-top:7px;text-align:center">Your position works the same way. Public data · no keys · no signing.</div>';
       }
@@ -863,31 +821,30 @@ const render = (positions, state) => {
   if (!watching && $("realQuote")) { const rp = positions.find((x) => x.wrappable); if (rp) void renderRealQuote(rp); }
 };
 
-// The pre-flip quote: /api/quote on the holder's own live position (probe only, nothing opens),
-// at the picked shape. Cached 45s per address+shape (realQuoteCache); a tile tap re-prices at once.
+// The pre-flip quote: /api/quote on the holder's own live position (probe only, nothing opens).
+// Cached 45s per address (realQuoteCache) so the 5s poll never spams the pricer.
 const realQuoteHtml = (j) =>
   '<div class="small muted" style="margin-top:10px">If you flip it on now:</div>' +
   termsGrid(j, j.founding && !INST ? ' <span class="badge founding">FOUNDING RATE</span>' : "") +
-  tierTiles(j, "real", false) +
   carryLine(j) +
   '<div class="small muted" style="margin-top:8px">' + feeLine(j) + (j.coverageNote ? " " + esc(j.coverageNote) : "") + ' Indicative \\u00b7 the fill sets the number.</div>';
 const renderRealQuote = async (p) => {
   const box = $("realQuote");
   if (!box || !account || watching) return;
-  const fresh = realQuoteCache.addr === account && realQuoteCache.tier === pickedTier && Date.now() - realQuoteCache.atMs < 45000;
+  const fresh = realQuoteCache.addr === account && Date.now() - realQuoteCache.atMs < 45000;
   if (fresh) { if (box.innerHTML !== realQuoteCache.html) { box.innerHTML = realQuoteCache.html; positionTips(box); } return; }
-  if (realQuoteCache.inflight === account + ":" + pickedTier) return;
-  realQuoteCache.inflight = account + ":" + pickedTier;
-  const want = pickedTier, forAddr = account;
+  if (realQuoteCache.inflight === account) return;
+  realQuoteCache.inflight = account;
+  const forAddr = account;
   try {
-    const j = await api("/api/quote?tier=" + want);
-    if (want !== pickedTier || forAddr !== account) return; // a newer pick or address won
+    const j = await api("/api/quote");
+    if (forAddr !== account) return; // a newer address won
     const html = j.ok ? realQuoteHtml(j) : '<div class="small muted" style="margin-top:10px">' + esc(humanChip(j.message || j.error)) + '</div>';
-    realQuoteCache = { addr: account, tier: want, atMs: Date.now(), html, inflight: "" };
+    realQuoteCache = { addr: account, atMs: Date.now(), html, inflight: "" };
     const now = $("realQuote");
     if (now) { now.innerHTML = html; positionTips(now); }
   } catch (e) {
-    if (realQuoteCache.inflight === forAddr + ":" + want) realQuoteCache.inflight = "";
+    if (realQuoteCache.inflight === forAddr) realQuoteCache.inflight = "";
   }
 };
 
@@ -946,7 +903,7 @@ const simStart = async () => {
   haptic("impact");
   try {
     const usd = Math.min(Math.round(p.notionalUsdc), PV_MAX_USD);
-    const j = await api("/api/preview?side=" + encodeURIComponent(p.side) + "&usd=" + usd + "&tier=" + pickedTier);
+    const j = await api("/api/preview?side=" + encodeURIComponent(p.side) + "&usd=" + usd);
     if (!sims[key] || sims[key].phase !== "quoting") return; // toggled off mid-quote
     if (!j.ok) {
       sims[key] = { phase: "refused", reason: String(j.message || j.error || "") };
@@ -969,39 +926,6 @@ const simStart = async () => {
     sims[key] = { phase: "refused", reason: "network error" };
     renderNow();
     setTimeout(() => { if (sims[key] && sims[key].phase === "refused") { delete sims[key]; renderNow(); } }, 8000);
-  }
-};
-// A tile tap on the active simulation re-prices the SAME position at the new shape from the live
-// book (still /api/preview, still nothing opens): same cycle clock, new floor / cap / credit.
-const simRetier = async (t) => {
-  const key = account.toLowerCase();
-  const s = sims[key];
-  if (!s || s.phase !== "active" || !s.quote || s.quote.tier === t || s.repricing) return;
-  const p = (lastPos || []).find((x) => x.wrappable);
-  if (!p) return;
-  setPickedTier(t);
-  s.repricing = t;
-  renderNow();
-  try {
-    const usd = Math.min(Math.round(p.notionalUsdc), PV_MAX_USD);
-    const j = await api("/api/preview?side=" + encodeURIComponent(p.side) + "&usd=" + usd + "&tier=" + t);
-    const cur = sims[key];
-    if (!cur || cur.phase !== "active" || cur.repricing !== t) return;
-    cur.repricing = null;
-    if (j.ok) {
-      cur.quote = j;
-      if (j.expiryMs && j.expiryMs > Date.now()) cur.endMs = j.expiryMs;
-    }
-    renderNow();
-    if (j.ok) {
-      const heroNum = document.querySelector(".sim-cred");
-      if (heroNum) countUp(heroNum, j.creditUsdc);
-      haptic("impact");
-    }
-  } catch (e) {
-    const cur = sims[key];
-    if (cur && cur.repricing === t) cur.repricing = null;
-    renderNow();
   }
 };
 const simToggle = async () => {
@@ -1044,20 +968,6 @@ document.addEventListener("click", (ev) => {
   markCoachDone();
   renderNow();
 });
-// Tier tiles (delegated — every quote surface re-renders): the tap re-prices that surface at the
-// new shape and remembers the pick for the next flip.
-document.addEventListener("click", (ev) => {
-  const b = ev.target.closest ? ev.target.closest(".tier[data-tier]") : null;
-  if (!b || b.disabled) return;
-  const box = b.closest(".tiers");
-  const ctx = box ? box.dataset.ctx : "";
-  const t = b.dataset.tier;
-  if (!TIER_ORDER.includes(t)) return;
-  if (ctx === "sim") { void simRetier(t); return; }
-  if (ctx === "pv") { setPickedTier(t); void runPreview(); return; }
-  if (ctx === "watch") { setPickedTier(t); watchQuoteCache.atMs = 0; const p = (lastPos || []).find((x) => x.wrappable); if (p) void renderWatchTerms(p); return; }
-  if (ctx === "real") { setPickedTier(t); b.classList.add("busy"); const p = (lastPos || []).find((x) => x.wrappable); if (p) void renderRealQuote(p); }
-});
 // "see how" microlinks (next to any credit figure) open the how-it-works modal in place.
 document.addEventListener("click", (ev) => {
   const a = ev.target.closest ? ev.target.closest(".howMini") : null;
@@ -1078,11 +988,11 @@ const thinNote = (creditUsdc, protectedUsd) =>
 // Priced full-size through the preview engine (no capacity clip — same rule as the preview, so a
 // $95M position never renders a $1 credit). Quotes are free; cached so the 5s poll never spams
 // the pricer.
-let watchQuoteCache = { addr: "", tier: "", atMs: 0, html: "" };
+let watchQuoteCache = { addr: "", atMs: 0, html: "" };
 const renderWatchTerms = async (p) => {
   const box = $("watchTerms");
   if (!box) return;
-  if (watchQuoteCache.addr === account && watchQuoteCache.tier === pickedTier && Date.now() - watchQuoteCache.atMs < 60000) {
+  if (watchQuoteCache.addr === account && Date.now() - watchQuoteCache.atMs < 60000) {
     box.innerHTML = watchQuoteCache.html;
     positionTips(box);
     return;
@@ -1092,18 +1002,16 @@ const renderWatchTerms = async (p) => {
     // first $500M priced with an honest label — viewing must never error for being impressive.
     const reqUsd = Math.min(Math.round(p.notionalUsdc), PV_MAX_USD);
     const clamped = p.notionalUsdc > PV_MAX_USD;
-    const want = pickedTier;
-    const j = await api("/api/preview?side=" + encodeURIComponent(p.side) + "&usd=" + reqUsd + "&tier=" + want);
+    const j = await api("/api/preview?side=" + encodeURIComponent(p.side) + "&usd=" + reqUsd);
     if (!j.ok) { box.innerHTML = '<div class="small muted" style="margin-top:10px">' + esc(humanChip(j.message || j.error)) + '</div>'; return; }
     const html =
       '<div class="small muted" style="margin-top:10px">' + (INST ? 'What protection would pay on this position ' + (j.tenor === "weekly" ? "this week" : "today") + ':' : 'If this trader flipped the toggle right now:') + '</div>' +
       termsGrid(j, "") +
-      tierTiles(j, "watch", false) +
       carryLine(j) +
       whyLine +
       thinNote(j.creditUsdc, Math.min(p.notionalUsdc, PV_MAX_USD)) +
       '<div class="small muted" style="margin-top:8px">' + (clamped ? 'Terms shown for the first ' + fmt$(PV_MAX_USD) + ' of this position. ' : '') + feeLine(j) + ' Live market quote \\u00b7 nothing opens, nothing is stored. Look up a client address to see theirs.</div>';
-    watchQuoteCache = { addr: account, tier: want, atMs: Date.now(), html };
+    watchQuoteCache = { addr: account, atMs: Date.now(), html };
     const boxNow = $("watchTerms");
     if (boxNow) { boxNow.innerHTML = html; positionTips(boxNow); }
   } catch (e) {
@@ -1238,8 +1146,7 @@ const onToggle = async (ev) => {
       setMsg("Wrapping · pricing the live options book…", false, true);
       // Client-supplied idempotency key: a flaky network can never double-wrap.
       const idem = (MINIAPP ? "tma-" : "web-") + account.slice(2, 10) + "-" + Date.now().toString(36);
-      // The shape picked on the pre-flip quote rides the wrap; the engine remembers it for renewals.
-      const j = await api("/api/wrap?tier=" + pickedTier, { method: "POST", headers: { "Idempotency-Key": idem } });
+      const j = await api("/api/wrap", { method: "POST", headers: { "Idempotency-Key": idem } });
       if (j.ok && j.controlToken) localStorage.setItem("ep_ctl_" + account.toLowerCase(), j.controlToken);
       setMsg(j.ok ? "Protection live · credit pays at the cycle's close." : humanChip(j.message || j.error), !j.ok);
       if (!j.ok) $("connectMsg").title = String(j.message || j.error || "");
@@ -1435,21 +1342,17 @@ $("pvClear").onclick = (e) => {
   pvSetSide("long");
   $("pvClear").style.display = "none";
 };
-// A tile tap re-runs the preview at the new shape; the pulse on the tapped tile says so.
 const runPreview = async () => {
   const usd = parseFloat($("pvUsd").value.replace(/[$,\\s]/g, ""));
   if (!(usd > 0)) { $("pvOut").innerHTML = '<div class="small muted" style="margin-top:8px">Enter a position size in dollars, e.g. 2,000.</div>'; return; }
-  const tapped = $("pvOut").querySelector('.tiers[data-ctx="pv"]') ? $("pvOut").querySelector('.tier[data-tier="' + pickedTier + '"]') : null;
-  if (tapped) tapped.classList.add("busy");
-  else $("pvOut").innerHTML = '<div class="small muted" style="margin-top:10px"><span class="spin"></span>Pricing off the live option book…</div>';
+  $("pvOut").innerHTML = '<div class="small muted" style="margin-top:10px"><span class="spin"></span>Pricing off the live option book…</div>';
   try {
-    const j = await api("/api/preview?side=" + pvSide + "&usd=" + encodeURIComponent(usd) + "&tier=" + pickedTier);
+    const j = await api("/api/preview?side=" + pvSide + "&usd=" + encodeURIComponent(usd));
     $("pvClear").style.display = "";
     if (!j.ok) { $("pvOut").innerHTML = '<div class="chip bad">' + esc(humanChip(j.message || j.error)) + '</div>'; return; }
     // Same terms grid as the real position card — the preview should look like the product.
     $("pvOut").innerHTML =
       termsGrid(j, j.founding && !INST ? ' <span class="badge founding">FOUNDING RATE</span>' : "") +
-      tierTiles(j, "pv", false) +
       carryLine(j) +
       whyLine +
       thinNote(j.creditUsdc, j.protectedUsd) +

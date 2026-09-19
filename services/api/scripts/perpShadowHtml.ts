@@ -2,18 +2,19 @@
  * Earn & Protect (perps) — the shadow record pages.
  *
  * Public: what was quoted from the live OKX book at the product's own terms
- * and what it did for the holder against the official delivery print.
+ * and what it did for the holder on the price path (a cap touch is a
+ * knock-out) and against the official delivery print.
  * Operator (token): what every other rule would have written from the same
- * book — tiers, fee rule, larger sizes — marked against the same print.
+ * book — every cap distance, fee rule, larger sizes, the weekly — settled on
+ * the same path and print; where the knock-outs fell and what they cost.
  */
 
+import type { CapGuard } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import {
-  PERP_TIERS,
-  PERP_TIER_RULES,
+  type PerpCapRungBook,
   type PerpRuleBook,
   type PerpShadowPosition,
   type PerpShadowSummary,
-  type PerpTier,
 } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowLedger";
 import { feeRuleText } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowQuote";
 
@@ -89,9 +90,17 @@ export interface PerpShadowPageInput {
 
 function positionRow(p: PerpShadowPosition): string {
   const o = p.outcome;
-  const tag = o ? (o.floorSave ? '<span class="tag save">floor</span>' : o.capHit ? '<span class="tag">cap</span>' : '<span class="tag">between</span>') : "";
+  const tag = o
+    ? o.floorSave
+      ? '<span class="tag save">floor</span>'
+      : o.knockedOut
+        ? '<span class="tag">knock-out</span>'
+        : '<span class="tag">between</span>'
+    : "";
   const right = o
-    ? `${signedUsd(o.deltaCents)} <i>vs naked · settled ${px(p.settleCents ?? 0)}</i>`
+    ? o.knockedOut
+      ? `${signedUsd(o.deltaCents)} <i>paid at the touch${o.touchedAtIso ? ` ${shortUtc(o.touchedAtIso)}` : ""}</i>`
+      : `${signedUsd(o.deltaCents)} <i>vs naked · settled ${px(p.settleCents ?? 0)}</i>`
     : `${usd(p.creditCents)} <i>cash · expires ${shortUtc(p.expiryIso)}</i>`;
   return `<div class="row"><span>${p.side === "long" ? "Long" : "Short"} ${(p.contracts * p.ctValBtc).toFixed(2)} BTC at ${px(p.spotCents)} ${tag}<br/><i style="font-style:normal;color:var(--faint);font-size:11.5px">floor ${px(p.floorStrikeCents)} · cap ${px(p.capStrikeCents)} · ${shortUtc(p.at)}</i></span><b>${right}</b></div>`;
 }
@@ -106,9 +115,11 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
   const settledLine =
     s.settled === 0
       ? "Nothing has expired yet; the first daily print settles the first positions."
-      : `${s.settled} settled: ${s.floorSaves} floor save${s.floorSaves === 1 ? "" : "s"}, ${s.capHits} capped, ${s.settled - s.floorSaves - s.capHits} closed between. Protection ${
-          s.holderDeltaCents >= 0 ? "added" : "cost"
-        } ${usd(Math.abs(s.holderDeltaCents))} against holding naked; the writer kept ${usd(s.writerCents)}.`;
+      : `${s.settled} settled: ${s.floorSaves} floor save${s.floorSaves === 1 ? "" : "s"}, ${s.knockouts} knocked out at the cap (paid what had vested, protection re-armed), ${
+          s.settled - s.floorSaves - s.knockouts
+        } ran to expiry between the wings. Protection ${s.holderDeltaCents >= 0 ? "added" : "cost"} ${usd(Math.abs(s.holderDeltaCents))} against holding naked; the writer's side came to ${signedUsd(
+          s.writerCents,
+        )}.`;
   const refusalRows = Object.entries(s.refusalReasons)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4)
@@ -134,7 +145,7 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
 <div class="wrap">
   <div class="card">
     <h1>What protection did, quote by quote</h1>
-    <div class="sub">Every hour the live product's collar is quoted from the OKX book for a ${input.sizeBtc.toFixed(2)} BTC Hyperliquid position, long and short, at the terms a holder would see: floor 6% below, cap as wide as the book funds, cash credit either way. When the options expire, each position is marked against OKX's official delivery price, protected versus naked. Positions are simulated; prices, fees and prints are real.</div>
+    <div class="sub">Every hour the live product's collar is quoted from the OKX book for a ${input.sizeBtc.toFixed(2)} BTC Hyperliquid position, long and short, at the terms a holder would see: a hard floor 6% out, the cap as far out as the book still pays, cash credit either way. A cap touch ends the cycle early: the holder keeps the position and every gain, is paid the credit vested to that moment, and protection re-arms. Each position is settled on the Hyperliquid price path (did the cap get touched, and when) and OKX's official delivery print, protected versus naked. Positions are simulated; prices, fees, candles and prints are real.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.positions}</div><div class="l">positions quoted</div></div>
       <div class="bignum"><div class="n">${s.refusals}</div><div class="l">honest refusals</div></div>
@@ -154,6 +165,8 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     <div class="row"><span>venue spread paid</span><b>${bpsPct(s.spreadCostBps)} <i>of notional, mid vs touch</i></b></div>
     <div class="row"><span>funding at open</span><b>${s.avgFundingBpsPer8h === null ? "–" : `${s.avgFundingBpsPer8h} bps / 8h`} <i>Hyperliquid, average</i></b></div>
     <div class="row"><span>basis at open</span><b>${s.avgBasisBps === null ? "–" : `${s.avgBasisBps} bps`} <i>HL mark vs OKX index</i></b></div>
+    <div class="row"><span>cap distance written</span><b>${s.avgCapPct === null ? "–" : `${(s.avgCapPct * 100).toFixed(1)}%`} <i>from price, average</i></b></div>
+    <div class="row"><span>knock-outs</span><b>${s.settled ? `${s.knockouts} of ${s.settled}` : "–"} <i>${s.knockoutDetail.avgHoursToTouch === null ? "cap touched, cycle ended early" : `avg ${s.knockoutDetail.avgHoursToTouch}h in`}</i></b></div>
     <div class="row"><span>long / short</span><b>${s.bySide.long.positions} / ${s.bySide.short.positions}</b></div>
     <div class="row"><span>rule comparison</span><b>${escapeHtml(cfLine)} <i>report on request</i></b></div>
     ${refusalRows ? `<h2 style="margin-top:14px">Why quotes were refused</h2>${refusalRows}` : ""}
@@ -170,11 +183,11 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
 
   <div class="card">
     <h2>How to read it</h2>
-    <div class="read"><b>Protection vs naked</b> is the holder's P&amp;L with the collar and credit minus the P&amp;L of the bare position, at the official print. Negative is the usual cost of protection; positive means the floor paid more than the cap gave up. <b>Our take</b> is the published share of the net credit and is the writer's whole result: the hedge legs are the holder's terms bought and sold on OKX, so the outcome cancels leg for leg. <b>Venue spread</b> is what crossing the book costs versus mid; it is the number a better fill would shrink.</div>
+    <div class="read"><b>Protection vs naked</b> is the holder's P&amp;L with the collar and credit minus the P&amp;L of the bare position. Ran to expiry: the floor clamps the loss side and the whole credit is theirs. <b>Knocked out</b>: price touched the cap on the Hyperliquid path, the cycle ended there, the holder kept the position and every gain and was paid the credit vested to the touch. <b>Our take</b> is the published share of the net credit; the floor leg is hedged leg for leg on OKX, and at a knock-out the short cap leg is bought back at the money, which is the writer's cost against the unvested credit kept. <b>Venue spread</b> is what crossing the book costs versus mid; it is the number a better fill would shrink.</div>
     <a class="back" href="${demoUrl()}">Try the live demo</a> <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>
   </div>
   <footer>
-    <b>What is real:</b> OKX option prices and fees, Hyperliquid marks and funding, OKX delivery prints. <b>What is simulated:</b> the positions; no venue credentials, no wallets, nothing traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer.
+    <b>What is real:</b> OKX option prices and fees, Hyperliquid marks, candles and funding, OKX delivery prints. <b>What is simulated:</b> the positions; no venue credentials, no wallets, nothing traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer.
   </footer>
 </div>
 </body>
@@ -187,9 +200,10 @@ export interface PerpShadowReportInput {
   atIso: string;
   summary: PerpShadowSummary;
   token?: string | null;
+  capGuard?: CapGuard;
 }
 
-const RULE_HEAD = `<tr><th>rule</th><th>quoted</th><th>refused</th><th>cash / notional</th><th>cash</th><th>take</th><th>settled</th><th>floor</th><th>cap</th><th>holder Δ</th><th>writer</th></tr>`;
+const RULE_HEAD = `<tr><th>rule</th><th>quoted</th><th>refused</th><th>cash / notional</th><th>cash</th><th>take</th><th>settled</th><th>floor</th><th>knock-outs</th><th>holder Δ</th><th>writer</th></tr>`;
 
 function ruleTr(name: string, note: string, b: PerpRuleBook, opts: { base?: boolean } = {}): string {
   return (
@@ -198,20 +212,66 @@ function ruleTr(name: string, note: string, b: PerpRuleBook, opts: { base?: bool
     `<td>${b.quoted}</td><td>${b.refused}</td>` +
     `<td class="hi">${escapeHtml(bpsPct(b.creditBpsOfNotional))}</td>` +
     `<td>${usd(b.creditCents)}</td><td>${usd(b.takeCents)}</td>` +
-    `<td>${b.settled}</td><td>${b.floorSaves}</td><td>${b.capHits}</td>` +
+    `<td>${b.settled}</td><td>${b.floorSaves}</td><td>${b.knockouts}${b.knockoutRatePct != null ? ` <i style="color:var(--faint);font-style:normal">${b.knockoutRatePct}%</i>` : ""}</td>` +
     `<td>${b.settled ? signedUsd(b.holderDeltaCents) : "–"}</td><td>${b.settled ? signedUsd(b.writerCents) : "–"}</td>` +
     `</tr>`
   );
 }
 
+const LADDER_HEAD = `<tr><th>cap from price</th><th>quoted</th><th>refused</th><th>live pick</th><th>cash / notional</th><th>settled</th><th>knock-outs</th><th>rate</th><th>avg time to touch</th><th>buyback</th><th>writer</th><th>OKX saw it</th></tr>`;
+
+function rungTr(r: PerpCapRungBook, guard?: CapGuard): string {
+  const under = guard ? r.capPct < guard.minCapPct - 1e-9 : r.underGuard > 0;
+  return (
+    `<tr${r.livePicks > 0 && r.livePicks >= (r.quoted + r.refused) / 2 ? ' class="base"' : ""}>` +
+    `<td>${r.bucket}${under ? ' <span class="tag">under guard</span>' : ""}</td>` +
+    `<td>${r.quoted}</td><td>${r.refused}</td><td>${r.livePicks}</td>` +
+    `<td class="hi">${escapeHtml(bpsPct(r.creditBpsOfNotional))}</td>` +
+    `<td>${r.settled}</td><td>${r.knockouts}</td><td>${r.knockoutRatePct == null ? "–" : `${r.knockoutRatePct}%`}</td>` +
+    `<td>${r.avgHoursToTouch == null ? "–" : `${r.avgHoursToTouch}h`}</td>` +
+    `<td>${r.knockouts ? usd(r.buybackCents) : "–"}</td><td>${r.settled ? signedUsd(r.writerCents) : "–"}</td>` +
+    `<td>${r.knockouts ? `${r.okxConfirmedTouches} / ${r.okxConfirmedTouches + r.hlOnlyTouches}` : "–"}</td>` +
+    `</tr>`
+  );
+}
+
 export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string {
-  const cf = input.summary.counterfactuals;
+  const s = input.summary;
+  const cf = s.counterfactuals;
+  const ko = s.knockoutDetail;
   const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
   const period = cf.recordedSince ? `${utcDay(cf.recordedSince)} to ${utcDay(input.atIso)} UTC` : "not started; the first quoted position begins it";
-  const tierRows = [ruleTr("live book", "what was quoted", cf.baseline, { base: true }), ...PERP_TIERS.map((t: PerpTier) => ruleTr(`${t} tier`, "", cf.tiers[t]))].join("");
-  const tierRules = PERP_TIERS.map(
-    (t) => `<div class="row"><span>${t}</span><b style="font-weight:500;text-align:left">${escapeHtml(PERP_TIER_RULES[t])}</b></div>`,
-  ).join("");
+  const ladderRows = cf.capLadder.map((r) => rungTr(r, input.capGuard)).join("");
+  const settledRungs = cf.capLadder.filter((r) => r.settled > 0);
+  const bestWriter = settledRungs.length ? [...settledRungs].sort((a, b) => b.writerCents - a.writerCents)[0] : null;
+  const ladderLine = bestWriter
+    ? `Over settled positions the writer's side was best with the cap ${bestWriter.bucket} out (${signedUsd(bestWriter.writerCents)}, ${bestWriter.knockouts} knock-out${
+        bestWriter.knockouts === 1 ? "" : "s"
+      } in ${bestWriter.settled}); the live pick averaged ${s.avgCapPct == null ? "–" : `${(s.avgCapPct * 100).toFixed(1)}%`}. A closer cap pays more cash and gets touched more; the buyback column is what each touch cost.`
+    : "Rungs settle with the live position; knock-out rates appear once positions expire.";
+  const guardLine = input.capGuard
+    ? `Cap guard in force: the live product refuses a cap closer than ${(input.capGuard.minCapPct * 100).toFixed(1)}% and searches out to ${(input.capGuard.maxCapPct * 100).toFixed(1)}%.`
+    : "";
+  const koLine =
+    ko.knockouts === 0
+      ? "No knock-outs settled yet."
+      : `${ko.knockouts} knock-out${ko.knockouts === 1 ? "" : "s"} over ${ko.touchHours} distinct hour${ko.touchHours === 1 ? "" : "s"}; the busiest hour had ${ko.maxInOneHour}. Buybacks came to ${usd(
+          ko.buybackCents,
+        )} against ${usd(ko.unvestedKeptCents)} of unvested credit kept${ko.pricedBlind ? ` (${ko.pricedBlind} priced without an ATM reference, counted as $0)` : ""}. Of the touches Hyperliquid saw, the OKX index reached the cap on ${
+          ko.okxConfirmed
+        } and stayed short on ${ko.hlOnly}${ko.avgOkxGapBps != null ? `; OKX's extreme sat ${ko.avgOkxGapBps} bps ${ko.avgOkxGapBps >= 0 ? "past" : "short of"} the cap on average` : ""}.`;
+  const fr = cf.fundingRule;
+  const fundingLine =
+    fr.judged === 0
+      ? "No funding read yet."
+      : `On ${fr.judged} quotes the credit came to ${usd(fr.creditCents)} against ${usd(fr.fundingCents)} of funding the holder pays over the cycle; the rule would have refused ${fr.wouldRefuse} (${Math.round(
+          (fr.wouldRefuse / fr.judged) * 100,
+        )}%).`;
+  const ss = s.sameStrike;
+  const sameLine =
+    ss.opens === 0
+      ? ""
+      : `${ss.sharedSellStrike} of ${ss.opens} opens landed on a funding strike already open on the book (most at once on one strike: ${ss.maxOpenOnOneStrike}). Those are the entries a single block RFQ would fill at one price.`;
   const feeLabels = Object.keys(cf.feeRules);
   const feeRows = [ruleTr("live book", "what was quoted", cf.baseline, { base: true }), ...feeLabels.map((l) => ruleTr(feeRuleText(l).name, "", cf.feeRules[l]))].join("");
   const feeRules = feeLabels
@@ -240,7 +300,7 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
     weekly && weekly.quoted > 0 && cf.baseline.quoted > 0
       ? `The same collar at the weekly pays ${bpsPct(weekly.creditBpsOfNotional)} of notional in cash against ${bpsPct(
           cf.baseline.creditBpsOfNotional,
-        )} at the daily: one-day options a few percent out are worth ticks, so most of the daily's gross goes to venue fees. The weekly is where the credit is real; it also holds the position through a week of funding.`
+        )} at the daily: one-day options a few percent out are worth ticks, so most of the daily's gross goes to venue fees. The weekly is where the credit is real; it also holds the position through a week of funding and a week of chances to touch the cap.`
       : "";
   const one = cf.capacity.find((c) => c.mult === 1);
   const top = cf.capacity[cf.capacity.length - 1];
@@ -271,19 +331,39 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
 <div class="wrap">
   <div class="card">
     <h1>What each rule would have done</h1>
-    <div class="sub">Every position records what the other tiers, the other fee rule and larger sizes would have written from the same OKX snapshot at the same second; at expiry every alternative is marked against the same delivery print. Same positions, same book, same print; only the rule differs.</div>
+    <div class="sub">Every position records what every listed cap distance, the other fee rule, larger sizes and the weekly would have written from the same OKX snapshot at the same second. At expiry every alternative is settled on the same Hyperliquid path (a cap touch is a knock-out: the cycle ends, the short cap leg is bought back at the money) and the same delivery print. Same positions, same book, same path; only the rule differs.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${cf.positionsWithCounterfactuals}</div><div class="l">positions compared</div></div>
       <div class="bignum"><div class="n">${cf.baseline.settled}</div><div class="l">of them settled</div></div>
+      <div class="bignum"><div class="n">${s.knockouts}</div><div class="l">knock-outs, live cap</div></div>
+      <div class="bignum"><div class="n ${s.writerCents >= 0 ? "green" : ""}">${s.settled ? signedUsd(s.writerCents) : "–"}</div><div class="l">writer's side, settled</div></div>
     </div>
     <div class="period">${escapeHtml(period)}</div>
   </div>
 
   <div class="card">
-    <h2>Protection tiers</h2>
-    <div class="sub" style="margin-bottom:6px">Three geometries from one book. Cash / notional is the holder's credit per dollar protected; holder Δ is protected minus naked over settled positions.</div>
-    <div class="tablewrap"><table>${RULE_HEAD}${tierRows}</table></div>
-    ${tierRules}
+    <h2>Cap distance</h2>
+    <div class="sub" style="margin-bottom:6px">The live floor held fixed; the funding wing moved to every listed strike in the band. Each rung is settled on the same path, so the knock-out rate and what each touch cost are measured per distance. The live rule takes the widest rung that pays.</div>
+    <div class="tablewrap"><table>${LADDER_HEAD}${ladderRows}</table></div>
+    <div class="read">${escapeHtml(ladderLine)}</div>
+    ${guardLine ? `<div class="rule">${escapeHtml(guardLine)} Buyback is the ATM ask the nearest scan saw, scaled to the time left at the touch; OKX saw it = the OKX index reached the cap within ±3 minutes of the Hyperliquid touch.</div>` : ""}
+  </div>
+
+  <div class="card">
+    <h2>Knock-outs</h2>
+    <div class="row"><span>knocked out</span><b>${ko.knockouts} <i>of ${s.settled} settled</i></b></div>
+    <div class="row"><span>time to touch</span><b>${ko.avgHoursToTouch == null ? "–" : `${ko.avgHoursToTouch}h`} <i>average from open</i></b></div>
+    <div class="row"><span>clustering</span><b>${ko.knockouts ? `${ko.maxInOneHour} in one hour` : "–"} <i>${ko.touchHours} hour${ko.touchHours === 1 ? "" : "s"} with a touch</i></b></div>
+    <div class="row"><span>buybacks</span><b>${ko.knockouts ? usd(ko.buybackCents) : "–"} <i>vs ${usd(ko.unvestedKeptCents)} unvested kept</i></b></div>
+    <div class="row"><span>two clocks</span><b>${ko.knockouts ? `${ko.okxConfirmed} confirmed · ${ko.hlOnly} HL only` : "–"} <i>${ko.avgOkxGapBps == null ? "OKX index vs cap at the touch" : `OKX ${ko.avgOkxGapBps} bps vs cap`}</i></b></div>
+    <div class="read">${escapeHtml(koLine)}</div>
+  </div>
+
+  <div class="card">
+    <h2>Does the math make sense</h2>
+    <div class="row"><span>credit vs funding</span><b>${fr.judged ? `${fr.wouldRefuse} of ${fr.judged} would be refused` : "–"} <i>credit ≤ the cycle's funding cost</i></b></div>
+    <div class="row"><span>same funding strike</span><b>${ss.opens ? `${ss.sharedSellStrike} of ${ss.opens}` : "–"} <i>already open on the book</i></b></div>
+    <div class="read">${escapeHtml(fundingLine)}${sameLine ? ` ${escapeHtml(sameLine)}` : ""}</div>
   </div>
 
   <div class="card">
@@ -302,7 +382,7 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
 
   <div class="card">
     <h2>Capacity</h2>
-    <div class="sub" style="margin-bottom:6px">The live tier re-quoted at larger sizes, each wing walked down the visible depth. Cash per dollar protected and the spread paid are the numbers to watch.</div>
+    <div class="sub" style="margin-bottom:6px">The live shape re-quoted at larger sizes, each wing walked down the visible depth. Cash per dollar protected and the spread paid are the numbers to watch.</div>
     <div class="tablewrap"><table>
       <tr><th>size</th><th>quoted</th><th>refused</th><th>fill rate</th><th>notional</th><th>cash</th><th>cash / notional</th><th>spread paid</th><th>take</th></tr>
       ${capRows}
@@ -314,7 +394,7 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
   <div class="card">
     <a class="back" href="/">Back to the shadow record</a> <a class="back" href="/api/shadow/report${tq}">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full${tq ? `&token=${encodeURIComponent(input.token as string)}` : ""}">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/export${tq}">Full ledger (JSONL)</a>
   </div>
-  <footer>Counterfactuals are computed at open from the OKX snapshot retained with the position and settled against the same delivery print as the live book. Nothing in the alternatives was traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC.</footer>
+  <footer>Counterfactuals are computed at open from the OKX snapshot retained with the position and settled on the same Hyperliquid path and OKX delivery print as the live book. Nothing in the alternatives was traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC.</footer>
 </div>
 </body>
 </html>`;

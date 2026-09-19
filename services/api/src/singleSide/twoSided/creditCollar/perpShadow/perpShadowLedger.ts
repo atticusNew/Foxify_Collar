@@ -1,21 +1,26 @@
 /**
  * The perp shadow ledger: the Earn & Protect collar quoted continuously from
  * the live OKX book at the demo's own terms, every quote a simulated position,
- * every position marked against the venue's official delivery price at expiry.
+ * every position settled on the price PATH (Hyperliquid candles: did the cap
+ * get touched, and when) and the venue's official delivery print.
+ *
+ * The collar is a knock-out. A cap touch ends the cycle: the holder keeps the
+ * position and every gain, is paid the credit vested to that moment, and
+ * protection re-arms. The writer buys the short funding leg back at the money
+ * and keeps the unvested credit against that cost. So the questions the
+ * shadow answers are not "which tier" but: how far out should the cap sit,
+ * how often does it get touched, what does a touch cost, do touches cluster,
+ * and does the hedge venue's clock agree with the trigger's.
  *
  * Append-only JSONL, replayed on every read; money in integer cents; nothing
  * edited in place. Each open also carries what the OTHER rules would have
- * written from the same snapshot (tiers, fee rule, larger sizes), so the rule
- * comparison is measured, not argued.
+ * written from the same snapshot (every listed cap distance, the fee rule,
+ * larger sizes, the weekly), so the rule comparison is measured, not argued.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PerpSide } from "../creditCollarPricer";
-import { PERP_TIERS, PERP_TIER_GEOMETRY, PERP_TIER_RULES, type PerpTier } from "../perpTiers";
-
-export { PERP_TIERS, PERP_TIER_GEOMETRY, PERP_TIER_RULES };
-export type { PerpTier };
 
 export type PerpTakeRule = "share" | "minimum" | "waived";
 
@@ -63,12 +68,36 @@ export interface PerpFeeRuleAlt {
 /** The same geometry at another expiry; compared on quoted terms (it settles on a different print). */
 export type PerpTenorAlt = (PerpAltTerms & { expiryIso: string }) | PerpAltRefusal;
 
+/**
+ * One rung of the cap-distance ladder: the live floor held fixed, the funding
+ * wing moved to this listed strike. Settled on the same path as the live
+ * position, so each rung shows its own knock-out rate and cost.
+ */
+export interface PerpCapRung {
+  sellInstId: string;
+  capStrikeCents: number;
+  /** distance from spot, fraction */
+  capPct: number;
+  /** the live pick (the widest strike that paid) */
+  live: boolean;
+  /** sits closer than the cap guard: the live product refuses to write here */
+  underGuard: boolean;
+  terms: PerpAlt;
+}
+
 export interface PerpShadowCounterfactuals {
-  version: 1;
-  tiers: Record<PerpTier, PerpAlt>;
+  version: 2;
+  capLadder: PerpCapRung[];
   feeRules: Record<string, PerpFeeRuleAlt>;
   sizeLadder: PerpSizeProbe[];
   tenors: Record<string, PerpTenorAlt>;
+}
+
+/** The ATM ask seen at open: the knock-out buyback is estimated from the nearest scan's. */
+export interface PerpAtmRef {
+  callAskPxBtc: number | null;
+  putAskPxBtc: number | null;
+  hoursToExpiry: number;
 }
 
 export interface PerpShadowOpenRecord {
@@ -88,8 +117,11 @@ export interface PerpShadowOpenRecord {
   basisBps: number | null;
   /** Hyperliquid funding at open, bps per 8h; what holding the perp costs meanwhile */
   fundingBpsPer8h: number | null;
+  /** funding over the cycle at that rate, cents; positive = the holder pays; null when funding unreadable */
+  fundingCycleCents: number | null;
   expiryIso: string;
-  tier: PerpTier;
+  /** the cap guard in force at open, fraction: a cap closer than this is refused live */
+  capGuardPct: number;
   buyInstId: string;
   sellInstId: string;
   floorStrikeCents: number;
@@ -110,6 +142,7 @@ export interface PerpShadowOpenRecord {
   creditCents: number;
   /** the collar valued at venue mids; the spread we pay is mid − net */
   midCreditCents: number | null;
+  atmRef: PerpAtmRef | null;
   counterfactuals: PerpShadowCounterfactuals | null;
 }
 
@@ -123,12 +156,37 @@ export interface PerpShadowRefusalRecord {
   message: string;
 }
 
+export interface PerpPathTouch {
+  capStrikeCents: number;
+  atIso: string;
+  /** the Hyperliquid candle extreme that reached the cap */
+  hlPxCents: number;
+  /** the OKX index extreme in the minutes around it; null when no candle covered the window */
+  okxPxCents: number | null;
+  /** did the hedge venue's index reach the cap too (null = unknown) */
+  okxConfirmed: boolean | null;
+  /** OKX extreme vs the cap, bps (negative = OKX did not reach it) */
+  okxGapBps: number | null;
+}
+
+/** The price path from open to expiry, and the first touch of every cap the position or its rungs used. */
+export interface PerpPath {
+  source: "hl_candles";
+  interval: "1m" | "5m";
+  candles: number;
+  hiCents: number;
+  loCents: number;
+  touches: PerpPathTouch[];
+}
+
 export interface PerpShadowSettleRecord {
   type: "settle";
   at: string;
   id: string;
   settleCents: number;
   source: "okx_delivery" | "hl_mark";
+  /** absent on records written before path settlement */
+  path?: PerpPath | null;
 }
 
 export interface PerpShadowVoidRecord {
@@ -145,6 +203,7 @@ export interface PerpShadowPosition extends Omit<PerpShadowOpenRecord, "type"> {
   settledAt?: string;
   settleCents?: number;
   settleSource?: PerpShadowSettleRecord["source"];
+  path?: PerpPath | null;
   voidReason?: string;
   outcome?: PerpOutcome;
 }
@@ -155,8 +214,18 @@ export interface PerpOutcome {
   /** protected − naked: what protection did for the holder */
   deltaCents: number;
   floorSave: boolean;
+  /** the cap was reached: on the path (knock-out at the touch) or, without a path, at the print */
   capHit: boolean;
-  /** the writer's side after the back-to-back hedge: the take, leg for leg */
+  /** the cycle ended early at a cap touch */
+  knockedOut: boolean;
+  touchedAtIso: string | null;
+  /** share of the credit vested when the cycle ended (1 = ran to expiry) */
+  vestedFraction: number;
+  /** the holder's cash: the credit × vested fraction */
+  paidCents: number;
+  /** estimated cost of buying the short funding leg back at the touch (ATM ask at the remaining time) */
+  buybackCents: number;
+  /** the writer's side: the take, plus unvested credit kept, minus the buyback */
   writerCents: number;
 }
 
@@ -164,29 +233,176 @@ export interface PerpOutcome {
 const pnlCents = (side: PerpSide, qtyBtc: number, fromCents: number, toCents: number): number =>
   Math.round(qtyBtc * (toCents - fromCents) * (side === "long" ? 1 : -1));
 
+export interface PerpSettleContext {
+  /** the touch of THIS cap on the path, if any */
+  touch?: PerpPathTouch | null;
+  /** a path was recorded (so "no touch" is a fact, not an absence of data) */
+  hasPath: boolean;
+  openMs: number;
+  expiryMs: number;
+  /** the ATM ask to estimate the buyback from (the nearest scan's), BTC per BTC, and its time to expiry */
+  atm?: { askPxBtc: number; hoursToExpiry: number } | null;
+}
+
 /**
- * The holder's two worlds at settlement. The collar clamps the exit between
- * floor and cap; the credit is theirs either way. Writer P&L is the take: the
- * hedge legs are the holder's terms bought and sold on the venue, so the
- * outcome cancels leg for leg and only the published take remains.
+ * Buyback estimate at a touch: the ATM ask a nearby scan saw, scaled by
+ * √(time remaining) — time value is what an ATM option is — priced at the
+ * cap (spot is at the cap when it touches). Null reference → 0, and the
+ * summary counts how many knock-outs were priced blind.
+ */
+export const buybackEstimateCents = (
+  qtyBtc: number,
+  capStrikeCents: number,
+  hoursLeftAtTouch: number,
+  atm: { askPxBtc: number; hoursToExpiry: number } | null | undefined,
+): number => {
+  if (!atm || !(atm.askPxBtc > 0) || !(atm.hoursToExpiry > 0)) return 0;
+  const scale = Math.sqrt(Math.max(0, hoursLeftAtTouch) / atm.hoursToExpiry);
+  return Math.round(atm.askPxBtc * scale * qtyBtc * capStrikeCents);
+};
+
+/**
+ * The holder's two worlds at settlement.
+ *
+ * Ran to expiry: the floor clamps the exit on the loss side; the full credit
+ * is theirs. Knocked out on the path: the cycle ended at the touch, the
+ * position kept running naked from there (re-arming is the next cycle's
+ * story), and the credit vested to the touch is paid. Without a path (older
+ * records) the print alone decides and a print beyond the cap is a knock-out
+ * at expiry with the intrinsic as the buyback.
+ *
+ * The writer's side is the take, plus the unvested credit kept at a
+ * knock-out, minus the buyback of the short leg. The floor leg is bought and
+ * held, so it cancels against the holder's terms leg for leg.
  */
 export function perpOutcome(
   p: Pick<PerpShadowOpenRecord, "side" | "contracts" | "ctValBtc" | "spotCents" | "floorStrikeCents" | "capStrikeCents" | "creditCents" | "takeCents">,
   settleCents: number,
+  ctx?: PerpSettleContext,
 ): PerpOutcome {
   const qty = p.contracts * p.ctValBtc;
-  const lo = Math.min(p.floorStrikeCents, p.capStrikeCents);
-  const hi = Math.max(p.floorStrikeCents, p.capStrikeCents);
-  const clamped = Math.min(hi, Math.max(lo, settleCents));
   const naked = pnlCents(p.side, qty, p.spotCents, settleCents);
-  const protectedPnl = pnlCents(p.side, qty, p.spotCents, clamped) + p.creditCents;
-  const floorSave = p.side === "long" ? settleCents < p.floorStrikeCents : settleCents > p.floorStrikeCents;
-  const capHit = p.side === "long" ? settleCents > p.capStrikeCents : settleCents < p.capStrikeCents;
-  return { nakedCents: naked, protectedCents: protectedPnl, deltaCents: protectedPnl - naked, floorSave, capHit, writerCents: p.takeCents };
+  const floorSaveAtPrint = p.side === "long" ? settleCents < p.floorStrikeCents : settleCents > p.floorStrikeCents;
+  const beyondCapAtPrint = p.side === "long" ? settleCents > p.capStrikeCents : settleCents < p.capStrikeCents;
+  const floored = p.side === "long" ? Math.max(p.floorStrikeCents, settleCents) : Math.min(p.floorStrikeCents, settleCents);
+
+  if (ctx?.touch) {
+    const touchMs = Date.parse(ctx.touch.atIso);
+    const span = Math.max(1, ctx.expiryMs - ctx.openMs);
+    const vested = Math.min(1, Math.max(0, (touchMs - ctx.openMs) / span));
+    const paid = Math.round(p.creditCents * vested);
+    const hoursLeft = Math.max(0, (ctx.expiryMs - touchMs) / 3_600_000);
+    const buyback = buybackEstimateCents(qty, p.capStrikeCents, hoursLeft, ctx.atm);
+    const protectedPnl = naked + paid;
+    return {
+      nakedCents: naked,
+      protectedCents: protectedPnl,
+      deltaCents: protectedPnl - naked,
+      floorSave: false,
+      capHit: true,
+      knockedOut: true,
+      touchedAtIso: ctx.touch.atIso,
+      vestedFraction: +vested.toFixed(4),
+      paidCents: paid,
+      buybackCents: buyback,
+      writerCents: p.takeCents + (p.creditCents - paid) - buyback,
+    };
+  }
+
+  if (ctx?.hasPath || !beyondCapAtPrint) {
+    // Ran to expiry without a touch (or a legacy print inside the wings): floor only.
+    const protectedPnl = pnlCents(p.side, qty, p.spotCents, floored) + p.creditCents;
+    // A print beyond the cap with no touch on the path means the last candle carried it there: knock-out at expiry.
+    if (beyondCapAtPrint) {
+      const intrinsic = Math.round(qty * Math.abs(settleCents - p.capStrikeCents));
+      return {
+        nakedCents: naked,
+        protectedCents: naked + p.creditCents,
+        deltaCents: p.creditCents,
+        floorSave: false,
+        capHit: true,
+        knockedOut: true,
+        touchedAtIso: new Date(ctx!.expiryMs).toISOString(),
+        vestedFraction: 1,
+        paidCents: p.creditCents,
+        buybackCents: intrinsic,
+        writerCents: p.takeCents - intrinsic,
+      };
+    }
+    return {
+      nakedCents: naked,
+      protectedCents: protectedPnl,
+      deltaCents: protectedPnl - naked,
+      floorSave: floorSaveAtPrint,
+      capHit: false,
+      knockedOut: false,
+      touchedAtIso: null,
+      vestedFraction: 1,
+      paidCents: p.creditCents,
+      buybackCents: 0,
+      writerCents: p.takeCents,
+    };
+  }
+
+  // Legacy (no path): the print is beyond the cap. Treat as a knock-out at expiry with the intrinsic as the buyback.
+  const intrinsic = Math.round(qty * Math.abs(settleCents - p.capStrikeCents));
+  return {
+    nakedCents: naked,
+    protectedCents: naked + p.creditCents,
+    deltaCents: p.creditCents,
+    floorSave: false,
+    capHit: true,
+    knockedOut: true,
+    touchedAtIso: null,
+    vestedFraction: 1,
+    paidCents: p.creditCents,
+    buybackCents: intrinsic,
+    writerCents: p.takeCents - intrinsic,
+  };
 }
 
-/** The same outcome for an alternative's terms on the same position and print. */
-export function altOutcome(p: PerpShadowPosition, alt: PerpAltTerms, settleCents: number): PerpOutcome {
+const touchFor = (path: PerpPath | null | undefined, capStrikeCents: number): PerpPathTouch | null =>
+  path?.touches.find((t) => t.capStrikeCents === capStrikeCents) ?? null;
+
+/**
+ * The ATM reference for a touch: the scan nearest in time to it, on either
+ * side, that saw an ask for the leg we are short (a long is short the call,
+ * a short is short the put).
+ */
+export const nearestAtm = (
+  positions: Array<Pick<PerpShadowPosition, "at" | "expiryIso" | "atmRef">>,
+  side: PerpSide,
+  expiryIso: string,
+  touchMs: number,
+): { askPxBtc: number; hoursToExpiry: number } | null => {
+  let best: { askPxBtc: number; hoursToExpiry: number } | null = null;
+  let bestDist = Infinity;
+  for (const p of positions) {
+    if (p.expiryIso !== expiryIso || !p.atmRef) continue;
+    const ask = side === "long" ? p.atmRef.callAskPxBtc : p.atmRef.putAskPxBtc;
+    if (ask == null || !(ask > 0)) continue;
+    const d = Math.abs(Date.parse(p.at) - touchMs);
+    if (d < bestDist) {
+      bestDist = d;
+      best = { askPxBtc: ask, hoursToExpiry: p.atmRef.hoursToExpiry };
+    }
+  }
+  return best;
+};
+
+const settleCtx = (p: PerpShadowPosition, capStrikeCents: number, all: PerpShadowPosition[]): PerpSettleContext => {
+  const touch = touchFor(p.path, capStrikeCents);
+  return {
+    touch,
+    hasPath: p.path != null,
+    openMs: Date.parse(p.at),
+    expiryMs: Date.parse(p.expiryIso),
+    atm: touch ? nearestAtm(all, p.side, p.expiryIso, Date.parse(touch.atIso)) : null,
+  };
+};
+
+/** The same outcome for an alternative's terms on the same position, path and print. */
+export function altOutcome(p: PerpShadowPosition, alt: PerpAltTerms, settleCents: number, all: PerpShadowPosition[] = [p]): PerpOutcome {
   return perpOutcome(
     {
       side: p.side,
@@ -199,6 +415,7 @@ export function altOutcome(p: PerpShadowPosition, alt: PerpAltTerms, settleCents
       takeCents: alt.takeCents,
     },
     settleCents,
+    settleCtx(p, alt.capStrikeCents, all),
   );
 }
 
@@ -238,7 +455,7 @@ export function replayPerpShadow(records: PerpShadowRecord[]): { positions: Perp
       p.settledAt = r.at;
       p.settleCents = r.settleCents;
       p.settleSource = r.source;
-      p.outcome = perpOutcome(p, r.settleCents);
+      p.path = r.path ?? null;
     } else if (r.type === "void") {
       const p = byId.get(r.id);
       if (!p || p.status !== "open") continue;
@@ -246,7 +463,13 @@ export function replayPerpShadow(records: PerpShadowRecord[]): { positions: Perp
       p.voidReason = r.reason;
     }
   }
-  return { positions: [...byId.values()], refusals };
+  // Outcomes last: a knock-out's buyback reads the ATM ask from the scan nearest the touch, which
+  // may be a later open than the position itself.
+  const positions = [...byId.values()];
+  for (const p of positions) {
+    if (p.status === "settled" && p.settleCents != null) p.outcome = perpOutcome(p, p.settleCents, settleCtx(p, p.capStrikeCents, positions));
+  }
+  return { positions, refusals };
 }
 
 export function loadPerpShadow(path: string): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[] } {
@@ -268,6 +491,14 @@ export interface PerpRuleBook {
   settled: number;
   floorSaves: number;
   capHits: number;
+  knockouts: number;
+  /** knock-outs / settled, percent to one decimal */
+  knockoutRatePct: number | null;
+  /** hours from open to the touch, averaged over knock-outs */
+  avgHoursToTouch: number | null;
+  buybackCents: number;
+  /** what holders were actually paid (vested at knock-outs) */
+  paidCents: number;
   holderDeltaCents: number;
   writerCents: number;
 }
@@ -287,9 +518,16 @@ const emptyBook = (): PerpRuleBook => ({
   settled: 0,
   floorSaves: 0,
   capHits: 0,
+  knockouts: 0,
+  knockoutRatePct: null,
+  avgHoursToTouch: null,
+  buybackCents: 0,
+  paidCents: 0,
   holderDeltaCents: 0,
   writerCents: 0,
 });
+
+type BookAcc = PerpRuleBook & { touchHours: number };
 
 const bookQuote = (b: PerpRuleBook, notionalCents: number, t: Pick<PerpAltTerms, "grossCreditCents" | "netCreditCents" | "takeCents" | "creditCents">): void => {
   b.quoted += 1;
@@ -299,54 +537,98 @@ const bookQuote = (b: PerpRuleBook, notionalCents: number, t: Pick<PerpAltTerms,
   b.takeCents += t.takeCents;
   b.creditCents += t.creditCents;
 };
-const bookSettle = (b: PerpRuleBook, o: PerpOutcome): void => {
+const bookSettle = (b: BookAcc, o: PerpOutcome, openMs: number): void => {
   b.settled += 1;
   if (o.floorSave) b.floorSaves += 1;
   if (o.capHit) b.capHits += 1;
+  if (o.knockedOut) {
+    b.knockouts += 1;
+    if (o.touchedAtIso) b.touchHours += (Date.parse(o.touchedAtIso) - openMs) / 3_600_000;
+  }
+  b.buybackCents += o.buybackCents;
+  b.paidCents += o.paidCents;
   b.holderDeltaCents += o.deltaCents;
   b.writerCents += o.writerCents;
 };
-const finishBook = (b: PerpRuleBook): PerpRuleBook => ({
+const newAcc = (): BookAcc => ({ ...emptyBook(), touchHours: 0 });
+const finishBook = ({ touchHours, ...b }: BookAcc): PerpRuleBook => ({
   ...b,
   creditBpsOfNotional: b.notionalCents > 0 ? bps1(b.creditCents / b.notionalCents) : null,
+  knockoutRatePct: b.settled > 0 ? +((b.knockouts / b.settled) * 100).toFixed(1) : null,
+  avgHoursToTouch: b.knockouts > 0 ? +(touchHours / b.knockouts).toFixed(1) : null,
 });
+
+/** Rungs are bucketed by cap distance to the nearest 0.5% so strikes from different spots compare. */
+export const capBucket = (capPct: number): string => `${(Math.round(capPct * 200) / 2).toFixed(1)}%`;
+
+export interface PerpCapRungBook extends PerpRuleBook {
+  bucket: string;
+  /** the bucket's mean cap distance, fraction */
+  capPct: number;
+  /** how many of its quotes were the live pick */
+  livePicks: number;
+  /** how many sat under the cap guard (refused live) */
+  underGuard: number;
+  okxConfirmedTouches: number;
+  hlOnlyTouches: number;
+}
 
 export interface PerpCounterfactualSummary {
   positionsWithCounterfactuals: number;
   recordedSince: string | null;
   baseline: PerpRuleBook;
-  tiers: Record<PerpTier, PerpRuleBook>;
+  /** every listed cap distance, floor held fixed, settled on the same path */
+  capLadder: PerpCapRungBook[];
   feeRules: Record<string, PerpRuleBook>;
-  /** the live tier re-quoted at larger sizes, walked down the depth */
+  /** the live geometry re-quoted at larger sizes, walked down the depth */
   capacity: Array<PerpRuleBook & { mult: number; contracts: number; avgSpreadCostBps: number | null }>;
   /** the live geometry at other expiries; quoted terms only, never settled here */
   tenors: Record<string, PerpRuleBook & { avgDays: number | null }>;
+  /** "math makes sense": how often the credit failed to clear the cycle's funding cost */
+  fundingRule: { judged: number; wouldRefuse: number; creditCents: number; fundingCents: number };
 }
 
 export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): PerpCounterfactualSummary {
   const withCf = positions.filter((p) => p.counterfactuals);
-  const baseline = emptyBook();
-  const tiers: Record<PerpTier, PerpRuleBook> = { tight: emptyBook(), balanced: emptyBook(), wide: emptyBook() };
-  const feeRules: Record<string, PerpRuleBook> = {};
-  const tenors = new Map<string, PerpRuleBook & { dayNum: number; dayDen: number }>();
-  const capacity = new Map<number, PerpRuleBook & { mult: number; contracts: number; spreadNum: number; spreadDen: number }>();
+  const baseline = newAcc();
+  const rungs = new Map<string, BookAcc & { capPctSum: number; livePicks: number; underGuard: number; okxConfirmedTouches: number; hlOnlyTouches: number }>();
+  const feeRules: Record<string, BookAcc> = {};
+  const tenors = new Map<string, BookAcc & { dayNum: number; dayDen: number }>();
+  const capacity = new Map<number, BookAcc & { mult: number; contracts: number; spreadNum: number; spreadDen: number }>();
+  const fundingRule = { judged: 0, wouldRefuse: 0, creditCents: 0, fundingCents: 0 };
   for (const p of withCf) {
     const cf = p.counterfactuals!;
     const settled = p.status === "settled" && p.settleCents != null;
+    const openMs = Date.parse(p.at);
     bookQuote(baseline, p.notionalCents, p);
-    if (settled && p.outcome) bookSettle(baseline, p.outcome);
-    for (const t of PERP_TIERS) {
-      const alt = cf.tiers[t];
-      if (!alt) continue;
-      if (!alt.ok) {
-        tiers[t].refused += 1;
-        continue;
+    if (settled && p.outcome) bookSettle(baseline, p.outcome, openMs);
+    if (p.fundingCycleCents != null) {
+      fundingRule.judged += 1;
+      fundingRule.creditCents += p.creditCents;
+      fundingRule.fundingCents += Math.max(0, p.fundingCycleCents);
+      if (p.fundingCycleCents > 0 && p.creditCents <= p.fundingCycleCents) fundingRule.wouldRefuse += 1;
+    }
+    for (const rung of cf.capLadder ?? []) {
+      const key = capBucket(rung.capPct);
+      const row = rungs.get(key) ?? { ...newAcc(), capPctSum: 0, livePicks: 0, underGuard: 0, okxConfirmedTouches: 0, hlOnlyTouches: 0 };
+      row.capPctSum += rung.capPct;
+      if (rung.live) row.livePicks += 1;
+      if (rung.underGuard) row.underGuard += 1;
+      if (!rung.terms.ok) row.refused += 1;
+      else {
+        bookQuote(row, p.notionalCents, rung.terms);
+        if (settled) {
+          const o = altOutcome(p, rung.terms, p.settleCents!, positions);
+          bookSettle(row, o, openMs);
+          const touch = touchFor(p.path, rung.capStrikeCents);
+          if (touch?.okxConfirmed === true) row.okxConfirmedTouches += 1;
+          else if (touch?.okxConfirmed === false) row.hlOnlyTouches += 1;
+        }
       }
-      bookQuote(tiers[t], p.notionalCents, alt);
-      if (settled) bookSettle(tiers[t], altOutcome(p, alt, p.settleCents!));
+      rungs.set(key, row);
     }
     for (const [label, fr] of Object.entries(cf.feeRules)) {
-      feeRules[label] ??= emptyBook();
+      feeRules[label] ??= newAcc();
       if (fr.refused) {
         feeRules[label].refused += 1;
         continue;
@@ -359,10 +641,10 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): P
         takeRule: fr.takeRule,
       };
       bookQuote(feeRules[label], p.notionalCents, terms);
-      if (settled) bookSettle(feeRules[label], altOutcome(p, terms, p.settleCents!));
+      if (settled) bookSettle(feeRules[label], altOutcome(p, terms, p.settleCents!, positions), openMs);
     }
     for (const [label, alt] of Object.entries(cf.tenors ?? {})) {
-      const row = tenors.get(label) ?? { ...emptyBook(), dayNum: 0, dayDen: 0 };
+      const row = tenors.get(label) ?? { ...newAcc(), dayNum: 0, dayDen: 0 };
       if (!alt.ok) row.refused += 1;
       else {
         bookQuote(row, p.notionalCents, alt);
@@ -372,7 +654,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): P
       tenors.set(label, row);
     }
     for (const probe of cf.sizeLadder) {
-      const row = capacity.get(probe.mult) ?? { ...emptyBook(), mult: probe.mult, contracts: 0, spreadNum: 0, spreadDen: 0 };
+      const row = capacity.get(probe.mult) ?? { ...newAcc(), mult: probe.mult, contracts: 0, spreadNum: 0, spreadDen: 0 };
       row.contracts += probe.contracts;
       if (!probe.terms.ok) row.refused += 1;
       else {
@@ -382,7 +664,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): P
           row.spreadNum += ((probe.terms.midCreditCents - probe.terms.netCreditCents) / notional) * 10000;
           row.spreadDen += 1;
         }
-        if (settled) bookSettle(row, altOutcome({ ...p, contracts: probe.contracts }, probe.terms, p.settleCents!));
+        if (settled) bookSettle(row, altOutcome({ ...p, contracts: probe.contracts }, probe.terms, p.settleCents!, positions), openMs);
       }
       capacity.set(probe.mult, row);
     }
@@ -391,7 +673,17 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): P
     positionsWithCounterfactuals: withCf.length,
     recordedSince: withCf.length ? withCf.map((p) => p.at).sort()[0] : null,
     baseline: finishBook(baseline),
-    tiers: { tight: finishBook(tiers.tight), balanced: finishBook(tiers.balanced), wide: finishBook(tiers.wide) },
+    capLadder: [...rungs.entries()]
+      .map(([bucket, { capPctSum, livePicks, underGuard, okxConfirmedTouches, hlOnlyTouches, ...row }]) => ({
+        ...finishBook(row),
+        bucket,
+        capPct: +(capPctSum / Math.max(1, row.quoted + row.refused)).toFixed(4),
+        livePicks,
+        underGuard,
+        okxConfirmedTouches,
+        hlOnlyTouches,
+      }))
+      .sort((a, b) => a.capPct - b.capPct),
     feeRules: Object.fromEntries(Object.entries(feeRules).map(([k, v]) => [k, finishBook(v)])),
     tenors: Object.fromEntries(
       [...tenors.entries()].map(([k, { dayNum, dayDen, ...row }]) => [k, { ...finishBook(row), avgDays: dayDen > 0 ? +(dayNum / dayDen).toFixed(1) : null }]),
@@ -404,7 +696,37 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): P
         contracts: row.contracts,
         avgSpreadCostBps: spreadDen > 0 ? Math.round((spreadNum / spreadDen) * 10) / 10 : null,
       })),
+    fundingRule,
   };
+}
+
+/** Knock-out timing: do touches cluster (many positions ending in the same hour = many buybacks at once)? */
+export interface PerpKnockoutSummary {
+  knockouts: number;
+  /** knock-outs whose touch was in hours the trigger and the hedge venue both saw (OKX index reached the cap too) */
+  okxConfirmed: number;
+  /** touches Hyperliquid saw that the OKX index did not reach in the window */
+  hlOnly: number;
+  /** OKX extreme vs cap at the touches, bps, averaged (negative = OKX stayed short of the cap) */
+  avgOkxGapBps: number | null;
+  avgHoursToTouch: number | null;
+  /** hours (UTC, yyyy-mm-ddThh) with at least one knock-out, and the busiest hour's count */
+  touchHours: number;
+  maxInOneHour: number;
+  /** knock-outs whose buyback was estimated without an ATM reference (counted as 0) */
+  pricedBlind: number;
+  buybackCents: number;
+  /** credit not paid because the cycle ended early: the writer's offset against the buyback */
+  unvestedKeptCents: number;
+}
+
+/** Same-strike coincidence: how often a new position's funding strike was already open on the book (the block-RFQ case). */
+export interface PerpSameStrikeSummary {
+  opens: number;
+  /** opens whose sell instrument was open on an earlier, still-live position at the same expiry */
+  sharedSellStrike: number;
+  /** the most positions open at once on one sell instrument */
+  maxOpenOnOneStrike: number;
 }
 
 export interface PerpShadowSummary {
@@ -426,15 +748,42 @@ export interface PerpShadowSummary {
   spreadCostBps: number | null;
   floorSaves: number;
   capHits: number;
+  knockouts: number;
+  /** what holders were actually paid over settled positions (vested at knock-outs) */
+  paidCents: number;
   holderDeltaCents: number;
   holderNakedCents: number;
   holderProtectedCents: number;
   writerCents: number;
-  bySide: Record<PerpSide, { positions: number; settled: number; creditCents: number; holderDeltaCents: number }>;
+  bySide: Record<PerpSide, { positions: number; settled: number; creditCents: number; holderDeltaCents: number; knockouts: number }>;
   refusalReasons: Record<string, number>;
   avgFundingBpsPer8h: number | null;
   avgBasisBps: number | null;
+  /** the cap distance actually written, averaged, fraction */
+  avgCapPct: number | null;
+  knockoutDetail: PerpKnockoutSummary;
+  sameStrike: PerpSameStrikeSummary;
   counterfactuals: PerpCounterfactualSummary;
+}
+
+export function summarizeSameStrike(positions: PerpShadowPosition[]): PerpSameStrikeSummary {
+  const out: PerpSameStrikeSummary = { opens: positions.length, sharedSellStrike: 0, maxOpenOnOneStrike: 0 };
+  const sorted = [...positions].sort((a, b) => a.at.localeCompare(b.at));
+  for (let i = 0; i < sorted.length; i++) {
+    const p = sorted[i];
+    const openMs = Date.parse(p.at);
+    let same = 0;
+    for (let j = 0; j < i; j++) {
+      const q = sorted[j];
+      if (q.sellInstId !== p.sellInstId || q.expiryIso !== p.expiryIso) continue;
+      // still live at p's open: not settled before it (a knock-out ends it at the touch)
+      const endMs = q.outcome?.touchedAtIso ? Date.parse(q.outcome.touchedAtIso) : Date.parse(q.expiryIso);
+      if (endMs > openMs) same += 1;
+    }
+    if (same > 0) out.sharedSellStrike += 1;
+    out.maxOpenOnOneStrike = Math.max(out.maxOpenOnOneStrike, same + 1);
+  }
+  return out;
 }
 
 export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: PerpShadowRefusalRecord[]): PerpShadowSummary {
@@ -455,17 +804,33 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
     spreadCostBps: null,
     floorSaves: 0,
     capHits: 0,
+    knockouts: 0,
+    paidCents: 0,
     holderDeltaCents: 0,
     holderNakedCents: 0,
     holderProtectedCents: 0,
     writerCents: 0,
     bySide: {
-      long: { positions: 0, settled: 0, creditCents: 0, holderDeltaCents: 0 },
-      short: { positions: 0, settled: 0, creditCents: 0, holderDeltaCents: 0 },
+      long: { positions: 0, settled: 0, creditCents: 0, holderDeltaCents: 0, knockouts: 0 },
+      short: { positions: 0, settled: 0, creditCents: 0, holderDeltaCents: 0, knockouts: 0 },
     },
     refusalReasons: {},
     avgFundingBpsPer8h: null,
     avgBasisBps: null,
+    avgCapPct: null,
+    knockoutDetail: {
+      knockouts: 0,
+      okxConfirmed: 0,
+      hlOnly: 0,
+      avgOkxGapBps: null,
+      avgHoursToTouch: null,
+      touchHours: 0,
+      maxInOneHour: 0,
+      pricedBlind: 0,
+      buybackCents: 0,
+      unvestedKeptCents: 0,
+    },
+    sameStrike: summarizeSameStrike(positions),
     counterfactuals: summarizePerpCounterfactuals(positions),
   };
   const ats = [...positions.map((p) => p.at), ...refusals.map((r) => r.at)].sort();
@@ -477,6 +842,13 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
   let fundDen = 0;
   let basisNum = 0;
   let basisDen = 0;
+  let capNum = 0;
+  let gapNum = 0;
+  let gapDen = 0;
+  let touchHours = 0;
+  let touchCount = 0;
+  const hourBuckets = new Map<string, number>();
+  const ko = s.knockoutDetail;
   for (const p of positions) {
     s[p.status] += 1;
     s.notionalCents += p.notionalCents;
@@ -484,6 +856,7 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
     s.venueFeeCents += p.venueFeeCents;
     s.creditCents += p.creditCents;
     s.takeCents += p.takeCents;
+    capNum += p.capPct;
     s.bySide[p.side].positions += 1;
     s.bySide[p.side].creditCents += p.creditCents;
     if (p.midCreditCents != null && p.notionalCents > 0) {
@@ -502,12 +875,34 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
       const o = p.outcome;
       if (o.floorSave) s.floorSaves += 1;
       if (o.capHit) s.capHits += 1;
+      s.paidCents += o.paidCents;
       s.holderDeltaCents += o.deltaCents;
       s.holderNakedCents += o.nakedCents;
       s.holderProtectedCents += o.protectedCents;
       s.writerCents += o.writerCents;
       s.bySide[p.side].settled += 1;
       s.bySide[p.side].holderDeltaCents += o.deltaCents;
+      if (o.knockedOut) {
+        s.knockouts += 1;
+        s.bySide[p.side].knockouts += 1;
+        ko.knockouts += 1;
+        ko.buybackCents += o.buybackCents;
+        ko.unvestedKeptCents += p.creditCents - o.paidCents;
+        const touch = touchFor(p.path, p.capStrikeCents);
+        if (touch) {
+          if (touch.okxConfirmed === true) ko.okxConfirmed += 1;
+          else if (touch.okxConfirmed === false) ko.hlOnly += 1;
+          if (touch.okxGapBps != null) {
+            gapNum += touch.okxGapBps;
+            gapDen += 1;
+          }
+          const hour = touch.atIso.slice(0, 13);
+          hourBuckets.set(hour, (hourBuckets.get(hour) ?? 0) + 1);
+          touchHours += (Date.parse(touch.atIso) - Date.parse(p.at)) / 3_600_000;
+          touchCount += 1;
+          if (o.buybackCents === 0 && nearestAtm(positions, p.side, p.expiryIso, Date.parse(touch.atIso)) == null) ko.pricedBlind += 1;
+        }
+      }
     }
   }
   for (const r of refusals) s.refusalReasons[r.error] = (s.refusalReasons[r.error] ?? 0) + 1;
@@ -515,6 +910,11 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
   s.spreadCostBps = spreadDen > 0 ? Math.round((spreadNum / spreadDen) * 10) / 10 : null;
   s.avgFundingBpsPer8h = fundDen > 0 ? +(fundNum / fundDen).toFixed(3) : null;
   s.avgBasisBps = basisDen > 0 ? +(basisNum / basisDen).toFixed(1) : null;
+  s.avgCapPct = positions.length > 0 ? +(capNum / positions.length).toFixed(4) : null;
+  ko.avgOkxGapBps = gapDen > 0 ? +(gapNum / gapDen).toFixed(1) : null;
+  ko.avgHoursToTouch = touchCount > 0 ? +(touchHours / touchCount).toFixed(1) : null;
+  ko.touchHours = hourBuckets.size;
+  ko.maxInOneHour = Math.max(0, ...hourBuckets.values());
   return s;
 }
 
@@ -553,9 +953,13 @@ export const PERP_CSV_PUBLIC_COLUMNS = [
   "holder_protected_c",
   "holder_delta_c",
   "floor_save",
-  "cap_hit",
+  "knocked_out",
+  "touched_at_utc",
+  "vested_frac",
+  "paid_c",
+  "path_hi_c",
+  "path_lo_c",
   "writer_c",
-  "tier",
 ] as const;
 
 export const PERP_CSV_COLUMNS = [
@@ -563,7 +967,12 @@ export const PERP_CSV_COLUMNS = [
   "take_rule",
   "take_share_c",
   "take_min_c",
-  ...PERP_TIERS.flatMap((t) => [`${t}_floor_c`, `${t}_cap_c`, `${t}_gross_c`, `${t}_credit_c`, `${t}_take_c`, `${t}_holder_delta_c`, `${t}_refused`]),
+  "cap_guard_pct",
+  "funding_cycle_c",
+  "buyback_c",
+  "okx_confirmed",
+  "okx_gap_bps",
+  "cap_ladder",
   "fee_rules",
   "size_ladder",
   "weekly_expiry_utc",
@@ -593,6 +1002,7 @@ export function perpPositionsCsv(positions: PerpShadowPosition[], scope: "public
     .sort((a, b) => a.at.localeCompare(b.at))
     .map((p) => {
       const o = p.outcome;
+      const touch = touchFor(p.path, p.capStrikeCents);
       const pub: Array<string | number | boolean | null | undefined> = [
         p.id,
         p.side,
@@ -626,25 +1036,43 @@ export function perpPositionsCsv(positions: PerpShadowPosition[], scope: "public
         o?.protectedCents ?? "",
         o?.deltaCents ?? "",
         o ? o.floorSave : "",
-        o ? o.capHit : "",
+        o ? o.knockedOut : "",
+        o?.touchedAtIso ?? "",
+        o?.vestedFraction ?? "",
+        o?.paidCents ?? "",
+        p.path?.hiCents ?? "",
+        p.path?.loCents ?? "",
         o?.writerCents ?? "",
-        p.tier,
       ];
       if (scope === "public") return pub.map(cell).join(",");
       const cf = p.counterfactuals;
-      const tierCells = PERP_TIERS.flatMap((t) => {
-        const alt = cf?.tiers[t];
-        if (!alt) return ["", "", "", "", "", "", ""];
-        if (!alt.ok) return ["", "", "", "", "", "", 1];
-        const out = p.status === "settled" && p.settleCents != null ? altOutcome(p, alt, p.settleCents) : null;
-        return [alt.floorStrikeCents, alt.capStrikeCents, alt.grossCreditCents, alt.creditCents, alt.takeCents, out?.deltaCents ?? "", 0];
+      const ladder = cf?.capLadder?.map((r) => {
+        const out = p.status === "settled" && p.settleCents != null && r.terms.ok ? altOutcome(p, r.terms, p.settleCents, positions) : null;
+        return {
+          cap: r.capStrikeCents,
+          pct: r.capPct,
+          live: r.live,
+          guard: r.underGuard,
+          ok: r.terms.ok,
+          credit: r.terms.ok ? r.terms.creditCents : null,
+          error: r.terms.ok ? null : r.terms.error,
+          ko: out?.knockedOut ?? null,
+          touched: out?.touchedAtIso ?? null,
+          writer: out?.writerCents ?? null,
+          buyback: out?.buybackCents ?? null,
+        };
       });
       return [
         ...pub,
         p.takeRule,
         p.takeShareCents,
         p.takeMinimumCents,
-        ...tierCells,
+        p.capGuardPct,
+        p.fundingCycleCents,
+        o?.buybackCents ?? "",
+        touch ? touch.okxConfirmed : "",
+        touch?.okxGapBps ?? "",
+        ladder ? JSON.stringify(ladder) : "",
         cf ? JSON.stringify(cf.feeRules) : "",
         cf ? JSON.stringify(cf.sizeLadder.map((s) => ({ mult: s.mult, contracts: s.contracts, ok: s.terms.ok, credit: s.terms.ok ? s.terms.creditCents : null, error: s.terms.ok ? null : s.terms.error }))) : "",
         ...weeklyCells(cf?.tenors?.weekly),

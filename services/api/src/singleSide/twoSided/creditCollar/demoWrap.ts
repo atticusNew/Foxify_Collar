@@ -112,10 +112,10 @@ export type DemoWrapRecord = {
     capStrike?: number;
     floorPctUsed: number;
     tenorDays: number;
-    /** Which shape the holder chose (tight / balanced / wide); absent on records before tiers. */
-    tier?: string;
     /** daily or weekly expiry; absent on records before tenors. */
     tenor?: string;
+    /** What holding the perp costs (+) or pays (−) over the cycle at the funding rate seen at quote time. */
+    fundingUsdc?: number;
   } | null;
   hedge: {
     venue: string; // "okx_model" | "okx_demo" | "okx_live"
@@ -549,8 +549,6 @@ export type ProtectionPref = {
   on: boolean;
   sinceMs: number;
   lastRenewAttemptMs?: number;
-  /** The tier the holder chose at toggle time; renewals keep it. */
-  tier?: string;
   /**
    * Close-gate control token (public-demo hardening): issued to the client that OPENS protection
    * and required to close it early — a stranger who merely knows the address cannot force a

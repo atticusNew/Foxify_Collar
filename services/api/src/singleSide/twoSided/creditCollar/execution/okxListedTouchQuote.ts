@@ -268,6 +268,13 @@ export const fetchOkxListedTouchQuote = async (input: {
   baseUrl?: string;
   /** daily (default; the product today) or weekly (the next listed Friday ≥ 5 days out, daily when none is listed) */
   tenor?: "daily" | "weekly";
+  /**
+   * Cap guard. The funding wing is the WIDEST strike that still pays; the search may reach
+   * `maxCapPct` from spot (default the 4% band), and a pick closer than `minCapPct` is REFUSED
+   * (`cap_too_close`) rather than written: this is a knock-out collar, a cap that sits on top of
+   * price crosses on noise, costs the writer an ATM buyback and the holder the rest of the cycle.
+   */
+  capGuard?: { minCapPct: number; maxCapPct: number };
 }): Promise<ListedTouchQuote> => {
   const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
   const getJson = async (path: string): Promise<unknown> => {
@@ -300,7 +307,8 @@ export const fetchOkxListedTouchQuote = async (input: {
     const buyType = input.side === "long" ? "put" : "call";
     const sellTarget = input.side === "long" ? input.planCallStrike : input.planPutStrike;
     const buyTarget = input.side === "long" ? input.planPutStrike : input.planCallStrike;
-    const sellCands = listedWingCandidates(chain, expiryMs, sellType, input.spot, sellTarget, FUNDING_BAND).slice(0, MAX_BOOK_PROBES);
+    const fundingBand = { minOtmPct: FUNDING_BAND.minOtmPct, maxOtmPct: Math.max(FUNDING_BAND.minOtmPct, input.capGuard?.maxCapPct ?? FUNDING_BAND.maxOtmPct) };
+    const sellCands = listedWingCandidates(chain, expiryMs, sellType, input.spot, sellTarget, fundingBand).slice(0, MAX_BOOK_PROBES);
     const buyCands = listedWingCandidates(chain, expiryMs, buyType, input.spot, buyTarget, PROTECTIVE_BAND).slice(0, MAX_BOOK_PROBES);
     if (sellCands.length === 0 || buyCands.length === 0) {
       return {
@@ -333,6 +341,17 @@ export const fetchOkxListedTouchQuote = async (input: {
         ok: false,
         error: "listed_book_empty",
         message: `listed OKX ${buyInst} ask ${buyAsk} / ${sellInst} bid ${sellBid} — no executable 1-lot credit on the book`
+      };
+    }
+    // The cap guard: the widest paying strike still sits too close to price. Refuse, and name
+    // the distance, rather than write a cap that will cross on noise.
+    const capDistPct = Math.abs(sellHit.inst.strike - input.spot) / input.spot;
+    const minCapPct = input.capGuard?.minCapPct ?? 0;
+    if (sellScan.pick && capDistPct < minCapPct - 1e-9) {
+      return {
+        ok: false,
+        error: "cap_too_close",
+        message: `widest paying cap ${sellHit.inst.instId} sits ${(capDistPct * 100).toFixed(2)}% from price, under the ${(minCapPct * 100).toFixed(1)}% guard — nothing wider has a bid`
       };
     }
 

@@ -20,7 +20,7 @@ import {
   touchCreditUsdc,
 } from "../execution/okxListedTouchQuote";
 import { nextListedWeeklyExpiryMs, nextStandardDailyExpiryMs, parseOkxChain, type OkxChainInstrument } from "../execution/okxLivePlanner";
-import type { CollarGeometry } from "../perpTiers";
+import type { CollarGeometry } from "../perpTenor";
 
 export { nextListedWeeklyExpiryMs };
 export type { CollarGeometry };
@@ -136,10 +136,10 @@ export const fetchOkxListedSnapshot = async (input: {
 };
 
 /**
- * Top-of-book snapshot in two requests (instruments + the option tickers feed),
- * for the demo's tier tiles: every in-band strike at the daily and weekly
- * expiries priced at the same instant. Depth is one level, so `mode: "walk"`
- * is not meaningful on it; the shadow's `fetchOkxListedSnapshot` keeps depth.
+ * Top-of-book snapshot in two requests (instruments + the option tickers feed):
+ * every in-band strike at the daily and weekly expiries priced at the same
+ * instant. Depth is one level, so `mode: "walk"` is not meaningful on it; the
+ * shadow's `fetchOkxListedSnapshot` keeps depth.
  */
 export const fetchOkxTopSnapshot = async (input: {
   spot: number;
@@ -231,7 +231,18 @@ export type SnapshotQuote =
  * at the top; the difference is the cost of size.
  */
 export const quoteCollarFromSnapshot = (
-  input: { side: PerpSide; spot: number; contracts: number; geometry: CollarGeometry; mode?: FillMode; expiryMs?: number },
+  input: {
+    side: PerpSide;
+    spot: number;
+    contracts: number;
+    geometry: CollarGeometry;
+    mode?: FillMode;
+    expiryMs?: number;
+    /** the widest strike the cap search may reach, fraction from spot (default the 4% funding band) */
+    maxCapPct?: number;
+    /** price THIS funding strike instead of searching: the cap-distance ladder holds the floor and moves the cap */
+    pinSellInstId?: string;
+  },
   snap: OkxListedSnapshot,
 ): SnapshotQuote => {
   const mode: FillMode = input.mode ?? "top";
@@ -243,7 +254,10 @@ export const quoteCollarFromSnapshot = (
   const buyType: "put" | "call" = input.side === "long" ? "put" : "call";
   const sellTarget = input.side === "long" ? plan.callStrike : plan.putStrike;
   const buyTarget = input.side === "long" ? plan.putStrike : plan.callStrike;
-  const sellCands = listedWingCandidates(snap.chain, expiryMs, sellType, input.spot, sellTarget, FUNDING_BAND).slice(0, 10);
+  const fundingBand = { minOtmPct: FUNDING_BAND.minOtmPct, maxOtmPct: Math.max(FUNDING_BAND.minOtmPct, input.maxCapPct ?? FUNDING_BAND.maxOtmPct) };
+  const sellCands = input.pinSellInstId
+    ? snap.chain.filter((c) => c.instId === input.pinSellInstId && c.optType === sellType && c.expiryMs === expiryMs)
+    : listedWingCandidates(snap.chain, expiryMs, sellType, input.spot, sellTarget, fundingBand).slice(0, 10);
   const buyCands = listedWingCandidates(snap.chain, expiryMs, buyType, input.spot, buyTarget, PROTECTIVE_BAND).slice(0, 10);
   if (sellCands.length === 0 || buyCands.length === 0) {
     return { ok: false, error: "listed_book_empty", message: "no listed OTM wing in band at this expiry" };
@@ -340,5 +354,60 @@ export const quoteCollarFromSnapshot = (
     netCreditUsdc: pick.net,
     midCreditUsdc: buyMid != null && sellMid != null ? round2((sellMid - buyMid) * qty * input.spot) : null,
     levelsUsed: { buy: buy.fill.levelsUsed, sell: pick.fill.levelsUsed },
+  };
+};
+
+/**
+ * Every listed funding strike in the band at the expiry, nearest first: the
+ * rungs of the cap-distance ladder. Calls above spot for a long, puts below
+ * for a short.
+ */
+export const fundingStrikeLadder = (
+  snap: OkxListedSnapshot,
+  side: PerpSide,
+  spot: number,
+  maxCapPct: number,
+  expiryMs = snap.expiryMs,
+): OkxChainInstrument[] => {
+  const sellType: "put" | "call" = side === "long" ? "call" : "put";
+  const band = { minOtmPct: FUNDING_BAND.minOtmPct, maxOtmPct: Math.max(FUNDING_BAND.minOtmPct, maxCapPct) };
+  return listedWingCandidates(snap.chain, expiryMs, sellType, spot, spot, band).sort(
+    (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
+  );
+};
+
+export interface AtmReference {
+  /** the nearest-to-spot listed call's / put's top ask at the expiry, BTC per BTC; null when no ask */
+  callAskPxBtc: number | null;
+  putAskPxBtc: number | null;
+  callInstId: string | null;
+  putInstId: string | null;
+  hoursToExpiry: number;
+}
+
+/**
+ * What an at-the-money option costs right now at the expiry: the reference a
+ * knock-out buyback is estimated from. When price reaches the cap the short
+ * funding leg is at the money; buying it back costs roughly the ATM ask at
+ * the remaining time, so each scan records the ATM ask it saw.
+ */
+export const atmReference = (snap: OkxListedSnapshot, spot: number, expiryMs = snap.expiryMs, nowMs = snap.atMs): AtmReference => {
+  const pick = (optType: "put" | "call") => {
+    const live = snap.chain.filter((c) => c.optType === optType && c.expiryMs === expiryMs && c.state === "live");
+    live.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
+    for (const c of live) {
+      const ask = snap.books[c.instId]?.asks[0]?.pxBtc;
+      if (ask != null && ask > 0) return { instId: c.instId, ask };
+    }
+    return null;
+  };
+  const call = pick("call");
+  const put = pick("put");
+  return {
+    callAskPxBtc: call?.ask ?? null,
+    putAskPxBtc: put?.ask ?? null,
+    callInstId: call?.instId ?? null,
+    putInstId: put?.instId ?? null,
+    hoursToExpiry: +Math.max(0, (expiryMs - nowMs) / 3_600_000).toFixed(2),
   };
 };

@@ -132,24 +132,18 @@ test("service placeholders intact for serve-time substitution", () => {
   }
 });
 
-test("tiers: outcome-named tiles on every quote surface, the pick rides preview / sim / wrap, a live protection locks it", () => {
+test("one shape, no tiers: the knock-out is explained as keeping the upside, the pre-flip quote leads with value", () => {
   for (const html of [web, mini]) {
-    assert.ok(html.includes('const TIER_ORDER = ["tight", "balanced", "wide"]'), "the three shapes, in order");
-    assert.ok(html.includes('tight: "Safest", balanced: "Balanced", wide: "Most upside"'), "outcome-named, the way the holder reads them");
-    assert.ok(html.includes('class="tiers" data-ctx="'), "tile container names the surface it re-prices");
-    assert.ok(html.includes('<div class="tn">') && html.includes('<div class="tf">') && html.includes('<div class="tc">floor '), "one number per tile: the credit, floor distance under it");
-    assert.ok(html.includes('aria-pressed="'), "tiles are accessible toggles");
-    assert.ok(html.includes("if (names.length < 2) return \"\";"), "fewer than two fundable shapes = no tiles");
-    assert.ok(html.includes('"&tier=" + pickedTier'), "the pick rides the preview and the simulation quote");
-    assert.ok(html.includes('"/api/wrap?tier=" + pickedTier'), "the pick rides the real wrap");
-    assert.ok(html.includes('"/api/quote?tier=" + want'), "the pre-flip quote is priced at the pick");
+    assert.ok(!html.includes("TIER_ORDER") && !html.includes("pickedTier") && !html.includes("ep_tier") && !html.includes("simRetier"), "the tier picker is gone");
+    assert.ok(!html.includes("Safest") && !html.includes("Most upside") && !html.includes("Three shapes"), "no tier copy anywhere");
+    assert.ok(!html.includes("?tier=") && !html.includes("&tier="), "no tier rides any request");
     assert.ok(html.includes("If you flip it on now:"), "the pre-flip quote leads with value before the commit");
-    assert.ok(html.includes('id="realQuote"'), "pre-flip quote box on the own-address card");
-    assert.ok(html.includes("ep_tier"), "the pick persists across visits");
-    assert.ok(html.includes("const simRetier"), "a tile tap on the active simulation re-prices from the live book");
-    assert.ok(html.includes("shape: q.tier"), "a live protection shows its locked shape on the credit label");
-    assert.ok(html.includes("Three shapes, one book."), "how-it-works explains the tiers in one line");
-    assert.ok(!html.includes("credit pays less"), "no directional claim about which shape pays more; the tile numbers say it");
+    assert.ok(html.includes('id="realQuote"') && html.includes('api("/api/quote")'), "pre-flip quote box priced off the holder's own position");
+    assert.ok(html.includes("The cap ends the cycle, not your trade."), "the cap is a re-arm trigger, not a ceiling on the trade");
+    assert.ok(html.includes("you keep your position, every gain, and the unlocked credit"), "the holder never gives up upside");
+    assert.ok(html.includes("Hedged, not carried.") && html.includes("hedged leg for leg") && html.includes("the cap leg is closed at its strike"), "how the writer stays flat, stated plainly");
+    assert.ok(!/delta[- ]neutral/i.test(html), "no 'delta neutral' claim on the retail surface");
+    assert.ok(html.includes("Cap touched · cycle over") && html.includes("re-arming at the new price"), "a knock-out reads as the end of a cycle, then re-arm");
   }
 });
 

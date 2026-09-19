@@ -1,11 +1,15 @@
 /**
- * Perp tiers, tenor and fee floor (B3): the pure pieces the demo service composes.
+ * Perp tenor, cap guard and fee floor (B3): the pure pieces the demo service composes.
  *
  *   - applyTake with a notional minimum: which rule bound, never past the gross
  *   - the weekly tenor: the first listed Friday 08:00 UTC ≥ 5 days out, and the
  *     planner / touch quote written to it
+ *   - the cap guard: the widest paying strike is refused when it sits too close
+ *     to price (a knock-out collar's cap must be far, not rich), and the band
+ *     the search may reach follows the tenor
  *   - fetchOkxTopSnapshot: two public requests become one top-of-book snapshot
- *     across the daily and weekly expiries (the demo's tier tiles)
+ *     across the daily and weekly expiries; the pinned-cap quote and the ATM
+ *     reference the shadow's cap ladder and knock-out buyback read from it
  */
 
 import assert from "node:assert/strict";
@@ -17,17 +21,11 @@ import {
   planLiveCollar,
   type OkxChainInstrument
 } from "../src/singleSide/twoSided/creditCollar/execution/okxLivePlanner";
-import { quoteFromListedBooks } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
-import { fetchOkxTopSnapshot, quoteCollarFromSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
-import {
-  PERP_TIERS,
-  PERP_TIER_GEOMETRY,
-  PERP_TIER_WORDS,
-  parsePerpTier,
-  parseTenor,
-  tenorExpiry,
-  tenorWord
-} from "../src/singleSide/twoSided/creditCollar/perpTiers";
+import { fetchOkxListedTouchQuote, quoteFromListedBooks } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
+import { atmReference, fetchOkxTopSnapshot, fundingStrikeLadder, quoteCollarFromSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
+import { capGuardFor, parseTenor, tenorExpiry, tenorWord } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+
+const SHAPE = { floorPct: 0.06, capPct: 0.015 };
 
 // ── Fixtures: Saturday 2026-07-18 08:20 UTC; daily = Sun 07-19 08:00; weekly = Fri 07-24 08:00 ──
 const now = Date.UTC(2026, 6, 18, 8, 20, 0);
@@ -158,23 +156,65 @@ test("quoteFromListedBooks: the tenor actually written rides the quote (daily by
   assert.equal(w.callInstId, `BTC-USD-${code(friday)}-101500-C`);
 });
 
-// ── tiers ─────────────────────────────────────────────────────────────────────
+// ── cap guard ─────────────────────────────────────────────────────────────────
 
-test("perp tiers: three shapes inside the listed bands, balanced is the product, words are outcome-named", () => {
-  assert.deepEqual([...PERP_TIERS], ["tight", "balanced", "wide"]);
-  for (const t of PERP_TIERS) {
-    const g = PERP_TIER_GEOMETRY[t];
-    assert.ok(g.floorPct >= 0.02 && g.floorPct <= 0.08, `${t} floor inside the protective band`);
-    assert.ok(g.capPct >= 0.005 && g.capPct <= 0.04, `${t} cap inside the funding band`);
+test("capGuardFor: 2% / 4% daily, 4% / 8% weekly, env-overridable as fractions, junk ignored", () => {
+  assert.deepEqual(capGuardFor("daily", {}), { minCapPct: 0.02, maxCapPct: 0.04 });
+  assert.deepEqual(capGuardFor("weekly", {}), { minCapPct: 0.04, maxCapPct: 0.08 });
+  assert.deepEqual(capGuardFor("daily", { EP_MIN_CAP_PCT: "0.015", EP_CAP_MAX_PCT: "0.05" }), { minCapPct: 0.015, maxCapPct: 0.05 });
+  assert.deepEqual(capGuardFor("weekly", { EP_MIN_CAP_PCT_WEEKLY: "0.03" }), { minCapPct: 0.03, maxCapPct: 0.08 });
+  assert.deepEqual(capGuardFor("daily", { EP_MIN_CAP_PCT: "nope", EP_CAP_MAX_PCT: "-1" }), { minCapPct: 0.02, maxCapPct: 0.04 });
+});
+
+/** The live touch-quote path against a fake OKX: instruments + one book per probed wing. */
+const withOkx = async <T>(books: Record<string, { bid?: number; ask?: number }>, run: () => Promise<T>): Promise<T> => {
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const u = String(url);
+    if (u.includes("/public/instruments")) return new Response(JSON.stringify({ data: chain.map(okxRow) }), { status: 200 });
+    const m = /instId=([^&]+)/.exec(u);
+    const b = m ? books[decodeURIComponent(m[1])] : undefined;
+    const data = [{ bids: b?.bid != null ? [[String(b.bid), "5"]] : [], asks: b?.ask != null ? [[String(b.ask), "5"]] : [] }];
+    return new Response(JSON.stringify({ data }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = real;
   }
-  assert.ok(PERP_TIER_GEOMETRY.tight.floorPct < PERP_TIER_GEOMETRY.balanced.floorPct);
-  assert.ok(PERP_TIER_GEOMETRY.balanced.floorPct < PERP_TIER_GEOMETRY.wide.floorPct);
-  assert.deepEqual(PERP_TIER_GEOMETRY.balanced, { floorPct: 0.06, capPct: 0.015 });
-  assert.deepEqual(PERP_TIER_WORDS, { tight: "Safest", balanced: "Balanced", wide: "Most upside" });
-  assert.equal(parsePerpTier("wide"), "wide");
-  assert.equal(parsePerpTier("safest"), "balanced", "unknown words fall back to the product");
-  assert.equal(parsePerpTier(null), "balanced");
-  assert.equal(parsePerpTier(undefined, "tight"), "tight");
+};
+
+const dailyId = (strike: number, t: "C" | "P") => `BTC-USD-${code(daily)}-${strike}-${t}`;
+
+test("fetchOkxListedTouchQuote: the widest paying cap under the guard is REFUSED as cap_too_close, never written", async () => {
+  // Only the 1% call has a bid; the put at 6% has an ask. Widest that pays = 101000-C, 1% out.
+  const books = { [dailyId(94000, "P")]: { ask: 0.0004 }, [dailyId(101000, "C")]: { bid: 0.003 } };
+  const base = { side: "long" as const, spot: 100_000, planPutStrike: 94_000, planCallStrike: 101_500, notionalUsdc: 1_000, contractsBtc: 0.01, nowMs: now, baseUrl: "https://okx.test" };
+  const guarded = await withOkx(books, () => fetchOkxListedTouchQuote({ ...base, capGuard: { minCapPct: 0.02, maxCapPct: 0.04 } }));
+  assert.equal(guarded.ok, false);
+  if (guarded.ok) return;
+  assert.equal(guarded.error, "cap_too_close");
+  assert.match(guarded.message, /101000-C sits 1\.00% from price, under the 2\.0% guard/);
+  // Without a guard the same book writes the 1% cap (the product before B3).
+  const unguarded = await withOkx(books, () => fetchOkxListedTouchQuote(base));
+  assert.ok(unguarded.ok, unguarded.ok ? "" : unguarded.message);
+  if (unguarded.ok) assert.equal(unguarded.callStrike, 101_000);
+});
+
+test("fetchOkxListedTouchQuote: a wider paying strike clears the guard and is the pick; the band reaches the guard's outer edge", async () => {
+  const books = {
+    [dailyId(94000, "P")]: { ask: 0.0004 },
+    [dailyId(101000, "C")]: { bid: 0.003 },
+    [dailyId(103000, "C")]: { bid: 0.0009 },
+    [dailyId(105000, "C")]: { bid: 0.0006 }
+  };
+  const base = { side: "long" as const, spot: 100_000, planPutStrike: 94_000, planCallStrike: 101_500, notionalUsdc: 1_000, contractsBtc: 0.01, nowMs: now, baseUrl: "https://okx.test" };
+  const daily4 = await withOkx(books, () => fetchOkxListedTouchQuote({ ...base, capGuard: { minCapPct: 0.02, maxCapPct: 0.04 } }));
+  assert.ok(daily4.ok, daily4.ok ? "" : daily4.message);
+  if (daily4.ok) assert.equal(daily4.callStrike, 103_000, "the 5% strike sits outside a 4% band; 3% is the widest that pays inside it");
+  const wide8 = await withOkx(books, () => fetchOkxListedTouchQuote({ ...base, capGuard: { minCapPct: 0.02, maxCapPct: 0.08 } }));
+  assert.ok(wide8.ok, wide8.ok ? "" : wide8.message);
+  if (wide8.ok) assert.equal(wide8.callStrike, 105_000, "an 8% band reaches the 5% strike, and it pays");
 });
 
 // ── top-of-book snapshot ──────────────────────────────────────────────────────
@@ -223,9 +263,9 @@ test("fetchOkxTopSnapshot: instruments + tickers become one snapshot across the 
   assert.equal(dailyCall.bids[0].contracts, 12);
   assert.equal(dailyCall.asks[0].contracts, 9);
 
-  // The same snapshot prices a tier at either expiry — the tiles the demo shows.
-  const d = quoteCollarFromSnapshot({ side: "long", spot: 100_000, contracts: 24, geometry: PERP_TIER_GEOMETRY.balanced, expiryMs: daily }, snap);
-  const w = quoteCollarFromSnapshot({ side: "long", spot: 100_000, contracts: 24, geometry: PERP_TIER_GEOMETRY.balanced, expiryMs: friday }, snap);
+  // The same snapshot prices the shape at either expiry.
+  const d = quoteCollarFromSnapshot({ side: "long", spot: 100_000, contracts: 24, geometry: SHAPE, expiryMs: daily }, snap);
+  const w = quoteCollarFromSnapshot({ side: "long", spot: 100_000, contracts: 24, geometry: SHAPE, expiryMs: friday }, snap);
   assert.ok(d.ok, d.ok ? "" : `${d.error}: ${d.message}`);
   assert.ok(w.ok, w.ok ? "" : `${w.error}: ${w.message}`);
   if (!d.ok || !w.ok) return;
@@ -233,6 +273,28 @@ test("fetchOkxTopSnapshot: instruments + tickers become one snapshot across the 
   assert.equal(w.expiryMs, friday);
   assert.ok(w.netCreditUsdc > d.netCreditUsdc, "the weekly book (richer premia in the fixture) funds more credit for the same shape");
   assert.equal(d.buyStrike, 94_000);
+
+  // The cap ladder: every listed funding strike in the band, nearest first; a pinned cap prices that rung alone.
+  const rungs = fundingStrikeLadder(snap, "long", 100_000, 0.04);
+  assert.deepEqual(rungs.map((r) => r.strike), [101000, 101500, 103000], "calls above spot inside 4%; the 5% strike is outside the band");
+  assert.deepEqual(fundingStrikeLadder(snap, "long", 100_000, 0.08).map((r) => r.strike), [101000, 101500, 103000, 105000]);
+  assert.deepEqual(fundingStrikeLadder(snap, "short", 100_000, 0.04).map((r) => r.strike), [97000], "puts below spot for a short");
+  const pinned = quoteCollarFromSnapshot({ side: "long", spot: 100_000, contracts: 24, geometry: SHAPE, pinSellInstId: `BTC-USD-${code(daily)}-101000-C` }, snap);
+  assert.ok(pinned.ok, pinned.ok ? "" : pinned.message);
+  if (pinned.ok) {
+    assert.equal(pinned.sellStrike, 101_000);
+    assert.equal(pinned.buyStrike, d.buyStrike, "the floor is held; only the cap moved");
+    assert.ok(pinned.netCreditUsdc > d.netCreditUsdc, "a closer cap pays more (and gets touched more; the shadow measures that)");
+  }
+  const unlisted = quoteCollarFromSnapshot({ side: "long", spot: 100_000, contracts: 24, geometry: SHAPE, pinSellInstId: "BTC-USD-000000-1-C" }, snap);
+  assert.ok(!unlisted.ok && unlisted.error === "listed_book_empty");
+
+  // The ATM reference: the nearest-to-spot call and put asks at the expiry, and the time left.
+  const atm = atmReference(snap, 100_000, daily, now);
+  assert.equal(atm.callInstId, `BTC-USD-${code(daily)}-101000-C`);
+  assert.equal(atm.putInstId, `BTC-USD-${code(daily)}-97000-P`);
+  assert.ok(atm.callAskPxBtc! > 0 && atm.putAskPxBtc! > 0);
+  assert.equal(atm.hoursToExpiry, 23.67);
 });
 
 test("fetchOkxTopSnapshot: an HTTP error names the call and nothing is cached by the caller", async () => {
