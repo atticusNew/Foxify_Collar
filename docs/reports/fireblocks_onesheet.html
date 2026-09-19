@@ -50,7 +50,7 @@
 <h2>Structure and execution</h2>
 <table>
   <tr><th>Element</th><th>Detail</th></tr>
-  <tr><td>Risk posture</td><td>Delta neutral by construction. Every wrap is hedged leg for leg at open; both legs fill or the pair auto-unwinds. Atticus revenue is a published fee on credits sourced, never trading P&amp;L.</td></tr>
+  <tr><td>Risk posture</td><td>Hedged, not carried. The floor is hedged leg for leg on listed options at open; both legs fill or the pair auto-unwinds. The cap is a knock-out, not a ceiling: at a touch the cap leg is closed at its strike, the cycle ends and protection re-arms, so the client never gives up upside. Atticus revenue is a published fee on credits sourced, never trading P&amp;L.</td></tr>
   <tr><td>Execution stack</td><td>OKX listed options, live and production-proven today. FalconX onboarded for block and RFQ execution as volume nets up (adapter built). The stack aligns with Fireblocks' existing OKX and FalconX relationships.</td></tr>
   <tr><td>Client economics</td><td>Approximately 8.5 bps/day gross credit on protected notional at block execution (measured). Client keeps 80%+ of every credit.</td></tr>
   <tr><td>Controls</td><td>Withdrawal-disabled venue keys, 40% collateral buffer never allocated, auto-pause at utilization line, kill switch that stops new exposure while payouts continue, concentration caps, full reconciliation against venue records.</td></tr>
