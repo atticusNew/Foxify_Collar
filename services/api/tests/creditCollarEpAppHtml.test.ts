@@ -132,6 +132,41 @@ test("service placeholders intact for serve-time substitution", () => {
   }
 });
 
+test("tiers: outcome-named tiles on every quote surface, the pick rides preview / sim / wrap, a live protection locks it", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes('const TIER_ORDER = ["tight", "balanced", "wide"]'), "the three shapes, in order");
+    assert.ok(html.includes('tight: "Safest", balanced: "Balanced", wide: "Most upside"'), "outcome-named, the way the holder reads them");
+    assert.ok(html.includes('class="tiers" data-ctx="'), "tile container names the surface it re-prices");
+    assert.ok(html.includes('<div class="tn">') && html.includes('<div class="tf">') && html.includes('<div class="tc">floor '), "one number per tile: the credit, floor distance under it");
+    assert.ok(html.includes('aria-pressed="'), "tiles are accessible toggles");
+    assert.ok(html.includes("if (names.length < 2) return \"\";"), "fewer than two fundable shapes = no tiles");
+    assert.ok(html.includes('"&tier=" + pickedTier'), "the pick rides the preview and the simulation quote");
+    assert.ok(html.includes('"/api/wrap?tier=" + pickedTier'), "the pick rides the real wrap");
+    assert.ok(html.includes('"/api/quote?tier=" + want'), "the pre-flip quote is priced at the pick");
+    assert.ok(html.includes("If you flip it on now:"), "the pre-flip quote leads with value before the commit");
+    assert.ok(html.includes('id="realQuote"'), "pre-flip quote box on the own-address card");
+    assert.ok(html.includes("ep_tier"), "the pick persists across visits");
+    assert.ok(html.includes("const simRetier"), "a tile tap on the active simulation re-prices from the live book");
+    assert.ok(html.includes("shape: q.tier"), "a live protection shows its locked shape on the credit label");
+    assert.ok(html.includes("Three shapes, one book."), "how-it-works explains the tiers in one line");
+    assert.ok(!html.includes("credit pays less"), "no directional claim about which shape pays more; the tile numbers say it");
+  }
+});
+
+test("tenor + carry + fee: the credit label follows the tenor, funding is stated beside it, the fee rule is on the quote", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes('j.tenor === "weekly" ? "this week\\u2019s" : "today\\u2019s"'), "tenor-aware credit label");
+    assert.ok(!html.includes("</b>today\\u2019s credit"), "no hardcoded daily label left on a quote surface");
+    assert.ok(html.includes("Funding over the cycle: "), "carry line");
+    assert.ok(html.includes("you receive "), "shorts receive positive funding");
+    assert.ok(html.includes("not part of the credit, shown so the number reads net"), "carry is disclosed as separate from the credit");
+    assert.ok(html.includes("The market funded "), "fee line names what the market funded");
+    assert.ok(html.includes("the published minimum at this size"), "the minimum rule is named when it binds");
+    assert.ok(html.includes("our cut is waived"), "the waiver is named when it applies");
+    assert.ok(html.includes("const termsGrid"), "one terms grid for every quote surface");
+  }
+});
+
 test("variants: miniapp loads the Telegram bridge, web does not", () => {
   assert.ok(mini.includes("telegram-web-app.js"));
   assert.ok(!web.includes("telegram-web-app.js"));

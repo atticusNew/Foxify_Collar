@@ -7,7 +7,7 @@
 
 import { computeCollarOpenFees } from "../bullishFees";
 import type { PerpSide } from "../creditCollarPricer";
-import { parseOkxChain, planLiveCollar, nextStandardDailyExpiryMs, type OkxChainInstrument } from "./okxLivePlanner";
+import { parseOkxChain, planLiveCollar, nextListedWeeklyExpiryMs, nextStandardDailyExpiryMs, type OkxChainInstrument } from "./okxLivePlanner";
 
 const round2 = (x: number) => +x.toFixed(2);
 const round6 = (x: number) => +x.toFixed(6);
@@ -22,6 +22,8 @@ export type ListedTouchQuote =
       putInstId: string;
       callInstId: string;
       expiryMs: number;
+      /** the tenor actually written: weekly falls back to daily when no weekly is listed */
+      tenor: "daily" | "weekly";
       floorPct: number;
       capPct: number;
       putAskPxBtc: number;
@@ -56,6 +58,7 @@ export const quoteFromListedBooks = (input: {
   chain: OkxChainInstrument[];
   putBook: BookTopPx;
   callBook: BookTopPx;
+  expiryMs?: number;
 }): ListedTouchQuote => {
   const planned = planLiveCollar(input.chain, {
     side: input.side,
@@ -66,7 +69,8 @@ export const quoteFromListedBooks = (input: {
     protectiveMidUsdc: 0,
     fundingMidUsdc: 0.16,
     modelContractsBtc: input.contractsBtc,
-    nowMs: input.nowMs
+    nowMs: input.nowMs,
+    expiryMs: input.expiryMs
   });
   if (!planned.ok) return { ok: false, error: planned.error, message: planned.message };
 
@@ -127,6 +131,7 @@ export const quoteFromListedBooks = (input: {
     putInstId: putLeg.instId,
     callInstId: callLeg.instId,
     expiryMs: planned.plan.expiryMs,
+    tenor: planned.plan.expiryMs === nextStandardDailyExpiryMs(input.nowMs) ? "daily" : "weekly",
     // Side-aware: the FLOOR is the protective wing's distance (put below for long, CALL above for
     // short); the CAP is the funding wing's. Type-based labels would invert the story for shorts.
     floorPct: round6(
@@ -261,6 +266,8 @@ export const fetchOkxListedTouchQuote = async (input: {
   contractsBtc: number;
   nowMs: number;
   baseUrl?: string;
+  /** daily (default; the product today) or weekly (the next listed Friday ≥ 5 days out, daily when none is listed) */
+  tenor?: "daily" | "weekly";
 }): Promise<ListedTouchQuote> => {
   const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
   const getJson = async (path: string): Promise<unknown> => {
@@ -274,6 +281,8 @@ export const fetchOkxListedTouchQuote = async (input: {
   try {
     const instr = (await getJson("/api/v5/public/instruments?instType=OPTION&uly=BTC-USD")) as { data?: ChainRow[] };
     const chain = parseOkxChain(instr.data ?? []);
+    const weeklyMs = input.tenor === "weekly" ? nextListedWeeklyExpiryMs(chain, input.nowMs) : null;
+    const wantExpiryMs = weeklyMs ?? undefined;
     const planned = planLiveCollar(chain, {
       side: input.side,
       spot: input.spot,
@@ -283,9 +292,10 @@ export const fetchOkxListedTouchQuote = async (input: {
       protectiveMidUsdc: 0,
       fundingMidUsdc: 0.16,
       modelContractsBtc: input.contractsBtc,
-      nowMs: input.nowMs
+      nowMs: input.nowMs,
+      expiryMs: wantExpiryMs
     });
-    const expiryMs = planned.ok ? planned.plan.expiryMs : nextStandardDailyExpiryMs(input.nowMs);
+    const expiryMs = planned.ok ? planned.plan.expiryMs : (wantExpiryMs ?? nextStandardDailyExpiryMs(input.nowMs));
     const sellType = input.side === "long" ? "call" : "put";
     const buyType = input.side === "long" ? "put" : "call";
     const sellTarget = input.side === "long" ? input.planCallStrike : input.planPutStrike;
@@ -334,7 +344,8 @@ export const fetchOkxListedTouchQuote = async (input: {
       planCallStrike: callInst.strike,
       chain,
       putBook: books[putInst.instId],
-      callBook: books[callInst.instId]
+      callBook: books[callInst.instId],
+      expiryMs: wantExpiryMs
     });
   } catch (e) {
     return { ok: false, error: "listed_book_fetch_failed", message: (e as Error).message };

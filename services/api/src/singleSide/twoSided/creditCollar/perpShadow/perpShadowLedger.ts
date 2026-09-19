@@ -12,27 +12,10 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PerpSide } from "../creditCollarPricer";
-import type { CollarGeometry } from "./okxListedSnapshot";
+import { PERP_TIERS, PERP_TIER_GEOMETRY, PERP_TIER_RULES, type PerpTier } from "../perpTiers";
 
-export type PerpTier = "tight" | "balanced" | "wide";
-export const PERP_TIERS: readonly PerpTier[] = ["tight", "balanced", "wide"] as const;
-
-/**
- * Geometry per tier, inside the live demo's bands (protective 2–8%, funding
- * 0.5–4%). Balanced IS the live product (6% / 1.5%); the others are what a
- * holder who wants more protection or more upside would be shown.
- */
-export const PERP_TIER_GEOMETRY: Record<PerpTier, CollarGeometry> = {
-  tight: { floorPct: 0.03, capPct: 0.01 },
-  balanced: { floorPct: 0.06, capPct: 0.015 },
-  wide: { floorPct: 0.08, capPct: 0.03 },
-};
-
-export const PERP_TIER_RULES: Record<PerpTier, string> = {
-  tight: "floor 3% below entry, cap as wide as the book funds from 1%: the most protection the venue will pay for",
-  balanced: "floor 6% below, cap from 1.5%: the live product's terms",
-  wide: "floor 8% below, cap from 3%: the most upside kept, the deepest floor",
-};
+export { PERP_TIERS, PERP_TIER_GEOMETRY, PERP_TIER_RULES };
+export type { PerpTier };
 
 export type PerpTakeRule = "share" | "minimum" | "waived";
 

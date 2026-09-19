@@ -67,6 +67,7 @@ import { buildPayoutSender, parsePayoutRailFromEnv } from "../src/singleSide/two
 import { unwindLiveCollar } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveUnwind";
 import {
   applyTake,
+  minTakeUsdcFor,
   assessCohort,
   assessStrikeConcentration,
   deriveCaps,
@@ -104,7 +105,17 @@ import { Pool } from "pg";
 import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regimeGate";
 import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
-import { fetchOkxListedTouchQuote } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
+import { fetchOkxListedTouchQuote, type ListedTouchQuote } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
+import {
+  PERP_TIERS,
+  PERP_TIER_GEOMETRY,
+  PERP_TIER_WORDS,
+  parsePerpTier,
+  parseTenor,
+  type EpTenor,
+  type PerpTier
+} from "../src/singleSide/twoSided/creditCollar/perpTiers";
+import { fetchOkxTopSnapshot, quoteCollarFromSnapshot, type OkxListedSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
 import { buildOkxLiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveRunner";
 import { executionArmed, parseLiveGuardsFromEnv } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
 
@@ -303,6 +314,111 @@ const resolveAccount = (raw: string | null): { ok: true; account: string } | { o
 const floorPct = num(process.env.DEMO_FLOOR_PCT, DEMO_FLOOR_PCT);
 const capPct = num(process.env.DEMO_CAP_PCT, DEMO_CAP_PCT);
 
+// ── Tenor + tiers ─────────────────────────────────────────────────────────────
+// EP_TENOR=weekly writes every collar to the next listed Friday 08:00 UTC (≥ 5 days out; daily
+// when none is listed) — one-day options a few percent out trade at ticks, the weekly is where
+// the credit is real (perp shadow, rule report: ~40× the cash per dollar protected). Default
+// daily = the product as shipped. EP_TIERS=off hides the tiles (balanced only). Balanced keeps
+// DEMO_FLOOR_PCT / DEMO_CAP_PCT so an unflagged deploy prices byte-for-byte as before.
+const tenor: EpTenor = parseTenor(process.env.EP_TENOR);
+const tiersOn = String(process.env.EP_TIERS ?? "on").toLowerCase() !== "off";
+const geometryFor = (tier: PerpTier): { floorPct: number; capPct: number } => (tier === "balanced" ? { floorPct, capPct } : PERP_TIER_GEOMETRY[tier]);
+
+type TierTile = {
+  floorStrike: number;
+  capStrike: number;
+  floorPct: number;
+  capPct: number;
+  creditUsdc: number;
+  grossCreditUsdc: number;
+  takeRatePct: number;
+  expiryMs: number;
+};
+
+// One top-of-book snapshot (2 OKX requests) serves the tier tiles for ~20s; the selected tier
+// is always the executable probe, so the hero number never comes from the cache.
+let topSnapCache: { atMs: number; spot: number; snap: OkxListedSnapshot } | null = null;
+const topSnapshot = async (spot: number): Promise<OkxListedSnapshot | null> => {
+  const nowMs = Date.now();
+  if (topSnapCache && nowMs - topSnapCache.atMs < 20_000 && Math.abs(topSnapCache.spot - spot) / spot < 0.002) return topSnapCache.snap;
+  try {
+    const snap = await fetchOkxTopSnapshot({ spot, nowMs });
+    topSnapCache = { atMs: nowMs, spot, snap };
+    return snap;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The three tiles for one quote. The selected tier is the probe the hero shows (executable
+ * touch, side-aware roles); the others are priced from the snapshot at the SAME expiry with
+ * the same take rule. A tier the book cannot fund is null and the client hides it.
+ */
+const tierTilesFor = async (input: {
+  side: PerpSide;
+  spot: number;
+  lots: number;
+  notionalUsdc: number;
+  selected: PerpTier;
+  probe: Extract<ListedTouchQuote, { ok: true }>;
+  rate: { ratePct: number; founding: boolean };
+}): Promise<Partial<Record<PerpTier, TierTile | null>>> => {
+  const minTake = minTakeUsdcFor(capsInputs, input.notionalUsdc);
+  const ownSplit = applyTake(input.probe.creditUsdc, input.rate.ratePct, capsInputs.deMinimisUsdc, input.rate.founding, minTake);
+  const own: TierTile = {
+    floorStrike: input.side === "long" ? input.probe.putStrike : input.probe.callStrike,
+    capStrike: input.side === "long" ? input.probe.callStrike : input.probe.putStrike,
+    floorPct: input.probe.floorPct,
+    capPct: input.probe.capPct,
+    creditUsdc: ownSplit.traderCreditUsdc,
+    grossCreditUsdc: input.probe.creditUsdc,
+    takeRatePct: ownSplit.appliedRatePct,
+    expiryMs: input.probe.expiryMs
+  };
+  const tiles: Partial<Record<PerpTier, TierTile | null>> = { [input.selected]: own };
+  if (!tiersOn) return tiles;
+  const snap = await topSnapshot(input.spot);
+  if (!snap) return tiles;
+  for (const t of PERP_TIERS) {
+    if (t === input.selected) continue;
+    const q = quoteCollarFromSnapshot({ side: input.side, spot: input.spot, contracts: input.lots, geometry: geometryFor(t), expiryMs: input.probe.expiryMs }, snap);
+    if (!q.ok) {
+      tiles[t] = null;
+      continue;
+    }
+    const split = applyTake(q.netCreditUsdc, input.rate.ratePct, capsInputs.deMinimisUsdc, input.rate.founding, minTake);
+    tiles[t] =
+      split.traderCreditUsdc > 0
+        ? {
+            floorStrike: q.buyStrike,
+            capStrike: q.sellStrike,
+            floorPct: q.floorPct,
+            capPct: q.capPct,
+            creditUsdc: split.traderCreditUsdc,
+            grossCreditUsdc: q.netCreditUsdc,
+            takeRatePct: split.appliedRatePct,
+            expiryMs: q.expiryMs
+          }
+        : null;
+  }
+  return tiles;
+};
+
+// Funding disclosure: what holding the perp costs (or pays) over the cycle, from Hyperliquid's
+// live rate. Longs pay positive funding; shorts receive it. Cached a minute; null when unreadable.
+let fundingCache: { atMs: number; bpsPer8h: number | null } = { atMs: 0, bpsPer8h: null };
+const fundingDisclosure = async (side: PerpSide, notionalUsdc: number, expiryMs: number): Promise<{ bpsPer8h: number; holderPaysUsdc: number } | null> => {
+  if (Date.now() - fundingCache.atMs > 60_000) {
+    fundingCache = { atMs: Date.now(), bpsPer8h: await hl.fundingBpsPer8h(coin).catch(() => null) };
+  }
+  const bps = fundingCache.bpsPer8h;
+  if (bps == null) return null;
+  const periods = Math.max(0, expiryMs - Date.now()) / (8 * 3_600_000);
+  const pays = round2(notionalUsdc * (bps / 10000) * periods * (side === "long" ? 1 : -1));
+  return { bpsPer8h: +bps.toFixed(3), holderPaysUsdc: pays };
+};
+
 const DAY_MS = 86_400_000;
 
 type HlPositionRead = {
@@ -367,9 +483,17 @@ const withTimeout = async <T>(work: Promise<T>, ms: number, onTimeout: T): Promi
   }
 };
 
-const doWrap = async (account: string, renewal = false, idempotencyKey: string | null = null): Promise<{ status: number; body: unknown }> => {
+const doWrap = async (
+  account: string,
+  renewal = false,
+  idempotencyKey: string | null = null,
+  tierParam: PerpTier | null = null
+): Promise<{ status: number; body: unknown }> => {
   const nowMs = Date.now();
   const records = await stores.loadWraps();
+  // The holder's shape: the tap's choice, else what the toggle was armed with, else balanced.
+  const tier: PerpTier = tierParam ?? parsePerpTier((await stores.loadPrefs())[account.toLowerCase()]?.tier);
+  const geom = geometryFor(tier);
 
   // Idempotent wrap requests: a client retry with the same key returns the ORIGINAL outcome —
   // a flaky network can never open two wraps.
@@ -467,7 +591,7 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
   // 2) QUOTE — listed OKX lots. Credit = executable touch net of OKX fees. No $80/$50k target.
   const spot = position.markPx;
   const hedgeNotionalUsdc = round2(cover.coveredBtc * spot);
-  const plan = demoPlanStrikes(spot, position.side, floorPct, capPct);
+  const plan = demoPlanStrikes(spot, position.side, geom.floorPct, geom.capPct);
   const listed = await fetchOkxListedTouchQuote({
     side: position.side,
     spot,
@@ -475,7 +599,8 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
     planCallStrike: plan.callStrike,
     notionalUsdc: hedgeNotionalUsdc,
     contractsBtc: cover.coveredBtc,
-    nowMs: Date.now()
+    nowMs: Date.now(),
+    tenor
   });
   if (!listed.ok) {
     okxQuoteFailStreak = /listed_book_empty|chain|fetch|network/i.test(listed.error) ? okxQuoteFailStreak + 1 : 0;
@@ -528,7 +653,13 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
   const tenorDays = Math.max(1 / 24, (listed.expiryMs - Date.now()) / DAY_MS);
   // The trader is quoted the NET credit (gross minus the published take). One-number rule: every
   // surface shows this number; the gross/split lives in rec.economics for the honest breakdown.
-  const quotedSplit = applyTake(q.economics.foxify_credit_usdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding);
+  const minTakeUsdc = minTakeUsdcFor(capsInputs, hedgeNotionalUsdc);
+  const quotedSplit = applyTake(q.economics.foxify_credit_usdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdc);
+  if (!(quotedSplit.traderCreditUsdc > 0)) {
+    failWrap(rec, Date.now(), `wrap refused: credit_below_take — the market funded $${q.economics.foxify_credit_usdc}, under the minimum take`);
+    await persist();
+    return { status: 409, body: { ok: false, error: "credit_below_take", message: rec.failReason, wrap: rec } };
+  }
   rec.quote = {
     spot: round2(spot),
     putStrike: q.legs.putStrike,
@@ -540,7 +671,9 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
     floorStrike,
     capStrike,
     floorPctUsed: floorUsedPct,
-    tenorDays: +tenorDays.toFixed(2)
+    tenorDays: +tenorDays.toFixed(2),
+    tier,
+    tenor: listed.tenor
   };
   rec.economics = {
     grossCreditUsdc: q.economics.foxify_credit_usdc,
@@ -557,6 +690,7 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
         ? ` (market sourced $${q.economics.foxify_credit_usdc}; we keep ${(quotedSplit.appliedRatePct * 100).toFixed(0)}%${rate.founding ? " founding rate" : ""})`
         : ` (market sourced $${q.economics.foxify_credit_usdc}; our cut waived under $${capsInputs.deMinimisUsdc.toFixed(2)})`) +
       ` · listed OKX ${listed.putInstId} / ${listed.callInstId} touch` +
+      (tier !== "balanced" || listed.tenor !== "daily" ? ` · ${PERP_TIER_WORDS[tier]} · ${listed.tenor}` : "") +
       (sizeNote ? ` · ${sizeNote}` : "")
   );
   await persist();
@@ -601,6 +735,8 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
     {
       client: new OkxExecutionClient({ apiKey: k, secret: s, passphrase: p, mode: liveGuards.mode }),
       guards: liveGuards,
+      // The legs go to the expiry the credit was quoted on (weekly tenor, or a daily quoted across the 12h roll).
+      expiryMs: listed.expiryMs,
       paths: {
         windowState: `./logs/demo-live-window-${rec.id}.json`, // fresh window per wrap (multi-take recording)
         executions: "./logs/demo-live-executions.jsonl",
@@ -673,7 +809,7 @@ const doWrap = async (account: string, renewal = false, idempotencyKey: string |
   };
   // ONE-NUMBER RULE: after the fill, every surface shows the trader's REALIZED credit (net of the
   // published take); the quote survives only as labeled history ("quoted → filled").
-  const realizedSplit = applyTake(pos.foxifyCreditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding);
+  const realizedSplit = applyTake(pos.foxifyCreditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdc);
   const quotedCredit = rec.quote?.creditUsdc ?? realizedSplit.traderCreditUsdc;
   if (rec.quote) rec.quote.creditUsdc = realizedSplit.traderCreditUsdc;
   rec.economics = {
@@ -849,7 +985,8 @@ const renewalTick = async (): Promise<void> => {
       }
       const cover = coverOkxLots(position.szBase);
       if (!cover.ok) continue; // below one lot — retry next throttle window
-      const renewPlan = demoPlanStrikes(position.markPx, position.side, floorPct, capPct);
+      const renewGeom = geometryFor(parsePerpTier(pref.tier));
+      const renewPlan = demoPlanStrikes(position.markPx, position.side, renewGeom.floorPct, renewGeom.capPct);
       const probe = await fetchOkxListedTouchQuote({
         side: position.side,
         spot: position.markPx,
@@ -857,7 +994,8 @@ const renewalTick = async (): Promise<void> => {
         planCallStrike: renewPlan.callStrike,
         notionalUsdc: round2(cover.coveredBtc * position.markPx),
         contractsBtc: cover.coveredBtc,
-        nowMs
+        nowMs,
+        tenor
       });
       if (!probe.ok) {
         console.error(`[demo] auto-renew: ${key} skip-day — ${probe.error} (retry in ${Math.round(renewRetryMs / 60000)}m)`);
@@ -1673,7 +1811,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
         return;
       }
-      const plan = demoPlanStrikes(position.markPx, position.side, floorPct, capPct);
+      const qTier = parsePerpTier(url.searchParams.get("tier"));
+      const qGeom = geometryFor(qTier);
+      const plan = demoPlanStrikes(position.markPx, position.side, qGeom.floorPct, qGeom.capPct);
       const probe = await fetchOkxListedTouchQuote({
         side: position.side,
         spot: position.markPx,
@@ -1681,7 +1821,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         planCallStrike: plan.callStrike,
         notionalUsdc: sizing.coveredNotionalUsdc,
         contractsBtc: sizing.coveredBtc,
-        nowMs: Date.now()
+        nowMs: Date.now(),
+        tenor
       });
       if (!probe.ok) {
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
@@ -1689,18 +1830,31 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       const registry = await stores.loadRegistry();
       const rate = takeRateFor(capsInputs, registry[acct.account.toLowerCase()]?.joinedAtMs ?? Date.now(), Date.now());
-      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding);
+      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdcFor(capsInputs, sizing.coveredNotionalUsdc));
+      if (!(split.traderCreditUsdc > 0)) {
+        sendJson(res, 409, { ok: false, error: "credit_below_take", message: `the market funded $${probe.creditUsdc}, under the minimum take` });
+        return;
+      }
+      const tiles = await tierTilesFor({ side: position.side, spot: position.markPx, lots: sizing.lots, notionalUsdc: sizing.coveredNotionalUsdc, selected: qTier, probe, rate });
       sendJson(res, 200, {
         ok: true,
         indicative: true, // executable truth is the post-fill number (one-number rule)
         side: position.side,
+        spot: position.markPx,
+        protectedUsd: sizing.coveredNotionalUsdc,
         creditUsdc: split.traderCreditUsdc,
         grossCreditUsdc: probe.creditUsdc,
         takeRatePct: split.appliedRatePct,
+        takeRule: split.rule,
         founding: rate.founding,
         floorStrike: position.side === "long" ? probe.putStrike : probe.callStrike,
         capStrike: position.side === "long" ? probe.callStrike : probe.putStrike,
         expiryMs: probe.expiryMs,
+        tenor: probe.tenor,
+        tier: qTier,
+        tiers: tiles,
+        tierWords: PERP_TIER_WORDS,
+        funding: await fundingDisclosure(position.side, sizing.coveredNotionalUsdc, probe.expiryMs),
         coveredBtc: sizing.coveredBtc,
         coverageNote: sizing.coverageNote
       });
@@ -1753,7 +1907,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
         return;
       }
-      const plan = demoPlanStrikes(mark, side, floorPct, capPct);
+      const pvTier = parsePerpTier(url.searchParams.get("tier"));
+      const pvGeom = geometryFor(pvTier);
+      const plan = demoPlanStrikes(mark, side, pvGeom.floorPct, pvGeom.capPct);
       const probe = await fetchOkxListedTouchQuote({
         side,
         spot: mark,
@@ -1761,7 +1917,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         planCallStrike: plan.callStrike,
         notionalUsdc: sizing.coveredNotionalUsdc,
         contractsBtc: sizing.coveredBtc,
-        nowMs: Date.now()
+        nowMs: Date.now(),
+        tenor
       });
       if (!probe.ok) {
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
@@ -1769,7 +1926,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       // A fresh wallet joining now gets the founding rate while the cohort has room — mirror /api/quote.
       const rate = takeRateFor(capsInputs, Date.now(), Date.now());
-      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding);
+      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdcFor(capsInputs, sizing.coveredNotionalUsdc));
+      if (!(split.traderCreditUsdc > 0)) {
+        sendJson(res, 409, { ok: false, error: "credit_below_take", message: `the market funded $${probe.creditUsdc}, under the minimum take` });
+        return;
+      }
+      const tiles = await tierTilesFor({ side, spot: mark, lots: sizing.lots, notionalUsdc: sizing.coveredNotionalUsdc, selected: pvTier, probe, rate });
       recordPageLoad(funnelState, "preview", Date.now());
       funnelDirty = true;
       sendJson(res, 200, {
@@ -1785,11 +1947,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         exceedsCurrentCap: sizing.coveredNotionalUsdc > derived.perWalletCapUsdc,
         spot: mark,
         creditUsdc: split.traderCreditUsdc,
+        grossCreditUsdc: probe.creditUsdc,
         takeRatePct: split.appliedRatePct,
+        takeRule: split.rule,
         founding: rate.founding,
         floorStrike: side === "long" ? probe.putStrike : probe.callStrike,
         capStrike: side === "long" ? probe.callStrike : probe.putStrike,
         expiryMs: probe.expiryMs,
+        tenor: probe.tenor,
+        tier: pvTier,
+        tiers: tiles,
+        tierWords: PERP_TIER_WORDS,
+        funding: await fundingDisclosure(side, sizing.coveredNotionalUsdc, probe.expiryMs),
         coverageNote: sizing.coverageNote
       });
       return;
@@ -1816,10 +1985,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         return;
       }
       const idem = String(req.headers["idempotency-key"] ?? url.searchParams.get("idem") ?? "").trim() || null;
+      const tierRaw = url.searchParams.get("tier");
+      const wrapTier: PerpTier | null = tierRaw ? parsePerpTier(tierRaw) : null;
       wrapsInFlight.set(key, Date.now());
       try {
         const out = await withTimeout(
-          doWrap(acct.account, false, idem),
+          doWrap(acct.account, false, idem, wrapTier),
           WRAP_REQUEST_TIMEOUT_MS,
           { status: 504, body: { ok: false, error: "wrap_timeout", message: "the venue did not answer in time — nothing opened; try again in a minute" } }
         );
@@ -1830,8 +2001,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           // Issue (or re-issue to the wrapping client) the account's close-gate control token.
           const prefs = await stores.loadPrefs();
           const pk = acct.account.toLowerCase();
-          if (!prefs[pk]?.controlToken) {
-            prefs[pk] = { ...(prefs[pk] ?? { on: true, sinceMs: Date.now() }), controlToken: randomUUID() };
+          const usedTier = (out.body as { wrap?: { quote?: { tier?: string } } }).wrap?.quote?.tier;
+          if (!prefs[pk]?.controlToken || (usedTier && prefs[pk]?.tier !== usedTier)) {
+            prefs[pk] = { ...(prefs[pk] ?? { on: true, sinceMs: Date.now() }), controlToken: prefs[pk]?.controlToken ?? randomUUID(), ...(usedTier ? { tier: usedTier } : {}) };
             await stores.savePrefs(prefs);
           }
           (out.body as Record<string, unknown>).controlToken = prefs[pk].controlToken;

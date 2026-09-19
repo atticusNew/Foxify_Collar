@@ -19,7 +19,11 @@ import {
   listedWingCandidates,
   touchCreditUsdc,
 } from "../execution/okxListedTouchQuote";
-import { nextStandardDailyExpiryMs, parseOkxChain, type OkxChainInstrument } from "../execution/okxLivePlanner";
+import { nextListedWeeklyExpiryMs, nextStandardDailyExpiryMs, parseOkxChain, type OkxChainInstrument } from "../execution/okxLivePlanner";
+import type { CollarGeometry } from "../perpTiers";
+
+export { nextListedWeeklyExpiryMs };
+export type { CollarGeometry };
 
 const round2 = (x: number) => +x.toFixed(2);
 const round6 = (x: number) => +x.toFixed(6);
@@ -91,15 +95,7 @@ export const instrumentsInBand = (chain: OkxChainInstrument[], expiryMs: number,
   return chain.filter((c) => c.state === "live" && c.expiryMs === expiryMs && c.strike >= lo && c.strike <= hi);
 };
 
-/** The first listed Friday 08:00 UTC expiry at least `minDays` out, or null when none is listed. */
-export const nextListedWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = 5): number | null => {
-  const listed = [...new Set(chain.filter((c) => c.state === "live").map((c) => c.expiryMs))].sort((a, b) => a - b);
-  for (const e of listed) {
-    const d = new Date(e);
-    if (d.getUTCDay() === 5 && d.getUTCHours() === 8 && e - nowMs >= minDays * 86_400_000) return e;
-  }
-  return null;
-};
+
 
 /** Public (unsigned) snapshot: instruments + depth for every in-band option at the next daily expiry. */
 export const fetchOkxListedSnapshot = async (input: {
@@ -139,14 +135,58 @@ export const fetchOkxListedSnapshot = async (input: {
   return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing };
 };
 
-export type FillMode = "top" | "walk";
+/**
+ * Top-of-book snapshot in two requests (instruments + the option tickers feed),
+ * for the demo's tier tiles: every in-band strike at the daily and weekly
+ * expiries priced at the same instant. Depth is one level, so `mode: "walk"`
+ * is not meaningful on it; the shadow's `fetchOkxListedSnapshot` keeps depth.
+ */
+export const fetchOkxTopSnapshot = async (input: {
+  spot: number;
+  nowMs: number;
+  baseUrl?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<OkxListedSnapshot> => {
+  const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
+  const f = input.fetchImpl ?? fetch;
+  const getJson = async (path: string): Promise<unknown> => {
+    const res = await f(`${base}${path}`, { signal: AbortSignal.timeout(8_000) });
+    if (!res.ok) throw new Error(`OKX ${path} HTTP ${res.status}`);
+    return res.json();
+  };
+  const [instr, tickers] = await Promise.all([
+    getJson("/api/v5/public/instruments?instType=OPTION&uly=BTC-USD") as Promise<{ data?: unknown[] }>,
+    getJson("/api/v5/market/tickers?instType=OPTION&uly=BTC-USD") as Promise<{
+      data?: Array<{ instId?: string; bidPx?: string; askPx?: string; bidSz?: string; askSz?: string }>;
+    }>,
+  ]);
+  const chainAll = parseOkxChain((instr.data ?? []) as Parameters<typeof parseOkxChain>[0]);
+  const expiryMs = nextStandardDailyExpiryMs(input.nowMs);
+  const weeklyExpiryMs = nextListedWeeklyExpiryMs(chainAll, input.nowMs);
+  const chain = [
+    ...instrumentsInBand(chainAll, expiryMs, input.spot),
+    ...(weeklyExpiryMs != null && weeklyExpiryMs !== expiryMs ? instrumentsInBand(chainAll, weeklyExpiryMs, input.spot) : []),
+  ];
+  const byId = new Map((tickers.data ?? []).map((t) => [t.instId ?? "", t]));
+  const books: Record<string, BookDepth> = {};
+  let booksMissing = 0;
+  for (const c of chain) {
+    const t = byId.get(c.instId);
+    if (!t) {
+      booksMissing += 1;
+      continue;
+    }
+    const lvl = (px?: string, sz?: string): BookLevel[] => {
+      const p = Number(px);
+      const s = Number(sz);
+      return Number.isFinite(p) && p > 0 ? [{ pxBtc: p, contracts: Number.isFinite(s) && s > 0 ? s : 1 }] : [];
+    };
+    books[c.instId] = { bids: lvl(t.bidPx, t.bidSz), asks: lvl(t.askPx, t.askSz) };
+  }
+  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing };
+};
 
-export interface CollarGeometry {
-  /** protective wing distance from spot (the holder's floor), fraction */
-  floorPct: number;
-  /** funding wing distance from spot (the holder's cap), fraction */
-  capPct: number;
-}
+export type FillMode = "top" | "walk";
 
 export type SnapshotQuote =
   | {
