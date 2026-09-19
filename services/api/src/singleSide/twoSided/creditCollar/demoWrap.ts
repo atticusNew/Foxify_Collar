@@ -157,6 +157,8 @@ export type KnockoutInfo = {
   capStrike: number;
   /** Net USD realized closing both hedge legs (okx lanes); null in paper (no venue legs). House-side bookkeeping. */
   unwindValueUsdc: number | null;
+  /** Contracts of the sold leg bought back BEFORE the touch by the pre-touch working order (cap watch), and what they cost. */
+  preTouch?: { filledContracts: number; avgPxBtc: number | null; costUsdc: number } | null;
 };
 
 export const newDemoWrap = (

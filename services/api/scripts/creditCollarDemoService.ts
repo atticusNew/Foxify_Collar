@@ -52,6 +52,7 @@ import {
   renewalStaggerOffsetMs,
   wrapCapStrike,
   wrapExposureUsdc,
+  wrapFloorStrike,
   wrapRefuseFromLive,
   concludeAtExpiry,
   renewalDecision,
@@ -65,6 +66,16 @@ import {
 } from "../src/singleSide/twoSided/creditCollar/settlement/payoutLedger";
 import { buildPayoutSender, parsePayoutRailFromEnv } from "../src/singleSide/twoSided/creditCollar/settlement/usdcPayout";
 import { unwindLiveCollar } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveUnwind";
+import {
+  capHeadroom,
+  capWatchConfigFromEnv,
+  expTimeOf,
+  fetchOkxMarkVols,
+  summarizeCapWatch,
+  workingOrderAction,
+  type CapWatchWrap,
+  type WorkingOrder
+} from "../src/singleSide/twoSided/creditCollar/capWatch";
 import {
   applyTake,
   minTakeUsdcFor,
@@ -1003,6 +1014,163 @@ const knockoutUnwindLegs = async (rec: DemoWrapRecord, markPx: number): Promise<
   return { ok: rep.complete, valueUsdc: rep.unwindValueUsdc, note: rep.notes.join("; ") || rep.outcome };
 };
 
+// ── Cap watch: live headroom per wrap + the pre-touch working order ─────────────
+// The lock-line watcher, repurposed (capWatch.ts). Every monitor tick prices what a knock-out
+// RIGHT NOW would cost the writer (buy back the sold leg at the money at its OKX mark vol, less
+// unvested credit, our take and the floor leg's recovery) and rolls the shortfall up as a margin
+// reserve; past EP_HEADROOM_ALERT_USD per wrap it pages. With EP_PRETOUCH_WORKING_ORDER=1 (okx
+// lanes only) a passive post-only buy on the sold leg rests at the book's mid while the mark is
+// within EP_PRETOUCH_NEAR_BPS of the cap, is recalled past EP_PRETOUCH_RECALL_BPS, and is
+// cancelled at the touch so the IOC unwind (venue truth first) finishes whatever did not fill.
+const capWatchCfg = capWatchConfigFromEnv(process.env);
+const capWatch = new Map<string, CapWatchWrap>();
+const markVolCache = new Map<string, { atMs: number; vols: Map<string, number> | null }>();
+const HEADROOM_ALERT_COOLDOWN_MS = num(process.env.EP_HEADROOM_ALERT_COOLDOWN_MS, 60 * 60_000);
+
+const markVolsFor = async (expTime: string, nowMs: number): Promise<Map<string, number> | null> => {
+  const c = markVolCache.get(expTime);
+  if (c && nowMs - c.atMs < 60_000) return c.vols;
+  let vols: Map<string, number> | null = null;
+  try {
+    vols = await fetchOkxMarkVols(expTime);
+  } catch (e) {
+    console.error(`[demo] cap watch: OKX mark vols unreadable for ${expTime}: ${(e as Error).message}`);
+  }
+  markVolCache.set(expTime, { atMs: nowMs, vols });
+  return vols;
+};
+
+const okxClientForWatch = (): OkxExecutionClient | null => {
+  if (guards.executionMode === "paper") return null;
+  const { OKX_API_KEY: k, OKX_API_SECRET: s, OKX_API_PASSPHRASE: p } = process.env;
+  if (!k || !s || !p) return null;
+  return new OkxExecutionClient({ apiKey: k, secret: s, passphrase: p, mode: parseLiveGuardsFromEnv(process.env, "okx").mode });
+};
+
+const parsePx = (v: string | undefined): number | null => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+/** Venue truth on a resting order: fills so far, or null when it cannot be read this tick. */
+const refreshWorkingOrder = async (client: OkxExecutionClient, order: WorkingOrder): Promise<WorkingOrder | null> => {
+  try {
+    const q = await client.getOrder(order.instId, order.ordId);
+    const snap = q.data?.[0];
+    if (!snap) return order;
+    const filled = Number(snap.accFillSz);
+    return { ...order, filledContracts: Number.isFinite(filled) ? filled : order.filledContracts, avgPxBtc: parsePx(snap.avgPx) ?? order.avgPxBtc };
+  } catch {
+    return null;
+  }
+};
+
+/** Cancel the resting order and return what it had already bought back (folded into the knock-out's economics). */
+const recallWorkingOrder = async (client: OkxExecutionClient, order: WorkingOrder, markPx: number): Promise<{ filledContracts: number; avgPxBtc: number | null; costUsdc: number }> => {
+  try {
+    await client.cancelOrder(order.instId, order.ordId);
+  } catch (e) {
+    console.error(`[demo] cap watch: cancel ${order.ordId} on ${order.instId} failed: ${(e as Error).message}`);
+  }
+  const fresh = (await refreshWorkingOrder(client, order)) ?? order;
+  const costUsdc = fresh.avgPxBtc != null ? round2(fresh.avgPxBtc * fresh.filledContracts * OKX_OPTION_LOT_BTC * markPx) : 0;
+  return { filledContracts: fresh.filledContracts, avgPxBtc: fresh.avgPxBtc, costUsdc };
+};
+
+/** Compute this wrap's headroom, then act on the working order; never throws (a watch failure is never a wrap failure). */
+const watchWrap = async (rec: DemoWrapRecord, markPx: number, nowMs: number, client: OkxExecutionClient | null): Promise<void> => {
+  const cap = wrapCapStrike(rec);
+  const v = demoVestingStatus(rec, nowMs);
+  if (cap == null || !v || !rec.vesting) return;
+  const capLeg = rec.legs.find((l) => l.role === "sell_call_cap" || l.role === "sell_put_cap");
+  const floorLeg = rec.legs.find((l) => l.role === "buy_put_floor" || l.role === "buy_call_floor");
+  const expTime = capLeg?.instId ? expTimeOf(capLeg.instId) : null;
+  const vols = expTime ? await markVolsFor(expTime, nowMs) : null;
+  const prev = capWatch.get(rec.id) ?? null;
+  let order = prev?.order ?? null;
+  if (order && client) order = await refreshWorkingOrder(client, order) ?? order;
+
+  let capLegAskBtc: number | null = null;
+  let book: { bidBtc: number | null; askBtc: number | null } | null = null;
+  const needBook = client && capLeg?.instId && (capWatchCfg.workingOrders || !vols?.get(capLeg.instId));
+  if (needBook && client && capLeg?.instId) {
+    try {
+      const top = (await client.getBookTop(capLeg.instId)).data?.[0];
+      book = { bidBtc: parsePx(top?.bids?.[0]?.[0]), askBtc: parsePx(top?.asks?.[0]?.[0]) };
+      capLegAskBtc = book.askBtc;
+    } catch {
+      book = null;
+    }
+  }
+  const headroom = capHeadroom(
+    {
+      side: rec.position.side,
+      capStrike: cap,
+      floorStrike: wrapFloorStrike(rec),
+      markPx,
+      nowMs,
+      expiryMs: rec.vesting.endMs,
+      coveredBtc: rec.hedge?.contracts != null ? rec.hedge.contracts * OKX_OPTION_LOT_BTC : rec.position.szBase,
+      fullCreditUsdc: rec.vesting.fullCreditUsdc,
+      vestedUsdc: v.vestedUsdc,
+      takeUsdc: rec.economics?.atticusTakeUsdc ?? 0,
+      capLegIv: capLeg?.instId ? vols?.get(capLeg.instId) ?? null : null,
+      floorLegIv: floorLeg?.instId ? vols?.get(floorLeg.instId) ?? null : null,
+      capLegAskBtc
+    },
+    capWatchCfg
+  );
+  if (headroom.reserveUsdc >= capWatchCfg.reserveAlertUsdc && headroom.priced !== "unpriced") {
+    raiseAlert(
+      "unwind_event",
+      `HEADROOM ${rec.id}: a knock-out now would cost the writer $${headroom.reserveUsdc} (buy-back $${headroom.buybackAtTouchUsdc} vs unvested $${headroom.unvestedUsdc} + take $${headroom.takeUsdc}) · ${headroom.distanceBps} bps from the cap, ${headroom.hoursLeft}h left`,
+      { wrapId: rec.id },
+      { dedupeKey: `headroom:${rec.id}`, dedupeMs: HEADROOM_ALERT_COOLDOWN_MS }
+    );
+  }
+
+  // The working order: only with a venue client behind it, only on a leg we can name.
+  const action = workingOrderAction(headroom, order, book, { ...capWatchCfg, workingOrders: capWatchCfg.workingOrders && client != null && capLeg?.instId != null });
+  let preTouch = prev?.preTouch ?? null;
+  if (client && capLeg?.instId) {
+    const contracts = rec.hedge?.contracts ?? 0;
+    const rest = async (pxBtc: number): Promise<WorkingOrder | null> => {
+      const res = await client.placeOrder({
+        instId: capLeg.instId as string,
+        side: "buy",
+        ordType: "post_only",
+        px: String(pxBtc),
+        sz: String(contracts),
+        tdMode: "cross",
+        reduceOnly: true,
+        clOrdId: `pt${nowMs.toString(36)}${rec.id.slice(-6).replace(/[^a-zA-Z0-9]/g, "")}`
+      });
+      const ordId = res.data?.[0]?.ordId;
+      if (!res.ok || !ordId) {
+        console.error(`[demo] cap watch: working order REJECTED for ${rec.id} at ${pxBtc}: ${res.code} ${res.data?.[0]?.sMsg ?? res.msg}`);
+        return null;
+      }
+      console.error(`[demo] cap watch: working order rested for ${rec.id}: buy ${contracts} ${capLeg.instId} @ ${pxBtc} (${action.reason})`);
+      return { instId: capLeg.instId as string, ordId, pxBtc, contracts, restedAtMs: nowMs, filledContracts: 0, avgPxBtc: null };
+    };
+    try {
+      if (action.kind === "rest" && contracts > 0) order = await rest(action.pxBtc);
+      else if (action.kind === "replace" && order) {
+        await recallWorkingOrder(client, order, markPx);
+        order = contracts > 0 ? await rest(action.pxBtc) : null;
+      } else if (action.kind === "cancel" && order) {
+        const got = await recallWorkingOrder(client, order, markPx);
+        console.error(`[demo] cap watch: working order recalled for ${rec.id} (${action.reason}) — ${got.filledContracts}/${order.contracts} had filled`);
+        if (headroom.state === "touched" && got.filledContracts > 0) preTouch = got;
+        order = null;
+      }
+    } catch (e) {
+      console.error(`[demo] cap watch: working order action ${action.kind} failed for ${rec.id}: ${(e as Error).message}`);
+    }
+  }
+  capWatch.set(rec.id, { wrapId: rec.id, account: rec.account, side: rec.position.side, capStrike: cap, headroom, order, preTouch, updatedAtMs: nowMs });
+};
+
 // Knockout unwind retry budget: fast for the first attempts, then 15-minute backoff. Retries are
 // idempotent and quiet; the ALERT for a wedged unwind fires once per wrap per cooldown (below),
 // not once per attempt — a stuck condition pages the operator, it does not machine-gun them.
@@ -1028,6 +1196,20 @@ const monitorTick = async (): Promise<void> => {
     const nowMs = Date.now();
     const records = await stores.loadWraps();
     let dirty = false;
+    // Cap watch first: headroom for every live wrap, and the working order recalled at a touch
+    // BEFORE the IOC unwind runs (so the unwind's venue-first read sees the true remainder).
+    const watchClient = okxClientForWatch();
+    const activeIds = new Set<string>();
+    for (const rec of records) {
+      if (rec.status !== "active" || !rec.vesting || nowMs >= rec.vesting.endMs) continue;
+      activeIds.add(rec.id);
+      try {
+        await watchWrap(rec, mark, nowMs, watchClient);
+      } catch (e) {
+        console.error(`[demo] cap watch failed for ${rec.id}: ${(e as Error).message}`);
+      }
+    }
+    for (const id of [...capWatch.keys()]) if (!activeIds.has(id)) capWatch.delete(id);
     for (const rec of records) {
       if (rec.status !== "active" || !rec.vesting) continue;
       const cap = wrapCapStrike(rec);
@@ -1037,6 +1219,7 @@ const monitorTick = async (): Promise<void> => {
         const tries = knockoutTries.get(rec.id) ?? { n: 0, lastMs: 0 };
         knockoutTries.set(rec.id, { n: tries.n + 1, lastMs: nowMs });
         const unwound = await knockoutUnwindLegs(rec, mark);
+        const preTouch = capWatch.get(rec.id)?.preTouch ?? null;
         if (!unwound.ok) {
           // Legs could not be fully closed: the wrap stays as-is; venue-truth checks make the
           // retry idempotent; after the fast tries it backs off to 15m and keeps retrying
@@ -1050,10 +1233,18 @@ const monitorTick = async (): Promise<void> => {
           continue;
         }
         knockoutTries.delete(rec.id);
-        knockoutWrap(rec, nowMs, mark, unwound.valueUsdc);
+        // The unwind's value covers what IT closed; the working order's pre-touch buy-back is its own cost.
+        const unwindValue = unwound.valueUsdc == null ? null : round2(unwound.valueUsdc - (preTouch?.costUsdc ?? 0));
+        knockoutWrap(rec, nowMs, mark, unwindValue);
+        if (rec.knockout) rec.knockout.preTouch = preTouch;
+        capWatch.delete(rec.id);
         dirty = true;
         await accrueConclusion(rec, null);
-        raiseAlert("unwind_event", `KNOCKOUT ${rec.id}: cap $${cap} touched at mark $${mark} — legs closed, cycle settled`, { wrapId: rec.id });
+        raiseAlert(
+          "unwind_event",
+          `KNOCKOUT ${rec.id}: cap $${cap} touched at mark $${mark} — legs closed, cycle settled${preTouch ? ` · ${preTouch.filledContracts} contract(s) bought back at mid before the touch ($${preTouch.costUsdc})` : ""}`,
+          { wrapId: rec.id }
+        );
         console.error(`[demo] KNOCKOUT ${rec.id}: cap $${cap} touched at mark $${mark} — cycle over, re-arms at new spot on the next renewal tick`);
         continue;
       }
@@ -2037,6 +2228,15 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         payoutBacklog: ledger.filter((e) => e.status === "accrued" || e.status === "queued").length,
         payoutFailures: ledger.filter((e) => e.status === "failed").length,
         loops: Object.values(loopPulses).map((p) => ({ name: p.name, lastRunMs: p.lastRunMs, intervalMs: p.intervalMs })),
+        // Cap watch: what a knock-out NOW would cost on every live wrap (margin reserve), which
+        // wraps are near their cap, and any pre-touch working orders resting on the hedge venue.
+        capWatch: {
+          config: { nearBps: capWatchCfg.nearBps, recallBps: capWatchCfg.recallBps, reserveAlertUsdc: capWatchCfg.reserveAlertUsdc, workingOrders: capWatchCfg.workingOrders && guards.executionMode !== "paper" },
+          summary: summarizeCapWatch(capWatch.values()),
+          wraps: [...capWatch.values()]
+            .sort((a, b) => a.headroom.distanceBps - b.headroom.distanceBps)
+            .map((w) => ({ wrapId: w.wrapId, account: w.account, side: w.side, capStrike: w.capStrike, ...w.headroom, order: w.order, updatedAtMs: w.updatedAtMs }))
+        },
         // Top of funnel: who LOOKED (distinct addresses that viewed positions/state) vs who
         // wrapped — tells reach problems apart from conversion problems. Admin-only. Headline
         // counts exclude EP_INTERNAL_ACCOUNTS (the operator's own testing).

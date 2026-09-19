@@ -74,6 +74,24 @@ services:
       # Brand mark (finch) — set when the asset URL exists; renders next to "by ATTICUS".
       - key: EP_BRAND_LOGO_URL
         sync: false
+      # ── Product shape flags (all default to the product as shipped; flip deliberately) ──
+      # One shape: floor DEMO_FLOOR_PCT (0.06) + the widest listed cap that still pays, refused
+      # under the cap guard (EP_MIN_CAP_PCT 0.02 daily / 0.04 weekly; band to EP_CAP_MAX_PCT).
+      # EP_TENOR=weekly writes to the next listed Friday (where the credit is real; daily = ticks).
+      # EP_MIN_TAKE_BPS: notional fee floor on our take (0 = share only). EP_CREDIT_MUST_CLEAR_FUNDING=1:
+      # refuse a quote whose net credit does not clear the cycle's funding cost.
+      - key: EP_TENOR
+        value: daily
+      - key: EP_MIN_TAKE_BPS
+        value: "0"
+      - key: EP_CREDIT_MUST_CLEAR_FUNDING
+        value: "0"
+      # Cap watch: per-wrap headroom is always on (admin status); the pre-touch working order only
+      # rests on okx lanes and only when this is 1. EP_HEADROOM_ALERT_USD pages past that reserve.
+      - key: EP_PRETOUCH_WORKING_ORDER
+        value: "0"
+      - key: EP_HEADROOM_ALERT_USD
+        value: "25"
 
   - type: worker
     name: atticus-earn-protect-bot
