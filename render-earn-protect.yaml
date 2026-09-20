@@ -105,6 +105,14 @@ services:
       # of its notional (an ATM weekly cap leg is ~200–250 bps).
       - key: EP_HEADROOM_ALERT_BPS
         value: "300"
+      # Unwind queue (plain mode, live OKX lanes): on an early close the holder settles at the book's
+      # mark-to-market at once; OUR legs go on a queue and are worked passive first (post-only at the
+      # mid for EP_UNWIND_PASSIVE_MS, re-priced as the mid walks), then IOC — every step a receipt on
+      # the wrap record, the realized-vs-book gap recorded as execution edge. A new wrap that needs
+      # the same instruments on the opposite side takes them from the queue at the mid (no spread,
+      # no fees, both sides). Off (default), the previous IOC-first path runs.
+      - key: EP_UNWIND_QUEUE
+        value: "1"
 
   - type: worker
     name: atticus-earn-protect-bot

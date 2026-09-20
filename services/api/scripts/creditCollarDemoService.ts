@@ -85,6 +85,17 @@ import {
 } from "../src/singleSide/twoSided/creditCollar/capWatch";
 import { buyBackLeg, closeValueFromBooks, fetchOkxBookTop, releaseQuoteFromBook, wrapLegs } from "../src/singleSide/twoSided/creditCollar/capRelease";
 import {
+  applyRecycle,
+  isOpen as unwindOpen,
+  planUnwindJob,
+  recyclePlan,
+  stepUnwindJob,
+  summarizeUnwindQueue,
+  unwindQueueConfigFromEnv,
+  type UnwindJob,
+  type UnwindLeg
+} from "../src/singleSide/twoSided/creditCollar/execution/unwindQueue";
+import {
   applyTake,
   minTakeUsdcFor,
   assessCohort,
@@ -685,6 +696,60 @@ const doWrap = async (
     await persist();
     return { status: 409, body: { ok: false, error: "missing_credentials", message: rec.failReason, wrap: rec } };
   }
+  // RECYCLE (item 3, queue on): if the legs we are about to buy and sell are exactly the legs the
+  // unwind queue is about to sell and buy back — same instruments, opposite side, every lot — take
+  // them from the queue at the book's mid. No spread crossed on either side; both wraps carry a
+  // receipt. Full-or-nothing so this hedge record is one clean fill. Priced at the same listed
+  // touches the credit was quoted from (the mid of each leg's book right now).
+  if (unwindQueueCfg.enabled && capMode === "plain") {
+    const floorInst = position.side === "long" ? listed.putInstId : listed.callInstId;
+    const capInst = position.side === "long" ? listed.callInstId : listed.putInstId;
+    const jobs = unwindJobsOf(records);
+    const plan = recyclePlan(jobs.values(), [
+      { instId: floorInst, action: "buy", contracts: cover.lots },
+      { instId: capInst, action: "sell", contracts: cover.lots }
+    ]);
+    if (plan) {
+      const [floorTop, capTop] = await Promise.all([bookTopFor(floorInst, nowMs, 5_000), bookTopFor(capInst, nowMs, 5_000)]);
+      const mid = (t: { bidPxBtc: number | null; askPxBtc: number | null } | null): number | null =>
+        t && t.bidPxBtc != null && t.askPxBtc != null && t.bidPxBtc > 0 && t.askPxBtc >= t.bidPxBtc ? +((t.bidPxBtc + t.askPxBtc) / 2).toFixed(8) : null;
+      const floorMid = mid(floorTop);
+      const capMid = mid(capTop);
+      if (floorMid != null && capMid != null) {
+        const qtyBtc = cover.lots * OKX_OPTION_LOT_BTC;
+        const netCredit = round2((capMid - floorMid) * qtyBtc * spot);
+        if (netCredit > 0) {
+          applyRecycle(jobs, plan, { [floorInst]: floorMid, [capInst]: capMid }, rec.id, nowMs);
+          rec.legs =
+            position.side === "long"
+              ? [
+                  { role: "sell_call_cap", instId: capInst, orderId: `recycle:${plan[1].jobId}`, premiumUsdc: round2(capMid * qtyBtc * spot), real: true },
+                  { role: "buy_put_floor", instId: floorInst, orderId: `recycle:${plan[0].jobId}`, premiumUsdc: round2(-floorMid * qtyBtc * spot), real: true }
+                ]
+              : [
+                  { role: "sell_put_cap", instId: capInst, orderId: `recycle:${plan[1].jobId}`, premiumUsdc: round2(capMid * qtyBtc * spot), real: true },
+                  { role: "buy_call_floor", instId: floorInst, orderId: `recycle:${plan[0].jobId}`, premiumUsdc: round2(-floorMid * qtyBtc * spot), real: true }
+                ];
+          rec.hedge = { venue: guards.executionMode, mode: guards.executionMode, netCreditUsdc: netCredit, venueFeeUsdc: 0, contracts: cover.lots, sizeNote };
+          const rs = applyTake(netCredit, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdc);
+          const quotedCredit = rec.quote?.creditUsdc ?? rs.traderCreditUsdc;
+          if (rec.quote) rec.quote.creditUsdc = rs.traderCreditUsdc;
+          rec.economics = { grossCreditUsdc: netCredit, atticusTakeUsdc: rs.atticusTakeUsdc, takeRatePct: rs.appliedRatePct, founding: rate.founding };
+          const beat = rs.traderCreditUsdc > quotedCredit + 0.005 ? ` (quoted $${quotedCredit}, price improvement passed through)` : "";
+          pushStage(rec, "hedge_locked", Date.now(), `recycled from the unwind queue at the mid — net credit $${rs.traderCreditUsdc}${beat} · no venue orders, no fees (${plan.map((x) => x.jobId).join(", ")})`);
+          pushStage(rec, "green_light", Date.now());
+          rec.vesting = { fullCreditUsdc: rs.traderCreditUsdc, startMs: Date.now(), endMs: listed.expiryMs };
+          pushStage(rec, "vesting", Date.now(), `$${rs.traderCreditUsdc} vests linearly to ${new Date(listed.expiryMs).toISOString()}`);
+          rec.status = "active";
+          registerWallet(registry, account, nowMs);
+          await stores.saveRegistry(registry);
+          await persist();
+          console.error(`[demo] recycled ${cover.lots} lot(s) of ${floorInst} / ${capInst} into ${rec.id} from the unwind queue at the mid`);
+          return { status: 200, body: { ok: true, wrap: rec } };
+        }
+      }
+    }
+  }
   const liveGuards = {
     ...parseLiveGuardsFromEnv(process.env, "okx"),
     windowUtc: "00:00",
@@ -1160,7 +1225,55 @@ const knockoutUnwindLegs = async (rec: DemoWrapRecord, markPx: number): Promise<
   return { ok: rep.complete, valueUsdc: rep.unwindValueUsdc, note: rep.notes.join("; ") || rep.outcome };
 };
 
-// ── Cap watch: live headroom per wrap + the pre-touch working order ─────────────
+// ── Unwind queue (item 3, EP_UNWIND_QUEUE=1) ──────────────────────────────────
+// The trader settles at the book's mark-to-market the moment they close; OUR legs go on a queue
+// and are worked passive first (post-only at the mid, re-priced as it walks), then IOC, every step
+// a receipt on the wrap record. A new wrap that needs the same instruments on the opposite side
+// takes them from the queue at the mid (recycle) instead of both sides crossing the spread.
+const unwindQueueCfg = unwindQueueConfigFromEnv(process.env);
+const readBookForQueue = async (instId: string): Promise<{ bidBtc: number | null; askBtc: number | null } | null> => {
+  const top = await bookTopFor(instId, Date.now(), 5_000);
+  return top ? { bidBtc: top.bidPxBtc, askBtc: top.askPxBtc } : null;
+};
+/** The IOC for what the passive phase left: the existing venue-truth-first unwind, per leg. */
+const iocForQueue = (rec: DemoWrapRecord) => async (legs: UnwindLeg[], spotUsd: number) => {
+  const { OKX_API_KEY: k, OKX_API_SECRET: s, OKX_API_PASSPHRASE: p } = process.env;
+  if (!k || !s || !p) return { complete: false, fills: [], note: "missing OKX credentials" };
+  const putInstId = rec.legs.find((l) => l.role === "buy_put_floor" || l.role === "sell_put_cap")?.instId;
+  const callInstId = rec.legs.find((l) => l.role === "sell_call_cap" || l.role === "buy_call_floor")?.instId;
+  const contracts = Math.max(...legs.map((l) => l.contracts - l.filledContracts), 0);
+  if (!putInstId || !callInstId || contracts <= 0) return { complete: legs.every((l) => l.contracts <= l.filledContracts), fills: [], note: "nothing left to close" };
+  const rep = await unwindLiveCollar(
+    new OkxExecutionClient({ apiKey: k, secret: s, passphrase: p, mode: parseLiveGuardsFromEnv(process.env, "okx").mode }),
+    { side: rec.position.side, putInstId, callInstId, contracts, ctValBtc: OKX_OPTION_LOT_BTC },
+    { spotUsd, clOrdPrefix: `uq${Date.now().toString(36)}`, checkVenueFirst: true, dustMaxUsd: num(process.env.EP_UNWIND_DUST_MAX_USD, 20), fireSaleMaxUsd: num(process.env.EP_UNWIND_FIRESALE_MAX_USD, 50) }
+  );
+  const fills = [rep.fundingClose, rep.protectiveClose].map((c) => ({ instId: c.instId, contracts: c.closedContracts, avgPxBtc: c.avgPxBtc, feeUsdc: round2(c.feeBtc * spotUsd) }));
+  return { complete: rep.complete, fills, note: rep.notes.join("; ") || rep.outcome };
+};
+/** Early close on a live lane with the queue on: value the collar off the book, queue our exit. Returns false when nothing could be planned. */
+const queueUnwind = (rec: DemoWrapRecord, markPx: number, nowMs: number): boolean => {
+  const { capLeg, floorLeg } = wrapLegs(rec);
+  const job = planUnwindJob({
+    wrapId: rec.id,
+    account: rec.account,
+    nowMs,
+    spotUsd: markPx,
+    mtmValueUsdc: rec.closeValue?.valueUsdc ?? null,
+    floorInstId: floorLeg?.instId ?? null,
+    capInstId: capLeg?.instId ?? null,
+    contracts: rec.hedge?.contracts ?? 0,
+    cappedContracts: cappedContracts(rec),
+    cfg: unwindQueueCfg
+  });
+  if (!job) return false;
+  rec.unwind = job;
+  console.error(`[demo] unwind queued for ${rec.id}: ${job.legs.map((l) => `${l.action} ${l.contracts} ${l.instId}`).join(", ")} — passive until ${new Date(job.passiveUntilMs).toISOString()}`);
+  return true;
+};
+const unwindJobsOf = (records: DemoWrapRecord[]): Map<string, UnwindJob> => new Map(records.filter((r) => r.unwind && unwindOpen(r.unwind)).map((r) => [r.unwind!.id, r.unwind!]));
+
+// ── Cap watch: live headroom per wrap ──────────────────────────────────────────
 // The lock-line watcher, repurposed (capWatch.ts). Every monitor tick prices the sold cap leg as
 // if the mark were at the cap right now (at the money at its OKX mark vol, less unvested credit,
 // our take and the floor leg's recovery). In plain mode that is observability and the release
@@ -1287,6 +1400,20 @@ const monitorTick = async (): Promise<void> => {
       }
     }
     for (const id of [...capWatch.keys()]) if (!activeIds.has(id)) capWatch.delete(id);
+    // The unwind queue: one tick of work on every open job (concluded wraps whose legs we still hold).
+    if (unwindQueueCfg.enabled && watchClient) {
+      for (const rec of records) {
+        if (!rec.unwind || !unwindOpen(rec.unwind)) continue;
+        const before = rec.unwind.receipts.length;
+        await stepUnwindJob(rec.unwind, { client: watchClient, readBook: readBookForQueue, ioc: iocForQueue(rec), nowMs, cfg: unwindQueueCfg });
+        if (rec.unwind.receipts.length !== before) dirty = true;
+        if (rec.unwind.phase === "failed") {
+          raiseAlert("unwind_event", `UNWIND QUEUE ${rec.id}: ${rec.unwind.receipts[rec.unwind.receipts.length - 1]?.note ?? "failed"}`, { wrapId: rec.id }, { dedupeKey: `unwind_queue:${rec.id}`, dedupeMs: UNWIND_ALERT_COOLDOWN_MS });
+        } else if (rec.unwind.phase === "done" && rec.unwind.receipts.length !== before) {
+          console.error(`[demo] unwind done for ${rec.id}: realized $${rec.unwind.realizedUsdc}${rec.unwind.executionEdgeUsdc == null ? "" : ` (${rec.unwind.executionEdgeUsdc >= 0 ? "+" : ""}$${rec.unwind.executionEdgeUsdc} vs the book the trader was settled at)`}`);
+        }
+      }
+    }
     for (const rec of records) {
       if (rec.status !== "active" || !rec.vesting) continue;
       const cap = wrapCapStrike(rec);
@@ -2357,7 +2484,16 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // early close settled the ledger but left real option legs open). Incomplete unwind ⟹
       // honest refusal — the wrap stays fully hedged and can be closed again or ride to expiry.
       const closeMark = await hl.midPx(coin).catch(() => active.quote?.spot ?? 0);
-      if (active.hedge && active.hedge.mode !== "paper") {
+      if (active.hedge && active.hedge.mode !== "paper" && unwindQueueCfg.enabled && wrapCapMode(active) === "plain") {
+        // Item 3: the trader settles at the book NOW; our legs are worked on the queue (passive
+        // first, then IOC) with receipts. A failure to fill is our problem, never a refusal.
+        await valueEarlyClose(active, closeMark, Date.now(), null);
+        if (!queueUnwind(active, closeMark, Date.now())) {
+          await setProtection(acct.account, true);
+          sendJson(res, 502, { ok: false, error: "close_unplanned", message: "the hedge legs could not be identified for the unwind — you're still protected; try again in a minute" });
+          return;
+        }
+      } else if (active.hedge && active.hedge.mode !== "paper") {
         const mark = closeMark;
         const unwound = await knockoutUnwindLegs(active, mark);
         if (!unwound.ok) {
@@ -2448,8 +2584,17 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         })(),
         released: records.filter((r) => r.release).length,
         loops: Object.values(loopPulses).map((p) => ({ name: p.name, lastRunMs: p.lastRunMs, intervalMs: p.intervalMs })),
-        // Cap watch: what a knock-out NOW would cost on every live wrap (margin reserve), which
-        // wraps are near their cap, and any pre-touch working orders resting on the hedge venue.
+        // Unwind queue: our own exits after early closes (passive first, then IOC), with receipts.
+        // Cap watch: what buying the cap back NOW would cost on every live wrap (margin reserve)
+        // and which wraps are near their cap.
+        unwindQueue: (() => {
+          const jobs = records.map((r) => r.unwind).filter((j): j is UnwindJob => !!j);
+          return {
+            config: { enabled: unwindQueueCfg.enabled, passiveMs: unwindQueueCfg.passiveMs, repriceTicks: unwindQueueCfg.repriceTicks, maxIocAttempts: unwindQueueCfg.maxIocAttempts },
+            summary: summarizeUnwindQueue(jobs),
+            open: jobs.filter((j) => unwindOpen(j) || j.phase === "failed").map((j) => ({ id: j.id, wrapId: j.wrapId, phase: j.phase, legs: j.legs.map((l) => ({ instId: l.instId, action: l.action, left: l.contracts - l.filledContracts, working: l.working?.pxBtc ?? null })), lastReceipt: j.receipts[j.receipts.length - 1]?.note ?? null }))
+          };
+        })(),
         capWatch: {
           config: { nearBps: capWatchCfg.nearBps, reserveAlertBps: capWatchCfg.reserveAlertBps },
           summary: summarizeCapWatch(capWatch.values()),
