@@ -16,9 +16,9 @@ One toggle on your Hyperliquid position → a hard floor underneath it → and t
 
 Read-only. No deposit. No keys. Ten seconds.
 
-**3/** No cap on your trade. If price rips through the cap level, the cycle just ends — you keep your position, ALL your gains, and the credit earned so far. Protection re-arms at the new price automatically.
+**3/** The honest part: the cap is what pays for the floor. Gains above it during the cycle are netted against your credit at the close. Don't want to give them up? Tap "Release upside" any time — the app shows you the live price of buying the cap back, in dollars, and you keep the whole rally. Your call, priced in front of you.
 
-You never owe anything. Ever.
+The floor stays either way. No hidden fee, no manufactured yield.
 
 **4/** This isn't vapor: the engine has already run real money. Here's a real wrap — actual OKX option fills next to the app card they funded. ~$0.85/day on a 0.01 BTC position, at the worst pricing tier that exists. [canary screenshot pair, labeled "live test, real fills"]
 
@@ -44,7 +44,7 @@ Tag him neutrally in a reply if not the QT. Never mention any outreach.
 
 **Cycle paid (demo):** "Demo cycle #[N] settled. [wallet short] earned $[X] on a $[Y] [LONG/SHORT] — floor held at $[F], never touched. Credit credited. Protection renewed itself at the new price. Same engine that runs our live tests. [screenshot with SIMULATED pill visible]"
 
-**Knockout (demo):** "BTC touched $[cap] today. [wallet short]'s demo cycle ended: kept the position, kept every gain to the cap, kept $[X] unlocked credit. Re-armed at $[new cap] within a minute — automatically. This is what 'no cap on your trade' means. [screenshot]"
+**Cap touched (demo):** "BTC touched $[cap] today. [wallet short]'s demo wrap stayed on — floor intact, credit still vesting. The app offered the release at $[X] (the live price of buying the cap back). [They took it / They passed]. Nothing was decided for them. [screenshot]"
 
 **Honest refusal:** "The market couldn't fund a positive credit at [time] today, so we refused to open protection and said why. No manufactured yield, ever. It re-quoted fundable [N] minutes later. [screenshot]"
 
@@ -62,7 +62,7 @@ Tag him neutrally in a reply if not the QT. Never mention any outreach.
 
 > Question for people running directional positions: would you use protection that pays YOU?
 >
-> Built a thing: toggle on your HL position → hard floor ~6% below → the options market pays you a credit daily (we buy the put, sell a call above, you get the difference). Cap touch just re-arms it — your upside is never capped, you never owe anything.
+> Built a thing: toggle on your HL position → hard floor ~6% below → the options market pays you a credit daily (we buy the put, sell a call above, you get the difference). The cap is what pays for the floor; gains above it are netted at the close — or you release it any time at the live price and keep them. Your call, in dollars.
 >
 > Honest caveat: at 0.01 BTC size the credit is ~$0.50/day. Real, small, scales with size. Demo is live, first 50 wallets lock the founding rate: [link]
 >
@@ -80,7 +80,7 @@ Subject: **White-label "Earn & Protect" for [App] users — 4 endpoints, rev-sha
 
 ## 7. HL grants application (core paragraph)
 
-> Earn & Protect adds a primitive Hyperliquid doesn't have: one-tap downside protection that PAYS the trader. We hedge each position with a credit collar on listed BTC options — the user gets a hard floor and a daily credit funded by the options market, with no custody, no signing, and no capped upside (a cap touch ends the cycle and re-arms automatically). It's live on HL today: web app + Telegram Mini App, positions read from the public API, payouts only to the position owner, structurally. Built API-first so HL ecosystem frontends can white-label it. We're asking for [amount] as hedge-margin collateral to run the founding cohort (50 wallets, capped $50k book) and publish measured credit economics — every fill auditable against exchange records. Working demo, receipts, and docs: [links]
+> Earn & Protect adds a primitive Hyperliquid doesn't have: one-tap downside protection that PAYS the trader. We hedge each position with a credit collar on listed BTC options — the user gets a hard floor and a daily credit funded by the options market, with no custody and no signing. The cap is the price of the floor and the trader can release it at any time at the live listed price; nothing is decided for them. It's live on HL today: web app + Telegram Mini App, positions read from the public API, payouts only to the position owner, structurally. Built API-first so HL ecosystem frontends can white-label it. We're asking for [amount] as hedge-margin collateral to run the founding cohort (50 wallets, capped $50k book) and publish measured credit economics — every fill auditable against exchange records. Working demo, receipts, and docs: [links]
 
 ## 8. Options desk / OKX BD seeding ask
 

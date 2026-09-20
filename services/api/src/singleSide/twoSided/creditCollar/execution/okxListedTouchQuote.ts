@@ -7,7 +7,7 @@
 
 import { computeCollarOpenFees } from "../bullishFees";
 import type { PerpSide } from "../creditCollarPricer";
-import { parseOkxChain, planLiveCollar, nextStandardDailyExpiryMs, type OkxChainInstrument } from "./okxLivePlanner";
+import { parseOkxChain, planLiveCollar, nextListedWeeklyExpiryMs, nextStandardDailyExpiryMs, type OkxChainInstrument } from "./okxLivePlanner";
 
 const round2 = (x: number) => +x.toFixed(2);
 const round6 = (x: number) => +x.toFixed(6);
@@ -22,6 +22,8 @@ export type ListedTouchQuote =
       putInstId: string;
       callInstId: string;
       expiryMs: number;
+      /** the tenor actually written: weekly falls back to daily when no weekly is listed */
+      tenor: "daily" | "weekly";
       floorPct: number;
       capPct: number;
       putAskPxBtc: number;
@@ -56,6 +58,7 @@ export const quoteFromListedBooks = (input: {
   chain: OkxChainInstrument[];
   putBook: BookTopPx;
   callBook: BookTopPx;
+  expiryMs?: number;
 }): ListedTouchQuote => {
   const planned = planLiveCollar(input.chain, {
     side: input.side,
@@ -66,7 +69,8 @@ export const quoteFromListedBooks = (input: {
     protectiveMidUsdc: 0,
     fundingMidUsdc: 0.16,
     modelContractsBtc: input.contractsBtc,
-    nowMs: input.nowMs
+    nowMs: input.nowMs,
+    expiryMs: input.expiryMs
   });
   if (!planned.ok) return { ok: false, error: planned.error, message: planned.message };
 
@@ -127,6 +131,7 @@ export const quoteFromListedBooks = (input: {
     putInstId: putLeg.instId,
     callInstId: callLeg.instId,
     expiryMs: planned.plan.expiryMs,
+    tenor: planned.plan.expiryMs === nextStandardDailyExpiryMs(input.nowMs) ? "daily" : "weekly",
     // Side-aware: the FLOOR is the protective wing's distance (put below for long, CALL above for
     // short); the CAP is the funding wing's. Type-based labels would invert the story for shorts.
     floorPct: round6(
@@ -261,6 +266,15 @@ export const fetchOkxListedTouchQuote = async (input: {
   contractsBtc: number;
   nowMs: number;
   baseUrl?: string;
+  /** daily (default; the product today) or weekly (the next listed Friday ≥ 5 days out, daily when none is listed) */
+  tenor?: "daily" | "weekly";
+  /**
+   * Cap guard. The funding wing is the WIDEST strike that still pays; the search may reach
+   * `maxCapPct` from spot (default the 4% band), and a pick closer than `minCapPct` is REFUSED
+   * (`cap_too_close`) rather than written: this is a knock-out collar, a cap that sits on top of
+   * price crosses on noise, costs the writer an ATM buyback and the holder the rest of the cycle.
+   */
+  capGuard?: { minCapPct: number; maxCapPct: number };
 }): Promise<ListedTouchQuote> => {
   const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
   const getJson = async (path: string): Promise<unknown> => {
@@ -274,6 +288,8 @@ export const fetchOkxListedTouchQuote = async (input: {
   try {
     const instr = (await getJson("/api/v5/public/instruments?instType=OPTION&uly=BTC-USD")) as { data?: ChainRow[] };
     const chain = parseOkxChain(instr.data ?? []);
+    const weeklyMs = input.tenor === "weekly" ? nextListedWeeklyExpiryMs(chain, input.nowMs) : null;
+    const wantExpiryMs = weeklyMs ?? undefined;
     const planned = planLiveCollar(chain, {
       side: input.side,
       spot: input.spot,
@@ -283,14 +299,16 @@ export const fetchOkxListedTouchQuote = async (input: {
       protectiveMidUsdc: 0,
       fundingMidUsdc: 0.16,
       modelContractsBtc: input.contractsBtc,
-      nowMs: input.nowMs
+      nowMs: input.nowMs,
+      expiryMs: wantExpiryMs
     });
-    const expiryMs = planned.ok ? planned.plan.expiryMs : nextStandardDailyExpiryMs(input.nowMs);
+    const expiryMs = planned.ok ? planned.plan.expiryMs : (wantExpiryMs ?? nextStandardDailyExpiryMs(input.nowMs));
     const sellType = input.side === "long" ? "call" : "put";
     const buyType = input.side === "long" ? "put" : "call";
     const sellTarget = input.side === "long" ? input.planCallStrike : input.planPutStrike;
     const buyTarget = input.side === "long" ? input.planPutStrike : input.planCallStrike;
-    const sellCands = listedWingCandidates(chain, expiryMs, sellType, input.spot, sellTarget, FUNDING_BAND).slice(0, MAX_BOOK_PROBES);
+    const fundingBand = { minOtmPct: FUNDING_BAND.minOtmPct, maxOtmPct: Math.max(FUNDING_BAND.minOtmPct, input.capGuard?.maxCapPct ?? FUNDING_BAND.maxOtmPct) };
+    const sellCands = listedWingCandidates(chain, expiryMs, sellType, input.spot, sellTarget, fundingBand).slice(0, MAX_BOOK_PROBES);
     const buyCands = listedWingCandidates(chain, expiryMs, buyType, input.spot, buyTarget, PROTECTIVE_BAND).slice(0, MAX_BOOK_PROBES);
     if (sellCands.length === 0 || buyCands.length === 0) {
       return {
@@ -325,6 +343,17 @@ export const fetchOkxListedTouchQuote = async (input: {
         message: `listed OKX ${buyInst} ask ${buyAsk} / ${sellInst} bid ${sellBid} — no executable 1-lot credit on the book`
       };
     }
+    // The cap guard: the widest paying strike still sits too close to price. Refuse, and name
+    // the distance, rather than write a cap that will cross on noise.
+    const capDistPct = Math.abs(sellHit.inst.strike - input.spot) / input.spot;
+    const minCapPct = input.capGuard?.minCapPct ?? 0;
+    if (sellScan.pick && capDistPct < minCapPct - 1e-9) {
+      return {
+        ok: false,
+        error: "cap_too_close",
+        message: `widest paying cap ${sellHit.inst.instId} sits ${(capDistPct * 100).toFixed(2)}% from price, under the ${(minCapPct * 100).toFixed(1)}% guard — nothing wider has a bid`
+      };
+    }
 
     const putInst = input.side === "long" ? buyHit.inst : sellHit.inst;
     const callInst = input.side === "long" ? sellHit.inst : buyHit.inst;
@@ -334,7 +363,8 @@ export const fetchOkxListedTouchQuote = async (input: {
       planCallStrike: callInst.strike,
       chain,
       putBook: books[putInst.instId],
-      callBook: books[callInst.instId]
+      callBook: books[callInst.instId],
+      expiryMs: wantExpiryMs
     });
   } catch (e) {
     return { ok: false, error: "listed_book_fetch_failed", message: (e as Error).message };

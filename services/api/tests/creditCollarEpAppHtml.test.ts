@@ -132,6 +132,40 @@ test("service placeholders intact for serve-time substitution", () => {
   }
 });
 
+test("one shape, no tiers: the knock-out is explained as keeping the upside, the pre-flip quote leads with value", () => {
+  for (const html of [web, mini]) {
+    assert.ok(!html.includes("TIER_ORDER") && !html.includes("pickedTier") && !html.includes("ep_tier") && !html.includes("simRetier"), "the tier picker is gone");
+    assert.ok(!html.includes("Safest") && !html.includes("Most upside") && !html.includes("Three shapes"), "no tier copy anywhere");
+    assert.ok(!html.includes("?tier=") && !html.includes("&tier="), "no tier rides any request");
+    assert.ok(html.includes("If you flip it on now:"), "the pre-flip quote leads with value before the commit");
+    assert.ok(html.includes('id="realQuote"') && html.includes('api("/api/quote")'), "pre-flip quote box priced off the holder's own position");
+    assert.ok(html.includes("The cap pays for your floor."), "the cap is explained as what funds the floor");
+    assert.ok(html.includes("Release your upside any time.") && html.includes("Release upside"), "the release tap is the holder's decision, priced live");
+    assert.ok(html.includes("Hedged, not carried.") && html.includes("hedged leg for leg") && html.includes("bought back only at the holder"), "how the writer stays flat, stated plainly");
+    assert.ok(!/delta[- ]neutral/i.test(html), "no 'delta neutral' claim on the retail surface");
+    assert.ok(!html.includes("You never owe anything"), "the plain collar can net negative: no 'never owe' claim");
+    assert.ok(html.includes('id="relVeil"') && html.includes("Release your upside?") && html.includes('api("/api/release/quote")') && html.includes("/api/release?ctl="), "release confirm modal re-prices at the tap and posts the ceiling the holder saw");
+    assert.ok(html.includes("maxCostUsdc=") && html.includes("price_moved"), "the engine may refuse a moved price; the app explains it");
+    assert.ok(html.includes("chip owed") && html.includes("to settle</b>"), "a negative net shows as a balance to settle, in dollars");
+    assert.ok(html.includes("cap_touched") && html.includes("cap_released"), "the new stages have labels");
+    assert.ok(html.includes("Cap touched · cycle over") && html.includes("re-arming at the new price"), "knockout-mode copy is kept for wraps written under the previous rule");
+  }
+});
+
+test("tenor + carry + fee: the credit label follows the tenor, funding is stated beside it, the fee rule is on the quote", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes('j.tenor === "weekly" ? "this week\\u2019s" : "today\\u2019s"'), "tenor-aware credit label");
+    assert.ok(!html.includes("</b>today\\u2019s credit"), "no hardcoded daily label left on a quote surface");
+    assert.ok(html.includes("Funding over the cycle: "), "carry line");
+    assert.ok(html.includes("you receive "), "shorts receive positive funding");
+    assert.ok(html.includes("not part of the credit, shown so the number reads net"), "carry is disclosed as separate from the credit");
+    assert.ok(html.includes("The market funded "), "fee line names what the market funded");
+    assert.ok(html.includes("the published minimum at this size"), "the minimum rule is named when it binds");
+    assert.ok(html.includes("our cut is waived"), "the waiver is named when it applies");
+    assert.ok(html.includes("const termsGrid"), "one terms grid for every quote surface");
+  }
+});
+
 test("variants: miniapp loads the Telegram bridge, web does not", () => {
   assert.ok(mini.includes("telegram-web-app.js"));
   assert.ok(!web.includes("telegram-web-app.js"));
