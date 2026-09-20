@@ -51,6 +51,8 @@ export interface CrossLedgerSummary {
   refusalsByCode: Record<string, number>;
   /** sum of holder credits across priced quotes, cents */
   creditsSourcedCents: number;
+  /** stake behind priced quotes (100¢ × contracts), cents: the volume protection was written on */
+  stakeQuotedCents: number;
   /** sum of the published take actually kept, cents */
   takeKeptCents: number;
   /** mean true cost of priced protection, bps of naked EV (null when unrecorded) */
@@ -72,6 +74,7 @@ export function summarizeCrossLedger(path: string = crossLedgerPath()): CrossLed
     refused: 0,
     refusalsByCode: {},
     creditsSourcedCents: 0,
+    stakeQuotedCents: 0,
     takeKeptCents: 0,
     avgEvCostBps: null,
     routeSplit: {},
@@ -103,6 +106,7 @@ export function summarizeCrossLedger(path: string = crossLedgerPath()): CrossLed
     if (rec.result.ok) {
       summary.priced += 1;
       summary.creditsSourcedCents += rec.result.creditCents;
+      summary.stakeQuotedCents += 100 * (rec.result.contracts ?? rec.contracts ?? 0);
       summary.takeKeptCents += rec.result.takeCents;
       const route = rec.route ?? "polymarket"; // pre-routing records were all cross-venue
       summary.routeSplit[route] = (summary.routeSplit[route] ?? 0) + 1;

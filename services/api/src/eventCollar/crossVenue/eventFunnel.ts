@@ -14,7 +14,7 @@
  * operator reads both funnels the same way.
  */
 
-export const EVENT_PAGES = ["app", "receipts"] as const;
+export const EVENT_PAGES = ["app", "receipts", "embed"] as const;
 export type EventPage = (typeof EVENT_PAGES)[number];
 
 export const EVENT_ACTIONS = ["row_tap", "protect_on", "protect_undo", "board_expand", "tier_pick"] as const;
