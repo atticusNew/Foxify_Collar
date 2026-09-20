@@ -46,6 +46,7 @@
  *      EVENT_X_TAKE_BPS (share of gross, default 1000) · EVENT_X_MIN_TAKE_BPS
  *      (minimum fee, bps of stake, default 25; 0 disables) · EVENT_X_DEFAULT_TIER
  *      (tight|balanced|wide, default balanced) · EVENT_X_LEDGER_PATH · EVENT_X_BOARD_ROWS
+ *      EVENT_X_MAX_EV_COST_BPS (ceiling on protection's EV cost, default 300; 0 = off)
  *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
  *      EVENT_X_FUNNEL_PATH · EVENT_X_ADMIN_TOKEN (or EVENT_X_DEV_NO_ADMIN=true)
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
@@ -101,6 +102,13 @@ const MAX_MATCH_ATTEMPTS = 10;
 /** Scanner board caps: how many pairings get live-quoted per refresh. */
 const MAX_BOARD_ROWS = Number(process.env.EVENT_X_BOARD_ROWS || 6);
 const MAX_CRYPTO_ROWS = Number(process.env.EVENT_X_CRYPTO_ROWS || 2);
+/**
+ * Ceiling on what protection may cost, in bps of the position's expected value at the market's
+ * own odds. Above it the cheapest route is still rich insurance (a wide No-side spread, usually),
+ * and refusing beats quoting: the board and the shadow record stop being dominated by the worst
+ * product. 0 disables the ceiling.
+ */
+export const MAX_EV_COST_BPS = Number(process.env.EVENT_X_MAX_EV_COST_BPS ?? 300);
 /** Kalshi crypto strike series admitted to the board (self-hedge route only). */
 const CRYPTO_SERIES = (process.env.EVENT_X_CRYPTO_SERIES || "KXBTCD,KXETHD")
   .split(",")
@@ -531,6 +539,25 @@ async function quoteCryptoCandidate(series: string, sel: ShowcaseSelection, now:
   };
 }
 
+/**
+ * Apply the EV-cost ceiling to a quoted candidate. The routes examined keep their real verdicts
+ * (operator information: the collar was fundable, just rich); the holder-facing quote becomes an
+ * honest refusal with a code of its own so the receipts count it as a ceiling, not as no depth.
+ */
+export function applyEvCeiling(result: CandidateResult, maxEvBps: number = MAX_EV_COST_BPS): CandidateResult {
+  if (maxEvBps <= 0 || !result.quote.ok || result.evBps === null || result.evBps <= maxEvBps) return result;
+  return {
+    ...result,
+    quote: {
+      ok: false,
+      code: "protection_too_rich",
+      detail: `the cheapest route costs ${(result.evBps / 100).toFixed(2)}% of expected value; the ceiling is ${(maxEvBps / 100).toFixed(2)}%`,
+    },
+    route: null,
+    evBps: null,
+  };
+}
+
 /** One refresh's full result: ranked quotable rows plus the best honest refusal. */
 export interface ScanState {
   atIso: string;
@@ -621,7 +648,7 @@ async function buildScan(): Promise<ScanState> {
     if (!pair || !showcaseWindowOk(pair, now)) return true;
     let result: CandidateResult;
     try {
-      result = await quoteSportsCandidate(pair, cand.mark, now);
+      result = applyEvCeiling(await quoteSportsCandidate(pair, cand.mark, now));
     } catch {
       return !countFailure();
     }
@@ -668,7 +695,7 @@ async function buildScan(): Promise<ScanState> {
       attempts += 1;
       let result: CandidateResult;
       try {
-        result = await quoteCryptoCandidate(series, sel, now);
+        result = applyEvCeiling(await quoteCryptoCandidate(series, sel, now));
       } catch {
         fetchFailures += 1;
         if (fetchFailures >= FETCH_FAILURE_LIMIT) break crypto;
