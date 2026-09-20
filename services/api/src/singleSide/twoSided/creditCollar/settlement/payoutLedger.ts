@@ -128,7 +128,12 @@ export const accrueWrapPayout = (
     createdAtMs: nowMs,
     updatedAtMs: nowMs,
     paidAtMs: null,
-    notes: [`accrued on ${payable.kind}`]
+    notes: [
+      `accrued on ${payable.kind}`,
+      ...((payable.capOwedUsdc ?? 0) > 0 ? [`net of $${payable.capOwedUsdc.toFixed(2)} gains above the cap handed back`] : []),
+      ...((payable.releaseCostUsdc ?? 0) > 0 ? [`net of $${payable.releaseCostUsdc.toFixed(2)} cap release`] : []),
+      ...((payable.closeValueUsdc ?? 0) !== 0 ? [`includes $${payable.closeValueUsdc.toFixed(2)} collar mark-to-market on the unwind`] : [])
+    ]
   };
   entries.push(entry);
   return { ok: true, entry, created: true };

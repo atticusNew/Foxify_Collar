@@ -74,6 +74,34 @@ services:
       # Brand mark (finch) — set when the asset URL exists; renders next to "by ATTICUS".
       - key: EP_BRAND_LOGO_URL
         sync: false
+      # ── Product shape flags (all default to the product as shipped; flip deliberately) ──
+      # One shape: floor DEMO_FLOOR_PCT (0.06) + the widest listed cap that still pays, refused
+      # under the cap guard (EP_MIN_CAP_PCT 0.02 daily / 0.04 weekly; band to EP_CAP_MAX_PCT).
+      # EP_CAP_MODE: plain (default) is a plain collar — the cap leg is held to expiry, hedged leg
+      # for leg, so gains above the cap are handed back at the close (they paid for the floor) and
+      # the holder may RELEASE the cap at any time at the live OKX price (POST /api/release) to keep
+      # a rally; a touch records, nothing closes. `knockout` is the previous rule (touch ends the
+      # cycle, cap leg bought back at the writer's cost) — measured negative-EV, keep it off.
+      # EP_TENOR: weekly (default) writes to the nearest listed Friday at least 3 days out, where the
+      # credit is real (measured $2.71 vs $0.15 daily on 0.03 BTC); `daily` opts out.
+      # EP_MIN_TAKE_BPS: notional fee floor on our take (0 = share only). EP_CREDIT_MUST_CLEAR_FUNDING=1:
+      # refuse a quote whose net credit does not clear the cycle's funding cost.
+      - key: EP_CAP_MODE
+        value: plain
+      - key: EP_TENOR
+        value: weekly
+      - key: EP_MIN_TAKE_BPS
+        value: "0"
+      - key: EP_CREDIT_MUST_CLEAR_FUNDING
+        value: "0"
+      # Cap watch: per-wrap headroom is always on (admin status) and prices the holder's release; the
+      # pre-touch working order only rests on okx lanes, only in knockout mode, and only when this is 1.
+      # EP_HEADROOM_ALERT_BPS pages (knockout mode) when one wrap's reserve passes this many bps of
+      # its notional (an ATM weekly cap leg is ~200–250 bps).
+      - key: EP_PRETOUCH_WORKING_ORDER
+        value: "0"
+      - key: EP_HEADROOM_ALERT_BPS
+        value: "300"
 
   - type: worker
     name: atticus-earn-protect-bot

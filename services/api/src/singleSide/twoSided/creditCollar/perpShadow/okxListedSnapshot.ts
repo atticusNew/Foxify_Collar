@@ -19,7 +19,11 @@ import {
   listedWingCandidates,
   touchCreditUsdc,
 } from "../execution/okxListedTouchQuote";
-import { nextStandardDailyExpiryMs, parseOkxChain, type OkxChainInstrument } from "../execution/okxLivePlanner";
+import { nextListedWeeklyExpiryMs, nextStandardDailyExpiryMs, parseOkxChain, type OkxChainInstrument } from "../execution/okxLivePlanner";
+import type { CollarGeometry } from "../perpTenor";
+
+export { nextListedWeeklyExpiryMs };
+export type { CollarGeometry };
 
 const round2 = (x: number) => +x.toFixed(2);
 const round6 = (x: number) => +x.toFixed(6);
@@ -91,15 +95,7 @@ export const instrumentsInBand = (chain: OkxChainInstrument[], expiryMs: number,
   return chain.filter((c) => c.state === "live" && c.expiryMs === expiryMs && c.strike >= lo && c.strike <= hi);
 };
 
-/** The first listed Friday 08:00 UTC expiry at least `minDays` out, or null when none is listed. */
-export const nextListedWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = 5): number | null => {
-  const listed = [...new Set(chain.filter((c) => c.state === "live").map((c) => c.expiryMs))].sort((a, b) => a - b);
-  for (const e of listed) {
-    const d = new Date(e);
-    if (d.getUTCDay() === 5 && d.getUTCHours() === 8 && e - nowMs >= minDays * 86_400_000) return e;
-  }
-  return null;
-};
+
 
 /** Public (unsigned) snapshot: instruments + depth for every in-band option at the next daily expiry. */
 export const fetchOkxListedSnapshot = async (input: {
@@ -139,14 +135,58 @@ export const fetchOkxListedSnapshot = async (input: {
   return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing };
 };
 
-export type FillMode = "top" | "walk";
+/**
+ * Top-of-book snapshot in two requests (instruments + the option tickers feed):
+ * every in-band strike at the daily and weekly expiries priced at the same
+ * instant. Depth is one level, so `mode: "walk"` is not meaningful on it; the
+ * shadow's `fetchOkxListedSnapshot` keeps depth.
+ */
+export const fetchOkxTopSnapshot = async (input: {
+  spot: number;
+  nowMs: number;
+  baseUrl?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<OkxListedSnapshot> => {
+  const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
+  const f = input.fetchImpl ?? fetch;
+  const getJson = async (path: string): Promise<unknown> => {
+    const res = await f(`${base}${path}`, { signal: AbortSignal.timeout(8_000) });
+    if (!res.ok) throw new Error(`OKX ${path} HTTP ${res.status}`);
+    return res.json();
+  };
+  const [instr, tickers] = await Promise.all([
+    getJson("/api/v5/public/instruments?instType=OPTION&uly=BTC-USD") as Promise<{ data?: unknown[] }>,
+    getJson("/api/v5/market/tickers?instType=OPTION&uly=BTC-USD") as Promise<{
+      data?: Array<{ instId?: string; bidPx?: string; askPx?: string; bidSz?: string; askSz?: string }>;
+    }>,
+  ]);
+  const chainAll = parseOkxChain((instr.data ?? []) as Parameters<typeof parseOkxChain>[0]);
+  const expiryMs = nextStandardDailyExpiryMs(input.nowMs);
+  const weeklyExpiryMs = nextListedWeeklyExpiryMs(chainAll, input.nowMs);
+  const chain = [
+    ...instrumentsInBand(chainAll, expiryMs, input.spot),
+    ...(weeklyExpiryMs != null && weeklyExpiryMs !== expiryMs ? instrumentsInBand(chainAll, weeklyExpiryMs, input.spot) : []),
+  ];
+  const byId = new Map((tickers.data ?? []).map((t) => [t.instId ?? "", t]));
+  const books: Record<string, BookDepth> = {};
+  let booksMissing = 0;
+  for (const c of chain) {
+    const t = byId.get(c.instId);
+    if (!t) {
+      booksMissing += 1;
+      continue;
+    }
+    const lvl = (px?: string, sz?: string): BookLevel[] => {
+      const p = Number(px);
+      const s = Number(sz);
+      return Number.isFinite(p) && p > 0 ? [{ pxBtc: p, contracts: Number.isFinite(s) && s > 0 ? s : 1 }] : [];
+    };
+    books[c.instId] = { bids: lvl(t.bidPx, t.bidSz), asks: lvl(t.askPx, t.askSz) };
+  }
+  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing };
+};
 
-export interface CollarGeometry {
-  /** protective wing distance from spot (the holder's floor), fraction */
-  floorPct: number;
-  /** funding wing distance from spot (the holder's cap), fraction */
-  capPct: number;
-}
+export type FillMode = "top" | "walk";
 
 export type SnapshotQuote =
   | {
@@ -191,7 +231,18 @@ export type SnapshotQuote =
  * at the top; the difference is the cost of size.
  */
 export const quoteCollarFromSnapshot = (
-  input: { side: PerpSide; spot: number; contracts: number; geometry: CollarGeometry; mode?: FillMode; expiryMs?: number },
+  input: {
+    side: PerpSide;
+    spot: number;
+    contracts: number;
+    geometry: CollarGeometry;
+    mode?: FillMode;
+    expiryMs?: number;
+    /** the widest strike the cap search may reach, fraction from spot (default the 4% funding band) */
+    maxCapPct?: number;
+    /** price THIS funding strike instead of searching: the cap-distance ladder holds the floor and moves the cap */
+    pinSellInstId?: string;
+  },
   snap: OkxListedSnapshot,
 ): SnapshotQuote => {
   const mode: FillMode = input.mode ?? "top";
@@ -203,7 +254,10 @@ export const quoteCollarFromSnapshot = (
   const buyType: "put" | "call" = input.side === "long" ? "put" : "call";
   const sellTarget = input.side === "long" ? plan.callStrike : plan.putStrike;
   const buyTarget = input.side === "long" ? plan.putStrike : plan.callStrike;
-  const sellCands = listedWingCandidates(snap.chain, expiryMs, sellType, input.spot, sellTarget, FUNDING_BAND).slice(0, 10);
+  const fundingBand = { minOtmPct: FUNDING_BAND.minOtmPct, maxOtmPct: Math.max(FUNDING_BAND.minOtmPct, input.maxCapPct ?? FUNDING_BAND.maxOtmPct) };
+  const sellCands = input.pinSellInstId
+    ? snap.chain.filter((c) => c.instId === input.pinSellInstId && c.optType === sellType && c.expiryMs === expiryMs)
+    : listedWingCandidates(snap.chain, expiryMs, sellType, input.spot, sellTarget, fundingBand).slice(0, 10);
   const buyCands = listedWingCandidates(snap.chain, expiryMs, buyType, input.spot, buyTarget, PROTECTIVE_BAND).slice(0, 10);
   if (sellCands.length === 0 || buyCands.length === 0) {
     return { ok: false, error: "listed_book_empty", message: "no listed OTM wing in band at this expiry" };
@@ -300,5 +354,60 @@ export const quoteCollarFromSnapshot = (
     netCreditUsdc: pick.net,
     midCreditUsdc: buyMid != null && sellMid != null ? round2((sellMid - buyMid) * qty * input.spot) : null,
     levelsUsed: { buy: buy.fill.levelsUsed, sell: pick.fill.levelsUsed },
+  };
+};
+
+/**
+ * Every listed funding strike in the band at the expiry, nearest first: the
+ * rungs of the cap-distance ladder. Calls above spot for a long, puts below
+ * for a short.
+ */
+export const fundingStrikeLadder = (
+  snap: OkxListedSnapshot,
+  side: PerpSide,
+  spot: number,
+  maxCapPct: number,
+  expiryMs = snap.expiryMs,
+): OkxChainInstrument[] => {
+  const sellType: "put" | "call" = side === "long" ? "call" : "put";
+  const band = { minOtmPct: FUNDING_BAND.minOtmPct, maxOtmPct: Math.max(FUNDING_BAND.minOtmPct, maxCapPct) };
+  return listedWingCandidates(snap.chain, expiryMs, sellType, spot, spot, band).sort(
+    (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
+  );
+};
+
+export interface AtmReference {
+  /** the nearest-to-spot listed call's / put's top ask at the expiry, BTC per BTC; null when no ask */
+  callAskPxBtc: number | null;
+  putAskPxBtc: number | null;
+  callInstId: string | null;
+  putInstId: string | null;
+  hoursToExpiry: number;
+}
+
+/**
+ * What an at-the-money option costs right now at the expiry: the reference a
+ * knock-out buyback is estimated from. When price reaches the cap the short
+ * funding leg is at the money; buying it back costs roughly the ATM ask at
+ * the remaining time, so each scan records the ATM ask it saw.
+ */
+export const atmReference = (snap: OkxListedSnapshot, spot: number, expiryMs = snap.expiryMs, nowMs = snap.atMs): AtmReference => {
+  const pick = (optType: "put" | "call") => {
+    const live = snap.chain.filter((c) => c.optType === optType && c.expiryMs === expiryMs && c.state === "live");
+    live.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
+    for (const c of live) {
+      const ask = snap.books[c.instId]?.asks[0]?.pxBtc;
+      if (ask != null && ask > 0) return { instId: c.instId, ask };
+    }
+    return null;
+  };
+  const call = pick("call");
+  const put = pick("put");
+  return {
+    callAskPxBtc: call?.ask ?? null,
+    putAskPxBtc: put?.ask ?? null,
+    callInstId: call?.instId ?? null,
+    putInstId: put?.instId ?? null,
+    hoursToExpiry: +Math.max(0, (expiryMs - nowMs) / 3_600_000).toFixed(2),
   };
 };

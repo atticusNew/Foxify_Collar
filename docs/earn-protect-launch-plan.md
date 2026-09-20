@@ -36,7 +36,7 @@ Lenders, wallets/trackers, and newer exchanges run on their own playbook — cad
 
 ## Phase 2 — React (Days 7–14)
 
-- **Daily, non-negotiable:** one receipts post on X (cycle concluded, credit paid, knockout re-armed, or an honest refusal — screenshots from the dashboard/app). This compounds; missing days kills it.
+- **Daily, non-negotiable:** one receipts post on X (cycle concluded, credit paid, cap touched with the release priced live, or an honest refusal — screenshots from the dashboard/app). This compounds; missing days kills it.
 - **Weekly revision rule:** any channel at zero response after 2 touches in 7 days → deprioritize; put the time into whichever channel produced a wallet. Any channel that produced ≥1 wallet → double the effort there.
 - **Press trigger:** do NOT pitch press at launch. Pitch when one of: 50-wallet cohort full, $25k+ wrapped, or a KOL post pops. The pitch is the traction number, not the product.
 - **Capital trigger:** the moment ANY capital lands (even $2–3k scraped) → run the live week immediately: margin probe day 1, live wraps all week, calibration report at the end. Live receipts retro-fuel every channel above.

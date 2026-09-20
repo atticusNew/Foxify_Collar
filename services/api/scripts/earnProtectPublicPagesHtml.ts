@@ -56,11 +56,14 @@ const poll = async () => {
     if (!st.ok) return;
     $("mode").textContent = st.executionMode === "okx_live" ? "LIVE" : st.executionMode.toUpperCase();
     $("cards").innerHTML =
-      card("Credits paid", '<span class="accent">' + fmt$(st.credits.paidUsdc) + '</span>', st.credits.paidCount + " payouts, paid daily") +
+      card("Credits paid", '<span class="accent">' + fmt$(st.credits.paidUsdc) + '</span>', st.credits.paidCount + " payouts, paid at each cycle's close") +
       card("Active wraps", st.wraps.active, fmt$(st.notional.openUsdc) + " protected right now") +
       card("Lifetime wrapped", fmt$(st.notional.lifetimeWrappedUsdc), st.wraps.total + " wraps priced") +
-      card("Cycles concluded", st.wraps.expiries + st.wraps.knockouts + st.wraps.earlyCloses,
-           st.wraps.expiries + " expiries · " + st.wraps.knockouts + " cap touches · " + st.wraps.earlyCloses + " early closes") +
+      (st.capMode === "knockout"
+        ? card("Cycles concluded", st.wraps.expiries + st.wraps.knockouts + st.wraps.earlyCloses,
+               st.wraps.expiries + " expiries · " + st.wraps.knockouts + " cap touches · " + st.wraps.earlyCloses + " early closes")
+        : card("Cycles concluded", st.wraps.expiries + st.wraps.earlyCloses,
+               st.wraps.expiries + " expiries · " + st.wraps.earlyCloses + " early closes · " + (st.wraps.capTouched ?? 0) + " caps touched · " + (st.wraps.released ?? 0) + " released")) +
       card("Book utilization", st.capacity.utilizationPct + "%", "of " + fmt$(st.capacity.bookCapUsdc) + " capacity") +
       (st.capacity.showCohortCount
         ? card("Founding cohort", st.capacity.walletsJoined + " / " + st.capacity.foundingWallets,
@@ -95,13 +98,14 @@ export const EP_TOS_HTML = `<!doctype html>
   <div class="v">Version __TOS_VERSION__</div>
   <div class="draft">DRAFT — placeholder pending legal counsel. Acceptance is recorded per wallet per version; publishing a new version requires re-acceptance before any new protection cycle opens.</div>
   <h2>What the service does</h2>
-  <p>Earn &amp; Protect reads your exchange position (read-only — you never sign, deposit, or share keys) and, while your toggle is on, hedges it with listed options. You receive the published share of the credit the options market funds, paid to your wallet at each daily cycle's conclusion.</p>
+  <p>Earn &amp; Protect reads your exchange position (read-only — you never sign, deposit, or share keys) and, while your toggle is on, hedges it with listed options: a hard floor is bought and a cap above it is sold, and the difference is your credit. You receive the published share of that credit, paid to your wallet at each cycle's conclusion.</p>
   <h2>What you accept</h2>
   <ul>
     <li>Protection terms are quoted from live order books and refused when the market cannot fund them.</li>
-    <li>Credits vest through each cycle and pay at its conclusion (expiry, cap touch, or early close) — never upfront.</li>
-    <li>If the market touches your cap, that protection cycle ends; you keep your position, gains to the cap, and the vested credit; protection re-arms while the toggle stays on.</li>
-    <li>We keep a published share of the credit we source (waived when tiny). You never owe us anything.</li>
+    <li>Credits vest through each cycle and pay at its conclusion (expiry or early close) — never upfront.</li>
+    <li>The cap is the price of the floor: gains above the cap during a cycle are handed back at its conclusion, netted against your credit. If they exceed your credit the difference is a balance owed, and no new protection opens for that position until it is settled.</li>
+    <li>You may release the cap at any time — including when the market touches it — by buying the cap leg back at the live listed price shown in the app. After a release every gain is yours; the floor stays.</li>
+    <li>We keep a published share of the credit we source (waived when tiny). Our hedge is held leg for leg; we take no view on your position.</li>
     <li>Payouts go only to the wallet address that owns the protected position.</li>
     <li>The service is unavailable in the United States and sanctioned jurisdictions.</li>
     <li>Derivatives involve risk; nothing here is investment advice.</li>

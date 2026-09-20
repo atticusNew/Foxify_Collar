@@ -34,7 +34,7 @@ test("parseByteRange: absent, malformed, or unsatisfiable ⟹ null (serve full f
 test("video page: player, ladder copy, live-product links, honesty line", () => {
   assert.ok(EP_VIDEO_PAGE_HTML.includes("/assets/hl-toggle-demo.mp4"), "video src");
   assert.ok(EP_VIDEO_PAGE_HTML.includes("playsinline"), "iOS inline playback");
-  assert.ok(EP_VIDEO_PAGE_HTML.includes("hard floor and a daily credit"), "ladder copy");
+  assert.ok(EP_VIDEO_PAGE_HTML.includes("hard floor and a weekly credit"), "ladder copy");
   assert.ok(EP_VIDEO_PAGE_HTML.includes("Everything else stays exactly the same"), "ladder copy");
   assert.ok(EP_VIDEO_PAGE_HTML.includes('href="/"'), "link into the live app");
   assert.ok(EP_VIDEO_PAGE_HTML.includes("facility.atticustrade.com"), "link to the facility track record");

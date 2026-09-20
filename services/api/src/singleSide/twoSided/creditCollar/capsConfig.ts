@@ -51,6 +51,11 @@ export type CapsInputs = {
   foundingLockMs: number;
   /** De minimis: a cycle cut below this is waived to $0 (default $0.05). */
   deMinimisUsdc: number;
+  /**
+   * Fee floor: the take is at least this many bps of the protected notional (EP_MIN_TAKE_BPS;
+   * default 0 = share only, the product today). Measured first in the perp shadow's rule report.
+   */
+  minTakeBps: number;
 };
 
 export const parseCapsInputsFromEnv = (env: Record<string, string | undefined>): CapsInputs => ({
@@ -64,7 +69,8 @@ export const parseCapsInputsFromEnv = (env: Record<string, string | undefined>):
   takeRatePct: num(env.EP_TAKE_RATE, 0.2),
   foundingTakeRatePct: num(env.EP_FOUNDING_TAKE_RATE, 0.1),
   foundingLockMs: num(env.EP_FOUNDING_LOCK_MS, 365 * 86_400_000),
-  deMinimisUsdc: num(env.EP_DE_MINIMIS_USDC, 0.05)
+  deMinimisUsdc: num(env.EP_DE_MINIMIS_USDC, 0.05),
+  minTakeBps: num(env.EP_MIN_TAKE_BPS, 0)
 });
 
 export type DerivedCaps = {
@@ -206,6 +212,8 @@ export type TakeResult = {
   atticusTakeUsdc: number;
   /** The rate actually applied (0 when waived). */
   appliedRatePct: number;
+  /** Which rule set the take: the published share, the notional minimum, or waived under de minimis. */
+  rule: "share" | "minimum" | "waived";
   founding: boolean;
 };
 
@@ -220,13 +228,30 @@ export const takeRateFor = (i: CapsInputs, foundingJoinedAtMs: number | null, no
  * executable credit and the quoted credit — published honestly ("we keep X% of the credit we
  * source"). A cut under the de minimis line is waived entirely.
  */
-export const applyTake = (grossCreditUsdc: number, ratePct: number, deMinimisUsdc: number, founding = false): TakeResult => {
+export const applyTake = (
+  grossCreditUsdc: number,
+  ratePct: number,
+  deMinimisUsdc: number,
+  founding = false,
+  /** the notional minimum in USDC (notional × EP_MIN_TAKE_BPS); 0 = none */
+  minTakeUsdc = 0
+): TakeResult => {
   const gross = Math.max(0, grossCreditUsdc);
-  let take = +(gross * Math.max(0, ratePct)).toFixed(2);
+  const share = +(gross * Math.max(0, ratePct)).toFixed(2);
+  const minimum = +Math.max(0, minTakeUsdc).toFixed(2);
+  let take = Math.max(share, minimum);
+  let rule: TakeResult["rule"] = minimum > share ? "minimum" : "share";
   let applied = ratePct;
   if (take < deMinimisUsdc) {
     take = 0;
     applied = 0;
+    rule = "waived";
   }
-  return { traderCreditUsdc: round2(gross - take), atticusTakeUsdc: take, appliedRatePct: applied, founding };
+  // A minimum can never turn the credit negative: cap at the gross (the caller refuses a $0 credit upstream).
+  take = Math.min(take, gross);
+  return { traderCreditUsdc: round2(gross - take), atticusTakeUsdc: take, appliedRatePct: applied, founding, rule };
 };
+
+/** The notional minimum for one wrap, in USDC. */
+export const minTakeUsdcFor = (i: Pick<CapsInputs, "minTakeBps">, notionalUsdc: number): number =>
+  +((Math.max(0, notionalUsdc) * Math.max(0, i.minTakeBps)) / 10000).toFixed(2);
