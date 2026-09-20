@@ -129,6 +129,7 @@ import { actionCleared, closeAllowed, verifyMessageText, verifyWalletSignature }
 import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
 import { EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
 import { retailRedact } from "../src/singleSide/twoSided/creditCollar/retailView";
+import { evaluateFloorRule, floorRuleFromEnv, floorRuleText } from "../src/singleSide/twoSided/creditCollar/floorRule";
 import { EP_VIDEO_PAGE_HTML, parseByteRange } from "./epVideoPageHtml";
 import { Pool } from "pg";
 import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
@@ -378,6 +379,41 @@ const capGuard = capGuardFor(tenor, process.env, capMode);
 // the strike's OKX mark vol; the widest paying strike when none qualifies or no vol is readable.
 const capRule = capRuleFromEnv(process.env);
 const markVolsForExpiry = (expiryMs: number): Promise<Map<string, number> | null> => markVolsFor(expTimeFromMs(expiryMs), Date.now());
+// Floor rule (floorRule.ts): which depth the floor is written to. Default = fixed at DEMO_FLOOR_PCT
+// (one probe, today's behaviour); EP_FLOOR_RULE=tightest_paying tries the band most-protective first.
+const floorRule = floorRuleFromEnv(process.env, floorPct);
+/**
+ * ONE listed quote path for every surface (quote, preview, wrap, renewal): the floor rule picks the
+ * depth, the cap rule picks the strike, the take is applied identically. Returns the chosen probe
+ * (or the last refusal when nothing pays) plus the depth it was written to.
+ */
+const listedQuoteByRule = async (a: { side: PerpSide; spot: number; notionalUsdc: number; contractsBtc: number; nowMs: number }) => {
+  const { pick, quotes } = await evaluateFloorRule(
+    floorRule,
+    (fp) => {
+      const plan = demoPlanStrikes(a.spot, a.side, fp, capPct);
+      return fetchOkxListedTouchQuote({
+        side: a.side,
+        spot: a.spot,
+        planPutStrike: plan.putStrike,
+        planCallStrike: plan.callStrike,
+        notionalUsdc: a.notionalUsdc,
+        contractsBtc: a.contractsBtc,
+        nowMs: a.nowMs,
+        tenor,
+        capGuard,
+        capRule,
+        markVolsFor: markVolsForExpiry
+      });
+    },
+    (q) =>
+      q.ok
+        ? { creditUsdc: applyTake(q.creditUsdc, takeRate().ratePct, capsInputs.deMinimisUsdc, false, minTakeUsdcFor(capsInputs, a.notionalUsdc)).traderCreditUsdc, notionalUsdc: a.notionalUsdc }
+        : { creditUsdc: null, notionalUsdc: 0 }
+  );
+  const chosen = pick.floorPct != null ? quotes.get(pick.floorPct)! : [...quotes.values()].pop()!;
+  return { probe: chosen, floorPctUsed: pick.floorPct ?? floorPct, floorRuleBy: pick.by };
+};
 
 // Funding disclosure: what holding the perp costs (or pays) over the cycle, from Hyperliquid's
 // live rate. Longs pay positive funding; shorts receive it. Cached a minute; null when unreadable.
@@ -562,20 +598,7 @@ const doWrap = async (
   // 2) QUOTE — listed OKX lots. Credit = executable touch net of OKX fees. No $80/$50k target.
   const spot = position.markPx;
   const hedgeNotionalUsdc = round2(cover.coveredBtc * spot);
-  const plan = demoPlanStrikes(spot, position.side, floorPct, capPct);
-  const listed = await fetchOkxListedTouchQuote({
-    side: position.side,
-    spot,
-    planPutStrike: plan.putStrike,
-    planCallStrike: plan.callStrike,
-    notionalUsdc: hedgeNotionalUsdc,
-    contractsBtc: cover.coveredBtc,
-    nowMs: Date.now(),
-    tenor,
-    capGuard,
-    capRule,
-    markVolsFor: markVolsForExpiry
-  });
+  const { probe: listed } = await listedQuoteByRule({ side: position.side, spot, notionalUsdc: hedgeNotionalUsdc, contractsBtc: cover.coveredBtc, nowMs: Date.now() });
   if (!listed.ok) {
     okxQuoteFailStreak = /listed_book_empty|chain|fetch|network/i.test(listed.error) ? okxQuoteFailStreak + 1 : 0;
     if (okxQuoteFailStreak >= 3)
@@ -1020,20 +1043,7 @@ const renewalTick = async (): Promise<void> => {
       }
       const cover = coverOkxLots(position.szBase);
       if (!cover.ok) continue; // below one lot — retry next throttle window
-      const renewPlan = demoPlanStrikes(position.markPx, position.side, floorPct, capPct);
-      const probe = await fetchOkxListedTouchQuote({
-        side: position.side,
-        spot: position.markPx,
-        planPutStrike: renewPlan.putStrike,
-        planCallStrike: renewPlan.callStrike,
-        notionalUsdc: round2(cover.coveredBtc * position.markPx),
-        contractsBtc: cover.coveredBtc,
-        nowMs,
-        tenor,
-        capGuard,
-        capRule,
-        markVolsFor: markVolsForExpiry
-      });
+      const { probe } = await listedQuoteByRule({ side: position.side, spot: position.markPx, notionalUsdc: round2(cover.coveredBtc * position.markPx), contractsBtc: cover.coveredBtc, nowMs });
       if (!probe.ok) {
         console.error(`[demo] auto-renew: ${key} skip-day — ${probe.error} (retry in ${Math.round(renewRetryMs / 60000)}m)`);
         continue;
@@ -2094,20 +2104,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
         return;
       }
-      const plan = demoPlanStrikes(position.markPx, position.side, floorPct, capPct);
-      const probe = await fetchOkxListedTouchQuote({
-        side: position.side,
-        spot: position.markPx,
-        planPutStrike: plan.putStrike,
-        planCallStrike: plan.callStrike,
-        notionalUsdc: sizing.coveredNotionalUsdc,
-        contractsBtc: sizing.coveredBtc,
-        nowMs: Date.now(),
-        tenor,
-        capGuard,
-        capRule,
-        markVolsFor: markVolsForExpiry
-      });
+      const { probe } = await listedQuoteByRule({ side: position.side, spot: position.markPx, notionalUsdc: sizing.coveredNotionalUsdc, contractsBtc: sizing.coveredBtc, nowMs: Date.now() });
       if (!probe.ok) {
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
         return;
@@ -2187,20 +2184,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
         return;
       }
-      const plan = demoPlanStrikes(mark, side, floorPct, capPct);
-      const probe = await fetchOkxListedTouchQuote({
-        side,
-        spot: mark,
-        planPutStrike: plan.putStrike,
-        planCallStrike: plan.callStrike,
-        notionalUsdc: sizing.coveredNotionalUsdc,
-        contractsBtc: sizing.coveredBtc,
-        nowMs: Date.now(),
-        tenor,
-        capGuard,
-        capRule,
-        markVolsFor: markVolsForExpiry
-      });
+      const { probe, floorRuleBy } = await listedQuoteByRule({ side, spot: mark, notionalUsdc: sizing.coveredNotionalUsdc, contractsBtc: sizing.coveredBtc, nowMs: Date.now() });
       if (!probe.ok) {
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
         return;
@@ -2249,6 +2233,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         capMode,
         capExceedProb: probe.capExceedProb,
         capRule: probe.capRuleApplied,
+        floorRule: floorRuleBy,
         release: pvRelease,
         coverageNote: sizing.coverageNote
       });
@@ -2637,7 +2622,7 @@ server.listen(port, () => {
     if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
     console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m, stagger window ${Math.round(renewStaggerMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
     if (autoRenew) setInterval(() => void renewalTick(), renewCheckMs);
-    console.error(`[demo] cap rule: ${capRuleText(capRule)}`);
+    console.error(`[demo] cap rule: ${capRuleText(capRule)} · floor rule: ${floorRuleText(floorRule)}`);
     console.error(
       `[demo] cap ${capMode === "plain" ? "PLAIN — the collar runs to expiry; a mark-touch of the cap is recorded and the holder may release it at the live price (POST /api/release)" : "KNOCKOUT — a mark-touch of the cap ends the cycle and re-arms"} (monitor every ${Math.round(knockoutCheckMs / 1000)}s; runs through the kill switch)`
     );

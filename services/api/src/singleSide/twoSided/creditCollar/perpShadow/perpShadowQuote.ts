@@ -6,6 +6,7 @@
 
 import type { CapRule } from "../capRule";
 import type { PerpSide } from "../creditCollarPricer";
+import { DEFAULT_FLOOR_BAND, floorRuleText, pickFloor, type FloorRule } from "../floorRule";
 import { otherTenor, type CapGuard, type CollarGeometry, type EpTenor } from "../perpTenor";
 import { atmReference, fundingStrikeLadder, quoteCollarFromSnapshot, type OkxListedSnapshot, type SnapshotQuote } from "./okxListedSnapshot";
 import type {
@@ -120,6 +121,8 @@ export interface PerpQuoteInputs {
   capGuard: CapGuard;
   /** the live cap rule (capRule.ts); default the widest strike that pays */
   capRule?: CapRule;
+  /** the floor rule to judge on the ladder (floorRule.ts); default `tightest_paying` over the default band */
+  floorRule?: FloorRule;
   take: PerpTakeConfig;
   /** the fee-floor counterfactual's minimum, bps of notional */
   counterfactualMinTakeBps: number;
@@ -226,6 +229,13 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
   });
 
   const counterfactuals: PerpShadowCounterfactuals = { version: 2, capLadder, feeRules, sizeLadder, tenors, floorLadder };
+  // The counterfactual floor rule, judged on the ladder just quoted (the live rule may be `fixed`).
+  const cfFloorRule = inputs.floorRule ?? { kind: "tightest_paying", ...DEFAULT_FLOOR_BAND };
+  const fpick = pickFloor(
+    cfFloorRule,
+    floorLadder.map((r) => ({ floorPct: r.floorPct, creditUsdc: r.terms.ok ? r.terms.creditCents / 100 : null, notionalUsdc: notionalCents / 100 })),
+  );
+  const floorRulePick = { rule: floorRuleText(cfFloorRule), floorPct: fpick.floorPct, by: fpick.by };
   const basisBps = inputs.okxIndex != null && inputs.okxIndex > 0 ? +(((inputs.spot - inputs.okxIndex) / inputs.okxIndex) * 10000).toFixed(1) : null;
   const nowMs = Date.parse(inputs.nowIso);
   const periods8h = Math.max(0, live.expiryMs - nowMs) / (8 * 3_600_000);
@@ -250,6 +260,7 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
     capGuardPct: inputs.capGuard.minCapPct,
     capExceedProb: live.capExceedProb,
     capRuleApplied: live.capRuleApplied,
+    floorRulePick,
     buyInstId: live.buyInstId,
     sellInstId: live.sellInstId,
     floorStrikeCents: cents(live.buyStrike),

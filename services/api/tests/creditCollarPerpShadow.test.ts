@@ -248,6 +248,11 @@ test("perp shadow: one snapshot becomes one open record with every counterfactua
   assert.ok(f8.creditCents >= fLive.creditCents, "a deeper floor is never dearer (this fixture's wings flatten past 6%, so it ties)");
   for (const r of fl) if (r.terms.ok) assert.equal(r.terms.capStrikeCents, rec.capStrikeCents, "on this fixture the widest paying cap is the same at every depth");
   assert.ok(rec.capRuleApplied === "widest" && rec.capExceedProb === null, "no vols on this snapshot: the widest rule decided, no odds invented");
+  // the counterfactual floor rule, judged on that ladder: tightest depth whose credit clears 5 bps, else the best paying
+  assert.ok(rec.floorRulePick, "every quote carries the floor rule's verdict");
+  assert.match(rec.floorRulePick!.rule, /tightest floor in 5–8%/);
+  assert.ok(["clears_minimum", "best_paying"].includes(rec.floorRulePick!.by), "on a fixture where every depth pays, the rule lands on a depth");
+  assert.ok(rec.floorRulePick!.floorPct != null && fl.some((r) => r.floorPct === rec.floorRulePick!.floorPct), "the pick is one of the depths tried");
 
   const noWeekly = perpShadowQuote(quoteInputs("long"), snap({ weeklyExpiryMs: null }));
   assert.ok(noWeekly.type === "open" && Object.keys(noWeekly.counterfactuals!.tenors).length === 0, "no weekly listed: no tenor counterfactual, nothing invented");
@@ -656,6 +661,11 @@ test("perp shadow: the ledger replays opens, settles (on the path) and voids; th
   assert.ok(f8.creditBpsOfNotional! >= f6.creditBpsOfNotional!, "the deeper floor is never dearer per dollar protected");
   assert.ok(cf.floorLadder[0].creditBpsOfNotional! < f6.creditBpsOfNotional!, "the 5% floor pays less");
   assert.equal(f8.settled, 2, "and is settled on the same two paths");
+  // the floor rule summary: every quote judged, picks tallied by depth, agreement with the live 6% counted
+  assert.equal(cf.floorRule.judged, 3);
+  assert.match(cf.floorRule.rule ?? "", /tightest floor/);
+  assert.equal(Object.values(cf.floorRule.picks).reduce((s, n) => s + n, 0), 3, "every judged quote lands in exactly one bucket");
+  assert.ok(cf.floorRule.agreesWithLive >= 0 && cf.floorRule.agreesWithLive <= 3);
   // the funding rule: at 0.125 bps/8h over 33h the cycle costs 12¢ on a long (a short receives it)
   assert.deepEqual(cf.fundingRule, { judged: 3, wouldRefuse: 0, creditCents: s.creditCents, fundingCents: a.fundingCycleCents! + c.fundingCycleCents! });
   assert.equal(cf.feeRules.share_only.quoted + cf.feeRules.share_only.refused, 3);

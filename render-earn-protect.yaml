@@ -2,9 +2,8 @@
 # render-earn-protect.yaml — Earn & Protect, deployed publicly (beta-ready).
 #
 # Deploys THREE things:
-#   1. the service (web app /app, Telegram Mini App /miniapp, public book
-#      /public, control room /demo, JSON API) — public HTTPS, which the
-#      Telegram Mini App requires
+#   1. the service (web app /app, Telegram Mini App /miniapp, control room
+#      /demo, JSON API) — public HTTPS, which the Telegram Mini App requires
 #   2. Postgres (Render's filesystem is ephemeral — JSON stores would reset
 #      on every deploy)
 #   3. the Telegram bot as a background worker (it must outlive laptops)
@@ -15,7 +14,6 @@
 # After deploy:
 #   - trader app:   https://<service>.onrender.com/app
 #   - mini app:     https://<service>.onrender.com/miniapp
-#   - public book:  https://<service>.onrender.com/public
 #   - control room: https://<service>.onrender.com/demo?token=<EP_ADMIN_TOKEN>
 #     (EP_ADMIN_TOKEN is generated — read it in the dashboard → Environment)
 #
@@ -46,10 +44,25 @@ services:
       - key: DEMO_EXECUTION
         value: paper # beta lane; flip to okx_live manually with the full arming chain
       # BETA ALLOW-LIST (fill at deploy): comma-separated tester wallets. This is the guard
-      # against third parties acting on others' addresses (and against strangers filling the
-      # founding cohort). "*" opens it to any address — only do that deliberately at launch.
+      # against third parties acting on others' addresses. "*" opens it to any address — only
+      # do that deliberately at launch.
       - key: DEMO_ALLOWED_ACCOUNTS
         sync: false
+      # RETAIL SKIN (default): every non-admin JSON response is passed through the retail view —
+      # operator fields (hedge legs, instruments, gross/take, capital formulas, lane names, rule
+      # internals, raw venue errors) never leave the server; refusals arrive as one retail
+      # sentence. Set EP_SKIN=institutional on a partner instance to serve the full payload.
+      - key: EP_SKIN
+        value: retail
+      # SHOWCASE (the landing card): curated public HL addresses, comma-separated — the visitor
+      # lands on a position that looks like theirs. Empty ⟹ the leaderboard is scanned
+      # (EP_SHOWCASE_SCAN rows) and positions inside the size band are preferred.
+      - key: EP_SHOWCASE_ADDRESSES
+        sync: false
+      - key: EP_SHOWCASE_MIN_USD
+        value: "2000"
+      - key: EP_SHOWCASE_MAX_USD
+        value: "500000"
       - key: EP_ADMIN_TOKEN
         generateValue: true # control room / admin API token — read it from the dashboard
       - key: DATABASE_URL
@@ -88,6 +101,11 @@ services:
       # EP_CAP_RULE / EP_CAP_EXCEED_PROB: which paying cap strike is sold — `target` (default) takes the
       # most credit among strikes the market gives at most EP_CAP_EXCEED_PROB (0.20) odds of finishing
       # beyond this cycle (OKX mark vol); `widest` is the previous rule (the widest strike that pays).
+      # EP_FLOOR_RULE: which depth the floor is written to — `fixed` (default) is DEMO_FLOOR_PCT, one
+      # probe, today's behaviour; `tightest_paying` tries EP_FLOOR_MIN_PCT..EP_FLOOR_MAX_PCT (0.05..0.08,
+      # step EP_FLOOR_STEP_PCT 0.01) most protective first and writes the shallowest depth whose net
+      # credit clears EP_FLOOR_MIN_CREDIT_BPS (5) of notional, else the depth that pays most. The shadow
+      # report's "Floor depth" card records what the rule would have picked before the default moves.
       # Retired 2026-09-20 and ignored if set: EP_CREDIT_MUST_CLEAR_FUNDING (funding is disclosed,
       # never a refusal) and EP_PRETOUCH_WORKING_ORDER (nothing rests on the venue).
       - key: EP_CAP_MODE
@@ -100,6 +118,8 @@ services:
         value: target
       - key: EP_CAP_EXCEED_PROB
         value: "0.20"
+      - key: EP_FLOOR_RULE
+        value: fixed
       # Cap watch: per-wrap headroom is always on (admin status) and prices the holder's release.
       # EP_HEADROOM_ALERT_BPS pages (knockout mode only) when one wrap's reserve passes this many bps
       # of its notional (an ATM weekly cap leg is ~200–250 bps).

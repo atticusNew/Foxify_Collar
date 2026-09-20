@@ -351,7 +351,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   </div>
 
   <div class="foot">
-    <span>Priced live from listed markets</span> · <span>refused honestly when unfundable</span> · __LINK_TG____LINK_X__<a href="#" id="howLink">How it works</a> · <a href="/tos" target="_blank" rel="noopener">Terms</a>
+    <span>Priced live from listed markets ·</span> <span>refused honestly when unfundable ·</span> __LINK_TG____LINK_X__<span><a href="#" id="howLink">How it works</a> ·</span> <a href="/tos" target="_blank" rel="noopener">Terms</a>
   </div>
 </div>
 

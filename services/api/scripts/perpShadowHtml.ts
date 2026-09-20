@@ -396,6 +396,17 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
             floorBest.avgCapPct != null && floorLive.avgCapPct != null ? `, with the cap at ${(floorBest.avgCapPct * 100).toFixed(1)}% against ${(floorLive.avgCapPct * 100).toFixed(1)}%` : ""
           }. A deeper floor is cheaper, so the cap rule can spend the difference on credit; whether it is worth the extra downside is the holder column once enough cycles have settled.`
       : "";
+  // The counterfactual floor RULE judged on each quote's ladder: which depth it would have written to.
+  const frule = cf.floorRule;
+  const floorRuleLine =
+    frule && frule.judged > 0
+      ? `Floor rule (${frule.rule ?? "—"}) judged on ${frule.judged} quote${frule.judged === 1 ? "" : "s"}: ` +
+        Object.entries(frule.picks)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, n]) => `${k} × ${n}`)
+          .join(", ") +
+        `; agrees with the live depth ${frule.agreesWithLive}/${frule.judged}.`
+      : "";
   const weeklyBook = liveTenor === "weekly" ? cf.baseline : cf.tenors.weekly;
   const dailyBook = liveTenor === "daily" ? cf.baseline : cf.tenors.daily;
   const tenorLine =
@@ -503,6 +514,7 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
       ${floorRows}
     </table></div>
     ${floorLine ? `<div class="read">${escapeHtml(floorLine)}</div>` : ""}
+    ${floorRuleLine ? `<div class="read">${escapeHtml(floorRuleLine)}</div>` : ""}
   </div>`
       : ""
   }

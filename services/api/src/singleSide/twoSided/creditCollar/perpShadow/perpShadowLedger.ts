@@ -149,6 +149,11 @@ export interface PerpShadowOpenRecord {
   capExceedProb?: number | null;
   /** which cap rule decided the live strike (`widest` for every record before the rule existed) */
   capRuleApplied?: "widest" | "target";
+  /**
+   * What the counterfactual FLOOR RULE (floorRule.ts, `tightest_paying`) would have picked from this
+   * quote's floor ladder, so the default depth changes on a measured number. Absent before 2026-09-20.
+   */
+  floorRulePick?: { rule: string; floorPct: number | null; by: "fixed" | "clears_minimum" | "best_paying" | "none" } | null;
   buyInstId: string;
   sellInstId: string;
   floorStrikeCents: number;
@@ -685,6 +690,8 @@ export interface PerpCounterfactualSummary {
   tenors: Record<string, PerpRuleBook & { avgDays: number | null }>;
   /** "math makes sense": how often the credit failed to clear the cycle's funding cost */
   fundingRule: { judged: number; wouldRefuse: number; creditCents: number; fundingCents: number };
+  /** the counterfactual floor rule: which depth it would have written each quote to, and how often */
+  floorRule: { rule: string | null; judged: number; picks: Record<string, number>; agreesWithLive: number };
 }
 
 export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], capMode: PerpCapMode = DEFAULT_PERP_CAP_MODE): PerpCounterfactualSummary {
@@ -696,6 +703,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
   const capacity = new Map<number, BookAcc & { mult: number; contracts: number; spreadNum: number; spreadDen: number }>();
   const floors = new Map<string, BookAcc & { floorPct: number; livePicks: number; capPctSum: number; capN: number; probSum: number; probN: number }>();
   const fundingRule = { judged: 0, wouldRefuse: 0, creditCents: 0, fundingCents: 0 };
+  const floorRule: PerpCounterfactualSummary["floorRule"] = { rule: null, judged: 0, picks: {}, agreesWithLive: 0 };
   for (const p of withCf) {
     const cf = p.counterfactuals!;
     const settled = p.status === "settled" && p.settleCents != null;
@@ -730,6 +738,13 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
         }
       }
       rungs.set(key, row);
+    }
+    if (p.floorRulePick) {
+      floorRule.rule = p.floorRulePick.rule;
+      floorRule.judged += 1;
+      const k = p.floorRulePick.floorPct == null ? "refuse" : `${(p.floorRulePick.floorPct * 100).toFixed(0)}%`;
+      floorRule.picks[k] = (floorRule.picks[k] ?? 0) + 1;
+      if (p.floorRulePick.floorPct != null && Math.abs(p.floorRulePick.floorPct - p.floorPct) < 0.005) floorRule.agreesWithLive += 1;
     }
     for (const rung of cf.floorLadder ?? []) {
       const key = rung.floorPct.toFixed(4);
@@ -793,6 +808,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
   return {
     positionsWithCounterfactuals: withCf.length,
     recordedSince: withCf.length ? withCf.map((p) => p.at).sort()[0] : null,
+    floorRule,
     baseline: finishBook(baseline),
     capLadder: [...rungs.entries()]
       .map(([bucket, { capPctSum, livePicks, underGuard, okxConfirmedTouches, hlOnlyTouches, probSum, probN, ...row }]) => ({
