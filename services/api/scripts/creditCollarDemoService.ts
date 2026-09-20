@@ -1094,16 +1094,6 @@ const executeRelease = async (rec: DemoWrapRecord, markPx: number, nowMs: number
   }
   const client = okxClientForWatch();
   if (!client) return { ok: false, status: 409, error: "not_armed", message: "OKX credentials missing — the cap leg cannot be bought back" };
-  // A resting pre-touch order on this leg (knockout-mode wraps only) would double-buy: recall it first.
-  const w = capWatch.get(rec.id);
-  if (w?.order) {
-    try {
-      await client.cancelOrder(w.order.instId, w.order.ordId);
-    } catch {
-      /* venue-first read below sees the truth */
-    }
-    w.order = null;
-  }
   const got = await buyBackLeg(client, { instId: capLeg.instId, contracts, spotUsd: markPx, clOrdPrefix: `rl${Date.now().toString(36)}` });
   if (got.filledContracts === 0 || got.costUsdc == null) {
     raiseAlert("unwind_event", `RELEASE unfilled for ${rec.id}: ${got.notes.join("; ") || "no fill"}`, { wrapId: rec.id }, { dedupeKey: `release:${rec.id}`, dedupeMs: 5 * 60_000 });
@@ -2465,7 +2455,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           summary: summarizeCapWatch(capWatch.values()),
           wraps: [...capWatch.values()]
             .sort((a, b) => a.headroom.distanceBps - b.headroom.distanceBps)
-            .map((w) => ({ wrapId: w.wrapId, account: w.account, side: w.side, capStrike: w.capStrike, ...w.headroom, order: w.order, updatedAtMs: w.updatedAtMs }))
+            .map((w) => ({ wrapId: w.wrapId, account: w.account, side: w.side, capStrike: w.capStrike, ...w.headroom, updatedAtMs: w.updatedAtMs }))
         },
         // Top of funnel: who LOOKED (distinct addresses that viewed positions/state) vs who
         // wrapped — tells reach problems apart from conversion problems. Admin-only. Headline
