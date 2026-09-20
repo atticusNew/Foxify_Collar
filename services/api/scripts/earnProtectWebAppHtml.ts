@@ -22,7 +22,7 @@
  * renders on the position card exactly as the live product. Flipping it runs a SIMULATION LANE:
  * the full lifecycle (quote → executing → active → vesting) fed by a real live preview quote,
  * never the real wrap path (server-side showcase guards stay armed). One quiet persistent
- * honesty label: "simulation · live pricing". The nav carries dApp-standard Connect chrome —
+ * honesty label: "preview · live pricing". The nav carries dApp-standard Connect chrome —
  * swapping in the visitor's own address (public data, no signing) is the conversion action the
  * funnel measures (lookers). Mobile-first: designed at 390px, expands up.
  *
@@ -108,11 +108,10 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .switch.on{background:var(--accent);box-shadow:0 0 14px rgba(80,210,193,.35)} .switch.on .knob{left:27px;background:var(--accent-ink)}
   .switch.busy{pointer-events:none}
   .switch.busy .knob{animation:pulse 1s ease-in-out infinite}
-  /* One-time coach bubble: standard product-tour grammar — caret points up at the toggle,
-     right-aligned beneath it. Dies on first flip, never returns. */
-  .coach{position:relative;display:flex;align-items:center;gap:8px;margin:12px 0 2px auto;width:max-content;background:#081418;border:1px solid var(--line);border-radius:8px;padding:8px 6px 8px 13px;font-size:12.5px;color:var(--text);box-shadow:0 10px 26px rgba(0,0,0,.5)}
-  .coach:before{content:"";position:absolute;top:-6px;right:19px;width:10px;height:10px;background:#081418;border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
-  .coach .coach-x{color:var(--muted);cursor:pointer;padding:2px 8px;font-size:14px;line-height:1}
+  /* Pre-toggle teaser (landing card, before the first flip): one quiet sentence that says what
+     the toggle does. Dies on the first flip, never returns. */
+  .teaser{margin-top:10px;font-size:12.5px;color:var(--muted)}
+  .teaser b{color:var(--text);font-weight:600}
   /* Credit hero: one number owns the active card; its label rides the blank space beside it. */
   .cred{margin-top:12px;display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
   .cred .cred-num{font-size:26px;font-weight:700;letter-spacing:-.4px;color:var(--accent);font-variant-numeric:tabular-nums}
@@ -230,8 +229,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .tag-real{color:var(--good);font-weight:700;font-size:10.5px} .tag-sim{color:#e3c34c;font-weight:700;font-size:10.5px}
   /* Narrow screens (Telegram WebView, phones): stack the header, keep cards breathing */
   @media (max-width:560px){
-    .nav-in{height:auto;min-height:48px;padding:8px 14px;flex-wrap:wrap;gap:6px}
-    .logo{font-size:13.5px} .logo .by{font-size:10.5px;margin-left:5px}
+    .nav-in{height:48px;padding:0 14px;flex-wrap:nowrap;gap:6px}
+    .logo{font-size:13.5px;white-space:nowrap} .logo .by{font-size:10.5px;margin-left:5px}
     .mode-pill{font-size:10px;padding:3px 8px;margin-right:5px}
     .wrap{padding:0 12px 44px}
     h1{font-size:20px} .sub{font-size:13px}
@@ -241,7 +240,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     th,td{padding:6px 4px;font-size:12px}
   }
   /* 390px-first: the header must hold logo · live mark · Connect on ONE line. */
-  @media (max-width:420px){
+  @media (max-width:480px){
     .logo .by{display:none}
     .nav-in{flex-wrap:nowrap}
     .px{margin-right:7px}
@@ -258,9 +257,9 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   /* HL grammar: chrome stays muted, brand pulses in small strokes — a vertical mint bar, not
      colored text. Sentence case: the honesty label is the only element allowed to shout. */
   h2{font-size:14.5px;font-weight:700;margin:24px 0 8px;color:var(--text);border-left:3px solid var(--accent);padding-left:9px}
-  .foot{color:var(--muted);font-size:11.5px;margin-top:32px;border-top:1px solid var(--line);padding-top:16px}
+  .foot{color:var(--muted);font-size:11.5px;margin-top:32px;border-top:1px solid var(--line);padding-top:16px;line-height:1.9}
+  .foot a,.foot span{white-space:nowrap}
   .badge{display:inline-block;font-size:10.5px;font-weight:700;border-radius:999px;padding:2.5px 9px;margin-left:8px;vertical-align:2px}
-  .badge.founding{background:rgba(80,210,193,.12);color:var(--accent);border:1px solid rgba(80,210,193,.4)}
   .empty{color:var(--muted);font-size:13.5px;padding:6px 0}
   /* Pre-connect intro trio + demonstration toggle panel (retail) */
   .trio{color:var(--muted);font-size:13px;padding:4px 0}
@@ -337,7 +336,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     </div>
   </div>
 
-  <h2><span id="posTitle">Your positions</span> <span class="small muted" id="cohortLine" style="font-weight:400"></span></h2>
+  <h2><span id="posTitle">Your positions</span></h2>
   <div class="card" id="watchStrip" style="display:none;border-color:rgba(80,210,193,.35)">
     <b id="wsTitle">Live position · public address</b> <span class="muted small" id="wsBody">Read-only, live pricing. Flip the toggle to see protection at work (simulation · nothing opens). Connect your address to see your own positions.</span>
     <a href="#" id="nextWhale" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:6px">view another position →</a>
@@ -352,7 +351,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   </div>
 
   <div class="foot">
-    Priced live from listed markets · refused honestly when unfundable · __LINK_TG____LINK_X__<a href="#" id="howLink">How it works</a> · <a href="/tos" target="_blank" rel="noopener">Terms</a>
+    <span>Priced live from listed markets</span> · <span>refused honestly when unfundable</span> · __LINK_TG____LINK_X__<a href="#" id="howLink">How it works</a> · <a href="/tos" target="_blank" rel="noopener">Terms</a>
   </div>
 </div>
 
@@ -364,7 +363,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <li><b>Paid every cycle, never upfront.</b> A cycle runs to the next weekly expiry (Friday, three to ten days out). Your credit unlocks through the cycle and pays automatically at its close.</li>
     <li><b>The cap pays for your floor.</b> Every gain up to the cap is yours. Gains above it this cycle are handed back at settlement: that is what funds the floor and the credit. Nothing closes when price touches the cap.</li>
     <li><b>Nothing to manage.</b> Protection renews every cycle while the toggle is on. Turn it off any time: the collar closes at the live market and you keep the credit unlocked so far.</li>
-    <li><b>Honest economics.</b> Settlement nets it all: your credit, plus any floor payout, minus any gains above the cap or a release. A negative net is a balance you settle before protection restarts. We keep a published share of the credit we source (waived when tiny); founding wallets keep a reduced rate<span id="rateNote"></span>. Hyperliquid's own funding on your perp is separate and unchanged; it is not part of the credit.</li>
+    <li><b>Honest economics.</b> Settlement nets it all: your credit, plus any floor payout, minus any gains above the cap or a release. A negative net is a balance you settle before protection restarts. We keep a published share of the credit we source (waived when tiny). Hyperliquid's own funding on your perp is separate and unchanged; it is not part of the credit.</li>
     <li>Derivatives involve risk. Nothing here is investment advice.</li>
   </ul>
   <button class="btn ghost" id="howClose">Close</button>
@@ -425,9 +424,16 @@ const short = (a) => a ? a.slice(0,6) + "…" + a.slice(-4) : "";
 const coachDone = () => { try { return localStorage.getItem("ep_coach_v1") === "1"; } catch (e) { return true; } };
 const markCoachDone = () => { try { localStorage.setItem("ep_coach_v1", "1"); } catch (e) { /* private mode */ } };
 
-// Honest refusal copy: ≤8 human words on the chip, the full engine string on hover.
+// Honest refusal copy. RETAIL: the server already speaks retail (retailView.ts rewrites every
+// refusal into one human sentence and drops the engine string), so the chip shows exactly what
+// it was given. INST: the full payload travels, so the legacy shape table maps it here.
+const FALLBACK_CHIP = "Couldn't complete \\u00b7 nothing opened";
 const humanChip = (raw) => {
-  const s = String(raw || "");
+  const s = String(raw || "").trim();
+  if (!INST) return s && !/^[a-z_]+$/.test(s) ? s : FALLBACK_CHIP;
+  return legacyChip(s);
+};
+const legacyChip = (s) => {
   const cd = s.match(/cooldown[^0-9]*(\\d+)s/i);
   if (cd) return "Next wrap in " + cd[1] + "s";
   if (/50\\d{3}|51\\d{3}|OK-ACCESS|API key|passphrase|network error|position_read_failed/i.test(s)) return "Our issue, not yours · nothing opened";
@@ -435,7 +441,6 @@ const humanChip = (raw) => {
   if (/credit_below_take|under the minimum take/i.test(s)) return "Credit too thin to cover the minimum fee · nothing opened";
   if (/aborted_no_fill|aborted_unwound|pair unwound|did not fill|hedge_not_filled/i.test(s)) return "Couldn't fill at our quote · nothing opened";
   if (/minimum one lot|0\\.01 BTC lots|below_min_lot/i.test(s)) return "Below the 0.01 BTC minimum";
-  if (/waitlist|founding cohort/i.test(s)) return "Founding cohort full · you're on the waitlist";
   if (/capacity.*in use|wallet_cap/i.test(s)) return "Your capacity is in use this cycle";
   if (/strike_concentration|already carries|unwindable|strike.*concentration/i.test(s)) return "That strike is crowded · try again shortly";
   if (/quota reached/i.test(s)) return "Daily limit reached";
@@ -452,13 +457,12 @@ const humanChip = (raw) => {
   if (/owed_outstanding|still owed on this account/i.test(s)) { const m = s.match(/\\$([0-9.]+)/); return (m ? "$" + m[1] + " settles" : "Your last cycle settles") + " from your last cycle\\u2019s gains first"; }
   if (/close_unwind_failed|couldn't close the hedge cleanly/i.test(s)) return "Couldn't close cleanly right now · you're still protected · try again shortly";
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first";
-  if (/waitlisted|#\d+ in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full · you're #" + m[1] + " in line" : "Founding cohort full · you're on the waitlist"; }
   if (/showcase_wallet|public wallet on watch/i.test(s)) return "Public wallet · watching only";
   if (/invalid_size/i.test(s)) return "Preview sizes up to $500M · try a smaller amount";
   if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
   if (/kill switch|demo disabled|paused/i.test(s)) return "Protection paused";
   if (/rate_limited/i.test(s)) return "Slow down a moment";
-  return "Couldn't complete · nothing opened";
+  return FALLBACK_CHIP;
 };
 
 const stageLabel = {wrap_requested:"Requested",position_read:"Position read",quoted:"Priced off the live book",hedge_executing:"Hedge executing",hedge_locked:"Hedge locked",green_light:"Protection live",vesting:"Credit vesting",failed:"Refused",knocked_out:"Cap touched · cycle over",cap_touched:"Cap touched · cycle runs on",cap_released:"Cap released · upside is yours",concluded:"Concluded"};
@@ -468,6 +472,14 @@ const fmtDur = (ms) => {
   if (ms == null || ms <= 0) return "now";
   const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
   return h > 0 ? h + "h " + m + "m" : m > 0 ? m + "m" : "<1m";
+};
+// "pays Friday" when the close is days out (a weekly cycle), "pays in 11h 26m" inside the last
+// day and a half — a countdown in hours reads as urgency, a weekday reads as a plan.
+const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const paysLabel = (remainingMs, endMs) => {
+  if (remainingMs == null || remainingMs <= 0) return "pays at settlement";
+  if (remainingMs > 36 * 3600000 && endMs) return "pays " + DAY_NAMES[new Date(endMs).getDay()];
+  return "pays in " + fmtDur(remainingMs);
 };
 const tip = (trigger, text, right) => '<span class="tipwrap' + (right ? " tip-right" : "") + '">' + trigger + '<span class="tip">' + esc(text) + '</span></span>';
 const infoTip = (text, right) => tip('<span class="info">i</span>', text, right);
@@ -498,7 +510,7 @@ const feeLine = (j) => {
   const kept = Math.max(0, j.grossCreditUsdc - j.creditUsdc);
   const rule = j.takeRule === "waived" ? "our cut is waived (under the minimum)"
     : j.takeRule === "minimum" ? "we keep " + fmt$(kept) + " (the published minimum at this size)"
-    : "we keep " + fmt$(kept) + " (" + Math.round((j.takeRatePct || 0) * 100) + "%" + (j.founding ? ", founding rate" : "") + ")";
+    : "we keep " + fmt$(kept) + " (" + Math.round((j.takeRatePct || 0) * 100) + "%)";
   return "The market funded " + fmt$(j.grossCreditUsdc) + " \\u00b7 " + rule + ".";
 };
 // SIZE-AWARE HERO. The card leads with one number. On a position where the market funds a real
@@ -512,11 +524,11 @@ const floorLeads = (creditUsdc, notionalUsdc) =>
 // One terms grid for every quote surface: the hero leads (credit, or the floor on a small
 // position), the other terms follow with their distance from the live price. The preview, the
 // viewing card and the pre-flip quote all use it.
-const termsGrid = (j, foundingBadge, notionalUsdc) => {
+const termsGrid = (j, badge, notionalUsdc) => {
   const fPct = ((j.floorStrike - j.spot) / j.spot) * 100, cPct = ((j.capStrike - j.spot) / j.spot) * 100;
   const sgn = (x) => (x >= 0 ? "+" : "\\u2212") + Math.abs(x).toFixed(1) + "%";
   const lead = floorLeads(j.creditUsdc, notionalUsdc == null ? j.protectedUsd : notionalUsdc);
-  const credit = '<div class="term' + (lead ? "" : " credit-hero") + '"><b style="color:var(--accent)">' + (lead ? "+" : "") + fmt$(j.creditUsdc) + '</b>' + tenorWord(j) + ' credit' + (foundingBadge || "") + '</div>';
+  const credit = '<div class="term' + (lead ? "" : " credit-hero") + '"><b style="color:var(--accent)">' + (lead ? "+" : "") + fmt$(j.creditUsdc) + '</b>' + tenorWord(j) + ' credit' + (badge || "") + '</div>';
   const floor = '<div class="term' + (lead ? " credit-hero" : "") + '"><b>' + fmtPx(j.floorStrike) + ' <em>' + sgn(fPct) + '</em></b>' + (lead ? "losses stop here" : "hard floor") + '</div>';
   return '<div class="terms">' + (lead ? floor + credit : credit + floor) +
     '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sgn(cPct) + '</em></b>' + capWord() + '</div>' +
@@ -596,7 +608,7 @@ if (INST) {
     '<li><b>Live-market pricing.</b> Every protection cycle is priced from listed option order books at the moment of activation. When the market cannot fund a credit, we refuse and say why.</li>' +
     '<li><b>Hedged, not carried.</b> Both legs are hedged leg for leg on listed options (OKX today; FalconX block execution as volume nets up) and held to expiry against the holder\\u2019s terms; the cap leg is bought back only at the holder\\u2019s request. Revenue is a published fee on credits, never trading P&amp;L.</li>' +
     '<li><b>Paid every cycle, never upfront.</b> A cycle runs to the next weekly listed expiry. The credit vests through the cycle and settles automatically at its close, only to the holder\\u2019s address.</li>' +
-    '<li><b>The cap funds the floor.</b> Gains above the cap for the cycle settle against the credit at expiry; nothing closes at a touch. The holder may release the cap at any time at the live listed price, fee included, and keep every gain from there.<span id="rateNote" style="display:none"></span></li>' +
+    '<li><b>The cap funds the floor.</b> Gains above the cap for the cycle settle against the credit at expiry; nothing closes at a touch. The holder may release the cap at any time at the live listed price, fee included, and keep every gain from there.</li>' +
     '<li>Derivatives involve risk. Nothing here is investment advice.</li>';
 }
 let verifyOffered = false; // surfaced when a close is refused cross-device — optional path to manage from anywhere
@@ -632,7 +644,6 @@ const setConn = () => {
   $("posTitle").textContent = watching
     ? (INST ? "Viewing · " + short(account) + " · public reference" : "Positions")
     : booting && !account ? "Positions" : "Your positions";
-  $("cohortLine").style.display = watching || INST ? "none" : "";
   $("watchStrip").style.display = INST && watching ? "" : "none";
   $("nextWhale").style.display = INST && watching && watchWallets.length > 1 ? "" : "none";
   $("stopViewing").style.display = INST && watching ? "" : "none";
@@ -701,8 +712,8 @@ const activeBody = (o) => {
     infoTip(capTipText, leftIsFloor) + '</span>' + relLine + '</span>';
   const px = o.livePx != null ? o.livePx : o.quoteSpot;
   const creditTip = o.sim
-    ? "Funded by the options market, never by the holder. In the live product the credit unlocks through the day and pays automatically at the cycle's close, never upfront."
-    : "Funded by the options market, not by us. Unlocks through the day and pays to this wallet automatically at the cycle's close, never upfront.";
+    ? "Funded by the options market, never by the holder. In the live product the credit unlocks through the cycle and pays automatically at its close, never upfront."
+    : "Funded by the options market, not by us. Unlocks through the cycle and pays to this wallet automatically at its close, never upfront.";
   // Floor tick = loss end (red), cap tick = upside end (mint) — the only color on the rail.
   const tickL = '<div class="rail-tick ' + (leftIsFloor ? "tfloor" : "tcap") + '" style="left:-1px"></div>';
   const tickR = '<div class="rail-tick ' + (leftIsFloor ? "tcap" : "tfloor") + '" style="right:-1px"></div>';
@@ -727,7 +738,7 @@ const activeBody = (o) => {
     // moves as the credit vests — no reserved gap, one line at 390px.
     '<div class="unlock" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;white-space:nowrap">' +
       '<span><span class="minibar"><span class="' + (o.sim ? "sim-fill" : "") + '" style="width:' + (o.fraction * 100).toFixed(2) + '%"></span></span>' +
-        tip(o.fullyVested ? "pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">pays in ' + fmtDur(o.remainingMs) + '</span>', o.settleTip) + '</span>' +
+        tip(o.fullyVested ? "pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">' + paysLabel(o.remainingMs, o.endMs) + '</span>', o.settleTip) + '</span>' +
       '<span><b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--accent);font-variant-numeric:tabular-nums">' + fmt$(o.vestedUsdc) + '</b> unlocked</span>' +
     '</div>';
 };
@@ -747,8 +758,6 @@ const render = (positions, state) => {
     return;
   }
   const w = state ? latestFor(state.wraps || []) : null;
-  const founding = state && state.protection && state.protection.founding;
-  const caps = state && state.caps;
   if (state && state.capMode) CAP_MODE = state.capMode;
   // A settled cycle that netted negative (gains above the cap or a release beyond the credit):
   // said once, in dollars, with what it means — protection restarts when it is settled.
@@ -763,11 +772,12 @@ const render = (positions, state) => {
     const active = isWrapCoin && w && (w.status === "active" || w.status === "quoting" || w.status === "executing");
     const v = w && w.vestingStatus;
     const q = w && w.quote;
-    let chip = "", terms = "", bar = "", coverage = "", receipt = "", tooltip = "";
+    let chip = "", terms = "", bar = "", coverage = "", receipt = "";
     const legLabel = { sell_call_cap: "SELL call (cap)", buy_put_floor: "BUY put (floor)", sell_put_cap: "SELL put (cap)", buy_call_floor: "BUY call (floor)" };
-    if (isWrapCoin && w && w.legs && w.legs.length && (w.status === "active" || w.status === "knocked_out")) {
-      // Hedge receipt — the proof: real instruments, premiums, order refs. REAL = a venue order
-      // stands behind the row; SIMULATED = a live-book model quote (paper lane), labeled honestly.
+    if (INST && isWrapCoin && w && w.legs && w.legs.length && (w.status === "active" || w.status === "knocked_out")) {
+      // Hedge receipt (institutional skin): real instruments, premiums, order refs. REAL = a venue
+      // order stands behind the row; SIMULATED = a live-book model quote (paper lane). The retail
+      // payload carries no legs — the card says "hedged leg for leg" and stops there.
       receipt = '<details class="receipt"><summary>Hedge receipt · how this protection is built</summary><table class="receipt-tbl">' +
         '<thead><tr><th>leg</th><th>listed instrument</th><th>premium</th><th>order ref</th><th></th></tr></thead><tbody>' +
         w.legs.map((l) =>
@@ -778,20 +788,19 @@ const render = (positions, state) => {
     if (isWrapCoin && w) {
       if (w.status === "active" && v && q) {
         const capStrike = q.capStrike ?? q.callStrike, floorStrike = q.floorStrike ?? q.putStrike;
-        const foundingBadge = founding && caps && !INST
-          ? " " + tip('<span class="badge founding">FOUNDING RATE</span>',
-              "You're one of our first " + caps.foundingWallets + " wallets, so you keep " + (100 - caps.foundingTakeRatePct * 100).toFixed(0) + "% of every credit instead of " + (100 - caps.takeRatePct * 100).toFixed(0) + "%, locked in for 12 months. And when our cut would be under 5\\u00a2, we skip it: you keep it all.")
-          : "";
         const settleIso = w.vesting && w.vesting.endMs ? new Date(w.vesting.endMs).toUTCString().replace(":00 GMT", " UTC") : null;
         terms = activeBody({
           creditUsdc: q.creditUsdc, floorStrike, capStrike, quoteSpot: q.spot, livePx: p.markPx, notionalUsdc: p.notionalUsdc,
-          vestedUsdc: v.vestedUsdc, fraction: v.fraction, remainingMs: v.remainingMs, fullyVested: v.fullyVested,
+          vestedUsdc: v.vestedUsdc, fraction: v.fraction, remainingMs: v.remainingMs, fullyVested: v.fullyVested, endMs: w.vesting && w.vesting.endMs,
           settleTip: settleIso ? "Settles at the listed expiry: " + settleIso + ". The credit lands in the payouts table below, then protection renews automatically." : "Pays at the cycle's close.",
-          sim: false, badge: foundingBadge, tenor: q.tenor,
+          sim: false, badge: "", tenor: q.tenor,
           release: (w.capMode || "knockout") === "plain" ? state.release : null, released: w.release || null, capTouched: !!w.capTouch
         });
-        const note = w.hedge && w.hedge.sizeNote;
+        const note = w.coverageNote || (w.hedge && w.hedge.sizeNote);
         if (note) coverage = '<div class="coverage">' + esc(note) + '</div>';
+        // One quiet honesty label on a lane where venue orders are not real (paper / demo venue):
+        // the pricing is live, the hedge is simulated. Never the lane's name.
+        if (state && state.simulated === true && !INST) chip = '<div class="simlabel">simulated hedge \\u00b7 live pricing</div>';
       } else if (w.status === "quoting" || w.status === "executing") {
         // Spinner + live seconds counter (server-truth: elapsed since the wrap request landed).
         chip = '<div class="chip on oneline"><span class="spin"></span>' +
@@ -805,8 +814,7 @@ const render = (positions, state) => {
         const relNote = w.release ? ' · cap released for ' + fmt$(w.release.costUsdc) : '';
         chip = '<div class="chip">' + (v.fullyVested ? "Cycle complete · earned " + fmt$(v.fullCreditUsdc) + " in full" : "Closed early · kept " + fmt$(v.vestedUsdc) + " of " + fmt$(v.fullCreditUsdc)) + relNote + owedNote + '</div>';
       } else if (w.status === "failed" && w.failReason) {
-        chip = '<div class="chip bad" title="' + esc(w.failReason) + '">' + esc(humanChip(w.failReason)) + '</div>';
-        tooltip = w.failReason;
+        chip = '<div class="chip bad">' + esc(humanChip(w.failReason)) + '</div>';
       }
     }
     // INST viewing keeps the would-be protection terms panel (filled async by renderWatchTerms).
@@ -824,14 +832,14 @@ const render = (positions, state) => {
     // REAL live preview quote, never the wrap path. One quiet persistent honesty label.
     const s = !INST && watching && isWrapCoin ? simFor(account) : null;
     if (s) {
-      const simLabel = '<div class="simlabel">simulation · live pricing</div>';
+      const simLabel = '<div class="simlabel">preview · live pricing</div>';
       if (s.phase === "quoting") {
         chip = simLabel + '<div class="chip on oneline"><span class="spin"></span>Pricing the live book <span class="els" data-ts="' + s.startedMs + '"></span></div>';
       } else if (s.phase === "executing") {
         chip = simLabel + '<div class="chip on oneline"><span class="spin"></span>Placing hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
       } else if (s.phase === "refused") {
         // The refusal is REAL — the live pricing engine declined; no simulation label needed.
-        chip = '<div class="chip bad" title="' + esc(s.reason || "") + '">' + esc(humanChip(s.reason)) + '</div>';
+        chip = '<div class="chip bad">' + esc(humanChip(s.reason)) + '</div>';
       } else if (s.phase === "closing") {
         chip = simLabel + '<div class="chip on oneline"><span class="spin"></span>Unwinding hedge legs <span class="els" data-ts="' + s.startedMs + '"></span></div>';
       } else if (s.phase === "closed") {
@@ -852,7 +860,7 @@ const render = (positions, state) => {
         terms = activeBody({
           creditUsdc: sq.creditUsdc, floorStrike: sq.floorStrike, capStrike: sq.capStrike, notionalUsdc: p.notionalUsdc,
           quoteSpot: sq.spot, livePx: lastMarkPx != null ? lastMarkPx : p.markPx,
-          vestedUsdc: vsim.vestedUsdc, fraction: vsim.fraction, remainingMs: vsim.remainingMs, fullyVested: false,
+          vestedUsdc: vsim.vestedUsdc, fraction: vsim.fraction, remainingMs: vsim.remainingMs, fullyVested: false, endMs: s.endMs,
           settleTip: settleIsoS ? "The live cycle settles at the listed expiry: " + settleIsoS + "." : "Pays at the cycle's close.",
           sim: true, badge: "", tenor: sq.tenor, capTouched: !!s.capTouched
         });
@@ -872,16 +880,16 @@ const render = (positions, state) => {
         (active && v ? ' data-vested="' + v.vestedUsdc + '" data-full="' + v.fullCreditUsdc + '"' : "") +
         ' role="switch" aria-checked="' + (active ? "true" : "false") + '"><div class="knob"></div></div>'
       : '<span class="small muted">protection for ' + esc(p.coin) + ' coming soon</span>';
-    // One-time coach bubble: caret points at the toggle; gone forever after the first flip.
+    // Pre-toggle teaser (landing card, first visit): what the toggle does, in one sentence.
     const coach = !INST && watching && !s && !coachDone()
-      ? '<div class="coach">Try it · nothing opens <span class="coach-x" role="button" aria-label="dismiss">×</span></div>'
+      ? '<div class="teaser"><b>Turn it on</b> to see the floor under this position and this week\\u2019s credit \\u00b7 preview, nothing opens.</div>'
       : "";
     // The card is self-describing on the landing: identity rides a quiet eyebrow, not a heading;
     // the pulsing dot says "live position on this address" without a word.
     const eyebrow = !INST && watching
       ? '<div class="small muted" style="margin-bottom:9px"><span class="livedot"></span>' + short(account) + ' · public · read-only</div>'
       : "";
-    return '<div class="card" title="' + esc(tooltip) + '">' + eyebrow +
+    return '<div class="card">' + eyebrow +
       '<div class="pos-row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + esc(p.coin) + ' · ' + fmtC(p.notionalUsdc) +
       '<div class="pos-sub">' + fmtSz(p.szBase) + ' ' + esc(p.coin) + (p.entryPx ? ' · entry ' + fmtPx(p.entryPx) : '') + '</div></div>' + toggle + '</div>' +
       coach + chip + terms + bar + coverage + receipt + '</div>';
@@ -907,7 +915,7 @@ const render = (positions, state) => {
 // Cached 45s per address (realQuoteCache) so the 5s poll never spams the pricer.
 const realQuoteHtml = (j) =>
   '<div class="small muted" style="margin-top:10px">If you flip it on now:</div>' +
-  termsGrid(j, j.founding && !INST ? ' <span class="badge founding">FOUNDING RATE</span>' : "") +
+  termsGrid(j, "") +
   carryLine(j) +
   '<div class="small muted" style="margin-top:8px">' + feeLine(j) + (j.coverageNote ? " " + esc(j.coverageNote) : "") + ' Indicative \\u00b7 the fill sets the number.</div>';
 const renderRealQuote = async (p) => {
@@ -1051,7 +1059,7 @@ const simStart = async () => {
       haptic("success");
     }, 1400);
   } catch (e) {
-    sims[key] = { phase: "refused", reason: "network error" };
+    sims[key] = { phase: "refused", reason: "Our issue, not yours \\u00b7 nothing opened" };
     renderNow();
     setTimeout(() => { if (sims[key] && sims[key].phase === "refused") { delete sims[key]; renderNow(); } }, 8000);
   }
@@ -1067,7 +1075,7 @@ const simToggle = async () => {
     const preview = simVest(s);
     const ok = await confirmClose(
       'You keep <b style="color:var(--accent)">' + fmt$(preview.vestedUsdc) + '</b> already unlocked · the remaining ' + fmt$(Math.max(0, s.quote.creditUsdc - preview.vestedUsdc)) + ' returns to the market · auto-renew turns off.' +
-      '<div class="simlabel" style="margin-top:12px">simulation · live pricing</div>'
+      '<div class="simlabel" style="margin-top:12px">preview · live pricing</div>'
     );
     if (!ok) return;
     // Re-read after the dialog: the sim may have knocked out or been cleared while it was open.
@@ -1089,13 +1097,6 @@ const simToggle = async () => {
   }
   void simStart();
 };
-// Coach mark dismiss (delegated — the mark is re-rendered by every poll until dismissed).
-document.addEventListener("click", (ev) => {
-  const x = ev.target.closest ? ev.target.closest(".coach-x") : null;
-  if (!x) return;
-  markCoachDone();
-  renderNow();
-});
 // "see how" microlinks (next to any credit figure) open the how-it-works modal in place.
 document.addEventListener("click", (ev) => {
   const a = ev.target.closest ? ev.target.closest(".howMini") : null;
@@ -1211,7 +1212,7 @@ setInterval(() => {
     const f = document.querySelector(".sim-fill");
     if (f) f.style.width = (vsim.fraction * 100).toFixed(2) + "%";
     const e2 = document.querySelector(".sim-eta");
-    if (e2) e2.textContent = "pays in " + fmtDur(vsim.remainingMs);
+    if (e2) e2.textContent = paysLabel(vsim.remainingMs, s.endMs);
     // KNOCKOUT on a REAL cap touch: only actual market motion triggers it — the most
     // misunderstood mechanic, demonstrated honestly, then re-armed like the live product.
     if (lastMarkPx != null) {
@@ -1280,7 +1281,6 @@ const onToggle = async (ev) => {
       const j = await api("/api/wrap", { method: "POST", headers: { "Idempotency-Key": idem } });
       if (j.ok && j.controlToken) localStorage.setItem("ep_ctl_" + account.toLowerCase(), j.controlToken);
       setMsg(j.ok ? "Protection live · credit pays at the cycle's close." : humanChip(j.message || j.error), !j.ok);
-      if (!j.ok) $("connectMsg").title = String(j.message || j.error || "");
       // Gate-at-action: the engine said what it needs — surface exactly that card, right now.
       if (!j.ok && /tos_required/i.test(String(j.error || ""))) revealGate("tos");
       if (!j.ok && /verify_required/i.test(String(j.error || ""))) revealGate("verify");
@@ -1434,24 +1434,10 @@ const poll = async () => {
       void watchWallet(next, false);
       return;
     }
-    if (st && st.caps && !watching) {
-      $("rateNote").textContent = " (" + (st.caps.foundingTakeRatePct * 100).toFixed(0) + "% vs " + (st.caps.takeRatePct * 100).toFixed(0) + "%, locked 12 months)";
-      const wl = st.caps.waitlistLength ? " · waitlist " + st.caps.waitlistLength : "";
-      const mine = st.protection && st.protection.waitlistPosition ? " · you're #" + st.protection.waitlistPosition + " in line" : "";
-      // Cohort framing: a founding wallet sees its own member number (a badge, not a gauge);
-      // everyone else sees the live count only when the server says it reads as momentum
-      // (EP_SHOW_COHORT_COUNT), otherwise the honest scarcity line without a numerator.
-      const rank = st.protection && st.protection.foundingRank;
-      const cohort = rank
-        ? "· founding member #" + rank + " · rate locked 12 months"
-        : st.caps.showCohortCount
-          ? "· founding cohort " + st.caps.walletsJoined + "/" + st.caps.foundingWallets
-          : "· founding rate · limited to the first " + st.caps.foundingWallets + " wallets";
-      $("cohortLine").textContent = cohort + wl + mine;
-    }
-    // Watch mode never shows the execution-mode badge: nothing can execute for a watched wallet,
-    // and "SIMULATED" next to a live quote tars real pricing as fake.
-    if (st && st.guards) setModePill(watching ? null : st.guards.executionMode);
+    // Execution-mode badge: institutional skin only (desks need the lane). The retail card carries
+    // its own one-line honesty label on a simulated lane; a nav badge shouting SIMULATED next to a
+    // live quote tars real pricing as fake. Watch mode never shows it: nothing can execute there.
+    if (INST && st && st.guards) setModePill(watching ? null : st.guards.executionMode);
     $("hero").style.display = "none"; // connected: the app gets denser, the pitch gets out of the way
     render(pos.ok ? pos.positions : [], st.ok ? st : null);
     renderPayouts(st.ok ? st : null);
@@ -1483,7 +1469,7 @@ const runPreview = async () => {
     if (!j.ok) { $("pvOut").innerHTML = '<div class="chip bad">' + esc(humanChip(j.message || j.error)) + '</div>'; return; }
     // Same terms grid as the real position card — the preview should look like the product.
     $("pvOut").innerHTML =
-      termsGrid(j, j.founding && !INST ? ' <span class="badge founding">FOUNDING RATE</span>' : "") +
+      termsGrid(j, "") +
       carryLine(j) +
       whyLine +
       thinNote(j.creditUsdc, j.protectedUsd) +

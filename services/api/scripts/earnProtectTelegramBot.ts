@@ -170,13 +170,13 @@ const handleMessage = async (chats: ChatStore, chatId: string | number, text: st
     }
     const payouts = (st.payouts as Array<{ amountUsdc: number; status: string }>) ?? [];
     const paid = payouts.filter((p) => p.status === "paid" || p.status === "confirmed").reduce((s, p) => s + p.amountUsdc, 0);
-    const prot = st.protection as { on?: boolean; founding?: boolean } | undefined;
+    const prot = st.protection as { on?: boolean } | undefined;
     await send(
       chatId,
       [
         "🛡 <b>Earn &amp; Protect</b> · <i>status</i>",
         "",
-        `Protection: <b>${prot?.on ? "ON — re-arms every cycle" : "off"}</b>${prot?.founding ? " · 🏅 founding rate" : ""}`,
+        `Protection: <b>${prot?.on ? "ON — re-arms every cycle" : "off"}</b>`,
         `Credits paid to date: <b>$${paid.toFixed(2)}</b>`,
         "",
         "<i>Use /positions to toggle.</i>"

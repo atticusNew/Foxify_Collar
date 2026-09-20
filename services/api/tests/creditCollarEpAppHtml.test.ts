@@ -14,10 +14,12 @@ import { buildEpAppHtml } from "../scripts/earnProtectWebAppHtml";
 const web = buildEpAppHtml("web");
 const mini = buildEpAppHtml("miniapp");
 
-test("simulation lane: the one quiet persistent honesty label is present verbatim", () => {
+test("preview lane: the one quiet persistent honesty label is present verbatim", () => {
   for (const html of [web, mini]) {
-    assert.ok(html.includes("simulation · live pricing"), "honesty label must be present");
+    assert.ok(html.includes("preview · live pricing"), "honesty label must be present");
+    assert.ok(!html.includes("simulation · live pricing"), "the word 'simulation' is retired from the retail label");
     assert.ok(html.includes('class="simlabel"'), "label style hook must exist");
+    assert.ok(html.includes("simulated hedge \\u00b7 live pricing") && html.includes("state.simulated === true && !INST"), "an own-address wrap on a simulated lane carries one honesty line, never the lane's name");
   }
 });
 
@@ -56,7 +58,8 @@ test("design system: credit hero, price rail, coach bubble, conversion CTA, comp
     assert.ok(html.includes("rail-track") && html.includes("rail-ends"), "floor–price–cap rail");
     assert.ok(html.includes("rail-tick") && html.includes("tfloor") && html.includes("tcap"), "floor/cap end ticks");
     assert.ok(html.includes("rail-pxval") && html.includes("<em>live</em>"), "live tag on the rail marker");
-    assert.ok(html.includes("Try it · nothing opens"), "one-time coach bubble");
+    assert.ok(html.includes('class="teaser"') && html.includes("preview, nothing opens"), "pre-toggle teaser on the landing card (first visit only)");
+    assert.ok(!html.includes("coach-x") && !html.includes('class="coach"'), "the coach bubble is retired for the teaser line");
     assert.ok(html.includes("livedot"), "live-data dot on the card eyebrow");
     assert.ok(html.includes("positionTips"), "tooltips are pre-positioned inside the viewport");
     assert.ok(html.includes("justify-content:space-between"), "vesting line: static text left, amount pinned right");
@@ -171,6 +174,21 @@ test("tenor + carry + fee: the credit label follows the tenor, funding is instit
     assert.ok(html.includes("the published minimum at this size"), "the minimum rule is named when it binds");
     assert.ok(html.includes("our cut is waived"), "the waiver is named when it applies");
     assert.ok(html.includes("const termsGrid"), "one terms grid for every quote surface");
+  }
+});
+
+test("retail first: no cohort, no mode badge, no receipt table, no raw engine strings on the retail surface", () => {
+  for (const html of [web, mini]) {
+    assert.ok(!/founding|cohort|waitlist/i.test(html), "the founding cohort / waitlist gates are gone from the client");
+    assert.ok(!html.includes('id="cohortLine"') && !html.includes('id="rateNote"'), "no cohort line, no rate note");
+    assert.ok(html.includes("if (INST && st && st.guards) setModePill("), "the execution-mode pill is institutional-only");
+    assert.ok(html.includes("if (INST && isWrapCoin && w && w.legs"), "the hedge receipt table (instruments, order refs) is institutional-only");
+    assert.ok(!html.includes('title="\' + esc(w.failReason)') && !html.includes("esc(tooltip)") && !html.includes('$("connectMsg").title'), "no raw engine string rides a title attribute");
+    assert.ok(html.includes("if (!INST) return s && !/^[a-z_]+$/.test(s) ? s : FALLBACK_CHIP;"), "retail chips show the server's retail sentence verbatim");
+    assert.ok(html.includes("const paysLabel") && html.includes('"pays " + DAY_NAMES['), "a weekly cycle says 'pays Friday', not a 100-hour countdown");
+    assert.ok(html.includes("w.coverageNote || (w.hedge && w.hedge.sizeNote)"), "coverage note read from the lifted retail field first");
+    assert.ok(html.includes(".foot a,.foot span{white-space:nowrap}"), "footer links never break mid-phrase");
+    assert.ok(html.includes(".nav-in{height:48px;padding:0 14px;flex-wrap:nowrap"), "the mobile header holds one line");
   }
 });
 

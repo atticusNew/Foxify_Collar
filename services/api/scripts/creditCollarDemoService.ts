@@ -98,13 +98,11 @@ import {
 import {
   applyTake,
   minTakeUsdcFor,
-  assessCohort,
   assessStrikeConcentration,
   deriveCaps,
   parseCapsInputsFromEnv,
   partialWrapSizing,
   registerWallet,
-  takeRateFor,
   type StrikeExposure
 } from "../src/singleSide/twoSided/creditCollar/capsConfig";
 import {
@@ -129,7 +127,8 @@ import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, record
 import { parseLeaderboardTop, parseShowcaseOverride, type ShowcaseWallet } from "../src/singleSide/twoSided/creditCollar/epShowcase";
 import { actionCleared, closeAllowed, verifyMessageText, verifyWalletSignature } from "../src/singleSide/twoSided/creditCollar/epVerify";
 import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
-import { EP_PUBLIC_DASHBOARD_HTML, EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
+import { EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
+import { retailRedact } from "../src/singleSide/twoSided/creditCollar/retailView";
 import { EP_VIDEO_PAGE_HTML, parseByteRange } from "./epVideoPageHtml";
 import { Pool } from "pg";
 import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
@@ -200,6 +199,10 @@ const internalAccounts = parseInternalAccounts(process.env.EP_INTERNAL_ACCOUNTS)
 // values), validated against LIVE open BTC positions, cached, and — critically — action-guarded:
 // a showcased address can be WATCHED by anyone but never wrapped/closed/toggled by anyone.
 const SHOWCASE_TTL_MS = 30 * 60_000;
+// Size band for leaderboard-sourced showcase positions (curated EP_SHOWCASE_ADDRESSES bypass it).
+const SHOWCASE_MIN_USD = num(process.env.EP_SHOWCASE_MIN_USD, 2_000);
+const SHOWCASE_MAX_USD = num(process.env.EP_SHOWCASE_MAX_USD, 500_000);
+const SHOWCASE_SCAN = Math.max(3, Math.min(200, num(process.env.EP_SHOWCASE_SCAN, 60)));
 let showcaseCache: { atMs: number; wallets: ShowcaseWallet[] } = { atMs: 0, wallets: [] };
 let showcaseRefreshing = false;
 const showcaseSet = new Set<string>(); // lowercase addresses currently on display
@@ -208,21 +211,30 @@ const refreshShowcase = async (): Promise<void> => {
   if (showcaseRefreshing) return;
   showcaseRefreshing = true;
   try {
-    let candidates = parseShowcaseOverride(process.env.EP_SHOWCASE_ADDRESSES);
+    const curated = parseShowcaseOverride(process.env.EP_SHOWCASE_ADDRESSES);
+    let candidates = curated;
     if (candidates.length === 0) {
       const res = await fetch("https://stats-data.hyperliquid.xyz/Mainnet/leaderboard");
-      if (res.ok) candidates = parseLeaderboardTop(await res.text(), 25).map((c) => c.address);
+      if (res.ok) candidates = parseLeaderboardTop(await res.text(), SHOWCASE_SCAN).map((c) => c.address);
     }
-    const wallets: ShowcaseWallet[] = [];
+    // Relatable first: a retail visitor should land on a position that looks like theirs, not a
+    // nine-figure whale. Leaderboard candidates inside the size band win; out-of-band positions
+    // are kept as the fallback so the landing never goes dark. Curated addresses skip the band.
+    const inBand: ShowcaseWallet[] = [];
+    const outOfBand: ShowcaseWallet[] = [];
     for (const addr of candidates) {
-      if (wallets.length >= 3) break;
+      if (inBand.length >= 3) break;
       try {
         const pos = await readHlPosition(addr);
-        if (pos) wallets.push({ address: addr, side: pos.side, szBase: pos.szBase, notionalUsdc: pos.notionalUsdc });
+        if (!pos) continue;
+        const w = { address: addr, side: pos.side, szBase: pos.szBase, notionalUsdc: pos.notionalUsdc };
+        if (curated.length > 0 || (pos.notionalUsdc >= SHOWCASE_MIN_USD && pos.notionalUsdc <= SHOWCASE_MAX_USD)) inBand.push(w);
+        else if (outOfBand.length < 3) outOfBand.push(w);
       } catch {
         /* unreadable candidate — skip */
       }
     }
+    const wallets = inBand.length > 0 ? inBand : outOfBand;
     // Empty result keeps the PREVIOUS set (serve stale over serving nothing) unless we never had one.
     if (wallets.length > 0 || showcaseCache.wallets.length === 0) {
       showcaseCache = { atMs: Date.now(), wallets };
@@ -264,14 +276,18 @@ const tosVersion = process.env.EP_TOS_VERSION ?? "2026-08-draft";
 const tosRequired = String(process.env.EP_TOS_REQUIRED ?? "false").toLowerCase() === "true";
 // Public-demo hardening: actions (wrap/close/protection) require a one-time wallet signature
 // that doubles as SIGNED ToS acceptance. Viewing never requires anything.
-const requireActionSig = String(process.env.EP_REQUIRE_ACTION_SIG ?? "false").toLowerCase() === "true";
+// Forced ON whenever the lane is not paper: real hedge capital never moves on an unsigned action.
+const requireActionSig = String(process.env.EP_REQUIRE_ACTION_SIG ?? "false").toLowerCase() === "true" || guards.executionMode !== "paper";
 // Close gate (default ON, zero friction): early close needs the control token issued to the
 // client that opened protection — or a signer-verified wallet, or the admin. EP_CLOSE_GATE=false disarms.
 const closeGate = String(process.env.EP_CLOSE_GATE ?? "true").toLowerCase() === "true";
-// Cohort count display: OFF by default — clients show the scarcity line ("first N wallets")
-// without the live numerator until the fill reads as momentum. The real count stays in the
-// payload (never faked, just not headlined); flip EP_SHOW_COHORT_COUNT=true to display it.
-const showCohortCount = String(process.env.EP_SHOW_COHORT_COUNT ?? "false").toLowerCase() === "true";
+// Retail skin (default): every non-admin JSON response is passed through the retail view —
+// operator fields dropped, refusals rewritten to retail sentences (retailView.ts). The
+// institutional skin (EP_SKIN=institutional) keeps the full payload for counterparties.
+const RETAIL_SKIN = process.env.EP_SKIN !== "institutional";
+// One published take for every wallet (the founding cohort / waitlist gates from the wallet-
+// collection demo are retired: the embedded product has no cohort, only a rate).
+const takeRate = () => ({ ratePct: capsInputs.takeRatePct, founding: false });
 // The showcase set is core surface now (the retail landing boots into it; the institutional
 // skin's reference-position view reads it too) — no seasonal EP_DEMO_AIDS flag anymore.
 const setProtection = async (account: string, on: boolean): Promise<void> => {
@@ -493,21 +509,9 @@ const doWrap = async (
     return { status: 409, body: { ok: false, error: "no_position", message: `no open ${coin} position on ${account}` } };
   }
 
-  // Formula caps at this spot (decision 4) + founding cohort / waitlist (50 wallets).
+  // Formula caps at this spot (decision 4). No cohort gate: any readable position may wrap.
   const { guards: guardsEff, derived } = effectiveGuards(position.markPx);
   const registry = await stores.loadRegistry();
-  const cohort = assessCohort(registry, account, derived.maxWallets);
-  if (!cohort.ok) {
-    // Cohort full: enroll first-come on the waitlist (idempotent) and say WHERE they stand.
-    const waitlist = await stores.loadWaitlist();
-    let pos = waitlist.findIndex((w) => w.account.toLowerCase() === account.toLowerCase());
-    if (pos < 0) {
-      waitlist.push({ account: account.toLowerCase(), joinedAtMs: nowMs });
-      await stores.saveWaitlist(waitlist);
-      pos = waitlist.length - 1;
-    }
-    return { status: 409, body: { ok: false, error: "waitlisted", message: `${cohort.reason} — you're #${pos + 1} in line; capacity grows with capital`, waitlistPosition: pos + 1 } };
-  }
 
   // Partial wraps (decision 6): wrap min(position, remaining per-wallet cap), floored to whole
   // lots — an oversized position is covered partially with honest copy, never refused.
@@ -602,9 +606,8 @@ const doWrap = async (
   }
 
   // Spread take (decision 3): the trader is quoted and paid the NET credit; the split is recorded
-  // and published honestly. Founding wallets keep their locked rate for 12 months.
-  const joinedAtMs = cohort.joinedAtMs ?? nowMs; // a new wallet joins the cohort with THIS wrap
-  const rate = takeRateFor(capsInputs, joinedAtMs, nowMs);
+  // and published honestly — one rate for every wallet.
+  const rate = takeRate();
   const q = {
     legs: {
       putStrike: listed.putStrike,
@@ -890,7 +893,7 @@ const buildState = async (account?: string, all = false) => {
   // client's wrap). ?all=1 = the whole book for the ops view.
   const wraps = all ? allWraps : allWraps.filter((r) => r.account.toLowerCase() === (acct ?? "").toLowerCase());
   const open = allWraps.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
-  const [ledger, prefs, registry, waitlist, tosReg] = await Promise.all([stores.loadLedger(), stores.loadPrefs(), stores.loadRegistry(), stores.loadWaitlist(), stores.loadTos()]);
+  const [ledger, prefs, tosReg] = await Promise.all([stores.loadLedger(), stores.loadPrefs(), stores.loadTos()]);
   const paidStatuses = new Set(["paid", "confirmed"]);
   const refSpot = position?.markPx ?? open.find((r) => r.quote)?.quote?.spot ?? 0;
   const derived = deriveCaps(capsInputs, refSpot);
@@ -915,13 +918,11 @@ const buildState = async (account?: string, all = false) => {
       bookCapUsdc: derived.bookCapUsdc,
       perWalletCapUsdc: derived.perWalletCapUsdc,
       perStrikeCapPct: derived.perStrikeCapPct,
-      foundingWallets: capsInputs.foundingWallets,
-      walletsJoined: Object.keys(registry).length,
-      waitlistLength: waitlist.length,
-      takeRatePct: capsInputs.takeRatePct,
-      foundingTakeRatePct: capsInputs.foundingTakeRatePct,
-      showCohortCount
+      takeRatePct: capsInputs.takeRatePct
     },
+    // The one honesty flag a retail card needs: are venue orders real on this lane? (The lane's
+    // name itself is operator information.)
+    simulated: guards.executionMode !== "okx_live",
     account: acct,
     coin,
     // Server truth for WATCH mode: a showcased address is watching no matter how it was entered
@@ -947,17 +948,7 @@ const buildState = async (account?: string, all = false) => {
     protection: {
       autoRenew,
       on: acct != null ? prefs[acct.toLowerCase()]?.on === true : false,
-      accountsOn: Object.values(prefs).filter((p) => p.on).length,
-      founding: acct != null ? registry[acct.toLowerCase()] != null : false,
-      // Join order within the cohort ("founding member #N") — personal, shown regardless of the
-      // public count flag: #1 is a badge, not a fill gauge.
-      foundingRank: (() => {
-        const key = acct?.toLowerCase();
-        const mine = key != null ? registry[key] : undefined;
-        if (key == null || mine == null) return null;
-        return 1 + Object.entries(registry).filter(([k, v]) => v.joinedAtMs < mine.joinedAtMs || (v.joinedAtMs === mine.joinedAtMs && k < key)).length;
-      })(),
-      waitlistPosition: acct != null ? (() => { const i = waitlist.findIndex((w) => w.account === acct.toLowerCase()); return i < 0 ? null : i + 1; })() : null
+      accountsOn: Object.values(prefs).filter((p) => p.on).length
     },
     // Gate status so clients render the right prompt (checkbox vs signature) without guessing.
     gates: {
@@ -1753,7 +1744,7 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Headers": "Content-Type, Idempotency-Key, X-Admin-Token, Authorization"
 };
 
-const sendJson = (res: ServerResponse, status: number, body: unknown) => {
+const sendJsonRaw = (res: ServerResponse, status: number, body: unknown) => {
   res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
   res.end(JSON.stringify(body, null, 2));
 };
@@ -1775,6 +1766,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   const route = url.pathname.replace(/^\/demo\/api\//, "/api/");
   const ip = clientIp(req);
   const isAdmin = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
+  // Retail view: non-admin callers on the retail skin get the redacted, retail-worded payload.
+  const retail = RETAIL_SKIN && !isAdmin;
+  const sendJson = (r: ServerResponse, status: number, body: unknown) => sendJsonRaw(r, status, retail ? retailRedact(body) : body);
   try {
     if (req.method === "OPTIONS") {
       res.writeHead(204, CORS_HEADERS);
@@ -1895,15 +1889,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       sendHtml(res, EP_TOS_HTML.replace(/__TOS_VERSION__/g, tosVersion));
       return;
     }
-    if (req.method === "GET" && url.pathname === "/public") {
-      recordPageLoad(funnelState, "public", Date.now());
-      funnelDirty = true;
-      sendHtml(res, EP_PUBLIC_DASHBOARD_HTML);
-      return;
-    }
 
     // ── Rate limits: reads generous, actions tight; admin exempt ──
-    const isAction = req.method === "POST" && /^\/api\/(wrap|close|protection|tos\/accept)$/.test(route);
+    const isAction = req.method === "POST" && /^\/api\/(wrap|close|release|protection|tos\/accept|verify)$/.test(route);
     const isRead = req.method === "GET" && route.startsWith("/api/");
     if (!isAdmin && ((isAction && !actionLimiter.allow(ip, Date.now())) || (isRead && !readLimiter.allow(ip, Date.now())))) {
       sendJson(res, 429, { ok: false, error: "rate_limited", message: "too many requests — slow down" });
@@ -2028,50 +2016,6 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
 
-    // ── Public live-book stats (aggregates only — never per-user data) ──
-    if (req.method === "GET" && route === "/api/stats") {
-      const [records, ledger, registry] = await Promise.all([stores.loadWraps(), stores.loadLedger(), stores.loadRegistry()]);
-      const open = records.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
-      const paid = ledger.filter((e) => e.status === "paid" || e.status === "confirmed");
-      const spotRef = open.find((r) => r.quote)?.quote?.spot ?? records.slice().reverse().find((r) => r.quote)?.quote?.spot ?? 0;
-      const derived = deriveCaps(capsInputs, spotRef);
-      const priced = records.filter((r) => r.quote != null && (r.hedge?.contracts ?? 0) > 0);
-      sendJson(res, 200, {
-        ok: true,
-        executionMode: guards.executionMode,
-        wraps: {
-          total: priced.length,
-          active: open.length,
-          expiries: records.filter((r) => r.status === "concluded" && r.concludedAtMs != null && r.vesting != null && r.concludedAtMs >= r.vesting.endMs).length,
-          knockouts: records.filter((r) => r.status === "knocked_out").length,
-          earlyCloses: records.filter((r) => r.status === "concluded" && r.concludedAtMs != null && r.vesting != null && r.concludedAtMs < r.vesting.endMs).length,
-          // plain collar: caps touched (release opportunities), caps released, cycles that settled with a balance owed
-          capTouched: records.filter((r) => r.capTouch).length,
-          released: records.filter((r) => r.release).length,
-          settledOwing: records.filter((r) => r.owed).length
-        },
-        capMode,
-        notional: {
-          openUsdc: round2(open.reduce((s, r) => s + wrapExposureUsdc(r), 0)),
-          lifetimeWrappedUsdc: round2(priced.reduce((s, r) => s + wrapExposureUsdc(r), 0))
-        },
-        credits: {
-          paidUsdc: round2(paid.reduce((s, e) => s + e.amountUsdc, 0)),
-          paidCount: paid.length
-        },
-        capacity: {
-          bookCapUsdc: derived.bookCapUsdc,
-          utilizationPct: derived.bookCapUsdc > 0 ? +((open.reduce((s, r) => s + wrapExposureUsdc(r), 0) / derived.bookCapUsdc) * 100).toFixed(1) : 0,
-          foundingWallets: capsInputs.foundingWallets,
-          walletsJoined: Object.keys(registry).length,
-          waitlistLength: (await stores.loadWaitlist()).length,
-          showCohortCount
-        },
-        generatedAtIso: new Date().toISOString()
-      });
-      return;
-    }
-
     // ── Trader API (account-scoped) ──
     if (req.method === "GET" && route === "/api/state") {
       const wantAll = url.searchParams.get("all") === "1";
@@ -2168,8 +2112,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
         return;
       }
-      const registry = await stores.loadRegistry();
-      const rate = takeRateFor(capsInputs, registry[acct.account.toLowerCase()]?.joinedAtMs ?? Date.now(), Date.now());
+      const rate = takeRate();
       const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdcFor(capsInputs, sizing.coveredNotionalUsdc));
       if (!(split.traderCreditUsdc > 0)) {
         sendJson(res, 409, { ok: false, error: "credit_below_take", message: `the market funded $${probe.creditUsdc}, under the minimum take` });
@@ -2262,8 +2205,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
         return;
       }
-      // A fresh wallet joining now gets the founding rate while the cohort has room — mirror /api/quote.
-      const rate = takeRateFor(capsInputs, Date.now(), Date.now());
+      const rate = takeRate();
       const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdcFor(capsInputs, sizing.coveredNotionalUsdc));
       if (!(split.traderCreditUsdc > 0)) {
         sendJson(res, 409, { ok: false, error: "credit_below_take", message: `the market funded $${probe.creditUsdc}, under the minimum take` });
@@ -2682,14 +2624,15 @@ server.listen(port, () => {
     console.error(`[demo] mode ${guards.executionMode.toUpperCase()} · kill switch ${guards.enabled ? "ARMED" : "OFF"} · account ${hlAccount() ?? "UNSET (set DEMO_HL_ADDRESS)"}`);
     console.error(
       `[demo] caps (formulas): capital $${capsInputs.subAccountCapitalUsdc} × ${(1 - capsInputs.headroomPct) * 100}% usable ÷ ${(capsInputs.marginPerWrapRate * 100).toFixed(0)}% margin ⟹ book cap $${refCaps.bookCapUsdc}` +
-        ` · per-wallet $${round2(refCaps.bookCapUsdc / capsInputs.targetWallets)} (floor 1 lot) · per-strike ≤${(capsInputs.perStrikeCapPct * 100).toFixed(0)}% · cohort ${capsInputs.foundingWallets} wallets` +
-        ` · take ${(capsInputs.takeRatePct * 100).toFixed(0)}%/${(capsInputs.foundingTakeRatePct * 100).toFixed(0)}% founding, $0 under $${capsInputs.deMinimisUsdc.toFixed(2)}`
+        ` · per-wallet $${round2(refCaps.bookCapUsdc / capsInputs.targetWallets)} (floor 1 lot) · per-strike ≤${(capsInputs.perStrikeCapPct * 100).toFixed(0)}%` +
+        ` · take ${(capsInputs.takeRatePct * 100).toFixed(0)}%, $0 under $${capsInputs.deMinimisUsdc.toFixed(2)}`
     );
     console.error(`[demo] admin: ${adminAuth.token ? "token auth ON" : adminAuth.enabled ? "DEV MODE (no token)" : "DISABLED — set EP_ADMIN_TOKEN"} · rate limits: reads ${num(process.env.EP_RATE_READS_PER_MIN, 120)}/min, actions ${num(process.env.EP_RATE_ACTIONS_PER_MIN, 12)}/min per IP`);
     console.error(
       `[demo] launch gates: geofence ${geofence.enabled ? `ON (blocked: ${geofence.blockedCountries.join(",")}; unknown ⟹ ${geofence.failOpen ? "allow" : "REFUSE"})` : "off (EP_GEOFENCE=true to arm)"}` +
         ` · ToS ${tosRequired ? `REQUIRED v${tosVersion}` : `off (EP_TOS_REQUIRED=true to arm; v${tosVersion})`}` +
-        ` · action signature ${requireActionSig ? "REQUIRED (owner-only actions)" : "off (EP_REQUIRE_ACTION_SIG=true to arm)"} · public dashboard /public`
+        ` · action signature ${requireActionSig ? `REQUIRED (owner-only actions${guards.executionMode !== "paper" ? "; forced on: lane is not paper" : ""})` : "off (EP_REQUIRE_ACTION_SIG=true to arm)"}` +
+        ` · skin ${RETAIL_SKIN ? "RETAIL (non-admin JSON redacted)" : "INSTITUTIONAL (full payload)"}`
     );
     if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
     console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m, stagger window ${Math.round(renewStaggerMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);

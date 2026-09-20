@@ -174,7 +174,9 @@ test("bot: keyboard — a Mini App URL adds the launch row with the account hand
 });
 
 test("bot: refusal copy stays human", () => {
-  assert.equal(humanRefusal("wrap refused: the founding cohort (50 wallets) is full — you're on the waitlist"), "Founding cohort full · you're on the waitlist");
+  // The founding-cohort / waitlist gate is retired (no cohort in the embedded product): its old
+  // reason string falls to the generic honest line rather than inventing a cohort.
+  assert.equal(humanRefusal("wrap refused: the founding cohort (50 wallets) is full — you're on the waitlist"), "Couldn't complete · nothing opened");
   assert.equal(humanRefusal("listed_credit_nonpositive — call bid under put ask"), "No honest credit right now · nothing opened");
   // The engine's REAL strike-concentration reason (regression: it does not contain "concentration")
   assert.equal(

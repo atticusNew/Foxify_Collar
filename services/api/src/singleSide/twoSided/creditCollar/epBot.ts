@@ -79,7 +79,6 @@ export const humanRefusal = (raw: string | null | undefined): string => {
   if (/listed_credit_nonpositive|listed_book_empty|credit_infeasible|not_priceable|no executable/i.test(s)) return "No honest credit right now · nothing opened";
   if (/aborted_no_fill|aborted_unwound|pair unwound|did not fill|hedge_not_filled/i.test(s)) return "Couldn't fill at our quote · nothing opened";
   if (/minimum one lot|0\.01 BTC lots|below_min_lot/i.test(s)) return "Below the 0.01 BTC minimum";
-  if (/waitlist|founding cohort/i.test(s)) return "Founding cohort full · you're on the waitlist";
   if (/capacity.*in use|wallet_cap/i.test(s)) return "Your capacity is in use this cycle";
   if (/strike_concentration|already carries|unwindable|strike.*concentration/i.test(s)) return "That strike is crowded · try again shortly";
   if (/quota reached/i.test(s)) return "Daily limit reached";
@@ -91,7 +90,6 @@ export const humanRefusal = (raw: string | null | undefined): string => {
   if (/close_locked/i.test(s)) return "Only the device that turned protection on can turn it off — it pays out on its own either way";
   if (/close_unwind_failed|couldn't close the hedge cleanly/i.test(s)) return "Couldn't close cleanly right now — you're still protected; try again shortly";
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first — tap the button above";
-  if (/waitlisted|in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full — you're #" + m[1] + " in line" : "Founding cohort full — you're on the waitlist"; }
   if (/geo_blocked|not available in your region|verify your location/i.test(s)) return "Not available in your region";
   if (/kill switch|demo disabled|paused/i.test(s)) return "Protection paused";
   return "Couldn't complete · nothing opened";
