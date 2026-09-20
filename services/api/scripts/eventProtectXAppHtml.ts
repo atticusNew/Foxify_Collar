@@ -296,12 +296,13 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       $('refreshed').textContent=age<2?'quotes refreshed just now':'quotes refreshed '+age+'s ago';
     }
   }
+  /* A weekday alone reads as "this Sunday"; past 24h out the date rides along so next week's game is never mistaken for today's. */
   function fmtEt(iso){
     try{
-      var dt=new Date(iso);
-      var day=dt.toLocaleDateString('en-US',{weekday:'short',timeZone:'America/New_York'});
+      var dt=new Date(iso),far=dt.getTime()-Date.now()>86400000;
+      var day=dt.toLocaleDateString('en-US',far?{weekday:'short',month:'short',day:'numeric',timeZone:'America/New_York'}:{weekday:'short',timeZone:'America/New_York'}).replace(',','');
       var tm=dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','');
-      return day+' '+tm+' ET';
+      return day+(far?' · ':' ')+tm+' ET';
     }catch(e){return 'game time'}
   }
 
@@ -542,6 +543,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
 const REFUSAL_LABELS: Record<string, string> = {
   credit_nonpositive: "the venues could not fund a positive credit",
+  protection_too_rich: "the cheapest route was still rich insurance (above the EV-cost ceiling)",
   market_too_close_to_start: "the game was too close to starting",
   mark_out_of_range: "the odds were outside the quotable band",
   pm_book_empty: "no executable depth on the Polymarket book",
@@ -604,6 +606,7 @@ export function renderFunnelHtml(
       <td>${escapeHtml(dayLabel(d.day))}</td>
       <td>${d.byPage.app ?? 0}</td>
       <td>${d.byPage.receipts ?? 0}</td>
+      <td>${d.byPage.embed ?? 0}</td>
       <td>${a.row_tap ?? 0}</td>
       <td class="hi">${a.protect_on ?? 0}</td>
       <td>${a.protect_undo ?? 0}</td>
@@ -614,6 +617,7 @@ export function renderFunnelHtml(
   const totals = {
     app: s.pageLoads7d.reduce((n, d) => n + (d.byPage.app ?? 0), 0),
     receipts: s.pageLoads7d.reduce((n, d) => n + (d.byPage.receipts ?? 0), 0),
+    embed: s.pageLoads7d.reduce((n, d) => n + (d.byPage.embed ?? 0), 0),
     taps: s.actions7d.reduce((n, d) => n + (d.byAction.row_tap ?? 0), 0),
     protects: s.actions7d.reduce((n, d) => n + (d.byAction.protect_on ?? 0), 0),
     undos: s.actions7d.reduce((n, d) => n + (d.byAction.protect_undo ?? 0), 0),
@@ -743,10 +747,10 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
   <div class="card" style="margin-top:12px">
     <h2>Last 7 days, UTC</h2>
     <div class="tablewrap"><table>
-      <thead><tr><th>day</th><th>board loads</th><th>receipts loads</th><th>${escapeHtml(ACTION_LABELS.row_tap)}</th><th>${escapeHtml(ACTION_LABELS.protect_on)}</th><th>${escapeHtml(ACTION_LABELS.protect_undo)}</th><th>${escapeHtml(ACTION_LABELS.tier_pick)}</th><th>${escapeHtml(ACTION_LABELS.board_expand)}</th></tr></thead>
+      <thead><tr><th>day</th><th>board loads</th><th>receipts loads</th><th>embed loads</th><th>${escapeHtml(ACTION_LABELS.row_tap)}</th><th>${escapeHtml(ACTION_LABELS.protect_on)}</th><th>${escapeHtml(ACTION_LABELS.protect_undo)}</th><th>${escapeHtml(ACTION_LABELS.tier_pick)}</th><th>${escapeHtml(ACTION_LABELS.board_expand)}</th></tr></thead>
       <tbody>
         ${days.join("")}
-        <tr class="total"><td>7-day total</td><td>${totals.app}</td><td>${totals.receipts}</td><td>${totals.taps}</td><td>${totals.protects}</td><td>${totals.undos}</td><td>${totals.tierPicks}</td><td>${totals.expands}</td></tr>
+        <tr class="total"><td>7-day total</td><td>${totals.app}</td><td>${totals.receipts}</td><td>${totals.embed}</td><td>${totals.taps}</td><td>${totals.protects}</td><td>${totals.undos}</td><td>${totals.tierPicks}</td><td>${totals.expands}</td></tr>
       </tbody>
     </table></div>
   </div>
@@ -768,7 +772,7 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
     <div class="sub">Counters live at <span class="mono">${escapeHtml(meta.funnelPath)}</span> on this instance and are flushed once a minute. Without a persistent disk a redeploy starts a fresh window.</div>
     <div class="actions">
       <a href="/api/admin/funnel${escapeHtml(tokenQs)}">raw JSON</a>
-      <a href="/">live board</a>
+      <a href="/board">live board</a>
       <a href="/receipts">receipts</a>
       <button type="button" class="danger" id="reset">reset counters</button>
     </div>
@@ -888,7 +892,7 @@ footer b{color:var(--dim);font-weight:600}
   <div class="card">
     <h2>Honesty notes</h2>
     <div class="sub">${windowLine} The ledger lives on this instance's disk, so a redeploy starts a fresh window. Positions are simulated; every quote and refusal in these numbers came from live market prices at the moment it was made.</div>
-    <a class="back" href="/">back to the live board</a>
+    <a class="back" href="/board">back to the live board</a>
   </div>
   <footer>
     <b>Demonstration, not an offer.</b> Aggregates cover simulated protection quotes priced from live public market data. Nothing here is investment advice. <a href="${shadowUrl()}">See the shadow record</a>.

@@ -222,12 +222,12 @@ test("demo service: page loads count, beacons record, admin funnel is gated and 
     });
   try {
     // reach: the board page and the receipts page are counted when served
-    assert.equal((await fetch(`${base}/`)).status, 200);
-    assert.equal((await fetch(`${base}/`)).status, 200);
+    assert.equal((await fetch(`${base}/board`)).status, 200);
+    assert.equal((await fetch(`${base}/board`)).status, 200);
     assert.equal((await fetch(`${base}/receipts`)).status, 200);
 
     // the page carries the beacon and fires it on the one-tap interactions
-    const html = await (await fetch(`${base}/`)).text();
+    const html = await (await fetch(`${base}/board`)).text();
     assert.ok(html.includes("'/api/metrics'"), "page posts beacons to /api/metrics");
     assert.ok(html.includes("track('protect_on'"), "Protect toggle is tracked");
     assert.ok(html.includes("track('row_tap'"), "board taps are tracked");
@@ -337,6 +337,44 @@ test("demo service: /api/showcase is retail without the token and the operator's
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
+});
+
+test("applyEvCeiling: a fundable collar above the EV-cost ceiling becomes an honest refusal; the routes examined keep their verdicts", async () => {
+  const { applyEvCeiling, MAX_EV_COST_BPS } = await import("../scripts/eventProtectXDemoService");
+  assert.equal(MAX_EV_COST_BPS, 300, "default ceiling: 3% of expected value");
+  const quote = { ok: true as const, floorCents: 40, capCents: 88, creditCents: 420, contracts: 150 } as unknown as import("../src/eventCollar/crossVenue/types").CrossQuote;
+  const base = {
+    kind: "crypto" as const,
+    league: "crypto",
+    market: { ticker: "KXBTCD-TEST" } as unknown as import("../src/eventCollar/types").KalshiMarket,
+    pair: null,
+    sideName: "Bitcoin above $115,000",
+    eventTitle: "BTC above $115,000",
+    eventTimeIso: "2026-09-21T21:00:00.000Z",
+    parityNote: "own No side",
+    fingerprint: "crypto:KXBTCD-TEST",
+    markCents: 48,
+    position: { contracts: 150, entryCents: 45, entrySource: "real_print", entryTime: null },
+    quote,
+    route: "kalshi_self" as const,
+    evBps: 472,
+    routesChecked: [{ route: "kalshi_self" as const, ok: true, evCostBps: 472, creditCents: 420 }],
+    books: {},
+  };
+  const rich = applyEvCeiling(base);
+  assert.equal(rich.quote.ok, false);
+  assert.equal(!rich.quote.ok && rich.quote.code, "protection_too_rich");
+  assert.match(!rich.quote.ok ? rich.quote.detail : "", /4\.72% of expected value; the ceiling is 3\.00%/);
+  assert.equal(rich.route, null);
+  assert.equal(rich.evBps, null);
+  assert.deepEqual(rich.routesChecked, base.routesChecked, "operator sees the route was fundable, just rich");
+
+  const cheap = { ...base, evBps: 122 };
+  assert.strictEqual(applyEvCeiling(cheap), cheap, "under the ceiling: untouched, same object");
+  assert.strictEqual(applyEvCeiling({ ...base, evBps: 300 }).quote.ok, true, "at the ceiling: still quoted");
+  assert.strictEqual(applyEvCeiling(base, 0).quote.ok, true, "0 disables the ceiling");
+  const refusedAlready = { ...base, quote: { ok: false as const, code: "kalshi_book_empty" as const, detail: "no asks" }, route: null, evBps: null };
+  assert.strictEqual(applyEvCeiling(refusedAlready).quote, refusedAlready.quote, "a refusal stays the refusal it was");
 });
 
 test("protectContextFor: attributes the tier the holder locked, falls back to the row's default", async () => {

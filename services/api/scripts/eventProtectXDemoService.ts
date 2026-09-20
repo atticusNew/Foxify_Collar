@@ -33,6 +33,16 @@
  * the operator token (?token= or x-admin-token, EVENT_X_ADMIN_TOKEN), so dev
  * tools show a visitor exactly what the card shows.
  *
+ * EMBED DEMO IS THE FRONT DOOR: GET / (also /embed) is the layer inside a
+ * host's app: a neutral positions list (their brand: EVENT_X_EMBED_BRAND by
+ * default, `?brand=` honoured only on EVENT_X_BRAND_ALLOWLIST; `?skin=dark`)
+ * with our Protect button on every row; the sheet prices from the same scan
+ * and the row reshapes to fewer contracts plus cash. The board is GET /board.
+ * GET /partner
+ * (operator token) is the host's console: volume protected, credits paid to
+ * their users, cost of protection, own-book share, refusals, revenue share
+ * (EVENT_X_PARTNER_SHARE_PCT, default 50).
+ *
  * Funnel (mirrors the perp demo's admin funnel): page loads are counted when
  * served; board taps and Protect toggles arrive as tiny beacons on
  * POST /api/metrics carrying only an anonymous per-tab session id and the
@@ -46,6 +56,7 @@
  *      EVENT_X_TAKE_BPS (share of gross, default 1000) · EVENT_X_MIN_TAKE_BPS
  *      (minimum fee, bps of stake, default 25; 0 disables) · EVENT_X_DEFAULT_TIER
  *      (tight|balanced|wide, default balanced) · EVENT_X_LEDGER_PATH · EVENT_X_BOARD_ROWS
+ *      EVENT_X_MAX_EV_COST_BPS (ceiling on protection's EV cost, default 300; 0 = off)
  *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
  *      EVENT_X_FUNNEL_PATH · EVENT_X_ADMIN_TOKEN (or EVENT_X_DEV_NO_ADMIN=true)
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
@@ -93,6 +104,7 @@ import {
   type RouteCheck,
 } from "../src/eventCollar/crossVenue/types";
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
+import { renderEventEmbedHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
 
 const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
@@ -101,6 +113,21 @@ const MAX_MATCH_ATTEMPTS = 10;
 /** Scanner board caps: how many pairings get live-quoted per refresh. */
 const MAX_BOARD_ROWS = Number(process.env.EVENT_X_BOARD_ROWS || 6);
 const MAX_CRYPTO_ROWS = Number(process.env.EVENT_X_CRYPTO_ROWS || 2);
+/**
+ * Ceiling on what protection may cost, in bps of the position's expected value at the market's
+ * own odds. Above it the cheapest route is still rich insurance (a wide No-side spread, usually),
+ * and refusing beats quoting: the board and the shadow record stop being dominated by the worst
+ * product. 0 disables the ceiling.
+ */
+export const MAX_EV_COST_BPS = Number(process.env.EVENT_X_MAX_EV_COST_BPS ?? 300);
+/**
+ * EMBED DEMO knobs. `?brand=` on /embed is honoured only for names on the allowlist (fail-closed
+ * to "Your app"); the partner console's revenue-share line uses EVENT_X_PARTNER_SHARE_PCT.
+ */
+const BRAND_ALLOWLIST = process.env.EVENT_X_BRAND_ALLOWLIST || "";
+/** What the embed shell calls the host when the link carries no brand (the first screen for a cold visitor). */
+const EMBED_BRAND = process.env.EVENT_X_EMBED_BRAND || "Your app";
+const PARTNER_SHARE_PCT = Math.min(100, Math.max(0, Number(process.env.EVENT_X_PARTNER_SHARE_PCT ?? 50)));
 /** Kalshi crypto strike series admitted to the board (self-hedge route only). */
 const CRYPTO_SERIES = (process.env.EVENT_X_CRYPTO_SERIES || "KXBTCD,KXETHD")
   .split(",")
@@ -205,6 +232,9 @@ export interface BoardRow {
   /** when protection locks: game start (sports) or market close (crypto), ISO */
   eventTimeIso: string;
   markCents: number;
+  /** the simulated position behind the row: size and the real print it was entered at */
+  contracts: number;
+  entryCents: number;
   floorCents: number;
   capCents: number;
   creditCents: number;
@@ -531,6 +561,25 @@ async function quoteCryptoCandidate(series: string, sel: ShowcaseSelection, now:
   };
 }
 
+/**
+ * Apply the EV-cost ceiling to a quoted candidate. The routes examined keep their real verdicts
+ * (operator information: the collar was fundable, just rich); the holder-facing quote becomes an
+ * honest refusal with a code of its own so the receipts count it as a ceiling, not as no depth.
+ */
+export function applyEvCeiling(result: CandidateResult, maxEvBps: number = MAX_EV_COST_BPS): CandidateResult {
+  if (maxEvBps <= 0 || !result.quote.ok || result.evBps === null || result.evBps <= maxEvBps) return result;
+  return {
+    ...result,
+    quote: {
+      ok: false,
+      code: "protection_too_rich",
+      detail: `the cheapest route costs ${(result.evBps / 100).toFixed(2)}% of expected value; the ceiling is ${(maxEvBps / 100).toFixed(2)}%`,
+    },
+    route: null,
+    evBps: null,
+  };
+}
+
 /** One refresh's full result: ranked quotable rows plus the best honest refusal. */
 export interface ScanState {
   atIso: string;
@@ -621,7 +670,7 @@ async function buildScan(): Promise<ScanState> {
     if (!pair || !showcaseWindowOk(pair, now)) return true;
     let result: CandidateResult;
     try {
-      result = await quoteSportsCandidate(pair, cand.mark, now);
+      result = applyEvCeiling(await quoteSportsCandidate(pair, cand.mark, now));
     } catch {
       return !countFailure();
     }
@@ -668,7 +717,7 @@ async function buildScan(): Promise<ScanState> {
       attempts += 1;
       let result: CandidateResult;
       try {
-        result = await quoteCryptoCandidate(series, sel, now);
+        result = applyEvCeiling(await quoteCryptoCandidate(series, sel, now));
       } catch {
         fetchFailures += 1;
         if (fetchFailures >= FETCH_FAILURE_LIMIT) break crypto;
@@ -730,6 +779,8 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
       eventTitle: s.res.eventTitle,
       eventTimeIso: s.res.eventTimeIso,
       markCents: s.res.markCents,
+      contracts: s.res.position.contracts,
+      entryCents: s.res.position.entryCents,
       floorCents: q.floorCents,
       capCents: q.capCents,
       creditCents: q.creditCents,
@@ -948,13 +999,40 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       await handleMetrics(req, res);
       return;
     }
-    if (url.pathname.startsWith("/api/admin/") || url.pathname === "/admin/funnel") {
+    // EMBED IS THE FRONT DOOR: the first screen is the layer inside a partner's app. The board moved to /board.
+    if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/embed") {
+      recordPageLoad(funnelState, "embed", Date.now());
+      funnelDirty = true;
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(
+        renderEventEmbedHtml({
+          brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND),
+          skin: url.searchParams.get("skin") === "dark" ? "dark" : "light",
+        }),
+      );
+      return;
+    }
+    if (url.pathname.startsWith("/api/admin/") || url.pathname === "/admin/funnel" || url.pathname === "/partner") {
       if (!adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"))) {
         sendJson(res, 403, {
           ok: false,
           error: "admin_required",
           message: adminAuth.enabled ? "bad admin token" : "admin surfaces disabled — set EVENT_X_ADMIN_TOKEN",
         });
+        return;
+      }
+      if (url.pathname === "/partner" && req.method === "GET") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.end(
+          renderPartnerHtml({
+            atIso: new Date().toISOString(),
+            brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND),
+            ledger: summarizeCrossLedger(LEDGER_PATH),
+            funnel: eventFunnelSummary(funnelState, Date.now()),
+            sharePct: PARTNER_SHARE_PCT,
+            maxEvCostBps: MAX_EV_COST_BPS,
+          }),
+        );
         return;
       }
       if (url.pathname === "/admin/funnel" && req.method === "GET") {
@@ -1018,7 +1096,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       res.end(renderReceiptsHtml(summarizeCrossLedger(LEDGER_PATH)));
       return;
     }
-    if (url.pathname === "/" || url.pathname === "/index.html") {
+    if (url.pathname === "/board") {
       recordPageLoad(funnelState, "app", Date.now());
       funnelDirty = true;
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });

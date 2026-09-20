@@ -7,14 +7,14 @@
  * receipts pages. Server-rendered, no client JS.
  */
 
-import type { RuleBook, ShadowPosition, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
+import type { RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 
 /** Public URL of the interactive demo, for the cross-link. */
 function demoUrl(): string {
-  return process.env.EVENT_SHADOW_DEMO_URL || "https://event.earnandprotect.xyz";
+  return process.env.EVENT_SHADOW_DEMO_URL || "https://event.earnandprotect.xyz/board";
 }
 
 function escapeHtml(s: string): string {
@@ -61,6 +61,11 @@ function hedgeLine(h: NonNullable<ShadowPageInput["hedges"]>): string {
 const signedUsd = (c: number): string => (c < 0 ? `-${usd(-c)}` : usd(c));
 const bpsPct = (bps: number | null, digits = 2): string => (bps === null ? "–" : `${(bps / 100).toFixed(digits)}%`);
 const utcDay = (iso: string): string => iso.slice(0, 10);
+/** Public words for a hedge route: how it was hedged, not where (the venue is the operator's). */
+const ROUTE_WORDS: Record<string, string> = {
+  kalshi_self: "hedged on the market's own No side",
+  polymarket: "hedged cross-venue on the same game",
+};
 
 const SHADOW_CSS = `
 :root{
@@ -144,9 +149,36 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     .sort((a, b) => b[1] - a[1])
     .map(
       ([route, n]) =>
-        `<div class="row"><span>${route === "kalshi_self" ? "hedged on the market's own No side (Kalshi)" : "hedged cross-venue (Polymarket)"}</span><b>${n}</b></div>`,
+        `<div class="row"><span>${escapeHtml(ROUTE_WORDS[route] ?? route)}</span><b>${n}</b></div>`,
     )
     .join("");
+  const id = s.identity;
+  const identityLine =
+    id.settled === 0
+      ? "Nothing has settled yet; the identity is checked on every settlement."
+      : id.holds
+        ? `On ${id.settled} settled events the writer's P&L is ${signedUsd(id.writerPnlCents)} and the take booked is ${usd(id.takeBookedCents)}: a gap of ${signedUsd(id.gapCents)}${id.gapCents === 0 ? "" : " (hedge units round up, never down)"}. The hedge layer carried no outcome risk.`
+        : `On ${id.settled} settled events the writer's P&L is ${signedUsd(id.writerPnlCents)} against ${usd(id.takeBookedCents)} of take booked: a gap of ${signedUsd(id.gapCents)}, outside rounding. Something in the hedge did not cover; the operator report has the positions.`;
+  const segmentRows = (m: Record<string, ShadowSegment>, label: (k: string) => string): string =>
+    Object.entries(m)
+      .sort((a, b) => b[1].opened - a[1].opened)
+      .map(
+        ([k, r]) =>
+          `<tr><td>${escapeHtml(label(k))}</td><td>${r.opened}</td><td>${r.settled}</td>` +
+          `<td class="hi">${escapeHtml(bpsPct(r.quotedAvgEvBps))}</td>` +
+          `<td>${r.holderDeltaBpsOfStake === null ? "–" : escapeHtml(bpsPct(r.holderDeltaBpsOfStake))}</td>` +
+          `<td>${usd(r.creditsCents)}</td><td>${signedUsd(r.writerPnlCents)}</td></tr>`,
+      )
+      .join("");
+  const routeSeg = segmentRows(s.segments.byRoute, (k) => ROUTE_WORDS[k] ?? k);
+  const leagueSeg = segmentRows(s.segments.byLeague, (k) => k.toUpperCase());
+  const richest = Object.entries(s.segments.byLeague)
+    .filter(([, r]) => r.quotedAvgEvBps !== null)
+    .sort((a, b) => (b[1].quotedAvgEvBps ?? 0) - (a[1].quotedAvgEvBps ?? 0));
+  const segmentLine =
+    richest.length >= 2
+      ? `Protection is cheapest on ${richest[richest.length - 1][0].toUpperCase()} (${bpsPct(richest[richest.length - 1][1].quotedAvgEvBps)} of expected value quoted) and richest on ${richest[0][0].toUpperCase()} (${bpsPct(richest[0][1].quotedAvgEvBps)}); the record-wide average is weighted by how many of each the scanner found, not by what a holder would choose.`
+      : "";
   const windowLine = s.firstOpenedAt
     ? `Recording since ${escapeHtml(s.firstOpenedAt.slice(0, 16).replace("T", " "))} UTC. Append-only; positions are never edited, only opened and settled.`
     : "The book is empty; it fills as the scanner finds quotable events.";
@@ -208,6 +240,27 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       <div class="bignum"><div class="n ${w.settledPnlCents >= 0 ? "green" : ""}">${signedUsd(w.settledPnlCents)}</div><div class="l">writer P&amp;L, settled</div></div>
     </div>
     <div class="period">${escapeHtml(periodLine)}</div>
+  </div>
+  <div class="card">
+    <h2>The hedge-layer identity</h2>
+    <div class="sub" style="margin-bottom:8px">Leg for leg, the writer's realized P&amp;L must equal the published take: the hedge pays the floor, the cap slice pays the hedge, and nothing depends on who won. This is the number that says the layer carries no outcome risk.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n ${id.holds ? "green" : ""}">${signedUsd(id.writerPnlCents)}</div><div class="l">writer P&amp;L, settled</div></div>
+      <div class="bignum"><div class="n">${usd(id.takeBookedCents)}</div><div class="l">take booked</div></div>
+      <div class="bignum"><div class="n ${id.holds ? "green" : ""}">${signedUsd(id.gapCents)}</div><div class="l">gap${id.settled > 0 ? (id.holds ? " · holds" : " · check") : ""}</div></div>
+    </div>
+    <div class="read" style="margin-top:10px">${escapeHtml(identityLine)}</div>
+    <div class="row" style="margin-top:8px"><span>hedge payouts minus hedge cost</span><b>${signedUsd(id.hedgeNetCents)} <i>${id.hedgeNetCents >= 0 ? "the hedge funded itself" : "the hedge fell short"}</i></b></div>
+    <div class="row"><span>cap slices kept minus floors and credits paid</span><b>${signedUsd(id.holderLegsNetCents)}</b></div>
+  </div>
+  <div class="card">
+    <h2>Where protection is cheap and where it is rich</h2>
+    <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of the protection at the market's own odds; holder Δ is realized, protected minus naked, as a share of settled stake.</div>
+    <div class="tablewrap"><table>
+      <tr><th>slice</th><th>opened</th><th>settled</th><th>EV cost</th><th>holder Δ</th><th>credits</th><th>writer P&amp;L</th></tr>
+      ${routeSeg}${leagueSeg}
+    </table></div>
+    ${segmentLine ? `<div class="read">${escapeHtml(segmentLine)}</div>` : ""}
   </div>
   <div class="card">
     <h2>The writer's book</h2>

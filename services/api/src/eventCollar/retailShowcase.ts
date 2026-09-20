@@ -53,6 +53,7 @@ export type RetailQuoteResult = RetailQuote | RetailRefusal;
  */
 export const RETAIL_REFUSAL_COPY: Readonly<Record<string, { code: string; detail: string }>> = {
   credit_nonpositive: { code: "no_credit", detail: "The market can't fund a credit on this position right now." },
+  protection_too_rich: { code: "too_expensive", detail: "Protection is too expensive on this one right now." },
   market_too_close_to_start: { code: "too_close", detail: "This one starts too soon to protect." },
   mark_out_of_range: { code: "odds_out_of_range", detail: "The odds are outside the range we protect." },
   pm_book_empty: { code: "no_depth", detail: "Not enough depth to protect this size right now." },
@@ -137,6 +138,8 @@ export interface OperatorBoardRow {
   eventTitle: string;
   eventTimeIso: string;
   markCents: number;
+  contracts: number;
+  entryCents: number;
   floorCents: number;
   capCents: number;
   creditCents: number;
@@ -233,6 +236,8 @@ export const retailCrossPayload = (p: OperatorCrossPayload): RetailCrossPayload 
     eventTitle: r.eventTitle,
     eventTimeIso: r.eventTimeIso,
     markCents: r.markCents,
+    contracts: r.contracts,
+    entryCents: r.entryCents,
     floorCents: r.floorCents,
     capCents: r.capCents,
     creditCents: r.creditCents,

@@ -80,6 +80,7 @@ test("cross-venue app html: grades and tappable rows; no route anywhere on the p
   assert.ok(html.includes("sideName"), "full team names from the venue pairing");
   assert.ok(html.includes("guaranteed "), "protected banner states the locked range");
   assert.ok(html.includes('href="/receipts"'), "receipts page linked from the footer");
+  assert.ok(html.includes("far=dt.getTime()-Date.now()>86400000") && html.includes("month:'short',day:'numeric'"), "a game more than a day out shows its date, not just a weekday");
 });
 
 test("cross-venue app html: one board for games and crypto, honestly worded", () => {
