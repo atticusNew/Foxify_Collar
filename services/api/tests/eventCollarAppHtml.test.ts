@@ -22,7 +22,8 @@ test("event app html: outcomes-first, percent framing, one-tap grammar", () => {
   assert.ok(html.includes("credit paid Yes or No"), "credit framing is all-in");
   assert.ok(html.includes("one tap · protected instantly"), "one-tap grammar");
   assert.ok(html.includes('id="undo"'), "undo window after the tap");
-  assert.ok(html.includes("see the hedge"), "machinery behind one disclosure");
+  assert.ok(html.includes("see the terms"), "machinery behind one disclosure");
+  assert.ok(!html.includes("see the hedge"), "retail first: the drawer is about the holder's terms, not our hedge");
   assert.ok(html.includes("terms locked at your tap"));
 });
 
@@ -67,6 +68,16 @@ test("event app html: no em dashes in visible copy", () => {
 test("event app html: never claims live execution", () => {
   const html = renderEventAppHtml();
   assert.ok(!/live execution|orders placed live|we are live/i.test(html));
-  assert.ok(html.includes("simulated fills at live quotes"));
+  assert.ok(html.includes("simulated · terms quoted live"));
   assert.ok(html.includes("places no orders"));
+});
+
+test("event app html: retail first — no hedge legs, venue, fees or take on the page", () => {
+  const html = renderEventAppHtml();
+  for (const leak of ["q.legs", "instId", "hedge tenor", "venue fees", "takeCents", "takeBps", "published take", "OKX", "expiry aligned"]) {
+    assert.ok(!html.includes(leak), `"${leak}" stays on the operator side`);
+  }
+  assert.ok(html.includes("The credit you see is the credit you get."), "the fee is explained as already netted, once");
+  assert.ok(html.includes("with protection"), "protected outcome row mirrors the naked row");
+  assert.ok(html.includes("'<b>Not right now.</b> '+q.detail"), "refusals render the server's retail sentence");
 });

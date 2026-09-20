@@ -9,8 +9,10 @@
  *
  * The screen answers one question in total dollars: "your minimum payout $X,
  * up to $Y if Yes, includes a $Z credit paid Yes or No." Everything else
- * (per-contract cents, tickers, hedge legs, fees, take, tenor, the BRTI
- * settlement mechanics) lives behind one "see the hedge" disclosure.
+ * (per-contract cents, the ticker, the BRTI settlement mechanics) lives behind
+ * one "see the terms" disclosure. Retail first: the hedge legs, venue, fees and
+ * our take never reach this page (the server serves the retail /api/showcase
+ * shape, src/eventCollar/retailShowcase.ts).
  *
  * Design rules: one accent per screen state (green owns the offer, amber owns
  * refusals), sentence case except the honesty label, no em dashes in visible
@@ -31,9 +33,9 @@ export function renderEventAppHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
 <title>Earn &amp; Protect · events</title>
-<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit, hedged on live listed option books. Demonstration with live pricing from Kalshi and OKX." />
+<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit, priced live. Demonstration with live pricing." />
 <meta property="og:title" content="Earn &amp; Protect · events" />
-<meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, hedged on live listed option books. Demonstration, live venue pricing." />
+<meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, paid in cash. Demonstration, live pricing." />
 <meta property="og:type" content="website" />
 <style>
 :root{
@@ -172,7 +174,7 @@ footer b{color:var(--dim);font-weight:600}
       <div class="refusal" id="refusal"></div>
 
       <details class="hedge" id="hedge" style="display:none">
-        <summary>see the hedge</summary>
+        <summary>see the terms</summary>
         <div class="legs" id="legs"></div>
       </details>
 
@@ -186,11 +188,11 @@ footer b{color:var(--dim);font-weight:600}
     <details>
       <summary>How this works</summary>
       <ul>
-        <li><b>Real market, real hedge prices.</b> The event and its prices are live from Kalshi's public data. The protection terms are quoted from live listed OKX option books at executable depth.</li>
+        <li><b>Real market, real prices.</b> The event and its prices are live from Kalshi's public data. The protection terms are quoted live from listed option markets at executable depth.</li>
         <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The options market pays more for that slice than your floor costs; the difference is your credit.</li>
         <li><b>How it settles.</b> The market is settled by the BRTI, the Bitcoin reference index published by CF Benchmarks: an average across major exchanges, read over the final 60 seconds. Yes or No, you get your payout plus the credit.</li>
-        <li><b>Honest economics.</b> We keep a published share of the credit we source, waived when tiny. Nothing is embedded in your terms. When the books cannot fund a credit, we refuse and say why.</li>
-        <li><b>Read only.</b> This demonstration holds no keys, places no orders (hedge fills are simulated at live quotes), and cannot move funds.</li>
+        <li><b>The credit you see is the credit you get.</b> Our fee comes out of the cash we source before the number is shown; nothing is embedded in your terms. When the market cannot fund a credit, we refuse and say so.</li>
+        <li><b>Read only.</b> This demonstration holds no keys, places no orders, and cannot move funds.</li>
       </ul>
     </details>
   </div>
@@ -198,7 +200,7 @@ footer b{color:var(--dim);font-weight:600}
   <div class="err" id="err"></div>
 
   <footer>
-    <b>Demonstration, not an offer.</b> The position and lifecycle above are simulated; market prices and hedge quotes are live. Event contracts and options involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice.
+    <b>Demonstration, not an offer.</b> The position and lifecycle above are simulated; prices are live. Event contracts and options involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice.
   </footer>
 </div>
 
@@ -257,19 +259,14 @@ footer b{color:var(--dim);font-weight:600}
     $('maxout').textContent=usd(o.yes);
     $('creditout').textContent=usd(q.creditCents);
     $('offer').style.display='block';
-    var takeLine=q.takeWaived?'take waived (de minimis)':('published take '+usd(q.takeCents)+' ('+(q.takeBps/100)+'% of credit sourced)');
     $('legs').innerHTML=
       '<div class="row"><span>market</span><b>Kalshi '+mk.ticker+'</b></div>'+
       '<div class="row"><span>settled by</span><b>60s average of the BRTI (CF Benchmarks) vs '+Number(mk.strike).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0})+'</b></div>'+
       '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2 · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
       '<div class="row"><span>without protection</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
-      '<div class="row"><span>buy '+q.legs[0].contracts+'x</span><b>'+q.legs[0].instId+'</b></div>'+
-      '<div class="row"><span>sell '+q.legs[1].contracts+'x</span><b>'+q.legs[1].instId+'</b></div>'+
-      '<div class="row"><span>hedge tenor</span><b>'+(q.alignment==='expiry_aligned'?'expiry aligned':'unwound at close (estimate)')+'</b></div>'+
-      '<div class="row"><span>venue fees</span><b>'+usd(q.feesCents)+'</b></div>'+
-      '<div class="row"><span>economics</span><b>'+takeLine+'</b></div>'+
+      '<div class="row"><span>with protection</span><b>'+usd(o.yes)+' if Yes · '+usd(o.no)+' if No</b></div>'+
       '<div class="row"><span>cost of protection</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+' at current odds</b></div>'+
-      '<div class="row"><span>fills</span><b>simulated fills at live quotes</b></div>';
+      '<div class="row"><span>position</span><b>simulated · terms quoted live</b></div>';
     $('hedge').style.display='block';
   }
 
@@ -313,7 +310,7 @@ footer b{color:var(--dim);font-weight:600}
       } else if(q){
         t.disabled=true; t.checked=false;
         hideOffer();
-        $('refusal').innerHTML='<b>Not quotable right now.</b> '+q.detail+' Refusing honestly beats mispricing.';
+        $('refusal').innerHTML='<b>Not right now.</b> '+q.detail;
         $('refusal').classList.add('show');
       }
     }
