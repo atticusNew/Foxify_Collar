@@ -26,13 +26,31 @@ const round2 = (x: number): number => +x.toFixed(2);
 
 export type BookTop = { bidPxBtc: number | null; askPxBtc: number | null };
 
-/** The wrap's sold (cap) leg and bought (floor) leg, by role. */
+const MONTH_NUM: Record<string, string> = { JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06", JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12" };
+
+/**
+ * The OKX-listed id behind a leg. Real legs already carry it. Paper legs carry the model's
+ * `BTC-USD-25SEP26-78000-P (model)`; the same contract is listed as `BTC-USD-260925-78000-P`,
+ * and that is the book the release (and the cap watch) prices against, so a paper wrap shows the
+ * holder the same dollar figure a live one would. Anything else passes through untouched.
+ */
+export const listedInstId = (instId: string | null | undefined): string | null => {
+  if (!instId) return null;
+  const bare = instId.replace(/\s*\(model\)\s*$/, "");
+  const m = /^([A-Z]+-[A-Z]+)-(\d{2})([A-Z]{3})(\d{2})-(\d+(?:\.\d+)?)-([CP])$/.exec(bare);
+  if (!m) return bare;
+  const mon = MONTH_NUM[m[3]];
+  return mon ? `${m[1]}-${m[4]}${mon}${m[2]}-${m[5]}-${m[6]}` : bare;
+};
+
+/** The wrap's sold (cap) leg and bought (floor) leg, by role, with `instId` in its listed form. */
 export const wrapLegs = (rec: Pick<DemoWrapRecord, "legs" | "position">): { capLeg: DemoLeg | null; floorLeg: DemoLeg | null } => {
   const capRole = rec.position.side === "long" ? "sell_call_cap" : "sell_put_cap";
   const floorRole = rec.position.side === "long" ? "buy_put_floor" : "buy_call_floor";
+  const listed = (l: DemoLeg | undefined): DemoLeg | null => (l ? { ...l, instId: listedInstId(l.instId) } : null);
   return {
-    capLeg: rec.legs.find((l) => l.role === capRole) ?? null,
-    floorLeg: rec.legs.find((l) => l.role === floorRole) ?? null
+    capLeg: listed(rec.legs.find((l) => l.role === capRole)),
+    floorLeg: listed(rec.legs.find((l) => l.role === floorRole))
   };
 };
 

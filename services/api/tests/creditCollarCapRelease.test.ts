@@ -17,6 +17,7 @@ import {
   capExplainer,
   closeValueFromBooks,
   legFeeUsdc,
+  listedInstId,
   releaseQuoteFromBook,
   wrapLegs
 } from "../src/singleSide/twoSided/creditCollar/capRelease";
@@ -214,6 +215,26 @@ test("closeValueFromBooks: floor sold at the bid, cap bought at the ask (if held
   assert.equal(closeValueFromBooks({ contracts: 3, spotUsd: 65_400, floorTop: { bidPxBtc: 0.001, askPxBtc: null }, capTop: { bidPxBtc: null, askPxBtc: null }, capHeld: true }), null);
   const noBid = closeValueFromBooks({ contracts: 3, spotUsd: 65_400, floorTop: { bidPxBtc: null, askPxBtc: 0.0012 }, capTop: null, capHeld: false });
   assert.equal(noBid, 0, "a floor leg with no bid is worth zero on the way out, never negative");
+});
+
+test("listedInstId: a paper '(model)' id maps to the OKX-listed contract; real ids pass through", () => {
+  assert.equal(listedInstId("BTC-USD-25SEP26-78000-P (model)"), "BTC-USD-260925-78000-P");
+  assert.equal(listedInstId("BTC-USD-02OCT26-86000-C (model)"), "BTC-USD-261002-86000-C");
+  assert.equal(listedInstId("BTC-USD-260925-78000-P"), "BTC-USD-260925-78000-P", "a live leg's id is already listed");
+  assert.equal(listedInstId("ETH-USD-15JAN27-3000-C (model)"), "ETH-USD-270115-3000-C");
+  assert.equal(listedInstId("something else (model)"), "something else", "unknown shapes only lose the label");
+  assert.equal(listedInstId(null), null);
+  assert.equal(listedInstId(""), null);
+  const paper = wrapLegs({
+    position: { side: "short" } as DemoWrapRecord["position"],
+    legs: [
+      { role: "sell_put_cap", instId: "BTC-USD-25SEP26-78000-P (model)", orderId: null, premiumUsdc: 4.8, real: false },
+      { role: "buy_call_floor", instId: "BTC-USD-25SEP26-86000-C (model)", orderId: null, premiumUsdc: -3.5, real: false }
+    ]
+  });
+  assert.equal(paper.capLeg?.instId, "BTC-USD-260925-78000-P", "the release prices the listed book behind a paper leg");
+  assert.equal(paper.floorLeg?.instId, "BTC-USD-260925-86000-C");
+  assert.equal(paper.capLeg?.real, false, "…without dressing it as a fill");
 });
 
 test("wrapLegs / capExplainer: roles by side; plain words", () => {

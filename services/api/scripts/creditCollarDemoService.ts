@@ -1237,8 +1237,9 @@ const watchWrap = async (rec: DemoWrapRecord, markPx: number, nowMs: number, cli
   const cap = wrapCapStrike(rec);
   const v = demoVestingStatus(rec, nowMs);
   if (cap == null || !v || !rec.vesting) return;
-  const capLeg = rec.legs.find((l) => l.role === "sell_call_cap" || l.role === "sell_put_cap");
-  const floorLeg = rec.legs.find((l) => l.role === "buy_put_floor" || l.role === "buy_call_floor");
+  // Listed ids (a paper leg's "(model)" id maps to the same OKX contract): the watch prices the
+  // real book either way, so a paper wrap's headroom and release read like a live one's.
+  const { capLeg, floorLeg } = wrapLegs(rec);
   const expTime = capLeg?.instId ? expTimeOf(capLeg.instId) : null;
   const vols = expTime ? await markVolsFor(expTime, nowMs) : null;
   const prev = capWatch.get(rec.id) ?? null;
@@ -2629,7 +2630,9 @@ server.listen(port, () => {
     if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
     console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m, stagger window ${Math.round(renewStaggerMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
     if (autoRenew) setInterval(() => void renewalTick(), renewCheckMs);
-    console.error(`[demo] knockout monitor ON — mark-touch of the cap ends the cycle (check every ${Math.round(knockoutCheckMs / 1000)}s; runs through the kill switch)`);
+    console.error(
+      `[demo] cap ${capMode === "plain" ? "PLAIN — the collar runs to expiry; a mark-touch of the cap is recorded and the holder may release it at the live price (POST /api/release)" : "KNOCKOUT — a mark-touch of the cap ends the cycle and re-arms"} (monitor every ${Math.round(knockoutCheckMs / 1000)}s; runs through the kill switch)`
+    );
     setInterval(() => void monitorTick(), knockoutCheckMs);
     setInterval(() => void watchdogTick(), Math.max(30_000, knockoutCheckMs * 2));
     if (!payoutRail.ok) {
