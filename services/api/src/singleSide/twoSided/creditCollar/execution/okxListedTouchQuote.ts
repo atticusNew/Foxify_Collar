@@ -351,7 +351,7 @@ export const fetchOkxListedTouchQuote = async (input: {
       return {
         ok: false,
         error: "cap_too_close",
-        message: `widest paying cap ${sellHit.inst.instId} sits ${(capDistPct * 100).toFixed(2)}% from price, under the ${(minCapPct * 100).toFixed(1)}% guard — nothing wider has a bid`
+        message: `widest paying cap ${sellHit.inst.instId} sits ${(capDistPct * 100).toFixed(2)}% from price, under the ${(minCapPct * 100).toFixed(1)}% guard — nothing wider pays a credit on this book`
       };
     }
 

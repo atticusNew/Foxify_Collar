@@ -335,10 +335,7 @@ const capPct = num(process.env.DEMO_CAP_PCT, DEMO_CAP_PCT);
 // at least 3 days out (the daily when none is listed) — one-day options a few percent out trade
 // at ticks, the weekly is where the credit is real (measured: $0.15 vs $2.71 on 0.03 BTC, same
 // floor, a wider cap, one hedge round-trip a week instead of seven). EP_TENOR=daily opts out.
-// The cap guard refuses a quote whose cap would sit closer than EP_MIN_CAP_PCT (2% daily, 4%
-// weekly) rather than write a cap that will cross on noise; the weekly band reaches to 8%.
 const tenor: EpTenor = parseTenor(process.env.EP_TENOR);
-const capGuard = capGuardFor(tenor, process.env);
 // How the cap settles (EP_CAP_MODE). PLAIN is the default: the collar runs to expiry, gains above
 // the cap this cycle are the holder's payment for the floor (owed at settlement, netted against
 // the credit), nothing closes at a touch, and the holder may RELEASE the cap any time by buying
@@ -346,6 +343,10 @@ const capGuard = capGuardFor(tenor, process.env);
 // construction, the take is the only P&L. `knockout` is the previous rule (a touch ends the
 // cycle, the writer eats the buy-back); records keep the mode they were written under.
 const capMode: CapMode = parseCapMode(process.env.EP_CAP_MODE);
+// The cap search takes the widest listed strike that pays (weekly band to 8%). Only knockout
+// refuses a close cap (2% daily / 4% weekly): under the plain collar the distance is shown, not
+// refused — see capGuardFor for the measured refusal a hard line caused.
+const capGuard = capGuardFor(tenor, process.env, capMode);
 
 // Funding disclosure: what holding the perp costs (or pays) over the cycle, from Hyperliquid's
 // live rate. Longs pay positive funding; shorts receive it. Cached a minute; null when unreadable.
@@ -2240,6 +2241,16 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       recordPageLoad(funnelState, "preview", Date.now());
       funnelDirty = true;
+      // What releasing the cap would cost right now (plain mode): the sold leg's live ask, the same
+      // number a real card shows — so the simulation demonstrates the whole shape before connect.
+      const sellInstId = side === "long" ? probe.callInstId : probe.putInstId;
+      const pvContracts = Math.round(sizing.coveredBtc / OKX_OPTION_LOT_BTC);
+      let pvRelease: { costUsdc: number; premiumUsdc: number; feeUsdc: number } | null = null;
+      if (capMode === "plain" && pvContracts > 0) {
+        const top = await bookTopFor(sellInstId, Date.now());
+        const rq = releaseQuoteFromBook({ contracts: pvContracts, spotUsd: mark, top, instId: sellInstId });
+        if (rq.ok) pvRelease = { costUsdc: rq.costUsdc, premiumUsdc: rq.premiumUsdc, feeUsdc: rq.feeUsdc };
+      }
       sendJson(res, 200, {
         ok: true,
         preview: true, // hypothetical position — nothing opens, nothing is stored
@@ -2262,6 +2273,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         expiryMs: probe.expiryMs,
         tenor: probe.tenor,
         funding: pvFunding,
+        capMode,
+        release: pvRelease,
         coverageNote: sizing.coverageNote
       });
       return;

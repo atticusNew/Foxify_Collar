@@ -87,9 +87,9 @@ const numEnv = (v: string | undefined, d: number): number => {
 // The live shape and guard, read the way the demo reads them so the shadow prices the product.
 const GEOMETRY = { floorPct: numEnv(process.env.DEMO_FLOOR_PCT, DEMO_FLOOR_PCT), capPct: numEnv(process.env.DEMO_CAP_PCT, DEMO_CAP_PCT) };
 const TENOR = parseTenor(process.env.EP_TENOR);
-const CAP_GUARD = capGuardFor(TENOR, process.env);
-const OTHER_TENOR_CAP_GUARD = capGuardFor(otherTenor(TENOR), process.env);
 const CAP_MODE = parseCapMode(process.env.EP_CAP_MODE);
+const CAP_GUARD = capGuardFor(TENOR, process.env, CAP_MODE);
+const OTHER_TENOR_CAP_GUARD = capGuardFor(otherTenor(TENOR), process.env, CAP_MODE);
 const REPLAY = { capMode: CAP_MODE };
 const CAP_LADDER_RULE =
   CAP_MODE === "plain"

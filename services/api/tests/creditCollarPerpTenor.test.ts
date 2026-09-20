@@ -165,12 +165,20 @@ test("quoteFromListedBooks: the tenor actually written rides the quote (daily by
 
 // ── cap guard ─────────────────────────────────────────────────────────────────
 
-test("capGuardFor: 2% / 4% daily, 4% / 8% weekly, env-overridable as fractions, junk ignored", () => {
-  assert.deepEqual(capGuardFor("daily", {}), { minCapPct: 0.02, maxCapPct: 0.04 });
-  assert.deepEqual(capGuardFor("weekly", {}), { minCapPct: 0.04, maxCapPct: 0.08 });
-  assert.deepEqual(capGuardFor("daily", { EP_MIN_CAP_PCT: "0.015", EP_CAP_MAX_PCT: "0.05" }), { minCapPct: 0.015, maxCapPct: 0.05 });
-  assert.deepEqual(capGuardFor("weekly", { EP_MIN_CAP_PCT_WEEKLY: "0.03" }), { minCapPct: 0.03, maxCapPct: 0.08 });
-  assert.deepEqual(capGuardFor("daily", { EP_MIN_CAP_PCT: "nope", EP_CAP_MAX_PCT: "-1" }), { minCapPct: 0.02, maxCapPct: 0.04 });
+test("capGuardFor: plain (default) never refuses on distance — widest paying cap, band 4% daily / 8% weekly; env may raise it", () => {
+  assert.deepEqual(capGuardFor("daily", {}), { minCapPct: 0, maxCapPct: 0.04 });
+  assert.deepEqual(capGuardFor("weekly", {}), { minCapPct: 0, maxCapPct: 0.08 });
+  assert.deepEqual(capGuardFor("weekly", {}, "plain"), { minCapPct: 0, maxCapPct: 0.08 });
+  assert.deepEqual(capGuardFor("weekly", { EP_MIN_CAP_PCT_WEEKLY: "0.03" }, "plain"), { minCapPct: 0.03, maxCapPct: 0.08 }, "a deliberate env line still applies");
+  assert.deepEqual(capGuardFor("daily", { EP_CAP_MAX_PCT: "0.05" }), { minCapPct: 0, maxCapPct: 0.05 });
+});
+
+test("capGuardFor: knockout keeps the refusal — 2% / 4% daily, 4% / 8% weekly, env-overridable as fractions, junk ignored", () => {
+  assert.deepEqual(capGuardFor("daily", {}, "knockout"), { minCapPct: 0.02, maxCapPct: 0.04 });
+  assert.deepEqual(capGuardFor("weekly", {}, "knockout"), { minCapPct: 0.04, maxCapPct: 0.08 });
+  assert.deepEqual(capGuardFor("daily", { EP_MIN_CAP_PCT: "0.015", EP_CAP_MAX_PCT: "0.05" }, "knockout"), { minCapPct: 0.015, maxCapPct: 0.05 });
+  assert.deepEqual(capGuardFor("weekly", { EP_MIN_CAP_PCT_WEEKLY: "0.03" }, "knockout"), { minCapPct: 0.03, maxCapPct: 0.08 });
+  assert.deepEqual(capGuardFor("daily", { EP_MIN_CAP_PCT: "nope", EP_CAP_MAX_PCT: "-1" }, "knockout"), { minCapPct: 0.02, maxCapPct: 0.04 });
 });
 
 /** The live touch-quote path against a fake OKX: instruments + one book per probed wing. */
