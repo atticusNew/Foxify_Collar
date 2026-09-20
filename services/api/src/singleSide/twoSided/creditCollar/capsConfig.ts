@@ -12,10 +12,12 @@
  *   per-strike cap  = ≤30% of book notional short any single strike/expiry (knockout unwinds hit
  *                     the order book, so simultaneous same-strike knockouts are the tail risk)
  *
- * Also here because they are wallet-cohort economics (decisions 3 + 6):
- *   - founding cohort: first N wallets (50) get the founding take rate (10%), locked 12 months;
- *     wallets beyond the cohort queue on the waitlist
- *   - spread take: 20% standard / 10% founding / $0 when the cut would be under $0.05 a cycle
+ * Also here because they are wallet economics (decisions 3 + 6):
+ *   - spread take: one published rate (EP_TAKE_RATE, 20%) / $0 when the cut would be under $0.05
+ *   - founding cohort + waitlist (assessCohort / registerWallet / takeRateFor): RETIRED from the
+ *     demo service on 2026-09-20 — they belonged to the wallet-collection demo. The embedded retail
+ *     product has no cohort gate and one rate. The functions stay (pure, tested) because older wrap
+ *     records carry `economics.founding` and replay through them; nothing live calls the gate.
  *   - partial wraps: positions above the per-wallet cap wrap min(position, remaining cap),
  *     rounded DOWN to whole lots — rounding up would over-hedge and create naked exposure
  *

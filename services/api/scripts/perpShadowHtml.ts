@@ -396,6 +396,47 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
             floorBest.avgCapPct != null && floorLive.avgCapPct != null ? `, with the cap at ${(floorBest.avgCapPct * 100).toFixed(1)}% against ${(floorLive.avgCapPct * 100).toFixed(1)}%` : ""
           }. A deeper floor is cheaper, so the cap rule can spend the difference on credit; whether it is worth the extra downside is the holder column once enough cycles have settled.`
       : "";
+  // The counterfactual floor RULE judged on each quote's ladder: which depth it would have written to.
+  const frule = cf.floorRule;
+  const floorRuleLine =
+    frule && frule.judged > 0
+      ? `Floor rule (${frule.rule ?? "—"}) judged on ${frule.judged} quote${frule.judged === 1 ? "" : "s"}: ` +
+        Object.entries(frule.picks)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, n]) => `${k} × ${n}`)
+          .join(", ") +
+        `; agrees with the live depth ${frule.agreesWithLive}/${frule.judged}.`
+      : "";
+  // Venue reference: the identical collar read at Deribit and Bullish the second OKX quoted it.
+  const vr = cf.venueReference;
+  const venueRows = vr
+    ? (Object.keys(vr) as Array<keyof typeof vr>)
+        .map((v) => {
+          const b = vr[v];
+          const name = v === "deribit" ? "Deribit" : v === "bullish" ? "Bullish" : String(v);
+          const vs = b.avgVsOkxBps == null ? "–" : `${b.avgVsOkxBps > 0 ? "+" : ""}${b.avgVsOkxBps.toFixed(2)} bps`;
+          const vsC = b.avgVsOkxCents == null ? "" : ` <i style="color:var(--faint);font-style:normal">${signedUsd(b.avgVsOkxCents)}/BTC</i>`;
+          return (
+            `<tr><td>${name}</td><td>${b.read}</td><td>${b.priced}</td>` +
+            `<td>${b.priced ? `${b.beatOkx} <i style="color:var(--faint);font-style:normal">${Math.round((b.beatOkx / b.priced) * 100)}%</i>` : "–"}</td>` +
+            `<td class="hi">${vs}${vsC}</td>` +
+            `<td>${b.buyAskPct == null ? "–" : `${b.buyAskPct}%`}</td><td>${b.sellBidPct == null ? "–" : `${b.sellBidPct}%`}</td><td>${b.errors}</td></tr>`
+          );
+        })
+        .join("")
+    : "";
+  const venueRead = vr ? Object.values(vr).reduce((n, b) => n + b.read, 0) : 0;
+  const venueLine = (() => {
+    if (!vr || venueRead === 0) return "";
+    const priced = (Object.entries(vr) as Array<[string, (typeof vr)[keyof typeof vr]]>).filter(([, b]) => b.priced > 0 && b.avgVsOkxBps != null);
+    if (!priced.length) return "Neither reference venue had both sides resting on the legs OKX quoted; nothing to compare yet.";
+    const best = priced.sort((a, b) => (b[1].avgVsOkxBps ?? -Infinity) - (a[1].avgVsOkxBps ?? -Infinity))[0];
+    const name = best[0] === "deribit" ? "Deribit" : "Bullish";
+    const bps = best[1].avgVsOkxBps as number;
+    return bps > 0
+      ? `${name} would have paid the holder ${bps.toFixed(2)} bps of spot more than OKX on average over ${best[1].priced} reads (beat OKX ${best[1].beatOkx} times): the number a FalconX quote should clear before it is accepted.`
+      : `OKX's touch beat every reference on average (${name} was closest at ${bps.toFixed(2)} bps over ${best[1].priced} reads): pricing off OKX leaves nothing on the table so far.`;
+  })();
   const weeklyBook = liveTenor === "weekly" ? cf.baseline : cf.tenors.weekly;
   const dailyBook = liveTenor === "daily" ? cf.baseline : cf.tenors.daily;
   const tenorLine =
@@ -503,6 +544,21 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
       ${floorRows}
     </table></div>
     ${floorLine ? `<div class="read">${escapeHtml(floorLine)}</div>` : ""}
+    ${floorRuleLine ? `<div class="read">${escapeHtml(floorRuleLine)}</div>` : ""}
+  </div>`
+      : ""
+  }
+
+  ${
+    venueRead > 0
+      ? `<div class="card">
+    <h2>Venue reference</h2>
+    <div class="sub" style="margin-bottom:6px">The identical collar — buy the floor at the ask, sell the cap at the bid, same strikes, same expiry — read at Deribit and Bullish the second OKX quoted it. Positive means that venue would have paid the holder more. A reference for RFQ acceptance, not a price we quote.</div>
+    <div class="tablewrap"><table>
+      <tr><th>venue</th><th>read</th><th>both sides</th><th>beat OKX</th><th>vs OKX (net)</th><th>floor ask</th><th>cap bid</th><th>errors</th></tr>
+      ${venueRows}
+    </table></div>
+    ${venueLine ? `<div class="read">${escapeHtml(venueLine)}</div>` : ""}
   </div>`
       : ""
   }
