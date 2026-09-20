@@ -336,9 +336,9 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
   const fundingLine =
     fr.judged === 0
       ? "No funding read yet."
-      : `On ${fr.judged} quotes the credit came to ${usd(fr.creditCents)} against ${usd(fr.fundingCents)} of funding the holder pays over the cycle; the rule would have refused ${fr.wouldRefuse} (${Math.round(
+      : `On ${fr.judged} quotes the credit came to ${usd(fr.creditCents)} against ${usd(fr.fundingCents)} of funding the holder pays over the cycle; on ${fr.wouldRefuse} (${Math.round(
           (fr.wouldRefuse / fr.judged) * 100,
-        )}%).`;
+        )}%) the credit did not clear it. Informational: funding is the perp's cost with or without protection, so the live product discloses it and never refuses on it (the refusal flag was retired 2026-09-20).`;
   const ss = s.sameStrike;
   const sameLine =
     ss.opens === 0
@@ -488,7 +488,7 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
 
   <div class="card">
     <h2>Does the math make sense</h2>
-    <div class="row"><span>credit vs funding</span><b>${fr.judged ? `${fr.wouldRefuse} of ${fr.judged} would be refused` : "–"} <i>credit ≤ the cycle's funding cost</i></b></div>
+    <div class="row"><span>credit vs funding</span><b>${fr.judged ? `${fr.wouldRefuse} of ${fr.judged} below funding` : "–"} <i>credit ≤ the cycle's funding cost · disclosed, never refused</i></b></div>
     <div class="row"><span>same funding strike</span><b>${ss.opens ? `${ss.sharedSellStrike} of ${ss.opens}` : "–"} <i>already open on the book</i></b></div>
     <div class="read">${escapeHtml(fundingLine)}${sameLine ? ` ${escapeHtml(sameLine)}` : ""}</div>
   </div>

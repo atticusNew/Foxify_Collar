@@ -8,13 +8,10 @@ import {
   DEFAULT_CAP_WATCH,
   expTimeOf,
   fetchOkxMarkVols,
-  passiveBuyPxBtc,
   reserveAlertUsdcFor,
   summarizeCapWatch,
-  workingOrderAction,
   type CapWatchWrap,
-  type HeadroomInput,
-  type WorkingOrder
+  type HeadroomInput
 } from "../src/singleSide/twoSided/creditCollar/capWatch";
 
 const H = 3_600_000;
@@ -98,57 +95,23 @@ test("cap watch: a short's cap sits below — the sold PUT is bought back at the
   assert.ok(s.buybackAtTouchUsdc < l.buybackAtTouchUsdc && s.buybackAtTouchUsdc > l.buybackAtTouchUsdc * 0.85);
 });
 
-test("cap watch: the passive buy price is the mid floored to a tick and never at the ask", () => {
-  assert.equal(passiveBuyPxBtc({ bidBtc: 0.001, askBtc: 0.0014 }), 0.0012);
-  assert.equal(passiveBuyPxBtc({ bidBtc: 0.001, askBtc: 0.0011 }), 0.001, "a one-tick spread: sit on the bid");
-  assert.equal(passiveBuyPxBtc({ bidBtc: 0.00105, askBtc: 0.0011 }), 0.001, "an off-tick mid is floored to the tick below the ask");
-  assert.equal(passiveBuyPxBtc({ bidBtc: null, askBtc: 0.0014 }), 0.0013, "no bid: one tick under the ask");
-  assert.equal(passiveBuyPxBtc({ bidBtc: 0.0015, askBtc: 0.0014 }), 0.0013, "a crossed book is priced off the ask alone");
-  assert.equal(passiveBuyPxBtc({ bidBtc: 0.001, askBtc: null }), null, "no ask: nothing to price against");
-});
-
-test("cap watch: the working order rests when near, holds inside the band, re-prices when the mid walks, recalls when calm, cancels at the touch", () => {
-  const cfg = { ...DEFAULT_CAP_WATCH, workingOrders: true };
-  const book = { bidBtc: 0.001, askBtc: 0.0014 };
-  const order: WorkingOrder = { instId: "BTC-USD-260920-83000-C", ordId: "o1", pxBtc: 0.0012, contracts: 3, restedAtMs: T0, filledContracts: 0, avgPxBtc: null };
-
-  assert.equal(workingOrderAction({ state: "calm", distanceBps: 375 }, null, book, cfg).kind, "none");
-  assert.deepEqual(workingOrderAction({ state: "near", distanceBps: 30 }, null, book, cfg), { kind: "rest", pxBtc: 0.0012, reason: "mark 30 bps from the cap — rest a passive buy at 0.0012" });
-  assert.equal(workingOrderAction({ state: "near", distanceBps: 30 }, null, { bidBtc: 0.001, askBtc: null }, cfg).kind, "none", "near but no ask: nothing rests");
-  assert.equal(workingOrderAction({ state: "near", distanceBps: 30 }, null, null, cfg).kind, "none", "near but no book read: nothing rests");
-  assert.equal(workingOrderAction({ state: "near", distanceBps: 20 }, order, book, cfg).kind, "hold");
-  assert.equal(workingOrderAction({ state: "near", distanceBps: 20 }, order, { bidBtc: 0.001, askBtc: 0.0015 }, cfg).kind, "hold", "a one-tick move in the mid is not worth a replace");
-  const rep = workingOrderAction({ state: "near", distanceBps: 20 }, order, { bidBtc: 0.0012, askBtc: 0.0018 }, cfg);
-  assert.equal(rep.kind, "replace");
-  assert.equal((rep as { pxBtc: number }).pxBtc, 0.0015);
-  // Hysteresis: calm inside the recall band holds; past it recalls.
-  assert.equal(workingOrderAction({ state: "calm", distanceBps: 50 }, order, book, cfg).kind, "hold");
-  assert.equal(workingOrderAction({ state: "calm", distanceBps: 61 }, order, book, cfg).kind, "cancel");
-  assert.equal(workingOrderAction({ state: "touched", distanceBps: -5 }, order, book, cfg).kind, "cancel");
-  assert.equal(workingOrderAction({ state: "touched", distanceBps: -5 }, null, book, cfg).kind, "none");
-  // Flag off: never rests, and an order left over from a previous configuration is recalled.
-  assert.equal(workingOrderAction({ state: "near", distanceBps: 20 }, null, book, DEFAULT_CAP_WATCH).kind, "none");
-  assert.equal(workingOrderAction({ state: "near", distanceBps: 20 }, order, book, DEFAULT_CAP_WATCH).kind, "cancel");
-});
-
-test("cap watch: config from env — defaults, overrides, the recall line never sits inside the near line, junk ignored", () => {
+test("cap watch: config from env — defaults, overrides, junk ignored; the retired working-order keys change nothing", () => {
   assert.deepEqual(capWatchConfigFromEnv({}), DEFAULT_CAP_WATCH);
-  const c = capWatchConfigFromEnv({ EP_PRETOUCH_NEAR_BPS: "50", EP_PRETOUCH_RECALL_BPS: "40", EP_HEADROOM_ALERT_BPS: "150", EP_PRETOUCH_WORKING_ORDER: "1" });
+  const c = capWatchConfigFromEnv({ EP_CAP_NEAR_BPS: "50", EP_HEADROOM_ALERT_BPS: "150", EP_PRETOUCH_WORKING_ORDER: "1", EP_PRETOUCH_RECALL_BPS: "40" });
   assert.equal(c.nearBps, 50);
-  assert.equal(c.recallBps, 55, "recall pulled out to near + 5");
   assert.equal(c.reserveAlertBps, 150);
   assert.equal(reserveAlertUsdcFor(c, 2_400), 36, "150 bps of a $2,400 wrap");
-  assert.equal(c.workingOrders, true);
-  const junk = capWatchConfigFromEnv({ EP_PRETOUCH_NEAR_BPS: "lots", EP_HEADROOM_ALERT_BPS: "-4", EP_PRETOUCH_WORKING_ORDER: "maybe" });
+  assert.ok(!("workingOrders" in c) && !("recallBps" in c), "item 6: nothing rests on the venue; the keys are gone from the config");
+  assert.equal(capWatchConfigFromEnv({ EP_PRETOUCH_NEAR_BPS: "40" }).nearBps, 40, "the old near-line key is still read");
+  const junk = capWatchConfigFromEnv({ EP_CAP_NEAR_BPS: "lots", EP_HEADROOM_ALERT_BPS: "-4" });
   assert.equal(junk.nearBps, 35);
   assert.equal(junk.reserveAlertBps, 300);
   assert.equal(reserveAlertUsdcFor(junk, 2_400), 72, "the default line: 300 bps, above an ATM weekly cap leg's ~200–250 bps");
   assert.equal(reserveAlertUsdcFor(junk, -5), 0);
-  assert.equal(junk.workingOrders, false);
 });
 
-test("cap watch: the book roll-up sums reserves, counts near / touched / working, names the worst priced wrap", () => {
-  const w = (id: string, headroomUsdc: number, state: "calm" | "near" | "touched", priced: "mark_vol" | "unpriced", order = false): CapWatchWrap => ({
+test("cap watch: the book roll-up sums reserves, counts near / touched, names the worst priced wrap", () => {
+  const w = (id: string, headroomUsdc: number, state: "calm" | "near" | "touched", priced: "mark_vol" | "unpriced"): CapWatchWrap => ({
     wrapId: id,
     account: "0xabc",
     side: "long",
@@ -166,12 +129,11 @@ test("cap watch: the book roll-up sums reserves, counts near / touched / working
       priced,
       hoursLeft: 10
     },
-    order: order ? { instId: "i", ordId: "o", pxBtc: 0.001, contracts: 3, restedAtMs: T0, filledContracts: 0, avgPxBtc: null } : null,
     updatedAtMs: T0
   });
-  const s = summarizeCapWatch([w("a", -12.5, "near", "mark_vol", true), w("b", 3, "calm", "mark_vol"), w("c", 0, "touched", "unpriced"), w("d", -2, "calm", "mark_vol")]);
-  assert.deepEqual(s, { wraps: 4, near: 1, touched: 1, reserveUsdc: 14.5, headroomUsdc: -11.5, unpriced: 1, working: 1, worst: { wrapId: "a", headroomUsdc: -12.5 } });
-  assert.deepEqual(summarizeCapWatch([]), { wraps: 0, near: 0, touched: 0, reserveUsdc: 0, headroomUsdc: 0, unpriced: 0, working: 0, worst: null });
+  const s = summarizeCapWatch([w("a", -12.5, "near", "mark_vol"), w("b", 3, "calm", "mark_vol"), w("c", 0, "touched", "unpriced"), w("d", -2, "calm", "mark_vol")]);
+  assert.deepEqual(s, { wraps: 4, near: 1, touched: 1, reserveUsdc: 14.5, headroomUsdc: -11.5, unpriced: 1, worst: { wrapId: "a", headroomUsdc: -12.5 } });
+  assert.deepEqual(summarizeCapWatch([]), { wraps: 0, near: 0, touched: 0, reserveUsdc: 0, headroomUsdc: 0, unpriced: 0, worst: null });
 });
 
 test("cap watch: OKX mark vols come from the public option summary for the leg's expiry; bad payloads throw, never guess", async () => {
