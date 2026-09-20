@@ -139,11 +139,16 @@ test("one shape, no tiers: the knock-out is explained as keeping the upside, the
     assert.ok(!html.includes("?tier=") && !html.includes("&tier="), "no tier rides any request");
     assert.ok(html.includes("If you flip it on now:"), "the pre-flip quote leads with value before the commit");
     assert.ok(html.includes('id="realQuote"') && html.includes('api("/api/quote")'), "pre-flip quote box priced off the holder's own position");
-    assert.ok(html.includes("The cap ends the cycle, not your trade."), "the cap is a re-arm trigger, not a ceiling on the trade");
-    assert.ok(html.includes("you keep your position, every gain, and the unlocked credit"), "the holder never gives up upside");
-    assert.ok(html.includes("Hedged, not carried.") && html.includes("hedged leg for leg") && html.includes("the cap leg is closed at its strike"), "how the writer stays flat, stated plainly");
+    assert.ok(html.includes("The cap pays for your floor."), "the cap is explained as what funds the floor");
+    assert.ok(html.includes("Release your upside any time.") && html.includes("Release upside"), "the release tap is the holder's decision, priced live");
+    assert.ok(html.includes("Hedged, not carried.") && html.includes("hedged leg for leg") && html.includes("bought back only at the holder"), "how the writer stays flat, stated plainly");
     assert.ok(!/delta[- ]neutral/i.test(html), "no 'delta neutral' claim on the retail surface");
-    assert.ok(html.includes("Cap touched · cycle over") && html.includes("re-arming at the new price"), "a knock-out reads as the end of a cycle, then re-arm");
+    assert.ok(!html.includes("You never owe anything"), "the plain collar can net negative: no 'never owe' claim");
+    assert.ok(html.includes('id="relVeil"') && html.includes("Release your upside?") && html.includes('api("/api/release/quote")') && html.includes("/api/release?ctl="), "release confirm modal re-prices at the tap and posts the ceiling the holder saw");
+    assert.ok(html.includes("maxCostUsdc=") && html.includes("price_moved"), "the engine may refuse a moved price; the app explains it");
+    assert.ok(html.includes("chip owed") && html.includes("to settle</b>"), "a negative net shows as a balance to settle, in dollars");
+    assert.ok(html.includes("cap_touched") && html.includes("cap_released"), "the new stages have labels");
+    assert.ok(html.includes("Cap touched · cycle over") && html.includes("re-arming at the new price"), "knockout-mode copy is kept for wraps written under the previous rule");
   }
 });
 

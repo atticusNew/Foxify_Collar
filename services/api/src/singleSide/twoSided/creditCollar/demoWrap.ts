@@ -68,7 +68,9 @@ export type DemoStageName =
   | "green_light"      // client may rely on the wrap from here
   | "vesting"          // credit vesting over the tenor
   | "failed"
-  | "knocked_out"      // Design B: mark touched the cap — legs closed, cycle over, re-arms at new spot
+  | "knocked_out"      // knockout mode: mark touched the cap — legs closed, cycle over, re-arms at new spot
+  | "cap_touched"      // plain mode: mark touched the cap — nothing closes; the holder may release
+  | "cap_released"     // plain mode: the holder bought the cap leg back at the live price — upside is theirs again
   | "concluded";
 
 export type DemoStage = { stage: DemoStageName; tsMs: number; note?: string };
@@ -84,9 +86,46 @@ export type DemoLeg = {
   real: boolean;
 };
 
+/**
+ * How the cap settles.
+ *   plain    — the collar runs to expiry. Gains above the cap this cycle are the holder's payment
+ *              for the floor (owed at settlement, netted against the credit); nothing closes at a
+ *              touch. The holder may RELEASE the cap any time by buying the leg back at the live
+ *              price. The hedge is held leg for leg: the writer is flat by construction.
+ *   knockout — a cap touch ends the cycle: both legs close, vested credit is paid, protection
+ *              re-arms. The holder never owes anything; the writer eats the buy-back.
+ */
+export type CapMode = "plain" | "knockout";
+export const parseCapMode = (v: string | null | undefined): CapMode => (v === "knockout" ? "knockout" : "plain");
+
+/** The holder bought the cap leg back mid-cycle (plain mode): the cap no longer applies. */
+export type CapRelease = {
+  atMs: number;
+  markPx: number;
+  instId: string | null;
+  contracts: number;
+  /** What the buy-back cost the holder, USDC, fees included. Owed at settlement (netted against the credit). */
+  costUsdc: number;
+  /** okx_fill = real IOC fill; okx_book = priced at the live ask (paper); model = mark-vol value when no book */
+  source: "okx_fill" | "okx_book" | "model";
+  note?: string;
+};
+
+/** A balance the holder owes after settlement (plain mode): gains above the cap, or a release, beyond the credit. */
+export type OwedBalance = {
+  amountUsdc: number;
+  status: "owed" | "settled" | "written_off";
+  createdAtMs: number;
+  settledAtMs: number | null;
+  /** venue debit reference, tx hash, or operator note */
+  ref: string | null;
+};
+
 export type DemoWrapRecord = {
   id: string;
   createdAtMs: number;
+  /** the cap rule this wrap was written under; absent on records from before the rule existed (knockout) */
+  capMode?: CapMode;
   clientVenue: string; // "hyperliquid"
   account: string;     // the account whose position is wrapped (shown on the video)
   position: {
@@ -133,8 +172,20 @@ export type DemoWrapRecord = {
   failReason: string | null;
   /** Set on a voluntary early close (toggle off): vesting freezes here — vested collected, rest clawed back. */
   concludedAtMs?: number | null;
-  /** Design B knockout record: set when mark touched the cap and the cycle ended early. */
+  /** knockout mode: set when mark touched the cap and the cycle ended early. */
   knockout?: KnockoutInfo | null;
+  /** plain mode: the cap was touched on the mark (informational — nothing closed). */
+  capTouch?: { firstTouchedAtMs: number; markPx: number; touches: number } | null;
+  /** plain mode: the holder released the cap. */
+  release?: CapRelease | null;
+  /**
+   * plain mode, early close / underlying gone: the collar's mark-to-market on the unwind —
+   * protective leg sold minus cap leg bought back minus fees. Positive is paid to the holder
+   * with the vested credit; negative is owed. Null when the unwind could not be valued.
+   */
+  closeValue?: { atMs: number; valueUsdc: number | null; source: "okx_fill" | "okx_book" | "unvalued"; note?: string } | null;
+  /** plain mode: what the holder owes after netting, and whether it has been settled. */
+  owed?: OwedBalance | null;
   /** Client-supplied idempotency key: a retry with the same key replays the original outcome. */
   idempotencyKey?: string | null;
   /** The honest credit split (decision 3): gross the market paid, our published take, the trader's net. */
@@ -506,36 +557,129 @@ export const floorPayoutUsdc = (side: PerpSide, floorStrike: number, settlePx: n
   return round2(perBtc * coveredBtc);
 };
 
+/** Gains above the cap on the covered size at the settle print (plain mode): what the holder hands back. Zero inside the cap. */
+export const capExcessUsdc = (side: PerpSide, capStrike: number, settlePx: number, coveredBtc: number): number => {
+  if (!(coveredBtc > 0) || !(capStrike > 0) || !(settlePx > 0)) return 0;
+  const perBtc = side === "long" ? Math.max(0, settlePx - capStrike) : Math.max(0, capStrike - settlePx);
+  return round2(perBtc * coveredBtc);
+};
+
+/** The cap rule a record settles under: what it was written with, else the legacy knockout. */
+export const wrapCapMode = (rec: Pick<DemoWrapRecord, "capMode">): CapMode => rec.capMode ?? "knockout";
+
+/** Contracts of the cap leg still held after any release (a partial fill leaves the rest capped). */
+export const cappedContracts = (rec: Pick<DemoWrapRecord, "capMode" | "release" | "hedge">): number =>
+  Math.max(0, (rec.hedge?.contracts ?? 0) - (wrapCapMode(rec) === "plain" ? rec.release?.contracts ?? 0 : 0));
+
+/** Whether the cap still binds: plain-mode wraps lose it at a (full) release. */
+export const wrapCapActive = (rec: Pick<DemoWrapRecord, "capMode" | "release" | "hedge">): boolean =>
+  wrapCapMode(rec) !== "plain" || rec.release == null || cappedContracts(rec) > 0;
+
 export type CyclePayable = {
   kind: "expiry" | "knockout" | "early_close";
   /** Vested credit owed for the cycle (full at expiry, vested-to-touch on knockout, vested-to-close early). */
   creditUsdc: number;
   /** Protective-wing payout when the cycle expired through the floor (natural expiry only). */
   floorPayoutUsdc: number;
+  /** plain mode, natural expiry: gains above the cap on the covered size, handed back (0 once released). */
+  capOwedUsdc: number;
+  /** plain mode: what the holder paid to release the cap mid-cycle (owed at settlement). */
+  releaseCostUsdc: number;
+  /** plain mode, early close: the collar's mark-to-market on the unwind (+ paid / − owed). */
+  closeValueUsdc: number;
+  /** credit + floor + closeValue − capOwed − release. NEGATIVE = the holder owes the difference. */
   totalUsdc: number;
+};
+
+const payable = (
+  kind: CyclePayable["kind"],
+  creditUsdc: number,
+  parts: Partial<Pick<CyclePayable, "floorPayoutUsdc" | "capOwedUsdc" | "releaseCostUsdc" | "closeValueUsdc">> = {}
+): CyclePayable => {
+  const floorPayoutUsdc = round2(parts.floorPayoutUsdc ?? 0);
+  const capOwedUsdc = round2(parts.capOwedUsdc ?? 0);
+  const releaseCostUsdc = round2(parts.releaseCostUsdc ?? 0);
+  const closeValueUsdc = round2(parts.closeValueUsdc ?? 0);
+  return {
+    kind,
+    creditUsdc: round2(creditUsdc),
+    floorPayoutUsdc,
+    capOwedUsdc,
+    releaseCostUsdc,
+    closeValueUsdc,
+    totalUsdc: round2(creditUsdc + floorPayoutUsdc + closeValueUsdc - capOwedUsdc - releaseCostUsdc)
+  };
 };
 
 /**
  * What is the trader owed for a CONCLUDED cycle? Pure. Returns null while the wrap is still open
  * (credit is paid at conclusion, never upfront) or when it failed before vesting existed.
- * `settlePx` is the expiry settle print (mark proxy in paper mode) used for the floor payout.
+ * `settlePx` is the expiry settle print (mark proxy in paper mode) used for the floor payout and,
+ * in plain mode, the gains above the cap. A negative total is a balance the holder owes: the
+ * caller records it on the wrap and gates new protection until it is settled.
  */
 export const cyclePayable = (rec: DemoWrapRecord, settlePx?: number | null): CyclePayable | null => {
   if (!rec.vesting) return null;
   const v = demoVestingStatus(rec, rec.concludedAtMs ?? rec.vesting.endMs);
   if (!v) return null;
+  const plain = wrapCapMode(rec) === "plain";
+  const releaseCostUsdc = plain ? rec.release?.costUsdc ?? 0 : 0;
   if (rec.status === "knocked_out") {
-    return { kind: "knockout", creditUsdc: v.vestedUsdc, floorPayoutUsdc: 0, totalUsdc: v.vestedUsdc };
+    return payable("knockout", v.vestedUsdc);
   }
   if (rec.status !== "concluded" || rec.concludedAtMs == null) return null;
   const natural = rec.concludedAtMs >= rec.vesting.endMs;
   if (!natural) {
-    return { kind: "early_close", creditUsdc: v.vestedUsdc, floorPayoutUsdc: 0, totalUsdc: v.vestedUsdc };
+    return payable("early_close", v.vestedUsdc, { releaseCostUsdc, closeValueUsdc: plain ? rec.closeValue?.valueUsdc ?? 0 : 0 });
   }
   const floorStrike = wrapFloorStrike(rec);
   const coveredBtc = (rec.hedge?.contracts ?? 0) * OKX_OPTION_LOT_BTC;
   const floorUsdc = floorStrike != null && settlePx != null ? floorPayoutUsdc(rec.position.side, floorStrike, settlePx, coveredBtc) : 0;
-  return { kind: "expiry", creditUsdc: v.fullCreditUsdc, floorPayoutUsdc: floorUsdc, totalUsdc: round2(v.fullCreditUsdc + floorUsdc) };
+  const capStrike = wrapCapStrike(rec);
+  const cappedBtc = cappedContracts(rec) * OKX_OPTION_LOT_BTC;
+  const capOwedUsdc = plain && capStrike != null && settlePx != null ? capExcessUsdc(rec.position.side, capStrike, settlePx, cappedBtc) : 0;
+  return payable("expiry", v.fullCreditUsdc, { floorPayoutUsdc: floorUsdc, capOwedUsdc, releaseCostUsdc });
+};
+
+/** Outstanding owed balance across an account's settled wraps (plain mode). */
+export const owedBalanceUsdc = (records: DemoWrapRecord[], account: string): number => {
+  const k = account.toLowerCase();
+  return round2(records.filter((r) => r.account.toLowerCase() === k && r.owed?.status === "owed").reduce((s, r) => s + (r.owed?.amountUsdc ?? 0), 0));
+};
+
+/** Record a cap touch on a plain-mode wrap (first touch stamped, later touches counted). Returns true on the FIRST touch. */
+export const noteCapTouch = (rec: DemoWrapRecord, nowMs: number, markPx: number): boolean => {
+  if (rec.capTouch) {
+    rec.capTouch.touches += 1;
+    return false;
+  }
+  rec.capTouch = { firstTouchedAtMs: nowMs, markPx: round2(markPx), touches: 1 };
+  pushStage(rec, "cap_touched", nowMs, `mark $${round2(markPx)} touched the cap $${wrapCapStrike(rec)} — nothing closes; gains above it this cycle fund the floor unless released`);
+  return true;
+};
+
+/**
+ * Book a release on an active plain-mode wrap: the cap stops binding on the released contracts;
+ * the cost is owed at settlement. A partial fill may be topped up by a later release (costs and
+ * contracts accumulate); a fully released cap refuses. Pure bookkeeping.
+ */
+export const releaseCap = (rec: DemoWrapRecord, release: CapRelease): boolean => {
+  if (rec.status !== "active" || wrapCapMode(rec) !== "plain" || !(release.contracts > 0)) return false;
+  const held = cappedContracts(rec);
+  if (held <= 0) return false;
+  const contracts = Math.min(held, release.contracts);
+  const costUsdc = round2(release.costUsdc);
+  rec.release = rec.release
+    ? { ...rec.release, atMs: release.atMs, markPx: round2(release.markPx), contracts: rec.release.contracts + contracts, costUsdc: round2(rec.release.costUsdc + costUsdc), source: release.source, note: [rec.release.note, release.note].filter(Boolean).join(" · ") || undefined }
+    : { ...release, contracts, costUsdc, markPx: round2(release.markPx) };
+  const left = cappedContracts(rec);
+  pushStage(
+    rec,
+    "cap_released",
+    release.atMs,
+    `cap $${wrapCapStrike(rec)} released on ${contracts} contract${contracts === 1 ? "" : "s"} at mark $${round2(release.markPx)} for $${costUsdc.toFixed(2)} (${release.source})${left > 0 ? ` — ${left} still capped` : " — every gain from here is the holder's"}`
+  );
+  return true;
 };
 
 // ── Auto-renew (protection is a STATE, not a button) ─────────────────────────

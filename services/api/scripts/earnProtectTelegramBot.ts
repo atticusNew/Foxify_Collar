@@ -8,7 +8,7 @@
  *
  *   paste address once  → stored per chat (read-only; we never ask for keys)
  *   /positions          → open perps with inline Earn & Protect buttons
- *   background notifier → pushes every cycle event: credit paid, renewed, knocked out + re-armed,
+ *   background notifier → pushes every cycle event: credit paid, renewed, cap touched, released,
  *                         refusals — the retention loop
  *
  * Run: TELEGRAM_BOT_TOKEN=… EP_API_BASE=http://localhost:8788 npx tsx services/api/scripts/earnProtectTelegramBot.ts
@@ -226,7 +226,7 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
           "🛡 <b>Protection live</b>",
           "",
           `${weekly ? "This week's" : "Today's"} credit: <b>$${q?.creditUsdc ?? "?"}</b> — unlocks through the ${weekly ? "week" : "day"}, pays at the cycle's close`,
-          `Hard floor: <b>$${(q?.floorStrike ?? 0).toLocaleString("en-US")}</b> · Cap: <b>$${(q?.capStrike ?? 0).toLocaleString("en-US")}</b> (touch ends the cycle — you keep your position, every gain, and the unlocked credit)`,
+          `Hard floor: <b>$${(q?.floorStrike ?? 0).toLocaleString("en-US")}</b> · Cap: <b>$${(q?.capStrike ?? 0).toLocaleString("en-US")}</b> (gains above it this ${weekly ? "week" : "day"} pay for the floor — release it any time in the app at the live price and keep every gain)`,
           "",
           `<i>Re-arms every ${weekly ? "week" : "day"} while the toggle stays on.</i>`
         ].join("\n")
