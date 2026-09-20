@@ -23,6 +23,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "n
 import { dirname } from "node:path";
 import type { PerpSide } from "../creditCollarPricer";
 import type { EpTenor } from "../perpTenor";
+import { summarizeVenueReference, type PerpVenueReference, type PerpVenueReferenceSummary } from "./venueReference";
 
 export type PerpTakeRule = "share" | "minimum" | "waived";
 
@@ -154,6 +155,12 @@ export interface PerpShadowOpenRecord {
    * quote's floor ladder, so the default depth changes on a measured number. Absent before 2026-09-20.
    */
   floorRulePick?: { rule: string; floorPct: number | null; by: "fixed" | "clears_minimum" | "best_paying" | "none" } | null;
+  /**
+   * The same two legs read at Deribit and Bullish the second OKX quoted them (venueReference.ts):
+   * would the identical collar have paid more elsewhere. A reference, never the price. Absent
+   * before 2026-09-20 and when the worker runs with PERP_SHADOW_VENUE_REF=0.
+   */
+  venueReference?: PerpVenueReference | null;
   buyInstId: string;
   sellInstId: string;
   floorStrikeCents: number;
@@ -692,6 +699,8 @@ export interface PerpCounterfactualSummary {
   fundingRule: { judged: number; wouldRefuse: number; creditCents: number; fundingCents: number };
   /** the counterfactual floor rule: which depth it would have written each quote to, and how often */
   floorRule: { rule: string | null; judged: number; picks: Record<string, number>; agreesWithLive: number };
+  /** Deribit and Bullish against OKX on the same legs at the same instant (a reference, not a counterfactual we could write) */
+  venueReference: PerpVenueReferenceSummary;
 }
 
 export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], capMode: PerpCapMode = DEFAULT_PERP_CAP_MODE): PerpCounterfactualSummary {
@@ -809,6 +818,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
     positionsWithCounterfactuals: withCf.length,
     recordedSince: withCf.length ? withCf.map((p) => p.at).sort()[0] : null,
     floorRule,
+    venueReference: summarizeVenueReference(positions.map((p) => p.venueReference)),
     baseline: finishBook(baseline),
     capLadder: [...rungs.entries()]
       .map(([bucket, { capPctSum, livePicks, underGuard, okxConfirmedTouches, hlOnlyTouches, probSum, probN, ...row }]) => ({

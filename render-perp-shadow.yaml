@@ -67,6 +67,12 @@ services:
         value: "5"
       - key: PERP_SHADOW_SCAN_MS
         value: "3600000"
+      # Venue reference: on every scan the same two legs are read at Deribit and Bullish (public,
+      # unsigned) and recorded against OKX's touch — would the identical collar have paid more
+      # elsewhere. Operator report card "Venue reference"; a measurement for FalconX RFQ
+      # acceptance, never the price. "0" turns the reads off.
+      - key: PERP_SHADOW_VENUE_REF
+        value: "1"
       - key: PERP_SHADOW_SETTLE_MS
         value: "900000"
       - key: PERP_SHADOW_DEMO_URL

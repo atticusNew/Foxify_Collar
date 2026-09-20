@@ -45,6 +45,7 @@ import { DEMO_CAP_PCT, DEMO_FLOOR_PCT, parseCapMode } from "../src/singleSide/tw
 import { capGuardFor, otherTenor, parseTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import { capRuleFromEnv, capRuleText } from "../src/singleSide/twoSided/creditCollar/capRule";
 import { fetchOkxListedSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
+import { bullishLegReader, deribitLegReader, readVenueReference } from "../src/singleSide/twoSided/creditCollar/perpShadow/venueReference";
 import {
   appendPerpShadowRecord,
   loadPerpShadow,
@@ -104,6 +105,10 @@ const TAKE: PerpTakeConfig = {
   deMinimisCents: Math.round(Number(process.env.EP_DE_MINIMIS_USDC || 0.05) * 100),
 };
 const CF_MIN_TAKE_BPS = Number(process.env.PERP_SHADOW_CF_MIN_TAKE_BPS || 5);
+// Venue reference (venueReference.ts): the same two legs read at Deribit and Bullish the second OKX
+// quotes them — a measurement for the operator report, never the price. PERP_SHADOW_VENUE_REF=0 turns it off.
+const VENUE_REF = !/^(0|false|off)$/i.test(String(process.env.PERP_SHADOW_VENUE_REF ?? "1"));
+const venueReaders = { deribit: deribitLegReader(), bullish: bullishLegReader() };
 
 const adminAuth = parseAdminAuthFromEnv(process.env);
 const OPERATOR_PATHS = new Set(["/report", "/api/shadow/report", "/api/shadow/export"]);
@@ -148,6 +153,12 @@ async function scanTick(): Promise<void> {
         },
         snap,
       );
+      if (rec.type === "open" && VENUE_REF) {
+        rec.venueReference = await readVenueReference(
+          { buyInstId: rec.buyInstId, sellInstId: rec.sellInstId, buyPxBtc: rec.buyPxBtc, sellPxBtc: rec.sellPxBtc, spot: hl.markPx },
+          venueReaders,
+        ).catch(() => null);
+      }
       appendPerpShadowRecord(LEDGER_PATH, rec);
     }
     lastScanAt = nowIso;
@@ -335,6 +346,9 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           capLadder: CAP_LADDER_RULE,
           capGuard: CAP_GUARD,
           capRule: capRuleText(CAP_RULE),
+          venueReference: VENUE_REF
+            ? "the same two legs read at Deribit and Bullish the second OKX quoted them (buy the floor at the ask, sell the cap at the bid, same strikes, same expiry); positive = that venue would have paid the holder more; a reference for FalconX RFQ acceptance, not a price we quote"
+            : "off (PERP_SHADOW_VENUE_REF=0)",
           fundingRule: "informational: how often the credit fails to clear what holding the perp costs over the cycle at the funding rate seen at open; the live product does not refuse on it (funding is the perp's cost, paid with or without protection)",
           feeRules: Object.fromEntries(Object.keys(summary.counterfactuals.feeRules).map((l) => [l, feeRuleText(l)])),
         },

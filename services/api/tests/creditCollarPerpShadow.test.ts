@@ -746,7 +746,16 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     const a = openRec("long", "a", "2026-09-18T23:00:00.000Z");
     appendPerpShadowRecord(path, a);
     appendPerpShadowRecord(path, { type: "settle", at: "2026-09-20T08:20:00.000Z", id: "a", settleCents: 7_000_000, source: "okx_delivery" });
-    appendPerpShadowRecord(path, openRec("short", "b", "2026-09-19T00:00:00.000Z"));
+    const b = openRec("short", "b", "2026-09-19T00:00:00.000Z");
+    // the venue reference as the worker records it: Deribit $30/BTC better than OKX, Bullish missing the cap bid
+    b.venueReference = {
+      okx: { buyAskCents: 100_000, sellBidCents: 80_000, netCents: -20_000 },
+      venues: {
+        deribit: { ok: true, buy: { instrument: "BTC-25SEP26-75000-P", bidCents: 95_000, askCents: 98_000 }, sell: { instrument: "BTC-25SEP26-86000-C", bidCents: 81_000, askCents: 84_000 }, netCents: -17_000, vsOkxCents: 3_000, vsOkxBps: 3.75 },
+        bullish: { ok: true, buy: { instrument: "BTC-USDC-20260925-75000-P", bidCents: 90_000, askCents: 105_000 }, sell: { instrument: "BTC-USDC-20260925-86000-C", bidCents: null, askCents: 90_000 }, netCents: null, vsOkxCents: null, vsOkxBps: null },
+      },
+    };
+    appendPerpShadowRecord(path, b);
 
     health = (await (await fetch(`${base}/healthz`)).json()) as Record<string, unknown>;
     assert.equal(health.positions, 2);
@@ -764,6 +773,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.equal(api.settled.length, 1);
     assert.equal(api.open.length, 1);
     assert.ok(!("counterfactuals" in api.settled[0]) && !("counterfactuals" in api.open[0]), "public positions carry no rule books");
+    assert.ok(!("venueReference" in api.summary), "the venue reference is an operator measurement, not part of the public record");
 
     const csv = await fetch(`${base}/api/shadow/positions.csv`);
     assert.match(csv.headers.get("content-type") ?? "", /text\/csv/);
@@ -797,6 +807,10 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.equal((report as unknown as { rules: { capMode: string; settlement: string } }).rules.capMode, "plain");
     assert.ok((report as unknown as { rules: { settlement: string } }).rules.settlement.includes("runs to expiry"));
     assert.ok(report.rules.feeRules.min_5bps.name === "share or 0.05% of notional");
+    const vref = (report as unknown as { rules: { venueReference: string }; counterfactuals: { venueReference: Record<string, { read: number; priced: number; beatOkx: number; avgVsOkxBps: number | null }> } });
+    assert.match(vref.rules.venueReference, /Deribit and Bullish/);
+    assert.deepEqual(vref.counterfactuals.venueReference.deribit, { read: 1, priced: 1, beatOkx: 1, avgVsOkxBps: 3.75, avgVsOkxCents: 3_000, buyAskPct: 100, sellBidPct: 100, errors: 0 });
+    assert.deepEqual(vref.counterfactuals.venueReference.bullish, { read: 1, priced: 0, beatOkx: 0, avgVsOkxBps: null, avgVsOkxCents: null, buyAskPct: 100, sellBidPct: 0, errors: 0 });
     const reportPage = await fetch(`${base}/report?token=op-secret`);
     assert.equal(reportPage.status, 200);
     const reportHtml = await reportPage.text();
@@ -806,6 +820,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.ok(reportHtml.includes("Does the math make sense") && reportHtml.includes("Tenor") && reportHtml.includes("Capacity"));
     assert.ok(!reportHtml.includes("Safest") && !reportHtml.includes("Most upside") && !reportHtml.includes("tier"), "no tiers anywhere in the perp shadow");
     assert.ok(reportHtml.includes('href="/api/shadow/export?token=op-secret"'));
+    assert.ok(reportHtml.includes("Venue reference") && reportHtml.includes("Deribit would have paid the holder 3.75 bps of spot more than OKX"), "the operator card reads the reference in one sentence");
     assert.ok(!reportHtml.includes("NaN") && !reportHtml.includes("undefined"));
 
     const exp = await fetch(`${base}/api/shadow/export`, op);
