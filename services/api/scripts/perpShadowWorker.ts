@@ -28,6 +28,8 @@
  *      PERP_SHADOW_SIZE_BTC (default 0.03 = 3 OKX lots) · PERP_SHADOW_SIDES (long,short)
  *      DEMO_FLOOR_PCT / DEMO_CAP_PCT (the live shape, default 0.06 / 0.015)
  *      EP_TENOR (weekly default; `daily` opts out) · EP_MIN_CAP_PCT / EP_CAP_MAX_PCT (+ _WEEKLY): the cap guard, as the demo
+ *      EP_CAP_MODE (plain default: the collar runs to expiry, gains above the cap are handed back, a touch is a
+ *                   release opportunity; `knockout` settles a touch as the end of the cycle, the previous rule)
  *      EP_TAKE_RATE (default 0.20) · EP_DE_MINIMIS_USDC (default 0.05)
  *      PERP_SHADOW_MIN_TAKE_BPS (live minimum, default 0 = none, as the product today)
  *      PERP_SHADOW_CF_MIN_TAKE_BPS (the fee-floor counterfactual, default 5)
@@ -39,7 +41,7 @@
 import { createReadStream, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
-import { DEMO_CAP_PCT, DEMO_FLOOR_PCT } from "../src/singleSide/twoSided/creditCollar/demoWrap";
+import { DEMO_CAP_PCT, DEMO_FLOOR_PCT, parseCapMode } from "../src/singleSide/twoSided/creditCollar/demoWrap";
 import { capGuardFor, otherTenor, parseTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import { fetchOkxListedSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
 import {
@@ -87,8 +89,12 @@ const GEOMETRY = { floorPct: numEnv(process.env.DEMO_FLOOR_PCT, DEMO_FLOOR_PCT),
 const TENOR = parseTenor(process.env.EP_TENOR);
 const CAP_GUARD = capGuardFor(TENOR, process.env);
 const OTHER_TENOR_CAP_GUARD = capGuardFor(otherTenor(TENOR), process.env);
+const CAP_MODE = parseCapMode(process.env.EP_CAP_MODE);
+const REPLAY = { capMode: CAP_MODE };
 const CAP_LADDER_RULE =
-  "the live floor held fixed, the funding wing moved to every listed strike in the band; each rung settled on the same Hyperliquid path, so it shows its own knock-out rate and buyback cost";
+  CAP_MODE === "plain"
+    ? "the live floor held fixed, the funding wing moved to every listed strike in the band; each rung settled on the same Hyperliquid path and print, so it shows how often it was touched (a release on offer), how often it ended past the cap and how much upside was handed back"
+    : "the live floor held fixed, the funding wing moved to every listed strike in the band; each rung settled on the same Hyperliquid path, so it shows its own knock-out rate and buyback cost";
 const COIN = process.env.PERP_SHADOW_COIN || "BTC";
 const TAKE: PerpTakeConfig = {
   shareRate: Number(process.env.EP_TAKE_RATE || 0.2),
@@ -188,7 +194,7 @@ const buildPath = async (p: PerpShadowPosition, candles: Candle[], interval: "1m
 async function settleTick(deps: { candles?: typeof fetchHlCandles; okxAround?: typeof fetchOkxIndexCandlesAround; delivery?: typeof fetchOkxDeliveryPrice } = {}): Promise<void> {
   try {
     const nowMs = Date.now();
-    const { positions } = loadPerpShadow(LEDGER_PATH);
+    const { positions } = loadPerpShadow(LEDGER_PATH, REPLAY);
     const due = positions.filter((p) => p.status === "open" && Date.parse(p.expiryIso) + SETTLE_GRACE_MS <= nowMs);
     const byExpiry = new Map<string, PerpShadowPosition[]>();
     for (const p of due) byExpiry.set(p.expiryIso, [...(byExpiry.get(p.expiryIso) ?? []), p]);
@@ -223,8 +229,8 @@ async function settleTick(deps: { candles?: typeof fetchHlCandles; okxAround?: t
 }
 
 function pageData(): { atIso: string; positions: PerpShadowPosition[]; summary: PerpShadowSummary } {
-  const { positions, refusals } = loadPerpShadow(LEDGER_PATH);
-  return { atIso: new Date().toISOString(), positions, summary: summarizePerpShadow(positions, refusals) };
+  const { positions, refusals } = loadPerpShadow(LEDGER_PATH, REPLAY);
+  return { atIso: new Date().toISOString(), positions, summary: summarizePerpShadow(positions, refusals, REPLAY) };
 }
 
 function publicSummary(s: PerpShadowSummary): Omit<PerpShadowSummary, "counterfactuals"> & {
@@ -238,7 +244,7 @@ function publicSummary(s: PerpShadowSummary): Omit<PerpShadowSummary, "counterfa
 }
 
 function healthBody(): Record<string, unknown> {
-  const { positions } = loadPerpShadow(LEDGER_PATH);
+  const { positions } = loadPerpShadow(LEDGER_PATH, REPLAY);
   return {
     ok: true,
     service: "earn-protect-perp-shadow",
@@ -246,7 +252,7 @@ function healthBody(): Record<string, unknown> {
     positions: positions.length,
     open: positions.filter((p) => p.status === "open").length,
     ledger: { path: LEDGER_PATH, ...perpLedgerStats(LEDGER_PATH) },
-    terms: { geometry: GEOMETRY, tenor: TENOR, capGuard: CAP_GUARD, contracts: CONTRACTS, sizeBtc: CONTRACTS * OKX_LOT_BTC, sides: SIDES, take: TAKE, counterfactualMinTakeBps: CF_MIN_TAKE_BPS },
+    terms: { geometry: GEOMETRY, tenor: TENOR, capMode: CAP_MODE, capGuard: CAP_GUARD, contracts: CONTRACTS, sizeBtc: CONTRACTS * OKX_LOT_BTC, sides: SIDES, take: TAKE, counterfactualMinTakeBps: CF_MIN_TAKE_BPS },
     lastScanAt,
     lastSettleAt,
     lastScanError,
@@ -291,7 +297,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/positions.csv") {
       const full = operator && url.searchParams.get("scope") === "full";
-      const csv = perpPositionsCsv(loadPerpShadow(LEDGER_PATH).positions, full ? "full" : "public");
+      const csv = perpPositionsCsv(loadPerpShadow(LEDGER_PATH, REPLAY).positions, full ? "full" : "public", REPLAY);
       res.writeHead(200, {
         "content-type": "text/csv; charset=utf-8",
         "content-disposition": `attachment; filename="perp-shadow-positions${full ? "-full" : ""}-${new Date().toISOString().slice(0, 10)}.csv"`,
@@ -318,6 +324,11 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         at: atIso,
         period: { recordedSince: summary.counterfactuals.recordedSince, renderedAt: atIso },
         rules: {
+          capMode: CAP_MODE,
+          settlement:
+            CAP_MODE === "plain"
+              ? "the collar runs to expiry: the exit is clamped at the floor and the cap; gains above the cap are handed back (they paid for the floor); the full credit is the holder's; a touch on the path closes nothing and is recorded with what a release would have cost; the writer is flat leg for leg and keeps the take"
+              : "a cap touch on the path ends the cycle: the credit vested to the touch is paid, the short cap leg is bought back at the money at the writer's cost",
           capLadder: CAP_LADDER_RULE,
           capGuard: CAP_GUARD,
           fundingRule: "the credit must clear what holding the perp costs over the cycle at the funding rate seen at open",
@@ -330,7 +341,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/report") {
       const { atIso, summary } = pageData();
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token"), capGuard: CAP_GUARD, tenor: TENOR }));
+      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token"), capGuard: CAP_GUARD, tenor: TENOR, capLadderRule: CAP_LADDER_RULE }));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {

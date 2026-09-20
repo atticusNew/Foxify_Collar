@@ -280,15 +280,57 @@ test("perp shadow: one snapshot becomes one open record with every counterfactua
   assert.ok(noGuard.type === "open" && noGuard.capStrikeCents === 8_100_000, "without a guard the same book writes the 1.25% cap");
 });
 
-test("perp shadow: settlement math for a long and a short at floor, cap and between (no path: the print decides)", () => {
+test("perp shadow: plain collar (the product) — the exit is clamped at both wings, the full credit is paid, the writer's side is the take", () => {
   const base = { contracts: 3, ctValBtc: 0.01, spotCents: 8_000_000, creditCents: 650, takeCents: 162 };
   const long = { ...base, side: "long" as const, floorStrikeCents: 7_500_000, capStrikeCents: 8_400_000 };
-  const ran = { knockedOut: false, touchedAtIso: null, vestedFraction: 1, paidCents: 650, buybackCents: 0 };
-  // crash to 70,000: naked −$300, protected floors at 75,000 → −$150 + $6.50 credit
+  const flat = { knockedOut: false, touchedAtIso: null, vestedFraction: 1, paidCents: 650, buybackCents: 0, writerCents: 162 };
+  // crash to 70,000: naked −$300, protected floors at 75,000 → −$150 + $6.50 credit — identical to the knock-out collar on the loss side
   let o = perpOutcome(long, 7_000_000);
+  assert.deepEqual(o, { nakedCents: -30_000, protectedCents: -15_000 + 650, deltaCents: 15_650, floorSave: true, capHit: false, capExcessCents: 0, ...flat });
+  assert.deepEqual(perpOutcome(long, 7_000_000, undefined, "plain"), o, "plain is the default mode");
+  // rally to 90,000: the exit is clamped at the 84,000 cap; $180 of gains above it are handed back (they paid for the floor); the writer is flat
+  o = perpOutcome(long, 9_000_000);
+  assert.deepEqual(o, { nakedCents: 30_000, protectedCents: 12_000 + 650, deltaCents: -18_000 + 650, floorSave: false, capHit: true, capExcessCents: 18_000, ...flat });
+  // between: only the credit differs
+  o = perpOutcome(long, 8_100_000);
+  assert.deepEqual(o, { nakedCents: 3_000, protectedCents: 3_650, deltaCents: 650, floorSave: false, capHit: false, capExcessCents: 0, ...flat });
+
+  const short = { ...base, side: "short" as const, floorStrikeCents: 8_500_000, capStrikeCents: 7_700_000 };
+  o = perpOutcome(short, 9_000_000); // rally hurts a short: floor at 85,000 saves it
+  assert.deepEqual(o, { nakedCents: -30_000, protectedCents: -15_000 + 650, deltaCents: 15_650, floorSave: true, capHit: false, capExcessCents: 0, ...flat });
+  o = perpOutcome(short, 7_000_000); // crash pays a short: clamped at the 77,000 cap, $210 handed back
+  assert.equal(o.capHit, true);
+  assert.equal(o.knockedOut, false);
+  assert.equal(o.nakedCents, 30_000);
+  assert.equal(o.capExcessCents, 21_000);
+  assert.equal(o.protectedCents, 9_000 + 650);
+  assert.equal(o.writerCents, 162);
+
+  // a touch on the path closes nothing in plain mode: it is the moment a release was on offer, priced at the ATM ask for the time left
+  const openMs = Date.UTC(2026, 8, 18, 23);
+  const expiryMs = DAILY;
+  const touchMs = openMs + 11 * 3_600_000;
+  const touch = { capStrikeCents: 8_400_000, atIso: new Date(touchMs).toISOString(), hlPxCents: 8_401_000, okxPxCents: 8_399_000, okxConfirmed: false, okxGapBps: -1.2 };
+  const atm = { askPxBtc: 0.006, hoursToExpiry: 33 };
+  const back = perpOutcome(long, 8_050_000, { touch, hasPath: true, openMs, expiryMs, atm });
+  assert.equal(back.knockedOut, false);
+  assert.equal(back.capHit, false, "the print came back inside: nothing was handed back");
+  assert.equal(back.touchedAtIso, touch.atIso);
+  assert.equal(back.paidCents, 650, "the full credit: nothing vests early in a plain collar");
+  assert.equal(back.buybackCents, buybackEstimateCents(0.03, 8_400_000, 22, atm), "what releasing at the touch would have cost (informational; nobody paid it)");
+  assert.equal(back.writerCents, 162);
+  assert.equal(back.protectedCents, 1_500 + 650);
+});
+
+test("perp shadow: knock-out mode (EP_CAP_MODE=knockout) — settlement math for a long and a short at floor, cap and between (no path: the print decides)", () => {
+  const base = { contracts: 3, ctValBtc: 0.01, spotCents: 8_000_000, creditCents: 650, takeCents: 162 };
+  const long = { ...base, side: "long" as const, floorStrikeCents: 7_500_000, capStrikeCents: 8_400_000 };
+  const ran = { knockedOut: false, touchedAtIso: null, vestedFraction: 1, paidCents: 650, buybackCents: 0, capExcessCents: 0 };
+  // crash to 70,000: naked −$300, protected floors at 75,000 → −$150 + $6.50 credit
+  let o = perpOutcome(long, 7_000_000, undefined, "knockout");
   assert.deepEqual(o, { nakedCents: -30_000, protectedCents: -15_000 + 650, deltaCents: 15_650, floorSave: true, capHit: false, writerCents: 162, ...ran });
   // rally to 90,000 with no path: a knock-out at expiry; the holder keeps every gain plus the credit, the writer pays the intrinsic
-  o = perpOutcome(long, 9_000_000);
+  o = perpOutcome(long, 9_000_000, undefined, "knockout");
   assert.deepEqual(o, {
     nakedCents: 30_000,
     protectedCents: 30_000 + 650,
@@ -300,22 +342,23 @@ test("perp shadow: settlement math for a long and a short at floor, cap and betw
     vestedFraction: 1,
     paidCents: 650,
     buybackCents: 18_000,
+    capExcessCents: 0,
     writerCents: 162 - 18_000,
   });
   // between: only the credit differs
-  o = perpOutcome(long, 8_100_000);
+  o = perpOutcome(long, 8_100_000, undefined, "knockout");
   assert.deepEqual(o, { nakedCents: 3_000, protectedCents: 3_650, deltaCents: 650, floorSave: false, capHit: false, writerCents: 162, ...ran });
 
   const short = { ...base, side: "short" as const, floorStrikeCents: 8_500_000, capStrikeCents: 7_700_000 };
-  o = perpOutcome(short, 9_000_000); // rally hurts a short: floor at 85,000 saves it
+  o = perpOutcome(short, 9_000_000, undefined, "knockout"); // rally hurts a short: floor at 85,000 saves it
   assert.deepEqual(o, { nakedCents: -30_000, protectedCents: -15_000 + 650, deltaCents: 15_650, floorSave: true, capHit: false, writerCents: 162, ...ran });
-  o = perpOutcome(short, 7_000_000); // crash pays a short; the cap was crossed
+  o = perpOutcome(short, 7_000_000, undefined, "knockout"); // crash pays a short; the cap was crossed
   assert.equal(o.knockedOut, true);
   assert.equal(o.nakedCents, 30_000);
   assert.equal(o.buybackCents, 21_000);
 });
 
-test("perp shadow: on the path a cap touch is a knock-out at the touch — vested credit paid, unvested kept, buyback at the money", () => {
+test("perp shadow: knock-out mode — on the path a cap touch is a knock-out at the touch — vested credit paid, unvested kept, buyback at the money", () => {
   const openMs = Date.UTC(2026, 8, 18, 23);
   const expiryMs = DAILY; // 33h later
   const long = { side: "long" as const, contracts: 3, ctValBtc: 0.01, spotCents: 8_000_000, floorStrikeCents: 7_500_000, capStrikeCents: 8_200_000, creditCents: 660, takeCents: 165 };
@@ -323,7 +366,7 @@ test("perp shadow: on the path a cap touch is a knock-out at the touch — veste
   const touch = { capStrikeCents: 8_200_000, atIso: new Date(touchMs).toISOString(), hlPxCents: 8_201_000, okxPxCents: 8_199_000, okxConfirmed: false, okxGapBps: -1.2 };
   const atm = { askPxBtc: 0.006, hoursToExpiry: 33 };
   // the print came back to 80,500: without the path this is "closed between"; with it, the cycle ended at the touch
-  const o = perpOutcome(long, 8_050_000, { touch, hasPath: true, openMs, expiryMs, atm });
+  const o = perpOutcome(long, 8_050_000, { touch, hasPath: true, openMs, expiryMs, atm }, "knockout");
   assert.equal(o.knockedOut, true);
   assert.equal(o.capHit, true);
   assert.equal(o.floorSave, false);
@@ -341,10 +384,10 @@ test("perp shadow: on the path a cap touch is a knock-out at the touch — veste
   assert.equal(o.writerCents, 165 + (660 - 220) - expectBuyback, "take + unvested kept − buyback");
 
   // the same position on a path WITHOUT a touch, printing between: floor only, full credit, writer = take
-  const ran = perpOutcome(long, 8_050_000, { touch: null, hasPath: true, openMs, expiryMs, atm });
-  assert.deepEqual(ran, { nakedCents: 1_500, protectedCents: 2_160, deltaCents: 660, floorSave: false, capHit: false, knockedOut: false, touchedAtIso: null, vestedFraction: 1, paidCents: 660, buybackCents: 0, writerCents: 165 });
+  const ran = perpOutcome(long, 8_050_000, { touch: null, hasPath: true, openMs, expiryMs, atm }, "knockout");
+  assert.deepEqual(ran, { nakedCents: 1_500, protectedCents: 2_160, deltaCents: 660, floorSave: false, capHit: false, knockedOut: false, touchedAtIso: null, vestedFraction: 1, paidCents: 660, buybackCents: 0, capExcessCents: 0, writerCents: 165 });
   // a path with no touch but a print beyond the cap: the last candle carried it there — knock-out at expiry, intrinsic buyback
-  const gap = perpOutcome(long, 8_300_000, { touch: null, hasPath: true, openMs, expiryMs, atm });
+  const gap = perpOutcome(long, 8_300_000, { touch: null, hasPath: true, openMs, expiryMs, atm }, "knockout");
   assert.equal(gap.knockedOut, true);
   assert.equal(gap.touchedAtIso, new Date(expiryMs).toISOString());
   assert.equal(gap.buybackCents, 3_000);
@@ -453,7 +496,47 @@ test("perp shadow: the ledger replays opens, settles (on the path) and voids; th
   for (const r of records) appendPerpShadowRecord(path, r);
   assert.equal(readFileSync(path, "utf8").trim().split("\n").length, records.length, "append-only, one line per record");
 
-  const { positions, refusals } = loadPerpShadow(path);
+  // The product (plain, the default): the same ledger read the way the writer actually carries it.
+  {
+    const { positions: plain, refusals: pr } = loadPerpShadow(path);
+    assert.equal(plain.length, 3);
+    const a1 = plain.find((p) => p.id === "a")!.outcome!;
+    const b1 = plain.find((p) => p.id === "b")!.outcome!;
+    assert.ok(!a1.knockedOut && a1.floorSave, "plain: the touch closed nothing, so the floor was still there for the crash");
+    assert.equal(a1.touchedAtIso, "2026-09-19T10:00:00.000Z", "…but the touch is on the record: a release was on offer");
+    assert.equal(a1.paidCents, a.creditCents, "the full credit");
+    assert.ok(a1.buybackCents > 0, "and what releasing then would have cost");
+    assert.equal(a1.capExcessCents, 0, "the print came back inside the cap: nothing handed back");
+    assert.equal(a1.writerCents, a.takeCents, "the writer is flat: hedged leg for leg");
+    assert.ok(b1.capHit && !b1.knockedOut, "plain: the short printed past its cap");
+    assert.equal(b1.capExcessCents, Math.round(0.03 * (b.capStrikeCents - 7_000_000)), "gains below the cap on 0.03 BTC handed back");
+    assert.equal(b1.protectedCents, Math.round(0.03 * (8_000_000 - b.capStrikeCents)) + b.creditCents);
+    assert.equal(b1.writerCents, b.takeCents);
+    const sp = summarizePerpShadow(plain, pr);
+    assert.equal(sp.capMode, "plain");
+    assert.equal(sp.knockouts, 0);
+    assert.equal(sp.floorSaves, 1);
+    assert.equal(sp.capHits, 1);
+    assert.equal(sp.writerCents, a.takeCents + b.takeCents);
+    assert.equal(sp.paidCents, a.creditCents + b.creditCents);
+    assert.deepEqual(
+      { ...sp.capDetail, releaseAtTouchCents: undefined },
+      { touched: 2, endedPastCap: 1, capExcessCents: b1.capExcessCents, releaseAtTouchCents: undefined, avgHoursToTouch: 20.5, okxConfirmed: 1, hlOnly: 1, creditOnPastCapCents: b.creditCents },
+    );
+    assert.equal(sp.capDetail.releaseAtTouchCents, a1.buybackCents + b1.buybackCents);
+    assert.equal(sp.counterfactuals.baseline.knockouts, 0);
+    assert.equal(sp.counterfactuals.capLadder[0].knockouts, 0, "no rung knocks out in plain mode…");
+    const r15p = sp.counterfactuals.capLadder[0];
+    assert.equal(r15p.okxConfirmedTouches + r15p.hlOnlyTouches, 2, "…the touches are still counted, per rung");
+    assert.ok(r15p.capExcessCents > 0, "and the closest rung handed the most upside back on the short's crash");
+    const pubPlain = perpPositionsCsv(plain, "public").trimEnd().split("\n");
+    assert.ok(pubPlain[0].endsWith(",cap_excess_c,writer_c"));
+    assert.ok(pubPlain.find((l) => l.startsWith("a,long,"))!.includes(",0,2026-09-19T10:00:00.000Z,1,"), "not knocked out, touched, fully vested");
+  }
+
+  // Knock-out mode (EP_CAP_MODE=knockout): the cycle ends at the touch.
+  const KO = { capMode: "knockout" as const };
+  const { positions, refusals } = loadPerpShadow(path, KO);
   assert.equal(positions.length, 3);
   assert.equal(refusals.length, 1);
   const pa = positions.find((p) => p.id === "a")!;
@@ -478,7 +561,7 @@ test("perp shadow: the ledger replays opens, settles (on the path) and voids; th
   assert.equal(pc.voidReason, "no delivery price published");
   assert.equal(pc.outcome, undefined);
 
-  const s = summarizePerpShadow(positions, refusals);
+  const s = summarizePerpShadow(positions, refusals, KO);
   assert.equal(s.positions, 3);
   assert.equal(s.settled, 2);
   assert.equal(s.void, 1);
@@ -555,14 +638,14 @@ test("perp shadow: the ledger replays opens, settles (on the path) and voids; th
   assert.equal(cf.tenors.weekly.settled, 0, "tenor alternatives are never settled against the daily print");
   assert.equal(cf.tenors.weekly.avgDays, 6.4);
 
-  const pub = perpPositionsCsv(positions, "public").trimEnd().split("\n");
+  const pub = perpPositionsCsv(positions, "public", KO).trimEnd().split("\n");
   assert.equal(pub[0], PERP_CSV_PUBLIC_COLUMNS.join(","));
   assert.equal(pub.length, 4);
   assert.ok(pub[0].includes(",knocked_out,touched_at_utc,vested_frac,paid_c,") && pub[0].endsWith(",writer_c"));
   assert.ok(!pub[0].includes("cap_ladder") && !pub[0].includes("alt_tenor_credit_c") && !pub[0].includes("buyback_c"));
   const rowA = pub.find((l) => l.startsWith("a,long,"))!;
   assert.ok(rowA.includes(",1,2026-09-19T10:00:00.000Z,0.3333,"), "knocked out at the touch, a third vested");
-  const full = perpPositionsCsv(positions, "full").trimEnd().split("\n");
+  const full = perpPositionsCsv(positions, "full", KO).trimEnd().split("\n");
   assert.equal(full[0], PERP_CSV_COLUMNS.join(","));
   assert.equal(full[0].split(",").length, PERP_CSV_COLUMNS.length);
   for (const line of full.slice(1)) assert.equal(line.split(",").length >= PERP_CSV_COLUMNS.length, true, "every row has every column (JSON cells are quoted)");
@@ -570,7 +653,7 @@ test("perp shadow: the ledger replays opens, settles (on the path) and voids; th
   assert.ok(full.find((l) => l.startsWith("a,long,"))!.includes('""ko"":true'), "the ladder cell carries each rung's knock-out");
 
   // replay is pure: the same records in memory give the same positions
-  assert.deepEqual(replayPerpShadow(records).positions.map((p) => [p.id, p.status]), [["a", "settled"], ["b", "settled"], ["c", "void"]]);
+  assert.deepEqual(replayPerpShadow(records, KO).positions.map((p) => [p.id, p.status]), [["a", "settled"], ["b", "settled"], ["c", "void"]]);
 });
 
 test("perp shadow: market parsers read venue payloads and refuse to invent a print", () => {
@@ -612,9 +695,10 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.equal(health.ok, true);
     assert.equal(health.positions, 0);
     assert.deepEqual(health.ledger, { path, exists: false, bytes: 0, records: 0 });
-    const terms = health.terms as { geometry: { floorPct: number; capPct: number }; tenor: string; capGuard: { minCapPct: number; maxCapPct: number } };
+    const terms = health.terms as { geometry: { floorPct: number; capPct: number }; tenor: string; capMode: string; capGuard: { minCapPct: number; maxCapPct: number } };
     assert.deepEqual(terms.geometry, { floorPct: 0.06, capPct: 0.015 });
     assert.equal(terms.tenor, "weekly", "the weekly is the default tenor");
+    assert.equal(terms.capMode, "plain", "the plain collar is the product; knockout is the opt-in rule");
     assert.deepEqual(terms.capGuard, { minCapPct: 0.04, maxCapPct: 0.08 }, "and the guard follows it");
     const emptyPage = await fetch(`${base}/`);
     assert.equal(emptyPage.status, 200);
@@ -645,7 +729,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     const csv = await fetch(`${base}/api/shadow/positions.csv`);
     assert.match(csv.headers.get("content-type") ?? "", /text\/csv/);
     const csvHead = (await csv.text()).split("\n")[0];
-    assert.ok(csvHead.endsWith(",path_lo_c,writer_c") && csvHead.includes(",knocked_out,") && !csvHead.includes("alt_tenor_credit_c") && !csvHead.includes("buyback_c"));
+    assert.ok(csvHead.endsWith(",path_lo_c,cap_excess_c,writer_c") && csvHead.includes(",knocked_out,") && !csvHead.includes("alt_tenor_credit_c") && !csvHead.includes("buyback_c"));
     assert.ok(!(await (await fetch(`${base}/api/shadow/positions.csv?scope=full`)).text()).includes("alt_tenor_credit_c"), "scope=full without the token is public");
     const full = await fetch(`${base}/api/shadow/positions.csv?scope=full&token=op-secret`);
     assert.match(full.headers.get("content-disposition") ?? "", /perp-shadow-positions-full-/);
@@ -670,12 +754,16 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.deepEqual(report.counterfactuals.capacity.map((c) => c.mult), [1, 10, 50]);
     assert.ok(report.counterfactuals.capLadder.length >= 2, "every listed cap distance in the band is a rung");
     assert.deepEqual(report.rules.capGuard, { minCapPct: 0.04, maxCapPct: 0.08 });
-    assert.ok(report.rules.capLadder.includes("knock-out rate") && report.rules.fundingRule.includes("clear"));
+    assert.ok(report.rules.capLadder.includes("handed back") && !report.rules.capLadder.includes("knock-out rate") && report.rules.fundingRule.includes("clear"));
+    assert.equal((report as unknown as { rules: { capMode: string; settlement: string } }).rules.capMode, "plain");
+    assert.ok((report as unknown as { rules: { settlement: string } }).rules.settlement.includes("runs to expiry"));
     assert.ok(report.rules.feeRules.min_5bps.name === "share or 0.05% of notional");
     const reportPage = await fetch(`${base}/report?token=op-secret`);
     assert.equal(reportPage.status, 200);
     const reportHtml = await reportPage.text();
-    assert.ok(reportHtml.includes("What each rule would have done") && reportHtml.includes("Cap distance") && reportHtml.includes("Knock-outs"));
+    assert.ok(reportHtml.includes("What each rule would have done") && reportHtml.includes("Cap distance") && reportHtml.includes("The cap"));
+    assert.ok(!reportHtml.includes("Knock-outs") && !reportHtml.includes("knocked out"), "plain mode: no knock-out card on the report");
+    assert.ok(reportHtml.includes("touched on the path") && reportHtml.includes("release at the touch"));
     assert.ok(reportHtml.includes("Does the math make sense") && reportHtml.includes("Tenor") && reportHtml.includes("Capacity"));
     assert.ok(!reportHtml.includes("Safest") && !reportHtml.includes("Most upside") && !reportHtml.includes("tier"), "no tiers anywhere in the perp shadow");
     assert.ok(reportHtml.includes('href="/api/shadow/export?token=op-secret"'));

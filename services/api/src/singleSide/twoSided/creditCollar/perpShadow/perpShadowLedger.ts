@@ -18,6 +18,7 @@
  * larger sizes, the weekly), so the rule comparison is measured, not argued.
  */
 
+import type { CapMode } from "../demoWrap";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PerpSide } from "../creditCollarPricer";
@@ -226,11 +227,21 @@ export interface PerpOutcome {
   vestedFraction: number;
   /** the holder's cash: the credit × vested fraction */
   paidCents: number;
-  /** estimated cost of buying the short funding leg back at the touch (ATM ask at the remaining time) */
+  /**
+   * knockout: the estimated cost of buying the short funding leg back at the touch (ATM ask at
+   * the remaining time), the writer's cost. plain: the same number as the RELEASE price the
+   * holder would have paid at the touch to keep the upside (informational; nobody paid it).
+   */
   buybackCents: number;
-  /** the writer's side: the take, plus unvested credit kept, minus the buyback */
+  /** plain: gains above the cap on the covered size at the print, handed back by the holder (0 in knockout mode) */
+  capExcessCents: number;
+  /** the writer's side: knockout = take + unvested kept − buyback; plain = the take (hedged leg for leg) */
   writerCents: number;
 }
+
+/** How the shadow settles the cap (mirrors the demo's EP_CAP_MODE; plain is the product). */
+export type PerpCapMode = CapMode;
+export const DEFAULT_PERP_CAP_MODE: PerpCapMode = "plain";
 
 /** Cents of P&L on `qtyBtc` from `fromCents` to `toCents`, signed for the side. */
 const pnlCents = (side: PerpSide, qtyBtc: number, fromCents: number, toCents: number): number =>
@@ -282,12 +293,43 @@ export function perpOutcome(
   p: Pick<PerpShadowOpenRecord, "side" | "contracts" | "ctValBtc" | "spotCents" | "floorStrikeCents" | "capStrikeCents" | "creditCents" | "takeCents">,
   settleCents: number,
   ctx?: PerpSettleContext,
+  capMode: PerpCapMode = DEFAULT_PERP_CAP_MODE,
 ): PerpOutcome {
   const qty = p.contracts * p.ctValBtc;
   const naked = pnlCents(p.side, qty, p.spotCents, settleCents);
   const floorSaveAtPrint = p.side === "long" ? settleCents < p.floorStrikeCents : settleCents > p.floorStrikeCents;
   const beyondCapAtPrint = p.side === "long" ? settleCents > p.capStrikeCents : settleCents < p.capStrikeCents;
   const floored = p.side === "long" ? Math.max(p.floorStrikeCents, settleCents) : Math.min(p.floorStrikeCents, settleCents);
+
+  if (capMode === "plain") {
+    // The plain collar runs to expiry: the exit is clamped at BOTH wings. Gains above the cap are
+    // handed back (they paid for the floor); the full credit is the holder's; the hedge is held
+    // leg for leg so the writer's side is the take. A touch on the path closed nothing; it is
+    // recorded as the moment a release was on offer, with what it would have cost.
+    const clamped = p.side === "long" ? Math.min(p.capStrikeCents, floored) : Math.max(p.capStrikeCents, floored);
+    const protectedPnl = pnlCents(p.side, qty, p.spotCents, clamped) + p.creditCents;
+    const excess = beyondCapAtPrint ? Math.round(qty * Math.abs(settleCents - p.capStrikeCents)) : 0;
+    const touch = ctx?.touch ?? null;
+    let releaseAtTouch = 0;
+    if (touch && ctx) {
+      const hoursLeft = Math.max(0, (ctx.expiryMs - Date.parse(touch.atIso)) / 3_600_000);
+      releaseAtTouch = buybackEstimateCents(qty, p.capStrikeCents, hoursLeft, ctx.atm);
+    }
+    return {
+      nakedCents: naked,
+      protectedCents: protectedPnl,
+      deltaCents: protectedPnl - naked,
+      floorSave: floorSaveAtPrint,
+      capHit: beyondCapAtPrint,
+      knockedOut: false,
+      touchedAtIso: touch?.atIso ?? null,
+      vestedFraction: 1,
+      paidCents: p.creditCents,
+      buybackCents: releaseAtTouch,
+      capExcessCents: excess,
+      writerCents: p.takeCents,
+    };
+  }
 
   if (ctx?.touch) {
     const touchMs = Date.parse(ctx.touch.atIso);
@@ -308,6 +350,7 @@ export function perpOutcome(
       vestedFraction: +vested.toFixed(4),
       paidCents: paid,
       buybackCents: buyback,
+      capExcessCents: 0,
       writerCents: p.takeCents + (p.creditCents - paid) - buyback,
     };
   }
@@ -329,6 +372,7 @@ export function perpOutcome(
         vestedFraction: 1,
         paidCents: p.creditCents,
         buybackCents: intrinsic,
+        capExcessCents: 0,
         writerCents: p.takeCents - intrinsic,
       };
     }
@@ -343,6 +387,7 @@ export function perpOutcome(
       vestedFraction: 1,
       paidCents: p.creditCents,
       buybackCents: 0,
+      capExcessCents: 0,
       writerCents: p.takeCents,
     };
   }
@@ -360,6 +405,7 @@ export function perpOutcome(
     vestedFraction: 1,
     paidCents: p.creditCents,
     buybackCents: intrinsic,
+    capExcessCents: 0,
     writerCents: p.takeCents - intrinsic,
   };
 }
@@ -405,7 +451,7 @@ const settleCtx = (p: PerpShadowPosition, capStrikeCents: number, all: PerpShado
 };
 
 /** The same outcome for an alternative's terms on the same position, path and print. */
-export function altOutcome(p: PerpShadowPosition, alt: PerpAltTerms, settleCents: number, all: PerpShadowPosition[] = [p]): PerpOutcome {
+export function altOutcome(p: PerpShadowPosition, alt: PerpAltTerms, settleCents: number, all: PerpShadowPosition[] = [p], capMode: PerpCapMode = DEFAULT_PERP_CAP_MODE): PerpOutcome {
   return perpOutcome(
     {
       side: p.side,
@@ -419,7 +465,12 @@ export function altOutcome(p: PerpShadowPosition, alt: PerpAltTerms, settleCents
     },
     settleCents,
     settleCtx(p, alt.capStrikeCents, all),
+    capMode,
   );
+}
+
+export interface PerpReplayOptions {
+  capMode?: PerpCapMode;
 }
 
 export function appendPerpShadowRecord(path: string, record: PerpShadowRecord): void {
@@ -441,7 +492,8 @@ export function loadPerpShadowRecords(path: string): PerpShadowRecord[] {
     .map((l) => JSON.parse(l) as PerpShadowRecord);
 }
 
-export function replayPerpShadow(records: PerpShadowRecord[]): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[] } {
+export function replayPerpShadow(records: PerpShadowRecord[], opts: PerpReplayOptions = {}): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[] } {
+  const capMode = opts.capMode ?? DEFAULT_PERP_CAP_MODE;
   const byId = new Map<string, PerpShadowPosition>();
   const refusals: PerpShadowRefusalRecord[] = [];
   for (const r of records) {
@@ -470,13 +522,13 @@ export function replayPerpShadow(records: PerpShadowRecord[]): { positions: Perp
   // may be a later open than the position itself.
   const positions = [...byId.values()];
   for (const p of positions) {
-    if (p.status === "settled" && p.settleCents != null) p.outcome = perpOutcome(p, p.settleCents, settleCtx(p, p.capStrikeCents, positions));
+    if (p.status === "settled" && p.settleCents != null) p.outcome = perpOutcome(p, p.settleCents, settleCtx(p, p.capStrikeCents, positions), capMode);
   }
   return { positions, refusals };
 }
 
-export function loadPerpShadow(path: string): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[] } {
-  return replayPerpShadow(loadPerpShadowRecords(path));
+export function loadPerpShadow(path: string, opts: PerpReplayOptions = {}): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[] } {
+  return replayPerpShadow(loadPerpShadowRecords(path), opts);
 }
 
 // ── Summary ─────────────────────────────────────────────────────────────────
@@ -500,6 +552,8 @@ export interface PerpRuleBook {
   /** hours from open to the touch, averaged over knock-outs */
   avgHoursToTouch: number | null;
   buybackCents: number;
+  /** plain: gains above the cap handed back at the print, summed */
+  capExcessCents: number;
   /** what holders were actually paid (vested at knock-outs) */
   paidCents: number;
   holderDeltaCents: number;
@@ -525,6 +579,7 @@ const emptyBook = (): PerpRuleBook => ({
   knockoutRatePct: null,
   avgHoursToTouch: null,
   buybackCents: 0,
+  capExcessCents: 0,
   paidCents: 0,
   holderDeltaCents: 0,
   writerCents: 0,
@@ -549,6 +604,7 @@ const bookSettle = (b: BookAcc, o: PerpOutcome, openMs: number): void => {
     if (o.touchedAtIso) b.touchHours += (Date.parse(o.touchedAtIso) - openMs) / 3_600_000;
   }
   b.buybackCents += o.buybackCents;
+  b.capExcessCents += o.capExcessCents;
   b.paidCents += o.paidCents;
   b.holderDeltaCents += o.deltaCents;
   b.writerCents += o.writerCents;
@@ -591,7 +647,7 @@ export interface PerpCounterfactualSummary {
   fundingRule: { judged: number; wouldRefuse: number; creditCents: number; fundingCents: number };
 }
 
-export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): PerpCounterfactualSummary {
+export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], capMode: PerpCapMode = DEFAULT_PERP_CAP_MODE): PerpCounterfactualSummary {
   const withCf = positions.filter((p) => p.counterfactuals);
   const baseline = newAcc();
   const rungs = new Map<string, BookAcc & { capPctSum: number; livePicks: number; underGuard: number; okxConfirmedTouches: number; hlOnlyTouches: number }>();
@@ -621,7 +677,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): P
       else {
         bookQuote(row, p.notionalCents, rung.terms);
         if (settled) {
-          const o = altOutcome(p, rung.terms, p.settleCents!, positions);
+          const o = altOutcome(p, rung.terms, p.settleCents!, positions, capMode);
           bookSettle(row, o, openMs);
           const touch = touchFor(p.path, rung.capStrikeCents);
           if (touch?.okxConfirmed === true) row.okxConfirmedTouches += 1;
@@ -644,7 +700,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): P
         takeRule: fr.takeRule,
       };
       bookQuote(feeRules[label], p.notionalCents, terms);
-      if (settled) bookSettle(feeRules[label], altOutcome(p, terms, p.settleCents!, positions), openMs);
+      if (settled) bookSettle(feeRules[label], altOutcome(p, terms, p.settleCents!, positions, capMode), openMs);
     }
     for (const [label, alt] of Object.entries(cf.tenors ?? {})) {
       const row = tenors.get(label) ?? { ...newAcc(), dayNum: 0, dayDen: 0 };
@@ -667,7 +723,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[]): P
           row.spreadNum += ((probe.terms.midCreditCents - probe.terms.netCreditCents) / notional) * 10000;
           row.spreadDen += 1;
         }
-        if (settled) bookSettle(row, altOutcome({ ...p, contracts: probe.contracts }, probe.terms, p.settleCents!, positions), openMs);
+        if (settled) bookSettle(row, altOutcome({ ...p, contracts: probe.contracts }, probe.terms, p.settleCents!, positions, capMode), openMs);
       }
       capacity.set(probe.mult, row);
     }
@@ -765,8 +821,28 @@ export interface PerpShadowSummary {
   /** the cap distance actually written, averaged, fraction */
   avgCapPct: number | null;
   knockoutDetail: PerpKnockoutSummary;
+  /** how the cap settled these positions */
+  capMode: PerpCapMode;
+  /** plain mode: the cap as the holder experienced it */
+  capDetail: PerpCapSummary;
   sameStrike: PerpSameStrikeSummary;
   counterfactuals: PerpCounterfactualSummary;
+}
+
+export interface PerpCapSummary {
+  /** settled positions whose cap was touched on the path (a release was on offer) */
+  touched: number;
+  /** settled positions that printed past the cap at expiry (upside handed back) */
+  endedPastCap: number;
+  /** gains above the cap handed back, summed */
+  capExcessCents: number;
+  /** what releasing at the touch would have cost, summed over touched positions (informational) */
+  releaseAtTouchCents: number;
+  avgHoursToTouch: number | null;
+  okxConfirmed: number;
+  hlOnly: number;
+  /** credit paid on the positions that ended past the cap: did it compensate for the upside handed back? */
+  creditOnPastCapCents: number;
 }
 
 export function summarizeSameStrike(positions: PerpShadowPosition[]): PerpSameStrikeSummary {
@@ -789,7 +865,8 @@ export function summarizeSameStrike(positions: PerpShadowPosition[]): PerpSameSt
   return out;
 }
 
-export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: PerpShadowRefusalRecord[]): PerpShadowSummary {
+export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: PerpShadowRefusalRecord[], opts: PerpReplayOptions = {}): PerpShadowSummary {
+  const capMode = opts.capMode ?? DEFAULT_PERP_CAP_MODE;
   const s: PerpShadowSummary = {
     positions: positions.length,
     open: 0,
@@ -833,8 +910,10 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
       buybackCents: 0,
       unvestedKeptCents: 0,
     },
+    capMode,
+    capDetail: { touched: 0, endedPastCap: 0, capExcessCents: 0, releaseAtTouchCents: 0, avgHoursToTouch: null, okxConfirmed: 0, hlOnly: 0, creditOnPastCapCents: 0 },
     sameStrike: summarizeSameStrike(positions),
-    counterfactuals: summarizePerpCounterfactuals(positions),
+    counterfactuals: summarizePerpCounterfactuals(positions, capMode),
   };
   const ats = [...positions.map((p) => p.at), ...refusals.map((r) => r.at)].sort();
   s.firstAt = ats[0] ?? null;
@@ -850,6 +929,7 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
   let gapDen = 0;
   let touchHours = 0;
   let touchCount = 0;
+  let capTouchHours = 0;
   const hourBuckets = new Map<string, number>();
   const ko = s.knockoutDetail;
   for (const p of positions) {
@@ -885,6 +965,20 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
       s.writerCents += o.writerCents;
       s.bySide[p.side].settled += 1;
       s.bySide[p.side].holderDeltaCents += o.deltaCents;
+      // The cap as the holder met it, whatever the mode: touched on the path, or printed past at expiry.
+      const capTouch = touchFor(p.path, p.capStrikeCents);
+      if (capTouch) {
+        s.capDetail.touched += 1;
+        s.capDetail.releaseAtTouchCents += o.buybackCents; // both modes price the same leg at the same touch
+        capTouchHours += (Date.parse(capTouch.atIso) - Date.parse(p.at)) / 3_600_000;
+        if (capTouch.okxConfirmed === true) s.capDetail.okxConfirmed += 1;
+        else if (capTouch.okxConfirmed === false) s.capDetail.hlOnly += 1;
+      }
+      if (o.capExcessCents > 0) {
+        s.capDetail.endedPastCap += 1;
+        s.capDetail.capExcessCents += o.capExcessCents;
+        s.capDetail.creditOnPastCapCents += o.paidCents;
+      }
       if (o.knockedOut) {
         s.knockouts += 1;
         s.bySide[p.side].knockouts += 1;
@@ -918,6 +1012,7 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
   ko.avgHoursToTouch = touchCount > 0 ? +(touchHours / touchCount).toFixed(1) : null;
   ko.touchHours = hourBuckets.size;
   ko.maxInOneHour = Math.max(0, ...hourBuckets.values());
+  s.capDetail.avgHoursToTouch = s.capDetail.touched > 0 ? +(capTouchHours / s.capDetail.touched).toFixed(1) : null;
   return s;
 }
 
@@ -963,6 +1058,7 @@ export const PERP_CSV_PUBLIC_COLUMNS = [
   "paid_c",
   "path_hi_c",
   "path_lo_c",
+  "cap_excess_c",
   "writer_c",
 ] as const;
 
@@ -1004,7 +1100,8 @@ const altTenorCells = (tenors: Record<string, PerpTenorAlt> | undefined): Array<
   return [label, alt.expiryIso, alt.floorStrikeCents, alt.capStrikeCents, alt.grossCreditCents, alt.creditCents, alt.takeCents, 0];
 };
 
-export function perpPositionsCsv(positions: PerpShadowPosition[], scope: "public" | "full" = "full"): string {
+export function perpPositionsCsv(positions: PerpShadowPosition[], scope: "public" | "full" = "full", opts: PerpReplayOptions = {}): string {
+  const capMode = opts.capMode ?? DEFAULT_PERP_CAP_MODE;
   const cols = scope === "public" ? PERP_CSV_PUBLIC_COLUMNS : PERP_CSV_COLUMNS;
   const rows = [...positions]
     .sort((a, b) => a.at.localeCompare(b.at))
@@ -1051,12 +1148,13 @@ export function perpPositionsCsv(positions: PerpShadowPosition[], scope: "public
         o?.paidCents ?? "",
         p.path?.hiCents ?? "",
         p.path?.loCents ?? "",
+        o?.capExcessCents ?? "",
         o?.writerCents ?? "",
       ];
       if (scope === "public") return pub.map(cell).join(",");
       const cf = p.counterfactuals;
       const ladder = cf?.capLadder?.map((r) => {
-        const out = p.status === "settled" && p.settleCents != null && r.terms.ok ? altOutcome(p, r.terms, p.settleCents, positions) : null;
+        const out = p.status === "settled" && p.settleCents != null && r.terms.ok ? altOutcome(p, r.terms, p.settleCents, positions, capMode) : null;
         return {
           cap: r.capStrikeCents,
           pct: r.capPct,
@@ -1069,6 +1167,7 @@ export function perpPositionsCsv(positions: PerpShadowPosition[], scope: "public
           touched: out?.touchedAtIso ?? null,
           writer: out?.writerCents ?? null,
           buyback: out?.buybackCents ?? null,
+          excess: out?.capExcessCents ?? null,
         };
       });
       return [
