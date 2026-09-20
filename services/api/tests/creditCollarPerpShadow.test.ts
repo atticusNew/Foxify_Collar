@@ -93,7 +93,7 @@ test("perp shadow: depth parsing and the walk down the book", () => {
   assert.equal(walkBook(d.bids, 15), null, "the visible depth does not cover the size: null, never a guess");
   assert.equal(walkBook([], 1), null);
   assert.equal(instrumentsInBand(chain, DAILY, SPOT).length, STRIKES.length * 2, "every fixture strike sits inside the union band");
-  assert.equal(nextListedWeeklyExpiryMs(chain, Date.UTC(2026, 8, 18, 23)), WEEKLY, "the Friday 08:00 ≥ 5 days out");
+  assert.equal(nextListedWeeklyExpiryMs(chain, Date.UTC(2026, 8, 18, 23)), WEEKLY, "the Friday 08:00 ≥ 3 days out");
   assert.equal(nextListedWeeklyExpiryMs(chain, Date.UTC(2026, 8, 22, 23)), null, "a weekly 2.4 days out is not a weekly tenor");
 });
 
@@ -173,8 +173,9 @@ const quoteInputs = (side: "long" | "short", id = `t-${side}`) => ({
   spot: SPOT,
   contracts: 3,
   geometry: { floorPct: 0.06, capPct: 0.015 },
+  tenor: "daily" as const,
   capGuard: GUARD,
-  weeklyCapGuard: { minCapPct: 0.04, maxCapPct: 0.08 },
+  otherTenorCapGuard: { minCapPct: 0.04, maxCapPct: 0.08 },
   take: TAKE,
   counterfactualMinTakeBps: 5,
   okxIndex: 79_970,
@@ -232,8 +233,32 @@ test("perp shadow: one snapshot becomes one open record with every counterfactua
   assert.ok(weekly.ok && weekly.expiryIso === new Date(WEEKLY).toISOString());
   assert.ok(weekly.ok && weekly.creditCents > rec.creditCents * 5, "the weekly is where the credit is real");
 
+  assert.equal(rec.tenor, "daily");
+
   const noWeekly = perpShadowQuote(quoteInputs("long"), snap({ weeklyExpiryMs: null }));
   assert.ok(noWeekly.type === "open" && Object.keys(noWeekly.counterfactuals!.tenors).length === 0, "no weekly listed: no tenor counterfactual, nothing invented");
+
+  // The live product written to the weekly (the default): the legs, the cap ladder and the ATM
+  // reference are all at the Friday; the daily becomes the counterfactual, in its own band.
+  const WEEKLY_GUARD = { minCapPct: 0.04, maxCapPct: 0.08 };
+  const wk = perpShadowQuote({ ...quoteInputs("long", "t-wk"), tenor: "weekly", capGuard: WEEKLY_GUARD, otherTenorCapGuard: GUARD }, snap());
+  assert.equal(wk.type, "open");
+  if (wk.type !== "open") return;
+  assert.equal(wk.tenor, "weekly");
+  assert.equal(wk.expiryIso, new Date(WEEKLY).toISOString());
+  assert.ok(wk.buyInstId.includes("260925") && wk.sellInstId.includes("260925"), "both legs at the Friday");
+  assert.ok(wk.counterfactuals!.capLadder.every((r) => r.sellInstId.includes("260925")), "the cap ladder walks the weekly's strikes");
+  assert.ok(wk.counterfactuals!.capLadder.some((r) => r.live), "the live pick is one rung");
+  assert.equal(wk.capGuardPct, 0.04);
+  const dailyAlt = wk.counterfactuals!.tenors.daily;
+  assert.ok(dailyAlt && dailyAlt.ok && dailyAlt.expiryIso === new Date(DAILY).toISOString(), "the other tenor is the daily");
+  assert.ok(dailyAlt.ok && dailyAlt.creditCents === rec.creditCents, "and it is the daily quote, to the cent");
+  assert.equal(wk.counterfactuals!.tenors.weekly, undefined, "no weekly-vs-weekly row");
+  assert.ok(wk.creditCents > rec.creditCents * 5, "the live weekly pays what the counterfactual promised");
+  assert.ok(wk.atmRef.hoursToExpiry > 100, "the ATM reference is the weekly's time value");
+
+  const wkNoFriday = perpShadowQuote({ ...quoteInputs("long", "t-wk2"), tenor: "weekly", capGuard: WEEKLY_GUARD }, snap({ weeklyExpiryMs: null }));
+  assert.ok(wkNoFriday.type === "open" && wkNoFriday.tenor === "daily" && wkNoFriday.expiryIso === new Date(DAILY).toISOString(), "no Friday listed: the daily is written and the record says so");
 
   const refusal = perpShadowQuote(quoteInputs("long"), snap({ books: {} }));
   assert.equal(refusal.type, "refusal");
@@ -534,14 +559,14 @@ test("perp shadow: the ledger replays opens, settles (on the path) and voids; th
   assert.equal(pub[0], PERP_CSV_PUBLIC_COLUMNS.join(","));
   assert.equal(pub.length, 4);
   assert.ok(pub[0].includes(",knocked_out,touched_at_utc,vested_frac,paid_c,") && pub[0].endsWith(",writer_c"));
-  assert.ok(!pub[0].includes("cap_ladder") && !pub[0].includes("weekly_credit_c") && !pub[0].includes("buyback_c"));
+  assert.ok(!pub[0].includes("cap_ladder") && !pub[0].includes("alt_tenor_credit_c") && !pub[0].includes("buyback_c"));
   const rowA = pub.find((l) => l.startsWith("a,long,"))!;
   assert.ok(rowA.includes(",1,2026-09-19T10:00:00.000Z,0.3333,"), "knocked out at the touch, a third vested");
   const full = perpPositionsCsv(positions, "full").trimEnd().split("\n");
   assert.equal(full[0], PERP_CSV_COLUMNS.join(","));
   assert.equal(full[0].split(",").length, PERP_CSV_COLUMNS.length);
   for (const line of full.slice(1)) assert.equal(line.split(",").length >= PERP_CSV_COLUMNS.length, true, "every row has every column (JSON cells are quoted)");
-  assert.ok(full[0].includes("weekly_credit_c") && full[0].includes("cap_ladder") && full[0].includes("buyback_c") && full[0].includes("fee_rules"));
+  assert.ok(full[0].includes("alt_tenor_credit_c") && full[0].includes("cap_ladder") && full[0].includes("buyback_c") && full[0].includes("fee_rules"));
   assert.ok(full.find((l) => l.startsWith("a,long,"))!.includes('""ko"":true'), "the ladder cell carries each rung's knock-out");
 
   // replay is pure: the same records in memory give the same positions
@@ -589,8 +614,8 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.deepEqual(health.ledger, { path, exists: false, bytes: 0, records: 0 });
     const terms = health.terms as { geometry: { floorPct: number; capPct: number }; tenor: string; capGuard: { minCapPct: number; maxCapPct: number } };
     assert.deepEqual(terms.geometry, { floorPct: 0.06, capPct: 0.015 });
-    assert.equal(terms.tenor, "daily");
-    assert.deepEqual(terms.capGuard, { minCapPct: 0.02, maxCapPct: 0.04 });
+    assert.equal(terms.tenor, "weekly", "the weekly is the default tenor");
+    assert.deepEqual(terms.capGuard, { minCapPct: 0.04, maxCapPct: 0.08 }, "and the guard follows it");
     const emptyPage = await fetch(`${base}/`);
     assert.equal(emptyPage.status, 200);
     assert.ok((await emptyPage.text()).includes("not started"));
@@ -620,11 +645,11 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     const csv = await fetch(`${base}/api/shadow/positions.csv`);
     assert.match(csv.headers.get("content-type") ?? "", /text\/csv/);
     const csvHead = (await csv.text()).split("\n")[0];
-    assert.ok(csvHead.endsWith(",path_lo_c,writer_c") && csvHead.includes(",knocked_out,") && !csvHead.includes("weekly_credit_c") && !csvHead.includes("buyback_c"));
-    assert.ok(!(await (await fetch(`${base}/api/shadow/positions.csv?scope=full`)).text()).includes("weekly_credit_c"), "scope=full without the token is public");
+    assert.ok(csvHead.endsWith(",path_lo_c,writer_c") && csvHead.includes(",knocked_out,") && !csvHead.includes("alt_tenor_credit_c") && !csvHead.includes("buyback_c"));
+    assert.ok(!(await (await fetch(`${base}/api/shadow/positions.csv?scope=full`)).text()).includes("alt_tenor_credit_c"), "scope=full without the token is public");
     const full = await fetch(`${base}/api/shadow/positions.csv?scope=full&token=op-secret`);
     assert.match(full.headers.get("content-disposition") ?? "", /perp-shadow-positions-full-/);
-    assert.ok((await full.text()).split("\n")[0].includes("weekly_credit_c"));
+    assert.ok((await full.text()).split("\n")[0].includes("alt_tenor_credit_c"));
 
     const page = await (await fetch(`${base}/`)).text();
     assert.ok(page.includes("What protection did, quote by quote"));
@@ -644,7 +669,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.equal(report.counterfactuals.tenors.weekly.quoted, 2);
     assert.deepEqual(report.counterfactuals.capacity.map((c) => c.mult), [1, 10, 50]);
     assert.ok(report.counterfactuals.capLadder.length >= 2, "every listed cap distance in the band is a rung");
-    assert.deepEqual(report.rules.capGuard, { minCapPct: 0.02, maxCapPct: 0.04 });
+    assert.deepEqual(report.rules.capGuard, { minCapPct: 0.04, maxCapPct: 0.08 });
     assert.ok(report.rules.capLadder.includes("knock-out rate") && report.rules.fundingRule.includes("clear"));
     assert.ok(report.rules.feeRules.min_5bps.name === "share or 0.05% of notional");
     const reportPage = await fetch(`${base}/report?token=op-secret`);

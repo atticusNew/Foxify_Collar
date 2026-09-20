@@ -21,6 +21,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PerpSide } from "../creditCollarPricer";
+import type { EpTenor } from "../perpTenor";
 
 export type PerpTakeRule = "share" | "minimum" | "waived";
 
@@ -120,6 +121,8 @@ export interface PerpShadowOpenRecord {
   /** funding over the cycle at that rate, cents; positive = the holder pays; null when funding unreadable */
   fundingCycleCents: number | null;
   expiryIso: string;
+  /** the expiry the live collar was written to; absent on records from before the tenor was recorded (daily) */
+  tenor?: EpTenor;
   /** the cap guard in force at open, fraction: a cap closer than this is refused live */
   capGuardPct: number;
   buyInstId: string;
@@ -925,6 +928,7 @@ export const PERP_CSV_PUBLIC_COLUMNS = [
   "side",
   "opened_at_utc",
   "expiry_utc",
+  "tenor",
   "status",
   "settled_at_utc",
   "settle_px_c",
@@ -975,13 +979,14 @@ export const PERP_CSV_COLUMNS = [
   "cap_ladder",
   "fee_rules",
   "size_ladder",
-  "weekly_expiry_utc",
-  "weekly_floor_c",
-  "weekly_cap_c",
-  "weekly_gross_c",
-  "weekly_credit_c",
-  "weekly_take_c",
-  "weekly_refused",
+  "alt_tenor",
+  "alt_tenor_expiry_utc",
+  "alt_tenor_floor_c",
+  "alt_tenor_cap_c",
+  "alt_tenor_gross_c",
+  "alt_tenor_credit_c",
+  "alt_tenor_take_c",
+  "alt_tenor_refused",
 ] as const;
 
 const cell = (v: string | number | boolean | null | undefined): string => {
@@ -990,10 +995,13 @@ const cell = (v: string | number | boolean | null | undefined): string => {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-const weeklyCells = (alt: PerpTenorAlt | undefined): Array<string | number> => {
-  if (!alt) return ["", "", "", "", "", "", ""];
-  if (!alt.ok) return ["", "", "", "", "", "", 1];
-  return [alt.expiryIso, alt.floorStrikeCents, alt.capStrikeCents, alt.grossCreditCents, alt.creditCents, alt.takeCents, 0];
+/** The other tenor's counterfactual (one per record: the daily when the live collar is weekly, and the reverse). */
+const altTenorCells = (tenors: Record<string, PerpTenorAlt> | undefined): Array<string | number> => {
+  const entry = Object.entries(tenors ?? {})[0];
+  if (!entry) return ["", "", "", "", "", "", "", ""];
+  const [label, alt] = entry;
+  if (!alt.ok) return [label, "", "", "", "", "", "", 1];
+  return [label, alt.expiryIso, alt.floorStrikeCents, alt.capStrikeCents, alt.grossCreditCents, alt.creditCents, alt.takeCents, 0];
 };
 
 export function perpPositionsCsv(positions: PerpShadowPosition[], scope: "public" | "full" = "full"): string {
@@ -1008,6 +1016,7 @@ export function perpPositionsCsv(positions: PerpShadowPosition[], scope: "public
         p.side,
         p.at,
         p.expiryIso,
+        p.tenor ?? "daily",
         p.status,
         p.settledAt ?? "",
         p.settleCents ?? "",
@@ -1075,7 +1084,7 @@ export function perpPositionsCsv(positions: PerpShadowPosition[], scope: "public
         ladder ? JSON.stringify(ladder) : "",
         cf ? JSON.stringify(cf.feeRules) : "",
         cf ? JSON.stringify(cf.sizeLadder.map((s) => ({ mult: s.mult, contracts: s.contracts, ok: s.terms.ok, credit: s.terms.ok ? s.terms.creditCents : null, error: s.terms.ok ? null : s.terms.error }))) : "",
-        ...weeklyCells(cf?.tenors?.weekly),
+        ...altTenorCells(cf?.tenors),
       ]
         .map(cell)
         .join(",");

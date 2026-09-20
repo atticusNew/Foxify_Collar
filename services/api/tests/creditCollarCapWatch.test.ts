@@ -9,6 +9,7 @@ import {
   expTimeOf,
   fetchOkxMarkVols,
   passiveBuyPxBtc,
+  reserveAlertUsdcFor,
   summarizeCapWatch,
   workingOrderAction,
   type CapWatchWrap,
@@ -132,14 +133,17 @@ test("cap watch: the working order rests when near, holds inside the band, re-pr
 
 test("cap watch: config from env — defaults, overrides, the recall line never sits inside the near line, junk ignored", () => {
   assert.deepEqual(capWatchConfigFromEnv({}), DEFAULT_CAP_WATCH);
-  const c = capWatchConfigFromEnv({ EP_PRETOUCH_NEAR_BPS: "50", EP_PRETOUCH_RECALL_BPS: "40", EP_HEADROOM_ALERT_USD: "10", EP_PRETOUCH_WORKING_ORDER: "1" });
+  const c = capWatchConfigFromEnv({ EP_PRETOUCH_NEAR_BPS: "50", EP_PRETOUCH_RECALL_BPS: "40", EP_HEADROOM_ALERT_BPS: "150", EP_PRETOUCH_WORKING_ORDER: "1" });
   assert.equal(c.nearBps, 50);
   assert.equal(c.recallBps, 55, "recall pulled out to near + 5");
-  assert.equal(c.reserveAlertUsdc, 10);
+  assert.equal(c.reserveAlertBps, 150);
+  assert.equal(reserveAlertUsdcFor(c, 2_400), 36, "150 bps of a $2,400 wrap");
   assert.equal(c.workingOrders, true);
-  const junk = capWatchConfigFromEnv({ EP_PRETOUCH_NEAR_BPS: "lots", EP_HEADROOM_ALERT_USD: "-4", EP_PRETOUCH_WORKING_ORDER: "maybe" });
+  const junk = capWatchConfigFromEnv({ EP_PRETOUCH_NEAR_BPS: "lots", EP_HEADROOM_ALERT_BPS: "-4", EP_PRETOUCH_WORKING_ORDER: "maybe" });
   assert.equal(junk.nearBps, 35);
-  assert.equal(junk.reserveAlertUsdc, 25);
+  assert.equal(junk.reserveAlertBps, 300);
+  assert.equal(reserveAlertUsdcFor(junk, 2_400), 72, "the default line: 300 bps, above an ATM weekly cap leg's ~200–250 bps");
+  assert.equal(reserveAlertUsdcFor(junk, -5), 0);
   assert.equal(junk.workingOrders, false);
 });
 

@@ -40,14 +40,16 @@ services:
         value: production
       - key: PERP_SHADOW_LEDGER_PATH
         value: /var/data/perp-shadow-ledger.jsonl
-      # The live product's terms: 3 OKX lots (0.03 BTC) long and short, the
-      # balanced (6% / 1.5%) geometry, 20% share take, $0.05 de minimis, no minimum.
+      # The live product's terms: 3 OKX lots (0.03 BTC) long and short, one shape
+      # (floor 6%, the widest listed cap that pays, under the cap guard), written to
+      # the weekly (EP_TENOR; `daily` opts out — the daily is then the counterfactual),
+      # 20% share take, $0.05 de minimis, no minimum.
       - key: PERP_SHADOW_SIZE_BTC
         value: "0.03"
       - key: PERP_SHADOW_SIDES
         value: long,short
-      - key: PERP_SHADOW_TIER
-        value: balanced
+      - key: EP_TENOR
+        value: weekly
       - key: EP_TAKE_RATE
         value: "0.20"
       - key: EP_DE_MINIMIS_USDC

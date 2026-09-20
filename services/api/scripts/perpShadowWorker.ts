@@ -9,7 +9,7 @@
  *     protective wing with an ask; widest in-band funding wing whose credit
  *     clears OKX fees, refused under the cap guard), plus what every other
  *     rule would have written from the same snapshot (every listed cap
- *     distance, fee rule, larger sizes walked down the depth, the weekly),
+ *     distance, fee rule, larger sizes walked down the depth, the other tenor),
  *   - every SETTLE interval, positions past expiry are settled on the PATH:
  *     Hyperliquid candles from open to expiry say whether and when each cap
  *     (the live one and every rung's) was touched — the collar is a
@@ -27,7 +27,7 @@
  *      PERP_SHADOW_SCAN_MS (default 60m) · PERP_SHADOW_SETTLE_MS (default 15m)
  *      PERP_SHADOW_SIZE_BTC (default 0.03 = 3 OKX lots) · PERP_SHADOW_SIDES (long,short)
  *      DEMO_FLOOR_PCT / DEMO_CAP_PCT (the live shape, default 0.06 / 0.015)
- *      EP_TENOR (daily default) · EP_MIN_CAP_PCT / EP_CAP_MAX_PCT (+ _WEEKLY): the cap guard, as the demo
+ *      EP_TENOR (weekly default; `daily` opts out) · EP_MIN_CAP_PCT / EP_CAP_MAX_PCT (+ _WEEKLY): the cap guard, as the demo
  *      EP_TAKE_RATE (default 0.20) · EP_DE_MINIMIS_USDC (default 0.05)
  *      PERP_SHADOW_MIN_TAKE_BPS (live minimum, default 0 = none, as the product today)
  *      PERP_SHADOW_CF_MIN_TAKE_BPS (the fee-floor counterfactual, default 5)
@@ -40,7 +40,7 @@ import { createReadStream, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { DEMO_CAP_PCT, DEMO_FLOOR_PCT } from "../src/singleSide/twoSided/creditCollar/demoWrap";
-import { capGuardFor, parseTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import { capGuardFor, otherTenor, parseTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import { fetchOkxListedSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
 import {
   appendPerpShadowRecord,
@@ -86,7 +86,7 @@ const numEnv = (v: string | undefined, d: number): number => {
 const GEOMETRY = { floorPct: numEnv(process.env.DEMO_FLOOR_PCT, DEMO_FLOOR_PCT), capPct: numEnv(process.env.DEMO_CAP_PCT, DEMO_CAP_PCT) };
 const TENOR = parseTenor(process.env.EP_TENOR);
 const CAP_GUARD = capGuardFor(TENOR, process.env);
-const WEEKLY_CAP_GUARD = capGuardFor("weekly", process.env);
+const OTHER_TENOR_CAP_GUARD = capGuardFor(otherTenor(TENOR), process.env);
 const CAP_LADDER_RULE =
   "the live floor held fixed, the funding wing moved to every listed strike in the band; each rung settled on the same Hyperliquid path, so it shows its own knock-out rate and buyback cost";
 const COIN = process.env.PERP_SHADOW_COIN || "BTC";
@@ -127,8 +127,9 @@ async function scanTick(): Promise<void> {
           spot: hl.markPx,
           contracts: CONTRACTS,
           geometry: GEOMETRY,
+          tenor: TENOR,
           capGuard: CAP_GUARD,
-          weeklyCapGuard: WEEKLY_CAP_GUARD,
+          otherTenorCapGuard: OTHER_TENOR_CAP_GUARD,
           take: TAKE,
           counterfactualMinTakeBps: CF_MIN_TAKE_BPS,
           okxIndex,
@@ -329,7 +330,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/report") {
       const { atIso, summary } = pageData();
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token"), capGuard: CAP_GUARD }));
+      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token"), capGuard: CAP_GUARD, tenor: TENOR }));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -337,7 +338,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const settled = positions.filter((p) => p.status === "settled").sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
       const open = positions.filter((p) => p.status === "open").sort((a, b) => a.expiryIso.localeCompare(b.expiryIso) || a.at.localeCompare(b.at));
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderPerpShadowHtml({ atIso, summary, open, settled, sizeBtc: CONTRACTS * OKX_LOT_BTC }));
+      res.end(renderPerpShadowHtml({ atIso, summary, open, settled, sizeBtc: CONTRACTS * OKX_LOT_BTC, tenor: TENOR }));
       return;
     }
     sendJson(res, 404, { ok: false, error: "not found" });

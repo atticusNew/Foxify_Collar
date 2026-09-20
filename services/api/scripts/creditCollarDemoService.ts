@@ -71,6 +71,7 @@ import {
   capWatchConfigFromEnv,
   expTimeOf,
   fetchOkxMarkVols,
+  reserveAlertUsdcFor,
   summarizeCapWatch,
   workingOrderAction,
   type CapWatchWrap,
@@ -321,9 +322,10 @@ const capPct = num(process.env.DEMO_CAP_PCT, DEMO_CAP_PCT);
 // still pays (the cap search starts at DEMO_CAP_PCT and walks wider while the book funds). It is
 // a knock-out collar: a cap touch ends the cycle, both legs unwind, protection re-arms; the
 // trader never gives up upside. So the cap is placed to be far, not to be rich.
-// EP_TENOR=weekly writes every collar to the next listed Friday 08:00 UTC (≥ 5 days out; daily
-// when none is listed) — one-day options a few percent out trade at ticks, the weekly is where
-// the credit is real. Default daily = the product as shipped.
+// The WEEKLY is the default tenor: every collar is written to the nearest listed Friday 08:00 UTC
+// at least 3 days out (the daily when none is listed) — one-day options a few percent out trade
+// at ticks, the weekly is where the credit is real (measured: $0.15 vs $2.71 on 0.03 BTC, same
+// floor, a wider cap, one hedge round-trip a week instead of seven). EP_TENOR=daily opts out.
 // The cap guard refuses a quote whose cap would sit closer than EP_MIN_CAP_PCT (2% daily, 4%
 // weekly) rather than write a cap that will cross on noise; the weekly band reaches to 8%.
 const tenor: EpTenor = parseTenor(process.env.EP_TENOR);
@@ -1018,7 +1020,7 @@ const knockoutUnwindLegs = async (rec: DemoWrapRecord, markPx: number): Promise<
 // The lock-line watcher, repurposed (capWatch.ts). Every monitor tick prices what a knock-out
 // RIGHT NOW would cost the writer (buy back the sold leg at the money at its OKX mark vol, less
 // unvested credit, our take and the floor leg's recovery) and rolls the shortfall up as a margin
-// reserve; past EP_HEADROOM_ALERT_USD per wrap it pages. With EP_PRETOUCH_WORKING_ORDER=1 (okx
+// reserve; past EP_HEADROOM_ALERT_BPS of the wrap's notional it pages. With EP_PRETOUCH_WORKING_ORDER=1 (okx
 // lanes only) a passive post-only buy on the sold leg rests at the book's mid while the mark is
 // within EP_PRETOUCH_NEAR_BPS of the cap, is recalled past EP_PRETOUCH_RECALL_BPS, and is
 // cancelled at the touch so the IOC unwind (venue truth first) finishes whatever did not fill.
@@ -1120,10 +1122,11 @@ const watchWrap = async (rec: DemoWrapRecord, markPx: number, nowMs: number, cli
     },
     capWatchCfg
   );
-  if (headroom.reserveUsdc >= capWatchCfg.reserveAlertUsdc && headroom.priced !== "unpriced") {
+  const reserveLineUsdc = reserveAlertUsdcFor(capWatchCfg, wrapExposureUsdc(rec));
+  if (headroom.reserveUsdc >= reserveLineUsdc && headroom.priced !== "unpriced") {
     raiseAlert(
       "unwind_event",
-      `HEADROOM ${rec.id}: a knock-out now would cost the writer $${headroom.reserveUsdc} (buy-back $${headroom.buybackAtTouchUsdc} vs unvested $${headroom.unvestedUsdc} + take $${headroom.takeUsdc}) · ${headroom.distanceBps} bps from the cap, ${headroom.hoursLeft}h left`,
+      `HEADROOM ${rec.id}: a knock-out now would cost the writer $${headroom.reserveUsdc}, past the ${capWatchCfg.reserveAlertBps} bps line ($${reserveLineUsdc}) (buy-back $${headroom.buybackAtTouchUsdc} vs unvested $${headroom.unvestedUsdc} + take $${headroom.takeUsdc}) · ${headroom.distanceBps} bps from the cap, ${headroom.hoursLeft}h left`,
       { wrapId: rec.id },
       { dedupeKey: `headroom:${rec.id}`, dedupeMs: HEADROOM_ALERT_COOLDOWN_MS }
     );
@@ -2231,7 +2234,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         // Cap watch: what a knock-out NOW would cost on every live wrap (margin reserve), which
         // wraps are near their cap, and any pre-touch working orders resting on the hedge venue.
         capWatch: {
-          config: { nearBps: capWatchCfg.nearBps, recallBps: capWatchCfg.recallBps, reserveAlertUsdc: capWatchCfg.reserveAlertUsdc, workingOrders: capWatchCfg.workingOrders && guards.executionMode !== "paper" },
+          config: { nearBps: capWatchCfg.nearBps, recallBps: capWatchCfg.recallBps, reserveAlertBps: capWatchCfg.reserveAlertBps, workingOrders: capWatchCfg.workingOrders && guards.executionMode !== "paper" },
           summary: summarizeCapWatch(capWatch.values()),
           wraps: [...capWatch.values()]
             .sort((a, b) => a.headroom.distanceBps - b.headroom.distanceBps)

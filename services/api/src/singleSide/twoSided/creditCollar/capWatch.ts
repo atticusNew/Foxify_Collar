@@ -46,8 +46,14 @@ export type CapWatchConfig = {
   spreadRelPct: number;
   /** Absolute half-spread floor on the buy-back, USDC. Default 1. */
   minSpreadUsdc: number;
-  /** Page the operator when one wrap's reserve (negative headroom) exceeds this, USDC. Default 25. */
-  reserveAlertUsdc: number;
+  /**
+   * Page the operator when one wrap's reserve (negative headroom) exceeds this many bps of the
+   * wrapped notional. Default 300: an at-the-money weekly cap leg is worth ~200–250 bps of
+   * notional, so a normal near-cap weekly reserve sits under the line and only an expensive
+   * one (a vol spike, a wide book) pages. Bps, not dollars, so a 0.03 BTC wrap and a 3 BTC
+   * wrap are judged by the same rule.
+   */
+  reserveAlertBps: number;
   /** Rest pre-touch working orders at all (okx lanes only; paper never places anything). */
   workingOrders: boolean;
 };
@@ -58,7 +64,7 @@ export const DEFAULT_CAP_WATCH: CapWatchConfig = {
   repriceTicks: 2,
   spreadRelPct: 0.05,
   minSpreadUsdc: 1,
-  reserveAlertUsdc: 25,
+  reserveAlertBps: 300,
   workingOrders: false,
 };
 
@@ -67,7 +73,7 @@ const numEnv = (v: string | undefined, d: number): number => {
   return Number.isFinite(n) && n >= 0 ? n : d;
 };
 
-/** EP_PRETOUCH_NEAR_BPS / EP_PRETOUCH_RECALL_BPS / EP_HEADROOM_ALERT_USD / EP_PRETOUCH_WORKING_ORDER. Junk keeps the default; recall never sits inside near. */
+/** EP_PRETOUCH_NEAR_BPS / EP_PRETOUCH_RECALL_BPS / EP_HEADROOM_ALERT_BPS / EP_PRETOUCH_WORKING_ORDER. Junk keeps the default; recall never sits inside near. */
 export const capWatchConfigFromEnv = (env: NodeJS.ProcessEnv): CapWatchConfig => {
   const nearBps = numEnv(env.EP_PRETOUCH_NEAR_BPS, DEFAULT_CAP_WATCH.nearBps);
   const recallRaw = numEnv(env.EP_PRETOUCH_RECALL_BPS, DEFAULT_CAP_WATCH.recallBps);
@@ -75,10 +81,14 @@ export const capWatchConfigFromEnv = (env: NodeJS.ProcessEnv): CapWatchConfig =>
     ...DEFAULT_CAP_WATCH,
     nearBps,
     recallBps: Math.max(recallRaw, nearBps + 5),
-    reserveAlertUsdc: numEnv(env.EP_HEADROOM_ALERT_USD, DEFAULT_CAP_WATCH.reserveAlertUsdc),
+    reserveAlertBps: numEnv(env.EP_HEADROOM_ALERT_BPS, DEFAULT_CAP_WATCH.reserveAlertBps),
     workingOrders: /^(1|true|on|yes)$/i.test(env.EP_PRETOUCH_WORKING_ORDER ?? ""),
   };
 };
+
+/** The reserve line for one wrap in dollars: the configured bps of its wrapped notional. */
+export const reserveAlertUsdcFor = (cfg: CapWatchConfig, notionalUsdc: number): number =>
+  +((Math.max(0, notionalUsdc) * cfg.reserveAlertBps) / 10000).toFixed(2);
 
 // ── Headroom ────────────────────────────────────────────────────────────────
 

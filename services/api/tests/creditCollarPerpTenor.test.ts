@@ -2,7 +2,7 @@
  * Perp tenor, cap guard and fee floor (B3): the pure pieces the demo service composes.
  *
  *   - applyTake with a notional minimum: which rule bound, never past the gross
- *   - the weekly tenor: the first listed Friday 08:00 UTC ≥ 5 days out, and the
+ *   - the weekly tenor (the default): the nearest listed Friday 08:00 UTC ≥ 3 days out, and the
  *     planner / touch quote written to it
  *   - the cap guard: the widest paying strike is refused when it sits too close
  *     to price (a knock-out collar's cap must be far, not rich), and the band
@@ -23,7 +23,7 @@ import {
 } from "../src/singleSide/twoSided/creditCollar/execution/okxLivePlanner";
 import { fetchOkxListedTouchQuote, quoteFromListedBooks } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 import { atmReference, fetchOkxTopSnapshot, fundingStrikeLadder, quoteCollarFromSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
-import { capGuardFor, parseTenor, tenorExpiry, tenorWord } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import { capGuardFor, otherTenor, parseTenor, tenorExpiry, tenorWord } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 
 const SHAPE = { floorPct: 0.06, capPct: 0.015 };
 
@@ -95,20 +95,27 @@ test("minTakeUsdcFor: bps of notional, two decimals; EP_MIN_TAKE_BPS defaults to
 
 // ── tenor ─────────────────────────────────────────────────────────────────────
 
-test("nextListedWeeklyExpiryMs: the first listed Friday 08:00 UTC at least five days out", () => {
+test("nextListedWeeklyExpiryMs: the nearest listed Friday 08:00 UTC at least three days out", () => {
   assert.equal(nextListedWeeklyExpiryMs(chain, now), friday);
-  // A day later (Sunday 08:20) Friday 08:00 is 4d 23h40m out: under five days, so the next one.
-  assert.equal(nextListedWeeklyExpiryMs(chain, now + 86_400_000), nextFriday);
+  // Sunday 08:20: Friday 08:00 is 4d 23h40m out — still this Friday (cycles run 3–10 days).
+  assert.equal(nextListedWeeklyExpiryMs(chain, now + 86_400_000), friday);
+  // Tuesday 08:20: Friday is 2d 23h40m out — under three days prices like a daily, so the next one.
+  assert.equal(nextListedWeeklyExpiryMs(chain, now + 3 * 86_400_000), nextFriday);
+  assert.equal(nextListedWeeklyExpiryMs(chain, now + 3 * 86_400_000, 5), nextFriday, "an explicit minimum is honoured");
   // A chain with no Friday listed (dailies only) has no weekly.
   assert.equal(nextListedWeeklyExpiryMs([...strikesFor(daily), ...strikesFor(tuesday)], now), null);
   // Expired / non-live rows never count.
   assert.equal(nextListedWeeklyExpiryMs(strikesFor(friday).map((c) => ({ ...c, state: "expired" })), now), null);
 });
 
-test("tenorExpiry / parseTenor / tenorWord: weekly when listed, daily otherwise, and the copy follows", () => {
+test("tenorExpiry / parseTenor / tenorWord: weekly by default, daily only when asked, and the copy follows", () => {
   assert.equal(parseTenor("weekly"), "weekly");
-  assert.equal(parseTenor("WEEKLY"), "daily", "strict: only the exact word flips the product");
-  assert.equal(parseTenor(undefined), "daily");
+  assert.equal(parseTenor(undefined), "weekly", "unset = the weekly default");
+  assert.equal(parseTenor(""), "weekly");
+  assert.equal(parseTenor("daily"), "daily", "the exact word opts out");
+  assert.equal(parseTenor("DAILY"), "weekly", "strict: junk keeps the default");
+  assert.equal(otherTenor("weekly"), "daily");
+  assert.equal(otherTenor("daily"), "weekly");
   assert.deepEqual(tenorExpiry("daily", chain, now), { expiryMs: daily, tenor: "daily" });
   assert.deepEqual(tenorExpiry("weekly", chain, now), { expiryMs: friday, tenor: "weekly" });
   assert.deepEqual(tenorExpiry("weekly", strikesFor(daily), now), { expiryMs: daily, tenor: "daily" }, "no weekly listed falls back and says so");

@@ -176,7 +176,7 @@ const handleMessage = async (chats: ChatStore, chatId: string | number, text: st
       [
         "🛡 <b>Earn &amp; Protect</b> · <i>status</i>",
         "",
-        `Protection: <b>${prot?.on ? "ON — auto-renews daily" : "off"}</b>${prot?.founding ? " · 🏅 founding rate" : ""}`,
+        `Protection: <b>${prot?.on ? "ON — re-arms every cycle" : "off"}</b>${prot?.founding ? " · 🏅 founding rate" : ""}`,
         `Credits paid to date: <b>$${paid.toFixed(2)}</b>`,
         "",
         "<i>Use /positions to toggle.</i>"
@@ -217,17 +217,18 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
       return;
     }
     if (out.ok === true) {
-      const wrap = out.wrap as { quote?: { creditUsdc?: number; floorStrike?: number; capStrike?: number } };
+      const wrap = out.wrap as { quote?: { creditUsdc?: number; floorStrike?: number; capStrike?: number; tenor?: string } };
       const q = wrap?.quote;
+      const weekly = q?.tenor !== "daily";
       await send(
         chatId,
         [
           "🛡 <b>Protection live</b>",
           "",
-          `Today's credit: <b>$${q?.creditUsdc ?? "?"}</b> — unlocks through the day, pays at the cycle's close`,
-          `Hard floor: <b>$${(q?.floorStrike ?? 0).toLocaleString("en-US")}</b> · Cap: <b>$${(q?.capStrike ?? 0).toLocaleString("en-US")}</b> (touch ends the cycle — you keep gains to the cap + unlocked credit)`,
+          `${weekly ? "This week's" : "Today's"} credit: <b>$${q?.creditUsdc ?? "?"}</b> — unlocks through the ${weekly ? "week" : "day"}, pays at the cycle's close`,
+          `Hard floor: <b>$${(q?.floorStrike ?? 0).toLocaleString("en-US")}</b> · Cap: <b>$${(q?.capStrike ?? 0).toLocaleString("en-US")}</b> (touch ends the cycle — you keep your position, every gain, and the unlocked credit)`,
           "",
-          "<i>Auto-renews daily while the toggle stays on.</i>"
+          `<i>Re-arms every ${weekly ? "week" : "day"} while the toggle stays on.</i>`
         ].join("\n")
       );
     } else {

@@ -275,7 +275,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <div class="wrap">
   <header id="hero">
     <h1 id="heroH1">One toggle. A hard floor. <span style="color:var(--accent)">And it pays.</span></h1>
-    <p class="sub" id="heroSub">Look up any Hyperliquid address. Flip protection on. Get paid daily.</p>
+    <p class="sub" id="heroSub">Look up any Hyperliquid address. Flip protection on. Get paid every cycle.</p>
   </header>
 
   <div class="card" id="geoBanner" style="display:none">
@@ -350,7 +350,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <ul id="howList">
     <li><b>Read-only.</b> We read your positions from Hyperliquid's public API. No signing, no deposits, no keys. Payouts go only to your own wallet.</li>
     <li><b>Live-market pricing.</b> Every protection cycle is quoted from listed option order books at the moment you toggle. When the market can't fund a credit, we refuse and say why.</li>
-    <li><b>Paid daily, never upfront.</b> Your credit unlocks through each daily cycle and pays automatically at its close.</li>
+    <li><b>Paid every cycle, never upfront.</b> A cycle runs to the next weekly expiry (Friday, three to ten days out). Your credit unlocks through the cycle and pays automatically at its close.</li>
     <li><b>The cap ends the cycle, not your trade.</b> If price touches your cap, that cycle ends: you keep your position, every gain, and the unlocked credit; protection re-arms at the new price while the toggle stays on. You never owe anything.</li>
     <li><b>Honest economics.</b> We keep a published share of the credit we source (waived when tiny); founding wallets keep a reduced rate<span id="rateNote"></span>.</li>
     <li>Derivatives involve risk. Nothing here is investment advice.</li>
@@ -448,7 +448,7 @@ const infoTip = (text, right) => tip('<span class="info">i</span>', text, right)
 // ONE SHAPE. A hard floor ~6% out and the WIDEST listed cap that still pays, because a cap touch
 // ends the cycle (both legs unwind, protection re-arms) — the trader never gives up upside, so the
 // cap is placed to be far, not to be rich. No tiers: the number on the card is the number.
-// The credit label follows the tenor the quote was written to (daily today; weekly when flagged).
+// The credit label follows the tenor the quote was written to (weekly by default; daily when EP_TENOR=daily).
 const tenorWord = (j) => (j && j.tenor === "weekly" ? "this week\\u2019s" : "today\\u2019s");
 // Carry, stated beside the credit so it reads net: what the perp's funding costs (a long pays a
 // positive rate) or pays (a short receives it) over this cycle, from Hyperliquid's live rate.
@@ -519,7 +519,7 @@ const INST = SKIN === "institutional";
 if (INST) {
   document.body.classList.add("inst");
   $("heroH1").innerHTML = 'Institutional asset protection. <span style="color:var(--accent)">One action.</span>';
-  $("heroSub").textContent = "A hard floor and a daily credit on custodied holdings and trading positions. Read-only: assets never move.";
+  $("heroSub").textContent = "A hard floor and a weekly credit on custodied holdings and trading positions. Read-only: assets never move.";
   // Treasury lane leads: the model card is the primary, always-open flow at treasury scale.
   $("previewCard").style.display = "";
   $("pvHeader").textContent = "Model a holding · live market pricing. Nothing opens, nothing is stored.";
@@ -551,7 +551,7 @@ if (INST) {
     '<li><b>Read-only.</b> Exposure is read from public venue APIs. No keys, no deposits, no custody movement. Direct vault-side balance integration is scoped in the design-partner pilot.</li>' +
     '<li><b>Live-market pricing.</b> Every protection cycle is priced from listed option order books at the moment of activation. When the market cannot fund a credit, we refuse and say why.</li>' +
     '<li><b>Hedged, not carried.</b> The floor is hedged leg for leg on listed options (OKX today; FalconX block execution as volume nets up); the cap leg is closed at its strike when price touches it. Revenue is a published fee on credits, never trading P&amp;L.</li>' +
-    '<li><b>Paid daily, never upfront.</b> The credit vests through each cycle and settles automatically at its close, only to the holder\\u2019s address.</li>' +
+    '<li><b>Paid every cycle, never upfront.</b> A cycle runs to the next weekly listed expiry. The credit vests through the cycle and settles automatically at its close, only to the holder\\u2019s address.</li>' +
     '<li><b>The cap ends the cycle, not the holding.</b> A cap touch concludes that cycle: the holder keeps the assets, gains, and vested credit; protection re-arms automatically.<span id="rateNote" style="display:none"></span></li>' +
     '<li>Derivatives involve risk. Nothing here is investment advice.</li>';
 }

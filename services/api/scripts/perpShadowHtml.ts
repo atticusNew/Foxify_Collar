@@ -5,11 +5,11 @@
  * and what it did for the holder on the price path (a cap touch is a
  * knock-out) and against the official delivery print.
  * Operator (token): what every other rule would have written from the same
- * book — every cap distance, fee rule, larger sizes, the weekly — settled on
+ * book — every cap distance, fee rule, larger sizes, the other tenor — settled on
  * the same path and print; where the knock-outs fell and what they cost.
  */
 
-import type { CapGuard } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import type { CapGuard, EpTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import {
   type PerpCapRungBook,
   type PerpRuleBook,
@@ -27,7 +27,7 @@ export function escapeHtml(s: string): string {
 }
 export const usd = (cents: number): string => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 export const signedUsd = (c: number): string => (c < 0 ? `-${usd(-c)}` : usd(c));
-/** bps to one decimal: perp collar credits are single-digit bps of notional at the daily tenor */
+/** bps to one decimal: perp collar credits are single-digit bps of notional at the daily, tens at the weekly */
 export const bpsPct = (bps: number | null): string => (bps === null ? "–" : `${bps.toFixed(1)} bps`);
 export const utcDay = (iso: string): string => iso.slice(0, 10);
 
@@ -86,6 +86,8 @@ export interface PerpShadowPageInput {
   open: PerpShadowPosition[];
   settled: PerpShadowPosition[];
   sizeBtc: number;
+  /** the tenor the live product writes to; the record page says which expiry each cycle runs to */
+  tenor?: EpTenor;
 }
 
 function positionRow(p: PerpShadowPosition): string {
@@ -145,7 +147,9 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
 <div class="wrap">
   <div class="card">
     <h1>What protection did, quote by quote</h1>
-    <div class="sub">Every hour the live product's collar is quoted from the OKX book for a ${input.sizeBtc.toFixed(2)} BTC Hyperliquid position, long and short, at the terms a holder would see: a hard floor 6% out, the cap as far out as the book still pays, cash credit either way. A cap touch ends the cycle early: the holder keeps the position and every gain, is paid the credit vested to that moment, and protection re-arms. Each position is settled on the Hyperliquid price path (did the cap get touched, and when) and OKX's official delivery print, protected versus naked. Positions are simulated; prices, fees, candles and prints are real.</div>
+    <div class="sub">Every hour the live product's collar is quoted from the OKX book for a ${input.sizeBtc.toFixed(2)} BTC Hyperliquid position, long and short, at the terms a holder would see: a hard floor 6% out, the cap as far out as the book still pays, cash credit either way, written to ${
+      (input.tenor ?? "weekly") === "weekly" ? "the nearest Friday expiry at least three days out" : "the next daily expiry"
+    }. A cap touch ends the cycle early: the holder keeps the position and every gain, is paid the credit vested to that moment, and protection re-arms. Each position is settled on the Hyperliquid price path (did the cap get touched, and when) and OKX's official delivery print, protected versus naked. Positions are simulated; prices, fees, candles and prints are real.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.positions}</div><div class="l">positions quoted</div></div>
       <div class="bignum"><div class="n">${s.refusals}</div><div class="l">honest refusals</div></div>
@@ -201,6 +205,8 @@ export interface PerpShadowReportInput {
   summary: PerpShadowSummary;
   token?: string | null;
   capGuard?: CapGuard;
+  /** the tenor the live product writes to (the baseline row); the counterfactual is the other one */
+  tenor?: EpTenor;
 }
 
 const RULE_HEAD = `<tr><th>rule</th><th>quoted</th><th>refused</th><th>cash / notional</th><th>cash</th><th>take</th><th>settled</th><th>floor</th><th>knock-outs</th><th>holder Δ</th><th>writer</th></tr>`;
@@ -290,17 +296,21 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
       );
     })
     .join("");
+  const liveTenor: EpTenor = input.tenor ?? "weekly";
   const tenorLabels = Object.keys(cf.tenors);
   const tenorRows = [
-    ruleTr("live book", `${cf.baseline.quoted ? "next daily" : ""}`, cf.baseline, { base: true }),
+    ruleTr("live book", `${cf.baseline.quoted ? `next ${liveTenor}` : ""}`, cf.baseline, { base: true }),
     ...tenorLabels.map((l) => ruleTr(`${l}${cf.tenors[l].avgDays != null ? ` · ${cf.tenors[l].avgDays}d` : ""}`, "", cf.tenors[l])),
   ].join("");
-  const weekly = cf.tenors.weekly;
+  const weeklyBook = liveTenor === "weekly" ? cf.baseline : cf.tenors.weekly;
+  const dailyBook = liveTenor === "daily" ? cf.baseline : cf.tenors.daily;
   const tenorLine =
-    weekly && weekly.quoted > 0 && cf.baseline.quoted > 0
-      ? `The same collar at the weekly pays ${bpsPct(weekly.creditBpsOfNotional)} of notional in cash against ${bpsPct(
-          cf.baseline.creditBpsOfNotional,
-        )} at the daily: one-day options a few percent out are worth ticks, so most of the daily's gross goes to venue fees. The weekly is where the credit is real; it also holds the position through a week of funding and a week of chances to touch the cap.`
+    weeklyBook && dailyBook && weeklyBook.quoted > 0 && dailyBook.quoted > 0
+      ? `The same collar at the weekly pays ${bpsPct(weeklyBook.creditBpsOfNotional)} of notional in cash against ${bpsPct(
+          dailyBook.creditBpsOfNotional,
+        )} at the daily: one-day options a few percent out are worth ticks, so most of the daily's gross goes to venue fees. The weekly is where the credit is real${
+          liveTenor === "weekly" ? " and is the live tenor" : ""
+        }; it also holds the position through a week of funding and a week of chances to touch the cap.`
       : "";
   const one = cf.capacity.find((c) => c.mult === 1);
   const top = cf.capacity[cf.capacity.length - 1];
@@ -331,7 +341,7 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
 <div class="wrap">
   <div class="card">
     <h1>What each rule would have done</h1>
-    <div class="sub">Every position records what every listed cap distance, the other fee rule, larger sizes and the weekly would have written from the same OKX snapshot at the same second. At expiry every alternative is settled on the same Hyperliquid path (a cap touch is a knock-out: the cycle ends, the short cap leg is bought back at the money) and the same delivery print. Same positions, same book, same path; only the rule differs.</div>
+    <div class="sub">Every position records what every listed cap distance, the other fee rule, larger sizes and the other tenor would have written from the same OKX snapshot at the same second. At expiry every alternative is settled on the same Hyperliquid path (a cap touch is a knock-out: the cycle ends, the short cap leg is bought back at the money) and the same delivery print. Same positions, same book, same path; only the rule differs.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${cf.positionsWithCounterfactuals}</div><div class="l">positions compared</div></div>
       <div class="bignum"><div class="n">${cf.baseline.settled}</div><div class="l">of them settled</div></div>
@@ -375,7 +385,7 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
 
   <div class="card">
     <h2>Tenor</h2>
-    <div class="sub" style="margin-bottom:6px">The live geometry at the next weekly expiry from the same snapshot. Quoted terms only: a weekly settles on a different print, so holder and writer columns stay empty here by design.</div>
+    <div class="sub" style="margin-bottom:6px">The live geometry at the other tenor's expiry from the same snapshot (the daily when the product is weekly, and the reverse). Quoted terms only: the other tenor settles on a different print, so holder and writer columns stay empty here by design.</div>
     <div class="tablewrap"><table>${RULE_HEAD}${tenorRows}</table></div>
     ${tenorLine ? `<div class="read">${escapeHtml(tenorLine)}</div>` : ""}
   </div>

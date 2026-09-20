@@ -75,8 +75,11 @@ export const nextStandardDailyExpiryMs = (nowMs: number, minHoursToExpiry = 12):
   return d.getTime();
 };
 
-/** The first LISTED Friday 08:00 UTC expiry at least `minDays` out (the weekly tenor), or null when none is listed. Pure. */
-export const nextListedWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = 5): number | null => {
+/** Cycles run 3–10 days: a Friday under three days off prices like a daily and is skipped for the next. */
+export const WEEKLY_MIN_DAYS = 3;
+
+/** The nearest LISTED Friday 08:00 UTC expiry at least `minDays` out (the weekly tenor), or null when none is listed. Pure. */
+export const nextListedWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = WEEKLY_MIN_DAYS): number | null => {
   const listed = [...new Set(chain.filter((c) => c.state === "live").map((c) => c.expiryMs))].sort((a, b) => a - b);
   for (const e of listed) {
     const d = new Date(e);

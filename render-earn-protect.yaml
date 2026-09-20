@@ -77,21 +77,23 @@ services:
       # ── Product shape flags (all default to the product as shipped; flip deliberately) ──
       # One shape: floor DEMO_FLOOR_PCT (0.06) + the widest listed cap that still pays, refused
       # under the cap guard (EP_MIN_CAP_PCT 0.02 daily / 0.04 weekly; band to EP_CAP_MAX_PCT).
-      # EP_TENOR=weekly writes to the next listed Friday (where the credit is real; daily = ticks).
+      # EP_TENOR: weekly (default) writes to the nearest listed Friday at least 3 days out, where the
+      # credit is real (measured $2.71 vs $0.15 daily on 0.03 BTC); `daily` opts out.
       # EP_MIN_TAKE_BPS: notional fee floor on our take (0 = share only). EP_CREDIT_MUST_CLEAR_FUNDING=1:
       # refuse a quote whose net credit does not clear the cycle's funding cost.
       - key: EP_TENOR
-        value: daily
+        value: weekly
       - key: EP_MIN_TAKE_BPS
         value: "0"
       - key: EP_CREDIT_MUST_CLEAR_FUNDING
         value: "0"
       # Cap watch: per-wrap headroom is always on (admin status); the pre-touch working order only
-      # rests on okx lanes and only when this is 1. EP_HEADROOM_ALERT_USD pages past that reserve.
+      # rests on okx lanes and only when this is 1. EP_HEADROOM_ALERT_BPS pages when one wrap's
+      # reserve passes this many bps of its notional (an ATM weekly cap leg is ~200–250 bps).
       - key: EP_PRETOUCH_WORKING_ORDER
         value: "0"
-      - key: EP_HEADROOM_ALERT_USD
-        value: "25"
+      - key: EP_HEADROOM_ALERT_BPS
+        value: "300"
 
   - type: worker
     name: atticus-earn-protect-bot
