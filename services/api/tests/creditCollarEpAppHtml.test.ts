@@ -151,7 +151,10 @@ test("one shape, no tiers: the knock-out is explained as keeping the upside, the
     assert.ok(!html.includes("You never owe anything"), "the plain collar can net negative: no 'never owe' claim");
     assert.ok(html.includes('id="relVeil"') && html.includes("Release your upside?") && html.includes('api("/api/release/quote")') && html.includes("/api/release?ctl="), "release confirm modal re-prices at the tap and posts the ceiling the holder saw");
     assert.ok(html.includes("maxCostUsdc=") && html.includes("price_moved"), "the engine may refuse a moved price; the app explains it");
-    assert.ok(html.includes("chip owed") && html.includes("to settle</b>"), "a negative net shows as a balance to settle, in dollars");
+    assert.ok(html.includes("chip owed") && html.includes("settles from gains</b>"), "a negative net is said in dollars as settling from the cycle's gains");
+    assert.ok(!/owed after netting|to settle<\/b>/.test(html), "no 'owed' on the retail surface: the excess is the floor's price, settled from gains");
+    assert.ok(html.includes("const floorLeads") && html.includes("HERO_MIN_CREDIT_USD = 10, HERO_MIN_CREDIT_BPS = 5") && html.includes("losses stop here"), "size-aware hero: the floor leads when the credit is small (under $10 or 5 bps)");
+    assert.ok(html.includes("cred cred-floor") && html.includes("cred-plus"), "the floor-led card keeps the credit as its second line");
     assert.ok(html.includes("cap_touched") && html.includes("cap_released"), "the new stages have labels");
     assert.ok(html.includes("Cap touched · cycle over") && html.includes("re-arming at the new price"), "knockout-mode copy is kept for wraps written under the previous rule");
   }
