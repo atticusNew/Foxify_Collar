@@ -1,0 +1,69 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-perp-shadow.yaml — Earn & Protect PERP PRODUCT SHADOW (track record)
+#
+# The retail collar as the live demo prices it (listed OKX touch on floored
+# lots, 6% floor / cap as wide as the book funds, published take), quoted
+# every hour for a fixed Hyperliquid position long and short, every position
+# marked against OKX's official delivery print at expiry. Each quote also
+# records what the other tiers, the other fee rule, larger sizes and the
+# weekly tenor would have written from the SAME book snapshot, so pricing
+# changes are measured before they are shipped.
+#
+# Distinct from the volume-facility shadow (facility.atticustrade.com,
+# render-integration-shadow.yaml): that one prices the $80-credit facility
+# with the Black-Scholes solver; this one prices the retail product's exact
+# path. Read-only: public market data only, no credentials, nothing traded.
+#
+# Singapore: OKX public REST is read directly (same region as the demo).
+# Deploy: Render dashboard → New → Blueprint → select this file. Manual deploys
+# only (autoDeploy off, like the demo). Pages: / (public record), /api/shadow,
+# /api/shadow/positions.csv, /healthz; operator (EP_ADMIN_TOKEN): /report,
+# /api/shadow/report, /api/shadow/export, /api/shadow/positions.csv?scope=full.
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: atticus-earn-protect-shadow
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/hl-toggle-demo-9151
+    autoDeploy: false
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/perpShadowWorker.ts
+    healthCheckPath: /healthz
+    disk:
+      name: earn-protect-shadow-ledger
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PERP_SHADOW_LEDGER_PATH
+        value: /var/data/perp-shadow-ledger.jsonl
+      # The live product's terms: 3 OKX lots (0.03 BTC) long and short, the
+      # balanced (6% / 1.5%) geometry, 20% share take, $0.05 de minimis, no minimum.
+      - key: PERP_SHADOW_SIZE_BTC
+        value: "0.03"
+      - key: PERP_SHADOW_SIDES
+        value: long,short
+      - key: PERP_SHADOW_TIER
+        value: balanced
+      - key: EP_TAKE_RATE
+        value: "0.20"
+      - key: EP_DE_MINIMIS_USDC
+        value: "0.05"
+      - key: PERP_SHADOW_MIN_TAKE_BPS
+        value: "0"
+      # The fee-floor counterfactual measured alongside (bps of protected notional).
+      - key: PERP_SHADOW_CF_MIN_TAKE_BPS
+        value: "5"
+      - key: PERP_SHADOW_SCAN_MS
+        value: "3600000"
+      - key: PERP_SHADOW_SETTLE_MS
+        value: "900000"
+      - key: PERP_SHADOW_DEMO_URL
+        value: https://earnandprotect.xyz
+      # Gates the operator views (?token=... or x-admin-token). Fail-closed:
+      # without it those routes answer 403 and the public record stays up.
+      - key: EP_ADMIN_TOKEN
+        generateValue: true
