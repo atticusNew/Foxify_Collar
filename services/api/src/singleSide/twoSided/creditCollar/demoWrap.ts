@@ -190,6 +190,12 @@ export type DemoWrapRecord = {
   closeValue?: { atMs: number; valueUsdc: number | null; source: "okx_fill" | "okx_book" | "unvalued"; note?: string } | null;
   /** plain mode: what the holder owes after netting, and whether it has been settled. */
   owed?: OwedBalance | null;
+  /**
+   * The writer's own exit after an early close (EP_UNWIND_QUEUE=1): the trader is settled at the
+   * book's mark-to-market; our hedge legs are worked passive first, then IOC, with receipts.
+   * Shape: execution/unwindQueue.ts UnwindJob (kept loose here so the record type has no cycle).
+   */
+  unwind?: import("./execution/unwindQueue").UnwindJob | null;
   /** Client-supplied idempotency key: a retry with the same key replays the original outcome. */
   idempotencyKey?: string | null;
   /** The honest credit split (decision 3): gross the market paid, our published take, the trader's net. */
