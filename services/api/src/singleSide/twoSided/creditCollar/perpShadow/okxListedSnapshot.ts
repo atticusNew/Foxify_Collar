@@ -11,6 +11,7 @@
  */
 
 import { computeCollarOpenFees } from "../bullishFees";
+import { exceedProb, expTimeFromMs, pickCap, YEAR_MS, type CapRule } from "../capRule";
 import type { PerpSide } from "../creditCollarPricer";
 import { demoPlanStrikes } from "../demoWrap";
 import {
@@ -46,6 +47,8 @@ export interface OkxListedSnapshot {
   books: Record<string, BookDepth>;
   /** how many instruments had no readable book (fetch failures are recorded, never guessed) */
   booksMissing: number;
+  /** OKX mark vol (annualized fraction) per instId at the snapshot's expiries, for the cap rule; absent when unreadable */
+  markVols?: Record<string, number>;
 }
 
 export const parseDepth = (raw: { data?: Array<{ bids?: string[][]; asks?: string[][] }> }): BookDepth => {
@@ -132,7 +135,35 @@ export const fetchOkxListedSnapshot = async (input: {
       booksMissing += 1;
     }
   }
-  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing };
+  const markVols = await fetchMarkVolsForExpiries(getJson, [expiryMs, weeklyExpiryMs]);
+  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing, ...(markVols ? { markVols } : {}) };
+};
+
+/**
+ * Mark vols for the snapshot's expiries from OKX opt-summary (one request per expiry). A failure
+ * leaves the field absent: the cap rule then falls back to `widest` rather than guess a vol.
+ */
+export const fetchMarkVolsForExpiries = async (
+  getJson: (path: string) => Promise<unknown>,
+  expiries: Array<number | null>,
+): Promise<Record<string, number> | null> => {
+  const out: Record<string, number> = {};
+  let any = false;
+  for (const e of new Set(expiries.filter((x): x is number => x != null))) {
+    try {
+      const j = (await getJson(`/api/v5/public/opt-summary?uly=BTC-USD&expTime=${expTimeFromMs(e)}`)) as { data?: Array<{ instId?: string; markVol?: string }> };
+      for (const row of j.data ?? []) {
+        const iv = Number(row.markVol);
+        if (row.instId && Number.isFinite(iv) && iv > 0) {
+          out[row.instId] = iv;
+          any = true;
+        }
+      }
+    } catch {
+      /* recorded as absent */
+    }
+  }
+  return any ? out : null;
 };
 
 /**
@@ -183,7 +214,8 @@ export const fetchOkxTopSnapshot = async (input: {
     };
     books[c.instId] = { bids: lvl(t.bidPx, t.bidSz), asks: lvl(t.askPx, t.askSz) };
   }
-  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing };
+  const markVols = await fetchMarkVolsForExpiries(getJson, [expiryMs, weeklyExpiryMs]);
+  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing, ...(markVols ? { markVols } : {}) };
 };
 
 export type FillMode = "top" | "walk";
@@ -219,6 +251,9 @@ export type SnapshotQuote =
       /** the same collar valued at venue mids (null when a mid is missing): the fair-value anchor */
       midCreditUsdc: number | null;
       levelsUsed: { buy: number; sell: number };
+      /** market-implied chance the cycle settles beyond the cap, from the sold strike's mark vol; null when unreadable */
+      capExceedProb: number | null;
+      capRuleApplied: CapRule["kind"];
     }
   | { ok: false; error: string; message: string };
 
@@ -242,6 +277,8 @@ export const quoteCollarFromSnapshot = (
     maxCapPct?: number;
     /** price THIS funding strike instead of searching: the cap-distance ladder holds the floor and moves the cap */
     pinSellInstId?: string;
+    /** which paying strike the cap sells (capRule.ts); default the widest that pays */
+    capRule?: CapRule;
   },
   snap: OkxListedSnapshot,
 ): SnapshotQuote => {
@@ -290,8 +327,14 @@ export const quoteCollarFromSnapshot = (
     };
   }
   const notionalUsdc = round2(input.contracts * ctValBtc * input.spot);
-  type SellCand = { inst: OkxChainInstrument; fill: NonNullable<ReturnType<typeof fillAt>>; net: number; gross: number; fee: number };
-  let pick: SellCand | null = null;
+  type SellCand = { inst: OkxChainInstrument; fill: NonNullable<ReturnType<typeof fillAt>>; net: number; gross: number; fee: number; strike: number; netUsdc: number; exceedProb: number | null };
+  const rule: CapRule = input.capRule ?? { kind: "widest" };
+  const yearsToExpiry = Math.max(0, expiryMs - snap.atMs) / YEAR_MS;
+  const exceedProbOf = (inst: OkxChainInstrument): number | null => {
+    const iv = snap.markVols?.[inst.instId];
+    return iv == null ? null : exceedProb({ side: input.side, spot: input.spot, strike: inst.strike, ivAnnual: iv, yearsToExpiry });
+  };
+  const cands: SellCand[] = [];
   let closest: SellCand | null = null;
   for (const inst of sellCands) {
     const fill = fillAt(inst.instId, "bid");
@@ -305,10 +348,13 @@ export const quoteCollarFromSnapshot = (
       mode: "clob_taker",
       venue: "okx",
     }).openFeeUsdc;
-    const cand: SellCand = { inst, fill, net: round2(gross - fee), gross, fee: round2(fee) };
+    const net = round2(gross - fee);
+    const cand: SellCand = { inst, fill, net, gross, fee: round2(fee), strike: inst.strike, netUsdc: net, exceedProb: exceedProbOf(inst) };
+    cands.push(cand);
     if (!closest || cand.net > closest.net) closest = cand;
-    if (cand.net > 0 && (!pick || Math.abs(inst.strike - input.spot) > Math.abs(pick.inst.strike - input.spot))) pick = cand;
   }
+  const chosen = pickCap(cands, input.spot, rule);
+  const pick = chosen?.pick ?? null;
   if (!pick) {
     return closest
       ? {
@@ -354,6 +400,8 @@ export const quoteCollarFromSnapshot = (
     netCreditUsdc: pick.net,
     midCreditUsdc: buyMid != null && sellMid != null ? round2((sellMid - buyMid) * qty * input.spot) : null,
     levelsUsed: { buy: buy.fill.levelsUsed, sell: pick.fill.levelsUsed },
+    capExceedProb: pick.exceedProb,
+    capRuleApplied: chosen?.decidedBy ?? "widest",
   };
 };
 

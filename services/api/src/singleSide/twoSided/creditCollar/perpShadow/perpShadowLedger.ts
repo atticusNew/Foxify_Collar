@@ -44,6 +44,8 @@ export interface PerpAltTerms {
   creditCents: number;
   midCreditCents: number | null;
   levelsUsed: { buy: number; sell: number };
+  /** market-implied odds of finishing past this cap at open; absent on records before the cap rule */
+  capExceedProb?: number | null;
 }
 export interface PerpAltRefusal {
   ok: false;
@@ -84,6 +86,21 @@ export interface PerpCapRung {
   live: boolean;
   /** sits closer than the cap guard: the live product refuses to write here */
   underGuard: boolean;
+  /** market-implied chance the cycle settles beyond this rung (the rung's mark vol); null when unreadable */
+  exceedProb?: number | null;
+  terms: PerpAlt;
+}
+
+/**
+ * One rung of the floor ladder: the collar re-quoted with the floor at this depth (the cap found
+ * by the live cap rule at each), same size, expiry and instant. Settled on the same path, so
+ * each depth shows what it paid, how often it was needed and what the holder netted.
+ */
+export interface PerpFloorRung {
+  /** floor depth from spot, fraction (the target; the listed strike is the nearest at or beyond it) */
+  floorPct: number;
+  /** the live geometry's floor */
+  live: boolean;
   terms: PerpAlt;
 }
 
@@ -93,6 +110,8 @@ export interface PerpShadowCounterfactuals {
   feeRules: Record<string, PerpFeeRuleAlt>;
   sizeLadder: PerpSizeProbe[];
   tenors: Record<string, PerpTenorAlt>;
+  /** absent on records before the floor ladder (2026-09-20) */
+  floorLadder?: PerpFloorRung[];
 }
 
 /** The ATM ask seen at open: the knock-out buyback is estimated from the nearest scan's. */
@@ -126,6 +145,10 @@ export interface PerpShadowOpenRecord {
   tenor?: EpTenor;
   /** the cap guard in force at open, fraction: a cap closer than this is refused live */
   capGuardPct: number;
+  /** market-implied chance the cycle settles beyond the live cap at open; null when no vol was readable */
+  capExceedProb?: number | null;
+  /** which cap rule decided the live strike (`widest` for every record before the rule existed) */
+  capRuleApplied?: "widest" | "target";
   buyInstId: string;
   sellInstId: string;
   floorStrikeCents: number;
@@ -630,6 +653,21 @@ export interface PerpCapRungBook extends PerpRuleBook {
   underGuard: number;
   okxConfirmedTouches: number;
   hlOnlyTouches: number;
+  /** mean market-implied chance (at open) of settling beyond this rung, % — null when no quote carried a vol */
+  predictedExceedPct: number | null;
+  /** realized share of settled cycles that ended beyond this rung, % — the number the prediction is checked against */
+  realizedExceedPct: number | null;
+}
+
+export interface PerpFloorRungBook extends PerpRuleBook {
+  /** floor depth, fraction */
+  floorPct: number;
+  /** how many of its quotes were the live geometry */
+  livePicks: number;
+  /** the mean cap distance the cap rule found at this floor, fraction (null when nothing paid) */
+  avgCapPct: number | null;
+  /** mean market-implied odds of finishing past that cap, % (null when no vol was readable) */
+  predictedExceedPct: number | null;
 }
 
 export interface PerpCounterfactualSummary {
@@ -638,6 +676,8 @@ export interface PerpCounterfactualSummary {
   baseline: PerpRuleBook;
   /** every listed cap distance, floor held fixed, settled on the same path */
   capLadder: PerpCapRungBook[];
+  /** the floor at each depth, the cap re-found by the live rule, settled on the same path */
+  floorLadder: PerpFloorRungBook[];
   feeRules: Record<string, PerpRuleBook>;
   /** the live geometry re-quoted at larger sizes, walked down the depth */
   capacity: Array<PerpRuleBook & { mult: number; contracts: number; avgSpreadCostBps: number | null }>;
@@ -650,10 +690,11 @@ export interface PerpCounterfactualSummary {
 export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], capMode: PerpCapMode = DEFAULT_PERP_CAP_MODE): PerpCounterfactualSummary {
   const withCf = positions.filter((p) => p.counterfactuals);
   const baseline = newAcc();
-  const rungs = new Map<string, BookAcc & { capPctSum: number; livePicks: number; underGuard: number; okxConfirmedTouches: number; hlOnlyTouches: number }>();
+  const rungs = new Map<string, BookAcc & { capPctSum: number; livePicks: number; underGuard: number; okxConfirmedTouches: number; hlOnlyTouches: number; probSum: number; probN: number }>();
   const feeRules: Record<string, BookAcc> = {};
   const tenors = new Map<string, BookAcc & { dayNum: number; dayDen: number }>();
   const capacity = new Map<number, BookAcc & { mult: number; contracts: number; spreadNum: number; spreadDen: number }>();
+  const floors = new Map<string, BookAcc & { floorPct: number; livePicks: number; capPctSum: number; capN: number; probSum: number; probN: number }>();
   const fundingRule = { judged: 0, wouldRefuse: 0, creditCents: 0, fundingCents: 0 };
   for (const p of withCf) {
     const cf = p.counterfactuals!;
@@ -669,8 +710,12 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
     }
     for (const rung of cf.capLadder ?? []) {
       const key = capBucket(rung.capPct);
-      const row = rungs.get(key) ?? { ...newAcc(), capPctSum: 0, livePicks: 0, underGuard: 0, okxConfirmedTouches: 0, hlOnlyTouches: 0 };
+      const row = rungs.get(key) ?? { ...newAcc(), capPctSum: 0, livePicks: 0, underGuard: 0, okxConfirmedTouches: 0, hlOnlyTouches: 0, probSum: 0, probN: 0 };
       row.capPctSum += rung.capPct;
+      if (rung.exceedProb != null) {
+        row.probSum += rung.exceedProb;
+        row.probN += 1;
+      }
       if (rung.live) row.livePicks += 1;
       if (rung.underGuard) row.underGuard += 1;
       if (!rung.terms.ok) row.refused += 1;
@@ -685,6 +730,23 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
         }
       }
       rungs.set(key, row);
+    }
+    for (const rung of cf.floorLadder ?? []) {
+      const key = rung.floorPct.toFixed(4);
+      const row = floors.get(key) ?? { ...newAcc(), floorPct: rung.floorPct, livePicks: 0, capPctSum: 0, capN: 0, probSum: 0, probN: 0 };
+      if (rung.live) row.livePicks += 1;
+      if (!rung.terms.ok) row.refused += 1;
+      else {
+        bookQuote(row, p.notionalCents, rung.terms);
+        row.capPctSum += rung.terms.capPct;
+        row.capN += 1;
+        if (rung.terms.capExceedProb != null) {
+          row.probSum += rung.terms.capExceedProb;
+          row.probN += 1;
+        }
+        if (settled) bookSettle(row, altOutcome(p, rung.terms, p.settleCents!, positions, capMode), openMs);
+      }
+      floors.set(key, row);
     }
     for (const [label, fr] of Object.entries(cf.feeRules)) {
       feeRules[label] ??= newAcc();
@@ -733,7 +795,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
     recordedSince: withCf.length ? withCf.map((p) => p.at).sort()[0] : null,
     baseline: finishBook(baseline),
     capLadder: [...rungs.entries()]
-      .map(([bucket, { capPctSum, livePicks, underGuard, okxConfirmedTouches, hlOnlyTouches, ...row }]) => ({
+      .map(([bucket, { capPctSum, livePicks, underGuard, okxConfirmedTouches, hlOnlyTouches, probSum, probN, ...row }]) => ({
         ...finishBook(row),
         bucket,
         capPct: +(capPctSum / Math.max(1, row.quoted + row.refused)).toFixed(4),
@@ -741,8 +803,19 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
         underGuard,
         okxConfirmedTouches,
         hlOnlyTouches,
+        predictedExceedPct: probN > 0 ? +((probSum / probN) * 100).toFixed(1) : null,
+        realizedExceedPct: row.settled > 0 ? +((row.capHits / row.settled) * 100).toFixed(1) : null,
       }))
       .sort((a, b) => a.capPct - b.capPct),
+    floorLadder: [...floors.values()]
+      .map(({ floorPct, livePicks, capPctSum, capN, probSum, probN, ...row }) => ({
+        ...finishBook(row),
+        floorPct,
+        livePicks,
+        avgCapPct: capN > 0 ? +(capPctSum / capN).toFixed(4) : null,
+        predictedExceedPct: probN > 0 ? +((probSum / probN) * 100).toFixed(1) : null,
+      }))
+      .sort((a, b) => a.floorPct - b.floorPct),
     feeRules: Object.fromEntries(Object.entries(feeRules).map(([k, v]) => [k, finishBook(v)])),
     tenors: Object.fromEntries(
       [...tenors.entries()].map(([k, { dayNum, dayDen, ...row }]) => [k, { ...finishBook(row), avgDays: dayDen > 0 ? +(dayNum / dayDen).toFixed(1) : null }]),

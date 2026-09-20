@@ -117,6 +117,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .cred{margin-top:12px;display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
   .cred .cred-num{font-size:26px;font-weight:700;letter-spacing:-.4px;color:var(--accent);font-variant-numeric:tabular-nums}
   .cred .cred-sub{font-size:12px;color:var(--muted)}
+  .cred.cred-floor .cred-num{color:var(--text)}
+  .cred .cred-plus{margin-left:auto;font-variant-numeric:tabular-nums} .cred .cred-plus b{color:var(--accent);font-weight:700}
   /* Live-data dot on the card eyebrow: this is a live position on this address, wordlessly. */
   .livedot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:7px;vertical-align:1px;animation:lpulse 2s ease-in-out infinite}
   @keyframes lpulse{0%,100%{opacity:1}50%{opacity:.35}}
@@ -447,7 +449,7 @@ const humanChip = (raw) => {
   if (/price_moved/i.test(s)) return "The release price moved · confirm the new price";
   if (/already_released/i.test(s)) return "Cap already released · every gain is yours";
   if (/release_unfilled|release_unpriced|no ask on the cap leg/i.test(s)) return "Couldn't price the release right now · still protected · try again shortly";
-  if (/owed_outstanding|still owed on this account/i.test(s)) { const m = s.match(/\\$([0-9.]+)/); return (m ? "$" + m[1] + " to settle" : "A balance to settle") + " from your last cycle first"; }
+  if (/owed_outstanding|still owed on this account/i.test(s)) { const m = s.match(/\\$([0-9.]+)/); return (m ? "$" + m[1] + " settles" : "Your last cycle settles") + " from your last cycle\\u2019s gains first"; }
   if (/close_unwind_failed|couldn't close the hedge cleanly/i.test(s)) return "Couldn't close cleanly right now · you're still protected · try again shortly";
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first";
   if (/waitlisted|#\d+ in line/i.test(s)) { const m = s.match(/#(\d+) in line/); return m ? "Founding cohort full · you're #" + m[1] + " in line" : "Founding cohort full · you're on the waitlist"; }
@@ -499,14 +501,24 @@ const feeLine = (j) => {
     : "we keep " + fmt$(kept) + " (" + Math.round((j.takeRatePct || 0) * 100) + "%" + (j.founding ? ", founding rate" : "") + ")";
   return "The market funded " + fmt$(j.grossCreditUsdc) + " \\u00b7 " + rule + ".";
 };
-// One terms grid for every quote surface: the credit leads, floor and cap follow with their
-// distance from the live price. The preview, the viewing card and the pre-flip quote all use it.
-const termsGrid = (j, foundingBadge) => {
+// SIZE-AWARE HERO. The card leads with one number. On a position where the market funds a real
+// credit that number is the credit; on a small position (a $4 credit on $2,000) the credit is
+// true but not the point, and a card that shouts "$4" reads as a joke. There the floor leads —
+// "losses stop at $75,500" is the value — and the credit follows as the second line. The
+// threshold is the smaller story, not a hidden rule: under $10, or under 0.05% of the notional.
+const HERO_MIN_CREDIT_USD = 10, HERO_MIN_CREDIT_BPS = 5;
+const floorLeads = (creditUsdc, notionalUsdc) =>
+  creditUsdc < HERO_MIN_CREDIT_USD || (notionalUsdc > 0 && (creditUsdc / notionalUsdc) * 10000 < HERO_MIN_CREDIT_BPS);
+// One terms grid for every quote surface: the hero leads (credit, or the floor on a small
+// position), the other terms follow with their distance from the live price. The preview, the
+// viewing card and the pre-flip quote all use it.
+const termsGrid = (j, foundingBadge, notionalUsdc) => {
   const fPct = ((j.floorStrike - j.spot) / j.spot) * 100, cPct = ((j.capStrike - j.spot) / j.spot) * 100;
   const sgn = (x) => (x >= 0 ? "+" : "\\u2212") + Math.abs(x).toFixed(1) + "%";
-  return '<div class="terms">' +
-    '<div class="term credit-hero"><b style="color:var(--accent)">' + fmt$(j.creditUsdc) + '</b>' + tenorWord(j) + ' credit' + (foundingBadge || "") + '</div>' +
-    '<div class="term"><b>' + fmtPx(j.floorStrike) + ' <em>' + sgn(fPct) + '</em></b>hard floor</div>' +
+  const lead = floorLeads(j.creditUsdc, notionalUsdc == null ? j.protectedUsd : notionalUsdc);
+  const credit = '<div class="term' + (lead ? "" : " credit-hero") + '"><b style="color:var(--accent)">' + (lead ? "+" : "") + fmt$(j.creditUsdc) + '</b>' + tenorWord(j) + ' credit' + (foundingBadge || "") + '</div>';
+  const floor = '<div class="term' + (lead ? " credit-hero" : "") + '"><b>' + fmtPx(j.floorStrike) + ' <em>' + sgn(fPct) + '</em></b>' + (lead ? "losses stop here" : "hard floor") + '</div>';
+  return '<div class="terms">' + (lead ? floor + credit : credit + floor) +
     '<div class="term"><b>' + fmtPx(j.capStrike) + ' <em>' + sgn(cPct) + '</em></b>' + capWord() + '</div>' +
   '</div>';
 };
@@ -694,8 +706,16 @@ const activeBody = (o) => {
   // Floor tick = loss end (red), cap tick = upside end (mint) — the only color on the rail.
   const tickL = '<div class="rail-tick ' + (leftIsFloor ? "tfloor" : "tcap") + '" style="left:-1px"></div>';
   const tickR = '<div class="rail-tick ' + (leftIsFloor ? "tcap" : "tfloor") + '" style="right:-1px"></div>';
-  return '<div class="cred"><b class="cred-num' + (o.sim ? ' sim-cred' : '') + '">' + fmt$(o.creditUsdc) + '</b>' +
-      '<span class="cred-sub">' + tenorWord(o) + ' credit' + infoTip(creditTip) + (o.badge || "") + '</span></div>' +
+  // The hero: the credit, or on a small position the floor (see floorLeads). The sim-cred hook
+  // stays on the credit number either way so the simulation's ticker finds it.
+  const lead = floorLeads(o.creditUsdc, o.notionalUsdc);
+  const hero = lead
+    ? '<div class="cred cred-floor"><b class="cred-num">' + fmtPx(o.floorStrike) + '</b>' +
+        '<span class="cred-sub">losses stop here' + infoTip("Your floor. Below " + fmtPx(o.floorStrike) + " the position\\u2019s losses are covered for the cycle, hedged leg for leg on the options market.") + '</span>' +
+        '<span class="cred-sub cred-plus"><b class="' + (o.sim ? 'sim-cred' : '') + '">+' + fmt$(o.creditUsdc) + '</b> ' + tenorWord(o) + ' credit' + infoTip(creditTip) + (o.badge || "") + '</span></div>'
+    : '<div class="cred"><b class="cred-num' + (o.sim ? ' sim-cred' : '') + '">' + fmt$(o.creditUsdc) + '</b>' +
+        '<span class="cred-sub">' + tenorWord(o) + ' credit' + infoTip(creditTip) + (o.badge || "") + '</span></div>';
+  return hero +
     '<div class="rail" data-lo="' + lo + '" data-hi="' + hi + '">' +
       '<div class="rail-track">' + tickL + tickR +
         '<div class="rail-px" style="left:' + railPos(px) + '%"><span class="rail-pxlab"><span class="rail-pxval">' + fmtPx(px) + '</span><em>live</em></span></div>' +
@@ -735,8 +755,8 @@ const render = (positions, state) => {
   const owedBanner = (() => {
     if (watching || !state || !state.owed || !(state.owed.balanceUsdc > 0)) return "";
     const hadRelease = (state.wraps || []).some((x) => x.release && x.owed && x.owed.status === "owed");
-    return '<div class="chip owed"><b>' + fmt$(state.owed.balanceUsdc) + ' to settle</b> from your last cycle: ' + (hadRelease ? "a cap release" : "gains above the cap") + ' beyond the credit. Protection restarts once it\\u2019s settled.' +
-      infoTip("The cap funds the floor: gains above it this cycle are handed back at settlement, netted against your credit. When the net is negative it is a balance to settle. Your hedge was held leg for leg; nobody carried the difference for you.") + '</div>';
+    return '<div class="chip owed"><b>' + fmt$(state.owed.balanceUsdc) + ' settles from gains</b> from your last cycle: ' + (hadRelease ? "a cap release" : "gains above the cap") + ' beyond the credit. Protection restarts once it\\u2019s settled.' +
+      infoTip("The cap funds the floor: gains above it this cycle are the floor\\u2019s price and settle from those gains at the close, netted against your credit. On an exchange this nets from the position\\u2019s PnL like funding; here it is recorded and settles before the next cycle. Your hedge was held leg for leg; nobody carried the difference for you.") + '</div>';
   })();
   el.innerHTML = owedBanner + positions.map((p) => {
     const isWrapCoin = p.wrappable;
@@ -764,7 +784,7 @@ const render = (positions, state) => {
           : "";
         const settleIso = w.vesting && w.vesting.endMs ? new Date(w.vesting.endMs).toUTCString().replace(":00 GMT", " UTC") : null;
         terms = activeBody({
-          creditUsdc: q.creditUsdc, floorStrike, capStrike, quoteSpot: q.spot, livePx: p.markPx,
+          creditUsdc: q.creditUsdc, floorStrike, capStrike, quoteSpot: q.spot, livePx: p.markPx, notionalUsdc: p.notionalUsdc,
           vestedUsdc: v.vestedUsdc, fraction: v.fraction, remainingMs: v.remainingMs, fullyVested: v.fullyVested,
           settleTip: settleIso ? "Settles at the listed expiry: " + settleIso + ". The credit lands in the payouts table below, then protection renews automatically." : "Pays at the cycle's close.",
           sim: false, badge: foundingBadge, tenor: q.tenor,
@@ -781,7 +801,7 @@ const render = (positions, state) => {
         const ko = w.knockout || {};
         chip = '<div class="chip">Cap $' + (ko.capStrike ?? "?") + ' touched · cycle over. You kept every gain to the cap' + (v ? ' + ' + fmt$(v.vestedUsdc) + ' credit' : '') + '. Re-arms automatically while the toggle is on.</div>';
       } else if (w.status === "concluded" && v) {
-        const owedNote = w.owed && w.owed.status === "owed" ? ' · ' + fmt$(w.owed.amountUsdc) + ' owed after netting' : '';
+        const owedNote = w.owed && w.owed.status === "owed" ? ' · ' + fmt$(w.owed.amountUsdc) + ' settles from gains' : '';
         const relNote = w.release ? ' · cap released for ' + fmt$(w.release.costUsdc) : '';
         chip = '<div class="chip">' + (v.fullyVested ? "Cycle complete · earned " + fmt$(v.fullCreditUsdc) + " in full" : "Closed early · kept " + fmt$(v.vestedUsdc) + " of " + fmt$(v.fullCreditUsdc)) + relNote + owedNote + '</div>';
       } else if (w.status === "failed" && w.failReason) {
@@ -830,7 +850,7 @@ const render = (positions, state) => {
         const settleIsoS = s.endMs ? new Date(s.endMs).toUTCString().replace(":00 GMT", " UTC") : null;
         chip = simLabel;
         terms = activeBody({
-          creditUsdc: sq.creditUsdc, floorStrike: sq.floorStrike, capStrike: sq.capStrike,
+          creditUsdc: sq.creditUsdc, floorStrike: sq.floorStrike, capStrike: sq.capStrike, notionalUsdc: p.notionalUsdc,
           quoteSpot: sq.spot, livePx: lastMarkPx != null ? lastMarkPx : p.markPx,
           vestedUsdc: vsim.vestedUsdc, fraction: vsim.fraction, remainingMs: vsim.remainingMs, fullyVested: false,
           settleTip: settleIsoS ? "The live cycle settles at the listed expiry: " + settleIsoS + "." : "Pays at the cycle's close.",
@@ -1114,7 +1134,7 @@ const renderWatchTerms = async (p) => {
     if (!j.ok) { box.innerHTML = '<div class="small muted" style="margin-top:10px">' + esc(humanChip(j.message || j.error)) + '</div>'; return; }
     const html =
       '<div class="small muted" style="margin-top:10px">' + (INST ? 'What protection would pay on this position ' + (j.tenor === "weekly" ? "this week" : "today") + ':' : 'If this trader flipped the toggle right now:') + '</div>' +
-      termsGrid(j, "") +
+      termsGrid(j, "", Math.min(p.notionalUsdc, PV_MAX_USD)) +
       carryLine(j) +
       whyLine +
       thinNote(j.creditUsdc, Math.min(p.notionalUsdc, PV_MAX_USD)) +

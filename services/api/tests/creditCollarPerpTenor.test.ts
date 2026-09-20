@@ -24,6 +24,7 @@ import {
 import { fetchOkxListedTouchQuote, quoteFromListedBooks } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 import { atmReference, fetchOkxTopSnapshot, fundingStrikeLadder, quoteCollarFromSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
 import { capGuardFor, otherTenor, parseTenor, tenorExpiry, tenorWord } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import { expTimeFromMs } from "../src/singleSide/twoSided/creditCollar/capRule";
 
 const SHAPE = { floorPct: 0.06, capPct: 0.015 };
 
@@ -262,10 +263,19 @@ test("fetchOkxTopSnapshot: instruments + tickers become one snapshot across the 
     calls.push(u);
     if (u.includes("/public/instruments")) return new Response(JSON.stringify({ data: chain.map(okxRow) }), { status: 200 });
     if (u.includes("/market/tickers")) return new Response(JSON.stringify({ data: tickers }), { status: 200 });
+    if (u.includes("/public/opt-summary")) {
+      // one request per expiry; the weekly's vols are readable, the daily's are not
+      return u.includes(`expTime=${expTimeFromMs(friday)}`)
+        ? new Response(JSON.stringify({ data: chain.filter((c) => c.expiryMs === friday).map((c) => ({ instId: c.instId, markVol: "0.45" })) }), { status: 200 })
+        : new Response("{}", { status: 500 });
+    }
     return new Response("{}", { status: 404 });
   };
   const snap = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl });
-  assert.equal(calls.length, 2, "exactly two public requests");
+  assert.equal(calls.filter((c) => !c.includes("opt-summary")).length, 2, "exactly two public requests for the books");
+  assert.equal(calls.filter((c) => c.includes("opt-summary")).length, 2, "and one mark-vol request per expiry");
+  assert.ok(snap.markVols && Object.keys(snap.markVols).length > 0 && Object.values(snap.markVols).every((v) => v === 0.45), "mark vols keyed by instId");
+  assert.ok(chain.filter((c) => c.expiryMs === daily).every((c) => snap.markVols![c.instId] == null), "an unreadable expiry leaves its vols absent, never guessed");
   assert.equal(snap.expiryMs, daily);
   assert.equal(snap.weeklyExpiryMs, friday);
   // Only the daily and weekly in-band strikes are kept: Tuesday and the following Friday are not.

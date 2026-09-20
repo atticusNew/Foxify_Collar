@@ -155,6 +155,10 @@ export type DemoWrapRecord = {
     tenor?: string;
     /** What holding the perp costs (+) or pays (−) over the cycle at the funding rate seen at quote time. */
     fundingUsdc?: number;
+    /** Market-implied chance (at open) the cycle settles beyond the cap, from the sold strike's mark vol; absent before the cap rule. */
+    capExceedProb?: number | null;
+    /** Which cap rule decided the strike (capRule.ts). */
+    capRule?: "widest" | "target";
   } | null;
   hedge: {
     venue: string; // "okx_model" | "okx_demo" | "okx_live"
@@ -186,6 +190,12 @@ export type DemoWrapRecord = {
   closeValue?: { atMs: number; valueUsdc: number | null; source: "okx_fill" | "okx_book" | "unvalued"; note?: string } | null;
   /** plain mode: what the holder owes after netting, and whether it has been settled. */
   owed?: OwedBalance | null;
+  /**
+   * The writer's own exit after an early close (EP_UNWIND_QUEUE=1): the trader is settled at the
+   * book's mark-to-market; our hedge legs are worked passive first, then IOC, with receipts.
+   * Shape: execution/unwindQueue.ts UnwindJob (kept loose here so the record type has no cycle).
+   */
+  unwind?: import("./execution/unwindQueue").UnwindJob | null;
   /** Client-supplied idempotency key: a retry with the same key replays the original outcome. */
   idempotencyKey?: string | null;
   /** The honest credit split (decision 3): gross the market paid, our published take, the trader's net. */
@@ -208,7 +218,7 @@ export type KnockoutInfo = {
   capStrike: number;
   /** Net USD realized closing both hedge legs (okx lanes); null in paper (no venue legs). House-side bookkeeping. */
   unwindValueUsdc: number | null;
-  /** Contracts of the sold leg bought back BEFORE the touch by the pre-touch working order (cap watch), and what they cost. */
+  /** Historical (records before 2026-09-20): contracts bought back before the touch by the retired pre-touch working order. Never written now. */
   preTouch?: { filledContracts: number; avgPxBtc: number | null; costUsdc: number } | null;
 };
 

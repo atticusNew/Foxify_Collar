@@ -4,6 +4,7 @@
  * priced from the same second of the same book.
  */
 
+import type { CapRule } from "../capRule";
 import type { PerpSide } from "../creditCollarPricer";
 import { otherTenor, type CapGuard, type CollarGeometry, type EpTenor } from "../perpTenor";
 import { atmReference, fundingStrikeLadder, quoteCollarFromSnapshot, type OkxListedSnapshot, type SnapshotQuote } from "./okxListedSnapshot";
@@ -12,6 +13,7 @@ import type {
   PerpAltTerms,
   PerpCapRung,
   PerpFeeRuleAlt,
+  PerpFloorRung,
   PerpShadowCounterfactuals,
   PerpShadowOpenRecord,
   PerpShadowRefusalRecord,
@@ -95,9 +97,13 @@ const altFrom = (q: SnapshotQuote, cfg: PerpTakeConfig): PerpAlt => {
     takeRule: split.takeRule,
     creditCents: split.creditCents,
     midCreditCents: q.midCreditUsdc == null ? null : cents(q.midCreditUsdc),
+    capExceedProb: q.capExceedProb,
     levelsUsed: q.levelsUsed,
   };
 };
+
+/** Floor depths the shadow re-quotes at (the live 6% among them). */
+export const FLOOR_LADDER_PCTS = [0.05, 0.06, 0.07, 0.08] as const;
 
 export const SIZE_LADDER_MULTS = [1, 10, 50] as const;
 
@@ -112,6 +118,8 @@ export interface PerpQuoteInputs {
   tenor: EpTenor;
   /** the live cap guard: the widest strike the search may reach, and the closest it may write */
   capGuard: CapGuard;
+  /** the live cap rule (capRule.ts); default the widest strike that pays */
+  capRule?: CapRule;
   take: PerpTakeConfig;
   /** the fee-floor counterfactual's minimum, bps of notional */
   counterfactualMinTakeBps: number;
@@ -135,7 +143,7 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
   const weeklyListed = snap.weeklyExpiryMs != null && snap.weeklyExpiryMs !== snap.expiryMs;
   const liveTenor: EpTenor = inputs.tenor === "weekly" && weeklyListed ? "weekly" : "daily";
   const liveExpiryMs = liveTenor === "weekly" ? (snap.weeklyExpiryMs as number) : snap.expiryMs;
-  const base = { side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: inputs.geometry, maxCapPct: inputs.capGuard.maxCapPct, expiryMs: liveExpiryMs };
+  const base = { side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: inputs.geometry, maxCapPct: inputs.capGuard.maxCapPct, expiryMs: liveExpiryMs, capRule: inputs.capRule };
   const live = quoteCollarFromSnapshot({ ...base, mode: "top" }, snap);
   let liveAlt = altFrom(live, inputs.take);
   // The cap guard: the widest paying strike still sits too close to price. Refuse, and say how close.
@@ -165,8 +173,10 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
   const capLadder: PerpCapRung[] = fundingStrikeLadder(snap, inputs.side, inputs.spot, inputs.capGuard.maxCapPct, liveExpiryMs).map((inst) => {
     const capPct = round6(Math.abs(inst.strike - inputs.spot) / inputs.spot);
     const isLive = inst.instId === live.sellInstId;
-    const terms = isLive ? liveAlt : altFrom(quoteCollarFromSnapshot({ ...base, mode: "top", pinSellInstId: inst.instId }, snap), inputs.take);
-    return { sellInstId: inst.instId, capStrikeCents: cents(inst.strike), capPct, live: isLive, underGuard: capPct < inputs.capGuard.minCapPct - 1e-9, terms };
+    const rq = isLive ? live : quoteCollarFromSnapshot({ ...base, mode: "top", pinSellInstId: inst.instId }, snap);
+    const terms = isLive ? liveAlt : altFrom(rq, inputs.take);
+    const exceedProb = rq.ok ? rq.capExceedProb : null;
+    return { sellInstId: inst.instId, capStrikeCents: cents(inst.strike), capPct, live: isLive, underGuard: capPct < inputs.capGuard.minCapPct - 1e-9, exceedProb, terms };
   });
 
   const feeRules: Record<string, PerpFeeRuleAlt> = {};
@@ -206,7 +216,16 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
     tenors[alt] = terms.ok ? { ...terms, expiryIso: new Date(altExpiryMs).toISOString() } : terms;
   }
 
-  const counterfactuals: PerpShadowCounterfactuals = { version: 2, capLadder, feeRules, sizeLadder, tenors };
+  // Floor depth: the collar re-quoted with the floor at each depth (the cap re-found by the live
+  // rule at each), same expiry and instant. Deeper floors are cheaper, so the cap can sit closer
+  // for the same credit or pay more at the same cap — measured per depth, settled on the same path.
+  const floorLadder: PerpFloorRung[] = FLOOR_LADDER_PCTS.map((floorPct) => {
+    const isLive = Math.abs(floorPct - inputs.geometry.floorPct) < 1e-9;
+    const q = isLive ? live : quoteCollarFromSnapshot({ ...base, geometry: { ...inputs.geometry, floorPct }, mode: "top" }, snap);
+    return { floorPct, live: isLive, terms: isLive ? liveAlt : altFrom(q, inputs.take) };
+  });
+
+  const counterfactuals: PerpShadowCounterfactuals = { version: 2, capLadder, feeRules, sizeLadder, tenors, floorLadder };
   const basisBps = inputs.okxIndex != null && inputs.okxIndex > 0 ? +(((inputs.spot - inputs.okxIndex) / inputs.okxIndex) * 10000).toFixed(1) : null;
   const nowMs = Date.parse(inputs.nowIso);
   const periods8h = Math.max(0, live.expiryMs - nowMs) / (8 * 3_600_000);
@@ -229,6 +248,8 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
     expiryIso: new Date(live.expiryMs).toISOString(),
     tenor: liveTenor,
     capGuardPct: inputs.capGuard.minCapPct,
+    capExceedProb: live.capExceedProb,
+    capRuleApplied: live.capRuleApplied,
     buyInstId: live.buyInstId,
     sellInstId: live.sellInstId,
     floorStrikeCents: cents(live.buyStrike),

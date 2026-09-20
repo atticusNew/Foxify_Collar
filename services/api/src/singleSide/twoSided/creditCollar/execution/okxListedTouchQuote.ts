@@ -1,11 +1,13 @@
 /**
  * Listed-lot pass-through quote. Credit = call bid − put ask − OKX fees on the instruments we
- * would actually trade. Sell-wing selection follows the pricer's loosest-acceptable principle:
- * the WIDEST listed OTM strike whose executable net credit is positive — walking tighter toward
- * the ATM guard only when nothing wider clears. Never a debit; refuse when nothing in band clears.
+ * would actually trade. Sell-wing selection follows the cap rule (capRule.ts): by default the
+ * WIDEST listed OTM strike whose executable net credit is positive; under the `target` rule the
+ * most credit among strikes the market gives at most N% chance of finishing beyond. Never a debit;
+ * refuse when nothing in band clears.
  */
 
 import { computeCollarOpenFees } from "../bullishFees";
+import { exceedProb, pickCap, YEAR_MS, type CapRule } from "../capRule";
 import type { PerpSide } from "../creditCollarPricer";
 import { parseOkxChain, planLiveCollar, nextListedWeeklyExpiryMs, nextStandardDailyExpiryMs, type OkxChainInstrument } from "./okxLivePlanner";
 
@@ -36,6 +38,10 @@ export type ListedTouchQuote =
       fundingTouchUsdc: number;
       creditUsdc: number;
       venueFeeUsdc: number;
+      /** market-implied chance the cycle settles beyond the cap (the sold strike's mark vol); null when no vol was readable */
+      capExceedProb: number | null;
+      /** which cap rule decided the strike (`target` only when a qualifying strike existed) */
+      capRuleApplied: CapRule["kind"];
     }
   | { ok: false; error: string; message: string };
 
@@ -59,6 +65,8 @@ export const quoteFromListedBooks = (input: {
   putBook: BookTopPx;
   callBook: BookTopPx;
   expiryMs?: number;
+  capExceedProb?: number | null;
+  capRuleApplied?: CapRule["kind"];
 }): ListedTouchQuote => {
   const planned = planLiveCollar(input.chain, {
     side: input.side,
@@ -148,7 +156,9 @@ export const quoteFromListedBooks = (input: {
     protectiveTouchUsdc: round6(buyAsk * qty * input.spot),
     fundingTouchUsdc: round6(sellBid * qty * input.spot),
     creditUsdc: net,
-    venueFeeUsdc: round2(fees)
+    venueFeeUsdc: round2(fees),
+    capExceedProb: input.capExceedProb ?? null,
+    capRuleApplied: input.capRuleApplied ?? "widest"
   };
 };
 
@@ -202,7 +212,7 @@ export const firstWingWithTouch = (
   return null;
 };
 
-export type WingPick = { inst: OkxChainInstrument; book: BookTopPx; netUsdc: number };
+export type WingPick = { inst: OkxChainInstrument; book: BookTopPx; netUsdc: number; strike: number; exceedProb: number | null };
 
 /**
  * Sell-wing selection = the pricer's loosest-acceptable-strike principle on listed books: among
@@ -210,15 +220,24 @@ export type WingPick = { inst: OkxChainInstrument; book: BookTopPx; netUsdc: num
  * (bid − buy ask) × size − OKX open fees — is positive. Tighter strikes are used only when nothing
  * wider clears. `closest` is the best-net candidate regardless of sign, for an honest refuse line.
  */
+/**
+ * The funding wing under the cap rule (capRule.ts). Every candidate with a bid is priced net of
+ * venue fees; `pick` is the rule's choice among those that pay (null when none does), `closest`
+ * the best-net candidate so a refusal names real instruments and the real nonpositive number.
+ * `exceedProbOf` supplies the market-implied chance of finishing beyond a strike (null ⟹ the
+ * `target` rule falls back to `widest`).
+ */
 export const widestExecutableWing = (
   candidates: OkxChainInstrument[],
   books: Record<string, BookTopPx>,
   buyAskPxBtc: number,
   size: { contracts: number; ctValBtc: number },
   spot: number,
-  notionalUsdc: number
-): { pick: WingPick | null; closest: WingPick | null } => {
-  let pick: WingPick | null = null;
+  notionalUsdc: number,
+  rule: CapRule = { kind: "widest" },
+  exceedProbOf: (inst: OkxChainInstrument) => number | null = () => null
+): { pick: WingPick | null; closest: WingPick | null; decidedBy: CapRule["kind"] | null } => {
+  const cands: WingPick[] = [];
   let closest: WingPick | null = null;
   for (const inst of candidates) {
     const book = books[inst.instId];
@@ -233,11 +252,12 @@ export const widestExecutableWing = (
       mode: "clob_taker",
       venue: "okx"
     }).openFeeUsdc;
-    const cand: WingPick = { inst, book, netUsdc: round2(gross - fees) };
+    const cand: WingPick = { inst, book, netUsdc: round2(gross - fees), strike: inst.strike, exceedProb: exceedProbOf(inst) };
+    cands.push(cand);
     if (!closest || cand.netUsdc > closest.netUsdc) closest = cand;
-    if (cand.netUsdc > 0 && (!pick || Math.abs(inst.strike - spot) > Math.abs(pick.inst.strike - spot))) pick = cand;
   }
-  return { pick, closest };
+  const chosen = pickCap(cands, spot, rule);
+  return { pick: chosen?.pick ?? null, closest, decidedBy: chosen?.decidedBy ?? null };
 };
 
 const parseBook = (raw: { data?: Array<{ bids?: string[][]; asks?: string[][] }> }): BookTopPx => ({
@@ -269,12 +289,15 @@ export const fetchOkxListedTouchQuote = async (input: {
   /** daily (default; the product today) or weekly (the next listed Friday ≥ 5 days out, daily when none is listed) */
   tenor?: "daily" | "weekly";
   /**
-   * Cap guard. The funding wing is the WIDEST strike that still pays; the search may reach
-   * `maxCapPct` from spot (default the 4% band), and a pick closer than `minCapPct` is REFUSED
-   * (`cap_too_close`) rather than written: this is a knock-out collar, a cap that sits on top of
-   * price crosses on noise, costs the writer an ATM buyback and the holder the rest of the cycle.
+   * Cap guard. The search may reach `maxCapPct` from spot (default the 4% band). A pick closer
+   * than `minCapPct` is REFUSED (`cap_too_close`) — a knockout-mode rule (there a close cap costs
+   * the writer an ATM buy-back); the plain collar passes 0 and shows the distance instead.
    */
   capGuard?: { minCapPct: number; maxCapPct: number };
+  /** Which paying strike the cap sells (capRule.ts). Default: the widest that pays. */
+  capRule?: CapRule;
+  /** Implied vol per instId at an expiry (OKX opt-summary mark vol) for the `target` rule; null ⟹ widest. */
+  markVolsFor?: (expiryMs: number) => Promise<Map<string, number> | null>;
 }): Promise<ListedTouchQuote> => {
   const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
   const getJson = async (path: string): Promise<unknown> => {
@@ -326,9 +349,17 @@ export const fetchOkxListedTouchQuote = async (input: {
     const size = planned.ok
       ? { contracts: planned.plan.contracts, ctValBtc: planned.plan.ctValBtc }
       : { contracts: Math.max(1, Math.round(input.contractsBtc / 0.01)), ctValBtc: 0.01 };
+    // The cap rule needs a vol per strike; read the expiry's mark vols once (null ⟹ widest).
+    const rule: CapRule = input.capRule ?? { kind: "widest" };
+    const vols = rule.kind === "target" && input.markVolsFor ? await input.markVolsFor(expiryMs).catch(() => null) : null;
+    const yearsToExpiry = Math.max(0, expiryMs - input.nowMs) / YEAR_MS;
+    const exceedProbOf = (inst: OkxChainInstrument): number | null => {
+      const iv = vols?.get(inst.instId);
+      return iv == null ? null : exceedProb({ side: input.side, spot: input.spot, strike: inst.strike, ivAnnual: iv, yearsToExpiry });
+    };
     const sellScan = buyHit
-      ? widestExecutableWing(sellCands, books, buyHit.book.askPxBtc!, size, input.spot, input.notionalUsdc)
-      : { pick: null, closest: null };
+      ? widestExecutableWing(sellCands, books, buyHit.book.askPxBtc!, size, input.spot, input.notionalUsdc, rule, exceedProbOf)
+      : { pick: null, closest: null, decidedBy: null };
     // Widest positive-credit wing if one exists; otherwise the best-net candidate so the refuse
     // line names the real instruments and the real (nonpositive) number.
     const sellHit = sellScan.pick ?? sellScan.closest;
@@ -364,7 +395,9 @@ export const fetchOkxListedTouchQuote = async (input: {
       chain,
       putBook: books[putInst.instId],
       callBook: books[callInst.instId],
-      expiryMs: wantExpiryMs
+      expiryMs: wantExpiryMs,
+      capExceedProb: sellHit.exceedProb ?? exceedProbOf(sellHit.inst),
+      capRuleApplied: sellScan.decidedBy ?? "widest"
     });
   } catch (e) {
     return { ok: false, error: "listed_book_fetch_failed", message: (e as Error).message };

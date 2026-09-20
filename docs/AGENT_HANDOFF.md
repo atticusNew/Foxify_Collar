@@ -74,6 +74,7 @@ Known, not yet done: college football whitelist (deliberately deferred: 130+ sch
 ## 5. Engineering standards
 
 - Money is integer cents or `Decimal` — never float.
+- **P&L identity rule (founder, 2026-09-20).** Any time a structure changes WHO KEEPS A PAYOFF (a knockout, a release, a take-profit at the cap, a capped handback, a netted balance, a new leg), the P&L identity is re-derived from scratch — writer, trader, venue, every state at expiry and at every early exit — and written into the module docstring and its test BEFORE anything ships. No inventory, diversification or re-arm argument substitutes for the derivation: an option sold for nothing stays sold for nothing. The knockout collar shipped without this and was measured negative-EV live; that is the incident this rule comes from.
 - All I/O async; connectors resilient (reconnection, backoff); public endpoints CORS'd and byte-range-correct where media is served.
 - Tests with `node:test`; new logic ships with tests; run the touched test files before pushing.
 - **Nothing deployed live may break.** Deployed branches auto-deploy on push — treat every push to a deployed branch as a production deploy.
