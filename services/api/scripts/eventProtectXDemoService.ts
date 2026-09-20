@@ -33,6 +33,14 @@
  * the operator token (?token= or x-admin-token, EVENT_X_ADMIN_TOKEN), so dev
  * tools show a visitor exactly what the card shows.
  *
+ * EMBED DEMO: GET /embed is the layer inside a host's app: a neutral positions
+ * list (their brand, `?brand=` honoured only on EVENT_X_BRAND_ALLOWLIST;
+ * `?skin=dark`) with our Protect button on every row; the sheet prices from the
+ * same scan and the row reshapes to fewer contracts plus cash. GET /partner
+ * (operator token) is the host's console: volume protected, credits paid to
+ * their users, cost of protection, own-book share, refusals, revenue share
+ * (EVENT_X_PARTNER_SHARE_PCT, default 50).
+ *
  * Funnel (mirrors the perp demo's admin funnel): page loads are counted when
  * served; board taps and Protect toggles arrive as tiny beacons on
  * POST /api/metrics carrying only an anonymous per-tab session id and the
@@ -94,6 +102,7 @@ import {
   type RouteCheck,
 } from "../src/eventCollar/crossVenue/types";
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
+import { renderEventEmbedHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
 
 const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
@@ -109,6 +118,12 @@ const MAX_CRYPTO_ROWS = Number(process.env.EVENT_X_CRYPTO_ROWS || 2);
  * product. 0 disables the ceiling.
  */
 export const MAX_EV_COST_BPS = Number(process.env.EVENT_X_MAX_EV_COST_BPS ?? 300);
+/**
+ * EMBED DEMO knobs. `?brand=` on /embed is honoured only for names on the allowlist (fail-closed
+ * to "Your app"); the partner console's revenue-share line uses EVENT_X_PARTNER_SHARE_PCT.
+ */
+const BRAND_ALLOWLIST = process.env.EVENT_X_BRAND_ALLOWLIST || "";
+const PARTNER_SHARE_PCT = Math.min(100, Math.max(0, Number(process.env.EVENT_X_PARTNER_SHARE_PCT ?? 50)));
 /** Kalshi crypto strike series admitted to the board (self-hedge route only). */
 const CRYPTO_SERIES = (process.env.EVENT_X_CRYPTO_SERIES || "KXBTCD,KXETHD")
   .split(",")
@@ -213,6 +228,9 @@ export interface BoardRow {
   /** when protection locks: game start (sports) or market close (crypto), ISO */
   eventTimeIso: string;
   markCents: number;
+  /** the simulated position behind the row: size and the real print it was entered at */
+  contracts: number;
+  entryCents: number;
   floorCents: number;
   capCents: number;
   creditCents: number;
@@ -757,6 +775,8 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
       eventTitle: s.res.eventTitle,
       eventTimeIso: s.res.eventTimeIso,
       markCents: s.res.markCents,
+      contracts: s.res.position.contracts,
+      entryCents: s.res.position.entryCents,
       floorCents: q.floorCents,
       capCents: q.capCents,
       creditCents: q.creditCents,
@@ -975,13 +995,39 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       await handleMetrics(req, res);
       return;
     }
-    if (url.pathname.startsWith("/api/admin/") || url.pathname === "/admin/funnel") {
+    if (url.pathname === "/embed") {
+      recordPageLoad(funnelState, "embed", Date.now());
+      funnelDirty = true;
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(
+        renderEventEmbedHtml({
+          brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST),
+          skin: url.searchParams.get("skin") === "dark" ? "dark" : "light",
+        }),
+      );
+      return;
+    }
+    if (url.pathname.startsWith("/api/admin/") || url.pathname === "/admin/funnel" || url.pathname === "/partner") {
       if (!adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"))) {
         sendJson(res, 403, {
           ok: false,
           error: "admin_required",
           message: adminAuth.enabled ? "bad admin token" : "admin surfaces disabled — set EVENT_X_ADMIN_TOKEN",
         });
+        return;
+      }
+      if (url.pathname === "/partner" && req.method === "GET") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.end(
+          renderPartnerHtml({
+            atIso: new Date().toISOString(),
+            brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST),
+            ledger: summarizeCrossLedger(LEDGER_PATH),
+            funnel: eventFunnelSummary(funnelState, Date.now()),
+            sharePct: PARTNER_SHARE_PCT,
+            maxEvCostBps: MAX_EV_COST_BPS,
+          }),
+        );
         return;
       }
       if (url.pathname === "/admin/funnel" && req.method === "GET") {

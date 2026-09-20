@@ -95,6 +95,8 @@ const CROSS_PAYLOAD: OperatorCrossPayload = {
       eventTitle: "Cubs vs Cardinals",
       eventTimeIso: "2026-09-20T23:10:00.000Z",
       markCents: 62,
+      contracts: 100,
+      entryCents: 58,
       floorCents: 40,
       capCents: 88,
       creditCents: 420,
@@ -113,6 +115,8 @@ const CROSS_PAYLOAD: OperatorCrossPayload = {
       eventTitle: "BTC above $115,000 at 5pm",
       eventTimeIso: "2026-09-20T21:00:00.000Z",
       markCents: 48,
+      contracts: 150,
+      entryCents: 45,
       floorCents: 30,
       capCents: 90,
       creditCents: 150,
@@ -223,7 +227,9 @@ test("retail showcase: the cross-venue payload is an allow-list — pair, positi
   assert.equal(r.board.length, 2);
   assert.deepEqual(Object.keys(r.board[0]).sort(), [
     "capCents",
+    "contracts",
     "creditCents",
+    "entryCents",
     "eventTimeIso",
     "eventTitle",
     "evCostBps",

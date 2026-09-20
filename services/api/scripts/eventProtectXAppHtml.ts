@@ -605,6 +605,7 @@ export function renderFunnelHtml(
       <td>${escapeHtml(dayLabel(d.day))}</td>
       <td>${d.byPage.app ?? 0}</td>
       <td>${d.byPage.receipts ?? 0}</td>
+      <td>${d.byPage.embed ?? 0}</td>
       <td>${a.row_tap ?? 0}</td>
       <td class="hi">${a.protect_on ?? 0}</td>
       <td>${a.protect_undo ?? 0}</td>
@@ -615,6 +616,7 @@ export function renderFunnelHtml(
   const totals = {
     app: s.pageLoads7d.reduce((n, d) => n + (d.byPage.app ?? 0), 0),
     receipts: s.pageLoads7d.reduce((n, d) => n + (d.byPage.receipts ?? 0), 0),
+    embed: s.pageLoads7d.reduce((n, d) => n + (d.byPage.embed ?? 0), 0),
     taps: s.actions7d.reduce((n, d) => n + (d.byAction.row_tap ?? 0), 0),
     protects: s.actions7d.reduce((n, d) => n + (d.byAction.protect_on ?? 0), 0),
     undos: s.actions7d.reduce((n, d) => n + (d.byAction.protect_undo ?? 0), 0),
@@ -744,10 +746,10 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
   <div class="card" style="margin-top:12px">
     <h2>Last 7 days, UTC</h2>
     <div class="tablewrap"><table>
-      <thead><tr><th>day</th><th>board loads</th><th>receipts loads</th><th>${escapeHtml(ACTION_LABELS.row_tap)}</th><th>${escapeHtml(ACTION_LABELS.protect_on)}</th><th>${escapeHtml(ACTION_LABELS.protect_undo)}</th><th>${escapeHtml(ACTION_LABELS.tier_pick)}</th><th>${escapeHtml(ACTION_LABELS.board_expand)}</th></tr></thead>
+      <thead><tr><th>day</th><th>board loads</th><th>receipts loads</th><th>embed loads</th><th>${escapeHtml(ACTION_LABELS.row_tap)}</th><th>${escapeHtml(ACTION_LABELS.protect_on)}</th><th>${escapeHtml(ACTION_LABELS.protect_undo)}</th><th>${escapeHtml(ACTION_LABELS.tier_pick)}</th><th>${escapeHtml(ACTION_LABELS.board_expand)}</th></tr></thead>
       <tbody>
         ${days.join("")}
-        <tr class="total"><td>7-day total</td><td>${totals.app}</td><td>${totals.receipts}</td><td>${totals.taps}</td><td>${totals.protects}</td><td>${totals.undos}</td><td>${totals.tierPicks}</td><td>${totals.expands}</td></tr>
+        <tr class="total"><td>7-day total</td><td>${totals.app}</td><td>${totals.receipts}</td><td>${totals.embed}</td><td>${totals.taps}</td><td>${totals.protects}</td><td>${totals.undos}</td><td>${totals.tierPicks}</td><td>${totals.expands}</td></tr>
       </tbody>
     </table></div>
   </div>

@@ -138,6 +138,8 @@ export interface OperatorBoardRow {
   eventTitle: string;
   eventTimeIso: string;
   markCents: number;
+  contracts: number;
+  entryCents: number;
   floorCents: number;
   capCents: number;
   creditCents: number;
@@ -234,6 +236,8 @@ export const retailCrossPayload = (p: OperatorCrossPayload): RetailCrossPayload 
     eventTitle: r.eventTitle,
     eventTimeIso: r.eventTimeIso,
     markCents: r.markCents,
+    contracts: r.contracts,
+    entryCents: r.entryCents,
     floorCents: r.floorCents,
     capCents: r.capCents,
     creditCents: r.creditCents,
