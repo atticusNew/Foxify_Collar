@@ -265,9 +265,61 @@ export interface ShadowSummary {
   lastSettledAt: string | null;
   /** the protection writer's side of the same settled events */
   writer: ShadowWriterSummary;
+  /**
+   * THE HEDGE-LAYER IDENTITY. Leg-for-leg, the writer's realized P&L on settled events must equal
+   * the published take booked on them: the hedge pays the floor, the cap slice pays the hedge, and
+   * nothing depends on who won. `gapCents` is what is left after that (per-position round-ups on
+   * hedge units, in the writer's favour by construction); `holds` is |gap| within tolerance.
+   */
+  identity: ShadowIdentity;
+  /** the same book cut by hedge route and by league: where protection is cheap and where it is rich */
+  segments: { byRoute: Record<string, ShadowSegment>; byLeague: Record<string, ShadowSegment> };
   /** what each proposed rule would have done on the same events (shadow v2 records only) */
   counterfactuals: ShadowCounterfactualSummary;
 }
+
+export interface ShadowIdentity {
+  settled: number;
+  writerPnlCents: number;
+  takeBookedCents: number;
+  /** writer P&L minus take booked */
+  gapCents: number;
+  /** |gap| as bps of settled stake (null when nothing settled) */
+  gapBpsOfStake: number | null;
+  /** hedge payouts received minus hedge cost paid (the hedge funded itself when >= 0) */
+  hedgeNetCents: number;
+  /** cap slices kept minus floors paid minus credits paid (the holder legs) */
+  holderLegsNetCents: number;
+  /** true when the gap is inside the rounding tolerance (1¢ per settled position) */
+  holds: boolean;
+}
+
+/** One slice of the book (a route or a league): what protection cost there, quoted and realized. */
+export interface ShadowSegment {
+  opened: number;
+  settled: number;
+  stakeSettledCents: number;
+  /** mean quoted EV cost across every position opened in this slice, bps of naked EV */
+  quotedAvgEvBps: number | null;
+  /** across settled: holder's protected minus naked, and as bps of settled stake */
+  holderDeltaCents: number;
+  holderDeltaBpsOfStake: number | null;
+  creditsCents: number;
+  takeCents: number;
+  writerPnlCents: number;
+}
+
+const newSegment = (): ShadowSegment => ({
+  opened: 0,
+  settled: 0,
+  stakeSettledCents: 0,
+  quotedAvgEvBps: null,
+  holderDeltaCents: 0,
+  holderDeltaBpsOfStake: null,
+  creditsCents: 0,
+  takeCents: 0,
+  writerPnlCents: 0,
+});
 
 /** One rule's book: quoted, settled, and what it would have paid each side. */
 export interface RuleBook {
@@ -470,9 +522,16 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
   let firstOpenedAt: string | null = null;
   const byLeague: ShadowWriterSummary["byLeague"] = {};
   let takeLockedOpenCents = 0;
+  const segRoute: Record<string, ShadowSegment & { evSum: number }> = {};
+  const segLeague: Record<string, ShadowSegment & { evSum: number }> = {};
+  const seg = (m: Record<string, ShadowSegment & { evSum: number }>, k: string) => (m[k] ??= { ...newSegment(), evSum: 0 });
   for (const p of positions) {
     routeSplit[p.route] = (routeSplit[p.route] ?? 0) + 1;
     quotedBpsSum += p.evCostBps;
+    for (const sg of [seg(segRoute, p.route), seg(segLeague, p.league)]) {
+      sg.opened += 1;
+      sg.evSum += p.evCostBps;
+    }
     if (!firstOpenedAt || p.at < firstOpenedAt) firstOpenedAt = p.at;
     const lg = (byLeague[p.league] ??= { settled: 0, open: 0, pnlCents: 0, stakeCents: 0 });
     if (p.status === "open") {
@@ -526,9 +585,42 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
     lg.settled += 1;
     lg.pnlCents += wp.writerCents;
     lg.stakeCents += 100 * p.contracts;
+    for (const sg of [seg(segRoute, p.route), seg(segLeague, p.league)]) {
+      sg.settled += 1;
+      sg.stakeSettledCents += 100 * p.contracts;
+      sg.holderDeltaCents += (p.protectedCents ?? 0) - (p.nakedCents ?? 0);
+      sg.creditsCents += p.creditCents;
+      sg.takeCents += p.takeCents;
+      sg.writerPnlCents += wp.writerCents;
+    }
   }
   w.settledPnlBpsOfStake = stakeCents > 0 ? Math.round((w.settledPnlCents / stakeCents) * 10_000) : null;
   const deltaTotalCents = protectedTotalCents - nakedTotalCents;
+  const finishSegment = (m: Record<string, ShadowSegment & { evSum: number }>): Record<string, ShadowSegment> =>
+    Object.fromEntries(
+      Object.entries(m).map(([k, v]) => {
+        const { evSum, ...rest } = v;
+        return [
+          k,
+          {
+            ...rest,
+            quotedAvgEvBps: rest.opened > 0 ? Math.round(evSum / rest.opened) : null,
+            holderDeltaBpsOfStake: rest.stakeSettledCents > 0 ? Math.round((rest.holderDeltaCents / rest.stakeSettledCents) * 10_000) : null,
+          },
+        ];
+      }),
+    );
+  const gapCents = w.settledPnlCents - w.takeBookedCents;
+  const identity: ShadowIdentity = {
+    settled: settled.length,
+    writerPnlCents: w.settledPnlCents,
+    takeBookedCents: w.takeBookedCents,
+    gapCents,
+    gapBpsOfStake: stakeCents > 0 ? Math.round((Math.abs(gapCents) / stakeCents) * 10_000) : null,
+    hedgeNetCents: w.hedgePayoutsCents - w.hedgeCostCents,
+    holderLegsNetCents: w.capSlicesKeptCents - w.floorsPaidCents - w.creditsPaidCents,
+    holds: Math.abs(gapCents) <= settled.length,
+  };
   return {
     openCount: positions.filter((p) => p.status === "open").length,
     settledCount: settled.length,
@@ -545,6 +637,8 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
     firstOpenedAt,
     lastSettledAt,
     writer: w,
+    identity,
+    segments: { byRoute: finishSegment(segRoute), byLeague: finishSegment(segLeague) },
     counterfactuals: summarizeCounterfactuals(positions),
   };
 }
