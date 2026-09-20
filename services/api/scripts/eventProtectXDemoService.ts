@@ -26,6 +26,13 @@
  * ISOLATION: imports only from src/eventCollar/**. Nothing here touches the
  * production Earn & Protect service, stores, or deploy.
  *
+ * RETAIL FIRST: GET /api/showcase and GET /api/receipts serve the holder's
+ * shape (src/eventCollar/retailShowcase.ts): event, position, floor/cap/credit
+ * per tier, a retail refusal sentence, the track record. The hedge leg, the
+ * pairing, the routes examined, our take and raw refusal detail answer only to
+ * the operator token (?token= or x-admin-token, EVENT_X_ADMIN_TOKEN), so dev
+ * tools show a visitor exactly what the card shows.
+ *
  * Funnel (mirrors the perp demo's admin funnel): page loads are counted when
  * served; board taps and Protect toggles arrive as tiny beacons on
  * POST /api/metrics carrying only an anonymous per-tab session id and the
@@ -67,6 +74,7 @@ import {
   type ShowcaseSelection,
 } from "../src/eventCollar/showcasePicker";
 import { appendCrossLedger, summarizeCrossLedger } from "../src/eventCollar/crossVenue/crossLedger";
+import { retailCrossPayload } from "../src/eventCollar/retailShowcase";
 import type { KalshiMarket } from "../src/eventCollar/types";
 import { LEAGUE_TEMPLATES } from "../src/eventCollar/crossVenue/resolutionWhitelist";
 import { matchKalshiMarket, parseGameTicker } from "../src/eventCollar/crossVenue/eventMatcher";
@@ -787,6 +795,12 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
 
 let cache: { at: number; state: ScanState } | null = null;
 const CACHE_TTL_MS = 10_000;
+
+/** Test seam: serve this scan as the current one (no venue round-trips). */
+export function primeScanForTests(state: ScanState): void {
+  if (process.env.NODE_ENV !== "test") throw new Error("primeScanForTests is test-only");
+  cache = { at: Date.now(), state };
+}
 let refreshing: Promise<void> | null = null;
 
 // Deploy warm-gate: report unhealthy until the prewarm scan lands so the host
@@ -922,7 +936,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (url.pathname === "/api/showcase") {
       const ticker = url.searchParams.get("ticker") || undefined;
-      sendJson(res, 200, payloadFromScan(await getCachedScan(), ticker));
+      const full = payloadFromScan(await getCachedScan(), ticker);
+      // Retail first: the holder's JSON carries exactly what the card shows (event, position,
+      // floor/cap/credit per tier, a retail refusal sentence). The hedge leg, our take, the
+      // pairing, the routes examined and raw refusal detail answer only to the operator token.
+      const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
+      sendJson(res, 200, operator ? full : retailCrossPayload(full));
       return;
     }
     if (url.pathname === "/api/metrics" && req.method === "POST") {
@@ -981,10 +1000,14 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
     if (url.pathname === "/api/receipts") {
+      const summary = summarizeCrossLedger(LEDGER_PATH);
+      const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
+      // Retail: the track record without our take or the route split (operator information).
+      const { takeKeptCents, routeSplit, ...retail } = summary;
       sendJson(res, 200, {
         ok: true,
         at: new Date().toISOString(),
-        ...summarizeCrossLedger(LEDGER_PATH),
+        ...(operator ? { takeKeptCents, routeSplit, ...retail } : retail),
       });
       return;
     }

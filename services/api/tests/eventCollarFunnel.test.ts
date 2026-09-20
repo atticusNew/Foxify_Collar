@@ -306,6 +306,39 @@ test("demo service: page loads count, beacons record, admin funnel is gated and 
   }
 });
 
+test("demo service: /api/showcase is retail without the token and the operator's full payload with it", async () => {
+  const { server, primeScanForTests } = await import("../scripts/eventProtectXDemoService");
+  const { forbiddenKeysIn } = await import("../src/eventCollar/retailShowcase");
+  primeScanForTests({ atIso: "2026-09-20T18:00:00.000Z", rows: [], fallback: null, fetchFailures: 1 });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const retail = (await (await fetch(`${base}/api/showcase`)).json()) as Record<string, unknown>;
+    assert.equal(retail.retail, true);
+    assert.deepEqual(Object.keys(retail).sort(), ["at", "board", "error", "ok", "pair", "position", "quote", "retail"]);
+    assert.equal(retail.error, "Live pricing is unavailable right now; retrying.");
+    assert.deepEqual(forbiddenKeysIn(retail), []);
+
+    const operator = (await (await fetch(`${base}/api/showcase?token=t0ken`)).json()) as Record<string, unknown>;
+    assert.equal(operator.retail, undefined);
+    assert.ok(Array.isArray(operator.routesChecked), "the operator payload keeps the routes");
+    assert.match(String(operator.error), /PM_CLOB_REST_BASE/, "and the raw reason with its relay hint");
+
+    const wrong = (await (await fetch(`${base}/api/showcase?token=nope`)).json()) as Record<string, unknown>;
+    assert.equal(wrong.retail, true, "a wrong token is a retail caller, not an error");
+
+    // the receipts JSON follows the same rule: the track record for everyone, our take and the route split for the operator
+    const receipts = (await (await fetch(`${base}/api/receipts`)).json()) as Record<string, unknown>;
+    assert.equal(receipts.ok, true);
+    assert.ok("priced" in receipts && "refused" in receipts && "creditsSourcedCents" in receipts && "refusalsByCode" in receipts);
+    assert.ok(!("takeKeptCents" in receipts) && !("routeSplit" in receipts), "take kept and route split stay with the operator");
+    const opReceipts = (await (await fetch(`${base}/api/receipts?token=t0ken`)).json()) as Record<string, unknown>;
+    assert.ok("takeKeptCents" in opReceipts && "routeSplit" in opReceipts);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
 test("protectContextFor: attributes the tier the holder locked, falls back to the row's default", async () => {
   const { protectContextFor } = await import("../scripts/eventProtectXDemoService");
   const { quoteLadderWrap } = await import("../src/eventCollar/crossVenue/kalshiLadder");

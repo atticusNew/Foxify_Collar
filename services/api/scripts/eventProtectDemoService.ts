@@ -14,6 +14,11 @@
  * ISOLATION: imports only from src/eventCollar/**. Nothing here touches the
  * production Earn & Protect service, stores, or deploy.
  *
+ * RETAIL FIRST: GET /api/showcase serves the holder's shape only
+ * (src/eventCollar/retailShowcase.ts): market, position, floor/cap/credit and a
+ * retail refusal sentence. Legs, instruments, venue fees and our take never
+ * leave the process (the full quote is written to the ledger for the operator).
+ *
  * Run: npx tsx services/api/scripts/eventProtectDemoService.ts
  * Env: EVENT_DEMO_PORT (default 8791) · KALSHI_SERIES (default KXBTCD)
  *      EVENT_TAKE_BPS · EVENT_FEE_CENTS_PER_SPREAD · EVENT_DEMO_LEDGER_PATH
@@ -37,6 +42,7 @@ import {
   type ShowcaseSelection,
 } from "../src/eventCollar/showcasePicker";
 import { appendLedger } from "../src/eventCollar/quoteLedger";
+import { retailBtcPayload } from "../src/eventCollar/retailShowcase";
 import { DEFAULT_SEARCH_CONFIG, type WrapQuoteResult, type WrapSearchConfig } from "../src/eventCollar/types";
 import { renderEventAppHtml } from "./eventProtectAppHtml";
 
@@ -312,7 +318,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (url.pathname === "/api/showcase") {
       const payload = await getShowcaseCached();
-      sendJson(res, 200, payload);
+      // Retail first: the legs, the venue, our take and the raw refusal stay off the wire; the
+      // card gets the market, the position, floor/cap/credit and a retail sentence.
+      sendJson(res, 200, retailBtcPayload(payload));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {

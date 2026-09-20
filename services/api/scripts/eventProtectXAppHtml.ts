@@ -2,12 +2,14 @@
  * Earn & Protect - events, cross-venue (Tier 2): the showcase page.
  *
  * Same surface grammar as the Tier 1 event page (light Kalshi-native theme,
- * total-dollars hero, one-tap toggle, one disclosure), but the hedge is the
- * SAME GAME on another venue: the drawer shows both listings, the resolution
- * parity note, and the opposing-outcome shares bought on Polymarket.
+ * total-dollars hero, one-tap toggle, one disclosure). Retail first: the page
+ * shows the event, the position, the floor, the cap, the credit and the tiers,
+ * and reads only the retail /api/showcase shape (src/eventCollar/retailShowcase.ts).
+ * The hedge leg, the pairing, the routes and our take live on the operator's
+ * surfaces (/api/showcase?token=..., the shadow record), never on this page.
  *
- * Everything financial is quoted live by the server from both venues' public
- * books; the position and lifecycle are simulated and labeled.
+ * Everything financial is quoted live by the server from public books; the
+ * position and lifecycle are simulated and labeled.
  */
 
 import { ATTICUS_LOGO_DATA_URI } from "./eventProtectLogo";
@@ -27,9 +29,9 @@ export function renderEventXAppHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
 <title>Earn &amp; Protect · events</title>
-<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit. Games and crypto on one board, each priced on every hedge route that is structurally safe for it. Demonstration with live pricing from Kalshi and Polymarket." />
+<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit. Games and crypto on one board, best value first. Demonstration with live pricing." />
 <meta property="og:title" content="Earn &amp; Protect · events" />
-<meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, games and crypto, hedged on the cheapest safe route. Demonstration, live venue pricing." />
+<meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, games and crypto, paid in cash. Demonstration, live pricing." />
 <meta property="og:type" content="website" />
 <style>
 :root{
@@ -163,10 +165,10 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 </div></div>
 <div class="wrap">
   <div class="card" id="hero">
-    <div class="eyebrow"><span class="dot"></span><span id="eyeline">Kalshi + Polymarket</span><span class="simlabel">simulation · live pricing</span></div>
+    <div class="eyebrow"><span class="dot"></span><span id="eyeline">Kalshi</span><span class="simlabel">simulation · live pricing</span></div>
     <div class="loading" id="loading">
       <div class="spinner"></div>
-      <div>scanning games and crypto across Kalshi and Polymarket…</div>
+      <div>scanning games and crypto…</div>
     </div>
     <div id="main" style="display:none">
     <h1 id="title">&nbsp;</h1>
@@ -209,7 +211,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       <div class="refusal" id="refusal"></div>
 
       <details class="hedge" id="hedge" style="display:none">
-        <summary>see the hedge</summary>
+        <summary>see the terms</summary>
         <div class="legs" id="legs"></div>
       </details>
 
@@ -230,9 +232,9 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       <summary>How this works</summary>
       <ul>
         <li><b>The trade.</b> You give up the top slice of your win so you never leave empty-handed. The market prices that risk live; when it prices it cheaper than the slice you sold, the difference is paid to you as cash.</li>
-        <li><b>The hedge is the same game.</b> Protection is backed by buying the side that pays exactly when yours loses, on the other venue or on the very same market, only where both venues verifiably settle on the identical official result. See the hedge on any quote.</li>
+        <li><b>Backed by the same game.</b> Protection is backed by buying the side that pays exactly when yours loses, only on listings that verifiably settle on the identical official result. Your floor does not depend on anyone's opinion of the game.</li>
         <li><b>Three ways to protect.</b> Safest keeps the most no matter what; Most upside keeps the most if you win; Balanced sits between. You pick; nothing is pre-chosen for you but a starting point.</li>
-        <li><b>Nothing hidden.</b> Our fee is a published share of the cash we source, with a small minimum, shown on every quote. When the venues cannot fund a credit that covers it, we refuse and say why. This is a demonstration: prices and hedges are live, the position is simulated, no funds can move, and undo simply resets it; in the real product, terms lock at your tap. <a href="/receipts">How the terms are built</a>.</li>
+        <li><b>The credit you see is the credit you get.</b> Our fee comes out of the cash we source before the number is shown; there is nothing to add back. When the market cannot fund a credit, we refuse and say so. This is a demonstration: prices are live, the position is simulated, no funds can move, and undo simply resets it; in the real product, terms lock at your tap. <a href="/receipts">See the receipts</a>.</li>
       </ul>
     </details>
   </div>
@@ -240,7 +242,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
   <div class="err" id="err"></div>
 
   <footer>
-    <b>Demonstration, not an offer.</b> Positions are simulated; prices and hedge quotes are live from both venues. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice. <a href="/receipts">See the receipts</a>. <a href="${shadowUrl()}">See the shadow record</a>.
+    <b>Demonstration, not an offer.</b> Positions are simulated; prices are live. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice. <a href="/receipts">See the receipts</a>. <a href="${shadowUrl()}">See the shadow record</a>.
   </footer>
 </div>
 
@@ -269,8 +271,6 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     }catch(e){}
   }
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
-  function shares(milli){var s=milli/1000;return (Math.round(s*10)/10).toLocaleString('en-US')}
-  function centsFromMilli(m){return (Math.round(m/10*10)/10)/1}
 
   function fmtCountdown(iso){
     var ms=new Date(iso).getTime()-Date.now();
@@ -335,21 +335,6 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     if(bps<0)return 'pays you';
     return bps<500?'cheap':(bps<=1500?'fair':'rich');
   }
-  function routesLine(p){
-    var rc=p.routesChecked||[];
-    if(!rc.length)return '';
-    var parts=[];
-    for(var i=0;i<rc.length;i++){
-      var r=rc[i];
-      var nm=r.route==='kalshi_self'?'Kalshi self-hedge':'Polymarket';
-      var v;
-      if(r.ok){ v=Math.abs(r.evCostBps/100).toFixed(1)+'%'+(r.evCostBps<0?' rebate':''); }
-      else if(r.detail&&r.detail.indexOf('not offered')===0){ v='not offered'; }
-      else { v='no quote'; }
-      parts.push(nm+' '+v);
-    }
-    return parts.join(' · ')+' · cheapest safe route wins';
-  }
 
   // The quote's top-level terms are its default tier (Balanced when the venues
   // fund it); the holder may pick another. Each tier is a complete,
@@ -379,40 +364,20 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
   function paintOffer(q0){
     var q=S.phase==='protected'&&S.terms?S.terms:termsFor(q0);
-    var p=S.payload,pr=p.pair,pos=p.position;
+    var p=S.payload,pos=p.position;
     var o=outcomeTotals(q);
     paintTiers(q0,S.phase==='protected');
     $('minout').textContent=usd(o.no);
     $('maxout').textContent=usd(o.yes);
     $('creditout').textContent=usd(q.creditCents);
     $('offer').style.display='block';
-    var takeLine;
-    if(q.takeWaived){ takeLine='waived · too small to charge'; }
-    else if(q.takeRule==='minimum'){ takeLine=usd(q.takeCents)+' · minimum fee, '+((q.minTakeBpsOfStake||0)/100).toFixed(2)+'% of the position'; }
-    else { takeLine=usd(q.takeCents)+' · '+(q.takeBps/100)+'% of the credit sourced'; }
-    var parityShort=(q.parityNote||pr.parityNote||'').split(';')[0];
-    var selfHedge=p.route==='kalshi_self';
-    var gapRow='';
-    if(!selfHedge&&pr.pmYesPriceMilli>0){
-      var pmYes=centsFromMilli(pr.pmYesPriceMilli);
-      gapRow='<div class="row"><span>same game, two prices</span><b>Kalshi '+q.markCents+'\\u00A2 · Polymarket '+pmYes+'\\u00A2 · the gap funds your credit</b></div>';
-    }
     var entryTag=pos.entrySource==='real_print'?' (real print)':'';
-    var buyRow=selfHedge
-      ?('<div class="row"><span>the hedge</span><b>buy '+shares(q.hedge.contractsMilli)+' No contracts @ avg '+q.hedge.avgPriceCents+'\\u00A2 · Kalshi, same market</b></div>')
-      :('<div class="row"><span>the hedge</span><b>buy '+shares(q.hedge.sharesMilli)+' '+q.hedge.outcome+' shares @ avg '+centsFromMilli(q.hedge.avgPriceMilli)+'\\u00A2 · Polymarket</b></div>');
-    var routesRow=routesLine(p);
     $('legs').innerHTML=
-      '<div class="row"><span>same result</span><b>'+parityShort+'</b></div>'+
-      gapRow+
       '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2'+entryTag+' · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
       '<div class="row"><span>without protection</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
       '<div class="row"><span>with protection</span><b>'+usd(o.yes)+' if Yes · '+usd(o.no)+' if No</b></div>'+
-      buyRow+
-      '<div class="row"><span>hedge cost</span><b>'+usd(q.hedge.costCents)+' · fees '+usd(q.feesCents)+'</b></div>'+
-      '<div class="row"><span>our take</span><b>'+takeLine+'</b></div>'+
       '<div class="row"><span>cost of protection</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+'</b></div>'+
-      (routesRow?('<div class="row"><span>routes checked</span><b>'+routesRow+'</b></div>'):'');
+      '<div class="row"><span>settles</span><b>'+(S.kind==='crypto'?'on the official index print':'on the official final score')+' · payout when it settles</b></div>';
     $('hedge').style.display='block';
   }
 
@@ -425,7 +390,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     var p=S.payload; if(!p)return;
     $('err').classList.remove('show');
     $('loading').style.display='none';
-    if(!p.ok||!p.pair){ $('eyeline').textContent=p.error||'no whitelisted pair quotable right now'; $('main').style.display='none'; $('boardcard').style.display='none'; return; }
+    if(!p.ok||!p.pair){ $('eyeline').textContent=p.error||'nothing is quotable right now'; $('main').style.display='none'; $('boardcard').style.display='none'; return; }
     $('main').style.display='block';
     var pr=p.pair,pos=p.position,q=p.quote;
     if(S.sel&&pr.kalshiTicker!==S.sel){ S.sel=null; }
@@ -435,13 +400,13 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     S.kind=pr.kind||'sports';
     var crypto=S.kind==='crypto';
 
-    $('eyeline').textContent=crypto?'Kalshi':'Kalshi + Polymarket';
+    $('eyeline').textContent='Kalshi';
     $('title').textContent=(pr.sideName||pr.kalshiSide)+(crypto?'?':' to win?');
     $('matchline').textContent=(crypto?'':(pr.opponent?('vs. '+pr.opponent+' · '):''))+pr.league.toUpperCase()+' · '+(crypto?'settles ':'')+fmtEt(pr.eventTimeIso);
     $('chance').textContent=pr.markCents+'%';
     S.startIso=pr.eventTimeIso;
     $('countd').textContent=countdLabel();
-    if(q&&q.ok&&p.route){
+    if(q&&q.ok){
       $('whyline').textContent=S.sel?'your pick':'best value right now';
     } else {
       $('whyline').innerHTML='&nbsp;';
@@ -472,7 +437,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       } else if(q){
         t.disabled=true; t.checked=false;
         hideOffer();
-        $('refusal').innerHTML='<b>Not quotable right now.</b> '+q.detail+' Refusing honestly beats mispricing.';
+        $('refusal').innerHTML='<b>Not right now.</b> '+q.detail;
         $('refusal').classList.add('show');
       }
     }
@@ -836,13 +801,6 @@ export function renderReceiptsHtml(s: CrossLedgerSummary): string {
       : s.avgEvCostBps < 0
         ? `${Math.abs(s.avgEvCostBps / 100).toFixed(1)}% BETTER than the naked position, on average`
         : `${(s.avgEvCostBps / 100).toFixed(1)}% of expected value, on average`;
-  const routeRows = Object.entries(s.routeSplit)
-    .sort((a, b) => b[1] - a[1])
-    .map(
-      ([route, n]) =>
-        `<div class="row"><span>${route === "kalshi_self" ? "hedged on the market's own No side (Kalshi)" : "hedged cross-venue (Polymarket)"}</span><b>${n}</b></div>`,
-    )
-    .join("");
   const refusalRows = Object.entries(s.refusalsByCode)
     .sort((a, b) => b[1] - a[1])
     .map(
@@ -915,23 +873,21 @@ footer b{color:var(--dim);font-weight:600}
   <div class="card">
     <h2>What the protection really cost</h2>
     <div class="row"><span>true cost of priced protection</span><b>${escapeHtml(avgLine)}</b></div>
-    <div class="row"><span>published take kept</span><b>${usdFromCents(s.takeKeptCents)}</b></div>
   </div>
-  ${routeRows ? `<div class="card"><h2>Which route won</h2>${routeRows}</div>` : ""}
   ${refusalRows ? `<div class="card"><h2>Why quotes were refused</h2>${refusalRows}</div>` : ""}
   <div class="card rules">
     <h2>How the terms are built</h2>
-    <div class="sub">Every protection is priced at executable depth on each hedge route that is structurally safe for the event: the same game's opposing side on Polymarket, and the market's own No side on Kalshi. The cheapest safe route wins. Crypto quotes the self-hedge route only, because the venues settle crypto on different index feeds.</div>
+    <div class="sub">Every protection is priced at executable depth, only on listings that verifiably settle on the identical official result, and backed by buying the side that pays exactly when yours loses. What you see is what the market funds right now.</div>
     <div class="row"><span>Safest</span><b>the highest floor the venues fund, with the largest credit at it</b></div>
     <div class="row"><span>Balanced</span><b>a floor halfway between Safest and Most upside, with a cap halfway between the least and the most the venues fund there</b></div>
     <div class="row"><span>Most upside</span><b>the lowest floor offered, with the highest cap the venues fund at it</b></div>
-    <div class="row"><span>our fee</span><b>the larger of a published share of the credit we source and a small minimum on the position, waived when tiny; both numbers are on every quote and nothing is embedded in the terms</b></div>
-    <div class="row"><span>refusals</span><b>when the venues cannot fund a credit that covers the fee, we refuse and say why</b></div>
+    <div class="row"><span>our fee</span><b>comes out of the cash we source before the credit is shown; the credit on the card is the credit you get, and nothing is embedded in the floor or the cap</b></div>
+    <div class="row"><span>refusals</span><b>when the market cannot fund a credit, we refuse and say so</b></div>
     <div class="row"><span>undo</span><b>free only in the demonstration, where nothing is bought; in the real product terms lock at your tap and the hedge is placed immediately, so an early unwind is a new trade quoted from the live books, never a free reversal</b></div>
   </div>
   <div class="card">
     <h2>Honesty notes</h2>
-    <div class="sub">${windowLine} The ledger lives on this instance's disk, so a redeploy starts a fresh window. Positions are simulated; every quote and refusal in these numbers came from live venue books at the moment it was made.</div>
+    <div class="sub">${windowLine} The ledger lives on this instance's disk, so a redeploy starts a fresh window. Positions are simulated; every quote and refusal in these numbers came from live market prices at the moment it was made.</div>
     <a class="back" href="/">back to the live board</a>
   </div>
   <footer>

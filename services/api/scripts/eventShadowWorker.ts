@@ -30,6 +30,10 @@
  * Durability: the ledger lives on one Render disk. GET /api/shadow/export streams
  * the raw JSONL so it can be mirrored off-box on a schedule
  * (`curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" https://<service>/api/shadow/export > backup-$(date +%F).jsonl`).
+ *
+ * GET /healthz is public liveness only (ok, service, positions, last scan/settle).
+ * Ledger and receipt paths, hedge strategy and venues, error text and failure
+ * counters come back on the same route with the operator token.
  */
 
 import { createReadStream, statSync } from "node:fs";
@@ -280,6 +284,20 @@ async function healthTick(): Promise<void> {
   }
 }
 
+/**
+ * The public liveness body: is it up, is it scanning, how many positions. Paths on disk, hedge
+ * strategy and venues, error text and failure counters are operator information (healthBody).
+ */
+function publicHealthBody(): Record<string, unknown> {
+  return {
+    ok: true,
+    service: "event-protect-shadow",
+    positions: loadShadowPositions(LEDGER_PATH).length,
+    lastScanAt,
+    lastSettleAt,
+  };
+}
+
 function healthBody(): Record<string, unknown> {
   const stats = ledgerStats(LEDGER_PATH);
   return {
@@ -346,7 +364,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       return;
     }
     if (url.pathname === "/healthz") {
-      sendJson(res, 200, healthBody());
+      sendJson(res, 200, operator ? healthBody() : publicHealthBody());
       return;
     }
     if (url.pathname === "/api/shadow/export") {

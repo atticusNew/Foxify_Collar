@@ -16,21 +16,38 @@ test("cross-venue app html: honesty label, gating line, and structure", () => {
   assert.ok(html.includes("width=device-width"), "mobile viewport");
   assert.ok(html.includes("Protect this position"));
   assert.ok(html.includes('id="loading"'), "loading state while venues are paired");
-  assert.ok(html.includes("scanning games and crypto across Kalshi and Polymarket"));
+  assert.ok(html.includes("scanning games and crypto"));
+  assert.ok(!html.includes("across Kalshi and Polymarket"), "retail first: the other venue is not on the page");
 });
 
-test("cross-venue app html: pairing is explicit and honest", () => {
+test("cross-venue app html: the drawer is the holder's terms; the hedge, the pairing and the take stay with the operator", () => {
   const html = renderEventXAppHtml();
-  assert.ok(html.includes("the hedge"), "the hedge leg named in the drawer");
+  assert.ok(html.includes("see the terms"), "the drawer is named for what it shows");
   assert.ok(html.includes("See the shadow record"), "footer links the live track record");
   assert.ok(html.includes("without protection"), "naked outcome row in the drawer");
   assert.ok(html.includes("with protection</span>"), "protected outcome row mirrors the naked row");
-  assert.ok(html.includes("same result"), "settlement parity shown to the holder");
+  assert.ok(html.includes(">settles</span>"), "settlement row: official final score / index print");
   assert.ok(html.includes("verifiably settle on the identical official result"), "settlement honesty lives in the disclosure");
   assert.ok(html.includes("the position is simulated, no funds can move"), "simulation disclosed in the disclosure");
   assert.ok(html.includes("simulation · live pricing"), "and once in the eyebrow: the one honesty marker on the hero");
-  assert.ok(html.includes("same game, two prices"), "venue gap row makes the credit source legible");
-  assert.ok(html.includes("the gap funds your credit"));
+  for (const leak of [
+    "same game, two prices",
+    "the gap funds your credit",
+    "q.hedge.",
+    "hedge cost",
+    "our take",
+    "routes checked",
+    "routesChecked",
+    "pmYesPriceMilli",
+    "parityNote",
+    "kalshi_self",
+    "minimum fee",
+    "% of the credit sourced",
+    "Kalshi + Polymarket",
+  ]) {
+    assert.ok(!html.includes(leak), `"${leak}" is operator information and is not on the retail page`);
+  }
+  assert.ok(html.includes("The credit you see is the credit you get."), "the fee is explained as already netted, once, in How this works");
   assert.ok(html.includes('id="refreshed"'), "quote freshness microtext");
   assert.ok(html.includes("In play."), "graceful in-play state");
 });
@@ -40,22 +57,22 @@ test("cross-venue app html: the scanner board ranks protection by its true cost"
   assert.ok(html.includes("Best protection right now"), "board card present");
   assert.ok(html.includes("best value first"), "the ranking rule in three words");
   assert.ok(html.includes("tap any game"), "rows are invitations, not decoration");
-  assert.ok(html.includes("cheapest safe route wins"), "route competition explained where the routes are shown");
+  assert.ok(!html.includes("cheapest safe route wins"), "route competition is an operator concern, not a retail sentence");
   assert.ok(html.includes('id="boardrows"'), "board rows container");
   assert.ok(html.includes("cost of protection"), "EV honesty line in the drawer");
   assert.ok(html.includes("% of expected value"), "EV framing in plain words");
   assert.ok(html.includes("pays "), "negative EV cost (venue-gap edge) has its own wording");
 });
 
-test("cross-venue app html: grades, tappable rows, and route competition", () => {
+test("cross-venue app html: grades and tappable rows; no route anywhere on the page", () => {
   const html = renderEventXAppHtml();
   assert.ok(html.includes("data-ticker"), "board rows carry their market ticker for tap-to-showcase");
   assert.ok(html.includes("'pays you'"), "grade word for negative EV cost");
   assert.ok(html.includes("'cheap'"), "grade word for cheap protection");
   assert.ok(html.includes("'rich'"), "grade word for rich protection");
-  assert.ok(html.includes("routes checked"), "both routes disclosed in the drawer");
-  assert.ok(html.includes("cheapest safe route wins"), "selection rule stated plainly");
-  assert.ok(html.includes("Kalshi, same market"), "self-hedge route named for the holder in the drawer");
+  assert.ok(!html.includes("routes checked"), "routes are not on the retail page");
+  assert.ok(!html.includes("Kalshi, same market"), "nor is the self-hedge route");
+  assert.ok(!html.includes("p.route"), "the page never reads a route field (the retail JSON has none)");
   assert.ok(!html.includes("via '+routeName"), "the route name stays out of the hero and the board rows");
   assert.ok(html.includes("keep at least '+usd(r.floorTotalCents)"), "board rows lead with what the holder keeps");
   assert.ok(html.includes("' cash</div>'"), "and the cash, nothing else");
@@ -70,8 +87,7 @@ test("cross-venue app html: one board for games and crypto, honestly worded", ()
   assert.ok(html.includes("games and crypto"), "the unified board is the pitch");
   assert.ok(html.includes("settles in "), "crypto countdown wording");
   assert.ok(html.includes("official index print"), "crypto settlement wording");
-  assert.ok(html.includes("'not offered'"), "structurally unsafe routes disclosed, not hidden");
-  assert.ok(html.includes("not offered for crypto") || html.includes("'not offered'"), "the drawer says so per route");
+  assert.ok(!html.includes("'not offered'"), "per-route verdicts are operator information");
   assert.ok(html.includes('id="whyline"'), "the showcase says why it was chosen");
   assert.ok(html.includes("best value right now"), "default showcase reason");
   assert.ok(html.includes("your pick"), "tapped showcase reason");
@@ -133,15 +149,15 @@ test("receipts html: honest aggregates from a real ledger file", () => {
   assert.ok(html.includes("How the terms are built"), "tier rules and fee mechanics live on the receipts page");
   for (const name of ["Safest", "Balanced", "Most upside"]) assert.ok(html.includes(`<span>${name}</span>`), `${name} rule row`);
   assert.ok(html.includes("the highest floor the venues fund"), "tight rule text");
-  assert.ok(html.includes("the larger of a published share"), "fee rule text");
+  assert.ok(html.includes("the credit on the card is the credit you get"), "the fee is explained as already netted");
+  assert.ok(!html.includes("the larger of a published share") && !html.includes("published take kept"), "retail first: the fee rule and the take kept are operator information (shadow record)");
   assert.ok(html.includes("never a free reversal"), "unwind economics disclosed");
-  assert.ok(html.includes("different index feeds"), "the crypto cross-venue exclusion is explained");
+  assert.ok(!html.includes("Which route won") && !html.includes("Polymarket") && !html.includes("own No side"), "hedge routes are not on the public receipts page");
   assert.ok(html.includes("Receipts"), "page title");
   assert.ok(html.includes("quotes priced"));
   assert.ok(html.includes("honest refusals"));
   assert.ok(html.includes("credits sourced"));
   assert.ok(html.includes("could not fund a positive credit"), "refusal code in plain words");
-  assert.ok(html.includes("own No side"), "route split names the self-hedge route");
   assert.ok(html.includes("Demonstration, not an offer."), "gating line present");
   assert.ok(!html.includes("\u2014"), "no em dash in receipts copy");
 
@@ -184,10 +200,9 @@ test("cross-venue app html: tiers are offered side by side with stated rules; th
   assert.ok(html.includes('<div class="tc">at least</div>'), "one number per tile: the floor");
   assert.ok(html.includes("tiers.balanced?'balanced'"), "Balanced is the starting point when funded");
   assert.ok(html.includes("aria-pressed"), "the selected tile is announced");
-  assert.ok(html.includes("minimum fee"), "the fee on notional is named");
-  assert.ok(html.includes("% of the credit sourced"), "the share is named in one clause");
+  assert.ok(!html.includes("minimum fee") && !html.includes("% of the credit sourced"), "the fee rule is not on the retail page; the credit shown is net");
   assert.ok(!html.includes("share would be") && !html.includes("not binding"), "the fee line no longer explains the other rule");
-  assert.ok(html.includes('<a href="/receipts">How the terms are built</a>'), "the mechanics are one tap away");
+  assert.ok(html.includes('<a href="/receipts">See the receipts</a>'), "the mechanics are one tap away");
   assert.ok(html.includes("'tier_pick'"), "tier picks are counted in the funnel");
   assert.ok(html.includes("track('protect_on',S.payload.pair&&S.payload.pair.kalshiTicker,S.tier)"), "Protect beacons carry the locked tier");
 });
