@@ -140,7 +140,12 @@ test("one shape, no tiers: the knock-out is explained as keeping the upside, the
     assert.ok(html.includes("If you flip it on now:"), "the pre-flip quote leads with value before the commit");
     assert.ok(html.includes('id="realQuote"') && html.includes('api("/api/quote")'), "pre-flip quote box priced off the holder's own position");
     assert.ok(html.includes("The cap pays for your floor."), "the cap is explained as what funds the floor");
-    assert.ok(html.includes("Release your upside any time.") && html.includes("Release upside"), "the release tap is the holder's decision, priced live");
+    assert.ok(html.includes("Nothing to manage.") && html.includes("Turn it off any time: the collar closes at the live market"), "the retail escape hatch is the toggle, stated in How it works");
+    assert.ok(!html.includes("Release your upside any time.") && !html.includes("Release upside \\u00b7") && !html.includes("live price in the product") && !html.includes('class="release"'), "no release row, button or promise on the retail surface");
+    assert.ok(html.includes("const relLine = !INST ||") && html.includes("release for ' + fmt$(rel.costUsdc)"), "the live release price is a second line under the cap on the institutional skin only");
+    assert.ok(!html.includes('data-sim="1"') || !html.includes("s.released"), "the simulation carries no release path");
+    assert.ok(html.includes("if (!INST) return \"\";") && html.includes("Hyperliquid's own funding on your perp is separate and unchanged"), "funding is off the retail card and one sentence in How it works");
+    assert.ok(!html.includes("Your position works the same way."), "the CTA subtitle is the trust line alone");
     assert.ok(html.includes("Hedged, not carried.") && html.includes("hedged leg for leg") && html.includes("bought back only at the holder"), "how the writer stays flat, stated plainly");
     assert.ok(!/delta[- ]neutral/i.test(html), "no 'delta neutral' claim on the retail surface");
     assert.ok(!html.includes("You never owe anything"), "the plain collar can net negative: no 'never owe' claim");
@@ -152,11 +157,11 @@ test("one shape, no tiers: the knock-out is explained as keeping the upside, the
   }
 });
 
-test("tenor + carry + fee: the credit label follows the tenor, funding is stated beside it, the fee rule is on the quote", () => {
+test("tenor + carry + fee: the credit label follows the tenor, funding is institutional-only, the fee rule is on the quote", () => {
   for (const html of [web, mini]) {
     assert.ok(html.includes('j.tenor === "weekly" ? "this week\\u2019s" : "today\\u2019s"'), "tenor-aware credit label");
     assert.ok(!html.includes("</b>today\\u2019s credit"), "no hardcoded daily label left on a quote surface");
-    assert.ok(html.includes("Funding over the cycle: "), "carry line");
+    assert.ok(html.includes("Funding over the cycle: "), "carry line (institutional skin)");
     assert.ok(html.includes("you receive "), "shorts receive positive funding");
     assert.ok(html.includes("not part of the credit, shown so the number reads net"), "carry is disclosed as separate from the credit");
     assert.ok(html.includes("The market funded "), "fee line names what the market funded");

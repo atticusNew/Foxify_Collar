@@ -47,11 +47,16 @@ export const tenorExpiry = (tenor: EpTenor, chain: OkxChainInstrument[], nowMs: 
 export const tenorWord = (tenor: EpTenor): string => (tenor === "weekly" ? "this week's" : "today's");
 
 /**
- * Cap-distance guard: the funding wing must sit at least this far from price,
- * else the quote is refused rather than written with a cap that will cross on
- * noise. Defaults 2% daily / 4% weekly (EP_MIN_CAP_PCT / EP_MIN_CAP_PCT_WEEKLY,
- * as fractions). The widest-that-pays rule usually lands well beyond these;
- * the guard is for the dead book at 03:00 where nothing wider has a bid.
+ * Cap-distance guard. The cap search always takes the WIDEST listed strike that still pays;
+ * `maxCapPct` is how far out it may look. `minCapPct` refuses a quote whose widest paying
+ * strike sits closer than this — a KNOCKOUT rule: there a close cap means frequent, expensive
+ * buy-backs. Under the plain collar a touch closes nothing and costs nothing, so the distance
+ * is information on the card (the cap %), not a reason to refuse: minCapPct defaults to 0 and
+ * only the funding band's 0.5% ATM hard stop applies. A hard threshold is also finer than the
+ * listed strike grid ($500 ≈ 0.6% at $80k), so a fixed line refuses one whole side of the book
+ * whenever the widest bid lands a few bps inside it — measured 2026-09-20: every short refused
+ * at 3.93% against a 4.0% line while the same book paid $64.91 on $100k. Env still raises it
+ * deliberately (EP_MIN_CAP_PCT / EP_MIN_CAP_PCT_WEEKLY, fractions); knockout keeps 2% / 4%.
  */
 export interface CapGuard {
   minCapPct: number;
@@ -64,7 +69,13 @@ const numEnv = (v: string | undefined, d: number): number => {
   return Number.isFinite(n) && n >= 0 ? n : d;
 };
 
-export const capGuardFor = (tenor: EpTenor, env: Record<string, string | undefined> = process.env): CapGuard =>
-  tenor === "weekly"
-    ? { minCapPct: numEnv(env.EP_MIN_CAP_PCT_WEEKLY, 0.04), maxCapPct: numEnv(env.EP_CAP_MAX_PCT_WEEKLY, 0.08) }
-    : { minCapPct: numEnv(env.EP_MIN_CAP_PCT, 0.02), maxCapPct: numEnv(env.EP_CAP_MAX_PCT, 0.04) };
+export const capGuardFor = (
+  tenor: EpTenor,
+  env: Record<string, string | undefined> = process.env,
+  capMode: "plain" | "knockout" = "plain"
+): CapGuard => {
+  const refuseUnder = capMode === "knockout";
+  return tenor === "weekly"
+    ? { minCapPct: numEnv(env.EP_MIN_CAP_PCT_WEEKLY, refuseUnder ? 0.04 : 0), maxCapPct: numEnv(env.EP_CAP_MAX_PCT_WEEKLY, 0.08) }
+    : { minCapPct: numEnv(env.EP_MIN_CAP_PCT, refuseUnder ? 0.02 : 0), maxCapPct: numEnv(env.EP_CAP_MAX_PCT, 0.04) };
+};

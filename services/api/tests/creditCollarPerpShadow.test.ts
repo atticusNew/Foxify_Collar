@@ -699,7 +699,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.deepEqual(terms.geometry, { floorPct: 0.06, capPct: 0.015 });
     assert.equal(terms.tenor, "weekly", "the weekly is the default tenor");
     assert.equal(terms.capMode, "plain", "the plain collar is the product; knockout is the opt-in rule");
-    assert.deepEqual(terms.capGuard, { minCapPct: 0.04, maxCapPct: 0.08 }, "and the guard follows it");
+    assert.deepEqual(terms.capGuard, { minCapPct: 0, maxCapPct: 0.08 }, "plain: the widest paying cap in the 8% weekly band, no distance refusal");
     const emptyPage = await fetch(`${base}/`);
     assert.equal(emptyPage.status, 200);
     assert.ok((await emptyPage.text()).includes("not started"));
@@ -753,7 +753,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.equal(report.counterfactuals.tenors.weekly.quoted, 2);
     assert.deepEqual(report.counterfactuals.capacity.map((c) => c.mult), [1, 10, 50]);
     assert.ok(report.counterfactuals.capLadder.length >= 2, "every listed cap distance in the band is a rung");
-    assert.deepEqual(report.rules.capGuard, { minCapPct: 0.04, maxCapPct: 0.08 });
+    assert.deepEqual(report.rules.capGuard, { minCapPct: 0, maxCapPct: 0.08 });
     assert.ok(report.rules.capLadder.includes("handed back") && !report.rules.capLadder.includes("knock-out rate") && report.rules.fundingRule.includes("clear"));
     assert.equal((report as unknown as { rules: { capMode: string; settlement: string } }).rules.capMode, "plain");
     assert.ok((report as unknown as { rules: { settlement: string } }).rules.settlement.includes("runs to expiry"));

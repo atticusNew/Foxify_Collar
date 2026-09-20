@@ -316,7 +316,9 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
           cd.creditOnPastCapCents,
         )} of credit paid on those cycles${cd.endedPastCap ? `: ${cd.capExcessCents > cd.creditOnPastCapCents ? "the upside given up outweighed the credit on those" : "the credit covered the upside given up on those"}` : ""}. Of the touches Hyperliquid saw, the OKX index reached the cap on ${cd.okxConfirmed} and stayed short on ${cd.hlOnly}.`;
   const guardLine = input.capGuard
-    ? `Cap guard in force: the live product refuses a cap closer than ${(input.capGuard.minCapPct * 100).toFixed(1)}% and searches out to ${(input.capGuard.maxCapPct * 100).toFixed(1)}%.`
+    ? input.capGuard.minCapPct > 0
+      ? `Cap guard in force: the live product refuses a cap closer than ${(input.capGuard.minCapPct * 100).toFixed(1)}% and searches out to ${(input.capGuard.maxCapPct * 100).toFixed(1)}%.`
+      : `No minimum cap distance: the live product writes the widest listed cap that pays (searched out to ${(input.capGuard.maxCapPct * 100).toFixed(1)}%) and shows the distance; the ladder below is what closer and wider rungs would have paid.`
     : "";
   const koLine =
     ko.knockouts === 0
