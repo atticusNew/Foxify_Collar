@@ -223,7 +223,7 @@
 
 > **Subject:** re: retention product
 >
-> Since I wrote: {receipt — e.g. "a live knockout settled and re-armed itself; here's the venue receipt"}.
+> Since I wrote: {receipt — e.g. "a cap was touched, the app priced the release live, the holder decided; here's the venue receipt"}.
 >
 > The pitch in one line: "the only exchange where your position pays you to protect it." That headline is available to exactly one exchange in your tier — first mover keeps it.
 >
@@ -271,7 +271,7 @@
 
 > Hey {name} — founder of Atticus here. Saw your [specific post/position].
 >
-> We built Earn & Protect: a toggle for HL positions. Flip it on and your position gets a hard floor and pays you a daily credit — an institutional knockout collar, hedged leg-for-leg on listed options. The catch, so you don't have to hunt for it: there's a cap, and touching it ends the cycle (you keep the gains, the credit, and it re-arms).
+> We built Earn & Protect: a toggle for HL positions. Flip it on and your position gets a hard floor and pays you a daily credit — an institutional credit collar, hedged leg-for-leg on listed options. The catch, so you don't have to hunt for it: there's a cap, and gains above it in a cycle are what pay for the floor — or you release it any time at the live price, in dollars, and keep them.
 >
 > It's live and my own money runs through it. Before I push it wider I want sharp traders to roast it. Read-only — paste your address, no keys, nothing to deposit, 10 seconds: earnandprotect.xyz. Find something dumb and I'll fix it, credit you publicly, and hold you a founding slot (10% rate, locked 12 months).
 
@@ -339,7 +339,7 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 
 *Principles: answer their question with a concrete condition, not "soon". Two specific asks, each answerable yes/no. Lead with the aligned incentive (our flow = their options volume), never with need. Do NOT play the "another exchange could fund us" card while they are leaning in; hold the honest version ("whichever venue's economics work first is where the book scales") for a stall only.*
 
-> Good timing — we're ready on the engine side. Live fills, knockout unwinds, and full reconciliation are all proven on OKX production over the past month; the audit packet is available if useful.
+> Good timing — we're ready on the engine side. Live fills, ladder unwinds, and full reconciliation are all proven on OKX production over the past month; the audit packet is available if useful.
 >
 > One gate before we scale: collateral sizing. Running the book properly means portfolio margin, and that means capitalizing the account at $25k+ rather than the $10k we originally scoped. We're closing that now.
 >

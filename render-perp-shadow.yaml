@@ -43,11 +43,17 @@ services:
       # The live product's terms: 3 OKX lots (0.03 BTC) long and short, one shape
       # (floor 6%, the widest listed cap that pays, under the cap guard), written to
       # the weekly (EP_TENOR; `daily` opts out — the daily is then the counterfactual),
-      # 20% share take, $0.05 de minimis, no minimum.
+      # 20% share take, $0.05 de minimis, no minimum. EP_CAP_MODE=plain settles the
+      # ledger the way the product carries it: exit clamped at both wings, gains above
+      # the cap handed back, writer flat; a touch on the path is recorded with the
+      # release it would have cost. `knockout` re-reads the same ledger under the old
+      # touch-ends-the-cycle rule (the ledger is append-only; the rule is a replay).
       - key: PERP_SHADOW_SIZE_BTC
         value: "0.03"
       - key: PERP_SHADOW_SIDES
         value: long,short
+      - key: EP_CAP_MODE
+        value: plain
       - key: EP_TENOR
         value: weekly
       - key: EP_TAKE_RATE
