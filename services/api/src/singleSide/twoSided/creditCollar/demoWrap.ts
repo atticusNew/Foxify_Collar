@@ -155,6 +155,10 @@ export type DemoWrapRecord = {
     tenor?: string;
     /** What holding the perp costs (+) or pays (−) over the cycle at the funding rate seen at quote time. */
     fundingUsdc?: number;
+    /** Market-implied chance (at open) the cycle settles beyond the cap, from the sold strike's mark vol; absent before the cap rule. */
+    capExceedProb?: number | null;
+    /** Which cap rule decided the strike (capRule.ts). */
+    capRule?: "widest" | "target";
   } | null;
   hedge: {
     venue: string; // "okx_model" | "okx_demo" | "okx_live"

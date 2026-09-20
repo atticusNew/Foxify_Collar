@@ -128,6 +128,7 @@ import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regi
 import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
 import { fetchOkxListedTouchQuote } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 import { capGuardFor, parseTenor, type EpTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import { capRuleFromEnv, capRuleText, expTimeFromMs } from "../src/singleSide/twoSided/creditCollar/capRule";
 import { buildOkxLiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveRunner";
 import { executionArmed, parseLiveGuardsFromEnv } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
 
@@ -347,6 +348,11 @@ const capMode: CapMode = parseCapMode(process.env.EP_CAP_MODE);
 // refuses a close cap (2% daily / 4% weekly): under the plain collar the distance is shown, not
 // refused — see capGuardFor for the measured refusal a hard line caused.
 const capGuard = capGuardFor(tenor, process.env, capMode);
+// Which paying strike the cap sells (capRule.ts): by default the most credit among strikes the
+// market gives at most EP_CAP_EXCEED_PROB (0.20) chance of finishing beyond this cycle, priced off
+// the strike's OKX mark vol; the widest paying strike when none qualifies or no vol is readable.
+const capRule = capRuleFromEnv(process.env);
+const markVolsForExpiry = (expiryMs: number): Promise<Map<string, number> | null> => markVolsFor(expTimeFromMs(expiryMs), Date.now());
 
 // Funding disclosure: what holding the perp costs (or pays) over the cycle, from Hyperliquid's
 // live rate. Longs pay positive funding; shorts receive it. Cached a minute; null when unreadable.
@@ -557,7 +563,9 @@ const doWrap = async (
     contractsBtc: cover.coveredBtc,
     nowMs: Date.now(),
     tenor,
-    capGuard
+    capGuard,
+    capRule,
+    markVolsFor: markVolsForExpiry
   });
   if (!listed.ok) {
     okxQuoteFailStreak = /listed_book_empty|chain|fetch|network/i.test(listed.error) ? okxQuoteFailStreak + 1 : 0;
@@ -638,6 +646,8 @@ const doWrap = async (
     floorPctUsed: floorUsedPct,
     tenorDays: +tenorDays.toFixed(2),
     tenor: listed.tenor,
+    capExceedProb: listed.capExceedProb,
+    capRule: listed.capRuleApplied,
     ...(funding ? { fundingUsdc: funding.holderPaysUsdc } : {})
   };
   rec.economics = {
@@ -976,7 +986,9 @@ const renewalTick = async (): Promise<void> => {
         contractsBtc: cover.coveredBtc,
         nowMs,
         tenor,
-        capGuard
+        capGuard,
+        capRule,
+        markVolsFor: markVolsForExpiry
       });
       if (!probe.ok) {
         console.error(`[demo] auto-renew: ${key} skip-day — ${probe.error} (retry in ${Math.round(renewRetryMs / 60000)}m)`);
@@ -2123,7 +2135,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         contractsBtc: sizing.coveredBtc,
         nowMs: Date.now(),
         tenor,
-        capGuard
+        capGuard,
+        capRule,
+        markVolsFor: markVolsForExpiry
       });
       if (!probe.ok) {
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
@@ -2220,7 +2234,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         contractsBtc: sizing.coveredBtc,
         nowMs: Date.now(),
         tenor,
-        capGuard
+        capGuard,
+        capRule,
+        markVolsFor: markVolsForExpiry
       });
       if (!probe.ok) {
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
@@ -2274,6 +2290,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         tenor: probe.tenor,
         funding: pvFunding,
         capMode,
+        capExceedProb: probe.capExceedProb,
+        capRule: probe.capRuleApplied,
         release: pvRelease,
         coverageNote: sizing.coverageNote
       });
@@ -2643,6 +2661,7 @@ server.listen(port, () => {
     if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
     console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m, stagger window ${Math.round(renewStaggerMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
     if (autoRenew) setInterval(() => void renewalTick(), renewCheckMs);
+    console.error(`[demo] cap rule: ${capRuleText(capRule)}`);
     console.error(
       `[demo] cap ${capMode === "plain" ? "PLAIN — the collar runs to expiry; a mark-touch of the cap is recorded and the holder may release it at the live price (POST /api/release)" : "KNOCKOUT — a mark-touch of the cap ends the cycle and re-arms"} (monitor every ${Math.round(knockoutCheckMs / 1000)}s; runs through the kill switch)`
     );

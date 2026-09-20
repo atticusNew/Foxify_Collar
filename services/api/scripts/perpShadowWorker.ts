@@ -43,6 +43,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { DEMO_CAP_PCT, DEMO_FLOOR_PCT, parseCapMode } from "../src/singleSide/twoSided/creditCollar/demoWrap";
 import { capGuardFor, otherTenor, parseTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import { capRuleFromEnv, capRuleText } from "../src/singleSide/twoSided/creditCollar/capRule";
 import { fetchOkxListedSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
 import {
   appendPerpShadowRecord,
@@ -89,6 +90,7 @@ const GEOMETRY = { floorPct: numEnv(process.env.DEMO_FLOOR_PCT, DEMO_FLOOR_PCT),
 const TENOR = parseTenor(process.env.EP_TENOR);
 const CAP_MODE = parseCapMode(process.env.EP_CAP_MODE);
 const CAP_GUARD = capGuardFor(TENOR, process.env, CAP_MODE);
+const CAP_RULE = capRuleFromEnv(process.env);
 const OTHER_TENOR_CAP_GUARD = capGuardFor(otherTenor(TENOR), process.env, CAP_MODE);
 const REPLAY = { capMode: CAP_MODE };
 const CAP_LADDER_RULE =
@@ -135,6 +137,7 @@ async function scanTick(): Promise<void> {
           geometry: GEOMETRY,
           tenor: TENOR,
           capGuard: CAP_GUARD,
+          capRule: CAP_RULE,
           otherTenorCapGuard: OTHER_TENOR_CAP_GUARD,
           take: TAKE,
           counterfactualMinTakeBps: CF_MIN_TAKE_BPS,
@@ -252,7 +255,7 @@ function healthBody(): Record<string, unknown> {
     positions: positions.length,
     open: positions.filter((p) => p.status === "open").length,
     ledger: { path: LEDGER_PATH, ...perpLedgerStats(LEDGER_PATH) },
-    terms: { geometry: GEOMETRY, tenor: TENOR, capMode: CAP_MODE, capGuard: CAP_GUARD, contracts: CONTRACTS, sizeBtc: CONTRACTS * OKX_LOT_BTC, sides: SIDES, take: TAKE, counterfactualMinTakeBps: CF_MIN_TAKE_BPS },
+    terms: { geometry: GEOMETRY, tenor: TENOR, capMode: CAP_MODE, capGuard: CAP_GUARD, capRule: CAP_RULE, contracts: CONTRACTS, sizeBtc: CONTRACTS * OKX_LOT_BTC, sides: SIDES, take: TAKE, counterfactualMinTakeBps: CF_MIN_TAKE_BPS },
     lastScanAt,
     lastSettleAt,
     lastScanError,
@@ -331,6 +334,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
               : "a cap touch on the path ends the cycle: the credit vested to the touch is paid, the short cap leg is bought back at the money at the writer's cost",
           capLadder: CAP_LADDER_RULE,
           capGuard: CAP_GUARD,
+          capRule: capRuleText(CAP_RULE),
           fundingRule: "the credit must clear what holding the perp costs over the cycle at the funding rate seen at open",
           feeRules: Object.fromEntries(Object.keys(summary.counterfactuals.feeRules).map((l) => [l, feeRuleText(l)])),
         },
@@ -341,7 +345,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/report") {
       const { atIso, summary } = pageData();
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token"), capGuard: CAP_GUARD, tenor: TENOR, capLadderRule: CAP_LADDER_RULE }));
+      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token"), capGuard: CAP_GUARD, tenor: TENOR, capLadderRule: CAP_LADDER_RULE, capRule: capRuleText(CAP_RULE) }));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
