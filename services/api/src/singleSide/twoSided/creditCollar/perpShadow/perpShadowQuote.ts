@@ -4,6 +4,7 @@
  * priced from the same second of the same book.
  */
 
+import type { CapRule } from "../capRule";
 import type { PerpSide } from "../creditCollarPricer";
 import { otherTenor, type CapGuard, type CollarGeometry, type EpTenor } from "../perpTenor";
 import { atmReference, fundingStrikeLadder, quoteCollarFromSnapshot, type OkxListedSnapshot, type SnapshotQuote } from "./okxListedSnapshot";
@@ -112,6 +113,8 @@ export interface PerpQuoteInputs {
   tenor: EpTenor;
   /** the live cap guard: the widest strike the search may reach, and the closest it may write */
   capGuard: CapGuard;
+  /** the live cap rule (capRule.ts); default the widest strike that pays */
+  capRule?: CapRule;
   take: PerpTakeConfig;
   /** the fee-floor counterfactual's minimum, bps of notional */
   counterfactualMinTakeBps: number;
@@ -135,7 +138,7 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
   const weeklyListed = snap.weeklyExpiryMs != null && snap.weeklyExpiryMs !== snap.expiryMs;
   const liveTenor: EpTenor = inputs.tenor === "weekly" && weeklyListed ? "weekly" : "daily";
   const liveExpiryMs = liveTenor === "weekly" ? (snap.weeklyExpiryMs as number) : snap.expiryMs;
-  const base = { side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: inputs.geometry, maxCapPct: inputs.capGuard.maxCapPct, expiryMs: liveExpiryMs };
+  const base = { side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: inputs.geometry, maxCapPct: inputs.capGuard.maxCapPct, expiryMs: liveExpiryMs, capRule: inputs.capRule };
   const live = quoteCollarFromSnapshot({ ...base, mode: "top" }, snap);
   let liveAlt = altFrom(live, inputs.take);
   // The cap guard: the widest paying strike still sits too close to price. Refuse, and say how close.
@@ -165,8 +168,10 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
   const capLadder: PerpCapRung[] = fundingStrikeLadder(snap, inputs.side, inputs.spot, inputs.capGuard.maxCapPct, liveExpiryMs).map((inst) => {
     const capPct = round6(Math.abs(inst.strike - inputs.spot) / inputs.spot);
     const isLive = inst.instId === live.sellInstId;
-    const terms = isLive ? liveAlt : altFrom(quoteCollarFromSnapshot({ ...base, mode: "top", pinSellInstId: inst.instId }, snap), inputs.take);
-    return { sellInstId: inst.instId, capStrikeCents: cents(inst.strike), capPct, live: isLive, underGuard: capPct < inputs.capGuard.minCapPct - 1e-9, terms };
+    const rq = isLive ? live : quoteCollarFromSnapshot({ ...base, mode: "top", pinSellInstId: inst.instId }, snap);
+    const terms = isLive ? liveAlt : altFrom(rq, inputs.take);
+    const exceedProb = rq.ok ? rq.capExceedProb : null;
+    return { sellInstId: inst.instId, capStrikeCents: cents(inst.strike), capPct, live: isLive, underGuard: capPct < inputs.capGuard.minCapPct - 1e-9, exceedProb, terms };
   });
 
   const feeRules: Record<string, PerpFeeRuleAlt> = {};
@@ -229,6 +234,8 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
     expiryIso: new Date(live.expiryMs).toISOString(),
     tenor: liveTenor,
     capGuardPct: inputs.capGuard.minCapPct,
+    capExceedProb: live.capExceedProb,
+    capRuleApplied: live.capRuleApplied,
     buyInstId: live.buyInstId,
     sellInstId: live.sellInstId,
     floorStrikeCents: cents(live.buyStrike),

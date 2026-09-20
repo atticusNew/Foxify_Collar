@@ -236,6 +236,8 @@ export interface PerpShadowReportInput {
   tenor?: EpTenor;
   /** the cap-ladder rule sentence (mode-aware), as the JSON report states it */
   capLadderRule?: string;
+  /** the live cap rule sentence (capRuleText) */
+  capRule?: string;
 }
 
 const ruleHead = (plain: boolean): string =>
@@ -259,14 +261,16 @@ function ruleTr(name: string, note: string, b: PerpRuleBook, opts: { base?: bool
 
 const ladderHead = (plain: boolean): string =>
   plain
-    ? `<tr><th>cap from price</th><th>quoted</th><th>refused</th><th>live pick</th><th>cash / notional</th><th>settled</th><th>touched</th><th>past the cap</th><th>handed back</th><th>release at touch</th><th>holder Δ</th><th>OKX saw it</th></tr>`
+    ? `<tr><th>cap from price</th><th>quoted</th><th>refused</th><th>live pick</th><th>cash / notional</th><th>market odds past cap</th><th>settled</th><th>touched</th><th>past the cap</th><th>realized</th><th>handed back</th><th>release at touch</th><th>holder Δ</th><th>OKX saw it</th></tr>`
     : `<tr><th>cap from price</th><th>quoted</th><th>refused</th><th>live pick</th><th>cash / notional</th><th>settled</th><th>knock-outs</th><th>rate</th><th>avg time to touch</th><th>buyback</th><th>writer</th><th>OKX saw it</th></tr>`;
 
 function rungTr(r: PerpCapRungBook, guard?: CapGuard, plain = false): string {
   const under = guard ? r.capPct < guard.minCapPct - 1e-9 : r.underGuard > 0;
   const touches = r.okxConfirmedTouches + r.hlOnlyTouches;
   const tail = plain
-    ? `<td>${r.settled}</td><td>${touches}</td><td>${r.capHits}</td>` +
+    ? `<td>${r.predictedExceedPct == null ? "–" : `${r.predictedExceedPct}%`}</td>` +
+      `<td>${r.settled}</td><td>${touches}</td><td>${r.capHits}</td>` +
+      `<td>${r.realizedExceedPct == null ? "–" : `${r.realizedExceedPct}%`}</td>` +
       `<td>${r.capExcessCents ? usd(r.capExcessCents) : "–"}</td>` +
       `<td>${touches ? usd(r.buybackCents) : "–"}</td><td>${r.settled ? signedUsd(r.holderDeltaCents) : "–"}</td>` +
       `<td>${touches ? `${r.okxConfirmedTouches} / ${touches}` : "–"}</td>`
@@ -427,6 +431,7 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
     )}</div>
     <div class="tablewrap"><table>${ladderHead(plain)}${ladderRows}</table></div>
     <div class="read">${escapeHtml(ladderLine)}</div>
+    ${input.capRule ? `<div class="rule">Live cap rule: ${escapeHtml(input.capRule)}. "Market odds past cap" is the mean market-implied chance at open (the rung's OKX mark vol, zero drift); "realized" is the share of settled cycles that ended past it — the rule is checked against that column, per rung.</div>` : ""}
     ${guardLine ? `<div class="rule">${escapeHtml(guardLine)} ${plain ? "Release at touch" : "Buyback"} is the ATM ask the nearest scan saw, scaled to the time left at the touch; OKX saw it = the OKX index reached the cap within ±3 minutes of the Hyperliquid touch.</div>` : ""}
   </div>
 
