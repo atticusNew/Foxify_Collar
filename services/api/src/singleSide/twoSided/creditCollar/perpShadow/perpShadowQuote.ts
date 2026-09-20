@@ -5,23 +5,23 @@
  */
 
 import type { PerpSide } from "../creditCollarPricer";
-import { quoteCollarFromSnapshot, type OkxListedSnapshot, type SnapshotQuote } from "./okxListedSnapshot";
-import {
-  PERP_TIERS,
-  PERP_TIER_GEOMETRY,
-  type PerpAlt,
-  type PerpAltTerms,
-  type PerpFeeRuleAlt,
-  type PerpShadowCounterfactuals,
-  type PerpShadowOpenRecord,
-  type PerpShadowRefusalRecord,
-  type PerpSizeProbe,
-  type PerpTakeRule,
-  type PerpTenorAlt,
-  type PerpTier,
+import { otherTenor, type CapGuard, type CollarGeometry, type EpTenor } from "../perpTenor";
+import { atmReference, fundingStrikeLadder, quoteCollarFromSnapshot, type OkxListedSnapshot, type SnapshotQuote } from "./okxListedSnapshot";
+import type {
+  PerpAlt,
+  PerpAltTerms,
+  PerpCapRung,
+  PerpFeeRuleAlt,
+  PerpShadowCounterfactuals,
+  PerpShadowOpenRecord,
+  PerpShadowRefusalRecord,
+  PerpSizeProbe,
+  PerpTakeRule,
+  PerpTenorAlt,
 } from "./perpShadowLedger";
 
 export const cents = (usd: number): number => Math.round(usd * 100);
+const round6 = (x: number): number => +x.toFixed(6);
 
 export interface PerpTakeConfig {
   /** share of the net credit we keep (EP_TAKE_RATE; the live default is 0.20) */
@@ -106,10 +106,17 @@ export interface PerpQuoteInputs {
   /** Hyperliquid mark, USD */
   spot: number;
   contracts: number;
-  liveTier: PerpTier;
+  /** the live shape: floor distance and the cap pin the search starts from (the demo's DEMO_FLOOR_PCT / DEMO_CAP_PCT) */
+  geometry: CollarGeometry;
+  /** the expiry the live product writes to (EP_TENOR; weekly by default). Falls back to the daily when no weekly is listed. */
+  tenor: EpTenor;
+  /** the live cap guard: the widest strike the search may reach, and the closest it may write */
+  capGuard: CapGuard;
   take: PerpTakeConfig;
   /** the fee-floor counterfactual's minimum, bps of notional */
   counterfactualMinTakeBps: number;
+  /** the other tenor's band (the counterfactual re-quotes the same shape at the other expiry); default the live guard */
+  otherTenorCapGuard?: CapGuard;
   okxIndex: number | null;
   fundingBpsPer8h: number | null;
   nowIso: string;
@@ -117,16 +124,28 @@ export interface PerpQuoteInputs {
 }
 
 /**
- * Quote the live tier at the live size and every alternative. Fee-rule
- * alternatives hold the collar fixed and recompute only the split, so the
- * difference is the fee and nothing else. Size probes re-walk the book.
+ * Quote the live shape at the live size and every alternative. The cap
+ * ladder holds the floor and moves the funding wing to each listed strike in
+ * the band. Fee-rule alternatives hold the collar fixed and recompute only
+ * the split, so the difference is the fee and nothing else. Size probes
+ * re-walk the book. The other tenor re-quotes the same shape at the other
+ * expiry (the daily when the live product is weekly, and the reverse).
  */
 export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot): PerpShadowOpenRecord | PerpShadowRefusalRecord {
-  const live = quoteCollarFromSnapshot(
-    { side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: PERP_TIER_GEOMETRY[inputs.liveTier], mode: "top" },
-    snap,
-  );
-  const liveAlt = altFrom(live, inputs.take);
+  const weeklyListed = snap.weeklyExpiryMs != null && snap.weeklyExpiryMs !== snap.expiryMs;
+  const liveTenor: EpTenor = inputs.tenor === "weekly" && weeklyListed ? "weekly" : "daily";
+  const liveExpiryMs = liveTenor === "weekly" ? (snap.weeklyExpiryMs as number) : snap.expiryMs;
+  const base = { side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: inputs.geometry, maxCapPct: inputs.capGuard.maxCapPct, expiryMs: liveExpiryMs };
+  const live = quoteCollarFromSnapshot({ ...base, mode: "top" }, snap);
+  let liveAlt = altFrom(live, inputs.take);
+  // The cap guard: the widest paying strike still sits too close to price. Refuse, and say how close.
+  if (live.ok && liveAlt.ok && live.capPct < inputs.capGuard.minCapPct - 1e-9) {
+    liveAlt = {
+      ok: false,
+      error: "cap_too_close",
+      message: `widest paying cap ${live.sellInstId} sits ${(live.capPct * 100).toFixed(2)}% from price, under the ${(inputs.capGuard.minCapPct * 100).toFixed(1)}% guard`,
+    };
+  }
   if (!live.ok || !liveAlt.ok) {
     const err = !live.ok ? live : (liveAlt as Extract<PerpAlt, { ok: false }>);
     return {
@@ -142,13 +161,13 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
   const notionalCents = cents(live.notionalUsdc);
   const split = perpTake(liveAlt.netCreditCents, notionalCents, inputs.take);
 
-  const tiers = {} as Record<PerpTier, PerpAlt>;
-  for (const t of PERP_TIERS) {
-    tiers[t] =
-      t === inputs.liveTier
-        ? liveAlt
-        : altFrom(quoteCollarFromSnapshot({ side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: PERP_TIER_GEOMETRY[t], mode: "top" }, snap), inputs.take);
-  }
+  // The cap-distance ladder: every listed funding strike in the band, the live floor held fixed.
+  const capLadder: PerpCapRung[] = fundingStrikeLadder(snap, inputs.side, inputs.spot, inputs.capGuard.maxCapPct, liveExpiryMs).map((inst) => {
+    const capPct = round6(Math.abs(inst.strike - inputs.spot) / inputs.spot);
+    const isLive = inst.instId === live.sellInstId;
+    const terms = isLive ? liveAlt : altFrom(quoteCollarFromSnapshot({ ...base, mode: "top", pinSellInstId: inst.instId }, snap), inputs.take);
+    return { sellInstId: inst.instId, capStrikeCents: cents(inst.strike), capPct, live: isLive, underGuard: capPct < inputs.capGuard.minCapPct - 1e-9, terms };
+  });
 
   const feeRules: Record<string, PerpFeeRuleAlt> = {};
   const shareOnly = perpTake(liveAlt.netCreditCents, notionalCents, { ...inputs.take, minTakeBpsOfNotional: 0 });
@@ -171,27 +190,29 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
 
   const sizeLadder: PerpSizeProbe[] = SIZE_LADDER_MULTS.map((mult) => {
     const contracts = inputs.contracts * mult;
-    const q = quoteCollarFromSnapshot(
-      { side: inputs.side, spot: inputs.spot, contracts, geometry: PERP_TIER_GEOMETRY[inputs.liveTier], mode: "walk" },
-      snap,
-    );
+    const q = quoteCollarFromSnapshot({ ...base, contracts, mode: "walk" }, snap);
     return { mult, contracts, terms: altFrom(q, inputs.take) };
   });
 
-  // Tenor: the same geometry at the next weekly. One-day options a few percent
-  // out are worth ticks; the weekly is the first place the credit is real.
+  // Tenor: the same geometry at the other expiry, in that tenor's band. One-day
+  // options a few percent out are worth ticks; the weekly is where the credit
+  // is real. Measured side by side so the default is a number, not an argument.
   const tenors: Record<string, PerpTenorAlt> = {};
-  if (snap.weeklyExpiryMs != null && snap.weeklyExpiryMs !== snap.expiryMs) {
-    const wq = quoteCollarFromSnapshot(
-      { side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: PERP_TIER_GEOMETRY[inputs.liveTier], mode: "top", expiryMs: snap.weeklyExpiryMs },
-      snap,
-    );
-    const alt = altFrom(wq, inputs.take);
-    tenors.weekly = alt.ok ? { ...alt, expiryIso: new Date(snap.weeklyExpiryMs).toISOString() } : alt;
+  if (weeklyListed) {
+    const alt = otherTenor(liveTenor);
+    const altExpiryMs = alt === "weekly" ? (snap.weeklyExpiryMs as number) : snap.expiryMs;
+    const aq = quoteCollarFromSnapshot({ ...base, maxCapPct: inputs.otherTenorCapGuard?.maxCapPct ?? base.maxCapPct, mode: "top", expiryMs: altExpiryMs }, snap);
+    const terms = altFrom(aq, inputs.take);
+    tenors[alt] = terms.ok ? { ...terms, expiryIso: new Date(altExpiryMs).toISOString() } : terms;
   }
 
-  const counterfactuals: PerpShadowCounterfactuals = { version: 1, tiers, feeRules, sizeLadder, tenors };
+  const counterfactuals: PerpShadowCounterfactuals = { version: 2, capLadder, feeRules, sizeLadder, tenors };
   const basisBps = inputs.okxIndex != null && inputs.okxIndex > 0 ? +(((inputs.spot - inputs.okxIndex) / inputs.okxIndex) * 10000).toFixed(1) : null;
+  const nowMs = Date.parse(inputs.nowIso);
+  const periods8h = Math.max(0, live.expiryMs - nowMs) / (8 * 3_600_000);
+  const fundingCycleCents =
+    inputs.fundingBpsPer8h == null ? null : Math.round(notionalCents * (inputs.fundingBpsPer8h / 10000) * periods8h * (inputs.side === "long" ? 1 : -1));
+  const atm = atmReference(snap, inputs.spot, live.expiryMs, nowMs);
   return {
     type: "open",
     at: inputs.nowIso,
@@ -204,8 +225,10 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
     okxIndexCents: inputs.okxIndex == null ? null : cents(inputs.okxIndex),
     basisBps,
     fundingBpsPer8h: inputs.fundingBpsPer8h,
+    fundingCycleCents,
     expiryIso: new Date(live.expiryMs).toISOString(),
-    tier: inputs.liveTier,
+    tenor: liveTenor,
+    capGuardPct: inputs.capGuard.minCapPct,
     buyInstId: live.buyInstId,
     sellInstId: live.sellInstId,
     floorStrikeCents: cents(live.buyStrike),
@@ -223,6 +246,7 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
     takeMinimumCents: split.takeMinimumCents,
     creditCents: split.creditCents,
     midCreditCents: liveAlt.midCreditCents,
+    atmRef: { callAskPxBtc: atm.callAskPxBtc, putAskPxBtc: atm.putAskPxBtc, hoursToExpiry: atm.hoursToExpiry },
     counterfactuals,
   };
 }

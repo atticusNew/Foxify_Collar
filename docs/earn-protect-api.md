@@ -53,6 +53,7 @@ specific:
 | `strike_concentration` | cap strike too crowded (≤30% of book per strike) |
 | `listed_credit_nonpositive` … | the market can't fund a positive credit right now |
 | `paused` | kill switch — existing wraps still conclude and pay |
+| `owed_outstanding` | a settled cycle left a balance owed on this account (`owedUsdc`); protection restarts once it is settled |
 | `refused` | guard rail (cooldown, daily quota, book cap, already active) — see `message` |
 
 Positions above the per-wallet cap wrap **partially** (never refused for size); the coverage note
@@ -61,7 +62,28 @@ is in `wrap.hedge.sizeNote`.
 ### `POST /api/close?account=0x…`
 
 Voluntary early close: keeps the vested credit, claws back the rest, unwinds the hedge, disarms
-auto-renew. Returns `{ vested: { vestedUsdc, fullCreditUsdc, fraction } }`.
+auto-renew. Returns `{ vested: { vestedUsdc, fullCreditUsdc, fraction } }`. In plain cap mode the
+collar is also marked to market on the unwind (floor leg sold, cap leg bought back if still held)
+and that value is part of the cycle's payable.
+
+### `GET /api/release/quote?account=0x…`
+
+The live price of releasing the cap on the account's active wrap: `{ wrapId, capMode, capStrike,
+markPx, release: { available, costUsdc, premiumUsdc, feeUsdc, askPxBtc, contracts, instId } }`
+(`available: false` carries a `reason`). Priced from the OKX ask on the sold cap leg for the
+contracts still capped; refreshes with the book, so show it live.
+
+### `POST /api/release?account=0x…[&maxCostUsdc=…]`
+
+Plain cap mode only. Buys the cap leg back for the holder at the live price (OKX IOC on live
+lanes; the book price in paper) so every gain from here is theirs; the floor stays. The cost is
+booked on the wrap (`wrap.release`) and netted against the credit at the cycle's close. Partial
+fills are booked as partial releases (the remaining contracts stay capped; call again). Pass the
+`costUsdc` the client showed as `maxCostUsdc`: if the live price is more than 5% above it the
+route answers `409 price_moved` with the new quote instead of filling. Same gates as `/api/close`
+(opening device or verified wallet: `release_locked`). Other refusals: `nothing_active`,
+`knockout_mode`, `already_released`, `no_cap`, `release_unpriced` (503), `release_unfilled` (502:
+nothing bought, still protected and capped).
 
 ### `GET /api/state?account=0x…`
 
@@ -89,25 +111,36 @@ stats. `?all=1` (whole book) requires the admin token.
 
 ### Public live book
 
-- `GET /api/stats` — read-only aggregates, never per-user data: wraps (total/active/expiries/
-  knockouts/early closes), notional (open + lifetime, HEDGED), credits paid, capacity
-  (book cap, utilization, founding-cohort fill).
+- `GET /api/stats` — read-only aggregates, never per-user data: `capMode`, wraps (total/active/
+  expiries/early closes, plus `capTouched`/`released`/`settledOwing` in plain mode and `knockouts`
+  in knockout mode), notional (open + lifetime, HEDGED), credits paid, capacity (book cap,
+  utilization, founding-cohort fill).
 - `GET /public` — the live-book dashboard page rendering `/api/stats`.
 
 ## Admin routes (require `EP_ADMIN_TOKEN` via `Authorization: Bearer`, `X-Admin-Token`, or `?token=`)
 
 - `POST /api/admin/pause?paused=true|false&reason=…` — kill switch: pauses new wraps + renewals;
-  conclusions, knockouts, and payouts keep running.
+  conclusions, releases, and payouts keep running.
 - `GET /api/admin/status` — stores backend, pause state, open wraps/notional, wallet count, payout
-  backlog/failures, loop heartbeats.
+  backlog/failures, loop heartbeats, `capMode`, the cap watch (headroom per wrap) and `owed`
+  (balances outstanding, by wrap).
+- `POST /api/admin/owed/settle?wrap=…[&status=written_off]` — a balance owed was collected (venue
+  debit, on-chain receipt) or written off: clears the `owed_outstanding` gate for that account.
 - `POST /api/admin/reset` — clears all stores (dev only; gated by `DEMO_ALLOW_RESET`).
 - `GET /demo?token=…` — ops control room (HTML).
 
 ## Cycle semantics every client must render honestly
 
-- Credit **pays at each 24h cycle's conclusion** (expiry / knockout / early close) — never upfront.
-- Knockout (mark touches the cap, no buffer): cycle ends, trader keeps the perp and all gains to
-  the cap plus vested credit; protection re-arms at new spot on the next renewal tick while the
-  toggle stays on. No trader ever owes anything.
+- Credit **pays at each cycle's conclusion** (expiry / early close) — never upfront. The cycle is
+  weekly by default (`EP_TENOR`; the record's `vesting.endMs` is the truth, never assume 24h).
+- The cap (`EP_CAP_MODE=plain`, default) is the price of the floor: the collar runs to expiry, so
+  gains above the cap during the cycle are handed back at the close, netted against the credit.
+  If they exceed the credit the difference is a balance **owed** (`wrap.owed`), and no new
+  protection opens for that account until it is settled — render it, never hide it. The client
+  may **release** the cap at any time at the live price (`/api/release`) and keep every gain; a
+  cap touch (`cap_touched` stage, `wrap.capTouch`) closes nothing and is the moment to offer it.
+  The phrase "you never owe anything" is retired.
+- Knockout mode (`EP_CAP_MODE=knockout`, off): mark touches the cap, cycle ends, trader keeps the
+  perp and all gains plus vested credit; protection re-arms on the next renewal tick.
 - Refusals carry a human-readable `message` — show it (or the short mapping used by our clients),
   never a generic "error".

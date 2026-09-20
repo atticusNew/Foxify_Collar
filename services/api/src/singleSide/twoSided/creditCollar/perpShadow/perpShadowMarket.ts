@@ -3,8 +3,12 @@
  *   - Hyperliquid mark and funding (the position's price and carry),
  *   - OKX BTC-USD index (the hedge venue's price; the basis between the two),
  *   - OKX delivery price at expiry (the official print the hedge settles at).
+ *   - Hyperliquid candles (the mark path a knock-out is judged on) and OKX
+ *     index candles around a touch (did the hedge venue's clock see it too).
  * Every fetch is injectable so tests run on fixtures and never touch a venue.
  */
+
+import { parseHlCandles, parseOkxIndexCandles, type Candle } from "./perpShadowPath";
 
 export interface HlContext {
   markPx: number;
@@ -74,6 +78,40 @@ export const deliveryPriceFor = (raw: unknown, expiryMs: number): number | null 
     }
   }
   return null;
+};
+
+/** Hyperliquid candles over [startMs, endMs]: the mark path the knock-out is judged on. */
+export const fetchHlCandles = async (
+  coin: string,
+  startMs: number,
+  endMs: number,
+  interval: "1m" | "5m",
+  base = process.env.HL_API_BASE || "https://api.hyperliquid.xyz",
+  f: typeof fetch = fetch,
+): Promise<Candle[]> => {
+  const res = await f(`${base}/info`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "candleSnapshot", req: { coin, interval, startTime: startMs, endTime: endMs } }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`Hyperliquid candleSnapshot HTTP ${res.status}`);
+  return parseHlCandles(await res.json());
+};
+
+/** OKX BTC-USD index 1m candles in the minutes around `aroundMs` (one request; `after` pages backward from its bound). */
+export const fetchOkxIndexCandlesAround = async (
+  aroundMs: number,
+  windowMs = 3 * 60_000,
+  base = process.env.OKX_REST_BASE || "https://www.okx.com",
+  f: typeof fetch = fetch,
+): Promise<Candle[]> => {
+  const limit = Math.ceil((2 * windowMs) / 60_000) + 2;
+  const res = await f(`${base}/api/v5/market/index-candles?instId=BTC-USD&bar=1m&after=${aroundMs + windowMs + 60_000}&limit=${limit}`, {
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!res.ok) throw new Error(`OKX index-candles HTTP ${res.status}`);
+  return parseOkxIndexCandles(await res.json());
 };
 
 export const fetchOkxDeliveryPrice = async (

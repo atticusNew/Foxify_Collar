@@ -42,7 +42,7 @@
 </table>
 
 <h2>2. Active Sleeve: Daily Protection Cycles</h2>
-<p>Each day the active book is wrapped in ONE ACTION: a hard floor about 5 to 6% below spot, a daily credit funded by the options market, automatic re-arm after any cap touch. Read-only: positions read from public data, hedges placed from Atticus accounts, credits paid to the client's address. The workflow is live at institutions.earnandprotect.xyz.</p>
+<p>Each day the active book is wrapped in ONE ACTION: a hard floor about 5 to 6% below spot and a daily credit funded by the options market: the floor is bought, a cap well above spot is sold, and the difference is the client's credit. Gains above the cap in a cycle pay for the floor and are netted at the close; the client can release the cap at any time at the live listed price and keep a rally. Read-only: positions read from public data, hedges placed from Atticus accounts, credits paid to the client's address. The workflow is live at institutions.earnandprotect.xyz.</p>
 <table>
   <tr><th>Line (90-day horizon)</th><th class="r">Value</th><th>Basis</th></tr>
   <tr><td>Average protected notional</td><td class="r">$2,000,000</td><td><span class="e">MODELED</span> (profile input)</td></tr>
@@ -50,7 +50,7 @@
   <tr><td>Gross credits, 90 days</td><td class="r">$153,000</td><td><span class="e">MODELED</span> = $2M x 8.5 bps x 90</td></tr>
   <tr><td>Client share (80% or better)</td><td class="r">$122,400+</td><td><span class="e">MODELED</span> (published take, institutional tiers)</td></tr>
   <tr><td>Expected floor events</td><td class="r">~1 of 90 cycles</td><td><span class="m">MEASURED</span> frequency 1.12% of positions</td></tr>
-  <tr><td>Expected cap touches (auto re-arm, credit kept)</td><td class="r">~4 of 90 cycles</td><td><span class="m">MEASURED</span> frequency 4.49% of positions</td></tr>
+  <tr><td>Expected cap touches (release offered at the live price, credit kept)</td><td class="r">~4 of 90 cycles</td><td><span class="m">MEASURED</span> frequency 4.49% of positions</td></tr>
   <tr><td>Days positive for clients across the measured window</td><td class="r">79%</td><td><span class="m">MEASURED</span> (89 settled positions)</td></tr>
   <tr class="total"><td>Client all-in result across the full measured window</td><td class="r">+4.5 bps on notional</td><td><span class="m">MEASURED</span> (credits + protection + funding, net)</td></tr>
 </table>
@@ -59,7 +59,7 @@
 <p>The facility lived through a 7.5% single-session move during the measured window. Below is what actually happened, per $50,000 position, both directions. For this profile's $2M active sleeve, multiply by 40.</p>
 <table>
   <tr><th>Direction</th><th class="r">Position P&amp;L</th><th class="r">Collar settlement</th><th class="r">Credit</th><th class="r">Client net</th><th>What the structure did</th></tr>
-  <tr><td>Long $50k (price rose 7.5%)</td><td class="r pos">+$3,796</td><td class="r neg">-$2,886</td><td class="r pos">+$29</td><td class="r pos">+$921</td><td>Cap engaged above the knockout: client kept gains to the cap plus vested credit; cycle re-armed at the new spot</td></tr>
+  <tr><td>Long $50k (price rose 7.5%)</td><td class="r pos">+$3,796</td><td class="r neg">-$2,886</td><td class="r pos">+$29</td><td class="r pos">+$921</td><td>Cap engaged: client kept gains to the cap plus the credit; gains above the cap paid for the floor (the client could have released the cap at the live price to keep them)</td></tr>
   <tr><td>Short $50k (price moved 7.5% against)</td><td class="r neg">-$3,774</td><td class="r pos">+$950</td><td class="r pos">+$48</td><td class="r neg">-$2,776</td><td>Floor engaged: the collar paid out and absorbed the loss beyond the floor; without protection the loss is the full -$3,774</td></tr>
 </table>
 <p class="muted">The point of the exhibit: on the worst day in the window, floors paid, caps behaved, no manual intervention occurred, and the facility's cumulative result remained positive. Protection is measured on the day it is needed, not the days it is not.</p>

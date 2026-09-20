@@ -40,6 +40,8 @@ export type LiveRunnerDeps = {
   guards?: LiveGuardsConfig;      // default: parsed from env
   paths?: { executions?: string; windowState?: string; alerts?: string; recon?: string; settlements?: string };
   reconToleranceUsdc?: number;    // default 5
+  /** Pin the plan to this listed expiry (the expiry the quote was computed on); default = next standard daily. */
+  expiryMs?: number;
   fillTimeoutMs?: number;
   pollDelayMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -120,7 +122,8 @@ export const buildOkxLiveExecutionHook = (env: Record<string, string | undefined
         fundingMidUsdc: solved.fundingLegMidUsdc,
         modelContractsBtc: solved.notionalUsdc / ctx.spot,
         nowMs: ctx.nowMs,
-        maxStrikeDriftPct: guards.maxStrikeDriftPct
+        maxStrikeDriftPct: guards.maxStrikeDriftPct,
+        expiryMs: deps.expiryMs
       });
       if (!planRes.ok) return planRes;
       let plan = planRes.plan;

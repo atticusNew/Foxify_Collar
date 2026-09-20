@@ -36,7 +36,7 @@ export const EP_VIDEO_PAGE_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Atticus — a live collar on Hyperliquid, one toggle</title>
 <meta property="og:title" content="Atticus — a live collar on Hyperliquid, one toggle">
-<meta property="og:description" content="4 JSON endpoints give a venue 1 white-label toggle. 1 tap gives the trader a hard floor and a daily credit.">
+<meta property="og:description" content="4 JSON endpoints give a venue 1 white-label toggle. 1 tap gives the trader a hard floor and a weekly credit.">
 <style>
   :root{--bg:#0b0f14;--panel:#111722;--line:#1f2937;--text:#e8edf4;--muted:#8b98a9;--accent:#d9ab01;--radius:14px}
   *{box-sizing:border-box;margin:0;padding:0}
@@ -70,7 +70,7 @@ export const EP_VIDEO_PAGE_HTML = `<!doctype html>
   <video controls autoplay muted playsinline preload="metadata" src="/assets/hl-toggle-demo.mp4?v=2"></video>
   <div class="ladder">
     <div class="row"><b>4</b> JSON endpoints give a venue <b>1</b> white-label toggle.</div>
-    <div class="row"><b>1</b> tap gives the trader a hard floor and a daily credit.</div>
+    <div class="row"><b>1</b> tap gives the trader a hard floor and a weekly credit.</div>
     <div class="row">Everything else stays exactly the same — for the venue and the trader.</div>
   </div>
   <div class="cta">

@@ -31,7 +31,7 @@
 <div class="subtitle">One-tap institutional collar protection for custodied trading positions. Prepared for Fireblocks, August 2026.</div>
 
 <h2>What it is</h2>
-<p>A client taps one toggle. Their position gets a hard price floor (about 5 to 6% below spot) and pays them a daily cash credit, funded by the options market: we sell the capped upside and buy the floor on listed BTC options, and the net premium is the client's credit. The credit vests through the day; the client can close anytime and keep what vested. If price touches the cap, the cycle auto-unwinds (client keeps position, gains, and vested credit) and re-arms at the new spot. When the market cannot fund an honest credit, the engine refuses to open.</p>
+<p>A client taps one toggle. Their position gets a hard price floor (about 5 to 6% below spot) and pays them a daily cash credit, funded by the options market: we sell the capped upside and buy the floor on listed BTC options, and the net premium is the client's credit. The credit vests through the day; the client can close anytime and keep what vested. Gains above the cap in a cycle are what pay for the floor; they are netted against the credit at the close. If price touches the cap the client is shown the live price to release it (buy the cap leg back on the listed market) and keep the rally; the floor stays either way. When the market cannot fund an honest credit, the engine refuses to open.</p>
 <p><b>Toggle on: credit plus floor. Toggle off: neither. Everything else identical.</b></p>
 
 <div class="fit"><b>Why it fits Fireblocks:</b> the entire product is read-only. No keys, no deposits, no custody change: positions are read from public data, hedged externally from our own account, and credits pay only to the client's address. A Fireblocks client gets downside protection and daily yield while every asset stays exactly where it is: in your vaults. Protection with zero custody movement is a feature your account teams can sell on day one.</div>
@@ -50,7 +50,7 @@
 <h2>Structure and execution</h2>
 <table>
   <tr><th>Element</th><th>Detail</th></tr>
-  <tr><td>Risk posture</td><td>Delta neutral by construction. Every wrap is hedged leg for leg at open; both legs fill or the pair auto-unwinds. Atticus revenue is a published fee on credits sourced, never trading P&amp;L.</td></tr>
+  <tr><td>Risk posture</td><td>Hedged, not carried. The floor is hedged leg for leg on listed options at open; both legs fill or the pair auto-unwinds. The cap leg is held to expiry, so the book is flat leg for leg at every price; the client, not Atticus, decides whether to buy the cap back, at a price in dollars on the screen. Atticus revenue is a published fee on credits sourced, never trading P&amp;L.</td></tr>
   <tr><td>Execution stack</td><td>OKX listed options, live and production-proven today. FalconX onboarded for block and RFQ execution as volume nets up (adapter built). The stack aligns with Fireblocks' existing OKX and FalconX relationships.</td></tr>
   <tr><td>Client economics</td><td>Approximately 8.5 bps/day gross credit on protected notional at block execution (measured). Client keeps 80%+ of every credit.</td></tr>
   <tr><td>Controls</td><td>Withdrawal-disabled venue keys, 40% collateral buffer never allocated, auto-pause at utilization line, kill switch that stops new exposure while payouts continue, concentration caps, full reconciliation against venue records.</td></tr>

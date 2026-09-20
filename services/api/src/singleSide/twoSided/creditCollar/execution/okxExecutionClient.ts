@@ -46,8 +46,8 @@ export const buildOkxHeaders = (
 export type OkxLegOrder = {
   instId: string;
   side: "buy" | "sell";
-  /** NOTE: OKX options reject "market" — closes use aggressive "ioc" limits (px required). */
-  ordType: "limit" | "market" | "ioc";
+  /** NOTE: OKX options reject "market" — closes use aggressive "ioc" limits (px required); "post_only" rests and is rejected if it would cross. */
+  ordType: "limit" | "market" | "ioc" | "post_only";
   sz: string;
   px?: string;
   tdMode?: "cross" | "isolated" | "cash";

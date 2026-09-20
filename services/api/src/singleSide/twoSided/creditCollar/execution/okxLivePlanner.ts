@@ -75,6 +75,19 @@ export const nextStandardDailyExpiryMs = (nowMs: number, minHoursToExpiry = 12):
   return d.getTime();
 };
 
+/** Cycles run 3–10 days: a Friday under three days off prices like a daily and is skipped for the next. */
+export const WEEKLY_MIN_DAYS = 3;
+
+/** The nearest LISTED Friday 08:00 UTC expiry at least `minDays` out (the weekly tenor), or null when none is listed. Pure. */
+export const nextListedWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = WEEKLY_MIN_DAYS): number | null => {
+  const listed = [...new Set(chain.filter((c) => c.state === "live").map((c) => c.expiryMs))].sort((a, b) => a - b);
+  for (const e of listed) {
+    const d = new Date(e);
+    if (d.getUTCDay() === 5 && d.getUTCHours() === 8 && e - nowMs >= minDays * 86_400_000) return e;
+  }
+  return null;
+};
+
 /** Round contracts to the venue lot; effective notional recomputed from the ROUNDED size. Pure. */
 export const contractsForNotional = (
   notionalUsdc: number,
@@ -196,6 +209,8 @@ export type PlanInput = {
   nowMs: number;
   minHoursToExpiry?: number;   // default 12
   maxStrikeDriftPct?: number;  // default 0.01 (1% of spot-relative strike drift)
+  /** Write to this listed expiry instead of the next standard daily (the weekly tenor). */
+  expiryMs?: number;
 };
 
 export type PlanResult = { ok: true; plan: LiveCollarPlan } | { ok: false; error: string; message: string };
@@ -207,7 +222,7 @@ export type PlanResult = { ok: true; plan: LiveCollarPlan } | { ok: false; error
  * or inconsistent contract sizes between the two legs.
  */
 export const planLiveCollar = (chain: OkxChainInstrument[], input: PlanInput): PlanResult => {
-  const expiryMs = nextStandardDailyExpiryMs(input.nowMs, input.minHoursToExpiry ?? 12);
+  const expiryMs = input.expiryMs ?? nextStandardDailyExpiryMs(input.nowMs, input.minHoursToExpiry ?? 12);
   const live = chain.filter((c) => c.state === "live" && c.expiryMs === expiryMs);
   if (live.length === 0) {
     return { ok: false, error: "expiry_not_listed", message: `no live OKX BTC-USD options at ${new Date(expiryMs).toISOString()} — daily not listed yet or chain fetch incomplete` };
