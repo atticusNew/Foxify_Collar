@@ -16,6 +16,7 @@ import {
   type ShadowAlertConfig,
 } from "../src/eventCollar/crossVenue/shadowAlerts";
 import { appendShadowRecord, ledgerStats, type ShadowOpenRecord } from "../src/eventCollar/crossVenue/shadowLedger";
+import { forbiddenKeysIn } from "../src/eventCollar/retailShowcase";
 
 const CFG: ShadowAlertConfig = {
   telegramBotToken: null,
@@ -198,7 +199,14 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     const emptyExport = await fetch(`${base}/api/shadow/export`, op);
     assert.equal(emptyExport.status, 200);
     assert.equal(await emptyExport.text(), "");
-    let health = (await (await fetch(`${base}/healthz`)).json()) as Record<string, unknown>;
+    // public /healthz: up, scanning, how many positions — no paths, strategy, venues or error text
+    const publicHealth = (await (await fetch(`${base}/healthz`)).json()) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(publicHealth).sort(), ["lastScanAt", "lastSettleAt", "ok", "positions", "service"]);
+    assert.equal(publicHealth.ok, true);
+    assert.equal(publicHealth.positions, 0);
+    assert.deepEqual(forbiddenKeysIn(publicHealth), []);
+    // the operator token unlocks the full body
+    let health = (await (await fetch(`${base}/healthz`, op)).json()) as Record<string, unknown>;
     assert.equal(health.ok, true);
     assert.deepEqual(health.ledger, { path, exists: false, bytes: 0, records: 0 });
     assert.equal(health.consecutiveScanFailures, 0);
@@ -215,9 +223,10 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.equal(exp.headers.get("content-length"), String(Buffer.byteLength(raw)));
     assert.equal(await exp.text(), raw, "byte-for-byte the append-only ledger");
 
-    health = (await (await fetch(`${base}/healthz`)).json()) as Record<string, unknown>;
+    health = (await (await fetch(`${base}/healthz`, op)).json()) as Record<string, unknown>;
     assert.deepEqual(health.ledger, { path, exists: true, bytes: Buffer.byteLength(raw), records: 2 });
     assert.equal(health.positions, 1);
+    assert.equal(((await (await fetch(`${base}/healthz`)).json()) as { positions: number }).positions, 1, "the public body counts positions too");
 
     const api = (await (await fetch(`${base}/api/shadow`)).json()) as {
       summary: {
