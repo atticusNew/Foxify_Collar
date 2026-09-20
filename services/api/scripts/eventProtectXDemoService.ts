@@ -200,6 +200,8 @@ export interface BoardRow {
   floorCents: number;
   capCents: number;
   creditCents: number;
+  /** what the holder keeps at worst: floor × contracts + credit, in cents */
+  floorTotalCents: number;
   /** cost of the protection in bps of the naked position's EV (negative = protection beats naked) */
   evCostBps: number;
   /** which hedge route won this event's quote */
@@ -723,6 +725,7 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
       floorCents: q.floorCents,
       capCents: q.capCents,
       creditCents: q.creditCents,
+      floorTotalCents: q.floorCents * s.res.position.contracts + q.creditCents,
       evCostBps: s.evBps,
       route: s.res.route ?? "polymarket",
       tier: q.tier,

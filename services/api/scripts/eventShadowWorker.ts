@@ -29,7 +29,7 @@
  *
  * Durability: the ledger lives on one Render disk. GET /api/shadow/export streams
  * the raw JSONL so it can be mirrored off-box on a schedule
- * (`curl -s https://<service>/api/shadow/export > backup-$(date +%F).jsonl`).
+ * (`curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" https://<service>/api/shadow/export > backup-$(date +%F).jsonl`).
  */
 
 import { createReadStream, statSync } from "node:fs";
@@ -42,6 +42,7 @@ import {
   positionsCsv,
   summarizeShadow,
   type ShadowPosition,
+  type ShadowSummary,
 } from "../src/eventCollar/crossVenue/shadowLedger";
 import {
   buildShadowAlerter,
@@ -62,6 +63,7 @@ import {
 import type { NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
+import { adminAuthorized, parseAdminAuthFromEnv } from "../src/eventCollar/crossVenue/eventFunnel";
 import {
   appendHedgeReceipt,
   intentFromHedge,
@@ -84,6 +86,14 @@ const VOID_AFTER_MS = Number(process.env.EVENT_SHADOW_VOID_AFTER_MS || 72 * 3_60
 /** one line per hedge: which strategy filled it, at what, and why the other did not */
 const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDGER_PATH), "hedge-receipts.jsonl");
 const hedgeChoice = hedgeExecutorFromEnv(process.env);
+/**
+ * Operator views (rule comparison, hedge receipts, raw ledger, full CSV) are
+ * gated: they are what we are learning, not what was quoted. Same token as the
+ * demo's /admin/funnel; fail-closed when unset so the public record is all
+ * that is ever public by default.
+ */
+const adminAuth = parseAdminAuthFromEnv(process.env);
+const OPERATOR_PATHS = new Set(["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export"]);
 
 const alertCfg = parseShadowAlertsFromEnv(process.env);
 const alerter: ShadowAlerter = buildShadowAlerter(alertCfg);
@@ -298,6 +308,24 @@ function pageData(): { atIso: string; positions: ShadowPosition[] } {
   return { atIso: new Date().toISOString(), positions: loadShadowPositions(LEDGER_PATH) };
 }
 
+/**
+ * The public JSON carries the live book's outcomes. The rule books (what each
+ * alternative would have done) stay with the operator; only their existence
+ * is public.
+ */
+function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals"> & {
+  counterfactuals: { recordedSince: string | null; positionsWithCounterfactuals: number };
+} {
+  const { counterfactuals, ...rest } = s;
+  return {
+    ...rest,
+    counterfactuals: {
+      recordedSince: counterfactuals.recordedSince,
+      positionsWithCounterfactuals: counterfactuals.positionsWithCounterfactuals,
+    },
+  };
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -308,7 +336,15 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
+  const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
   try {
+    if (OPERATOR_PATHS.has(url.pathname) && !operator) {
+      sendJson(res, 403, {
+        ok: false,
+        error: adminAuth.enabled ? "bad admin token" : "operator views disabled — set EVENT_X_ADMIN_TOKEN",
+      });
+      return;
+    }
     if (url.pathname === "/healthz") {
       sendJson(res, 200, healthBody());
       return;
@@ -333,10 +369,13 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/positions.csv") {
       // Spreadsheet form: one row per position, every leg in integer cents.
-      const csv = positionsCsv(loadShadowPositions(LEDGER_PATH));
+      // Public rows carry what was quoted and what settled; the operator's
+      // ?scope=full adds the recorded fee rule and every counterfactual.
+      const full = operator && url.searchParams.get("scope") === "full";
+      const csv = positionsCsv(loadShadowPositions(LEDGER_PATH), full ? "full" : "public");
       res.writeHead(200, {
         "content-type": "text/csv; charset=utf-8",
-        "content-disposition": `attachment; filename="event-shadow-positions-${new Date().toISOString().slice(0, 10)}.csv"`,
+        "content-disposition": `attachment; filename="event-shadow-positions${full ? "-full" : ""}-${new Date().toISOString().slice(0, 10)}.csv"`,
         "cache-control": "no-store",
       });
       res.end(csv);
@@ -350,7 +389,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const open = positions
         .filter((p) => p.status === "open")
         .sort((a, b) => a.eventTimeIso.localeCompare(b.eventTimeIso));
-      sendJson(res, 200, { ok: true, at: atIso, summary: summarizeShadow(positions), settled, open });
+      sendJson(res, 200, { ok: true, at: atIso, summary: publicSummary(summarizeShadow(positions)), settled, open });
       return;
     }
     if (url.pathname === "/api/shadow/report") {
@@ -384,7 +423,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/report") {
       const { atIso, positions } = pageData();
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderShadowReportHtml({ atIso, summary: summarizeShadow(positions) }));
+      res.end(renderShadowReportHtml({ atIso, summary: summarizeShadow(positions), token: url.searchParams.get("token") }));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
