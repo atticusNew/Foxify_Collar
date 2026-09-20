@@ -80,7 +80,9 @@ export type CrossRefusalCode =
   | "pm_book_too_thin"
   | "kalshi_book_empty"
   | "kalshi_book_too_thin"
-  | "credit_nonpositive";
+  | "credit_nonpositive"
+  /** every route funded a collar, but the cheapest still costs more than the ceiling in EV terms */
+  | "protection_too_rich";
 
 export interface CrossRefusal {
   ok: false;

@@ -112,6 +112,36 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   assert.deepEqual(w.byLeague.mlb, { settled: 1, open: 0, pnlCents: 12, stakeCents: 15_000 });
   assert.deepEqual(w.byLeague.nfl, { settled: 1, open: 1, pnlCents: 20, stakeCents: 15_000 });
 
+  // the hedge-layer identity: writer P&L equals take booked, leg for leg
+  assert.deepEqual(s.identity, {
+    settled: 2,
+    writerPnlCents: 32,
+    takeBookedCents: 32,
+    gapCents: 0,
+    gapBpsOfStake: 0,
+    hedgeNetCents: 13_350 - (5426 + (5550 - 104 - 20)),
+    holderLegsNetCents: 37 * 150 - 52 * 150 - (112 + 104),
+    holds: true,
+  });
+  assert.equal(s.identity.hedgeNetCents + s.identity.holderLegsNetCents, s.identity.writerPnlCents, "the two nets add up to the writer's P&L");
+
+  // segments: the same book by route and by league, quoted EV cost and realized holder delta
+  assert.deepEqual(Object.keys(s.segments.byRoute), ["polymarket"]);
+  const pm = s.segments.byRoute.polymarket;
+  assert.equal(pm.opened, 3);
+  assert.equal(pm.settled, 2);
+  assert.equal(pm.quotedAvgEvBps, 297);
+  assert.equal(pm.stakeSettledCents, 30_000);
+  assert.equal(pm.holderDeltaCents, 7912 + (63 * 150 + 104 - 15_000));
+  assert.equal(pm.holderDeltaBpsOfStake, Math.round((pm.holderDeltaCents / 30_000) * 10_000));
+  assert.equal(pm.creditsCents, 112 + 104);
+  assert.equal(pm.takeCents, 32);
+  assert.equal(pm.writerPnlCents, 32);
+  assert.deepEqual(Object.keys(s.segments.byLeague).sort(), ["mlb", "nfl"]);
+  assert.equal(s.segments.byLeague.nfl.opened, 2);
+  assert.equal(s.segments.byLeague.nfl.settled, 1);
+  assert.equal(s.segments.byLeague.mlb.holderDeltaCents, 7912);
+
   const csv = positionsCsv(positions);
   const lines = csv.trimEnd().split("\n");
   assert.equal(lines[0], POSITIONS_CSV_COLUMNS.join(","));
@@ -137,6 +167,12 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   const html = renderShadowHtml({ atIso: "2026-09-15T00:00:00.000Z", summary: s, open: positions.filter((p) => p.status === "open"), settled: positions.filter((p) => p.status === "settled") });
   assert.ok(html.includes("The writer&#39;s book") || html.includes("The writer's book"));
   assert.ok(html.includes("$0.32"), "writer P&L shows in dollars");
+  assert.ok(html.includes("The hedge-layer identity"), "the identity leads the page");
+  assert.ok(html.includes("a gap of $0.00. The hedge layer carried no outcome risk."), "and reads the gap in one sentence");
+  assert.ok(html.includes("Where protection is cheap and where it is rich"), "EV cost by route and league");
+  assert.ok(html.includes("<td>MLB</td>") && html.includes("<td>NFL</td>"), "league rows");
+  assert.ok(html.includes("hedged cross-venue on the same game"), "route rows in public words");
+  assert.ok(!html.includes("Polymarket") && !html.includes("(Kalshi)"), "the hedge venue is not named on the public record");
   assert.ok(html.includes("2026-09-12 to 2026-09-14 UTC"), "the period line names the window");
   assert.ok(html.includes('href="/api/shadow/positions.csv"'));
 });

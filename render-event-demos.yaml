@@ -66,6 +66,18 @@ services:
         value: /var/data/event-demo-funnel.json
       - key: EVENT_X_LEDGER_PATH
         value: /var/data/cross-quotes.jsonl
+      # Ceiling on protection's cost in bps of expected value; above it the
+      # cheapest route is still rich insurance and the scan refuses honestly
+      # (protection_too_rich). 0 turns the ceiling off.
+      - key: EVENT_X_MAX_EV_COST_BPS
+        value: "300"
+      # Embed demo (/embed): host names honoured on ?brand=, comma-separated;
+      # anything else renders as "Your app". Partner console (/partner, operator
+      # token) shows the host's revenue share at this percent of the take.
+      - key: EVENT_X_BRAND_ALLOWLIST
+        value: ""
+      - key: EVENT_X_PARTNER_SHARE_PCT
+        value: "50"
 
   # Shadow run: the cross-venue router quoted continuously, every position
   # marked against official results as events settle. The persistent disk is
@@ -90,6 +102,10 @@ services:
         value: production
       - key: EVENT_SHADOW_LEDGER_PATH
         value: /var/data/event-shadow-ledger.jsonl
+      # The shadow scans with the demo's scanner, so the same EV-cost ceiling applies:
+      # rows above it are recorded as protection_too_rich refusals, not opened.
+      - key: EVENT_X_MAX_EV_COST_BPS
+        value: "300"
       # Gates the operator views: /report, /api/shadow/report, /api/shadow/hedges,
       # /api/shadow/export and the full positions CSV (?token=... or x-admin-token).
       # Fail-closed: without it those routes answer 403 and the public record stays up.
