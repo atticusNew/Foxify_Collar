@@ -234,6 +234,20 @@ test("perp shadow: one snapshot becomes one open record with every counterfactua
   assert.ok(weekly.ok && weekly.creditCents > rec.creditCents * 5, "the weekly is where the credit is real");
 
   assert.equal(rec.tenor, "daily");
+  // the floor ladder: the same collar with the floor at 5/6/7/8%, the cap re-found at each; 6% is the live shape
+  const fl = cf.floorLadder!;
+  assert.deepEqual(fl.map((r) => r.floorPct), [0.05, 0.06, 0.07, 0.08]);
+  assert.deepEqual(fl.map((r) => r.live), [false, true, false, false]);
+  const fLive = fl[1].terms;
+  assert.ok(fLive.ok && fLive.creditCents === rec.creditCents && fLive.floorStrikeCents === rec.floorStrikeCents, "the live rung is the live quote");
+  const f5 = fl[0].terms;
+  const f8 = fl[3].terms;
+  assert.ok(f5.ok && f8.ok);
+  assert.ok(f5.floorStrikeCents > fLive.floorStrikeCents && f8.floorStrikeCents < fLive.floorStrikeCents, "shallower floor sits higher, deeper lower");
+  assert.ok(fLive.creditCents > f5.creditCents, "the shallower floor costs more, so it pays less at the same cap");
+  assert.ok(f8.creditCents >= fLive.creditCents, "a deeper floor is never dearer (this fixture's wings flatten past 6%, so it ties)");
+  for (const r of fl) if (r.terms.ok) assert.equal(r.terms.capStrikeCents, rec.capStrikeCents, "on this fixture the widest paying cap is the same at every depth");
+  assert.ok(rec.capRuleApplied === "widest" && rec.capExceedProb === null, "no vols on this snapshot: the widest rule decided, no odds invented");
 
   const noWeekly = perpShadowQuote(quoteInputs("long"), snap({ weeklyExpiryMs: null }));
   assert.ok(noWeekly.type === "open" && Object.keys(noWeekly.counterfactuals!.tenors).length === 0, "no weekly listed: no tenor counterfactual, nothing invented");
@@ -627,6 +641,21 @@ test("perp shadow: the ledger replays opens, settles (on the path) and voids; th
   assert.equal(r15.okxConfirmedTouches, 2, "OKX reached the closer rungs on both paths");
   assert.ok(r15.avgHoursToTouch != null && r15.avgHoursToTouch > 0);
   assert.ok(r15.buybackCents > 0 && r40.buybackCents > 0, "every touched rung carries a buyback estimate (ATM ask at the time left; the strike moves it only marginally)");
+  assert.equal(r15.predictedExceedPct, null, "no vols in this fixture: no predicted odds");
+  assert.equal(r40.realizedExceedPct, 100, "both settled paths ended past the 3.75% cap");
+  // the floor ladder, one row per depth, the live 6% flagged, settled on the same paths
+  assert.deepEqual(cf.floorLadder.map((r) => r.floorPct), [0.05, 0.06, 0.07, 0.08]);
+  const f6 = cf.floorLadder[1];
+  assert.equal(f6.livePicks, 3);
+  assert.equal(f6.creditCents, cf.baseline.creditCents, "the live depth's book equals the baseline");
+  assert.equal(f6.settled, 2);
+  assert.ok(f6.avgCapPct != null && Math.abs(f6.avgCapPct - 0.0375) < 1e-6);
+  const f8 = cf.floorLadder[3];
+  assert.equal(f8.livePicks, 0);
+  assert.equal(f8.quoted, 3);
+  assert.ok(f8.creditBpsOfNotional! >= f6.creditBpsOfNotional!, "the deeper floor is never dearer per dollar protected");
+  assert.ok(cf.floorLadder[0].creditBpsOfNotional! < f6.creditBpsOfNotional!, "the 5% floor pays less");
+  assert.equal(f8.settled, 2, "and is settled on the same two paths");
   // the funding rule: at 0.125 bps/8h over 33h the cycle costs 12¢ on a long (a short receives it)
   assert.deepEqual(cf.fundingRule, { judged: 3, wouldRefuse: 0, creditCents: s.creditCents, fundingCents: a.fundingCycleCents! + c.fundingCycleCents! });
   assert.equal(cf.feeRules.share_only.quoted + cf.feeRules.share_only.refused, 3);
