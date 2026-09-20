@@ -77,6 +77,7 @@
     "falconx:readiness": "tsx scripts/creditCollarFalconxReadiness.ts",
     "live:canary": "tsx scripts/creditCollarLiveCanary.ts",
     "live:unwind": "tsx scripts/creditCollarLiveUnwind.ts",
+    "ep:rehearsal": "tsx scripts/epRehearsal.ts",
     "deribit:dry-run": "tsx scripts/creditCollarDeribitDryRun.ts",
     "deribit:auth-probe": "tsx scripts/creditCollarDeribitAuthProbe.ts",
     "deribit:margin-sweep": "tsx scripts/creditCollarDeribitMarginSweep.ts",
