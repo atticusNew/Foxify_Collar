@@ -226,7 +226,7 @@ const handleCallback = async (chats: ChatStore, cb: { id: string; data?: string;
           "🛡 <b>Protection live</b>",
           "",
           `${weekly ? "This week's" : "Today's"} credit: <b>$${q?.creditUsdc ?? "?"}</b> — unlocks through the ${weekly ? "week" : "day"}, pays at the cycle's close`,
-          `Hard floor: <b>$${(q?.floorStrike ?? 0).toLocaleString("en-US")}</b> · Cap: <b>$${(q?.capStrike ?? 0).toLocaleString("en-US")}</b> (gains above it this ${weekly ? "week" : "day"} pay for the floor — release it any time in the app at the live price and keep every gain)`,
+          `Hard floor: <b>$${(q?.floorStrike ?? 0).toLocaleString("en-US")}</b> · Cap: <b>$${(q?.capStrike ?? 0).toLocaleString("en-US")}</b> (every gain up to it this ${weekly ? "week" : "day"} is yours; gains above it pay for the floor)`,
           "",
           `<i>Re-arms every ${weekly ? "week" : "day"} while the toggle stays on.</i>`
         ].join("\n")

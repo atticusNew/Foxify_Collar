@@ -16,7 +16,7 @@ One toggle on your Hyperliquid position → a hard floor underneath it → and t
 
 Read-only. No deposit. No keys. Ten seconds.
 
-**3/** The honest part: the cap is what pays for the floor. Gains above it during the cycle are netted against your credit at the close. Don't want to give them up? Tap "Release upside" any time — the app shows you the live price of buying the cap back, in dollars, and you keep the whole rally. Your call, priced in front of you.
+**3/** The honest part: the cap is what pays for the floor. Every gain up to it this week is yours; gains above it are netted against your credit at the close. Nothing to manage: it renews while the toggle is on, and turning it off closes at the live market with the credit unlocked so far.
 
 The floor stays either way. No hidden fee, no manufactured yield.
 
