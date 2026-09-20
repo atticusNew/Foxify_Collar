@@ -368,6 +368,34 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
     ruleTr("live book", `${cf.baseline.quoted ? `next ${liveTenor}` : ""}`, cf.baseline, { base: true, plain }),
     ...tenorLabels.map((l) => ruleTr(`${l}${cf.tenors[l].avgDays != null ? ` · ${cf.tenors[l].avgDays}d` : ""}`, "", cf.tenors[l], { plain })),
   ].join("");
+  const floorRows = (cf.floorLadder ?? [])
+    .map((r) => {
+      const capCell = plain
+        ? `${r.capHits}${r.capExcessCents ? ` <i style="color:var(--faint);font-style:normal">${usd(r.capExcessCents)} back</i>` : ""}`
+        : `${r.knockouts}${r.knockoutRatePct != null ? ` <i style="color:var(--faint);font-style:normal">${r.knockoutRatePct}%</i>` : ""}`;
+      return (
+        `<tr${r.livePicks > 0 ? ' class="base"' : ""}>` +
+        `<td>${(r.floorPct * 100).toFixed(0)}%${r.livePicks > 0 ? ' <span class="tag">live</span>' : ""}</td>` +
+        `<td>${r.quoted}</td><td>${r.refused}</td>` +
+        `<td>${r.avgCapPct == null ? "–" : `${(r.avgCapPct * 100).toFixed(1)}%`}</td>` +
+        `<td>${r.predictedExceedPct == null ? "–" : `${r.predictedExceedPct}%`}</td>` +
+        `<td class="hi">${escapeHtml(bpsPct(r.creditBpsOfNotional))}</td><td>${usd(r.creditCents)}</td>` +
+        `<td>${r.settled}</td><td>${r.floorSaves}</td><td>${capCell}</td>` +
+        `<td>${r.settled ? signedUsd(r.holderDeltaCents) : "–"}</td>` +
+        `</tr>`
+      );
+    })
+    .join("");
+  const floorLive = (cf.floorLadder ?? []).find((r) => r.livePicks > 0 && r.quoted > 0);
+  const floorBest = (cf.floorLadder ?? []).filter((r) => r.quoted > 0).sort((a, b) => (b.creditBpsOfNotional ?? -1) - (a.creditBpsOfNotional ?? -1))[0];
+  const floorLine =
+    floorLive && floorBest
+      ? floorBest.floorPct === floorLive.floorPct
+        ? `The live ${(floorLive.floorPct * 100).toFixed(0)}% floor pays the most cash per dollar protected of the depths tried (${bpsPct(floorLive.creditBpsOfNotional)}).`
+        : `A ${(floorBest.floorPct * 100).toFixed(0)}% floor pays ${bpsPct(floorBest.creditBpsOfNotional)} of notional against ${bpsPct(floorLive.creditBpsOfNotional)} at the live ${(floorLive.floorPct * 100).toFixed(0)}%${
+            floorBest.avgCapPct != null && floorLive.avgCapPct != null ? `, with the cap at ${(floorBest.avgCapPct * 100).toFixed(1)}% against ${(floorLive.avgCapPct * 100).toFixed(1)}%` : ""
+          }. A deeper floor is cheaper, so the cap rule can spend the difference on credit; whether it is worth the extra downside is the holder column once enough cycles have settled.`
+      : "";
   const weeklyBook = liveTenor === "weekly" ? cf.baseline : cf.tenors.weekly;
   const dailyBook = liveTenor === "daily" ? cf.baseline : cf.tenors.daily;
   const tenorLine =
@@ -464,6 +492,20 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
     <div class="row"><span>same funding strike</span><b>${ss.opens ? `${ss.sharedSellStrike} of ${ss.opens}` : "–"} <i>already open on the book</i></b></div>
     <div class="read">${escapeHtml(fundingLine)}${sameLine ? ` ${escapeHtml(sameLine)}` : ""}</div>
   </div>
+
+  ${
+    floorRows
+      ? `<div class="card">
+    <h2>Floor depth</h2>
+    <div class="sub" style="margin-bottom:6px">The collar re-quoted with the floor at each depth, the cap re-found by the live cap rule at each, same size, expiry and instant; settled on the same path. Deeper floors are cheaper, so they buy a closer cap or more cash — the trade is downside kept against cash paid.</div>
+    <div class="tablewrap"><table>
+      <tr><th>floor</th><th>quoted</th><th>refused</th><th>cap found</th><th>market odds past cap</th><th>cash / notional</th><th>cash</th><th>settled</th><th>floor used</th><th>${plain ? "past the cap" : "knock-outs"}</th><th>holder Δ</th></tr>
+      ${floorRows}
+    </table></div>
+    ${floorLine ? `<div class="read">${escapeHtml(floorLine)}</div>` : ""}
+  </div>`
+      : ""
+  }
 
   <div class="card">
     <h2>Fee rule</h2>

@@ -13,6 +13,7 @@ import type {
   PerpAltTerms,
   PerpCapRung,
   PerpFeeRuleAlt,
+  PerpFloorRung,
   PerpShadowCounterfactuals,
   PerpShadowOpenRecord,
   PerpShadowRefusalRecord,
@@ -96,9 +97,13 @@ const altFrom = (q: SnapshotQuote, cfg: PerpTakeConfig): PerpAlt => {
     takeRule: split.takeRule,
     creditCents: split.creditCents,
     midCreditCents: q.midCreditUsdc == null ? null : cents(q.midCreditUsdc),
+    capExceedProb: q.capExceedProb,
     levelsUsed: q.levelsUsed,
   };
 };
+
+/** Floor depths the shadow re-quotes at (the live 6% among them). */
+export const FLOOR_LADDER_PCTS = [0.05, 0.06, 0.07, 0.08] as const;
 
 export const SIZE_LADDER_MULTS = [1, 10, 50] as const;
 
@@ -211,7 +216,16 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
     tenors[alt] = terms.ok ? { ...terms, expiryIso: new Date(altExpiryMs).toISOString() } : terms;
   }
 
-  const counterfactuals: PerpShadowCounterfactuals = { version: 2, capLadder, feeRules, sizeLadder, tenors };
+  // Floor depth: the collar re-quoted with the floor at each depth (the cap re-found by the live
+  // rule at each), same expiry and instant. Deeper floors are cheaper, so the cap can sit closer
+  // for the same credit or pay more at the same cap — measured per depth, settled on the same path.
+  const floorLadder: PerpFloorRung[] = FLOOR_LADDER_PCTS.map((floorPct) => {
+    const isLive = Math.abs(floorPct - inputs.geometry.floorPct) < 1e-9;
+    const q = isLive ? live : quoteCollarFromSnapshot({ ...base, geometry: { ...inputs.geometry, floorPct }, mode: "top" }, snap);
+    return { floorPct, live: isLive, terms: isLive ? liveAlt : altFrom(q, inputs.take) };
+  });
+
+  const counterfactuals: PerpShadowCounterfactuals = { version: 2, capLadder, feeRules, sizeLadder, tenors, floorLadder };
   const basisBps = inputs.okxIndex != null && inputs.okxIndex > 0 ? +(((inputs.spot - inputs.okxIndex) / inputs.okxIndex) * 10000).toFixed(1) : null;
   const nowMs = Date.parse(inputs.nowIso);
   const periods8h = Math.max(0, live.expiryMs - nowMs) / (8 * 3_600_000);

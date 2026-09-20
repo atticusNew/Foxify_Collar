@@ -44,6 +44,8 @@ export interface PerpAltTerms {
   creditCents: number;
   midCreditCents: number | null;
   levelsUsed: { buy: number; sell: number };
+  /** market-implied odds of finishing past this cap at open; absent on records before the cap rule */
+  capExceedProb?: number | null;
 }
 export interface PerpAltRefusal {
   ok: false;
@@ -89,12 +91,27 @@ export interface PerpCapRung {
   terms: PerpAlt;
 }
 
+/**
+ * One rung of the floor ladder: the collar re-quoted with the floor at this depth (the cap found
+ * by the live cap rule at each), same size, expiry and instant. Settled on the same path, so
+ * each depth shows what it paid, how often it was needed and what the holder netted.
+ */
+export interface PerpFloorRung {
+  /** floor depth from spot, fraction (the target; the listed strike is the nearest at or beyond it) */
+  floorPct: number;
+  /** the live geometry's floor */
+  live: boolean;
+  terms: PerpAlt;
+}
+
 export interface PerpShadowCounterfactuals {
   version: 2;
   capLadder: PerpCapRung[];
   feeRules: Record<string, PerpFeeRuleAlt>;
   sizeLadder: PerpSizeProbe[];
   tenors: Record<string, PerpTenorAlt>;
+  /** absent on records before the floor ladder (2026-09-20) */
+  floorLadder?: PerpFloorRung[];
 }
 
 /** The ATM ask seen at open: the knock-out buyback is estimated from the nearest scan's. */
@@ -642,12 +659,25 @@ export interface PerpCapRungBook extends PerpRuleBook {
   realizedExceedPct: number | null;
 }
 
+export interface PerpFloorRungBook extends PerpRuleBook {
+  /** floor depth, fraction */
+  floorPct: number;
+  /** how many of its quotes were the live geometry */
+  livePicks: number;
+  /** the mean cap distance the cap rule found at this floor, fraction (null when nothing paid) */
+  avgCapPct: number | null;
+  /** mean market-implied odds of finishing past that cap, % (null when no vol was readable) */
+  predictedExceedPct: number | null;
+}
+
 export interface PerpCounterfactualSummary {
   positionsWithCounterfactuals: number;
   recordedSince: string | null;
   baseline: PerpRuleBook;
   /** every listed cap distance, floor held fixed, settled on the same path */
   capLadder: PerpCapRungBook[];
+  /** the floor at each depth, the cap re-found by the live rule, settled on the same path */
+  floorLadder: PerpFloorRungBook[];
   feeRules: Record<string, PerpRuleBook>;
   /** the live geometry re-quoted at larger sizes, walked down the depth */
   capacity: Array<PerpRuleBook & { mult: number; contracts: number; avgSpreadCostBps: number | null }>;
@@ -664,6 +694,7 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
   const feeRules: Record<string, BookAcc> = {};
   const tenors = new Map<string, BookAcc & { dayNum: number; dayDen: number }>();
   const capacity = new Map<number, BookAcc & { mult: number; contracts: number; spreadNum: number; spreadDen: number }>();
+  const floors = new Map<string, BookAcc & { floorPct: number; livePicks: number; capPctSum: number; capN: number; probSum: number; probN: number }>();
   const fundingRule = { judged: 0, wouldRefuse: 0, creditCents: 0, fundingCents: 0 };
   for (const p of withCf) {
     const cf = p.counterfactuals!;
@@ -699,6 +730,23 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
         }
       }
       rungs.set(key, row);
+    }
+    for (const rung of cf.floorLadder ?? []) {
+      const key = rung.floorPct.toFixed(4);
+      const row = floors.get(key) ?? { ...newAcc(), floorPct: rung.floorPct, livePicks: 0, capPctSum: 0, capN: 0, probSum: 0, probN: 0 };
+      if (rung.live) row.livePicks += 1;
+      if (!rung.terms.ok) row.refused += 1;
+      else {
+        bookQuote(row, p.notionalCents, rung.terms);
+        row.capPctSum += rung.terms.capPct;
+        row.capN += 1;
+        if (rung.terms.capExceedProb != null) {
+          row.probSum += rung.terms.capExceedProb;
+          row.probN += 1;
+        }
+        if (settled) bookSettle(row, altOutcome(p, rung.terms, p.settleCents!, positions, capMode), openMs);
+      }
+      floors.set(key, row);
     }
     for (const [label, fr] of Object.entries(cf.feeRules)) {
       feeRules[label] ??= newAcc();
@@ -759,6 +807,15 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
         realizedExceedPct: row.settled > 0 ? +((row.capHits / row.settled) * 100).toFixed(1) : null,
       }))
       .sort((a, b) => a.capPct - b.capPct),
+    floorLadder: [...floors.values()]
+      .map(({ floorPct, livePicks, capPctSum, capN, probSum, probN, ...row }) => ({
+        ...finishBook(row),
+        floorPct,
+        livePicks,
+        avgCapPct: capN > 0 ? +(capPctSum / capN).toFixed(4) : null,
+        predictedExceedPct: probN > 0 ? +((probSum / probN) * 100).toFixed(1) : null,
+      }))
+      .sort((a, b) => a.floorPct - b.floorPct),
     feeRules: Object.fromEntries(Object.entries(feeRules).map(([k, v]) => [k, finishBook(v)])),
     tenors: Object.fromEntries(
       [...tenors.entries()].map(([k, { dayNum, dayDen, ...row }]) => [k, { ...finishBook(row), avgDays: dayDen > 0 ? +(dayNum / dayDen).toFixed(1) : null }]),
