@@ -296,12 +296,13 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       $('refreshed').textContent=age<2?'quotes refreshed just now':'quotes refreshed '+age+'s ago';
     }
   }
+  /* A weekday alone reads as "this Sunday"; past 24h out the date rides along so next week's game is never mistaken for today's. */
   function fmtEt(iso){
     try{
-      var dt=new Date(iso);
-      var day=dt.toLocaleDateString('en-US',{weekday:'short',timeZone:'America/New_York'});
+      var dt=new Date(iso),far=dt.getTime()-Date.now()>86400000;
+      var day=dt.toLocaleDateString('en-US',far?{weekday:'short',month:'short',day:'numeric',timeZone:'America/New_York'}:{weekday:'short',timeZone:'America/New_York'}).replace(',','');
       var tm=dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','');
-      return day+' '+tm+' ET';
+      return day+(far?' · ':' ')+tm+' ET';
     }catch(e){return 'game time'}
   }
 
@@ -771,7 +772,7 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
     <div class="sub">Counters live at <span class="mono">${escapeHtml(meta.funnelPath)}</span> on this instance and are flushed once a minute. Without a persistent disk a redeploy starts a fresh window.</div>
     <div class="actions">
       <a href="/api/admin/funnel${escapeHtml(tokenQs)}">raw JSON</a>
-      <a href="/">live board</a>
+      <a href="/board">live board</a>
       <a href="/receipts">receipts</a>
       <button type="button" class="danger" id="reset">reset counters</button>
     </div>
@@ -891,7 +892,7 @@ footer b{color:var(--dim);font-weight:600}
   <div class="card">
     <h2>Honesty notes</h2>
     <div class="sub">${windowLine} The ledger lives on this instance's disk, so a redeploy starts a fresh window. Positions are simulated; every quote and refusal in these numbers came from live market prices at the moment it was made.</div>
-    <a class="back" href="/">back to the live board</a>
+    <a class="back" href="/board">back to the live board</a>
   </div>
   <footer>
     <b>Demonstration, not an offer.</b> Aggregates cover simulated protection quotes priced from live public market data. Nothing here is investment advice. <a href="${shadowUrl()}">See the shadow record</a>.

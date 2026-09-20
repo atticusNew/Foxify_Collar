@@ -14,7 +14,7 @@ import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 
 /** Public URL of the interactive demo, for the cross-link. */
 function demoUrl(): string {
-  return process.env.EVENT_SHADOW_DEMO_URL || "https://event.earnandprotect.xyz";
+  return process.env.EVENT_SHADOW_DEMO_URL || "https://event.earnandprotect.xyz/board";
 }
 
 function escapeHtml(s: string): string {

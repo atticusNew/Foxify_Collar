@@ -222,12 +222,12 @@ test("demo service: page loads count, beacons record, admin funnel is gated and 
     });
   try {
     // reach: the board page and the receipts page are counted when served
-    assert.equal((await fetch(`${base}/`)).status, 200);
-    assert.equal((await fetch(`${base}/`)).status, 200);
+    assert.equal((await fetch(`${base}/board`)).status, 200);
+    assert.equal((await fetch(`${base}/board`)).status, 200);
     assert.equal((await fetch(`${base}/receipts`)).status, 200);
 
     // the page carries the beacon and fires it on the one-tap interactions
-    const html = await (await fetch(`${base}/`)).text();
+    const html = await (await fetch(`${base}/board`)).text();
     assert.ok(html.includes("'/api/metrics'"), "page posts beacons to /api/metrics");
     assert.ok(html.includes("track('protect_on'"), "Protect toggle is tracked");
     assert.ok(html.includes("track('row_tap'"), "board taps are tracked");

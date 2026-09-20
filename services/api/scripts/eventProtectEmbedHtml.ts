@@ -34,16 +34,20 @@ export interface EmbedOptions {
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** Resolve `?brand=` against the allowlist; anything else is "Your app". */
-export function resolveBrand(requested: string | null | undefined, allowlist: string | undefined): string {
+/**
+ * Resolve `?brand=` against the allowlist; anything else is the default brand (EVENT_X_EMBED_BRAND,
+ * else "Your app"). The default is what the first screen says when a visitor arrives with no link.
+ */
+export function resolveBrand(requested: string | null | undefined, allowlist: string | undefined, fallback = "Your app"): string {
+  const dflt = (fallback ?? "").trim() || "Your app";
   const want = (requested ?? "").trim();
-  if (!want) return "Your app";
+  if (!want) return dflt;
   const allowed = (allowlist ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
   const hit = allowed.find((a) => a.toLowerCase() === want.toLowerCase());
-  return hit ?? "Your app";
+  return hit ?? dflt;
 }
 
 export function renderEventEmbedHtml(opts: EmbedOptions): string {
@@ -147,7 +151,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   </div>
   <div class="tabs"><span class="on">Positions</span><span>Markets</span><span>Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
-  <div class="host-note">This is the host's app, not ours; the green button and the sheet are the integration. Simulated positions at live prices; nothing is bought. <a href="/">The board</a> · <a href="/receipts">Receipts</a></div>
+  <div class="host-note">This is the host's app, not ours; the green button and the sheet are the integration. Simulated positions at live prices; nothing is bought. <a href="/board">The board</a> · <a href="/receipts">Receipts</a></div>
 </div>
 <div class="scrim" id="scrim"></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-h">
@@ -180,12 +184,13 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
   function el(id){return document.getElementById(id)}
+  /* A weekday alone reads as "this Sunday"; past 24h out the date rides along so next week's game is never mistaken for today's. */
   function fmtEt(iso){
     try{
-      var dt=new Date(iso);
-      var day=dt.toLocaleDateString('en-US',{weekday:'short',timeZone:'America/New_York'});
+      var dt=new Date(iso),far=dt.getTime()-Date.now()>86400000;
+      var day=dt.toLocaleDateString('en-US',far?{weekday:'short',month:'short',day:'numeric',timeZone:'America/New_York'}:{weekday:'short',timeZone:'America/New_York'}).replace(',','');
       var tm=dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','');
-      return day+' '+tm+' ET';
+      return day+(far?' · ':' ')+tm+' ET';
     }catch(e){return ''}
   }
   function contractsWord(n){return (Math.abs(n-Math.round(n))<1e-9?String(Math.round(n)):n.toFixed(1))}

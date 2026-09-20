@@ -16,6 +16,7 @@ process.env.EVENT_X_LEDGER_PATH = join(TMP_DIR, "ledger.jsonl");
 process.env.EVENT_X_ADMIN_TOKEN = "t0ken";
 process.env.EVENT_X_BRAND_ALLOWLIST = "ProphetX, Novig";
 process.env.EVENT_X_PARTNER_SHARE_PCT = "40";
+process.env.EVENT_X_EMBED_BRAND = "Demo Exchange";
 
 test("embed: the brand is honoured only from the allowlist, case-insensitively, else 'Your app'", () => {
   assert.equal(resolveBrand("ProphetX", "ProphetX, Novig"), "ProphetX");
@@ -25,6 +26,10 @@ test("embed: the brand is honoured only from the allowlist, case-insensitively, 
   assert.equal(resolveBrand("ProphetX", undefined), "Your app", "no allowlist: fail closed");
   assert.equal(resolveBrand(null, "ProphetX"), "Your app");
   assert.equal(resolveBrand("  ", "ProphetX"), "Your app");
+  assert.equal(resolveBrand(null, "ProphetX", "Demo Exchange"), "Demo Exchange", "the configured default names the cold first screen");
+  assert.equal(resolveBrand("Kalshi", "ProphetX", "Demo Exchange"), "Demo Exchange", "and is what an off-list name falls back to");
+  assert.equal(resolveBrand("prophetx", "ProphetX", "Demo Exchange"), "ProphetX", "an allowlisted name still wins");
+  assert.equal(resolveBrand(null, "ProphetX", "  "), "Your app", "a blank default is not a brand");
 });
 
 test("embed: the host shell is theirs, the button and the sheet are ours; positions reshape to fewer contracts plus cash", () => {
@@ -47,6 +52,8 @@ test("embed: the host shell is theirs, the button and the sheet are ours; positi
   assert.ok(html.includes("The credit you see is the credit you get."), "the fee is explained as netted, once");
   assert.ok(html.includes("Nothing to manage. It settles with your position."), "passive after the tap");
   assert.ok(html.includes("Simulated positions at live prices; nothing is bought."), "honesty line on the shell");
+  assert.ok(html.includes('<a href="/board">The board</a>'), "the board moved to /board; the shell links it");
+  assert.ok(html.includes("far=dt.getTime()-Date.now()>86400000") && html.includes("month:'short',day:'numeric'"), "past 24h out the row shows the date, so next Sunday's game never reads as today's");
   for (const leak of ["Kalshi", "Polymarket", "hedge", "route", "take", "instId", "OKX"]) {
     assert.ok(!new RegExp(`\\b${leak}\\b`).test(html.replace(/protection by/g, "")), `"${leak}" is not on the embedded page`);
   }
@@ -114,7 +121,7 @@ test("embed: the partner console reads the ledger and funnel in the host's words
   assert.ok(!html.includes("—"), "no em dash");
 });
 
-test("embed: /embed is public and brand-gated; /partner needs the operator token; board rows carry the position behind them", async () => {
+test("embed: / is the embed shell (also /embed), /board is the board; brand-gated; /partner needs the operator token", async () => {
   const { server, primeScanForTests } = await import("../scripts/eventProtectXDemoService");
   primeScanForTests({ atIso: "2026-09-20T18:00:00.000Z", rows: [], fallback: null, fetchFailures: 0 });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
@@ -127,7 +134,14 @@ test("embed: /embed is public and brand-gated; /partner needs the operator token
     assert.ok(html.includes("<title>Novig · Positions</title>"), "allowlisted brand, canonical casing");
     assert.ok(html.includes("--bg:#0f1115"), "dark skin");
     const other = await (await fetch(`${base}/embed?brand=Kalshi`)).text();
-    assert.ok(other.includes("<title>Your app · Positions</title>"), "a name off the list falls back");
+    assert.ok(other.includes("<title>Demo Exchange · Positions</title>"), "a name off the list falls back to EVENT_X_EMBED_BRAND");
+
+    // the front door is the embed shell; the board has its own address
+    const root = await (await fetch(`${base}/`)).text();
+    assert.ok(root.includes("<title>Demo Exchange · Positions</title>") && root.includes('id="sheet"'), "/ serves the embed shell with the default brand");
+    const board = await (await fetch(`${base}/board`)).text();
+    assert.ok(board.includes('id="toggle"') && board.includes("Best protection right now"), "/board serves the board");
+    assert.ok(!root.includes("Best protection right now"), "the shell is not the board");
 
     assert.equal((await fetch(`${base}/partner`)).status, 403, "the console names our take: operator only");
     assert.equal((await fetch(`${base}/partner?token=nope`)).status, 403);
@@ -144,7 +158,9 @@ test("embed: /embed is public and brand-gated; /partner needs the operator token
 
     const funnel = (await (await fetch(`${base}/api/admin/funnel?token=t0ken`)).json()) as { funnel: { pageLoads7d: Array<{ byPage: Record<string, number> }> } };
     const embedLoads = funnel.funnel.pageLoads7d.reduce((n, d) => n + (d.byPage.embed ?? 0), 0);
-    assert.equal(embedLoads, 2, "both /embed loads counted under their own page");
+    const boardLoads = funnel.funnel.pageLoads7d.reduce((n, d) => n + (d.byPage.app ?? 0), 0);
+    assert.equal(embedLoads, 3, "/embed twice and / once count as embed loads");
+    assert.equal(boardLoads, 1, "/board counts as a board load");
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
