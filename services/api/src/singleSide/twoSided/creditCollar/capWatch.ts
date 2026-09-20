@@ -1,28 +1,25 @@
 /**
- * CAP WATCH — the lock-line watcher, repurposed for the knock-out collar.
+ * CAP WATCH — the lock-line watcher, repurposed for the collar's cap leg.
  *
- * `lockPolicy.ts` asked "MAY we unwind at a touch?" — for this product the answer is fixed: a
- * cap touch ALWAYS ends the cycle (both legs close, protection re-arms, the trader keeps every
- * gain). What is left to decide is what a touch would COST us right now, and how to make the
- * buy-back cheap when it comes. Two jobs, both pure here, wired by the demo service's monitor:
+ * `lockPolicy.ts` asked "MAY we unwind at a touch?". The plain collar (the product since
+ * 2026-09-20) holds both legs to expiry, so nothing is unwound at a touch; what is left to know is
+ * what the sold cap leg is WORTH right now — that is the holder's release price and, in knockout
+ * mode (kept for comparison), the writer's buy-back. One pure job, wired by the demo service's
+ * monitor:
  *
- *  1. HEADROOM, per active wrap, every monitor tick.
- *       headroom = (unvested credit + our take + floor-leg recovery) − buy-back of the sold cap leg
- *     where the buy-back is priced as if the mark were AT the cap right now: the at-the-money time
- *     value of the sold leg at its OKX mark vol for the time left, plus the half-spread we would
- *     pay to lift the ask. Positive: a knock-out now is paid for by credit the trader has not yet
- *     earned. Negative: the shortfall is the writer's cost — booked as a MARGIN RESERVE, summed
- *     across the book, and paged past an alert line. When no vol is readable the leg's live ask
- *     stands in (a floor on the true cost while the leg is out of the money).
+ *  HEADROOM, per active wrap, every monitor tick.
+ *      headroom = (unvested credit + our take + floor-leg recovery) − buy-back of the sold cap leg
+ *    where the buy-back is priced as if the mark were AT the cap right now: the at-the-money time
+ *    value of the sold leg at its OKX mark vol for the time left, plus the half-spread we would
+ *    pay to lift the ask. When no vol is readable the leg's live ask stands in (a floor on the
+ *    true cost while the leg is out of the money). Negative headroom is booked as a reserve and
+ *    summed across the book; in knockout mode it pages past an alert line. In plain mode it is
+ *    observability: the release quote and the book's mark-to-market.
  *
- *  2. PRE-TOUCH WORKING ORDER (flag-guarded, EP_PRETOUCH_WORKING_ORDER=1, okx lanes only).
- *     When the Hyperliquid mark comes within `nearBps` of the cap, a passive LIMIT BUY on the sold
- *     leg is rested at the OKX book's mid (never crossing the ask), so that if the touch comes the
- *     buy-back is done at mid instead of at the ask on an IOC. If the mark recedes past
- *     `recallBps` the order is cancelled; if the mid moves it is re-priced; at the touch whatever
- *     did not fill goes through the existing IOC unwind (which reads venue positions first, so a
- *     pre-touch fill is never bought twice). Trigger on the product's clock (HL mark), price on
- *     the hedge venue's clock (OKX book).
+ *  RETIRED (2026-09-20, item 6): the pre-touch working order (a passive post-only buy on the sold
+ *  leg rested near the cap so a knockout buy-back filled at mid). It existed to make the WRITER's
+ *  knockout cheap; the plain collar buys nothing back unless the holder releases, and a release is
+ *  priced at the ask the holder sees. Nothing rests on the venue any more.
  */
 
 import { bsCall, bsPut } from "../../../pilot/blackScholes";
@@ -31,17 +28,9 @@ import type { PerpSide } from "./creditCollarPricer";
 const YEAR_MS = 365.25 * 24 * 3_600_000;
 const round2 = (x: number): number => +x.toFixed(2);
 
-// OKX BTC option tick (BTC per BTC of underlying); off-tick prices are rejected outright.
-export const OKX_OPTION_TICK_BTC = 0.0001;
-export const floorTick = (px: number): number => Math.max(OKX_OPTION_TICK_BTC, +(Math.floor(px / OKX_OPTION_TICK_BTC + 1e-9) * OKX_OPTION_TICK_BTC).toFixed(8));
-
 export type CapWatchConfig = {
-  /** Distance to the cap (bps of mark) under which the wrap is "near" and a working order may rest. Default 35. */
+  /** Distance to the cap (bps of mark) under which the wrap is "near" (the state the app and alerts read). Default 35. */
   nearBps: number;
-  /** Distance past which a resting order is recalled. Must exceed nearBps (hysteresis). Default 60. */
-  recallBps: number;
-  /** Re-price the resting order when the book's mid has moved by at least this many ticks. Default 2. */
-  repriceTicks: number;
   /** Half-spread assumed on the buy-back, as a fraction of the leg's model value. Default 0.05. */
   spreadRelPct: number;
   /** Absolute half-spread floor on the buy-back, USDC. Default 1. */
@@ -54,18 +43,13 @@ export type CapWatchConfig = {
    * wrap are judged by the same rule.
    */
   reserveAlertBps: number;
-  /** Rest pre-touch working orders at all (okx lanes only; paper never places anything). */
-  workingOrders: boolean;
 };
 
 export const DEFAULT_CAP_WATCH: CapWatchConfig = {
   nearBps: 35,
-  recallBps: 60,
-  repriceTicks: 2,
   spreadRelPct: 0.05,
   minSpreadUsdc: 1,
   reserveAlertBps: 300,
-  workingOrders: false,
 };
 
 const numEnv = (v: string | undefined, d: number): number => {
@@ -73,18 +57,12 @@ const numEnv = (v: string | undefined, d: number): number => {
   return Number.isFinite(n) && n >= 0 ? n : d;
 };
 
-/** EP_PRETOUCH_NEAR_BPS / EP_PRETOUCH_RECALL_BPS / EP_HEADROOM_ALERT_BPS / EP_PRETOUCH_WORKING_ORDER. Junk keeps the default; recall never sits inside near. */
-export const capWatchConfigFromEnv = (env: NodeJS.ProcessEnv): CapWatchConfig => {
-  const nearBps = numEnv(env.EP_PRETOUCH_NEAR_BPS, DEFAULT_CAP_WATCH.nearBps);
-  const recallRaw = numEnv(env.EP_PRETOUCH_RECALL_BPS, DEFAULT_CAP_WATCH.recallBps);
-  return {
-    ...DEFAULT_CAP_WATCH,
-    nearBps,
-    recallBps: Math.max(recallRaw, nearBps + 5),
-    reserveAlertBps: numEnv(env.EP_HEADROOM_ALERT_BPS, DEFAULT_CAP_WATCH.reserveAlertBps),
-    workingOrders: /^(1|true|on|yes)$/i.test(env.EP_PRETOUCH_WORKING_ORDER ?? ""),
-  };
-};
+/** EP_CAP_NEAR_BPS (EP_PRETOUCH_NEAR_BPS still read) / EP_HEADROOM_ALERT_BPS. Junk keeps the default. EP_PRETOUCH_WORKING_ORDER is retired and ignored. */
+export const capWatchConfigFromEnv = (env: NodeJS.ProcessEnv): CapWatchConfig => ({
+  ...DEFAULT_CAP_WATCH,
+  nearBps: numEnv(env.EP_CAP_NEAR_BPS ?? env.EP_PRETOUCH_NEAR_BPS, DEFAULT_CAP_WATCH.nearBps),
+  reserveAlertBps: numEnv(env.EP_HEADROOM_ALERT_BPS, DEFAULT_CAP_WATCH.reserveAlertBps),
+});
 
 /** The reserve line for one wrap in dollars: the configured bps of its wrapped notional. */
 export const reserveAlertUsdcFor = (cfg: CapWatchConfig, notionalUsdc: number): number =>
@@ -195,63 +173,6 @@ export const capHeadroom = (input: HeadroomInput, cfg: Pick<CapWatchConfig, "nea
 
 // ── Pre-touch working order ─────────────────────────────────────────────────
 
-export type WorkingOrder = {
-  instId: string;
-  ordId: string;
-  pxBtc: number;
-  contracts: number;
-  restedAtMs: number;
-  /** Fills seen so far on this resting order (venue truth, refreshed each tick). */
-  filledContracts: number;
-  avgPxBtc: number | null;
-};
-
-export type WorkingOrderAction =
-  | { kind: "none"; reason: string }
-  | { kind: "hold"; reason: string }
-  | { kind: "rest"; pxBtc: number; reason: string }
-  | { kind: "replace"; pxBtc: number; reason: string }
-  | { kind: "cancel"; reason: string };
-
-/** The passive price for a buy: the book's mid floored to a tick, never at or above the ask. */
-export const passiveBuyPxBtc = (book: { bidBtc: number | null; askBtc: number | null }): number | null => {
-  if (book.askBtc == null || !(book.askBtc > 0)) return null;
-  const ask = book.askBtc;
-  const belowAsk = floorTick(ask - OKX_OPTION_TICK_BTC);
-  if (book.bidBtc == null || !(book.bidBtc > 0) || book.bidBtc >= ask) return belowAsk;
-  const mid = floorTick((book.bidBtc + ask) / 2);
-  return Math.min(mid, belowAsk);
-};
-
-/**
- * What to do with the working order this tick. Pure: state, book and the resting order in, one
- * action out. `touched` always cancels (the IOC unwind takes over on venue truth); `calm` past the
- * recall line cancels; `near` rests at the passive price, or re-prices when the mid has walked.
- */
-export const workingOrderAction = (
-  headroom: Pick<CapHeadroom, "state" | "distanceBps">,
-  order: WorkingOrder | null,
-  book: { bidBtc: number | null; askBtc: number | null } | null,
-  cfg: Pick<CapWatchConfig, "workingOrders" | "recallBps" | "repriceTicks">,
-): WorkingOrderAction => {
-  if (!cfg.workingOrders) return order ? { kind: "cancel", reason: "working orders disabled" } : { kind: "none", reason: "working orders disabled" };
-  if (headroom.state === "touched") return order ? { kind: "cancel", reason: "cap touched — the IOC unwind takes over" } : { kind: "none", reason: "cap touched" };
-  if (headroom.state === "calm") {
-    if (order && headroom.distanceBps > cfg.recallBps) return { kind: "cancel", reason: `mark receded to ${headroom.distanceBps} bps, past the ${cfg.recallBps} bps recall line` };
-    return order ? { kind: "hold", reason: "inside the recall band" } : { kind: "none", reason: "calm" };
-  }
-  // near
-  const px = book ? passiveBuyPxBtc(book) : null;
-  if (!order) {
-    if (px == null) return { kind: "none", reason: "near, but the sold leg has no ask to price against" };
-    return { kind: "rest", pxBtc: px, reason: `mark ${headroom.distanceBps} bps from the cap — rest a passive buy at ${px}` };
-  }
-  if (px != null && Math.abs(px - order.pxBtc) >= cfg.repriceTicks * OKX_OPTION_TICK_BTC - 1e-9) {
-    return { kind: "replace", pxBtc: px, reason: `mid walked from ${order.pxBtc} to ${px}` };
-  }
-  return { kind: "hold", reason: "resting at the passive price" };
-};
-
 // ── Book-level roll-up ──────────────────────────────────────────────────────
 
 export type CapWatchWrap = {
@@ -260,9 +181,6 @@ export type CapWatchWrap = {
   side: PerpSide;
   capStrike: number;
   headroom: CapHeadroom;
-  order: WorkingOrder | null;
-  /** What the working order had bought back when it was recalled at the touch (folded into the knock-out). */
-  preTouch?: { filledContracts: number; avgPxBtc: number | null; costUsdc: number } | null;
   updatedAtMs: number;
 };
 
@@ -276,18 +194,16 @@ export type CapWatchSummary = {
   headroomUsdc: number;
   /** Wraps priced without a readable vol or ask (their reserve is 0 by construction: unknown, not safe). */
   unpriced: number;
-  working: number;
   worst: { wrapId: string; headroomUsdc: number } | null;
 };
 
 export const summarizeCapWatch = (wraps: Iterable<CapWatchWrap>): CapWatchSummary => {
-  const s: CapWatchSummary = { wraps: 0, near: 0, touched: 0, reserveUsdc: 0, headroomUsdc: 0, unpriced: 0, working: 0, worst: null };
+  const s: CapWatchSummary = { wraps: 0, near: 0, touched: 0, reserveUsdc: 0, headroomUsdc: 0, unpriced: 0, worst: null };
   for (const w of wraps) {
     s.wraps += 1;
     if (w.headroom.state === "near") s.near += 1;
     if (w.headroom.state === "touched") s.touched += 1;
     if (w.headroom.priced === "unpriced") s.unpriced += 1;
-    if (w.order) s.working += 1;
     s.reserveUsdc += w.headroom.reserveUsdc;
     s.headroomUsdc += w.headroom.headroomUsdc;
     if (w.headroom.priced !== "unpriced" && (!s.worst || w.headroom.headroomUsdc < s.worst.headroomUsdc)) s.worst = { wrapId: w.wrapId, headroomUsdc: w.headroom.headroomUsdc };

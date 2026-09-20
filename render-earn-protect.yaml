@@ -84,22 +84,25 @@ services:
       # cycle, cap leg bought back at the writer's cost) — measured negative-EV, keep it off.
       # EP_TENOR: weekly (default) writes to the nearest listed Friday at least 3 days out, where the
       # credit is real (measured $2.71 vs $0.15 daily on 0.03 BTC); `daily` opts out.
-      # EP_MIN_TAKE_BPS: notional fee floor on our take (0 = share only). EP_CREDIT_MUST_CLEAR_FUNDING=1:
-      # refuse a quote whose net credit does not clear the cycle's funding cost.
+      # EP_MIN_TAKE_BPS: notional fee floor on our take (0 = share only).
+      # EP_CAP_RULE / EP_CAP_EXCEED_PROB: which paying cap strike is sold — `target` (default) takes the
+      # most credit among strikes the market gives at most EP_CAP_EXCEED_PROB (0.20) odds of finishing
+      # beyond this cycle (OKX mark vol); `widest` is the previous rule (the widest strike that pays).
+      # Retired 2026-09-20 and ignored if set: EP_CREDIT_MUST_CLEAR_FUNDING (funding is disclosed,
+      # never a refusal) and EP_PRETOUCH_WORKING_ORDER (nothing rests on the venue).
       - key: EP_CAP_MODE
         value: plain
       - key: EP_TENOR
         value: weekly
       - key: EP_MIN_TAKE_BPS
         value: "0"
-      - key: EP_CREDIT_MUST_CLEAR_FUNDING
-        value: "0"
-      # Cap watch: per-wrap headroom is always on (admin status) and prices the holder's release; the
-      # pre-touch working order only rests on okx lanes, only in knockout mode, and only when this is 1.
-      # EP_HEADROOM_ALERT_BPS pages (knockout mode) when one wrap's reserve passes this many bps of
-      # its notional (an ATM weekly cap leg is ~200–250 bps).
-      - key: EP_PRETOUCH_WORKING_ORDER
-        value: "0"
+      - key: EP_CAP_RULE
+        value: target
+      - key: EP_CAP_EXCEED_PROB
+        value: "0.20"
+      # Cap watch: per-wrap headroom is always on (admin status) and prices the holder's release.
+      # EP_HEADROOM_ALERT_BPS pages (knockout mode only) when one wrap's reserve passes this many bps
+      # of its notional (an ATM weekly cap leg is ~200–250 bps).
       - key: EP_HEADROOM_ALERT_BPS
         value: "300"
 

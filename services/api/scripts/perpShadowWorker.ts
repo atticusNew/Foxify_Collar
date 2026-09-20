@@ -335,7 +335,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           capLadder: CAP_LADDER_RULE,
           capGuard: CAP_GUARD,
           capRule: capRuleText(CAP_RULE),
-          fundingRule: "the credit must clear what holding the perp costs over the cycle at the funding rate seen at open",
+          fundingRule: "informational: how often the credit fails to clear what holding the perp costs over the cycle at the funding rate seen at open; the live product does not refuse on it (funding is the perp's cost, paid with or without protection)",
           feeRules: Object.fromEntries(Object.keys(summary.counterfactuals.feeRules).map((l) => [l, feeRuleText(l)])),
         },
         counterfactuals: summary.counterfactuals,
