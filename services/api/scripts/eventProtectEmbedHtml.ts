@@ -183,7 +183,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos .undo:hover{text-decoration:underline;opacity:1}
 .empty{padding:30px 16px;color:var(--faint);text-align:center;font-size:14px}
 .host-note{position:fixed;left:0;right:0;bottom:0;padding:10px 16px 14px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.45;background:linear-gradient(to top,var(--bg) 70%,transparent);pointer-events:none}
-.host-note a{color:var(--dim);pointer-events:auto}
+/* two deliberate lines (the disclaimer, then the link): never a sentence that wraps and strands the link */
+.host-note span,.host-note a{display:block}
+.host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap;margin-top:2px}
 .toast{position:fixed;left:50%;bottom:64px;transform:translate(-50%,8px);background:var(--ink);color:var(--bg);font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;white-space:nowrap;z-index:5}
 .toast.on{opacity:.96;transform:translate(-50%,0)}
 /* ---- the sheet: ours, same in any host ---- */
@@ -273,7 +275,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   </div>
   <div class="tabs"><span class="on">Positions</span><span data-tab="Markets">Markets</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
-  <div class="host-note">Demo. Simulated positions at live prices; nothing is bought. · <a href="${trackRecordUrl}">Track record</a></div>
+  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><a href="${trackRecordUrl}">Track record</a></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="scrim" id="scrim"></div>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-h">
