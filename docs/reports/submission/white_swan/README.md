@@ -1,0 +1,37 @@
+# Evidence folder: Atticus for White Swan Predicts
+
+This folder is what we send with the application. Read the one sheet first; everything else is the evidence behind its numbers.
+
+## Contents
+
+| File | What it is |
+|---|---|
+| `atticus_white_swan_onesheet.pdf` | One page: what the product is, what the record shows, how to verify it. |
+| `track_record.png` | Screenshot of the public track record at the end of the record window, identity card visible. |
+| `embed_demo.png` | Screenshot of the embedded demo with one protected row. |
+| `event-shadow-positions-[DATE].csv` | The public positions export. One row per position: what was quoted, what was hedged, what settled. Every amount in integer cents. |
+| `shadow-summary-[DATE].json` | The public summary the track record page is rendered from, as fetched on the same day as the CSV. |
+| `atticus_shadow_facility_report_33d.pdf` | The perpetual-futures version of the same layer, for reference. Same identity, different market. |
+
+## How to read the CSV
+
+- One row per protected position. `status` is `open` or `settled`. Every `_c` column is integer cents.
+- `contracts` and `mark_c` are the position as held before protection; `contracts × mark_c` is the stake.
+- `floor_c` and `cap_c` are the protected outcomes at settlement, per contract. `credit_c` is what the user was paid at quote time.
+- Settled rows carry `result`, `holder_protected_c` (what the user ended with), `holder_naked_c` (what they would have ended with unprotected) and `holder_delta_c` (the difference).
+- Sum `credit_c` over all rows to reproduce "Credit paid to users" on the one sheet.
+
+## How to check the identity
+
+On settled rows, sum `writer_pnl_c` and sum `take_c`. They are equal. That is the whole claim: the layer earns its published take and nothing on the outcome. The take is already netted out of every credit a user sees.
+
+## Live links
+
+- Track record: `[TRACK RECORD URL]`
+- Embedded demo: `[DEMO URL]`
+
+Both are public while the book is open. Positions in the demo are simulated at live prices; nothing is bought.
+
+## Contact
+
+`[FULL NAME]` · `[EMAIL]`
