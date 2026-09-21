@@ -23,7 +23,7 @@ test("cross-venue app html: honesty label, gating line, and structure", () => {
 test("cross-venue app html: the drawer is the holder's terms; the hedge, the pairing and the take stay with the operator", () => {
   const html = renderEventXAppHtml();
   assert.ok(html.includes("see the terms"), "the drawer is named for what it shows");
-  assert.ok(html.includes("See the shadow record"), "footer links the live track record");
+  assert.ok(html.includes("See the track record"), "footer links the live track record");
   assert.ok(html.includes("without protection"), "naked outcome row in the drawer");
   assert.ok(html.includes("with protection</span>"), "protected outcome row mirrors the naked row");
   assert.ok(html.includes(">settles</span>"), "settlement row: official final score / index print");

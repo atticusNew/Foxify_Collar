@@ -267,7 +267,8 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     // the public page: outcomes and the live book's receipts; no operator links, one line saying the comparison exists
     const page = await (await fetch(`${base}/`)).text();
     assert.ok(page.includes('href="/api/shadow/positions.csv"'), "the spreadsheet form");
-    assert.ok(page.includes("writer P&amp;L, settled"));
+    assert.ok(page.includes("our P&amp;L, settled") && !page.includes("writer P&amp;L"));
+    assert.ok(page.includes("Track record") && !page.includes("Shadow record"));
     assert.ok(!page.includes('href="/report"') && !page.includes('href="/api/shadow/export"') && !page.includes('href="/api/shadow/hedges"'));
     assert.ok(!page.includes("What each rule would have done") && !page.includes("How the hedge leg is filled"));
     assert.ok(page.includes("rule comparison") && page.includes("report on request"));

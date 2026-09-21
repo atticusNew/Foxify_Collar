@@ -290,6 +290,8 @@ test("summarizeCounterfactuals: rule books fold quoted, refused and settled; leg
   assert.ok(html.includes("the venues&#39; books did not fund a single collar") || html.includes("the venues' books did not fund a single collar"), "capacity line explains the 20x refusals");
   assert.ok(html.includes(`The minimum adds $${((s.feeRules.min_25bps.takeCents - s.feeRules.share_only.takeCents) / 100).toFixed(2)}`));
   assert.ok(html.includes('href="/api/shadow/report"'));
+  assert.ok(html.includes("Our book, line by line") && html.includes("cap slices kept (user won)") && html.includes("hedge payouts minus hedge cost"), "the line-by-line book lives on the operator report");
+  assert.ok(html.includes("<th>user Δ</th><th>our P&amp;L</th>") && !/writer P&amp;L|holder Δ/.test(html), "same words as the public page");
   assert.ok(!html.includes("undefined") && !html.includes("NaN"));
 
   // an empty book renders without a period and without dividing by zero
