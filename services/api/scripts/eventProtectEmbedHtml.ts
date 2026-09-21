@@ -49,12 +49,22 @@ const DEFAULT_TRACK_RECORD_URL = "https://atticus-event-shadow.onrender.com";
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+/** The placeholder host: what the shell says when no partner brand is on the link. */
+export const DEFAULT_EMBED_BRAND = "Your Exchange";
+
+/** The pip's letter: a real brand's first letter; the placeholder's noun ("Your Exchange" -> E). */
+export function brandInitial(brand: string): string {
+  const words = brand.trim().split(/\s+/).filter(Boolean);
+  const word = words.length > 1 && /^your$/i.test(words[0]) ? words[1] : words[0];
+  return (word?.[0] ?? "A").toUpperCase();
+}
+
 /**
  * Resolve `?brand=` against the allowlist; anything else is the default brand (EVENT_X_EMBED_BRAND,
- * else "Your app"). The default is what the first screen says when a visitor arrives with no link.
+ * else "Your Exchange"). The default is what the first screen says when a visitor arrives with no link.
  */
-export function resolveBrand(requested: string | null | undefined, allowlist: string | undefined, fallback = "Your app"): string {
-  const dflt = (fallback ?? "").trim() || "Your app";
+export function resolveBrand(requested: string | null | undefined, allowlist: string | undefined, fallback = DEFAULT_EMBED_BRAND): string {
+  const dflt = (fallback ?? "").trim() || DEFAULT_EMBED_BRAND;
   const want = (requested ?? "").trim();
   if (!want) return dflt;
   const allowed = (allowlist ?? "")
@@ -115,7 +125,7 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const brand = escapeHtml(opts.brand);
   const theme = brandTheme(opts.brand);
   const dark = (opts.skin ?? theme.skin) === "dark";
-  const initial = escapeHtml((opts.brand.trim()[0] ?? "A").toUpperCase());
+  const initial = escapeHtml(brandInitial(opts.brand));
   const minCredit = opts.minCredit ?? DEFAULT_MINIMUM_CREDIT;
   const trackRecordUrl = escapeHtml(opts.trackRecordUrl || DEFAULT_TRACK_RECORD_URL);
   return `<!doctype html>
@@ -183,7 +193,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .sheet.on{transform:translateY(0)}
 .sheet .grab{width:38px;height:4px;border-radius:2px;background:#dfe3e2;margin:0 auto 12px}
 .sheet .eyebrow{display:flex;align-items:center;justify-content:space-between;color:var(--ep-faint);font-size:11.5px;letter-spacing:.02em}
-.sheet .eyebrow img{height:16px;display:block;opacity:.7;filter:brightness(0)}
+.sheet .eyebrow img{height:20px;display:block}
 .sheet h2{font-size:19px;font-weight:700;letter-spacing:-.01em;margin-top:8px;color:var(--ep-ink)}
 .sheet .who{color:var(--ep-dim);font-size:13.5px;margin-top:2px}
 .tiles{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:14px}
@@ -220,7 +230,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   body{background:var(--stage);color:var(--stage-ink)}
   .stage{display:grid;grid-template-columns:minmax(300px,420px) 400px;gap:72px;align-items:center;justify-content:center;padding:40px 32px;min-height:100vh}
   .pitch{display:block;color:var(--stage-ink)}
-  .pitch img{height:18px;opacity:.7;filter:brightness(0);display:block;margin-bottom:22px}
+  .pitch img{height:24px;display:block;margin-bottom:22px}
   .pitch h1{font-size:34px;line-height:1.12;letter-spacing:-.02em;font-weight:700}
   .pitch p{color:var(--stage-dim);font-size:16px;line-height:1.55;margin-top:14px;max-width:34em}
   .pitch ul{list-style:none;margin-top:18px;color:var(--stage-ink);font-size:15px;line-height:1.5}
@@ -515,7 +525,7 @@ export function renderPartnerHtml(input: PartnerConsoleInput): string {
 body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
 .topbar{background:#fff;border-bottom:1px solid var(--line)}.topbar .in{max-width:640px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:12px 16px}
 .topbar .wordmark{color:var(--ink);font-weight:650;font-size:14px}.topbar .wordmark span{color:var(--faint);font-weight:400}
-.topbar img{height:16px;display:block;opacity:.7;filter:brightness(0)}
+.topbar img{height:18px;display:block}
 .wrap{max-width:640px;margin:0 auto;padding:14px 14px 40px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px}
 h1{font-size:20px;font-weight:700;letter-spacing:-.01em}h2{font-size:14px;font-weight:700;margin-bottom:6px}
@@ -578,6 +588,81 @@ a{color:var(--dim)}
     <div class="row"><span>revenue share</span><b>${input.sharePct}% of the published take</b></div>
     <div class="rule">The published take is already netted out of every credit shown to a user: the credit they see is the credit they get. <a href="/embed">See the embedded shell</a> · <a href="/receipts">Receipts</a></div>
   </div>
+</div>
+</body>
+</html>`;
+}
+
+export interface PartnerCtaInput {
+  brand: string;
+  /** where "Talk to us" goes */
+  contactEmail: string;
+  trackRecordUrl: string;
+}
+
+/**
+ * PARTNER PAGE, PUBLIC — what /partner shows without an operator token. The console itself names
+ * our take, so it stays behind the token; a visitor who follows the link gets the pitch for it
+ * (what a partner sees, what they get) and one call to action, not a JSON error.
+ */
+export function renderPartnerCtaHtml(input: PartnerCtaInput): string {
+  const email = escapeHtml(input.contactEmail);
+  const subject = encodeURIComponent(`Protection inside ${input.brand === DEFAULT_EMBED_BRAND ? "our app" : input.brand}`);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Partner console · Earn &amp; Protect</title>
+<style>
+:root{--bg:#f6f7f7;--card:#fff;--line:#e4e7e7;--ink:#050d0a;--dim:#5c6a64;--faint:#98a49e;--green:#00b67a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
+.topbar{background:#fff;border-bottom:1px solid var(--line)}.topbar .in{max-width:640px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:12px 16px}
+.topbar .wordmark{color:var(--ink);font-weight:650;font-size:14px}.topbar .wordmark span{color:var(--faint);font-weight:400}
+.topbar img{height:18px;display:block}
+.wrap{max-width:640px;margin:0 auto;padding:28px 16px 48px}
+h1{font-size:28px;line-height:1.15;letter-spacing:-.02em;font-weight:700}
+.sub{color:var(--dim);font-size:15px;margin-top:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-top:22px}
+.card h2{font-size:13px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}
+.card li{list-style:none;padding:7px 0;border-bottom:1px solid var(--line);font-size:14.5px}.card li:last-child{border-bottom:0}
+.card li b{font-weight:650}
+.cta{display:inline-block;margin-top:22px;background:var(--green);color:#fff;font-weight:700;font-size:15px;padding:13px 22px;border-radius:12px;text-decoration:none}
+.cta:hover{filter:brightness(.96)}
+.also{margin-top:14px;font-size:13px;color:var(--dim)}.also a{color:var(--ink)}
+.foot{margin-top:36px;color:var(--faint);font-size:12px}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="wordmark">Earn &amp; Protect <span>· partner console</span></div>
+  <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
+</div></div>
+<div class="wrap">
+  <h1>The console your team gets.</h1>
+  <div class="sub">One page, live, for the layer running on your users' positions. We price and hedge; your venue executes and settles.</div>
+  <div class="card">
+    <h2>What it shows</h2>
+    <ul>
+      <li><b>Volume protected</b> and credits paid to your users, by day</li>
+      <li><b>What protection cost</b> your users in expected value, against our ceiling</li>
+      <li><b>Where it was priced</b>: on your own book, or cross-venue on the same game</li>
+      <li><b>What we refused</b>, and why, one line per reason</li>
+      <li><b>Your share</b> of the take, to the cent</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h2>What integration takes</h2>
+    <ul>
+      <li>One JSON quote in, one receipt out</li>
+      <li>Your brand, your ledger, your official result</li>
+      <li>A Protect button on the position row; we supply the sheet</li>
+    </ul>
+  </div>
+  <a class="cta" href="mailto:${email}?subject=${subject}">Talk to us</a>
+  <div class="also">Or see the <a href="${escapeHtml(input.trackRecordUrl)}">track record</a> first: every quote, every settlement, our P&amp;L against the take we booked.</div>
+  <div class="foot">Demonstration. Simulated positions at live prices; nothing is bought.</div>
 </div>
 </body>
 </html>`;
