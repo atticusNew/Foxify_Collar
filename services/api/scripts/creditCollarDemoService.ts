@@ -1853,7 +1853,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           )
           .replaceAll("__BRAND_LINE__", (process.env.EP_BRAND_LINE ?? "for").replace(/[<>&"]/g, ""))
           .replaceAll("__SKIN__", process.env.EP_SKIN === "institutional" ? "institutional" : "retail")
-          .replaceAll("__LINK_RECORD__", /^https:\/\//.test(recordLink) ? `<a href="${recordLink.replace(/"/g, "")}" target="_blank" rel="noopener">Track record</a> · ` : "")
+          .replaceAll("__LINK_RECORD__", /^https?:\/\//.test(recordLink) ? `<a href="${recordLink.replace(/"/g, "")}" target="_blank" rel="noopener">Track record</a> · ` : "")
           .replaceAll("__LINK_TG__", /^https:\/\//.test(tgLink) ? `<a href="${tgLink.replace(/"/g, "")}" target="_blank" rel="noopener">Support / Telegram</a> · ` : "")
           .replaceAll("__LINK_X__", /^https:\/\//.test(xLink) ? `<a href="${xLink.replace(/"/g, "")}" target="_blank" rel="noopener">X</a> · ` : "")
       );

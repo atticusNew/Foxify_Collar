@@ -132,6 +132,28 @@ const contract = (name: string, build: () => Promise<EpStores>) => {
     assert.deepEqual(await s.loadLedger(), []);
     assert.deepEqual(await s.loadRegistry(), {});
   });
+
+  test(`${name}: archiveAll moves everything aside under a stamp and starts fresh — nothing is deleted`, async () => {
+    const s = await build();
+    await s.saveWraps([wrap("w-1"), wrap("w-2")]);
+    await s.saveLedger([entry("w-1")]);
+    await s.saveRegistry({ ["0x" + "a".repeat(40)]: { joinedAtMs: NOW } });
+    const archived = await s.archiveAll("2026-09-21T03:04:05.000Z");
+    assert.ok(archived.length >= 3, `wraps, ledger and registry were archived (${archived.map((a) => a.store).join(", ")})`);
+    assert.ok(archived.every((a) => a.rows >= 1 && a.to.length > 0));
+    assert.deepEqual(await s.loadWraps(), []);
+    assert.deepEqual(await s.loadLedger(), []);
+    assert.deepEqual(await s.loadRegistry(), {});
+    if (s.kind === "json") {
+      const w = archived.find((a) => a.store === "wraps");
+      assert.ok(w && /wraps\.2026-09-21T030405Z\.archived\.json$/.test(w.to), "the file is renamed beside itself with the stamp");
+    }
+    // a second archive on empty stores archives nothing and is not an error
+    assert.deepEqual(await s.archiveAll("2026-09-21T04:00:00.000Z"), []);
+    // and the store keeps working afterwards
+    await s.saveWraps([wrap("w-3")]);
+    assert.equal((await s.loadWraps()).length, 1);
+  });
 };
 
 contract("json stores", async () => jsonStores(tmpPaths()));
