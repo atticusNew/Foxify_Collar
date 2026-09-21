@@ -32,11 +32,12 @@ export const parseShowcaseOverride = (raw: string | undefined): string[] =>
     .map((s) => s.trim().toLowerCase())
     .filter((s) => /^0x[0-9a-f]{40}$/.test(s));
 
-// ── Three buckets, longs only, one hero an hour ─────────────────────────────
+// ── Three slots, longs only, one hero an hour ───────────────────────────────
 // The retail landing is a LONG position (the product's home case: a floor under a long, paid
-// for). The set holds one live public long per size bucket so the hero varies — small, medium,
-// large — and the hour picks which one is up, deterministically, so every visitor in the same
-// hour sees the same wallet and a restart changes nothing.
+// for). The set holds three live public longs — two medium, one large — and the hour picks which
+// one is up, deterministically, so every visitor in the same hour sees the same wallet and a
+// restart changes nothing. Small positions are still classified (the shadow uses the same lines)
+// but no longer land: a $15k long pays a single-digit weekly credit, which reads as thin.
 
 export type SizeBucket = "small" | "medium" | "large";
 
@@ -47,6 +48,10 @@ export const SIZE_BUCKETS: Record<SizeBucket, { minUsd: number; maxUsd: number }
   large: { minUsd: 150_000, maxUsd: 750_000 },
 };
 export const BUCKET_ORDER: SizeBucket[] = ["small", "medium", "large"];
+/** The landing's slots in rotation order: medium, large, medium — consecutive hours never repeat a size. */
+export const SHOWCASE_SLOTS: SizeBucket[] = ["medium", "large", "medium"];
+/** The distinct buckets the scan has to fill. */
+export const SHOWCASE_BUCKETS: SizeBucket[] = Array.from(new Set(SHOWCASE_SLOTS));
 
 /** The bucket a notional falls in, or null when it is outside every band (dust, or a nine-figure whale). */
 export const bucketOf = (notionalUsd: number): SizeBucket | null => {
@@ -65,27 +70,42 @@ export interface PickShowcaseOptions {
 }
 
 /**
- * From candidates (in leaderboard order) keep the first LONG in each bucket, ordered small → large.
- * When no bucket fills at all, the first three in-side positions are the fallback so the landing
- * never goes dark; they carry `bucket: null` and the card says nothing about size.
+ * From candidates (in leaderboard order) fill the landing's slots (SHOWCASE_SLOTS) with the first
+ * in-side positions of each slot's size, keeping slot order. When no slot fills at all, the first
+ * three in-side positions are the fallback so the landing never goes dark; they carry
+ * `bucket: null` and the card says nothing about size.
  */
 export function pickShowcaseSet(candidates: ShowcaseWallet[], opts: PickShowcaseOptions = {}): BucketedWallet[] {
   const sides = new Set(opts.sides ?? ["long"]);
-  const byBucket = new Map<SizeBucket, BucketedWallet>();
+  const slots: Array<BucketedWallet | undefined> = SHOWCASE_SLOTS.map(() => undefined);
   const fallback: BucketedWallet[] = [];
   for (const w of candidates) {
     if (!sides.has(w.side)) continue;
     const bucket = bucketOf(w.notionalUsdc);
-    if (bucket && !byBucket.has(bucket)) byBucket.set(bucket, { ...w, bucket });
+    const free = bucket ? SHOWCASE_SLOTS.findIndex((b, i) => b === bucket && !slots[i]) : -1;
+    if (free >= 0) slots[free] = { ...w, bucket };
     else if (fallback.length < 3) fallback.push({ ...w, bucket: null });
-    if (byBucket.size === BUCKET_ORDER.length) break;
+    if (slots.every((s) => !!s)) break;
   }
-  const picked = BUCKET_ORDER.map((b) => byBucket.get(b)).filter((w): w is BucketedWallet => !!w);
+  const picked = slots.filter((w): w is BucketedWallet => !!w);
   return picked.length > 0 ? picked : fallback;
 }
 
-/** Every bucket still missing after a pick (so the scan knows whether to keep reading candidates). */
-export const missingBuckets = (set: BucketedWallet[]): SizeBucket[] => BUCKET_ORDER.filter((b) => !set.some((w) => w.bucket === b));
+/**
+ * The size of every slot still unfilled after a pick, one entry per open slot (so the scan knows
+ * whether to keep reading a bucket's candidates: `missingBuckets(set).includes("medium")`).
+ */
+export const missingBuckets = (set: BucketedWallet[]): SizeBucket[] => {
+  const taken = new Map<SizeBucket, number>();
+  for (const w of set) if (w.bucket) taken.set(w.bucket, (taken.get(w.bucket) ?? 0) + 1);
+  const out: SizeBucket[] = [];
+  for (const b of SHOWCASE_SLOTS) {
+    const n = taken.get(b) ?? 0;
+    if (n > 0) taken.set(b, n - 1);
+    else out.push(b);
+  }
+  return out;
+};
 
 /** Which wallet is the hour's hero: the UTC hour index modulo the set size. */
 export const heroIndex = (count: number, nowMs: number): number => (count > 0 ? Math.floor(nowMs / 3_600_000) % count : 0);

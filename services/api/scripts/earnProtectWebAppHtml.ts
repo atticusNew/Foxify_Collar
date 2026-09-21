@@ -160,6 +160,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   /* The simulation lane's one honesty label: quiet, persistent, unmistakable. */
   .simlabel{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);margin-top:12px}
   .simlabel:before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#e3c34c;margin-right:6px;vertical-align:1px}
+  .simnote{font-size:12.5px;color:var(--muted);margin-top:6px}
+  .unlock .rate{color:var(--muted);font-variant-numeric:tabular-nums}
   /* Landing skeleton — the app boots into a live position, never an empty entry gate. */
   .skl{height:12px;border-radius:6px;background:linear-gradient(90deg,var(--panel2) 25%,#16333b 50%,var(--panel2) 75%);background-size:200% 100%;animation:shim 1.2s linear infinite;margin:12px 0}
   @keyframes shim{to{background-position:-200% 0}}
@@ -613,8 +615,34 @@ let landTried = 0;          // showcase wallets tried this session (dead-positio
 // SIMULATION LANE state: full lifecycle visuals (quote → executing → active → vesting) fed by a
 // REAL live preview quote — never the real wrap path (server guards on showcase wallets stay
 // armed regardless). Keyed by address so the 5s poll re-render can't undo a running simulation.
-const sims = {};
+// The preview survives a reload within the tab: only ACTIVE previews persist (the transient
+// phases run on timers that a reload would orphan; refused/closed/knocked are moments, not state).
+const SIMS_KEY = "ep_sims_v1";
+const loadSims = () => {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(SIMS_KEY) || "{}");
+    const out = {};
+    for (const k of Object.keys(raw)) {
+      const s = raw[k];
+      if (s && s.phase === "active" && s.quote && s.endMs > Date.now()) out[k] = s;
+    }
+    return out;
+  } catch (e) { return {}; }
+};
+const saveSims = (t) => {
+  try {
+    const keep = {};
+    for (const k of Object.keys(t)) if (t[k] && t[k].phase === "active") keep[k] = t[k];
+    sessionStorage.setItem(SIMS_KEY, JSON.stringify(keep));
+  } catch (e) { /* private mode */ }
+};
+const sims = new Proxy(loadSims(), {
+  set(t, k, v) { t[k] = v; saveSims(t); return true; },
+  deleteProperty(t, k) { delete t[k]; saveSims(t); return true; },
+});
 const simFor = (a) => (a && sims[a.toLowerCase()]) || null;
+// "on since 8:26 PM": the preview visibly started at a moment, so repeated flips never look identical.
+const sinceLabel = (ms) => { try { return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); } catch (e) { return ""; } };
 const simVest = (s) => {
   const now = Date.now();
   const total = Math.max(1, s.endMs - s.vestStartMs);
@@ -801,7 +829,9 @@ const activeBody = (o) => {
     '<div class="unlock" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;white-space:nowrap">' +
       '<span><span class="minibar"><span class="' + (o.sim ? "sim-fill" : "") + '" style="width:' + (o.fraction * 100).toFixed(2) + '%"></span></span>' +
         tip(o.fullyVested ? "pays at settlement" : '<span class="' + (o.sim ? "sim-eta" : "") + '">' + paysLabel(o.remainingMs, o.endMs) + '</span>', o.settleTip) + '</span>' +
-      '<span><b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--accent);font-variant-numeric:tabular-nums">' + fmt$(o.vestedUsdc) + '</b> unlocked</span>' +
+      '<span><b class="' + (o.sim ? "sim-vested" : "") + '" style="color:var(--accent);font-variant-numeric:tabular-nums">' + fmt$(o.vestedUsdc) + '</b> unlocked' +
+        // A weekly credit takes minutes to show its first cent; the rate says it is moving.
+        (o.perDayUsdc > 0 && !o.fullyVested ? '<span class="rate"> · ' + fmt$(o.perDayUsdc) + '/day</span>' : '') + '</span>' +
     '</div>';
 };
 
@@ -854,6 +884,7 @@ const render = (positions, state) => {
         terms = activeBody({
           creditUsdc: q.creditUsdc, floorStrike, capStrike, quoteSpot: q.spot, livePx: p.markPx, notionalUsdc: p.notionalUsdc,
           vestedUsdc: v.vestedUsdc, fraction: v.fraction, remainingMs: v.remainingMs, fullyVested: v.fullyVested, endMs: w.vesting && w.vesting.endMs,
+          perDayUsdc: v.fraction < 1 && v.remainingMs > 0 ? q.creditUsdc * 86400000 * (1 - v.fraction) / v.remainingMs : null,
           settleTip: settleIso ? "Settles at the listed expiry: " + settleIso + ". The credit lands in the payouts table below, then protection renews automatically." : "Pays at the cycle's close.",
           sim: false, badge: "", tenor: q.tenor,
           release: (w.capMode || "knockout") === "plain" ? state.release : null, released: w.release || null, capTouched: !!w.capTouch
@@ -918,16 +949,21 @@ const render = (positions, state) => {
         const sq = s.quote;
         const vsim = simVest(s);
         const settleIsoS = s.endMs ? new Date(s.endMs).toUTCString().replace(":00 GMT", " UTC") : null;
-        chip = simLabel;
+        // The label carries the start time; one line under it says whose wallet this is and that
+        // the terms are real. The CTA is the visitor's next step, not a missing one.
+        const since = sinceLabel(s.vestStartMs);
+        chip = '<div class="simlabel">preview · live pricing' + (since ? ' · on since ' + since : '') + '</div>' +
+          '<div class="simnote">Public wallet, so this is a preview. The terms are live.</div>';
         terms = activeBody({
           creditUsdc: sq.creditUsdc, floorStrike: sq.floorStrike, capStrike: sq.capStrike, notionalUsdc: p.notionalUsdc,
           quoteSpot: sq.spot, livePx: lastMarkPx != null ? lastMarkPx : p.markPx,
           vestedUsdc: vsim.vestedUsdc, fraction: vsim.fraction, remainingMs: vsim.remainingMs, fullyVested: false, endMs: s.endMs,
+          perDayUsdc: s.endMs > s.vestStartMs ? sq.creditUsdc * 86400000 / (s.endMs - s.vestStartMs) : null,
           settleTip: settleIsoS ? "The live cycle settles at the listed expiry: " + settleIsoS + "." : "Pays at the cycle's close.",
           sim: true, badge: "", tenor: sq.tenor, capTouched: !!s.capTouched
         });
-        coverage = '<button type="button" class="btn cta connOpen">Connect your address</button>' +
-          '<div class="small muted" style="margin-top:7px;text-align:center">Public data · no keys · no signing.</div>';
+        coverage = '<button type="button" class="btn cta connOpen">Protect my position</button>' +
+          '<div class="small muted" style="margin-top:7px;text-align:center">Paste your address · no keys · no signing.</div>';
       }
     }
     const simOn = s != null && (s.phase === "quoting" || s.phase === "executing" || s.phase === "active" || s.phase === "knocked");

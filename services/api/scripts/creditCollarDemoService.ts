@@ -125,7 +125,7 @@ import {
 import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
 import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, recordPageLoad, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
 import {
-  BUCKET_ORDER,
+  SHOWCASE_BUCKETS,
   candidatesForBucket,
   dayKey,
   heroIndex,
@@ -247,10 +247,10 @@ const refreshShowcase = async (): Promise<void> => {
   showcaseRefreshing = true;
   try {
     const curated = parseShowcaseOverride(process.env.EP_SHOWCASE_ADDRESSES);
-    // Three buckets, longs only (epShowcase.ts): one live public long in each of small, medium
-    // and large, so the hero varies by the hour. Curated addresses are taken as given (bucketed,
-    // any side). Otherwise each bucket draws candidates from the leaderboard band that tends to
-    // hold positions of its size, in an order seeded by the day, and reads until it has one.
+    // Three slots, longs only (epShowcase.ts): two medium and one large live public long, so the
+    // hero varies by the hour. Curated addresses are taken as given (bucketed, any side).
+    // Otherwise each slot size draws candidates from the leaderboard band that tends to hold
+    // positions of that size, in an order seeded by the day, and reads until its slots are full.
     const found: ShowcaseWallet[] = [];
     let wallets: BucketedWallet[] = [];
     const read = async (addr: string): Promise<void> => {
@@ -268,9 +268,9 @@ const refreshShowcase = async (): Promise<void> => {
       const res = await fetch("https://stats-data.hyperliquid.xyz/Mainnet/leaderboard");
       const all = res.ok ? parseLeaderboardAll(await res.text()) : [];
       const day = dayKey(Date.now());
-      const perBucket = Math.max(1, Math.floor(SHOWCASE_SCAN / BUCKET_ORDER.length));
+      const perBucket = Math.max(1, Math.floor(SHOWCASE_SCAN / SHOWCASE_BUCKETS.length));
       const seen = new Set<string>();
-      for (const bucket of BUCKET_ORDER) {
+      for (const bucket of SHOWCASE_BUCKETS) {
         for (const addr of candidatesForBucket(all, bucket, day, perBucket)) {
           if (!missingBuckets(wallets).includes(bucket)) break; // an earlier band's read may already have filled this one
           if (seen.has(addr)) continue;
