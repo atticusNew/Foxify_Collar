@@ -125,7 +125,8 @@ import {
 import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
 import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, recordPageLoad, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
 import {
-  BUCKET_ORDER,
+  SHOWCASE_BUCKETS,
+  SHOWCASE_SLOTS,
   candidatesForBucket,
   dayKey,
   heroIndex,
@@ -231,8 +232,11 @@ const internalAccounts = parseInternalAccounts(process.env.EP_INTERNAL_ACCOUNTS)
 // values), validated against LIVE open BTC positions, cached, and — critically — action-guarded:
 // a showcased address can be WATCHED by anyone but never wrapped/closed/toggled by anyone.
 const SHOWCASE_TTL_MS = 30 * 60_000;
-// Wallets read per refresh across the three buckets (≈ 0.2s each; the refresh runs every 30 min).
-const SHOWCASE_SCAN = Math.max(3, Math.min(400, num(process.env.EP_SHOWCASE_SCAN, 150)));
+// Wallets read per refresh across the slot sizes (≈ 0.2s each; the refresh runs every 30 min; the
+// read stops early once the slots fill). Medium in-band longs are sparse — a live probe found the
+// first one at candidate 96 of the day's medium band while the large band hit at 7 — so the
+// budget is weighted by slot count and the ceiling is high enough to reach them.
+const SHOWCASE_SCAN = Math.max(3, Math.min(600, num(process.env.EP_SHOWCASE_SCAN, 300)));
 // The landing is a LONG (EP_SHOWCASE_SIDES=long,short to allow shorts on it).
 const SHOWCASE_SIDES = String(process.env.EP_SHOWCASE_SIDES || "long")
   .split(",")
@@ -247,10 +251,10 @@ const refreshShowcase = async (): Promise<void> => {
   showcaseRefreshing = true;
   try {
     const curated = parseShowcaseOverride(process.env.EP_SHOWCASE_ADDRESSES);
-    // Three buckets, longs only (epShowcase.ts): one live public long in each of small, medium
-    // and large, so the hero varies by the hour. Curated addresses are taken as given (bucketed,
-    // any side). Otherwise each bucket draws candidates from the leaderboard band that tends to
-    // hold positions of its size, in an order seeded by the day, and reads until it has one.
+    // Three slots, longs only (epShowcase.ts): two medium and one large live public long, so the
+    // hero varies by the hour. Curated addresses are taken as given (bucketed, any side).
+    // Otherwise each slot size draws candidates from the leaderboard band that tends to hold
+    // positions of that size, in an order seeded by the day, and reads until its slots are full.
     const found: ShowcaseWallet[] = [];
     let wallets: BucketedWallet[] = [];
     const read = async (addr: string): Promise<void> => {
@@ -268,10 +272,11 @@ const refreshShowcase = async (): Promise<void> => {
       const res = await fetch("https://stats-data.hyperliquid.xyz/Mainnet/leaderboard");
       const all = res.ok ? parseLeaderboardAll(await res.text()) : [];
       const day = dayKey(Date.now());
-      const perBucket = Math.max(1, Math.floor(SHOWCASE_SCAN / BUCKET_ORDER.length));
       const seen = new Set<string>();
-      for (const bucket of BUCKET_ORDER) {
-        for (const addr of candidatesForBucket(all, bucket, day, perBucket)) {
+      for (const bucket of SHOWCASE_BUCKETS) {
+        const slotsOf = SHOWCASE_SLOTS.filter((b) => b === bucket).length;
+        const budget = Math.max(1, Math.floor((SHOWCASE_SCAN * slotsOf) / SHOWCASE_SLOTS.length));
+        for (const addr of candidatesForBucket(all, bucket, day, budget)) {
           if (!missingBuckets(wallets).includes(bucket)) break; // an earlier band's read may already have filled this one
           if (seen.has(addr)) continue;
           seen.add(addr);

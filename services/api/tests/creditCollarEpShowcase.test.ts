@@ -12,6 +12,8 @@ import {
   parseLeaderboardTop,
   parseShowcaseOverride,
   pickShowcaseSet,
+  SHOWCASE_BUCKETS,
+  SHOWCASE_SLOTS,
   type ShowcaseWallet,
 } from "../src/singleSide/twoSided/creditCollar/epShowcase";
 
@@ -47,7 +49,7 @@ test("showcase: env override parses messy comma lists and drops invalid entries"
 
 const w = (i: number, side: "long" | "short", notionalUsdc: number): ShowcaseWallet => ({ address: "0x" + String(i).padStart(40, "0"), side, szBase: notionalUsdc / 80_000, notionalUsdc });
 
-test("showcase: three buckets, longs only — the first live long in each of small, medium, large, ordered small to large", () => {
+test("showcase: three slots, longs only — two mediums and a large, in medium, large, medium order; small is classified but never lands", () => {
   assert.equal(bucketOf(4_999), null, "dust is outside every band");
   assert.equal(bucketOf(5_000), "small");
   assert.equal(bucketOf(24_999.99), "small");
@@ -55,30 +57,33 @@ test("showcase: three buckets, longs only — the first live long in each of sma
   assert.equal(bucketOf(149_999), "medium");
   assert.equal(bucketOf(150_000), "large");
   assert.equal(bucketOf(750_000), null, "a nine-figure whale is not a relatable landing");
+  assert.deepEqual(SHOWCASE_SLOTS, ["medium", "large", "medium"], "consecutive hours never repeat a size");
+  assert.deepEqual(SHOWCASE_BUCKETS, ["medium", "large"]);
 
   const set = pickShowcaseSet([
     w(1, "short", 40_000), // a short: never the landing
     w(2, "long", 90_000_000), // whale: out of band
-    w(3, "long", 60_000), // medium
-    w(4, "long", 70_000), // second medium: skipped
+    w(3, "long", 60_000), // first medium
+    w(4, "long", 70_000), // second medium: the third slot
     w(5, "long", 300_000), // large
-    w(6, "long", 12_000), // small
-    w(7, "long", 9_000), // second small: skipped
+    w(6, "long", 12_000), // small: a $12k long pays a thin credit; not the landing
+    w(7, "long", 80_000), // a third medium: no slot left
   ]);
   assert.deepEqual(
     set.map((x) => [x.address.slice(-1), x.bucket]),
     [
-      ["6", "small"],
       ["3", "medium"],
       ["5", "large"],
+      ["4", "medium"],
     ],
   );
   assert.ok(set.every((x) => x.side === "long"));
   assert.deepEqual(missingBuckets(set), []);
 
-  const partial = pickShowcaseSet([w(1, "long", 60_000), w(2, "long", 60_000)]);
+  const partial = pickShowcaseSet([w(1, "long", 60_000), w(2, "long", 12_000)]);
   assert.deepEqual(partial.map((x) => x.bucket), ["medium"]);
-  assert.deepEqual(missingBuckets(partial), ["small", "large"], "the scan keeps reading candidates for these");
+  assert.deepEqual(missingBuckets(partial), ["large", "medium"], "one medium slot and the large slot still open: the scan keeps reading both bands");
+  assert.deepEqual(missingBuckets(pickShowcaseSet([w(1, "long", 60_000), w(2, "long", 61_000)])), ["large"], "both mediums filled: only the large band is still read");
 
   const fallback = pickShowcaseSet([w(1, "long", 90_000_000), w(2, "short", 12_000), w(3, "long", 1_000), w(4, "long", 200_000_000), w(5, "long", 2_000)]);
   assert.deepEqual(fallback.map((x) => [x.address.slice(-1), x.bucket]), [["1", null], ["3", null], ["4", null]], "nothing in band: the first three longs, unlabelled, so the landing never goes dark");

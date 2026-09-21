@@ -23,6 +23,16 @@ test("preview lane: the one quiet persistent honesty label is present verbatim",
   }
 });
 
+test("preview lane, active: says whose wallet it is, when it started, that the credit is moving, and what the visitor does next", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes("Public wallet, so this is a preview. The terms are live."), "one line of context under the label");
+    assert.ok(html.includes("' · on since ' + since") && html.includes("const sinceLabel"), "the label carries the start time");
+    assert.ok(html.includes("Protect my position") && !html.includes(">Connect your address</button>"), "the CTA is the next step, not a missing one");
+    assert.ok(html.includes("/day</span>") && html.includes("perDayUsdc"), "the unlock line shows the daily rate beside the amount");
+    assert.ok(html.includes('sessionStorage.getItem(SIMS_KEY)') && html.includes('s.phase === "active" && s.quote && s.endMs > Date.now()'), "only active previews survive a reload, and only within the tab");
+  }
+});
+
 test("simulation lane: toggle is marked data-sim and priced by the live preview endpoint", () => {
   for (const html of [web, mini]) {
     assert.ok(html.includes('data-sim="1"'), "showcase toggle must carry the sim marker");
