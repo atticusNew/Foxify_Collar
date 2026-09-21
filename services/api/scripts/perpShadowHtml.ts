@@ -1,5 +1,5 @@
 /**
- * Earn & Protect (perps) — the shadow record pages.
+ * Earn & Protect (perps) — the track record pages.
  *
  * Public: what was quoted from the live OKX book at the product's own terms
  * and what it did for the holder on the price path (a cap touch is a
@@ -85,10 +85,19 @@ export interface PerpShadowPageInput {
   summary: PerpShadowSummary;
   open: PerpShadowPosition[];
   settled: PerpShadowPosition[];
+  /** closed early at live prices (flow mode) */
+  closed?: PerpShadowPosition[];
   sizeBtc: number;
   /** the tenor the live product writes to; the record page says which expiry each cycle runs to */
   tenor?: EpTenor;
+  /** flow mode's one-line rule (describeFlow), or null when the shadow is the fixed-size metronome */
+  flow?: string | null;
 }
+
+const sizeWords = (p: PerpShadowPosition): string => {
+  const cls = p.flow?.sizeClass;
+  return cls ? `<span class="tag">${cls}</span> ` : "";
+};
 
 function positionRow(p: PerpShadowPosition): string {
   const o = p.outcome;
@@ -102,15 +111,82 @@ function positionRow(p: PerpShadowPosition): string {
           : o.touchedAtIso
             ? '<span class="tag">touched</span>'
             : '<span class="tag">between</span>'
-    : "";
+    : p.status === "closed"
+      ? '<span class="tag">closed early</span>'
+      : "";
+  const co = p.closeOutcome;
   const right = o
     ? o.knockedOut
       ? `${signedUsd(o.deltaCents)} <i>paid at the touch${o.touchedAtIso ? ` ${shortUtc(o.touchedAtIso)}` : ""}</i>`
       : o.capExcessCents > 0
-        ? `${signedUsd(o.deltaCents)} <i>vs naked · ${usd(o.capExcessCents)} above the cap handed back · settled ${px(p.settleCents ?? 0)}</i>`
-        : `${signedUsd(o.deltaCents)} <i>vs naked · settled ${px(p.settleCents ?? 0)}</i>`
-    : `${usd(p.creditCents)} <i>cash · expires ${shortUtc(p.expiryIso)}</i>`;
-  return `<div class="row"><span>${p.side === "long" ? "Long" : "Short"} ${(p.contracts * p.ctValBtc).toFixed(2)} BTC at ${px(p.spotCents)} ${tag}<br/><i style="font-style:normal;color:var(--faint);font-size:11.5px">floor ${px(p.floorStrikeCents)} · cap ${px(p.capStrikeCents)} · ${shortUtc(p.at)}</i></span><b>${right}</b></div>`;
+        ? `${signedUsd(o.deltaCents)} <i>vs unprotected · ${usd(o.capExcessCents)} above the cap handed back · settled ${px(p.settleCents ?? 0)}</i>`
+        : `${signedUsd(o.deltaCents)} <i>vs unprotected · settled ${px(p.settleCents ?? 0)}</i>`
+    : p.status === "closed"
+      ? co && co.deltaCents != null
+        ? `${signedUsd(co.deltaCents)} <i>vs unprotected · closed at ${px(p.closeValuation?.markCents ?? 0)}${co.executionEdgeCents != null ? ` · ${usd(Math.abs(co.executionEdgeCents))} edge on the unwind` : ""}</i>`
+        : `<i>closed at ${px(p.closeValuation?.markCents ?? 0)} · legs unpriced</i>`
+      : `${usd(p.creditCents)} <i>cash · expires ${shortUtc(p.expiryIso)}</i>`;
+  return `<div class="row"><span>${p.side === "long" ? "Long" : "Short"} ${(p.contracts * p.ctValBtc).toFixed(2)} BTC at ${px(p.spotCents)} ${sizeWords(p)}${tag}<br/><i style="font-style:normal;color:var(--faint);font-size:11.5px">floor ${px(p.floorStrikeCents)} · cap ${px(p.capStrikeCents)} · ${shortUtc(p.at)}</i></span><b>${right}</b></div>`;
+}
+
+/**
+ * THE IDENTITY. In plain mode the hedge is held leg for leg to expiry, so on every settled position
+ * our P&L is the take we booked at the quote: nothing else. The card shows both numbers and the gap.
+ */
+function identityCard(s: PerpShadowSummary): string {
+  const plain = s.capMode === "plain";
+  const gap = s.writerCents - s.settledTakeCents;
+  const holds = plain ? Math.abs(gap) <= Math.max(1, Math.round(s.settled * 0.5)) : true;
+  const line = !s.settled
+    ? "Starts with the first settled position."
+    : plain
+      ? `On ${s.settled} settled positions our P&amp;L is <b>${signedUsd(s.writerCents)}</b>; the take booked when those quotes were written was <b>${usd(s.settledTakeCents)}</b>. Gap: <b>${signedUsd(gap)}</b>. Both legs are hedged on OKX and held to expiry, so we carry no view on where price ends: users' floors are paid from the floor leg, gains above the cap go to the cap leg.`
+      : `On ${s.settled} settled positions our P&amp;L is <b>${signedUsd(s.writerCents)}</b> against <b>${usd(s.settledTakeCents)}</b> of take booked; the difference is knock-out buy-backs (${usd(s.knockoutDetail.buybackCents)}) against unvested credit kept (${usd(s.knockoutDetail.unvestedKeptCents)}).`;
+  return `<div class="card">
+    <h2>We carry no outcome risk</h2>
+    <div class="bignums" style="margin-top:8px">
+      <div class="bignum"><div class="n ${s.settled && holds ? "green" : ""}">${s.settled ? signedUsd(s.writerCents) : "–"}</div><div class="l">our P&amp;L, settled</div></div>
+      <div class="bignum"><div class="n">${s.settled ? usd(s.settledTakeCents) : "–"}</div><div class="l">take booked at quote</div></div>
+    </div>
+    <div class="read" style="margin-top:10px">${line}</div>
+  </div>`;
+}
+
+function flowCard(s: PerpShadowSummary, rule: string | null | undefined): string {
+  const f = s.flow;
+  if (!f || !f.enabled) return "";
+  const cls = (k: "small" | "medium" | "large", words: string) => {
+    const b = f.bySize[k];
+    return `<div class="row"><span>${words}</span><b>${b.positions} <i>${usd(b.notionalCents)} · ${b.refused ? `${b.refused} refused${f.depthRefusals[k] ? `, ${f.depthRefusals[k]} for depth` : ""}` : "none refused"}</i></b></div>`;
+  };
+  const days = f.notionalByDay.slice(0, 7).map((d) => `<div class="row"><span>${d.day}</span><b>${usd(d.notionalCents)} <i>${d.positions} wraps</i></b></div>`).join("");
+  const bk = f.book.latest;
+  const saved = (a: number, b: number) => usd(Math.max(0, a - b));
+  const bookRows = bk
+    ? `<div class="row"><span>open book</span><b>${bk.positions} wraps <i>${bk.instruments} instruments · ${bk.expiries} expir${bk.expiries === 1 ? "y" : "ies"}</i></b></div>
+    <div class="row"><span>hedge legs, gross → net</span><b>${bk.grossContracts} → ${bk.netContracts} <i>${bk.nettedShare == null ? "" : `${(bk.nettedShare * 100).toFixed(0)}% netted away`}</i></b></div>
+    <div class="row"><span>OKX fees saved</span><b>${saved(bk.feeGrossCents, bk.feeNetCents)} <i>of ${usd(bk.feeGrossCents)} leg for leg</i></b></div>
+    <div class="row"><span>margin saved</span><b>${saved(bk.marginGrossCents, bk.marginNetCents)} <i>of ${usd(bk.marginGrossCents)} leg for leg · OKX simple, est.</i></b></div>
+    <div class="row"><span>slippage saved</span><b>${bk.slippageGrossCents != null && bk.slippageNetCents != null ? saved(bk.slippageGrossCents, bk.slippageNetCents) : "–"} <i>${bk.slippageGrossCents != null ? `of ${usd(bk.slippageGrossCents)} hedging each alone` : `${bk.unpricedInstruments} instrument${bk.unpricedInstruments === 1 ? "" : "s"} off the live band`}</i></b></div>
+    ${f.book.avgNettedShare != null ? `<div class="row"><span>last 24h, average</span><b>${(f.book.avgNettedShare * 100).toFixed(0)}% netted <i>${f.book.avgFeeSavedCents != null ? `fees ${usd(f.book.avgFeeSavedCents)}` : ""}${f.book.avgMarginSavedCents != null ? ` · margin ${usd(f.book.avgMarginSavedCents)}` : ""} per snapshot</i></b></div>` : ""}`
+    : `<div class="row"><span>open book</span><b>– <i>first batch pending</i></b></div>`;
+  const c = f.closes;
+  const closeRows = `<div class="row"><span>scheduled / done</span><b>${c.scheduled} / ${c.done}${c.unpriced ? ` <i>${c.unpriced} with a leg unpriced</i>` : ""}</b></div>
+    ${c.done - c.unpriced > 0 ? `<div class="row"><span>protection vs unprotected</span><b>${signedUsd(c.holderDeltaCents)} <i>at the close, credit and collar unwound</i></b></div>
+    <div class="row"><span>unwind, crossing the book</span><b>${signedUsd(c.unwindImmediateCents)} <i>vs ${signedUsd(c.unwindPassiveCents)} at mids</i></b></div>
+    <div class="row"><span>execution edge available</span><b>${usd(Math.abs(c.executionEdgeCents))} <i>what working the legs keeps</i></b></div>` : ""}`;
+  return `<div class="card">
+    <h2>Run as a book</h2>
+    <div class="read">${escapeHtml(rule ?? "")}. Sizes, sides and arrival times are simulated; every price, fee and depth is the live OKX book at that second.</div>
+    <h2 style="margin-top:14px">By size</h2>
+    ${cls("small", "small, under $25k")}${cls("medium", "medium, $25k to $150k")}${cls("large", "large, over $150k")}
+    ${days ? `<h2 style="margin-top:14px">Notional wrapped, by day</h2>${days}` : ""}
+    <h2 style="margin-top:14px">Netting the book</h2>
+    ${bookRows}
+    <div class="rule">Netted by exact instrument: a long's cap leg and a short's floor leg at the same strike and expiry cancel, and every wrap at the same strike aggregates into one order. Portfolio margin across strikes would be lower still; these are floors on the saving.</div>
+    <h2 style="margin-top:14px">Early closes, at live prices</h2>
+    ${closeRows}
+  </div>`;
 }
 
 export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
@@ -122,20 +198,17 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     : "starts with the first quoted position";
   const plain = s.capMode === "plain";
   const cd = s.capDetail;
+  const flowOn = !!s.flow?.enabled;
   const settledLine =
     s.settled === 0
       ? "Nothing has expired yet; the first print settles the first positions."
       : plain
         ? `${s.settled} settled: ${s.floorSaves} floor save${s.floorSaves === 1 ? "" : "s"}, ${cd.endedPastCap} ended past the cap (${usd(cd.capExcessCents)} of gains above it handed back against ${usd(
             cd.creditOnPastCapCents,
-          )} of credit on those), ${s.settled - s.floorSaves - cd.endedPastCap} between the wings. ${cd.touched} touched the cap on the way${
-            cd.touched ? ` (a release was on offer; at the touch it would have cost ${usd(cd.releaseAtTouchCents)} in all)` : ""
-          }. Protection ${s.holderDeltaCents >= 0 ? "added" : "cost"} ${usd(Math.abs(s.holderDeltaCents))} against holding naked; the writer's side is the take, ${signedUsd(s.writerCents)}, hedged leg for leg.`
+          )} of credit on those), ${s.settled - s.floorSaves - cd.endedPastCap} between the wings. ${cd.touched} touched the cap on the way. Protection ${s.holderDeltaCents >= 0 ? "added" : "cost"} ${usd(Math.abs(s.holderDeltaCents))} against holding unprotected.`
         : `${s.settled} settled: ${s.floorSaves} floor save${s.floorSaves === 1 ? "" : "s"}, ${s.knockouts} knocked out at the cap (paid what had vested, protection re-armed), ${
             s.settled - s.floorSaves - s.knockouts
-          } ran to expiry between the wings. Protection ${s.holderDeltaCents >= 0 ? "added" : "cost"} ${usd(Math.abs(s.holderDeltaCents))} against holding naked; the writer's side came to ${signedUsd(
-            s.writerCents,
-          )}.`;
+          } ran to expiry between the wings. Protection ${s.holderDeltaCents >= 0 ? "added" : "cost"} ${usd(Math.abs(s.holderDeltaCents))} against holding unprotected.`;
   const refusalRows = Object.entries(s.refusalReasons)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4)
@@ -143,6 +216,10 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     .join("");
   const openRows = input.open.slice(0, 6).map(positionRow).join("");
   const settledRows = input.settled.slice(0, 12).map(positionRow).join("");
+  const closedRows = (input.closed ?? []).slice(0, 6).map(positionRow).join("");
+  const sizeSentence = flowOn
+    ? `Wraps of every size arrive through the day, long and short, each priced from the OKX book at its own size`
+    : `Every hour the live product's collar is quoted from the OKX book for a ${input.sizeBtc.toFixed(2)} BTC Hyperliquid position, long and short`;
 
   return `<!doctype html>
 <html lang="en">
@@ -150,38 +227,40 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
-<title>Shadow record · Earn &amp; Protect</title>
+<title>Track record · Earn &amp; Protect</title>
 <meta name="description" content="The Earn &amp; Protect collar quoted continuously from the live OKX book at the product's own terms, every position marked against the official delivery price. Simulated positions, real prices, real prints." />
 <style>${SHADOW_CSS}</style>
 </head>
 <body>
 <div class="topbar"><div class="in">
-  <div class="wordmark">Earn &amp; Protect <span>· shadow record</span></div>
+  <div class="wordmark">Earn &amp; Protect <span>· track record</span></div>
 </div></div>
 <div class="wrap">
   <div class="card">
-    <h1>What protection did, quote by quote</h1>
-    <div class="sub">Every hour the live product's collar is quoted from the OKX book for a ${input.sizeBtc.toFixed(2)} BTC Hyperliquid position, long and short, at the terms a holder would see: a hard floor 6% out, the cap as far out as the book still pays, cash credit either way, written to ${
+    <h1>Track record</h1>
+    <div class="sub">${sizeSentence}, at the terms a user would see: a hard floor 6% out, the cap as far out as the book still pays, cash credit either way, written to ${
       (input.tenor ?? "weekly") === "weekly" ? "the nearest Friday expiry at least three days out" : "the next daily expiry"
     }. ${
       plain
-        ? "The collar runs to expiry: every gain up to the cap is the holder's, gains above it this cycle pay for the floor, the full credit is theirs, and the cap can be released at any time at the live price. A touch closes nothing."
-        : "A cap touch ends the cycle early: the holder keeps the position and every gain, is paid the credit vested to that moment, and protection re-arms."
-    } Each position is settled on the Hyperliquid price path (did the cap get touched, and when) and OKX's official delivery print, protected versus naked. Positions are simulated; prices, fees, candles and prints are real.</div>
+        ? "The collar runs to expiry: every gain up to the cap is the user's, gains above it this cycle pay for the floor, the full credit is theirs. A touch closes nothing."
+        : "A cap touch ends the cycle early: the user keeps the position and every gain, is paid the credit vested to that moment, and protection re-arms."
+    } Each position is settled on the Hyperliquid price path and OKX's official delivery print, protected versus unprotected. Positions are simulated; prices, fees, candles and prints are real.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.positions}</div><div class="l">positions quoted</div></div>
       <div class="bignum"><div class="n">${s.refusals}</div><div class="l">honest refusals</div></div>
       <div class="bignum"><div class="n green">${usd(s.creditCents)}</div><div class="l">cash credited</div></div>
-      <div class="bignum"><div class="n ${s.holderDeltaCents >= 0 ? "green" : ""}">${s.settled ? signedUsd(s.holderDeltaCents) : "–"}</div><div class="l">protection vs naked, settled</div></div>
+      <div class="bignum"><div class="n ${s.holderDeltaCents >= 0 ? "green" : ""}">${s.settled ? signedUsd(s.holderDeltaCents) : "–"}</div><div class="l">protection vs unprotected, settled</div></div>
     </div>
     <div class="period">${escapeHtml(period)}</div>
     <div class="read" style="margin-top:10px">${escapeHtml(settledLine)}</div>
   </div>
 
+  ${identityCard(s)}
+
   <div class="card">
     <h2>The honest aggregate</h2>
     <div class="row"><span>protected notional</span><b>${usd(s.notionalCents)}</b></div>
-    <div class="row"><span>cash to holders</span><b>${usd(s.creditCents)} <i>${bpsPct(s.creditBpsOfNotional)} of notional</i></b></div>
+    <div class="row"><span>cash to users</span><b>${usd(s.creditCents)} <i>${bpsPct(s.creditBpsOfNotional)} of notional</i></b></div>
     <div class="row"><span>market funded</span><b>${usd(s.grossCreditCents)} <i>gross, before OKX fees ${usd(s.venueFeeCents)}</i></b></div>
     <div class="row"><span>our take</span><b>${usd(s.takeCents)}</b></div>
     <div class="row"><span>venue spread paid</span><b>${bpsPct(s.spreadCostBps)} <i>of notional, mid vs touch</i></b></div>
@@ -190,14 +269,17 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     <div class="row"><span>cap distance written</span><b>${s.avgCapPct === null ? "–" : `${(s.avgCapPct * 100).toFixed(1)}%`} <i>from price, average</i></b></div>
     ${
       plain
-        ? `<div class="row"><span>cap touched</span><b>${s.settled ? `${cd.touched} of ${s.settled}` : "–"} <i>${cd.avgHoursToTouch === null ? "a release on offer, nothing closed" : `avg ${cd.avgHoursToTouch}h in · release on offer`}</i></b></div>
+        ? `<div class="row"><span>cap touched</span><b>${s.settled ? `${cd.touched} of ${s.settled}` : "–"} <i>${cd.avgHoursToTouch === null ? "nothing closed" : `avg ${cd.avgHoursToTouch}h in · nothing closed`}</i></b></div>
     <div class="row"><span>ended past the cap</span><b>${s.settled ? `${cd.endedPastCap} of ${s.settled}` : "–"} <i>${cd.endedPastCap ? `${usd(cd.capExcessCents)} handed back vs ${usd(cd.creditOnPastCapCents)} credit` : "gains above the cap handed back"}</i></b></div>`
         : `<div class="row"><span>knock-outs</span><b>${s.settled ? `${s.knockouts} of ${s.settled}` : "–"} <i>${s.knockoutDetail.avgHoursToTouch === null ? "cap touched, cycle ended early" : `avg ${s.knockoutDetail.avgHoursToTouch}h in`}</i></b></div>`
     }
     <div class="row"><span>long / short</span><b>${s.bySide.long.positions} / ${s.bySide.short.positions}</b></div>
+    ${s.closed ? `<div class="row"><span>closed early</span><b>${s.closed} <i>at live prices</i></b></div>` : ""}
     <div class="row"><span>rule comparison</span><b>${escapeHtml(cfLine)} <i>report on request</i></b></div>
     ${refusalRows ? `<h2 style="margin-top:14px">Why quotes were refused</h2>${refusalRows}` : ""}
   </div>
+
+  ${flowCard(s, input.flow)}
 
   ${
     settledRows
@@ -206,19 +288,20 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
         }</div>`
       : ""
   }
+  ${closedRows ? `<div class="card"><h2>Closed early, most recent first</h2>${closedRows}</div>` : ""}
   ${openRows ? `<div class="card"><h2>Open, next to expire</h2>${openRows}</div>` : ""}
 
   <div class="card">
     <h2>How to read it</h2>
     <div class="read">${
       plain
-        ? `<b>Protection vs naked</b> is the holder's P&amp;L with the collar and credit minus the P&amp;L of the bare position. The floor clamps the loss side; the cap clamps the gain side for the cycle (<b>past the cap</b>: the gains above it were handed back, they paid for the floor); the whole credit is theirs. <b>Touched</b>: price reached the cap on the Hyperliquid path; nothing closed, and the holder could have released the cap at that moment for the buy-back price shown. <b>Our take</b> is the published share of the net credit; both legs are hedged leg for leg on OKX and held to expiry, so the take is the writer's whole side. <b>Venue spread</b> is what crossing the book costs versus mid; it is the number a better fill would shrink.`
-        : `<b>Protection vs naked</b> is the holder's P&amp;L with the collar and credit minus the P&amp;L of the bare position. Ran to expiry: the floor clamps the loss side and the whole credit is theirs. <b>Knocked out</b>: price touched the cap on the Hyperliquid path, the cycle ended there, the holder kept the position and every gain and was paid the credit vested to the touch. <b>Our take</b> is the published share of the net credit; the floor leg is hedged leg for leg on OKX, and at a knock-out the short cap leg is bought back at the money, which is the writer's cost against the unvested credit kept. <b>Venue spread</b> is what crossing the book costs versus mid; it is the number a better fill would shrink.`
+        ? `<b>Protection vs unprotected</b> is the user's P&amp;L with the collar and credit minus the P&amp;L of the bare position. The floor clamps the loss side; the cap clamps the gain side for the cycle (<b>past the cap</b>: the gains above it were handed back, they paid for the floor); the whole credit is theirs. <b>Touched</b>: price reached the cap on the Hyperliquid path; nothing closed. <b>Our take</b> is the published share of the net credit; both legs are hedged leg for leg on OKX and held to expiry, so the take is our whole side. <b>Venue spread</b> is what crossing the book costs versus mid; it is the number a better fill would shrink.`
+        : `<b>Protection vs unprotected</b> is the user's P&amp;L with the collar and credit minus the P&amp;L of the bare position. Ran to expiry: the floor clamps the loss side and the whole credit is theirs. <b>Knocked out</b>: price touched the cap on the Hyperliquid path, the cycle ended there, the user kept the position and every gain and was paid the credit vested to the touch. <b>Our take</b> is the published share of the net credit; the floor leg is hedged leg for leg on OKX, and at a knock-out the short cap leg is bought back at the money, which is our cost against the unvested credit kept. <b>Venue spread</b> is what crossing the book costs versus mid; it is the number a better fill would shrink.`
     }</div>
-    <a class="back" href="${demoUrl()}">Try the live demo</a> <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>
+    <a class="back" href="${demoUrl()}">back to the demo</a> <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>
   </div>
   <footer>
-    <b>What is real:</b> OKX option prices and fees, Hyperliquid marks, candles and funding, OKX delivery prints. <b>What is simulated:</b> the positions; no venue credentials, no wallets, nothing traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer.
+    <b>What is real:</b> OKX option prices, depth and fees, Hyperliquid marks, candles and funding, OKX delivery prints. <b>What is simulated:</b> the positions${flowOn ? ", their sizes, sides, arrival times and close decisions" : ""}; no venue credentials, no wallets, nothing traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer.
   </footer>
 </div>
 </body>
@@ -241,7 +324,7 @@ export interface PerpShadowReportInput {
 }
 
 const ruleHead = (plain: boolean): string =>
-  `<tr><th>rule</th><th>quoted</th><th>refused</th><th>cash / notional</th><th>cash</th><th>take</th><th>settled</th><th>floor</th><th>${plain ? "past the cap" : "knock-outs"}</th><th>holder Δ</th><th>writer</th></tr>`;
+  `<tr><th>rule</th><th>quoted</th><th>refused</th><th>cash / notional</th><th>cash</th><th>take</th><th>settled</th><th>floor</th><th>${plain ? "past the cap" : "knock-outs"}</th><th>user Δ</th><th>our P&amp;L</th></tr>`;
 
 function ruleTr(name: string, note: string, b: PerpRuleBook, opts: { base?: boolean; plain?: boolean } = {}): string {
   const capCell = opts.plain
@@ -261,8 +344,8 @@ function ruleTr(name: string, note: string, b: PerpRuleBook, opts: { base?: bool
 
 const ladderHead = (plain: boolean): string =>
   plain
-    ? `<tr><th>cap from price</th><th>quoted</th><th>refused</th><th>live pick</th><th>cash / notional</th><th>market odds past cap</th><th>settled</th><th>touched</th><th>past the cap</th><th>realized</th><th>handed back</th><th>release at touch</th><th>holder Δ</th><th>OKX saw it</th></tr>`
-    : `<tr><th>cap from price</th><th>quoted</th><th>refused</th><th>live pick</th><th>cash / notional</th><th>settled</th><th>knock-outs</th><th>rate</th><th>avg time to touch</th><th>buyback</th><th>writer</th><th>OKX saw it</th></tr>`;
+    ? `<tr><th>cap from price</th><th>quoted</th><th>refused</th><th>live pick</th><th>cash / notional</th><th>market odds past cap</th><th>settled</th><th>touched</th><th>past the cap</th><th>realized</th><th>handed back</th><th>release at touch</th><th>user Δ</th><th>OKX saw it</th></tr>`
+    : `<tr><th>cap from price</th><th>quoted</th><th>refused</th><th>live pick</th><th>cash / notional</th><th>settled</th><th>knock-outs</th><th>rate</th><th>avg time to touch</th><th>buyback</th><th>our P&amp;L</th><th>OKX saw it</th></tr>`;
 
 function rungTr(r: PerpCapRungBook, guard?: CapGuard, plain = false): string {
   const under = guard ? r.capPct < guard.minCapPct - 1e-9 : r.underGuard > 0;

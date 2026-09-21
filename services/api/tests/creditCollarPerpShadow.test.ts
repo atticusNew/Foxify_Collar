@@ -726,10 +726,11 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const op = { headers: { "x-admin-token": "op-secret" } };
   try {
-    for (const p of ["/report", "/api/shadow/report", "/api/shadow/export"]) {
+    for (const p of ["/report", "/api/shadow/report", "/api/shadow/export", "/api/shadow/reset"]) {
       assert.equal((await fetch(`${base}${p}`)).status, 403, `${p} without a token`);
       assert.equal((await fetch(`${base}${p}?token=wrong`)).status, 403);
     }
+    assert.equal((await fetch(`${base}/api/shadow/reset?token=op-secret`)).status, 405, "GET without confirm=reset does nothing");
     let health = (await (await fetch(`${base}/healthz`)).json()) as Record<string, unknown>;
     assert.equal(health.ok, true);
     assert.equal(health.positions, 0);
@@ -785,7 +786,10 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.ok((await full.text()).split("\n")[0].includes("alt_tenor_credit_c"));
 
     const page = await (await fetch(`${base}/`)).text();
-    assert.ok(page.includes("What protection did, quote by quote"));
+    assert.ok(page.includes("<h1>Track record</h1>") && page.includes("· track record") && !page.includes("shadow record"), "the public page is the track record");
+    assert.ok(page.includes("We carry no outcome risk") && page.includes("our P&amp;L, settled") && page.includes("take booked at quote"), "the identity card leads");
+    assert.ok(!page.includes("holder") && !page.includes("writer"), "user and our P&L, not holder and writer, on the public page");
+    assert.ok(!page.includes("Run as a book"), "flow mode off: no book card");
     assert.ok(page.includes("rule comparison") && page.includes("report on request"));
     assert.ok(!page.includes('href="/report"') && !page.includes('href="/api/shadow/export"'));
     assert.ok(page.includes("floor save"), "the settled long was saved by its floor");
@@ -826,6 +830,23 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     const exp = await fetch(`${base}/api/shadow/export`, op);
     assert.equal(exp.status, 200);
     assert.equal(await exp.text(), readFileSync(path, "utf8"), "byte for byte the ledger");
+
+    // Reset: archive, never delete. The old file is renamed beside itself; the record starts empty.
+    const before = readFileSync(path, "utf8");
+    const reset = await fetch(`${base}/api/shadow/reset?token=op-secret`, { method: "POST" });
+    assert.equal(reset.status, 200);
+    const resetBody = (await reset.json()) as { ok: boolean; archived: Array<{ from: string; to: string }>; rules: { capMode: string; flow: string } };
+    assert.equal(resetBody.ok, true);
+    assert.equal(resetBody.archived.length, 1);
+    assert.equal(resetBody.archived[0].from, path);
+    assert.match(resetBody.archived[0].to, /ledger\.\d{4}-\d{2}-\d{2}T\d{6}Z\.archived\.jsonl$/);
+    assert.equal(readFileSync(resetBody.archived[0].to, "utf8"), before, "the archive is the old ledger byte for byte");
+    assert.equal(resetBody.rules.capMode, "plain");
+    assert.match(resetBody.rules.flow, /metronome/);
+    // the reset kicks a scan, which will fail here (no network in tests) and must not write a ledger
+    await new Promise((r) => setTimeout(r, 50));
+    const afterHealth = (await (await fetch(`${base}/healthz`)).json()) as { positions: number };
+    assert.equal(afterHealth.positions, 0, "a fresh record after the reset");
   } finally {
     delete process.env.EP_ADMIN_TOKEN;
     await new Promise<void>((r) => server.close(() => r()));

@@ -34,8 +34,15 @@
  *      PERP_SHADOW_MIN_TAKE_BPS (live minimum, default 0 = none, as the product today)
  *      PERP_SHADOW_CF_MIN_TAKE_BPS (the fee-floor counterfactual, default 5)
  *      PERP_SHADOW_SETTLE_GRACE_MS (default 20m past expiry) · PERP_SHADOW_VOID_AFTER_MS (default 72h)
- *      EP_ADMIN_TOKEN (the demo's admin token) gates /report, /api/shadow/report, /api/shadow/export
- *      and the full CSV; fail-closed when unset.
+ *      EP_ADMIN_TOKEN (the demo's admin token) gates /report, /api/shadow/report, /api/shadow/export,
+ *      /api/shadow/reset and the full CSV; fail-closed when unset.
+ *      PERP_SHADOW_FLOW=1 runs the shadow as a BOOK (perpShadowFlow.ts): hourly batches of wraps to a
+ *      daily notional target (PERP_SHADOW_DAILY_NOTIONAL_USD, default $2M), lognormal sizes
+ *      (PERP_SHADOW_MEDIAN_USD 15000, PERP_SHADOW_SIZE_SIGMA 1.4, PERP_SHADOW_MAX_USD 750000), a side
+ *      mix (PERP_SHADOW_LONG_SHARE 0.7), early closes at live prices (PERP_SHADOW_CLOSE_SHARE 0.3),
+ *      every wrap priced at its own size by walking the book, and a netted book snapshot after every
+ *      batch (gross vs net legs, fees, margin, slippage). Off: the metronome above.
+ *      POST /api/shadow/reset (operator) archives the ledger beside itself and opens a fresh book.
  */
 
 import { createReadStream, statSync } from "node:fs";
@@ -49,14 +56,18 @@ import { bullishLegReader, deribitLegReader, readVenueReference } from "../src/s
 import {
   appendPerpShadowRecord,
   loadPerpShadow,
+  loadPerpShadowRecords,
   perpLedgerStats,
   perpPositionsCsv,
+  plannedIdsIn,
   summarizePerpShadow,
   type PerpPath,
   type PerpPathTouch,
   type PerpShadowPosition,
   type PerpShadowSummary,
 } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowLedger";
+import { buildBook, closeAtIso, describeFlow, flowConfigFromEnv, hourKey, planHourBatch, summarizeFlow, valueClose } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowFlow";
+import { archiveLedgerFile } from "../src/singleSide/twoSided/creditCollar/perpShadow/ledgerArchive";
 import {
   fetchHlCandles,
   fetchHlContext,
@@ -109,9 +120,11 @@ const CF_MIN_TAKE_BPS = Number(process.env.PERP_SHADOW_CF_MIN_TAKE_BPS || 5);
 // quotes them — a measurement for the operator report, never the price. PERP_SHADOW_VENUE_REF=0 turns it off.
 const VENUE_REF = !/^(0|false|off)$/i.test(String(process.env.PERP_SHADOW_VENUE_REF ?? "1"));
 const venueReaders = { deribit: deribitLegReader(), bullish: bullishLegReader() };
+// Flow mode (perpShadowFlow.ts): the shadow as a book rather than a metronome.
+const FLOW = flowConfigFromEnv(process.env);
 
 const adminAuth = parseAdminAuthFromEnv(process.env);
-const OPERATOR_PATHS = new Set(["/report", "/api/shadow/report", "/api/shadow/export"]);
+const OPERATOR_PATHS = new Set(["/report", "/api/shadow/report", "/api/shadow/export", "/api/shadow/reset"]);
 const BOOT_MS = Date.now();
 
 let lastScanAt: string | null = null;
@@ -133,34 +146,57 @@ async function scanTick(): Promise<void> {
     const snap = await fetchOkxListedSnapshot({ spot: hl.markPx, nowMs });
     if (snap.chain.length === 0) throw new Error("OKX chain has no live in-band options at the next daily expiry");
     const nowIso = new Date(nowMs).toISOString();
-    for (const side of SIDES) {
-      const rec = perpShadowQuote(
-        {
-          side,
-          spot: hl.markPx,
-          contracts: CONTRACTS,
-          geometry: GEOMETRY,
-          tenor: TENOR,
-          capGuard: CAP_GUARD,
-          capRule: CAP_RULE,
-          otherTenorCapGuard: OTHER_TENOR_CAP_GUARD,
-          take: TAKE,
-          counterfactualMinTakeBps: CF_MIN_TAKE_BPS,
-          okxIndex,
-          fundingBpsPer8h: hl.fundingBpsPer8h,
-          nowIso,
-          id: `${nowIso.slice(0, 16).replace(/[-:T]/g, "")}-${side}`,
-        },
-        snap,
-      );
-      if (rec.type === "open" && VENUE_REF) {
-        rec.venueReference = await readVenueReference(
-          { buyInstId: rec.buyInstId, sellInstId: rec.sellInstId, buyPxBtc: rec.buyPxBtc, sellPxBtc: rec.sellPxBtc, spot: hl.markPx },
-          venueReaders,
-        ).catch(() => null);
+    const common = {
+      spot: hl.markPx,
+      geometry: GEOMETRY,
+      tenor: TENOR,
+      capGuard: CAP_GUARD,
+      capRule: CAP_RULE,
+      otherTenorCapGuard: OTHER_TENOR_CAP_GUARD,
+      take: TAKE,
+      counterfactualMinTakeBps: CF_MIN_TAKE_BPS,
+      okxIndex,
+      fundingBpsPer8h: hl.fundingBpsPer8h,
+      nowIso,
+    };
+    if (FLOW.enabled) {
+      // The hour's batch is re-plannable from its key; whatever the ledger already has from it is skipped.
+      const key = hourKey(nowMs);
+      const seen = plannedIdsIn(loadPerpShadowRecords(LEDGER_PATH));
+      const ctValBtc = snap.chain[0]?.ctValBtc ?? 0.01;
+      for (const plan of planHourBatch(key, hl.markPx, ctValBtc, FLOW)) {
+        if (seen.has(plan.id)) continue;
+        const rec = perpShadowQuote({ ...common, side: plan.side, contracts: plan.contracts, id: plan.id, fillMode: "walk" }, snap);
+        if (rec.type === "open") {
+          rec.flow = { sizeClass: plan.sizeClass, targetUsd: plan.targetUsd, closeAtIso: closeAtIso(rec.at, rec.expiryIso, plan.closeAtFrac) };
+          // the venue reference is a per-leg read at two venues; keep it to the first wrap of the hour so a batch is not 40 round-trips
+          if (VENUE_REF && plan.id.endsWith("-f1")) {
+            rec.venueReference = await readVenueReference(
+              { buyInstId: rec.buyInstId, sellInstId: rec.sellInstId, buyPxBtc: rec.buyPxBtc, sellPxBtc: rec.sellPxBtc, spot: hl.markPx },
+              venueReaders,
+            ).catch(() => null);
+          }
+        } else {
+          rec.id = plan.id;
+          rec.sizeClass = plan.sizeClass;
+        }
+        appendPerpShadowRecord(LEDGER_PATH, rec);
       }
-      appendPerpShadowRecord(LEDGER_PATH, rec);
+    } else {
+      for (const side of SIDES) {
+        const rec = perpShadowQuote({ ...common, side, contracts: CONTRACTS, id: `${nowIso.slice(0, 16).replace(/[-:T]/g, "")}-${side}` }, snap);
+        if (rec.type === "open" && VENUE_REF) {
+          rec.venueReference = await readVenueReference(
+            { buyInstId: rec.buyInstId, sellInstId: rec.sellInstId, buyPxBtc: rec.buyPxBtc, sellPxBtc: rec.sellPxBtc, spot: hl.markPx },
+            venueReaders,
+          ).catch(() => null);
+        }
+        appendPerpShadowRecord(LEDGER_PATH, rec);
+      }
     }
+    // The book after this batch, netted by exact instrument at this snapshot's depth.
+    const open = loadPerpShadow(LEDGER_PATH, REPLAY).positions.filter((p) => p.status === "open");
+    if (open.length > 0) appendPerpShadowRecord(LEDGER_PATH, buildBook(open, snap, hl.markPx, nowIso));
     lastScanAt = nowIso;
     lastScanError = null;
     consecutiveScanFailures = 0;
@@ -205,10 +241,27 @@ const buildPath = async (p: PerpShadowPosition, candles: Candle[], interval: "1m
 };
 
 /** Settle every expired position on its path and the official delivery print; void what never prints. */
-async function settleTick(deps: { candles?: typeof fetchHlCandles; okxAround?: typeof fetchOkxIndexCandlesAround; delivery?: typeof fetchOkxDeliveryPrice } = {}): Promise<void> {
+async function settleTick(
+  deps: { candles?: typeof fetchHlCandles; okxAround?: typeof fetchOkxIndexCandlesAround; delivery?: typeof fetchOkxDeliveryPrice; hl?: typeof fetchHlContext; snapshot?: typeof fetchOkxListedSnapshot } = {},
+): Promise<void> {
   try {
     const nowMs = Date.now();
     const { positions } = loadPerpShadow(LEDGER_PATH, REPLAY);
+    // Early closes fall due before expiry and are valued at LIVE prices: the mark now, the two legs now.
+    const closing = positions.filter((p) => p.status === "open" && p.flow?.closeAtIso && Date.parse(p.flow.closeAtIso) <= nowMs && Date.parse(p.expiryIso) > nowMs);
+    if (closing.length > 0) {
+      const hl = await (deps.hl ?? fetchHlContext)(COIN);
+      if (hl) {
+        const snap = await (deps.snapshot ?? fetchOkxListedSnapshot)({ spot: hl.markPx, nowMs }).catch(() => null);
+        const nowIso = new Date(nowMs).toISOString();
+        for (const p of closing) {
+          const valuation = snap
+            ? valueClose(p, snap, hl.markPx)
+            : { markCents: Math.round(hl.markPx * 100), legs: { floorBidBtc: null, floorAskBtc: null, capBidBtc: null, capAskBtc: null }, unwindImmediateCents: null, unwindPassiveCents: null };
+          appendPerpShadowRecord(LEDGER_PATH, { type: "close", at: nowIso, id: p.id, valuation });
+        }
+      }
+    }
     const due = positions.filter((p) => p.status === "open" && Date.parse(p.expiryIso) + SETTLE_GRACE_MS <= nowMs);
     const byExpiry = new Map<string, PerpShadowPosition[]>();
     for (const p of due) byExpiry.set(p.expiryIso, [...(byExpiry.get(p.expiryIso) ?? []), p]);
@@ -243,8 +296,10 @@ async function settleTick(deps: { candles?: typeof fetchHlCandles; okxAround?: t
 }
 
 function pageData(): { atIso: string; positions: PerpShadowPosition[]; summary: PerpShadowSummary } {
-  const { positions, refusals } = loadPerpShadow(LEDGER_PATH, REPLAY);
-  return { atIso: new Date().toISOString(), positions, summary: summarizePerpShadow(positions, refusals, REPLAY) };
+  const { positions, refusals, books } = loadPerpShadow(LEDGER_PATH, REPLAY);
+  const summary = summarizePerpShadow(positions, refusals, REPLAY);
+  summary.flow = summarizeFlow(positions, refusals, books, FLOW);
+  return { atIso: new Date().toISOString(), positions, summary };
 }
 
 function publicSummary(s: PerpShadowSummary): Omit<PerpShadowSummary, "counterfactuals"> & {
@@ -267,6 +322,7 @@ function healthBody(): Record<string, unknown> {
     open: positions.filter((p) => p.status === "open").length,
     ledger: { path: LEDGER_PATH, ...perpLedgerStats(LEDGER_PATH) },
     terms: { geometry: GEOMETRY, tenor: TENOR, capMode: CAP_MODE, capGuard: CAP_GUARD, capRule: CAP_RULE, contracts: CONTRACTS, sizeBtc: CONTRACTS * OKX_LOT_BTC, sides: SIDES, take: TAKE, counterfactualMinTakeBps: CF_MIN_TAKE_BPS },
+    flow: FLOW.enabled ? { ...FLOW, rule: describeFlow(FLOW) } : { enabled: false },
     lastScanAt,
     lastSettleAt,
     lastScanError,
@@ -291,6 +347,26 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/healthz") {
       sendJson(res, 200, healthBody());
+      return;
+    }
+    if (url.pathname === "/api/shadow/reset") {
+      // FRESH START, ARCHIVE NOT DELETE: the ledger is renamed beside itself with a UTC stamp (still
+      // exportable, still append-only, now closed) and the next scan opens a new book under the rules
+      // in force. Operator only; POST, or GET with confirm=reset from a browser.
+      if (!(req.method === "POST" || (req.method === "GET" && url.searchParams.get("confirm") === "reset"))) {
+        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/reset?token=… or GET …&confirm=reset" });
+        return;
+      }
+      const atIso = new Date().toISOString();
+      const archived = [archiveLedgerFile(LEDGER_PATH, atIso)].filter((a) => a.archivedTo).map((a) => ({ from: a.path, to: a.archivedTo }));
+      void scanTick();
+      sendJson(res, 200, {
+        ok: true,
+        at: atIso,
+        archived,
+        message: "perp shadow ledger archived; a fresh book opens with the next scan",
+        rules: { capMode: CAP_MODE, tenor: TENOR, geometry: GEOMETRY, capRule: capRuleText(CAP_RULE), flow: FLOW.enabled ? describeFlow(FLOW) : "off (metronome)" },
+      });
       return;
     }
     if (url.pathname === "/api/shadow/export") {
@@ -324,11 +400,12 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const { atIso, positions, summary } = pageData();
       const settled = positions.filter((p) => p.status === "settled").sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
       const open = positions.filter((p) => p.status === "open").sort((a, b) => a.expiryIso.localeCompare(b.expiryIso) || a.at.localeCompare(b.at));
+      const closed = positions.filter((p) => p.status === "closed").sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? ""));
       const strip = (p: PerpShadowPosition) => {
         const { counterfactuals: _cf, ...rest } = p;
         return rest;
       };
-      sendJson(res, 200, { ok: true, at: atIso, summary: publicSummary(summary), settled: settled.map(strip), open: open.map(strip) });
+      sendJson(res, 200, { ok: true, at: atIso, summary: publicSummary(summary), settled: settled.map(strip), open: open.map(strip), closed: closed.map(strip) });
       return;
     }
     if (url.pathname === "/api/shadow/report") {
@@ -350,6 +427,9 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
             ? "the same two legs read at Deribit and Bullish the second OKX quoted them (buy the floor at the ask, sell the cap at the bid, same strikes, same expiry); positive = that venue would have paid the holder more; a reference for FalconX RFQ acceptance, not a price we quote"
             : "off (PERP_SHADOW_VENUE_REF=0)",
           fundingRule: "informational: how often the credit fails to clear what holding the perp costs over the cycle at the funding rate seen at open; the live product does not refuse on it (funding is the perp's cost, paid with or without protection)",
+          flow: FLOW.enabled ? describeFlow(FLOW) : "off: one long and one short at a fixed size every scan",
+          book: "after every batch the open book is netted by exact instrument (same strike, expiry, type): gross legs vs net legs, OKX taker fees gross vs net, OKX simple short-option margin gross vs net, book-walk slippage of hedging each wrap alone vs one order per instrument at that snapshot's depth. Exact-instrument netting only, so the savings are lower bounds; portfolio margin across strikes would be lower still",
+          earlyCloses: "a scheduled share of wraps closes before expiry at LIVE prices: the perp at the Hyperliquid mark, the collar unwound at the OKX book crossing the spread (immediate) and at mids (passive); passive minus immediate is the execution edge the unwind queue works for; legs outside the live band are recorded unpriced",
           feeRules: Object.fromEntries(Object.keys(summary.counterfactuals.feeRules).map((l) => [l, feeRuleText(l)])),
         },
         counterfactuals: summary.counterfactuals,
@@ -367,7 +447,8 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const settled = positions.filter((p) => p.status === "settled").sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
       const open = positions.filter((p) => p.status === "open").sort((a, b) => a.expiryIso.localeCompare(b.expiryIso) || a.at.localeCompare(b.at));
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderPerpShadowHtml({ atIso, summary, open, settled, sizeBtc: CONTRACTS * OKX_LOT_BTC, tenor: TENOR }));
+      const closed = positions.filter((p) => p.status === "closed").sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? ""));
+      res.end(renderPerpShadowHtml({ atIso, summary, open, settled, closed, sizeBtc: CONTRACTS * OKX_LOT_BTC, tenor: TENOR, flow: FLOW.enabled ? describeFlow(FLOW) : null }));
       return;
     }
     sendJson(res, 404, { ok: false, error: "not found" });
@@ -380,7 +461,7 @@ function main(): void {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
-      `[perp-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · ${CONTRACTS} lots ${SIDES.join("+")} · floor ${GEOMETRY.floorPct} · cap guard ${CAP_GUARD.minCapPct}–${CAP_GUARD.maxCapPct} · ${TENOR} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m`,
+      `[perp-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · ${FLOW.enabled ? `flow: ${describeFlow(FLOW)}` : `${CONTRACTS} lots ${SIDES.join("+")}`} · floor ${GEOMETRY.floorPct} · cap guard ${CAP_GUARD.minCapPct}–${CAP_GUARD.maxCapPct} · ${TENOR} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m`,
     );
     void scanTick();
     void settleTick();
