@@ -77,8 +77,8 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes("cash:41250"), "and the script starts from it");
   assert.ok(html.includes('data-protect="'), "one Protect button per row");
   assert.ok(html.includes('id="sheet"') && html.includes('role="dialog"'), "the sheet is a dialog over the host");
-  assert.ok(html.includes("protection by") && html.includes("data:image/png;base64"), "the sheet carries our gold wordmark, inlined");
-  assert.ok(html.includes(".sheet .eyebrow img{height:14px;display:block;opacity:.8}"), "14px tall at 80%: subtle");
+  assert.ok(html.includes("protection by") && html.includes("data:image/png;base64"), "the sheet carries our wordmark, inlined");
+  assert.ok(html.includes(".sheet .eyebrow img{height:16px;display:block;opacity:.7;filter:brightness(0)}"), "rendered as ink at 16px / 70%: legible on the white sheet, still quiet");
   assert.ok(!html.includes("data:image/jpeg"), "the black-tile mark is gone from the embed");
   assert.ok(html.includes("Protect this position"), "same grammar as the board");
   assert.ok(html.includes(">if it loses<") && html.includes(">paid now<") && html.includes(">if it wins<"), "three tiles, three outcomes");
@@ -99,9 +99,14 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes("You sell part of this position at today\\'s price and keep the rest. That is why you are paid now."), "how it works: the sale framing, not set-aside");
   assert.ok(html.includes("The credit you see is the credit you get."), "the fee is explained as netted, once");
   assert.ok(html.includes("Nothing to manage. It settles with your position."), "passive after the tap");
-  assert.ok(html.includes("Demo. Simulated positions at live prices; nothing is bought."), "honesty line on the shell, trimmed");
-  assert.ok(html.includes('<a href="/board">Board</a>'), "the board moved to /board; the shell links it");
+  assert.ok(html.includes("Demo. Simulated positions at live prices; nothing is bought. · <a href=\"https://atticus-event-shadow.onrender.com\">Track record</a></div>"), "the phone has one line and one link: the track record");
+  assert.ok(!html.includes('<a href="/board">Board</a>') && !html.includes('<a href="/receipts">Receipts</a></div>'), "board and receipts are off the phone");
   assert.ok(html.includes('<aside class="pitch">') && html.includes("Protection inside your app.") && html.includes("One JSON quote in, one receipt out"), "desktop: the pitch beside the phone");
+  assert.ok(html.includes("We price it and carry the risk; you keep the flow, the ledger and the relationship."), "the subline carries the deal");
+  assert.ok(html.includes('<b>For partners</b><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="/partner">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a>'), "desktop: every partner surface in one row");
+  const custom = renderEventEmbedHtml({ brand: "ProphetX", trackRecordUrl: "https://tr.example", minCredit: { cents: 50, bpsOfStake: 10 } });
+  assert.ok(custom.includes('href="https://tr.example">Track record</a>'), "the track record URL comes from the server");
+  assert.ok(custom.includes("var MIN_CREDIT_CENTS=50,MIN_CREDIT_BPS=10;"), "the page mirrors the server's minimum-credit rule");
   assert.ok(html.includes("@media(min-width:900px)") && html.includes(".host-note,.scrim,.sheet,.toast{position:absolute}"), "on desktop the sheet stays inside the phone frame");
   assert.ok(html.includes("far=dt.getTime()-Date.now()>86400000") && html.includes("month:'short',day:'numeric'"), "past 24h out the row shows the date, so next Sunday's game never reads as today's");
   for (const leak of ["Kalshi", "Polymarket", "hedge", "route", "take", "instId", "OKX", "tight", "wide"]) {
@@ -168,7 +173,7 @@ test("embed: the partner console reads the ledger and funnel in the host's words
   assert.ok(html.includes("<span>embedded shell loads, 7 days</span><b>2</b>"), "embed loads counted apart from the board");
   assert.ok(html.includes("we price and hedge <i>your venue executes and settles</i>"), "who does what, stated");
   assert.ok(!html.includes("quote-only"), "not a pricer");
-  assert.ok(html.includes("data:image/png;base64") && html.includes(".topbar img{height:14px;display:block;opacity:.8}"), "gold wordmark, subtle, on the console bar");
+  assert.ok(html.includes("data:image/png;base64") && html.includes(".topbar img{height:16px;display:block;opacity:.7;filter:brightness(0)}"), "the wordmark as ink, subtle, on the console bar");
   assert.ok(html.includes("2026-09-18 to 2026-09-20 UTC"));
   assert.ok(!html.includes("—"), "no em dash");
 });
