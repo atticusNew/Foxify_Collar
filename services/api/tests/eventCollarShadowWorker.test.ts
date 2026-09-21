@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -312,6 +312,23 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.equal(hedges.strategy, "book");
     assert.equal(hedges.summary.receipts, 0, "positions appended by hand carry no hedge receipt; the scanner writes those");
     assert.deepEqual(hedges.recent, []);
+
+    // FRESH START: operator only; archive, never delete. The old window stays on disk beside the new empty book.
+    assert.equal((await fetch(`${base}/api/shadow/reset`, { method: "POST" })).status, 403, "reset is an operator action");
+    assert.equal((await fetch(`${base}/api/shadow/reset?token=op-secret`)).status, 405, "a bare GET does nothing");
+    const reset = await fetch(`${base}/api/shadow/reset?token=op-secret`, { method: "POST" });
+    assert.equal(reset.status, 200);
+    const resetBody = (await reset.json()) as { ok: boolean; archived: Array<{ from: string; to: string }> };
+    assert.equal(resetBody.ok, true);
+    assert.equal(resetBody.archived.length, 1, "the ledger was archived; there were no hedge receipts to archive");
+    assert.equal(resetBody.archived[0].from, path);
+    assert.match(resetBody.archived[0].to, /ledger\.\d{4}-\d{2}-\d{2}T\d{6}Z\.archived\.jsonl$/);
+    assert.equal(readFileSync(resetBody.archived[0].to, "utf8"), raw, "the archive is the old ledger byte for byte");
+    assert.equal(existsSync(path), false, "and the live path is empty until the next scan");
+    assert.equal(((await (await fetch(`${base}/healthz`)).json()) as { positions: number }).positions, 0);
+    assert.equal(((await (await fetch(`${base}/api/shadow`)).json()) as { summary: { settledCount: number } }).summary.settledCount, 0, "the public record starts over");
+    assert.equal((await fetch(`${base}/api/shadow/reset?token=op-secret&confirm=reset`)).status, 200, "GET with confirm=reset works from a browser");
+    assert.equal(((await (await fetch(`${base}/api/shadow/reset?token=op-secret&confirm=reset`)).json()) as { archived: unknown[] }).archived.length, 0, "nothing to archive twice");
   } finally {
     delete process.env.EVENT_X_ADMIN_TOKEN;
     await new Promise<void>((r) => server.close(() => r()));

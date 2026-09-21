@@ -76,6 +76,7 @@ import {
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml } from "./eventShadowHtml";
+import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 import type { ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -97,7 +98,7 @@ const hedgeChoice = hedgeExecutorFromEnv(process.env);
  * that is ever public by default.
  */
 const adminAuth = parseAdminAuthFromEnv(process.env);
-const OPERATOR_PATHS = new Set(["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export"]);
+const OPERATOR_PATHS = new Set(["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export", "/api/shadow/reset"]);
 
 const alertCfg = parseShadowAlertsFromEnv(process.env);
 const alerter: ShadowAlerter = buildShadowAlerter(alertCfg);
@@ -365,6 +366,22 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/healthz") {
       sendJson(res, 200, operator ? healthBody() : publicHealthBody());
+      return;
+    }
+    if (url.pathname === "/api/shadow/reset") {
+      // FRESH START, ARCHIVE NOT DELETE: the ledger and the hedge receipts are renamed beside
+      // themselves with a UTC stamp (still exportable, still append-only, now closed) and the next
+      // scan opens a new book under the rules in force. Operator only; POST, or GET with confirm=reset.
+      if (!(req.method === "POST" || (req.method === "GET" && url.searchParams.get("confirm") === "reset"))) {
+        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/reset?token=… or GET …&confirm=reset" });
+        return;
+      }
+      const atIso = new Date().toISOString();
+      const archived = [archiveLedgerFile(LEDGER_PATH, atIso), archiveLedgerFile(RECEIPTS_PATH, atIso)]
+        .filter((a) => a.archivedTo)
+        .map((a) => ({ from: a.path, to: a.archivedTo }));
+      if (scan) void scanTick();
+      sendJson(res, 200, { ok: true, at: atIso, archived, message: "shadow ledger and hedge receipts archived; a fresh book opens with the next scan" });
       return;
     }
     if (url.pathname === "/api/shadow/export") {

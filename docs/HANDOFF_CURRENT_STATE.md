@@ -26,6 +26,8 @@ Earn & Protect: one-tap protection for Hyperliquid perp positions. A daily knock
 - NEVER run okx_live or spend real funds without founder's explicit in-session confirmation. Never commit secrets.
 - Honesty is the brand: MEASURED vs ESTIMATE labeled; shadow results never "revenue"; no "guaranteed"/"risk-free"; the cap tradeoff volunteered; every public number checkable.
 - LIVE-LANGUAGE RULE: never claim what a click can falsify. Software is "in production"; execution is "production-proven on OKX (real fills)"; the hedge book "activates at first close — that's what the raise funds". "Live" only for live pricing/positions/demo.
+- MINIMUM CREDIT (events): a tier is offered only if its credit is at least 25c AND 0.25% of stake (EVENT_X_MIN_CREDIT_CENTS / _BPS). Runs server-side in the scan (src/eventCollar/crossVenue/minimumCredit.ts) before the EV-cost ceiling, so board, embed and track record agree; a default under the line promotes the next clearing tier (Balanced, Safest, Most upside); nothing clearing refuses as `credit_too_small`.
+- ARCHIVE, NEVER DELETE (ledgers): a fresh start is `POST /api/shadow/reset` (track record) and `POST /api/admin/reset` (demo receipts + funnel), operator token required; the file is renamed `<name>.<UTC stamp>.archived.<ext>` beside itself and the next scan opens a new book. Never rm a ledger.
 - Never name Foxify in customer-facing copy (first pilot partner stays unnamed). US persons geofenced. Never leak private threads (incl. an HL co-founder DM thread). No em dashes in founder-facing PDFs/reports. Copy grammar: "address", never "wallet" (for the public-data thing being pasted).
 
 ## 4. Number lock (Aug 31 scorecard — use everywhere, refresh from scorecard before big sends)

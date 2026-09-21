@@ -82,7 +82,9 @@ export type CrossRefusalCode =
   | "kalshi_book_too_thin"
   | "credit_nonpositive"
   /** every route funded a collar, but the cheapest still costs more than the ceiling in EV terms */
-  | "protection_too_rich";
+  | "protection_too_rich"
+  /** a collar was funded, but no tier's credit clears the minimum (25¢ and 0.25% of stake by default) */
+  | "credit_too_small";
 
 export interface CrossRefusal {
   ok: false;

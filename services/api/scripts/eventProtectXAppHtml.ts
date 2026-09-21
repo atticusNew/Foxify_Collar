@@ -544,6 +544,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 const REFUSAL_LABELS: Record<string, string> = {
   credit_nonpositive: "the venues could not fund a positive credit",
   protection_too_rich: "the cheapest route was still rich insurance (above the EV-cost ceiling)",
+  credit_too_small: "the best credit fell under the minimum (25¢ and 0.25% of stake)",
   market_too_close_to_start: "the game was too close to starting",
   mark_out_of_range: "the odds were outside the quotable band",
   pm_book_empty: "no executable depth on the Polymarket book",

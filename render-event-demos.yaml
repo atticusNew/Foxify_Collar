@@ -71,6 +71,14 @@ services:
       # (protection_too_rich). 0 turns the ceiling off.
       - key: EVENT_X_MAX_EV_COST_BPS
         value: "300"
+      # Minimum credit a tier must pay to be offered: 25¢ and 0.25% of stake,
+      # whichever is more (38¢ on 150 contracts). Below it the scan refuses
+      # (credit_too_small) rather than offering pennies. Applied in the scan, so
+      # the board, the embed and the shadow record agree.
+      - key: EVENT_X_MIN_CREDIT_CENTS
+        value: "25"
+      - key: EVENT_X_MIN_CREDIT_BPS
+        value: "25"
       # Embed demo (/): host names honoured on ?brand=, comma-separated; anything
       # else renders as EVENT_X_EMBED_BRAND. These names carry a colourway and a
       # light/dark shell (scripts/eventProtectEmbedHtml.ts BRAND_PRESETS); any

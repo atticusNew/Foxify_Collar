@@ -106,6 +106,8 @@ import {
 } from "../src/eventCollar/crossVenue/types";
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
 import { renderEventEmbedHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
+import { applyMinimumCredit, describeMinimumCredit, minimumCreditRuleFromEnv } from "../src/eventCollar/crossVenue/minimumCredit";
+import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 
 const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
@@ -122,6 +124,12 @@ const MAX_CRYPTO_ROWS = Number(process.env.EVENT_X_CRYPTO_ROWS || 2);
  */
 export const MAX_EV_COST_BPS = Number(process.env.EVENT_X_MAX_EV_COST_BPS ?? 300);
 /**
+ * MINIMUM CREDIT (src/eventCollar/crossVenue/minimumCredit.ts): 25¢ and 0.25% of stake by default
+ * (EVENT_X_MIN_CREDIT_CENTS, EVENT_X_MIN_CREDIT_BPS). Applied in the scan, before the ceiling, so
+ * the board, the embed and the shadow record offer the same tiers and refuse the same events.
+ */
+export const MIN_CREDIT_RULE = minimumCreditRuleFromEnv(process.env);
+/**
  * EMBED DEMO knobs. `?brand=` on /embed is honoured only for names on the allowlist (fail-closed
  * to "Your app"); the partner console's revenue-share line uses EVENT_X_PARTNER_SHARE_PCT.
  */
@@ -129,6 +137,8 @@ const BRAND_ALLOWLIST = process.env.EVENT_X_BRAND_ALLOWLIST || "";
 /** What the embed shell calls the host when the link carries no brand (the first screen for a cold visitor). */
 const EMBED_BRAND = process.env.EVENT_X_EMBED_BRAND || "Your app";
 const PARTNER_SHARE_PCT = Math.min(100, Math.max(0, Number(process.env.EVENT_X_PARTNER_SHARE_PCT ?? 50)));
+/** The track record (its own deploy); the embed's one public link and the desktop pitch's first partner link. */
+const TRACK_RECORD_URL = process.env.EVENT_X_SHADOW_URL || "https://atticus-event-shadow.onrender.com";
 /** Kalshi crypto strike series admitted to the board (self-hedge route only). */
 const CRYPTO_SERIES = (process.env.EVENT_X_CRYPTO_SERIES || "KXBTCD,KXETHD")
   .split(",")
@@ -581,6 +591,29 @@ export function applyEvCeiling(result: CandidateResult, maxEvBps: number = MAX_E
   };
 }
 
+/**
+ * Apply the minimum-credit rule to a quoted candidate: tiers under the line drop, a clearing tier
+ * is promoted when the default is under it (and the EV cost follows the promoted terms), and a
+ * quote with nothing clearing becomes a `credit_too_small` refusal. Runs BEFORE the ceiling so a
+ * promoted tier is still judged on cost.
+ */
+export function applyMinimumCreditRule(result: CandidateResult, rule = MIN_CREDIT_RULE): CandidateResult {
+  if (!result.quote.ok) return result;
+  const quote = applyMinimumCredit(result.quote, rule);
+  if (!quote.ok) return { ...result, quote, route: null, evBps: null };
+  if (quote === result.quote) return result;
+  return {
+    ...result,
+    quote,
+    evBps: evCostBps(result.markCents, quote.floorCents, quote.capCents, quote.creditCents, result.position.contracts),
+  };
+}
+
+/** The scan's post-quote pipeline, in order: minimum credit, then the EV-cost ceiling. */
+export function applyQuoteRules(result: CandidateResult): CandidateResult {
+  return applyEvCeiling(applyMinimumCreditRule(result));
+}
+
 /** One refresh's full result: ranked quotable rows plus the best honest refusal. */
 export interface ScanState {
   atIso: string;
@@ -671,7 +704,7 @@ async function buildScan(): Promise<ScanState> {
     if (!pair || !showcaseWindowOk(pair, now)) return true;
     let result: CandidateResult;
     try {
-      result = applyEvCeiling(await quoteSportsCandidate(pair, cand.mark, now));
+      result = applyQuoteRules(await quoteSportsCandidate(pair, cand.mark, now));
     } catch {
       return !countFailure();
     }
@@ -718,7 +751,7 @@ async function buildScan(): Promise<ScanState> {
       attempts += 1;
       let result: CandidateResult;
       try {
-        result = applyEvCeiling(await quoteCryptoCandidate(series, sel, now));
+        result = applyQuoteRules(await quoteCryptoCandidate(series, sel, now));
       } catch {
         fetchFailures += 1;
         if (fetchFailures >= FETCH_FAILURE_LIMIT) break crypto;
@@ -1008,6 +1041,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       res.end(
         renderEventEmbedHtml({
           brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND),
+          minCredit: MIN_CREDIT_RULE,
+          trackRecordUrl: TRACK_RECORD_URL,
           // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
           skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,
         }),
@@ -1066,6 +1101,30 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
             2,
           ),
         );
+        return;
+      }
+      if (url.pathname === "/api/admin/reset" && (req.method === "POST" || (req.method === "GET" && url.searchParams.get("confirm") === "reset"))) {
+        // FRESH START, ARCHIVE NOT DELETE: the quote ledger (receipts, partner console) and the funnel
+        // are renamed beside themselves with a UTC stamp; the next scan writes a new ledger.
+        const atIso = new Date().toISOString();
+        const ledger = archiveLedgerFile(LEDGER_PATH, atIso);
+        flushFunnel();
+        const funnel = archiveLedgerFile(FUNNEL_PATH, atIso);
+        funnelState = emptyEventFunnel();
+        funnelDirty = true;
+        flushFunnel();
+        if (cache) cache = { at: 0, state: cache.state }; // the next request re-scans and writes the first fresh receipts
+        sendJson(res, 200, {
+          ok: true,
+          at: atIso,
+          archived: [ledger, funnel].filter((a) => a.archivedTo).map((a) => ({ from: a.path, to: a.archivedTo })),
+          message: "quote ledger and funnel archived; a fresh ledger starts with the next scan",
+          rules: { minimumCredit: describeMinimumCredit(MIN_CREDIT_RULE), maxEvCostBps: MAX_EV_COST_BPS },
+        });
+        return;
+      }
+      if (url.pathname === "/api/admin/reset") {
+        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/admin/reset?token=… or GET …&confirm=reset" });
         return;
       }
       if (url.pathname === "/api/admin/funnel/reset" && req.method === "POST") {
