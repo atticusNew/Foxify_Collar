@@ -192,6 +192,21 @@ test("retail first: no cohort, no mode badge, no receipt table, no raw engine st
   }
 });
 
+test("desktop stage: the pitch beside the card in an exchange panel, retail web only, folds away on connect", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes('<aside class="pitch" id="pitch">') && html.includes("One toggle. A hard floor.") && html.includes("Flip protection on any perp position."), "the pitch column exists");
+    assert.ok(html.includes('<div class="panel-top"><b>Positions</b><span>__BRAND_FOR__ · BTC</span></div>'), "the panel header names the venue: a trading UI's side panel, not a phone");
+    assert.ok(html.includes("@media (min-width:900px){") && html.includes("body.retail:not(.connected) .stage{display:grid"), "the stage is desktop-only css on body.retail:not(.connected)");
+    assert.ok(html.includes(".pitch,.panel-top{display:none}"), "phones never see the pitch or the panel header");
+    assert.ok(html.includes('document.body.classList.toggle("connected", !!account && !watching)'), "connecting an own address folds the stage into the app; watching a showcase keeps it");
+    assert.ok(html.includes("body.retail:not(.connected) .wrap .foot{display:none}") && html.includes('<b>For partners</b> __LINK_RECORD____LINK_TG____LINK_X__<span><a href="#" id="howLink2">How it works</a> ·</span>'), "on the stage the footer moves into the pitch column, placeholders included");
+    assert.ok(html.includes('$("howLink2").onclick'), "the pitch's How it works opens the same modal");
+    assert.ok(html.includes("body.retail:not(.connected) #hero{display:none!important}"), "the in-column hero never doubles the pitch");
+  }
+  assert.ok(web.includes("if (!INST && !false) document.body.classList.add(\"retail\");"), "web: retail body class arms the stage");
+  assert.ok(mini.includes("if (!INST && !true) document.body.classList.add(\"retail\");"), "miniapp: never a stage, it is a phone surface");
+});
+
 test("variants: miniapp loads the Telegram bridge, web does not", () => {
   assert.ok(mini.includes("telegram-web-app.js"));
   assert.ok(!web.includes("telegram-web-app.js"));
