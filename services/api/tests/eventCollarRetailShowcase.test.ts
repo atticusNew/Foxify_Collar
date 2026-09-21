@@ -164,6 +164,7 @@ test("retail showcase: every engine refusal code maps to a retail sentence with 
     "kalshi_book_too_thin",
     "credit_nonpositive",
     "protection_too_rich",
+    "credit_too_small",
   ];
   const wrapCodes: WrapRefusalCode[] = [
     "market_not_active",

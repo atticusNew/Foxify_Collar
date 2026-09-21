@@ -31,13 +31,20 @@
 import { ATTICUS_WORDMARK_GOLD_DATA_URI } from "./eventProtectLogo";
 import type { CrossLedgerSummary } from "../src/eventCollar/crossVenue/crossLedger";
 import type { EventFunnelSummary } from "../src/eventCollar/crossVenue/eventFunnel";
+import { DEFAULT_MINIMUM_CREDIT, type MinimumCreditRule } from "../src/eventCollar/crossVenue/minimumCredit";
 
 export interface EmbedOptions {
   /** the host's display name, already checked against the allowlist */
   brand: string;
   /** the shell; when absent the brand preset decides */
   skin?: "light" | "dark" | null;
+  /** the server's minimum-credit rule, mirrored in the page script so a stale client never shows a tier the server dropped */
+  minCredit?: MinimumCreditRule;
+  /** the track record's URL: the phone's one link, and the first partner link on desktop */
+  trackRecordUrl?: string;
 }
+
+const DEFAULT_TRACK_RECORD_URL = "https://atticus-event-shadow.onrender.com";
 
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -94,14 +101,14 @@ export function brandTheme(brand: string): BrandTheme {
 }
 
 /**
- * MINIMUM CREDIT: a tier is offered only when its credit is at least 25¢ and at least 0.25% of the
- * stake (100¢ × contracts). A collar that pays 3¢ on $150 is technically fundable and practically an
- * insult; the sheet hides it, and when no tier clears, the sheet says "not right now" rather than
- * offering a negligible credit. The same rule runs in the page script below.
+ * MINIMUM CREDIT lives server-side (src/eventCollar/crossVenue/minimumCredit.ts) and is applied in
+ * the scan, so what reaches this page has already been filtered. The page script re-checks with the
+ * same numbers (passed in via `minCredit`) purely as a belt: a cached page can never show a tier the
+ * server would not offer.
  */
-export const EMBED_MIN_CREDIT = { cents: 25, bpsOfStake: 25 } as const;
-export function worthOffering(creditCents: number, contracts: number): boolean {
-  return creditCents >= Math.max(EMBED_MIN_CREDIT.cents, Math.round((contracts * 100 * EMBED_MIN_CREDIT.bpsOfStake) / 10_000));
+export const EMBED_MIN_CREDIT = DEFAULT_MINIMUM_CREDIT;
+export function worthOffering(creditCents: number, contracts: number, rule: MinimumCreditRule = DEFAULT_MINIMUM_CREDIT): boolean {
+  return creditCents >= Math.max(rule.cents, Math.round((contracts * 100 * rule.bpsOfStake) / 10_000));
 }
 
 export function renderEventEmbedHtml(opts: EmbedOptions): string {
@@ -109,6 +116,8 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const theme = brandTheme(opts.brand);
   const dark = (opts.skin ?? theme.skin) === "dark";
   const initial = escapeHtml((opts.brand.trim()[0] ?? "A").toUpperCase());
+  const minCredit = opts.minCredit ?? DEFAULT_MINIMUM_CREDIT;
+  const trackRecordUrl = escapeHtml(opts.trackRecordUrl || DEFAULT_TRACK_RECORD_URL);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -174,7 +183,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .sheet.on{transform:translateY(0)}
 .sheet .grab{width:38px;height:4px;border-radius:2px;background:#dfe3e2;margin:0 auto 12px}
 .sheet .eyebrow{display:flex;align-items:center;justify-content:space-between;color:var(--ep-faint);font-size:11.5px;letter-spacing:.02em}
-.sheet .eyebrow img{height:14px;display:block;opacity:.8}
+.sheet .eyebrow img{height:16px;display:block;opacity:.7;filter:brightness(0)}
 .sheet h2{font-size:19px;font-weight:700;letter-spacing:-.01em;margin-top:8px;color:var(--ep-ink)}
 .sheet .who{color:var(--ep-dim);font-size:13.5px;margin-top:2px}
 .tiles{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:14px}
@@ -211,7 +220,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   body{background:var(--stage);color:var(--stage-ink)}
   .stage{display:grid;grid-template-columns:minmax(300px,420px) 400px;gap:72px;align-items:center;justify-content:center;padding:40px 32px;min-height:100vh}
   .pitch{display:block;color:var(--stage-ink)}
-  .pitch img{height:18px;opacity:.8;display:block;margin-bottom:22px}
+  .pitch img{height:18px;opacity:.7;filter:brightness(0);display:block;margin-bottom:22px}
   .pitch h1{font-size:34px;line-height:1.12;letter-spacing:-.02em;font-weight:700}
   .pitch p{color:var(--stage-dim);font-size:16px;line-height:1.55;margin-top:14px;max-width:34em}
   .pitch ul{list-style:none;margin-top:18px;color:var(--stage-ink);font-size:15px;line-height:1.5}
@@ -219,7 +228,11 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   .pitch li:before{content:"";position:absolute;left:0;top:13px;width:9px;height:9px;border-radius:50%;background:var(--ep-green)}
   .pitch .try{margin-top:22px;color:var(--stage-ink);font-weight:600;font-size:15px}
   .pitch .try b{color:var(--ep-green)}
-  .pitch .foot{margin-top:28px;color:var(--stage-dim);font-size:12.5px}
+  .pitch .partners{margin-top:30px;padding-top:16px;border-top:1px solid rgba(15,17,21,.1);color:var(--stage-dim);font-size:12.5px}
+  .pitch .partners b{color:var(--stage-ink);font-weight:600;margin-right:8px}
+  .pitch .partners a{color:var(--stage-ink);text-decoration:none;border-bottom:1px solid rgba(15,17,21,.25);margin-right:12px}
+  .pitch .partners a:hover{border-bottom-color:var(--stage-ink)}
+  .pitch .foot{margin-top:14px;color:var(--stage-dim);font-size:12.5px}
   .phone{margin:0;width:400px;height:min(820px,calc(100vh - 80px));min-height:560px;border-radius:40px;border:1px solid var(--frame);box-shadow:0 30px 80px rgba(15,17,21,.22),0 2px 6px rgba(15,17,21,.08);overflow:hidden;display:flex;flex-direction:column;color:var(--ink)}
   .host-top{padding-top:22px}
   .list{flex:1;min-height:0;overflow:auto;padding-bottom:64px}
@@ -233,13 +246,14 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 <aside class="pitch">
   <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
   <h1>Protection inside your app.</h1>
-  <p>One button on every position row. Your users lock a floor and get paid today; you keep the flow, the ledger and the relationship. We price it and carry the risk.</p>
+  <p>One button on every position row. Your users lock a floor and get paid today. We price it and carry the risk; you keep the flow, the ledger and the relationship.</p>
   <ul>
     <li>One JSON quote in, one receipt out</li>
     <li>Your brand, your ledger, your official result</li>
     <li>Refuses when the market can't fund a credit</li>
   </ul>
   <div class="try">Tap <b>Protect</b> on any row &rarr;</div>
+  <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">Track record</a><a href="/partner">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a></div>
   <div class="foot">Demonstration. Simulated positions at live prices; nothing is bought.</div>
 </aside>
 <div class="phone" id="phone">
@@ -249,7 +263,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   </div>
   <div class="tabs"><span class="on">Positions</span><span data-tab="Markets">Markets</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
-  <div class="host-note">Demo. Simulated positions at live prices; nothing is bought. <a href="/board">Board</a> · <a href="/receipts">Receipts</a></div>
+  <div class="host-note">Demo. Simulated positions at live prices; nothing is bought. · <a href="${trackRecordUrl}">Track record</a></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="scrim" id="scrim"></div>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-h">
@@ -265,7 +279,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   var S={rows:[],byTicker:{},protectedBy:{},open:null,quote:null,offered:{},tier:'balanced',how:false,adjust:false,cash:41250};
   var TIER_ORDER=['tight','balanced','wide'];
   var TIER_WORDS={tight:'Safest',balanced:'Balanced',wide:'Most upside'};
-  var MIN_CREDIT_CENTS=${EMBED_MIN_CREDIT.cents},MIN_CREDIT_BPS=${EMBED_MIN_CREDIT.bpsOfStake};
+  var MIN_CREDIT_CENTS=${Math.round(minCredit.cents)},MIN_CREDIT_BPS=${Number(minCredit.bpsOfStake)};
   var SID=(function(){
     try{
       var k='epx_sid',v=sessionStorage.getItem(k);
@@ -448,6 +462,7 @@ const PARTNER_ROUTE_WORDS: Record<string, string> = {
 const PARTNER_REFUSAL_WORDS: Record<string, string> = {
   credit_nonpositive: "the market could not fund a credit",
   protection_too_rich: "protection would have cost more than our ceiling",
+  credit_too_small: "the credit fell under our minimum",
   pm_book_empty: "no depth to hedge",
   pm_book_too_thin: "not enough depth for the size",
   kalshi_book_empty: "no depth on the market's No side",
@@ -500,7 +515,7 @@ export function renderPartnerHtml(input: PartnerConsoleInput): string {
 body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
 .topbar{background:#fff;border-bottom:1px solid var(--line)}.topbar .in{max-width:640px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:12px 16px}
 .topbar .wordmark{color:var(--ink);font-weight:650;font-size:14px}.topbar .wordmark span{color:var(--faint);font-weight:400}
-.topbar img{height:14px;display:block;opacity:.8}
+.topbar img{height:16px;display:block;opacity:.7;filter:brightness(0)}
 .wrap{max-width:640px;margin:0 auto;padding:14px 14px 40px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px}
 h1{font-size:20px;font-weight:700;letter-spacing:-.01em}h2{font-size:14px;font-weight:700;margin-bottom:6px}
