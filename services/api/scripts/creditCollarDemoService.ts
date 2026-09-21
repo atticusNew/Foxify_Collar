@@ -126,6 +126,7 @@ import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../s
 import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, recordPageLoad, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
 import {
   SHOWCASE_BUCKETS,
+  SHOWCASE_SLOTS,
   candidatesForBucket,
   dayKey,
   heroIndex,
@@ -231,8 +232,11 @@ const internalAccounts = parseInternalAccounts(process.env.EP_INTERNAL_ACCOUNTS)
 // values), validated against LIVE open BTC positions, cached, and — critically — action-guarded:
 // a showcased address can be WATCHED by anyone but never wrapped/closed/toggled by anyone.
 const SHOWCASE_TTL_MS = 30 * 60_000;
-// Wallets read per refresh across the three buckets (≈ 0.2s each; the refresh runs every 30 min).
-const SHOWCASE_SCAN = Math.max(3, Math.min(400, num(process.env.EP_SHOWCASE_SCAN, 150)));
+// Wallets read per refresh across the slot sizes (≈ 0.2s each; the refresh runs every 30 min; the
+// read stops early once the slots fill). Medium in-band longs are sparse — a live probe found the
+// first one at candidate 96 of the day's medium band while the large band hit at 7 — so the
+// budget is weighted by slot count and the ceiling is high enough to reach them.
+const SHOWCASE_SCAN = Math.max(3, Math.min(600, num(process.env.EP_SHOWCASE_SCAN, 300)));
 // The landing is a LONG (EP_SHOWCASE_SIDES=long,short to allow shorts on it).
 const SHOWCASE_SIDES = String(process.env.EP_SHOWCASE_SIDES || "long")
   .split(",")
@@ -268,10 +272,11 @@ const refreshShowcase = async (): Promise<void> => {
       const res = await fetch("https://stats-data.hyperliquid.xyz/Mainnet/leaderboard");
       const all = res.ok ? parseLeaderboardAll(await res.text()) : [];
       const day = dayKey(Date.now());
-      const perBucket = Math.max(1, Math.floor(SHOWCASE_SCAN / SHOWCASE_BUCKETS.length));
       const seen = new Set<string>();
       for (const bucket of SHOWCASE_BUCKETS) {
-        for (const addr of candidatesForBucket(all, bucket, day, perBucket)) {
+        const slotsOf = SHOWCASE_SLOTS.filter((b) => b === bucket).length;
+        const budget = Math.max(1, Math.floor((SHOWCASE_SCAN * slotsOf) / SHOWCASE_SLOTS.length));
+        for (const addr of candidatesForBucket(all, bucket, day, budget)) {
           if (!missingBuckets(wallets).includes(bucket)) break; // an earlier band's read may already have filled this one
           if (seen.has(addr)) continue;
           seen.add(addr);
