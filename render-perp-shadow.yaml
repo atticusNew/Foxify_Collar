@@ -52,6 +52,25 @@ services:
         value: "0.03"
       - key: PERP_SHADOW_SIDES
         value: long,short
+      # FLOW: run the shadow as a book, not a metronome. Hourly batches of wraps to about $2M a
+      # day, lognormal sizes around $15k with a real tail (capped $750k), 70% long, 30% closing
+      # early at live prices, every wrap priced at its own size by walking the OKX book (too big
+      # for the depth = refused, recorded), and a netted book snapshot after every batch. Sizes,
+      # sides and timing are simulated; every price, fee and depth is live. "0" = the metronome.
+      - key: PERP_SHADOW_FLOW
+        value: "1"
+      - key: PERP_SHADOW_DAILY_NOTIONAL_USD
+        value: "2000000"
+      - key: PERP_SHADOW_MEDIAN_USD
+        value: "15000"
+      - key: PERP_SHADOW_SIZE_SIGMA
+        value: "1.4"
+      - key: PERP_SHADOW_MAX_USD
+        value: "750000"
+      - key: PERP_SHADOW_LONG_SHARE
+        value: "0.7"
+      - key: PERP_SHADOW_CLOSE_SHARE
+        value: "0.3"
       - key: EP_CAP_MODE
         value: plain
       - key: EP_TENOR
@@ -77,7 +96,7 @@ services:
         value: "900000"
       - key: PERP_SHADOW_DEMO_URL
         value: https://earnandprotect.xyz
-      # Gates the operator views (?token=... or x-admin-token). Fail-closed:
-      # without it those routes answer 403 and the public record stays up.
+      # Gates the operator views and POST /api/shadow/reset (?token=... or x-admin-token).
+      # Fail-closed: without it those routes answer 403 and the public record stays up.
       - key: EP_ADMIN_TOKEN
         generateValue: true

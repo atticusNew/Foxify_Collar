@@ -351,7 +351,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   </div>
 
   <div class="foot">
-    <span>Priced live from listed markets ·</span> <span>refused honestly when unfundable ·</span> __LINK_TG____LINK_X__<span><a href="#" id="howLink">How it works</a> ·</span> <a href="/tos" target="_blank" rel="noopener">Terms</a>
+    <span>Priced live from listed markets ·</span> <span>refused honestly when unfundable ·</span> __LINK_RECORD____LINK_TG____LINK_X__<span><a href="#" id="howLink">How it works</a> ·</span> <a href="/tos" target="_blank" rel="noopener">Terms</a>
   </div>
 </div>
 
@@ -546,6 +546,7 @@ let busy = false;
 // Watching only ever starts from a click THIS session — a stored address alone never enters it.
 let watching = false;
 let watchWallets = [];
+let watchIdx = 0;
 let userEntered = false; // an address typed or chip-clicked in this session (vs restored storage)
 // LANDING (retail): the visitor arrives inside the operating product — a live public BTC
 // position with the toggle — never an empty address gate. Their own stored address always wins.
@@ -886,8 +887,13 @@ const render = (positions, state) => {
       : "";
     // The card is self-describing on the landing: identity rides a quiet eyebrow, not a heading;
     // the pulsing dot says "live position on this address" without a word.
+    // Size class from the showcase set (small / medium / large): the hero varies by the hour, and
+    // the card says which size it is in one word. A quiet link steps to the next one.
+    const ww = watchWallets[watchIdx];
+    const sizeWord = ww && ww.address === account && ww.bucket ? ' · ' + ww.bucket + ' position' : '';
+    const another = watchWallets.length > 1 ? ' <a href="#" class="anotherPos" style="color:var(--muted);text-decoration:underline">another →</a>' : '';
     const eyebrow = !INST && watching
-      ? '<div class="small muted" style="margin-bottom:9px"><span class="livedot"></span>' + short(account) + ' · public · read-only</div>'
+      ? '<div class="small muted" style="margin-bottom:9px"><span class="livedot"></span>' + short(account) + sizeWord + ' · public · read-only' + another + '</div>'
       : "";
     return '<div class="card">' + eyebrow +
       '<div class="pos-row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + esc(p.coin) + ' · ' + fmtC(p.notionalUsdc) +
@@ -900,6 +906,7 @@ const render = (positions, state) => {
   if (!INST) $("connPill").classList.toggle("ghosted", !!sAct);
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
   for (const rb of el.querySelectorAll(".releaseBtn")) rb.addEventListener("click", onRelease);
+  for (const ap of el.querySelectorAll(".anotherPos")) ap.addEventListener("click", (e) => { e.preventDefault(); if (watchWallets.length > 1) void watchWallet((watchIdx + 1) % watchWallets.length, false); });
   positionTips(el);
   if (prevOpenText) {
     for (const wrp of el.querySelectorAll(".tipwrap")) {
@@ -1429,7 +1436,7 @@ const poll = async () => {
     // Landing failover: a showcase wallet whose BTC position just closed is a dead landing —
     // advance to the next validated wallet (once each) instead of parking on an empty card.
     if (!INST && watching && autoLanded && pos && pos.ok && lastPos.filter((x) => x.wrappable).length === 0 && landTried < watchWallets.length) {
-      const next = landTried;
+      const next = (watchIdx + 1) % watchWallets.length;
       landTried += 1;
       void watchWallet(next, false);
       return;
@@ -1555,10 +1562,15 @@ $("forgetBtn").onclick = () => {
 };
 
 // Showcase set: live public wallets validated by the server against open BTC positions.
+let heroIdx = 0; // the hour's hero (server-picked, deterministic): the landing opens on it
 const fetchShowcase = async (attempt) => {
   try {
     const j = await api("/api/showcase");
-    if (j.ok && j.wallets && j.wallets.length) { watchWallets = j.wallets; return true; }
+    if (j.ok && j.wallets && j.wallets.length) {
+      watchWallets = j.wallets;
+      heroIdx = Number.isInteger(j.heroIndex) && j.heroIndex >= 0 && j.heroIndex < j.wallets.length ? j.heroIndex : 0;
+      return true;
+    }
   } catch (e) { /* retry below */ }
   if ((attempt || 0) < 3) {
     await new Promise((r) => setTimeout(r, ((attempt || 0) + 1) * 5000));
@@ -1566,7 +1578,6 @@ const fetchShowcase = async (attempt) => {
   }
   return false;
 };
-let watchIdx = 0;
 const watchWallet = async (i, scroll) => {
   watchIdx = i;
   userEntered = true;
@@ -1618,7 +1629,7 @@ const landShowcase = async () => {
   }
   autoLanded = true;
   landTried = 1;
-  await watchWallet(0, false);
+  await watchWallet(heroIdx, false);
 };
 
 // Live HL mark in the header from the FIRST paint — no address required. Once an account

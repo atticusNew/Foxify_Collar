@@ -24,6 +24,7 @@ import { dirname } from "node:path";
 import type { PerpSide } from "../creditCollarPricer";
 import type { EpTenor } from "../perpTenor";
 import { summarizeVenueReference, type PerpVenueReference, type PerpVenueReferenceSummary } from "./venueReference";
+import { closeOutcome, type PerpBookRecord, type PerpCloseOutcome, type PerpCloseValuation, type PerpFlowSummary, type SizeClass } from "./perpShadowFlow";
 
 export type PerpTakeRule = "share" | "minimum" | "waived";
 
@@ -183,6 +184,8 @@ export interface PerpShadowOpenRecord {
   midCreditCents: number | null;
   atmRef: PerpAtmRef | null;
   counterfactuals: PerpShadowCounterfactuals | null;
+  /** flow mode (perpShadowFlow.ts): the size drawn, its class, and when it is scheduled to close early (null = runs to expiry) */
+  flow?: { sizeClass: SizeClass; targetUsd: number; closeAtIso: string | null };
 }
 
 export interface PerpShadowRefusalRecord {
@@ -193,6 +196,9 @@ export interface PerpShadowRefusalRecord {
   spotCents: number;
   error: string;
   message: string;
+  /** flow mode: the planned wrap's id (so a restart does not re-refuse the same plan) and size class */
+  id?: string;
+  sizeClass?: SizeClass;
 }
 
 export interface PerpPathTouch {
@@ -235,16 +241,27 @@ export interface PerpShadowVoidRecord {
   reason: string;
 }
 
-export type PerpShadowRecord = PerpShadowOpenRecord | PerpShadowRefusalRecord | PerpShadowSettleRecord | PerpShadowVoidRecord;
+/** An early close at live prices: the holder leaves the perp at the mark and unwinds the collar at the OKX book. */
+export interface PerpShadowCloseRecord {
+  type: "close";
+  at: string;
+  id: string;
+  valuation: PerpCloseValuation;
+}
+
+export type PerpShadowRecord = PerpShadowOpenRecord | PerpShadowRefusalRecord | PerpShadowSettleRecord | PerpShadowVoidRecord | PerpShadowCloseRecord | PerpBookRecord;
 
 export interface PerpShadowPosition extends Omit<PerpShadowOpenRecord, "type"> {
-  status: "open" | "settled" | "void";
+  status: "open" | "settled" | "void" | "closed";
   settledAt?: string;
   settleCents?: number;
   settleSource?: PerpShadowSettleRecord["source"];
   path?: PerpPath | null;
   voidReason?: string;
   outcome?: PerpOutcome;
+  closedAt?: string;
+  closeValuation?: PerpCloseValuation;
+  closeOutcome?: PerpCloseOutcome;
 }
 
 export interface PerpOutcome {
@@ -527,17 +544,36 @@ export function loadPerpShadowRecords(path: string): PerpShadowRecord[] {
     .map((l) => JSON.parse(l) as PerpShadowRecord);
 }
 
-export function replayPerpShadow(records: PerpShadowRecord[], opts: PerpReplayOptions = {}): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[] } {
+export function replayPerpShadow(
+  records: PerpShadowRecord[],
+  opts: PerpReplayOptions = {},
+): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[]; books: PerpBookRecord[] } {
   const capMode = opts.capMode ?? DEFAULT_PERP_CAP_MODE;
   const byId = new Map<string, PerpShadowPosition>();
   const refusals: PerpShadowRefusalRecord[] = [];
+  const books: PerpBookRecord[] = [];
+  const refusalIds = new Set<string>();
   for (const r of records) {
     if (r.type === "open") {
       if (byId.has(r.id)) continue;
       const { type: _t, ...rest } = r;
       byId.set(r.id, { ...rest, status: "open" });
     } else if (r.type === "refusal") {
+      // flow refusals carry the plan's id: a restart that re-plans the hour must not count it twice
+      if (r.id) {
+        if (refusalIds.has(r.id)) continue;
+        refusalIds.add(r.id);
+      }
       refusals.push(r);
+    } else if (r.type === "book") {
+      books.push(r);
+    } else if (r.type === "close") {
+      const p = byId.get(r.id);
+      if (!p || p.status !== "open") continue;
+      p.status = "closed";
+      p.closedAt = r.at;
+      p.closeValuation = r.valuation;
+      p.closeOutcome = closeOutcome(p, r.valuation);
     } else if (r.type === "settle") {
       const p = byId.get(r.id);
       if (!p || p.status !== "open") continue;
@@ -559,10 +595,20 @@ export function replayPerpShadow(records: PerpShadowRecord[], opts: PerpReplayOp
   for (const p of positions) {
     if (p.status === "settled" && p.settleCents != null) p.outcome = perpOutcome(p, p.settleCents, settleCtx(p, p.capStrikeCents, positions), capMode);
   }
-  return { positions, refusals };
+  return { positions, refusals, books };
 }
 
-export function loadPerpShadow(path: string, opts: PerpReplayOptions = {}): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[] } {
+/** Ids already in the ledger (opens and flow refusals): what a re-planned batch must skip. */
+export function plannedIdsIn(records: PerpShadowRecord[]): Set<string> {
+  const ids = new Set<string>();
+  for (const r of records) {
+    if (r.type === "open") ids.add(r.id);
+    else if (r.type === "refusal" && r.id) ids.add(r.id);
+  }
+  return ids;
+}
+
+export function loadPerpShadow(path: string, opts: PerpReplayOptions = {}): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[]; books: PerpBookRecord[] } {
   return replayPerpShadow(loadPerpShadowRecords(path), opts);
 }
 
@@ -892,6 +938,8 @@ export interface PerpShadowSummary {
   open: number;
   settled: number;
   void: number;
+  /** closed early at live prices (flow mode) */
+  closed: number;
   refusals: number;
   firstAt: string | null;
   lastAt: string | null;
@@ -913,6 +961,8 @@ export interface PerpShadowSummary {
   holderNakedCents: number;
   holderProtectedCents: number;
   writerCents: number;
+  /** the take booked at quote on the SETTLED positions only: the identity compares it with writerCents */
+  settledTakeCents: number;
   bySide: Record<PerpSide, { positions: number; settled: number; creditCents: number; holderDeltaCents: number; knockouts: number }>;
   refusalReasons: Record<string, number>;
   avgFundingBpsPer8h: number | null;
@@ -926,6 +976,8 @@ export interface PerpShadowSummary {
   capDetail: PerpCapSummary;
   sameStrike: PerpSameStrikeSummary;
   counterfactuals: PerpCounterfactualSummary;
+  /** flow mode: sizes, days, early closes, the netted book (perpShadowFlow.ts); set by the worker */
+  flow?: PerpFlowSummary;
 }
 
 export interface PerpCapSummary {
@@ -971,6 +1023,7 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
     open: 0,
     settled: 0,
     void: 0,
+    closed: 0,
     refusals: refusals.length,
     firstAt: null,
     lastAt: null,
@@ -989,6 +1042,7 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
     holderNakedCents: 0,
     holderProtectedCents: 0,
     writerCents: 0,
+    settledTakeCents: 0,
     bySide: {
       long: { positions: 0, settled: 0, creditCents: 0, holderDeltaCents: 0, knockouts: 0 },
       short: { positions: 0, settled: 0, creditCents: 0, holderDeltaCents: 0, knockouts: 0 },
@@ -1055,6 +1109,7 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
     }
     if (p.status === "settled" && p.outcome) {
       const o = p.outcome;
+      s.settledTakeCents += p.takeCents;
       if (o.floorSave) s.floorSaves += 1;
       if (o.capHit) s.capHits += 1;
       s.paidCents += o.paidCents;
