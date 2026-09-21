@@ -268,6 +268,40 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .demo-vest div{transition:width 2.4s cubic-bezier(.2,.7,.3,1)}
   .carry{font-size:12px;color:var(--muted);margin-top:8px}
   .carry b{color:var(--text);font-weight:600}
+  /* ── DESKTOP STAGE (retail, not connected, 900px and up) ─────────────────────────────────
+     The phone layout is the product; on a wide screen a lone card in the corner says nothing.
+     The stage puts the pitch beside it, the event demo's grammar with a perp-correct frame: perp
+     traders sit at a trading UI, so the card sits in a slim exchange side panel, never a phone.
+     Pure CSS on body.retail:not(.connected); connecting collapses the stage into the dense app. */
+  .pitch,.panel-top{display:none}
+  @media (min-width:900px){
+    body.retail:not(.connected) .stage{display:grid;grid-template-columns:minmax(300px,400px) 480px;gap:72px;justify-content:center;align-items:center;padding:40px 32px 56px;min-height:calc(100vh - 54px)}
+    body.retail:not(.connected) .nav-in{max-width:952px} /* nav spans the stage's two columns */
+    body.retail:not(.connected) .pitch{display:block}
+    body.retail:not(.connected) .pitch .brand-lockup{height:26px;margin:0 0 20px;vertical-align:baseline}
+    body.retail:not(.connected) .pitch .atticus-serif{font-size:23px;display:inline-block;margin-bottom:18px}
+    body.retail:not(.connected) .pitch .brand-img{height:22px;vertical-align:-4px}
+    body.retail:not(.connected) .pitch h1{font-size:34px;line-height:1.12;letter-spacing:-.02em;margin:0}
+    body.retail:not(.connected) .pitch p{color:var(--muted);font-size:16px;line-height:1.55;margin-top:14px;max-width:32em}
+    body.retail:not(.connected) .pitch ul{list-style:none;margin-top:18px;font-size:15px;line-height:1.5}
+    body.retail:not(.connected) .pitch li{padding:6px 0 6px 22px;position:relative}
+    body.retail:not(.connected) .pitch li:before{content:"";position:absolute;left:0;top:13px;width:9px;height:9px;border-radius:50%;background:var(--accent)}
+    body.retail:not(.connected) .pitch .try{margin-top:22px;font-weight:600;font-size:15px}
+    body.retail:not(.connected) .pitch .try b{color:var(--accent)}
+    body.retail:not(.connected) .pitch .partners{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px;line-height:1.9}
+    body.retail:not(.connected) .pitch .partners b{color:var(--text);font-weight:600;margin-right:8px}
+    body.retail:not(.connected) .pitch .partners a,body.retail:not(.connected) .pitch .partners span{white-space:nowrap}
+    body.retail:not(.connected) .pitch .pfoot{margin-top:12px;color:var(--muted);font-size:12.5px}
+    /* the panel: a trading UI's side panel, the venue named in its header */
+    body.retail:not(.connected) .wrap{max-width:none;margin:0;padding:0;width:480px}
+    body.retail:not(.connected) .wrap .foot{display:none}
+    body.retail:not(.connected) #hero{display:none!important}
+    body.retail:not(.connected) .panel{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:12px;box-shadow:0 30px 80px rgba(0,0,0,.35)}
+    body.retail:not(.connected) .panel-top{display:flex;justify-content:space-between;align-items:center;padding:4px 6px 12px;font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);font-weight:600}
+    body.retail:not(.connected) .panel-top b{color:var(--text);font-weight:600}
+    body.retail:not(.connected) .panel .card{margin-bottom:0}
+    body.retail:not(.connected) .panel .card+.card{margin-top:10px}
+  }
 </style>
 </head>
 <body>
@@ -282,6 +316,22 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <button type="button" class="connbtn" id="connPill">Connect</button>
   </div>
 </div></nav>
+<div class="stage">
+<!-- Desktop pitch (retail, 900px+, not connected): the value in one glance beside the live card.
+     Hidden on phones and the moment a visitor connects; see the DESKTOP STAGE styles. -->
+<aside class="pitch" id="pitch">
+  <div>__BRAND_MARK__</div>
+  <h1>One toggle. A hard floor. <span style="color:var(--accent)">And it pays.</span></h1>
+  <p>Flip protection on any perp position. A hard floor under it, a credit paid to you every week. Nothing to manage.</p>
+  <ul>
+    <li>Paid by the options market, never by you</li>
+    <li>Both legs hedged. We carry no view on price</li>
+    <li>Refuses when the market can't fund a credit</li>
+  </ul>
+  <div class="try">Flip the <b>toggle</b> &rarr;</div>
+  <div class="partners"><b>For partners</b> __LINK_RECORD____LINK_TG____LINK_X__<span><a href="#" id="howLink2">How it works</a> ·</span> <a href="/tos" target="_blank" rel="noopener">Terms</a></div>
+  <div class="pfoot">Priced live from listed markets. Refused honestly when unfundable.</div>
+</aside>
 <div class="wrap">
   <header id="hero">
     <h1 id="heroH1">One toggle. A hard floor. <span style="color:var(--accent)">And it pays.</span></h1>
@@ -293,6 +343,10 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <b id="geoTitle">Not available in your region.</b> <span class="muted small" id="geoMsg"></span>
   </div>
 
+  <!-- The panel: on the desktop stage this block reads as an exchange side panel (frame + venue
+       header); everywhere else the wrapper is invisible. -->
+  <div class="panel">
+  <div class="panel-top"><b>Positions</b><span>__BRAND_FOR__ · BTC</span></div>
   <!-- Pre-connect intro (retail fallback only): shown when the operating landing cannot load —
        a visitor should land inside the product, not on a brochure. -->
   <div class="card" id="introTrio" style="display:none">
@@ -343,6 +397,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <a href="#" id="stopViewing" class="small" style="display:none;color:var(--accent);text-decoration:none;margin-left:10px">stop viewing ×</a>
   </div>
   <div id="positions"><div class="empty">Look up an address to see its open positions.</div></div>
+  </div>
 
   <h2 id="payoutsH">Payouts</h2>
   <div class="card" id="payoutsCard" style="padding-top:10px">
@@ -353,6 +408,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <div class="foot">
     <span>Priced live from listed markets ·</span> <span>refused honestly when unfundable ·</span> __LINK_RECORD____LINK_TG____LINK_X__<span><a href="#" id="howLink">How it works</a> ·</span> <a href="/tos" target="_blank" rel="noopener">Terms</a>
   </div>
+</div>
 </div>
 
 <div class="modal-veil" id="howVeil"><div class="modal">
@@ -573,6 +629,8 @@ let realQuoteCache = { addr: "", atMs: 0, html: "", inflight: "" }; // the pre-f
 // register: counterparties and treasuries, never whales; viewing, never watching; no retail promos.
 const SKIN = "__SKIN__";
 const INST = SKIN === "institutional";
+// The desktop stage is the web page's, retail only: the Mini App is a phone surface by definition.
+if (!INST && !${miniapp ? "true" : "false"}) document.body.classList.add("retail");
 if (INST) {
   document.body.classList.add("inst");
   $("heroH1").innerHTML = 'Institutional asset protection. <span style="color:var(--accent)">One action.</span>';
@@ -626,6 +684,9 @@ const setMsg = (t, isErr, working) => {
 };
 
 const setConn = () => {
+  // Desktop stage: the pitch stands beside the live card until the visitor connects their own
+  // address; then the stage folds into the dense app (owner sections, payouts).
+  document.body.classList.toggle("connected", !!account && !watching);
   // Nav chrome: dApp-standard Connect, upper right. The showcase landing still reads "Connect" —
   // swapping in the visitor's own address IS the conversion action. INST keeps a quiet status pill.
   const pill = $("connPill");
@@ -1190,6 +1251,7 @@ document.addEventListener("click", (ev) => {
 });
 
 $("howLink").onclick = (e) => { e.preventDefault(); $("howVeil").classList.add("open"); };
+$("howLink2").onclick = (e) => { e.preventDefault(); $("howVeil").classList.add("open"); };
 $("howClose").onclick = () => $("howVeil").classList.remove("open");
 $("howVeil").addEventListener("click", (e) => { if (e.target === $("howVeil")) $("howVeil").classList.remove("open"); });
 
