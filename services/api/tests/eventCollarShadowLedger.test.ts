@@ -165,9 +165,11 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   assert.ok(quoted.includes('"Rays, ""the"" team"'));
 
   const html = renderShadowHtml({ atIso: "2026-09-15T00:00:00.000Z", summary: s, open: positions.filter((p) => p.status === "open"), settled: positions.filter((p) => p.status === "settled") });
-  assert.ok(html.includes("The writer&#39;s book") || html.includes("The writer's book"));
-  assert.ok(html.includes("$0.32"), "writer P&L shows in dollars");
-  assert.ok(html.includes("The hedge-layer identity"), "the identity leads the page");
+  assert.ok(!html.includes("The writer's book") && !html.includes("cap slices kept (holder won)"), "the line-by-line book moved to the operator report");
+  assert.ok(html.includes("$0.32"), "our P&L shows in dollars");
+  assert.ok(html.includes("We carry no outcome risk"), "the identity leads the page");
+  assert.ok(html.includes("our P&amp;L, settled") && !/writer|holder/i.test(html.replace(/writerPnl|holderDelta/g, "")), "public words: our P&L and user, never writer and holder");
+  assert.ok(html.includes("<th>user Δ</th>") && html.includes("<th>our P&amp;L</th>"));
   assert.ok(html.includes("a gap of $0.00. The hedge layer carried no outcome risk."), "and reads the gap in one sentence");
   assert.ok(html.includes("Where protection is cheap and where it is rich"), "EV cost by route and league");
   assert.ok(html.includes("<td>MLB</td>") && html.includes("<td>NFL</td>"), "league rows");
@@ -275,12 +277,12 @@ test("shadow: page renders the honest record", () => {
     open: positions.filter((p) => p.status === "open"),
     settled: positions.filter((p) => p.status === "settled"),
   });
-  assert.ok(html.includes("Shadow record"), "page title");
+  assert.ok(html.includes("Track record") && !html.includes("Shadow record"), "page title");
   assert.ok(html.includes("floor saves"), "the save count is a hero number");
   assert.ok(html.includes("floor paid"), "settled row tags the save");
   assert.ok(html.includes("$79.12"), "protected payout shown");
   assert.ok(html.includes("vs $0.00 naked"), "naked comparison shown");
-  assert.ok(html.includes("What is real"), "honesty footer");
+  assert.ok(html.includes("<b>Real:</b>") && html.includes("<b>Simulated:</b>"), "honesty footer");
   assert.ok(html.includes("nothing is bought"), "simulation disclosed");
   assert.ok(html.includes("Demonstration, not an offer."), "not an offer");
   assert.ok(!html.includes("\u2014"), "no em dashes in visible copy");

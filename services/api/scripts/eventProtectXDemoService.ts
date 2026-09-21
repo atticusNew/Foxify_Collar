@@ -34,10 +34,11 @@
  * tools show a visitor exactly what the card shows.
  *
  * EMBED DEMO IS THE FRONT DOOR: GET / (also /embed) is the layer inside a
- * host's app: a neutral positions list (their brand: EVENT_X_EMBED_BRAND by
- * default, `?brand=` honoured only on EVENT_X_BRAND_ALLOWLIST; `?skin=dark`)
- * with our Protect button on every row; the sheet prices from the same scan
- * and the row reshapes to fewer contracts plus cash. The board is GET /board.
+ * host's app: their positions list in their colours (brand: EVENT_X_EMBED_BRAND
+ * by default, `?brand=` honoured only on EVENT_X_BRAND_ALLOWLIST; a recognised
+ * brand brings its colourway and light/dark shell, `?skin=` overrides) with
+ * our Protect button on every row; the sheet prices from the same scan and the
+ * row reshapes to "ends floor or cap · credit paid now". The board is GET /board.
  * GET /partner
  * (operator token) is the host's console: volume protected, credits paid to
  * their users, cost of protection, own-book share, refusals, revenue share
@@ -116,7 +117,7 @@ const MAX_CRYPTO_ROWS = Number(process.env.EVENT_X_CRYPTO_ROWS || 2);
 /**
  * Ceiling on what protection may cost, in bps of the position's expected value at the market's
  * own odds. Above it the cheapest route is still rich insurance (a wide No-side spread, usually),
- * and refusing beats quoting: the board and the shadow record stop being dominated by the worst
+ * and refusing beats quoting: the board and the track record stop being dominated by the worst
  * product. 0 disables the ceiling.
  */
 export const MAX_EV_COST_BPS = Number(process.env.EVENT_X_MAX_EV_COST_BPS ?? 300);
@@ -1007,7 +1008,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       res.end(
         renderEventEmbedHtml({
           brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND),
-          skin: url.searchParams.get("skin") === "dark" ? "dark" : "light",
+          // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
+          skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,
         }),
       );
       return;

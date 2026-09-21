@@ -1,10 +1,14 @@
 /**
- * Shadow record page — the public face of the event shadow run.
+ * Track record page — the public face of the event shadow run.
  *
  * Renders the replayed ledger: settled events marked against official Kalshi
  * results, the open book, and the honest aggregate (protection usually costs
- * a little; the floor is what it buys). Same visual language as the demo and
- * receipts pages. Server-rendered, no client JS.
+ * a little; the floor is what it buys). Written for a partner reading it once:
+ * the identity (we carry no outcome risk) leads, then what settled, then with
+ * and without protection, then where it is cheap and rich. Our book line by
+ * line (cap slices, floors, hedge legs, per league) is on the operator report.
+ * "Our P&L" and "user", never "writer" and "holder", on the public page. Same
+ * visual language as the demo and receipts pages. Server-rendered, no client JS.
  */
 
 import type { RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
@@ -157,8 +161,8 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     id.settled === 0
       ? "Nothing has settled yet; the identity is checked on every settlement."
       : id.holds
-        ? `On ${id.settled} settled events the writer's P&L is ${signedUsd(id.writerPnlCents)} and the take booked is ${usd(id.takeBookedCents)}: a gap of ${signedUsd(id.gapCents)}${id.gapCents === 0 ? "" : " (hedge units round up, never down)"}. The hedge layer carried no outcome risk.`
-        : `On ${id.settled} settled events the writer's P&L is ${signedUsd(id.writerPnlCents)} against ${usd(id.takeBookedCents)} of take booked: a gap of ${signedUsd(id.gapCents)}, outside rounding. Something in the hedge did not cover; the operator report has the positions.`;
+        ? `On ${id.settled} settled events our P&L is ${signedUsd(id.writerPnlCents)} and the take booked is ${usd(id.takeBookedCents)}: a gap of ${signedUsd(id.gapCents)}${id.gapCents === 0 ? "" : " (hedge units round up, never down)"}. The hedge layer carried no outcome risk.`
+        : `On ${id.settled} settled events our P&L is ${signedUsd(id.writerPnlCents)} against ${usd(id.takeBookedCents)} of take booked: a gap of ${signedUsd(id.gapCents)}, outside rounding. Something in the hedge did not cover; the operator report has the positions.`;
   const segmentRows = (m: Record<string, ShadowSegment>, label: (k: string) => string): string =>
     Object.entries(m)
       .sort((a, b) => b[1].opened - a[1].opened)
@@ -177,7 +181,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     .sort((a, b) => (b[1].quotedAvgEvBps ?? 0) - (a[1].quotedAvgEvBps ?? 0));
   const segmentLine =
     richest.length >= 2
-      ? `Protection is cheapest on ${richest[richest.length - 1][0].toUpperCase()} (${bpsPct(richest[richest.length - 1][1].quotedAvgEvBps)} of expected value quoted) and richest on ${richest[0][0].toUpperCase()} (${bpsPct(richest[0][1].quotedAvgEvBps)}); the record-wide average is weighted by how many of each the scanner found, not by what a holder would choose.`
+      ? `Protection is cheapest on ${richest[richest.length - 1][0].toUpperCase()} (${bpsPct(richest[richest.length - 1][1].quotedAvgEvBps)} of expected value quoted) and richest on ${richest[0][0].toUpperCase()} (${bpsPct(richest[0][1].quotedAvgEvBps)}); the record-wide average is weighted by how many of each the scanner found, not by what a user would choose.`
       : "";
   const windowLine = s.firstOpenedAt
     ? `Recording since ${escapeHtml(s.firstOpenedAt.slice(0, 16).replace("T", " "))} UTC. Append-only; positions are never edited, only opened and settled.`
@@ -195,93 +199,48 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       : s.firstOpenedAt
         ? `since ${utcDay(s.firstOpenedAt)} UTC; nothing settled yet`
         : "no positions yet";
-  const pnlBpsLine =
-    w.settledPnlBpsOfStake === null
-      ? "–"
-      : `${(w.settledPnlBpsOfStake / 100).toFixed(2)}% of settled stake`;
-  const evenLine =
-    w.settledWhenHolderWon > 0 && w.settledWhenHolderLost > 0
-      ? `${signedUsd(w.pnlWhenHolderWonCents)} on ${w.settledWhenHolderWon} holder wins · ${signedUsd(w.pnlWhenHolderLostCents)} on ${w.settledWhenHolderLost} holder losses`
-      : w.settledWhenHolderWon > 0
-        ? `${signedUsd(w.pnlWhenHolderWonCents)} on ${w.settledWhenHolderWon} holder wins; no losses settled yet`
-        : w.settledWhenHolderLost > 0
-          ? `${signedUsd(w.pnlWhenHolderLostCents)} on ${w.settledWhenHolderLost} holder losses; no wins settled yet`
-          : "nothing settled yet";
-  const leagueRows = Object.entries(w.byLeague)
-    .sort((a, b) => b[1].settled + b[1].open - (a[1].settled + a[1].open))
-    .map(
-      ([league, r]) =>
-        `<div class="row"><span>${escapeHtml(league.toUpperCase())} · ${r.settled} settled, ${r.open} open</span>` +
-        `<b>${signedUsd(r.pnlCents)}${r.stakeCents > 0 ? ` <i>${((r.pnlCents / r.stakeCents) * 100).toFixed(2)}% of stake</i>` : ""}</b></div>`,
-    )
-    .join("");
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
-<title>Shadow record · Earn &amp; Protect · events</title>
+<title>Track record · Earn &amp; Protect · events</title>
 <meta name="description" content="A continuous simulated run of the protection engine, marked against official results as events settle." />
 <style>${SHADOW_CSS}</style>
 </head>
 <body>
 <div class="topbar"><div class="in">
-  <div class="wordmark">Earn &amp; Protect <span>· shadow record</span></div>
+  <div class="wordmark">Earn &amp; Protect <span>· track record</span></div>
 </div></div>
 <div class="wrap">
   <div class="card">
-    <h1>Shadow record</h1>
-    <div class="sub">A continuous simulated run of the protection engine. Every quotable event is protected at its live quoted terms, then marked against the official result when the market settles. Simulated fills at live venue quotes; nothing is bought.</div>
+    <h1>Track record</h1>
+    <div class="sub">A continuous simulated run. Every quotable event is protected at its live quoted terms, then marked against the official result when it settles. Live prices; nothing is bought.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.settledCount}</div><div class="l">events settled</div></div>
       <div class="bignum"><div class="n">${s.floorSaves}</div><div class="l">floor saves</div></div>
       <div class="bignum"><div class="n green">${s.openCount}</div><div class="l">open now</div></div>
-      <div class="bignum"><div class="n ${w.settledPnlCents >= 0 ? "green" : ""}">${signedUsd(w.settledPnlCents)}</div><div class="l">writer P&amp;L, settled</div></div>
+      <div class="bignum"><div class="n ${w.settledPnlCents >= 0 ? "green" : ""}">${signedUsd(w.settledPnlCents)}</div><div class="l">our P&amp;L, settled</div></div>
     </div>
     <div class="period">${escapeHtml(periodLine)}</div>
   </div>
   <div class="card">
-    <h2>The hedge-layer identity</h2>
-    <div class="sub" style="margin-bottom:8px">Leg for leg, the writer's realized P&amp;L must equal the published take: the hedge pays the floor, the cap slice pays the hedge, and nothing depends on who won. This is the number that says the layer carries no outcome risk.</div>
+    <h2>We carry no outcome risk</h2>
+    <div class="sub" style="margin-bottom:8px">Leg for leg, what we earn on a settled event must equal the published take: the hedge pays the floor, the cap slice pays the hedge, and nothing depends on who won.</div>
     <div class="bignums">
-      <div class="bignum"><div class="n ${id.holds ? "green" : ""}">${signedUsd(id.writerPnlCents)}</div><div class="l">writer P&amp;L, settled</div></div>
+      <div class="bignum"><div class="n ${id.holds ? "green" : ""}">${signedUsd(id.writerPnlCents)}</div><div class="l">our P&amp;L, settled</div></div>
       <div class="bignum"><div class="n">${usd(id.takeBookedCents)}</div><div class="l">take booked</div></div>
       <div class="bignum"><div class="n ${id.holds ? "green" : ""}">${signedUsd(id.gapCents)}</div><div class="l">gap${id.settled > 0 ? (id.holds ? " · holds" : " · check") : ""}</div></div>
     </div>
     <div class="read" style="margin-top:10px">${escapeHtml(identityLine)}</div>
-    <div class="row" style="margin-top:8px"><span>hedge payouts minus hedge cost</span><b>${signedUsd(id.hedgeNetCents)} <i>${id.hedgeNetCents >= 0 ? "the hedge funded itself" : "the hedge fell short"}</i></b></div>
-    <div class="row"><span>cap slices kept minus floors and credits paid</span><b>${signedUsd(id.holderLegsNetCents)}</b></div>
-  </div>
-  <div class="card">
-    <h2>Where protection is cheap and where it is rich</h2>
-    <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of the protection at the market's own odds; holder Δ is realized, protected minus naked, as a share of settled stake.</div>
-    <div class="tablewrap"><table>
-      <tr><th>slice</th><th>opened</th><th>settled</th><th>EV cost</th><th>holder Δ</th><th>credits</th><th>writer P&amp;L</th></tr>
-      ${routeSeg}${leagueSeg}
-    </table></div>
-    ${segmentLine ? `<div class="read">${escapeHtml(segmentLine)}</div>` : ""}
-  </div>
-  <div class="card">
-    <h2>The writer's book</h2>
-    <div class="sub" style="margin-bottom:8px">The other side of every settled event: what selling the protection and carrying the hedge netted. Leg-for-leg means the answer should not depend on who won.</div>
-    <div class="row"><span>realized, settled events</span><b>${signedUsd(w.settledPnlCents)} <i>${escapeHtml(pnlBpsLine)}</i></b></div>
-    <div class="row"><span>split by outcome</span><b>${escapeHtml(evenLine)}</b></div>
-    <div class="row"><span>published take booked on those events</span><b>${usd(w.takeBookedCents)}</b></div>
-    <div class="row"><span>cap slices kept (holder won)</span><b>${usd(w.capSlicesKeptCents)}</b></div>
-    <div class="row"><span>floors paid (holder lost)</span><b>${signedUsd(-w.floorsPaidCents)}</b></div>
-    <div class="row"><span>hedge payouts received</span><b>${usd(w.hedgePayoutsCents)}</b></div>
-    <div class="row"><span>hedge cost paid</span><b>${signedUsd(-w.hedgeCostCents)}</b></div>
-    <div class="row"><span>credits paid to holders</span><b>${signedUsd(-w.creditsPaidCents)}</b></div>
-    <div class="row"><span>take locked on open positions</span><b>${usd(w.takeLockedOpenCents)} <i>realizes as they settle</i></b></div>
-    ${leagueRows}
   </div>
   <div class="card">
     <h2>Settled, most recent first</h2>
     ${settledRows || '<div class="row"><span>nothing settled yet</span><b>the book is young</b></div>'}
   </div>
   <div class="card">
-    <h2>The honest aggregate</h2>
+    <h2>With and without protection</h2>
     <div class="row"><span>with protection, settled total</span><b>${usd(s.protectedTotalCents)}</b></div>
     <div class="row"><span>without protection, settled total</span><b>${usd(s.nakedTotalCents)}</b></div>
     <div class="row"><span>realized</span><b>${escapeHtml(realizedLine)}</b></div>
@@ -292,12 +251,21 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     <div class="row"><span>rule comparison</span><b>${escapeHtml(cfLine)} <i>report on request</i></b></div>
   </div>
   <div class="card">
+    <h2>Where protection is cheap and where it is rich</h2>
+    <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of protection at the market's own odds; user Δ is realized, protected minus naked, as a share of settled stake.</div>
+    <div class="tablewrap"><table>
+      <tr><th>slice</th><th>opened</th><th>settled</th><th>EV cost</th><th>user Δ</th><th>credits</th><th>our P&amp;L</th></tr>
+      ${routeSeg}${leagueSeg}
+    </table></div>
+    ${segmentLine ? `<div class="read">${escapeHtml(segmentLine)}</div>` : ""}
+  </div>
+  <div class="card">
     <h2>Open book</h2>
     ${openRows || '<div class="row"><span>no open positions</span><b>next scan fills the board</b></div>'}
     <a class="back" href="${demoUrl()}">back to the live board</a>
   </div>
   <footer>
-    <b>What is real:</b> the venues' live prices, the quoted terms, and the official results. <b>What is simulated:</b> the positions; no venue credentials, no wallets. Protection usually costs a little; the floor saves are what it buys. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>
+    <b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions; no venue credentials, no wallets. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>
   </footer>
 </div>
 </body>
@@ -344,7 +312,50 @@ function ruleTr(label: string, note: string, r: RuleBook, opts: { base?: boolean
 }
 
 const RULE_HEAD =
-  "<tr><th>rule</th><th>quoted</th><th>refused</th><th>settled</th><th>EV cost</th><th>credits</th><th>take</th><th>holder Δ</th><th>writer P&amp;L</th></tr>";
+  "<tr><th>rule</th><th>quoted</th><th>refused</th><th>settled</th><th>EV cost</th><th>credits</th><th>take</th><th>user Δ</th><th>our P&amp;L</th></tr>";
+
+/**
+ * OUR BOOK, LINE BY LINE — the operator's view of the identity: every leg that adds up to our P&L
+ * on settled events, split by outcome and by league. Moved here from the public page so the track
+ * record reads in one pass; the numbers are the same summary.
+ */
+function ourBookCard(s: ShadowSummary): string {
+  const w = s.writer;
+  const id = s.identity;
+  const pnlBpsLine = w.settledPnlBpsOfStake === null ? "–" : `${(w.settledPnlBpsOfStake / 100).toFixed(2)}% of settled stake`;
+  const evenLine =
+    w.settledWhenHolderWon > 0 && w.settledWhenHolderLost > 0
+      ? `${signedUsd(w.pnlWhenHolderWonCents)} on ${w.settledWhenHolderWon} user wins · ${signedUsd(w.pnlWhenHolderLostCents)} on ${w.settledWhenHolderLost} user losses`
+      : w.settledWhenHolderWon > 0
+        ? `${signedUsd(w.pnlWhenHolderWonCents)} on ${w.settledWhenHolderWon} user wins; no losses settled yet`
+        : w.settledWhenHolderLost > 0
+          ? `${signedUsd(w.pnlWhenHolderLostCents)} on ${w.settledWhenHolderLost} user losses; no wins settled yet`
+          : "nothing settled yet";
+  const leagueRows = Object.entries(w.byLeague)
+    .sort((a, b) => b[1].settled + b[1].open - (a[1].settled + a[1].open))
+    .map(
+      ([league, r]) =>
+        `<div class="row"><span>${escapeHtml(league.toUpperCase())} · ${r.settled} settled, ${r.open} open</span>` +
+        `<b>${signedUsd(r.pnlCents)}${r.stakeCents > 0 ? ` <i>${((r.pnlCents / r.stakeCents) * 100).toFixed(2)}% of stake</i>` : ""}</b></div>`,
+    )
+    .join("");
+  return `<div class="card">
+    <h2>Our book, line by line</h2>
+    <div class="sub" style="margin-bottom:8px">The other side of every settled event: what selling the protection and carrying the hedge netted. Leg for leg, the answer should not depend on who won; the gap on the track record is what is left after these lines.</div>
+    <div class="row"><span>realized, settled events</span><b>${signedUsd(w.settledPnlCents)} <i>${escapeHtml(pnlBpsLine)}</i></b></div>
+    <div class="row"><span>split by outcome</span><b>${escapeHtml(evenLine)}</b></div>
+    <div class="row"><span>published take booked on those events</span><b>${usd(w.takeBookedCents)}</b></div>
+    <div class="row"><span>cap slices kept (user won)</span><b>${usd(w.capSlicesKeptCents)}</b></div>
+    <div class="row"><span>floors paid (user lost)</span><b>${signedUsd(-w.floorsPaidCents)}</b></div>
+    <div class="row"><span>hedge payouts received</span><b>${usd(w.hedgePayoutsCents)}</b></div>
+    <div class="row"><span>hedge cost paid</span><b>${signedUsd(-w.hedgeCostCents)}</b></div>
+    <div class="row"><span>credits paid to users</span><b>${signedUsd(-w.creditsPaidCents)}</b></div>
+    <div class="row"><span>hedge payouts minus hedge cost</span><b>${signedUsd(id.hedgeNetCents)} <i>${id.hedgeNetCents >= 0 ? "the hedge funded itself" : "the hedge fell short"}</i></b></div>
+    <div class="row"><span>cap slices kept minus floors and credits paid</span><b>${signedUsd(id.holderLegsNetCents)}</b></div>
+    <div class="row"><span>take locked on open positions</span><b>${usd(w.takeLockedOpenCents)} <i>realizes as they settle</i></b></div>
+    ${leagueRows}
+  </div>`;
+}
 
 /**
  * The rule comparison: every proposed pricing rule marked against the same
@@ -360,8 +371,8 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
     : "not started; the next scan that quotes an event begins it";
   const settledLine =
     cf.baseline.settled === 0
-      ? "None of these positions has settled yet, so the holder and writer columns are empty; quoted terms, EV cost, credits and take are already comparable."
-      : `${cf.baseline.settled} of ${cf.positionsWithCounterfactuals} have settled against official results, so holder and writer columns are realized on those.`;
+      ? "None of these positions has settled yet, so the user and our-P&L columns are empty; quoted terms, EV cost, credits and take are already comparable."
+      : `${cf.baseline.settled} of ${cf.positionsWithCounterfactuals} have settled against official results, so the user and our-P&L columns are realized on those.`;
 
   const tierRows = [
     ruleTr("live book", "what was quoted", cf.baseline, { base: true }),
@@ -388,7 +399,7 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
     shareOnly && minRule && shareOnly.quoted > 0
       ? minRule.takeCents - shareOnly.takeCents === 0
         ? "On these positions the minimum never bound: the share was already above 0.25% of stake every time, so both rules book the same take."
-        : `The minimum adds ${usd(minRule.takeCents - shareOnly.takeCents)} of take across ${shareOnly.quoted} quotes and takes the same amount out of holder credits; the collar itself is unchanged, so floors, caps and hedges match line for line.`
+        : `The minimum adds ${usd(minRule.takeCents - shareOnly.takeCents)} of take across ${shareOnly.quoted} quotes and takes the same amount out of user credits; the collar itself is unchanged, so floors, caps and hedges match line for line.`
       : "";
 
   const capRows = cf.capacity
@@ -426,7 +437,7 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
-<title>Rule comparison · Shadow record · Earn &amp; Protect</title>
+<title>Rule comparison · Track record · Earn &amp; Protect</title>
 <meta name="description" content="Every proposed pricing rule marked against the same positions, books and official results as the live shadow book." />
 <style>${SHADOW_CSS}</style>
 </head>
@@ -446,9 +457,11 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
     <div class="read" style="margin-top:10px">${escapeHtml(settledLine)}</div>
   </div>
 
+  ${ourBookCard(s)}
+
   <div class="card">
     <h2>Protection tiers</h2>
-    <div class="sub" style="margin-bottom:6px">Three collars from one book. Holder Δ is protected minus naked across settled events; writer P&amp;L is the other side after the hedge. Percentages are of settled stake.</div>
+    <div class="sub" style="margin-bottom:6px">Three collars from one book. User Δ is protected minus naked across settled events; our P&amp;L is the other side after the hedge. Percentages are of settled stake.</div>
     <div class="tablewrap"><table>${RULE_HEAD}${tierRows}</table></div>
     <div class="rule">A tier that resolves to the same collar as another is recorded once and not counted as a refusal, so tier rows can total fewer quotes than the live book.</div>
     ${tierRules}
@@ -475,8 +488,8 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
 
   <div class="card">
     <h2>How to read it</h2>
-    <div class="read"><b>Holder Δ</b> is what protection did for the holder against holding naked: negative is the usual cost of protection, positive means the floor paid more than the cap gave up. <b>Writer P&amp;L</b> is what selling that protection and carrying the hedge netted; leg-for-leg it should not depend on who won. <b>EV cost</b> is the quoted expected cost of the collar as a share of stake, before anything settles. A rule that lifts writer P&amp;L without moving holder Δ much is a better rule; one that only shifts money from one column to the other is a fee.</div>
-    <a class="back" href="/">Back to the shadow record</a> <a class="back" href="/api/shadow/report${tq}">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full${tq ? `&token=${encodeURIComponent(input.token as string)}` : ""}">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/hedges${tq}">Hedge receipts (JSON)</a> <a class="back" href="/api/shadow/export${tq}">Full ledger (JSONL)</a>
+    <div class="read"><b>User Δ</b> is what protection did for the user against holding naked: negative is the usual cost of protection, positive means the floor paid more than the cap gave up. <b>Our P&amp;L</b> is what selling that protection and carrying the hedge netted; leg for leg it should not depend on who won. <b>EV cost</b> is the quoted expected cost of the collar as a share of stake, before anything settles. A rule that lifts our P&amp;L without moving user Δ much is a better rule; one that only shifts money from one column to the other is a fee.</div>
+    <a class="back" href="/">Back to the track record</a> <a class="back" href="/api/shadow/report${tq}">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full${tq ? `&token=${encodeURIComponent(input.token as string)}` : ""}">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/hedges${tq}">Hedge receipts (JSON)</a> <a class="back" href="/api/shadow/export${tq}">Full ledger (JSONL)</a>
   </div>
   <footer>
     Counterfactuals are computed at open from the venue books retained on the position and settled against the same official result as the live book. Nothing in the alternatives was traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer.

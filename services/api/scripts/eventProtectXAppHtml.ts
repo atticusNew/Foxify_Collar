@@ -6,7 +6,7 @@
  * shows the event, the position, the floor, the cap, the credit and the tiers,
  * and reads only the retail /api/showcase shape (src/eventCollar/retailShowcase.ts).
  * The hedge leg, the pairing, the routes and our take live on the operator's
- * surfaces (/api/showcase?token=..., the shadow record), never on this page.
+ * surfaces (/api/showcase?token=..., the track record), never on this page.
  *
  * Everything financial is quoted live by the server from public books; the
  * position and lifecycle are simulated and labeled.
@@ -16,7 +16,7 @@ import { ATTICUS_LOGO_DATA_URI } from "./eventProtectLogo";
 import type { CrossLedgerSummary } from "../src/eventCollar/crossVenue/crossLedger";
 import type { EventFunnelSummary } from "../src/eventCollar/crossVenue/eventFunnel";
 
-/** Public URL of the shadow record service (its own deploy, so the track record outlives demo restarts). */
+/** Public URL of the track record service (its own deploy, so the track record outlives demo restarts). */
 function shadowUrl(): string {
   return process.env.EVENT_X_SHADOW_URL || "https://atticus-event-shadow.onrender.com";
 }
@@ -242,7 +242,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
   <div class="err" id="err"></div>
 
   <footer>
-    <b>Demonstration, not an offer.</b> Positions are simulated; prices are live. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice. <a href="/receipts">See the receipts</a>. <a href="${shadowUrl()}">See the shadow record</a>.
+    <b>Demonstration, not an offer.</b> Positions are simulated; prices are live. Event contracts involve risk. US availability requires a regulated deployment path; that work is underway. Nothing here is investment advice. <a href="/receipts">See the receipts</a>. <a href="${shadowUrl()}">See the track record</a>.
   </footer>
 </div>
 
@@ -895,7 +895,7 @@ footer b{color:var(--dim);font-weight:600}
     <a class="back" href="/board">back to the live board</a>
   </div>
   <footer>
-    <b>Demonstration, not an offer.</b> Aggregates cover simulated protection quotes priced from live public market data. Nothing here is investment advice. <a href="${shadowUrl()}">See the shadow record</a>.
+    <b>Demonstration, not an offer.</b> Aggregates cover simulated protection quotes priced from live public market data. Nothing here is investment advice. <a href="${shadowUrl()}">See the track record</a>.
   </footer>
 </div>
 </body>
