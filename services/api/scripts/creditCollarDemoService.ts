@@ -124,7 +124,19 @@ import {
 } from "../src/singleSide/twoSided/creditCollar/epSafety";
 import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
 import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, recordPageLoad, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
-import { parseLeaderboardTop, parseShowcaseOverride, type ShowcaseWallet } from "../src/singleSide/twoSided/creditCollar/epShowcase";
+import {
+  BUCKET_ORDER,
+  candidatesForBucket,
+  dayKey,
+  heroIndex,
+  missingBuckets,
+  nextRotationIso,
+  parseLeaderboardAll,
+  parseShowcaseOverride,
+  pickShowcaseSet,
+  type BucketedWallet,
+  type ShowcaseWallet,
+} from "../src/singleSide/twoSided/creditCollar/epShowcase";
 import { actionCleared, closeAllowed, verifyMessageText, verifyWalletSignature } from "../src/singleSide/twoSided/creditCollar/epVerify";
 import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
 import { EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
@@ -200,11 +212,14 @@ const internalAccounts = parseInternalAccounts(process.env.EP_INTERNAL_ACCOUNTS)
 // values), validated against LIVE open BTC positions, cached, and — critically — action-guarded:
 // a showcased address can be WATCHED by anyone but never wrapped/closed/toggled by anyone.
 const SHOWCASE_TTL_MS = 30 * 60_000;
-// Size band for leaderboard-sourced showcase positions (curated EP_SHOWCASE_ADDRESSES bypass it).
-const SHOWCASE_MIN_USD = num(process.env.EP_SHOWCASE_MIN_USD, 2_000);
-const SHOWCASE_MAX_USD = num(process.env.EP_SHOWCASE_MAX_USD, 500_000);
-const SHOWCASE_SCAN = Math.max(3, Math.min(200, num(process.env.EP_SHOWCASE_SCAN, 60)));
-let showcaseCache: { atMs: number; wallets: ShowcaseWallet[] } = { atMs: 0, wallets: [] };
+// Wallets read per refresh across the three buckets (≈ 0.2s each; the refresh runs every 30 min).
+const SHOWCASE_SCAN = Math.max(3, Math.min(400, num(process.env.EP_SHOWCASE_SCAN, 150)));
+// The landing is a LONG (EP_SHOWCASE_SIDES=long,short to allow shorts on it).
+const SHOWCASE_SIDES = String(process.env.EP_SHOWCASE_SIDES || "long")
+  .split(",")
+  .map((x) => x.trim())
+  .filter((x): x is "long" | "short" => x === "long" || x === "short");
+let showcaseCache: { atMs: number; wallets: BucketedWallet[] } = { atMs: 0, wallets: [] };
 let showcaseRefreshing = false;
 const showcaseSet = new Set<string>(); // lowercase addresses currently on display
 
@@ -213,29 +228,40 @@ const refreshShowcase = async (): Promise<void> => {
   showcaseRefreshing = true;
   try {
     const curated = parseShowcaseOverride(process.env.EP_SHOWCASE_ADDRESSES);
-    let candidates = curated;
-    if (candidates.length === 0) {
-      const res = await fetch("https://stats-data.hyperliquid.xyz/Mainnet/leaderboard");
-      if (res.ok) candidates = parseLeaderboardTop(await res.text(), SHOWCASE_SCAN).map((c) => c.address);
-    }
-    // Relatable first: a retail visitor should land on a position that looks like theirs, not a
-    // nine-figure whale. Leaderboard candidates inside the size band win; out-of-band positions
-    // are kept as the fallback so the landing never goes dark. Curated addresses skip the band.
-    const inBand: ShowcaseWallet[] = [];
-    const outOfBand: ShowcaseWallet[] = [];
-    for (const addr of candidates) {
-      if (inBand.length >= 3) break;
+    // Three buckets, longs only (epShowcase.ts): one live public long in each of small, medium
+    // and large, so the hero varies by the hour. Curated addresses are taken as given (bucketed,
+    // any side). Otherwise each bucket draws candidates from the leaderboard band that tends to
+    // hold positions of its size, in an order seeded by the day, and reads until it has one.
+    const found: ShowcaseWallet[] = [];
+    let wallets: BucketedWallet[] = [];
+    const read = async (addr: string): Promise<void> => {
       try {
         const pos = await readHlPosition(addr);
-        if (!pos) continue;
-        const w = { address: addr, side: pos.side, szBase: pos.szBase, notionalUsdc: pos.notionalUsdc };
-        if (curated.length > 0 || (pos.notionalUsdc >= SHOWCASE_MIN_USD && pos.notionalUsdc <= SHOWCASE_MAX_USD)) inBand.push(w);
-        else if (outOfBand.length < 3) outOfBand.push(w);
+        if (pos) found.push({ address: addr, side: pos.side, szBase: pos.szBase, notionalUsdc: pos.notionalUsdc });
       } catch {
         /* unreadable candidate — skip */
       }
+    };
+    if (curated.length > 0) {
+      for (const addr of curated) await read(addr);
+      wallets = pickShowcaseSet(found, { sides: ["long", "short"] });
+    } else {
+      const res = await fetch("https://stats-data.hyperliquid.xyz/Mainnet/leaderboard");
+      const all = res.ok ? parseLeaderboardAll(await res.text()) : [];
+      const day = dayKey(Date.now());
+      const perBucket = Math.max(1, Math.floor(SHOWCASE_SCAN / BUCKET_ORDER.length));
+      const seen = new Set<string>();
+      for (const bucket of BUCKET_ORDER) {
+        for (const addr of candidatesForBucket(all, bucket, day, perBucket)) {
+          if (!missingBuckets(wallets).includes(bucket)) break; // an earlier band's read may already have filled this one
+          if (seen.has(addr)) continue;
+          seen.add(addr);
+          await read(addr);
+          wallets = pickShowcaseSet(found, { sides: SHOWCASE_SIDES });
+          if (!missingBuckets(wallets).includes(bucket)) break;
+        }
+      }
     }
-    const wallets = inBand.length > 0 ? inBand : outOfBand;
     // Empty result keeps the PREVIOUS set (serve stale over serving nothing) unless we never had one.
     if (wallets.length > 0 || showcaseCache.wallets.length === 0) {
       showcaseCache = { atMs: Date.now(), wallets };
@@ -1806,6 +1832,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       const tgLink = (process.env.EP_SUPPORT_TELEGRAM ?? "").trim();
       const xLink = (process.env.EP_SOCIAL_X ?? "").trim();
+      // The public track record (the perp shadow): one footer link, the same as the event demo's.
+      const recordLink = (process.env.EP_TRACK_RECORD_URL ?? "https://atticus-earn-protect-shadow.onrender.com").trim();
       sendHtml(
         res,
         (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML)
@@ -1825,6 +1853,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           )
           .replaceAll("__BRAND_LINE__", (process.env.EP_BRAND_LINE ?? "for").replace(/[<>&"]/g, ""))
           .replaceAll("__SKIN__", process.env.EP_SKIN === "institutional" ? "institutional" : "retail")
+          .replaceAll("__LINK_RECORD__", /^https:\/\//.test(recordLink) ? `<a href="${recordLink.replace(/"/g, "")}" target="_blank" rel="noopener">Track record</a> · ` : "")
           .replaceAll("__LINK_TG__", /^https:\/\//.test(tgLink) ? `<a href="${tgLink.replace(/"/g, "")}" target="_blank" rel="noopener">Support / Telegram</a> · ` : "")
           .replaceAll("__LINK_X__", /^https:\/\//.test(xLink) ? `<a href="${xLink.replace(/"/g, "")}" target="_blank" rel="noopener">X</a> · ` : "")
       );
@@ -2138,10 +2167,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
     if (req.method === "GET" && route === "/api/showcase") {
-      // The showcase set (retail landing + INST reference view): up to 3 live public wallets.
+      // The showcase set (retail landing + INST reference view): one live public long per size
+      // bucket, and which of them is this hour's hero.
       // Stale-while-revalidate — never block a page render on a 36MB leaderboard fetch.
       if (Date.now() - showcaseCache.atMs > SHOWCASE_TTL_MS) void refreshShowcase();
-      sendJson(res, 200, { ok: true, wallets: showcaseCache.wallets });
+      const nowMs = Date.now();
+      sendJson(res, 200, { ok: true, wallets: showcaseCache.wallets, heroIndex: heroIndex(showcaseCache.wallets.length, nowMs), rotatesAtIso: nextRotationIso(nowMs) });
       return;
     }
     if (req.method === "GET" && route === "/api/px") {
@@ -2544,15 +2575,21 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       sendJson(res, 200, { ok: true, message: "funnel counters cleared (lookers + page loads + previews + watches)" });
       return;
     }
-    if (req.method === "POST" && (route === "/api/reset" || route === "/api/admin/reset")) {
+    if ((req.method === "POST" || (req.method === "GET" && url.searchParams.get("confirm") === "reset")) && (route === "/api/reset" || route === "/api/admin/reset")) {
+      // FRESH START, ARCHIVE NOT DELETE: every store is moved aside under a UTC stamp (json files
+      // renamed beside themselves; postgres rows copied into ep_archive) and the live stores start
+      // empty. Admin only; POST, or GET with confirm=reset from a browser.
       if (!allowReset) {
         sendJson(res, 403, { ok: false, message: "reset disabled (DEMO_ALLOW_RESET=false)" });
         return;
       }
-      await stores.clearAll();
+      const atIso = new Date().toISOString();
+      const archived = await stores.archiveAll(atIso);
       runtimePaused = false;
       runtimePausedReason = null;
-      sendJson(res, 200, { ok: true, message: "store cleared (wraps + prefs + payout ledger + wallet registry + runtime flags)" });
+      funnelState = emptyFunnel();
+      funnelDirty = false;
+      sendJson(res, 200, { ok: true, at: atIso, archived, message: "stores archived (wraps, prefs, payout ledger, wallet registry, runtime flags, ToS, funnel); the demo starts fresh" });
       return;
     }
     sendJson(res, 404, { ok: false, error: "not_found" });

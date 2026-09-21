@@ -26,6 +26,7 @@ import type { WalletRegistry } from "../capsConfig";
 import { emptyFunnel, type FunnelState } from "../epFunnel";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolveWritablePath } from "../shadowStore";
+import { archiveLedgerFile } from "../perpShadow/ledgerArchive";
 
 export type EpStorePaths = {
   wraps: string;
@@ -73,6 +74,12 @@ export type EpStores = {
   saveFunnel: (funnel: FunnelState) => Promise<void>;
   /** Demo affordance: clear everything (guarded by DEMO_ALLOW_RESET upstream). */
   clearAll: () => Promise<void>;
+  /**
+   * FRESH START, ARCHIVE NOT DELETE: every store is moved aside under a UTC stamp (json: the file is
+   * renamed beside itself; postgres: rows are copied into ep_archive with the stamp and table name)
+   * and the live stores start empty. Returns what was archived and where.
+   */
+  archiveAll: (atIso: string) => Promise<Array<{ store: string; to: string; rows: number }>>;
 };
 
 const DEFAULT_RUNTIME: EpRuntimeFlags = { paused: false, pausedReason: null, updatedAtMs: 0 };
@@ -140,6 +147,14 @@ export const jsonStores = (paths: EpStorePaths): EpStores => ({
     saveJsonObject(paths.tos, {});
     saveJsonObject(paths.waitlist, []);
     saveJsonObject(paths.funnel, emptyFunnel());
+  },
+  archiveAll: async (atIso) => {
+    const out: Array<{ store: string; to: string; rows: number }> = [];
+    for (const [store, path] of Object.entries(paths)) {
+      const r = archiveLedgerFile(resolveWritablePath(path), atIso);
+      if (r.archivedTo) out.push({ store, to: r.archivedTo, rows: 1 });
+    }
+    return out;
   }
 });
 
@@ -279,6 +294,28 @@ export const postgresStores = (pool: Queryable): EpStores => ({
   saveFunnel: async (funnel) => replaceAll(pool, "ep_funnel", [{ cols: ["k", "v"], vals: ["state", JSON.stringify(funnel)] }]),
   clearAll: async () => {
     for (const t of ["ep_wraps", "ep_protection", "ep_payouts", "ep_wallets", "ep_runtime", "ep_tos", "ep_waitlist", "ep_funnel"]) await pool.query(`DELETE FROM ${t}`);
+  },
+  archiveAll: async (atIso) => {
+    try {
+      await pool.query("SELECT 1 FROM ep_archive LIMIT 1");
+    } catch {
+      await pool.query("CREATE TABLE ep_archive (archived_at TEXT NOT NULL, tbl TEXT NOT NULL, row JSONB NOT NULL)");
+    }
+    const out: Array<{ store: string; to: string; rows: number }> = [];
+    for (const t of ["ep_wraps", "ep_protection", "ep_payouts", "ep_wallets", "ep_runtime", "ep_tos", "ep_waitlist", "ep_funnel"]) {
+      const rows = (await pool.query(`SELECT * FROM ${t}`)).rows as Array<Record<string, unknown>>;
+      await pool.query("BEGIN");
+      try {
+        for (const r of rows) await pool.query("INSERT INTO ep_archive (archived_at, tbl, row) VALUES ($1, $2, $3)", [atIso, t, JSON.stringify(r)]);
+        await pool.query(`DELETE FROM ${t}`);
+        await pool.query("COMMIT");
+      } catch (e) {
+        await pool.query("ROLLBACK");
+        throw e;
+      }
+      if (rows.length > 0) out.push({ store: t, to: `ep_archive where archived_at = '${atIso}' and tbl = '${t}'`, rows: rows.length });
+    }
+    return out;
   }
 });
 

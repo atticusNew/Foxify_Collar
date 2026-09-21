@@ -54,15 +54,19 @@ services:
       # sentence. Set EP_SKIN=institutional on a partner instance to serve the full payload.
       - key: EP_SKIN
         value: retail
-      # SHOWCASE (the landing card): curated public HL addresses, comma-separated — the visitor
-      # lands on a position that looks like theirs. Empty ⟹ the leaderboard is scanned
-      # (EP_SHOWCASE_SCAN rows) and positions inside the size band are preferred.
+      # SHOWCASE (the landing card): a LONG position, one live public wallet per size bucket
+      # (small $5k–25k, medium $25k–150k, large $150k–750k) from the leaderboard, and the UTC
+      # hour picks which is up. EP_SHOWCASE_ADDRESSES (comma-separated) curates the set instead;
+      # EP_SHOWCASE_SIDES=long,short allows shorts on the landing; EP_SHOWCASE_SCAN = rows read.
       - key: EP_SHOWCASE_ADDRESSES
         sync: false
-      - key: EP_SHOWCASE_MIN_USD
-        value: "2000"
-      - key: EP_SHOWCASE_MAX_USD
-        value: "500000"
+      - key: EP_SHOWCASE_SIDES
+        value: long
+      - key: EP_SHOWCASE_SCAN
+        value: "120"
+      # The public track record the footer links to (the perp shadow service).
+      - key: EP_TRACK_RECORD_URL
+        value: https://atticus-earn-protect-shadow.onrender.com
       - key: EP_ADMIN_TOKEN
         generateValue: true # control room / admin API token — read it from the dashboard
       - key: DATABASE_URL
