@@ -166,6 +166,25 @@ const storePath = process.env.DEMO_STORE_PATH ?? "./logs/demo-wraps.json";
 const allowReset = String(process.env.DEMO_ALLOW_RESET ?? "true").toLowerCase() === "true";
 const coin = process.env.DEMO_COIN ?? "BTC";
 
+// The public track record (the perp shadow service) linked from the footer. FAIL CLOSED: the link
+// renders only while that service answers its /healthz — a retail footer must never send anyone to
+// a "Not Found" page because a service was renamed or not yet created. Probed at boot and every
+// 10 minutes; EP_TRACK_RECORD_URL="" turns the link off.
+const TRACK_RECORD_URL = (process.env.EP_TRACK_RECORD_URL ?? "https://atticus-earn-protect-shadow.onrender.com").trim().replace(/\/+$/, "");
+let trackRecordAlive = false;
+const probeTrackRecord = async (): Promise<void> => {
+  if (!/^https?:\/\//.test(TRACK_RECORD_URL)) return;
+  try {
+    const r = await fetch(`${TRACK_RECORD_URL}/healthz`, { signal: AbortSignal.timeout(6000), redirect: "follow" });
+    const wasAlive = trackRecordAlive;
+    trackRecordAlive = r.ok;
+    if (wasAlive !== trackRecordAlive) console.log(`[demo] track record link ${trackRecordAlive ? "ON" : "OFF"} · ${TRACK_RECORD_URL} answered ${r.status}`);
+  } catch (e) {
+    if (trackRecordAlive) console.log(`[demo] track record link OFF · ${TRACK_RECORD_URL} unreachable (${(e as Error).message})`);
+    trackRecordAlive = false;
+  }
+};
+
 // Auto-renew: protection is a STATE — while an account's toggle is on, expired wraps re-quote and
 // re-wrap at the morning book; unfundable books are honest skip-days retried on a throttle.
 const autoRenew = String(process.env.DEMO_AUTO_RENEW ?? "true").toLowerCase() === "true";
@@ -1832,8 +1851,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       const tgLink = (process.env.EP_SUPPORT_TELEGRAM ?? "").trim();
       const xLink = (process.env.EP_SOCIAL_X ?? "").trim();
-      // The public track record (the perp shadow): one footer link, the same as the event demo's.
-      const recordLink = (process.env.EP_TRACK_RECORD_URL ?? "https://atticus-earn-protect-shadow.onrender.com").trim();
+      // The public track record (the perp shadow): one footer link, the same as the event demo's,
+      // shown only while that service is up (probeTrackRecord).
+      const recordLink = trackRecordAlive ? TRACK_RECORD_URL : "";
       sendHtml(
         res,
         (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML)
@@ -2634,6 +2654,9 @@ server.listen(port, () => {
     funnelState = await stores.loadFunnel();
     // Showcase prefetch (non-blocking): the first visitor lands on a live position, not a skeleton.
     void refreshShowcase();
+    // Footer track-record link: on only while the shadow service answers.
+    void probeTrackRecord().then(() => console.error(`[demo] track record link ${trackRecordAlive ? `ON · ${TRACK_RECORD_URL}` : `OFF · ${TRACK_RECORD_URL || "(unset)"} did not answer /healthz`}`));
+    setInterval(() => void probeTrackRecord(), 10 * 60_000);
     setInterval(() => {
       if (!funnelDirty) return;
       funnelDirty = false;
