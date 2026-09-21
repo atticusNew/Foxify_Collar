@@ -88,7 +88,10 @@ services:
         value: "ProphetX,Novig,Kalshi,Polymarket,DraftKings,FanDuel,PrizePicks,Underdog,Robinhood,Coinbase,Kraken"
       # What the front door (/) calls the host when the link carries no ?brand=.
       - key: EVENT_X_EMBED_BRAND
-        value: "Demo Exchange"
+        value: "Your Exchange"
+      # Where the public /partner page's "Talk to us" goes.
+      - key: EVENT_X_CONTACT_EMAIL
+        value: "hello@atticustrade.com"
       - key: EVENT_X_PARTNER_SHARE_PCT
         value: "50"
 

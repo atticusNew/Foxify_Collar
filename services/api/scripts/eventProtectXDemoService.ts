@@ -105,7 +105,7 @@ import {
   type RouteCheck,
 } from "../src/eventCollar/crossVenue/types";
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
-import { renderEventEmbedHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
+import { DEFAULT_EMBED_BRAND, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
 import { applyMinimumCredit, describeMinimumCredit, minimumCreditRuleFromEnv } from "../src/eventCollar/crossVenue/minimumCredit";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 
@@ -131,11 +131,15 @@ export const MAX_EV_COST_BPS = Number(process.env.EVENT_X_MAX_EV_COST_BPS ?? 300
 export const MIN_CREDIT_RULE = minimumCreditRuleFromEnv(process.env);
 /**
  * EMBED DEMO knobs. `?brand=` on /embed is honoured only for names on the allowlist (fail-closed
- * to "Your app"); the partner console's revenue-share line uses EVENT_X_PARTNER_SHARE_PCT.
+ * to "Your Exchange"); the partner console's revenue-share line uses EVENT_X_PARTNER_SHARE_PCT.
+ * /partner without the operator token is the public pitch for the console with one CTA
+ * (EVENT_X_CONTACT_EMAIL, default hello@atticustrade.com); with it, the console.
  */
 const BRAND_ALLOWLIST = process.env.EVENT_X_BRAND_ALLOWLIST || "";
 /** What the embed shell calls the host when the link carries no brand (the first screen for a cold visitor). */
-const EMBED_BRAND = process.env.EVENT_X_EMBED_BRAND || "Your app";
+const EMBED_BRAND = process.env.EVENT_X_EMBED_BRAND || DEFAULT_EMBED_BRAND;
+/** where the public /partner page's "Talk to us" goes */
+const CONTACT_EMAIL = process.env.EVENT_X_CONTACT_EMAIL || "hello@atticustrade.com";
 const PARTNER_SHARE_PCT = Math.min(100, Math.max(0, Number(process.env.EVENT_X_PARTNER_SHARE_PCT ?? 50)));
 /** The track record (its own deploy); the embed's one public link and the desktop pitch's first partner link. */
 const TRACK_RECORD_URL = process.env.EVENT_X_SHADOW_URL || "https://atticus-event-shadow.onrender.com";
@@ -1045,6 +1049,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           trackRecordUrl: TRACK_RECORD_URL,
           // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
           skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/partner" && req.method === "GET" && !adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"))) {
+      // A visitor (a partner following the pitch's link) gets the case for the console and a CTA; the console itself names our take.
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(
+        renderPartnerCtaHtml({
+          brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND),
+          contactEmail: CONTACT_EMAIL,
+          trackRecordUrl: TRACK_RECORD_URL,
         }),
       );
       return;

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { BRAND_PRESETS, GENERIC_THEME, brandTheme, renderEventEmbedHtml, renderPartnerHtml, resolveBrand, worthOffering } from "../scripts/eventProtectEmbedHtml";
+import { BRAND_PRESETS, GENERIC_THEME, brandInitial, brandTheme, renderEventEmbedHtml, renderPartnerHtml, resolveBrand, worthOffering } from "../scripts/eventProtectEmbedHtml";
 import { summarizeCrossLedger } from "../src/eventCollar/crossVenue/crossLedger";
 import { emptyEventFunnel, eventFunnelSummary, recordPageLoad, EVENT_PAGES } from "../src/eventCollar/crossVenue/eventFunnel";
 import { forbiddenKeysIn } from "../src/eventCollar/retailShowcase";
@@ -16,20 +16,20 @@ process.env.EVENT_X_LEDGER_PATH = join(TMP_DIR, "ledger.jsonl");
 process.env.EVENT_X_ADMIN_TOKEN = "t0ken";
 process.env.EVENT_X_BRAND_ALLOWLIST = "ProphetX, Novig";
 process.env.EVENT_X_PARTNER_SHARE_PCT = "40";
-process.env.EVENT_X_EMBED_BRAND = "Demo Exchange";
+process.env.EVENT_X_EMBED_BRAND = "Your Exchange";
 
 test("embed: the brand is honoured only from the allowlist, case-insensitively, else 'Your app'", () => {
   assert.equal(resolveBrand("ProphetX", "ProphetX, Novig"), "ProphetX");
   assert.equal(resolveBrand("prophetx", "ProphetX, Novig"), "ProphetX", "canonical casing from the allowlist");
-  assert.equal(resolveBrand("Kalshi", "ProphetX, Novig"), "Your app", "a name not on the list never renders");
-  assert.equal(resolveBrand("<script>", "ProphetX"), "Your app");
-  assert.equal(resolveBrand("ProphetX", undefined), "Your app", "no allowlist: fail closed");
-  assert.equal(resolveBrand(null, "ProphetX"), "Your app");
-  assert.equal(resolveBrand("  ", "ProphetX"), "Your app");
-  assert.equal(resolveBrand(null, "ProphetX", "Demo Exchange"), "Demo Exchange", "the configured default names the cold first screen");
-  assert.equal(resolveBrand("Kalshi", "ProphetX", "Demo Exchange"), "Demo Exchange", "and is what an off-list name falls back to");
-  assert.equal(resolveBrand("prophetx", "ProphetX", "Demo Exchange"), "ProphetX", "an allowlisted name still wins");
-  assert.equal(resolveBrand(null, "ProphetX", "  "), "Your app", "a blank default is not a brand");
+  assert.equal(resolveBrand("Kalshi", "ProphetX, Novig"), "Your Exchange", "a name not on the list never renders");
+  assert.equal(resolveBrand("<script>", "ProphetX"), "Your Exchange");
+  assert.equal(resolveBrand("ProphetX", undefined), "Your Exchange", "no allowlist: fail closed");
+  assert.equal(resolveBrand(null, "ProphetX"), "Your Exchange");
+  assert.equal(resolveBrand("  ", "ProphetX"), "Your Exchange");
+  assert.equal(resolveBrand(null, "ProphetX", "Your Exchange"), "Your Exchange", "the configured default names the cold first screen");
+  assert.equal(resolveBrand("Kalshi", "ProphetX", "Your Exchange"), "Your Exchange", "and is what an off-list name falls back to");
+  assert.equal(resolveBrand("prophetx", "ProphetX", "Your Exchange"), "ProphetX", "an allowlisted name still wins");
+  assert.equal(resolveBrand(null, "ProphetX", "  "), "Your Exchange", "a blank default is not a brand");
 });
 
 test("embed: brands bring a colourway and a default shell; anything else is the generic slate on light", () => {
@@ -37,8 +37,11 @@ test("embed: brands bring a colourway and a default shell; anything else is the 
   assert.equal(brandTheme("DraftKings").skin, "dark", "DraftKings ships dark");
   assert.equal(brandTheme("kalshi").skin, "light", "Kalshi ships light");
   assert.equal(brandTheme("Crypto.com").accent, "#1199FA", "dots survive the key");
-  assert.deepEqual(brandTheme("Demo Exchange"), GENERIC_THEME, "the demo host is generic");
-  assert.deepEqual(brandTheme("Your app"), GENERIC_THEME);
+  assert.deepEqual(brandTheme("Your Exchange"), GENERIC_THEME, "the placeholder host is generic");
+  assert.equal(brandInitial("Your Exchange"), "E", "the pip shows the noun, not Y");
+  assert.equal(brandInitial("DraftKings"), "D");
+  assert.equal(brandInitial("your book"), "B");
+  assert.equal(brandInitial("  "), "A");
   for (const [name, t] of Object.entries(BRAND_PRESETS)) {
     assert.match(t.accent, /^#[0-9A-Fa-f]{6}$/, `${name} accent is a hex colour`);
     assert.match(t.accentInk, /^#[0-9A-Fa-f]{6}$/, `${name} ink is a hex colour`);
@@ -50,8 +53,9 @@ test("embed: brands bring a colourway and a default shell; anything else is the 
   assert.ok(dk.includes('<div class="brand"><i>D</i>DraftKings</div>'), "the brand pip carries the initial");
   const dkLight = renderEventEmbedHtml({ brand: "DraftKings", skin: "light" });
   assert.ok(dkLight.includes("--bg:#f4f5f7") && dkLight.includes("--accent:#53D337"), "?skin= overrides the shell, not the colour");
-  const generic = renderEventEmbedHtml({ brand: "Demo Exchange" });
+  const generic = renderEventEmbedHtml({ brand: "Your Exchange" });
   assert.ok(generic.includes(`--accent:${GENERIC_THEME.accent};`) && generic.includes("--bg:#f4f5f7"), "generic: slate on light");
+  assert.ok(generic.includes('<div class="brand"><i>E</i>Your Exchange</div>'), "the placeholder pip reads E");
 });
 
 test("embed: the minimum-credit rule hides negligible tiers: 25¢ and 0.25% of stake, whichever is more", () => {
@@ -78,7 +82,9 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes('data-protect="'), "one Protect button per row");
   assert.ok(html.includes('id="sheet"') && html.includes('role="dialog"'), "the sheet is a dialog over the host");
   assert.ok(html.includes("protection by") && html.includes("data:image/png;base64"), "the sheet carries our wordmark, inlined");
-  assert.ok(html.includes(".sheet .eyebrow img{height:16px;display:block;opacity:.7;filter:brightness(0)}"), "rendered as ink at 16px / 70%: legible on the white sheet, still quiet");
+  assert.ok(html.includes(".sheet .eyebrow img{height:20px;display:block}"), "the wordmark in Atticus gold, 20px, full strength: brand colour, legible on the sheet");
+  assert.ok(!html.includes("brightness(0)"), "never recoloured");
+  assert.ok(html.includes(".pitch img{height:24px;display:block;margin-bottom:22px}"), "24px on the desktop pitch");
   assert.ok(!html.includes("data:image/jpeg"), "the black-tile mark is gone from the embed");
   assert.ok(html.includes("Protect this position"), "same grammar as the board");
   assert.ok(html.includes(">if it loses<") && html.includes(">paid now<") && html.includes(">if it wins<"), "three tiles, three outcomes");
@@ -113,7 +119,7 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
     assert.ok(!new RegExp(`\\b${leak}\\b`).test(html.replace(/protection by/g, "").replace(/'tight'|'wide'|tight:|wide:|offered\.tight|offered\.wide/g, "")), `"${leak}" is not on the embedded page as copy`);
   }
   assert.ok(!html.includes("—"), "no em dash in any copy");
-  const dark = renderEventEmbedHtml({ brand: "Your app", skin: "dark" });
+  const dark = renderEventEmbedHtml({ brand: "Your Exchange", skin: "dark" });
   assert.ok(dark.includes("--bg:#0f1115"), "dark skin flips the host shell");
   assert.ok(dark.includes(".sheet{position:fixed") && dark.includes("background:#fff;color:var(--ep-ink)"), "the sheet keeps its own look in a dark host");
   assert.ok(renderEventEmbedHtml({ brand: "A&B \"x\"", skin: "light" }).includes("A&amp;B &quot;x&quot;"), "the brand is escaped");
@@ -173,7 +179,7 @@ test("embed: the partner console reads the ledger and funnel in the host's words
   assert.ok(html.includes("<span>embedded shell loads, 7 days</span><b>2</b>"), "embed loads counted apart from the board");
   assert.ok(html.includes("we price and hedge <i>your venue executes and settles</i>"), "who does what, stated");
   assert.ok(!html.includes("quote-only"), "not a pricer");
-  assert.ok(html.includes("data:image/png;base64") && html.includes(".topbar img{height:16px;display:block;opacity:.7;filter:brightness(0)}"), "the wordmark as ink, subtle, on the console bar");
+  assert.ok(html.includes("data:image/png;base64") && html.includes(".topbar img{height:18px;display:block}"), "the gold wordmark on the console bar");
   assert.ok(html.includes("2026-09-18 to 2026-09-20 UTC"));
   assert.ok(!html.includes("—"), "no em dash");
 });
@@ -191,17 +197,27 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     assert.ok(html.includes("<title>Novig · Positions</title>"), "allowlisted brand, canonical casing");
     assert.ok(html.includes("--bg:#0f1115"), "dark skin");
     const other = await (await fetch(`${base}/embed?brand=Kalshi`)).text();
-    assert.ok(other.includes("<title>Demo Exchange · Positions</title>"), "a name off the list falls back to EVENT_X_EMBED_BRAND");
+    assert.ok(other.includes("<title>Your Exchange · Positions</title>"), "a name off the list falls back to EVENT_X_EMBED_BRAND");
 
     // the front door is the embed shell; the board has its own address
     const root = await (await fetch(`${base}/`)).text();
-    assert.ok(root.includes("<title>Demo Exchange · Positions</title>") && root.includes('id="sheet"'), "/ serves the embed shell with the default brand");
+    assert.ok(root.includes("<title>Your Exchange · Positions</title>") && root.includes('id="sheet"'), "/ serves the embed shell with the default brand");
     const board = await (await fetch(`${base}/board`)).text();
     assert.ok(board.includes('id="toggle"') && board.includes("Best protection right now"), "/board serves the board");
     assert.ok(!root.includes("Best protection right now"), "the shell is not the board");
 
-    assert.equal((await fetch(`${base}/partner`)).status, 403, "the console names our take: operator only");
-    assert.equal((await fetch(`${base}/partner?token=nope`)).status, 403);
+    // /partner without the token is the public case for the console with one CTA, never a JSON error
+    const publicPartner = await fetch(`${base}/partner`);
+    assert.equal(publicPartner.status, 200);
+    assert.match(publicPartner.headers.get("content-type") ?? "", /text\/html/);
+    const ctaHtml = await publicPartner.text();
+    assert.ok(ctaHtml.includes("The console your team gets.") && ctaHtml.includes('href="mailto:hello@atticustrade.com?subject='), "the pitch and a Talk to us CTA");
+    assert.ok(ctaHtml.includes('href="https://atticus-event-shadow.onrender.com">track record</a>'), "and the track record as the soft path");
+    assert.ok(!ctaHtml.includes("your share (") && !/\$\d/.test(ctaHtml), "no numbers: the console's figures stay behind the token");
+    assert.ok(!ctaHtml.includes("admin_required") && !ctaHtml.includes("token"), "nothing about tokens");
+    const wrongToken = await fetch(`${base}/partner?token=nope`);
+    assert.equal(wrongToken.status, 200, "a wrong token is a visitor too");
+    assert.ok((await wrongToken.text()).includes("The console your team gets."));
     const console_ = await fetch(`${base}/partner?token=t0ken&brand=ProphetX`);
     assert.equal(console_.status, 200);
     const consoleHtml = await console_.text();
