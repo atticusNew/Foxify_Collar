@@ -288,7 +288,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
   function el(id){return document.getElementById(id)}
   var toastT=null;
-  function toast(msg){var t=el('toast');t.textContent=msg;t.className='toast on';clearTimeout(toastT);toastT=setTimeout(function(){t.className='toast'},1800)}
+  function toast(msg){var t=el('toast');t.textContent=msg;t.className='toast on';clearTimeout(toastT);toastT=setTimeout(function(){t.className='toast'},2400)}
   /* A weekday alone reads as "this Sunday"; past 24h out the date rides along so next week's game is never mistaken for today's. */
   function fmtEt(iso){
     try{
