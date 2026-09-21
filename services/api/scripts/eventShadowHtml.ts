@@ -18,7 +18,7 @@ import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 
 /** Public URL of the interactive demo, for the cross-link. */
 function demoUrl(): string {
-  return process.env.EVENT_SHADOW_DEMO_URL || "https://event.earnandprotect.xyz/board";
+  return process.env.EVENT_SHADOW_DEMO_URL || "https://event.earnandprotect.xyz/";
 }
 
 function escapeHtml(s: string): string {
@@ -262,7 +262,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
   <div class="card">
     <h2>Open book</h2>
     ${openRows || '<div class="row"><span>no open positions</span><b>next scan fills the board</b></div>'}
-    <a class="back" href="${demoUrl()}">back to the live board</a>
+    <a class="back" href="${demoUrl()}">back to the demo</a>
   </div>
   <footer>
     <b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions; no venue credentials, no wallets. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>
