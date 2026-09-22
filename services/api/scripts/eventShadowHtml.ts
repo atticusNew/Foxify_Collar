@@ -104,7 +104,7 @@ h2{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;lett
 .row b{color:var(--ink);font-weight:650;text-align:right}
 .row b i{color:var(--faint);font-style:normal;font-weight:500;font-size:12px}
 .row b i.paid{display:block;margin-top:1px}
-.row.settled b{white-space:nowrap;flex-shrink:0}
+.row.settled b,.row.open b{white-space:nowrap;flex-shrink:0}
 .tag{display:inline-block;background:var(--card2);color:var(--dim);border-radius:6px;padding:1px 6px;font-size:10.5px;font-weight:600;vertical-align:1px}
 .tag.save{background:var(--green-wash);color:var(--green-deep)}
 .back{display:inline-block;margin-top:2px;color:var(--green-deep);font-weight:600;font-size:13px;text-decoration:underline}
@@ -123,10 +123,38 @@ footer b{color:var(--dim);font-weight:600}
 @media(min-width:700px){.wrap,.topbar .in{max-width:520px}}
 `;
 
+/**
+ * The lists show up to 25 rows. Taken straight off the top they are 25 Bitcoin strikes, because
+ * strikes are many and settle hourly; the games disappear. Round-robin across leagues in the
+ * order given (most recent first, or next to lock first) so every league on the book is visible.
+ */
+export function interleaveByLeague<T extends { league: string }>(items: readonly T[], limit: number): T[] {
+  const byLeague = new Map<string, T[]>();
+  for (const it of items) {
+    const list = byLeague.get(it.league) ?? [];
+    list.push(it);
+    byLeague.set(it.league, list);
+  }
+  const queues = [...byLeague.values()];
+  const out: T[] = [];
+  for (let i = 0; out.length < limit && queues.some((q) => i < q.length); i += 1) {
+    for (const q of queues) if (i < q.length && out.length < limit) out.push(q[i]);
+  }
+  return out;
+}
+
+/** "42 open · 17 crypto · 15 MLB · 10 NFL": the list's true shape, whatever 25 rows show. */
+function leagueCountLine(items: ReadonlyArray<{ league: string }>, noun: string): string {
+  if (items.length === 0) return "";
+  const counts = new Map<string, number>();
+  for (const it of items) counts.set(it.league, (counts.get(it.league) ?? 0) + 1);
+  const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([l, n]) => `${n} ${l === "crypto" ? "crypto" : l.toUpperCase()}`);
+  return `<div class="sub" style="margin:-4px 0 8px">${items.length} ${noun} · ${escapeHtml(parts.join(" · "))}</div>`;
+}
+
 export function renderShadowHtml(input: ShadowPageInput): string {
   const s = input.summary;
-  const settledRows = input.settled
-    .slice(0, 25)
+  const settledRows = interleaveByLeague(input.settled, 25)
     .map((p) => {
       const saved = p.result === "no";
       const tag = saved ? '<span class="tag save">floor paid</span>' : '<span class="tag">won, capped</span>';
@@ -139,11 +167,10 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       );
     })
     .join("");
-  const openRows = input.open
-    .slice(0, 25)
+  const openRows = interleaveByLeague(input.open, 25)
     .map(
       (p) =>
-        `<div class="row"><span>${escapeHtml(p.sideName)} · locks ${escapeHtml(shortEt(p.eventTimeIso))}</span>` +
+        `<div class="row open"><span>${escapeHtml(p.sideName)} · locks ${escapeHtml(shortEt(p.eventTimeIso))}</span>` +
         `<b>floor ${usd(p.floorCents * p.contracts + p.creditCents)} · up to ${usd(p.capCents * p.contracts + p.creditCents)}</b></div>`,
     )
     .join("");
@@ -167,8 +194,15 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     const saved = `Protection paid the floor on ${s.floorSaves} of ${s.settledCount} settled events (${savePct}%).`;
     if (s.deltaTotalCents >= 0) return `${saved} Across everyone it came out ${usd(s.deltaTotalCents)} ahead of holding unprotected.`;
     const realizedPct = s.nakedTotalCents > 0 ? `${((100 * -s.deltaTotalCents) / s.nakedTotalCents).toFixed(1)}% of what the same positions paid unprotected` : usd(-s.deltaTotalCents);
-    const quoted = s.quotedAvgEvBps !== null && s.quotedAvgEvBps >= 0 ? `, against ${(s.quotedAvgEvBps / 100).toFixed(1)}% quoted up front` : "";
-    return `${saved} Across everyone it cost ${usd(-s.deltaTotalCents)}, ${realizedPct}${quoted}. That is the price of the floor, and it was the price shown.`;
+    const quoted = s.quotedAvgEvBps !== null && s.quotedAvgEvBps >= 0 ? `; ${(s.quotedAvgEvBps / 100).toFixed(1)}% was quoted up front` : "";
+    // Realized is one sample and quoted is the expectation; when strikes on one coin dominate the
+    // settled book they settle together, so a rally caps many at once and the two numbers part.
+    const cryptoSettled = s.segments.byLeague.crypto?.settled ?? 0;
+    const cluster =
+      cryptoSettled * 2 > s.settledCount
+        ? " Strikes on the same coin settle together, so a rally caps many at once and a drop pays many floors at once; the gap between the two closes as the book widens."
+        : "";
+    return `${saved} Across everyone it cost ${usd(-s.deltaTotalCents)}, ${realizedPct}${quoted}. Quoted is the expectation at the market's odds; realized is what this sample did.${cluster}`;
   })();
   const routeRows = Object.entries(s.routeSplit)
     .sort((a, b) => b[1] - a[1])
@@ -260,6 +294,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
   </div>
   <div class="card">
     <h2>Settled, most recent first</h2>
+    ${leagueCountLine(input.settled, "settled")}
     ${settledRows || '<div class="row"><span>nothing settled yet</span><b>the book is young</b></div>'}
   </div>
   <div class="card">
@@ -285,6 +320,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
   </div>
   <div class="card">
     <h2>Open book</h2>
+    ${leagueCountLine(input.open, "open")}
     ${openRows || '<div class="row"><span>no open positions</span><b>next scan fills the board</b></div>'}
     <a class="back" href="${demoUrl()}">back to the demo</a>
   </div>
