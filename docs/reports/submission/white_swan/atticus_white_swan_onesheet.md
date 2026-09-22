@@ -19,17 +19,17 @@ Every quote, fill, refusal and settlement is written to an append-only ledger wi
 
 | | Value |
 |---|---|
-| Record window | `[START DATE]` to `[END DATE]` (`[N]` days) |
-| Positions protected | `[N]` (`[N]` NFL, `[N]` MLB, `[N]` crypto strikes) |
-| Quotes refused | `[N]` (`[TOP REASON]`) |
-| Stake protected | `$[X]` |
-| Credit paid to users | `$[X]` |
-| Floor saves (user finished above the unprotected outcome) | `[N]` |
-| Our P&L vs. take booked | `$[X]` vs. `$[X]` |
+| Record window | 2026-09-12 to 2026-09-22 UTC (10 days, first position opened to last settlement) |
+| Positions protected | 403 (28 NFL, 107 MLB, 268 crypto strikes); 330 settled, 73 open |
+| Stake protected | $33,321.00 |
+| Credit paid to users | $899.33 ($593.86 of it on the 330 settled positions) |
+| Floor saves (user finished above the unprotected outcome) | 136 of 330 settled (41%) |
+| Realized cost of the floor, settled | $2,281.64, 7.8% of the unprotected payout, against 3.9% quoted at the market's odds |
+| Our P&L vs. take booked | $69.39 vs. $69.39 (gap $0.00) |
 
 The last line is the identity the whole product rests on. Our P&L equals the take booked at quote time, to the cent, on every settled position. If it did not, we would be carrying outcome risk. We are not.
 
-NFL is one game day a week, so the NFL sample is one week deep at the deadline; the open book shows the Week 4 slate protected and waiting for its results. The mechanism is the same on a Chiefs game as on a Bitcoin strike, and the larger MLB and crypto samples are where the percentages have settled. On `[RULE DATE]` the terms rule was tightened (a minimum credit below which we refuse rather than offer pennies); positions since then also record the alternative terms.
+Realized cost runs above quoted in this window because strikes on the same coin settle together: a rally caps many positions at once and a drop pays many floors at once. Quoted is the expectation at the market's odds; realized is what this sample did, and the gap closes as the book widens across leagues. NFL is one game day a week, so the NFL sample is one Sunday deep: 4 settled, 24 protected and waiting in the open book for Thursday, Sunday and Monday. The mechanism is the same on a Packers game as on a Bitcoin strike, and the larger MLB and crypto samples are where the percentages have settled. On 2026-09-20 the terms rule was tightened (a minimum credit below which we refuse rather than offer pennies); positions since then also record the alternative terms.
 
 ## Why this is a prediction-market submission
 
@@ -40,9 +40,9 @@ NFL is one game day a week, so the NFL sample is one week deep at the deadline; 
 
 ## How to verify
 
-1. Open the track record: `[TRACK RECORD URL]`. The identity card at the top shows our P&L against take booked.
-2. Download the positions CSV linked from the same page. One row per position, every leg in integer cents. Sum the credit column and compare to the figure above.
-3. Open the embedded demo: `[DEMO URL]`. Tap Protect on any row. Positions are simulated at live prices; nothing is bought.
+1. Open the track record: https://atticus-event-shadow.onrender.com/. The identity card at the top shows our P&L against take booked.
+2. Download the positions CSV: https://atticus-event-shadow.onrender.com/api/shadow/positions.csv. One row per position, every leg in integer cents. Sum `credit_c` and compare to the figure above; on settled rows, sum `writer_pnl_c` and `take_c` and they match.
+3. Open the embedded demo: https://atticus-event-demo-cross-venue.onrender.com/. Tap Protect on any row. Positions are simulated at live prices; nothing is bought.
 
 ## What this is not
 
@@ -52,6 +52,6 @@ NFL is one game day a week, so the NFL sample is one week deep at the deadline; 
 
 ---
 
-**Team** · `[FULL NAME]`, founder · `[EMAIL]` · `[CITY]`
+**Team** · Michael William, founder · michael@atticustrade.com
 
-**Same engine, other market** · A perpetual-futures version of this layer has run as a public shadow facility since `[PERP START]`; the 33-day report is attached for reference.
+**Same engine, other market** · A perpetual-futures version of this layer has run as a public shadow facility since July 19, 2026; the 33-day report is attached for reference.

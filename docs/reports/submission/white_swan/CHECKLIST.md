@@ -8,33 +8,30 @@ Send what proves the claim and nothing else. No code, no repo links, no operator
 
 ## Timing
 
-Deadline Sep 25. Do not reset the book: a fresh book cannot hold an NFL sample by then. Thursday night (Sep 24) settles about 06:30 UTC Sep 25, so pull the evidence the morning of Sep 25 ET and the record has Week 3 settled plus Thursday, with the Week 4 Sunday slate in the open book.
+Deadline Sep 25. Submitting Sep 22: the one sheet and README are filled from the record as of 2026-09-22 20:45 UTC (403 positions, 330 settled, 73 open). Do not reset the book. If you pull the CSV on a later day, refill the one sheet's table from that day's page so the CSV and the PDF agree; the numbers move every settlement.
 
 ## Pull the evidence (one pass, same hour)
 
-Replace `SHADOW` with the event track record host (`atticus-event-shadow.onrender.com` unless renamed) and `DEMO` with the embed demo host (`atticus-event-demo-cross-venue.onrender.com` unless renamed). Run from any folder; these are plain downloads.
+Run from any folder; this is a plain download.
 
 ```
-curl -sS -o shadow-summary-$(date -u +%F).json          https://SHADOW/api/shadow
-curl -sS -o event-shadow-positions-$(date -u +%F).csv   https://SHADOW/api/shadow/positions.csv
+curl -sS -o event-shadow-positions-$(date -u +%F).csv   https://atticus-event-shadow.onrender.com/api/shadow/positions.csv
 ```
 
-Do not add `?token=` or `?scope=full` to either. The public CSV is the one we send.
+Do not add `?token=` or `?scope=full`. The public CSV is the one we send. Do not send `/api/shadow` (the summary JSON): it carries the counterfactual tiers and fee rules per position, which are not for the folder. The CSV reproduces every number on the one sheet on its own.
 
 Screenshots, desktop width, light background:
 
-- `track_record.png`: `https://SHADOW/` with the identity card and the settled table in frame.
-- `embed_demo.png`: `https://DEMO/` after tapping Protect on one row so the protected outcome line is visible.
+- `track_record.png`: `https://atticus-event-shadow.onrender.com/` with the identity card and the settled table in frame.
+- `embed_demo.png`: `https://atticus-event-demo-cross-venue.onrender.com/` after tapping Protect on one row so the protected outcome line is visible.
 
-## Fill the one sheet
+## The one sheet
 
-Open `atticus_white_swan_onesheet.md` and replace every `[BRACKET]` from the track record page and the summary JSON. Then build the PDF:
+`atticus_white_swan_onesheet.md` is filled as of 2026-09-22 and `atticus_white_swan_onesheet.pdf` is built from it. To rebuild after a refill:
 
 ```
 python3 -c "import sys; sys.path.insert(0,'scripts'); from md_to_pdf import convert; convert('docs/reports/submission/white_swan/atticus_white_swan_onesheet.md','docs/reports/submission/white_swan/atticus_white_swan_onesheet.pdf')"
 ```
-
-Fill the same brackets in `README.md` (links, name, email, dates in file names).
 
 ## Assemble the folder
 
@@ -44,10 +41,10 @@ white_swan/
   atticus_white_swan_onesheet.pdf
   track_record.png
   embed_demo.png
-  event-shadow-positions-[DATE].csv
-  shadow-summary-[DATE].json
+  event-shadow-positions-2026-09-22.csv
   atticus_shadow_facility_report_33d.pdf
 ```
+
 
 Zip it. Send to the address on the application, or share a view-only Drive folder and paste the link in the form. Email is the default.
 
@@ -62,6 +59,6 @@ Zip it. Send to the address on the application, or share a view-only Drive folde
 ## Before hitting send
 
 - Every `[BRACKET]` is gone from the PDF and the README.
-- The CSV opens and the credit column sums to the one sheet's figure.
+- The CSV opens, has 403 rows plus the header, and `credit_c` sums to $899.33; on settled rows `writer_pnl_c` and `take_c` both sum to $69.39. If the CSV was pulled later and the sums differ, refill the one sheet from that day's page and rebuild the PDF.
 - Both live links load without a token.
 - Nothing in the folder mentions venues, rules or numbers that are not on the public track record.
