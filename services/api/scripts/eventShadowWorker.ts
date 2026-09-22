@@ -23,6 +23,7 @@
  * Env: EVENT_SHADOW_PORT (default 8793) · EVENT_SHADOW_LEDGER_PATH
  *      EVENT_SHADOW_SCAN_MS (default 5m) · EVENT_SHADOW_SETTLE_MS (default 10m)
  *      EVENT_SHADOW_SETTLE_GRACE_MS (default 3h) · EVENT_SHADOW_VOID_AFTER_MS (default 72h)
+ *      EVENT_SHADOW_CRYPTO_SHARE_MAX (default 0.5) · EVENT_SHADOW_CRYPTO_FLOOR_PER_DAY (default 4)
  *      plus the demo's EVENT_X_* scanner knobs (contracts, board rows, series)
  * Alerts (optional, see crossVenue/shadowAlerts.ts): EVENT_SHADOW_ALERT_BOT_TOKEN +
  *      EVENT_SHADOW_ALERT_CHAT_ID (Telegram) and/or EVENT_SHADOW_ALERT_WEBHOOK_URL
@@ -77,6 +78,7 @@ import {
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml } from "./eventShadowHtml";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
+import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import type { ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -98,6 +100,9 @@ const hedgeChoice = hedgeExecutorFromEnv(process.env);
  * that is ever public by default.
  */
 const adminAuth = parseAdminAuthFromEnv(process.env);
+/** crypto strikes roll over hourly; without a ceiling they crowd the games out of the record */
+const openMix = openMixRuleFromEnv(process.env);
+let cryptoSkippedLastScan = 0;
 const OPERATOR_PATHS = new Set(["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export", "/api/shadow/reset"]);
 
 const alertCfg = parseShadowAlertsFromEnv(process.env);
@@ -155,10 +160,18 @@ async function scanTick(): Promise<void> {
   if (!scan) return;
   try {
     const state = await scan();
-    const seen = new Set(loadShadowPositions(LEDGER_PATH).map((p) => p.ticker));
+    const book = loadShadowPositions(LEDGER_PATH);
+    const seen = new Set(book.map((p) => p.ticker));
+    const opened: Array<{ kind: "sports" | "crypto"; at: string }> = book.map((p) => ({ kind: p.kind, at: p.at }));
+    let cryptoSkipped = 0;
     for (const { res, evBps } of state.rows) {
       const q = res.quote;
       if (!q.ok || seen.has(res.market.ticker)) continue;
+      if (res.kind === "crypto" && !cryptoOpenAllowed(opened, Date.now(), openMix).allowed) {
+        // Quotable, just enough of its kind in the window; not a refusal, not recorded.
+        cryptoSkipped += 1;
+        continue;
+      }
       const route = res.route ?? "kalshi_self";
       // Same books, same instant: what every other rule would have written.
       let counterfactuals: ShadowCounterfactuals | undefined;
@@ -209,8 +222,10 @@ async function scanTick(): Promise<void> {
         ...(counterfactuals ? { counterfactuals } : {}),
       });
       seen.add(res.market.ticker);
+      opened.push({ kind: res.kind, at: new Date().toISOString() });
       await fillHedge(res.market.ticker, q.hedge, res.books);
     }
+    cryptoSkippedLastScan = cryptoSkipped;
     lastScanAt = new Date().toISOString();
     lastScanOkMs = Date.now();
     lastScanError = null;
@@ -313,6 +328,7 @@ function healthBody(): Record<string, unknown> {
     consecutiveScanFailures,
     settleFailuresLastTick,
     settleDueLastTick,
+    openMix: { ...openMix, cryptoSkippedLastScan },
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
     hedge: {
       strategy: hedgeChoice.strategy,

@@ -122,6 +122,13 @@ services:
       # rows above it are recorded as protection_too_rich refusals, not opened.
       - key: EVENT_X_MAX_EV_COST_BPS
         value: "300"
+      # Open mix: crypto strikes roll over hourly and would fill the record (3 of 4 opens on the
+      # first book). Crypto is held to this share of the trailing day's opens, with a small
+      # allowance so an overnight book with no games still records something.
+      - key: EVENT_SHADOW_CRYPTO_SHARE_MAX
+        value: "0.5"
+      - key: EVENT_SHADOW_CRYPTO_FLOOR_PER_DAY
+        value: "4"
       # Gates the operator views: /report, /api/shadow/report, /api/shadow/hedges,
       # /api/shadow/export and the full positions CSV (?token=... or x-admin-token).
       # Fail-closed: without it those routes answer 403 and the public record stays up.

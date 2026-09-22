@@ -20,7 +20,7 @@ import {
   type ShadowOpenRecord,
 } from "../src/eventCollar/crossVenue/shadowLedger";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
-import { renderShadowHtml } from "../scripts/eventShadowHtml";
+import { MIN_SLICE_EVENTS, renderShadowHtml } from "../scripts/eventShadowHtml";
 
 const OPEN_FIXTURE: ShadowOpenRecord = {
   type: "open",
@@ -177,6 +177,59 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   assert.ok(!html.includes("Polymarket") && !html.includes("(Kalshi)"), "the hedge venue is not named on the public record");
   assert.ok(html.includes("2026-09-12 to 2026-09-14 UTC"), "the period line names the window");
   assert.ok(html.includes('href="/api/shadow/positions.csv"'));
+
+  // Small slices show counts, not percentages: 3 opened and 2 settled are under the line.
+  assert.ok(html.includes(`Slices under ${MIN_SLICE_EVENTS} events show counts only.`));
+  assert.ok(!html.includes("<td class=\"hi\">2.97%</td>"), "3 opened is too few for an EV cost percentage");
+  assert.ok((html.match(/too few/g) ?? []).length >= 6, "EV cost and user Δ cells read 'too few' on every small slice");
+  assert.ok(!html.includes("Protection is cheapest on"), "no cheapest/richest verdict from slices under the line");
+  // The bridge sentence holds the save count and the cost in one breath; the fixture came out ahead.
+  assert.ok(html.includes("Protection paid the floor on 1 of 2 settled events (50%). Across everyone it came out $24.66 ahead of holding unprotected."), "bridge line, ahead case");
+  // Every settled row says how much of the protected total was the credit paid at open.
+  assert.ok(html.includes("$79.12 <i>vs $0.00 naked</i><i class=\"paid\">incl. $1.12 paid at open</i>"), "floor-save row carries the credit");
+  assert.ok(html.includes("$95.54 <i>vs $150.00 naked</i><i class=\"paid\">incl. $1.04 paid at open</i>"), "capped row carries the credit");
+});
+
+test("shadow: the page bridges floor saves and protection cost, and prints percentages only past the slice line", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shadow-bridge-"));
+  const path = join(dir, "ledger.jsonl");
+  // 20 MLB games, 9 floor saves and 11 capped wins: past the line for both EV cost and user Δ.
+  for (let i = 0; i < MIN_SLICE_EVENTS; i += 1) {
+    const ticker = `KXMLBGAME-T${i}`;
+    appendShadowRecord(path, { ...OPEN_FIXTURE, ticker, sideName: `Team ${i}`, at: `2026-09-12T1${i % 10}:00:00.000Z` });
+    appendShadowRecord(path, { type: "settle", at: "2026-09-13T21:00:00.000Z", ticker, result: i < 9 ? "no" : "yes" });
+  }
+  // 2 NFL games, one settled: under the line, counts only.
+  appendShadowRecord(path, { ...OPEN_FIXTURE, ticker: "KXNFLGAME-A", league: "nfl", sideName: "Chiefs" });
+  appendShadowRecord(path, { ...OPEN_FIXTURE, ticker: "KXNFLGAME-B", league: "nfl", sideName: "Bills" });
+  appendShadowRecord(path, { type: "settle", at: "2026-09-14T04:00:00.000Z", ticker: "KXNFLGAME-A", result: "yes" });
+  const positions = loadShadowPositions(path);
+  const s = summarizeShadow(positions);
+  const html = renderShadowHtml({ atIso: "2026-09-15T00:00:00.000Z", summary: s, open: positions.filter((p) => p.status === "open"), settled: positions.filter((p) => p.status === "settled") });
+
+  // 9 saves x 7912 + 12 wins x 9562 protected = 185,952; naked 12 x 15,000 = 180,000: ahead by $59.52
+  assert.equal(s.deltaTotalCents, 9 * 7912 + 12 * 9562 - 12 * 15_000);
+  assert.ok(html.includes("Protection paid the floor on 9 of 21 settled events (43%). Across everyone it came out $59.52 ahead of holding unprotected."));
+  // MLB is past the line on both counts, NFL on neither; the route slice (22 opened, 21 settled) is past on both.
+  assert.ok(/<td>MLB<\/td><td>20<\/td><td>20<\/td><td class="hi">2\.97%<\/td><td>-?\d+\.\d\d%<\/td>/.test(html), "MLB shows EV cost and user Δ");
+  assert.ok(/<td>NFL<\/td><td>2<\/td><td>1<\/td><td><i[^>]*>too few<\/i><\/td><td><i[^>]*>too few<\/i><\/td>/.test(html), "NFL shows counts only");
+  assert.ok(!html.includes("Protection is cheapest on"), "one qualifying league is not a comparison");
+
+  // The cost case: make every win the only outcome so protection trails naked, and check the sentence names both numbers.
+  const dir2 = mkdtempSync(join(tmpdir(), "shadow-bridge-cost-"));
+  const path2 = join(dir2, "ledger.jsonl");
+  for (let i = 0; i < 4; i += 1) {
+    const ticker = `KXMLBGAME-W${i}`;
+    appendShadowRecord(path2, { ...OPEN_FIXTURE, ticker, sideName: `Team ${i}` });
+    appendShadowRecord(path2, { type: "settle", at: "2026-09-13T21:00:00.000Z", ticker, result: "yes" });
+  }
+  const p2 = loadShadowPositions(path2);
+  const html2 = renderShadowHtml({ atIso: "2026-09-15T00:00:00.000Z", summary: summarizeShadow(p2), open: [], settled: p2 });
+  // 4 x (15,000 - 9,562) = 21,752 cost on 60,000 naked = 36.3%; quoted 2.97%
+  assert.ok(
+    html2.includes("Protection paid the floor on 0 of 4 settled events (0%). Across everyone it cost $217.52, 36.3% of what the same positions paid unprotected, against 3.0% quoted up front. That is the price of the floor, and it was the price shown."),
+    "bridge line, cost case, realized next to quoted",
+  );
 });
 
 test("shadow: replay opens once per ticker, settles, voids, skips bad lines", () => {

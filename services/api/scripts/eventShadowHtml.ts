@@ -64,6 +64,11 @@ function hedgeLine(h: NonNullable<ShadowPageInput["hedges"]>): string {
 
 const signedUsd = (c: number): string => (c < 0 ? `-${usd(-c)}` : usd(c));
 const bpsPct = (bps: number | null, digits = 2): string => (bps === null ? "–" : `${(bps / 100).toFixed(digits)}%`);
+/**
+ * A slice with fewer events than this shows its counts and nothing else: four NFL games do not
+ * make a percentage, and a page that prints one anyway is calling noise a finding.
+ */
+export const MIN_SLICE_EVENTS = 20;
 const utcDay = (iso: string): string => iso.slice(0, 10);
 /** Public words for a hedge route: how it was hedged, not where (the venue is the operator's). */
 const ROUTE_WORDS: Record<string, string> = {
@@ -98,6 +103,8 @@ h2{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;lett
 .row:first-of-type{border-top:0}
 .row b{color:var(--ink);font-weight:650;text-align:right}
 .row b i{color:var(--faint);font-style:normal;font-weight:500;font-size:12px}
+.row b i.paid{display:block;margin-top:1px}
+.row.settled b{white-space:nowrap;flex-shrink:0}
 .tag{display:inline-block;background:var(--card2);color:var(--dim);border-radius:6px;padding:1px 6px;font-size:10.5px;font-weight:600;vertical-align:1px}
 .tag.save{background:var(--green-wash);color:var(--green-deep)}
 .back{display:inline-block;margin-top:2px;color:var(--green-deep);font-weight:600;font-size:13px;text-decoration:underline}
@@ -123,9 +130,12 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     .map((p) => {
       const saved = p.result === "no";
       const tag = saved ? '<span class="tag save">floor paid</span>' : '<span class="tag">won, capped</span>';
+      // The credit was paid at open and is inside the protected total; say so on every row,
+      // or "capped" reads as the whole story.
       return (
-        `<div class="row"><span>${escapeHtml(p.sideName)} ${tag}</span>` +
-        `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} naked</i></b></div>`
+        `<div class="row settled"><span>${escapeHtml(p.sideName)} ${tag}</span>` +
+        `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} naked</i>` +
+        `<i class="paid">incl. ${usd(p.creditCents)} paid at open</i></b></div>`
       );
     })
     .join("");
@@ -149,6 +159,17 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       : s.quotedAvgEvBps < 0
         ? `${Math.abs(s.quotedAvgEvBps / 100).toFixed(1)}% better than naked, on average`
         : `${(s.quotedAvgEvBps / 100).toFixed(1)}% of expected value, on average`;
+  // The bridge between "floor saves" and "protection cost": one sentence that holds both, with
+  // the realized cost next to the quoted one so the reader can see the quote was honest.
+  const bridgeLine = (() => {
+    if (s.settledCount === 0) return "";
+    const savePct = Math.round((100 * s.floorSaves) / s.settledCount);
+    const saved = `Protection paid the floor on ${s.floorSaves} of ${s.settledCount} settled events (${savePct}%).`;
+    if (s.deltaTotalCents >= 0) return `${saved} Across everyone it came out ${usd(s.deltaTotalCents)} ahead of holding unprotected.`;
+    const realizedPct = s.nakedTotalCents > 0 ? `${((100 * -s.deltaTotalCents) / s.nakedTotalCents).toFixed(1)}% of what the same positions paid unprotected` : usd(-s.deltaTotalCents);
+    const quoted = s.quotedAvgEvBps !== null && s.quotedAvgEvBps >= 0 ? `, against ${(s.quotedAvgEvBps / 100).toFixed(1)}% quoted up front` : "";
+    return `${saved} Across everyone it cost ${usd(-s.deltaTotalCents)}, ${realizedPct}${quoted}. That is the price of the floor, and it was the price shown.`;
+  })();
   const routeRows = Object.entries(s.routeSplit)
     .sort((a, b) => b[1] - a[1])
     .map(
@@ -163,21 +184,23 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       : id.holds
         ? `On ${id.settled} settled events our P&L is ${signedUsd(id.writerPnlCents)} and the take booked is ${usd(id.takeBookedCents)}: a gap of ${signedUsd(id.gapCents)}${id.gapCents === 0 ? "" : " (hedge units round up, never down)"}. The hedge layer carried no outcome risk.`
         : `On ${id.settled} settled events our P&L is ${signedUsd(id.writerPnlCents)} against ${usd(id.takeBookedCents)} of take booked: a gap of ${signedUsd(id.gapCents)}, outside rounding. Something in the hedge did not cover; the operator report has the positions.`;
+  // Small slices show counts only: EV cost needs MIN_SLICE_EVENTS opened, user Δ needs that many settled.
+  const fewCell = '<td><i style="font-style:normal;color:var(--faint)">too few</i></td>';
   const segmentRows = (m: Record<string, ShadowSegment>, label: (k: string) => string): string =>
     Object.entries(m)
       .sort((a, b) => b[1].opened - a[1].opened)
       .map(
         ([k, r]) =>
           `<tr><td>${escapeHtml(label(k))}</td><td>${r.opened}</td><td>${r.settled}</td>` +
-          `<td class="hi">${escapeHtml(bpsPct(r.quotedAvgEvBps))}</td>` +
-          `<td>${r.holderDeltaBpsOfStake === null ? "–" : escapeHtml(bpsPct(r.holderDeltaBpsOfStake))}</td>` +
+          (r.opened >= MIN_SLICE_EVENTS ? `<td class="hi">${escapeHtml(bpsPct(r.quotedAvgEvBps))}</td>` : fewCell) +
+          (r.settled >= MIN_SLICE_EVENTS && r.holderDeltaBpsOfStake !== null ? `<td>${escapeHtml(bpsPct(r.holderDeltaBpsOfStake))}</td>` : fewCell) +
           `<td>${usd(r.creditsCents)}</td><td>${signedUsd(r.writerPnlCents)}</td></tr>`,
       )
       .join("");
   const routeSeg = segmentRows(s.segments.byRoute, (k) => ROUTE_WORDS[k] ?? k);
   const leagueSeg = segmentRows(s.segments.byLeague, (k) => k.toUpperCase());
   const richest = Object.entries(s.segments.byLeague)
-    .filter(([, r]) => r.quotedAvgEvBps !== null)
+    .filter(([, r]) => r.quotedAvgEvBps !== null && r.opened >= MIN_SLICE_EVENTS)
     .sort((a, b) => (b[1].quotedAvgEvBps ?? 0) - (a[1].quotedAvgEvBps ?? 0));
   const segmentLine =
     richest.length >= 2
@@ -241,6 +264,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
   </div>
   <div class="card">
     <h2>With and without protection</h2>
+    ${bridgeLine ? `<div class="read" style="margin:0 0 8px">${escapeHtml(bridgeLine)}</div>` : ""}
     <div class="row"><span>with protection, settled total</span><b>${usd(s.protectedTotalCents)}</b></div>
     <div class="row"><span>without protection, settled total</span><b>${usd(s.nakedTotalCents)}</b></div>
     <div class="row"><span>realized</span><b>${escapeHtml(realizedLine)}</b></div>
@@ -252,7 +276,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
   </div>
   <div class="card">
     <h2>Where protection is cheap and where it is rich</h2>
-    <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of protection at the market's own odds; user Δ is realized, protected minus naked, as a share of settled stake.</div>
+    <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of protection at the market's own odds; user Δ is realized, protected minus naked, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} events show counts only.</div>
     <div class="tablewrap"><table>
       <tr><th>slice</th><th>opened</th><th>settled</th><th>EV cost</th><th>user Δ</th><th>credits</th><th>our P&amp;L</th></tr>
       ${routeSeg}${leagueSeg}
