@@ -238,7 +238,7 @@ function flowSections(s: PerpShadowSummary, rule: string | null | undefined): st
       ${kpi(
         "slippage saved",
         bk.slippageGrossCents != null && bk.slippageNetCents != null ? saved(bk.slippageGrossCents, bk.slippageNetCents) : "–",
-        bk.slippageGrossCents != null ? `of ${usd(bk.slippageGrossCents)} hedging each alone` : `${bk.unpricedInstruments} instrument${bk.unpricedInstruments === 1 ? "" : "s"} off the live band`,
+        bk.slippageGrossCents != null ? `of ${usd(bk.slippageGrossCents)} hedging each alone` : `${bk.unpricedInstruments} instrument${bk.unpricedInstruments === 1 ? "" : "s"} with no live book`,
         "green",
       )}
       ${f.book.avgNettedShare != null ? kpi("last 24h, average", `${(f.book.avgNettedShare * 100).toFixed(0)}% netted`, `${f.book.avgFeeSavedCents != null ? `fees ${usd(f.book.avgFeeSavedCents)}` : ""}${f.book.avgMarginSavedCents != null ? ` · margin ${usd(f.book.avgMarginSavedCents)}` : ""} per snapshot`) : ""}
@@ -368,7 +368,8 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
       : ""
   }
   ${closedRows ? `<h2>Closed early <small>at live prices, most recent first</small></h2>
-  ${table(th("closed", "side", "size", "open → close", "floor", "cap", "credit", "vs unprotected", "unwind edge"), closedRows)}` : ""}
+  ${table(th("closed", "side", "size", "open → close", "floor", "cap", "credit", "vs unprotected", "unwind edge"), closedRows)}
+  ${(input.closed ?? []).some((p) => p.closeOutcome?.deltaCents == null) ? `<div class="rule">A close marked <b>legs unpriced</b> fell due while the snapshot carried no live book for one of its legs. It is recorded as it was and never re-marked at a later price.</div>` : ""}` : ""}
   ${openRows ? `<h2>Open <small>next to settle first</small></h2>
   ${table(th("opened", "side", "size", "price", "floor", "cap", "credit", "settles"), openRows)}` : ""}
 

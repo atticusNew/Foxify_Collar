@@ -22,7 +22,8 @@ import {
   type OkxChainInstrument
 } from "../src/singleSide/twoSided/creditCollar/execution/okxLivePlanner";
 import { fetchOkxListedTouchQuote, quoteFromListedBooks } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
-import { atmReference, fetchOkxTopSnapshot, fundingStrikeLadder, quoteCollarFromSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
+import { atmReference, fetchOkxListedSnapshot, fetchOkxTopSnapshot, fundingStrikeLadder, quoteCollarFromSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
+import { heldInstIds } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowFlow";
 import { capGuardFor, otherTenor, parseTenor, tenorExpiry, tenorWord } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import { expTimeFromMs } from "../src/singleSide/twoSided/creditCollar/capRule";
 
@@ -320,6 +321,61 @@ test("fetchOkxTopSnapshot: instruments + tickers become one snapshot across the 
   assert.equal(atm.putInstId, `BTC-USD-${code(daily)}-97000-P`);
   assert.ok(atm.callAskPxBtc! > 0 && atm.putAskPxBtc! > 0);
   assert.equal(atm.hoursToExpiry, 23.67);
+});
+
+test("snapshots carry the legs the open book holds, whatever their expiry or distance from spot; they never join the quoting chain", async () => {
+  // The book holds a leg at the FOLLOWING Friday (the chain's weekly is this Friday) and a leg at a strike
+  // 8% under spot at Tuesday (an expiry the chain does not quote at all). Both must come back with a book.
+  const farExpiryLeg = `BTC-USD-${code(nextFriday)}-101500-C`;
+  const offBandLeg = `BTC-USD-${code(tuesday)}-92000-P`;
+  const delisted = "BTC-USD-000000-1-C";
+  const inChainLeg = `BTC-USD-${code(daily)}-94000-P`;
+  const tickers = chain.map((c) => ({ instId: c.instId, bidPx: "0.0010", askPx: "0.0011", bidSz: "5", askSz: "5" }));
+  const topCalls: string[] = [];
+  const topFetch: typeof fetch = async (url) => {
+    const u = String(url);
+    topCalls.push(u);
+    if (u.includes("/public/instruments")) return new Response(JSON.stringify({ data: chain.map(okxRow) }), { status: 200 });
+    if (u.includes("/market/tickers")) return new Response(JSON.stringify({ data: tickers }), { status: 200 });
+    return new Response("{}", { status: 500 });
+  };
+  const held = [farExpiryLeg, offBandLeg, delisted, inChainLeg, farExpiryLeg];
+  const top = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: topFetch, heldInstIds: held });
+  assert.ok(top.books[farExpiryLeg], "a held leg at an expiry the chain rolled past has a book");
+  assert.ok(top.books[offBandLeg], "a held leg outside the band has a book");
+  assert.ok(!top.books[delisted], "a held id that is not live is not invented");
+  assert.deepEqual([...new Set(top.chain.map((c) => c.expiryMs))].sort(), [daily, friday], "held legs do not widen the quoting chain");
+  assert.equal(topCalls.filter((c) => !c.includes("opt-summary")).length, 2, "the tickers feed already carries them: no extra requests");
+
+  const depthCalls: string[] = [];
+  const depthFetch: typeof fetch = async (url) => {
+    const u = String(url);
+    depthCalls.push(u);
+    if (u.includes("/public/instruments")) return new Response(JSON.stringify({ data: chain.map(okxRow) }), { status: 200 });
+    if (u.includes("/market/books")) return new Response(JSON.stringify({ data: [{ bids: [["0.0010", "5"]], asks: [["0.0011", "5"]] }] }), { status: 200 });
+    return new Response("{}", { status: 500 });
+  };
+  const deep = await fetchOkxListedSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: depthFetch, heldInstIds: held });
+  const bookCalls = depthCalls.filter((c) => c.includes("/market/books"));
+  assert.equal(bookCalls.length, deep.chain.length + 2, "one depth request per chain instrument plus one per held leg outside it, deduplicated");
+  assert.ok(deep.books[farExpiryLeg] && deep.books[offBandLeg], "both held legs have depth");
+  assert.ok(!deep.books[delisted]);
+  assert.equal(bookCalls.filter((c) => c.includes(encodeURIComponent(inChainLeg))).length, 1, "a held leg already in the chain is fetched once, not twice");
+
+  // Nothing held: the snapshot is exactly what it was.
+  const plain = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: topFetch });
+  assert.equal(Object.keys(plain.books).length, plain.chain.length);
+});
+
+test("heldInstIds: every leg of every open position, once; closed and settled positions do not count", () => {
+  const legs = heldInstIds([
+    { status: "open", buyInstId: "A", sellInstId: "B" },
+    { status: "open", buyInstId: "A", sellInstId: "C" },
+    { status: "closed", buyInstId: "D", sellInstId: "E" },
+    { status: "settled", buyInstId: "F", sellInstId: "G" },
+  ] as never);
+  assert.deepEqual(legs.sort(), ["A", "B", "C"]);
+  assert.deepEqual(heldInstIds([]), []);
 });
 
 test("fetchOkxTopSnapshot: an HTTP error names the call and nothing is cached by the caller", async () => {

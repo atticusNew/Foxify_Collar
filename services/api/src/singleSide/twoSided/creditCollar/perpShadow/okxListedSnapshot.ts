@@ -98,7 +98,18 @@ export const instrumentsInBand = (chain: OkxChainInstrument[], expiryMs: number,
   return chain.filter((c) => c.state === "live" && c.expiryMs === expiryMs && c.strike >= lo && c.strike <= hi);
 };
 
-
+/**
+ * Instruments the open book holds that the quoting chain does not reach: a leg written
+ * last week sits at an expiry the chain has rolled past, or at a strike the band no longer
+ * covers after a move. They still need a live book to value a close or mark the book, so
+ * the snapshot fetches them too; they never join `chain`, so no new wrap is quoted on them.
+ */
+export const heldOutsideChain = (heldInstIds: ReadonlyArray<string> | undefined, chain: OkxChainInstrument[], chainAll: OkxChainInstrument[]): string[] => {
+  if (!heldInstIds || heldInstIds.length === 0) return [];
+  const inChain = new Set(chain.map((c) => c.instId));
+  const live = new Set(chainAll.filter((c) => c.state === "live").map((c) => c.instId));
+  return [...new Set(heldInstIds)].filter((id) => !inChain.has(id) && live.has(id));
+};
 
 /** Public (unsigned) snapshot: instruments + depth for every in-band option at the next daily expiry. */
 export const fetchOkxListedSnapshot = async (input: {
@@ -107,6 +118,8 @@ export const fetchOkxListedSnapshot = async (input: {
   baseUrl?: string;
   depth?: number;
   fetchImpl?: typeof fetch;
+  /** legs the open book holds; fetched with depth whatever their expiry or distance from spot */
+  heldInstIds?: ReadonlyArray<string>;
 }): Promise<OkxListedSnapshot> => {
   const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
   const f = input.fetchImpl ?? fetch;
@@ -126,10 +139,10 @@ export const fetchOkxListedSnapshot = async (input: {
   const books: Record<string, BookDepth> = {};
   let booksMissing = 0;
   const sz = input.depth ?? 25;
-  for (const c of chain) {
+  for (const instId of [...chain.map((c) => c.instId), ...heldOutsideChain(input.heldInstIds, chain, chainAll)]) {
     try {
-      books[c.instId] = parseDepth(
-        (await getJson(`/api/v5/market/books?instId=${encodeURIComponent(c.instId)}&sz=${sz}`)) as Parameters<typeof parseDepth>[0],
+      books[instId] = parseDepth(
+        (await getJson(`/api/v5/market/books?instId=${encodeURIComponent(instId)}&sz=${sz}`)) as Parameters<typeof parseDepth>[0],
       );
     } catch {
       booksMissing += 1;
@@ -177,6 +190,8 @@ export const fetchOkxTopSnapshot = async (input: {
   nowMs: number;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  /** legs the open book holds; read from the same tickers feed whatever their expiry or distance from spot */
+  heldInstIds?: ReadonlyArray<string>;
 }): Promise<OkxListedSnapshot> => {
   const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
   const f = input.fetchImpl ?? fetch;
@@ -201,8 +216,8 @@ export const fetchOkxTopSnapshot = async (input: {
   const byId = new Map((tickers.data ?? []).map((t) => [t.instId ?? "", t]));
   const books: Record<string, BookDepth> = {};
   let booksMissing = 0;
-  for (const c of chain) {
-    const t = byId.get(c.instId);
+  for (const instId of [...chain.map((c) => c.instId), ...heldOutsideChain(input.heldInstIds, chain, chainAll)]) {
+    const t = byId.get(instId);
     if (!t) {
       booksMissing += 1;
       continue;
@@ -212,7 +227,7 @@ export const fetchOkxTopSnapshot = async (input: {
       const s = Number(sz);
       return Number.isFinite(p) && p > 0 ? [{ pxBtc: p, contracts: Number.isFinite(s) && s > 0 ? s : 1 }] : [];
     };
-    books[c.instId] = { bids: lvl(t.bidPx, t.bidSz), asks: lvl(t.askPx, t.askSz) };
+    books[instId] = { bids: lvl(t.bidPx, t.bidSz), asks: lvl(t.askPx, t.askSz) };
   }
   const markVols = await fetchMarkVolsForExpiries(getJson, [expiryMs, weeklyExpiryMs]);
   return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing, ...(markVols ? { markVols } : {}) };
