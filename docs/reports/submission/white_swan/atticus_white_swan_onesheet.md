@@ -29,6 +29,8 @@ Every quote, fill, refusal and settlement is written to an append-only ledger wi
 
 The last line is the identity the whole product rests on. Our P&L equals the take booked at quote time, to the cent, on every settled position. If it did not, we would be carrying outcome risk. We are not.
 
+NFL is one game day a week, so the NFL sample is one week deep at the deadline; the open book shows the Week 4 slate protected and waiting for its results. The mechanism is the same on a Chiefs game as on a Bitcoin strike, and the larger MLB and crypto samples are where the percentages have settled. On `[RULE DATE]` the terms rule was tightened (a minimum credit below which we refuse rather than offer pennies); positions since then also record the alternative terms.
+
 ## Why this is a prediction-market submission
 
 - **Market-neutral by construction.** The layer earns a published take on each protected position and nothing on the result. Wins and losses on the outcome pass through to the user and the hedge.
