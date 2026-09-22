@@ -5,7 +5,9 @@
  * Runs the same protection router as the public demo, continuously, and turns
  * it into an auditable history:
  *   - every SCAN interval, every quotable board row becomes one simulated
- *     position (one per market, ever; first priced quote wins),
+ *     position (one per market, ever; first priced quote wins). The scan is
+ *     told which markets the book already holds, so it walks past them and
+ *     reaches every quotable game in the window over successive scans,
  *   - every SETTLE interval, positions whose events have passed are marked
  *     against the official Kalshi result (floor or cap plus credit, versus
  *     the naked payout),
@@ -79,7 +81,7 @@ import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecuto
 import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml } from "./eventShadowHtml";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
-import type { ScanState } from "./eventProtectXDemoService";
+import type { ScanOptions, ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
 const LEDGER_PATH = process.env.EVENT_SHADOW_LEDGER_PATH || "/tmp/event-demo/shadow-ledger.jsonl";
@@ -109,7 +111,7 @@ const alertCfg = parseShadowAlertsFromEnv(process.env);
 const alerter: ShadowAlerter = buildShadowAlerter(alertCfg);
 const BOOT_MS = Date.now();
 
-let scan: (() => Promise<ScanState>) | null = null;
+let scan: ((opts?: ScanOptions) => Promise<ScanState>) | null = null;
 let searchConfig: () => CrossSearchConfig = () => DEFAULT_CROSS_CONFIG;
 let lastScanAt: string | null = null;
 let lastScanOkMs: number | null = null;
@@ -159,9 +161,10 @@ async function fillHedge(ticker: string, hedge: HedgeLeg, books: { pmNoBook?: Pm
 async function scanTick(): Promise<void> {
   if (!scan) return;
   try {
-    const state = await scan();
     const book = loadShadowPositions(LEDGER_PATH);
     const seen = new Set(book.map((p) => p.ticker));
+    // Step over what the book already holds so each scan reaches the next games in the ranking.
+    const state = await scan({ skipTickers: seen });
     const opened: Array<{ kind: "sports" | "crypto"; at: string }> = book.map((p) => ({ kind: p.kind, at: p.at }));
     let cryptoSkipped = 0;
     for (const { res, evBps } of state.rows) {
