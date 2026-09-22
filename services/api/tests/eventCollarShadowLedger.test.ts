@@ -20,7 +20,7 @@ import {
   type ShadowOpenRecord,
 } from "../src/eventCollar/crossVenue/shadowLedger";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
-import { MIN_SLICE_EVENTS, renderShadowHtml } from "../scripts/eventShadowHtml";
+import { MIN_SLICE_EVENTS, interleaveByLeague, renderShadowHtml } from "../scripts/eventShadowHtml";
 
 const OPEN_FIXTURE: ShadowOpenRecord = {
   type: "open",
@@ -227,9 +227,42 @@ test("shadow: the page bridges floor saves and protection cost, and prints perce
   const html2 = renderShadowHtml({ atIso: "2026-09-15T00:00:00.000Z", summary: summarizeShadow(p2), open: [], settled: p2 });
   // 4 x (15,000 - 9,562) = 21,752 cost on 60,000 naked = 36.3%; quoted 2.97%
   assert.ok(
-    html2.includes("Protection paid the floor on 0 of 4 settled events (0%). Across everyone it cost $217.52, 36.3% of what the same positions paid unprotected, against 3.0% quoted up front. That is the price of the floor, and it was the price shown."),
-    "bridge line, cost case, realized next to quoted",
+    html2.includes("Protection paid the floor on 0 of 4 settled events (0%). Across everyone it cost $217.52, 36.3% of what the same positions paid unprotected; 3.0% was quoted up front. Quoted is the expectation at the market's odds; realized is what this sample did."),
+    "bridge line, cost case, realized next to quoted with no claim that they match",
   );
+  assert.ok(!html2.includes("Strikes on the same coin"), "the cluster note needs a crypto-majority settled book");
+
+  // A crypto-majority settled book gets the cluster note, and the lists interleave leagues so the games stay visible.
+  const dir3 = mkdtempSync(join(tmpdir(), "shadow-cluster-"));
+  const path3 = join(dir3, "ledger.jsonl");
+  for (let i = 0; i < 30; i += 1) {
+    const ticker = `KXBTCD-T${i}`;
+    appendShadowRecord(path3, { ...OPEN_FIXTURE, ticker, kind: "crypto", league: "crypto", route: "kalshi_self", sideName: `Bitcoin $${80_000 + i * 100} or above`, at: `2026-09-12T${String(i % 24).padStart(2, "0")}:00:00.000Z` });
+    appendShadowRecord(path3, { type: "settle", at: `2026-09-13T${String(i % 24).padStart(2, "0")}:30:00.000Z`, ticker, result: "yes" });
+  }
+  appendShadowRecord(path3, { ...OPEN_FIXTURE, ticker: "KXMLBGAME-X", sideName: "Tigers" });
+  appendShadowRecord(path3, { type: "settle", at: "2026-09-13T01:00:00.000Z", ticker: "KXMLBGAME-X", result: "no" });
+  appendShadowRecord(path3, { ...OPEN_FIXTURE, ticker: "KXNFLGAME-OPEN-A", league: "nfl", sideName: "Chiefs", eventTimeIso: "2026-09-27T17:00:00.000Z" });
+  for (let i = 0; i < 26; i += 1) appendShadowRecord(path3, { ...OPEN_FIXTURE, ticker: `KXBTCD-OPEN-${i}`, kind: "crypto", league: "crypto", route: "kalshi_self", sideName: `Bitcoin $${86_000 + i * 100} or above`, eventTimeIso: `2026-09-15T${String(i % 24).padStart(2, "0")}:00:00.000Z` });
+  const p3 = loadShadowPositions(path3);
+  const settled3 = p3.filter((p) => p.status === "settled").sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
+  const open3 = p3.filter((p) => p.status === "open").sort((a, b) => a.eventTimeIso.localeCompare(b.eventTimeIso));
+  const html3 = renderShadowHtml({ atIso: "2026-09-15T00:00:00.000Z", summary: summarizeShadow(p3), open: open3, settled: settled3 });
+  assert.ok(html3.includes("Strikes on the same coin settle together, so a rally caps many at once and a drop pays many floors at once"), "cluster note on a crypto-majority book");
+  assert.ok(html3.includes("31 settled · 30 crypto · 1 MLB"), "settled count line names the leagues");
+  assert.ok(html3.includes("27 open · 26 crypto · 1 NFL"), "open count line names the leagues");
+  assert.ok(html3.includes("Tigers <span class=\"tag save\">floor paid</span>"), "the one MLB settlement is on the page, not buried under 30 strikes");
+  assert.ok(html3.includes("Chiefs · locks"), "the one NFL open position is on the page, not pushed out by 26 strikes");
+});
+
+test("shadow: interleaveByLeague round-robins leagues in the order given and stops at the limit", () => {
+  const items = [
+    { league: "crypto", id: 1 }, { league: "crypto", id: 2 }, { league: "crypto", id: 3 },
+    { league: "mlb", id: 4 }, { league: "nfl", id: 5 }, { league: "mlb", id: 6 },
+  ];
+  assert.deepEqual(interleaveByLeague(items, 10).map((i) => i.id), [1, 4, 5, 2, 6, 3], "first of each league, then second of each, order within a league preserved");
+  assert.deepEqual(interleaveByLeague(items, 4).map((i) => i.id), [1, 4, 5, 2]);
+  assert.deepEqual(interleaveByLeague([], 5), []);
 });
 
 test("shadow: replay opens once per ticker, settles, voids, skips bad lines", () => {
