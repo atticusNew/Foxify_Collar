@@ -6,6 +6,10 @@ Internal. Not part of the evidence folder.
 
 Send what proves the claim and nothing else. No code, no repo links, no operator views, no fee rule, no counterfactuals, no hedge receipts. The public track record and the public CSV are the evidence; the one sheet is the argument.
 
+## Timing
+
+Deadline Sep 25. Do not reset the book: a fresh book cannot hold an NFL sample by then. Thursday night (Sep 24) settles about 06:30 UTC Sep 25, so pull the evidence the morning of Sep 25 ET and the record has Week 3 settled plus Thursday, with the Week 4 Sunday slate in the open book.
+
 ## Pull the evidence (one pass, same hour)
 
 Replace `SHADOW` with the event track record host (`atticus-event-shadow.onrender.com` unless renamed) and `DEMO` with the embed demo host (`atticus-event-demo-cross-venue.onrender.com` unless renamed). Run from any folder; these are plain downloads.

@@ -19,8 +19,8 @@ Every quote, fill, refusal and settlement is written to an append-only ledger wi
 
 | | Value |
 |---|---|
-| Record window | `[START DATE]` to `[END DATE]` (`[N]` days, fresh book) |
-| Positions protected | `[N]` |
+| Record window | `[START DATE]` to `[END DATE]` (`[N]` days) |
+| Positions protected | `[N]` (`[N]` NFL, `[N]` MLB, `[N]` crypto strikes) |
 | Quotes refused | `[N]` (`[TOP REASON]`) |
 | Stake protected | `$[X]` |
 | Credit paid to users | `$[X]` |

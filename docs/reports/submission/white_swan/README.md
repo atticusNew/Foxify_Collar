@@ -25,6 +25,10 @@ This folder is what we send with the application. Read the one sheet first; ever
 
 On settled rows, sum `writer_pnl_c` and sum `take_c`. They are equal. That is the whole claim: the layer earns its published take and nothing on the outcome. The take is already netted out of every credit a user sees.
 
+## One disclosure
+
+The terms rule was tightened on `[RULE DATE]`: a minimum credit was added, below which a quote is refused rather than offered. Positions before that date were quoted under the earlier rule and are marked as such in the record. Every position, before and after, settled against the official result under the terms it was quoted at; the identity holds across both.
+
 ## Live links
 
 - Track record: `[TRACK RECORD URL]`
