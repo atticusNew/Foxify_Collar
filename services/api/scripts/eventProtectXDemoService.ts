@@ -648,8 +648,26 @@ interface LeagueCursor {
   rows: number;
 }
 
-async function buildScan(): Promise<ScanState> {
+/**
+ * Scan options. `skipTickers` is the shadow's: markets it already holds are stepped over without
+ * spending a match attempt, so successive scans walk down each league's ranking and the record
+ * reaches every quotable game in the window instead of re-quoting the same top few all week.
+ * The demo board passes nothing and is unchanged.
+ */
+export interface ScanOptions {
+  skipTickers?: ReadonlySet<string>;
+}
+
+/** Index of the first ranked candidate from `from` that is not held; `ranked.length` when none is. */
+export function nextUnheld(ranked: ReadonlyArray<{ m: { ticker: string } }>, from: number, held: ReadonlySet<string>): number {
+  let i = from;
+  while (i < ranked.length && held.has(ranked[i].m.ticker)) i += 1;
+  return i;
+}
+
+async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
   const now = new Date();
+  const skip = opts.skipTickers ?? new Set<string>();
 
   // The scanner: walk the whitelisted leagues and their ranked games, quote
   // EVERY verified pairing on both routes (up to the board cap), then admit
@@ -690,6 +708,7 @@ async function buildScan(): Promise<ScanState> {
 
   /** Match and quote one league's next candidate; true when the cursor still has work. */
   const step = async (c: LeagueCursor): Promise<boolean> => {
+    c.next = nextUnheld(c.ranked, c.next, skip);
     if (c.next >= c.ranked.length || c.attempts >= MAX_MATCH_ATTEMPTS) return false;
     const cand = c.ranked[c.next++];
     c.attempts += 1;
@@ -752,6 +771,7 @@ async function buildScan(): Promise<ScanState> {
     for (const sel of ranked) {
       if (cryptoRows >= MAX_CRYPTO_ROWS) break;
       if (attempts >= MAX_MATCH_ATTEMPTS) break;
+      if (skip.has(sel.market.ticker)) continue;
       attempts += 1;
       let result: CandidateResult;
       try {

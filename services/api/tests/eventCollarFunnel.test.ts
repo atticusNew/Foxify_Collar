@@ -209,6 +209,16 @@ test("board budget: next week's slate is skipped before it burns match attempts"
   assert.equal(gameDateWithinHorizon("KXNFLGAME-26SEP10INDKC-KC", nfl, now), false, "already played");
 });
 
+test("board budget: the shadow's held markets are stepped over without spending a match attempt", async () => {
+  const { nextUnheld } = await import("../scripts/eventProtectXDemoService");
+  const ranked = ["A", "B", "C", "D"].map((t) => ({ m: { ticker: t } }));
+  assert.equal(nextUnheld(ranked, 0, new Set()), 0, "nothing held: the top of the ranking");
+  assert.equal(nextUnheld(ranked, 0, new Set(["A", "B"])), 2, "the two the book holds are skipped; C is next");
+  assert.equal(nextUnheld(ranked, 2, new Set(["A", "B"])), 2, "resumes from the cursor");
+  assert.equal(nextUnheld(ranked, 0, new Set(["A", "B", "C", "D"])), 4, "everything held: past the end, the cursor is done");
+  assert.equal(nextUnheld(ranked, 1, new Set(["C"])), 1, "a held market further down does not move an unheld cursor");
+});
+
 test("demo service: page loads count, beacons record, admin funnel is gated and persists", async () => {
   const funnelPath = FUNNEL_PATH;
   const { server, flushFunnel } = await import("../scripts/eventProtectXDemoService");
