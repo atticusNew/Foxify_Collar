@@ -62,17 +62,19 @@ h1{font-size:22px;font-weight:700;letter-spacing:-.2px}
 h2{font-size:14.5px;font-weight:700;margin:26px 0 10px;color:var(--ink);border-left:3px solid var(--green-deep);padding-left:9px}
 h2 small{color:var(--dim);font-weight:500;font-size:12.5px;margin-left:8px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:14px 0 0}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px;min-width:0;container-type:inline-size}
 .grid .card{margin-bottom:0}
 .k{color:var(--dim);font-size:11.5px;letter-spacing:.2px}
-.v{font-size:21px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+/* headline numbers size to their card: --w is the value's estimated width in em (set per value by the
+   renderer), so a long dollar figure shrinks to fit and a short one keeps the full size */
+.v{font-size:min(21px,calc(100cqi / var(--w,6)));font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:clip;line-height:1.25;min-height:26px}
 .v.green{color:var(--green)} .v.bad{color:var(--bad)} .v.mint{color:var(--green-deep)}
 .s{color:var(--dim);font-size:11.5px;margin-top:3px;line-height:1.4}
 .s b{color:var(--ink);font-weight:600}
 /* legacy blocks (operator report): the same look, one accent */
 .bignums{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
-.bignum{flex:1;min-width:calc(25% - 8px);background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
-.bignum .n{font-size:21px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.bignum{flex:1;min-width:calc(25% - 8px);background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;container-type:inline-size}
+.bignum .n{font-size:min(21px,calc(100cqi / var(--w,6)));font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;line-height:1.25}
 .bignum .n.green{color:var(--green)}
 .bignum .l{color:var(--dim);font-size:11.5px;margin-top:2px}
 .period{color:var(--dim);font-size:12px;margin-top:10px;font-variant-numeric:tabular-nums}
@@ -104,7 +106,7 @@ tbody tr:last-child td{border-bottom:0}
 .bullets b{color:var(--ink);font-weight:600}
 footer{color:var(--faint);font-size:11.5px;line-height:1.6;padding:22px 2px 0;border-top:1px solid var(--line);margin-top:26px}
 footer b{color:var(--dim);font-weight:600}
-@media(max-width:560px){.wrap{padding:16px 12px 40px} .v{font-size:19px} h1{font-size:20px} .topbar a{margin-left:10px}}
+@media(max-width:560px){.wrap{padding:16px 12px 40px} .v{font-size:min(19px,calc(100cqi / var(--w,6)))} h1{font-size:20px} .topbar a{margin-left:10px}}
 `;
 
 const shortUtc = (iso: string): string => iso.slice(5, 16).replace("T", " ") + " UTC";
@@ -175,8 +177,23 @@ function openTr(p: PerpShadowPosition): string {
   );
 }
 
+/**
+ * Estimated width of a headline value in em at the display weight, so the CSS can
+ * size the type to the card (font-size = min(cap, 100cqi / --w)). Digits in a bold
+ * tabular face sit near 0.6em; separators nearer 0.3em. Tags are ignored.
+ */
+export function fitEm(value: string): number {
+  const text = value.replace(/<[^>]*>/g, "").replace(/&[a-z#0-9]+;/gi, "x");
+  let em = 0;
+  for (const ch of text) em += /[.,:;' ·–-]/.test(ch) ? 0.3 : /[a-z]/.test(ch) ? 0.55 : 0.62;
+  return Math.max(1, Math.round(em * 100) / 100);
+}
+const fitStyle = (value: string): string => ` style="--w:${fitEm(value)}"`;
+
 const kpi = (label: string, value: string, sub = "", tone: "" | "green" | "bad" | "mint" = ""): string =>
-  `<div class="card"><div class="k">${label}</div><div class="v ${tone}">${value}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+  `<div class="card"><div class="k">${label}</div><div class="v ${tone}"${fitStyle(value)}>${value}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+const bignum = (value: string, label: string, tone: "" | "green" = ""): string =>
+  `<div class="bignum"><div class="n ${tone}"${fitStyle(value)}>${value}</div><div class="l">${label}</div></div>`;
 const table = (head: string, rows: string): string => `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
 const th = (...cols: string[]): string => cols.map((c) => `<th>${c}</th>`).join("");
 
@@ -221,7 +238,7 @@ function flowSections(s: PerpShadowSummary, rule: string | null | undefined): st
       ${kpi(
         "slippage saved",
         bk.slippageGrossCents != null && bk.slippageNetCents != null ? saved(bk.slippageGrossCents, bk.slippageNetCents) : "–",
-        bk.slippageGrossCents != null ? `of ${usd(bk.slippageGrossCents)} hedging each alone` : `${bk.unpricedInstruments} instrument${bk.unpricedInstruments === 1 ? "" : "s"} off the live band`,
+        bk.slippageGrossCents != null ? `of ${usd(bk.slippageGrossCents)} hedging each alone` : `${bk.unpricedInstruments} instrument${bk.unpricedInstruments === 1 ? "" : "s"} with no live book`,
         "green",
       )}
       ${f.book.avgNettedShare != null ? kpi("last 24h, average", `${(f.book.avgNettedShare * 100).toFixed(0)}% netted`, `${f.book.avgFeeSavedCents != null ? `fees ${usd(f.book.avgFeeSavedCents)}` : ""}${f.book.avgMarginSavedCents != null ? ` · margin ${usd(f.book.avgMarginSavedCents)}` : ""} per snapshot`) : ""}
@@ -351,7 +368,8 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
       : ""
   }
   ${closedRows ? `<h2>Closed early <small>at live prices, most recent first</small></h2>
-  ${table(th("closed", "side", "size", "open → close", "floor", "cap", "credit", "vs unprotected", "unwind edge"), closedRows)}` : ""}
+  ${table(th("closed", "side", "size", "open → close", "floor", "cap", "credit", "vs unprotected", "unwind edge"), closedRows)}
+  ${(input.closed ?? []).some((p) => p.closeOutcome?.deltaCents == null) ? `<div class="rule">A close marked <b>legs unpriced</b> fell due while the snapshot carried no live book for one of its legs. It is recorded as it was and never re-marked at a later price.</div>` : ""}` : ""}
   ${openRows ? `<h2>Open <small>next to settle first</small></h2>
   ${table(th("opened", "side", "size", "price", "floor", "cap", "credit", "settles"), openRows)}` : ""}
 
@@ -633,10 +651,10 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
         : " (a cap touch is a knock-out: the cycle ends, the short cap leg is bought back at the money)"
     }. Same positions, same book, same path; only the rule differs.</div>
     <div class="bignums">
-      <div class="bignum"><div class="n green">${cf.positionsWithCounterfactuals}</div><div class="l">positions compared</div></div>
-      <div class="bignum"><div class="n">${cf.baseline.settled}</div><div class="l">of them settled</div></div>
-      ${plain ? `<div class="bignum"><div class="n">${cd.endedPastCap}</div><div class="l">ended past the cap, live pick</div></div>` : `<div class="bignum"><div class="n">${s.knockouts}</div><div class="l">knock-outs, live cap</div></div>`}
-      <div class="bignum"><div class="n ${s.writerCents >= 0 ? "green" : ""}">${s.settled ? signedUsd(s.writerCents) : "–"}</div><div class="l">writer's side, settled</div></div>
+      ${bignum(String(cf.positionsWithCounterfactuals), "positions compared", "green")}
+      ${bignum(String(cf.baseline.settled), "of them settled")}
+      ${plain ? bignum(String(cd.endedPastCap), "ended past the cap, live pick") : bignum(String(s.knockouts), "knock-outs, live cap")}
+      ${bignum(s.settled ? signedUsd(s.writerCents) : "–", "writer's side, settled", s.writerCents >= 0 ? "green" : "")}
     </div>
     <div class="period">${escapeHtml(period)}</div>
   </div>

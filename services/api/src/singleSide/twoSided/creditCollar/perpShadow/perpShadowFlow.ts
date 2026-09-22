@@ -197,6 +197,17 @@ export interface PerpCloseValuation {
   unwindPassiveCents: number | null;
 }
 
+/** Every leg the open book holds, once each: what the snapshot must carry to value a close or mark the book. */
+export function heldInstIds(positions: ReadonlyArray<Pick<PerpShadowPosition, "status" | "buyInstId" | "sellInstId">>): string[] {
+  const ids = new Set<string>();
+  for (const p of positions) {
+    if (p.status !== "open") continue;
+    ids.add(p.buyInstId);
+    ids.add(p.sellInstId);
+  }
+  return [...ids];
+}
+
 /** Look both legs up in a live snapshot and value the unwind two ways. */
 export function valueClose(p: Pick<PerpShadowPosition, "contracts" | "ctValBtc" | "buyInstId" | "sellInstId">, snap: OkxListedSnapshot, spot: number): PerpCloseValuation {
   const floor = topOf(snap.books[p.buyInstId]);

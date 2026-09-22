@@ -66,7 +66,7 @@ import {
   type PerpShadowPosition,
   type PerpShadowSummary,
 } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowLedger";
-import { buildBook, closeAtIso, describeFlow, flowConfigFromEnv, hourKey, planHourBatch, summarizeFlow, valueClose } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowFlow";
+import { buildBook, closeAtIso, describeFlow, flowConfigFromEnv, heldInstIds, hourKey, planHourBatch, summarizeFlow, valueClose } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowFlow";
 import { archiveLedgerFile } from "../src/singleSide/twoSided/creditCollar/perpShadow/ledgerArchive";
 import {
   fetchHlCandles,
@@ -143,7 +143,10 @@ async function scanTick(): Promise<void> {
     const hl = await fetchHlContext(COIN);
     if (!hl) throw new Error(`Hyperliquid returned no ${COIN} context`);
     const okxIndex = await fetchOkxIndex().catch(() => null);
-    const snap = await fetchOkxListedSnapshot({ spot: hl.markPx, nowMs });
+    // The book's own legs ride along whatever their expiry or distance from spot, so the netting
+    // snapshot after this batch marks every open leg at a live book instead of its last quote.
+    const held = heldInstIds(loadPerpShadow(LEDGER_PATH, REPLAY).positions);
+    const snap = await fetchOkxListedSnapshot({ spot: hl.markPx, nowMs, heldInstIds: held });
     if (snap.chain.length === 0) throw new Error("OKX chain has no live in-band options at the next daily expiry");
     const nowIso = new Date(nowMs).toISOString();
     const common = {
@@ -252,7 +255,9 @@ async function settleTick(
     if (closing.length > 0) {
       const hl = await (deps.hl ?? fetchHlContext)(COIN);
       if (hl) {
-        const snap = await (deps.snapshot ?? fetchOkxListedSnapshot)({ spot: hl.markPx, nowMs }).catch(() => null);
+        // A close is valued at the legs it holds; they may sit at an expiry the quoting chain has
+        // rolled past or a strike outside the band, so the snapshot fetches them by name.
+        const snap = await (deps.snapshot ?? fetchOkxListedSnapshot)({ spot: hl.markPx, nowMs, heldInstIds: heldInstIds(closing) }).catch(() => null);
         const nowIso = new Date(nowMs).toISOString();
         for (const p of closing) {
           const valuation = snap
@@ -429,7 +434,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           fundingRule: "informational: how often the credit fails to clear what holding the perp costs over the cycle at the funding rate seen at open; the live product does not refuse on it (funding is the perp's cost, paid with or without protection)",
           flow: FLOW.enabled ? describeFlow(FLOW) : "off: one long and one short at a fixed size every scan",
           book: "after every batch the open book is netted by exact instrument (same strike, expiry, type): gross legs vs net legs, OKX taker fees gross vs net, OKX simple short-option margin gross vs net, book-walk slippage of hedging each wrap alone vs one order per instrument at that snapshot's depth. Exact-instrument netting only, so the savings are lower bounds; portfolio margin across strikes would be lower still",
-          earlyCloses: "a scheduled share of wraps closes before expiry at LIVE prices: the perp at the Hyperliquid mark, the collar unwound at the OKX book crossing the spread (immediate) and at mids (passive); passive minus immediate is the execution edge the unwind queue works for; legs outside the live band are recorded unpriced",
+          earlyCloses: "a scheduled share of wraps closes before expiry at LIVE prices: the perp at the Hyperliquid mark, the collar unwound at the OKX book crossing the spread (immediate) and at mids (passive); passive minus immediate is the execution edge the unwind queue works for; legs with no live book are recorded unpriced, never guessed",
           feeRules: Object.fromEntries(Object.keys(summary.counterfactuals.feeRules).map((l) => [l, feeRuleText(l)])),
         },
         counterfactuals: summary.counterfactuals,
