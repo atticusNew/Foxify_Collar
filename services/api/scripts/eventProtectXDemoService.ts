@@ -133,13 +133,13 @@ export const MIN_CREDIT_RULE = minimumCreditRuleFromEnv(process.env);
  * EMBED DEMO knobs. `?brand=` on /embed is honoured only for names on the allowlist (fail-closed
  * to "Your Exchange"); the partner console's revenue-share line uses EVENT_X_PARTNER_SHARE_PCT.
  * /partner without the operator token is the public pitch for the console with one CTA
- * (EVENT_X_CONTACT_EMAIL, default hello@atticustrade.com); with it, the console.
+ * (EVENT_X_CONTACT_EMAIL, default michael@atticustrade.com); with it, the console.
  */
 const BRAND_ALLOWLIST = process.env.EVENT_X_BRAND_ALLOWLIST || "";
 /** What the embed shell calls the host when the link carries no brand (the first screen for a cold visitor). */
 const EMBED_BRAND = process.env.EVENT_X_EMBED_BRAND || DEFAULT_EMBED_BRAND;
 /** where the public /partner page's "Talk to us" goes */
-const CONTACT_EMAIL = process.env.EVENT_X_CONTACT_EMAIL || "hello@atticustrade.com";
+const CONTACT_EMAIL = process.env.EVENT_X_CONTACT_EMAIL || "michael@atticustrade.com";
 const PARTNER_SHARE_PCT = Math.min(100, Math.max(0, Number(process.env.EVENT_X_PARTNER_SHARE_PCT ?? 50)));
 /** The track record (its own deploy); the embed's one public link and the desktop pitch's first partner link. */
 const TRACK_RECORD_URL = process.env.EVENT_X_SHADOW_URL || "https://atticus-event-shadow.onrender.com";

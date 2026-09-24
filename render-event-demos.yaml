@@ -91,7 +91,7 @@ services:
         value: "Your Exchange"
       # Where the public /partner page's "Talk to us" goes.
       - key: EVENT_X_CONTACT_EMAIL
-        value: "hello@atticustrade.com"
+        value: "michael@atticustrade.com"
       - key: EVENT_X_PARTNER_SHARE_PCT
         value: "50"
 
