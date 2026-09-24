@@ -212,7 +212,7 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     assert.equal(publicPartner.status, 200);
     assert.match(publicPartner.headers.get("content-type") ?? "", /text\/html/);
     const ctaHtml = await publicPartner.text();
-    assert.ok(ctaHtml.includes("The console your team gets.") && ctaHtml.includes('href="mailto:hello@atticustrade.com?subject='), "the pitch and a Talk to us CTA");
+    assert.ok(ctaHtml.includes("The console your team gets.") && ctaHtml.includes('href="mailto:michael@atticustrade.com?subject='), "the pitch and a Talk to us CTA");
     assert.ok(ctaHtml.includes('href="https://atticus-event-shadow.onrender.com">track record</a>'), "and the track record as the soft path");
     assert.ok(!ctaHtml.includes("your share (") && !/\$\d/.test(ctaHtml), "no numbers: the console's figures stay behind the token");
     assert.ok(!ctaHtml.includes("admin_required") && !ctaHtml.includes("token"), "nothing about tokens");
