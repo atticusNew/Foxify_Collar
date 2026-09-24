@@ -95,4 +95,4 @@ Pooled activation: many positions netted internally, residual risk hedged as ins
 
 ---
 
-*Atticus builds protection infrastructure for trading venues. The venue interface shown in our demonstrations is an overlay for placement illustration; the venue is not a partner. Positions, orders, fills, credits, and settlements referenced in the live record are real and documented. Nothing in this document is investment advice. Contact: hello@atticustrade.com.*
+*Atticus builds protection infrastructure for trading venues. The venue interface shown in our demonstrations is an overlay for placement illustration; the venue is not a partner. Positions, orders, fills, credits, and settlements referenced in the live record are real and documented. Nothing in this document is investment advice. Contact: michael@atticustrade.com.*
