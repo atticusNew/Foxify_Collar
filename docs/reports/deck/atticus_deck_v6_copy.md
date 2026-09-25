@@ -1,6 +1,19 @@
 # Atticus deck v6: slide copy and build notes
 
-Pre-seed deck. Ten slides plus two optional appendix slides. Numbers below are the live public records as of 2026-09-24 23:28 UTC; refresh the two proof numbers the morning you send.
+Pre-seed deck. Ten slides plus two optional appendix slides. Numbers below are the live public records as of 2026-09-25 18:49 UTC, after the first weekly perp settlement; refresh the proof numbers the morning you send.
+
+Screenshots for the slides are in `assets/` next to this file (all captured from the live demos and records at 2x on 2026-09-25):
+
+- `slide3_perp_headline_and_card.png`: the landing headline and the toggled card together.
+- `slide3_perp_card_toggled.png`: the card alone. Long BTC $128,484, this week's credit $192.58, floor $79,000, cap $87,000, pays Friday.
+- `slide5_perp_record_kpis_2026-09-25.png` and `slide5_perp_record_identity_2026-09-25.png`: the perp track record top block and the "we carry no outcome risk" row.
+- `slide5_event_record_kpis_2026-09-25.png`: the event track record top block and identity.
+- `slide6_event_phone_protected.png` and `slide6_event_protect_sheet.png`: the embed with the Astros row protected and the confirmation sheet.
+
+## How the two products differ (do not blur this on the slides)
+
+- Perps: one toggle. The engine finds the floor and the cap on the live options book. The trader picks nothing. The credit unlocks through the week and pays Friday at the cycle close, never up front. The collar runs to Friday; the cap can be bought back at the live listed price, and that is shown on the institutional skin only. Nothing to manage.
+- Events: one tap on the position row. The floor and the cash are shown before the tap; the cash is added to the balance at protect time. Where the market supports it the embed offers three floor tiers (tight, balanced, wide) with the default chosen for the trader.
 
 ## Build rules
 
@@ -9,17 +22,18 @@ Pre-seed deck. Ten slides plus two optional appendix slides. Numbers below are t
 - Real screenshots only (the retail card, the two track-record pages). No generated art, no stock photos, no icons.
 - Black text, white background, the gold accent used once per slide at most.
 - Every claim on slides 5 and 8 has a public URL. Put the URL in small type on the slide.
-- Corrections to v5 that must not survive: "daily credit" (it is a weekly Friday tenor, credit paid up front), "knockout" (there is none; the holder can release upside at the live price any time), "10% published, 20% founding" fee lines (live take is 20% of the net credit, nothing else), "live on Hyperliquid rails" (we wrap Hyperliquid positions; the hedge is on listed BTC options), the three side products on the solution slide (Leverage Extension, Bad-Debt Shield, Volume Facility go to an appendix or get cut).
+- Corrections to v5 that must not survive: "daily credit" (it is a weekly Friday tenor; the credit unlocks through the week and pays Friday), "knockout" (there is none; the collar runs to Friday and the cap can be bought back at the live price), "10% published, 20% founding" fee lines (live take is 20% of the net credit, nothing else), "live on Hyperliquid rails" (we wrap Hyperliquid positions; the hedge is on listed BTC options), the three side products on the solution slide (Leverage Extension, Bad-Debt Shield, Volume Facility go to an appendix or get cut).
+- Never write "pick a floor" for perps. The engine picks. Never show a release button; the retail card has none.
 
 ---
 
 ## Slide 1: Title
 
-**Protection that pays the trader.**
+**One toggle. A hard floor. And it pays.**
 
 Atticus | Earn & Protect
 
-A hard floor and a cash credit on any open position. One tap. Hedged leg for leg.
+A hard floor and a cash credit on any open position. Nothing to manage. Hedged leg for leg.
 
 Pre-seed · September 2026 · Michael William · michael@atticustrade.com
 
@@ -43,17 +57,18 @@ Speaker note: The venue has a growth problem, not a protection problem. Liquidat
 
 ## Slide 3: Solution
 
-**Pick a floor. Get paid today. Keep your position.**
+**One toggle. A hard floor. And it pays.**
 
-[Screenshot: the retail card, mid-tap, showing floor, credit, and "Release my upside".]
+[Screenshot: `assets/slide3_perp_card_toggled.png`. Long BTC, $192.58 this week's credit, $79,000 floor, $87,000 cap, pays Friday.]
 
-- Hard floor to Friday. If price falls through it, the floor pays.
-- Cash credit paid up front for selling upside you were not going to use.
-- Release my upside any time at the live price. One tap on, one tap off.
+- Flip protection on any perp position. The engine finds the floor and the cap on the live options book.
+- A hard floor under the position to Friday. Losses stop there.
+- A credit, funded by the options market, unlocks through the week and pays Friday.
+- Nothing to set. Nothing to manage. Refuses when the market cannot fund an honest credit.
 
 Small type: Under the hood it is a collar on listed options, netted across holders and hedged leg for leg. Atticus carries zero market risk.
 
-Speaker note: Do not explain options. Explain the three bullets. If asked "how", the answer is one sentence: we buy the put and sell the call for them on a listed venue, and we never hold the difference.
+Speaker note: This headline is the landing page; keep the deck and the product saying the same sentence. Do not explain options. If asked "how", one sentence: we buy the put and sell the call for them on a listed venue, and we never hold the difference. If asked "can the trader change the floor", the answer is no, and that is the point: the trailing stop asks for three settings, this asks for none.
 
 ---
 
@@ -64,14 +79,14 @@ Speaker note: Do not explain options. Explain the three bullets. If asked "how",
 | | Trailing stop | Earn & Protect |
 |---|---|---|
 | On a wick | Sells you out at the low | Floor holds. You stay in. |
-| Cost | Free, then you eat the exit | Pays you cash up front |
-| Setup | Distance, activation price, size | One tap |
-| Undo | Re-enter and pay the spread again | Release my upside at the live price |
+| Cost | Free, then you eat the exit | Pays you a credit every week |
+| Setup | Distance, activation price, size | One toggle. The engine picks the floor and the cap. |
+| Undo | Re-enter and pay the spread again | The cap can be bought back at the live listed price; the floor stays either way |
 | Who hedges it | Nobody. Your risk. | Atticus, leg for leg, on a listed book |
 
 Footer line: Hyperliquid shipped trailing stops on September 21. Our perp record restarted the same day. Simpler for the trader, and the trader gets paid.
 
-Speaker note: This is the "why us and not the venue" slide. Venues ship exits because exits are free to build. A floor needs an options book, netting and a hedge desk. That is us.
+Speaker note: This is the "why us and not the venue" slide. Venues ship exits because exits are free to build. A floor needs an options book, netting and a hedge desk. That is us. The "undo" row is a pocket fact, not a feature: the retail card does not show a release button, by design.
 
 ---
 
@@ -81,17 +96,19 @@ Speaker note: This is the "why us and not the venue" slide. Venues ship exits be
 
 Perps (facility.atticustrade.com), since September 21:
 
-- 343 positions protected · $13.9M notional · 0 quotes refused
-- $12,398 credit paid to holders · 8.9 bps of notional
-- 37 early releases priced at the live book · first weekly settlement Friday, September 25
+- 410 positions protected · $16.3M notional · 0 quotes refused
+- $14,763 credit to holders · 9.1 bps of notional · 45 early closes priced at the live book
+- First weekly settlement, September 25: 68 settled · our P&L $548.44 = booked take $548.44 · gap $0.00
 
 Event contracts (atticus-event-shadow.onrender.com), since September 12:
 
-- 491 positions protected · 400 settled · 169 floor saves (42%)
-- Our P&L on settled positions $102.50 = booked take $102.50 · gap $0.00
+- 516 positions protected · 427 settled · 180 floor saves (42%)
+- Our P&L on settled positions $116.83 = booked take $116.83 · gap $0.00
 - Every hedge leg priced off Kalshi or Polymarket depth at the time of the trade
 
-Speaker note: The identity line is the whole slide. Our P&L equals our published take to the cent because we never hold risk. Anyone can download the CSV and sum it. Refresh these six numbers the morning you send.
+[Screenshots: `assets/slide5_perp_record_identity_2026-09-25.png` and `assets/slide5_event_record_kpis_2026-09-25.png`, side by side. The identity cards are the image; the bullets can shrink to two per product if the slide is crowded.]
+
+Speaker note: The identity line is the whole slide. Our P&L equals our published take to the cent, on both products, because we never hold risk. Anyone can download the CSV and sum it. Refresh these numbers the morning you send. If asked about the first perp settlement: 68 positions, none fell to the floor, one ended past the cap and handed back $10.00 of gains against $13.71 of credit, 67 settled between the wings with the full credit; $2,193.60 went to holders.
 
 ---
 
@@ -103,9 +120,13 @@ Speaker note: The identity line is the whole slide. Our P&L equals our published
 - We embed inside the venue. The trader never leaves. The venue earns a share of our take. Our hedge legs land on the venue's own book.
 - A third-market app will not share revenue. A venue will not send its traders elsewhere to hedge. We solve both.
 
+[Screenshot: `assets/slide6_event_phone_protected.png`. The Astros row protected inside "Your Exchange", the sheet reading "ends $70.59 or $102.09, +$4.59 added to your cash, Nothing to manage."]
+
+One tap on the position row. Floor and cash shown before the tap. Three floor tiers when the market supports them; the default is chosen for the trader.
+
 Small type: Kalshi and Polymarket Global weekly contract volume, September 14 to 20, 2026: $16.4B (Kalshi $15.3B). Roughly a third of Kalshi's daily flow arrives through Robinhood. Distribution wins this market; we are a feature inside the distribution.
 
-Speaker note: Sports and crypto event markets settle in hours, so floor saves show up fast. Our record: 169 floor saves in 400 settled contracts. No venue offers this today and none can build it without a hedge desk.
+Speaker note: Sports and crypto event markets settle in hours, so floor saves show up fast. Our record: 180 floor saves in 427 settled contracts. No venue offers this today and none can build it without a hedge desk.
 
 ---
 
@@ -113,19 +134,19 @@ Speaker note: Sports and crypto event markets settle in hours, so floor saves sh
 
 **We keep 20% of the credit. The trader keeps 80%. Venue fees pass through at cost.**
 
-Live record, four days, $13.9M wrapped:
+Live record, five days, $16.3M wrapped:
 
-- Gross credit from the options book: $23,593
-- Venue fees, passed through: $8,095
-- Paid to traders: $12,398
-- Atticus: $3,100 (about 2.2 bps of notional wrapped)
+- Gross credit from the options book: $27,949
+- Venue fees, passed through: $9,495
+- Credit to holders, paid at each Friday close: $14,763
+- Atticus: $3,691 (about 2.3 bps of notional wrapped)
 
 - Fees fall with RFQ pricing and volume tiers. Every basis point saved goes to the trader and to us, in the same 80/20.
 - Embedded venues take a share of our 20%. Set per partner.
 
 Illustrative: $50M a day wrapped at today's take is about $4M a year. That is one mid-size venue.
 
-Speaker note: Revenue is never trading P&L. If a partner asks what happens in a crash, the answer is on slide 5: the floor pays because the put pays; our number does not move.
+Speaker note: Revenue is never trading P&L. The first Friday close booked $548.44 of take on 68 settled positions and our P&L was $548.44. If a partner asks what happens in a crash, the answer is on slide 5: the floor pays because the put pays; our number does not move.
 
 ---
 
@@ -208,7 +229,8 @@ Neutrality is the moat. We hedge on whichever venue is best for that trade and s
 
 - "Why won't the venue build this?" A floor needs an options book, netting across holders and a hedge desk. Venues ship exits because exits are free. Hyperliquid's trailing stops are the evidence.
 - "Where is the regulatory risk?" We are a protection feature on a position the trader already holds, hedged on regulated or listed venues. The venue owns the customer and the KYC.
-- "What breaks in a crash?" Our P&L is the published take, not the hedge. The record shows the gap at $0.00 across 400 settlements. A crash pays floors from puts we already bought.
+- "What breaks in a crash?" Our P&L is the published take, not the hedge. The records show the gap at $0.00 across 427 event settlements and the first 68 perp settlements. A crash pays floors from puts we already bought.
+- "Can the trader undo it?" The position is the trader's the whole time; the collar runs to Friday. The cap can be bought back at the live listed price (shown on the institutional skin). Turning the toggle off is not a free exit and the card does not pretend it is.
 - "Why is the fee drag 34% of gross credit?" Because we pay taker fees on a listed book with no volume tier. RFQ and tiers cut that, and the saving goes 80/20 to the trader and us.
 - "Who is the customer?" The venue. The trader is the venue's customer and stays that way.
 
