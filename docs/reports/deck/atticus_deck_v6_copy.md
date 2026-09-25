@@ -9,8 +9,14 @@ Screenshots for the slides are in `assets/` next to this file (all captured from
 - `slide5_perp_record_kpis_2026-09-25.png` and `slide5_perp_record_identity_2026-09-25.png`: the perp track record top block and the "we carry no outcome risk" row.
 - `slide5_event_record_kpis_2026-09-25.png`: the event track record top block and identity.
 - `slide6_event_phone_protected.png` and `slide6_event_protect_sheet.png`: the embed with the Astros row protected and the confirmation sheet.
+- `slide8_hyperliquid_trailing_stops_with_reply.png`: Hyperliquid's trailing-stop announcement with our reply beneath it (phone capture, September 21).
+- `slide8_robinhood_hood_summit.png`: Robinhood's "The retail trader is evolving, and so is the options market" post for HOOD Summit (phone capture, September 25).
 
-## How the two products differ (do not blur this on the slides)
+Slide map: 1 title, 2 problem, 3 solution (perps), 4 versus the tools venues ship, 5 proof, 6 event markets, 7 business model, 8 why now, 9 team, 10 ask. Team and ask stay separate slides.
+
+## How the two products differ (a build note, not a slide)
+
+Slide 3 shows the perp product and slide 6 shows the event product; the difference is seen, not explained. Do not add a slide for this.
 
 - Perps: one toggle. The engine finds the floor and the cap on the live options book. The trader picks nothing. The credit unlocks through the week and pays Friday at the cycle close, never up front. The collar runs to Friday; the cap can be bought back at the live listed price, and that is shown on the institutional skin only. Nothing to manage.
 - Events: one tap on the position row. The floor and the cash are shown before the tap; the cash is added to the balance at protect time. Where the market supports it the embed offers three floor tiers (tight, balanced, wide) with the default chosen for the trader.
@@ -84,7 +90,9 @@ Speaker note: This headline is the landing page; keep the deck and the product s
 | Undo | Re-enter and pay the spread again | The cap can be bought back at the live listed price; the floor stays either way |
 | Who hedges it | Nobody. Your risk. | Atticus, leg for leg, on a listed book |
 
-Footer line: Hyperliquid shipped trailing stops on September 21. Our perp record restarted the same day. Simpler for the trader, and the trader gets paid.
+Footer line: A trailing stop is a promise you make to sell into a falling market. A floor is a promise someone else already made to buy.
+
+(That is our public reply to Hyperliquid's trailing-stop announcement on September 21, the day our perp record restarted. The screenshot of both is on slide 8.)
 
 Speaker note: This is the "why us and not the venue" slide. Venues ship exits because exits are free to build. A floor needs an options book, netting and a hedge desk. That is us. The "undo" row is a pocket fact, not a feature: the retail card does not show a release button, by design.
 
@@ -106,7 +114,7 @@ Event contracts (atticus-event-shadow.onrender.com), since September 12:
 - Our P&L on settled positions $116.83 = booked take $116.83 · gap $0.00
 - Every hedge leg priced off Kalshi or Polymarket depth at the time of the trade
 
-[Screenshots: `assets/slide5_perp_record_identity_2026-09-25.png` and `assets/slide5_event_record_kpis_2026-09-25.png`, side by side. The identity cards are the image; the bullets can shrink to two per product if the slide is crowded.]
+[Layout: the "we carry no outcome risk" images are this slide. Perp identity row (`assets/slide5_perp_record_identity_2026-09-25.png`) across the top, event identity block (`assets/slide5_event_record_kpis_2026-09-25.png`) beside or under it, both reading P&L = take, gap $0.00. Cut the bullets to two per product if the slide is crowded. This is the only slide that carries these images; slide 7 points back to it.]
 
 Speaker note: The identity line is the whole slide. Our P&L equals our published take to the cent, on both products, because we never hold risk. Anyone can download the CSV and sum it. Refresh these numbers the morning you send. If asked about the first perp settlement: 68 positions, none fell to the floor, one ended past the cap and handed back $10.00 of gains against $13.71 of credit, 67 settled between the wings with the full credit; $2,193.60 went to holders.
 
@@ -152,16 +160,19 @@ Speaker note: Revenue is never trading P&L. The first Friday close booked $548.4
 
 ## Slide 8: Why now
 
-**Venues are racing to become derivatives exchanges. They are building the spot layer. We are the derivatives layer above all of them.**
+**The venues are saying it themselves.**
 
-- Hyperliquid: about $240B in perp volume in the last 30 days, roughly a third of all perp DEX volume. September 21: trailing stops.
-- Hyperion DeFi (Nasdaq: HYPD), CFO David Knox, public post September 2026: bring non-native infrastructure teams onto Hyperliquid. We replied. He took it to his CEO the same day.
-- Kalshi: first $3B day, September 20. Distribution through Robinhood, Coinbase, Webull, Moomoo. Prediction markets are becoming brokerage features, and features need protection.
-- Kraken simplified options (July), Binance US stock options (September), SGX perps filed with the CFTC (September).
+Three screenshots across the slide, one line under each:
+
+1. `assets/slide8_hyperliquid_trailing_stops_with_reply.png`. Hyperliquid, September 21: "Trailing stops are now available for perp markets." Our reply beneath it. Line: The biggest perp venue ships exits. We ship the floor.
+2. `assets/slide8_robinhood_hood_summit.png`. Robinhood, September 25: "The retail trader is evolving, and so is the options market." Steve Quirk with Cboe at HOOD Summit, September 29, on 0DTE and expanded access. Line: The biggest retail broker says options are the retail product now.
+3. David Knox, CFO, Hyperion DeFi (Nasdaq: HYPD), public post, September 2026: bring non-native infrastructure teams onto Hyperliquid. Line: We replied. He took it to his CEO the same day.
+
+Small type under the images: Hyperliquid about $240B perp volume in 30 days, roughly a third of all perp DEX volume. Kalshi and Polymarket $16.4B in one week, Kalshi's first $3B day September 20, a third of its flow arriving through Robinhood.
 
 Footer line: We started 18 months ago. Both products run in public today.
 
-Speaker note: The Knox item is the strongest line in the deck. Say it exactly as it happened and no more. Do not say a deal is in progress.
+Speaker note: Say each screenshot in one sentence and move on; the images do the work. The Knox item is the strongest line in the deck. Say it exactly as it happened and no more. Do not say a deal is in progress. Pocket facts if asked "why now" a second time: Kraken simplified options (July), Binance US stock options (September), SGX perps filed with the CFTC (September), the CFTC path for Hyperliquid via Bitnomial (Bloomberg Businessweek, September 24).
 
 ---
 
