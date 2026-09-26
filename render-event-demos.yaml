@@ -134,6 +134,14 @@ services:
       # Fail-closed: without it those routes answer 403 and the public record stays up.
       - key: EVENT_X_ADMIN_TOKEN
         generateValue: true
+      # Polymarket Builders Program attribution. This is the PUBLIC bytes32 Builder Code
+      # (0x + 64 hex) from polymarket.com/settings?tab=builder, attached as `builderCode`
+      # to every Polymarket order we place. Not the Builder API key: that is a UUID, is a
+      # secret, is never put on an order, and is refused here with a healthz note if pasted
+      # by mistake. Optional; the shadow (book mode) sends no orders, so this only takes
+      # effect once EVENT_HEDGE_STRATEGY=rfq and POLY_* credentials are set.
+      - key: POLYMARKET_BUILDER_CODE
+        sync: false
 
   - type: web
     name: atticus-pm-clob-egress-proxy

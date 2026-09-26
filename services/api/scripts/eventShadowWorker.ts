@@ -336,6 +336,7 @@ function healthBody(): Record<string, unknown> {
     hedge: {
       strategy: hedgeChoice.strategy,
       rfqVenues: hedgeChoice.rfqVenues,
+      polymarketBuilderCode: hedgeChoice.polymarketBuilderCode,
       notes: hedgeChoice.notes,
       receipts: { path: RECEIPTS_PATH, ...ledgerStats(RECEIPTS_PATH) },
     },
@@ -468,6 +469,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         at: new Date().toISOString(),
         strategy: hedgeChoice.strategy,
         rfqVenues: hedgeChoice.rfqVenues,
+        polymarketBuilderCode: hedgeChoice.polymarketBuilderCode,
         notes: hedgeChoice.notes,
         summary: summarizeHedgeReceipts(receipts),
         recent: receipts.slice(-limit).reverse(),

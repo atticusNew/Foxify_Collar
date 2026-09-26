@@ -24,6 +24,14 @@
  * Accepting needs an EIP-712-signed V1 order; the signer is injected. Without
  * one this client can request and read quotes (price discovery) but reports
  * canExecute() === false, and the executor fills at the book instead.
+ *
+ * Builder attribution (Polymarket Builders Program). A builder profile issues
+ * two values: a public bytes32 Builder Code and a secret Builder API key. Only
+ * the code travels with orders: CLOB v2 takes it as the `builderCode` field on
+ * every order (here, the accept body), and the relayer takes it as an
+ * `X-Builder-Code` header on deposit/withdraw. The API key never leaves the
+ * environment and is not needed for attribution, so nothing here reads it.
+ * POLYMARKET_BUILDER_CODE is optional; when absent, orders go out unattributed.
  */
 
 import { createHmac } from "node:crypto";
@@ -49,6 +57,41 @@ export function polymarketRfqCredentialsFromEnv(env: NodeJS.ProcessEnv = process
   if (!apiKey || !secret || !passphrase || !address) return null;
   const st = Number(env.POLY_SIGNATURE_TYPE ?? 0);
   return { apiKey, secret, passphrase, address, signatureType: st === 1 || st === 2 ? st : 0 };
+}
+
+/** The public bytes32 builder code as CLOB v2 wants it: 0x + 64 lowercase hex. */
+export const POLYMARKET_BUILDER_CODE_HEADER = "X-Builder-Code";
+
+const BUILDER_CODE_RE = /^0x[0-9a-fA-F]{64}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export type PolymarketBuilderCodeRead =
+  | { code: string; note: null }
+  | { code: null; note: string | null };
+
+/**
+ * Read POLYMARKET_BUILDER_CODE. Unset is fine (unattributed). A set-but-wrong
+ * value is refused with a note rather than sent, because the CLOB rejects a
+ * malformed builderCode and the order would fail at the worst moment. The one
+ * mistake worth naming: pasting the Builder API key (a UUID) where the code
+ * belongs; that value is a secret and must not be put on an order.
+ */
+export function polymarketBuilderCodeFromEnv(env: NodeJS.ProcessEnv = process.env): PolymarketBuilderCodeRead {
+  const raw = env.POLYMARKET_BUILDER_CODE?.trim();
+  if (!raw) return { code: null, note: null };
+  if (BUILDER_CODE_RE.test(raw)) return { code: raw.toLowerCase(), note: null };
+  if (UUID_RE.test(raw)) {
+    return {
+      code: null,
+      note: "polymarket: POLYMARKET_BUILDER_CODE holds a UUID, which is the Builder API key (secret), not the bytes32 Builder Code; orders unattributed",
+    };
+  }
+  return { code: null, note: "polymarket: POLYMARKET_BUILDER_CODE is not 0x + 64 hex; orders unattributed" };
+}
+
+/** Short form for healthz: enough to recognise the code, not the whole thing. */
+export function maskBuilderCode(code: string): string {
+  return `${code.slice(0, 8)}...${code.slice(-4)}`;
 }
 
 function b64urlDecode(s: string): Buffer {
@@ -131,10 +174,13 @@ export interface PolymarketRfqClientOptions {
   nowSec?: () => number;
   /** seconds a signed accept order stays valid; 0 = no expiration */
   orderTtlSec?: number;
+  /** public bytes32 builder code; attached to every order we place, never to reads */
+  builderCode?: string | null;
 }
 
 export class PolymarketRfqClient implements RfqClient {
   readonly venue = "polymarket" as const;
+  readonly builderCode: string | null;
   private readonly base: string;
   private readonly fetchImpl: typeof fetch;
   private readonly nowSec: () => number;
@@ -149,6 +195,9 @@ export class PolymarketRfqClient implements RfqClient {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.nowSec = opts.nowSec ?? (() => Math.floor(Date.now() / 1000));
     this.orderTtlSec = opts.orderTtlSec ?? 120;
+    const code = opts.builderCode?.trim();
+    if (code && !BUILDER_CODE_RE.test(code)) throw new Error("polymarket rfq: builderCode must be 0x + 64 hex");
+    this.builderCode = code ? code.toLowerCase() : null;
   }
 
   canExecute(): boolean {
@@ -197,7 +246,14 @@ export class PolymarketRfqClient implements RfqClient {
       unitsMilli: intent.unitsMilli,
       expirationSec: this.orderTtlSec > 0 ? this.nowSec() + this.orderTtlSec : 0,
     });
-    const body = { requestId: rfqId, quoteId: quote.quoteId, owner: this.creds.apiKey, ...order };
+    // The builder code is an order field, so it rides inside the HMAC-signed body.
+    const body = {
+      requestId: rfqId,
+      quoteId: quote.quoteId,
+      owner: this.creds.apiKey,
+      ...order,
+      ...(this.builderCode ? { builderCode: this.builderCode } : {}),
+    };
     const data = (await this.call("POST", "/rfq/request/accept", body)) as { orderId?: string; orderID?: string; id?: string } | null;
     const orderId = data?.orderId ?? data?.orderID ?? data?.id;
     return orderId ? { orderId } : {};
