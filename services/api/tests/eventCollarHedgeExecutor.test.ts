@@ -37,6 +37,8 @@ import {
 import {
   PolymarketRfqClient,
   buyViewOfQuote,
+  maskBuilderCode,
+  polymarketBuilderCodeFromEnv,
   polymarketRfqCredentialsFromEnv,
   signPolymarketL2,
   type SignedV1Order,
@@ -291,8 +293,37 @@ test("hedgeExecutorFromEnv: book by default; rfq only where credentials exist, w
     POLY_ADDRESS: "0xabc",
   });
   assert.deepEqual(withKalshi.rfqVenues, ["kalshi"]);
-  assert.equal(withKalshi.notes.length, 1);
+  assert.equal(withKalshi.notes.length, 2);
   assert.match(withKalshi.notes[0], /polymarket: credentials present, no order signer/);
+  assert.match(withKalshi.notes[1], /polymarket: no POLYMARKET_BUILDER_CODE; orders unattributed/);
+  assert.equal(withKalshi.polymarketBuilderCode, null);
+});
+
+test("hedgeExecutorFromEnv: the builder code is read in both modes, masked for healthz, and a pasted API key is refused by name", () => {
+  const code = "0x" + "ab".repeat(32);
+  const book = hedgeExecutorFromEnv({ POLYMARKET_BUILDER_CODE: code });
+  assert.equal(book.strategy, "book");
+  assert.equal(book.polymarketBuilderCode, "0xababab...abab");
+  assert.deepEqual(book.notes, ["book: simulated fill at the walked terms"], "book mode sends nothing, so nothing to warn about");
+
+  const unset = hedgeExecutorFromEnv({});
+  assert.equal(unset.polymarketBuilderCode, null);
+  assert.equal(unset.notes.length, 1, "unset is fine in book mode; no nag");
+
+  const pastedKey = hedgeExecutorFromEnv({ POLYMARKET_BUILDER_CODE: "00000000-1111-4222-8333-444444444444" });
+  assert.equal(pastedKey.polymarketBuilderCode, null);
+  assert.match(pastedKey.notes[1], /Builder API key \(secret\), not the bytes32 Builder Code/);
+
+  const rfq = hedgeExecutorFromEnv({
+    EVENT_HEDGE_STRATEGY: "rfq",
+    POLY_API_KEY: "k",
+    POLY_API_SECRET: "c2VjcmV0",
+    POLY_API_PASSPHRASE: "p",
+    POLY_ADDRESS: "0xabc",
+    POLYMARKET_BUILDER_CODE: code.toUpperCase().replace("0X", "0x"),
+  });
+  assert.equal(rfq.polymarketBuilderCode, "0xababab...abab", "normalised to lowercase");
+  assert.ok(!rfq.notes.some((n) => /unattributed/.test(n)), rfq.notes.join(" | "));
 });
 
 // ---------------------------------------------------------------------------
@@ -483,10 +514,24 @@ test("polymarket rfq: L2 HMAC matches the reference construction; the buy view f
       ?.signatureType,
     2,
   );
+
+  const code = "0x" + "0123456789abcdef".repeat(4);
+  assert.deepEqual(polymarketBuilderCodeFromEnv({}), { code: null, note: null }, "unset: unattributed, silently");
+  assert.deepEqual(polymarketBuilderCodeFromEnv({ POLYMARKET_BUILDER_CODE: ` ${code.toUpperCase().replace("0X", "0x")} ` }), { code, note: null });
+  assert.equal(polymarketBuilderCodeFromEnv({ POLYMARKET_BUILDER_CODE: "0x1234" }).code, null, "short hex is not a bytes32");
+  assert.match(polymarketBuilderCodeFromEnv({ POLYMARKET_BUILDER_CODE: "0x1234" }).note ?? "", /not 0x \+ 64 hex/);
+  assert.match(
+    polymarketBuilderCodeFromEnv({ POLYMARKET_BUILDER_CODE: "00000000-1111-4222-8333-444444444444" }).note ?? "",
+    /Builder API key \(secret\)/,
+    "the API key is a UUID; refuse it and say why",
+  );
+  assert.equal(maskBuilderCode(code), "0x012345...cdef");
+  assert.throws(() => new PolymarketRfqClient(null, null, { builderCode: "nope" }), /builderCode must be 0x \+ 64 hex/);
 });
 
 test("polymarket rfq client: request amounts are exact micro units; best quote parses; accept needs the signer; cancel is a DELETE with a body", async () => {
   const creds = { apiKey: "key", secret: Buffer.from("s").toString("base64url"), passphrase: "pass", address: "0xabc", signatureType: 1 as const };
+  const builderCode = "0x" + "cd".repeat(32);
   const intent = intentFromHedge(PM_LEG, 415);
   const signer = {
     async signBuy(args: { tokenId: string; priceMilli: number; unitsMilli: number; expirationSec: number }): Promise<SignedV1Order> {
@@ -518,7 +563,7 @@ test("polymarket rfq client: request amounts are exact micro units; best quote p
         amountIn: "150000000",
         amountOut: "62250000",
         userType: 1,
-      });
+      }, "the RFQ request is not an order; no builderCode on it");
       assert.equal(c.headers.POLY_ADDRESS, "0xabc");
       assert.equal(c.headers.POLY_API_KEY, "key");
       assert.equal(c.headers.POLY_PASSPHRASE, "pass");
@@ -540,6 +585,8 @@ test("polymarket rfq client: request amounts are exact micro units; best quote p
       assert.equal(body.owner, "key");
       assert.equal(body.signature, "0xsig");
       assert.equal(body.side, "BUY");
+      assert.equal(body.builderCode, builderCode, "attribution rides on the order we place");
+      assert.equal(c.headers.POLY_SIGNATURE, signPolymarketL2(creds.secret, 1_726_000_000, "POST", "/rfq/request/accept", c.body ?? ""), "and inside the signed body");
       return { status: 200, body: { orderId: "ord-1" } };
     },
     (c) => {
@@ -549,8 +596,9 @@ test("polymarket rfq client: request amounts are exact micro units; best quote p
       return { status: 200, body: "OK" };
     },
   ]);
-  const client = new PolymarketRfqClient(creds, signer, { base: "https://clob.test", fetchImpl: fx.fetchImpl, nowSec: () => 1_726_000_000 });
+  const client = new PolymarketRfqClient(creds, signer, { base: "https://clob.test", fetchImpl: fx.fetchImpl, nowSec: () => 1_726_000_000, builderCode });
   assert.equal(client.canExecute(), true);
+  assert.equal(client.builderCode, builderCode);
   const { rfqId } = await client.request(intent);
   assert.equal(rfqId, "req-1");
   const best = await client.bestQuote(rfqId, intent);
