@@ -245,11 +245,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     : "The book is empty; it fills as the scanner finds quotable events.";
 
   const w = s.writer;
-  const cf = s.counterfactuals;
-  // Every position since shadow v2 also records what the other rules would have written; the comparison itself is the operator's.
-  const cfLine = cf.recordedSince
-    ? `${cf.positionsWithCounterfactuals} positions since ${utcDay(cf.recordedSince)} also record the alternative terms`
-    : "starts with the next quoted event";
+  // The rule comparison (what every proposed rule would have written) stays on the operator report; the public page does not mention it.
   const periodLine =
     s.firstOpenedAt && s.lastSettledAt
       ? `${utcDay(s.firstOpenedAt)} to ${utcDay(s.lastSettledAt)} UTC, first position opened to last settlement`
@@ -307,7 +303,6 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     ${routeRows}
     ${s.voidCount > 0 ? `<div class="row"><span>voided (no official result)</span><b>${s.voidCount}</b></div>` : ""}
     ${input.hedges ? hedgeLine(input.hedges) : ""}
-    <div class="row"><span>rule comparison</span><b>${escapeHtml(cfLine)} <i>report on request</i></b></div>
   </div>
   <div class="card">
     <h2>Where protection is cheap and where it is rich</h2>

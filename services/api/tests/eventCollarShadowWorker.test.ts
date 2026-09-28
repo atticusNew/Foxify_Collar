@@ -264,14 +264,14 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     const fullHeader = (await fullCsv.text()).split("\n")[0];
     assert.ok(fullHeader.includes("wide_floor_c") && fullHeader.includes("x20_refused") && fullHeader.includes("min_25bps_take_c"));
 
-    // the public page: outcomes and the live book's receipts; no operator links, one line saying the comparison exists
+    // the public page: outcomes and the live book's receipts; no operator links, no mention of the rule comparison
     const page = await (await fetch(`${base}/`)).text();
     assert.ok(page.includes('href="/api/shadow/positions.csv"'), "the spreadsheet form");
     assert.ok(page.includes("our P&amp;L, settled") && !page.includes("writer P&amp;L"));
     assert.ok(page.includes("Track record") && !page.includes("Shadow record"));
     assert.ok(!page.includes('href="/report"') && !page.includes('href="/api/shadow/export"') && !page.includes('href="/api/shadow/hedges"'));
     assert.ok(!page.includes("What each rule would have done") && !page.includes("How the hedge leg is filled"));
-    assert.ok(page.includes("rule comparison") && page.includes("report on request"));
+    assert.ok(!page.includes("rule comparison") && !page.includes("report on request"), "operator note, not a public card");
     assert.ok(page.includes("hedge fills"));
 
     // the rule comparison (operator): JSON carries the rule books plus the plain-language rules; HTML renders them
