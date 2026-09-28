@@ -258,7 +258,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 <aside class="pitch">
   <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
   <h1>Protection inside your app.</h1>
-  <p>One button on every position row. Your users lock a floor and get paid today. We price it and carry the risk; you keep the flow, the ledger and the relationship.</p>
+  <p>One button on every open position. Your users lock a floor and get paid today. We price the protection and hedge it leg for leg; you keep the flow, the ledger and the relationship.</p>
   <ul>
     <li>One JSON quote in, one receipt out</li>
     <li>Your brand, your ledger, your official result</li>
@@ -266,7 +266,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   </ul>
   <div class="try">Tap <b>Protect</b> on any row &rarr;</div>
   <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">Track record</a><a href="/partner">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a></div>
-  <div class="foot">Demonstration. Simulated positions at live prices; nothing is bought.</div>
+  <div class="foot">Demonstration only. Simulated positions at live prices; nothing is bought.</div>
 </aside>
 <div class="phone" id="phone">
   <div class="host-top">
@@ -664,7 +664,7 @@ h1{font-size:28px;line-height:1.15;letter-spacing:-.02em;font-weight:700}
   </div>
   <a class="cta" href="mailto:${email}?subject=${subject}">Talk to us</a>
   <div class="also">Or see the <a href="${escapeHtml(input.trackRecordUrl)}">track record</a> first: every quote, every settlement, our P&amp;L against the take we booked.</div>
-  <div class="foot">Demonstration. Simulated positions at live prices; nothing is bought.</div>
+  <div class="foot">Demonstration only. Simulated positions at live prices; nothing is bought.</div>
 </div>
 </body>
 </html>`;

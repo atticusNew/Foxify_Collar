@@ -852,8 +852,8 @@ h2{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;lett
 .row:first-of-type{border-top:0}
 .row b{color:var(--ink);font-weight:650;text-align:right}
 .rules .row{display:block}
-.rules .row span{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
-.rules .row b{display:block;text-align:left;font-weight:500;margin-top:2px;line-height:1.45}
+.rules .row span{display:block;font-size:13.5px;font-weight:650;color:var(--ink)}
+.rules .row b{display:block;text-align:left;font-weight:400;color:var(--dim);margin-top:2px;line-height:1.45}
 .back{display:inline-block;margin-top:2px;color:var(--green-deep);font-weight:600;font-size:13px;text-decoration:underline}
 footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
 footer b{color:var(--dim);font-weight:600}
@@ -886,9 +886,9 @@ footer b{color:var(--dim);font-weight:600}
     <div class="row"><span>Safest</span><b>the highest floor the venues fund, with the largest credit at it</b></div>
     <div class="row"><span>Balanced</span><b>a floor halfway between Safest and Most upside, with a cap halfway between the least and the most the venues fund there</b></div>
     <div class="row"><span>Most upside</span><b>the lowest floor offered, with the highest cap the venues fund at it</b></div>
-    <div class="row"><span>our fee</span><b>comes out of the cash we source before the credit is shown; the credit on the card is the credit you get, and nothing is embedded in the floor or the cap</b></div>
-    <div class="row"><span>refusals</span><b>when the market cannot fund a credit, we refuse and say so</b></div>
-    <div class="row"><span>undo</span><b>free only in the demonstration, where nothing is bought; in the real product terms lock at your tap and the hedge is placed immediately, so an early unwind is a new trade quoted from the live books, never a free reversal</b></div>
+    <div class="row"><span>Our fee</span><b>comes out of the cash we source before the credit is shown; the credit on the card is the credit you get, and nothing is embedded in the floor or the cap</b></div>
+    <div class="row"><span>Refusals</span><b>when the market cannot fund a credit, we refuse and say so</b></div>
+    <div class="row"><span>Undo</span><b>free only in the demonstration, where nothing is bought; in the real product terms lock at your tap and the hedge is placed immediately, so an early unwind is a new trade quoted from the live books, never a free reversal</b></div>
   </div>
   <div class="card">
     <h2>Honesty notes</h2>
