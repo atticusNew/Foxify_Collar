@@ -1,5 +1,5 @@
 /**
- * EARN & PROTECT — /video: the 28-second toggle demo page.
+ * EARN & PROTECT — /video: the 22-second toggle demo page.
  *
  * A single shareable page for outreach (investor emails, LinkedIn first-comment links): the
  * demo video, the 4→1→1 ladder, and one-click paths into the live app and the public book.
@@ -62,12 +62,12 @@ export const EP_VIDEO_PAGE_HTML = `<!doctype html>
 <body>
 <nav><div class="nav-in">
   <div class="logo">ATTICUS <b>·</b> <span class="kicker">Demo</span></div>
-  <div class="kicker">28 seconds</div>
+  <div class="kicker">22 seconds</div>
 </div></nav>
 <div class="wrap">
   <h1>A live collar on Hyperliquid. One toggle.</h1>
   <p class="sub">Real position, live venue pricing, executed end to end.</p>
-  <video controls autoplay muted playsinline preload="metadata" src="/assets/hl-toggle-demo.mp4?v=2"></video>
+  <video controls autoplay muted playsinline preload="metadata" src="/assets/hl-toggle-demo.mp4?v=3"></video>
   <div class="ladder">
     <div class="row"><b>4</b> JSON endpoints give a venue <b>1</b> white-label toggle.</div>
     <div class="row"><b>1</b> tap gives the trader a hard floor and a weekly credit.</div>
