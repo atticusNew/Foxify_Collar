@@ -1589,14 +1589,14 @@ const runPreview = async () => {
       const brandName = (document.querySelector(".logo b") || { textContent: "PARTNER" }).textContent;
       $("pvOut").insertAdjacentHTML("beforeend",
         '<div style="margin-top:14px;border:1px solid var(--line);border-radius:8px;overflow:hidden">' +
-          '<div style="background:var(--panel2);padding:6px 12px;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)">How this appears in a ' + esc(brandName) + ' client interface \\u00b7 demonstration</div>' +
+          '<div style="background:var(--panel2);padding:6px 12px;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)">How this appears in a ' + esc(brandName) + ' client interface \\u00b7 demonstration only</div>' +
           '<div style="padding:12px 14px">' +
             '<div class="row" style="align-items:center;justify-content:space-between">' +
               '<div><b>Protect &amp; Earn</b><div class="small muted">BTC holding \\u00b7 ' + fmt$(j.protectedUsd) + '</div></div>' +
               '<div class="switch" id="demoSwitch" role="switch" aria-checked="false"><div class="knob"></div></div>' +
             '</div>' +
             '<div id="demoActive" style="display:none">' +
-              '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration)</span> \\u00b7 the credit vests through the cycle and settles at its close</div>' +
+              '<div class="chip on">PROTECTION ACTIVE <span class="muted">(demonstration only)</span> \\u00b7 the credit vests through the cycle and settles at its close</div>' +
               '<div class="bar"><div style="width:28%"></div></div>' +
               '<div class="unlock">unlocks through the day \\u00b7 pays automatically at the cycle\\u2019s close</div>' +
             '</div>' +
