@@ -233,6 +233,37 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       .join("");
   const routeSeg = segmentRows(s.segments.byRoute, (k) => ROUTE_WORDS[k] ?? k);
   const leagueSeg = segmentRows(s.segments.byLeague, (k) => k.toUpperCase());
+  const kindSeg = segmentRows(s.segments.byKind ?? {}, (k) => (k === "sports" ? "sports, all leagues" : k));
+  // Sports first: the product lives on game positions; crypto strikes are the always-on filler that
+  // keeps the record moving overnight. The card reads the sports slice on its own so a sports venue
+  // sees its numbers without the crypto weighting.
+  const sp = s.segments.byKind?.sports;
+  const sportsLeagues = Object.keys(s.segments.byLeague)
+    .filter((k) => k !== "crypto")
+    .map((k) => k.toUpperCase())
+    .sort();
+  const sportsCard = (() => {
+    if (!sp || sp.opened === 0) return "";
+    const leagues = sportsLeagues.length > 0 ? sportsLeagues.join(" and ") : "sports";
+    const evCell = sp.opened >= MIN_SLICE_EVENTS ? bpsPct(sp.quotedAvgEvBps) : "too few";
+    const dCell = sp.settled >= MIN_SLICE_EVENTS && sp.holderDeltaBpsOfStake !== null ? bpsPct(sp.holderDeltaBpsOfStake) : "too few";
+    const pnlLine =
+      sp.settled > 0
+        ? `On the ${sp.settled} settled, our P&L is ${signedUsd(sp.writerPnlCents)} against ${usd(sp.takeCents)} of take booked; users were paid ${usd(sp.creditsCents)} in credits at the tap.`
+        : "Nothing has settled yet.";
+    return `  <div class="card">
+    <h2>Sports first</h2>
+    <div class="sub" style="margin-bottom:8px">The product lives on game positions: ${escapeHtml(leagues)} here. Crypto strikes keep the record moving overnight and are shown separately below.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n green">${sp.settled}</div><div class="l">games settled</div></div>
+      <div class="bignum"><div class="n">${sp.opened - sp.settled}</div><div class="l">open now</div></div>
+      <div class="bignum"><div class="n">${escapeHtml(evCell)}</div><div class="l">quoted cost, of expected value</div></div>
+      <div class="bignum"><div class="n">${escapeHtml(dCell)}</div><div class="l">realized, protected minus naked</div></div>
+    </div>
+    <div class="read" style="margin-top:10px">${escapeHtml(pnlLine)}</div>
+  </div>
+`;
+  })();
   const richest = Object.entries(s.segments.byLeague)
     .filter(([, r]) => r.quotedAvgEvBps !== null && r.opened >= MIN_SLICE_EVENTS)
     .sort((a, b) => (b[1].quotedAvgEvBps ?? 0) - (a[1].quotedAvgEvBps ?? 0));
@@ -288,7 +319,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     </div>
     <div class="read" style="margin-top:10px">${escapeHtml(identityLine)}</div>
   </div>
-  <div class="card">
+${sportsCard}  <div class="card">
     <h2>Settled, most recent first</h2>
     ${leagueCountLine(input.settled, "settled")}
     ${settledRows || '<div class="row"><span>nothing settled yet</span><b>the book is young</b></div>'}
@@ -309,7 +340,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of protection at the market's own odds; user Δ is realized, protected minus naked, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} events show counts only.</div>
     <div class="tablewrap"><table>
       <tr><th>slice</th><th>opened</th><th>settled</th><th>EV cost</th><th>user Δ</th><th>credits</th><th>our P&amp;L</th></tr>
-      ${routeSeg}${leagueSeg}
+      ${kindSeg}${routeSeg}${leagueSeg}
     </table></div>
     ${segmentLine ? `<div class="read">${escapeHtml(segmentLine)}</div>` : ""}
   </div>

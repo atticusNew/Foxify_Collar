@@ -141,6 +141,11 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   assert.equal(s.segments.byLeague.nfl.opened, 2);
   assert.equal(s.segments.byLeague.nfl.settled, 1);
   assert.equal(s.segments.byLeague.mlb.holderDeltaCents, 7912);
+  // by kind: sports aggregates every league that is not crypto; this fixture is all games
+  assert.deepEqual(Object.keys(s.segments.byKind), ["sports"]);
+  assert.equal(s.segments.byKind.sports.opened, 3);
+  assert.equal(s.segments.byKind.sports.settled, 2);
+  assert.equal(s.segments.byKind.sports.writerPnlCents, pm.writerPnlCents, "all-sports book equals the whole book here");
 
   const csv = positionsCsv(positions);
   const lines = csv.trimEnd().split("\n");
@@ -173,6 +178,9 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   assert.ok(html.includes("a gap of $0.00. The hedge layer carried no outcome risk."), "and reads the gap in one sentence");
   assert.ok(html.includes("Where protection is cheap and where it is rich"), "EV cost by route and league");
   assert.ok(html.includes("<td>MLB</td>") && html.includes("<td>NFL</td>"), "league rows");
+  assert.ok(html.includes("<td>sports, all leagues</td>"), "the sports aggregate row leads the slice table");
+  assert.ok(html.includes("<h2>Sports first</h2>") && html.includes("games settled") && html.includes("MLB and NFL here"), "the sports card reads the game book on its own");
+  assert.ok(html.indexOf("<h2>Sports first</h2>") < html.indexOf("<h2>Settled, most recent first</h2>"), "sports card sits above the settled list");
   assert.ok(html.includes("hedged cross-venue on the same game"), "route rows in public words");
   assert.ok(!html.includes("Polymarket") && !html.includes("(Kalshi)"), "the hedge venue is not named on the public record");
   assert.ok(html.includes("2026-09-12 to 2026-09-14 UTC"), "the period line names the window");

@@ -272,8 +272,8 @@ export interface ShadowSummary {
    * hedge units, in the writer's favour by construction); `holds` is |gap| within tolerance.
    */
   identity: ShadowIdentity;
-  /** the same book cut by hedge route and by league: where protection is cheap and where it is rich */
-  segments: { byRoute: Record<string, ShadowSegment>; byLeague: Record<string, ShadowSegment> };
+  /** the same book cut by hedge route, by league and by kind (sports vs crypto): where protection is cheap and where it is rich */
+  segments: { byRoute: Record<string, ShadowSegment>; byLeague: Record<string, ShadowSegment>; byKind: Record<string, ShadowSegment> };
   /** what each proposed rule would have done on the same events (shadow v2 records only) */
   counterfactuals: ShadowCounterfactualSummary;
 }
@@ -524,11 +524,12 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
   let takeLockedOpenCents = 0;
   const segRoute: Record<string, ShadowSegment & { evSum: number }> = {};
   const segLeague: Record<string, ShadowSegment & { evSum: number }> = {};
+  const segKind: Record<string, ShadowSegment & { evSum: number }> = {};
   const seg = (m: Record<string, ShadowSegment & { evSum: number }>, k: string) => (m[k] ??= { ...newSegment(), evSum: 0 });
   for (const p of positions) {
     routeSplit[p.route] = (routeSplit[p.route] ?? 0) + 1;
     quotedBpsSum += p.evCostBps;
-    for (const sg of [seg(segRoute, p.route), seg(segLeague, p.league)]) {
+    for (const sg of [seg(segRoute, p.route), seg(segLeague, p.league), seg(segKind, p.kind)]) {
       sg.opened += 1;
       sg.evSum += p.evCostBps;
     }
@@ -585,7 +586,7 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
     lg.settled += 1;
     lg.pnlCents += wp.writerCents;
     lg.stakeCents += 100 * p.contracts;
-    for (const sg of [seg(segRoute, p.route), seg(segLeague, p.league)]) {
+    for (const sg of [seg(segRoute, p.route), seg(segLeague, p.league), seg(segKind, p.kind)]) {
       sg.settled += 1;
       sg.stakeSettledCents += 100 * p.contracts;
       sg.holderDeltaCents += (p.protectedCents ?? 0) - (p.nakedCents ?? 0);
@@ -638,7 +639,7 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
     lastSettledAt,
     writer: w,
     identity,
-    segments: { byRoute: finishSegment(segRoute), byLeague: finishSegment(segLeague) },
+    segments: { byRoute: finishSegment(segRoute), byLeague: finishSegment(segLeague), byKind: finishSegment(segKind) },
     counterfactuals: summarizeCounterfactuals(positions),
   };
 }
