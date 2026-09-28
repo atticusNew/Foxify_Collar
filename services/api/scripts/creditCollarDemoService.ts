@@ -160,7 +160,7 @@ const round2 = (x: number) => +x.toFixed(2);
 const port = num(process.env.DEMO_PORT ?? process.env.PORT, 8788); // PORT: hosted platforms (Render) inject it
 /** The single-SVG brand lockup (drop-in — see scripts/assets/README.md). */
 const BRAND_LOCKUP_PATH = join(dirname(fileURLToPath(import.meta.url)), "assets", "atticus-lockup.svg");
-/** The 28-second toggle demo video (drop-in like the lockup): /video 404s until this file exists. */
+/** The 22-second toggle demo video (drop-in like the lockup): /video 404s until this file exists. */
 const DEMO_VIDEO_PATH = join(dirname(fileURLToPath(import.meta.url)), "assets", "hl-toggle-demo.mp4");
 const guards = parseDemoGuardsFromEnv(process.env);
 const storePath = process.env.DEMO_STORE_PATH ?? "./logs/demo-wraps.json";
@@ -1893,7 +1893,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       res.end(readFileSync(BRAND_LOCKUP_PATH));
       return;
     }
-    // ── /video: the 28-second toggle demo page (outreach link target). 404 until the mp4 asset
+    // ── /video: the 22-second toggle demo page (outreach link target). 404 until the mp4 asset
     // is checked in, so this route can ship ahead of the video without a broken page live. ──
     if (req.method === "GET" && url.pathname === "/video") {
       if (!existsSync(DEMO_VIDEO_PATH)) {
