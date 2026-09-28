@@ -109,15 +109,21 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes(".host-note span,.host-note a{display:block}") && html.includes(".host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap"), "the link never wraps or strands mid-sentence");
   assert.ok(!html.includes('<a href="/board">Board</a>') && !html.includes('<a href="/receipts">Receipts</a></div>'), "board and receipts are off the phone");
   assert.ok(html.includes('<aside class="pitch">') && html.includes("Protection inside your app.") && html.includes("One JSON quote in, one receipt out"), "desktop: the pitch beside the phone");
-  assert.ok(html.includes("We price it and carry the risk; you keep the flow, the ledger and the relationship."), "the subline carries the deal");
+  assert.ok(html.includes("One button on every open position."), "the pitch speaks to the partner, not the integrator");
+  assert.ok(html.includes("We price the protection and hedge it leg for leg; you keep the flow, the ledger and the relationship."), "the subline carries the deal and never claims we carry risk");
+  assert.ok(!html.includes("carry the risk"), "the record says we carry no outcome risk; the pitch must not contradict it");
+  assert.ok(html.includes("Demonstration only."), "labelled a demonstration, plainly");
   assert.ok(html.includes('<b>For partners</b><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="/partner">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a>'), "desktop: every partner surface in one row");
   const custom = renderEventEmbedHtml({ brand: "ProphetX", trackRecordUrl: "https://tr.example", minCredit: { cents: 50, bpsOfStake: 10 } });
   assert.ok(custom.includes('href="https://tr.example">Track record</a>'), "the track record URL comes from the server");
   assert.ok(custom.includes("var MIN_CREDIT_CENTS=50,MIN_CREDIT_BPS=10;"), "the page mirrors the server's minimum-credit rule");
   assert.ok(html.includes("@media(min-width:900px)") && html.includes(".host-note,.scrim,.sheet,.toast{position:absolute}"), "on desktop the sheet stays inside the phone frame");
   assert.ok(html.includes("far=dt.getTime()-Date.now()>86400000") && html.includes("month:'short',day:'numeric'"), "past 24h out the row shows the date, so next Sunday's game never reads as today's");
+  // The phone is retail copy: outcomes, never mechanics. The desktop pitch aside speaks to the partner and may say "hedge".
+  const phone = html.replace(/<aside class="pitch">[\s\S]*?<\/aside>/, "");
+  assert.ok(phone.length < html.length, "the pitch aside is present and excluded from the retail leak check");
   for (const leak of ["Kalshi", "Polymarket", "hedge", "route", "take", "instId", "OKX", "tight", "wide"]) {
-    assert.ok(!new RegExp(`\\b${leak}\\b`).test(html.replace(/protection by/g, "").replace(/'tight'|'wide'|tight:|wide:|offered\.tight|offered\.wide/g, "")), `"${leak}" is not on the embedded page as copy`);
+    assert.ok(!new RegExp(`\\b${leak}\\b`).test(phone.replace(/protection by/g, "").replace(/'tight'|'wide'|tight:|wide:|offered\.tight|offered\.wide/g, "")), `"${leak}" is not on the embedded page as copy`);
   }
   assert.ok(!html.includes("—"), "no em dash in any copy");
   const dark = renderEventEmbedHtml({ brand: "Your Exchange", skin: "dark" });
