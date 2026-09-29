@@ -153,7 +153,22 @@ Suggested by Robin Obermaier (Liquidium) on 2026-09-29: a liquidity provider pos
 
 **Hermetica (Jakob Schillinger, USDh).** Delta-neutral Bitcoin-backed dollar; margin held off-exchange via Copper ClearLoop and Ceffu MirrorX; Robin and Tycho Onnasch (Zest) are angels. Ask about OES minimums when they were small, how they took first outside capital before the vault, how they handle cash-versus-P&L timing, and how they word "how safe is it" to depositors. Offer: netting and hedge data; USDh as the credit or settlement rail for a Bitcoin-native deployment.
 
-## 14. Changelog
+## 14. ProphetX: pilot readiness
 
+**Who they are now.** CFTC approved ProphetX as DCM and DCO on 2026-06-11; nationwide launch 2026-06-18; sports only; direct clearing; proprietary parlay pricing. Founded 2018 in the UK as a licensed peer-to-peer sports exchange, NJ launch 2022 as Prophet Exchange, sweepstakes model 2024, federal exchange 2026. CEO Dean Sisun. API onboarding runs through marketmaking@prophetexchange.com: a sandbox account with demo funds, then access key and secret; REST for tournaments, events, markets and a price ladder; Pusher WebSocket for liquidity and fills; orders carry a unique external_id.
+
+**Shadow pilot, two shapes.**
+- *Mirror* (nothing from them): our scanner already prices every game they list on Kalshi and Polymarket; a ProphetX-branded embed exists (`?brand=prophetx`). Ships the day they say yes.
+- *Their book* (the one worth asking for): a sandbox API account. We read their moneylines, match each game to the Kalshi ticker and Polymarket slug through the existing whitelist, price protection against their own opposing side and cross-venue, and publish a record segmented "ProphetX positions". Build: a `prophetxPublic` adapter, a matcher extension for their competitor abbreviations, a protected-venue field on the ledger, a record segment. Contained; the pricing, netting and settlement engine is unchanged. Settlement oracle: the matched Kalshi result, with a divergence recorded as a void.
+
+**Why a DCM is the clean live venue.** On a binary contract the collar is a linear identity: protected payout = (cap minus floor)/100 of the position kept, plus floor and credit in cash. So live, the user's account sells a fraction of its position into our bid on ProphetX's own book; we hedge that fill on Kalshi or Polymarket No. Everything clears at a DCO, no off-venue contract with a retail user, no money moving outside the clearinghouse. We are a participant whose bids are hedged elsewhere plus the software that shows the user floor, cap and credit.
+
+**Blocks to live beyond capital.** (1) Participant status on ProphetX as an entity: API account, KYC as an LLC, production keys. (2) Kalshi and Polymarket US execution credentials with an order signer (RFQ mode exists; production keys do not). (3) Counsel on the display: whether ProphetX shows the fill as "protection" or as a partial sale, and Letter 26-25 posture for us as the software layer. (4) Refusal-and-unwind for one-leg fills with a stated time window, live. (5) Void and postponement rule per venue pair. (6) Ledger reconciliation against both venues' fills, daily. (7) Ops: alerting, kill switch, capital-drawn dashboard. None needs new science; all need keys, counsel time and runbooks.
+
+**Talking point.** Followed them since the Prophet Exchange peer-to-peer days while building a peer-to-peer options exchange; the shared thesis is that the market sets the price, not the house, and a hedged collar belongs on a book built that way. One sentence, then move on.
+
+## 15. Changelog
+
+- 2026-09-29: Section 14 added: ProphetX pilot readiness (status, two pilot shapes, the DCM identity argument, blocks to live beyond capital, talking point).
 - 2026-09-29: Perp numbers refreshed to 2026-09-29. Margin figure corrected: about 10 cents per dollar leg for leg, 7 cents netted (was "5 cents"). Section 13 added: hedge collateral facility, the three lender questions answered off the record, providers, legal shape, Hermetica prep. Section 12 margin answer updated.
 - 2026-09-29: Created. Sections 1 to 11 from the study guide delivered 2026-09-28; section 9 adds the market-maker and institutional-entry picture (SIG, DRW, Cantor, Marex, IBKR), the 23/5 equities point, and Letter 26-25 wording; section 12 seeds questions to expect. Numbers as of 2026-09-28. Flagged the ask discrepancy with `AGENT_HANDOFF.md`.
