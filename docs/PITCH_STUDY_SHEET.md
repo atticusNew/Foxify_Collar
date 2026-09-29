@@ -41,16 +41,16 @@ Refresh from the live pages before any event. Event record: the `atticus-event-s
 - Sports slice: 223 settled, 2.89% quoted cost of expected value, -1.60% realized, our P&L $90.64 = take $90.64, $819.37 credits paid.
 - Hedged on the market's own No: 388. Cross-venue on the same game: 220.
 
-**Perps** (recording since 2026-09-21, weekly Friday expiry; as of 2026-09-28):
-- 713 positions quoted, $25.6M notional protected, 506 long, 207 short. Zero refusals.
-- $27,244 credited to users, 10.6 bps of notional. Our take $6,811.
+**Perps** (recording since 2026-09-21, weekly Friday expiry; as of 2026-09-29):
+- 794 positions quoted, $29.7M notional protected, 568 long, 226 short. Zero refusals. 594 open, 68 settled, 132 closed early.
+- $31,503 credited to users, 10.6 bps of notional. Our take $7,876 (25% of the credit). Market funded $55,197 gross; OKX fees $15,819, twice our take.
 - 68 settled, P&L $548.44 = take booked $548.44, gap $0.00.
-- Users' P&L with collar minus without, settled: +$2,183.60.
+- Users' P&L with collar minus without, settled: +$2,183.60. Early closes at live prices: +$5,496 vs unprotected; unwinds crossing the book cost $490 in total.
 - Floor 6% out; cap 4.1% out on average; 13 of 68 touched the cap, 1 ended past it.
-- Netting: 33% of hedge legs cancel across the book; $3,454 of $10,620 OKX fees saved; margin $635k saved of $1.99M leg for leg.
-- Venue spread paid 7.1 bps of notional. Basis HL mark vs OKX index 0.7 bps.
+- Netting: 35% of hedge legs cancel across the book; $4,276 of $12,220 OKX fees saved; margin $767k saved of $2.28M leg for leg (OKX simple mode, a floor on the saving).
+- Venue spread paid 7.1 bps of notional. Basis HL mark vs OKX index 0.6 bps.
 
-**Capital:** live event hedging needs roughly $3,500 on Kalshi and $7,500 on Polymarket at current shadow volumes. Perp hedge margin runs about 5 cents per dollar protected before netting, less after.
+**Capital:** live event hedging needs roughly $3,500 on Kalshi and $7,500 on Polymarket at current shadow volumes. Perp hedge margin on the open book (594 wraps, about $22M notional): $2.28M leg for leg, $1.51M netted. That is about 10 cents per dollar protected before netting and about 7 cents after. The earlier "5 cents" figure was wrong; do not use it.
 
 ## 6. Objections and the answer you give
 
@@ -81,7 +81,7 @@ Say these. Do not say "patent" unless a provisional is filed; if it is, "patent 
 
 - Pricing engine: every wrap priced at its own size by walking the live book, with honest refusal when the book cannot fund a credit.
 - Identity audit: our P&L must equal the published take on every settled position, checked and published on every settlement.
-- Netting: 33% of hedge legs cancel across the book; fees, margin and slippage fall as the book grows. Scale moat.
+- Netting: 35% of hedge legs cancel across the book; fees, margin and slippage fall as the book grows. Scale moat.
 - Cross-venue matching: Kalshi and Polymarket sides of the same game matched and hedged against each other.
 - API-first partner shape: four endpoints, one button, revenue share. Integration is the venue's afternoon.
 - The public record: append-only since September, every quote and settlement, CSV and JSON. It compounds daily and a competitor starts at zero.
@@ -130,10 +130,30 @@ Fit check for the room: Strobe Ventures writes $1M to $3M first checks at 7% to 
 - "Polymarket US is live; why do you need Kalshi?" Cross-venue is the point: two books on the same game means a tighter floor.
 - "How do you handle a voided or postponed game?" Void follows the venue's official rule; both legs unwind at the venue's void price; the record shows voids separately.
 - "What is your exposure to a venue outage mid-hedge?" One leg filled, one not: name the refusal-and-unwind rule and the time window. Have the number.
-- "Portfolio margin at OKX: how much capital per $1M protected, netted?" Roughly 5 cents per dollar before netting; state the netted figure from the record.
+- "Portfolio margin at OKX: how much capital per $1M protected, netted?" About $100k leg for leg, about $70k netted, from the record's open-book figures (simple margin; portfolio margin would be lower).
 - "If a sportsbook wanted to hedge liabilities through you, could they?" Yes in shape; block size and DCM access are the constraints; SIG and Cantor are building exactly that pipe.
 - "Have you talked to counsel about Letter 26-25?" Answer with the gate, not a conclusion.
 
-## 13. Changelog
+## 13. Hedge collateral facility (a lender in place of an angel)
 
+Suggested by Robin Obermaier (Liquidium) on 2026-09-29: a liquidity provider posts $10k to $50k of hedge margin for a 15% to 25% annual return, standing in for an angel until the vault runs. Not options liquidity; collateral.
+
+**What it is.** A bilateral loan whose only use of funds is exchange margin for the hedge legs. Tradfi name: margin financing from a prime broker or FCM. Crypto precedent: treasury desks and credit pools (Maple, Clearpool) lending to market makers; the 2022 defaults (Orthogonal, Auros) are why every lender now asks "how safe" first and expects segregated accounts.
+
+**The three questions, answered off the record (perp, 2026-09-29):**
+- *How much do they get back.* Take $7,876 in 8 days on $1.51M of netted margin = 24% a year on netted margin, 16% on gross ($2.28M). At today's 25% take share a 15% to 25% coupon on the full facility consumes most or all of the take. Levers, in order: a higher take share on the lender-funded book (40% of the credit doubles the yield on margin to about 38% netted; users still get paid); an OKX fee tier (fees are $15.8k against a $7.9k take, so a 30% to 50% fee cut adds more than the whole coupon); pay the coupon on drawn margin only with a small commitment fee on the undrawn part; a lower fixed coupon (10% to 12%) plus a share of take above a hurdle. Say all of this out loud; do not promise 25% on the full facility at the current share.
+- *How safe is it.* No outcome risk: gap $0.00 on 68 settled perps and 557 events, both legs held to expiry, zero refusals. The residual risks are execution (one leg fills, the other does not: refusal-and-unwind rule; 13 of 132 early closes had a leg unpriced, disclose it), venue (exchange failure), and cash timing on a sharp up move (OKX calls margin on the short cap legs before the user side settles at expiry). The third is the real one and the buffer is sized against it.
+- *Insurance against losses.* Nobody sells a policy at this size, so safety is structural: segregated OKX sub-account in the lender's name or with withdrawal whitelisted to the lender; trade-only API keys; utilization cap (draw at most half the facility as initial margin, the rest is maintenance buffer); stop-writing trigger when the buffer thins; first-loss reserve funded from our take before we take anything; daily statement reconciled to exchange fills; capital returnable within one weekly expiry (eight days' notice). Off-exchange settlement (Copper ClearLoop supports OKX) once size justifies it.
+
+**Scale.** $10k to $50k supports $100k to $500k of open protected notional at netted margin, about 1% to 2% of the shadow book. It proves the structure and starts a live record; it does not fund hires or the regulated path.
+
+**Who does this.** G-20 Group (Zug; market making, OTC, treasury management, anchor LP investor); Keyrock and Flowdesk treasury desks (strategic at this size, not a business line); on-chain credit at small size: Wildcat Protocol (borrower sets rate and terms, lender whitelist), Clearpool (KYB, larger); Bitcoin-native lenders in Robin's circle: Zest Protocol, Liquidium's own lenders; angels via a secured note. Maple and Syrup are too large a minimum.
+
+**Legal shape.** One accredited or professional lender, a promissory note or loan agreement, not a pooled offering. Same counsel gate as `docs/VAULT_DESIGN.md` section 7. A non-US lender simplifies it.
+
+**Hermetica (Jakob Schillinger, USDh).** Delta-neutral Bitcoin-backed dollar; margin held off-exchange via Copper ClearLoop and Ceffu MirrorX; Robin and Tycho Onnasch (Zest) are angels. Ask about OES minimums when they were small, how they took first outside capital before the vault, how they handle cash-versus-P&L timing, and how they word "how safe is it" to depositors. Offer: netting and hedge data; USDh as the credit or settlement rail for a Bitcoin-native deployment.
+
+## 14. Changelog
+
+- 2026-09-29: Perp numbers refreshed to 2026-09-29. Margin figure corrected: about 10 cents per dollar leg for leg, 7 cents netted (was "5 cents"). Section 13 added: hedge collateral facility, the three lender questions answered off the record, providers, legal shape, Hermetica prep. Section 12 margin answer updated.
 - 2026-09-29: Created. Sections 1 to 11 from the study guide delivered 2026-09-28; section 9 adds the market-maker and institutional-entry picture (SIG, DRW, Cantor, Marex, IBKR), the 23/5 equities point, and Letter 26-25 wording; section 12 seeds questions to expect. Numbers as of 2026-09-28. Flagged the ask discrepancy with `AGENT_HANDOFF.md`.
