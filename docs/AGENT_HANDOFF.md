@@ -80,6 +80,7 @@ Known, not yet done: college football whitelist (deliberately deferred: 130+ sch
 - **Nothing deployed live may break.** Deployed branches auto-deploy on push — treat every push to a deployed branch as a production deploy.
 - Small, single-purpose commits. Branch naming `cursor/<description>-<suffix>` per run instructions.
 - No secrets in code, chat, or logs.
+- **Pitch study sheet is a living document (founder, 2026-09-29).** `docs/PITCH_STUDY_SHEET.md` holds the elevator pitch, numbers, objections and answers, defensibility, market-structure notes and the ask. Whenever a public-record number moves materially, a venue or regulator does something that changes an answer, a real conversation surfaces a question it does not cover, or an answer proves wrong, update the sheet (with a dated changelog line) in the same PR as the related work, or in its own PR if there is none.
 
 ## 6. Regulatory context (know it, don't act on it)
 
