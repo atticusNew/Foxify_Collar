@@ -131,6 +131,8 @@ Fit check for the room: Strobe Ventures writes $1M to $3M first checks at 7% to 
 - "How do you handle a voided or postponed game?" Void follows the venue's official rule; both legs unwind at the venue's void price; the record shows voids separately.
 - "What is your exposure to a venue outage mid-hedge?" One leg filled, one not: name the refusal-and-unwind rule and the time window. Have the number.
 - "Portfolio margin at OKX: how much capital per $1M protected, netted?" About $100k leg for leg, about $70k netted, from the record's open-book figures (simple margin; portfolio margin would be lower).
+- "Any emphasis on 0DTE?" (asked by Sid, ex-G-20, 2026-09-30). Three readings, keep all open: a same-day protection tenor for holders; short-dated hedge legs a market maker prices best; his firm as the liquidity behind the legs. Live OKX pull 2026-09-30 04:25 UTC, index $83,371: the same-day expiry (3.6h out) sat at the minimum tick on both wings (0.0001 BTC), a collar nets $0; next day, floor 1.6% out and cap 1.35% out net 8 bps of notional gross; two to three days, 10 to 15 bps; the live weekly funds 18.6 bps gross. So 0DTE is not fundable off the screen and is exactly where a maker quoting inside the tick matters: the 0DTE question and the liquidity question are the same question. The engine already carries a daily tenor (`EP_TENOR=daily`, cap guards per tenor); a second shadow on it is an env flip. Events are 0DTE by nature (game-time expiry).
+- "How do we talk about liquidity?" We consume it and publish the cost: venue spread paid 7.1 bps of notional and OKX fees 5.3 bps against a 2.65 bps take. One day of flow (2026-09-29): 90 wraps, $3.9M notional, 70% long, 16 instruments across two Friday expiries, about 94 BTC of legs. The conversation is a sample: here are yesterday's legs with timestamps, quote them, we compare to the walked book. Whoever beats the screen gets first look at the netted legs.
 - "If a sportsbook wanted to hedge liabilities through you, could they?" Yes in shape; block size and DCM access are the constraints; SIG and Cantor are building exactly that pipe.
 - "Have you talked to counsel about Letter 26-25?" Answer with the gate, not a conclusion.
 
@@ -171,6 +173,7 @@ Suggested by Robin Obermaier (Liquidium) on 2026-09-29: a liquidity provider pos
 
 ## 15. Changelog
 
+- 2026-09-30: Section 12: 0DTE and liquidity questions (Sid, ex-G-20) answered with a live OKX pull and a one-day flow profile.
 - 2026-09-30: Section 13 mechanics paragraph: entity-only onboarding, Safe multisig as borrower wallet, Wildcat market parameters and delinquency, Clearpool tiers, last mile to a trade-only sub-account, venue jurisdiction decides the borrowing entity.
 - 2026-09-29: Section 13 providers corrected: Wildcat is rails not capital, Clearpool removed as a fit, Credit Coop and 3Jane added as near fits. Section 14 one-leg note clarified for events.
 - 2026-09-29: Section 14 added: ProphetX pilot readiness (status, two pilot shapes, the DCM identity argument, blocks to live beyond capital, talking point).
