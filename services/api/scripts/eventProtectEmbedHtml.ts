@@ -95,6 +95,7 @@ export const BRAND_PRESETS: Readonly<Record<string, BrandTheme>> = {
   polymarket: { accent: "#2D6BFF", accentInk: "#ffffff", skin: "dark" },
   prophetx: { accent: "#8A5CFF", accentInk: "#ffffff", skin: "dark" },
   novig: { accent: "#C6FF3D", accentInk: "#0f1115", skin: "dark" },
+  sporttrade: { accent: "#22C55E", accentInk: "#0f1115", skin: "dark" },
   draftkings: { accent: "#53D337", accentInk: "#0f1115", skin: "dark" },
   fanduel: { accent: "#1493FF", accentInk: "#ffffff", skin: "dark" },
   prizepicks: { accent: "#8000FF", accentInk: "#ffffff", skin: "dark" },
