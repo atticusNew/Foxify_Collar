@@ -93,7 +93,7 @@ export const GENERIC_THEME: BrandTheme = { accent: "#3D4F73", accentInk: "#fffff
 export const BRAND_PRESETS: Readonly<Record<string, BrandTheme>> = {
   kalshi: { accent: "#0EA870", accentInk: "#ffffff", skin: "light" },
   polymarket: { accent: "#2D6BFF", accentInk: "#ffffff", skin: "dark" },
-  prophetx: { accent: "#8A5CFF", accentInk: "#ffffff", skin: "dark" },
+  prophetx: { accent: "#52CEA6", accentInk: "#11162C", skin: "dark" },
   novig: { accent: "#C6FF3D", accentInk: "#0f1115", skin: "dark" },
   sporttrade: { accent: "#22C55E", accentInk: "#0f1115", skin: "dark" },
   draftkings: { accent: "#53D337", accentInk: "#0f1115", skin: "dark" },
