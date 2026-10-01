@@ -101,6 +101,7 @@ input:disabled + .slider{opacity:.45;cursor:default}
 .protectedline{display:none;margin-top:12px;background:var(--green-wash);border:1px solid #cdeee0;border-radius:10px;padding:11px 13px;font-size:14px;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .protectedline.show{display:flex}
 .protectedline b{color:var(--green-deep);font-weight:650}
+.protectedline .lockline{display:block;font-style:normal;font-size:12px;color:var(--dim);margin-top:3px;line-height:1.4}
 .undo{background:#fff;border:1px solid var(--green);color:var(--green-deep);border-radius:9px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;min-width:72px}
 .hedge{margin-top:10px}
 .hedge summary{cursor:pointer;color:var(--dim);font-size:13px;padding:7px 0;list-style:none}
@@ -206,7 +207,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         <label class="switch"><input type="checkbox" id="toggle" disabled /><span class="slider"></span></label>
       </div>
 
-      <div class="protectedline" id="protectedline"><span>Protected · <b id="paysline">payout when the game settles</b></span><button type="button" class="undo" id="undo">undo</button></div>
+      <div class="protectedline" id="protectedline"><span>Protected · <b id="paysline">payout when the game settles</b><i class="lockline">locked at your tap · an early exit is a new trade at live prices</i></span><button type="button" class="undo" id="undo">undo · demo only</button></div>
 
       <div class="refusal" id="refusal"></div>
 

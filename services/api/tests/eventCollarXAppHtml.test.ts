@@ -178,7 +178,8 @@ test("cross-venue app html: kalshi-native vocabulary, total dollars, one-tap", (
   assert.ok(html.includes("starts in"), "countdown to game start");
   assert.ok(html.includes(">one tap<"), "toggle promise in two words");
   assert.ok(html.includes("terms locked at your tap"));
-  assert.ok(html.includes('id="undo"'), "undo after the tap");
+  assert.ok(html.includes('id="undo">undo · demo only</button>'), "undo after the tap, labelled demo only");
+  assert.ok(html.includes('<i class="lockline">locked at your tap · an early exit is a new trade at live prices</i>'), "the protected line states the lock");
   assert.ok(!/resolution/i.test(html.replace(/US availability requires a regulated deployment path/g, "")), "no 'resolution' in visible copy");
 });
 

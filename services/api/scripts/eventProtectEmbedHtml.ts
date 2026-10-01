@@ -180,6 +180,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos .shield{display:inline-flex;align-items:center;gap:5px;background:rgba(0,182,122,.12);color:var(--ep-green);font-size:12px;font-weight:700;border-radius:999px;padding:3px 9px}
 .pos .terms{margin-top:8px;font-size:13px;color:var(--dim);line-height:1.5;font-variant-numeric:tabular-nums}
 .pos .terms b{color:var(--ink);font-weight:650}
+.pos .lock{margin-top:4px;font-size:11.5px;color:var(--faint);line-height:1.45}
 .pos .undo{color:var(--faint);font-size:11.5px;cursor:pointer;background:none;border:0;font:inherit;padding:2px 4px;opacity:.75}
 .pos .undo:hover{text-decoration:underline;opacity:1}
 .empty{padding:30px 16px;color:var(--faint);text-align:center;font-size:14px}
@@ -352,7 +353,8 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
         '<div class="pl '+(pl>0?'up':pl<0?'down':'')+'"><b>'+(pl>=0?'+':'-')+usd(Math.abs(pl))+'</b><i>'+r.markCents+'¢ now</i></div></div>';
       if(p){
         html+='<div class="terms">ends <b>'+usd(p.floorTotal)+'</b> or <b>'+usd(p.capTotal)+'</b> · <b>'+usd(p.creditCents)+'</b> paid now</div>'+
-          '<div class="f"><span class="shield">&#x2713; Protected</span><button class="undo" data-undo="'+esc(r.kalshiTicker)+'">undo</button></div>';
+          '<div class="lock">locked at your tap · an early exit is a new trade at live prices</div>'+
+          '<div class="f"><span class="shield">&#x2713; Protected</span><button class="undo" data-undo="'+esc(r.kalshiTicker)+'">undo · demo only</button></div>';
       }else{
         html+='<div class="f"><span class="size">'+r.contracts+' contracts · ends $0 or '+usd0(100*r.contracts)+'</span>'+
           '<button class="pbtn" data-protect="'+esc(r.kalshiTicker)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>Protect</button></div>';
@@ -404,7 +406,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
       (chips?'<div class="chips'+(S.adjust?' on':'')+'" id="chips">'+chips+'</div>':'')+
       '<button class="go" id="sh-go">Protect · +'+usd(t.creditCents)+' now</button>'+
       '<div class="fine">priced live · locks at your tap'+(chips?' · <a href="#" id="sh-adjust">adjust</a>':'')+' · <a href="#" id="sh-how">how it works</a></div>'+
-      '<div class="how'+(S.how?' on':'')+'" id="how"><p>You sell part of this position at today\\'s price and keep the rest. That is why you are paid now.</p><p>If '+esc(r.sideName||'your side')+' loses you end with '+usd(rs.floorTotal)+' instead of $0. If it wins, '+usd(rs.capTotal)+' instead of '+usd0(100*n)+'.</p><p>The credit you see is the credit you get. It settles on the same official result as your position; nothing to manage.</p></div>';
+      '<div class="how'+(S.how?' on':'')+'" id="how"><p>You sell part of this position at today\\'s price and keep the rest. That is why you are paid now.</p><p>If '+esc(r.sideName||'your side')+' loses you end with '+usd(rs.floorTotal)+' instead of $0. If it wins, '+usd(rs.capTotal)+' instead of '+usd0(100*n)+'.</p><p>The credit you see is the credit you get. It settles on the same official result as your position; nothing to manage.</p><p>Terms lock at your tap; the other side is bought in the same second. Want out early? That is a new trade priced from the live books, never a free reversal. The undo here is demo only: nothing is bought, so it simply resets the row.</p></div>';
     var cs=body.querySelectorAll('[data-tier]');
     for(var j=0;j<cs.length;j++)cs[j].onclick=function(){S.tier=this.getAttribute('data-tier');S.adjust=true;track('tier_pick',S.open,S.tier);paintSheet(p)};
     if(el('sh-adjust'))el('sh-adjust').onclick=function(e){e.preventDefault();S.adjust=!S.adjust;el('chips').className='chips'+(S.adjust?' on':'')};
