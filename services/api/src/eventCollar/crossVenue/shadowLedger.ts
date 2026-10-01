@@ -67,6 +67,42 @@ export interface ShadowOpenRecord {
    * default tier at larger sizes. Absent on records before shadow v2.
    */
   counterfactuals?: ShadowCounterfactuals;
+  /**
+   * The Polymarket token the cross-venue hedge bought, so an early close can
+   * sell it into its live book. Absent on self-hedged positions and on records
+   * before early closes existed (those close with the hedge leg unpriced).
+   */
+  hedgeTokenId?: string;
+}
+
+/**
+ * The user left early, before the lock: a new trade at live prices, both legs
+ * sold into their venues' bids in the same second. `priced: false` records an
+ * attempt where a leg had no depth; the position stays open and runs to
+ * settlement, and the attempt is counted so the record can say so.
+ */
+export interface ShadowCloseRecord {
+  type: "close";
+  at: string;
+  ticker: string;
+  priced: boolean;
+  /** when unpriced: which leg and why */
+  reason?: string;
+  /** the protected market's live mid at the close, cents (null when one side was empty) */
+  yesMidCents?: number | null;
+  /** average fill selling the user's Yes contracts, cents */
+  yesFillCents?: number;
+  /** the user's own sale after the venue fee; also what leaving with no protection pays */
+  positionProceedsCents?: number;
+  /** our hedge sale after fees */
+  hedgeProceedsCents?: number;
+  feesCents?: number;
+  /** what the user walked away with, the credit paid at the tap included */
+  protectedAtCloseCents?: number;
+  /** the frictionless reference at the live mid (null without a mid) */
+  protectedAtMidCents?: number | null;
+  /** protectedAtMid minus protectedAtClose: what crossing both books cost (null without a mid) */
+  unwindFrictionCents?: number | null;
 }
 
 /** The market finalized on Kalshi with an official result. */
@@ -85,22 +121,34 @@ export interface ShadowVoidRecord {
   reason: string;
 }
 
-export type ShadowRecord = ShadowOpenRecord | ShadowSettleRecord | ShadowVoidRecord;
+export type ShadowRecord = ShadowOpenRecord | ShadowSettleRecord | ShadowVoidRecord | ShadowCloseRecord;
 
 export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
-  status: "open" | "settled" | "void";
+  status: "open" | "settled" | "void" | "closed";
   result?: "yes" | "no";
   settledAt?: string;
   voidReason?: string;
-  /** total payout with protection: (cap if yes, floor if no) x contracts + credit */
+  /**
+   * Total with protection. Settled: (cap if yes, floor if no) x contracts + credit.
+   * Closed: what the user walked away with at live prices, credit included.
+   */
   protectedCents?: number;
-  /** total payout without protection: 100 x contracts if yes, 0 if no */
+  /** Total without protection. Settled: 100 x contracts if yes, 0 if no. Closed: the same sale, no protection ever bought. */
   nakedCents?: number;
   /** protected minus naked; positive = protection paid off on this event */
   deltaCents?: number;
-  /** writer side, settled only: what the protection writer netted after hedge and credit */
+  /** writer side, settled or closed: what the protection writer netted after hedge and credit */
   writerCents?: number;
   hedgePayoutCents?: number;
+  /** closed only: when, at what mid and fill, and what crossing the books cost against the mid */
+  closedAt?: string;
+  closeYesMidCents?: number | null;
+  closeYesFillCents?: number;
+  closeFeesCents?: number;
+  closeProtectedAtMidCents?: number | null;
+  closeUnwindFrictionCents?: number | null;
+  /** an early close was attempted and a leg had no depth; the position runs to settlement */
+  closeUnpriced?: { at: string; reason: string };
 }
 
 /** Outcome math for one settled position — the same totals the app banner shows. */
@@ -239,6 +287,32 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
       const pos = byTicker.get(rec.ticker);
       if (!pos || pos.status !== "open") continue;
       byTicker.set(rec.ticker, { ...pos, status: "void", voidReason: rec.reason });
+    } else if (rec.type === "close") {
+      const pos = byTicker.get(rec.ticker);
+      if (!pos || pos.status !== "open") continue;
+      if (!rec.priced) {
+        // One attempt per position: the schedule does not retry, the position settles as usual.
+        byTicker.set(rec.ticker, { ...pos, closeUnpriced: { at: rec.at, reason: rec.reason ?? "a leg had no depth" } });
+        continue;
+      }
+      const protectedCents = rec.protectedAtCloseCents ?? 0;
+      const nakedCents = rec.positionProceedsCents ?? 0;
+      byTicker.set(rec.ticker, {
+        ...pos,
+        status: "closed",
+        closedAt: rec.at,
+        protectedCents,
+        nakedCents,
+        deltaCents: protectedCents - nakedCents,
+        // leg for leg: the user pays live prices on both legs, so the writer keeps exactly the take
+        writerCents: pos.takeCents,
+        hedgePayoutCents: rec.hedgeProceedsCents ?? 0,
+        closeYesMidCents: rec.yesMidCents ?? null,
+        closeYesFillCents: rec.yesFillCents,
+        closeFeesCents: rec.feesCents ?? 0,
+        closeProtectedAtMidCents: rec.protectedAtMidCents ?? null,
+        closeUnwindFrictionCents: rec.unwindFrictionCents ?? null,
+      });
     }
   }
   return [...byTicker.values()];
@@ -276,6 +350,32 @@ export interface ShadowSummary {
   segments: { byRoute: Record<string, ShadowSegment>; byLeague: Record<string, ShadowSegment>; byKind: Record<string, ShadowSegment> };
   /** what each proposed rule would have done on the same events (shadow v2 records only) */
   counterfactuals: ShadowCounterfactualSummary;
+  /** positions the user left before the lock, priced as a new trade at live books */
+  closed: ShadowClosedSummary;
+}
+
+export interface ShadowClosedSummary {
+  count: number;
+  /** attempts where a leg had no depth; those positions ran to settlement instead */
+  unpriced: number;
+  /** across closed: what users walked away with, credit included */
+  protectedAtCloseCents: number;
+  /** across closed: the same sale with no protection ever bought */
+  nakedAtCloseCents: number;
+  /** protected minus naked at the close */
+  deltaCents: number;
+  /** across closed positions that had a live mid: the frictionless reference and what crossing the books cost */
+  withMid: number;
+  protectedAtMidCents: number;
+  unwindFrictionCents: number;
+  /** venue taker fees paid on both legs */
+  feesCents: number;
+  /** the writer's result on closed positions and the take booked on them: equal by construction */
+  writerPnlCents: number;
+  takeBookedCents: number;
+  /** stake across closed positions (100c x contracts), for percentages */
+  stakeCents: number;
+  byKind: Record<string, { closed: number; unpriced: number }>;
 }
 
 export interface ShadowIdentity {
@@ -611,6 +711,7 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
         ];
       }),
     );
+  const closed = summarizeClosed(positions);
   const gapCents = w.settledPnlCents - w.takeBookedCents;
   const identity: ShadowIdentity = {
     settled: settled.length,
@@ -641,7 +742,50 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
     identity,
     segments: { byRoute: finishSegment(segRoute), byLeague: finishSegment(segLeague), byKind: finishSegment(segKind) },
     counterfactuals: summarizeCounterfactuals(positions),
+    closed,
   };
+}
+
+/** The early closes: what leaving at live prices paid the user and cost against the mid. */
+export function summarizeClosed(positions: ShadowPosition[]): ShadowClosedSummary {
+  const out: ShadowClosedSummary = {
+    count: 0,
+    unpriced: 0,
+    protectedAtCloseCents: 0,
+    nakedAtCloseCents: 0,
+    deltaCents: 0,
+    withMid: 0,
+    protectedAtMidCents: 0,
+    unwindFrictionCents: 0,
+    feesCents: 0,
+    writerPnlCents: 0,
+    takeBookedCents: 0,
+    stakeCents: 0,
+    byKind: {},
+  };
+  for (const p of positions) {
+    const k = (out.byKind[p.kind] ??= { closed: 0, unpriced: 0 });
+    if (p.closeUnpriced && p.status !== "closed") {
+      out.unpriced += 1;
+      k.unpriced += 1;
+    }
+    if (p.status !== "closed") continue;
+    out.count += 1;
+    k.closed += 1;
+    out.protectedAtCloseCents += p.protectedCents ?? 0;
+    out.nakedAtCloseCents += p.nakedCents ?? 0;
+    out.feesCents += p.closeFeesCents ?? 0;
+    out.writerPnlCents += p.writerCents ?? 0;
+    out.takeBookedCents += p.takeCents;
+    out.stakeCents += 100 * p.contracts;
+    if (typeof p.closeProtectedAtMidCents === "number" && typeof p.closeUnwindFrictionCents === "number") {
+      out.withMid += 1;
+      out.protectedAtMidCents += p.closeProtectedAtMidCents;
+      out.unwindFrictionCents += p.closeUnwindFrictionCents;
+    }
+  }
+  out.deltaCents = out.protectedAtCloseCents - out.nakedAtCloseCents;
+  return out;
 }
 
 /** Column order of the positions CSV; stable so downstream sheets do not break. */
@@ -678,6 +822,11 @@ export const POSITIONS_CSV_PUBLIC_COLUMNS = [
   "writer_pnl_c",
   "ev_cost_bps",
   "tier",
+  "closed_at_utc",
+  "close_mid_c",
+  "close_fill_c",
+  "close_fees_c",
+  "close_friction_c",
 ] as const;
 
 /** Every column: the public set, then the recorded fee rule and every counterfactual (operator export). */
@@ -717,7 +866,8 @@ export function positionsCsv(positions: ShadowPosition[], scope: PositionsCsvSco
   const rows = [...positions]
     .sort((a, b) => a.at.localeCompare(b.at))
     .map((p) => {
-      const settled = p.status === "settled";
+      const settled = p.status === "settled" || p.status === "closed";
+      const closed = p.status === "closed";
       return [
         p.ticker,
         p.league,
@@ -746,6 +896,11 @@ export function positionsCsv(positions: ShadowPosition[], scope: PositionsCsvSco
         settled ? (p.writerCents ?? 0) : "",
         p.evCostBps,
         p.tier ?? "",
+        closed ? (p.closedAt ?? "") : "",
+        closed ? (p.closeYesMidCents ?? "") : "",
+        closed ? (p.closeYesFillCents ?? "") : "",
+        closed ? (p.closeFeesCents ?? 0) : "",
+        closed ? (p.closeUnwindFrictionCents ?? "") : "",
         ...(scope === "full" ? counterfactualCells(p) : []),
       ]
         .map(csvCell)

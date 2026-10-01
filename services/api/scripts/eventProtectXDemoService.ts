@@ -108,6 +108,7 @@ import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eve
 import { DEFAULT_EMBED_BRAND, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
 import { applyMinimumCredit, describeMinimumCredit, minimumCreditRuleFromEnv } from "../src/eventCollar/crossVenue/minimumCredit";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
+import { getKalshiBookSides, quoteEarlyClose, type EarlyCloseBooks } from "../src/eventCollar/crossVenue/earlyClose";
 
 const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
@@ -163,6 +164,8 @@ const CRYPTO_PM_NOT_OFFERED =
 const FUNNEL_PATH = process.env.EVENT_X_FUNNEL_PATH || "/tmp/event-demo/funnel.json";
 const adminAuth = parseAdminAuthFromEnv(process.env);
 const metricsLimiter = tokenBucketLimiter(Number(process.env.EVENT_X_RATE_METRICS_PER_MIN || 30), 60_000);
+/** early-close quotes hit the venues' books live on every call; one bucket per visitor keeps that honest */
+const closeQuoteLimiter = tokenBucketLimiter(Number(process.env.EVENT_X_RATE_CLOSE_PER_MIN || 20), 60_000);
 const METRICS_BODY_LIMIT = 2_048;
 let funnelState: EventFunnelState = loadFunnel();
 let funnelDirty = false;
@@ -1035,6 +1038,99 @@ async function handleMetrics(req: IncomingMessage, res: ServerResponse): Promise
   res.end();
 }
 
+/** An integer cents query value inside [lo, hi], or null. */
+function centsParam(url: URL, key: string, lo: number, hi: number): number | null {
+  const raw = url.searchParams.get(key);
+  if (raw === null || !/^-?\d{1,9}$/.test(raw)) return null;
+  const v = Number(raw);
+  return v >= lo && v <= hi ? v : null;
+}
+
+/**
+ * GET /api/close-quote?ticker=&floor=&cap=&credit= — what leaving a protected position pays
+ * RIGHT NOW. Terms locked at the tap come from the page (validated, never re-derived: the lock
+ * is the point); size and route come from the live scan, so the page cannot invent a position.
+ * Both legs are sold into the live bids that second: the user's contracts on the protected
+ * market, our other side on its venue. Retail JSON carries what the card shows; the full
+ * leg-by-leg quote answers to the operator token.
+ */
+async function handleCloseQuote(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  if (!closeQuoteLimiter.allow(clientIp(req), Date.now())) {
+    sendJson(res, 429, { ok: false, error: "rate_limited" });
+    return;
+  }
+  const ticker = url.searchParams.get("ticker") || "";
+  const state = await getCachedScan();
+  const row = state.rows.find((s) => s.res.market.ticker === ticker);
+  if (!row || !row.res.quote.ok) {
+    sendJson(res, 404, { ok: false, error: "not_on_board", message: "This position is not on the board right now." });
+    return;
+  }
+  const n = row.res.position.contracts;
+  const floorCents = centsParam(url, "floor", 1, 99);
+  const capCents = centsParam(url, "cap", 1, 99);
+  const creditCents = centsParam(url, "credit", 0, 100 * n);
+  if (floorCents === null || capCents === null || creditCents === null || floorCents >= capCents) {
+    sendJson(res, 400, { ok: false, error: "bad_terms", message: "floor, cap and credit must be the locked terms, in cents." });
+    return;
+  }
+  const route = row.res.route ?? "kalshi_self";
+  const books: EarlyCloseBooks = { kalshi: await getKalshiBookSides(ticker) };
+  if (route === "polymarket" && row.res.pair) {
+    try {
+      books.pmNoBook = await getPmBook(row.res.pair.pm.tokenIds[row.res.pair.pmNoOutcomeIndex]);
+    } catch {
+      // unreachable hedge venue: the pricer refuses the leg honestly
+    }
+  }
+  const q = quoteEarlyClose(
+    {
+      contracts: n,
+      floorCents,
+      capCents,
+      creditCents,
+      takeCents: 0,
+      // the sizing rule, exact in milli: (floor + 100 - cap) x N / 100 units
+      hedgeUnitsMilli: (floorCents + 100 - capCents) * n * 10,
+      route,
+    },
+    books,
+  );
+  const at = new Date().toISOString();
+  const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
+  if (!q.ok) {
+    sendJson(res, 200, {
+      ok: false,
+      at,
+      ticker,
+      error: "no_depth",
+      message: "The books cannot absorb this exit right now. Your terms stay locked and settle at the lock as quoted.",
+      ...(operator ? { refusal: q } : {}),
+    });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    at,
+    ticker,
+    contracts: n,
+    floorCents,
+    capCents,
+    creditCents,
+    /** what the user leaves with, the credit already paid included */
+    leaveWithCents: q.protectedAtCloseCents,
+    /** the same sale with no protection ever bought */
+    withoutProtectionCents: q.nakedAtCloseCents,
+    midCents: q.yesMidCents,
+    fillCents: q.yesFillCents,
+    feesCents: q.positionFeesCents + q.hedgeFeesCents,
+    /** the frictionless number at the mid, and what crossing the books cost against it */
+    atMidCents: q.protectedAtMidCents,
+    costVsMidCents: q.unwindFrictionCents,
+    ...(operator ? { legs: q, route } : {}),
+  });
+}
+
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
   try {
@@ -1055,6 +1151,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (url.pathname === "/api/metrics" && req.method === "POST") {
       await handleMetrics(req, res);
+      return;
+    }
+    if (url.pathname === "/api/close-quote") {
+      await handleCloseQuote(req, res, url);
       return;
     }
     // EMBED IS THE FRONT DOOR: the first screen is the layer inside a partner's app. The board moved to /board.

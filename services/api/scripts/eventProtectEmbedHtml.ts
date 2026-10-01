@@ -183,6 +183,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos .lock{margin-top:4px;font-size:11.5px;color:var(--faint);line-height:1.45}
 .pos .undo{color:var(--faint);font-size:11.5px;cursor:pointer;background:none;border:0;font:inherit;padding:2px 4px;opacity:.75}
 .pos .undo:hover{text-decoration:underline;opacity:1}
+.pos .acts{display:inline-flex;align-items:center;gap:8px}
+.pos .closeb{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:650;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 11px}
+.pos .closeb:hover{border-color:var(--ep-green);color:var(--ep-green)}
 .empty{padding:30px 16px;color:var(--faint);text-align:center;font-size:14px}
 .host-note{position:fixed;left:0;right:0;bottom:0;padding:10px 16px 14px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.45;background:linear-gradient(to top,var(--bg) 70%,transparent);pointer-events:none}
 /* two deliberate lines (the disclaimer, then the link): never a sentence that wraps and strands the link */
@@ -351,10 +354,14 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
       html+='<div class="pos'+(p?' protected':'')+'" data-ticker="'+esc(r.kalshiTicker)+'">'+
         '<div class="h"><div><div class="name">'+esc(r.sideName)+'</div><div class="meta">'+esc(r.league.toUpperCase())+' · '+esc(when)+'</div></div>'+
         '<div class="pl '+(pl>0?'up':pl<0?'down':'')+'"><b>'+(pl>=0?'+':'-')+usd(Math.abs(pl))+'</b><i>'+r.markCents+'¢ now</i></div></div>';
-      if(p){
+      if(p&&p.closed){
+        html+='<div class="terms">closed early · left with <b>'+usd(p.closed.leaveWithCents)+'</b> · vs <b>'+usd(p.closed.withoutProtectionCents)+'</b> without protection</div>'+
+          '<div class="lock">a new trade at the live prices of '+esc(p.closed.at)+' · your '+usd(p.creditCents)+' credit stayed yours</div>'+
+          '<div class="f"><span class="shield">&#x2713; Closed</span><button class="undo" data-undo="'+esc(r.kalshiTicker)+'">reset · demo only</button></div>';
+      }else if(p){
         html+='<div class="terms">ends <b>'+usd(p.floorTotal)+'</b> or <b>'+usd(p.capTotal)+'</b> · <b>'+usd(p.creditCents)+'</b> paid now</div>'+
           '<div class="lock">locked at your tap · an early exit is a new trade at live prices</div>'+
-          '<div class="f"><span class="shield">&#x2713; Protected</span><button class="undo" data-undo="'+esc(r.kalshiTicker)+'">undo · demo only</button></div>';
+          '<div class="f"><span class="shield">&#x2713; Protected</span><span class="acts"><button class="closeb" data-close="'+esc(r.kalshiTicker)+'">close early</button><button class="undo" data-undo="'+esc(r.kalshiTicker)+'">reset · demo only</button></span></div>';
       }else{
         html+='<div class="f"><span class="size">'+r.contracts+' contracts · ends $0 or '+usd0(100*r.contracts)+'</span>'+
           '<button class="pbtn" data-protect="'+esc(r.kalshiTicker)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>Protect</button></div>';
@@ -406,7 +413,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
       (chips?'<div class="chips'+(S.adjust?' on':'')+'" id="chips">'+chips+'</div>':'')+
       '<button class="go" id="sh-go">Protect · +'+usd(t.creditCents)+' now</button>'+
       '<div class="fine">priced live · locks at your tap'+(chips?' · <a href="#" id="sh-adjust">adjust</a>':'')+' · <a href="#" id="sh-how">how it works</a></div>'+
-      '<div class="how'+(S.how?' on':'')+'" id="how"><p>You sell part of this position at today\\'s price and keep the rest. That is why you are paid now.</p><p>If '+esc(r.sideName||'your side')+' loses you end with '+usd(rs.floorTotal)+' instead of $0. If it wins, '+usd(rs.capTotal)+' instead of '+usd0(100*n)+'.</p><p>The credit you see is the credit you get. It settles on the same official result as your position; nothing to manage.</p><p>Terms lock at your tap; the other side is bought in the same second. Want out early? That is a new trade priced from the live books, never a free reversal. The undo here is demo only: nothing is bought, so it simply resets the row.</p></div>';
+      '<div class="how'+(S.how?' on':'')+'" id="how"><p>You sell part of this position at today\\'s price and keep the rest. That is why you are paid now.</p><p>If '+esc(r.sideName||'your side')+' loses you end with '+usd(rs.floorTotal)+' instead of $0. If it wins, '+usd(rs.capTotal)+' instead of '+usd0(100*n)+'.</p><p>The credit you see is the credit you get. It settles on the same official result as your position; nothing to manage.</p><p>Terms lock at your tap; the other side is bought in the same second. Want out early? Tap close early on the card: a new trade priced from the live books, never a free reversal. The reset is demo only: nothing is bought here, so it simply clears the row.</p></div>';
     var cs=body.querySelectorAll('[data-tier]');
     for(var j=0;j<cs.length;j++)cs[j].onclick=function(){S.tier=this.getAttribute('data-tier');S.adjust=true;track('tier_pick',S.open,S.tier);paintSheet(p)};
     if(el('sh-adjust'))el('sh-adjust').onclick=function(e){e.preventDefault();S.adjust=!S.adjust;el('chips').className='chips'+(S.adjust?' on':'')};
@@ -417,7 +424,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   function confirmProtect(q,n,t){
     var ticker=S.open,r=S.byTicker[ticker];
     var rs=reshape(n,t.floorCents,t.capCents,t.creditCents);
-    S.protectedBy[ticker]={kept:rs.kept,cashCents:rs.cashCents,floorTotal:rs.floorTotal,capTotal:rs.capTotal,creditCents:t.creditCents,tier:S.tier};
+    S.protectedBy[ticker]={kept:rs.kept,cashCents:rs.cashCents,floorTotal:rs.floorTotal,capTotal:rs.capTotal,creditCents:t.creditCents,floorCents:t.floorCents,capCents:t.capCents,tier:S.tier,closed:null};
     S.cash+=t.creditCents;
     track('protect_on',ticker,S.tier);
     el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Protected</h2>'+
@@ -427,13 +434,67 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     paintList();
   }
 
+  /* CLOSE EARLY: the other half of "terms lock at your tap". Leaving is a new trade priced from the
+     live books this second: the user's contracts sold into the bids, the other side sold into its
+     bids, the protection settled at what both fetched. The credit paid at the tap stays theirs. */
+  function openCloseSheet(ticker){
+    var p=S.protectedBy[ticker],r=S.byTicker[ticker];
+    if(!p||p.closed)return;
+    S.open=ticker;S.how=false;
+    el('scrim').className='scrim on';el('sheet').className='sheet on';
+    el('sh-body').innerHTML='<h2 id="sh-h">Leave early</h2><div class="who">'+esc(r?r.sideName:'')+' · '+(r?r.contracts:'')+' contracts</div><div class="skel"></div><div class="skel" style="width:70%"></div><div class="skel" style="width:40%"></div>';
+    track('close_quote',ticker,p.tier);
+    var qs='ticker='+encodeURIComponent(ticker)+'&floor='+p.floorCents+'&cap='+p.capCents+'&credit='+p.creditCents;
+    fetch('/api/close-quote?'+qs,{cache:'no-store'}).then(function(x){return x.json()}).then(function(c){
+      if(S.open!==ticker)return;
+      paintCloseSheet(c,p,r);
+    }).catch(function(){if(S.open===ticker)paintCloseSheet(null,p,r)});
+  }
+  function paintCloseSheet(c,p,r){
+    var body=el('sh-body');
+    if(!c||!c.ok){
+      body.innerHTML='<h2 id="sh-h">Leave early</h2><div class="who">'+esc(r?r.sideName:'')+'</div>'+
+        '<div class="refusal"><b>Not right now.</b> '+esc(c&&c.message?c.message:'Live pricing is unavailable right now. Your terms stay locked.')+'</div>'+
+        '<button class="go quiet" id="sh-close">Keep it</button>'+
+        '<div class="fine">Hold to the lock and it ends '+usd(p.floorTotal)+' or '+usd(p.capTotal)+', as quoted.</div>';
+      el('sh-close').onclick=closeSheet;return;
+    }
+    var n=c.contracts||(r?r.contracts:0),mid=c.midCents!=null?c.midCents+'¢ now':'';
+    var cost=c.costVsMidCents!=null?usd(Math.max(0,c.costVsMidCents)):null;
+    body.innerHTML='<h2 id="sh-h">Leave early</h2><div class="who">'+esc(r?r.sideName:'')+' · '+n+' contracts'+(mid?' · '+mid:'')+'</div>'+
+      '<div class="tiles"><div class="tile k"><div class="l">leave with</div><div class="v">'+usd(c.leaveWithCents)+'</div><div class="was">now, credit included</div></div>'+
+      '<div class="tile"><div class="l">or hold</div><div class="v">'+usd(p.floorTotal)+'</div><div class="was">or '+usd(p.capTotal)+' at the lock</div></div>'+
+      '<div class="tile"><div class="l">without protection</div><div class="v">'+usd(c.withoutProtectionCents)+'</div><div class="was">selling now</div></div></div>'+
+      '<button class="go" id="sh-go">Close early · '+usd(c.leaveWithCents)+' now</button>'+
+      '<div class="fine">priced live this second · a new trade, not a reversal · <a href="#" id="sh-how">how it works</a></div>'+
+      '<div class="how'+(S.how?' on':'')+'" id="how"><p>You sell your contracts into the live bids and the other side is sold into its bids in the same second. The protection settles at what both fetched; the '+usd(p.creditCents)+' paid at your tap stays yours.</p>'+
+      (cost?'<p>Leaving costs the spread on both sides: '+cost+' against the mid right now. Hold to the lock and there is no spread to pay.</p>':'')+
+      '<p>Demo only: nothing is sold. The row closes and the cash lands in your balance.</p></div>';
+    el('sh-how').onclick=function(e){e.preventDefault();S.how=!S.how;el('how').className='how'+(S.how?' on':'')};
+    el('sh-go').onclick=function(){confirmClose(c,p,r)};
+  }
+  function confirmClose(c,p,r){
+    var ticker=S.open,added=c.leaveWithCents-p.creditCents;
+    p.closed={leaveWithCents:c.leaveWithCents,withoutProtectionCents:c.withoutProtectionCents,at:fmtNow(),addedCents:added};
+    S.cash+=added;
+    track('close_early',ticker,p.tier);
+    el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Closed</h2>'+
+      '<div class="sum">'+esc(r?r.sideName:'')+'<br>left with <b>'+usd(c.leaveWithCents)+'</b> in total<br><b>'+(added>=0?'+':'-')+usd(Math.abs(added))+'</b> to your cash now, your <b>'+usd(p.creditCents)+'</b> credit already counted</div></div>'+
+      '<button class="go" id="sh-done">Done</button><div class="fine">A new trade at live prices. Nothing left to settle.</div>';
+    el('sh-done').onclick=function(){closeSheet();paintList()};
+    paintList();
+  }
+  function fmtNow(){try{return new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return 'now'}}
+
   document.addEventListener('click',function(e){
-    var b=e.target.closest?e.target.closest('[data-protect],[data-undo],[data-tab]'):null;
+    var b=e.target.closest?e.target.closest('[data-protect],[data-undo],[data-close],[data-tab]'):null;
     if(!b)return;
     var t=b.getAttribute('data-protect');
     if(t){openSheet(t);return}
+    var c=b.getAttribute('data-close');
+    if(c){openCloseSheet(c);return}
     var u=b.getAttribute('data-undo');
-    if(u&&S.protectedBy[u]){S.cash-=S.protectedBy[u].creditCents;delete S.protectedBy[u];track('protect_undo',u);paintList();return}
+    if(u&&S.protectedBy[u]){var pu=S.protectedBy[u];S.cash-=pu.creditCents;if(pu.closed)S.cash-=pu.closed.addedCents;delete S.protectedBy[u];track('protect_undo',u);paintList();return}
     if(b.getAttribute('data-tab'))toast('Demo: only Positions is live here.');
   });
   el('scrim').onclick=closeSheet;

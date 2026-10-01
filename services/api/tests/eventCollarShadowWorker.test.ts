@@ -254,7 +254,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     const csvLines = (await csv.text()).trimEnd().split("\n");
     assert.equal(csvLines.length, 2, "header + the one position");
     assert.ok(csvLines[0].startsWith("ticker,league,kind,"));
-    assert.ok(csvLines[0].endsWith(",ev_cost_bps,tier"));
+    assert.ok(csvLines[0].endsWith(",ev_cost_bps,tier,closed_at_utc,close_mid_c,close_fill_c,close_fees_c,close_friction_c"));
     assert.ok(!csvLines[0].includes("wide_floor_c") && !csvLines[0].includes("x20_refused"));
     assert.ok(csvLines[1].startsWith(`${OPEN.ticker},`));
     const publicAsksFull = await fetch(`${base}/api/shadow/positions.csv?scope=full`);
