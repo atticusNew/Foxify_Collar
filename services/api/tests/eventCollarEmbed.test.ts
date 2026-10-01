@@ -95,7 +95,9 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes("' contracts · ends $0 or '+usd0(100*r.contracts)+'"), "an unprotected row reads as two endings too");
   assert.ok(!html.includes("contracts</b> kept") && !html.includes("set aside"), "no contracts-kept or cash-set-aside mechanics on the row");
   assert.ok(html.includes("&#x2713; Protected"), "protected badge");
-  assert.ok(html.includes('">undo</button>') && !html.includes("undo (demo)"), "undo is quiet");
+  assert.ok(html.includes('">undo · demo only</button>'), "undo says it is demo only");
+  assert.ok(html.includes('<div class="lock">locked at your tap · an early exit is a new trade at live prices</div>'), "a protected row states the lock");
+  assert.ok(html.includes("Terms lock at your tap; the other side is bought in the same second."), "the sheet explains the lock and the demo undo");
   assert.ok(html.includes('class="chips'+"'+(S.adjust?' on':'')+'"), "tiers are hidden until adjust is tapped");
   assert.ok(html.includes('id="sh-adjust">adjust</a>'), "one shape by default, adjust on request");
   assert.ok(html.includes("if(keys.length>1)"), "adjust is offered only when more than one tier clears");
