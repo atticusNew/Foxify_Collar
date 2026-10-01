@@ -130,6 +130,12 @@ services:
         value: "0.25"
       - key: EVENT_SHADOW_CRYPTO_FLOOR_PER_DAY
         value: "2"
+      # Early closes: this share of positions leave before the lock, priced as a new trade at
+      # the live books that second (both legs sold into the bids). The record then shows what
+      # leaving early paid against holding, and what crossing the books cost against the mid.
+      # 0 disables. The draw is a hash of the ticker, so a redeploy replays the same schedule.
+      - key: EVENT_SHADOW_EARLY_CLOSE_SHARE_PCT
+        value: "20"
       # Gates the operator views: /report, /api/shadow/report, /api/shadow/hedges,
       # /api/shadow/export and the full positions CSV (?token=... or x-admin-token).
       # Fail-closed: without it those routes answer 403 and the public record stays up.

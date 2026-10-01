@@ -50,6 +50,8 @@ export interface ShadowPageInput {
   summary: ShadowSummary;
   open: ShadowPosition[];
   settled: ShadowPosition[];
+  /** positions the user left before the lock, most recent first */
+  closed?: ShadowPosition[];
   /** the hedge trail, when the worker keeps one */
   hedges?: { strategy: HedgeStrategy; rfqVenues: string[]; summary: HedgeReceiptSummary };
 }
@@ -251,6 +253,8 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       sp.settled > 0
         ? `On the ${sp.settled} settled, our P&L is ${signedUsd(sp.writerPnlCents)} against ${usd(sp.takeCents)} of take booked; users were paid ${usd(sp.creditsCents)} in credits at the tap.`
         : "Nothing has settled yet.";
+    const sportsClosed = s.closed?.byKind?.sports?.closed ?? 0;
+    const closedLine = sportsClosed > 0 ? ` ${sportsClosed} left before the game at live prices; see the early closes below.` : "";
     return `  <div class="card">
     <h2>Sports first</h2>
     <div class="sub" style="margin-bottom:8px">The product lives on game positions: ${escapeHtml(leagues)} here. Crypto strikes keep the record moving overnight and are shown separately below.</div>
@@ -260,7 +264,45 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       <div class="bignum"><div class="n">${escapeHtml(evCell)}</div><div class="l">quoted cost, of expected value</div></div>
       <div class="bignum"><div class="n">${escapeHtml(dCell)}</div><div class="l">realized, protected minus naked</div></div>
     </div>
-    <div class="read" style="margin-top:10px">${escapeHtml(pnlLine)}</div>
+    <div class="read" style="margin-top:10px">${escapeHtml(pnlLine + closedLine)}</div>
+  </div>
+`;
+  })();
+  // EARLY CLOSES: the other half of "terms lock at your tap". Leaving is a new trade at the live
+  // books; the card shows what that paid against holding unprotected, what crossing the books
+  // cost against the mid, and that our result on the way out is still the take.
+  const closedCard = (() => {
+    const c = s.closed;
+    if (!c || (c.count === 0 && c.unpriced === 0)) return "";
+    const rows = interleaveByLeague(input.closed ?? [], 10)
+      .map((p) => {
+        const mid = typeof p.closeYesMidCents === "number" ? `at ${p.closeYesMidCents}¢ mid` : "no live mid";
+        return (
+          `<div class="row settled"><span>${escapeHtml(p.sideName)} <span class="tag">left early</span></span>` +
+          `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} unprotected</i>` +
+          `<i class="paid">${escapeHtml(mid)}, ${escapeHtml(shortEt(p.closedAt ?? ""))}</i></b></div>`
+        );
+      })
+      .join("");
+    const frictionPct = c.stakeCents > 0 && c.withMid > 0 ? ` (${((100 * c.unwindFrictionCents) / c.stakeCents).toFixed(2)}% of stake)` : "";
+    const readLine =
+      c.count === 0
+        ? `${c.unpriced} scheduled exit${c.unpriced === 1 ? "" : "s"} found no depth on a leg and ran to settlement instead; nothing has closed early yet.`
+        : `${c.count} position${c.count === 1 ? "" : "s"} left before the lock. Each exit was a new trade at the live books that second: the user's contracts sold into the bids, our other side sold into its bids, and the protection settled at what both fetched. ` +
+          `They walked away with ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} had they never protected (${signedUsd(c.deltaCents)}). ` +
+          (c.withMid > 0 ? `Crossing both books cost ${signedUsd(c.unwindFrictionCents)} against the mid${frictionPct}. ` : "") +
+          `Our result on the way out is the take booked, ${usd(c.takeBookedCents)}: the user pays live prices on both legs, so we carry no price risk on the exit either.` +
+          (c.unpriced > 0 ? ` ${c.unpriced} other scheduled exit${c.unpriced === 1 ? "" : "s"} found no depth on a leg and ran to settlement instead.` : "");
+    return `  <div class="card">
+    <h2>Closed early at live prices</h2>
+    <div class="bignums">
+      <div class="bignum"><div class="n green">${c.count}</div><div class="l">left before the lock</div></div>
+      <div class="bignum"><div class="n ${c.deltaCents >= 0 ? "green" : ""}">${signedUsd(c.deltaCents)}</div><div class="l">protected minus unprotected, at the close</div></div>
+      <div class="bignum"><div class="n">${c.withMid > 0 ? signedUsd(-c.unwindFrictionCents) : "–"}</div><div class="l">crossing the books, against the mid</div></div>
+      <div class="bignum"><div class="n">${c.unpriced}</div><div class="l">exits with a leg unpriced</div></div>
+    </div>
+    <div class="read" style="margin-top:10px">${escapeHtml(readLine)}</div>
+    ${rows ? `<div style="margin-top:8px">${rows}</div>` : ""}
   </div>
 `;
   })();
@@ -272,7 +314,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       ? `Protection is cheapest on ${richest[richest.length - 1][0].toUpperCase()} (${bpsPct(richest[richest.length - 1][1].quotedAvgEvBps)} of expected value quoted) and richest on ${richest[0][0].toUpperCase()} (${bpsPct(richest[0][1].quotedAvgEvBps)}); the record-wide average is weighted by how many of each the scanner found, not by what a user would choose.`
       : "";
   const windowLine = s.firstOpenedAt
-    ? `Recording since ${escapeHtml(s.firstOpenedAt.slice(0, 16).replace("T", " "))} UTC. Append-only; positions are never edited, only opened and settled.`
+    ? `Recording since ${escapeHtml(s.firstOpenedAt.slice(0, 16).replace("T", " "))} UTC. Append-only; positions are never edited, only opened, closed early at live prices, and settled.`
     : "The book is empty; it fills as the scanner finds quotable events.";
 
   const w = s.writer;
@@ -335,7 +377,7 @@ ${sportsCard}  <div class="card">
     ${s.voidCount > 0 ? `<div class="row"><span>voided (no official result)</span><b>${s.voidCount}</b></div>` : ""}
     ${input.hedges ? hedgeLine(input.hedges) : ""}
   </div>
-  <div class="card">
+${closedCard}  <div class="card">
     <h2>Where protection is cheap and where it is rich</h2>
     <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of protection at the market's own odds; user Δ is realized, protected minus naked, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} events show counts only.</div>
     <div class="tablewrap"><table>

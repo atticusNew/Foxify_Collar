@@ -44,6 +44,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { dirname, join } from "node:path";
 import {
   appendShadowRecord,
+  hedgeUnitsOf,
   ledgerStats,
   loadShadowPositions,
   positionsCsv,
@@ -81,6 +82,14 @@ import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecuto
 import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml } from "./eventShadowHtml";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
+import {
+  earlyCloseRuleFromEnv,
+  earlyCloseSchedule,
+  getKalshiBookSides,
+  quoteEarlyClose,
+  type EarlyCloseBooks,
+} from "../src/eventCollar/crossVenue/earlyClose";
+import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import type { ScanOptions, ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -91,6 +100,13 @@ const SETTLE_MS = Number(process.env.EVENT_SHADOW_SETTLE_MS || 10 * 60_000);
 const SETTLE_GRACE_MS = Number(process.env.EVENT_SHADOW_SETTLE_GRACE_MS || 3 * 3_600_000);
 /** an event with no official result after this long is voided (postponed, rebooked) */
 const VOID_AFTER_MS = Number(process.env.EVENT_SHADOW_VOID_AFTER_MS || 72 * 3_600_000);
+/**
+ * EARLY CLOSES: a share of positions leave before the lock, priced as a new trade at the live
+ * books that second (EVENT_SHADOW_EARLY_CLOSE_SHARE_PCT, default 20; 0 disables). The record then
+ * shows what leaving early paid against holding, and what crossing the books cost against the mid.
+ */
+const CLOSE_MS = Number(process.env.EVENT_SHADOW_CLOSE_MS || 60_000);
+const earlyCloseRule = earlyCloseRuleFromEnv(process.env);
 
 /** one line per hedge: which strategy filled it, at what, and why the other did not */
 const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDGER_PATH), "hedge-receipts.jsonl");
@@ -122,6 +138,9 @@ let consecutiveScanFailures = 0;
 let scanFailingRaised = false;
 let settleFailuresLastTick = 0;
 let settleDueLastTick = 0;
+let lastCloseAt: string | null = null;
+let lastCloseError: string | null = null;
+let closeDueLastTick = 0;
 
 /** Append with the failure surfaced: a ledger that cannot be written is the one fault that must page. */
 function appendOrAlert(record: Parameters<typeof appendShadowRecord>[1]): boolean {
@@ -223,6 +242,7 @@ async function scanTick(): Promise<void> {
         takeShareCents: q.takeShareCents,
         takeMinimumCents: q.takeMinimumCents,
         ...(counterfactuals ? { counterfactuals } : {}),
+        ...(q.hedge.venue === "polymarket" ? { hedgeTokenId: q.hedge.tokenId } : {}),
       });
       seen.add(res.market.ticker);
       opened.push({ kind: res.kind, at: new Date().toISOString() });
@@ -280,6 +300,73 @@ async function settleTick(): Promise<void> {
   await healthTick();
 }
 
+/**
+ * Close the positions whose scheduled exit has come: both legs sold into the live bids that
+ * second, recorded priced or unpriced. One attempt per position; an unpriced leg leaves the
+ * position open to settle as usual, and the record counts the attempt.
+ */
+async function closeTick(): Promise<void> {
+  const now = Date.now();
+  let due = 0;
+  let failed = 0;
+  for (const p of loadShadowPositions(LEDGER_PATH)) {
+    if (p.status !== "open" || p.closeUnpriced) continue;
+    const sched = earlyCloseSchedule(p.ticker, p.at, p.eventTimeIso, earlyCloseRule);
+    if (!sched.selected || sched.closeAtMs === null || now < sched.closeAtMs) continue;
+    // Past the margin the pricers refuse anyway; a close that missed its window is not forced.
+    if (now > Date.parse(p.eventTimeIso) - earlyCloseRule.marginMs) continue;
+    due += 1;
+    try {
+      const books: EarlyCloseBooks = { kalshi: await getKalshiBookSides(p.ticker) };
+      if (p.route === "polymarket" && p.hedgeTokenId) {
+        try {
+          books.pmNoBook = await getPmBook(p.hedgeTokenId);
+        } catch {
+          // the hedge venue unreachable: the pricer records the leg as unlocatable, honestly
+        }
+      }
+      const q = quoteEarlyClose(
+        {
+          contracts: p.contracts,
+          floorCents: p.floorCents,
+          capCents: p.capCents,
+          creditCents: p.creditCents,
+          takeCents: p.takeCents,
+          hedgeUnitsMilli: hedgeUnitsOf(p),
+          route: p.route,
+        },
+        books,
+      );
+      const at = new Date().toISOString();
+      if (!q.ok) {
+        appendOrAlert({ type: "close", at, ticker: p.ticker, priced: false, reason: `${q.leg} leg: ${q.detail}` });
+        continue;
+      }
+      appendOrAlert({
+        type: "close",
+        at,
+        ticker: p.ticker,
+        priced: true,
+        yesMidCents: q.yesMidCents,
+        yesFillCents: q.yesFillCents,
+        positionProceedsCents: q.positionProceedsCents,
+        hedgeProceedsCents: q.hedgeProceedsCents,
+        feesCents: q.positionFeesCents + q.hedgeFeesCents,
+        protectedAtCloseCents: q.protectedAtCloseCents,
+        protectedAtMidCents: q.protectedAtMidCents,
+        unwindFrictionCents: q.unwindFrictionCents,
+      });
+    } catch (err) {
+      // venue unreachable; the schedule is still due next tick
+      failed += 1;
+      lastCloseError = String(err instanceof Error ? err.message : err);
+    }
+  }
+  if (failed === 0) lastCloseError = null;
+  closeDueLastTick = due;
+  lastCloseAt = new Date().toISOString();
+}
+
 /** Evaluate the counters against the alert thresholds; runs after every tick. */
 async function healthTick(): Promise<void> {
   const alerts = evaluateShadowHealth(
@@ -331,6 +418,7 @@ function healthBody(): Record<string, unknown> {
     consecutiveScanFailures,
     settleFailuresLastTick,
     settleDueLastTick,
+    earlyClose: { ...earlyCloseRule, everyMs: CLOSE_MS, lastCloseAt, lastCloseError, closeDueLastTick },
     openMix: { ...openMix, cryptoSkippedLastScan },
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
     hedge: {
@@ -345,6 +433,15 @@ function healthBody(): Record<string, unknown> {
 
 function pageData(): { atIso: string; positions: ShadowPosition[] } {
   return { atIso: new Date().toISOString(), positions: loadShadowPositions(LEDGER_PATH) };
+}
+
+/** Settled most recent first, open next to lock first, closed most recent first. */
+function splitPositions(positions: ShadowPosition[]): { settled: ShadowPosition[]; open: ShadowPosition[]; closed: ShadowPosition[] } {
+  return {
+    settled: positions.filter((p) => p.status === "settled").sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? "")),
+    open: positions.filter((p) => p.status === "open").sort((a, b) => a.eventTimeIso.localeCompare(b.eventTimeIso)),
+    closed: positions.filter((p) => p.status === "closed").sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? "")),
+  };
 }
 
 /**
@@ -438,13 +535,8 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow") {
       const { atIso, positions } = pageData();
-      const settled = positions
-        .filter((p) => p.status === "settled")
-        .sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
-      const open = positions
-        .filter((p) => p.status === "open")
-        .sort((a, b) => a.eventTimeIso.localeCompare(b.eventTimeIso));
-      sendJson(res, 200, { ok: true, at: atIso, summary: publicSummary(summarizeShadow(positions)), settled, open });
+      const { settled, open, closed } = splitPositions(positions);
+      sendJson(res, 200, { ok: true, at: atIso, summary: publicSummary(summarizeShadow(positions)), settled, open, closed });
       return;
     }
     if (url.pathname === "/api/shadow/report") {
@@ -484,12 +576,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
       const { atIso, positions } = pageData();
-      const settled = positions
-        .filter((p) => p.status === "settled")
-        .sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
-      const open = positions
-        .filter((p) => p.status === "open")
-        .sort((a, b) => a.eventTimeIso.localeCompare(b.eventTimeIso));
+      const { settled, open, closed } = splitPositions(positions);
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(
         renderShadowHtml({
@@ -497,6 +584,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           summary: summarizeShadow(positions),
           open,
           settled,
+          closed,
           hedges: {
             strategy: hedgeChoice.strategy,
             rfqVenues: hedgeChoice.rfqVenues,
@@ -522,15 +610,16 @@ async function main(): Promise<void> {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
-      `[event-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m`,
+      `[event-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m · early closes ${earlyCloseRule.sharePct}% of the book`,
     );
     void scanTick();
     void settleTick();
     setInterval(() => void scanTick(), SCAN_MS);
     setInterval(() => void settleTick(), SETTLE_MS);
+    if (earlyCloseRule.sharePct > 0) setInterval(() => void closeTick(), CLOSE_MS);
   });
 }
 
 if (process.env.NODE_ENV !== "test") void main();
 
-export { server, scanTick, settleTick };
+export { server, scanTick, settleTick, closeTick };

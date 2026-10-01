@@ -17,7 +17,7 @@
 export const EVENT_PAGES = ["app", "receipts", "embed"] as const;
 export type EventPage = (typeof EVENT_PAGES)[number];
 
-export const EVENT_ACTIONS = ["row_tap", "protect_on", "protect_undo", "board_expand", "tier_pick"] as const;
+export const EVENT_ACTIONS = ["row_tap", "protect_on", "protect_undo", "board_expand", "tier_pick", "close_quote", "close_early"] as const;
 export type EventAction = (typeof EVENT_ACTIONS)[number];
 
 export interface SessionRow {
