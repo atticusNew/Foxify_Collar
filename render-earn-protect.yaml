@@ -15,6 +15,7 @@
 #   - trader app:   https://<service>.onrender.com/app
 #   - mini app:     https://<service>.onrender.com/miniapp
 #   - control room: https://<service>.onrender.com/demo?token=<EP_ADMIN_TOKEN>
+#   - traffic page: https://<service>.onrender.com/admin/funnel?token=<EP_ADMIN_TOKEN>
 #     (EP_ADMIN_TOKEN is generated — read it in the dashboard → Environment)
 #
 # Going LIVE later (real OKX legs) — set manually on the service, never here:
@@ -65,9 +66,16 @@ services:
         value: long
       - key: EP_SHOWCASE_SCAN
         value: "300"
-      # The public track record the footer links to (the perp shadow service).
+      # Sister surfaces the site cross-links (nav switch, pitch, /video buttons, footer). Each link
+      # fails closed: shown only while that host answers /healthz. The site's own /record,
+      # /prediction and /prediction/record redirect there so the clicks land in the funnel
+      # (read it at /admin/funnel?token=<EP_ADMIN_TOKEN>). An empty value switches a link off.
       - key: EP_TRACK_RECORD_URL
-        value: https://atticus-earn-protect-shadow.onrender.com
+        value: https://facility.atticustrade.com
+      - key: EP_PREDICTION_URL
+        value: https://event.earnandprotect.xyz
+      - key: EP_PREDICTION_RECORD_URL
+        value: https://atticus-event-shadow.onrender.com
       - key: EP_ADMIN_TOKEN
         generateValue: true # control room / admin API token — read it from the dashboard
       - key: DATABASE_URL

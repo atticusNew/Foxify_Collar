@@ -139,9 +139,23 @@ test("institutional skin markers untouched", () => {
 
 test("service placeholders intact for serve-time substitution", () => {
   for (const html of [web, mini]) {
-    for (const ph of ["__SKIN__", "__BRAND_FOR__", "__BRAND_LINE__", "__BRAND_MARK__", "__LINK_TG__", "__LINK_X__"]) {
+    for (const ph of ["__SKIN__", "__BRAND_FOR__", "__BRAND_LINE__", "__BRAND_MARK__", "__LINK_RECORD__", "__LINK_PREDICTION__", "__LINK_TG__", "__LINK_X__", "__PROD_SWITCH_NAV__", "__PROD_SWITCH_BAR__", "__XSELL_PREDICTION__"]) {
       assert.ok(html.includes(ph), `${ph} must remain for the service to substitute`);
     }
+  }
+});
+
+test("prediction markets CTA: product switch in the nav (wide) and on a bar under it (phones), cross-sell in the pitch, links in both footers", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes('<div class="nav-l"><div class="logo">') && html.includes("</span></div>__PROD_SWITCH_NAV__</div>"), "the switch sits beside the logo, left of the price and Connect");
+    assert.ok(html.includes('<div class="prodbar">__PROD_SWITCH_BAR__</div>') && html.indexOf('<div class="prodbar">') < html.indexOf('<div class="stage">'), "the phone bar sits directly under the header, outside the stage, so it survives the hero folding away");
+    assert.ok(html.includes("@media (max-width:640px){.prod-nav{display:none} .prodbar{display:flex}}"), "one switch visible at a time: nav on wide screens, bar on phones");
+    assert.ok(html.includes(".prodbar{display:none;justify-content:center}") && html.includes(".prodbar .prod{margin:10px 12px 6px}"), "an empty bar (link off) takes no height");
+    assert.ok(html.includes("body.inst .prod,body.inst .prodbar,body.inst .xsell{display:none}"), "the institutional skin carries no prediction cross-sell");
+    assert.ok(html.indexOf("__XSELL_PREDICTION__") > html.indexOf('<div class="try">Flip the <b>toggle</b>') && html.indexOf("__XSELL_PREDICTION__") < html.indexOf('<div class="partners">'), "the pitch cross-sell sits under the toggle call, above the partner links");
+    const footer = html.slice(html.indexOf('<div class="foot">'));
+    assert.ok(footer.includes("__LINK_RECORD____LINK_PREDICTION____LINK_TG____LINK_X__"), "the footer carries the prediction links right after the track record");
+    assert.ok(!html.includes("event.earnandprotect.xyz") && !html.includes("onrender.com"), "no sister URL is hardcoded in the template; the service injects counted redirects");
   }
 });
 
@@ -209,7 +223,7 @@ test("desktop stage: the pitch beside the card in an exchange panel, retail web 
     assert.ok(html.includes("@media (min-width:900px){") && html.includes("body.retail:not(.connected) .stage{display:grid"), "the stage is desktop-only css on body.retail:not(.connected)");
     assert.ok(html.includes(".pitch,.panel-top{display:none}"), "phones never see the pitch or the panel header");
     assert.ok(html.includes('document.body.classList.toggle("connected", !!account && !watching)'), "connecting an own address folds the stage into the app; watching a showcase keeps it");
-    assert.ok(html.includes("body.retail:not(.connected) .wrap .foot{display:none}") && html.includes('<b>For partners</b> __LINK_RECORD____LINK_TG____LINK_X__<span><a href="#" id="howLink2">How it works</a> ·</span>'), "on the stage the footer moves into the pitch column, placeholders included");
+    assert.ok(html.includes("body.retail:not(.connected) .wrap .foot{display:none}") && html.includes('<b>For partners</b> __LINK_RECORD____LINK_PREDICTION____LINK_TG____LINK_X__<span><a href="#" id="howLink2">How it works</a> ·</span>'), "on the stage the footer moves into the pitch column, placeholders included");
     assert.ok(html.includes('$("howLink2").onclick'), "the pitch's How it works opens the same modal");
     assert.ok(html.includes("body.retail:not(.connected) #hero{display:none!important}"), "the in-column hero never doubles the pitch");
   }
