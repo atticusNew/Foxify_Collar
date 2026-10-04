@@ -382,4 +382,5 @@ test("shadow: page renders the honest record", () => {
   assert.ok(!html.includes("\u2014"), "no em dashes in visible copy");
   assert.ok(!/resolution/i.test(html), "banned vocabulary");
   assert.ok(html.includes(`href="https://event.earnandprotect.xyz/">back to the demo</a>`), "back link goes to the front door (the embed), not the board");
+  assert.ok(html.includes(`back to the demo</a> <a class="back" href="https://earnandprotect.xyz/">Perps demo</a>`), "the perp site rides beside the demo link: the other half of the product, one click away");
 });

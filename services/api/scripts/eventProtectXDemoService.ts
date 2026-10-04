@@ -60,6 +60,7 @@
  *      EVENT_X_MAX_EV_COST_BPS (ceiling on protection's EV cost, default 300; 0 = off)
  *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
  *      EVENT_X_FUNNEL_PATH · EVENT_X_ADMIN_TOKEN (or EVENT_X_DEV_NO_ADMIN=true)
+ *      EVENT_X_PERP_URL (the perp site behind GET /perps, default https://earnandprotect.xyz; "" = off)
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
  */
 
@@ -144,6 +145,12 @@ const CONTACT_EMAIL = process.env.EVENT_X_CONTACT_EMAIL || "michael@atticustrade
 const PARTNER_SHARE_PCT = Math.min(100, Math.max(0, Number(process.env.EVENT_X_PARTNER_SHARE_PCT ?? 50)));
 /** The track record (its own deploy); the embed's one public link and the desktop pitch's first partner link. */
 const TRACK_RECORD_URL = process.env.EVENT_X_SHADOW_URL || "https://atticus-event-shadow.onrender.com";
+/**
+ * The perp site, the other half of the product. Linked from the embed's phone note and partner row
+ * through GET /perps, this service's own redirect, so the funnel counts the click before the hop.
+ * EVENT_X_PERP_URL="" leaves the link out and makes /perps a 404.
+ */
+const PERP_SITE_URL = (process.env.EVENT_X_PERP_URL ?? "https://earnandprotect.xyz").trim().replace(/\/+$/, "");
 /** Kalshi crypto strike series admitted to the board (self-hedge route only). */
 const CRYPTO_SERIES = (process.env.EVENT_X_CRYPTO_SERIES || "KXBTCD,KXETHD")
   .split(",")
@@ -1157,6 +1164,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       await handleCloseQuote(req, res, url);
       return;
     }
+    // The counted hop to the perp site (see PERP_SITE_URL). 302 so an env change applies at once.
+    if (url.pathname === "/perps" && req.method === "GET") {
+      if (!/^https?:\/\//.test(PERP_SITE_URL)) {
+        sendJson(res, 404, { ok: false, error: "not_found", message: "perp site link is switched off" });
+        return;
+      }
+      recordPageLoad(funnelState, "perps", Date.now());
+      funnelDirty = true;
+      res.writeHead(302, { location: `${PERP_SITE_URL}/`, "cache-control": "no-store" });
+      res.end();
+      return;
+    }
     // EMBED IS THE FRONT DOOR: the first screen is the layer inside a partner's app. The board moved to /board.
     if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/embed") {
       recordPageLoad(funnelState, "embed", Date.now());
@@ -1167,6 +1186,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND),
           minCredit: MIN_CREDIT_RULE,
           trackRecordUrl: TRACK_RECORD_URL,
+          perpsUrl: /^https?:\/\//.test(PERP_SITE_URL) ? "/perps" : "",
           // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
           skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,
         }),
