@@ -37,8 +37,8 @@ test("video page: player, ladder copy, live-product links, honesty line", () => 
   assert.ok(EP_VIDEO_PAGE_HTML.includes("hard floor and a weekly credit"), "ladder copy");
   assert.ok(EP_VIDEO_PAGE_HTML.includes("Everything else stays exactly the same"), "ladder copy");
   assert.ok(EP_VIDEO_PAGE_HTML.includes('href="/"'), "link into the live app");
-  assert.ok(EP_VIDEO_PAGE_HTML.includes("facility.atticustrade.com"), "link to the facility track record");
-  assert.ok(EP_VIDEO_PAGE_HTML.includes('target="_blank"'), "facility opens in a new tab (video page stays open)");
+  assert.ok(EP_VIDEO_PAGE_HTML.includes("__VIDEO_RECORD_BTN__") && EP_VIDEO_PAGE_HTML.includes("__VIDEO_PREDICTION_BTN__"), "the track record and prediction buttons are service slots: counted redirects, hidden while a sister service is down");
+  assert.ok(!EP_VIDEO_PAGE_HTML.includes("onrender.com") && !EP_VIDEO_PAGE_HTML.includes("facility.atticustrade.com"), "no sister URL is hardcoded on the page; EP_TRACK_RECORD_URL / EP_PREDICTION_URL own them");
   assert.ok(EP_VIDEO_PAGE_HTML.includes("browser extension"), "disclaimer: not venue-embedded");
   assert.ok(EP_VIDEO_PAGE_HTML.includes("credits scale with position size"), "disclaimer: small credit");
 });
@@ -49,4 +49,13 @@ test("funnel: video page loads count under their own surface", () => {
   recordPageLoad(f, "video", Date.UTC(2026, 8, 16, 13));
   recordPageLoad(f, "app", Date.UTC(2026, 8, 16, 14));
   assert.deepEqual(f.pageLoads["2026-09-16"], { video: 2, app: 1 });
+});
+
+test("funnel: outbound clicks (record, prediction, prediction record) count under their own surfaces", () => {
+  const f = emptyFunnel();
+  recordPageLoad(f, "prediction", Date.UTC(2026, 9, 1, 12));
+  recordPageLoad(f, "prediction", Date.UTC(2026, 9, 1, 13));
+  recordPageLoad(f, "record", Date.UTC(2026, 9, 1, 14));
+  recordPageLoad(f, "prediction_record", Date.UTC(2026, 9, 1, 15));
+  assert.deepEqual(f.pageLoads["2026-10-01"], { prediction: 2, record: 1, prediction_record: 1 });
 });

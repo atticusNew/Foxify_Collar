@@ -86,6 +86,23 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .px{font-size:12px;color:var(--muted);margin-right:10px;font-variant-numeric:tabular-nums;white-space:nowrap}
   .px b{color:var(--text);font-weight:600;transition:color .5s}
   .px.up b{color:var(--good)} .px.down b{color:var(--bad)}
+  /* Product switch: Perps (here) · Prediction markets (the sister site). Segmented like an
+     exchange's market tabs so it reads as "the other half of the product", not an ad. Lives in
+     the nav on wide screens and under the hero on phones (the 390px header holds one line). */
+  .nav-l{display:flex;align-items:center;min-width:0}
+  .prod{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:3px;gap:2px;background:var(--panel2);white-space:nowrap}
+  .prod span,.prod a{font-size:11.5px;font-weight:600;letter-spacing:.2px;padding:4px 11px;border-radius:999px;color:var(--muted);text-decoration:none;line-height:1.4}
+  .prod .on{background:rgba(80,210,193,.14);color:var(--accent)}
+  .prod a:hover{color:var(--text);background:rgba(255,255,255,.04)}
+  .prod a:after{content:"\\2197";font-size:10px;margin-left:5px;opacity:.75}
+  .prod-nav{margin-left:14px}
+  .prodbar{display:none;justify-content:center}
+  .prodbar .prod{margin:10px 12px 0}
+  @media (max-width:640px){.prod-nav{display:none} .prodbar{display:flex}}
+  body.inst .prod,body.inst .prodbar,body.inst .xsell{display:none}
+  /* Pitch cross-sell: one quiet line under the toggle call, the same product on the other market. */
+  .xsell{margin-top:14px;font-size:14px;color:var(--muted)}
+  .xsell a{color:var(--accent);font-weight:600;white-space:nowrap}
   h1{font-size:24px;font-weight:700;letter-spacing:-.2px;margin:28px 0 6px}
   .sub{color:var(--muted);font-size:14px;margin-bottom:22px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:12px;transition:border-color .25s}
@@ -311,13 +328,16 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   <!-- Venue affiliation is DESCRIPTIVE ("for Hyperliquid" — where your positions live), not a
        partnership claim; swap the venue name per integration. The brand mark after "by" is
        injected by the service: the Atticus logo (EP_BRAND_LOGO_URL) or the wordmark fallback. -->
-  <div class="logo">Earn &amp; Protect <span class="by">__BRAND_LINE__ <b>__BRAND_FOR__</b> · by __BRAND_MARK__</span></div>
+  <div class="nav-l"><div class="logo">Earn &amp; Protect <span class="by">__BRAND_LINE__ <b>__BRAND_FOR__</b> · by __BRAND_MARK__</span></div>__PROD_SWITCH_NAV__</div>
   <div style="display:flex;align-items:center">
     <span class="px" id="pxPill" style="display:none">BTC <b id="pxVal">—</b></span>
     <span class="mode-pill tipwrap" id="modePill" style="display:none"></span>
     <button type="button" class="connbtn" id="connPill">Connect</button>
   </div>
 </div></nav>
+<!-- Phones: the product switch rides a slim bar under the header (the hero folds away the moment
+     the live showcase loads, so it cannot live there). Wide screens carry it in the nav. -->
+<div class="prodbar">__PROD_SWITCH_BAR__</div>
 <div class="stage">
 <!-- Desktop pitch (retail, 900px+, not connected): the value in one glance beside the live card.
      Hidden on phones and the moment a visitor connects; see the DESKTOP STAGE styles. -->
@@ -331,7 +351,8 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <li>Refuses when the market can't fund a credit</li>
   </ul>
   <div class="try">Flip the <b>toggle</b> &rarr;</div>
-  <div class="partners"><b>For partners</b> __LINK_RECORD____LINK_TG____LINK_X__<span><a href="#" id="howLink2">How it works</a> ·</span> <a href="/tos" target="_blank" rel="noopener">Terms</a></div>
+  __XSELL_PREDICTION__
+  <div class="partners"><b>For partners</b> __LINK_RECORD____LINK_PREDICTION____LINK_TG____LINK_X__<span><a href="#" id="howLink2">How it works</a> ·</span> <a href="/tos" target="_blank" rel="noopener">Terms</a></div>
   <div class="pfoot">Priced live from listed markets. Refused honestly when unfundable.</div>
 </aside>
 <div class="wrap">
@@ -408,7 +429,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   </div>
 
   <div class="foot">
-    <span>Priced live from listed markets ·</span> <span>refused honestly when unfundable ·</span> __LINK_RECORD____LINK_TG____LINK_X__<span><a href="#" id="howLink">How it works</a> ·</span> <a href="/tos" target="_blank" rel="noopener">Terms</a>
+    <span>Priced live from listed markets ·</span> <span>refused honestly when unfundable ·</span> __LINK_RECORD____LINK_PREDICTION____LINK_TG____LINK_X__<span><a href="#" id="howLink">How it works</a> ·</span> <a href="/tos" target="_blank" rel="noopener">Terms</a>
   </div>
 </div>
 </div>

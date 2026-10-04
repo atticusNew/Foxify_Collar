@@ -123,7 +123,8 @@ import {
   type LoopPulse
 } from "../src/singleSide/twoSided/creditCollar/epSafety";
 import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
-import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, recordPageLoad, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
+import { emptyFunnel, funnelSummary, parseInternalAccounts, recordLooker, recordPageLoad, renderEpFunnelHtml, type FunnelState } from "../src/singleSide/twoSided/creditCollar/epFunnel";
+import { OutboundLink } from "../src/singleSide/twoSided/creditCollar/epOutboundLink";
 import {
   SHOWCASE_BUCKETS,
   SHOWCASE_SLOTS,
@@ -167,23 +168,21 @@ const storePath = process.env.DEMO_STORE_PATH ?? "./logs/demo-wraps.json";
 const allowReset = String(process.env.DEMO_ALLOW_RESET ?? "true").toLowerCase() === "true";
 const coin = process.env.DEMO_COIN ?? "BTC";
 
-// The public track record (the perp shadow service) linked from the footer. FAIL CLOSED: the link
-// renders only while that service answers its /healthz — a retail footer must never send anyone to
-// a "Not Found" page because a service was renamed or not yet created. Probed at boot and every
-// 10 minutes; EP_TRACK_RECORD_URL="" turns the link off.
-const TRACK_RECORD_URL = (process.env.EP_TRACK_RECORD_URL ?? "https://atticus-earn-protect-shadow.onrender.com").trim().replace(/\/+$/, "");
-let trackRecordAlive = false;
-const probeTrackRecord = async (): Promise<void> => {
-  if (!/^https?:\/\//.test(TRACK_RECORD_URL)) return;
-  try {
-    const r = await fetch(`${TRACK_RECORD_URL}/healthz`, { signal: AbortSignal.timeout(6000), redirect: "follow" });
-    const wasAlive = trackRecordAlive;
-    trackRecordAlive = r.ok;
-    if (wasAlive !== trackRecordAlive) console.log(`[demo] track record link ${trackRecordAlive ? "ON" : "OFF"} · ${TRACK_RECORD_URL} answered ${r.status}`);
-  } catch (e) {
-    if (trackRecordAlive) console.log(`[demo] track record link OFF · ${TRACK_RECORD_URL} unreachable (${(e as Error).message})`);
-    trackRecordAlive = false;
-  }
+// Sister surfaces on other services, linked from the nav, hero, pitch and footer. FAIL CLOSED: a
+// link renders only while that service answers its /healthz — a retail page must never send anyone
+// to a "Not Found" page because a service was renamed or not yet created. Probed at boot and every
+// 10 minutes; an empty env value turns a link off.
+//   EP_TRACK_RECORD_URL       the perp track record (facility.atticustrade.com)
+//   EP_PREDICTION_URL         the prediction-market demo (event.earnandprotect.xyz)
+//   EP_PREDICTION_RECORD_URL  the prediction-market record (the event shadow service)
+// The site's own /record, /prediction and /prediction/record redirect there, so every click on a
+// cross-link is counted in the funnel before it leaves.
+const trackRecordLink = new OutboundLink("track record", process.env.EP_TRACK_RECORD_URL, "https://facility.atticustrade.com");
+const predictionLink = new OutboundLink("prediction markets", process.env.EP_PREDICTION_URL, "https://event.earnandprotect.xyz");
+const predictionRecordLink = new OutboundLink("prediction record", process.env.EP_PREDICTION_RECORD_URL, "https://atticus-event-shadow.onrender.com");
+const OUTBOUND_LINKS = [trackRecordLink, predictionLink, predictionRecordLink];
+const probeOutboundLinks = async (): Promise<void> => {
+  await Promise.all(OUTBOUND_LINKS.map((l) => l.probe()));
 };
 
 // Auto-renew: protection is a STATE — while an account's toggle is on, expired wraps re-quote and
@@ -1856,13 +1855,30 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       const tgLink = (process.env.EP_SUPPORT_TELEGRAM ?? "").trim();
       const xLink = (process.env.EP_SOCIAL_X ?? "").trim();
-      // The public track record (the perp shadow): one footer link, the same as the event demo's,
-      // shown only while that service is up (probeTrackRecord).
-      const recordLink = trackRecordAlive ? TRACK_RECORD_URL : "";
+      const miniapp = url.pathname === "/miniapp";
+      // Cross-links go through the site's own redirects (/record, /prediction, /prediction/record)
+      // so each click is counted in the funnel; each renders only while its service is up.
+      // The product switch (Perps · Prediction markets) sits in the nav on wide screens and on a
+      // slim bar under it on phones; the Telegram Mini App opens the sister site in the system browser.
+      const ext = miniapp ? ' target="_blank" rel="noopener"' : "";
+      const prodSwitch = (cls: string): string =>
+        predictionLink.href
+          ? `<div class="prod ${cls}" role="navigation" aria-label="Product"><span class="on" aria-current="page">Perps</span><a href="/prediction"${ext}>Prediction markets</a></div>`
+          : "";
+      const xsell = predictionLink.href
+        ? `<div class="xsell">Trading prediction markets too? <a href="/prediction"${ext}>Protect a Yes or No position &rarr;</a></div>`
+        : "";
+      const footerLinks =
+        (predictionLink.href ? `<a href="/prediction" target="_blank" rel="noopener">Prediction markets</a> · ` : "") +
+        (predictionRecordLink.href ? `<a href="/prediction/record" target="_blank" rel="noopener">Prediction record</a> · ` : "");
       sendHtml(
         res,
-        (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML)
+        (miniapp ? EP_MINI_APP_HTML : EP_WEB_APP_HTML)
           .replaceAll("__BRAND_MARK__", brandMark)
+          .replaceAll("__PROD_SWITCH_NAV__", prodSwitch("prod-nav"))
+          .replaceAll("__PROD_SWITCH_BAR__", prodSwitch("prod-bar"))
+          .replaceAll("__XSELL_PREDICTION__", xsell)
+          .replaceAll("__LINK_PREDICTION__", footerLinks)
           // White-label venue slot: "for HYPERLIQUID" by default; a partner demo instance sets
           // EP_BRAND_FOR=FIREBLOCKS (and optionally EP_BRAND_LINE="built for"). Per-recipient
           // demo links can override with ?brand=… but ONLY for names pre-approved in
@@ -1878,7 +1894,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           )
           .replaceAll("__BRAND_LINE__", (process.env.EP_BRAND_LINE ?? "for").replace(/[<>&"]/g, ""))
           .replaceAll("__SKIN__", process.env.EP_SKIN === "institutional" ? "institutional" : "retail")
-          .replaceAll("__LINK_RECORD__", /^https?:\/\//.test(recordLink) ? `<a href="${recordLink.replace(/"/g, "")}" target="_blank" rel="noopener">Track record</a> · ` : "")
+          .replaceAll("__LINK_RECORD__", trackRecordLink.href ? `<a href="/record" target="_blank" rel="noopener">Track record</a> · ` : "")
           .replaceAll("__LINK_TG__", /^https:\/\//.test(tgLink) ? `<a href="${tgLink.replace(/"/g, "")}" target="_blank" rel="noopener">Support / Telegram</a> · ` : "")
           .replaceAll("__LINK_X__", /^https:\/\//.test(xLink) ? `<a href="${xLink.replace(/"/g, "")}" target="_blank" rel="noopener">X</a> · ` : "")
       );
@@ -1902,7 +1918,48 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       recordPageLoad(funnelState, "video", Date.now());
       funnelDirty = true;
-      sendHtml(res, EP_VIDEO_PAGE_HTML);
+      sendHtml(
+        res,
+        EP_VIDEO_PAGE_HTML
+          .replaceAll("__VIDEO_RECORD_BTN__", trackRecordLink.href ? `<a class="ghost" href="/record" target="_blank" rel="noopener">See the track record</a>` : "")
+          .replaceAll("__VIDEO_PREDICTION_BTN__", predictionLink.href ? `\n    <a class="ghost" href="/prediction" target="_blank" rel="noopener">Prediction markets demo</a>` : "")
+      );
+      return;
+    }
+    // ── Outbound redirects: the site's own short paths to the sister surfaces. Counted in the
+    // funnel before the hop so the traffic page shows how many perp visitors went to prediction
+    // markets. 302 (never cached) so an env change takes effect at once; 404 when switched off. ──
+    const outbound: Record<string, { link: OutboundLink; page: "record" | "prediction" | "prediction_record" }> = {
+      "/record": { link: trackRecordLink, page: "record" },
+      "/prediction": { link: predictionLink, page: "prediction" },
+      "/prediction/record": { link: predictionRecordLink, page: "prediction_record" }
+    };
+    const hop = outbound[url.pathname.replace(/\/+$/, "") || url.pathname];
+    if (req.method === "GET" && hop) {
+      if (!hop.link.configured) {
+        sendJson(res, 404, { ok: false, error: "not_found", message: `${hop.link.label} link is switched off` });
+        return;
+      }
+      recordPageLoad(funnelState, hop.page, Date.now());
+      funnelDirty = true;
+      res.writeHead(302, { Location: `${hop.link.url}/`, "Cache-Control": "no-store", ...CORS_HEADERS });
+      res.end();
+      return;
+    }
+    // ── The operator's traffic page (admin-gated like /demo): both funnels read alike. ──
+    if (req.method === "GET" && url.pathname === "/admin/funnel") {
+      if (!isAdmin) {
+        sendJson(res, 403, { ok: false, error: "admin_required", message: "traffic page requires EP_ADMIN_TOKEN (pass ?token=…)" });
+        return;
+      }
+      const registry = await stores.loadRegistry();
+      sendHtml(
+        res,
+        renderEpFunnelHtml(funnelSummary(funnelState, new Set(Object.keys(registry)), Date.now(), internalAccounts), {
+          atIso: new Date().toISOString(),
+          links: OUTBOUND_LINKS.map((l) => ({ label: l.label, url: l.configured ? l.url : "", alive: l.isAlive }))
+        })
+      );
       return;
     }
     if (req.method === "GET" && url.pathname === "/assets/hl-toggle-demo.mp4") {
@@ -2659,9 +2716,12 @@ server.listen(port, () => {
     funnelState = await stores.loadFunnel();
     // Showcase prefetch (non-blocking): the first visitor lands on a live position, not a skeleton.
     void refreshShowcase();
-    // Footer track-record link: on only while the shadow service answers.
-    void probeTrackRecord().then(() => console.error(`[demo] track record link ${trackRecordAlive ? `ON · ${TRACK_RECORD_URL}` : `OFF · ${TRACK_RECORD_URL || "(unset)"} did not answer /healthz`}`));
-    setInterval(() => void probeTrackRecord(), 10 * 60_000);
+    // Cross-links (track record, prediction markets, prediction record): on only while each
+    // sister service answers its /healthz.
+    void probeOutboundLinks().then(() => {
+      for (const l of OUTBOUND_LINKS) console.error(`[demo] ${l.label} link ${l.isAlive ? `ON · ${l.url}` : `OFF · ${l.url || "(unset)"} ${l.configured ? "did not answer /healthz" : "switched off"}`}`);
+    });
+    setInterval(() => void probeOutboundLinks(), 10 * 60_000);
     setInterval(() => {
       if (!funnelDirty) return;
       funnelDirty = false;

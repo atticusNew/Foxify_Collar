@@ -73,9 +73,11 @@ export const EP_VIDEO_PAGE_HTML = `<!doctype html>
     <div class="row"><b>1</b> tap gives the trader a hard floor and a weekly credit.</div>
     <div class="row">Everything else stays exactly the same — for the venue and the trader.</div>
   </div>
+  <!-- The two sister links go through the site's own /record and /prediction redirects (counted in
+       the funnel, hidden by the service while a sister service is down). -->
   <div class="cta">
     <a class="primary" href="/">Open the live demo</a>
-    <a class="ghost" href="https://facility.atticustrade.com/" target="_blank" rel="noopener">See the track record</a>
+    __VIDEO_RECORD_BTN____VIDEO_PREDICTION_BTN__
   </div>
   <div class="foot">This demo runs as a browser extension over Hyperliquid on a small live position — embedded venue-side it is the same API, and credits scale with position size. Every credit is auditable to an exchange fill. Nothing on this page is investment advice.</div>
 </div>
