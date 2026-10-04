@@ -418,6 +418,8 @@ The named list (traders, KOLs, communities, trackers, builder apps — with hand
 
 ## 7. Tracker (one row per target — keep in this file or a sheet, whichever you'll actually update)
 
+**Sep 2026 refresh:** the full venue list (127 rows: younger perp DEXs, HIP-3 deployers, Hyperliquid frontends and wallets, younger CEXs, US-regulated perp launches, regional spot venues, younger prediction venues) with contacts, channels, reach grades and status lives in **`docs/venue-outreach-tracker.md`** (CSV twin: `docs/venue-outreach-tracker.csv`). The table below is the legacy short list.
+
 | Company | Class | Person / role | T1 sent | T2 (+4d) | T3 (+10d) | Reply? | State (active / parked / call) | Notes |
 |---|---|---|---|---|---|---|---|---|
 | Arcus | exchange | (route via responders → derivs owner) | — | — | — | yes (non-BD) | active — intro ask 5.1 | CEO cold = dead end; work the replies |
