@@ -21,6 +21,16 @@ function demoUrl(): string {
   return process.env.EVENT_SHADOW_DEMO_URL || "https://event.earnandprotect.xyz/";
 }
 
+/** Public URL of the perp site, the other half of the product. "" leaves the link out. */
+function perpUrl(): string {
+  return process.env.EVENT_SHADOW_PERP_URL ?? "https://earnandprotect.xyz/";
+}
+
+function perpLink(): string {
+  const u = perpUrl();
+  return /^https?:\/\//.test(u) ? ` <a class="back" href="${escapeHtml(u)}">Perps demo</a>` : "";
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -390,7 +400,7 @@ ${closedCard}  <div class="card">
     <h2>Open book</h2>
     ${leagueCountLine(input.open, "open")}
     ${openRows || '<div class="row"><span>no open positions</span><b>next scan fills the board</b></div>'}
-    <a class="back" href="${demoUrl()}">back to the demo</a>
+    <a class="back" href="${demoUrl()}">back to the demo</a>${perpLink()}
   </div>
   <footer>
     <b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions; no venue credentials, no wallets. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>

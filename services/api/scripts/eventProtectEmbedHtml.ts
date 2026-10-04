@@ -42,9 +42,17 @@ export interface EmbedOptions {
   minCredit?: MinimumCreditRule;
   /** the track record's URL: the phone's one link, and the first partner link on desktop */
   trackRecordUrl?: string;
+  /**
+   * the perp site (earnandprotect.xyz), the other half of the product: a second quiet link in the
+   * phone note and in the partner row. The service passes its own counted redirect (/perps); an
+   * empty string leaves the link out.
+   */
+  perpsUrl?: string;
 }
 
 const DEFAULT_TRACK_RECORD_URL = "https://atticus-event-shadow.onrender.com";
+/** The demo service's own redirect to the perp site, counted in the funnel before the hop. */
+const DEFAULT_PERPS_URL = "/perps";
 
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -129,6 +137,8 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const initial = escapeHtml(brandInitial(opts.brand));
   const minCredit = opts.minCredit ?? DEFAULT_MINIMUM_CREDIT;
   const trackRecordUrl = escapeHtml(opts.trackRecordUrl || DEFAULT_TRACK_RECORD_URL);
+  const perpsUrl = opts.perpsUrl === undefined ? DEFAULT_PERPS_URL : opts.perpsUrl;
+  const perpsLink = perpsUrl ? `<a href="${escapeHtml(perpsUrl)}">Perps</a>` : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -188,9 +198,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos .closeb:hover{border-color:var(--ep-green);color:var(--ep-green)}
 .empty{padding:30px 16px;color:var(--faint);text-align:center;font-size:14px}
 .host-note{position:fixed;left:0;right:0;bottom:0;padding:10px 16px 14px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.45;background:linear-gradient(to top,var(--bg) 70%,transparent);pointer-events:none}
-/* two deliberate lines (the disclaimer, then the link): never a sentence that wraps and strands the link */
-.host-note span,.host-note a{display:block}
-.host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap;margin-top:2px}
+/* two deliberate lines (the disclaimer, then the links): never a sentence that wraps and strands a link */
+.host-note span,.host-note .links{display:block}
+.host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap;display:inline-block;margin:2px 6px 0}
 .toast{position:fixed;left:50%;bottom:64px;transform:translate(-50%,8px);background:var(--ink);color:var(--bg);font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;white-space:nowrap;z-index:5}
 .toast.on{opacity:.96;transform:translate(-50%,0)}
 /* ---- the sheet: ours, same in any host ---- */
@@ -270,7 +280,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     <li>Refuses when the market can't fund a credit</li>
   </ul>
   <div class="try">Tap <b>Protect</b> on any row &rarr;</div>
-  <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">Track record</a><a href="/partner">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a></div>
+  <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">Track record</a><a href="/partner">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a>${perpsLink}</div>
   <div class="foot">Demonstration only. Simulated positions at live prices; nothing is bought.</div>
 </aside>
 <div class="phone" id="phone">
@@ -280,7 +290,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   </div>
   <div class="tabs"><span class="on">Positions</span><span data-tab="Markets">Markets</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
-  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><a href="${trackRecordUrl}">Track record</a></div>
+  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">Track record</a>${perpsLink}</span></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="scrim" id="scrim"></div>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-h">

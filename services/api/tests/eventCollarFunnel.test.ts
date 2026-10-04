@@ -24,6 +24,7 @@ import {
   tokenBucketLimiter,
   type ProtectContext,
 } from "../src/eventCollar/crossVenue/eventFunnel";
+import { renderFunnelHtml } from "../scripts/eventProtectXAppHtml";
 
 // The demo service reads its env once at import; set it before any test imports it.
 const TMP_DIR = mkdtempSync(join(tmpdir(), "event-funnel-"));
@@ -71,6 +72,17 @@ test("funnel: page loads bucket by UTC day and prune past retention", () => {
   // the 45-day-old bucket was written, then pruned by the next write
   recordPageLoad(f, "app", T0 + 2000);
   assert.equal(Object.keys(f.pageLoads).length, 1);
+});
+
+test("funnel: the /perps hop to the perp site counts as its own surface and shows on the funnel page", () => {
+  const f = emptyEventFunnel();
+  recordPageLoad(f, "embed", T0);
+  recordPageLoad(f, "perps", T0);
+  recordPageLoad(f, "perps", T0 + 1000);
+  assert.deepEqual(f.pageLoads["2026-09-18"], { embed: 1, perps: 2 });
+  const html = renderFunnelHtml(eventFunnelSummary(f, T0 + 2000), { atIso: new Date(T0).toISOString(), funnelPath: "/tmp/x.json", token: null });
+  assert.ok(html.includes("<th>clicks to perps</th>"), "a column for the hop");
+  assert.ok(/<tr class="total"><td>7-day total<\/td><td>0<\/td><td>0<\/td><td>1<\/td><td>2<\/td>/.test(html), "7-day total carries the perps clicks after embed loads");
 });
 
 test("funnel: actions reject bad input without writing", () => {

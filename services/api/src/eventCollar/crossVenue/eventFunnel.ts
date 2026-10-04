@@ -14,7 +14,8 @@
  * operator reads both funnels the same way.
  */
 
-export const EVENT_PAGES = ["app", "receipts", "embed"] as const;
+/** Page loads, plus "perps": the service's own /perps redirect to the perp site, counted before the hop. */
+export const EVENT_PAGES = ["app", "receipts", "embed", "perps"] as const;
 export type EventPage = (typeof EVENT_PAGES)[number];
 
 export const EVENT_ACTIONS = ["row_tap", "protect_on", "protect_undo", "board_expand", "tier_pick", "close_quote", "close_early"] as const;

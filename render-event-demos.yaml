@@ -66,6 +66,10 @@ services:
         value: /var/data/event-demo-funnel.json
       - key: EVENT_X_LEDGER_PATH
         value: /var/data/cross-quotes.jsonl
+      # The perp site (the other half of the product), linked as "Perps" from the embed through
+      # this service's own /perps redirect so the click lands in the funnel. "" switches it off.
+      - key: EVENT_X_PERP_URL
+        value: https://earnandprotect.xyz
       # Ceiling on protection's cost in bps of expected value; above it the
       # cheapest route is still rich insurance and the scan refuses honestly
       # (protection_too_rich). 0 turns the ceiling off.
@@ -118,6 +122,11 @@ services:
         value: production
       - key: EVENT_SHADOW_LEDGER_PATH
         value: /var/data/event-shadow-ledger.jsonl
+      # Cross-links on the record page: the interactive demo and the perp site.
+      - key: EVENT_SHADOW_DEMO_URL
+        value: https://event.earnandprotect.xyz/
+      - key: EVENT_SHADOW_PERP_URL
+        value: https://earnandprotect.xyz/
       # The shadow scans with the demo's scanner, so the same EV-cost ceiling applies:
       # rows above it are recorded as protection_too_rich refusals, not opened.
       - key: EVENT_X_MAX_EV_COST_BPS
