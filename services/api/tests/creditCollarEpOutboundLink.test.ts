@@ -90,11 +90,11 @@ test("traffic page: every funnel surface has a column, outbound clicks and cross
     ]
   });
   for (const p of FUNNEL_PAGES) assert.ok(html.includes(`<th>${FUNNEL_PAGE_LABELS[p]}</th>`), `column for ${p}`);
-  assert.ok(html.includes("<th>clicks to prediction markets</th>") && html.includes("<th>clicks to perp record</th>"), "outbound clicks are named plainly");
+  assert.ok(html.includes("<th>to prediction markets</th>") && html.includes("<th>to perp record</th>"), "outbound clicks are named plainly");
   assert.ok(html.includes('<div class="n green">2</div><div class="l">clicks to prediction markets, 7 days</div>'), "headline number: clicks to prediction markets");
   assert.ok(html.includes('<div class="n">3</div><div class="l">all outbound clicks, 7 days</div>'), "all outbound clicks summed");
-  assert.ok(html.includes("https://facility.atticustrade.com · up, link shown"), "live cross-link reported up");
-  assert.ok(html.includes("https://event.earnandprotect.xyz · down, link hidden"), "down cross-link reported hidden");
+  assert.ok(html.includes('<em class="up">up, link shown</em> https://facility.atticustrade.com'), "live cross-link reported up");
+  assert.ok(html.includes('<em class="down">down, link hidden</em> https://event.earnandprotect.xyz'), "down cross-link reported hidden");
   assert.ok(html.includes("<span>prediction record</span><b>off</b>"), "switched-off link reported off");
   assert.ok(html.includes("0xabab…abab"), "recent lookers shortened");
   assert.ok(!html.includes(" — "), "no em dashes");

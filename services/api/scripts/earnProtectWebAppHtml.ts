@@ -97,7 +97,7 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
   .prod a:after{content:"\\2197";font-size:10px;margin-left:5px;opacity:.75}
   .prod-nav{margin-left:14px}
   .prodbar{display:none;justify-content:center}
-  .prodbar .prod{margin:10px 12px 0}
+  .prodbar .prod{margin:10px 12px 6px}
   @media (max-width:640px){.prod-nav{display:none} .prodbar{display:flex}}
   body.inst .prod,body.inst .prodbar,body.inst .xsell{display:none}
   /* Pitch cross-sell: one quiet line under the toggle call, the same product on the other market. */

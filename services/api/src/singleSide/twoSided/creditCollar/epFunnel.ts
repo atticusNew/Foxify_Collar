@@ -46,16 +46,17 @@ export const recordLooker = (f: FunnelState, account: string, nowMs: number): bo
 export const FUNNEL_PAGES = ["app", "miniapp", "public", "preview", "watch", "video", "record", "prediction", "prediction_record"] as const;
 export type FunnelPage = (typeof FUNNEL_PAGES)[number];
 
+/** Column labels on the traffic page: short, so all nine fit one row on a laptop. */
 export const FUNNEL_PAGE_LABELS: Record<FunnelPage, string> = {
-  app: "app loads",
-  miniapp: "Telegram app loads",
-  public: "public views",
-  preview: "preview quotes",
-  watch: "showcase views",
-  video: "video page loads",
-  record: "clicks to perp record",
-  prediction: "clicks to prediction markets",
-  prediction_record: "clicks to prediction record"
+  app: "app",
+  miniapp: "Telegram app",
+  public: "public",
+  preview: "previews",
+  watch: "showcase",
+  video: "video",
+  record: "to perp record",
+  prediction: "to prediction markets",
+  prediction_record: "to prediction record"
 };
 
 /** Record a page load, a no-address preview quote, a watch-mode view, or an outbound click. Mutates; prunes days beyond retention. */
@@ -157,7 +158,7 @@ export const renderEpFunnelHtml = (
   const links = meta.links
     .map(
       (l) =>
-        `<div class="row"><span>${escapeHtml(l.label)}</span><b>${l.url ? `${escapeHtml(l.url)} · ${l.alive ? "up, link shown" : "down, link hidden"}` : "off"}</b></div>`
+        `<div class="row"><span>${escapeHtml(l.label)}</span><b>${l.url ? `<em class="${l.alive ? "up" : "down"}">${l.alive ? "up, link shown" : "down, link hidden"}</em> ${escapeHtml(l.url)}` : "off"}</b></div>`
     )
     .join("");
   return `<!doctype html>
@@ -169,7 +170,7 @@ export const renderEpFunnelHtml = (
 <link rel="icon" href="data:," />
 <title>Funnel · Earn &amp; Protect · perps</title>
 <style>
-:root{--bg:#f6f7f7;--card:#fff;--card2:#f2f4f4;--line:#e4e7e7;--ink:#050d0a;--dim:#5c6a64;--faint:#98a49e;--green:#00b67a}
+:root{--bg:#f6f7f7;--card:#fff;--card2:#f2f4f4;--line:#e4e7e7;--ink:#050d0a;--dim:#5c6a64;--faint:#98a49e;--green:#00b67a;--warn:#b9862f}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
 .topbar{background:#050d0a}
@@ -191,10 +192,12 @@ h1{font-size:19px;font-weight:650;letter-spacing:-.01em}
 h2{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
 .row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:13.5px;color:var(--dim);font-variant-numeric:tabular-nums;border-top:1px solid var(--line)}
 .row:first-of-type{border-top:0}
-.row b{color:var(--ink);font-weight:650;text-align:right;word-break:break-all}
+.row b{color:var(--ink);font-weight:650;text-align:right;overflow-wrap:anywhere;font-size:12.5px}
+.row b em{font-style:normal;font-weight:650;white-space:nowrap}
+.row b em.up{color:var(--green)} .row b em.down{color:var(--warn)}
 table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
-th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:6px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
-td{padding:7px 6px;border-bottom:1px solid var(--line);color:var(--dim);white-space:nowrap}
+th{text-align:left;color:var(--dim);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;padding:6px 5px;border-bottom:1px solid var(--line);vertical-align:bottom;line-height:1.25}
+td{padding:7px 5px;border-bottom:1px solid var(--line);color:var(--dim);white-space:nowrap}
 td.hi{color:var(--ink);font-weight:650}
 td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--ink)}
 tr.total td{color:var(--ink);font-weight:650;border-bottom:0}

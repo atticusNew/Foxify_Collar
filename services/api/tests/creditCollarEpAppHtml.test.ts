@@ -150,7 +150,7 @@ test("prediction markets CTA: product switch in the nav (wide) and on a bar unde
     assert.ok(html.includes('<div class="nav-l"><div class="logo">') && html.includes("</span></div>__PROD_SWITCH_NAV__</div>"), "the switch sits beside the logo, left of the price and Connect");
     assert.ok(html.includes('<div class="prodbar">__PROD_SWITCH_BAR__</div>') && html.indexOf('<div class="prodbar">') < html.indexOf('<div class="stage">'), "the phone bar sits directly under the header, outside the stage, so it survives the hero folding away");
     assert.ok(html.includes("@media (max-width:640px){.prod-nav{display:none} .prodbar{display:flex}}"), "one switch visible at a time: nav on wide screens, bar on phones");
-    assert.ok(html.includes(".prodbar{display:none;justify-content:center}") && html.includes(".prodbar .prod{margin:10px 12px 0}"), "an empty bar (link off) takes no height");
+    assert.ok(html.includes(".prodbar{display:none;justify-content:center}") && html.includes(".prodbar .prod{margin:10px 12px 6px}"), "an empty bar (link off) takes no height");
     assert.ok(html.includes("body.inst .prod,body.inst .prodbar,body.inst .xsell{display:none}"), "the institutional skin carries no prediction cross-sell");
     assert.ok(html.indexOf("__XSELL_PREDICTION__") > html.indexOf('<div class="try">Flip the <b>toggle</b>') && html.indexOf("__XSELL_PREDICTION__") < html.indexOf('<div class="partners">'), "the pitch cross-sell sits under the toggle call, above the partner links");
     const footer = html.slice(html.indexOf('<div class="foot">'));
