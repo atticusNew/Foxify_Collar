@@ -62,8 +62,8 @@ Make one-tap, hedged, paying protection the default feature on every venue where
 
 | Item | Status | Where |
 |---|---|---|
-| Entities | Atticus Trade, Inc. (US). A Seychelles entity is also registered (founder to confirm name and intended role, likely the non-US B2C and vault wrapper). Treat jurisdiction as a counsel question, never a design input. | founder |
-| Funding | Self-funded. Raising a pre-seed: $250k to $500k on a post-money SAFE at a $5M cap (founder, 2026-09-28); older material says "$2M seed at $10M cap" and "$4M cap / 20% discount". Confirm the current terms with him before any send. | `PITCH_STUDY_SHEET.md` §10 |
+| Entities | Two. Atticus Trade, Inc. (US) and a Seychelles Ltd company, incorporated through a licensed registered agent with an attorney; certificate of incorporation, certificate of incumbency and the usual corporate documents are on file with the founder. Which entity signs a given venue, lender or depositor agreement is a counsel question, never a design input; ask the founder which one applies before drafting anything that names a party. | founder |
+| Funding | Self-funded. Raising a pre-seed of $250k to $400k on a post-money SAFE at a $5M cap (founder, 2026-10-06). Older material saying "$250k to $500k", "$2M seed at $10M cap" or "$4M cap / 20% discount" is superseded; correct it wherever you find it. | `PITCH_STUDY_SHEET.md` §10 |
 | Use of funds | hedge margin for the first live cohort, the regulated deployment path for US event venues, two hires (engineer, sales) | same |
 | Team | founder plus agents. No employees. | |
 | Contact | `michael@atticustrade.com` everywhere (hello@ was not receiving) | PR #203, #202 |

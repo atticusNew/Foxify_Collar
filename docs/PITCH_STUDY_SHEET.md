@@ -2,7 +2,7 @@
 
 **Living document.** Update it whenever any of these happen: a number on either public record moves materially, a venue or regulator does something that changes an answer, a question comes up in a real conversation that is not covered here, or an answer below turns out to be wrong. Every update goes in the changelog at the bottom with the date. Agents: when the founder reports a new development, an investor or partner question, or a market-structure change, update this sheet in the same PR as any related work.
 
-**Last updated:** 2026-09-29. Numbers are from the live records on that date; refresh before any event.
+**Last updated:** 2026-10-06 (ask and entities). Numbers are from the live records on 2026-09-28/29; refresh before any event.
 
 ---
 
@@ -109,7 +109,7 @@ Say these. Do not say "patent" unless a provisional is filed; if it is, "patent 
 
 ## 10. The ask
 
-As of 2026-09-28 (founder, in conversation): $250k to $500k pre-seed at a $5M post-money cap; funds hedge margin for the founding cohort, the regulated deployment path for US event venues, and two hires. `docs/AGENT_HANDOFF.md` (2026-09-18) records "$2M seed at a $10M cap, $250K first-close tranche." Confirm which is current before any event and update both.
+As of 2026-10-06 (founder): $250k to $400k pre-seed on a post-money SAFE at a $5M cap; funds hedge margin for the founding cohort, the regulated deployment path for US event venues, and two hires. The company is self-funded to date. Entities: Atticus Trade, Inc. (US) and a Seychelles Ltd (incorporated through a registered agent with counsel; incorporation and incumbency documents on file). Earlier figures ("$250k to $500k", "$2M seed at a $10M cap", "$4M cap / 20% discount") are superseded; `docs/AGENT_HANDOFF.md` carries the same terms.
 
 Fit check for the room: Strobe Ventures writes $1M to $3M first checks at 7% to 10% ownership; below that size, the ask to a fund like that is a relationship and names, not a check.
 
@@ -169,6 +169,7 @@ Suggested by Robin Obermaier (Liquidium) on 2026-09-29: a liquidity provider pos
 
 ## 15. Changelog
 
+- 2026-10-06: Section 10: the ask is $250k to $400k at a $5M post-money cap (founder); self-funded to date; two entities named (Atticus Trade, Inc. and a Seychelles Ltd). Handoff rewritten the same day (`docs/AGENT_HANDOFF.md`).
 - 2026-09-29: Section 13 providers corrected: Wildcat is rails not capital, Clearpool removed as a fit, Credit Coop and 3Jane added as near fits. Section 14 one-leg note clarified for events.
 - 2026-09-29: Section 14 added: ProphetX pilot readiness (status, two pilot shapes, the DCM identity argument, blocks to live beyond capital, talking point).
 - 2026-09-29: Perp numbers refreshed to 2026-09-29. Margin figure corrected: about 10 cents per dollar leg for leg, 7 cents netted (was "5 cents"). Section 13 added: hedge collateral facility, the three lender questions answered off the record, providers, legal shape, Hermetica prep. Section 12 margin answer updated.
