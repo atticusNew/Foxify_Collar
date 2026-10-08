@@ -11,6 +11,7 @@
  * visual language as the demo and receipts pages. Server-rendered, no client JS.
  */
 
+import type { LastLegSummary } from "../src/eventCollar/crossVenue/lastLeg";
 import type { RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
@@ -417,6 +418,79 @@ export interface ShadowReportInput {
   summary: ShadowSummary;
   /** the operator token the page was opened with, carried on its own links */
   token?: string | null;
+  /** the last-leg shadow (lastLeg.ts); absent on reports rendered before it existed */
+  lastLeg?: { summary: LastLegSummary; enabled: boolean; stakeCents: number };
+}
+
+const pct1 = (x: number | null): string => (x === null ? "–" : `${x.toFixed(1)}%`);
+const n1 = (x: number | null, unit = ""): string => (x === null ? "–" : `${x.toFixed(1)}${unit}`);
+
+/**
+ * LAST LEG — the parlay question, answered with numbers rather than instinct. Tickets are built
+ * from the public combo-leg catalog (Polymarket publishes no list of real tickets), tracked leg by
+ * leg, and quoted at the moment every leg but the last has hit. Everything about the prices and
+ * results is real; the tickets are the only simulation, and the card says so.
+ */
+export function lastLegCard(input: NonNullable<ShadowReportInput["lastLeg"]>, token: string): string {
+  const s = input.summary;
+  if (!input.enabled) {
+    return `<div class="card"><h2>Last leg</h2><div class="sub">The last-leg shadow is off on this instance (EVENT_LASTLEG_ENABLED=0).</div></div>`;
+  }
+  const decided = s.reachedLastLeg + s.busted;
+  const reachLine =
+    decided === 0
+      ? "No ticket has been decided yet; the first slate with a late game will begin it."
+      : `${s.reachedLastLeg} of ${decided} decided tickets reached the last leg with every other leg hit (${pct1(s.reachedPctOfDecided)}); ${s.busted} busted earlier.`;
+  const attempted = s.quoted + s.refusedOnly;
+  const quoteLine =
+    s.reachedLastLeg === 0
+      ? ""
+      : attempted === 0
+        ? s.windowMissed > 0
+          ? `${s.windowMissed} reached the moment but the other legs' results landed too late to quote before the last game; the gap rule needs more room.`
+          : "Tickets at the last leg are waiting for their window."
+        : `At the moment, the venues funded a credit on ${s.quoted} of ${attempted} tickets quoted${s.windowMissed > 0 ? `; ${s.windowMissed} more reached it too late to quote` : ""}.`;
+  const termsLine =
+    s.quoted === 0
+      ? ""
+      : `On the quoted tickets the bettor kept ${pct1(s.avgFloorPctOfMark)} of the ticket's value on a miss (the floor), gave up everything above ${pct1(s.avgCapPctOfMark)} on a hit (the cap), and was paid ${usd(Math.round(s.avgCreditCents ?? 0))} up front on average (${n1(s.avgCreditBpsOfValue === null ? null : s.avgCreditBpsOfValue / 100, "%")} of the ticket's value), ${n1(s.avgMinutesToStartAtQuote === null ? null : s.avgMinutesToStartAtQuote / 60, "h")} before the last game. Quoted EV cost ${bpsPct(s.avgEvCostBps)} of the position.`;
+  const st = s.settled;
+  const settledLine =
+    st.withProtection === 0
+      ? "No protected ticket has settled yet."
+      : `${st.withProtection} protected tickets settled: ${st.floorSaves} missed the last leg and the floor paid, ${st.capGiveups} hit it and gave up the cap${st.scalar ? `, ${st.scalar} settled partially` : ""}. Protected ${usd(st.protectedCents)} against ${usd(st.nakedCents)} naked (${signedUsd(st.deltaCents)}). Our side netted ${signedUsd(st.writerCents)} against ${usd(st.takeBookedCents)} of take booked: ${st.identityHolds ? "the identity holds" : "GAP, investigate"}.`;
+  const refusals = Object.entries(s.refusalCodes)
+    .sort((a, b) => b[1] - a[1])
+    .map(([code, n]) => `<div class="row"><span>${escapeHtml(code)}</span><b>${n}</b></div>`)
+    .join("");
+  const sizeRows = s.bySize
+    .map(
+      (r) =>
+        `<tr><td>${r.size} legs</td><td>${r.built}</td><td>${r.busted}</td><td>${r.reachedLastLeg}</td><td class="hi">${r.quoted}</td><td>${r.refusedOnly}</td><td>${r.settled}</td><td>${r.quoted ? `${usd(r.protectedCents)} / ${usd(r.nakedCents)}` : "–"}</td></tr>`,
+    )
+    .join("");
+  const period = s.firstTicketAt ? `since ${utcDay(s.firstTicketAt)} UTC` : "not started";
+  return `<div class="card">
+    <h2>Last leg</h2>
+    <div class="sub" style="margin-bottom:8px">Does "lock in your parlay before the last leg" fund a credit? Tickets of ${escapeHtml(s.bySize.map((r) => r.size).join(", ") || "2 to 5")} favourites at a $${(input.stakeCents / 100).toFixed(0)} stake are built from Polymarket's public combo-leg catalog the way a bettor builds them, tracked leg by leg, and when every leg but the last has hit the compressed position is quoted with the live book's collar on the last leg's own book. Prices, results and quotes are real; the tickets are simulated, because the venue publishes no list of real ones.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n">${s.tickets}</div><div class="l">tickets built</div></div>
+      <div class="bignum"><div class="n">${s.reachedLastLeg}</div><div class="l">reached the last leg</div></div>
+      <div class="bignum"><div class="n green">${s.quoted}</div><div class="l">funded a credit</div></div>
+      <div class="bignum"><div class="n">${s.refusedOnly}</div><div class="l">refused every time</div></div>
+    </div>
+    <div class="period">${escapeHtml(period)} · ${s.open} in play · ${s.voided} voided</div>
+    <div class="read" style="margin-top:10px">${escapeHtml(reachLine)}${quoteLine ? ` ${escapeHtml(quoteLine)}` : ""}</div>
+    ${termsLine ? `<div class="read">${escapeHtml(termsLine)}</div>` : ""}
+    <div class="read">${escapeHtml(settledLine)}</div>
+    <div class="tablewrap" style="margin-top:8px"><table>
+      <tr><th>ticket</th><th>built</th><th>busted</th><th>reached</th><th>quoted</th><th>refused</th><th>settled</th><th>protected / naked</th></tr>
+      ${sizeRows || `<tr><td colspan="8">no tickets yet</td></tr>`}
+    </table></div>
+    ${refusals ? `<div class="rule">Refusals by reason across ${s.attempts} attempts:</div>${refusals}` : ""}
+    <div class="rule">Busted means a leg other than the last lost, so no moment existed. Refused means the moment came and the last leg's book did not fund a positive credit at any floor/cap, or the mark sat outside the quotable band. Ticket value at the moment is contracts × the last leg's mark: what a cash-out at fair would pay.</div>
+    <a class="back" href="/api/shadow/lastleg${token}">Tickets (JSON)</a> <a class="back" href="/api/shadow/lastleg.csv${token}">Tickets (CSV)</a>
+  </div>`;
 }
 
 /** One rule's line in a comparison table. `hi` marks the columns a reader compares first. */
@@ -586,6 +660,8 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
   </div>
 
   ${ourBookCard(s)}
+
+  ${input.lastLeg ? lastLegCard(input.lastLeg, tq) : ""}
 
   <div class="card">
     <h2>Protection tiers</h2>

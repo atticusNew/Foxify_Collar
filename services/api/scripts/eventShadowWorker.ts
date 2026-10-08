@@ -27,6 +27,10 @@
  *      EVENT_SHADOW_SETTLE_GRACE_MS (default 3h) · EVENT_SHADOW_VOID_AFTER_MS (default 72h)
  *      EVENT_SHADOW_CRYPTO_SHARE_MAX (default 0.5) · EVENT_SHADOW_CRYPTO_FLOOR_PER_DAY (default 4)
  *      plus the demo's EVENT_X_* scanner knobs (contracts, board rows, series)
+ *      Last-leg shadow (crossVenue/lastLeg.ts): EVENT_LASTLEG_ENABLED (default on) · EVENT_LASTLEG_TICK_MS (10m)
+ *      · EVENT_LASTLEG_LEDGER_PATH · EVENT_LASTLEG_STAKE_CENTS · EVENT_LASTLEG_LEG_COUNTS · EVENT_LASTLEG_TICKETS_PER_SIZE
+ *      · EVENT_LASTLEG_MAX_OPEN · EVENT_LASTLEG_FAV_MIN_MILLI / _MAX_MILLI · EVENT_LASTLEG_MIN_GAP_MS · EVENT_LASTLEG_WINDOW_MS
+ *      · EVENT_LASTLEG_LEAGUES · EVENT_LASTLEG_CATALOG_PAGES · EVENT_LASTLEG_VOID_AFTER_MS
  * Alerts (optional, see crossVenue/shadowAlerts.ts): EVENT_SHADOW_ALERT_BOT_TOKEN +
  *      EVENT_SHADOW_ALERT_CHAT_ID (Telegram) and/or EVENT_SHADOW_ALERT_WEBHOOK_URL
  *
@@ -90,6 +94,16 @@ import {
   type EarlyCloseBooks,
 } from "../src/eventCollar/crossVenue/earlyClose";
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
+import { getComboLegStatus, getComboMarkets } from "../src/eventCollar/crossVenue/polymarketCombos";
+import {
+  appendLastLegRecord,
+  lastLegConfigFromEnv,
+  lastLegCsv,
+  loadLastLegTickets,
+  runLastLegTick,
+  summarizeLastLeg,
+  type LastLegTickReport,
+} from "../src/eventCollar/crossVenue/lastLeg";
 import type { ScanOptions, ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -108,6 +122,17 @@ const VOID_AFTER_MS = Number(process.env.EVENT_SHADOW_VOID_AFTER_MS || 72 * 3_60
 const CLOSE_MS = Number(process.env.EVENT_SHADOW_CLOSE_MS || 60_000);
 const earlyCloseRule = earlyCloseRuleFromEnv(process.env);
 
+/**
+ * LAST-LEG SHADOW: representative parlay tickets built from Polymarket's public combo-leg catalog,
+ * tracked leg by leg, and quoted for protection at the moment every leg but the last has hit
+ * (lastLeg.ts). Its own append-only ledger beside the positions ledger; operator views only.
+ */
+const LASTLEG_PATH = process.env.EVENT_LASTLEG_LEDGER_PATH || join(dirname(LEDGER_PATH), "lastleg-ledger.jsonl");
+const lastLegCfg = lastLegConfigFromEnv(process.env);
+let lastLastLegAt: string | null = null;
+let lastLastLegError: string | null = null;
+let lastLastLegReport: LastLegTickReport | null = null;
+
 /** one line per hedge: which strategy filled it, at what, and why the other did not */
 const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDGER_PATH), "hedge-receipts.jsonl");
 const hedgeChoice = hedgeExecutorFromEnv(process.env);
@@ -121,7 +146,15 @@ const adminAuth = parseAdminAuthFromEnv(process.env);
 /** crypto strikes roll over hourly; without a ceiling they crowd the games out of the record */
 const openMix = openMixRuleFromEnv(process.env);
 let cryptoSkippedLastScan = 0;
-const OPERATOR_PATHS = new Set(["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export", "/api/shadow/reset"]);
+const OPERATOR_PATHS = new Set([
+  "/report",
+  "/api/shadow/report",
+  "/api/shadow/hedges",
+  "/api/shadow/export",
+  "/api/shadow/reset",
+  "/api/shadow/lastleg",
+  "/api/shadow/lastleg.csv",
+]);
 
 const alertCfg = parseShadowAlertsFromEnv(process.env);
 const alerter: ShadowAlerter = buildShadowAlerter(alertCfg);
@@ -367,6 +400,29 @@ async function closeTick(): Promise<void> {
   lastCloseAt = new Date().toISOString();
 }
 
+/** Resolve legs, quote the moment, build tickets: one pass of the last-leg shadow. */
+async function lastLegTick(): Promise<void> {
+  if (!lastLegCfg.enabled) return;
+  try {
+    lastLastLegReport = await runLastLegTick(
+      {
+        nowMs: () => Date.now(),
+        catalog: () => getComboMarkets({ maxPages: lastLegCfg.catalogPages }),
+        legStatus: (slug) => getComboLegStatus(slug),
+        noBook: (tokenId) => getPmBook(tokenId),
+        load: () => loadLastLegTickets(LASTLEG_PATH),
+        append: (record) => appendLastLegRecord(LASTLEG_PATH, record),
+      },
+      lastLegCfg,
+      searchConfig(),
+    );
+    lastLastLegError = lastLastLegReport.errors.length ? lastLastLegReport.errors[lastLastLegReport.errors.length - 1] : null;
+  } catch (err) {
+    lastLastLegError = String(err instanceof Error ? err.message : err);
+  }
+  lastLastLegAt = new Date().toISOString();
+}
+
 /** Evaluate the counters against the alert thresholds; runs after every tick. */
 async function healthTick(): Promise<void> {
   const alerts = evaluateShadowHealth(
@@ -420,6 +476,13 @@ function healthBody(): Record<string, unknown> {
     settleDueLastTick,
     earlyClose: { ...earlyCloseRule, everyMs: CLOSE_MS, lastCloseAt, lastCloseError, closeDueLastTick },
     openMix: { ...openMix, cryptoSkippedLastScan },
+    lastLeg: {
+      ...lastLegCfg,
+      ledger: { path: LASTLEG_PATH, ...ledgerStats(LASTLEG_PATH) },
+      lastTickAt: lastLastLegAt,
+      lastError: lastLastLegError,
+      lastReport: lastLastLegReport,
+    },
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
     hedge: {
       strategy: hedgeChoice.strategy,
@@ -494,7 +557,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         return;
       }
       const atIso = new Date().toISOString();
-      const archived = [archiveLedgerFile(LEDGER_PATH, atIso), archiveLedgerFile(RECEIPTS_PATH, atIso)]
+      const archived = [archiveLedgerFile(LEDGER_PATH, atIso), archiveLedgerFile(RECEIPTS_PATH, atIso), archiveLedgerFile(LASTLEG_PATH, atIso)]
         .filter((a) => a.archivedTo)
         .map((a) => ({ from: a.path, to: a.archivedTo }));
       if (scan) void scanTick();
@@ -552,6 +615,31 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       });
       return;
     }
+    if (url.pathname === "/api/shadow/lastleg") {
+      // The last-leg shadow: every ticket with its legs, moments and outcome, plus the summary.
+      const tickets = loadLastLegTickets(LASTLEG_PATH);
+      sendJson(res, 200, {
+        ok: true,
+        at: new Date().toISOString(),
+        config: lastLegCfg,
+        lastTickAt: lastLastLegAt,
+        lastError: lastLastLegError,
+        lastReport: lastLastLegReport,
+        summary: summarizeLastLeg(tickets),
+        tickets: tickets.sort((a, b) => b.at.localeCompare(a.at)),
+      });
+      return;
+    }
+    if (url.pathname === "/api/shadow/lastleg.csv") {
+      const csv = lastLegCsv(loadLastLegTickets(LASTLEG_PATH));
+      res.writeHead(200, {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="event-shadow-lastleg-${new Date().toISOString().slice(0, 10)}.csv"`,
+        "cache-control": "no-store",
+      });
+      res.end(csv);
+      return;
+    }
     if (url.pathname === "/api/shadow/hedges") {
       // The hedge trail: how each hedge leg was filled, and what the RFQ path did or would have done.
       const receipts = loadHedgeReceipts(RECEIPTS_PATH);
@@ -571,7 +659,14 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/report") {
       const { atIso, positions } = pageData();
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderShadowReportHtml({ atIso, summary: summarizeShadow(positions), token: url.searchParams.get("token") }));
+      res.end(
+        renderShadowReportHtml({
+          atIso,
+          summary: summarizeShadow(positions),
+          token: url.searchParams.get("token"),
+          lastLeg: { summary: summarizeLastLeg(loadLastLegTickets(LASTLEG_PATH)), enabled: lastLegCfg.enabled, stakeCents: lastLegCfg.stakeCents },
+        }),
+      );
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -610,16 +705,23 @@ async function main(): Promise<void> {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
-      `[event-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m · early closes ${earlyCloseRule.sharePct}% of the book`,
+      `[event-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m · early closes ${earlyCloseRule.sharePct}% of the book` +
+        (lastLegCfg.enabled
+          ? ` · last-leg shadow every ${Math.round(lastLegCfg.tickMs / 60_000)}m (${lastLegCfg.legCounts.join("/")}-leg tickets, $${(lastLegCfg.stakeCents / 100).toFixed(0)} stake, ledger ${LASTLEG_PATH})`
+          : " · last-leg shadow off"),
     );
     void scanTick();
     void settleTick();
     setInterval(() => void scanTick(), SCAN_MS);
     setInterval(() => void settleTick(), SETTLE_MS);
     if (earlyCloseRule.sharePct > 0) setInterval(() => void closeTick(), CLOSE_MS);
+    if (lastLegCfg.enabled) {
+      void lastLegTick();
+      setInterval(() => void lastLegTick(), lastLegCfg.tickMs);
+    }
   });
 }
 
 if (process.env.NODE_ENV !== "test") void main();
 
-export { server, scanTick, settleTick, closeTick };
+export { server, scanTick, settleTick, closeTick, lastLegTick };
