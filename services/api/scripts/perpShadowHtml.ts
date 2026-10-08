@@ -350,7 +350,17 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     ${
       plain
         ? kpi("cap touched", s.settled ? `${cd.touched} of ${s.settled}` : "–", cd.avgHoursToTouch === null ? "nothing closes at a touch" : `avg ${cd.avgHoursToTouch}h in · nothing closed`) +
-          kpi("ended past the cap", s.settled ? `${cd.endedPastCap} of ${s.settled}` : "–", cd.endedPastCap ? `${usd(cd.capExcessCents)} handed back vs ${usd(cd.creditOnPastCapCents)} credit` : "gains above the cap pay for the floor")
+          kpi("ended past the cap", s.settled ? `${cd.endedPastCap} of ${s.settled}` : "–", cd.endedPastCap ? `${usd(cd.capExcessCents)} handed back vs ${usd(cd.creditOnPastCapCents)} credit` : "gains above the cap pay for the floor") +
+          kpi(
+            "hand-back beyond the credit",
+            s.settled ? `${cd.exceededCredit} of ${s.settled}` : "–",
+            cd.exceededCredit ? `${usd(cd.exceededCreditCents)} in all · largest ${usd(cd.largestExceededCreditCents)}` : "the credit covered every hand-back so far",
+          ) +
+          kpi(
+            "cap odds, said vs seen",
+            cd.realizedExceedPct == null ? "–" : `${cd.realizedExceedPct}%`,
+            cd.predictedExceedPct == null ? "finished past the cap · no market odds recorded at open" : `finished past the cap · the market said ${cd.predictedExceedPct}% at open`,
+          )
         : kpi("knock-outs", s.settled ? `${s.knockouts} of ${s.settled}` : "–", s.knockoutDetail.avgHoursToTouch === null ? "cap touched, cycle ended early" : `avg ${s.knockoutDetail.avgHoursToTouch}h in`)
     }
     ${kpi("funding at open", s.avgFundingBpsPer8h === null ? "–" : `${s.avgFundingBpsPer8h} bps/8h`, "Hyperliquid, average · not part of the credit")}
@@ -379,6 +389,7 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     ${
       plain
         ? `<li><b>Floor save</b>: the floor clamped the loss. <b>Past the cap</b>: gains above the cap this cycle were handed back; they paid for the floor. <b>Touched</b>: price reached the cap on the Hyperliquid path; nothing closed. The whole credit is the user's in every case.</li>
+    <li><b>Hand-back beyond the credit</b>: the credit pays at the close of the cycle and covers the first slice of any hand-back, so this counts the cycles where the gains handed back were larger than the credit. On a venue that holds the position the week is simply booked capped; on Hyperliquid, where we can pay the user but never debit, this is the balance that is recorded and never collected. <b>Cap odds, said vs seen</b>: the cap is placed where the options market gives about a one-in-five chance of finishing past it; the second number is how often it happened.</li>
     <li><b>Our take</b> is the published share of the net credit. Both legs are hedged leg for leg on OKX and held to expiry, so the take is our whole side: our P&amp;L equals the take booked.</li>`
         : `<li><b>Floor save</b>: the floor clamped the loss. <b>Knock-out</b>: price touched the cap, the cycle ended there, the user kept the position and every gain and was paid the credit vested to the touch.</li>
     <li><b>Our take</b> is the published share of the net credit; at a knock-out the short cap leg is bought back at the money, our cost against the unvested credit kept.</li>`
@@ -682,6 +693,8 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
     <div class="row"><span>release at the touch</span><b>${cd.touched ? usd(cd.releaseAtTouchCents) : "–"} <i>what keeping the upside would have cost, in all</i></b></div>
     <div class="row"><span>ended past the cap</span><b>${cd.endedPastCap} <i>of ${s.settled} settled</i></b></div>
     <div class="row"><span>handed back</span><b>${cd.endedPastCap ? usd(cd.capExcessCents) : "–"} <i>vs ${usd(cd.creditOnPastCapCents)} credit on those cycles</i></b></div>
+    <div class="row"><span>beyond the credit</span><b>${cd.exceededCredit} <i>of ${s.settled} settled · ${cd.exceededCredit ? `${usd(cd.exceededCreditCents)} in all, largest ${usd(cd.largestExceededCreditCents)}` : "the credit covered every hand-back"} · the one-way-rail balance</i></b></div>
+    <div class="row"><span>cap odds, said vs seen</span><b>${cd.predictedExceedPct == null ? "–" : `${cd.predictedExceedPct}% → ${cd.realizedExceedPct ?? "–"}%`} <i>market-implied at open vs realized past-the-cap rate</i></b></div>
     <div class="row"><span>two clocks</span><b>${cd.touched ? `${cd.okxConfirmed} confirmed · ${cd.hlOnly} HL only` : "–"} <i>OKX index vs cap at the touch</i></b></div>
     <div class="read">${escapeHtml(capCardLine)}</div>
   </div>`

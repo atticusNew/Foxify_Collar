@@ -994,6 +994,24 @@ export interface PerpCapSummary {
   hlOnly: number;
   /** credit paid on the positions that ended past the cap: did it compensate for the upside handed back? */
   creditOnPastCapCents: number;
+  /**
+   * Settled positions whose hand-back exceeded the credit paid on that cycle. The credit settles
+   * at close and nets the first slice of the hand-back, so this is the only case in which a
+   * one-way rail (Hyperliquid agent wallets) is left with a balance it cannot collect. On a venue
+   * ledger the week is simply booked capped and this number is informational.
+   */
+  exceededCredit: number;
+  /** sum of (hand-back − credit) over those positions, cents: the balance a one-way rail would carry */
+  exceededCreditCents: number;
+  /** the largest single (hand-back − credit), cents */
+  largestExceededCreditCents: number;
+  /**
+   * The cap rule's calibration. Market-implied odds at open that the live cap would be finished
+   * past (the rule targets at most 20%), averaged over settled positions with a readable vol, %.
+   */
+  predictedExceedPct: number | null;
+  /** realized share of settled positions that finished past the cap, %: the number the prediction is checked against */
+  realizedExceedPct: number | null;
 }
 
 export function summarizeSameStrike(positions: PerpShadowPosition[]): PerpSameStrikeSummary {
@@ -1064,7 +1082,21 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
       unvestedKeptCents: 0,
     },
     capMode,
-    capDetail: { touched: 0, endedPastCap: 0, capExcessCents: 0, releaseAtTouchCents: 0, avgHoursToTouch: null, okxConfirmed: 0, hlOnly: 0, creditOnPastCapCents: 0 },
+    capDetail: {
+      touched: 0,
+      endedPastCap: 0,
+      capExcessCents: 0,
+      releaseAtTouchCents: 0,
+      avgHoursToTouch: null,
+      okxConfirmed: 0,
+      hlOnly: 0,
+      creditOnPastCapCents: 0,
+      exceededCredit: 0,
+      exceededCreditCents: 0,
+      largestExceededCreditCents: 0,
+      predictedExceedPct: null,
+      realizedExceedPct: null,
+    },
     sameStrike: summarizeSameStrike(positions),
     counterfactuals: summarizePerpCounterfactuals(positions, capMode),
   };
@@ -1083,6 +1115,8 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
   let touchHours = 0;
   let touchCount = 0;
   let capTouchHours = 0;
+  let exceedProbSum = 0;
+  let exceedProbN = 0;
   const hourBuckets = new Map<string, number>();
   const ko = s.knockoutDetail;
   for (const p of positions) {
@@ -1132,6 +1166,16 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
         s.capDetail.endedPastCap += 1;
         s.capDetail.capExcessCents += o.capExcessCents;
         s.capDetail.creditOnPastCapCents += o.paidCents;
+        const beyondCredit = o.capExcessCents - o.paidCents;
+        if (beyondCredit > 0) {
+          s.capDetail.exceededCredit += 1;
+          s.capDetail.exceededCreditCents += beyondCredit;
+          s.capDetail.largestExceededCreditCents = Math.max(s.capDetail.largestExceededCreditCents, beyondCredit);
+        }
+      }
+      if (p.capExceedProb != null) {
+        exceedProbSum += p.capExceedProb;
+        exceedProbN += 1;
       }
       if (o.knockedOut) {
         s.knockouts += 1;
@@ -1167,6 +1211,8 @@ export function summarizePerpShadow(positions: PerpShadowPosition[], refusals: P
   ko.touchHours = hourBuckets.size;
   ko.maxInOneHour = Math.max(0, ...hourBuckets.values());
   s.capDetail.avgHoursToTouch = s.capDetail.touched > 0 ? +(capTouchHours / s.capDetail.touched).toFixed(1) : null;
+  s.capDetail.predictedExceedPct = exceedProbN > 0 ? +((exceedProbSum / exceedProbN) * 100).toFixed(1) : null;
+  s.capDetail.realizedExceedPct = s.settled > 0 ? +((s.capDetail.endedPastCap / s.settled) * 100).toFixed(1) : null;
   return s;
 }
 
