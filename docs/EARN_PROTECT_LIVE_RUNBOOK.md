@@ -42,6 +42,7 @@ Confirm the flags that must already be right in `render-earn-protect.yaml` (they
 | `EP_TENOR` | `weekly` | nearest listed Friday at least 3 days out; the credit is real there |
 | `EP_CAP_RULE` / `EP_CAP_EXCEED_PROB` | `target` / `0.20` | most credit among caps with ≤20% market-implied odds of finishing beyond |
 | `EP_FLOOR_RULE` | `fixed` (6%) until the shadow's Floor depth card says otherwise | the rule is measured before the default moves |
+| `EP_BRAND_SETTINGS` | unset (every brand on the instance's settings) | per-brand dials inside published bands: tenor band 3–14 days, cap odds 10–30%, take waiver; the boot log prints each brand's line and any clamped value |
 | `EP_UNWIND_QUEUE` | `1` | early closes settle the holder at MTM at once; our legs are worked passive → IOC with receipts |
 | `EP_SKIN` | `retail` | non-admin JSON is redacted server-side; the institutional payload is a separate instance |
 | `EP_REQUIRE_ACTION_SIG` | forced on for every non-paper lane | owner-only actions; a wallet signs once |

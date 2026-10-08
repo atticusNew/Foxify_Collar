@@ -133,6 +133,16 @@ services:
         value: "0.20"
       - key: EP_FLOOR_RULE
         value: fixed
+      # EP_BRAND_SETTINGS: per-brand dials, a JSON object keyed by brand name (the instance's
+      # EP_BRAND_FOR or any EP_BRAND_ALLOWLIST name a `?brand=` link may carry). Each brand may set
+      # tenorMinDays / tenorMaxDays (3–14; the cycle runs to the nearest listed Friday inside the
+      # band, the live rule when none sits there), capExceedProb (0.10–0.30; that brand's
+      # EP_CAP_EXCEED_PROB) and takeWaived (true = no take and no notional minimum on that brand's
+      # wraps; the trader is paid the whole net credit). Values outside a band are clamped and
+      # logged at boot. Unset (default) = every brand runs the instance's settings; nothing changes.
+      #   {"PRIMEVAULT":{"tenorMinDays":7,"tenorMaxDays":14,"capExceedProb":0.15,"takeWaived":true}}
+      - key: EP_BRAND_SETTINGS
+        sync: false
       # Cap watch: per-wrap headroom is always on (admin status) and prices the holder's release.
       # EP_HEADROOM_ALERT_BPS pages (knockout mode only) when one wrap's reserve passes this many bps
       # of its notional (an ATM weekly cap leg is ~200–250 bps).

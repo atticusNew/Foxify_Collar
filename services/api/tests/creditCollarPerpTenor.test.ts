@@ -24,7 +24,7 @@ import {
 import { fetchOkxListedTouchQuote, quoteFromListedBooks } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 import { atmReference, fetchOkxListedSnapshot, fetchOkxTopSnapshot, fundingStrikeLadder, quoteCollarFromSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
 import { heldInstIds } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowFlow";
-import { capGuardFor, otherTenor, parseTenor, tenorExpiry, tenorWord } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import { capGuardFor, listedWeeklyExpiryInBand, otherTenor, parseTenor, tenorExpiry, tenorWord } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import { expTimeFromMs } from "../src/singleSide/twoSided/creditCollar/capRule";
 
 const SHAPE = { floorPct: 0.06, capPct: 0.015 };
@@ -108,6 +108,20 @@ test("nextListedWeeklyExpiryMs: the nearest listed Friday 08:00 UTC at least thr
   assert.equal(nextListedWeeklyExpiryMs([...strikesFor(daily), ...strikesFor(tuesday)], now), null);
   // Expired / non-live rows never count.
   assert.equal(nextListedWeeklyExpiryMs(strikesFor(friday).map((c) => ({ ...c, state: "expired" })), now), null);
+});
+
+test("listedWeeklyExpiryInBand: the nearest listed Friday inside a brand's band; null when none sits there (the caller falls back)", () => {
+  // Saturday 08:20: Friday 07-24 is 5d 23h40m out, Friday 07-31 is 12d 23h40m out.
+  assert.equal(listedWeeklyExpiryInBand(chain, now, { minDays: 3, maxDays: 14 }), friday, "the default band is the live rule");
+  assert.equal(listedWeeklyExpiryInBand(chain, now, { minDays: 7, maxDays: 14 }), nextFriday, "a brand that wants a week or more skips this Friday");
+  assert.equal(listedWeeklyExpiryInBand(chain, now, { minDays: 3, maxDays: 5 }), null, "nothing listed inside 3–5 days");
+  assert.equal(listedWeeklyExpiryInBand(chain, now, { minDays: 13, maxDays: 14 }), null);
+  // Tuesday 08:00 is a listed expiry but not a Friday; dailies never count as a weekly.
+  assert.equal(listedWeeklyExpiryInBand([...strikesFor(daily), ...strikesFor(tuesday)], now, { minDays: 1, maxDays: 14 }), null);
+  // Expired rows never count; a max under the min reads as a one-day band at the min.
+  assert.equal(listedWeeklyExpiryInBand(strikesFor(friday).map((c) => ({ ...c, state: "expired" })), now, { minDays: 3, maxDays: 14 }), null);
+  assert.equal(listedWeeklyExpiryInBand(chain, now, { minDays: 6, maxDays: 3 }), null, "band 6–6: Friday at 5.98 days is just under");
+  assert.equal(listedWeeklyExpiryInBand(chain, now + 3 * 86_400_000, { minDays: 3, maxDays: 14 }), nextFriday, "Tuesday 08:20: this Friday is under three days, so the next");
 });
 
 test("tenorExpiry / parseTenor / tenorWord: weekly by default, daily only when asked, and the copy follows", () => {
@@ -232,6 +246,33 @@ test("fetchOkxListedTouchQuote: a wider paying strike clears the guard and is th
   const wide8 = await withOkx(books, () => fetchOkxListedTouchQuote({ ...base, capGuard: { minCapPct: 0.02, maxCapPct: 0.08 } }));
   assert.ok(wide8.ok, wide8.ok ? "" : wide8.message);
   if (wide8.ok) assert.equal(wide8.callStrike, 105_000, "an 8% band reaches the 5% strike, and it pays");
+});
+
+test("fetchOkxListedTouchQuote: a brand's tenor band picks WHICH Friday is written; no Friday in the band falls back to the live rule, never refuses", async () => {
+  const idAt = (expiryMs: number, strike: number, t: "C" | "P") => `BTC-USD-${code(expiryMs)}-${strike}-${t}`;
+  const books = {
+    [idAt(friday, 94000, "P")]: { ask: 0.0009 },
+    [idAt(friday, 103000, "C")]: { bid: 0.003 },
+    [idAt(nextFriday, 94000, "P")]: { ask: 0.0015 },
+    [idAt(nextFriday, 103000, "C")]: { bid: 0.005 }
+  };
+  const base = { side: "long" as const, spot: 100_000, planPutStrike: 94_000, planCallStrike: 103_000, notionalUsdc: 1_000, contractsBtc: 0.01, nowMs: now, baseUrl: "https://okx.test", tenor: "weekly" as const };
+  const live = await withOkx(books, () => fetchOkxListedTouchQuote(base));
+  assert.ok(live.ok, live.ok ? "" : live.message);
+  if (live.ok) assert.equal(live.expiryMs, friday, "no band = the live rule (nearest Friday at least 3 days out)");
+  const dflt = await withOkx(books, () => fetchOkxListedTouchQuote({ ...base, tenorBand: { minDays: 3, maxDays: 14 } }));
+  assert.ok(dflt.ok, dflt.ok ? "" : dflt.message);
+  if (dflt.ok) assert.equal(dflt.expiryMs, friday, "the default band writes exactly what the live rule writes");
+  const week = await withOkx(books, () => fetchOkxListedTouchQuote({ ...base, tenorBand: { minDays: 7, maxDays: 14 } }));
+  assert.ok(week.ok, week.ok ? "" : week.message);
+  if (week.ok) {
+    assert.equal(week.expiryMs, nextFriday, "a 7–14 day brand skips this Friday");
+    assert.equal(week.tenor, "weekly");
+    assert.ok(week.putInstId.includes(code(nextFriday)) && week.callInstId.includes(code(nextFriday)), "both legs sit at the brand's expiry");
+  }
+  const none = await withOkx(books, () => fetchOkxListedTouchQuote({ ...base, tenorBand: { minDays: 3, maxDays: 5 } }));
+  assert.ok(none.ok, none.ok ? "" : none.message);
+  if (none.ok) assert.equal(none.expiryMs, friday, "no Friday inside 3–5 days: the live rule, not a refusal");
 });
 
 // ── top-of-book snapshot ──────────────────────────────────────────────────────

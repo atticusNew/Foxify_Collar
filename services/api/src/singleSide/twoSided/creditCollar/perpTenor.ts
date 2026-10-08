@@ -46,6 +46,26 @@ export const tenorExpiry = (tenor: EpTenor, chain: OkxChainInstrument[], nowMs: 
 
 export const tenorWord = (tenor: EpTenor): string => (tenor === "weekly" ? "this week's" : "today's");
 
+/** A brand's tenor band: the cycle runs to the nearest listed Friday at least `minDays` and at most `maxDays` out (epBranding.ts). */
+export type TenorBand = { minDays: number; maxDays: number };
+
+/**
+ * The nearest LISTED Friday 08:00 UTC expiry inside the band, or null when none sits there. Pure.
+ * The default band (3–14) is the live weekly rule: the nearest Friday at least 3 days out is
+ * always under 10 days off, so a brand that does not dial the band gets today's product.
+ */
+export const listedWeeklyExpiryInBand = (chain: OkxChainInstrument[], nowMs: number, band: TenorBand): number | null => {
+  const lo = Math.max(0, band.minDays) * 86_400_000;
+  const hi = Math.max(band.minDays, band.maxDays) * 86_400_000;
+  const listed = [...new Set(chain.filter((c) => c.state === "live").map((c) => c.expiryMs))].sort((a, b) => a - b);
+  for (const e of listed) {
+    const d = new Date(e);
+    const off = e - nowMs;
+    if (d.getUTCDay() === 5 && d.getUTCHours() === 8 && off >= lo && off <= hi) return e;
+  }
+  return null;
+};
+
 /**
  * Cap-distance guard. The cap search always takes the WIDEST listed strike that still pays;
  * `maxCapPct` is how far out it may look. `minCapPct` refuses a quote whose widest paying

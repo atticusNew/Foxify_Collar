@@ -231,6 +231,14 @@ test("desktop stage: the pitch beside the card in an exchange panel, retail web 
   assert.ok(mini.includes("if (!INST && !true) document.body.classList.add(\"retail\");"), "miniapp: never a stage, it is a phone surface");
 });
 
+test("brand links: a page opened as ?brand= carries the brand on every API call, so quotes and wraps run under that brand's settings", () => {
+  for (const html of [web, mini]) {
+    assert.ok(html.includes('new URLSearchParams(location.search).get("brand")'), "the brand is read once from the page's query");
+    assert.ok(html.includes('"&brand=" + encodeURIComponent(pageBrand)'), "and appended to each api() call, encoded");
+    assert.ok(html.includes('"account=" + encodeURIComponent(account) + brandQ'), "after the account, on the same helper every call uses");
+  }
+});
+
 test("variants: miniapp loads the Telegram bridge, web does not", () => {
   assert.ok(mini.includes("telegram-web-app.js"));
   assert.ok(!web.includes("telegram-web-app.js"));
