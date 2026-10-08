@@ -494,8 +494,9 @@ const shortTouchedPath = (b: PerpShadowOpenRecord): PerpPath => {
 test("perp shadow: the ledger replays opens, settles (on the path) and voids; the summary and CSVs fold them", () => {
   const dir = mkdtempSync(join(tmpdir(), "perp-shadow-"));
   const path = join(dir, "ledger.jsonl");
-  const a = openRec("long", "a", "2026-09-18T23:00:00.000Z");
-  const b = openRec("short", "b", "2026-09-18T23:00:00.000Z");
+  // the fixture snapshot carries no vols; stamp the market's odds at open so the calibration line has an input
+  const a: PerpShadowOpenRecord = { ...openRec("long", "a", "2026-09-18T23:00:00.000Z"), capExceedProb: 0.2 };
+  const b: PerpShadowOpenRecord = { ...openRec("short", "b", "2026-09-18T23:00:00.000Z"), capExceedProb: 0.1 };
   const c = openRec("long", "c", "2026-09-19T00:00:00.000Z");
   assert.equal(a.capStrikeCents, 8_300_000, "the fixture's widest paying call inside 4% (3.75%), clear of the 2% guard");
   assert.equal(b.capStrikeCents, 7_700_000);
@@ -538,9 +539,26 @@ test("perp shadow: the ledger replays opens, settles (on the path) and voids; th
     assert.equal(sp.capHits, 1);
     assert.equal(sp.writerCents, a.takeCents + b.takeCents);
     assert.equal(sp.paidCents, a.creditCents + b.creditCents);
+    assert.ok(b1.capExcessCents > b.creditCents, "the short's crash handed back more than its credit");
     assert.deepEqual(
       { ...sp.capDetail, releaseAtTouchCents: undefined },
-      { touched: 2, endedPastCap: 1, capExcessCents: b1.capExcessCents, releaseAtTouchCents: undefined, avgHoursToTouch: 20.5, okxConfirmed: 1, hlOnly: 1, creditOnPastCapCents: b.creditCents },
+      {
+        touched: 2,
+        endedPastCap: 1,
+        capExcessCents: b1.capExcessCents,
+        releaseAtTouchCents: undefined,
+        avgHoursToTouch: 20.5,
+        okxConfirmed: 1,
+        hlOnly: 1,
+        creditOnPastCapCents: b.creditCents,
+        // the credit nets the first slice at close; what remains is the balance a one-way rail would carry
+        exceededCredit: 1,
+        exceededCreditCents: b1.capExcessCents - b.creditCents,
+        largestExceededCreditCents: b1.capExcessCents - b.creditCents,
+        // said 15% on average (0.2, 0.1), seen 1 of 2 settled past the cap
+        predictedExceedPct: 15,
+        realizedExceedPct: 50,
+      },
     );
     assert.equal(sp.capDetail.releaseAtTouchCents, a1.buybackCents + b1.buybackCents);
     assert.equal(sp.counterfactuals.baseline.knockouts, 0);
