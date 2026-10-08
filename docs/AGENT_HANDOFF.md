@@ -2,7 +2,7 @@
 
 > **You are a new agent picking up an active, production-adjacent codebase.** Read this fully, explore only what it points you to, then STOP and confirm comprehension. Do not make any changes until directed.
 >
-> **Last updated:** 2026-09-18. Everything before September 2026 in `docs/` (Foxify pilot era, Deribit 1-day/biweekly product) is historical context only — that pilot concluded and is NOT the current product surface.
+> **Last updated:** 2026-09-18; business-model and funding lines corrected 2026-10-08 (take is 20% of the credit sourced; ask is $250k to $400k at a $5M post-money cap). Everything before September 2026 in `docs/` (Foxify pilot era, Deribit 1-day/biweekly product) is historical context only — that pilot concluded and is NOT the current product surface.
 
 ---
 
@@ -35,9 +35,9 @@ Operate as a single agent with these combined competencies. Do not perform work 
 
 ## 3. Company objective
 
-- **Business model:** B2B white-label licensing to venues (venues embed the toggle; Atticus prices, hedges cross-venue, takes ~10% of the credit) + B2C wedge apps on Hyperliquid/Katana via builder codes (non-US) to prove demand and generate revenue ahead of venue embeds. Roadmap: protection-writing vault as the on-chain capital leg.
+- **Business model:** B2B white-label licensing to venues (venues embed the toggle; Atticus prices, hedges cross-venue, keeps a published 20% of the credit sourced, `EP_TAKE_RATE`; the credit vests through the cycle and pays at its close, netted against any gains above the cap handed back) + B2C wedge apps on Hyperliquid/Katana via builder codes (non-US) to prove demand and generate revenue ahead of venue embeds. Roadmap: protection-writing vault as the on-chain capital leg.
 - **Why now:** venues are racing from spot to derivatives (DraftKings' $250M Railbird acquisition; Kalshi/Coinbase/Bitnomial Form 1-Ns; SGX perps CFTC filing; Polymarket US via QCEX). All build spot; none can be the neutral protection layer.
-- **Funding status:** raising a $2M seed at a $10M cap ($250K first-close tranche in motion). Founder is mid-outreach (1kx and other funds, angels, venue leads). Materials: pitch deck, live demos, 28-second toggle video.
+- **Funding status:** raising a $250k to $400k pre-seed on a post-money SAFE at a $5M cap (founder, 2026-10-06; the earlier "$2M seed at a $10M cap" is superseded). Founder is mid-outreach (1kx and other funds, angels, venue leads). Materials: pitch deck, live demos, 28-second toggle video.
 - **Ultimate goal:** make the one-tap collar / defined-outcome layer ubiquitous across exchanges and venues, and profitable — institutional-grade, production-ready, highest possible performance.
 
 ## 4. Current status & repo map
