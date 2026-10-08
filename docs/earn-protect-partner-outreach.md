@@ -38,7 +38,7 @@
 
 **Two-line elevator (use verbatim):**
 
-> One toggle gives every trader a hard floor under their position and pays them a daily credit that offsets funding. No out-of-pocket cost — the options market funds it.
+> One toggle gives every trader a hard floor under their position and pays them a weekly credit that offsets funding. No out-of-pocket cost — the options market funds it.
 
 **Follow-on (the "what is it really" answer):**
 
@@ -49,6 +49,12 @@
 - Investors (the timing line): "We built through the eighteen months when consensus said options would never be retail. That consensus flipped this summer — Kraken's launch is the flag. We're standing where the market turned, live, with a machine-audited record." Never frame past rejections as grievance.
 - The moat answer (when asked "why won't Kraken crush you?"): Kraken built simpler CONTRACTS for professionals behind RFQ; we built OUTCOMES — no chain, no strike, one toggle — white-label and venue-agnostic. Every non-Kraken venue now needs an answer to Kraken's move, and none will license it from a competitor.
 - The Kemet differential (when the $1B bar comes up): Kemet sold execution tools into EXISTING institutional demand; we're creating a new consumer behavior — different curve, and the Kraken signal says the curve just turned. Our constraint was never demand; it's collateral to serve it.
+
+**The integration requirement (one sentence, say it early):**
+
+> At cycle close your ledger books the position's protected P&L: floor applied, cap applied, credit added, like funding. We report the three numbers; you book them. Reading the position is the only other thing we need.
+
+Why it matters: the credit is the sale of the gains above the cap, so on a week that ends past the cap those gains are the floor's premium. On a venue that holds the position nobody collects anything; the week is simply booked capped. A venue that cannot book P&L (a non-custodial front-end on Hyperliquid agent wallets) can only run the record-not-collect lane, and we say so rather than sell it the full product. The hedge venue (OKX, an RFQ dealer, several venues) is a separate conversation and does not touch this.
 
 **Language rules:** never "eliminates liquidations" (the liquidation engine is mechanical; protection settles at cycle close — a CTO finds the exception in minutes and discounts everything after). The floor claim is "a hard floor under every position"; the liquidation claim belongs to the exchange's business ("fewer blown-up accounts, longer trader lifetime"), not the mechanism. Never "a proven financial technique" — vague reassurance pattern-matches to scams; NAME the structure (a collar) and let them verify. Pitch = one sentence + the live link; the demo does the explaining.
 
