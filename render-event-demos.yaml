@@ -136,8 +136,16 @@ services:
       # 0 disables. The draw is a hash of the ticker, so a redeploy replays the same schedule.
       - key: EVENT_SHADOW_EARLY_CLOSE_SHARE_PCT
         value: "20"
+      # Last leg of a parlay: a second ledger on the same disk. Simulated tickets of 2 to 5
+      # favourites from Polymarket's combo leg catalog (there is no public list of real
+      # tickets), real results and real books. When every earlier leg has hit, the compressed
+      # position on the last leg is priced with the same collar search and the terms are
+      # recorded once; nothing is bought. Defaults: $20 stake, two tickets per size, 10-minute
+      # tick. EVENT_LASTLEG_ENABLED=0 turns it off. Operator views: /api/shadow/lastleg{,.csv}.
+      - key: EVENT_LASTLEG_LEDGER_PATH
+        value: /var/data/event-shadow-lastleg.jsonl
       # Gates the operator views: /report, /api/shadow/report, /api/shadow/hedges,
-      # /api/shadow/export and the full positions CSV (?token=... or x-admin-token).
+      # /api/shadow/lastleg, /api/shadow/export and the full positions CSV (?token=... or x-admin-token).
       # Fail-closed: without it those routes answer 403 and the public record stays up.
       - key: EVENT_X_ADMIN_TOKEN
         generateValue: true
