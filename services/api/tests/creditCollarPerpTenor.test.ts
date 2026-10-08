@@ -16,15 +16,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { applyTake, minTakeUsdcFor, parseCapsInputsFromEnv } from "../src/singleSide/twoSided/creditCollar/capsConfig";
 import {
+  isMonthlyExpiryMs,
+  listedFridayExpiriesMs,
+  nextListedMonthlyExpiryMs,
+  nextListedTwoWeeklyExpiryMs,
   nextListedWeeklyExpiryMs,
   nextStandardDailyExpiryMs,
   planLiveCollar,
   type OkxChainInstrument
 } from "../src/singleSide/twoSided/creditCollar/execution/okxLivePlanner";
 import { fetchOkxListedTouchQuote, quoteFromListedBooks } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
-import { atmReference, fetchOkxListedSnapshot, fetchOkxTopSnapshot, fundingStrikeLadder, quoteCollarFromSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
+import { atmReference, fetchOkxListedSnapshot, fetchOkxTopSnapshot, fundingStrikeLadder, quoteCollarFromSnapshot, snapshotBand } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
 import { heldInstIds } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowFlow";
-import { capGuardFor, otherTenor, parseTenor, tenorExpiry, tenorWord } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import { altTenorExpiries, capGuardFor, otherTenor, parseTenor, tenorExpiry, tenorWord } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import { expTimeFromMs } from "../src/singleSide/twoSided/creditCollar/capRule";
 
 const SHAPE = { floorPct: 0.06, capPct: 0.015 };
@@ -274,14 +278,21 @@ test("fetchOkxTopSnapshot: instruments + tickers become one snapshot across the 
   };
   const snap = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl });
   assert.equal(calls.filter((c) => !c.includes("opt-summary")).length, 2, "exactly two public requests for the books");
-  assert.equal(calls.filter((c) => c.includes("opt-summary")).length, 2, "and one mark-vol request per expiry");
+  assert.equal(calls.filter((c) => c.includes("opt-summary")).length, 3, "and one mark-vol request per expiry: the daily, the weekly and the two-weekly the shadow measures");
   assert.ok(snap.markVols && Object.keys(snap.markVols).length > 0 && Object.values(snap.markVols).every((v) => v === 0.45), "mark vols keyed by instId");
   assert.ok(chain.filter((c) => c.expiryMs === daily).every((c) => snap.markVols![c.instId] == null), "an unreadable expiry leaves its vols absent, never guessed");
   assert.equal(snap.expiryMs, daily);
   assert.equal(snap.weeklyExpiryMs, friday);
-  // Only the daily and weekly in-band strikes are kept: Tuesday and the following Friday are not.
+  // The daily, the weekly and the two-weekly (the Friday after the weekly's, 13 days out) are kept; Tuesday is
+  // not. The 31st is July's last Friday but only 13 days out: not a monthly (21 days or more), so no monthly row.
   const expiries = new Set(snap.chain.map((c) => c.expiryMs));
-  assert.deepEqual([...expiries].sort(), [daily, friday]);
+  assert.deepEqual([...expiries].sort(), [daily, friday, nextFriday]);
+  assert.deepEqual(snap.altExpiries, { two_weekly: nextFriday }, "the longer tenors the snapshot carries, by label");
+  calls.length = 0;
+  const noAlts = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl, altTenors: false });
+  assert.deepEqual([...new Set(noAlts.chain.map((c) => c.expiryMs))].sort(), [daily, friday], "altTenors off: the daily and the weekly only");
+  assert.equal(noAlts.altExpiries, undefined);
+  assert.equal(calls.filter((c) => c.includes("opt-summary")).length, 2);
   assert.equal(snap.booksMissing, 1, "the daily 105000-C had no ticker");
   const dailyCall = snap.books[`BTC-USD-${code(daily)}-101500-C`];
   assert.ok(dailyCall);
@@ -340,7 +351,8 @@ test("snapshots carry the legs the open book holds, whatever their expiry or dis
     return new Response("{}", { status: 500 });
   };
   const held = [farExpiryLeg, offBandLeg, delisted, inChainLeg, farExpiryLeg];
-  const top = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: topFetch, heldInstIds: held });
+  // altTenors off: the quoting chain is the daily and the weekly, so the following Friday is an expiry it rolled past.
+  const top = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: topFetch, heldInstIds: held, altTenors: false });
   assert.ok(top.books[farExpiryLeg], "a held leg at an expiry the chain rolled past has a book");
   assert.ok(top.books[offBandLeg], "a held leg outside the band has a book");
   assert.ok(!top.books[delisted], "a held id that is not live is not invented");
@@ -355,7 +367,7 @@ test("snapshots carry the legs the open book holds, whatever their expiry or dis
     if (u.includes("/market/books")) return new Response(JSON.stringify({ data: [{ bids: [["0.0010", "5"]], asks: [["0.0011", "5"]] }] }), { status: 200 });
     return new Response("{}", { status: 500 });
   };
-  const deep = await fetchOkxListedSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: depthFetch, heldInstIds: held });
+  const deep = await fetchOkxListedSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: depthFetch, heldInstIds: held, altTenors: false });
   const bookCalls = depthCalls.filter((c) => c.includes("/market/books"));
   assert.equal(bookCalls.length, deep.chain.length + 2, "one depth request per chain instrument plus one per held leg outside it, deduplicated");
   assert.ok(deep.books[farExpiryLeg] && deep.books[offBandLeg], "both held legs have depth");
@@ -363,8 +375,50 @@ test("snapshots carry the legs the open book holds, whatever their expiry or dis
   assert.equal(bookCalls.filter((c) => c.includes(encodeURIComponent(inChainLeg))).length, 1, "a held leg already in the chain is fetched once, not twice");
 
   // Nothing held: the snapshot is exactly what it was.
-  const plain = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: topFetch });
+  const plain = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: topFetch, altTenors: false });
   assert.equal(Object.keys(plain.books).length, plain.chain.length);
+
+  // With the longer tenors on, the following Friday IS quoted (two-weekly), so a held leg there is simply in the chain.
+  const withAlts = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl: topFetch, heldInstIds: held });
+  assert.ok(withAlts.chain.some((c) => c.instId === farExpiryLeg), "the two-weekly's strikes join the quoting chain");
+  assert.ok(withAlts.books[farExpiryLeg] && withAlts.books[offBandLeg]);
+});
+
+test("longer tenors: the two-weekly is the listed Friday after the weekly's; the monthly is a last Friday three weeks or more out; wider band at those expiries", async () => {
+  // Chain: this Friday (6d), next Friday (13d, July's last Friday), Aug 28 (41d, August's last Friday), Aug 7 (20d, not a monthly).
+  const aug7 = Date.UTC(2026, 7, 7, 8);
+  const aug28 = Date.UTC(2026, 7, 28, 8);
+  assert.equal(new Date(aug28).getUTCDay(), 5);
+  const wide = [...chain, ...strikesFor(aug7), ...strikesFor(aug28), inst(115_000, "call", aug28), inst(86_000, "put", aug28), inst(115_000, "call", friday)];
+  assert.equal(listedFridayExpiriesMs(wide, now).length, 4, "four listed Fridays at least 3 days out");
+  assert.equal(nextListedWeeklyExpiryMs(wide, now), friday);
+  assert.equal(nextListedTwoWeeklyExpiryMs(wide, now), nextFriday, "the Friday after the weekly's: 13 days");
+  assert.equal(isMonthlyExpiryMs(nextFriday), true, "July 31 is July's last Friday");
+  assert.equal(isMonthlyExpiryMs(aug7), false);
+  assert.equal(isMonthlyExpiryMs(aug28), true);
+  assert.equal(isMonthlyExpiryMs(tuesday), false, "a Tuesday is never a monthly");
+  assert.equal(nextListedMonthlyExpiryMs(wide, now), aug28, "July 31 is a last Friday but only 13 days out; the monthly is the next last Friday at 21+ days");
+  assert.deepEqual(altTenorExpiries(wide, now), { two_weekly: nextFriday, monthly: aug28 });
+  // When the two-weekly IS the only candidate monthly in range, the monthly is not listed twice.
+  const sameFriday = [...chain, ...strikesFor(Date.UTC(2026, 7, 7, 8))];
+  assert.deepEqual(altTenorExpiries(sameFriday, now), { two_weekly: nextFriday }, "no monthly 21+ days out: no monthly row, nothing invented");
+  assert.deepEqual(altTenorExpiries(chain.filter((c) => c.expiryMs !== nextFriday), now), {}, "no Friday 10+ days out: no two-weekly");
+
+  const tickers = wide.map((c) => ({ instId: c.instId, bidPx: "0.0010", askPx: "0.0011", bidSz: "5", askSz: "5" }));
+  const fetchImpl: typeof fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/public/instruments")) return new Response(JSON.stringify({ data: wide.map(okxRow) }), { status: 200 });
+    if (u.includes("/market/tickers")) return new Response(JSON.stringify({ data: tickers }), { status: 200 });
+    return new Response("{}", { status: 500 });
+  };
+  const snap = await fetchOkxTopSnapshot({ spot: 100_000, nowMs: now, baseUrl: "https://okx.test", fetchImpl });
+  assert.deepEqual(snap.altExpiries, { two_weekly: nextFriday, monthly: aug28 });
+  assert.deepEqual([...new Set(snap.chain.map((c) => c.expiryMs))].sort(), [daily, friday, nextFriday, aug28], "Aug 7 is neither a weekly, a two-weekly nor a monthly: not quoted");
+  assert.ok(snap.chain.some((c) => c.expiryMs === aug28 && c.strike === 115_000), "a 15%-out strike is inside the monthly's band");
+  assert.ok(snap.chain.some((c) => c.expiryMs === aug28 && c.strike === 86_000));
+  assert.ok(!snap.chain.some((c) => c.expiryMs === friday && c.strike === 115_000), "the weekly keeps its own 8% band");
+  assert.equal(snapshotBand(100_000).hi, snapshotBand(100_000, 0.05).hi, "a narrower request never shrinks the union band");
+  assert.ok(snapshotBand(100_000, 0.15).hi > snapshotBand(100_000).hi);
 });
 
 test("heldInstIds: every leg of every open position, once; closed and settled positions do not count", () => {

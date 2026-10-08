@@ -9,7 +9,7 @@
  * the same path and print; where the knock-outs fell and what they cost.
  */
 
-import type { CapGuard, EpTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import { altTenorWords, type CapGuard, type EpTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import {
   type PerpCapRungBook,
   type PerpRuleBook,
@@ -543,10 +543,27 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
     })
     .join("");
   const liveTenor: EpTenor = input.tenor ?? "weekly";
-  const tenorLabels = Object.keys(cf.tenors);
+  // Rows in cycle order: the daily, the live book, then the longer tenors the shadow measures.
+  const tenorOrder = ["daily", "weekly", "two_weekly", "monthly"];
+  const tenorLabels = Object.keys(cf.tenors).sort((a, b) => (tenorOrder.indexOf(a) + 1 || 99) - (tenorOrder.indexOf(b) + 1 || 99));
+  const tenorTag = (l: string): string => {
+    const t = cf.tenors[l];
+    const bits = [t.avgDays != null ? `${t.avgDays}d` : "", t.creditBpsPerDay != null ? `${t.creditBpsPerDay} bps/day` : "", t.avgCapPct != null ? `cap ${(t.avgCapPct * 100).toFixed(1)}%` : ""].filter(Boolean);
+    return bits.join(" · ");
+  };
+  const liveBefore = tenorLabels.filter((l) => tenorOrder.indexOf(l) < tenorOrder.indexOf(liveTenor));
+  const liveAfter = tenorLabels.filter((l) => !liveBefore.includes(l));
   const tenorRows = [
-    ruleTr("live book", `${cf.baseline.quoted ? `next ${liveTenor}` : ""}`, cf.baseline, { base: true, plain }),
-    ...tenorLabels.map((l) => ruleTr(`${l}${cf.tenors[l].avgDays != null ? ` · ${cf.tenors[l].avgDays}d` : ""}`, "", cf.tenors[l], { plain })),
+    ...liveBefore.map((l) => ruleTr(altTenorWords(l), tenorTag(l), cf.tenors[l], { plain })),
+    ruleTr(
+      "live book",
+      cf.baseline.quoted
+        ? [`next ${liveTenor}`, cf.baselineDays?.avgDays != null ? `${cf.baselineDays.avgDays}d` : "", cf.baselineDays?.creditBpsPerDay != null ? `${cf.baselineDays.creditBpsPerDay} bps/day` : ""].filter(Boolean).join(" · ")
+        : "",
+      cf.baseline,
+      { base: true, plain },
+    ),
+    ...liveAfter.map((l) => ruleTr(altTenorWords(l), tenorTag(l), cf.tenors[l], { plain })),
   ].join("");
   const floorRows = (cf.floorLadder ?? [])
     .map((r) => {
@@ -627,6 +644,26 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
           liveTenor === "weekly" ? " and is the live tenor" : ""
         }; it also holds the position through a week of funding and a week of chances to touch the cap.`
       : "";
+  // The longer tenors against the live book, per day: a two-week or month-long cycle pays more
+  // cash up front; whether it pays more per day protected is what decides the tenor band.
+  const longerLine = (() => {
+    const livePerDay = cf.baseline.quoted > 0 ? (cf.baselineDays?.creditBpsPerDay ?? null) : null;
+    const longer = ["two_weekly", "monthly"].filter((l) => cf.tenors[l] && cf.tenors[l].quoted > 0);
+    if (!longer.length || livePerDay == null) return "";
+    const parts = longer.map((l) => {
+      const t = cf.tenors[l];
+      return `the ${altTenorWords(l)} (${t.avgDays ?? "?"} days) pays ${bpsPct(t.creditBpsOfNotional)} in cash, ${t.creditBpsPerDay ?? "?"} bps a day${
+        t.avgCapPct != null ? `, with the cap ${(t.avgCapPct * 100).toFixed(1)}% out` : ""
+      }${t.refused ? ` (${t.refused} refused)` : ""}`;
+    });
+    const best = longer.map((l) => cf.tenors[l]).sort((a, b) => (b.creditBpsPerDay ?? -1) - (a.creditBpsPerDay ?? -1))[0];
+    const moreCash = longer.some((l) => (cf.tenors[l].creditBpsOfNotional ?? -1) > (cf.baseline.creditBpsOfNotional ?? -1));
+    const verdict =
+      best.creditBpsPerDay != null && best.creditBpsPerDay > livePerDay
+        ? `A longer cycle pays more per day protected than the live ${liveTenor} (${livePerDay} bps a day), at the price of a wider cap, more days of funding and a longer wait for the credit.`
+        : `The live ${liveTenor} pays the most per day protected (${livePerDay} bps a day)${moreCash ? "; a longer cycle pays more cash up front, not more per day" : ""}.`;
+    return `Longer cycles from the same snapshot: ${parts.join("; ")}. ${verdict} Quoted terms only; a longer cycle settles on a different print.`;
+  })();
   const one = cf.capacity.find((c) => c.mult === 1);
   const top = cf.capacity[cf.capacity.length - 1];
   const capLine =
@@ -754,9 +791,10 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
 
   <div class="card">
     <h2>Tenor</h2>
-    <div class="sub" style="margin-bottom:6px">The live geometry at the other tenor's expiry from the same snapshot (the daily when the product is weekly, and the reverse). Quoted terms only: the other tenor settles on a different print, so holder and writer columns stay empty here by design.</div>
+    <div class="sub" style="margin-bottom:6px">The live geometry at other expiries from the same snapshot: the other tenor (the daily when the product is weekly, and the reverse) and the longer cycles the shadow measures (two-weekly: the listed Friday after the weekly's; monthly: the last Friday of a month, three weeks or more out), each with the cap search allowed its wider band. Quoted terms only: another tenor settles on a different print, so user and our P&amp;L columns stay empty here by design.</div>
     <div class="tablewrap"><table>${ruleHead(plain)}${tenorRows}</table></div>
     ${tenorLine ? `<div class="read">${escapeHtml(tenorLine)}</div>` : ""}
+    ${longerLine ? `<div class="read">${escapeHtml(longerLine)}</div>` : ""}
   </div>
 
   <div class="card">

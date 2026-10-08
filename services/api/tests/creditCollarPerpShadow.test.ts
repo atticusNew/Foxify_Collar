@@ -46,6 +46,7 @@ import {
   type Candle,
 } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowPath";
 import { feeRuleText, perpShadowQuote, perpTake } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowQuote";
+import { renderPerpShadowReportHtml } from "../scripts/perpShadowHtml";
 
 // ── Fixture: a daily and a weekly chain around spot 80,000 ──────────────────
 
@@ -711,6 +712,96 @@ test("perp shadow: the ledger replays opens, settles (on the path) and voids; th
 
   // replay is pure: the same records in memory give the same positions
   assert.deepEqual(replayPerpShadow(records, KO).positions.map((p) => [p.id, p.status]), [["a", "settled"], ["b", "settled"], ["c", "void"]]);
+});
+
+test("perp shadow: longer tenors (two-weekly, monthly) are quoted from the same snapshot, summarized per day, and read on the operator report; never settled", () => {
+  // Fri 2026-10-02 (13.4d out) is the two-weekly; Fri 2026-10-30 (41.4d, October's last Friday) the monthly.
+  const TWO_WEEKLY = Date.UTC(2026, 9, 2, 8);
+  const MONTHLY = Date.UTC(2026, 9, 30, 8);
+  const wideStrikes = [68000, 70000, 72000, 74000, 75000, 76000, 77000, 78000, 79000, 81000, 82000, 83000, 84000, 86000, 88000, 90000, 92000];
+  const longChain = [...chain];
+  for (const e of [TWO_WEEKLY, MONTHLY]) for (const k of wideStrikes) longChain.push(inst(e, "put", k), inst(e, "call", k));
+  // Longer options are worth more and decay slower with distance, so the far calls still carry a bid; puts
+  // are cheaper than calls here (an upside skew) so the widest paying cap sits well past the 6% floor.
+  const longBook = (c: OkxChainInstrument): BookDepth => {
+    if (c.expiryMs !== TWO_WEEKLY && c.expiryMs !== MONTHLY) return bookFor(c);
+    const dist = Math.abs(c.strike - SPOT) / SPOT;
+    const scale = c.expiryMs === MONTHLY ? 0.08 : 0.05;
+    const decay = c.optType === "put" ? 30 : c.expiryMs === MONTHLY ? 14 : 22;
+    const mid = Math.max(0.0003, scale * Math.exp(-dist * decay));
+    return depth(+(mid * 0.97).toFixed(6), +(mid * 1.03).toFixed(6));
+  };
+  const books: Record<string, BookDepth> = {};
+  for (const c of longChain) books[c.instId] = longBook(c);
+  const longSnap: OkxListedSnapshot = { ...snap(), chain: longChain, books, altExpiries: { two_weekly: TWO_WEEKLY, monthly: MONTHLY } };
+  const WEEKLY_GUARD = { minCapPct: 0, maxCapPct: 0.08 };
+
+  const rec = perpShadowQuote({ ...quoteInputs("long", "t-long"), tenor: "weekly", capGuard: WEEKLY_GUARD, otherTenorCapGuard: GUARD }, longSnap);
+  assert.equal(rec.type, "open");
+  if (rec.type !== "open") return;
+  assert.equal(rec.tenor, "weekly");
+  assert.equal(rec.expiryIso, new Date(WEEKLY).toISOString(), "the live book is still the weekly");
+  const t = rec.counterfactuals!.tenors;
+  assert.deepEqual(Object.keys(t), ["daily", "two_weekly", "monthly"], "the other tenor first, then the longer cycles");
+  const tw = t.two_weekly;
+  const mo = t.monthly;
+  assert.ok(tw.ok && tw.expiryIso === new Date(TWO_WEEKLY).toISOString(), tw.ok ? "" : `${tw.error}: ${tw.message}`);
+  assert.ok(mo.ok && mo.expiryIso === new Date(MONTHLY).toISOString(), mo.ok ? "" : `${mo.error}: ${mo.message}`);
+  if (!tw.ok || !mo.ok) return;
+  assert.ok(tw.buyInstId.includes("261002") && tw.sellInstId.includes("261002"), "both two-weekly legs at its Friday");
+  assert.ok(mo.buyInstId.includes("261030") && mo.sellInstId.includes("261030"), "both monthly legs at its Friday");
+  assert.ok(Math.abs(tw.floorPct - 0.06) < 0.011 && Math.abs(mo.floorPct - 0.06) < 0.011, "the floor stays at the live depth");
+  assert.ok(mo.capPct > 0.08 + 1e-9, `the monthly's cap search reaches past the weekly's 8% band (got ${mo.capPct})`);
+  assert.ok(mo.capPct <= 0.15 + 1e-9, "and no further than its own band");
+  assert.ok(tw.capPct <= 0.1 + 1e-9);
+  assert.equal(tw.capPct, 0.075, "two-weekly: the widest paying call in a 10% band is 86,000");
+  assert.equal(mo.capPct, 0.125, "monthly: the widest paying call in a 15% band is 90,000");
+  assert.ok(tw.creditCents > 0 && mo.creditCents > 0, "the widest paying strike pays, by construction, little: the rule buys distance, not cash");
+  assert.equal(rec.counterfactuals!.capLadder.every((r) => r.sellInstId.includes("260925")), true, "the cap ladder stays at the live expiry");
+  // A snapshot without the longer expiries: no rows, nothing invented.
+  const bare = perpShadowQuote({ ...quoteInputs("long", "t-bare"), tenor: "weekly", capGuard: WEEKLY_GUARD, otherTenorCapGuard: GUARD }, snap());
+  assert.ok(bare.type === "open" && Object.keys(bare.counterfactuals!.tenors).join() === "daily");
+
+  // Summary: per-day footing, where the cap landed, and never settled.
+  const dir = mkdtempSync(join(tmpdir(), "perp-shadow-long-"));
+  const path = join(dir, "ledger.jsonl");
+  appendPerpShadowRecord(path, rec);
+  appendPerpShadowRecord(path, { ...rec, id: "t-long-2", at: "2026-09-19T23:00:00.000Z" } as PerpShadowOpenRecord);
+  const { positions, refusals } = loadPerpShadow(path);
+  const s = summarizePerpShadow(positions, refusals);
+  const cf = s.counterfactuals;
+  assert.equal(cf.baselineDays.avgDays, 5.9, "the live weekly from 18th/19th 23:00 to Fri 25th 08:00: (6.4 + 5.4) / 2");
+  assert.equal(cf.baselineDays.creditBpsPerDay, +((cf.baseline.creditBpsOfNotional ?? 0) / 5.9).toFixed(2));
+  const twRow = cf.tenors.two_weekly;
+  const moRow = cf.tenors.monthly;
+  assert.equal(twRow.quoted, 2);
+  assert.equal(twRow.settled, 0, "a longer cycle settles on a different print: never settled here");
+  assert.equal(twRow.avgDays, 12.9, "(13.4 + 12.4) / 2");
+  assert.equal(moRow.avgDays, 40.9);
+  assert.equal(twRow.creditBpsPerDay, +((twRow.creditBpsOfNotional ?? 0) / 12.9).toFixed(2));
+  assert.equal(moRow.creditBpsPerDay, +((moRow.creditBpsOfNotional ?? 0) / 40.9).toFixed(2));
+  assert.ok(moRow.avgCapPct != null && Math.abs(moRow.avgCapPct - mo.capPct) < 1e-6);
+  assert.equal(moRow.predictedExceedPct, null, "no vols on this snapshot: no odds invented");
+  assert.equal(cf.tenors.daily.quoted, 2, "the other tenor's row is unchanged");
+
+  // The CSV's alt-tenor columns still carry the OTHER tenor (the daily), not a longer one.
+  const full = perpPositionsCsv(positions, "full").trimEnd().split("\n");
+  assert.ok(full[1].includes(`,daily,${new Date(DAILY).toISOString()},`), "alt_tenor, alt_tenor_expiry_utc: the daily");
+  assert.ok(!full[1].includes(",two_weekly,") && !full[1].includes(",monthly,"), "the longer tenors ride the JSON report, not the CSV");
+
+  // Operator report: a row per tenor in cycle order with days and bps/day, and the longer-cycles sentence.
+  const html = renderPerpShadowReportHtml({ atIso: "2026-09-20T00:00:00.000Z", summary: s, token: "op-secret", capGuard: WEEKLY_GUARD, tenor: "weekly" });
+  const tenorCard = html.slice(html.indexOf("<h2>Tenor</h2>"), html.indexOf("<h2>", html.indexOf("<h2>Tenor</h2>") + 1));
+  const order = ["<td>daily", "live book", "<td>two-weekly", "<td>monthly"].map((k) => tenorCard.indexOf(k));
+  assert.ok(order.every((i) => i >= 0), `every tenor row is on the card: ${order}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "rows in cycle order: daily, live weekly, two-weekly, monthly");
+  assert.ok(tenorCard.includes("12.9d") && tenorCard.includes("40.9d") && tenorCard.includes("bps/day"), "days and per-day cash on each row");
+  assert.ok(tenorCard.includes(`cap ${(mo.capPct * 100).toFixed(1)}%`), "where the monthly's cap landed");
+  assert.ok(tenorCard.includes("Longer cycles from the same snapshot") && tenorCard.includes("the monthly (40.9 days) pays"), "the longer-cycles sentence");
+  assert.ok(/pays (more|the most) per day protected/.test(tenorCard), "a per-day verdict against the live book");
+  assert.ok(tenorCard.includes("Quoted terms only"), "and says it is not settled");
+  assert.ok(!tenorCard.includes("two_weekly") && !tenorCard.includes("holder"), "plain words, no labels or holder/writer on the card");
+  assert.ok(!html.includes("NaN") && !html.includes("undefined"));
 });
 
 test("perp shadow: market parsers read venue payloads and refuse to invent a print", () => {

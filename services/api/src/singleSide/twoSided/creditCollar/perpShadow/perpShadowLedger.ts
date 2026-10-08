@@ -732,6 +732,8 @@ export interface PerpCounterfactualSummary {
   positionsWithCounterfactuals: number;
   recordedSince: string | null;
   baseline: PerpRuleBook;
+  /** the live book's mean days from open to expiry, and its credit per day on that footing (what the tenor rows compare against) */
+  baselineDays: { avgDays: number | null; creditBpsPerDay: number | null };
   /** every listed cap distance, floor held fixed, settled on the same path */
   capLadder: PerpCapRungBook[];
   /** the floor at each depth, the cap re-found by the live rule, settled on the same path */
@@ -739,8 +741,13 @@ export interface PerpCounterfactualSummary {
   feeRules: Record<string, PerpRuleBook>;
   /** the live geometry re-quoted at larger sizes, walked down the depth */
   capacity: Array<PerpRuleBook & { mult: number; contracts: number; avgSpreadCostBps: number | null }>;
-  /** the live geometry at other expiries; quoted terms only, never settled here */
-  tenors: Record<string, PerpRuleBook & { avgDays: number | null }>;
+  /**
+   * the live geometry at other expiries (the other tenor; the two-weekly and monthly the shadow
+   * measures); quoted terms only, never settled here. `creditBpsPerDay` puts tenors of different
+   * length on one footing; `avgCapPct` / `predictedExceedPct` say where the cap landed and what
+   * the market gave it.
+   */
+  tenors: Record<string, PerpRuleBook & { avgDays: number | null; creditBpsPerDay: number | null; avgCapPct: number | null; predictedExceedPct: number | null }>;
   /** "math makes sense": how often the credit failed to clear the cycle's funding cost */
   fundingRule: { judged: number; wouldRefuse: number; creditCents: number; fundingCents: number };
   /** the counterfactual floor rule: which depth it would have written each quote to, and how often */
@@ -754,16 +761,18 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
   const baseline = newAcc();
   const rungs = new Map<string, BookAcc & { capPctSum: number; livePicks: number; underGuard: number; okxConfirmedTouches: number; hlOnlyTouches: number; probSum: number; probN: number }>();
   const feeRules: Record<string, BookAcc> = {};
-  const tenors = new Map<string, BookAcc & { dayNum: number; dayDen: number }>();
+  const tenors = new Map<string, BookAcc & { dayNum: number; dayDen: number; capPctSum: number; probSum: number; probN: number }>();
   const capacity = new Map<number, BookAcc & { mult: number; contracts: number; spreadNum: number; spreadDen: number }>();
   const floors = new Map<string, BookAcc & { floorPct: number; livePicks: number; capPctSum: number; capN: number; probSum: number; probN: number }>();
   const fundingRule = { judged: 0, wouldRefuse: 0, creditCents: 0, fundingCents: 0 };
   const floorRule: PerpCounterfactualSummary["floorRule"] = { rule: null, judged: 0, picks: {}, agreesWithLive: 0 };
+  let baselineDayNum = 0;
   for (const p of withCf) {
     const cf = p.counterfactuals!;
     const settled = p.status === "settled" && p.settleCents != null;
     const openMs = Date.parse(p.at);
     bookQuote(baseline, p.notionalCents, p);
+    baselineDayNum += (Date.parse(p.expiryIso) - openMs) / 86_400_000;
     if (settled && p.outcome) bookSettle(baseline, p.outcome, openMs);
     if (p.fundingCycleCents != null) {
       fundingRule.judged += 1;
@@ -835,12 +844,17 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
       if (settled) bookSettle(feeRules[label], altOutcome(p, terms, p.settleCents!, positions, capMode), openMs);
     }
     for (const [label, alt] of Object.entries(cf.tenors ?? {})) {
-      const row = tenors.get(label) ?? { ...newAcc(), dayNum: 0, dayDen: 0 };
+      const row = tenors.get(label) ?? { ...newAcc(), dayNum: 0, dayDen: 0, capPctSum: 0, probSum: 0, probN: 0 };
       if (!alt.ok) row.refused += 1;
       else {
         bookQuote(row, p.notionalCents, alt);
         row.dayNum += (Date.parse(alt.expiryIso) - Date.parse(p.at)) / 86_400_000;
         row.dayDen += 1;
+        row.capPctSum += alt.capPct;
+        if (alt.capExceedProb != null) {
+          row.probSum += alt.capExceedProb;
+          row.probN += 1;
+        }
       }
       tenors.set(label, row);
     }
@@ -866,6 +880,11 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
     floorRule,
     venueReference: summarizeVenueReference(positions.map((p) => p.venueReference)),
     baseline: finishBook(baseline),
+    baselineDays: (() => {
+      const book = finishBook(baseline);
+      const avgDays = withCf.length > 0 ? +(baselineDayNum / withCf.length).toFixed(1) : null;
+      return { avgDays, creditBpsPerDay: book.creditBpsOfNotional != null && avgDays != null && avgDays > 0 ? +(book.creditBpsOfNotional / avgDays).toFixed(2) : null };
+    })(),
     capLadder: [...rungs.entries()]
       .map(([bucket, { capPctSum, livePicks, underGuard, okxConfirmedTouches, hlOnlyTouches, probSum, probN, ...row }]) => ({
         ...finishBook(row),
@@ -890,7 +909,20 @@ export function summarizePerpCounterfactuals(positions: PerpShadowPosition[], ca
       .sort((a, b) => a.floorPct - b.floorPct),
     feeRules: Object.fromEntries(Object.entries(feeRules).map(([k, v]) => [k, finishBook(v)])),
     tenors: Object.fromEntries(
-      [...tenors.entries()].map(([k, { dayNum, dayDen, ...row }]) => [k, { ...finishBook(row), avgDays: dayDen > 0 ? +(dayNum / dayDen).toFixed(1) : null }]),
+      [...tenors.entries()].map(([k, { dayNum, dayDen, capPctSum, probSum, probN, ...row }]) => {
+        const book = finishBook(row);
+        const avgDays = dayDen > 0 ? +(dayNum / dayDen).toFixed(1) : null;
+        return [
+          k,
+          {
+            ...book,
+            avgDays,
+            creditBpsPerDay: book.creditBpsOfNotional != null && avgDays != null && avgDays > 0 ? +(book.creditBpsOfNotional / avgDays).toFixed(2) : null,
+            avgCapPct: dayDen > 0 ? +(capPctSum / dayDen).toFixed(4) : null,
+            predictedExceedPct: probN > 0 ? +((probSum / probN) * 100).toFixed(1) : null,
+          },
+        ];
+      }),
     ),
     capacity: [...capacity.values()]
       .sort((a, b) => a.mult - b.mult)
@@ -1291,9 +1323,10 @@ const cell = (v: string | number | boolean | null | undefined): string => {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-/** The other tenor's counterfactual (one per record: the daily when the live collar is weekly, and the reverse). */
+/** The other tenor's counterfactual (the daily when the live collar is weekly, and the reverse); the longer tenors ride in the JSON report, not these columns. */
 const altTenorCells = (tenors: Record<string, PerpTenorAlt> | undefined): Array<string | number> => {
-  const entry = Object.entries(tenors ?? {})[0];
+  const entries = Object.entries(tenors ?? {});
+  const entry = entries.find(([k]) => k === "daily" || k === "weekly") ?? entries[0];
   if (!entry) return ["", "", "", "", "", "", "", ""];
   const [label, alt] = entry;
   if (!alt.ok) return [label, "", "", "", "", "", "", 1];
