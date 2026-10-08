@@ -31,6 +31,11 @@ import {
   newDemoWrap,
   noteCapTouch,
   owedBalanceUsdc,
+  owedRemainingUsdc,
+  assessOwedCarry,
+  netOwedAgainstPayout,
+  parseOwedCarryCycles,
+  DEFAULT_OWED_CARRY_CYCLES,
   parseCapMode,
   releaseCap,
   wrapCapActive,
@@ -183,6 +188,108 @@ test("owed balance + payout ledger: a negative total is never a payout; the owed
   assert.ok(!ok.ok);
   const inside = accrueWrapPayout(entries, pos, cyclePayable(pos, 64_900)!, NOW);
   assert.ok(inside.ok && inside.created && inside.entry.amountUsdc === 3.12);
+});
+
+test("carry-forward: EP_OWED_CARRY_CYCLES parses to a non-negative number of cycles, default 3", () => {
+  assert.equal(DEFAULT_OWED_CARRY_CYCLES, 3);
+  assert.equal(parseOwedCarryCycles(undefined), 3);
+  assert.equal(parseOwedCarryCycles(""), 3);
+  assert.equal(parseOwedCarryCycles("abc"), 3);
+  assert.equal(parseOwedCarryCycles("-1"), 3);
+  assert.equal(parseOwedCarryCycles("0"), 0, "0 = any balance gates (the pre-October rule)");
+  assert.equal(parseOwedCarryCycles("1.5"), 1.5);
+});
+
+test("carry-forward: a balance rides along while it is at most N cycles of the new wrap's credit; 0 restores gate-on-any-balance", () => {
+  assert.deepEqual(assessOwedCarry(0, 3.12, 3), { ok: true, owedUsdc: 0, capUsdc: 9.36 });
+  assert.deepEqual(assessOwedCarry(9.36, 3.12, 3), { ok: true, owedUsdc: 9.36, capUsdc: 9.36 }, "exactly the cap still rides");
+  const over = assessOwedCarry(9.37, 3.12, 3);
+  assert.ok(!over.ok && over.capUsdc === 9.36 && /\$9\.37 .*more than we carry \(\$9\.36, 3 cycles of this credit\)/.test(over.reason));
+  const one = assessOwedCarry(5, 3.12, 1);
+  assert.ok(!one.ok && /1 cycle of this credit/.test(one.reason), "singular");
+  const none = assessOwedCarry(0.01, 3.12, 0);
+  assert.ok(!none.ok && none.capUsdc === 0 && /from a settled cycle is still owed .* settle it before protection can restart/.test(none.reason), "0 cycles: the old sentence, any balance refuses");
+  assert.ok(assessOwedCarry(-5, 3.12, 0).ok, "a negative balance is no balance");
+  assert.ok(!assessOwedCarry(1, 0, 3).ok, "no credit quoted → nothing to carry against");
+});
+
+test("carry-forward: later cycles' payouts pay the account's balances down oldest first; the remainder reaches the holder; idempotent per concluding wrap", () => {
+  const older = plainWrap({ id: "wrap-older" });
+  older.owed = { amountUsdc: 5, status: "owed", createdAtMs: NOW - 2 * DAY, settledAtMs: null, ref: null };
+  const newer = plainWrap({ id: "wrap-newer" });
+  newer.owed = { amountUsdc: 4, status: "owed", createdAtMs: NOW - DAY, settledAtMs: null, ref: "ops note" };
+  const stranger = plainWrap({ id: "wrap-x", account: "0x00000000000000000000000000000000000abc02" });
+  stranger.owed = { amountUsdc: 100, status: "owed", createdAtMs: NOW - 3 * DAY, settledAtMs: null, ref: null };
+  const records = [newer, stranger, older];
+  assert.equal(owedBalanceUsdc(records, ACCT), 9);
+
+  // cycle A pays $3.12: all of it goes to the OLDEST balance, nothing reaches the holder
+  const a = netOwedAgainstPayout(records, ACCT, 3.12, NOW, "wrap-a");
+  assert.deepEqual(a, { paidToHolderUsdc: 0, appliedUsdc: 3.12, applied: [{ wrapId: "wrap-older", amountUsdc: 3.12, remainingUsdc: 1.88 }] });
+  assert.equal(owedRemainingUsdc(older.owed), 1.88);
+  assert.equal(older.owed.paidDownUsdc, 3.12);
+  assert.deepEqual(older.owed.history, [{ atMs: NOW, amountUsdc: 3.12, fromWrapId: "wrap-a" }]);
+  assert.equal(older.owed.status, "owed");
+  assert.equal(owedBalanceUsdc(records, ACCT), 5.88, "the account balance is what is still outstanding");
+  assert.equal(owedBalanceUsdc(records, stranger.account), 100, "another account's balance is untouched");
+
+  // the same conclusion again applies nothing twice
+  const again = netOwedAgainstPayout(records, ACCT, 3.12, NOW + 1, "wrap-a");
+  assert.deepEqual(again, { paidToHolderUsdc: 3.12, appliedUsdc: 0, applied: [] });
+  assert.equal(owedBalanceUsdc(records, ACCT), 5.88);
+
+  // cycle B pays $4: clears the older ($1.88, settled, ref appended), then $2.12 on the newer; nothing left over
+  const b = netOwedAgainstPayout(records, ACCT, 4, NOW + DAY, "wrap-b");
+  assert.deepEqual(b, {
+    paidToHolderUsdc: 0,
+    appliedUsdc: 4,
+    applied: [
+      { wrapId: "wrap-older", amountUsdc: 1.88, remainingUsdc: 0 },
+      { wrapId: "wrap-newer", amountUsdc: 2.12, remainingUsdc: 1.88 }
+    ]
+  });
+  assert.equal(older.owed.status, "settled");
+  assert.equal(older.owed.settledAtMs, NOW + DAY);
+  assert.equal(older.owed.ref, "netted from cycle credits (last: wrap-b)");
+  assert.equal(older.owed.amountUsdc, 5, "the booked amount is history, never rewritten");
+  assert.equal(newer.owed.ref, "ops note", "an open balance keeps its note");
+  assert.equal(owedBalanceUsdc(records, ACCT), 1.88);
+
+  // cycle C pays $10: clears the rest, $8.12 reaches the holder
+  const c = netOwedAgainstPayout(records, ACCT, 10, NOW + 2 * DAY, "wrap-c");
+  assert.deepEqual([c.paidToHolderUsdc, c.appliedUsdc], [8.12, 1.88]);
+  assert.equal(newer.owed.status, "settled");
+  assert.equal(newer.owed.ref, "ops note · netted from cycle credits (last: wrap-c)");
+  assert.equal(owedBalanceUsdc(records, ACCT), 0);
+
+  // nothing outstanding: the whole payout reaches the holder; a non-positive total applies nothing
+  assert.deepEqual(netOwedAgainstPayout(records, ACCT, 2, NOW + 3 * DAY, "wrap-d"), { paidToHolderUsdc: 2, appliedUsdc: 0, applied: [] });
+  assert.deepEqual(netOwedAgainstPayout(records, stranger.account, -3, NOW, "wrap-e"), { paidToHolderUsdc: 0, appliedUsdc: 0, applied: [] });
+  assert.equal(stranger.owed.paidDownUsdc, undefined);
+
+  // a concluding wrap never pays down its own balance
+  const self = plainWrap({ id: "wrap-self" });
+  self.owed = { amountUsdc: 3, status: "owed", createdAtMs: NOW, settledAtMs: null, ref: null };
+  assert.equal(netOwedAgainstPayout([self], ACCT, 3, NOW, "wrap-self").appliedUsdc, 0);
+  // records from before 2026-10-08 (no paidDownUsdc) read as fully outstanding
+  assert.equal(owedRemainingUsdc({ amountUsdc: 7.5, status: "owed", createdAtMs: NOW, settledAtMs: null, ref: null }), 7.5);
+  assert.equal(owedRemainingUsdc({ amountUsdc: 7.5, status: "written_off", createdAtMs: NOW, settledAtMs: null, ref: null }), 0);
+  assert.equal(owedRemainingUsdc(null), 0);
+});
+
+test("carry-forward: the payout ledger books the cycle net of what paid balances down, and says so; a fully applied cycle books nothing", () => {
+  const pos = plainWrap({ id: "wrap-net" });
+  concludeAtExpiry(pos, NOW + DAY / 2 + 1);
+  const p = cyclePayable(pos, 64_900)!; // $3.12 credit, inside the band
+  const entries: Parameters<typeof accrueWrapPayout>[0] = [];
+  const partial = accrueWrapPayout(entries, pos, { ...p, owedAppliedUsdc: 1.12 }, NOW);
+  assert.ok(partial.ok && partial.created);
+  assert.equal(partial.entry.amountUsdc, 2);
+  assert.ok(partial.entry.notes.includes("net of $1.12 carried from earlier cycles (paid down first)"));
+  const all = accrueWrapPayout([], plainWrap({ id: "wrap-all", status: "expired" }), { ...p, owedAppliedUsdc: 3.12 }, NOW);
+  assert.ok(!all.ok && /the whole \$3\.12 paid down earlier cycles' balances; nothing left to pay/.test(all.reason));
+  const none = accrueWrapPayout([], plainWrap({ id: "wrap-none", status: "expired" }), { ...p, owedAppliedUsdc: 0 }, NOW);
+  assert.ok(none.ok && none.entry.amountUsdc === 3.12 && !none.entry.notes.some((n) => /carried/.test(n)), "no carry, no note");
 });
 
 test("noteCapTouch: the first touch is stamped and staged once; later touches only count", () => {

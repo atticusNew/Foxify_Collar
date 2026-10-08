@@ -133,6 +133,14 @@ services:
         value: "0.20"
       - key: EP_FLOOR_RULE
         value: fixed
+      # EP_OWED_CARRY_CYCLES (plain mode, this one-way rail): a cycle that nets negative (gains above
+      # the cap or a release beyond the credit) is recorded, never collected; the account's next
+      # cycles' payouts pay it down first, oldest balance first. A new wrap is refused only when the
+      # outstanding balance exceeds this many cycles of the credit it would pay. 0 = any balance
+      # gates (the pre-2026-10-08 rule). The identity is unchanged: who keeps a payoff is the same,
+      # only when the netting lands moves.
+      - key: EP_OWED_CARRY_CYCLES
+        value: "3"
       # Cap watch: per-wrap headroom is always on (admin status) and prices the holder's release.
       # EP_HEADROOM_ALERT_BPS pages (knockout mode only) when one wrap's reserve passes this many bps
       # of its notional (an ATM weekly cap leg is ~200–250 bps).
