@@ -7,7 +7,7 @@
 import type { CapRule } from "../capRule";
 import type { PerpSide } from "../creditCollarPricer";
 import { DEFAULT_FLOOR_BAND, floorRuleText, pickFloor, type FloorRule } from "../floorRule";
-import { otherTenor, type CapGuard, type CollarGeometry, type EpTenor } from "../perpTenor";
+import { ALT_TENORS, otherTenor, type CapGuard, type CollarGeometry, type EpTenor } from "../perpTenor";
 import { atmReference, fundingStrikeLadder, quoteCollarFromSnapshot, type OkxListedSnapshot, type SnapshotQuote } from "./okxListedSnapshot";
 import type {
   PerpAlt,
@@ -142,7 +142,9 @@ export interface PerpQuoteInputs {
  * the band. Fee-rule alternatives hold the collar fixed and recompute only
  * the split, so the difference is the fee and nothing else. Size probes
  * re-walk the book. The other tenor re-quotes the same shape at the other
- * expiry (the daily when the live product is weekly, and the reverse).
+ * expiry (the daily when the live product is weekly, and the reverse); the
+ * longer tenors (two-weekly, monthly) re-quote it at the expiry each would
+ * write to when the snapshot carried that expiry.
  */
 export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot): PerpShadowOpenRecord | PerpShadowRefusalRecord {
   const weeklyListed = snap.weeklyExpiryMs != null && snap.weeklyExpiryMs !== snap.expiryMs;
@@ -220,6 +222,16 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
     const aq = quoteCollarFromSnapshot({ ...base, maxCapPct: inputs.otherTenorCapGuard?.maxCapPct ?? base.maxCapPct, mode: liveMode, expiryMs: altExpiryMs }, snap);
     const terms = altFrom(aq, inputs.take);
     tenors[alt] = terms.ok ? { ...terms, expiryIso: new Date(altExpiryMs).toISOString() } : terms;
+  }
+  // Longer tenors (two-weekly, monthly): the same floor at the expiry each would write to, the cap
+  // search allowed its wider band (perpTenor.ALT_TENORS), from the same snapshot. Measured, not
+  // written; only recorded when the snapshot carried that expiry (nothing invented).
+  for (const t of ALT_TENORS) {
+    const altExpiryMs = snap.altExpiries?.[t.label];
+    if (altExpiryMs == null || altExpiryMs === liveExpiryMs) continue;
+    const aq = quoteCollarFromSnapshot({ ...base, maxCapPct: Math.max(base.maxCapPct, t.maxCapPct), mode: liveMode, expiryMs: altExpiryMs }, snap);
+    const terms = altFrom(aq, inputs.take);
+    tenors[t.label] = terms.ok ? { ...terms, expiryIso: new Date(altExpiryMs).toISOString() } : terms;
   }
 
   // Floor depth: the collar re-quoted with the floor at each depth (the cap re-found by the live
