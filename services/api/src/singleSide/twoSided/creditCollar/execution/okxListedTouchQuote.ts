@@ -10,6 +10,7 @@ import { computeCollarOpenFees } from "../bullishFees";
 import { exceedProb, pickCap, YEAR_MS, type CapRule } from "../capRule";
 import type { PerpSide } from "../creditCollarPricer";
 import { parseOkxChain, planLiveCollar, nextListedWeeklyExpiryMs, nextStandardDailyExpiryMs, type OkxChainInstrument } from "./okxLivePlanner";
+import { listedWeeklyExpiryInBand, type TenorBand } from "../perpTenor";
 
 const round2 = (x: number) => +x.toFixed(2);
 const round6 = (x: number) => +x.toFixed(6);
@@ -286,8 +287,13 @@ export const fetchOkxListedTouchQuote = async (input: {
   contractsBtc: number;
   nowMs: number;
   baseUrl?: string;
-  /** daily (default; the product today) or weekly (the next listed Friday ≥ 5 days out, daily when none is listed) */
+  /** daily (default; the product today) or weekly (the next listed Friday ≥ 3 days out, daily when none is listed) */
   tenor?: "daily" | "weekly";
+  /**
+   * A brand's tenor band (epBranding.ts): the weekly is the nearest listed Friday inside it. When
+   * no Friday sits in the band the live rule (≥ 3 days) is used, so a band never refuses.
+   */
+  tenorBand?: TenorBand;
   /**
    * Cap guard. The search may reach `maxCapPct` from spot (default the 4% band). A pick closer
    * than `minCapPct` is REFUSED (`cap_too_close`) — a knockout-mode rule (there a close cap costs
@@ -311,7 +317,10 @@ export const fetchOkxListedTouchQuote = async (input: {
   try {
     const instr = (await getJson("/api/v5/public/instruments?instType=OPTION&uly=BTC-USD")) as { data?: ChainRow[] };
     const chain = parseOkxChain(instr.data ?? []);
-    const weeklyMs = input.tenor === "weekly" ? nextListedWeeklyExpiryMs(chain, input.nowMs) : null;
+    const weeklyMs =
+      input.tenor === "weekly"
+        ? (input.tenorBand ? listedWeeklyExpiryInBand(chain, input.nowMs, input.tenorBand) : null) ?? nextListedWeeklyExpiryMs(chain, input.nowMs)
+        : null;
     const wantExpiryMs = weeklyMs ?? undefined;
     const planned = planLiveCollar(chain, {
       side: input.side,

@@ -30,7 +30,16 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HyperliquidClient } from "../src/singleSide/twoSided/creditCollar/execution/perpVenues/hyperliquidClient";
-import { parseBrandAllowlist, resolveBrandFor } from "../src/singleSide/twoSided/creditCollar/epBranding";
+import {
+  DEFAULT_BRAND_SETTINGS,
+  brandDiffers,
+  describeBrandSettings,
+  parseBrandAllowlist,
+  parseBrandSettings,
+  resolveBrandFor,
+  settingsForBrand,
+  type BrandSettings
+} from "../src/singleSide/twoSided/creditCollar/epBranding";
 import {
   assessDemoWrap,
   assessUnderlying,
@@ -155,7 +164,7 @@ import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regi
 import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
 import { fetchOkxListedTouchQuote } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 import { capGuardFor, parseTenor, type EpTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
-import { capRuleFromEnv, capRuleText, expTimeFromMs } from "../src/singleSide/twoSided/creditCollar/capRule";
+import { capRuleFromEnv, capRuleText, expTimeFromMs, type CapRule } from "../src/singleSide/twoSided/creditCollar/capRule";
 import { buildOkxLiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveRunner";
 import { executionArmed, parseLiveGuardsFromEnv } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
 
@@ -344,10 +353,10 @@ const RETAIL_SKIN = process.env.EP_SKIN !== "institutional";
 const takeRate = () => ({ ratePct: capsInputs.takeRatePct, founding: false });
 // The showcase set is core surface now (the retail landing boots into it; the institutional
 // skin's reference-position view reads it too) — no seasonal EP_DEMO_AIDS flag anymore.
-const setProtection = async (account: string, on: boolean): Promise<void> => {
+const setProtection = async (account: string, on: boolean, brand?: string): Promise<void> => {
   const prefs = await stores.loadPrefs();
   const key = account.toLowerCase();
-  if (on) prefs[key] = { ...(prefs[key] ?? { sinceMs: Date.now() }), on: true, sinceMs: prefs[key]?.on ? prefs[key].sinceMs : Date.now() };
+  if (on) prefs[key] = { ...(prefs[key] ?? { sinceMs: Date.now() }), on: true, sinceMs: prefs[key]?.on ? prefs[key].sinceMs : Date.now(), ...(brand ? { brand } : {}) };
   else if (prefs[key]) prefs[key] = { ...prefs[key], on: false };
   await stores.savePrefs(prefs);
 };
@@ -435,6 +444,27 @@ const capGuard = capGuardFor(tenor, process.env, capMode);
 // market gives at most EP_CAP_EXCEED_PROB (0.20) chance of finishing beyond this cycle, priced off
 // the strike's OKX mark vol; the widest paying strike when none qualifies or no vol is readable.
 const capRule = capRuleFromEnv(process.env);
+// ── Per-brand settings (epBranding.ts, 2026-10-08) ────────────────────────────
+// The instance brand (EP_BRAND_FOR) and any allowlisted `?brand=` run under EP_BRAND_SETTINGS:
+// a tenor band (3–14 days), the cap odds (10–30%) and a take waiver, each inside its band; the
+// instance's own values are the defaults, so no EP_BRAND_SETTINGS changes nothing. Tenor band
+// and cap odds change WHICH expiry and strike are written; the waiver changes who keeps the take
+// (identity re-derived in epBranding.ts). A wrap remembers its brand so renewals keep it.
+const instanceBrand = (process.env.EP_BRAND_FOR ?? "HYPERLIQUID").trim() || "HYPERLIQUID";
+const brandAllowlist = parseBrandAllowlist(process.env.EP_BRAND_ALLOWLIST);
+const brandSettings = parseBrandSettings(process.env.EP_BRAND_SETTINGS, {
+  ...DEFAULT_BRAND_SETTINGS,
+  capExceedProb: capRule.kind === "target" ? capRule.maxExceedProb : DEFAULT_BRAND_SETTINGS.capExceedProb
+});
+for (const n of brandSettings.notes) console.error(`[demo] brand settings: ${n}`);
+/** The brand a request runs as: an allowlisted `?brand=` or the instance's (fail closed). */
+const brandFromQuery = (q: string | null): string => resolveBrandFor(instanceBrand, q, brandAllowlist);
+const settingsFor = (brand: string | null | undefined): BrandSettings => settingsForBrand(brandSettings, brand ?? instanceBrand);
+/** The cap rule under a brand's odds: `widest` stays widest; `target` takes the brand's dial. */
+const brandCapRule = (s: BrandSettings): CapRule => (capRule.kind === "target" ? { kind: "target", maxExceedProb: s.capExceedProb } : capRule);
+/** The take under a brand: waived ⟹ rate 0 and no notional minimum (the trader is paid the whole net credit). */
+const brandTakeRate = (s: BrandSettings): { ratePct: number; founding: boolean; waived: boolean } => (s.takeWaived ? { ratePct: 0, founding: false, waived: true } : { ...takeRate(), waived: false });
+const brandMinTakeUsdc = (s: BrandSettings, notionalUsdc: number): number => (s.takeWaived ? 0 : minTakeUsdcFor(capsInputs, notionalUsdc));
 const markVolsForExpiry = (expiryMs: number): Promise<Map<string, number> | null> => markVolsFor(expTimeFromMs(expiryMs), Date.now());
 // Floor rule (floorRule.ts): which depth the floor is written to. Default = fixed at DEMO_FLOOR_PCT
 // (one probe, today's behaviour); EP_FLOOR_RULE=tightest_paying tries the band most-protective first.
@@ -444,7 +474,7 @@ const floorRule = floorRuleFromEnv(process.env, floorPct);
  * depth, the cap rule picks the strike, the take is applied identically. Returns the chosen probe
  * (or the last refusal when nothing pays) plus the depth it was written to.
  */
-const listedQuoteByRule = async (a: { side: PerpSide; spot: number; notionalUsdc: number; contractsBtc: number; nowMs: number }) => {
+const listedQuoteByRule = async (a: { side: PerpSide; spot: number; notionalUsdc: number; contractsBtc: number; nowMs: number }, bs: BrandSettings = brandSettings.defaults) => {
   const { pick, quotes } = await evaluateFloorRule(
     floorRule,
     (fp) => {
@@ -458,14 +488,15 @@ const listedQuoteByRule = async (a: { side: PerpSide; spot: number; notionalUsdc
         contractsBtc: a.contractsBtc,
         nowMs: a.nowMs,
         tenor,
+        tenorBand: { minDays: bs.tenorMinDays, maxDays: bs.tenorMaxDays },
         capGuard,
-        capRule,
+        capRule: brandCapRule(bs),
         markVolsFor: markVolsForExpiry
       });
     },
     (q) =>
       q.ok
-        ? { creditUsdc: applyTake(q.creditUsdc, takeRate().ratePct, capsInputs.deMinimisUsdc, false, minTakeUsdcFor(capsInputs, a.notionalUsdc)).traderCreditUsdc, notionalUsdc: a.notionalUsdc }
+        ? { creditUsdc: applyTake(q.creditUsdc, brandTakeRate(bs).ratePct, capsInputs.deMinimisUsdc, false, brandMinTakeUsdc(bs, a.notionalUsdc)).traderCreditUsdc, notionalUsdc: a.notionalUsdc }
         : { creditUsdc: null, notionalUsdc: 0 }
   );
   const chosen = pick.floorPct != null ? quotes.get(pick.floorPct)! : [...quotes.values()].pop()!;
@@ -559,10 +590,12 @@ const withTimeout = async <T>(work: Promise<T>, ms: number, onTimeout: T): Promi
 const doWrap = async (
   account: string,
   renewal = false,
-  idempotencyKey: string | null = null
+  idempotencyKey: string | null = null,
+  brand: string = instanceBrand
 ): Promise<{ status: number; body: unknown }> => {
   const nowMs = Date.now();
   const records = await stores.loadWraps();
+  const bs = settingsFor(brand);
 
   // Idempotent wrap requests: a client retry with the same key returns the ORIGINAL outcome —
   // a flaky network can never open two wraps.
@@ -650,6 +683,7 @@ const doWrap = async (
   rec.capMode = capMode;
   if (renewal) rec.stages[0].note = "auto-renewal — protection stayed on through expiry";
   if (idempotencyKey) rec.idempotencyKey = idempotencyKey;
+  if (brand !== instanceBrand || brandDiffers(bs, brandSettings.defaults)) rec.brand = brand;
   rec.wrappedNotionalUsdc = coveredNotionalUsdc; // the book carries the HEDGED exposure, not the raw position
   records.push(rec);
   await stores.saveWraps(records);
@@ -658,7 +692,7 @@ const doWrap = async (
   // 2) QUOTE — listed OKX lots. Credit = executable touch net of OKX fees. No $80/$50k target.
   const spot = position.markPx;
   const hedgeNotionalUsdc = round2(cover.coveredBtc * spot);
-  const { probe: listed } = await listedQuoteByRule({ side: position.side, spot, notionalUsdc: hedgeNotionalUsdc, contractsBtc: cover.coveredBtc, nowMs: Date.now() });
+  const { probe: listed } = await listedQuoteByRule({ side: position.side, spot, notionalUsdc: hedgeNotionalUsdc, contractsBtc: cover.coveredBtc, nowMs: Date.now() }, bs);
   if (!listed.ok) {
     okxQuoteFailStreak = /listed_book_empty|chain|fetch|network/i.test(listed.error) ? okxQuoteFailStreak + 1 : 0;
     if (okxQuoteFailStreak >= 3)
@@ -689,8 +723,8 @@ const doWrap = async (
   }
 
   // Spread take (decision 3): the trader is quoted and paid the NET credit; the split is recorded
-  // and published honestly — one rate for every wallet.
-  const rate = takeRate();
+  // and published honestly — one rate for every wallet (waived outright on a brand that dials it).
+  const rate = brandTakeRate(bs);
   const q = {
     legs: {
       putStrike: listed.putStrike,
@@ -709,7 +743,7 @@ const doWrap = async (
   const tenorDays = Math.max(1 / 24, (listed.expiryMs - Date.now()) / DAY_MS);
   // The trader is quoted the NET credit (gross minus the published take). One-number rule: every
   // surface shows this number; the gross/split lives in rec.economics for the honest breakdown.
-  const minTakeUsdc = minTakeUsdcFor(capsInputs, hedgeNotionalUsdc);
+  const minTakeUsdc = brandMinTakeUsdc(bs, hedgeNotionalUsdc);
   const quotedSplit = applyTake(q.economics.foxify_credit_usdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdc);
   if (!(quotedSplit.traderCreditUsdc > 0)) {
     failWrap(rec, Date.now(), `wrap refused: credit_below_take — the market funded $${q.economics.foxify_credit_usdc}, under the minimum take`);
@@ -759,9 +793,12 @@ const doWrap = async (
     `floor $${floorStrike} / cap $${capStrike} · credit $${quotedSplit.traderCreditUsdc}` +
       (quotedSplit.atticusTakeUsdc > 0
         ? ` (market sourced $${q.economics.foxify_credit_usdc}; we keep ${(quotedSplit.appliedRatePct * 100).toFixed(0)}%${rate.founding ? " founding rate" : ""})`
-        : ` (market sourced $${q.economics.foxify_credit_usdc}; our cut waived under $${capsInputs.deMinimisUsdc.toFixed(2)})`) +
+        : rate.waived
+          ? ` (market sourced $${q.economics.foxify_credit_usdc}; no take on ${brand})`
+          : ` (market sourced $${q.economics.foxify_credit_usdc}; our cut waived under $${capsInputs.deMinimisUsdc.toFixed(2)})`) +
       ` · listed OKX ${listed.putInstId} / ${listed.callInstId} touch` +
       (listed.tenor !== "daily" ? ` · ${listed.tenor}` : "") +
+      (rec.brand ? ` · ${brand}: ${describeBrandSettings(bs)}` : "") +
       (funding && funding.holderPaysUsdc !== 0 ? ` · funding ${funding.holderPaysUsdc > 0 ? "costs" : "pays"} $${Math.abs(funding.holderPaysUsdc)} over the cycle` : "") +
       (sizeNote ? ` · ${sizeNote}` : "")
   );
@@ -1114,7 +1151,8 @@ const renewalTick = async (): Promise<void> => {
       }
       const cover = coverOkxLots(position.szBase);
       if (!cover.ok) continue; // below one lot — retry next throttle window
-      const { probe } = await listedQuoteByRule({ side: position.side, spot: position.markPx, notionalUsdc: round2(cover.coveredBtc * position.markPx), contractsBtc: cover.coveredBtc, nowMs });
+      const renewBrand = pref.brand ?? latest?.brand ?? instanceBrand;
+      const { probe } = await listedQuoteByRule({ side: position.side, spot: position.markPx, notionalUsdc: round2(cover.coveredBtc * position.markPx), contractsBtc: cover.coveredBtc, nowMs }, settingsFor(renewBrand));
       if (!probe.ok) {
         console.error(`[demo] auto-renew: ${key} skip-day — ${probe.error} (retry in ${Math.round(renewRetryMs / 60000)}m)`);
         continue;
@@ -1122,7 +1160,7 @@ const renewalTick = async (): Promise<void> => {
       wrapsInFlight.set(key, Date.now());
       try {
         const out = await withTimeout(
-          doWrap(key, true),
+          doWrap(key, true, null, renewBrand),
           WRAP_REQUEST_TIMEOUT_MS,
           { status: 504, body: { ok: false, error: "wrap_timeout", message: "renewal attempt timed out — retrying next tick" } }
         );
@@ -1919,14 +1957,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           // demo links can override with ?brand=… but ONLY for names pre-approved in
           // EP_BRAND_ALLOWLIST (fail closed to the env default) — partner names never appear
           // on the public instance unless the founder configured them.
-          .replaceAll(
-            "__BRAND_FOR__",
-            resolveBrandFor(
-              process.env.EP_BRAND_FOR ?? "HYPERLIQUID",
-              url.searchParams.get("brand"),
-              parseBrandAllowlist(process.env.EP_BRAND_ALLOWLIST)
-            ).replace(/[<>&"]/g, "")
-          )
+          .replaceAll("__BRAND_FOR__", brandFromQuery(url.searchParams.get("brand")).replace(/[<>&"]/g, ""))
           .replaceAll("__BRAND_LINE__", (process.env.EP_BRAND_LINE ?? "for").replace(/[<>&"]/g, ""))
           .replaceAll("__SKIN__", process.env.EP_SKIN === "institutional" ? "institutional" : "retail")
           .replaceAll("__LINK_RECORD__", trackRecordLink.href ? `<a href="/record" target="_blank" rel="noopener">Track record</a> · ` : "")
@@ -2250,13 +2281,15 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
         return;
       }
-      const { probe } = await listedQuoteByRule({ side: position.side, spot: position.markPx, notionalUsdc: sizing.coveredNotionalUsdc, contractsBtc: sizing.coveredBtc, nowMs: Date.now() });
+      const qBrand = brandFromQuery(url.searchParams.get("brand"));
+      const qbs = settingsFor(qBrand);
+      const { probe } = await listedQuoteByRule({ side: position.side, spot: position.markPx, notionalUsdc: sizing.coveredNotionalUsdc, contractsBtc: sizing.coveredBtc, nowMs: Date.now() }, qbs);
       if (!probe.ok) {
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
         return;
       }
-      const rate = takeRate();
-      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdcFor(capsInputs, sizing.coveredNotionalUsdc));
+      const rate = brandTakeRate(qbs);
+      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, brandMinTakeUsdc(qbs, sizing.coveredNotionalUsdc));
       if (!(split.traderCreditUsdc > 0)) {
         sendJson(res, 409, { ok: false, error: "credit_below_take", message: `the market funded $${probe.creditUsdc}, under the minimum take` });
         return;
@@ -2332,13 +2365,15 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 409, { ok: false, error: "not_wrappable", message: sizing.reason });
         return;
       }
-      const { probe, floorRuleBy } = await listedQuoteByRule({ side, spot: mark, notionalUsdc: sizing.coveredNotionalUsdc, contractsBtc: sizing.coveredBtc, nowMs: Date.now() });
+      const pBrand = brandFromQuery(url.searchParams.get("brand"));
+      const pbs = settingsFor(pBrand);
+      const { probe, floorRuleBy } = await listedQuoteByRule({ side, spot: mark, notionalUsdc: sizing.coveredNotionalUsdc, contractsBtc: sizing.coveredBtc, nowMs: Date.now() }, pbs);
       if (!probe.ok) {
         sendJson(res, 409, { ok: false, error: probe.error, message: probe.message });
         return;
       }
-      const rate = takeRate();
-      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, minTakeUsdcFor(capsInputs, sizing.coveredNotionalUsdc));
+      const rate = brandTakeRate(pbs);
+      const split = applyTake(probe.creditUsdc, rate.ratePct, capsInputs.deMinimisUsdc, rate.founding, brandMinTakeUsdc(pbs, sizing.coveredNotionalUsdc));
       if (!(split.traderCreditUsdc > 0)) {
         sendJson(res, 409, { ok: false, error: "credit_below_take", message: `the market funded $${probe.creditUsdc}, under the minimum take` });
         return;
@@ -2409,17 +2444,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         return;
       }
       const idem = String(req.headers["idempotency-key"] ?? url.searchParams.get("idem") ?? "").trim() || null;
+      const wBrand = brandFromQuery(url.searchParams.get("brand"));
       wrapsInFlight.set(key, Date.now());
       try {
         const out = await withTimeout(
-          doWrap(acct.account, false, idem),
+          doWrap(acct.account, false, idem, wBrand),
           WRAP_REQUEST_TIMEOUT_MS,
           { status: 504, body: { ok: false, error: "wrap_timeout", message: "the venue did not answer in time — nothing opened; try again in a minute" } }
         );
         // Toggle ON is a state: a SUCCESSFUL wrap arms auto-renew for this account (refusals don't —
         // the daily quota can't be laundered through the renewal lane by toggling once).
         if ((out.body as { ok?: boolean }).ok === true) {
-          await setProtection(acct.account, true);
+          await setProtection(acct.account, true, wBrand);
           // Issue (or re-issue to the wrapping client) the account's close-gate control token.
           const prefs = await stores.loadPrefs();
           const pk = acct.account.toLowerCase();
@@ -2772,6 +2808,12 @@ server.listen(port, () => {
       `[demo] caps (formulas): capital $${capsInputs.subAccountCapitalUsdc} × ${(1 - capsInputs.headroomPct) * 100}% usable ÷ ${(capsInputs.marginPerWrapRate * 100).toFixed(0)}% margin ⟹ book cap $${refCaps.bookCapUsdc}` +
         ` · per-wallet $${round2(refCaps.bookCapUsdc / capsInputs.targetWallets)} (floor 1 lot) · per-strike ≤${(capsInputs.perStrikeCapPct * 100).toFixed(0)}%` +
         ` · take ${(capsInputs.takeRatePct * 100).toFixed(0)}%, $0 under $${capsInputs.deMinimisUsdc.toFixed(2)}`
+    );
+    console.error(
+      `[demo] brand ${instanceBrand}: ${describeBrandSettings(brandSettings.defaults)}` +
+        Object.entries(brandSettings.byBrand)
+          .map(([k, v]) => ` · ${k.toUpperCase()}: ${describeBrandSettings(v)}`)
+          .join("")
     );
     console.error(`[demo] admin: ${adminAuth.token ? "token auth ON" : adminAuth.enabled ? "DEV MODE (no token)" : "DISABLED — set EP_ADMIN_TOKEN"} · rate limits: reads ${num(process.env.EP_RATE_READS_PER_MIN, 120)}/min, actions ${num(process.env.EP_RATE_ACTIONS_PER_MIN, 12)}/min per IP`);
     console.error(

@@ -152,6 +152,8 @@ export type DemoWrapRecord = {
   createdAtMs: number;
   /** the cap rule this wrap was written under; absent on records from before the rule existed (knockout) */
   capMode?: CapMode;
+  /** the brand this wrap was written under when it differs from the instance's (epBranding.ts); renewals keep it */
+  brand?: string;
   clientVenue: string; // "hyperliquid"
   account: string;     // the account whose position is wrapped (shown on the video)
   position: {
@@ -820,6 +822,8 @@ export type ProtectionPref = {
    * clawback. Stable per account so auto-renewed wraps stay closable by the opening client.
    */
   controlToken?: string;
+  /** brand the trader turned protection on under (epBranding.ts); auto-renewals wrap under the same settings */
+  brand?: string;
 };
 export type ProtectionPrefs = Record<string, ProtectionPref>; // key = account, lowercase
 

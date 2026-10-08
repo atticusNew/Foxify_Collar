@@ -771,9 +771,13 @@ const setConn = () => {
   $("introTrio").style.display = !INST && !account && landingFailed ? "" : "none";
 };
 
+// A page opened as ?brand=<name> quotes and wraps under that brand's settings (server-side
+// allowlist; unknown names fall back to the instance brand), so the query rides every call.
+const pageBrand = (() => { try { return new URLSearchParams(location.search).get("brand") || ""; } catch { return ""; } })();
 const api = async (path, opts) => {
   const sep = path.includes("?") ? "&" : "?";
-  const r = await fetch(path + sep + "account=" + encodeURIComponent(account), opts);
+  const brandQ = pageBrand ? "&brand=" + encodeURIComponent(pageBrand) : "";
+  const r = await fetch(path + sep + "account=" + encodeURIComponent(account) + brandQ, opts);
   return r.json();
 };
 
