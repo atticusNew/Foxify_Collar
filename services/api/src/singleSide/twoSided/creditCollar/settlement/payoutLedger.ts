@@ -111,8 +111,11 @@ export const accrueWrapPayout = (
   const existing = entries.find((e) => e.wrapId === rec.id);
   if (existing) return { ok: true, entry: existing, created: false };
   if (!isEvmAddress(rec.account)) return { ok: false, reason: `not a payable address: ${rec.account}` };
-  const amountUsdc = round2(payable.totalUsdc);
-  if (!(amountUsdc >= 0.01)) return { ok: false, reason: `nothing to pay this cycle ($${amountUsdc.toFixed(2)})` };
+  const owedApplied = round2(Math.max(0, payable.owedAppliedUsdc ?? 0));
+  const amountUsdc = round2(payable.totalUsdc - owedApplied);
+  if (!(amountUsdc >= 0.01)) {
+    return { ok: false, reason: owedApplied > 0 ? `the whole $${round2(payable.totalUsdc).toFixed(2)} paid down earlier cycles' balances; nothing left to pay this cycle` : `nothing to pay this cycle ($${amountUsdc.toFixed(2)})` };
+  }
   const entry: PayoutEntry = {
     id: rec.id,
     wrapId: rec.id,
@@ -132,7 +135,8 @@ export const accrueWrapPayout = (
       `accrued on ${payable.kind}`,
       ...((payable.capOwedUsdc ?? 0) > 0 ? [`net of $${payable.capOwedUsdc.toFixed(2)} gains above the cap handed back`] : []),
       ...((payable.releaseCostUsdc ?? 0) > 0 ? [`net of $${payable.releaseCostUsdc.toFixed(2)} cap release`] : []),
-      ...((payable.closeValueUsdc ?? 0) !== 0 ? [`includes $${payable.closeValueUsdc.toFixed(2)} collar mark-to-market on the unwind`] : [])
+      ...((payable.closeValueUsdc ?? 0) !== 0 ? [`includes $${payable.closeValueUsdc.toFixed(2)} collar mark-to-market on the unwind`] : []),
+      ...(owedApplied > 0 ? [`net of $${owedApplied.toFixed(2)} carried from earlier cycles (paid down first)`] : [])
     ]
   };
   entries.push(entry);

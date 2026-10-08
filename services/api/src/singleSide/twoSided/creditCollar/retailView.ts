@@ -117,6 +117,16 @@ const CLIENT_CODES: ReadonlySet<string> = new Set([
 export type RetailRefusal = { error: string; message: string };
 
 /**
+ * A refused wrap over a carried balance (plain mode). The balance is never collected: later
+ * cycles' credits pay it down first, and a wrap is refused only once it is more than we carry.
+ * Says the dollars, what pays it, and that protection restarts — never "owed".
+ */
+const owedSentence = (raw: string): string => {
+  const m = raw.match(/\$([0-9][0-9,]*\.?[0-9]*)/);
+  return (m ? `$${m[1]} from past cycles` : "Your last cycles\u2019 balance") + " settles from your credits first \u00b7 it\u2019s more than we carry forward right now, so protection restarts once it\u2019s settled.";
+};
+
+/**
  * The retail sentence for an engine refusal. Codes first (exact), then the raw string's shape
  * (wrap records carry free-text `failReason`s), then a safe default. Never echoes the raw string.
  */
@@ -161,10 +171,8 @@ export const retailRefusal = (code: string | undefined | null, raw: string | und
       return { error: c, message: "Live price unavailable · try again in a moment." };
     case "bad_signature":
       return { error: c, message: "That signature didn't verify · try again." };
-    case "owed_outstanding": {
-      const m = s.match(/\$([0-9][0-9,]*\.?[0-9]*)/);
-      return { error: c, message: (m ? `$${m[1]} settles` : "Your last cycle settles") + " from your last cycle\u2019s gains first." };
-    }
+    case "owed_outstanding":
+      return { error: c, message: owedSentence(s) };
     case "below_min_lot":
     case "not_wrappable":
       return { error: "not_wrappable", message: "Below the 0.01 BTC minimum." };
@@ -206,10 +214,7 @@ export const retailRefusal = (code: string | undefined | null, raw: string | und
     return { error: "no_fill", message: "Couldn\u2019t fill at our quote · nothing opened." };
   if (/already active|in flight|being processed/i.test(s)) return { error: "in_flight", message: "Already in progress · one moment." };
   if (/no open .* position|no live position|position is gone|underlying/i.test(s)) return { error: "no_position", message: "No open position to protect." };
-  if (/settles from gains|still owed/i.test(s)) {
-    const m = s.match(/\$([0-9][0-9,]*\.?[0-9]*)/);
-    return { error: "owed_outstanding", message: (m ? `$${m[1]} settles` : "Your last cycle settles") + " from your last cycle\u2019s gains first." };
-  }
+  if (/settles from gains|still owed|more than we carry/i.test(s)) return { error: "owed_outstanding", message: owedSentence(s) };
   if (/Terms of Service|tos_required/i.test(s)) return { error: "tos_required", message: "Please accept the Terms first." };
   if (/verify_required/i.test(s)) return { error: "verify_required", message: "Verify your wallet first · one signature, one time." };
   if (/not available in your region|geo_blocked/i.test(s)) return { error: "geo_blocked", message: "Not available in your region." };

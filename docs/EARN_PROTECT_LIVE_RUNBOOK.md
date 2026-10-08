@@ -42,6 +42,7 @@ Confirm the flags that must already be right in `render-earn-protect.yaml` (they
 | `EP_TENOR` | `weekly` | nearest listed Friday at least 3 days out; the credit is real there |
 | `EP_CAP_RULE` / `EP_CAP_EXCEED_PROB` | `target` / `0.20` | most credit among caps with ≤20% market-implied odds of finishing beyond |
 | `EP_FLOOR_RULE` | `fixed` (6%) until the shadow's Floor depth card says otherwise | the rule is measured before the default moves |
+| `EP_OWED_CARRY_CYCLES` | `3` | a cycle that nets negative is recorded, never collected; the next cycles' payouts pay it down first and a new wrap waits only when the balance exceeds 3 cycles of its credit (`0` = any balance gates, the old rule) |
 | `EP_UNWIND_QUEUE` | `1` | early closes settle the holder at MTM at once; our legs are worked passive → IOC with receipts |
 | `EP_SKIN` | `retail` | non-admin JSON is redacted server-side; the institutional payload is a separate instance |
 | `EP_REQUIRE_ACTION_SIG` | forced on for every non-paper lane | owner-only actions; a wallet signs once |
