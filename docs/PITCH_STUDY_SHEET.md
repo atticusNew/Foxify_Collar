@@ -2,7 +2,7 @@
 
 **Living document.** Update it whenever any of these happen: a number on either public record moves materially, a venue or regulator does something that changes an answer, a question comes up in a real conversation that is not covered here, or an answer below turns out to be wrong. Every update goes in the changelog at the bottom with the date. Agents: when the founder reports a new development, an investor or partner question, or a market-structure change, update this sheet in the same PR as any related work.
 
-**Last updated:** 2026-09-29. Numbers are from the live records on that date; refresh before any event.
+**Last updated:** 2026-10-08 (wording: credit timing, take, the ask, the hand-back, the venue requirement). Numbers are from the live records as of 2026-09-29; refresh before any event.
 
 ---
 
@@ -43,7 +43,7 @@ Refresh from the live pages before any event. Event record: the `atticus-event-s
 
 **Perps** (recording since 2026-09-21, weekly Friday expiry; as of 2026-09-29):
 - 794 positions quoted, $29.7M notional protected, 568 long, 226 short. Zero refusals. 594 open, 68 settled, 132 closed early.
-- $31,503 credited to users, 10.6 bps of notional. Our take $7,876 (25% of the credit). Market funded $55,197 gross; OKX fees $15,819, twice our take.
+- $31,503 credited to users, 10.6 bps of notional. Our take $7,876: 20% of the credit sourced ($39,379 after fees), which is 25% of what users received. Say "20% of the credit"; it is the rate the code enforces (`EP_TAKE_RATE`). Market funded $55,197 gross; OKX fees $15,819, twice our take.
 - 68 settled, P&L $548.44 = take booked $548.44, gap $0.00.
 - Users' P&L with collar minus without, settled: +$2,183.60. Early closes at live prices: +$5,496 vs unprotected; unwinds crossing the book cost $490 in total.
 - Floor 6% out; cap 4.1% out on average; 13 of 68 touched the cap, 1 ended past it.
@@ -55,10 +55,11 @@ Refresh from the live pages before any event. Event record: the `atticus-event-s
 ## 6. Objections and the answer you give
 
 - **"So it is just a collar."** Yes, the instrument is a collar. The product is that it attaches to a position the user already holds, pays the user instead of charging them, and is hedged leg for leg so nobody carries the book. Nobody has shipped that to retail with a toggle.
-- **"Why would a user pay for protection?"** They do not. They are paid. Cash at the tap, or vesting through the cycle.
+- **"Why would a user pay for protection?"** They do not. They are paid. On perps the credit vests through the cycle and settles at its close, netted against any gains above the cap handed back; never upfront.
+- **"So the trader has to pay you back if price runs past the cap?"** The gains above the cap are the floor's premium; the trader agreed to sell them at the tap, and the amount is always a slice of a gain they just made, so they always have it. On a venue that holds the position, nobody pays anybody: the week's P&L is booked with the floor and cap applied, like funding. On Hyperliquid, where our rail is one way, the amount beyond the credit is recorded, never collected. Measured so far: 13 of 68 settled touched the cap, 1 finished past it.
 - **"Where does the credit come from?"** From selling a slice of the upside. Call skew on BTC and the price of the winning side on a binary make the upside slice worth more than the floor. The market funds it, not us.
 - **"Who is on the other side of the risk?"** The listed options market or the opposing side of the same event. Both legs placed when the user taps. Our P&L on any settled position equals the take we published; that identity is on the record with a zero gap.
-- **"What if the hedge is not available?"** We refuse and say so. Zero refusals on 713 perp quotes; event refusals are recorded and counted. We never quote what the book cannot fund.
+- **"What if the hedge is not available?"** We refuse and say so. Zero refusals on 794 perp quotes; event refusals are recorded and counted. We never quote what the book cannot fund.
 - **"Gap through the floor?"** The floor is a put, or the opposing side of a binary. It pays at settlement on the official print regardless of path. Gap risk sits with the option seller, who was paid for it. Our residual is basis between the perp mark and the options index, 0.7 bps at open.
 - **"Counterparty risk?"** Cleared venues. OKX for options; CFTC-regulated DCMs for US events. We hold no user funds and no keys.
 - **"Why won't the exchange build it?"** An exchange matches and clears; it does not want to price, hedge and warehouse a derivatives book against its own users. A partner who does that and takes a revenue share is the natural shape, the same reason exchanges do not run their own market makers.
@@ -94,8 +95,11 @@ Say these. Do not say "patent" unless a provisional is filed; if it is, "patent 
 - EV cost (events): quoted cost of protection as a share of the position's expected value at the market's own odds. 2.89% on sports.
 - User delta: realized protected minus naked, as a share of stake. Negative in a sample where favorites won; the floor is what it buys.
 - The identity: writer P&L = take booked. Hedge pays the floor, cap slice pays the hedge, nothing depends on who won.
-- Take: a published share of the credit, netted out before the user sees the number. The credit you see is the credit you get.
+- Take: a published share of the credit, 20% of the credit sourced, netted out before the user sees the number. The credit you see is the credit you get.
 - Cycle (perps): weekly, Friday expiry at least three days out. Cap touch on a plain collar runs to expiry; the demo variant re-arms.
+- Credit timing (perps): vests through the cycle, pays at its close, netted against any hand-back. Never upfront.
+- Hand-back: gains above the cap at the print. The floor's premium, due out of a week the trader won. On a venue ledger it is booked with the week's P&L; on a one-way rail it is recorded, never collected. No structure removes it without removing the credit: the credit is the sale of those gains.
+- Hold to expiry: nothing trades between the tap and the print. That is what makes writer P&L equal the take to the cent. Selling the cap leg at a touch pays the market's richest price for something that mostly expires worthless (13 touches, 1 finish past the cap). Release is the trader's choice, at the live price, never ours.
 - P&L identity rule (house rule since 2026-09-20): any structure change that moves who keeps a payoff gets the identity re-derived and tested before it ships. The knockout collar shipped without it and measured negative-EV live; that is the incident.
 
 ## 9. Market structure: what is happening and how to talk about it
@@ -109,7 +113,7 @@ Say these. Do not say "patent" unless a provisional is filed; if it is, "patent 
 
 ## 10. The ask
 
-As of 2026-09-28 (founder, in conversation): $250k to $500k pre-seed at a $5M post-money cap; funds hedge margin for the founding cohort, the regulated deployment path for US event venues, and two hires. `docs/AGENT_HANDOFF.md` (2026-09-18) records "$2M seed at a $10M cap, $250K first-close tranche." Confirm which is current before any event and update both.
+As of 2026-10-06 (founder): $250k to $400k pre-seed on a post-money SAFE at a $5M cap; funds hedge margin for the first live cohort, the regulated deployment path for US event venues, and two hires (engineer, sales). Older material saying "$250k to $500k", "$2M seed at a $10M cap" or "$4M cap / 20% discount" is superseded; correct it wherever found.
 
 Fit check for the room: Strobe Ventures writes $1M to $3M first checks at 7% to 10% ownership; below that size, the ask to a fund like that is a relationship and names, not a check.
 
@@ -167,8 +171,15 @@ Suggested by Robin Obermaier (Liquidium) on 2026-09-29: a liquidity provider pos
 
 **Talking point.** Followed them since the Prophet Exchange peer-to-peer days while building a peer-to-peer options exchange; the shared thesis is that the market sets the price, not the house, and a hedged collar belongs on a book built that way. One sentence, then move on.
 
-## 15. Changelog
+## 15. What a position venue must be able to do
 
+One sentence, for any partner conversation: **at cycle close the venue books the position's protected P&L: floor applied, cap applied, credit added, like funding.** Atticus reports the three numbers; the venue books them. Reading the position is the only other requirement. A venue that can do this (a perp exchange or DEX with its own account ledger; a DCM through the sell-a-fraction identity in section 14) can run the full product. A venue that cannot (a non-custodial front-end on Hyperliquid agent wallets, which pay the holder and can never debit) runs the record-not-collect lane: the credit settles at close, anything beyond it is recorded and never collected, and the record page shows how often that happened.
+
+The hedge venue is a separate list and does not touch this. OKX today; an RFQ dealer (FalconX scaffolded), a better OKX fee tier, or several venues later. They change fees, spread, margin and counterparty; they cannot see or touch the trader's gains.
+
+## 16. Changelog
+
+- 2026-10-08: Wording. Credit is paid at the close of each cycle and netted against any hand-back (the code and the card already said so; "at the tap" was stale). Take stated once as 20% of the credit sourced (was "25% of the credit", which is 25% of the user's share). Ask corrected to $250k to $400k at a $5M post-money cap (founder, 2026-10-06). Refusal count in section 6 refreshed to 794. Section 6 gains a hand-back objection; section 8 gains credit timing, hand-back and hold-to-expiry lines; section 15 added (the one-sentence position-venue requirement; hedge venue separate). Changelog moved to section 16.
 - 2026-09-29: Section 13 providers corrected: Wildcat is rails not capital, Clearpool removed as a fit, Credit Coop and 3Jane added as near fits. Section 14 one-leg note clarified for events.
 - 2026-09-29: Section 14 added: ProphetX pilot readiness (status, two pilot shapes, the DCM identity argument, blocks to live beyond capital, talking point).
 - 2026-09-29: Perp numbers refreshed to 2026-09-29. Margin figure corrected: about 10 cents per dollar leg for leg, 7 cents netted (was "5 cents"). Section 13 added: hedge collateral facility, the three lender questions answered off the record, providers, legal shape, Hermetica prep. Section 12 margin answer updated.

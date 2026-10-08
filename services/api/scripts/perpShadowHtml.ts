@@ -9,7 +9,7 @@
  * the same path and print; where the knock-outs fell and what they cost.
  */
 
-import type { CapGuard, EpTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
+import { altTenorWords, type CapGuard, type EpTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
 import {
   type PerpCapRungBook,
   type PerpRuleBook,
@@ -350,7 +350,17 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     ${
       plain
         ? kpi("cap touched", s.settled ? `${cd.touched} of ${s.settled}` : "–", cd.avgHoursToTouch === null ? "nothing closes at a touch" : `avg ${cd.avgHoursToTouch}h in · nothing closed`) +
-          kpi("ended past the cap", s.settled ? `${cd.endedPastCap} of ${s.settled}` : "–", cd.endedPastCap ? `${usd(cd.capExcessCents)} handed back vs ${usd(cd.creditOnPastCapCents)} credit` : "gains above the cap pay for the floor")
+          kpi("ended past the cap", s.settled ? `${cd.endedPastCap} of ${s.settled}` : "–", cd.endedPastCap ? `${usd(cd.capExcessCents)} handed back vs ${usd(cd.creditOnPastCapCents)} credit` : "gains above the cap pay for the floor") +
+          kpi(
+            "hand-back beyond the credit",
+            s.settled ? `${cd.exceededCredit} of ${s.settled}` : "–",
+            cd.exceededCredit ? `${usd(cd.exceededCreditCents)} in all · largest ${usd(cd.largestExceededCreditCents)}` : "the credit covered every hand-back so far",
+          ) +
+          kpi(
+            "cap odds, said vs seen",
+            cd.realizedExceedPct == null ? "–" : `${cd.realizedExceedPct}%`,
+            cd.predictedExceedPct == null ? "finished past the cap · no market odds recorded at open" : `finished past the cap · the market said ${cd.predictedExceedPct}% at open`,
+          )
         : kpi("knock-outs", s.settled ? `${s.knockouts} of ${s.settled}` : "–", s.knockoutDetail.avgHoursToTouch === null ? "cap touched, cycle ended early" : `avg ${s.knockoutDetail.avgHoursToTouch}h in`)
     }
     ${kpi("funding at open", s.avgFundingBpsPer8h === null ? "–" : `${s.avgFundingBpsPer8h} bps/8h`, "Hyperliquid, average · not part of the credit")}
@@ -379,6 +389,7 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     ${
       plain
         ? `<li><b>Floor save</b>: the floor clamped the loss. <b>Past the cap</b>: gains above the cap this cycle were handed back; they paid for the floor. <b>Touched</b>: price reached the cap on the Hyperliquid path; nothing closed. The whole credit is the user's in every case.</li>
+    <li><b>Hand-back beyond the credit</b>: the credit pays at the close of the cycle and covers the first slice of any hand-back, so this counts the cycles where the gains handed back were larger than the credit. On a venue that holds the position the week is simply booked capped; on Hyperliquid, where we can pay the user but never debit, this is the balance that is recorded and never collected. <b>Cap odds, said vs seen</b>: the cap is placed where the options market gives about a one-in-five chance of finishing past it; the second number is how often it happened.</li>
     <li><b>Our take</b> is the published share of the net credit. Both legs are hedged leg for leg on OKX and held to expiry, so the take is our whole side: our P&amp;L equals the take booked.</li>`
         : `<li><b>Floor save</b>: the floor clamped the loss. <b>Knock-out</b>: price touched the cap, the cycle ended there, the user kept the position and every gain and was paid the credit vested to the touch.</li>
     <li><b>Our take</b> is the published share of the net credit; at a knock-out the short cap leg is bought back at the money, our cost against the unvested credit kept.</li>`
@@ -532,10 +543,27 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
     })
     .join("");
   const liveTenor: EpTenor = input.tenor ?? "weekly";
-  const tenorLabels = Object.keys(cf.tenors);
+  // Rows in cycle order: the daily, the live book, then the longer tenors the shadow measures.
+  const tenorOrder = ["daily", "weekly", "two_weekly", "monthly"];
+  const tenorLabels = Object.keys(cf.tenors).sort((a, b) => (tenorOrder.indexOf(a) + 1 || 99) - (tenorOrder.indexOf(b) + 1 || 99));
+  const tenorTag = (l: string): string => {
+    const t = cf.tenors[l];
+    const bits = [t.avgDays != null ? `${t.avgDays}d` : "", t.creditBpsPerDay != null ? `${t.creditBpsPerDay} bps/day` : "", t.avgCapPct != null ? `cap ${(t.avgCapPct * 100).toFixed(1)}%` : ""].filter(Boolean);
+    return bits.join(" · ");
+  };
+  const liveBefore = tenorLabels.filter((l) => tenorOrder.indexOf(l) < tenorOrder.indexOf(liveTenor));
+  const liveAfter = tenorLabels.filter((l) => !liveBefore.includes(l));
   const tenorRows = [
-    ruleTr("live book", `${cf.baseline.quoted ? `next ${liveTenor}` : ""}`, cf.baseline, { base: true, plain }),
-    ...tenorLabels.map((l) => ruleTr(`${l}${cf.tenors[l].avgDays != null ? ` · ${cf.tenors[l].avgDays}d` : ""}`, "", cf.tenors[l], { plain })),
+    ...liveBefore.map((l) => ruleTr(altTenorWords(l), tenorTag(l), cf.tenors[l], { plain })),
+    ruleTr(
+      "live book",
+      cf.baseline.quoted
+        ? [`next ${liveTenor}`, cf.baselineDays?.avgDays != null ? `${cf.baselineDays.avgDays}d` : "", cf.baselineDays?.creditBpsPerDay != null ? `${cf.baselineDays.creditBpsPerDay} bps/day` : ""].filter(Boolean).join(" · ")
+        : "",
+      cf.baseline,
+      { base: true, plain },
+    ),
+    ...liveAfter.map((l) => ruleTr(altTenorWords(l), tenorTag(l), cf.tenors[l], { plain })),
   ].join("");
   const floorRows = (cf.floorLadder ?? [])
     .map((r) => {
@@ -616,6 +644,26 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
           liveTenor === "weekly" ? " and is the live tenor" : ""
         }; it also holds the position through a week of funding and a week of chances to touch the cap.`
       : "";
+  // The longer tenors against the live book, per day: a two-week or month-long cycle pays more
+  // cash up front; whether it pays more per day protected is what decides the tenor band.
+  const longerLine = (() => {
+    const livePerDay = cf.baseline.quoted > 0 ? (cf.baselineDays?.creditBpsPerDay ?? null) : null;
+    const longer = ["two_weekly", "monthly"].filter((l) => cf.tenors[l] && cf.tenors[l].quoted > 0);
+    if (!longer.length || livePerDay == null) return "";
+    const parts = longer.map((l) => {
+      const t = cf.tenors[l];
+      return `the ${altTenorWords(l)} (${t.avgDays ?? "?"} days) pays ${bpsPct(t.creditBpsOfNotional)} in cash, ${t.creditBpsPerDay ?? "?"} bps a day${
+        t.avgCapPct != null ? `, with the cap ${(t.avgCapPct * 100).toFixed(1)}% out` : ""
+      }${t.refused ? ` (${t.refused} refused)` : ""}`;
+    });
+    const best = longer.map((l) => cf.tenors[l]).sort((a, b) => (b.creditBpsPerDay ?? -1) - (a.creditBpsPerDay ?? -1))[0];
+    const moreCash = longer.some((l) => (cf.tenors[l].creditBpsOfNotional ?? -1) > (cf.baseline.creditBpsOfNotional ?? -1));
+    const verdict =
+      best.creditBpsPerDay != null && best.creditBpsPerDay > livePerDay
+        ? `A longer cycle pays more per day protected than the live ${liveTenor} (${livePerDay} bps a day), at the price of a wider cap, more days of funding and a longer wait for the credit.`
+        : `The live ${liveTenor} pays the most per day protected (${livePerDay} bps a day)${moreCash ? "; a longer cycle pays more cash up front, not more per day" : ""}.`;
+    return `Longer cycles from the same snapshot: ${parts.join("; ")}. ${verdict} Quoted terms only; a longer cycle settles on a different print.`;
+  })();
   const one = cf.capacity.find((c) => c.mult === 1);
   const top = cf.capacity[cf.capacity.length - 1];
   const capLine =
@@ -682,6 +730,8 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
     <div class="row"><span>release at the touch</span><b>${cd.touched ? usd(cd.releaseAtTouchCents) : "–"} <i>what keeping the upside would have cost, in all</i></b></div>
     <div class="row"><span>ended past the cap</span><b>${cd.endedPastCap} <i>of ${s.settled} settled</i></b></div>
     <div class="row"><span>handed back</span><b>${cd.endedPastCap ? usd(cd.capExcessCents) : "–"} <i>vs ${usd(cd.creditOnPastCapCents)} credit on those cycles</i></b></div>
+    <div class="row"><span>beyond the credit</span><b>${cd.exceededCredit} <i>of ${s.settled} settled · ${cd.exceededCredit ? `${usd(cd.exceededCreditCents)} in all, largest ${usd(cd.largestExceededCreditCents)}` : "the credit covered every hand-back"} · the one-way-rail balance</i></b></div>
+    <div class="row"><span>cap odds, said vs seen</span><b>${cd.predictedExceedPct == null ? "–" : `${cd.predictedExceedPct}% → ${cd.realizedExceedPct ?? "–"}%`} <i>market-implied at open vs realized past-the-cap rate</i></b></div>
     <div class="row"><span>two clocks</span><b>${cd.touched ? `${cd.okxConfirmed} confirmed · ${cd.hlOnly} HL only` : "–"} <i>OKX index vs cap at the touch</i></b></div>
     <div class="read">${escapeHtml(capCardLine)}</div>
   </div>`
@@ -741,9 +791,10 @@ export function renderPerpShadowReportHtml(input: PerpShadowReportInput): string
 
   <div class="card">
     <h2>Tenor</h2>
-    <div class="sub" style="margin-bottom:6px">The live geometry at the other tenor's expiry from the same snapshot (the daily when the product is weekly, and the reverse). Quoted terms only: the other tenor settles on a different print, so holder and writer columns stay empty here by design.</div>
+    <div class="sub" style="margin-bottom:6px">The live geometry at other expiries from the same snapshot: the other tenor (the daily when the product is weekly, and the reverse) and the longer cycles the shadow measures (two-weekly: the listed Friday after the weekly's; monthly: the last Friday of a month, three weeks or more out), each with the cap search allowed its wider band. Quoted terms only: another tenor settles on a different print, so user and our P&amp;L columns stay empty here by design.</div>
     <div class="tablewrap"><table>${ruleHead(plain)}${tenorRows}</table></div>
     ${tenorLine ? `<div class="read">${escapeHtml(tenorLine)}</div>` : ""}
+    ${longerLine ? `<div class="read">${escapeHtml(longerLine)}</div>` : ""}
   </div>
 
   <div class="card">

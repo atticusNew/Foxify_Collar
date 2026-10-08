@@ -14,7 +14,13 @@
  * daily.
  */
 
-import { nextListedWeeklyExpiryMs, nextStandardDailyExpiryMs, type OkxChainInstrument } from "./execution/okxLivePlanner";
+import {
+  nextListedMonthlyExpiryMs,
+  nextListedTwoWeeklyExpiryMs,
+  nextListedWeeklyExpiryMs,
+  nextStandardDailyExpiryMs,
+  type OkxChainInstrument,
+} from "./execution/okxLivePlanner";
 
 export interface CollarGeometry {
   /** protective wing distance from spot (the holder's floor), fraction */
@@ -64,6 +70,35 @@ export const listedWeeklyExpiryInBand = (chain: OkxChainInstrument[], nowMs: num
     if (d.getUTCDay() === 5 && d.getUTCHours() === 8 && off >= lo && off <= hi) return e;
   }
   return null;
+};
+
+/**
+ * Longer tenors the shadow MEASURES and the product does not write (2026-10-08): the same
+ * collar re-quoted at the two-weekly (the listed Friday after the weekly's, 10–17 days) and the
+ * monthly (the last Friday of a month, 21–52 days), from the same snapshot. The floor stays at
+ * the live depth; the cap search may reach further out, because the same 20% market odds of
+ * finishing past the cap sit at a wider strike when there is more time — a band as narrow as
+ * the weekly's would force the cap in and understate what a longer cycle pays. Quoted terms
+ * only: a longer cycle settles on a different print, so nothing here is settled. The rows exist
+ * so the tenor band (3–14 days) is set by a number, not an argument.
+ */
+export type AltTenor = "two_weekly" | "monthly";
+export const ALT_TENORS: ReadonlyArray<{ label: AltTenor; maxCapPct: number; words: string }> = [
+  { label: "two_weekly", maxCapPct: 0.1, words: "two-weekly" },
+  { label: "monthly", maxCapPct: 0.15, words: "monthly" },
+];
+export const altTenorWords = (label: string): string => ALT_TENORS.find((t) => t.label === label)?.words ?? label.replace(/_/g, "-");
+/** The widest the snapshot's band and the cap search reach for any tenor the shadow prices. */
+export const ALT_TENOR_MAX_OTM_PCT = Math.max(...ALT_TENORS.map((t) => t.maxCapPct));
+
+/** The expiry each measured tenor would write to, from the live chain; absent when none is listed. Pure. */
+export const altTenorExpiries = (chain: OkxChainInstrument[], nowMs: number): Partial<Record<AltTenor, number>> => {
+  const out: Partial<Record<AltTenor, number>> = {};
+  const twoWeekly = nextListedTwoWeeklyExpiryMs(chain, nowMs);
+  if (twoWeekly != null) out.two_weekly = twoWeekly;
+  const monthly = nextListedMonthlyExpiryMs(chain, nowMs);
+  if (monthly != null && monthly !== twoWeekly) out.monthly = monthly;
+  return out;
 };
 
 /**

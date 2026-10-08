@@ -133,6 +133,14 @@ services:
         value: "0.20"
       - key: EP_FLOOR_RULE
         value: fixed
+      # EP_OWED_CARRY_CYCLES (plain mode, this one-way rail): a cycle that nets negative (gains above
+      # the cap or a release beyond the credit) is recorded, never collected; the account's next
+      # cycles' payouts pay it down first, oldest balance first. A new wrap is refused only when the
+      # outstanding balance exceeds this many cycles of the credit it would pay. 0 = any balance
+      # gates (the pre-2026-10-08 rule). The identity is unchanged: who keeps a payoff is the same,
+      # only when the netting lands moves.
+      - key: EP_OWED_CARRY_CYCLES
+        value: "3"
       # EP_BRAND_SETTINGS: per-brand dials, a JSON object keyed by brand name (the instance's
       # EP_BRAND_FOR or any EP_BRAND_ALLOWLIST name a `?brand=` link may carry). Each brand may set
       # tenorMinDays / tenorMaxDays (3–14; the cycle runs to the nearest listed Friday inside the

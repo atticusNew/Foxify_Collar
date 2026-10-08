@@ -120,9 +120,15 @@ test("retail view: error bodies keep the codes the client acts on and collapse e
     assert.ok(!/OKX|paper|_KEY/.test(r.message), `${c}: the raw message never leaves`);
     assert.ok(r.message.length > 8, `${c}: a real sentence`);
   }
-  const owed = retailRedact({ ok: false, error: "owed_outstanding", owedUsdc: 12.4, message: "$12.40 from a settled cycle is still owed on this account — settle it before protection can restart" }) as { message: string; owedUsdc: number };
-  assert.equal(owed.message, "$12.40 settles from your last cycle\u2019s gains first.");
+  const owed = retailRedact({ ok: false, error: "owed_outstanding", owedUsdc: 12.4, carryCapUsdc: 9.36, message: "wrap refused: $12.40 from past cycles is still owed on this account, more than we carry ($9.36, 3 cycles of this credit) — it settles from gains before protection can restart" }) as { message: string; owedUsdc: number; carryCapUsdc: number };
+  assert.equal(owed.message, "$12.40 from past cycles settles from your credits first \u00b7 it\u2019s more than we carry forward right now, so protection restarts once it\u2019s settled.");
+  assert.ok(!/owed|cycles of this credit/.test(owed.message), "never 'owed', never the carry formula, on the retail surface");
   assert.equal(owed.owedUsdc, 12.4, "the amount travels as a number too");
+  assert.equal(owed.carryCapUsdc, 9.36, "so does what we carry");
+  const legacy = retailRedact({ ok: false, error: "owed_outstanding", owedUsdc: 12.4, message: "$12.40 from a settled cycle is still owed on this account — settle it before protection can restart" }) as { message: string };
+  assert.equal(legacy.message, owed.message, "the no-carry (EP_OWED_CARRY_CYCLES=0) refusal reads the same");
+  const byShape = retailRedact({ ok: false, error: "refused", message: "wrap refused: $3.00 from past cycles is still owed on this account, more than we carry ($0.00, 0 cycles of this credit)" }) as { error: string; message: string };
+  assert.equal(byShape.error, "owed_outstanding", "the free-text reason maps by shape");
   // operator codes collapse
   for (const [code, msg] of [
     ["missing_credentials", "missing OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE"],

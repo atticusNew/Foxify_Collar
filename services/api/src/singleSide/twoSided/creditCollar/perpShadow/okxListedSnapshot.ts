@@ -21,7 +21,7 @@ import {
   touchCreditUsdc,
 } from "../execution/okxListedTouchQuote";
 import { nextListedWeeklyExpiryMs, nextStandardDailyExpiryMs, parseOkxChain, type OkxChainInstrument } from "../execution/okxLivePlanner";
-import type { CollarGeometry } from "../perpTenor";
+import { ALT_TENOR_MAX_OTM_PCT, altTenorExpiries, type CollarGeometry } from "../perpTenor";
 
 export { nextListedWeeklyExpiryMs };
 export type { CollarGeometry };
@@ -40,9 +40,14 @@ export interface OkxListedSnapshot {
   atMs: number;
   /** the live product's expiry: the next standard daily (08:00 UTC, ≥ 12h out) */
   expiryMs: number;
-  /** the next weekly (Friday 08:00 UTC, ≥ 5 days out) that is listed; the tenor counterfactual */
+  /** the next weekly (Friday 08:00 UTC, ≥ 3 days out) that is listed; the tenor counterfactual */
   weeklyExpiryMs: number | null;
-  /** live options at those expiries inside the union of both bands, either side */
+  /**
+   * longer tenors the shadow measures (perpTenor.ALT_TENORS: two_weekly, monthly) and the expiry
+   * each would write to; absent on snapshots taken without them or before 2026-10-08
+   */
+  altExpiries?: Record<string, number>;
+  /** live options at those expiries inside the union of both bands, either side (the alt tenors' wider band at their expiries) */
   chain: OkxChainInstrument[];
   books: Record<string, BookDepth>;
   /** how many instruments had no readable book (fetch failures are recorded, never guessed) */
@@ -87,15 +92,44 @@ export const walkBook = (
   return null;
 };
 
-/** The union band either side of spot: everything a geometry in either role could touch. */
-export const snapshotBand = (spot: number): { lo: number; hi: number } => {
-  const maxOtm = Math.max(FUNDING_BAND.maxOtmPct, PROTECTIVE_BAND.maxOtmPct);
+/** The union band either side of spot: everything a geometry in either role could touch. `maxOtmPct` widens it (longer tenors). */
+export const snapshotBand = (spot: number, maxOtmPct?: number): { lo: number; hi: number } => {
+  const maxOtm = Math.max(FUNDING_BAND.maxOtmPct, PROTECTIVE_BAND.maxOtmPct, maxOtmPct ?? 0);
   return { lo: spot * (1 - maxOtm) * 0.999, hi: spot * (1 + maxOtm) * 1.001 };
 };
 
-export const instrumentsInBand = (chain: OkxChainInstrument[], expiryMs: number, spot: number): OkxChainInstrument[] => {
-  const { lo, hi } = snapshotBand(spot);
+export const instrumentsInBand = (chain: OkxChainInstrument[], expiryMs: number, spot: number, maxOtmPct?: number): OkxChainInstrument[] => {
+  const { lo, hi } = snapshotBand(spot, maxOtmPct);
   return chain.filter((c) => c.state === "live" && c.expiryMs === expiryMs && c.strike >= lo && c.strike <= hi);
+};
+
+/**
+ * The expiries one snapshot prices: the daily, the weekly when listed, and (unless `altTenors` is
+ * off) the longer tenors the shadow measures. Pure; shared by both fetchers so they agree.
+ */
+export const snapshotExpiries = (
+  chainAll: OkxChainInstrument[],
+  spot: number,
+  nowMs: number,
+  altTenors = true,
+): { expiryMs: number; weeklyExpiryMs: number | null; altExpiries: Record<string, number> | undefined; chain: OkxChainInstrument[]; markVolExpiries: Array<number | null> } => {
+  const expiryMs = nextStandardDailyExpiryMs(nowMs);
+  const weeklyExpiryMs = nextListedWeeklyExpiryMs(chainAll, nowMs);
+  const alts = altTenors ? altTenorExpiries(chainAll, nowMs) : {};
+  const taken = new Set<number>([expiryMs, ...(weeklyExpiryMs != null ? [weeklyExpiryMs] : [])]);
+  const altExpiries: Record<string, number> = {};
+  for (const [label, e] of Object.entries(alts)) {
+    if (e == null || taken.has(e)) continue;
+    taken.add(e);
+    altExpiries[label] = e;
+  }
+  const chain = [
+    ...instrumentsInBand(chainAll, expiryMs, spot),
+    ...(weeklyExpiryMs != null && weeklyExpiryMs !== expiryMs ? instrumentsInBand(chainAll, weeklyExpiryMs, spot) : []),
+    ...Object.values(altExpiries).flatMap((e) => instrumentsInBand(chainAll, e, spot, ALT_TENOR_MAX_OTM_PCT)),
+  ];
+  const hasAlts = Object.keys(altExpiries).length > 0;
+  return { expiryMs, weeklyExpiryMs, altExpiries: hasAlts ? altExpiries : undefined, chain, markVolExpiries: [expiryMs, weeklyExpiryMs, ...Object.values(altExpiries)] };
 };
 
 /**
@@ -120,6 +154,8 @@ export const fetchOkxListedSnapshot = async (input: {
   fetchImpl?: typeof fetch;
   /** legs the open book holds; fetched with depth whatever their expiry or distance from spot */
   heldInstIds?: ReadonlyArray<string>;
+  /** also capture the longer tenors the shadow measures (two-weekly, monthly); default on. Off for a snapshot that only values held legs. */
+  altTenors?: boolean;
 }): Promise<OkxListedSnapshot> => {
   const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
   const f = input.fetchImpl ?? fetch;
@@ -130,12 +166,7 @@ export const fetchOkxListedSnapshot = async (input: {
   };
   const instr = (await getJson("/api/v5/public/instruments?instType=OPTION&uly=BTC-USD")) as { data?: unknown[] };
   const chainAll = parseOkxChain((instr.data ?? []) as Parameters<typeof parseOkxChain>[0]);
-  const expiryMs = nextStandardDailyExpiryMs(input.nowMs);
-  const weeklyExpiryMs = nextListedWeeklyExpiryMs(chainAll, input.nowMs);
-  const chain = [
-    ...instrumentsInBand(chainAll, expiryMs, input.spot),
-    ...(weeklyExpiryMs != null && weeklyExpiryMs !== expiryMs ? instrumentsInBand(chainAll, weeklyExpiryMs, input.spot) : []),
-  ];
+  const { expiryMs, weeklyExpiryMs, altExpiries, chain, markVolExpiries } = snapshotExpiries(chainAll, input.spot, input.nowMs, input.altTenors ?? true);
   const books: Record<string, BookDepth> = {};
   let booksMissing = 0;
   const sz = input.depth ?? 25;
@@ -148,8 +179,8 @@ export const fetchOkxListedSnapshot = async (input: {
       booksMissing += 1;
     }
   }
-  const markVols = await fetchMarkVolsForExpiries(getJson, [expiryMs, weeklyExpiryMs]);
-  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing, ...(markVols ? { markVols } : {}) };
+  const markVols = await fetchMarkVolsForExpiries(getJson, markVolExpiries);
+  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, ...(altExpiries ? { altExpiries } : {}), chain, books, booksMissing, ...(markVols ? { markVols } : {}) };
 };
 
 /**
@@ -192,6 +223,8 @@ export const fetchOkxTopSnapshot = async (input: {
   fetchImpl?: typeof fetch;
   /** legs the open book holds; read from the same tickers feed whatever their expiry or distance from spot */
   heldInstIds?: ReadonlyArray<string>;
+  /** also capture the longer tenors the shadow measures (two-weekly, monthly); default on */
+  altTenors?: boolean;
 }): Promise<OkxListedSnapshot> => {
   const base = input.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
   const f = input.fetchImpl ?? fetch;
@@ -207,12 +240,7 @@ export const fetchOkxTopSnapshot = async (input: {
     }>,
   ]);
   const chainAll = parseOkxChain((instr.data ?? []) as Parameters<typeof parseOkxChain>[0]);
-  const expiryMs = nextStandardDailyExpiryMs(input.nowMs);
-  const weeklyExpiryMs = nextListedWeeklyExpiryMs(chainAll, input.nowMs);
-  const chain = [
-    ...instrumentsInBand(chainAll, expiryMs, input.spot),
-    ...(weeklyExpiryMs != null && weeklyExpiryMs !== expiryMs ? instrumentsInBand(chainAll, weeklyExpiryMs, input.spot) : []),
-  ];
+  const { expiryMs, weeklyExpiryMs, altExpiries, chain, markVolExpiries } = snapshotExpiries(chainAll, input.spot, input.nowMs, input.altTenors ?? true);
   const byId = new Map((tickers.data ?? []).map((t) => [t.instId ?? "", t]));
   const books: Record<string, BookDepth> = {};
   let booksMissing = 0;
@@ -229,8 +257,8 @@ export const fetchOkxTopSnapshot = async (input: {
     };
     books[instId] = { bids: lvl(t.bidPx, t.bidSz), asks: lvl(t.askPx, t.askSz) };
   }
-  const markVols = await fetchMarkVolsForExpiries(getJson, [expiryMs, weeklyExpiryMs]);
-  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, chain, books, booksMissing, ...(markVols ? { markVols } : {}) };
+  const markVols = await fetchMarkVolsForExpiries(getJson, markVolExpiries);
+  return { atMs: input.nowMs, expiryMs, weeklyExpiryMs, ...(altExpiries ? { altExpiries } : {}), chain, books, booksMissing, ...(markVols ? { markVols } : {}) };
 };
 
 export type FillMode = "top" | "walk";

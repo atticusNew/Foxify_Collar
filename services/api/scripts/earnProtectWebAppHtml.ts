@@ -440,9 +440,9 @@ ${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>
     <li><b>Read-only.</b> We read your positions from Hyperliquid's public API. No signing, no deposits, no keys. Payouts go only to your own wallet.</li>
     <li><b>Live-market pricing.</b> Every protection cycle is quoted from listed option order books at the moment you toggle. When the market can't fund a credit, we refuse and say why.</li>
     <li><b>Paid every cycle, never upfront.</b> A cycle runs to the next weekly expiry (Friday, three to ten days out). Your credit unlocks through the cycle and pays automatically at its close.</li>
-    <li><b>The cap pays for your floor.</b> Every gain up to the cap is yours. Gains above it this cycle are handed back at settlement: that is what funds the floor and the credit. Nothing closes when price touches the cap.</li>
+    <li><b>The cap pays for your floor.</b> Every gain up to the cap is yours. Gains above it this cycle are handed back at settlement: that is what funds the floor and the credit. Nothing closes when price touches the cap. On Hyperliquid, anything beyond your credit is recorded against your future credits, never collected.</li>
     <li><b>Nothing to manage.</b> Protection renews every cycle while the toggle is on. Turn it off any time: the collar closes at the live market and you keep the credit unlocked so far.</li>
-    <li><b>Honest economics.</b> Settlement nets it all: your credit, plus any floor payout, minus any gains above the cap or a release. A negative net is a balance you settle before protection restarts. We keep a published share of the credit we source (waived when tiny). Hyperliquid's own funding on your perp is separate and unchanged; it is not part of the credit.</li>
+    <li><b>Honest economics.</b> Settlement nets it all: your credit, plus any floor payout, minus any gains above the cap or a release. A negative net is never collected: it is recorded and your next cycles' credits pay it down first. Protection only waits when that balance grows past a few cycles of credit. We keep a published share of the credit we source (waived when tiny). Hyperliquid's own funding on your perp is separate and unchanged; it is not part of the credit.</li>
     <li>Derivatives involve risk. Nothing here is investment advice.</li>
   </ul>
   <button class="btn ghost" id="howClose">Close</button>
@@ -533,7 +533,7 @@ const legacyChip = (s) => {
   if (/price_moved/i.test(s)) return "The release price moved · confirm the new price";
   if (/already_released/i.test(s)) return "Cap already released · every gain is yours";
   if (/release_unfilled|release_unpriced|no ask on the cap leg/i.test(s)) return "Couldn't price the release right now · still protected · try again shortly";
-  if (/owed_outstanding|still owed on this account/i.test(s)) { const m = s.match(/\\$([0-9.]+)/); return (m ? "$" + m[1] + " settles" : "Your last cycle settles") + " from your last cycle\\u2019s gains first"; }
+  if (/owed_outstanding|still owed on this account|more than we carry/i.test(s)) { const m = s.match(/\\$([0-9.]+)/); return (m ? "$" + m[1] + " from past cycles" : "Your last cycles\\u2019 balance") + " settles from your credits first · it\\u2019s more than we carry forward right now, so protection restarts once it\\u2019s settled"; }
   if (/close_unwind_failed|couldn't close the hedge cleanly/i.test(s)) return "Couldn't close cleanly right now · you're still protected · try again shortly";
   if (/tos_required|Terms of Service/i.test(s)) return "Please accept the Terms first";
   if (/showcase_wallet|public wallet on watch/i.test(s)) return "Public wallet · watching only";
@@ -877,12 +877,14 @@ const render = (positions, state) => {
   const w = state ? latestFor(state.wraps || []) : null;
   if (state && state.capMode) CAP_MODE = state.capMode;
   // A settled cycle that netted negative (gains above the cap or a release beyond the credit):
-  // said once, in dollars, with what it means — protection restarts when it is settled.
+  // said once, in dollars, with what it means — recorded, never collected; the next cycles'
+  // credits pay it down first and protection keeps running while it is within the carry.
   const owedBanner = (() => {
     if (watching || !state || !state.owed || !(state.owed.balanceUsdc > 0)) return "";
     const hadRelease = (state.wraps || []).some((x) => x.release && x.owed && x.owed.status === "owed");
-    return '<div class="chip owed"><b>' + fmt$(state.owed.balanceUsdc) + ' settles from gains</b> from your last cycle: ' + (hadRelease ? "a cap release" : "gains above the cap") + ' beyond the credit. Protection restarts once it\\u2019s settled.' +
-      infoTip("The cap funds the floor: gains above it this cycle are the floor\\u2019s price and settle from those gains at the close, netted against your credit. On an exchange this nets from the position\\u2019s PnL like funding; here it is recorded and settles before the next cycle. Your hedge was held leg for leg; nobody carried the difference for you.") + '</div>';
+    const paidDown = (state.owed.items || []).reduce((s, it) => s + (it.paidDownUsdc || 0), 0);
+    return '<div class="chip owed"><b>' + fmt$(state.owed.balanceUsdc) + ' settles from gains</b> from your last cycle: ' + (hadRelease ? "a cap release" : "gains above the cap") + ' beyond the credit. Never collected: your next credits pay it down first' + (paidDown > 0 ? " (" + fmt$(paidDown) + " paid down so far)" : "") + '.' +
+      infoTip("The cap funds the floor: gains above it this cycle are the floor\\u2019s price and settle from those gains at the close, netted against your credit. On an exchange this nets from the position\\u2019s PnL like funding; here it is recorded against your future credits and paid down from them, oldest first, before anything is paid out. Protection keeps running while the balance is within a few cycles of credit. Your hedge was held leg for leg; nobody carried the difference for you.") + '</div>';
   })();
   el.innerHTML = owedBanner + positions.map((p) => {
     const isWrapCoin = p.wrappable;

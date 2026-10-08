@@ -111,14 +111,40 @@ export type CapRelease = {
   note?: string;
 };
 
-/** A balance the holder owes after settlement (plain mode): gains above the cap, or a release, beyond the credit. */
+/**
+ * A balance the holder owes after settlement (plain mode): gains above the cap, or a release,
+ * beyond the credit.
+ *
+ * CARRY-FORWARD (2026-10-08). On a venue ledger this balance never exists: the week is booked
+ * capped. On a one-way rail (Hyperliquid agent wallets pay the holder and can never debit) it is
+ * recorded, never collected, and the holder's NEXT cycles' payouts pay it down first, oldest
+ * balance first, before anything reaches the holder. New protection is refused only when the
+ * outstanding balance exceeds EP_OWED_CARRY_CYCLES (default 3) times the credit the new wrap
+ * would pay; 0 restores the pre-October rule (any balance gates).
+ *
+ * P&L IDENTITY (re-derived under the house rule; this changes WHEN the netting lands, never who
+ * keeps a payoff). Per cycle, price at expiry S, size q, credit C:
+ *   trader = C + max(0, K_floor − S)·q − max(0, S − K_cap)·q − release     (unchanged)
+ *   writer = take                                                           (unchanged; legs held leg for leg)
+ *   venue  = fees + spreads                                                 (unchanged)
+ * Carry-forward only moves a negative trader total from cycle n into cycle n+1's payout:
+ *   payout_{n+1} = max(0, trader_{n+1} − owed_n),  owed_{n+1} = max(0, owed_n − trader_{n+1})
+ * Summed over any run of cycles the trader receives Σ trader (floored at the carried balance,
+ * which is never collected), so the writer's side is still exactly Σ take. The uncollected
+ * remainder when a holder walks away is a receivable written off, bounded by the carry cap.
+ */
 export type OwedBalance = {
+  /** the balance as booked at settlement (what the cycle netted negative), USDC */
   amountUsdc: number;
   status: "owed" | "settled" | "written_off";
   createdAtMs: number;
   settledAtMs: number | null;
   /** venue debit reference, tx hash, or operator note */
   ref: string | null;
+  /** paid down from later cycles' payouts (carry-forward), USDC; absent on records before 2026-10-08 */
+  paidDownUsdc?: number;
+  /** each pay-down: when, how much, from which concluded wrap */
+  history?: Array<{ atMs: number; amountUsdc: number; fromWrapId: string }>;
 };
 
 export type DemoWrapRecord = {
@@ -601,6 +627,8 @@ export type CyclePayable = {
   closeValueUsdc: number;
   /** credit + floor + closeValue − capOwed − release. NEGATIVE = the holder owes the difference. */
   totalUsdc: number;
+  /** carry-forward: what this cycle's positive total paid down on earlier cycles' balances before reaching the holder (set by the caller) */
+  owedAppliedUsdc?: number;
 };
 
 const payable = (
@@ -653,10 +681,91 @@ export const cyclePayable = (rec: DemoWrapRecord, settlePx?: number | null): Cyc
   return payable("expiry", v.fullCreditUsdc, { floorPayoutUsdc: floorUsdc, capOwedUsdc, releaseCostUsdc });
 };
 
+/** What is still outstanding on one owed balance: booked amount less what later cycles paid down. */
+export const owedRemainingUsdc = (owed: OwedBalance | null | undefined): number =>
+  owed && owed.status === "owed" ? round2(Math.max(0, owed.amountUsdc - (owed.paidDownUsdc ?? 0))) : 0;
+
 /** Outstanding owed balance across an account's settled wraps (plain mode). */
 export const owedBalanceUsdc = (records: DemoWrapRecord[], account: string): number => {
   const k = account.toLowerCase();
-  return round2(records.filter((r) => r.account.toLowerCase() === k && r.owed?.status === "owed").reduce((s, r) => s + (r.owed?.amountUsdc ?? 0), 0));
+  return round2(records.filter((r) => r.account.toLowerCase() === k).reduce((s, r) => s + owedRemainingUsdc(r.owed), 0));
+};
+
+/** EP_OWED_CARRY_CYCLES: cycles of the new wrap's credit an account may owe before protection waits (default 3; 0 = any balance gates). */
+export const DEFAULT_OWED_CARRY_CYCLES = 3;
+export const parseOwedCarryCycles = (v: string | undefined): number => {
+  const n = Number(v);
+  return v != null && v !== "" && Number.isFinite(n) && n >= 0 ? n : DEFAULT_OWED_CARRY_CYCLES;
+};
+
+export type OwedCarryDecision = { ok: true; owedUsdc: number; capUsdc: number } | { ok: false; owedUsdc: number; capUsdc: number; reason: string };
+
+/**
+ * May this account open new protection with `owedUsdc` outstanding? Yes while the balance is at
+ * most `carryCycles` times the credit the new wrap would pay (the next payouts pay it down first).
+ * Pure. With carryCycles 0 any balance refuses, the pre-October rule.
+ */
+export const assessOwedCarry = (owedUsdc: number, quotedCreditUsdc: number, carryCycles: number): OwedCarryDecision => {
+  const owed = round2(Math.max(0, owedUsdc));
+  const capUsdc = round2(Math.max(0, carryCycles) * Math.max(0, quotedCreditUsdc));
+  if (owed <= 0) return { ok: true, owedUsdc: 0, capUsdc };
+  if (owed <= capUsdc + 1e-9) return { ok: true, owedUsdc: owed, capUsdc };
+  return {
+    ok: false,
+    owedUsdc: owed,
+    capUsdc,
+    reason:
+      carryCycles > 0
+        ? `wrap refused: $${owed.toFixed(2)} from past cycles is still owed on this account, more than we carry ($${capUsdc.toFixed(2)}, ${carryCycles} cycle${carryCycles === 1 ? "" : "s"} of this credit) — it settles from gains before protection can restart`
+        : `wrap refused: $${owed.toFixed(2)} from a settled cycle is still owed on this account — settle it before protection can restart`
+  };
+};
+
+export type OwedNetting = {
+  /** what reaches the holder after outstanding balances were paid down, USDC */
+  paidToHolderUsdc: number;
+  /** what the payout paid down in all, USDC */
+  appliedUsdc: number;
+  applied: Array<{ wrapId: string; amountUsdc: number; remainingUsdc: number }>;
+};
+
+/**
+ * Pay the account's outstanding balances down from a concluded cycle's positive total, oldest
+ * first; what is left reaches the holder. Mutates the owed records (pay-down history, settled
+ * when cleared). Pure in everything else; idempotent per `fromWrapId` (a repeated conclusion
+ * applies nothing twice).
+ */
+export const netOwedAgainstPayout = (records: DemoWrapRecord[], account: string, totalUsdc: number, nowMs: number, fromWrapId: string): OwedNetting => {
+  const k = account.toLowerCase();
+  const out: OwedNetting = { paidToHolderUsdc: round2(Math.max(0, totalUsdc)), appliedUsdc: 0, applied: [] };
+  if (!(totalUsdc > 0)) return out;
+  const mine = records.filter((r) => r.id !== fromWrapId && r.account.toLowerCase() === k && r.owed);
+  // Idempotent: a conclusion that already paid something down (even a balance since settled) applies nothing twice.
+  if (mine.some((r) => (r.owed!.history ?? []).some((h) => h.fromWrapId === fromWrapId))) return out;
+  const open = mine
+    .filter((r) => r.owed!.status === "owed" && owedRemainingUsdc(r.owed) > 0)
+    .sort((a, b) => (a.owed!.createdAtMs - b.owed!.createdAtMs) || a.id.localeCompare(b.id));
+  let left = round2(totalUsdc);
+  for (const r of open) {
+    if (left <= 0) break;
+    const o = r.owed!;
+    const remaining = owedRemainingUsdc(o);
+    const pay = round2(Math.min(left, remaining));
+    if (pay <= 0) continue;
+    o.paidDownUsdc = round2((o.paidDownUsdc ?? 0) + pay);
+    o.history = [...(o.history ?? []), { atMs: nowMs, amountUsdc: pay, fromWrapId }];
+    const after = owedRemainingUsdc(o);
+    if (after <= 0) {
+      o.status = "settled";
+      o.settledAtMs = nowMs;
+      o.ref = [o.ref, `netted from cycle credits (last: ${fromWrapId})`].filter(Boolean).join(" · ");
+    }
+    left = round2(left - pay);
+    out.appliedUsdc = round2(out.appliedUsdc + pay);
+    out.applied.push({ wrapId: r.id, amountUsdc: pay, remainingUsdc: after });
+  }
+  out.paidToHolderUsdc = left;
+  return out;
 };
 
 /** Record a cap touch on a plain-mode wrap (first touch stamped, later touches counted). Returns true on the FIRST touch. */

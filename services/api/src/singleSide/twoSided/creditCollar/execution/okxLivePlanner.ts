@@ -78,15 +78,37 @@ export const nextStandardDailyExpiryMs = (nowMs: number, minHoursToExpiry = 12):
 /** Cycles run 3–10 days: a Friday under three days off prices like a daily and is skipped for the next. */
 export const WEEKLY_MIN_DAYS = 3;
 
-/** The nearest LISTED Friday 08:00 UTC expiry at least `minDays` out (the weekly tenor), or null when none is listed. Pure. */
-export const nextListedWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = WEEKLY_MIN_DAYS): number | null => {
+/** Every LISTED Friday 08:00 UTC expiry at least `minDays` out, nearest first. Pure. */
+export const listedFridayExpiriesMs = (chain: OkxChainInstrument[], nowMs: number, minDays = WEEKLY_MIN_DAYS): number[] => {
   const listed = [...new Set(chain.filter((c) => c.state === "live").map((c) => c.expiryMs))].sort((a, b) => a - b);
-  for (const e of listed) {
+  return listed.filter((e) => {
     const d = new Date(e);
-    if (d.getUTCDay() === 5 && d.getUTCHours() === 8 && e - nowMs >= minDays * 86_400_000) return e;
-  }
-  return null;
+    return d.getUTCDay() === 5 && d.getUTCHours() === 8 && e - nowMs >= minDays * 86_400_000;
+  });
 };
+
+/** The nearest LISTED Friday 08:00 UTC expiry at least `minDays` out (the weekly tenor), or null when none is listed. Pure. */
+export const nextListedWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = WEEKLY_MIN_DAYS): number | null =>
+  listedFridayExpiriesMs(chain, nowMs, minDays)[0] ?? null;
+
+/** A two-week cycle: the listed Friday after the weekly's, so 10–17 days out when the weekly runs 3–10. */
+export const TWO_WEEKLY_MIN_DAYS = WEEKLY_MIN_DAYS + 7;
+/** The nearest LISTED Friday at least `minDays` (10) out: the two-weekly tenor's expiry, or null. Pure. */
+export const nextListedTwoWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = TWO_WEEKLY_MIN_DAYS): number | null =>
+  listedFridayExpiriesMs(chain, nowMs, minDays)[0] ?? null;
+
+/** A listed Friday 08:00 UTC that is the LAST Friday of its month: the venues' monthly expiry. Pure. */
+export const isMonthlyExpiryMs = (expiryMs: number): boolean => {
+  const d = new Date(expiryMs);
+  if (d.getUTCDay() !== 5 || d.getUTCHours() !== 8) return false;
+  return new Date(expiryMs + 7 * 86_400_000).getUTCMonth() !== d.getUTCMonth();
+};
+
+/** A month-long cycle starts past the two-weekly's reach (17 days), so 21–52 days out. */
+export const MONTHLY_MIN_DAYS = 21;
+/** The nearest LISTED monthly (last Friday of a month) at least `minDays` (21) out, or null. Pure. */
+export const nextListedMonthlyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = MONTHLY_MIN_DAYS): number | null =>
+  listedFridayExpiriesMs(chain, nowMs, minDays).find(isMonthlyExpiryMs) ?? null;
 
 /** Round contracts to the venue lot; effective notional recomputed from the ROUNDED size. Pure. */
 export const contractsForNotional = (

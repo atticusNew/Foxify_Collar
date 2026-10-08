@@ -180,6 +180,10 @@ test("one shape, no tiers: the knock-out is explained as keeping the upside, the
     assert.ok(html.includes("maxCostUsdc=") && html.includes("price_moved"), "the engine may refuse a moved price; the app explains it");
     assert.ok(html.includes("chip owed") && html.includes("settles from gains</b>"), "a negative net is said in dollars as settling from the cycle's gains");
     assert.ok(!/owed after netting|to settle<\/b>/.test(html), "no 'owed' on the retail surface: the excess is the floor's price, settled from gains");
+    assert.ok(html.includes("On Hyperliquid, anything beyond your credit is recorded against your future credits, never collected."), "the pre-tap sentence: on this rail nothing is ever collected");
+    assert.ok(html.includes("Never collected: your next credits pay it down first") && html.includes("paid down so far"), "the balance chip says what pays it down and how far along it is");
+    assert.ok(!html.includes("Protection restarts once it\\u2019s settled.") && !html.includes("A negative net is a balance you settle before protection restarts"), "no 'settle before protection restarts' promise: protection runs while the balance is within the carry");
+    assert.ok(html.includes("more than we carry forward right now, so protection restarts once it\\u2019s settled"), "the refusal over the carry says why and what restarts it");
     assert.ok(html.includes("const floorLeads") && html.includes("HERO_MIN_CREDIT_USD = 10, HERO_MIN_CREDIT_BPS = 5") && html.includes("losses stop here"), "size-aware hero: the floor leads when the credit is small (under $10 or 5 bps)");
     assert.ok(html.includes("cred cred-floor") && html.includes("cred-plus"), "the floor-led card keeps the credit as its second line");
     assert.ok(html.includes("cap_touched") && html.includes("cap_released"), "the new stages have labels");

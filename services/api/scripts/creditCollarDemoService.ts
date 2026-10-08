@@ -69,6 +69,10 @@ import {
   type DemoWrapRecord,
   noteCapTouch,
   owedBalanceUsdc,
+  owedRemainingUsdc,
+  assessOwedCarry,
+  netOwedAgainstPayout,
+  parseOwedCarryCycles,
   parseCapMode,
   releaseCap,
   wrapCapActive,
@@ -428,6 +432,10 @@ const tenor: EpTenor = parseTenor(process.env.EP_TENOR);
 // construction, the take is the only P&L. `knockout` is the previous rule (a touch ends the
 // cycle, the writer eats the buy-back); records keep the mode they were written under.
 const capMode: CapMode = parseCapMode(process.env.EP_CAP_MODE);
+// Carry-forward (EP_OWED_CARRY_CYCLES, default 3): on this one-way rail a settled cycle's balance is
+// recorded, never collected; the next cycles' payouts pay it down first and new protection waits
+// only when the balance exceeds this many cycles of the new wrap's credit. 0 = any balance gates.
+const owedCarryCycles = parseOwedCarryCycles(process.env.EP_OWED_CARRY_CYCLES);
 // The cap search takes the widest listed strike that pays (weekly band to 8%). Only knockout
 // refuses a close cap (2% daily / 4% weekly): under the plain collar the distance is shown, not
 // refused — see capGuardFor for the measured refusal a hard line caused.
@@ -649,10 +657,13 @@ const doWrap = async (
   const permit = assessDemoWrap(guardsEff, nowMs, coveredNotionalUsdc, records, account, renewal);
   if (!permit.ok) return { status: 409, body: { ok: false, error: "refused", message: permit.reason } };
   // Plain mode: a settled cycle can leave the holder owing (gains above the cap beyond the credit,
-  // or a release). New protection waits until that balance is settled — never stacked.
+  // or a release). Carry-forward: the next cycles' payouts pay it down first, so new protection
+  // is refused only when the balance exceeds EP_OWED_CARRY_CYCLES times this wrap's credit; that
+  // check runs once the credit is quoted (below). With no carry (0) any balance refuses here.
   const owed = owedBalanceUsdc(records, account);
-  if (owed > 0) {
-    return { status: 409, body: { ok: false, error: "owed_outstanding", owedUsdc: owed, message: `$${owed.toFixed(2)} from a settled cycle is still owed on this account — settle it before protection can restart` } };
+  if (owed > 0 && owedCarryCycles <= 0) {
+    const carry = assessOwedCarry(owed, 0, 0);
+    return { status: 409, body: { ok: false, error: "owed_outstanding", owedUsdc: owed, carryCapUsdc: 0, message: carry.ok ? "" : carry.reason } };
   }
 
   // okx lanes must clear the SAME arming chain as the canary before anything else happens.
@@ -738,6 +749,17 @@ const doWrap = async (
     failWrap(rec, Date.now(), `wrap refused: credit_below_take — the market funded $${q.economics.foxify_credit_usdc}, under the minimum take`);
     await persist();
     return { status: 409, body: { ok: false, error: "credit_below_take", message: rec.failReason, wrap: rec } };
+  }
+  // Carry-forward gate (plain mode): an outstanding balance rides along while it is at most
+  // EP_OWED_CARRY_CYCLES of this credit; this cycle's payout pays it down first.
+  const carry = assessOwedCarry(owed, quotedSplit.traderCreditUsdc, owedCarryCycles);
+  if (!carry.ok) {
+    failWrap(rec, Date.now(), carry.reason);
+    await persist();
+    return { status: 409, body: { ok: false, error: "owed_outstanding", owedUsdc: carry.owedUsdc, carryCapUsdc: carry.capUsdc, message: carry.reason, wrap: rec } };
+  }
+  if (carry.owedUsdc > 0) {
+    pushStage(rec, "quoted", Date.now(), `$${carry.owedUsdc.toFixed(2)} from past cycles rides along (we carry up to $${carry.capUsdc.toFixed(2)}); this cycle's payout settles it first`);
   }
   // Funding over the cycle, disclosed on the record (never a refusal).
   const funding = await fundingDisclosure(position.side, hedgeNotionalUsdc, listed.expiryMs);
@@ -1076,8 +1098,8 @@ const buildState = async (account?: string, all = false) => {
     owed: (() => {
       const items = allWraps
         .filter((r) => r.owed && r.account.toLowerCase() === (acct ?? "").toLowerCase())
-        .map((r) => ({ wrapId: r.id, amountUsdc: r.owed!.amountUsdc, status: r.owed!.status, createdAtMs: r.owed!.createdAtMs, settledAtMs: r.owed!.settledAtMs, ref: r.owed!.ref }));
-      return { balanceUsdc: acct ? owedBalanceUsdc(allWraps, acct) : 0, items };
+        .map((r) => ({ wrapId: r.id, amountUsdc: r.owed!.amountUsdc, paidDownUsdc: r.owed!.paidDownUsdc ?? 0, remainingUsdc: owedRemainingUsdc(r.owed), status: r.owed!.status, createdAtMs: r.owed!.createdAtMs, settledAtMs: r.owed!.settledAtMs, ref: r.owed!.ref }));
+      return { balanceUsdc: acct ? owedBalanceUsdc(allWraps, acct) : 0, carryCycles: owedCarryCycles, items };
     })(),
     capMode,
     generatedAtIso: new Date(nowMs).toISOString()
@@ -1108,9 +1130,9 @@ const renewalTick = async (): Promise<void> => {
         await stores.saveWraps(records);
         // Settle the concluded cycle (idempotent — the monitor loop may have beaten us to it).
         try {
-          await accrueConclusion(latest, await hl.midPx(coin));
+          await accrueConclusion(latest, await hl.midPx(coin), records);
         } catch {
-          await accrueConclusion(latest, null);
+          await accrueConclusion(latest, null, records);
         }
         console.error(`[demo] auto-renew: ${latest.id} expired fully vested — re-wrapping ${key}`);
       }
@@ -1157,7 +1179,7 @@ const renewalTick = async (): Promise<void> => {
 // Every concluded cycle (expiry / knockout / early close) accrues exactly one ledger entry for the
 // verified position owner. Credit is paid at conclusion, never upfront (decision 2).
 
-const accrueConclusion = async (rec: DemoWrapRecord, settlePx: number | null): Promise<void> => {
+const accrueConclusion = async (rec: DemoWrapRecord, settlePx: number | null, records?: DemoWrapRecord[]): Promise<void> => {
   const payable = cyclePayable(rec, settlePx);
   if (!payable) return;
   if (payable.totalUsdc <= -0.01) {
@@ -1167,12 +1189,12 @@ const accrueConclusion = async (rec: DemoWrapRecord, settlePx: number | null): P
       rec.owed = { amountUsdc: round2(-payable.totalUsdc), status: "owed", createdAtMs: Date.now(), settledAtMs: null, ref: null };
       raiseAlert(
         "unwind_event",
-        `OWED ${rec.id}: ${rec.account} owes $${rec.owed.amountUsdc} after settlement (${payable.kind}: credit $${payable.creditUsdc}${payable.capOwedUsdc ? ` − $${payable.capOwedUsdc} gains above the cap` : ""}${payable.releaseCostUsdc ? ` − $${payable.releaseCostUsdc} release` : ""}${payable.closeValueUsdc ? ` ${payable.closeValueUsdc < 0 ? "−" : "+"} $${Math.abs(payable.closeValueUsdc)} unwind mark-to-market` : ""}) — protection gated until settled`,
+        `OWED ${rec.id}: ${rec.account} owes $${rec.owed.amountUsdc} after settlement (${payable.kind}: credit $${payable.creditUsdc}${payable.capOwedUsdc ? ` − $${payable.capOwedUsdc} gains above the cap` : ""}${payable.releaseCostUsdc ? ` − $${payable.releaseCostUsdc} release` : ""}${payable.closeValueUsdc ? ` ${payable.closeValueUsdc < 0 ? "−" : "+"} $${Math.abs(payable.closeValueUsdc)} unwind mark-to-market` : ""}) — ${owedCarryCycles > 0 ? `recorded, never collected; the next cycles' payouts pay it down first (carry up to ${owedCarryCycles} cycles of credit)` : "protection gated until settled"}`,
         { wrapId: rec.id }
       );
       console.error(`[demo] owed: ${rec.id} → $${rec.owed.amountUsdc} owed by ${rec.account} (${payable.kind})`);
       // Callers may have persisted the conclusion before settling it: pin the owed balance now.
-      const all = await stores.loadWraps();
+      const all = records ?? (await stores.loadWraps());
       const mine = all.find((r) => r.id === rec.id);
       if (mine && !mine.owed) {
         mine.owed = rec.owed;
@@ -1182,14 +1204,27 @@ const accrueConclusion = async (rec: DemoWrapRecord, settlePx: number | null): P
     return;
   }
   const ledger = await stores.loadLedger();
-  const res = accrueWrapPayout(ledger, rec, payable, Date.now());
+  if (ledger.some((e) => e.wrapId === rec.id)) return; // already accrued (and any carry already applied)
+  // Carry-forward: earlier cycles' balances on this account are paid down first, oldest first;
+  // only the remainder reaches the holder. Applied to the caller's in-memory records (so a later
+  // save by the caller keeps it) and persisted here as well.
+  const nowMs = Date.now();
+  const all = records ?? (await stores.loadWraps());
+  const netting = netOwedAgainstPayout(all, rec.account, payable.totalUsdc, nowMs, rec.id);
+  if (netting.appliedUsdc > 0) {
+    await stores.saveWraps(all);
+    for (const a of netting.applied) {
+      console.error(`[demo] carry-forward: ${rec.id} paid $${a.amountUsdc} down on ${a.wrapId} (${a.remainingUsdc > 0 ? `$${a.remainingUsdc} still carried` : "settled"})`);
+    }
+  }
+  const res = accrueWrapPayout(ledger, rec, { ...payable, owedAppliedUsdc: netting.appliedUsdc }, nowMs);
   if (!res.ok) {
     console.error(`[demo] payout not accrued for ${rec.id}: ${res.reason}`);
     return;
   }
   if (res.created) {
     await stores.saveLedger(ledger);
-    console.error(`[demo] payout accrued: ${rec.id} → $${res.entry.amountUsdc} (${payable.kind}) to ${rec.account}`);
+    console.error(`[demo] payout accrued: ${rec.id} → $${res.entry.amountUsdc} (${payable.kind}) to ${rec.account}${netting.appliedUsdc > 0 ? ` after $${netting.appliedUsdc} carried forward` : ""}`);
   }
 };
 
@@ -1537,7 +1572,7 @@ const monitorTick = async (): Promise<void> => {
         knockoutWrap(rec, nowMs, mark, unwound.valueUsdc == null ? null : round2(unwound.valueUsdc));
         capWatch.delete(rec.id);
         dirty = true;
-        await accrueConclusion(rec, null);
+        await accrueConclusion(rec, null, records);
         raiseAlert(
           "unwind_event",
           `KNOCKOUT ${rec.id}: cap $${cap} touched at mark $${mark} — legs closed, cycle settled`,
@@ -1550,7 +1585,7 @@ const monitorTick = async (): Promise<void> => {
       // Staggered natural expiry: conclude + settle once past the fixing plus this account's anchor.
       if (nowMs >= rec.vesting.endMs + renewalStaggerOffsetMs(rec.account, renewStaggerMs) && concludeAtExpiry(rec, nowMs)) {
         dirty = true;
-        accrueConclusion(rec, mark);
+        accrueConclusion(rec, mark, records);
         console.error(`[demo] expiry settled: ${rec.id} — payable accrued to the ledger`);
       }
     }
@@ -1601,7 +1636,7 @@ const monitorTick = async (): Promise<void> => {
           concludeWrapEarly(rec, nowMs);
           underlyingGoneStreak.delete(rec.id);
           dirty = true;
-          await accrueConclusion(rec, null);
+          await accrueConclusion(rec, null, records);
           raiseAlert("unwind_event", `UNDERLYING GONE ${rec.id}: HL position closed mid-cycle — wrap concluded early, vested credit accrued`, { wrapId: rec.id });
           console.error(`[demo] underlying gone: ${rec.id} — position closed on HL mid-cycle; concluded with vested-only credit`);
         }
@@ -2590,7 +2625,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const v = concludeWrapEarly(active, Date.now());
       await stores.saveWraps(records);
       // Early close is a cycle conclusion: the vested credit accrues to the payout ledger.
-      await accrueConclusion(active, null);
+      await accrueConclusion(active, null, records);
       sendJson(res, 200, { ok: true, wrap: active, vested: v });
       return;
     }
@@ -2654,8 +2689,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           const owedRecs = records.filter((r) => r.owed?.status === "owed");
           return {
             accounts: new Set(owedRecs.map((r) => r.account.toLowerCase())).size,
-            totalUsdc: round2(owedRecs.reduce((s, r) => s + (r.owed?.amountUsdc ?? 0), 0)),
-            items: owedRecs.map((r) => ({ wrapId: r.id, account: r.account, amountUsdc: r.owed!.amountUsdc, createdAtMs: r.owed!.createdAtMs }))
+            totalUsdc: round2(owedRecs.reduce((s, r) => s + owedRemainingUsdc(r.owed), 0)),
+            carryCycles: owedCarryCycles,
+            items: owedRecs.map((r) => ({ wrapId: r.id, account: r.account, amountUsdc: r.owed!.amountUsdc, paidDownUsdc: r.owed!.paidDownUsdc ?? 0, remainingUsdc: owedRemainingUsdc(r.owed), createdAtMs: r.owed!.createdAtMs }))
           };
         })(),
         released: records.filter((r) => r.release).length,

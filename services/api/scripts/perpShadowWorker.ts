@@ -257,7 +257,7 @@ async function settleTick(
       if (hl) {
         // A close is valued at the legs it holds; they may sit at an expiry the quoting chain has
         // rolled past or a strike outside the band, so the snapshot fetches them by name.
-        const snap = await (deps.snapshot ?? fetchOkxListedSnapshot)({ spot: hl.markPx, nowMs, heldInstIds: heldInstIds(closing) }).catch(() => null);
+        const snap = await (deps.snapshot ?? fetchOkxListedSnapshot)({ spot: hl.markPx, nowMs, heldInstIds: heldInstIds(closing), altTenors: false }).catch(() => null);
         const nowIso = new Date(nowMs).toISOString();
         for (const p of closing) {
           const valuation = snap
