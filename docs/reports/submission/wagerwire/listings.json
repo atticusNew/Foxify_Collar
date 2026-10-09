@@ -1,0 +1,175 @@
+[
+  {
+    "id": "ORD_0d984ff3",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_0d984ff3-5587-4f04-91ee-005cbbf30ffb",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "Caesars",
+    "legsTotal": 2,
+    "legsRemaining": 1,
+    "listedPriceCents": 52500,
+    "highestBidCents": null,
+    "payoutCents": 382500,
+    "resolvesIso": "2027-02-15T00:00:00Z",
+    "hitLegs": [{ "label": "Norway vs. England", "market": "Regular Time Correct Score: 1-1" }],
+    "remaining": [
+      { "label": "Kansas City Chiefs", "market": "26/27 Super Bowl Winner", "venue": "polymarket", "eventSlug": "pro-football-2027-champion-20260729185915366", "outcome": "Kansas City Chiefs", "side": 0 }
+    ]
+  },
+  {
+    "id": "ORD_c4ae3d93",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_c4ae3d93-de14-4f42-a4b2-ed8c7410623a",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "DraftKings",
+    "legsTotal": 2,
+    "legsRemaining": 1,
+    "listedPriceCents": 21000,
+    "highestBidCents": null,
+    "payoutCents": 357000,
+    "resolvesIso": "2027-02-15T00:00:00Z",
+    "hitLegs": [{ "label": "Argentina vs Switzerland", "market": "Regular Time Correct Score: 1-1" }],
+    "remaining": [
+      { "label": "Kansas City Chiefs", "market": "26/27 Super Bowl Winner", "venue": "polymarket", "eventSlug": "pro-football-2027-champion-20260729185915366", "outcome": "Kansas City Chiefs", "side": 0 }
+    ]
+  },
+  {
+    "id": "ORD_6bedcc35",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_6bedcc35-434c-404f-bd34-f19470898da8",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "Fanatics",
+    "legsTotal": 2,
+    "legsRemaining": 1,
+    "listedPriceCents": 16800,
+    "highestBidCents": null,
+    "payoutCents": 192500,
+    "resolvesIso": "2027-02-15T00:00:00Z",
+    "hitLegs": [{ "label": "Spain", "market": "2026 World Cup Winner" }],
+    "remaining": [
+      { "label": "Buffalo Bills", "market": "26/27 Super Bowl Winner", "venue": "polymarket", "eventSlug": "pro-football-2027-champion-20260729185915366", "outcome": "Buffalo Bills", "side": 0 }
+    ]
+  },
+  {
+    "id": "ORD_7d4f2257",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_7d4f2257-6f30-4d93-8861-5e96d97c177a",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "FanDuel",
+    "legsTotal": 3,
+    "legsRemaining": 1,
+    "listedPriceCents": 18375,
+    "highestBidCents": null,
+    "payoutCents": 185400,
+    "resolvesIso": "2027-02-15T00:00:00Z",
+    "hitLegs": [
+      { "label": "Spain vs Argentina", "market": "2026 World Cup Draw - Regular Time" },
+      { "label": "Boston Red Sox", "market": "Team to Make 2026 Playoffs" }
+    ],
+    "remaining": [
+      { "label": "Buffalo Bills", "market": "26/27 Super Bowl Winner", "venue": "polymarket", "eventSlug": "pro-football-2027-champion-20260729185915366", "outcome": "Buffalo Bills", "side": 0 }
+    ]
+  },
+  {
+    "id": "ORD_a3765aef",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_a3765aef-9464-4933-847d-64bec18c7df2",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "DraftKings",
+    "legsTotal": 5,
+    "legsRemaining": 1,
+    "listedPriceCents": 21000,
+    "highestBidCents": null,
+    "payoutCents": 45101,
+    "resolvesIso": "2026-11-01T00:00:00Z",
+    "hitLegs": [
+      { "label": "Denver Nuggets To Win", "market": "Denver Nuggets vs Brooklyn Nets" },
+      { "label": "2+ Jaden McDaniels 3PM and 5+ Anthony Edwards Assists", "market": "Oklahoma City Thunder vs Minnesota Timberwolves" },
+      { "label": "Houston Rockets -3.5", "market": "Houston Rockets vs Atlanta Hawks" },
+      { "label": "Seattle Seahawks To Win", "market": "Super Bowl LX" }
+    ],
+    "remaining": [
+      { "label": "Los Angeles Dodgers", "market": "2026 World Series Champions", "venue": "polymarket", "eventSlug": "mlb-world-series-champion-2026", "outcome": "Los Angeles Dodgers", "side": 0 }
+    ]
+  },
+  {
+    "id": "ORD_06e7b309",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_06e7b309-a5f0-4c11-8b5b-c8bf37eeaf21",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "FanDuel",
+    "legsTotal": 1,
+    "legsRemaining": 1,
+    "listedPriceCents": 787500,
+    "highestBidCents": null,
+    "payoutCents": 5250000,
+    "resolvesIso": "2026-11-01T00:00:00Z",
+    "hitLegs": [],
+    "remaining": [
+      { "label": "Shohei Ohtani", "market": "2026 MLB Cy Young Winner", "venue": "polymarket", "eventSlug": "mlb-2026-nl-cy-young-winner", "outcome": "Shohei Ohtani", "side": 0 }
+    ],
+    "note": "The listing says MLB Cy Young without a league; Ohtani plays in the National League, so the NL award market is used."
+  },
+  {
+    "id": "ORD_4a19ce5e",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_4a19ce5e-e3cd-4dd1-b20a-8b387aa0647c",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "FanDuel",
+    "legsTotal": 1,
+    "legsRemaining": 1,
+    "listedPriceCents": 367500,
+    "highestBidCents": null,
+    "payoutCents": 2480000,
+    "resolvesIso": "2026-11-01T00:00:00Z",
+    "hitLegs": [],
+    "remaining": [
+      { "label": "Shohei Ohtani", "market": "2026 MLB Cy Young Winner", "venue": "polymarket", "eventSlug": "mlb-2026-nl-cy-young-winner", "outcome": "Shohei Ohtani", "side": 0 }
+    ],
+    "note": "NL award market used; see ORD_06e7b309."
+  },
+  {
+    "id": "ORD_6527ef16",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_6527ef16-c0ba-46bc-a147-a4026526a754",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "FanDuel",
+    "legsTotal": 1,
+    "legsRemaining": 1,
+    "listedPriceCents": 42000,
+    "highestBidCents": null,
+    "payoutCents": 360000,
+    "resolvesIso": "2026-11-01T00:00:00Z",
+    "hitLegs": [],
+    "remaining": [
+      { "label": "Shohei Ohtani", "market": "2026 MLB Cy Young Winner", "venue": "polymarket", "eventSlug": "mlb-2026-nl-cy-young-winner", "outcome": "Shohei Ohtani", "side": 0 }
+    ],
+    "note": "NL award market used; see ORD_06e7b309."
+  },
+  {
+    "id": "ORD_3b87a911",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_3b87a911-6538-4c04-80f2-99bf775eb024",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "Fanatics",
+    "legsTotal": 3,
+    "legsRemaining": 2,
+    "listedPriceCents": 4541,
+    "highestBidCents": null,
+    "payoutCents": 168813,
+    "resolvesIso": "2027-02-15T00:00:00Z",
+    "hitLegs": [{ "label": "Los Angeles Dodgers", "market": "2026 National League Winner" }],
+    "remaining": [
+      { "label": "Denver Broncos", "market": "26/27 Super Bowl Winner", "venue": "polymarket", "side": 0 },
+      { "label": "Kylian Mbappe", "market": "2026 World Cup Golden Boot Winner", "venue": "polymarket", "side": 0 }
+    ]
+  },
+  {
+    "id": "ORD_9c74315f",
+    "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_9c74315f-b2ac-4ce0-8ec6-b0c414aafed4",
+    "readAt": "2026-10-09T02:52:00Z",
+    "book": "Fanatics",
+    "legsTotal": 3,
+    "legsRemaining": 2,
+    "listedPriceCents": 5250,
+    "highestBidCents": null,
+    "payoutCents": 168813,
+    "resolvesIso": "2027-02-15T00:00:00Z",
+    "hitLegs": [{ "label": "Los Angeles Dodgers", "market": "2026 National League Winner" }],
+    "remaining": [
+      { "label": "Denver Broncos", "market": "26/27 Super Bowl Winner", "venue": "polymarket", "side": 0 },
+      { "label": "Kylian Mbappe", "market": "2026 World Cup Golden Boot Winner", "venue": "polymarket", "side": 0 }
+    ]
+  }
+]
