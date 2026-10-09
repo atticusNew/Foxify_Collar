@@ -33,9 +33,13 @@ Merge #228 if it is not merged. On Render, `atticus-event-demo-cross-venue` must
 
 Open `atticus_wagerwire_listings.pdf`. Page one is the table. The timestamp is this morning's. No bracketed placeholders. Attach it; do not paste it into the body.
 
+## 5. The mockup
+
+The rerun also writes `listing_lock_mockup.html`; make the PNG with the command the script prints (headless Chrome). Open `listing_lock_mockup.png`: the card's numbers (pays, ask, lock, credit) match the lead row of this morning's page, and the phone shows outcomes and dollars only. Attach it as a second file; it is a picture of how the button sits in their UI, not a demo, so do not describe it as live.
+
 ## What to send
 
-Three things: the message, the PDF attached, two links in the body.
+Four things: the message, the PDF attached, the mockup PNG attached, two links in the body.
 
 - Demo in their brand: `https://atticus-event-demo-cross-venue.onrender.com/?brand=WagerWire`
 - Their record (copied from the demo's "WagerWire record" link in step 3)
@@ -56,7 +60,7 @@ Subject: Ten of your listings, with a firm number next to each ask
 >
 > Every lock is hedged leg for leg on Polymarket or Kalshi in the same second, so we carry no outcome risk and earn a stated take, whichever way the game goes. You said your power users already hedge remaining legs on Kalshi. This is that, inside your app, for every seller who lists and hears nothing.
 >
-> It runs as JSON endpoints and one button on the listing row; there is nothing to integrate on your side beyond rendering it, and nothing to pay. The hedge, the balance sheet and the liquidity are ours.
+> It runs as JSON endpoints and one button on the listing row; there is nothing to integrate on your side beyond rendering it, and nothing to pay. The hedge, the balance sheet and the liquidity are ours. The second attachment is a picture of how that button and the seller's sheet would sit on one of your listing cards, with the Chiefs numbers on it.
 >
 > Here it is in your brand, on live prices, with a record of every game we have priced this way since September: [demo link]. Your record: [record link].
 >
