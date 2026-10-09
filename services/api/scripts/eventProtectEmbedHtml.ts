@@ -45,7 +45,11 @@ export interface EmbedOptions {
   minCredit?: MinimumCreditRule;
   /** the track record's URL: the phone's one link, and the first partner link on desktop */
   trackRecordUrl?: string;
-  /** the record link is the brand's own slate page (label it so) */
+  /**
+   * The record link is the brand's own slate page: label it so, and keep the
+   * whole-book pages (receipts, full board) off this shell, since they have no
+   * per-brand cut and would read as "the full version" beside the brand's slate.
+   */
   recordIsSlate?: boolean;
 }
 
@@ -303,7 +307,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     <li>Refuses when the market can't fund a credit</li>
   </ul>
   <div class="try">Tap <b>Protect</b> on any row &rarr;</div>
-  <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">${recordLabel}</a><a href="/partner${brandQ}">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a></div>
+  <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">${recordLabel}</a><a href="/partner${brandQ}">Partner console</a>${opts.recordIsSlate ? "" : '<a href="/receipts">Receipts</a><a href="/board">Full board</a>'}</div>
   <div class="foot">Demonstration only. Simulated positions at live prices; nothing is bought.</div>
 </aside>
 <div class="phone" id="phone">

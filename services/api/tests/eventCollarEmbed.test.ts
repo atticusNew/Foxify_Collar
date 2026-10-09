@@ -73,8 +73,13 @@ test("embed: a partner shell's record link is its own slate page with a key for 
   assert.ok(html.includes(`<a href="${wm.url.replace(/&/g, "&amp;")}">Wire Markets record</a>`), "both record links go to the slate, labelled with the brand");
   assert.equal(html.split(`href="${wm.url}"`).length - 1, 2, "the pitch link and the phone link");
   assert.ok(html.includes('<a href="/partner?brand=Wire%20Markets">Partner console</a>'), "the partner console keeps the brand");
+  assert.ok(!html.includes('href="/receipts"') && !html.includes('href="/board"'), "the whole-book pages are off a shell whose record is its own slate");
+  assert.ok(html.includes("Partner console</a></div>"), "the partner row ends at the console");
   const generic = renderEventEmbedHtml({ brand: "Your Exchange", trackRecordUrl: "https://shadow.example" });
   assert.ok(generic.includes('<a href="https://shadow.example">Track record</a>') && generic.includes('<a href="/partner">Partner console</a>'));
+  assert.ok(generic.includes('<a href="/receipts">Receipts</a><a href="/board">Full board</a>'), "the generic shell keeps receipts and the full board");
+  const brandedNoKey = renderEventEmbedHtml({ brand: "Wire Markets", trackRecordUrl: "https://shadow.example" });
+  assert.ok(brandedNoKey.includes('<a href="/receipts">Receipts</a><a href="/board">Full board</a>'), "without a slate link the branded shell falls back to the full set, as before");
 });
 
 test("embed: a sportsbook shell lists games only; the generic shell and ?kind= decide otherwise", () => {

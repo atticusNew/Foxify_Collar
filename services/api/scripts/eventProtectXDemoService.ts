@@ -1142,7 +1142,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   try {
     if (url.pathname === "/healthz") {
       const h = healthReady();
-      sendJson(res, h.ready ? 200 : 503, { ok: h.ready, warm: h.warm, service: "event-protect-cross-venue-demo" });
+      // brandRecordLinks says where a branded shell's record link goes: "slate" when
+      // EVENT_SHADOW_SLATE_KEY is set (the same value as the shadow service), else the
+      // full public record. A boolean about configuration, never the value.
+      sendJson(res, h.ready ? 200 : 503, { ok: h.ready, warm: h.warm, service: "event-protect-cross-venue-demo", brandRecordLinks: SLATE_KEY?.trim() ? "slate" : "full record" });
       return;
     }
     if (url.pathname === "/api/showcase") {
