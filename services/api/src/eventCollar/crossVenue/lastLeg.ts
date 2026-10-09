@@ -39,7 +39,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
-import { enumerateCollars, refuseUnfunded, selectTiers } from "./collarSearch";
+import { type CollarSearchResult, enumerateCollars, refuseUnfunded, selectTiers } from "./collarSearch";
 import { walkPmAsks } from "./crossVenuePricer";
 import type { ComboLegMarket, ComboLegStatus } from "./polymarketCombos";
 import { writerPayouts } from "./shadowLedger";
@@ -396,6 +396,19 @@ export type LastLegQuote =
  * difference is that the contracts came from a ticket.
  */
 export function quoteLastLeg(input: LastLegQuoteInputs): LastLegQuote {
+  const grid = lastLegCollars(input);
+  if (!grid.ok) return grid;
+  const sel = selectTiers(grid.search.candidates, input.entryCents, input.config.defaultTier);
+  return { ok: true, ...sel.terms, tier: sel.tier, tiers: sel.tiers, candidatesConsidered: grid.search.candidates.length };
+}
+
+/**
+ * Every collar the last leg's NO book funds on the compressed position, before
+ * tier selection; the eligibility refusals are the same as the quote's.
+ * listingQuote.ts reads the whole grid because a seller beside an ask wants
+ * the highest guaranteed outcome, not the balanced tier.
+ */
+export function lastLegCollars(input: LastLegQuoteInputs): { ok: true; search: CollarSearchResult } | CrossRefusal {
   const cfg = input.config;
   if (input.contracts < 1) {
     return { ok: false, code: "credit_nonpositive", detail: "the compressed position is under one contract; nothing to protect" };
@@ -449,8 +462,7 @@ export function quoteLastLeg(input: LastLegQuoteInputs): LastLegQuote {
       none: "no quotable floor/cap combination for this ticket",
     });
   }
-  const sel = selectTiers(search.candidates, input.entryCents, cfg.defaultTier);
-  return { ok: true, ...sel.terms, tier: sel.tier, tiers: sel.tiers, candidatesConsidered: search.candidates.length };
+  return { ok: true, search };
 }
 
 /** A moment record from a quote attempt, every field the ledger needs to settle it later. */

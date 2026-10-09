@@ -1,0 +1,530 @@
+{
+  "at": "2026-10-09T03:21:24.712Z",
+  "marketplace": "WagerWire",
+  "carryBpsPerMonth": 50,
+  "minimumCredit": {
+    "cents": 25,
+    "bpsOfStake": 25
+  },
+  "rows": [
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_0d984ff3",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_0d984ff3-5587-4f04-91ee-005cbbf30ffb",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "Caesars",
+      "legsTotal": 2,
+      "legsRemaining": 1,
+      "hitLegs": [
+        {
+          "label": "Norway vs. England",
+          "market": "Regular Time Correct Score: 1-1"
+        }
+      ],
+      "remaining": [
+        {
+          "label": "Kansas City Chiefs",
+          "market": "26/27 Super Bowl Winner",
+          "venue": "polymarket",
+          "eventSlug": "pro-football-2027-champion-20260729185915366",
+          "outcome": "Kansas City Chiefs",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2027-02-15T00:00:00.000Z",
+      "askCents": 52500,
+      "bidCents": null,
+      "payoutCents": 382500,
+      "contracts": 3825,
+      "unprotectedCents": 0,
+      "venue": "polymarket",
+      "markCents": 10,
+      "markMilli": 98,
+      "fairCents": 37485,
+      "askVsFairBps": 4006,
+      "marketTitle": "Pro Football: 2027 Champion: Will the Kansas City Chiefs win the 2027 NFL league championship?",
+      "quote": {
+        "ok": true,
+        "rule": "highest worst case",
+        "floorCents": 5,
+        "capCents": 13,
+        "creditCents": 5675,
+        "grossCreditCents": 15130,
+        "takeCents": 1513,
+        "carryCents": 7942,
+        "monthsCarried": 5,
+        "feesCents": 0,
+        "hedgeSharesMilli": 3519000,
+        "hedgeCostCents": 317645,
+        "hedgeAvgPriceMilli": 903,
+        "hedgeWorstPriceMilli": 905,
+        "hedgeTokenId": "67568786173941702599227613885622963618166350967368584648718149385526580902390",
+        "lockWorstCents": 24800,
+        "lockBestCents": 55400,
+        "evCostBps": 2716,
+        "candidatesConsidered": 19
+      },
+      "lockBeatsAsk": false
+    },
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_c4ae3d93",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_c4ae3d93-de14-4f42-a4b2-ed8c7410623a",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "DraftKings",
+      "legsTotal": 2,
+      "legsRemaining": 1,
+      "hitLegs": [
+        {
+          "label": "Argentina vs Switzerland",
+          "market": "Regular Time Correct Score: 1-1"
+        }
+      ],
+      "remaining": [
+        {
+          "label": "Kansas City Chiefs",
+          "market": "26/27 Super Bowl Winner",
+          "venue": "polymarket",
+          "eventSlug": "pro-football-2027-champion-20260729185915366",
+          "outcome": "Kansas City Chiefs",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2027-02-15T00:00:00.000Z",
+      "askCents": 21000,
+      "bidCents": null,
+      "payoutCents": 357000,
+      "contracts": 3570,
+      "unprotectedCents": 0,
+      "venue": "polymarket",
+      "markCents": 10,
+      "markMilli": 98,
+      "fairCents": 34986,
+      "askVsFairBps": -3998,
+      "marketTitle": "Pro Football: 2027 Champion: Will the Kansas City Chiefs win the 2027 NFL league championship?",
+      "quote": {
+        "ok": true,
+        "rule": "highest worst case",
+        "floorCents": 5,
+        "capCents": 13,
+        "creditCents": 5348,
+        "grossCreditCents": 14176,
+        "takeCents": 1417,
+        "carryCents": 7411,
+        "monthsCarried": 5,
+        "feesCents": 0,
+        "hedgeSharesMilli": 3284400,
+        "hedgeCostCents": 296414,
+        "hedgeAvgPriceMilli": 903,
+        "hedgeWorstPriceMilli": 905,
+        "hedgeTokenId": "67568786173941702599227613885622963618166350967368584648718149385526580902390",
+        "lockWorstCents": 23198,
+        "lockBestCents": 51758,
+        "evCostBps": 2702,
+        "candidatesConsidered": 19
+      },
+      "lockBeatsAsk": true
+    },
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_6bedcc35",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_6bedcc35-434c-404f-bd34-f19470898da8",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "Fanatics",
+      "legsTotal": 2,
+      "legsRemaining": 1,
+      "hitLegs": [
+        {
+          "label": "Spain",
+          "market": "2026 World Cup Winner"
+        }
+      ],
+      "remaining": [
+        {
+          "label": "Buffalo Bills",
+          "market": "26/27 Super Bowl Winner",
+          "venue": "polymarket",
+          "eventSlug": "pro-football-2027-champion-20260729185915366",
+          "outcome": "Buffalo Bills",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2027-02-15T00:00:00.000Z",
+      "askCents": 16800,
+      "bidCents": null,
+      "payoutCents": 192500,
+      "contracts": 1925,
+      "unprotectedCents": 0,
+      "venue": "polymarket",
+      "markCents": 12,
+      "markMilli": 115,
+      "fairCents": 22138,
+      "askVsFairBps": -2411,
+      "marketTitle": "Pro Football: 2027 Champion: Will the Buffalo Bills win the 2027 NFL league championship?",
+      "quote": {
+        "ok": true,
+        "rule": "highest worst case",
+        "floorCents": 7,
+        "capCents": 15,
+        "creditCents": 1465,
+        "grossCreditCents": 6006,
+        "takeCents": 600,
+        "carryCents": 3941,
+        "monthsCarried": 5,
+        "feesCents": 0,
+        "hedgeSharesMilli": 1771000,
+        "hedgeCostCents": 157619,
+        "hedgeAvgPriceMilli": 890,
+        "hedgeWorstPriceMilli": 890,
+        "hedgeTokenId": "67935976852048146144153944546165225960351367142796154911654417011484745097152",
+        "lockWorstCents": 14940,
+        "lockBestCents": 30340,
+        "evCostBps": 2732,
+        "candidatesConsidered": 17
+      },
+      "lockBeatsAsk": false
+    },
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_7d4f2257",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_7d4f2257-6f30-4d93-8861-5e96d97c177a",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "FanDuel",
+      "legsTotal": 3,
+      "legsRemaining": 1,
+      "hitLegs": [
+        {
+          "label": "Spain vs Argentina",
+          "market": "2026 World Cup Draw - Regular Time"
+        },
+        {
+          "label": "Boston Red Sox",
+          "market": "Team to Make 2026 Playoffs"
+        }
+      ],
+      "remaining": [
+        {
+          "label": "Buffalo Bills",
+          "market": "26/27 Super Bowl Winner",
+          "venue": "polymarket",
+          "eventSlug": "pro-football-2027-champion-20260729185915366",
+          "outcome": "Buffalo Bills",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2027-02-15T00:00:00.000Z",
+      "askCents": 18375,
+      "bidCents": null,
+      "payoutCents": 185400,
+      "contracts": 1854,
+      "unprotectedCents": 0,
+      "venue": "polymarket",
+      "markCents": 12,
+      "markMilli": 115,
+      "fairCents": 21321,
+      "askVsFairBps": -1382,
+      "marketTitle": "Pro Football: 2027 Champion: Will the Buffalo Bills win the 2027 NFL league championship?",
+      "quote": {
+        "ok": true,
+        "rule": "highest worst case",
+        "floorCents": 7,
+        "capCents": 15,
+        "creditCents": 1410,
+        "grossCreditCents": 5784,
+        "takeCents": 578,
+        "carryCents": 3796,
+        "monthsCarried": 5,
+        "feesCents": 0,
+        "hedgeSharesMilli": 1705680,
+        "hedgeCostCents": 151806,
+        "hedgeAvgPriceMilli": 890,
+        "hedgeWorstPriceMilli": 890,
+        "hedgeTokenId": "67935976852048146144153944546165225960351367142796154911654417011484745097152",
+        "lockWorstCents": 14388,
+        "lockBestCents": 29220,
+        "evCostBps": 2733,
+        "candidatesConsidered": 17
+      },
+      "lockBeatsAsk": false
+    },
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_a3765aef",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_a3765aef-9464-4933-847d-64bec18c7df2",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "DraftKings",
+      "legsTotal": 5,
+      "legsRemaining": 1,
+      "hitLegs": [
+        {
+          "label": "Denver Nuggets To Win",
+          "market": "Denver Nuggets vs Brooklyn Nets"
+        },
+        {
+          "label": "2+ Jaden McDaniels 3PM and 5+ Anthony Edwards Assists",
+          "market": "Oklahoma City Thunder vs Minnesota Timberwolves"
+        },
+        {
+          "label": "Houston Rockets -3.5",
+          "market": "Houston Rockets vs Atlanta Hawks"
+        },
+        {
+          "label": "Seattle Seahawks To Win",
+          "market": "Super Bowl LX"
+        }
+      ],
+      "remaining": [
+        {
+          "label": "Los Angeles Dodgers",
+          "market": "2026 World Series Champions",
+          "venue": "polymarket",
+          "eventSlug": "mlb-world-series-champion-2026",
+          "outcome": "Los Angeles Dodgers",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2026-11-01T00:00:00.000Z",
+      "askCents": 21000,
+      "bidCents": null,
+      "payoutCents": 45101,
+      "contracts": 451,
+      "unprotectedCents": 1,
+      "venue": "polymarket",
+      "markCents": 43,
+      "markMilli": 425,
+      "fairCents": 19168,
+      "askVsFairBps": 956,
+      "marketTitle": "MLB World Series Champion 2026: Will the Los Angeles Dodgers win the 2026 World Series?",
+      "quote": {
+        "ok": true,
+        "rule": "highest worst case",
+        "floorCents": 35,
+        "capCents": 46,
+        "creditCents": 843,
+        "grossCreditCents": 1073,
+        "takeCents": 113,
+        "carryCents": 117,
+        "monthsCarried": 1,
+        "feesCents": 0,
+        "hedgeSharesMilli": 401390,
+        "hedgeCostCents": 23281,
+        "hedgeAvgPriceMilli": 580,
+        "hedgeWorstPriceMilli": 580,
+        "hedgeTokenId": "65347099416413012038874568960137034756796660297895673058090101511987410403548",
+        "lockWorstCents": 16628,
+        "lockBestCents": 21589,
+        "evCostBps": 326,
+        "candidatesConsidered": 56
+      },
+      "lockBeatsAsk": false
+    },
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_06e7b309",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_06e7b309-a5f0-4c11-8b5b-c8bf37eeaf21",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "FanDuel",
+      "legsTotal": 1,
+      "legsRemaining": 1,
+      "hitLegs": [],
+      "remaining": [
+        {
+          "label": "Shohei Ohtani",
+          "market": "2026 MLB Cy Young Winner",
+          "venue": "polymarket",
+          "eventSlug": "mlb-2026-nl-cy-young-winner",
+          "outcome": "Shohei Ohtani",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2026-11-01T00:00:00.000Z",
+      "askCents": 787500,
+      "bidCents": null,
+      "payoutCents": 5250000,
+      "contracts": 52500,
+      "unprotectedCents": 0,
+      "venue": "polymarket",
+      "markCents": 0,
+      "markMilli": 3,
+      "fairCents": 15750,
+      "askVsFairBps": 490000,
+      "marketTitle": "MLB: 2026 NL Cy Young Winner: Will Shohei Ohtani win the 2026 NL Cy Young Award?",
+      "quote": {
+        "ok": false,
+        "code": "mark_out_of_range",
+        "detail": "the last leg's mark 0c is outside the quotable 10c-92c band"
+      },
+      "lockBeatsAsk": null
+    },
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_4a19ce5e",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_4a19ce5e-e3cd-4dd1-b20a-8b387aa0647c",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "FanDuel",
+      "legsTotal": 1,
+      "legsRemaining": 1,
+      "hitLegs": [],
+      "remaining": [
+        {
+          "label": "Shohei Ohtani",
+          "market": "2026 MLB Cy Young Winner",
+          "venue": "polymarket",
+          "eventSlug": "mlb-2026-nl-cy-young-winner",
+          "outcome": "Shohei Ohtani",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2026-11-01T00:00:00.000Z",
+      "askCents": 367500,
+      "bidCents": null,
+      "payoutCents": 2480000,
+      "contracts": 24800,
+      "unprotectedCents": 0,
+      "venue": "polymarket",
+      "markCents": 0,
+      "markMilli": 3,
+      "fairCents": 7440,
+      "askVsFairBps": 483952,
+      "marketTitle": "MLB: 2026 NL Cy Young Winner: Will Shohei Ohtani win the 2026 NL Cy Young Award?",
+      "quote": {
+        "ok": false,
+        "code": "mark_out_of_range",
+        "detail": "the last leg's mark 0c is outside the quotable 10c-92c band"
+      },
+      "lockBeatsAsk": null
+    },
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_6527ef16",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_6527ef16-c0ba-46bc-a147-a4026526a754",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "FanDuel",
+      "legsTotal": 1,
+      "legsRemaining": 1,
+      "hitLegs": [],
+      "remaining": [
+        {
+          "label": "Shohei Ohtani",
+          "market": "2026 MLB Cy Young Winner",
+          "venue": "polymarket",
+          "eventSlug": "mlb-2026-nl-cy-young-winner",
+          "outcome": "Shohei Ohtani",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2026-11-01T00:00:00.000Z",
+      "askCents": 42000,
+      "bidCents": null,
+      "payoutCents": 360000,
+      "contracts": 3600,
+      "unprotectedCents": 0,
+      "venue": "polymarket",
+      "markCents": 0,
+      "markMilli": 3,
+      "fairCents": 1080,
+      "askVsFairBps": 378889,
+      "marketTitle": "MLB: 2026 NL Cy Young Winner: Will Shohei Ohtani win the 2026 NL Cy Young Award?",
+      "quote": {
+        "ok": false,
+        "code": "mark_out_of_range",
+        "detail": "the last leg's mark 0c is outside the quotable 10c-92c band"
+      },
+      "lockBeatsAsk": null
+    },
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_3b87a911",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_3b87a911-6538-4c04-80f2-99bf775eb024",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "Fanatics",
+      "legsTotal": 3,
+      "legsRemaining": 2,
+      "hitLegs": [
+        {
+          "label": "Los Angeles Dodgers",
+          "market": "2026 National League Winner"
+        }
+      ],
+      "remaining": [
+        {
+          "label": "Denver Broncos",
+          "market": "26/27 Super Bowl Winner",
+          "venue": "polymarket",
+          "side": 0
+        },
+        {
+          "label": "Kylian Mbappe",
+          "market": "2026 World Cup Golden Boot Winner",
+          "venue": "polymarket",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2027-02-15T00:00:00.000Z",
+      "askCents": 4541,
+      "bidCents": null,
+      "payoutCents": 168813,
+      "contracts": 1688,
+      "unprotectedCents": 13,
+      "venue": "polymarket",
+      "markCents": null,
+      "markMilli": null,
+      "fairCents": null,
+      "askVsFairBps": null,
+      "marketTitle": null,
+      "quote": {
+        "ok": false,
+        "code": "legs_remaining",
+        "detail": "2 legs remain; a leg-for-leg hedge covers one market, not a product of 2"
+      },
+      "lockBeatsAsk": null
+    },
+    {
+      "at": "2026-10-09T03:21:24.712Z",
+      "id": "ORD_9c74315f",
+      "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_9c74315f-b2ac-4ce0-8ec6-b0c414aafed4",
+      "readAt": "2026-10-09T02:52:00.000Z",
+      "book": "Fanatics",
+      "legsTotal": 3,
+      "legsRemaining": 2,
+      "hitLegs": [
+        {
+          "label": "Los Angeles Dodgers",
+          "market": "2026 National League Winner"
+        }
+      ],
+      "remaining": [
+        {
+          "label": "Denver Broncos",
+          "market": "26/27 Super Bowl Winner",
+          "venue": "polymarket",
+          "side": 0
+        },
+        {
+          "label": "Kylian Mbappe",
+          "market": "2026 World Cup Golden Boot Winner",
+          "venue": "polymarket",
+          "side": 0
+        }
+      ],
+      "resolvesIso": "2027-02-15T00:00:00.000Z",
+      "askCents": 5250,
+      "bidCents": null,
+      "payoutCents": 168813,
+      "contracts": 1688,
+      "unprotectedCents": 13,
+      "venue": "polymarket",
+      "markCents": null,
+      "markMilli": null,
+      "fairCents": null,
+      "askVsFairBps": null,
+      "marketTitle": null,
+      "quote": {
+        "ok": false,
+        "code": "legs_remaining",
+        "detail": "2 legs remain; a leg-for-leg hedge covers one market, not a product of 2"
+      },
+      "lockBeatsAsk": null
+    }
+  ]
+}
