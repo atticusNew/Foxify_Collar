@@ -83,7 +83,7 @@ import {
   summarizeHedgeReceipts,
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
-import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml } from "./eventShadowHtml";
+import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml, renderSlateHtml } from "./eventShadowHtml";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import {
@@ -100,10 +100,12 @@ import {
   lastLegConfigFromEnv,
   lastLegCsv,
   loadLastLegTickets,
+  lockVersusSell,
   runLastLegTick,
   summarizeLastLeg,
   type LastLegTickReport,
 } from "../src/eventCollar/crossVenue/lastLeg";
+import { findVenueSlate, parseVenueSlates, slateKeyOk, slateLeaguesOnRecord, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
 import type { ScanOptions, ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -132,6 +134,19 @@ const lastLegCfg = lastLegConfigFromEnv(process.env);
 let lastLastLegAt: string | null = null;
 let lastLastLegError: string | null = null;
 let lastLastLegReport: LastLegTickReport | null = null;
+
+/**
+ * VENUE SLATES (crossVenue/venueSlate.ts): the record cut to one venue's leagues, with its name
+ * on the page, at /slate/<slug> and /slate/<slug>.csv. Reached by the share key (?k=) or the
+ * operator token; no key configured and no slate page opens. Nothing is read from the venue.
+ */
+const venueSlates = parseVenueSlates(process.env.EVENT_SHADOW_SLATES);
+const SLATE_KEY = process.env.EVENT_SHADOW_SLATE_KEY;
+/** the interactive demo, which renders in a venue's brand with ?brand= */
+const DEMO_URL = (process.env.EVENT_SHADOW_DEMO_URL || "https://atticus-event-demo-cross-venue.onrender.com").replace(/\/+$/, "");
+const RECORD_URL = (process.env.EVENT_SHADOW_PUBLIC_URL || "https://atticus-event-shadow.onrender.com").replace(/\/+$/, "");
+/** the books the hedges are bought on, by public name, keyed by the record's route codes */
+const HEDGE_VENUE_NAMES: Record<string, string> = { kalshi_self: "Kalshi", polymarket: "Polymarket" };
 
 /** one line per hedge: which strategy filled it, at what, and why the other did not */
 const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDGER_PATH), "hedge-receipts.jsonl");
@@ -483,6 +498,7 @@ function healthBody(): Record<string, unknown> {
       lastError: lastLastLegError,
       lastReport: lastLastLegReport,
     },
+    slates: { keyConfigured: Boolean((SLATE_KEY ?? "").trim()), configured: venueSlates.map((s) => ({ slug: s.slug, name: s.name, leagues: s.leagues })) },
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
     hedge: {
       strategy: hedgeChoice.strategy,
@@ -669,6 +685,53 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       );
       return;
     }
+    const slateMatch = /^\/slate\/([a-z0-9-]+?)(\.csv)?$/.exec(url.pathname);
+    if (slateMatch) {
+      // A prospect's name renders only on a link the operator sent: share key or operator token,
+      // and only for a configured slate. Anything else is the same 404 as an unknown path.
+      const slate = findVenueSlate(venueSlates, slateMatch[1]);
+      const keyed = slateKeyOk(SLATE_KEY, url.searchParams.get("k"));
+      if (!slate || !(keyed || operator)) {
+        sendJson(res, 404, { ok: false, error: "not found" });
+        return;
+      }
+      const { atIso, positions } = pageData();
+      const onSlate = slatePositions(slate, positions);
+      const keyQuery = keyed ? `?k=${encodeURIComponent(url.searchParams.get("k") as string)}` : `?token=${encodeURIComponent(url.searchParams.get("token") ?? "")}`;
+      if (slateMatch[2]) {
+        res.writeHead(200, {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": `attachment; filename="${slate.slug}-slate-${new Date().toISOString().slice(0, 10)}.csv"`,
+          "cache-control": "no-store",
+        });
+        res.end(positionsCsv(onSlate, "public"));
+        return;
+      }
+      const summary = summarizeShadow(onSlate);
+      const { settled, open } = splitPositions(onSlate);
+      const tickets = loadLastLegTickets(LASTLEG_PATH);
+      const routes = Object.keys(summary.routeSplit).map((r) => HEDGE_VENUE_NAMES[r]).filter(Boolean);
+      const hedgeVenues = routes.length ? [...new Set(routes)] : Object.values(HEDGE_VENUE_NAMES);
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" });
+      res.end(
+        renderSlateHtml({
+          atIso,
+          slate,
+          leaguesOnRecord: slateLeaguesOnRecord(slate, positions),
+          summary,
+          settled,
+          open,
+          lockVsSell: lockVersusSell(tickets),
+          lastLeg: summarizeLastLeg(tickets),
+          lastLegStakeCents: lastLegCfg.stakeCents,
+          hedgeVenues,
+          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(slate.name)}`,
+          csvHref: `/slate/${slate.slug}.csv${keyQuery}`,
+          recordUrl: RECORD_URL,
+        }),
+      );
+      return;
+    }
     if (url.pathname === "/" || url.pathname === "/index.html") {
       const { atIso, positions } = pageData();
       const { settled, open, closed } = splitPositions(positions);
@@ -708,7 +771,10 @@ async function main(): Promise<void> {
       `[event-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m · early closes ${earlyCloseRule.sharePct}% of the book` +
         (lastLegCfg.enabled
           ? ` · last-leg shadow every ${Math.round(lastLegCfg.tickMs / 60_000)}m (${lastLegCfg.legCounts.join("/")}-leg tickets, $${(lastLegCfg.stakeCents / 100).toFixed(0)} stake, ledger ${LASTLEG_PATH})`
-          : " · last-leg shadow off"),
+          : " · last-leg shadow off") +
+        (venueSlates.length
+          ? ` · slates ${venueSlates.map((s) => `/slate/${s.slug} (${s.name})`).join(", ")}${(SLATE_KEY ?? "").trim() ? "" : " [no share key: operator token only]"}`
+          : ""),
     );
     void scanTick();
     void settleTick();

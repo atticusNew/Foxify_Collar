@@ -181,6 +181,8 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
   process.env.NODE_ENV = "test";
   process.env.EVENT_SHADOW_LEDGER_PATH = path;
   process.env.EVENT_X_ADMIN_TOKEN = "op-secret";
+  process.env.EVENT_SHADOW_SLATES = "wiremarkets=Wire Markets:nfl,nba;sporttrade=Sporttrade:mlb";
+  process.env.EVENT_SHADOW_SLATE_KEY = "share-key-1";
   const { server } = await import("../scripts/eventShadowWorker");
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -312,6 +314,39 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.equal(hedges.strategy, "book");
     assert.equal(hedges.summary.receipts, 0, "positions appended by hand carry no hedge receipt; the scanner writes those");
     assert.deepEqual(hedges.recent, []);
+
+    // VENUE SLATES: a prospect's name renders only on a link we sent. No key, wrong key, unknown
+    // slate: the same 404 as any unknown path. The share key or the operator token opens it.
+    for (const p of ["/slate/wiremarkets", "/slate/wiremarkets?k=wrong", "/slate/wiremarkets.csv", "/slate/kalshi?k=share-key-1", "/slate/Wire%20Markets?k=share-key-1"]) {
+      assert.equal((await fetch(`${base}${p}`)).status, 404, `${p}`);
+    }
+    const slatePage = await fetch(`${base}/slate/wiremarkets?k=share-key-1`);
+    assert.equal(slatePage.status, 200);
+    assert.match(slatePage.headers.get("content-type") ?? "", /text\/html/);
+    assert.equal(slatePage.headers.get("x-robots-tag"), "noindex, nofollow");
+    const slateHtml = await slatePage.text();
+    assert.ok(slateHtml.includes("Protection on the Wire Markets slate"));
+    assert.ok(slateHtml.includes("Hedged leg for leg on Polymarket."), "named from the routes on the slate's record");
+    assert.ok(slateHtml.includes('<div class="n green">1</div><div class="l">games settled</div>'), "the NFL position is on the slate");
+    assert.ok(slateHtml.includes("Kansas City Chiefs"));
+    assert.ok(slateHtml.includes('href="/slate/wiremarkets.csv?k=share-key-1"'), "the CSV link carries the share key, not the operator token");
+    assert.ok(slateHtml.includes("?brand=Wire%20Markets"), "the demo link opens in the venue's brand");
+    assert.ok(!slateHtml.includes("op-secret"));
+    assert.equal((await fetch(`${base}/slate/wiremarkets`, op)).status, 200, "the operator token opens any slate");
+    const otherSlate = await (await fetch(`${base}/slate/sporttrade?k=share-key-1`)).text();
+    assert.ok(otherSlate.includes("Protection on the Sporttrade slate") && otherSlate.includes("no positions on these leagues yet"), "an MLB-only slate has none of this record");
+    const slateCsv = await fetch(`${base}/slate/wiremarkets.csv?k=share-key-1`);
+    assert.equal(slateCsv.status, 200);
+    assert.match(slateCsv.headers.get("content-disposition") ?? "", /wiremarkets-slate-\d{4}-\d{2}-\d{2}\.csv/);
+    const slateCsvLines = (await slateCsv.text()).trimEnd().split("\n");
+    assert.equal(slateCsvLines.length, 2);
+    assert.ok(slateCsvLines[0].startsWith("ticker,league,kind,") && !slateCsvLines[0].includes("wide_floor_c"), "public columns only");
+    assert.ok(slateCsvLines[1].startsWith(`${OPEN.ticker},`));
+    assert.equal(((await (await fetch(`${base}/slate/sporttrade.csv?k=share-key-1`)).text()).trimEnd().split("\n")).length, 1, "header only off the slate");
+    const healthSlates = (health as { slates: { keyConfigured: boolean; configured: Array<{ slug: string }> } }).slates;
+    assert.equal(healthSlates.keyConfigured, true);
+    assert.deepEqual(healthSlates.configured.map((s) => s.slug), ["wiremarkets", "sporttrade"]);
+    assert.equal("slates" in publicHealth, false, "the public health body does not list prospects");
 
     // FRESH START: operator only; archive, never delete. The old window stays on disk beside the new empty book.
     assert.equal((await fetch(`${base}/api/shadow/reset`, { method: "POST" })).status, 403, "reset is an operator action");
