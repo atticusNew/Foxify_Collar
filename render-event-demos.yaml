@@ -82,10 +82,11 @@ services:
       # Embed demo (/): host names honoured on ?brand=, comma-separated; anything
       # else renders as EVENT_X_EMBED_BRAND. These names carry a colourway and a
       # light/dark shell (scripts/eventProtectEmbedHtml.ts BRAND_PRESETS); any
-      # other allowlisted name gets the generic slate palette. Partner console
+      # other allowlisted name gets the generic slate palette. Sportsbook presets
+      # hide the crypto strikes (?kind=all shows them). Partner console
       # (/partner, operator token) shows the host's revenue share at this percent.
       - key: EVENT_X_BRAND_ALLOWLIST
-        value: "ProphetX,Novig,Sporttrade,Kalshi,Polymarket,DraftKings,FanDuel,PrizePicks,Underdog,Robinhood,Coinbase,Kraken"
+        value: "ProphetX,Novig,Sporttrade,Kalshi,Polymarket,DraftKings,FanDuel,PrizePicks,Underdog,Robinhood,Coinbase,Kraken,WagerWire,Wire Markets"
       # What the front door (/) calls the host when the link carries no ?brand=.
       - key: EVENT_X_EMBED_BRAND
         value: "Your Exchange"
@@ -144,6 +145,18 @@ services:
       # tick. EVENT_LASTLEG_ENABLED=0 turns it off. Operator views: /api/shadow/lastleg{,.csv}.
       - key: EVENT_LASTLEG_LEDGER_PATH
         value: /var/data/event-shadow-lastleg.jsonl
+      # Venue slates: the record cut to one venue's leagues with its name on the page, at
+      # /slate/<slug>?k=<EVENT_SHADOW_SLATE_KEY> (and /slate/<slug>.csv). One slate per
+      # semicolon, slug=Name:leagues; an empty league list is every sports league. Reached
+      # only by the share key or the operator token, never linked from the public record, so a
+      # prospect's name appears only on a link we chose to send. Nothing is read from the venue.
+      - key: EVENT_SHADOW_SLATES
+        value: "wiremarkets=Wire Markets:nfl,nba,mlb,nhl,epl,ucl,mls;wagerwire=WagerWire:nfl,nba,mlb,nhl;sporttrade=Sporttrade:nfl,nba,mlb,nhl;novig=Novig:nfl,nba,mlb,nhl"
+      - key: EVENT_SHADOW_SLATE_KEY
+        generateValue: true
+      # Where the slate page's "Open the demo" goes (renders in the venue's brand with ?brand=).
+      - key: EVENT_SHADOW_DEMO_URL
+        value: https://atticus-event-demo-cross-venue.onrender.com
       # Gates the operator views: /report, /api/shadow/report, /api/shadow/hedges,
       # /api/shadow/lastleg, /api/shadow/export and the full positions CSV (?token=... or x-admin-token).
       # Fail-closed: without it those routes answer 403 and the public record stays up.

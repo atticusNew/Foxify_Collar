@@ -1169,6 +1169,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           trackRecordUrl: TRACK_RECORD_URL,
           // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
           skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,
+          // no ?kind= and the brand preset decides (a sportsbook shell hides the crypto strikes)
+          sportsOnly: url.searchParams.get("kind") === "sports" ? true : url.searchParams.get("kind") === "all" ? false : null,
         }),
       );
       return;

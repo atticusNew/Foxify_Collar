@@ -832,6 +832,113 @@ export function lastLegCsv(tickets: readonly LastLegTicket[]): string {
   return [head.join(","), ...rows].join("\n") + "\n";
 }
 
+// ── lock versus sell ──────────────────────────────────────────────────────────
+
+/**
+ * The bettor's three choices at the moment, side by side. SELL is a cash-out at
+ * fair: the ticket's value on the contracts basis (contracts x mark), what a
+ * marketplace would pay before its spread. LOCK is the collar: the two endings
+ * (floor x contracts + credit, cap x contracts + credit) and the credit paid at
+ * the tap. HOLD is the naked ticket. Only tickets with a priced quote appear;
+ * settled rows carry what each choice actually paid.
+ */
+export interface LockVsSellRow {
+  ticketId: string;
+  quotedAt: string;
+  size: number;
+  /** the last leg as the bettor would read it: outcome and game */
+  lastLeg: string;
+  league: string;
+  minutesToStart: number;
+  contracts: number;
+  markCents: number;
+  sellCents: number;
+  lockFloorCents: number;
+  lockCapCents: number;
+  creditCents: number;
+  status: LastLegStatus;
+  result?: LastLegOutcome["result"];
+  /** settled only: what each choice paid */
+  lockPaidCents?: number;
+  holdPaidCents?: number;
+}
+
+export interface LockVsSellSummary {
+  rows: LockVsSellRow[];
+  quoted: number;
+  settled: number;
+  /** across quoted rows */
+  sellCents: number;
+  lockFloorCents: number;
+  lockCapCents: number;
+  creditsCents: number;
+  /** across settled rows: what each choice paid */
+  settledSellCents: number;
+  settledLockCents: number;
+  settledHoldCents: number;
+  /** settled rows where the lock beat the sell, and where the hold beat both */
+  lockBeatSell: number;
+  holdBeatBoth: number;
+}
+
+export function lockVersusSell(tickets: readonly LastLegTicket[]): LockVsSellSummary {
+  const rows: LockVsSellRow[] = [];
+  for (const t of tickets) {
+    const q = t.quote;
+    if (!q || !q.ok || q.floorCents === undefined || q.capCents === undefined || q.creditCents === undefined) continue;
+    const last = t.legs[t.legs.length - 1];
+    const o = t.outcome;
+    const settled = t.status === "settled" && o && o.protectedCents !== null;
+    rows.push({
+      ticketId: t.ticketId,
+      quotedAt: q.at,
+      size: t.size,
+      lastLeg: `${last.outcome} · ${last.title}`,
+      league: last.league,
+      minutesToStart: q.minutesToStart,
+      contracts: q.contracts,
+      markCents: q.markCents,
+      sellCents: q.ticketValueCents,
+      lockFloorCents: q.floorCents * q.contracts + q.creditCents,
+      lockCapCents: q.capCents * q.contracts + q.creditCents,
+      creditCents: q.creditCents,
+      status: t.status,
+      ...(o ? { result: o.result } : {}),
+      ...(settled ? { lockPaidCents: o.protectedCents as number, holdPaidCents: o.nakedCents } : {}),
+    });
+  }
+  rows.sort((a, b) => b.quotedAt.localeCompare(a.quotedAt));
+  const s: LockVsSellSummary = {
+    rows,
+    quoted: rows.length,
+    settled: 0,
+    sellCents: 0,
+    lockFloorCents: 0,
+    lockCapCents: 0,
+    creditsCents: 0,
+    settledSellCents: 0,
+    settledLockCents: 0,
+    settledHoldCents: 0,
+    lockBeatSell: 0,
+    holdBeatBoth: 0,
+  };
+  for (const r of rows) {
+    s.sellCents += r.sellCents;
+    s.lockFloorCents += r.lockFloorCents;
+    s.lockCapCents += r.lockCapCents;
+    s.creditsCents += r.creditCents;
+    if (r.lockPaidCents !== undefined && r.holdPaidCents !== undefined) {
+      s.settled += 1;
+      s.settledSellCents += r.sellCents;
+      s.settledLockCents += r.lockPaidCents;
+      s.settledHoldCents += r.holdPaidCents;
+      if (r.lockPaidCents > r.sellCents) s.lockBeatSell += 1;
+      if (r.holdPaidCents > r.lockPaidCents && r.holdPaidCents > r.sellCents) s.holdBeatBoth += 1;
+    }
+  }
+  return s;
+}
+
 // ── the tick ──────────────────────────────────────────────────────────────────
 
 /** Everything the tick touches outside itself, injected so the tick is testable without a venue. */

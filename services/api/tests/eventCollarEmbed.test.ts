@@ -58,6 +58,21 @@ test("embed: brands bring a colourway and a default shell; anything else is the 
   assert.ok(generic.includes('<div class="brand"><i>E</i>Your Exchange</div>'), "the placeholder pip reads E");
 });
 
+test("embed: a sportsbook shell lists games only; the generic shell and ?kind= decide otherwise", () => {
+  assert.equal(brandTheme("Wire Markets").sportsOnly, true);
+  assert.equal(brandTheme("WagerWire").accent, brandTheme("Wire Markets").accent, "one colourway for the group");
+  assert.equal(brandTheme("DraftKings").sportsOnly, true);
+  assert.equal(brandTheme("Kalshi").sportsOnly, undefined, "a prediction market lists everything it lists");
+  assert.equal(GENERIC_THEME.sportsOnly, undefined);
+  const wm = renderEventEmbedHtml({ brand: "Wire Markets" });
+  assert.ok(wm.includes("var SPORTS_ONLY=true;"), "the preset hides the crypto strikes");
+  assert.ok(wm.includes("if(SPORTS_ONLY)rows=rows.filter(function(r){return r.kind!=='crypto'});"), "filtered where the rows are loaded");
+  assert.ok(wm.includes('<div class="brand"><i>W</i>Wire Markets</div>') && wm.includes("--accent:#02FDDD;"));
+  assert.ok(renderEventEmbedHtml({ brand: "Wire Markets", sportsOnly: false }).includes("var SPORTS_ONLY=false;"), "?kind=all overrides the preset");
+  assert.ok(renderEventEmbedHtml({ brand: "Your Exchange" }).includes("var SPORTS_ONLY=false;"), "the generic shell shows the whole board");
+  assert.ok(renderEventEmbedHtml({ brand: "Your Exchange", sportsOnly: true }).includes("var SPORTS_ONLY=true;"), "?kind=sports narrows any shell");
+});
+
 test("embed: the minimum-credit rule hides negligible tiers: 25¢ and 0.25% of stake, whichever is more", () => {
   assert.equal(worthOffering(25, 10), true, "25¢ on $10 clears both");
   assert.equal(worthOffering(24, 10), false, "24¢ never clears");
