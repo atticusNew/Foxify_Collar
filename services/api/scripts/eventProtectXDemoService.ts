@@ -105,7 +105,7 @@ import {
   type RouteCheck,
 } from "../src/eventCollar/crossVenue/types";
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
-import { DEFAULT_EMBED_BRAND, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
+import { DEFAULT_EMBED_BRAND, brandRecordUrl, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
 import { applyMinimumCredit, describeMinimumCredit, minimumCreditRuleFromEnv } from "../src/eventCollar/crossVenue/minimumCredit";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { getKalshiBookSides, quoteEarlyClose, type EarlyCloseBooks } from "../src/eventCollar/crossVenue/earlyClose";
@@ -144,6 +144,12 @@ const CONTACT_EMAIL = process.env.EVENT_X_CONTACT_EMAIL || "michael@atticustrade
 const PARTNER_SHARE_PCT = Math.min(100, Math.max(0, Number(process.env.EVENT_X_PARTNER_SHARE_PCT ?? 50)));
 /** The track record (its own deploy); the embed's one public link and the desktop pitch's first partner link. */
 const TRACK_RECORD_URL = process.env.EVENT_X_SHADOW_URL || "https://atticus-event-shadow.onrender.com";
+/**
+ * The shadow's slate share key, the same value as on the shadow service. With it, a partner
+ * brand's shell links to its own slate page (/slate/<slug>) with a key derived for that slate
+ * alone; without it every shell links to the public record.
+ */
+const SLATE_KEY = process.env.EVENT_SHADOW_SLATE_KEY;
 /** Kalshi crypto strike series admitted to the board (self-hedge route only). */
 const CRYPTO_SERIES = (process.env.EVENT_X_CRYPTO_SERIES || "KXBTCD,KXETHD")
   .split(",")
@@ -1161,12 +1167,15 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/embed") {
       recordPageLoad(funnelState, "embed", Date.now());
       funnelDirty = true;
+      const brand = resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND);
+      const record = brandRecordUrl(TRACK_RECORD_URL, brand, SLATE_KEY, EMBED_BRAND);
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(
         renderEventEmbedHtml({
-          brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND),
+          brand,
           minCredit: MIN_CREDIT_RULE,
-          trackRecordUrl: TRACK_RECORD_URL,
+          trackRecordUrl: record.url,
+          recordIsSlate: record.slate,
           // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
           skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,
           // no ?kind= and the brand preset decides (a sportsbook shell hides the crypto strikes)
@@ -1178,11 +1187,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     if (url.pathname === "/partner" && req.method === "GET" && !adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"))) {
       // A visitor (a partner following the pitch's link) gets the case for the console and a CTA; the console itself names our take.
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      const ctaBrand = resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND);
       res.end(
         renderPartnerCtaHtml({
-          brand: resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND),
+          brand: ctaBrand,
           contactEmail: CONTACT_EMAIL,
-          trackRecordUrl: TRACK_RECORD_URL,
+          trackRecordUrl: brandRecordUrl(TRACK_RECORD_URL, ctaBrand, SLATE_KEY, EMBED_BRAND).url,
         }),
       );
       return;

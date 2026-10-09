@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { BRAND_PRESETS, GENERIC_THEME, brandInitial, brandTheme, renderEventEmbedHtml, renderPartnerHtml, resolveBrand, worthOffering } from "../scripts/eventProtectEmbedHtml";
+import { BRAND_PRESETS, DEFAULT_EMBED_BRAND, GENERIC_THEME, brandInitial, brandRecordUrl, brandTheme, renderEventEmbedHtml, renderPartnerHtml, resolveBrand, worthOffering } from "../scripts/eventProtectEmbedHtml";
 import { summarizeCrossLedger } from "../src/eventCollar/crossVenue/crossLedger";
 import { emptyEventFunnel, eventFunnelSummary, recordPageLoad, EVENT_PAGES } from "../src/eventCollar/crossVenue/eventFunnel";
 import { forbiddenKeysIn } from "../src/eventCollar/retailShowcase";
@@ -56,6 +56,25 @@ test("embed: brands bring a colourway and a default shell; anything else is the 
   const generic = renderEventEmbedHtml({ brand: "Your Exchange" });
   assert.ok(generic.includes(`--accent:${GENERIC_THEME.accent};`) && generic.includes("--bg:#f4f5f7"), "generic: slate on light");
   assert.ok(generic.includes('<div class="brand"><i>E</i>Your Exchange</div>'), "the placeholder pip reads E");
+});
+
+test("embed: a partner shell's record link is its own slate page with a key for that slate alone; the generic shell links to the public record", () => {
+  const pub = brandRecordUrl("https://shadow.example/", "Your Exchange", "share-secret");
+  assert.deepEqual(pub, { url: "https://shadow.example", slate: false }, "the placeholder host has no slate");
+  const noKey = brandRecordUrl("https://shadow.example", "Wire Markets", undefined);
+  assert.deepEqual(noKey, { url: "https://shadow.example", slate: false }, "no share key configured: the public record");
+  const wm = brandRecordUrl("https://shadow.example", "Wire Markets", "share-secret");
+  assert.equal(wm.slate, true);
+  assert.match(wm.url, /^https:\/\/shadow\.example\/slate\/wiremarkets\?k=[0-9a-f]{24}$/);
+  assert.ok(!wm.url.includes("share-secret"), "the share key itself never appears in a page");
+  assert.notEqual(brandRecordUrl("https://shadow.example", "Sporttrade", "share-secret").url.split("k=")[1], wm.url.split("k=")[1], "one key per slate");
+
+  const html = renderEventEmbedHtml({ brand: "Wire Markets", trackRecordUrl: wm.url, recordIsSlate: true });
+  assert.ok(html.includes(`<a href="${wm.url.replace(/&/g, "&amp;")}">Wire Markets record</a>`), "both record links go to the slate, labelled with the brand");
+  assert.equal(html.split(`href="${wm.url}"`).length - 1, 2, "the pitch link and the phone link");
+  assert.ok(html.includes('<a href="/partner?brand=Wire%20Markets">Partner console</a>'), "the partner console keeps the brand");
+  const generic = renderEventEmbedHtml({ brand: "Your Exchange", trackRecordUrl: "https://shadow.example" });
+  assert.ok(generic.includes('<a href="https://shadow.example">Track record</a>') && generic.includes('<a href="/partner">Partner console</a>'));
 });
 
 test("embed: a sportsbook shell lists games only; the generic shell and ?kind= decide otherwise", () => {
@@ -134,7 +153,9 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes("We price the protection and hedge it leg for leg; you keep the flow, the ledger and the relationship."), "the subline carries the deal and never claims we carry risk");
   assert.ok(!html.includes("carry the risk"), "the record says we carry no outcome risk; the pitch must not contradict it");
   assert.ok(html.includes("Demonstration only."), "labelled a demonstration, plainly");
-  assert.ok(html.includes('<b>For partners</b><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="/partner">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a>'), "desktop: every partner surface in one row");
+  assert.ok(html.includes('<b>For partners</b><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="/partner?brand=ProphetX">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a>'), "desktop: every partner surface in one row, the console opened as this brand");
+  const plain = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND });
+  assert.ok(plain.includes('<a href="/partner">Partner console</a>'), "the default brand opens the console unbranded");
   const custom = renderEventEmbedHtml({ brand: "ProphetX", trackRecordUrl: "https://tr.example", minCredit: { cents: 50, bpsOfStake: 10 } });
   assert.ok(custom.includes('href="https://tr.example">Track record</a>'), "the track record URL comes from the server");
   assert.ok(custom.includes("var MIN_CREDIT_CENTS=50,MIN_CREDIT_BPS=10;"), "the page mirrors the server's minimum-credit rule");
