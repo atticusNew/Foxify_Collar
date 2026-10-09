@@ -54,7 +54,7 @@ li small{display:block;color:var(--dim);font-size:12px}
 .foot{color:#666;font-size:12px;margin-top:22px}
 </style></head><body><div class="wrap">
 <h1>The Lock on a listing</h1>
-<p class="sub">Your listing card, your buttons. One more button, rendered by you from one JSON quote. After the tap, one sheet, ours: two endings and the cash paid now. Numbers from the sheet priced 2026-10-09 04:13 UTC.</p>
+<p class="sub">Your listing card, your buttons. One more button, rendered by you from one JSON quote. After the tap, one sheet, ours: two endings and the cash paid now. Numbers from the sheet priced 2026-10-09 17:34 UTC.</p>
 <div class="row">
 <div class="phone"><div class="screen">
   <div class="top"><div class="brand"><i>W</i>WagerWire</div><div class="tab">Your listing</div></div>
@@ -71,7 +71,7 @@ li small{display:block;color:var(--dim);font-size:12px}
     <div class="btns">
       <div class="btn">Make bid</div>
       <div class="btn">Bet value</div>
-      <div class="btn lock" style="position:relative"><span>Lock in $231.98</span><small>guaranteed &middot; $53.48 paid to you now</small><span class="ours">ours</span></div>
+      <div class="btn lock" style="position:relative"><span>Lock in $233.47</span><small>guaranteed &middot; $54.97 paid to you now</small><span class="ours">ours</span></div>
     </div>
   </div>
   <div class="note">Demo. Simulated at live prices; nothing is bought.</div>
@@ -87,15 +87,15 @@ li small{display:block;color:var(--dim);font-size:12px}
   <div class="scrim"></div>
   <div class="sheet">
     <div class="grab"></div>
-    <h2>Lock in $231.98</h2>
+    <h2>Lock in $233.47</h2>
     <p class="lead">Keep the ticket. Whatever happens, you end with at least this.</p>
     <div class="ends">
-      <div><small>If Kansas City Chiefs win</small><b>$517.58</b><small>was $3,570</small></div>
-      <div><small>If they don't</small><b>$231.98</b><small>was $0</small></div>
+      <div><small>If Kansas City Chiefs win</small><b>$519.07</b><small>was $3,570</small></div>
+      <div><small>If they don't</small><b>$233.47</b><small>was $0</small></div>
     </div>
-    <div class="now"><span>Paid to you now</span><b>$53.48</b></div>
-    <p class="vs">Your ask is $210.00 with no bids. The lock's worst case is $21.98 more than your ask.</p>
-    <div class="cta">Lock in $231.98 &middot; take $53.48 now</div>
+    <div class="now"><span>Paid to you now</span><b>$54.97</b></div>
+    <p class="vs">Your ask is $210.00 with no bids. The lock's worst case is $23.47 more than your ask.</p>
+    <div class="cta">Lock in $233.47 &middot; take $54.97 now</div>
     <p class="fine">Terms lock at your tap. The credit you see is the credit you get. Settles with your ticket.</p>
   </div>
 </div></div>
@@ -103,8 +103,8 @@ li small{display:block;color:var(--dim);font-size:12px}
 <div class="caption">
   <h3>What you render</h3>
   <p>One GET per listing returns the quote; you draw one button from it. The sheet, the pricing and the settlement are ours. Nothing to pay, nothing to hold.</p>
-  <div class="mono">GET /api/quote?listing=ORD_c4ae3d93 &nbsp;(example shape)<br />&rarr; { "worstCents": 23198, "bestCents": 51758,<br />&nbsp;&nbsp;&nbsp;&nbsp;"creditCents": 5348, "floorCents": 5,<br />&nbsp;&nbsp;&nbsp;&nbsp;"capCents": 13, "contracts": 3570 }</div>
+  <div class="mono">GET /api/quote?listing=ORD_c4ae3d93 &nbsp;(example shape)<br />&rarr; { "worstCents": 23347, "bestCents": 51907,<br />&nbsp;&nbsp;&nbsp;&nbsp;"creditCents": 5497, "floorCents": 5,<br />&nbsp;&nbsp;&nbsp;&nbsp;"capCents": 13, "contracts": 3570 }</div>
   <p style="margin-top:12px">The other side is bought on the venue that lists the leg in the same second the seller taps, so we carry no outcome risk; the take is stated on every quote and already netted out of the credit. Nothing for the seller to manage afterwards: it settles with the ticket.</p>
-  <p class="foot">Mockup for WagerWire. Listing as read on your public page; prices as of 2026-10-09 04:13 UTC. The live demo with the same button on exchange positions: atticus-event-demo-cross-venue.onrender.com/?brand=WagerWire</p>
+  <p class="foot">Mockup for WagerWire. Listing as read on your public page; prices as of 2026-10-09 17:34 UTC. The live demo with the same button on exchange positions: atticus-event-demo-cross-venue.onrender.com/?brand=WagerWire</p>
 </div>
 </div></div></body></html>

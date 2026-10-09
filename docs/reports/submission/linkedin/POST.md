@@ -19,7 +19,7 @@ python3 docs/reports/submission/linkedin/build_timeline.py
 
 ## Before posting
 
-1. Open `https://atticus-event-shadow.onrender.com/` and read the numbers off the top of the page (events settled, floor saves, our P&L, take booked, gap). The post text below uses the 2026-10-09 04:30 UTC numbers; replace them with the morning's. The graphic has no count on it on purpose, so it does not go stale.
+1. Open `https://atticus-event-shadow.onrender.com/` and read the numbers off the top of the page (events settled, floor saves, our P&L, take booked, gap). The post text below uses the 2026-10-09 17:35 UTC numbers; replace them with the morning's. The graphic has no count on it on purpose, so it does not go stale.
 2. The record page must still say "Live prices; nothing is bought." The graphic says "in shadow"; the two must agree.
 3. Open the demo `https://atticus-event-demo-cross-venue.onrender.com/` in a private window. No brand parameter, no slate key: this is the public link, and it must show the generic shell, never a partner's name.
 4. Confirm the two dates only you can confirm: that you were pitching retail options in 2023 and event protection in late 2025. The investor emails in the outreach playbook say "eighteen months ago we started building" (from August 2026, so early 2025). Pitching in 2023 and building from 2025 are compatible; be ready to say so in one sentence if asked.
@@ -31,7 +31,7 @@ python3 docs/reports/submission/linkedin/build_timeline.py
 >
 > We pitched the crypto retail step in 2023, when the consensus was that options would never be retail. We pitched the event retail step in late 2025, before the institutional step had formed. Both arrived on schedule.
 >
-> So we built the third step for event markets: one tap on a position, a floor and a credit, hedged leg for leg on the venue that lists the other side. It runs in shadow on live prices, and every quote has been public since September 12. As of this morning: 693 events settled, 296 floor saves, and our P&L equals the take we booked to the cent, because the hedge carries no outcome risk.
+> So we built the third step for event markets: one tap on a position, a floor and a credit, hedged leg for leg on the venue that lists the other side. It runs in shadow on live prices, and every quote has been public since September 12. As of this morning: 695 events settled, 297 floor saves, and our P&L equals the take we booked to the cent, because the hedge carries no outcome risk.
 >
 > Dates, sources, the demo and the public record are in the first comment.
 
