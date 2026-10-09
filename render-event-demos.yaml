@@ -82,10 +82,11 @@ services:
       # Embed demo (/): host names honoured on ?brand=, comma-separated; anything
       # else renders as EVENT_X_EMBED_BRAND. These names carry a colourway and a
       # light/dark shell (scripts/eventProtectEmbedHtml.ts BRAND_PRESETS); any
-      # other allowlisted name gets the generic slate palette. Partner console
+      # other allowlisted name gets the generic slate palette. Sportsbook presets
+      # hide the crypto strikes (?kind=all shows them). Partner console
       # (/partner, operator token) shows the host's revenue share at this percent.
       - key: EVENT_X_BRAND_ALLOWLIST
-        value: "ProphetX,Novig,Sporttrade,Kalshi,Polymarket,DraftKings,FanDuel,PrizePicks,Underdog,Robinhood,Coinbase,Kraken"
+        value: "ProphetX,Novig,Sporttrade,Kalshi,Polymarket,DraftKings,FanDuel,PrizePicks,Underdog,Robinhood,Coinbase,Kraken,WagerWire,Wire Markets"
       # What the front door (/) calls the host when the link carries no ?brand=.
       - key: EVENT_X_EMBED_BRAND
         value: "Your Exchange"

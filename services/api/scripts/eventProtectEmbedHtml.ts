@@ -38,6 +38,8 @@ export interface EmbedOptions {
   brand: string;
   /** the shell; when absent the brand preset decides */
   skin?: "light" | "dark" | null;
+  /** games only (true), the whole board (false); when absent the brand preset decides */
+  sportsOnly?: boolean | null;
   /** the server's minimum-credit rule, mirrored in the page script so a stale client never shows a tier the server dropped */
   minCredit?: MinimumCreditRule;
   /** the track record's URL: the phone's one link, and the first partner link on desktop */
@@ -80,6 +82,12 @@ export interface BrandTheme {
   accent: string;
   accentInk: string;
   skin: "light" | "dark";
+  /**
+   * The host lists games and nothing else, so the shell hides the crypto strikes the board also
+   * carries: a Bitcoin row inside a sportsbook's positions list is not their app. `?kind=all`
+   * on the link overrides for a demo of the whole board.
+   */
+  sportsOnly?: boolean;
 }
 
 /** The generic host: a neutral slate that belongs to no brand, on a light shell. */
@@ -93,13 +101,17 @@ export const GENERIC_THEME: BrandTheme = { accent: "#3D4F73", accentInk: "#fffff
 export const BRAND_PRESETS: Readonly<Record<string, BrandTheme>> = {
   kalshi: { accent: "#0EA870", accentInk: "#ffffff", skin: "light" },
   polymarket: { accent: "#2D6BFF", accentInk: "#ffffff", skin: "dark" },
-  prophetx: { accent: "#52CEA6", accentInk: "#11162C", skin: "dark" },
-  novig: { accent: "#C6FF3D", accentInk: "#0f1115", skin: "dark" },
-  sporttrade: { accent: "#22C55E", accentInk: "#0f1115", skin: "dark" },
-  draftkings: { accent: "#53D337", accentInk: "#0f1115", skin: "dark" },
-  fanduel: { accent: "#1493FF", accentInk: "#ffffff", skin: "dark" },
-  prizepicks: { accent: "#8000FF", accentInk: "#ffffff", skin: "dark" },
-  underdog: { accent: "#F5C400", accentInk: "#0f1115", skin: "dark" },
+  prophetx: { accent: "#52CEA6", accentInk: "#11162C", skin: "dark", sportsOnly: true },
+  novig: { accent: "#C6FF3D", accentInk: "#0f1115", skin: "dark", sportsOnly: true },
+  sporttrade: { accent: "#22C55E", accentInk: "#0f1115", skin: "dark", sportsOnly: true },
+  draftkings: { accent: "#53D337", accentInk: "#0f1115", skin: "dark", sportsOnly: true },
+  fanduel: { accent: "#1493FF", accentInk: "#ffffff", skin: "dark", sportsOnly: true },
+  prizepicks: { accent: "#8000FF", accentInk: "#ffffff", skin: "dark", sportsOnly: true },
+  underdog: { accent: "#F5C400", accentInk: "#0f1115", skin: "dark", sportsOnly: true },
+  // WagerWire (US bet marketplace) and Wire Markets (its international prediction market): the
+  // same charcoal shell and mint accent as wagerwire.com; both list games only.
+  wagerwire: { accent: "#02FDDD", accentInk: "#0f1115", skin: "dark", sportsOnly: true },
+  wiremarkets: { accent: "#02FDDD", accentInk: "#0f1115", skin: "dark", sportsOnly: true },
   robinhood: { accent: "#00C805", accentInk: "#0f1115", skin: "light" },
   coinbase: { accent: "#0052FF", accentInk: "#ffffff", skin: "light" },
   kraken: { accent: "#7132F5", accentInk: "#ffffff", skin: "dark" },
@@ -126,6 +138,7 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const brand = escapeHtml(opts.brand);
   const theme = brandTheme(opts.brand);
   const dark = (opts.skin ?? theme.skin) === "dark";
+  const sportsOnly = opts.sportsOnly ?? theme.sportsOnly ?? false;
   const initial = escapeHtml(brandInitial(opts.brand));
   const minCredit = opts.minCredit ?? DEFAULT_MINIMUM_CREDIT;
   const trackRecordUrl = escapeHtml(opts.trackRecordUrl || DEFAULT_TRACK_RECORD_URL);
@@ -297,6 +310,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   var TIER_ORDER=['tight','balanced','wide'];
   var TIER_WORDS={tight:'Safest',balanced:'Balanced',wide:'Most upside'};
   var MIN_CREDIT_CENTS=${Math.round(minCredit.cents)},MIN_CREDIT_BPS=${Number(minCredit.bpsOfStake)};
+  var SPORTS_ONLY=${sportsOnly ? "true" : "false"};
   var SID=(function(){
     try{
       var k='epx_sid',v=sessionStorage.getItem(k);
@@ -502,6 +516,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   function load(){
     fetch('/api/showcase',{cache:'no-store'}).then(function(x){return x.json()}).then(function(p){
       var rows=(p&&p.board)||[];
+      if(SPORTS_ONLY)rows=rows.filter(function(r){return r.kind!=='crypto'});
       S.rows=rows;S.byTicker={};
       for(var i=0;i<rows.length;i++)S.byTicker[rows[i].kalshiTicker]=rows[i];
       S.err=rows.length?null:(p&&p.error)||null;
