@@ -56,7 +56,7 @@ Subject: Ten of your listings, with a firm number next to each ask
 >
 > I read ten listings on your public pages last night. All ten show no bid. Eight are a parlay with every leg hit but one, which makes each a single position on one future, and that is the shape we price.
 >
-> The attached page puts our number beside each ask: what the market says the ticket is worth, what the seller is guaranteed if they tap, what they end with if the leg hits, and the credit paid at the tap. On the DraftKings Chiefs 2-leg, listed at $210 with no bid, the lock pays $231.98 whatever happens and $517.58 if Kansas City wins. Five of the ten quote; the page says plainly why the other five do not.
+> The attached page puts our number beside each ask: what the market says the ticket is worth, what the seller is guaranteed if they tap, what they end with if the leg hits, and the credit paid at the tap. On the DraftKings Chiefs 2-leg, listed at $210 with no bid, the lock pays $233.47 whatever happens and $519.07 if Kansas City wins. Five of the ten quote; the page says plainly why the other five do not.
 >
 > Every lock is hedged leg for leg on Polymarket or Kalshi in the same second, so we carry no outcome risk and earn a stated take, whichever way the game goes. You said your power users already hedge remaining legs on Kalshi. This is that, inside your app, for every seller who lists and hears nothing.
 >
@@ -73,7 +73,7 @@ Replace the two bracketed links with the URLs from step 3. Nothing else in the m
 
 ## LinkedIn version (if email bounces)
 
-> Zach, I priced ten of WagerWire's public listings last night, all with no bid. On the DraftKings Chiefs 2-leg listed at $210, our lock pays $231.98 whatever happens, $517.58 if KC wins, hedged on Polymarket in the same second. One page, your brand, live prices: [demo link]. Twenty minutes?
+> Zach, I priced ten of WagerWire's public listings last night, all with no bid. On the DraftKings Chiefs 2-leg listed at $210, our lock pays $233.47 whatever happens, $519.07 if KC wins, hedged on Polymarket in the same second. One page, your brand, live prices: [demo link]. Twenty minutes?
 
 ## If they reply
 

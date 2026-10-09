@@ -1,13 +1,13 @@
 # 10 of your listings, priced
 
-Prepared for WagerWire. Prices as of 2026-10-09 04:13 UTC. Listings as a person read them on your public pages; nothing was read by machine and nothing was bought.
+Prepared for WagerWire. Prices as of 2026-10-09 17:34 UTC. Listings as a person read them on your public pages; nothing was read by machine and nothing was bought.
 
 **5 of 10 quoted.** 1 of the 5 locks pay more in their worst case than the seller is asking. 10 of 10 listings show no bid.
 
 | Ticket | Last leg | Ask | Fair now | Lock: worst / if it hits | Paid now |
 |---|---|---|---|---|---|
-| Caesars 2-leg parlay, pays $3,825, Feb 2027 | Kansas City Chiefs, 26/27 Super Bowl Winner | $525.00 | $374.85 | $248.00 / $554.00 | $56.75 |
-| DraftKings 2-leg parlay, pays $3,570, Feb 2027 | Kansas City Chiefs, 26/27 Super Bowl Winner | $210.00 | $349.86 | $231.98 (beats the ask) / $517.58 | $53.48 |
+| Caesars 2-leg parlay, pays $3,825, Feb 2027 | Kansas City Chiefs, 26/27 Super Bowl Winner | $525.00 | $386.33 | $250.14 / $556.14 | $58.89 |
+| DraftKings 2-leg parlay, pays $3,570, Feb 2027 | Kansas City Chiefs, 26/27 Super Bowl Winner | $210.00 | $360.57 | $233.47 (beats the ask) / $519.07 | $54.97 |
 | Fanatics 2-leg parlay, pays $1,925, Feb 2027 | Buffalo Bills, 26/27 Super Bowl Winner | $168.00 | $221.38 | $149.40 / $303.40 | $14.65 |
 | FanDuel 3-leg parlay, pays $1,854, Feb 2027 | Buffalo Bills, 26/27 Super Bowl Winner | $183.75 | $213.21 | $143.88 / $292.20 | $14.10 |
 | DraftKings 5-leg parlay, pays $451.01, Nov 2026 | Los Angeles Dodgers, 2026 World Series Champions | $210.00 | $191.68 | $166.28 / $215.89 | $8.43 |
@@ -23,9 +23,9 @@ Pays: the ticket's full payout if the last leg hits, as listed, with the month i
 
 ## Each quoted ticket
 
-**Caesars 2-leg parlay, pays $3,825.00 if Kansas City Chiefs wins (26/27 Super Bowl Winner).** Ask $525.00, 40% above fair; no bid. The market prices the leg at 9.8c, so the ticket is worth $374.85 tonight. Lock: floor 5c, cap 13c on 3,825 contracts, $56.75 paid now. The seller ends with $248.00 if the leg misses and $554.00 if it hits. Hedge: 3,519 shares of Kansas City Chiefs NO at 90.3c average, $3,176.45 outlay carried 5 months ($79.42). Our take $15.13, already netted out of the credit.
+**Caesars 2-leg parlay, pays $3,825.00 if Kansas City Chiefs wins (26/27 Super Bowl Winner).** Ask $525.00, 36% above fair; no bid. The market prices the leg at 10.1c, so the ticket is worth $386.33 tonight. Lock: floor 5c, cap 13c on 3,825 contracts, $58.89 paid now. The seller ends with $250.14 if the leg misses and $556.14 if it hits. Hedge: 3,519 shares of Kansas City Chiefs NO at 90.2c average, $3,174.14 outlay carried 5 months ($79.36). Our take $15.36, already netted out of the credit.
 
-**DraftKings 2-leg parlay, pays $3,570.00 if Kansas City Chiefs wins (26/27 Super Bowl Winner).** Ask $210.00, 40% below fair; no bid. The market prices the leg at 9.8c, so the ticket is worth $349.86 tonight. Lock: floor 5c, cap 13c on 3,570 contracts, $53.48 paid now. The seller ends with $231.98 if the leg misses and $517.58 if it hits; the worst case is $21.98 more than the ask. Hedge: 3,284 shares of Kansas City Chiefs NO at 90.3c average, $2,964.14 outlay carried 5 months ($74.11). Our take $14.17, already netted out of the credit.
+**DraftKings 2-leg parlay, pays $3,570.00 if Kansas City Chiefs wins (26/27 Super Bowl Winner).** Ask $210.00, 42% below fair; no bid. The market prices the leg at 10.1c, so the ticket is worth $360.57 tonight. Lock: floor 5c, cap 13c on 3,570 contracts, $54.97 paid now. The seller ends with $233.47 if the leg misses and $519.07 if it hits; the worst case is $23.47 more than the ask. Hedge: 3,284 shares of Kansas City Chiefs NO at 90.2c average, $2,962.53 outlay carried 5 months ($74.07). Our take $14.33, already netted out of the credit.
 
 **Fanatics 2-leg parlay, pays $1,925.00 if Buffalo Bills wins (26/27 Super Bowl Winner).** Ask $168.00, 24% below fair; no bid. The market prices the leg at 11.5c, so the ticket is worth $221.38 tonight. Lock: floor 7c, cap 15c on 1,925 contracts, $14.65 paid now. The seller ends with $149.40 if the leg misses and $303.40 if it hits. Hedge: 1,771 shares of Buffalo Bills NO at 89.0c average, $1,576.19 outlay carried 5 months ($39.41). Our take $6.00, already netted out of the credit.
 

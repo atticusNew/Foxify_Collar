@@ -1,5 +1,5 @@
 {
-  "at": "2026-10-09T04:13:39.097Z",
+  "at": "2026-10-09T17:34:37.496Z",
   "marketplace": "WagerWire",
   "carryBpsPerMonth": 50,
   "minimumCredit": {
@@ -8,7 +8,7 @@
   },
   "rows": [
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_0d984ff3",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_0d984ff3-5587-4f04-91ee-005cbbf30ffb",
       "readAt": "2026-10-09T02:52:00.000Z",
@@ -39,35 +39,35 @@
       "unprotectedCents": 0,
       "venue": "polymarket",
       "markCents": 10,
-      "markMilli": 98,
-      "fairCents": 37485,
-      "askVsFairBps": 4006,
+      "markMilli": 101,
+      "fairCents": 38633,
+      "askVsFairBps": 3589,
       "marketTitle": "Pro Football: 2027 Champion: Will the Kansas City Chiefs win the 2027 NFL league championship?",
       "quote": {
         "ok": true,
         "rule": "highest worst case",
         "floorCents": 5,
         "capCents": 13,
-        "creditCents": 5675,
-        "grossCreditCents": 15130,
-        "takeCents": 1513,
-        "carryCents": 7942,
+        "creditCents": 5889,
+        "grossCreditCents": 15361,
+        "takeCents": 1536,
+        "carryCents": 7936,
         "monthsCarried": 5,
         "feesCents": 0,
         "hedgeSharesMilli": 3519000,
-        "hedgeCostCents": 317645,
-        "hedgeAvgPriceMilli": 903,
-        "hedgeWorstPriceMilli": 905,
+        "hedgeCostCents": 317414,
+        "hedgeAvgPriceMilli": 902,
+        "hedgeWorstPriceMilli": 902,
         "hedgeTokenId": "67568786173941702599227613885622963618166350967368584648718149385526580902390",
-        "lockWorstCents": 24800,
-        "lockBestCents": 55400,
-        "evCostBps": 2716,
+        "lockWorstCents": 25014,
+        "lockBestCents": 55614,
+        "evCostBps": 2660,
         "candidatesConsidered": 19
       },
       "lockBeatsAsk": false
     },
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_c4ae3d93",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_c4ae3d93-de14-4f42-a4b2-ed8c7410623a",
       "readAt": "2026-10-09T02:52:00.000Z",
@@ -98,35 +98,35 @@
       "unprotectedCents": 0,
       "venue": "polymarket",
       "markCents": 10,
-      "markMilli": 98,
-      "fairCents": 34986,
-      "askVsFairBps": -3998,
+      "markMilli": 101,
+      "fairCents": 36057,
+      "askVsFairBps": -4176,
       "marketTitle": "Pro Football: 2027 Champion: Will the Kansas City Chiefs win the 2027 NFL league championship?",
       "quote": {
         "ok": true,
         "rule": "highest worst case",
         "floorCents": 5,
         "capCents": 13,
-        "creditCents": 5348,
-        "grossCreditCents": 14176,
-        "takeCents": 1417,
-        "carryCents": 7411,
+        "creditCents": 5497,
+        "grossCreditCents": 14337,
+        "takeCents": 1433,
+        "carryCents": 7407,
         "monthsCarried": 5,
         "feesCents": 0,
         "hedgeSharesMilli": 3284400,
-        "hedgeCostCents": 296414,
-        "hedgeAvgPriceMilli": 903,
-        "hedgeWorstPriceMilli": 905,
+        "hedgeCostCents": 296253,
+        "hedgeAvgPriceMilli": 902,
+        "hedgeWorstPriceMilli": 902,
         "hedgeTokenId": "67568786173941702599227613885622963618166350967368584648718149385526580902390",
-        "lockWorstCents": 23198,
-        "lockBestCents": 51758,
-        "evCostBps": 2702,
+        "lockWorstCents": 23347,
+        "lockBestCents": 51907,
+        "evCostBps": 2660,
         "candidatesConsidered": 19
       },
       "lockBeatsAsk": true
     },
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_6bedcc35",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_6bedcc35-434c-404f-bd34-f19470898da8",
       "readAt": "2026-10-09T02:52:00.000Z",
@@ -185,7 +185,7 @@
       "lockBeatsAsk": false
     },
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_7d4f2257",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_7d4f2257-6f30-4d93-8861-5e96d97c177a",
       "readAt": "2026-10-09T02:52:00.000Z",
@@ -248,7 +248,7 @@
       "lockBeatsAsk": false
     },
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_a3765aef",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_a3765aef-9464-4933-847d-64bec18c7df2",
       "readAt": "2026-10-09T02:52:00.000Z",
@@ -319,7 +319,7 @@
       "lockBeatsAsk": false
     },
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_06e7b309",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_06e7b309-a5f0-4c11-8b5b-c8bf37eeaf21",
       "readAt": "2026-10-09T02:52:00.000Z",
@@ -357,7 +357,7 @@
       "lockBeatsAsk": null
     },
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_4a19ce5e",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_4a19ce5e-e3cd-4dd1-b20a-8b387aa0647c",
       "readAt": "2026-10-09T02:52:00.000Z",
@@ -395,7 +395,7 @@
       "lockBeatsAsk": null
     },
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_6527ef16",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_6527ef16-c0ba-46bc-a147-a4026526a754",
       "readAt": "2026-10-09T02:52:00.000Z",
@@ -433,7 +433,7 @@
       "lockBeatsAsk": null
     },
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_3b87a911",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_3b87a911-6538-4c04-80f2-99bf775eb024",
       "readAt": "2026-10-09T02:52:00.000Z",
@@ -480,7 +480,7 @@
       "lockBeatsAsk": null
     },
     {
-      "at": "2026-10-09T04:13:39.097Z",
+      "at": "2026-10-09T17:34:37.496Z",
       "id": "ORD_9c74315f",
       "sourceUrl": "https://www.wagerwire.com/for-sale/ORD_9c74315f-b2ac-4ce0-8ec6-b0c414aafed4",
       "readAt": "2026-10-09T02:52:00.000Z",
