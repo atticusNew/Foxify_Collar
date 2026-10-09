@@ -25,6 +25,7 @@ import {
 } from "../src/eventCollar/crossVenue/listingQuote";
 import { lastLegCollars, quoteLastLeg } from "../src/eventCollar/crossVenue/lastLeg";
 import { DEFAULT_CROSS_CONFIG, type PmBook } from "../src/eventCollar/crossVenue/types";
+import { pickMockRow, renderListingMockHtml } from "../scripts/wagerwireListingMockHtml";
 
 const NOW = Date.parse("2026-10-09T03:00:00Z");
 
@@ -211,4 +212,38 @@ test("the page: every listing on one table, quoted rows beside the ask, refusals
   assert.ok(md.includes("Michael Ting, michael@example.com."));
   assert.ok(!md.includes("\u2014"), "no em dash");
   assert.ok(!/wallet/i.test(md));
+});
+
+test("the mockup: drawn from the row whose lock beats the ask; the phone shows the seller's two endings and the credit, never the mechanics", () => {
+  const beats = quoteListing(listing(), state(98, 902), NOW);
+  assert.equal(beats.lockBeatsAsk, true, "fixture: the lock beats the $210 ask");
+  const under = quoteListing(listing({ id: "ORD_under", listedPriceCents: 300_000 }), state(98, 902), NOW);
+  assert.equal(under.lockBeatsAsk, false);
+  const refused = quoteListing(listing({ id: "ORD_refused" }), state(98, 902, { closed: true }), NOW);
+  assert.equal(pickMockRow([under, refused, beats])?.id, "ORD_test", "the lock that beats the ask leads");
+  assert.equal(pickMockRow([under, refused])?.id, "ORD_under", "else the quoted row with the highest worst case");
+  assert.equal(pickMockRow([refused]), null);
+  assert.throws(() => renderListingMockHtml(refused, { brand: "WagerWire", atIso: "2026-10-09T03:00:00.000Z" }), /must be quoted/);
+
+  const html = renderListingMockHtml(beats, { brand: "WagerWire", atIso: "2026-10-09T03:00:00.000Z" });
+  const q = beats.quote as ListingLockTerms;
+  const phone = html.slice(html.indexOf('<div class="row">'), html.indexOf('<div class="caption">'));
+  const caption = html.slice(html.indexOf('<div class="caption">'));
+  assert.ok(phone.includes(`Lock in ${fmtUsd(q.lockWorstCents)}`), "the button names the guaranteed amount");
+  assert.ok(phone.includes(`${fmtUsd(q.creditCents)} paid to you now`), "and the credit");
+  assert.ok(phone.includes(`<b>${fmtUsd(q.lockBestCents)}</b><small>was $3,570</small>`), "the hit ending against the naked payout");
+  assert.ok(phone.includes(`<b>${fmtUsd(q.lockWorstCents)}</b><small>was $0</small>`), "the miss ending against zero");
+  assert.ok(phone.includes(`The lock's worst case is ${fmtUsd(q.lockWorstCents - 21000)} more than your ask.`));
+  assert.ok(phone.includes("Pays $3,570.00") && phone.includes("<b>$210.00</b>") && phone.includes("Feb 15, 2027") && phone.includes("2 &middot; 1 hit"), "the listing as the marketplace shows it");
+  assert.ok(phone.includes("Argentina vs Switzerland") && phone.includes("Kansas City Chiefs"));
+  assert.ok(!/polymarket|kalshi|hedge|collar|writer|contracts/i.test(phone), "retail copy is outcomes, not mechanics");
+  assert.ok(caption.includes(`"worstCents": ${q.lockWorstCents}`) && caption.includes(`"creditCents": ${q.creditCents}`) && caption.includes(`"contracts": 3570`), "the partner caption carries the quote shape");
+  assert.ok(caption.includes("?brand=WagerWire"));
+  assert.ok(!html.includes("\u2014"), "no em dash");
+  assert.ok(!/wallet|foxify/i.test(html));
+  assert.ok(!html.includes("<script"), "static: no script");
+
+  const withBid = renderListingMockHtml(quoteListing(listing({ highestBidCents: 15000 }), state(98, 902), NOW), { brand: "Wire Markets", atIso: "2026-10-09T03:00:00.000Z" });
+  assert.ok(withBid.includes("<small>Highest bid</small><b>$150.00</b>") && withBid.includes("a high bid of $150.00"));
+  assert.ok(withBid.includes("<i>W</i>Wire Markets") && withBid.includes("?brand=Wire%20Markets"));
 });

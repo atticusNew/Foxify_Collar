@@ -30,6 +30,7 @@ import {
   refuseListing,
 } from "../src/eventCollar/crossVenue/listingQuote";
 import { getEventMarketsBySlug, getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
+import { pickMockRow, renderListingMockHtml } from "./wagerwireListingMockHtml";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(here, "..", "..", "..");
@@ -103,6 +104,17 @@ async function main(): Promise<void> {
   const quoted = rows.filter((r) => r.quote.ok).length;
   console.log(`\n${quoted}/${rows.length} quoted · ${rows.filter((r) => r.lockBeatsAsk).length} locks beat the ask · wrote ${jsonPath} and ${mdPath}`);
   console.log(`PDF: python3 -c "import sys; sys.path.insert(0,'scripts'); from md_to_pdf import convert; convert('${mdPath.replace(`${REPO_ROOT}/`, "")}','${mdPath.replace(`${REPO_ROOT}/`, "").replace(/\.md$/, ".pdf")}')"  (from the repo root)`);
+
+  // The UI mockup: the lock on the lead listing's card, and the sheet after the tap.
+  const mockRow = pickMockRow(rows);
+  if (mockRow) {
+    const mockPath = join(outDir, "listing_lock_mockup.html");
+    writeFileSync(mockPath, renderListingMockHtml(mockRow, { brand: marketplace, atIso: nowIso }), "utf8");
+    console.log(`mockup: ${mockRow.id} → ${mockPath}`);
+    console.log(`PNG: google-chrome --headless=new --disable-gpu --hide-scrollbars --user-data-dir=/tmp/chrome-mock-profile --window-size=1240,900 --screenshot=${mockPath.replace(/\.html$/, ".png")} file://${mockPath}`);
+  } else {
+    console.log("mockup: no quoted row to draw");
+  }
 }
 
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
