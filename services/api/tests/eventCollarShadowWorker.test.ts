@@ -333,6 +333,12 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.ok(slateHtml.includes("?brand=Wire%20Markets"), "the demo link opens in the venue's brand");
     assert.ok(!slateHtml.includes("op-secret"));
     assert.equal((await fetch(`${base}/slate/wiremarkets`, op)).status, 200, "the operator token opens any slate");
+    const { slateLinkKey } = await import("../src/eventCollar/crossVenue/venueSlate");
+    const wmLink = slateLinkKey("share-key-1", "wiremarkets");
+    assert.equal((await fetch(`${base}/slate/wiremarkets?k=${wmLink}`)).status, 200, "the slate's derived link key (what the branded demo carries) opens it");
+    assert.equal((await fetch(`${base}/slate/sporttrade?k=${wmLink}`)).status, 404, "and opens no other slate");
+    const linkedHtml = await (await fetch(`${base}/slate/wiremarkets?k=${wmLink}`)).text();
+    assert.ok(linkedHtml.includes(`href="/slate/wiremarkets.csv?k=${wmLink}"`), "the CSV link carries the key the visitor arrived with");
     const otherSlate = await (await fetch(`${base}/slate/sporttrade?k=share-key-1`)).text();
     assert.ok(otherSlate.includes("Protection on the Sporttrade slate") && otherSlate.includes("no positions on these leagues yet"), "an MLB-only slate has none of this record");
     const slateCsv = await fetch(`${base}/slate/wiremarkets.csv?k=share-key-1`);

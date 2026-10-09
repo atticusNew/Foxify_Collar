@@ -105,7 +105,7 @@ import {
   summarizeLastLeg,
   type LastLegTickReport,
 } from "../src/eventCollar/crossVenue/lastLeg";
-import { findVenueSlate, parseVenueSlates, slateKeyOk, slateLeaguesOnRecord, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
+import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
 import type { ScanOptions, ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -690,7 +690,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       // A prospect's name renders only on a link the operator sent: share key or operator token,
       // and only for a configured slate. Anything else is the same 404 as an unknown path.
       const slate = findVenueSlate(venueSlates, slateMatch[1]);
-      const keyed = slateKeyOk(SLATE_KEY, url.searchParams.get("k"));
+      const keyed = slate !== null && slateAccessOk(SLATE_KEY, slate.slug, url.searchParams.get("k"));
       if (!slate || !(keyed || operator)) {
         sendJson(res, 404, { ok: false, error: "not found" });
         return;

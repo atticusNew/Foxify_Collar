@@ -18,7 +18,17 @@ import {
   type LastLegRecord,
   type LastLegTicketRecord,
 } from "../src/eventCollar/crossVenue/lastLeg";
-import { findVenueSlate, onSlate, parseVenueSlates, slateKeyOk, slateLeaguesOnRecord, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
+import {
+  findVenueSlate,
+  onSlate,
+  parseVenueSlates,
+  slateAccessOk,
+  slateKeyOk,
+  slateLeaguesOnRecord,
+  slateLinkKey,
+  slatePositions,
+  slateSlugOf,
+} from "../src/eventCollar/crossVenue/venueSlate";
 import { loadShadowPositions, summarizeShadow, type ShadowOpenRecord, type ShadowRecord } from "../src/eventCollar/crossVenue/shadowLedger";
 import { renderSlateHtml } from "../scripts/eventShadowHtml";
 import { DEFAULT_CROSS_CONFIG, type PmBook } from "../src/eventCollar/crossVenue/types";
@@ -133,6 +143,24 @@ test("slateKeyOk: fail closed without a configured key; exact match only", () =>
   assert.equal(slateKeyOk("abc", "abcd"), false);
   assert.equal(slateKeyOk(" abc ", "abc"), true, "whitespace around the configured value is not part of the key");
   assert.equal(slateKeyOk("abc", "abc"), true);
+});
+
+test("slate link keys: derived per slate from the share key, so a branded demo link opens its own slate and no other", () => {
+  const wm = slateLinkKey("share-secret", "wiremarkets");
+  assert.match(wm, /^[0-9a-f]{24}$/);
+  assert.equal(slateLinkKey("share-secret", "WireMarkets"), wm, "slug case does not change the key");
+  assert.notEqual(slateLinkKey("share-secret", "sporttrade"), wm);
+  assert.notEqual(slateLinkKey("other-secret", "wiremarkets"), wm);
+  assert.equal(slateLinkKey(undefined, "wiremarkets"), "", "no share key: no link key");
+  assert.equal(slateLinkKey("  ", "wiremarkets"), "");
+  assert.equal(slateAccessOk("share-secret", "wiremarkets", "share-secret"), true, "the share key opens every slate");
+  assert.equal(slateAccessOk("share-secret", "wiremarkets", wm), true, "the slate's own key opens it");
+  assert.equal(slateAccessOk("share-secret", "sporttrade", wm), false, "and not another slate");
+  assert.equal(slateAccessOk(undefined, "wiremarkets", ""), false, "no key configured: nothing opens, not even an empty key");
+  assert.equal(slateAccessOk("share-secret", "wiremarkets", null), false);
+  assert.equal(slateSlugOf("Wire Markets"), "wiremarkets");
+  assert.equal(slateSlugOf("Crypto.com"), "cryptocom");
+  assert.equal(slateSlugOf("  "), "");
 });
 
 // ── lock versus sell ──────────────────────────────────────────────────────────

@@ -90,6 +90,14 @@ services:
       # What the front door (/) calls the host when the link carries no ?brand=.
       - key: EVENT_X_EMBED_BRAND
         value: "Your Exchange"
+      # A branded shell (?brand=Wire Markets) links its "record" to that venue's slate on
+      # the shadow service, /slate/<slug>?k=<derived key>, instead of the full public
+      # record. The derived key is HMAC(EVENT_SHADOW_SLATE_KEY, slug), so this must be
+      # the SAME value as EVENT_SHADOW_SLATE_KEY on atticus-event-shadow (copy it by
+      # hand in the dashboard; Render does not share generated values across
+      # services). Unset, branded shells fall back to the full public record.
+      - key: EVENT_SHADOW_SLATE_KEY
+        sync: false
       # Where the public /partner page's "Talk to us" goes.
       - key: EVENT_X_CONTACT_EMAIL
         value: "michael@atticustrade.com"

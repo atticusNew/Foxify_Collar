@@ -19,6 +19,7 @@
  * An empty league list means every sports league on the record.
  */
 
+import { createHmac } from "node:crypto";
 import type { ShadowPosition } from "./shadowLedger";
 
 export interface VenueSlate {
@@ -95,4 +96,27 @@ export function slateKeyOk(configured: string | undefined, presented: string | n
   let diff = 0;
   for (let i = 0; i < want.length; i += 1) diff |= want.charCodeAt(i) ^ got.charCodeAt(i);
   return diff === 0;
+}
+
+/**
+ * A per-slate link key derived from the share key: the branded demo can link to its own slate
+ * page without carrying the share key itself, and a leaked link opens that one slate and no
+ * other. Empty when no share key is configured.
+ */
+export function slateLinkKey(configured: string | undefined, slug: string): string {
+  const secret = (configured ?? "").trim();
+  if (!secret) return "";
+  return createHmac("sha256", secret).update(`slate:${slug.toLowerCase()}`).digest("hex").slice(0, 24);
+}
+
+/** The share key or the slate's own link key opens a slate page. */
+export function slateAccessOk(configured: string | undefined, slug: string, presented: string | null | undefined): boolean {
+  if (slateKeyOk(configured, presented)) return true;
+  const link = slateLinkKey(configured, slug);
+  return link !== "" && slateKeyOk(link, presented);
+}
+
+/** A brand's slate slug: lower-case letters and digits only ("Wire Markets" -> "wiremarkets"). */
+export function slateSlugOf(brand: string): string {
+  return brand.toLowerCase().replace(/[^a-z0-9]/g, "");
 }

@@ -32,6 +32,7 @@ import { ATTICUS_WORDMARK_GOLD_DATA_URI } from "./eventProtectLogo";
 import type { CrossLedgerSummary } from "../src/eventCollar/crossVenue/crossLedger";
 import type { EventFunnelSummary } from "../src/eventCollar/crossVenue/eventFunnel";
 import { DEFAULT_MINIMUM_CREDIT, type MinimumCreditRule } from "../src/eventCollar/crossVenue/minimumCredit";
+import { slateLinkKey, slateSlugOf } from "../src/eventCollar/crossVenue/venueSlate";
 
 export interface EmbedOptions {
   /** the host's display name, already checked against the allowlist */
@@ -44,6 +45,8 @@ export interface EmbedOptions {
   minCredit?: MinimumCreditRule;
   /** the track record's URL: the phone's one link, and the first partner link on desktop */
   trackRecordUrl?: string;
+  /** the record link is the brand's own slate page (label it so) */
+  recordIsSlate?: boolean;
 }
 
 const DEFAULT_TRACK_RECORD_URL = "https://atticus-event-shadow.onrender.com";
@@ -124,6 +127,20 @@ export function brandTheme(brand: string): BrandTheme {
 }
 
 /**
+ * Where a shell's "Track record" goes. A partner brand with the shadow's share key configured
+ * (EVENT_SHADOW_SLATE_KEY, the same value on both services) links to its own slate page, carrying
+ * the slate's derived link key, so the Wire Markets shell opens the Wire Markets record and
+ * nothing else. The placeholder host, or no key, links to the public record.
+ */
+export function brandRecordUrl(trackRecordUrl: string, brand: string, slateKey: string | undefined, defaultBrand = DEFAULT_EMBED_BRAND): { url: string; slate: boolean } {
+  const base = (trackRecordUrl || DEFAULT_TRACK_RECORD_URL).replace(/\/+$/, "");
+  const slug = slateSlugOf(brand);
+  const link = slateLinkKey(slateKey, slug);
+  if (!slug || !link || brand.trim().toLowerCase() === defaultBrand.trim().toLowerCase()) return { url: base, slate: false };
+  return { url: `${base}/slate/${slug}?k=${link}`, slate: true };
+}
+
+/**
  * MINIMUM CREDIT lives server-side (src/eventCollar/crossVenue/minimumCredit.ts) and is applied in
  * the scan, so what reaches this page has already been filtered. The page script re-checks with the
  * same numbers (passed in via `minCredit`) purely as a belt: a cached page can never show a tier the
@@ -142,6 +159,9 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const initial = escapeHtml(brandInitial(opts.brand));
   const minCredit = opts.minCredit ?? DEFAULT_MINIMUM_CREDIT;
   const trackRecordUrl = escapeHtml(opts.trackRecordUrl || DEFAULT_TRACK_RECORD_URL);
+  const recordLabel = opts.recordIsSlate ? `${brand} record` : "Track record";
+  // a partner's shell keeps its brand on the partner pages it links to
+  const brandQ = opts.brand.trim().toLowerCase() === DEFAULT_EMBED_BRAND.toLowerCase() ? "" : `?brand=${encodeURIComponent(opts.brand)}`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -283,7 +303,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     <li>Refuses when the market can't fund a credit</li>
   </ul>
   <div class="try">Tap <b>Protect</b> on any row &rarr;</div>
-  <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">Track record</a><a href="/partner">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a></div>
+  <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">${recordLabel}</a><a href="/partner${brandQ}">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a></div>
   <div class="foot">Demonstration only. Simulated positions at live prices; nothing is bought.</div>
 </aside>
 <div class="phone" id="phone">
@@ -293,7 +313,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   </div>
   <div class="tabs"><span class="on">Positions</span><span data-tab="Markets">Markets</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
-  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><a href="${trackRecordUrl}">Track record</a></div>
+  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><a href="${trackRecordUrl}">${recordLabel}</a></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="scrim" id="scrim"></div>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-h">
