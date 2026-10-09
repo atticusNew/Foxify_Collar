@@ -710,8 +710,9 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const summary = summarizeShadow(onSlate);
       const { settled, open } = splitPositions(onSlate);
       const tickets = loadLastLegTickets(LASTLEG_PATH);
-      const routes = Object.keys(summary.routeSplit).map((r) => HEDGE_VENUE_NAMES[r]).filter(Boolean);
-      const hedgeVenues = routes.length ? [...new Set(routes)] : Object.values(HEDGE_VENUE_NAMES);
+      // the books wired today, the ones the record has used first; the per-row route is in the CSV
+      const used = Object.keys(summary.routeSplit).map((r) => HEDGE_VENUE_NAMES[r]).filter(Boolean);
+      const hedgeVenues = [...new Set([...used, ...Object.values(HEDGE_VENUE_NAMES)])];
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" });
       res.end(
         renderSlateHtml({

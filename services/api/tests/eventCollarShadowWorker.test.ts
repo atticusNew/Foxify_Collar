@@ -326,7 +326,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.equal(slatePage.headers.get("x-robots-tag"), "noindex, nofollow");
     const slateHtml = await slatePage.text();
     assert.ok(slateHtml.includes("Protection on the Wire Markets slate"));
-    assert.ok(slateHtml.includes("Hedged leg for leg on Polymarket."), "named from the routes on the slate's record");
+    assert.ok(slateHtml.includes("Hedged leg for leg on Polymarket and Kalshi."), "the books wired, the one this record used first");
     assert.ok(slateHtml.includes('<div class="n green">1</div><div class="l">games settled</div>'), "the NFL position is on the slate");
     assert.ok(slateHtml.includes("Kansas City Chiefs"));
     assert.ok(slateHtml.includes('href="/slate/wiremarkets.csv?k=share-key-1"'), "the CSV link carries the share key, not the operator token");
