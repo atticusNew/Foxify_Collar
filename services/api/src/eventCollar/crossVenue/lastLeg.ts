@@ -15,8 +15,8 @@
  * What is simulated: the tickets. Polymarket publishes no list of live combo
  * tickets (polymarketCombos.ts), so tickets are built here the way a bettor
  * builds them: 2 to 5 favourites across distinct games, a fixed stake, the
- * latest-starting game as the last leg. Nothing is bought; this module cannot
- * trade.
+ * latest-starting game as the last leg, and no game on more than a few
+ * undecided tickets at once. Nothing is bought; this module cannot trade.
  *
  * The compressed position. A ticket of S shares (1 share pays $1 when every leg
  * wins) whose decided legs settled to a product P (1 when all won outright; a
@@ -41,6 +41,7 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { type CollarSearchResult, enumerateCollars, refuseUnfunded, selectTiers } from "./collarSearch";
 import { walkPmAsks } from "./crossVenuePricer";
+import { pickWords } from "./pickWords";
 import type { ComboLegMarket, ComboLegStatus } from "./polymarketCombos";
 import { writerPayouts } from "./shadowLedger";
 import type { CollarTerms, CrossHedgeLeg, CrossRefusal, CrossSearchConfig, PmBook, ProtectionTier, TakeRule } from "./types";
@@ -58,6 +59,8 @@ export interface LastLegConfig {
   ticketsPerSize: number;
   /** ceiling on tickets that have not reached an outcome */
   maxOpen: number;
+  /** ceiling on undecided tickets that share one game: one upset must not empty the whole board */
+  maxPerGame: number;
   /** a leg is a favourite priced inside this band, milli */
   favMinMilli: number;
   favMaxMilli: number;
@@ -82,6 +85,7 @@ export const DEFAULT_LAST_LEG_CONFIG: LastLegConfig = {
   legCounts: [2, 3, 4, 5],
   ticketsPerSize: 2,
   maxOpen: 40,
+  maxPerGame: 3,
   favMinMilli: 550,
   favMaxMilli: 900,
   minGapMs: 4 * 3_600_000,
@@ -115,6 +119,7 @@ export function lastLegConfigFromEnv(env: NodeJS.ProcessEnv): LastLegConfig {
     legCounts: counts.length ? [...new Set(counts)].sort((a, b) => a - b) : d.legCounts,
     ticketsPerSize: Math.max(0, Math.round(numOr(env.EVENT_LASTLEG_TICKETS_PER_SIZE, d.ticketsPerSize))),
     maxOpen: Math.max(1, Math.round(numOr(env.EVENT_LASTLEG_MAX_OPEN, d.maxOpen))),
+    maxPerGame: Math.max(1, Math.round(numOr(env.EVENT_LASTLEG_MAX_PER_GAME, d.maxPerGame))),
     favMinMilli: favMin,
     favMaxMilli: Math.min(999, Math.max(favMin, numOr(env.EVENT_LASTLEG_FAV_MAX_MILLI, d.favMaxMilli))),
     minGapMs: Math.max(0, numOr(env.EVENT_LASTLEG_MIN_GAP_MS, d.minGapMs)),
@@ -249,6 +254,13 @@ export interface LastLegTicket extends Omit<LastLegTicketRecord, "type"> {
 
 const HASH_LEN = 12;
 
+/** A leg in a bettor's words: "Cowboys vs Buccaneers", "Brighton & Hove Albion to win"; an unparsed title rides after a dot. */
+export function legWords(leg: Pick<TicketLeg, "outcome" | "title">): string {
+  const w = pickWords(leg.outcome, leg.title);
+  if (!w.versus) return w.outcome;
+  return /^(vs|at) /.test(w.versus) ? `${w.outcome} ${w.versus}` : `${w.outcome} · ${w.versus}`;
+}
+
 /** Deterministic ticket id from its legs and sides: the same ticket is never built twice. */
 export function ticketIdFor(legs: ReadonlyArray<Pick<TicketLeg, "conditionId" | "side">>): string {
   const key = legs
@@ -328,7 +340,9 @@ export function legCandidates(
  * on the ledger are never rebuilt, and `ticketsPerSize` is a ceiling on the
  * undecided tickets of each size: a new one is built only once an earlier one
  * has settled, busted or voided, so the record is not filled with near-copies
- * of the same slate every tick.
+ * of the same slate every tick. `maxPerGame` caps how many undecided tickets
+ * may share one game: the biggest market would otherwise sit on every ticket,
+ * and one upset would bust the whole board in one tick.
  */
 export function buildTickets(
   cands: readonly LegCandidate[],
@@ -341,15 +355,20 @@ export function buildTickets(
   const byStart = [...cands].sort((a, b) => a.gameStartMs - b.gameStartMs || b.volumeUsd - a.volumeUsd);
   const seen = new Set(existing.map((t) => t.ticketId));
   const undecidedBySize = new Map<number, number>();
+  const gameUses = new Map<string, number>();
   for (const t of existing) {
-    if (t.status === "open" || t.status === "last_leg") undecidedBySize.set(t.legs.length, (undecidedBySize.get(t.legs.length) ?? 0) + 1);
+    if (t.status !== "open" && t.status !== "last_leg") continue;
+    undecidedBySize.set(t.legs.length, (undecidedBySize.get(t.legs.length) ?? 0) + 1);
+    for (const l of t.legs) gameUses.set(l.conditionId, (gameUses.get(l.conditionId) ?? 0) + 1);
   }
+  const hasRoom = (c: LegCandidate): boolean => (gameUses.get(c.conditionId) ?? 0) < cfg.maxPerGame;
   for (const n of cfg.legCounts) {
     let made = undecidedBySize.get(n) ?? 0;
     for (let i = byStart.length - 1; i >= 0 && made < cfg.ticketsPerSize && out.length < room; i -= 1) {
       const last = byStart[i];
+      if (!hasRoom(last)) continue;
       const others = byStart
-        .filter((c) => c.conditionId !== last.conditionId && c.gameStartMs + cfg.minGapMs <= last.gameStartMs)
+        .filter((c) => c.conditionId !== last.conditionId && hasRoom(c) && c.gameStartMs + cfg.minGapMs <= last.gameStartMs)
         .sort((a, b) => b.volumeUsd - a.volumeUsd)
         .slice(0, n - 1)
         .sort((a, b) => a.gameStartMs - b.gameStartMs);
@@ -358,6 +377,7 @@ export function buildTickets(
       const id = ticketIdFor(legs);
       if (seen.has(id)) continue;
       seen.add(id);
+      for (const l of legs) gameUses.set(l.conditionId, (gameUses.get(l.conditionId) ?? 0) + 1);
       const price = comboPriceMilli(legs.map((l) => l.priceMilli));
       out.push({
         type: "ticket",
@@ -905,7 +925,7 @@ export function lockVersusSell(tickets: readonly LastLegTicket[]): LockVsSellSum
       ticketId: t.ticketId,
       quotedAt: q.at,
       size: t.size,
-      lastLeg: `${last.outcome} · ${last.title}`,
+      lastLeg: legWords(last),
       league: last.league,
       minutesToStart: q.minutesToStart,
       contracts: q.contracts,

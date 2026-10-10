@@ -20,6 +20,7 @@
 
 import type { LastLegSummary, LastLegTicket, LockVsSellSummary } from "./lastLeg";
 import { compressedContracts } from "./lastLeg";
+import { pickWords } from "./pickWords";
 
 /** Why the lock was not offered, in the bettor's words (outcomes, never mechanics: no "hedge" on the phone). Keys are CrossRefusalCode. */
 export const PARLAY_REFUSAL_WORDS: Readonly<Record<string, string>> = {
@@ -38,11 +39,30 @@ export const PARLAY_REFUSAL_WORDS: Readonly<Record<string, string>> = {
 
 export const refusalWords = (code: string): string => PARLAY_REFUSAL_WORDS[code] ?? code.replace(/_/g, " ");
 
+/** The same refusals at row length: one short clause after "No lock right now:"; the full words sit a tap away. */
+export const PARLAY_REFUSAL_SHORT: Readonly<Record<string, string>> = {
+  credit_nonpositive: "market could not fund a credit",
+  protection_too_rich: "protection too costly",
+  credit_too_small: "credit under our minimum",
+  pm_book_empty: "other side not on offer",
+  pm_book_too_thin: "not enough on offer",
+  kalshi_book_empty: "other side not on offer",
+  kalshi_book_too_thin: "not enough on offer",
+  market_too_close_to_start: "too close to kickoff",
+  mark_out_of_range: "odds outside our range",
+  no_matched_market: "no verified pairing",
+  resolution_mismatch: "settlement rules differ",
+};
+
+export const refusalShort = (code: string): string => PARLAY_REFUSAL_SHORT[code] ?? refusalWords(code);
+
 export type ParlayPickState = "hit" | "miss" | "open" | "partial";
 
 export interface ParlayPick {
-  /** the side the bettor needs, by name */
+  /** the side the bettor needs, in a bettor's words: "Cowboys", "Brighton & Hove Albion to win" */
   outcome: string;
+  /** the rest of the matchup, to read after the outcome: "vs Buccaneers", "at Padres"; "" when the venue names no opponent */
+  versus: string;
   /** the game as the venue titles it */
   game: string;
   league: string;
@@ -89,6 +109,8 @@ export interface ParlayTicket {
   lock: ParlayLock | null;
   /** at the last pick without a lock: the reason in plain words; null before the first attempt */
   lockRefused: string | null;
+  /** the same reason at row length; null when lockRefused is */
+  lockRefusedShort: string | null;
   result: ParlayResult | null;
   /** when the ticket left play: settled, busted or voided */
   decidedAt: string | null;
@@ -134,7 +156,7 @@ const pickState = (value: number | undefined): ParlayPickState =>
 
 const stateOf = (t: LastLegTicket): ParlayState => (t.status === "last_leg" ? "last_pick" : t.status);
 
-/** The refusal a bettor is told: the reason seen most often on this ticket. */
+/** The refusal a bettor is told: the code seen most often on this ticket. */
 function mostCommonRefusal(refusals: Record<string, number>): string | null {
   let best: string | null = null;
   let n = 0;
@@ -144,17 +166,21 @@ function mostCommonRefusal(refusals: Record<string, number>): string | null {
       n = count;
     }
   }
-  return best === null ? null : refusalWords(best);
+  return best;
 }
 
 export function retailParlayTicket(t: LastLegTicket): ParlayTicket {
-  const picks: ParlayPick[] = t.legs.map((l) => ({
-    outcome: l.outcome,
-    game: l.title,
-    league: l.league,
-    startsIso: l.gameStartIso,
-    state: pickState(t.legValues[l.conditionId]),
-  }));
+  const picks: ParlayPick[] = t.legs.map((l) => {
+    const w = pickWords(l.outcome, l.title);
+    return {
+      outcome: w.outcome,
+      versus: w.versus,
+      game: l.title,
+      league: l.league,
+      startsIso: l.gameStartIso,
+      state: pickState(t.legValues[l.conditionId]),
+    };
+  });
   const open = picks.filter((p) => p.state === "open");
   const nextStartIso = open.length ? open.map((p) => p.startsIso).sort()[0] : null;
   const q = t.quote;
@@ -177,6 +203,7 @@ export function retailParlayTicket(t: LastLegTicket): ParlayTicket {
       : state === "busted"
         ? { hit: false, ticketPaidCents: 0, lockPaidCents: null }
         : null;
+  const refusedCode = lock === null && state === "last_pick" && t.attempts > 0 ? mostCommonRefusal(t.refusals) : null;
   return {
     id: t.ticketId,
     builtAt: t.at,
@@ -188,7 +215,8 @@ export function retailParlayTicket(t: LastLegTicket): ParlayTicket {
     state,
     nextStartIso,
     lock,
-    lockRefused: lock === null && state === "last_pick" && t.attempts > 0 ? mostCommonRefusal(t.refusals) : null,
+    lockRefused: refusedCode === null ? null : refusalWords(refusedCode),
+    lockRefusedShort: refusedCode === null ? null : refusalShort(refusedCode),
     result,
     decidedAt: t.settledAt ?? t.bustedAt ?? (state === "void" ? (t.lastAttemptAt ?? null) : null),
   };

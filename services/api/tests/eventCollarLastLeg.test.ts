@@ -215,7 +215,7 @@ test("legCandidates: sports moneylines in the window with a favourite side; the 
 });
 
 test("buildTickets: the latest game is the last leg, the biggest earlier games fill the rest, nothing is rebuilt, caps hold", () => {
-  const cfg = { ...DEFAULT_LAST_LEG_CONFIG, legCounts: [2, 3], ticketsPerSize: 2, stakeCents: 2_000 };
+  const cfg = { ...DEFAULT_LAST_LEG_CONFIG, legCounts: [2, 3], ticketsPerSize: 2, stakeCents: 2_000, maxPerGame: 10 };
   const cands = [cand("A", SAT_13, 700, 500), cand("B", SAT_16, 650, 900, 1), cand("C", SAT_20, 800, 300), cand("D", SUN_20, 600, 1000)];
   const built = buildTickets(cands, cfg, [], iso(FRI_NOON), 10);
   // size 2: D last with B (biggest), then C last with B (A and B start >= 4h before C's 20:00); size 3: D + B + A, then C + A + B
@@ -245,6 +245,25 @@ test("buildTickets: the latest game is the last leg, the biggest earlier games f
   assert.deepEqual(refill[0].legs.map((l) => l.conditionId), ["E", "F"]);
   // A gap rule the slate cannot satisfy builds nothing.
   assert.equal(buildTickets(cands, { ...cfg, minGapMs: 48 * 3_600_000 }, [], iso(FRI_NOON), 10).length, 0);
+});
+
+test("buildTickets: no game sits on more than maxPerGame undecided tickets, counting the ones already on the ledger", () => {
+  const cands = [cand("A", SAT_13, 700, 500), cand("B", SAT_16, 650, 900, 1), cand("C", SAT_20, 800, 300), cand("D", SUN_20, 600, 1000)];
+  const legIds = (t: { legs: Array<{ conditionId: string }> }) => t.legs.map((l) => l.conditionId);
+  // Unlimited, the biggest market (B) is on every ticket: one upset there would bust the whole board.
+  const loose = buildTickets(cands, { ...DEFAULT_LAST_LEG_CONFIG, legCounts: [2], ticketsPerSize: 4, maxPerGame: 10 }, [], iso(FRI_NOON), 10);
+  assert.deepEqual(loose.map(legIds), [["B", "D"], ["B", "C"]]);
+  // Capped at one ticket per game, the second ticket takes the next market instead.
+  const capped = buildTickets(cands, { ...DEFAULT_LAST_LEG_CONFIG, legCounts: [2], ticketsPerSize: 4, maxPerGame: 1 }, [], iso(FRI_NOON), 10);
+  assert.deepEqual(capped.map(legIds), [["B", "D"], ["A", "C"]]);
+  // Tickets already in play count against the cap; decided ones do not.
+  const open = [{ ticketId: loose[0].ticketId, status: "open" as const, legs: loose[0].legs }];
+  assert.deepEqual(buildTickets(cands, { ...DEFAULT_LAST_LEG_CONFIG, legCounts: [2], ticketsPerSize: 4, maxPerGame: 1 }, open, iso(FRI_NOON), 10).map(legIds), [["A", "C"]]);
+  const busted = [{ ...open[0], status: "busted" as const }];
+  assert.deepEqual(buildTickets(cands, { ...DEFAULT_LAST_LEG_CONFIG, legCounts: [2], ticketsPerSize: 4, maxPerGame: 1 }, busted, iso(FRI_NOON), 10).map(legIds), [["B", "C"]], "the busted ticket is never rebuilt, but its games are free again: B now leads a new ticket");
+  assert.equal(DEFAULT_LAST_LEG_CONFIG.maxPerGame, 3);
+  assert.equal(lastLegConfigFromEnv({ EVENT_LASTLEG_MAX_PER_GAME: "0" }).maxPerGame, 1, "never below one");
+  assert.equal(lastLegConfigFromEnv({ EVENT_LASTLEG_MAX_PER_GAME: "2" }).maxPerGame, 2);
 });
 
 // ── the collar on the compressed position ─────────────────────────────────────
