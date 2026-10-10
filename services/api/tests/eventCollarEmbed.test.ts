@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -115,7 +116,7 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes("<title>ProphetX · Positions</title>"), "the host's name on the tab");
   assert.ok(html.includes('<div class="brand"><i>P</i>ProphetX</div>'), "and on the shell");
   assert.ok(html.includes('class="tabs"') && html.includes(">Positions</span>"), "a host positions list, not our board");
-  assert.ok(html.includes('data-tab="Markets"') && html.includes('data-tab="Activity"') && html.includes("toast('Demo: only Positions is live here.')"), "the other tabs answer with a toast, not silence");
+  assert.ok(html.includes('data-tab="Markets"') && html.includes('data-tab="Activity"') && html.includes("toast('Demo: Positions and Parlays are live here.')"), "the other tabs answer with a toast, not silence");
   assert.ok(html.includes('id="bal">Cash $412.50<'), "a plausible balance, not $0.00");
   assert.ok(html.includes("cash:41250"), "and the script starts from it");
   assert.ok(html.includes('data-protect="'), "one Protect button per row");
@@ -238,12 +239,45 @@ test("embed: the partner console reads the ledger and funnel in the host's words
   assert.ok(!html.includes("—"), "no em dash");
 });
 
-test("embed: / is the embed shell (also /embed), /board is the board; brand-gated; /partner needs the operator token", async () => {
+test("embed: / is the embed shell (also /embed), /board is the board; brand-gated; /partner needs the operator token; /api/parlays reads the record through", async () => {
+  // a stand-in for the shadow service: the demo's /api/parlays is a read-through of its public /api/shadow/parlays
+  let shadowMode: "ok" | "down" = "down";
+  let shadowHits = 0;
+  const shadow = createServer((req, res) => {
+    shadowHits += 1;
+    if (shadowMode === "down" || req.url !== "/api/shadow/parlays") {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, at: "2026-10-10T12:00:00.000Z", enabled: true, stakeCents: 2000, pricedEveryMinutes: 10, summary: { tickets: 1 }, tickets: [{ id: "ll_x", state: "open", picksOpen: 2, picks: [] }] }));
+  });
+  await new Promise<void>((r) => shadow.listen(0, "127.0.0.1", () => r()));
+  const shadowBase = `http://127.0.0.1:${(shadow.address() as AddressInfo).port}`;
+  process.env.EVENT_X_SHADOW_URL = shadowBase;
   const { server, primeScanForTests } = await import("../scripts/eventProtectXDemoService");
   primeScanForTests({ atIso: "2026-09-20T18:00:00.000Z", rows: [], fallback: null, fetchFailures: 0 });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
+    // the shadow is down and nothing is cached: an honest 503 with a retail sentence, not a stack trace
+    const cold = await fetch(`${base}/api/parlays`);
+    assert.equal(cold.status, 503);
+    assert.deepEqual(await cold.json(), { ok: false, error: "Parlays are unavailable right now." });
+    shadowMode = "ok";
+    const warm = await fetch(`${base}/api/parlays`);
+    assert.equal(warm.status, 200);
+    const warmBody = (await warm.json()) as { ok: boolean; tickets: Array<{ id: string }>; pricedEveryMinutes: number };
+    assert.equal(warmBody.ok, true);
+    assert.equal(warmBody.tickets[0].id, "ll_x", "the shadow's body, passed through untouched");
+    assert.equal(warmBody.pricedEveryMinutes, 10);
+    const hitsAfterWarm = shadowHits;
+    shadowMode = "down";
+    const cached = await fetch(`${base}/api/parlays`);
+    assert.equal(cached.status, 200, "a fresh copy is served from cache; the shadow is not asked again within the minute");
+    assert.equal(shadowHits, hitsAfterWarm);
+
     const shell = await fetch(`${base}/embed?brand=novig&skin=dark`);
     assert.equal(shell.status, 200);
     assert.match(shell.headers.get("content-type") ?? "", /text\/html/);
@@ -266,7 +300,7 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     assert.match(publicPartner.headers.get("content-type") ?? "", /text\/html/);
     const ctaHtml = await publicPartner.text();
     assert.ok(ctaHtml.includes("The console your team gets.") && ctaHtml.includes('href="mailto:michael@atticustrade.com?subject='), "the pitch and a Talk to us CTA");
-    assert.ok(ctaHtml.includes('href="https://atticus-event-shadow.onrender.com">track record</a>'), "and the track record as the soft path");
+    assert.ok(ctaHtml.includes(`href="${shadowBase}">track record</a>`), "and the track record (EVENT_X_SHADOW_URL) as the soft path");
     assert.ok(!ctaHtml.includes("your share (") && !/\$\d/.test(ctaHtml), "no numbers: the console's figures stay behind the token");
     assert.ok(!ctaHtml.includes("admin_required") && !ctaHtml.includes("token"), "nothing about tokens");
     const wrongToken = await fetch(`${base}/partner?token=nope`);
@@ -290,5 +324,6 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     assert.equal(boardLoads, 1, "/board counts as a board load");
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
+    await new Promise<void>((r) => shadow.close(() => r()));
   }
 });

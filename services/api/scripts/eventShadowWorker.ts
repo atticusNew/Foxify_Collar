@@ -105,6 +105,7 @@ import {
   summarizeLastLeg,
   type LastLegTickReport,
 } from "../src/eventCollar/crossVenue/lastLeg";
+import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
 import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
 import type { ScanOptions, ScanState } from "./eventProtectXDemoService";
 
@@ -127,7 +128,9 @@ const earlyCloseRule = earlyCloseRuleFromEnv(process.env);
 /**
  * LAST-LEG SHADOW: representative parlay tickets built from Polymarket's public combo-leg catalog,
  * tracked leg by leg, and quoted for protection at the moment every leg but the last has hit
- * (lastLeg.ts). Its own append-only ledger beside the positions ledger; operator views only.
+ * (lastLeg.ts). Its own append-only ledger beside the positions ledger. The raw tickets with their
+ * hedge legs are operator views; the retail shape (/api/shadow/parlays) and the lock-sell-hold
+ * card on the public record are public, and the demo's Parlays tab reads the former.
  */
 const LASTLEG_PATH = process.env.EVENT_LASTLEG_LEDGER_PATH || join(dirname(LEDGER_PATH), "lastleg-ledger.jsonl");
 const lastLegCfg = lastLegConfigFromEnv(process.env);
@@ -646,6 +649,29 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       });
       return;
     }
+    if (url.pathname === "/api/shadow/parlays") {
+      // PUBLIC, RETAIL SHAPE: the tickets as a bettor's app would list them (picks, state, the
+      // lock's two endings and credit, what settled paid) plus the lock-sell-hold summary. No
+      // hedge legs, take or token ids: those stay on /api/shadow/lastleg behind the operator token.
+      // The demo's Parlays tab reads this. CORS is open because the body is public already.
+      const tickets = loadLastLegTickets(LASTLEG_PATH);
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "public, max-age=60",
+        "access-control-allow-origin": "*",
+      });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          at: new Date().toISOString(),
+          enabled: lastLegCfg.enabled,
+          stakeCents: lastLegCfg.stakeCents,
+          pricedEveryMinutes: Math.round(lastLegCfg.tickMs / 60_000),
+          ...retailParlays(tickets, summarizeLastLeg(tickets), lockVersusSell(tickets)),
+        }),
+      );
+      return;
+    }
     if (url.pathname === "/api/shadow/lastleg.csv") {
       const csv = lastLegCsv(loadLastLegTickets(LASTLEG_PATH));
       res.writeHead(200, {
@@ -736,6 +762,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/" || url.pathname === "/index.html") {
       const { atIso, positions } = pageData();
       const { settled, open, closed } = splitPositions(positions);
+      const tickets = lastLegCfg.enabled ? loadLastLegTickets(LASTLEG_PATH) : null;
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(
         renderShadowHtml({
@@ -749,6 +776,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
             rfqVenues: hedgeChoice.rfqVenues,
             summary: summarizeHedgeReceipts(loadHedgeReceipts(RECEIPTS_PATH)),
           },
+          ...(tickets ? { parlays: { lockVsSell: lockVersusSell(tickets), lastLeg: summarizeLastLeg(tickets), stakeCents: lastLegCfg.stakeCents } } : {}),
         }),
       );
       return;

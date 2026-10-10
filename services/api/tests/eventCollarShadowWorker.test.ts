@@ -178,8 +178,10 @@ test("shadow ledger: stats count bytes and non-empty lines; missing file is empt
 test("shadow worker: public record vs operator views; /api/shadow/export streams the raw ledger to the operator", async () => {
   const dir = mkdtempSync(join(tmpdir(), "shadow-worker-"));
   const path = join(dir, "ledger.jsonl");
+  const lastLegPath = join(dir, "lastleg-ledger.jsonl");
   process.env.NODE_ENV = "test";
   process.env.EVENT_SHADOW_LEDGER_PATH = path;
+  process.env.EVENT_LASTLEG_LEDGER_PATH = lastLegPath;
   process.env.EVENT_X_ADMIN_TOKEN = "op-secret";
   process.env.EVENT_SHADOW_SLATES = "wiremarkets=Wire Markets:nfl,nba;sporttrade=Sporttrade:mlb";
   process.env.EVENT_SHADOW_SLATE_KEY = "share-key-1";
@@ -354,6 +356,52 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.deepEqual(healthSlates.configured.map((s) => s.slug), ["wiremarkets", "sporttrade"]);
     assert.equal("slates" in publicHealth, false, "the public health body does not list prospects");
 
+    // PARLAYS, PUBLIC: the last-leg tickets in retail shape for the demo's Parlays tab, and the
+    // lock-sell-hold card on the record. The raw tickets stay behind the operator token.
+    const emptyParlays = (await (await fetch(`${base}/api/shadow/parlays`)).json()) as { ok: boolean; tickets: unknown[]; summary: { tickets: number } };
+    assert.equal(emptyParlays.ok, true);
+    assert.deepEqual(emptyParlays.tickets, []);
+    const ll = await import("../src/eventCollar/crossVenue/lastLeg");
+    const legs = [
+      { conditionId: "A", slug: "nfl-a", title: "A game", league: "nfl", side: 0 as const, outcome: "Away", priceMilli: 700, yesTokenId: "A-t0", noTokenId: "A-t1", gameStartIso: "2026-10-10T13:00:00.000Z" },
+      { conditionId: "D", slug: "nfl-d", title: "D game", league: "nfl", side: 0 as const, outcome: "Away", priceMilli: 600, yesTokenId: "D-t0", noTokenId: "D-t1", gameStartIso: "2026-10-11T20:00:00.000Z" },
+    ];
+    const price = ll.comboPriceMilli(legs.map((l) => l.priceMilli));
+    ll.appendLastLegRecord(lastLegPath, { type: "ticket", at: "2026-10-09T12:00:00.000Z", ticketId: "ll_pub", stakeCents: 2_000, legs, comboPriceMilli: price, sharesMilli: ll.sharesFor(2_000, price) });
+    ll.appendLastLegRecord(lastLegPath, { type: "leg", at: "2026-10-10T16:00:00.000Z", ticketId: "ll_pub", conditionId: "A", valueMilli: 1000 });
+    const parlays = await fetch(`${base}/api/shadow/parlays`);
+    assert.equal(parlays.status, 200);
+    assert.equal(parlays.headers.get("access-control-allow-origin"), "*");
+    const parlayBody = (await parlays.json()) as {
+      ok: boolean;
+      enabled: boolean;
+      stakeCents: number;
+      pricedEveryMinutes: number;
+      summary: { tickets: number; atLastPick: number };
+      tickets: Array<{ id: string; state: string; picksOpen: number; picks: Array<{ state: string }>; lock: unknown; lockRefused: unknown }>;
+    };
+    assert.equal(parlayBody.ok, true);
+    assert.equal(parlayBody.enabled, true);
+    assert.equal(parlayBody.stakeCents, 2_000);
+    assert.equal(parlayBody.pricedEveryMinutes, 10);
+    assert.equal(parlayBody.summary.tickets, 1);
+    assert.equal(parlayBody.summary.atLastPick, 1);
+    assert.equal(parlayBody.tickets.length, 1);
+    assert.equal(parlayBody.tickets[0].id, "ll_pub");
+    assert.equal(parlayBody.tickets[0].state, "last_pick");
+    assert.equal(parlayBody.tickets[0].picksOpen, 1);
+    assert.deepEqual(parlayBody.tickets[0].picks.map((p) => p.state), ["hit", "open"]);
+    assert.equal(parlayBody.tickets[0].lock, null, "no moment priced yet");
+    assert.equal(parlayBody.tickets[0].lockRefused, null);
+    assert.deepEqual(forbiddenKeysIn(parlayBody), [], "no hedge legs, token ids or take in the public body");
+    assert.ok(!JSON.stringify(parlayBody).includes("D-t1"), "the hedge token never leaves the operator view");
+    const recordWithParlays = await (await fetch(`${base}/`)).text();
+    assert.ok(recordWithParlays.includes("Lock, sell or hold: the parlay moment"), "the record carries the parlay card");
+    assert.ok(recordWithParlays.includes('<div class="n">1</div><div class="l">tickets built</div>'));
+    assert.ok(recordWithParlays.includes('href="/api/shadow/parlays"'));
+    assert.ok(!recordWithParlays.includes('href="/api/shadow/lastleg"'), "the raw tickets stay an operator link");
+    assert.equal((await fetch(`${base}/api/shadow/lastleg`)).status, 403, "still gated");
+
     // FRESH START: operator only; archive, never delete. The old window stays on disk beside the new empty book.
     assert.equal((await fetch(`${base}/api/shadow/reset`, { method: "POST" })).status, 403, "reset is an operator action");
     assert.equal((await fetch(`${base}/api/shadow/reset?token=op-secret`)).status, 405, "a bare GET does nothing");
@@ -361,10 +409,13 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.equal(reset.status, 200);
     const resetBody = (await reset.json()) as { ok: boolean; archived: Array<{ from: string; to: string }> };
     assert.equal(resetBody.ok, true);
-    assert.equal(resetBody.archived.length, 1, "the ledger was archived; there were no hedge receipts to archive");
-    assert.equal(resetBody.archived[0].from, path);
-    assert.match(resetBody.archived[0].to, /ledger\.\d{4}-\d{2}-\d{2}T\d{6}Z\.archived\.jsonl$/);
-    assert.equal(readFileSync(resetBody.archived[0].to, "utf8"), raw, "the archive is the old ledger byte for byte");
+    assert.equal(resetBody.archived.length, 2, "the positions ledger and the last-leg ledger were archived; there were no hedge receipts to archive");
+    const archivedLedger = resetBody.archived.find((a) => a.from === path);
+    assert.ok(archivedLedger);
+    assert.match(archivedLedger.to, /ledger\.\d{4}-\d{2}-\d{2}T\d{6}Z\.archived\.jsonl$/);
+    assert.equal(readFileSync(archivedLedger.to, "utf8"), raw, "the archive is the old ledger byte for byte");
+    assert.ok(resetBody.archived.some((a) => a.from === lastLegPath), "the parlay tickets start over with the book");
+    assert.deepEqual(((await (await fetch(`${base}/api/shadow/parlays`)).json()) as { tickets: unknown[] }).tickets, []);
     assert.equal(existsSync(path), false, "and the live path is empty until the next scan");
     assert.equal(((await (await fetch(`${base}/healthz`)).json()) as { positions: number }).positions, 0);
     assert.equal(((await (await fetch(`${base}/api/shadow`)).json()) as { summary: { settledCount: number } }).summary.settledCount, 0, "the public record starts over");
