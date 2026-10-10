@@ -296,7 +296,7 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   const html = renderEventEmbedHtml({ brand: "Wire Markets" });
   assert.ok(html.includes('<span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span>'), "a live tab, not a toast");
   assert.ok(html.includes("fetch('/api/parlays',{cache:'no-store'})"));
-  assert.ok(html.includes("Protect unlocks at your last pick"), "two or more picks open");
+  assert.ok(html.includes("Lock in opens at your last pick"), "two or more picks open");
   assert.ok(html.includes("Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button>"), "one pick open with a priced lock");
   assert.ok(html.includes("No lock right now: '+esc(t.lockRefusedShort||t.lockRefused)+'</button>"), "one pick open, refused: one clause on the row");
   assert.ok(html.includes("function openWhySheet(id)") && html.includes("<h2 id=\"sh-h\">No lock right now</h2>") && html.includes("esc(t.lockRefused.charAt(0).toUpperCase()+t.lockRefused.slice(1))"), "the full reason a tap away");
