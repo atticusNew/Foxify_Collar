@@ -119,22 +119,22 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes('data-tab="Markets"') && html.includes('data-tab="Activity"') && html.includes("toast('Demo: Positions and Parlays are live here.')"), "the other tabs answer with a toast, not silence");
   assert.ok(html.includes('id="bal">Cash $412.50<'), "a plausible balance, not $0.00");
   assert.ok(html.includes("cash:41250"), "and the script starts from it");
-  assert.ok(html.includes('data-protect="'), "one Protect button per row");
+  assert.ok(html.includes('data-protect="') && html.includes("</svg>Lock in</button>"), "one Lock in button per row");
   assert.ok(html.includes('id="sheet"') && html.includes('role="dialog"'), "the sheet is a dialog over the host");
   assert.ok(html.includes("protection by") && html.includes("data:image/png;base64"), "the sheet carries our wordmark, inlined");
   assert.ok(html.includes(".sheet .eyebrow img{height:20px;display:block}"), "the wordmark in Atticus gold, 20px, full strength: brand colour, legible on the sheet");
   assert.ok(!html.includes("brightness(0)"), "never recoloured");
   assert.ok(html.includes(".pitch img{height:24px;display:block;margin-bottom:22px}"), "24px on the desktop pitch");
   assert.ok(!html.includes("data:image/jpeg"), "the black-tile mark is gone from the embed");
-  assert.ok(html.includes("Protect this position"), "same grammar as the board");
+  assert.ok(html.includes("Lock in this position"), "the sheet is titled with the bettor's verb");
   assert.ok(html.includes(">if it loses<") && html.includes(">paid now<") && html.includes(">if it wins<"), "three tiles, three outcomes");
   assert.ok(html.includes('<div class="was">was $0</div>') && html.includes("<div class=\"was\">was '+usd0(100*n)+'</div>"), "each outcome tile shows what it was without protection");
-  assert.ok(html.includes("Protect · +'+usd(t.creditCents)+' now"), "the button says what you get");
+  assert.ok(html.includes("Lock in · +'+usd(t.creditCents)+' now"), "the button says what you get");
   assert.ok(html.includes("function reshape(n,F,C,K){return {kept:n*(C-F)/100, cashCents:F*n+K"), "the reshape identity stays in code");
   assert.ok(html.includes("ends <b>'+usd(p.floorTotal)+'</b> or <b>'+usd(p.capTotal)+'</b> · <b>'+usd(p.creditCents)+'</b> paid now"), "a protected row reads as two endings and the credit");
   assert.ok(html.includes("' contracts · ends $0 or '+usd0(100*r.contracts)+'"), "an unprotected row reads as two endings too");
   assert.ok(!html.includes("contracts</b> kept") && !html.includes("set aside"), "no contracts-kept or cash-set-aside mechanics on the row");
-  assert.ok(html.includes("&#x2713; Protected"), "protected badge");
+  assert.ok(html.includes("&#x2713; Locked in") && html.includes('<h2 id="sh-h">Locked in</h2>'), "locked-in badge and done state");
   assert.ok(html.includes('">reset · demo only</button>'), "the reset says it is demo only");
   assert.ok(html.includes('<button class="closeb" data-close="\'+esc(r.kalshiTicker)+\'">close early</button>'), "a protected row offers close early");
   assert.ok(html.includes('<div class="lock">locked at your tap · an early exit is a new trade at live prices</div>'), "a protected row states the lock");
@@ -174,6 +174,12 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
     assert.ok(!new RegExp(`\\b${leak}\\b`).test(phone.replace(/protection by/g, "").replace(/'tight'|'wide'|tight:|wide:|offered\.tight|offered\.wide/g, "")), `"${leak}" is not on the embedded page as copy`);
   }
   assert.ok(!html.includes("—"), "no em dash in any copy");
+  // "Protect" is the name of the line (Earn & Protect), never the bettor's verb: on a positions list it reads as the house
+  // conceding its product needs protecting. The phone says "Lock in"; the sheet eyebrow "protection by" names us, not the tap.
+  const phoneCopy = phone.replace(/Earn &amp; Protect|Earn & Protect|protection by|data-protect|protectedBy|\.protected|' protected'|confirmProtect|protect_\w+|protects\.\w+|pos protected/g, "");
+  assert.ok(!/\bProtect(ed)?\b/.test(phoneCopy), "no Protect/Protected as copy on the phone");
+  assert.ok(!/without protection|positions to protect|Protection is only/.test(phoneCopy), "the lock, not protection, in the phone's sentences");
+  assert.ok(html.includes("Tap <b>Lock in</b> on any row"), "the pitch uses the same verb");
   const dark = renderEventEmbedHtml({ brand: "Your Exchange", skin: "dark" });
   assert.ok(dark.includes("--bg:#0f1115"), "dark skin flips the host shell");
   assert.ok(dark.includes(".sheet{position:fixed") && dark.includes("background:#fff;color:var(--ep-ink)"), "the sheet keeps its own look in a dark host");
@@ -232,6 +238,7 @@ test("embed: the partner console reads the ledger and funnel in the host's words
   assert.ok(html.includes("not enough depth on the market's No side</span><b>1</b>"));
   assert.ok(html.includes("<span>ceiling on cost of protection</span><b>3.00% <i>of expected value</i></b>"));
   assert.ok(html.includes("<span>embedded shell loads, 7 days</span><b>2</b>"), "embed loads counted apart from the board");
+  assert.ok(html.includes("<span>Lock in taps (all pages)</span>"), "the console counts taps by the bettor's verb");
   assert.ok(html.includes("we price and hedge <i>your venue executes and settles</i>"), "who does what, stated");
   assert.ok(!html.includes("quote-only"), "not a pricer");
   assert.ok(html.includes("data:image/png;base64") && html.includes(".topbar img{height:18px;display:block}"), "the gold wordmark on the console bar");
