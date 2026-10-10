@@ -577,7 +577,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   function parlayId(id){return String(id||'').toUpperCase()}
   /* "Cowboys vs Buccaneers": the side in ink, the rest of the matchup faint; soccer picks arrive as "Brighton to win" with nothing after */
   function pickHtml(p){
-    var v=p.versus?(/^(vs|at) /.test(p.versus)?' ':' &middot; ')+esc(p.versus):'';
+    var vs=p.versus==null?p.game:p.versus,v=vs?(/^(vs|at) /.test(vs)?' ':' &middot; ')+esc(vs):'';
     return '<div class="pick '+esc(p.state)+'"><i>'+PICK_MARK[p.state]+'</i><span><b>'+esc(p.outcome)+'</b>'+v+'</span><em>'+esc(p.state==='open'?fmtEt(p.startsIso):p.state)+'</em></div>';
   }
   function picksHtml(t){var h='<div class="picks">';for(var i=0;i<t.picks.length;i++)h+=pickHtml(t.picks[i]);return h+'</div>'}

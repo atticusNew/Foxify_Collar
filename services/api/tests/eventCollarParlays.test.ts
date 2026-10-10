@@ -313,7 +313,8 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(!html.includes("publishes no list"), "the 'venue publishes no list of real ones' sentence is off the phone");
   assert.ok(html.includes("from the live book, '+L.hoursBefore+'h before the game"), "the quote carries its time");
   // the picks: the side in ink, the matchup after it; the leagues of the ticket, not just the last pick's
-  assert.ok(html.includes("<span><b>'+esc(p.outcome)+'</b>'+v+'</span>") && html.includes("/^(vs|at) /.test(p.versus)"));
+  assert.ok(html.includes("<span><b>'+esc(p.outcome)+'</b>'+v+'</span>") && html.includes("/^(vs|at) /.test(vs)"));
+  assert.ok(html.includes("var vs=p.versus==null?p.game:p.versus"), "a record that predates `versus` still shows the game title");
   assert.ok(!html.includes("last pick\";") && !html.includes("· last pick"), "no duplicate 'last pick' suffix on the row");
   assert.ok(html.includes("function leaguesOf(t)") && html.includes("(lg?' &middot; '+lg:'')"));
   // the list: In play, then a collapsed Settled group of one-line rows that expand on tap
