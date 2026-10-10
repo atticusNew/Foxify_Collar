@@ -18,7 +18,7 @@ One Letter page for a visual reader who wants the gist in a skim and the whole t
 
 The PDF, plus the two links already printed on it:
 
-- Demo: https://atticus-event-demo-cross-venue.onrender.com/ (add `?tab=parlays` for the parlays tab)
+- Demo: https://event.earnandprotect.xyz/ (add `?tab=parlays` for the parlays tab)
 - Track record: https://atticus-event-shadow.onrender.com/
 
 If the conversation is in a chat rather than email, `atticus_mockup.png` carries the same picture without opening a file.

@@ -28,7 +28,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RECORD = "https://atticus-event-shadow.onrender.com"
-DEMO = "https://atticus-event-demo-cross-venue.onrender.com"
+DEMO = "https://event.earnandprotect.xyz"
 
 GOLD = "#C9A227"
 GREEN = "#00B67A"
