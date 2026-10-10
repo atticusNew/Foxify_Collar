@@ -159,6 +159,8 @@ services:
       # gives it up to twenty rows across the week's slate while staying under EVENT_LASTLEG_MAX_OPEN.
       - key: EVENT_LASTLEG_TICKETS_PER_SIZE
         value: "5"
+      # No game on more than three undecided tickets at once (EVENT_LASTLEG_MAX_PER_GAME, default 3):
+      # the biggest market would otherwise sit on every ticket and one upset would bust the whole board.
       # Venue slates: the record cut to one venue's leagues with its name on the page, at
       # /slate/<slug>?k=<EVENT_SHADOW_SLATE_KEY> (and /slate/<slug>.csv). One slate per
       # semicolon, slug=Name:leagues; an empty league list is every sports league. Reached

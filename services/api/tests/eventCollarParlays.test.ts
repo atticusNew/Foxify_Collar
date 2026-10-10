@@ -17,7 +17,9 @@ import {
   type LastLegRecord,
   type LastLegTicketRecord,
 } from "../src/eventCollar/crossVenue/lastLeg";
-import { PARLAY_REFUSAL_WORDS, refusalWords, retailParlayTicket, retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
+import { PARLAY_REFUSAL_SHORT, PARLAY_REFUSAL_WORDS, refusalShort, refusalWords, retailParlayTicket, retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
+import { pickWords, shortClub } from "../src/eventCollar/crossVenue/pickWords";
+import { legWords } from "../src/eventCollar/crossVenue/lastLeg";
 import { EVENT_ACTIONS, isEventAction, isValidTicker } from "../src/eventCollar/crossVenue/eventFunnel";
 import { forbiddenKeysIn } from "../src/eventCollar/retailShowcase";
 import { summarizeShadow } from "../src/eventCollar/crossVenue/shadowLedger";
@@ -133,7 +135,7 @@ test("retailParlayTicket: picks with their marks, the three row states, the lock
   assert.equal(open.lockRefused, null);
   assert.equal(open.result, null);
   assert.equal(open.paysCents, compressedContracts(tickets.find((t) => t.ticketId === "ll_open")!.sharesMilli, 1000) * 100, "whole contracts, the basis the lock and the settled lines use");
-  assert.deepEqual(open.picks[0], { outcome: "Away", game: "A game", league: "nfl", startsIso: iso(SAT_13), state: "hit" });
+  assert.deepEqual(open.picks[0], { outcome: "Away", versus: "A game", game: "A game", league: "nfl", startsIso: iso(SAT_13), state: "hit" });
 
   const atLast = by.ll_last;
   assert.equal(atLast.state, "last_pick");
@@ -155,11 +157,13 @@ test("retailParlayTicket: picks with their marks, the three row states, the lock
   assert.equal(refused.state, "last_pick");
   assert.equal(refused.lock, null);
   assert.equal(refused.lockRefused, "no one is offering the other side of the last pick right now", "the refusal in the bettor's words, not the code");
+  assert.equal(refused.lockRefusedShort, "other side not on offer", "the same reason at row length");
 
   const pending = by.ll_pending;
   assert.equal(pending.state, "last_pick");
   assert.equal(pending.lock, null);
   assert.equal(pending.lockRefused, null, "no attempt yet: nothing to explain");
+  assert.equal(pending.lockRefusedShort, null);
 
   const busted = by.ll_busted;
   assert.equal(busted.state, "busted");
@@ -214,13 +218,43 @@ test("retailParlays: at the last pick first (priced before refused), then open b
   assert.equal(empty.summary.settled.identityHolds, null);
 });
 
-test("refusal words: every refusal code the collar search can return has retail words; unknown codes read as words, not snake_case", () => {
+test("refusal words: every refusal code the collar search can return has retail words, long and short; unknown codes read as words, not snake_case", () => {
   for (const code of ["credit_nonpositive", "protection_too_rich", "credit_too_small", "pm_book_empty", "pm_book_too_thin", "market_too_close_to_start", "mark_out_of_range", "no_matched_market", "resolution_mismatch", "kalshi_book_empty", "kalshi_book_too_thin"]) {
     assert.ok(PARLAY_REFUSAL_WORDS[code], code);
-    assert.ok(!/_/.test(PARLAY_REFUSAL_WORDS[code]));
-    assert.ok(!/polymarket|kalshi|token|hedge|writer|book/i.test(PARLAY_REFUSAL_WORDS[code]), `${code}: no venue or mechanics in the bettor's words`);
+    assert.ok(PARLAY_REFUSAL_SHORT[code], code);
+    assert.ok(!/_/.test(PARLAY_REFUSAL_WORDS[code]) && !/_/.test(PARLAY_REFUSAL_SHORT[code]));
+    assert.ok(!/polymarket|kalshi|token|hedge|writer|book/i.test(PARLAY_REFUSAL_WORDS[code] + PARLAY_REFUSAL_SHORT[code]), `${code}: no venue or mechanics in the bettor's words`);
+    assert.ok(PARLAY_REFUSAL_SHORT[code].length <= 32, `${code}: the short form fits one row clause`);
+    assert.ok(PARLAY_REFUSAL_SHORT[code].length < PARLAY_REFUSAL_WORDS[code].length || PARLAY_REFUSAL_SHORT[code] === PARLAY_REFUSAL_WORDS[code], code);
   }
   assert.equal(refusalWords("some_new_code"), "some new code");
+  assert.equal(refusalShort("some_new_code"), "some new code", "no short form: the long words, never the code");
+});
+
+test("pick words: team picks read 'Cowboys vs Buccaneers' and 'Dodgers at Padres'; soccer Yes/No markets read 'Brighton & Hove Albion to win'; anything else keeps the venue's title", () => {
+  assert.deepEqual(pickWords("Cowboys", "Buccaneers vs. Cowboys"), { outcome: "Cowboys", versus: "vs Buccaneers" });
+  assert.deepEqual(pickWords("Buccaneers", "Buccaneers vs. Cowboys"), { outcome: "Buccaneers", versus: "vs Cowboys" });
+  assert.deepEqual(pickWords("Dodgers", "Dodgers at Padres"), { outcome: "Dodgers", versus: "at Padres" });
+  assert.deepEqual(pickWords("Padres", "Dodgers at Padres"), { outcome: "Padres", versus: "vs Dodgers" });
+  assert.deepEqual(pickWords("No", "Will Brighton & Hove Albion FC win on 2026-10-10?"), { outcome: "Brighton & Hove Albion not to win", versus: "" });
+  assert.deepEqual(pickWords("Yes", "Will Manchester United FC win on 2026-10-10?"), { outcome: "Manchester United to win", versus: "" });
+  assert.deepEqual(pickWords("Yes", "Will AFC Bournemouth win on 2026-10-11?"), { outcome: "Bournemouth to win", versus: "" });
+  assert.deepEqual(pickWords("Away", "A game"), { outcome: "Away", versus: "A game" }, "an outcome that is not a side of the title keeps the title");
+  assert.deepEqual(pickWords("Yes", "Will it rain?"), { outcome: "Yes", versus: "Will it rain?" }, "a Yes/No that is not a win market is left alone");
+  assert.equal(shortClub("Brighton & Hove Albion FC"), "Brighton & Hove Albion");
+  assert.equal(shortClub("FC Barcelona"), "Barcelona");
+  assert.equal(shortClub("Inter Miami CF"), "Inter Miami");
+  assert.equal(legWords({ outcome: "Cowboys", title: "Buccaneers vs. Cowboys" }), "Cowboys vs Buccaneers");
+  assert.equal(legWords({ outcome: "No", title: "Will Brighton & Hove Albion FC win on 2026-10-10?" }), "Brighton & Hove Albion not to win");
+  // the retail pick and the record row both go through it
+  const t = ticketRec("ll_words", [["A", 700, 0, SAT_13], ["B", 650, 1, SUN_20]]);
+  t.legs[0].outcome = "Cowboys";
+  t.legs[0].title = "Buccaneers vs. Cowboys";
+  t.legs[1].outcome = "No";
+  t.legs[1].title = "Will Brighton & Hove Albion FC win on 2026-10-11?";
+  const retail = retailParlayTicket(replayLastLeg(lines([t]))[0]);
+  assert.deepEqual(retail.picks.map((p) => [p.outcome, p.versus]), [["Cowboys", "vs Buccaneers"], ["Brighton & Hove Albion not to win", ""]]);
+  assert.equal(retail.picks[1].game, "Will Brighton & Hove Albion FC win on 2026-10-11?", "the venue's title stays on the pick for anyone who wants it");
 });
 
 test("public record: the parlay card reads lock, sell or hold with refusals counted and the identity checked; absent when the shadow is off", () => {
@@ -264,16 +298,30 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(html.includes("fetch('/api/parlays',{cache:'no-store'})"));
   assert.ok(html.includes("Protect unlocks at your last pick"), "two or more picks open");
   assert.ok(html.includes("Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button>"), "one pick open with a priced lock");
-  assert.ok(html.includes("'Not right now: '+esc(t.lockRefused)"), "one pick open, refused, with the reason");
+  assert.ok(html.includes("No lock right now: '+esc(t.lockRefusedShort||t.lockRefused)+'</button>"), "one pick open, refused: one clause on the row");
+  assert.ok(html.includes("function openWhySheet(id)") && html.includes("<h2 id=\"sh-h\">No lock right now</h2>") && html.includes("esc(t.lockRefused.charAt(0).toUpperCase()+t.lockRefused.slice(1))"), "the full reason a tap away");
   assert.ok(html.includes("pricing the lock at the next pass"), "one pick open, not yet attempted");
   assert.ok(html.includes("locked it would have paid") && html.includes("no lock was priced before the last game"), "settled, lock against ticket");
   assert.ok(html.includes("no lock exists before the last pick"), "busted");
   assert.ok(html.includes("Lock in your parlay") && html.includes(">if it misses<") && html.includes(">if it hits<"), "the sheet: two endings and the credit");
   assert.ok(html.includes("Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket"), "the cash-out comparison");
   assert.ok(html.includes("With two picks open there is no market for the pair of games, so no lock is offered yet."));
-  assert.ok(html.includes("built from public game markets at the prices when built; the venue publishes no list of real ones."), "honesty: the tickets are simulated");
-  assert.ok(html.includes("The lock is priced from the live market on the last pick, re-read every") && html.includes("nothing is bought."), "honesty: the lock is simulated at live prices");
+  // honesty: one line on the tab, the long version behind the info button, and the confusing sentence gone
+  assert.ok(html.includes('<div class="note"><span>Simulated tickets at live prices; nothing is bought.</span><button class="info" data-info="1" aria-label="About these tickets">i</button></div>'));
+  assert.ok(html.includes("<h2 id=\"sh-h\">About these tickets</h2>") && html.includes("These tickets are ours, not copied from anyone.") && html.includes("built from public game markets at the prices when it was built."));
+  assert.ok(html.includes("The lock is priced from the live market on the last pick and refreshed every") && html.includes("<p>Nothing is bought.</p>"));
+  assert.ok(!html.includes("publishes no list"), "the 'venue publishes no list of real ones' sentence is off the phone");
   assert.ok(html.includes("from the live book, '+L.hoursBefore+'h before the game"), "the quote carries its time");
+  // the picks: the side in ink, the matchup after it; the leagues of the ticket, not just the last pick's
+  assert.ok(html.includes("<span><b>'+esc(p.outcome)+'</b>'+v+'</span>") && html.includes("/^(vs|at) /.test(p.versus)"));
+  assert.ok(!html.includes("last pick\";") && !html.includes("· last pick"), "no duplicate 'last pick' suffix on the row");
+  assert.ok(html.includes("function leaguesOf(t)") && html.includes("(lg?' &middot; '+lg:'')"));
+  // the list: In play, then a collapsed Settled group of one-line rows that expand on tap
+  assert.ok(html.includes("<div class=\"grp\"><span>In play</span></div>"));
+  assert.ok(html.includes("Settled &middot; '+done.length+'</span><button data-settled=\"1\">'+(S.showSettled?'Hide':'Show')+'</button>"));
+  assert.ok(html.includes("showSettled:false,expanded:{}") && html.includes("if(S.showSettled)for(i=0;i<done.length;i++)html+=decidedHtml(done[i])"));
+  assert.ok(html.includes("data-expand=\"'+esc(t.id)+'\"") && html.includes("S.expanded[ex]=!S.expanded[ex]"));
+  assert.ok(html.includes("<b>Last pick</b>") && html.includes("<b>'+t.picksOpen+' picks open</b>") && html.includes("h out</i>"), "row headers: one line each");
   assert.ok(html.includes("track('parlay_tab')") && html.includes("track('parlay_tap',parlayId(id))") && html.includes("track('parlay_lock',parlayId(t.id))"));
   assert.ok(html.includes("Parlays: a floor and a credit at the last pick, never before"), "the pitch names it");
   assert.ok(html.includes("if(/[?&]tab=parlays\\b/i.test(location.search))switchTab('Parlays')"), "?tab=parlays deep-links to the tab");

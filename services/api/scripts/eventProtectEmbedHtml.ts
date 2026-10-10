@@ -24,9 +24,12 @@
  * read-through of the record's public /api/shadow/parlays). A row has three
  * states: two or more picks open and the lock is not offered yet; one pick
  * open and the lock reads "Lock in $floor · $credit paid now", or the reason
- * it was refused; settled or busted and the row shows what the ticket paid
- * against what the lock paid. The lock's terms are the shadow's, priced from
- * the live book at the moment; the browser re-prices nothing.
+ * it was refused (one clause on the row, the full reason a tap away); settled
+ * or busted and the ticket sits as one line under a collapsed Settled group,
+ * the lock-against-ticket comparison on tap. The honesty note is one line
+ * with the long version behind an info button. The lock's terms are the
+ * shadow's, priced from the live book at the moment; the browser re-prices
+ * nothing.
  *
  * `?brand=` names the host; it is honoured only when the name is on
  * EVENT_X_BRAND_ALLOWLIST (fail-closed to EVENT_X_EMBED_BRAND, else "Your
@@ -232,20 +235,33 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos .closeb{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:650;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 11px}
 .pos .closeb:hover{border-color:var(--ep-green);color:var(--ep-green)}
 /* ---- parlays: the picks, their marks, and the lock that only exists at the last pick ---- */
-.picks{margin-top:8px;display:flex;flex-direction:column;gap:4px}
-.pick{display:flex;align-items:baseline;gap:8px;font-size:13px;color:var(--dim);line-height:1.35}
-.pick i{font-style:normal;width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0;align-self:center;background:var(--card2);color:var(--faint);border:1px solid var(--line)}
+.pos.parlay{padding:10px 12px 9px}
+.parlay .pl b,.parlay .pl i{display:inline;font-size:14px}
+.parlay .pl i{font-size:12px}
+.picks{margin-top:7px;display:flex;flex-direction:column;gap:3px}
+.pick{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--faint);line-height:1.35}
+.pick i{font-style:normal;width:15px;height:15px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:800;flex-shrink:0;background:var(--card2);color:var(--faint);border:1px solid var(--line)}
 .pick.hit i{background:rgba(0,182,122,.14);color:var(--ep-green);border-color:transparent}
 .pick.miss i{background:rgba(255,107,107,.14);color:var(--down);border-color:transparent}
-.pick.hit span{color:var(--ink)}
-.pick.miss span{text-decoration:line-through}
 .pick span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pick em{font-style:normal;color:var(--faint);font-size:11.5px;white-space:nowrap}
-.pick.last span:after{content:" · last pick";color:var(--faint);font-size:11px}
+.pick span b{font-weight:600;color:var(--ink)}
+.pick.miss span b{text-decoration:line-through;color:var(--dim)}
+.pick em{font-style:normal;color:var(--faint);font-size:11.5px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.pick.hit em{color:var(--ep-green)}
+.pick.miss em{color:var(--down)}
 .pbtn.off{background:var(--card2);color:var(--faint);box-shadow:none;cursor:default;border:1px solid var(--line)}
 .pbtn.full{flex:1;justify-content:center;padding:9px 13px}
+.pos .f.end{justify-content:flex-end}
 .pos .shield.grey{background:var(--card2);color:var(--dim)}
-.note{margin:6px 4px 2px;color:var(--faint);font-size:11.5px;line-height:1.45}
+.why{appearance:none;background:none;border:0;padding:0;font:inherit;font-size:12.5px;color:var(--dim);text-align:left;cursor:pointer;flex:1;line-height:1.4}
+.why:after{content:" \\203A";color:var(--faint)}
+.note{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 4px 0;color:var(--faint);font-size:11.5px;line-height:1.4}
+.info{appearance:none;width:18px;height:18px;border-radius:50%;border:1px solid var(--line);background:var(--card2);color:var(--dim);font:italic 700 11px Georgia,"Times New Roman",serif;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;padding:0}
+.grp{display:flex;justify-content:space-between;align-items:center;margin:14px 4px 0;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.grp button{appearance:none;background:none;border:0;padding:0;font:inherit;font-size:11.5px;font-weight:600;letter-spacing:0;text-transform:none;color:var(--dim);cursor:pointer}
+.pos.mini{padding:9px 12px;cursor:pointer}
+.pos.mini .name{font-size:14px}
+.pos.mini .meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .empty{padding:30px 16px;color:var(--faint);text-align:center;font-size:14px}
 .host-note{position:fixed;left:0;right:0;bottom:0;padding:10px 16px 14px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.45;background:linear-gradient(to top,var(--bg) 70%,transparent);pointer-events:none}
 /* two deliberate lines (the disclaimer, then the link): never a sentence that wraps and strands the link */
@@ -355,7 +371,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 (function(){
   'use strict';
   var S={rows:[],byTicker:{},protectedBy:{},open:null,quote:null,offered:{},tier:'balanced',how:false,adjust:false,cash:41250,
-    tab:'Positions',parlays:null,parlaysErr:null,byParlay:{},lockedBy:{},openParlay:null};
+    tab:'Positions',parlays:null,parlaysErr:null,byParlay:{},lockedBy:{},openParlay:null,showSettled:false,expanded:{}};
   var TIER_ORDER=['tight','balanced','wide'];
   var TIER_WORDS={tight:'Safest',balanced:'Balanced',wide:'Most upside'};
   var MIN_CREDIT_CENTS=${Math.round(minCredit.cents)},MIN_CREDIT_BPS=${Number(minCredit.bpsOfStake)};
@@ -553,61 +569,104 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 
   /* PARLAYS: the shadow's simulated tickets, read through /api/parlays in retail shape. Three states
      on a row. Two or more picks open: no lock, and the row says so (there is no market for the pair of
-     games, so nothing to price it against). One pick open: the lock priced from the live book at the moment, or the reason it
-     was refused. Settled or busted: what the ticket paid against what the lock paid. The tap here
-     is simulated on top of the shadow's terms; nothing is re-priced in the browser. */
+     games, so nothing to price it against). One pick open: the lock priced from the live book at the
+     moment, or the reason it was refused, a tap away in full. Settled or busted: one line under a
+     collapsed Settled group, the full comparison on tap. The lock tap here is simulated on top of the
+     shadow's terms; nothing is re-priced in the browser. */
   var PICK_MARK={hit:'&#x2713;',miss:'&#x2717;',open:'&middot;',partial:'&frac12;'};
   function parlayId(id){return String(id||'').toUpperCase()}
-  function picksHtml(t){
-    var h='<div class="picks">';
-    for(var i=0;i<t.picks.length;i++){var p=t.picks[i];
-      h+='<div class="pick '+esc(p.state)+(i===t.picks.length-1?' last':'')+'"><i>'+PICK_MARK[p.state]+'</i><span>'+esc(p.outcome)+' &middot; '+esc(p.game)+'</span><em>'+esc(p.state==='open'?fmtEt(p.startsIso):p.state)+'</em></div>'}
-    return h+'</div>';
+  /* "Cowboys vs Buccaneers": the side in ink, the rest of the matchup faint; soccer picks arrive as "Brighton to win" with nothing after */
+  function pickHtml(p){
+    var v=p.versus?(/^(vs|at) /.test(p.versus)?' ':' &middot; ')+esc(p.versus):'';
+    return '<div class="pick '+esc(p.state)+'"><i>'+PICK_MARK[p.state]+'</i><span><b>'+esc(p.outcome)+'</b>'+v+'</span><em>'+esc(p.state==='open'?fmtEt(p.startsIso):p.state)+'</em></div>';
+  }
+  function picksHtml(t){var h='<div class="picks">';for(var i=0;i<t.picks.length;i++)h+=pickHtml(t.picks[i]);return h+'</div>'}
+  function leaguesOf(t){var seen={},out=[];for(var i=0;i<t.picks.length;i++){var l=String(t.picks[i].league||'').toUpperCase();if(l&&!seen[l]){seen[l]=1;out.push(l)}}return out.join(' &middot; ')}
+  function missedPick(t){for(var j=0;j<t.picks.length;j++)if(t.picks[j].state==='miss')return t.picks[j];return null}
+  function metaHtml(t){var win=t.paysCents-t.stakeCents,lg=leaguesOf(t);return usd0(t.stakeCents)+' to win '+usd0(win)+(lg?' &middot; '+lg:'')}
+  function lockIcon(){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>'}
+  /* a ticket still in play: the full card */
+  function inPlayHtml(t){
+    var L=t.lock,locked=!!S.lockedBy[t.id],head='',foot='';
+    if(t.state==='open'){
+      head='<b>'+t.picksOpen+' picks open</b>';
+      foot='<div class="f end"><button class="pbtn off" disabled>Protect unlocks at your last pick</button></div>';
+    }else if(L&&locked){
+      head='<b>worth '+usd(L.worthCents)+'</b> <i>&middot; '+L.hoursBefore+'h out</i>';
+      foot='<div class="terms">ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b> &middot; <b>'+usd(L.creditCents)+'</b> paid now</div>'+
+        '<div class="lock">locked at your tap &middot; terms priced '+esc(fmtAt(L.quotedAt))+' from the live book</div>'+
+        '<div class="f"><span class="shield">&#x2713; Locked</span><button class="undo" data-unlock="'+esc(t.id)+'">reset &middot; demo only</button></div>';
+    }else if(L){
+      head='<b>worth '+usd(L.worthCents)+'</b> <i>&middot; '+L.hoursBefore+'h out</i>';
+      foot='<div class="f"><button class="pbtn full" data-parlay="'+esc(t.id)+'">'+lockIcon()+'Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button></div>';
+    }else{
+      head='<b>Last pick</b>';
+      foot='<div class="f">'+(t.lockRefused
+        ?'<button class="why" data-why="'+esc(t.id)+'">No lock right now: '+esc(t.lockRefusedShort||t.lockRefused)+'</button>'
+        :'<span class="size">pricing the lock at the next pass</span>')+'<button class="pbtn off" disabled>Lock</button></div>';
+    }
+    return '<div class="pos parlay'+(locked?' protected':'')+'" data-tid="'+esc(t.id)+'"><div class="h"><div><div class="name">'+t.size+'-pick parlay</div><div class="meta">'+metaHtml(t)+'</div></div><div class="pl">'+head+'</div></div>'+picksHtml(t)+foot+'</div>';
+  }
+  /* a decided ticket: one line, the picks and the lock comparison on tap */
+  function decidedHtml(t){
+    var L=t.lock,R=t.result,open=!!S.expanded[t.id],head='',line='',more='',cls='';
+    if(t.state==='settled'&&R){
+      var hit=R.hit===true,net=R.ticketPaidCents-t.stakeCents;
+      cls=hit?'up':R.hit===false?'down':'';
+      head='<b>'+(net>=0?'+':'-')+usd0(Math.abs(net))+'</b> <i>&middot; '+(hit?'hit':R.hit==='partial'?'partial':'missed the last pick')+'</i>';
+      line=R.lockPaidCents!=null?'ticket paid '+usd0(R.ticketPaidCents)+' &middot; locked '+usd0(R.lockPaidCents):'ticket paid '+usd0(R.ticketPaidCents)+' &middot; no lock priced';
+      more='<div class="terms">'+(R.lockPaidCents!=null
+        ?'ticket alone paid <b>'+usd(R.ticketPaidCents)+'</b> &middot; locked it would have paid <b>'+usd(R.lockPaidCents)+'</b>'+(L?' <i style="font-style:normal;color:var(--faint)">(incl. '+usd(L.creditCents)+' at the tap)</i>':'')
+        :'ticket paid <b>'+usd(R.ticketPaidCents)+'</b> &middot; no lock was priced before the last game')+'</div>';
+    }else if(t.state==='busted'){
+      var miss=missedPick(t);
+      cls='down';
+      head='<b>-'+usd0(t.stakeCents)+'</b> <i>&middot; busted</i>';
+      line=(miss?'busted on '+esc(miss.outcome)+' &middot; ':'')+'ticket paid $0';
+      more='<div class="terms">'+(miss?'busted on <b>'+esc(miss.outcome)+'</b> &middot; ':'')+'ticket paid <b>$0</b> &middot; no lock exists before the last pick</div>';
+    }else{
+      head='<b>void</b> <i>&middot; no result</i>';
+      line='the venue settled no result';
+    }
+    return '<div class="pos parlay mini" data-expand="'+esc(t.id)+'" data-tid="'+esc(t.id)+'"><div class="h"><div><div class="name">'+t.size+'-pick parlay</div><div class="meta">'+(open?metaHtml(t):line)+'</div></div><div class="pl '+cls+'">'+head+'</div></div>'+(open?picksHtml(t)+more:'')+'</div>';
   }
   function paintParlays(){
     var list=el('list'),P=S.parlays;
     if(!P){list.innerHTML='<div class="empty">'+esc(S.parlaysErr||'loading your parlays…')+'</div>';return}
-    var rows=P.tickets||[],html='<div class="note">Simulated tickets, 2 to 5 favourites at '+usd0(P.stakeCents||2000)+', built from public game markets at the prices when built; the venue publishes no list of real ones. The lock is priced from the live market on the last pick, re-read every '+(P.pricedEveryMinutes||10)+' minutes; nothing is bought.</div>';
+    var rows=P.tickets||[],live=[],done=[],i;
+    for(i=0;i<rows.length;i++)(rows[i].state==='open'||rows[i].state==='last_pick'?live:done).push(rows[i]);
+    var html='<div class="note"><span>Simulated tickets at live prices; nothing is bought.</span><button class="info" data-info="1" aria-label="About these tickets">i</button></div>';
     if(!rows.length){list.innerHTML=html+'<div class="empty">No parlay tickets yet. New ones are built from the week\\'s slate.</div>';return}
-    for(var i=0;i<rows.length;i++){
-      var t=rows[i],L=t.lock,locked=!!S.lockedBy[t.id],win=t.paysCents-t.stakeCents,last=t.picks[t.picks.length-1];
-      var cls='pos parlay'+(locked?' protected':''),head='',foot='';
-      if(t.state==='open'){
-        head='<b>'+t.picksOpen+' picks open</b><i>next '+esc(fmtEt(t.nextStartIso))+'</i>';
-        foot='<div class="f"><span class="size">to win '+usd(win)+'</span><button class="pbtn off" disabled>Protect unlocks at your last pick</button></div>';
-      }else if(t.state==='last_pick'){
-        if(L&&locked){
-          head='<b>worth '+usd(L.worthCents)+'</b><i>at fair, '+L.hoursBefore+'h before</i>';
-          foot='<div class="terms">ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b> &middot; <b>'+usd(L.creditCents)+'</b> paid now</div>'+
-            '<div class="lock">locked at your tap &middot; terms priced '+esc(fmtAt(L.quotedAt))+' from the live book</div>'+
-            '<div class="f"><span class="shield">&#x2713; Locked</span><button class="undo" data-unlock="'+esc(t.id)+'">reset &middot; demo only</button></div>';
-        }else if(L){
-          head='<b>worth '+usd(L.worthCents)+'</b><i>at fair, '+L.hoursBefore+'h before</i>';
-          foot='<div class="f"><button class="pbtn full" data-parlay="'+esc(t.id)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button></div>';
-        }else{
-          head='<b>1 pick open</b><i>'+esc(fmtEt(t.nextStartIso))+'</i>';
-          foot='<div class="f"><span class="size">'+(t.lockRefused?'Not right now: '+esc(t.lockRefused):'pricing the lock at the next pass')+'</span><button class="pbtn off" disabled>Lock</button></div>';
-        }
-      }else if(t.state==='settled'&&t.result){
-        var hit=t.result.hit===true,R=t.result,net=R.ticketPaidCents-t.stakeCents;
-        head='<b>'+(net>=0?'+':'-')+usd(Math.abs(net))+'</b><i>'+(hit?'hit':R.hit==='partial'?'partial':'missed the last pick')+'</i>';
-        foot='<div class="terms">'+(R.lockPaidCents!=null
-            ?'ticket alone paid <b>'+usd(R.ticketPaidCents)+'</b> &middot; locked it would have paid <b>'+usd(R.lockPaidCents)+'</b>'+(L?' <i style="font-style:normal;color:var(--faint)">(incl. '+usd(L.creditCents)+' at the tap)</i>':'')
-            :'ticket paid <b>'+usd(R.ticketPaidCents)+'</b> &middot; no lock was priced before the last game')+'</div>'+
-          '<div class="f"><span class="shield grey">Settled</span></div>';
-      }else if(t.state==='busted'){
-        var miss=null;for(var j=0;j<t.picks.length;j++)if(t.picks[j].state==='miss'){miss=t.picks[j];break}
-        head='<b>-'+usd(t.stakeCents)+'</b><i>busted</i>';
-        foot='<div class="terms">'+(miss?'busted on <b>'+esc(miss.outcome)+'</b> &middot; ':'')+'ticket paid <b>$0</b> &middot; no lock exists before the last pick</div><div class="f"><span class="shield grey">Busted</span></div>';
-      }else{
-        head='<b>void</b><i>no result</i>';
-        foot='<div class="f"><span class="shield grey">Void</span></div>';
-      }
-      var plCls=t.state==='settled'&&t.result&&t.result.hit===true?'up':(t.state==='busted'||(t.state==='settled'&&t.result&&t.result.hit===false))?'down':'';
-      html+='<div class="'+cls+'" data-tid="'+esc(t.id)+'"><div class="h"><div><div class="name">'+t.size+'-pick parlay</div><div class="meta">'+usd0(t.stakeCents)+' to win '+usd(win)+' &middot; '+esc(String(last.league||'').toUpperCase())+'</div></div><div class="pl '+plCls+'">'+head+'</div></div>'+picksHtml(t)+foot+'</div>';
+    if(live.length){html+='<div class="grp"><span>In play</span></div>';for(i=0;i<live.length;i++)html+=inPlayHtml(live[i])}
+    else html+='<div class="empty">Nothing in play right now. New tickets are built from the week\\'s slate.</div>';
+    if(done.length){
+      html+='<div class="grp"><span>Settled &middot; '+done.length+'</span><button data-settled="1">'+(S.showSettled?'Hide':'Show')+'</button></div>';
+      if(S.showSettled)for(i=0;i<done.length;i++)html+=decidedHtml(done[i]);
     }
     list.innerHTML=html;
     el('bal').textContent='Cash '+usd(S.cash);
+  }
+  function openPlainSheet(key,body){
+    S.openParlay=key;S.open=null;S.how=false;
+    el('scrim').className='scrim on';el('sheet').className='sheet on';
+    el('sh-body').innerHTML=body+'<button class="go quiet" id="sh-done">Got it</button>';
+    el('sh-done').onclick=closeSheet;
+  }
+  /* the long version of the one-line note at the top of the tab */
+  function openInfoSheet(){
+    var P=S.parlays||{};
+    openPlainSheet('info','<h2 id="sh-h">About these tickets</h2>'+
+      '<div class="how on"><p>These tickets are ours, not copied from anyone. Each is 2 to 5 favourites at '+usd0(P.stakeCents||2000)+', built from public game markets at the prices when it was built.</p>'+
+      '<p>The lock is priced from the live market on the last pick and refreshed every '+(P.pricedEveryMinutes||10)+' minutes. It is offered only when one pick is left: with two picks open there is no market for the pair of games.</p>'+
+      '<p>Nothing is bought.</p></div>');
+  }
+  /* the refusal in full, behind the one-line reason on the row */
+  function openWhySheet(id){
+    var t=S.byParlay[id];if(!t||!t.lockRefused)return;
+    var last=t.picks[t.picks.length-1],P=S.parlays||{};
+    openPlainSheet(id,'<h2 id="sh-h">No lock right now</h2><div class="who">'+esc(last.outcome)+' is the last pick</div>'+
+      '<div class="refusal">'+esc(t.lockRefused.charAt(0).toUpperCase()+t.lockRefused.slice(1))+'.</div>'+
+      '<div class="how on"><p>The lock is re-priced every '+(P.pricedEveryMinutes||10)+' minutes while the last game is still ahead. When the market can fund it, the button lights up on this row.</p></div>');
   }
   function openParlaySheet(id){
     var t=S.byParlay[id];if(!t||!t.lock)return;
@@ -623,7 +682,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
       '<div class="fine">priced '+esc(fmtAt(L.quotedAt))+' from the live book, '+L.hoursBefore+'h before the game &middot; <a href="#" id="sh-how">how it works</a></div>'+
       '<div class="how" id="how"><p>Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket: it guarantees '+usd(L.floorTotalCents)+' if '+esc(last.outcome)+' misses, pays '+usd(L.creditCents)+' now, and leaves the upside to '+usd(L.capTotalCents)+' if it hits.</p>'+
       '<p>It is priced only when one pick is left. With two picks open there is no market for the pair of games, so no lock is offered yet.</p>'+
-      '<p>The ticket is simulated from public game markets at the prices when it was built; the venue publishes no list of real tickets. The terms are the ones the live market on the last pick funded at that second; nothing is bought.</p></div>';
+      '<p>The ticket is ours, built from public game markets at the prices when it was built. The terms are the ones the live market on the last pick funded at that second; nothing is bought.</p></div>';
     el('sh-how').onclick=function(e){e.preventDefault();S.how=!S.how;el('how').className='how'+(S.how?' on':'')};
     el('sh-go').onclick=function(){confirmParlayLock(t)};
   }
@@ -655,8 +714,14 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   }
 
   document.addEventListener('click',function(e){
-    var b=e.target.closest?e.target.closest('[data-protect],[data-undo],[data-close],[data-tab],[data-parlay],[data-unlock]'):null;
+    var b=e.target.closest?e.target.closest('[data-protect],[data-undo],[data-close],[data-tab],[data-parlay],[data-unlock],[data-info],[data-why],[data-settled],[data-expand]'):null;
     if(!b)return;
+    if(b.hasAttribute('data-info')){openInfoSheet();return}
+    var why=b.getAttribute('data-why');
+    if(why){openWhySheet(why);return}
+    if(b.hasAttribute('data-settled')){S.showSettled=!S.showSettled;paintList();return}
+    var ex=b.getAttribute('data-expand');
+    if(ex){S.expanded[ex]=!S.expanded[ex];paintList();return}
     var t=b.getAttribute('data-protect');
     if(t){openSheet(t);return}
     var c=b.getAttribute('data-close');
