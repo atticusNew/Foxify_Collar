@@ -160,10 +160,20 @@ export function legStatusFromGamma(raw: Record<string, unknown>): ComboLegStatus
   };
 }
 
-/** Gamma market by slug; null when the venue has no such market. */
+/**
+ * Gamma market by slug; null when the venue has no such market.
+ *
+ * Gamma's list endpoint drops a market from `GET /markets?slug=` the moment it
+ * closes, so a leg whose game has been played reads as "no such market" there
+ * and would never resolve. The second read asks for closed markets by name;
+ * only when both are empty does the venue have no such market.
+ */
 export async function getComboLegStatus(slug: string, fetchImpl: typeof fetch = fetch): Promise<ComboLegStatus | null> {
-  const url = `${gammaBase()}/markets?slug=${encodeURIComponent(slug)}`;
-  const data = (await fetchJsonWithRetry(url, fetchImpl)) as Array<Record<string, unknown>>;
-  const row = Array.isArray(data) ? data[0] : undefined;
-  return row ? legStatusFromGamma(row) : null;
+  const base = `${gammaBase()}/markets?slug=${encodeURIComponent(slug)}`;
+  for (const url of [base, `${base}&closed=true`]) {
+    const data = (await fetchJsonWithRetry(url, fetchImpl)) as Array<Record<string, unknown>>;
+    const row = Array.isArray(data) ? data[0] : undefined;
+    if (row) return legStatusFromGamma(row);
+  }
+  return null;
 }

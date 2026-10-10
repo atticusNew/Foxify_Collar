@@ -28,7 +28,7 @@ import {
   type LastLegTicketRecord,
   type LegCandidate,
 } from "../src/eventCollar/crossVenue/lastLeg";
-import { legStatusFromGamma, parseComboMarket, type ComboLegMarket, type ComboLegStatus } from "../src/eventCollar/crossVenue/polymarketCombos";
+import { getComboLegStatus, legStatusFromGamma, parseComboMarket, type ComboLegMarket, type ComboLegStatus } from "../src/eventCollar/crossVenue/polymarketCombos";
 import { lastLegCard } from "../scripts/eventShadowHtml";
 import { DEFAULT_CROSS_CONFIG, type PmBook } from "../src/eventCollar/crossVenue/types";
 
@@ -132,6 +132,33 @@ test("legStatusFromGamma: open, resolved 1/0, closed-but-proposed (not resolved)
   assert.equal(proposed.closed, true);
   const half = legStatusFromGamma(resolvedRow("nfl-a-b-2026-10-10", "0xa", SAT_13, '["0.5", "0.5"]'));
   assert.equal(half.valueMilli, 500, "the venue's partial settlement rides as a value");
+});
+
+test("getComboLegStatus: a played leg leaves Gamma's open list, so it is read again among the closed; an unknown slug is null", async () => {
+  const played = resolvedRow("nfl-tb-dal-2026-10-09", "0xdal", SAT_13, '["1", "0"]');
+  const urls: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = String(input);
+    urls.push(url);
+    const closed = url.includes("closed=true");
+    const slug = new URL(url).searchParams.get("slug");
+    const rows = slug === "nfl-tb-dal-2026-10-09" && closed ? [played] : slug === "nfl-open-2026-10-10" && !closed ? [gammaRow(slug, "0xo", SAT_13)] : [];
+    return new Response(JSON.stringify(rows), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+
+  const resolved = await getComboLegStatus("nfl-tb-dal-2026-10-09", fetchImpl);
+  assert.ok(resolved);
+  assert.equal(resolved.resolved, true);
+  assert.equal(resolved.valueMilli, 1000);
+  assert.equal(urls.length, 2, "open list first, then the closed list");
+  assert.match(urls[1], /slug=nfl-tb-dal-2026-10-09&closed=true$/);
+
+  urls.length = 0;
+  const open = await getComboLegStatus("nfl-open-2026-10-10", fetchImpl);
+  assert.equal(open?.resolved, false);
+  assert.equal(urls.length, 1, "an open market needs one read");
+
+  assert.equal(await getComboLegStatus("no-such-market", fetchImpl), null);
 });
 
 // ── arithmetic ────────────────────────────────────────────────────────────────
