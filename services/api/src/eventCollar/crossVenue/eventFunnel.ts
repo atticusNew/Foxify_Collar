@@ -17,7 +17,8 @@
 export const EVENT_PAGES = ["app", "receipts", "embed"] as const;
 export type EventPage = (typeof EVENT_PAGES)[number];
 
-export const EVENT_ACTIONS = ["row_tap", "protect_on", "protect_undo", "board_expand", "tier_pick", "close_quote", "close_early"] as const;
+/** Browser actions the funnel counts; the parlay_* three are the embed's Parlays tab (ticker = the ticket id, upper-cased). */
+export const EVENT_ACTIONS = ["row_tap", "protect_on", "protect_undo", "board_expand", "tier_pick", "close_quote", "close_early", "parlay_tab", "parlay_tap", "parlay_lock"] as const;
 export type EventAction = (typeof EVENT_ACTIONS)[number];
 
 export interface SessionRow {

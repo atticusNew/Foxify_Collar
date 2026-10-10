@@ -20,6 +20,14 @@
  * exactly what the sheet shows). Taps are counted in the same funnel as the
  * public board under page "embed".
  *
+ * The Parlays tab lists the shadow's simulated tickets (/api/parlays, a
+ * read-through of the record's public /api/shadow/parlays). A row has three
+ * states: two or more picks open and the lock is not offered yet; one pick
+ * open and the lock reads "Lock in $floor · $credit paid now", or the reason
+ * it was refused; settled or busted and the row shows what the ticket paid
+ * against what the lock paid. The lock's terms are the shadow's, priced from
+ * the live book at the moment; the browser re-prices nothing.
+ *
  * `?brand=` names the host; it is honoured only when the name is on
  * EVENT_X_BRAND_ALLOWLIST (fail-closed to EVENT_X_EMBED_BRAND, else "Your
  * app"), so nobody can render a competitor's or a regulator's name into a
@@ -223,6 +231,21 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos .acts{display:inline-flex;align-items:center;gap:8px}
 .pos .closeb{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:650;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 11px}
 .pos .closeb:hover{border-color:var(--ep-green);color:var(--ep-green)}
+/* ---- parlays: the picks, their marks, and the lock that only exists at the last pick ---- */
+.picks{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.pick{display:flex;align-items:baseline;gap:8px;font-size:13px;color:var(--dim);line-height:1.35}
+.pick i{font-style:normal;width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0;align-self:center;background:var(--card2);color:var(--faint);border:1px solid var(--line)}
+.pick.hit i{background:rgba(0,182,122,.14);color:var(--ep-green);border-color:transparent}
+.pick.miss i{background:rgba(255,107,107,.14);color:var(--down);border-color:transparent}
+.pick.hit span{color:var(--ink)}
+.pick.miss span{text-decoration:line-through}
+.pick span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pick em{font-style:normal;color:var(--faint);font-size:11.5px;white-space:nowrap}
+.pick.last span:after{content:" · last pick";color:var(--faint);font-size:11px}
+.pbtn.off{background:var(--card2);color:var(--faint);box-shadow:none;cursor:default;border:1px solid var(--line)}
+.pbtn.full{flex:1;justify-content:center;padding:9px 13px}
+.pos .shield.grey{background:var(--card2);color:var(--dim)}
+.note{margin:6px 4px 2px;color:var(--faint);font-size:11.5px;line-height:1.45}
 .empty{padding:30px 16px;color:var(--faint);text-align:center;font-size:14px}
 .host-note{position:fixed;left:0;right:0;bottom:0;padding:10px 16px 14px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.45;background:linear-gradient(to top,var(--bg) 70%,transparent);pointer-events:none}
 /* two deliberate lines (the disclaimer, then the link): never a sentence that wraps and strands the link */
@@ -305,8 +328,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     <li>One JSON quote in, one receipt out</li>
     <li>Your brand, your ledger, your official result</li>
     <li>Refuses when the market can't fund a credit</li>
+    <li>Parlays: a floor and a credit at the last pick, never before</li>
   </ul>
-  <div class="try">Tap <b>Protect</b> on any row &rarr;</div>
+  <div class="try">Tap <b>Protect</b> on any row, or open <b>Parlays</b> &rarr;</div>
   <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">${recordLabel}</a><a href="/partner${brandQ}">Partner console</a>${opts.recordIsSlate ? "" : '<a href="/receipts">Receipts</a><a href="/board">Full board</a>'}</div>
   <div class="foot">Demonstration only. Simulated positions at live prices; nothing is bought.</div>
 </aside>
@@ -315,7 +339,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     <div class="brand"><i>${initial}</i>${brand}</div>
     <div class="bal" id="bal">Cash $412.50</div>
   </div>
-  <div class="tabs"><span class="on">Positions</span><span data-tab="Markets">Markets</span><span data-tab="Activity">Activity</span></div>
+  <div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Markets">Markets</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
   <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><a href="${trackRecordUrl}">${recordLabel}</a></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -330,7 +354,8 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 <script>
 (function(){
   'use strict';
-  var S={rows:[],byTicker:{},protectedBy:{},open:null,quote:null,offered:{},tier:'balanced',how:false,adjust:false,cash:41250};
+  var S={rows:[],byTicker:{},protectedBy:{},open:null,quote:null,offered:{},tier:'balanced',how:false,adjust:false,cash:41250,
+    tab:'Positions',parlays:null,parlaysErr:null,byParlay:{},lockedBy:{},openParlay:null};
   var TIER_ORDER=['tight','balanced','wide'];
   var TIER_WORDS={tight:'Safest',balanced:'Balanced',wide:'Most upside'};
   var MIN_CREDIT_CENTS=${Math.round(minCredit.cents)},MIN_CREDIT_BPS=${Number(minCredit.bpsOfStake)};
@@ -382,6 +407,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   function defaultTier(offered){return offered.balanced?'balanced':offered.tight?'tight':offered.wide?'wide':null}
 
   function paintList(){
+    if(S.tab==='Parlays'){paintParlays();return}
     var list=el('list');
     if(!S.rows.length){list.innerHTML='<div class="empty">'+esc(S.err||'No open positions to protect right now.')+'</div>';return}
     var html='';
@@ -423,7 +449,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
       paintSheet(p);
     }).catch(function(){if(S.open===ticker)paintSheet(null)});
   }
-  function closeSheet(){S.open=null;el('scrim').className='scrim';el('sheet').className='sheet'}
+  function closeSheet(){S.open=null;S.openParlay=null;el('scrim').className='scrim';el('sheet').className='sheet'}
 
   function paintSheet(p){
     var r=S.byTicker[S.open]||{};
@@ -523,9 +549,113 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     paintList();
   }
   function fmtNow(){try{return new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return 'now'}}
+  function fmtAt(iso){try{var d=new Date(iso);return d.toLocaleDateString('en-US',{weekday:'short',timeZone:'America/New_York'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return ''}}
+
+  /* PARLAYS: the shadow's simulated tickets, read through /api/parlays in retail shape. Three states
+     on a row. Two or more picks open: no lock, and the row says so (there is no market for the pair of
+     games, so nothing to price it against). One pick open: the lock priced from the live book at the moment, or the reason it
+     was refused. Settled or busted: what the ticket paid against what the lock paid. The tap here
+     is simulated on top of the shadow's terms; nothing is re-priced in the browser. */
+  var PICK_MARK={hit:'&#x2713;',miss:'&#x2717;',open:'&middot;',partial:'&frac12;'};
+  function parlayId(id){return String(id||'').toUpperCase()}
+  function picksHtml(t){
+    var h='<div class="picks">';
+    for(var i=0;i<t.picks.length;i++){var p=t.picks[i];
+      h+='<div class="pick '+esc(p.state)+(i===t.picks.length-1?' last':'')+'"><i>'+PICK_MARK[p.state]+'</i><span>'+esc(p.outcome)+' &middot; '+esc(p.game)+'</span><em>'+esc(p.state==='open'?fmtEt(p.startsIso):p.state)+'</em></div>'}
+    return h+'</div>';
+  }
+  function paintParlays(){
+    var list=el('list'),P=S.parlays;
+    if(!P){list.innerHTML='<div class="empty">'+esc(S.parlaysErr||'loading your parlays…')+'</div>';return}
+    var rows=P.tickets||[],html='<div class="note">Simulated tickets, 2 to 5 favourites at '+usd0(P.stakeCents||2000)+', built from public game markets at the prices when built; the venue publishes no list of real ones. The lock is priced from the live market on the last pick, re-read every '+(P.pricedEveryMinutes||10)+' minutes; nothing is bought.</div>';
+    if(!rows.length){list.innerHTML=html+'<div class="empty">No parlay tickets yet. New ones are built from the week\\'s slate.</div>';return}
+    for(var i=0;i<rows.length;i++){
+      var t=rows[i],L=t.lock,locked=!!S.lockedBy[t.id],win=t.paysCents-t.stakeCents,last=t.picks[t.picks.length-1];
+      var cls='pos parlay'+(locked?' protected':''),head='',foot='';
+      if(t.state==='open'){
+        head='<b>'+t.picksOpen+' picks open</b><i>next '+esc(fmtEt(t.nextStartIso))+'</i>';
+        foot='<div class="f"><span class="size">to win '+usd(win)+'</span><button class="pbtn off" disabled>Protect unlocks at your last pick</button></div>';
+      }else if(t.state==='last_pick'){
+        if(L&&locked){
+          head='<b>worth '+usd(L.worthCents)+'</b><i>at fair, '+L.hoursBefore+'h before</i>';
+          foot='<div class="terms">ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b> &middot; <b>'+usd(L.creditCents)+'</b> paid now</div>'+
+            '<div class="lock">locked at your tap &middot; terms priced '+esc(fmtAt(L.quotedAt))+' from the live book</div>'+
+            '<div class="f"><span class="shield">&#x2713; Locked</span><button class="undo" data-unlock="'+esc(t.id)+'">reset &middot; demo only</button></div>';
+        }else if(L){
+          head='<b>worth '+usd(L.worthCents)+'</b><i>at fair, '+L.hoursBefore+'h before</i>';
+          foot='<div class="f"><button class="pbtn full" data-parlay="'+esc(t.id)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button></div>';
+        }else{
+          head='<b>1 pick open</b><i>'+esc(fmtEt(t.nextStartIso))+'</i>';
+          foot='<div class="f"><span class="size">'+(t.lockRefused?'Not right now: '+esc(t.lockRefused):'pricing the lock at the next pass')+'</span><button class="pbtn off" disabled>Lock</button></div>';
+        }
+      }else if(t.state==='settled'&&t.result){
+        var hit=t.result.hit===true,R=t.result,net=R.ticketPaidCents-t.stakeCents;
+        head='<b>'+(net>=0?'+':'-')+usd(Math.abs(net))+'</b><i>'+(hit?'hit':R.hit==='partial'?'partial':'missed the last pick')+'</i>';
+        foot='<div class="terms">'+(R.lockPaidCents!=null
+            ?'ticket alone paid <b>'+usd(R.ticketPaidCents)+'</b> &middot; locked it would have paid <b>'+usd(R.lockPaidCents)+'</b>'+(L?' <i style="font-style:normal;color:var(--faint)">(incl. '+usd(L.creditCents)+' at the tap)</i>':'')
+            :'ticket paid <b>'+usd(R.ticketPaidCents)+'</b> &middot; no lock was priced before the last game')+'</div>'+
+          '<div class="f"><span class="shield grey">Settled</span></div>';
+      }else if(t.state==='busted'){
+        var miss=null;for(var j=0;j<t.picks.length;j++)if(t.picks[j].state==='miss'){miss=t.picks[j];break}
+        head='<b>-'+usd(t.stakeCents)+'</b><i>busted</i>';
+        foot='<div class="terms">'+(miss?'busted on <b>'+esc(miss.outcome)+'</b> &middot; ':'')+'ticket paid <b>$0</b> &middot; no lock exists before the last pick</div><div class="f"><span class="shield grey">Busted</span></div>';
+      }else{
+        head='<b>void</b><i>no result</i>';
+        foot='<div class="f"><span class="shield grey">Void</span></div>';
+      }
+      var plCls=t.state==='settled'&&t.result&&t.result.hit===true?'up':(t.state==='busted'||(t.state==='settled'&&t.result&&t.result.hit===false))?'down':'';
+      html+='<div class="'+cls+'" data-tid="'+esc(t.id)+'"><div class="h"><div><div class="name">'+t.size+'-pick parlay</div><div class="meta">'+usd0(t.stakeCents)+' to win '+usd(win)+' &middot; '+esc(String(last.league||'').toUpperCase())+'</div></div><div class="pl '+plCls+'">'+head+'</div></div>'+picksHtml(t)+foot+'</div>';
+    }
+    list.innerHTML=html;
+    el('bal').textContent='Cash '+usd(S.cash);
+  }
+  function openParlaySheet(id){
+    var t=S.byParlay[id];if(!t||!t.lock)return;
+    var L=t.lock,last=t.picks[t.picks.length-1];
+    S.openParlay=id;S.open=null;S.how=false;
+    el('scrim').className='scrim on';el('sheet').className='sheet on';
+    track('parlay_tap',parlayId(id));
+    el('sh-body').innerHTML='<h2 id="sh-h">Lock in your parlay</h2><div class="who">'+esc(last.outcome)+' is the last pick &middot; worth '+usd(L.worthCents)+' at fair</div>'+
+      '<div class="tiles"><div class="tile"><div class="l">if it misses</div><div class="v">'+usd(L.floorTotalCents)+'</div><div class="was">was $0</div></div>'+
+      '<div class="tile k"><div class="l">paid now</div><div class="v">+'+usd(L.creditCents)+'</div><div class="was">yours today</div></div>'+
+      '<div class="tile"><div class="l">if it hits</div><div class="v">'+usd(L.capTotalCents)+'</div><div class="was">was '+usd(t.paysCents)+'</div></div></div>'+
+      '<button class="go" id="sh-go">Lock in '+usd(L.floorTotalCents)+' &middot; +'+usd(L.creditCents)+' now</button>'+
+      '<div class="fine">priced '+esc(fmtAt(L.quotedAt))+' from the live book, '+L.hoursBefore+'h before the game &middot; <a href="#" id="sh-how">how it works</a></div>'+
+      '<div class="how" id="how"><p>Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket: it guarantees '+usd(L.floorTotalCents)+' if '+esc(last.outcome)+' misses, pays '+usd(L.creditCents)+' now, and leaves the upside to '+usd(L.capTotalCents)+' if it hits.</p>'+
+      '<p>It is priced only when one pick is left. With two picks open there is no market for the pair of games, so no lock is offered yet.</p>'+
+      '<p>The ticket is simulated from public game markets at the prices when it was built; the venue publishes no list of real tickets. The terms are the ones the live market on the last pick funded at that second; nothing is bought.</p></div>';
+    el('sh-how').onclick=function(e){e.preventDefault();S.how=!S.how;el('how').className='how'+(S.how?' on':'')};
+    el('sh-go').onclick=function(){confirmParlayLock(t)};
+  }
+  function confirmParlayLock(t){
+    var L=t.lock;
+    S.lockedBy[t.id]=true;S.cash+=L.creditCents;
+    track('parlay_lock',parlayId(t.id));
+    el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Locked</h2>'+
+      '<div class="sum">'+t.size+'-pick parlay<br>ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b><br><b>+'+usd(L.creditCents)+'</b> added to your cash</div></div>'+
+      '<button class="go" id="sh-done">Done</button><div class="fine">Nothing to manage. It settles with the last pick.</div>';
+    el('sh-done').onclick=function(){closeSheet();paintList()};
+    paintList();
+  }
+  function switchTab(tab){
+    if(S.tab===tab)return;
+    S.tab=tab;
+    var ts=document.querySelectorAll('.tabs span');
+    for(var i=0;i<ts.length;i++)ts[i].className=ts[i].getAttribute('data-tab')===tab?'on':'';
+    if(tab==='Parlays'){track('parlay_tab');if(!S.parlays)loadParlays()}
+    paintList();
+  }
+  function loadParlays(){
+    fetch('/api/parlays',{cache:'no-store'}).then(function(x){return x.json()}).then(function(p){
+      if(!p||!p.ok){S.parlays=null;S.parlaysErr=(p&&p.error)||'Parlays are unavailable right now.';if(S.tab==='Parlays')paintList();return}
+      S.parlays=p;S.parlaysErr=null;S.byParlay={};
+      var rows=p.tickets||[];for(var i=0;i<rows.length;i++)S.byParlay[rows[i].id]=rows[i];
+      if(S.tab==='Parlays')paintList();
+    }).catch(function(){S.parlays=null;S.parlaysErr='Parlays are unavailable right now.';if(S.tab==='Parlays')paintList()});
+  }
 
   document.addEventListener('click',function(e){
-    var b=e.target.closest?e.target.closest('[data-protect],[data-undo],[data-close],[data-tab]'):null;
+    var b=e.target.closest?e.target.closest('[data-protect],[data-undo],[data-close],[data-tab],[data-parlay],[data-unlock]'):null;
     if(!b)return;
     var t=b.getAttribute('data-protect');
     if(t){openSheet(t);return}
@@ -533,7 +663,13 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     if(c){openCloseSheet(c);return}
     var u=b.getAttribute('data-undo');
     if(u&&S.protectedBy[u]){var pu=S.protectedBy[u];S.cash-=pu.creditCents;if(pu.closed)S.cash-=pu.closed.addedCents;delete S.protectedBy[u];track('protect_undo',u);paintList();return}
-    if(b.getAttribute('data-tab'))toast('Demo: only Positions is live here.');
+    var pid=b.getAttribute('data-parlay');
+    if(pid){openParlaySheet(pid);return}
+    var ul=b.getAttribute('data-unlock');
+    if(ul&&S.lockedBy[ul]){var lt=S.byParlay[ul];if(lt&&lt.lock)S.cash-=lt.lock.creditCents;delete S.lockedBy[ul];paintList();return}
+    var tab=b.getAttribute('data-tab');
+    if(tab==='Positions'||tab==='Parlays'){switchTab(tab);return}
+    if(tab)toast('Demo: Positions and Parlays are live here.');
   });
   el('scrim').onclick=closeSheet;
 
@@ -548,7 +684,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     }).catch(function(){S.rows=[];S.err='Positions are unavailable right now.';paintList()});
   }
   load();
-  setInterval(function(){if(!S.open)load()},60000);
+  /* ?tab=parlays opens on the Parlays tab, so a link can land a partner on the parlay rows directly */
+  try{if(/[?&]tab=parlays\\b/i.test(location.search))switchTab('Parlays')}catch(e){}
+  setInterval(function(){if(S.open||S.openParlay)return;if(S.tab==='Parlays')loadParlays();else load()},60000);
 })();
 </script>
 </body>

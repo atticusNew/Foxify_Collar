@@ -12,6 +12,7 @@
  */
 
 import type { LastLegSummary, LockVsSellSummary } from "../src/eventCollar/crossVenue/lastLeg";
+import { refusalWords } from "../src/eventCollar/crossVenue/parlayRetail";
 import type { RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { VenueSlate } from "../src/eventCollar/crossVenue/venueSlate";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
@@ -56,6 +57,8 @@ export interface ShadowPageInput {
   closed?: ShadowPosition[];
   /** the hedge trail, when the worker keeps one */
   hedges?: { strategy: HedgeStrategy; rfqVenues: string[]; summary: HedgeReceiptSummary };
+  /** the parlay moment (lastLeg.ts); absent on instances with the last-leg shadow off */
+  parlays?: ParlayCardInput;
 }
 
 /** One public line on hedge fills: how they are filled and how many. The receipts themselves are the operator's. */
@@ -379,7 +382,7 @@ ${sportsCard}  <div class="card">
     ${s.voidCount > 0 ? `<div class="row"><span>voided (no official result)</span><b>${s.voidCount}</b></div>` : ""}
     ${input.hedges ? hedgeLine(input.hedges) : ""}
   </div>
-${closedCard}  <div class="card">
+${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class="card">
     <h2>Where protection is cheap and where it is rich</h2>
     <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of protection at the market's own odds; user Δ is realized, protected minus naked, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} events show counts only.</div>
     <div class="tablewrap"><table>
@@ -395,7 +398,7 @@ ${closedCard}  <div class="card">
     <a class="back" href="${demoUrl()}">back to the demo</a>
   </div>
   <footer>
-    <b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions; no venue credentials, no wallets. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>
+    <b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions${input.parlays ? " and the parlay tickets" : ""}; no venue credentials, no wallets. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>${input.parlays ? ' <a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>' : ""}
   </footer>
 </div>
 </body>
@@ -704,6 +707,91 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
 </html>`;
 }
 
+// ── the parlay moment ─────────────────────────────────────────────────────────
+
+export interface ParlayCardInput {
+  lockVsSell: LockVsSellSummary;
+  lastLeg: LastLegSummary;
+  stakeCents: number;
+}
+
+/**
+ * LOCK, SELL OR HOLD — the parlay moment on a public page (the record and every venue slate).
+ * A bettor whose ticket has every pick in but the last has three choices; the card puts them
+ * side by side, with the refusals counted and the identity checked, in the same words the
+ * demo's Parlays tab uses. Tickets are the only simulation and the card says so.
+ */
+export function parlayMomentCard(input: ParlayCardInput): string {
+  const lv = input.lockVsSell;
+  const ll = input.lastLeg;
+  const lvRows = lv.rows
+    .slice(0, 12)
+    .map((r) => {
+      const when = `${Math.round(r.minutesToStart / 60)}h before`;
+      const settled = r.lockPaidCents !== undefined && r.holdPaidCents !== undefined;
+      const paid = settled
+        ? `<td class="hi">${usd(r.lockPaidCents as number)}</td><td>${usd(r.sellCents)}</td><td>${usd(r.holdPaidCents as number)}</td>`
+        : `<td colspan="3"><i style="font-style:normal;color:var(--faint)">${r.status === "last_leg" ? "last leg not played yet" : r.status}</i></td>`;
+      return (
+        `<tr><td class="hi">${r.size} legs · ${escapeHtml(r.lastLeg)}</td><td>${escapeHtml(when)}</td>` +
+        `<td>${usd(r.sellCents)}</td><td>${usd(r.lockFloorCents)} to ${usd(r.lockCapCents)}</td><td class="hi">${usd(r.creditCents)}</td>${paid}</tr>`
+      );
+    })
+    .join("");
+  const lvLine = (() => {
+    if (ll.tickets === 0) return "The parlay shadow has just started; tickets are being built from this week's slate.";
+    if (lv.quoted === 0) {
+      const reached = ll.reachedLastLeg > 0 ? `${ll.reachedLastLeg} reached the last leg and the books did not fund a credit yet.` : "None has reached the last leg yet; the first moments come when every earlier leg has hit and only the last game is left.";
+      return `${ll.tickets} tickets built, ${ll.busted} busted on an earlier leg. ${reached}`;
+    }
+    const avgCredit = lv.quoted > 0 ? usd(Math.round(lv.creditsCents / lv.quoted)) : "–";
+    const avgSell = lv.quoted > 0 ? usd(Math.round(lv.sellCents / lv.quoted)) : "–";
+    const settledPart =
+      lv.settled > 0
+        ? ` On the ${lv.settled} settled, locking paid ${usd(lv.settledLockCents)} against ${usd(lv.settledSellCents)} for selling and ${usd(lv.settledHoldCents)} for holding; the lock beat the sell on ${lv.lockBeatSell}, and holding beat both on ${lv.holdBeatBoth}.`
+        : "";
+    return `${lv.quoted} tickets reached the last leg with a priced lock, on average ${avgCredit} paid at the tap on a ticket worth ${avgSell} at fair.${settledPart}`;
+  })();
+  // Refusals in the bettor's words: the moment came and the lock was not offered, counted not hidden.
+  const refusalCounts = new Map<string, number>();
+  for (const [code, n] of Object.entries(ll.refusalCodes)) {
+    const words = refusalWords(code);
+    refusalCounts.set(words, (refusalCounts.get(words) ?? 0) + n);
+  }
+  const refusalRows = [...refusalCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([words, n]) => `<div class="row"><span>${escapeHtml(words)}</span><b>${n}</b></div>`)
+    .join("");
+  const st = ll.settled;
+  const identityLine =
+    st.withProtection === 0
+      ? "No locked ticket has settled yet; the identity is checked on every settlement."
+      : `On ${st.withProtection} settled locked tickets our P&L is ${signedUsd(st.writerCents)} against ${usd(st.takeBookedCents)} of take booked: ${st.identityHolds ? "the identity holds, we carried no outcome risk on the last pick." : "a gap outside rounding; the operator report has the tickets."}`;
+  return `  <div class="card">
+    <h2>Lock, sell or hold: the parlay moment</h2>
+    <div class="sub" style="margin-bottom:8px">A bettor whose parlay has every leg in but the last has three choices. Sell is a cash-out at fair (the ticket's value before any spread). Lock is the collar on the last leg: a floor, a cap, and a credit paid at the tap, hedged on the last leg's own book. Hold is the naked ticket. Tickets here are simulated from the public slate (2 to 5 favourites, $${(input.stakeCents / 100).toFixed(0)} stake); prices, results and quotes are real.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n">${ll.tickets}</div><div class="l">tickets built</div></div>
+      <div class="bignum"><div class="n">${ll.reachedLastLeg}</div><div class="l">reached the last leg</div></div>
+      <div class="bignum"><div class="n green">${lv.quoted}</div><div class="l">priced a lock</div></div>
+      <div class="bignum"><div class="n green">${usd(lv.creditsCents)}</div><div class="l">paid at the tap</div></div>
+    </div>
+    <div class="read" style="margin-top:10px">${escapeHtml(lvLine)}</div>
+    ${
+      lvRows
+        ? `<div class="tablewrap" style="margin-top:8px"><table>
+      <tr><th>ticket · last leg</th><th>when</th><th>sell at fair</th><th>lock ends</th><th>paid now</th><th>lock paid</th><th>sell paid</th><th>hold paid</th></tr>
+      ${lvRows}
+    </table></div>`
+        : ""
+    }
+    <div class="rule">Lock ends shows the two endings with the credit included. Paid columns fill when the last game settles. A ticket with two or more legs still open is never quoted: that would mean hedging the product of two games, and no book quotes it. Nothing is bought; the lock is priced from the live book the hedge would have been bought on.</div>
+    ${refusalRows ? `<div class="rule" style="margin-top:8px">Lock not offered, and why, across ${ll.attempts} attempts:</div>${refusalRows}` : ""}
+    <div class="read" style="margin-top:8px">${escapeHtml(identityLine)}</div>
+  </div>
+`;
+}
+
 // ── venue slate ───────────────────────────────────────────────────────────────
 
 export interface SlatePageInput {
@@ -805,37 +893,7 @@ export function renderSlateHtml(input: SlatePageInput): string {
     )
     .join("");
 
-  // Lock versus sell: the parlay moment.
-  const lv = input.lockVsSell;
-  const ll = input.lastLeg;
-  const lvRows = lv.rows
-    .slice(0, 12)
-    .map((r) => {
-      const when = `${Math.round(r.minutesToStart / 60)}h before`;
-      const settled = r.lockPaidCents !== undefined && r.holdPaidCents !== undefined;
-      const paid = settled
-        ? `<td class="hi">${usd(r.lockPaidCents as number)}</td><td>${usd(r.sellCents)}</td><td>${usd(r.holdPaidCents as number)}</td>`
-        : `<td colspan="3"><i style="font-style:normal;color:var(--faint)">${r.status === "last_leg" ? "last leg not played yet" : r.status}</i></td>`;
-      return (
-        `<tr><td class="hi">${r.size} legs · ${escapeHtml(r.lastLeg)}</td><td>${escapeHtml(when)}</td>` +
-        `<td>${usd(r.sellCents)}</td><td>${usd(r.lockFloorCents)} to ${usd(r.lockCapCents)}</td><td class="hi">${usd(r.creditCents)}</td>${paid}</tr>`
-      );
-    })
-    .join("");
-  const lvLine = (() => {
-    if (ll.tickets === 0) return "The parlay shadow has just started; tickets are being built from this week's slate.";
-    if (lv.quoted === 0) {
-      const reached = ll.reachedLastLeg > 0 ? `${ll.reachedLastLeg} reached the last leg and the books did not fund a credit yet.` : "None has reached the last leg yet; the first moments come when every earlier leg has hit and only the last game is left.";
-      return `${ll.tickets} tickets built, ${ll.busted} busted on an earlier leg. ${reached}`;
-    }
-    const avgCredit = lv.quoted > 0 ? usd(Math.round(lv.creditsCents / lv.quoted)) : "–";
-    const avgSell = lv.quoted > 0 ? usd(Math.round(lv.sellCents / lv.quoted)) : "–";
-    const settledPart =
-      lv.settled > 0
-        ? ` On the ${lv.settled} settled, locking paid ${usd(lv.settledLockCents)} against ${usd(lv.settledSellCents)} for selling and ${usd(lv.settledHoldCents)} for holding; the lock beat the sell on ${lv.lockBeatSell}, and holding beat both on ${lv.holdBeatBoth}.`
-        : "";
-    return `${lv.quoted} tickets reached the last leg with a priced lock, on average ${avgCredit} paid at the tap on a ticket worth ${avgSell} at fair.${settledPart}`;
-  })();
+  const parlayCard = parlayMomentCard({ lockVsSell: input.lockVsSell, lastLeg: input.lastLeg, stakeCents: input.lastLegStakeCents });
 
   return `<!doctype html>
 <html lang="en">
@@ -886,27 +944,7 @@ export function renderSlateHtml(input: SlatePageInput): string {
     </div>
     <div class="read" style="margin-top:10px">${escapeHtml(identityLine)}</div>
   </div>
-  <div class="card">
-    <h2>Lock, sell or hold: the parlay moment</h2>
-    <div class="sub" style="margin-bottom:8px">A bettor whose parlay has every leg in but the last has three choices. Sell is a cash-out at fair (the ticket's value before any spread). Lock is the collar on the last leg: a floor, a cap, and a credit paid at the tap, hedged on the last leg's own book. Hold is the naked ticket. Tickets here are simulated from the public slate (2 to 5 favourites, $${(input.lastLegStakeCents / 100).toFixed(0)} stake); prices, results and quotes are real.</div>
-    <div class="bignums">
-      <div class="bignum"><div class="n">${ll.tickets}</div><div class="l">tickets built</div></div>
-      <div class="bignum"><div class="n">${ll.reachedLastLeg}</div><div class="l">reached the last leg</div></div>
-      <div class="bignum"><div class="n green">${lv.quoted}</div><div class="l">priced a lock</div></div>
-      <div class="bignum"><div class="n green">${usd(lv.creditsCents)}</div><div class="l">paid at the tap</div></div>
-    </div>
-    <div class="read" style="margin-top:10px">${escapeHtml(lvLine)}</div>
-    ${
-      lvRows
-        ? `<div class="tablewrap" style="margin-top:8px"><table>
-      <tr><th>ticket · last leg</th><th>when</th><th>sell at fair</th><th>lock ends</th><th>paid now</th><th>lock paid</th><th>sell paid</th><th>hold paid</th></tr>
-      ${lvRows}
-    </table></div>`
-        : ""
-    }
-    <div class="rule">Lock ends shows the two endings with the credit included. Paid columns fill when the last game settles. Nothing is bought; the lock is priced from the live book the hedge would have been bought on.</div>
-  </div>
-  <div class="card">
+${parlayCard}  <div class="card">
     <h2>Settled on your leagues, most recent first</h2>
     ${settledRows || '<div class="row"><span>nothing settled yet</span><b>the book is young</b></div>'}
   </div>
