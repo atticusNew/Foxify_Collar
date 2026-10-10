@@ -66,7 +66,7 @@ Subject: Ten of your listings, with a firm number next to each ask
 >
 > Twenty minutes this week or next? If it is useful, a read-only feed of your listings lets us run this on your whole board instead of the ten I could read by hand.
 >
-> Michael Ting
+> Michael William
 > Atticus · michael@atticustrade.com
 
 Replace the two bracketed links with the URLs from step 3. Nothing else in the message is a placeholder.
