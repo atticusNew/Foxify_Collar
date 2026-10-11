@@ -116,7 +116,9 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes("<title>ProphetX · Positions</title>"), "the host's name on the tab");
   assert.ok(html.includes('<div class="brand"><i>P</i>ProphetX</div>'), "and on the shell");
   assert.ok(html.includes('class="tabs"') && html.includes(">Positions</span>"), "a host positions list, not our board");
-  assert.ok(html.includes('data-tab="Markets"') && html.includes('data-tab="Activity"') && html.includes("toast('Demo: Positions and Parlays are live here.')"), "the other tabs answer with a toast, not silence");
+  assert.ok(html.includes('<div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Activity">Activity</span></div>'), "three tabs, all live");
+  assert.ok(!html.includes('data-tab="Markets"') && !html.includes("Positions and Parlays are live here"), "no Markets tab and no dead-tab toast: browsing is the host's product");
+  assert.ok(html.includes("if(tab==='Positions'||tab==='Parlays'||tab==='Activity'){switchTab(tab);return}"), "every tab switches");
   assert.ok(html.includes('id="bal">Cash $412.50<'), "a plausible balance, not $0.00");
   assert.ok(html.includes("cash:41250"), "and the script starts from it");
   assert.ok(html.includes('data-protect="') && html.includes("</svg>Lock in</button>"), "one Lock in button per row");
@@ -252,12 +254,23 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
   let shadowHits = 0;
   const shadow = createServer((req, res) => {
     shadowHits += 1;
-    if (shadowMode === "down" || req.url !== "/api/shadow/parlays") {
+    if (shadowMode === "down" || (req.url !== "/api/shadow/parlays" && req.url !== "/api/shadow")) {
       res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: false }));
       return;
     }
     res.writeHead(200, { "content-type": "application/json" });
+    if (req.url === "/api/shadow") {
+      // the shadow's full positions, hedge words and all: the demo must cut them to retail before serving
+      const settled = {
+        at: "2026-10-04T22:11:37.343Z", ticker: "KXNFLGAME-26OCT11PHIJAC-PHI", kind: "sports", league: "nfl", sideName: "Eagles", eventTitle: "Eagles vs. Jaguars", eventTimeIso: "2026-10-11T13:30:00.000Z",
+        contracts: 150, markCents: 39, floorCents: 24, capCents: 51, creditCents: 603, evCostBps: 115, route: "polymarket", feesCents: 0, takeCents: 67, hedgeCostCents: 6680, hedgeUnitsMilli: 109500, hedgeTokenId: "0xabc",
+        status: "settled", result: "no", settledAt: "2026-10-11T17:05:00.000Z", protectedCents: 4203, nakedCents: 0, deltaCents: 4203, writerCents: 67, hedgePayoutCents: 10950,
+        counterfactuals: { alternatives: { tight: { takeCents: 38 } } },
+      };
+      res.end(JSON.stringify({ ok: true, at: "2026-10-11T18:00:00.000Z", summary: {}, settled: [settled], open: [{ ...settled, status: "open" }], closed: [] }));
+      return;
+    }
     res.end(JSON.stringify({ ok: true, at: "2026-10-10T12:00:00.000Z", enabled: true, stakeCents: 2000, pricedEveryMinutes: 10, summary: { tickets: 1 }, tickets: [{ id: "ll_x", state: "open", picksOpen: 2, picks: [] }] }));
   });
   await new Promise<void>((r) => shadow.listen(0, "127.0.0.1", () => r()));
@@ -284,6 +297,29 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     const cached = await fetch(`${base}/api/parlays`);
     assert.equal(cached.status, 200, "a fresh copy is served from cache; the shadow is not asked again within the minute");
     assert.equal(shadowHits, hitsAfterWarm);
+
+    // /api/activity: the same read-through, cut to retail before it is served
+    const actCold = await fetch(`${base}/api/activity`);
+    assert.equal(actCold.status, 503);
+    assert.deepEqual(await actCold.json(), { ok: false, error: "Activity is unavailable right now." });
+    shadowMode = "ok";
+    const act = await fetch(`${base}/api/activity`);
+    assert.equal(act.status, 200);
+    const actBody = (await act.json()) as { ok: boolean; at: string; rows: Array<Record<string, unknown>>; settledCount: number; closedCount: number };
+    assert.equal(actBody.ok, true);
+    assert.equal(actBody.at, "2026-10-11T18:00:00.000Z");
+    assert.deepEqual([actBody.settledCount, actBody.closedCount], [1, 0], "the open position is not activity");
+    assert.deepEqual(actBody.rows, [
+      {
+        id: "KXNFLGAME-26OCT11PHIJAC-PHI", kind: "sports", league: "nfl", name: "Eagles", game: "Eagles vs. Jaguars", startsIso: "2026-10-11T13:30:00.000Z",
+        state: "settled", outcome: "lost", atIso: "2026-10-11T17:05:00.000Z", contracts: 150, endedCents: 4203, withoutCents: 0, creditCents: 603, floorTotalCents: 4203, capTotalCents: 8253,
+      },
+    ]);
+    assert.deepEqual(forbiddenKeysIn(actBody), [], "no hedge, take, route or counterfactual words reach the phone");
+    const actHits = shadowHits;
+    shadowMode = "down";
+    assert.equal((await fetch(`${base}/api/activity`)).status, 200, "served from cache within the minute");
+    assert.equal(shadowHits, actHits);
 
     const shell = await fetch(`${base}/embed?brand=novig&skin=dark`);
     assert.equal(shell.status, 200);
