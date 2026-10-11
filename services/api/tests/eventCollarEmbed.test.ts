@@ -121,6 +121,13 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes("if(tab==='Positions'||tab==='Parlays'||tab==='Activity'){switchTab(tab);return}"), "every tab switches");
   assert.ok(html.includes('id="bal">Cash $412.50<'), "a plausible balance, not $0.00");
   assert.ok(html.includes("cash:41250"), "and the script starts from it");
+  // the credit is "paid now": cash is seen taking it
+  assert.ok(html.includes('<div class="bal"><i class="delta" id="delta" aria-hidden="true"></i><span id="bal">Cash $412.50</span></div>'), "a pulse slot beside the balance");
+  assert.ok(html.includes("function addCash(cents){") && html.includes("d.textContent=(cents>0?'+':'-')+usd(Math.abs(cents))") && html.includes("d.className='delta on'+(cents<0?' down':'')"), "every change prints +$x, or -$x in the down colour on a reset");
+  assert.ok(html.includes("deltaT=setTimeout(function(){d.className='delta'},1900)") && html.includes("@keyframes delta{"), "then it is gone");
+  assert.ok(html.includes("if(S.open||S.openParlay){pendingDelta+=cents;return}") && html.includes("el('sheet').className='sheet';if(pendingDelta){var d=pendingDelta;pendingDelta=0;pulse(d)}"), "behind a sheet the pulse waits for Done, when the corner is visible again");
+  assert.equal((html.match(/S\.cash[+-]=/g) ?? []).length, 1, "no cash change bypasses the pulse");
+  for (const call of ["addCash(t.creditCents);", "addCash(added);", "addCash(L.creditCents);", "addCash(-(pu.creditCents+(pu.closed?pu.closed.addedCents:0)));", "addCash(-S.lockedBy[ul].lock.creditCents);"]) assert.ok(html.includes(call), call);
   assert.ok(html.includes('data-protect="') && html.includes("</svg>Lock in</button>"), "one Lock in button per row");
   assert.ok(html.includes('id="sheet"') && html.includes('role="dialog"'), "the sheet is a dialog over the host");
   assert.ok(html.includes("protection by") && html.includes("data:image/png;base64"), "the sheet carries our wordmark, inlined");
