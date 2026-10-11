@@ -42,7 +42,9 @@ export type ShadowAlertKind =
   | "scan_stalled"
   | "settle_failing"
   | "position_voided"
-  | "ledger_write_failed";
+  | "ledger_write_failed"
+  /** a market settled under rule text whose hash differs from the one pinned at open */
+  | "rule_changed";
 
 export interface ShadowAlert {
   kind: ShadowAlertKind;

@@ -17,6 +17,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HedgeRoute, ProtectionTier, TakeRule } from "./types";
 import { PROTECTION_TIERS } from "./types";
+import type { RuleCheck, RuleEvidence } from "./ruleEvidence";
 import {
   FEE_RULE_LABELS,
   SIZE_LADDER_MULTS,
@@ -73,6 +74,12 @@ export interface ShadowOpenRecord {
    * before early closes existed (those close with the hedge leg unpriced).
    */
   hedgeTokenId?: string;
+  /**
+   * The venue's rule text as published at open, pinned (sha256, source URL, excerpt). Null when
+   * the venue published none; absent on records before 2026-10-11. Evidence for the result, never
+   * an input to the payout.
+   */
+  rule?: RuleEvidence | null;
 }
 
 /**
@@ -111,6 +118,8 @@ export interface ShadowSettleRecord {
   at: string;
   ticker: string;
   result: "yes" | "no";
+  /** the rule text read again at this settlement, against the pin (ruleEvidence.checkRule); absent before 2026-10-11 */
+  ruleCheck?: RuleCheck;
 }
 
 /** The market never produced a result (e.g. postponed and rebooked). */
@@ -127,6 +136,7 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   status: "open" | "settled" | "void" | "closed";
   result?: "yes" | "no";
   settledAt?: string;
+  ruleCheck?: RuleCheck;
   voidReason?: string;
   /**
    * Total with protection. Settled: (cap if yes, floor if no) x contracts + credit.
@@ -279,6 +289,7 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
         status: "settled",
         result: rec.result,
         settledAt: rec.at,
+        ...(rec.ruleCheck ? { ruleCheck: rec.ruleCheck } : {}),
         ...pay,
         writerCents: writer.writerCents,
         hedgePayoutCents: writer.hedgePayoutCents,
