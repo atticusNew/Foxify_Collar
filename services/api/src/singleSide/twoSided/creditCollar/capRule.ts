@@ -106,6 +106,72 @@ export const pickCap = <T extends CapCandidate>(cands: readonly T[], spot: numbe
   return { pick: widest, decidedBy: "widest" };
 };
 
+// ── Realized versus implied: the cap odds move inside the published band ──────
+//
+// Under the pricing measure every cap strike leaves the trader's expectation unchanged (above);
+// what the record shows is that implied odds run above realized (18% said, 4% seen over the first
+// three weeks). That gap is the variance premium: when options are rich against what price then
+// does, a closer cap sells more credit per dollar of upside actually handed back; when they are
+// cheap or price is trending, a wider cap gives back less for the credit it loses. So the odds the
+// rule targets slide with implied over realized, inside the band a brand publishes (10-30%), and
+// never outside it. This changes WHICH strike is written, never who keeps a payoff: the identity
+// trader = C + floor payout - cap excess, writer = take holds at every strike the band allows.
+
+/**
+ * Close-to-close realized volatility, annualized fraction, from evenly spaced candles. Null with
+ * fewer than `minCandles` usable returns, so a thin history never pretends to be a vol.
+ */
+export const realizedVolAnnual = (candles: ReadonlyArray<{ t: number; c: number }>, intervalMs: number, minCandles = 48): number | null => {
+  if (!(intervalMs > 0)) return null;
+  const closes = [...candles].sort((a, b) => a.t - b.t).map((c) => c.c).filter((c) => Number.isFinite(c) && c > 0);
+  if (closes.length < minCandles + 1) return null;
+  const rets: number[] = [];
+  for (let i = 1; i < closes.length; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
+  const mean = rets.reduce((s, r) => s + r, 0) / rets.length;
+  const variance = rets.reduce((s, r) => s + (r - mean) * (r - mean), 0) / (rets.length - 1);
+  const perYear = YEAR_MS / intervalMs;
+  const vol = Math.sqrt(variance * perYear);
+  return Number.isFinite(vol) && vol > 0 ? +vol.toFixed(4) : null;
+};
+
+export interface CapOddsBand {
+  lo: number;
+  hi: number;
+}
+export const DEFAULT_CAP_ODDS_BAND: CapOddsBand = { lo: 0.1, hi: 0.3 };
+/** odds move 0.2 per unit of (implied / realized - 1): 1.5x rich vol lifts 20% to 30%, 0.75x drops it to 15% */
+export const DEFAULT_CAP_ODDS_SLOPE = 0.2;
+
+export interface CapOddsAdvice {
+  baseProb: number;
+  impliedVolAnnual: number | null;
+  realizedVolAnnual: number | null;
+  /** implied / realized; null when either is unreadable */
+  ratio: number | null;
+  /** the odds the rule would target now, inside the band */
+  adviceProb: number;
+  band: CapOddsBand;
+  reason: "vol_rich" | "vol_cheap" | "near_fair" | "no_vol";
+}
+
+/** Where the cap odds should sit now. Pure; the caller decides whether to apply it or only record it. */
+export const adaptCapOdds = (input: { baseProb: number; impliedVolAnnual: number | null; realizedVolAnnual: number | null; band?: CapOddsBand; slope?: number }): CapOddsAdvice => {
+  const band = input.band ?? DEFAULT_CAP_ODDS_BAND;
+  const slope = input.slope ?? DEFAULT_CAP_ODDS_SLOPE;
+  const clamp = (p: number) => Math.min(band.hi, Math.max(band.lo, p));
+  const base = clamp(input.baseProb);
+  const iv = input.impliedVolAnnual;
+  const rv = input.realizedVolAnnual;
+  if (!(iv != null && iv > 0 && rv != null && rv > 0)) return { baseProb: base, impliedVolAnnual: iv ?? null, realizedVolAnnual: rv ?? null, ratio: null, adviceProb: base, band, reason: "no_vol" };
+  const ratio = +(iv / rv).toFixed(3);
+  const advice = +clamp(base + slope * (ratio - 1)).toFixed(4);
+  const reason = ratio >= 1.15 ? "vol_rich" : ratio <= 0.9 ? "vol_cheap" : "near_fair";
+  return { baseProb: base, impliedVolAnnual: iv, realizedVolAnnual: rv, ratio, adviceProb: advice, band, reason };
+};
+
+/** The cap rule with the advised odds applied (target rule only; `widest` has no odds to move). */
+export const applyCapOdds = (rule: CapRule, advice: CapOddsAdvice): CapRule => (rule.kind === "target" ? { kind: "target", maxExceedProb: advice.adviceProb } : rule);
+
 /** OKX `expTime` (YYMMDD, UTC) for an expiry timestamp — the opt-summary key. */
 export const expTimeFromMs = (expiryMs: number): string => {
   const d = new Date(expiryMs);
