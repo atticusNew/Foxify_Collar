@@ -218,7 +218,11 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .host-top{padding:14px 16px 8px;display:flex;align-items:center;justify-content:space-between}
 .host-top .brand{font-weight:700;font-size:17px;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
 .host-top .brand i{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:7px;background:var(--accent);color:var(--accent-ink);font-style:normal;font-size:12px;font-weight:800}
-.host-top .bal{font-variant-numeric:tabular-nums;font-size:13px;color:var(--dim)}
+.host-top .bal{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums;font-size:13px;color:var(--dim)}
+.host-top .delta{font-style:normal;font-weight:700;font-size:12px;color:var(--up);opacity:0}
+.host-top .delta.down{color:var(--down)}
+.host-top .delta.on{animation:delta 1.8s ease-out forwards}
+@keyframes delta{0%{opacity:0;transform:translateY(5px)}15%{opacity:1;transform:none}70%{opacity:1;transform:none}100%{opacity:0;transform:translateY(-5px)}}
 .tabs{display:flex;gap:18px;padding:0 16px;border-bottom:1px solid var(--line)}
 .tabs span{padding:8px 0 10px;font-size:14px;color:var(--faint);font-weight:600;cursor:pointer;user-select:none}
 .tabs span.on{color:var(--ink);border-bottom:2px solid var(--accent);cursor:default}
@@ -369,7 +373,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 <div class="phone" id="phone">
   <div class="host-top">
     <div class="brand"><i>${initial}</i>${brand}</div>
-    <div class="bal" id="bal">Cash $412.50</div>
+    <div class="bal"><i class="delta" id="delta" aria-hidden="true"></i><span id="bal">Cash $412.50</span></div>
   </div>
   <div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
@@ -410,6 +414,23 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     }catch(e){}
   }
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
+  /* CASH MOVES ON SCREEN: the credit is "paid now", so the number in the corner has to be seen
+     taking it. Every change to cash goes through addCash: the balance updates at once, and a +$x
+     (or -$x on a reset) sits beside it for under two seconds, then is gone. While a sheet is up the
+     corner is behind the scrim, so the pulse waits for the sheet to close and fires then, when the
+     eye is back on the list. */
+  var deltaT=null,pendingDelta=0;
+  function pulse(cents){
+    var d=el('delta');d.textContent=(cents>0?'+':'-')+usd(Math.abs(cents));d.className='delta';void d.offsetWidth;d.className='delta on'+(cents<0?' down':'');
+    clearTimeout(deltaT);deltaT=setTimeout(function(){d.className='delta'},1900);
+  }
+  function addCash(cents){
+    if(!cents)return;
+    S.cash+=cents;
+    el('bal').textContent='Cash '+usd(S.cash);
+    if(S.open||S.openParlay){pendingDelta+=cents;return}
+    pulse(cents);
+  }
   /* whole dollars read as whole dollars: $150, not $150.00 */
   function usd0(c){return c%100===0?'$'+(c/100).toLocaleString('en-US'):usd(c)}
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
@@ -499,7 +520,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
       paintSheet(p);
     }).catch(function(){if(S.open===ticker)paintSheet(null)});
   }
-  function closeSheet(){S.open=null;S.openParlay=null;el('scrim').className='scrim';el('sheet').className='sheet'}
+  function closeSheet(){S.open=null;S.openParlay=null;el('scrim').className='scrim';el('sheet').className='sheet';if(pendingDelta){var d=pendingDelta;pendingDelta=0;pulse(d)}}
 
   function paintSheet(p){
     var r=S.byTicker[S.open]||{};
@@ -541,7 +562,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     /* the row's words ride along: the board re-scans every minute and may drop the row, and the Activity tab still has to list the lock */
     S.protectedBy[ticker]={kept:rs.kept,cashCents:rs.cashCents,floorTotal:rs.floorTotal,capTotal:rs.capTotal,creditCents:t.creditCents,floorCents:t.floorCents,capCents:t.capCents,tier:S.tier,closed:null,
       sideName:r?r.sideName:'',league:r?r.league:'',eventTimeIso:r?r.eventTimeIso:''};
-    S.cash+=t.creditCents;
+    addCash(t.creditCents);
     track('protect_on',ticker,S.tier);
     el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Locked in</h2>'+
       '<div class="sum">'+esc(r?r.sideName:'')+'<br>ends <b>'+usd(rs.floorTotal)+'</b> or <b>'+usd(rs.capTotal)+'</b><br><b>+'+usd(t.creditCents)+'</b> added to your cash</div></div>'+
@@ -592,7 +613,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   function confirmClose(c,p,r){
     var ticker=S.open,added=c.leaveWithCents-p.creditCents;
     p.closed={leaveWithCents:c.leaveWithCents,withoutProtectionCents:c.withoutProtectionCents,at:fmtNow(),addedCents:added};
-    S.cash+=added;
+    addCash(added);
     track('close_early',ticker,p.tier);
     el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Closed</h2>'+
       '<div class="sum">'+esc(r?r.sideName:'')+'<br>left with <b>'+usd(c.leaveWithCents)+'</b> in total<br><b>'+(added>=0?'+':'-')+usd(Math.abs(added))+'</b> to your cash now, your <b>'+usd(p.creditCents)+'</b> credit already counted</div></div>'+
@@ -778,7 +799,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   }
   function confirmParlayLock(t){
     var L=t.lock;
-    S.lockedBy[t.id]={size:t.size,lock:L,leagues:leaguesOf(t)};S.cash+=L.creditCents;
+    S.lockedBy[t.id]={size:t.size,lock:L,leagues:leaguesOf(t)};addCash(L.creditCents);
     track('parlay_lock',parlayId(t.id));
     el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Locked</h2>'+
       '<div class="sum">'+t.size+'-pick parlay<br>ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b><br><b>+'+usd(L.creditCents)+'</b> added to your cash</div></div>'+
@@ -819,11 +840,11 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     var c=b.getAttribute('data-close');
     if(c){openCloseSheet(c);return}
     var u=b.getAttribute('data-undo');
-    if(u&&S.protectedBy[u]){var pu=S.protectedBy[u];S.cash-=pu.creditCents;if(pu.closed)S.cash-=pu.closed.addedCents;delete S.protectedBy[u];track('protect_undo',u);paintList();return}
+    if(u&&S.protectedBy[u]){var pu=S.protectedBy[u];addCash(-(pu.creditCents+(pu.closed?pu.closed.addedCents:0)));delete S.protectedBy[u];track('protect_undo',u);paintList();return}
     var pid=b.getAttribute('data-parlay');
     if(pid){openParlaySheet(pid);return}
     var ul=b.getAttribute('data-unlock');
-    if(ul&&S.lockedBy[ul]){S.cash-=S.lockedBy[ul].lock.creditCents;delete S.lockedBy[ul];paintList();return}
+    if(ul&&S.lockedBy[ul]){addCash(-S.lockedBy[ul].lock.creditCents);delete S.lockedBy[ul];paintList();return}
     var tab=b.getAttribute('data-tab');
     if(tab==='Positions'||tab==='Parlays'||tab==='Activity'){switchTab(tab);return}
   });
