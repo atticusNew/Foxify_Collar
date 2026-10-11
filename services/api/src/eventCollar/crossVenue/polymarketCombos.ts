@@ -120,6 +120,9 @@ export interface ComboLegStatus {
   closed: boolean;
   resolved: boolean;
   valueMilli: number | null;
+  /** the venue's rule text (`description`) and named source of truth (`resolutionSource`), as published at this read */
+  description: string;
+  resolutionSource: string;
 }
 
 function asStringArray(v: unknown): string[] {
@@ -157,6 +160,8 @@ export function legStatusFromGamma(raw: Record<string, unknown>): ComboLegStatus
     closed,
     resolved,
     valueMilli: resolved ? Math.min(1000, Math.max(0, prices[0])) : null,
+    description: String(raw.description ?? ""),
+    resolutionSource: String(raw.resolutionSource ?? ""),
   };
 }
 

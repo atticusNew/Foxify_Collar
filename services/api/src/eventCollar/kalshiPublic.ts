@@ -73,6 +73,7 @@ export function parseKalshiMarket(raw: Record<string, unknown>): KalshiMarket {
     volume: Number(raw.volume_fp ?? raw.volume ?? 0),
     openInterest: Number(raw.open_interest_fp ?? raw.open_interest ?? 0),
     rulesPrimary: String(raw.rules_primary ?? ""),
+    rulesSecondary: String(raw.rules_secondary ?? ""),
   };
 }
 
@@ -124,6 +125,11 @@ export interface KalshiMarketResult {
   status: string;
   /** "yes" | "no" once finalized, "" while the result is not yet official */
   result: "yes" | "no" | "";
+  /** the rule text as published at this read (both parts), for the settlement check; "" when absent */
+  rulesPrimary: string;
+  rulesSecondary: string;
+  /** the exact URL read */
+  sourceUrl: string;
 }
 
 /** Official settlement result for one market (empty result until finalized). */
@@ -131,16 +137,17 @@ export async function getMarketResult(
   ticker: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<KalshiMarketResult> {
-  const data = (await fetchJsonWithRetry(
-    `${kalshiBase()}/markets/${encodeURIComponent(ticker)}`,
-    fetchImpl,
-  )) as { market?: Record<string, unknown> };
+  const sourceUrl = `${kalshiBase()}/markets/${encodeURIComponent(ticker)}`;
+  const data = (await fetchJsonWithRetry(sourceUrl, fetchImpl)) as { market?: Record<string, unknown> };
   const m = data.market ?? {};
   const raw = String(m.result ?? "");
   return {
     ticker: String(m.ticker ?? ticker),
     status: String(m.status ?? ""),
     result: raw === "yes" || raw === "no" ? raw : "",
+    rulesPrimary: String(m.rules_primary ?? ""),
+    rulesSecondary: String(m.rules_secondary ?? ""),
+    sourceUrl,
   };
 }
 
