@@ -89,7 +89,7 @@ export const fetchHlCandles = async (
   coin: string,
   startMs: number,
   endMs: number,
-  interval: "1m" | "5m",
+  interval: "1m" | "5m" | "15m" | "1h",
   base = process.env.HL_API_BASE || "https://api.hyperliquid.xyz",
   f: typeof fetch = fetch,
 ): Promise<Candle[]> => {
@@ -118,14 +118,27 @@ export const fetchOkxIndexCandlesAround = async (
   return parseOkxIndexCandles(await res.json());
 };
 
-export const fetchOkxDeliveryPrice = async (
-  expiryMs: number,
-  base = process.env.OKX_REST_BASE || "https://www.okx.com",
-  f: typeof fetch = fetch,
-): Promise<number | null> => {
+/** How many delivery rows the parser can read a date code and a price from: the drift check's number. */
+export const readableDeliveryPrints = (raw: unknown): number => {
+  const rows = (raw as { data?: Array<{ details?: Array<{ insId?: string; px?: string }> }> })?.data ?? [];
+  let n = 0;
+  for (const row of rows) {
+    const d = (row.details ?? []).find((x) => x.insId && dateCodeOf(x.insId) != null && Number(x.px) > 0);
+    if (d) n += 1;
+  }
+  return n;
+};
+
+export const fetchOkxDeliveryHistory = async (base = process.env.OKX_REST_BASE || "https://www.okx.com", f: typeof fetch = fetch): Promise<unknown> => {
   const res = await f(`${base}/api/v5/public/delivery-exercise-history?instType=OPTION&uly=BTC-USD&limit=100`, {
     signal: AbortSignal.timeout(8_000),
   });
   if (!res.ok) throw new Error(`OKX delivery-exercise-history HTTP ${res.status}`);
-  return deliveryPriceFor(await res.json(), expiryMs);
+  return res.json();
 };
+
+export const fetchOkxDeliveryPrice = async (
+  expiryMs: number,
+  base = process.env.OKX_REST_BASE || "https://www.okx.com",
+  f: typeof fetch = fetch,
+): Promise<number | null> => deliveryPriceFor(await fetchOkxDeliveryHistory(base, f), expiryMs);

@@ -72,7 +72,13 @@ export type EpAlertKind =
   | "unwind_event"
   | "margin_utilization"
   | "reconcile_mismatch"
-  | "paused";
+  | "paused"
+  // perp shadow operations (perpShadowOps.ts)
+  | "settlement_stalled"
+  | "quote_stalled"
+  | "netting_stale"
+  | "venue_payload_drift"
+  | "friday_review";
 
 export type EpAlert = { kind: EpAlertKind; message: string; data?: Record<string, unknown>; tsMs: number };
 
