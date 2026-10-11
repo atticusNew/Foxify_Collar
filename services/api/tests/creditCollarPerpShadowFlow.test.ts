@@ -303,5 +303,5 @@ test("perp flow: the ledger replays opens, flow refusals, closes and books, dedu
   assert.ok(!existsSync(path));
   assert.equal(readFileSync(r.archivedTo as string, "utf8"), before);
   assert.deepEqual(archiveLedgerFile(path), { path, archivedTo: null }, "nothing to archive is not an error");
-  assert.deepEqual(loadPerpShadow(path), { positions: [], refusals: [], books: [] });
+  assert.deepEqual(loadPerpShadow(path), { positions: [], refusals: [], books: [], reviewed: new Set() });
 });

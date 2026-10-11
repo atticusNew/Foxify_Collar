@@ -186,6 +186,13 @@ export interface PerpShadowOpenRecord {
   counterfactuals: PerpShadowCounterfactuals | null;
   /** flow mode (perpShadowFlow.ts): the size drawn, its class, and when it is scheduled to close early (null = runs to expiry) */
   flow?: { sizeClass: SizeClass; targetUsd: number; closeAtIso: string | null };
+  /**
+   * Where the cap odds would sit on implied over realized vol (capRule.adaptCapOdds), and whether
+   * the quote applied it (EP_CAP_ODDS_ADAPT) or only recorded it. Absent before 2026-10-11.
+   */
+  capOdds?: { baseProb: number; adviceProb: number; applied: boolean; impliedVolAnnual: number | null; realizedVolAnnual: number | null; ratio: number | null; reason: string } | null;
+  /** the net a desk would have to beat for this collar to route to RFQ instead of the book (rfqRoute.ts). Absent before 2026-10-11. */
+  rfq?: { bookNetCents: number; beatBookNetCents: number } | null;
 }
 
 export interface PerpShadowRefusalRecord {
@@ -249,7 +256,14 @@ export interface PerpShadowCloseRecord {
   valuation: PerpCloseValuation;
 }
 
-export type PerpShadowRecord = PerpShadowOpenRecord | PerpShadowRefusalRecord | PerpShadowSettleRecord | PerpShadowVoidRecord | PerpShadowCloseRecord | PerpBookRecord;
+/** The Friday review for one expiry was posted (perpShadowOps.fridayReview); a restart must not post it twice. */
+export interface PerpShadowReviewRecord {
+  type: "review";
+  at: string;
+  expiryIso: string;
+}
+
+export type PerpShadowRecord = PerpShadowOpenRecord | PerpShadowRefusalRecord | PerpShadowSettleRecord | PerpShadowVoidRecord | PerpShadowCloseRecord | PerpBookRecord | PerpShadowReviewRecord;
 
 export interface PerpShadowPosition extends Omit<PerpShadowOpenRecord, "type"> {
   status: "open" | "settled" | "void" | "closed";
@@ -547,11 +561,12 @@ export function loadPerpShadowRecords(path: string): PerpShadowRecord[] {
 export function replayPerpShadow(
   records: PerpShadowRecord[],
   opts: PerpReplayOptions = {},
-): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[]; books: PerpBookRecord[] } {
+): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[]; books: PerpBookRecord[]; reviewed: Set<string> } {
   const capMode = opts.capMode ?? DEFAULT_PERP_CAP_MODE;
   const byId = new Map<string, PerpShadowPosition>();
   const refusals: PerpShadowRefusalRecord[] = [];
   const books: PerpBookRecord[] = [];
+  const reviewed = new Set<string>();
   const refusalIds = new Set<string>();
   for (const r of records) {
     if (r.type === "open") {
@@ -587,6 +602,8 @@ export function replayPerpShadow(
       if (!p || p.status !== "open") continue;
       p.status = "void";
       p.voidReason = r.reason;
+    } else if (r.type === "review") {
+      reviewed.add(r.expiryIso);
     }
   }
   // Outcomes last: a knock-out's buyback reads the ATM ask from the scan nearest the touch, which
@@ -595,7 +612,7 @@ export function replayPerpShadow(
   for (const p of positions) {
     if (p.status === "settled" && p.settleCents != null) p.outcome = perpOutcome(p, p.settleCents, settleCtx(p, p.capStrikeCents, positions), capMode);
   }
-  return { positions, refusals, books };
+  return { positions, refusals, books, reviewed };
 }
 
 /** Ids already in the ledger (opens and flow refusals): what a re-planned batch must skip. */
@@ -608,7 +625,7 @@ export function plannedIdsIn(records: PerpShadowRecord[]): Set<string> {
   return ids;
 }
 
-export function loadPerpShadow(path: string, opts: PerpReplayOptions = {}): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[]; books: PerpBookRecord[] } {
+export function loadPerpShadow(path: string, opts: PerpReplayOptions = {}): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[]; books: PerpBookRecord[]; reviewed: Set<string> } {
   return replayPerpShadow(loadPerpShadowRecords(path), opts);
 }
 

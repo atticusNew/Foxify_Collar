@@ -17,6 +17,8 @@ import {
   type PerpShadowSummary,
 } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowLedger";
 import { feeRuleText } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowQuote";
+import type { FeeShare, FridayReviewConfig, FridayRow, PerpOpsAlarm, PublicCapRung } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowOps";
+import type { CapOddsAdvice } from "../src/singleSide/twoSided/creditCollar/capRule";
 
 function demoUrl(): string {
   return process.env.PERP_SHADOW_DEMO_URL || "https://earnandprotect.xyz";
@@ -124,6 +126,15 @@ export interface PerpShadowPageInput {
   tenor?: EpTenor;
   /** flow mode's one-line rule (describeFlow), or null when the shadow is the fixed-size metronome */
   flow?: string | null;
+  /** the counterfactual cap ladder, rungs that settled (perpShadowOps.publicCapLadder) */
+  capLadder?: PublicCapRung[];
+  /** the Friday review, oldest first (perpShadowOps.fridayReview) */
+  fridays?: FridayRow[];
+  fridayConfig?: FridayReviewConfig;
+  feeShare?: FeeShare;
+  capOdds?: { adaptApplied: boolean; latest: CapOddsAdvice | null };
+  /** what the watchdog is raising right now; the page says so rather than render stale numbers quietly */
+  alarms?: PerpOpsAlarm[];
 }
 
 const sideTd = (p: PerpShadowPosition): string => `<td class="${p.side}">${p.side === "long" ? "Long" : "Short"}</td>`;
@@ -268,6 +279,70 @@ function flowSections(s: PerpShadowSummary, rule: string | null | undefined): st
   ${closes}`;
 }
 
+function alarmBanner(alarms: PerpOpsAlarm[]): string {
+  if (alarms.length === 0) return "";
+  return `<div class="card" style="border-color:rgba(227,195,76,.5);margin-top:14px"><div class="k" style="color:var(--warn)">OPERATIONS</div>${alarms
+    .map((a) => `<div class="s"><b>${escapeHtml(a.kind.replace(/_/g, " "))}</b> · ${escapeHtml(a.message)}</div>`)
+    .join("")}</div>`;
+}
+
+const flagTag = (f: FridayRow["flags"][number]): string =>
+  f === "floor_paid" ? '<span class="tag save">floor paid</span>' : f === "seen_above_said" ? '<span class="tag warn">seen above said</span>' : '<span class="tag warn">hand-back over share</span>';
+
+/**
+ * FRIDAY BY FRIDAY: one row per expiry, said vs seen and hand-back vs take, with the record to
+ * date on each row. The two flags are the ones the operator is told about: realized past-cap
+ * share above the published odds, and cumulative hand-back above the set share of take.
+ */
+function fridaySection(rows: FridayRow[], cfg?: FridayReviewConfig): string {
+  if (rows.length === 0) return "";
+  const body = [...rows]
+    .reverse()
+    .map(
+      (r) =>
+        `<tr><td>${escapeHtml(r.expiryIso.slice(0, 10))}${r.settleSource && r.settleSource !== "okx_delivery" ? ` <span class="tag">${escapeHtml(r.settleSource)}</span>` : ""}</td>` +
+        `<td class="hi">${r.settled}</td><td>${r.settleCents != null ? px(r.settleCents) : "–"}</td>` +
+        `<td>${r.saidPct == null ? "–" : `${r.saidPct}%`} / <b style="color:var(--ink)">${r.seenPct}%</b></td>` +
+        `<td>${r.floorSaves}</td><td>${r.endedPastCap ? `${r.endedPastCap} · ${usd(r.capExcessCents)}` : "–"}</td>` +
+        `<td class="hi">${usd(r.takeCents)}</td>${signedTd(r.holderDeltaCents)}` +
+        `<td>${r.cumulative.saidPct == null ? "–" : `${r.cumulative.saidPct}%`} / ${r.cumulative.seenPct}% · ${r.cumulative.handBackOfTakePct == null ? "–" : `${r.cumulative.handBackOfTakePct}%`}</td>` +
+        `<td>${r.flags.length ? r.flags.map(flagTag).join(" ") : '<span class="tag">clear</span>'}</td></tr>`,
+    )
+    .join("");
+  const band = cfg ? `${Math.round(cfg.capExceedProb * 100)}%` : "the published odds";
+  const share = cfg ? `${Math.round(cfg.handBackShareOfTake * 100)}%` : "the set share";
+  return `
+  <h2>Friday by Friday <small>every expiry, checked against the published odds</small></h2>
+  ${table(th("expiry", "settled", "print", "cap odds said / seen", "floor saves", "past the cap · handed back", "our take", "users vs unprotected", "to date: said / seen · hand-back of take", "flags"), body)}
+  <div class="rule">Posted to the operator the moment an expiry settles. <b>Seen above said</b> flags when the record's realized past-cap share rises above ${band}; <b>hand-back over share</b> when gains handed back exceed ${share} of take, cumulative${cfg ? `, after ${cfg.minSettledForFlags} settled` : ""}. One Friday is one draw; the cumulative columns are the ones that mean something.</div>`;
+}
+
+/**
+ * THE CAP LADDER, public: every listed cap distance the live floor could have been paired with,
+ * settled on the same path and print as the live position. Which rung earns the most credit for
+ * the least upside handed back is a measured number, not an argument.
+ */
+function capLadderSection(rungs: PublicCapRung[], capOdds?: { adaptApplied: boolean; latest: CapOddsAdvice | null }): string {
+  if (rungs.length === 0) return "";
+  const body = rungs
+    .map(
+      (r) =>
+        `<tr${r.livePicks > 0 && r.livePicks * 2 >= r.quoted ? ' class="base"' : ""}><td>${(r.capPct * 100).toFixed(1)}%${r.livePicks ? ` <span class="tag">live ${r.livePicks}</span>` : ""}${r.underGuard ? ` <span class="tag warn">under guard</span>` : ""}</td>` +
+        `<td class="hi">${r.settled}</td><td>${r.predictedExceedPct == null ? "–" : `${r.predictedExceedPct}%`} / <b style="color:var(--ink)">${r.realizedExceedPct == null ? "–" : `${r.realizedExceedPct}%`}</b></td>` +
+        `<td class="hi">${usd(r.creditCents)}</td><td>${r.endedPastCap ? `${r.endedPastCap} · ${usd(r.capExcessCents)}` : "–"}</td>` +
+        `<td>${r.creditCents > 0 ? `${Math.round((100 * r.capExcessCents) / r.creditCents)}%` : "–"}</td>${signedTd(r.holderDeltaCents)}<td>${usd(r.takeCents)}</td></tr>`,
+    )
+    .join("");
+  const odds = capOdds?.latest;
+  const oddsLine = odds
+    ? `Cap odds now: the rule targets <b>${(odds.baseProb * 100).toFixed(0)}%</b>; implied vol ${odds.impliedVolAnnual == null ? "unreadable" : `${(odds.impliedVolAnnual * 100).toFixed(0)}%`} against realized ${odds.realizedVolAnnual == null ? "unreadable" : `${(odds.realizedVolAnnual * 100).toFixed(0)}%`}${odds.ratio == null ? "" : ` (${odds.ratio}x)`} says <b>${(odds.adviceProb * 100).toFixed(0)}%</b>${capOdds?.adaptApplied ? ", applied to the live strike" : ", recorded beside every quote and not yet applied"}.`
+    : "";
+  return `
+  <h2>The cap ladder <small>every listed cap, settled on the same path</small></h2>
+  ${table(th("cap distance", "settled", "odds said / seen", "credit", "past the cap · handed back", "handed back, share of credit", "users vs unprotected", "our take"), body)}
+  <div class="rule">Floor held fixed, the funding wing moved to every listed strike; each rung settled on the same Hyperliquid path and OKX print as the live position. A closer cap pays more credit and hands back more upside; the market prices those to be equal in expectation, and the record shows what actually happened. ${oddsLine}</div>`;
+}
+
 export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
   const s = input.summary;
   const period = s.firstAt ? `${utcDay(s.firstAt)} to ${utcDay(input.atIso)} UTC` : "not started; the first quote begins it";
@@ -327,6 +402,7 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     ${flowOn ? '<span class="pill">flow · run as a book</span>' : '<span class="pill">hourly · fixed size</span>'}
   </div>
 
+  ${alarmBanner(input.alarms ?? [])}
   <div class="grid">
     ${kpi("positions quoted", String(s.positions), `${s.open} open · ${s.settled} settled${s.closed ? ` · ${s.closed} closed early` : ""}`, "green")}
     ${kpi("honest refusals", String(s.refusals), s.refusals ? "the market could not fund a credit" : "every quote funded")}
@@ -341,6 +417,11 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
   <div class="grid">
     ${identityKpis(s)}
     ${kpi("market funded", usd(s.grossCreditCents), `gross · OKX fees ${usd(s.venueFeeCents)}`)}
+    ${
+      input.feeShare && input.feeShare.feePct != null
+        ? kpi("venue fees, share of gross", `${input.feeShare.feePct}%`, `of the credit the market funded · half the fee would add ${usd(input.feeShare.halfFeeGainCents)} to the net credit`, "mint")
+        : ""
+    }
     ${kpi("venue spread paid", bpsPct(s.spreadCostBps), "of notional, mid vs touch: the number a better fill shrinks")}
   </div>
 
@@ -369,6 +450,9 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
   </div>
   ${refusalRows ? `<h2>Why quotes were refused</h2>${table(th("reason", "count"), refusalRows)}` : ""}
 
+  ${fridaySection(input.fridays ?? [], input.fridayConfig)}
+  ${capLadderSection(input.capLadder ?? [], input.capOdds)}
+
   ${flowSections(s, input.flow)}
 
   ${
@@ -395,6 +479,7 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
     <li><b>Our take</b> is the published share of the net credit; at a knock-out the short cap leg is bought back at the money, our cost against the unvested credit kept.</li>`
     }
     <li><b>Venue spread</b> is what crossing the OKX book costs versus mid; it is the number a better fill would shrink.</li>
+    <li><b>Print</b>: OKX's official delivery price. When that print is unreadable a day after expiry, the Hyperliquid mark at the expiry minute settles the group and every such row says <i>hl_mark</i> in the CSV; nothing is voided while either source can print.</li>
   </ul>
   <div style="margin-top:14px"><a class="back" href="${demoUrl()}">Back to the demo</a><a class="back" href="/api/shadow">Raw JSON</a><a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a></div>
   <footer>

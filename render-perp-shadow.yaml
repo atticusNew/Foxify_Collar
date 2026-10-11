@@ -17,7 +17,8 @@
 # Singapore: OKX public REST is read directly (same region as the demo).
 # Deploy: Render dashboard → New → Blueprint → select this file. Manual deploys
 # only (autoDeploy off, like the demo). Pages: / (public record), /api/shadow,
-# /api/shadow/positions.csv, /healthz; operator (EP_ADMIN_TOKEN): /report,
+# /api/shadow/positions.csv, /api/shadow/fridays, /api/shadow/ops, /healthz
+# (alarms); operator (EP_ADMIN_TOKEN): /report,
 # /api/shadow/report, /api/shadow/export, /api/shadow/positions.csv?scope=full.
 # ─────────────────────────────────────────────────────────────────────────
 services:
@@ -96,6 +97,59 @@ services:
         value: "900000"
       - key: PERP_SHADOW_DEMO_URL
         value: https://earnandprotect.xyz
+      # SETTLEMENT: OKX's delivery print first; after PERP_SHADOW_HL_PRINT_AFTER_MS (24h) with no
+      # print, the Hyperliquid mark at the expiry minute settles the group (recorded hl_mark); a
+      # void only after PERP_SHADOW_VOID_AFTER_MS (7 days) with neither. Nothing is voided while a
+      # venue printed.
+      - key: PERP_SHADOW_HL_PRINT_AFTER_MS
+        value: "86400000"
+      - key: PERP_SHADOW_VOID_AFTER_MS
+        value: "604800000"
+      # ALARMS: settlement_stalled (an open position PERP_SHADOW_SETTLE_STALL_MS past expiry +
+      # grace), quote_stalled (no quote for 3 scans or 3 failures in a row), netting_stale (flow
+      # mode, open positions, no book snapshot for 3 scans), venue_payload_drift (the real parsers
+      # read the live OKX and Hyperliquid payloads every hour and found nothing). Each is raised
+      # once per PERP_SHADOW_ALARM_COOLDOWN_MS, shown on /healthz and /api/shadow/ops, and sent to
+      # the sink below. The Friday review (one row per settled expiry: said vs seen, hand-back vs
+      # take, cumulative, flags) posts on the same sink and is recorded in the ledger once.
+      - key: PERP_SHADOW_SETTLE_STALL_MS
+        value: "21600000"
+      - key: PERP_SHADOW_ALARM_COOLDOWN_MS
+        value: "21600000"
+      # The sink: set in the Render dashboard, never in this file. Telegram needs both keys; the
+      # webhook is any HTTPS endpoint that accepts a JSON POST. Without either, alarms still land
+      # on /healthz and in EP_ALERTS_PATH on the disk.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ALERT_CHAT_ID
+        sync: false
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+      - key: EP_ALERTS_PATH
+        value: /var/data/perp-shadow-alerts.jsonl
+      # CAP ODDS: realized vol (30 days of Hyperliquid hourly closes) against the strike's implied
+      # vol moves the odds the cap rule targets inside the published band (10-30%). "0" records
+      # the advice on every open and on /api/shadow without applying it; "1" applies it. Measure
+      # first.
+      - key: EP_CAP_ODDS_ADAPT
+        value: "0"
+      - key: EP_CAP_ODDS_SLOPE
+        value: "0.2"
+      # FRIDAY REVIEW flags: cumulative hand-back above this share of cumulative take, once at
+      # least this many positions have settled (one Friday is one draw).
+      - key: EP_FRIDAY_HANDBACK_SHARE
+        value: "0.5"
+      - key: EP_FRIDAY_MIN_SETTLED
+        value: "100"
+      # RFQ: the net a desk must beat for a collar to route to RFQ instead of the book, recorded
+      # on every open (rfq.beatBookNetCents). No desk is called from the shadow; quote-only
+      # routing lives in the pricer and needs dealer credentials the shadow never holds.
+      - key: EP_RFQ_SIZE_THRESHOLD_USD
+        value: "50000"
+      - key: EP_RFQ_MIN_IMPROVEMENT_BPS
+        value: "1"
+      - key: EP_RFQ_TIE_USD
+        value: "0.50"
       # Gates the operator views and POST /api/shadow/reset (?token=... or x-admin-token).
       # Fail-closed: without it those routes answer 403 and the public record stays up.
       - key: EP_ADMIN_TOKEN

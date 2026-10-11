@@ -33,7 +33,22 @@
  *      EP_TAKE_RATE (default 0.20) · EP_DE_MINIMIS_USDC (default 0.05)
  *      PERP_SHADOW_MIN_TAKE_BPS (live minimum, default 0 = none, as the product today)
  *      PERP_SHADOW_CF_MIN_TAKE_BPS (the fee-floor counterfactual, default 5)
- *      PERP_SHADOW_SETTLE_GRACE_MS (default 20m past expiry) · PERP_SHADOW_VOID_AFTER_MS (default 72h)
+ *      PERP_SHADOW_SETTLE_GRACE_MS (default 20m past expiry) · PERP_SHADOW_HL_PRINT_AFTER_MS (default 24h: when
+ *      OKX's print is still unreadable this long after expiry, the Hyperliquid mark at the expiry minute settles
+ *      the group, recorded as hl_mark) · PERP_SHADOW_VOID_AFTER_MS (default 7d: void only when neither source printed)
+ *      OPERATIONS (perpShadowOps.ts): the watchdog raises settlement_stalled (an open position past expiry by
+ *      PERP_SHADOW_SETTLE_STALL_MS, default 6h), quote_stalled, netting_stale and venue_payload_drift (the real
+ *      parsers read the live OKX and Hyperliquid payloads every hour); alarms go to the EP alert sink
+ *      (ALERT_WEBHOOK_URL, TELEGRAM_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID, EP_ALERTS_PATH), once per condition per
+ *      PERP_SHADOW_ALARM_COOLDOWN_MS (default 6h), and show on /healthz. After each expiry settles, the Friday
+ *      review (one row: said vs seen, hand-back vs take, cumulative, flags) is posted on the same sink and
+ *      recorded in the ledger so a restart never posts it twice; EP_FRIDAY_HANDBACK_SHARE (default 0.5) and
+ *      EP_FRIDAY_MIN_SETTLED (default 100) set the flags.
+ *      CAP ODDS (capRule.ts): every quote records where the cap odds would sit on implied over realized vol
+ *      (PERP_SHADOW_RV_DAYS of hourly Hyperliquid candles, default 30; EP_CAP_ODDS_SLOPE, default 0.2, inside the
+ *      10-30% band); EP_CAP_ODDS_ADAPT=1 applies it to the live strike, otherwise it is measured only.
+ *      RFQ (rfqRoute.ts): every quote records the net a desk would have to beat for the collar to route to RFQ
+ *      (EP_RFQ_SIZE_THRESHOLD_USD, EP_RFQ_MIN_IMPROVEMENT_BPS, EP_RFQ_TIE_USD).
  *      EP_ADMIN_TOKEN (the demo's admin token) gates /report, /api/shadow/report, /api/shadow/export,
  *      /api/shadow/reset and the full CSV; fail-closed when unset.
  *      PERP_SHADOW_FLOW=1 runs the shadow as a BOOK (perpShadowFlow.ts): hourly batches of wraps to a
@@ -50,8 +65,24 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { DEMO_CAP_PCT, DEMO_FLOOR_PCT, parseCapMode } from "../src/singleSide/twoSided/creditCollar/demoWrap";
 import { capGuardFor, otherTenor, parseTenor } from "../src/singleSide/twoSided/creditCollar/perpTenor";
-import { capRuleFromEnv, capRuleText } from "../src/singleSide/twoSided/creditCollar/capRule";
-import { fetchOkxListedSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
+import { adaptCapOdds, applyCapOdds, capRuleFromEnv, capRuleText, DEFAULT_CAP_EXCEED_PROB, DEFAULT_CAP_ODDS_SLOPE, realizedVolAnnual, type CapOddsAdvice } from "../src/singleSide/twoSided/creditCollar/capRule";
+import { packageFor, rfqConfigFromEnv } from "../src/singleSide/twoSided/creditCollar/rfqRoute";
+import { buildAlertRaiser, parseAlertSinkFromEnv } from "../src/singleSide/twoSided/creditCollar/epSafety";
+import {
+  DEFAULT_FRIDAY_CONFIG,
+  DEFAULT_SETTLE_STALL_MS,
+  driftAlarm,
+  feeShare,
+  fridayMessage,
+  fridayReview,
+  hlPrintAtExpiry,
+  publicCapLadder,
+  watchdog,
+  type DriftCheck,
+  type FridayReviewConfig,
+  type PerpOpsAlarm,
+} from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowOps";
+import { atmReference, fetchOkxListedSnapshot } from "../src/singleSide/twoSided/creditCollar/perpShadow/okxListedSnapshot";
 import { bullishLegReader, deribitLegReader, readVenueReference } from "../src/singleSide/twoSided/creditCollar/perpShadow/venueReference";
 import {
   appendPerpShadowRecord,
@@ -71,9 +102,11 @@ import { archiveLedgerFile } from "../src/singleSide/twoSided/creditCollar/perpS
 import {
   fetchHlCandles,
   fetchHlContext,
+  fetchOkxDeliveryHistory,
   fetchOkxDeliveryPrice,
   fetchOkxIndex,
   fetchOkxIndexCandlesAround,
+  readableDeliveryPrints,
 } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowMarket";
 import { candleIntervalFor, firstTouches, okxConfirms, pathRange, type Candle } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowPath";
 import { feeRuleText, perpShadowQuote, type PerpTakeConfig } from "../src/singleSide/twoSided/creditCollar/perpShadow/perpShadowQuote";
@@ -85,7 +118,23 @@ const LEDGER_PATH = process.env.PERP_SHADOW_LEDGER_PATH || "/tmp/perp-shadow/led
 const SCAN_MS = Number(process.env.PERP_SHADOW_SCAN_MS || 60 * 60_000);
 const SETTLE_MS = Number(process.env.PERP_SHADOW_SETTLE_MS || 15 * 60_000);
 const SETTLE_GRACE_MS = Number(process.env.PERP_SHADOW_SETTLE_GRACE_MS || 20 * 60_000);
-const VOID_AFTER_MS = Number(process.env.PERP_SHADOW_VOID_AFTER_MS || 72 * 3_600_000);
+const HL_PRINT_AFTER_MS = Number(process.env.PERP_SHADOW_HL_PRINT_AFTER_MS || 24 * 3_600_000);
+const VOID_AFTER_MS = Number(process.env.PERP_SHADOW_VOID_AFTER_MS || 7 * 24 * 3_600_000);
+const SETTLE_STALL_MS = Number(process.env.PERP_SHADOW_SETTLE_STALL_MS || DEFAULT_SETTLE_STALL_MS);
+const ALARM_COOLDOWN_MS = Number(process.env.PERP_SHADOW_ALARM_COOLDOWN_MS || 6 * 3_600_000);
+const OPS_MS = Number(process.env.PERP_SHADOW_OPS_MS || 5 * 60_000);
+const DRIFT_MS = Number(process.env.PERP_SHADOW_DRIFT_MS || 60 * 60_000);
+const RV_DAYS = Number(process.env.PERP_SHADOW_RV_DAYS || 30);
+const CAP_ODDS_ADAPT = /^(1|true|on)$/i.test(String(process.env.EP_CAP_ODDS_ADAPT ?? "0"));
+const CAP_ODDS_SLOPE = Number(process.env.EP_CAP_ODDS_SLOPE || DEFAULT_CAP_ODDS_SLOPE);
+const RFQ_CFG = rfqConfigFromEnv(process.env);
+const FRIDAY_CFG: FridayReviewConfig = {
+  capExceedProb: DEFAULT_FRIDAY_CONFIG.capExceedProb,
+  handBackShareOfTake: Number(process.env.EP_FRIDAY_HANDBACK_SHARE || DEFAULT_FRIDAY_CONFIG.handBackShareOfTake),
+  minSettledForFlags: Number(process.env.EP_FRIDAY_MIN_SETTLED || DEFAULT_FRIDAY_CONFIG.minSettledForFlags),
+};
+const alertSink = parseAlertSinkFromEnv(process.env);
+const raiseAlert = buildAlertRaiser(alertSink);
 const SIZE_BTC = Number(process.env.PERP_SHADOW_SIZE_BTC || 0.03);
 const OKX_LOT_BTC = 0.01;
 const CONTRACTS = Math.max(1, Math.round(SIZE_BTC / OKX_LOT_BTC));
@@ -103,6 +152,7 @@ const TENOR = parseTenor(process.env.EP_TENOR);
 const CAP_MODE = parseCapMode(process.env.EP_CAP_MODE);
 const CAP_GUARD = capGuardFor(TENOR, process.env, CAP_MODE);
 const CAP_RULE = capRuleFromEnv(process.env);
+FRIDAY_CFG.capExceedProb = CAP_RULE.kind === "target" ? CAP_RULE.maxExceedProb : DEFAULT_CAP_EXCEED_PROB;
 const OTHER_TENOR_CAP_GUARD = capGuardFor(otherTenor(TENOR), process.env, CAP_MODE);
 const REPLAY = { capMode: CAP_MODE };
 const CAP_LADDER_RULE =
@@ -133,6 +183,20 @@ let lastScanError: string | null = null;
 let lastSettleError: string | null = null;
 let consecutiveScanFailures = 0;
 let scanning = false;
+let activeAlarms: PerpOpsAlarm[] = [];
+let lastDriftChecks: DriftCheck[] = [];
+let lastDriftAt: string | null = null;
+let lastCapOdds: CapOddsAdvice | null = null;
+
+/** Realized vol for the cap odds: hourly Hyperliquid closes over RV_DAYS. Null on any failure; the rule then keeps its base odds. */
+async function realizedVolNow(nowMs: number): Promise<number | null> {
+  try {
+    const candles = await fetchHlCandles(COIN, nowMs - RV_DAYS * 86_400_000, nowMs, "1h");
+    return realizedVolAnnual(candles, 3_600_000);
+  } catch {
+    return null;
+  }
+}
 
 /** One quote per side from one snapshot; refusals are recorded, never hidden. */
 async function scanTick(): Promise<void> {
@@ -149,12 +213,27 @@ async function scanTick(): Promise<void> {
     const snap = await fetchOkxListedSnapshot({ spot: hl.markPx, nowMs, heldInstIds: held });
     if (snap.chain.length === 0) throw new Error("OKX chain has no live in-band options at the next daily expiry");
     const nowIso = new Date(nowMs).toISOString();
+    // Implied over realized: the ATM call's OKX mark vol against RV_DAYS of hourly Hyperliquid closes.
+    const atm = atmReference(snap, hl.markPx);
+    const impliedVol = atm.callInstId ? (snap.markVols?.[atm.callInstId] ?? null) : null;
+    const capOdds = adaptCapOdds({ baseProb: CAP_RULE.kind === "target" ? CAP_RULE.maxExceedProb : DEFAULT_CAP_EXCEED_PROB, impliedVolAnnual: impliedVol, realizedVolAnnual: await realizedVolNow(nowMs), slope: CAP_ODDS_SLOPE });
+    lastCapOdds = capOdds;
+    const capRuleNow = CAP_ODDS_ADAPT ? applyCapOdds(CAP_RULE, capOdds) : CAP_RULE;
+    const stampOpen = (r: ReturnType<typeof perpShadowQuote>) => {
+      if (r.type !== "open") return;
+      r.capOdds = { baseProb: capOdds.baseProb, adviceProb: capOdds.adviceProb, applied: CAP_ODDS_ADAPT, impliedVolAnnual: capOdds.impliedVolAnnual, realizedVolAnnual: capOdds.realizedVolAnnual, ratio: capOdds.ratio, reason: capOdds.reason };
+      const pkg = packageFor(
+        { side: r.side, contracts: r.contracts, ctValBtc: r.ctValBtc, notionalCents: r.notionalCents, expiryIso: r.expiryIso, floorStrikeCents: r.floorStrikeCents, capStrikeCents: r.capStrikeCents, bookNetCreditCents: r.netCreditCents },
+        RFQ_CFG,
+      );
+      r.rfq = { bookNetCents: pkg.bookNetCents, beatBookNetCents: pkg.beatBookNetCents };
+    };
     const common = {
       spot: hl.markPx,
       geometry: GEOMETRY,
       tenor: TENOR,
       capGuard: CAP_GUARD,
-      capRule: CAP_RULE,
+      capRule: capRuleNow,
       otherTenorCapGuard: OTHER_TENOR_CAP_GUARD,
       take: TAKE,
       counterfactualMinTakeBps: CF_MIN_TAKE_BPS,
@@ -183,6 +262,7 @@ async function scanTick(): Promise<void> {
           rec.id = plan.id;
           rec.sizeClass = plan.sizeClass;
         }
+        stampOpen(rec);
         appendPerpShadowRecord(LEDGER_PATH, rec);
       }
     } else {
@@ -194,6 +274,7 @@ async function scanTick(): Promise<void> {
             venueReaders,
           ).catch(() => null);
         }
+        stampOpen(rec);
         appendPerpShadowRecord(LEDGER_PATH, rec);
       }
     }
@@ -271,12 +352,30 @@ async function settleTick(
     const byExpiry = new Map<string, PerpShadowPosition[]>();
     for (const p of due) byExpiry.set(p.expiryIso, [...(byExpiry.get(p.expiryIso) ?? []), p]);
     const nowIso = new Date(nowMs).toISOString();
+    let settledSomething = false;
     for (const [expiryIso, group] of byExpiry) {
       const expiryMs = Date.parse(expiryIso);
-      const px = await (deps.delivery ?? fetchOkxDeliveryPrice)(expiryMs);
+      let px: number | null = null;
+      let source: "okx_delivery" | "hl_mark" = "okx_delivery";
+      try {
+        px = await (deps.delivery ?? fetchOkxDeliveryPrice)(expiryMs);
+      } catch (err) {
+        lastSettleError = `delivery: ${String(err instanceof Error ? err.message : err)}`;
+      }
+      if (px == null && nowMs - expiryMs > HL_PRINT_AFTER_MS) {
+        // SECOND SOURCE before any void: the Hyperliquid mark at the expiry minute (the product's own
+        // price, 0.6 bps from the OKX index on this record). Marked hl_mark on every row it settles.
+        try {
+          const around = await (deps.candles ?? fetchHlCandles)(COIN, expiryMs - 30 * 60_000, expiryMs + 60_000, "1m");
+          px = hlPrintAtExpiry(around, expiryMs, 60_000);
+          if (px != null) source = "hl_mark";
+        } catch (err) {
+          lastSettleError = `hl print: ${String(err instanceof Error ? err.message : err)}`;
+        }
+      }
       if (px == null) {
         if (nowMs - expiryMs > VOID_AFTER_MS) {
-          for (const p of group) appendPerpShadowRecord(LEDGER_PATH, { type: "void", at: nowIso, id: p.id, reason: "no delivery price published" });
+          for (const p of group) appendPerpShadowRecord(LEDGER_PATH, { type: "void", at: nowIso, id: p.id, reason: "no delivery price published by OKX and no Hyperliquid mark at expiry" });
         }
         continue;
       }
@@ -290,14 +389,94 @@ async function settleTick(
       }
       for (const p of group) {
         const path = candles.length ? await buildPath(p, candles, interval, deps.okxAround ?? fetchOkxIndexCandlesAround) : null;
-        appendPerpShadowRecord(LEDGER_PATH, { type: "settle", at: nowIso, id: p.id, settleCents: Math.round(px * 100), source: "okx_delivery", path });
+        appendPerpShadowRecord(LEDGER_PATH, { type: "settle", at: nowIso, id: p.id, settleCents: Math.round(px * 100), source, path });
       }
+      settledSomething = true;
     }
     lastSettleAt = nowIso;
     if (!lastSettleError?.startsWith("candles:")) lastSettleError = null;
+    if (settledSomething || byExpiry.size === 0) postFridayReviews(nowIso);
   } catch (err) {
     lastSettleError = String(err instanceof Error ? err.message : err);
   }
+}
+
+/**
+ * The Friday review: one row per expiry that has settled and has not been posted. Goes to the
+ * alert sink and is recorded in the ledger (type review) so a restart posts nothing twice.
+ */
+function postFridayReviews(nowIso: string): void {
+  const { positions, reviewed } = loadPerpShadow(LEDGER_PATH, REPLAY);
+  for (const row of fridayReview(positions, FRIDAY_CFG)) {
+    if (reviewed.has(row.expiryIso)) continue;
+    // every position at this expiry must be past open before its row is final
+    if (positions.some((p) => p.expiryIso === row.expiryIso && p.status === "open")) continue;
+    raiseAlert("friday_review", fridayMessage(row), { expiryIso: row.expiryIso, flags: row.flags }, { dedupeKey: `friday:${row.expiryIso}`, dedupeMs: 365 * 86_400_000 });
+    appendPerpShadowRecord(LEDGER_PATH, { type: "review", at: nowIso, expiryIso: row.expiryIso });
+  }
+}
+
+/** The watchdog: who has gone quiet, what is overdue. Every alarm is raised once per cooldown and shown on /healthz. */
+function opsTick(nowMs = Date.now()): PerpOpsAlarm[] {
+  const { positions, books } = loadPerpShadow(LEDGER_PATH, REPLAY);
+  const lastBook = books.length ? Date.parse(books[books.length - 1].at) : null;
+  const alarms = watchdog({
+    nowMs,
+    positions,
+    lastScanAtMs: lastScanAt ? Date.parse(lastScanAt) : null,
+    lastSettleAtMs: lastSettleAt ? Date.parse(lastSettleAt) : null,
+    lastScanError,
+    lastSettleError,
+    consecutiveScanFailures,
+    lastBookAtMs: lastBook,
+    flowEnabled: FLOW.enabled,
+    scanMs: SCAN_MS,
+    settleGraceMs: SETTLE_GRACE_MS,
+    settleStallMs: SETTLE_STALL_MS,
+    bootMs: BOOT_MS,
+  });
+  const drift = driftAlarm(lastDriftChecks);
+  if (drift) alarms.push(drift);
+  for (const a of alarms) raiseAlert(a.kind, a.message, a.data, { dedupeKey: a.key, dedupeMs: ALARM_COOLDOWN_MS });
+  activeAlarms = alarms;
+  return alarms;
+}
+
+/**
+ * Venue payload drift: the real parsers read the live payloads and must find what they expect.
+ * The October 2026 rename of delivered instruments (BTC-USD_UM) would have failed this on day one.
+ */
+async function driftTick(
+  deps: { delivery?: typeof fetchOkxDeliveryHistory; hl?: typeof fetchHlContext; candles?: typeof fetchHlCandles; index?: typeof fetchOkxIndex } = {},
+): Promise<DriftCheck[]> {
+  const nowMs = Date.now();
+  const checks: DriftCheck[] = [];
+  const run = async (name: string, f: () => Promise<{ ok: boolean; detail: string }>) => {
+    try {
+      checks.push({ name, ...(await f()) });
+    } catch (err) {
+      checks.push({ name, ok: false, detail: String(err instanceof Error ? err.message : err) });
+    }
+  };
+  await run("okx_delivery_history", async () => {
+    const n = readableDeliveryPrints(await (deps.delivery ?? fetchOkxDeliveryHistory)());
+    return { ok: n > 0, detail: n > 0 ? `${n} readable prints` : "no row parsed to a date code and a price" };
+  });
+  await run("hl_context", async () => {
+    const hl = await (deps.hl ?? fetchHlContext)(COIN);
+    return { ok: !!hl && hl.markPx > 0, detail: hl ? `mark ${hl.markPx}` : "no mark" };
+  });
+  await run("hl_candles", async () => {
+    const c = await (deps.candles ?? fetchHlCandles)(COIN, nowMs - 2 * 3_600_000, nowMs, "1m");
+    return { ok: c.length > 0, detail: `${c.length} candles in the last 2h` };
+  });
+  await run("okx_index", async () => {
+    const px = await (deps.index ?? fetchOkxIndex)();
+    return { ok: px != null && px > 0, detail: px != null ? `index ${px}` : "no index" };
+  });
+  lastDriftChecks = checks;
+  lastDriftAt = new Date(nowMs).toISOString();
+  return checks;
 }
 
 function pageData(): { atIso: string; positions: PerpShadowPosition[]; summary: PerpShadowSummary } {
@@ -307,13 +486,21 @@ function pageData(): { atIso: string; positions: PerpShadowPosition[]; summary: 
   return { atIso: new Date().toISOString(), positions, summary };
 }
 
-function publicSummary(s: PerpShadowSummary): Omit<PerpShadowSummary, "counterfactuals"> & {
+function publicSummary(s: PerpShadowSummary, positions: PerpShadowPosition[]): Omit<PerpShadowSummary, "counterfactuals"> & {
   counterfactuals: { recordedSince: string | null; positionsWithCounterfactuals: number };
+  capLadder: ReturnType<typeof publicCapLadder>;
+  fridays: ReturnType<typeof fridayReview>;
+  feeShare: ReturnType<typeof feeShare>;
+  capOdds: { adaptApplied: boolean; latest: CapOddsAdvice | null };
 } {
   const { counterfactuals, ...rest } = s;
   return {
     ...rest,
     counterfactuals: { recordedSince: counterfactuals.recordedSince, positionsWithCounterfactuals: counterfactuals.positionsWithCounterfactuals },
+    capLadder: publicCapLadder(counterfactuals),
+    fridays: fridayReview(positions, FRIDAY_CFG),
+    feeShare: feeShare(s),
+    capOdds: { adaptApplied: CAP_ODDS_ADAPT, latest: lastCapOdds },
   };
 }
 
@@ -334,6 +521,13 @@ function healthBody(): Record<string, unknown> {
     lastSettleError,
     consecutiveScanFailures,
     operatorViews: adminAuth.enabled,
+    // operations: what is wrong right now, where it would be sent, what the parsers last read
+    alarms: activeAlarms.map((a) => ({ kind: a.kind, message: a.message })),
+    alertSink: { webhook: !!alertSink.webhookUrl, telegram: !!alertSink.telegram, path: alertSink.path, cooldownMs: ALARM_COOLDOWN_MS },
+    drift: { at: lastDriftAt, checks: lastDriftChecks },
+    settlement: { graceMs: SETTLE_GRACE_MS, hlPrintAfterMs: HL_PRINT_AFTER_MS, voidAfterMs: VOID_AFTER_MS, stallMs: SETTLE_STALL_MS },
+    capOdds: { adaptApplied: CAP_ODDS_ADAPT, slope: CAP_ODDS_SLOPE, realizedVolDays: RV_DAYS, latest: lastCapOdds },
+    rfq: RFQ_CFG,
   };
 }
 
@@ -410,7 +604,16 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         const { counterfactuals: _cf, ...rest } = p;
         return rest;
       };
-      sendJson(res, 200, { ok: true, at: atIso, summary: publicSummary(summary), settled: settled.map(strip), open: open.map(strip), closed: closed.map(strip) });
+      sendJson(res, 200, { ok: true, at: atIso, summary: publicSummary(summary, positions), settled: settled.map(strip), open: open.map(strip), closed: closed.map(strip) });
+      return;
+    }
+    if (url.pathname === "/api/shadow/fridays") {
+      const { atIso, positions } = pageData();
+      sendJson(res, 200, { ok: true, at: atIso, config: FRIDAY_CFG, fridays: fridayReview(positions, FRIDAY_CFG) });
+      return;
+    }
+    if (url.pathname === "/api/shadow/ops") {
+      sendJson(res, 200, { ok: true, at: new Date().toISOString(), alarms: opsTick(), drift: { at: lastDriftAt, checks: lastDriftChecks } });
       return;
     }
     if (url.pathname === "/api/shadow/report") {
@@ -453,7 +656,24 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const open = positions.filter((p) => p.status === "open").sort((a, b) => a.expiryIso.localeCompare(b.expiryIso) || a.at.localeCompare(b.at));
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       const closed = positions.filter((p) => p.status === "closed").sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? ""));
-      res.end(renderPerpShadowHtml({ atIso, summary, open, settled, closed, sizeBtc: CONTRACTS * OKX_LOT_BTC, tenor: TENOR, flow: FLOW.enabled ? describeFlow(FLOW) : null }));
+      res.end(
+        renderPerpShadowHtml({
+          atIso,
+          summary,
+          open,
+          settled,
+          closed,
+          sizeBtc: CONTRACTS * OKX_LOT_BTC,
+          tenor: TENOR,
+          flow: FLOW.enabled ? describeFlow(FLOW) : null,
+          capLadder: publicCapLadder(summary.counterfactuals),
+          fridays: fridayReview(positions, FRIDAY_CFG),
+          feeShare: feeShare(summary),
+          fridayConfig: FRIDAY_CFG,
+          capOdds: { adaptApplied: CAP_ODDS_ADAPT, latest: lastCapOdds },
+          alarms: activeAlarms,
+        }),
+      );
       return;
     }
     sendJson(res, 404, { ok: false, error: "not found" });
@@ -470,11 +690,14 @@ function main(): void {
     );
     void scanTick();
     void settleTick();
+    void driftTick().then(() => opsTick());
     setInterval(() => void scanTick(), SCAN_MS);
     setInterval(() => void settleTick(), SETTLE_MS);
+    setInterval(() => opsTick(), OPS_MS);
+    setInterval(() => void driftTick(), DRIFT_MS);
   });
 }
 
 if (process.env.NODE_ENV !== "test") main();
 
-export { server, scanTick, settleTick };
+export { server, scanTick, settleTick, opsTick, driftTick, postFridayReviews };
