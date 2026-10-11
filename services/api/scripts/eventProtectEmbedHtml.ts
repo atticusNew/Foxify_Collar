@@ -37,6 +37,12 @@
  * shadow's, priced from the live book at the moment; the browser re-prices
  * nothing.
  *
+ * The Positions list is grouped by league (crypto last) so it reads like a
+ * real app's, and the Activity tab is real: this session's own taps on top,
+ * then the record's finished positions (/api/activity, a retail cut of the
+ * shadow's public /api/shadow) as what each ended at with the lock against
+ * without. There is no Markets tab: browsing and buying is the host's product.
+ *
  * `?brand=` names the host; it is honoured only when the name is on
  * EVENT_X_BRAND_ALLOWLIST (fail-closed to EVENT_X_EMBED_BRAND, else "Your
  * app"), so nobody can render a competitor's or a regulator's name into a
@@ -268,6 +274,10 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos.mini{padding:9px 12px;cursor:pointer}
 .pos.mini .name{font-size:14px}
 .pos.mini .meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pos.act{padding:9px 12px 8px}
+.pos.act .name{font-size:14px}
+.pos.act .meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pos.act .terms{margin-top:5px;font-size:12.5px}
 .empty{padding:30px 16px;color:var(--faint);text-align:center;font-size:14px}
 .host-note{position:fixed;left:0;right:0;bottom:0;padding:10px 16px 14px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.45;background:linear-gradient(to top,var(--bg) 70%,transparent);pointer-events:none}
 /* two deliberate lines (the disclaimer, then the link): never a sentence that wraps and strands the link */
@@ -361,7 +371,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     <div class="brand"><i>${initial}</i>${brand}</div>
     <div class="bal" id="bal">Cash $412.50</div>
   </div>
-  <div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Markets">Markets</span><span data-tab="Activity">Activity</span></div>
+  <div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
   <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><a href="${trackRecordUrl}">${recordLabel}</a></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -377,7 +387,8 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 (function(){
   'use strict';
   var S={rows:[],byTicker:{},protectedBy:{},open:null,quote:null,offered:{},tier:'balanced',how:false,adjust:false,cash:41250,
-    tab:'Positions',parlays:null,parlaysErr:null,byParlay:{},lockedBy:{},openParlay:null,showSettled:false,expanded:{}};
+    tab:'Positions',parlays:null,parlaysErr:null,byParlay:{},lockedBy:{},openParlay:null,showSettled:false,expanded:{},
+    activity:null,activityErr:null,activityShown:25};
   var TIER_ORDER=['tight','balanced','wide'];
   var TIER_WORDS={tight:'Safest',balanced:'Balanced',wide:'Most upside'};
   var MIN_CREDIT_CENTS=${Math.round(minCredit.cents)},MIN_CREDIT_BPS=${Number(minCredit.bpsOfStake)};
@@ -428,13 +439,29 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   }
   function defaultTier(offered){return offered.balanced?'balanced':offered.tight?'tight':offered.wide?'wide':null}
 
+  /* POSITIONS, GROUPED: a flat list with Bitcoin strikes between NFL and NBA rows looks like no
+     real app. Rows are grouped by league, the league with the nearest game first, crypto last;
+     inside a group the rows keep the board's order. One league alone needs no header. */
+  function groupRows(rows){
+    var groups=[],by={},i,r,k,t;
+    for(i=0;i<rows.length;i++){r=rows[i];k=r.kind==='crypto'?'crypto':String(r.league||'other').toLowerCase();t=Date.parse(r.eventTimeIso)||Infinity;
+      if(!by[k]){by[k]={key:k,rows:[],next:t};groups.push(by[k])}by[k].rows.push(r);if(t<by[k].next)by[k].next=t}
+    var out=[];for(i=0;i<groups.length;i++)if(groups[i].key!=='crypto')out.push(groups[i]);
+    out.sort(function(a,b){return a.next-b.next});
+    if(by.crypto)out.push(by.crypto);
+    return out;
+  }
   function paintList(){
     if(S.tab==='Parlays'){paintParlays();return}
+    if(S.tab==='Activity'){paintActivity();return}
     var list=el('list');
     if(!S.rows.length){list.innerHTML='<div class="empty">'+esc(S.err||'No open positions to lock in right now.')+'</div>';return}
-    var html='';
-    for(var i=0;i<S.rows.length;i++){
-      var r=S.rows[i],p=S.protectedBy[r.kalshiTicker];
+    var html='',groups=groupRows(S.rows),g,gi;
+    for(gi=0;gi<groups.length;gi++){
+    g=groups[gi];
+    if(groups.length>1)html+='<div class="grp"><span>'+esc(g.key.toUpperCase())+' &middot; '+g.rows.length+'</span></div>';
+    for(var i=0;i<g.rows.length;i++){
+      var r=g.rows[i],p=S.protectedBy[r.kalshiTicker];
       var pl=(r.markCents-r.entryCents)*r.contracts;
       var when=r.kind==='crypto'?'settles '+fmtEt(r.eventTimeIso):fmtEt(r.eventTimeIso);
       html+='<div class="pos'+(p?' protected':'')+'" data-ticker="'+esc(r.kalshiTicker)+'">'+
@@ -453,6 +480,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
           '<button class="pbtn" data-protect="'+esc(r.kalshiTicker)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>Lock in</button></div>';
       }
       html+='</div>';
+    }
     }
     list.innerHTML=html;
     el('bal').textContent='Cash '+usd(S.cash);
@@ -510,7 +538,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   function confirmProtect(q,n,t){
     var ticker=S.open,r=S.byTicker[ticker];
     var rs=reshape(n,t.floorCents,t.capCents,t.creditCents);
-    S.protectedBy[ticker]={kept:rs.kept,cashCents:rs.cashCents,floorTotal:rs.floorTotal,capTotal:rs.capTotal,creditCents:t.creditCents,floorCents:t.floorCents,capCents:t.capCents,tier:S.tier,closed:null};
+    /* the row's words ride along: the board re-scans every minute and may drop the row, and the Activity tab still has to list the lock */
+    S.protectedBy[ticker]={kept:rs.kept,cashCents:rs.cashCents,floorTotal:rs.floorTotal,capTotal:rs.capTotal,creditCents:t.creditCents,floorCents:t.floorCents,capCents:t.capCents,tier:S.tier,closed:null,
+      sideName:r?r.sideName:'',league:r?r.league:'',eventTimeIso:r?r.eventTimeIso:''};
     S.cash+=t.creditCents;
     track('protect_on',ticker,S.tier);
     el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Locked in</h2>'+
@@ -652,6 +682,60 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     list.innerHTML=html;
     el('bal').textContent='Cash '+usd(S.cash);
   }
+  /* ACTIVITY: what finished. First this session's own taps (locks and early closes made here,
+     simulated, so a visitor finds what they just did where a real app would put it), then the
+     record's finished positions through /api/activity in retail shape: settled at the venue's
+     official result or closed early, most recent first. A row reads as what it ended at with
+     the lock against what it would have ended at without; the credit paid at open is inside the
+     first number and said. Nothing here is re-priced. */
+  function fmtDay(iso){try{var d=new Date(iso);return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',timeZone:'America/New_York'}).replace(',','')}catch(e){return ''}}
+  function sessionHtml(){
+    var html='',k,r,p,t,L;
+    for(k in S.protectedBy){if(!Object.prototype.hasOwnProperty.call(S.protectedBy,k))continue;p=S.protectedBy[k];r=S.byTicker[k]||{};
+      var name=p.sideName||r.sideName||k,lg=String(p.league||r.league||'').toUpperCase(),when=p.eventTimeIso||r.eventTimeIso;
+      if(p.closed)html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; closed early '+esc(p.closed.at)+'</div></div><div class="pl"><b>'+usd(p.closed.leaveWithCents)+'</b><i>vs '+usd(p.closed.withoutProtectionCents)+' without</i></div></div></div>';
+      else html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; locked in'+(when?' &middot; '+esc(fmtEt(when)):'')+'</div></div><div class="pl"><b>'+usd(p.floorTotal)+' or '+usd(p.capTotal)+'</b><i>'+usd(p.creditCents)+' paid now</i></div></div></div>';
+    }
+    for(k in S.lockedBy){if(!Object.prototype.hasOwnProperty.call(S.lockedBy,k))continue;t=S.lockedBy[k];L=t.lock;
+      html+='<div class="pos act"><div class="h"><div><div class="name">'+t.size+'-pick parlay</div><div class="meta">'+t.leagues+' &middot; locked in</div></div><div class="pl"><b>'+usd(L.floorTotalCents)+' or '+usd(L.capTotalCents)+'</b><i>'+usd(L.creditCents)+' paid now</i></div></div></div>';
+    }
+    return html;
+  }
+  function activityRowHtml(a){
+    var closed=a.state==='closed',won=a.outcome==='won';
+    var meta=esc(String(a.league||'').toUpperCase())+' &middot; '+esc(fmtDay(a.atIso))+' &middot; '+(closed?'closed early':won?'won':'lost');
+    var line=usd(a.creditCents)+' paid at open &middot; '+(closed?'closed before the result':won?'the win, to the cap':'the floor, paid');
+    return '<div class="pos act"><div class="h"><div><div class="name">'+esc(a.name)+'</div><div class="meta">'+meta+'</div></div>'+
+      '<div class="pl"><b>'+usd(a.endedCents)+'</b><i>vs '+usd0(a.withoutCents)+' without</i></div></div><div class="terms">'+line+'</div></div>';
+  }
+  function paintActivity(){
+    var list=el('list'),A=S.activity,mine=sessionHtml(),i;
+    var html='<div class="note"><span>Finished positions from our public record; nothing is bought.</span><button class="info" data-info="activity" aria-label="About this activity">i</button></div>';
+    if(mine)html+='<div class="grp"><span>This session</span></div>'+mine;
+    if(!A){list.innerHTML=html+'<div class="empty">'+esc(S.activityErr||'loading what finished…')+'</div>';return}
+    var rows=A.rows||[],total=(A.settledCount||0)+(A.closedCount||0);
+    if(SPORTS_ONLY)rows=rows.filter(function(r){return r.kind!=='crypto'});
+    if(!rows.length){list.innerHTML=html+'<div class="empty">Nothing has finished yet.</div>';return}
+    /* the feed carries the most recent rows; the record's full count is said when it is larger (a sportsbook shell hides crypto, so there the count is the rows') */
+    html+='<div class="grp"><span>Finished &middot; '+(!SPORTS_ONLY&&total>rows.length?'last '+rows.length+' of '+total:rows.length)+'</span></div>';
+    var n=Math.min(rows.length,S.activityShown);
+    for(i=0;i<n;i++)html+=activityRowHtml(rows[i]);
+    if(rows.length>n)html+='<div class="grp" style="justify-content:center"><button data-more="activity">Show '+Math.min(25,rows.length-n)+' more</button></div>';
+    list.innerHTML=html;
+    el('bal').textContent='Cash '+usd(S.cash);
+  }
+  function loadActivity(){
+    fetch('/api/activity',{cache:'no-store'}).then(function(x){return x.json()}).then(function(p){
+      if(!p||!p.ok){S.activity=null;S.activityErr=(p&&p.error)||'Activity is unavailable right now.';if(S.tab==='Activity')paintList();return}
+      S.activity=p;S.activityErr=null;
+      if(S.tab==='Activity')paintList();
+    }).catch(function(){S.activity=null;S.activityErr='Activity is unavailable right now.';if(S.tab==='Activity')paintList()});
+  }
+  function openActivityInfoSheet(){
+    openPlainSheet('activity-info','<h2 id="sh-h">About this activity</h2>'+
+      '<div class="how on"><p>Anything you lock in or close here shows at the top for this session. It is simulated: nothing is bought.</p>'+
+      '<p>Below that is our public record: positions we have been protecting on paper at live prices, settled at the venue\\'s official result or closed early. Each row says what it ended at with the lock and what the same position would have ended at without one. The amount paid at open is inside the first number.</p></div>');
+  }
   function openPlainSheet(key,body){
     S.openParlay=key;S.open=null;S.how=false;
     el('scrim').className='scrim on';el('sheet').className='sheet on';
@@ -694,7 +778,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   }
   function confirmParlayLock(t){
     var L=t.lock;
-    S.lockedBy[t.id]=true;S.cash+=L.creditCents;
+    S.lockedBy[t.id]={size:t.size,lock:L,leagues:leaguesOf(t)};S.cash+=L.creditCents;
     track('parlay_lock',parlayId(t.id));
     el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Locked</h2>'+
       '<div class="sum">'+t.size+'-pick parlay<br>ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b><br><b>+'+usd(L.creditCents)+'</b> added to your cash</div></div>'+
@@ -708,6 +792,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     var ts=document.querySelectorAll('.tabs span');
     for(var i=0;i<ts.length;i++)ts[i].className=ts[i].getAttribute('data-tab')===tab?'on':'';
     if(tab==='Parlays'){track('parlay_tab');if(!S.parlays)loadParlays()}
+    if(tab==='Activity'){track('activity_tab');if(!S.activity)loadActivity()}
     paintList();
   }
   function loadParlays(){
@@ -720,9 +805,10 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   }
 
   document.addEventListener('click',function(e){
-    var b=e.target.closest?e.target.closest('[data-protect],[data-undo],[data-close],[data-tab],[data-parlay],[data-unlock],[data-info],[data-why],[data-settled],[data-expand]'):null;
+    var b=e.target.closest?e.target.closest('[data-protect],[data-undo],[data-close],[data-tab],[data-parlay],[data-unlock],[data-info],[data-why],[data-settled],[data-expand],[data-more]'):null;
     if(!b)return;
-    if(b.hasAttribute('data-info')){openInfoSheet();return}
+    if(b.hasAttribute('data-info')){if(b.getAttribute('data-info')==='activity')openActivityInfoSheet();else openInfoSheet();return}
+    if(b.hasAttribute('data-more')){S.activityShown+=25;paintList();return}
     var why=b.getAttribute('data-why');
     if(why){openWhySheet(why);return}
     if(b.hasAttribute('data-settled')){S.showSettled=!S.showSettled;paintList();return}
@@ -737,10 +823,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     var pid=b.getAttribute('data-parlay');
     if(pid){openParlaySheet(pid);return}
     var ul=b.getAttribute('data-unlock');
-    if(ul&&S.lockedBy[ul]){var lt=S.byParlay[ul];if(lt&&lt.lock)S.cash-=lt.lock.creditCents;delete S.lockedBy[ul];paintList();return}
+    if(ul&&S.lockedBy[ul]){S.cash-=S.lockedBy[ul].lock.creditCents;delete S.lockedBy[ul];paintList();return}
     var tab=b.getAttribute('data-tab');
-    if(tab==='Positions'||tab==='Parlays'){switchTab(tab);return}
-    if(tab)toast('Demo: Positions and Parlays are live here.');
+    if(tab==='Positions'||tab==='Parlays'||tab==='Activity'){switchTab(tab);return}
   });
   el('scrim').onclick=closeSheet;
 
@@ -755,9 +840,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     }).catch(function(){S.rows=[];S.err='Positions are unavailable right now.';paintList()});
   }
   load();
-  /* ?tab=parlays opens on the Parlays tab, so a link can land a partner on the parlay rows directly */
-  try{if(/[?&]tab=parlays\\b/i.test(location.search))switchTab('Parlays')}catch(e){}
-  setInterval(function(){if(S.open||S.openParlay)return;if(S.tab==='Parlays')loadParlays();else load()},60000);
+  /* ?tab=parlays or ?tab=activity opens on that tab, so a link can land a partner on those rows directly */
+  try{if(/[?&]tab=parlays\\b/i.test(location.search))switchTab('Parlays');else if(/[?&]tab=activity\\b/i.test(location.search))switchTab('Activity')}catch(e){}
+  setInterval(function(){if(S.open||S.openParlay)return;if(S.tab==='Parlays')loadParlays();else if(S.tab==='Activity')loadActivity();else load()},60000);
 })();
 </script>
 </body>

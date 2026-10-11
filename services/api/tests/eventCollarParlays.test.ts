@@ -331,6 +331,6 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(!html.includes("\u2014"), "no em dash");
 
   for (const a of ["parlay_tab", "parlay_tap", "parlay_lock"]) assert.ok(isEventAction(a), a);
-  assert.equal(EVENT_ACTIONS.length, 10);
+  assert.equal(EVENT_ACTIONS.length, 11);
   assert.ok(isValidTicker("LL_0A1B2C3D4E5F"), "the ticket id upper-cased passes the funnel's ticker rule");
 });
