@@ -34,6 +34,7 @@ import {
   owedRemainingUsdc,
   assessOwedCarry,
   netOwedAgainstPayout,
+  summarizeOwedRecovery,
   parseOwedCarryCycles,
   DEFAULT_OWED_CARRY_CYCLES,
   parseCapMode,
@@ -275,6 +276,38 @@ test("carry-forward: later cycles' payouts pay the account's balances down oldes
   assert.equal(owedRemainingUsdc({ amountUsdc: 7.5, status: "owed", createdAtMs: NOW, settledAtMs: null, ref: null }), 7.5);
   assert.equal(owedRemainingUsdc({ amountUsdc: 7.5, status: "written_off", createdAtMs: NOW, settledAtMs: null, ref: null }), 0);
   assert.equal(owedRemainingUsdc(null), 0);
+});
+
+test("carry-forward: the recovery stat says how much of what was recorded came back, by dollars and by account", () => {
+  assert.deepEqual(summarizeOwedRecovery([plainWrap()]), { booked: 0, bookedUsdc: 0, recoveredUsdc: 0, settledOtherwiseUsdc: 0, writtenOffUsdc: 0, outstandingUsdc: 0, recoveryPct: null, accountsWithBalance: 0, accountsReturned: 0, accountsOutstanding: 0 });
+  const other = "0x00000000000000000000000000000000000abc02";
+  const third = "0x00000000000000000000000000000000000abc03";
+  const recs = [
+    // booked $5, $3.12 came back through a later credit, $1.88 still owed
+    { ...plainWrap({ id: "w1" }), owed: { amountUsdc: 5, status: "owed" as const, createdAtMs: NOW, settledAtMs: null, ref: null, paidDownUsdc: 3.12 } },
+    // booked $4, fully paid down and settled by carry-forward
+    { ...plainWrap({ id: "w2" }), owed: { amountUsdc: 4, status: "settled" as const, createdAtMs: NOW, settledAtMs: NOW + DAY, ref: "netted from cycle credits (last: w9)", paidDownUsdc: 4 } },
+    // another account: booked $10, settled by a venue debit, nothing through credits
+    { ...plainWrap({ id: "w3", account: other }), owed: { amountUsdc: 10, status: "settled" as const, createdAtMs: NOW, settledAtMs: NOW + DAY, ref: "venue debit 0xabc" } },
+    // a third: booked $2, never came back, written off
+    { ...plainWrap({ id: "w4", account: third }), owed: { amountUsdc: 2, status: "written_off" as const, createdAtMs: NOW, settledAtMs: NOW + DAY, ref: null } },
+    // the third again, uppercased on the wire: $1 outstanding, same account
+    { ...plainWrap({ id: "w5", account: third.toUpperCase() }), owed: { amountUsdc: 1, status: "owed" as const, createdAtMs: NOW, settledAtMs: null, ref: null } }
+  ];
+  const r = summarizeOwedRecovery(recs);
+  assert.deepEqual(r, {
+    booked: 5,
+    bookedUsdc: 22,
+    recoveredUsdc: 7.12,
+    settledOtherwiseUsdc: 10,
+    writtenOffUsdc: 2,
+    outstandingUsdc: 2.88,
+    recoveryPct: 32.4,
+    accountsWithBalance: 3,
+    accountsReturned: 1,
+    accountsOutstanding: 2
+  });
+  assert.equal(r.recoveredUsdc + r.settledOtherwiseUsdc + r.writtenOffUsdc + r.outstandingUsdc, r.bookedUsdc, "every booked dollar is in exactly one bucket");
 });
 
 test("carry-forward: the payout ledger books the cycle net of what paid balances down, and says so; a fully applied cycle books nothing", () => {

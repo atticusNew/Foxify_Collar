@@ -70,6 +70,7 @@ import {
   noteCapTouch,
   owedBalanceUsdc,
   owedRemainingUsdc,
+  summarizeOwedRecovery,
   assessOwedCarry,
   netOwedAgainstPayout,
   parseOwedCarryCycles,
@@ -2691,6 +2692,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
             accounts: new Set(owedRecs.map((r) => r.account.toLowerCase())).size,
             totalUsdc: round2(owedRecs.reduce((s, r) => s + owedRemainingUsdc(r.owed), 0)),
             carryCycles: owedCarryCycles,
+            // Carry-forward recovery: of everything ever recorded, how much came back through later credits.
+            recovery: summarizeOwedRecovery(records),
             items: owedRecs.map((r) => ({ wrapId: r.id, account: r.account, amountUsdc: r.owed!.amountUsdc, paidDownUsdc: r.owed!.paidDownUsdc ?? 0, remainingUsdc: owedRemainingUsdc(r.owed), createdAtMs: r.owed!.createdAtMs }))
           };
         })(),

@@ -768,6 +768,59 @@ export const netOwedAgainstPayout = (records: DemoWrapRecord[], account: string,
   return out;
 };
 
+export type OwedRecovery = {
+  /** balances ever booked (every status) */
+  booked: number;
+  bookedUsdc: number;
+  /** paid down from later cycles' credits, USDC */
+  recoveredUsdc: number;
+  /** settled by a venue debit or operator entry rather than by carry-forward, USDC */
+  settledOtherwiseUsdc: number;
+  writtenOffUsdc: number;
+  outstandingUsdc: number;
+  /** recovered / booked, % to one decimal (null before anything is booked) */
+  recoveryPct: number | null;
+  accountsWithBalance: number;
+  /** accounts that came back and paid something down: the number that decides whether the one-way rail is a cost */
+  accountsReturned: number;
+  accountsOutstanding: number;
+};
+
+/**
+ * How much of what the Hyperliquid lane recorded has come back through later credits. Pure over
+ * the wrap records; the number the live product has to earn before the "recorded, never
+ * collected" balance can be called small.
+ */
+export const summarizeOwedRecovery = (records: DemoWrapRecord[]): OwedRecovery => {
+  const out: OwedRecovery = { booked: 0, bookedUsdc: 0, recoveredUsdc: 0, settledOtherwiseUsdc: 0, writtenOffUsdc: 0, outstandingUsdc: 0, recoveryPct: null, accountsWithBalance: 0, accountsReturned: 0, accountsOutstanding: 0 };
+  const accounts = new Set<string>();
+  const returned = new Set<string>();
+  const outstanding = new Set<string>();
+  for (const r of records) {
+    const o = r.owed;
+    if (!o) continue;
+    const k = r.account.toLowerCase();
+    accounts.add(k);
+    out.booked += 1;
+    out.bookedUsdc = round2(out.bookedUsdc + o.amountUsdc);
+    const paidDown = o.paidDownUsdc ?? 0;
+    out.recoveredUsdc = round2(out.recoveredUsdc + paidDown);
+    if (paidDown > 0) returned.add(k);
+    if (o.status === "written_off") out.writtenOffUsdc = round2(out.writtenOffUsdc + Math.max(0, o.amountUsdc - paidDown));
+    else if (o.status === "settled") out.settledOtherwiseUsdc = round2(out.settledOtherwiseUsdc + Math.max(0, o.amountUsdc - paidDown));
+    else {
+      const left = owedRemainingUsdc(o);
+      out.outstandingUsdc = round2(out.outstandingUsdc + left);
+      if (left > 0) outstanding.add(k);
+    }
+  }
+  out.recoveryPct = out.bookedUsdc > 0 ? Math.round((1000 * out.recoveredUsdc) / out.bookedUsdc) / 10 : null;
+  out.accountsWithBalance = accounts.size;
+  out.accountsReturned = returned.size;
+  out.accountsOutstanding = outstanding.size;
+  return out;
+};
+
 /** Record a cap touch on a plain-mode wrap (first touch stamped, later touches counted). Returns true on the FIRST touch. */
 export const noteCapTouch = (rec: DemoWrapRecord, nowMs: number, markPx: number): boolean => {
   if (rec.capTouch) {
