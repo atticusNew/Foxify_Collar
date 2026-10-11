@@ -822,6 +822,15 @@ test("perp shadow: market parsers read venue payloads and refuse to invent a pri
   };
   assert.equal(deliveryPriceFor(hist, DAILY), 79800.4, "the print for the expiry's date code");
   assert.equal(deliveryPriceFor(hist, WEEKLY), null, "no print yet: null, and the position stays open");
+  // OKX renamed the delivered instruments with a margin-mode suffix (BTC-USD_UM-...) in 2026-10; the
+  // print must still be found or every weekly position sits open until the void window swallows it.
+  const histUm = {
+    data: [
+      { ts: "3", details: [{ insId: "BTC-USD_UM-260920-68000-C", px: "82485.9362690241718889", type: "exercised" }, { insId: "BTC-USD_UM-260920-68000-P", px: "82485.9362690241718889", type: "expired_otm" }] },
+    ],
+  };
+  assert.equal(deliveryPriceFor(histUm, DAILY), 82485.9362690241718889, "the suffixed spelling is the same expiry");
+  assert.equal(deliveryPriceFor({ data: [{ ts: "4", details: [{ insId: "ETH-USD_UM-260920-4000-C", px: "4000", type: "exercised" }] }] }, DAILY), null, "another underlying is never our print");
 });
 
 test("perp shadow worker: public record vs operator views over HTTP", async () => {

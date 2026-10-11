@@ -54,8 +54,12 @@ export const fetchOkxIndex = async (base = process.env.OKX_REST_BASE || "https:/
   return parseOkxIndex(await res.json());
 };
 
-/** BTC-USD-YYMMDD-STRIKE-C → the YYMMDD the instrument expires */
-const dateCodeOf = (instId: string): string | null => /^BTC-USD-(\d{6})-/.exec(instId)?.[1] ?? null;
+/**
+ * BTC-USD-YYMMDD-STRIKE-C → the YYMMDD the instrument expires. The delivery history
+ * names the same instruments with a margin-mode suffix on the underlying
+ * (BTC-USD_UM-YYMMDD-STRIKE-C, seen from 2026-10); both spellings are one expiry.
+ */
+const dateCodeOf = (instId: string): string | null => /^BTC-USD(?:_[A-Z]+)?-(\d{6})-/.exec(instId)?.[1] ?? null;
 export const dateCodeForExpiry = (expiryMs: number): string => {
   const d = new Date(expiryMs);
   return `${String(d.getUTCFullYear()).slice(2)}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`;
