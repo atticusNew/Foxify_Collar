@@ -20,8 +20,10 @@ import {
   kalshiRuleUrl,
   normalizeRuleText,
   pinRule,
+  ruleDiff,
   ruleEvidenceLine,
   ruleHash,
+  ruleStateLabel,
   shortHash,
   summarizeRuleEvidence,
 } from "../src/eventCollar/crossVenue/ruleEvidence";
@@ -65,6 +67,7 @@ test("rule evidence: pin carries venue, key, source URL, hash, bytes and an exce
   assert.equal(pin.bytes, Buffer.byteLength(`${PRIMARY}\n${SECONDARY}`, "utf8"));
   assert.equal(pin.readAtIso, at);
   assert.ok(pin.excerpt.startsWith("If Washington wins") && pin.excerpt.endsWith("…") && pin.excerpt.length <= 200);
+  assert.equal(pin.text, `${PRIMARY}\n${SECONDARY}`, "the whole text rides on the pin so a later edit can be shown word for word");
   const short = pinRule({ venue: "polymarket", marketId: "nfl-was-sf-2026-10-19", ruleText: "Short rule.", sourceUrl: "u", readAtIso: at });
   assert.equal(short?.excerpt, "Short rule.", "a short rule is its own excerpt");
   assert.equal(pinRule({ venue: "kalshi", marketId: "X", ruleText: "", sourceUrl: "u", readAtIso: at }), null);
@@ -78,8 +81,34 @@ test("rule evidence: the second read says unchanged, changed, or that it could n
   const changed = checkRule(pin, PRIMARY.replace("Oct 19", "Oct 20"), at);
   assert.equal(changed.unchanged, false);
   assert.notEqual(changed.sha256, pin!.sha256);
+  assert.equal(changed.text, PRIMARY.replace("Oct 19", "Oct 20"), "a differing text is kept so the record can show the edit");
   assert.deepEqual(checkRule(pin, "", at), { readAtIso: at, sha256: null, unchanged: null }, "the venue returned no text: nothing to compare, said as null");
   assert.deepEqual(checkRule(null, PRIMARY, at), { readAtIso: at, sha256: ruleHash(PRIMARY), unchanged: null }, "no pin at open: the read is kept, the comparison is null");
+  assert.equal(ruleStateLabel(checkRule(pin, PRIMARY, at)), "terms held");
+  assert.equal(ruleStateLabel(changed), "venue edited its rules");
+  assert.equal(ruleStateLabel(checkRule(pin, "", at)), "terms kept at open");
+  assert.equal(ruleStateLabel(undefined), "terms kept at open");
+});
+
+test("rule evidence: the diff names the words that moved, not the paragraphs around them", () => {
+  const before = "If Dallas wins the game originally scheduled for Oct 19, 2026, then Yes. Ties pay fifty cents.";
+  const after = "If Dallas wins the game originally scheduled for Oct 20, 2026, then Yes.";
+  assert.deepEqual(ruleDiff(before, after), [
+    { kind: "same", text: "If Dallas wins the game originally scheduled for Oct" },
+    { kind: "cut", text: "19," },
+    { kind: "add", text: "20," },
+    { kind: "same", text: "2026, then Yes." },
+    { kind: "cut", text: "Ties pay fifty cents." },
+  ]);
+  assert.deepEqual(ruleDiff("a b c", "a   b\nc"), [{ kind: "same", text: "a b c" }], "whitespace is not an edit");
+  assert.deepEqual(ruleDiff("", "new words"), [{ kind: "add", text: "new words" }]);
+  assert.deepEqual(ruleDiff("", ""), []);
+  const long = Array.from({ length: 1_600 }, (_, i) => `w${i}`).join(" ");
+  assert.deepEqual(
+    ruleDiff(long, "short").map((p) => p.kind),
+    ["cut", "add"],
+    "past the word cap the record shows all of the old and all of the new rather than a slow diff",
+  );
 });
 
 test("rule evidence: Kalshi pins both rule parts and the settle read carries them back; Gamma pins the description and its named source", async () => {
@@ -154,24 +183,39 @@ test("rule evidence: the shadow ledger carries the pin on the open and the check
 
   const summary = summarizeRuleEvidence(positions.map((p) => ({ id: p.ticker, rule: p.rule, check: p.ruleCheck })));
   assert.deepEqual(summary, { total: 3, pinned: 2, compared: 2, unchanged: 1, changed: 1, unreadable: 0, changedIds: ["KXNFLGAME-26OCT19DALNYG-DAL"] });
-  assert.equal(ruleEvidenceLine(summary, "position"), "Settled against the venue's own rule text: 2 of 3 positions carry the rule pinned at open (sha256); 2 read again at settlement, 1 unchanged, 1 changed.");
+  assert.equal(
+    ruleEvidenceLine(summary, "position"),
+    "2 of 3 positions carry the venue's rules as they read when they opened; the rest were opened before we kept them. At settlement we read them again: 1 unchanged, 1 reworded by the venue.",
+  );
+  assert.equal(ruleEvidenceLine({ ...summary, total: 2 }, "position"), "Each position carries the venue's rules as they read when it opened. At settlement we read them again: 1 unchanged, 1 reworded by the venue.");
   assert.equal(ruleEvidenceLine({ ...summary, pinned: 0 }, "position"), "", "nothing pinned: no line, no claim");
-  assert.equal(ruleEvidenceLine({ total: 1, pinned: 1, compared: 0, unchanged: 0, changed: 0, unreadable: 1, changedIds: [] }, "leg"), "Settled against the venue's own rule text: 1 of 1 leg carry the rule pinned at open (sha256); 1 could not be read again.");
+  assert.equal(ruleEvidenceLine({ total: 1, pinned: 1, compared: 0, unchanged: 0, changed: 0, unreadable: 1, changedIds: [] }, "leg"), "Each leg carries the venue's rules as they read when it opened. 1 could not be read again.");
+  assert.ok(!/sha256|hash/i.test(ruleEvidenceLine(summary, "position")), "the line is for a bettor; the fingerprint stays in the tooltip and the JSON");
 
   const html = renderShadowHtml({ atIso: settleAt, summary: summarizeShadow(positions), open: [], settled: positions.filter((p) => p.status === "settled") });
-  assert.ok(html.includes(`href="${KALSHI_BASE}/markets/${OPEN.ticker}"`), "the hash links to the venue's own read");
-  assert.ok(html.includes(`rule ${shortHash(rule!.sha256)}`));
-  assert.ok(html.includes(`sha256 ${rule!.sha256} · pinned at open, unchanged at settlement`));
-  assert.ok(html.includes('<span class="tag changed">rule text changed before settlement</span>'), "a changed rule is said on its row");
-  assert.ok(html.includes("the venue's text changed before settlement"));
-  assert.ok(html.includes("2 of 3 positions carry the rule pinned at open (sha256); 2 read again at settlement, 1 unchanged, 1 changed."));
-  assert.ok(html.includes("Each hash links to the venue's published text."));
-  assert.equal((html.match(/class="rulelink"/g) ?? []).length, 2, "the old record carries no mark");
+  assert.ok(html.includes(`<a class="tag rule" href="${KALSHI_BASE}/markets/${OPEN.ticker}" rel="noopener" title="fingerprint sha256 ${rule!.sha256}, read at open and again at settlement, same words">terms held</a>`), "an unchanged rule is two words that link to the venue's own read; the fingerprint is the tooltip");
+  assert.ok(html.includes('<span class="tag rule" title="fingerprint sha256 '), "the edited rule's tag carries its fingerprint the same way");
+  assert.ok(html.includes("venue edited its rules</span>"), "an edited rule is said in neutral words on its own line");
+  assert.ok(!html.includes("tag changed") && !html.includes("changed before settlement"), "no warning tone on the trader's own row");
+  assert.ok(html.includes("<summary>what the venue changed</summary>"), "the edited row opens to the edit");
+  assert.ok(html.includes("The venue reworded this market's rules after the position opened. The payout followed the venue's official result, as always."));
+  assert.ok(html.includes("<del>19,</del> <ins>20,</ins>"), "the edit is shown word for word: the date moved, nothing else");
+  assert.ok(html.includes(`read again 2026-10-20 04:00 UTC, <code>${shortHash(dal.ruleCheck!.sha256!)}</code>`));
+  assert.ok(html.includes(`href="${KALSHI_BASE}/markets/KXNFLGAME-26OCT19DALNYG-DAL" rel="noopener">Venue's current text</a>`));
+  assert.ok(html.includes("2 of 3 positions carry the venue's rules as they read when they opened"));
+  assert.ok(html.includes("<b>How we check rules:</b> when a position opens we keep the venue's own rule text"), "the footer says what the words mean, once");
+  assert.equal((html.match(/class="tag rule"/g) ?? []).length, 2, "the old record carries no mark");
+  assert.equal((html.match(/<details class="ruledetail">/g) ?? []).length, 1, "only the edited row opens");
   assert.ok(!html.includes("\u2014"), "no em dashes");
   assert.ok(!/resolution/i.test(html), "banned vocabulary stays out of the page");
 
   const bare = renderShadowHtml({ atIso: settleAt, summary: summarizeShadow([old]), open: [], settled: [old] });
-  assert.ok(!bare.includes('class="rulelink"') && !bare.includes("Settled against the venue's own rule text"), "a record with no pins says nothing about them");
+  assert.ok(!bare.includes('class="tag rule"') && !bare.includes("venue's rules as they read") && !bare.includes("How we check rules"), "a record with no pins says nothing about them");
+
+  // a pin written before the text was kept still renders: the excerpt stands in for the diff
+  const oldPin = { ...changedRule!, text: undefined };
+  const noText = renderShadowHtml({ atIso: settleAt, summary: summarizeShadow([dal]), open: [], settled: [{ ...dal, rule: oldPin, ruleCheck: { ...dal.ruleCheck!, text: undefined } }] });
+  assert.ok(noText.includes("venue edited its rules</span>") && noText.includes("At open the rules began: If Dallas wins") && !noText.includes("<del>"));
 });
 
 // ── parlay legs ──────────────────────────────────────────────────────────────
@@ -282,8 +326,11 @@ test("rule evidence: a parlay leg pins the Gamma rule when the ticket is built; 
     settled: [],
     parlays: { lockVsSell: lockVersusSell(tickets), lastLeg: s, stakeCents: cfg.stakeCents, rules: legRules },
   });
-  assert.ok(html.includes("2 of 2 legs carry the rule pinned at open (sha256); 2 read again at settlement, 1 unchanged, 1 changed."));
+  assert.ok(html.includes("Each leg carries the venue's rules as they read when it opened. At settlement we read them again: 1 unchanged, 1 reworded by the venue."));
+  assert.ok(html.includes("<b>How we check rules:</b>"), "the footer note appears when the only pins on the page are parlay legs");
   assert.ok(!html.includes("\u2014"));
+  assert.equal(t.legRuleChecks?.B.text, "Resolves to the winner of Away at Home on Oct 10.\nResolution source: https://www.nfl.com/", "the edited leg keeps the text it settled under");
+  assert.equal(t.legRuleChecks?.D.text, undefined, "an unchanged leg keeps no second copy");
 
   // a ticket from before pins existed reads the same as before: no rule, no check, no line
   const legacy = replayLastLeg(ledger.map((l) => l.replace(/,"rule":\{[^}]*\}/g, "").replace(/,"ruleCheck":\{[^}]*\}/g, "")));
