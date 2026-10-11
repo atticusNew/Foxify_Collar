@@ -13,6 +13,7 @@
 
 import type { LastLegSummary, LockVsSellSummary } from "../src/eventCollar/crossVenue/lastLeg";
 import { refusalWords } from "../src/eventCollar/crossVenue/parlayRetail";
+import { ruleEvidenceLine, shortHash, summarizeRuleEvidence, type RuleEvidenceSummary } from "../src/eventCollar/crossVenue/ruleEvidence";
 import type { RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { VenueSlate } from "../src/eventCollar/crossVenue/venueSlate";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
@@ -114,6 +115,9 @@ h2{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;lett
 .row.settled b,.row.open b{white-space:nowrap;flex-shrink:0}
 .tag{display:inline-block;background:var(--card2);color:var(--dim);border-radius:6px;padding:1px 6px;font-size:10.5px;font-weight:600;vertical-align:1px}
 .tag.save{background:var(--green-wash);color:var(--green-deep)}
+.tag.changed{background:#fbf1dc;color:#7a5410}
+.rulelink{color:var(--faint);font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;text-decoration:none;border-bottom:1px dotted var(--faint)}
+.rulelink:hover{color:var(--dim)}
 .back{display:inline-block;margin-top:2px;color:var(--green-deep);font-weight:600;font-size:13px;text-decoration:underline}
 .read{color:var(--ink);font-size:13.5px;line-height:1.5;margin-top:6px}
 .read b{font-weight:650}
@@ -159,21 +163,37 @@ function leagueCountLine(items: ReadonlyArray<{ league: string }>, noun: string)
   return `<div class="sub" style="margin:-4px 0 8px">${items.length} ${noun} · ${escapeHtml(parts.join(" · "))}</div>`;
 }
 
+/**
+ * The rule the result was judged under, on the row: the pinned hash links to the venue's own
+ * text; a second read that differs is said out loud on its own line. Nothing when no rule was pinned.
+ */
+function ruleMark(p: Pick<ShadowPosition, "rule" | "ruleCheck">): { link: string; changed: boolean } {
+  if (!p.rule) return { link: "", changed: false };
+  const changed = p.ruleCheck?.unchanged === false;
+  const words = p.ruleCheck?.unchanged === true ? "pinned at open, unchanged at settlement" : changed ? "pinned at open; the venue's text changed before settlement" : "pinned at open";
+  const link = `<a class="rulelink" href="${escapeHtml(p.rule.sourceUrl)}" rel="noopener" title="sha256 ${escapeHtml(p.rule.sha256)} · ${words}">rule ${escapeHtml(shortHash(p.rule.sha256))}</a>`;
+  return { link, changed };
+}
+
 export function renderShadowHtml(input: ShadowPageInput): string {
   const s = input.summary;
   const settledRows = interleaveByLeague(input.settled, 25)
     .map((p) => {
       const saved = p.result === "no";
       const tag = saved ? '<span class="tag save">floor paid</span>' : '<span class="tag">won, capped</span>';
+      const rule = ruleMark(p);
       // The credit was paid at open and is inside the protected total; say so on every row,
       // or "capped" reads as the whole story.
       return (
         `<div class="row settled"><span>${escapeHtml(p.sideName)} ${tag}</span>` +
         `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} naked</i>` +
-        `<i class="paid">incl. ${usd(p.creditCents)} paid at open</i></b></div>`
+        `<i class="paid">incl. ${usd(p.creditCents)} paid at open${rule.link ? ` · ${rule.link}` : ""}</i>` +
+        // on its own line: beside the hash it pushes the row past the card on a phone
+        `${rule.changed ? '<i class="paid"><span class="tag changed">rule text changed before settlement</span></i>' : ""}</b></div>`
       );
     })
     .join("");
+  const ruleLine = ruleEvidenceLine(summarizeRuleEvidence(input.settled.map((p) => ({ id: p.ticker, rule: p.rule, check: p.ruleCheck }))), "position");
   const openRows = interleaveByLeague(input.open, 25)
     .map(
       (p) =>
@@ -370,6 +390,7 @@ ${sportsCard}  <div class="card">
     <h2>Settled, most recent first</h2>
     ${leagueCountLine(input.settled, "settled")}
     ${settledRows || '<div class="row"><span>nothing settled yet</span><b>the book is young</b></div>'}
+    ${ruleLine ? `<div class="read" style="margin-top:8px">${escapeHtml(ruleLine)} Each hash links to the venue's published text.</div>` : ""}
   </div>
   <div class="card">
     <h2>With and without protection</h2>
@@ -713,6 +734,8 @@ export interface ParlayCardInput {
   lockVsSell: LockVsSellSummary;
   lastLeg: LastLegSummary;
   stakeCents: number;
+  /** the legs' pinned rules and second reads (lastLeg.summarizeLegRules); absent on instances before 2026-10-11 */
+  rules?: RuleEvidenceSummary;
 }
 
 /**
@@ -788,6 +811,7 @@ export function parlayMomentCard(input: ParlayCardInput): string {
     <div class="rule">Lock ends shows the two endings with the credit included. Paid columns fill when the last game settles. A ticket with two or more legs still open is never quoted: that would mean hedging the product of two games, and no book quotes it. Nothing is bought; the lock is priced from the live book the hedge would have been bought on.</div>
     ${refusalRows ? `<div class="rule" style="margin-top:8px">Lock not offered, and why, across ${ll.attempts} attempts:</div>${refusalRows}` : ""}
     <div class="read" style="margin-top:8px">${escapeHtml(identityLine)}</div>
+    ${input.rules && input.rules.pinned > 0 ? `<div class="read" style="margin-top:6px">${escapeHtml(ruleEvidenceLine(input.rules, "leg"))} The full pins are in the parlays JSON.</div>` : ""}
   </div>
 `;
 }
