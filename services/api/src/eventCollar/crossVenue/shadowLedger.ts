@@ -75,7 +75,7 @@ export interface ShadowOpenRecord {
    */
   hedgeTokenId?: string;
   /**
-   * The venue's rule text as published at open, pinned (sha256, source URL, excerpt). Null when
+   * The venue's rule text as published at open, pinned (sha256, source URL, the text). Null when
    * the venue published none; absent on records before 2026-10-11. Evidence for the result, never
    * an input to the payout.
    */

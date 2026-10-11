@@ -7,9 +7,11 @@
  * different contracts the day a game is postponed; a tie paying $0.50 is a
  * line in the secondary rules, not the headline. So every position carries the
  * sha256 of the rule text the venue published at open, the public URL the text
- * was read from (a click shows the same text), and a short excerpt. At
+ * was read from (a click shows the same text), and the text itself. At
  * settlement the text is read again and compared, and the record says
- * "unchanged" or "changed", never silently either.
+ * "terms held" or "venue edited its rules" with the edit shown word for word,
+ * never silently either. The page speaks in those words; the hash is the
+ * receipt behind them, in the tooltip and the JSON.
  *
  * Pure. No venue calls; the adapters pass the text in. Nothing here changes a
  * payout: evidence is attached to a result, it does not decide one.
@@ -32,6 +34,8 @@ export interface RuleEvidence {
   readAtIso: string;
   /** the opening of the normalized text, so the record reads without a fetch */
   excerpt: string;
+  /** the whole normalized text, so a later edit can be shown word for word (pins before this field carry only the excerpt) */
+  text?: string;
 }
 
 /** The second read, at settlement, against the pin. */
@@ -41,6 +45,8 @@ export interface RuleCheck {
   sha256: string | null;
   /** null when nothing could be compared: no pin at open, or no text at settlement */
   unchanged: boolean | null;
+  /** the text as read at settlement, kept only when it differs from the pin, so the record can show what changed */
+  text?: string;
 }
 
 export const RULE_EXCERPT_CHARS = 200;
@@ -81,13 +87,82 @@ export function pinRule(input: { venue: RuleVenue; marketId: string; ruleText: s
     bytes: Buffer.byteLength(n, "utf8"),
     readAtIso: input.readAtIso,
     excerpt: n.length > RULE_EXCERPT_CHARS ? `${n.slice(0, RULE_EXCERPT_CHARS - 1).trimEnd()}…` : n,
+    text: n,
   };
 }
 
-/** Read again at settlement and compare to the pin. */
+/** Read again at settlement and compare to the pin. A differing text is kept so the record can show the edit. */
 export function checkRule(pinned: RuleEvidence | null | undefined, ruleTextNow: string | null | undefined, readAtIso: string): RuleCheck {
-  const sha256 = ruleHash(ruleTextNow);
-  return { readAtIso, sha256, unchanged: pinned && sha256 ? pinned.sha256 === sha256 : null };
+  const n = normalizeRuleText(ruleTextNow);
+  const sha256 = ruleHash(n);
+  const unchanged = pinned && sha256 ? pinned.sha256 === sha256 : null;
+  return unchanged === false ? { readAtIso, sha256, unchanged, text: n } : { readAtIso, sha256, unchanged };
+}
+
+// ── What changed ─────────────────────────────────────────────────────────────
+
+export interface RuleDiffPart {
+  kind: "same" | "cut" | "add";
+  text: string;
+}
+
+const RULE_DIFF_MAX_WORDS = 1_500;
+
+/**
+ * Word-level difference between the text at open and the text at settlement, so a reader
+ * sees "Oct 19" became "Oct 20" rather than two paragraphs to compare by eye. Longest common
+ * subsequence over whitespace-split words; rule texts are a few sentences, so quadratic is
+ * fine, and anything beyond RULE_DIFF_MAX_WORDS falls back to "all of the old, all of the new".
+ */
+export function ruleDiff(before: string, after: string): RuleDiffPart[] {
+  const a = normalizeRuleText(before).split(/\s+/).filter(Boolean);
+  const b = normalizeRuleText(after).split(/\s+/).filter(Boolean);
+  if (a.length === 0 && b.length === 0) return [];
+  if (a.length > RULE_DIFF_MAX_WORDS || b.length > RULE_DIFF_MAX_WORDS) {
+    const out: RuleDiffPart[] = [];
+    if (a.length) out.push({ kind: "cut", text: a.join(" ") });
+    if (b.length) out.push({ kind: "add", text: b.join(" ") });
+    return out;
+  }
+  const n = a.length;
+  const m = b.length;
+  const lcs: Uint16Array[] = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const parts: RuleDiffPart[] = [];
+  const push = (kind: RuleDiffPart["kind"], word: string) => {
+    const last = parts[parts.length - 1];
+    if (last && last.kind === kind) last.text += ` ${word}`;
+    else parts.push({ kind, text: word });
+  };
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      push("same", a[i]);
+      i += 1;
+      j += 1;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      push("cut", a[i]);
+      i += 1;
+    } else {
+      push("add", b[j]);
+      j += 1;
+    }
+  }
+  while (i < n) push("cut", a[i++]);
+  while (j < m) push("add", b[j++]);
+  return parts;
+}
+
+/** The two or three words a row prints for its rule state. Plain, never alarming. */
+export function ruleStateLabel(check: RuleCheck | null | undefined): "terms held" | "venue edited its rules" | "terms kept at open" {
+  if (check?.unchanged === true) return "terms held";
+  if (check?.unchanged === false) return "venue edited its rules";
+  return "terms kept at open";
 }
 
 // ── Venue text and URLs ──────────────────────────────────────────────────────
@@ -154,12 +229,18 @@ export function summarizeRuleEvidence(items: ReadonlyArray<{ id: string; rule: R
   return out;
 }
 
-/** The sentence under a settled list. Plain words; no claim a click cannot check. */
+/**
+ * The sentences under a settled list. Plain words a bettor reads without knowing what a hash
+ * is; the fingerprint itself stays in the tooltip and the JSON. No claim a click cannot check.
+ */
 export function ruleEvidenceLine(s: RuleEvidenceSummary, noun: "position" | "leg"): string {
   if (s.pinned === 0) return "";
   const plural = (n: number) => (n === 1 ? noun : `${noun}s`);
-  const parts = [`Settled against the venue's own rule text: ${s.pinned} of ${s.total} ${plural(s.total)} carry the rule pinned at open (sha256)`];
-  if (s.compared > 0) parts.push(`${s.compared} read again at settlement, ${s.unchanged} unchanged${s.changed > 0 ? `, ${s.changed} changed` : ""}`);
-  if (s.unreadable > 0) parts.push(`${s.unreadable} could not be read again`);
-  return `${parts.join("; ")}.`;
+  const parts =
+    s.pinned === s.total
+      ? [`Each ${noun} carries the venue's rules as they read when it opened.`]
+      : [`${s.pinned} of ${s.total} ${plural(s.total)} carry the venue's rules as they read when they opened; the rest were opened before we kept them.`];
+  if (s.compared > 0) parts.push(`At settlement we read them again: ${s.unchanged} unchanged${s.changed > 0 ? `, ${s.changed} reworded by the venue` : ""}.`);
+  if (s.unreadable > 0) parts.push(`${s.unreadable} could not be read again.`);
+  return parts.join(" ");
 }
