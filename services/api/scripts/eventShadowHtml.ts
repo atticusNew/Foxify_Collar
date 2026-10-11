@@ -13,6 +13,13 @@
 
 import type { LastLegSummary, LockVsSellSummary } from "../src/eventCollar/crossVenue/lastLeg";
 import { refusalWords } from "../src/eventCollar/crossVenue/parlayRetail";
+import { ruleDiff, ruleEvidenceLine, ruleStateLabel, shortHash, summarizeRuleEvidence, type RuleEvidenceSummary } from "../src/eventCollar/crossVenue/ruleEvidence";
+
+/** The footer's three sentences, printed only when something on the page carries a pinned rule. */
+export const RULE_CHECK_NOTE =
+  "when a position opens we keep the venue's own rule text for that market and its fingerprint (sha256). When it settles we read the venue's text again and compare. " +
+  "\u201cTerms held\u201d means the same words both times; \u201cvenue edited its rules\u201d means the venue changed the wording while the position was open, and the row opens to show the edit. " +
+  "Payouts follow the venue's official result either way.";
 import type { RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { VenueSlate } from "../src/eventCollar/crossVenue/venueSlate";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
@@ -114,6 +121,17 @@ h2{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;lett
 .row.settled b,.row.open b{white-space:nowrap;flex-shrink:0}
 .tag{display:inline-block;background:var(--card2);color:var(--dim);border-radius:6px;padding:1px 6px;font-size:10.5px;font-weight:600;vertical-align:1px}
 .tag.save{background:var(--green-wash);color:var(--green-deep)}
+a.tag.rule{text-decoration:none;border-bottom:1px dotted var(--faint)}
+.ruledetail{margin:-2px 0 8px;padding:0 0 0 2px;font-size:12.5px;line-height:1.5;color:var(--dim)}
+.ruledetail summary{cursor:pointer;color:var(--green-deep);font-weight:600;font-size:12px;list-style:none}
+.ruledetail summary::before{content:"+ ";font-weight:700}
+.ruledetail[open] summary::before{content:"\\2212  "}
+.ruledetail p{margin-top:6px;white-space:normal}
+.ruledetail .diff{color:var(--ink);background:var(--card2);border-radius:8px;padding:8px 10px}
+.ruledetail del{background:#f6e3e3;color:#7a1c1c;text-decoration:line-through;border-radius:3px;padding:0 2px}
+.ruledetail ins{background:var(--green-wash);color:var(--green-deep);text-decoration:none;border-radius:3px;padding:0 2px}
+.ruledetail .fine{color:var(--faint);font-size:11px}
+.ruledetail .fine code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px}
 .back{display:inline-block;margin-top:2px;color:var(--green-deep);font-weight:600;font-size:13px;text-decoration:underline}
 .read{color:var(--ink);font-size:13.5px;line-height:1.5;margin-top:6px}
 .read b{font-weight:650}
@@ -159,21 +177,75 @@ function leagueCountLine(items: ReadonlyArray<{ league: string }>, noun: string)
   return `<div class="sub" style="margin:-4px 0 8px">${items.length} ${noun} · ${escapeHtml(parts.join(" · "))}</div>`;
 }
 
+const utcMinute = (iso: string): string => `${iso.slice(0, 16).replace("T", " ")} UTC`;
+
+/**
+ * The edit, word for word, with long unchanged runs folded to their edges so the changed words
+ * stand out. Cut words are struck, added words are marked; nothing is reflowed.
+ */
+function ruleDiffHtml(before: string, after: string): string {
+  const CONTEXT = 6;
+  return ruleDiff(before, after)
+    .map((part, idx, all) => {
+      if (part.kind === "cut") return `<del>${escapeHtml(part.text)}</del>`;
+      if (part.kind === "add") return `<ins>${escapeHtml(part.text)}</ins>`;
+      const words = part.text.split(" ");
+      if (words.length <= CONTEXT * 2 + 2) return escapeHtml(part.text);
+      const head = idx === 0 ? [] : words.slice(0, CONTEXT);
+      const tail = idx === all.length - 1 ? [] : words.slice(-CONTEXT);
+      return [head.join(" "), "…", tail.join(" ")].filter(Boolean).map(escapeHtml).join(" ");
+    })
+    .join(" ");
+}
+
+/**
+ * The rule the result was judged under, said in plain words on the row: "terms held" links to
+ * the venue's own text; "venue edited its rules" sits on its own line and opens to the edit
+ * itself. The fingerprint stays in the tooltip and the JSON. Nothing when no rule was pinned.
+ */
+function ruleMark(p: Pick<ShadowPosition, "rule" | "ruleCheck">): { inline: string; changedLine: string; detail: string } {
+  const none = { inline: "", changedLine: "", detail: "" };
+  if (!p.rule) return none;
+  const label = ruleStateLabel(p.ruleCheck);
+  const fp = `fingerprint sha256 ${p.rule.sha256}`;
+  if (label !== "venue edited its rules") {
+    const when = label === "terms held" ? "read at open and again at settlement, same words" : "read at open";
+    return { ...none, inline: ` · <a class="tag rule" href="${escapeHtml(p.rule.sourceUrl)}" rel="noopener" title="${escapeHtml(fp)}, ${when}">${label}</a>` };
+  }
+  const check = p.ruleCheck!;
+  const canShow = Boolean(p.rule.text && check.text);
+  const body = canShow
+    ? `<p class="diff">${ruleDiffHtml(p.rule.text!, check.text!)}</p>`
+    : `<p class="diff">At open the rules began: ${escapeHtml(p.rule.excerpt)}</p>`;
+  const detail =
+    `<details class="ruledetail"><summary>what the venue changed</summary>` +
+    `<p>The venue reworded this market's rules after the position opened. The payout followed the venue's official result, as always. The wording at open is kept here; the venue's current text is at the link.</p>` +
+    body +
+    `<p class="fine">Read at open ${escapeHtml(utcMinute(p.rule.readAtIso))}, <code>${escapeHtml(shortHash(p.rule.sha256))}</code>; read again ${escapeHtml(utcMinute(check.readAtIso))}, <code>${escapeHtml(shortHash(check.sha256 ?? ""))}</code>. ` +
+    `<a class="back" style="font-size:11px" href="${escapeHtml(p.rule.sourceUrl)}" rel="noopener">Venue's current text</a></p></details>`;
+  return { inline: "", changedLine: `<i class="paid"><span class="tag rule" title="${escapeHtml(fp)} at open; different words at settlement">${label}</span></i>`, detail };
+}
+
 export function renderShadowHtml(input: ShadowPageInput): string {
   const s = input.summary;
   const settledRows = interleaveByLeague(input.settled, 25)
     .map((p) => {
       const saved = p.result === "no";
       const tag = saved ? '<span class="tag save">floor paid</span>' : '<span class="tag">won, capped</span>';
+      const rule = ruleMark(p);
       // The credit was paid at open and is inside the protected total; say so on every row,
       // or "capped" reads as the whole story.
       return (
         `<div class="row settled"><span>${escapeHtml(p.sideName)} ${tag}</span>` +
         `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} naked</i>` +
-        `<i class="paid">incl. ${usd(p.creditCents)} paid at open</i></b></div>`
+        `<i class="paid">incl. ${usd(p.creditCents)} paid at open${rule.inline}</i>` +
+        // on its own line: beside the credit it pushes the row past the card on a phone
+        `${rule.changedLine}</b></div>${rule.detail}`
       );
     })
     .join("");
+  const ruleLine = ruleEvidenceLine(summarizeRuleEvidence(input.settled.map((p) => ({ id: p.ticker, rule: p.rule, check: p.ruleCheck }))), "position");
+  const rulesOnPage = Boolean(ruleLine) || (input.parlays?.rules?.pinned ?? 0) > 0;
   const openRows = interleaveByLeague(input.open, 25)
     .map(
       (p) =>
@@ -370,6 +442,7 @@ ${sportsCard}  <div class="card">
     <h2>Settled, most recent first</h2>
     ${leagueCountLine(input.settled, "settled")}
     ${settledRows || '<div class="row"><span>nothing settled yet</span><b>the book is young</b></div>'}
+    ${ruleLine ? `<div class="read" style="margin-top:8px">${escapeHtml(ruleLine)}</div>` : ""}
   </div>
   <div class="card">
     <h2>With and without protection</h2>
@@ -398,7 +471,7 @@ ${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class
     <a class="back" href="${demoUrl()}">back to the demo</a>
   </div>
   <footer>
-    <b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions${input.parlays ? " and the parlay tickets" : ""}; no venue credentials, no wallets. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>${input.parlays ? ' <a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>' : ""}
+    ${rulesOnPage ? `<b>How we check rules:</b> ${RULE_CHECK_NOTE}<br><br>` : ""}<b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions${input.parlays ? " and the parlay tickets" : ""}; no venue credentials, no wallets. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>${input.parlays ? ' <a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>' : ""}
   </footer>
 </div>
 </body>
@@ -713,6 +786,8 @@ export interface ParlayCardInput {
   lockVsSell: LockVsSellSummary;
   lastLeg: LastLegSummary;
   stakeCents: number;
+  /** the legs' pinned rules and second reads (lastLeg.summarizeLegRules); absent on instances before 2026-10-11 */
+  rules?: RuleEvidenceSummary;
 }
 
 /**
@@ -788,6 +863,7 @@ export function parlayMomentCard(input: ParlayCardInput): string {
     <div class="rule">Lock ends shows the two endings with the credit included. Paid columns fill when the last game settles. A ticket with two or more legs still open is never quoted: that would mean hedging the product of two games, and no book quotes it. Nothing is bought; the lock is priced from the live book the hedge would have been bought on.</div>
     ${refusalRows ? `<div class="rule" style="margin-top:8px">Lock not offered, and why, across ${ll.attempts} attempts:</div>${refusalRows}` : ""}
     <div class="read" style="margin-top:8px">${escapeHtml(identityLine)}</div>
+    ${input.rules && input.rules.pinned > 0 ? `<div class="read" style="margin-top:6px">${escapeHtml(ruleEvidenceLine(input.rules, "leg"))}</div>` : ""}
   </div>
 `;
 }

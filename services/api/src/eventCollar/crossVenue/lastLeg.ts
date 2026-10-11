@@ -43,6 +43,8 @@ import { type CollarSearchResult, enumerateCollars, refuseUnfunded, selectTiers 
 import { walkPmAsks } from "./crossVenuePricer";
 import { pickWords } from "./pickWords";
 import type { ComboLegMarket, ComboLegStatus } from "./polymarketCombos";
+import { gammaBase } from "./polymarketPublic";
+import { checkRule, gammaRuleText, gammaRuleUrl, pinRule, summarizeRuleEvidence, type RuleCheck, type RuleEvidence, type RuleEvidenceSummary } from "./ruleEvidence";
 import { writerPayouts } from "./shadowLedger";
 import type { CollarTerms, CrossHedgeLeg, CrossRefusal, CrossSearchConfig, PmBook, ProtectionTier, TakeRule } from "./types";
 
@@ -148,6 +150,8 @@ export interface TicketLeg {
   yesTokenId: string;
   noTokenId: string;
   gameStartIso: string;
+  /** the venue's rule text pinned when the ticket was built (sha256, source URL, excerpt); null when none was published; absent before 2026-10-11 */
+  rule?: RuleEvidence | null;
 }
 
 /** A leg eligible for a ticket: catalog row joined with its Gamma status, the favourite side chosen. */
@@ -176,6 +180,8 @@ export interface LastLegLegRecord {
   ticketId: string;
   conditionId: string;
   valueMilli: number;
+  /** the rule text read again at resolution, against the pin; absent before 2026-10-11 */
+  ruleCheck?: RuleCheck;
 }
 
 /** One attempt to quote protection at the moment; a quote or an honest refusal, both kept. */
@@ -239,6 +245,8 @@ export interface LastLegTicket extends Omit<LastLegTicketRecord, "type"> {
   size: number;
   status: LastLegStatus;
   legValues: Record<string, number>;
+  /** per leg (by conditionId), the rule text read again at resolution against the pin */
+  legRuleChecks?: Record<string, RuleCheck>;
   /** product of resolved legs' values other than the last leg, milli */
   decidedProductMilli: number;
   attempts: number;
@@ -325,6 +333,7 @@ export function legCandidates(
       yesTokenId: status.tokenIds[side],
       noTokenId: status.tokenIds[1 - side],
       gameStartIso: new Date(startMs).toISOString(),
+      rule: pinRule({ venue: "polymarket", marketId: market.slug, ruleText: gammaRuleText(status), sourceUrl: gammaRuleUrl(market.slug, gammaBase()), readAtIso: new Date(nowMs).toISOString() }),
       gameStartMs: startMs,
       volumeUsd: market.volumeUsd,
     });
@@ -624,7 +633,11 @@ export function replayLastLeg(lines: readonly string[]): LastLegTicket[] {
     if (!t || t.status === "settled" || t.status === "void" || t.status === "busted") continue;
     if (rec.type === "leg") {
       if (!t.legs.some((l) => l.conditionId === rec.conditionId) || t.legValues[rec.conditionId] !== undefined) continue;
-      const next: LastLegTicket = { ...t, legValues: { ...t.legValues, [rec.conditionId]: Math.min(1000, Math.max(0, rec.valueMilli)) } };
+      const next: LastLegTicket = {
+        ...t,
+        legValues: { ...t.legValues, [rec.conditionId]: Math.min(1000, Math.max(0, rec.valueMilli)) },
+        ...(rec.ruleCheck ? { legRuleChecks: { ...(t.legRuleChecks ?? {}), [rec.conditionId]: rec.ruleCheck } } : {}),
+      };
       next.decidedProductMilli = decidedProduct(next);
       const status = statusOf(next);
       if (status === "settled") byId.set(rec.ticketId, settle(next, rec.at));
@@ -710,6 +723,11 @@ export interface LastLegSummary {
 }
 
 const avg = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+
+/** Every leg on the record with its pinned rule and, once resolved, the second read: the evidence line on the record page. */
+export function summarizeLegRules(tickets: readonly LastLegTicket[]): RuleEvidenceSummary {
+  return summarizeRuleEvidence(tickets.flatMap((t) => t.legs.map((l) => ({ id: l.slug, rule: l.rule, check: t.legRuleChecks?.[l.conditionId] }))));
+}
 
 export function summarizeLastLeg(tickets: readonly LastLegTicket[]): LastLegSummary {
   const sizes = new Map<number, LastLegSizeRow>();
@@ -1024,7 +1042,7 @@ export async function runLastLegTick(io: LastLegIo, cfg: LastLegConfig, search: 
         if (s?.resolved && s.valueMilli !== null) {
           // Gamma values the venue's first outcome; the bettor's leg is worth that or its complement.
           const valueMilli = leg.side === 0 ? s.valueMilli : 1000 - s.valueMilli;
-          io.append({ type: "leg", at: nowIso, ticketId: t.ticketId, conditionId: leg.conditionId, valueMilli });
+          io.append({ type: "leg", at: nowIso, ticketId: t.ticketId, conditionId: leg.conditionId, valueMilli, ruleCheck: checkRule(leg.rule, gammaRuleText(s), nowIso) });
           report.legsResolved += 1;
         }
       } catch (err) {

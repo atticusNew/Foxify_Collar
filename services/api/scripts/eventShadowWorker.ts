@@ -74,7 +74,8 @@ import {
   type PmBook,
 } from "../src/eventCollar/crossVenue/types";
 import type { NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
-import { getMarketResult } from "../src/eventCollar/kalshiPublic";
+import { getMarketResult, kalshiBase } from "../src/eventCollar/kalshiPublic";
+import { checkRule, kalshiRuleText, kalshiRuleUrl, pinRule } from "../src/eventCollar/crossVenue/ruleEvidence";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { adminAuthorized, parseAdminAuthFromEnv } from "../src/eventCollar/crossVenue/eventFunnel";
 import {
@@ -104,6 +105,7 @@ import {
   lockVersusSell,
   runLastLegTick,
   summarizeLastLeg,
+  summarizeLegRules,
   type LastLegTickReport,
 } from "../src/eventCollar/crossVenue/lastLeg";
 import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
@@ -295,6 +297,14 @@ async function scanTick(): Promise<void> {
         takeMinimumCents: q.takeMinimumCents,
         ...(counterfactuals ? { counterfactuals } : {}),
         ...(q.hedge.venue === "polymarket" ? { hedgeTokenId: q.hedge.tokenId } : {}),
+        // the rule the result will be judged under, as the venue publishes it this second
+        rule: pinRule({
+          venue: "kalshi",
+          marketId: res.market.ticker,
+          ruleText: kalshiRuleText(res.market),
+          sourceUrl: kalshiRuleUrl(res.market.ticker, kalshiBase()),
+          readAtIso: new Date().toISOString(),
+        }),
       });
       seen.add(res.market.ticker);
       opened.push({ kind: res.kind, at: new Date().toISOString() });
@@ -326,11 +336,18 @@ async function settleTick(): Promise<void> {
     try {
       const r = await getMarketResult(p.ticker);
       if (r.result === "yes" || r.result === "no") {
+        const at = new Date().toISOString();
+        // the same read that carries the result carries the rule; compared to the pin, said either way
+        const ruleCheck = checkRule(p.rule, kalshiRuleText(r), at);
+        if (ruleCheck.unchanged === false) {
+          void alerter({ kind: "rule_changed", message: `${p.ticker} (${p.eventTitle}) settled ${r.result} under a rule text that changed since open: ${p.rule?.sha256.slice(0, 12)} -> ${ruleCheck.sha256?.slice(0, 12)}` });
+        }
         appendOrAlert({
           type: "settle",
-          at: new Date().toISOString(),
+          at,
           ticker: p.ticker,
           result: r.result,
+          ruleCheck,
         });
       } else if (now > eventMs + VOID_AFTER_MS) {
         const reason = `no official result ${Math.round(VOID_AFTER_MS / 3_600_000)}h after the event`;
@@ -777,7 +794,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
             rfqVenues: hedgeChoice.rfqVenues,
             summary: summarizeHedgeReceipts(loadHedgeReceipts(RECEIPTS_PATH)),
           },
-          ...(tickets ? { parlays: { lockVsSell: lockVersusSell(tickets), lastLeg: summarizeLastLeg(tickets), stakeCents: lastLegCfg.stakeCents } } : {}),
+          ...(tickets ? { parlays: { lockVsSell: lockVersusSell(tickets), lastLeg: summarizeLastLeg(tickets), stakeCents: lastLegCfg.stakeCents, rules: summarizeLegRules(tickets) } } : {}),
         }),
       );
       return;

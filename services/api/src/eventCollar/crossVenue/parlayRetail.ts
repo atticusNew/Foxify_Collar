@@ -19,8 +19,9 @@
  */
 
 import type { LastLegSummary, LastLegTicket, LockVsSellSummary } from "./lastLeg";
-import { compressedContracts } from "./lastLeg";
+import { compressedContracts, summarizeLegRules } from "./lastLeg";
 import { pickWords } from "./pickWords";
+import type { RuleEvidenceSummary } from "./ruleEvidence";
 
 /** Why the lock was not offered, in the bettor's words (outcomes, never mechanics: no "hedge" on the phone). Keys are CrossRefusalCode. */
 export const PARLAY_REFUSAL_WORDS: Readonly<Record<string, string>> = {
@@ -68,6 +69,12 @@ export interface ParlayPick {
   league: string;
   startsIso: string;
   state: ParlayPickState;
+  /**
+   * The venue's rule text the pick settles under: its sha256 as pinned when the ticket was built,
+   * the public URL that shows the text, and whether the second read at resolution matched (null
+   * while open). Null when the venue published no rule; absent on tickets before 2026-10-11.
+   */
+  rule?: { sha256: string; sourceUrl: string; unchanged: boolean | null } | null;
 }
 
 export type ParlayState = "open" | "last_pick" | "busted" | "settled" | "void";
@@ -149,6 +156,8 @@ export interface ParlaySummary {
 export interface ParlayPayload {
   summary: ParlaySummary;
   tickets: ParlayTicket[];
+  /** the legs' pinned rules and second reads across every ticket on the record */
+  rules: RuleEvidenceSummary;
 }
 
 const pickState = (value: number | undefined): ParlayPickState =>
@@ -179,6 +188,8 @@ export function retailParlayTicket(t: LastLegTicket): ParlayTicket {
       league: l.league,
       startsIso: l.gameStartIso,
       state: pickState(t.legValues[l.conditionId]),
+      // only legs built since pins existed carry the key, so older tickets read exactly as before
+      ...(l.rule !== undefined ? { rule: l.rule ? { sha256: l.rule.sha256, sourceUrl: l.rule.sourceUrl, unchanged: t.legRuleChecks?.[l.conditionId]?.unchanged ?? null } : null } : {}),
     };
   });
   const open = picks.filter((p) => p.state === "open");
@@ -231,6 +242,7 @@ const IN_PLAY_RANK: Record<ParlayState, number> = { last_pick: 0, open: 1, settl
  */
 export function retailParlays(tickets: readonly LastLegTicket[], lastLeg: LastLegSummary, lockVsSell: LockVsSellSummary, decidedLimit = 12): ParlayPayload {
   const rows = tickets.map(retailParlayTicket);
+  const rules = summarizeLegRules(tickets);
   const inPlay = rows
     .filter((r) => r.state === "open" || r.state === "last_pick")
     .sort((a, b) => {
@@ -274,5 +286,6 @@ export function retailParlays(tickets: readonly LastLegTicket[], lastLeg: LastLe
       firstTicketAt: lastLeg.firstTicketAt,
     },
     tickets: [...inPlay, ...decided],
+    rules,
   };
 }
