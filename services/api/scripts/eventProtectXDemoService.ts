@@ -108,6 +108,7 @@ import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eve
 import { DEFAULT_EMBED_BRAND, brandRecordUrl, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
 import { applyMinimumCredit, describeMinimumCredit, minimumCreditRuleFromEnv } from "../src/eventCollar/crossVenue/minimumCredit";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
+import { activityFromShadowBody } from "../src/eventCollar/crossVenue/activityRetail";
 import { getKalshiBookSides, quoteEarlyClose, type EarlyCloseBooks } from "../src/eventCollar/crossVenue/earlyClose";
 
 const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
@@ -161,29 +162,52 @@ const PARLAYS_SOURCE = `${TRACK_RECORD_URL.replace(/\/+$/, "")}/api/shadow/parla
 const PARLAYS_FRESH_MS = 60_000;
 const PARLAYS_STALE_MS = 10 * 60_000;
 const PARLAYS_TIMEOUT_MS = Number(process.env.EVENT_X_PARLAYS_TIMEOUT_MS || 6_000);
-let parlaysCache: { body: string; atMs: number } | null = null;
-let parlaysInflight: Promise<string | null> | null = null;
-async function fetchParlays(nowMs: number): Promise<string | null> {
-  if (parlaysCache && nowMs - parlaysCache.atMs < PARLAYS_FRESH_MS) return parlaysCache.body;
-  if (!parlaysInflight) {
-    parlaysInflight = (async () => {
-      try {
-        const r = await fetch(PARLAYS_SOURCE, { signal: AbortSignal.timeout(PARLAYS_TIMEOUT_MS), headers: { accept: "application/json" } });
-        if (!r.ok) throw new Error(`shadow answered ${r.status}`);
-        const body = await r.text();
-        const parsed = JSON.parse(body) as { ok?: unknown };
-        if (parsed.ok !== true) throw new Error("shadow body not ok");
-        parlaysCache = { body, atMs: Date.now() };
-        return body;
-      } catch {
-        return parlaysCache && Date.now() - parlaysCache.atMs < PARLAYS_STALE_MS ? parlaysCache.body : null;
-      } finally {
-        parlaysInflight = null;
-      }
-    })();
-  }
-  return parlaysInflight;
+
+/**
+ * One read-through of a public shadow URL: fresh for a minute, the stale copy for ten when the
+ * shadow is unreachable, then null for an honest "unavailable". `shape` turns the shadow's body
+ * into what this service serves (identity for parlays; the retail activity cut for activity),
+ * and runs once per fetch, not per request.
+ */
+function shadowReadThrough(source: string, shape: (body: string) => string): (nowMs: number) => Promise<string | null> {
+  let cache: { body: string; atMs: number } | null = null;
+  let inflight: Promise<string | null> | null = null;
+  return async (nowMs: number) => {
+    if (cache && nowMs - cache.atMs < PARLAYS_FRESH_MS) return cache.body;
+    if (!inflight) {
+      inflight = (async () => {
+        try {
+          const r = await fetch(source, { signal: AbortSignal.timeout(PARLAYS_TIMEOUT_MS), headers: { accept: "application/json" } });
+          if (!r.ok) throw new Error(`shadow answered ${r.status}`);
+          const raw = await r.text();
+          const parsed = JSON.parse(raw) as { ok?: unknown };
+          if (parsed.ok !== true) throw new Error("shadow body not ok");
+          const body = shape(raw);
+          cache = { body, atMs: Date.now() };
+          return body;
+        } catch {
+          return cache && Date.now() - cache.atMs < PARLAYS_STALE_MS ? cache.body : null;
+        } finally {
+          inflight = null;
+        }
+      })();
+    }
+    return inflight;
+  };
 }
+const fetchParlays = shadowReadThrough(PARLAYS_SOURCE, (body) => body);
+
+/**
+ * ACTIVITY: the demo's Activity tab lists the record's finished positions (settled at the
+ * venue's official result, or closed early) through GET /api/activity, cut to retail shape
+ * from the shadow's public /api/shadow. Same cache rhythm as parlays. Outcomes only: what it
+ * ended at with the lock, what it would have ended at without, what was paid at open.
+ */
+const ACTIVITY_SOURCE = `${TRACK_RECORD_URL.replace(/\/+$/, "")}/api/shadow`;
+const fetchActivity = shadowReadThrough(ACTIVITY_SOURCE, (body) => {
+  const parsed = JSON.parse(body) as { at?: unknown };
+  return JSON.stringify({ ok: true, at: typeof parsed.at === "string" ? parsed.at : new Date().toISOString(), ...activityFromShadowBody(parsed) });
+});
 
 /** Kalshi crypto strike series admitted to the board (self-hedge route only). */
 const CRYPTO_SERIES = (process.env.EVENT_X_CRYPTO_SERIES || "KXBTCD,KXETHD")
@@ -1205,6 +1229,16 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const body = await fetchParlays(Date.now());
       if (body === null) {
         sendJson(res, 503, { ok: false, error: "Parlays are unavailable right now." });
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(body);
+      return;
+    }
+    if (url.pathname === "/api/activity") {
+      const body = await fetchActivity(Date.now());
+      if (body === null) {
+        sendJson(res, 503, { ok: false, error: "Activity is unavailable right now." });
         return;
       }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
