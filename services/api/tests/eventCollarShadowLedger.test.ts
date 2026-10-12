@@ -198,6 +198,67 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   assert.ok(html.includes("$95.54 <i>vs $150.00 naked</i><i class=\"paid\">incl. $1.04 paid at open</i>"), "capped row carries the credit");
 });
 
+test("shadow: flow onto public books is one total over positions opened in the window, whatever they became", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shadow-flow-"));
+  const path = join(dir, "ledger.jsonl");
+  // Four positions: a settled floor save, a capped win, a void and one still open. The void and the
+  // open count too: the other side was bought at open. A fifth opened 40 days before "now" is in the
+  // all-time total and out of the 30-day window.
+  appendShadowRecord(path, OPEN_FIXTURE);
+  appendShadowRecord(path, { ...OPEN_FIXTURE, ticker: "KXNFLGAME-TEST-KC", league: "nfl", sideName: "Chiefs", at: "2026-09-13T16:00:00.000Z", takeCents: 20, creditCents: 104, hedgeUnitsMilli: 134_000, hedgeCostCents: 5426 });
+  appendShadowRecord(path, { ...OPEN_FIXTURE, ticker: "KXNFLGAME-TEST-VOID", league: "nfl", sideName: "Jets", at: "2026-09-14T16:00:00.000Z" });
+  appendShadowRecord(path, { ...OPEN_FIXTURE, ticker: "KXNFLGAME-TEST-OPEN", league: "nfl", sideName: "Bills", at: "2026-09-15T16:00:00.000Z", contracts: 300, creditCents: 224, takeCents: 24 });
+  appendShadowRecord(path, { ...OPEN_FIXTURE, ticker: "KXMLBGAME-TEST-OLD", sideName: "Old game", at: "2026-08-06T16:00:00.000Z", route: "kalshi_self" });
+  appendShadowRecord(path, { type: "settle", at: "2026-09-13T21:00:00.000Z", ticker: OPEN_FIXTURE.ticker, result: "no" });
+  appendShadowRecord(path, { type: "settle", at: "2026-09-14T04:00:00.000Z", ticker: "KXNFLGAME-TEST-KC", result: "yes" });
+  appendShadowRecord(path, { type: "void", at: "2026-09-15T04:00:00.000Z", ticker: "KXNFLGAME-TEST-VOID", reason: "no official result" });
+  appendShadowRecord(path, { type: "settle", at: "2026-08-07T04:00:00.000Z", ticker: "KXMLBGAME-TEST-OLD", result: "yes" });
+
+  const positions = loadShadowPositions(path);
+  const now = new Date("2026-09-15T20:00:00.000Z");
+  const f = summarizeShadow(positions, now).flow;
+  assert.equal(f.windowDays, 30);
+  assert.equal(f.asOf, now.toISOString());
+  assert.equal(f.last30Days.since, "2026-08-16T20:00:00.000Z");
+  assert.equal(f.allTime.since, "2026-08-06T16:00:00.000Z", "all time starts at the first open");
+
+  // 30 days: fixture 133.5 units + KC 134 (as quoted) + void 133.5 + open on 300 contracts 267 = 668 contracts
+  assert.equal(f.last30Days.positions, 4);
+  assert.equal(f.last30Days.contractsMilli, 133_500 + 134_000 + 133_500 + 267_000);
+  assert.equal(f.last30Days.contracts, 668);
+  // what those units cost at open: funding - credit - take on each, fees inside
+  assert.equal(f.last30Days.hedgeNotionalCents, 5426 + (5550 - 104 - 20) + 5426 + (37 * 300 - 224 - 24));
+  assert.equal(f.last30Days.stakeCents, 100 * (150 + 150 + 150 + 300));
+  // all time adds the old one and nothing else
+  assert.equal(f.allTime.positions, 5);
+  assert.equal(f.allTime.contractsMilli, f.last30Days.contractsMilli + 133_500);
+  assert.equal(f.allTime.contracts, 668 + 134, "133.5 rounds to 134 on its own; the total rounds once");
+  assert.equal(f.allTime.hedgeNotionalCents, f.last30Days.hedgeNotionalCents + 5426);
+  // one total: no route key anywhere in the flow block
+  assert.ok(!JSON.stringify(f).includes("kalshi") && !JSON.stringify(f).includes("polymarket"), "flow is not cut by venue");
+
+  // a window with nothing opened reads as zero, not as missing
+  const later = summarizeShadow(positions, new Date("2026-12-01T00:00:00.000Z")).flow;
+  assert.equal(later.last30Days.positions, 0);
+  assert.equal(later.last30Days.contracts, 0);
+  assert.equal(later.allTime.contracts, 802);
+  assert.deepEqual(summarizeShadow([], now).flow.allTime, { positions: 0, contractsMilli: 0, contracts: 0, hedgeNotionalCents: 0, stakeCents: 0, since: null });
+
+  // the public page: one card, one total, no venue words, the simulated caveat on the line
+  const s = summarizeShadow(positions, now);
+  const html = renderShadowHtml({ atIso: now.toISOString(), summary: s, open: positions.filter((p) => p.status === "open"), settled: positions.filter((p) => p.status === "settled") });
+  assert.ok(html.includes("<h2>Flow onto public books</h2>"));
+  assert.ok(html.indexOf("<h2>Flow onto public books</h2>") < html.indexOf("<h2>Sports first</h2>"), "the flow card follows the identity card");
+  assert.ok(html.includes('<div class="n green">668</div><div class="l">contracts, last 30 days</div>'));
+  assert.ok(html.includes(`<div class="n">${"$" + ((5426 + 5426 + 5426 + 10_852) / 100).toFixed(2)}</div><div class="l">paid for them, fees in</div>`));
+  assert.ok(html.includes('<div class="n">802</div><div class="l">contracts since 2026-08-06</div>'));
+  assert.ok(html.includes("In the last 30 days protection put 668 contracts on public books across 4 positions: $271.30 of flow against $750.00 of stake protected. Since 2026-08-06 UTC: 802 contracts across 5 positions, $325.56 of flow."));
+  assert.ok(html.includes("Simulated here, like the positions"), "the card says the flow is simulated, like the rest of the record");
+  assert.ok(!html.includes("Polymarket") && !html.includes("(Kalshi)"), "no venue named on the flow card either");
+  const empty = renderShadowHtml({ atIso: now.toISOString(), summary: summarizeShadow([], now), open: [], settled: [] });
+  assert.ok(!empty.includes("Flow onto public books"), "an empty book shows no flow card");
+});
+
 test("shadow: the page bridges floor saves and protection cost, and prints percentages only past the slice line", () => {
   const dir = mkdtempSync(join(tmpdir(), "shadow-bridge-"));
   const path = join(dir, "ledger.jsonl");

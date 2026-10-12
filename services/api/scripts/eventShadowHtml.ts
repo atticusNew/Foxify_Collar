@@ -78,6 +78,7 @@ function hedgeLine(h: NonNullable<ShadowPageInput["hedges"]>): string {
 }
 
 const signedUsd = (c: number): string => (c < 0 ? `-${usd(-c)}` : usd(c));
+const intStr = (n: number): string => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 const bpsPct = (bps: number | null, digits = 2): string => (bps === null ? "–" : `${(bps / 100).toFixed(digits)}%`);
 /**
  * A slice with fewer events than this shows its counts and nothing else: four NFL games do not
@@ -384,6 +385,33 @@ export function renderShadowHtml(input: ShadowPageInput): string {
   </div>
 `;
   })();
+  // FLOW ONTO PUBLIC BOOKS: one total. Every protection buys its other side on a public book at
+  // open, so the record is also a count of the contracts protection sent to those books. The page
+  // says how many and what they cost, and does not cut the number by venue.
+  const flowCard = (() => {
+    const f = s.flow;
+    if (!f || f.allTime.positions === 0) return "";
+    const r = f.last30Days;
+    const a = f.allTime;
+    const sinceDay = a.since ? utcDay(a.since) : "the first position";
+    const recentLine =
+      r.positions === 0
+        ? `No positions opened in the last ${f.windowDays} days.`
+        : `In the last ${f.windowDays} days protection put ${intStr(r.contracts)} contracts on public books across ${r.positions} position${r.positions === 1 ? "" : "s"}: ${usd(r.hedgeNotionalCents)} of flow against ${usd(r.stakeCents)} of stake protected.`;
+    const allLine = ` Since ${sinceDay} UTC: ${intStr(a.contracts)} contracts across ${a.positions} positions, ${usd(a.hedgeNotionalCents)} of flow.`;
+    const simLine = " Simulated here, like the positions; live, this is order flow onto the books that price the event, placed the second the user taps.";
+    return `  <div class="card">
+    <h2>Flow onto public books</h2>
+    <div class="sub" style="margin-bottom:8px">Every protection buys its other side on a public book, leg for leg. One total; the record does not cut it by venue.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n green">${intStr(r.contracts)}</div><div class="l">contracts, last ${f.windowDays} days</div></div>
+      <div class="bignum"><div class="n">${usd(r.hedgeNotionalCents)}</div><div class="l">paid for them, fees in</div></div>
+      <div class="bignum"><div class="n">${intStr(a.contracts)}</div><div class="l">contracts since ${escapeHtml(sinceDay)}</div></div>
+    </div>
+    <div class="read" style="margin-top:10px">${escapeHtml(recentLine + allLine + simLine)}</div>
+  </div>
+`;
+  })();
   const richest = Object.entries(s.segments.byLeague)
     .filter(([, r]) => r.quotedAvgEvBps !== null && r.opened >= MIN_SLICE_EVENTS)
     .sort((a, b) => (b[1].quotedAvgEvBps ?? 0) - (a[1].quotedAvgEvBps ?? 0));
@@ -439,7 +467,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     </div>
     <div class="read" style="margin-top:10px">${escapeHtml(identityLine)}</div>
   </div>
-${sportsCard}  <div class="card">
+${flowCard}${sportsCard}  <div class="card">
     <h2>Settled, most recent first</h2>
     ${leagueCountLine(input.settled, "settled")}
     ${settledRows || '<div class="row"><span>nothing settled yet</span><b>the book is young</b></div>'}
