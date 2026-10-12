@@ -167,7 +167,7 @@ services:
       # only by the share key or the operator token, never linked from the public record, so a
       # prospect's name appears only on a link we chose to send. Nothing is read from the venue.
       - key: EVENT_SHADOW_SLATES
-        value: "wiremarkets=Wire Markets:nfl,nba,mlb,nhl,epl,ucl,mls;wagerwire=WagerWire:nfl,nba,mlb,nhl;sporttrade=Sporttrade:nfl,nba,mlb,nhl;novig=Novig:nfl,nba,mlb,nhl"
+        value: "wiremarkets=Wire Markets:nfl,nba,mlb,nhl,epl,ucl,mls;wagerwire=WagerWire:nfl,nba,mlb,nhl;sporttrade=Sporttrade:nfl,nba,mlb,nhl;novig=Novig:nfl,nba,mlb,nhl;draftkings=DraftKings:nfl,nba,mlb,nhl;underdog=Underdog:nfl,nba,mlb,nhl;prophetx=ProphetX:nfl,nba,mlb,nhl,epl,ucl,mls;prizepicks=PrizePicks:nfl,nba,mlb,nhl"
       - key: EVENT_SHADOW_SLATE_KEY
         generateValue: true
       # Where the slate page's "Open the demo" goes (renders in the venue's brand with ?brand=).

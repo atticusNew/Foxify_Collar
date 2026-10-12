@@ -238,10 +238,18 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
         floorSaves: number;
         writer: { settledPnlCents: number; takeBookedCents: number };
         counterfactuals: Record<string, unknown>;
+        flow: { windowDays: number; last30Days: Record<string, unknown>; allTime: { positions: number; contracts: number; hedgeNotionalCents: number; since: string } };
       };
     };
     assert.equal(api.summary.settledCount, 1);
     assert.equal(api.summary.floorSaves, 1);
+    // the flow line: contracts protection put on public books, one total, no venue split
+    assert.equal(api.summary.flow.windowDays, 30);
+    assert.deepEqual(api.summary.flow.allTime, { positions: 1, contractsMilli: 133_500, contracts: 134, hedgeNotionalCents: 5426, stakeCents: 15_000, since: OPEN.at });
+    assert.deepEqual(Object.keys(api.summary.flow.last30Days).sort(), ["contracts", "contractsMilli", "hedgeNotionalCents", "positions", "since", "stakeCents"]);
+    assert.ok(!JSON.stringify(api.summary.flow).includes("polymarket"), "no route inside the flow block");
+    const flowPage = await (await fetch(`${base}/`)).text();
+    assert.ok(flowPage.includes("<h2>Flow onto public books</h2>") && flowPage.includes("contracts since 2026-09-12"), "the public page carries the flow card");
     assert.equal(api.summary.writer.settledPnlCents, OPEN.takeCents, "writer realized the published take");
     assert.equal(api.summary.writer.takeBookedCents, OPEN.takeCents);
     assert.deepEqual(
@@ -353,9 +361,13 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.ok(slateCsvLines[0].startsWith("ticker,league,kind,") && !slateCsvLines[0].includes("wide_floor_c"), "public columns only");
     assert.ok(slateCsvLines[1].startsWith(`${OPEN.ticker},`));
     assert.equal(((await (await fetch(`${base}/slate/sporttrade.csv?k=share-key-1`)).text()).trimEnd().split("\n")).length, 1, "header only off the slate");
-    const healthSlates = (health as { slates: { keyConfigured: boolean; configured: Array<{ slug: string }> } }).slates;
+    const healthSlates = (health as { slates: { keyConfigured: boolean; configured: Array<{ slug: string; shareUrl: string | null; demoUrl: string }> } }).slates;
     assert.equal(healthSlates.keyConfigured, true);
     assert.deepEqual(healthSlates.configured.map((s) => s.slug), ["wiremarkets", "sporttrade"]);
+    // the operator body carries the link to send per slate: the slate on its own derived key, the demo in the brand
+    assert.equal(healthSlates.configured[0].shareUrl, `https://atticus-event-shadow.onrender.com/slate/wiremarkets?k=${wmLink}`);
+    assert.equal(healthSlates.configured[1].shareUrl, `https://atticus-event-shadow.onrender.com/slate/sporttrade?k=${slateLinkKey("share-key-1", "sporttrade")}`);
+    assert.equal(healthSlates.configured[0].demoUrl, "https://atticus-event-demo-cross-venue.onrender.com/?brand=Wire%20Markets");
     assert.equal("slates" in publicHealth, false, "the public health body does not list prospects");
 
     // PARLAYS, PUBLIC: the last-leg tickets in retail shape for the demo's Parlays tab, and the

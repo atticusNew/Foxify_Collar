@@ -116,7 +116,7 @@ import {
 } from "../src/eventCollar/crossVenue/lastLeg";
 import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
 import { measureNetting } from "../src/eventCollar/crossVenue/shadowNetting";
-import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
+import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slateLinkKey, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
 import type { ScanOptions, ScanState } from "./eventProtectXDemoService";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -527,7 +527,22 @@ function healthBody(): Record<string, unknown> {
       lastError: lastLastLegError,
       lastReport: lastLastLegReport,
     },
-    slates: { keyConfigured: Boolean((SLATE_KEY ?? "").trim()), configured: venueSlates.map((s) => ({ slug: s.slug, name: s.name, leagues: s.leagues })) },
+    // Each slate with the link to send: the slate page on its own derived key (opens that one slate
+    // and no other) and the demo in the venue's brand. Operator body only; the public health body
+    // does not list prospects.
+    slates: {
+      keyConfigured: Boolean((SLATE_KEY ?? "").trim()),
+      configured: venueSlates.map((s) => {
+        const link = slateLinkKey(SLATE_KEY, s.slug);
+        return {
+          slug: s.slug,
+          name: s.name,
+          leagues: s.leagues,
+          shareUrl: link ? `${RECORD_URL}/slate/${s.slug}?k=${link}` : null,
+          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(s.name)}`,
+        };
+      }),
+    },
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
     hedge: {
       strategy: hedgeChoice.strategy,
