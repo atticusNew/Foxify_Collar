@@ -42,6 +42,12 @@
  * GET /healthz is public liveness only (ok, service, positions, last scan/settle).
  * Ledger and receipt paths, hedge strategy and venues, error text and failure
  * counters come back on the same route with the operator token.
+ *
+ * WHAT IS PUBLIC: the record (/, /api/shadow, /api/shadow/positions.csv, /api/shadow/parlays)
+ * carries quoted terms, official results, both sides' money and the two books the hedges were
+ * bought on. Everything that is a study rather than a receipt (rule counterfactuals, hedge
+ * receipts, the last-leg tickets, netting measured on the book) is an operator view. A new
+ * measurement joins the operator views first; it reaches the record only by decision.
  */
 
 import { createReadStream, statSync } from "node:fs";
@@ -109,6 +115,7 @@ import {
   type LastLegTickReport,
 } from "../src/eventCollar/crossVenue/lastLeg";
 import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
+import { measureNetting } from "../src/eventCollar/crossVenue/shadowNetting";
 import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
 import type { ScanOptions, ScanState } from "./eventProtectXDemoService";
 
@@ -175,6 +182,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/reset",
   "/api/shadow/lastleg",
   "/api/shadow/lastleg.csv",
+  "/api/shadow/netting",
 ]);
 
 const alertCfg = parseShadowAlertsFromEnv(process.env);
@@ -562,6 +570,16 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
   };
 }
 
+/**
+ * A position as the public JSON carries it: what was quoted, what settled, both sides' money.
+ * The counterfactual rule books and the hedge leg's venue token stay with the operator (the raw
+ * ledger, the full CSV); a reader can recompute every public row without them.
+ */
+function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "hedgeTokenId"> {
+  const { counterfactuals: _cf, hedgeTokenId: _tok, ...rest } = p;
+  return rest;
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -636,7 +654,22 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/api/shadow") {
       const { atIso, positions } = pageData();
       const { settled, open, closed } = splitPositions(positions);
-      sendJson(res, 200, { ok: true, at: atIso, summary: publicSummary(summarizeShadow(positions)), settled, open, closed });
+      sendJson(res, 200, {
+        ok: true,
+        at: atIso,
+        summary: publicSummary(summarizeShadow(positions)),
+        settled: settled.map(publicPosition),
+        open: open.map(publicPosition),
+        closed: closed.map(publicPosition),
+      });
+      return;
+    }
+    if (url.pathname === "/api/shadow/netting") {
+      // Netting measured on the replayed ledger: the two sides of one game matched on paper,
+      // the saving derived, the pair identity written out per winner. Operator only; the record
+      // hedges leg for leg and the public page does not mention netting.
+      const { atIso, positions } = pageData();
+      sendJson(res, 200, { ok: true, at: atIso, ...measureNetting(positions) });
       return;
     }
     if (url.pathname === "/api/shadow/report") {
@@ -725,6 +758,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           summary: summarizeShadow(positions),
           token: url.searchParams.get("token"),
           lastLeg: { summary: summarizeLastLeg(loadLastLegTickets(LASTLEG_PATH)), enabled: lastLegCfg.enabled, stakeCents: lastLegCfg.stakeCents },
+          netting: measureNetting(positions),
         }),
       );
       return;
