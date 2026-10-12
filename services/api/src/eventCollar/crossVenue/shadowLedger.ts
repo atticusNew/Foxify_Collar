@@ -363,6 +363,61 @@ export interface ShadowSummary {
   counterfactuals: ShadowCounterfactualSummary;
   /** positions the user left before the lock, priced as a new trade at live books */
   closed: ShadowClosedSummary;
+  /** contracts protection put on public books, one total; the public page does not cut it by venue */
+  flow: ShadowFlowSummary;
+}
+
+/**
+ * FLOW ONTO PUBLIC BOOKS. Every protection buys its other side on a public book at open, leg for
+ * leg, so the record is also a count of the contracts protection sent to those books. Summed as
+ * one total over every position opened in the window, whatever it later became (settled, closed
+ * early, voided): the hedge was placed at open. The split by route stays on the operator report.
+ */
+export interface ShadowFlowWindow {
+  /** positions opened in the window */
+  positions: number;
+  /** units bought on public books at open, milli (hedgeUnitsOf) */
+  contractsMilli: number;
+  /** the same in whole contracts, rounded */
+  contracts: number;
+  /** what those units cost at open, cents, venue fees included (hedgeCostOf) */
+  hedgeNotionalCents: number;
+  /** stake protected in the window, cents: 100c x contracts per position */
+  stakeCents: number;
+  /** when the window opens: now minus the window for the rolling one, first open for all time */
+  since: string | null;
+}
+
+export interface ShadowFlowSummary {
+  asOf: string;
+  windowDays: number;
+  last30Days: ShadowFlowWindow;
+  allTime: ShadowFlowWindow;
+}
+
+export const FLOW_WINDOW_DAYS = 30;
+
+export function summarizeFlow(positions: readonly ShadowPosition[], now: Date = new Date()): ShadowFlowSummary {
+  const nowMs = now.getTime();
+  const sinceMs = nowMs - FLOW_WINDOW_DAYS * 86_400_000;
+  const empty = (since: string | null): ShadowFlowWindow => ({ positions: 0, contractsMilli: 0, contracts: 0, hedgeNotionalCents: 0, stakeCents: 0, since });
+  const recent = empty(new Date(sinceMs).toISOString());
+  const all = empty(null);
+  for (const p of positions) {
+    const openedMs = Date.parse(p.at);
+    const units = hedgeUnitsOf(p);
+    const cost = hedgeCostOf(p);
+    const stake = 100 * p.contracts;
+    for (const w of openedMs >= sinceMs && openedMs <= nowMs ? [recent, all] : [all]) {
+      w.positions += 1;
+      w.contractsMilli += units;
+      w.hedgeNotionalCents += cost;
+      w.stakeCents += stake;
+    }
+    if (all.since === null || p.at < all.since) all.since = p.at;
+  }
+  for (const w of [recent, all]) w.contracts = Math.round(w.contractsMilli / 1000);
+  return { asOf: now.toISOString(), windowDays: FLOW_WINDOW_DAYS, last30Days: recent, allTime: all };
 }
 
 export interface ShadowClosedSummary {
@@ -626,7 +681,7 @@ export interface ShadowWriterSummary {
   byLeague: Record<string, { settled: number; open: number; pnlCents: number; stakeCents: number }>;
 }
 
-export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
+export function summarizeShadow(positions: ShadowPosition[], now: Date = new Date()): ShadowSummary {
   const settled = positions.filter((p) => p.status === "settled");
   const routeSplit: Record<string, number> = {};
   let quotedBpsSum = 0;
@@ -754,6 +809,7 @@ export function summarizeShadow(positions: ShadowPosition[]): ShadowSummary {
     segments: { byRoute: finishSegment(segRoute), byLeague: finishSegment(segLeague), byKind: finishSegment(segKind) },
     counterfactuals: summarizeCounterfactuals(positions),
     closed,
+    flow: summarizeFlow(positions, now),
   };
 }
 
