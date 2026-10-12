@@ -21,6 +21,7 @@ export const RULE_CHECK_NOTE =
   "\u201cTerms held\u201d means the same words both times; \u201cvenue edited its rules\u201d means the venue changed the wording while the position was open, and the row opens to show the edit. " +
   "Payouts follow the venue's official result either way.";
 import type { RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
+import type { NettingReport } from "../src/eventCollar/crossVenue/shadowNetting";
 import type { VenueSlate } from "../src/eventCollar/crossVenue/venueSlate";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
@@ -497,6 +498,8 @@ export interface ShadowReportInput {
   token?: string | null;
   /** the last-leg shadow (lastLeg.ts); absent on reports rendered before it existed */
   lastLeg?: { summary: LastLegSummary; enabled: boolean; stakeCents: number };
+  /** netting measured on the same ledger (shadowNetting.ts); operator only, never on the record */
+  netting?: NettingReport;
 }
 
 const pct1 = (x: number | null): string => (x === null ? "–" : `${x.toFixed(1)}%`);
@@ -637,6 +640,79 @@ function ourBookCard(s: ShadowSummary): string {
 }
 
 /**
+ * NETTING, MEASURED. The two sides of one game on the record, matched on paper: what buying both
+ * hedges paid above holding the matched dollar as cash. Operator card; the record itself still
+ * hedges leg for leg and says nothing about netting. Numbers from shadowNetting.ts.
+ */
+function nettingCard(r: NettingReport, tq: string): string {
+  const s = r.summary;
+  const cpd = (x: number | null): string => (x === null ? "–" : `${x.toFixed(1)}¢`);
+  const lead =
+    s.pairs === 0
+      ? "No game has both sides on the record yet; the first pair forms when a scan opens the other side of a game already held."
+      : `${s.pairs} games have both sides on the record (${s.singles} have one). Leg for leg those ${s.pairedPositions} hedges cost ${usd(s.legForLegCents)}; netted they would have cost ${usd(s.nettedCents)}, a saving of ${signedUsd(s.savingCents)} (${bpsPct(s.savingBpsOfLegForLeg)} of the hedge cost, ${bpsPct(s.savingBpsOfTake, 0)} of the ${usd(s.takeOnPairsCents)} of take booked on them).`;
+  const windowLine =
+    s.pairs === 0
+      ? ""
+      : s.sameWindow.pairs === 0
+        ? `No pair had both sides priced within ${s.sameWindow.windowHours}h of each other, so every two-sided cost here carries the market's move between the two opens.`
+        : `${s.sameWindow.pairs} pairs had both sides priced within ${s.sameWindow.windowHours}h of each other: on those the median two-sided cost is ${cpd(s.sameWindow.medianTwoSidedCostCentsPerUnit)} per netted dollar and the saving is ${signedUsd(s.sameWindow.savingCents)} on ${usd(s.sameWindow.legForLegCents)}. That is the number to quote; the rest of the pairs were priced a median ${n1(s.openedGapHours.median, "h")} apart and carry whatever the market did in between.`;
+  const shareLine =
+    s.pairs === 0
+      ? ""
+      : `${bpsPct(s.nettedShareBps, 0)} of the paired hedge units matched, because the shadow opens one position per market at one size: that share is the board's, not a user's. ${s.pairsNotSaving} of ${s.pairs} pairs would not have saved (the two books summed under a dollar at their opens).`;
+  const leagueRows = Object.entries(s.byLeague)
+    .sort((a, b) => b[1].pairs - a[1].pairs)
+    .map(
+      ([league, l]) =>
+        `<div class="row"><span>${escapeHtml(league.toUpperCase())} · ${l.pairs} pairs, ${l.singles} single</span>` +
+        `<b>${signedUsd(l.savingCents)} <i>of ${usd(l.legForLegCents)} · median ${escapeHtml(cpd(l.medianTwoSidedCostCentsPerUnit))} per dollar</i></b></div>`,
+    )
+    .join("");
+  const pairRows = r.pairs
+    .slice(0, 12)
+    .map((p) => {
+      const [a, b] = p.sides;
+      return (
+        `<tr><td class="hi">${escapeHtml(p.eventTitle)}</td>` +
+        `<td>${escapeHtml(a.sideName)} ${a.unitCostCents.toFixed(1)}¢ · ${escapeHtml(b.sideName)} ${b.unitCostCents.toFixed(1)}¢</td>` +
+        `<td class="hi">${p.twoSidedCostCentsPerUnit.toFixed(1)}¢</td>` +
+        `<td>${p.openedGapHours.toFixed(1)}h</td>` +
+        `<td>${usd(p.legForLegCents)}</td>` +
+        `<td>${usd(p.nettedCents)}</td>` +
+        `<td class="hi">${signedUsd(p.savingCents)}</td>` +
+        `<td>${usd(p.takeCents)}</td>` +
+        `<td>${p.identity.holds ? "holds" : "off"}</td></tr>`
+      );
+    })
+    .join("");
+  return `<div class="card">
+    <h2>Netting, measured</h2>
+    <div class="sub" style="margin-bottom:8px">A user protected on one side of a game and a user protected on the other are each other's hedge: the two hedge legs together pay a dollar whoever wins. The record buys both anyway, leg for leg; this card measures what it would have saved to hold the matched dollar as cash and buy only the residual. Nothing was netted.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n green">${s.pairs}</div><div class="l">games with both sides</div></div>
+      <div class="bignum"><div class="n">${signedUsd(s.savingCents)}</div><div class="l">saving, all pairs</div></div>
+      <div class="bignum"><div class="n">${escapeHtml(cpd(s.sameWindow.medianTwoSidedCostCentsPerUnit))}</div><div class="l">per netted dollar, same-window pairs</div></div>
+      <div class="bignum"><div class="n ${s.identityHolds ? "green" : ""}">${s.identityHolds ? "holds" : "off"}</div><div class="l">pair identity, every pair</div></div>
+    </div>
+    <div class="read" style="margin-top:10px">${escapeHtml(lead)}</div>
+    ${windowLine ? `<div class="read">${escapeHtml(windowLine)}</div>` : ""}
+    ${shareLine ? `<div class="read">${escapeHtml(shareLine)}</div>` : ""}
+    ${leagueRows}
+    ${
+      pairRows
+        ? `<div class="tablewrap" style="margin-top:8px"><table>
+      <tr><th>game</th><th>unit cost, each side</th><th>two-sided</th><th>opened apart</th><th>leg for leg</th><th>netted</th><th>saving</th><th>take</th><th>identity</th></tr>
+      ${pairRows}
+    </table></div>`
+        : ""
+    }
+    <div class="rule">Unit cost is the hedge leg's cost, venue fees included, per $1 of payout, from the credit identity on the record. Two-sided is the two added: 100¢ would be a free dollar; what is above it is the spread and fees netting removes. Netted holds the matched units as cash at 100¢ and buys the residual at that side's own average, which is a ceiling on its cost, so the saving is a floor. Identity: our result on the pair, written out for each winner, equals the two takes plus the saving in both states.</div>
+    <a class="back" href="/api/shadow/netting${tq}">Pairs (JSON)</a>
+  </div>`;
+}
+
+/**
  * The rule comparison: every proposed pricing rule marked against the same
  * positions, same books, same results as the live book. Read across a row for
  * one rule; read down a column to compare rules. Nothing here was traded.
@@ -737,6 +813,8 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
   </div>
 
   ${ourBookCard(s)}
+
+  ${input.netting ? nettingCard(input.netting, tq) : ""}
 
   ${input.lastLeg ? lastLegCard(input.lastLeg, tq) : ""}
 

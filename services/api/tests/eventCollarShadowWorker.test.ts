@@ -191,7 +191,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
   const op = { headers: { "x-admin-token": "op-secret" } };
   try {
     // operator views are gated: no token, wrong token -> 403; the public record is unaffected
-    for (const p of ["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export"]) {
+    for (const p of ["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export", "/api/shadow/netting"]) {
       assert.equal((await fetch(`${base}${p}`)).status, 403, `${p} without a token`);
       assert.equal((await fetch(`${base}${p}?token=wrong`)).status, 403, `${p} with the wrong token`);
     }
@@ -298,6 +298,8 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.ok(reportHtml.includes("What each rule would have done"));
     assert.ok(reportHtml.includes("not started"), "no v2 positions yet: the period says so");
     assert.ok(!reportHtml.includes("NaN"));
+    assert.ok(reportHtml.includes("Netting, measured") && reportHtml.includes("No game has both sides on the record yet"), "the netting card, empty");
+
     assert.ok(reportHtml.includes('href="/api/shadow/export?token=op-secret"'), "operator links carry the token");
     assert.ok(reportHtml.includes('href="/api/shadow/positions.csv?scope=full&token=op-secret"'));
 
@@ -421,6 +423,60 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.equal(((await (await fetch(`${base}/api/shadow`)).json()) as { summary: { settledCount: number } }).summary.settledCount, 0, "the public record starts over");
     assert.equal((await fetch(`${base}/api/shadow/reset?token=op-secret&confirm=reset`)).status, 200, "GET with confirm=reset works from a browser");
     assert.equal(((await (await fetch(`${base}/api/shadow/reset?token=op-secret&confirm=reset`)).json()) as { archived: unknown[] }).archived.length, 0, "nothing to archive twice");
+
+    // NETTING: on the fresh book, both sides of one game open; the operator sees the pair, the record does not change.
+    // The open carries a counterfactual block and a hedge token id, which the public JSON must not repeat.
+    appendShadowRecord(path, OPEN);
+    appendShadowRecord(path, {
+      ...OPEN,
+      at: "2026-09-12T16:20:00.000Z",
+      ticker: "KXNFLGAME-TEST-LAC",
+      sideName: "Los Angeles Chargers",
+      markCents: 40,
+      floorCents: 32,
+      capCents: 43,
+      creditCents: 430,
+      takeCents: 110,
+      hedgeUnitsMilli: 133_500,
+      hedgeTokenId: "0xpm-token",
+      counterfactuals: { alternatives: {}, feeRules: {}, sizeLadder: [] } as never,
+    });
+    const netting = (await (await fetch(`${base}/api/shadow/netting`, op)).json()) as {
+      ok: boolean;
+      summary: { pairs: number; singles: number; savingCents: number; legForLegCents: number; nettedCents: number; identityHolds: boolean; takeOnPairsCents: number };
+      pairs: Array<{ eventKey: string; sides: Array<{ sideName: string }>; savingCents: number; identity: { holds: boolean; ifFirstWinsCents: number; ifSecondWinsCents: number } }>;
+    };
+    assert.equal(netting.ok, true);
+    assert.equal(netting.summary.pairs, 1);
+    assert.equal(netting.summary.singles, 0);
+    assert.equal(netting.pairs[0].eventKey, "KXNFLGAME-TEST");
+    assert.deepEqual(netting.pairs[0].sides.map((s) => s.sideName), ["Kansas City Chiefs", "Los Angeles Chargers"]);
+    // Chiefs: funding 5550, cost 5426 over 133,500 milli (40.6¢); Chargers: funding 8550, cost 8010 over 133,500 (60.0¢).
+    // Both hedges 133,500 milli: all matched, no residual. Leg for leg 13,436¢; reserve 13,350¢; saving 86¢ on 122¢ of take.
+    assert.equal(netting.summary.legForLegCents, 5426 + 8010);
+    assert.equal(netting.summary.nettedCents, 13_350);
+    assert.equal(netting.summary.savingCents, 86);
+    assert.equal(netting.summary.takeOnPairsCents, 122);
+    assert.equal(netting.summary.identityHolds, true);
+    assert.equal(netting.pairs[0].identity.ifFirstWinsCents, netting.pairs[0].identity.ifSecondWinsCents, "our result on the pair does not depend on who won");
+    const reportWithPair = await (await fetch(`${base}/report?token=op-secret`)).text();
+    assert.ok(reportWithPair.includes("1 games have both sides on the record") && reportWithPair.includes("Kansas City Chiefs 40.6¢"));
+    assert.ok(reportWithPair.includes('href="/api/shadow/netting?token=op-secret"'));
+
+    // the record: no netting anywhere public, and no counterfactuals or venue token ids on the public positions
+    const publicPage = await (await fetch(`${base}/`)).text();
+    assert.ok(!publicPage.includes("Netting, measured") && !publicPage.includes("/api/shadow/netting") && !publicPage.includes("both sides on the record"), "the public page does not mention netting");
+    const publicJson = (await (await fetch(`${base}/api/shadow`)).json()) as { open: Array<Record<string, unknown>>; settled: Array<Record<string, unknown>> };
+    const publicText = JSON.stringify(publicJson);
+    assert.ok(!publicText.includes("netting") && !publicText.includes("nettedUnits"));
+    assert.ok(!publicText.includes("0xpm-token") && !publicText.includes('"counterfactuals":{"alternatives"'), "the public JSON strips the operator fields");
+    const chargers = publicJson.open.find((p) => p.ticker === "KXNFLGAME-TEST-LAC");
+    assert.ok(chargers);
+    assert.ok(!("counterfactuals" in chargers) && !("hedgeTokenId" in chargers));
+    assert.equal(chargers.hedgeUnitsMilli, 133_500, "the hedge leg itself stays public: the identity is checkable from it");
+    assert.ok(!(await (await fetch(`${base}/api/shadow/positions.csv`)).text()).includes("0xpm-token"));
+    const fullExport = await (await fetch(`${base}/api/shadow/export`, op)).text();
+    assert.ok(fullExport.includes("0xpm-token"), "the operator's raw ledger has everything");
   } finally {
     delete process.env.EVENT_X_ADMIN_TOKEN;
     await new Promise<void>((r) => server.close(() => r()));
