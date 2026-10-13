@@ -326,6 +326,23 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.equal(hedges.strategy, "book");
     assert.equal(hedges.summary.receipts, 0, "positions appended by hand carry no hedge receipt; the scanner writes those");
     assert.deepEqual(hedges.recent, []);
+    assert.equal((h.hedge as { live: unknown }).live, null, "book mode: no live rails");
+    // the live pre-flight is an operator view; in book mode it says so and places nothing
+    assert.equal((await fetch(`${base}/api/shadow/hedges/preflight`)).status, 403);
+    const preflight = (await (await fetch(`${base}/api/shadow/hedges/preflight?ticker=kxnba-x`, op)).json()) as {
+      ok: boolean;
+      strategy: string;
+      live: unknown;
+      sentTodayContracts: number;
+      venue: { ok: boolean; error?: string };
+      ticker: { ticker: string; allowlisted: boolean; wouldSend: boolean } | null;
+    };
+    assert.equal(preflight.ok, true);
+    assert.equal(preflight.strategy, "book");
+    assert.equal(preflight.live, null);
+    assert.equal(preflight.sentTodayContracts, 0);
+    assert.deepEqual(preflight.venue, { ok: false, error: "not in live mode" });
+    assert.deepEqual(preflight.ticker, { ticker: "KXNBA-X", allowlisted: false, wouldSend: false });
 
     // VENUE SLATES: a prospect's name renders only on a link we sent. No key, wrong key, unknown
     // slate: the same 404 as any unknown path. The share key or the operator token opens it.

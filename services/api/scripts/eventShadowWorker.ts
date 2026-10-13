@@ -91,6 +91,7 @@ import {
   summarizeHedgeReceipts,
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
+import { sentUnitsMilliOn } from "../src/eventCollar/crossVenue/liveHedge";
 import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml, renderSlateHtml } from "./eventShadowHtml";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
@@ -163,7 +164,7 @@ const HEDGE_VENUE_NAMES: Record<string, string> = { kalshi_self: "Kalshi", polym
 
 /** one line per hedge: which strategy filled it, at what, and why the other did not */
 const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDGER_PATH), "hedge-receipts.jsonl");
-const hedgeChoice = hedgeExecutorFromEnv(process.env);
+const hedgeChoice = hedgeExecutorFromEnv(process.env, null, { receiptsPath: RECEIPTS_PATH });
 /**
  * Operator views (rule comparison, hedge receipts, raw ledger, full CSV) are
  * gated: they are what we are learning, not what was quoted. Same token as the
@@ -178,6 +179,7 @@ const OPERATOR_PATHS = new Set([
   "/report",
   "/api/shadow/report",
   "/api/shadow/hedges",
+  "/api/shadow/hedges/preflight",
   "/api/shadow/export",
   "/api/shadow/reset",
   "/api/shadow/lastleg",
@@ -548,6 +550,7 @@ function healthBody(): Record<string, unknown> {
       strategy: hedgeChoice.strategy,
       rfqVenues: hedgeChoice.rfqVenues,
       polymarketBuilderCode: hedgeChoice.polymarketBuilderCode,
+      live: hedgeChoice.live,
       notes: hedgeChoice.notes,
       receipts: { path: RECEIPTS_PATH, ...ledgerStats(RECEIPTS_PATH) },
     },
@@ -758,10 +761,43 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         strategy: hedgeChoice.strategy,
         rfqVenues: hedgeChoice.rfqVenues,
         polymarketBuilderCode: hedgeChoice.polymarketBuilderCode,
+        live: hedgeChoice.live,
         notes: hedgeChoice.notes,
         summary: summarizeHedgeReceipts(receipts),
         recent: receipts.slice(-limit).reverse(),
       });
+      return;
+    }
+    if (url.pathname === "/api/shadow/hedges/preflight") {
+      // Before a live order: do the credentials sign, does the venue answer, what cash is there,
+      // and what would the rails do with a sample ticker (?ticker=). Reads only; nothing is placed.
+      const ticker = (url.searchParams.get("ticker") ?? "").trim().toUpperCase();
+      const live = hedgeChoice.live;
+      const sentToday = sentUnitsMilliOn(loadHedgeReceipts(RECEIPTS_PATH), new Date().toISOString().slice(0, 10)) / 1000;
+      const venueCheck: Promise<{ ok: boolean; balanceCents?: number; error?: string }> = hedgeChoice.kalshiOrders
+        ? hedgeChoice.kalshiOrders
+            .balanceCents()
+            .then((balanceCents) => ({ ok: true, balanceCents }))
+            .catch((err: unknown) => ({ ok: false, error: String(err instanceof Error ? err.message : err) }))
+        : Promise.resolve({ ok: false, error: live ? "no Kalshi credentials in the service env" : "not in live mode" });
+      void venueCheck.then((venue) =>
+        sendJson(res, 200, {
+          ok: true,
+          at: new Date().toISOString(),
+          strategy: hedgeChoice.strategy,
+          live,
+          sentTodayContracts: sentToday,
+          venue,
+          ticker: ticker
+            ? {
+                ticker,
+                allowlisted: Boolean(live?.allowlist.includes(ticker)),
+                wouldSend: Boolean(live && !live.dryRun && !live.killSwitch && live.allowlist.includes(ticker) && venue.ok),
+              }
+            : null,
+          notes: hedgeChoice.notes,
+        }),
+      );
       return;
     }
     if (url.pathname === "/report") {

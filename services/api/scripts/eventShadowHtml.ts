@@ -72,7 +72,12 @@ export interface ShadowPageInput {
 /** One public line on hedge fills: how they are filled and how many. The receipts themselves are the operator's. */
 function hedgeLine(h: NonNullable<ShadowPageInput["hedges"]>): string {
   const s = h.summary;
-  const how = h.strategy === "rfq" ? "RFQ first, visible book as the fallback" : "at the visible book, at the terms quoted";
+  const how =
+    h.strategy === "rfq"
+      ? "RFQ first, visible book as the fallback"
+      : h.strategy === "live"
+        ? "on the venue, never above the terms quoted"
+        : "at the visible book, at the terms quoted";
   const sim = s.receipts > 0 && s.simulated === s.receipts ? ", all simulated" : s.simulated > 0 ? `, ${s.simulated} simulated` : "";
   return `<div class="row"><span>hedge fills</span><b>${escapeHtml(how)} <i>${s.receipts} recorded${sim}</i></b></div>`;
 }

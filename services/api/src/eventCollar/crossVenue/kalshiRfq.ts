@@ -58,6 +58,15 @@ export function signKalshiRequest(creds: KalshiRfqCredentials, timestampMs: numb
     .toString("base64");
 }
 
+/** The three auth headers Kalshi reads, for one request. The key id is the only credential that travels. */
+export function kalshiAuthHeaders(creds: KalshiRfqCredentials, timestampMs: number, method: string, path: string): Record<string, string> {
+  return {
+    "KALSHI-ACCESS-KEY": creds.apiKeyId,
+    "KALSHI-ACCESS-TIMESTAMP": String(timestampMs),
+    "KALSHI-ACCESS-SIGNATURE": signKalshiRequest(creds, timestampMs, method, path),
+  };
+}
+
 /** 1000 = 1 contract -> fixed-point "N.NN", rounded UP to 0.01 (never under-hedged). */
 export function contractsFp(unitsMilli: number): string {
   const hundredths = Math.ceil(unitsMilli / 10);
@@ -187,9 +196,7 @@ export class KalshiRfqClient implements RfqClient {
     const headers: Record<string, string> = {
       accept: "application/json",
       "user-agent": "atticus-event-hedge",
-      "KALSHI-ACCESS-KEY": this.creds.apiKeyId,
-      "KALSHI-ACCESS-TIMESTAMP": String(ts),
-      "KALSHI-ACCESS-SIGNATURE": signKalshiRequest(this.creds, ts, method, path),
+      ...kalshiAuthHeaders(this.creds, ts, method, path),
     };
     const init: RequestInit = { method, headers, signal: AbortSignal.timeout(Number(process.env.EVENT_FETCH_TIMEOUT_MS || 8000)) };
     if (body !== undefined) {

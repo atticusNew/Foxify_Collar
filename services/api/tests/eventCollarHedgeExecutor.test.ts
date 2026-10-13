@@ -258,8 +258,9 @@ test("receipt trail: append-only JSONL replays; the summary counts outcomes, sav
   assert.deepEqual(loaded.map((r) => r.ref), ["A", "B", "C"]);
   const s = summarizeHedgeReceipts(loaded);
   assert.equal(s.receipts, 3);
-  assert.deepEqual(s.byOutcome, { filled_rfq: 1, filled_book: 2, unfilled: 0 });
+  assert.deepEqual(s.byOutcome, { filled_rfq: 1, filled_book: 2, filled_live: 0, unfilled: 0 });
   assert.deepEqual(s.byVenue, { kalshi: 2, polymarket: 1 });
+  assert.deepEqual(s.live, { refused: 0, byRail: {}, dryRun: 0, sent: 0, filled: 0, partial: 0, sentUnitsMilli: 0, costCents: 0 }, "no live path touched");
   assert.equal(s.rfqSavedCents, 225);
   assert.equal(s.bookWalkPenaltyCents, 600, "300 on each Kalshi hedge, 0 on the Polymarket one at the top");
   assert.equal(s.costCents, 6_300 + 6_075 + 6_225);
