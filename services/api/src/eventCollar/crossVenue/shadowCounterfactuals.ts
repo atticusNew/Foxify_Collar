@@ -64,6 +64,9 @@ export interface ShadowSizeProbe {
   terms: ShadowAltTerms;
 }
 
+/** The hedge routes the scan examines; the record writes the cheaper one. */
+export const ROUTE_LABELS = ["kalshi_self", "polymarket"] as const satisfies readonly HedgeRoute[];
+
 export interface ShadowCounterfactuals {
   /** every distinct tier the venues funded at open, keyed by tier name */
   alternatives: Partial<Record<ProtectionTier, ShadowAltTerms>>;
@@ -71,6 +74,13 @@ export interface ShadowCounterfactuals {
   feeRules: Record<FeeRuleLabel, ShadowAltTerms>;
   /** the default tier re-priced at larger sizes on the same route and books */
   sizeLadder: ShadowSizeProbe[];
+  /**
+   * ROUTING. The default tier on EACH hedge route from the same books at the same instant: the
+   * route the record wrote (its live terms) and the other one re-priced. Answers "what would
+   * protection cost if the hedge had to run on the market's own No side" with the record's own
+   * positions, before any routing policy changes. Absent on records opened before this existed.
+   */
+  routes?: Record<HedgeRoute, ShadowAltTerms>;
 }
 
 export interface CounterfactualInputs {
@@ -176,5 +186,20 @@ export function counterfactualsFor(
     return { mult, contracts, terms: q ? altFromQuote(q) : UNAVAILABLE };
   });
 
-  return { alternatives, feeRules, sizeLadder };
+  // Each route from the same books: the live route is the live terms; the other is re-priced at
+  // the live size. A crypto strike has no verified pair, so the cross-venue route is not offered
+  // there (different settlement feeds), which is a disclosure rather than a thin book.
+  const routes = {} as Record<HedgeRoute, ShadowAltTerms>;
+  for (const route of ROUTE_LABELS) {
+    if (route === inputs.route) {
+      routes[route] = altFromTerms(live);
+    } else if (route === "polymarket" && !inputs.pair) {
+      routes[route] = { ok: false, refused: "route_not_offered" };
+    } else {
+      const q = requote({ ...inputs, route }, inputs.config, inputs.contracts);
+      routes[route] = q ? altFromQuote(q) : UNAVAILABLE;
+    }
+  }
+
+  return { alternatives, feeRules, sizeLadder, routes };
 }

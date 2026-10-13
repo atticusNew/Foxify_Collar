@@ -15,7 +15,8 @@ import {
   type CounterfactualInputs,
 } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
 import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
-import { DEFAULT_CROSS_CONFIG, PROTECTION_TIERS } from "../src/eventCollar/crossVenue/types";
+import { quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
+import { DEFAULT_CROSS_CONFIG, PROTECTION_TIERS, type MatchedPair, type PmBook } from "../src/eventCollar/crossVenue/types";
 import {
   POSITIONS_CSV_COLUMNS,
   altOutcome,
@@ -160,6 +161,163 @@ test("altOutcome: every alternative nets the writer its own take, whichever way 
     assert.equal(no.writerCents, wp.writerCents);
   }
   assert.equal(altOutcome({ ok: false, refused: "x" }, 150, "yes"), null);
+});
+
+/** A verified MLB pair whose Polymarket No book is cheaper than the Kalshi ladder above. */
+function pmPair(): MatchedPair {
+  return {
+    league: "mlb",
+    kalshi: {
+      ticker: "KXMLBGAME-26SEP20NYYBOS-NYY",
+      eventTicker: "KXMLBGAME-26SEP20NYYBOS",
+      title: "Yankees win",
+      subtitle: "Yankees",
+      strike: 0,
+      strikeType: "",
+      status: "active",
+      openTime: "",
+      closeTime: LOCK,
+      yesBidCents: 59,
+      yesAskCents: 61,
+      lastPriceCents: 60,
+      volume: 1000,
+      openInterest: 500,
+      rulesPrimary: "",
+    },
+    pm: {
+      eventSlug: "mlb-nyy-bos-2026-09-20",
+      eventTitle: "New York Yankees vs. Boston Red Sox",
+      question: "New York Yankees vs. Boston Red Sox",
+      conditionId: "0xdef",
+      outcomes: ["New York Yankees", "Boston Red Sox"],
+      tokenIds: ["111", "222"],
+      outcomePricesMilli: [600, 400],
+      gameStartTime: LOCK,
+      endDate: "2026-09-27T17:00:00Z",
+      sportsMarketType: "moneyline",
+      active: true,
+      closed: false,
+      acceptingOrders: true,
+      negRisk: false,
+      orderMinSizeShares: 5,
+      liquidityUsd: 9000,
+      volumeUsd: 100,
+    },
+    pmYesOutcomeIndex: 0,
+    pmNoOutcomeIndex: 1,
+    gameStartTime: LOCK,
+    parityNote: "both venues settle on the official MLB final result for this game",
+    fingerprint: "mlb:NYY:BOS:2026-09-20",
+  };
+}
+const PM_NO_BOOK: PmBook = {
+  tokenId: "222",
+  asks: [
+    { priceMilli: 380, sizeMilli: 300_000 },
+    { priceMilli: 390, sizeMilli: 500_000 },
+  ],
+  bids: [{ priceMilli: 370, sizeMilli: 200_000 }],
+  minOrderSizeShares: 5,
+  tickMilli: 10,
+};
+
+test("counterfactualsFor: both hedge routes are recorded from the same books; crypto has one route; summary measures kalshi-only", () => {
+  // Sports, routed cross-venue because the second book is cheaper: the record keeps both quotes.
+  const pmLive = quoteCrossWrap({ pair: pmPair(), markCents: 60, entryCents: 55, contracts: 150, now: NOW, noBook: PM_NO_BOOK, config: CFG });
+  assert.ok(pmLive.ok, JSON.stringify(pmLive));
+  const cf = counterfactualsFor(inputs({ route: "polymarket", pair: pmPair(), books: { pmNoBook: PM_NO_BOOK, noAsks: NO_ASKS } }), pmLive);
+  assert.ok(cf.routes);
+  const live = cf.routes.polymarket;
+  const k = cf.routes.kalshi_self;
+  assert.ok(live.ok && k.ok);
+  assert.equal(live.creditCents, pmLive.creditCents, "the live route carries the live terms, not a re-price");
+  const ladder = liveQuote();
+  assert.equal(k.creditCents, ladder.creditCents, "the other route is the ladder quote on the retained Kalshi book");
+  assert.ok(k.evCostBps > live.evCostBps, "on this book the market's own No side is the richer hedge");
+
+  // Routed to Kalshi self with the pair and both books retained: the second book is re-priced.
+  const cf2 = counterfactualsFor(inputs({ pair: pmPair(), books: { pmNoBook: PM_NO_BOOK, noAsks: NO_ASKS } }), ladder);
+  assert.ok(cf2.routes?.kalshi_self.ok && cf2.routes.polymarket.ok);
+  assert.equal(cf2.routes.kalshi_self.creditCents, ladder.creditCents);
+  assert.equal(cf2.routes.polymarket.creditCents, pmLive.creditCents);
+
+  // Second book not retained: marked, never guessed. No pair (a crypto strike): not offered.
+  const cf3 = counterfactualsFor(inputs({ pair: pmPair(), books: { noAsks: NO_ASKS } }), ladder);
+  assert.ok(!cf3.routes?.polymarket.ok && cf3.routes?.polymarket.refused === "book_not_retained");
+  const cf4 = counterfactualsFor(inputs(), ladder);
+  assert.ok(!cf4.routes?.polymarket.ok && cf4.routes?.polymarket.refused === "route_not_offered");
+
+  // Summary: two sports positions both routes quoted (one settled NO), one sports position the
+  // Kalshi side refused, one crypto strike (one route, left out), one legacy record without routes.
+  const dir = mkdtempSync(join(tmpdir(), "shadow-routes-"));
+  const path = join(dir, "ledger.jsonl");
+  const open = (ticker: string, at: string, q: typeof pmLive, route: "polymarket" | "kalshi_self", extra: Partial<ShadowOpenRecord> = {}): ShadowOpenRecord => ({
+    type: "open",
+    at,
+    ticker,
+    kind: "sports",
+    league: "mlb",
+    sideName: "Yankees",
+    eventTitle: "Yankees to win",
+    eventTimeIso: LOCK,
+    contracts: 150,
+    markCents: 60,
+    floorCents: q.floorCents,
+    capCents: q.capCents,
+    creditCents: q.creditCents,
+    evCostBps: q.evCostBps,
+    route,
+    feesCents: q.feesCents,
+    takeCents: q.takeCents,
+    hedgeCostCents: q.hedge.costCents + q.feesCents,
+    hedgeUnitsMilli: q.hedge.venue === "kalshi" ? q.hedge.contractsMilli : q.hedge.sharesMilli,
+    tier: q.tier,
+    takeRule: q.takeRule,
+    takeShareCents: q.takeShareCents,
+    takeMinimumCents: q.takeMinimumCents,
+    counterfactuals: cf,
+    ...extra,
+  });
+  appendShadowRecord(path, open("PM-SETTLED", "2026-09-20T11:00:00.000Z", pmLive, "polymarket"));
+  appendShadowRecord(path, { type: "settle", at: "2026-09-20T21:00:00.000Z", ticker: "PM-SETTLED", result: "no" });
+  appendShadowRecord(path, open("PM-OPEN", "2026-09-20T11:01:00.000Z", pmLive, "polymarket"));
+  appendShadowRecord(path, open("PM-KREFUSED", "2026-09-20T11:02:00.000Z", pmLive, "polymarket", { counterfactuals: { ...cf, routes: { polymarket: cf.routes.polymarket, kalshi_self: { ok: false, refused: "kalshi_book_empty" } } } }));
+  appendShadowRecord(path, open("CRYPTO", "2026-09-20T11:03:00.000Z", ladder, "kalshi_self", { kind: "crypto", league: "crypto", counterfactuals: cf4 }));
+  const legacy = open("LEGACY", "2026-09-20T10:00:00.000Z", pmLive, "polymarket", { counterfactuals: { ...cf, routes: undefined } });
+  appendShadowRecord(path, legacy);
+
+  const positions = loadShadowPositions(path);
+  const r = summarizeCounterfactuals(positions).routes;
+  assert.equal(r.positions, 3, "three sports positions carry both routes; crypto and legacy are out");
+  assert.equal(r.recordedSince, "2026-09-20T11:00:00.000Z");
+  assert.deepEqual(r.liveRouteSplit, { polymarket: 3 });
+  assert.equal(r.live.quoted, 3);
+  assert.equal(r.live.settled, 1);
+  assert.equal(r.live.creditsCents, 3 * pmLive.creditCents);
+  assert.equal(r.kalshiOnly.quoted, 2);
+  assert.equal(r.kalshiOnly.refused, 1);
+  assert.equal(r.kalshiOnly.settled, 1, "the settled one was quoted on both, so kalshi-only is marked against the same result");
+  assert.equal(r.kalshiOnly.creditsCents, 2 * ladder.creditCents);
+  assert.equal(r.crossOnly.quoted, 3);
+  assert.deepEqual({ ...r.crossOnly }, { ...r.live }, "cross-only equals the live book when every position routed cross-venue");
+  assert.equal(r.bothQuoted, 2);
+  assert.equal(r.kalshiOnlyRefusedWhereLiveQuoted, 1);
+  assert.equal(r.kalshiOnlyExtraEvBps, Math.round(((k.evCostBps - live.evCostBps) * 2) / 2));
+  assert.ok((r.kalshiOnlyExtraEvBps as number) > 0, "kalshi-only is richer here");
+  assert.equal(r.kalshiOnlyCreditDeltaCents, 2 * (ladder.creditCents - pmLive.creditCents));
+  assert.ok(r.kalshiOnlyCreditDeltaCents < 0, "users would have been paid less");
+  // kalshi-only writer P&L on the settled position is the ladder's own take: the identity holds per route
+  assert.equal(r.kalshiOnly.writerPnlCents, ladder.takeCents);
+
+  // the operator report carries the card; the public summary does not carry routes
+  const s = summarizeShadow(positions);
+  const html = renderShadowReportHtml({ atIso: "2026-09-21T00:00:00.000Z", summary: s });
+  assert.ok(html.includes("<h2>Routing, measured</h2>"));
+  assert.ok(html.includes("kalshi only") && html.includes("second book only"));
+  assert.ok(html.includes("3 sports positions since 2026-09-20 UTC"));
+  assert.ok(html.includes("1 position the live route protected would have been refused kalshi-only"));
+  const empty = renderShadowReportHtml({ atIso: "2026-09-21T00:00:00.000Z", summary: summarizeShadow([]) });
+  assert.ok(empty.includes("No sports position has carried both routes yet"));
 });
 
 test("summarizeCounterfactuals: rule books fold quoted, refused and settled; legacy records are excluded", () => {

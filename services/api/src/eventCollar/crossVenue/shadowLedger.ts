@@ -528,6 +528,33 @@ export interface ShadowCounterfactualSummary {
       grossBpsOfStake: number | null;
     }
   >;
+  /**
+   * ROUTING, MEASURED. Sports positions whose open carried both routes: the live book (the cheaper
+   * route, as written) beside the same positions forced onto each route. "Kalshi-only" is what a
+   * production hedge that must run on the market's own No side would have cost; the pairwise
+   * numbers compare only positions both routes quoted, so a refusal on one side does not pass as
+   * a saving. Operator report only.
+   */
+  routes: ShadowRouteComparison;
+}
+
+export interface ShadowRouteComparison {
+  recordedSince: string | null;
+  /** sports positions carrying route counterfactuals (crypto has one route and is left out) */
+  positions: number;
+  /** how the record actually routed those positions */
+  liveRouteSplit: Record<string, number>;
+  live: RuleBook;
+  kalshiOnly: RuleBook;
+  crossOnly: RuleBook;
+  /** positions both routes quoted; the pairwise fields below are over these */
+  bothQuoted: number;
+  /** average quoted EV cost, kalshi-only minus live, bps (positive: kalshi-only is richer) */
+  kalshiOnlyExtraEvBps: number | null;
+  /** credits users would have been paid under kalshi-only minus what the live route paid, cents */
+  kalshiOnlyCreditDeltaCents: number;
+  /** positions the live route quoted that kalshi-only refused: coverage lost, not cost */
+  kalshiOnlyRefusedWhereLiveQuoted: number;
 }
 
 function emptyRuleBook(): RuleBook {
@@ -577,7 +604,7 @@ function finishRule<T extends RuleBook & { evSum?: number }>(book: T): T {
 }
 
 /** The live position's own terms in the alternative shape, so the baseline folds through the same code. */
-function liveAsAlt(p: ShadowPosition): ShadowAltTerms {
+function liveAsAlt(p: ShadowPosition): Extract<ShadowAltTerms, { ok: true }> {
   return {
     ok: true,
     floorCents: p.floorCents,
@@ -613,12 +640,43 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
     evSum: 0,
   }));
   let recordedSince: string | null = null;
+  const routes: ShadowRouteComparison & { live: RuleBook & { evSum?: number }; kalshiOnly: RuleBook & { evSum?: number }; crossOnly: RuleBook & { evSum?: number } } = {
+    recordedSince: null,
+    positions: 0,
+    liveRouteSplit: {},
+    live: emptyRuleBook(),
+    kalshiOnly: emptyRuleBook(),
+    crossOnly: emptyRuleBook(),
+    bothQuoted: 0,
+    kalshiOnlyExtraEvBps: null,
+    kalshiOnlyCreditDeltaCents: 0,
+    kalshiOnlyRefusedWhereLiveQuoted: 0,
+  };
+  let routeEvDiffSum = 0;
 
   for (const p of withCf) {
     const cf = p.counterfactuals as ShadowCounterfactuals;
     if (!recordedSince || p.at < recordedSince) recordedSince = p.at;
     const result = p.status === "settled" ? p.result : undefined;
     foldRule(baseline, liveAsAlt(p), p.contracts, result);
+    if (cf.routes && p.kind === "sports") {
+      routes.positions += 1;
+      if (!routes.recordedSince || p.at < routes.recordedSince) routes.recordedSince = p.at;
+      routes.liveRouteSplit[p.route] = (routes.liveRouteSplit[p.route] ?? 0) + 1;
+      const live = liveAsAlt(p);
+      const k = cf.routes.kalshi_self;
+      const x = cf.routes.polymarket;
+      foldRule(routes.live, live, p.contracts, result);
+      foldRule(routes.kalshiOnly, k, p.contracts, result);
+      foldRule(routes.crossOnly, x, p.contracts, result);
+      if (k.ok) {
+        routes.bothQuoted += 1;
+        routeEvDiffSum += k.evCostBps - live.evCostBps;
+        routes.kalshiOnlyCreditDeltaCents += k.creditCents - live.creditCents;
+      } else {
+        routes.kalshiOnlyRefusedWhereLiveQuoted += 1;
+      }
+    }
     for (const tier of PROTECTION_TIERS) {
       const alt = cf.alternatives?.[tier];
       // A tier the venues did not fund distinctly collapsed into another; it is not a refusal.
@@ -643,6 +701,7 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
     row.grossBpsOfStake =
       row.stakeQuotedCents > 0 ? Math.round((row.grossCreditCents / row.stakeQuotedCents) * 10_000) : null;
   }
+  routes.kalshiOnlyExtraEvBps = routes.bothQuoted > 0 ? Math.round(routeEvDiffSum / routes.bothQuoted) : null;
   return {
     recordedSince,
     positionsWithCounterfactuals: withCf.length,
@@ -650,6 +709,7 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
     tiers: Object.fromEntries(PROTECTION_TIERS.map((t) => [t, finishRule(tiers[t])])) as Record<ProtectionTier, RuleBook>,
     feeRules: Object.fromEntries(FEE_RULE_LABELS.map((l) => [l, finishRule(feeRules[l])])) as Record<FeeRuleLabel, RuleBook>,
     capacity: capacity.map((row) => finishRule(row)),
+    routes: { ...routes, live: finishRule(routes.live), kalshiOnly: finishRule(routes.kalshiOnly), crossOnly: finishRule(routes.crossOnly) },
   };
 }
 
