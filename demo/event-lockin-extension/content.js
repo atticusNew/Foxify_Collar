@@ -160,10 +160,15 @@
       if (i < 0) continue;
       if (!best || i < best.i || (i === best.i && k.key.length > best.len)) best = { i, len: k.key.length, ticker: k.ticker };
     }
-    if (best) return best.ticker;
+    if (best) return { ticker: best.ticker, weak: false };
+    // A code alone is a weak match: skipped when two games share it (IND is Colts and Pacers), and
+    // dropped by findRows when it sits inside a row that matched by name.
     for (const m of S.markets) {
       const code = m.ticker.slice(m.ticker.lastIndexOf("-") + 1);
-      if (code.length >= 2 && code.length <= 4 && new RegExp("(^|[^A-Z])" + code + "(?![A-Z])").test(text)) return m.ticker;
+      if (code.length < 2 || code.length > 4 || !new RegExp("(^|[^A-Z])" + code + "(?![A-Z])").test(text)) continue;
+      const stem = (t) => t.slice(0, t.lastIndexOf("-"));
+      if (S.markets.some((o) => stem(o.ticker) !== stem(m.ticker) && o.ticker.endsWith("-" + code))) return null;
+      return { ticker: m.ticker, weak: true };
     }
     return null;
   };
@@ -221,15 +226,19 @@
       if (OURS(node)) continue;
       const text = (node.textContent || "").replace(/\s+/g, " ").trim();
       if (text.length < 12 || text.length > 420 || !text.includes("$")) continue;
-      const ticker = teamIn(text);
-      if (!ticker) continue;
-      found.push({ node, ticker, text, size: readSize(text) });
+      const hit = teamIn(text);
+      if (!hit) continue;
+      found.push({ node, ticker: hit.ticker, weak: hit.weak, text, size: readSize(text) });
     }
+    // A code-only match inside or around a row that named its team is that row's cell or container,
+    // not another position.
+    const strong = found.filter((c) => !c.weak);
+    const kept = found.filter((c) => !c.weak || !strong.some((s) => s.node.contains(c.node) || c.node.contains(s.node)));
     // Per team, the innermost candidate whose size reads is the row: a payout cell that names the
     // team ("if SF wins") is inside the row and has no stake, so the row around it wins. When no
     // candidate reads, the innermost stands and the sheet uses the default size.
     const byTicker = new Map();
-    for (const c of found) {
+    for (const c of kept) {
       const list = byTicker.get(c.ticker) || [];
       list.push(c);
       byTicker.set(c.ticker, list);
@@ -342,9 +351,11 @@
     sheet.className = "ael-ui ael-sheet";
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-modal", "true");
-    sheet.innerHTML = '<div class="ael-grab"></div><div class="ael-eyebrow"><span>Earn &amp; Protect</span><span>Atticus</span></div><div id="ael-body"></div>';
+    // no brand of ours up top: the panel reads as the venue's own order slip; the third-party line is at the foot
+    sheet.innerHTML = '<div class="ael-grab"></div><div class="ael-head"><span>Protection</span><button type="button" class="ael-x" id="ael-x" aria-label="Close">&times;</button></div><div id="ael-body"></div>';
     document.body.appendChild(scrim);
     document.body.appendChild(sheet);
+    el("ael-x").addEventListener("click", closeSheet);
   };
 
   const showSheet = (on) => {
@@ -431,7 +442,8 @@
       '<div class="ael-refusal"><b>Not right now.</b> ' + esc(detail) + "</div>" +
       (other ? '<button type="button" class="ael-go ael-quiet" id="ael-other">Try the other side: ' + esc(labelOf(other)) + "</button>" : "") +
       '<button type="button" class="ael-go ael-quiet" id="ael-close">Close</button>' +
-      '<div class="ael-fine">The lock is only offered when the market pays you for it.</div>';
+      '<div class="ael-fine">The lock is only offered when the market pays you for it.</div>' +
+      '<div class="ael-disclose">Third-party protection by Atticus. Panel rendered locally for this demo; not a product of this venue.</div>';
     el("ael-close").onclick = closeSheet;
     if (other) el("ael-other").onclick = () => openSheet(other.ticker, true);
     wireSize(ticker);
@@ -465,7 +477,7 @@
       '<button type="button" class="ael-go" id="ael-go">Lock in &middot; +' + esc(usd(t.creditCents)) + " now</button>" +
       '<div class="ael-fine">priced live &middot; locks at your tap' + (chips ? ' &middot; <a href="#" id="ael-adjust">adjust</a>' : "") + ' &middot; <a href="#" id="ael-how">how it works</a></div>' +
       '<div class="ael-how' + (S.how ? " ael-on" : "") + '" id="ael-how-body"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(p.sideName || "your side") + " loses you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If it wins, " + esc(usd(rs.capTotal)) + " instead of " + esc(usd0(100 * n)) + ".</p><p>The credit you see is the credit you get. It settles on the same official result as your position; nothing to manage.</p><p>Terms lock at your tap; the other side is bought in the same second.</p></div>" +
-      '<div class="ael-disclose">Button and sheet rendered locally to show placement; not a product of this venue. Pricing, record and hedge are live.</div>';
+      '<div class="ael-disclose">Third-party protection by Atticus. Button and panel rendered locally for this demo; not a product of this venue. Pricing, record and hedge are live.</div>';
     for (const c of el("ael-body").querySelectorAll("[data-tier]")) {
       c.onclick = () => {
         S.tier = c.getAttribute("data-tier");
@@ -527,7 +539,8 @@
       '<div class="ael-done"><div class="ael-ck">&#x2713;</div><h2 id="ael-h">Locked in</h2>' +
       '<div class="ael-sum">' + esc(L.sideName || "") + " &middot; " + L.contracts + " contracts<br>ends <b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b><br><b>+" + esc(usd(L.creditCents)) + "</b> paid now</div></div>" +
       hedgeLine +
-      '<button type="button" class="ael-go" id="ael-done">Done</button><div class="ael-fine">Nothing to manage. It settles with your position.</div>';
+      '<button type="button" class="ael-go" id="ael-done">Done</button><div class="ael-fine">Nothing to manage. It settles with your position.</div>' +
+      '<div class="ael-disclose">Third-party protection by Atticus. Panel rendered locally for this demo; not a product of this venue.</div>';
     el("ael-done").onclick = closeSheet;
   };
 
