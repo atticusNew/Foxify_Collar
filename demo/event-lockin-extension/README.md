@@ -8,8 +8,9 @@ holder trades exactly as they do today. Once a position exists, under its row:
    case $25.06". Priced live from the holder's actual size;
 2. tapping it opens an **inline panel** under that row (the rows below move down; nothing floats
    over the slip): the headline "Worst case $14.71 instead of $0", three tiles (if they lose,
-   paid now, if they win), a two-segment control (**Even** / **Keep more upside**) with the numbers
-   for each, one button, a fine-print line with the kickoff cut-off and "how it works";
+   paid now, if they win), a segmented control with the price shapes the book offers right now
+   (**Most now** / **Even** / **Keep more upside**) and the numbers for each, one button, a
+   fine-print line with the kickoff cut-off and "how it works";
 3. after the tap, a **Protected** chip on the row: "Protected · +$1.66 paid · ends $14.71 or
    $25.06 · details". Details is the same inline panel: worst case, best case, paid now, settles on
    the game's official result, a link to the public record;
@@ -156,7 +157,8 @@ GET /healthz                                                lock.enabled true, h
 1. Open the preview Portfolio with the extension loaded. Every row has a line under it: Lock in
    with a price, Protection unavailable with a reason, or Protected.
 2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Keep more
-   upside**: the three tiles and the button reprice. Tap **Even**: they return.
+   upside** or **Most now**: the three tiles and the button reprice. Tap **Even**: they return.
+   Only the shapes the book offers for that pick are listed; a heavy favourite often has one.
 3. Tap **Lock in · +$x now**. The panel shows "Locked in" with the three numbers; the line reads
    "Protected · +$x paid". Open `/` on the service: the position is there with `source: lock`.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).

@@ -27,9 +27,9 @@
   const POLL_RECORD_MS = 60_000;
   const REQUOTE_MS = 60_000;
   const SCAN_MIN_GAP_MS = 500;
-  // the service prices three shapes; the holder sees two. "tight" stays available to the API.
-  const TIER_ORDER = ["balanced", "wide"];
-  const TIER_WORDS = { balanced: "Even", wide: "Keep more upside" };
+  // the three shapes the service prices, shown only when the book offers more than one
+  const TIER_ORDER = ["tight", "balanced", "wide"];
+  const TIER_WORDS = { tight: "Most now", balanced: "Even", wide: "Keep more upside" };
   const DEFAULTS = { showHedge: "no" };
   const SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>';
   const SHIELD_FILL = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5" stroke="#0b0b0e" stroke-width="2.4" fill="none"/></svg>';
