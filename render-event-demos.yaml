@@ -195,6 +195,12 @@ services:
       #   EVENT_HEDGE_LIVE_SEND=yes             the only value that sends; anything else is a dry run
       #   EVENT_HEDGE_KILL_SWITCH=1             nothing leaves, whatever else is set
       # Pre-flight (operator): GET /api/shadow/hedges/preflight?ticker=KX... reads balance and the rails.
+      # LOCK IN (the tap from the browser extension; off here, set in the dashboard, never in git):
+      #   EVENT_SHADOW_LOCK_KEY=<12+ chars>     opens GET /api/shadow/markets, GET /api/shadow/quote
+      #                                         and POST /api/shadow/lock to callers sending x-lock-key.
+      #                                         Unset: those routes answer 404 to anyone but the operator.
+      #   Tickers on EVENT_HEDGE_LIVE_TICKERS are reserved for the tap: the scan skips them so the
+      #   lock is the record that opens them.
 
   - type: web
     name: atticus-pm-clob-egress-proxy

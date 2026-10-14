@@ -80,6 +80,12 @@ export interface ShadowOpenRecord {
    * an input to the payout.
    */
   rule?: RuleEvidence | null;
+  /**
+   * How the position came to be on the record. Absent: the scan opened it (the shadow's own
+   * simulated holder). "lock": a person tapped Lock in on a real position of this size, through
+   * the lock endpoint; the terms and the hedge are the same code path, the size is theirs.
+   */
+  source?: "lock";
 }
 
 /**

@@ -474,8 +474,20 @@ async function showcasePositionFor(ticker: string, markCents: number) {
  * Throws only when both venues are unreachable (counts toward the breaker);
  * a single unreachable venue becomes that route's honest refusal.
  */
-async function quoteSportsCandidate(pair: MatchedPair, markCents: number, now: Date): Promise<CandidateResult> {
-  const position = await showcasePositionFor(pair.kalshi.ticker, markCents);
+async function quoteSportsCandidate(
+  pair: MatchedPair,
+  markCents: number,
+  now: Date,
+  /** a real holder's position (the lock path); absent, the showcase builds one from public prints */
+  given?: ReturnType<typeof buildShowcasePosition>,
+  /**
+   * Pin the hedge to one route instead of taking the cheaper. The lock path pins a ticker that is
+   * armed for live orders to the venue the executor can send to; the other route is still checked
+   * and disclosed in routesChecked. A pinned route that refuses is the quote's refusal.
+   */
+  pinRoute?: HedgeRoute,
+): Promise<CandidateResult> {
+  const position = given ?? (await showcasePositionFor(pair.kalshi.ticker, markCents));
 
   const [pmRes, ladderRes] = await Promise.allSettled([
     getPmBook(pair.pm.tokenIds[pair.pmNoOutcomeIndex]),
@@ -536,7 +548,12 @@ async function quoteSportsCandidate(pair: MatchedPair, markCents: number, now: D
   let route: HedgeRoute | null;
   let quote: CrossQuoteResult;
   let evBps: number | null;
-  if (pmQuote.ok && ladderQuote.ok) {
+  if (pinRoute) {
+    const pinned = pinRoute === "kalshi_self" ? ladderQuote : pmQuote;
+    route = pinned.ok ? pinRoute : null;
+    quote = pinned;
+    evBps = pinned.ok ? (pinRoute === "kalshi_self" ? ladderBps : pmBps) : null;
+  } else if (pmQuote.ok && ladderQuote.ok) {
     const ladderWins = (ladderBps as number) <= (pmBps as number);
     route = ladderWins ? "kalshi_self" : "polymarket";
     quote = ladderWins ? ladderQuote : pmQuote;
@@ -887,6 +904,105 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
   }
 
   return { atIso: now.toISOString(), rows: scanned, fallback, fetchFailures };
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* ONE POSITION, ON DEMAND (the lock path)                                                      */
+/*                                                                                              */
+/* The board quotes the scanner's pick at the showcase size. A real holder has one game and one */
+/* size. These two functions let a thin client (the browser extension over a venue's positions  */
+/* page) list the games the engine can protect and quote exactly the holder's position, through */
+/* the same pairing, the same books, the same rules as the board.                               */
+/* ------------------------------------------------------------------------------------------ */
+
+export interface GameMarketRow {
+  ticker: string;
+  league: string;
+  /** the side this market pays on: the team (Kalshi's yes_sub_title) */
+  sideName: string;
+  title: string;
+  /** the game date from the ticker, YYYY-MM-DD (ET) */
+  dateIso: string | null;
+  closeTimeIso: string;
+  markCents: number;
+}
+
+/** Open, active game markets in the horizon for the whitelisted leagues (or one league). Public data, no quoting. */
+export async function listGameMarkets(league?: string, now: Date = new Date()): Promise<GameMarketRow[]> {
+  const out: GameMarketRow[] = [];
+  for (const template of LEAGUE_TEMPLATES) {
+    if (league && template.league !== league.toLowerCase()) continue;
+    const markets = await getOpenMarkets(template.kalshiSeries);
+    for (const m of markets) {
+      if (m.status !== "active" || !gameDateWithinHorizon(m.ticker, template, now)) continue;
+      out.push({
+        ticker: m.ticker,
+        league: template.league,
+        sideName: m.subtitle,
+        title: m.title,
+        dateIso: parseGameTicker(m.ticker, template)?.dateIso ?? null,
+        closeTimeIso: m.closeTime,
+        markCents: midCents(m),
+      });
+    }
+  }
+  return out.sort((a, b) => a.closeTimeIso.localeCompare(b.closeTimeIso) || a.ticker.localeCompare(b.ticker));
+}
+
+export interface OneQuoteInputs {
+  ticker: string;
+  /** the holder's size, whole contracts */
+  contracts: number;
+  /** what the holder paid per contract, cents; absent, the market's mid stands in */
+  entryCents?: number;
+  now?: Date;
+  /** hedge route to pin (see quoteSportsCandidate); absent, the cheaper route wins as on the board */
+  route?: HedgeRoute;
+}
+
+export type OneQuoteResult = { ok: true; result: CandidateResult } | { ok: false; code: string; detail: string };
+
+/**
+ * Quote one game market at one size. Refuses, by name, anything the board would never carry:
+ * a ticker outside the whitelisted leagues, a market that is not open, a game without a verified
+ * pairing, a start outside the window. A quotable game comes back as the same CandidateResult the
+ * board builds, so the record and the hedge are the same code path.
+ */
+export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> {
+  const now = inputs.now ?? new Date();
+  const ticker = inputs.ticker.trim().toUpperCase();
+  if (!Number.isInteger(inputs.contracts) || inputs.contracts < 1 || inputs.contracts > 10_000) {
+    return { ok: false, code: "bad_size", detail: "contracts must be a whole number from 1 to 10,000" };
+  }
+  if (inputs.entryCents !== undefined && (!Number.isInteger(inputs.entryCents) || inputs.entryCents < 1 || inputs.entryCents > 99)) {
+    return { ok: false, code: "bad_entry", detail: "entry must be whole cents from 1 to 99" };
+  }
+  const template = LEAGUE_TEMPLATES.find((t) => ticker.startsWith(`${t.kalshiSeries}-`));
+  if (!template) return { ok: false, code: "not_offered", detail: "Protection isn't offered on this market." };
+  const market = (await getOpenMarkets(template.kalshiSeries)).find((m) => m.ticker === ticker);
+  if (!market || market.status !== "active") return { ok: false, code: "market_not_active", detail: "This market isn't open for protection right now." };
+  const markCents = midCents(market);
+  if (!(markCents >= 1 && markCents <= 99 && market.yesBidCents > 0 && market.yesAskCents < 100)) {
+    return { ok: false, code: "mark_out_of_range", detail: "The odds are outside the range we protect." };
+  }
+  let pair: MatchedPair | null;
+  if (pairCache.has(ticker)) {
+    pair = pairCache.get(ticker) ?? null;
+    if (pair) pair = { ...pair, kalshi: market };
+  } else {
+    pair = await matchKalshiMarket(market, template);
+    pairCache.set(ticker, pair);
+  }
+  if (!pair) return { ok: false, code: "no_matched_market", detail: "Protection isn't offered on this event yet." };
+  if (!showcaseWindowOk(pair, now)) return { ok: false, code: "market_too_close_to_start", detail: "This one starts too soon to protect." };
+  const position: ReturnType<typeof buildShowcasePosition> = {
+    contracts: inputs.contracts,
+    entryCents: inputs.entryCents ?? markCents,
+    entrySource: "entered_now",
+    entryTime: null,
+  };
+  const result = applyQuoteRules(await quoteSportsCandidate(pair, markCents, now, position, inputs.route));
+  return { ok: true, result };
 }
 
 /**
