@@ -89,7 +89,7 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 }
 @keyframes ael-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-.ael-tiles { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 8px; margin: 0 0 10px; }
+.ael-tiles { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 8px; margin: 0 0 10px; }
 .ael-tile { border: 1px solid #27272a; border-radius: 12px; padding: 10px 8px; text-align: center; background: #0d0d0f; }
 .ael-tile.ael-k { background: rgba(11, 162, 73, 0.12); border-color: rgba(11, 162, 73, 0.55); }
 .ael-l { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #9a9ca3; }

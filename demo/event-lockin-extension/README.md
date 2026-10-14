@@ -5,16 +5,18 @@ word for a play is a trade), and nothing anywhere else. No shield, badge or icon
 the game page or the order slip; the
 holder plays exactly as they do today. Once a matched play exists, under its row:
 
-1. a **Lock in** line: "Lock in · +$1.66 now", caption "worst case $14.71 instead of $0 · best
-   case $25.06". Priced live from the holder's actual size;
+1. a **Lock in** line that leads with the floor: "Lock in · $14.71 if the Texans lose", caption
+   "instead of $0 · $25.06 if they win (was $46.00) · +$1.66 paid now". Priced live from the
+   holder's actual size. The floor is the product; the credit is the third number on purpose;
 2. tapping it opens an **inline panel** under that row (the rows below move down; nothing floats
    over the slip): the headline "Worst case $14.71 instead of $0", three tiles (if they lose,
-   paid now, if they win), a segmented control with the price shapes the book offers right now
-   (**Most now** / **Even** / **Keep more upside**) and the numbers for each, one button, a
-   fine-print line with the kickoff cut-off and "how it works";
-3. after the tap, a **Protected** chip on the row: "Protected · +$1.66 paid · ends $14.71 or
-   $25.06 · details". Details is the same inline panel: worst case, best case, paid now, settles on
-   the game's official result, a link to the public record;
+   highlighted; paid now; if they win), a segmented control with the price shapes the book offers
+   right now (**Most now** / **Even** / **Keep more upside**, only the ones offered; a heavy
+   favourite usually gets two) and the numbers for each, one button ("Lock in · worst case
+   $14.71"), a fine-print line with the kickoff cut-off and "how it works";
+3. after the tap, a **Protected** chip on the row: "Protected · $14.71 or $25.06 · whichever way
+   it goes · +$1.66 paid · details". Details is the same inline panel: worst case, best case, paid
+   now, settles on the game's official result, a link to the public record;
 4. a play protection does not cover gets a muted **Protection unavailable** line with the reason
    after it: "covers Moneyline picks" on a spread or total, "waits until the play is matched" on a
    play that is still an open order, or the live refusal from pricing. Tapping it says what to do.
@@ -196,8 +198,8 @@ GET /healthz                                                lock.enabled true, h
 2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Keep more
    upside** or **Most now**: the three tiles and the button reprice. Tap **Even**: they return.
    Only the shapes the book offers for that pick are listed; a heavy favourite often has one.
-3. Tap **Lock in · +$x now**. The panel shows "Locked in" with the three numbers; the line reads
-   "Protected · +$x paid". Open `/` on the service: the position is there with `source: lock`.
+3. Tap **Lock in · worst case $x**. The panel shows "Locked in" with the three numbers; the line
+   reads "Protected · $x or $y". Open `/` on the service: the position is there with `source: lock`.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).
 5. Tap the Spread row's line: "Protection covers the Moneyline market." Close it.
 6. Open the **Resting** tab. The Chiefs order's line says "waits until the play is matched"; tap

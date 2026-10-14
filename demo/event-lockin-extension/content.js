@@ -694,7 +694,7 @@
       const rs = reshape(rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
       if (rec.status === "settled" && rec.result) line = lineGo("Settled &middot; paid " + esc(usd(rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal)), "", "ael-line-on");
       else if (rec.status === "void") line = lineGo("Protection voided", "no official result; nothing owed", "ael-line-on");
-      else line = lineGo("Protected &middot; +" + esc(usd(rec.creditCents)) + " paid", "ends " + esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)) + " &middot; details", "ael-line-on");
+      else line = lineGo("Protected &middot; " + esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), "whichever way it goes &middot; +" + esc(usd(rec.creditCents)) + " paid &middot; details", "ael-line-on");
     } else if (B.kind === "other") {
       line = lineGo("Protection unavailable", "covers Moneyline picks", "ael-line-off");
     } else if (B.match === "unmatched") {
@@ -713,7 +713,8 @@
       const t = (q.tiers && q.tiers[st.tier]) || q;
       const n = q.contracts || p.contracts;
       const rs = reshape(n, t.floorCents, t.capCents, t.creditCents);
-      line = lineGo("Lock in &middot; +" + esc(usd(t.creditCents)) + " now", "worst case " + esc(usd(rs.floorTotal)) + " instead of $0 &middot; best case " + esc(usd(rs.capTotal)), "");
+      const was = B.size && B.size.payoutCents ? " (was " + esc(usd(B.size.payoutCents)) + ")" : "";
+      line = lineGo("Lock in &middot; " + esc(usd(rs.floorTotal)) + " if the " + esc(shortOf(B.ticker)) + " lose", "instead of $0 &middot; " + esc(usd(rs.capTotal)) + " if they win" + was + " &middot; +" + esc(usd(t.creditCents)) + " paid now", "");
     }
     B.box.innerHTML = line + '<div class="ael-panel' + (st.open ? " ael-on" : "") + '"></div>';
     B.box.querySelector(".ael-line").onclick = () => {
@@ -769,11 +770,11 @@
     }
     panel.innerHTML =
       '<div class="ael-ph"><b>Worst case ' + esc(usd(rs.floorTotal)) + " instead of $0</b><span>" + whoLine(B, p) + "</span></div>" +
-      '<div class="ael-tiles"><div class="ael-tile"><div class="ael-l">if ' + esc(shortOf(B.ticker)) + ' lose</div><div class="ael-v">' + esc(usd(rs.floorTotal)) + '</div><div class="ael-was">was $0</div></div>' +
-      '<div class="ael-tile ael-k"><div class="ael-l">paid now</div><div class="ael-v">+' + esc(usd(t.creditCents)) + '</div><div class="ael-was">yours today</div></div>' +
+      '<div class="ael-tiles"><div class="ael-tile ael-k"><div class="ael-l">if ' + esc(shortOf(B.ticker)) + ' lose</div><div class="ael-v">' + esc(usd(rs.floorTotal)) + '</div><div class="ael-was">was $0</div></div>' +
+      '<div class="ael-tile"><div class="ael-l">paid now</div><div class="ael-v">+' + esc(usd(t.creditCents)) + '</div><div class="ael-was">yours today</div></div>' +
       '<div class="ael-tile"><div class="ael-l">if they win</div><div class="ael-v">' + esc(usd(rs.capTotal)) + '</div><div class="ael-was">was ' + esc(was) + "</div></div></div>" +
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") +
-      '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '">Lock in &middot; +' + esc(usd(t.creditCents)) + " now</button>" +
+      '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '">Lock in &middot; worst case ' + esc(usd(rs.floorTotal)) + "</button>" +
       '<div class="ael-fine">priced live, locks at your tap' + (p.eventTimeIso ? " &middot; available until kickoff " + esc(fmtAt(p.eventTimeIso)) : "") + ' &middot; <a href="#" class="ael-how-a">how it works</a></div>' +
       '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap.</p></div>" +
       DISCLOSE;
