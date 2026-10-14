@@ -87,7 +87,7 @@
 <body>
 <div class="top">
 <div class="ticker"><span>Hockey <span class="live">Live</span> 3rd 00:38 <b>TOR</b>4 <b>UTA</b>5</span><span>Hockey <span class="live">Live</span> End 2nd <b>CGY</b>2 <b>ANA</b>2</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:55 <b>POR</b>81 <b>SAC</b>50</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:09 <b>GSW</b>63 <b>LAL</b>70</span><span>Hockey <span class="live">Live</span> 2nd 17:57 <b>EDM</b>3 <b>LAK</b>0</span><span>Pro BSB <span class="blue">Tomorrow 8:00 PM</span> <b>MIL</b> <span class="green">+156</span> <b>LAD</b> <span class="green">-164</span></span><span>CFB <span class="blue">Tomorrow 7:00 PM</span> <b>WKU</b> <span class="green">-112</span> <b>SHSU</b> <span class="green">+111</span></span></div>
-<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/" id="nav-home"><span class="ico"></span>Home</a><a href="#/"><span class="ico"></span>Sports</a><a href="#/plays" id="nav-plays"><span class="ico"></span><span id="pf-nav">My Plays</span></a><a href="#"><span class="ico"></span>Promos</a></div><div class="right"><div class="mode" id="mode"><span class="on" data-mode="cash">Cash</span><span data-mode="points">Points</span></div><div class="search">Search Events, Teams &amp; Players</div><div class="dep">Deposit</div></div></header>
+<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/" id="nav-home"><span class="ico"></span>Home</a><a href="#/"><span class="ico"></span>Sports</a><a href="#/my-trades" id="nav-plays"><span class="ico"></span><span id="pf-nav">My Trades</span></a><a href="#"><span class="ico"></span>Promos</a></div><div class="right"><div class="mode" id="mode"><span class="on" data-mode="cash">Cash</span><span data-mode="points">Points</span></div><div class="search">Search Events, Teams &amp; Players</div><div class="dep">+ Deposit</div><div class="get" id="bal">$180.00</div></div></header>
 </div>
 <div class="wrap">
 <aside><a><i style="background:#8ab"></i>Hockey</a><a><i style="background:#cc3"></i>Tennis (M)</a><a><i style="background:#e73"></i>Pro BB (M)</a><a class="on" href="#/"><i style="background:#a63"></i>Pro FB</a><a><i style="background:#a4c"></i>Tennis (W)</a><a><i style="background:#e73"></i>Pro BB (W)</a><a><i style="background:#63c"></i>EPL</a><a><i style="background:#c33"></i>MMA</a><a><i style="background:#c33"></i>La Liga</a><a><i style="background:#3a6"></i>Serie A</a><a><i style="background:#36c"></i>Ligue 1</a><a><i style="background:#c33"></i>US Soccer</a>
@@ -102,8 +102,9 @@
 </div>
 </div>
 <script>
-// A stand-in for the venue's React app: hash routes, a play slip with a stake input and a To Win
-// line, American odds, and a My Plays page where each play carries its matching state.
+// A stand-in for the venue's React app: hash routes, a market-order slip with a Cost input and a To Gain
+// line, prices shown as the implied chance (75.9%), and a My Trades page where each trade carries its
+// matching state. Odds are kept American in the data and shown as percentages, as the venue does.
 const GAMES = [
   { id: "SEADEN", when: "Thu 8:15 PM", away: ["SEA", "Seahawks", "3-2"], home: ["DEN", "Broncos", "4-1"], spread: ["+1.5", "-105", "-1.5", "-108"], total: ["O 41.5", "-111", "U 41.5", "-103"], win: ["-132", "+127"], matched: "$212,440" },
   { id: "HOUJAX", when: "Sun 9:30 AM", away: ["HOU", "Texans", "2-3"], home: ["JAX", "Jaguars", "4-1"], spread: ["+2.5", "+104", "-2.5", "-108"], total: ["O 42.5", "+100", "U 42.5", "-102"], win: ["+130", "-133"], matched: "$257,702" },
@@ -116,38 +117,41 @@ const GAMES = [
 ];
 const slip = { sel: null, stake: "20" };
 let mode = sessionStorage.getItem("mock-mode") || "cash";
-// Open plays, as the venue's My Plays page would list them. Place Play on the slip adds one (matched at once, for the demo).
+// Open trades, as the venue's My Trades page lists them. Place Trade on the slip adds one (a market order, matched at once).
 // matched: the dollars of the stake another account has taken; 0 is a resting order.
-const PLAYS = JSON.parse(sessionStorage.getItem("mock-plays") || "null") || [
+const PLAYS = JSON.parse(sessionStorage.getItem("mock-trades") || "null") || [
   { g: "HOUJAX", side: "away", kind: "Moneyline", line: "", odds: "+130", stake: 20, matched: 20, when: "Sun 9:30 AM", away: ["HOU", "Texans"], home: ["JAX", "Jaguars"] },
   { g: "WASSF", side: "home", kind: "Moneyline", line: "", odds: "-357", stake: 20, matched: 20, when: "Mon 8:15 PM", away: ["WAS", "Commanders"], home: ["SF", "49ers"] },
   { g: "TENIND", side: "home", kind: "Spread", line: "-6.5", odds: "-118", stake: 10, matched: 10, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
   { g: "TENIND", side: "away", kind: "Moneyline", line: "", odds: "+292", stake: 5, matched: 5, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
   { g: "PITTB", side: "away", kind: "Moneyline", line: "", odds: "-127", stake: 10, matched: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
   { g: "PITTB", side: "home", kind: "Moneyline", line: "", odds: "+125", stake: 10, matched: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
-  { g: "SEADEN", side: "home", kind: "Moneyline", line: "", odds: "+127", stake: 10, matched: 10, when: "Thu 8:15 PM", away: ["SEA", "Seahawks"], home: ["DEN", "Broncos"] },
+  { g: "SEADEN", side: "home", kind: "Moneyline", line: "", odds: "+127", stake: 10, matched: 10, codeOnly: true, when: "Thu 8:15 PM", away: ["SEA", "Seahawks"], home: ["DEN", "Broncos"] },
   { g: "BUFLV", side: "away", kind: "Moneyline", line: "", odds: "-222", stake: 20, matched: 10, when: "Sun 4:25 PM", away: ["BUF", "Bills"], home: ["LV", "Raiders"] },
   { g: "LACKC", side: "home", kind: "Moneyline", line: "", odds: "-385", stake: 10, matched: 0, when: "Sun 4:25 PM", away: ["LA", "Chargers"], home: ["KC", "Chiefs"] },
 ];
-const savePlays = () => sessionStorage.setItem("mock-plays", JSON.stringify(PLAYS));
+const savePlays = () => sessionStorage.setItem("mock-trades", JSON.stringify(PLAYS));
 const $ = (s) => document.querySelector(s);
 const money = (n) => (mode === "points" ? Math.round(n * 100).toLocaleString("en-US") + " pts" : "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 // payout per $1 at American odds
 const mult = (odds) => { const o = Number(odds); return o > 0 ? 1 + o / 100 : 1 + 100 / -o; };
 const toWin = (stake, odds) => stake * (mult(odds) - 1);
 const tag = (p) => (p.matched <= 0 ? '<span class="tag wait">Unmatched</span>' : p.matched < p.stake ? '<span class="tag part">Partially Matched</span>' : '<span class="tag ok">Matched</span>');
+const show = (odds) => (100 / mult(odds)).toFixed(1) + "%";
 const playRow = (p) => {
   const t = p.side === "away" ? p.away : p.home;
   const part = p.matched > 0 && p.matched < p.stake;
-  return '<div class="pos"><span class="logo-sq"' + (p.side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><div class="pmid"><div class="pname">' + t[0] + " " + t[1] + (p.line ? " " + p.line : "") + " &middot; " + p.kind + '</div><div class="pmeta">Pro FB &middot; ' + p.away[0] + " " + p.away[1] + " at " + p.home[0] + " " + p.home[1] + " &middot; " + p.when + (part ? " &middot; Matched " + money(p.matched) + " &middot; Unmatched " + money(p.stake - p.matched) : "") + '</div></div><div class="podds">' + p.odds + '</div><div class="pnum">Stake<b>' + money(p.stake) + '</b></div><div class="pnum">To Win<b>' + money(toWin(p.stake, p.odds)) + "</b></div>" + tag(p) + "</div>";
+  // the venue names the pick by code and nickname on most rows, by code alone on some
+  const title = (p.codeOnly ? t[0] : t[0] + " " + t[1]) + (p.line ? " " + p.line : "") + " &middot; " + p.kind;
+  return '<div class="pos"><span class="logo-sq"' + (p.side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><div class="pmid"><div class="pname">' + title + '</div><div class="pmeta">NFL &middot; ' + p.away[0] + " @ " + p.home[0] + " &middot; " + p.when + (part ? " &middot; Matched " + money(p.matched) + " &middot; Unmatched " + money(p.stake - p.matched) : "") + '</div></div><div class="podds">' + show(p.odds) + '</div><div class="pnum">Cost<b>' + money(p.stake) + '</b></div><div class="pnum">To Gain<b>' + money(toWin(p.stake, p.odds)) + "</b></div>" + tag(p) + "</div>";
 };
 const playsView = () => {
   const risk = PLAYS.reduce((a, p) => a + p.stake, 0);
   const win = PLAYS.reduce((a, p) => a + toWin(p.matched, p.odds), 0);
-  return '<h1>My Plays</h1><div class="ptabs"><span class="on">Open</span><span>Settled</span></div><div class="psum"><div>Balance<b>' + money(180) + '</b></div><div>In play<b>' + money(risk) + '</b></div><div>To win (matched)<b>' + money(win) + "</b></div></div>" +
-    (PLAYS.length ? PLAYS.map(playRow).join("") : '<div class="pempty">No open plays</div>');
+  return '<h1>My Trades</h1><div class="ptabs"><span class="on">Open</span><span>Settled</span></div><div class="psum"><div>Balance<b>' + money(180) + '</b></div><div>In play<b>' + money(risk) + '</b></div><div>To gain (matched)<b>' + money(win) + "</b></div></div>" +
+    (PLAYS.length ? PLAYS.map(playRow).join("") : '<div class="pempty">No open trades</div>');
 };
-const cell = (g, side, kind, line, odds) => '<div class="cell" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-odds="' + odds + '"' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? ' class="cell sel"' : "") + ">" + (line ? line + "<small>" + odds + "</small>" : '<span class="o">' + odds + "</span>") + "</div>";
+const cell = (g, side, kind, line, odds) => '<div class="cell" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-odds="' + odds + '"' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? ' class="cell sel"' : "") + ">" + (line ? line + "<small>" + show(odds) + "</small>" : '<span class="o">' + show(odds) + "</span>") + "</div>";
 const teamRow = (g, side) => {
   const t = side === "away" ? g.away : g.home;
   return '<div class="team"><span class="logo-sq"' + (side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><a href="#/game/' + g.id + '"><span class="name">' + t[0] + " " + t[1] + "</span></a>" + (side === "away" ? '<span class="at">at</span>' : "") + '<span class="rec">' + t[2] + "</span></div>";
@@ -165,21 +169,21 @@ const gameView = (g) =>
   '<div class="when">Matched: ' + g.matched + '</div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Moneyline</span></div>' + rows(g) +
   '<div class="lines">Game Lines<small>Player Props</small></div><div class="pills"><span class="on">Main Markets</span><span>1st Half</span><span>Team Totals</span></div><div class="lines">Spread<small>What is the final margin?</small></div>';
 const slipView = () => {
-  if (!slip.sel) return '<div class="slip"><div class="empty"><div class="art"></div><b>Play Slip Empty</b>Add a selection to place a play</div></div>';
+  if (!slip.sel) return '<div class="slip"><div class="empty"><div class="art"></div><b>No selections</b>Pick a price to build a market order</div></div>';
   const s = slip.sel;
   const g = GAMES.find((x) => x.id === s.g);
   const t = s.side === "away" ? g.away : g.home;
   const stake = Number(slip.stake) || 0;
   const pickName = t[0] + " " + t[1] + (s.kind === "Spread" ? " " + s.line : "") + (s.kind === "Total" ? " " + s.line : "");
-  return '<div class="slip"><div class="slip-h"><span class="n">1</span> Play Slip</div><div class="otype">Play Type<small>Take the best price now, or make your own.</small><span class="seg"><span class="on">Take</span><span>Make</span></span></div>' +
-    '<div class="pick-card"><span class="rm" id="rm">&#x1F5D1;</span><div class="pick">' + pickName + " &middot; " + s.kind + '</div><div class="pick-meta">Pro FB &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + '</div><div class="odds">' + s.odds + '</div><div class="fields"><div class="stake"><label>Stake</label><input id="stake" type="text" inputmode="decimal" value="' + slip.stake + '"></div><div class="stake" style="border-color:#26262d"><label>To Win</label><b id="towin">' + money(toWin(stake, s.odds)) + "</b></div></div></div></div>" +
-    '<button class="place">' + (stake > 0 ? "Place Play: " + money(stake) : "Enter a stake") + "<small>To Win: " + money(toWin(stake, s.odds)) + "</small></button>";
+  return '<div class="slip"><div class="slip-h">Market Order &#x25BE;</div>' +
+    '<div class="pick-card"><span class="rm" id="rm">&#x1F5D1;</span><div class="pick">' + pickName + " &middot; " + s.kind + '</div><div class="pick-meta">Pro FB &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + '</div><div class="odds">' + show(s.odds) + '</div><div class="fields"><div class="stake"><label>Cost</label><input id="stake" type="text" inputmode="decimal" value="' + slip.stake + '"></div><div class="stake" style="border-color:#26262d"><label>To Gain</label><b id="towin">' + money(toWin(stake, s.odds)) + "</b></div></div></div></div>" +
+    '<button class="place">' + (stake > 0 ? "Place Trade" : "Enter a cost") + "<small>Net winnings per market are subject to a 2% fee</small></button>";
 };
 const render = () => {
   const h = location.hash || "#/";
   const m = /^#\/game\/(\w+)/.exec(h);
   const g = m ? GAMES.find((x) => x.id === m[1]) : null;
-  const plays = /^#\/(plays|portfolio)/.test(h);
+  const plays = /^#\/(my-trades|trades|plays|portfolio)/.test(h);
   $("#main").innerHTML = plays ? playsView() : g ? gameView(g) : listView();
   $("#slip").innerHTML = slipView();
   $("#trend").className = "trend" + (slip.sel ? " hidden" : "");
@@ -195,12 +199,12 @@ const render = () => {
     PLAYS.push({ g: s.g, side: s.side, kind: s.kind, line: s.line, odds: s.odds, stake, matched: stake, when: g2.when, away: g2.away.slice(0, 2), home: g2.home.slice(0, 2) });
     savePlays();
     slip.sel = null;
-    location.hash = "#/plays";
+    location.hash = "#/my-trades";
     render();
   };
   for (const c of document.querySelectorAll(".cell[data-g]")) c.onclick = () => { slip.sel = { g: c.dataset.g, side: c.dataset.side, kind: c.dataset.kind, line: c.dataset.line, odds: c.dataset.odds }; render(); };
   const st = $("#stake");
-  if (st) st.oninput = () => { slip.stake = st.value.replace(/[^\d.]/g, ""); const s = slip.sel; const w = toWin(Number(slip.stake) || 0, s.odds); $("#towin").textContent = money(w); $(".place").innerHTML = ((Number(slip.stake) || 0) > 0 ? "Place Play: " + money(Number(slip.stake)) : "Enter a stake") + "<small>To Win: " + money(w) + "</small>"; };
+  if (st) st.oninput = () => { slip.stake = st.value.replace(/[^\d.]/g, ""); const s = slip.sel; const w = toWin(Number(slip.stake) || 0, s.odds); $("#towin").textContent = money(w); $(".place").innerHTML = ((Number(slip.stake) || 0) > 0 ? "Place Trade" : "Enter a cost") + "<small>Net winnings per market are subject to a 2% fee</small>"; };
   const rm = $("#rm");
   if (rm) rm.onclick = () => { slip.sel = null; render(); };
   for (const s of document.querySelectorAll("#mode span")) s.onclick = () => { mode = s.dataset.mode; sessionStorage.setItem("mock-mode", mode); render(); };

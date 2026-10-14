@@ -1,6 +1,6 @@
 // Atticus Earn & Protect: Lock in (content script).
 //
-// One place, after the trade. On the venue's My Plays page (its list of open plays), each open
+// One place, after the trade. On the venue's My Trades page (its list of open plays), each open
 // matched play the engine can protect gets one line directly under its row: "Lock in · +$0.60 now"
 // with the worst case it buys. Tap it and our panel opens inline under that row, pushing the rows
 // below down; nothing floats over the venue's page. Plays we cannot protect get the same line
@@ -44,6 +44,7 @@
     markets: [],
     byTicker: {},
     nicks: new Map(), // nickname (lower) -> [{ ticker, league, code }]
+    codes: new Map(), // team code (upper) -> [ticker]
     nickRe: null,
     svc: { configured: false, positions: [], at: 0, error: null },
     record: new Map(), // ticker -> the public record's lock position (open or settled)
@@ -131,13 +132,20 @@
     S.markets = markets;
     S.byTicker = {};
     S.nicks = new Map();
+    S.codes = new Map();
     for (const m of markets) {
       S.byTicker[m.ticker] = m;
+      const code = codeOf(m.ticker);
+      for (const c of [code, ...(CODE_ALIAS[code] || [])]) {
+        const l = S.codes.get(c) || [];
+        if (!l.includes(m.ticker)) l.push(m.ticker);
+        S.codes.set(c, l);
+      }
       const nick = nickOf(m);
       if (!nick) continue;
       const k = nick.toLowerCase();
       const list = S.nicks.get(k) || [];
-      list.push({ ticker: m.ticker, league: m.league, code: codeOf(m.ticker) });
+      list.push({ ticker: m.ticker, league: m.league, code });
       S.nicks.set(k, list);
     }
     const keys = [...S.nicks.keys()].sort((a, b) => b.length - a.length).map(escapeRe);
@@ -178,12 +186,49 @@
     scan(true);
   };
 
-  /** Every side the text names, with how often; the pick is named more than once on most rows. */
+  /**
+   * Every side the text names, with how often; the pick is named more than once on most rows.
+   * A side is a nickname ("Colts", "IND Colts") or, where the venue prints only codes ("NYJ @ NE"),
+   * a bare upper-case code that names exactly one market the service can protect this week.
+   */
+  const CODE_RE = /(^|[^A-Za-z0-9])([A-Z]{2,3})(?![A-Za-z0-9])/g;
+  const LEAGUE_WORDS = [
+    [/\b(nfl|pro fb|football)\b/i, "nfl"],
+    [/\b(nba|pro bb|basketball)\b/i, "nba"],
+    [/\b(mlb|pro bsb|baseball)\b/i, "mlb"],
+  ];
+  const leagueOf = (ticker) => String((S.byTicker[ticker] || {}).league || "").toLowerCase();
   const sidesIn = (text) => {
+    const out = nicksIn(text);
+    out.ambiguous = false;
+    if (!S.nickRe) return out;
+    // codes: unique ones count at once; a code shared across leagues (DEN, TB, KC) is resolved by the
+    // row's league word, else by the league of a side already resolved; left unresolved it is flagged
+    let league = null;
+    for (const [re, l] of LEAGUE_WORDS) if (re.test(text)) { league = l; break; }
+    const found = [];
+    let m;
+    CODE_RE.lastIndex = 0;
+    while ((m = CODE_RE.exec(text))) found.push(S.codes.get(m[2]) || []);
+    for (const list of found) if (list.length === 1) out.set(list[0], (out.get(list[0]) || 0) + 1);
+    if (!league) {
+      const ls = new Set([...out.keys()].map(leagueOf));
+      if (ls.size === 1) league = [...ls][0];
+    }
+    for (const list of found) {
+      if (list.length < 2) continue;
+      const named = list.filter((t) => out.has(t));
+      const pick = named.length === 1 ? named : league ? list.filter((t) => leagueOf(t) === league) : list;
+      if (pick.length === 1) out.set(pick[0], (out.get(pick[0]) || 0) + 1);
+      else out.ambiguous = true;
+    }
+    return out;
+  };
+  const nicksIn = (text) => {
     const out = new Map();
     if (!S.nickRe) return out;
-    S.nickRe.lastIndex = 0;
     let m;
+    S.nickRe.lastIndex = 0;
     while ((m = S.nickRe.exec(text))) {
       const list = S.nicks.get(m[2].toLowerCase()) || [];
       let ticker = null;
@@ -206,6 +251,7 @@
   const MULTIPLIER = /(?:^|[^\d.])(\d{1,2}\.\d{1,3})\s?x(?![a-z])/i;
   // American odds: a signed figure of three or more digits that is not a dollar amount (+250, -300)
   const AMERICAN = /(?:^|[^\d.$,])([+-]\d{3,5})(?![\d.,%])/;
+  const PERCENT = /(?:^|[^\d.])(\d{1,2}(?:\.\d{1,2})?)\s?%/;
   /** payout per $1 at American odds; null for anything between -99 and 99 */
   const payoutMultiple = (odds) => (odds >= 100 ? 1 + odds / 100 : odds <= -100 ? 1 + 100 / -odds : null);
   /** textContent joins adjacent elements with nothing between ("To Win$2.60Unmatched"); give the words room */
@@ -243,9 +289,12 @@
     const matched = matchedM ? Number(matchedM[1].replace(/,/g, "")) : null;
     const stake = matched != null && matched > 0 && (wager == null || matched <= wager) ? matched : wager;
     const payout = labelled(text, /(?:payout|pays|returns|max\s*payout|total\s*return)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
-    const toWin = labelled(text, /(?:to\s*win|profit|win)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
-    const odds = AMERICAN.exec(text.replace(/\$\s?[\d,.]+/g, ""));
-    const k = odds ? payoutMultiple(Number(odds[1])) : null;
+    const toWin = labelled(text, /(?:to\s*win|to\s*gain|profit|win|gain)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
+    const bare = text.replace(/\$\s?[\d,.]+/g, "");
+    const odds = AMERICAN.exec(bare);
+    // the venue can show the price as the implied chance (75.9%): payout per $1 is 100 over that
+    const pct = PERCENT.exec(bare);
+    const k = odds ? payoutMultiple(Number(odds[1])) : pct && Number(pct[1]) > 0 && Number(pct[1]) < 100 ? 100 / Number(pct[1]) : null;
     if (stake && payout && payout > stake) {
       // the payout on the row is for the whole stake; scale it to the matched part
       return sizeOf(stake, wager && stake < wager ? (payout * stake) / wager : payout);
@@ -286,11 +335,12 @@
 
   // ── finding the plays page and its rows ─────────────────────────────────────
   const onPortfolioPage = () => {
-    const where = (location.pathname + " " + location.hash).toLowerCase();
-    if (/portfolio|position|plays|my-?plays|open-?plays|my-?bets|mybets|wagers|open-?bets|activity/.test(where)) return true;
+    // a hash-routed app is judged on its route, not on the file that hosts it
+    const where = (location.hash.startsWith("#/") ? location.hash : location.pathname + " " + location.hash).toLowerCase();
+    if (/portfolio|position|trades|my-?trades|open-?trades|plays|my-?plays|open-?plays|my-?bets|mybets|wagers|open-?bets|activity/.test(where)) return true;
     for (const h of document.querySelectorAll("h1, h2, h3, [role=heading]")) {
       if (OURS(h)) continue;
-      if (/^(portfolio|positions|open positions|my plays|plays|open plays|my bets|open bets|my wagers|active)\b/i.test(norm(h.textContent))) return true;
+      if (/^(portfolio|positions|open positions|my trades|trades|open trades|my plays|plays|open plays|my bets|open bets|my wagers|active)\b/i.test(norm(h.textContent))) return true;
     }
     return false;
   };
@@ -319,7 +369,7 @@
    * carries the position's money (two dollar amounts, or one with a wager/payout word), of a
    * row's proportions, with no input in it (that is the order slip) and not the whole page.
    */
-  const STAKE_LABELS = /(wager|stake|risk|cost|bet|payout|to\s*win|pays)\s*:?\s*\$\s?\d/gi;
+  const STAKE_LABELS = /(wager|stake|risk|cost|bet|payout|to\s*win|to\s*gain|pays)\s*:?\s*\$\s?\d/gi;
   const rowFrom = (node) => {
     let e = node.parentElement;
     let found = null;
@@ -332,13 +382,21 @@
       const labels = (text.match(STAKE_LABELS) || []).length;
       if (found) {
         // a block was found without the row's stake and payout labels (a matched/unmatched detail
-        // can carry two amounts on its own): take the parent that has them, one row's worth, no more
-        if (labels >= 1 && labels <= 2 && !(spaced(norm(found.textContent)).match(STAKE_LABELS) || []).length) found = e;
-        break;
+        // can carry two amounts on its own): keep climbing, within the same limits, to the ancestor
+        // that has them; one row's worth of labels, never a list's
+        if (labels > 2) break;
+        if (labels >= 1) {
+          found = e;
+          break;
+        }
+        continue;
       }
       const amounts = amountsIn(text);
-      const moneyWords = /\b(wager|stake|payout|to win|pays|returns|cost|avg|average|contracts|shares|risk|matched|odds)\b/i.test(text);
-      if ((amounts.length >= 2 || (amounts.length >= 1 && moneyWords)) && r.width >= 200 && r.height >= 24) found = e;
+      const moneyWords = /\b(wager|stake|payout|to win|to gain|pays|returns|cost|avg|average|contracts|shares|risk|matched|odds)\b/i.test(text);
+      if ((amounts.length >= 2 || (amounts.length >= 1 && moneyWords)) && r.width >= 200 && r.height >= 24) {
+        found = e;
+        if (labels >= 1) break;
+      }
     }
     return found;
   };
@@ -363,7 +421,7 @@
     for (const row of rows) {
       const text = norm(row.textContent);
       if (pointsRow(text)) continue;
-      const count = new Map(sidesIn(text));
+      const count = sidesIn(text);
       if (!count.size) continue;
       // the pick: a "Team · Winner" style line, else the side named more than once (matchup plus
       // selection), else the one side the service confirms a position on, else the only side
@@ -375,7 +433,9 @@
       }
       if (!ticker) {
         const sorted = [...count.entries()].sort((a, b) => b[1] - a[1]);
-        if (sorted.length === 1 || sorted[0][1] > sorted[1][1]) ticker = sorted[0][0];
+        // one side named more often than any other; a side named once alone is the pick only when no
+        // code in the row was left unresolved (else it may be the opponent of an unresolved pick)
+        if ((sorted.length === 1 && (!count.ambiguous || sorted[0][1] >= 2)) || (sorted.length > 1 && sorted[0][1] > sorted[1][1])) ticker = sorted[0][0];
       }
       if (!ticker) {
         const withSvc = [...count.keys()].filter((t) => svcFor(t));

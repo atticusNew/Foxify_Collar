@@ -5,7 +5,7 @@
  * so the worker route and the client do not care which venue the holder is on.
  *
  * Credentials: VENUE_API_ACCESS_KEY + VENUE_API_SECRET_KEY, service env only, never in the client.
- * The venue issues these from its website (Settings, Token). They are account keys, not scoped
+ * The venue issues these from its website (menu, API Integration). They are account keys, not scoped
  * read keys: the same pair could place an order. This module only ever calls login, refresh and
  * four GET routes; nothing here submits or cancels. Keep the pair in the service env, use a
  * dedicated pair, revoke it when the recording is done.

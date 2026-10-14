@@ -19,7 +19,7 @@
  *
  *          Bearer venue (the partner API, session login): env VENUE_API_HOST (with the /partner path,
  *          production https://cash.api.<venue>/partner), VENUE_API_ACCESS_KEY, VENUE_API_SECRET_KEY.
- *          The pair comes from the venue's website (Settings, Token). It is an account key, so it can
+ *          The pair comes from the venue's website (menu, API Integration). It is an account key, so it can
  *          trade: this script only logs in and reads open plays. Use a dedicated pair; revoke it after.
  *          Prints each open play with its matched stake in our units, or "unmatched" for a resting one.
  *          Which venue is checked follows the env: the key id and PEM select signed, the access key
