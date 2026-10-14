@@ -138,6 +138,7 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 .ael-size-form input { width: 110px; padding: 8px 10px; border: 1px solid #2c2c30; border-radius: 8px; font-size: 13px; color: #fff; background: #0d0d0f; }
 
 .ael-op { font-size: 11px; color: #9a9ca3; background: #0d0d0f; border: 1px solid #27272a; border-radius: 8px; padding: 8px 12px; margin: 0 0 10px; font-variant-numeric: tabular-nums; }
+.ael-op a { color: #55e8b9; text-decoration: underline; font-weight: 600; }
 
 .ael-disclose { font-size: 10.5px; color: #6f7279; text-align: center; border-top: 1px solid #222225; padding-top: 8px; margin-top: 6px; }
 

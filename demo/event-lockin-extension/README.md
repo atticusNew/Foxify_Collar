@@ -111,7 +111,7 @@ No venue account is needed.
 - `content.css` the line, the inline panel, the segmented control, the chip. Two-column tiles under
   560px.
 - `background.js` is the fetch proxy; it attaches `x-lock-key` from extension storage.
-- `options.html` sets the service URL, lock key, and the operator-only hedge line.
+- `options.html` sets the service URL, lock key, Rehearsal, and the operator-only hedge line.
 - `preview/positions.html` is the stand-in board described above.
 
 ## Service side (Render dashboard, never in git)
@@ -187,6 +187,10 @@ GET /healthz                                                lock.enabled true, h
 2. Open the extension's options. Set the service URL (default is the record service) and paste the
    lock key. Leave "show hedge line" off for a customer-facing recording; turn it on for the
    operator cut.
+   **Rehearsal** (same page): with it On, the Lock in button walks the whole flow on the live
+   quote, but calls nothing: nothing is locked, written or bought. The result panel says
+   "Locked in (rehearsal)" and offers Reset. Use it to see the screens before real money, then
+   turn it Off and reload the venue tab before the recording.
 3. On the venue, switch to **Cash** mode (not points) and open **My Trades** (top right), **Filled**
    tab. Each filled play gets its line; on Resting the line says the order has not matched. If the extension cannot find the rows but the service knows your plays, a card
    bottom-right lists them with the same lines.
@@ -198,8 +202,12 @@ GET /healthz                                                lock.enabled true, h
 2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Keep more
    upside** or **Most now**: the three tiles and the button reprice. Tap **Even**: they return.
    Only the shapes the book offers for that pick are listed; a heavy favourite often has one.
-3. Tap **Lock in · worst case $x**. The panel shows "Locked in" with the three numbers; the line
-   reads "Protected · $x or $y". Open `/` on the service: the position is there with `source: lock`.
+3. Tap **Lock in · worst case $x**. The button reports the stages (pricing from the live book,
+   writing the record, buying the other side) with the seconds elapsed; the panel then shows
+   "Locked in" with the three numbers and how long it took; the line reads "Protected · $x or $y".
+   Open `/` on the service: the position is there with `source: lock`.
+   With Rehearsal on in the options, the same tap ends on "Locked in (rehearsal)" with a Reset link
+   and nothing reaches the service.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).
 5. Tap the Spread row's line: "Protection covers the Moneyline market." Close it.
 6. Open the **Resting** tab. The Chiefs order's line says "waits until the play is matched"; tap
