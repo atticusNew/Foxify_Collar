@@ -1,14 +1,21 @@
 # Atticus Earn & Protect: Lock in (browser extension, demo placement)
 
-Demo-only. Renders a **Lock in** button beside each open position on a venue's positions page and
-a protection panel when it is tapped. The button's placement is the **only staged pixel**. Everything
-behind the tap is the Atticus event service: the game is matched, the position is priced from live
-books at the holder's size, the terms lock, the record is written, and the hedge is bought on Kalshi.
+Demo-only. Draws three things on a venue's page and nothing else:
 
-The panel is styled in the venue's own theme (near-black, white, one blue accent, red only for a
-refusal) with no brand of ours up top, so the eye stays on the venue; our name is one line at the
-foot. On a desktop width it docks at the right where the venue keeps its order slip; on a phone it
-is a bottom sheet.
+1. a small blue **shield** after a team's name wherever protection is offered on that side right
+   now (game list, game page, portfolio). Sides with nothing offered get nothing: no greyed icon,
+   no "unavailable" word;
+2. a **Lock in** line under the venue's order slip once a Winner pick with a wager is in it. It
+   shows the paid-now amount at that wager before the tap, and the floor and cap in a caption;
+3. the **protection panel**, docked over the slip's own column on a desktop width (same place,
+   same width, no shadow box) and a bottom sheet on a phone.
+
+That placement is the only staged pixel. Everything behind the tap is the Atticus event service:
+the game is matched, the position is priced from live books at the holder's size, the terms lock,
+the record is written, and the hedge is bought on Kalshi.
+
+Styled in the venue's own theme (near-black, white, one blue accent, red only for a refusal), with
+no brand of ours up top; our name is one line at the foot of the panel.
 
 > Disclosure line, shown on every panel and to be read in any published recording:
 > *"Third-party protection by Atticus. Button and panel rendered locally for this demo; not a
@@ -18,34 +25,51 @@ What this extension holds: the service URL and a lock key. What it never holds: 
 a Kalshi key, or anything that can move money. The venue's own session is never read or used.
 The Kalshi API key lives in the service's environment only.
 
+## The flow on the venue
+
+1. Open a league or a game. Shields appear after the teams the service will protect right now.
+2. Tap a **Winner** price. The venue's order slip opens with the pick and a wager box.
+3. Enter the wager. The **Lock in** line appears under the slip: "Lock in  +$0.32 now", caption
+   "Ends $14.10 if San Francisco 49ers loses, $21.38 if it wins". It reprices as the wager changes.
+4. Tap it. The panel takes the slip's column: paid now, if it loses, if it wins, one button.
+5. Tap **Lock in**. "Locked in" with the three numbers; the slip line reads "Locked · +$x paid";
+   the team's shield fills with a check.
+
+A Spread or Total pick gets a quiet note that protection covers the Winner market. A wager too
+small for the minimum credit gets "Protection on this pick starts at a larger wager."
+
 ## See it before any deposit or trade
 
-No venue account is needed to see the button and the panel.
+No venue account is needed.
 
 1. Load the extension (below) and set the service URL and lock key in its options.
-2. Serve the preview page from this folder and open it:
+2. Serve the preview page **from this folder** and open it:
 
    ```
-   cd demo/event-lockin-extension && python3 -m http.server 8812 --bind 127.0.0.1
+   cd event-lockin-extension && python3 -m http.server 8812 --bind 127.0.0.1
    open http://127.0.0.1:8812/preview/positions.html
    ```
 
-   The page is a generic exchange-style portfolio with three open positions. The button sits beside
-   the rows the service can protect; the panel prices them from live books, and a tap writes to the
-   record and runs the hedge path for real (dry run unless the service is set to send). Lock only
-   games you mean to put on the record.
-3. On the venue itself with no positions yet, the docked **Lock in** pill bottom-right opens the
-   picker, which lists every game in the window with live odds. That is the same panel.
+   If you started the server one folder up, the address is
+   `http://127.0.0.1:8812/event-lockin-extension/preview/positions.html`; a 404 means the server's
+   folder and the address do not match.
+
+   The page is a generic exchange-style board (league list, game page, order slip) with real games
+   from the service's window. Shields price from live books; a lock writes to the record and runs
+   the hedge path for real (dry run unless the service is set to send). Lock only games you mean
+   to put on the record.
 
 ## Files
 
 - `manifest.json` runs the content script on the venue's domains (edit `matches` to add one) and on
-  the local preview page, and grants fetch to the service host only.
-- `content.js` finds position rows by text (a team the service can protect plus a dollar amount),
-  places a button beside each, and renders the panel. If no row reads, a docked pill opens a game picker.
+  the local preview page; grants fetch to the service host and to localhost on any port.
+- `content.js` reads the page by text: team names the service can protect, the slip's "Payout: $x"
+  line, its wager input and its pick ("IND Colts · Winner"). Overlays are positioned from those
+  rects and hidden when the page scrolls them under the venue's header. The venue's DOM is never
+  modified.
 - `background.js` is the fetch proxy; it attaches `x-lock-key` from extension storage.
 - `options.html` sets the service URL, lock key, default size, and the operator-only hedge line.
-- `preview/positions.html` is the stand-in positions page described above.
+- `preview/positions.html` is the stand-in board described above.
 
 ## Service side (Render dashboard, never in git)
 
@@ -87,25 +111,25 @@ GET /healthz                                                lock.enabled true, h
 2. Open the extension's options. Set the service URL (default is the record service), paste the
    lock key, set the default size used when a row's stake cannot be read. Leave "show hedge line"
    off for a customer-facing recording; turn it on for the operator cut.
-3. Open the venue's positions page. A blue **Lock in** sits beside each row the script can read. If
-   none reads, a **Lock in** pill sits bottom-right and opens the picker.
+3. Open the venue. Shields appear after the teams the service will protect; the **Lock in** line
+   appears under the order slip once a Winner pick with a wager is in it. If the page shows neither
+   a team nor a slip, a small **Protection** pill bottom-left opens a game picker.
 
-## Reading the row
+## Reading the slip
 
-The venue shows a position as the team ("SF 49ers · Winner"), the multiplier ("1.28x"), the amount
-and the payout. Two dollar amounts a multiplier apart are the stake and the payout; payout in dollars
-is the size in $1 contracts (26 for $20.00 at 1.28x) and stake over payout is the entry price (78c).
-American odds and "to win" amounts are read too. The panel shows the size it read, with an edit link
-to reprice at another size before locking. After the lock the button reads "Locked · +$x paid" and
-reopens the panel with the full terms.
+Size is the slip's payout in dollars, one $1 contract per dollar: a $20 wager at 1.33x pays $26.60,
+so 27 contracts; the entry price is wager over payout (75c). The pick names the side; the market
+word after the dot (Winner, Spread, Total) says whether protection applies. A portfolio row is read
+the same way from its stake and payout a multiplier apart. The panel shows the size it read, with
+an edit link to reprice at another size before locking.
 
 ## Recording checklist
 
 Three clips, one tap.
 
-1. **Venue positions page.** The open position, the button on its row. Tap. The panel prices from
-   live books at that size: ends-at-worst, paid-now, ends-at-best. Tap **Lock in**. "Locked in"
-   with the three numbers.
+1. **Venue, the pick.** Shields on the board. Tap the Winner price, enter the wager, the Lock in
+   line prices under the slip. Tap it; the panel shows ends-at-worst, paid-now, ends-at-best. Tap
+   **Lock in**. "Locked in" with the three numbers, the slip line reads "Locked", the shield fills.
 2. **Record.** `/` on the service a moment later: the position appears with `source: lock`, the
    three numbers match the panel. Operator cut: `/api/shadow/hedges` shows the live attempt, order
    id, fill, cost.
