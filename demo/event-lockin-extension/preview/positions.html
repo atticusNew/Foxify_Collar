@@ -1,61 +1,147 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Portfolio</title>
+<html lang="en"><head><meta charset="utf-8"><title>Exchange</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  body{margin:0;background:#0b0b0d;color:#f2f3f5;font-family:-apple-system,Segoe UI,Roboto,sans-serif}
-  .ticker{display:flex;gap:28px;padding:8px 16px;background:#121216;border-bottom:1px solid #1f1f25;font-size:11px;color:#9a9ca3;overflow:hidden;white-space:nowrap}
-  .ticker b{color:#f2f3f5;margin-right:6px}.live{color:#ff5a5a}
-  header{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;background:#0b0b0d;border-bottom:1px solid #1f1f25}
-  .logo{font-weight:900;letter-spacing:.06em;font-size:18px}
-  .tabs{display:flex;gap:28px;font-size:11px;color:#9a9ca3;text-align:center}
-  .tabs div{display:flex;flex-direction:column;align-items:center;gap:4px}.tabs .on{color:#fff}
+  *{box-sizing:border-box}
+  body{margin:0;background:#0b0b0d;color:#f2f3f5;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px}
+  a{color:inherit;text-decoration:none}
+  .top{position:sticky;top:0;z-index:5;background:#0b0b0d}
+  .ticker{display:flex;gap:26px;padding:7px 14px;background:#101013;border-bottom:1px solid #1f1f25;font-size:10.5px;color:#9a9ca3;overflow:hidden;white-space:nowrap}
+  .ticker b{color:#f2f3f5;margin:0 4px}.live{color:#ff5a5a;font-weight:700}.blue{color:#3b8bff}
+  header{display:flex;align-items:center;justify-content:space-between;padding:10px 24px;border-bottom:1px solid #1f1f25}
+  .logo{font-weight:900;letter-spacing:.08em;font-size:17px}
+  .tabs{display:flex;gap:30px;font-size:10.5px;color:#9a9ca3;text-align:center}
+  .tabs a{display:flex;flex-direction:column;align-items:center;gap:4px}.tabs .on{color:#fff}
   .ico{width:18px;height:18px;border-radius:5px;background:#2a2a31;display:block}.on .ico{background:#fff}
   .right{display:flex;gap:10px;align-items:center}
-  .search{background:#17171c;border:1px solid #26262d;border-radius:999px;padding:8px 16px;color:#9a9ca3;font-size:13px;width:200px}
-  .dep{background:#1a73ff;color:#fff;border-radius:999px;padding:8px 18px;font-weight:700;font-size:13px}
-  .wrap{display:grid;grid-template-columns:150px 1fr;min-height:80vh}
-  aside{border-right:1px solid #1f1f25;padding:16px 10px;font-size:13px;color:#d6d7db}
-  aside div{padding:8px 10px;border-radius:8px;margin-bottom:2px}aside .on{background:#17171c;color:#fff}
-  main{padding:22px 28px;max-width:760px}
-  h1{font-size:22px;margin:0 0 4px}.sub{color:#9a9ca3;font-size:13px;margin-bottom:18px}
-  .bal{display:flex;gap:28px;margin-bottom:22px}.bal div span{display:block;font-size:11px;color:#9a9ca3}.bal b{font-size:20px}
-  .seg{display:flex;gap:6px;margin-bottom:14px}.seg span{padding:6px 14px;border-radius:999px;background:#17171c;color:#9a9ca3;font-size:12px}.seg .on{background:#fff;color:#000;font-weight:700}
-  .pos{display:grid;grid-template-columns:1fr 90px 110px 120px;align-items:center;background:#121216;border:1px solid #1f1f25;border-radius:12px;padding:14px 16px;margin-bottom:10px}
-  .hd{display:grid;grid-template-columns:1fr 90px 110px 120px;padding:0 16px 6px;font-size:11px;color:#9a9ca3}
-  .pick{font-weight:700;font-size:14px}.pick small{color:#9a9ca3;font-weight:500;margin-left:6px}
-  .meta{color:#9a9ca3;font-size:12px;margin-top:3px}
-  .mult{color:#3b8bff;font-weight:700;font-size:14px}
-  .num{font-size:14px;text-align:right}.num span{display:block;font-size:11px;color:#9a9ca3}
-  .open{display:inline-block;font-size:10px;padding:2px 8px;border-radius:999px;background:#13261a;color:#4fd58a;margin-top:6px}
+  .search{background:#17171c;border:1px solid #26262d;border-radius:999px;padding:8px 16px;color:#9a9ca3;font-size:12px;width:220px}
+  .dep{background:#1a73ff;color:#fff;border-radius:999px;padding:8px 18px;font-weight:700;font-size:12px}
+  .get{background:#17171c;border:1px solid #26262d;color:#fff;border-radius:999px;padding:8px 14px;font-weight:700;font-size:12px}
+  .wrap{display:grid;grid-template-columns:150px 1fr 250px;min-height:120vh}
+  aside{border-right:1px solid #1f1f25;padding:14px 8px;font-size:13px;color:#d6d7db}
+  aside a{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;margin-bottom:2px}aside .on{background:#17171c;color:#fff}
+  aside i{width:14px;height:14px;border-radius:50%;background:#3b8bff;display:inline-block}
+  aside .foot{margin-top:28px;font-size:11px;color:#6f7279;line-height:1.9}
+  main{padding:18px 22px 60px;border-right:1px solid #1f1f25}
+  h1{font-size:20px;margin:0 0 10px}
+  .subtabs{display:flex;gap:22px;font-size:14px;margin:0 0 16px}.subtabs .on{font-weight:700;border-bottom:2px solid #fff;padding-bottom:4px}
+  .game{margin-bottom:14px}
+  .when{font-size:11px;color:#9a9ca3;margin:0 0 6px}.when b{color:#3b8bff;font-weight:600}
+  .grid{display:grid;grid-template-columns:1fr 92px 92px 92px;gap:4px 6px;align-items:center}
+  .cols{display:grid;grid-template-columns:1fr 92px 92px 92px;gap:6px;font-size:10.5px;color:#9a9ca3;text-align:center;margin-bottom:4px}
+  .team{display:flex;align-items:center;gap:8px;padding:6px 0}
+  .logo-sq{width:22px;height:22px;border-radius:6px;background:#1c3a7a;flex:none}
+  .name{font-weight:600;font-size:13px}.at{color:#9a9ca3;font-size:12px}.rec{color:#9a9ca3;font-size:11px}
+  .cell{background:#1c1c20;border-radius:7px;padding:6px 4px;text-align:center;cursor:pointer;border:1px solid transparent;line-height:1.2}
+  .cell:hover{border-color:#3b8bff}.cell.sel{border-color:#1a73ff;background:#132a55}
+  .cell small{display:block;color:#3b8bff;font-size:11px;font-weight:600}
+  .traded{font-size:10.5px;color:#9a9ca3;text-align:right;margin-top:4px}
+  .matchup{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;justify-items:center;padding:14px 0 10px;margin-bottom:8px}
+  .jersey{width:40px;height:40px;border-radius:8px;background:#1c3a7a;margin-bottom:6px}
+  .matchup .code{font-weight:700;font-size:12px}
+  .center{font-size:11px;color:#9a9ca3;text-align:center}.center b{display:block;color:#fff;font-size:12px}.center .blue{display:block}
+  .chart{height:150px;border-bottom:1px solid #1f1f25;position:relative;margin-bottom:8px}
+  .chart svg{width:100%;height:100%}
+  .chart .lbl{position:absolute;right:0;font-size:11px;font-weight:700;color:#3b8bff}
+  .chart .lbl small{display:block;font-weight:400;color:#9a9ca3;font-size:10px}
+  .back{display:inline-flex;width:30px;height:30px;border-radius:50%;background:#1c1c20;align-items:center;justify-content:center;margin-bottom:8px;cursor:pointer}
+  .lines{margin-top:18px;font-size:14px;font-weight:700}.lines small{display:block;font-weight:400;color:#9a9ca3;font-size:11px;margin-top:4px}
+  .pills{display:flex;gap:8px;margin:10px 0 16px}.pills span{padding:6px 12px;border-radius:999px;background:#1c1c20;font-size:12px}.pills .on{background:#fff;color:#000;font-weight:700}
+  .right-col{padding:14px 12px;position:relative}
+  .slip{background:#121216;border:1px solid #1f1f25;border-radius:12px;padding:12px}
+  .slip-h{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;margin-bottom:10px}
+  .slip-h .n{width:20px;height:20px;border-radius:50%;background:#1a73ff;display:inline-flex;align-items:center;justify-content:center;font-size:11px}
+  .empty{text-align:center;padding:30px 0 24px;color:#9a9ca3;font-size:12px}
+  .empty .art{width:90px;height:90px;border-radius:50%;background:#1c1c20;margin:0 auto 14px}
+  .empty b{display:block;color:#fff;font-size:14px;margin-bottom:4px}
+  .pick-card{background:#1c1c20;border-radius:10px;padding:10px}
+  .pick{font-weight:700;font-size:13px}.pick-meta{font-size:11px;color:#9a9ca3;margin:3px 0 8px}
+  .odds{font-size:12px;color:#3b8bff;font-weight:700;text-align:right;margin-bottom:8px}
+  .otype{display:flex;justify-content:space-between;align-items:center;font-size:12px;margin:10px 0}.otype small{display:block;color:#9a9ca3;font-size:10.5px}
+  .otype .seg span{padding:4px 10px;border-radius:999px;background:#1c1c20;font-size:11px;margin-left:4px}.otype .seg .on{background:#fff;color:#000;font-weight:700}
+  .stake{display:flex;align-items:center;gap:6px;border:1px solid #3b8bff;border-radius:8px;padding:6px 10px;background:#0b0b0d;margin-left:auto;width:110px}
+  .stake input{background:transparent;border:0;color:#fff;font-size:14px;font-weight:700;width:100%;text-align:right;outline:0}
+  .payout{text-align:right;font-size:11.5px;color:#9a9ca3;margin-top:8px}.payout b{color:#fff;font-weight:600}
+  .rm{float:right;color:#6f7279;cursor:pointer;font-size:12px}
+  .trend{margin-top:18px}
+  .trend h3{font-size:14px;margin:0 0 10px}
+  .place{position:fixed;right:12px;bottom:12px;width:226px;background:#1a73ff;color:#fff;border:0;border-radius:10px;padding:10px 12px;font-weight:700;font-size:13px;text-align:center;cursor:pointer}
+  .place small{display:block;font-weight:500;font-size:11px;opacity:.9}
+  .hidden{display:none}
 </style></head>
 <body>
-<div class="ticker"><span>Pro FB <span class="live">Live</span> Q3 04:49 <b>NYK</b>66 <b>TOR</b>104</span><span>Hockey <span class="live">Live</span> 3rd 06:58 <b>FLA</b>6 <b>CBJ</b>1</span><span>Pro BB (M) <span class="live">Live</span> Q3 04:49 <b>CLE</b>63 <b>ORL</b>93</span><span>Hockey <span class="live">Live</span> 2nd 04:11 <b>TBL</b>4 <b>NYR</b>1</span></div>
-<header><div class="logo">EXCHANGE</div><div class="tabs"><div><span class="ico"></span>Home</div><div><span class="ico"></span>Points</div><div class="on"><span class="ico"></span>$45.00 Portfolio</div><div><span class="ico"></span>Ranks</div></div><div class="right"><div class="search">Search Events, Teams &amp; Players</div><div class="dep">Deposit</div></div></header>
-<div class="wrap">
-<aside><div>Live</div><div>Hockey</div><div>Pro BSB</div><div>CFB</div><div>MMA</div><div>Tennis (M)</div><div>Pro BB (M)</div><div>Tennis (W)</div><div>UCL</div><div class="on">Pro FB</div></aside>
-<main>
-  <h1>Portfolio</h1><div class="sub">Open positions settle on the official result.</div>
-  <div class="bal"><div><span>Cash</span><b>$0.00</b></div><div><span>In positions</span><b>$50.00</b></div><div><span>Potential payout</span><b>$85.53</b></div></div>
-  <div class="seg"><span class="on">Open (3)</span><span>Settled</span><span>Orders</span></div>
-  <div class="hd"><div>Position</div><div>Odds</div><div style="text-align:right">Amount</div><div style="text-align:right">Payout</div></div>
-  <section class="pos">
-    <div><div class="pick">IND Colts<small>Winner</small></div><div class="meta">Pro FB · TEN at IND · Sun 1:00 PM</div><span class="open">Open</span></div>
-    <div class="mult">1.33x</div>
-    <div class="num">$15.00<span>cost</span></div>
-    <div class="num">$20.00<span>if IND wins</span></div>
-  </section>
-  <section class="pos">
-    <div><div class="pick">SF 49ers<small>Winner</small></div><div class="meta">Pro FB · WAS at SF · Mon 8:15 PM</div><span class="open">Open</span></div>
-    <div class="mult">1.28x</div>
-    <div class="num">$20.00<span>cost</span></div>
-    <div class="num">$25.63<span>if SF wins</span></div>
-  </section>
-  <section class="pos">
-    <div><div class="pick">EDM Oilers<small>Winner</small></div><div class="meta">Hockey · EDM at CGY · Thu 9:00 PM</div><span class="open">Open</span></div>
-    <div class="mult">2.66x</div>
-    <div class="num">$15.00<span>cost</span></div>
-    <div class="num">$39.90<span>if EDM wins</span></div>
-  </section>
-</main>
+<div class="top">
+<div class="ticker"><span>Hockey <span class="live">Live</span> 3rd 00:38 <b>TOR</b>4 <b>UTA</b>5</span><span>Hockey <span class="live">Live</span> End 2nd <b>CGY</b>2 <b>ANA</b>2</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:55 <b>POR</b>81 <b>SAC</b>50</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:09 <b>GSW</b>63 <b>LAL</b>70</span><span>Hockey <span class="live">Live</span> 2nd 17:57 <b>EDM</b>3 <b>LAK</b>0</span><span>Pro BSB <span class="blue">Tomorrow 8:00 PM</span> <b>MIL</b> 2.56x <b>LAD</b> 1.61x</span><span>CFB <span class="blue">Tomorrow 7:00 PM</span> <b>WKU</b> 1.89x <b>SHSU</b> 2.11x</span></div>
+<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/"><span class="ico"></span>Home</a><a href="#"><span class="ico"></span>Points</a><a href="#"><span class="ico"></span>$0 Portfolio</a><a href="#"><span class="ico"></span>Ranks</a></div><div class="right"><div class="search">Search Events, Teams &amp; Players</div><div class="dep">Deposit</div><div class="get">Get $50</div></div></header>
 </div>
+<div class="wrap">
+<aside><a><i style="background:#8ab"></i>Hockey</a><a><i style="background:#cc3"></i>Tennis (M)</a><a><i style="background:#e73"></i>Pro BB (M)</a><a class="on" href="#/"><i style="background:#a63"></i>Pro FB</a><a><i style="background:#a4c"></i>Tennis (W)</a><a><i style="background:#e73"></i>Pro BB (W)</a><a><i style="background:#63c"></i>EPL</a><a><i style="background:#c33"></i>MMA</a><a><i style="background:#c33"></i>La Liga</a><a><i style="background:#3a6"></i>Serie A</a><a><i style="background:#36c"></i>Ligue 1</a><a><i style="background:#c33"></i>US Soccer</a>
+<div class="foot">Terms of Use<br>Privacy Policy<br>Responsible Trading<br>Your Privacy Choices<br>Cookie Preferences<br>About<br>Careers<br>Newsroom<br>Data<br>Filings<br>Help Center</div></aside>
+<main id="main"></main>
+<div class="right-col"><div id="slip"></div>
+<div class="trend" id="trend"><h3>Trending Futures</h3><div class="pills"><span class="on">Pro FB</span><span>Baseball</span><span>CFB</span></div>
+<div class="when">SB Winner <span style="float:right">Traded: $485,163</span></div>
+<div class="grid" style="grid-template-columns:1fr 60px 60px"><div class="team"><span class="logo-sq" style="background:#a22"></span><span class="name">SF</span></div><div class="cell"><small>Yes</small>7.41x</div><div class="cell"><small>No</small>1.14x</div>
+<div class="team"><span class="logo-sq"></span><span class="name">LAR</span></div><div class="cell"><small>Yes</small>7.69x</div><div class="cell"><small>No</small>1.12x</div>
+<div class="team"><span class="logo-sq" style="background:#136"></span><span class="name">BUF</span></div><div class="cell"><small>Yes</small>8.33x</div><div class="cell"><small>No</small>1.12x</div></div></div>
+</div>
+</div>
+<script>
+// A stand-in for the venue's React app: hash routes, a slip with a wager input and a payout line.
+const GAMES = [
+  { id: "SEADEN", when: "Thu 8:15 PM", away: ["SEA", "Seahawks", "3-2"], home: ["DEN", "Broncos", "4-1"], spread: ["+1.5", "1.95x", "-1.5", "1.92x"], total: ["O 41.5", "1.90x", "U 41.5", "1.97x"], win: ["1.76x", "2.27x"], traded: "$212,440" },
+  { id: "PITTB", when: "Sun 1:00 PM", away: ["PIT", "Steelers", "3-2"], home: ["TB", "Buccaneers", "1-4"], spread: ["-2.5", "2.00x", "+2.5", "1.98x"], total: ["O 39.5", "2.00x", "U 39.5", "1.98x"], win: ["1.79x", "2.25x"], traded: "$85,293" },
+  { id: "TENIND", when: "Sun 1:00 PM", away: ["TEN", "Titans", "0-5"], home: ["IND", "Colts", "2-3"], spread: ["+6.5", "2.13x", "-6.5", "1.85x"], total: ["O 43.5", "1.89x", "U 43.5", "2.06x"], win: ["3.92x", "1.33x"], traded: "$12,593" },
+  { id: "ARILAR", when: "Sun 4:05 PM", away: ["ARI", "Cardinals", "1-4"], home: ["LA", "Rams", "2-3"], spread: ["+12.5", "2.02x", "-12.5", "1.96x"], total: ["O 51.5", "1.96x", "U 51.5", "2.02x"], win: ["8.00x", "1.14x"], traded: "$129,924" },
+  { id: "LACKC", when: "Sun 4:25 PM", away: ["LA", "Chargers", "0-5"], home: ["KC", "Chiefs", "4-0"], spread: ["+8.5", "1.96x", "-8.5", "2.04x"], total: ["O 42.5", "2.02x", "U 42.5", "1.96x"], win: ["4.76x", "1.26x"], traded: "$174,873" },
+  { id: "BUFLV", when: "Sun 4:25 PM", away: ["BUF", "Bills", "4-1"], home: ["LV", "Raiders", "3-2"], spread: ["-5.5", "2.06x", "+5.5", "1.89x"], total: ["O 53.5", "1.98x", "U 53.5", "1.98x"], win: ["1.45x", "3.17x"], traded: "$96,310" },
+  { id: "WASSF", when: "Mon 8:15 PM", away: ["WAS", "Commanders", "2-3"], home: ["SF", "49ers", "4-1"], spread: ["+7.5", "1.98x", "-7.5", "2.00x"], total: ["O 45.5", "1.95x", "U 45.5", "2.00x"], win: ["4.30x", "1.28x"], traded: "$140,112" },
+];
+const slip = { sel: null, stake: "20" };
+const $ = (s) => document.querySelector(s);
+const money = (n) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const cell = (g, side, kind, line, mult) => '<div class="cell" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-mult="' + mult + '"' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? ' class="cell sel"' : "") + ">" + (line ? line + "<small>" + mult + "</small>" : "<span style='color:#3b8bff;font-weight:600'>" + mult + "</span>") + "</div>";
+const teamRow = (g, side) => {
+  const t = side === "away" ? g.away : g.home;
+  return '<div class="team"><span class="logo-sq"' + (side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><a href="#/game/' + g.id + '"><span class="name">' + t[0] + " " + t[1] + "</span></a>" + (side === "away" ? '<span class="at">at</span>' : "") + '<span class="rec">' + t[2] + "</span></div>";
+};
+const rows = (g) =>
+  '<div class="grid">' + teamRow(g, "away") + cell(g, "away", "Spread", g.spread[0], g.spread[1]) + cell(g, "away", "Total", g.total[0], g.total[1]) + cell(g, "away", "Winner", "", g.win[0]) +
+  teamRow(g, "home") + cell(g, "home", "Spread", g.spread[2], g.spread[3]) + cell(g, "home", "Total", g.total[2], g.total[3]) + cell(g, "home", "Winner", "", g.win[1]) + "</div>";
+const listView = () =>
+  '<h1>Pro FB</h1><div class="subtabs"><span class="on">Games</span><span>Featured Parlays</span><span>Player Props</span><span>Futures</span></div>' +
+  GAMES.map((g) => '<div class="game"><div class="when">' + g.when.split(" ")[0] + " <b>" + g.when.split(" ").slice(1).join(" ") + '</b></div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Winner</span></div>' + rows(g) + '<div class="traded">Pro FB &nbsp; Traded: ' + g.traded + " &nbsp; 9 More &rsaquo;</div></div>").join("");
+const gameView = (g) =>
+  '<a class="back" href="#/">&lsaquo;</a><div class="matchup"><div><div class="jersey"></div><div class="code">' + g.away[0] + '</div></div><div class="center"><b>' + g.when.split(" ").slice(1).join(" ") + "</b>" + g.when.split(" ")[0] + '<span class="blue" style="margin-top:14px;font-weight:900;letter-spacing:.1em;color:#6f7279">EXCHANGE</span></div><div><div class="jersey" style="background:#2a5a9a"></div><div class="code">' + g.home[0] + "</div></div></div>" +
+  '<div class="chart"><div class="lbl" style="top:8px">' + g.home[0] + "<small>" + Math.round(100 / parseFloat(g.win[1])) + "%</small></div><div class=\"lbl\" style=\"bottom:28px\">" + g.away[0] + "<small>" + Math.round(100 / parseFloat(g.win[0])) + '%</small></div><svg viewBox="0 0 600 150" preserveAspectRatio="none"><polyline fill="none" stroke="#3b8bff" stroke-width="2" points="0,40 180,40 180,36 420,36 600,34"/><polyline fill="none" stroke="#3b8bff" stroke-width="1" opacity=".6" points="0,110 180,110 180,114 420,114 600,116"/></svg></div>' +
+  '<div class="when">Traded: ' + g.traded + '</div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Winner</span></div>' + rows(g) +
+  '<div class="lines">Game Lines<small>Featured Parlays &nbsp; Player Props</small></div><div class="pills"><span class="on">Main Markets</span><span>1st Half</span><span>Team Totals</span></div><div class="lines">Spread<small>What is the final margin?</small></div>';
+const slipView = () => {
+  if (!slip.sel) return '<div class="slip"><div class="empty"><div class="art"></div><b>Order Slip Empty</b>Add selections to place an order</div></div>';
+  const s = slip.sel;
+  const g = GAMES.find((x) => x.id === s.g);
+  const t = s.side === "away" ? g.away : g.home;
+  const stake = Number(slip.stake) || 0;
+  const payout = stake * parseFloat(s.mult);
+  const pickName = t[0] + " " + t[1] + (s.kind === "Spread" ? " " + s.line : "") + (s.kind === "Total" ? " " + s.line : "");
+  return '<div class="slip"><div class="slip-h"><span class="n">1</span> Order Slip</div><div class="otype">Order Type<small>Place an order at the best available price.</small><span class="seg"><span class="on">Take</span><span>Make</span></span></div>' +
+    '<div class="pick-card"><span class="rm" id="rm">&#x1F5D1;</span><div class="pick">' + pickName + " &middot; " + s.kind + '</div><div class="pick-meta">Pro FB &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + '</div><div class="odds">' + s.mult + '</div><div class="stake"><span>$</span><input id="stake" type="text" inputmode="decimal" value="' + slip.stake + '"></div><div class="payout">Payout: <b>' + money(payout) + "</b></div></div></div>" +
+    '<button class="place">' + (stake > 0 ? "Place Order: " + money(stake) : "Enter a wager") + "<small>Total Payout: " + money(payout) + "</small></button>";
+};
+const render = () => {
+  const h = location.hash || "#/";
+  const m = /^#\/game\/(\w+)/.exec(h);
+  const g = m ? GAMES.find((x) => x.id === m[1]) : null;
+  $("#main").innerHTML = g ? gameView(g) : listView();
+  $("#slip").innerHTML = slipView();
+  $("#trend").className = "trend" + (slip.sel ? " hidden" : "");
+  for (const c of document.querySelectorAll(".cell[data-g]")) c.onclick = () => { slip.sel = { g: c.dataset.g, side: c.dataset.side, kind: c.dataset.kind, line: c.dataset.line, mult: c.dataset.mult }; render(); };
+  const st = $("#stake");
+  if (st) st.oninput = () => { slip.stake = st.value.replace(/[^\d.]/g, ""); const s = slip.sel; const g2 = GAMES.find((x) => x.id === s.g); const p = (Number(slip.stake) || 0) * parseFloat(s.mult); $(".payout").innerHTML = "Payout: <b>" + money(p) + "</b>"; $(".place").innerHTML = ((Number(slip.stake) || 0) > 0 ? "Place Order: " + money(Number(slip.stake)) : "Enter a wager") + "<small>Total Payout: " + money(p) + "</small>"; };
+  const rm = $("#rm");
+  if (rm) rm.onclick = () => { slip.sel = null; render(); };
+};
+window.addEventListener("hashchange", render);
+render();
+</script>
 </body></html>
