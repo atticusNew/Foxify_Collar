@@ -169,6 +169,12 @@ const HEDGE_VENUE_NAMES: Record<string, string> = { kalshi_self: "Kalshi", polym
 
 /** one line per hedge: which strategy filled it, at what, and why the other did not */
 const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDGER_PATH), "hedge-receipts.jsonl");
+/**
+ * A real holder's locks live in their own ledger beside the scan's. The scan opens one showcase
+ * position per market; a holder may lock the same market, so the two cannot share a file keyed by
+ * ticker. Same record shape, same settlement; never early-closed (that experiment is the scan's).
+ */
+const LOCK_LEDGER_PATH = process.env.EVENT_SHADOW_LOCK_LEDGER_PATH || join(dirname(LEDGER_PATH), "lock-ledger.jsonl");
 const hedgeChoice = hedgeExecutorFromEnv(process.env, null, { receiptsPath: RECEIPTS_PATH });
 /**
  * Operator views (rule comparison, hedge receipts, raw ledger, full CSV) are
@@ -230,15 +236,18 @@ let lastCloseAt: string | null = null;
 let lastCloseError: string | null = null;
 let closeDueLastTick = 0;
 
+/** Every position on the record: the scan's showcase positions and the holders' locks. */
+const allPositions = () => [...loadShadowPositions(LEDGER_PATH), ...loadShadowPositions(LOCK_LEDGER_PATH)];
+
 /** Append with the failure surfaced: a ledger that cannot be written is the one fault that must page. */
-function appendOrAlert(record: Parameters<typeof appendShadowRecord>[1]): boolean {
+function appendOrAlert(record: Parameters<typeof appendShadowRecord>[1], path: string = LEDGER_PATH): boolean {
   try {
-    appendShadowRecord(LEDGER_PATH, record);
+    appendShadowRecord(path, record);
     return true;
   } catch (err) {
     void alerter({
       kind: "ledger_write_failed",
-      message: `could not append ${record.type} for ${record.ticker} to ${LEDGER_PATH}: ${String(err instanceof Error ? err.message : err)}`,
+      message: `could not append ${record.type} for ${record.ticker} to ${path}: ${String(err instanceof Error ? err.message : err)}`,
     });
     return false;
   }
@@ -335,7 +344,7 @@ function openRecordFor(
       sourceUrl: kalshiRuleUrl(res.market.ticker, kalshiBase()),
       readAtIso: new Date().toISOString(),
     }),
-    ...(source ? { source } : {}),
+    ...(source ? { source, entryCents: res.position.entryCents } : {}),
   };
 }
 
@@ -371,7 +380,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
   }
   const atIso = new Date().toISOString();
   if (url.pathname === "/api/shadow/markets") {
-    const held = new Set(loadShadowPositions(LEDGER_PATH).map((p) => p.ticker));
+    const held = new Set(loadShadowPositions(LOCK_LEDGER_PATH).map((p) => p.ticker));
     const league = url.searchParams.get("league") ?? undefined;
     const markets = await listGameMarketsFn(league);
     sendJson(res, 200, {
@@ -396,7 +405,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, { ok: false, at: atIso, ticker: parsed.value.ticker, code: q.code, message: q.detail });
       return;
     }
-    const held = loadShadowPositions(LEDGER_PATH).some((p) => p.ticker === parsed.value.ticker);
+    const held = loadShadowPositions(LOCK_LEDGER_PATH).some((p) => p.ticker === parsed.value.ticker);
     sendJson(res, 200, { ok: true, at: atIso, onRecord: held, ...retailOneQuote(q.result, q.result.evBps) });
     return;
   }
@@ -415,8 +424,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being locked right now." });
       return;
     }
-    if (loadShadowPositions(LEDGER_PATH).some((p) => p.ticker === ticker)) {
-      sendJson(res, 409, { ok: false, error: "already_on_record", message: "This market is already on the record; one position per market." });
+    if (loadShadowPositions(LOCK_LEDGER_PATH).some((p) => p.ticker === ticker)) {
+      sendJson(res, 409, { ok: false, error: "already_on_record", message: "This market is already locked; one lock per market." });
       return;
     }
     lockInFlight.add(ticker);
@@ -435,7 +444,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       // the tier the holder chose, when the venues funded it; else the quote's default
       const chosen = tier && result.quote.tiers[tier] ? { ...result.quote, ...result.quote.tiers[tier], tier } : result.quote;
       const evBps = chosen.tier === result.quote.tier ? result.evBps : chosen.evCostBps;
-      if (!appendOrAlert(openRecordFor(result, chosen, evBps, atIso, "lock"))) {
+      if (!appendOrAlert(openRecordFor(result, chosen, evBps, atIso, "lock"), LOCK_LEDGER_PATH)) {
         sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: "The record could not be written; nothing was locked." });
         return;
       }
@@ -479,8 +488,9 @@ async function scanTick(): Promise<void> {
   try {
     const book = loadShadowPositions(LEDGER_PATH);
     const seen = new Set(book.map((p) => p.ticker));
-    // Tickers armed for a live hedge belong to the tap, not the scan.
+    // Tickers armed for a live hedge belong to the tap, not the scan; a market a holder locked stays theirs.
     for (const t of hedgeChoice.live?.allowlist ?? []) seen.add(t);
+    for (const p of loadShadowPositions(LOCK_LEDGER_PATH)) seen.add(p.ticker);
     // Step over what the book already holds so each scan reaches the next games in the ranking.
     const state = await scan({ skipTickers: seen });
     const opened: Array<{ kind: "sports" | "crypto"; at: string }> = book.map((p) => ({ kind: p.kind, at: p.at }));
@@ -516,7 +526,8 @@ async function settleTick(): Promise<void> {
   const now = Date.now();
   let due = 0;
   let failed = 0;
-  for (const p of loadShadowPositions(LEDGER_PATH)) {
+  const onBoth = [LEDGER_PATH, LOCK_LEDGER_PATH].flatMap((path) => loadShadowPositions(path).map((p) => ({ p, path })));
+  for (const { p, path } of onBoth) {
     if (p.status !== "open") continue;
     const eventMs = Date.parse(p.eventTimeIso);
     if (!Number.isFinite(eventMs) || now < eventMs + SETTLE_GRACE_MS) continue;
@@ -530,16 +541,19 @@ async function settleTick(): Promise<void> {
         if (ruleCheck.unchanged === false) {
           void alerter({ kind: "rule_changed", message: `${p.ticker} (${p.eventTitle}) settled ${r.result} under a rule text that changed since open: ${p.rule?.sha256.slice(0, 12)} -> ${ruleCheck.sha256?.slice(0, 12)}` });
         }
-        appendOrAlert({
-          type: "settle",
-          at,
-          ticker: p.ticker,
-          result: r.result,
-          ruleCheck,
-        });
+        appendOrAlert(
+          {
+            type: "settle",
+            at,
+            ticker: p.ticker,
+            result: r.result,
+            ruleCheck,
+          },
+          path,
+        );
       } else if (now > eventMs + VOID_AFTER_MS) {
         const reason = `no official result ${Math.round(VOID_AFTER_MS / 3_600_000)}h after the event`;
-        if (appendOrAlert({ type: "void", at: new Date().toISOString(), ticker: p.ticker, reason })) {
+        if (appendOrAlert({ type: "void", at: new Date().toISOString(), ticker: p.ticker, reason }, path)) {
           // A void is rare and worth a human look (postponement, ticker change, result feed gap).
           void alerter({ kind: "position_voided", message: `${p.ticker} (${p.eventTitle}) voided: ${reason}` });
         }
@@ -678,7 +692,7 @@ function publicHealthBody(): Record<string, unknown> {
   return {
     ok: true,
     service: "event-protect-shadow",
-    positions: loadShadowPositions(LEDGER_PATH).length,
+    positions: allPositions().length,
     lastScanAt,
     lastSettleAt,
   };
@@ -689,7 +703,7 @@ function healthBody(): Record<string, unknown> {
   return {
     ok: true,
     service: "event-protect-shadow",
-    positions: loadShadowPositions(LEDGER_PATH).length,
+    positions: allPositions().length,
     ledger: { path: LEDGER_PATH, ...stats },
     lastScanAt,
     lastSettleAt,
@@ -724,7 +738,12 @@ function healthBody(): Record<string, unknown> {
       }),
     },
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
-    lock: { enabled: Boolean(LOCK_KEY), reservedTickers: hedgeChoice.live?.allowlist ?? [] },
+    lock: {
+      enabled: Boolean(LOCK_KEY),
+      reservedTickers: hedgeChoice.live?.allowlist ?? [],
+      positions: loadShadowPositions(LOCK_LEDGER_PATH).length,
+      ledger: { path: LOCK_LEDGER_PATH, ...ledgerStats(LOCK_LEDGER_PATH) },
+    },
     hedge: {
       strategy: hedgeChoice.strategy,
       rfqVenues: hedgeChoice.rfqVenues,
@@ -737,7 +756,7 @@ function healthBody(): Record<string, unknown> {
 }
 
 function pageData(): { atIso: string; positions: ShadowPosition[] } {
-  return { atIso: new Date().toISOString(), positions: loadShadowPositions(LEDGER_PATH) };
+  return { atIso: new Date().toISOString(), positions: allPositions() };
 }
 
 /** Settled most recent first, open next to lock first, closed most recent first. */
@@ -830,21 +849,23 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       return;
     }
     if (url.pathname === "/api/shadow/export") {
-      // The raw append-only ledger, byte for byte: the artifact to mirror off-box.
-      const stats = ledgerStats(LEDGER_PATH);
+      // The raw append-only ledger, byte for byte: the artifact to mirror off-box. ?ledger=lock for the holders' locks.
+      const lockFile = url.searchParams.get("ledger") === "lock";
+      const path = lockFile ? LOCK_LEDGER_PATH : LEDGER_PATH;
+      const stats = ledgerStats(path);
       if (!stats.exists) {
         res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "content-length": 0, "cache-control": "no-store" });
         res.end();
         return;
       }
-      const size = statSync(LEDGER_PATH).size;
+      const size = statSync(path).size;
       res.writeHead(200, {
         "content-type": "application/x-ndjson; charset=utf-8",
         "content-length": size,
-        "content-disposition": `attachment; filename="event-shadow-ledger-${new Date().toISOString().slice(0, 10)}.jsonl"`,
+        "content-disposition": `attachment; filename="event-shadow-${lockFile ? "lock-" : ""}ledger-${new Date().toISOString().slice(0, 10)}.jsonl"`,
         "cache-control": "no-store",
       });
-      createReadStream(LEDGER_PATH).pipe(res);
+      createReadStream(path).pipe(res);
       return;
     }
     if (url.pathname === "/api/shadow/positions.csv") {
@@ -852,7 +873,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       // Public rows carry what was quoted and what settled; the operator's
       // ?scope=full adds the recorded fee rule and every counterfactual.
       const full = operator && url.searchParams.get("scope") === "full";
-      const csv = positionsCsv(loadShadowPositions(LEDGER_PATH), full ? "full" : "public");
+      const csv = positionsCsv(allPositions(), full ? "full" : "public");
       res.writeHead(200, {
         "content-type": "text/csv; charset=utf-8",
         "content-disposition": `attachment; filename="event-shadow-positions${full ? "-full" : ""}-${new Date().toISOString().slice(0, 10)}.csv"`,
@@ -978,7 +999,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
             .then((balanceCents) => ({ ok: true, balanceCents }))
             .catch((err: unknown) => ({ ok: false, error: String(err instanceof Error ? err.message : err) }))
         : Promise.resolve({ ok: false, error: live ? "no Kalshi credentials in the service env" : "not in live mode" });
-      const held = new Set(loadShadowPositions(LEDGER_PATH).map((p) => p.ticker));
+      const held = new Set(loadShadowPositions(LOCK_LEDGER_PATH).map((p) => p.ticker));
       const kalshiRouteQuote = async (t: string) => {
         if (!quoteOneFn) return { offered: false as const, code: "engine_not_ready", detail: "the scanner is still loading" };
         const q = await quoteOneFn({ ticker: t, contracts, route: "kalshi_self" });

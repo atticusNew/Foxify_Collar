@@ -328,7 +328,11 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.deepEqual(hedges.recent, []);
     assert.equal((h.hedge as { live: unknown }).live, null, "book mode: no live rails");
     // no EVENT_SHADOW_LOCK_KEY: the lock routes do not exist for a visitor; the operator reaches them (engine not wired here)
-    assert.deepEqual((health as { lock: unknown }).lock, { enabled: false, reservedTickers: [] });
+    const lockView = (health as { lock: { enabled: boolean; reservedTickers: string[]; positions: number; ledger: { exists: boolean } } }).lock;
+    assert.equal(lockView.enabled, false);
+    assert.deepEqual(lockView.reservedTickers, []);
+    assert.equal(lockView.positions, 0);
+    assert.equal(lockView.ledger.exists, false, "no lock yet, no lock ledger");
     assert.equal((await fetch(`${base}/api/shadow/lock`, { method: "POST" })).status, 404);
     assert.equal((await fetch(`${base}/api/shadow/markets`)).status, 404);
     assert.equal((await fetch(`${base}/api/shadow/markets`, { headers: { "x-lock-key": "anything-at-all-here" } })).status, 404);

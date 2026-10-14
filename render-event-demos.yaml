@@ -199,8 +199,10 @@ services:
       #   EVENT_SHADOW_LOCK_KEY=<12+ chars>     opens GET /api/shadow/markets, GET /api/shadow/quote
       #                                         and POST /api/shadow/lock to callers sending x-lock-key.
       #                                         Unset: those routes answer 404 to anyone but the operator.
-      #   Tickers on EVENT_HEDGE_LIVE_TICKERS are reserved for the tap: the scan skips them so the
-      #   lock is the record that opens them.
+      #   Locks are written to their own ledger beside the scan's (lock-ledger.jsonl on the same
+      #   disk; EVENT_SHADOW_LOCK_LEDGER_PATH to move it), so a holder may lock a market the scan
+      #   already shows. Same settlement; never early-closed. Operator export: /api/shadow/export?ledger=lock
+      #   Tickers on EVENT_HEDGE_LIVE_TICKERS are hedged on Kalshi's own No side and skipped by the scan.
 
   - type: web
     name: atticus-pm-clob-egress-proxy

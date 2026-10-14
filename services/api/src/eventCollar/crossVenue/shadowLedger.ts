@@ -86,6 +86,8 @@ export interface ShadowOpenRecord {
    * the lock endpoint; the terms and the hedge are the same code path, the size is theirs.
    */
   source?: "lock";
+  /** With source "lock": what the holder paid per contract, cents, so their own cost sits on the record. */
+  entryCents?: number;
 }
 
 /**

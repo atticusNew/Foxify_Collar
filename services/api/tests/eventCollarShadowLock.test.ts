@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { lockAuthorized, lockKeyFromEnv, parseLockRequest } from "../src/eventCollar/crossVenue/lockGate";
-import { loadShadowPositions } from "../src/eventCollar/crossVenue/shadowLedger";
+import { appendShadowRecord, loadShadowPositions } from "../src/eventCollar/crossVenue/shadowLedger";
 import { DEFAULT_CROSS_CONFIG, type CrossQuoteResult } from "../src/eventCollar/crossVenue/types";
 import type { CandidateResult, GameMarketRow, OneQuoteInputs, OneQuoteResult } from "../scripts/eventProtectXDemoService";
 
@@ -109,9 +109,35 @@ function candidate(contracts: number, entryCents: number): CandidateResult {
 
 test("shadow worker lock routes: 404 without a key, 403 with the wrong one; markets, quote and lock answer to the key; the lock writes source=lock and hedges dry", async () => {
   const dir = mkdtempSync(join(tmpdir(), "shadow-lock-"));
-  const ledger = join(dir, "ledger.jsonl");
+  const scanLedger = join(dir, "ledger.jsonl");
+  const ledger = join(dir, "lock-ledger.jsonl");
   process.env.NODE_ENV = "test";
-  process.env.EVENT_SHADOW_LEDGER_PATH = ledger;
+  process.env.EVENT_SHADOW_LEDGER_PATH = scanLedger;
+  process.env.EVENT_SHADOW_LOCK_LEDGER_PATH = ledger;
+  // the scan already holds this market as a showcase position; a holder may still lock it
+  const scanOpen = candidate(150, 60);
+  appendShadowRecord(scanLedger, {
+    type: "open",
+    at: "2026-10-13T12:00:00.000Z",
+    ticker: TICKER,
+    kind: "sports",
+    league: "nba",
+    sideName: "Boston Celtics",
+    eventTitle: "Lakers at Celtics Winner?",
+    eventTimeIso: START,
+    contracts: 150,
+    markCents: 60,
+    entryCents: 60,
+    floorCents: scanOpen.quote.ok ? scanOpen.quote.floorCents : 40,
+    capCents: scanOpen.quote.ok ? scanOpen.quote.capCents : 80,
+    creditCents: scanOpen.quote.ok ? scanOpen.quote.creditCents : 100,
+    takeCents: 7,
+    feesCents: 0,
+    hedgeCostCents: 0,
+    evCostBps: 300,
+    route: "kalshi_self",
+    tier: "balanced",
+  } as Parameters<typeof appendShadowRecord>[1]);
   process.env.EVENT_LASTLEG_LEDGER_PATH = join(dir, "lastleg.jsonl");
   process.env.EVENT_X_ADMIN_TOKEN = "op-secret";
   process.env.EVENT_SHADOW_LOCK_KEY = "lock-key-0123456789";
@@ -144,8 +170,10 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
       assert.equal((await fetch(`${base}${p}`, { headers: { "x-lock-key": "lock-key-012345678x" } })).status, 403, `${p} with the wrong key`);
     }
     // healthz (operator) says the lock routes are on and which tickers the scan leaves to the tap
-    const health = (await (await fetch(`${base}/healthz?token=op-secret`)).json()) as { lock: unknown };
-    assert.deepEqual(health.lock, { enabled: true, reservedTickers: [TICKER] });
+    const health = (await (await fetch(`${base}/healthz?token=op-secret`)).json()) as { lock: { enabled: boolean; reservedTickers: string[]; positions: number } };
+    assert.equal(health.lock.enabled, true);
+    assert.deepEqual(health.lock.reservedTickers, [TICKER]);
+    assert.equal(health.lock.positions, 0);
     assert.ok(!JSON.stringify(await (await fetch(`${base}/healthz`)).json()).includes("lock"), "public healthz says nothing about it");
 
     // preflight (operator) prices the ticker on the Kalshi route at the given size and, with scan=1,
@@ -169,7 +197,7 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     const m = (await (await fetch(`${base}/api/shadow/markets?league=nba`, { headers: key })).json()) as { ok: boolean; markets: Array<Record<string, unknown>> };
     assert.equal(m.ok, true);
     assert.equal(m.markets.length, 2);
-    assert.equal(m.markets[0].onRecord, false);
+    assert.equal(m.markets[0].onRecord, false, "the scan's showcase position does not block a holder's lock");
     assert.equal(m.markets[0].live, true, "the allowlisted ticker is flagged");
     assert.equal(m.markets[1].live, false);
 
@@ -216,10 +244,12 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(lock.hedge.route, "kalshi_self");
 
     const positions = loadShadowPositions(ledger);
-    assert.equal(positions.length, 1);
+    assert.equal(positions.length, 1, "the lock lives in its own ledger");
+    assert.equal(loadShadowPositions(scanLedger).length, 1, "the scan's ledger is untouched");
     assert.equal(positions[0].ticker, TICKER);
     assert.equal(positions[0].contracts, 20);
     assert.equal(positions[0].source, "lock");
+    assert.equal(positions[0].entryCents, 58, "the holder's own cost is on the record");
     assert.equal(positions[0].status, "open");
     const requested = positions[0].tier;
     assert.ok(requested === "wide" || requested === "balanced" || requested === "tight");
@@ -253,11 +283,16 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(hedges.summary.live.sent, 0);
     assert.equal(hedges.recent[0].ref, TICKER);
 
-    // the public record shows the position like any other, without naming where the tap came from
+    // the public record shows both positions on the market: the scan's showcase and the holder's lock
     const pub = (await (await fetch(`${base}/api/shadow`)).json()) as { open: Array<Record<string, unknown>> };
-    assert.equal(pub.open.length, 1);
-    assert.equal(pub.open[0].ticker, TICKER);
-    assert.equal(pub.open[0].contracts, 20);
+    assert.equal(pub.open.length, 2);
+    assert.deepEqual(pub.open.map((p) => [p.ticker, p.contracts]).sort((a, b) => Number(a[1]) - Number(b[1])), [[TICKER, 20], [TICKER, 150]]);
+    const health2 = (await (await fetch(`${base}/healthz?token=op-secret`)).json()) as { positions: number; lock: { positions: number } };
+    assert.equal(health2.positions, 2);
+    assert.equal(health2.lock.positions, 1);
+    const exported = await (await fetch(`${base}/api/shadow/export?ledger=lock&token=op-secret`)).text();
+    assert.equal(exported.trim().split("\n").length, 1);
+    assert.equal((JSON.parse(exported.trim()) as { source: string }).source, "lock");
     assert.ok(!JSON.stringify(pub).includes("novig"));
   } finally {
     await new Promise<void>((r) => worker.server.close(() => r()));
