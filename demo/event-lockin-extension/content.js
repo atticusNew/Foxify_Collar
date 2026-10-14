@@ -251,6 +251,8 @@
 
   // ── reading sizes off a row (fallback when the service has no key) ──────────
   const MONEY = /\$\s?(\d{1,6}(?:,\d{3})*(?:\.\d{1,2})?)/g;
+  /** The text without its dollar amounts. Cells can touch ("$20.0074.68%"), so only an amount's own shape is removed, never the digits after it. */
+  const noMoney = (text) => text.replace(/\$\s?\d{1,6}(?:,\d{3})*(?:\.\d{1,2})?/g, " ");
   const MULTIPLIER = /(?:^|[^\d.])(\d{1,2}\.\d{1,3})\s?x(?![a-z])/i;
   // American odds: a signed figure of three or more digits that is not a dollar amount (+250, -300)
   const AMERICAN = /(?:^|[^\d.$,])([+-]\d{3,5})(?![\d.,%])/;
@@ -294,7 +296,7 @@
     const stake = matched != null && matched > 0 && (wager == null || matched <= wager) ? matched : wager;
     const payout = labelled(text, /(?:payout|pays|returns|max\s*payout|total\s*return)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
     const toWin = labelled(text, /(?:to\s*win|to\s*gain|profit|win|gain)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
-    const bare = text.replace(/\$\s?[\d,.]+/g, "");
+    const bare = noMoney(text);
     const odds = AMERICAN.exec(bare);
     // the venue can show the price as the implied chance (75.9%): payout per $1 is 100 over that
     const pct = PERCENT.exec(bare);
@@ -331,7 +333,7 @@
   const headerCells = (row) => {
     const table = row.closest("table, [role=table], [role=grid], [role=treegrid]") || row.parentElement;
     if (!table) return null;
-    const rows = [...table.querySelectorAll("thead tr, tr, [role=row]")].filter((r) => r !== row && !r.contains(row) && !OURS(r));
+    const rows = [...table.querySelectorAll("thead tr, tr, [role=row]"), ...(row.parentElement ? row.parentElement.children : [])].filter((r) => r !== row && !r.contains(row) && !OURS(r));
     for (const r of rows) {
       const t = spaced(norm(r.textContent));
       if (/\$\s?\d/.test(t) || !/\b(cost|stake|wager|risk)\b/i.test(t) || !/\b(payout|to win|to gain|price|odds|return)\b/i.test(t)) continue;
@@ -364,14 +366,14 @@
   /** Winner (moneyline) or something else. A spread line is a signed one or two digit figure; American odds are three or more. */
   const kindIn = (raw) => {
     const text = spaced(raw);
-    const bare = text.replace(/\$\s?[\d,.]+/g, "");
+    const bare = noMoney(text);
     if (/\b(spread|handicap|total|over|under|o\/u)\b/i.test(text) || /(^|\s)[+-]\d{1,2}(\.5)?(?=\s|$)/.test(bare)) return /\b(winner|moneyline|money line|ml)\b/i.test(text) ? "winner" : "other";
     return "winner";
   };
   /** Matched, or still an order. A row that says only Unmatched (no matched part, not partially matched) is an order. */
   const matchIn = (raw) => {
     const text = spaced(raw);
-    const bare = text.replace(/\$\s?[\d,.]+/g, "");
+    const bare = noMoney(text);
     if (!/\b(unmatched|open order|resting|pending match)\b/i.test(bare)) return "matched";
     if (/\b(partially\s+matched|fully\s+matched|filled)\b/i.test(bare)) return "matched";
     const m = /(?:^|[^a-z])matched\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i.exec(text);
