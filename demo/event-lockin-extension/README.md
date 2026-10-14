@@ -8,15 +8,17 @@ holder plays exactly as they do today. Once a matched play exists, under its row
 1. a **Lock in** line that leads with the floor: "Lock in · $14.71 if the Texans lose", caption
    "instead of $0 · $25.06 if they win (was $46.00) · +$1.66 paid now". Priced live from the
    holder's actual size. The floor is the product; the credit is the third number on purpose;
-2. tapping it opens an **inline panel** under that row (the rows below move down; nothing floats
-   over the slip): the headline "Worst case $14.71 instead of $0", three tiles (if they lose,
-   highlighted; paid now; if they win), a segmented control with the price shapes the book offers
-   right now (**Most now** / **Even** / **Keep more upside**, only the ones offered; a heavy
-   favourite usually gets two) and the numbers for each, one button ("Lock in · worst case
-   $14.71"), a fine-print line with the kickoff cut-off and "how it works";
+2. tapping it (the chevron at the right end turns) opens an **inline panel** under that row (the
+   rows below move down; nothing floats over the slip), one strip in the venue's type size: the
+   headline "Worst case $14.71 instead of $0" with, to its right, the price shapes the book offers
+   right now (**Most now** / **Even** / **Keep more upside**, only the ones that clear the
+   minimum credit; a heavy favourite usually gets one or two); then three tiles (if they lose,
+   highlighted; paid now; if they win) and the button ("Lock in · worst case $14.71") on one row;
+   a fine-print line with the kickoff cut-off and "how it works". Tapping the line again closes it;
 3. after the tap, a **Protected** chip on the row: "Protected · $14.71 or $25.06 · whichever way
-   it goes · +$1.66 paid · details". Details is the same inline panel: worst case, best case, paid
-   now, settles on the game's official result, a link to the public record;
+   it goes · +$1.66 paid · details". Details is the same inline panel: a check, "Locked in", the
+   same three tiles, settles on the game's official result. The public record link appears only
+   with the operator setting on;
 4. a play protection does not cover gets a muted **Protection unavailable** line with the reason
    after it: "covers Moneyline picks" on a spread or total, "waits until the play is matched" on a
    play that is still an open order, or the live refusal from pricing. Tapping it says what to do.
@@ -202,9 +204,10 @@ GET /healthz                                                lock.enabled true, h
 2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Keep more
    upside** or **Most now**: the three tiles and the button reprice. Tap **Even**: they return.
    Only the shapes the book offers for that pick are listed; a heavy favourite often has one.
-3. Tap **Lock in · worst case $x**. The button reports the stages (pricing from the live book,
-   writing the record, buying the other side) with the seconds elapsed; the panel then shows
-   "Locked in" with the three numbers and how long it took; the line reads "Protected · $x or $y".
+3. Tap **Lock in · worst case $x**. The button reports the stages in words (Pricing from the live
+   book, Writing the record, Buying the other side) under a slow sheen, with whole seconds only
+   past three; the panel then shows "Locked in" with the three tiles and how long it took; the
+   line reads "Protected · $x or $y".
    Open `/` on the service: the position is there with `source: lock`.
    With Rehearsal on in the options, the same tap ends on "Locked in (rehearsal)" with a Reset link
    and nothing reaches the service.
