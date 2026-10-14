@@ -13,13 +13,22 @@
  *          VENUE_API_PRIVATE_KEY_PEM=<contents of --out>. The management key stays on your machine.
  *
  *   check  npx tsx scripts/venueReadKey.ts check
- *          env: VENUE_API_HOST, VENUE_API_KEY_ID, VENUE_API_PRIVATE_KEY_PEM (or VENUE_API_PRIVATE_KEY_PEM_PATH)
+ *          Signed venue: env VENUE_API_HOST, VENUE_API_KEY_ID, VENUE_API_PRIVATE_KEY_PEM (or VENUE_API_PRIVATE_KEY_PEM_PATH)
  *          Signs GET /v3/portfolio/positions with the read key and prints each open position in our
  *          units (contracts at $1, entry in cents) with the game and side as the venue names them.
+ *
+ *          Bearer venue (the partner API, session login): env VENUE_API_HOST (with the /partner path,
+ *          production https://cash.api.<venue>/partner), VENUE_API_ACCESS_KEY, VENUE_API_SECRET_KEY.
+ *          The pair comes from the venue's website (Settings, Token). It is an account key, so it can
+ *          trade: this script only logs in and reads open plays. Use a dedicated pair; revoke it after.
+ *          Prints each open play with its matched stake in our units, or "unmatched" for a resting one.
+ *          Which venue is checked follows the env: the key id and PEM select signed, the access key
+ *          and secret key select bearer.
  */
 
 import { generateKeyPairSync } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { PlaysClient, asVenueMarket, playSize, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
 import { VenueClient, positionSize, signedHeaders, signerFromPem } from "../src/eventCollar/crossVenue/venuePositions";
 
 const args = process.argv.slice(2);
@@ -58,11 +67,39 @@ async function mint(): Promise<void> {
   console.log(`service env: VENUE_API_HOST=${host}  VENUE_API_KEY_ID=${created.keyId}  VENUE_API_PRIVATE_KEY_PEM=<contents of ${out}>`);
 }
 
+async function checkBearer(cfg: { host: string; accessKey: string; secretKey: string }): Promise<void> {
+  const client = new PlaysClient(cfg);
+  const plays = await client.listOpenPlays();
+  console.log(`${cfg.host}: ${plays.length} open play(s)`);
+  for (const p of plays) {
+    const size = playSize(p);
+    const matched = typeof p.matched_stake === "number" ? p.matched_stake : p.stake;
+    let line = `  stake $${p.stake} at ${p.odds > 0 ? "+" : ""}${p.odds}, matched $${matched}${p.matching_status ? ` (${p.matching_status})` : ""}`;
+    line += size ? ` → ${size.contracts} contracts @ ${size.entryCents}c, pays $${(size.payoutCents / 100).toFixed(2)}` : " → unmatched, not a position yet";
+    try {
+      const event = await client.findEvent(String(p.sport_event_id));
+      const market = event ? (await client.listMarkets(String(p.sport_event_id))).find((m) => String(m.id) === String(p.market_id)) : undefined;
+      if (!event) line += " · event not in a covered league";
+      else if (!market) line += ` · ${event.display_name || event.name} · market not found`;
+      else {
+        const vm = asVenueMarket(market, event);
+        const side = vm.outcomes.find((o) => o.outcomeId === String(p.outcome_id))?.name ?? "?";
+        line += ` · ${event.display_name || event.name} · ${side} · ${vm.marketType} · ${vm.startsTs ? new Date(vm.startsTs).toISOString() : "no start time"}`;
+      }
+    } catch (err) {
+      line += ` · lookup failed: ${String(err instanceof Error ? err.message : err)}`;
+    }
+    console.log(line);
+  }
+}
+
 async function check(): Promise<void> {
+  const bearer = playsConfigFromEnv();
   const keyId = process.env.VENUE_API_KEY_ID?.trim();
   const pem = process.env.VENUE_API_PRIVATE_KEY_PEM?.trim() || (process.env.VENUE_API_PRIVATE_KEY_PEM_PATH ? readFileSync(process.env.VENUE_API_PRIVATE_KEY_PEM_PATH, "utf8") : "");
   if (!keyId || !pem) {
-    console.error("check needs VENUE_API_KEY_ID and VENUE_API_PRIVATE_KEY_PEM (or VENUE_API_PRIVATE_KEY_PEM_PATH)");
+    if (bearer) return checkBearer(bearer);
+    console.error("check needs VENUE_API_KEY_ID and VENUE_API_PRIVATE_KEY_PEM (or VENUE_API_PRIVATE_KEY_PEM_PATH), or VENUE_API_ACCESS_KEY and VENUE_API_SECRET_KEY");
     process.exit(2);
   }
   const client = new VenueClient({ host, signer: signerFromPem(keyId, pem) });
@@ -83,8 +120,13 @@ async function check(): Promise<void> {
   }
 }
 
-if (cmd === "mint") void mint();
-else if (cmd === "check") void check();
+const fail = (err: unknown): void => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+};
+
+if (cmd === "mint") mint().catch(fail);
+else if (cmd === "check") check().catch(fail);
 else {
   console.error("usage: venueReadKey.ts mint --out <file> | check");
   process.exit(2);
