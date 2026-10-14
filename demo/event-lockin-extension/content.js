@@ -46,6 +46,7 @@
     nicks: new Map(), // nickname (lower) -> [{ ticker, league, code }]
     codes: new Map(), // team code (upper) -> [ticker]
     nickRe: null,
+    tab: null, // "resting" | "filled" | "settled" | null, from the page's tabs
     svc: { configured: false, positions: [], at: 0, error: null },
     record: new Map(), // ticker -> the public record's lock position (open or settled)
     rows: new Map(), // row element -> binding { row, host, ticker, size, kind, from }
@@ -198,7 +199,8 @@
     [/\b(mlb|pro bsb|baseball)\b/i, "mlb"],
   ];
   const leagueOf = (ticker) => String((S.byTicker[ticker] || {}).league || "").toLowerCase();
-  const sidesIn = (text) => {
+  const sidesIn = (raw) => {
+    const text = spaced(raw);
     const out = nicksIn(text);
     out.ambiguous = false;
     if (!S.nickRe) return out;
@@ -224,7 +226,8 @@
     }
     return out;
   };
-  const nicksIn = (text) => {
+  const nicksIn = (raw) => {
+    const text = spaced(raw);
     const out = new Map();
     if (!S.nickRe) return out;
     let m;
@@ -258,7 +261,8 @@
   const spaced = (text) =>
     String(text)
       .replace(/([a-z])([A-Z])/g, "$1 $2")
-      .replace(/(\d)([A-Za-z])/g, "$1 $2")
+      .replace(/(\d)([A-Z])/g, "$1 $2") // "2.60Unmatched" splits; "49ers" and "76ers" stay whole
+      .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2") // "DENMoneyline"
       .replace(/([A-Za-z])(\$)/g, "$1 $2");
   const amountsIn = (text) => {
     const out = [];
@@ -301,6 +305,12 @@
     }
     if (stake && toWin) return sizeOf(stake, stake + (wager && stake < wager ? (toWin * stake) / wager : toWin));
     if (stake && k) return sizeOf(stake, stake * k);
+    if (k) {
+      // a table row carries bare amounts under column headers ("$20.00 74.68% $26.78"): the pair
+      // the price joins, cost times payout-per-dollar equal to the payout, within a cent or two
+      const amounts = amountsIn(text);
+      for (const a of amounts) for (const b of amounts) if (a > 0 && b > a && Math.abs(a * k - b) <= Math.max(0.05, 0.005 * b)) return sizeOf(a, b);
+    }
     const mult = MULTIPLIER.exec(text);
     if (mult && Number(mult[1]) > 1) {
       const m = Number(mult[1]);
@@ -309,6 +319,47 @@
       if (stake) return sizeOf(stake, stake * m);
     }
     return null;
+  };
+  /**
+   * A table lays the row out under column headers (Cost, Price, Payout) instead of labelling each
+   * figure. Pair the row's cells with the header cells by position and read the size from them.
+   */
+  const cellsOf = (row) => {
+    const kids = [...row.children].filter((c) => !OURS(c));
+    return kids.length >= 3 ? kids : null;
+  };
+  const headerCells = (row) => {
+    const table = row.closest("table, [role=table], [role=grid], [role=treegrid]") || row.parentElement;
+    if (!table) return null;
+    const rows = [...table.querySelectorAll("thead tr, tr, [role=row]")].filter((r) => r !== row && !r.contains(row) && !OURS(r));
+    for (const r of rows) {
+      const t = spaced(norm(r.textContent));
+      if (/\$\s?\d/.test(t) || !/\b(cost|stake|wager|risk)\b/i.test(t) || !/\b(payout|to win|to gain|price|odds|return)\b/i.test(t)) continue;
+      const cells = cellsOf(r);
+      if (cells) return cells.map((c) => norm(c.textContent).toLowerCase());
+    }
+    return null;
+  };
+  const tableSize = (row) => {
+    const cells = cellsOf(row);
+    const heads = cells && headerCells(row);
+    if (!heads || heads.length !== cells.length) return null;
+    const at = (re) => {
+      const i = heads.findIndex((h) => re.test(h));
+      return i >= 0 ? spaced(norm(cells[i].textContent)) : "";
+    };
+    const money = (s) => amountsIn(s)[0] || null;
+    const stake = money(at(/^(cost|stake|wager|risk|bet)\b/));
+    if (!stake) return null;
+    const payout = money(at(/^(payout|pays|return|total return)\b/));
+    if (payout && payout > stake) return sizeOf(stake, payout);
+    const gain = money(at(/^(to win|to gain|profit|win|gain)\b/));
+    if (gain) return sizeOf(stake, stake + gain);
+    const price = at(/^(price|odds)\b/);
+    const odds = AMERICAN.exec(price);
+    const pct = PERCENT.exec(price);
+    const k = odds ? payoutMultiple(Number(odds[1])) : pct && Number(pct[1]) > 0 && Number(pct[1]) < 100 ? 100 / Number(pct[1]) : null;
+    return k ? sizeOf(stake, stake * k) : null;
   };
   /** Winner (moneyline) or something else. A spread line is a signed one or two digit figure; American odds are three or more. */
   const kindIn = (raw) => {
@@ -343,6 +394,51 @@
       if (/^(portfolio|positions|open positions|my trades|trades|open trades|my plays|plays|open plays|my bets|open bets|my wagers|active)\b/i.test(norm(h.textContent))) return true;
     }
     return false;
+  };
+
+  /**
+   * Which list the page shows when it splits trades into tabs: resting orders, filled, settled.
+   * The selected tab is the one marked so (aria, data-state, class), else the one drawn apart
+   * from the others (lit text or an underline). Nothing decided means the rows speak for themselves.
+   */
+  const TAB_WORDS = /^(resting|open orders?|unmatched|pending|filled|matched|open|active|settled|closed|history)$/i;
+  const tabGroup = (w) => (/^(resting|open orders?|unmatched|pending)$/i.test(w) ? "resting" : /^(settled|closed|history)$/i.test(w) ? "settled" : "filled");
+  const MARKED = (el) => {
+    for (let e = el, i = 0; e && i < 3; e = e.parentElement, i++) {
+      if (e.getAttribute("aria-selected") === "true" || e.hasAttribute("aria-current") || e.getAttribute("data-state") === "active" || e.getAttribute("data-active") === "true") return true;
+      if (/(^|[\s_-])(active|selected|current)(?![a-z])/i.test(e.className || "")) return true;
+    }
+    return false;
+  };
+  const tabState = (nodes) => {
+    const tabs = [];
+    for (const node of nodes) {
+      const t = norm(node.nodeValue);
+      if (t.length > 12 || !TAB_WORDS.test(t)) continue;
+      // the tab is the outermost element that says only this word
+      let el = node.parentElement;
+      while (el.parentElement && el.parentElement !== document.body && norm(el.parentElement.textContent) === t) el = el.parentElement;
+      const r = el.getBoundingClientRect();
+      if (r.width < 20 || r.height < 10 || r.height > 60) continue;
+      tabs.push({ el, word: t.toLowerCase(), r });
+    }
+    const groups = new Set(tabs.map((x) => tabGroup(x.word)));
+    if (groups.size < 2) return null;
+    const marked = tabs.filter((x) => MARKED(x.el));
+    if (marked.length === 1) return tabGroup(marked[0].word);
+    if (marked.length > 1) return null;
+    const styled = tabs.map((x) => {
+      const cs = getComputedStyle(x.el);
+      const rgb = (cs.color.match(/\d+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+      return { ...x, lum: (rgb[0] + rgb[1] + rgb[2]) / 3, line: parseFloat(cs.borderBottomWidth) > 0 && !/transparent|rgba\(0, 0, 0, 0\)/.test(cs.borderBottomColor), bold: parseInt(cs.fontWeight, 10) >= 600 };
+    });
+    const lined = styled.filter((x) => x.line);
+    if (lined.length === 1) return tabGroup(lined[0].word);
+    const bold = styled.filter((x) => x.bold);
+    if (bold.length === 1 && styled.length > 1) return tabGroup(bold[0].word);
+    const sorted = [...styled].sort((a, b) => b.lum - a.lum);
+    if (sorted.length > 1 && sorted[0].lum - sorted[1].lum >= 60) return tabGroup(sorted[0].word);
+    return null;
   };
 
   const textNodes = () => {
@@ -419,7 +515,7 @@
     const rows = [...seen.keys()].filter((r) => ![...seen.keys()].some((o) => o !== r && r.contains(o)));
     const out = [];
     for (const row of rows) {
-      const text = norm(row.textContent);
+      const text = spaced(norm(row.textContent));
       if (pointsRow(text)) continue;
       const count = sidesIn(text);
       if (!count.size) continue;
@@ -445,9 +541,12 @@
       // a spread or total row is never sized from the winner position the service holds on the same club;
       // an unmatched play is an order, so the service's confirmed position (if any) is a different play
       const kind = kindIn(text);
-      const match = matchIn(text);
+      // the page's tab decides what its rows are when the rows themselves do not say
+      let match = matchIn(text);
+      if (S.tab === "resting" && match === "matched") match = "unmatched";
+      if (S.tab === "settled") match = "settled";
       const svc = kind === "winner" && match === "matched" ? svcFor(ticker) : null;
-      const read = match === "matched" ? sizeIn(text) : null;
+      const read = match === "matched" ? tableSize(row) || sizeIn(text) : null;
       out.push({ row, ticker, kind, match, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
     }
     return out;
@@ -502,6 +601,9 @@
   /** Our block spans the row's own width and left edge. */
   const fitHost = (B) => {
     if (B.card || !B.host || !B.row.isConnected) return;
+    // in a table our cell already spans every column; sizing it to the row would widen the table,
+    // which widens the row, which would size it again
+    if (B.host.tagName === "TR") return;
     const rr = B.row.getBoundingClientRect();
     const hr = B.box.getBoundingClientRect();
     if (!rr.width) return;
@@ -557,6 +659,8 @@
         return { why: "Protection covers the Moneyline market.", next: "A Moneyline pick on this game can be locked in." };
       case "unmatched":
         return { why: "This play has not been matched yet.", next: "It is an order until another account takes the other side. Protection prices on the matched stake; check back once it fills." };
+      case "settled":
+        return { why: "This play has settled.", next: "Protection is for plays on games that have not started." };
       case "market_too_close_to_start":
       case "market_not_active":
         return { why: "This game starts too soon to protect.", next: "Protection is available until shortly before kickoff." };
@@ -593,6 +697,8 @@
       line = lineGo("Protection unavailable", "covers Moneyline picks", "ael-line-off");
     } else if (B.match === "unmatched") {
       line = lineGo("Protection unavailable", "waits until the play is matched", "ael-line-off");
+    } else if (B.match === "settled") {
+      line = lineGo("Protection unavailable", "this play has settled", "ael-line-off");
     } else if (!B.size) {
       line = lineGo("Lock in", "size not read from the page", "");
     } else if (!st.quote) {
@@ -635,6 +741,7 @@
     if (rec) return paintDetails(B, panel, rec);
     if (B.kind === "other") return paintRefusal(B, panel, "spread", "");
     if (B.match === "unmatched") return paintRefusal(B, panel, "unmatched", "");
+    if (B.match === "settled") return paintRefusal(B, panel, "settled", "");
     if (!B.size) return paintRefusal(B, panel, "no_size", "");
     if (!st.quote) {
       panel.innerHTML = '<div class="ael-skel"></div><div class="ael-skel" style="width:70%"></div>';
@@ -863,7 +970,9 @@
       return;
     }
     paintNotice(S.serviceState === "key" ? "Lock in: the lock key is missing or wrong. Open the extension's settings." : S.serviceState === "off" ? "Lock in: the service has no lock routes configured." : S.serviceState === "down" ? "Lock in: the service is unreachable." : "");
-    const found = findRows(textNodes());
+    const nodes = textNodes();
+    S.tab = tabState(nodes);
+    const found = findRows(nodes);
     const live = new Set();
     for (const F of found) {
       live.add(F.row);
@@ -937,5 +1046,8 @@
   if (document.readyState === "complete" || document.readyState === "interactive") start();
   else document.addEventListener("DOMContentLoaded", start);
   // inert inside the extension (isolated world); lets a page-level harness read state when it injects this file
-  if (window.__AEL_DEBUG) window.__ael = S;
+  if (window.__AEL_DEBUG) {
+    window.__ael = S;
+    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState };
+  }
 })();

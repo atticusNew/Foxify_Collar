@@ -23,8 +23,8 @@ That placement is the only staged pixel. Everything behind the tap is the Atticu
 the play is matched to its market, priced from live books at the holder's size, the terms lock,
 the record is written, and the hedge is bought on Kalshi.
 
-Styled in the venue's own theme (near-black, white, one accent), with no brand of ours up top;
-our name is one line at the foot of the panel.
+Styled in the venue's own theme (near-black, white, the venue's green as the one accent), with no
+brand of ours up top; our name is one line at the foot of the panel.
 
 > Disclosure line, shown on every panel and to be read in any published recording:
 > *"Third-party protection by Atticus, rendered here for this demo; not a product of this venue.
@@ -36,8 +36,9 @@ read or used. The Kalshi API key and the venue API key live in the service's env
 
 ## Matched, partially matched, unmatched
 
-On this venue a play rests as an order until another account takes the other side. The extension
-treats the three states differently:
+On this venue a play rests as an order until another account takes the other side. My Trades splits
+them into tabs, **Resting** (orders), **Filled** (positions) and **Settled**; the extension reads
+which tab is open and treats the three states differently:
 
 - **Matched**: a position. Priced and lockable.
 - **Partially matched**: the matched part is the position. Sized on it (the service reports the
@@ -57,14 +58,15 @@ Two sources, in this order:
    market, outcome) and matches each to our ticker, returning contracts, entry price, stake and
    payout. The extension pairs that with the row on the page by team name and amounts. Nothing is
    guessed.
-2. **The page**, when the service has no key or has not heard of the play yet. The row's
-   "Cost $20.00" and "To Gain $6.67" are read as text (or the cost and the price, shown by the
-   venue as the implied chance, 75.9%, or as American odds, -300): one $1 contract per payout
-   dollar, entry price is cost over payout. The panel then says "read from the page". If neither
-   can be read, the line offers "Price it" with a payout box.
+2. **The page**, when the service has no key or has not heard of the play yet. My Trades is a
+   table: the row's figures sit under the column headers Cost, Price and Payout, so the reader pairs
+   each cell with its header ("$20.00", "74.68%", "$26.78"); a row that labels its own figures
+   ("Cost $20.00", "To Gain $6.78") or shows a price as American odds (-300) is read too. One $1
+   contract per payout dollar, entry price is cost over payout. The panel then says "read from the
+   page". If nothing can be read, the line offers "Price it" with a payout box.
 
-Prices become our units like this: $20 at 75% (-300) gains $6.67, payout $26.67, which is 27
-contracts at an entry of 75 cents. $5 at 25.5% (+292) pays $19.60: 20 contracts at 26 cents. The
+Prices become our units like this: $20 at 74.68% pays $26.78, which is 27 contracts at an entry
+of 75 cents. $5 at 25.5% (+292) pays $19.60: 20 contracts at 26 cents. The
 two sources agree to the cent on the preview board; the page is enough for the recording, the
 service confirms it when the key pair is set.
 
@@ -86,10 +88,11 @@ No venue account is needed.
 
    The board is a generic exchange-style page in the venue's conventions: prices as the implied
    chance (75.9%), a Moneyline market, a Market Order slip with Cost and To Gain, a Cash / Points
-   toggle, and a My Trades page with a Matched, Partially Matched or Unmatched tag on each row
-   (Texans Moneyline 43.5% $20, 49ers 78.1% $20, Colts -6.5 Spread $10, Titans 25.5% $5, a Bills
-   play matched $10 of $20, a Chiefs play still unmatched, a Broncos row that names the team by
-   code only, and so on). Placing a trade on the slip adds a matched row to My Trades,
+   toggle, and a My Trades table (Market, Type, Event/Date, Cost, Price, Payout, Ref ID/Placed)
+   under Resting / Filled / Settled tabs: Texans Moneyline 43.5% $20, 49ers 78.1% $20, Colts -6.5
+   Spread $10, Titans 25.5% $5, a Bills play filled $10 of $20 (the rest on Resting), a Chiefs
+   order still resting, a Broncos row that names the team by code only, and so on. Placing a
+   trade on the slip adds a filled row to My Trades,
    which is where the extension draws. Prices come from live books; a lock writes to the record
    and runs the hedge path for real (dry run unless the service is set to send). Lock only games
    you mean to put on the record.
@@ -98,10 +101,11 @@ No venue account is needed.
 
 - `manifest.json` runs the content script on the venue's domains (edit `matches` to add one) and on
   the local preview page; grants fetch to the service host and to localhost on any port.
-- `content.js` decides it is on the My Trades page (URL or heading), finds play rows by text (a team
-  the service can protect, by nickname or by code, plus the row's money), reads the matching state, inserts our block as a
-  sibling after the row, and re-inserts it when the venue re-renders. The venue's DOM is never
-  modified.
+- `content.js` decides it is on the My Trades page (URL or heading) and which tab is open, finds
+  play rows by text (a team the service can protect, by nickname or by code, plus the row's money),
+  reads the size from the table's columns or the row's labels, inserts our block as a sibling after
+  the row (a full-width table row when the row is one), and re-inserts it when the venue re-renders.
+  The venue's DOM is never modified.
 - `content.css` the line, the inline panel, the segmented control, the chip. Two-column tiles under
   560px.
 - `background.js` is the fetch proxy; it attaches `x-lock-key` from extension storage.
@@ -181,8 +185,8 @@ GET /healthz                                                lock.enabled true, h
 2. Open the extension's options. Set the service URL (default is the record service) and paste the
    lock key. Leave "show hedge line" off for a customer-facing recording; turn it on for the
    operator cut.
-3. On the venue, switch to **Cash** mode (not points) and open **My Trades** (top right). Each open matched play
-   gets its line. If the extension cannot find the rows but the service knows your plays, a card
+3. On the venue, switch to **Cash** mode (not points) and open **My Trades** (top right), **Filled**
+   tab. Each filled play gets its line; on Resting the line says the order has not matched. If the extension cannot find the rows but the service knows your plays, a card
    bottom-right lists them with the same lines.
 
 ## Test steps (five minutes, no money)
@@ -196,9 +200,10 @@ GET /healthz                                                lock.enabled true, h
    "Protected · +$x paid". Open `/` on the service: the position is there with `source: lock`.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).
 5. Tap the Spread row's line: "Protection covers the Moneyline market." Close it.
-6. Tap the Chiefs row's line (Unmatched): "This play has not been matched yet." Close it.
-7. The Bills row (Partially Matched, $10 of $20): the panel says "pays $14.50 if they win · you
-   paid $10.00", the matched part only.
+6. Open the **Resting** tab. The Chiefs order's line says "waits until the play is matched"; tap
+   it: "This play has not been matched yet." Close it.
+7. Back on **Filled**, the Bills row shows the filled $10 of a $20 order: the panel says "pays
+   $14.50 if they win · you paid $10.00", the filled part only.
 8. Switch the toggle to **Points**: no lines on the rows. Back to **Cash**: they return.
 
 ## Recording checklist
@@ -206,7 +211,7 @@ GET /healthz                                                lock.enabled true, h
 Three clips, one tap. Shoot on a desktop width; the panel is responsive, but the My Trades rows
 are widest and clearest there.
 
-1. **Venue, after the play.** My Trades with the new play showing **Matched**. Tap its Lock in
+1. **Venue, after the play.** My Trades, Filled tab, with the new play. Tap its Lock in
    line; the panel opens with the terms; tap **Lock in**. "Locked in", the chip on the row.
 2. **Record.** `/` on the service a moment later: the position appears with `source: lock`, the
    three numbers match the panel. Operator cut: `/api/shadow/hedges` shows the live attempt, order
