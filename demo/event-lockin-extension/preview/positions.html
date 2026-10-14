@@ -7,16 +7,17 @@
   a{color:inherit;text-decoration:none}
   .top{position:sticky;top:0;z-index:5;background:#0b0b0d}
   .ticker{display:flex;gap:26px;padding:7px 14px;background:#101013;border-bottom:1px solid #1f1f25;font-size:10.5px;color:#9a9ca3;overflow:hidden;white-space:nowrap}
-  .ticker b{color:#f2f3f5;margin:0 4px}.live{color:#ff5a5a;font-weight:700}.blue{color:#3b8bff}
+  .ticker b{color:#f2f3f5;margin:0 4px}.live{color:#ff5a5a;font-weight:700}.blue{color:#3b8bff}.green{color:#2fd27a}
   header{display:flex;align-items:center;justify-content:space-between;padding:10px 24px;border-bottom:1px solid #1f1f25}
   .logo{font-weight:900;letter-spacing:.08em;font-size:17px}
   .tabs{display:flex;gap:30px;font-size:10.5px;color:#9a9ca3;text-align:center}
   .tabs a{display:flex;flex-direction:column;align-items:center;gap:4px}.tabs .on{color:#fff}
   .ico{width:18px;height:18px;border-radius:5px;background:#2a2a31;display:block}.on .ico{background:#fff}
   .right{display:flex;gap:10px;align-items:center}
-  .search{background:#17171c;border:1px solid #26262d;border-radius:999px;padding:8px 16px;color:#9a9ca3;font-size:12px;width:220px}
-  .dep{background:#1a73ff;color:#fff;border-radius:999px;padding:8px 18px;font-weight:700;font-size:12px}
-  .get{background:#17171c;border:1px solid #26262d;color:#fff;border-radius:999px;padding:8px 14px;font-weight:700;font-size:12px}
+  .mode{display:flex;background:#17171c;border:1px solid #26262d;border-radius:999px;padding:3px;font-size:11px;font-weight:700}
+  .mode span{padding:5px 12px;border-radius:999px;color:#9a9ca3;cursor:pointer}.mode .on{background:#2fd27a;color:#000}
+  .search{background:#17171c;border:1px solid #26262d;border-radius:999px;padding:8px 16px;color:#9a9ca3;font-size:12px;width:200px}
+  .dep{background:#2fd27a;color:#000;border-radius:999px;padding:8px 18px;font-weight:700;font-size:12px}
   .wrap{display:grid;grid-template-columns:150px 1fr 250px;min-height:120vh}
   aside{border-right:1px solid #1f1f25;padding:14px 8px;font-size:13px;color:#d6d7db}
   aside a{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;margin-bottom:2px}aside .on{background:#17171c;color:#fff}
@@ -33,8 +34,9 @@
   .logo-sq{width:22px;height:22px;border-radius:6px;background:#1c3a7a;flex:none}
   .name{font-weight:600;font-size:13px}.at{color:#9a9ca3;font-size:12px}.rec{color:#9a9ca3;font-size:11px}
   .cell{background:#1c1c20;border-radius:7px;padding:6px 4px;text-align:center;cursor:pointer;border:1px solid transparent;line-height:1.2}
-  .cell:hover{border-color:#3b8bff}.cell.sel{border-color:#1a73ff;background:#132a55}
-  .cell small{display:block;color:#3b8bff;font-size:11px;font-weight:600}
+  .cell:hover{border-color:#2fd27a}.cell.sel{border-color:#2fd27a;background:#123a26}
+  .cell small{display:block;color:#2fd27a;font-size:11px;font-weight:600}
+  .cell .o{color:#2fd27a;font-weight:700}
   .traded{font-size:10.5px;color:#9a9ca3;text-align:right;margin-top:4px}
   .matchup{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;justify-items:center;padding:14px 0 10px;margin-bottom:8px}
   .jersey{width:40px;height:40px;border-radius:8px;background:#1c3a7a;margin-bottom:6px}
@@ -42,7 +44,7 @@
   .center{font-size:11px;color:#9a9ca3;text-align:center}.center b{display:block;color:#fff;font-size:12px}.center .blue{display:block}
   .chart{height:150px;border-bottom:1px solid #1f1f25;position:relative;margin-bottom:8px}
   .chart svg{width:100%;height:100%}
-  .chart .lbl{position:absolute;right:0;font-size:11px;font-weight:700;color:#3b8bff}
+  .chart .lbl{position:absolute;right:0;font-size:11px;font-weight:700;color:#2fd27a}
   .chart .lbl small{display:block;font-weight:400;color:#9a9ca3;font-size:10px}
   .back{display:inline-flex;width:30px;height:30px;border-radius:50%;background:#1c1c20;align-items:center;justify-content:center;margin-bottom:8px;cursor:pointer}
   .lines{margin-top:18px;font-size:14px;font-weight:700}.lines small{display:block;font-weight:400;color:#9a9ca3;font-size:11px;margin-top:4px}
@@ -50,23 +52,25 @@
   .right-col{padding:14px 12px;position:relative}
   .slip{background:#121216;border:1px solid #1f1f25;border-radius:12px;padding:12px}
   .slip-h{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;margin-bottom:10px}
-  .slip-h .n{width:20px;height:20px;border-radius:50%;background:#1a73ff;display:inline-flex;align-items:center;justify-content:center;font-size:11px}
+  .slip-h .n{width:20px;height:20px;border-radius:50%;background:#2fd27a;color:#000;display:inline-flex;align-items:center;justify-content:center;font-size:11px}
   .empty{text-align:center;padding:30px 0 24px;color:#9a9ca3;font-size:12px}
   .empty .art{width:90px;height:90px;border-radius:50%;background:#1c1c20;margin:0 auto 14px}
   .empty b{display:block;color:#fff;font-size:14px;margin-bottom:4px}
   .pick-card{background:#1c1c20;border-radius:10px;padding:10px}
   .pick{font-weight:700;font-size:13px}.pick-meta{font-size:11px;color:#9a9ca3;margin:3px 0 8px}
-  .odds{font-size:12px;color:#3b8bff;font-weight:700;text-align:right;margin-bottom:8px}
+  .odds{font-size:12px;color:#2fd27a;font-weight:700;text-align:right;margin-bottom:8px}
   .otype{display:flex;justify-content:space-between;align-items:center;font-size:12px;margin:10px 0}.otype small{display:block;color:#9a9ca3;font-size:10.5px}
   .otype .seg span{padding:4px 10px;border-radius:999px;background:#1c1c20;font-size:11px;margin-left:4px}.otype .seg .on{background:#fff;color:#000;font-weight:700}
-  .stake{display:flex;align-items:center;gap:6px;border:1px solid #3b8bff;border-radius:8px;padding:6px 10px;background:#0b0b0d;margin-left:auto;width:110px}
-  .stake input{background:transparent;border:0;color:#fff;font-size:14px;font-weight:700;width:100%;text-align:right;outline:0}
-  .payout{text-align:right;font-size:11.5px;color:#9a9ca3;margin-top:8px}.payout b{color:#fff;font-weight:600}
+  .fields{display:flex;gap:8px}
+  .stake{flex:1;border:1px solid #2fd27a;border-radius:8px;padding:6px 10px;background:#0b0b0d}
+  .stake label{display:block;font-size:10px;color:#9a9ca3}
+  .stake input{background:transparent;border:0;color:#fff;font-size:14px;font-weight:700;width:100%;outline:0}
+  .stake b{display:block;color:#fff;font-size:14px;font-weight:700;line-height:20px}
   .rm{float:right;color:#6f7279;cursor:pointer;font-size:12px}
   .trend{margin-top:18px}
   .trend h3{font-size:14px;margin:0 0 10px}
-  .place{position:fixed;right:12px;bottom:12px;width:226px;background:#1a73ff;color:#fff;border:0;border-radius:10px;padding:10px 12px;font-weight:700;font-size:13px;text-align:center;cursor:pointer}
-  .place small{display:block;font-weight:500;font-size:11px;opacity:.9}
+  .place{position:fixed;right:12px;bottom:12px;width:226px;background:#2fd27a;color:#000;border:0;border-radius:10px;padding:10px 12px;font-weight:700;font-size:13px;text-align:center;cursor:pointer}
+  .place small{display:block;font-weight:500;font-size:11px;opacity:.8}
   .hidden{display:none}
   .ptabs{display:flex;gap:18px;font-size:13px;margin:0 0 14px;color:#9a9ca3}.ptabs .on{color:#fff;font-weight:700;border-bottom:2px solid #fff;padding-bottom:4px}
   .psum{display:flex;gap:24px;margin:0 0 18px;font-size:12px;color:#9a9ca3}.psum b{display:block;color:#fff;font-size:18px;font-weight:800}
@@ -74,120 +78,132 @@
   .pos .logo-sq{width:34px;height:34px;border-radius:8px}
   .pos .pname{font-weight:700;font-size:14px}.pos .pmeta{font-size:11.5px;color:#9a9ca3;margin-top:3px}
   .pos .pmid{flex:1}
-  .pos .pnum{text-align:right;min-width:92px;font-size:11px;color:#9a9ca3}.pos .pnum b{display:block;color:#fff;font-size:14px;font-weight:700;margin-top:2px}
-  .pos .pmult{color:#3b8bff;font-weight:700;font-size:13px;min-width:48px;text-align:right}
-  .pos .cash{background:#1c1c20;border:1px solid #26262d;color:#9a9ca3;border-radius:8px;padding:7px 10px;font-size:11.5px;font-weight:700}
+  .pos .pnum{text-align:right;min-width:84px;font-size:11px;color:#9a9ca3}.pos .pnum b{display:block;color:#fff;font-size:14px;font-weight:700;margin-top:2px}
+  .pos .podds{color:#2fd27a;font-weight:700;font-size:13px;min-width:48px;text-align:right}
+  .tag{border-radius:999px;padding:5px 10px;font-size:11px;font-weight:700;white-space:nowrap}
+  .tag.ok{background:#123a26;color:#2fd27a}.tag.part{background:#3a3212;color:#f0c24a}.tag.wait{background:#1c1c20;color:#9a9ca3;border:1px solid #26262d}
   .pempty{color:#9a9ca3;padding:30px 0;text-align:center}
 </style></head>
 <body>
 <div class="top">
-<div class="ticker"><span>Hockey <span class="live">Live</span> 3rd 00:38 <b>TOR</b>4 <b>UTA</b>5</span><span>Hockey <span class="live">Live</span> End 2nd <b>CGY</b>2 <b>ANA</b>2</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:55 <b>POR</b>81 <b>SAC</b>50</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:09 <b>GSW</b>63 <b>LAL</b>70</span><span>Hockey <span class="live">Live</span> 2nd 17:57 <b>EDM</b>3 <b>LAK</b>0</span><span>Pro BSB <span class="blue">Tomorrow 8:00 PM</span> <b>MIL</b> 2.56x <b>LAD</b> 1.61x</span><span>CFB <span class="blue">Tomorrow 7:00 PM</span> <b>WKU</b> 1.89x <b>SHSU</b> 2.11x</span></div>
-<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/"><span class="ico"></span>Home</a><a href="#"><span class="ico"></span>Points</a><a href="#/portfolio" id="nav-portfolio"><span class="ico"></span><span id="pf-nav">$0 Portfolio</span></a><a href="#"><span class="ico"></span>Ranks</a></div><div class="right"><div class="search">Search Events, Teams &amp; Players</div><div class="dep">Deposit</div><div class="get">Get $50</div></div></header>
+<div class="ticker"><span>Hockey <span class="live">Live</span> 3rd 00:38 <b>TOR</b>4 <b>UTA</b>5</span><span>Hockey <span class="live">Live</span> End 2nd <b>CGY</b>2 <b>ANA</b>2</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:55 <b>POR</b>81 <b>SAC</b>50</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:09 <b>GSW</b>63 <b>LAL</b>70</span><span>Hockey <span class="live">Live</span> 2nd 17:57 <b>EDM</b>3 <b>LAK</b>0</span><span>Pro BSB <span class="blue">Tomorrow 8:00 PM</span> <b>MIL</b> <span class="green">+156</span> <b>LAD</b> <span class="green">-164</span></span><span>CFB <span class="blue">Tomorrow 7:00 PM</span> <b>WKU</b> <span class="green">-112</span> <b>SHSU</b> <span class="green">+111</span></span></div>
+<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/" id="nav-home"><span class="ico"></span>Home</a><a href="#/"><span class="ico"></span>Sports</a><a href="#/plays" id="nav-plays"><span class="ico"></span><span id="pf-nav">My Plays</span></a><a href="#"><span class="ico"></span>Promos</a></div><div class="right"><div class="mode" id="mode"><span class="on" data-mode="cash">Cash</span><span data-mode="points">Points</span></div><div class="search">Search Events, Teams &amp; Players</div><div class="dep">Deposit</div></div></header>
 </div>
 <div class="wrap">
 <aside><a><i style="background:#8ab"></i>Hockey</a><a><i style="background:#cc3"></i>Tennis (M)</a><a><i style="background:#e73"></i>Pro BB (M)</a><a class="on" href="#/"><i style="background:#a63"></i>Pro FB</a><a><i style="background:#a4c"></i>Tennis (W)</a><a><i style="background:#e73"></i>Pro BB (W)</a><a><i style="background:#63c"></i>EPL</a><a><i style="background:#c33"></i>MMA</a><a><i style="background:#c33"></i>La Liga</a><a><i style="background:#3a6"></i>Serie A</a><a><i style="background:#36c"></i>Ligue 1</a><a><i style="background:#c33"></i>US Soccer</a>
-<div class="foot">Terms of Use<br>Privacy Policy<br>Responsible Trading<br>Your Privacy Choices<br>Cookie Preferences<br>About<br>Careers<br>Newsroom<br>Data<br>Filings<br>Help Center</div></aside>
+<div class="foot">Terms of Use<br>Privacy Policy<br>Responsible Gaming<br>Your Privacy Choices<br>Cookie Preferences<br>About<br>Careers<br>Newsroom<br>Help Center</div></aside>
 <main id="main"></main>
 <div class="right-col"><div id="slip"></div>
 <div class="trend" id="trend"><h3>Trending Futures</h3><div class="pills"><span class="on">Pro FB</span><span>Baseball</span><span>CFB</span></div>
-<div class="when">SB Winner <span style="float:right">Traded: $485,163</span></div>
-<div class="grid" style="grid-template-columns:1fr 60px 60px"><div class="team"><span class="logo-sq" style="background:#a22"></span><span class="name">SF</span></div><div class="cell"><small>Yes</small>7.41x</div><div class="cell"><small>No</small>1.14x</div>
-<div class="team"><span class="logo-sq"></span><span class="name">LAR</span></div><div class="cell"><small>Yes</small>7.69x</div><div class="cell"><small>No</small>1.12x</div>
-<div class="team"><span class="logo-sq" style="background:#136"></span><span class="name">BUF</span></div><div class="cell"><small>Yes</small>8.33x</div><div class="cell"><small>No</small>1.12x</div></div></div>
+<div class="when">SB Winner <span style="float:right">Matched: $485,163</span></div>
+<div class="grid" style="grid-template-columns:1fr 60px 60px"><div class="team"><span class="logo-sq" style="background:#a22"></span><span class="name">SF</span></div><div class="cell"><small>Yes</small>+641</div><div class="cell"><small>No</small>-714</div>
+<div class="team"><span class="logo-sq"></span><span class="name">LAR</span></div><div class="cell"><small>Yes</small>+669</div><div class="cell"><small>No</small>-833</div>
+<div class="team"><span class="logo-sq" style="background:#136"></span><span class="name">BUF</span></div><div class="cell"><small>Yes</small>+733</div><div class="cell"><small>No</small>-833</div></div></div>
 </div>
 </div>
 <script>
-// A stand-in for the venue's React app: hash routes, a slip with a wager input and a payout line.
+// A stand-in for the venue's React app: hash routes, a play slip with a stake input and a To Win
+// line, American odds, and a My Plays page where each play carries its matching state.
 const GAMES = [
-  { id: "SEADEN", when: "Thu 8:15 PM", away: ["SEA", "Seahawks", "3-2"], home: ["DEN", "Broncos", "4-1"], spread: ["+1.5", "1.95x", "-1.5", "1.92x"], total: ["O 41.5", "1.90x", "U 41.5", "1.97x"], win: ["1.76x", "2.27x"], traded: "$212,440" },
-  { id: "HOUJAX", when: "Sun 9:30 AM", away: ["HOU", "Texans", "2-3"], home: ["JAX", "Jaguars", "4-1"], spread: ["+2.5", "2.04x", "-2.5", "1.92x"], total: ["O 42.5", "2.00x", "U 42.5", "1.98x"], win: ["2.30x", "1.75x"], traded: "$257,702" },
-  { id: "PITTB", when: "Sun 1:00 PM", away: ["PIT", "Steelers", "3-2"], home: ["TB", "Buccaneers", "1-4"], spread: ["-2.5", "2.00x", "+2.5", "1.98x"], total: ["O 39.5", "2.00x", "U 39.5", "1.98x"], win: ["1.79x", "2.25x"], traded: "$85,293" },
-  { id: "TENIND", when: "Sun 1:00 PM", away: ["TEN", "Titans", "0-5"], home: ["IND", "Colts", "2-3"], spread: ["+6.5", "2.13x", "-6.5", "1.85x"], total: ["O 43.5", "1.89x", "U 43.5", "2.06x"], win: ["3.92x", "1.33x"], traded: "$12,593" },
-  { id: "ARILAR", when: "Sun 4:05 PM", away: ["ARI", "Cardinals", "1-4"], home: ["LA", "Rams", "2-3"], spread: ["+12.5", "2.02x", "-12.5", "1.96x"], total: ["O 51.5", "1.96x", "U 51.5", "2.02x"], win: ["8.00x", "1.14x"], traded: "$129,924" },
-  { id: "LACKC", when: "Sun 4:25 PM", away: ["LA", "Chargers", "0-5"], home: ["KC", "Chiefs", "4-0"], spread: ["+8.5", "1.96x", "-8.5", "2.04x"], total: ["O 42.5", "2.02x", "U 42.5", "1.96x"], win: ["4.76x", "1.26x"], traded: "$174,873" },
-  { id: "BUFLV", when: "Sun 4:25 PM", away: ["BUF", "Bills", "4-1"], home: ["LV", "Raiders", "3-2"], spread: ["-5.5", "2.06x", "+5.5", "1.89x"], total: ["O 53.5", "1.98x", "U 53.5", "1.98x"], win: ["1.45x", "3.17x"], traded: "$96,310" },
-  { id: "WASSF", when: "Mon 8:15 PM", away: ["WAS", "Commanders", "2-3"], home: ["SF", "49ers", "4-1"], spread: ["+7.5", "1.98x", "-7.5", "2.00x"], total: ["O 45.5", "1.95x", "U 45.5", "2.00x"], win: ["4.30x", "1.28x"], traded: "$140,112" },
+  { id: "SEADEN", when: "Thu 8:15 PM", away: ["SEA", "Seahawks", "3-2"], home: ["DEN", "Broncos", "4-1"], spread: ["+1.5", "-105", "-1.5", "-108"], total: ["O 41.5", "-111", "U 41.5", "-103"], win: ["-132", "+127"], matched: "$212,440" },
+  { id: "HOUJAX", when: "Sun 9:30 AM", away: ["HOU", "Texans", "2-3"], home: ["JAX", "Jaguars", "4-1"], spread: ["+2.5", "+104", "-2.5", "-108"], total: ["O 42.5", "+100", "U 42.5", "-102"], win: ["+130", "-133"], matched: "$257,702" },
+  { id: "PITTB", when: "Sun 1:00 PM", away: ["PIT", "Steelers", "3-2"], home: ["TB", "Buccaneers", "1-4"], spread: ["-2.5", "+100", "+2.5", "-102"], total: ["O 39.5", "+100", "U 39.5", "-102"], win: ["-127", "+125"], matched: "$85,293" },
+  { id: "TENIND", when: "Sun 1:00 PM", away: ["TEN", "Titans", "0-5"], home: ["IND", "Colts", "2-3"], spread: ["+6.5", "+113", "-6.5", "-118"], total: ["O 43.5", "-112", "U 43.5", "+106"], win: ["+292", "-300"], matched: "$12,593" },
+  { id: "ARILAR", when: "Sun 4:05 PM", away: ["ARI", "Cardinals", "1-4"], home: ["LA", "Rams", "2-3"], spread: ["+12.5", "+102", "-12.5", "-104"], total: ["O 51.5", "-104", "U 51.5", "+102"], win: ["+700", "-714"], matched: "$129,924" },
+  { id: "LACKC", when: "Sun 4:25 PM", away: ["LA", "Chargers", "0-5"], home: ["KC", "Chiefs", "4-0"], spread: ["+8.5", "-104", "-8.5", "+104"], total: ["O 42.5", "+102", "U 42.5", "-104"], win: ["+376", "-385"], matched: "$174,873" },
+  { id: "BUFLV", when: "Sun 4:25 PM", away: ["BUF", "Bills", "4-1"], home: ["LV", "Raiders", "3-2"], spread: ["-5.5", "+106", "+5.5", "-112"], total: ["O 53.5", "-102", "U 53.5", "-102"], win: ["-222", "+217"], matched: "$96,310" },
+  { id: "WASSF", when: "Mon 8:15 PM", away: ["WAS", "Commanders", "2-3"], home: ["SF", "49ers", "4-1"], spread: ["+7.5", "-102", "-7.5", "+100"], total: ["O 45.5", "-105", "U 45.5", "+100"], win: ["+330", "-357"], matched: "$140,112" },
 ];
 const slip = { sel: null, stake: "20" };
-// Open positions, as the venue's portfolio page would list them. Place Order on the slip adds one.
-const POSITIONS = JSON.parse(sessionStorage.getItem("mock-positions") || "null") || [
-  { g: "HOUJAX", side: "away", kind: "Winner", line: "", mult: "2.27x", stake: 20, when: "Sun 9:30 AM", away: ["HOU", "Texans"], home: ["JAX", "Jaguars"] },
-  { g: "WASSF", side: "home", kind: "Winner", line: "", mult: "1.28x", stake: 20, when: "Mon 8:15 PM", away: ["WAS", "Commanders"], home: ["SF", "49ers"] },
-  { g: "TENIND", side: "home", kind: "Spread", line: "-6.5", mult: "1.85x", stake: 10, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
-  { g: "TENIND", side: "away", kind: "Winner", line: "", mult: "3.92x", stake: 5, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
-  { g: "PITTB", side: "away", kind: "Winner", line: "", mult: "1.79x", stake: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
-  { g: "PITTB", side: "home", kind: "Winner", line: "", mult: "2.25x", stake: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
-  { g: "SEADEN", side: "home", kind: "Winner", line: "", mult: "2.27x", stake: 10, when: "Thu 8:15 PM", away: ["SEA", "Seahawks"], home: ["DEN", "Broncos"] },
+let mode = sessionStorage.getItem("mock-mode") || "cash";
+// Open plays, as the venue's My Plays page would list them. Place Play on the slip adds one (matched at once, for the demo).
+// matched: the dollars of the stake another account has taken; 0 is a resting order.
+const PLAYS = JSON.parse(sessionStorage.getItem("mock-plays") || "null") || [
+  { g: "HOUJAX", side: "away", kind: "Moneyline", line: "", odds: "+130", stake: 20, matched: 20, when: "Sun 9:30 AM", away: ["HOU", "Texans"], home: ["JAX", "Jaguars"] },
+  { g: "WASSF", side: "home", kind: "Moneyline", line: "", odds: "-357", stake: 20, matched: 20, when: "Mon 8:15 PM", away: ["WAS", "Commanders"], home: ["SF", "49ers"] },
+  { g: "TENIND", side: "home", kind: "Spread", line: "-6.5", odds: "-118", stake: 10, matched: 10, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
+  { g: "TENIND", side: "away", kind: "Moneyline", line: "", odds: "+292", stake: 5, matched: 5, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
+  { g: "PITTB", side: "away", kind: "Moneyline", line: "", odds: "-127", stake: 10, matched: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
+  { g: "PITTB", side: "home", kind: "Moneyline", line: "", odds: "+125", stake: 10, matched: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
+  { g: "SEADEN", side: "home", kind: "Moneyline", line: "", odds: "+127", stake: 10, matched: 10, when: "Thu 8:15 PM", away: ["SEA", "Seahawks"], home: ["DEN", "Broncos"] },
+  { g: "BUFLV", side: "away", kind: "Moneyline", line: "", odds: "-222", stake: 20, matched: 10, when: "Sun 4:25 PM", away: ["BUF", "Bills"], home: ["LV", "Raiders"] },
+  { g: "LACKC", side: "home", kind: "Moneyline", line: "", odds: "-385", stake: 10, matched: 0, when: "Sun 4:25 PM", away: ["LA", "Chargers"], home: ["KC", "Chiefs"] },
 ];
-const savePositions = () => sessionStorage.setItem("mock-positions", JSON.stringify(POSITIONS));
+const savePlays = () => sessionStorage.setItem("mock-plays", JSON.stringify(PLAYS));
 const $ = (s) => document.querySelector(s);
-const money = (n) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const posRow = (p) => {
+const money = (n) => (mode === "points" ? Math.round(n * 100).toLocaleString("en-US") + " pts" : "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+// payout per $1 at American odds
+const mult = (odds) => { const o = Number(odds); return o > 0 ? 1 + o / 100 : 1 + 100 / -o; };
+const toWin = (stake, odds) => stake * (mult(odds) - 1);
+const tag = (p) => (p.matched <= 0 ? '<span class="tag wait">Unmatched</span>' : p.matched < p.stake ? '<span class="tag part">Partially Matched</span>' : '<span class="tag ok">Matched</span>');
+const playRow = (p) => {
   const t = p.side === "away" ? p.away : p.home;
-  const payout = p.stake * parseFloat(p.mult);
-  return '<div class="pos"><span class="logo-sq"' + (p.side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><div class="pmid"><div class="pname">' + t[0] + " " + t[1] + (p.line ? " " + p.line : "") + " &middot; " + p.kind + '</div><div class="pmeta">Pro FB &middot; ' + p.away[0] + " " + p.away[1] + " at " + p.home[0] + " " + p.home[1] + " &middot; " + p.when + '</div></div><div class="pmult">' + p.mult + '</div><div class="pnum">Wager<b>' + money(p.stake) + '</b></div><div class="pnum">Payout<b>' + money(payout) + '</b></div><span class="cash">Cash Out</span></div>';
+  const part = p.matched > 0 && p.matched < p.stake;
+  return '<div class="pos"><span class="logo-sq"' + (p.side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><div class="pmid"><div class="pname">' + t[0] + " " + t[1] + (p.line ? " " + p.line : "") + " &middot; " + p.kind + '</div><div class="pmeta">Pro FB &middot; ' + p.away[0] + " " + p.away[1] + " at " + p.home[0] + " " + p.home[1] + " &middot; " + p.when + (part ? " &middot; Matched " + money(p.matched) + " &middot; Unmatched " + money(p.stake - p.matched) : "") + '</div></div><div class="podds">' + p.odds + '</div><div class="pnum">Stake<b>' + money(p.stake) + '</b></div><div class="pnum">To Win<b>' + money(toWin(p.stake, p.odds)) + "</b></div>" + tag(p) + "</div>";
 };
-const portfolioView = () => {
-  const risk = POSITIONS.reduce((a, p) => a + p.stake, 0);
-  const pays = POSITIONS.reduce((a, p) => a + p.stake * parseFloat(p.mult), 0);
-  return '<h1>Portfolio</h1><div class="ptabs"><span class="on">Open</span><span>Settled</span><span>Orders</span></div><div class="psum"><div>Balance<b>$180.00</b></div><div>In play<b>' + money(risk) + '</b></div><div>Max payout<b>' + money(pays) + "</b></div></div>" +
-    (POSITIONS.length ? POSITIONS.map(posRow).join("") : '<div class="pempty">No open positions</div>');
+const playsView = () => {
+  const risk = PLAYS.reduce((a, p) => a + p.stake, 0);
+  const win = PLAYS.reduce((a, p) => a + toWin(p.matched, p.odds), 0);
+  return '<h1>My Plays</h1><div class="ptabs"><span class="on">Open</span><span>Settled</span></div><div class="psum"><div>Balance<b>' + money(180) + '</b></div><div>In play<b>' + money(risk) + '</b></div><div>To win (matched)<b>' + money(win) + "</b></div></div>" +
+    (PLAYS.length ? PLAYS.map(playRow).join("") : '<div class="pempty">No open plays</div>');
 };
-const cell = (g, side, kind, line, mult) => '<div class="cell" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-mult="' + mult + '"' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? ' class="cell sel"' : "") + ">" + (line ? line + "<small>" + mult + "</small>" : "<span style='color:#3b8bff;font-weight:600'>" + mult + "</span>") + "</div>";
+const cell = (g, side, kind, line, odds) => '<div class="cell" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-odds="' + odds + '"' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? ' class="cell sel"' : "") + ">" + (line ? line + "<small>" + odds + "</small>" : '<span class="o">' + odds + "</span>") + "</div>";
 const teamRow = (g, side) => {
   const t = side === "away" ? g.away : g.home;
   return '<div class="team"><span class="logo-sq"' + (side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><a href="#/game/' + g.id + '"><span class="name">' + t[0] + " " + t[1] + "</span></a>" + (side === "away" ? '<span class="at">at</span>' : "") + '<span class="rec">' + t[2] + "</span></div>";
 };
 const rows = (g) =>
-  '<div class="grid">' + teamRow(g, "away") + cell(g, "away", "Spread", g.spread[0], g.spread[1]) + cell(g, "away", "Total", g.total[0], g.total[1]) + cell(g, "away", "Winner", "", g.win[0]) +
-  teamRow(g, "home") + cell(g, "home", "Spread", g.spread[2], g.spread[3]) + cell(g, "home", "Total", g.total[2], g.total[3]) + cell(g, "home", "Winner", "", g.win[1]) + "</div>";
+  '<div class="grid">' + teamRow(g, "away") + cell(g, "away", "Spread", g.spread[0], g.spread[1]) + cell(g, "away", "Total", g.total[0], g.total[1]) + cell(g, "away", "Moneyline", "", g.win[0]) +
+  teamRow(g, "home") + cell(g, "home", "Spread", g.spread[2], g.spread[3]) + cell(g, "home", "Total", g.total[2], g.total[3]) + cell(g, "home", "Moneyline", "", g.win[1]) + "</div>";
 const listView = () =>
-  '<h1>Pro FB</h1><div class="subtabs"><span class="on">Games</span><span>Featured Parlays</span><span>Player Props</span><span>Futures</span></div>' +
-  GAMES.map((g) => '<div class="game"><div class="when">' + g.when.split(" ")[0] + " <b>" + g.when.split(" ").slice(1).join(" ") + '</b></div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Winner</span></div>' + rows(g) + '<div class="traded">Pro FB &nbsp; Traded: ' + g.traded + " &nbsp; 9 More &rsaquo;</div></div>").join("");
+  '<h1>Pro FB</h1><div class="subtabs"><span class="on">Games</span><span>Player Props</span><span>Futures</span></div>' +
+  GAMES.map((g) => '<div class="game"><div class="when">' + g.when.split(" ")[0] + " <b>" + g.when.split(" ").slice(1).join(" ") + '</b></div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Moneyline</span></div>' + rows(g) + '<div class="traded">Pro FB &nbsp; Matched: ' + g.matched + " &nbsp; 9 More &rsaquo;</div></div>").join("");
+const pct = (odds) => Math.round(100 / mult(odds));
 const gameView = (g) =>
   '<a class="back" href="#/">&lsaquo;</a><div class="matchup"><div><div class="jersey"></div><div class="code">' + g.away[0] + '</div></div><div class="center"><b>' + g.when.split(" ").slice(1).join(" ") + "</b>" + g.when.split(" ")[0] + '<span class="blue" style="margin-top:14px;font-weight:900;letter-spacing:.1em;color:#6f7279">EXCHANGE</span></div><div><div class="jersey" style="background:#2a5a9a"></div><div class="code">' + g.home[0] + "</div></div></div>" +
-  '<div class="chart"><div class="lbl" style="top:8px">' + g.home[0] + "<small>" + Math.round(100 / parseFloat(g.win[1])) + "%</small></div><div class=\"lbl\" style=\"bottom:28px\">" + g.away[0] + "<small>" + Math.round(100 / parseFloat(g.win[0])) + '%</small></div><svg viewBox="0 0 600 150" preserveAspectRatio="none"><polyline fill="none" stroke="#3b8bff" stroke-width="2" points="0,40 180,40 180,36 420,36 600,34"/><polyline fill="none" stroke="#3b8bff" stroke-width="1" opacity=".6" points="0,110 180,110 180,114 420,114 600,116"/></svg></div>' +
-  '<div class="when">Traded: ' + g.traded + '</div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Winner</span></div>' + rows(g) +
-  '<div class="lines">Game Lines<small>Featured Parlays &nbsp; Player Props</small></div><div class="pills"><span class="on">Main Markets</span><span>1st Half</span><span>Team Totals</span></div><div class="lines">Spread<small>What is the final margin?</small></div>';
+  '<div class="chart"><div class="lbl" style="top:8px">' + g.home[0] + "<small>" + pct(g.win[1]) + "%</small></div><div class=\"lbl\" style=\"bottom:28px\">" + g.away[0] + "<small>" + pct(g.win[0]) + '%</small></div><svg viewBox="0 0 600 150" preserveAspectRatio="none"><polyline fill="none" stroke="#2fd27a" stroke-width="2" points="0,40 180,40 180,36 420,36 600,34"/><polyline fill="none" stroke="#2fd27a" stroke-width="1" opacity=".6" points="0,110 180,110 180,114 420,114 600,116"/></svg></div>' +
+  '<div class="when">Matched: ' + g.matched + '</div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Moneyline</span></div>' + rows(g) +
+  '<div class="lines">Game Lines<small>Player Props</small></div><div class="pills"><span class="on">Main Markets</span><span>1st Half</span><span>Team Totals</span></div><div class="lines">Spread<small>What is the final margin?</small></div>';
 const slipView = () => {
-  if (!slip.sel) return '<div class="slip"><div class="empty"><div class="art"></div><b>Order Slip Empty</b>Add selections to place an order</div></div>';
+  if (!slip.sel) return '<div class="slip"><div class="empty"><div class="art"></div><b>Play Slip Empty</b>Add a selection to place a play</div></div>';
   const s = slip.sel;
   const g = GAMES.find((x) => x.id === s.g);
   const t = s.side === "away" ? g.away : g.home;
   const stake = Number(slip.stake) || 0;
-  const payout = stake * parseFloat(s.mult);
   const pickName = t[0] + " " + t[1] + (s.kind === "Spread" ? " " + s.line : "") + (s.kind === "Total" ? " " + s.line : "");
-  return '<div class="slip"><div class="slip-h"><span class="n">1</span> Order Slip</div><div class="otype">Order Type<small>Place an order at the best available price.</small><span class="seg"><span class="on">Take</span><span>Make</span></span></div>' +
-    '<div class="pick-card"><span class="rm" id="rm">&#x1F5D1;</span><div class="pick">' + pickName + " &middot; " + s.kind + '</div><div class="pick-meta">Pro FB &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + '</div><div class="odds">' + s.mult + '</div><div class="stake"><span>$</span><input id="stake" type="text" inputmode="decimal" value="' + slip.stake + '"></div><div class="payout">Payout: <b>' + money(payout) + "</b></div></div></div>" +
-    '<button class="place">' + (stake > 0 ? "Place Order: " + money(stake) : "Enter a wager") + "<small>Total Payout: " + money(payout) + "</small></button>";
+  return '<div class="slip"><div class="slip-h"><span class="n">1</span> Play Slip</div><div class="otype">Play Type<small>Take the best price now, or make your own.</small><span class="seg"><span class="on">Take</span><span>Make</span></span></div>' +
+    '<div class="pick-card"><span class="rm" id="rm">&#x1F5D1;</span><div class="pick">' + pickName + " &middot; " + s.kind + '</div><div class="pick-meta">Pro FB &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + '</div><div class="odds">' + s.odds + '</div><div class="fields"><div class="stake"><label>Stake</label><input id="stake" type="text" inputmode="decimal" value="' + slip.stake + '"></div><div class="stake" style="border-color:#26262d"><label>To Win</label><b id="towin">' + money(toWin(stake, s.odds)) + "</b></div></div></div></div>" +
+    '<button class="place">' + (stake > 0 ? "Place Play: " + money(stake) : "Enter a stake") + "<small>To Win: " + money(toWin(stake, s.odds)) + "</small></button>";
 };
 const render = () => {
   const h = location.hash || "#/";
   const m = /^#\/game\/(\w+)/.exec(h);
   const g = m ? GAMES.find((x) => x.id === m[1]) : null;
-  const portfolio = /^#\/portfolio/.test(h);
-  $("#main").innerHTML = portfolio ? portfolioView() : g ? gameView(g) : listView();
+  const plays = /^#\/(plays|portfolio)/.test(h);
+  $("#main").innerHTML = plays ? playsView() : g ? gameView(g) : listView();
   $("#slip").innerHTML = slipView();
   $("#trend").className = "trend" + (slip.sel ? " hidden" : "");
-  $("#pf-nav").textContent = money(POSITIONS.reduce((a, p) => a + p.stake, 0)) + " Portfolio";
-  $("#nav-portfolio").className = portfolio ? "on" : "";
+  $("#nav-plays").className = plays ? "on" : "";
+  $("#nav-home").className = plays ? "" : "on";
+  for (const s of document.querySelectorAll("#mode span")) s.className = s.dataset.mode === mode ? "on" : "";
   const place = $(".place");
   if (place) place.onclick = () => {
     const s = slip.sel;
     const stake = Number(slip.stake) || 0;
     if (!s || stake <= 0) return;
     const g2 = GAMES.find((x) => x.id === s.g);
-    POSITIONS.push({ g: s.g, side: s.side, kind: s.kind, line: s.line, mult: s.mult, stake, when: g2.when, away: g2.away.slice(0, 2), home: g2.home.slice(0, 2) });
-    savePositions();
+    PLAYS.push({ g: s.g, side: s.side, kind: s.kind, line: s.line, odds: s.odds, stake, matched: stake, when: g2.when, away: g2.away.slice(0, 2), home: g2.home.slice(0, 2) });
+    savePlays();
     slip.sel = null;
-    location.hash = "#/portfolio";
+    location.hash = "#/plays";
     render();
   };
-  for (const c of document.querySelectorAll(".cell[data-g]")) c.onclick = () => { slip.sel = { g: c.dataset.g, side: c.dataset.side, kind: c.dataset.kind, line: c.dataset.line, mult: c.dataset.mult }; render(); };
+  for (const c of document.querySelectorAll(".cell[data-g]")) c.onclick = () => { slip.sel = { g: c.dataset.g, side: c.dataset.side, kind: c.dataset.kind, line: c.dataset.line, odds: c.dataset.odds }; render(); };
   const st = $("#stake");
-  if (st) st.oninput = () => { slip.stake = st.value.replace(/[^\d.]/g, ""); const s = slip.sel; const g2 = GAMES.find((x) => x.id === s.g); const p = (Number(slip.stake) || 0) * parseFloat(s.mult); $(".payout").innerHTML = "Payout: <b>" + money(p) + "</b>"; $(".place").innerHTML = ((Number(slip.stake) || 0) > 0 ? "Place Order: " + money(Number(slip.stake)) : "Enter a wager") + "<small>Total Payout: " + money(p) + "</small>"; };
+  if (st) st.oninput = () => { slip.stake = st.value.replace(/[^\d.]/g, ""); const s = slip.sel; const w = toWin(Number(slip.stake) || 0, s.odds); $("#towin").textContent = money(w); $(".place").innerHTML = ((Number(slip.stake) || 0) > 0 ? "Place Play: " + money(Number(slip.stake)) : "Enter a stake") + "<small>To Win: " + money(w) + "</small>"; };
   const rm = $("#rm");
   if (rm) rm.onclick = () => { slip.sel = null; render(); };
+  for (const s of document.querySelectorAll("#mode span")) s.onclick = () => { mode = s.dataset.mode; sessionStorage.setItem("mock-mode", mode); render(); };
 };
 window.addEventListener("hashchange", render);
 render();
