@@ -1,4 +1,4 @@
-const DEFAULTS = { baseUrl: "https://atticus-event-shadow.onrender.com", lockKey: "", showHedge: "no" };
+const DEFAULTS = { baseUrl: "https://atticus-event-shadow.onrender.com", lockKey: "", showHedge: "no", rehearse: "no" };
 const el = (id) => document.getElementById(id);
 
 chrome.storage.local.get(DEFAULTS, (v) => {
@@ -6,6 +6,7 @@ chrome.storage.local.get(DEFAULTS, (v) => {
   el("baseUrl").value = s.baseUrl;
   el("lockKey").value = s.lockKey;
   el("showHedge").value = s.showHedge;
+  el("rehearse").value = s.rehearse;
 });
 
 el("save").addEventListener("click", () => {
@@ -14,6 +15,7 @@ el("save").addEventListener("click", () => {
       baseUrl: (el("baseUrl").value || DEFAULTS.baseUrl).trim().replace(/\/+$/, ""),
       lockKey: el("lockKey").value.trim(),
       showHedge: el("showHedge").value === "yes" ? "yes" : "no",
+      rehearse: el("rehearse").value === "yes" ? "yes" : "no",
     },
     () => {
       el("ok").textContent = "Saved. Reload the venue tab.";
