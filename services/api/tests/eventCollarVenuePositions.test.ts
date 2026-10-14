@@ -282,7 +282,7 @@ test("shadow worker /api/shadow/positions: configured:false without a venue key;
       source: "lock",
     } as Parameters<typeof appendShadowRecord>[1]);
     const { client } = fakeVenue([{ marketId: "m-1", outcomeId: "o-hou", qty: 2000, cost: "11.40000" }], [market()], [event]);
-    worker.wireLockEngine({ quoteOne: quoteOne as never, listGameMarkets: listGameMarkets as never, venueClient: client });
+    worker.wireLockEngine({ quoteOne: quoteOne as never, listGameMarkets: listGameMarkets as never, venueClient: { kind: "signed", holderPositions: (p) => holderPositions(client, p) } });
     r = await fetch(`${base}/api/shadow/positions`, { headers: { "x-lock-key": "lock-key-for-positions-test" } });
     const full = (await r.json()) as { ok: boolean; configured: boolean; positions: Array<{ ticker: string | null; contracts: number; lock: { status: string; creditCents: number } | null }> };
     assert.equal(full.configured, true);

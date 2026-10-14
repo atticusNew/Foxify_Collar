@@ -123,7 +123,8 @@ import { measureNetting } from "../src/eventCollar/crossVenue/shadowNetting";
 import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slateLinkKey, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
 import type { CandidateResult, ScanOptions, ScanState, listGameMarkets, quoteOne } from "./eventProtectXDemoService";
 import { lockAuthorized, lockKeyFromEnv, parseLockRequest, readJsonBody } from "../src/eventCollar/crossVenue/lockGate";
-import { VenueClient, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition } from "../src/eventCollar/crossVenue/venuePositions";
+import { VenueClient, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
+import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -218,21 +219,33 @@ const LOCK_KEY = lockKeyFromEnv(process.env);
 const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/positions"]);
 const lockInFlight = new Set<string>();
 /**
- * HOLDER POSITIONS (crossVenue/venuePositions.ts): with a read-only key for the holder's venue
- * account in the service env, GET /api/shadow/positions confirms what they hold (contracts, cost,
- * game) and which of our markets each maps to, so the client points at a row and never guesses a
- * size. Unset, the route answers configured:false and the client reads the page instead.
+ * HOLDER POSITIONS (crossVenue/venuePositions.ts, crossVenue/venuePlays.ts): with a key for the
+ * holder's venue account in the service env, GET /api/shadow/positions confirms what they hold
+ * (contracts, cost, game) and which of our markets each maps to, so the client points at a row
+ * and never guesses a size. Two venue APIs are spoken, chosen by which credentials are set:
+ * VENUE_API_KEY_ID + VENUE_API_PRIVATE_KEY_PEM (signed requests, read-only key) or
+ * VENUE_API_ACCESS_KEY + VENUE_API_SECRET_KEY (session login, bearer token). Unset, the route
+ * answers configured:false and the client reads the page instead.
  */
-let venueClient: VenueClient | null = null;
+export interface HolderPositionsSource {
+  kind: "signed" | "bearer";
+  holderPositions(protectable: ProtectableMarket[]): Promise<HolderPosition[]>;
+}
+let venueClient: HolderPositionsSource | null = null;
 let venueClientNote: string | null = null;
 {
-  const cfg = venueConfigFromEnv(process.env);
-  if (cfg) {
+  const signed = venueConfigFromEnv(process.env);
+  const bearer = playsConfigFromEnv(process.env);
+  if (signed) {
     try {
-      venueClient = new VenueClient({ host: cfg.host, signer: signerFromPem(cfg.keyId, cfg.pem) });
+      const c = new VenueClient({ host: signed.host, signer: signerFromPem(signed.keyId, signed.pem) });
+      venueClient = { kind: "signed", holderPositions: (p) => holderPositions(c, p) };
     } catch (err) {
       venueClientNote = `venue positions: key unusable (${String(err instanceof Error ? err.message : err)})`;
     }
+  } else if (bearer) {
+    const c = new PlaysClient(bearer);
+    venueClient = { kind: "bearer", holderPositions: (p) => holderPlays(c, p) };
   }
 }
 const POSITIONS_TTL_MS = Number(process.env.EVENT_SHADOW_POSITIONS_TTL_MS || 20_000);
@@ -419,7 +432,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     if (!positionsCache || Date.now() - positionsCache.at > POSITIONS_TTL_MS || url.searchParams.get("fresh") === "1") {
       try {
         const markets = await listGameMarketsFn();
-        positionsCache = { at: Date.now(), positions: await holderPositions(venueClient, markets) };
+        positionsCache = { at: Date.now(), positions: await venueClient.holderPositions(markets) };
       } catch (err) {
         sendJson(res, 200, { ok: false, at: atIso, configured: true, error: "venue_read_failed", message: String(err instanceof Error ? err.message : err) });
         return;
@@ -806,7 +819,7 @@ function healthBody(): Record<string, unknown> {
       positions: loadShadowPositions(LOCK_LEDGER_PATH).length,
       ledger: { path: LOCK_LEDGER_PATH, ...ledgerStats(LOCK_LEDGER_PATH) },
       // the holder's venue account, read-only: configured or not, never the key
-      holderPositions: { configured: Boolean(venueClient), ...(venueClientNote ? { note: venueClientNote } : {}), lastReadAt: positionsCache ? new Date(positionsCache.at).toISOString() : null },
+      holderPositions: { configured: Boolean(venueClient), ...(venueClient ? { api: venueClient.kind } : {}), ...(venueClientNote ? { note: venueClientNote } : {}), lastReadAt: positionsCache ? new Date(positionsCache.at).toISOString() : null },
     },
     hedge: {
       strategy: hedgeChoice.strategy,
@@ -1252,7 +1265,7 @@ async function main(): Promise<void> {
 if (process.env.NODE_ENV !== "test") void main();
 
 /** Test seam: the lock routes' engine calls, normally wired in main() from the scanner module. */
-export function wireLockEngine(fns: { quoteOne: typeof quoteOne; listGameMarkets: typeof listGameMarkets; venueClient?: VenueClient | null }): void {
+export function wireLockEngine(fns: { quoteOne: typeof quoteOne; listGameMarkets: typeof listGameMarkets; venueClient?: HolderPositionsSource | null }): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
   if (fns.venueClient !== undefined) {
