@@ -454,6 +454,7 @@
       default:
         return { why: message || "Protection isn't available on this position right now.", next: "" };
     }
+    positionOverlays();
   };
 
   const lineGo = (label, sub, cls) => '<button type="button" class="ael-line ' + (cls || "") + '"><span class="ael-ic">' + (cls === "ael-line-on" ? SHIELD_FILL : SHIELD) + '</span><span class="ael-lt"><b>' + label + "</b>" + (sub ? "<span>" + sub + "</span>" : "") + "</span></button>";
