@@ -9,10 +9,13 @@
  * one price for the whole size, off-book; when a maker answers at or inside
  * the walk, the hedge costs less than was quoted and the difference is kept.
  *
- * Two strategies behind one interface:
+ * Three strategies behind one interface:
  *   book  — take the visible book at the walked terms (what the quote assumed)
  *   rfq   — request a quote for the whole size; accept only if the all-in cost
  *           is at or under the book walk; otherwise fall back to the book
+ *   live  — place a real order on the venue, capped at the walked worst price,
+ *           behind rails (liveHedge.ts); anything the rails or the venue refuse
+ *           falls back to the simulated book so the shadow's record continues
  *
  * The RFQ path never makes the hedge worse than quoted: the book walk is the
  * ceiling, and a quote above it is declined. Every step, on every path, lands
@@ -33,7 +36,7 @@ import { dirname } from "node:path";
 import type { HedgeLeg } from "./types";
 
 export type HedgeVenue = "kalshi" | "polymarket";
-export type HedgeStrategy = "book" | "rfq";
+export type HedgeStrategy = "book" | "rfq" | "live";
 
 /** What the hedge needs to buy, and the book walk it was quoted against. */
 export interface HedgeIntent {
@@ -128,9 +131,23 @@ export type HedgeAttempt =
       priceMilli?: number;
       costCents?: number;
     }
-  | { strategy: "book"; step: "fill"; ok: boolean; at: string; detail: string; costCents?: number };
+  | { strategy: "book"; step: "fill"; ok: boolean; at: string; detail: string; costCents?: number }
+  | {
+      strategy: "live";
+      /** rails: the pre-trade checks; dry_run: the order built and held; order: the order sent to the venue */
+      step: "rails" | "dry_run" | "order";
+      ok: boolean;
+      at: string;
+      detail: string;
+      /** which rail refused, when one did */
+      rail?: string;
+      orderId?: string;
+      /** units the order asked for (sent), or filled (ok order) */
+      unitsMilli?: number;
+      costCents?: number;
+    };
 
-export type HedgeOutcome = "filled_rfq" | "filled_book" | "unfilled";
+export type HedgeOutcome = "filled_rfq" | "filled_book" | "filled_live" | "unfilled";
 
 /** The trail for one hedge: every step tried, in order, and what came of it. */
 export interface HedgeReceipt {
@@ -164,7 +181,7 @@ export const REAL_CLOCK: ExecutorClock = {
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 
-function receiptId(intent: HedgeIntent, at: string): string {
+export function receiptId(intent: HedgeIntent, at: string): string {
   return createHash("sha256")
     .update(`${intent.venue}|${intent.instrument}|${intent.unitsMilli}|${at}`)
     .digest("hex")
@@ -451,7 +468,7 @@ export class RfqHedgeExecutor implements HedgeExecutor {
   }
 }
 
-function errText(err: unknown): string {
+export function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -492,18 +509,36 @@ export interface HedgeReceiptSummary {
   costCents: number;
   simulated: number;
   fallbackReasons: Record<string, number>;
+  /** the live path: what the rails held, what was built and not sent, what reached the venue */
+  live: {
+    /** hedges a rail refused (then simulated) */
+    refused: number;
+    byRail: Record<string, number>;
+    /** orders built under dry run and not sent */
+    dryRun: number;
+    /** orders that reached the venue */
+    sent: number;
+    /** sent orders that filled, in full or part */
+    filled: number;
+    partial: number;
+    /** units sent to the venue, milli */
+    sentUnitsMilli: number;
+    /** all-in cents paid on live fills */
+    costCents: number;
+  };
 }
 
 export function summarizeHedgeReceipts(receipts: HedgeReceipt[]): HedgeReceiptSummary {
   const s: HedgeReceiptSummary = {
     receipts: receipts.length,
-    byOutcome: { filled_rfq: 0, filled_book: 0, unfilled: 0 },
+    byOutcome: { filled_rfq: 0, filled_book: 0, filled_live: 0, unfilled: 0 },
     byVenue: { kalshi: 0, polymarket: 0 },
     rfqSavedCents: 0,
     bookWalkPenaltyCents: 0,
     costCents: 0,
     simulated: 0,
     fallbackReasons: {},
+    live: { refused: 0, byRail: {}, dryRun: 0, sent: 0, filled: 0, partial: 0, sentUnitsMilli: 0, costCents: 0 },
   };
   for (const r of receipts) {
     s.byOutcome[r.outcome] = (s.byOutcome[r.outcome] ?? 0) + 1;
@@ -513,6 +548,24 @@ export function summarizeHedgeReceipts(receipts: HedgeReceipt[]): HedgeReceiptSu
       s.costCents += r.fill.costCents;
       if (r.fill.simulated) s.simulated += 1;
       if (r.outcome === "filled_rfq") s.rfqSavedCents += r.fill.vsBookCents;
+    }
+    for (const a of r.attempts) {
+      if (a.strategy !== "live") continue;
+      if (a.step === "rails" && !a.ok) {
+        s.live.refused += 1;
+        const rail = a.rail ?? "unknown";
+        s.live.byRail[rail] = (s.live.byRail[rail] ?? 0) + 1;
+      } else if (a.step === "dry_run") {
+        s.live.dryRun += 1;
+      } else if (a.step === "order") {
+        s.live.sent += 1;
+        s.live.sentUnitsMilli += r.intent.unitsMilli;
+      }
+    }
+    if (r.outcome === "filled_live" && r.fill) {
+      s.live.filled += 1;
+      s.live.costCents += r.fill.costCents;
+      if (r.fill.unitsMilli < r.intent.unitsMilli) s.live.partial += 1;
     }
     if (r.fallbackReason) {
       // group by the reason's head so one summary line covers a family of quotes

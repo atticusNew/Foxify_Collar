@@ -1,0 +1,321 @@
+/* Atticus Earn & Protect: Lock in. Styled to sit inside the venue's own theme (near-black, white,
+   one blue accent, red only for a refusal) so the eye stays on the venue; our name is one line at
+   the foot. On a desktop width the panel docks at the right where the venue's order slip lives;
+   on a phone it is a bottom sheet. */
+
+.ael-ui,
+.ael-ui * {
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.3;
+}
+
+/* Row button: placed by the script beside the row (or in its bottom-right corner). */
+.ael-btn {
+  position: fixed;
+  z-index: 2147483000;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #1a73ff;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(26, 115, 255, 0.35);
+  transition: transform 0.12s, box-shadow 0.12s, background 0.12s;
+  white-space: nowrap;
+}
+.ael-btn:hover { background: #2b7fff; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(26, 115, 255, 0.45); }
+.ael-btn:active { transform: translateY(0); }
+.ael-btn svg { width: 15px; height: 15px; flex: none; }
+
+.ael-btn.ael-locked {
+  background: #121216;
+  color: #3b8bff;
+  box-shadow: 0 0 0 1px #26262d;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ael-btn.ael-locked:hover { transform: none; background: #17171c; }
+
+/* Docked pill when no row reads. */
+.ael-pill {
+  position: fixed;
+  right: 18px;
+  bottom: 78px;
+  z-index: 2147483000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: #1a73ff;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(26, 115, 255, 0.4);
+}
+.ael-pill svg { width: 18px; height: 18px; }
+
+/* Scrim: click anywhere outside to close. Barely dims, like the venue's own overlays. */
+.ael-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483500;
+  background: rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s;
+}
+.ael-scrim.ael-on { opacity: 1; pointer-events: auto; }
+
+/* Panel (phone: bottom sheet) */
+.ael-sheet {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  z-index: 2147483600;
+  width: 100%;
+  max-width: 430px;
+  max-height: 92vh;
+  overflow-y: auto;
+  transform: translate(-50%, 104%);
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  background: #121216;
+  color: #f2f3f5;
+  border: 1px solid #26262d;
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  padding: 10px 18px 18px;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.5);
+  font-size: 15px;
+  text-align: left;
+}
+.ael-sheet.ael-on { transform: translate(-50%, 0); }
+
+.ael-grab { width: 40px; height: 4px; border-radius: 2px; background: #2a2a31; margin: 0 auto 10px; }
+
+.ael-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9a9ca3;
+  margin-bottom: 10px;
+}
+.ael-x {
+  border: 0;
+  background: transparent;
+  color: #9a9ca3;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.ael-x:hover { background: #1b1b21; color: #fff; }
+
+/* Desktop: dock at the right where the venue keeps its order slip. */
+@media (min-width: 900px) {
+  .ael-scrim { background: rgba(0, 0, 0, 0.15); }
+  .ael-sheet {
+    left: auto;
+    right: 16px;
+    top: 104px;
+    bottom: auto;
+    width: 330px;
+    max-width: 330px;
+    max-height: calc(100vh - 124px);
+    transform: translateX(110%);
+    border-bottom: 1px solid #26262d;
+    border-radius: 14px;
+    padding: 14px 16px 16px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  }
+  .ael-sheet.ael-on { transform: none; }
+  .ael-grab { display: none; }
+}
+
+.ael-sheet h2 {
+  margin: 0 0 4px;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #fff;
+}
+
+.ael-who { font-size: 13px; color: #9a9ca3; margin-bottom: 10px; }
+
+.ael-size { font-size: 12px; color: #9a9ca3; margin: -4px 0 12px; }
+.ael-size a { color: #3b8bff; text-decoration: none; font-weight: 600; margin-left: 4px; }
+.ael-size-form { display: none; margin-left: 8px; }
+.ael-size-form.ael-on { display: inline-flex; gap: 6px; align-items: center; }
+.ael-size-form input {
+  width: 80px;
+  padding: 5px 8px;
+  border: 1px solid #2a2a31;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #fff;
+  background: #0b0b0d;
+}
+.ael-size-form button {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: #1a73ff;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ael-skel {
+  height: 16px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #1b1b21 25%, #24242b 50%, #1b1b21 75%);
+  background-size: 200% 100%;
+  animation: ael-shimmer 1.2s infinite;
+  margin: 10px 0;
+}
+@keyframes ael-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+.ael-tiles { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 8px; margin: 6px 0 12px; }
+.ael-tile {
+  border: 1px solid #26262d;
+  border-radius: 12px;
+  padding: 11px 8px;
+  text-align: center;
+  background: #0b0b0d;
+}
+.ael-tile.ael-k { background: rgba(26, 115, 255, 0.12); border-color: rgba(26, 115, 255, 0.55); }
+.ael-l { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #9a9ca3; }
+.ael-v { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; margin: 4px 0 2px; font-variant-numeric: tabular-nums; color: #fff; }
+.ael-tile.ael-k .ael-v { color: #3b8bff; }
+.ael-was { font-size: 11px; color: #6f7279; }
+
+.ael-chips { display: none; gap: 8px; margin: 0 0 12px; }
+.ael-chips.ael-on { display: grid; grid-template-columns: repeat(3, 1fr); }
+.ael-chip {
+  border: 1px solid #26262d;
+  border-radius: 10px;
+  background: #0b0b0d;
+  color: #9a9ca3;
+  padding: 8px 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  cursor: pointer;
+  text-align: center;
+}
+.ael-chip b { display: block; color: #fff; font-size: 12px; margin-bottom: 2px; }
+.ael-chip[aria-pressed="true"] { border-color: #1a73ff; box-shadow: 0 0 0 1px #1a73ff inset; background: rgba(26, 115, 255, 0.12); }
+
+.ael-go {
+  display: block;
+  width: 100%;
+  padding: 14px 16px;
+  margin: 0 0 10px;
+  border: 0;
+  border-radius: 12px;
+  background: #1a73ff;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(26, 115, 255, 0.3);
+}
+.ael-go:hover { background: #2b7fff; }
+.ael-go:disabled { opacity: 0.75; cursor: wait; box-shadow: none; }
+.ael-go.ael-quiet { background: #1b1b21; color: #fff; box-shadow: none; font-size: 14px; font-weight: 700; padding: 11px 16px; }
+.ael-go.ael-quiet:hover { background: #24242b; }
+
+.ael-fine { font-size: 11px; color: #6f7279; text-align: center; margin-bottom: 6px; }
+.ael-fine a { color: #9a9ca3; text-decoration: underline; }
+
+.ael-refusal {
+  background: rgba(255, 90, 90, 0.08);
+  border: 1px solid rgba(255, 90, 90, 0.35);
+  color: #d6d7db;
+  border-radius: 10px;
+  padding: 11px 13px;
+  font-size: 13px;
+  margin: 8px 0 12px;
+}
+.ael-refusal b { color: #ff5a5a; }
+
+.ael-how { display: none; font-size: 13px; color: #9a9ca3; margin: 6px 0 10px; }
+.ael-how.ael-on { display: block; }
+.ael-how p { margin: 0 0 8px; }
+
+.ael-done { text-align: center; padding: 6px 0 12px; }
+.ael-ck {
+  width: 52px;
+  height: 52px;
+  margin: 4px auto 10px;
+  border-radius: 50%;
+  background: rgba(26, 115, 255, 0.15);
+  color: #3b8bff;
+  font-size: 28px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ael-sum { font-size: 14px; color: #9a9ca3; line-height: 1.5; margin-top: 6px; }
+.ael-sum b { color: #fff; }
+
+.ael-op {
+  font-size: 11px;
+  color: #9a9ca3;
+  background: #0b0b0d;
+  border: 1px solid #26262d;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ael-disclose {
+  font-size: 10.5px;
+  color: #6f7279;
+  text-align: center;
+  border-top: 1px solid #1f1f25;
+  padding-top: 10px;
+  margin-top: 6px;
+}
+
+/* Picker */
+.ael-leagues { display: flex; gap: 8px; margin: 0 0 10px; flex-wrap: wrap; }
+.ael-leagues .ael-chip { padding: 6px 12px; border-radius: 999px; }
+.ael-leagues .ael-chip b { margin: 0; }
+
+.ael-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-height: 44vh; overflow-y: auto; }
+.ael-pick {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #26262d;
+  border-radius: 10px;
+  background: #0b0b0d;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #fff;
+}
+.ael-pick:hover { border-color: #1a73ff; }
+.ael-pick b { display: block; font-size: 14px; font-weight: 700; }
+.ael-pick span { display: block; font-size: 11px; color: #9a9ca3; margin-top: 2px; }
+.ael-pick.ael-held { opacity: 0.5; cursor: not-allowed; }
+.ael-pick.ael-held:hover { border-color: #26262d; }

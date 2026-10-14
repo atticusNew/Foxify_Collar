@@ -186,6 +186,23 @@ services:
       # EVENT_HEDGE_STRATEGY=rfq and POLY_* credentials are set. Public value, safe in git.
       - key: POLYMARKET_BUILDER_CODE
         value: "0x7c25351b760a956a2617e4574ba775190a0483944143b8f14e40733d1f5eff16"
+      # LIVE HEDGE (off here; set in the dashboard for the live-order demo, never in git):
+      #   EVENT_HEDGE_STRATEGY=live             real Kalshi orders behind rails; anything the
+      #                                         rails hold is simulated at the book, reason on the receipt
+      #   KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM   service env only; the extension never sees them
+      #   EVENT_HEDGE_LIVE_TICKERS=KX...,KX...  allowlist; empty allows nothing
+      #   EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER=25 / EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY=100
+      #   EVENT_HEDGE_LIVE_SEND=yes             the only value that sends; anything else is a dry run
+      #   EVENT_HEDGE_KILL_SWITCH=1             nothing leaves, whatever else is set
+      # Pre-flight (operator): GET /api/shadow/hedges/preflight?ticker=KX... reads balance and the rails.
+      # LOCK IN (the tap from the browser extension; off here, set in the dashboard, never in git):
+      #   EVENT_SHADOW_LOCK_KEY=<12+ chars>     opens GET /api/shadow/markets, GET /api/shadow/quote
+      #                                         and POST /api/shadow/lock to callers sending x-lock-key.
+      #                                         Unset: those routes answer 404 to anyone but the operator.
+      #   Locks are written to their own ledger beside the scan's (lock-ledger.jsonl on the same
+      #   disk; EVENT_SHADOW_LOCK_LEDGER_PATH to move it), so a holder may lock a market the scan
+      #   already shows. Same settlement; never early-closed. Operator export: /api/shadow/export?ledger=lock
+      #   Tickers on EVENT_HEDGE_LIVE_TICKERS are hedged on Kalshi's own No side and skipped by the scan.
 
   - type: web
     name: atticus-pm-clob-egress-proxy

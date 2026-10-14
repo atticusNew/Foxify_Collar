@@ -326,6 +326,41 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.equal(hedges.strategy, "book");
     assert.equal(hedges.summary.receipts, 0, "positions appended by hand carry no hedge receipt; the scanner writes those");
     assert.deepEqual(hedges.recent, []);
+    assert.equal((h.hedge as { live: unknown }).live, null, "book mode: no live rails");
+    // no EVENT_SHADOW_LOCK_KEY: the lock routes do not exist for a visitor; the operator reaches them (engine not wired here)
+    const lockView = (health as { lock: { enabled: boolean; reservedTickers: string[]; positions: number; ledger: { exists: boolean } } }).lock;
+    assert.equal(lockView.enabled, false);
+    assert.deepEqual(lockView.reservedTickers, []);
+    assert.equal(lockView.positions, 0);
+    assert.equal(lockView.ledger.exists, false, "no lock yet, no lock ledger");
+    assert.equal((await fetch(`${base}/api/shadow/lock`, { method: "POST" })).status, 404);
+    assert.equal((await fetch(`${base}/api/shadow/markets`)).status, 404);
+    assert.equal((await fetch(`${base}/api/shadow/markets`, { headers: { "x-lock-key": "anything-at-all-here" } })).status, 404);
+    assert.equal((await fetch(`${base}/api/shadow/markets`, op)).status, 503);
+    // the live pre-flight is an operator view; in book mode it says so and places nothing
+    assert.equal((await fetch(`${base}/api/shadow/hedges/preflight`)).status, 403);
+    const preflight = (await (await fetch(`${base}/api/shadow/hedges/preflight?ticker=kxnba-x`, op)).json()) as {
+      ok: boolean;
+      strategy: string;
+      live: unknown;
+      sentTodayContracts: number;
+      venue: { ok: boolean; error?: string };
+      ticker: { ticker: string; allowlisted: boolean; onRecord: boolean; wouldSend: boolean; contracts: number; kalshiRoute: unknown } | null;
+    };
+    assert.equal(preflight.ok, true);
+    assert.equal(preflight.strategy, "book");
+    assert.equal(preflight.live, null);
+    assert.equal(preflight.sentTodayContracts, 0);
+    assert.deepEqual(preflight.venue, { ok: false, error: "not in live mode" });
+    // no engine wired in this test: the Kalshi-route quote says so instead of guessing
+    assert.deepEqual(preflight.ticker, {
+      ticker: "KXNBA-X",
+      allowlisted: false,
+      onRecord: false,
+      wouldSend: false,
+      contracts: 20,
+      kalshiRoute: { offered: false, code: "engine_not_ready", detail: "the scanner is still loading" },
+    });
 
     // VENUE SLATES: a prospect's name renders only on a link we sent. No key, wrong key, unknown
     // slate: the same 404 as any unknown path. The share key or the operator token opens it.

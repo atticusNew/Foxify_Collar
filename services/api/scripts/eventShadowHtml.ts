@@ -72,7 +72,12 @@ export interface ShadowPageInput {
 /** One public line on hedge fills: how they are filled and how many. The receipts themselves are the operator's. */
 function hedgeLine(h: NonNullable<ShadowPageInput["hedges"]>): string {
   const s = h.summary;
-  const how = h.strategy === "rfq" ? "RFQ first, visible book as the fallback" : "at the visible book, at the terms quoted";
+  const how =
+    h.strategy === "rfq"
+      ? "RFQ first, visible book as the fallback"
+      : h.strategy === "live"
+        ? "on the venue, never above the terms quoted"
+        : "at the visible book, at the terms quoted";
   const sim = s.receipts > 0 && s.simulated === s.receipts ? ", all simulated" : s.simulated > 0 ? `, ${s.simulated} simulated` : "";
   return `<div class="row"><span>hedge fills</span><b>${escapeHtml(how)} <i>${s.receipts} recorded${sim}</i></b></div>`;
 }
@@ -814,6 +819,46 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
           } from ${bpsPct(one.grossBpsOfStake)} to ${bpsPct(top.grossBpsOfStake)}. That fall is the price of walking the book; an RFQ fill at one price is what removes it.`
       : "";
 
+  // ROUTING, MEASURED: the same sports positions forced onto each hedge route. The question it
+  // answers is what a hedge that must run on the market's own No side costs, before any routing
+  // policy is changed on the live record. Operator only.
+  const routeCard = (() => {
+    const r = cf.routes;
+    if (!r || r.positions === 0) {
+      return `  <div class="card">
+    <h2>Routing, measured</h2>
+    <div class="read">No sports position has carried both routes yet; the next scan that quotes a game begins it. Each new open records the default tier on the market's own No side and on the second book, from the same books at the same second.</div>
+  </div>
+`;
+    }
+    const rows = [
+      ruleTr("live book", "the cheaper route, as written", r.live, { base: true }),
+      ruleTr("kalshi only", "the market's own No side, every time", r.kalshiOnly),
+      ruleTr("second book only", "cross-venue, every time", r.crossOnly),
+    ].join("");
+    const split = Object.entries(r.liveRouteSplit)
+      .map(([k, n]) => `${n} ${ROUTE_WORDS[k] ?? k}`)
+      .join(", ");
+    const extra =
+      r.kalshiOnlyExtraEvBps === null
+        ? ""
+        : r.kalshiOnlyExtraEvBps > 0
+          ? `On the ${r.bothQuoted} positions the market's own No side also funded, kalshi-only quoted ${bpsPct(r.kalshiOnlyExtraEvBps)} of expected value more than the route written, and users would have been paid ${signedUsd(r.kalshiOnlyCreditDeltaCents)} in credits against the live book.`
+          : `On the ${r.bothQuoted} positions the market's own No side also funded, kalshi-only was no richer than the route written (${bpsPct(r.kalshiOnlyExtraEvBps)}), credits ${signedUsd(r.kalshiOnlyCreditDeltaCents)} against the live book.`;
+    const refused =
+      r.kalshiOnlyRefusedWhereLiveQuoted > 0
+        ? ` ${r.kalshiOnlyRefusedWhereLiveQuoted} position${r.kalshiOnlyRefusedWhereLiveQuoted === 1 ? "" : "s"} the live route protected would have been refused kalshi-only: that is coverage lost, not cost, and it is excluded from the pairwise numbers.`
+        : "";
+    return `  <div class="card">
+    <h2>Routing, measured</h2>
+    <div class="sub" style="margin-bottom:6px">${r.positions} sports positions since ${escapeHtml(utcDay(r.recordedSince ?? input.atIso))} UTC carry the default tier on both hedge routes from the same books at the same second. The live book wrote the cheaper one (${escapeHtml(split)}). Crypto strikes have one route and are left out.</div>
+    <div class="tablewrap"><table>${RULE_HEAD}${rows}</table></div>
+    <div class="read">${escapeHtml(extra + refused)}</div>
+    <div class="rule">Kalshi-only is what a hedge that must run on the market's own No side would have cost: the production shape for a US venue. The second book is a price reference until it can be filled on from here; the live record keeps choosing the cheaper route for the user until a routing rule is published.</div>
+  </div>
+`;
+  })();
+
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -846,6 +891,7 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
 
   ${input.lastLeg ? lastLegCard(input.lastLeg, tq) : ""}
 
+${routeCard}
   <div class="card">
     <h2>Protection tiers</h2>
     <div class="sub" style="margin-bottom:6px">Three collars from one book. User Δ is protected minus naked across settled events; our P&amp;L is the other side after the hedge. Percentages are of settled stake.</div>
