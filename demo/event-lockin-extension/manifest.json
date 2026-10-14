@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Atticus Earn & Protect: Lock in (demo placement)",
-  "version": "0.1.0",
-  "description": "Demo-only, local rendering: shows the Lock in button and sheet in place on a venue's positions page. Pricing, the record and the hedge run in the Atticus event service; this extension holds no venue credentials and is placement only.",
+  "version": "0.2.0",
+  "description": "Demo-only, local rendering: a shield beside a team where protection is offered, a Lock in line under the venue's order slip, and the protection panel. Pricing, the record and the hedge run in the Atticus event service; this extension holds no venue credentials and is placement only.",
   "permissions": [
     "storage"
   ],
   "host_permissions": [
     "https://atticus-event-shadow.onrender.com/*",
-    "http://localhost:8793/*",
-    "http://127.0.0.1:8793/*"
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*"
   ],
   "content_scripts": [
     {
