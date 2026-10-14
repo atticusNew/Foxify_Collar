@@ -72,7 +72,11 @@
   .place{position:fixed;right:12px;bottom:12px;width:226px;background:#2fd27a;color:#000;border:0;border-radius:10px;padding:10px 12px;font-weight:700;font-size:13px;text-align:center;cursor:pointer}
   .place small{display:block;font-weight:500;font-size:11px;opacity:.8}
   .hidden{display:none}
-  .ptabs{display:flex;gap:18px;font-size:13px;margin:0 0 14px;color:#9a9ca3}.ptabs .on{color:#fff;font-weight:700;border-bottom:2px solid #fff;padding-bottom:4px}
+  .ptabs{display:flex;gap:22px;font-size:13px;margin:0 0 18px;color:#9a9ca3;border-bottom:1px solid #1f1f25}.ptabs a{color:inherit;text-decoration:none;padding:0 2px 8px}.ptabs .on{color:#fff;font-weight:600;border-bottom:2px solid #0ba249;margin-bottom:-1px}
+  .filters{display:flex;gap:16px;margin:0 0 18px}.filters div small{display:block;font-size:11px;color:#9a9ca3;margin-bottom:4px}.filters div span{display:inline-block;min-width:120px;padding:7px 12px;border:1px solid #27272a;border-radius:8px;font-size:12.5px;color:#f2f3f5}
+  table.trades{width:100%;border-collapse:collapse;font-size:12.5px}table.trades th{font-weight:400;color:#c3c4c9;text-align:left;padding:8px 10px;border-bottom:1px solid #1f1f25}table.trades th:nth-child(5),table.trades th:nth-child(6),table.trades th:nth-child(7),table.trades td:nth-child(5),table.trades td:nth-child(6),table.trades td:nth-child(7){text-align:right}
+  table.trades td{padding:12px 10px;border-bottom:1px solid #1a1a1e;vertical-align:middle;color:#f2f3f5}table.trades td small{display:block;color:#9a9ca3;font-size:11px;margin-top:3px}table.trades td b{font-weight:500}table.trades td.pr{color:#c3c4c9}table.trades td.ic{width:22px;color:#6f7279;font-size:12px}table.trades td.act{color:#9a9ca3;text-align:center}
+  .mk{display:flex;gap:10px;align-items:center}.mk .pin{width:8px;height:8px;border-radius:50%;background:#2fd27a;flex:none}.type{border:1px solid #27272a;border-radius:999px;padding:3px 9px;font-size:11px;color:#c3c4c9;background:#161618}
   .psum{display:flex;gap:24px;margin:0 0 18px;font-size:12px;color:#9a9ca3}.psum b{display:block;color:#fff;font-size:18px;font-weight:800}
   .pos{display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid #1f1f25;border-radius:12px;background:#121216;margin-top:10px}
   .pos .logo-sq{width:34px;height:34px;border-radius:8px}
@@ -87,7 +91,7 @@
 <body>
 <div class="top">
 <div class="ticker"><span>Hockey <span class="live">Live</span> 3rd 00:38 <b>TOR</b>4 <b>UTA</b>5</span><span>Hockey <span class="live">Live</span> End 2nd <b>CGY</b>2 <b>ANA</b>2</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:55 <b>POR</b>81 <b>SAC</b>50</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:09 <b>GSW</b>63 <b>LAL</b>70</span><span>Hockey <span class="live">Live</span> 2nd 17:57 <b>EDM</b>3 <b>LAK</b>0</span><span>Pro BSB <span class="blue">Tomorrow 8:00 PM</span> <b>MIL</b> <span class="green">+156</span> <b>LAD</b> <span class="green">-164</span></span><span>CFB <span class="blue">Tomorrow 7:00 PM</span> <b>WKU</b> <span class="green">-112</span> <b>SHSU</b> <span class="green">+111</span></span></div>
-<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/" id="nav-home"><span class="ico"></span>Home</a><a href="#/"><span class="ico"></span>Sports</a><a href="#/my-trades" id="nav-plays"><span class="ico"></span><span id="pf-nav">My Trades</span></a><a href="#"><span class="ico"></span>Promos</a></div><div class="right"><div class="mode" id="mode"><span class="on" data-mode="cash">Cash</span><span data-mode="points">Points</span></div><div class="search">Search Events, Teams &amp; Players</div><div class="dep">+ Deposit</div><div class="get" id="bal">$180.00</div></div></header>
+<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/" id="nav-home"><span class="ico"></span>Home</a><a href="#/"><span class="ico"></span>Sports</a><a href="#/my-trades" id="nav-plays"><span class="ico"></span><span id="pf-nav">My Trades</span></a><a href="#"><span class="ico"></span>Promos</a></div><div class="right"><div class="mode" id="mode"><span class="on" data-mode="cash">Cash</span><span data-mode="points">Points</span></div><div class="search">Search Events, Teams &amp; Players</div><div class="dep">+ Deposit</div><div class="get" id="bal">$2.00 &#x25BE;</div></div></header>
 </div>
 <div class="wrap">
 <aside><a><i style="background:#8ab"></i>Hockey</a><a><i style="background:#cc3"></i>Tennis (M)</a><a><i style="background:#e73"></i>Pro BB (M)</a><a class="on" href="#/"><i style="background:#a63"></i>Pro FB</a><a><i style="background:#a4c"></i>Tennis (W)</a><a><i style="background:#e73"></i>Pro BB (W)</a><a><i style="background:#63c"></i>EPL</a><a><i style="background:#c33"></i>MMA</a><a><i style="background:#c33"></i>La Liga</a><a><i style="background:#3a6"></i>Serie A</a><a><i style="background:#36c"></i>Ligue 1</a><a><i style="background:#c33"></i>US Soccer</a>
@@ -138,18 +142,24 @@ const mult = (odds) => { const o = Number(odds); return o > 0 ? 1 + o / 100 : 1 
 const toWin = (stake, odds) => stake * (mult(odds) - 1);
 const tag = (p) => (p.matched <= 0 ? '<span class="tag wait">Unmatched</span>' : p.matched < p.stake ? '<span class="tag part">Partially Matched</span>' : '<span class="tag ok">Matched</span>');
 const show = (odds) => (100 / mult(odds)).toFixed(1) + "%";
-const playRow = (p) => {
+const CITY = { HOU: "Houston", JAX: "Jacksonville", WAS: "Washington", SF: "San Francisco", TEN: "Tennessee", IND: "Indianapolis", PIT: "Pittsburgh", TB: "Tampa Bay", SEA: "Seattle", DEN: "Denver", BUF: "Buffalo", LV: "Las Vegas", LA: "Los Angeles", KC: "Kansas City", ARI: "Arizona" };
+const full = (t) => CITY[t[0]] + " " + t[1];
+const refOf = (p, i) => "mo_" + (p.g + i).toLowerCase().slice(0, 2) + "\u2026" + (1000 + i * 731).toString(16).slice(-4);
+// one row of the venue's table: Market, Type, Event/Date, Cost, Price, Payout, Ref ID/Placed, Actions.
+// The figures sit under column headers with no label of their own; the filled tab shows the matched
+// part of a play as its cost, the resting tab what is still an order.
+const tradeRow = (p, i, cost) => {
   const t = p.side === "away" ? p.away : p.home;
-  const part = p.matched > 0 && p.matched < p.stake;
-  // the venue names the pick by code and nickname on most rows, by code alone on some
-  const title = (p.codeOnly ? t[0] : t[0] + " " + t[1]) + (p.line ? " " + p.line : "") + " &middot; " + p.kind;
-  return '<div class="pos"><span class="logo-sq"' + (p.side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><div class="pmid"><div class="pname">' + title + '</div><div class="pmeta">NFL &middot; ' + p.away[0] + " @ " + p.home[0] + " &middot; " + p.when + (part ? " &middot; Matched " + money(p.matched) + " &middot; Unmatched " + money(p.stake - p.matched) : "") + '</div></div><div class="podds">' + show(p.odds) + '</div><div class="pnum">Cost<b>' + money(p.stake) + '</b></div><div class="pnum">To Gain<b>' + money(toWin(p.stake, p.odds)) + "</b></div>" + tag(p) + "</div>";
+  const market = (p.codeOnly ? t[0] : full(t)) + (p.line ? " " + p.line : "");
+  return "<tr><td><div class=\"mk\"><span class=\"pin\"></span><div><b>" + market + "</b><small>" + p.kind + "</small></div></div></td><td><span class=\"type\">Straight</span></td><td><b>" + full(p.away) + " at " + full(p.home) + " &#x2197;</b><small>Oct " + (p.when.startsWith("Thu") ? "16" : p.when.startsWith("Mon") ? "20" : "19") + ", 2026 &middot; " + p.when.split(" ").slice(1).join(" ") + "</small></td><td>" + money(cost) + "</td><td class=\"pr\">" + (100 / mult(p.odds)).toFixed(2) + "%</td><td>" + money(cost * mult(p.odds)) + "</td><td><b>Oct 14, 2026 &middot; 2:4" + (i % 10) + " PM</b><small>" + refOf(p, i) + " &#x2398;</small></td><td class=\"act\">&#x22EF;</td></tr>";
 };
-const playsView = () => {
-  const risk = PLAYS.reduce((a, p) => a + p.stake, 0);
-  const win = PLAYS.reduce((a, p) => a + toWin(p.matched, p.odds), 0);
-  return '<h1>My Trades</h1><div class="ptabs"><span class="on">Open</span><span>Settled</span></div><div class="psum"><div>Balance<b>' + money(180) + '</b></div><div>In play<b>' + money(risk) + '</b></div><div>To gain (matched)<b>' + money(win) + "</b></div></div>" +
-    (PLAYS.length ? PLAYS.map(playRow).join("") : '<div class="pempty">No open trades</div>');
+const TABS = ["resting", "filled", "settled"];
+const playsView = (tab) => {
+  const rows = tab === "resting" ? PLAYS.map((p, i) => (p.matched < p.stake ? tradeRow(p, i, p.stake - p.matched) : "")) : tab === "filled" ? PLAYS.map((p, i) => (p.matched > 0 ? tradeRow(p, i, p.matched) : "")) : [];
+  const body = rows.join("");
+  return '<h1>My Trades</h1><div class="ptabs">' + TABS.map((t) => '<a href="#/my-trades/' + t + '"' + (t === tab ? ' class="on"' : "") + ">" + t[0].toUpperCase() + t.slice(1) + "</a>").join("") + "</div>" +
+    '<div class="filters"><div><small>Trade Type</small><span>All &#x25BE;</span></div><div><small>Sort By</small><span>Placed (New to Old) &#x25BE;</span></div><div><small>Date Range</small><span>All &#x25BE;</span></div></div>' +
+    (body ? '<table class="trades"><thead><tr><th></th><th>Market</th><th>Type</th><th>Event/Date</th><th>Cost</th><th>Price</th><th>Payout</th><th>Ref ID/Placed</th><th>Actions</th></tr></thead><tbody>' + body.replace(/<tr><td>/g, '<tr><td class="ic">&#x1F517;</td><td>') + "</tbody></table>" : '<div class="pempty">No ' + tab + " trades</div>");
 };
 const cell = (g, side, kind, line, odds) => '<div class="cell" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-odds="' + odds + '"' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? ' class="cell sel"' : "") + ">" + (line ? line + "<small>" + show(odds) + "</small>" : '<span class="o">' + show(odds) + "</span>") + "</div>";
 const teamRow = (g, side) => {
@@ -183,8 +193,9 @@ const render = () => {
   const h = location.hash || "#/";
   const m = /^#\/game\/(\w+)/.exec(h);
   const g = m ? GAMES.find((x) => x.id === m[1]) : null;
-  const plays = /^#\/(my-trades|trades|plays|portfolio)/.test(h);
-  $("#main").innerHTML = plays ? playsView() : g ? gameView(g) : listView();
+  const pm = /^#\/(?:my-trades|trades|plays|portfolio)(?:\/(resting|filled|settled))?/.exec(h);
+  const plays = !!pm;
+  $("#main").innerHTML = plays ? playsView(pm[1] || "filled") : g ? gameView(g) : listView();
   $("#slip").innerHTML = slipView();
   $("#trend").className = "trend" + (slip.sel ? " hidden" : "");
   $("#nav-plays").className = plays ? "on" : "";
