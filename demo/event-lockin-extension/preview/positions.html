@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Portfolio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body{margin:0;background:#0b0b0d;color:#f2f3f5;font-family:-apple-system,Segoe UI,Roboto,sans-serif}
+  .ticker{display:flex;gap:28px;padding:8px 16px;background:#121216;border-bottom:1px solid #1f1f25;font-size:11px;color:#9a9ca3;overflow:hidden;white-space:nowrap}
+  .ticker b{color:#f2f3f5;margin-right:6px}.live{color:#ff5a5a}
+  header{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;background:#0b0b0d;border-bottom:1px solid #1f1f25}
+  .logo{font-weight:900;letter-spacing:.06em;font-size:18px}
+  .tabs{display:flex;gap:28px;font-size:11px;color:#9a9ca3;text-align:center}
+  .tabs div{display:flex;flex-direction:column;align-items:center;gap:4px}.tabs .on{color:#fff}
+  .ico{width:18px;height:18px;border-radius:5px;background:#2a2a31;display:block}.on .ico{background:#fff}
+  .right{display:flex;gap:10px;align-items:center}
+  .search{background:#17171c;border:1px solid #26262d;border-radius:999px;padding:8px 16px;color:#9a9ca3;font-size:13px;width:200px}
+  .dep{background:#1a73ff;color:#fff;border-radius:999px;padding:8px 18px;font-weight:700;font-size:13px}
+  .wrap{display:grid;grid-template-columns:150px 1fr;min-height:80vh}
+  aside{border-right:1px solid #1f1f25;padding:16px 10px;font-size:13px;color:#d6d7db}
+  aside div{padding:8px 10px;border-radius:8px;margin-bottom:2px}aside .on{background:#17171c;color:#fff}
+  main{padding:22px 28px;max-width:760px}
+  h1{font-size:22px;margin:0 0 4px}.sub{color:#9a9ca3;font-size:13px;margin-bottom:18px}
+  .bal{display:flex;gap:28px;margin-bottom:22px}.bal div span{display:block;font-size:11px;color:#9a9ca3}.bal b{font-size:20px}
+  .seg{display:flex;gap:6px;margin-bottom:14px}.seg span{padding:6px 14px;border-radius:999px;background:#17171c;color:#9a9ca3;font-size:12px}.seg .on{background:#fff;color:#000;font-weight:700}
+  .pos{display:grid;grid-template-columns:1fr 90px 110px 120px;align-items:center;background:#121216;border:1px solid #1f1f25;border-radius:12px;padding:14px 16px;margin-bottom:10px}
+  .hd{display:grid;grid-template-columns:1fr 90px 110px 120px;padding:0 16px 6px;font-size:11px;color:#9a9ca3}
+  .pick{font-weight:700;font-size:14px}.pick small{color:#9a9ca3;font-weight:500;margin-left:6px}
+  .meta{color:#9a9ca3;font-size:12px;margin-top:3px}
+  .mult{color:#3b8bff;font-weight:700;font-size:14px}
+  .num{font-size:14px;text-align:right}.num span{display:block;font-size:11px;color:#9a9ca3}
+  .open{display:inline-block;font-size:10px;padding:2px 8px;border-radius:999px;background:#13261a;color:#4fd58a;margin-top:6px}
+</style></head>
+<body>
+<div class="ticker"><span>Pro FB <span class="live">Live</span> Q3 04:49 <b>NYK</b>66 <b>TOR</b>104</span><span>Hockey <span class="live">Live</span> 3rd 06:58 <b>FLA</b>6 <b>CBJ</b>1</span><span>Pro BB (M) <span class="live">Live</span> Q3 04:49 <b>CLE</b>63 <b>ORL</b>93</span><span>Hockey <span class="live">Live</span> 2nd 04:11 <b>TBL</b>4 <b>NYR</b>1</span></div>
+<header><div class="logo">EXCHANGE</div><div class="tabs"><div><span class="ico"></span>Home</div><div><span class="ico"></span>Points</div><div class="on"><span class="ico"></span>$45.63 Portfolio</div><div><span class="ico"></span>Ranks</div></div><div class="right"><div class="search">Search Events, Teams &amp; Players</div><div class="dep">Deposit</div></div></header>
+<div class="wrap">
+<aside><div>Live</div><div>Hockey</div><div>Pro BSB</div><div>CFB</div><div>MMA</div><div>Tennis (M)</div><div>Pro BB (M)</div><div>Tennis (W)</div><div>UCL</div><div class="on">Pro FB</div></aside>
+<main>
+  <h1>Portfolio</h1><div class="sub">Open positions settle on the official result.</div>
+  <div class="bal"><div><span>Cash</span><b>$0.00</b></div><div><span>In positions</span><b>$45.00</b></div><div><span>Potential payout</span><b>$84.73</b></div></div>
+  <div class="seg"><span class="on">Open (3)</span><span>Settled</span><span>Orders</span></div>
+  <div class="hd"><div>Position</div><div>Odds</div><div style="text-align:right">Amount</div><div style="text-align:right">Payout</div></div>
+  <section class="pos">
+    <div><div class="pick">SF 49ers<small>Winner</small></div><div class="meta">Pro FB · WAS at SF · Sun 1:00 PM</div><span class="open">Open</span></div>
+    <div class="mult">1.28x</div>
+    <div class="num">$20.00<span>cost</span></div>
+    <div class="num">$25.63<span>if SF wins</span></div>
+  </section>
+  <section class="pos">
+    <div><div class="pick">OKC Thunder<small>Winner</small></div><div class="meta">Pro BB (M) · OKC at HOU · Wed 7:30 PM</div><span class="open">Open</span></div>
+    <div class="mult">1.92x</div>
+    <div class="num">$10.00<span>cost</span></div>
+    <div class="num">$19.20<span>if OKC wins</span></div>
+  </section>
+  <section class="pos">
+    <div><div class="pick">EDM Oilers<small>Winner</small></div><div class="meta">Hockey · EDM at CGY · Thu 9:00 PM</div><span class="open">Open</span></div>
+    <div class="mult">2.66x</div>
+    <div class="num">$15.00<span>cost</span></div>
+    <div class="num">$39.90<span>if EDM wins</span></div>
+  </section>
+</main>
+</div>
+</body></html>
