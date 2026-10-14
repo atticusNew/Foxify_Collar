@@ -1,8 +1,9 @@
 # Atticus Earn & Protect: Lock in (browser extension, demo placement)
 
-Demo-only. Draws on one page of the venue, the **Portfolio** (open positions), and nothing
-anywhere else. No shield, badge or icon on the game list, the game page or the order slip; the
-holder trades exactly as they do today. Once a position exists, under its row:
+Demo-only. Draws on one page of the venue, **My Trades** (the list of open plays; the venue's
+word for a play is a trade), and nothing anywhere else. No shield, badge or icon on the game list,
+the game page or the order slip; the
+holder plays exactly as they do today. Once a matched play exists, under its row:
 
 1. a **Lock in** line: "Lock in · +$1.66 now", caption "worst case $14.71 instead of $0 · best
    case $25.06". Priced live from the holder's actual size;
@@ -14,70 +15,93 @@ holder trades exactly as they do today. Once a position exists, under its row:
 3. after the tap, a **Protected** chip on the row: "Protected · +$1.66 paid · ends $14.71 or
    $25.06 · details". Details is the same inline panel: worst case, best case, paid now, settles on
    the game's official result, a link to the public record;
-4. a position protection does not cover gets a muted **Protection unavailable** line with the
-   reason after it ("covers Winner picks", or the live refusal from pricing). Tapping it says what
-   to do: a Winner pick on this game can be locked; or check back, the book moves toward kickoff.
+4. a play protection does not cover gets a muted **Protection unavailable** line with the reason
+   after it: "covers Moneyline picks" on a spread or total, "waits until the play is matched" on a
+   play that is still an open order, or the live refusal from pricing. Tapping it says what to do.
 
 That placement is the only staged pixel. Everything behind the tap is the Atticus event service:
-the position is matched to its market, priced from live books at the holder's size, the terms lock,
+the play is matched to its market, priced from live books at the holder's size, the terms lock,
 the record is written, and the hedge is bought on Kalshi.
 
-Styled in the venue's own theme (near-black, white, one blue accent), with no brand of ours up
-top; our name is one line at the foot of the panel.
+Styled in the venue's own theme (near-black, white, one accent), with no brand of ours up top;
+our name is one line at the foot of the panel.
 
 > Disclosure line, shown on every panel and to be read in any published recording:
 > *"Third-party protection by Atticus, rendered here for this demo; not a product of this venue.
 > Pricing, record and hedge are live."*
 
 What this extension holds: the service URL and a lock key. What it never holds: a venue login,
-a Kalshi key, or anything that can move money. The venue's own session is never read or used.
-The Kalshi API key lives in the service's environment only.
+a venue API key, a Kalshi key, or anything that can move money. The venue's own session is never
+read or used. The Kalshi API key and the venue API key live in the service's environment only.
+
+## Matched, partially matched, unmatched
+
+On this venue a play rests as an order until another account takes the other side. The extension
+treats the three states differently:
+
+- **Matched**: a position. Priced and lockable.
+- **Partially matched**: the matched part is the position. Sized on it (the service reports the
+  matched stake; the page reader scales To Gain to the matched share). The rest is still an order.
+- **Unmatched**: an order, not a position. Muted line, "waits until the play is matched"; the
+  tap explains. Nothing is priced, nothing can be locked. For the recording, place the play as a
+  **Market Order** (the slip's default) so it matches at once.
+
+Rows in the venue's points mode (play money) are never drawn on.
 
 ## Where the size comes from
 
 Two sources, in this order:
 
-1. **The service, from the venue's API** (preferred). A read-only key on the service lists what
-   the holder has: market, side, quantity, cost. The service matches each position to our ticker
-   and returns contracts, entry price, stake and payout. The extension pairs that with the row on
-   the page by team name and amounts. Nothing is guessed.
-2. **The page**, when the service has no key or has not heard of the position yet. The row's
-   "Wager $20.00" and "Payout $45.40" are read as text: one $1 contract per payout dollar, entry
-   price is wager over payout. The panel then says "read from the page". If neither amount can be
-   read, the line offers "Price it" with a payout box.
+1. **The service, from the venue's API** (preferred). With the venue's API key pair in the
+   service env, the service logs in, lists the account's open plays (stake, matched stake, odds,
+   market, outcome) and matches each to our ticker, returning contracts, entry price, stake and
+   payout. The extension pairs that with the row on the page by team name and amounts. Nothing is
+   guessed.
+2. **The page**, when the service has no key or has not heard of the play yet. The row's
+   "Cost $20.00" and "To Gain $6.67" are read as text (or the cost and the price, shown by the
+   venue as the implied chance, 75.9%, or as American odds, -300): one $1 contract per payout
+   dollar, entry price is cost over payout. The panel then says "read from the page". If neither
+   can be read, the line offers "Price it" with a payout box.
 
-The two agree to the cent on the preview board; the first is the one to use on the recording.
+Prices become our units like this: $20 at 75% (-300) gains $6.67, payout $26.67, which is 27
+contracts at an entry of 75 cents. $5 at 25.5% (+292) pays $19.60: 20 contracts at 26 cents. The
+two sources agree to the cent on the preview board; the page is enough for the recording, the
+service confirms it when the key pair is set.
 
 ## See it before any deposit or trade
 
 No venue account is needed.
 
 1. Load the extension (below) and set the service URL and lock key in its options.
-2. Serve the preview page **from this folder** and open the Portfolio route:
+2. Serve the preview page **from this folder** and open the My Trades route:
 
    ```
    cd event-lockin-extension && python3 -m http.server 8812 --bind 127.0.0.1
-   open http://127.0.0.1:8812/preview/positions.html#/portfolio
+   open http://127.0.0.1:8812/preview/positions.html#/my-trades
    ```
 
    If you started the server one folder up, the address is
-   `http://127.0.0.1:8812/event-lockin-extension/preview/positions.html#/portfolio`; a 404 means
+   `http://127.0.0.1:8812/event-lockin-extension/preview/positions.html#/my-trades`; a 404 means
    the server's folder and the address do not match.
 
-   The board is a generic exchange-style page: league list, game page, order slip, and a Portfolio
-   with open positions (Texans Winner $20, 49ers Winner $20, Colts -6.5 Spread $10, Titans Winner
-   $5, and so on). Placing an order on the slip adds a row to the Portfolio, which is where the
-   extension draws. Prices come from live books; a lock writes to the record and runs the hedge
-   path for real (dry run unless the service is set to send). Lock only games you mean to put on
-   the record.
+   The board is a generic exchange-style page in the venue's conventions: prices as the implied
+   chance (75.9%), a Moneyline market, a Market Order slip with Cost and To Gain, a Cash / Points
+   toggle, and a My Trades page with a Matched, Partially Matched or Unmatched tag on each row
+   (Texans Moneyline 43.5% $20, 49ers 78.1% $20, Colts -6.5 Spread $10, Titans 25.5% $5, a Bills
+   play matched $10 of $20, a Chiefs play still unmatched, a Broncos row that names the team by
+   code only, and so on). Placing a trade on the slip adds a matched row to My Trades,
+   which is where the extension draws. Prices come from live books; a lock writes to the record
+   and runs the hedge path for real (dry run unless the service is set to send). Lock only games
+   you mean to put on the record.
 
 ## Files
 
 - `manifest.json` runs the content script on the venue's domains (edit `matches` to add one) and on
   the local preview page; grants fetch to the service host and to localhost on any port.
-- `content.js` decides it is on the Portfolio page (URL or heading), finds position rows by text
-  (a team the service can protect plus two money amounts), inserts our block as a sibling after the
-  row, and re-inserts it when the venue re-renders. The venue's DOM is never modified.
+- `content.js` decides it is on the My Trades page (URL or heading), finds play rows by text (a team
+  the service can protect, by nickname or by code, plus the row's money), reads the matching state, inserts our block as a
+  sibling after the row, and re-inserts it when the venue re-renders. The venue's DOM is never
+  modified.
 - `content.css` the line, the inline panel, the segmented control, the chip. Two-column tiles under
   560px.
 - `background.js` is the fetch proxy; it attaches `x-lock-key` from extension storage.
@@ -100,40 +124,48 @@ The lock routes are off until a key is set.
 | `EVENT_HEDGE_LIVE_SEND` | `yes` | The only value that sends. Anything else is a dry run. |
 | `EVENT_HEDGE_KILL_SWITCH` | `1` to stop | Nothing leaves, whatever else is set. |
 
-### Holder positions from the venue (optional, recommended for the recording)
+### Holder plays from the venue (optional, recommended for the recording)
 
-The service can read what the holder has at the venue with a **read-only** key: it lists
-positions and can do nothing else (no orders, no transfers). The key is minted from a management
-key that stays on your machine; only the read key goes to Render.
+**Not needed for the recording**: without it the extension reads each row's Cost and To Gain
+from the page and the numbers are the same. It is a confirmation, not a dependency.
 
-```
-cd services/api
-VENUE_API_HOST=https://api.<venue host> \
-VENUE_MGMT_KEY_ID=<your management key id> \
-VENUE_MGMT_KEY_PEM_PATH=~/keys/venue-management.pem \
-  npx tsx scripts/venueReadKey.ts mint --out ~/keys/venue-read.pem --name "atticus read"
-```
+The venue issues API keys from its website: the **menu (top right), API Integration**, create a
+token. You get an access key and a secret key; the secret is shown once. Trading API access may
+first need an access request approved by the venue (their docs: Requesting API Access). Note what
+the keys are: **account keys**. The venue has no read-only
+scope, so the same pair could place a play. The service only ever calls login, refresh and four
+read routes (open plays, tournaments, events, markets); nothing in it submits or cancels. Still:
 
-It prints the new key's id and writes the private key to the file (mode 600). Then, in the Render
-dashboard for the record service:
+- make a **dedicated pair** for the service, named so you know what it is;
+- put it in the **Render env only**, never in the extension, never in chat, a ticket or a commit;
+- **revoke it** on the website when the recording is done.
 
 | Env | Value |
 | --- | --- |
-| `VENUE_API_HOST` | the venue's API host (its paper host for a rehearsal) |
-| `VENUE_API_KEY_ID` | the id the mint printed |
-| `VENUE_API_PRIVATE_KEY_PEM` | the contents of the read key file (`\n` escapes are fine) |
+| `VENUE_API_HOST` | the venue's partner API base, with the partner path: production `https://cash.api.<venue domain>/partner`, sandbox `https://api.sandbox.<venue dev domain>/partner` |
+| `VENUE_API_ACCESS_KEY` | the access key from the pair |
+| `VENUE_API_SECRET_KEY` | the secret key from the pair |
 | `EVENT_SHADOW_POSITIONS_TTL_MS` | `20000` (one read reused for 20 seconds) |
 
-Check it from your machine before recording (it prints the positions in our units and the ticker
-each one matched):
+The service logs in once, keeps the session alive (the access token lasts about ten minutes and is
+refreshed a minute before it lapses; the refresh token lasts three days; a refused refresh logs in
+again), and caches the catalog for ten minutes.
+
+Check it from your machine before recording (it prints each open play with its matched stake in
+our units and the game and side as the venue names them, or "unmatched"):
 
 ```
-VENUE_API_HOST=... VENUE_API_KEY_ID=... VENUE_API_PRIVATE_KEY_PEM="$(cat ~/keys/venue-read.pem)" \
+cd services/api
+VENUE_API_HOST=https://cash.api.<venue domain>/partner VENUE_API_ACCESS_KEY=... VENUE_API_SECRET_KEY=... \
   npx tsx scripts/venueReadKey.ts check
 ```
 
-`GET /healthz` on the service shows `lock.holderPositions.configured: true` once the key is set.
-Never paste a key into chat, a ticket or a commit. Unset, the extension reads sizes from the page.
+`GET /healthz` on the service (operator token) shows `lock.holderPositions.configured: true` and
+`api: "bearer"` once the pair is set. Unset, the extension reads sizes from the page.
+
+The service also still speaks the signed read-key API of the previous venue
+(`VENUE_API_KEY_ID` + `VENUE_API_PRIVATE_KEY_PEM`, minted with `venueReadKey.ts mint`). Whichever
+pair of variables is set picks the API; set one, not both.
 
 Pre-flight (operator token):
 
@@ -149,12 +181,13 @@ GET /healthz                                                lock.enabled true, h
 2. Open the extension's options. Set the service URL (default is the record service) and paste the
    lock key. Leave "show hedge line" off for a customer-facing recording; turn it on for the
    operator cut.
-3. Open the venue's Portfolio. Each open position gets its line. If the extension cannot find the
-   rows but the service knows your positions, a card bottom-right lists them with the same lines.
+3. On the venue, switch to **Cash** mode (not points) and open **My Trades** (top right). Each open matched play
+   gets its line. If the extension cannot find the rows but the service knows your plays, a card
+   bottom-right lists them with the same lines.
 
 ## Test steps (five minutes, no money)
 
-1. Open the preview Portfolio with the extension loaded. Every row has a line under it: Lock in
+1. Open the preview My Trades with the extension loaded. Every row has a line under it: Lock in
    with a price, Protection unavailable with a reason, or Protected.
 2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Keep more
    upside** or **Most now**: the three tiles and the button reprice. Tap **Even**: they return.
@@ -162,27 +195,33 @@ GET /healthz                                                lock.enabled true, h
 3. Tap **Lock in · +$x now**. The panel shows "Locked in" with the three numbers; the line reads
    "Protected · +$x paid". Open `/` on the service: the position is there with `source: lock`.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).
-5. Tap the Spread row's line: "Protection covers the Winner market." Close it.
+5. Tap the Spread row's line: "Protection covers the Moneyline market." Close it.
+6. Tap the Chiefs row's line (Unmatched): "This play has not been matched yet." Close it.
+7. The Bills row (Partially Matched, $10 of $20): the panel says "pays $14.50 if they win · you
+   paid $10.00", the matched part only.
+8. Switch the toggle to **Points**: no lines on the rows. Back to **Cash**: they return.
 
 ## Recording checklist
 
-Three clips, one tap. Shoot on a desktop width; the panel is responsive, but the Portfolio rows
+Three clips, one tap. Shoot on a desktop width; the panel is responsive, but the My Trades rows
 are widest and clearest there.
 
-1. **Venue, after the trade.** The Portfolio with the new position. Tap its Lock in line; the
-   panel opens with the terms; tap **Lock in**. "Locked in", the chip on the row.
+1. **Venue, after the play.** My Trades with the new play showing **Matched**. Tap its Lock in
+   line; the panel opens with the terms; tap **Lock in**. "Locked in", the chip on the row.
 2. **Record.** `/` on the service a moment later: the position appears with `source: lock`, the
    three numbers match the panel. Operator cut: `/api/shadow/hedges` shows the live attempt, order
    id, fill, cost.
 3. **Settlement.** After the game, the position's settled row on the record and the chip's details
-   panel: what the holder received, what the position alone would have paid.
+   panel: what the holder received, what the play alone would have paid.
 
 Rules the service enforces, so plan the game around them:
 
 - The lock must be at least 45 minutes before start and inside 7 days.
 - One lock per Kalshi market. A second tap on the same game is refused with "already locked".
-- The size you hold at the venue should be the size you lock. Position and hedge settle on the
-  same official result.
+- The play must be matched. Place it as a Market Order so it fills at once; a limit order that
+  rests is refused until it matches.
+- The size you hold at the venue should be the size you lock. Play and hedge settle on the same
+  official result.
 - Protection is priced from the book. A pick the book will not pay for shows "Protection
   unavailable" with the reason; that can change toward kickoff.
 

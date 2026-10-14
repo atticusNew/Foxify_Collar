@@ -205,12 +205,20 @@ services:
       #   already shows. Same settlement; never early-closed. Operator export: /api/shadow/export?ledger=lock
       #   Tickers on EVENT_HEDGE_LIVE_TICKERS are hedged on Kalshi's own No side and skipped by the scan.
       # HOLDER POSITIONS (optional; confirms what the holder has at the venue so the extension does not
-      # have to read sizes off the page). Read-only key minted with scripts/venueReadKey.ts; it can list
-      # positions and nothing else. Set in the dashboard, never in git. Unset: /api/shadow/positions
-      # answers configured:false and the extension reads the row from the page.
+      # have to read sizes off the page). Two venue APIs are spoken; the variables set pick one. Set in
+      # the dashboard, never in git. Unset: /api/shadow/positions answers configured:false and the
+      # extension reads the row from the page.
+      # Bearer venue (partner API, session login; the venue issues the pair at Settings > Token. It is an
+      # account key pair, so it could trade: dedicated pair, service env only, revoke after the recording.
+      # The service only logs in and reads open plays, tournaments, events, markets):
+      #   VENUE_API_HOST=https://cash.api..../partner   the partner API base, with the /partner path
+      #   VENUE_API_ACCESS_KEY=<access key>
+      #   VENUE_API_SECRET_KEY=<secret key>
+      # Signed venue (read-only key minted with scripts/venueReadKey.ts; lists positions, nothing else):
       #   VENUE_API_HOST=https://api....         the venue's API host (paper host for a rehearsal)
       #   VENUE_API_KEY_ID=<key id>              the read key's id
       #   VENUE_API_PRIVATE_KEY_PEM=<PKCS8 PEM>   the read key's private key; "\n" escapes accepted
+      # Both:
       #   EVENT_SHADOW_POSITIONS_TTL_MS=20000    how long one read is reused
 
   - type: web
