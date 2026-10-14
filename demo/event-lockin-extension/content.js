@@ -681,7 +681,8 @@
     }
   };
 
-  const lineGo = (label, sub, cls) => '<button type="button" class="ael-line ' + (cls || "") + '"><span class="ael-ic">' + (cls === "ael-line-on" ? SHIELD_FILL : SHIELD) + '</span><span class="ael-lt"><b>' + label + "</b>" + (sub ? "<span>" + sub + "</span>" : "") + "</span></button>";
+  const CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+  const lineGo = (label, sub, cls) => '<button type="button" class="ael-line ' + (cls || "") + '"><span class="ael-ic">' + (cls === "ael-line-on" ? SHIELD_FILL : SHIELD) + '</span><span class="ael-lt"><b>' + label + "</b>" + (sub ? "<span>" + sub + "</span>" : "") + '</span><span class="ael-chev">' + CHEVRON + "</span></button>";
 
   /** The line under the row, from the row's state. */
   const paintRow = (B) => {
@@ -724,12 +725,19 @@
       B.panelHtml = null;
       B.box.querySelector(".ael-line").onclick = () => {
         st.open = !st.open;
-        if (!st.open) st.how = false;
+        if (!st.open) {
+          st.how = false;
+          // the "Locked in" moment is shown once; the next open is the position's details
+          if (st.done) st.done.justNow = false;
+          const r = S.record.get(B.ticker);
+          if (r) r.justNow = false;
+        }
         paintRow(B);
       };
     }
     const panel = B.box.querySelector(".ael-panel");
     panel.className = "ael-panel" + (st.open ? " ael-on" : "");
+    B.box.querySelector(".ael-line").classList.toggle("ael-open", Boolean(st.open));
     if (st.open) paintPanel(B);
     else B.panelHtml = null;
     fitHost(B);
@@ -743,16 +751,23 @@
     if (bind) bind();
   };
 
-  const DISCLOSE = '<div class="ael-disclose">Third-party protection by Atticus, rendered here for this demo; not a product of this venue. Pricing, record and hedge are live.</div>';
+  const DISCLOSE = '<div class="ael-disclose">Protection by Atticus, a third party; not a product of this venue.</div>';
+  const operator = () => S.settings.showHedge === "yes";
 
   const whoLine = (B, p) => {
     const nick = shortOf(B.ticker);
     const size = B.size;
     const pays = size ? usd(size.payoutCents || size.contracts * 100) : p ? usd0(100 * p.contracts) : "";
     const paid = size && size.stakeCents ? " &middot; you paid " + esc(usd(size.stakeCents)) : "";
-    const from = B.from === "page" ? " &middot; read from the page" : "";
+    const from = operator() && B.from === "page" ? " &middot; read from the page" : "";
     return esc(nick) + (pays ? " &middot; pays " + esc(pays) + " if they win" : "") + paid + from;
   };
+
+  /** The three numbers, the floor first: the same strip before the tap and after it. */
+  const tiles = (nick, rs, creditCents, was) =>
+    '<div class="ael-tiles"><div class="ael-tile ael-k"><div class="ael-l">if ' + esc(nick) + ' lose</div><div class="ael-v">' + esc(usd(rs.floorTotal)) + '</div><div class="ael-was">was $0</div></div>' +
+    '<div class="ael-tile"><div class="ael-l">paid now</div><div class="ael-v">+' + esc(usd(creditCents)) + '</div><div class="ael-was">yours today</div></div>' +
+    '<div class="ael-tile"><div class="ael-l">if they win</div><div class="ael-v">' + esc(usd(rs.capTotal)) + '</div><div class="ael-was">' + (was ? "was " + esc(was) : "") + "</div></div></div>";
 
   const paintPanel = (B) => {
     const st = stateOf(B.ticker);
@@ -786,12 +801,10 @@
       }
     }
     const html =
-      '<div class="ael-ph"><b>Worst case ' + esc(usd(rs.floorTotal)) + " instead of $0</b><span>" + whoLine(B, p) + "</span></div>" +
-      '<div class="ael-tiles"><div class="ael-tile ael-k"><div class="ael-l">if ' + esc(shortOf(B.ticker)) + ' lose</div><div class="ael-v">' + esc(usd(rs.floorTotal)) + '</div><div class="ael-was">was $0</div></div>' +
-      '<div class="ael-tile"><div class="ael-l">paid now</div><div class="ael-v">+' + esc(usd(t.creditCents)) + '</div><div class="ael-was">yours today</div></div>' +
-      '<div class="ael-tile"><div class="ael-l">if they win</div><div class="ael-v">' + esc(usd(rs.capTotal)) + '</div><div class="ael-was">was ' + esc(was) + "</div></div></div>" +
-      (seg ? '<div class="ael-segs">' + seg + "</div>" : "") +
-      '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '">Lock in &middot; worst case ' + esc(usd(rs.floorTotal)) + "</button>" +
+      '<div class="ael-top"><div class="ael-ph"><b>Worst case ' + esc(usd(rs.floorTotal)) + " instead of $0</b><span>" + whoLine(B, p) + "</span></div>" +
+      (seg ? '<div class="ael-segs">' + seg + "</div>" : "") + "</div>" +
+      '<div class="ael-deal">' + tiles(shortOf(B.ticker), rs, t.creditCents, was) +
+      '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '">Lock in &middot; worst case ' + esc(usd(rs.floorTotal)) + "</button></div>" +
       '<div class="ael-fine">priced live, locks at your tap' + (p.eventTimeIso ? " &middot; available until kickoff " + esc(fmtAt(p.eventTimeIso)) : "") + ' &middot; <a href="#" class="ael-how-a">how it works</a></div>' +
       '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap.</p></div>" +
       DISCLOSE;
@@ -817,13 +830,9 @@
       code === "no_size"
         ? '<div class="ael-size-form"><input type="number" min="1" max="10000" step="1" placeholder="pays $" aria-label="Payout in dollars" /><button type="button" class="ael-go ael-quiet">Price it</button></div>'
         : "";
-    const html = '<div class="ael-ph"><b>' + esc(w.why) + "</b>" + (w.next ? "<span>" + esc(w.next) + "</span>" : "") + "</div>" + sizeForm + '<div class="ael-fine">' + (code === "spread" || code === "no_size" || code === "unmatched" ? "" : "Protection is offered when the market pays for it. ") + '<a href="#" class="ael-close-a">close</a></div>' + DISCLOSE;
+    const fine = code === "spread" || code === "no_size" || code === "unmatched" ? "" : '<div class="ael-fine">Protection is offered when the market pays for it.</div>';
+    const html = '<div class="ael-ph"><b>' + esc(w.why) + "</b>" + (w.next ? "<span>" + esc(w.next) + "</span>" : "") + "</div>" + sizeForm + fine + DISCLOSE;
     setPanel(B, panel, html, () => {
-      panel.querySelector(".ael-close-a").onclick = (e) => {
-        e.preventDefault();
-        stateOf(B.ticker).open = false;
-        paintRow(B);
-      };
       if (sizeForm) {
         const inp = panel.querySelector("input");
         panel.querySelector(".ael-quiet").onclick = () => {
@@ -845,18 +854,26 @@
     const go = B.box.querySelector(".ael-go");
     go.disabled = true;
     const t0 = Date.now();
-    const STAGES = ["pricing from the live book", "writing the record", "buying the other side"];
-    const stage = () => STAGES[Math.min(STAGES.length - 1, Math.floor((Date.now() - t0) / 1200))];
-    go.textContent = "Locking in… " + stage();
+    // the stages in words, a slow sheen, and whole seconds only once it has taken a few: calm to watch
+    const STAGES = ["Pricing from the live book…", "Writing the record…", "Buying the other side…"];
+    const label = () => {
+      const s = (Date.now() - t0) / 1000;
+      return STAGES[Math.min(STAGES.length - 1, Math.floor(s / 1.5))] + (s >= 3 ? " " + Math.floor(s) + "s" : "");
+    };
+    // keep the button's footprint so the tiles beside it do not shift as the words change
+    go.style.minWidth = Math.ceil(go.getBoundingClientRect().width) + "px";
+    go.classList.add("ael-busy");
+    go.textContent = label();
     const tick = setInterval(() => {
       const g = B.box && B.box.querySelector(".ael-go");
-      if (g) g.textContent = "Locking in… " + stage() + " · " + ((Date.now() - t0) / 1000).toFixed(1) + "s";
-    }, 100);
+      const next = label();
+      if (g && g.textContent !== next) g.textContent = next;
+    }, 250);
     // rehearsal (Options): the whole flow with the live quote, but no call to the service; nothing is
     // locked, written or bought. The panel says so and offers a reset.
     const r =
       S.settings.rehearse === "yes"
-        ? await new Promise((resolve) => setTimeout(() => resolve({ ok: true, json: { ok: true, at: new Date().toISOString(), contracts: n, floorCents: t.floorCents, capCents: t.capCents, creditCents: t.creditCents, sideName: shortOf(B.ticker), eventTimeIso: st.quote.p.eventTimeIso, hedge: { simulated: true, fallbackReason: "rehearsal" }, rehearsal: true } }), 2400))
+        ? await new Promise((resolve) => setTimeout(() => resolve({ ok: true, json: { ok: true, at: new Date().toISOString(), contracts: n, floorCents: t.floorCents, capCents: t.capCents, creditCents: t.creditCents, sideName: shortOf(B.ticker), eventTimeIso: st.quote.p.eventTimeIso, hedge: { simulated: true, fallbackReason: "rehearsal" }, rehearsal: true } }), 3600))
         : await api("/api/shadow/lock", "POST", { ticker: B.ticker, contracts: n, entryCents: (B.size && B.size.entryCents) || undefined, tier: st.tier || undefined });
     clearInterval(tick);
     st.busy = false;
@@ -899,26 +916,18 @@
       const took = rec.ms ? (rec.ms / 1000).toFixed(1) + "s" : "";
       const hedged = rec.hedge && !rec.hedge.simulated ? "the other side was bought on the exchange" + (took ? " in " + took : "") : took ? "locked in " + took : "";
       head = rec.justNow
-        ? '<div class="ael-ck">&#x2713;</div><b>Locked in' + (rec.rehearsal ? " (rehearsal)" : "") + "</b><span>" + esc(nick) + " &middot; settles when the game is final &middot; nothing to manage" + (hedged ? " &middot; " + esc(hedged) : "") + "</span>"
+        ? '<b><span class="ael-ck">&#x2713;</span>Locked in' + (rec.rehearsal ? " (rehearsal)" : "") + "</b><span>" + esc(nick) + " &middot; settles when the game is final &middot; nothing to manage" + (hedged ? " &middot; " + esc(hedged) : "") + "</span>"
         : "<b>Protected" + (rec.rehearsal ? " (rehearsal)" : "") + (rec.at ? " &middot; locked " + esc(fmtAt(rec.at)) : "") + "</b><span>" + esc(nick) + " &middot; settles when the game is final</span>";
-      rows = '<div class="ael-kv"><span>Worst case</span><b>' + esc(usd(rs.floorTotal)) + '</b></div><div class="ael-kv"><span>Best case</span><b>' + esc(usd(rs.capTotal)) + '</b></div><div class="ael-kv"><span>Paid now</span><b>+' + esc(usd(rec.creditCents)) + "</b></div>";
+      const was = usd(B.size && B.size.payoutCents ? B.size.payoutCents : 100 * rec.contracts);
+      rows = '<div class="ael-deal">' + tiles(nick, rs, rec.creditCents, was) + "</div>";
     }
     const recordUrl = (S.baseUrl || "").replace(/\/+$/, "") + "/";
     const html =
       '<div class="ael-ph">' + head + "</div>" + rows + opLine +
       (rec.rehearsal ? '<div class="ael-op">Rehearsal: nothing was locked, written or bought. <a href="#" class="ael-reset-a">Reset</a></div>' : "") +
-      '<div class="ael-fine"><a href="' + esc(recordUrl) + '" target="_blank" rel="noopener">public record</a> &middot; <a href="#" class="ael-close-a">close</a></div>' +
-      '<div class="ael-disclose">Third-party protection by Atticus; not a product of this venue.</div>';
+      (operator() ? '<div class="ael-fine"><a href="' + esc(recordUrl) + '" target="_blank" rel="noopener">public record</a></div>' : "") +
+      DISCLOSE;
     setPanel(B, panel, html, () => {
-      panel.querySelector(".ael-close-a").onclick = (e) => {
-        e.preventDefault();
-        const st = stateOf(B.ticker);
-        st.open = false;
-        if (st.done) st.done.justNow = false;
-        const r = S.record.get(B.ticker);
-        if (r) r.justNow = false;
-        paintRow(B);
-      };
       const reset = panel.querySelector(".ael-reset-a");
       if (reset)
         reset.onclick = (e) => {
