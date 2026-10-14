@@ -68,11 +68,21 @@
   .place{position:fixed;right:12px;bottom:12px;width:226px;background:#1a73ff;color:#fff;border:0;border-radius:10px;padding:10px 12px;font-weight:700;font-size:13px;text-align:center;cursor:pointer}
   .place small{display:block;font-weight:500;font-size:11px;opacity:.9}
   .hidden{display:none}
+  .ptabs{display:flex;gap:18px;font-size:13px;margin:0 0 14px;color:#9a9ca3}.ptabs .on{color:#fff;font-weight:700;border-bottom:2px solid #fff;padding-bottom:4px}
+  .psum{display:flex;gap:24px;margin:0 0 18px;font-size:12px;color:#9a9ca3}.psum b{display:block;color:#fff;font-size:18px;font-weight:800}
+  .pos{display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid #1f1f25;border-radius:12px;background:#121216;margin-top:10px}
+  .pos .logo-sq{width:34px;height:34px;border-radius:8px}
+  .pos .pname{font-weight:700;font-size:14px}.pos .pmeta{font-size:11.5px;color:#9a9ca3;margin-top:3px}
+  .pos .pmid{flex:1}
+  .pos .pnum{text-align:right;min-width:92px;font-size:11px;color:#9a9ca3}.pos .pnum b{display:block;color:#fff;font-size:14px;font-weight:700;margin-top:2px}
+  .pos .pmult{color:#3b8bff;font-weight:700;font-size:13px;min-width:48px;text-align:right}
+  .pos .cash{background:#1c1c20;border:1px solid #26262d;color:#9a9ca3;border-radius:8px;padding:7px 10px;font-size:11.5px;font-weight:700}
+  .pempty{color:#9a9ca3;padding:30px 0;text-align:center}
 </style></head>
 <body>
 <div class="top">
 <div class="ticker"><span>Hockey <span class="live">Live</span> 3rd 00:38 <b>TOR</b>4 <b>UTA</b>5</span><span>Hockey <span class="live">Live</span> End 2nd <b>CGY</b>2 <b>ANA</b>2</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:55 <b>POR</b>81 <b>SAC</b>50</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:09 <b>GSW</b>63 <b>LAL</b>70</span><span>Hockey <span class="live">Live</span> 2nd 17:57 <b>EDM</b>3 <b>LAK</b>0</span><span>Pro BSB <span class="blue">Tomorrow 8:00 PM</span> <b>MIL</b> 2.56x <b>LAD</b> 1.61x</span><span>CFB <span class="blue">Tomorrow 7:00 PM</span> <b>WKU</b> 1.89x <b>SHSU</b> 2.11x</span></div>
-<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/"><span class="ico"></span>Home</a><a href="#"><span class="ico"></span>Points</a><a href="#"><span class="ico"></span>$0 Portfolio</a><a href="#"><span class="ico"></span>Ranks</a></div><div class="right"><div class="search">Search Events, Teams &amp; Players</div><div class="dep">Deposit</div><div class="get">Get $50</div></div></header>
+<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/"><span class="ico"></span>Home</a><a href="#"><span class="ico"></span>Points</a><a href="#/portfolio" id="nav-portfolio"><span class="ico"></span><span id="pf-nav">$0 Portfolio</span></a><a href="#"><span class="ico"></span>Ranks</a></div><div class="right"><div class="search">Search Events, Teams &amp; Players</div><div class="dep">Deposit</div><div class="get">Get $50</div></div></header>
 </div>
 <div class="wrap">
 <aside><a><i style="background:#8ab"></i>Hockey</a><a><i style="background:#cc3"></i>Tennis (M)</a><a><i style="background:#e73"></i>Pro BB (M)</a><a class="on" href="#/"><i style="background:#a63"></i>Pro FB</a><a><i style="background:#a4c"></i>Tennis (W)</a><a><i style="background:#e73"></i>Pro BB (W)</a><a><i style="background:#63c"></i>EPL</a><a><i style="background:#c33"></i>MMA</a><a><i style="background:#c33"></i>La Liga</a><a><i style="background:#3a6"></i>Serie A</a><a><i style="background:#36c"></i>Ligue 1</a><a><i style="background:#c33"></i>US Soccer</a>
@@ -90,6 +100,7 @@
 // A stand-in for the venue's React app: hash routes, a slip with a wager input and a payout line.
 const GAMES = [
   { id: "SEADEN", when: "Thu 8:15 PM", away: ["SEA", "Seahawks", "3-2"], home: ["DEN", "Broncos", "4-1"], spread: ["+1.5", "1.95x", "-1.5", "1.92x"], total: ["O 41.5", "1.90x", "U 41.5", "1.97x"], win: ["1.76x", "2.27x"], traded: "$212,440" },
+  { id: "HOUJAX", when: "Sun 9:30 AM", away: ["HOU", "Texans", "2-3"], home: ["JAX", "Jaguars", "4-1"], spread: ["+2.5", "2.04x", "-2.5", "1.92x"], total: ["O 42.5", "2.00x", "U 42.5", "1.98x"], win: ["2.30x", "1.75x"], traded: "$257,702" },
   { id: "PITTB", when: "Sun 1:00 PM", away: ["PIT", "Steelers", "3-2"], home: ["TB", "Buccaneers", "1-4"], spread: ["-2.5", "2.00x", "+2.5", "1.98x"], total: ["O 39.5", "2.00x", "U 39.5", "1.98x"], win: ["1.79x", "2.25x"], traded: "$85,293" },
   { id: "TENIND", when: "Sun 1:00 PM", away: ["TEN", "Titans", "0-5"], home: ["IND", "Colts", "2-3"], spread: ["+6.5", "2.13x", "-6.5", "1.85x"], total: ["O 43.5", "1.89x", "U 43.5", "2.06x"], win: ["3.92x", "1.33x"], traded: "$12,593" },
   { id: "ARILAR", when: "Sun 4:05 PM", away: ["ARI", "Cardinals", "1-4"], home: ["LA", "Rams", "2-3"], spread: ["+12.5", "2.02x", "-12.5", "1.96x"], total: ["O 51.5", "1.96x", "U 51.5", "2.02x"], win: ["8.00x", "1.14x"], traded: "$129,924" },
@@ -98,8 +109,30 @@ const GAMES = [
   { id: "WASSF", when: "Mon 8:15 PM", away: ["WAS", "Commanders", "2-3"], home: ["SF", "49ers", "4-1"], spread: ["+7.5", "1.98x", "-7.5", "2.00x"], total: ["O 45.5", "1.95x", "U 45.5", "2.00x"], win: ["4.30x", "1.28x"], traded: "$140,112" },
 ];
 const slip = { sel: null, stake: "20" };
+// Open positions, as the venue's portfolio page would list them. Place Order on the slip adds one.
+const POSITIONS = JSON.parse(sessionStorage.getItem("mock-positions") || "null") || [
+  { g: "HOUJAX", side: "away", kind: "Winner", line: "", mult: "2.27x", stake: 20, when: "Sun 9:30 AM", away: ["HOU", "Texans"], home: ["JAX", "Jaguars"] },
+  { g: "WASSF", side: "home", kind: "Winner", line: "", mult: "1.28x", stake: 20, when: "Mon 8:15 PM", away: ["WAS", "Commanders"], home: ["SF", "49ers"] },
+  { g: "TENIND", side: "home", kind: "Spread", line: "-6.5", mult: "1.85x", stake: 10, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
+  { g: "TENIND", side: "away", kind: "Winner", line: "", mult: "3.92x", stake: 5, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
+  { g: "PITTB", side: "away", kind: "Winner", line: "", mult: "1.79x", stake: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
+  { g: "PITTB", side: "home", kind: "Winner", line: "", mult: "2.25x", stake: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
+  { g: "SEADEN", side: "home", kind: "Winner", line: "", mult: "2.27x", stake: 10, when: "Thu 8:15 PM", away: ["SEA", "Seahawks"], home: ["DEN", "Broncos"] },
+];
+const savePositions = () => sessionStorage.setItem("mock-positions", JSON.stringify(POSITIONS));
 const $ = (s) => document.querySelector(s);
 const money = (n) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const posRow = (p) => {
+  const t = p.side === "away" ? p.away : p.home;
+  const payout = p.stake * parseFloat(p.mult);
+  return '<div class="pos"><span class="logo-sq"' + (p.side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><div class="pmid"><div class="pname">' + t[0] + " " + t[1] + (p.line ? " " + p.line : "") + " &middot; " + p.kind + '</div><div class="pmeta">Pro FB &middot; ' + p.away[0] + " " + p.away[1] + " at " + p.home[0] + " " + p.home[1] + " &middot; " + p.when + '</div></div><div class="pmult">' + p.mult + '</div><div class="pnum">Wager<b>' + money(p.stake) + '</b></div><div class="pnum">Payout<b>' + money(payout) + '</b></div><span class="cash">Cash Out</span></div>';
+};
+const portfolioView = () => {
+  const risk = POSITIONS.reduce((a, p) => a + p.stake, 0);
+  const pays = POSITIONS.reduce((a, p) => a + p.stake * parseFloat(p.mult), 0);
+  return '<h1>Portfolio</h1><div class="ptabs"><span class="on">Open</span><span>Settled</span><span>Orders</span></div><div class="psum"><div>Balance<b>$180.00</b></div><div>In play<b>' + money(risk) + '</b></div><div>Max payout<b>' + money(pays) + "</b></div></div>" +
+    (POSITIONS.length ? POSITIONS.map(posRow).join("") : '<div class="pempty">No open positions</div>');
+};
 const cell = (g, side, kind, line, mult) => '<div class="cell" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-mult="' + mult + '"' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? ' class="cell sel"' : "") + ">" + (line ? line + "<small>" + mult + "</small>" : "<span style='color:#3b8bff;font-weight:600'>" + mult + "</span>") + "</div>";
 const teamRow = (g, side) => {
   const t = side === "away" ? g.away : g.home;
@@ -132,9 +165,24 @@ const render = () => {
   const h = location.hash || "#/";
   const m = /^#\/game\/(\w+)/.exec(h);
   const g = m ? GAMES.find((x) => x.id === m[1]) : null;
-  $("#main").innerHTML = g ? gameView(g) : listView();
+  const portfolio = /^#\/portfolio/.test(h);
+  $("#main").innerHTML = portfolio ? portfolioView() : g ? gameView(g) : listView();
   $("#slip").innerHTML = slipView();
   $("#trend").className = "trend" + (slip.sel ? " hidden" : "");
+  $("#pf-nav").textContent = money(POSITIONS.reduce((a, p) => a + p.stake, 0)) + " Portfolio";
+  $("#nav-portfolio").className = portfolio ? "on" : "";
+  const place = $(".place");
+  if (place) place.onclick = () => {
+    const s = slip.sel;
+    const stake = Number(slip.stake) || 0;
+    if (!s || stake <= 0) return;
+    const g2 = GAMES.find((x) => x.id === s.g);
+    POSITIONS.push({ g: s.g, side: s.side, kind: s.kind, line: s.line, mult: s.mult, stake, when: g2.when, away: g2.away.slice(0, 2), home: g2.home.slice(0, 2) });
+    savePositions();
+    slip.sel = null;
+    location.hash = "#/portfolio";
+    render();
+  };
   for (const c of document.querySelectorAll(".cell[data-g]")) c.onclick = () => { slip.sel = { g: c.dataset.g, side: c.dataset.side, kind: c.dataset.kind, line: c.dataset.line, mult: c.dataset.mult }; render(); };
   const st = $("#stake");
   if (st) st.oninput = () => { slip.stake = st.value.replace(/[^\d.]/g, ""); const s = slip.sel; const g2 = GAMES.find((x) => x.id === s.g); const p = (Number(slip.stake) || 0) * parseFloat(s.mult); $(".payout").innerHTML = "Payout: <b>" + money(p) + "</b>"; $(".place").innerHTML = ((Number(slip.stake) || 0) > 0 ? "Place Order: " + money(Number(slip.stake)) : "Enter a wager") + "<small>Total Payout: " + money(p) + "</small>"; };

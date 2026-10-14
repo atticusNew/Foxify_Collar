@@ -16,15 +16,12 @@
 </head>
 <body>
   <h1>Lock in: settings</h1>
-  <p>The service prices, records and hedges. This extension only places the button.</p>
+  <p>The service prices, records and hedges. This extension only places the Lock in line under your open positions.</p>
   <label>Service URL
     <input id="baseUrl" type="url" placeholder="https://atticus-event-shadow.onrender.com" />
   </label>
   <label>Lock key
     <input id="lockKey" type="password" autocomplete="off" placeholder="EVENT_SHADOW_LOCK_KEY on the service" />
-  </label>
-  <label>Default size when the row cannot be read (contracts)
-    <input id="defaultContracts" type="number" min="1" max="10000" step="1" />
   </label>
   <label>Show the hedge line after a lock (operator)
     <select id="showHedge"><option value="no">No</option><option value="yes">Yes</option></select>
