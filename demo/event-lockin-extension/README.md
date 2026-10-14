@@ -58,7 +58,7 @@ The lock routes are off until a key is set.
 | `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. |
 | `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap | Allowlist. Empty allows nothing. Listed tickers are hedged on Kalshi's own No side and skipped by the hourly scan. |
 | `EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER` | `25` | Per-order cap. |
-| `EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY` | `15` for the first live test, then `100` | Per-day cap, counted from the receipt file, so a restart cannot reset it. The smallest lock (20 contracts) hedges about 14 Kalshi contracts. |
+| `EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY` | `20` for the first live test, then `100` | Per-day cap, counted from the receipt file, so a restart cannot reset it. The smallest lock (20 contracts) hedges about 14 Kalshi contracts; 20 leaves room for the book to move and bounds the day at about $5. |
 | `EVENT_SHADOW_LOCK_LEDGER_PATH` | leave unset | Locks live in `lock-ledger.jsonl` beside the scan's ledger on the same disk. |
 | `EVENT_HEDGE_LIVE_SEND` | `yes` | The only value that sends. Anything else is a dry run. |
 | `EVENT_HEDGE_KILL_SWITCH` | `1` to stop | Nothing leaves, whatever else is set. |
