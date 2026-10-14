@@ -196,13 +196,22 @@ services:
       #   EVENT_HEDGE_KILL_SWITCH=1             nothing leaves, whatever else is set
       # Pre-flight (operator): GET /api/shadow/hedges/preflight?ticker=KX... reads balance and the rails.
       # LOCK IN (the tap from the browser extension; off here, set in the dashboard, never in git):
-      #   EVENT_SHADOW_LOCK_KEY=<12+ chars>     opens GET /api/shadow/markets, GET /api/shadow/quote
-      #                                         and POST /api/shadow/lock to callers sending x-lock-key.
+      #   EVENT_SHADOW_LOCK_KEY=<12+ chars>     opens GET /api/shadow/markets, GET /api/shadow/quote,
+      #                                         GET /api/shadow/positions and POST /api/shadow/lock to
+      #                                         callers sending x-lock-key.
       #                                         Unset: those routes answer 404 to anyone but the operator.
       #   Locks are written to their own ledger beside the scan's (lock-ledger.jsonl on the same
       #   disk; EVENT_SHADOW_LOCK_LEDGER_PATH to move it), so a holder may lock a market the scan
       #   already shows. Same settlement; never early-closed. Operator export: /api/shadow/export?ledger=lock
       #   Tickers on EVENT_HEDGE_LIVE_TICKERS are hedged on Kalshi's own No side and skipped by the scan.
+      # HOLDER POSITIONS (optional; confirms what the holder has at the venue so the extension does not
+      # have to read sizes off the page). Read-only key minted with scripts/venueReadKey.ts; it can list
+      # positions and nothing else. Set in the dashboard, never in git. Unset: /api/shadow/positions
+      # answers configured:false and the extension reads the row from the page.
+      #   VENUE_API_HOST=https://api....         the venue's API host (paper host for a rehearsal)
+      #   VENUE_API_KEY_ID=<key id>              the read key's id
+      #   VENUE_API_PRIVATE_KEY_PEM=<PKCS8 PEM>   the read key's private key; "\n" escapes accepted
+      #   EVENT_SHADOW_POSITIONS_TTL_MS=20000    how long one read is reused
 
   - type: web
     name: atticus-pm-clob-egress-proxy
