@@ -140,7 +140,7 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 
 .ael-disclose { font-size: 10.5px; color: #6f7279; text-align: center; border-top: 1px solid #1f1f25; padding-top: 8px; margin-top: 6px; }
 
-/* Notice: bottom left, small, only when the service cannot answer on the portfolio page. */
+/* Notice: bottom left, small, only when the service cannot answer on the plays page. */
 .ael-note {
   position: fixed;
   left: 18px;

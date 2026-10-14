@@ -1,22 +1,26 @@
 // Atticus Earn & Protect: Lock in (content script).
 //
-// One place, after the trade. On the venue's portfolio page, each open position the engine can
-// protect gets one line directly under its row: "Lock in · +$0.60 now" with the worst case it
-// buys. Tap it and our panel opens inline under that row, pushing the rows below down; nothing
-// floats over the venue's page. Positions we cannot protect get the same line muted, and the tap
-// says why. A locked position shows a Protected chip whose details are the four things a holder
-// needs: worst case, best case, what was paid, when it settles, and the public record.
+// One place, after the trade. On the venue's My Plays page (its list of open plays), each open
+// matched play the engine can protect gets one line directly under its row: "Lock in · +$0.60 now"
+// with the worst case it buys. Tap it and our panel opens inline under that row, pushing the rows
+// below down; nothing floats over the venue's page. Plays we cannot protect get the same line
+// muted, and the tap says why. A locked play shows a Protected chip whose details are the four
+// things a holder needs: worst case, best case, what was paid, when it settles, and the public record.
 //
-// Nothing is drawn on the game list, the game page or the order slip. The venue's own flow places
-// the trade; protection is offered on what the account then holds.
+// Nothing is drawn on the game list, the game page or the play slip. The venue's own flow places
+// the play; protection is offered on what the account then holds.
 //
-// Sizes: when the service has a read-only key for the holder's venue account, every number comes
-// from the service's confirmation of the position (GET /api/shadow/positions): contracts, what
-// they cost, the game. Without it, the row's text is read (wager and payout) and the panel says the
-// size was read from the page.
+// Sizes: when the service has a key for the holder's venue account, every number comes from the
+// service's confirmation of the play (GET /api/shadow/positions): the matched stake, what it pays,
+// the game. Without it, the row's text is read (stake and To Win, or stake and American odds) and
+// the panel says the size was read from the page.
+//
+// Matching: on this venue a play rests until another account takes the other side. An unmatched
+// play is an order, not a position, so it gets the muted line and the tap says it waits for the
+// match. A partially matched play is sized on its matched part.
 //
 // Selector strategy: the venue's web app is a React SPA with no stable ids, so rows are found by
-// text: a block that names a team the service can protect and carries the position's money.
+// text: a block that names a team the service can protect and carries the play's money.
 // Our line is inserted as a sibling after that block and re-inserted if the venue re-renders.
 // Nothing of the venue's is modified or removed. Nothing here holds credentials: the lock key
 // lives in extension storage and is attached by the background worker.
@@ -197,9 +201,19 @@
     return out;
   };
 
-  // ── reading sizes off a row (fallback when the service has no read key) ─────
+  // ── reading sizes off a row (fallback when the service has no key) ──────────
   const MONEY = /\$\s?(\d{1,6}(?:,\d{3})*(?:\.\d{1,2})?)/g;
   const MULTIPLIER = /(?:^|[^\d.])(\d{1,2}\.\d{1,3})\s?x(?![a-z])/i;
+  // American odds: a signed figure of three or more digits that is not a dollar amount (+250, -300)
+  const AMERICAN = /(?:^|[^\d.$,])([+-]\d{3,5})(?![\d.,%])/;
+  /** payout per $1 at American odds; null for anything between -99 and 99 */
+  const payoutMultiple = (odds) => (odds >= 100 ? 1 + odds / 100 : odds <= -100 ? 1 + 100 / -odds : null);
+  /** textContent joins adjacent elements with nothing between ("To Win$2.60Unmatched"); give the words room */
+  const spaced = (text) =>
+    String(text)
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/(\d)([A-Za-z])/g, "$1 $2")
+      .replace(/([A-Za-z])(\$)/g, "$1 $2");
   const amountsIn = (text) => {
     const out = [];
     let m;
@@ -217,34 +231,66 @@
     const m = re.exec(text);
     return m ? Number(m[1].replace(/,/g, "")) : null;
   };
-  /** Wager and payout from a row's text: labelled amounts first, then two amounts a multiplier apart. */
-  const sizeIn = (text) => {
-    const stake = labelled(text, /(?:wager|stake|risk|cost|bet)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
+  /**
+   * Stake and payout from a row's text. The matched part of the stake when the row shows it
+   * ("Matched $15.00"), else the stake. Then: a labelled payout, a To Win figure, American odds,
+   * or two amounts a multiplier apart.
+   */
+  const sizeIn = (raw) => {
+    const text = spaced(raw);
+    const wager = labelled(text, /(?:wager|stake|risk|cost|bet)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
+    const matchedM = /(?:^|[^a-z])matched\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i.exec(text);
+    const matched = matchedM ? Number(matchedM[1].replace(/,/g, "")) : null;
+    const stake = matched != null && matched > 0 && (wager == null || matched <= wager) ? matched : wager;
     const payout = labelled(text, /(?:payout|pays|returns|max\s*payout|total\s*return)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
     const toWin = labelled(text, /(?:to\s*win|profit|win)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
-    if (stake && payout && payout > stake) return sizeOf(stake, payout);
-    if (stake && toWin) return sizeOf(stake, stake + toWin);
+    const odds = AMERICAN.exec(text.replace(/\$\s?[\d,.]+/g, ""));
+    const k = odds ? payoutMultiple(Number(odds[1])) : null;
+    if (stake && payout && payout > stake) {
+      // the payout on the row is for the whole stake; scale it to the matched part
+      return sizeOf(stake, wager && stake < wager ? (payout * stake) / wager : payout);
+    }
+    if (stake && toWin) return sizeOf(stake, stake + (wager && stake < wager ? (toWin * stake) / wager : toWin));
+    if (stake && k) return sizeOf(stake, stake * k);
     const mult = MULTIPLIER.exec(text);
     if (mult && Number(mult[1]) > 1) {
-      const k = Number(mult[1]);
+      const m = Number(mult[1]);
       const amounts = amountsIn(text);
-      for (const a of amounts) for (const b of amounts) if (a > 0 && b > a && Math.abs(b - a * k) <= Math.max(0.02, 0.01 * b)) return sizeOf(a, b);
-      if (stake) return sizeOf(stake, stake * k);
+      for (const a of amounts) for (const b of amounts) if (a > 0 && b > a && Math.abs(b - a * m) <= Math.max(0.02, 0.01 * b)) return sizeOf(a, b);
+      if (stake) return sizeOf(stake, stake * m);
     }
     return null;
   };
-  const kindIn = (text) => {
-    if (/\b(spread|handicap|total|over|under|o\/u)\b/i.test(text) || /(^|\s)[+-]\d+(\.5)?(\s|$)/.test(text.replace(/\$\s?[\d,.]+/g, ""))) return /\b(winner|moneyline|money line|ml)\b/i.test(text) ? "winner" : "other";
+  /** Winner (moneyline) or something else. A spread line is a signed one or two digit figure; American odds are three or more. */
+  const kindIn = (raw) => {
+    const text = spaced(raw);
+    const bare = text.replace(/\$\s?[\d,.]+/g, "");
+    if (/\b(spread|handicap|total|over|under|o\/u)\b/i.test(text) || /(^|\s)[+-]\d{1,2}(\.5)?(?=\s|$)/.test(bare)) return /\b(winner|moneyline|money line|ml)\b/i.test(text) ? "winner" : "other";
     return "winner";
   };
+  /** Matched, or still an order. A row that says only Unmatched (no matched part, not partially matched) is an order. */
+  const matchIn = (raw) => {
+    const text = spaced(raw);
+    const bare = text.replace(/\$\s?[\d,.]+/g, "");
+    if (!/\b(unmatched|open order|resting|pending match)\b/i.test(bare)) return "matched";
+    if (/\b(partially\s+matched|fully\s+matched|filled)\b/i.test(bare)) return "matched";
+    const m = /(?:^|[^a-z])matched\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i.exec(text);
+    if (m) return Number(m[1].replace(/,/g, "")) > 0 ? "matched" : "unmatched";
+    return /(^|[^a-z])matched\b/i.test(bare) ? "matched" : "unmatched";
+  };
+  /** The venue's play-money mode (points, not dollars) is never priced. */
+  const pointsRow = (raw) => {
+    const text = spaced(raw);
+    return /\bprophet\s*points\b/i.test(text) || (/\bpts\b/i.test(text) && !/\$\s?\d/.test(text));
+  };
 
-  // ── finding the portfolio page and its rows ─────────────────────────────────
+  // ── finding the plays page and its rows ─────────────────────────────────────
   const onPortfolioPage = () => {
     const where = (location.pathname + " " + location.hash).toLowerCase();
-    if (/portfolio|position|my-?bets|mybets|wagers|open-?bets|activity/.test(where)) return true;
+    if (/portfolio|position|plays|my-?plays|open-?plays|my-?bets|mybets|wagers|open-?bets|activity/.test(where)) return true;
     for (const h of document.querySelectorAll("h1, h2, h3, [role=heading]")) {
       if (OURS(h)) continue;
-      if (/^(portfolio|positions|open positions|my bets|open bets|my wagers|active)\b/i.test(norm(h.textContent))) return true;
+      if (/^(portfolio|positions|open positions|my plays|plays|open plays|my bets|open bets|my wagers|active)\b/i.test(norm(h.textContent))) return true;
     }
     return false;
   };
@@ -273,20 +319,28 @@
    * carries the position's money (two dollar amounts, or one with a wager/payout word), of a
    * row's proportions, with no input in it (that is the order slip) and not the whole page.
    */
+  const STAKE_LABELS = /(wager|stake|risk|cost|bet|payout|to\s*win|pays)\s*:?\s*\$\s?\d/gi;
   const rowFrom = (node) => {
     let e = node.parentElement;
+    let found = null;
     for (let i = 0; e && e !== document.body && i < 9; i++, e = e.parentElement) {
-      if (e.querySelector("input, textarea")) return null;
-      const text = norm(e.textContent);
-      if (text.length > 600) return null;
-      const amounts = amountsIn(text);
-      const moneyWords = /\b(wager|stake|payout|to win|pays|returns|cost|avg|average|contracts|shares|risk)\b/i.test(text);
-      if (amounts.length >= 2 || (amounts.length >= 1 && moneyWords)) {
-        const r = e.getBoundingClientRect();
-        if (r.width >= 200 && r.height >= 24 && r.height <= 320 && r.width <= window.innerWidth) return e;
+      if (e.querySelector("input, textarea")) break;
+      const text = spaced(norm(e.textContent));
+      if (text.length > 600) break;
+      const r = e.getBoundingClientRect();
+      if (r.height > 320 || r.width > window.innerWidth) break;
+      const labels = (text.match(STAKE_LABELS) || []).length;
+      if (found) {
+        // a block was found without the row's stake and payout labels (a matched/unmatched detail
+        // can carry two amounts on its own): take the parent that has them, one row's worth, no more
+        if (labels >= 1 && labels <= 2 && !(spaced(norm(found.textContent)).match(STAKE_LABELS) || []).length) found = e;
+        break;
       }
+      const amounts = amountsIn(text);
+      const moneyWords = /\b(wager|stake|payout|to win|pays|returns|cost|avg|average|contracts|shares|risk|matched|odds)\b/i.test(text);
+      if ((amounts.length >= 2 || (amounts.length >= 1 && moneyWords)) && r.width >= 200 && r.height >= 24) found = e;
     }
-    return null;
+    return found;
   };
 
   /** The service's confirmed position for one of our markets, when it has one. */
@@ -308,6 +362,7 @@
     const out = [];
     for (const row of rows) {
       const text = norm(row.textContent);
+      if (pointsRow(text)) continue;
       const count = new Map(sidesIn(text));
       if (!count.size) continue;
       // the pick: a "Team · Winner" style line, else the side named more than once (matchup plus
@@ -327,11 +382,13 @@
         if (withSvc.length === 1) ticker = withSvc[0];
       }
       if (!ticker) continue;
-      // a spread or total row is never sized from the winner position the service holds on the same club
+      // a spread or total row is never sized from the winner position the service holds on the same club;
+      // an unmatched play is an order, so the service's confirmed position (if any) is a different play
       const kind = kindIn(text);
-      const svc = kind === "winner" ? svcFor(ticker) : null;
-      const read = sizeIn(text);
-      out.push({ row, ticker, kind, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
+      const match = matchIn(text);
+      const svc = kind === "winner" && match === "matched" ? svcFor(ticker) : null;
+      const read = match === "matched" ? sizeIn(text) : null;
+      out.push({ row, ticker, kind, match, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
     }
     return out;
   };
@@ -437,7 +494,9 @@
         return { why: "No hedge book for this game yet.", next: "Protection reaches more games as venues are added." };
       case "market_not_covered":
       case "spread":
-        return { why: "Protection covers the Winner market.", next: "A Winner pick on this game can be locked in." };
+        return { why: "Protection covers the Moneyline market.", next: "A Moneyline pick on this game can be locked in." };
+      case "unmatched":
+        return { why: "This play has not been matched yet.", next: "It is an order until another account takes the other side. Protection prices on the matched stake; check back once it fills." };
       case "market_too_close_to_start":
       case "market_not_active":
         return { why: "This game starts too soon to protect.", next: "Protection is available until shortly before kickoff." };
@@ -471,7 +530,9 @@
       else if (rec.status === "void") line = lineGo("Protection voided", "no official result; nothing owed", "ael-line-on");
       else line = lineGo("Protected &middot; +" + esc(usd(rec.creditCents)) + " paid", "ends " + esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)) + " &middot; details", "ael-line-on");
     } else if (B.kind === "other") {
-      line = lineGo("Protection unavailable", "covers Winner picks", "ael-line-off");
+      line = lineGo("Protection unavailable", "covers Moneyline picks", "ael-line-off");
+    } else if (B.match === "unmatched") {
+      line = lineGo("Protection unavailable", "waits until the play is matched", "ael-line-off");
     } else if (!B.size) {
       line = lineGo("Lock in", "size not read from the page", "");
     } else if (!st.quote) {
@@ -513,6 +574,7 @@
     const rec = B.kind === "winner" ? S.record.get(B.ticker) || st.done : null;
     if (rec) return paintDetails(B, panel, rec);
     if (B.kind === "other") return paintRefusal(B, panel, "spread", "");
+    if (B.match === "unmatched") return paintRefusal(B, panel, "unmatched", "");
     if (!B.size) return paintRefusal(B, panel, "no_size", "");
     if (!st.quote) {
       panel.innerHTML = '<div class="ael-skel"></div><div class="ael-skel" style="width:70%"></div>';
@@ -565,7 +627,7 @@
       code === "no_size"
         ? '<div class="ael-size-form"><input type="number" min="1" max="10000" step="1" placeholder="pays $" aria-label="Payout in dollars" /><button type="button" class="ael-go ael-quiet">Price it</button></div>'
         : "";
-    panel.innerHTML = '<div class="ael-ph"><b>' + esc(w.why) + "</b>" + (w.next ? "<span>" + esc(w.next) + "</span>" : "") + "</div>" + sizeForm + '<div class="ael-fine">' + (code === "spread" || code === "no_size" ? "" : "Protection is offered when the market pays for it. ") + '<a href="#" class="ael-close-a">close</a></div>' + DISCLOSE;
+    panel.innerHTML = '<div class="ael-ph"><b>' + esc(w.why) + "</b>" + (w.next ? "<span>" + esc(w.next) + "</span>" : "") + "</div>" + sizeForm + '<div class="ael-fine">' + (code === "spread" || code === "no_size" || code === "unmatched" ? "" : "Protection is offered when the market pays for it. ") + '<a href="#" class="ael-close-a">close</a></div>' + DISCLOSE;
     panel.querySelector(".ael-close-a").onclick = (e) => {
       e.preventDefault();
       stateOf(B.ticker).open = false;
@@ -659,7 +721,7 @@
     c = document.createElement("div");
     c.id = "ael-card";
     c.className = "ael-ui ael-card";
-    c.innerHTML = '<div class="ael-card-h"><span>Your positions &middot; protection</span><button type="button" class="ael-x" aria-label="Hide">&times;</button></div><div class="ael-card-b"></div>';
+    c.innerHTML = '<div class="ael-card-h"><span>Your plays &middot; protection</span><button type="button" class="ael-x" aria-label="Hide">&times;</button></div><div class="ael-card-b"></div>';
     c.querySelector(".ael-x").onclick = () => {
       c.style.display = "none";
       S.cardHidden = true;
@@ -687,7 +749,7 @@
         item.className = "ael-ui ael-card-row";
         item.innerHTML = '<div class="ael-card-pos"><b>' + esc(p.side || "position") + "</b><span>" + esc(p.event || "") + (p.startsIso ? " &middot; " + esc(fmtAt(p.startsIso)) : "") + " &middot; pays " + esc(usd(p.payoutCents)) + "</span></div>" + '<div class="ael-ui ael-row"></div>';
         body.appendChild(item);
-        B = { row: item, host: item, box: item.querySelector(".ael-row"), ticker: p.ticker || "__" + p.id, kind: "winner", size: { contracts: p.contracts, entryCents: p.entryCents, stakeCents: p.costCents, payoutCents: p.payoutCents }, from: "service", card: true };
+        B = { row: item, host: item, box: item.querySelector(".ael-row"), ticker: p.ticker || "__" + p.id, kind: "winner", match: "matched", size: { contracts: p.contracts, entryCents: p.entryCents, stakeCents: p.costCents, payoutCents: p.payoutCents }, from: "service", card: true };
         S.cardRows.set(p.id, B);
       }
       if (B.ticker.startsWith("__")) {
@@ -761,6 +823,7 @@
           B.from = F.from;
         }
         B.kind = F.kind;
+        B.match = F.match;
         if (!B.host.isConnected) mountHost(B);
       }
       quoteRow(B);
