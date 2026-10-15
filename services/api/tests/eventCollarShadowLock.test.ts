@@ -243,6 +243,25 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(lock.hedge.fallbackReason, "dry run", "live mode, allowlisted ticker, dry run: built and held");
     assert.equal(lock.hedge.orderId, null);
     assert.equal(lock.hedge.route, "kalshi_self");
+    assert.equal(lock.hedge.venue, "Kalshi", "the holder's receipt names where the other side is bought");
+    assert.ok(typeof lock.hedge.at === "string" && typeof lock.hedge.receiptId === "string" && typeof lock.hedge.avgPriceMilli === "number");
+
+    // RECEIPT (lock key): the same terms and the same hedge view, any time after the tap
+    assert.equal((await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`)).status, 403);
+    assert.equal((await fetch(`${base}/api/shadow/receipt?ticker=KXNBAGAME-26OCT14LALBOS-LAL`, { headers: key })).status, 404);
+    const rcpt = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER.toLowerCase()}`, { headers: key })).json()) as {
+      ok: boolean;
+      lock: { status: string; contracts: number; floorCents: number; tier: string };
+      hedge: { receiptId: string; simulated: boolean; venue: string; unitsMilli: number; costCents: number };
+    };
+    assert.equal(rcpt.ok, true);
+    assert.equal(rcpt.lock.status, "open");
+    assert.equal(rcpt.lock.contracts, 20);
+    assert.equal(rcpt.lock.floorCents, lock.floorCents);
+    assert.equal(rcpt.hedge.receiptId, lock.hedge.receiptId, "the receipt the tap answered with");
+    assert.equal(rcpt.hedge.simulated, true);
+    assert.equal(rcpt.hedge.venue, "Kalshi");
+    assert.ok(rcpt.hedge.unitsMilli > 0 && rcpt.hedge.costCents > 0);
 
     const positions = loadShadowPositions(ledger);
     assert.equal(positions.length, 1, "the lock lives in its own ledger");
@@ -335,6 +354,41 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     const forced = (await (await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}&force=1`, { method: "POST", headers: op })).json()) as { ok: boolean; priorReceipts: number };
     assert.equal(forced.ok, true);
     assert.equal(forced.priorReceipts, 3);
+    // the holder's receipt now stands on the live fill, not the later dry run
+    const rcptLive = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { hedge: { receiptId: string; simulated: boolean; orderId: string } };
+    assert.deepEqual([rcptLive.hedge.receiptId, rcptLive.hedge.simulated, rcptLive.hedge.orderId], ["live-1", false, "ord-live"]);
+
+    // LOCK RESET (operator): the lock's lines move to an archive beside the ledger; the market opens
+    // again; the old lock's live fill is named so the operator settles the venue side by hand
+    assert.equal((await fetch(`${base}/api/shadow/lock/reset?ticker=${TICKER}`, { method: "POST" })).status, 403, "operator only");
+    assert.equal((await fetch(`${base}/api/shadow/lock/reset?ticker=${TICKER}`, { headers: op })).status, 405, "GET resets nothing");
+    assert.equal((await fetch(`${base}/api/shadow/lock/reset?ticker=KXNBAGAME-26OCT14LALBOS-LAL`, { method: "POST", headers: op })).status, 404);
+    const resetRes = await fetch(`${base}/api/shadow/lock/reset?ticker=${TICKER.toLowerCase()}`, { method: "POST", headers: op });
+    assert.equal(resetRes.status, 200);
+    const reset = (await resetRes.json()) as { ok: boolean; archived: { to: string; records: number; kept: number }; lock: { contracts: number }; liveFills: Array<{ orderId: string }>; message: string };
+    assert.equal(reset.ok, true);
+    assert.equal(reset.archived.records, 1);
+    assert.equal(reset.archived.kept, 0);
+    assert.match(reset.archived.to, /lock-ledger\.\d{4}-\d{2}-\d{2}T\d{6}Z\.KXNBAGAME-26OCT14LALBOS-BOS\.archived\.jsonl$/);
+    assert.equal((JSON.parse(readFileSync(reset.archived.to, "utf8").trim()) as { source: string; contracts: number }).contracts, 20, "the old lock is kept, not deleted");
+    assert.equal(reset.lock.contracts, 20);
+    assert.deepEqual(reset.liveFills.map((f) => f.orderId), ["ord-live"]);
+    assert.match(reset.message, /1 live fill\(s\) remain at the venue/);
+    assert.equal(loadShadowPositions(ledger).length, 0, "off the record");
+    assert.equal(readFileSync(ledger, "utf8"), "");
+    assert.equal((await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).status, 404, "no lock, no receipt");
+    assert.equal(((await (await fetch(`${base}/api/shadow/quote?ticker=${TICKER}&contracts=20`, { headers: key })).json()) as { onRecord: boolean }).onRecord, false);
+    assert.equal((await fetch(`${base}/api/shadow/lock/reset?ticker=${TICKER}`, { method: "POST", headers: op })).status, 404, "nothing left to reset");
+
+    // the market locks again as if for the first time; the new lock's receipt is its own, never the old live fill
+    const relock = (await (await fetch(`${base}/api/shadow/lock`, { method: "POST", headers: { ...key, "content-type": "application/json" }, body: JSON.stringify({ ticker: TICKER, contracts: 20, entryCents: 58, tier: "wide" }) })).json()) as { ok: boolean; hedge: { receiptId: string; simulated: boolean } };
+    assert.equal(relock.ok, true);
+    assert.equal(relock.hedge.simulated, true);
+    assert.equal(readFileSync(ledger, "utf8").trim().split("\n").length, 1);
+    const rcptNew = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { hedge: { receiptId: string; simulated: boolean; fallbackReason: string } };
+    assert.equal(rcptNew.hedge.receiptId, relock.hedge.receiptId);
+    assert.equal(rcptNew.hedge.simulated, true);
+    assert.equal(rcptNew.hedge.fallbackReason, "dry run");
 
     // the public record shows both positions on the market: the scan's showcase and the holder's lock
     const pub = (await (await fetch(`${base}/api/shadow`)).json()) as { open: Array<Record<string, unknown>> };

@@ -96,7 +96,7 @@ import {
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { sentUnitsMilliOn } from "../src/eventCollar/crossVenue/liveHedge";
 import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml, renderSlateHtml } from "./eventShadowHtml";
-import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
+import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import {
   earlyCloseRuleFromEnv,
@@ -194,6 +194,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/hedges",
   "/api/shadow/hedges/preflight",
   "/api/shadow/hedges/resend",
+  "/api/shadow/lock/reset",
   "/api/shadow/export",
   "/api/shadow/reset",
   "/api/shadow/lastleg",
@@ -217,7 +218,7 @@ let listGameMarketsFn: typeof listGameMarkets | null = null;
  * for the lock: the scan steps over them so the tap, not the scan, opens them.
  */
 const LOCK_KEY = lockKeyFromEnv(process.env);
-const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/positions"]);
+const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/positions", "/api/shadow/receipt"]);
 const lockInFlight = new Set<string>();
 /**
  * HOLDER POSITIONS (crossVenue/venuePositions.ts, crossVenue/venuePlays.ts): with a key for the
@@ -308,6 +309,43 @@ async function fillHedge(ticker: string, hedge: HedgeLeg, books: { pmNoBook?: Pm
     lastScanError = `hedge for ${ticker}: ${String(err instanceof Error ? err.message : err)}`;
     return null;
   }
+}
+
+/**
+ * The holder's view of one hedge receipt: what was bought on the other side, where, at what, and
+ * the ids that tie it to the venue and to our trail. Nothing about rails or strategy; the fallback
+ * reason rides along for the operator's client. Shared by the lock answer and /api/shadow/receipt
+ * so the receipt the holder sees a week later is the one they saw at the tap.
+ */
+function hedgeViewOf(receipt: HedgeReceipt) {
+  const fill = receipt.fill;
+  // where the other side was bought is the receipt's own fact: a lock quoted on one route may be hedged again on another
+  const route: HedgeRoute = (fill?.venue ?? receipt.intent.venue) === "polymarket" ? "polymarket" : "kalshi_self";
+  return {
+    at: receipt.at,
+    route,
+    venue: HEDGE_VENUE_NAMES[route],
+    outcome: receipt.outcome,
+    simulated: fill?.simulated ?? true,
+    unitsMilli: fill?.unitsMilli ?? null,
+    /** all in, fees included, milli dollars per contract */
+    avgPriceMilli: fill?.avgPriceMilli ?? null,
+    costCents: fill?.costCents ?? null,
+    orderId: fill?.ids.orderId ?? null,
+    fallbackReason: receipt.fallbackReason,
+    receiptId: receipt.id,
+  };
+}
+
+/**
+ * The receipt that stands for a lock: the latest live fill on the trail for its ticker since the
+ * lock was written; else the latest receipt since then; null when the trail has none (a lock
+ * re-done after a reset never inherits the old lock's hedge).
+ */
+function receiptForLock(ticker: string, lockAtIso: string): HedgeReceipt | null {
+  const since = loadHedgeReceipts(RECEIPTS_PATH).filter((r) => r.ref === ticker && r.at >= lockAtIso);
+  const live = since.filter((r) => r.fill && !r.fill.simulated);
+  return live.at(-1) ?? since.at(-1) ?? null;
 }
 
 /**
@@ -407,6 +445,7 @@ function retailOneQuote(res: CandidateResult, evBps: number | null) {
  *   POST /api/shadow/lock {ticker, contracts, entryCents?, tier?}   quote again (the lock is at the tap),
  *        write the open record with source "lock", fill the hedge, answer with the terms and the
  *        hedge receipt's outcome (the caller holds the key; it is the operator's own client)
+ *   GET  /api/shadow/receipt?ticker=   the lock's terms and the hedge behind them, any time after
  */
 async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   if (!quoteOneFn || !listGameMarketsFn) {
@@ -537,25 +576,82 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         floorCents: chosen.floorCents,
         capCents: chosen.capCents,
         creditCents: chosen.creditCents,
-        hedge: receipt
-          ? {
-              route: result.route,
-              outcome: receipt.outcome,
-              simulated: receipt.fill?.simulated ?? true,
-              unitsMilli: receipt.fill?.unitsMilli ?? null,
-              costCents: receipt.fill?.costCents ?? null,
-              orderId: receipt.fill?.ids.orderId ?? null,
-              fallbackReason: receipt.fallbackReason,
-              receiptId: receipt.id,
-            }
-          : null,
+        hedge: receipt ? hedgeViewOf(receipt) : null,
       });
     } finally {
       lockInFlight.delete(ticker);
     }
     return;
   }
+  if (url.pathname === "/api/shadow/receipt") {
+    // The holder's receipt for one lock, any time after the tap: the terms as written and the
+    // hedge that stands behind them (hedgeViewOf). The client opens this under "receipt".
+    const ticker = (url.searchParams.get("ticker") ?? "").trim().toUpperCase();
+    const lock = ticker ? loadShadowPositions(LOCK_LEDGER_PATH).find((p) => p.ticker === ticker) : undefined;
+    if (!lock) {
+      sendJson(res, 404, { ok: false, error: "no_lock", message: ticker ? "This market is not on the record." : "?ticker= names the lock" });
+      return;
+    }
+    const receipt = receiptForLock(ticker, lock.at);
+    sendJson(res, 200, {
+      ok: true,
+      at: atIso,
+      ticker,
+      lock: {
+        at: lock.at,
+        status: lock.status,
+        contracts: lock.contracts,
+        floorCents: lock.floorCents,
+        capCents: lock.capCents,
+        creditCents: lock.creditCents,
+        ...(lock.tier ? { tier: lock.tier } : {}),
+        ...(lock.result ? { result: lock.result, protectedCents: lock.protectedCents, nakedCents: lock.nakedCents, settledAt: lock.settledAt } : {}),
+      },
+      hedge: receipt ? hedgeViewOf(receipt) : null,
+    });
+    return;
+  }
   sendJson(res, 404, { ok: false, error: "not found" });
+}
+
+/**
+ * POST /api/shadow/lock/reset?ticker= (operator): take one holder's lock off the record so the
+ * market can be locked again. The lock's lines move to an archive file beside the ledger (never
+ * deleted; the operator export still reaches them), other holders' locks stand, the hedge trail
+ * is untouched. The venue position behind the old lock is the operator's to settle by hand.
+ */
+function handleLockReset(req: IncomingMessage, res: ServerResponse, url: URL): void {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/lock/reset?ticker=KX... with the operator token" });
+    return;
+  }
+  const ticker = (url.searchParams.get("ticker") ?? "").trim().toUpperCase();
+  const lock = ticker ? loadShadowPositions(LOCK_LEDGER_PATH).find((p) => p.ticker === ticker) : undefined;
+  if (!lock) {
+    sendJson(res, 404, { ok: false, error: "no_lock", message: ticker ? `no lock on the record for ${ticker}` : "?ticker= names the lock" });
+    return;
+  }
+  if (lockInFlight.has(ticker)) {
+    sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being locked right now." });
+    return;
+  }
+  const atIso = new Date().toISOString();
+  const archived = archiveLedgerLines(LOCK_LEDGER_PATH, (rec) => rec.ticker === ticker, ticker, atIso);
+  const liveFills = loadHedgeReceipts(RECEIPTS_PATH)
+    .filter((r) => r.ref === ticker && r.at >= lock.at && r.fill && !r.fill.simulated)
+    .map((r) => ({ receiptId: r.id, at: r.at, orderId: r.fill?.ids.orderId ?? null, unitsMilli: r.fill?.unitsMilli ?? 0, costCents: r.fill?.costCents ?? 0 }));
+  sendJson(res, 200, {
+    ok: true,
+    at: atIso,
+    ticker,
+    archived: { to: archived.archivedTo, records: archived.moved, kept: archived.kept },
+    lock: { at: lock.at, status: lock.status, contracts: lock.contracts, floorCents: lock.floorCents, capCents: lock.capCents, creditCents: lock.creditCents },
+    // what the venue still holds for the lock just taken off the record: the operator's to sell or keep
+    liveFills,
+    message: liveFills.length
+      ? `lock archived; the market can be locked again. ${liveFills.length} live fill(s) remain at the venue for the old lock.`
+      : "lock archived; the market can be locked again.",
+  });
 }
 
 /**
@@ -1241,6 +1337,10 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/hedges/resend") {
       void handleHedgeResend(req, res, url).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+      return;
+    }
+    if (url.pathname === "/api/shadow/lock/reset") {
+      handleLockReset(req, res, url);
       return;
     }
     if (url.pathname === "/report") {

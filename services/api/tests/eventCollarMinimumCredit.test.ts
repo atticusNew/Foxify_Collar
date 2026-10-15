@@ -15,7 +15,7 @@ import {
   minimumCreditCents,
   minimumCreditRuleFromEnv,
 } from "../src/eventCollar/crossVenue/minimumCredit";
-import { archiveLedgerFile, archivePathFor, archiveStamp } from "../src/eventCollar/crossVenue/ledgerArchive";
+import { archiveLedgerFile, archiveLedgerLines, archivePathFor, archiveStamp } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { quoteLadderWrap } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { DEFAULT_CROSS_CONFIG, type CollarTerms, type CrossQuote } from "../src/eventCollar/crossVenue/types";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
@@ -189,6 +189,24 @@ test("archive: a ledger is renamed beside itself with a UTC stamp, never deleted
   assert.equal(r.archivedTo, join(dir, "ledger.2026-09-21T013005Z.archived.jsonl"));
   assert.equal(existsSync(path), false);
   assert.equal(readFileSync(r.archivedTo as string, "utf8"), '{"a":1}\n{"a":2}\n', "byte for byte");
+});
+
+test("archive lines: one ticker's records move to a labelled archive beside the ledger; the rest stand, in order; unparsable lines are kept", () => {
+  const dir = mkdtempSync(join(tmpdir(), "archive-lines-"));
+  const path = join(dir, "lock-ledger.jsonl");
+  assert.deepEqual(archiveLedgerLines(path, () => true, "X", "2026-10-15T20:30:00.000Z"), { path, archivedTo: null, moved: 0, kept: 0 }, "missing file");
+  writeFileSync(path, '{"type":"open","ticker":"KX-A","n":1}\n{"type":"open","ticker":"KX-B","n":2}\nnot json\n{"type":"settle","ticker":"KX-A","n":3}\n');
+  const none = archiveLedgerLines(path, (r) => r.ticker === "KX-Z", "KX-Z", "2026-10-15T20:30:00.000Z");
+  assert.deepEqual(none, { path, archivedTo: null, moved: 0, kept: 4 });
+  assert.equal(readFileSync(path, "utf8"), '{"type":"open","ticker":"KX-A","n":1}\n{"type":"open","ticker":"KX-B","n":2}\nnot json\n{"type":"settle","ticker":"KX-A","n":3}\n', "nothing picked: untouched");
+  const r = archiveLedgerLines(path, (rec) => rec.ticker === "KX-A", "KX-A", "2026-10-15T20:30:00.000Z");
+  assert.equal(r.archivedTo, join(dir, "lock-ledger.2026-10-15T203000Z.KX-A.archived.jsonl"));
+  assert.deepEqual([r.moved, r.kept], [2, 2]);
+  assert.equal(readFileSync(r.archivedTo as string, "utf8"), '{"type":"open","ticker":"KX-A","n":1}\n{"type":"settle","ticker":"KX-A","n":3}\n', "both of the ticker's records, in order");
+  assert.equal(readFileSync(path, "utf8"), '{"type":"open","ticker":"KX-B","n":2}\nnot json\n', "the other holder's lock and the odd line stand");
+  const rest = archiveLedgerLines(path, (rec) => rec.ticker === "KX-B", "KX/B weird", "2026-10-15T20:31:00.000Z");
+  assert.equal(rest.archivedTo, join(dir, "lock-ledger.2026-10-15T203100Z.KX_B_weird.archived.jsonl"), "the label is made filename-safe");
+  assert.equal(readFileSync(path, "utf8"), "not json\n");
 });
 
 test("demo service: POST /api/admin/reset archives the quote ledger and the funnel and starts fresh; operator only", async () => {
