@@ -65,7 +65,9 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 
 /* The panel under the line, closed by default. */
 .ael-panel { display: none; margin-top: 6px; padding: 12px 14px 10px; border: 1px solid #27272a; border-radius: 8px; background: #161618; color: #f2f3f5; font-size: 13px; }
-.ael-panel.ael-on { display: block; animation: ael-open 0.18s ease-out; }
+.ael-panel.ael-on { display: block; }
+/* The slide-in plays once, at the tap that opens the panel; a repaint never replays it. */
+.ael-panel.ael-enter { animation: ael-open 0.18s ease-out; }
 @keyframes ael-open { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 
 .ael-ph { margin: 0 0 10px; }

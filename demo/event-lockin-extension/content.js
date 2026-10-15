@@ -164,12 +164,22 @@
     scan(true);
   };
 
+  /**
+   * A lock as the service now reports it, keeping what only the tap knew: that it was this
+   * moment, how long it took, the hedge behind it. The refreshes carry none of that, and a panel
+   * whose words change under the holder a few seconds after the tap reads as a glitch.
+   */
+  const rememberLock = (ticker, next) => {
+    const prev = S.record.get(ticker);
+    S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), ms: prev.ms, hedge: next.hedge || prev.hedge || null } : next);
+  };
+
   /** The service's confirmation of what the account holds, when it has a read key. */
   const loadPositions = async () => {
     const r = await api("/api/shadow/positions", "GET");
     if (r.ok && r.json && r.json.ok) {
       S.svc = { configured: Boolean(r.json.configured), positions: Array.isArray(r.json.positions) ? r.json.positions : [], at: Date.now(), error: null };
-      for (const p of S.svc.positions) if (p.ticker && p.lock) S.record.set(p.ticker, { ...p.lock, ticker: p.ticker, fromSvc: true });
+      for (const p of S.svc.positions) if (p.ticker && p.lock) rememberLock(p.ticker, { ...p.lock, ticker: p.ticker, fromSvc: true });
     } else if (r.ok && r.json && r.json.configured) {
       S.svc = { ...S.svc, configured: true, error: r.json.message || "venue read failed" };
     }
@@ -182,7 +192,7 @@
     if (!(r.ok && r.json && r.json.ok)) return;
     for (const list of [r.json.open, r.json.settled, r.json.closed]) {
       if (!Array.isArray(list)) continue;
-      for (const p of list) if (p && p.source === "lock" && p.ticker) S.record.set(p.ticker, { ...p, justNow: Boolean((S.record.get(p.ticker) || {}).justNow) });
+      for (const p of list) if (p && p.source === "lock" && p.ticker) rememberLock(p.ticker, p);
     }
     scan(true);
   };
@@ -558,7 +568,7 @@
   const stateOf = (ticker) => {
     let st = S.st.get(ticker);
     if (!st) {
-      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, how: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptBusy: false, rcptErr: "" };
+      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, enter: false, how: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptBusy: false, rcptErr: "" };
       S.st.set(ticker, st);
     }
     return st;
@@ -597,6 +607,21 @@
     after.insertAdjacentElement("afterend", host);
     B.host = host;
     B.after = after;
+    fitHost(B);
+  };
+
+  /** An existing block back under its row, as it is; built afresh only when the row's shape changed. */
+  const remountHost = (B) => {
+    const after = insertionPoint(B.row);
+    if (!B.host || (after.tagName === "TR") !== (B.host.tagName === "TR")) {
+      B.host && B.host.remove();
+      mountHost(B);
+      return;
+    }
+    if (B.after !== after || !B.host.isConnected) {
+      after.insertAdjacentElement("afterend", B.host);
+      B.after = after;
+    }
     fitHost(B);
   };
 
@@ -725,7 +750,8 @@
       B.panelHtml = null;
       B.box.querySelector(".ael-line").onclick = () => {
         st.open = !st.open;
-        if (!st.open) {
+        if (st.open) st.enter = true;
+        else {
           st.how = false;
           // the "Locked in" moment is shown once; the next open is the position's details
           if (st.done) st.done.justNow = false;
@@ -736,7 +762,15 @@
       };
     }
     const panel = B.box.querySelector(".ael-panel");
-    panel.className = "ael-panel" + (st.open ? " ael-on" : "");
+    panel.classList.toggle("ael-on", Boolean(st.open));
+    // the panel slides in once, at the holder's tap or the lock; a repaint or a venue re-render that
+    // moves our block never replays it, or the block would blink every time the page redrew
+    if (!st.open) panel.classList.remove("ael-enter");
+    else if (st.enter) {
+      st.enter = false;
+      panel.classList.add("ael-enter");
+      panel.addEventListener("animationend", () => panel.classList.remove("ael-enter"), { once: true });
+    }
     B.box.querySelector(".ael-line").classList.toggle("ael-open", Boolean(st.open));
     if (st.open) paintPanel(B);
     else B.panelHtml = null;
@@ -882,6 +916,7 @@
     }
     st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
     st.open = true;
+    st.enter = true;
     if (r.json.rehearsal) {
       paintRow(B);
       return;
@@ -1107,12 +1142,25 @@
     S.tab = tabState(nodes);
     const found = findRows(nodes);
     const live = new Set();
+    // a venue that redraws its list hands us new row elements for the same plays; the block we
+    // already built for a play moves under its new row as it is, rather than being built again
+    const orphans = [...S.rows.values()].filter((B) => !B.row.isConnected);
     for (const F of found) {
       live.add(F.row);
       let B = S.rows.get(F.row);
       if (B && B.ticker !== F.ticker) {
         B.host.remove();
         B = null;
+      }
+      if (!B) {
+        const i = orphans.findIndex((o) => o.ticker === F.ticker && o.kind === F.kind);
+        if (i >= 0) {
+          B = orphans.splice(i, 1)[0];
+          S.rows.delete(B.row);
+          B.row = F.row;
+          S.rows.set(F.row, B);
+          remountHost(B);
+        }
       }
       if (!B) {
         B = { ...F, host: null, box: null };
@@ -1126,7 +1174,7 @@
         }
         B.kind = F.kind;
         B.match = F.match;
-        if (!B.host.isConnected) mountHost(B);
+        if (!B.host.isConnected) remountHost(B);
       }
       quoteRow(B);
       paintRow(B);
@@ -1145,6 +1193,13 @@
   const observer = new MutationObserver((muts) => {
     if (raf) return;
     if (muts.every((m) => OURS(m.target))) return;
+    // a redraw that pulled one of our blocks out of the page is put right before it is painted
+    for (const [row, B] of S.rows) {
+      if (!row.isConnected || (B.host && !B.host.isConnected)) {
+        scan(true);
+        return;
+      }
+    }
     raf = requestAnimationFrame(() => {
       raf = null;
       scan(false);
