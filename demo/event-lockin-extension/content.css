@@ -155,6 +155,15 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 .ael-sum { font-size: 13px; color: #c3c4c9; margin: 0 0 3px; }
 .ael-sum b { color: #fff; font-weight: 700; font-variant-numeric: tabular-nums; }
 .ael-meta { font-size: 11px; color: #6f7279; margin: 0 0 6px; }
+.ael-meta a { color: #9a9ca3; text-decoration: underline; }
+.ael-meta a:hover { color: #c3c4c9; }
+
+/* The receipt's detail, under "receipt": what stands behind the terms, four labelled lines. */
+.ael-rcpt { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 3px; font-size: 11.5px; color: #c3c4c9; background: #0d0d0f; border: 1px solid #27272a; border-radius: 8px; padding: 8px 10px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+.ael-rcpt span { color: #6f7279; }
+.ael-rcpt b { font-weight: 600; color: #e6e6ea; overflow-wrap: anywhere; }
+.ael-rcpt code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #c3c4c9; }
+.ael-rcpt .ael-dim { color: #9a9ca3; font-weight: 500; }
 
 .ael-size-form { display: flex; gap: 8px; align-items: center; margin: 0 0 8px; }
 .ael-size-form input { width: 110px; padding: 7px 10px; border: 1px solid #2c2c30; border-radius: 8px; font-size: 13px; color: #fff; background: #0d0d0f; }

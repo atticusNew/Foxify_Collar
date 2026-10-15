@@ -558,7 +558,7 @@
   const stateOf = (ticker) => {
     let st = S.st.get(ticker);
     if (!st) {
-      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, how: false, busy: false, done: null, pending: false };
+      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, how: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptBusy: false, rcptErr: "" };
       S.st.set(ticker, st);
     }
     return st;
@@ -891,11 +891,66 @@
     setTimeout(loadRecord, 3000);
   };
 
+  /**
+   * The receipt's detail, under "receipt": what stands behind the terms. Four labelled lines
+   * from the service's hedge view (the lock answer at the tap; GET /api/shadow/receipt later):
+   * the other side (contracts, side, venue, price with fees), the cost, the venue's order id
+   * and time, the record id. A hedge that did not reach the venue reads "covered at the book",
+   * no order line; the holder's protection is on the record either way. The reason stays with
+   * the operator's hedge line.
+   */
+  const receiptHtml = (st, rec) => {
+    const h = st.rcptHedge || rec.hedge || null;
+    const row = (k, v) => "<span>" + k + "</span><b>" + v + "</b>";
+    if (rec.rehearsal) {
+      return (
+        '<div class="ael-rcpt">' +
+        row("Other side", 'No on Kalshi, priced at the book <span class="ael-dim">(rehearsal, nothing bought)</span>') +
+        row("Order", '<span class="ael-dim">none; this was a rehearsal</span>') +
+        row("Record", '<span class="ael-dim">not written</span>') +
+        "</div>"
+      );
+    }
+    if (st.rcptBusy && !h) return '<div class="ael-rcpt">' + row("Receipt", '<span class="ael-dim">reading&hellip;</span>') + "</div>";
+    if (!h) return '<div class="ael-rcpt">' + row("Receipt", '<span class="ael-dim">' + esc(st.rcptErr || "not available right now") + "</span>") + "</div>";
+    const units = h.unitsMilli != null ? (h.unitsMilli / 1000).toFixed(2).replace(/\.00$/, "") : null;
+    const venue = h.venue || "Kalshi";
+    const lines = [];
+    if (h.simulated) {
+      lines.push(row("Other side", (units ? esc(units) + " contracts " : "") + "covered at the book" + (h.costCents != null ? " &middot; " + esc(usd(h.costCents)) : "")));
+    } else {
+      lines.push(row("Other side", esc(units || "") + " contracts No on " + esc(venue) + (h.avgPriceMilli != null ? " at " + esc((h.avgPriceMilli / 10).toFixed(1)) + "c each with fees" : "")));
+      if (h.costCents != null) lines.push(row("Cost", esc(usd(h.costCents)) + ' <span class="ael-dim">all in</span>'));
+      if (h.orderId) lines.push(row("Order", "<code>" + esc(String(h.orderId).slice(0, 8)) + "&hellip;</code> " + esc(venue) + (h.at ? ' <span class="ael-dim">&middot; ' + esc(fmtAt(h.at)) + "</span>" : "")));
+    }
+    if (h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
+    return '<div class="ael-rcpt">' + lines.join("") + "</div>";
+  };
+
+  /** Read the hedge view for a lock from the service once, then paint; the tap's own answer is used when present. */
+  const loadReceipt = async (B) => {
+    const st = stateOf(B.ticker);
+    if (st.rcptBusy || st.rcptHedge) return;
+    st.rcptBusy = true;
+    const r = await api("/api/shadow/receipt?ticker=" + encodeURIComponent(B.ticker), "GET");
+    st.rcptBusy = false;
+    if (r.ok && r.json && r.json.ok) {
+      st.rcptHedge = r.json.hedge || null;
+      st.rcptErr = r.json.hedge ? "" : "no hedge on the trail for this lock";
+    } else st.rcptErr = (r.json && (r.json.message || r.json.error)) || r.error || "could not read the receipt";
+    paintRow(B);
+  };
+
   /** The protected position's details: only what the holder needs to see the deal they have. */
   const paintDetails = (B, panel, rec) => {
+    const st = stateOf(B.ticker);
+    // the hedge behind the receipt: the tap's own answer, kept once seen (the record refresh a
+    // moment later carries none), else read from the service the first time the receipt opens
+    if (!st.rcptHedge && rec.hedge && rec.hedge.receiptId) st.rcptHedge = rec.hedge;
+    if (st.rcpt && !rec.rehearsal && !st.rcptHedge && !st.rcptBusy && !st.rcptErr) void loadReceipt(B);
     const rs = reshape(rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
     const nick = shortOf(B.ticker);
-    const h = rec.hedge;
+    const h = st.rcptHedge || rec.hedge;
     const opLine =
       S.settings.showHedge === "yes" && h
         ? '<div class="ael-op">' + (h.simulated ? "hedge held: " + esc(h.fallbackReason || "simulated") : "hedged live &middot; order " + esc(h.orderId || "") + " &middot; " + (h.costCents != null ? esc(usd(h.costCents)) : "")) + "</div>"
@@ -921,11 +976,14 @@
       if (rec.at) meta.push("locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
     }
+    // the receipt's detail is one tap away, never in the way: a link at the end of the facts line
+    if (rec.status !== "void") meta.push('<a href="#" class="ael-rcpt-a">' + (st.rcpt ? "hide receipt" : "receipt") + "</a>");
     const recordUrl = (S.baseUrl || "").replace(/\/+$/, "") + "/";
     const html =
       '<div class="ael-ph ael-rc"><b>' + head + "</b></div>" +
       '<div class="ael-sum">' + sum + "</div>" +
       (meta.length ? '<div class="ael-meta">' + meta.join(" &middot; ") + "</div>" : "") +
+      (st.rcpt && rec.status !== "void" ? receiptHtml(st, rec) : "") +
       opLine +
       (rec.rehearsal ? '<div class="ael-op">Rehearsal: nothing was locked, written or bought. <a href="#" class="ael-reset-a">Reset</a></div>' : "") +
       (operator() ? '<div class="ael-fine"><a href="' + esc(recordUrl) + '" target="_blank" rel="noopener">public record</a></div>' : "") +
@@ -939,6 +997,18 @@
           st.done = null;
           st.open = false;
           st.quoteAt = 0;
+          st.rcpt = false;
+          st.rcptHedge = null;
+          paintRow(B);
+        };
+      const rcpt = panel.querySelector(".ael-rcpt-a");
+      if (rcpt)
+        rcpt.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const st = stateOf(B.ticker);
+          st.rcpt = !st.rcpt;
+          if (st.rcpt) st.rcptErr = "";
           paintRow(B);
         };
     });
