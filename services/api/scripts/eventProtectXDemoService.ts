@@ -61,11 +61,14 @@
  *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
  *      EVENT_X_FUNNEL_PATH · EVENT_X_ADMIN_TOKEN (or EVENT_X_DEV_NO_ADMIN=true)
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
+ *      EVENT_X_VIDEO_URL / EVENT_X_VIDEO_POSTER_URL (the live recording on the demo page;
+ *      default the bundled file at /media/lockin-live.mp4; "off" hides the block)
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   adminAuthorized,
   coerceEventFunnel,
@@ -105,7 +108,8 @@ import {
   type RouteCheck,
 } from "../src/eventCollar/crossVenue/types";
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
-import { DEFAULT_EMBED_BRAND, brandRecordUrl, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand } from "./eventProtectEmbedHtml";
+import { DEFAULT_EMBED_BRAND, DEFAULT_LIVE_VIDEO, brandRecordUrl, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand, type LiveVideo } from "./eventProtectEmbedHtml";
+import { serveMedia } from "../src/eventCollar/crossVenue/mediaFiles";
 import { applyMinimumCredit, describeMinimumCredit, minimumCreditRuleFromEnv } from "../src/eventCollar/crossVenue/minimumCredit";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { activityFromShadowBody } from "../src/eventCollar/crossVenue/activityRetail";
@@ -151,6 +155,18 @@ const TRACK_RECORD_URL = process.env.EVENT_X_SHADOW_URL || "https://atticus-even
  * alone; without it every shell links to the public record.
  */
 const SLATE_KEY = process.env.EVENT_SHADOW_SLATE_KEY;
+/**
+ * The live recording on the demo page (a real position locked and hedged on Kalshi). Served
+ * from this service's assets folder at /media/ by default; EVENT_X_VIDEO_URL (and
+ * EVENT_X_VIDEO_POSTER_URL) point it at a CDN instead, and EVENT_X_VIDEO_URL=off leaves it out.
+ */
+const MEDIA_DIR = join(dirname(fileURLToPath(import.meta.url)), "assets");
+const LIVE_VIDEO: LiveVideo | null = (() => {
+  const src = process.env.EVENT_X_VIDEO_URL?.trim();
+  if (src?.toLowerCase() === "off") return null;
+  if (!src) return DEFAULT_LIVE_VIDEO;
+  return { src, poster: process.env.EVENT_X_VIDEO_POSTER_URL?.trim() || DEFAULT_LIVE_VIDEO.poster };
+})();
 
 /**
  * PARLAYS: the demo's Parlays tab lists the shadow's simulated tickets (the last-leg ledger
@@ -1323,6 +1339,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       sendJson(res, h.ready ? 200 : 503, { ok: h.ready, warm: h.warm, service: "event-protect-cross-venue-demo", brandRecordLinks: SLATE_KEY?.trim() ? "slate" : "full record" });
       return;
     }
+    if (serveMedia(req, res, url.pathname, MEDIA_DIR)) return;
     if (url.pathname === "/api/showcase") {
       const ticker = url.searchParams.get("ticker") || undefined;
       const full = payloadFromScan(await getCachedScan(), ticker);
@@ -1374,6 +1391,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           minCredit: MIN_CREDIT_RULE,
           trackRecordUrl: record.url,
           recordIsSlate: record.slate,
+          liveVideo: LIVE_VIDEO,
           // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
           skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,
           // no ?kind= and the brand preset decides (a sportsbook shell hides the crypto strikes)

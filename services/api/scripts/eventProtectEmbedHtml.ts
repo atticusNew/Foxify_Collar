@@ -74,7 +74,22 @@ export interface EmbedOptions {
    * per-brand cut and would read as "the full version" beside the brand's slate.
    */
   recordIsSlate?: boolean;
+  /**
+   * The live recording: a real position on a real exchange, locked and hedged on Kalshi,
+   * shown in the pitch column under the bullets. `null` leaves the block out.
+   */
+  liveVideo?: LiveVideo | null;
 }
+
+export interface LiveVideo {
+  /** the mp4's URL, absolute or on this host */
+  src: string;
+  /** the still shown before play */
+  poster: string;
+}
+
+/** Where the demo page's live recording is served by default (the service's own /media route). */
+export const DEFAULT_LIVE_VIDEO: LiveVideo = { src: "/media/lockin-live.mp4", poster: "/media/lockin-live.jpg" };
 
 const DEFAULT_TRACK_RECORD_URL = "https://atticus-event-shadow.onrender.com";
 
@@ -189,6 +204,15 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const recordLabel = opts.recordIsSlate ? `${brand} record` : "Track record";
   // a partner's shell keeps its brand on the partner pages it links to
   const brandQ = opts.brand.trim().toLowerCase() === DEFAULT_EMBED_BRAND.toLowerCase() ? "" : `?brand=${encodeURIComponent(opts.brand)}`;
+  const video = opts.liveVideo === undefined ? DEFAULT_LIVE_VIDEO : opts.liveVideo;
+  // the recording: a shared link previews it, and the pitch column plays it on tap, never on its own
+  const videoMeta = video ? `\n<meta property="og:video" content="${escapeHtml(video.src)}" />\n<meta property="og:video:type" content="video/mp4" />\n<meta property="og:image" content="${escapeHtml(video.poster)}" />` : "";
+  const videoBlock = video
+    ? `<div class="live"><div class="live-h">Seen live</div>` +
+      `<video controls preload="none" playsinline poster="${escapeHtml(video.poster)}" src="${escapeHtml(video.src)}"></video>` +
+      `<p>A real position on a real exchange, locked and hedged on Kalshi. Receipt on screen.</p>` +
+      `<p class="live-fine">Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p></div>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -197,7 +221,7 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
 <meta name="robots" content="noindex" />
 <link rel="icon" href="data:," />
 <title>${brand} · Positions</title>
-<meta name="description" content="How Earn &amp; Protect sits inside a prediction market's positions list: one Lock in button per row, one sheet, one tap. Demonstration; positions are simulated, prices are live." />
+<meta name="description" content="How Earn &amp; Protect sits inside a prediction market's positions list: one Lock in button per row, one sheet, one tap. Demonstration; positions are simulated, prices are live." />${videoMeta}
 <style>
 :root{
   ${
@@ -341,6 +365,11 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   .pitch li:before{content:"";position:absolute;left:0;top:13px;width:9px;height:9px;border-radius:50%;background:var(--ep-green)}
   .pitch .try{margin-top:22px;color:var(--stage-ink);font-weight:600;font-size:15px}
   .pitch .try b{color:var(--ep-green)}
+  .pitch .live{margin-top:26px;max-width:420px}
+  .pitch .live-h{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ep-green);margin-bottom:8px}
+  .pitch .live video{display:block;width:100%;aspect-ratio:1920/1244;border-radius:10px;background:#0e0e10;box-shadow:0 14px 40px rgba(15,17,21,.18)}
+  .pitch .live p{margin-top:10px;font-size:14px;line-height:1.5;color:var(--stage-ink)}
+  .pitch .live p.live-fine{margin-top:4px;font-size:12px;color:var(--stage-dim)}
   .pitch .partners{margin-top:30px;padding-top:16px;border-top:1px solid rgba(15,17,21,.1);color:var(--stage-dim);font-size:12.5px}
   .pitch .partners b{color:var(--stage-ink);font-weight:600;margin-right:8px}
   .pitch .partners a{color:var(--stage-ink);text-decoration:none;border-bottom:1px solid rgba(15,17,21,.25);margin-right:12px}
@@ -367,8 +396,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
     <li>Parlays: a floor and a credit at the last pick, never before</li>
   </ul>
   <div class="try">Tap <b>Lock in</b> on any row, or open <b>Parlays</b> &rarr;</div>
+  ${videoBlock}
   <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">${recordLabel}</a><a href="/partner${brandQ}">Partner console</a>${opts.recordIsSlate ? "" : '<a href="/receipts">Receipts</a><a href="/board">Full board</a>'}</div>
-  <div class="foot">Demonstration only. Simulated positions at live prices; nothing is bought.</div>
+  <div class="foot">Demo positions are simulated at live prices. The record also carries locks on a real position, hedged with real orders on Kalshi.</div>
 </aside>
 <div class="phone" id="phone">
   <div class="host-top">
