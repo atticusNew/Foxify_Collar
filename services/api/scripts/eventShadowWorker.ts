@@ -193,6 +193,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/report",
   "/api/shadow/hedges",
   "/api/shadow/hedges/preflight",
+  "/api/shadow/hedges/resend",
   "/api/shadow/export",
   "/api/shadow/reset",
   "/api/shadow/lastleg",
@@ -555,6 +556,105 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   sendJson(res, 404, { ok: false, error: "not found" });
+}
+
+/**
+ * POST /api/shadow/hedges/resend?ticker= (operator): a lock whose hedge never reached the venue
+ * (the trail shows a simulated fill, e.g. the venue refused the order) is hedged again. The same
+ * position is priced on Kalshi's own No side now and sent through the executor and its rails; one
+ * more receipt lands on the trail under the same ref. The lock's terms do not move: the record is
+ * as quoted at the tap. Refused while a live fill is already on the trail for it unless ?force=1.
+ */
+async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/hedges/resend?ticker=KX... with the operator token; nothing is sent on GET" });
+    return;
+  }
+  if (!quoteOneFn) {
+    sendJson(res, 503, { ok: false, error: "engine_not_ready", message: "the scanner is still loading" });
+    return;
+  }
+  const ticker = (url.searchParams.get("ticker") ?? "").trim().toUpperCase();
+  const lock = ticker ? loadShadowPositions(LOCK_LEDGER_PATH).find((p) => p.ticker === ticker) : undefined;
+  if (!lock) {
+    sendJson(res, 404, { ok: false, error: "no_lock", message: ticker ? `no lock on the record for ${ticker}` : "?ticker= names the lock" });
+    return;
+  }
+  if (lock.status !== "open") {
+    sendJson(res, 409, { ok: false, error: "not_open", message: `the lock on ${ticker} is ${lock.status}; only an open lock is hedged again` });
+    return;
+  }
+  const prior = loadHedgeReceipts(RECEIPTS_PATH).filter((r) => r.ref === ticker);
+  const liveFills = prior
+    .filter((r) => r.fill && !r.fill.simulated)
+    .map((r) => ({ receiptId: r.id, at: r.at, orderId: r.fill?.ids.orderId ?? null, unitsMilli: r.fill?.unitsMilli ?? 0, costCents: r.fill?.costCents ?? 0 }));
+  if (liveFills.length > 0 && url.searchParams.get("force") !== "1") {
+    sendJson(res, 409, { ok: false, error: "already_live", message: `the venue already holds a fill for ${ticker}; ?force=1 to send another`, liveFills });
+    return;
+  }
+  if (lockInFlight.has(ticker)) {
+    sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being locked right now." });
+    return;
+  }
+  lockInFlight.add(ticker);
+  try {
+    const atIso = new Date().toISOString();
+    const q = await quoteOneFn({ ticker, contracts: lock.contracts, entryCents: lock.entryCents, route: "kalshi_self" });
+    if (!q.ok) {
+      sendJson(res, 200, { ok: false, at: atIso, ticker, code: q.code, message: q.detail });
+      return;
+    }
+    const result = q.result;
+    if (!result.quote.ok) {
+      sendJson(res, 200, { ok: false, at: atIso, ticker, code: result.quote.code, message: result.quote.detail });
+      return;
+    }
+    const chosen = lock.tier && result.quote.tiers[lock.tier] ? { ...result.quote, ...result.quote.tiers[lock.tier], tier: lock.tier } : result.quote;
+    const receipt = await fillHedge(ticker, chosen.hedge, result.books);
+    sendJson(res, receipt ? 200 : 502, {
+      ok: Boolean(receipt),
+      at: atIso,
+      ticker,
+      allowlisted: Boolean(hedgeChoice.live?.allowlist.includes(ticker)),
+      lock: {
+        at: lock.at,
+        contracts: lock.contracts,
+        entryCents: lock.entryCents ?? null,
+        tier: lock.tier ?? null,
+        floorCents: lock.floorCents,
+        capCents: lock.capCents,
+        creditCents: lock.creditCents,
+        hedgeUnitsMilli: lock.hedgeUnitsMilli ?? null,
+        hedgeCostCents: lock.hedgeCostCents,
+      },
+      // the same position on this moment's book: what the hedge is sized and priced at now
+      repriced: {
+        tier: chosen.tier,
+        floorCents: chosen.floorCents,
+        capCents: chosen.capCents,
+        creditCents: chosen.creditCents,
+        hedgeUnitsMilli: "sharesMilli" in chosen.hedge ? chosen.hedge.sharesMilli : chosen.hedge.contractsMilli,
+        hedgeCostCents: chosen.hedge.costCents + chosen.feesCents,
+      },
+      priorReceipts: prior.length,
+      hedge: receipt
+        ? {
+            route: result.route,
+            outcome: receipt.outcome,
+            simulated: receipt.fill?.simulated ?? true,
+            unitsMilli: receipt.fill?.unitsMilli ?? null,
+            costCents: receipt.fill?.costCents ?? null,
+            orderId: receipt.fill?.ids.orderId ?? null,
+            fallbackReason: receipt.fallbackReason,
+            receiptId: receipt.id,
+            attempts: receipt.attempts.map((a) => ({ step: a.step, ok: a.ok, detail: a.detail })),
+          }
+        : null,
+      ...(receipt ? {} : { error: "hedge_failed", message: lastScanError }),
+    });
+  } finally {
+    lockInFlight.delete(ticker);
+  }
 }
 
 /** Open one simulated position for every quotable board row we have not seen. */
@@ -1137,6 +1237,10 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           notes: hedgeChoice.notes,
         }),
       );
+      return;
+    }
+    if (url.pathname === "/api/shadow/hedges/resend") {
+      void handleHedgeResend(req, res, url).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
       return;
     }
     if (url.pathname === "/report") {
