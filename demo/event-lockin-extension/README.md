@@ -20,8 +20,11 @@ holder plays exactly as they do today. Once a matched play exists, under its row
    it goes · +$1.66 paid". Its panel is a receipt, shaped unlike the offer on purpose: a check and
    "Locked in", one sentence with the numbers ("$14.71 if the Texans lose · $25.06 if they win ·
    +$1.66 paid now"), one grey line of facts (settles on the official result, when it was locked,
-   how long it took). No tiles, no button. The public record link appears only with the operator
-   setting on;
+   how long it took) ending in a **receipt** link. Tapping it opens four labelled lines in place:
+   the other side ("19.17 contracts No on Kalshi at 27.4c each with fees"), the cost, the venue's
+   order id and time, and the record id; a hedge that did not reach the venue reads "covered at
+   the book" with no order line. No tiles, no button. The public record link appears only with
+   the operator setting on;
 4. a play protection does not cover gets a muted **Protection unavailable** line with the reason
    after it: "covers Moneyline picks" on a spread or total, "waits until the play is matched" on a
    play that is still an open order, or the live refusal from pricing. Tapping it says what to do.
@@ -125,7 +128,7 @@ The lock routes are off until a key is set.
 
 | Env | Value | Why |
 | --- | --- | --- |
-| `EVENT_SHADOW_LOCK_KEY` | 12+ random chars | Opens `/api/shadow/markets`, `/api/shadow/quote`, `/api/shadow/positions`, `/api/shadow/lock` to callers with `x-lock-key`. Unset answers 404. |
+| `EVENT_SHADOW_LOCK_KEY` | 12+ random chars | Opens `/api/shadow/markets`, `/api/shadow/quote`, `/api/shadow/positions`, `/api/shadow/lock`, `/api/shadow/receipt` to callers with `x-lock-key`. Unset answers 404. |
 | `EVENT_HEDGE_STRATEGY` | `live` | Real Kalshi orders behind rails. Anything the rails hold is simulated at the book, reason on the receipt. |
 | `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. |
 | `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap | Allowlist. Empty allows nothing. Listed tickers are hedged on Kalshi's own No side and skipped by the hourly scan. |
@@ -200,6 +203,15 @@ GET /healthz                                                lock.enabled true, h
    tab. Each filled play gets its line; on Resting the line says the order has not matched. If the extension cannot find the rows but the service knows your plays, a card
    bottom-right lists them with the same lines.
 
+Operator actions (token in `x-admin-token`), for the recording day:
+
+| Call | What it does |
+| --- | --- |
+| `GET /api/shadow/hedges/preflight?ticker=KX...&contracts=N` | Balance, rails, and whether the tap would be offered and sent. Reads only. |
+| `POST /api/shadow/hedges/resend?ticker=KX...` | Hedges an open lock again when its hedge never reached the venue (simulated fill on the trail). Refuses once a live fill exists unless `&force=1`. |
+| `POST /api/shadow/lock/reset?ticker=KX...` | Takes one lock off the record (its lines move to an archive beside the ledger) so the market can be locked again; the row goes back to the offer on the next poll. Names any live fill the venue still holds for the old lock, which is yours to sell or keep. |
+| `GET /api/shadow/hedges` | The hedge trail: every receipt, order ids, fills, reasons. |
+
 ## Test steps (five minutes, no money)
 
 1. Open the preview My Trades with the extension loaded. Every row has a line under it: Lock in
@@ -211,7 +223,8 @@ GET /healthz                                                lock.enabled true, h
    book, Writing the record, Buying the other side) under a slow sheen, with whole seconds only
    past three; the panel then turns into the receipt ("Locked in", the sentence with the three
    numbers, the facts line with how long it took); the line reads "Protected · $x or $y".
-   Open `/` on the service: the position is there with `source: lock`.
+   Tap **receipt** at the end of the facts line: the other side, the cost, the order, the record
+   id. Open `/` on the service: the position is there with `source: lock`.
    With Rehearsal on in the options, the same tap ends on "Locked in (rehearsal)" with a Reset link
    and nothing reaches the service.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).

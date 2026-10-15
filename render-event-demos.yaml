@@ -198,6 +198,9 @@ services:
       # Resend (operator): POST /api/shadow/hedges/resend?ticker=KX... hedges an open lock again when
       #   its hedge never reached the venue (simulated fill on the trail); refuses once a live fill
       #   exists unless &force=1. Orders go to Kalshi's V2 path (POST /portfolio/events/orders).
+      # Lock reset (operator): POST /api/shadow/lock/reset?ticker=KX... moves one lock's lines to an
+      #   archive beside the lock ledger so the market can be locked again; names the live fills the
+      #   venue still holds for the old lock. The holder's receipt: GET /api/shadow/receipt?ticker= (lock key).
       # LOCK IN (the tap from the browser extension; off here, set in the dashboard, never in git):
       #   EVENT_SHADOW_LOCK_KEY=<12+ chars>     opens GET /api/shadow/markets, GET /api/shadow/quote,
       #                                         GET /api/shadow/positions and POST /api/shadow/lock to
