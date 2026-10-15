@@ -695,7 +695,7 @@
       const rs = reshape(rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
       if (rec.status === "settled" && rec.result) line = lineGo("Settled &middot; paid " + esc(usd(rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal)), "", "ael-line-on");
       else if (rec.status === "void") line = lineGo("Protection voided", "no official result; nothing owed", "ael-line-on");
-      else line = lineGo("Protected" + (rec.rehearsal ? " (rehearsal)" : "") + " &middot; " + esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), "whichever way it goes &middot; +" + esc(usd(rec.creditCents)) + " paid &middot; details", "ael-line-on");
+      else line = lineGo("Protected" + (rec.rehearsal ? " (rehearsal)" : "") + " &middot; " + esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), "whichever way it goes &middot; +" + esc(usd(rec.creditCents)) + " paid", "ael-line-on");
     } else if (B.kind === "other") {
       line = lineGo("Protection unavailable", "covers Moneyline picks", "ael-line-off");
     } else if (B.match === "unmatched") {
@@ -803,8 +803,8 @@
     const html =
       '<div class="ael-top"><div class="ael-ph"><b>Worst case ' + esc(usd(rs.floorTotal)) + " instead of $0</b><span>" + whoLine(B, p) + "</span></div>" +
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") + "</div>" +
-      '<div class="ael-deal">' + tiles(shortOf(B.ticker), rs, t.creditCents, was) +
-      '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '">Lock in &middot; worst case ' + esc(usd(rs.floorTotal)) + "</button></div>" +
+      tiles(shortOf(B.ticker), rs, t.creditCents, was) +
+      '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '">Lock in &middot; worst case ' + esc(usd(rs.floorTotal)) + "</button>" +
       '<div class="ael-fine">priced live, locks at your tap' + (p.eventTimeIso ? " &middot; available until kickoff " + esc(fmtAt(p.eventTimeIso)) : "") + ' &middot; <a href="#" class="ael-how-a">how it works</a></div>' +
       '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap.</p></div>" +
       DISCLOSE;
@@ -860,8 +860,6 @@
       const s = (Date.now() - t0) / 1000;
       return STAGES[Math.min(STAGES.length - 1, Math.floor(s / 1.5))] + (s >= 3 ? " " + Math.floor(s) + "s" : "");
     };
-    // keep the button's footprint so the tiles beside it do not shift as the words change
-    go.style.minWidth = Math.ceil(go.getBoundingClientRect().width) + "px";
     go.classList.add("ael-busy");
     go.textContent = label();
     const tick = setInterval(() => {
@@ -902,28 +900,33 @@
       S.settings.showHedge === "yes" && h
         ? '<div class="ael-op">' + (h.simulated ? "hedge held: " + esc(h.fallbackReason || "simulated") : "hedged live &middot; order " + esc(h.orderId || "") + " &middot; " + (h.costCents != null ? esc(usd(h.costCents)) : "")) + "</div>"
         : "";
+    // the receipt reads differently from the offer on purpose: a sentence with the numbers, then
+    // one grey line of facts; no tiles, no button, nothing left to choose
     let head;
-    let rows;
+    let sum;
+    const meta = [];
     if (rec.status === "settled" && rec.result) {
       const got = rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal;
       const naked = rec.nakedCents != null ? rec.nakedCents : rec.result === "yes" ? 100 * rec.contracts : 0;
-      head = "<b>Settled &middot; " + esc(nick) + (rec.result === "yes" ? " won" : " lost") + "</b><span>" + (rec.settledAt ? esc(fmtAt(rec.settledAt)) : "") + "</span>";
-      rows = '<div class="ael-kv"><span>You received</span><b>' + esc(usd(got)) + '</b></div><div class="ael-kv"><span>Unprotected it would have paid</span><b>' + esc(usd(naked)) + "</b></div>";
+      head = '<span class="ael-ck">&#x2713;</span>Settled &middot; ' + esc(nick) + (rec.result === "yes" ? " won" : " lost");
+      sum = "You received <b>" + esc(usd(got)) + "</b> &middot; unprotected it would have paid <b>" + esc(usd(naked)) + "</b>";
+      if (rec.settledAt) meta.push("settled " + esc(fmtAt(rec.settledAt)));
     } else if (rec.status === "void") {
-      head = "<b>Protection voided</b><span>no official result for this game</span>";
-      rows = '<div class="ael-kv"><span>Nothing owed either way</span><b></b></div>';
+      head = "Protection voided";
+      sum = "No official result for this game &middot; nothing owed either way";
     } else {
-      const took = rec.ms ? (rec.ms / 1000).toFixed(1) + "s" : "";
-      const hedged = rec.hedge && !rec.hedge.simulated ? "the other side was bought on the exchange" + (took ? " in " + took : "") : took ? "locked in " + took : "";
-      head = rec.justNow
-        ? '<b><span class="ael-ck">&#x2713;</span>Locked in' + (rec.rehearsal ? " (rehearsal)" : "") + "</b><span>" + esc(nick) + " &middot; settles when the game is final &middot; nothing to manage" + (hedged ? " &middot; " + esc(hedged) : "") + "</span>"
-        : "<b>Protected" + (rec.rehearsal ? " (rehearsal)" : "") + (rec.at ? " &middot; locked " + esc(fmtAt(rec.at)) : "") + "</b><span>" + esc(nick) + " &middot; settles when the game is final</span>";
-      const was = usd(B.size && B.size.payoutCents ? B.size.payoutCents : 100 * rec.contracts);
-      rows = '<div class="ael-deal">' + tiles(nick, rs, rec.creditCents, was) + "</div>";
+      head = (rec.justNow ? '<span class="ael-ck">&#x2713;</span>Locked in' : "Protected") + (rec.rehearsal ? " (rehearsal)" : "");
+      sum = "<b>" + esc(usd(rs.floorTotal)) + "</b> if the " + esc(nick) + " lose &middot; <b>" + esc(usd(rs.capTotal)) + "</b> if they win &middot; <b>+" + esc(usd(rec.creditCents)) + "</b> paid now";
+      meta.push("settles on the official result; nothing to manage");
+      if (rec.at) meta.push("locked " + esc(fmtAt(rec.at)));
+      if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
     }
     const recordUrl = (S.baseUrl || "").replace(/\/+$/, "") + "/";
     const html =
-      '<div class="ael-ph">' + head + "</div>" + rows + opLine +
+      '<div class="ael-ph ael-rc"><b>' + head + "</b></div>" +
+      '<div class="ael-sum">' + sum + "</div>" +
+      (meta.length ? '<div class="ael-meta">' + meta.join(" &middot; ") + "</div>" : "") +
+      opLine +
       (rec.rehearsal ? '<div class="ael-op">Rehearsal: nothing was locked, written or bought. <a href="#" class="ael-reset-a">Reset</a></div>' : "") +
       (operator() ? '<div class="ael-fine"><a href="' + esc(recordUrl) + '" target="_blank" rel="noopener">public record</a></div>' : "") +
       DISCLOSE;
