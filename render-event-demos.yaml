@@ -195,6 +195,9 @@ services:
       #   EVENT_HEDGE_LIVE_SEND=yes             the only value that sends; anything else is a dry run
       #   EVENT_HEDGE_KILL_SWITCH=1             nothing leaves, whatever else is set
       # Pre-flight (operator): GET /api/shadow/hedges/preflight?ticker=KX... reads balance and the rails.
+      # Resend (operator): POST /api/shadow/hedges/resend?ticker=KX... hedges an open lock again when
+      #   its hedge never reached the venue (simulated fill on the trail); refuses once a live fill
+      #   exists unless &force=1. Orders go to Kalshi's V2 path (POST /portfolio/events/orders).
       # LOCK IN (the tap from the browser extension; off here, set in the dashboard, never in git):
       #   EVENT_SHADOW_LOCK_KEY=<12+ chars>     opens GET /api/shadow/markets, GET /api/shadow/quote,
       #                                         GET /api/shadow/positions and POST /api/shadow/lock to

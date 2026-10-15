@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { appendHedgeReceipt, type HedgeReceipt } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { lockAuthorized, lockKeyFromEnv, parseLockRequest } from "../src/eventCollar/crossVenue/lockGate";
 import { appendShadowRecord, loadShadowPositions } from "../src/eventCollar/crossVenue/shadowLedger";
@@ -282,6 +283,58 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(hedges.summary.live.dryRun, 1);
     assert.equal(hedges.summary.live.sent, 0);
     assert.equal(hedges.recent[0].ref, TICKER);
+
+    // RESEND (operator): a lock whose hedge did not reach the venue is hedged again at the lock's
+    // size and entry on the Kalshi route; the record is untouched, the trail gains one receipt
+    const op = { "x-admin-token": "op-secret" };
+    seen.length = 0;
+    assert.equal((await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}`, { method: "POST" })).status, 403, "operator only");
+    assert.equal((await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}`, { headers: op })).status, 405, "GET sends nothing");
+    assert.equal((await fetch(`${base}/api/shadow/hedges/resend?ticker=KXNBAGAME-26OCT14LALBOS-LAL`, { method: "POST", headers: op })).status, 404, "no lock, nothing to resend");
+    assert.equal(seen.length, 0, "nothing priced before the lock is found");
+    const resendRes = await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER.toLowerCase()}`, { method: "POST", headers: op });
+    assert.equal(resendRes.status, 200);
+    const resend = (await resendRes.json()) as {
+      ok: boolean;
+      ticker: string;
+      allowlisted: boolean;
+      priorReceipts: number;
+      lock: { contracts: number; entryCents: number; floorCents: number; hedgeUnitsMilli: number };
+      repriced: { hedgeUnitsMilli: number; tier: string };
+      hedge: { outcome: string; simulated: boolean; fallbackReason: string; route: string; receiptId: string; attempts: Array<{ step: string; ok: boolean }> };
+    };
+    assert.equal(resend.ok, true);
+    assert.equal(resend.ticker, TICKER);
+    assert.equal(resend.allowlisted, true);
+    assert.equal(resend.priorReceipts, 1);
+    assert.equal(resend.lock.contracts, 20);
+    assert.equal(resend.lock.entryCents, 58);
+    assert.equal(resend.lock.floorCents, lock.floorCents);
+    assert.deepEqual(seen.at(-1), { ticker: TICKER, contracts: 20, entryCents: 58, route: "kalshi_self" }, "priced as the lock was taken, on the route the executor sends to");
+    assert.equal(resend.repriced.tier, requested, "the holder's tier");
+    assert.equal(resend.repriced.hedgeUnitsMilli, resend.lock.hedgeUnitsMilli, "same book in the fake: same size");
+    assert.equal(resend.hedge.route, "kalshi_self");
+    assert.equal(resend.hedge.outcome, "filled_book");
+    assert.equal(resend.hedge.simulated, true);
+    assert.equal(resend.hedge.fallbackReason, "dry run");
+    assert.deepEqual(resend.hedge.attempts.map((a) => [a.step, a.ok]), [["rails", true], ["dry_run", true], ["fill", true]], "rails passed, held dry, simulated at the book");
+    assert.equal(readFileSync(ledger, "utf8").trim().split("\n").length, 1, "no record written: the lock's terms stand");
+    const trail = (await (await fetch(`${base}/api/shadow/hedges?token=op-secret`)).json()) as { summary: { receipts: number }; recent: Array<HedgeReceipt> };
+    assert.equal(trail.summary.receipts, 2);
+    assert.deepEqual(trail.recent.map((r) => r.ref), [TICKER, TICKER]);
+    assert.equal(trail.recent[0].id, resend.hedge.receiptId);
+
+    // once a live fill is on the trail the resend refuses (the venue holds the hedge) unless forced
+    const liveFill: HedgeReceipt = { ...trail.recent[0], id: "live-1", fill: { ...trail.recent[0].fill!, simulated: false, strategy: "live", ids: { orderId: "ord-live" } }, outcome: "filled_live", fallbackReason: null };
+    appendHedgeReceipt(join(dir, "hedge-receipts.jsonl"), liveFill);
+    const held = await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}`, { method: "POST", headers: op });
+    assert.equal(held.status, 409);
+    const heldBody = (await held.json()) as { error: string; liveFills: Array<{ orderId: string; receiptId: string }> };
+    assert.equal(heldBody.error, "already_live");
+    assert.deepEqual(heldBody.liveFills.map((f) => [f.receiptId, f.orderId]), [["live-1", "ord-live"]]);
+    const forced = (await (await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}&force=1`, { method: "POST", headers: op })).json()) as { ok: boolean; priorReceipts: number };
+    assert.equal(forced.ok, true);
+    assert.equal(forced.priorReceipts, 3);
 
     // the public record shows both positions on the market: the scan's showcase and the holder's lock
     const pub = (await (await fetch(`${base}/api/shadow`)).json()) as { open: Array<Record<string, unknown>> };

@@ -20,7 +20,8 @@ import {
   type HedgeReceipt,
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
-import { KalshiOrderClient, fillOfOrder } from "../src/eventCollar/crossVenue/kalshiOrders";
+import { kalshiTakerFeeCents } from "../src/eventCollar/crossVenue/kalshiLadder";
+import { KalshiOrderClient, fillOfOrder, fillOfV2Order } from "../src/eventCollar/crossVenue/kalshiOrders";
 import {
   DEFAULT_LIVE_RAILS,
   LiveHedgeExecutor,
@@ -227,7 +228,7 @@ test("live executor: a sent order fills live with the venue's numbers; a partial
   const failEx = new LiveHedgeExecutor(
     {
       kalshi: async () => {
-        throw new Error("kalshi orders: HTTP 400 POST /portfolio/orders insufficient_balance");
+        throw new Error("kalshi orders: HTTP 400 POST /portfolio/events/orders insufficient_balance");
       },
     },
     OPEN_RAILS,
@@ -321,23 +322,45 @@ function testCreds(): { apiKeyId: string; privateKeyPem: string } {
   return { apiKeyId: "key-1", privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }) as string };
 }
 
-test("kalshi orders: the body is a limit buy of No at the walked worst price, IOC; whole sizes as count, fractions as count_fp", () => {
+test("kalshi orders: the V2 body is an ask of Yes at 1 - the walked worst No price (a buy of No at the cap), IOC, fixed-point size", () => {
   const body = KalshiOrderClient.orderBody(intentFromHedge(KALSHI_LEG, 400), "atticus-abc");
   assert.deepEqual(body, {
     ticker: "KXNBAGAME-26OCT14LALBOS-BOS",
     client_order_id: "atticus-abc",
-    side: "no",
-    action: "buy",
-    type: "limit",
-    count: 20,
-    no_price: 42,
+    side: "ask",
+    count: "20.00",
+    price: "0.5800",
     time_in_force: "immediate_or_cancel",
+    self_trade_prevention_type: "taker_at_cross",
   });
   const frac = KalshiOrderClient.orderBody(intentFromHedge({ ...KALSHI_LEG, contractsMilli: 20_501, worstPriceCents: 41 }, 400), "x");
-  assert.equal(frac.count, undefined);
-  assert.equal(frac.count_fp, "20.51", "rounded up to the venue's hundredth");
-  assert.equal(frac.no_price, 41);
+  assert.equal(frac.count, "20.51", "rounded up to the venue's hundredth");
+  assert.equal(frac.price, "0.5900", "No at 41c is Yes at 59c");
+  const milli = KalshiOrderClient.orderBody(intentFromHedge({ ...KALSHI_LEG, contractsMilli: 19_170, worstPriceCents: 26 }, 250), "x");
+  assert.equal(milli.count, "19.17");
+  assert.equal(milli.price, "0.7400");
   assert.throws(() => KalshiOrderClient.orderBody(intentFromHedge(PM_LEG, 415), "x"), /intent is for polymarket/);
+});
+
+test("kalshi orders: a V2 fill is read from the Yes side; the No cost rounds up, the fee rounds up, gaps fall to the cap and the formula", () => {
+  const cap = 42;
+  // 20 sold at a Yes average of 0.59 = 20 bought No at 41c = 820c, plus 0.0035/contract = 7c
+  assert.deepEqual(fillOfV2Order({ order_id: "o", fill_count: "20.00", remaining_count: "0.00", average_fill_price: "0.590000", average_fee_paid: "0.003500" }, cap), {
+    unitsMilli: 20_000,
+    costCents: 827,
+    feesCents: 7,
+  });
+  // sub-cent average and a fractional size: 19.17 No at 0.4085 = 783.09c -> 784c; fee 19.17 x 0.0034 = 6.52c -> 7c
+  const sub = fillOfV2Order({ order_id: "o", fill_count: "19.17", remaining_count: "0.00", average_fill_price: "0.5915", average_fee_paid: "0.0034" }, cap);
+  assert.deepEqual(sub, { unitsMilli: 19_170, costCents: 791, feesCents: 7 });
+  // seven decimals (more than the venue emits): the Yes average truncates (No up), the fee rounds up
+  const seven = fillOfV2Order({ order_id: "o", fill_count: "1.00", remaining_count: "0.00", average_fill_price: "0.5000009", average_fee_paid: "0.0100001" }, cap);
+  assert.deepEqual(seven, { unitsMilli: 1_000, costCents: 52, feesCents: 2 }, "50.00c No rounds to 50c; 1.00001c fee rounds to 2c");
+  const noFee = fillOfV2Order({ order_id: "o", fill_count: "20.00", remaining_count: "0.00", average_fill_price: "0.59" }, cap);
+  assert.equal(noFee.feesCents, kalshiTakerFeeCents(20_000, 41), "no fee reported: the exact taker formula");
+  const noAvg = fillOfV2Order({ order_id: "o", fill_count: "20.00", remaining_count: "0.00" }, cap);
+  assert.equal(noAvg.costCents - noAvg.feesCents, 840, "no average reported: read at the cap");
+  assert.deepEqual(fillOfV2Order({ order_id: "o", fill_count: "0.00", remaining_count: "0.00" }, cap), { unitsMilli: 0, costCents: 0, feesCents: 0 });
 });
 
 test("kalshi orders: fills read fixed-point before integers, fees from the venue or the exact formula, nothing under-counted", () => {
@@ -361,67 +384,69 @@ test("kalshi orders: fills read fixed-point before integers, fees from the venue
   assert.equal(fillOfOrder({ order_id: "o", taker_fill_count: 8, maker_fill_count: 2, taker_fill_cost: 320, maker_fill_cost: 80, taker_fees: 3, maker_fees: 0 }, cap).unitsMilli, 10_000);
 });
 
-test("kalshi orders client: place, read until final, cancel the rest; headers signed; the result is the venue's numbers", async () => {
+test("kalshi orders client: one V2 post, signed, is the whole order; the result is the venue's numbers; a resting remainder is cancelled and read back", async () => {
   const creds = testCreds();
-  let nowMs = 1_760_000_000_000;
+  const nowMs = 1_760_000_000_000;
   const intent = intentFromHedge(KALSHI_LEG, 400);
-  const fx = fixtureFetch([
+  // executed at once: one call, no read, no cancel
+  const fast = fixtureFetch([
     (c) => {
       assert.equal(c.method, "POST");
-      assert.equal(c.url, "https://api.test/trade-api/v2/portfolio/orders");
+      assert.equal(c.url, "https://api.test/trade-api/v2/portfolio/events/orders");
       assert.equal(c.headers["KALSHI-ACCESS-KEY"], "key-1");
       assert.equal(c.headers["KALSHI-ACCESS-TIMESTAMP"], String(nowMs));
       assert.ok(c.headers["KALSHI-ACCESS-SIGNATURE"].length > 100);
       assert.equal(c.headers["content-type"], "application/json");
       const body = JSON.parse(c.body ?? "");
       assert.equal(body.client_order_id, "atticus-r1");
-      assert.equal(body.count, 20);
-      assert.equal(body.no_price, 42);
-      return { status: 201, body: { order: { order_id: "ord-9", status: "resting", taker_fill_count: 12, taker_fill_cost: 492, taker_fees: 4, remaining_count: 8 } } };
+      assert.equal(body.side, "ask");
+      assert.equal(body.count, "20.00");
+      assert.equal(body.price, "0.5800");
+      assert.equal(body.time_in_force, "immediate_or_cancel");
+      return { status: 201, body: { order_id: "ord-10", client_order_id: "atticus-r1", fill_count: "20.00", remaining_count: "0.00", average_fill_price: "0.595000", average_fee_paid: "0.003500", ts_ms: nowMs } };
+    },
+  ]);
+  const quick = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: fast.fetchImpl, now: () => nowMs });
+  const q = await quick.placeNo(intent, "atticus-r1");
+  // 20 No at 40.5c = 810c, fees 7c; the average carries the fee: 817c / 20 = 40.85c, up to 409 milli
+  assert.deepEqual(q, { orderId: "ord-10", unitsMilli: 20_000, avgPriceMilli: 409, costCents: 817, feesCents: 7, status: "executed" });
+  assert.equal(fast.calls.length, 1);
+
+  // the venue rests 8 anyway (not IOC behaviour, but defended): cancel on the V2 path, read the legacy order, take its fill
+  const fx = fixtureFetch([
+    () => ({ status: 201, body: { order_id: "ord-9", fill_count: "12.00", remaining_count: "8.00", average_fill_price: "0.590000", average_fee_paid: "0.003400", ts_ms: nowMs } }),
+    (c) => {
+      assert.equal(c.method, "DELETE");
+      assert.equal(c.url, "https://api.test/trade-api/v2/portfolio/events/orders/ord-9");
+      return { status: 200, body: { order: { order_id: "ord-9", status: "canceled" }, reduced_by: 8 } };
     },
     (c) => {
       assert.equal(c.method, "GET");
       assert.equal(c.url, "https://api.test/trade-api/v2/portfolio/orders/ord-9");
-      return { status: 200, body: { order: { order_id: "ord-9", status: "resting", taker_fill_count: 12, taker_fill_cost: 492, taker_fees: 4, remaining_count: 8 } } };
-    },
-    (c) => {
-      assert.equal(c.method, "DELETE");
-      assert.equal(c.url, "https://api.test/trade-api/v2/portfolio/orders/ord-9");
-      return { status: 200, body: { order: { order_id: "ord-9", status: "canceled", taker_fill_count: 12, taker_fill_cost: 492, taker_fees: 4, remaining_count: 0 }, reduced_by: 8 } };
+      return { status: 200, body: { order: { order_id: "ord-9", status: "canceled", taker_fill_count: 12, taker_fill_cost: 492, taker_fees: 4, remaining_count: 0 } } };
     },
   ]);
-  const client = new KalshiOrderClient(creds, {
-    base: "https://api.test/trade-api/v2",
-    fetchImpl: fx.fetchImpl,
-    now: () => nowMs,
-    sleep: async (ms) => {
-      nowMs += ms;
-    },
-    restWaitMs: 250,
-    restPollMs: 250,
-  });
-  const r = await client.placeNo(intent, "atticus-r1");
+  const client = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: fx.fetchImpl, now: () => nowMs });
+  const r = await client.placeNo(intent, "atticus-r2");
   assert.deepEqual(r, { orderId: "ord-9", unitsMilli: 12_000, avgPriceMilli: 414, costCents: 496, feesCents: 4, status: "canceled" });
   assert.equal(fx.calls.length, 3);
-
-  // executed at once: one call, no read, no cancel
-  const fast = fixtureFetch([() => ({ status: 201, body: { order: { order_id: "ord-10", status: "executed", taker_fill_count_fp: "20.00", taker_fill_cost_dollars: "8.1000", taker_fees_dollars: "0.0700" } } })]);
-  const quick = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: fast.fetchImpl, now: () => nowMs, sleep: async () => {} });
-  const q = await quick.placeNo(intent, "atticus-r2");
-  assert.deepEqual(q, { orderId: "ord-10", unitsMilli: 20_000, avgPriceMilli: 409, costCents: 817, feesCents: 7, status: "executed" });
-  assert.equal(fast.calls.length, 1);
 });
 
 test("kalshi orders client: nothing filled throws (so the executor falls back); an HTTP error names the call; balance reads cents", async () => {
   const creds = testCreds();
   const intent = intentFromHedge(KALSHI_LEG, 400);
-  const empty = fixtureFetch([() => ({ status: 201, body: { order: { order_id: "ord-0", status: "canceled", taker_fill_count: 0 } } })]);
-  const c1 = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: empty.fetchImpl, sleep: async () => {} });
+  const empty = fixtureFetch([() => ({ status: 201, body: { order_id: "ord-0", fill_count: "0.00", remaining_count: "0.00", ts_ms: 1 } })]);
+  const c1 = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: empty.fetchImpl });
   await assert.rejects(c1.placeNo(intent, "x"), /order ord-0 canceled with nothing filled at or under 42c/);
 
+  const legacyGone = fixtureFetch([() => ({ status: 410, body: { error: { code: "deprecated_v1_order_endpoint", message: "Please switch to the V2 endpoints" } } })]);
+  const c410 = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: legacyGone.fetchImpl });
+  await assert.rejects(c410.placeNo(intent, "x"), /kalshi orders: HTTP 410 POST \/portfolio\/events\/orders .*deprecated_v1_order_endpoint/);
+  assert.equal(legacyGone.calls[0].url, "https://api.test/trade-api/v2/portfolio/events/orders", "the order never goes to the legacy path");
+
   const denied = fixtureFetch([() => ({ status: 401, body: { error: { code: "unauthorized" } } })]);
-  const c2 = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: denied.fetchImpl, sleep: async () => {} });
-  await assert.rejects(c2.placeNo(intent, "x"), /kalshi orders: HTTP 401 POST \/portfolio\/orders/);
+  const c2 = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: denied.fetchImpl });
+  await assert.rejects(c2.placeNo(intent, "x"), /kalshi orders: HTTP 401 POST \/portfolio\/events\/orders/);
 
   const bal = fixtureFetch([
     (c) => {
