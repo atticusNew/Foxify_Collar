@@ -167,7 +167,7 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(html.includes("One button on every open position."), "the pitch speaks to the partner, not the integrator");
   assert.ok(html.includes("We price the protection and hedge it leg for leg; you keep the flow, the ledger and the relationship."), "the subline carries the deal and never claims we carry risk");
   assert.ok(!html.includes("carry the risk"), "the record says we carry no outcome risk; the pitch must not contradict it");
-  assert.ok(html.includes("Demonstration only."), "labelled a demonstration, plainly");
+  assert.ok(html.includes("Demo positions are simulated at live prices. The record also carries locks on a real position, hedged with real orders on Kalshi."), "labelled a demonstration, plainly, and the record's real locks named");
   assert.ok(html.includes('<b>For partners</b><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="/partner?brand=ProphetX">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a>'), "desktop: every partner surface in one row, the console opened as this brand");
   const plain = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND });
   assert.ok(plain.includes('<a href="/partner">Partner console</a>'), "the default brand opens the console unbranded");
@@ -193,6 +193,26 @@ test("embed: the host shell is theirs, the button and the sheet are ours; copy i
   assert.ok(dark.includes("--bg:#0f1115"), "dark skin flips the host shell");
   assert.ok(dark.includes(".sheet{position:fixed") && dark.includes("background:#fff;color:var(--ep-ink)"), "the sheet keeps its own look in a dark host");
   assert.ok(renderEventEmbedHtml({ brand: "A&B \"x\"", skin: "light" }).includes("A&amp;B &quot;x&quot;"), "the brand is escaped");
+});
+
+test("embed: the live recording sits in the pitch column, plays only on tap, carries the Kalshi sentence and the extension disclaimer, and can be pointed elsewhere or left out", () => {
+  const html = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND });
+  assert.ok(html.includes('<div class="live"><div class="live-h">Seen live</div>'), "the block is labelled");
+  assert.ok(html.includes('<video controls preload="none" playsinline poster="/media/lockin-live.jpg" src="/media/lockin-live.mp4"></video>'), "default: the bundled file, no autoplay, nothing fetched until play");
+  assert.ok(html.includes("A real position on a real exchange, locked and hedged on Kalshi. Receipt on screen."), "the one sentence names Kalshi");
+  assert.ok(html.includes("Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue."), "the disclaimer travels with the clip");
+  assert.ok(html.includes('<meta property="og:video" content="/media/lockin-live.mp4" />') && html.includes('<meta property="og:image" content="/media/lockin-live.jpg" />'), "a shared link previews the clip");
+  const aside = /<aside class="pitch">([\s\S]*?)<\/aside>/.exec(html)?.[1] || "";
+  const order = [aside.indexOf("Tap <b>Lock in</b>"), aside.indexOf('class="live"'), aside.indexOf("<b>For partners</b>")];
+  assert.ok(order[0] > 0 && order[0] < order[1] && order[1] < order[2], "under the try line, above the partner links");
+  assert.ok(html.includes(".pitch .live video{display:block;width:100%;aspect-ratio:1920/1244"), "sized to the clip's frame so the column does not jump when it loads");
+  const cdn = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND, liveVideo: { src: "https://cdn.example/a.mp4", poster: "https://cdn.example/a.jpg" } });
+  assert.ok(cdn.includes('poster="https://cdn.example/a.jpg" src="https://cdn.example/a.mp4"') && cdn.includes('<meta property="og:video" content="https://cdn.example/a.mp4" />'), "a CDN URL replaces both the player and the preview");
+  const escaped = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND, liveVideo: { src: 'x"><script>', poster: "p" } });
+  assert.ok(escaped.includes('src="x&quot;&gt;&lt;script&gt;"') && !escaped.includes('src="x"><script>'), "URLs are escaped");
+  const none = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND, liveVideo: null });
+  assert.ok(!none.includes('class="live"') && !none.includes("og:video") && !none.includes("<video"), "null leaves the block and the preview tags out");
+  assert.ok(none.includes("<b>For partners</b>"), "the rest of the pitch is unchanged");
 });
 
 test("embed: the partner console reads the ledger and funnel in the host's words: volume, credits, cost, own-book share, refusals, revenue share", () => {
