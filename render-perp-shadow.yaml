@@ -76,12 +76,13 @@ services:
         value: plain
       - key: EP_TENOR
         value: weekly
-      # MINIMUM CAP DISTANCE (2026-10-17): the cap rule picks among paying strikes at least this far
-      # from price and refuses only when none of them pays. The first four Fridays' ladder: caps at
-      # 3.5% and closer handed back more upside than the take; from 4.5% out almost nothing. "0"
-      # removes the floor (the 20% odds rule alone, as before).
+      # MINIMUM CAP DISTANCE: the cap rule picks among paying strikes at least this far from price
+      # and refuses only when none of them pays. "0" = no floor, the 20% odds rule alone. Tried at
+      # 0.045 on 2026-10-17 (the ladder rung that handed back almost nothing) and reverted the same
+      # day: on the live book the call at 4.5% bid less than the 6% put asked, so every LONG was
+      # refused. The ladder keeps measuring every rung as a counterfactual; this is the written one.
       - key: EP_MIN_CAP_PCT_WEEKLY
-        value: "0.045"
+        value: "0"
       - key: EP_TAKE_RATE
         value: "0.20"
       - key: EP_DE_MINIMIS_USDC
