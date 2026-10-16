@@ -56,6 +56,7 @@ import type { CrossLedgerSummary } from "../src/eventCollar/crossVenue/crossLedg
 import type { EventFunnelSummary } from "../src/eventCollar/crossVenue/eventFunnel";
 import { DEFAULT_MINIMUM_CREDIT, type MinimumCreditRule } from "../src/eventCollar/crossVenue/minimumCredit";
 import { slateLinkKey, slateSlugOf } from "../src/eventCollar/crossVenue/venueSlate";
+import { prettyPhone, type CardContact } from "../src/eventCollar/crossVenue/cardContact";
 
 export interface EmbedOptions {
   /** the host's display name, already checked against the allowlist */
@@ -79,6 +80,12 @@ export interface EmbedOptions {
    * shown in the pitch column under the bullets. `null` leaves the block out.
    */
   liveVideo?: LiveVideo | null;
+  /**
+   * The business card's landing (`?from=card`). A phone that scanned the card gets the sentence,
+   * the clip, "Save contact" (a vCard) and the links instead of landing cold inside the demo;
+   * a desktop still gets the full page. `null`/absent renders the page as usual.
+   */
+  card?: CardContact | null;
 }
 
 export interface LiveVideo {
@@ -193,6 +200,29 @@ export function worthOffering(creditCents: number, contracts: number, rule: Mini
   return creditCents >= Math.max(rule.cents, Math.round((contracts * 100 * rule.bpsOfStake) / 10_000));
 }
 
+/**
+ * What a phone sees after scanning the card: who this is, the clip, Save contact, Try the demo,
+ * and the links. The demo link drops `from=card` so the tap lands in the positions list as usual.
+ */
+function renderCardLanding(c: CardContact, video: LiveVideo | null, trackRecordUrl: string, recordLabel: string, brandQ: string): string {
+  const name = escapeHtml(`${c.givenName} ${c.familyName}`.trim());
+  const videoBlock = video
+    ? `<video controls preload="metadata" playsinline poster="${escapeHtml(video.poster)}" src="${escapeHtml(video.src)}"></video>` +
+      `<p class="cl-cap"><b>Seen live on a real position.</b> Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p>`
+    : "";
+  return `<section class="cardland"><div class="in">
+  <img class="cl-logo" src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
+  <div class="cl-eyebrow">Earn &amp; Protect</div>
+  <h1>The <b>Lock in</b> button.</h1>
+  <p class="cl-lede">One tap gives any open position a floor and cash now. Hedged leg for leg on Kalshi; every lock and hedge on the public record.</p>
+  ${videoBlock}
+  <div class="cl-btns"><a class="cl-btn cl-primary" href="/contact.vcf" download>Save contact</a><a class="cl-btn" href="/${brandQ}">Try the demo: tap Lock in on a position</a></div>
+  <div class="cl-links"><a href="${escapeHtml(c.linkedin)}">LinkedIn</a><a href="mailto:${escapeHtml(c.email)}">Email</a><a href="https://wa.me/${escapeHtml(c.phoneE164.replace(/^\+/, ""))}">WhatsApp</a><a href="${trackRecordUrl}">${recordLabel}</a></div>
+  <div class="cl-who"><b>${name}</b>${escapeHtml(c.title)}, ${escapeHtml(c.org)}<br><a href="tel:${escapeHtml(c.phoneE164)}">${escapeHtml(prettyPhone(c.phoneE164))}</a> · <a href="mailto:${escapeHtml(c.email)}">${escapeHtml(c.email)}</a></div>
+</div></section>
+`;
+}
+
 export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const brand = escapeHtml(opts.brand);
   const theme = brandTheme(opts.brand);
@@ -213,6 +243,8 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
       `<p>A real position on a real exchange, locked and hedged on Kalshi. Receipt on screen.</p>` +
       `<p class="live-fine">Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p></div>`
     : "";
+  const card = opts.card ?? null;
+  const cardBlock = card ? renderCardLanding(card, video, trackRecordUrl, recordLabel, brandQ) : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -238,6 +270,27 @@ html,body{height:100%}
 body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 .stage{min-height:100vh}
 .pitch{display:none}
+/* ---- the card's landing: a phone that scanned the card sees this instead of the demo ---- */
+.cardland{display:none}
+.stage.from-card .cardland{display:block;background:#0a0a0b;color:#e9e6dc;min-height:100vh;padding:34px 22px calc(40px + env(safe-area-inset-bottom))}
+.stage.from-card .phone{display:none}
+.cardland .in{max-width:460px;margin:0 auto}
+.cardland .cl-logo{height:30px;display:block}
+.cardland .cl-eyebrow{margin-top:12px;font-size:11px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:#C9A227}
+.cardland h1{margin-top:22px;font-size:30px;line-height:1.1;letter-spacing:-.02em;font-weight:700;color:#f6f3ea}
+.cardland h1 b{color:#2ec27e}
+.cardland .cl-lede{margin-top:12px;font-size:16px;line-height:1.5;color:#c9c6bc}
+.cardland video{display:block;width:100%;aspect-ratio:1920/1244;margin-top:22px;border-radius:12px;background:#0e0e10}
+.cardland .cl-cap{margin-top:10px;font-size:12.5px;line-height:1.45;color:#8e8b82}
+.cardland .cl-cap b{color:#c9c6bc;font-weight:600}
+.cardland .cl-btns{display:grid;gap:10px;margin-top:24px}
+.cardland .cl-btn{display:block;text-align:center;padding:15px 16px;border-radius:12px;font-size:16px;font-weight:700;text-decoration:none;border:1px solid rgba(201,162,39,.55);color:#f6f3ea}
+.cardland .cl-btn.cl-primary{background:#C9A227;border-color:#C9A227;color:#1a1507}
+.cardland .cl-links{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:22px;font-size:14px}
+.cardland .cl-links a{color:#e9e6dc;text-decoration:none;border-bottom:1px solid rgba(233,230,220,.35);padding-bottom:1px}
+.cardland .cl-who{margin-top:26px;padding-top:16px;border-top:1px solid rgba(255,255,255,.1);font-size:13.5px;line-height:1.6;color:#9a978d}
+.cardland .cl-who b{display:block;color:#f6f3ea;font-weight:600;font-size:15px}
+.cardland .cl-who a{color:#c9c6bc;text-decoration:none}
 .phone{max-width:430px;margin:0 auto;min-height:100vh;background:var(--bg);position:relative}
 .host-top{padding:14px 16px 8px;display:flex;align-items:center;justify-content:space-between}
 .host-top .brand{font-weight:700;font-size:17px;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
@@ -380,12 +433,14 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   .list{flex:1;min-height:0;overflow:auto;padding-bottom:64px}
   .host-note,.scrim,.sheet,.toast{position:absolute}
   .sheet{max-width:none;padding-bottom:22px}
+  .stage.from-card .cardland{display:none}
+  .stage.from-card .phone{display:flex}
 }
 </style>
 </head>
 <body>
-<div class="stage">
-<aside class="pitch">
+<div class="stage${card ? " from-card" : ""}">
+${cardBlock}<aside class="pitch">
   <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
   <h1>Protection inside your app.</h1>
   <p>One button on every open position. Your users lock a floor and get paid today. We price the protection and hedge it leg for leg; you keep the flow, the ledger and the relationship.</p>

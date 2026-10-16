@@ -110,6 +110,7 @@ import {
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
 import { DEFAULT_EMBED_BRAND, DEFAULT_LIVE_VIDEO, brandRecordUrl, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand, type LiveVideo } from "./eventProtectEmbedHtml";
 import { serveMedia } from "../src/eventCollar/crossVenue/mediaFiles";
+import { renderVCard, vcardFilename, type CardContact } from "../src/eventCollar/crossVenue/cardContact";
 import { applyMinimumCredit, describeMinimumCredit, minimumCreditRuleFromEnv } from "../src/eventCollar/crossVenue/minimumCredit";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { activityFromShadowBody } from "../src/eventCollar/crossVenue/activityRetail";
@@ -167,6 +168,26 @@ const LIVE_VIDEO: LiveVideo | null = (() => {
   if (!src) return DEFAULT_LIVE_VIDEO;
   return { src, poster: process.env.EVENT_X_VIDEO_POSTER_URL?.trim() || DEFAULT_LIVE_VIDEO.poster };
 })();
+
+/**
+ * THE BUSINESS CARD: its QR is `/?from=card`. A phone that scans it gets a landing (the sentence,
+ * the clip, Save contact, the links) instead of the bare demo; a desktop gets the page as usual.
+ * `/contact.vcf` is the "Save contact" behind it. EVENT_X_CARD=off turns both off.
+ */
+const CARD_CONTACT: CardContact | null =
+  process.env.EVENT_X_CARD?.trim().toLowerCase() === "off"
+    ? null
+    : {
+        givenName: "Michael",
+        familyName: "William",
+        org: "Atticus",
+        title: "Founder",
+        email: "michael@atticustrade.com",
+        phoneE164: "+17186643497",
+        linkedin: "https://www.linkedin.com/in/michael-william-5888ba263/",
+        site: "https://event.earnandprotect.xyz/",
+        note: "Earn & Protect. The Lock in button: a floor and cash now on any open position, hedged leg for leg.",
+      };
 
 /**
  * PARLAYS: the demo's Parlays tab lists the shadow's simulated tickets (the last-leg ledger
@@ -1340,6 +1361,22 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
     if (serveMedia(req, res, url.pathname, MEDIA_DIR)) return;
+    if (url.pathname === "/contact.vcf" && CARD_CONTACT) {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.writeHead(405, { allow: "GET, HEAD" });
+        res.end();
+        return;
+      }
+      const body = renderVCard(CARD_CONTACT);
+      res.writeHead(200, {
+        "content-type": "text/vcard; charset=utf-8",
+        "content-length": Buffer.byteLength(body),
+        "content-disposition": `attachment; filename="${vcardFilename(CARD_CONTACT)}"`,
+        "cache-control": "public, max-age=3600",
+      });
+      res.end(req.method === "HEAD" ? undefined : body);
+      return;
+    }
     if (url.pathname === "/api/showcase") {
       const ticker = url.searchParams.get("ticker") || undefined;
       const full = payloadFromScan(await getCachedScan(), ticker);
@@ -1392,6 +1429,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           trackRecordUrl: record.url,
           recordIsSlate: record.slate,
           liveVideo: LIVE_VIDEO,
+          card: url.searchParams.get("from") === "card" ? CARD_CONTACT : null,
           // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
           skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,
           // no ?kind= and the brand preset decides (a sportsbook shell hides the crypto strikes)
