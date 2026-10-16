@@ -363,6 +363,28 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     const board = await (await fetch(`${base}/board`)).text();
     assert.ok(board.includes('id="toggle"') && board.includes("Best protection right now"), "/board serves the board");
     assert.ok(!root.includes("Best protection right now"), "the shell is not the board");
+    assert.ok(!root.includes('class="cardland"') && !root.includes('class="stage from-card"'), "a plain visit has no card landing in the page");
+
+    // the business card's QR: the landing rides on the same page, and Save contact is a vCard
+    const card = await (await fetch(`${base}/?from=card`)).text();
+    assert.ok(card.includes('<div class="stage from-card">') && card.includes('<section class="cardland">'), "?from=card adds the landing");
+    assert.ok(card.includes('id="sheet"') && card.includes('class="pitch"'), "the demo and the desktop pitch are still in the page");
+    assert.ok(card.includes('<a class="cl-btn cl-primary" href="/contact.vcf" download>Save contact</a>'), "Save contact");
+    assert.ok(card.includes('<a class="cl-btn" href="/">Try the demo: tap Lock in on a position</a>'), "the demo link drops from=card");
+    assert.ok(card.includes('href="https://wa.me/17186643497"') && card.includes('href="tel:+17186643497">+1 718 664 3497</a>'), "WhatsApp and tel from the one number");
+    assert.ok(card.includes('href="https://www.linkedin.com/in/michael-william-5888ba263/"'), "LinkedIn is behind the QR, not on the paper");
+    assert.ok(card.includes("Hedged leg for leg on Kalshi; every lock and hedge on the public record."), "the sentence");
+    assert.ok(card.includes("Not affiliated with or endorsed by the venue."), "the extension disclaimer travels with the clip");
+    assert.ok(!/ProphetX|Novig/.test(card.replace(/Your Exchange/g, "")), "no venue named on the card landing");
+    const vcf = await fetch(`${base}/contact.vcf`);
+    assert.equal(vcf.status, 200);
+    assert.match(vcf.headers.get("content-type") ?? "", /text\/vcard/);
+    assert.equal(vcf.headers.get("content-disposition"), 'attachment; filename="michael-william-atticus.vcf"');
+    const vcfText = await vcf.text();
+    assert.ok(vcfText.startsWith("BEGIN:VCARD\r\nVERSION:3.0\r\n") && vcfText.endsWith("END:VCARD\r\n"), "a vCard with CRLF lines");
+    assert.ok(vcfText.includes("FN:Michael William\r\n") && vcfText.includes("TEL;TYPE=CELL,VOICE:+17186643497\r\n") && vcfText.includes("EMAIL;TYPE=INTERNET,WORK:michael@atticustrade.com\r\n"));
+    assert.ok(vcfText.includes("URL;TYPE=LinkedIn:https://www.linkedin.com/in/michael-william-5888ba263/\r\n"), "LinkedIn rides in the contact");
+    assert.equal((await fetch(`${base}/contact.vcf`, { method: "POST" })).status, 405);
 
     // /partner without the token is the public case for the console with one CTA, never a JSON error
     const publicPartner = await fetch(`${base}/partner`);
@@ -390,7 +412,7 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     const funnel = (await (await fetch(`${base}/api/admin/funnel?token=t0ken`)).json()) as { funnel: { pageLoads7d: Array<{ byPage: Record<string, number> }> } };
     const embedLoads = funnel.funnel.pageLoads7d.reduce((n, d) => n + (d.byPage.embed ?? 0), 0);
     const boardLoads = funnel.funnel.pageLoads7d.reduce((n, d) => n + (d.byPage.app ?? 0), 0);
-    assert.equal(embedLoads, 3, "/embed twice and / once count as embed loads");
+    assert.equal(embedLoads, 4, "/embed twice, / once and the card's /?from=card once count as embed loads");
     assert.equal(boardLoads, 1, "/board counts as a board load");
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
