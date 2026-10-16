@@ -236,7 +236,9 @@ export const widestExecutableWing = (
   spot: number,
   notionalUsdc: number,
   rule: CapRule = { kind: "widest" },
-  exceedProbOf: (inst: OkxChainInstrument) => number | null = () => null
+  exceedProbOf: (inst: OkxChainInstrument) => number | null = () => null,
+  /** the cap guard's minimum distance (fraction of spot): closer strikes are not candidates unless nothing beyond pays */
+  minCapPct = 0
 ): { pick: WingPick | null; closest: WingPick | null; decidedBy: CapRule["kind"] | null } => {
   const cands: WingPick[] = [];
   let closest: WingPick | null = null;
@@ -257,7 +259,7 @@ export const widestExecutableWing = (
     cands.push(cand);
     if (!closest || cand.netUsdc > closest.netUsdc) closest = cand;
   }
-  const chosen = pickCap(cands, spot, rule);
+  const chosen = pickCap(cands, spot, rule, minCapPct);
   return { pick: chosen?.pick ?? null, closest, decidedBy: chosen?.decidedBy ?? null };
 };
 
@@ -367,7 +369,7 @@ export const fetchOkxListedTouchQuote = async (input: {
       return iv == null ? null : exceedProb({ side: input.side, spot: input.spot, strike: inst.strike, ivAnnual: iv, yearsToExpiry });
     };
     const sellScan = buyHit
-      ? widestExecutableWing(sellCands, books, buyHit.book.askPxBtc!, size, input.spot, input.notionalUsdc, rule, exceedProbOf)
+      ? widestExecutableWing(sellCands, books, buyHit.book.askPxBtc!, size, input.spot, input.notionalUsdc, rule, exceedProbOf, input.capGuard?.minCapPct ?? 0)
       : { pick: null, closest: null, decidedBy: null };
     // Widest positive-credit wing if one exists; otherwise the best-net candidate so the refuse
     // line names the real instruments and the real (nonpositive) number.
@@ -383,8 +385,8 @@ export const fetchOkxListedTouchQuote = async (input: {
         message: `listed OKX ${buyInst} ask ${buyAsk} / ${sellInst} bid ${sellBid} — no executable 1-lot credit on the book`
       };
     }
-    // The cap guard: the widest paying strike still sits too close to price. Refuse, and name
-    // the distance, rather than write a cap that will cross on noise.
+    // The cap guard: nothing at or beyond the minimum distance pays, so the pick is the widest
+    // paying strike inside it. Refuse, and name the distance, rather than write a closer cap.
     const capDistPct = Math.abs(sellHit.inst.strike - input.spot) / input.spot;
     const minCapPct = input.capGuard?.minCapPct ?? 0;
     if (sellScan.pick && capDistPct < minCapPct - 1e-9) {

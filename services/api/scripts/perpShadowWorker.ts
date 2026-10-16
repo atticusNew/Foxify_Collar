@@ -28,6 +28,8 @@
  *      PERP_SHADOW_SIZE_BTC (default 0.03 = 3 OKX lots) · PERP_SHADOW_SIDES (long,short)
  *      DEMO_FLOOR_PCT / DEMO_CAP_PCT (the live shape, default 0.06 / 0.015)
  *      EP_TENOR (weekly default; `daily` opts out) · EP_MIN_CAP_PCT / EP_CAP_MAX_PCT (+ _WEEKLY): the cap guard, as the demo
+ *                   (weekly plain: the cap sits at least 4.5% out by default since 2026-10-17, the record's ladder;
+ *                   the rule picks among paying strikes from there and refuses only when none of them pays)
  *      EP_CAP_MODE (plain default: the collar runs to expiry, gains above the cap are handed back, a touch is a
  *                   release opportunity; `knockout` settles a touch as the end of the cycle, the previous rule)
  *      EP_TAKE_RATE (default 0.20) · EP_DE_MINIMIS_USDC (default 0.05)
@@ -155,6 +157,14 @@ const CAP_RULE = capRuleFromEnv(process.env);
 FRIDAY_CFG.capExceedProb = CAP_RULE.kind === "target" ? CAP_RULE.maxExceedProb : DEFAULT_CAP_EXCEED_PROB;
 const OTHER_TENOR_CAP_GUARD = capGuardFor(otherTenor(TENOR), process.env, CAP_MODE);
 const REPLAY = { capMode: CAP_MODE };
+/** The first open written under the current minimum cap distance (positions record the guard they were quoted under). */
+const capGuardSince = (positions: ReadonlyArray<{ at: string; capGuardPct: number }>, minCapPct: number): string | null => {
+  if (!(minCapPct > 0)) return null;
+  let first: string | null = null;
+  for (const p of positions) if (p.capGuardPct >= minCapPct - 1e-9 && (first == null || p.at < first)) first = p.at;
+  return first;
+};
+
 const CAP_LADDER_RULE =
   CAP_MODE === "plain"
     ? "the live floor held fixed, the funding wing moved to every listed strike in the band; each rung settled on the same Hyperliquid path and print, so it shows how often it was touched (a release on offer), how often it ended past the cap and how much upside was handed back"
@@ -564,7 +574,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         at: atIso,
         archived,
         message: "perp shadow ledger archived; a fresh book opens with the next scan",
-        rules: { capMode: CAP_MODE, tenor: TENOR, geometry: GEOMETRY, capRule: capRuleText(CAP_RULE), flow: FLOW.enabled ? describeFlow(FLOW) : "off (metronome)" },
+        rules: { capMode: CAP_MODE, tenor: TENOR, geometry: GEOMETRY, capRule: capRuleText(CAP_RULE, CAP_GUARD.minCapPct), flow: FLOW.enabled ? describeFlow(FLOW) : "off (metronome)" },
       });
       return;
     }
@@ -630,7 +640,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
               : "a cap touch on the path ends the cycle: the credit vested to the touch is paid, the short cap leg is bought back at the money at the writer's cost",
           capLadder: CAP_LADDER_RULE,
           capGuard: CAP_GUARD,
-          capRule: capRuleText(CAP_RULE),
+          capRule: capRuleText(CAP_RULE, CAP_GUARD.minCapPct),
           venueReference: VENUE_REF
             ? "the same two legs read at Deribit and Bullish the second OKX quoted them (buy the floor at the ask, sell the cap at the bid, same strikes, same expiry); positive = that venue would have paid the holder more; a reference for FalconX RFQ acceptance, not a price we quote"
             : "off (PERP_SHADOW_VENUE_REF=0)",
@@ -647,7 +657,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/report") {
       const { atIso, summary } = pageData();
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token"), capGuard: CAP_GUARD, tenor: TENOR, capLadderRule: CAP_LADDER_RULE, capRule: capRuleText(CAP_RULE) }));
+      res.end(renderPerpShadowReportHtml({ atIso, summary, token: url.searchParams.get("token"), capGuard: CAP_GUARD, tenor: TENOR, capLadderRule: CAP_LADDER_RULE, capRule: capRuleText(CAP_RULE, CAP_GUARD.minCapPct) }));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -672,6 +682,8 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           fridayConfig: FRIDAY_CFG,
           capOdds: { adaptApplied: CAP_ODDS_ADAPT, latest: lastCapOdds },
           alarms: activeAlarms,
+          capGuard: CAP_GUARD,
+          capGuardSince: capGuardSince(positions, CAP_GUARD.minCapPct),
         }),
       );
       return;

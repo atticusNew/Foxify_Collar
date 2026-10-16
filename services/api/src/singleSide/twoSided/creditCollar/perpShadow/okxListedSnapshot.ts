@@ -322,6 +322,12 @@ export const quoteCollarFromSnapshot = (
     pinSellInstId?: string;
     /** which paying strike the cap sells (capRule.ts); default the widest that pays */
     capRule?: CapRule;
+    /**
+     * the cap guard's minimum distance, fraction from spot: closer strikes are not candidates, and
+     * the widest paying one inside it is returned only when nothing at or beyond it pays (the
+     * caller's guard then refuses on the distance). Default 0: no floor.
+     */
+    minCapPct?: number;
   },
   snap: OkxListedSnapshot,
 ): SnapshotQuote => {
@@ -396,7 +402,7 @@ export const quoteCollarFromSnapshot = (
     cands.push(cand);
     if (!closest || cand.net > closest.net) closest = cand;
   }
-  const chosen = pickCap(cands, input.spot, rule);
+  const chosen = pickCap(cands, input.spot, rule, input.minCapPct ?? 0);
   const pick = chosen?.pick ?? null;
   if (!pick) {
     return closest

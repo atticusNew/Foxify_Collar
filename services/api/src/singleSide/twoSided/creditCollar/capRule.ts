@@ -31,8 +31,16 @@
  *               cap at ~18%; the widest rule already wrote ~4.7% on a 6% floor, so the default keeps
  *               that shape and only moves the cap when the widest rule would leave the credit behind).
  *
- * Neither rule refuses on distance (the plain collar has nothing to refuse for); the funding band's
- * 0.5% ATM hard stop is the only limit on how close the search may look.
+ * MINIMUM DISTANCE (2026-10-17). Either rule can be given a floor on the cap's distance from
+ * price (`minCapPct`, the cap guard's number): strikes closer than it are not candidates, so the
+ * rule picks among the paying strikes at or beyond it. Only when nothing at or beyond it pays
+ * does the pick fall back to the widest paying strike, which the caller's guard then refuses
+ * with the distance in the message. Measured on the record 2026-09-21 to 2026-10-16, 1500
+ * settled: the 20% odds rule alone wrote 987 live caps at 3.5% or closer and handed back
+ * $16,471 of upside against a $14,825 take; the ladder's 4.5% rung handed back $144 on 595
+ * settled and every rung from 5% out handed back nothing. The identity above holds at every
+ * strike, so the floor changes the shape (less credit, far fewer weeks past the cap), never
+ * who keeps a payoff.
  */
 
 import type { PerpSide } from "./creditCollarPricer";
@@ -52,10 +60,12 @@ export const capRuleFromEnv = (env: Record<string, string | undefined> = process
     ? { kind: "widest" }
     : { kind: "target", maxExceedProb: numEnv(env.EP_CAP_EXCEED_PROB, DEFAULT_CAP_EXCEED_PROB) };
 
-export const capRuleText = (rule: CapRule): string =>
-  rule.kind === "widest"
-    ? "the widest listed cap whose net credit is positive"
-    : `the most credit among listed caps the market gives at most a ${(rule.maxExceedProb * 100).toFixed(0)}% chance of finishing beyond this cycle (widest paying cap when none qualifies)`;
+export const capRuleText = (rule: CapRule, minCapPct = 0): string => {
+  const floor = minCapPct > 0 ? `, never closer than ${(minCapPct * 100).toFixed(1)}% from price (refused when nothing at or beyond that pays)` : "";
+  return rule.kind === "widest"
+    ? `the widest listed cap whose net credit is positive${floor}`
+    : `the most credit among listed caps the market gives at most a ${(rule.maxExceedProb * 100).toFixed(0)}% chance of finishing beyond this cycle (widest paying cap when none qualifies)${floor}`;
+};
 
 /** Standard normal CDF (Abramowitz–Stegun 7.1.26; |error| < 1.5e-7). */
 export const normCdf = (x: number): number => {
@@ -90,20 +100,26 @@ export interface CapCandidate {
 /**
  * Pick the funding strike. Returns the chosen candidate and which rule actually decided (`target`
  * only when a qualifying strike existed; `widest` otherwise, including every fallback).
+ * `minCapPct` (fraction of spot) removes closer strikes from the choice; `underMin` is set only
+ * when nothing at or beyond it pays and the pick is the widest paying strike inside it, which the
+ * caller's cap guard refuses.
  */
-export const pickCap = <T extends CapCandidate>(cands: readonly T[], spot: number, rule: CapRule): { pick: T; decidedBy: CapRule["kind"] } | null => {
+export const pickCap = <T extends CapCandidate>(cands: readonly T[], spot: number, rule: CapRule, minCapPct = 0): { pick: T; decidedBy: CapRule["kind"]; underMin: boolean } | null => {
   const paying = cands.filter((c) => c.netUsdc > 0);
   if (paying.length === 0) return null;
   const dist = (c: T) => Math.abs(c.strike - spot);
-  const widest = paying.reduce((a, b) => (dist(b) > dist(a) ? b : a));
-  if (rule.kind === "target") {
-    const ok = paying.filter((c) => c.exceedProb != null && c.exceedProb <= rule.maxExceedProb + 1e-9);
+  const farEnough = minCapPct > 0 ? paying.filter((c) => dist(c) >= minCapPct * spot - 1e-9) : paying;
+  const pool = farEnough.length > 0 ? farEnough : paying;
+  const underMin = farEnough.length === 0;
+  const widest = pool.reduce((a, b) => (dist(b) > dist(a) ? b : a));
+  if (rule.kind === "target" && !underMin) {
+    const ok = pool.filter((c) => c.exceedProb != null && c.exceedProb <= rule.maxExceedProb + 1e-9);
     if (ok.length > 0) {
       const best = ok.reduce((a, b) => (b.netUsdc > a.netUsdc || (b.netUsdc === a.netUsdc && dist(b) > dist(a)) ? b : a));
-      return { pick: best, decidedBy: "target" };
+      return { pick: best, decidedBy: "target", underMin };
     }
   }
-  return { pick: widest, decidedBy: "widest" };
+  return { pick: widest, decidedBy: "widest", underMin };
 };
 
 // ── Realized versus implied: the cap odds move inside the published band ──────

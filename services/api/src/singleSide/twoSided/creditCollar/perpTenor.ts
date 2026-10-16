@@ -102,17 +102,24 @@ export const altTenorExpiries = (chain: OkxChainInstrument[], nowMs: number): Pa
 };
 
 /**
- * Cap-distance guard. The cap search always takes the WIDEST listed strike that still pays;
- * `maxCapPct` is how far out it may look. `minCapPct` refuses a quote whose widest paying
- * strike sits closer than this — a KNOCKOUT rule: there a close cap means frequent, expensive
- * buy-backs. Under the plain collar a touch closes nothing and costs nothing, so the distance
- * is information on the card (the cap %), not a reason to refuse: minCapPct defaults to 0 and
- * only the funding band's 0.5% ATM hard stop applies. A hard threshold is also finer than the
- * listed strike grid ($500 ≈ 0.6% at $80k), so a fixed line refuses one whole side of the book
- * whenever the widest bid lands a few bps inside it — measured 2026-09-20: every short refused
- * at 3.93% against a 4.0% line while the same book paid $64.91 on $100k. Env still raises it
- * deliberately (EP_MIN_CAP_PCT / EP_MIN_CAP_PCT_WEEKLY, fractions); knockout keeps 2% / 4%.
+ * Cap-distance guard. `maxCapPct` is how far out the cap search may look. `minCapPct` is the
+ * closest the cap may sit: since 2026-10-17 the cap rule (capRule.pickCap) chooses among the
+ * paying strikes at or beyond it, and the quote is refused only when nothing at or beyond it
+ * pays (perpShadowQuote: `cap_too_close`, with the distance in the message). Before that the
+ * minimum only refused, which is why the plain default was 0: a fixed line finer than the strike
+ * grid ($500 ≈ 0.6% at $80k) refused one whole side of the book whenever the widest bid landed a
+ * few bps inside it (measured 2026-09-20: every short refused at 3.93% against a 4.0% line while
+ * the same book paid $64.91 on $100k). Now the line moves the pick out instead.
+ *
+ * Defaults: weekly plain 4.5% (the record's cap ladder, 2026-09-21 to 2026-10-16: rungs from 4.5%
+ * out handed back almost nothing, the 3.5%-and-closer caps the odds rule had been writing handed
+ * back more than the take); daily plain 0 (a day is too short for a 4.5% cap to pay); knockout
+ * 2% / 4% (there a close cap means frequent, expensive buy-backs). Env sets any of them
+ * (EP_MIN_CAP_PCT / EP_MIN_CAP_PCT_WEEKLY, fractions; "0" removes the floor).
  */
+/** The weekly plain collar's minimum cap distance (the record's 4.5% rung; see the comment above). */
+export const DEFAULT_WEEKLY_MIN_CAP_PCT = 0.045;
+
 export interface CapGuard {
   minCapPct: number;
   /** the widest strike the cap search may reach (the funding band's outer edge) */
@@ -131,6 +138,6 @@ export const capGuardFor = (
 ): CapGuard => {
   const refuseUnder = capMode === "knockout";
   return tenor === "weekly"
-    ? { minCapPct: numEnv(env.EP_MIN_CAP_PCT_WEEKLY, refuseUnder ? 0.04 : 0), maxCapPct: numEnv(env.EP_CAP_MAX_PCT_WEEKLY, 0.08) }
+    ? { minCapPct: numEnv(env.EP_MIN_CAP_PCT_WEEKLY, refuseUnder ? 0.04 : DEFAULT_WEEKLY_MIN_CAP_PCT), maxCapPct: numEnv(env.EP_CAP_MAX_PCT_WEEKLY, 0.08) }
     : { minCapPct: numEnv(env.EP_MIN_CAP_PCT, refuseUnder ? 0.02 : 0), maxCapPct: numEnv(env.EP_CAP_MAX_PCT, 0.04) };
 };
