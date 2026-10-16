@@ -87,6 +87,39 @@ test("pickCap target: equal credit breaks toward the wider strike; shorts measur
   assert.equal(short?.pick.strike, 78_000);
 });
 
+test("pickCap minimum distance: closer strikes leave the choice; the rule picks from the paying strikes at or beyond the line", () => {
+  // 4.5% of 81,200 is 3,654: 84,000 (3.4%) is out, 85,000 (4.7%) and 86,000 (5.9%) stay
+  const t = pickCap(cands, spot, { kind: "target", maxExceedProb: 0.2 }, 0.045);
+  assert.equal(t?.pick.strike, 85_000, "the most credit at or beyond 4.5% under the odds ceiling");
+  assert.equal(t?.decidedBy, "target");
+  assert.equal(t?.underMin, false);
+  const w = pickCap(cands, spot, { kind: "widest" }, 0.045);
+  assert.equal(w?.pick.strike, 86_000);
+  assert.equal(w?.underMin, false);
+  const loose = pickCap(cands, spot, { kind: "target", maxExceedProb: 0.3 }, 0.045);
+  assert.equal(loose?.pick.strike, 85_000, "a looser ceiling cannot pull the cap back inside the line");
+  const none = pickCap(cands, spot, { kind: "target", maxExceedProb: 0.2 }, 0);
+  assert.equal(none?.pick.strike, 85_000, "0 is no floor: the same pick as before");
+  assert.equal(none?.underMin, false);
+});
+
+test("pickCap minimum distance: when nothing at or beyond the line pays, the widest paying strike inside it is returned and flagged, never a closer one chosen by credit", () => {
+  const r = pickCap(cands, spot, { kind: "target", maxExceedProb: 0.2 }, 0.07);
+  assert.equal(r?.pick.strike, 86_000, "the widest that pays, not the 84,000 with the most credit");
+  assert.equal(r?.decidedBy, "widest");
+  assert.equal(r?.underMin, true, "flagged so the caller's guard refuses on the distance");
+  const short = pickCap([{ strike: 78_500, netUsdc: 90, exceedProb: 0.3 }, { strike: 78_000, netUsdc: 64, exceedProb: 0.19 }, { strike: 77_500, netUsdc: 10, exceedProb: 0.15 }], spot, { kind: "target", maxExceedProb: 0.2 }, 0.045);
+  assert.equal(short?.pick.strike, 77_500, "shorts measure the line below spot: 77,500 is 4.56% down, 78,000 only 3.9%");
+  assert.equal(short?.underMin, false);
+  assert.equal(pickCap(cands.filter((c) => c.netUsdc <= 0), spot, { kind: "widest" }, 0.045), null, "nothing pays anywhere ⟹ null");
+});
+
+test("capRuleText names the minimum distance when there is one", () => {
+  assert.ok(capRuleText({ kind: "target", maxExceedProb: 0.2 }, 0.045).endsWith("never closer than 4.5% from price (refused when nothing at or beyond that pays)"));
+  assert.ok(!capRuleText({ kind: "target", maxExceedProb: 0.2 }).includes("never closer"));
+  assert.ok(capRuleText({ kind: "widest" }, 0.045).startsWith("the widest listed cap whose net credit is positive, never closer than 4.5%"));
+});
+
 // ── through the live quote path ──────────────────────────────────────────────
 
 const friday = Date.UTC(2026, 8, 25, 8);

@@ -277,6 +277,31 @@ test("perp shadow: one snapshot becomes one open record with every counterfactua
   assert.ok(wk.creditCents > rec.creditCents * 5, "the live weekly pays what the counterfactual promised");
   assert.ok(wk.atmRef.hoursToExpiry > 100, "the ATM reference is the weekly's time value");
 
+  // The minimum cap distance moves the pick, it does not refuse: with vols on the chain the 20% odds
+  // rule alone takes the 3.75% call (the most credit under the ceiling); at least 4.5% out it takes
+  // the 5% call, the closer rungs stay on the ladder marked under guard, and the daily counterfactual
+  // keeps its own guard.
+  const markVols: Record<string, number> = {};
+  for (const c of chain) markVols[c.instId] = 0.3;
+  const odds = { kind: "target" as const, maxExceedProb: 0.2 };
+  const free = perpShadowQuote({ ...quoteInputs("long", "t-free"), tenor: "weekly", capGuard: { minCapPct: 0, maxCapPct: 0.08 }, otherTenorCapGuard: GUARD, capRule: odds }, snap({ markVols }));
+  assert.ok(free.type === "open" && free.capStrikeCents === 8_300_000 && free.capRuleApplied === "target", "no floor: the odds rule writes the 3.75% cap");
+  const floored = perpShadowQuote({ ...quoteInputs("long", "t-floored"), tenor: "weekly", capGuard: { minCapPct: 0.045, maxCapPct: 0.08 }, otherTenorCapGuard: GUARD, capRule: odds }, snap({ markVols }));
+  assert.equal(floored.type, "open", "a paying strike beyond the line exists, so nothing is refused");
+  if (floored.type === "open") {
+    assert.equal(floored.capStrikeCents, 8_400_000, "the cap moves out to the first paying strike at or beyond 4.5%");
+    assert.equal(floored.capRuleApplied, "target");
+    assert.equal(floored.capGuardPct, 0.045, "the position records the guard it was written under");
+    assert.ok(floored.creditCents < (free as { creditCents: number }).creditCents, "less credit for the wider cap, as the ladder says");
+    const ladder = floored.counterfactuals!.capLadder;
+    assert.ok(ladder.some((r) => r.underGuard && !r.live && r.terms.ok), "closer rungs are still priced on the ladder, marked under guard");
+    assert.ok(ladder.find((r) => r.live)!.capPct >= 0.045);
+    const daily = floored.counterfactuals!.tenors.daily;
+    assert.ok(daily && daily.ok, "the daily counterfactual is quoted under the daily guard, not the weekly minimum");
+  }
+  const tooFar = perpShadowQuote({ ...quoteInputs("long", "t-far"), tenor: "weekly", capGuard: { minCapPct: 0.06, maxCapPct: 0.08 }, otherTenorCapGuard: GUARD, capRule: odds }, snap({ markVols }));
+  assert.ok(tooFar.type === "refusal" && tooFar.error === "cap_too_close" && /84000-C sits 5\.00% from price, under the 6\.0% guard/.test(tooFar.message), "nothing at or beyond the line pays: refused, with the distance");
+
   const wkNoFriday = perpShadowQuote({ ...quoteInputs("long", "t-wk2"), tenor: "weekly", capGuard: WEEKLY_GUARD }, snap({ weeklyExpiryMs: null }));
   assert.ok(wkNoFriday.type === "open" && wkNoFriday.tenor === "daily" && wkNoFriday.expiryIso === new Date(DAILY).toISOString(), "no Friday listed: the daily is written and the record says so");
 
@@ -857,10 +882,16 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.deepEqual(terms.geometry, { floorPct: 0.06, capPct: 0.015 });
     assert.equal(terms.tenor, "weekly", "the weekly is the default tenor");
     assert.equal(terms.capMode, "plain", "the plain collar is the product; knockout is the opt-in rule");
-    assert.deepEqual(terms.capGuard, { minCapPct: 0, maxCapPct: 0.08 }, "plain: the widest paying cap in the 8% weekly band, no distance refusal");
+    assert.deepEqual(terms.capGuard, { minCapPct: 0.045, maxCapPct: 0.08 }, "plain weekly: the cap at least 4.5% out, searched to 8%");
+    const ruleReport = (await (await fetch(`${base}/api/shadow/report?token=op-secret`)).json()) as { rules: { capRule: string; capGuard: { minCapPct: number } } };
+    assert.ok(ruleReport.rules.capRule.endsWith("never closer than 4.5% from price (refused when nothing at or beyond that pays)"), "the published rule names the minimum");
+    assert.equal(ruleReport.rules.capGuard.minCapPct, 0.045);
     const emptyPage = await fetch(`${base}/`);
     assert.equal(emptyPage.status, 200);
-    assert.ok((await emptyPage.text()).includes("not started"));
+    const emptyHtml = await emptyPage.text();
+    assert.ok(emptyHtml.includes("not started"));
+    assert.ok(emptyHtml.includes("a hard floor 6% out, the cap at least 4.5% out, the most credit the book pays from there, cash credit either way"), "the headline states where the cap sits");
+    assert.ok(!emptyHtml.includes("(since "), "no position yet, so no date on the rule");
 
     const a = openRec("long", "a", "2026-09-18T23:00:00.000Z");
     appendPerpShadowRecord(path, a);
@@ -911,6 +942,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.ok(page.includes("rule comparison") && page.includes("report on request"));
     assert.ok(!page.includes('href="/report"') && !page.includes('href="/api/shadow/export"'));
     assert.ok(page.includes("floor save"), "the settled long was saved by its floor");
+    assert.ok(page.includes("the cap at least 4.5% out, the most credit the book pays from there") && !page.includes("(since "), "both positions were quoted under a 2% guard, so the 4.5% rule has no start date yet");
     assert.ok(!page.includes("NaN") && !page.includes("undefined"));
 
     const report = (await (await fetch(`${base}/api/shadow/report`, op)).json()) as {
@@ -924,7 +956,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.equal(report.counterfactuals.tenors.weekly.quoted, 2);
     assert.deepEqual(report.counterfactuals.capacity.map((c) => c.mult), [1, 10, 50]);
     assert.ok(report.counterfactuals.capLadder.length >= 2, "every listed cap distance in the band is a rung");
-    assert.deepEqual(report.rules.capGuard, { minCapPct: 0, maxCapPct: 0.08 });
+    assert.deepEqual(report.rules.capGuard, { minCapPct: 0.045, maxCapPct: 0.08 });
     assert.ok(report.rules.capLadder.includes("handed back") && !report.rules.capLadder.includes("knock-out rate") && report.rules.fundingRule.includes("clear"));
     assert.equal((report as unknown as { rules: { capMode: string; settlement: string } }).rules.capMode, "plain");
     assert.ok((report as unknown as { rules: { settlement: string } }).rules.settlement.includes("runs to expiry"));

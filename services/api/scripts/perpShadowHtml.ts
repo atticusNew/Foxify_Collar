@@ -135,6 +135,10 @@ export interface PerpShadowPageInput {
   capOdds?: { adaptApplied: boolean; latest: CapOddsAdvice | null };
   /** what the watchdog is raising right now; the page says so rather than render stale numbers quietly */
   alarms?: PerpOpsAlarm[];
+  /** the live cap guard; with a minimum distance the headline says where the cap may sit */
+  capGuard?: CapGuard;
+  /** when the first position was written under the current minimum (ISO); the headline dates the rule */
+  capGuardSince?: string | null;
 }
 
 const sideTd = (p: PerpShadowPosition): string => `<td class="${p.side}">${p.side === "long" ? "Long" : "Short"}</td>`;
@@ -373,6 +377,13 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
   const sizeSentence = flowOn
     ? "Wraps of every size, long and short, each priced from the live OKX book at its own size"
     : `The live product's collar, quoted every hour from the OKX book for a ${input.sizeBtc.toFixed(2)} BTC Hyperliquid position, long and short`;
+  const minCap = input.capGuard?.minCapPct ?? 0;
+  const capSentence =
+    minCap > 0
+      ? `the cap at least ${(minCap * 100).toFixed(1)}% out, the most credit the book pays from there${
+          input.capGuardSince ? ` (since ${utcDay(input.capGuardSince)}; earlier positions were written where the market gave about one week in five of finishing past the cap, and the ladder below is why the line moved)` : ""
+        }`
+      : "the cap as far out as the book still pays";
 
   return `<!doctype html>
 <html lang="en">
@@ -392,7 +403,7 @@ export function renderPerpShadowHtml(input: PerpShadowPageInput): string {
 </div></div>
 <div class="wrap">
   <h1>Track record</h1>
-  <div class="sub">${sizeSentence}, at the terms a user sees: a hard floor 6% out, the cap as far out as the book still pays, cash credit either way, written to ${
+  <div class="sub">${sizeSentence}, at the terms a user sees: a hard floor 6% out, ${capSentence}, cash credit either way, written to ${
     tenor === "weekly" ? "the nearest Friday expiry at least three days out" : "the next daily expiry"
   }. Every position is settled on the Hyperliquid price path and OKX's official delivery print, protected versus unprotected. Positions are simulated; prices, fees, candles and prints are real.</div>
   <div class="pills">

@@ -151,10 +151,11 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
   const liveTenor: EpTenor = inputs.tenor === "weekly" && weeklyListed ? "weekly" : "daily";
   const liveExpiryMs = liveTenor === "weekly" ? (snap.weeklyExpiryMs as number) : snap.expiryMs;
   const liveMode = inputs.fillMode ?? "top";
-  const base = { side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: inputs.geometry, maxCapPct: inputs.capGuard.maxCapPct, expiryMs: liveExpiryMs, capRule: inputs.capRule };
+  const base = { side: inputs.side, spot: inputs.spot, contracts: inputs.contracts, geometry: inputs.geometry, maxCapPct: inputs.capGuard.maxCapPct, minCapPct: inputs.capGuard.minCapPct, expiryMs: liveExpiryMs, capRule: inputs.capRule };
   const live = quoteCollarFromSnapshot({ ...base, mode: liveMode }, snap);
   let liveAlt = altFrom(live, inputs.take);
-  // The cap guard: the widest paying strike still sits too close to price. Refuse, and say how close.
+  // The cap guard: nothing at or beyond the minimum distance pays, so the pick is the widest paying
+  // strike inside it. Refuse, and say how close.
   if (live.ok && liveAlt.ok && live.capPct < inputs.capGuard.minCapPct - 1e-9) {
     liveAlt = {
       ok: false,
@@ -219,7 +220,7 @@ export function perpShadowQuote(inputs: PerpQuoteInputs, snap: OkxListedSnapshot
   if (weeklyListed) {
     const alt = otherTenor(liveTenor);
     const altExpiryMs = alt === "weekly" ? (snap.weeklyExpiryMs as number) : snap.expiryMs;
-    const aq = quoteCollarFromSnapshot({ ...base, maxCapPct: inputs.otherTenorCapGuard?.maxCapPct ?? base.maxCapPct, mode: liveMode, expiryMs: altExpiryMs }, snap);
+    const aq = quoteCollarFromSnapshot({ ...base, maxCapPct: inputs.otherTenorCapGuard?.maxCapPct ?? base.maxCapPct, minCapPct: inputs.otherTenorCapGuard?.minCapPct ?? 0, mode: liveMode, expiryMs: altExpiryMs }, snap);
     const terms = altFrom(aq, inputs.take);
     tenors[alt] = terms.ok ? { ...terms, expiryIso: new Date(altExpiryMs).toISOString() } : terms;
   }
