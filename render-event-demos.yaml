@@ -232,10 +232,11 @@ services:
       # page calls them "reference book A" (signed API) and "reference book B" (partner API); the
       # record carries the dialect ids signed_v3 and partner_mm, never a venue name. Set in the
       # dashboard, never in git. Unset: no reference is read. Either may be set alone.
-      # Signed venue (same key kind as the holder reader above; the catalog list and the book reads
-      # need a key that may read the catalog):
-      #   REFERENCE_BOOK_SIGNED_HOST=https://api....
-      #   REFERENCE_BOOK_SIGNED_KEY_ID=<key id>
+      # Signed venue. Its catalog and books are PUBLIC, so the host alone turns the reference on
+      # (unsigned reads of /v3/public/catalog); the key is optional and only switches the reads to
+      # the signed, account-scoped paths:
+      #   REFERENCE_BOOK_SIGNED_HOST=https://api....   the venue's API host, nothing else needed
+      #   REFERENCE_BOOK_SIGNED_KEY_ID=<key id>          optional, with the PEM
       #   REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM=<PKCS8 PEM>
       # Partner venue (same account key pair kind as above; only login, tournaments, events and
       # markets are read; dedicated pair, revoke when done):
