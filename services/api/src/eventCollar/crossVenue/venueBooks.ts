@@ -25,10 +25,13 @@
  *     price per effective $1 of payout is p / (1 - 0.02 x (1 - p)) and the size shrinks by the
  *     same factor. Same ask-book shape out the other end.
  *
- * Credentials: REFERENCE_BOOK_SIGNED_HOST + REFERENCE_BOOK_SIGNED_KEY_ID + REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM
- * for the first; REFERENCE_BOOK_BEARER_HOST + REFERENCE_BOOK_BEARER_ACCESS_KEY + REFERENCE_BOOK_BEARER_SECRET_KEY
- * for the second. Service env only. Either set alone reads one venue; neither set, no reference is
- * read and the record carries none. A venue that does not list the game, cannot be reached, or
+ * Credentials: REFERENCE_BOOK_SIGNED_HOST alone reads the first venue's PUBLIC catalog and books
+ * (it publishes both unsigned, which is all a reference needs); add REFERENCE_BOOK_SIGNED_KEY_ID +
+ * REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM and the reads are signed instead. REFERENCE_BOOK_BEARER_HOST +
+ * REFERENCE_BOOK_BEARER_ACCESS_KEY + REFERENCE_BOOK_BEARER_SECRET_KEY for the second. Service env
+ * only. Either venue alone is fine; neither set, no reference is read and the record carries none.
+ * Outcome names on the first venue are team codes ("PHI", "KC"); the templates' code tables match
+ * them, and every code the venue listed for the covered leagues was checked against them. A venue that does not list the game, cannot be reached, or
  * answers in a shape this module does not recognise is recorded as unlisted, never guessed.
  *
  * Nothing here names a venue in anything the record publishes: the ids are the dialects, the
@@ -38,8 +41,8 @@
 import type { LeagueTemplate } from "./resolutionWhitelist";
 import type { MatchedPair, PmBook, PmBookLevel } from "./types";
 import { decimalToMilli } from "./polymarketPublic";
-import { PlaysClient, payoutMultiple, type RawMarket, type RawSelection, type RawSportEvent } from "./venuePlays";
-import { VenueClient, clubMatches, signerFromPem, templateForLeague, type RawVenueBook, type RawVenueMarket } from "./venuePositions";
+import { PlaysApiError, PlaysClient, payoutMultiple, type RawMarket, type RawSelection, type RawSportEvent } from "./venuePlays";
+import { VenueApiError, VenueClient, clubMatches, signerFromPem, templateForLeague, type RawVenueBook, type RawVenueMarket } from "./venuePositions";
 
 /** Stable ledger keys. The dialect, not the venue. */
 export const REFERENCE_BOOK_IDS = ["signed_v3", "partner_mm"] as const;
@@ -72,9 +75,31 @@ const START_WINDOW_MS = 1.5 * DAY_MS;
 
 const clubsOf = (template: LeagueTemplate): string[] => [...new Set(Object.values(template.teamNames))];
 
+/** Every code the template knows for a club: the Kalshi codes mapping to it and their slug aliases, uppercased. */
+function codesFor(template: LeagueTemplate, club: string): Set<string> {
+  const codes = new Set<string>();
+  for (const [code, full] of Object.entries(template.teamNames)) {
+    if (full !== club) continue;
+    codes.add(code.toUpperCase());
+    for (const a of template.teamCodeAliases[code] ?? []) codes.add(a.toUpperCase());
+  }
+  return codes;
+}
+
+/**
+ * Does a venue's outcome name this club? The full name, nickname or unshared city (clubMatches),
+ * or a bare team code as some venues list outcomes ("PHI", "KC"), matched against the codes the
+ * template knows for the club.
+ */
+export function clubNamed(template: LeagueTemplate, club: string, outcomeName: string): boolean {
+  const name = outcomeName.trim();
+  if (/^[A-Za-z]{2,4}$/.test(name)) return codesFor(template, club).has(name.toUpperCase());
+  return clubMatches(template, club, name);
+}
+
 /** The template's club for a name as a venue (or the second book) writes it; null when no club matches. */
 export function clubFor(template: LeagueTemplate, name: string): string | null {
-  const hits = clubsOf(template).filter((club) => clubMatches(template, club, name));
+  const hits = clubsOf(template).filter((club) => clubNamed(template, club, name));
   return hits.length === 1 ? hits[0] : null;
 }
 
@@ -123,7 +148,8 @@ export function signedFeeAppliesPreGame(fee: RawVenueMarket["fee"]): boolean {
  */
 export function signedAsksForOpposing(book: RawVenueBook, ourOutcomeId: string, fee: RawVenueMarket["fee"]): PmBookLevel[] {
   const bids = book.orders[ourOutcomeId] ?? [];
-  const coefficient = typeof fee?.coefficient === "number" && fee.coefficient >= 0 ? fee.coefficient : SIGNED_DEFAULT_FEE_COEFFICIENT;
+  const c = fee?.coefficient === undefined || fee.coefficient === null ? NaN : Number(fee.coefficient);
+  const coefficient = Number.isFinite(c) && c >= 0 ? c : SIGNED_DEFAULT_FEE_COEFFICIENT;
   const charged = signedFeeAppliesPreGame(fee);
   const levels: PmBookLevel[] = [];
   for (const o of bids) {
@@ -149,12 +175,12 @@ export function signedSource(client: VenueClient): ReferenceBookSource {
         if (!isWinnerMarket(m.marketType)) return false;
         if (m.status && /^(settled|closed|cancel|void|suspend)/i.test(m.status)) return false;
         if (!sameGame(m.startsTs, pair.gameStartTime)) return false;
-        const ours = m.outcomes.find((o) => clubMatches(clubs.template, clubs.ours, o.name));
-        const opp = m.outcomes.find((o) => clubMatches(clubs.template, clubs.opposing, o.name));
+        const ours = m.outcomes.find((o) => clubNamed(clubs.template, clubs.ours, o.name));
+        const opp = m.outcomes.find((o) => clubNamed(clubs.template, clubs.opposing, o.name));
         return Boolean(ours && opp && ours !== opp);
       });
       if (!hit) return { id: "signed_v3", book: null, reason: "not_listed" };
-      const ourOutcome = hit.outcomes.find((o) => clubMatches(clubs.template, clubs.ours, o.name))!;
+      const ourOutcome = hit.outcomes.find((o) => clubNamed(clubs.template, clubs.ours, o.name))!;
       const book = await client.getBook(hit.marketId);
       return { id: "signed_v3", book: asksBook(signedAsksForOpposing(book, ourOutcome.outcomeId, hit.fee), `signed_v3:${hit.marketId}`) };
     },
@@ -198,7 +224,7 @@ const flatSelections = (m: RawMarket): RawSelection[] =>
 function competitorFor(template: LeagueTemplate, event: RawSportEvent, club: string): NonNullable<RawSportEvent["competitors"]>[number] | null {
   for (const c of event.competitors ?? []) {
     const names = [c.name, c.display_name].filter((n): n is string => Boolean(n));
-    if (names.some((n) => clubMatches(template, club, n))) return c;
+    if (names.some((n) => clubNamed(template, club, n))) return c;
   }
   return null;
 }
@@ -207,7 +233,7 @@ export function partnerAsksForOpposing(market: RawMarket, template: LeagueTempla
   const levels: PmBookLevel[] = [];
   for (const sel of flatSelections(market)) {
     const byId = opposingCompetitorId !== null && sel.competitor_id !== undefined && sel.competitor_id !== null && String(sel.competitor_id) === opposingCompetitorId;
-    const byName = [sel.name, sel.display_name].some((n) => typeof n === "string" && clubMatches(template, opposing, n));
+    const byName = [sel.name, sel.display_name].some((n) => typeof n === "string" && clubNamed(template, opposing, n));
     if (!byId && !byName) continue;
     const level = partnerAskLevel(sel);
     if (level) levels.push(level);
@@ -270,8 +296,12 @@ export function referenceSourcesFromEnv(env: NodeJS.ProcessEnv = process.env, op
       } catch (err) {
         notes.push(`reference book A: key unusable (${String(err instanceof Error ? err.message : err)})`);
       }
+    } else if (signedHost && !signedKeyId && !signedPem) {
+      // the venue publishes its catalog and books unsigned; a reference needs nothing more
+      sources.push(signedSource(new VenueClient({ host: signedHost, fetchImpl })));
+      notes.push("reference book A: reading the public catalog (no key set)");
     } else {
-      notes.push("reference book A: host, key id and private key must all be set; off");
+      notes.push("reference book A: set the host alone for public reads, or host, key id and private key together; off");
     }
   }
   const bearerHost = env.REFERENCE_BOOK_BEARER_HOST?.trim().replace(/\/+$/, "");
@@ -299,9 +329,13 @@ function withTimeout(fetchImpl: typeof fetch, timeoutMs: number): typeof fetch {
 export async function readReferenceBooks(sources: ReferenceBookSource[], pair: MatchedPair, now: Date): Promise<ReferenceBook[]> {
   if (sources.length === 0) return [];
   const settled = await Promise.allSettled(sources.map((s) => s.read(pair, now)));
-  return settled.map((r, i) =>
-    r.status === "fulfilled"
-      ? r.value
-      : { id: sources[i].id, book: null, reason: `unreachable: ${String(r.reason instanceof Error ? r.reason.message : r.reason).slice(0, 80)}` },
-  );
+  return settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const err = r.reason;
+    // the venue answered with a code (rate limit, bad key): keep the code; anything else is unreachable
+    if ((err instanceof VenueApiError || err instanceof PlaysApiError) && err.status > 0) {
+      return { id: sources[i].id, book: null, reason: `venue_${err.code.toLowerCase().replace(/[^a-z0-9]+/g, "_")}` };
+    }
+    return { id: sources[i].id, book: null, reason: `unreachable: ${String(err instanceof Error ? err.message : err).slice(0, 80)}` };
+  });
 }

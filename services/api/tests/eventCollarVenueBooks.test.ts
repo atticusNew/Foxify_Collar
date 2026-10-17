@@ -94,6 +94,14 @@ test("reference books: the pair's two clubs resolve by canonical name from the t
   assert.equal(clubFor(mlb, "White Sox"), "Chicago White Sox");
   assert.equal(clubFor(mlb, "Sox"), null, "a shared nickname word names no club");
   assert.equal(clubFor(mlb, "New York"), null, "a shared city names no club");
+  // the venue lists outcomes by team code; the templates' code tables answer those
+  assert.equal(clubFor(mlb, "NYY"), "New York Yankees");
+  assert.equal(clubFor(mlb, "BOS"), "Boston Red Sox");
+  assert.equal(clubFor(mlb, "CWS"), "Chicago White Sox");
+  const nba = templateForLeague("nba")!;
+  assert.equal(clubFor(nba, "GS"), "Golden State Warriors", "an alias code the template knows");
+  assert.equal(clubFor(nba, "GSW"), "Golden State Warriors");
+  assert.equal(clubFor(nba, "ZZZ"), null);
   const clubs = pairClubs(pair());
   assert.deepEqual(clubs && [clubs.ours, clubs.opposing], ["New York Yankees", "Boston Red Sox"]);
   assert.equal(pairClubs({ ...pair(), league: "cricket" }), null, "a league without a template is not read");
@@ -138,18 +146,27 @@ test("reference books: signed dialect turns the venue's bids on our club into as
   assert.deepEqual(signedAsksForOpposing(book, "nobody", undefined), [], "no bids on our side: nothing to buy on theirs");
 });
 
-function signedFakeVenue(markets: unknown[], book: unknown) {
+/**
+ * The venue as it answers today: signed reads on /v3/catalog, unsigned on /v3/public/catalog, the
+ * list wrapped as {items, next}, fee numbers as strings, outcomes named by team code.
+ */
+function signedFakeVenue(markets: unknown[], book: unknown, opts: { signed?: boolean; rateLimitAfter?: number } = {}) {
   const calls: Array<{ path: string; headers: Record<string, string> }> = [];
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
-    calls.push({ path: url.pathname + url.search, headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)) });
-    if (url.pathname === "/v3/catalog/markets") return json(markets);
-    if (/^\/v3\/catalog\/markets\/[^/]+\/book$/.test(url.pathname)) return json(book);
+    const headers = Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>));
+    calls.push({ path: url.pathname + url.search, headers });
+    if (opts.rateLimitAfter !== undefined && calls.length > opts.rateLimitAfter) return json({ code: "RATE_LIMIT_EXCEEDED", message: "slow down" }, 429);
+    const isPublic = url.pathname.startsWith("/v3/public/catalog/");
+    if (!isPublic && !headers["Novig-Key-Id"]) return json({ code: "SIGNATURE_REJECTED", message: "novig-key-id header is required" }, 401);
+    const rest = url.pathname.replace(/^\/v3\/(public\/)?catalog/, "");
+    if (rest === "/markets") return json({ items: markets, next: null });
+    if (/^\/markets\/[^/]+\/book$/.test(rest)) return json(book);
     return json({ code: "not_found" }, 404);
   };
   const { privateKey } = generateKeyPairSync("ed25519");
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
-  const client = new VenueClient({ host: "https://venue-a.test", signer: signerFromPem("kid", pem), fetchImpl });
+  const client = new VenueClient({ host: "https://venue-a.test", ...(opts.signed === false ? {} : { signer: signerFromPem("kid", pem) }), fetchImpl });
   return { client, calls };
 }
 
@@ -161,10 +178,10 @@ const SIGNED_MARKETS = [
     marketType: "MONEY",
     status: "OPEN",
     startsTs: Date.parse(LOCK),
-    fee: { coefficient: 0.06, makerCredit: 0.5, charged: "WHEN_LIVE" },
+    fee: { coefficient: "0.06", makerCredit: "0.5", charged: "WHEN_LIVE" },
     outcomes: [
-      { outcomeId: "o-nyy", name: "NY Yankees", status: "OPEN" },
-      { outcomeId: "o-bos", name: "Boston Red Sox", status: "OPEN" },
+      { outcomeId: "o-nyy", name: "NYY", status: "TBD" },
+      { outcomeId: "o-bos", name: "BOS", status: "TBD" },
     ],
   },
   {
@@ -175,8 +192,8 @@ const SIGNED_MARKETS = [
     status: "OPEN",
     startsTs: Date.parse(LOCK),
     outcomes: [
-      { outcomeId: "o-lad", name: "Los Angeles Dodgers", status: "OPEN" },
-      { outcomeId: "o-sf", name: "San Francisco Giants", status: "OPEN" },
+      { outcomeId: "o-lad", name: "LAD", status: "TBD" },
+      { outcomeId: "o-sf", name: "SF", status: "TBD" },
     ],
   },
 ];
@@ -224,6 +241,33 @@ test("reference books: the signed source finds the game in the league's winner m
   const lastWeek = { ...pair(), gameStartTime: "2026-09-10T17:00:00.000Z" };
   const stale = await src.read(lastWeek, NOW);
   assert.ok(!stale.book && stale.reason === "not_listed");
+});
+
+test("reference books: without a key the signed dialect reads the venue's public catalog unsigned and gets the same book", async () => {
+  const { client, calls } = signedFakeVenue(SIGNED_MARKETS, SIGNED_BOOK, { signed: false });
+  assert.equal(client.isPublic, true);
+  const ref = await signedSource(client).read(pair(), NOW);
+  assert.ok(ref.book, JSON.stringify(ref));
+  assert.deepEqual(ref.book.asks, [
+    { priceMilli: 380, sizeMilli: 300_000 },
+    { priceMilli: 390, sizeMilli: 500_000 },
+  ]);
+  assert.deepEqual(
+    calls.map((c) => c.path),
+    ["/v3/public/catalog/markets?league=MLB&marketType=MONEY&limit=200", "/v3/public/catalog/markets/m-nyy-bos/book"],
+  );
+  for (const c of calls) assert.equal(c.headers["Novig-Key-Id"], undefined, "nothing is signed");
+  await assert.rejects(() => client.listPositions(), /signed key/, "positions are not readable on the public catalog");
+  // a venue that lists the game under full names instead of codes is matched the same way
+  const named = SIGNED_MARKETS.map((m) => ({ ...m, outcomes: m.outcomes.map((o) => ({ ...o, name: o.name === "NYY" ? "New York Yankees" : o.name === "BOS" ? "Boston Red Sox" : o.name })) }));
+  const ref2 = await signedSource(signedFakeVenue(named, SIGNED_BOOK, { signed: false }).client).read(pair(), NOW);
+  assert.ok(ref2.book && ref2.book.asks.length === 2);
+});
+
+test("reference books: a venue answering with a code (rate limit, bad key) keeps the code as the reason; a dropped connection is unreachable", async () => {
+  const limited = signedFakeVenue(SIGNED_MARKETS, SIGNED_BOOK, { signed: false, rateLimitAfter: 1 });
+  const refs = await readReferenceBooks([signedSource(limited.client)], pair(), NOW);
+  assert.equal(refs[0].reason, "venue_rate_limit_exceeded");
 });
 
 // ---------------------------------------------------------------------------
@@ -358,6 +402,13 @@ test("reference books: the partner source finds the event through the covered to
 
 test("reference books: nothing configured reads nothing; a half-set venue is a note, not a guess; both set, both read", () => {
   assert.deepEqual(referenceSourcesFromEnv({}), { sources: [], notes: [] });
+  // the first venue's catalog is public: the host alone is a working reference
+  const hostOnly = referenceSourcesFromEnv({ REFERENCE_BOOK_SIGNED_HOST: "https://a.test/" });
+  assert.deepEqual(hostOnly.sources.map((s) => s.id), ["signed_v3"]);
+  assert.match(hostOnly.notes[0], /public catalog/);
+  const keyIdOnly = referenceSourcesFromEnv({ REFERENCE_BOOK_SIGNED_HOST: "https://a.test", REFERENCE_BOOK_SIGNED_KEY_ID: "kid" });
+  assert.equal(keyIdOnly.sources.length, 0, "half a key is neither public nor signed");
+  assert.match(keyIdOnly.notes[0], /host alone for public reads/);
   const half = referenceSourcesFromEnv({ REFERENCE_BOOK_BEARER_HOST: "https://b.test/partner", REFERENCE_BOOK_BEARER_ACCESS_KEY: "ak" });
   assert.equal(half.sources.length, 0);
   assert.match(half.notes[0], /reference book B/);

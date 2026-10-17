@@ -139,7 +139,12 @@ export function signedHeaders(signer: VenueSigner, i: Omit<CanonicalInputs, "tim
 
 export interface VenueClientConfig {
   host: string;
-  signer: VenueSigner;
+  /**
+   * Absent, the client reads the venue's PUBLIC catalog and books (`/v3/public/...`, unsigned),
+   * which is all a price reference needs; positions then cannot be read. Present, every read is
+   * signed and goes to the account-scoped paths.
+   */
+  signer?: VenueSigner;
   fetchImpl?: typeof fetch;
   /** market and event lookups are cached this long; the catalog barely moves pre-game */
   catalogTtlMs?: number;
@@ -169,8 +174,8 @@ export interface RawVenueMarket {
   status: string;
   startsTs: number;
   outcomes: Array<{ outcomeId: string; name: string; status: string }>;
-  /** the venue's fee rule for the market: c x P x (1 - P) per contract, charged always or only once live */
-  fee?: { coefficient?: number; makerCredit?: number; charged?: string };
+  /** the venue's fee rule for the market: c x P x (1 - P) per contract, charged always or only once live (numbers arrive as strings) */
+  fee?: { coefficient?: number | string; makerCredit?: number | string; charged?: string };
 }
 
 /** One resting order as the venue's book shows it: every order is a bid on its outcome, best first. */
@@ -219,8 +224,21 @@ export class VenueClient {
     this.ttl = cfg.catalogTtlMs ?? 10 * 60_000;
   }
 
+  /** true when every read goes unsigned to the public catalog */
+  get isPublic(): boolean {
+    return !this.cfg.signer;
+  }
+
+  /** The catalog path for this client: the account-scoped one when signed, the public one otherwise. */
+  private catalog(path: string): string {
+    return this.cfg.signer ? `/v3/catalog${path}` : `/v3/public/catalog${path}`;
+  }
+
   private async get<T>(path: string, query = ""): Promise<T> {
-    const headers = { accept: "application/json", ...signedHeaders(this.cfg.signer, { method: "GET", path, query, body: "" }) };
+    const headers = {
+      accept: "application/json",
+      ...(this.cfg.signer ? signedHeaders(this.cfg.signer, { method: "GET", path, query, body: "" }) : {}),
+    };
     const r = await this.fetchImpl(`${this.cfg.host}${path}${query ? `?${query}` : ""}`, { method: "GET", headers });
     const text = await r.text();
     let json: unknown = null;
@@ -238,6 +256,7 @@ export class VenueClient {
 
   /** Every open position across every wallet the key can read (a management-scope key answers an object keyed by wallet). */
   async listPositions(): Promise<RawVenuePosition[]> {
+    if (!this.cfg.signer) throw new VenueApiError(0, "unsigned", "positions need a signed key; this client reads the public catalog only");
     const body = await this.get<RawVenuePosition[] | Record<string, RawVenuePosition[]>>("/v3/portfolio/positions");
     if (Array.isArray(body)) return body.filter(isPosition);
     if (body && typeof body === "object") return Object.values(body).flat().filter(isPosition);
@@ -247,7 +266,7 @@ export class VenueClient {
   async getMarket(marketId: string): Promise<RawVenueMarket> {
     const hit = this.markets.get(marketId);
     if (hit && Date.now() - hit.at < this.ttl) return hit.v;
-    const v = await this.get<RawVenueMarket>(`/v3/catalog/markets/${encodeURIComponent(marketId)}`);
+    const v = await this.get<RawVenueMarket>(this.catalog(`/markets/${encodeURIComponent(marketId)}`));
     this.markets.set(marketId, { at: Date.now(), v });
     return v;
   }
@@ -255,21 +274,24 @@ export class VenueClient {
   async getEvent(eventId: string): Promise<RawVenueEvent> {
     const hit = this.events.get(eventId);
     if (hit && Date.now() - hit.at < this.ttl) return hit.v;
-    const v = await this.get<RawVenueEvent>(`/v3/catalog/events/${encodeURIComponent(eventId)}`);
+    const v = await this.get<RawVenueEvent>(this.catalog(`/events/${encodeURIComponent(eventId)}`));
     this.events.set(eventId, { at: Date.now(), v });
     return v;
   }
 
-  /** The winner markets of one league, as the catalog lists them; cached like the single reads. */
+  /**
+   * The winner markets of one league as the catalog lists them (`{items, next}`; a bare array is
+   * accepted too). One page of 200 covers a league's slate; a `next` beyond that is not followed.
+   * Cached like the single reads.
+   */
   async listMoneyMarkets(league: string): Promise<RawVenueMarket[]> {
     const key = `money:${league.toUpperCase()}`;
     const hit = this.marketLists.get(key);
     if (hit && Date.now() - hit.at < this.ttl) return hit.v;
     const query = `league=${encodeURIComponent(league.toUpperCase())}&marketType=MONEY&limit=200`;
-    const body = await this.get<RawVenueMarket[] | { markets?: RawVenueMarket[] }>("/v3/catalog/markets", query);
-    const v = (Array.isArray(body) ? body : (body?.markets ?? [])).filter(
-      (m) => m && typeof m.marketId === "string" && Array.isArray(m.outcomes),
-    );
+    const body = await this.get<RawVenueMarket[] | { items?: RawVenueMarket[]; markets?: RawVenueMarket[]; next?: string | null }>(this.catalog("/markets"), query);
+    const items = Array.isArray(body) ? body : (body?.items ?? body?.markets ?? []);
+    const v = items.filter((m) => m && typeof m.marketId === "string" && Array.isArray(m.outcomes));
     this.marketLists.set(key, { at: Date.now(), v });
     for (const m of v) this.markets.set(m.marketId, { at: Date.now(), v: m });
     return v;
@@ -277,7 +299,7 @@ export class VenueClient {
 
   /** The live book of one market: resting bids per outcome, best first. Never cached. */
   async getBook(marketId: string): Promise<RawVenueBook> {
-    const v = await this.get<RawVenueBook>(`/v3/catalog/markets/${encodeURIComponent(marketId)}/book`);
+    const v = await this.get<RawVenueBook>(this.catalog(`/markets/${encodeURIComponent(marketId)}/book`));
     if (!v || typeof v !== "object" || !v.orders || typeof v.orders !== "object") {
       throw new VenueApiError(0, "book_shape", `venue book for ${marketId} has no orders`);
     }
