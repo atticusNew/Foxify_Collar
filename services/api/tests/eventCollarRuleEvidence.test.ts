@@ -191,6 +191,11 @@ test("rule evidence: the shadow ledger carries the pin on the open and the check
   assert.equal(ruleEvidenceLine({ ...summary, pinned: 0 }, "position"), "", "nothing pinned: no line, no claim");
   assert.equal(ruleEvidenceLine({ total: 1, pinned: 1, compared: 0, unchanged: 0, changed: 0, unreadable: 1, changedIds: [] }, "leg"), "Each leg carries the venue's rules as they read when it opened. 1 could not be read again.");
   assert.ok(!/sha256|hash/i.test(ruleEvidenceLine(summary, "position")), "the line is for a bettor; the fingerprint stays in the tooltip and the JSON");
+  assert.equal(
+    ruleEvidenceLine({ total: 153, pinned: 87, compared: 32, unchanged: 32, changed: 0, unreadable: 0, changedIds: [] }, "leg"),
+    "87 of 153 legs carry the venue's rules as they read when they opened; the rest were opened before we kept them. At settlement we read them again: 32 read so far, 32 unchanged. 55 not read again yet: the leg has not settled, or its ticket ended before it did.",
+    "legs still in play are counted, so 32 of 87 never reads as 55 rewordings",
+  );
 
   const html = renderShadowHtml({ atIso: settleAt, summary: summarizeShadow(positions), open: [], settled: positions.filter((p) => p.status === "settled") });
   assert.ok(html.includes(`<a class="tag rule" href="${KALSHI_BASE}/markets/${OPEN.ticker}" rel="noopener" title="fingerprint sha256 ${rule!.sha256}, read at open and again at settlement, same words">terms held</a>`), "an unchanged rule is two words that link to the venue's own read; the fingerprint is the tooltip");

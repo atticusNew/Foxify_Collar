@@ -656,8 +656,8 @@ function ourBookCard(s: ShadowSummary): string {
     .join("");
   return `<div class="card">
     <h2>Our book, line by line</h2>
-    <div class="sub" style="margin-bottom:8px">The other side of every settled event: what selling the protection and carrying the hedge netted. Leg for leg, the answer should not depend on who won; the gap on the track record is what is left after these lines.</div>
-    <div class="row"><span>realized, settled events</span><b>${signedUsd(w.settledPnlCents)} <i>${escapeHtml(pnlBpsLine)}</i></b></div>
+    <div class="sub" style="margin-bottom:8px">The other side of every settled event: what selling the protection and carrying the hedge netted. Leg for leg, the answer should not depend on who won; the gap on the track record is what is left after these lines. This card covers every settled position on the record (${w.settledWhenHolderWon + w.settledWhenHolderLost}); the rule tables below cover the ${s.counterfactuals.baseline.settled} settled since the alternatives were recorded.</div>
+    <div class="row"><span>realized, all ${w.settledWhenHolderWon + w.settledWhenHolderLost} settled events</span><b>${signedUsd(w.settledPnlCents)} <i>${escapeHtml(pnlBpsLine)}</i></b></div>
     <div class="row"><span>split by outcome</span><b>${escapeHtml(evenLine)}</b></div>
     <div class="row"><span>published take booked on those events</span><b>${usd(w.takeBookedCents)}</b></div>
     <div class="row"><span>cap slices kept (user won)</span><b>${usd(w.capSlicesKeptCents)}</b></div>

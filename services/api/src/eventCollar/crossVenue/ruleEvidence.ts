@@ -240,7 +240,15 @@ export function ruleEvidenceLine(s: RuleEvidenceSummary, noun: "position" | "leg
     s.pinned === s.total
       ? [`Each ${noun} carries the venue's rules as they read when it opened.`]
       : [`${s.pinned} of ${s.total} ${plural(s.total)} carry the venue's rules as they read when they opened; the rest were opened before we kept them.`];
-  if (s.compared > 0) parts.push(`At settlement we read them again: ${s.unchanged} unchanged${s.changed > 0 ? `, ${s.changed} reworded by the venue` : ""}.`);
+  if (s.compared > 0) {
+    parts.push(
+      s.compared === s.pinned
+        ? `At settlement we read them again: ${s.unchanged} unchanged${s.changed > 0 ? `, ${s.changed} reworded by the venue` : ""}.`
+        : `At settlement we read them again: ${s.compared} read so far, ${s.unchanged} unchanged${s.changed > 0 ? `, ${s.changed} reworded by the venue` : ""}.`,
+    );
+  }
   if (s.unreadable > 0) parts.push(`${s.unreadable} could not be read again.`);
+  const awaiting = s.pinned - s.compared - s.unreadable;
+  if (awaiting > 0) parts.push(`${awaiting} not read again yet: the ${noun} has not settled, or its ticket ended before it did.`);
   return parts.join(" ");
 }
