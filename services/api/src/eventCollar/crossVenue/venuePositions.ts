@@ -19,6 +19,9 @@
  *
  * Units: the venue's contract pays 1 cent; ours pays $1. qty 2000 at cost "11.40" is 20 of our
  * contracts at 57 cents. Nothing here names the venue in anything the record publishes.
+ *
+ * The same client also lists a league's winner markets and reads one market's book; venueBooks.ts
+ * uses those two reads to price the venue as a reference beside the hedge routes.
  */
 
 import { createHash, createPrivateKey, sign as cryptoSign, type KeyObject } from "node:crypto";
@@ -166,6 +169,23 @@ export interface RawVenueMarket {
   status: string;
   startsTs: number;
   outcomes: Array<{ outcomeId: string; name: string; status: string }>;
+  /** the venue's fee rule for the market: c x P x (1 - P) per contract, charged always or only once live */
+  fee?: { coefficient?: number; makerCredit?: number; charged?: string };
+}
+
+/** One resting order as the venue's book shows it: every order is a bid on its outcome, best first. */
+export interface RawVenueOrder {
+  orderId?: string;
+  /** decimal string probability, "0.665" */
+  price: string;
+  /** contracts paying 1 cent each */
+  qty: number;
+}
+
+export interface RawVenueBook {
+  marketId: string;
+  seq?: number;
+  orders: Record<string, RawVenueOrder[]>;
 }
 
 export interface RawVenueEvent {
@@ -192,6 +212,7 @@ export class VenueClient {
   private readonly ttl: number;
   private readonly markets = new Map<string, { at: number; v: RawVenueMarket }>();
   private readonly events = new Map<string, { at: number; v: RawVenueEvent }>();
+  private readonly marketLists = new Map<string, { at: number; v: RawVenueMarket[] }>();
 
   constructor(private readonly cfg: VenueClientConfig) {
     this.fetchImpl = cfg.fetchImpl ?? fetch;
@@ -236,6 +257,30 @@ export class VenueClient {
     if (hit && Date.now() - hit.at < this.ttl) return hit.v;
     const v = await this.get<RawVenueEvent>(`/v3/catalog/events/${encodeURIComponent(eventId)}`);
     this.events.set(eventId, { at: Date.now(), v });
+    return v;
+  }
+
+  /** The winner markets of one league, as the catalog lists them; cached like the single reads. */
+  async listMoneyMarkets(league: string): Promise<RawVenueMarket[]> {
+    const key = `money:${league.toUpperCase()}`;
+    const hit = this.marketLists.get(key);
+    if (hit && Date.now() - hit.at < this.ttl) return hit.v;
+    const query = `league=${encodeURIComponent(league.toUpperCase())}&marketType=MONEY&limit=200`;
+    const body = await this.get<RawVenueMarket[] | { markets?: RawVenueMarket[] }>("/v3/catalog/markets", query);
+    const v = (Array.isArray(body) ? body : (body?.markets ?? [])).filter(
+      (m) => m && typeof m.marketId === "string" && Array.isArray(m.outcomes),
+    );
+    this.marketLists.set(key, { at: Date.now(), v });
+    for (const m of v) this.markets.set(m.marketId, { at: Date.now(), v: m });
+    return v;
+  }
+
+  /** The live book of one market: resting bids per outcome, best first. Never cached. */
+  async getBook(marketId: string): Promise<RawVenueBook> {
+    const v = await this.get<RawVenueBook>(`/v3/catalog/markets/${encodeURIComponent(marketId)}/book`);
+    if (!v || typeof v !== "object" || !v.orders || typeof v.orders !== "object") {
+      throw new VenueApiError(0, "book_shape", `venue book for ${marketId} has no orders`);
+    }
     return v;
   }
 }

@@ -226,6 +226,23 @@ services:
       #   VENUE_API_PRIVATE_KEY_PEM=<PKCS8 PEM>   the read key's private key; "\n" escapes accepted
       # Both:
       #   EVENT_SHADOW_POSITIONS_TTL_MS=20000    how long one read is reused
+      # REFERENCE BOOKS (optional; other regulated US exchanges listing the same games, read on every
+      # sports open so the record carries what the default tier would have cost hedged there. Price
+      # reference only: never picks the route, never changes the quote, nothing is filled. The public
+      # page calls them "reference book A" (signed API) and "reference book B" (partner API); the
+      # record carries the dialect ids signed_v3 and partner_mm, never a venue name. Set in the
+      # dashboard, never in git. Unset: no reference is read. Either may be set alone.
+      # Signed venue (same key kind as the holder reader above; the catalog list and the book reads
+      # need a key that may read the catalog):
+      #   REFERENCE_BOOK_SIGNED_HOST=https://api....
+      #   REFERENCE_BOOK_SIGNED_KEY_ID=<key id>
+      #   REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM=<PKCS8 PEM>
+      # Partner venue (same account key pair kind as above; only login, tournaments, events and
+      # markets are read; dedicated pair, revoke when done):
+      #   REFERENCE_BOOK_BEARER_HOST=https://cash.api..../partner
+      #   REFERENCE_BOOK_BEARER_ACCESS_KEY=<access key>
+      #   REFERENCE_BOOK_BEARER_SECRET_KEY=<secret key>
+      # Status: the operator state's hedge.referenceBooks lists which are configured, never the keys.
 
   - type: web
     name: atticus-pm-clob-egress-proxy

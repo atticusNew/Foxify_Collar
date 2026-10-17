@@ -93,6 +93,10 @@ export interface RawSelection {
   display_price?: string;
   price?: number;
   strike_id?: string;
+  /** USD that can be staked against this selection right now (the sizing field) */
+  value?: number;
+  /** legacy liability figure; only a fallback for sizing when `value` is absent */
+  quantity?: number;
 }
 
 export interface RawMarket {

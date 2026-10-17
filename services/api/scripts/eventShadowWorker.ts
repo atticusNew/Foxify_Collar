@@ -125,6 +125,7 @@ import type { CandidateResult, ScanOptions, ScanState, listGameMarkets, quoteOne
 import { lockAuthorized, lockKeyFromEnv, parseLockRequest, readJsonBody } from "../src/eventCollar/crossVenue/lockGate";
 import { VenueClient, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
+import { referenceSourcesFromEnv } from "../src/eventCollar/crossVenue/venueBooks";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -250,6 +251,11 @@ let venueClientNote: string | null = null;
     venueClient = { kind: "bearer", holderPositions: (p) => holderPlays(c, p) };
   }
 }
+/** REFERENCE_BOOK_* in the env: the scanner module reads these books on every sports open; this is only the operator's view of what is on */
+const referenceBooks = (() => {
+  const r = referenceSourcesFromEnv(process.env);
+  return { configured: r.sources.map((s) => s.id), notes: r.notes };
+})();
 const POSITIONS_TTL_MS = Number(process.env.EVENT_SHADOW_POSITIONS_TTL_MS || 20_000);
 let positionsCache: { at: number; positions: HolderPosition[] } | null = null;
 /**
@@ -1024,6 +1030,8 @@ function healthBody(): Record<string, unknown> {
       live: hedgeChoice.live,
       notes: hedgeChoice.notes,
       receipts: { path: RECEIPTS_PATH, ...ledgerStats(RECEIPTS_PATH) },
+      // other regulated exchanges read as price references on each open: which dialects, never the keys
+      referenceBooks,
     },
   };
 }

@@ -26,6 +26,7 @@ import type { VenueSlate } from "../src/eventCollar/crossVenue/venueSlate";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
+import { REFERENCE_BOOK_WORDS } from "../src/eventCollar/crossVenue/venueBooks";
 
 /** Public URL of the interactive demo, for the cross-link. */
 function demoUrl(): string {
@@ -831,11 +832,22 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
   </div>
 `;
     }
+    const refs = r.references ?? [];
     const rows = [
       ruleTr("live book", "the cheaper route, as written", r.live, { base: true }),
       ruleTr("kalshi only", "the market's own No side, every time", r.kalshiOnly),
       ruleTr("second book only", "cross-venue, every time", r.crossOnly),
+      ...refs.map((ref) => ruleTr(REFERENCE_BOOK_WORDS[ref.id as keyof typeof REFERENCE_BOOK_WORDS] ?? ref.id, `listed ${ref.listed} of ${ref.positions}, read only`, ref)),
     ].join("");
+    const refLines = refs
+      .map((ref) => {
+        const name = REFERENCE_BOOK_WORDS[ref.id as keyof typeof REFERENCE_BOOK_WORDS] ?? ref.id;
+        const coverage = `${name} listed ${ref.listed} of the ${ref.positions} games it was read for`;
+        if (ref.bothQuoted === 0) return `${coverage}${ref.listed > 0 ? ` and funded none of them at the live size` : ""}.`;
+        const richer = ref.extraEvBps !== null && ref.extraEvBps > 0;
+        return `${coverage} and funded ${ref.bothQuoted}; on those it quoted ${bpsPct(Math.abs(ref.extraEvBps ?? 0))} of expected value ${richer ? "more" : "less"} than the route written, credits ${signedUsd(ref.creditDeltaCents)} against the live book.`;
+      })
+      .join(" ");
     const split = Object.entries(r.liveRouteSplit)
       .map(([k, n]) => `${n} ${ROUTE_WORDS[k] ?? k}`)
       .join(", ");
@@ -853,8 +865,12 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
     <h2>Routing, measured</h2>
     <div class="sub" style="margin-bottom:6px">${r.positions} sports positions since ${escapeHtml(utcDay(r.recordedSince ?? input.atIso))} UTC carry the default tier on both hedge routes from the same books at the same second. The live book wrote the cheaper one (${escapeHtml(split)}). Crypto strikes have one route and are left out.</div>
     <div class="tablewrap"><table>${RULE_HEAD}${rows}</table></div>
-    <div class="read">${escapeHtml(extra + refused)}</div>
-    <div class="rule">Kalshi-only is what a hedge that must run on the market's own No side would have cost: the production shape for a US venue. The second book is a price reference until it can be filled on from here; the live record keeps choosing the cheaper route for the user until a routing rule is published.</div>
+    <div class="read">${escapeHtml([extra + refused, refLines].filter(Boolean).join(" "))}</div>
+    <div class="rule">Kalshi-only is what a hedge that must run on the market's own No side would have cost: the production shape for a US venue. The second book is a price reference until it can be filled on from here; the live record keeps choosing the cheaper route for the user until a routing rule is published.${
+      refs.length > 0
+        ? " Reference books are other regulated US exchanges listing the same games, read at the same second with their fees folded into the price and priced exactly like a hedge route. Nothing is filled on them; the rows measure what hedging there would have cost, which is what decides whether to onboard one."
+        : ""
+    }</div>
   </div>
 `;
   })();
