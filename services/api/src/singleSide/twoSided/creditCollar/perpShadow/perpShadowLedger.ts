@@ -544,18 +544,49 @@ export function appendPerpShadowRecord(path: string, record: PerpShadowRecord): 
   appendFileSync(path, `${JSON.stringify(record)}\n`, "utf8");
 }
 
+/**
+ * ONE parse per ledger version. The ledger is append-only, so (size, mtime) names its content;
+ * every reader (the scan's three reads, settle, ops, the Friday review, the page, /healthz, the
+ * export) gets the same parsed records and the same replay until the file grows. Before this each
+ * read re-parsed the whole file: in flow mode (thousands of positions, each with a price path, a
+ * cap ladder and counterfactuals) a restart ran scan + settle + ops together, each parsing the
+ * ledger again, the event loop sat blocked for long enough that in-flight fetches timed out and
+ * Render's health check never got an answer ("No open HTTP ports detected", 2026-10-17). The
+ * returned arrays are shared: readers filter and copy, never mutate.
+ */
+const recordsCache = new Map<string, { size: number; mtimeMs: number; records: PerpShadowRecord[] }>();
+const replayCache = new Map<string, { records: PerpShadowRecord[]; capMode: PerpCapMode; result: ReturnType<typeof replayPerpShadow> }>();
+
+/** Drop the caches (tests that rewrite a ledger in place; never needed by the worker). */
+export function forgetPerpShadowLedger(path?: string): void {
+  if (path == null) {
+    recordsCache.clear();
+    replayCache.clear();
+    return;
+  }
+  recordsCache.delete(path);
+  replayCache.delete(path);
+}
+
 export function perpLedgerStats(path: string): { exists: boolean; bytes: number; records: number } {
   if (!existsSync(path)) return { exists: false, bytes: 0, records: 0 };
-  const raw = readFileSync(path, "utf8");
-  return { exists: true, bytes: statSync(path).size, records: raw.split("\n").filter((l) => l.trim()).length };
+  return { exists: true, bytes: statSync(path).size, records: loadPerpShadowRecords(path).length };
 }
 
 export function loadPerpShadowRecords(path: string): PerpShadowRecord[] {
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
+  if (!existsSync(path)) {
+    forgetPerpShadowLedger(path);
+    return [];
+  }
+  const st = statSync(path);
+  const hit = recordsCache.get(path);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.records;
+  const records = readFileSync(path, "utf8")
     .split("\n")
     .filter((l) => l.trim())
     .map((l) => JSON.parse(l) as PerpShadowRecord);
+  recordsCache.set(path, { size: st.size, mtimeMs: st.mtimeMs, records });
+  return records;
 }
 
 export function replayPerpShadow(
@@ -626,7 +657,13 @@ export function plannedIdsIn(records: PerpShadowRecord[]): Set<string> {
 }
 
 export function loadPerpShadow(path: string, opts: PerpReplayOptions = {}): { positions: PerpShadowPosition[]; refusals: PerpShadowRefusalRecord[]; books: PerpBookRecord[]; reviewed: Set<string> } {
-  return replayPerpShadow(loadPerpShadowRecords(path), opts);
+  const records = loadPerpShadowRecords(path);
+  const capMode = opts.capMode ?? DEFAULT_PERP_CAP_MODE;
+  const hit = replayCache.get(path);
+  if (hit && hit.records === records && hit.capMode === capMode) return hit.result;
+  const result = replayPerpShadow(records, opts);
+  replayCache.set(path, { records, capMode, result });
+  return result;
 }
 
 // ── Summary ─────────────────────────────────────────────────────────────────
