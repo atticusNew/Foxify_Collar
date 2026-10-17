@@ -563,6 +563,28 @@ export interface ShadowRouteComparison {
   kalshiOnlyCreditDeltaCents: number;
   /** positions the live route quoted that kalshi-only refused: coverage lost, not cost */
   kalshiOnlyRefusedWhereLiveQuoted: number;
+  /**
+   * Other regulated exchanges read as price references: the same positions priced on each one's
+   * book. One row per reference id the record has seen; empty until a reference is configured.
+   */
+  references: ReferenceBookComparison[];
+}
+
+/** One reference book beside the live route, over the positions whose open carried it. */
+export interface ReferenceBookComparison extends RuleBook {
+  id: string;
+  /** positions whose open read this reference (listed or not) */
+  positions: number;
+  /** positions where the venue listed the game and a book was read */
+  listed: number;
+  /** positions where it did not list the game, or could not be reached: coverage, not price */
+  unlisted: number;
+  /** positions this reference quoted that the live route also quoted; the pairwise fields are over these */
+  bothQuoted: number;
+  /** average quoted EV cost, this reference minus live, bps (positive: the reference is richer) */
+  extraEvBps: number | null;
+  /** credits users would have been paid on this reference minus what the live route paid, cents */
+  creditDeltaCents: number;
 }
 
 function emptyRuleBook(): RuleBook {
@@ -659,8 +681,18 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
     kalshiOnlyExtraEvBps: null,
     kalshiOnlyCreditDeltaCents: 0,
     kalshiOnlyRefusedWhereLiveQuoted: 0,
+    references: [],
   };
   let routeEvDiffSum = 0;
+  const references = new Map<string, ReferenceBookComparison & { evSum?: number; evDiffSum: number }>();
+  const referenceRow = (id: string) => {
+    let row = references.get(id);
+    if (!row) {
+      row = { ...emptyRuleBook(), id, positions: 0, listed: 0, unlisted: 0, bothQuoted: 0, extraEvBps: null, creditDeltaCents: 0, evDiffSum: 0 };
+      references.set(id, row);
+    }
+    return row;
+  };
 
   for (const p of withCf) {
     const cf = p.counterfactuals as ShadowCounterfactuals;
@@ -683,6 +715,26 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
         routes.kalshiOnlyCreditDeltaCents += k.creditCents - live.creditCents;
       } else {
         routes.kalshiOnlyRefusedWhereLiveQuoted += 1;
+      }
+    }
+    // A reference that did not list the game is coverage, not a refusal on price: it is counted
+    // apart and kept out of the rule book, so quoted + refused is over listed games only.
+    for (const ref of cf.references ?? []) {
+      if (p.kind !== "sports") continue;
+      const row = referenceRow(ref.id);
+      row.positions += 1;
+      const listed = ref.terms.ok || ref.bestAskMilli !== null;
+      if (!listed) {
+        row.unlisted += 1;
+        continue;
+      }
+      row.listed += 1;
+      const live = liveAsAlt(p);
+      foldRule(row, ref.terms, p.contracts, result);
+      if (ref.terms.ok) {
+        row.bothQuoted += 1;
+        row.evDiffSum += ref.terms.evCostBps - live.evCostBps;
+        row.creditDeltaCents += ref.terms.creditCents - live.creditCents;
       }
     }
     for (const tier of PROTECTION_TIERS) {
@@ -710,6 +762,13 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
       row.stakeQuotedCents > 0 ? Math.round((row.grossCreditCents / row.stakeQuotedCents) * 10_000) : null;
   }
   routes.kalshiOnlyExtraEvBps = routes.bothQuoted > 0 ? Math.round(routeEvDiffSum / routes.bothQuoted) : null;
+  routes.references = [...references.values()]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(({ evDiffSum, ...row }) => {
+      const done = finishRule(row);
+      done.extraEvBps = done.bothQuoted > 0 ? Math.round(evDiffSum / done.bothQuoted) : null;
+      return done;
+    });
   return {
     recordedSince,
     positionsWithCounterfactuals: withCf.length,

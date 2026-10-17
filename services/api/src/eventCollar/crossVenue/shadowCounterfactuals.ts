@@ -28,6 +28,7 @@ import type {
   TakeRule,
 } from "./types";
 import { PROTECTION_TIERS } from "./types";
+import type { ReferenceBook, ReferenceBookId } from "./venueBooks";
 
 /** One alternative collar as it would have been written, or why it was not. */
 export type ShadowAltTerms =
@@ -67,6 +68,20 @@ export interface ShadowSizeProbe {
 /** The hedge routes the scan examines; the record writes the cheaper one. */
 export const ROUTE_LABELS = ["kalshi_self", "polymarket"] as const satisfies readonly HedgeRoute[];
 
+/**
+ * REFERENCE. The default tier re-priced on another regulated exchange's book for the same game,
+ * from the same instant, at the live size. Nothing is filled there; the number says what a hedge
+ * there would have cost, which is the measurement that decides whether to onboard the venue.
+ */
+export interface ShadowReferenceQuote {
+  id: ReferenceBookId;
+  terms: ShadowAltTerms;
+  /** the venue's best ask on the opposing outcome, fees folded, milli dollars; null when no book */
+  bestAskMilli: number | null;
+  /** every visible ask's size summed, milli shares (what the venue would fill at any price) */
+  depthMilli: number;
+}
+
 export interface ShadowCounterfactuals {
   /** every distinct tier the venues funded at open, keyed by tier name */
   alternatives: Partial<Record<ProtectionTier, ShadowAltTerms>>;
@@ -81,6 +96,12 @@ export interface ShadowCounterfactuals {
    * positions, before any routing policy changes. Absent on records opened before this existed.
    */
   routes?: Record<HedgeRoute, ShadowAltTerms>;
+  /**
+   * Other regulated exchanges' books for the same game, each priced like a hedge route and kept
+   * beside the routes. One entry per venue the service was configured to read, listed or not.
+   * Absent on records opened before a reference was configured.
+   */
+  references?: ShadowReferenceQuote[];
 }
 
 export interface CounterfactualInputs {
@@ -95,7 +116,7 @@ export interface CounterfactualInputs {
   contracts: number;
   now: Date;
   config: CrossSearchConfig;
-  books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[] };
+  books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; references?: ReferenceBook[] };
 }
 
 export function hedgeUnitsOfTerms(t: CollarTerms): number {
@@ -201,5 +222,37 @@ export function counterfactualsFor(
     }
   }
 
-  return { alternatives, feeRules, sizeLadder, routes };
+  const references = referenceQuotesFor(inputs);
+  return { alternatives, feeRules, sizeLadder, routes, ...(references ? { references } : {}) };
+}
+
+/**
+ * The default tier on each reference book, priced exactly as the cross-venue route is priced (same
+ * grid, same fee rule, same size), with the venue's own fees already in the book's prices so the
+ * config's hedge-fee knobs, which belong to the second book, do not apply twice. Undefined when no
+ * reference was read; a reference read but unlisted keeps its reason.
+ */
+export function referenceQuotesFor(inputs: CounterfactualInputs): ShadowReferenceQuote[] | undefined {
+  const refs = inputs.books.references;
+  if (!refs || refs.length === 0) return undefined;
+  const cfg: CrossSearchConfig = { ...inputs.config, hedgeFeeBps: 0, hedgeFeeFlatCents: 0 };
+  return refs.map((ref) => {
+    if (!ref.book) return { id: ref.id, terms: { ok: false, refused: ref.reason }, bestAskMilli: null, depthMilli: 0 };
+    const depthMilli = ref.book.asks.reduce((s, l) => s + l.sizeMilli, 0);
+    const bestAskMilli = ref.book.asks[0]?.priceMilli ?? null;
+    if (!inputs.pair) return { id: ref.id, terms: { ok: false, refused: "route_not_offered" }, bestAskMilli, depthMilli };
+    const q = quoteCrossWrap({
+      pair: inputs.pair,
+      markCents: inputs.markCents,
+      entryCents: inputs.entryCents,
+      contracts: inputs.contracts,
+      now: inputs.now,
+      noBook: ref.book,
+      config: cfg,
+    });
+    const terms = altFromQuote(q);
+    // the pricer's refusal codes are named for the second book; a reference is just a book
+    const refused = !terms.ok ? terms.refused.replace(/^pm_book_/, "book_") : null;
+    return { id: ref.id, terms: refused ? { ok: false, refused } : terms, bestAskMilli, depthMilli };
+  });
 }
