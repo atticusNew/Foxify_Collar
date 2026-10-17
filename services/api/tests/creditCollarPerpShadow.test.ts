@@ -21,6 +21,8 @@ import {
   buybackEstimateCents,
   capBucket,
   loadPerpShadow,
+  loadPerpShadowRecords,
+  perpLedgerStats,
   nearestAtm,
   perpOutcome,
   perpPositionsCsv,
@@ -856,6 +858,25 @@ test("perp shadow: market parsers read venue payloads and refuse to invent a pri
   };
   assert.equal(deliveryPriceFor(histUm, DAILY), 82485.9362690241718889, "the suffixed spelling is the same expiry");
   assert.equal(deliveryPriceFor({ data: [{ ts: "4", details: [{ insId: "ETH-USD_UM-260920-4000-C", px: "4000", type: "exercised" }] }] }, DAILY), null, "another underlying is never our print");
+});
+
+test("perp shadow ledger: one parse per ledger version; every reader shares it until the file grows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "perp-shadow-cache-"));
+  const path = join(dir, "ledger.jsonl");
+  assert.deepEqual(loadPerpShadow(path).positions, [], "missing ledger: nothing, and nothing cached");
+  appendPerpShadowRecord(path, openRec("long", "a", "2026-09-18T23:00:00.000Z"));
+  const first = loadPerpShadowRecords(path);
+  assert.equal(first.length, 1);
+  assert.equal(loadPerpShadowRecords(path), first, "same file, same parsed records (identity)");
+  const replay1 = loadPerpShadow(path, { capMode: "plain" });
+  assert.equal(loadPerpShadow(path, { capMode: "plain" }), replay1, "same records and cap mode, same replay (identity)");
+  assert.notEqual(loadPerpShadow(path, { capMode: "knockout" }), replay1, "another cap mode replays again");
+  assert.deepEqual(perpLedgerStats(path), { exists: true, bytes: readFileSync(path).length, records: 1 }, "stats come from the cached parse, not a second read");
+  appendPerpShadowRecord(path, { type: "settle", at: "2026-09-20T08:20:00.000Z", id: "a", settleCents: 7_000_000, source: "okx_delivery" });
+  const second = loadPerpShadowRecords(path);
+  assert.notEqual(second, first, "the file grew, so it is parsed again");
+  assert.equal(second.length, 2);
+  assert.equal(loadPerpShadow(path, { capMode: "plain" }).positions[0].status, "settled", "the replay follows the new parse");
 });
 
 test("perp shadow worker: public record vs operator views over HTTP", async () => {
