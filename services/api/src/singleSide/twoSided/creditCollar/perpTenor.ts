@@ -106,19 +106,25 @@ export const altTenorExpiries = (chain: OkxChainInstrument[], nowMs: number): Pa
  * closest the cap may sit: since 2026-10-17 the cap rule (capRule.pickCap) chooses among the
  * paying strikes at or beyond it, and the quote is refused only when nothing at or beyond it
  * pays (perpShadowQuote: `cap_too_close`, with the distance in the message). Before that the
- * minimum only refused, which is why the plain default was 0: a fixed line finer than the strike
- * grid ($500 ≈ 0.6% at $80k) refused one whole side of the book whenever the widest bid landed a
- * few bps inside it (measured 2026-09-20: every short refused at 3.93% against a 4.0% line while
- * the same book paid $64.91 on $100k). Now the line moves the pick out instead.
+ * minimum only refused: a fixed line finer than the strike grid ($500 ≈ 0.6% at $80k) refused one
+ * whole side of the book whenever the widest bid landed a few bps inside it (measured 2026-09-20:
+ * every short refused at 3.93% against a 4.0% line while the same book paid $64.91 on $100k). Now
+ * the line moves the pick out instead, which helps only when something beyond it pays.
  *
- * Defaults: weekly plain 4.5% (the record's cap ladder, 2026-09-21 to 2026-10-16: rungs from 4.5%
- * out handed back almost nothing, the 3.5%-and-closer caps the odds rule had been writing handed
- * back more than the take); daily plain 0 (a day is too short for a 4.5% cap to pay); knockout
- * 2% / 4% (there a close cap means frequent, expensive buy-backs). Env sets any of them
- * (EP_MIN_CAP_PCT / EP_MIN_CAP_PCT_WEEKLY, fractions; "0" removes the floor).
+ * Defaults: plain 0 for both tenors (no floor: the odds rule alone); knockout 2% / 4% (there a
+ * close cap means frequent, expensive buy-backs). Env sets any of them (EP_MIN_CAP_PCT /
+ * EP_MIN_CAP_PCT_WEEKLY, fractions; "0" removes the floor).
+ *
+ * 2026-10-17, measured and reverted the same day: a 4.5% weekly default (the record's ladder
+ * rung that handed back almost nothing) refused every LONG on the live book. The long's credit is
+ * the call bid at the cap less the put ask at the 6% floor; at ~30% implied vol the 85000-C
+ * (4.1% out) bid 0.0031 BTC against the 77000-P ask 0.0033 BTC, so nothing at or beyond 4.5%
+ * paid and the demo showed "No honest credit" on every long. The ladder's 4.5% rung had priced
+ * on 595 of 1,500 positions for the same reason: it only exists when skew allows it. Strike
+ * distance and credit trade off one for one on this structure; the floor is a dial, not a fix.
  */
-/** The weekly plain collar's minimum cap distance (the record's 4.5% rung; see the comment above). */
-export const DEFAULT_WEEKLY_MIN_CAP_PCT = 0.045;
+/** The weekly plain collar's default minimum cap distance: none (see the comment above). */
+export const DEFAULT_WEEKLY_MIN_CAP_PCT = 0;
 
 export interface CapGuard {
   minCapPct: number;

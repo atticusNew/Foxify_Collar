@@ -882,16 +882,16 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.deepEqual(terms.geometry, { floorPct: 0.06, capPct: 0.015 });
     assert.equal(terms.tenor, "weekly", "the weekly is the default tenor");
     assert.equal(terms.capMode, "plain", "the plain collar is the product; knockout is the opt-in rule");
-    assert.deepEqual(terms.capGuard, { minCapPct: 0.045, maxCapPct: 0.08 }, "plain weekly: the cap at least 4.5% out, searched to 8%");
+    assert.deepEqual(terms.capGuard, { minCapPct: 0, maxCapPct: 0.08 }, "plain weekly: no minimum (the 4.5% floor refused every long), searched to 8%");
     const ruleReport = (await (await fetch(`${base}/api/shadow/report?token=op-secret`)).json()) as { rules: { capRule: string; capGuard: { minCapPct: number } } };
-    assert.ok(ruleReport.rules.capRule.endsWith("never closer than 4.5% from price (refused when nothing at or beyond that pays)"), "the published rule names the minimum");
-    assert.equal(ruleReport.rules.capGuard.minCapPct, 0.045);
+    assert.ok(!ruleReport.rules.capRule.includes("never closer than"), "no floor, so the published rule does not name one");
+    assert.equal(ruleReport.rules.capGuard.minCapPct, 0);
     const emptyPage = await fetch(`${base}/`);
     assert.equal(emptyPage.status, 200);
     const emptyHtml = await emptyPage.text();
     assert.ok(emptyHtml.includes("not started"));
-    assert.ok(emptyHtml.includes("a hard floor 6% out, the cap at least 4.5% out, the most credit the book pays from there, cash credit either way"), "the headline states where the cap sits");
-    assert.ok(!emptyHtml.includes("(since "), "no position yet, so no date on the rule");
+    assert.ok(emptyHtml.includes("a hard floor 6% out, the cap as far out as the book still pays, cash credit either way"), "the headline states where the cap sits");
+    assert.ok(!emptyHtml.includes("(since "), "no floor, so no date on the rule");
 
     const a = openRec("long", "a", "2026-09-18T23:00:00.000Z");
     appendPerpShadowRecord(path, a);
@@ -942,7 +942,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.ok(page.includes("rule comparison") && page.includes("report on request"));
     assert.ok(!page.includes('href="/report"') && !page.includes('href="/api/shadow/export"'));
     assert.ok(page.includes("floor save"), "the settled long was saved by its floor");
-    assert.ok(page.includes("the cap at least 4.5% out, the most credit the book pays from there") && !page.includes("(since "), "both positions were quoted under a 2% guard, so the 4.5% rule has no start date yet");
+    assert.ok(page.includes("the cap as far out as the book still pays") && !page.includes("(since "), "no floor by default, so the headline carries no floor and no start date");
     assert.ok(!page.includes("NaN") && !page.includes("undefined"));
 
     const report = (await (await fetch(`${base}/api/shadow/report`, op)).json()) as {
@@ -956,7 +956,7 @@ test("perp shadow worker: public record vs operator views over HTTP", async () =
     assert.equal(report.counterfactuals.tenors.weekly.quoted, 2);
     assert.deepEqual(report.counterfactuals.capacity.map((c) => c.mult), [1, 10, 50]);
     assert.ok(report.counterfactuals.capLadder.length >= 2, "every listed cap distance in the band is a rung");
-    assert.deepEqual(report.rules.capGuard, { minCapPct: 0.045, maxCapPct: 0.08 });
+    assert.deepEqual(report.rules.capGuard, { minCapPct: 0, maxCapPct: 0.08 });
     assert.ok(report.rules.capLadder.includes("handed back") && !report.rules.capLadder.includes("knock-out rate") && report.rules.fundingRule.includes("clear"));
     assert.equal((report as unknown as { rules: { capMode: string; settlement: string } }).rules.capMode, "plain");
     assert.ok((report as unknown as { rules: { settlement: string } }).rules.settlement.includes("runs to expiry"));
