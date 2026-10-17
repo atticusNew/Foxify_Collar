@@ -385,3 +385,50 @@ test("runner: canary size below the block minimum skips RFQ and goes straight to
   assert.equal(rfqTouched, false, "sub-minimum sizes never attempt RFQ");
   assert.ok(placed.length > 0);
 });
+
+test("runner: quote-floor invariant (opt-in) — fill below quote unwinds instead of booking", async () => {
+  // Realized net = 130 − 65 − 2 = $63, below the $78 quoted to the client.
+  // NOTE: makeClient consumes (shifts) the script arrays — each client needs fresh fixtures.
+  const belowQuoteScript = () => ({
+    "BTC-USD-260723-94000-P": [{ fill: 50, px: 0.0013, fee: 0.00001 }],
+    "BTC-USD-260723-102000-C": [{ fill: 50, px: 0.0026, fee: 0.00001 }]
+  });
+  const unwindScript = () => ({
+    "BTC-USD-260723-102000-C": [{ fill: 50, px: 0.0031 }],
+    "BTC-USD-260723-94000-P": [{ fill: 50, px: 0.0011 }]
+  });
+
+  // Default env (canary semantics): books the position, drift recorded, NOT refused.
+  const pathsA = freshPaths();
+  const a = makeClient(belowQuoteScript(), unwindScript());
+  const hookA = mkHook(a.client, pathsA);
+  const rA = await hookA.executeWindow(ctx("elevated"));
+  assert.equal(rA.newOpens.length, 1);
+  assert.equal(rA.newOpens[0].foxifyCreditUsdc, 63);
+  assert.equal(a.placed.filter((p) => p.reduceOnly).length, 0);
+
+  // Enforced env (demo/pilot): same fills ⟹ pair unwound, nothing booked.
+  const pathsB = freshPaths();
+  const b = makeClient(belowQuoteScript(), unwindScript());
+  const hookB = mkHook(b.client, pathsB, { ...armedEnv, LIVE_ENFORCE_QUOTE_FLOOR: "true" });
+  const rB = await hookB.executeWindow(ctx("elevated"));
+  assert.equal(rB.newOpens.length, 0);
+  const closes = b.placed.filter((p) => p.reduceOnly);
+  assert.equal(closes.length, 2, "both legs closed");
+  const execs = loadLiveExecutions(pathsB.executions);
+  assert.equal(execs.filter((e) => e.outcome === "filled").length, 0);
+});
+
+test("runner: quote-floor invariant does NOT trigger on fills at or above quote", async () => {
+  // Realized net = 140 − 65 − 2 = $73... use richer call fill: 0.0029 ⟹ 145 − 65 − 2 = $78 = quoted.
+  const paths = freshPaths();
+  const { client, placed } = makeClient({
+    "BTC-USD-260723-94000-P": [{ fill: 50, px: 0.0013, fee: 0.00001 }],
+    "BTC-USD-260723-102000-C": [{ fill: 50, px: 0.0029, fee: 0.00001 }]
+  });
+  const hook = mkHook(client, paths, { ...armedEnv, LIVE_ENFORCE_QUOTE_FLOOR: "true" });
+  const r = await hook.executeWindow(ctx("elevated"));
+  assert.equal(r.newOpens.length, 1);
+  assert.equal(r.newOpens[0].foxifyCreditUsdc, 78);
+  assert.equal(placed.filter((p) => p.reduceOnly).length, 0);
+});

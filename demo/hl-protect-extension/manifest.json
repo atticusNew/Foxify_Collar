@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Atticus Earn & Protect — demo toggle",
+  "version": "0.1.1",
+  "description": "Demo-only, local rendering: shows the Atticus 'Earn & Protect' toggle in-place on the live Hyperliquid positions UI. All pricing and execution run in the local Atticus demo service — the toggle is placement only and is disclosed as such.",
+  "content_scripts": [
+    {
+      "matches": ["https://app.hyperliquid.xyz/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": { "service_worker": "background.js" },
+  "host_permissions": ["http://localhost:8788/*", "http://127.0.0.1:8788/*"]
+}

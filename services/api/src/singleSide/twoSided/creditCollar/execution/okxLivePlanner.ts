@@ -75,6 +75,41 @@ export const nextStandardDailyExpiryMs = (nowMs: number, minHoursToExpiry = 12):
   return d.getTime();
 };
 
+/** Cycles run 3–10 days: a Friday under three days off prices like a daily and is skipped for the next. */
+export const WEEKLY_MIN_DAYS = 3;
+
+/** Every LISTED Friday 08:00 UTC expiry at least `minDays` out, nearest first. Pure. */
+export const listedFridayExpiriesMs = (chain: OkxChainInstrument[], nowMs: number, minDays = WEEKLY_MIN_DAYS): number[] => {
+  const listed = [...new Set(chain.filter((c) => c.state === "live").map((c) => c.expiryMs))].sort((a, b) => a - b);
+  return listed.filter((e) => {
+    const d = new Date(e);
+    return d.getUTCDay() === 5 && d.getUTCHours() === 8 && e - nowMs >= minDays * 86_400_000;
+  });
+};
+
+/** The nearest LISTED Friday 08:00 UTC expiry at least `minDays` out (the weekly tenor), or null when none is listed. Pure. */
+export const nextListedWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = WEEKLY_MIN_DAYS): number | null =>
+  listedFridayExpiriesMs(chain, nowMs, minDays)[0] ?? null;
+
+/** A two-week cycle: the listed Friday after the weekly's, so 10–17 days out when the weekly runs 3–10. */
+export const TWO_WEEKLY_MIN_DAYS = WEEKLY_MIN_DAYS + 7;
+/** The nearest LISTED Friday at least `minDays` (10) out: the two-weekly tenor's expiry, or null. Pure. */
+export const nextListedTwoWeeklyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = TWO_WEEKLY_MIN_DAYS): number | null =>
+  listedFridayExpiriesMs(chain, nowMs, minDays)[0] ?? null;
+
+/** A listed Friday 08:00 UTC that is the LAST Friday of its month: the venues' monthly expiry. Pure. */
+export const isMonthlyExpiryMs = (expiryMs: number): boolean => {
+  const d = new Date(expiryMs);
+  if (d.getUTCDay() !== 5 || d.getUTCHours() !== 8) return false;
+  return new Date(expiryMs + 7 * 86_400_000).getUTCMonth() !== d.getUTCMonth();
+};
+
+/** A month-long cycle starts past the two-weekly's reach (17 days), so 21–52 days out. */
+export const MONTHLY_MIN_DAYS = 21;
+/** The nearest LISTED monthly (last Friday of a month) at least `minDays` (21) out, or null. Pure. */
+export const nextListedMonthlyExpiryMs = (chain: OkxChainInstrument[], nowMs: number, minDays = MONTHLY_MIN_DAYS): number | null =>
+  listedFridayExpiriesMs(chain, nowMs, minDays).find(isMonthlyExpiryMs) ?? null;
+
 /** Round contracts to the venue lot; effective notional recomputed from the ROUNDED size. Pure. */
 export const contractsForNotional = (
   notionalUsdc: number,
@@ -93,6 +128,17 @@ export const premiumUsd = (pxBtc: number, contracts: number, ctValBtc: number, s
 const floorToTick = (px: number, tickSz: number): number => (tickSz > 0 ? Math.floor(px / tickSz + 1e-9) * tickSz : px);
 const ceilToTick = (px: number, tickSz: number): number => (tickSz > 0 ? Math.ceil(px / tickSz - 1e-9) * tickSz : px);
 const roundPx = (px: number) => +px.toFixed(8);
+
+/**
+ * Slippage-band anchor in BTC per BTC underlying. A 1-lot deep OTM put often has a model mid of
+ * cents or less; round2 of that USDC total is $0.00, and a sub-tick px cannot be a % band (OKX
+ * will not list below 1 tick). Floor at tick so the limit price and fillWithinBand agree.
+ */
+export const bandAnchorPxBtc = (modelPxBtc: number, tickSz: number): number => {
+  const tick = tickSz > 0 ? tickSz : 0;
+  if (modelPxBtc > 0) return Math.max(modelPxBtc, tick);
+  return tick;
+};
 
 /**
  * Band-capped marketable limit price (BTC per BTC underlying). Crosses to the touch but NEVER beyond
@@ -185,6 +231,8 @@ export type PlanInput = {
   nowMs: number;
   minHoursToExpiry?: number;   // default 12
   maxStrikeDriftPct?: number;  // default 0.01 (1% of spot-relative strike drift)
+  /** Write to this listed expiry instead of the next standard daily (the weekly tenor). */
+  expiryMs?: number;
 };
 
 export type PlanResult = { ok: true; plan: LiveCollarPlan } | { ok: false; error: string; message: string };
@@ -196,7 +244,7 @@ export type PlanResult = { ok: true; plan: LiveCollarPlan } | { ok: false; error
  * or inconsistent contract sizes between the two legs.
  */
 export const planLiveCollar = (chain: OkxChainInstrument[], input: PlanInput): PlanResult => {
-  const expiryMs = nextStandardDailyExpiryMs(input.nowMs, input.minHoursToExpiry ?? 12);
+  const expiryMs = input.expiryMs ?? nextStandardDailyExpiryMs(input.nowMs, input.minHoursToExpiry ?? 12);
   const live = chain.filter((c) => c.state === "live" && c.expiryMs === expiryMs);
   if (live.length === 0) {
     return { ok: false, error: "expiry_not_listed", message: `no live OKX BTC-USD options at ${new Date(expiryMs).toISOString()} — daily not listed yet or chain fetch incomplete` };
@@ -234,10 +282,17 @@ export const planLiveCollar = (chain: OkxChainInstrument[], input: PlanInput): P
   if (size.contracts < 1) return { ok: false, error: "size_rounds_to_zero", message: `notional ${input.notionalUsdc} rounds to 0 contracts of ${prot.ctValBtc} BTC` };
 
   // Model USDC totals → px in BTC per BTC underlying (size-independent, so rounding contracts is safe).
+  // 1-lot cheap puts often round to $0.00 in the pricer; the listed tick is then the honest band floor.
   const toPxBtc = (midUsdc: number) => (input.modelContractsBtc > 0 && input.spot > 0 ? midUsdc / input.modelContractsBtc / input.spot : 0);
-  const protMidPxBtc = toPxBtc(input.protectiveMidUsdc);
-  const fundMidPxBtc = toPxBtc(input.fundingMidUsdc);
-  if (!(protMidPxBtc > 0) || !(fundMidPxBtc > 0)) return { ok: false, error: "model_mid_invalid", message: "model mids must be positive to anchor the slippage band" };
+  const protMidPxBtc = bandAnchorPxBtc(toPxBtc(input.protectiveMidUsdc), prot.tickSz);
+  const fundMidPxBtc = bandAnchorPxBtc(toPxBtc(input.fundingMidUsdc), fund.tickSz);
+  if (!(protMidPxBtc > 0) || !(fundMidPxBtc > 0)) {
+    return {
+      ok: false,
+      error: "model_mid_invalid",
+      message: "model mids must be positive to anchor the slippage band (and the listed tick is missing, so there is no 1-tick floor)"
+    };
+  }
 
   const leg = (inst: OkxChainInstrument, action: "buy" | "sell", role: "protective" | "funding", solverStrike: number, drift: number, midPxBtc: number): PlannedLeg => ({
     instId: inst.instId,

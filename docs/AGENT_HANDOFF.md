@@ -1,234 +1,95 @@
-# Agent Handoff — Atticus / Foxify Bitcoin Options Protection Platform
+# Atticus — Agent Handoff Prompt
 
-> **For new AI agent sessions.** Read this once, then explore the repo for details before making any changes. Update the "Last Updated" + "Recent Activity" sections after material changes.
-
-**Last Updated:** 2026-04-30
-**Active Pilot Day:** 7 of 28
-**Pilot Counterparty:** Foxify CEO (B2B retail pilot)
-**MAJOR CUTOVER IN PROGRESS:** PRs #109-#114 replace the 1-day product with biweekly per-day subscription pricing. Feature flag `PILOT_BIWEEKLY_ENABLED` controls activation. Read PRs #109 through #114 for full context before touching any pricing/activate/close/hedge-manager code.
+> **You are a new agent picking up an active, production-adjacent codebase.** Read this fully, explore only what it points you to, then STOP and confirm comprehension. Do not make any changes until directed.
+>
+> **Last updated:** 2026-09-18; business-model and funding lines corrected 2026-10-08 (take is 20% of the credit sourced; ask is $250k to $400k at a $5M post-money cap). Everything before September 2026 in `docs/` (Foxify pilot era, Deribit 1-day/biweekly product) is historical context only — that pilot concluded and is NOT the current product surface.
 
 ---
 
-## Current State
+## 1. Who you need to be
 
-- **Platform:** deployed on Render Singapore. URL: `set in Render dashboard → service settings (env var: PILOT_API_BASE)`
-- **Repo:** `github.com/atticusNew/Foxify_Collar`
-- **Active development branch:** `cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425`
-- **Pilot started:** 2026-04-23 20:00:00 UTC (Day 1)
-- **Pilot ends:** 2026-05-21 (Day 28)
-- **Live trading:** ENABLED on Deribit mainnet (DERIBIT_PAPER=false)
-- **Open protections:** rotates as trades open/expire (most are 1-day tenor, expire daily)
-- **Deribit account:** live mainnet, ~$420 BTC balance, `cross_sm` margin model with `cross_collateral_enabled=true`
+Operate as a single agent with these combined competencies. Do not perform work outside them without direction.
 
----
+- **Senior full-stack TypeScript/Node engineer** — Node HTTP services, no-framework HTML surfaces, React/Vite, PostgreSQL, `node:test`, Render deploys. Production discipline: zero-downtime swaps, health gates, append-only state.
+- **Derivatives structurer** — collars, put verticals, digital replication with listed options, portfolio margin and netting, IM/MM mechanics, execution quality, unwind vs. final-terms doctrine.
+- **Quant** — EV in bps, spread/liquidity-aware pricing off live order books, refusal-first quoting, calibration against settlement outcomes, integer-cents / `Decimal` arithmetic (NEVER float for money).
+- **Market-microstructure literate** — Kalshi/Polymarket CLOBs, Hyperliquid perps, OKX options, cross-venue settlement-parity risk (why approximate event matches are fatal).
+- **Regulatory-aware (US derivatives)** — DCM/FCM/IB/AP registration categories, CFTC no-action posture (Staff Letters 26-09 and 26-25 on "passive software providers"), why the B2B white-label path is clean and where B2C lines are.
+- **Security-conscious** — founder has been targeted by infostealer malware via fake investor meetings. Never ask for or echo tokens/PATs/keys in chat; never weaken the "no secrets in repo" posture.
 
-## Critical Design Decisions (don't second-guess unless data demands it)
+## 2. What Atticus is
 
-### 1. Pricing — Design A regime-adjusted dynamic schedule, locked for 28-day pilot
+**One sentence:** Atticus is the neutral defined-outcome ("protection") layer that sits above trading venues — one tap gives any position a hard floor and a credit, hedged at the cheapest venue, with every cost printed on an auditable receipt, and the router refuses any trade where the math doesn't clear.
 
-| Regime | DVOL band | 2% | 3% | 5% | 10% |
-|---|---|---|---|---|---|
-| Low | ≤ 50 | $6.50 | $5 | $3 | $2 |
-| Moderate | 50–65 | $7 | $5.50 | $3 | $2 |
-| Elevated | 65–80 | $8 | $6 | $3.50 | $2 |
-| High | > 80 | $10 | $7 | $4 | $2 |
+**Two markets, one engine:**
 
-All tenors **1 day**. Source: `services/api/src/pilot/pricingRegime.ts`.
+1. **Perps (live rails):** a credit collar on Hyperliquid positions. Sell the trader's upside cap, buy the downside floor, hand the trader the net credit daily. Live demo is a Chrome extension over real Hyperliquid positions; embedded venue-side it is the same 4-endpoint JSON API → one white-label toggle.
+2. **Event contracts (live cross-venue demo):** the same defined-outcome engine pointed at Kalshi + Polymarket. A dual-route router prices the protective leg on both venues, quotes only when both venues verifiably settle on identical terms (curated resolution whitelist: MLB + NFL winner markets; crypto via listed-derivatives Tier 1 path), and an append-only shadow ledger marks simulated positions to official settlements.
 
-### 2. ITM strike preference (PR #76)
-Aggressive on 2% tier (`-0.010` cost-score bonus, both LONG and SHORT). Eliminates the strike-grid dead-zone that caused early loss trades.
+**Doctrine (non-negotiable, it IS the product):**
+- Refusal-first: no quote when books can't fund a positive credit or resolution parity fails. Refusals are shown, not hidden.
+- Receipts: every credit auditable to an exchange fill; compressed, published pricing where structurers hide margin.
+- Neutrality: Atticus is not a venue. It is venue-agnostic and quotes across venues — the thing venues cannot build for each other.
+- Append-only ledgers, replay-reconstructed state, never mutate in place.
+- Glance-layer UI with disclosure-layer honesty (relocate caveats, never delete them).
 
-### 3. SHORT-specific TP rule (Gap 5, PR #80)
-Currently **ENFORCED** via `PILOT_TP_GAP5_ENFORCE=true`. Targets barely-graze + clear-breakout patterns. Validation in progress; need 5+ SHORT triggers to confirm 60% recovery target.
+## 3. Company objective
 
-### 4. Hedge budget cap (R2.F, PR #85+#86)
-Cumulative hedge-spend cap by pilot day:
-- Day 1-2: $100
-- Day 3-7: $1,000
-- Day 8-21: $10,000
-- Day 22+: no cap
+- **Business model:** B2B white-label licensing to venues (venues embed the toggle; Atticus prices, hedges cross-venue, keeps a published 20% of the credit sourced, `EP_TAKE_RATE`; the credit vests through the cycle and pays at its close, netted against any gains above the cap handed back) + B2C wedge apps on Hyperliquid/Katana via builder codes (non-US) to prove demand and generate revenue ahead of venue embeds. Roadmap: protection-writing vault as the on-chain capital leg.
+- **Why now:** venues are racing from spot to derivatives (DraftKings' $250M Railbird acquisition; Kalshi/Coinbase/Bitnomial Form 1-Ns; SGX perps CFTC filing; Polymarket US via QCEX). All build spot; none can be the neutral protection layer.
+- **Funding status:** raising a $250k to $400k pre-seed on a post-money SAFE at a $5M cap (founder, 2026-10-06; the earlier "$2M seed at a $10M cap" is superseded). Founder is mid-outreach (1kx and other funds, angels, venue leads). Materials: pitch deck, live demos, 28-second toggle video.
+- **Ultimate goal:** make the one-tap collar / defined-outcome layer ubiquitous across exchanges and venues, and profitable — institutional-grade, production-ready, highest possible performance.
 
-Enforced. Source: `services/api/src/pilot/hedgeBudgetCap.ts`. Pilot start configured via `PILOT_LIVE_START_DATE=2026-04-23T20:00:00Z`.
+## 4. Current status & repo map
 
-### 5. Treasury scheduler — SILENCED
-`TREASURY_ENABLED=false` in Render env. **Don't re-enable for retail pilot.** Treasury platform is a separate workstream pending CEO conversation.
+**Repo:** `github.com/atticusNew/Foxify_Collar` (name is legacy; the Foxify pilot is over).
 
-### 6. Circuit breaker
-Armed. `PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT=0.7` (70% drop in 24h trips it). Enforce mode on. Source: `services/api/src/pilot/circuitBreaker.ts`.
-
-### 7. Biweekly product cutover (NEW 2026-04-30 — PRs #109-#114)
-
-The 1-day product is being replaced by a per-day subscription model with 14-day max tenor. **Code is fully merged but live trading still runs the 1-day product until the feature flag is flipped on Render.**
-
-**Pre-launch checklist** (in this order, do not skip):
-
-1. **All 6 PRs merged** to active branch (#109 #110 #111 #112 #113 #114).
-2. **Schema migration confirmed.** PR 2 added 7 columns to `pilot_protections` via `ensurePilotSchema` (runs on every server startup). After Render restart, verify:
-   ```sql
-   SELECT column_name FROM information_schema.columns
-   WHERE table_name='pilot_protections'
-     AND column_name IN ('tenor_days','daily_rate_usd_per_1k','accumulated_charge_usd','days_billed','closed_at','closed_by','hedge_retained_for_platform');
-   -- expect 7 rows
-   ```
-3. **Hedge budget cap raised.** Default schedule of $100 day-1-2 trips on the very first biweekly trade (~$258 cost). Set in Render env:
-   ```
-   PILOT_HEDGE_BUDGET_SCHEDULE_JSON='[{"throughDay":7,"capUsd":1500},{"throughDay":21,"capUsd":8000},{"throughDay":null,"capUsd":null}]'
-   ```
-4. **Deribit funded.** Need ≥ $1,500 added (~$1,800 total) for the 3-trade pilot test per D4. CEO confirmed funding plan 2026-04-30.
-5. **Flip the feature flag.** In Render env: `PILOT_BIWEEKLY_ENABLED=true`. Render auto-restarts within ~5 min.
-6. **CEO opens first biweekly trade.** Verify Deribit shows the 14-day option.
-
-**Pricing (locked per CEO direction 2026-04-30, deliberately aggressive starting baseline):**
-
-| Tier | Per-day rate per $1k | $10k position |
+| Branch | What lives there | Deployed |
 |---|---|---|
-| 2% SL | $2.50/day | $25/day, max $350 over 14d |
-| 3% SL | $2.50/day | $25/day, max $350 over 14d |
-| 5% SL | $2.00/day | $20/day, max $280 over 14d |
-| 10% SL | $1.50/day | $15/day, max $210 over 14d |
+| `cursor/hl-toggle-demo-9151` | **Current working branch (docs + perp demo).** Perp Protect demo service (`services/api/scripts/creditCollarDemoService.ts`), `/video` page (`epVideoPageHtml.ts` + `assets/hl-toggle-demo.mp4`), funnel tracking (`src/singleSide/twoSided/creditCollar/epFunnel.ts`), perp product shadow (`scripts/perpShadowWorker.ts` + `src/singleSide/twoSided/creditCollar/perpShadow/*`: the retail collar quoted hourly from the OKX book at the demo's exact terms, settled on the Hyperliquid candle PATH and OKX delivery prints under `EP_CAP_MODE` — `plain` (default: the collar runs to expiry, gains above the cap handed back, a touch is recorded with the release it would have cost, writer flat) or `knockout` (touch ends the cycle; the old rule, replayed from the same append-only ledger) — with cap-distance-ladder / fee-rule / size / tenor counterfactuals per quote; weekly is the live tenor, the daily the counterfactual, and since 2026-10-08 the two-weekly and monthly are quoted too, measured per day on the operator report's Tenor card, never settled or written), cap watch (`src/singleSide/twoSided/creditCollar/capWatch.ts`: prices the cap leg live per wrap — the holder's release quote in plain mode, the writer's margin reserve + flag-guarded pre-touch working order in knockout mode), cap release (`capRelease.ts`: `POST /api/release` buys the cap leg back on OKX at the ask for the holder, partial fills booked; `cyclePayable` nets cap excess / release cost / early-close MTM and books a negative total as OWED on the record, which gates new protection until `/api/admin/owed/settle`) | earnandprotect.xyz via `render-earn-protect.yaml` (service `atticus-earn-protect` + bot worker + Postgres); perp shadow via `render-perp-shadow.yaml` (service `atticus-earn-protect-shadow`, 1 GB disk, operator views behind `EP_ADMIN_TOKEN`) |
+| `cursor/tier2-cross-venue-2bfa` | **The single event-stack branch.** Tier 1 (`eventProtectDemoService.ts`, `src/eventCollar/*`) AND Tier 2 (`eventProtectXDemoService.ts`, `src/eventCollar/crossVenue/*`: resolution whitelist, event matcher, Polymarket connector, cross-venue + Kalshi-ladder pricers, quote ledgers, shadow ledger, `eventShadowWorker.ts`) | all four event services via `render-event-demos.yaml`: `atticus-event-demo-btc` (Tier 1), `atticus-event-demo-cross-venue` (Tier 2 board), `atticus-event-shadow` (event shadow record, 1 GB disk), `atticus-pm-clob-egress-proxy` |
+| `cursor/kalshi-event-demo-2bfa` | Event Protect v1 lineage. Historical only: `render-event-demos.yaml` deploys the Tier 1 demo from the tier2 branch, not from here. **Do not land fixes here.** | nothing |
+| `cursor/bullish-fees-hedge-receipt-9151` | Perp volume-facility shadow runner (`src/singleSide/twoSided/creditCollar/shadowRunner.ts` + `shadowDashboard.ts`) | facility.atticustrade.com via `render-integration-shadow.yaml` (service `atticus-product-shadow`); founder to confirm the domain mapping in the Render dashboard |
 
-Flat across volatility regimes. Tunable via `PILOT_BIWEEKLY_RATE_<N>PCT` env vars without a deploy. Re-enabling regime-variable pricing is a 1-line change in `biweeklyPricing.ts:getBiweeklyRatePerDayPer1k`.
+**Key live surfaces:** `earnandprotect.xyz` (perp demo, `/video`, `/public`, `/metrics` funnel), `facility.atticustrade.com` (**perp** volume-facility shadow scorecard: 53 days / 127 settled / 100% reconciled as of 2026-09-18; the `/video` page's "track record" CTA points here), the event shadow record (`atticus-event-shadow` on Render, `/`, `/api/shadow`, `/api/shadow/export`). All on Render; `render-*.yaml` files define services. A healthz warm-gate pattern protects against cold-window swaps.
 
-**Architecture:**
-- `services/api/src/pilot/biweeklyPricing.ts` — rate table, helpers, feature flag
-- `services/api/src/pilot/biweeklyActivate.ts` — quote + activate handlers (called from `routes.ts` early-return branches when `product:"biweekly"` in body)
-- `services/api/src/pilot/biweeklyClose.ts` — close handler (used by the new `POST /:id/close` endpoint, by triggerMonitor close-on-trigger, and by the natural-expiry sweep)
-- `pilot_protections` table — 7 new columns, all back-compat (legacy 1-day rows default to `tenor_days=1` and the rest null/0/false)
-- Hedge manager TP timing — tenor-aware (legacy 1-day behavior unchanged; biweekly gets √14× longer cooling, 14× longer prime window, 4×-capped near-expiry salvage)
-- Per CEO direction: when biweekly trigger fires, protection closes for user but hedge stays open for platform (`hedge_retained_for_platform=true`). Hedge manager's TP logic owns disposition.
+**Deploys are manual.** The blueprints say `autoDeploy: true` but the founder deploys by hand from the Render dashboard ("Manual Deploy → latest commit") after merging; auto-deploy has been unreliable. A push to a deployed branch is therefore not itself a production change, but treat it as one anyway: whatever is on the branch tip is what the next manual deploy ships.
 
-**Rollback:** set `PILOT_BIWEEKLY_ENABLED=false` (or unset) — instant fallback to legacy 1-day path. All biweekly code is dormant. Existing biweekly protections continue to render and can be closed; no new ones can open.
+**Event-stack rule (decided 2026-09-18):** every event change lands on `cursor/tier2-cross-venue-2bfa` via a PR based on it. Its `eventCollar` tree is a strict superset of the kalshi branch's. Do not push to `cursor/kalshi-event-demo-2bfa`.
 
-**1-trade-per-24h guard:** enforced in `biweeklyActivate.handleBiweeklyActivate`. Per CEO direction (one trade per day during baseline-discovery phase). Removable in a follow-up PR when CEO is ready to scale.
+**Numbers you should know (do not restate without checking freshness):** netting factor 0.078 = portfolio-margin IM vs. sum of isolated IMs on a hedged book; fee = ~10% of the trader credit; event demo EV shown in bps with venue-vs-venue route competition.
 
----
+**Open PRs / recent work (2026-09-18):**
 
-## Open Questions / Pending Decisions
+| PR | Base | What | Status |
+|---|---|---|---|
+| #167 | tier2 | Event matcher: verify both sides against canonical club names, next-day slug + ET-date guard, Kalshi `WAS`/`JAC`; **NBA whitelist template**. Live probe showed the Polymarket NFL route paired 0/32 games before, 32/32 after; MLB unchanged 50/50. NBA pairs once Polymarket lists the Oct 20 games. | open, awaiting merge + manual redeploy of `atticus-event-demo-cross-venue` and `atticus-event-shadow` |
+| #168 | tier2 | Event shadow worker: `GET /api/shadow/export` (raw JSONL, mirror off-box), operator alerts (`EVENT_SHADOW_ALERT_*`, Telegram/webhook, deduped, off by default), richer `/healthz`. | open, awaiting merge + manual redeploy of `atticus-event-shadow` |
+| #169 | hl-toggle | `docs/VAULT_DESIGN.md`: the vault is a margin pool behind a flat book, not an options-writing strategy; waterfall, risk table, three shapes, phasing from a zero-capital shadow NAV. | open |
+| #170 | hl-toggle | `docs/REGULATORY_PASSIVITY_MAP.md`: component-by-component discretion inventory for counsel; Atticus is a principal, so Letter 26-25 may not be the operative frame. | open |
+| (this PR) | hl-toggle | This branch-map correction (facility = perp shadow, event stack = tier2 only, fourth deployed branch named) and the manual-deploy note. | open |
 
-1. **CEO use case:** speculation or integrated hedging? (asked, awaiting response)
-2. **Tenor:** 1-day product replaced by 14-day biweekly subscription per PRs #109-#114 (pending feature-flag flip on Render — see Critical Design Decisions §7).
-3. **Dynamic pricing vs fixed:** biweekly launches with FLAT rates across regimes (per CEO 2026-04-30: "absolute baseline"). Re-enabling regime-variable pricing is a 1-line change in `biweeklyPricing.ts` after we collect enough data.
-4. **Recovery rate validation under biweekly:** D2 modeled 159% recovery (BS) vs 18% on 1-day. Need n≥3 live biweekly triggers to validate.
-5. **Treasury platform spec:** deferred; Q&A document drafted but CEO answers pending.
-6. **Capital scaling beyond 3-trade test:** D4 sized $1,500 added for 3 concurrent biweekly trades. After 3-trade test passes, plan funding for 5 (~$7,500 floor) and 10 (~$18,000 floor) before lifting the 1-trade-per-24h guard.
+Known, not yet done: college football whitelist (deliberately deferred: 130+ schools, inconsistent Polymarket slugs, neutral sites); mirroring the event shadow ledger off Render on a schedule (the export endpoint exists, the cron does not).
 
----
+## 5. Engineering standards
 
-## Recent Activity (last 5-7 days)
+- Money is integer cents or `Decimal` — never float.
+- **P&L identity rule (founder, 2026-09-20).** Any time a structure changes WHO KEEPS A PAYOFF (a knockout, a release, a take-profit at the cap, a capped handback, a netted balance, a new leg), the P&L identity is re-derived from scratch — writer, trader, venue, every state at expiry and at every early exit — and written into the module docstring and its test BEFORE anything ships. No inventory, diversification or re-arm argument substitutes for the derivation: an option sold for nothing stays sold for nothing. The knockout collar shipped without this and was measured negative-EV live; that is the incident this rule comes from.
+- All I/O async; connectors resilient (reconnection, backoff); public endpoints CORS'd and byte-range-correct where media is served.
+- Tests with `node:test`; new logic ships with tests; run the touched test files before pushing.
+- **Nothing deployed live may break.** Deployed branches auto-deploy on push — treat every push to a deployed branch as a production deploy.
+- Small, single-purpose commits. Branch naming `cursor/<description>-<suffix>` per run instructions.
+- No secrets in code, chat, or logs.
+- **Pitch study sheet is a living document (founder, 2026-09-29).** `docs/PITCH_STUDY_SHEET.md` holds the elevator pitch, numbers, objections and answers, defensibility, market-structure notes and the ask. Whenever a public-record number moves materially, a venue or regulator does something that changes an answer, a real conversation surfaces a question it does not cover, or an answer proves wrong, update the sheet (with a dated changelog line) in the same PR as the related work, or in its own PR if there is none.
 
-| Date | PR | Summary |
-|---|---|---|
-| 2026-04-22 | #82 | Triggered tab filter bug — exclude naturally-expired |
-| 2026-04-23 | #83 | Triggered recovery/ITM display + widget archive sync + SHORT 2% strike-grid hardening |
-| 2026-04-23 | #84 | Foxify Pilot Agreement v2 (4-page PDF) |
-| 2026-04-23 | #85 | Hedge-budget cap (R2.F) initial implementation |
-| 2026-04-23 | #86 | Hedge-budget cap correctness fix (sum execution_price × quantity, exclude paper fills) |
-| 2026-04-23 | #87 | Check Balance button now hits Deribit (was hitting dead Bullish endpoint) |
-| 2026-04-25 | #88 | Lower low-regime 2% $7 → $6.50 (CEO feedback on calm-regime price weight) |
-| 2026-04-29 | #89 | Restore AGENT_HANDOFF.md on active branch (was on a side branch, never merged) |
-| 2026-04-29 | #98-#100 | Day-6 platform assessment + ghost-trade investigation. CEO-confirmed ghost was an Open-Without local-only row. Three follow-on PRs: handoff doc Day-6 refresh + URL redaction, admin filter chip, remove Open Without button. |
-| 2026-04-30 | #101-#108 | **Phase 0 analysis complete.** Five deliverables across 4 PRs (D1 #105 pricing dataset, D2 #106 trigger replay, D3 #108 per-day pricing model, D4 #107 capital requirements). Verdict: biweekly product is materially better than 1-day in every regime tested. Per-day rate table proposed and validated. |
-| 2026-04-30 | #109-#114 | **Biweekly cutover (6 PRs, chained sequence).** Replaces the 1-day product with biweekly per-day subscription pricing. PR 1 (#109) pricing module + feature flag, PR 2 (#110) schema + ledger, PR 3 (#111) activate path + 14-day hedge buy + 1-trade/24h, PR 4 (#112) close endpoint + trigger close-handling + natural-expiry sweep, PR 5 (#113) widget UX subscription model, PR 6 (#114) hedge manager TP retuning for 14-day options. **Feature flag `PILOT_BIWEEKLY_ENABLED=false` by default; live trading still on 1-day until flag flipped.** See "Critical Design Decisions" §7 below for the full launch checklist. |
+## 6. Regulatory context (know it, don't act on it)
 
-All numbered PRs above merged to active branch.
+- Simulation/shadow trading and hedging as principal: no registration required. B2B licensing to registered venues: clean.
+- Direct US B2C event product historically assumed to need Introducing Broker (IB) registration. **CFTC Staff Letter 26-25 (2026-09-17)** extends no-action relief to "passive software providers" — front-ends that let users submit orders directly to registered DCMs/FCMs may avoid IB registration, may charge transaction fees and revenue-share, subject to strict passivity (no buy/sell signals, no routing discretion) and conditions. Atticus's router likely exceeds "passive" as-is; counsel review is the gate. Do not redesign anything around this without direction.
 
----
+## 7. Your first task — and hard stop
 
-## Operating Principles (the user's preferences, learned)
-
-- **Plan first, get confirmation, THEN implement.** User dislikes "I'll just do it" approach without a clear plan/analysis step.
-- **Be pragmatic with credit/time.** Don't over-engineer or write excessive tests.
-- **Honest assessment over optimism.** User repeatedly asks "honest read?" — give the real answer including downsides.
-- **Separate PRs for separate logical changes.** No batched mega-PRs.
-- **Always create a PR for changes;** user uses `gh pr merge X -R atticusNew/Foxify_Collar --squash --delete-branch` to merge.
-- **Branch naming:** `cursor/<short-description>-38e5` (the `-38e5` suffix is required).
-- **ALL financial calculations use `Decimal` type, NEVER float.**
-- **Don't touch treasury system without explicit user request.**
-- **Don't change open protections' economics retroactively** (premium is locked at activation time).
-- **Stress regime pricing must stay high** — that's the buffer keeping weighted EV positive across cycles.
-
----
-
-## Key Docs in Repo
-
-| Doc | Purpose |
-|---|---|
-| `docs/PILOT_TECHNICAL_GUIDE.md` | Full architecture, all components, env vars |
-| `docs/cfo-report/Atticus_Foxify_Pilot_CFO_Report.md` | Economics, levers, regime breakdowns, watch list |
-| `docs/FOXIFY_PILOT_AGREEMENT_v2.md` | Current pilot agreement (PDF: `docs/pilot-agreement/Foxify_Protect_Pilot_v2.pdf`) |
-| `docs/pilot-reports/short_protection_logic_audit.md` | PR #75 audit; reference for SHORT-vs-LONG asymmetry decisions |
-| `docs/PILOT_DAILY_CHECKLIST.md` | Operational runbook |
-| `scripts/pilot-status` | 30-second daily health check |
-| `scripts/pilot-trade-investigate <id>` | Per-trade lifecycle deep-dive |
-
----
-
-## Critical Tech Details
-
-- **Stack:** Node.js + Fastify (`services/api`), TypeScript + React + Vite (`apps/web`), PostgreSQL on Render
-- **Deribit connector:** `services/connectors/src/deribitConnector.ts`
-- **Hedge manager:** `services/api/src/pilot/hedgeManager.ts` (runs every 60s)
-- **Trigger monitor:** `services/api/src/pilot/triggerMonitor.ts` (polls every 3s)
-- **Auto-renew:** `services/api/src/pilot/autoRenew.ts`
-- **Tests:** use `node:test` + `pg-mem` for DB simulation
-- **TS errors:** ~30 pre-existing in `routes.ts`/`db.ts`/`types.ts`. Do **NOT** introduce new ones. Verify with stash+rerun before committing.
-
-### Render Environment Variables (production set)
-
-```
-DERIBIT_ENV=live
-DERIBIT_PAPER=false
-DERIBIT_CLIENT_ID=<set>
-DERIBIT_CLIENT_SECRET=<set>
-PILOT_VENUE_MODE=deribit_live
-PILOT_LIVE_START_DATE=2026-04-23T20:00:00Z
-PILOT_HEDGE_BUDGET_CAP_ENABLED=true
-PILOT_CIRCUIT_BREAKER_ENFORCE=true
-PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT=0.7
-PILOT_TP_GAP5_ENFORCE=true
-TREASURY_ENABLED=false
-PILOT_API_ENABLED=true
-PILOT_ADMIN_TOKEN=<set>
-```
-
----
-
-## What the User Likely Needs Next
-
-Pilot is in **observe-and-collect mode**. Real work is gated on:
-- CEO responses to outstanding questions (use case, tenor preference)
-- More live trade data (need n≥5 SHORT triggers, n≥10 LONG triggers)
-- Treasury platform launch (separate workstream)
-
-**Don't initiate new architecture without user direction.** If asked for analysis on something: give honest assessment, identify trade-offs, propose options, ask user to choose. **Don't decide unilaterally on anything financial.**
-
----
-
-## When Starting a Session
-
-```bash
-# 1. Sync to active branch
-cd /workspace
-git fetch origin --prune
-git checkout origin/cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425 -B cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425
-
-# 2. (User-side) Run platform health check
-./scripts/pilot-status
-
-# 3. Read docs/PILOT_TECHNICAL_GUIDE.md §1-3 for fast architecture context
-```
-
-**Always wait for user to specify today's focus before starting code work.** If unsure about anything, ask the user. Don't guess on financial product decisions.
-
----
-
-## Update Protocol
-
-When this file becomes stale, update these sections:
-1. **Last Updated** date at the top
-2. **Active Pilot Day** counter
-3. **Recent Activity** table (add new PRs, drop entries older than ~7 days if list grows past 15)
-4. **Critical Design Decisions** if any are revised (preserve old ones — strike through, don't delete)
-5. **Open Questions** — add new ones, remove resolved ones
-
-Goal: keep this under ~3 pages. If it grows past that, we're carrying history that should live in the repo commits/docs instead.
+1. Read this file. Skim the branch map above; on each branch read only the files listed in §4 plus their tests. Do NOT crawl the whole repo — most of `docs/` and `src/pilot/` is the concluded Foxify/Deribit era. Do not waste tokens on anything not tied to the objectives in §3.
+2. Reply with a comprehension confirmation: (a) the product in your own words, both markets; (b) the doctrine and why refusal/receipts/neutrality are load-bearing; (c) the live surfaces and which branch feeds each; (d) the business objective and current phase (fundraising outreach — code is in support of that, stability over novelty).
+3. Suggest a short ranked list of best next steps (candidates the founder already has in mind: NBA/college-football whitelist templates before MLB ends; event-demo hardening; vault design; counsel-gated US B2C lane per §6 — but form your own view).
+4. **Then WAIT for direction.** The founder is mid-outreach; next steps are planned and will be assigned. Make zero code changes until told.

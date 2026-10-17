@@ -99,8 +99,10 @@ export type LiveAlert = { tsMs: number; level: "warn" | "critical"; code: string
 /** Log LOUDLY (console) and persist. The pilot's minimum alerting bar. */
 export const raiseLiveAlert = (alert: LiveAlert, path = DEFAULT_LIVE_ALERTS_PATH): void => {
   const banner = alert.level === "critical" ? "🚨🚨 LIVE-ALERT CRITICAL 🚨🚨" : "⚠️ LIVE-ALERT";
-  console.error(`${banner} [${alert.code}] ${alert.message}`);
-  appendJsonl(path, alert);
+  // Demo wrap is not a daily canary window — drop the "day skipped" suffix on that alert path.
+  const message = /demo-live/.test(path) ? alert.message.replace(/\s*—\s*day skipped/gi, "") : alert.message;
+  console.error(`${banner} [${alert.code}] ${message}`);
+  appendJsonl(path, { ...alert, message });
 };
 
 export const loadLiveAlerts = (path = DEFAULT_LIVE_ALERTS_PATH): LiveAlert[] => readJsonl<LiveAlert>(path);

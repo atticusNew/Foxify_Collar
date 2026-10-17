@@ -135,6 +135,44 @@ export class HyperliquidClient {
     return p ? Number(p.position.szi) : 0;
   }
 
+  /** Every open perp position on the account (read-only; the trader-client positions list). */
+  async allPositions(address: string): Promise<Array<{ coin: string; szi: number; entryPx: number | null; positionValueUsd: number | null }>> {
+    const st = (await this.post("/info", { type: "clearinghouseState", user: address })) as {
+      assetPositions?: Array<{ position: { coin: string; szi: string; entryPx?: string; positionValue?: string } }>;
+    };
+    return (st.assetPositions ?? [])
+      .map((ap) => {
+        const szi = Number(ap.position.szi);
+        const entry = Number(ap.position.entryPx);
+        const value = Number(ap.position.positionValue);
+        return {
+          coin: ap.position.coin,
+          szi: Number.isFinite(szi) ? szi : 0,
+          entryPx: Number.isFinite(entry) && entry > 0 ? entry : null,
+          positionValueUsd: Number.isFinite(value) && value > 0 ? value : null
+        };
+      })
+      .filter((p) => p.szi !== 0);
+  }
+
+  /** Full position row (size + entry + value) for display surfaces. null ⟹ no open position. */
+  async positionDetail(address: string, coin: string): Promise<{ szi: number; entryPx: number | null; positionValueUsd: number | null } | null> {
+    const st = (await this.post("/info", { type: "clearinghouseState", user: address })) as {
+      assetPositions?: Array<{ position: { coin: string; szi: string; entryPx?: string; positionValue?: string } }>;
+    };
+    const p = (st.assetPositions ?? []).find((ap) => ap.position.coin === coin);
+    if (!p) return null;
+    const szi = Number(p.position.szi);
+    if (!Number.isFinite(szi) || szi === 0) return null;
+    const entry = Number(p.position.entryPx);
+    const value = Number(p.position.positionValue);
+    return {
+      szi,
+      entryPx: Number.isFinite(entry) && entry > 0 ? entry : null,
+      positionValueUsd: Number.isFinite(value) && value > 0 ? value : null
+    };
+  }
+
   /** Current funding in bps per 8h from metaAndAssetCtxs (funding is an 8h rate fraction). */
   async fundingBpsPer8h(coin: string): Promise<number | null> {
     const raw = (await this.post("/info", { type: "metaAndAssetCtxs" })) as [

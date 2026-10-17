@@ -1,0 +1,163 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-perp-shadow.yaml — Earn & Protect PERP PRODUCT SHADOW (track record)
+#
+# The retail collar as the live demo prices it (listed OKX touch on floored
+# lots, 6% floor / cap as wide as the book funds, published take), quoted
+# every hour for a fixed Hyperliquid position long and short, every position
+# marked against OKX's official delivery print at expiry. Each quote also
+# records what the other tiers, the other fee rule, larger sizes and the
+# weekly tenor would have written from the SAME book snapshot, so pricing
+# changes are measured before they are shipped.
+#
+# Distinct from the volume-facility shadow (facility.atticustrade.com,
+# render-integration-shadow.yaml): that one prices the $80-credit facility
+# with the Black-Scholes solver; this one prices the retail product's exact
+# path. Read-only: public market data only, no credentials, nothing traded.
+#
+# Singapore: OKX public REST is read directly (same region as the demo).
+# Deploy: Render dashboard → New → Blueprint → select this file. Manual deploys
+# only (autoDeploy off, like the demo). Pages: / (public record), /api/shadow,
+# /api/shadow/positions.csv, /api/shadow/fridays, /api/shadow/ops, /healthz
+# (alarms); operator (EP_ADMIN_TOKEN): /report,
+# /api/shadow/report, /api/shadow/export, /api/shadow/positions.csv?scope=full.
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: atticus-earn-protect-shadow
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/hl-toggle-demo-9151
+    autoDeploy: false
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/perpShadowWorker.ts
+    healthCheckPath: /healthz
+    disk:
+      name: earn-protect-shadow-ledger
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PERP_SHADOW_LEDGER_PATH
+        value: /var/data/perp-shadow-ledger.jsonl
+      # The live product's terms: 3 OKX lots (0.03 BTC) long and short, one shape
+      # (floor 6%, the widest listed cap that pays, under the cap guard), written to
+      # the weekly (EP_TENOR; `daily` opts out — the daily is then the counterfactual),
+      # 20% share take, $0.05 de minimis, no minimum. EP_CAP_MODE=plain settles the
+      # ledger the way the product carries it: exit clamped at both wings, gains above
+      # the cap handed back, writer flat; a touch on the path is recorded with the
+      # release it would have cost. `knockout` re-reads the same ledger under the old
+      # touch-ends-the-cycle rule (the ledger is append-only; the rule is a replay).
+      - key: PERP_SHADOW_SIZE_BTC
+        value: "0.03"
+      - key: PERP_SHADOW_SIDES
+        value: long,short
+      # FLOW: run the shadow as a book, not a metronome. Hourly batches of wraps to about $2M a
+      # day, lognormal sizes around $15k with a real tail (capped $750k), 70% long, 30% closing
+      # early at live prices, every wrap priced at its own size by walking the OKX book (too big
+      # for the depth = refused, recorded), and a netted book snapshot after every batch. Sizes,
+      # sides and timing are simulated; every price, fee and depth is live. "0" = the metronome.
+      - key: PERP_SHADOW_FLOW
+        value: "1"
+      - key: PERP_SHADOW_DAILY_NOTIONAL_USD
+        value: "2000000"
+      - key: PERP_SHADOW_MEDIAN_USD
+        value: "15000"
+      - key: PERP_SHADOW_SIZE_SIGMA
+        value: "1.4"
+      - key: PERP_SHADOW_MAX_USD
+        value: "750000"
+      - key: PERP_SHADOW_LONG_SHARE
+        value: "0.7"
+      - key: PERP_SHADOW_CLOSE_SHARE
+        value: "0.3"
+      - key: EP_CAP_MODE
+        value: plain
+      - key: EP_TENOR
+        value: weekly
+      # MINIMUM CAP DISTANCE: the cap rule picks among paying strikes at least this far from price
+      # and refuses only when none of them pays. "0" = no floor, the 20% odds rule alone. Tried at
+      # 0.045 on 2026-10-17 (the ladder rung that handed back almost nothing) and reverted the same
+      # day: on the live book the call at 4.5% bid less than the 6% put asked, so every LONG was
+      # refused. The ladder keeps measuring every rung as a counterfactual; this is the written one.
+      - key: EP_MIN_CAP_PCT_WEEKLY
+        value: "0"
+      - key: EP_TAKE_RATE
+        value: "0.20"
+      - key: EP_DE_MINIMIS_USDC
+        value: "0.05"
+      - key: PERP_SHADOW_MIN_TAKE_BPS
+        value: "0"
+      # The fee-floor counterfactual measured alongside (bps of protected notional).
+      - key: PERP_SHADOW_CF_MIN_TAKE_BPS
+        value: "5"
+      - key: PERP_SHADOW_SCAN_MS
+        value: "3600000"
+      # Venue reference: on every scan the same two legs are read at Deribit and Bullish (public,
+      # unsigned) and recorded against OKX's touch — would the identical collar have paid more
+      # elsewhere. Operator report card "Venue reference"; a measurement for FalconX RFQ
+      # acceptance, never the price. "0" turns the reads off.
+      - key: PERP_SHADOW_VENUE_REF
+        value: "1"
+      - key: PERP_SHADOW_SETTLE_MS
+        value: "900000"
+      - key: PERP_SHADOW_DEMO_URL
+        value: https://earnandprotect.xyz
+      # SETTLEMENT: OKX's delivery print first; after PERP_SHADOW_HL_PRINT_AFTER_MS (24h) with no
+      # print, the Hyperliquid mark at the expiry minute settles the group (recorded hl_mark); a
+      # void only after PERP_SHADOW_VOID_AFTER_MS (7 days) with neither. Nothing is voided while a
+      # venue printed.
+      - key: PERP_SHADOW_HL_PRINT_AFTER_MS
+        value: "86400000"
+      - key: PERP_SHADOW_VOID_AFTER_MS
+        value: "604800000"
+      # ALARMS: settlement_stalled (an open position PERP_SHADOW_SETTLE_STALL_MS past expiry +
+      # grace), quote_stalled (no quote for 3 scans or 3 failures in a row), netting_stale (flow
+      # mode, open positions, no book snapshot for 3 scans), venue_payload_drift (the real parsers
+      # read the live OKX and Hyperliquid payloads every hour and found nothing). Each is raised
+      # once per PERP_SHADOW_ALARM_COOLDOWN_MS, shown on /healthz and /api/shadow/ops, and sent to
+      # the sink below. The Friday review (one row per settled expiry: said vs seen, hand-back vs
+      # take, cumulative, flags) posts on the same sink and is recorded in the ledger once.
+      - key: PERP_SHADOW_SETTLE_STALL_MS
+        value: "21600000"
+      - key: PERP_SHADOW_ALARM_COOLDOWN_MS
+        value: "21600000"
+      # The sink: set in the Render dashboard, never in this file. Telegram needs both keys; the
+      # webhook is any HTTPS endpoint that accepts a JSON POST. Without either, alarms still land
+      # on /healthz and in EP_ALERTS_PATH on the disk.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ALERT_CHAT_ID
+        sync: false
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+      - key: EP_ALERTS_PATH
+        value: /var/data/perp-shadow-alerts.jsonl
+      # CAP ODDS: realized vol (30 days of Hyperliquid hourly closes) against the strike's implied
+      # vol moves the odds the cap rule targets inside the published band (10-30%). "0" records
+      # the advice on every open and on /api/shadow without applying it; "1" applies it. Measure
+      # first.
+      - key: EP_CAP_ODDS_ADAPT
+        value: "0"
+      - key: EP_CAP_ODDS_SLOPE
+        value: "0.2"
+      # FRIDAY REVIEW flags: cumulative hand-back above this share of cumulative take, once at
+      # least this many positions have settled (one Friday is one draw).
+      - key: EP_FRIDAY_HANDBACK_SHARE
+        value: "0.5"
+      - key: EP_FRIDAY_MIN_SETTLED
+        value: "100"
+      # RFQ: the net a desk must beat for a collar to route to RFQ instead of the book, recorded
+      # on every open (rfq.beatBookNetCents). No desk is called from the shadow; quote-only
+      # routing lives in the pricer and needs dealer credentials the shadow never holds.
+      - key: EP_RFQ_SIZE_THRESHOLD_USD
+        value: "50000"
+      - key: EP_RFQ_MIN_IMPROVEMENT_BPS
+        value: "1"
+      - key: EP_RFQ_TIE_USD
+        value: "0.50"
+      # Gates the operator views and POST /api/shadow/reset (?token=... or x-admin-token).
+      # Fail-closed: without it those routes answer 403 and the public record stays up.
+      - key: EP_ADMIN_TOKEN
+        generateValue: true
