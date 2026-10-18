@@ -416,6 +416,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       <div class="bignum"><div class="n">${intStr(a.contracts)}</div><div class="l">contracts since ${escapeHtml(sinceDay)}</div></div>
     </div>
     <div class="read" style="margin-top:10px">${escapeHtml(recentLine + allLine + simLine)}</div>
+    <div class="rule">Before a route is written, every sports quote is priced on more than one regulated book, and refused when none can fund it. The route-by-route comparison, with other regulated books read as references, is in the operator report and available to any partner on request.</div>
   </div>
 `;
   })();
