@@ -76,7 +76,7 @@ const START_WINDOW_MS = 1.5 * DAY_MS;
 const clubsOf = (template: LeagueTemplate): string[] => [...new Set(Object.values(template.teamNames))];
 
 /** Every code the template knows for a club: the Kalshi codes mapping to it and their slug aliases, uppercased. */
-function codesFor(template: LeagueTemplate, club: string): Set<string> {
+export function codesFor(template: LeagueTemplate, club: string): Set<string> {
   const codes = new Set<string>();
   for (const [code, full] of Object.entries(template.teamNames)) {
     if (full !== club) continue;
@@ -93,7 +93,8 @@ function codesFor(template: LeagueTemplate, club: string): Set<string> {
  */
 export function clubNamed(template: LeagueTemplate, club: string, outcomeName: string): boolean {
   const name = outcomeName.trim();
-  if (/^[A-Za-z]{2,4}$/.test(name)) return codesFor(template, club).has(name.toUpperCase());
+  // a code is upper case; "Jets", "Heat" and "Cubs" are nicknames and go to the name match
+  if (/^[A-Z]{2,4}$/.test(name) && codesFor(template, club).has(name)) return true;
   return clubMatches(template, club, name);
 }
 

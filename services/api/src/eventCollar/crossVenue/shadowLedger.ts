@@ -568,6 +568,33 @@ export interface ShadowRouteComparison {
    * book. One row per reference id the record has seen; empty until a reference is configured.
    */
   references: ReferenceBookComparison[];
+  /**
+   * Exchanges that publish only yesterday's tape: the opposing outcome's last print there against
+   * the price the live hedge paid. A sign of where that venue trades, never a quote; empty until
+   * a print source is configured.
+   */
+  prints: ReferencePrintComparison[];
+}
+
+/** One print source beside the live hedge's price, over the positions whose open carried it. */
+export interface ReferencePrintComparison {
+  id: string;
+  /** positions whose open read this source (printed or not) */
+  positions: number;
+  /** positions where the venue had printed the opposing outcome on its last published day */
+  printed: number;
+  /** positions where it had not, or the file could not be read */
+  unprinted: number;
+  /** average of (last print minus the live hedge's average price), cents, over printed positions */
+  avgGapCents: number | null;
+  /** printed positions where the venue's last print was above the live hedge's price */
+  richer: number;
+  /** printed positions where it was below */
+  cheaper: number;
+  /** average age of the print at the quote, hours */
+  avgAgeHours: number | null;
+  /** average contracts the venue traded that day on the opposing outcome */
+  avgDayContracts: number | null;
 }
 
 /** One reference book beside the live route, over the positions whose open carried it. */
@@ -682,8 +709,18 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
     kalshiOnlyCreditDeltaCents: 0,
     kalshiOnlyRefusedWhereLiveQuoted: 0,
     references: [],
+    prints: [],
   };
   let routeEvDiffSum = 0;
+  const prints = new Map<string, ReferencePrintComparison & { gapSum: number; ageSum: number; contractsSum: number }>();
+  const printRow = (id: string) => {
+    let row = prints.get(id);
+    if (!row) {
+      row = { id, positions: 0, printed: 0, unprinted: 0, avgGapCents: null, richer: 0, cheaper: 0, avgAgeHours: null, avgDayContracts: null, gapSum: 0, ageSum: 0, contractsSum: 0 };
+      prints.set(id, row);
+    }
+    return row;
+  };
   const references = new Map<string, ReferenceBookComparison & { evSum?: number; evDiffSum: number }>();
   const referenceRow = (id: string) => {
     let row = references.get(id);
@@ -737,6 +774,21 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
         row.creditDeltaCents += ref.terms.creditCents - live.creditCents;
       }
     }
+    for (const pr of cf.prints ?? []) {
+      if (p.kind !== "sports") continue;
+      const row = printRow(pr.id);
+      row.positions += 1;
+      if (!pr.ok) {
+        row.unprinted += 1;
+        continue;
+      }
+      row.printed += 1;
+      row.gapSum += pr.gapCents;
+      row.ageSum += pr.ageHours;
+      row.contractsSum += pr.dayContracts;
+      if (pr.gapCents > 0) row.richer += 1;
+      else if (pr.gapCents < 0) row.cheaper += 1;
+    }
     for (const tier of PROTECTION_TIERS) {
       const alt = cf.alternatives?.[tier];
       // A tier the venues did not fund distinctly collapsed into another; it is not a refusal.
@@ -769,6 +821,14 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
       done.extraEvBps = done.bothQuoted > 0 ? Math.round(evDiffSum / done.bothQuoted) : null;
       return done;
     });
+  routes.prints = [...prints.values()]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(({ gapSum, ageSum, contractsSum, ...row }) => ({
+      ...row,
+      avgGapCents: row.printed > 0 ? Math.round((gapSum / row.printed) * 10) / 10 : null,
+      avgAgeHours: row.printed > 0 ? Math.round((ageSum / row.printed) * 10) / 10 : null,
+      avgDayContracts: row.printed > 0 ? Math.round(contractsSum / row.printed) : null,
+    }));
   return {
     recordedSince,
     positionsWithCounterfactuals: withCf.length,

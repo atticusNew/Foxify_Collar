@@ -97,6 +97,7 @@ import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import { getNoAsks, quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
+import { readReferencePrints, referencePrintSourcesFromEnv, type ReferencePrint } from "../src/eventCollar/crossVenue/venuePrints";
 import {
   DEFAULT_CROSS_CONFIG,
   type CollarTerms,
@@ -336,6 +337,12 @@ function parseTier(v: string | undefined): ProtectionTier {
  * read). Price reference only: they never pick the route or change the quote.
  */
 const referenceBooks = referenceSourcesFromEnv(process.env);
+/**
+ * An exchange that publishes only yesterday's tape (REFERENCE_PRINTS_HOST; unset, none is read):
+ * the opposing side's last print there is kept beside the price the live hedge paid. Never priced
+ * as a route, never touches the quote.
+ */
+const referencePrints = referencePrintSourcesFromEnv(process.env);
 
 export function searchConfig(): CrossSearchConfig {
   const minTake = process.env.EVENT_X_MIN_TAKE_BPS;
@@ -500,7 +507,7 @@ export interface CandidateResult {
    * re-price the same moment under other rules or sizes (counterfactuals)
    * without another venue call. Absent when the venue was unreachable.
    */
-  books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; references?: ReferenceBook[] };
+  books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; references?: ReferenceBook[]; prints?: ReferencePrint[] };
 }
 
 async function showcasePositionFor(ticker: string, markCents: number) {
@@ -536,11 +543,13 @@ async function quoteSportsCandidate(
 
   // the reference read never throws: a venue that is down is one unlisted reference, not a failed quote
   const referencesP = readReferenceBooks(referenceBooks.sources, pair, now);
+  const printsP = readReferencePrints(referencePrints.sources, pair, now);
   const [pmRes, ladderRes] = await Promise.allSettled([
     getPmBook(pair.pm.tokenIds[pair.pmNoOutcomeIndex]),
     getNoAsks(pair.kalshi.ticker),
   ]);
   const references = await referencesP;
+  const prints = await printsP;
   if (pmRes.status === "rejected" && ladderRes.status === "rejected") {
     throw new Error("both hedge venues unreachable");
   }
@@ -645,6 +654,7 @@ async function quoteSportsCandidate(
       ...(pmRes.status === "fulfilled" ? { pmNoBook: pmRes.value } : {}),
       ...(ladderRes.status === "fulfilled" ? { noAsks: ladderRes.value } : {}),
       ...(references.length > 0 ? { references } : {}),
+      ...(prints.length > 0 ? { prints } : {}),
     },
   };
 }

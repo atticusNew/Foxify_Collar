@@ -126,6 +126,7 @@ import { lockAuthorized, lockKeyFromEnv, parseLockRequest, readJsonBody } from "
 import { VenueClient, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
 import { referenceSourcesFromEnv } from "../src/eventCollar/crossVenue/venueBooks";
+import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venuePrints";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -254,6 +255,11 @@ let venueClientNote: string | null = null;
 /** REFERENCE_BOOK_* in the env: the scanner module reads these books on every sports open; this is only the operator's view of what is on */
 const referenceBooks = (() => {
   const r = referenceSourcesFromEnv(process.env);
+  return { configured: r.sources.map((s) => s.id), notes: r.notes };
+})();
+/** REFERENCE_PRINTS_HOST in the env: yesterday's tape from an exchange with no live book, read on every sports open; the operator's view only */
+const referencePrints = (() => {
+  const r = referencePrintSourcesFromEnv(process.env);
   return { configured: r.sources.map((s) => s.id), notes: r.notes };
 })();
 const POSITIONS_TTL_MS = Number(process.env.EVENT_SHADOW_POSITIONS_TTL_MS || 20_000);
@@ -1032,6 +1038,8 @@ function healthBody(): Record<string, unknown> {
       receipts: { path: RECEIPTS_PATH, ...ledgerStats(RECEIPTS_PATH) },
       // other regulated exchanges read as price references on each open: which dialects, never the keys
       referenceBooks,
+      // an exchange that publishes only yesterday's tape, read the same way: on or off
+      referencePrints,
     },
   };
 }
