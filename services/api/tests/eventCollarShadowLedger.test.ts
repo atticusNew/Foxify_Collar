@@ -249,6 +249,9 @@ test("shadow: flow onto public books is one total over positions opened in the w
   const html = renderShadowHtml({ atIso: now.toISOString(), summary: s, open: positions.filter((p) => p.status === "open"), settled: positions.filter((p) => p.status === "settled") });
   assert.ok(html.includes("<h2>Flow onto public books</h2>"));
   assert.ok(html.indexOf("<h2>Flow onto public books</h2>") < html.indexOf("<h2>Sports first</h2>"), "the flow card follows the identity card");
+  assert.ok(html.includes("every sports quote is priced on more than one regulated book, and refused when none can fund it"), "the public page says the routing comparison exists");
+  assert.ok(html.includes("is in the operator report and available to any partner on request"));
+  assert.doesNotMatch(html, /novig|prophet|underdog|udx/i, "and names no venue");
   assert.ok(html.includes('<div class="n green">668</div><div class="l">contracts, last 30 days</div>'));
   assert.ok(html.includes(`<div class="n">${"$" + ((5426 + 5426 + 5426 + 10_852) / 100).toFixed(2)}</div><div class="l">paid for them, fees in</div>`));
   assert.ok(html.includes('<div class="n">802</div><div class="l">contracts since 2026-08-06</div>'));
