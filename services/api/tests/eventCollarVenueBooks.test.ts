@@ -98,7 +98,12 @@ test("reference books: the pair's two clubs resolve by canonical name from the t
   assert.equal(clubFor(mlb, "NYY"), "New York Yankees");
   assert.equal(clubFor(mlb, "BOS"), "Boston Red Sox");
   assert.equal(clubFor(mlb, "CWS"), "Chicago White Sox");
+  const nfl = templateForLeague("nfl")!;
+  assert.equal(clubFor(nfl, "Jets"), "New York Jets", "a four-letter nickname is a name, not a code");
+  assert.equal(clubFor(nfl, "NYJ"), "New York Jets");
+  assert.equal(clubFor(nfl, "NE"), "New England Patriots");
   const nba = templateForLeague("nba")!;
+  assert.equal(clubFor(nba, "Heat"), "Miami Heat");
   assert.equal(clubFor(nba, "GS"), "Golden State Warriors", "an alias code the template knows");
   assert.equal(clubFor(nba, "GSW"), "Golden State Warriors");
   assert.equal(clubFor(nba, "ZZZ"), null);
