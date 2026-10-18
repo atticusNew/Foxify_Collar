@@ -27,6 +27,7 @@ import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/cros
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { REFERENCE_BOOK_WORDS } from "../src/eventCollar/crossVenue/venueBooks";
+import { REFERENCE_PRINT_WORDS } from "../src/eventCollar/crossVenue/venuePrints";
 
 /** Public URL of the interactive demo, for the cross-link. */
 function demoUrl(): string {
@@ -848,6 +849,19 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
         return `${coverage} and funded ${ref.bothQuoted}; on those it quoted ${bpsPct(Math.abs(ref.extraEvBps ?? 0))} of expected value ${richer ? "more" : "less"} than the route written, credits ${signedUsd(ref.creditDeltaCents)} against the live book.`;
       })
       .join(" ");
+    // Prints are yesterday's tape, so they are a sentence beside the table, never a row in it: a
+    // row would read as a hedge priced there, and nothing could have been filled at a day-old print.
+    const prints = r.prints ?? [];
+    const printLines = prints
+      .map((pr) => {
+        const name = REFERENCE_PRINT_WORDS[pr.id as keyof typeof REFERENCE_PRINT_WORDS] ?? pr.id;
+        const coverage = `${name} had printed the opposing side of ${pr.printed} of the ${pr.positions} games it was read for`;
+        if (pr.printed === 0 || pr.avgGapCents === null) return `${coverage}.`;
+        const dir = pr.avgGapCents > 0 ? "above" : pr.avgGapCents < 0 ? "below" : "level with";
+        const gap = pr.avgGapCents === 0 ? "" : ` by ${Math.abs(pr.avgGapCents).toFixed(1)}¢ on average`;
+        return `${coverage}; its last print there was ${dir} the price the live hedge paid${gap} (${pr.richer} richer, ${pr.cheaper} cheaper), about ${pr.avgDayContracts ?? 0} contracts traded that day, the print ${pr.avgAgeHours ?? 0} hours old at the quote. Yesterday's tape against today's book: a sign of where that venue trades, not a quote.`;
+      })
+      .join(" ");
     const split = Object.entries(r.liveRouteSplit)
       .map(([k, n]) => `${n} ${ROUTE_WORDS[k] ?? k}`)
       .join(", ");
@@ -865,10 +879,14 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
     <h2>Routing, measured</h2>
     <div class="sub" style="margin-bottom:6px">${r.positions} sports positions since ${escapeHtml(utcDay(r.recordedSince ?? input.atIso))} UTC carry the default tier on both hedge routes from the same books at the same second. The live book wrote the cheaper one (${escapeHtml(split)}). Crypto strikes have one route and are left out.</div>
     <div class="tablewrap"><table>${RULE_HEAD}${rows}</table></div>
-    <div class="read">${escapeHtml([extra + refused, refLines].filter(Boolean).join(" "))}</div>
+    <div class="read">${escapeHtml([extra + refused, refLines, printLines].filter(Boolean).join(" "))}</div>
     <div class="rule">Kalshi-only is what a hedge that must run on the market's own No side would have cost: the production shape for a US venue. The second book is a price reference until it can be filled on from here; the live record keeps choosing the cheaper route for the user until a routing rule is published.${
       refs.length > 0
         ? " Reference books are other regulated US exchanges listing the same games, read at the same second with their fees folded into the price and priced exactly like a hedge route. Nothing is filled on them; the rows measure what hedging there would have cost, which is what decides whether to onboard one."
+        : ""
+    }${
+      prints.length > 0
+        ? " Reference prints come from a regulated US exchange that publishes no live book, only every trade it matched the day before, in the CFTC's public format. The record keeps the opposing side's last print, its size and its age beside the price the live hedge paid; it is never priced as a route."
         : ""
     }</div>
   </div>

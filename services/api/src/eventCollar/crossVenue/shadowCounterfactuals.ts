@@ -29,6 +29,7 @@ import type {
 } from "./types";
 import { PROTECTION_TIERS } from "./types";
 import type { ReferenceBook, ReferenceBookId } from "./venueBooks";
+import type { ReferencePrint, ReferencePrintId } from "./venuePrints";
 
 /** One alternative collar as it would have been written, or why it was not. */
 export type ShadowAltTerms =
@@ -82,6 +83,31 @@ export interface ShadowReferenceQuote {
   depthMilli: number;
 }
 
+/**
+ * REFERENCE PRINT. A regulated exchange that publishes only yesterday's tape: the opposing
+ * outcome's last print there, with its size and age, beside the price the live hedge paid per $1
+ * of payout. Not priced as a route: a day-old print is nothing a hedge could have been filled at,
+ * so the gap is a sign of where that venue trades, never a quote.
+ */
+export type ShadowReferencePrint =
+  | {
+      id: ReferencePrintId;
+      ok: true;
+      reportDate: string;
+      printedAtIso: string;
+      /** hours from the last print to the quote, one decimal */
+      ageHours: number;
+      lastPriceCents: number;
+      vwapCents: number;
+      dayContracts: number;
+      prints: number;
+      /** what the live hedge paid per $1 of payout on the route written, cents (walked average, venue fees apart) */
+      liveHedgeAvgCents: number;
+      /** last print minus the live hedge's average price, cents: positive, the venue last traded richer */
+      gapCents: number;
+    }
+  | { id: ReferencePrintId; ok: false; reason: string };
+
 export interface ShadowCounterfactuals {
   /** every distinct tier the venues funded at open, keyed by tier name */
   alternatives: Partial<Record<ProtectionTier, ShadowAltTerms>>;
@@ -102,6 +128,12 @@ export interface ShadowCounterfactuals {
    * Absent on records opened before a reference was configured.
    */
   references?: ShadowReferenceQuote[];
+  /**
+   * Exchanges that publish only yesterday's tape: the opposing outcome's last print there beside
+   * the price the live hedge paid. One entry per print source configured, printed or not. Absent
+   * on records opened before one was configured.
+   */
+  prints?: ShadowReferencePrint[];
 }
 
 export interface CounterfactualInputs {
@@ -116,7 +148,7 @@ export interface CounterfactualInputs {
   contracts: number;
   now: Date;
   config: CrossSearchConfig;
-  books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; references?: ReferenceBook[] };
+  books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; references?: ReferenceBook[]; prints?: ReferencePrint[] };
 }
 
 export function hedgeUnitsOfTerms(t: CollarTerms): number {
@@ -223,7 +255,38 @@ export function counterfactualsFor(
   }
 
   const references = referenceQuotesFor(inputs);
-  return { alternatives, feeRules, sizeLadder, routes, ...(references ? { references } : {}) };
+  const prints = referencePrintsFor(inputs, live);
+  return { alternatives, feeRules, sizeLadder, routes, ...(references ? { references } : {}), ...(prints ? { prints } : {}) };
+}
+
+/**
+ * Each print source's read beside the live hedge's own price per $1 of payout. Both the hedge
+ * (the market's No side or the second book's opposing outcome) and the print (the opposing club's
+ * contract) pay $1 when the holder's side loses, so the two prices compare directly. Undefined
+ * when no print source was read; a source read but not printed keeps its reason.
+ */
+export function referencePrintsFor(inputs: CounterfactualInputs, live: Extract<CrossQuoteResult, { ok: true }>): ShadowReferencePrint[] | undefined {
+  const prints = inputs.books.prints;
+  if (!prints || prints.length === 0) return undefined;
+  const liveHedgeAvgCents = live.hedge.venue === "kalshi" ? live.hedge.avgPriceCents : Math.round(live.hedge.avgPriceMilli) / 10;
+  return prints.map((p) => {
+    if (!p.print) return { id: p.id, ok: false, reason: p.reason };
+    const printedMs = Date.parse(p.print.lastPrintAtIso);
+    const ageHours = Number.isFinite(printedMs) ? Math.max(0, Math.round((inputs.now.getTime() - printedMs) / 360_000) / 10) : 0;
+    return {
+      id: p.id,
+      ok: true,
+      reportDate: p.print.reportDate,
+      printedAtIso: p.print.lastPrintAtIso,
+      ageHours,
+      lastPriceCents: p.print.lastPriceCents,
+      vwapCents: p.print.vwapCents,
+      dayContracts: p.print.dayContracts,
+      prints: p.print.prints,
+      liveHedgeAvgCents,
+      gapCents: Math.round((p.print.lastPriceCents - liveHedgeAvgCents) * 10) / 10,
+    };
+  });
 }
 
 /**

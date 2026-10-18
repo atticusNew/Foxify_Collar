@@ -244,6 +244,15 @@ services:
       #   REFERENCE_BOOK_BEARER_ACCESS_KEY=<access key>
       #   REFERENCE_BOOK_BEARER_SECRET_KEY=<secret key>
       # Status: the operator state's hedge.referenceBooks lists which are configured, never the keys.
+      # REFERENCE PRINTS (optional; a regulated US exchange that publishes no live book, only every
+      # trade it matched the day before, in the CFTC's public reporting format, as a public file).
+      # On every sports open the record keeps the opposing side's last print there, its size and
+      # its age, beside the price the live hedge paid. Never priced as a route (a day-old print is
+      # nothing a hedge could have been filled at), never touches the quote. The public page calls
+      # it "reference prints C"; the record carries the id public_prints, never a venue name. No
+      # credentials: the host alone turns it on. Unset: nothing is read.
+      #   REFERENCE_PRINTS_HOST=https://cftc-public-reports....   the origin that serves /reporting/trade_data_YYYY-MM-DD.json.gz
+      # Status: the operator state's hedge.referencePrints says whether it is on.
 
   - type: web
     name: atticus-pm-clob-egress-proxy
