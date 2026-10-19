@@ -199,7 +199,7 @@ test("embed: the live recording sits in the pitch column, plays only on tap, car
   const html = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND });
   assert.ok(html.includes('<div class="live"><div class="live-h">Seen live</div>'), "the block is labelled");
   assert.ok(html.includes('<video controls preload="none" playsinline poster="/media/lockin-live.jpg" src="/media/lockin-live.mp4"></video>'), "default: the bundled file, no autoplay, nothing fetched until play");
-  assert.ok(html.includes("A real position on a real exchange, locked and hedged on Kalshi. Receipt on screen."), "the one sentence names Kalshi");
+  assert.ok(html.includes("A real position on a real exchange, locked and hedged on Kalshi, then settled on the official result: $13.85 instead of $0. Receipt on screen."), "the one sentence names Kalshi and the settlement");
   assert.ok(html.includes("Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue."), "the disclaimer travels with the clip");
   assert.ok(html.includes('<meta property="og:video" content="/media/lockin-live.mp4" />') && html.includes('<meta property="og:image" content="/media/lockin-live.jpg" />'), "a shared link previews the clip");
   const aside = /<aside class="pitch">([\s\S]*?)<\/aside>/.exec(html)?.[1] || "";
@@ -373,7 +373,7 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     assert.ok(card.includes('<a class="cl-btn" href="/">Try the demo: tap Lock in on a position</a>'), "the demo link drops from=card");
     assert.ok(card.includes('href="https://wa.me/17186643497"') && card.includes('href="tel:+17186643497">+1 718 664 3497</a>'), "WhatsApp and tel from the one number");
     assert.ok(card.includes('href="https://www.linkedin.com/in/michael-william-5888ba263/"'), "LinkedIn is behind the QR, not on the paper");
-    assert.ok(card.includes("Hedged leg for leg on Kalshi; every lock and hedge on the public record."), "the sentence");
+    assert.ok(card.includes("Priced across venues, hedged leg for leg on the cheaper book; refused when no book can fund it. Every quote, hedge, refusal and result on a public record."), "the sentence matches the printed card");
     assert.ok(card.includes("Not affiliated with or endorsed by the venue."), "the extension disclaimer travels with the clip");
     assert.ok(!/ProphetX|Novig/.test(card.replace(/Your Exchange/g, "")), "no venue named on the card landing");
     const vcf = await fetch(`${base}/contact.vcf`);

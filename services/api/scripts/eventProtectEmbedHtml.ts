@@ -208,13 +208,13 @@ function renderCardLanding(c: CardContact, video: LiveVideo | null, trackRecordU
   const name = escapeHtml(`${c.givenName} ${c.familyName}`.trim());
   const videoBlock = video
     ? `<video controls preload="metadata" playsinline poster="${escapeHtml(video.poster)}" src="${escapeHtml(video.src)}"></video>` +
-      `<p class="cl-cap"><b>Seen live on a real position.</b> Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p>`
+      `<p class="cl-cap"><b>Seen live on a real position, locked Thursday and settled Sunday.</b> Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p>`
     : "";
   return `<section class="cardland"><div class="in">
   <img class="cl-logo" src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
   <div class="cl-eyebrow">Earn &amp; Protect</div>
   <h1>The <b>Lock in</b> button.</h1>
-  <p class="cl-lede">One tap gives any open position a floor and cash now. Hedged leg for leg on Kalshi; every lock and hedge on the public record.</p>
+  <p class="cl-lede">One tap gives any open position a floor and cash now. Priced across venues, hedged leg for leg on the cheaper book; refused when no book can fund it. Every quote, hedge, refusal and result on a public record.</p>
   ${videoBlock}
   <div class="cl-btns"><a class="cl-btn cl-primary" href="/contact.vcf" download>Save contact</a><a class="cl-btn" href="/${brandQ}">Try the demo: tap Lock in on a position</a></div>
   <div class="cl-links"><a href="${escapeHtml(c.linkedin)}">LinkedIn</a><a href="mailto:${escapeHtml(c.email)}">Email</a><a href="https://wa.me/${escapeHtml(c.phoneE164.replace(/^\+/, ""))}">WhatsApp</a><a href="${trackRecordUrl}">${recordLabel}</a></div>
@@ -240,7 +240,7 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const videoBlock = video
     ? `<div class="live"><div class="live-h">Seen live</div>` +
       `<video controls preload="none" playsinline poster="${escapeHtml(video.poster)}" src="${escapeHtml(video.src)}"></video>` +
-      `<p>A real position on a real exchange, locked and hedged on Kalshi. Receipt on screen.</p>` +
+      `<p>A real position on a real exchange, locked and hedged on Kalshi, then settled on the official result: $13.85 instead of $0. Receipt on screen.</p>` +
       `<p class="live-fine">Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p></div>`
     : "";
   const card = opts.card ?? null;
