@@ -245,8 +245,11 @@ are widest and clearest there.
 2. **Record.** `/` on the service a moment later: the position appears with `source: lock`, the
    three numbers match the panel. Operator cut: `/api/shadow/hedges` shows the live attempt, order
    id, fill, cost.
-3. **Settlement.** After the game, the position's settled row on the record and the chip's details
-   panel: what the holder received, what the play alone would have paid.
+3. **Settlement.** After the game, the position's settled row on the record and, on the venue's
+   Settled tab, the chip's details panel: what the holder ends with, what the play alone would
+   have paid, and where the money stands ("$8.00 owed to you", then "paid in full" once the
+   operator records the payment with `POST /api/shadow/cash`). Settled plays that were never
+   locked read "Not protected".
 
 Rules the service enforces, so plan the game around them:
 

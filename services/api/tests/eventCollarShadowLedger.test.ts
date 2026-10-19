@@ -10,6 +10,7 @@ import { join } from "node:path";
 import {
   POSITIONS_CSV_COLUMNS,
   appendShadowRecord,
+  cashDue,
   hedgeCostOf,
   hedgeUnitsOf,
   loadShadowPositions,
@@ -52,6 +53,43 @@ test("shadow: settle payouts match the app's outcome totals", () => {
   assert.equal(no.protectedCents, 52 * 150 + 112); // 7912
   assert.equal(no.nakedCents, 0);
   assert.equal(no.deltaCents, 7912); // the floor save
+});
+
+test("shadow: cash due follows the lock's state; cash lines pay a leg down and never below zero; a line on no position is noise", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shadow-cash-"));
+  const path = join(dir, "lock.jsonl");
+  const t = OPEN_FIXTURE.ticker;
+  appendShadowRecord(path, { ...OPEN_FIXTURE, source: "lock", contracts: 20 });
+  // a cash line before its position, a bad leg, zero cents: none of them land
+  appendShadowRecord(path, { type: "cash", at: "2026-09-12T16:01:00.000Z", ticker: "KX-NOBODY", leg: "credit", cents: 50 });
+  appendShadowRecord(path, { type: "cash", at: "2026-09-12T16:01:00.000Z", ticker: t, leg: "rebate" as never, cents: 50 });
+  appendShadowRecord(path, { type: "cash", at: "2026-09-12T16:01:00.000Z", ticker: t, leg: "credit", cents: 0 });
+  let [p] = loadShadowPositions(path);
+  assert.equal(p.cash, undefined);
+  assert.deepEqual(cashDue(p), [{ leg: "credit", to: "holder", dueCents: 112, paidCents: 0, outstandingCents: 112, paidAt: null }], "open: the credit, nothing else");
+
+  appendShadowRecord(path, { type: "cash", at: "2026-09-12T16:02:00.000Z", ticker: t, leg: "credit", cents: 100, method: "venue transfer", ref: "tx-1" });
+  [p] = loadShadowPositions(path);
+  assert.deepEqual(p.cash, [{ at: "2026-09-12T16:02:00.000Z", leg: "credit", cents: 100, method: "venue transfer" }], "the reference stays in the raw ledger");
+  assert.deepEqual(cashDue(p)[0], { leg: "credit", to: "holder", dueCents: 112, paidCents: 100, outstandingCents: 12, paidAt: null });
+  appendShadowRecord(path, { type: "cash", at: "2026-09-12T16:03:00.000Z", ticker: t, leg: "credit", cents: 12 });
+  [p] = loadShadowPositions(path);
+  assert.deepEqual(cashDue(p)[0], { leg: "credit", to: "holder", dueCents: 112, paidCents: 112, outstandingCents: 0, paidAt: "2026-09-12T16:03:00.000Z" }, "paid at the time of the line that completed it");
+
+  // settled lost: the floor is owed to the holder; a payment over the due leaves nothing negative
+  appendShadowRecord(path, { type: "settle", at: "2026-09-13T21:00:00.000Z", ticker: t, result: "no" });
+  [p] = loadShadowPositions(path);
+  assert.deepEqual(cashDue(p).map((d) => [d.leg, d.to, d.dueCents, d.outstandingCents]), [["credit", "holder", 112, 0], ["floor", "holder", 52 * 20, 52 * 20]]);
+  appendShadowRecord(path, { type: "cash", at: "2026-09-14T12:00:00.000Z", ticker: t, leg: "floor", cents: 52 * 20 + 1 });
+  [p] = loadShadowPositions(path);
+  assert.deepEqual(cashDue(p)[1], { leg: "floor", to: "holder", dueCents: 1040, paidCents: 1041, outstandingCents: 0, paidAt: "2026-09-14T12:00:00.000Z" });
+
+  // settled won: the slice above the cap goes back to the writer; a cap at $1 hands nothing back; void and close owe only the credit
+  const won = { ...p, status: "settled" as const, result: "yes" as const, cash: undefined };
+  assert.deepEqual(cashDue(won).map((d) => [d.leg, d.to, d.dueCents]), [["credit", "holder", 112], ["handback", "writer", (100 - 63) * 20]]);
+  assert.deepEqual(cashDue({ ...won, capCents: 100 }).map((d) => d.leg), ["credit"]);
+  assert.deepEqual(cashDue({ ...won, status: "void" as const, result: undefined }).map((d) => d.leg), ["credit"]);
+  assert.deepEqual(cashDue({ ...won, status: "closed" as const, result: undefined }).map((d) => d.leg), ["credit"]);
 });
 
 test("shadow: writer nets the published take whether the holder won or lost", () => {

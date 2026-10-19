@@ -48,18 +48,27 @@
  * bought on. Everything that is a study rather than a receipt (rule counterfactuals, hedge
  * receipts, the last-leg tickets, netting measured on the book) is an operator view. A new
  * measurement joins the operator views first; it reaches the record only by decision.
+ *
+ * A holder's lock (source "lock", its own ledger) also carries the money between the two parties:
+ * POST /api/shadow/cash (operator) records each payment against the leg it pays (credit, floor,
+ * handback); the holder's receipt and the public record say what is owed and what was paid
+ * (`curl -s -X POST -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" -H "content-type: application/json" \
+ *   -d '{"ticker":"KX...","leg":"floor","cents":1200,"method":"venue transfer","ref":"..."}' https://<service>/api/shadow/cash`).
  */
 
 import { createReadStream, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import {
+  CASH_LEGS,
   appendShadowRecord,
+  cashDue,
   hedgeUnitsOf,
   ledgerStats,
   loadShadowPositions,
   positionsCsv,
   summarizeShadow,
+  type CashLeg,
   type ShadowPosition,
   type ShadowSummary,
 } from "../src/eventCollar/crossVenue/shadowLedger";
@@ -197,6 +206,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/hedges/preflight",
   "/api/shadow/hedges/resend",
   "/api/shadow/lock/reset",
+  "/api/shadow/cash",
   "/api/shadow/export",
   "/api/shadow/reset",
   "/api/shadow/lastleg",
@@ -620,10 +630,77 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         ...(lock.result ? { result: lock.result, protectedCents: lock.protectedCents, nakedCents: lock.nakedCents, settledAt: lock.settledAt } : {}),
       },
       hedge: receipt ? hedgeViewOf(receipt) : null,
+      // what the lock owes and what has been paid, leg by leg; the payments' references stay in the ledger
+      cash: cashDue(lock),
     });
     return;
   }
   sendJson(res, 404, { ok: false, error: "not found" });
+}
+
+/**
+ * POST /api/shadow/cash (operator): record that money moved on a lock. Body {ticker, leg, cents,
+ * method?, ref?, note?, at?}. The leg must be one the lock owes in its current state: the credit
+ * from the tap; the floor once the side has settled lost; the handback once it has settled won.
+ * A payment past what is outstanding is refused, so the record cannot say more was paid than
+ * was owed. Appends one line to the lock ledger; the holder's receipt reads it from there.
+ */
+async function handleCash(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/cash {ticker, leg, cents, method?, ref?, note?, at?} with the operator token" });
+    return;
+  }
+  const body = (await readJsonBody(req)) as Record<string, unknown> | null;
+  if (!body || typeof body !== "object") {
+    sendJson(res, 400, { ok: false, error: "bad_request", message: "a JSON body is required" });
+    return;
+  }
+  const ticker = String(body.ticker ?? "").trim().toUpperCase();
+  const leg = String(body.leg ?? "").trim().toLowerCase() as CashLeg;
+  const cents = typeof body.cents === "number" ? body.cents : Number(body.cents);
+  const at = body.at === undefined ? new Date().toISOString() : String(body.at);
+  if (!ticker) {
+    sendJson(res, 400, { ok: false, error: "bad_request", message: "ticker names the lock" });
+    return;
+  }
+  if (!CASH_LEGS.includes(leg)) {
+    sendJson(res, 400, { ok: false, error: "bad_request", message: `leg must be one of ${CASH_LEGS.join(", ")}` });
+    return;
+  }
+  if (!Number.isInteger(cents) || cents <= 0) {
+    sendJson(res, 400, { ok: false, error: "bad_request", message: "cents must be a positive whole number" });
+    return;
+  }
+  if (!Number.isFinite(Date.parse(at))) {
+    sendJson(res, 400, { ok: false, error: "bad_request", message: "at must be an ISO time" });
+    return;
+  }
+  const lock = loadShadowPositions(LOCK_LEDGER_PATH).find((p) => p.ticker === ticker);
+  if (!lock) {
+    sendJson(res, 404, { ok: false, error: "no_lock", message: `no lock on the record for ${ticker}` });
+    return;
+  }
+  const due = cashDue(lock);
+  const owed = due.find((d) => d.leg === leg);
+  if (!owed) {
+    sendJson(res, 409, { ok: false, error: "leg_not_owed", message: `${ticker} owes no ${leg} in its current state (${lock.status}${lock.result ? `, ${lock.result}` : ""})`, cash: due });
+    return;
+  }
+  if (cents > owed.outstandingCents) {
+    sendJson(res, 409, { ok: false, error: "overpaid", message: `${leg} has ${owed.outstandingCents} cents outstanding; ${cents} would pay more than is owed`, cash: due });
+    return;
+  }
+  const strOpt = (k: string) => {
+    const v = body[k];
+    return typeof v === "string" && v.trim() ? { [k]: v.trim().slice(0, 200) } : {};
+  };
+  const line = { type: "cash" as const, at, ticker, leg, cents, ...strOpt("method"), ...strOpt("ref"), ...strOpt("note") };
+  if (!appendOrAlert(line, LOCK_LEDGER_PATH)) {
+    sendJson(res, 500, { ok: false, error: "ledger_write_failed" });
+    return;
+  }
+  const updated = loadShadowPositions(LOCK_LEDGER_PATH).find((p) => p.ticker === ticker)!;
+  sendJson(res, 200, { ok: true, at: new Date().toISOString(), ticker, recorded: { at, leg, cents, ...strOpt("method") }, cash: cashDue(updated) });
 }
 
 /**
@@ -1080,9 +1157,10 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
  * The counterfactual rule books and the hedge leg's venue token stay with the operator (the raw
  * ledger, the full CSV); a reader can recompute every public row without them.
  */
-function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "hedgeTokenId"> {
+function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "hedgeTokenId"> & { cashDue?: ReturnType<typeof cashDue> } {
   const { counterfactuals: _cf, hedgeTokenId: _tok, ...rest } = p;
-  return rest;
+  // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
+  return p.source === "lock" ? { ...rest, cashDue: cashDue(p) } : rest;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -1357,6 +1435,10 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/lock/reset") {
       handleLockReset(req, res, url);
+      return;
+    }
+    if (url.pathname === "/api/shadow/cash") {
+      void handleCash(req, res).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
       return;
     }
     if (url.pathname === "/report") {
