@@ -199,7 +199,7 @@ test("embed: the live recording sits in the pitch column, plays only on tap, car
   const html = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND });
   assert.ok(html.includes('<div class="live"><div class="live-h">Seen live</div>'), "the block is labelled");
   assert.ok(html.includes('<video controls preload="none" playsinline poster="/media/lockin-live.jpg" src="/media/lockin-live.mp4"></video>'), "default: the bundled file, no autoplay, nothing fetched until play");
-  assert.ok(html.includes("A real position on a real exchange, locked and hedged on Kalshi. Receipt on screen."), "the one sentence names Kalshi");
+  assert.ok(html.includes("A real position on a real exchange, locked and hedged on Kalshi, then settled on the official result: $13.85 instead of $0. Receipt on screen."), "the one sentence names Kalshi and the settlement");
   assert.ok(html.includes("Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue."), "the disclaimer travels with the clip");
   assert.ok(html.includes('<meta property="og:video" content="/media/lockin-live.mp4" />') && html.includes('<meta property="og:image" content="/media/lockin-live.jpg" />'), "a shared link previews the clip");
   const aside = /<aside class="pitch">([\s\S]*?)<\/aside>/.exec(html)?.[1] || "";

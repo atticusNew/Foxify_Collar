@@ -208,7 +208,7 @@ function renderCardLanding(c: CardContact, video: LiveVideo | null, trackRecordU
   const name = escapeHtml(`${c.givenName} ${c.familyName}`.trim());
   const videoBlock = video
     ? `<video controls preload="metadata" playsinline poster="${escapeHtml(video.poster)}" src="${escapeHtml(video.src)}"></video>` +
-      `<p class="cl-cap"><b>Seen live on a real position.</b> Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p>`
+      `<p class="cl-cap"><b>Seen live on a real position, locked Thursday and settled Sunday.</b> Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p>`
     : "";
   return `<section class="cardland"><div class="in">
   <img class="cl-logo" src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
@@ -240,7 +240,7 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const videoBlock = video
     ? `<div class="live"><div class="live-h">Seen live</div>` +
       `<video controls preload="none" playsinline poster="${escapeHtml(video.poster)}" src="${escapeHtml(video.src)}"></video>` +
-      `<p>A real position on a real exchange, locked and hedged on Kalshi. Receipt on screen.</p>` +
+      `<p>A real position on a real exchange, locked and hedged on Kalshi, then settled on the official result: $13.85 instead of $0. Receipt on screen.</p>` +
       `<p class="live-fine">Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p></div>`
     : "";
   const card = opts.card ?? null;
