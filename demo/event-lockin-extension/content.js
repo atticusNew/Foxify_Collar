@@ -129,12 +129,19 @@
   };
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+  /**
+   * The sides a row can name: the markets the service can protect this week, and the holder's
+   * own locks. The service lists live markets only, so a locked game drops off the list when it
+   * settles; without its lock in the index the settled row could not be tied to its record and
+   * would read as never protected.
+   */
   const indexMarkets = (markets) => {
     S.markets = markets;
     S.byTicker = {};
     S.nicks = new Map();
     S.codes = new Map();
-    for (const m of markets) {
+    const locks = [...S.record.values()].filter((p) => p.ticker && p.league && !markets.some((m) => m.ticker === p.ticker));
+    for (const m of [...markets, ...locks]) {
       S.byTicker[m.ticker] = m;
       const code = codeOf(m.ticker);
       for (const c of [code, ...(CODE_ALIAS[code] || [])]) {
@@ -172,6 +179,8 @@
   const rememberLock = (ticker, next) => {
     const prev = S.record.get(ticker);
     S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), ms: prev.ms, hedge: next.hedge || prev.hedge || null } : next);
+    // a lock on a game the service no longer lists joins the index so its row is still found
+    if (!S.byTicker[ticker] && next.league) indexMarkets(S.markets);
   };
 
   /** The service's confirmation of what the account holds, when it has a read key. */
@@ -568,7 +577,7 @@
   const stateOf = (ticker) => {
     let st = S.st.get(ticker);
     if (!st) {
-      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, enter: false, how: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptBusy: false, rcptErr: "" };
+      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, enter: false, how: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptCash: null, rcptBusy: false, rcptErr: "" };
       S.st.set(ticker, st);
     }
     return st;
@@ -687,7 +696,7 @@
       case "unmatched":
         return { why: "This play has not been matched yet.", next: "It is an order until another account takes the other side. Protection prices on the matched stake; check back once it fills." };
       case "settled":
-        return { why: "This play has settled.", next: "Protection is for plays on games that have not started." };
+        return { why: "This play settled without protection.", next: "Protection is locked before the game starts. A locked play shows what it paid here once it settles." };
       case "market_too_close_to_start":
       case "market_not_active":
         return { why: "This game starts too soon to protect.", next: "Protection is available until shortly before kickoff." };
@@ -706,6 +715,29 @@
     }
   };
 
+  /**
+   * Where the money stands on a lock, from the record's cash legs (what each leg owes, what was
+   * paid): what is still owed to the holder, what the holder still owes back, or paid in full.
+   * Null when the service's record predates cash legs; the line then says only what settled.
+   */
+  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap" };
+  const cashState = (rec) => {
+    const legs = Array.isArray(rec.cashDue) ? rec.cashDue : null;
+    if (!legs || !legs.length) return null;
+    const toYou = legs.filter((l) => l.to === "holder").reduce((s, l) => s + (l.outstandingCents || 0), 0);
+    const back = legs.filter((l) => l.to === "writer").reduce((s, l) => s + (l.outstandingCents || 0), 0);
+    if (toYou > 0) return { label: esc(usd(toYou)) + " owed to you", sub: "on its way", open: true };
+    if (back > 0) return { label: esc(usd(back)) + " due back", sub: "the slice above the cap", open: true };
+    return { label: "paid in full", sub: "", open: false };
+  };
+  const legLine = (l) => {
+    const who = l.to === "holder" ? "to you" : "back to the writer";
+    const amount = (l.to === "holder" && l.leg === "credit" ? "+" : "") + esc(usd(l.dueCents));
+    if (l.outstandingCents === 0 && l.paidCents > 0) return amount + ' <span class="ael-dim">&middot; paid ' + (l.paidAt ? esc(fmtAt(l.paidAt)) : "") + "</span>";
+    if (l.paidCents > 0) return amount + ' <span class="ael-dim">&middot; ' + esc(usd(l.paidCents)) + " paid, " + esc(usd(l.outstandingCents)) + " owed " + who + "</span>";
+    return amount + ' <span class="ael-dim">&middot; owed ' + who + "</span>";
+  };
+
   const CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
   const lineGo = (label, sub, cls) => '<button type="button" class="ael-line ' + (cls || "") + '"><span class="ael-ic">' + (cls === "ael-line-on" ? SHIELD_FILL : SHIELD) + '</span><span class="ael-lt"><b>' + label + "</b>" + (sub ? "<span>" + sub + "</span>" : "") + '</span><span class="ael-chev">' + CHEVRON + "</span></button>";
 
@@ -718,15 +750,22 @@
     let line;
     if (rec) {
       const rs = reshape(rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
-      if (rec.status === "settled" && rec.result) line = lineGo("Settled &middot; paid " + esc(usd(rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal)), "", "ael-line-on");
-      else if (rec.status === "void") line = lineGo("Protection voided", "no official result; nothing owed", "ael-line-on");
+      if (rec.status === "settled" && rec.result) {
+        // the protected outcome is the record's; whether the cash has moved is said beside it,
+        // never as "paid" on its own, since the holder can see at the venue whether it has
+        const got = usd(rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal);
+        const cash = cashState(rec);
+        line = cash
+          ? lineGo("Settled &middot; " + (cash.open ? cash.label : "paid " + esc(got)), cash.open ? "protected outcome " + esc(got) + (cash.sub ? " &middot; " + cash.sub : "") : "every leg paid", "ael-line-on")
+          : lineGo("Settled &middot; protected " + esc(got), "", "ael-line-on");
+      } else if (rec.status === "void") line = lineGo("Protection voided", "no official result; nothing owed", "ael-line-on");
       else line = lineGo("Protected" + (rec.rehearsal ? " (rehearsal)" : "") + " &middot; " + esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), "whichever way it goes &middot; +" + esc(usd(rec.creditCents)) + " paid", "ael-line-on");
     } else if (B.kind === "other") {
       line = lineGo("Protection unavailable", "covers Moneyline picks", "ael-line-off");
     } else if (B.match === "unmatched") {
       line = lineGo("Protection unavailable", "waits until the play is matched", "ael-line-off");
     } else if (B.match === "settled") {
-      line = lineGo("Protection unavailable", "this play has settled", "ael-line-off");
+      line = lineGo("Not protected", "this play settled without protection", "ael-line-off");
     } else if (!B.size) {
       line = lineGo("Lock in", "size not read from the page", "");
     } else if (!st.quote) {
@@ -946,19 +985,25 @@
         "</div>"
       );
     }
-    if (st.rcptBusy && !h) return '<div class="ael-rcpt">' + row("Receipt", '<span class="ael-dim">reading&hellip;</span>') + "</div>";
-    if (!h) return '<div class="ael-rcpt">' + row("Receipt", '<span class="ael-dim">' + esc(st.rcptErr || "not available right now") + "</span>") + "</div>";
-    const units = h.unitsMilli != null ? (h.unitsMilli / 1000).toFixed(2).replace(/\.00$/, "") : null;
-    const venue = h.venue || "Kalshi";
     const lines = [];
-    if (h.simulated) {
-      lines.push(row("Other side", (units ? esc(units) + " contracts " : "") + "covered at the book" + (h.costCents != null ? " &middot; " + esc(usd(h.costCents)) : "")));
-    } else {
-      lines.push(row("Other side", esc(units || "") + " contracts No on " + esc(venue) + (h.avgPriceMilli != null ? " at " + esc((h.avgPriceMilli / 10).toFixed(1)) + "c each with fees" : "")));
-      if (h.costCents != null) lines.push(row("Cost", esc(usd(h.costCents)) + ' <span class="ael-dim">all in</span>'));
-      if (h.orderId) lines.push(row("Order", "<code>" + esc(String(h.orderId).slice(0, 8)) + "&hellip;</code> " + esc(venue) + (h.at ? ' <span class="ael-dim">&middot; ' + esc(fmtAt(h.at)) + "</span>" : "")));
+    if (st.rcptBusy && !h) lines.push(row("Receipt", '<span class="ael-dim">reading&hellip;</span>'));
+    else if (!h) lines.push(row("Receipt", '<span class="ael-dim">' + esc(st.rcptErr || "not available right now") + "</span>"));
+    else {
+      const units = h.unitsMilli != null ? (h.unitsMilli / 1000).toFixed(2).replace(/\.00$/, "") : null;
+      const venue = h.venue || "Kalshi";
+      if (h.simulated) {
+        lines.push(row("Other side", (units ? esc(units) + " contracts " : "") + "covered at the book" + (h.costCents != null ? " &middot; " + esc(usd(h.costCents)) : "")));
+      } else {
+        lines.push(row("Other side", esc(units || "") + " contracts No on " + esc(venue) + (h.avgPriceMilli != null ? " at " + esc((h.avgPriceMilli / 10).toFixed(1)) + "c each with fees" : "")));
+        if (h.costCents != null) lines.push(row("Cost", esc(usd(h.costCents)) + ' <span class="ael-dim">all in</span>'));
+        if (h.orderId) lines.push(row("Order", "<code>" + esc(String(h.orderId).slice(0, 8)) + "&hellip;</code> " + esc(venue) + (h.at ? ' <span class="ael-dim">&middot; ' + esc(fmtAt(h.at)) + "</span>" : "")));
+      }
+      if (h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
     }
-    if (h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
+    // the money between the two parties, leg by leg, as the record has it: the credit from the
+    // tap, and at settlement the floor to the holder or the slice above the cap back to the writer
+    const legs = Array.isArray(st.rcptCash) && st.rcptCash.length ? st.rcptCash : Array.isArray(rec.cashDue) ? rec.cashDue : [];
+    for (const l of legs) if (LEG_WORDS[l.leg]) lines.push(row(LEG_WORDS[l.leg], legLine(l)));
     return '<div class="ael-rcpt">' + lines.join("") + "</div>";
   };
 
@@ -971,6 +1016,7 @@
     st.rcptBusy = false;
     if (r.ok && r.json && r.json.ok) {
       st.rcptHedge = r.json.hedge || null;
+      st.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : null;
       st.rcptErr = r.json.hedge ? "" : "no hedge on the trail for this lock";
     } else st.rcptErr = (r.json && (r.json.message || r.json.error)) || r.error || "could not read the receipt";
     paintRow(B);
@@ -999,8 +1045,11 @@
       const got = rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal;
       const naked = rec.nakedCents != null ? rec.nakedCents : rec.result === "yes" ? 100 * rec.contracts : 0;
       head = '<span class="ael-ck">&#x2713;</span>Settled &middot; ' + esc(nick) + (rec.result === "yes" ? " won" : " lost");
-      sum = "You received <b>" + esc(usd(got)) + "</b> &middot; unprotected it would have paid <b>" + esc(usd(naked)) + "</b>";
+      // "you end with", not "you received": whether the cash has moved is the next clause
+      const cash = cashState(rec);
+      sum = "You end with <b>" + esc(usd(got)) + "</b> &middot; unprotected it would have paid <b>" + esc(usd(naked)) + "</b>" + (cash ? " &middot; <b>" + cash.label + "</b>" : "");
       if (rec.settledAt) meta.push("settled " + esc(fmtAt(rec.settledAt)));
+      if (cash && cash.open) meta.push(rec.result === "yes" ? "the slice above the cap goes back to the writer; the receipt shows each leg" : "the floor comes to you; the receipt shows each leg");
     } else if (rec.status === "void") {
       head = "Protection voided";
       sum = "No official result for this game &middot; nothing owed either way";

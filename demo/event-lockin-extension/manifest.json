@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Atticus Earn & Protect: Lock in (demo placement)",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "description": "Demo-only, local rendering on the venue's My Plays page: a Lock in line under each open matched play, an inline panel with the terms, and a Protected chip once locked. Nothing is drawn before a trade. Pricing, the record and the hedge run in the Atticus event service; this extension holds no venue credentials and is placement only.",
   "permissions": [
     "storage"
