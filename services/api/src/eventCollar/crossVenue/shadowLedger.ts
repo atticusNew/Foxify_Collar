@@ -138,7 +138,30 @@ export interface ShadowVoidRecord {
   reason: string;
 }
 
-export type ShadowRecord = ShadowOpenRecord | ShadowSettleRecord | ShadowVoidRecord | ShadowCloseRecord;
+/**
+ * CASH. Money that actually moved between the writer and the holder of a lock, as the operator
+ * recorded it. The record's other lines say what is owed (the credit at the tap; at settlement
+ * the floor to the holder when the side lost, or the slice above the cap back to the writer when
+ * it won); this line says a payment happened. Direction follows the leg. Several lines may pay
+ * one leg. The scan's showcase positions never carry one: nobody is paid on paper.
+ */
+export type CashLeg = "credit" | "floor" | "handback";
+export const CASH_LEGS: readonly CashLeg[] = ["credit", "floor", "handback"];
+export interface ShadowCashRecord {
+  type: "cash";
+  at: string;
+  ticker: string;
+  leg: CashLeg;
+  /** cents that moved, positive */
+  cents: number;
+  /** how it moved, in the operator's words ("venue transfer", "wire", "cash") */
+  method?: string;
+  /** the payment's own reference; stays in the raw ledger, never on a page */
+  ref?: string;
+  note?: string;
+}
+
+export type ShadowRecord = ShadowOpenRecord | ShadowSettleRecord | ShadowVoidRecord | ShadowCloseRecord | ShadowCashRecord;
 
 export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   status: "open" | "settled" | "void" | "closed";
@@ -167,6 +190,39 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   closeUnwindFrictionCents?: number | null;
   /** an early close was attempted and a leg had no depth; the position runs to settlement */
   closeUnpriced?: { at: string; reason: string };
+  /** payments recorded on this lock, oldest first; the reference and note stay in the raw ledger */
+  cash?: Array<{ at: string; leg: CashLeg; cents: number; method?: string }>;
+}
+
+/** One leg of cash the lock owes, and how much of it has been paid. */
+export interface CashLegDue {
+  leg: CashLeg;
+  /** who receives it */
+  to: "holder" | "writer";
+  dueCents: number;
+  paidCents: number;
+  outstandingCents: number;
+  /** when the leg was paid in full, else null */
+  paidAt: string | null;
+}
+
+/**
+ * What a lock owes and to whom, from its terms and its state, with the cash lines applied. The
+ * credit is owed to the holder from the tap. A settled position adds one leg: the floor to the
+ * holder when the side lost, the slice above the cap to the writer when it won (none when the
+ * cap is $1). A void or closed position owes nothing beyond the credit; a close is settled at
+ * live prices on the books, not between the two parties.
+ */
+export function cashDue(p: ShadowPosition): CashLegDue[] {
+  const owed: Array<{ leg: CashLeg; to: "holder" | "writer"; dueCents: number }> = [{ leg: "credit", to: "holder", dueCents: p.creditCents }];
+  if (p.status === "settled" && p.result === "no") owed.push({ leg: "floor", to: "holder", dueCents: p.floorCents * p.contracts });
+  if (p.status === "settled" && p.result === "yes" && p.capCents < 100) owed.push({ leg: "handback", to: "writer", dueCents: (100 - p.capCents) * p.contracts });
+  return owed.map((o) => {
+    const lines = (p.cash ?? []).filter((c) => c.leg === o.leg);
+    const paidCents = lines.reduce((s, c) => s + c.cents, 0);
+    const outstandingCents = Math.max(0, o.dueCents - paidCents);
+    return { ...o, paidCents, outstandingCents, paidAt: lines.length > 0 && outstandingCents === 0 ? lines[lines.length - 1].at : null };
+  });
 }
 
 /** Outcome math for one settled position — the same totals the app banner shows. */
@@ -306,6 +362,12 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
       const pos = byTicker.get(rec.ticker);
       if (!pos || pos.status !== "open") continue;
       byTicker.set(rec.ticker, { ...pos, status: "void", voidReason: rec.reason });
+    } else if (rec.type === "cash") {
+      // a payment lands on the position in any state; one that names no position is noise
+      const pos = byTicker.get(rec.ticker);
+      if (!pos || !CASH_LEGS.includes(rec.leg) || !Number.isInteger(rec.cents) || rec.cents <= 0) continue;
+      const line = { at: rec.at, leg: rec.leg, cents: rec.cents, ...(rec.method ? { method: rec.method } : {}) };
+      byTicker.set(rec.ticker, { ...pos, cash: [...(pos.cash ?? []), line] });
     } else if (rec.type === "close") {
       const pos = byTicker.get(rec.ticker);
       if (!pos || pos.status !== "open") continue;

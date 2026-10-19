@@ -108,6 +108,13 @@ function candidate(contracts: number, entryCents: number): CandidateResult {
   };
 }
 
+/** The lock's terms as the ledger has them, for the cash the test expects it to owe. */
+function relockTerms(ledger: string): { creditCents: number; floorCents: number } {
+  const lock = loadShadowPositions(ledger).find((p) => p.source === "lock");
+  assert.ok(lock, "a lock on the record");
+  return { creditCents: lock.creditCents, floorCents: lock.floorCents };
+}
+
 test("shadow worker lock routes: 404 without a key, 403 with the wrong one; markets, quote and lock answer to the key; the lock writes source=lock and hedges dry", async () => {
   const dir = mkdtempSync(join(tmpdir(), "shadow-lock-"));
   const scanLedger = join(dir, "ledger.jsonl");
@@ -401,6 +408,67 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(exported.trim().split("\n").length, 1);
     assert.equal((JSON.parse(exported.trim()) as { source: string }).source, "lock");
     assert.ok(!JSON.stringify(pub).includes("novig"));
+
+    // CASH (operator): money that moved on the lock goes on the record, leg by leg; the receipt
+    // and the public record say what is owed and what was paid, never more than was owed
+    type Due = { leg: string; to: string; dueCents: number; paidCents: number; outstandingCents: number; paidAt: string | null };
+    const postCash = (body: unknown, headers: Record<string, string> = op) => fetch(`${base}/api/shadow/cash`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body) });
+    const credit = relockTerms(ledger).creditCents;
+    assert.equal((await postCash({ ticker: TICKER, leg: "credit", cents: credit }, {})).status, 403, "operator only");
+    assert.equal((await postCash({ ticker: TICKER, leg: "credit", cents: credit }, key)).status, 403, "the lock key records no cash");
+    assert.equal((await fetch(`${base}/api/shadow/cash`, { headers: op })).status, 405, "GET records nothing");
+    for (const [body, why] of [
+      [{ leg: "credit", cents: 1 }, "no ticker"],
+      [{ ticker: TICKER, leg: "rebate", cents: 1 }, "unknown leg"],
+      [{ ticker: TICKER, leg: "credit", cents: 0 }, "zero"],
+      [{ ticker: TICKER, leg: "credit", cents: 1.5 }, "fractional cents"],
+      [{ ticker: TICKER, leg: "credit", cents: -5 }, "negative"],
+      [{ ticker: TICKER, leg: "credit", cents: 1, at: "yesterday" }, "bad time"],
+    ] as Array<[unknown, string]>) assert.equal((await postCash(body)).status, 400, why);
+    assert.equal((await postCash({ ticker: "KXNBAGAME-26OCT14LALBOS-LAL", leg: "credit", cents: 1 })).status, 404, "no lock, nothing to pay");
+    const early = await postCash({ ticker: TICKER, leg: "floor", cents: 100 });
+    assert.equal(early.status, 409, "the floor is owed only once the side has settled lost");
+    assert.equal(((await early.json()) as { error: string }).error, "leg_not_owed");
+    assert.equal(readFileSync(ledger, "utf8").trim().split("\n").length, 1, "nothing refused reaches the ledger");
+
+    const dueBefore = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { cash: Due[] };
+    assert.deepEqual(dueBefore.cash, [{ leg: "credit", to: "holder", dueCents: credit, paidCents: 0, outstandingCents: credit, paidAt: null }], "an open lock owes the holder the credit");
+
+    const part = Math.max(1, Math.floor(credit / 2));
+    const paid1 = (await (await postCash({ ticker: TICKER.toLowerCase(), leg: "Credit", cents: part, method: "venue transfer", ref: "tx-001", at: "2026-10-14T01:00:00.000Z" })).json()) as { ok: boolean; recorded: { leg: string; cents: number; method: string }; cash: Due[] };
+    assert.equal(paid1.ok, true);
+    assert.deepEqual(paid1.recorded, { at: "2026-10-14T01:00:00.000Z", leg: "credit", cents: part, method: "venue transfer" });
+    assert.deepEqual(paid1.cash[0], { leg: "credit", to: "holder", dueCents: credit, paidCents: part, outstandingCents: credit - part, paidAt: null }, "part paid: still outstanding");
+    const over = await postCash({ ticker: TICKER, leg: "credit", cents: credit - part + 1 });
+    assert.equal(over.status, 409, "a payment past what is outstanding is refused");
+    assert.equal(((await over.json()) as { error: string }).error, "overpaid");
+    const paid2 = (await (await postCash({ ticker: TICKER, leg: "credit", cents: credit - part, at: "2026-10-14T01:05:00.000Z" })).json()) as { cash: Due[] };
+    assert.deepEqual(paid2.cash[0], { leg: "credit", to: "holder", dueCents: credit, paidCents: credit, outstandingCents: 0, paidAt: "2026-10-14T01:05:00.000Z" }, "paid in full at the last line's time");
+    const lines = readFileSync(ledger, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    assert.equal(lines.length, 3);
+    assert.deepEqual(lines[1], { type: "cash", at: "2026-10-14T01:00:00.000Z", ticker: TICKER, leg: "credit", cents: part, method: "venue transfer", ref: "tx-001" }, "the payment's own reference is in the raw ledger");
+
+    // the public record: the lock carries what it owes and what was paid; the reference never
+    // leaves the ledger; the scan's showcase position pays nobody and carries nothing
+    const pubCash = (await (await fetch(`${base}/api/shadow`)).json()) as { open: Array<{ contracts: number; cashDue?: Due[]; cash?: unknown }> };
+    const lockPub = pubCash.open.find((p) => p.contracts === 20)!;
+    const scanPub = pubCash.open.find((p) => p.contracts === 150)!;
+    assert.deepEqual(lockPub.cashDue?.map((d) => [d.leg, d.outstandingCents]), [["credit", 0]]);
+    assert.equal(scanPub.cashDue, undefined);
+    assert.ok(!JSON.stringify(pubCash).includes("tx-001"));
+
+    // settled lost: the floor is owed to the holder; settled won would owe the slice above the cap back
+    appendShadowRecord(ledger, { type: "settle", at: "2026-10-15T03:00:00.000Z", ticker: TICKER, result: "no" });
+    const terms = relockTerms(ledger);
+    const dueAfter = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { lock: { status: string; result: string }; cash: Due[] };
+    assert.equal(dueAfter.lock.status, "settled");
+    assert.deepEqual(dueAfter.cash.map((d) => [d.leg, d.to, d.dueCents, d.outstandingCents]), [["credit", "holder", credit, 0], ["floor", "holder", terms.floorCents * 20, terms.floorCents * 20]]);
+    assert.equal((await postCash({ ticker: TICKER, leg: "handback", cents: 1 })).status, 409, "a lost side hands nothing back");
+    const floorPaid = (await (await postCash({ ticker: TICKER, leg: "floor", cents: terms.floorCents * 20, method: "wire" })).json()) as { cash: Due[] };
+    assert.deepEqual(floorPaid.cash.map((d) => [d.leg, d.outstandingCents]), [["credit", 0], ["floor", 0]], "every leg paid");
+    const settledPub = (await (await fetch(`${base}/api/shadow`)).json()) as { settled: Array<{ cashDue?: Due[] }> };
+    assert.equal(settledPub.settled.length, 1);
+    assert.ok(settledPub.settled[0].cashDue?.every((d) => d.outstandingCents === 0 && d.paidAt));
   } finally {
     await new Promise<void>((r) => worker.server.close(() => r()));
   }
