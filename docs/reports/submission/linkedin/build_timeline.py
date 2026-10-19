@@ -75,7 +75,7 @@ ROWS = [
             },
             {
                 "year": "now",
-                "sub": "Atticus: built. One tap, floor + credit, priced and hedged leg for leg in shadow. Every quote public since Sept 2026.",
+                "sub": "Atticus: live. One tap, floor + credit, hedged leg for leg on a regulated exchange. First real position protected Oct 15, settled Oct 18, 2026. Every quote public since Sept 2026.",
                 "kind": "now",
             },
         ],
@@ -89,6 +89,8 @@ ROWS = [
 LEGEND = [("dot", "happened"), ("ring", "arriving"), ("diamond", "Atticus")]
 FOOT_LEFT = "ATTICUS"
 FOOT_RIGHT = "Dates, sources, demo and public record: first comment."
+# a direct message has no first comment; the --dm build points at the site instead
+FOOT_RIGHT_DM = "Dates, sources, the live clip and the public record: event.earnandprotect.xyz"
 
 
 def esc(s: str) -> str:
@@ -285,8 +287,14 @@ def screenshot(html_path: Path, png_path: Path, w: int, h: int) -> None:
 
 
 def main() -> None:
+    global FOOT_RIGHT
+    dm = "--dm" in sys.argv
+    if dm:
+        FOOT_RIGHT = FOOT_RIGHT_DM
     for name, fn in (("timeline_landscape", landscape), ("timeline_portrait", portrait)):
         doc, w, h = fn()
+        if dm:
+            name += "_dm"
         html_path = HERE / f"{name}.html"
         html_path.write_text(doc, encoding="utf-8")
         screenshot(html_path, HERE / f"{name}.png", w, h)

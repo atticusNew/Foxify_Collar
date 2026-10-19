@@ -9,7 +9,7 @@ What to post, what to put in the first comment, and the five checks before posti
 | `timeline_portrait.png` | 2160x2700 (4:5). Post this one first; LinkedIn is mostly read on phones and 4:5 takes the most screen. |
 | `timeline_landscape.png` | 2400x1400. Second image in the same post, for desktop readers. |
 | `timeline_*.html` | The rendered sources. Open in a browser to proofread at any size. |
-| `build_timeline.py` | Data and layout. Change a date or a label there, run it, and both PNGs regenerate (headless Chrome, isolated profile). |
+| `build_timeline.py` | Data and layout. Change a date or a label there, run it, and both PNGs regenerate (headless Chrome, isolated profile). `--dm` writes `timeline_*_dm.png`, the same graphic with the footer pointing at the site instead of "first comment", for a direct message. |
 
 Rebuild from the repo root:
 
@@ -20,7 +20,7 @@ python3 docs/reports/submission/linkedin/build_timeline.py
 ## Before posting
 
 1. Open `https://atticus-event-shadow.onrender.com/` and read the numbers off the top of the page (events settled, floor saves, our P&L, take booked, gap). The post text below uses the 2026-10-09 17:35 UTC numbers; replace them with the morning's. The graphic has no count on it on purpose, so it does not go stale.
-2. The record page must still say "Live prices; nothing is bought." The graphic says "in shadow"; the two must agree.
+2. The graphic now says "Atticus: live … First real position protected Oct 15, settled Oct 18, 2026." Open `https://atticus-event-shadow.onrender.com/api/shadow` and confirm the lock position (`source: "lock"`, ticker `KXNFLGAME-26OCT18TENIND-IND`) is there and settled; the simulated positions are still marked as such on the page, and the two must agree.
 3. Open the demo `https://atticus-event-demo-cross-venue.onrender.com/` in a private window. No brand parameter, no slate key: this is the public link, and it must show the generic shell, never a partner's name.
 4. Confirm the two dates only you can confirm: that you were pitching retail options in 2023 and event protection in late 2025. The investor emails in the outreach playbook say "eighteen months ago we started building" (from August 2026, so early 2025). Pitching in 2023 and building from 2025 are compatible; be ready to say so in one sentence if asked.
 5. Put the links in the first comment, not the post body. Links in the body suppress reach. Do not name WagerWire or any listing anywhere; the email to Zach goes the same day.
@@ -31,7 +31,7 @@ python3 docs/reports/submission/linkedin/build_timeline.py
 >
 > We pitched the crypto retail step in 2023, when the consensus was that options would never be retail. We pitched the event retail step in late 2025, before the institutional step had formed. Both arrived on schedule.
 >
-> So we built the third step for event markets: one tap on a position, a floor and a credit, hedged leg for leg on the venue that lists the other side. It runs in shadow on live prices, and every quote has been public since September 12. As of this morning: 695 events settled, 297 floor saves, and our P&L equals the take we booked to the cent, because the hedge carries no outcome risk.
+> So we built the third step for event markets: one tap on a position, a floor and a credit, hedged leg for leg on the venue that lists the other side. Every quote has been public since September 12, simulated at live prices; on October 15 the first real position was locked and hedged on a regulated exchange, and on October 18 it settled: $13.85 to the holder instead of $0. As of this morning: 695 events settled, 297 floor saves, and our P&L equals the take we booked to the cent, because the hedge carries no outcome risk.
 >
 > Dates, sources, the demo and the public record are in the first comment.
 
