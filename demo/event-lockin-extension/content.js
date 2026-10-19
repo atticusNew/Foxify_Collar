@@ -130,6 +130,48 @@
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   /**
+   * One ticker out of several the same name fits. A club plays every week, so once the holder's
+   * locks are indexed beside the live markets, "Colts" can name last Sunday's lock and next
+   * Sunday's game at once. The game day settles it: the ticker carries it (26OCT18, Eastern) and
+   * the venue prints it on the row. A text with no date falls to the tab: Settled wants a lock
+   * that has settled, the other tabs want a market the holder can still act on.
+   */
+  const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  const DATE_RE = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\b|\b(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?\b/gi;
+  const gameDayOf = (ticker) => {
+    const m = /-\d{2}([A-Z]{3})(\d{2})[A-Z]+-[A-Z]+$/.exec(String(ticker || ""));
+    const mo = m ? MONTHS.indexOf(m[1]) : -1;
+    return mo >= 0 ? mo + 1 + "-" + Number(m[2]) : null;
+  };
+  const datesIn = (text) => {
+    const out = new Set();
+    let m;
+    DATE_RE.lastIndex = 0;
+    while ((m = DATE_RE.exec(text))) {
+      const mo = m[1] ? MONTHS.indexOf(m[1].slice(0, 3).toUpperCase()) + 1 : Number(m[3]);
+      const day = Number(m[2] || m[4]);
+      if (mo >= 1 && mo <= 12 && day >= 1 && day <= 31) out.add(mo + "-" + day);
+    }
+    return out;
+  };
+  const choose = (tickers, text) => {
+    const list = [...new Set(tickers)];
+    if (list.length <= 1) return list[0] || null;
+    const days = datesIn(text);
+    if (days.size) {
+      const dated = list.filter((t) => days.has(gameDayOf(t)));
+      if (dated.length === 1) return dated[0];
+      if (dated.length > 1) return null;
+    }
+    const settledLock = (t) => {
+      const r = S.record.get(t);
+      return Boolean(r && r.status !== "open");
+    };
+    const byTab = S.tab === "settled" ? list.filter(settledLock) : list.filter((t) => !settledLock(t));
+    return byTab.length === 1 ? byTab[0] : null;
+  };
+
+  /**
    * The sides a row can name: the markets the service can protect this week, and the holder's
    * own locks. The service lists live markets only, so a locked game drops off the list when it
    * settles; without its lock in the index the settled row could not be tied to its record and
@@ -240,7 +282,9 @@
       if (list.length < 2) continue;
       const named = list.filter((t) => out.has(t));
       const pick = named.length === 1 ? named : league ? list.filter((t) => leagueOf(t) === league) : list;
-      if (pick.length === 1) out.set(pick[0], (out.get(pick[0]) || 0) + 1);
+      // one club, several weeks (IND last Sunday's lock, IND next Sunday's game): the row's date or the tab
+      const one = pick.length === 1 ? pick[0] : choose(pick, text);
+      if (one) out.set(one, (out.get(one) || 0) + 1);
       else out.ambiguous = true;
     }
     return out;
@@ -252,17 +296,18 @@
     let m;
     S.nickRe.lastIndex = 0;
     while ((m = S.nickRe.exec(text))) {
-      const list = S.nicks.get(m[2].toLowerCase()) || [];
-      let ticker = null;
-      if (list.length === 1) ticker = list[0].ticker;
-      else {
+      let list = S.nicks.get(m[2].toLowerCase()) || [];
+      if (list.length > 1) {
+        // a code just before the name ("IND Colts") narrows a nickname two leagues share
         const before = text.slice(0, m.index + m[1].length).trim();
         const code = /(?:^|[^A-Za-z])([A-Z]{2,3})$/.exec(before);
         if (code) {
           const hit = list.filter((x) => x.code === code[1] || (CODE_ALIAS[code[1]] || []).includes(x.code));
-          if (hit.length === 1) ticker = hit[0].ticker;
+          if (hit.length) list = hit;
         }
       }
+      // the same club across weeks: the game day on the row, else the tab
+      const ticker = choose(list.map((x) => x.ticker), text);
       if (ticker) out.set(ticker, (out.get(ticker) || 0) + 1);
     }
     return out;
