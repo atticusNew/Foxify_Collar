@@ -214,7 +214,7 @@ function renderCardLanding(c: CardContact, video: LiveVideo | null, trackRecordU
   <img class="cl-logo" src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
   <div class="cl-eyebrow">Earn &amp; Protect</div>
   <h1>The <b>Lock in</b> button.</h1>
-  <p class="cl-lede">One tap gives any open position a floor and cash now. Hedged leg for leg on Kalshi; every lock and hedge on the public record.</p>
+  <p class="cl-lede">One tap gives any open position a floor and cash now. Priced across venues, hedged leg for leg on the cheaper book; refused when no book can fund it. Every quote, hedge, refusal and result on a public record.</p>
   ${videoBlock}
   <div class="cl-btns"><a class="cl-btn cl-primary" href="/contact.vcf" download>Save contact</a><a class="cl-btn" href="/${brandQ}">Try the demo: tap Lock in on a position</a></div>
   <div class="cl-links"><a href="${escapeHtml(c.linkedin)}">LinkedIn</a><a href="mailto:${escapeHtml(c.email)}">Email</a><a href="https://wa.me/${escapeHtml(c.phoneE164.replace(/^\+/, ""))}">WhatsApp</a><a href="${trackRecordUrl}">${recordLabel}</a></div>

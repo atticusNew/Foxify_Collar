@@ -373,7 +373,7 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     assert.ok(card.includes('<a class="cl-btn" href="/">Try the demo: tap Lock in on a position</a>'), "the demo link drops from=card");
     assert.ok(card.includes('href="https://wa.me/17186643497"') && card.includes('href="tel:+17186643497">+1 718 664 3497</a>'), "WhatsApp and tel from the one number");
     assert.ok(card.includes('href="https://www.linkedin.com/in/michael-william-5888ba263/"'), "LinkedIn is behind the QR, not on the paper");
-    assert.ok(card.includes("Hedged leg for leg on Kalshi; every lock and hedge on the public record."), "the sentence");
+    assert.ok(card.includes("Priced across venues, hedged leg for leg on the cheaper book; refused when no book can fund it. Every quote, hedge, refusal and result on a public record."), "the sentence matches the printed card");
     assert.ok(card.includes("Not affiliated with or endorsed by the venue."), "the extension disclaimer travels with the clip");
     assert.ok(!/ProphetX|Novig/.test(card.replace(/Your Exchange/g, "")), "no venue named on the card landing");
     const vcf = await fetch(`${base}/contact.vcf`);
