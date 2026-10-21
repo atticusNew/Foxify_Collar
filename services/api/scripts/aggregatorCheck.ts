@@ -44,9 +44,14 @@ const flag = (name: string): boolean => args.includes(name);
 const cents = (c: number | null) => (c === null ? "—" : `${c}c`);
 const idOf = (l: Listing): string =>
   l.venue === "KALSHI" ? `${(l as { ticker: string }).ticker} ${(l as { side: string }).side}` : l.venue === "POLYMARKET" ? `token …${String((l as { tokenId: string }).tokenId).slice(-8)}` : l.venue === "PROPHETX" ? `strike ${(l as { strikeId: string }).strikeId}` : JSON.stringify(l);
-const winnerLike = (m: Market) => /moneyline|money line|winner|to win|match result|\bML\b/i.test(m.title) || (m.outcomes.length === 2 && !m.line);
+/** the full-game winner market: a moneyline that is not a half, quarter, period or prop (an event lists 1,000+ markets; this is the one every venue carries) */
+const PARTIAL = /\b(1H|2H|1Q|2Q|3Q|4Q|OT|first|second|third|fourth|half|quarter|period|inning|set)\b/i;
+const winnerLike = (m: Market) => /\b(moneyline|money line|match winner|to win|match result)\b/i.test(m.title) && !PARTIAL.test(m.title) && !m.line;
+/** winner markets first, the one listed on the most venues ahead of the rest */
+const venuesOf = (m: Market) => new Set(m.outcomes.flatMap((o) => o.listings.map((l) => l.venue))).size;
+const byCoverage = (markets: Market[]) => [...markets].sort((a, b) => venuesOf(b) - venuesOf(a));
 const firstTicker = (markets: Market[]): string | null => {
-  for (const m of markets.filter(winnerLike).concat(markets)) {
+  for (const m of byCoverage(markets.filter(winnerLike)).concat(byCoverage(markets))) {
     for (const o of m.outcomes) {
       const k = o.listings.find((l) => l.venue === "KALSHI" && (l as { side?: string }).side === "YES") as { ticker?: string } | undefined;
       if (k?.ticker) return k.ticker;
@@ -109,7 +114,9 @@ async function main(): Promise<void> {
   const byVenue = new Map<string, number>();
   for (const m of markets) for (const o of m.outcomes) for (const l of o.listings) byVenue.set(l.venue, (byVenue.get(l.venue) ?? 0) + 1);
   console.log(`  markets     ${markets.length} on "${event.name}" · listings per venue: ${[...byVenue].map(([v, n]) => `${v} ${n}`).join(", ") || "none"}`);
-  for (const m of markets.filter(winnerLike).slice(0, 3)) {
+  const winners = byCoverage(markets.filter(winnerLike));
+  console.log(`  winner markets ${winners.length}${winners.length ? "" : " (none matched; showing the first three listed)"}`);
+  for (const m of (winners.length ? winners : markets).slice(0, 3)) {
     console.log(`              ${m.title}${m.line ? ` (${m.line})` : ""}`);
     for (const o of m.outcomes) console.log(`                ${o.name}: ${o.listings.map((l) => `${l.venue}${l.executable === false ? "(off)" : ""} ${idOf(l)}`).join(" · ") || "no listings"}`);
   }
