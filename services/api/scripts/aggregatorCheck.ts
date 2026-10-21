@@ -42,11 +42,13 @@ const opt = (name: string): string | undefined => {
 const flag = (name: string): boolean => args.includes(name);
 
 const cents = (c: number | null) => (c === null ? "—" : `${c}c`);
+const shares = (n: number) => Math.round(n).toLocaleString("en-US");
 const idOf = (l: Listing): string =>
   l.venue === "KALSHI" ? `${(l as { ticker: string }).ticker} ${(l as { side: string }).side}` : l.venue === "POLYMARKET" ? `token …${String((l as { tokenId: string }).tokenId).slice(-8)}` : l.venue === "PROPHETX" ? `strike ${(l as { strikeId: string }).strikeId}` : JSON.stringify(l);
 /** the full-game winner market: a moneyline that is not a half, quarter, period or prop (an event lists 1,000+ markets; this is the one every venue carries) */
 const PARTIAL = /\b(1H|2H|1Q|2Q|3Q|4Q|OT|first|second|third|fourth|half|quarter|period|inning|set)\b/i;
-const winnerLike = (m: Market) => /\b(moneyline|money line|match winner|to win|match result)\b/i.test(m.title) && !PARTIAL.test(m.title) && !m.line;
+const winnerLike = (m: Market) =>
+  !PARTIAL.test(m.title) && !m.line && (/\b(moneyline|money line|match winner|to win|match result)\b/i.test(m.title) || (m.outcomes.length === 2 && !m.title.includes(":") && !/\?/.test(m.title)));
 /** winner markets first, the one listed on the most venues ahead of the rest */
 const venuesOf = (m: Market) => new Set(m.outcomes.flatMap((o) => o.listings.map((l) => l.venue))).size;
 const byCoverage = (markets: Market[]) => [...markets].sort((a, b) => venuesOf(b) - venuesOf(a));
@@ -117,7 +119,7 @@ async function main(): Promise<void> {
   const winners = byCoverage(markets.filter(winnerLike));
   console.log(`  winner markets ${winners.length}${winners.length ? "" : " (none matched; showing the first three listed)"}`);
   for (const m of (winners.length ? winners : markets).slice(0, 3)) {
-    console.log(`              ${m.title}${m.line ? ` (${m.line})` : ""}`);
+    console.log(`              ${m.title}${m.line && !m.title.includes(m.line) ? ` (${m.line})` : ""}`);
     for (const o of m.outcomes) console.log(`                ${o.name}: ${o.listings.map((l) => `${l.venue}${l.executable === false ? "(off)" : ""} ${idOf(l)}`).join(" · ") || "no listings"}`);
   }
 
@@ -149,10 +151,10 @@ async function main(): Promise<void> {
     }
     const b = bestOf(s.book);
     const ageSec = s.book.venueTimestamp ? Math.max(0, Math.round((s.book.serverTimestamp - s.book.venueTimestamp) / 1000)) : null;
-    console.log(`              ${s.market.venue} ${name}: bid ${cents(b.bidCents)} x ${b.bidSize} · ask ${cents(b.askCents)} x ${b.askSize} · ${s.book.bids.length}/${s.book.asks.length} levels${s.book.status ? ` · ${s.book.status}` : ""}${ageSec !== null ? ` · book age ${ageSec}s` : ""}`);
+    console.log(`              ${s.market.venue} ${name}: bid ${cents(b.bidCents)} x ${shares(b.bidSize)} · ask ${cents(b.askCents)} x ${shares(b.askSize)} · ${s.book.bids.length}/${s.book.asks.length} levels${s.book.status ? ` · ${s.book.status}` : ""}${ageSec !== null ? ` · book age ${ageSec}s` : ""}`);
     if (s.market.venue === "KALSHI") {
       const no = bestOf(kalshiNoView(s.book));
-      console.log(`                No side (what our hedge buys): bid ${cents(no.bidCents)} x ${no.bidSize} · ask ${cents(no.askCents)} x ${no.askSize}`);
+      console.log(`                No side (what our hedge buys): bid ${cents(no.bidCents)} x ${shares(no.bidSize)} · ask ${cents(no.askCents)} x ${shares(no.askSize)}`);
     }
   }
   if (!snaps.some((s) => s.book)) throw new Error("no venue streamed a snapshot; books open closer to game time, try a nearer event or --ticker");
