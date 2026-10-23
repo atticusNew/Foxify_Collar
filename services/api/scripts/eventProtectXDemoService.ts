@@ -97,6 +97,7 @@ import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import { getNoAsks, quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
+import { aggregatorBookSourceFromEnv, type AggregatorBookStatus, type BookOrigins } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { readReferencePrints, referencePrintSourcesFromEnv, type ReferencePrint } from "../src/eventCollar/crossVenue/venuePrints";
 import {
   DEFAULT_CROSS_CONFIG,
@@ -343,6 +344,24 @@ const referenceBooks = referenceSourcesFromEnv(process.env);
  * as a route, never touches the quote.
  */
 const referencePrints = referencePrintSourcesFromEnv(process.env);
+/**
+ * The aggregator's cross-venue feed as the first source of the books every sports quote is priced
+ * from (AGGREGATOR_KEY_ID + AGGREGATOR_PRIVATE_KEY_HEX; unset, the venues are read directly as
+ * before). The mapping must agree with ours before a book is trusted; anything it cannot supply
+ * falls back to the direct read, pair by pair, so a partner outage never becomes a refusal.
+ */
+const aggregatorBooks = aggregatorBookSourceFromEnv(process.env);
+// one line in the service log at boot, so a deploy's pricing source is visible without the operator token
+console.log(
+  aggregatorBooks.source
+    ? `[pricing-source] aggregator feed first (${aggregatorBooks.source.status().host}); venues read directly behind it`
+    : `[pricing-source] venues read directly (aggregator key not set${aggregatorBooks.notes.length ? `: ${aggregatorBooks.notes.join("; ")}` : ""})`,
+);
+
+/** The operator's view of the pricing source: configured or not, counters, never the key. */
+export function pricingSourceStatus(): { aggregator: AggregatorBookStatus | { configured: false }; notes: string[] } {
+  return { aggregator: aggregatorBooks.source ? aggregatorBooks.source.status() : { configured: false }, notes: aggregatorBooks.notes };
+}
 
 export function searchConfig(): CrossSearchConfig {
   const minTake = process.env.EVENT_X_MIN_TAKE_BPS;
@@ -508,6 +527,10 @@ export interface CandidateResult {
    * without another venue call. Absent when the venue was unreachable.
    */
   books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; references?: ReferenceBook[]; prints?: ReferencePrint[] };
+  /** where each route's book came from: the aggregator's feed first, the venue directly behind it (sports only) */
+  bookOrigins?: BookOrigins;
+  /** the aggregator's own account of what it could not supply for this pair; empty when it supplied everything */
+  aggregatorNotes?: string[];
 }
 
 async function showcasePositionFor(ticker: string, markCents: number) {
@@ -544,11 +567,17 @@ async function quoteSportsCandidate(
   // the reference read never throws: a venue that is down is one unlisted reference, not a failed quote
   const referencesP = readReferenceBooks(referenceBooks.sources, pair, now);
   const printsP = readReferencePrints(referencePrints.sources, pair, now);
+  // The aggregator's feed is read first (never throws); whatever it did not supply is read from
+  // the venue directly, so a partner outage prices the way the record always has.
+  const agg = aggregatorBooks.source ? await aggregatorBooks.source.read(pair, now) : null;
+  const bookOrigins: BookOrigins | undefined = agg
+    ? { polymarket: agg.pmNoBook ? "aggregator" : "direct", kalshi: agg.noAsks ? "aggregator" : "direct" }
+    : undefined;
   const [pmRes, ladderRes] = await Promise.allSettled([
-    getPmBook(pair.pm.tokenIds[pair.pmNoOutcomeIndex]),
-    getNoAsks(pair.kalshi.ticker),
+    agg?.pmNoBook ? Promise.resolve(agg.pmNoBook) : getPmBook(pair.pm.tokenIds[pair.pmNoOutcomeIndex]),
+    agg?.noAsks ? Promise.resolve(agg.noAsks) : getNoAsks(pair.kalshi.ticker),
   ]);
-  const references = await referencesP;
+  const references = [...(await referencesP), ...(agg?.references ?? [])];
   const prints = await printsP;
   if (pmRes.status === "rejected" && ladderRes.status === "rejected") {
     throw new Error("both hedge venues unreachable");
@@ -656,6 +685,8 @@ async function quoteSportsCandidate(
       ...(references.length > 0 ? { references } : {}),
       ...(prints.length > 0 ? { prints } : {}),
     },
+    ...(bookOrigins ? { bookOrigins } : {}),
+    ...(agg ? { aggregatorNotes: agg.notes } : {}),
   };
 }
 
@@ -1406,7 +1437,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // floor/cap/credit per tier, a retail refusal sentence). The hedge leg, our take, the
       // pairing, the routes examined and raw refusal detail answer only to the operator token.
       const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
-      sendJson(res, 200, operator ? full : retailCrossPayload(full));
+      // the operator also sees where the books came from (the aggregator's feed or the venues), never the key
+      sendJson(res, 200, operator ? { ...full, pricingSource: pricingSourceStatus() } : retailCrossPayload(full));
       return;
     }
     if (url.pathname === "/api/metrics" && req.method === "POST") {

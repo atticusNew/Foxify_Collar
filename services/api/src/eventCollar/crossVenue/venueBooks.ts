@@ -45,13 +45,17 @@ import { PlaysApiError, PlaysClient, payoutMultiple, type RawMarket, type RawSel
 import { VenueApiError, VenueClient, clubMatches, signerFromPem, templateForLeague, type RawVenueBook, type RawVenueMarket } from "./venuePositions";
 
 /** Stable ledger keys. The dialect, not the venue. */
-export const REFERENCE_BOOK_IDS = ["signed_v3", "partner_mm"] as const;
+export const REFERENCE_BOOK_IDS = ["signed_v3", "partner_mm", "aggregated_mm", "aggregated_other"] as const;
 export type ReferenceBookId = (typeof REFERENCE_BOOK_IDS)[number];
 
 /** What the public page and the operator report call each reference. Never the venue. */
 export const REFERENCE_BOOK_WORDS: Record<ReferenceBookId, string> = {
   signed_v3: "reference book A",
   partner_mm: "reference book B",
+  // the same second-dialect venue's book read through the aggregator's feed (aggregatorBooks.ts)
+  aggregated_mm: "reference book B (via the aggregator)",
+  // any further venue the aggregator aligns that this service has no direct read for
+  aggregated_other: "reference book C (via the aggregator)",
 };
 
 /** One venue's read for one pair: a book shaped like the cross-venue hedge book, or why there is none. */
