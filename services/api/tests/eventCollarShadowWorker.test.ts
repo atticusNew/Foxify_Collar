@@ -191,7 +191,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
   const op = { headers: { "x-admin-token": "op-secret" } };
   try {
     // operator views are gated: no token, wrong token -> 403; the public record is unaffected
-    for (const p of ["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export", "/api/shadow/netting"]) {
+    for (const p of ["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export", "/api/shadow/netting", "/venues", "/api/shadow/venues"]) {
       assert.equal((await fetch(`${base}${p}`)).status, 403, `${p} without a token`);
       assert.equal((await fetch(`${base}${p}?token=wrong`)).status, 403, `${p} with the wrong token`);
     }

@@ -104,7 +104,7 @@ import {
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { sentUnitsMilliOn } from "../src/eventCollar/crossVenue/liveHedge";
-import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml, renderSlateHtml } from "./eventShadowHtml";
+import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
 import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import {
@@ -129,6 +129,7 @@ import {
 } from "../src/eventCollar/crossVenue/lastLeg";
 import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
 import { measureNetting } from "../src/eventCollar/crossVenue/shadowNetting";
+import { venueBreakdown } from "../src/eventCollar/crossVenue/shadowVenues";
 import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slateLinkKey, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
 import type { CandidateResult, ScanOptions, ScanState, listGameMarkets, pricingSourceStatus, quoteOne } from "./eventProtectXDemoService";
 import { lockAuthorized, lockKeyFromEnv, parseLockRequest, readJsonBody } from "../src/eventCollar/crossVenue/lockGate";
@@ -212,6 +213,8 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/lastleg",
   "/api/shadow/lastleg.csv",
   "/api/shadow/netting",
+  "/venues",
+  "/api/shadow/venues",
 ]);
 
 const alertCfg = parseShadowAlertsFromEnv(process.env);
@@ -432,6 +435,7 @@ function openRecordFor(
     takeShareCents: q.takeShareCents,
     takeMinimumCents: q.takeMinimumCents,
     ...(counterfactuals ? { counterfactuals } : {}),
+    ...(res.bookOrigins ? { bookOrigins: res.bookOrigins } : {}),
     ...(q.hedge.venue === "polymarket" ? { hedgeTokenId: q.hedge.tokenId } : {}),
     // the rule the result will be judged under, as the venue publishes it this second
     rule: pinRule({
@@ -1443,6 +1447,22 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/cash") {
       void handleCash(req, res).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+      return;
+    }
+    if (url.pathname === "/venues" || url.pathname === "/api/shadow/venues") {
+      // VENUES, NAMED: every game priced on every venue read, from the ledger's counterfactuals.
+      // Operator only (OPERATOR_PATHS); the public record never carries a venue's name.
+      const daysRaw = Number(url.searchParams.get("days"));
+      const windowDays = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, 365) : 7;
+      const { atIso, positions } = pageData();
+      const breakdown = venueBreakdown(positions, new Date(atIso), { windowDays });
+      const pricingSource = pricingSourceStatusFn ? pricingSourceStatusFn() : { aggregator: { configured: false as const }, notes: ["engine not loaded yet"] };
+      if (url.pathname === "/api/shadow/venues") {
+        sendJson(res, 200, { ok: true, windowDays, pricingSource, ...breakdown });
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderVenuesHtml({ breakdown, pricingSource, token: url.searchParams.get("token"), windowDays }));
       return;
     }
     if (url.pathname === "/report") {
