@@ -244,6 +244,19 @@ services:
       #   REFERENCE_BOOK_BEARER_ACCESS_KEY=<access key>
       #   REFERENCE_BOOK_BEARER_SECRET_KEY=<secret key>
       # Status: the operator state's hedge.referenceBooks lists which are configured, never the keys.
+      # AGGREGATOR FEED (optional; the cross-venue data partner's signed API and orderbook stream).
+      # With the key set, every sports quote reads its books from the feed FIRST: the opposing
+      # outcome on the second venue, our own market's No side, and the same outcome on the venues
+      # this service has no direct read for (kept as "reference book B (via the aggregator)" /
+      # "reference book C (via the aggregator)", ids aggregated_mm / aggregated_other). Whatever
+      # the feed cannot supply for a pair is read from the venue directly, as before; a mapping
+      # that disagrees with ours is never priced from. A DATA key is all this needs (it refuses
+      # venue paths); a key with trade capability belongs on its own small pod, not here.
+      # Set in the dashboard, never in git. Unset: the venues are read directly, nothing changes.
+      #   AGGREGATOR_KEY_ID=<key id>
+      #   AGGREGATOR_PRIVATE_KEY_HEX=<64 hex seed, or a PKCS8 PEM>
+      #   AGGREGATOR_API_HOST / AGGREGATOR_STREAM_URL   optional; default to the partner's hosts
+      # Status: hedge.pricingSource (configured, reads, readsWithBooks, mappingMismatches, lastError), never the key.
       # REFERENCE PRINTS (optional; a regulated US exchange that publishes no live book, only every
       # trade it matched the day before, in the CFTC's public reporting format, as a public file).
       # On every sports open the record keeps the opposing side's last print there, its size and

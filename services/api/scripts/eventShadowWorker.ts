@@ -130,7 +130,7 @@ import {
 import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
 import { measureNetting } from "../src/eventCollar/crossVenue/shadowNetting";
 import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slateLinkKey, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
-import type { CandidateResult, ScanOptions, ScanState, listGameMarkets, quoteOne } from "./eventProtectXDemoService";
+import type { CandidateResult, ScanOptions, ScanState, listGameMarkets, pricingSourceStatus, quoteOne } from "./eventProtectXDemoService";
 import { lockAuthorized, lockKeyFromEnv, parseLockRequest, readJsonBody } from "../src/eventCollar/crossVenue/lockGate";
 import { VenueClient, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
@@ -223,6 +223,8 @@ let searchConfig: () => CrossSearchConfig = () => DEFAULT_CROSS_CONFIG;
 /** the lock path's engine calls (eventProtectXDemoService), wired in main() with the scanner */
 let quoteOneFn: typeof quoteOne | null = null;
 let listGameMarketsFn: typeof listGameMarkets | null = null;
+/** the engine's pricing-source status (the aggregator's feed, then the venues); wired in main() */
+let pricingSourceStatusFn: typeof pricingSourceStatus | null = null;
 /**
  * LOCK: a real holder's tap (the browser extension over a venue's page) opens a position at
  * their size and fills the hedge through the same executor. Gated by EVENT_SHADOW_LOCK_KEY
@@ -1113,6 +1115,8 @@ function healthBody(): Record<string, unknown> {
       live: hedgeChoice.live,
       notes: hedgeChoice.notes,
       receipts: { path: RECEIPTS_PATH, ...ledgerStats(RECEIPTS_PATH) },
+      // the books the quote is priced from: the aggregator's feed first when its key is set, the venues directly behind it
+      pricingSource: pricingSourceStatusFn ? pricingSourceStatusFn() : { aggregator: { configured: false }, notes: ["engine not loaded yet"] },
       // other regulated exchanges read as price references on each open: which dialects, never the keys
       referenceBooks,
       // an exchange that publishes only yesterday's tape, read the same way: on or off
@@ -1540,6 +1544,7 @@ async function main(): Promise<void> {
   searchConfig = demo.searchConfig;
   quoteOneFn = demo.quoteOne;
   listGameMarketsFn = demo.listGameMarkets;
+  pricingSourceStatusFn = demo.pricingSourceStatus;
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
