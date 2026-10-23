@@ -351,6 +351,12 @@ const referencePrints = referencePrintSourcesFromEnv(process.env);
  * falls back to the direct read, pair by pair, so a partner outage never becomes a refusal.
  */
 const aggregatorBooks = aggregatorBookSourceFromEnv(process.env);
+// one line in the service log at boot, so a deploy's pricing source is visible without the operator token
+console.log(
+  aggregatorBooks.source
+    ? `[pricing-source] aggregator feed first (${aggregatorBooks.source.status().host}); venues read directly behind it`
+    : `[pricing-source] venues read directly (aggregator key not set${aggregatorBooks.notes.length ? `: ${aggregatorBooks.notes.join("; ")}` : ""})`,
+);
 
 /** The operator's view of the pricing source: configured or not, counters, never the key. */
 export function pricingSourceStatus(): { aggregator: AggregatorBookStatus | { configured: false }; notes: string[] } {
@@ -1431,7 +1437,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // floor/cap/credit per tier, a retail refusal sentence). The hedge leg, our take, the
       // pairing, the routes examined and raw refusal detail answer only to the operator token.
       const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
-      sendJson(res, 200, operator ? full : retailCrossPayload(full));
+      // the operator also sees where the books came from (the aggregator's feed or the venues), never the key
+      sendJson(res, 200, operator ? { ...full, pricingSource: pricingSourceStatus() } : retailCrossPayload(full));
       return;
     }
     if (url.pathname === "/api/metrics" && req.method === "POST") {
