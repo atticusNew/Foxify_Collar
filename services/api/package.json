@@ -65,6 +65,7 @@
     "backtest:fee-recovery": "tsx scripts/feeRecoveryTouchBacktest.ts",
     "calibrate:short-iv": "tsx scripts/calibrateShortDatedIv.ts",
     "harness:pricing": "tsx scripts/creditCollarPricingHarness.ts",
+    "aggregator:check": "tsx scripts/aggregatorCheck.ts",
     "shadow:run": "tsx scripts/creditCollarShadowRunner.ts",
     "shadow:scorecard": "tsx scripts/creditCollarShadowScorecard.ts",
     "shadow:service": "tsx scripts/creditCollarShadowService.ts",
