@@ -1255,7 +1255,7 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
   const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
   const ps = input.pricingSource.aggregator;
   const feedLine = ps.configured
-    ? `The feed is on (${escapeHtml(ps.host)}): ${ps.reads} reads since boot, ${ps.readsWithBooks} with books, ${ps.mappingMismatches} mapping mismatch${ps.mappingMismatches === 1 ? "" : "es"}${ps.lastError ? `; last error: ${escapeHtml(ps.lastError)}` : ""}${ps.lastReadAt ? `; last read ${escapeHtml(shortEt(ps.lastReadAt))}` : ""}.`
+    ? `The feed is on (${escapeHtml(ps.host)}, key …${escapeHtml(ps.keyIdTail)}, public key <code>${escapeHtml(ps.publicKeyHex)}</code>): ${ps.reads} reads since boot, ${ps.readsWithBooks} with books, ${ps.mappingMismatches} mapping mismatch${ps.mappingMismatches === 1 ? "" : "es"}${ps.lastError ? `; last error: ${escapeHtml(ps.lastError)}${/401|UNAUTHORIZED/i.test(ps.lastError) ? " — the partner rejects this key's signatures: compare the public key above with the one registered on their side, and the key id with the one issued" : ""}` : ""}${ps.lastReadAt ? `; last read ${escapeHtml(shortEt(ps.lastReadAt))}` : ""}.`
     : "The feed is off: every book is read from its venue directly.";
   const originLine = `Of the ${b.positions} games in the window, ${b.origins.feed} priced from the feed, ${b.origins.direct} from the venues directly${b.origins.unknown > 0 ? `, ${b.origins.unknown} opened before the field existed (direct)` : ""}.`;
 

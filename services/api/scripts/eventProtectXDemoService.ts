@@ -354,7 +354,7 @@ const aggregatorBooks = aggregatorBookSourceFromEnv(process.env);
 // one line in the service log at boot, so a deploy's pricing source is visible without the operator token
 console.log(
   aggregatorBooks.source
-    ? `[pricing-source] aggregator feed first (${aggregatorBooks.source.status().host}); venues read directly behind it`
+    ? `[pricing-source] aggregator feed first (${aggregatorBooks.source.status().host}; key …${aggregatorBooks.source.status().keyIdTail}, public key ${aggregatorBooks.source.status().publicKeyHex}); venues read directly behind it`
     : `[pricing-source] venues read directly (aggregator key not set${aggregatorBooks.notes.length ? `: ${aggregatorBooks.notes.join("; ")}` : ""})`,
 );
 

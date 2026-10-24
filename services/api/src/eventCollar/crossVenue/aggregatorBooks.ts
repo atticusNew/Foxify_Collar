@@ -69,6 +69,10 @@ export interface AggregatorBookSource {
 export interface AggregatorBookStatus {
   configured: true;
   host: string;
+  /** the key id's last six characters: enough to tell two keys apart, not enough to use */
+  keyIdTail: string;
+  /** the public key the secret derives, hex: compare with what the partner registered when a 401 appears */
+  publicKeyHex: string;
   lastReadAt: string | null;
   lastError: string | null;
   reads: number;
@@ -169,7 +173,17 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
   const nowMs = opts.nowMs ?? (() => Date.now());
   const client = new AggregatorClient({ host, signer, fetchImpl: opts.fetchImpl, nowSec: () => Math.floor(nowMs() / 1000) });
   const lookups = new Map<string, { at: number; aligned: AlignedPair | null }>();
-  const status: AggregatorBookStatus = { configured: true, host, lastReadAt: null, lastError: null, reads: 0, readsWithBooks: 0, mappingMismatches: 0 };
+  const status: AggregatorBookStatus = {
+    configured: true,
+    host,
+    keyIdTail: signer.keyId.slice(-6),
+    publicKeyHex: signer.publicKeyHex,
+    lastReadAt: null,
+    lastError: null,
+    reads: 0,
+    readsWithBooks: 0,
+    mappingMismatches: 0,
+  };
   let clockSynced = false;
   let chain: Promise<unknown> = Promise.resolve();
   /** one REST call at a time, spaced: the partner's limit is shared by every pair the scan prices */

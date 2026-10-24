@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generateKeyPairSync, verify as cryptoVerify } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync, verify as cryptoVerify } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, WebSocket as WsClient } from "ws";
@@ -340,4 +340,16 @@ test("aggregator books env: nothing set reads nothing; half a key is a note and 
   assert.ok(ok.source);
   assert.equal(ok.source.status().host, "https://api.example.test");
   assert.deepEqual(ok.notes, []);
+  // the status carries what an operator needs to check a 401 against the partner's portal, never the secret
+  assert.equal(ok.source.status().keyIdTail, KEY_ID.slice(-6));
+  assert.equal(ok.source.status().publicKeyHex, keypair.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"));
+  assert.ok(!JSON.stringify(ok.source.status()).includes(keypair.seedHex));
+});
+
+test("aggregator signer: the public key it derives is the RFC 8032 one for a known seed, from the hex seed and from a PEM alike", () => {
+  const seed = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+  const pub = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+  assert.equal(signerFromSecret(KEY_ID, seed).publicKeyHex, pub);
+  const pem = createPrivateKey({ key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.from(seed, "hex")]), format: "der", type: "pkcs8" }).export({ format: "pem", type: "pkcs8" }) as string;
+  assert.equal(signerFromSecret(KEY_ID, pem).publicKeyHex, pub);
 });
