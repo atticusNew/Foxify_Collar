@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   }
   const signer = signerFromSecret(cfg.keyId, cfg.secret);
   const client = new AggregatorClient({ host: cfg.host, signer });
-  console.log(`host ${cfg.host}  key …${cfg.keyId.slice(-6)}`);
+  console.log(`host ${cfg.host}  key …${cfg.keyId.slice(-6)}  public key ${signer.publicKeyHex}`);
 
   // 1. identity
   const who = await client.whoami();

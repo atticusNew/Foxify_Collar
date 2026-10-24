@@ -27,7 +27,7 @@
  * headers on an upgrade.
  */
 
-import { createHash, createPrivateKey, sign as cryptoSign, type KeyObject } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, sign as cryptoSign, type KeyObject } from "node:crypto";
 
 export const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 export const DEFAULT_API_HOST = "https://api.parlayx.com";
@@ -90,6 +90,12 @@ export interface AggregatorSigner {
   keyId: string;
   /** Ed25519 over the canonical string, lowercase hex */
   sign(canonical: string): string;
+  /**
+   * The public half of the key, raw 32 bytes as lowercase hex. Safe to print: it is what the
+   * partner registered against the key id, so a 401 can be checked against their portal without
+   * anyone seeing the secret.
+   */
+  publicKeyHex: string;
 }
 
 /** The secret as the partner issues it (64 hex chars, the seed) or as a PKCS8 PEM; either builds the same signer. */
@@ -104,7 +110,9 @@ export function signerFromSecret(keyId: string, secret: string): AggregatorSigne
     throw new Error("aggregator key: expected a 64-hex Ed25519 seed or a PKCS8 PEM");
   }
   if (key.asymmetricKeyType !== "ed25519") throw new Error(`aggregator key: expected Ed25519, got ${String(key.asymmetricKeyType)}`);
-  return { keyId, sign: (c) => cryptoSign(null, Buffer.from(c, "utf8"), key).toString("hex") };
+  // SPKI DER for Ed25519 is a 12-byte prefix then the 32 raw public bytes
+  const publicKeyHex = createPublicKey(key).export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+  return { keyId, publicKeyHex, sign: (c) => cryptoSign(null, Buffer.from(c, "utf8"), key).toString("hex") };
 }
 
 export interface SignedRequest {
