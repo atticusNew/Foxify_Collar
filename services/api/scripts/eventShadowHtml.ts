@@ -27,6 +27,8 @@ import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/cros
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { REFERENCE_BOOK_WORDS } from "../src/eventCollar/crossVenue/venueBooks";
+import type { VenueBreakdown, VenueCell } from "../src/eventCollar/crossVenue/shadowVenues";
+import type { AggregatorBookStatus } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { REFERENCE_PRINT_WORDS } from "../src/eventCollar/crossVenue/venuePrints";
 
 /** Public URL of the interactive demo, for the cross-link. */
@@ -957,7 +959,7 @@ ${routeCard}
   <div class="card">
     <h2>How to read it</h2>
     <div class="read"><b>User Δ</b> is what protection did for the user against holding naked: negative is the usual cost of protection, positive means the floor paid more than the cap gave up. <b>Our P&amp;L</b> is what selling that protection and carrying the hedge netted; leg for leg it should not depend on who won. <b>EV cost</b> is the quoted expected cost of the collar as a share of stake, before anything settles. A rule that lifts our P&amp;L without moving user Δ much is a better rule; one that only shifts money from one column to the other is a fee.</div>
-    <a class="back" href="/">Back to the track record</a> <a class="back" href="/api/shadow/report${tq}">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full${tq ? `&token=${encodeURIComponent(input.token as string)}` : ""}">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/hedges${tq}">Hedge receipts (JSON)</a> <a class="back" href="/api/shadow/export${tq}">Full ledger (JSONL)</a>
+    <a class="back" href="/">Back to the track record</a> <a class="back" href="/api/shadow/report${tq}">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full${tq ? `&token=${encodeURIComponent(input.token as string)}` : ""}">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/hedges${tq}">Hedge receipts (JSON)</a> <a class="back" href="/api/shadow/export${tq}">Full ledger (JSONL)</a> <a class="back" href="/venues${tq}">By venue, named (operator)</a>
   </div>
   <footer>
     Counterfactuals are computed at open from the venue books retained on the position and settled against the same official result as the live book. Nothing in the alternatives was traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer.
@@ -1222,6 +1224,126 @@ ${parlayCard}  <div class="card">
   </div>
   <footer>
     <b>Real:</b> live prices, quoted terms, hedge books, official results. <b>Simulated:</b> the positions and the parlay tickets; no venue credentials, nothing bought. The terms shown are the terms we would have had to hedge at that second. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Prepared for ${name}; demonstration, not an offer.
+  </footer>
+</div>
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
+// VENUES — operator only. Every game on the record priced on every venue read, venues named.
+// ---------------------------------------------------------------------------
+
+export interface VenuesPageInput {
+  breakdown: VenueBreakdown;
+  pricingSource: { aggregator: AggregatorBookStatus | { configured: false }; notes: string[] };
+  token: string | null;
+  windowDays: number;
+}
+
+function venueCellHtml(c: VenueCell, written: boolean): string {
+  if (!c.read) return `<td>–</td>`;
+  const ask = c.bestAskCents !== null ? `<i>${c.bestAskCents}¢${c.depthShares !== null && c.depthShares > 0 ? ` × ${intStr(c.depthShares)}` : ""}</i>` : "";
+  if (c.creditCents === null) return `<td class="ref">${escapeHtml(c.refused ?? "refused")}${ask}</td>`;
+  const delta = written || c.deltaCents === null ? "" : `<i class="${c.deltaCents > 0 ? "up" : c.deltaCents < 0 ? "dn" : ""}">${c.deltaCents > 0 ? "+" : ""}${usd(c.deltaCents)}</i>`;
+  const ev = c.evCostBps === null ? "" : `<i>ev ${bpsPct(c.evCostBps)}</i>`;
+  return `<td class="${written ? "hi" : ""}">${usd(c.creditCents)}${delta}${ev}${ask}</td>`;
+}
+
+export function renderVenuesHtml(input: VenuesPageInput): string {
+  const b = input.breakdown;
+  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
+  const ps = input.pricingSource.aggregator;
+  const feedLine = ps.configured
+    ? `The feed is on (${escapeHtml(ps.host)}): ${ps.reads} reads since boot, ${ps.readsWithBooks} with books, ${ps.mappingMismatches} mapping mismatch${ps.mappingMismatches === 1 ? "" : "es"}${ps.lastError ? `; last error: ${escapeHtml(ps.lastError)}` : ""}${ps.lastReadAt ? `; last read ${escapeHtml(shortEt(ps.lastReadAt))}` : ""}.`
+    : "The feed is off: every book is read from its venue directly.";
+  const originLine = `Of the ${b.positions} games in the window, ${b.origins.feed} priced from the feed, ${b.origins.direct} from the venues directly${b.origins.unknown > 0 ? `, ${b.origins.unknown} opened before the field existed (direct)` : ""}.`;
+
+  const head = `<tr><th>game</th><th>side</th><th>locks</th><th>mark</th><th>written</th>${b.totals.map((t) => `<th>${escapeHtml(t.name)}${t.via === "feed" ? " <small>feed</small>" : ""}</th>`).join("")}</tr>`;
+  const rows = b.rows
+    .map((r) => {
+      const origin = r.bookOrigins ? (r.bookOrigins.polymarket === "aggregator" || r.bookOrigins.kalshi === "aggregator" ? "feed" : "direct") : "";
+      const routeName = r.route === "kalshi_self" ? "Kalshi" : "Polymarket";
+      return `<tr class="${r.status}"><td class="g"><b>${escapeHtml(r.eventTitle)}</b><i>${escapeHtml(r.league.toUpperCase())}${r.status !== "open" ? ` · ${escapeHtml(r.status)}` : ""}${origin ? ` · ${origin}` : ""}</i></td><td>${escapeHtml(r.sideName)}<i>${r.contracts} @ ${r.markCents}¢</i></td><td>${escapeHtml(shortEt(r.eventTimeIso))}</td><td>${r.markCents}¢</td><td class="hi">${routeName}<i>floor ${r.floorCents}¢ · cap ${r.capCents}¢</i></td>${r.cells.map((c) => venueCellHtml(c, c.written)).join("")}</tr>`;
+    })
+    .join("");
+
+  const totalsRows = b.totals
+    .map(
+      (t) =>
+        `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.read}</td><td>${t.listed}</td><td>${t.quoted}</td><td>${t.kind === "route" ? t.written : "–"}</td><td class="hi">${t.best}</td><td>${t.avgDeltaCents === null ? "–" : `${t.avgDeltaCents > 0 ? "+" : ""}${usd(t.avgDeltaCents)}<i>over ${t.bothQuoted}</i>`}</td></tr>`,
+    )
+    .join("");
+
+  const richestLine = (() => {
+    const quotedRefs = b.totals.filter((t) => t.kind === "reference" && t.quoted > 0);
+    if (b.positions === 0) return "No sports game has been priced on more than one route yet; the next scan that quotes a game begins the table.";
+    const parts = [`The record wrote ${b.totals.find((t) => t.id === "kalshi_self")?.written ?? 0} games on Kalshi's own No side and ${b.totals.find((t) => t.id === "polymarket")?.written ?? 0} cross-venue on Polymarket.`];
+    for (const t of quotedRefs) {
+      parts.push(
+        `${t.name}${t.via === "feed" ? " (feed)" : ""} listed ${t.listed} of the ${t.read} games it was read for and would have funded ${t.quoted}; it was the cheapest protection on ${t.best}${
+          t.avgDeltaCents === null ? "" : `, and on the ${t.bothQuoted} games both quoted it would have paid ${t.avgDeltaCents >= 0 ? "" : "-"}${usd(Math.abs(t.avgDeltaCents))} ${t.avgDeltaCents >= 0 ? "more" : "less"} credit per position than the route written`
+        }.`,
+      );
+    }
+    const readNotQuoted = b.totals.filter((t) => t.kind === "reference" && t.read > 0 && t.quoted === 0);
+    for (const t of readNotQuoted) parts.push(`${t.name}${t.via === "feed" ? " (feed)" : ""} was read for ${t.read} games and listed ${t.listed}; none funded the live size.`);
+    return parts.join(" ");
+  })();
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<link rel="icon" href="data:," />
+<title>Venues · operator · Earn &amp; Protect</title>
+<style>${SHADOW_CSS}
+.wrap,.topbar .in{max-width:1180px}
+@media(min-width:700px){.wrap,.topbar .in{max-width:1180px}}
+td.g{text-align:left;white-space:normal;min-width:180px}
+td i{display:block;color:var(--faint);font-style:normal;font-size:11px;font-weight:500}
+td i.up{color:var(--green-deep)} td i.dn{color:#8a2a2a}
+td.ref{color:var(--faint)}
+tr.settled td,tr.closed td{opacity:.72}
+th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="wordmark">Earn &amp; Protect <span>· venues · operator only</span></div>
+</div></div>
+<div class="wrap">
+  <div class="card">
+    <h1>Where each game could have been hedged</h1>
+    <div class="sub">Every sports position on the record is priced, at open, on both hedge routes and on every other venue the service read, from the same books at the same second. The record writes the cheaper route; the rest are measured and never filled. This page names the venues. It answers only to the operator token and is never published; the public record says "the market's own No side" and "reference book B".</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n green">${b.positions}</div><div class="l">games priced, last ${input.windowDays} days</div></div>
+      <div class="bignum"><div class="n">${b.origins.feed}</div><div class="l">priced from the feed</div></div>
+      <div class="bignum"><div class="n">${b.totals.filter((t) => t.kind === "reference" && t.quoted > 0).length}</div><div class="l">other venues that funded a game</div></div>
+      <div class="bignum"><div class="n">${ps.configured ? "on" : "off"}</div><div class="l">aggregator feed</div></div>
+    </div>
+    <div class="read" style="margin-top:10px">${feedLine} ${escapeHtml(originLine)}</div>
+    ${input.pricingSource.notes.length > 0 ? `<div class="rule">${escapeHtml(input.pricingSource.notes.join(" · "))}</div>` : ""}
+  </div>
+
+  <div class="card">
+    <h2>By venue</h2>
+    <div class="tablewrap"><table><tr><th>venue</th><th>read</th><th>listed</th><th>funded</th><th>written</th><th>cheapest</th><th>credit vs written</th></tr>${totalsRows}</table></div>
+    <div class="read">${escapeHtml(richestLine)}</div>
+    <div class="rule">Read: the venue was looked at for the game. Listed: it had a book on the opposing outcome. Funded: that book filled the default tier at the live size. Written: the record hedged there. Cheapest: its book made protection cheapest in EV terms of every book that funded, which is how the record picks its route; a richer credit with a lower floor can lose on that measure. Credit vs written: on games both quoted, this venue's credit minus the credit written, averaged.</div>
+  </div>
+
+  <div class="card">
+    <h2>By game</h2>
+    <div class="sub" style="margin-bottom:6px">Open games first, next to lock first; then settled, most recent first. Each venue cell is the credit the default tier would have paid from that book, the difference against the credit written, and for reference books the best ask on the opposing outcome and its visible depth in shares.</div>
+    <div class="tablewrap"><table>${head}${rows}</table></div>
+    ${b.rows.length === 0 ? `<div class="read">Nothing in the window yet.</div>` : ""}
+    <a class="back" href="/report${tq}">Rule comparison</a> <a class="back" href="/api/shadow/venues${tq}">Raw JSON</a> <a class="back" href="/healthz${tq}">Status</a>
+  </div>
+  <footer>
+    Operator view. Venue names appear here and nowhere public. Nothing on this page was traded except the route written. Rendered ${escapeHtml(b.atIso.slice(0, 16).replace("T", " "))} UTC.
   </footer>
 </div>
 </body>

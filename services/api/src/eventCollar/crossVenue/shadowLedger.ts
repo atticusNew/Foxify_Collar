@@ -69,6 +69,11 @@ export interface ShadowOpenRecord {
    */
   counterfactuals?: ShadowCounterfactuals;
   /**
+   * Where each route's book came from at open: the aggregator's feed or the venue read directly.
+   * Absent on records before the feed was wired (every one of those was a direct read).
+   */
+  bookOrigins?: { polymarket?: "aggregator" | "direct"; kalshi?: "aggregator" | "direct" };
+  /**
    * The Polymarket token the cross-venue hedge bought, so an early close can
    * sell it into its live book. Absent on self-hedged positions and on records
    * before early closes existed (those close with the hedge leg unpriced).
