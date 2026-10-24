@@ -487,6 +487,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
       hedgeUnitsMilli: 133_500,
       hedgeTokenId: "0xpm-token",
       counterfactuals: { alternatives: {}, feeRules: {}, sizeLadder: [] } as never,
+      bookOrigins: { polymarket: "aggregator", kalshi: "aggregator" },
     });
     const netting = (await (await fetch(`${base}/api/shadow/netting`, op)).json()) as {
       ok: boolean;
@@ -519,7 +520,8 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.ok(!publicText.includes("0xpm-token") && !publicText.includes('"counterfactuals":{"alternatives"'), "the public JSON strips the operator fields");
     const chargers = publicJson.open.find((p) => p.ticker === "KXNFLGAME-TEST-LAC");
     assert.ok(chargers);
-    assert.ok(!("counterfactuals" in chargers) && !("hedgeTokenId" in chargers));
+    assert.ok(!("counterfactuals" in chargers) && !("hedgeTokenId" in chargers) && !("bookOrigins" in chargers), "where the books were read from is the operator's");
+    assert.ok(!publicText.includes("aggregator"));
     assert.equal(chargers.hedgeUnitsMilli, 133_500, "the hedge leg itself stays public: the identity is checkable from it");
     assert.ok(!(await (await fetch(`${base}/api/shadow/positions.csv`)).text()).includes("0xpm-token"));
     const fullExport = await (await fetch(`${base}/api/shadow/export`, op)).text();

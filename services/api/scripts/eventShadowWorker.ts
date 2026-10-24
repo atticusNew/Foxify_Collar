@@ -1162,11 +1162,13 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
 
 /**
  * A position as the public JSON carries it: what was quoted, what settled, both sides' money.
- * The counterfactual rule books and the hedge leg's venue token stay with the operator (the raw
- * ledger, the full CSV); a reader can recompute every public row without them.
+ * The counterfactual rule books, the hedge leg's venue token and where each book was read from
+ * stay with the operator (the raw ledger, the full CSV, /venues); a reader can recompute every
+ * public row without them.
  */
-function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "hedgeTokenId"> & { cashDue?: ReturnType<typeof cashDue> } {
-  const { counterfactuals: _cf, hedgeTokenId: _tok, ...rest } = p;
+function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "hedgeTokenId" | "bookOrigins"> & { cashDue?: ReturnType<typeof cashDue> } {
+  // where the books came from (the partner's feed or the venue) is the operator's: /venues, the raw ledger
+  const { counterfactuals: _cf, hedgeTokenId: _tok, bookOrigins: _origins, ...rest } = p;
   // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
   return p.source === "lock" ? { ...rest, cashDue: cashDue(p) } : rest;
 }
