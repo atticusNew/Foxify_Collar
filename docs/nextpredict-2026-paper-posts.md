@@ -16,7 +16,7 @@ Companion to `nextpredict-2026-paper.md`. Nothing here goes into the paper. It h
 
 Two days, five stages, about 200 speakers. We wrote down what the prediction-market industry said it is missing, and set it beside what Earn & Protect has running.
 
-Bank of America: $28bn of weekly volume, up nearly 30x in a year. Polymarket's own cohort data: half of new users active at two months, 17% at three. Wedbush, Crypto.com and Sharp Alpha: everyone is posting all the money, and market makers are funding collateral with structured notes. Susquehanna and Cantor: the hedge is the institutional use case, and it is still priced bespoke. White Swan: combination contracts carry $18bn of risk a week, heading for $30bn by Christmas. Sporttrade, Novig, DraftKings and Smarkets: protection is coming, by rule or by reckoning.
+Bank of America: $28bn of weekly volume, up nearly 30x in a year. Polymarket's 2024 cohort data, cited from the stage: half of new wallets active at two months, 17% at three. Wedbush, Crypto.com and Sharp Alpha: everyone is posting all the money, and market makers are funding collateral with structured notes. Susquehanna and Cantor: the hedge is the institutional use case, and it is still priced bespoke. White Swan: combination contracts carry $18bn of risk a week, heading for $30bn by Christmas. Sporttrade, Novig, DraftKings and Smarkets: protection is coming, by rule or by reckoning.
 
 Each of those is a description of a position that can only be won or lost.
 
