@@ -44,7 +44,34 @@ The paper quotes the stage by name and session, lists the summit's own forecasts
 
 ## Founder LinkedIn post
 
-*Personal voice. Shorter, plainer. Post a day or two after the company page, linking the same Medium article in the first comment.*
+*Personal voice. Built for the scan: one-line hook, short lines, white space. Post a day or two after the company page, linking the same Medium article in the first comment. LinkedIn truncates after about three lines, so the first line has to carry it.*
+
+Two days at NEXTPredict. Every stage described the same missing product.
+
+What the industry said:
+- Half of new users are gone by month three.
+- The hedge exists, if you're a fund with a market-maker on speed dial.
+- $18bn a week of parlay risk, nothing under it.
+- "Trader protection" = a deposit limit nobody sets.
+
+The root cause is the same every time: a position can only be won or lost.
+
+What we built:
+- One tap on a position you already hold.
+- Floor if it loses. Credit, paid now, if it wins smaller.
+- Stays on your venue, in your account.
+- We build the hedge ourselves on a regulated exchange and publish the receipt, order id and all.
+- No honest credit available? You're told. No bad quotes.
+
+Live on a perpetuals venue. Running on a public record across event-contract venues. Parlays next.
+
+Full write-up, quoted by name and session, in the comments.
+
+If you were on one of those panels: this is the thing you were describing.
+
+#predictionmarkets #NEXTPredict #hedging
+
+### Earlier founder draft (kept for reference, not for posting)
 
 Spent two days at NEXTPredict in New York listening to exchanges, market makers, banks and regulators describe the prediction-market product's problems. I kept writing down the same one.
 
@@ -57,8 +84,6 @@ You hold a position. You tap once. You get a floor if it loses, and you get paid
 It is live on a perpetuals venue today and running on a public record across event-contract venues. The parlay version is next.
 
 I wrote up what was said on stage, by whom, and where we stand against it. Link in the comments. If you were on one of those panels and this sounds like what you were describing, it is.
-
-#predictionmarkets #NEXTPredict #hedging
 
 ## Paste procedure for Medium
 
