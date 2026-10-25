@@ -117,7 +117,15 @@ export interface HedgeFill {
   /** true when no order reached a venue (shadow, or a book fill with no order hook) */
   simulated: boolean;
   ids: { rfqId?: string; quoteId?: string; orderId?: string };
+  /**
+   * How the order reached the venue: our own key on the venue ("direct"), or the aggregator's
+   * execution pod holding the venue account ("aggregator"). Absent on a simulated fill. On the
+   * holder's receipt as the path the other side took; the operator's trail keeps the name.
+   */
+  via?: HedgeVia;
 }
+
+export type HedgeVia = "direct" | "aggregator";
 
 export type HedgeAttempt =
   | {
@@ -268,6 +276,7 @@ export class BookHedgeExecutor implements HedgeExecutor {
         vsBookCents: intent.book.costCents - r.costCents,
         simulated: false,
         ids: { orderId: r.orderId },
+        via: "direct",
       };
     } catch (err) {
       attempts.push({ strategy: "book", step: "fill", ok: false, at, detail: errText(err) });
@@ -440,6 +449,7 @@ export class RfqHedgeExecutor implements HedgeExecutor {
           vsBookCents: intent.book.costCents - cost,
           simulated: false,
           ids: { rfqId, quoteId: best.quoteId, ...(r.orderId ? { orderId: r.orderId } : {}) },
+          via: "direct",
         },
         reason: "",
       };
