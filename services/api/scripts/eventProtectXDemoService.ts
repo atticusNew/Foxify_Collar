@@ -60,8 +60,9 @@
  *      EVENT_X_MAX_EV_COST_BPS (ceiling on protection's EV cost, default 300; 0 = off)
  *      EVENT_X_FAR_OUT_HOURS (no cross-venue route on a game further out than this when the
  *      market's own No side is empty and the feed has no book, default 24; 0 = off)
- *      EVENT_X_STALE_MAX_MS (a cached scan older than this is not served before its refresh,
- *      default 60s) · EVENT_X_STALE_WAIT_MS (how long that wait may take, default 20s)
+ *      EVENT_X_KEEP_WARM_MS (the scan is refreshed on this timer with or without visitors, default 60s)
+ *      EVENT_X_STALE_MAX_MS (backstop: a cached scan older than this is not served before its
+ *      refresh, default 5m) · EVENT_X_STALE_WAIT_MS (how long that wait may take, default 20s)
  *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
  *      EVENT_X_FUNNEL_PATH · EVENT_X_ADMIN_TOKEN (or EVENT_X_DEV_NO_ADMIN=true)
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
@@ -1214,12 +1215,20 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
 let cache: { at: number; state: ScanState } | null = null;
 const CACHE_TTL_MS = 10_000;
 /**
- * Past this age the last scan is not served as is: a visitor arriving after a quiet hour would
- * otherwise read books from that hour while the refresh they triggered lands behind them. The
- * request waits for the refresh instead, up to STALE_WAIT_MS, then takes whatever is current
- * (the fresh scan when it landed, the old one when the venues were slow or down).
+ * KEEP WARM: the scan is refreshed on a timer whether or not anyone is looking, so a visitor
+ * arriving after a quiet hour reads books at most a minute old, instantly. A scan takes ten to
+ * fifteen seconds of venue round-trips; making the first visitor wait for one (the previous
+ * approach) left the page blank for that long, which on a demo reads as broken. The timer is the
+ * fix; the stale ceiling below is only the backstop for a timer whose scans keep failing.
  */
-const STALE_MAX_MS = Number(process.env.EVENT_X_STALE_MAX_MS || 60_000);
+const KEEP_WARM_MS = Number(process.env.EVENT_X_KEEP_WARM_MS || 60_000);
+/**
+ * Backstop: past this age the last scan is not served as is; the request waits for the refresh
+ * it started, up to STALE_WAIT_MS, then takes whatever is current. With the keep-warm timer on,
+ * a scan this old means the timer's scans have been failing for minutes, so the ceiling sits
+ * well above the timer (five minutes) and is not met in normal running.
+ */
+const STALE_MAX_MS = Number(process.env.EVENT_X_STALE_MAX_MS || 5 * 60_000);
 const STALE_WAIT_MS = Number(process.env.EVENT_X_STALE_WAIT_MS || 20_000);
 
 export type CacheServeDecision = "serve" | "refresh_and_serve" | "refresh_and_wait";
@@ -1265,12 +1274,12 @@ function refreshInBackground(): void {
 }
 
 /**
- * Stale-while-revalidate, bounded: visitors get an instant answer from the last good scan while a
- * background refresh keeps it current, as long as that scan is younger than STALE_MAX_MS. Older
- * than that (the service sat idle), the request waits for the refresh it started, up to
- * STALE_WAIT_MS, so the first visitor after a quiet spell sees live books rather than the hour-old
- * ones. The very first request after boot (cold cache) waits for the venue round-trips; prewarming
- * at startup usually removes even that.
+ * Stale-while-revalidate, kept warm: visitors get an instant answer from the last good scan,
+ * which the keep-warm timer holds under a minute old whether or not anyone is looking; a request
+ * past the TTL also starts a refresh behind itself. Only past the stale ceiling (the timer's scans
+ * failing for minutes) does a request wait, up to STALE_WAIT_MS, for the refresh it started. The
+ * very first request after boot (cold cache) waits for the venue round-trips; prewarming at
+ * startup usually removes even that.
  */
 async function getCachedScan(): Promise<ScanState> {
   if (cache) {
@@ -1693,6 +1702,8 @@ if (process.env.NODE_ENV !== "test" && process.env.EVENT_X_EMBED !== "1") {
     // prewarm so the first visitor is not the one paying for venue round-trips;
     // a failed prewarm must never crash the process (retried on first request)
     getCachedScan().catch(() => {});
+    // keep the scan warm on a timer; a refresh already running is left alone (refreshInBackground)
+    if (KEEP_WARM_MS > 0) setInterval(refreshInBackground, KEEP_WARM_MS).unref();
     setInterval(flushFunnel, 60_000).unref();
   });
   // Best-effort flush on shutdown so a deploy does not drop the last minute of counters.
