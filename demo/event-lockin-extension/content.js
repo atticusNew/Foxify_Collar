@@ -19,6 +19,11 @@
 // play is an order, not a position, so it gets the muted line and the tap says it waits for the
 // match. A partially matched play is sized on its matched part.
 //
+// Venues: one script, three skins. ProphetX (My Trades, prices as the implied chance or American
+// odds), Kalshi (Portfolio, Yes/No contracts priced in cents; a No on one club is read as the
+// other club's Yes) and Novig (Portfolio, decimal multipliers, Take fills now and Make rests).
+// The host name picks the venue; it sets the colours, the words and the reading rules below.
+//
 // Selector strategy: the venue's web app is a React SPA with no stable ids, so rows are found by
 // text: a block that names a team the service can protect and carries the play's money.
 // Our line is inserted as a sibling after that block and re-inserted if the venue re-renders.
@@ -35,6 +40,30 @@
   const TIER_ORDER = ["tight", "balanced", "wide"];
   const TIER_WORDS = { tight: "Most now", balanced: "Even", wide: "Keep more upside" };
   const DEFAULTS = { showHedge: "no", rehearse: "no" };
+
+  // ── the venue this page belongs to ──────────────────────────────────────────
+  // One codebase, three skins. The host name decides; a preview page names its venue in a meta
+  // tag. The venue sets the colours (a class on every root we draw), the word for a play, and a
+  // few reading rules: Kalshi prices in cents and counts contracts, with a Yes and a No side on
+  // each club; Novig prices as multipliers (1.25x) and rests a Make order until it is taken.
+  const VENUES = {
+    prophetx: { name: "ProphetX", host: /(^|\.)prophetx\.(co|dev)$/, play: "play", plays: "plays", page: "My Trades", matched: "matched" },
+    kalshi: { name: "Kalshi", host: /(^|\.)kalshi\.com$/, play: "position", plays: "positions", page: "Portfolio", matched: "filled" },
+    novig: { name: "Novig", host: /(^|\.)novig\.(us|com)$/, play: "order", plays: "orders", page: "Portfolio", matched: "matched" },
+  };
+  const detectVenue = () => {
+    const host = String(location.hostname || "").toLowerCase();
+    for (const id of Object.keys(VENUES)) if (VENUES[id].host.test(host)) return id;
+    const meta = document.querySelector('meta[name="ael-venue"]');
+    if (meta && VENUES[meta.getAttribute("content")]) return meta.getAttribute("content");
+    const m = /\/preview\/(kalshi|novig)\.html$/i.exec(location.pathname);
+    return m ? m[1].toLowerCase() : "prophetx";
+  };
+  const VENUE_ID = detectVenue();
+  const V = VENUES[VENUE_ID];
+  /** The class every root we draw carries, so the skin's variables cascade into it. */
+  const SKIN = "ael-v-" + VENUE_ID;
+
   const SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>';
   const SHIELD_FILL = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5" stroke="#0b0b0e" stroke-width="2.4" fill="none"/></svg>';
 
@@ -263,7 +292,7 @@
   const sidesIn = (raw) => {
     const text = spaced(raw);
     const out = nicksIn(text);
-    out.ambiguous = false;
+    out.ambiguous = Boolean(out.ambiguous);
     if (!S.nickRe) return out;
     // codes: unique ones count at once; a code shared across leagues (DEN, TB, KC) is resolved by the
     // row's league word, else by the league of a side already resolved; left unresolved it is flagged
@@ -309,6 +338,7 @@
       // the same club across weeks: the game day on the row, else the tab
       const ticker = choose(list.map((x) => x.ticker), text);
       if (ticker) out.set(ticker, (out.get(ticker) || 0) + 1);
+      else out.ambiguous = true;
     }
     return out;
   };
@@ -343,6 +373,34 @@
     stakeCents: Math.round(stake * 100),
     payoutCents: Math.round(payout * 100),
   });
+  // Kalshi's units are ours: N contracts at c cents each pay $N. A price in cents ("42¢", "@ 42c",
+  // "Avg 42¢") and a contract count ("10 contracts", "10 shares"), or the price and the cost.
+  const CENTS = /(?:^|[^\d.$])(\d{1,2})\s?(?:¢|&cent;|c(?![a-z0-9]))/i;
+  const CONTRACTS = /(\d{1,6}(?:,\d{3})*)\s*(?:contracts?|shares?)\b/i;
+  const sizeOfContracts = (contracts, cents) => ({
+    contracts: Math.max(1, Math.round(contracts)),
+    entryCents: Math.min(99, Math.max(1, Math.round(cents))),
+    stakeCents: Math.round(contracts * cents),
+    payoutCents: Math.round(contracts) * 100,
+  });
+  const centsSize = (text) => {
+    const bare = noMoney(text);
+    const c = CENTS.exec(bare);
+    const cents = c ? Number(c[1]) : null;
+    const n = labelled(text, CONTRACTS);
+    if (cents && cents > 0 && cents < 100) {
+      if (n) return sizeOfContracts(n, cents);
+      const amounts = amountsIn(text);
+      // the cost at that price: contracts are the cost over the price
+      const cost = labelled(text, /(?:cost|paid|spent|total|amount|avg\s*cost)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i) || amounts[0];
+      if (cost) return sizeOfContracts(Math.round((100 * cost) / cents), cents);
+    }
+    if (n) {
+      const cost = labelled(text, /(?:cost|paid|spent|amount)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
+      if (cost && cost < n) return sizeOfContracts(n, (100 * cost) / n);
+    }
+    return null;
+  };
   const labelled = (text, re) => {
     const m = re.exec(text);
     return m ? Number(m[1].replace(/,/g, "")) : null;
@@ -354,7 +412,12 @@
    */
   const sizeIn = (raw) => {
     const text = spaced(raw);
-    const wager = labelled(text, /(?:wager|stake|risk|cost|bet)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
+    // Kalshi says it in our units outright; read those before any dollar pairing
+    if (VENUE_ID === "kalshi") {
+      const k = centsSize(text);
+      if (k) return k;
+    }
+    const wager = labelled(text, /(?:wager|stake|risk|cost|bet|amount)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
     const matchedM = /(?:^|[^a-z])matched\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i.exec(text);
     const matched = matchedM ? Number(matchedM[1].replace(/,/g, "")) : null;
     const stake = matched != null && matched > 0 && (wager == null || matched <= wager) ? matched : wager;
@@ -382,9 +445,12 @@
       const m = Number(mult[1]);
       const amounts = amountsIn(text);
       for (const a of amounts) for (const b of amounts) if (a > 0 && b > a && Math.abs(b - a * m) <= Math.max(0.02, 0.01 * b)) return sizeOf(a, b);
+      // a venue that nets its fee out of the winnings prints a payout a little under stake times
+      // the multiplier ($20 at 1.25x pays $24.70, not $25.00): the pair whose profit is most of it
+      for (const a of amounts) for (const b of amounts) if (a > 0 && b > a && b <= a * m + 0.02 && b - a >= 0.85 * (a * m - a)) return sizeOf(a, b);
       if (stake) return sizeOf(stake, stake * m);
     }
-    return null;
+    return centsSize(text);
   };
   /**
    * A table lays the row out under column headers (Cost, Price, Payout) instead of labelling each
@@ -421,10 +487,11 @@
     if (payout && payout > stake) return sizeOf(stake, payout);
     const gain = money(at(/^(to win|to gain|profit|win|gain)\b/));
     if (gain) return sizeOf(stake, stake + gain);
-    const price = at(/^(price|odds)\b/);
+    const price = at(/^(price|odds|avg|average|avg\.? price)\b/);
     const odds = AMERICAN.exec(price);
     const pct = PERCENT.exec(price);
-    const k = odds ? payoutMultiple(Number(odds[1])) : pct && Number(pct[1]) > 0 && Number(pct[1]) < 100 ? 100 / Number(pct[1]) : null;
+    const cents = CENTS.exec(" " + price);
+    const k = odds ? payoutMultiple(Number(odds[1])) : pct && Number(pct[1]) > 0 && Number(pct[1]) < 100 ? 100 / Number(pct[1]) : cents && Number(cents[1]) > 0 ? 100 / Number(cents[1]) : null;
     return k ? sizeOf(stake, stake * k) : null;
   };
   /** Winner (moneyline) or something else. A spread line is a signed one or two digit figure; American odds are three or more. */
@@ -438,8 +505,8 @@
   const matchIn = (raw) => {
     const text = spaced(raw);
     const bare = noMoney(text);
-    if (!/\b(unmatched|open order|resting|pending match)\b/i.test(bare)) return "matched";
-    if (/\b(partially\s+matched|fully\s+matched|filled)\b/i.test(bare)) return "matched";
+    if (!/\b(unmatched|unfilled|open order|resting|pending|pending match|awaiting match|not matched|working)\b/i.test(bare)) return "matched";
+    if (/\b(partially\s+(?:matched|filled)|fully\s+(?:matched|filled)|filled)\b/i.test(bare)) return "matched";
     const m = /(?:^|[^a-z])matched\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i.exec(text);
     if (m) return Number(m[1].replace(/,/g, "")) > 0 ? "matched" : "unmatched";
     return /(^|[^a-z])matched\b/i.test(bare) ? "matched" : "unmatched";
@@ -447,7 +514,23 @@
   /** The venue's play-money mode (points, not dollars) is never priced. */
   const pointsRow = (raw) => {
     const text = spaced(raw);
-    return /\bprophet\s*points\b/i.test(text) || (/\bpts\b/i.test(text) && !/\$\s?\d/.test(text));
+    return /\b(prophet|novig)\s*points\b/i.test(text) || (/\b(pts|points)\b/i.test(text) && !/\$\s?\d/.test(text));
+  };
+  /**
+   * Kalshi holds a club's game as Yes or No on that club. A No on the Chiefs is a Yes on the
+   * Seahawks: the other market of the same game, which is what the service protects. The row's
+   * side word decides; a game with no sibling market listed cannot be flipped.
+   */
+  const siblingOf = (ticker) => {
+    const stem = String(ticker).slice(0, String(ticker).lastIndexOf("-") + 1);
+    const others = Object.keys(S.byTicker).filter((t) => t !== ticker && t.startsWith(stem));
+    return others.length === 1 ? others[0] : null;
+  };
+  const sideWord = (raw) => {
+    const bare = noMoney(spaced(raw));
+    const yes = /(^|[^a-z])yes(?![a-z])/i.test(bare);
+    const no = /(^|[^a-z])no(?![a-z])/i.test(bare);
+    return no && !yes ? "no" : yes ? "yes" : null;
   };
 
   // ── finding the plays page and its rows ─────────────────────────────────────
@@ -467,8 +550,9 @@
    * The selected tab is the one marked so (aria, data-state, class), else the one drawn apart
    * from the others (lit text or an underline). Nothing decided means the rows speak for themselves.
    */
-  const TAB_WORDS = /^(resting|open orders?|unmatched|pending|filled|matched|open|active|settled|closed|history)$/i;
-  const tabGroup = (w) => (/^(resting|open orders?|unmatched|pending)$/i.test(w) ? "resting" : /^(settled|closed|history)$/i.test(w) ? "settled" : "filled");
+  // ProphetX: Resting / Filled / Settled. Kalshi: Positions / Orders / History. Novig: Open / Settled.
+  const TAB_WORDS = /^(resting|open orders?|orders?|unmatched|pending|filled|matched|positions?|open|active|settled|closed|history|past)$/i;
+  const tabGroup = (w) => (/^(resting|open orders?|orders?|unmatched|pending)$/i.test(w) ? "resting" : /^(settled|closed|history|past)$/i.test(w) ? "settled" : "filled");
   const MARKED = (el) => {
     for (let e = el, i = 0; e && i < 3; e = e.parentElement, i++) {
       if (e.getAttribute("aria-selected") === "true" || e.hasAttribute("aria-current") || e.getAttribute("data-state") === "active" || e.getAttribute("data-active") === "true") return true;
@@ -570,7 +654,9 @@
     const seen = new Map(); // row element -> { tickers Map, nodes }
     for (const node of nodes) {
       const sides = sidesIn(node.nodeValue);
-      if (!sides.size) continue;
+      // a name this node alone cannot settle (one club, two listed weeks) still marks its row: the
+      // row's full text carries the game day, and the pass below reads the row whole
+      if (!sides.size && !sides.ambiguous) continue;
       const row = rowFrom(node);
       if (!row) continue;
       const cur = seen.get(row) || { count: new Map(), first: node };
@@ -585,6 +671,10 @@
       if (pointsRow(text)) continue;
       const count = sidesIn(text);
       if (!count.size) continue;
+      // a block that names three clubs or more, or prices both Yes and No, is a board (a futures
+      // list, a game card with both sides to buy), not one position
+      if (count.size > 2) continue;
+      if (/(^|[^a-z])yes(?![a-z])/i.test(text) && /(^|[^a-z])no(?![a-z])/i.test(text)) continue;
       // the pick: a "Team · Winner" style line, else the side named more than once (matchup plus
       // selection), else the one side the service confirms a position on, else the only side
       let ticker = null;
@@ -604,6 +694,14 @@
         if (withSvc.length === 1) ticker = withSvc[0];
       }
       if (!ticker) continue;
+      // Kalshi: a No on the named club is a Yes on the other club of the same game
+      let flipped = false;
+      if (VENUE_ID === "kalshi" && sideWord(text) === "no") {
+        const other = siblingOf(ticker);
+        if (!other) continue;
+        ticker = other;
+        flipped = true;
+      }
       // a spread or total row is never sized from the winner position the service holds on the same club;
       // an unmatched play is an order, so the service's confirmed position (if any) is a different play
       const kind = kindIn(text);
@@ -613,17 +711,20 @@
       if (S.tab === "settled") match = "settled";
       const svc = kind === "winner" && match === "matched" ? svcFor(ticker) : null;
       const read = match === "matched" ? tableSize(row) || sizeIn(text) : null;
-      out.push({ row, ticker, kind, match, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
+      out.push({ row, ticker, kind, match, flipped, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
     }
     return out;
   };
 
   // ── our line and panel under a row ──────────────────────────────────────────
-  const stateOf = (ticker) => {
-    let st = S.st.get(ticker);
+  // keyed by market; a spread or total row on the same club keeps its own panel state, so opening
+  // the one never opens the other
+  const stateOf = (B) => {
+    const key = B.kind && B.kind !== "winner" ? B.ticker + "#" + B.kind : B.ticker;
+    let st = S.st.get(key);
     if (!st) {
       st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, enter: false, how: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptCash: null, rcptBusy: false, rcptErr: "" };
-      S.st.set(ticker, st);
+      S.st.set(key, st);
     }
     return st;
   };
@@ -645,7 +746,7 @@
     let host;
     if (after.tagName === "TR") {
       host = document.createElement("tr");
-      host.className = "ael-ui ael-host";
+      host.className = "ael-ui ael-host " + SKIN;
       const td = document.createElement("td");
       td.colSpan = 99;
       td.innerHTML = '<div class="ael-ui ael-row"></div>';
@@ -653,7 +754,7 @@
       B.box = td.firstElementChild;
     } else {
       host = document.createElement("div");
-      host.className = "ael-ui ael-host";
+      host.className = "ael-ui ael-host " + SKIN;
       host.innerHTML = '<div class="ael-ui ael-row"></div>';
       B.box = host.firstElementChild;
     }
@@ -695,7 +796,7 @@
 
   /** The quote at this row's size, refreshed while the page is open; the lock reprices at the tap. */
   const quoteRow = (B) => {
-    const st = stateOf(B.ticker);
+    const st = stateOf(B);
     if (!B.size || st.done || S.record.has(B.ticker)) return;
     const key = B.ticker + ":" + B.size.contracts + ":" + (B.size.entryCents || "");
     if (st.pending || st.busy) return;
@@ -739,9 +840,11 @@
       case "spread":
         return { why: "Protection covers the Moneyline market.", next: "A Moneyline pick on this game can be locked in." };
       case "unmatched":
-        return { why: "This play has not been matched yet.", next: "It is an order until another account takes the other side. Protection prices on the matched stake; check back once it fills." };
+        return VENUE_ID === "kalshi"
+          ? { why: "This order has not filled yet.", next: "It is a resting order until the book fills it. Protection prices on the contracts you hold; check back once it fills." }
+          : { why: "This " + V.play + " has not been matched yet.", next: "It is an order until another account takes the other side. Protection prices on the matched stake; check back once it fills." };
       case "settled":
-        return { why: "This play settled without protection.", next: "Protection is locked before the game starts. A locked play shows what it paid here once it settles." };
+        return { why: "This " + V.play + " settled without protection.", next: "Protection is locked before the game starts. A locked " + V.play + " shows what it paid here once it settles." };
       case "market_too_close_to_start":
       case "market_not_active":
         return { why: "This game starts too soon to protect.", next: "Protection is available until shortly before kickoff." };
@@ -789,7 +892,7 @@
   /** The line under the row, from the row's state. */
   const paintRow = (B) => {
     if (!B.box) return;
-    const st = stateOf(B.ticker);
+    const st = stateOf(B);
     // a lock on this market covers the Winner position; a spread or total row on the same club is not it
     const rec = B.kind === "winner" ? S.record.get(B.ticker) || st.done : null;
     let line;
@@ -806,11 +909,11 @@
       } else if (rec.status === "void") line = lineGo("Protection voided", "no official result; nothing owed", "ael-line-on");
       else line = lineGo("Protected" + (rec.rehearsal ? " (rehearsal)" : "") + " &middot; " + esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), "whichever way it goes &middot; +" + esc(usd(rec.creditCents)) + " paid", "ael-line-on");
     } else if (B.kind === "other") {
-      line = lineGo("Protection unavailable", "covers Moneyline picks", "ael-line-off");
+      line = lineGo("Protection unavailable", VENUE_ID === "novig" ? "covers Winner picks" : "covers Moneyline picks", "ael-line-off");
     } else if (B.match === "unmatched") {
-      line = lineGo("Protection unavailable", "waits until the play is matched", "ael-line-off");
+      line = lineGo("Protection unavailable", VENUE_ID === "kalshi" ? "waits until the order fills" : "waits until the " + esc(V.play) + " is matched", "ael-line-off");
     } else if (B.match === "settled") {
-      line = lineGo("Not protected", "this play settled without protection", "ael-line-off");
+      line = lineGo("Not protected", "this " + esc(V.play) + " settled without protection", "ael-line-off");
     } else if (!B.size) {
       line = lineGo("Lock in", "size not read from the page", "");
     } else if (!st.quote) {
@@ -878,7 +981,9 @@
     const pays = size ? usd(size.payoutCents || size.contracts * 100) : p ? usd0(100 * p.contracts) : "";
     const paid = size && size.stakeCents ? " &middot; you paid " + esc(usd(size.stakeCents)) : "";
     const from = operator() && B.from === "page" ? " &middot; read from the page" : "";
-    return esc(nick) + (pays ? " &middot; pays " + esc(pays) + " if they win" : "") + paid + from;
+    // a Kalshi No on the other club is this club's Yes; say so once, in the holder's own words
+    const flip = B.flipped ? " &middot; your No on the " + esc(shortOf(siblingOf(B.ticker) || "")) : "";
+    return esc(nick) + (pays ? " &middot; pays " + esc(pays) + " if they win" : "") + paid + flip + from;
   };
 
   /** The three numbers, the floor first: the same strip before the tap and after it. */
@@ -888,7 +993,7 @@
     '<div class="ael-tile"><div class="ael-l">if they win</div><div class="ael-v">' + esc(usd(rs.capTotal)) + '</div><div class="ael-was">' + (was ? "was " + esc(was) : "") + "</div></div></div>";
 
   const paintPanel = (B) => {
-    const st = stateOf(B.ticker);
+    const st = stateOf(B);
     const panel = B.box.querySelector(".ael-panel");
     const rec = B.kind === "winner" ? S.record.get(B.ticker) || st.done : null;
     if (rec) return paintDetails(B, panel, rec);
@@ -966,7 +1071,7 @@
   };
 
   const lockIn = async (B, n, t) => {
-    const st = stateOf(B.ticker);
+    const st = stateOf(B);
     if (st.busy) return;
     st.busy = true;
     const go = B.box.querySelector(".ael-go");
@@ -1018,13 +1123,15 @@
    * no order line; the holder's protection is on the record either way. The reason stays with
    * the operator's hedge line.
    */
+  /** How the order reached the venue, as the receipt says it: through the aggregator's pod, or on our own key. The partner is never named. */
+  const viaWords = (h) => (h && h.via === "aggregator" ? ' <span class="ael-dim">&middot; through the aggregator</span>' : h && h.via === "direct" ? ' <span class="ael-dim">&middot; direct</span>' : "");
   const receiptHtml = (st, rec) => {
     const h = st.rcptHedge || rec.hedge || null;
     const row = (k, v) => "<span>" + k + "</span><b>" + v + "</b>";
     if (rec.rehearsal) {
       return (
         '<div class="ael-rcpt">' +
-        row("Other side", 'No on Kalshi, priced at the book <span class="ael-dim">(rehearsal, nothing bought)</span>') +
+        row("Other side", 'the other side, priced at the hedge book <span class="ael-dim">(rehearsal, nothing bought)</span>') +
         row("Order", '<span class="ael-dim">none; this was a rehearsal</span>') +
         row("Record", '<span class="ael-dim">not written</span>') +
         "</div>"
@@ -1036,12 +1143,14 @@
     else {
       const units = h.unitsMilli != null ? (h.unitsMilli / 1000).toFixed(2).replace(/\.00$/, "") : null;
       const venue = h.venue || "Kalshi";
+      // Kalshi holds the other side as No on the club; any other book holds it as the other club
+      const side = /kalshi/i.test(venue) ? "No on " + esc(venue) : "the other side on " + esc(venue);
       if (h.simulated) {
         lines.push(row("Other side", (units ? esc(units) + " contracts " : "") + "covered at the book" + (h.costCents != null ? " &middot; " + esc(usd(h.costCents)) : "")));
       } else {
-        lines.push(row("Other side", esc(units || "") + " contracts No on " + esc(venue) + (h.avgPriceMilli != null ? " at " + esc((h.avgPriceMilli / 10).toFixed(1)) + "c each with fees" : "")));
+        lines.push(row("Other side", esc(units || "") + " contracts " + side + (h.avgPriceMilli != null ? " at " + esc((h.avgPriceMilli / 10).toFixed(1)) + "c each with fees" : "")));
         if (h.costCents != null) lines.push(row("Cost", esc(usd(h.costCents)) + ' <span class="ael-dim">all in</span>'));
-        if (h.orderId) lines.push(row("Order", "<code>" + esc(String(h.orderId).slice(0, 8)) + "&hellip;</code> " + esc(venue) + (h.at ? ' <span class="ael-dim">&middot; ' + esc(fmtAt(h.at)) + "</span>" : "")));
+        if (h.orderId) lines.push(row("Order", "<code>" + esc(String(h.orderId).slice(0, 8)) + "&hellip;</code> " + esc(venue) + viaWords(h) + (h.at ? ' <span class="ael-dim">&middot; ' + esc(fmtAt(h.at)) + "</span>" : "")));
       }
       if (h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
     }
@@ -1054,7 +1163,7 @@
 
   /** Read the hedge view for a lock from the service once, then paint; the tap's own answer is used when present. */
   const loadReceipt = async (B) => {
-    const st = stateOf(B.ticker);
+    const st = stateOf(B);
     if (st.rcptBusy || st.rcptHedge) return;
     st.rcptBusy = true;
     const r = await api("/api/shadow/receipt?ticker=" + encodeURIComponent(B.ticker), "GET");
@@ -1069,7 +1178,7 @@
 
   /** The protected position's details: only what the holder needs to see the deal they have. */
   const paintDetails = (B, panel, rec) => {
-    const st = stateOf(B.ticker);
+    const st = stateOf(B);
     // the hedge behind the receipt: the tap's own answer, kept once seen (the record refresh a
     // moment later carries none), else read from the service the first time the receipt opens
     if (!st.rcptHedge && rec.hedge && rec.hedge.receiptId) st.rcptHedge = rec.hedge;
@@ -1079,7 +1188,7 @@
     const h = st.rcptHedge || rec.hedge;
     const opLine =
       S.settings.showHedge === "yes" && h
-        ? '<div class="ael-op">' + (h.simulated ? "hedge held: " + esc(h.fallbackReason || "simulated") : "hedged live &middot; order " + esc(h.orderId || "") + " &middot; " + (h.costCents != null ? esc(usd(h.costCents)) : "")) + "</div>"
+        ? '<div class="ael-op">' + (h.simulated ? "hedge held: " + esc(h.fallbackReason || "simulated") : "hedged live on " + esc(h.venue || "Kalshi") + (h.via ? " via " + esc(h.via) : "") + " &middot; order " + esc(h.orderId || "") + " &middot; " + (h.costCents != null ? esc(usd(h.costCents)) : "")) + "</div>"
         : "";
     // the receipt reads differently from the offer on purpose: a sentence with the numbers, then
     // one grey line of facts; no tiles, no button, nothing left to choose
@@ -1122,7 +1231,7 @@
       if (reset)
         reset.onclick = (e) => {
           e.preventDefault();
-          const st = stateOf(B.ticker);
+          const st = stateOf(B);
           st.done = null;
           st.open = false;
           st.quoteAt = 0;
@@ -1135,7 +1244,7 @@
         rcpt.onclick = (e) => {
           e.preventDefault();
           e.stopPropagation();
-          const st = stateOf(B.ticker);
+          const st = stateOf(B);
           st.rcpt = !st.rcpt;
           if (st.rcpt) st.rcptErr = "";
           paintRow(B);
@@ -1149,8 +1258,8 @@
     if (c) return c;
     c = document.createElement("div");
     c.id = "ael-card";
-    c.className = "ael-ui ael-card";
-    c.innerHTML = '<div class="ael-card-h"><span>Your plays &middot; protection</span><button type="button" class="ael-x" aria-label="Hide">&times;</button></div><div class="ael-card-b"></div>';
+    c.className = "ael-ui ael-card " + SKIN;
+    c.innerHTML = '<div class="ael-card-h"><span>Your ' + esc(V.plays) + ' &middot; protection</span><button type="button" class="ael-x" aria-label="Hide">&times;</button></div><div class="ael-card-b"></div>';
     c.querySelector(".ael-x").onclick = () => {
       c.style.display = "none";
       S.cardHidden = true;
@@ -1182,7 +1291,7 @@
         S.cardRows.set(p.id, B);
       }
       if (B.ticker.startsWith("__")) {
-        const st = stateOf(B.ticker);
+        const st = stateOf(B);
         st.quote = { ok: false, code: p.reason || "unavailable", message: "" };
       } else quoteRow(B);
       paintRow(B);
@@ -1205,7 +1314,7 @@
     if (!n) {
       n = document.createElement("div");
       n.id = "ael-note";
-      n.className = "ael-ui ael-note";
+      n.className = "ael-ui ael-note " + SKIN;
       document.body.appendChild(n);
     }
     n.style.display = "";
@@ -1268,6 +1377,7 @@
         }
         B.kind = F.kind;
         B.match = F.match;
+        B.flipped = F.flipped;
         if (!B.host.isConnected) remountHost(B);
       }
       quoteRow(B);
@@ -1330,6 +1440,6 @@
   // inert inside the extension (isolated world); lets a page-level harness read state when it injects this file
   if (window.__AEL_DEBUG) {
     window.__ael = S;
-    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState };
+    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, venue: VENUE_ID };
   }
 })();

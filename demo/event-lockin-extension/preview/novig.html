@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Novig (stand-in)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ael-venue" content="novig">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#050505;color:#fff8f4;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:13px}
+  a{color:inherit;text-decoration:none}
+  .strip{display:flex;gap:28px;padding:6px 12px;background:#0b0b0b;border-bottom:1px solid #1c1c1c;font-size:10px;color:#beb9b6;white-space:nowrap;overflow:hidden}
+  .strip b{color:#fff8f4;margin:0 6px 0 4px}.strip .live{color:#ff5a5a}.strip .blue{color:#179be7}
+  header{display:flex;align-items:center;gap:30px;padding:10px 24px;height:56px;border-bottom:1px solid #1c1c1c}
+  .logo{font-weight:900;font-size:19px;letter-spacing:.06em}
+  .tabs{display:flex;gap:28px;font-size:10px;color:#beb9b6;text-align:center;margin-left:30px}
+  .tabs a{display:flex;flex-direction:column;align-items:center;gap:3px}.tabs a.on{color:#fff}
+  .tabs i{display:block;width:16px;height:16px;border-radius:4px;background:#2a2a2a}.tabs .on i{background:#fff}.tabs .bal{font-size:12px;font-weight:600;color:#fff8f4}
+  .search{margin-left:auto;background:#1c1c1c;border-radius:999px;padding:9px 16px;color:#beb9b6;font-size:12px;width:240px}
+  .dep{background:#179be7;color:#fff;border-radius:6px;padding:8px 18px;font-weight:700;font-size:12px}
+  .get{background:#1c1c1c;border-radius:6px;padding:8px 14px;font-weight:700;font-size:12px}
+  .wrap{display:grid;grid-template-columns:140px 1fr 250px;min-height:110vh}
+  aside{border-right:1px solid #1c1c1c;padding:12px 8px;font-size:13px}
+  aside a{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;margin-bottom:2px;color:#fff8f4}aside a.on{background:#242424}
+  aside i{width:14px;height:14px;border-radius:50%;display:inline-block;background:#555}
+  aside .foot{margin-top:24px;padding-top:14px;border-top:1px solid #1c1c1c;font-size:10.5px;color:#beb9b6;line-height:1.9}
+  main{padding:18px 22px 80px;border-right:1px solid #1c1c1c}
+  h1{font-size:18px;margin:8px 0 10px}
+  .sub{display:flex;gap:16px;font-size:13px;color:#beb9b6;margin:0 0 18px}.sub .on{color:#fff;font-weight:600;border-bottom:2px solid #fff;padding-bottom:3px}
+  .game{margin-bottom:22px}
+  .when{font-size:10.5px;color:#179be7;margin:0 0 6px}.when .live{color:#ff8a3d}
+  .cols{display:grid;grid-template-columns:1fr 74px 74px 74px;gap:6px;font-size:10px;color:#beb9b6;text-align:center;margin-bottom:4px}
+  .grid{display:grid;grid-template-columns:1fr 74px 74px 74px;gap:4px 6px;align-items:center}
+  .team{display:flex;align-items:center;gap:8px;padding:5px 0}
+  .helm{width:20px;height:18px;border-radius:50% 50% 40% 40%;flex:none;background:#c33}
+  .name{font-weight:600;font-size:12.5px}.name small{color:#beb9b6;font-weight:400;margin-left:4px}.rec{display:block;color:#beb9b6;font-size:10.5px}
+  .cell{background:#1c1c1c;border-radius:6px;padding:5px 4px;text-align:center;cursor:pointer;border:1px solid transparent;line-height:1.2;font-size:11px;color:#fff8f4}
+  .cell:hover{border-color:#179be7}.cell.sel{background:#061f3a;border-color:#179be7}
+  .cell b{display:block;color:#179be7;font-weight:600;font-size:11.5px}
+  .traded{font-size:10px;color:#beb9b6;text-align:right;margin-top:4px}.traded span{float:left}
+  .right-col{padding:14px 12px}
+  .slip-h{display:flex;align-items:center;gap:8px;font-weight:600;font-size:12.5px;margin-bottom:14px}.slip-h .n{width:18px;height:18px;border-radius:50%;background:#179be7;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px}
+  .empty{text-align:center;padding:40px 0 20px;color:#beb9b6;font-size:11px}.empty .art{width:84px;height:84px;border-radius:50%;background:#1c1c1c;margin:0 auto 14px}.empty b{display:block;color:#fff;font-size:13px;margin-bottom:4px}
+  .otype{display:flex;justify-content:space-between;align-items:center;font-size:12px;margin:0 0 14px}.otype small{display:block;color:#beb9b6;font-size:10px}
+  .seg{display:flex;background:#1c1c1c;border-radius:6px;padding:2px}.seg span{padding:4px 12px;border-radius:5px;font-size:11px;cursor:pointer;color:#beb9b6}.seg .on{background:#fff;color:#000;font-weight:700}
+  .pick{display:grid;grid-template-columns:22px 1fr auto;gap:10px;align-items:start;margin-bottom:8px}.pick .bin{color:#beb9b6;font-size:12px}
+  .pick b{display:block;font-size:12.5px}.pick small{display:block;color:#beb9b6;font-size:10.5px;margin-top:2px}.pick small .live{color:#179be7}
+  .pick .mult{color:#179be7;font-weight:600;font-size:12px}
+  .amt{display:flex;align-items:center;gap:6px;border:1px solid #179be7;border-radius:6px;padding:6px 10px;margin:8px 0 6px 32px;width:112px;float:right;background:#111}
+  .amt input{background:transparent;border:0;color:#fff;font-size:14px;font-weight:700;width:70px;outline:0;text-align:right}
+  .payout{clear:both;text-align:right;font-size:10.5px;color:#beb9b6}.payout b{color:#fff8f4}
+  .promos{border-top:1px solid #1c1c1c;margin-top:16px;padding-top:12px;font-size:12px;font-weight:600}
+  .place{position:fixed;right:12px;bottom:12px;width:226px;background:#179be7;color:#fff;border:0;border-radius:8px;padding:11px 12px;font-weight:700;font-size:13px;text-align:center;cursor:pointer}
+  .place small{display:block;font-weight:500;font-size:10.5px;opacity:.85}
+  /* portfolio */
+  .psum{display:flex;gap:26px;margin:0 0 18px;font-size:11px;color:#beb9b6}.psum b{display:block;color:#fff;font-size:18px;font-weight:700;margin-top:2px}
+  .ptabs{display:flex;gap:22px;font-size:13px;margin:0 0 14px;color:#beb9b6;border-bottom:1px solid #1c1c1c}.ptabs a{padding:0 2px 8px}.ptabs a.active{color:#fff;font-weight:600;border-bottom:2px solid #179be7;margin-bottom:-1px}
+  .ord{display:grid;grid-template-columns:1fr auto auto auto auto auto;gap:18px;align-items:center;padding:12px 14px;border-radius:10px;background:#1c1c1c;margin-bottom:8px}
+  .ord .nm{font-weight:600;font-size:13px}.ord .meta{font-size:10.5px;color:#beb9b6;margin-top:3px}
+  .ord .num{text-align:right;font-size:10px;color:#beb9b6;min-width:70px}.ord .num b{display:block;color:#fff8f4;font-size:13px;font-weight:600;margin-top:2px}
+  .ord .mult{color:#179be7;font-weight:600;font-size:13px}
+  .tag{border-radius:999px;padding:4px 10px;font-size:10.5px;font-weight:600;white-space:nowrap}.tag.take{background:#061f3a;color:#5fc1ff}.tag.make{background:#242424;color:#beb9b6;border:1px solid #2a2a2a}
+  .tag.ok{background:#0f2b1d;color:#39d98a}.tag.wait{background:#242424;color:#beb9b6}.tag.won{background:#0f2b1d;color:#39d98a}.tag.lost{background:#2b0f12;color:#ff6b6b}
+  .pempty{color:#beb9b6;padding:40px 0;text-align:center}
+</style></head>
+<body>
+<div class="strip"><span>Hockey <span class="live">Live</span> 3rd 05:42 <b>FLA</b>2 <b>CHI</b>2</span><span>La Liga <span class="live">Live</span> 78' <b>Real Madrid</b>1 <b>Barcelona</b>1</span><span>Pro FB <span class="live">Halftime</span> <b>DEN</b>13 <b>ARI</b>6</span><span>Pro FB <span class="live">Q2 1:47</span> <b>LAR</b>21 <b>LV</b>3</span><span>Pro FB <span class="live">Q2 1:44</span> <b>GB</b>7 <b>DET</b>10</span><span>Pro BB (M) <span class="live">Live</span> Q1 01:21 <b>LAL</b>25 <b>UTA</b>37</span><span>Pro FB <span class="blue">Today 8:20 PM</span> <b>KC</b> 2.38x <b>SEA</b> 1.71x</span><span>Pro FB <span class="blue">Tomorrow 8:15 PM</span> <b>DAL</b> 1.44x <b>PHI</b> 3.14x</span></div>
+<header><a class="logo" href="#/">NOVIG</a><div class="tabs"><a class="on" id="nav-home" href="#/"><i></i>Home</a><a id="nav-pts"><i></i>Points</a><a id="nav-pf" href="#/portfolio"><span class="bal" id="bal">$70.00</span>Portfolio</a><a><i></i>Ranks</a></div><div class="search">&#x1F50D;&nbsp; Search Events, Teams &amp; Players</div><span class="dep">Deposit</span><span class="get">&#x1F381; Get $25</span></header>
+<div class="wrap">
+<aside><a><i style="background:#ff5a5a"></i>Live</a><a class="on" href="#/"><i style="background:#a63"></i>Pro FB</a><a><i style="background:#c33"></i>La Liga</a><a><i style="background:#e73"></i>Pro BB (M)</a><a><i style="background:#36c"></i>Hockey</a><a><i style="background:#cc3"></i>NASCAR</a><a><i style="background:#c33"></i>F1</a><a><i style="background:#3a6"></i>Pro BSB</a><a><i style="background:#63c"></i>EPL</a><a><i style="background:#9c3"></i>Tennis (M)</a><a><i style="background:#a4c"></i>Tennis (W)</a><a><i style="background:#36c"></i>CFB</a>
+<div class="foot">Terms of Use<br>Privacy Policy<br>Responsible Trading<br>Your Privacy Choices<br>Cookie Preferences<br>About Novig<br>Careers<br>Newsroom<br>Novig Data<br>Filings</div></aside>
+<main id="main"></main>
+<div class="right-col"><div id="slip"></div></div>
+</div>
+<script>
+// A stand-in for Novig's web app: hash routes, a Pro FB list (Spread, Total, Winner; prices as
+// decimal multipliers), an Order Slip with Take (fills now) or Make (rests until taken), a cash
+// amount and the payout net of the fee, and a Portfolio page (Open / Settled) where each order
+// is "DEN - Winner", its multiplier, the wager, the payout and whether it is matched.
+const FEE = 0.06; // the venue keeps 6% of net winnings on a Take
+const GAMES = [
+  { id: "DENARI", when: "Halftime", live: true, away: ["DEN", "Broncos", "4-2"], home: ["ARI", "Cardinals", "2-4"], score: [13, 6], spread: ["-6.5", "1.82", "+6.5", "2.20"], total: ["O 39.5", "1.89", "U 39.5", "2.04"], win: ["1.25", "4.88"], traded: "$3,901,122" },
+  { id: "LARLV", when: "Q2 1:55 1st & 10", live: true, away: ["LAR", "Rams", "2-4"], home: ["LV", "Raiders", "3-3"], score: [21, 3], spread: ["-21.5", "2.11", "+21.5", "1.79"], total: ["O 53.5", "2.15", "U 53.5", "1.85"], win: ["1.03", "30.30"], traded: "$4,288,961" },
+  { id: "GBDET", when: "Q2 1:48 1st & 10", live: true, away: ["GB", "Packers", "4-2"], home: ["DET", "Lions", "3-2"], score: [7, 10], spread: ["+6.5", "1.92", "-6.5", "1.52"], total: ["O 49.5", "1.85", "U 49.5", "2.00"], win: ["4.26", "1.30"], traded: "$6,171,028" },
+  { id: "KCSEA", when: "Today 8:20 PM", away: ["KC", "Chiefs", "5-0"], home: ["SEA", "Seahawks", "3-3"], spread: ["+3.5", "1.70", "-3.5", "2.21"], total: ["O 42.5", "1.98", "U 42.5", "1.88"], win: ["2.38", "1.71"], traded: "$1,507,305" },
+  { id: "DALPHI", when: "Tomorrow 8:15 PM", away: ["DAL", "Cowboys", "2-4"], home: ["PHI", "Eagles", "5-1"], spread: ["+6.5", "1.90", "-6.5", "1.95"], total: ["O 45.5", "1.92", "U 45.5", "1.92"], win: ["3.14", "1.44"], traded: "$984,220" },
+];
+const slip = { sel: null, amount: "20", type: "take" };
+let mode = sessionStorage.getItem("novig-mode") || "cash";
+// Orders as the Portfolio lists them. matched: dollars taken; a Make that nobody has taken yet is Unmatched.
+const ORDERS = JSON.parse(sessionStorage.getItem("novig-orders") || "null") || [
+  { g: "KCSEA", side: "home", kind: "Winner", line: "", m: "1.71", amount: 20, matched: 20, type: "take", placed: "Oct 25, 11:20 AM" },
+  { g: "DALPHI", side: "home", kind: "Winner", line: "", m: "1.44", amount: 20, matched: 20, type: "take", placed: "Oct 24, 9:05 PM" },
+  { g: "KCSEA", side: "away", kind: "Spread", line: "+3.5", m: "1.70", amount: 10, matched: 10, type: "take", placed: "Oct 25, 11:22 AM" },
+  { g: "KCSEA", side: "away", kind: "Winner", line: "", m: "2.50", amount: 20, matched: 0, type: "make", placed: "Oct 25, 11:30 AM" },
+  { g: "BUFCAR", side: "away", kind: "Winner", line: "", m: "1.40", amount: 20, matched: 20, type: "take", settled: "won", placed: "Oct 18, 7:10 PM", away: ["BUF", "Bills"], home: ["CAR", "Panthers"], when: "Oct 19 1:00 PM" },
+];
+const save = () => sessionStorage.setItem("novig-orders", JSON.stringify(ORDERS));
+const $ = (s) => document.querySelector(s);
+const money = (n) => (mode === "points" ? Math.round(n * 100).toLocaleString("en-US") + " pts" : "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+// what a Take pays: the stake back plus the winnings less the fee; a Make pays the full multiple
+const payout = (amount, m, type) => (type === "make" ? amount * Number(m) : amount + amount * (Number(m) - 1) * (1 - FEE));
+const gameOf = (o) => GAMES.find((g) => g.id === o.g) || { id: o.g, when: o.when, away: o.away, home: o.home };
+const cell = (g, side, kind, line, m) => '<div class="cell' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? " sel" : "") + '" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-m="' + m + '">' + (line ? line + "<b>" + m + "x</b>" : "<b>" + m + "x</b>") + "</div>";
+const teamRow = (g, side) => {
+  const t = side === "away" ? g.away : g.home;
+  return '<div class="team"><span class="helm" style="background:' + (side === "away" ? "#c33" : "#2a5a9a") + '"></span><span><span class="name">' + t[0] + " " + t[1] + (side === "away" ? "<small>at</small>" : "") + '</span><span class="rec">' + t[2] + (g.live ? "&nbsp; &nbsp; " + g.score[side === "away" ? 0 : 1] : "") + "</span></span></div>";
+};
+const rows = (g) => '<div class="grid">' + teamRow(g, "away") + cell(g, "away", "Spread", g.spread[0], g.spread[1]) + cell(g, "away", "Total", g.total[0], g.total[1]) + cell(g, "away", "Winner", "", g.win[0]) + teamRow(g, "home") + cell(g, "home", "Spread", g.spread[2], g.spread[3]) + cell(g, "home", "Total", g.total[2], g.total[3]) + cell(g, "home", "Winner", "", g.win[1]) + "</div>";
+const listHtml = () => "<h1>Pro FB</h1>" + '<div class="sub"><span class="on">Games</span><span>Featured Parlays</span><span>Player Props</span><span>Futures</span><span>Awards</span><span>Standings</span></div>' +
+  GAMES.map((g) => '<div class="game"><div class="when">' + (g.live ? '<span class="live">&#x25CF; ' + g.when + "</span>" : g.when) + '</div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Winner</span></div>' + rows(g) + '<div class="traded"><span>Pro FB</span>Traded: ' + g.traded + " &nbsp; 129 More &rsaquo;</div></div>").join("");
+const slipHtml = () => {
+  if (!slip.sel) return '<div class="slip-h"><span class="n">1</span>Order Slip</div><div class="empty"><div class="art"></div><b>Order Slip Empty</b>Add selections to place an order</div>';
+  const s = slip.sel;
+  const g = GAMES.find((x) => x.id === s.g);
+  const t = s.side === "away" ? g.away : g.home;
+  const amount = Number(slip.amount) || 0;
+  return '<div class="slip-h"><span class="n">1</span>Order Slip</div>' +
+    '<div class="otype"><div>Order Type<small>Place an order at the best available price.</small></div><div class="seg"><span data-type="take"' + (slip.type === "take" ? ' class="on"' : "") + '>Take</span><span data-type="make"' + (slip.type === "make" ? ' class="on"' : "") + ">Make</span></div></div>" +
+    '<div class="pick"><span class="bin" id="rm">&#x1F5D1;</span><div><b>' + t[0] + (s.line ? " " + s.line : "") + " - " + s.kind + "</b><small>Pro FB &middot; " + g.away[0] + " at " + g.home[0] + (g.live ? ' &middot; <span class="live">Live</span>' : "") + '</small></div><span class="mult">' + s.m + "x</span></div>" +
+    '<div class="amt">$ <input id="amount" type="text" inputmode="decimal" value="' + slip.amount + '"></div><div class="payout">Payout: <b id="pay">' + money(payout(amount, s.m, slip.type)) + "</b> &#x24D8;</div>" +
+    '<div class="promos">Available Promos (5)</div>' +
+    '<button class="place">' + (amount > 0 ? (slip.type === "take" ? "Place Order" : "Place Make Order") : "Enter an amount") + "<small>" + (slip.type === "take" ? "Fills at the best available price" : "Rests until another account takes it") + "</small></button>";
+};
+const orderRow = (o) => {
+  const g = gameOf(o);
+  const t = o.side === "away" ? g.away : g.home;
+  const status = o.settled ? '<span class="tag ' + o.settled + '">' + (o.settled === "won" ? "Won" : "Lost") + "</span>" : o.matched <= 0 ? '<span class="tag wait">Unmatched</span>' : o.matched < o.amount ? '<span class="tag wait">Partially matched</span>' : '<span class="tag ok">Matched</span>';
+  return '<div class="ord"><div><div class="nm">' + t[0] + (o.line ? " " + o.line : "") + " - " + o.kind + '</div><div class="meta">Pro FB &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + " &middot; placed " + o.placed + '</div></div><span class="tag ' + o.type + '">' + (o.type === "take" ? "Take" : "Make") + '</span><span class="mult">' + o.m + 'x</span><div class="num">Wager<b>' + money(o.amount) + '</b></div><div class="num">Payout<b>' + money(payout(o.amount, o.m, o.type)) + "</b></div>" + status + "</div>";
+};
+const TABS = ["open", "settled"];
+const portfolioHtml = (tab) => {
+  const list = tab === "settled" ? ORDERS.filter((o) => o.settled) : ORDERS.filter((o) => !o.settled);
+  return "<h1>Portfolio</h1>" + '<div class="psum"><div>Balance<b>' + money(70) + "</b></div><div>In play<b>" + money(ORDERS.filter((o) => !o.settled).reduce((s, o) => s + o.amount, 0)) + "</b></div><div>Potential payout<b>" + money(ORDERS.filter((o) => !o.settled && o.matched > 0).reduce((s, o) => s + payout(o.matched, o.m, o.type), 0)) + "</b></div></div>" +
+    '<div class="ptabs">' + TABS.map((t) => '<a href="#/portfolio/' + t + '"' + (t === tab ? ' class="active"' : "") + ">" + t[0].toUpperCase() + t.slice(1) + "</a>").join("") + "</div>" +
+    (list.length ? list.map(orderRow).join("") : '<div class="pempty">No ' + tab + " orders</div>");
+};
+const render = () => {
+  const h = location.hash || "#/";
+  const pm = /^#\/portfolio(?:\/(open|settled))?/.exec(h);
+  $("#main").innerHTML = pm ? portfolioHtml(pm[1] || "open") : listHtml();
+  $("#slip").innerHTML = slipHtml();
+  $("#nav-pf").className = pm ? "on" : "";
+  $("#nav-home").className = pm ? "" : "on";
+  $("#nav-pts").className = mode === "points" ? "on" : "";
+  $("#bal").textContent = money(70);
+  for (const c of document.querySelectorAll(".cell[data-g]")) c.onclick = () => { slip.sel = { g: c.dataset.g, side: c.dataset.side, kind: c.dataset.kind, line: c.dataset.line, m: c.dataset.m }; render(); };
+  for (const s of document.querySelectorAll(".seg span")) s.onclick = () => { slip.type = s.dataset.type; render(); };
+  const a = $("#amount");
+  if (a) a.oninput = () => { slip.amount = a.value.replace(/[^\d.]/g, ""); $("#pay").textContent = money(payout(Number(slip.amount) || 0, slip.sel.m, slip.type)); };
+  const rm = $("#rm");
+  if (rm) rm.onclick = () => { slip.sel = null; render(); };
+  const place = $(".place");
+  if (place) place.onclick = () => {
+    const s = slip.sel;
+    const amount = Number(slip.amount) || 0;
+    if (!s || amount <= 0) return;
+    ORDERS.unshift({ g: s.g, side: s.side, kind: s.kind, line: s.line, m: s.m, amount, matched: slip.type === "take" ? amount : 0, type: slip.type, placed: "Oct 25, " + new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) });
+    save();
+    slip.sel = null;
+    location.hash = "#/portfolio";
+    render();
+  };
+  $("#nav-pts").onclick = () => { mode = mode === "points" ? "cash" : "points"; sessionStorage.setItem("novig-mode", mode); render(); };
+};
+window.addEventListener("hashchange", render);
+render();
+</script>
+</body></html>

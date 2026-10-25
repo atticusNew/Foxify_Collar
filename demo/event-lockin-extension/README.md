@@ -1,9 +1,20 @@
 # Atticus Earn & Protect: Lock in (browser extension, demo placement)
 
-Demo-only. Draws on one page of the venue, **My Trades** (the list of open plays; the venue's
-word for a play is a trade), and nothing anywhere else. No shield, badge or icon on the game list,
-the game page or the order slip; the
-holder plays exactly as they do today. Once a matched play exists, under its row:
+Demo-only. One extension, three venues, each in its own skin:
+
+| Venue | Page it draws on | How the venue says a play | Skin |
+| --- | --- | --- | --- |
+| ProphetX (`prophetx.co`) | **My Trades**, Resting / Filled / Settled | cost, price as the implied chance or American odds, payout | near-black, the venue's green |
+| Kalshi (`kalshi.com`) | **Portfolio**, Positions / Orders / History | Yes or No on a club, N contracts at a price in cents | white, near-black type, the venue's green |
+| Novig (`novig.us`) | **Portfolio**, Open / Settled | Winner at a decimal multiplier (1.25x), Take or Make, wager and payout | black, dark-grey cards, the venue's blue |
+
+The host name picks the venue. It sets the colours (CSS variables on every block we draw), the
+words ("play", "position", "order") and the reading rules below. Everything else is the same
+code: the line, the panel, the lock, the receipt.
+
+Draws on one page of the venue, its list of open plays, and nothing anywhere else. No shield,
+badge or icon on the game list, the game page or the order slip; the holder plays exactly as
+they do today. Once a matched play exists, under its row:
 
 1. a **Lock in** line that leads with the floor: "Lock in · $14.71 if the Texans lose", caption
    "instead of $0 · $25.06 if they win (was $46.00) · +$1.66 paid now". Priced live from the
@@ -21,10 +32,12 @@ holder plays exactly as they do today. Once a matched play exists, under its row
    "Locked in", one sentence with the numbers ("$14.71 if the Texans lose · $25.06 if they win ·
    +$1.66 paid now"), one grey line of facts (settles on the official result, when it was locked,
    how long it took) ending in a **receipt** link. Tapping it opens four labelled lines in place:
-   the other side ("19.17 contracts No on Kalshi at 27.4c each with fees"), the cost, the venue's
-   order id and time, and the record id; a hedge that did not reach the venue reads "covered at
-   the book" with no order line. No tiles, no button. The public record link appears only with
-   the operator setting on;
+   the other side ("19.17 contracts No on Kalshi at 27.4c each with fees"; on any other book,
+   "the other side on Novig"), the cost, the venue's order id and time with how the order got
+   there ("through the aggregator" when it went through the execution pod, "direct" on our own
+   key; the partner is never named), and the record id; a hedge that did not reach the venue
+   reads "covered at the book" with no order line. No tiles, no button. The public record link
+   appears only with the operator setting on;
 4. a play protection does not cover gets a muted **Protection unavailable** line with the reason
    after it: "covers Moneyline picks" on a spread or total, "waits until the play is matched" on a
    play that is still an open order, or the live refusal from pricing. Tapping it says what to do.
@@ -33,8 +46,10 @@ That placement is the only staged pixel. Everything behind the tap is the Atticu
 the play is matched to its market, priced from live books at the holder's size, the terms lock,
 the record is written, and the hedge is bought on Kalshi.
 
-Styled in the venue's own theme (near-black, white, the venue's green as the one accent), with no
-brand of ours up top; our name is one line at the foot of the panel.
+Styled in each venue's own theme, with no brand of ours up top; our name is one line at the foot
+of the panel. The hedge venue on the receipt is whatever the service chose for that lock: Kalshi,
+or the holder's own venue when it has the best price (the "keep it on venue" route, when the
+service offers it).
 
 > Disclosure line, shown on every panel and to be read in any published recording:
 > *"Third-party protection by Atticus, rendered here for this demo; not a product of this venue.
@@ -57,7 +72,29 @@ which tab is open and treats the three states differently:
   tap explains. Nothing is priced, nothing can be locked. For the recording, place the play as a
   **Market Order** (the slip's default) so it matches at once.
 
-Rows in the venue's points mode (play money) are never drawn on.
+Rows in the venue's points mode (play money) are never drawn on: Prophet Points on ProphetX,
+Novig Points on Novig.
+
+### Kalshi
+
+A Kalshi position is **Yes** or **No** on one club, N contracts at an average price in cents.
+Those are our units already: N contracts at 59¢ cost $5.90 and pay $10.00. The reader takes the
+contract count and the cents price off the row ("10 contracts · Avg 59¢"), or the cents price and
+the cost. A **No** on a club is read as a **Yes on the other club of the same game**, which is the
+market the service protects: "No · DAL Cowboys, 15 contracts at 32¢" becomes 15 contracts of
+Philadelphia at 32¢, and the panel says "your No on the Cowboys" so the holder knows which row
+it means. Spread markets ("...: Spread") get the muted line. The Portfolio page's tabs are read:
+**Positions** are filled, **Orders** are resting ("waits until the order fills"), **History** is
+settled.
+
+### Novig
+
+A Novig order is a Winner, Spread or Total at a decimal multiplier. **Take** fills now at the
+best price; **Make** rests until another account takes it, and the row says **Unmatched** until
+then (muted line, "waits until the order is matched"). The reader takes the wager and the payout
+from the row ("Wager $20.00 · Payout $24.70"); the payout is net of the venue's fee on winnings,
+so $20 at 1.25x pays $24.70, not $25.00, and the reader pairs them anyway. Spread and Total rows
+get the muted line ("covers Winner picks"). Tabs: **Open** and **Settled**.
 
 ## Where the size comes from
 
@@ -80,21 +117,42 @@ of 75 cents. $5 at 25.5% (+292) pays $19.60: 20 contracts at 26 cents. The
 two sources agree to the cent on the preview board; the page is enough for the recording, the
 service confirms it when the key pair is set.
 
-## See it before any deposit or trade
+## See it before any deposit or trade (the simulations)
 
-No venue account is needed.
+No venue account is needed. Three stand-in boards, one per venue, in that venue's conventions
+and colours; the extension treats each exactly as it treats the real site (the board names its
+venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
 
 1. Load the extension (below) and set the service URL and lock key in its options.
-2. Serve the preview page **from this folder** and open the My Trades route:
+2. Serve the preview pages **from this folder**, then open the venue you want:
 
    ```
    cd event-lockin-extension && python3 -m http.server 8812 --bind 127.0.0.1
-   open http://127.0.0.1:8812/preview/positions.html#/my-trades
+
+   open http://127.0.0.1:8812/preview/positions.html#/my-trades    # ProphetX: My Trades
+   open http://127.0.0.1:8812/preview/kalshi.html#/portfolio        # Kalshi: Portfolio
+   open http://127.0.0.1:8812/preview/novig.html#/portfolio         # Novig: Portfolio
    ```
 
-   If you started the server one folder up, the address is
-   `http://127.0.0.1:8812/event-lockin-extension/preview/positions.html#/my-trades`; a 404 means
-   the server's folder and the address do not match.
+   If you started the server one folder up, the addresses begin with
+   `http://127.0.0.1:8812/event-lockin-extension/preview/...`; a 404 means the server's folder
+   and the address do not match.
+
+   **Kalshi board**: an NFL list with this week's games (KC Chiefs vs SEA Seahawks, DAL Cowboys
+   vs PHI Eagles, and so on), a market page with Yes/No at a price in cents and an order panel
+   in contracts, and a Portfolio with Positions (Yes SEA 10 contracts at 59¢; **No DAL** 15 at
+   32¢, which the extension reads as the Eagles; Yes DEN 20 at 80¢; a Spread position), Orders
+   (a resting Yes GB at 40¢) and History (a settled play from last week). Placing an order on
+   the market page adds a position.
+
+   **Novig board**: the Pro FB list with Spread / Total / Winner at multipliers, an Order Slip with
+   Take / Make and the payout net of the fee, the Points toggle, and a Portfolio with Open (SEA
+   Winner 1.71x $20 Take, matched; PHI Winner 1.44x; a KC +3.5 Spread; a KC Winner **Make** at
+   2.50x still Unmatched) and Settled. Placing a Take adds a matched order; a Make adds an
+   unmatched one.
+
+   Both boards name this week's games, so the real service lists them and prices them. Change
+   the games in the `GAMES` table at the top of each file when the week turns.
 
    The board is a generic exchange-style page in the venue's conventions: prices as the implied
    chance (75.9%), a Moneyline market, a Market Order slip with Cost and To Gain, a Cash / Points
@@ -109,18 +167,21 @@ No venue account is needed.
 
 ## Files
 
-- `manifest.json` runs the content script on the venue's domains (edit `matches` to add one) and on
-  the local preview page; grants fetch to the service host and to localhost on any port.
-- `content.js` decides it is on the My Trades page (URL or heading) and which tab is open, finds
-  play rows by text (a team the service can protect, by nickname or by code, plus the row's money),
-  reads the size from the table's columns or the row's labels, inserts our block as a sibling after
-  the row (a full-width table row when the row is one), and re-inserts it when the venue re-renders.
-  The venue's DOM is never modified.
-- `content.css` the line, the inline panel, the segmented control, the chip. Two-column tiles under
-  560px.
+- `manifest.json` runs the content script on the three venues' domains (edit `matches` to add one)
+  and on the local preview pages; grants fetch to the service host and to localhost on any port.
+- `content.js` picks the venue from the host name (`VENUES`), decides it is on the plays page (URL
+  or heading) and which tab is open, finds play rows by text (a team the service can protect, by
+  nickname or by code, plus the row's money), reads the size from the table's columns, the row's
+  labels, or Kalshi's contracts and cents, flips a Kalshi No to the other club's market, inserts
+  our block as a sibling after the row (a full-width table row when the row is one) with the
+  venue's skin class on it, and re-inserts it when the venue re-renders. The venue's DOM is never
+  modified.
+- `content.css` the line, the inline panel, the segmented control, the chip. Every colour is a
+  variable with the ProphetX values as defaults; `.ael-v-kalshi` and `.ael-v-novig` override them.
+  Two-column tiles under 560px.
 - `background.js` is the fetch proxy; it attaches `x-lock-key` from extension storage.
 - `options.html` sets the service URL, lock key, Rehearsal, and the operator-only hedge line.
-- `preview/positions.html` is the stand-in board described above.
+- `preview/positions.html`, `preview/kalshi.html`, `preview/novig.html` are the stand-in boards.
 
 ## Service side (Render dashboard, never in git)
 
@@ -199,9 +260,11 @@ GET /healthz                                                lock.enabled true, h
    quote, but calls nothing: nothing is locked, written or bought. The result panel says
    "Locked in (rehearsal)" and offers Reset. Use it to see the screens before real money, then
    turn it Off and reload the venue tab before the recording.
-3. On the venue, switch to **Cash** mode (not points) and open **My Trades** (top right), **Filled**
-   tab. Each filled play gets its line; on Resting the line says the order has not matched. If the extension cannot find the rows but the service knows your plays, a card
-   bottom-right lists them with the same lines.
+3. On the venue, open the plays page: ProphetX **My Trades** (Cash mode, **Filled** tab), Kalshi
+   **Portfolio** (**Positions** tab), Novig **Portfolio** (**Open** tab, cash not points). Each
+   matched play gets its line; a resting order's line says it has not matched or filled. If the
+   extension cannot find the rows but the service knows your plays, a card bottom-right lists
+   them with the same lines.
 
 Operator actions (token in `x-admin-token`), for the recording day:
 
@@ -210,7 +273,8 @@ Operator actions (token in `x-admin-token`), for the recording day:
 | `GET /api/shadow/hedges/preflight?ticker=KX...&contracts=N` | Balance, rails, and whether the tap would be offered and sent. Reads only. |
 | `POST /api/shadow/hedges/resend?ticker=KX...` | Hedges an open lock again when its hedge never reached the venue (simulated fill on the trail). Refuses once a live fill exists unless `&force=1`. |
 | `POST /api/shadow/lock/reset?ticker=KX...` | Takes one lock off the record (its lines move to an archive beside the ledger) so the market can be locked again; the row goes back to the offer on the next poll. Names any live fill the venue still holds for the old lock, which is yours to sell or keep. |
-| `GET /api/shadow/hedges` | The hedge trail: every receipt, order ids, fills, reasons. |
+| `GET /api/shadow/hedges` | The hedge trail: every receipt, order ids, fills, reasons. Each live fill says `via`: `direct` (our own venue key) or `aggregator` (the execution pod). |
+| `GET /holders?token=...` | One page per holder key: their locks, what is owed each way, and the `POST /api/shadow/cash` line to record a payment. The JSON is `GET /api/shadow/holders`. |
 
 ## Test steps (five minutes, no money)
 
@@ -234,6 +298,20 @@ Operator actions (token in `x-admin-token`), for the recording day:
 7. Back on **Filled**, the Bills row shows the filled $10 of a $20 order: the panel says "pays
    $14.50 if they win · you paid $10.00", the filled part only.
 8. Switch the toggle to **Points**: no lines on the rows. Back to **Cash**: they return.
+
+Kalshi board (`kalshi.html#/portfolio`), two minutes more:
+
+9. **Positions**: the Yes SEA row offers "Lock in · $x if the Seahawks lose"; the **No DAL** row
+   offers the Eagles, and its panel says "your No on the Cowboys"; the Spread row is muted. Lock
+   one; the receipt's Order line names the hedge venue and how the order got there.
+10. **Orders**: the resting GB order's line says "waits until the order fills". **History**: a
+    settled play from last week has no line (never locked, no longer listed).
+
+Novig board (`novig.html#/portfolio`):
+
+11. **Open**: SEA Winner (Take, matched) offers; the KC +3.5 Spread is muted ("covers Winner
+    picks"); the KC Winner **Make** is muted ("waits until the order is matched"). Tap **Points**
+    in the header: no lines. Tap it again: they return.
 
 ## Recording checklist
 
