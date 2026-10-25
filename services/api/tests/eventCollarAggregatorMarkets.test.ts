@@ -305,8 +305,10 @@ interface ServerSocket {
   terminate(): void;
 }
 
-function startFakeStream(opts: { silentFor?: Set<string> } = {}): Promise<{ stop: () => void; url: string; handshakes: Array<{ ok: boolean; why?: string }> }> {
+function startFakeStream(opts: { silentFor?: Set<string>; unavailableTimes?: Map<string, number> } = {}): Promise<{ stop: () => void; url: string; handshakes: Array<{ ok: boolean; why?: string }>; subscribes: MarketStream[][] }> {
   const handshakes: Array<{ ok: boolean; why?: string }> = [];
+  const subscribes: MarketStream[][] = [];
+  const unavailableLeft = new Map(opts.unavailableTimes ?? []);
   const server = createServer();
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
@@ -325,20 +327,27 @@ function startFakeStream(opts: { silentFor?: Set<string> } = {}): Promise<{ stop
   });
   wss.on("connection", (ws: ServerSocket) => {
     const now = Date.now();
+    let subN = 0;
     ws.send(JSON.stringify({ type: "WELCOME", v: 1, serverTimestamp: now, connectionId: "conn-1", limits: { maxSubscriptionsPerConnection: 200, maxConnections: 20, connectionTtlSeconds: 28800 } }));
     ws.on("message", (raw: Buffer) => {
       const f = JSON.parse(raw.toString("utf8")) as { type: string; markets?: MarketStream[]; requestId?: string };
       if (f.type !== "SUBSCRIBE") return;
-      let n = 0;
+      subscribes.push(f.markets ?? []);
       for (const m of f.markets ?? []) {
-        n += 1;
+        subN += 1;
         const key = JSON.stringify(m);
         if (m.venue === "POLYMARKET" && m.tokenId === "bad") {
           ws.send(JSON.stringify({ type: "ERROR", v: 1, serverTimestamp: now, market: m, channel: "BOOK", code: "UNKNOWN_MARKET", message: "no such token" }));
           continue;
         }
-        const subscriptionId = `sub-${n}`;
+        const subscriptionId = `sub-${subN}`;
         ws.send(JSON.stringify({ type: "SUBSCRIBED", v: 1, serverTimestamp: now, market: m, channel: "BOOK", subscriptionId, snapshotPending: true }));
+        const left = unavailableLeft.get(key) ?? 0;
+        if (left > 0) {
+          unavailableLeft.set(key, left - 1);
+          ws.send(JSON.stringify({ type: "ERROR", v: 1, serverTimestamp: now, subscriptionId, code: "UNAVAILABLE", message: "no book for that line right now" }));
+          continue;
+        }
         if (opts.silentFor?.has(key)) continue;
         if (m.venue === "PROPHETX") {
           ws.send(JSON.stringify({ type: "ERROR", v: 1, serverTimestamp: now, subscriptionId, code: "MARKET_NOT_YET_OPEN", message: "books open nearer the start" }));
@@ -367,8 +376,41 @@ function startFakeStream(opts: { silentFor?: Set<string> } = {}): Promise<{ stop
     wss.close();
     stop(server);
   };
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ stop: stopAll, url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/v1/orderbook`, handshakes })));
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ stop: stopAll, url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/v1/orderbook`, handshakes, subscribes })));
 }
+
+test("aggregator stream: UNAVAILABLE is transient by the partner's word, so that one market is subscribed once more inside the read; a second UNAVAILABLE is final, and the retry never stretches the timeout", async () => {
+  const once = { venue: "KALSHI", ticker: "KX-ONCE" } as const;
+  const twice = { venue: "KALSHI", ticker: "KX-TWICE" } as const;
+  const steady = { venue: "KALSHI", ticker: "KX-STEADY" } as const;
+  const { stop: stopStream, url, subscribes } = await startFakeStream({
+    unavailableTimes: new Map([
+      [JSON.stringify(once), 1],
+      [JSON.stringify(twice), 2],
+    ]),
+  });
+  try {
+    const signer = signerFromSecret(KEY_ID, keypair.seedHex);
+    const t0 = Date.now();
+    const out = await readSnapshots(signer, [once, twice, steady], { streamUrl: url, wsFactory, timeoutMs: 2_000, retryDelayMs: 200 });
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed >= 180 && elapsed < 1_500, `settled after the one retry, before the timeout (${elapsed}ms)`);
+    const [a, b, c] = out;
+    assert.ok(a.book, "the retry caught the book the first SUBSCRIBE missed");
+    assert.equal(a.book.seq, 4287);
+    assert.equal(b.book, null);
+    assert.equal(b.error?.code, "UNAVAILABLE");
+    assert.match(b.error?.message ?? "", /twice/);
+    assert.ok(c.book, "a market that answered first time is untouched");
+    // one SUBSCRIBE for the batch, then one per retried market carrying only that market
+    assert.equal(subscribes.length, 3);
+    assert.deepEqual(subscribes[0], [once, twice, steady]);
+    assert.deepEqual(subscribes.slice(1).map((s) => s.length), [1, 1]);
+    assert.deepEqual(new Set(subscribes.slice(1).map((s) => (s[0] as { ticker: string }).ticker)), new Set(["KX-ONCE", "KX-TWICE"]));
+  } finally {
+    stopStream();
+  }
+});
 
 test("aggregator stream: a signed handshake, WELCOME then SUBSCRIBE, one snapshot per market, an unknown market's error, a not-yet-open book, and a silent one times out as UNAVAILABLE", async () => {
   const { stop: stopStream, url, handshakes } = await startFakeStream({ silentFor: new Set([JSON.stringify({ venue: "KALSHI", ticker: "KX-SILENT" })]) });
