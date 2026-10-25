@@ -102,7 +102,7 @@ import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import { getNoAsks, quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
-import { aggregatorBookSourceFromEnv, type AggregatorBookStatus, type BookOrigins } from "../src/eventCollar/crossVenue/aggregatorBooks";
+import { aggregatorBookSourceFromEnv, type AggregatorBookSource, type AggregatorBookStatus, type BookOrigins } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { farOutGuardFromEnv, farOutVerdict, type FarOutGuardRule } from "../src/eventCollar/crossVenue/farOutGuard";
 import { readReferencePrints, referencePrintSourcesFromEnv, type ReferencePrint } from "../src/eventCollar/crossVenue/venuePrints";
 import {
@@ -374,6 +374,11 @@ console.log(
 /** The operator's view of the pricing source: configured or not, counters, never the key. */
 export function pricingSourceStatus(): { aggregator: AggregatorBookStatus | { configured: false }; notes: string[] } {
   return { aggregator: aggregatorBooks.source ? aggregatorBooks.source.status() : { configured: false }, notes: aggregatorBooks.notes };
+}
+
+/** The aggregator source itself, for the shadow worker's held books (its lookup and its key stay inside it); null when the key is not set. */
+export function aggregatorSource(): AggregatorBookSource | null {
+  return aggregatorBooks.source;
 }
 
 export function searchConfig(): CrossSearchConfig {
