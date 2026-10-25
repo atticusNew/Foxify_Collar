@@ -95,6 +95,12 @@ export interface ShadowOpenRecord {
   source?: "lock";
   /** With source "lock": what the holder paid per contract, cents, so their own cost sits on the record. */
   entryCents?: number;
+  /**
+   * With source "lock": the holder's alias (lockGate.ts), from the key their client sent. Each
+   * holder's locks live in their own ledger file, so one market can be locked by several people
+   * and the ticker stays the key inside each file. Operator views only; the public record strips it.
+   */
+  holder?: string;
 }
 
 /**

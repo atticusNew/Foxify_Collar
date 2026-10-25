@@ -54,6 +54,8 @@ export interface LiveHedgeView {
   /** venues with a live order client (credentials present) */
   venues: HedgeVenue[];
   allowlist: string[];
+  /** EVENT_HEDGE_LIVE_TICKERS had `*`: any ticker the engine priced may trade */
+  anyTicker: boolean;
   maxContractsPerOrder: number;
   maxContractsPerDay: number;
 }
@@ -86,6 +88,7 @@ function liveView(rails: LiveHedgeRails, venues: HedgeVenue[]): LiveHedgeView {
     killSwitch: rails.killSwitch,
     venues,
     allowlist: rails.allowlist,
+    anyTicker: rails.anyTicker,
     maxContractsPerOrder: rails.maxUnitsPerOrderMilli / 1000,
     maxContractsPerDay: rails.maxUnitsPerDayMilli / 1000,
   };
@@ -120,9 +123,11 @@ export function hedgeExecutorFromEnv(
     const venues = (Object.keys(hooks) as HedgeVenue[]).filter((v) => hooks[v]);
     notes.push(rails.killSwitch ? "live: KILL SWITCH ON; nothing is sent" : rails.dryRun ? "live: dry run; orders built and held, EVENT_HEDGE_LIVE_SEND=yes to send" : "live: SENDING real orders");
     notes.push(
-      rails.allowlist.length === 0
-        ? "live: EVENT_HEDGE_LIVE_TICKERS is empty; no ticker may trade"
-        : `live: ${rails.allowlist.length} ticker(s) allowlisted; caps ${rails.maxUnitsPerOrderMilli / 1000} per order, ${rails.maxUnitsPerDayMilli / 1000} per day`,
+      rails.anyTicker
+        ? `live: ANY ticker may trade (EVENT_HEDGE_LIVE_TICKERS=*); caps ${rails.maxUnitsPerOrderMilli / 1000} per order, ${rails.maxUnitsPerDayMilli / 1000} per day`
+        : rails.allowlist.length === 0
+          ? "live: EVENT_HEDGE_LIVE_TICKERS is empty; no ticker may trade"
+          : `live: ${rails.allowlist.length} ticker(s) allowlisted; caps ${rails.maxUnitsPerOrderMilli / 1000} per order, ${rails.maxUnitsPerDayMilli / 1000} per day`,
     );
     notes.push("polymarket: no live order client; book only");
     if (builder.note) notes.push(builder.note);

@@ -468,7 +468,7 @@ test("hedgeExecutorFromEnv: live mode wires the rails and the Kalshi client from
   assert.equal(bare.executor.strategy, "live");
   assert.deepEqual(bare.rfqVenues, []);
   assert.equal(bare.kalshiOrders, null);
-  assert.deepEqual(bare.live, { dryRun: true, killSwitch: false, venues: [], allowlist: [], maxContractsPerOrder: 25, maxContractsPerDay: 100 });
+  assert.deepEqual(bare.live, { dryRun: true, killSwitch: false, venues: [], allowlist: [], anyTicker: false, maxContractsPerOrder: 25, maxContractsPerDay: 100 });
   assert.match(bare.notes[0], /kalshi: no KALSHI_API_KEY_ID/);
   assert.match(bare.notes[1], /live: dry run; orders built and held, EVENT_HEDGE_LIVE_SEND=yes to send/);
   assert.match(bare.notes[2], /EVENT_HEDGE_LIVE_TICKERS is empty/);
@@ -493,6 +493,7 @@ test("hedgeExecutorFromEnv: live mode wires the rails and the Kalshi client from
     killSwitch: false,
     venues: ["kalshi"],
     allowlist: ["KXNBAGAME-26OCT14LALBOS-BOS"],
+    anyTicker: false,
     maxContractsPerOrder: 20,
     maxContractsPerDay: 100,
   });

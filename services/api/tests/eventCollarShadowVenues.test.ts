@@ -46,7 +46,7 @@ function position(over: Partial<ShadowPosition> & { ticker: string }): ShadowPos
       sizeLadder: [],
       routes: { polymarket: ok(300), kalshi_self: ok(260, 140) },
       references: [
-        { id: "aggregated_mm", terms: ok(340, 80), bestAskMilli: 370, depthMilli: 2_500_000 },
+        { id: "aggregated_mm", terms: ok(340, 80), bestAskMilli: 370, depthMilli: 2_500_000, ageSec: 247 },
         { id: "aggregated_other", terms: refused("not_listed"), bestAskMilli: null, depthMilli: 0 },
       ],
     },
@@ -71,11 +71,14 @@ test("venue row: every column in order, written route marked, best book found, r
   assert.equal(px.deltaCents, 40);
   assert.equal(px.bestAskCents, 37, "milli dollars to cents per $1");
   assert.equal(px.depthShares, 2500);
+  assert.equal(px.ageSec, 247, "the snapshot's age at the read is carried onto the cell");
   assert.equal(px.listed, true);
   const other = by.get("aggregated_other")!;
   assert.equal(other.read, true);
   assert.equal(other.listed, false);
+  assert.equal(other.ageSec, null);
   assert.equal(other.refused, "not listed");
+  assert.equal(by.get("kalshi_self")?.ageSec, null, "routes are never dated: a stale route is dropped before it is priced");
   assert.equal(by.get("signed_v3")?.read, false, "a venue never configured is unread, not refused");
   assert.equal(row.best, "aggregated_mm", "lowest EV cost (80 bps) wins, which here is also the richest credit");
   assert.deepEqual(row.bookOrigins, { polymarket: "aggregator", kalshi: "aggregator" });

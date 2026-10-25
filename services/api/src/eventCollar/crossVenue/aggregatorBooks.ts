@@ -16,8 +16,9 @@
  * The caller uses what came back and reads the venue directly for anything missing, so a
  * partner outage degrades to today's path rather than to a refusal. Fail closed everywhere: the
  * mapping has to agree with ours before its book is trusted (a token that differs from the pair's
- * is a note, never a quote), a snapshot older than the staleness bound is dropped, and nothing in
- * this module throws to the caller.
+ * is a note, never a quote), a route's snapshot older than the staleness bound is dropped (a
+ * reference's is kept and dated: it is compared, never filled on), and nothing in this module
+ * throws to the caller.
  *
  * A reference venue's book is in one of four states, which the partner distinguishes and so does
  * the record (the reason on a bookless reference, then the operator's word in shadowVenues):
@@ -150,11 +151,19 @@ export function noAsksFromSnapshot(book: Pick<BookSnapshot, "bids" | "asks">): N
     .sort((a, b) => a.priceCents - b.priceCents);
 }
 
+/** How old a snapshot is at `nowMs`, whole seconds, floored at 0; null when the venue did not stamp it. */
+export function snapshotAgeSec(book: BookSnapshot, nowMs: number): number | null {
+  const ts = book.venueTimestamp || book.serverTimestamp;
+  if (!ts) return null;
+  const tsMs = ts < 1e12 ? ts * 1000 : ts; // seconds or milliseconds, as the venue stamps it
+  return Math.max(0, Math.floor((nowMs - tsMs) / 1000));
+}
+
 /** Is this snapshot fresh enough to price from? Unstamped snapshots are taken at the read time. */
 export function snapshotFresh(book: BookSnapshot, nowMs: number, maxAgeMs = MAX_SNAPSHOT_AGE_MS): boolean {
   const ts = book.venueTimestamp || book.serverTimestamp;
   if (!ts) return true;
-  const tsMs = ts < 1e12 ? ts * 1000 : ts; // seconds or milliseconds, as the venue stamps it
+  const tsMs = ts < 1e12 ? ts * 1000 : ts;
   return nowMs - tsMs <= maxAgeMs;
 }
 
@@ -322,12 +331,17 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
       const b = fresh(results[i++], "second venue");
       if (b) out.pmNoBook = pmBookFromSnapshot(pmStream.tokenId, b);
     }
+    // A reference is compared, never filled on, so the staleness bound does not drop it: a venue
+    // that stamps its snapshot at the last change shows a quiet resting book as "old", and that
+    // book is still the price the venue would trade at. The age rides along for the record.
     for (const { id, stream } of refStreams) {
       const res = results[i++];
       if (!res.book) out.references.push({ id, book: null, reason: `stream_${res.error.code.toLowerCase()}` });
-      else if (!snapshotFresh(res.book, nowMs(), maxAge)) out.references.push({ id, book: null, reason: "stale" });
       else if (res.book.bids.length === 0 && res.book.asks.length === 0) out.references.push({ id, book: null, reason: MAPPED_NO_BOOK });
-      else out.references.push({ id, book: pmBookFromSnapshot(`${stream.venue}:${aligned.marketId}`, res.book) });
+      else {
+        const ageSec = snapshotAgeSec(res.book, nowMs());
+        out.references.push({ id, book: pmBookFromSnapshot(`${stream.venue}:${aligned.marketId}`, res.book), ...(ageSec === null ? {} : { ageSec }) });
+      }
     }
     if (out.pmNoBook || out.noAsks) status.readsWithBooks += 1;
     status.lastError = null;

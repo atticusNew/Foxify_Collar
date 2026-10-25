@@ -9,7 +9,9 @@
  * Rails, checked in this order on every hedge:
  *   kill switch   EVENT_HEDGE_KILL_SWITCH=1          nothing is sent, ever
  *   venue         a live client exists for the venue   (only Kalshi today)
- *   ticker        EVENT_HEDGE_LIVE_TICKERS=A,B,C      allowlist; empty allows nothing
+ *   ticker        EVENT_HEDGE_LIVE_TICKERS=A,B,C      allowlist; empty allows nothing;
+ *                 `*` allows any ticker the engine priced (a pilot where holders
+ *                 pick their own games); the caps below still bound every order
  *   per order     EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER   default 25
  *   per day       EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY     default 100, UTC day,
  *                 counted from the receipt trail (every order sent, filled or not)
@@ -65,6 +67,8 @@ export interface LiveHedgeRails {
   dryRun: boolean;
   /** instruments (Kalshi tickers) allowed to trade; empty allows nothing */
   allowlist: string[];
+  /** `*` in the allowlist: any ticker may trade; `allowlist` then holds only the named ones */
+  anyTicker: boolean;
   maxUnitsPerOrderMilli: number;
   maxUnitsPerDayMilli: number;
 }
@@ -73,9 +77,15 @@ export const DEFAULT_LIVE_RAILS: LiveHedgeRails = {
   killSwitch: false,
   dryRun: true,
   allowlist: [],
+  anyTicker: false,
   maxUnitsPerOrderMilli: 25_000,
   maxUnitsPerDayMilli: 100_000,
 };
+
+/** Is this instrument armed for a live order under these rails? */
+export function tickerArmed(rails: Pick<LiveHedgeRails, "allowlist" | "anyTicker">, instrument: string): boolean {
+  return rails.anyTicker || rails.allowlist.includes(instrument.toUpperCase());
+}
 
 const truthy = (v: string | undefined): boolean => /^(1|true|yes|on)$/i.test((v ?? "").trim());
 
@@ -85,15 +95,18 @@ function positiveInt(v: string | undefined, fallback: number): number {
 }
 
 export function liveRailsFromEnv(env: NodeJS.ProcessEnv = process.env): LiveHedgeRails {
-  const allowlist = (env.EVENT_HEDGE_LIVE_TICKERS ?? "")
+  const listed = (env.EVENT_HEDGE_LIVE_TICKERS ?? "")
     .split(",")
     .map((t) => t.trim().toUpperCase())
     .filter(Boolean);
+  const anyTicker = listed.includes("*");
+  const allowlist = [...new Set(listed.filter((t) => t !== "*"))];
   return {
     killSwitch: truthy(env.EVENT_HEDGE_KILL_SWITCH),
     // the one setting that lets money move is spelled out, not a bare flag
     dryRun: (env.EVENT_HEDGE_LIVE_SEND ?? "").trim().toLowerCase() !== "yes",
-    allowlist: [...new Set(allowlist)],
+    allowlist,
+    anyTicker,
     maxUnitsPerOrderMilli: positiveInt(env.EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER, DEFAULT_LIVE_RAILS.maxUnitsPerOrderMilli / 1000) * 1000,
     maxUnitsPerDayMilli: positiveInt(env.EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY, DEFAULT_LIVE_RAILS.maxUnitsPerDayMilli / 1000) * 1000,
   };
@@ -113,7 +126,7 @@ export function checkRails(
 ): RailRefusal | null {
   if (rails.killSwitch) return { rail: "kill_switch", detail: "kill switch is on; no order leaves" };
   if (!hasClient) return { rail: "venue", detail: `no live client for ${intent.venue}` };
-  if (!rails.allowlist.includes(intent.instrument.toUpperCase())) {
+  if (!tickerArmed(rails, intent.instrument)) {
     return { rail: "ticker", detail: `${intent.instrument} is not on the live allowlist (${rails.allowlist.length} tickers)` };
   }
   if (intent.unitsMilli > rails.maxUnitsPerOrderMilli) {

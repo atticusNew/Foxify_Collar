@@ -9,6 +9,14 @@
  * path): fail closed. The operator token also opens it.
  *
  * The key is not a venue credential. It lets a client ask; the rails decide what is sent.
+ *
+ * HOLDERS. A pilot has several people locking, each from their own venue account, and the record
+ * has to know whose lock is whose: the credit is paid to a person, the handback is owed by one.
+ * EVENT_SHADOW_HOLDER_KEYS names them: `ann:<key>,bob:<key>` (commas, spaces or newlines between
+ * pairs). A request carrying a holder's key is that holder; the shared EVENT_SHADOW_LOCK_KEY stays
+ * what it was (the operator's own client, no holder). The holder comes from the key alone, never
+ * from the body, so nobody can lock as somebody else. A holder's alias is short and lower-case; it
+ * names their ledger file and appears on the operator's views, never on the public record.
  */
 
 import { timingSafeEqual } from "node:crypto";
@@ -34,6 +42,75 @@ export function lockAuthorized(key: string | null, headers: IncomingHttpHeaders,
   const h = headers["x-lock-key"];
   const sent = (Array.isArray(h) ? h[0] : h) ?? query ?? "";
   return sent.length > 0 && same(sent, key);
+}
+
+// ---------------------------------------------------------------------------
+// holders
+// ---------------------------------------------------------------------------
+
+export interface HolderKey {
+  /** the alias: 2 to 24 of a-z 0-9 _ -, starting with a letter or digit */
+  holder: string;
+  key: string;
+}
+
+export const HOLDER_ALIAS_RE = /^[a-z0-9][a-z0-9_-]{1,23}$/;
+
+/**
+ * EVENT_SHADOW_HOLDER_KEYS parsed: `alias:key` pairs. A pair with a bad alias, a key under 12
+ * chars, a key equal to the shared key, or an alias or key already seen is dropped with a note,
+ * never silently accepted: two people on one key would be one person to the record.
+ */
+export function holderKeysFromEnv(env: NodeJS.ProcessEnv = process.env, sharedKey: string | null = lockKeyFromEnv(env)): { holders: HolderKey[]; notes: string[] } {
+  const raw = env.EVENT_SHADOW_HOLDER_KEYS ?? "";
+  const holders: HolderKey[] = [];
+  const notes: string[] = [];
+  const aliases = new Set<string>();
+  const keys = new Set<string>();
+  for (const pair of raw.split(/[,\s]+/)) {
+    if (!pair) continue;
+    const i = pair.indexOf(":");
+    const holder = (i === -1 ? pair : pair.slice(0, i)).trim().toLowerCase();
+    const key = i === -1 ? "" : pair.slice(i + 1).trim();
+    if (!HOLDER_ALIAS_RE.test(holder)) {
+      notes.push(`holder keys: alias "${holder.slice(0, 24)}" is not 2-24 of a-z 0-9 _ -; dropped`);
+      continue;
+    }
+    if (key.length < 12) {
+      notes.push(`holder keys: ${holder}: key under 12 chars; dropped`);
+      continue;
+    }
+    if (sharedKey && same(key, sharedKey)) {
+      notes.push(`holder keys: ${holder}: key equals the shared lock key; dropped`);
+      continue;
+    }
+    if (aliases.has(holder)) {
+      notes.push(`holder keys: ${holder}: alias listed twice; second dropped`);
+      continue;
+    }
+    if (keys.has(key)) {
+      notes.push(`holder keys: ${holder}: key already belongs to another holder; dropped`);
+      continue;
+    }
+    aliases.add(holder);
+    keys.add(key);
+    holders.push({ holder, key });
+  }
+  return { holders, notes };
+}
+
+/** Who is asking: the shared key (no holder), one of the holders, or nobody. */
+export type LockCaller = { kind: "shared"; holder: null } | { kind: "holder"; holder: string };
+
+export function lockCaller(sharedKey: string | null, holders: readonly HolderKey[], headers: IncomingHttpHeaders, query: string | null): LockCaller | null {
+  const h = headers["x-lock-key"];
+  const sent = (Array.isArray(h) ? h[0] : h) ?? query ?? "";
+  if (sent.length === 0) return null;
+  if (sharedKey && same(sent, sharedKey)) return { kind: "shared", holder: null };
+  // every holder's key is compared so the time taken does not say which alias exists
+  let found: string | null = null;
+  for (const hk of holders) if (same(sent, hk.key)) found = hk.holder;
+  return found ? { kind: "holder", holder: found } : null;
 }
 
 /** The whole body as JSON, or null when it is not JSON, is empty, or exceeds `maxBytes`. */
