@@ -248,6 +248,7 @@ test("aggregator books: one read supplies the second venue's No book, our market
     assert.equal(r.references[0].id, "aggregated_mm");
     assert.ok(r.references[0].book);
     assert.deepEqual(r.references[0].book.asks, [{ priceMilli: 420, sizeMilli: 150_000 }]);
+    assert.ok(r.references[0].ageSec !== undefined && r.references[0].ageSec >= 2 && r.references[0].ageSec <= 5, `the snapshot's age rides on the reference: ${r.references[0].ageSec}`);
     assert.deepEqual(fake.subscribed[0].map((m) => m.venue), ["KALSHI", "POLYMARKET", "PROPHETX"]);
 
     // the mapping holds: a second read on the same ticker streams again but looks nothing up
@@ -302,6 +303,20 @@ test("aggregator books: a stale snapshot, a book that errors and a silent one ea
     const r2 = await src.read(pairWith(PM_TITANS), new Date());
     assert.equal(r2.pmNoBook, undefined);
     assert.ok(r2.notes.some((n) => /second venue: UNAVAILABLE/.test(n)), r2.notes.join(" | "));
+
+    // a stale REFERENCE is kept and dated, not dropped: it is compared, never filled on
+    fake.books.set(`KALSHI:${TICKER}`, "stale");
+    fake.books.set(`POLYMARKET:${PM_TITANS}`, PM_BOOK);
+    fake.books.set(`PROPHETX:${PX_TITANS}`, "stale");
+    const r3 = await src.read(pairWith(PM_TITANS), new Date());
+    assert.equal(r3.noAsks, undefined, "the route's stale book is still dropped");
+    assert.equal(r3.references.length, 1);
+    const ref = r3.references[0];
+    assert.ok(ref.book, "the reference's stale book stands");
+    assert.deepEqual(ref.book.asks, [{ priceMilli: 510, sizeMilli: 10_000 }]);
+    const staleSec = Math.floor((MAX_SNAPSHOT_AGE_MS + 5_000) / 1000);
+    assert.ok(ref.ageSec !== undefined && ref.ageSec >= staleSec && ref.ageSec <= staleSec + 3, `dated past the routes' bound: ${ref.ageSec}s`);
+    assert.ok(!r3.notes.some((n) => /stale/.test(n) && !/own market/.test(n)), "no stale note for the reference");
   } finally {
     fake.stop();
   }

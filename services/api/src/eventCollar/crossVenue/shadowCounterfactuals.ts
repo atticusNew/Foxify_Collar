@@ -81,6 +81,8 @@ export interface ShadowReferenceQuote {
   bestAskMilli: number | null;
   /** every visible ask's size summed, milli shares (what the venue would fill at any price) */
   depthMilli: number;
+  /** the venue's snapshot age when read, whole seconds; absent when the venue did not stamp it */
+  ageSec?: number;
 }
 
 /**
@@ -369,7 +371,8 @@ export function referenceQuotesFor(inputs: CounterfactualInputs): ShadowReferenc
     if (!ref.book) return { id: ref.id, terms: { ok: false, refused: ref.reason }, bestAskMilli: null, depthMilli: 0 };
     const depthMilli = ref.book.asks.reduce((s, l) => s + l.sizeMilli, 0);
     const bestAskMilli = ref.book.asks[0]?.priceMilli ?? null;
-    if (!inputs.pair) return { id: ref.id, terms: { ok: false, refused: "route_not_offered" }, bestAskMilli, depthMilli };
+    const age = ref.ageSec === undefined ? {} : { ageSec: ref.ageSec };
+    if (!inputs.pair) return { id: ref.id, terms: { ok: false, refused: "route_not_offered" }, bestAskMilli, depthMilli, ...age };
     const q = quoteCrossWrap({
       pair: inputs.pair,
       markCents: inputs.markCents,
@@ -382,6 +385,6 @@ export function referenceQuotesFor(inputs: CounterfactualInputs): ShadowReferenc
     const terms = altFromQuote(q);
     // the pricer's refusal codes are named for the second book; a reference is just a book
     const refused = !terms.ok ? terms.refused.replace(/^pm_book_/, "book_") : null;
-    return { id: ref.id, terms: refused ? { ok: false, refused } : terms, bestAskMilli, depthMilli };
+    return { id: ref.id, terms: refused ? { ok: false, refused } : terms, bestAskMilli, depthMilli, ...age };
   });
 }

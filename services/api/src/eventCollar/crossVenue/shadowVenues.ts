@@ -69,6 +69,8 @@ export interface VenueCell {
   bestAskCents: number | null;
   /** visible depth, whole shares (references only) */
   depthShares: number | null;
+  /** the venue's snapshot age at the read, seconds (references only; null when unstamped or no book) */
+  ageSec: number | null;
   refused: string | null;
   /** this venue's book was the one the record wrote from */
   written: boolean;
@@ -182,14 +184,15 @@ export interface VenueBreakdown {
   rows: VenueGameRow[];
 }
 
-function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written: boolean, liveCredit: number | null, extra?: { bestAskMilli: number | null; depthMilli: number }): VenueCell {
+function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written: boolean, liveCredit: number | null, extra?: { bestAskMilli: number | null; depthMilli: number; ageSec?: number }): VenueCell {
   const bestAskCents = extra ? (extra.bestAskMilli === null ? null : Math.round(extra.bestAskMilli / 10)) : null;
   const depthShares = extra ? Math.floor(extra.depthMilli / 1000) : null;
-  if (!t) return { id, read: false, listed: false, creditCents: null, deltaCents: null, evCostBps: null, bestAskCents, depthShares, refused: null, written: false };
+  const ageSec = extra?.ageSec ?? null;
+  if (!t) return { id, read: false, listed: false, creditCents: null, deltaCents: null, evCostBps: null, bestAskCents, depthShares, ageSec, refused: null, written: false };
   if (!t.ok) {
     // a route refused for thinness still had a book; "not offered" / "not listed" / "no book" had none
     const hadBook = extra ? extra.bestAskMilli !== null : /too_thin|credit|too_rich|fee_exceeds/.test(t.refused);
-    return { id, read: true, listed: hadBook, creditCents: null, deltaCents: null, evCostBps: null, bestAskCents, depthShares, refused: refusalWord(t.refused), written };
+    return { id, read: true, listed: hadBook, creditCents: null, deltaCents: null, evCostBps: null, bestAskCents, depthShares, ageSec, refused: refusalWord(t.refused), written };
   }
   return {
     id,
@@ -200,6 +203,7 @@ function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written
     evCostBps: t.evCostBps,
     bestAskCents,
     depthShares,
+    ageSec,
     refused: null,
     written,
   };
@@ -208,7 +212,7 @@ function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written
 /** Every column from one read's routes and references, deltas against `writtenCredit`. */
 function cellsFrom(
   routes: Partial<Record<HedgeRoute, ShadowAltTerms>>,
-  references: ReadonlyArray<{ id: ReferenceBookId; terms: ShadowAltTerms; bestAskMilli: number | null; depthMilli: number }>,
+  references: ReadonlyArray<{ id: ReferenceBookId; terms: ShadowAltTerms; bestAskMilli: number | null; depthMilli: number; ageSec?: number }>,
   writtenRoute: HedgeRoute,
   writtenCredit: number | null,
 ): { cells: VenueCell[]; best: VenueColumnId | null } {
@@ -219,7 +223,7 @@ function cellsFrom(
       return cellFromTerms(col.id, routes[route], writtenRoute === route, writtenCredit);
     }
     const ref = refs.get(col.id as ReferenceBookId);
-    return cellFromTerms(col.id, ref?.terms, false, writtenCredit, ref ? { bestAskMilli: ref.bestAskMilli, depthMilli: ref.depthMilli } : undefined);
+    return cellFromTerms(col.id, ref?.terms, false, writtenCredit, ref ? { bestAskMilli: ref.bestAskMilli, depthMilli: ref.depthMilli, ageSec: ref.ageSec } : undefined);
   });
   const quoted = cells.filter((c) => c.evCostBps !== null);
   const best = quoted.length > 0 ? quoted.reduce((a, b) => (b.evCostBps! < a.evCostBps! ? b : a)).id : null;

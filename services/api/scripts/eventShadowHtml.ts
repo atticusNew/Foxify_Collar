@@ -89,6 +89,9 @@ function hedgeLine(h: NonNullable<ShadowPageInput["hedges"]>): string {
 
 const signedUsd = (c: number): string => (c < 0 ? `-${usd(-c)}` : usd(c));
 const intStr = (n: number): string => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+/** A snapshot's age as the operator reads it: "48s", "4m", "2h"; only shown past the routes' 90s bound. */
+const ageWord = (sec: number): string => (sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m` : `${Math.floor(sec / 3600)}h`);
+const SHOW_AGE_FROM_SEC = 90;
 const bpsPct = (bps: number | null, digits = 2): string => (bps === null ? "–" : `${(bps / 100).toFixed(digits)}%`);
 /**
  * A slice with fewer events than this shows its counts and nothing else: four NFL games do not
@@ -1247,10 +1250,14 @@ export interface VenuesPageInput {
 /** A venue column's operator name, by id; the id itself when the window dropped the column. */
 const venueNameOf = (b: VenueBreakdown, id: string): string => b.totals.find((t) => t.id === id)?.name ?? id;
 
-/** One read of one venue: credit, delta against the route written, EV cost, and for a reference its best ask and depth. */
+/**
+ * One read of one venue: credit, delta against the route written, EV cost, and for a reference its
+ * best ask and depth, dated ("· 4m old") when the venue's snapshot was older than a route may price from.
+ */
 function venueReadHtml(c: VenueCell, written: boolean): string {
   if (!c.read) return "–";
-  const ask = c.bestAskCents !== null ? `<i>${c.bestAskCents}¢${c.depthShares !== null && c.depthShares > 0 ? ` × ${intStr(c.depthShares)}` : ""}</i>` : "";
+  const age = c.ageSec !== null && c.ageSec > SHOW_AGE_FROM_SEC ? ` · ${ageWord(c.ageSec)} old` : "";
+  const ask = c.bestAskCents !== null ? `<i>${c.bestAskCents}¢${c.depthShares !== null && c.depthShares > 0 ? ` × ${intStr(c.depthShares)}` : ""}${age}</i>` : "";
   if (c.creditCents === null) return `<span class="ref">${escapeHtml(c.refused ?? "refused")}</span>${ask}`;
   const delta = written || c.deltaCents === null ? "" : `<i class="${c.deltaCents > 0 ? "up" : c.deltaCents < 0 ? "dn" : ""}">${c.deltaCents > 0 ? "+" : ""}${usd(c.deltaCents)}</i>`;
   const ev = c.evCostBps === null ? "" : `<i>ev ${bpsPct(c.evCostBps)}</i>`;

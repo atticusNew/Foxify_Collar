@@ -58,10 +58,15 @@ export const REFERENCE_BOOK_WORDS: Record<ReferenceBookId, string> = {
   aggregated_other: "reference book C (via the aggregator)",
 };
 
-/** One venue's read for one pair: a book shaped like the cross-venue hedge book, or why there is none. */
+/**
+ * One venue's read for one pair: a book shaped like the cross-venue hedge book, or why there is
+ * none. `ageSec` is how old the venue's snapshot was when read, when the venue stamps it: a
+ * reference is a comparison, not a fill, so an old resting book is kept and dated rather than
+ * dropped (the hedge routes keep their staleness bound).
+ */
 export type ReferenceBook =
-  | { id: ReferenceBookId; book: PmBook; reason?: undefined }
-  | { id: ReferenceBookId; book: null; reason: string };
+  | { id: ReferenceBookId; book: PmBook; reason?: undefined; ageSec?: number }
+  | { id: ReferenceBookId; book: null; reason: string; ageSec?: undefined };
 
 export interface ReferenceBookSource {
   id: ReferenceBookId;
