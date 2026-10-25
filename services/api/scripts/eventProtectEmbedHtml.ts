@@ -983,6 +983,7 @@ const PARTNER_REFUSAL_WORDS: Record<string, string> = {
   kalshi_book_empty: "no depth on the market's No side",
   kalshi_book_too_thin: "not enough depth on the market's No side",
   market_too_close_to_start: "too close to the start",
+  far_out_no_book: "too early: no venue has a real book yet",
   mark_out_of_range: "odds outside the range we protect",
   no_matched_market: "no verified pairing",
   resolution_mismatch: "settlement rules did not match",

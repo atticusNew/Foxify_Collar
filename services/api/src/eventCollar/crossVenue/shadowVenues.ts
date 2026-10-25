@@ -36,6 +36,7 @@ export function refusalWord(code: string): string {
   if (/_book_too_thin$/.test(code) || code === "book_too_thin") return "too thin";
   if (code === "credit_nonpositive" || code === "credit_too_small") return "no credit";
   if (code === "protection_too_rich") return "too rich";
+  if (code === "far_out_no_book") return "too early";
   if (code === "book_not_retained") return "not kept";
   if (code === "fee_exceeds_gross") return "fee > gross";
   if (code.startsWith("stream_")) return `feed: ${code.slice(7).replace(/_/g, " ")}`;

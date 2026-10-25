@@ -547,6 +547,7 @@ const REFUSAL_LABELS: Record<string, string> = {
   protection_too_rich: "the cheapest route was still rich insurance (above the EV-cost ceiling)",
   credit_too_small: "the best credit fell under the minimum (25¢ and 0.25% of stake)",
   market_too_close_to_start: "the game was too close to starting",
+  far_out_no_book: "days from the start and no venue has a real book yet (priced again inside the window)",
   mark_out_of_range: "the odds were outside the quotable band",
   pm_book_empty: "no executable depth on the Polymarket book",
   pm_book_too_thin: "the Polymarket book was too thin for the size",

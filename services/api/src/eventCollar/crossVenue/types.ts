@@ -84,7 +84,9 @@ export type CrossRefusalCode =
   /** every route funded a collar, but the cheapest still costs more than the ceiling in EV terms */
   | "protection_too_rich"
   /** a collar was funded, but no tier's credit clears the minimum (25¢ and 0.25% of stake by default) */
-  | "credit_too_small";
+  | "credit_too_small"
+  /** the cross-venue route priced off a placeholder: days out, the market's own No side empty, no feed book (farOutGuard.ts) */
+  | "far_out_no_book";
 
 export interface CrossRefusal {
   ok: false;

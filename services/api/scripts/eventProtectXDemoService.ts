@@ -58,6 +58,8 @@
  *      (minimum fee, bps of stake, default 25; 0 disables) · EVENT_X_DEFAULT_TIER
  *      (tight|balanced|wide, default balanced) · EVENT_X_LEDGER_PATH · EVENT_X_BOARD_ROWS
  *      EVENT_X_MAX_EV_COST_BPS (ceiling on protection's EV cost, default 300; 0 = off)
+ *      EVENT_X_FAR_OUT_HOURS (no cross-venue route on a game further out than this when the
+ *      market's own No side is empty and the feed has no book, default 24; 0 = off)
  *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
  *      EVENT_X_FUNNEL_PATH · EVENT_X_ADMIN_TOKEN (or EVENT_X_DEV_NO_ADMIN=true)
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
@@ -98,6 +100,7 @@ import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVe
 import { getNoAsks, quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
 import { aggregatorBookSourceFromEnv, type AggregatorBookStatus, type BookOrigins } from "../src/eventCollar/crossVenue/aggregatorBooks";
+import { farOutGuardFromEnv, farOutVerdict, type FarOutGuardRule } from "../src/eventCollar/crossVenue/farOutGuard";
 import { readReferencePrints, referencePrintSourcesFromEnv, type ReferencePrint } from "../src/eventCollar/crossVenue/venuePrints";
 import {
   DEFAULT_CROSS_CONFIG,
@@ -139,6 +142,13 @@ export const MAX_EV_COST_BPS = Number(process.env.EVENT_X_MAX_EV_COST_BPS ?? 300
  * the board, the embed and the shadow record offer the same tiers and refuse the same events.
  */
 export const MIN_CREDIT_RULE = minimumCreditRuleFromEnv(process.env);
+/**
+ * FAR-OUT GUARD (src/eventCollar/crossVenue/farOutGuard.ts): a game more than EVENT_X_FAR_OUT_HOURS
+ * away (default 24) is not routed cross-venue while the market's own No side cannot fund it and the
+ * feed has no book for it: the second venue's ask is a placeholder then, not a hedge. Deferred, not
+ * lost; priced again every scan and opened once a real book shows or the window is reached.
+ */
+export const FAR_OUT_GUARD = farOutGuardFromEnv(process.env);
 /**
  * EMBED DEMO knobs. `?brand=` on /embed is honoured only for names on the allowlist (fail-closed
  * to "Your Exchange"); the partner console's revenue-share line uses EVENT_X_PARTNER_SHARE_PCT.
@@ -788,9 +798,32 @@ export function applyMinimumCreditRule(result: CandidateResult, rule = MIN_CREDI
   };
 }
 
-/** The scan's post-quote pipeline, in order: minimum credit, then the EV-cost ceiling. */
-export function applyQuoteRules(result: CandidateResult): CandidateResult {
-  return applyEvCeiling(applyMinimumCreditRule(result));
+/**
+ * Apply the far-out guard: a cross-venue quote on a game days away, with the market's own No side
+ * unable to fund it and no feed book behind the second venue, becomes a `far_out_no_book` refusal.
+ * The routes examined keep their verdicts (operator information); the holder-facing quote says
+ * protection opens nearer the start.
+ */
+export function applyFarOutGuard(result: CandidateResult, now: Date, rule: FarOutGuardRule = FAR_OUT_GUARD): CandidateResult {
+  if (!result.quote.ok) return result;
+  const verdict = farOutVerdict(
+    {
+      kind: result.kind,
+      route: result.route,
+      eventTimeIso: result.eventTimeIso,
+      nowMs: now.getTime(),
+      kalshiRouteOk: result.routesChecked.some((r) => r.route === "kalshi_self" && r.ok),
+      feedSuppliedPmBook: result.bookOrigins?.polymarket === "aggregator",
+    },
+    rule,
+  );
+  if (!verdict.defer) return result;
+  return { ...result, quote: { ok: false, code: verdict.code, detail: verdict.detail }, route: null, evBps: null };
+}
+
+/** The scan's post-quote pipeline, in order: minimum credit, the EV-cost ceiling, then the far-out guard. */
+export function applyQuoteRules(result: CandidateResult, now: Date = new Date()): CandidateResult {
+  return applyFarOutGuard(applyEvCeiling(applyMinimumCreditRule(result)), now);
 }
 
 /** One refresh's full result: ranked quotable rows plus the best honest refusal. */
@@ -902,7 +935,7 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
     if (!pair || !showcaseWindowOk(pair, now)) return true;
     let result: CandidateResult;
     try {
-      result = applyQuoteRules(await quoteSportsCandidate(pair, cand.mark, now));
+      result = applyQuoteRules(await quoteSportsCandidate(pair, cand.mark, now), now);
     } catch {
       return !countFailure();
     }
@@ -950,7 +983,7 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
       attempts += 1;
       let result: CandidateResult;
       try {
-        result = applyQuoteRules(await quoteCryptoCandidate(series, sel, now));
+        result = applyQuoteRules(await quoteCryptoCandidate(series, sel, now), now);
       } catch {
         fetchFailures += 1;
         if (fetchFailures >= FETCH_FAILURE_LIMIT) break crypto;
@@ -1091,7 +1124,7 @@ export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> 
     entrySource: "entered_now",
     entryTime: null,
   };
-  const result = applyQuoteRules(await quoteSportsCandidate(pair, markCents, now, position, inputs.route));
+  const result = applyQuoteRules(await quoteSportsCandidate(pair, markCents, now, position, inputs.route), now);
   return { ok: true, result };
 }
 
