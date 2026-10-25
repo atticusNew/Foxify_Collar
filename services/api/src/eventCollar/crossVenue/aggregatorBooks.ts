@@ -55,6 +55,7 @@ import {
   type StreamResult,
   type WsFactory,
 } from "./aggregatorMarkets";
+import { heldBooks as openHeldBooks, type HeldBooks, type HeldBooksOptions } from "./aggregatorHeldBooks";
 import type { NoAskLevel } from "./kalshiLadder";
 import type { MatchedPair, PmBook, PmBookLevel } from "./types";
 import type { ReferenceBook } from "./venueBooks";
@@ -78,6 +79,21 @@ export interface AggregatorBooks {
 export interface AggregatorBookSource {
   read(pair: MatchedPair, now: Date): Promise<AggregatorBooks>;
   status(): AggregatorBookStatus;
+  /**
+   * The reference venues' streams for the opposing outcome of our ticker's market, from the same
+   * cached lookup `read` uses: what a held subscription (aggregatorHeldBooks.ts) would hold for
+   * this game. Null when the ticker is not in the mapping or the lookup failed; empty when the
+   * market is mapped but no reference venue lists the opposing outcome yet ("not mapped" on
+   * that venue: ask again after the lookup's TTL).
+   */
+  referenceStreams(ticker: string): Promise<ReferenceStream[] | null>;
+  /** A held-books connection on this source's key and stream URL; the caller never sees either. */
+  heldBooks(opts?: Omit<HeldBooksOptions, "streamUrl" | "wsFactory" | "nowMs">): HeldBooks;
+}
+
+export interface ReferenceStream {
+  id: ReferenceBook["id"];
+  stream: MarketStream;
 }
 
 export interface AggregatorBookStatus {
@@ -260,15 +276,10 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
     } else out.notes.push("aggregator: opposing outcome not listed on the second venue");
     const kalshiStream: MarketStream | null = ourKalshi ? { venue: "KALSHI", ticker: ourKalshi.ticker } : null;
     if (!kalshiStream) out.notes.push("aggregator: our market's own book not in the mapping");
-    const refStreams: { listing: Listing; stream: MarketStream }[] = [];
-    for (const l of aligned.opposing) {
-      if (l.venue === "POLYMARKET" || l.venue === "KALSHI") continue;
-      const s = streamFor(l);
-      if (s) refStreams.push({ listing: l, stream: s });
-    }
+    const refStreams = referenceStreamsOf(aligned);
     // The venue the feed is relied on for: no listing on the opposing outcome is a state of its
     // own ("not mapped yet"), distinct from a mapping whose book has not opened.
-    if (!refStreams.some((r) => r.listing.venue === "PROPHETX")) out.references.push({ id: "aggregated_mm", book: null, reason: NOT_MAPPED });
+    if (!refStreams.some((r) => r.id === "aggregated_mm")) out.references.push({ id: "aggregated_mm", book: null, reason: NOT_MAPPED });
     const streams = [kalshiStream, pmStream, ...refStreams.map((r) => r.stream)].filter((s): s is MarketStream => s !== null);
     if (streams.length === 0) return out;
 
@@ -311,20 +322,42 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
       const b = fresh(results[i++], "second venue");
       if (b) out.pmNoBook = pmBookFromSnapshot(pmStream.tokenId, b);
     }
-    for (const r of refStreams) {
+    for (const { id, stream } of refStreams) {
       const res = results[i++];
-      const id: ReferenceBook["id"] = r.listing.venue === "PROPHETX" ? "aggregated_mm" : "aggregated_other";
       if (!res.book) out.references.push({ id, book: null, reason: `stream_${res.error.code.toLowerCase()}` });
       else if (!snapshotFresh(res.book, nowMs(), maxAge)) out.references.push({ id, book: null, reason: "stale" });
       else if (res.book.bids.length === 0 && res.book.asks.length === 0) out.references.push({ id, book: null, reason: MAPPED_NO_BOOK });
-      else out.references.push({ id, book: pmBookFromSnapshot(`${r.listing.venue}:${aligned.marketId}`, res.book) });
+      else out.references.push({ id, book: pmBookFromSnapshot(`${stream.venue}:${aligned.marketId}`, res.book) });
     }
     if (out.pmNoBook || out.noAsks) status.readsWithBooks += 1;
     status.lastError = null;
     return out;
   };
 
-  return { read, status: () => ({ ...status }) };
+  const referenceStreams = async (ticker: string): Promise<ReferenceStream[] | null> => {
+    try {
+      const aligned = await align(ticker);
+      return aligned ? referenceStreamsOf(aligned) : null;
+    } catch (err) {
+      status.lastError = describe(err);
+      return null;
+    }
+  };
+
+  const held = (o: Omit<HeldBooksOptions, "streamUrl" | "wsFactory" | "nowMs"> = {}): HeldBooks => openHeldBooks(signer, { ...o, streamUrl: opts.streamUrl, wsFactory: opts.wsFactory, nowMs });
+
+  return { read, status: () => ({ ...status }), referenceStreams, heldBooks: held };
+}
+
+/** The opposing outcome's listings on every venue that is neither route, as reference streams, in listing order. */
+export function referenceStreamsOf(aligned: AlignedPair): ReferenceStream[] {
+  const out: ReferenceStream[] = [];
+  for (const l of aligned.opposing) {
+    if (l.venue === "POLYMARKET" || l.venue === "KALSHI") continue;
+    const s = streamFor(l);
+    if (s) out.push({ id: l.venue === "PROPHETX" ? "aggregated_mm" : "aggregated_other", stream: s });
+  }
+  return out;
 }
 
 const describe = (err: unknown): string => {
