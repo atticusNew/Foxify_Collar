@@ -14,7 +14,9 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, WebSocket as WsClient } from "ws";
 import {
+  MAPPED_NO_BOOK,
   MAX_SNAPSHOT_AGE_MS,
+  NOT_MAPPED,
   aggregatorBookSource,
   aggregatorBookSourceFromEnv,
   alignPair,
@@ -128,6 +130,8 @@ interface Fake {
   /** per stream key: a book, "stale", "error" or "silent" */
   books: Map<string, "stale" | "error" | "silent" | { bids: { price: number; size: number }[]; asks: { price: number; size: number }[] }>;
   down: boolean;
+  /** what the lookup answers for our ticker; MARKET unless a test narrows the mapping */
+  market: Market;
 }
 
 interface ServerSocket {
@@ -139,7 +143,7 @@ interface ServerSocket {
 const streamKeyOf = (m: MarketStream) => (m.venue === "KALSHI" ? `KALSHI:${m.ticker}` : m.venue === "POLYMARKET" ? `POLYMARKET:${m.tokenId}` : m.venue === "PROPHETX" ? `PROPHETX:${m.strikeId}` : "LIMITLESS");
 
 async function startFake(): Promise<Fake> {
-  const fake = { restCalls: [], subscribed: [], books: new Map(), down: false } as unknown as Fake;
+  const fake = { restCalls: [], subscribed: [], books: new Map(), down: false, market: MARKET } as unknown as Fake;
   const rest = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://x");
     const send = (status: number, body: unknown) => {
@@ -154,7 +158,7 @@ async function startFake(): Promise<Fake> {
     const canonical = [req.method ?? "GET", u.pathname, sortedQuery(u.search.slice(1)), isTime ? "" : String(ts), EMPTY_SHA256].join("\n");
     if (req.headers["px-key-id"] !== KEY_ID || !verifies(canonical, sig)) return send(401, { error: { code: "UNAUTHORIZED", message: "signature" } });
     if (isTime) return send(200, { time: Math.floor(Date.now() / 1000) });
-    if (u.pathname === "/v1/markets") return send(200, { markets: u.searchParams.get("ticker") === TICKER ? [MARKET] : [] });
+    if (u.pathname === "/v1/markets") return send(200, { markets: u.searchParams.get("ticker") === TICKER ? [fake.market] : [] });
     send(404, { error: { code: "NOT_FOUND", message: u.pathname } });
   });
   const wss = new WebSocketServer({ noServer: true });
@@ -298,6 +302,43 @@ test("aggregator books: a stale snapshot, a book that errors and a silent one ea
     const r2 = await src.read(pairWith(PM_TITANS), new Date());
     assert.equal(r2.pmNoBook, undefined);
     assert.ok(r2.notes.some((n) => /second venue: UNAVAILABLE/.test(n)), r2.notes.join(" | "));
+  } finally {
+    fake.stop();
+  }
+});
+
+test("aggregator books: the partner's four mapping states are kept apart on the reference: no listing is 'not mapped', an empty snapshot is 'mapped, no book', not-yet-open and unavailable keep their stream codes; none of them is ever a priced book", async () => {
+  const fake = await startFake();
+  try {
+    fake.books.set(`KALSHI:${TICKER}`, KALSHI_BOOK);
+    fake.books.set(`POLYMARKET:${PM_TITANS}`, PM_BOOK);
+
+    // mapped, empty book: a listing whose SNAPSHOT carries no levels; the venue itself has not opened the line
+    fake.books.set(`PROPHETX:${PX_TITANS}`, { bids: [], asks: [] });
+    const src = aggregatorBookSource(signerFromSecret(KEY_ID, keypair.seedHex), fake.host, { streamUrl: fake.streamUrl, wsFactory, streamTimeoutMs: 2_000 });
+    const empty = await src.read(pairWith(PM_TITANS), new Date());
+    assert.deepEqual(empty.references, [{ id: "aggregated_mm", book: null, reason: MAPPED_NO_BOOK }]);
+    assert.ok(empty.pmNoBook && empty.noAsks, "the routes' books are untouched by a reference's state");
+    assert.ok(fake.subscribed[0].some((m) => m.venue === "PROPHETX"), "the listing was streamed: it is mapped");
+
+    // not mapped: the lookup carries no listing for the venue on the opposing outcome, so nothing is streamed for it
+    fake.market = {
+      ...MARKET,
+      outcomes: MARKET.outcomes.map((o) => (o.name === "Titans" ? { ...o, listings: o.listings.filter((l) => l.venue !== "PROPHETX") } : o)),
+    };
+    const unmapped = aggregatorBookSource(signerFromSecret(KEY_ID, keypair.seedHex), fake.host, { streamUrl: fake.streamUrl, wsFactory, streamTimeoutMs: 2_000 });
+    const none = await unmapped.read(pairWith(PM_TITANS), new Date());
+    assert.deepEqual(none.references, [{ id: "aggregated_mm", book: null, reason: NOT_MAPPED }]);
+    assert.ok(!fake.subscribed[1].some((m) => m.venue === "PROPHETX"), "nothing to subscribe to");
+    assert.ok(none.pmNoBook && none.noAsks);
+
+    // a reference with one ask and no bids is still a book: only a snapshot empty on both sides is the "no book yet" state
+    fake.market = MARKET;
+    fake.books.set(`PROPHETX:${PX_TITANS}`, { bids: [], asks: [{ price: 0.42, size: 150 }] });
+    const oneSided = aggregatorBookSource(signerFromSecret(KEY_ID, keypair.seedHex), fake.host, { streamUrl: fake.streamUrl, wsFactory, streamTimeoutMs: 2_000 });
+    const r3 = await oneSided.read(pairWith(PM_TITANS), new Date());
+    assert.ok(r3.references[0].book);
+    assert.deepEqual(r3.references[0].book.asks, [{ priceMilli: 420, sizeMilli: 150_000 }]);
   } finally {
     fake.stop();
   }
