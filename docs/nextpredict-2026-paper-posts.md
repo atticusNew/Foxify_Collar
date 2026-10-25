@@ -44,32 +44,51 @@ The paper quotes the stage by name and session, lists the summit's own forecasts
 
 ## Founder LinkedIn post
 
-*Personal voice. Built for the scan: one-line hook, short lines, white space. Post a day or two after the company page, linking the same Medium article in the first comment. LinkedIn truncates after about three lines, so the first line has to carry it.*
+*Personal voice. Built for the scan: one-line hook, short lines, white space. Post a day or two after the company page, linking the same Medium article in the first comment. LinkedIn truncates after about three lines, so the first line has to carry it. Every quotation below is verbatim from the published record (live blogs, NEXTPredict's panel write-ups, the main-stage transcript); sources are listed under "Quote sources" at the end of this file.*
 
 Two days at NEXTPredict. Every stage described the same missing product.
 
-What the industry said:
-- Half of new users are gone by month three.
-- The hedge exists, if you're a fund with a market-maker on speed dial.
-- $18bn a week of parlay risk, nothing under it.
-- "Trader protection" = a deposit limit nobody sets.
+In their words:
 
-The root cause is the same every time: a position can only be won or lost.
+- "Getting people in the door doesn't seem to be the problem, but keeping them is." 50% of new wallets active at month two. 17% at month three. (NEXTPredict, opening the retention panel)
+- "There's a market maker on the other end collecting those winnings." Bonus bets don't work on an exchange, so product is the only retention tool left. (Matt Bresler, Odditt)
+- "Wasting their time is probably one of the fastest ways to destroy trust." On parlay quotes that never arrive. (Jeremy Levine, Underdog)
+- "Liquid insurance." What event contracts are for. (Neal Berger, Eagle's View)
+- $18bn a week of combo risk. "It's going to be $30bn by Christmas." (Bernard Marantelli, White Swan)
+
+Same root cause every time: a position can only be won or lost.
 
 What we built:
+
 - One tap on a position you already hold.
 - Floor if it loses. Credit, paid now, if it wins smaller.
 - Stays on your venue, in your account.
 - We build the hedge ourselves on a regulated exchange and publish the receipt, order id and all.
 - No honest credit available? You're told. No bad quotes.
 
-Live on a perpetuals venue. Running on a public record across event-contract venues. Parlays next.
+The credit is the retention tool Bresler says exchanges can't buy, paid for by the hedge instead of the promo budget. The floor is Berger's liquid insurance, for the holder, at their size.
 
-Full write-up, quoted by name and session, in the comments.
+Live on a perpetuals venue. Public record across event-contract venues. Parlays next.
 
-If you were on one of those panels: this is the thing you were describing.
+Full write-up, by name and session, in the comments.
 
 #predictionmarkets #NEXTPredict #hedging
+
+*Optional sixth quote if you want the marketing-cost point: "You have to sign Sydney Sweeney to a two-year marketing deal to win 1% of the market share." (Henry Kerins, Manhattan Athletic Group). Optional Bresler alternate: "Constant product velocity, new things, social experiences, overall product stickiness and experience become absolutely critical."*
+
+### Speakers checked and not quoted
+
+- Jeanine Hightower-Sellitto (DraftKings Predictions, The Year Wall Street Bought In). The only reported lines are "We are a sports-first company" and that DraftKings' vertical integration gives it control over contract development, pricing and liquidity. Neither is a validation point, so she is not quoted. If you remember the specific thing she said, send the gist and it can go in as a paraphrase attributed to her, not in quotation marks.
+- JB Mackenzie (Robinhood, Prediction Markets Go Retail). Reported lines: prediction markets have "a perception problem" (relayed second-hand by the retention-panel host), the Fed decision was Robinhood's top September contract, and "now it's moving into economics and financials." Same treatment: not quoted unless you can supply the point.
+
+### Quote sources
+
+- Yuhl, 50%/17%: Investing.com main-stage transcript, The Second Trade.
+- Bresler, "market maker on the other end", "constant product velocity": NEXTPredict, "'Not one perfect metric': Is Kalshi's 74% share overstated?", October 23, 2026 (The PM Scoreboard panel).
+- Levine, "wasting their time": NEXTPredict day-one live blog, 16:09 ET (The Road to the Mainstream).
+- Berger, "liquid insurance": NEXTPredict, "Prediction markets could outgrow stocks says hedge fund manager", October 22, 2026 (The Year Wall Street Bought In).
+- Marantelli, $18bn / $30bn: NEXTPredict day-one live blog, 11:48 ET (RFQs: The Next Market Structure?).
+- Kerins, Sydney Sweeney: NEXTPredict day-two live blog, 11:06 ET (The PM Scoreboard).
 
 ### Earlier founder draft (kept for reference, not for posting)
 
