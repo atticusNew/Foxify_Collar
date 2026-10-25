@@ -60,6 +60,8 @@
  *      EVENT_X_MAX_EV_COST_BPS (ceiling on protection's EV cost, default 300; 0 = off)
  *      EVENT_X_FAR_OUT_HOURS (no cross-venue route on a game further out than this when the
  *      market's own No side is empty and the feed has no book, default 24; 0 = off)
+ *      EVENT_X_STALE_MAX_MS (a cached scan older than this is not served before its refresh,
+ *      default 60s) · EVENT_X_STALE_WAIT_MS (how long that wait may take, default 20s)
  *      EVENT_X_CRYPTO_SERIES (default KXBTCD,KXETHD) · EVENT_X_CRYPTO_ROWS
  *      EVENT_X_FUNNEL_PATH · EVENT_X_ADMIN_TOKEN (or EVENT_X_DEV_NO_ADMIN=true)
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
@@ -1211,6 +1213,23 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
 
 let cache: { at: number; state: ScanState } | null = null;
 const CACHE_TTL_MS = 10_000;
+/**
+ * Past this age the last scan is not served as is: a visitor arriving after a quiet hour would
+ * otherwise read books from that hour while the refresh they triggered lands behind them. The
+ * request waits for the refresh instead, up to STALE_WAIT_MS, then takes whatever is current
+ * (the fresh scan when it landed, the old one when the venues were slow or down).
+ */
+const STALE_MAX_MS = Number(process.env.EVENT_X_STALE_MAX_MS || 60_000);
+const STALE_WAIT_MS = Number(process.env.EVENT_X_STALE_WAIT_MS || 20_000);
+
+export type CacheServeDecision = "serve" | "refresh_and_serve" | "refresh_and_wait";
+
+/** What a request does with a cached scan of this age; pure, so the thresholds can be tested. */
+export function cacheServeDecision(ageMs: number, limits: { ttlMs: number; staleMaxMs: number } = { ttlMs: CACHE_TTL_MS, staleMaxMs: STALE_MAX_MS }): CacheServeDecision {
+  if (ageMs < limits.ttlMs) return "serve";
+  if (ageMs < limits.staleMaxMs) return "refresh_and_serve";
+  return "refresh_and_wait";
+}
 
 /** Test seam: serve this scan as the current one (no venue round-trips). */
 export function primeScanForTests(state: ScanState): void {
@@ -1246,14 +1265,20 @@ function refreshInBackground(): void {
 }
 
 /**
- * Stale-while-revalidate: visitors always get an instant answer from the last
- * good scan while a background refresh keeps it current. Only the very first
- * request after boot (cold cache) has to wait for the venue round-trips, and
- * prewarming at startup usually removes even that.
+ * Stale-while-revalidate, bounded: visitors get an instant answer from the last good scan while a
+ * background refresh keeps it current, as long as that scan is younger than STALE_MAX_MS. Older
+ * than that (the service sat idle), the request waits for the refresh it started, up to
+ * STALE_WAIT_MS, so the first visitor after a quiet spell sees live books rather than the hour-old
+ * ones. The very first request after boot (cold cache) waits for the venue round-trips; prewarming
+ * at startup usually removes even that.
  */
 async function getCachedScan(): Promise<ScanState> {
   if (cache) {
-    if (Date.now() - cache.at >= CACHE_TTL_MS) refreshInBackground();
+    const decision = cacheServeDecision(Date.now() - cache.at);
+    if (decision !== "serve") refreshInBackground();
+    if (decision === "refresh_and_wait" && refreshing) {
+      await Promise.race([refreshing, new Promise<void>((resolve) => setTimeout(resolve, STALE_WAIT_MS).unref())]);
+    }
     return cache.state;
   }
   const state = await buildScan();
