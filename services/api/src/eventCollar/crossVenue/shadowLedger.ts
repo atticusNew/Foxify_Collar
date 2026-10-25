@@ -24,6 +24,7 @@ import {
   type FeeRuleLabel,
   type ShadowAltTerms,
   type ShadowCounterfactuals,
+  type ShadowReread,
 } from "./shadowCounterfactuals";
 
 /** One simulated position opened from a live board quote. */
@@ -166,7 +167,17 @@ export interface ShadowCashRecord {
   note?: string;
 }
 
-export type ShadowRecord = ShadowOpenRecord | ShadowSettleRecord | ShadowVoidRecord | ShadowCloseRecord | ShadowCashRecord;
+/**
+ * PRE-LOCK RE-READ. The open position priced again, both routes and every reference, from fresh
+ * books a fixed time before its lock (shadowCounterfactuals.ShadowReread). Measurement only: the
+ * terms written at open stand; this line says what the same protection would have cost on each
+ * book at the moment a late tap's hedge would actually be placed. One per position; a second is
+ * ignored on replay. `unread` records a read that could not happen for a reason that will not
+ * change before the lock, so the tick does not try again.
+ */
+export type ShadowRereadRecord = { type: "reread"; ticker: string; phase: "prelock" } & ShadowReread;
+
+export type ShadowRecord = ShadowOpenRecord | ShadowSettleRecord | ShadowVoidRecord | ShadowCloseRecord | ShadowCashRecord | ShadowRereadRecord;
 
 export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   status: "open" | "settled" | "void" | "closed";
@@ -197,6 +208,8 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   closeUnpriced?: { at: string; reason: string };
   /** payments recorded on this lock, oldest first; the reference and note stay in the raw ledger */
   cash?: Array<{ at: string; leg: CashLeg; cents: number; method?: string }>;
+  /** the pre-lock re-read, when one has happened (operator information, like the counterfactuals) */
+  prelock?: ShadowReread;
 }
 
 /** One leg of cash the lock owes, and how much of it has been paid. */
@@ -373,6 +386,12 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
       if (!pos || !CASH_LEGS.includes(rec.leg) || !Number.isInteger(rec.cents) || rec.cents <= 0) continue;
       const line = { at: rec.at, leg: rec.leg, cents: rec.cents, ...(rec.method ? { method: rec.method } : {}) };
       byTicker.set(rec.ticker, { ...pos, cash: [...(pos.cash ?? []), line] });
+    } else if (rec.type === "reread") {
+      // one pre-lock read per position, the first; it lands in any state (the position may have settled since)
+      const pos = byTicker.get(rec.ticker);
+      if (!pos || pos.prelock || rec.phase !== "prelock") continue;
+      const { type: _t, ticker: _k, phase: _p, ...reread } = rec;
+      byTicker.set(rec.ticker, { ...pos, prelock: reread });
     } else if (rec.type === "close") {
       const pos = byTicker.get(rec.ticker);
       if (!pos || pos.status !== "open") continue;
