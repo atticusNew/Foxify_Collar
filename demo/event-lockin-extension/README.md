@@ -12,9 +12,20 @@ The host name picks the venue. It sets the colours (CSS variables on every block
 words ("play", "position", "order") and the reading rules below. Everything else is the same
 code: the line, the panel, the lock, the receipt.
 
-Draws on one page of the venue, its list of open plays, and nothing anywhere else. No shield,
-badge or icon on the game list, the game page or the order slip; the holder plays exactly as
-they do today. Once a matched play exists, under its row:
+Before the trade, two quiet things and no more (each can be turned off in Options):
+
+- a small **shield** after the name of each club whose game the service can protect this week,
+  on the game list and the game page. Hover: "Protection available on this game after your pick
+  fills. Lock it in from Portfolio." Nothing on games the service does not list, so the mark also
+  shows coverage honestly. Bare codes (the score strip, the futures list) are never marked;
+- one line in the **order slip** once a Winner pick sits in it, priced at the slip's own stake:
+  "Lock in available after this is matched · worst case $8.29 instead of $0 · +$1.36 paid now ·
+  from Portfolio". It reprices as the stake is typed. No button; nothing can be locked before
+  the trade. Spread and Total picks get no line. On Kalshi a **No** pick says "your No is a pick
+  on the Seahawks".
+
+The holder places the play exactly as they do today. The offer itself is on one page, the list
+of open plays. Once a matched play exists, under its row:
 
 1. a **Lock in** line that leads with the floor: "Lock in · $14.71 if the Texans lose", caption
    "instead of $0 · $25.06 if they win (was $46.00) · +$1.66 paid now". Priced live from the
@@ -51,7 +62,8 @@ of the panel. The hedge venue on the receipt is whatever the service chose for t
 or the holder's own venue when it has the best price (the "keep it on venue" route, when the
 service offers it).
 
-> Disclosure line, shown on every panel and to be read in any published recording:
+> Disclosure line, shown on every panel and to be read in any published recording (the marker
+> and the slip line are a notice that protection exists; nothing is offered until the play fills):
 > *"Third-party protection by Atticus, rendered here for this demo; not a product of this venue.
 > Pricing, record and hedge are live."*
 
@@ -174,13 +186,17 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
   nickname or by code, plus the row's money), reads the size from the table's columns, the row's
   labels, or Kalshi's contracts and cents, flips a Kalshi No to the other club's market, inserts
   our block as a sibling after the row (a full-width table row when the row is one) with the
-  venue's skin class on it, and re-inserts it when the venue re-renders. The venue's DOM is never
-  modified.
+  venue's skin class on it, and re-inserts it when the venue re-renders. Off the plays page it
+  puts the shield after each protectable club's name (`markGames`; a club with two listed games is
+  settled by the date on its card) and the one line in the slip (`findSlip`: the block an input
+  sits in, the pick named most in it, the stake from the input). The venue's DOM is never
+  modified; our marks and line are added beside it.
 - `content.css` the line, the inline panel, the segmented control, the chip. Every colour is a
   variable with the ProphetX values as defaults; `.ael-v-kalshi` and `.ael-v-novig` override them.
   Two-column tiles under 560px.
 - `background.js` is the fetch proxy; it attaches `x-lock-key` from extension storage.
-- `options.html` sets the service URL, lock key, Rehearsal, and the operator-only hedge line.
+- `options.html` sets the service URL, lock key, Rehearsal, the two before-the-trade items
+  (shield, slip line), and the operator-only hedge line.
 - `preview/positions.html`, `preview/kalshi.html`, `preview/novig.html` are the stand-in boards.
 
 ## Service side (Render dashboard, never in git)
@@ -299,6 +315,16 @@ Operator actions (token in `x-admin-token`), for the recording day:
    $14.50 if they win · you paid $10.00", the filled part only.
 8. Switch the toggle to **Points**: no lines on the rows. Back to **Cash**: they return.
 
+Before the trade, on any board:
+
+- Open the game list: a small shield sits after each club the service lists this week; hover one
+  for the sentence. Nothing on clubs it does not list. The score strip and the futures list have
+  no marks.
+- Pick a Winner / Moneyline price: the slip shows "Lock in available after this is matched ·
+  worst case $x instead of $0 · +$y paid now" a second later. Change the stake: it reprices.
+  Pick a Spread: the line goes away. On Kalshi, pick **No** on a club: the line names the other
+  club. Open the plays page: no marks, no slip line, the rows have their offers.
+
 Kalshi board (`kalshi.html#/portfolio`), two minutes more:
 
 9. **Positions**: the Yes SEA row offers "Lock in · $x if the Seahawks lose"; the **No DAL** row
@@ -318,8 +344,10 @@ Novig board (`novig.html#/portfolio`):
 Three clips, one tap. Shoot on a desktop width; the panel is responsive, but the My Trades rows
 are widest and clearest there.
 
-1. **Venue, after the play.** My Trades, Filled tab, with the new play. Tap its Lock in
-   line; the panel opens with the terms; tap **Lock in**. "Locked in", the chip on the row.
+1. **Venue, before and after the play.** The game list with the shields; pick the Winner price;
+   the slip's line with the floor at that stake; place the play. Then My Trades, Filled tab,
+   with the new play. Tap its Lock in line; the panel opens with the terms; tap **Lock in**.
+   "Locked in", the chip on the row.
 2. **Record.** `/` on the service a moment later: the position appears with `source: lock`, the
    three numbers match the panel. Operator cut: `/api/shadow/hedges` shows the live attempt, order
    id, fill, cost.

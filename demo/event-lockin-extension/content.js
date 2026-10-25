@@ -7,8 +7,10 @@
 // muted, and the tap says why. A locked play shows a Protected chip whose details are the four
 // things a holder needs: worst case, best case, what was paid, when it settles, and the public record.
 //
-// Nothing is drawn on the game list, the game page or the play slip. The venue's own flow places
-// the play; protection is offered on what the account then holds.
+// Before the trade, two quiet things and no more: a small shield after the name of each club whose
+// game the service can protect this week (game list, game page), and one line in the order slip
+// once a Winner pick sits in it, with the floor at the slip's stake. No button before the trade.
+// The venue's own flow places the play; protection is locked on what the account then holds.
 //
 // Sizes: when the service has a key for the holder's venue account, every number comes from the
 // service's confirmation of the play (GET /api/shadow/positions): the matched stake, what it pays,
@@ -39,7 +41,7 @@
   // the three shapes the service prices, shown only when the book offers more than one
   const TIER_ORDER = ["tight", "balanced", "wide"];
   const TIER_WORDS = { tight: "Most now", balanced: "Even", wide: "Keep more upside" };
-  const DEFAULTS = { showHedge: "no", rehearse: "no" };
+  const DEFAULTS = { showHedge: "no", rehearse: "no", showShield: "yes", showSlip: "yes" };
 
   // ── the venue this page belongs to ──────────────────────────────────────────
   // One codebase, three skins. The host name decides; a preview page names its venue in a meta
@@ -84,6 +86,8 @@
     serviceState: "loading",
     lastScan: 0,
     cardRows: new Map(), // position id -> binding (fallback card)
+    marks: new Map(), // text node -> the shield mark after it (game list and game page)
+    slip: null, // the order slip's binding while a protectable pick sits in it
   };
 
   // ── plumbing ────────────────────────────────────────────────────────────────
@@ -358,6 +362,7 @@
     String(text)
       .replace(/([a-z])([A-Z])/g, "$1 $2")
       .replace(/(\d)([A-Z])/g, "$1 $2") // "2.60Unmatched" splits; "49ers" and "76ers" stay whole
+      .replace(/([A-Za-z])(\d)/g, "$1 $2") // "SEA1.71x": a code then the price in the next element
       .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2") // "DENMoneyline"
       .replace(/([A-Za-z])(\$)/g, "$1 $2");
   const amountsIn = (text) => {
@@ -498,7 +503,8 @@
   const kindIn = (raw) => {
     const text = spaced(raw);
     const bare = noMoney(text);
-    if (/\b(spread|handicap|total|over|under|o\/u)\b/i.test(text) || /(^|\s)[+-]\d{1,2}(\.5)?(?=\s|$)/.test(bare)) return /\b(winner|moneyline|money line|ml)\b/i.test(text) ? "winner" : "other";
+    // "Total" the market, not "Total cost" or "Total return" on a slip
+    if (/\b(spread|handicap|total(?!\s*(?:cost|return|payout|stake|wager|amount|risk|to win))|over|under|o\/u)\b/i.test(text) || /(^|\s)[+-]\d{1,2}(\.5)?(?=\s|$)/.test(bare)) return /\b(winner|moneyline|money line|ml)\b/i.test(text) ? "winner" : "other";
     return "winner";
   };
   /** Matched, or still an order. A row that says only Unmatched (no matched part, not partially matched) is an order. */
@@ -720,7 +726,7 @@
   // keyed by market; a spread or total row on the same club keeps its own panel state, so opening
   // the one never opens the other
   const stateOf = (B) => {
-    const key = B.kind && B.kind !== "winner" ? B.ticker + "#" + B.kind : B.ticker;
+    const key = B.slip ? B.ticker + "#slip" : B.kind && B.kind !== "winner" ? B.ticker + "#" + B.kind : B.ticker;
     let st = S.st.get(key);
     if (!st) {
       st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, enter: false, how: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptCash: null, rcptBusy: false, rcptErr: "" };
@@ -818,7 +824,8 @@
           if (!st.tier || !(q.tiers && q.tiers[st.tier])) st.tier = q.tiers && q.tiers.balanced ? "balanced" : q.tier;
         }
       }
-      paintRow(B);
+      if (B.slip) paintSlip(B);
+      else paintRow(B);
     });
   };
 
@@ -1252,6 +1259,169 @@
     });
   };
 
+  // ── before the trade: a marker on protectable games, and one line in the slip ───────────
+  // The game list and the game page get one small shield after the name of each club whose game
+  // the service can protect this week (hover: what it means); nothing on games it does not list,
+  // so the mark also tells the truth about coverage. The order slip, once a Winner pick sits in
+  // it, gets one quiet line with the floor at the slip's own stake: the offer the holder will see
+  // under the row after the play fills. No button, nothing to tap; the lock is still after the trade.
+  const MARK_TITLE = () => "Protection available on this game after your pick " + (VENUE_ID === "kalshi" ? "fills" : "is matched") + ". Lock it in from " + V.page + ".";
+  const marksOn = () => S.settings.showShield === "yes";
+  const slipOn = () => S.settings.showSlip === "yes";
+  /** The block an input sits in, climbing from a node: the slip. Null when no input is above it. */
+  const slipFrom = (node) => {
+    let e = node.parentElement;
+    for (let i = 0; e && e !== document.body && i < 9; i++, e = e.parentElement) {
+      const r = e.getBoundingClientRect();
+      if (r.width > 620 || r.height > 760) return null;
+      if (e.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=search])')) return e;
+    }
+    return null;
+  };
+  /** Live markets only: a settled lock in the index is a record, not a game to protect. */
+  const liveMarket = (ticker) => S.markets.some((m) => m.ticker === ticker && !m.onRecord);
+  /**
+   * The one club a short text names, as a market: by nickname (a bare code would mark the score
+   * strip and the futures list too). A club with two listed games (NBA, MLB; or last week's lock
+   * beside this week's game) is settled by the date on the card around the name.
+   */
+  const markTicker = (node) => {
+    const text = norm(node.nodeValue);
+    if (!S.nickRe) return null;
+    S.nickRe.lastIndex = 0;
+    const m = S.nickRe.exec(text);
+    if (!m) return null;
+    S.nickRe.lastIndex = m.index + m[0].length;
+    if (S.nickRe.exec(text)) return null;
+    const nick = m[2].toLowerCase();
+    const direct = nicksIn(text);
+    if (direct.size === 1) return [...direct.keys()][0];
+    let e = node.parentElement;
+    for (let i = 0; e && e !== document.body && i < 6; i++, e = e.parentElement) {
+      const t = spaced(norm(e.textContent));
+      if (t.length > 400) break;
+      const hits = [...nicksIn(t).keys()].filter((tk) => (nickOf(S.byTicker[tk]) || "").toLowerCase() === nick);
+      if (hits.length === 1) return hits[0];
+    }
+    return null;
+  };
+  const markGames = (nodes) => {
+    const keep = new Set();
+    if (marksOn() && S.serviceState === "ok") {
+      for (const node of nodes) {
+        const text = norm(node.nodeValue);
+        if (text.length > 40) continue;
+        const ticker = markTicker(node);
+        if (!ticker || !liveMarket(ticker)) continue;
+        const p = node.parentElement;
+        if (!p || OURS(p) || p.closest("a[href] svg, button") || slipFrom(node)) continue;
+        const r = p.getBoundingClientRect();
+        if (r.width < 30 || r.height < 10 || r.height > 60) continue;
+        keep.add(node);
+        if (S.marks.has(node)) continue;
+        const mark = document.createElement("span");
+        mark.className = "ael-ui ael-mark " + SKIN;
+        mark.title = MARK_TITLE();
+        mark.setAttribute("aria-label", "Protection available");
+        mark.innerHTML = SHIELD;
+        mark.addEventListener("click", (e) => e.stopPropagation());
+        node.parentNode.insertBefore(mark, node.nextSibling);
+        S.marks.set(node, mark);
+      }
+    }
+    for (const [node, mark] of S.marks) {
+      if (!keep.has(node) || !node.isConnected) {
+        mark.remove();
+        S.marks.delete(node);
+      }
+    }
+  };
+
+  /** The slip's pick, its size, and where our line goes; null when the slip is empty or not a Winner pick. */
+  const findSlip = (nodes) => {
+    for (const node of nodes) {
+      const sides = sidesIn(node.nodeValue);
+      if (!sides.size) continue;
+      const block = slipFrom(node);
+      if (!block) continue;
+      const input = block.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=search])');
+      const typed = String(input.value || "").replace(/[^\d.]/g, "");
+      let text = spaced(norm(block.textContent));
+      if (text.length > 700 || pointsRow(text)) return null;
+      // the input's figure is not in the text: a dollar stake on most venues, a contract count on Kalshi
+      if (typed && Number(typed) > 0) text += VENUE_ID === "kalshi" ? " " + typed + " contracts" : " Wager $" + typed;
+      const count = sidesIn(text);
+      if (!count.size) return null;
+      const sorted = [...count.entries()].sort((a, b) => b[1] - a[1]);
+      let ticker = sorted.length === 1 || sorted[0][1] > sorted[1][1] ? sorted[0][0] : null;
+      if (!ticker) return null;
+      let flipped = false;
+      if (VENUE_ID === "kalshi" && sideWord(text) === "no") {
+        const other = siblingOf(ticker);
+        if (!other) return null;
+        ticker = other;
+        flipped = true;
+      }
+      if (kindIn(text) !== "winner" || !liveMarket(ticker)) return null;
+      const size = sizeIn(text);
+      return { block, ticker, size, flipped };
+    }
+    return null;
+  };
+  const paintSlip = (B) => {
+    if (!B.host || !B.host.isConnected) {
+      B.host && B.host.remove();
+      const host = document.createElement("div");
+      host.className = "ael-ui ael-slip " + SKIN;
+      host.addEventListener("click", (e) => e.stopPropagation());
+      const btn = [...B.block.querySelectorAll("button")].filter((b) => !OURS(b)).pop();
+      if (btn && btn.parentElement === B.block) B.block.insertBefore(host, btn);
+      else B.block.appendChild(host);
+      B.host = host;
+      B.html = null;
+    }
+    const st = stateOf(B);
+    const when = VENUE_ID === "kalshi" ? "after this fills" : "after this is matched";
+    let html;
+    if (!B.size) html = "";
+    else if (!st.quote) html = '<span class="ael-ic">' + SHIELD + '</span><span class="ael-dim">Checking protection&hellip;</span>';
+    else if (!st.quote.ok) html = "";
+    else {
+      const p = st.quote.p;
+      const q = p.quote;
+      const t = (q.tiers && q.tiers.balanced) || q;
+      const n = q.contracts || p.contracts;
+      const rs = reshape(n, t.floorCents, t.capCents, t.creditCents);
+      html = '<span class="ael-ic">' + SHIELD + "</span><span><b>Lock in available " + when + "</b> &middot; worst case " + esc(usd(rs.floorTotal)) + " instead of $0 &middot; +" + esc(usd(t.creditCents)) + " paid now" + (B.flipped ? " &middot; your No is a pick on the " + esc(shortOf(B.ticker)) : "") + " &middot; from " + esc(V.page) + "</span>";
+    }
+    if (B.html !== html) {
+      B.host.innerHTML = html;
+      B.host.style.display = html ? "" : "none";
+      B.html = html;
+    }
+  };
+  const scanSlip = (nodes) => {
+    const F = slipOn() && S.serviceState === "ok" ? findSlip(nodes) : null;
+    if (!F) {
+      if (S.slip) S.slip.host && S.slip.host.remove();
+      S.slip = null;
+      return;
+    }
+    let B = S.slip;
+    if (B && (B.ticker !== F.ticker || B.block !== F.block)) {
+      B.host && B.host.remove();
+      B = null;
+    }
+    if (!B) B = { ...F, slip: true, kind: "winner", match: "matched", from: "page", host: null, html: null };
+    else {
+      B.size = F.size;
+      B.flipped = F.flipped;
+    }
+    S.slip = B;
+    quoteRow(B);
+    paintSlip(B);
+  };
+
   // ── the fallback card: the service knows the positions but no row on the page was read ──
   const ensureCard = () => {
     let c = document.getElementById("ael-card");
@@ -1338,8 +1508,14 @@
       S.rows.clear();
       paintCard(false);
       paintNotice("");
+      // before the trade: the marks on the list and the game page, the line in the slip
+      const nodes = textNodes();
+      markGames(nodes);
+      scanSlip(nodes);
       return;
     }
+    markGames([]);
+    scanSlip([]);
     paintNotice(S.serviceState === "key" ? "Lock in: the lock key is missing or wrong. Open the extension's settings." : S.serviceState === "off" ? "Lock in: the service has no lock routes configured." : S.serviceState === "down" ? "Lock in: the service is unreachable." : "");
     const nodes = textNodes();
     S.tab = tabState(nodes);
@@ -1431,6 +1607,7 @@
     window.addEventListener("resize", () => {
       for (const [, B] of S.rows) fitHost(B);
     });
+    document.addEventListener("input", () => scan(false), true);
     window.addEventListener("hashchange", () => scan(true));
     window.addEventListener("popstate", () => scan(true));
   };
@@ -1440,6 +1617,6 @@
   // inert inside the extension (isolated world); lets a page-level harness read state when it injects this file
   if (window.__AEL_DEBUG) {
     window.__ael = S;
-    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, venue: VENUE_ID };
+    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, findSlip, markGames, indexMarkets, sizeIn, kindIn, venue: VENUE_ID };
   }
 })();
