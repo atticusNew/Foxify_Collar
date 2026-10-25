@@ -28,6 +28,9 @@
  *      EVENT_SHADOW_CRYPTO_SHARE_MAX (default 0.5) · EVENT_SHADOW_CRYPTO_FLOOR_PER_DAY (default 4)
  *      EVENT_SHADOW_REREAD_HOURS (price every open game again on every venue this long before its
  *      lock, default 2; 0 = off) · EVENT_SHADOW_REREAD_MS (how often that is checked, default 60s)
+ *      EVENT_SHADOW_HOLD_HOURS (hold the feed's reference books for every open game this long before
+ *      its lock and price it again the moment one opens, default 48; 0 = off; needs the aggregator
+ *      key) · EVENT_SHADOW_HOLD_MS (how often the holds are reconciled, default 60s)
  *      plus the demo's EVENT_X_* scanner knobs (contracts, board rows, series)
  *      Last-leg shadow (crossVenue/lastLeg.ts): EVENT_LASTLEG_ENABLED (default on) · EVENT_LASTLEG_TICK_MS (10m)
  *      · EVENT_LASTLEG_LEDGER_PATH · EVENT_LASTLEG_STAKE_CENTS · EVENT_LASTLEG_LEG_COUNTS · EVENT_LASTLEG_TICKETS_PER_SIZE
@@ -83,8 +86,12 @@ import {
 import {
   counterfactualsFor,
   rereadQuotesFor,
+  type ShadowBookOpened,
   type ShadowCounterfactuals,
 } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
+import type { AggregatorBookSource } from "../src/eventCollar/crossVenue/aggregatorBooks";
+import type { HeldBookOpen, HeldBooks } from "../src/eventCollar/crossVenue/aggregatorHeldBooks";
+import type { ReferenceBookId } from "../src/eventCollar/crossVenue/venueBooks";
 import {
   DEFAULT_CROSS_CONFIG,
   type CrossQuoteResult,
@@ -177,6 +184,39 @@ let lastRereadError: string | null = null;
 let rereadDueLastTick = 0;
 let rereadWrittenLastTick = 0;
 let rereadInFlight = false;
+
+/**
+ * HELD BOOKS: for every open game inside this window the worker keeps a subscription on the
+ * aggregator's stream for each reference venue's book on the opposing outcome
+ * (aggregatorHeldBooks.ts), and the first time that book shows a level the game is priced again
+ * on every venue at that second, written beside the open as a `book_open` re-read
+ * (shadowCounterfactuals.ShadowBookOpenReread). The pre-lock re-read measures a fixed moment; this
+ * one measures the moment the late venue actually listed. The partner's own advice: hold the
+ * subscription and catch the open, rather than wait for the fixed read. Needs the aggregator key;
+ * without it nothing is held and the health says so. Measurement only, like the re-read.
+ */
+const HOLD_HOURS = (() => {
+  const raw = process.env.EVENT_SHADOW_HOLD_HOURS;
+  const n = Number(raw);
+  return raw !== undefined && raw.trim() !== "" && Number.isFinite(n) && n >= 0 && n <= 240 ? n : 48;
+})();
+const HOLD_MS = Number(process.env.EVENT_SHADOW_HOLD_MS || 60_000);
+/** new games looked up per tick: each is one REST call to the feed, spaced by the source */
+const HOLD_MAX_NEW_PER_TICK = 24;
+/** a book-open read whose venues were unreachable is tried again this many times, one per tick */
+const BOOK_OPEN_MAX_ATTEMPTS = 3;
+let heldSource: AggregatorBookSource | null = null;
+let heldBooksConn: HeldBooks | null = null;
+/** the holds per ticker: which ledger the position is on, and the hold keys (one per reference venue) */
+const holdsByTicker = new Map<string, { path: string; keys: string[]; sinceIso: string }>();
+/** opens the stream reported, waiting to be priced; drained by the hold tick and on arrival */
+const openQueue: Array<{ ev: HeldBookOpen; attempts: number }> = [];
+let openDraining = false;
+let lastHoldAt: string | null = null;
+let lastHoldError: string | null = null;
+let holdWantedLastTick = 0;
+let holdNotMappedLastTick = 0;
+let bookOpensWritten = 0;
 
 /**
  * LAST-LEG SHADOW: representative parlay tickets built from Polymarket's public combo-leg catalog,
@@ -1102,6 +1142,163 @@ async function rereadTick(): Promise<void> {
   }
 }
 
+/** The hold key for one game's reference venue, and back. */
+const holdKey = (ticker: string, id: ReferenceBookId) => `${ticker}|${id}`;
+const splitHoldKey = (key: string): { ticker: string; id: ReferenceBookId } => {
+  const i = key.lastIndexOf("|");
+  return { ticker: key.slice(0, i), id: key.slice(i + 1) as ReferenceBookId };
+};
+
+/** The stream's open event lands in the queue; pricing it reads the venues, which happens off the stream's thread. */
+function onHeldBookOpen(ev: HeldBookOpen): void {
+  openQueue.push({ ev, attempts: 0 });
+  void drainOpens();
+}
+
+const releaseHolds = (ticker: string) => {
+  const h = holdsByTicker.get(ticker);
+  if (!h) return;
+  for (const k of h.keys) heldBooksConn?.release(k);
+  holdsByTicker.delete(ticker);
+};
+
+/**
+ * Price every open the stream reported, in order: the engine's own quote path at the position's
+ * size, then both routes and every reference re-priced, written as a `book_open` re-read with
+ * which venue opened and how. A structural refusal is written as `unread`; venues unreachable
+ * are tried again next tick, a few times. Either way the game's holds are then released: one
+ * open per position is the measure.
+ */
+async function drainOpens(): Promise<void> {
+  if (openDraining || !quoteOneFn) return;
+  openDraining = true;
+  try {
+    const retry: typeof openQueue = [];
+    while (openQueue.length) {
+      const item = openQueue.shift()!;
+      const { ticker, id } = splitHoldKey(item.ev.key);
+      const hold = holdsByTicker.get(ticker);
+      const pos = hold ? loadShadowPositions(hold.path).find((p) => p.ticker === ticker) : undefined;
+      if (!hold || !pos || pos.bookOpen || pos.status !== "open") {
+        releaseHolds(ticker);
+        continue;
+      }
+      const asks = [...item.ev.book.asks].sort((a, b) => a.price - b.price);
+      const bids = [...item.ev.book.bids].sort((a, b) => b.price - a.price);
+      const opened: ShadowBookOpened = {
+        venue: id,
+        caught: item.ev.caught,
+        heldSinceIso: item.ev.sinceIso,
+        bestAskCents: asks[0] ? Math.round(asks[0].price * 100) : null,
+        bestBidCents: bids[0] ? Math.round(bids[0].price * 100) : null,
+        depthShares: Math.floor(asks.reduce((s, l) => s + l.size, 0)),
+      };
+      const eventMs = Date.parse(pos.eventTimeIso);
+      try {
+        const q = await quoteOneFn({ ticker, contracts: pos.contracts, entryCents: pos.entryCents });
+        const at = new Date().toISOString();
+        const hoursToLock = Math.round(((eventMs - Date.parse(at)) / 3_600_000) * 10) / 10;
+        if (!q.ok) {
+          if (appendOrAlert({ type: "reread", at, ticker, phase: "book_open", hoursToLock, unread: q.code, opened }, hold.path)) bookOpensWritten += 1;
+        } else {
+          const res = q.result;
+          const { routes, references } = rereadQuotesFor({
+            route: pos.route,
+            ticker,
+            lockTimeIso: pos.eventTimeIso,
+            pair: res.pair,
+            markCents: res.markCents,
+            entryCents: pos.entryCents ?? res.markCents,
+            contracts: pos.contracts,
+            now: new Date(at),
+            config: searchConfig(),
+            books: res.books,
+          });
+          const ok = appendOrAlert(
+            {
+              type: "reread",
+              at,
+              ticker,
+              phase: "book_open",
+              hoursToLock,
+              markCents: res.markCents,
+              routes,
+              ...(references ? { references } : {}),
+              ...(res.bookOrigins ? { bookOrigins: res.bookOrigins } : {}),
+              opened,
+            },
+            hold.path,
+          );
+          if (ok) bookOpensWritten += 1;
+        }
+        releaseHolds(ticker);
+      } catch (err) {
+        lastHoldError = `${ticker} open: ${String(err instanceof Error ? err.message : err)}`;
+        if (item.attempts + 1 < BOOK_OPEN_MAX_ATTEMPTS) retry.push({ ev: item.ev, attempts: item.attempts + 1 });
+        else releaseHolds(ticker);
+      }
+    }
+    openQueue.push(...retry);
+  } finally {
+    openDraining = false;
+  }
+}
+
+/**
+ * Reconcile the holds with the ledgers: every open game inside the hold window that has no
+ * book-open read yet is held (one subscription per reference venue the feed lists for its
+ * opposing outcome); a game that left the window, settled, or has its read is released. A game
+ * the feed has no reference listing for yet is asked about again next tick, through the source's
+ * cached lookup. Then any opens waiting are priced.
+ */
+async function holdTick(): Promise<void> {
+  if (!heldSource || HOLD_HOURS <= 0 || !quoteOneFn) return;
+  if (!heldBooksConn) heldBooksConn = heldSource.heldBooks({ onOpen: onHeldBookOpen, onLog: (l) => console.log(`[event-shadow] ${l}`) });
+  const now = Date.now();
+  const wanted = new Map<string, { path: string; p: ShadowPosition }>();
+  let notMapped = 0;
+  lastHoldError = null;
+  try {
+    for (const path of [LEDGER_PATH, LOCK_LEDGER_PATH]) {
+      for (const p of loadShadowPositions(path)) {
+        if (p.status !== "open" || p.kind !== "sports" || p.bookOpen) continue;
+        const eventMs = Date.parse(p.eventTimeIso);
+        if (!Number.isFinite(eventMs) || eventMs <= now || eventMs - now > HOLD_HOURS * 3_600_000) continue;
+        wanted.set(p.ticker, { path, p });
+      }
+    }
+    for (const ticker of [...holdsByTicker.keys()]) if (!wanted.has(ticker)) releaseHolds(ticker);
+    let looked = 0;
+    for (const [ticker, { path }] of wanted) {
+      if (holdsByTicker.has(ticker)) continue;
+      if (looked >= HOLD_MAX_NEW_PER_TICK) break;
+      looked += 1;
+      const streams = await heldSource.referenceStreams(ticker);
+      if (!streams || streams.length === 0) {
+        notMapped += 1;
+        continue;
+      }
+      const keys: string[] = [];
+      for (const s of streams) {
+        const key = holdKey(ticker, s.id);
+        const r = heldBooksConn.hold(key, s.stream);
+        if (r === "held" || r === "already") keys.push(key);
+        else lastHoldError = `${ticker}: hold ${r}`;
+      }
+      if (keys.length) holdsByTicker.set(ticker, { path, keys, sinceIso: new Date().toISOString() });
+    }
+    await drainOpens();
+    const st = heldBooksConn.status();
+    if (st.lastError && !lastHoldError) lastHoldError = st.lastError;
+  } catch (err) {
+    lastHoldError = String(err instanceof Error ? err.message : err);
+  } finally {
+    holdWantedLastTick = wanted.size;
+    holdNotMappedLastTick = notMapped;
+    lastHoldAt = new Date().toISOString();
+  }
+}
+
 /** Resolve legs, quote the moment, build tickets: one pass of the last-leg shadow. */
 async function lastLegTick(): Promise<void> {
   if (!lastLegCfg.enabled) return;
@@ -1179,6 +1376,21 @@ function healthBody(): Record<string, unknown> {
     earlyClose: { ...earlyCloseRule, everyMs: CLOSE_MS, lastCloseAt, lastCloseError, closeDueLastTick },
     // the pre-lock read: on or off, how far before the lock, the last tick's counters
     reread: { hours: REREAD_HOURS, everyMs: REREAD_MS, lastAt: lastRereadAt, lastError: lastRereadError, dueLastTick: rereadDueLastTick, writtenLastTick: rereadWrittenLastTick },
+    // the held books: on or off (and why), the window, what is held and in which state, opens written
+    heldBooks: {
+      hours: HOLD_HOURS,
+      everyMs: HOLD_MS,
+      on: Boolean(heldSource) && HOLD_HOURS > 0,
+      ...(!heldSource ? { off: "aggregator key not set" } : HOLD_HOURS <= 0 ? { off: "EVENT_SHADOW_HOLD_HOURS=0" } : {}),
+      lastAt: lastHoldAt,
+      lastError: lastHoldError,
+      wantedLastTick: holdWantedLastTick,
+      notMappedLastTick: holdNotMappedLastTick,
+      holding: holdsByTicker.size,
+      queued: openQueue.length,
+      bookOpensWritten,
+      stream: heldBooksConn ? heldBooksConn.status() : null,
+    },
     openMix: { ...openMix, cryptoSkippedLastScan },
     lastLeg: {
       ...lastLegCfg,
@@ -1266,9 +1478,9 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
  * each book was read from stay with the operator (the raw ledger, the full CSV, /venues); a
  * reader can recompute every public row without them.
  */
-function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "hedgeTokenId" | "bookOrigins"> & { cashDue?: ReturnType<typeof cashDue> } {
-  // where the books came from (the partner's feed or the venue) and the pre-lock read are the operator's: /venues, the raw ledger
-  const { counterfactuals: _cf, prelock: _prelock, hedgeTokenId: _tok, bookOrigins: _origins, ...rest } = p;
+function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "hedgeTokenId" | "bookOrigins"> & { cashDue?: ReturnType<typeof cashDue> } {
+  // where the books came from (the partner's feed or the venue), the pre-lock read and the book-open read are the operator's: /venues, the raw ledger
+  const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, hedgeTokenId: _tok, bookOrigins: _origins, ...rest } = p;
   // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
   return p.source === "lock" ? { ...rest, cashDue: cashDue(p) } : rest;
 }
@@ -1559,12 +1771,13 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const { atIso, positions } = pageData();
       const breakdown = venueBreakdown(positions, new Date(atIso), { windowDays });
       const pricingSource = pricingSourceStatusFn ? pricingSourceStatusFn() : { aggregator: { configured: false as const }, notes: ["engine not loaded yet"] };
+      const heldBooks = heldBooksConn ? heldBooksConn.status() : null;
       if (url.pathname === "/api/shadow/venues") {
-        sendJson(res, 200, { ok: true, windowDays, pricingSource, ...breakdown });
+        sendJson(res, 200, { ok: true, windowDays, pricingSource, heldBooks, ...breakdown });
         return;
       }
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderVenuesHtml({ breakdown, pricingSource, token: url.searchParams.get("token"), windowDays }));
+      res.end(renderVenuesHtml({ breakdown, pricingSource, heldBooks, token: url.searchParams.get("token"), windowDays }));
       return;
     }
     if (url.pathname === "/report") {
@@ -1667,11 +1880,13 @@ async function main(): Promise<void> {
   quoteOneFn = demo.quoteOne;
   listGameMarketsFn = demo.listGameMarkets;
   pricingSourceStatusFn = demo.pricingSourceStatus;
+  heldSource = demo.aggregatorSource();
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
       `[event-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m · early closes ${earlyCloseRule.sharePct}% of the book` +
         (REREAD_HOURS > 0 ? ` · pre-lock re-read ${REREAD_HOURS}h before each lock` : " · pre-lock re-read off") +
+        (heldSource && HOLD_HOURS > 0 ? ` · held books ${HOLD_HOURS}h before each lock` : ` · held books off (${heldSource ? "EVENT_SHADOW_HOLD_HOURS=0" : "aggregator key not set"})`) +
         (lastLegCfg.enabled
           ? ` · last-leg shadow every ${Math.round(lastLegCfg.tickMs / 60_000)}m (${lastLegCfg.legCounts.join("/")}-leg tickets, $${(lastLegCfg.stakeCents / 100).toFixed(0)} stake, ledger ${LASTLEG_PATH})`
           : " · last-leg shadow off") +
@@ -1688,6 +1903,10 @@ async function main(): Promise<void> {
     if (REREAD_HOURS > 0) {
       void rereadTick();
       setInterval(() => void rereadTick(), REREAD_MS);
+    }
+    if (heldSource && HOLD_HOURS > 0) {
+      void holdTick();
+      setInterval(() => void holdTick(), HOLD_MS);
     }
     if (lastLegCfg.enabled) {
       void lastLegTick();
@@ -1708,4 +1927,13 @@ export function wireLockEngine(fns: { quoteOne: typeof quoteOne; listGameMarkets
   }
 }
 
-export { server, scanTick, settleTick, closeTick, lastLegTick, rereadTick };
+/** Test seam: the aggregator source the held books hang off, normally the scanner module's. Replacing it drops any current holds. */
+export function wireHeldBooks(source: AggregatorBookSource | null): void {
+  heldBooksConn?.close();
+  heldBooksConn = null;
+  holdsByTicker.clear();
+  openQueue.length = 0;
+  heldSource = source;
+}
+
+export { server, scanTick, settleTick, closeTick, lastLegTick, rereadTick, holdTick };

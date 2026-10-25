@@ -3,6 +3,8 @@
  * before its lock, from fresh books at the position's size, written beside the open-time read.
  * Pure pricing (rereadQuotesFor), the ledger's fold (prelock), the venues layout (a second read
  * per cell, per-venue totals at the pre-lock read), and the worker's tick with a fake engine.
+ * Then the held books: the worker's hold tick against a fake feed source, the book-open re-read
+ * it writes when a held book opens, its fold (bookOpen), and the venues layout of that read.
  */
 
 import assert from "node:assert/strict";
@@ -19,6 +21,9 @@ import { appendShadowRecord, loadShadowPositions, type ShadowOpenRecord, type Sh
 import { venueBreakdown, venuePrelockFor, venueRowFor } from "../src/eventCollar/crossVenue/shadowVenues";
 import { DEFAULT_CROSS_CONFIG, type CrossQuoteResult, type MatchedPair, type PmBook } from "../src/eventCollar/crossVenue/types";
 import type { ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
+import type { AggregatorBookSource, ReferenceStream } from "../src/eventCollar/crossVenue/aggregatorBooks";
+import type { HeldBookOpen } from "../src/eventCollar/crossVenue/aggregatorHeldBooks";
+import type { MarketStream } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import type { CandidateResult, OneQuoteInputs, OneQuoteResult } from "../scripts/eventProtectXDemoService";
 
 const LOCK = "2026-09-20T17:00:00.000Z";
@@ -395,4 +400,175 @@ test("shadow worker reread tick: games inside the window are read once, at their
   } finally {
     await new Promise<void>((r) => worker.server.close(() => r()));
   }
+});
+
+// ---------------------------------------------------------------------------
+// held books: the worker's hold tick and the book-open re-read
+// ---------------------------------------------------------------------------
+
+/** An in-memory stand-in for the held-books connection: the test fires the opens itself. */
+function fakeHeldSource(streamsFor: (ticker: string) => ReferenceStream[] | null) {
+  const held = new Map<string, MarketStream>();
+  const released: string[] = [];
+  const lookups: string[] = [];
+  let onOpen: ((ev: HeldBookOpen) => void) | null = null;
+  let closed = 0;
+  const phases = () => ({ pending: 0, empty: held.size, open: 0, not_yet_open: 0, unavailable: 0, closed: 0, stopped: 0 });
+  const source: AggregatorBookSource = {
+    read: async () => ({ references: [], notes: [], readAtIso: new Date().toISOString() }),
+    status: () => ({ configured: true, host: "fake", keyIdTail: "abcdef", publicKeyHex: "00", lastReadAt: null, lastError: null, reads: 0, readsWithBooks: 0, mappingMismatches: 0 }),
+    referenceStreams: async (ticker) => {
+      lookups.push(ticker);
+      return streamsFor(ticker);
+    },
+    heldBooks: (opts) => {
+      onOpen = opts?.onOpen ?? null;
+      return {
+        hold: (key, market) => {
+          if (held.has(key)) return "already";
+          held.set(key, market);
+          return "held";
+        },
+        release: (key) => {
+          if (held.delete(key)) released.push(key);
+        },
+        get: () => undefined,
+        list: () => [],
+        status: () => ({ connected: true, connectionId: "fake-1", connects: 1, held: held.size, byPhase: phases(), opens: 0, frames: 0, lastFrameAt: null, lastError: null, lastGoodbye: null, stopped: null, overCap: 0 }),
+        close: () => {
+          closed += 1;
+        },
+      };
+    },
+  };
+  const open = (key: string, caught: "live" | "at_hold", book = { bids: [{ price: 0.37, size: 100 }], asks: [{ price: 0.42, size: 150 }, { price: 0.43, size: 50 }] }) => {
+    assert.ok(onOpen, "the worker wired its onOpen");
+    onOpen!({ key, market: held.get(key) ?? { venue: "PROPHETX", strikeId: "?" }, book, atIso: new Date().toISOString(), sinceIso: new Date(Date.now() - 60_000).toISOString(), caught });
+  };
+  return { source, held, released, lookups, open, closedCount: () => closed };
+}
+
+test("shadow worker hold tick: every open game inside the hold window is held on the feed, one hold per reference venue; the open the stream reports is priced at that second and written as a book_open re-read with how it was caught; the holds are then released; unmapped games are asked again; an unreachable read is retried", async () => {
+  const scanLedger = process.env.EVENT_SHADOW_LEDGER_PATH!;
+  const lockLedger = process.env.EVENT_SHADOW_LOCK_LEDGER_PATH!;
+  const h = (hours: number) => new Date(Date.now() + hours * 3_600_000).toISOString();
+  const live = quoteCrossWrap({ pair: pmPair("G", h(30)), markCents: 60, entryCents: 55, contracts: 150, now: new Date(), noBook: PM_NO_BOOK, config: CFG });
+  assert.ok(live.ok);
+  const opened = { at: h(-10) };
+  // G: 30h out, mapped on the late venue. H: 20h out, mapped; the engine will refuse at the open. I: 10h out, mapped but no reference listing yet.
+  // J: 60h out, outside the window. K: 26h out, mapped; the venues are down at its open, once. L: a holder's lock, 12h out, mapped.
+  appendShadowRecord(scanLedger, openRecord("G", h(30), live, opened));
+  appendShadowRecord(scanLedger, openRecord("H", h(20), live, opened));
+  appendShadowRecord(scanLedger, openRecord("I", h(10), live, opened));
+  appendShadowRecord(scanLedger, openRecord("J", h(60), live, opened));
+  appendShadowRecord(scanLedger, openRecord("K", h(26), live, opened));
+  appendShadowRecord(lockLedger, openRecord("L", h(12), live, { ...opened, source: "lock", entryCents: 52, contracts: 20 }));
+
+  const worker = await import("../scripts/eventShadowWorker");
+  const px = (s: string): ReferenceStream => ({ id: "aggregated_mm", stream: { venue: "PROPHETX", strikeId: s } });
+  const fake = fakeHeldSource((t) => (t === "G" || t === "H" || t === "K" || t === "L" ? [px(t.toLowerCase())] : t === "I" ? [] : null));
+  const seen: OneQuoteInputs[] = [];
+  let kDown = true;
+  worker.wireLockEngine({
+    listGameMarkets: async () => [],
+    quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => {
+      seen.push(inputs);
+      if (inputs.ticker === "H") return { ok: false, code: "market_not_active", detail: "closed" };
+      if (inputs.ticker === "K" && kDown) throw new Error("venue unreachable");
+      return { ok: true, result: candidate(inputs.ticker, h(1)) };
+    },
+  });
+  worker.wireHeldBooks(fake.source);
+  try {
+    await worker.holdTick();
+    // held: G, H, K, L (one reference venue each); I has no listing yet; J is outside the window; the earlier tests' games (A..F, inside 48h) were looked up and found unmapped
+    assert.deepEqual([...fake.held.keys()].sort(), ["G|aggregated_mm", "H|aggregated_mm", "K|aggregated_mm", "L|aggregated_mm"]);
+    assert.ok(fake.lookups.includes("I") && !fake.lookups.includes("J"));
+    assert.deepEqual(seen, [], "holding reads nothing");
+
+    // G opens live; L had levels at its first snapshot
+    fake.open("G|aggregated_mm", "live");
+    fake.open("L|aggregated_mm", "at_hold");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(seen.map((s) => s.ticker), ["G", "L"]);
+    assert.equal(seen[1].contracts, 20, "the holder's size");
+    const g = loadShadowPositions(scanLedger).find((p) => p.ticker === "G")!;
+    assert.ok(g.bookOpen && !("unread" in g.bookOpen), "G has its book-open read");
+    assert.equal(g.bookOpen.opened.venue, "aggregated_mm");
+    assert.equal(g.bookOpen.opened.caught, "live");
+    assert.equal(g.bookOpen.opened.bestAskCents, 42);
+    assert.equal(g.bookOpen.opened.bestBidCents, 37);
+    assert.equal(g.bookOpen.opened.depthShares, 200);
+    assert.ok(g.bookOpen.hoursToLock > 29 && g.bookOpen.hoursToLock <= 30, `hours to lock ${g.bookOpen.hoursToLock}`);
+    assert.ok(g.bookOpen.routes.polymarket.ok && g.bookOpen.references?.length === 2);
+    assert.equal(g.prelock, undefined, "the pre-lock read is a different line");
+    const l = loadShadowPositions(lockLedger).find((p) => p.ticker === "L")!;
+    assert.equal(l.bookOpen?.opened.caught, "at_hold");
+    assert.deepEqual(fake.released.sort(), ["G|aggregated_mm", "L|aggregated_mm"], "a priced open releases the game's holds");
+
+    // H opens; the engine refuses structurally: written as unread, released. K opens; the venues are down: kept, retried next tick.
+    fake.open("H|aggregated_mm", "live");
+    fake.open("K|aggregated_mm", "live");
+    await new Promise((r) => setTimeout(r, 50));
+    const hPos = loadShadowPositions(scanLedger).find((p) => p.ticker === "H")!;
+    assert.ok(hPos.bookOpen && "unread" in hPos.bookOpen && hPos.bookOpen.unread === "market_not_active");
+    assert.equal(hPos.bookOpen.opened.venue, "aggregated_mm");
+    assert.equal(loadShadowPositions(scanLedger).find((p) => p.ticker === "K")!.bookOpen, undefined);
+    assert.ok(fake.held.has("K|aggregated_mm"), "K stays held while its read is retried");
+    kDown = false;
+    seen.length = 0;
+    await worker.holdTick();
+    assert.deepEqual(seen.map((s) => s.ticker), ["K"]);
+    assert.ok(loadShadowPositions(scanLedger).find((p) => p.ticker === "K")!.bookOpen);
+    assert.ok(!fake.held.has("K|aggregated_mm"));
+    // games with their read are not held again; I is asked about again (its mapping may have landed)
+    fake.lookups.length = 0;
+    await worker.holdTick();
+    assert.ok(!fake.held.has("G|aggregated_mm") && !fake.held.has("H|aggregated_mm"));
+    assert.ok(fake.lookups.includes("I"));
+    assert.equal(fake.held.size, 0);
+
+    await new Promise<void>((r) => worker.server.listen(0, "127.0.0.1", () => r()));
+    const base = `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`;
+    try {
+      const v = (await (await fetch(`${base}/api/shadow/venues?token=op-secret`)).json()) as {
+        bookOpen: { read: number; unread: number; live: number; atHold: number; avgHoursToLock: number | null; avgHoursToLockLive: number | null };
+        heldBooks: { connected: boolean; held: number } | null;
+        totals: Array<{ id: string; bookOpen: { read: number; quoted: number; best: number } }>;
+        rows: Array<{ ticker: string; bookOpen?: { hoursToLock: number; unread: string | null; opened: { venue: string; caught: string }; cells: Array<{ id: string; creditCents: number | null }> } }>;
+      };
+      assert.deepEqual({ read: v.bookOpen.read, unread: v.bookOpen.unread, live: v.bookOpen.live, atHold: v.bookOpen.atHold }, { read: 3, unread: 1, live: 3, atHold: 1 });
+      assert.ok(v.bookOpen.avgHoursToLock! > 20 && v.bookOpen.avgHoursToLock! < 23, `avg hours ${v.bookOpen.avgHoursToLock}`);
+      assert.ok(v.heldBooks && v.heldBooks.connected);
+      const rowG = v.rows.find((r) => r.ticker === "G")!;
+      assert.equal(rowG.bookOpen?.opened.caught, "live");
+      assert.ok(rowG.bookOpen!.cells.find((c) => c.id === "aggregated_mm")?.creditCents);
+      assert.equal(v.totals.find((t) => t.id === "aggregated_mm")!.bookOpen.quoted, 3);
+      assert.ok(v.rows.find((r) => r.ticker === "J")!.bookOpen === undefined);
+
+      const html = await (await fetch(`${base}/venues?token=op-secret`)).text();
+      assert.match(html, /By venue, the moment a book opened/);
+      assert.match(html, /ProphetX opened T-(29\.\d|30)h/);
+      assert.match(html, /before the hold/);
+      assert.match(html, /caught a reference book opening: 3 seen live, 1 already open/);
+      assert.match(html, /<b>opened T-/);
+
+      const health = (await (await fetch(`${base}/healthz?token=op-secret`)).json()) as { heldBooks: { on: boolean; hours: number; holding: number; bookOpensWritten: number; notMappedLastTick: number; stream: { connected: boolean } | null } };
+      assert.equal(health.heldBooks.on, true);
+      assert.equal(health.heldBooks.hours, 48);
+      assert.equal(health.heldBooks.bookOpensWritten, 4);
+      assert.equal(health.heldBooks.holding, 0);
+      assert.ok(health.heldBooks.notMappedLastTick >= 1);
+      assert.ok(health.heldBooks.stream?.connected);
+      const publicHealth = JSON.stringify(await (await fetch(`${base}/healthz`)).json());
+      assert.ok(!publicHealth.includes("heldBooks"));
+      const pub = JSON.stringify(await (await fetch(`${base}/api/shadow`)).json());
+      assert.ok(!pub.includes("bookOpen") && !pub.includes("heldSince"), "the public record never carries the book-open read");
+    } finally {
+      await new Promise<void>((r) => worker.server.close(() => r()));
+    }
+  } finally {
+    worker.wireHeldBooks(null);
+  }
+  assert.equal(fake.closedCount(), 1, "the connection is closed when the source is unwired");
 });
