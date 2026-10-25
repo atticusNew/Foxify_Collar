@@ -27,7 +27,7 @@ import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/cros
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { REFERENCE_BOOK_WORDS } from "../src/eventCollar/crossVenue/venueBooks";
-import type { VenueBreakdown, VenueCell } from "../src/eventCollar/crossVenue/shadowVenues";
+import type { VenueBreakdown, VenueCell, VenuePrelock } from "../src/eventCollar/crossVenue/shadowVenues";
 import type { AggregatorBookStatus } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { REFERENCE_PRINT_WORDS } from "../src/eventCollar/crossVenue/venuePrints";
 
@@ -1241,13 +1241,36 @@ export interface VenuesPageInput {
   windowDays: number;
 }
 
-function venueCellHtml(c: VenueCell, written: boolean): string {
-  if (!c.read) return `<td>–</td>`;
+/** One read of one venue: credit, delta against the route written, EV cost, and for a reference its best ask and depth. */
+function venueReadHtml(c: VenueCell, written: boolean): string {
+  if (!c.read) return "–";
   const ask = c.bestAskCents !== null ? `<i>${c.bestAskCents}¢${c.depthShares !== null && c.depthShares > 0 ? ` × ${intStr(c.depthShares)}` : ""}</i>` : "";
-  if (c.creditCents === null) return `<td class="ref">${escapeHtml(c.refused ?? "refused")}${ask}</td>`;
+  if (c.creditCents === null) return `<span class="ref">${escapeHtml(c.refused ?? "refused")}</span>${ask}`;
   const delta = written || c.deltaCents === null ? "" : `<i class="${c.deltaCents > 0 ? "up" : c.deltaCents < 0 ? "dn" : ""}">${c.deltaCents > 0 ? "+" : ""}${usd(c.deltaCents)}</i>`;
   const ev = c.evCostBps === null ? "" : `<i>ev ${bpsPct(c.evCostBps)}</i>`;
-  return `<td class="${written ? "hi" : ""}">${usd(c.creditCents)}${delta}${ev}${ask}</td>`;
+  return `${usd(c.creditCents)}${delta}${ev}${ask}`;
+}
+
+/**
+ * A venue's cell: the open-time read, and under it the pre-lock read when the game has had one
+ * ("T-2.0h"), each laid out the same way. The written route's cell is highlighted at open; at the
+ * pre-lock read the deltas are against that same route as it priced then.
+ */
+function venueCellHtml(c: VenueCell, prelock: VenuePrelock | undefined, written: boolean): string {
+  const open = venueReadHtml(c, written);
+  if (!prelock) return `<td class="${written ? "hi" : ""}${!c.read || c.creditCents === null ? " ref" : ""}">${open}</td>`;
+  const pc = prelock.cells.find((x) => x.id === c.id);
+  const pre = prelock.unread !== null ? `<span class="ref">${escapeHtml(refusalWordForPage(prelock.unread))}</span>` : pc ? venueReadHtml(pc, written) : "–";
+  return `<td class="${written ? "hi" : ""}"><div class="rd">${open}</div><div class="rd pl"><b>T-${prelock.hoursToLock}h</b>${pre}</div></td>`;
+}
+
+/** the engine's structural refusal codes as the operator reads them on this page */
+function refusalWordForPage(code: string): string {
+  if (code === "market_too_close_to_start") return "too close to start";
+  if (code === "market_not_active") return "market closed";
+  if (code === "mark_out_of_range") return "odds out of range";
+  if (code === "no_matched_market") return "no pairing";
+  return code.replace(/_/g, " ");
 }
 
 export function renderVenuesHtml(input: VenuesPageInput): string {
@@ -1264,7 +1287,8 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
     .map((r) => {
       const origin = r.bookOrigins ? (r.bookOrigins.polymarket === "aggregator" || r.bookOrigins.kalshi === "aggregator" ? "feed" : "direct") : "";
       const routeName = r.route === "kalshi_self" ? "Kalshi" : "Polymarket";
-      return `<tr class="${r.status}"><td class="g"><b>${escapeHtml(r.eventTitle)}</b><i>${escapeHtml(r.league.toUpperCase())}${r.status !== "open" ? ` · ${escapeHtml(r.status)}` : ""}${origin ? ` · ${origin}` : ""}</i></td><td>${escapeHtml(r.sideName)}<i>${r.contracts} @ ${r.markCents}¢</i></td><td>${escapeHtml(shortEt(r.eventTimeIso))}</td><td>${r.markCents}¢</td><td class="hi">${routeName}<i>floor ${r.floorCents}¢ · cap ${r.capCents}¢</i></td>${r.cells.map((c) => venueCellHtml(c, c.written)).join("")}</tr>`;
+      const mark = r.prelock && r.prelock.markCents !== null && r.prelock.markCents !== r.markCents ? `${r.markCents}¢<i>T-${r.prelock.hoursToLock}h ${r.prelock.markCents}¢</i>` : `${r.markCents}¢`;
+      return `<tr class="${r.status}"><td class="g"><b>${escapeHtml(r.eventTitle)}</b><i>${escapeHtml(r.league.toUpperCase())}${r.status !== "open" ? ` · ${escapeHtml(r.status)}` : ""}${origin ? ` · ${origin}` : ""}${r.prelock ? " · re-read" : ""}</i></td><td>${escapeHtml(r.sideName)}<i>${r.contracts} @ ${r.markCents}¢</i></td><td>${escapeHtml(shortEt(r.eventTimeIso))}</td><td>${mark}</td><td class="hi">${routeName}<i>floor ${r.floorCents}¢ · cap ${r.capCents}¢</i></td>${r.cells.map((c) => venueCellHtml(c, r.prelock, c.written)).join("")}</tr>`;
     })
     .join("");
 
@@ -1274,6 +1298,31 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
         `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.read}</td><td>${t.listed}</td><td>${t.quoted}</td><td>${t.kind === "route" ? t.written : "–"}</td><td class="hi">${t.best}</td><td>${t.avgDeltaCents === null ? "–" : `${t.avgDeltaCents > 0 ? "+" : ""}${usd(t.avgDeltaCents)}<i>over ${t.bothQuoted}</i>`}</td></tr>`,
     )
     .join("");
+
+  // the pre-lock read, per venue, over the games that had one
+  const prelockRows =
+    b.prelock.read > 0
+      ? b.totals
+          .filter((t) => t.prelock.read > 0)
+          .map(
+            (t) =>
+              `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.prelock.read}</td><td>${t.prelock.listed}</td><td>${t.prelock.quoted}</td><td class="hi">${t.prelock.best}</td><td>${t.prelock.avgDeltaCents === null ? "–" : `${t.prelock.avgDeltaCents > 0 ? "+" : ""}${usd(t.prelock.avgDeltaCents)}<i>over ${t.prelock.bothQuoted}</i>`}</td></tr>`,
+          )
+          .join("")
+      : "";
+  const prelockLine = (() => {
+    if (b.prelock.read === 0 && b.prelock.unread === 0) return "No game has reached its pre-lock read yet; the first one inside the window begins this table.";
+    const parts = [`${b.prelock.read} game${b.prelock.read === 1 ? "" : "s"} priced again before the lock${b.prelock.unread > 0 ? `; ${b.prelock.unread} could not be (the market had closed or the odds had left the range)` : ""}.`];
+    const refs = b.totals.filter((t) => t.kind === "reference" && t.prelock.read > 0);
+    for (const t of refs) {
+      parts.push(
+        `${t.name}${t.via === "feed" ? " (feed)" : ""} listed ${t.prelock.listed} of ${t.prelock.read} at the pre-lock read and would have funded ${t.prelock.quoted}; cheapest on ${t.prelock.best}${
+          t.prelock.avgDeltaCents === null ? "" : `, ${t.prelock.avgDeltaCents >= 0 ? "+" : "-"}${usd(Math.abs(t.prelock.avgDeltaCents))} credit against the route written as it priced then, over ${t.prelock.bothQuoted}`
+        }.`,
+      );
+    }
+    return parts.join(" ");
+  })();
 
   const richestLine = (() => {
     const quotedRefs = b.totals.filter((t) => t.kind === "reference" && t.quoted > 0);
@@ -1305,7 +1354,9 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
 td.g{text-align:left;white-space:normal;min-width:180px}
 td i{display:block;color:var(--faint);font-style:normal;font-size:11px;font-weight:500}
 td i.up{color:var(--green-deep)} td i.dn{color:#8a2a2a}
-td.ref{color:var(--faint)}
+td.ref,td .ref{color:var(--faint)}
+td .rd.pl{margin-top:4px;padding-top:3px;border-top:1px dashed var(--line,#ddd)}
+td .rd.pl b{display:block;font-size:9px;font-weight:600;color:var(--faint);letter-spacing:.04em}
 tr.settled td,tr.closed td{opacity:.72}
 th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
 </style>
@@ -1317,11 +1368,12 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
 <div class="wrap">
   <div class="card">
     <h1>Where each game could have been hedged</h1>
-    <div class="sub">Every sports position on the record is priced, at open, on both hedge routes and on every other venue the service read, from the same books at the same second. The record writes the cheaper route; the rest are measured and never filled. This page names the venues. It answers only to the operator token and is never published; the public record says "the market's own No side" and "reference book B".</div>
+    <div class="sub">Every sports position on the record is priced, at open, on both hedge routes and on every other venue the service read, from the same books at the same second. The record writes the cheaper route; the rest are measured and never filled. Each game is priced again the same way a fixed time before its lock, when every venue that will list it has; that read sits under the open-time read, never in its place. This page names the venues. It answers only to the operator token and is never published; the public record says "the market's own No side" and "reference book B".</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${b.positions}</div><div class="l">games priced, last ${input.windowDays} days</div></div>
       <div class="bignum"><div class="n">${b.origins.feed}</div><div class="l">priced from the feed</div></div>
-      <div class="bignum"><div class="n">${b.totals.filter((t) => t.kind === "reference" && t.quoted > 0).length}</div><div class="l">other venues that funded a game</div></div>
+      <div class="bignum"><div class="n">${b.totals.filter((t) => t.kind === "reference" && (t.quoted > 0 || t.prelock.quoted > 0)).length}</div><div class="l">other venues that funded a game</div></div>
+      <div class="bignum"><div class="n">${b.prelock.read}</div><div class="l">priced again before the lock</div></div>
       <div class="bignum"><div class="n">${ps.configured ? "on" : "off"}</div><div class="l">aggregator feed</div></div>
     </div>
     <div class="read" style="margin-top:10px">${feedLine} ${escapeHtml(originLine)}</div>
@@ -1336,8 +1388,15 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
   </div>
 
   <div class="card">
+    <h2>By venue, at the pre-lock read</h2>
+    ${prelockRows ? `<div class="tablewrap"><table><tr><th>venue</th><th>read</th><th>listed</th><th>funded</th><th>cheapest</th><th>credit vs written</th></tr>${prelockRows}</table></div>` : ""}
+    <div class="read">${escapeHtml(prelockLine)}</div>
+    <div class="rule">The same columns from the pre-lock read: the game priced again on every venue a fixed time before its lock, at the position's size and that moment's mark. Credit vs written here is against the route written as it priced at that same read, so both sides move with the game. Nothing on this table was filled; the terms written at open stand.</div>
+  </div>
+
+  <div class="card">
     <h2>By game</h2>
-    <div class="sub" style="margin-bottom:6px">Open games first, next to lock first; then settled, most recent first. Each venue cell is the credit the default tier would have paid from that book, the difference against the credit written, and for reference books the best ask on the opposing outcome and its visible depth in shares.</div>
+    <div class="sub" style="margin-bottom:6px">Open games first, next to lock first; then settled, most recent first. Each venue cell is the credit the default tier would have paid from that book, the difference against the credit written, and for reference books the best ask on the opposing outcome and its visible depth in shares. A game that has had its pre-lock read shows that read under the open-time one, marked by the hours it was taken before the lock.</div>
     <div class="tablewrap"><table>${head}${rows}</table></div>
     ${b.rows.length === 0 ? `<div class="read">Nothing in the window yet.</div>` : ""}
     <a class="back" href="/report${tq}">Rule comparison</a> <a class="back" href="/api/shadow/venues${tq}">Raw JSON</a> <a class="back" href="/healthz${tq}">Status</a>

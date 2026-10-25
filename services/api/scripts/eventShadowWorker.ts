@@ -26,6 +26,8 @@
  *      EVENT_SHADOW_SCAN_MS (default 5m) · EVENT_SHADOW_SETTLE_MS (default 10m)
  *      EVENT_SHADOW_SETTLE_GRACE_MS (default 3h) · EVENT_SHADOW_VOID_AFTER_MS (default 72h)
  *      EVENT_SHADOW_CRYPTO_SHARE_MAX (default 0.5) · EVENT_SHADOW_CRYPTO_FLOOR_PER_DAY (default 4)
+ *      EVENT_SHADOW_REREAD_HOURS (price every open game again on every venue this long before its
+ *      lock, default 2; 0 = off) · EVENT_SHADOW_REREAD_MS (how often that is checked, default 60s)
  *      plus the demo's EVENT_X_* scanner knobs (contracts, board rows, series)
  *      Last-leg shadow (crossVenue/lastLeg.ts): EVENT_LASTLEG_ENABLED (default on) · EVENT_LASTLEG_TICK_MS (10m)
  *      · EVENT_LASTLEG_LEDGER_PATH · EVENT_LASTLEG_STAKE_CENTS · EVENT_LASTLEG_LEG_COUNTS · EVENT_LASTLEG_TICKETS_PER_SIZE
@@ -80,6 +82,7 @@ import {
 } from "../src/eventCollar/crossVenue/shadowAlerts";
 import {
   counterfactualsFor,
+  rereadQuotesFor,
   type ShadowCounterfactuals,
 } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
 import {
@@ -154,6 +157,26 @@ const VOID_AFTER_MS = Number(process.env.EVENT_SHADOW_VOID_AFTER_MS || 72 * 3_60
  */
 const CLOSE_MS = Number(process.env.EVENT_SHADOW_CLOSE_MS || 60_000);
 const earlyCloseRule = earlyCloseRuleFromEnv(process.env);
+/**
+ * PRE-LOCK RE-READ: every open game is priced again on both routes and every reference this many
+ * hours before its lock, from fresh books at the position's size, and the read is written beside
+ * the open (shadowCounterfactuals.ShadowReread). The open-time read is days before tip for most
+ * games, when a venue that opens its books late is not listed yet; the pre-lock read is when a
+ * late tap's hedge would actually be placed. Measurement only: nothing is re-hedged or re-written.
+ */
+const REREAD_HOURS = (() => {
+  const raw = process.env.EVENT_SHADOW_REREAD_HOURS;
+  const n = Number(raw);
+  return raw !== undefined && raw.trim() !== "" && Number.isFinite(n) && n >= 0 && n <= 48 ? n : 2;
+})();
+const REREAD_MS = Number(process.env.EVENT_SHADOW_REREAD_MS || 60_000);
+/** reads per tick, so a Sunday slate of games due at once is spread over a few ticks rather than one burst at the venues */
+const REREAD_MAX_PER_TICK = 12;
+let lastRereadAt: string | null = null;
+let lastRereadError: string | null = null;
+let rereadDueLastTick = 0;
+let rereadWrittenLastTick = 0;
+let rereadInFlight = false;
 
 /**
  * LAST-LEG SHADOW: representative parlay tickets built from Polymarket's public combo-leg catalog,
@@ -1004,6 +1027,81 @@ async function closeTick(): Promise<void> {
   lastCloseAt = new Date().toISOString();
 }
 
+/**
+ * Price every open game that is inside the pre-lock window and has no pre-lock read yet: the
+ * engine's own quote path (fresh books from the feed, then the venues, plus every reference),
+ * then both routes and each reference re-priced at the position's size. The read is appended to
+ * the position's own ledger. A read the engine refuses for a reason that will not change before
+ * the lock (the market closed, the odds out of range) is written as `unread` so it is not asked
+ * again; a venue that is unreachable is retried next tick.
+ */
+async function rereadTick(): Promise<void> {
+  if (!quoteOneFn || REREAD_HOURS <= 0 || rereadInFlight) return;
+  rereadInFlight = true;
+  const now = Date.now();
+  let due = 0;
+  let written = 0;
+  let failed = 0;
+  try {
+    const onBoth = [LEDGER_PATH, LOCK_LEDGER_PATH].flatMap((path) => loadShadowPositions(path).map((p) => ({ p, path })));
+    for (const { p, path } of onBoth) {
+      if (p.status !== "open" || p.kind !== "sports" || p.prelock) continue;
+      const eventMs = Date.parse(p.eventTimeIso);
+      if (!Number.isFinite(eventMs) || eventMs <= now || eventMs - now > REREAD_HOURS * 3_600_000) continue;
+      due += 1;
+      if (written + failed >= REREAD_MAX_PER_TICK) continue;
+      try {
+        const q = await quoteOneFn({ ticker: p.ticker, contracts: p.contracts, entryCents: p.entryCents });
+        const at = new Date().toISOString();
+        const hoursToLock = Math.round(((eventMs - Date.parse(at)) / 3_600_000) * 10) / 10;
+        if (!q.ok) {
+          // a structural refusal (the engine checks the market and the window before any book): final for this position
+          if (appendOrAlert({ type: "reread", at, ticker: p.ticker, phase: "prelock", hoursToLock, unread: q.code }, path)) written += 1;
+          continue;
+        }
+        const res = q.result;
+        const { routes, references } = rereadQuotesFor({
+          route: p.route,
+          ticker: p.ticker,
+          lockTimeIso: p.eventTimeIso,
+          pair: res.pair,
+          markCents: res.markCents,
+          entryCents: p.entryCents ?? res.markCents,
+          contracts: p.contracts,
+          now: new Date(at),
+          config: searchConfig(),
+          books: res.books,
+        });
+        const ok = appendOrAlert(
+          {
+            type: "reread",
+            at,
+            ticker: p.ticker,
+            phase: "prelock",
+            hoursToLock,
+            markCents: res.markCents,
+            routes,
+            ...(references ? { references } : {}),
+            ...(res.bookOrigins ? { bookOrigins: res.bookOrigins } : {}),
+          },
+          path,
+        );
+        if (ok) written += 1;
+      } catch (err) {
+        // the venues unreachable for this one; due again next tick
+        failed += 1;
+        lastRereadError = `${p.ticker}: ${String(err instanceof Error ? err.message : err)}`;
+      }
+    }
+    if (failed === 0) lastRereadError = null;
+  } finally {
+    rereadInFlight = false;
+    rereadDueLastTick = due;
+    rereadWrittenLastTick = written;
+    lastRereadAt = new Date().toISOString();
+  }
+}
+
 /** Resolve legs, quote the moment, build tickets: one pass of the last-leg shadow. */
 async function lastLegTick(): Promise<void> {
   if (!lastLegCfg.enabled) return;
@@ -1079,6 +1177,8 @@ function healthBody(): Record<string, unknown> {
     settleFailuresLastTick,
     settleDueLastTick,
     earlyClose: { ...earlyCloseRule, everyMs: CLOSE_MS, lastCloseAt, lastCloseError, closeDueLastTick },
+    // the pre-lock read: on or off, how far before the lock, the last tick's counters
+    reread: { hours: REREAD_HOURS, everyMs: REREAD_MS, lastAt: lastRereadAt, lastError: lastRereadError, dueLastTick: rereadDueLastTick, writtenLastTick: rereadWrittenLastTick },
     openMix: { ...openMix, cryptoSkippedLastScan },
     lastLeg: {
       ...lastLegCfg,
@@ -1162,13 +1262,13 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
 
 /**
  * A position as the public JSON carries it: what was quoted, what settled, both sides' money.
- * The counterfactual rule books, the hedge leg's venue token and where each book was read from
- * stay with the operator (the raw ledger, the full CSV, /venues); a reader can recompute every
- * public row without them.
+ * The counterfactual rule books, the pre-lock re-read, the hedge leg's venue token and where
+ * each book was read from stay with the operator (the raw ledger, the full CSV, /venues); a
+ * reader can recompute every public row without them.
  */
-function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "hedgeTokenId" | "bookOrigins"> & { cashDue?: ReturnType<typeof cashDue> } {
-  // where the books came from (the partner's feed or the venue) is the operator's: /venues, the raw ledger
-  const { counterfactuals: _cf, hedgeTokenId: _tok, bookOrigins: _origins, ...rest } = p;
+function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "hedgeTokenId" | "bookOrigins"> & { cashDue?: ReturnType<typeof cashDue> } {
+  // where the books came from (the partner's feed or the venue) and the pre-lock read are the operator's: /venues, the raw ledger
+  const { counterfactuals: _cf, prelock: _prelock, hedgeTokenId: _tok, bookOrigins: _origins, ...rest } = p;
   // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
   return p.source === "lock" ? { ...rest, cashDue: cashDue(p) } : rest;
 }
@@ -1571,6 +1671,7 @@ async function main(): Promise<void> {
     // eslint-disable-next-line no-console
     console.log(
       `[event-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m · early closes ${earlyCloseRule.sharePct}% of the book` +
+        (REREAD_HOURS > 0 ? ` · pre-lock re-read ${REREAD_HOURS}h before each lock` : " · pre-lock re-read off") +
         (lastLegCfg.enabled
           ? ` · last-leg shadow every ${Math.round(lastLegCfg.tickMs / 60_000)}m (${lastLegCfg.legCounts.join("/")}-leg tickets, $${(lastLegCfg.stakeCents / 100).toFixed(0)} stake, ledger ${LASTLEG_PATH})`
           : " · last-leg shadow off") +
@@ -1584,6 +1685,10 @@ async function main(): Promise<void> {
     setInterval(() => void scanTick(), SCAN_MS);
     setInterval(() => void settleTick(), SETTLE_MS);
     if (earlyCloseRule.sharePct > 0) setInterval(() => void closeTick(), CLOSE_MS);
+    if (REREAD_HOURS > 0) {
+      void rereadTick();
+      setInterval(() => void rereadTick(), REREAD_MS);
+    }
     if (lastLegCfg.enabled) {
       void lastLegTick();
       setInterval(() => void lastLegTick(), lastLegCfg.tickMs);
@@ -1603,4 +1708,4 @@ export function wireLockEngine(fns: { quoteOne: typeof quoteOne; listGameMarkets
   }
 }
 
-export { server, scanTick, settleTick, closeTick, lastLegTick };
+export { server, scanTick, settleTick, closeTick, lastLegTick, rereadTick };

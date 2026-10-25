@@ -260,6 +260,54 @@ export function counterfactualsFor(
 }
 
 /**
+ * PRE-LOCK RE-READ. Both routes and every reference priced again from fresh books a fixed time
+ * before the lock, at the position's size and the mark of that moment. The open-time read is
+ * days before tip for most games, when a venue that opens its books late is not listed yet and
+ * the far-out books are thin; the pre-lock read is the moment a late tap's hedge would actually
+ * be placed. It is stored beside the open-time read, never in its place: the terms written stay
+ * the terms written.
+ */
+export type ShadowReread =
+  | {
+      at: string;
+      /** hours from this read to the lock, one decimal */
+      hoursToLock: number;
+      /** the protected market's mid at this read, cents */
+      markCents: number;
+      /** the default tier on each hedge route from this read's books, at the position's size */
+      routes: Record<HedgeRoute, ShadowAltTerms>;
+      references?: ShadowReferenceQuote[];
+      bookOrigins?: { polymarket?: "aggregator" | "direct"; kalshi?: "aggregator" | "direct" };
+    }
+  | {
+      at: string;
+      hoursToLock: number;
+      /** the books could not be read for a reason that will not change before the lock (the market closed, the odds out of range) */
+      unread: string;
+    };
+
+const UNREACHABLE: ShadowAltTerms = { ok: false, refused: "unreachable" };
+
+/**
+ * Each route and each reference from one fresh read of the books. Unlike counterfactualsFor there
+ * is no live quote to copy: both routes are re-priced. A route whose book could not be read is
+ * `unreachable`; the cross-venue route without a verified pair is `route_not_offered`.
+ */
+export function rereadQuotesFor(inputs: CounterfactualInputs): { routes: Record<HedgeRoute, ShadowAltTerms>; references?: ShadowReferenceQuote[] } {
+  const routes = {} as Record<HedgeRoute, ShadowAltTerms>;
+  for (const route of ROUTE_LABELS) {
+    if (route === "polymarket" && !inputs.pair) {
+      routes[route] = { ok: false, refused: "route_not_offered" };
+      continue;
+    }
+    const q = requote({ ...inputs, route }, inputs.config, inputs.contracts);
+    routes[route] = q ? altFromQuote(q) : UNREACHABLE;
+  }
+  const references = referenceQuotesFor(inputs);
+  return { routes, ...(references ? { references } : {}) };
+}
+
+/**
  * Each print source's read beside the live hedge's own price per $1 of payout. Both the hedge
  * (the market's No side or the second book's opposing outcome) and the print (the opposing club's
  * contract) pay $1 when the holder's side loses, so the two prices compare directly. Undefined

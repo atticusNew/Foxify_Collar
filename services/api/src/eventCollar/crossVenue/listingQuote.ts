@@ -461,6 +461,7 @@ const REFUSAL_WORDS: Record<ListingRefusalCode, string> = {
   resolution_mismatch: "the venue's market resolves on different terms than the ticket",
   kalshi_book_empty: "no one is offering the other side on the venue right now",
   kalshi_book_too_thin: "the venue's book is too shallow to hedge a ticket this size",
+  far_out_no_book: "days from the start and no venue has a real book yet; priced again inside the window",
 };
 
 export interface ListingPageOptions {

@@ -7,10 +7,15 @@
  * the operator token and is never published. The public record and the demo keep their neutral
  * words ("the market's own No side", "reference book B").
  *
+ * Two reads per game when both exist: the open-time read (the books the record wrote from) and
+ * the pre-lock read (the same routes and references priced again a fixed time before the lock,
+ * when every venue that will list the game has). Each is laid out the same way; the pre-lock
+ * read compares each venue to the route written as it priced at that same moment.
+ *
  * Nothing here re-reads a venue; it is the ledger, arranged.
  */
 
-import type { ShadowAltTerms } from "./shadowCounterfactuals";
+import type { ShadowAltTerms, ShadowReread } from "./shadowCounterfactuals";
 import type { ShadowPosition } from "./shadowLedger";
 import type { HedgeRoute } from "./types";
 import type { ReferenceBookId } from "./venueBooks";
@@ -36,6 +41,7 @@ export function refusalWord(code: string): string {
   if (/_book_too_thin$/.test(code) || code === "book_too_thin") return "too thin";
   if (code === "credit_nonpositive" || code === "credit_too_small") return "no credit";
   if (code === "protection_too_rich") return "too rich";
+  if (code === "far_out_no_book") return "too early";
   if (code === "book_not_retained") return "not kept";
   if (code === "fee_exceeds_gross") return "fee > gross";
   if (code.startsWith("stream_")) return `feed: ${code.slice(7).replace(/_/g, " ")}`;
@@ -87,6 +93,32 @@ export interface VenueGameRow {
    */
   best: VenueColumnId | null;
   cells: VenueCell[];
+  /** the pre-lock read, when one has happened; absent until then */
+  prelock?: VenuePrelock;
+}
+
+/** The pre-lock read laid out like the open-time one; `unread` when the books could not be read then. */
+export interface VenuePrelock {
+  at: string;
+  hoursToLock: number;
+  markCents: number | null;
+  unread: string | null;
+  /** the venue whose book made protection cheapest at the pre-lock read, of those that funded it */
+  best: VenueColumnId | null;
+  /** the route written, as it priced at the pre-lock read (what the deltas compare to); null when it refused then */
+  writtenCreditCents: number | null;
+  cells: VenueCell[];
+}
+
+/** Per-venue counts over the games that had a pre-lock read. */
+export interface VenuePrelockTotals {
+  read: number;
+  listed: number;
+  quoted: number;
+  best: number;
+  /** over games both this venue and the written route quoted at the pre-lock read: average credit here minus written, cents */
+  avgDeltaCents: number | null;
+  bothQuoted: number;
 }
 
 export interface VenueTotals {
@@ -104,6 +136,8 @@ export interface VenueTotals {
   /** over games both this venue and the written route quoted: average credit here minus written, cents */
   avgDeltaCents: number | null;
   bothQuoted: number;
+  /** the same counts at the pre-lock read, over the games that had one */
+  prelock: VenuePrelockTotals;
 }
 
 export interface VenueBreakdown {
@@ -113,11 +147,13 @@ export interface VenueBreakdown {
   sinceIso: string | null;
   /** how many of the window's opens priced each route book from the feed, from the venue, or predate the field */
   origins: { feed: number; direct: number; unknown: number };
+  /** games in the window with a pre-lock read: with books, and with none for a reason that would not change */
+  prelock: { read: number; unread: number };
   totals: VenueTotals[];
   rows: VenueGameRow[];
 }
 
-function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written: boolean, liveCredit: number, extra?: { bestAskMilli: number | null; depthMilli: number }): VenueCell {
+function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written: boolean, liveCredit: number | null, extra?: { bestAskMilli: number | null; depthMilli: number }): VenueCell {
   const bestAskCents = extra ? (extra.bestAskMilli === null ? null : Math.round(extra.bestAskMilli / 10)) : null;
   const depthShares = extra ? Math.floor(extra.depthMilli / 1000) : null;
   if (!t) return { id, read: false, listed: false, creditCents: null, deltaCents: null, evCostBps: null, bestAskCents, depthShares, refused: null, written: false };
@@ -131,7 +167,7 @@ function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written
     read: true,
     listed: true,
     creditCents: t.creditCents,
-    deltaCents: t.creditCents - liveCredit,
+    deltaCents: liveCredit === null ? null : t.creditCents - liveCredit,
     evCostBps: t.evCostBps,
     bestAskCents,
     depthShares,
@@ -140,21 +176,45 @@ function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written
   };
 }
 
+/** Every column from one read's routes and references, deltas against `writtenCredit`. */
+function cellsFrom(
+  routes: Partial<Record<HedgeRoute, ShadowAltTerms>>,
+  references: ReadonlyArray<{ id: ReferenceBookId; terms: ShadowAltTerms; bestAskMilli: number | null; depthMilli: number }>,
+  writtenRoute: HedgeRoute,
+  writtenCredit: number | null,
+): { cells: VenueCell[]; best: VenueColumnId | null } {
+  const refs = new Map(references.map((r) => [r.id, r]));
+  const cells: VenueCell[] = VENUE_COLUMNS.map((col) => {
+    if (col.kind === "route") {
+      const route = col.id as HedgeRoute;
+      return cellFromTerms(col.id, routes[route], writtenRoute === route, writtenCredit);
+    }
+    const ref = refs.get(col.id as ReferenceBookId);
+    return cellFromTerms(col.id, ref?.terms, false, writtenCredit, ref ? { bestAskMilli: ref.bestAskMilli, depthMilli: ref.depthMilli } : undefined);
+  });
+  const quoted = cells.filter((c) => c.evCostBps !== null);
+  const best = quoted.length > 0 ? quoted.reduce((a, b) => (b.evCostBps! < a.evCostBps! ? b : a)).id : null;
+  return { cells, best };
+}
+
+/** The pre-lock read laid out; each venue against the route written as it priced at that read. */
+export function venuePrelockFor(reread: ShadowReread, writtenRoute: HedgeRoute): VenuePrelock {
+  if ("unread" in reread) {
+    const { cells } = cellsFrom({}, [], writtenRoute, null);
+    return { at: reread.at, hoursToLock: reread.hoursToLock, markCents: null, unread: reread.unread, best: null, writtenCreditCents: null, cells };
+  }
+  const w = reread.routes[writtenRoute];
+  const writtenCreditCents = w?.ok ? w.creditCents : null;
+  const { cells, best } = cellsFrom(reread.routes, reread.references ?? [], writtenRoute, writtenCreditCents);
+  return { at: reread.at, hoursToLock: reread.hoursToLock, markCents: reread.markCents, unread: null, best, writtenCreditCents, cells };
+}
+
 /** One game's cells in column order; null when the position predates route counterfactuals or is not a game. */
 export function venueRowFor(p: ShadowPosition): VenueGameRow | null {
   const cf = p.counterfactuals;
   if (p.kind !== "sports" || !cf?.routes) return null;
-  const refs = new Map((cf.references ?? []).map((r) => [r.id, r]));
-  const cells: VenueCell[] = VENUE_COLUMNS.map((col) => {
-    if (col.kind === "route") {
-      const route = col.id as HedgeRoute;
-      return cellFromTerms(col.id, cf.routes?.[route], p.route === route, p.creditCents);
-    }
-    const ref = refs.get(col.id as ReferenceBookId);
-    return cellFromTerms(col.id, ref?.terms, false, p.creditCents, ref ? { bestAskMilli: ref.bestAskMilli, depthMilli: ref.depthMilli } : undefined);
-  });
-  const quoted = cells.filter((c) => c.evCostBps !== null);
-  const best = quoted.length > 0 ? quoted.reduce((a, b) => (b.evCostBps! < a.evCostBps! ? b : a)).id : null;
+  const { cells, best } = cellsFrom(cf.routes, cf.references ?? [], p.route, p.creditCents);
+  const prelock = p.prelock ? venuePrelockFor(p.prelock, p.route) : undefined;
   return {
     ticker: p.ticker,
     league: p.league,
@@ -172,6 +232,7 @@ export function venueRowFor(p: ShadowPosition): VenueGameRow | null {
     ...(p.bookOrigins ? { bookOrigins: p.bookOrigins } : {}),
     best,
     cells,
+    ...(prelock ? { prelock } : {}),
   };
 }
 
@@ -186,9 +247,13 @@ export function venueBreakdown(positions: ShadowPosition[], now: Date, opts: { w
   const inWindow = positions.filter((p) => p.kind === "sports" && p.counterfactuals?.routes && nowMs - Date.parse(p.at) <= windowMs);
   const rowsAll = inWindow.map(venueRowFor).filter((r): r is VenueGameRow => r !== null);
 
-  const totals = new Map<VenueColumnId, VenueTotals & { deltaSum: number }>();
-  for (const col of VENUE_COLUMNS) totals.set(col.id, { ...col, read: 0, listed: 0, quoted: 0, written: 0, best: 0, avgDeltaCents: null, bothQuoted: 0, deltaSum: 0 });
+  type Tally = VenueTotals & { deltaSum: number; prelock: VenuePrelockTotals & { deltaSum: number } };
+  const totals = new Map<VenueColumnId, Tally>();
+  for (const col of VENUE_COLUMNS) {
+    totals.set(col.id, { ...col, read: 0, listed: 0, quoted: 0, written: 0, best: 0, avgDeltaCents: null, bothQuoted: 0, deltaSum: 0, prelock: { read: 0, listed: 0, quoted: 0, best: 0, avgDeltaCents: null, bothQuoted: 0, deltaSum: 0 } });
+  }
   const origins = { feed: 0, direct: 0, unknown: 0 };
+  const prelock = { read: 0, unread: 0 };
   for (const r of rowsAll) {
     for (const c of r.cells) {
       const t = totals.get(c.id)!;
@@ -202,20 +267,39 @@ export function venueBreakdown(positions: ShadowPosition[], now: Date, opts: { w
         t.deltaSum += c.deltaCents;
       }
     }
+    if (r.prelock) {
+      if (r.prelock.unread !== null) prelock.unread += 1;
+      else prelock.read += 1;
+      for (const c of r.prelock.cells) {
+        const t = totals.get(c.id)!.prelock;
+        if (c.read) t.read += 1;
+        if (c.listed) t.listed += 1;
+        if (c.creditCents !== null) t.quoted += 1;
+        if (r.prelock.best === c.id) t.best += 1;
+        if (c.deltaCents !== null && !c.written) {
+          t.bothQuoted += 1;
+          t.deltaSum += c.deltaCents;
+        }
+      }
+    }
     const o = r.bookOrigins;
     if (!o) origins.unknown += 1;
     else if (o.polymarket === "aggregator" || o.kalshi === "aggregator") origins.feed += 1;
     else origins.direct += 1;
   }
   const kept = new Set<VenueColumnId>();
-  for (const t of totals.values()) if (t.read > 0) kept.add(t.id);
+  for (const t of totals.values()) if (t.read > 0 || t.prelock.read > 0) kept.add(t.id);
   // the two routes are always shown: they are what the record chooses between
   kept.add("kalshi_self");
   kept.add("polymarket");
 
   const open = rowsAll.filter((r) => r.status === "open").sort((a, b) => a.eventTimeIso.localeCompare(b.eventTimeIso));
   const done = rowsAll.filter((r) => r.status !== "open").sort((a, b) => b.openedAt.localeCompare(a.openedAt));
-  const rows = [...open, ...done].slice(0, maxRows).map((r) => ({ ...r, cells: r.cells.filter((c) => kept.has(c.id)) }));
+  const rows = [...open, ...done].slice(0, maxRows).map((r) => ({
+    ...r,
+    cells: r.cells.filter((c) => kept.has(c.id)),
+    ...(r.prelock ? { prelock: { ...r.prelock, cells: r.prelock.cells.filter((c) => kept.has(c.id)) } } : {}),
+  }));
   const since = rowsAll.reduce<string | null>((s, r) => (s === null || r.openedAt < s ? r.openedAt : s), null);
 
   return {
@@ -223,9 +307,17 @@ export function venueBreakdown(positions: ShadowPosition[], now: Date, opts: { w
     positions: rowsAll.length,
     sinceIso: since,
     origins,
+    prelock,
     totals: [...totals.values()]
       .filter((t) => kept.has(t.id))
-      .map(({ deltaSum, ...t }) => ({ ...t, avgDeltaCents: t.bothQuoted > 0 ? Math.round(deltaSum / t.bothQuoted) : null })),
+      .map(({ deltaSum, prelock: pl, ...t }) => {
+        const { deltaSum: plSum, ...plRest } = pl;
+        return {
+          ...t,
+          avgDeltaCents: t.bothQuoted > 0 ? Math.round(deltaSum / t.bothQuoted) : null,
+          prelock: { ...plRest, avgDeltaCents: pl.bothQuoted > 0 ? Math.round(plSum / pl.bothQuoted) : null },
+        };
+      }),
     rows,
   };
 }
