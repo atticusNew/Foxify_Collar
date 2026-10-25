@@ -27,7 +27,8 @@ import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/cros
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { REFERENCE_BOOK_WORDS } from "../src/eventCollar/crossVenue/venueBooks";
-import type { VenueBreakdown, VenueCell, VenuePrelock } from "../src/eventCollar/crossVenue/shadowVenues";
+import type { HeldBooksStatus } from "../src/eventCollar/crossVenue/aggregatorHeldBooks";
+import type { VenueBookOpen, VenueBreakdown, VenueCell, VenuePrelock } from "../src/eventCollar/crossVenue/shadowVenues";
 import type { AggregatorBookStatus } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { REFERENCE_PRINT_WORDS } from "../src/eventCollar/crossVenue/venuePrints";
 
@@ -1237,9 +1238,14 @@ ${parlayCard}  <div class="card">
 export interface VenuesPageInput {
   breakdown: VenueBreakdown;
   pricingSource: { aggregator: AggregatorBookStatus | { configured: false }; notes: string[] };
+  /** the held-books stream, when the worker holds one; null when the hold is off or the feed is */
+  heldBooks?: HeldBooksStatus | null;
   token: string | null;
   windowDays: number;
 }
+
+/** A venue column's operator name, by id; the id itself when the window dropped the column. */
+const venueNameOf = (b: VenueBreakdown, id: string): string => b.totals.find((t) => t.id === id)?.name ?? id;
 
 /** One read of one venue: credit, delta against the route written, EV cost, and for a reference its best ask and depth. */
 function venueReadHtml(c: VenueCell, written: boolean): string {
@@ -1256,12 +1262,19 @@ function venueReadHtml(c: VenueCell, written: boolean): string {
  * ("T-2.0h"), each laid out the same way. The written route's cell is highlighted at open; at the
  * pre-lock read the deltas are against that same route as it priced then.
  */
-function venueCellHtml(c: VenueCell, prelock: VenuePrelock | undefined, written: boolean): string {
+function venueCellHtml(c: VenueCell, prelock: VenuePrelock | undefined, bookOpen: VenueBookOpen | undefined, written: boolean): string {
   const open = venueReadHtml(c, written);
-  if (!prelock) return `<td class="${written ? "hi" : ""}${!c.read || c.creditCents === null ? " ref" : ""}">${open}</td>`;
-  const pc = prelock.cells.find((x) => x.id === c.id);
-  const pre = prelock.unread !== null ? `<span class="ref">${escapeHtml(refusalWordForPage(prelock.unread))}</span>` : pc ? venueReadHtml(pc, written) : "–";
-  return `<td class="${written ? "hi" : ""}"><div class="rd">${open}</div><div class="rd pl"><b>T-${prelock.hoursToLock}h</b>${pre}</div></td>`;
+  if (!prelock && !bookOpen) return `<td class="${written ? "hi" : ""}${!c.read || c.creditCents === null ? " ref" : ""}">${open}</td>`;
+  const later = (read: VenuePrelock, label: string): string => {
+    const pc = read.cells.find((x) => x.id === c.id);
+    const body = read.unread !== null ? `<span class="ref">${escapeHtml(refusalWordForPage(read.unread))}</span>` : pc ? venueReadHtml(pc, written) : "–";
+    return `<div class="rd pl"><b>${label}</b>${body}</div>`;
+  };
+  // in time order: the open-time read, the moment a held book opened, then the fixed pre-lock read
+  const lines = [`<div class="rd">${open}</div>`];
+  if (bookOpen) lines.push(later(bookOpen, `${bookOpen.opened.venue === c.id ? "opened" : "at open"} T-${bookOpen.hoursToLock}h`));
+  if (prelock) lines.push(later(prelock, `T-${prelock.hoursToLock}h`));
+  return `<td class="${written ? "hi" : ""}">${lines.join("")}</td>`;
 }
 
 /** the engine's structural refusal codes as the operator reads them on this page */
@@ -1288,7 +1301,8 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
       const origin = r.bookOrigins ? (r.bookOrigins.polymarket === "aggregator" || r.bookOrigins.kalshi === "aggregator" ? "feed" : "direct") : "";
       const routeName = r.route === "kalshi_self" ? "Kalshi" : "Polymarket";
       const mark = r.prelock && r.prelock.markCents !== null && r.prelock.markCents !== r.markCents ? `${r.markCents}¢<i>T-${r.prelock.hoursToLock}h ${r.prelock.markCents}¢</i>` : `${r.markCents}¢`;
-      return `<tr class="${r.status}"><td class="g"><b>${escapeHtml(r.eventTitle)}</b><i>${escapeHtml(r.league.toUpperCase())}${r.status !== "open" ? ` · ${escapeHtml(r.status)}` : ""}${origin ? ` · ${origin}` : ""}${r.prelock ? " · re-read" : ""}</i></td><td>${escapeHtml(r.sideName)}<i>${r.contracts} @ ${r.markCents}¢</i></td><td>${escapeHtml(shortEt(r.eventTimeIso))}</td><td>${mark}</td><td class="hi">${routeName}<i>floor ${r.floorCents}¢ · cap ${r.capCents}¢</i></td>${r.cells.map((c) => venueCellHtml(c, r.prelock, c.written)).join("")}</tr>`;
+      const openedTag = r.bookOpen ? ` · ${venueNameOf(b, r.bookOpen.opened.venue)} opened T-${r.bookOpen.hoursToLock}h${r.bookOpen.opened.caught === "at_hold" ? " (before the hold)" : ""}` : "";
+      return `<tr class="${r.status}"><td class="g"><b>${escapeHtml(r.eventTitle)}</b><i>${escapeHtml(r.league.toUpperCase())}${r.status !== "open" ? ` · ${escapeHtml(r.status)}` : ""}${origin ? ` · ${origin}` : ""}${r.prelock ? " · re-read" : ""}${escapeHtml(openedTag)}</i></td><td>${escapeHtml(r.sideName)}<i>${r.contracts} @ ${r.markCents}¢</i></td><td>${escapeHtml(shortEt(r.eventTimeIso))}</td><td>${mark}</td><td class="hi">${routeName}<i>floor ${r.floorCents}¢ · cap ${r.capCents}¢</i></td>${r.cells.map((c) => venueCellHtml(c, r.prelock, r.bookOpen, c.written)).join("")}</tr>`;
     })
     .join("");
 
@@ -1322,6 +1336,35 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
       );
     }
     return parts.join(" ");
+  })();
+
+  // the book-open read, per venue, over the games whose held book the record caught opening
+  const bookOpenRows =
+    b.bookOpen.read > 0
+      ? b.totals
+          .filter((t) => t.bookOpen.read > 0)
+          .map(
+            (t) =>
+              `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.bookOpen.read}</td><td>${t.bookOpen.listed}</td><td>${t.bookOpen.quoted}</td><td class="hi">${t.bookOpen.best}</td><td>${t.bookOpen.avgDeltaCents === null ? "–" : `${t.bookOpen.avgDeltaCents > 0 ? "+" : ""}${usd(t.bookOpen.avgDeltaCents)}<i>over ${t.bookOpen.bothQuoted}</i>`}</td></tr>`,
+          )
+          .join("")
+      : "";
+  const bookOpenLine = (() => {
+    const bo = b.bookOpen;
+    const hb = input.heldBooks;
+    const holding = hb ? ` The stream is ${hb.connected ? "connected" : "not connected"}${hb.stopped ? ` (stopped: ${hb.stopped})` : ""}, holding ${hb.held} book${hb.held === 1 ? "" : "s"}: ${hb.byPhase.open} open, ${hb.byPhase.empty} mapped with no book yet, ${hb.byPhase.not_yet_open} outside the feed's window, ${hb.byPhase.unavailable} unavailable, ${hb.byPhase.pending} pending${hb.byPhase.closed + hb.byPhase.stopped > 0 ? `, ${hb.byPhase.closed + hb.byPhase.stopped} ended` : ""}${hb.lastError ? `; last error: ${hb.lastError}` : ""}.` : "";
+    if (bo.read === 0 && bo.unread === 0) return `No held book has opened yet; the first one begins this table.${holding}`;
+    const parts = [
+      `${bo.read + bo.unread} game${bo.read + bo.unread === 1 ? "" : "s"} caught a reference book opening: ${bo.live} seen live, ${bo.atHold} already open when the hold began${bo.avgHoursToLock === null ? "" : `; on average ${bo.avgHoursToLock}h before the lock${bo.avgHoursToLockLive !== null && bo.live > 0 ? ` (${bo.avgHoursToLockLive}h for the ones seen live)` : ""}`}${bo.unread > 0 ? `; ${bo.unread} could not then be priced (the market had closed or the odds had left the range)` : ""}.`,
+    ];
+    for (const t of b.totals.filter((t) => t.kind === "reference" && t.bookOpen.read > 0)) {
+      parts.push(
+        `${t.name}${t.via === "feed" ? " (feed)" : ""} listed ${t.bookOpen.listed} of ${t.bookOpen.read} at that moment and would have funded ${t.bookOpen.quoted}; cheapest on ${t.bookOpen.best}${
+          t.bookOpen.avgDeltaCents === null ? "" : `, ${t.bookOpen.avgDeltaCents >= 0 ? "+" : "-"}${usd(Math.abs(t.bookOpen.avgDeltaCents))} credit against the route written as it priced then, over ${t.bookOpen.bothQuoted}`
+        }.`,
+      );
+    }
+    return parts.join(" ") + holding;
   })();
 
   const richestLine = (() => {
@@ -1374,6 +1417,7 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
       <div class="bignum"><div class="n">${b.origins.feed}</div><div class="l">priced from the feed</div></div>
       <div class="bignum"><div class="n">${b.totals.filter((t) => t.kind === "reference" && (t.quoted > 0 || t.prelock.quoted > 0)).length}</div><div class="l">other venues that funded a game</div></div>
       <div class="bignum"><div class="n">${b.prelock.read}</div><div class="l">priced again before the lock</div></div>
+      <div class="bignum"><div class="n">${b.bookOpen.read + b.bookOpen.unread}</div><div class="l">caught a book opening</div></div>
       <div class="bignum"><div class="n">${ps.configured ? "on" : "off"}</div><div class="l">aggregator feed</div></div>
     </div>
     <div class="read" style="margin-top:10px">${feedLine} ${escapeHtml(originLine)}</div>
@@ -1395,8 +1439,15 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
   </div>
 
   <div class="card">
+    <h2>By venue, the moment a book opened</h2>
+    ${bookOpenRows ? `<div class="tablewrap"><table><tr><th>venue</th><th>read</th><th>listed</th><th>funded</th><th>cheapest</th><th>credit vs written</th></tr>${bookOpenRows}</table></div>` : ""}
+    <div class="read">${escapeHtml(bookOpenLine)}</div>
+    <div class="rule">For every open game inside the hold window the record keeps a subscription on the feed for each reference venue's book on the opposing outcome. The first time that book shows a level, the game is priced again on every venue at that second, exactly as at the pre-lock read. "Seen live" means the first level arrived while the subscription was held; "already open" means the book had levels at the hold's first snapshot, so the venue opened earlier than the hold window. Nothing on this table was filled.</div>
+  </div>
+
+  <div class="card">
     <h2>By game</h2>
-    <div class="sub" style="margin-bottom:6px">Open games first, next to lock first; then settled, most recent first. Each venue cell is the credit the default tier would have paid from that book, the difference against the credit written, and for reference books the best ask on the opposing outcome and its visible depth in shares. A game that has had its pre-lock read shows that read under the open-time one, marked by the hours it was taken before the lock.</div>
+    <div class="sub" style="margin-bottom:6px">Open games first, next to lock first; then settled, most recent first. Each venue cell is the credit the default tier would have paid from that book, the difference against the credit written, and for reference books the best ask on the opposing outcome and its visible depth in shares. A game that has had its pre-lock read shows that read under the open-time one, marked by the hours it was taken before the lock; a game whose held book was caught opening shows that read too, marked "opened" on the venue that opened.</div>
     <div class="tablewrap"><table>${head}${rows}</table></div>
     ${b.rows.length === 0 ? `<div class="read">Nothing in the window yet.</div>` : ""}
     <a class="back" href="/report${tq}">Rule comparison</a> <a class="back" href="/api/shadow/venues${tq}">Raw JSON</a> <a class="back" href="/healthz${tq}">Status</a>

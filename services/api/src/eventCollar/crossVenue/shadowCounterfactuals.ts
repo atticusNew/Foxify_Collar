@@ -286,6 +286,24 @@ export type ShadowReread =
       unread: string;
     };
 
+/**
+ * BOOK-OPEN RE-READ. The same read, taken the moment a reference venue's book first showed
+ * levels while the record held its subscription on the feed (aggregatorHeldBooks.ts), rather
+ * than at a fixed time before the lock. `opened` says which venue, how long before the lock,
+ * and whether the open was seen happen or was already there when the hold began.
+ */
+export interface ShadowBookOpened {
+  venue: ReferenceBookId;
+  /** "live": the first level arrived while held; "at_hold": the book had levels at the hold's first snapshot */
+  caught: "live" | "at_hold";
+  heldSinceIso: string;
+  /** the opening book, as the feed showed it, before the full read */
+  bestAskCents: number | null;
+  bestBidCents: number | null;
+  depthShares: number;
+}
+export type ShadowBookOpenReread = ShadowReread & { opened: ShadowBookOpened };
+
 const UNREACHABLE: ShadowAltTerms = { ok: false, refused: "unreachable" };
 
 /**

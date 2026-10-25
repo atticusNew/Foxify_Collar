@@ -23,6 +23,7 @@ import {
   SIZE_LADDER_MULTS,
   type FeeRuleLabel,
   type ShadowAltTerms,
+  type ShadowBookOpenReread,
   type ShadowCounterfactuals,
   type ShadowReread,
 } from "./shadowCounterfactuals";
@@ -175,7 +176,10 @@ export interface ShadowCashRecord {
  * ignored on replay. `unread` records a read that could not happen for a reason that will not
  * change before the lock, so the tick does not try again.
  */
-export type ShadowRereadRecord = { type: "reread"; ticker: string; phase: "prelock" } & ShadowReread;
+export type ShadowRereadRecord =
+  | ({ type: "reread"; ticker: string; phase: "prelock" } & ShadowReread)
+  /** the same read taken when a held reference book first showed levels (shadowCounterfactuals.ShadowBookOpenReread); one per position */
+  | ({ type: "reread"; ticker: string; phase: "book_open" } & ShadowBookOpenReread);
 
 export type ShadowRecord = ShadowOpenRecord | ShadowSettleRecord | ShadowVoidRecord | ShadowCloseRecord | ShadowCashRecord | ShadowRereadRecord;
 
@@ -210,6 +214,8 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   cash?: Array<{ at: string; leg: CashLeg; cents: number; method?: string }>;
   /** the pre-lock re-read, when one has happened (operator information, like the counterfactuals) */
   prelock?: ShadowReread;
+  /** the read taken the moment a held reference book opened, when the record caught one (operator information) */
+  bookOpen?: ShadowBookOpenReread;
 }
 
 /** One leg of cash the lock owes, and how much of it has been paid. */
@@ -387,11 +393,18 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
       const line = { at: rec.at, leg: rec.leg, cents: rec.cents, ...(rec.method ? { method: rec.method } : {}) };
       byTicker.set(rec.ticker, { ...pos, cash: [...(pos.cash ?? []), line] });
     } else if (rec.type === "reread") {
-      // one pre-lock read per position, the first; it lands in any state (the position may have settled since)
+      // one read per position per phase, the first; it lands in any state (the position may have settled since)
       const pos = byTicker.get(rec.ticker);
-      if (!pos || pos.prelock || rec.phase !== "prelock") continue;
-      const { type: _t, ticker: _k, phase: _p, ...reread } = rec;
-      byTicker.set(rec.ticker, { ...pos, prelock: reread });
+      if (!pos) continue;
+      if (rec.phase === "prelock") {
+        if (pos.prelock) continue;
+        const { type: _t, ticker: _k, phase: _p, ...reread } = rec;
+        byTicker.set(rec.ticker, { ...pos, prelock: reread });
+      } else if (rec.phase === "book_open") {
+        if (pos.bookOpen) continue;
+        const { type: _t, ticker: _k, phase: _p, ...reread } = rec;
+        byTicker.set(rec.ticker, { ...pos, bookOpen: reread });
+      }
     } else if (rec.type === "close") {
       const pos = byTicker.get(rec.ticker);
       if (!pos || pos.status !== "open") continue;
