@@ -167,6 +167,11 @@ test("refusal words are short and never leak a code shape the operator has to de
   assert.equal(refusalWord("route_not_offered"), "not offered");
   assert.equal(refusalWord("winner_market_not_listed"), "not listed");
   assert.equal(refusalWord("stream_unauthorized"), "feed: unauthorized");
+  // the feed's mapping states read as states, not as faults
+  assert.equal(refusalWord("not_mapped"), "not mapped yet");
+  assert.equal(refusalWord("mapped_no_book"), "mapped, no book yet");
+  assert.equal(refusalWord("stream_market_not_yet_open"), "mapped, streams ~2d out");
+  assert.equal(refusalWord("stream_unavailable"), "feed: unavailable");
   assert.equal(refusalWord("stale"), "stale book");
   assert.equal(refusalWord("unreachable: ECONNRESET"), "unreachable");
 });

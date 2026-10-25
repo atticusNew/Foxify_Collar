@@ -19,6 +19,20 @@
  * is a note, never a quote), a snapshot older than the staleness bound is dropped, and nothing in
  * this module throws to the caller.
  *
+ * A reference venue's book is in one of four states, which the partner distinguishes and so does
+ * the record (the reason on a bookless reference, then the operator's word in shadowVenues):
+ *
+ *   - no listing for the venue on the opposing outcome    → `not_mapped`      the partner has not
+ *                                                            confirmed a mapping yet; ask again later
+ *   - listing, SNAPSHOT with empty bids and asks          → `mapped_no_book`  the venue itself has no
+ *                                                            book yet; the subscription would stream it
+ *   - listing, ERROR MARKET_NOT_YET_OPEN                  → `stream_market_not_yet_open`  the partner
+ *                                                            streams that venue from about two days out
+ *   - listing, ERROR UNAVAILABLE (after one retry)        → `stream_unavailable`  transient, theirs
+ *
+ * Only a listing with a priced book is a book. The Polymarket route's book is left as the venue
+ * streams it (an empty book refuses as an empty book), so no route is ever opened by a mapping.
+ *
  * Secrets: AGGREGATOR_KEY_ID and AGGREGATOR_PRIVATE_KEY_HEX, service env only (aggregatorMarkets.ts).
  * The partner is never named in anything published: "the aggregator" in notes and status.
  */
@@ -84,6 +98,9 @@ export interface AggregatorBookStatus {
 
 /** A snapshot older than this is not a price a quote can stand on. */
 export const MAX_SNAPSHOT_AGE_MS = 90_000;
+/** Reference reasons for the two mapping states a stream code does not carry (see the header). */
+export const NOT_MAPPED = "not_mapped";
+export const MAPPED_NO_BOOK = "mapped_no_book";
 /** The lookup is a mapping, not a price: it holds for this long per ticker. */
 const LOOKUP_TTL_MS = 15 * 60_000;
 /** Spacing between REST calls, under the partner's 10 rps. */
@@ -165,6 +182,8 @@ export interface AggregatorSourceOptions {
   streamUrl?: string;
   /** one stream read is given this long before pending markets come back unavailable */
   streamTimeoutMs?: number;
+  /** a market the feed answers UNAVAILABLE is subscribed once more after this, inside the same read */
+  streamRetryDelayMs?: number;
   nowMs?: () => number;
   maxSnapshotAgeMs?: number;
 }
@@ -247,6 +266,9 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
       const s = streamFor(l);
       if (s) refStreams.push({ listing: l, stream: s });
     }
+    // The venue the feed is relied on for: no listing on the opposing outcome is a state of its
+    // own ("not mapped yet"), distinct from a mapping whose book has not opened.
+    if (!refStreams.some((r) => r.listing.venue === "PROPHETX")) out.references.push({ id: "aggregated_mm", book: null, reason: NOT_MAPPED });
     const streams = [kalshiStream, pmStream, ...refStreams.map((r) => r.stream)].filter((s): s is MarketStream => s !== null);
     if (streams.length === 0) return out;
 
@@ -256,6 +278,7 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
         streamUrl: opts.streamUrl,
         wsFactory: opts.wsFactory,
         timeoutMs: opts.streamTimeoutMs ?? 6_000,
+        retryDelayMs: opts.streamRetryDelayMs,
         nowSec: () => Math.floor(nowMs() / 1000),
       });
     } catch (err) {
@@ -293,6 +316,7 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
       const id: ReferenceBook["id"] = r.listing.venue === "PROPHETX" ? "aggregated_mm" : "aggregated_other";
       if (!res.book) out.references.push({ id, book: null, reason: `stream_${res.error.code.toLowerCase()}` });
       else if (!snapshotFresh(res.book, nowMs(), maxAge)) out.references.push({ id, book: null, reason: "stale" });
+      else if (res.book.bids.length === 0 && res.book.asks.length === 0) out.references.push({ id, book: null, reason: MAPPED_NO_BOOK });
       else out.references.push({ id, book: pmBookFromSnapshot(`${r.listing.venue}:${aligned.marketId}`, res.book) });
     }
     if (out.pmNoBook || out.noAsks) status.readsWithBooks += 1;

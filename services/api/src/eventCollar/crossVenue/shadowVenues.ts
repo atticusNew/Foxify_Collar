@@ -44,6 +44,10 @@ export function refusalWord(code: string): string {
   if (code === "far_out_no_book") return "too early";
   if (code === "book_not_retained") return "not kept";
   if (code === "fee_exceeds_gross") return "fee > gross";
+  // the feed's four mapping states (aggregatorBooks.ts header): which one tells the operator whether to wait or to ask
+  if (code === "not_mapped") return "not mapped yet";
+  if (code === "mapped_no_book") return "mapped, no book yet";
+  if (code === "stream_market_not_yet_open") return "mapped, streams ~2d out";
   if (code.startsWith("stream_")) return `feed: ${code.slice(7).replace(/_/g, " ")}`;
   if (code.startsWith("venue_")) return `venue: ${code.slice(6).replace(/_/g, " ")}`;
   if (code.startsWith("unreachable")) return "unreachable";

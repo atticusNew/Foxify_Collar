@@ -412,20 +412,33 @@ export interface SnapshotOptions {
   wsFactory?: WsFactory;
   /** give up on markets still pending after this; they come back as UNAVAILABLE */
   timeoutMs?: number;
+  /** a market the partner answers UNAVAILABLE (transient, by their word) is subscribed once more after this; the timeout still bounds the read */
+  retryDelayMs?: number;
   nowSec?: () => number;
 }
+
+/** The partner's "no book for that line right now; subscribe again after a short delay". */
+export const STREAM_UNAVAILABLE = "UNAVAILABLE";
 
 /**
  * Open the stream, subscribe BOOK on every market, keep the first SNAPSHOT (or the ERROR) per
  * market, then close. For a reference read that is all that is needed; a live quote path would
  * hold the socket and apply deltas instead.
+ *
+ * The partner's own reading of its ERROR codes, which this honours: UNAVAILABLE is transient
+ * ("subscribe again after a short delay"), so one market gets one more SUBSCRIBE inside the same
+ * read; MARKET_NOT_YET_OPEN is their window (books stream from about two days before the start)
+ * and is final for this read.
  */
 export function readSnapshots(signer: AggregatorSigner, markets: MarketStream[], opt: SnapshotOptions = {}): Promise<StreamResult[]> {
   const timeoutMs = opt.timeoutMs ?? 8_000;
+  const retryDelayMs = opt.retryDelayMs ?? 1_000;
   const url = signedStreamUrl(signer, opt.streamUrl ?? DEFAULT_STREAM_URL, opt.nowSec?.() ?? Math.floor(Date.now() / 1000));
   const wanted = new Map(markets.map((m) => [streamKey(m), m]));
   const bySub = new Map<string, MarketStream>();
   const results = new Map<string, StreamResult>();
+  const retried = new Set<string>();
+  const retryTimers: ReturnType<typeof setTimeout>[] = [];
   if (!markets.length) return Promise.resolve([]);
   return new Promise<StreamResult[]>((resolve, reject) => {
     let done = false;
@@ -434,7 +447,8 @@ export function readSnapshots(signer: AggregatorSigner, markets: MarketStream[],
       if (done) return;
       done = true;
       clearTimeout(timer);
-      for (const [k, m] of wanted) if (!results.has(k)) results.set(k, { market: m, book: null, error: { code: "UNAVAILABLE", message: "no snapshot before the read timed out" } });
+      for (const t of retryTimers) clearTimeout(t);
+      for (const [k, m] of wanted) if (!results.has(k)) results.set(k, { market: m, book: null, error: { code: STREAM_UNAVAILABLE, message: "no snapshot before the read timed out" } });
       try {
         ws.close(1000, "done");
       } catch {
@@ -457,6 +471,7 @@ export function readSnapshots(signer: AggregatorSigner, markets: MarketStream[],
     ws.addEventListener("error", (ev) => {
       if (done) return;
       clearTimeout(timer);
+      for (const t of retryTimers) clearTimeout(t);
       done = true;
       reject(new Error(`aggregator stream: ${String((ev as { message?: string }).message ?? "connection error")}`));
     });
@@ -464,6 +479,7 @@ export function readSnapshots(signer: AggregatorSigner, markets: MarketStream[],
       if (done) return;
       if (!results.size) {
         clearTimeout(timer);
+        for (const t of retryTimers) clearTimeout(t);
         done = true;
         reject(new Error(`aggregator stream closed before any frame (${ev.code ?? "?"} ${ev.reason ?? ""})`.trim()));
         return;
@@ -505,8 +521,24 @@ export function readSnapshots(signer: AggregatorSigner, markets: MarketStream[],
         const code = String(f.code ?? "ERROR");
         const message = String(f.message ?? "");
         const m = (f.market as MarketStream | undefined) ?? (typeof f.subscriptionId === "string" ? bySub.get(f.subscriptionId) : undefined);
-        if (m && wanted.has(streamKey(m))) settle(streamKey(m), { market: m, book: null, error: { code, message } });
-        else if (!m && results.size === 0 && wanted.size > 0 && !bySub.size) {
+        if (m && wanted.has(streamKey(m))) {
+          const k = streamKey(m);
+          if (code === STREAM_UNAVAILABLE && !results.has(k) && !retried.has(k) && retryDelayMs < timeoutMs) {
+            retried.add(k);
+            retryTimers.push(
+              setTimeout(() => {
+                if (done) return;
+                try {
+                  ws.send(JSON.stringify({ type: "SUBSCRIBE", markets: [m], channels: ["BOOK"], requestId: `retry:${k}` }));
+                } catch {
+                  settle(k, { market: m, book: null, error: { code, message } });
+                }
+              }, retryDelayMs),
+            );
+            return;
+          }
+          settle(k, { market: m, book: null, error: { code, message: retried.has(k) && code === STREAM_UNAVAILABLE ? `${message} (twice)`.trim() : message } });
+        } else if (!m && results.size === 0 && wanted.size > 0 && !bySub.size) {
           // a connection-level error before any ack: the whole batch was refused
           for (const [k, mk] of wanted) results.set(k, { market: mk, book: null, error: { code, message } });
           finish();
