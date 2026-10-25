@@ -217,7 +217,7 @@ test("shadow worker holders: a key names its holder; locks land in the holder's 
     const bobMarkets = (await (await fetch(`${base}/api/shadow/markets`, { headers: bob })).json()) as { holder?: string; markets: Array<{ ticker: string; onRecord: boolean }> };
     assert.equal(bobMarkets.holder, "bob");
     assert.deepEqual(bobMarkets.markets.map((x) => [x.ticker, x.onRecord]), [[TICKER, true], [OTHER, false]]);
-    const annRcpt = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: ann })).json()) as { holder?: string; lock: { contracts: number }; hedge: { receiptId: string } };
+    const annRcpt = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: ann })).json()) as { holder?: string; lock: { contracts: number }; hedge: { receiptId: string; via: string } };
     assert.equal(annRcpt.holder, "ann");
     assert.equal(annRcpt.lock.contracts, 20);
     assert.equal(annRcpt.hedge.receiptId, annLock.hedge.receiptId, "her receipt, not bob's");
@@ -284,6 +284,19 @@ test("shadow worker holders: a key names its holder; locks land in the holder's 
     assert.equal(hs.totals.locks, 4);
     assert.equal(hs.totals.toHolderCents, hs.holders.reduce((s, h) => s + h.outstanding.toHolderCents, 0));
     assert.ok(!JSON.stringify(hs).includes(ANN));
+    // the same, as the page the pay run reads: every alias, the standing per lock, the totals
+    assert.equal((await fetch(`${base}/holders`)).status, 403, "operator only");
+    const page = await (await fetch(`${base}/holders?token=op-secret`)).text();
+    assert.match(page, /<title>Holders · operator/);
+    assert.match(page, /<h2>ann<\/h2>/);
+    assert.match(page, /<h2>bob<\/h2>/);
+    assert.match(page, /<h2>shared key<\/h2>/);
+    assert.match(page, /owed to holder/);
+    assert.match(page, /square/);
+    assert.ok(page.includes(`$${((bobTerms.creditCents + bobTerms.floorCents * 10) / 100).toFixed(2)}`), "bob's credit plus floor is on the page");
+    assert.ok(!page.includes(ANN) && !page.includes(BOB), "no key on the page");
+    // the receipt says how the other side reached the venue: nothing was sent here, so "book"
+    assert.equal(annRcpt.hedge.via, "book");
 
     // RESEND and RESET by holder
     const resendAmb = await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}`, { method: "POST", headers: op });

@@ -362,8 +362,9 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(forced.ok, true);
     assert.equal(forced.priorReceipts, 3);
     // the holder's receipt now stands on the live fill, not the later dry run
-    const rcptLive = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { hedge: { receiptId: string; simulated: boolean; orderId: string } };
+    const rcptLive = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { hedge: { receiptId: string; simulated: boolean; orderId: string; via: string } };
     assert.deepEqual([rcptLive.hedge.receiptId, rcptLive.hedge.simulated, rcptLive.hedge.orderId], ["live-1", false, "ord-live"]);
+    assert.equal(rcptLive.hedge.via, "direct", "a live fill with no path recorded was sent on our own key");
 
     // LOCK RESET (operator): the lock's lines move to an archive beside the ledger; the market opens
     // again; the old lock's live fill is named so the operator settles the venue side by hand
@@ -392,8 +393,9 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(relock.ok, true);
     assert.equal(relock.hedge.simulated, true);
     assert.equal(readFileSync(ledger, "utf8").trim().split("\n").length, 1);
-    const rcptNew = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { hedge: { receiptId: string; simulated: boolean; fallbackReason: string } };
+    const rcptNew = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { hedge: { receiptId: string; simulated: boolean; fallbackReason: string; via: string } };
     assert.equal(rcptNew.hedge.receiptId, relock.hedge.receiptId);
+    assert.equal(rcptNew.hedge.via, "book", "a dry run sent nothing");
     assert.equal(rcptNew.hedge.simulated, true);
     assert.equal(rcptNew.hedge.fallbackReason, "dry run");
 

@@ -1,8 +1,100 @@
-/* Atticus Earn & Protect: Lock in. Styled to sit inside the venue's own theme (near-black, white,
-   one green accent, the venue's) so the eye stays on the venue; our name is one line at the foot of the panel.
-   Everything is inline: one line under a position row, and a panel that opens under that line and
-   pushes the rows below down. Nothing is fixed over the page except a one-line notice when the
-   service cannot answer, and the fallback card when the page's rows could not be read. */
+/* Atticus Earn & Protect: Lock in. Styled to sit inside each venue's own theme so the eye stays on
+   the venue; our name is one line at the foot of the panel. Everything is inline: one line under a
+   position row, and a panel that opens under that line and pushes the rows below down. Nothing is
+   fixed over the page except a one-line notice when the service cannot answer, and the fallback
+   card when the page's rows could not be read.
+
+   Skins. Every colour below is a variable set on the roots we draw (.ael-host, .ael-card,
+   .ael-note). The defaults are the ProphetX theme: near-black, white, the venue's green. The
+   script adds a venue class to each root (.ael-v-kalshi, .ael-v-novig) and the skin overrides
+   the variables there; nothing else in the file knows which venue it is on. */
+
+:where(.ael-host, .ael-card, .ael-note) {
+  --ael-fg: #f2f3f5;
+  --ael-fg-strong: #ffffff;
+  --ael-soft: #c3c4c9;
+  --ael-muted: #9a9ca3;
+  --ael-dim: #6f7279;
+  --ael-faint: #55575e;
+  --ael-bg: #161618;
+  --ael-bg-deep: #0d0d0f;
+  --ael-bg-raise: #1d1d20;
+  --ael-bg-hover: #262629;
+  --ael-border: #27272a;
+  --ael-border-hover: #333336;
+  --ael-divider: #222225;
+  --ael-accent: #0ba249;
+  --ael-accent-hover: #0db553;
+  --ael-accent-ink: #ffffff;
+  --ael-glow: #55e8b9;
+  --ael-accent-line: rgba(11, 162, 73, 0.55);
+  --ael-accent-wash: rgba(11, 162, 73, 0.1);
+  --ael-accent-wash-2: rgba(11, 162, 73, 0.14);
+  --ael-accent-wash-3: rgba(11, 162, 73, 0.18);
+  --ael-shadow: rgba(0, 0, 0, 0.55);
+  --ael-ring: rgba(255, 255, 255, 0.35);
+  --ael-radius: 8px;
+  --ael-radius-lg: 14px;
+}
+
+/* Kalshi: white page, near-black type, one green (the venue's action green), soft grey borders,
+   rounder corners as its pills have. */
+.ael-v-kalshi {
+  --ael-fg: #191919;
+  --ael-fg-strong: #191919;
+  --ael-soft: #3a3a3a;
+  --ael-muted: #737373;
+  --ael-dim: #8c8c8c;
+  --ael-faint: #a3a3a3;
+  --ael-bg: #ffffff;
+  --ael-bg-deep: #f6f6f6;
+  --ael-bg-raise: #efefef;
+  --ael-bg-hover: #e6e6e6;
+  --ael-border: #ededed;
+  --ael-border-hover: #d0d0d0;
+  --ael-divider: #ededed;
+  --ael-accent: #06b67a;
+  --ael-accent-hover: #05a46e;
+  --ael-accent-ink: #ffffff;
+  --ael-glow: #06b67a;
+  --ael-accent-line: rgba(6, 182, 122, 0.55);
+  --ael-accent-wash: rgba(6, 182, 122, 0.08);
+  --ael-accent-wash-2: rgba(6, 182, 122, 0.12);
+  --ael-accent-wash-3: rgba(6, 182, 122, 0.16);
+  --ael-shadow: rgba(0, 0, 0, 0.14);
+  --ael-ring: rgba(255, 255, 255, 0.5);
+  --ael-radius: 10px;
+  --ael-radius-lg: 16px;
+}
+
+/* Novig: black page, dark-grey cards, warm white type, the venue's blue as the one accent. */
+.ael-v-novig {
+  --ael-fg: #fff8f4;
+  --ael-fg-strong: #ffffff;
+  --ael-soft: #d9d4d0;
+  --ael-muted: #beb9b6;
+  --ael-dim: #8a8683;
+  --ael-faint: #656260;
+  --ael-bg: #1c1c1c;
+  --ael-bg-deep: #111111;
+  --ael-bg-raise: #242424;
+  --ael-bg-hover: #2c2c2c;
+  --ael-border: #2a2a2a;
+  --ael-border-hover: #3a3a3a;
+  --ael-divider: #262626;
+  --ael-accent: #179be7;
+  --ael-accent-hover: #2ea8f0;
+  --ael-accent-ink: #ffffff;
+  --ael-glow: #5fc1ff;
+  --ael-accent-line: rgba(23, 155, 231, 0.6);
+  --ael-accent-wash: rgba(23, 155, 231, 0.12);
+  --ael-accent-wash-2: rgba(23, 155, 231, 0.16);
+  --ael-accent-wash-3: rgba(23, 155, 231, 0.22);
+  --ael-shadow: rgba(0, 0, 0, 0.6);
+  --ael-ring: rgba(255, 255, 255, 0.35);
+  --ael-radius: 6px;
+  --ael-radius-lg: 12px;
+}
 
 .ael-ui,
 .ael-ui * {
@@ -20,7 +112,7 @@ tr.ael-host { display: table-row; }
 tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 /* Capped: the venue's table can be wider than the window, and a card under the Market column
    reads better than a banner across every column. */
-.ael-row { display: block; max-width: 680px; padding: 4px 0 8px; color: #f2f3f5; font-size: 13px; text-align: left; }
+.ael-row { display: block; max-width: 680px; padding: 4px 0 8px; color: var(--ael-fg); font-size: 13px; text-align: left; }
 
 /* The line: one button, label and caption, the row's own width. */
 .ael-line {
@@ -29,50 +121,50 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
   gap: 10px;
   width: 100%;
   padding: 8px 12px;
-  border: 1px solid rgba(11, 162, 73, 0.55);
-  border-radius: 8px;
-  background: rgba(11, 162, 73, 0.1);
-  color: #fff;
+  border: 1px solid var(--ael-accent-line);
+  border-radius: var(--ael-radius);
+  background: var(--ael-accent-wash);
+  color: var(--ael-fg-strong);
   cursor: pointer;
   text-align: left;
   transition: background 0.12s, border-color 0.12s;
 }
-.ael-line:hover { background: rgba(11, 162, 73, 0.18); border-color: #0ba249; }
-.ael-ic { display: inline-flex; flex: none; width: 18px; height: 18px; align-items: center; justify-content: center; color: #55e8b9; }
+.ael-line:hover { background: var(--ael-accent-wash-3); border-color: var(--ael-accent); }
+.ael-ic { display: inline-flex; flex: none; width: 18px; height: 18px; align-items: center; justify-content: center; color: var(--ael-glow); }
 .ael-ic svg { width: 16px; height: 16px; display: block; }
 .ael-lt { display: flex; flex: 1; min-width: 0; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .ael-lt b { font-size: 13px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.ael-lt span { font-size: 11px; color: #9a9ca3; }
-.ael-lt span b { font-size: 11px; color: #f2f3f5; font-weight: 600; }
+.ael-lt span { font-size: 11px; color: var(--ael-muted); }
+.ael-lt span b { font-size: 11px; color: var(--ael-fg); font-weight: 600; }
 /* The chevron: the line opens and closes its panel; it turns when the panel is open. */
-.ael-chev { flex: none; width: 14px; height: 14px; color: #6f7279; transition: transform 0.18s ease; }
+.ael-chev { flex: none; width: 14px; height: 14px; color: var(--ael-dim); transition: transform 0.18s ease; }
 .ael-chev svg { width: 14px; height: 14px; display: block; }
-.ael-line.ael-open .ael-chev { transform: rotate(180deg); color: #9a9ca3; }
+.ael-line.ael-open .ael-chev { transform: rotate(180deg); color: var(--ael-muted); }
 
-.ael-line-wait { border-color: #27272a; background: #161618; cursor: default; }
-.ael-line-wait .ael-ic { color: #6f7279; }
-.ael-line-wait b { color: #9a9ca3; font-weight: 600; }
+.ael-line-wait { border-color: var(--ael-border); background: var(--ael-bg); cursor: default; }
+.ael-line-wait .ael-ic { color: var(--ael-dim); }
+.ael-line-wait b { color: var(--ael-muted); font-weight: 600; }
 
 /* Unavailable: muted, still a button; the tap says why. */
-.ael-line-off { border-color: #27272a; background: #161618; color: #9a9ca3; }
-.ael-line-off:hover { background: #1a1a1d; border-color: #333336; }
-.ael-line-off .ael-ic { color: #6f7279; }
-.ael-line-off b { color: #c3c4c9; font-weight: 600; }
+.ael-line-off { border-color: var(--ael-border); background: var(--ael-bg); color: var(--ael-muted); }
+.ael-line-off:hover { background: var(--ael-bg-raise); border-color: var(--ael-border-hover); }
+.ael-line-off .ael-ic { color: var(--ael-dim); }
+.ael-line-off b { color: var(--ael-soft); font-weight: 600; }
 
-/* Protected: filled shield, blue outline. */
-.ael-line-on { border-color: #0ba249; background: rgba(11, 162, 73, 0.14); }
-.ael-line-on .ael-ic { color: #55e8b9; }
+/* Protected: filled shield, accent outline. */
+.ael-line-on { border-color: var(--ael-accent); background: var(--ael-accent-wash-2); }
+.ael-line-on .ael-ic { color: var(--ael-glow); }
 
 /* The panel under the line, closed by default. */
-.ael-panel { display: none; margin-top: 6px; padding: 12px 14px 10px; border: 1px solid #27272a; border-radius: 8px; background: #161618; color: #f2f3f5; font-size: 13px; }
+.ael-panel { display: none; margin-top: 6px; padding: 12px 14px 10px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg); color: var(--ael-fg); font-size: 13px; }
 .ael-panel.ael-on { display: block; }
 /* The slide-in plays once, at the tap that opens the panel; a repaint never replays it. */
 .ael-panel.ael-enter { animation: ael-open 0.18s ease-out; }
 @keyframes ael-open { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 
 .ael-ph { margin: 0 0 10px; }
-.ael-ph b { display: block; font-size: 14px; font-weight: 700; color: #fff; }
-.ael-ph span { display: block; font-size: 11.5px; color: #9a9ca3; margin-top: 2px; }
+.ael-ph b { display: block; font-size: 14px; font-weight: 700; color: var(--ael-fg-strong); }
+.ael-ph span { display: block; font-size: 11.5px; color: var(--ael-muted); margin-top: 2px; }
 .ael-ph .ael-ck,
 .ael-ck {
   display: inline-flex;
@@ -82,8 +174,8 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
   height: 18px;
   margin: 0 8px -3px 0;
   border-radius: 50%;
-  background: rgba(11, 162, 73, 0.18);
-  color: #55e8b9;
+  background: var(--ael-accent-wash-3);
+  color: var(--ael-glow);
   font-size: 12px;
   font-weight: 800;
   align-items: center;
@@ -93,7 +185,7 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 .ael-skel {
   height: 14px;
   border-radius: 6px;
-  background: linear-gradient(90deg, #1d1d20 25%, #262629 50%, #1d1d20 75%);
+  background: linear-gradient(90deg, var(--ael-bg-raise) 25%, var(--ael-bg-hover) 50%, var(--ael-bg-raise) 75%);
   background-size: 200% 100%;
   animation: ael-shimmer 1.2s infinite;
   margin: 8px 0;
@@ -102,21 +194,21 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 
 /* The three numbers, then the button under them, as the venue's own slip does it. */
 .ael-tiles { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 6px; margin: 0 0 8px; }
-.ael-tile { border: 1px solid #27272a; border-radius: 8px; padding: 6px 8px 5px; text-align: center; background: #0d0d0f; }
-.ael-tile.ael-k { background: rgba(11, 162, 73, 0.12); border-color: rgba(11, 162, 73, 0.55); }
-.ael-l { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #9a9ca3; }
-.ael-v { font-size: 14px; font-weight: 700; margin: 2px 0 1px; font-variant-numeric: tabular-nums; color: #fff; }
-.ael-tile.ael-k .ael-v { color: #55e8b9; }
-.ael-was { font-size: 10.5px; color: #6f7279; }
+.ael-tile { border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 6px 8px 5px; text-align: center; background: var(--ael-bg-deep); }
+.ael-tile.ael-k { background: var(--ael-accent-wash-2); border-color: var(--ael-accent-line); }
+.ael-l { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ael-muted); }
+.ael-v { font-size: 14px; font-weight: 700; margin: 2px 0 1px; font-variant-numeric: tabular-nums; color: var(--ael-fg-strong); }
+.ael-tile.ael-k .ael-v { color: var(--ael-glow); }
+.ael-was { font-size: 10.5px; color: var(--ael-dim); }
 
 /* Shape of the deal: a small segmented control, visible when the books fund more than one. */
 .ael-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .ael-top .ael-ph { flex: 1 1 260px; }
 .ael-segs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(150px, auto); gap: 6px; margin: 0 0 8px; }
-.ael-seg { border: 1px solid #27272a; border-radius: 8px; background: #0d0d0f; color: #9a9ca3; padding: 5px 6px; font-size: 10px; line-height: 1.3; cursor: pointer; text-align: center; }
-.ael-seg b { display: block; color: #fff; font-size: 11.5px; margin-bottom: 1px; }
+.ael-seg { border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg-deep); color: var(--ael-muted); padding: 5px 6px; font-size: 10px; line-height: 1.3; cursor: pointer; text-align: center; }
+.ael-seg b { display: block; color: var(--ael-fg-strong); font-size: 11.5px; margin-bottom: 1px; }
 .ael-seg span { display: block; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ael-seg[aria-pressed="true"] { border-color: #0ba249; box-shadow: 0 0 0 1px #0ba249 inset; background: rgba(11, 162, 73, 0.12); }
+.ael-seg[aria-pressed="true"] { border-color: var(--ael-accent); box-shadow: 0 0 0 1px var(--ael-accent) inset; background: var(--ael-accent-wash-2); }
 
 .ael-go {
   display: block;
@@ -124,18 +216,18 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
   padding: 9px 16px;
   margin: 0 0 7px;
   border: 0;
-  border-radius: 8px;
-  background: #0ba249;
-  color: #fff;
+  border-radius: var(--ael-radius);
+  background: var(--ael-accent);
+  color: var(--ael-accent-ink);
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
 }
-.ael-go:hover { background: #0db553; }
+.ael-go:hover { background: var(--ael-accent-hover); }
 .ael-go:disabled { cursor: wait; }
 /* While the lock runs: the button holds its colour, a small ring turns before the stage in words. */
-.ael-go.ael-busy { background: #0ba249; font-weight: 600; }
+.ael-go.ael-busy { background: var(--ael-accent); font-weight: 600; }
 .ael-go.ael-busy::before {
   content: "";
   display: inline-block;
@@ -144,43 +236,43 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
   height: 13px;
   margin-right: 9px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #fff;
+  border: 2px solid var(--ael-ring);
+  border-top-color: var(--ael-accent-ink);
   animation: ael-spin 0.8s linear infinite;
 }
 @keyframes ael-spin { to { transform: rotate(360deg); } }
-.ael-go.ael-quiet { background: #1d1d20; color: #fff; font-size: 12.5px; font-weight: 700; padding: 8px 14px; width: auto; margin: 0; }
-.ael-go.ael-quiet:hover { background: #262629; }
+.ael-go.ael-quiet { background: var(--ael-bg-raise); color: var(--ael-fg-strong); font-size: 12.5px; font-weight: 700; padding: 8px 14px; width: auto; margin: 0; }
+.ael-go.ael-quiet:hover { background: var(--ael-bg-hover); }
 
-.ael-fine { font-size: 10.5px; color: #6f7279; text-align: left; margin-bottom: 2px; }
-.ael-fine a { color: #9a9ca3; text-decoration: underline; }
+.ael-fine { font-size: 10.5px; color: var(--ael-dim); text-align: left; margin-bottom: 2px; }
+.ael-fine a { color: var(--ael-muted); text-decoration: underline; }
 
-.ael-how { display: none; font-size: 12px; color: #9a9ca3; margin: 8px 0 4px; max-width: 70ch; }
+.ael-how { display: none; font-size: 12px; color: var(--ael-muted); margin: 8px 0 4px; max-width: 70ch; }
 .ael-how.ael-on { display: block; }
 .ael-how p { margin: 0 0 6px; }
 
 /* The receipt: a sentence with the numbers, then one grey line of facts. */
 .ael-ph.ael-rc { margin-bottom: 4px; }
-.ael-sum { font-size: 13px; color: #c3c4c9; margin: 0 0 3px; }
-.ael-sum b { color: #fff; font-weight: 700; font-variant-numeric: tabular-nums; }
-.ael-meta { font-size: 11px; color: #6f7279; margin: 0 0 6px; }
-.ael-meta a { color: #9a9ca3; text-decoration: underline; }
-.ael-meta a:hover { color: #c3c4c9; }
+.ael-sum { font-size: 13px; color: var(--ael-soft); margin: 0 0 3px; }
+.ael-sum b { color: var(--ael-fg-strong); font-weight: 700; font-variant-numeric: tabular-nums; }
+.ael-meta { font-size: 11px; color: var(--ael-dim); margin: 0 0 6px; }
+.ael-meta a { color: var(--ael-muted); text-decoration: underline; }
+.ael-meta a:hover { color: var(--ael-soft); }
 
 /* The receipt's detail, under "receipt": what stands behind the terms, four labelled lines. */
-.ael-rcpt { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 3px; font-size: 11.5px; color: #c3c4c9; background: #0d0d0f; border: 1px solid #27272a; border-radius: 8px; padding: 8px 10px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
-.ael-rcpt span { color: #6f7279; }
-.ael-rcpt b { font-weight: 600; color: #e6e6ea; overflow-wrap: anywhere; }
-.ael-rcpt code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #c3c4c9; }
-.ael-rcpt .ael-dim { color: #9a9ca3; font-weight: 500; }
+.ael-rcpt { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 3px; font-size: 11.5px; color: var(--ael-soft); background: var(--ael-bg-deep); border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 8px 10px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+.ael-rcpt span { color: var(--ael-dim); }
+.ael-rcpt b { font-weight: 600; color: var(--ael-fg); overflow-wrap: anywhere; }
+.ael-rcpt code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--ael-soft); }
+.ael-rcpt .ael-dim { color: var(--ael-muted); font-weight: 500; }
 
 .ael-size-form { display: flex; gap: 8px; align-items: center; margin: 0 0 8px; }
-.ael-size-form input { width: 110px; padding: 7px 10px; border: 1px solid #2c2c30; border-radius: 8px; font-size: 13px; color: #fff; background: #0d0d0f; }
+.ael-size-form input { width: 110px; padding: 7px 10px; border: 1px solid var(--ael-border-hover); border-radius: var(--ael-radius); font-size: 13px; color: var(--ael-fg-strong); background: var(--ael-bg-deep); }
 
-.ael-op { font-size: 11px; color: #9a9ca3; background: #0d0d0f; border: 1px solid #27272a; border-radius: 8px; padding: 6px 10px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
-.ael-op a { color: #55e8b9; text-decoration: underline; font-weight: 600; }
+.ael-op { font-size: 11px; color: var(--ael-muted); background: var(--ael-bg-deep); border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 6px 10px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+.ael-op a { color: var(--ael-glow); text-decoration: underline; font-weight: 600; }
 
-.ael-disclose { font-size: 10px; color: #55575e; text-align: left; margin-top: 6px; }
+.ael-disclose { font-size: 10px; color: var(--ael-faint); text-align: left; margin-top: 6px; }
 
 /* Notice: bottom left, small, only when the service cannot answer on the plays page. */
 .ael-note {
@@ -192,14 +284,15 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
   align-items: center;
   gap: 8px;
   padding: 8px 14px;
-  border: 1px solid #27272a;
+  border: 1px solid var(--ael-border);
   border-radius: 999px;
-  background: #161618;
-  color: #c3c4c9;
+  background: var(--ael-bg);
+  color: var(--ael-soft);
   font-size: 12px;
   opacity: 0.92;
+  box-shadow: 0 6px 24px var(--ael-shadow);
 }
-.ael-note .ael-ic { color: #6f7279; width: 14px; height: 14px; }
+.ael-note .ael-ic { color: var(--ael-dim); width: 14px; height: 14px; }
 .ael-note .ael-ic svg { width: 14px; height: 14px; }
 
 /* Fallback card: the service confirmed positions but no row on the page could be read. */
@@ -211,19 +304,19 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
   width: min(380px, calc(100vw - 32px));
   max-height: 70vh;
   overflow-y: auto;
-  border: 1px solid #27272a;
-  border-radius: 14px;
-  background: #161618;
-  color: #f2f3f5;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--ael-border);
+  border-radius: var(--ael-radius-lg);
+  background: var(--ael-bg);
+  color: var(--ael-fg);
+  box-shadow: 0 12px 40px var(--ael-shadow);
 }
-.ael-card-h { display: flex; justify-content: space-between; align-items: center; padding: 10px 10px 8px 16px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #9a9ca3; border-bottom: 1px solid #222225; }
-.ael-x { border: 0; background: transparent; color: #9a9ca3; font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
-.ael-x:hover { background: #1d1d20; color: #fff; }
+.ael-card-h { display: flex; justify-content: space-between; align-items: center; padding: 10px 10px 8px 16px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ael-muted); border-bottom: 1px solid var(--ael-divider); }
+.ael-x { border: 0; background: transparent; color: var(--ael-muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.ael-x:hover { background: var(--ael-bg-raise); color: var(--ael-fg-strong); }
 .ael-card-b { padding: 6px 12px 10px; }
 .ael-card-row { padding: 6px 0 0; }
-.ael-card-pos b { display: block; font-size: 14px; font-weight: 700; color: #fff; }
-.ael-card-pos span { display: block; font-size: 11.5px; color: #9a9ca3; margin-top: 2px; }
+.ael-card-pos b { display: block; font-size: 14px; font-weight: 700; color: var(--ael-fg-strong); }
+.ael-card-pos span { display: block; font-size: 11.5px; color: var(--ael-muted); margin-top: 2px; }
 .ael-card .ael-row { padding-top: 6px; }
 
 @media (max-width: 560px) {

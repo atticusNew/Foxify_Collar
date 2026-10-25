@@ -242,6 +242,7 @@ export class LiveHedgeExecutor implements HedgeExecutor {
         vsBookCents: bookForFilled - r.costCents,
         simulated: false,
         ids: { orderId: r.orderId },
+        via: "direct",
       };
       return { ...base, attempts, fill, outcome: "filled_live", fallbackReason: null };
     } catch (err) {

@@ -114,7 +114,7 @@ import {
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { sentUnitsMilliOn, tickerArmed } from "../src/eventCollar/crossVenue/liveHedge";
-import { FEE_RULE_TEXT, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
+import { FEE_RULE_TEXT, renderHoldersHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
 import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import {
@@ -272,6 +272,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/lock/reset",
   "/api/shadow/cash",
   "/api/shadow/holders",
+  "/holders",
   "/api/shadow/export",
   "/api/shadow/reset",
   "/api/shadow/lastleg",
@@ -507,6 +508,8 @@ function hedgeViewOf(receipt: HedgeReceipt) {
     avgPriceMilli: fill?.avgPriceMilli ?? null,
     costCents: fill?.costCents ?? null,
     orderId: fill?.ids.orderId ?? null,
+    /** how the order reached the venue: "direct" (our key), "aggregator" (the partner's pod), "book" (simulated, nothing sent) */
+    via: fill && !fill.simulated ? (fill.via ?? "direct") : "book",
     fallbackReason: receipt.fallbackReason,
     receiptId: receipt.id,
   };
@@ -1081,6 +1084,7 @@ async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url:
             unitsMilli: receipt.fill?.unitsMilli ?? null,
             costCents: receipt.fill?.costCents ?? null,
             orderId: receipt.fill?.ids.orderId ?? null,
+            via: receipt.fill && !receipt.fill.simulated ? (receipt.fill.via ?? "direct") : "book",
             fallbackReason: receipt.fallbackReason,
             receiptId: receipt.id,
             attempts: receipt.attempts.map((a) => ({ step: a.step, ok: a.ok, detail: a.detail })),
@@ -1969,6 +1973,12 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/cash") {
       void handleCash(req, res).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+      return;
+    }
+    if (url.pathname === "/holders") {
+      // HOLDERS, NAMED: the page a pay run reads. Operator only; aliases never appear in public.
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderHoldersHtml({ ...holdersSummary(), token: url.searchParams.get("token") }));
       return;
     }
     if (url.pathname === "/api/shadow/holders") {

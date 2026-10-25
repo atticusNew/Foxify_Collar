@@ -20,7 +20,7 @@ export const RULE_CHECK_NOTE =
   "when a position opens we keep the venue's own rule text for that market and its fingerprint (sha256). When it settles we read the venue's text again and compare. " +
   "\u201cTerms held\u201d means the same words both times; \u201cvenue edited its rules\u201d means the venue changed the wording while the position was open, and the row opens to show the edit. " +
   "Payouts follow the venue's official result either way.";
-import type { RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
+import type { CashLegDue, RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { NettingReport } from "../src/eventCollar/crossVenue/shadowNetting";
 import type { VenueSlate } from "../src/eventCollar/crossVenue/venueSlate";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
@@ -1228,6 +1228,131 @@ ${parlayCard}  <div class="card">
   </div>
   <footer>
     <b>Real:</b> live prices, quoted terms, hedge books, official results. <b>Simulated:</b> the positions and the parlay tickets; no venue credentials, nothing bought. The terms shown are the terms we would have had to hedge at that second. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Prepared for ${name}; demonstration, not an offer.
+  </footer>
+</div>
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
+// HOLDERS — operator only. Who locked what, and what is owed each way, the page a pay run reads.
+// ---------------------------------------------------------------------------
+
+export interface HoldersPageInput {
+  at: string;
+  holders: Array<{
+    holder: string;
+    configured: boolean;
+    locks: number;
+    open: number;
+    settled: number;
+    outstanding: { toHolderCents: number; toWriterCents: number; netToHolderCents: number };
+    positions: Array<{
+      ticker: string;
+      at: string;
+      status: string;
+      result?: string;
+      eventTitle: string;
+      sideName: string;
+      eventTimeIso: string;
+      contracts: number;
+      entryCents: number | null;
+      floorCents: number;
+      capCents: number;
+      creditCents: number;
+      route: string;
+      cash: CashLegDue[];
+      ledger: string;
+    }>;
+  }>;
+  totals: { locks: number; toHolderCents: number; toWriterCents: number };
+  token: string | null;
+}
+
+const CASH_LEG_WORDS: Record<string, string> = { credit: "credit", floor: "floor", handback: "above the cap" };
+
+/** One cash leg as the pay run reads it: what is due, what moved, what is left, which way. */
+function cashLegHtml(l: CashLegDue): string {
+  const who = l.to === "holder" ? "to holder" : "to writer";
+  const state = l.outstandingCents === 0 ? `<i class="paid">paid${l.paidAt ? ` ${escapeHtml(shortEt(l.paidAt))}` : ""}</i>` : l.paidCents > 0 ? `<i>${usd(l.paidCents)} paid · <b>${usd(l.outstandingCents)}</b> owed ${who}</i>` : `<i><b>${usd(l.outstandingCents)}</b> owed ${who}</i>`;
+  return `<div class="leg"><span>${escapeHtml(CASH_LEG_WORDS[l.leg] ?? l.leg)}</span>${usd(l.dueCents)}${state}</div>`;
+}
+
+export function renderHoldersHtml(input: HoldersPageInput): string {
+  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
+  const net = input.totals.toHolderCents - input.totals.toWriterCents;
+  const sections = input.holders
+    .map((h) => {
+      const rows = h.positions
+        .map((p) => {
+          const owedToHolder = p.cash.filter((c) => c.to === "holder").reduce((s, c) => s + c.outstandingCents, 0);
+          const owedToWriter = p.cash.filter((c) => c.to === "writer").reduce((s, c) => s + c.outstandingCents, 0);
+          const standing = owedToHolder > 0 ? `<b class="owe">${usd(owedToHolder)}</b><i>owed to holder</i>` : owedToWriter > 0 ? `<b class="back">${usd(owedToWriter)}</b><i>owed back</i>` : `<b class="sq">square</b><i>every leg paid</i>`;
+          const result = p.status === "settled" ? ` · ${p.result === "yes" ? `${escapeHtml(p.sideName)} won` : p.result === "no" ? `${escapeHtml(p.sideName)} lost` : escapeHtml(p.result ?? "")}` : p.status === "open" ? "" : ` · ${escapeHtml(p.status)}`;
+          return `<tr class="${escapeHtml(p.status)}"><td class="g"><b>${escapeHtml(p.eventTitle)}</b><i>${escapeHtml(p.sideName)} · ${escapeHtml(shortEt(p.eventTimeIso))}${result}</i><i class="tk">${escapeHtml(p.ticker)}</i></td><td>${p.contracts}<i>${p.entryCents !== null ? `@ ${p.entryCents}¢` : ""}</i></td><td>${p.floorCents}¢ / ${p.capCents}¢<i>+${usd(p.creditCents)} credit</i></td><td>${escapeHtml(p.route === "kalshi_self" ? "Kalshi" : "Polymarket")}<i>locked ${escapeHtml(shortEt(p.at))}</i></td><td class="legs">${p.cash.map(cashLegHtml).join("")}</td><td class="st">${standing}</td></tr>`;
+        })
+        .join("");
+      const name = h.holder === "(shared)" ? "shared key" : h.holder;
+      const o = h.outstanding;
+      const line = o.toHolderCents === 0 && o.toWriterCents === 0 ? "square" : `${o.toHolderCents > 0 ? `${usd(o.toHolderCents)} owed to them` : ""}${o.toHolderCents > 0 && o.toWriterCents > 0 ? " · " : ""}${o.toWriterCents > 0 ? `${usd(o.toWriterCents)} owed back` : ""} · net ${o.netToHolderCents >= 0 ? "pay " : "collect "}${usd(Math.abs(o.netToHolderCents))}`;
+      return `<div class="card holder">
+    <div class="hh"><h2>${escapeHtml(name)}${h.configured ? "" : ' <small>key removed; history kept</small>'}</h2><span class="hs">${h.locks} lock${h.locks === 1 ? "" : "s"} · ${h.open} open · ${h.settled} settled</span></div>
+    <div class="read">${escapeHtml(line)}</div>
+    ${rows ? `<div class="tablewrap"><table><tr><th>game</th><th>size</th><th>floor / cap</th><th>hedged on</th><th>cash</th><th>standing</th></tr>${rows}</table></div>` : `<div class="rule">No locks yet.</div>`}
+  </div>`;
+    })
+    .join("\n");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<link rel="icon" href="data:," />
+<title>Holders · operator · Earn &amp; Protect</title>
+<style>${SHADOW_CSS}
+.wrap,.topbar .in{max-width:1100px}
+@media(min-width:700px){.wrap,.topbar .in{max-width:1100px}}
+td.g{text-align:left;white-space:normal;min-width:200px}
+td i{display:block;color:var(--faint);font-style:normal;font-size:11px;font-weight:500}
+td i.tk{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
+td.legs{text-align:left;min-width:220px}
+.leg{display:grid;grid-template-columns:72px auto;column-gap:8px;font-size:12px;padding:2px 0}
+.leg span{color:var(--faint)} .leg i{grid-column:2;color:var(--dim)} .leg i b{color:var(--ink)} .leg i.paid{color:var(--green-deep)}
+td.st b{display:block;font-size:14px} td.st b.owe{color:#8a2a2a} td.st b.back{color:var(--warn)} td.st b.sq{color:var(--green-deep)}
+tr.settled td{opacity:.86}
+.hh{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.hh h2{margin-bottom:0;font-size:14px;text-transform:none;letter-spacing:0;color:var(--ink)} .hh h2 small{color:var(--faint);font-weight:500;text-transform:none;letter-spacing:0}
+.hs{color:var(--dim);font-size:12px}
+pre{background:var(--card2);border-radius:8px;padding:10px 12px;font-size:11.5px;overflow-x:auto;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="wordmark">Earn &amp; Protect <span>· holders · operator only</span></div>
+</div></div>
+<div class="wrap">
+  <div class="card">
+    <h1>Who locked what, and what is owed</h1>
+    <div class="sub">Every lock on the record grouped by the key that took it. The credit is owed to the holder at the tap; on a loss the floor is owed to them; on a win above the cap the slice above it is owed back. Payments recorded with the cash route move each leg to paid and the holder's receipt follows. Aliases appear here and nowhere public.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n">${input.totals.locks}</div><div class="l">locks on the record</div></div>
+      <div class="bignum"><div class="n${input.totals.toHolderCents > 0 ? "" : " green"}">${usd(input.totals.toHolderCents)}</div><div class="l">owed to holders</div></div>
+      <div class="bignum"><div class="n">${usd(input.totals.toWriterCents)}</div><div class="l">owed back to the writer</div></div>
+      <div class="bignum"><div class="n ${net > 0 ? "" : "green"}">${net >= 0 ? "" : "−"}${usd(Math.abs(net))}</div><div class="l">net ${net >= 0 ? "to pay out" : "to collect"}</div></div>
+    </div>
+  </div>
+${sections}
+  <div class="card">
+    <h2>Recording a payment</h2>
+    <div class="read">Each payment is one line on the holder's ledger. Name the holder when the same game is locked by more than one.</div>
+    <pre>curl -X POST "$SERVICE/api/shadow/cash" -H "x-admin-token: $TOKEN" -H "content-type: application/json" \\
+  -d '{"ticker":"KX...","holder":"ann","leg":"credit","cents":150,"method":"venmo","ref":"..."}'</pre>
+    <a class="back" href="/api/shadow/holders${tq}">Raw JSON</a> <a class="back" href="/venues${tq}">Venues</a> <a class="back" href="/healthz${tq}">Status</a>
+  </div>
+  <footer>
+    Operator view. Rendered ${escapeHtml(input.at.slice(0, 16).replace("T", " "))} UTC.
   </footer>
 </div>
 </body>
