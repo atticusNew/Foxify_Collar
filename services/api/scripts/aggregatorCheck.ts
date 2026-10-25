@@ -134,6 +134,7 @@ async function main(): Promise<void> {
   }
   console.log(`4 lookup      ${ticker} → "${aligned.title}" · outcome "${aligned.outcome}" on ${aligned.listings.length} venue(s)`);
   for (const l of aligned.listings) console.log(`              ${l.venue}${l.executable === false ? " (not executable today)" : ""}: ${idOf(l)}`);
+  if (!aligned.listings.some((l) => l.venue === "PROPHETX")) console.log("              PROPHETX: no listing → not mapped yet (the partner has not confirmed the mapping; check again later)");
 
   // 5. one snapshot per listing
   if (flag("--no-stream")) {
@@ -146,7 +147,13 @@ async function main(): Promise<void> {
   for (const s of snaps) {
     const name = s.market.venue === "KALSHI" ? s.market.ticker : s.market.venue === "POLYMARKET" ? `token …${s.market.tokenId.slice(-8)}` : s.market.venue === "PROPHETX" ? `strike ${s.market.strikeId}` : `${s.market.marketId}`;
     if (!s.book) {
-      console.log(`              ${s.market.venue} ${name}: ${s.error.code}${s.error.message ? ` · ${s.error.message}` : ""}`);
+      // the partner's reading of its own codes: MARKET_NOT_YET_OPEN is their ~2-day window, UNAVAILABLE is transient (one retry already made)
+      const state = s.error.code === "MARKET_NOT_YET_OPEN" ? " · mapped, streams ~2d out" : s.error.code === "UNAVAILABLE" ? " · transient, try again shortly" : "";
+      console.log(`              ${s.market.venue} ${name}: ${s.error.code}${s.error.message ? ` · ${s.error.message}` : ""}${state}`);
+      continue;
+    }
+    if (s.book.bids.length === 0 && s.book.asks.length === 0) {
+      console.log(`              ${s.market.venue} ${name}: mapped, no book yet (empty snapshot; the venue has not opened this line)${s.book.status ? ` · ${s.book.status}` : ""}`);
       continue;
     }
     const b = bestOf(s.book);
