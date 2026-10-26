@@ -16,3 +16,7 @@ docs/pilot-reports/raw-pilot-data/*/
 !docs/pilot-reports/raw-pilot-data/README.md
 .env.exit-assessment
 .env.*
+
+# the lock-in extension: saved venue pages for the simulation, and the packed build
+demo/event-lockin-extension/preview/fixtures/*.html
+demo/event-lockin-extension/dist/

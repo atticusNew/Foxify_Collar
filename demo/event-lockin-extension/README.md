@@ -1,6 +1,6 @@
-# Atticus Earn & Protect: Lock in (browser extension, demo placement)
+# Atticus Earn & Protect: Lock in (browser extension)
 
-Demo-only. One extension, three venues, each in its own skin:
+One extension, three venues, each in its own skin:
 
 | Venue | Page it draws on | How the venue says a play | Skin |
 | --- | --- | --- | --- |
@@ -14,20 +14,23 @@ code: the line, the panel, the lock, the receipt.
 
 Before the trade, two quiet things and no more (each can be turned off in Options):
 
-- a **shield** in a small disc of the venue's colour after the name of each club whose game the
-  service can protect this week, on the game list and the game page. Hover (or tap) it and our
-  own card opens at once, in the skin: "Lock in available · Protection available on this game
-  after your pick fills. Lock it in from Portfolio." It is not a browser tooltip, so there is no
-  delay and no question-mark cursor, and it goes with the first scroll or press. The mark swallows
-  its own click, so the venue's row (a link or a button) does not fire. Nothing on games the
-  service does not list, so the mark also shows coverage honestly. Bare codes (the score strip,
-  the futures list) are never marked;
-- one line in the **order slip** once a Winner pick sits in it, priced at the slip's own stake:
-  "Lock in available after this is matched · worst case $8.29 instead of $0 · +$1.36 paid now ·
-  from Portfolio". It reprices as the stake is typed; with no stake typed yet (an empty slip, no
-  funds) it reads "enter a stake to see the worst case". No button; nothing can be locked before
-  the trade. Spread and Total picks get no line. On Kalshi a **No** pick says "your No is a pick
-  on the Seahawks".
+- one **"Lock in" pill** per game the service can lock in right now, on the game list and the
+  game page: a filled shield and "Lock in · until 7:35pm ET", in a neutral place on the game's
+  card (after its title, else after its time line, else on a line of its own at the foot). The
+  service decides which games: `markets[].protectable` is true from seven days out until 45
+  minutes before kickoff, for a paired game with odds in range and no lock on it yet. A game under
+  way, or about to start, gets no pill. The page is read only to find each game's card (the block
+  naming both clubs), so there is one pill per game, never one per team. Hover or tap the pill
+  and our own card opens at once, in the skin ("Protection on this game can be locked in from
+  Portfolio after your pick fills, until 7:35pm ET (45 minutes before kickoff)."); not a browser
+  tooltip, so no delay and no question-mark cursor. The pill swallows its own click so the
+  venue's row does not open; a venue that redraws its list gets the same pill back in the same
+  place, with an open card moving to it;
+- the **same pill in the order slip**, as one line, once a Winner pick on a protectable game sits
+  in it: "Lock in available after this is matched · until 7:35pm ET · from Portfolio". No
+  figures: the stake typed into a page we do not control is not read; the price is quoted on
+  the plays page once the play fills, at the size that filled. Spread and Total picks get no
+  line. On Kalshi a **No** pick adds "your No is a pick on the Seahawks".
 
 The holder places the play exactly as they do today. The offer itself is on one page, the list
 of open plays. Once a matched play exists, under its row:
@@ -186,24 +189,69 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
 
 - `manifest.json` runs the content script on the three venues' domains (edit `matches` to add one)
   and on the local preview pages; grants fetch to the service host and to localhost on any port.
+  `node pack.mjs` writes the production build to `dist/` with the local matches and permissions
+  stripped and the previews left out (see Production build).
 - `content.js` picks the venue from the host name (`VENUES`), decides it is on the plays page (URL
   or heading) and which tab is open, finds play rows by text (a team the service can protect, by
   nickname or by code, plus the row's money), reads the size from the table's columns, the row's
   labels, or Kalshi's contracts and cents, flips a Kalshi No to the other club's market, inserts
   our block as a sibling after the row (a full-width table row when the row is one) with the
   venue's skin class on it, and re-inserts it when the venue re-renders. Off the plays page it
-  puts the shield after each protectable club's name (`markGames`; a club with two listed games is
-  settled by the date on its card, else by which of them is still open to protect; the hover card
-  is `showTip`) and the one line in the slip (`findSlip`: the block an input, textbox or
-  spinbutton sits in, the pick named most in it, the stake from the input). The venue's DOM is never
-  modified; our marks and line are added beside it.
+  finds each game's card (`findGames`: from a club's name, the block naming both clubs of exactly
+  one game, grown to the card with its time line), puts one pill on each card the service says
+  is protectable (`markGames`, keyed by game so a redraw keeps it; the hover card is `showTip`),
+  and the one line in the slip (`findSlip`: the block with the venue's place-order button, the
+  pick named most in it; no stake is read). Once per page view it posts the anonymous counts
+  (`sendTelemetry`). The venue's DOM is never modified; our pills and line are added beside it.
 - `content.css` the line, the inline panel, the segmented control, the chip. Every colour is a
   variable with the ProphetX values as defaults; `.ael-v-kalshi` and `.ael-v-novig` override them.
   Two-column tiles under 560px.
 - `background.js` is the fetch proxy; it attaches `x-lock-key` from extension storage.
 - `options.html` sets the service URL, lock key, Rehearsal, the two before-the-trade items
-  (shield, slip line), and the operator-only hedge line.
-- `preview/positions.html`, `preview/kalshi.html`, `preview/novig.html` are the stand-in boards.
+  (pill, slip line), the anonymous counts, and the operator-only hedge line.
+- `preview/positions.html`, `preview/kalshi.html`, `preview/novig.html` are the stand-in boards;
+  `preview/fixtures/` takes saved copies of the real pages (its README says how; not committed).
+- `pack.mjs` builds `dist/lock-in-<version>/` and `.zip` for the store. `PRIVACY.md` is the
+  privacy policy the store listing links to; it ships inside the build.
+
+## What the service decides, and what it hears back
+
+The extension draws; the service decides. Two things ride with `GET /api/shadow/markets`:
+
+- each market's `startIso`, `protectable`, `protectableUntilIso` and, when not protectable, why
+  (`in_progress`, `too_close`, `far_out`, `unpaired`, `mark_out_of_range`, `on_record`). The
+  window is one rule for the board, the quote and the pill: `PROTECT_WINDOW_MINUTES` in
+  `eventProtectXDemoService.ts`, 45 minutes to 7 days before kickoff;
+- `ext`: the switches. `minVersion` (env `EVENT_SHADOW_EXT_MIN_VERSION`): an extension below it
+  draws nothing but a notice to update, on every page. `marksOff` (env
+  `EVENT_SHADOW_EXT_MARKS_OFF`, comma list of `prophetx,kalshi,novig`): the pills and slip line
+  are off on those venues until the switch is cleared, with no new build. `cutoffMinutes`.
+
+Once per page view, the extension posts `POST /api/shadow/ext-telemetry` (lock key): venue, kind
+of page (`board`, `game`, `plays`, `other`), extension version, and whole-number counts (markets
+listed, protectable, games found, pills drawn, slip seen, slip marked, rows read, offers shown,
+rows unread). Fixed vocabularies only; anything else is refused with 400, and no page text or
+amount is accepted. `GET /api/shadow/ext-telemetry/summary?token=...` (operator) shows totals
+per venue and the last rows, so what drew on a live venue is seen without a screenshot. Off in
+Options for anyone who prefers.
+
+## Production build
+
+```
+cd demo/event-lockin-extension && node pack.mjs
+```
+
+writes `dist/lock-in-<version>/` and `dist/lock-in-<version>.zip`: the same files, `manifest.json`
+without the `127.0.0.1` / `localhost` matches and permissions, no previews, `PRIVACY.md` inside.
+Upload the zip to the Chrome Web Store developer dashboard; link `PRIVACY.md` (host it on the
+service or the site) in the listing's privacy field. Before uploading: bump `version` in
+`manifest.json`, set `EVENT_SHADOW_EXT_MIN_VERSION` on the service to the oldest build whose
+reading still matches the venues, and keep `EVENT_SHADOW_EXT_MARKS_OFF` at hand for a venue that
+changes its page under us.
+
+Words: "protection" and "lock in", never "insurance" or "guarantee"; the cutoff is stated where
+the pill is ("until 7:35pm ET"), since that is the first question. The pre-trade line carries no
+price on purpose: the quote at placement is the one that binds.
 
 ## Service side (Render dashboard, never in git)
 
@@ -220,6 +268,8 @@ The lock routes are off until a key is set.
 | `EVENT_SHADOW_LOCK_LEDGER_PATH` | leave unset | Locks live in `lock-ledger.jsonl` beside the scan's ledger on the same disk. |
 | `EVENT_HEDGE_LIVE_SEND` | `yes` | The only value that sends. Anything else is a dry run. |
 | `EVENT_HEDGE_KILL_SWITCH` | `1` to stop | Nothing leaves, whatever else is set. |
+| `EVENT_SHADOW_EXT_MIN_VERSION` | e.g. `0.7.0` | Extensions below it draw nothing but "update the extension". Unset: every build draws. |
+| `EVENT_SHADOW_EXT_MARKS_OFF` | e.g. `novig` | Venues (comma list) whose pills and slip line are off, with no new build. The plays page keeps its offers. |
 
 ### Holder plays from the venue (optional, recommended for the recording)
 
@@ -323,14 +373,14 @@ Operator actions (token in `x-admin-token`), for the recording day:
 
 Before the trade, on any board:
 
-- Open the game list: a shield in a small disc sits after each club the service lists this week;
-  hover one and the card opens under it at once; click it and the row does not open. Nothing on
-  clubs it does not list. The score strip and the futures list have no marks.
+- Open the game list: one "Lock in · until 7:35pm ET" pill per game the service can lock in,
+  on the game's time line (Kalshi: after the game's title). Games under way have none. Hover a
+  pill and the card opens under it at once; click it and the row does not open. The score strip
+  and the futures list have no pills.
 - Pick a Winner / Moneyline price: the slip shows "Lock in available after this is matched ·
-  worst case $x instead of $0 · +$y paid now" a second later. Clear the stake: "enter a stake to
-  see the worst case". Change the stake: it reprices.
-  Pick a Spread: the line goes away. On Kalshi, pick **No** on a club: the line names the other
-  club. Open the plays page: no marks, no slip line, the rows have their offers.
+  until 7:35pm ET · from Portfolio" a second later, with no figures. Pick a Spread: the line goes
+  away. Pick a game under way: no line. On Kalshi, pick **No** on a club: the line names the
+  other club. Open the plays page: no pills, no slip line, the rows have their offers.
 
 Kalshi board (`kalshi.html#/portfolio`), two minutes more:
 
