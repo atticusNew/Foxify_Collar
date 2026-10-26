@@ -41,7 +41,7 @@
   // the three shapes the service prices, shown only when the book offers more than one
   const TIER_ORDER = ["tight", "balanced", "wide"];
   const TIER_WORDS = { tight: "Most now", balanced: "Even", wide: "Keep more upside" };
-  const DEFAULTS = { showHedge: "no", rehearse: "no", showShield: "yes", showSlip: "yes" };
+  const DEFAULTS = { showHedge: "no", rehearse: "no", showShield: "yes", showSlip: "yes", telemetry: "yes" };
 
   // ── the venue this page belongs to ──────────────────────────────────────────
   // One codebase, three skins. The host name decides; a preview page names its venue in a meta
@@ -58,7 +58,8 @@
     for (const id of Object.keys(VENUES)) if (VENUES[id].host.test(host)) return id;
     const meta = document.querySelector('meta[name="ael-venue"]');
     if (meta && VENUES[meta.getAttribute("content")]) return meta.getAttribute("content");
-    const m = /\/preview\/(kalshi|novig)\.html$/i.exec(location.pathname);
+    // the stand-in boards, and saved copies of the real pages dropped in preview/fixtures/<venue>-*.html
+    const m = /\/preview\/(?:fixtures\/)?(prophetx|kalshi|novig)[-.]/i.exec(location.pathname);
     return m ? m[1].toLowerCase() : "prophetx";
   };
   const VENUE_ID = detectVenue();
@@ -86,9 +87,12 @@
     serviceState: "loading",
     lastScan: 0,
     cardRows: new Map(), // position id -> binding (fallback card)
-    marks: new Map(), // text node -> the shield mark after it (game list and game page)
-    tip: null, // the hover card open over a mark
+    pills: new Map(), // game stem -> { el, html }: the pill on each protectable game's card
+    tip: null, // the hover card open over a pill
     slip: null, // the order slip's binding while a protectable pick sits in it
+    ext: {}, // the service's switches for the extension: minVersion, marksOff, cutoffMinutes
+    counts: { games: 0, marks: 0, slip: 0, slipMarked: 0, rows: 0, offers: 0, unread: 0 },
+    tele: { key: null, timer: null },
   };
 
   // ── plumbing ────────────────────────────────────────────────────────────────
@@ -240,7 +244,9 @@
     const r = await api("/api/shadow/markets", "GET");
     if (r.ok && r.json && r.json.ok && Array.isArray(r.json.markets)) {
       indexMarkets(r.json.markets);
-      S.serviceState = "ok";
+      S.ext = r.json.ext && typeof r.json.ext === "object" ? r.json.ext : {};
+      // the service names the oldest build it will draw with; an older one shows only the notice
+      S.serviceState = S.ext.minVersion && cmpVersion(EXT_VERSION, S.ext.minVersion) < 0 ? "old" : "ok";
     } else {
       S.serviceState = r.status === 403 ? "key" : r.status === 404 ? "off" : "down";
     }
@@ -1260,149 +1266,271 @@
     });
   };
 
-  // ── before the trade: a marker on protectable games, and one line in the slip ───────────
-  // The game list and the game page get one small shield after the name of each club whose game
-  // the service can protect this week (hover: what it means); nothing on games it does not list,
-  // so the mark also tells the truth about coverage. The order slip, once a Winner pick sits in
-  // it, gets one quiet line with the floor at the slip's own stake: the offer the holder will see
-  // under the row after the play fills. No button, nothing to tap; the lock is still after the trade.
-  const MARK_TITLE = () => "Protection available on this game after your pick " + (VENUE_ID === "kalshi" ? "fills" : "is matched") + ". Lock it in from " + V.page + ".";
-  const marksOn = () => S.settings.showShield === "yes";
-  const slipOn = () => S.settings.showSlip === "yes";
-  /** The block an input sits in, climbing from a node: the slip. Null when no input is above it. */
-  const STAKE_INPUT = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=search]):not([type=submit]):not([type=button]), [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="spinbutton"]';
-  const slipFrom = (node) => {
-    let e = node.parentElement;
-    for (let i = 0; e && e !== document.body && i < 9; i++, e = e.parentElement) {
-      const r = e.getBoundingClientRect();
-      if (r.width > 720 || r.height > 900) return null;
-      if (e.querySelector(STAKE_INPUT)) return e;
+  // ── before the trade: one pill per protectable game, and the same pill in the slip ───────
+  // The service says which games can be locked in right now (markets[].protectable, with the
+  // window's close: 45 minutes before kickoff); a game under way or about to start is not on it.
+  // The page is read only to find each game's card: the smallest block naming both clubs. One
+  // pill per game, in a neutral place (after the game's title, else after its time line, else on
+  // its last line), reading "Lock in · until 7:35pm ET": the words are on the mark, no hover
+  // needed; the hover card says the rest. The slip gets the same pill with no figures: a price
+  // is quoted on the plays page once the play fills, not from a stake typed into a page we do
+  // not control.
+  const marksOff = () => S.serviceState !== "ok" || (S.ext.marksOff || []).includes(VENUE_ID);
+  const marksOn = () => S.settings.showShield === "yes" && !marksOff();
+  const slipOn = () => S.settings.showSlip === "yes" && !marksOff();
+  const stemOf = (ticker) => String(ticker).slice(0, String(ticker).lastIndexOf("-"));
+  /** The service's word on a game: open to lock in when either side is, and when the window closes. */
+  const gameOpen = (stem) => S.markets.filter((m) => stemOf(m.ticker) === stem && m.protectable);
+  const gameUntil = (stem) => (gameOpen(stem).find((m) => m.protectableUntilIso) || {}).protectableUntilIso || null;
+  const untilWords = (iso) => {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      const et = (x) => x.toLocaleDateString("en-US", { timeZone: "America/New_York" });
+      const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).toLowerCase().replace(" ", "");
+      return "until " + (et(d) === et(new Date()) ? "" : d.toLocaleDateString("en-US", { weekday: "short", timeZone: "America/New_York" }) + " ") + time + " ET";
+    } catch {
+      return "";
     }
-    return null;
   };
-  const stakeTyped = (input) => {
-    if (!input) return "";
-    const raw = "value" in input && input.value != null && input.tagName === "INPUT" ? input.value : input.textContent;
-    return String(raw || "").replace(/[^\d.]/g, "");
+  const TIP_WORDS = (stem) => {
+    const u = gameUntil(stem);
+    return "Protection on this game can be locked in from " + V.page + " after your pick " + (VENUE_ID === "kalshi" ? "fills" : "is matched") + (u ? ", " + untilWords(u) + " (" + (S.ext.cutoffMinutes || 45) + " minutes before kickoff)." : ".");
   };
-  /** Live markets only: a settled lock in the index is a record, not a game to protect. */
-  const liveMarket = (ticker) => S.markets.some((m) => m.ticker === ticker && !m.onRecord);
   /**
-   * The one club a short text names, as a market: by nickname (a bare code would mark the score
-   * strip and the futures list too). A club with two listed games (NBA, MLB; or last week's lock
-   * beside this week's game) is settled by the date on the card around the name.
+   * The games (ticker stems) a text names both clubs of. A nickname shared by two listed games
+   * (this week and next) is settled by the other club: both sides must share one stem.
    */
-  const markTicker = (node) => {
-    const text = norm(node.nodeValue);
-    if (!S.nickRe) return null;
+  const gamesIn = (raw) => {
+    const text = spaced(raw);
+    const seen = new Map(); // stem -> { sides: Set(ticker), named: a nickname was read }
+    if (!S.nickRe) return [];
+    const add = (ticker, named) => {
+      const st = stemOf(ticker);
+      const g = seen.get(st) || { sides: new Set(), named: false };
+      g.sides.add(ticker);
+      g.named = g.named || named;
+      seen.set(st, g);
+    };
+    let m;
     S.nickRe.lastIndex = 0;
-    const m = S.nickRe.exec(text);
-    if (!m) return null;
-    S.nickRe.lastIndex = m.index + m[0].length;
-    if (S.nickRe.exec(text)) return null;
-    const nick = m[2].toLowerCase();
-    const direct = nicksIn(text);
-    if (direct.size === 1) return [...direct.keys()][0];
-    let e = node.parentElement;
-    for (let i = 0; e && e !== document.body && i < 6; i++, e = e.parentElement) {
-      const t = spaced(norm(e.textContent));
-      if (t.length > 400) break;
-      const hits = [...nicksIn(t).keys()].filter((tk) => (nickOf(S.byTicker[tk]) || "").toLowerCase() === nick);
-      if (hits.length === 1) return hits[0];
+    while ((m = S.nickRe.exec(text))) {
+      let list = S.nicks.get(m[2].toLowerCase()) || [];
+      if (list.length > 1) {
+        const before = text.slice(0, m.index + m[1].length).trim();
+        const code = /(?:^|[^A-Za-z])([A-Z]{2,3})$/.exec(before);
+        if (code) {
+          const hit = list.filter((x) => x.code === code[1] || (CODE_ALIAS[code[1]] || []).includes(x.code));
+          if (hit.length) list = hit;
+        }
+      }
+      for (const x of list) add(x.ticker, true);
     }
-    // no date near the name: of the club's listed games, the one still open to protect (a settled
-    // lock from an earlier week sits in the index only so its row on the plays page can be found)
-    const live = (S.nicks.get(nick) || []).map((x) => x.ticker).filter(liveMarket);
-    return live.length === 1 ? live[0] : null;
+    // the other club may be printed as its code only ("DET Lions" beside "GB" in a joined cell);
+    // a card of codes alone (the score strip) names no game
+    CODE_RE.lastIndex = 0;
+    while ((m = CODE_RE.exec(text))) for (const t of S.codes.get(m[2]) || []) add(t, false);
+    return [...seen.entries()].filter(([, g]) => g.sides.size >= 2 && g.named).map(([st]) => st);
   };
-  /** Our own hover card for a mark: at once, in the skin, no browser tooltip and no question-mark cursor. */
-  const showTip = (mark) => {
+  const CARD_MAX_H = 340;
+  const CARD_MAX_TEXT = 700;
+  const TIME_RE = /\b\d{1,2}:\d{2}\s?(?:[ap]\.?m\.?)?\b|\b(?:today|tomorrow|tonight|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.? \d{1,2}\b/i;
+  /** Every game card on the page: stem -> where the pill goes (a title node, or the card itself). */
+  const findGames = (nodes) => {
+    const out = new Map();
+    if (!S.nickRe) return out;
+    for (const node of nodes) {
+      const text = norm(node.nodeValue);
+      if (!text || text.length > 80 || OURS(node)) continue;
+      S.nickRe.lastIndex = 0;
+      if (!S.nickRe.test(text)) continue;
+      // a title names both clubs ("KC Chiefs vs SEA Seahawks"): the pill goes right after it
+      const titled = gamesIn(text);
+      if (titled.length === 1) {
+        if (!out.has(titled[0])) out.set(titled[0], { anchor: node, card: null });
+        continue;
+      }
+      if (titled.length > 1) continue;
+      // one club: climb to the block naming both clubs of exactly one game, then keep climbing
+      // while the block above still names only that game (the row grid up to the card with its
+      // time line), stopping at the list of games or at a block too tall to be one card
+      let card = null;
+      let stem = null;
+      let e = node.parentElement;
+      for (let i = 0; e && e !== document.body && i < 8; i++, e = e.parentElement) {
+        const t = e.textContent || "";
+        if (t.length > CARD_MAX_TEXT) break;
+        const games = gamesIn(t);
+        if (!games.length) continue;
+        if (games.length > 1 || (stem && games[0] !== stem)) break;
+        const r = e.getBoundingClientRect();
+        if (r.height > CARD_MAX_H || r.width < 120) break;
+        card = e;
+        stem = games[0];
+      }
+      if (card && !out.has(stem)) out.set(stem, { anchor: null, card });
+    }
+    return out;
+  };
+  /** Where a card's pill sits: after its time line, else on its last line. */
+  const cardSpot = (card) => {
+    const w = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      const t = norm(n.nodeValue);
+      if (!t || t.length > 40 || OURS(n)) continue;
+      S.nickRe.lastIndex = 0;
+      if (S.nickRe.test(t)) continue;
+      if (TIME_RE.test(t)) return { anchor: n, card };
+    }
+    // no time line: a line of our own at the foot of the card
+    return { anchor: null, card };
+  };
+  const mountPill = (pill, spot) => {
+    if (spot.anchor) spot.anchor.parentNode.insertBefore(pill, spot.anchor.nextSibling);
+    else {
+      const row = document.createElement("div");
+      row.className = "ael-ui ael-pill-row " + SKIN;
+      row.appendChild(pill);
+      spot.card.appendChild(row);
+    }
+  };
+  const unmountPill = (el) => (el.parentNode && el.parentNode.classList && el.parentNode.classList.contains("ael-pill-row") ? el.parentNode : el).remove();
+  const pillHtml = (stem) => '<span class="ael-ic">' + SHIELD_FILL + "</span><b>Lock in</b>" + (gameUntil(stem) ? '<span class="ael-until">' + esc(untilWords(gameUntil(stem))) + "</span>" : "");
+  const stopRow = (el) => {
+    // the venue's row is a link or a button: our pill must not fire it
+    for (const ev of ["click", "mousedown", "pointerdown", "touchstart"]) el.addEventListener(ev, (e) => { e.stopPropagation(); e.preventDefault(); });
+  };
+  const newPill = (stem) => {
+    const pill = document.createElement("span");
+    pill.className = "ael-ui ael-pill " + SKIN;
+    pill.dataset.aelGame = stem;
+    pill.setAttribute("role", "note");
+    pill.setAttribute("aria-label", "Lock in available. " + TIP_WORDS(stem));
+    pill.tabIndex = 0;
+    pill.innerHTML = pillHtml(stem);
+    stopRow(pill);
+    pill.addEventListener("click", () => (S.tip && S.tip.mark === pill ? hideTip() : showTip(pill, stem)));
+    pill.addEventListener("mouseenter", () => showTip(pill, stem));
+    pill.addEventListener("mouseleave", hideTip);
+    pill.addEventListener("focus", () => showTip(pill, stem));
+    pill.addEventListener("blur", hideTip);
+    return pill;
+  };
+  /** Our own hover card under a pill: at once, in the skin; no browser tooltip, no question-mark cursor. */
+  const placeTip = () => {
+    if (!S.tip) return;
+    const r = S.tip.mark.getBoundingClientRect();
+    const w = S.tip.el.offsetWidth;
+    S.tip.el.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + "px";
+    S.tip.el.style.top = r.bottom + 7 + "px";
+  };
+  const showTip = (mark, stem) => {
     hideTip();
     const tip = document.createElement("div");
     tip.className = "ael-ui ael-tip " + SKIN;
-    tip.innerHTML = '<b><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in available</b><span>" + esc(MARK_TITLE()) + "</span>";
+    tip.innerHTML = '<b><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in available</b><span>" + esc(TIP_WORDS(stem)) + "</span>";
     document.body.appendChild(tip);
-    const r = mark.getBoundingClientRect();
-    const w = tip.offsetWidth;
-    tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + "px";
-    tip.style.top = r.bottom + 7 + "px";
-    S.tip = { el: tip, mark };
+    S.tip = { el: tip, mark, stem };
+    placeTip();
   };
   const hideTip = () => {
     if (S.tip) S.tip.el.remove();
     S.tip = null;
   };
-  // the card is fixed over the page: it goes when the page scrolls or anything is pressed
+  // the card is fixed over the page: it goes when the page scrolls or anything else is pressed
   document.addEventListener("scroll", hideTip, true);
   document.addEventListener("pointerdown", (e) => { if (!(S.tip && S.tip.mark.contains(e.target))) hideTip(); }, true);
+  /**
+   * One pill per protectable game on the page. Keyed by the game, so a venue that redraws its
+   * list gets the same pill back in the same place, and an open hover card moves to the new pill
+   * instead of closing.
+   */
   const markGames = (nodes) => {
+    const found = marksOn() ? findGames(nodes) : new Map();
     const keep = new Set();
-    if (marksOn() && S.serviceState === "ok") {
-      for (const node of nodes) {
-        const text = norm(node.nodeValue);
-        if (text.length > 40) continue;
-        const ticker = markTicker(node);
-        if (!ticker || !liveMarket(ticker)) continue;
-        const p = node.parentElement;
-        if (!p || OURS(p) || slipFrom(node)) continue;
-        const r = p.getBoundingClientRect();
-        if (r.width < 30 || r.height < 10 || r.height > 72) continue;
-        keep.add(node);
-        if (S.marks.has(node)) continue;
-        const mark = document.createElement("span");
-        mark.className = "ael-ui ael-mark " + SKIN;
-        mark.setAttribute("role", "img");
-        mark.setAttribute("aria-label", "Lock in available: " + MARK_TITLE());
-        mark.tabIndex = 0;
-        mark.innerHTML = SHIELD_FILL;
-        // the venue's row is a link or a button: our mark must not fire it
-        for (const ev of ["click", "mousedown", "pointerdown", "touchstart"]) mark.addEventListener(ev, (e) => { e.stopPropagation(); e.preventDefault(); });
-        mark.addEventListener("click", () => (S.tip && S.tip.mark === mark ? hideTip() : showTip(mark))); // a tap on a touch screen
-        mark.addEventListener("mouseenter", () => showTip(mark));
-        mark.addEventListener("mouseleave", hideTip);
-        mark.addEventListener("focus", () => showTip(mark));
-        mark.addEventListener("blur", hideTip);
-        node.parentNode.insertBefore(mark, node.nextSibling);
-        S.marks.set(node, mark);
+    for (const [stem, where] of found) {
+      if (!gameOpen(stem).length) continue;
+      const spot = where.anchor ? where : cardSpot(where.card);
+      keep.add(stem);
+      let P = S.pills.get(stem);
+      const placed = P && P.el.isConnected && ((spot.anchor && P.el.previousSibling === spot.anchor) || (!spot.anchor && P.el.parentNode && P.el.parentNode.parentNode === spot.card));
+      if (placed) {
+        const html = pillHtml(stem);
+        if (P.html !== html) {
+          P.el.innerHTML = html;
+          P.html = html;
+        }
+        continue;
+      }
+      const el = newPill(stem);
+      const wasTip = P && S.tip && S.tip.mark === P.el ? P.el.getBoundingClientRect() : null;
+      if (P) unmountPill(P.el);
+      mountPill(el, spot);
+      S.pills.set(stem, { el, html: el.innerHTML });
+      // a redraw in place keeps the open card, on the new pill; a pill that moved elsewhere loses it
+      if (wasTip) {
+        const r = el.getBoundingClientRect();
+        if (Math.abs(r.top - wasTip.top) < 40 && Math.abs(r.left - wasTip.left) < 120) S.tip.mark = el;
+        else hideTip();
       }
     }
-    for (const [node, mark] of S.marks) {
-      if (!keep.has(node) || !node.isConnected) {
-        if (S.tip && S.tip.mark === mark) hideTip();
-        mark.remove();
-        S.marks.delete(node);
-      }
+    for (const [stem, P] of S.pills) {
+      if (keep.has(stem)) continue;
+      if (S.tip && S.tip.mark === P.el) hideTip();
+      unmountPill(P.el);
+      S.pills.delete(stem);
     }
-    if (S.tip && !S.tip.mark.isConnected) hideTip();
+    if (S.tip) {
+      if (!S.tip.mark.isConnected) hideTip();
+      else placeTip();
+    }
+    S.counts.games = found.size;
+    S.counts.marks = S.pills.size;
   };
 
-  /** The slip's pick, its size, and where our line goes; null when the slip is empty or not a Winner pick. */
+  /**
+   * The slip: the block with the venue's place-order button, climbing from a text node that names
+   * a club. Its pick is the club named most in it; a Spread or Total pick gets nothing, protection
+   * covers the Winner market. No stake is read.
+   */
+  const PLACE_RE = /\b(place|submit|confirm|review|buy|sell|add to)\b/i;
+  const slipFrom = (node) => {
+    let e = node.parentElement;
+    for (let i = 0; e && e !== document.body && i < 10; i++, e = e.parentElement) {
+      const r = e.getBoundingClientRect();
+      if (r.width > 720 || r.height > 1400) return null;
+      if ((e.textContent || "").length > 900) return null;
+      const btn = [...e.querySelectorAll("button, [role=button], input[type=submit]")].find((b) => !OURS(b) && PLACE_RE.test(norm(b.textContent || b.value || "")));
+      if (btn) return e;
+    }
+    return null;
+  };
   const findSlip = (nodes) => {
     for (const node of nodes) {
+      if (OURS(node)) continue;
       const sides = sidesIn(node.nodeValue);
       if (!sides.size) continue;
       const block = slipFrom(node);
       if (!block) continue;
-      const typed = stakeTyped(block.querySelector(STAKE_INPUT));
-      let text = spaced(norm(block.textContent));
-      if (text.length > 700 || pointsRow(text)) return null;
-      // the input's figure is not in the text: a dollar stake on most venues, a contract count on Kalshi
-      if (typed && Number(typed) > 0) text += VENUE_ID === "kalshi" ? " " + typed + " contracts" : " Wager $" + typed;
+      const text = spaced(norm(block.textContent));
+      if (pointsRow(text) || gamesIn(text).length > 1) return null;
       const count = sidesIn(text);
       if (!count.size) return null;
       const sorted = [...count.entries()].sort((a, b) => b[1] - a[1]);
       let ticker = sorted.length === 1 || sorted[0][1] > sorted[1][1] ? sorted[0][0] : null;
+      // a slip that names both clubs once each ("DEN at ARI"): the game is enough for the pill
+      if (!ticker && gamesIn(text).length === 1) ticker = gameOpen(gamesIn(text)[0])[0] ? gameOpen(gamesIn(text)[0])[0].ticker : sorted[0][0];
       if (!ticker) return null;
       let flipped = false;
       if (VENUE_ID === "kalshi" && sideWord(text) === "no") {
         const other = siblingOf(ticker);
-        if (!other) return null;
-        ticker = other;
-        flipped = true;
+        if (other) {
+          ticker = other;
+          flipped = true;
+        }
       }
-      if (kindIn(text) !== "winner" || !liveMarket(ticker)) return null;
-      const size = sizeIn(text);
-      return { block, ticker, size, flipped };
+      const kind = kindIn(text);
+      return { block, ticker, stem: stemOf(ticker), kind, flipped };
     }
     return null;
   };
@@ -1411,54 +1539,78 @@
       B.host && B.host.remove();
       const host = document.createElement("div");
       host.className = "ael-ui ael-slip " + SKIN;
-      host.addEventListener("click", (e) => e.stopPropagation());
+      stopRow(host);
       const btn = [...B.block.querySelectorAll("button")].filter((b) => !OURS(b)).pop();
       if (btn && btn.parentElement === B.block) B.block.insertBefore(host, btn);
       else B.block.appendChild(host);
       B.host = host;
       B.html = null;
     }
-    const st = stateOf(B);
     const when = VENUE_ID === "kalshi" ? "after this fills" : "after this is matched";
-    let html;
-    // no stake yet (an empty slip, no funds): the notice without numbers; the figures come with the stake
-    if (!B.size) html = '<span class="ael-ic">' + SHIELD_FILL + "</span><span><b>Lock in available " + when + "</b> &middot; enter " + (VENUE_ID === "kalshi" ? "a contract count" : "a stake") + " to see the worst case &middot; from " + esc(V.page) + "</span>";
-    else if (!st.quote) html = '<span class="ael-ic">' + SHIELD_FILL + '</span><span class="ael-dim">Checking protection&hellip;</span>';
-    else if (!st.quote.ok) html = '<span class="ael-ic">' + SHIELD_FILL + "</span><span><b>Lock in available " + when + "</b> &middot; " + esc(refusalWords(st.quote.code, st.quote.message).why.replace(/\.$/, "").replace(/^Protecting this pick/, "protecting it")) + " &middot; from " + esc(V.page) + "</span>";
-    else {
-      const p = st.quote.p;
-      const q = p.quote;
-      const t = (q.tiers && q.tiers.balanced) || q;
-      const n = q.contracts || p.contracts;
-      const rs = reshape(n, t.floorCents, t.capCents, t.creditCents);
-      html = '<span class="ael-ic">' + SHIELD_FILL + "</span><span><b>Lock in available " + when + "</b> &middot; worst case " + esc(usd(rs.floorTotal)) + " instead of $0 &middot; +" + esc(usd(t.creditCents)) + " paid now" + (B.flipped ? " &middot; your No is a pick on the " + esc(shortOf(B.ticker)) : "") + " &middot; from " + esc(V.page) + "</span>";
-    }
+    const u = gameUntil(B.stem);
+    const html = '<span class="ael-ic">' + SHIELD_FILL + "</span><span><b>Lock in available</b> " + when + (u ? " &middot; " + esc(untilWords(u)) : "") + " &middot; from " + esc(V.page) + (B.flipped ? " &middot; your No is a pick on the " + esc(shortOf(B.ticker)) : "") + "</span>";
     if (B.html !== html) {
       B.host.innerHTML = html;
-      B.host.style.display = html ? "" : "none";
       B.html = html;
     }
   };
   const scanSlip = (nodes) => {
-    const F = slipOn() && S.serviceState === "ok" ? findSlip(nodes) : null;
-    if (!F) {
+    const F = slipOn() ? findSlip(nodes) : null;
+    S.counts.slip = F ? 1 : 0;
+    const show = F && F.kind === "winner" && gameOpen(F.stem).length > 0;
+    S.counts.slipMarked = show ? 1 : 0;
+    if (!show) {
       if (S.slip) S.slip.host && S.slip.host.remove();
       S.slip = null;
       return;
     }
     let B = S.slip;
-    if (B && (B.ticker !== F.ticker || B.block !== F.block)) {
+    if (B && (B.stem !== F.stem || B.block !== F.block)) {
       B.host && B.host.remove();
       B = null;
     }
-    if (!B) B = { ...F, slip: true, kind: "winner", match: "matched", from: "page", host: null, html: null };
+    if (!B) B = { ...F, host: null, html: null };
     else {
-      B.size = F.size;
+      B.ticker = F.ticker;
       B.flipped = F.flipped;
     }
     S.slip = B;
-    quoteRow(B);
     paintSlip(B);
+  };
+
+  // ── telemetry: anonymous counts, once per page view, so a live venue can be read without a screenshot
+  const EXT_VERSION = (() => {
+    try {
+      return chrome.runtime.getManifest().version;
+    } catch {
+      return "0.0.0";
+    }
+  })();
+  const teleVenue = () => (/^(127\.0\.0\.1|localhost)$/.test(location.hostname) ? "preview" : VENUE_ID);
+  const sendTelemetry = () => {
+    if (S.settings.telemetry === "no" || S.serviceState !== "ok") return;
+    const page = S.pageOk ? "plays" : S.counts.games > 1 ? "board" : S.counts.games === 1 || S.counts.slip ? "game" : "other";
+    const counts = { markets: S.markets.length, protectable: S.markets.filter((m) => m.protectable).length, games: S.counts.games, marks: S.counts.marks, slip: S.counts.slip, slipMarked: S.counts.slipMarked, rows: S.counts.rows, offers: S.counts.offers, unread: S.counts.unread };
+    void api("/api/shadow/ext-telemetry", "POST", { venue: teleVenue(), page, version: EXT_VERSION, counts });
+  };
+  const teleTick = () => {
+    const key = location.pathname + location.hash;
+    if (S.tele.key !== key) {
+      S.tele.key = key;
+      clearTimeout(S.tele.timer);
+      // the page's own loading first, then one post for the view
+      S.tele.timer = setTimeout(sendTelemetry, 6_000);
+    }
+  };
+  /** Semantic compare, "0.7.0" against "0.10.1": negative when a is older. */
+  const cmpVersion = (a, b) => {
+    const A = String(a).split(".").map(Number);
+    const B = String(b).split(".").map(Number);
+    for (let i = 0; i < Math.max(A.length, B.length); i++) {
+      const d = (A[i] || 0) - (B[i] || 0);
+      if (d) return d;
+    }
+    return 0;
   };
 
   // ── the fallback card: the service knows the positions but no row on the page was read ──
@@ -1542,15 +1694,27 @@
     scanTimer = null;
     S.lastScan = now;
     S.pageOk = onPortfolioPage();
+    if (S.serviceState === "old") {
+      // too old for the service: nothing is drawn but the notice, on every page
+      for (const [, B] of S.rows) B.host && B.host.remove();
+      S.rows.clear();
+      paintCard(false);
+      markGames([]);
+      scanSlip([]);
+      paintNotice("Lock in: update the extension. This build (" + EXT_VERSION + ") is below the service's minimum (" + S.ext.minVersion + ").");
+      return;
+    }
     if (!S.pageOk) {
       for (const [, B] of S.rows) B.host && B.host.remove();
       S.rows.clear();
       paintCard(false);
       paintNotice("");
-      // before the trade: the marks on the list and the game page, the line in the slip
+      // before the trade: the pill on each protectable game's card, and in the slip
       const nodes = textNodes();
       markGames(nodes);
       scanSlip(nodes);
+      S.counts.rows = S.counts.offers = S.counts.unread = 0;
+      teleTick();
       return;
     }
     markGames([]);
@@ -1605,6 +1769,10 @@
       }
     }
     paintCard(found.length === 0 && S.svc.configured && S.svc.positions.length > 0);
+    S.counts.rows = S.rows.size;
+    S.counts.offers = [...S.rows.values()].filter((B) => { const st = S.st.get(B.ticker); return st && st.quote && st.quote.ok; }).length;
+    S.counts.unread = [...S.rows.values()].filter((B) => B.from === "none").length;
+    teleTick();
   };
 
   // ── start ───────────────────────────────────────────────────────────────────
@@ -1647,8 +1815,8 @@
       for (const [, B] of S.rows) fitHost(B);
     });
     document.addEventListener("input", () => scan(false), true);
-    window.addEventListener("hashchange", () => scan(true));
-    window.addEventListener("popstate", () => scan(true));
+    window.addEventListener("hashchange", () => (hideTip(), scan(true)));
+    window.addEventListener("popstate", () => (hideTip(), scan(true)));
   };
 
   if (document.readyState === "complete" || document.readyState === "interactive") start();
@@ -1656,6 +1824,6 @@
   // inert inside the extension (isolated world); lets a page-level harness read state when it injects this file
   if (window.__AEL_DEBUG) {
     window.__ael = S;
-    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, findSlip, markGames, indexMarkets, sizeIn, kindIn, venue: VENUE_ID };
+    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, findSlip, findGames, gamesIn, markGames, indexMarkets, kindIn, venue: VENUE_ID };
   }
 })();

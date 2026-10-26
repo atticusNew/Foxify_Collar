@@ -143,6 +143,7 @@ import { venueBreakdown } from "../src/eventCollar/crossVenue/shadowVenues";
 import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slateLinkKey, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
 import type { CandidateResult, ScanOptions, ScanState, listGameMarkets, pricingSourceStatus, quoteOne } from "./eventProtectXDemoService";
 import { HOLDER_ALIAS_RE, holderKeysFromEnv, lockCaller, lockKeyFromEnv, parseLockRequest, readJsonBody } from "../src/eventCollar/crossVenue/lockGate";
+import { ExtTelemetryStore, parseExtTelemetry } from "../src/eventCollar/crossVenue/extTelemetry";
 import { VenueClient, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
 import { referenceSourcesFromEnv } from "../src/eventCollar/crossVenue/venueBooks";
@@ -280,6 +281,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/netting",
   "/venues",
   "/api/shadow/venues",
+  "/api/shadow/ext-telemetry/summary",
 ]);
 
 const alertCfg = parseShadowAlertsFromEnv(process.env);
@@ -309,7 +311,23 @@ const LOCK_KEY = lockKeyFromEnv(process.env);
  */
 const HOLDER_KEYS = holderKeysFromEnv(process.env, LOCK_KEY);
 const LOCK_ROUTES_ON = Boolean(LOCK_KEY) || HOLDER_KEYS.holders.length > 0;
-const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/positions", "/api/shadow/receipt"]);
+const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/ext-telemetry"]);
+/**
+ * THE EXTENSION'S SWITCHES, served with the markets list so the service, not the build, decides:
+ * EVENT_SHADOW_EXT_MIN_VERSION   the version below which the extension shows "update" and draws nothing
+ * EVENT_SHADOW_EXT_MARKS_OFF     venues (comma list: prophetx,kalshi,novig) whose marks are off for now
+ */
+const EXT_MIN_VERSION = (process.env.EVENT_SHADOW_EXT_MIN_VERSION ?? "").trim() || null;
+const EXT_MARKS_OFF = new Set(
+  (process.env.EVENT_SHADOW_EXT_MARKS_OFF ?? "")
+    .split(",")
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean),
+);
+let protectCutoffMinutes = 45;
+const extConfig = () => ({ minVersion: EXT_MIN_VERSION, marksOff: [...EXT_MARKS_OFF].sort(), cutoffMinutes: protectCutoffMinutes });
+/** anonymous counts the extension posts per page (extTelemetry.ts); in memory, operator-read */
+const extTelemetry = new ExtTelemetryStore();
 /** keyed `${holder ?? ""}|${ticker}`: two holders may lock one market at once, one holder may not lock it twice */
 const lockInFlight = new Set<string>();
 const inFlightKey = (holder: string | null, ticker: string) => `${holder ?? ""}|${ticker}`;
@@ -645,8 +663,24 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       ok: true,
       at: atIso,
       ...(holder ? { holder } : {}),
-      markets: markets.map((m) => ({ ...m, onRecord: held.has(m.ticker), live: tickerIsArmed(m.ticker) })),
+      ext: extConfig(),
+      // a market this holder already locked is on record, not protectable again
+      markets: markets.map((m) => ({ ...m, onRecord: held.has(m.ticker), protectable: m.protectable && !held.has(m.ticker), ...(held.has(m.ticker) ? { notProtectable: "on_record" } : {}), live: tickerIsArmed(m.ticker) })),
     });
+    return;
+  }
+  if (url.pathname === "/api/shadow/ext-telemetry") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST a JSON body {venue, page, version, counts}" });
+      return;
+    }
+    const parsed = parseExtTelemetry(await readJsonBody(req), atIso);
+    if (!parsed.ok) {
+      sendJson(res, 400, { ok: false, error: "bad_request", message: parsed.error });
+      return;
+    }
+    extTelemetry.add(parsed.row);
+    sendJson(res, 200, { ok: true, at: atIso });
     return;
   }
   if (url.pathname === "/api/shadow/positions") {
@@ -1985,6 +2019,11 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       sendJson(res, 200, holdersSummary());
       return;
     }
+    if (url.pathname === "/api/shadow/ext-telemetry/summary") {
+      // what the extension drew on each venue lately, and the switches it is being served
+      sendJson(res, 200, { ok: true, ext: extConfig(), ...extTelemetry.summary() });
+      return;
+    }
     if (url.pathname === "/venues" || url.pathname === "/api/shadow/venues") {
       // VENUES, NAMED: every game priced on every venue read, from the ledger's counterfactuals.
       // Operator only (OPERATOR_PATHS); the public record never carries a venue's name.
@@ -2101,6 +2140,7 @@ async function main(): Promise<void> {
   searchConfig = demo.searchConfig;
   quoteOneFn = demo.quoteOne;
   listGameMarketsFn = demo.listGameMarkets;
+  protectCutoffMinutes = demo.PROTECT_WINDOW_MINUTES.min;
   pricingSourceStatusFn = demo.pricingSourceStatus;
   heldSource = demo.aggregatorSource();
   server.listen(PORT, () => {

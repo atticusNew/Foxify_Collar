@@ -140,8 +140,8 @@ test("shadow worker holders: a key names its holder; locks land in the holder's 
   const worker = await import("../scripts/eventShadowWorker");
   const seen: OneQuoteInputs[] = [];
   const markets: GameMarketRow[] = [
-    { ticker: TICKER, league: "nba", sideName: "Boston Celtics", title: "Lakers at Celtics Winner?", dateIso: "2026-10-14", closeTimeIso: START, markCents: 60 },
-    { ticker: OTHER, league: "nba", sideName: "Los Angeles Lakers", title: "Lakers at Celtics Winner?", dateIso: "2026-10-14", closeTimeIso: START, markCents: 40 },
+    { ticker: TICKER, league: "nba", sideName: "Boston Celtics", title: "Lakers at Celtics Winner?", dateIso: "2026-10-14", closeTimeIso: START, markCents: 60, startIso: START, protectable: true, protectableUntilIso: START },
+    { ticker: OTHER, league: "nba", sideName: "Los Angeles Lakers", title: "Lakers at Celtics Winner?", dateIso: "2026-10-14", closeTimeIso: START, markCents: 40, startIso: START, protectable: true, protectableUntilIso: START },
   ];
   worker.wireLockEngine({
     listGameMarkets: async (league?: string) => markets.filter((m) => !league || m.league === league),

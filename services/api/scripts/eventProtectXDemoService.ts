@@ -96,7 +96,7 @@ import {
 import { appendCrossLedger, summarizeCrossLedger } from "../src/eventCollar/crossVenue/crossLedger";
 import { retailCrossPayload } from "../src/eventCollar/retailShowcase";
 import type { KalshiMarket } from "../src/eventCollar/types";
-import { LEAGUE_TEMPLATES } from "../src/eventCollar/crossVenue/resolutionWhitelist";
+import { LEAGUE_TEMPLATES, type LeagueTemplate } from "../src/eventCollar/crossVenue/resolutionWhitelist";
 import { matchKalshiMarket, parseGameTicker } from "../src/eventCollar/crossVenue/eventMatcher";
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
@@ -467,9 +467,25 @@ export interface CrossShowcasePayload {
 /** Verified pairings are stable for a game; cache them to spare the Gamma API. */
 const pairCache = new Map<string, MatchedPair | null>();
 
+/**
+ * The window a game can be locked in: from seven days out until 45 minutes before kickoff. One
+ * rule for the board, the quote, and the list the extension marks games from; the extension never
+ * works it out from the venue's page.
+ */
+export const PROTECT_WINDOW_MINUTES = { min: 45, max: 7 * 24 * 60 } as const;
+export type ProtectWindowWhy = "in_progress" | "too_close" | "far_out";
+export function protectWindow(startIso: string, now: Date): { open: boolean; why?: ProtectWindowWhy; untilIso: string } {
+  const startMs = new Date(startIso).getTime();
+  const untilIso = new Date(startMs - PROTECT_WINDOW_MINUTES.min * 60_000).toISOString();
+  const minutes = (startMs - now.getTime()) / 60_000;
+  if (minutes <= 0) return { open: false, why: "in_progress", untilIso };
+  if (minutes < PROTECT_WINDOW_MINUTES.min) return { open: false, why: "too_close", untilIso };
+  if (minutes > PROTECT_WINDOW_MINUTES.max) return { open: false, why: "far_out", untilIso };
+  return { open: true, untilIso };
+}
+
 function showcaseWindowOk(pair: MatchedPair, now: Date): boolean {
-  const minutes = (new Date(pair.gameStartTime).getTime() - now.getTime()) / 60_000;
-  return minutes >= 45 && minutes <= 7 * 24 * 60;
+  return protectWindow(pair.gameStartTime, now).open;
 }
 
 /**
@@ -1056,16 +1072,52 @@ export interface GameMarketRow {
   dateIso: string | null;
   closeTimeIso: string;
   markCents: number;
+  /** kickoff, from the verified pairing; null until the game is paired */
+  startIso: string | null;
+  /** can a position on this market be locked in right now (paired, odds in range, inside the window) */
+  protectable: boolean;
+  /** when the window closes: 45 minutes before kickoff; null when the kickoff is not known */
+  protectableUntilIso: string | null;
+  /** why not, when not */
+  notProtectable?: ProtectWindowWhy | "unpaired" | "mark_out_of_range";
 }
 
-/** Open, active game markets in the horizon for the whitelisted leagues (or one league). Public data, no quoting. */
+/**
+ * Kickoff per market, from the pairing. A verified pairing is kept for good (pairCache); a market
+ * that would not pair is asked again after a while, since the other venue lists games late.
+ */
+const UNPAIRED_RETRY_MS = 10 * 60_000;
+const unpairedAt = new Map<string, number>();
+async function kickoffFor(m: KalshiMarket, template: LeagueTemplate): Promise<string | null> {
+  if (pairCache.has(m.ticker)) {
+    const cached = pairCache.get(m.ticker) ?? null;
+    if (cached) return cached.gameStartTime;
+    const at = unpairedAt.get(m.ticker) ?? 0;
+    if (Date.now() - at < UNPAIRED_RETRY_MS) return null;
+    pairCache.delete(m.ticker);
+  }
+  const pair = await matchKalshiMarket(m, template);
+  pairCache.set(m.ticker, pair);
+  if (!pair) unpairedAt.set(m.ticker, Date.now());
+  return pair?.gameStartTime ?? null;
+}
+
+/**
+ * Open, active game markets in the horizon for the whitelisted leagues (or one league), each
+ * saying whether it can be locked in right now. Public data plus the pairing; no quoting.
+ */
 export async function listGameMarkets(league?: string, now: Date = new Date()): Promise<GameMarketRow[]> {
   const out: GameMarketRow[] = [];
   for (const template of LEAGUE_TEMPLATES) {
     if (league && template.league !== league.toLowerCase()) continue;
-    const markets = await getOpenMarkets(template.kalshiSeries);
-    for (const m of markets) {
-      if (m.status !== "active" || !gameDateWithinHorizon(m.ticker, template, now)) continue;
+    const markets = (await getOpenMarkets(template.kalshiSeries)).filter((m) => m.status === "active" && gameDateWithinHorizon(m.ticker, template, now));
+    const starts = await Promise.all(markets.map((m) => kickoffFor(m, template).catch(() => null)));
+    markets.forEach((m, i) => {
+      const startIso = starts[i];
+      const markCents = midCents(m);
+      const markOk = markCents >= 1 && markCents <= 99 && m.yesBidCents > 0 && m.yesAskCents < 100;
+      const window = startIso ? protectWindow(startIso, now) : null;
+      const notProtectable = !startIso ? "unpaired" : !markOk ? "mark_out_of_range" : window && !window.open ? window.why : undefined;
       out.push({
         ticker: m.ticker,
         league: template.league,
@@ -1073,11 +1125,15 @@ export async function listGameMarkets(league?: string, now: Date = new Date()): 
         title: m.title,
         dateIso: parseGameTicker(m.ticker, template)?.dateIso ?? null,
         closeTimeIso: m.closeTime,
-        markCents: midCents(m),
+        markCents,
+        startIso,
+        protectable: !notProtectable,
+        protectableUntilIso: window ? window.untilIso : null,
+        ...(notProtectable ? { notProtectable } : {}),
       });
-    }
+    });
   }
-  return out.sort((a, b) => a.closeTimeIso.localeCompare(b.closeTimeIso) || a.ticker.localeCompare(b.ticker));
+  return out.sort((a, b) => (a.startIso ?? a.closeTimeIso).localeCompare(b.startIso ?? b.closeTimeIso) || a.ticker.localeCompare(b.ticker));
 }
 
 export interface OneQuoteInputs {

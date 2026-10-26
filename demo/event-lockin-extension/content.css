@@ -5,11 +5,11 @@
    card when the page's rows could not be read.
 
    Skins. Every colour below is a variable set on the roots we draw (.ael-host, .ael-card,
-   .ael-note, .ael-mark, .ael-slip, .ael-tip). The defaults are the ProphetX theme: near-black, white, the venue's green. The
+   .ael-note, .ael-pill, .ael-slip, .ael-tip). The defaults are the ProphetX theme: near-black, white, the venue's green. The
    script adds a venue class to each root (.ael-v-kalshi, .ael-v-novig) and the skin overrides
    the variables there; nothing else in the file knows which venue it is on. */
 
-:where(.ael-host, .ael-card, .ael-note, .ael-mark, .ael-slip, .ael-tip) {
+:where(.ael-host, .ael-card, .ael-note, .ael-pill, .ael-slip, .ael-tip) {
   --ael-fg: #f2f3f5;
   --ael-fg-strong: #ffffff;
   --ael-soft: #c3c4c9;
@@ -274,31 +274,42 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 
 .ael-disclose { font-size: 10px; color: var(--ael-faint); text-align: left; margin-top: 6px; }
 
-/* Before the trade. The mark: a filled shield in a small disc of the skin's colour after a club's
-   name on the game list and the game page. Not a browser tooltip: hovering opens our own card at
-   once (.ael-tip), so the cursor stays an arrow and the words come in the skin. */
-.ael-mark {
+/* Before the trade. The pill: a filled shield and the words "Lock in · until 7:35pm ET" on each
+   protectable game's card, after its title or its time line. Not a browser tooltip: hovering
+   opens our own card at once (.ael-tip), so the cursor stays an arrow and the words come in the
+   skin. The pill swallows its own click so the venue's row does not open. */
+.ael-pill {
   display: inline-flex;
-  vertical-align: -5px;
-  width: 20px;
-  height: 20px;
-  margin-left: 6px;
   align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--ael-accent-wash-3);
-  box-shadow: 0 0 0 1px var(--ael-accent-line) inset;
-  color: var(--ael-glow);
+  gap: 5px;
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 2px 9px 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--ael-accent-line);
+  background: var(--ael-accent-wash-2);
+  color: var(--ael-fg-strong);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
   cursor: pointer;
   outline: none;
-  transition: box-shadow 0.12s ease, background 0.12s ease;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
-.ael-mark:hover, .ael-mark:focus-visible { background: var(--ael-accent); color: var(--ael-accent-ink); box-shadow: 0 0 0 1px var(--ael-accent) inset, 0 0 0 3px var(--ael-accent-wash-3); }
-.ael-mark svg { width: 14px; height: 14px; display: block; }
+.ael-pill b { font-weight: 700; color: var(--ael-fg-strong); }
+.ael-pill .ael-until { font-weight: 500; color: var(--ael-muted); }
+.ael-pill .ael-ic { width: 14px; height: 14px; color: var(--ael-glow); }
+.ael-pill .ael-ic svg { width: 14px; height: 14px; }
+.ael-pill:hover, .ael-pill:focus-visible { background: var(--ael-accent); border-color: var(--ael-accent); color: var(--ael-accent-ink); }
+.ael-pill:hover b, .ael-pill:hover .ael-until, .ael-pill:hover .ael-ic, .ael-pill:focus-visible b, .ael-pill:focus-visible .ael-until, .ael-pill:focus-visible .ael-ic { color: var(--ael-accent-ink); }
+.ael-pill:hover svg path:last-child, .ael-pill:focus-visible svg path:last-child { stroke: var(--ael-accent); }
+/* the pill on its own line at the foot of a card that has no time line */
+.ael-pill-row { display: block; grid-column: 1 / -1; margin: 6px 0 2px; text-align: left; }
+.ael-pill-row .ael-pill { margin-left: 0; }
 /* the tick inside the shield is cut in the skin's page colour, white on Kalshi, dark elsewhere */
-.ael-mark svg path:last-child, .ael-tip svg path:last-child, .ael-slip svg path:last-child { stroke: var(--ael-bg); }
-.ael-mark:hover svg path:last-child, .ael-mark:focus-visible svg path:last-child { stroke: var(--ael-accent); }
-/* The hover card under a mark: fixed over the page, in the skin, two lines. */
+.ael-pill svg path:last-child, .ael-tip svg path:last-child, .ael-slip svg path:last-child { stroke: var(--ael-bg); }
+/* The hover card under a pill: fixed over the page, in the skin, two lines. */
 .ael-tip {
   position: fixed;
   z-index: 2147482000;
