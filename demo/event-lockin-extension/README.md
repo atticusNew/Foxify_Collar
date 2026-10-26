@@ -198,10 +198,14 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
   our block as a sibling after the row (a full-width table row when the row is one) with the
   venue's skin class on it, and re-inserts it when the venue re-renders. Off the plays page it
   finds each game's card (`findGames`: from a club's name, the block naming both clubs of exactly
-  one game, grown to the card with its time line), puts one pill on each card the service says
-  is protectable (`markGames`, keyed by game so a redraw keeps it; the hover card is `showTip`),
-  and the one line in the slip (`findSlip`: the block with the venue's place-order button, the
-  pick named most in it; no stake is read). Once per page view it posts the anonymous counts
+  one game, grown to the card with its time line; a title the venue cuts with an ellipsis, as in
+  ProphetX's sidebar and "most active" rail, is a list entry and gets nothing; when no card can
+  be told apart the pill goes beside the first club named), puts one pill on each card the
+  service says is protectable (`markGames`, keyed by game so a redraw keeps it; the hover card is
+  `showTip`), and the one line in the slip (`findSlip`: the block with the venue's place-order
+  button, the pick named most in it; no stake is read). A club listed twice in the window (this
+  Sunday and next) is settled by the date on the line, else by the game whose page this is, else
+  by the club's next game. Once per page view it posts the anonymous counts
   (`sendTelemetry`). The venue's DOM is never modified; our pills and line are added beside it.
 - `content.css` the line, the inline panel, the segmented control, the chip. Every colour is a
   variable with the ProphetX values as defaults; `.ael-v-kalshi` and `.ael-v-novig` override them.

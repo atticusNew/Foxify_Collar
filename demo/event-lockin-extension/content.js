@@ -181,6 +181,12 @@
     const mo = m ? MONTHS.indexOf(m[1]) : -1;
     return mo >= 0 ? mo + 1 + "-" + Number(m[2]) : null;
   };
+  /** The game day as a number that sorts (yymmdd from the ticker's 26OCT25), unknown last. */
+  const gameOrdinal = (ticker) => {
+    const m = /-(\d{2})([A-Z]{3})(\d{2})[A-Z]+-[A-Z]+$/.exec(String(ticker || ""));
+    const mo = m ? MONTHS.indexOf(m[2]) : -1;
+    return mo >= 0 ? Number(m[1]) * 10000 + (mo + 1) * 100 + Number(m[3]) : Infinity;
+  };
   const datesIn = (text) => {
     const out = new Set();
     let m;
@@ -200,6 +206,16 @@
       const dated = list.filter((t) => days.has(gameDayOf(t)));
       if (dated.length === 1) return dated[0];
       if (dated.length > 1) return null;
+    }
+    if (!S.pageOk) {
+      // before the trade, a club named without a date: on a game's own page, that game; on a
+      // board, the club's next game (the week in view), the page's own date deciding when it prints one
+      if (S.counts.games === 1) {
+        const onPage = list.filter((t) => S.pills.has(t.slice(0, t.lastIndexOf("-"))));
+        if (onPage.length === 1) return onPage[0];
+      }
+      const sorted = [...list].sort((a, b) => gameOrdinal(a) - gameOrdinal(b));
+      return gameOrdinal(sorted[0]) < gameOrdinal(sorted[1]) ? sorted[0] : null;
     }
     const settledLock = (t) => {
       const r = S.record.get(t);
@@ -1311,23 +1327,30 @@
    */
   const gamesIn = (raw) => {
     const text = spaced(raw);
-    const seen = new Map(); // stem -> { sides: Set(ticker), named: a nickname was read }
+    // stem -> { sides: Set(ticker), words: Set(the words that named them), named: a nickname was read }
+    // Two sides from two words: "LA" alone fits both Los Angeles clubs and must not name their game.
+    const seen = new Map();
     if (!S.nickRe) return [];
+    let word = 0;
     const add = (ticker, named) => {
       const st = stemOf(ticker);
-      const g = seen.get(st) || { sides: new Set(), named: false };
+      const g = seen.get(st) || { sides: new Set(), words: new Set(), named: false };
       g.sides.add(ticker);
+      g.words.add(word);
       g.named = g.named || named;
       seen.set(st, g);
     };
     let m;
+    const partOfName = new Set(); // where a code that is part of a club's name ends ("LA Rams")
     S.nickRe.lastIndex = 0;
     while ((m = S.nickRe.exec(text))) {
+      word++;
       let list = S.nicks.get(m[2].toLowerCase()) || [];
-      if (list.length > 1) {
-        const before = text.slice(0, m.index + m[1].length).trim();
-        const code = /(?:^|[^A-Za-z])([A-Z]{2,3})$/.exec(before);
-        if (code) {
+      const before = text.slice(0, m.index + m[1].length).replace(/\s+$/, "");
+      const code = /(?:^|[^A-Za-z])([A-Z]{2,3})$/.exec(before);
+      if (code) {
+        partOfName.add(before.length);
+        if (list.length > 1) {
           const hit = list.filter((x) => x.code === code[1] || (CODE_ALIAS[code[1]] || []).includes(x.code));
           if (hit.length) list = hit;
         }
@@ -1337,65 +1360,126 @@
     // the other club may be printed as its code only ("DET Lions" beside "GB" in a joined cell);
     // a card of codes alone (the score strip) names no game
     CODE_RE.lastIndex = 0;
-    while ((m = CODE_RE.exec(text))) for (const t of S.codes.get(m[2]) || []) add(t, false);
-    return [...seen.entries()].filter(([, g]) => g.sides.size >= 2 && g.named).map(([st]) => st);
+    while ((m = CODE_RE.exec(text))) {
+      if (partOfName.has(m.index + m[0].length)) continue;
+      word++;
+      for (const t of S.codes.get(m[2]) || []) add(t, false);
+    }
+    return [...seen.entries()].filter(([, g]) => g.sides.size >= 2 && g.words.size >= 2 && g.named).map(([st]) => st);
   };
   const CARD_MAX_H = 340;
   const CARD_MAX_TEXT = 700;
   const TIME_RE = /\b\d{1,2}:\d{2}\s?(?:[ap]\.?m\.?)?\b|\b(?:today|tomorrow|tonight|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.? \d{1,2}\b/i;
-  /** Every game card on the page: stem -> where the pill goes (a title node, or the card itself). */
-  const findGames = (nodes) => {
-    const out = new Map();
-    if (!S.nickRe) return out;
-    for (const node of nodes) {
-      const text = norm(node.nodeValue);
-      if (!text || text.length > 80 || OURS(node)) continue;
-      S.nickRe.lastIndex = 0;
-      if (!S.nickRe.test(text)) continue;
-      // a title names both clubs ("KC Chiefs vs SEA Seahawks"): the pill goes right after it
-      const titled = gamesIn(text);
-      if (titled.length === 1) {
-        if (!out.has(titled[0])) out.set(titled[0], { anchor: node, card: null });
-        continue;
-      }
-      if (titled.length > 1) continue;
-      // one club: climb to the block naming both clubs of exactly one game, then keep climbing
-      // while the block above still names only that game (the row grid up to the card with its
-      // time line), stopping at the list of games or at a block too tall to be one card
-      let card = null;
-      let stem = null;
-      let e = node.parentElement;
-      for (let i = 0; e && e !== document.body && i < 8; i++, e = e.parentElement) {
-        const t = e.textContent || "";
-        if (t.length > CARD_MAX_TEXT) break;
-        const games = gamesIn(t);
-        if (!games.length) continue;
-        if (games.length > 1 || (stem && games[0] !== stem)) break;
-        const r = e.getBoundingClientRect();
-        if (r.height > CARD_MAX_H || r.width < 120) break;
-        card = e;
-        stem = games[0];
-      }
-      if (card && !out.has(stem)) out.set(stem, { anchor: null, card });
+  /** A text line the venue cuts with an ellipsis (a sidebar's game list, a "most active" rail): a pill after it would be cut too. */
+  const clipped = (node) => {
+    let e = node.parentElement;
+    for (let i = 0; e && i < 3; i++, e = e.parentElement) {
+      const cs = getComputedStyle(e);
+      if (/hidden|clip/.test(cs.overflowX) && (cs.textOverflow === "ellipsis" || cs.whiteSpace === "nowrap")) return true;
     }
-    return out;
+    return false;
   };
-  /** Where a card's pill sits: after its time line, else on its last line. */
-  const cardSpot = (card) => {
+  /**
+   * The card's time line, if it has one: a short text that is a time, a day or the game's state
+   * ("LIVE"), not a club and not a section heading ("Today" over the day's games).
+   */
+  const STATE_RE = /^(live|in progress|final|started)$/i;
+  const timeLine = (card) => {
     const w = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
     for (let n = w.nextNode(); n; n = w.nextNode()) {
       const t = norm(n.nodeValue);
       if (!t || t.length > 40 || OURS(n)) continue;
       S.nickRe.lastIndex = 0;
       if (S.nickRe.test(t)) continue;
-      if (TIME_RE.test(t)) return { anchor: n, card };
+      if ((TIME_RE.test(t) || STATE_RE.test(t)) && !(n.parentElement && n.parentElement.closest("h1,h2,h3,h4,h5,h6"))) return n;
     }
+    return null;
+  };
+  /**
+   * From a text naming one or both clubs, the block that is the game's card: the smallest naming
+   * both clubs of exactly one game, grown while the block above still names only that game (the
+   * row grid up to the card with its time line) and stopped once it holds a time line, at the
+   * list of games, or at a block too tall or too narrow to be one card.
+   */
+  const climbToCard = (node) => {
+    let card = null;
+    let stem = null;
+    let e = node.parentElement;
+    for (let i = 0; e && e !== document.body && i < 14; i++, e = e.parentElement) {
+      const t = e.textContent || "";
+      if (t.length > CARD_MAX_TEXT) break;
+      const games = gamesIn(t);
+      if (!games.length) continue;
+      if (games.length > 1 || (stem && games[0] !== stem)) break;
+      const r = e.getBoundingClientRect();
+      if (r.height > CARD_MAX_H || r.width < 120) break;
+      // a block that brings in a heading the card had none of is the day's section, not the card
+      if (card && !card.querySelector("h1,h2,h3,h4,h5,h6") && e.querySelector("h1,h2,h3,h4,h5,h6")) break;
+      card = e;
+      stem = games[0];
+      if (timeLine(e)) break;
+    }
+    return card ? { stem, card } : null;
+  };
+  /**
+   * Every game on the page: stem -> where the pill goes. Each text naming a club offers a spot,
+   * ranked; the best spot per game wins, the first in the page on a tie:
+   *   0  a whole title the venue does not cut ("KC Chiefs vs SEA Seahawks"), the pill right after it
+   *   1  the card climbed to from one club's name
+   *   2  beside the first club named, when no card can be told apart (one pill per game still)
+   */
+  const findGames = (nodes) => {
+    const best = new Map();
+    if (!S.nickRe) return best;
+    const offer = (stem, rank, spot) => {
+      const have = best.get(stem);
+      if (!have || rank < have.rank) best.set(stem, { rank, ...spot });
+    };
+    const slipBlock = S.slip && S.slip.block;
+    for (const node of nodes) {
+      const text = norm(node.nodeValue);
+      if (!text || text.length > 80 || OURS(node)) continue;
+      S.nickRe.lastIndex = 0;
+      if (!S.nickRe.test(text)) continue;
+      // the slip has its own line
+      if (slipBlock && slipBlock.contains(node)) continue;
+      const titled = gamesIn(text);
+      if (titled.length > 1) continue;
+      if (titled.length === 1) {
+        // a cut title is a list entry (a sidebar, a "most active" rail), not the game's card
+        if (!clipped(node)) offer(titled[0], 0, { anchor: node, card: null });
+        continue;
+      }
+      const c = climbToCard(node);
+      if (c) offer(c.stem, 1, { anchor: null, card: c.card });
+      else {
+        // the club's own tickers; only a name that fits one listed game can carry a pill
+        S.nickRe.lastIndex = 0;
+        const m = S.nickRe.exec(text);
+        const list = m ? S.nicks.get(m[2].toLowerCase()) || [] : [];
+        const stems = [...new Set(list.map((x) => stemOf(x.ticker)))];
+        // a label, not a sentence: a club named in running text carries nothing
+        if (stems.length === 1 && text.length <= 40 && !clipped(node)) offer(stems[0], 2, { anchor: node, card: null });
+      }
+    }
+    return best;
+  };
+  /** Where a card's pill sits: after its time line, else on its last line. */
+  const cardSpot = (card) => {
+    const n = timeLine(card);
     // no time line: a line of our own at the foot of the card
-    return { anchor: null, card };
+    return n ? { anchor: n, card } : { anchor: null, card };
+  };
+  /** The node the pill follows: the anchor text, or its badge when the text is all the badge holds ("12:15 AM" in a rounded chip). */
+  const pillAfter = (spot) => {
+    const p = spot.anchor.parentNode;
+    return p && p.childNodes.length === 1 && p !== spot.card && p.parentNode && !/^(DIV|P|LI|TD|TH|SECTION|ARTICLE|H[1-6])$/.test(p.tagName) ? p : spot.anchor;
   };
   const mountPill = (pill, spot) => {
-    if (spot.anchor) spot.anchor.parentNode.insertBefore(pill, spot.anchor.nextSibling);
-    else {
+    if (spot.anchor) {
+      const after = pillAfter(spot);
+      after.parentNode.insertBefore(pill, after.nextSibling);
+    } else {
       const row = document.createElement("div");
       row.className = "ael-ui ael-pill-row " + SKIN;
       row.appendChild(pill);
@@ -1461,7 +1545,7 @@
       const spot = where.anchor ? where : cardSpot(where.card);
       keep.add(stem);
       let P = S.pills.get(stem);
-      const placed = P && P.el.isConnected && ((spot.anchor && P.el.previousSibling === spot.anchor) || (!spot.anchor && P.el.parentNode && P.el.parentNode.parentNode === spot.card));
+      const placed = P && P.el.isConnected && ((spot.anchor && P.el.previousSibling === pillAfter(spot)) || (!spot.anchor && P.el.parentNode && P.el.parentNode.parentNode === spot.card));
       if (placed) {
         const html = pillHtml(stem);
         if (P.html !== html) {
@@ -1488,6 +1572,9 @@
       unmountPill(P.el);
       S.pills.delete(stem);
     }
+    // a venue that copies its markup wholesale copies our pills with it: only the ones we hold stay
+    const ours = new Set([...S.pills.values()].map((P) => P.el));
+    for (const el of document.querySelectorAll(".ael-pill")) if (!ours.has(el)) unmountPill(el);
     if (S.tip) {
       if (!S.tip.mark.isConnected) hideTip();
       else placeTip();
@@ -1501,7 +1588,7 @@
    * a club. Its pick is the club named most in it; a Spread or Total pick gets nothing, protection
    * covers the Winner market. No stake is read.
    */
-  const PLACE_RE = /\b(place|submit|confirm|review|buy|sell|add to)\b/i;
+  const PLACE_RE = /\b(place|submit|confirm|review|buy|sell|add to|trade)\b/i;
   const slipFrom = (node) => {
     let e = node.parentElement;
     for (let i = 0; e && e !== document.body && i < 10; i++, e = e.parentElement) {
@@ -1516,8 +1603,10 @@
   const findSlip = (nodes) => {
     for (const node of nodes) {
       if (OURS(node)) continue;
+      // a line naming a club, even one the line alone cannot settle ("DAL @ PHI" when Dallas
+      // plays twice in the window): the slip's whole text, with its date, settles it below
       const sides = sidesIn(node.nodeValue);
-      if (!sides.size) continue;
+      if (!sides.size && !sides.ambiguous) continue;
       const block = slipFrom(node);
       if (!block) continue;
       const text = spaced(norm(block.textContent));
@@ -1548,8 +1637,11 @@
       const host = document.createElement("div");
       host.className = "ael-ui ael-slip " + SKIN;
       stopRow(host);
-      const btn = [...B.block.querySelectorAll("button")].filter((b) => !OURS(b)).pop();
-      if (btn && btn.parentElement === B.block) B.block.insertBefore(host, btn);
+      // just above the place button: before the block's own child that holds it
+      const btn = [...B.block.querySelectorAll("button")].filter((b) => !OURS(b) && PLACE_RE.test(norm(b.textContent || ""))).pop();
+      let row = btn;
+      while (row && row.parentElement && row.parentElement !== B.block) row = row.parentElement;
+      if (row && row.parentElement === B.block) B.block.insertBefore(host, row);
       else B.block.appendChild(host);
       B.host = host;
       B.html = null;
@@ -1720,7 +1812,10 @@
       // before the trade: the pill on each protectable game's card, and in the slip
       const nodes = textNodes();
       markGames(nodes);
+      const slipWas = S.slip && S.slip.block;
       scanSlip(nodes);
+      // a slip just found or gone: the game pills keep out of it
+      if ((S.slip && S.slip.block) !== slipWas) markGames(nodes);
       S.counts.rows = S.counts.offers = S.counts.unread = 0;
       teleTick();
       return;
