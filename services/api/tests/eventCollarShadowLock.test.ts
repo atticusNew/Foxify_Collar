@@ -158,8 +158,8 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
   const worker = await import("../scripts/eventShadowWorker");
   const seen: OneQuoteInputs[] = [];
   const markets: GameMarketRow[] = [
-    { ticker: TICKER, league: "nba", sideName: "Boston Celtics", title: "Lakers at Celtics Winner?", dateIso: "2026-10-14", closeTimeIso: START, markCents: 60 },
-    { ticker: "KXNBAGAME-26OCT14LALBOS-LAL", league: "nba", sideName: "Los Angeles Lakers", title: "Lakers at Celtics Winner?", dateIso: "2026-10-14", closeTimeIso: START, markCents: 40 },
+    { ticker: TICKER, league: "nba", sideName: "Boston Celtics", title: "Lakers at Celtics Winner?", dateIso: "2026-10-14", closeTimeIso: START, markCents: 60, startIso: START, protectable: true, protectableUntilIso: START },
+    { ticker: "KXNBAGAME-26OCT14LALBOS-LAL", league: "nba", sideName: "Los Angeles Lakers", title: "Lakers at Celtics Winner?", dateIso: "2026-10-14", closeTimeIso: START, markCents: 40, startIso: START, protectable: true, protectableUntilIso: START },
   ];
   worker.wireLockEngine({
     listGameMarkets: async (league?: string) => markets.filter((m) => !league || m.league === league),
@@ -208,6 +208,27 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(m.markets[0].onRecord, false, "the scan's showcase position does not block a holder's lock");
     assert.equal(m.markets[0].live, true, "the allowlisted ticker is flagged");
     assert.equal(m.markets[1].live, false);
+    assert.equal(m.markets[0].protectable, true, "the list says which games the extension may mark");
+    assert.deepEqual((m as unknown as { ext: Record<string, unknown> }).ext, { minVersion: null, marksOff: [], cutoffMinutes: 45 }, "the extension's switches ride with the list");
+
+    // extension telemetry: anonymous counts in, operator summary out; anything outside the vocabulary is refused
+    const tele = (v: unknown) => fetch(`${base}/api/shadow/ext-telemetry`, { method: "POST", headers: { ...key, "content-type": "application/json" }, body: JSON.stringify(v) });
+    assert.equal((await tele({ venue: "kalshi", page: "board", version: "0.7.0", counts: { markets: 2, protectable: 2, games: 5, marks: 5 } })).status, 200);
+    assert.equal((await tele({ venue: "kalshi", page: "game", version: "0.7.0", counts: { slip: 1, slipMarked: 0 } })).status, 200);
+    assert.equal((await tele({ venue: "kalshi", page: "board", version: "0.7.0", counts: { marks: 1 }, note: "free text" })).status, 200, "unknown top-level keys are dropped, not kept");
+    assert.equal((await tele({ venue: "draftkings", page: "board", version: "0.7.0", counts: {} })).status, 400);
+    assert.equal((await tele({ venue: "kalshi", page: "board", version: "0.7.0", counts: { email: 1 } })).status, 400);
+    assert.equal((await tele({ venue: "kalshi", page: "board", version: "latest", counts: {} })).status, 400);
+    assert.equal((await fetch(`${base}/api/shadow/ext-telemetry/summary`)).status, 403, "the summary is the operator's");
+    const sum = (await (await fetch(`${base}/api/shadow/ext-telemetry/summary?token=op-secret`)).json()) as { rows: number; byVenue: Record<string, { loads: number; boards: number; boardsWithMarks: number; slips: number; slipsMarked: number; totals: { marks: number } }>; recent: Array<{ venue: string }> };
+    assert.equal(sum.rows, 3);
+    assert.equal(sum.byVenue.kalshi.loads, 3);
+    assert.equal(sum.byVenue.kalshi.boards, 3);
+    assert.equal(sum.byVenue.kalshi.boardsWithMarks, 2);
+    assert.equal(sum.byVenue.kalshi.slips, 1);
+    assert.equal(sum.byVenue.kalshi.slipsMarked, 0);
+    assert.equal(sum.byVenue.kalshi.totals.marks, 6);
+    assert.ok(!JSON.stringify(sum).includes("free text"));
 
     const bad = await fetch(`${base}/api/shadow/quote?ticker=${TICKER}&contracts=0`, { headers: key });
     assert.equal(bad.status, 400);
@@ -294,8 +315,10 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(readFileSync(ledger, "utf8").trim().split("\n").length, 1);
     const afterQuote = (await (await fetch(`${base}/api/shadow/quote?ticker=${TICKER}&contracts=20`, { headers: key })).json()) as { onRecord: boolean };
     assert.equal(afterQuote.onRecord, true);
-    const afterMarkets = (await (await fetch(`${base}/api/shadow/markets`, { headers: key })).json()) as { markets: Array<{ onRecord: boolean }> };
+    const afterMarkets = (await (await fetch(`${base}/api/shadow/markets`, { headers: key })).json()) as { markets: Array<{ onRecord: boolean; protectable: boolean; notProtectable?: string }> };
     assert.equal(afterMarkets.markets[0].onRecord, true);
+    assert.equal(afterMarkets.markets[0].protectable, false, "a locked market is not marked as protectable again");
+    assert.equal(afterMarkets.markets[0].notProtectable, "on_record");
 
     // a refused quote at the tap locks nothing
     const refusedLock = (await (await fetch(`${base}/api/shadow/lock`, { method: "POST", headers: { ...key, "content-type": "application/json" }, body: JSON.stringify({ ticker: "KXNBAGAME-26OCT14LALBOS-LAL", contracts: 20 }) })).json()) as Record<string, unknown>;
