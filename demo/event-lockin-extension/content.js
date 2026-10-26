@@ -1370,13 +1370,31 @@
   const CARD_MAX_H = 340;
   const CARD_MAX_TEXT = 700;
   const TIME_RE = /\b\d{1,2}:\d{2}\s?(?:[ap]\.?m\.?)?\b|\b(?:today|tomorrow|tonight|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.? \d{1,2}\b/i;
+  /**
+   * A block's words with a space between its text nodes. `textContent` runs them together, and
+   * a React Native Web page puts a view, not a space, between a club's code and its name ("GB"
+   * "Packers") or its name and its record ("Lions" "3-2"): "GBPackers" names no club.
+   */
+  const wordsOf = (el, max) => {
+    let s = "";
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      const t = n.nodeValue && n.nodeValue.trim();
+      if (!t || OURS(n)) continue;
+      s += (s ? " " : "") + t;
+      if (s.length > max) break;
+    }
+    return s;
+  };
+  /** An element that cuts its one line of text (overflow hidden with nowrap or an ellipsis). */
+  const cuts = (e) => {
+    const cs = getComputedStyle(e);
+    return /hidden|clip/.test(cs.overflowX) && (cs.textOverflow === "ellipsis" || cs.whiteSpace === "nowrap");
+  };
   /** A text line the venue cuts with an ellipsis (a sidebar's game list, a "most active" rail): a pill after it would be cut too. */
   const clipped = (node) => {
     let e = node.parentElement;
-    for (let i = 0; e && i < 3; i++, e = e.parentElement) {
-      const cs = getComputedStyle(e);
-      if (/hidden|clip/.test(cs.overflowX) && (cs.textOverflow === "ellipsis" || cs.whiteSpace === "nowrap")) return true;
-    }
+    for (let i = 0; e && i < 3; i++, e = e.parentElement) if (cuts(e)) return true;
     return false;
   };
   /**
@@ -1406,7 +1424,7 @@
     let stem = null;
     let e = node.parentElement;
     for (let i = 0; e && e !== document.body && i < 14; i++, e = e.parentElement) {
-      const t = e.textContent || "";
+      const t = wordsOf(e, CARD_MAX_TEXT);
       if (t.length > CARD_MAX_TEXT) break;
       const games = gamesIn(t);
       if (!games.length) continue;
@@ -1459,7 +1477,7 @@
         const list = m ? S.nicks.get(m[2].toLowerCase()) || [] : [];
         const stems = [...new Set(list.map((x) => stemOf(x.ticker)))];
         // a label, not a sentence: a club named in running text carries nothing
-        if (stems.length === 1 && text.length <= 40 && !clipped(node)) offer(stems[0], 2, { anchor: node, card: null });
+        if (stems.length === 1 && text.length <= 40) offer(stems[0], 2, { anchor: node, card: null });
       }
     }
     return best;
@@ -1472,8 +1490,30 @@
   };
   /** The node the pill follows: the anchor text, or its badge when the text is all the badge holds ("12:15 AM" in a rounded chip). */
   const pillAfter = (spot) => {
-    const p = spot.anchor.parentNode;
-    return p && p.childNodes.length === 1 && p !== spot.card && p.parentNode && !/^(DIV|P|LI|TD|TH|SECTION|ARTICLE|H[1-6])$/.test(p.tagName) ? p : spot.anchor;
+    let after = spot.anchor;
+    for (let i = 0; i < 4; i++) {
+      const p = after.parentNode;
+      if (!p || p === spot.card || p === document.body || !p.parentNode) break;
+      const lone = p.childNodes.length === 1;
+      // out of a chip or wrapper that holds this text alone, and out of any line that cuts its text
+      // (a pill inside it would be cut): one that is a block holding other things too is the line itself
+      if ((lone && !/^(DIV|P|LI|TD|TH|SECTION|ARTICLE|H[1-6])$/.test(p.tagName)) || (p.nodeType === 1 && cuts(p))) after = p;
+      else break;
+    }
+    return after;
+  };
+  /** The pill has room: a size of its own, and not cut off by an ancestor that hides its overflow (the page's own scroll box aside). */
+  const shows = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 24 || r.height < 10) return false;
+    for (let e = el.parentElement, i = 0; e && e !== document.body && i < 12; e = e.parentElement, i++) {
+      const cs = getComputedStyle(e);
+      if (!/hidden|clip/.test(cs.overflowX) && !/hidden|clip/.test(cs.overflowY)) continue;
+      const b = e.getBoundingClientRect();
+      if (b.height > window.innerHeight * 0.8) continue;
+      if (r.right > b.right + 1 || r.bottom > b.bottom + 1 || r.left < b.left - 1 || r.top < b.top - 1) return false;
+    }
+    return true;
   };
   const mountPill = (pill, spot) => {
     if (spot.anchor) {
@@ -1542,9 +1582,9 @@
     const keep = new Set();
     for (const [stem, where] of found) {
       if (!gameOpen(stem).length) continue;
-      const spot = where.anchor ? where : cardSpot(where.card);
-      keep.add(stem);
       let P = S.pills.get(stem);
+      const spot = P && P.foot && where.card ? { anchor: null, card: where.card } : where.anchor ? where : cardSpot(where.card);
+      keep.add(stem);
       const placed = P && P.el.isConnected && ((spot.anchor && P.el.previousSibling === pillAfter(spot)) || (!spot.anchor && P.el.parentNode && P.el.parentNode.parentNode === spot.card));
       if (placed) {
         const html = pillHtml(stem);
@@ -1558,7 +1598,15 @@
       const wasTip = P && S.tip && S.tip.mark === P.el ? P.el.getBoundingClientRect() : null;
       if (P) unmountPill(P.el);
       mountPill(el, spot);
-      S.pills.set(stem, { el, html: el.innerHTML });
+      // a pill the page gives no room to (cut by a line, or in a box of no size) goes on its own
+      // line at the foot of the card instead; remembered, so the next scan puts it there at once
+      let foot = Boolean(P && P.foot);
+      if (where.card && !foot && !shows(el)) {
+        unmountPill(el);
+        foot = true;
+        mountPill(el, { anchor: null, card: where.card });
+      }
+      S.pills.set(stem, { el, html: el.innerHTML, foot });
       // a redraw in place keeps the open card, on the new pill; a pill that moved elsewhere loses it
       if (wasTip) {
         const r = el.getBoundingClientRect();
@@ -1609,7 +1657,7 @@
       if (!sides.size && !sides.ambiguous) continue;
       const block = slipFrom(node);
       if (!block) continue;
-      const text = spaced(norm(block.textContent));
+      const text = spaced(norm(wordsOf(block, 2000)));
       if (pointsRow(text) || gamesIn(text).length > 1) return null;
       const count = sidesIn(text);
       if (!count.size) return null;
