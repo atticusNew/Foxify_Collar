@@ -87,6 +87,7 @@
     lastScan: 0,
     cardRows: new Map(), // position id -> binding (fallback card)
     marks: new Map(), // text node -> the shield mark after it (game list and game page)
+    tip: null, // the hover card open over a mark
     slip: null, // the order slip's binding while a protectable pick sits in it
   };
 
@@ -1269,14 +1270,20 @@
   const marksOn = () => S.settings.showShield === "yes";
   const slipOn = () => S.settings.showSlip === "yes";
   /** The block an input sits in, climbing from a node: the slip. Null when no input is above it. */
+  const STAKE_INPUT = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=search]):not([type=submit]):not([type=button]), [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="spinbutton"]';
   const slipFrom = (node) => {
     let e = node.parentElement;
     for (let i = 0; e && e !== document.body && i < 9; i++, e = e.parentElement) {
       const r = e.getBoundingClientRect();
-      if (r.width > 620 || r.height > 760) return null;
-      if (e.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=search])')) return e;
+      if (r.width > 720 || r.height > 900) return null;
+      if (e.querySelector(STAKE_INPUT)) return e;
     }
     return null;
+  };
+  const stakeTyped = (input) => {
+    if (!input) return "";
+    const raw = "value" in input && input.value != null && input.tagName === "INPUT" ? input.value : input.textContent;
+    return String(raw || "").replace(/[^\d.]/g, "");
   };
   /** Live markets only: a settled lock in the index is a record, not a game to protect. */
   const liveMarket = (ticker) => S.markets.some((m) => m.ticker === ticker && !m.onRecord);
@@ -1303,8 +1310,31 @@
       const hits = [...nicksIn(t).keys()].filter((tk) => (nickOf(S.byTicker[tk]) || "").toLowerCase() === nick);
       if (hits.length === 1) return hits[0];
     }
-    return null;
+    // no date near the name: of the club's listed games, the one still open to protect (a settled
+    // lock from an earlier week sits in the index only so its row on the plays page can be found)
+    const live = (S.nicks.get(nick) || []).map((x) => x.ticker).filter(liveMarket);
+    return live.length === 1 ? live[0] : null;
   };
+  /** Our own hover card for a mark: at once, in the skin, no browser tooltip and no question-mark cursor. */
+  const showTip = (mark) => {
+    hideTip();
+    const tip = document.createElement("div");
+    tip.className = "ael-ui ael-tip " + SKIN;
+    tip.innerHTML = '<b><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in available</b><span>" + esc(MARK_TITLE()) + "</span>";
+    document.body.appendChild(tip);
+    const r = mark.getBoundingClientRect();
+    const w = tip.offsetWidth;
+    tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + "px";
+    tip.style.top = r.bottom + 7 + "px";
+    S.tip = { el: tip, mark };
+  };
+  const hideTip = () => {
+    if (S.tip) S.tip.el.remove();
+    S.tip = null;
+  };
+  // the card is fixed over the page: it goes when the page scrolls or anything is pressed
+  document.addEventListener("scroll", hideTip, true);
+  document.addEventListener("pointerdown", (e) => { if (!(S.tip && S.tip.mark.contains(e.target))) hideTip(); }, true);
   const markGames = (nodes) => {
     const keep = new Set();
     if (marksOn() && S.serviceState === "ok") {
@@ -1314,27 +1344,36 @@
         const ticker = markTicker(node);
         if (!ticker || !liveMarket(ticker)) continue;
         const p = node.parentElement;
-        if (!p || OURS(p) || p.closest("a[href] svg, button") || slipFrom(node)) continue;
+        if (!p || OURS(p) || slipFrom(node)) continue;
         const r = p.getBoundingClientRect();
-        if (r.width < 30 || r.height < 10 || r.height > 60) continue;
+        if (r.width < 30 || r.height < 10 || r.height > 72) continue;
         keep.add(node);
         if (S.marks.has(node)) continue;
         const mark = document.createElement("span");
         mark.className = "ael-ui ael-mark " + SKIN;
-        mark.title = MARK_TITLE();
-        mark.setAttribute("aria-label", "Protection available");
-        mark.innerHTML = SHIELD;
-        mark.addEventListener("click", (e) => e.stopPropagation());
+        mark.setAttribute("role", "img");
+        mark.setAttribute("aria-label", "Lock in available: " + MARK_TITLE());
+        mark.tabIndex = 0;
+        mark.innerHTML = SHIELD_FILL;
+        // the venue's row is a link or a button: our mark must not fire it
+        for (const ev of ["click", "mousedown", "pointerdown", "touchstart"]) mark.addEventListener(ev, (e) => { e.stopPropagation(); e.preventDefault(); });
+        mark.addEventListener("click", () => (S.tip && S.tip.mark === mark ? hideTip() : showTip(mark))); // a tap on a touch screen
+        mark.addEventListener("mouseenter", () => showTip(mark));
+        mark.addEventListener("mouseleave", hideTip);
+        mark.addEventListener("focus", () => showTip(mark));
+        mark.addEventListener("blur", hideTip);
         node.parentNode.insertBefore(mark, node.nextSibling);
         S.marks.set(node, mark);
       }
     }
     for (const [node, mark] of S.marks) {
       if (!keep.has(node) || !node.isConnected) {
+        if (S.tip && S.tip.mark === mark) hideTip();
         mark.remove();
         S.marks.delete(node);
       }
     }
+    if (S.tip && !S.tip.mark.isConnected) hideTip();
   };
 
   /** The slip's pick, its size, and where our line goes; null when the slip is empty or not a Winner pick. */
@@ -1344,8 +1383,7 @@
       if (!sides.size) continue;
       const block = slipFrom(node);
       if (!block) continue;
-      const input = block.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=search])');
-      const typed = String(input.value || "").replace(/[^\d.]/g, "");
+      const typed = stakeTyped(block.querySelector(STAKE_INPUT));
       let text = spaced(norm(block.textContent));
       if (text.length > 700 || pointsRow(text)) return null;
       // the input's figure is not in the text: a dollar stake on most venues, a contract count on Kalshi
@@ -1383,16 +1421,17 @@
     const st = stateOf(B);
     const when = VENUE_ID === "kalshi" ? "after this fills" : "after this is matched";
     let html;
-    if (!B.size) html = "";
-    else if (!st.quote) html = '<span class="ael-ic">' + SHIELD + '</span><span class="ael-dim">Checking protection&hellip;</span>';
-    else if (!st.quote.ok) html = "";
+    // no stake yet (an empty slip, no funds): the notice without numbers; the figures come with the stake
+    if (!B.size) html = '<span class="ael-ic">' + SHIELD_FILL + "</span><span><b>Lock in available " + when + "</b> &middot; enter " + (VENUE_ID === "kalshi" ? "a contract count" : "a stake") + " to see the worst case &middot; from " + esc(V.page) + "</span>";
+    else if (!st.quote) html = '<span class="ael-ic">' + SHIELD_FILL + '</span><span class="ael-dim">Checking protection&hellip;</span>';
+    else if (!st.quote.ok) html = '<span class="ael-ic">' + SHIELD_FILL + "</span><span><b>Lock in available " + when + "</b> &middot; " + esc(refusalWords(st.quote.code, st.quote.message).why.replace(/\.$/, "").replace(/^Protecting this pick/, "protecting it")) + " &middot; from " + esc(V.page) + "</span>";
     else {
       const p = st.quote.p;
       const q = p.quote;
       const t = (q.tiers && q.tiers.balanced) || q;
       const n = q.contracts || p.contracts;
       const rs = reshape(n, t.floorCents, t.capCents, t.creditCents);
-      html = '<span class="ael-ic">' + SHIELD + "</span><span><b>Lock in available " + when + "</b> &middot; worst case " + esc(usd(rs.floorTotal)) + " instead of $0 &middot; +" + esc(usd(t.creditCents)) + " paid now" + (B.flipped ? " &middot; your No is a pick on the " + esc(shortOf(B.ticker)) : "") + " &middot; from " + esc(V.page) + "</span>";
+      html = '<span class="ael-ic">' + SHIELD_FILL + "</span><span><b>Lock in available " + when + "</b> &middot; worst case " + esc(usd(rs.floorTotal)) + " instead of $0 &middot; +" + esc(usd(t.creditCents)) + " paid now" + (B.flipped ? " &middot; your No is a pick on the " + esc(shortOf(B.ticker)) : "") + " &middot; from " + esc(V.page) + "</span>";
     }
     if (B.html !== html) {
       B.host.innerHTML = html;

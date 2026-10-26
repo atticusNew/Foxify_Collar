@@ -32,7 +32,7 @@
   .cols{display:grid;grid-template-columns:1fr 92px 92px 92px;gap:6px;font-size:10.5px;color:#9a9ca3;text-align:center;margin-bottom:4px}
   .team{display:flex;align-items:center;gap:8px;padding:6px 0}
   .logo-sq{width:22px;height:22px;border-radius:6px;background:#1c3a7a;flex:none}
-  .name{font-weight:600;font-size:13px}.at{color:#9a9ca3;font-size:12px}.rec{color:#9a9ca3;font-size:11px}
+  .name{font:inherit;font-weight:600;font-size:13px;background:none;border:0;color:inherit;padding:0;cursor:pointer}.at{color:#9a9ca3;font-size:12px}.rec{color:#9a9ca3;font-size:11px}
   .cell{background:#1c1c20;border-radius:7px;padding:6px 4px;text-align:center;cursor:pointer;border:1px solid transparent;line-height:1.2}
   .cell:hover{border-color:#2fd27a}.cell.sel{border-color:#2fd27a;background:#123a26}
   .cell small{display:block;color:#2fd27a;font-size:11px;font-weight:600}
@@ -164,7 +164,7 @@ const playsView = (tab) => {
 const cell = (g, side, kind, line, odds) => '<div class="cell" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-odds="' + odds + '"' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? ' class="cell sel"' : "") + ">" + (line ? line + "<small>" + show(odds) + "</small>" : '<span class="o">' + show(odds) + "</span>") + "</div>";
 const teamRow = (g, side) => {
   const t = side === "away" ? g.away : g.home;
-  return '<div class="team"><span class="logo-sq"' + (side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><a href="#/game/' + g.id + '"><span class="name">' + t[0] + " " + t[1] + "</span></a>" + (side === "away" ? '<span class="at">at</span>' : "") + '<span class="rec">' + t[2] + "</span></div>";
+  return '<div class="team"><span class="logo-sq"' + (side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><button type="button" class="name" data-go="#/game/' + g.id + '">' + t[0] + " " + t[1] + "</button>" + (side === "away" ? '<span class="at">at</span>' : "") + '<span class="rec">' + t[2] + "</span></div>";
 };
 const rows = (g) =>
   '<div class="grid">' + teamRow(g, "away") + cell(g, "away", "Spread", g.spread[0], g.spread[1]) + cell(g, "away", "Total", g.total[0], g.total[1]) + cell(g, "away", "Moneyline", "", g.win[0]) +
@@ -218,6 +218,7 @@ const render = () => {
   if (st) st.oninput = () => { slip.stake = st.value.replace(/[^\d.]/g, ""); const s = slip.sel; const w = toWin(Number(slip.stake) || 0, s.odds); $("#towin").textContent = money(w); $(".place").innerHTML = ((Number(slip.stake) || 0) > 0 ? "Place Trade" : "Enter a cost") + "<small>Net winnings per market are subject to a 2% fee</small>"; };
   const rm = $("#rm");
   if (rm) rm.onclick = () => { slip.sel = null; render(); };
+  for (const b of document.querySelectorAll("button[data-go]")) b.onclick = () => { location.hash = b.dataset.go; };
   for (const s of document.querySelectorAll("#mode span")) s.onclick = () => { mode = s.dataset.mode; sessionStorage.setItem("mock-mode", mode); render(); };
 };
 window.addEventListener("hashchange", render);

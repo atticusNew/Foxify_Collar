@@ -14,13 +14,18 @@ code: the line, the panel, the lock, the receipt.
 
 Before the trade, two quiet things and no more (each can be turned off in Options):
 
-- a small **shield** after the name of each club whose game the service can protect this week,
-  on the game list and the game page. Hover: "Protection available on this game after your pick
-  fills. Lock it in from Portfolio." Nothing on games the service does not list, so the mark also
-  shows coverage honestly. Bare codes (the score strip, the futures list) are never marked;
+- a **shield** in a small disc of the venue's colour after the name of each club whose game the
+  service can protect this week, on the game list and the game page. Hover (or tap) it and our
+  own card opens at once, in the skin: "Lock in available · Protection available on this game
+  after your pick fills. Lock it in from Portfolio." It is not a browser tooltip, so there is no
+  delay and no question-mark cursor, and it goes with the first scroll or press. The mark swallows
+  its own click, so the venue's row (a link or a button) does not fire. Nothing on games the
+  service does not list, so the mark also shows coverage honestly. Bare codes (the score strip,
+  the futures list) are never marked;
 - one line in the **order slip** once a Winner pick sits in it, priced at the slip's own stake:
   "Lock in available after this is matched · worst case $8.29 instead of $0 · +$1.36 paid now ·
-  from Portfolio". It reprices as the stake is typed. No button; nothing can be locked before
+  from Portfolio". It reprices as the stake is typed; with no stake typed yet (an empty slip, no
+  funds) it reads "enter a stake to see the worst case". No button; nothing can be locked before
   the trade. Spread and Total picks get no line. On Kalshi a **No** pick says "your No is a pick
   on the Seahawks".
 
@@ -188,8 +193,9 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
   our block as a sibling after the row (a full-width table row when the row is one) with the
   venue's skin class on it, and re-inserts it when the venue re-renders. Off the plays page it
   puts the shield after each protectable club's name (`markGames`; a club with two listed games is
-  settled by the date on its card) and the one line in the slip (`findSlip`: the block an input
-  sits in, the pick named most in it, the stake from the input). The venue's DOM is never
+  settled by the date on its card, else by which of them is still open to protect; the hover card
+  is `showTip`) and the one line in the slip (`findSlip`: the block an input, textbox or
+  spinbutton sits in, the pick named most in it, the stake from the input). The venue's DOM is never
   modified; our marks and line are added beside it.
 - `content.css` the line, the inline panel, the segmented control, the chip. Every colour is a
   variable with the ProphetX values as defaults; `.ael-v-kalshi` and `.ael-v-novig` override them.
@@ -317,11 +323,12 @@ Operator actions (token in `x-admin-token`), for the recording day:
 
 Before the trade, on any board:
 
-- Open the game list: a small shield sits after each club the service lists this week; hover one
-  for the sentence. Nothing on clubs it does not list. The score strip and the futures list have
-  no marks.
+- Open the game list: a shield in a small disc sits after each club the service lists this week;
+  hover one and the card opens under it at once; click it and the row does not open. Nothing on
+  clubs it does not list. The score strip and the futures list have no marks.
 - Pick a Winner / Moneyline price: the slip shows "Lock in available after this is matched ·
-  worst case $x instead of $0 · +$y paid now" a second later. Change the stake: it reprices.
+  worst case $x instead of $0 · +$y paid now" a second later. Clear the stake: "enter a stake to
+  see the worst case". Change the stake: it reprices.
   Pick a Spread: the line goes away. On Kalshi, pick **No** on a club: the line names the other
   club. Open the plays page: no marks, no slip line, the rows have their offers.
 
