@@ -9,7 +9,7 @@
    script adds a venue class to each root (.ael-v-kalshi, .ael-v-novig) and the skin overrides
    the variables there; nothing else in the file knows which venue it is on. */
 
-:where(.ael-host, .ael-card, .ael-note) {
+:where(.ael-host, .ael-card, .ael-note, .ael-mark, .ael-slip) {
   --ael-fg: #f2f3f5;
   --ael-fg-strong: #ffffff;
   --ael-soft: #c3c4c9;
@@ -273,6 +273,41 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; }
 .ael-op a { color: var(--ael-glow); text-decoration: underline; font-weight: 600; }
 
 .ael-disclose { font-size: 10px; color: var(--ael-faint); text-align: left; margin-top: 6px; }
+
+/* Before the trade. The mark: one small shield after a club's name on the game list and the game
+   page, the size of a bullet, in the skin's glow colour; hover says what it means. */
+.ael-mark {
+  display: inline-flex;
+  vertical-align: -2px;
+  width: 13px;
+  height: 13px;
+  margin-left: 5px;
+  align-items: center;
+  justify-content: center;
+  color: var(--ael-glow);
+  opacity: 0.85;
+  cursor: help;
+}
+.ael-mark svg { width: 12px; height: 12px; display: block; }
+/* The slip line: one quiet sentence under the pick, no button. */
+.ael-slip {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--ael-accent-line);
+  border-radius: var(--ael-radius);
+  background: var(--ael-accent-wash);
+  color: var(--ael-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+}
+.ael-slip .ael-ic { width: 14px; height: 14px; margin-top: 1px; }
+.ael-slip .ael-ic svg { width: 13px; height: 13px; }
+.ael-slip b { color: var(--ael-fg-strong); font-weight: 600; }
+.ael-slip .ael-dim { color: var(--ael-dim); }
 
 /* Notice: bottom left, small, only when the service cannot answer on the plays page. */
 .ael-note {
