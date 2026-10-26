@@ -245,6 +245,8 @@
     if (r.ok && r.json && r.json.ok && Array.isArray(r.json.markets)) {
       indexMarkets(r.json.markets);
       S.ext = r.json.ext && typeof r.json.ext === "object" ? r.json.ext : {};
+      // a service built before `ext` has no telemetry route and no word on windows: draw as 0.6 did
+      S.ext.legacy = !(r.json.ext && typeof r.json.ext === "object");
       // the service names the oldest build it will draw with; an older one shows only the notice
       S.serviceState = S.ext.minVersion && cmpVersion(EXT_VERSION, S.ext.minVersion) < 0 ? "old" : "ok";
     } else {
@@ -1279,8 +1281,14 @@
   const marksOn = () => S.settings.showShield === "yes" && !marksOff();
   const slipOn = () => S.settings.showSlip === "yes" && !marksOff();
   const stemOf = (ticker) => String(ticker).slice(0, String(ticker).lastIndexOf("-"));
+  /**
+   * A market is open to lock in on the service's word (markets[].protectable). A service built
+   * before that field (it answers the markets route but not the telemetry one) says only what is
+   * already on the record: those rows draw on `!onRecord`, as 0.6 did, with no "until" on the pill.
+   */
+  const marketOpen = (m) => (m.protectable === undefined ? !m.onRecord : m.protectable === true);
   /** The service's word on a game: open to lock in when either side is, and when the window closes. */
-  const gameOpen = (stem) => S.markets.filter((m) => stemOf(m.ticker) === stem && m.protectable);
+  const gameOpen = (stem) => S.markets.filter((m) => stemOf(m.ticker) === stem && marketOpen(m));
   const gameUntil = (stem) => (gameOpen(stem).find((m) => m.protectableUntilIso) || {}).protectableUntilIso || null;
   const untilWords = (iso) => {
     if (!iso) return "";
@@ -1588,9 +1596,9 @@
   })();
   const teleVenue = () => (/^(127\.0\.0\.1|localhost)$/.test(location.hostname) ? "preview" : VENUE_ID);
   const sendTelemetry = () => {
-    if (S.settings.telemetry === "no" || S.serviceState !== "ok") return;
+    if (S.settings.telemetry === "no" || S.serviceState !== "ok" || S.ext.legacy) return;
     const page = S.pageOk ? "plays" : S.counts.games > 1 ? "board" : S.counts.games === 1 || S.counts.slip ? "game" : "other";
-    const counts = { markets: S.markets.length, protectable: S.markets.filter((m) => m.protectable).length, games: S.counts.games, marks: S.counts.marks, slip: S.counts.slip, slipMarked: S.counts.slipMarked, rows: S.counts.rows, offers: S.counts.offers, unread: S.counts.unread };
+    const counts = { markets: S.markets.length, protectable: S.markets.filter(marketOpen).length, games: S.counts.games, marks: S.counts.marks, slip: S.counts.slip, slipMarked: S.counts.slipMarked, rows: S.counts.rows, offers: S.counts.offers, unread: S.counts.unread };
     void api("/api/shadow/ext-telemetry", "POST", { venue: teleVenue(), page, version: EXT_VERSION, counts });
   };
   const teleTick = () => {

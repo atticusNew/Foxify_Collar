@@ -227,6 +227,11 @@ The extension draws; the service decides. Two things ride with `GET /api/shadow/
   `EVENT_SHADOW_EXT_MARKS_OFF`, comma list of `prophetx,kalshi,novig`): the pills and slip line
   are off on those venues until the switch is cleared, with no new build. `cutoffMinutes`.
 
+A service deployed from a build before these fields (markets rows without `protectable`, no `ext`)
+still draws: the pill goes on every listed game not already on the record, as 0.6 did, with no
+"until" on it, and no telemetry is posted. The service's deploy and the extension's update are
+two steps and may land in either order.
+
 Once per page view, the extension posts `POST /api/shadow/ext-telemetry` (lock key): venue, kind
 of page (`board`, `game`, `plays`, `other`), extension version, and whole-number counts (markets
 listed, protectable, games found, pills drawn, slip seen, slip marked, rows read, offers shown,
