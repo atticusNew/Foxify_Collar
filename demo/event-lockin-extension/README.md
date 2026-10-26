@@ -200,9 +200,12 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
   finds each game's card (`findGames`: from a club's name, the block naming both clubs of exactly
   one game, grown to the card with its time line; a title the venue cuts with an ellipsis, as in
   ProphetX's sidebar and "most active" rail, is a list entry and gets nothing; when no card can
-  be told apart the pill goes beside the first club named), puts one pill on each card the
+  be told apart the pill goes beside the first club named; a block's words are read with a space
+  between its text nodes, since a React Native Web page such as Novig's puts a view, not a space,
+  between a club's code, its name and its record), puts one pill on each card the
   service says is protectable (`markGames`, keyed by game so a redraw keeps it; the hover card is
-  `showTip`), and the one line in the slip (`findSlip`: the block with the venue's place-order
+  `showTip`; a pill the page gives no room to, inside a line that cuts its text, moves out of
+  that line or to its own line at the card's foot), and the one line in the slip (`findSlip`: the block with the venue's place-order
   button, the pick named most in it; no stake is read). A club listed twice in the window (this
   Sunday and next) is settled by the date on the line, else by the game whose page this is, else
   by the club's next game. Once per page view it posts the anonymous counts
