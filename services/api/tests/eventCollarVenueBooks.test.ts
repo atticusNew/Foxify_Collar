@@ -25,7 +25,7 @@ import {
   signedSource,
   type ReferenceBookSource,
 } from "../src/eventCollar/crossVenue/venueBooks";
-import { VenueClient, signerFromPem, templateForLeague } from "../src/eventCollar/crossVenue/venuePositions";
+import { VenueApiError, VenueClient, signerFromPem, templateForLeague } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, payoutMultiple } from "../src/eventCollar/crossVenue/venuePlays";
 import { counterfactualsFor, type CounterfactualInputs } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
 import { quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
@@ -804,4 +804,59 @@ test("reference books: REFERENCE_BOOK_SIGNED_LEAGUES is league=CODE pairs; a bad
   const probe = await fromEnv.sources[0].catalog!("nba");
   assert.equal(probe.queries[0].query, "league=NBA_REG&marketType=MONEY&limit=200", "the alias from the env reaches the probe");
   assert.ok(venue.calls.some((c) => c.includes("league=NBA_REG")));
+});
+
+test("reference books: a signed key the venue's catalog refuses (account locked) falls back to the public catalog for one cache window; positions do not", async () => {
+  const calls: Array<{ path: string; signed: boolean }> = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    calls.push({ path: url.pathname + url.search, signed: Boolean(headers["Novig-Key-Id"]) });
+    if (url.pathname.startsWith("/v3/catalog/") || url.pathname.startsWith("/v3/portfolio/")) return json({ code: "ACCOUNT_LOCKED", message: "The account is locked out of trading." }, 423);
+    const rest = url.pathname.replace(/^\/v3\/public\/catalog/, "");
+    if (rest === "/markets") return json({ items: SIGNED_MARKETS, next: null });
+    if (/\/book$/.test(rest)) return json(SIGNED_BOOK);
+    return json({ code: "not_found" }, 404);
+  };
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+  const client = new VenueClient({ host: "https://venue-a.test", signer: signerFromPem("kid", pem), fetchImpl });
+  assert.equal(client.isPublic, false);
+  assert.equal(client.catalogFallbackNote, null);
+
+  const src = signedSource(client);
+  const ref = await src.read(pair(), NOW);
+  assert.ok(ref.book, JSON.stringify(ref));
+  assert.equal(ref.book.asks.length, 2, "the public catalog carries the same book");
+  assert.deepEqual(
+    calls.map((c) => `${c.signed ? "S " : "P "}${c.path}`),
+    [
+      "S /v3/catalog/markets?league=MLB&marketType=MONEY&limit=200",
+      "P /v3/public/catalog/markets?league=MLB&marketType=MONEY&limit=200",
+      "P /v3/public/catalog/markets/m-nyy-bos/book",
+    ],
+    "one refused signed read, then public reads, the book not retried on the signed path",
+  );
+  assert.match(client.catalogFallbackNote ?? "", /423 ACCOUNT_LOCKED.*public catalog/);
+
+  // the probe says so, and its queries answer from the public catalog
+  const probe = await src.catalog!("mlb");
+  assert.equal(probe.queries[0].count, 2);
+  assert.equal(probe.queries[0].error, undefined);
+  assert.match(probe.note ?? "", /ACCOUNT_LOCKED/);
+  assert.ok(!JSON.stringify(probe).includes("kid"), "the key id is not in the probe");
+
+  // positions stay on the signed path and keep the venue's answer
+  await assert.rejects(() => client.listPositions(), (err: unknown) => err instanceof VenueApiError && err.status === 423 && err.code === "ACCOUNT_LOCKED");
+
+  // a plain 500 on the signed catalog is not a key problem and is not retried
+  const flaky: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.startsWith("/v3/catalog/")) return json({ code: "INTERNAL", message: "oops" }, 500);
+    return fetchImpl(input, init);
+  };
+  const c2 = new VenueClient({ host: "https://venue-a.test", signer: signerFromPem("kid", pem), fetchImpl: flaky });
+  const r2 = await readReferenceBooks([signedSource(c2)], pair(), NOW);
+  assert.equal(r2[0].reason, "venue_internal");
+  assert.equal(c2.catalogFallbackNote, null);
 });

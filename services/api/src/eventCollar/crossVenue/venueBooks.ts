@@ -95,6 +95,8 @@ export interface ReferenceCatalogProbe {
   league: string;
   /** each query tried, as sent (no host, no key), with what came back */
   queries: ReferenceCatalogQuery[];
+  /** how the reads went, when there is something to say (the signed catalog refused the key and the public one answered) */
+  note?: string;
 }
 export interface ReferenceCatalogQuery {
   query: string;
@@ -351,7 +353,8 @@ export async function signedCatalogProbe(client: VenueClient, league: string, co
     }
   };
   const queries = [await run({ league: signedLeagueCode(league, codes), marketType: "MONEY", limit: "200" }), await run({ marketType: "MONEY", limit: "200" })];
-  return { id: "signed_v3", league, queries };
+  const note = client.catalogFallbackNote;
+  return { id: "signed_v3", league, queries, ...(note ? { note } : {}) };
 }
 
 // ---------------------------------------------------------------------------
