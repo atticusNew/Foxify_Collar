@@ -226,6 +226,7 @@ test("reference books: the signed source finds the game in the league's winner m
   ]);
   assert.deepEqual(ref.book.bids, []);
   assert.equal(ref.book.tokenId, "signed_v3:m-nyy-bos");
+  assert.deepEqual(ref.listing, { marketId: "m-nyy-bos", key: "e1" }, "the venue's market and event ids ride on the reference");
   assert.equal(calls.length, 2, "one catalog read, one book read");
   assert.equal(calls[0].path, "/v3/catalog/markets?league=MLB&marketType=MONEY&limit=200");
   assert.equal(calls[1].path, "/v3/catalog/markets/m-nyy-bos/book");
@@ -604,4 +605,94 @@ test("reference books: the routing comparison carries one row per reference, cou
   // a record with no references renders the card as before
   const plain = renderShadowReportHtml({ atIso: "2026-09-21T00:00:00.000Z", summary: summarizeShadow(loadShadowPositions(path).filter((p) => p.ticker === "BEFORE")) });
   assert.ok(!plain.includes("reference book"));
+});
+
+test("reference books: the signed source's catalog probe asks the league two ways and tallies what came back, so a run of not_listed can be told from a league code the venue spells differently", async () => {
+  // the venue spells basketball "NBA_REG" and ignores an unknown league filter with an empty page
+  const nbaMarkets = [
+    {
+      marketId: "m-bos-nyk",
+      eventId: "e9",
+      description: "Celtics @ Knicks",
+      marketType: "MONEY",
+      status: "OPEN",
+      league: "NBA_REG",
+      startsTs: Date.parse(LOCK),
+      outcomes: [
+        { outcomeId: "o-bos", name: "BOS", status: "TBD" },
+        { outcomeId: "o-nyk", name: "NYK", status: "TBD" },
+      ],
+    },
+    {
+      marketId: "m-bos-nyk-spread",
+      eventId: "e9",
+      description: "Celtics @ Knicks spread",
+      marketType: "SPREAD",
+      status: "OPEN",
+      league: "NBA_REG",
+      startsTs: Date.parse(LOCK),
+      outcomes: [
+        { outcomeId: "o-bos-s", name: "BOS -3.5", status: "TBD" },
+        { outcomeId: "o-nyk-s", name: "NYK +3.5", status: "TBD" },
+      ],
+    },
+    {
+      marketId: "m-settled",
+      eventId: "e8",
+      description: "Lakers @ Suns",
+      marketType: "MONEY",
+      status: "SETTLED",
+      league: "NBA_REG",
+      startsTs: Date.parse(LOCK) - 86_400_000,
+      outcomes: [
+        { outcomeId: "o-lal", name: "LAL", status: "WON" },
+        { outcomeId: "o-phx", name: "PHX", status: "LOST" },
+      ],
+    },
+  ];
+  const calls: string[] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    calls.push(url.pathname + url.search);
+    const league = url.searchParams.get("league");
+    if (league === "NBA") return json({ items: [], next: null });
+    const all = [...SIGNED_MARKETS.map((m) => ({ ...m, league: "MLB" })), ...nbaMarkets];
+    return json({ items: all.filter((m) => !league || m.league === league), next: null });
+  };
+  const client = new VenueClient({ host: "https://venue-a.test", fetchImpl });
+  const src = signedSource(client);
+  assert.ok(src.catalog, "the signed dialect has a catalog to ask");
+  const probe = await src.catalog("nba");
+  assert.equal(probe.id, "signed_v3");
+  assert.equal(probe.league, "nba");
+  assert.equal(probe.queries.length, 2);
+  const [filtered, all] = probe.queries;
+  assert.equal(filtered.query, "league=NBA&marketType=MONEY&limit=200", "the reader's own query first");
+  assert.deepEqual({ count: filtered.count, winners: filtered.winners, ourClubs: filtered.ourClubs }, { count: 0, winners: 0, ourClubs: 0 }, "the reader sees nothing under our code");
+  assert.equal(all.query, "marketType=MONEY&limit=200");
+  assert.equal(all.count, 5);
+  assert.equal(all.winners, 3, "winner markets not settled: two MLB, one NBA; the spread and the settled game are not");
+  assert.equal(all.ourClubs, 1, "one of them names two NBA clubs");
+  assert.deepEqual(all.leaguesSeen, { MLB: 2, NBA_REG: 3 }, "the venue's own league words, by count: the code to try");
+  assert.equal(all.sample[0].marketId, "m-bos-nyk", "our clubs' games first in the sample");
+  assert.deepEqual(all.sample[0].outcomes, ["BOS", "NYK"]);
+  assert.equal(all.sample[0].league, "NBA_REG");
+  assert.equal(all.sample[0].startsIso, LOCK);
+  assert.equal(all.sample[0].eventId, "e9");
+  assert.equal(all.sample.length, 5);
+  for (const c of calls) assert.ok(c.startsWith("/v3/public/catalog/markets?"), c);
+  assert.ok(!JSON.stringify(probe).includes("venue-a.test"), "no host in the probe");
+
+  // a venue that refuses the unfiltered query keeps the error on that query only
+  const refusing: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    if (!url.searchParams.get("league")) return json({ code: "LEAGUE_REQUIRED", message: "league is required" }, 400);
+    return json({ items: nbaMarkets.filter((m) => m.marketType === "MONEY"), next: null });
+  };
+  const p2 = await signedSource(new VenueClient({ host: "https://venue-a.test", fetchImpl: refusing })).catalog!("nba");
+  assert.equal(p2.queries[0].count, 2);
+  assert.equal(p2.queries[0].winners, 1);
+  assert.equal(p2.queries[1].count, null);
+  assert.match(p2.queries[1].error ?? "", /400 LEAGUE_REQUIRED/);
+  assert.deepEqual(p2.queries[1].sample, []);
 });

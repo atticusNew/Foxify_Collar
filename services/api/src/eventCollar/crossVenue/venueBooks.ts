@@ -65,13 +65,64 @@ export const REFERENCE_BOOK_WORDS: Record<ReferenceBookId, string> = {
  * dropped (the hedge routes keep their staleness bound).
  */
 export type ReferenceBook =
-  | { id: ReferenceBookId; book: PmBook; reason?: undefined; ageSec?: number }
-  | { id: ReferenceBookId; book: null; reason: string; ageSec?: undefined };
+  | { id: ReferenceBookId; book: PmBook; reason?: undefined; ageSec?: number; listing?: ReferenceListing }
+  | { id: ReferenceBookId; book: null; reason: string; ageSec?: undefined; listing?: ReferenceListing };
+
+/**
+ * Which listing a reference was read from, kept on the record so a cell with no book can be asked
+ * about by id ("mapped, no book yet" on market X, strike Y, at time T) instead of by game name.
+ * Ids only, never a key or a name; absent when the read never reached a listing (not mapped, the
+ * league not covered, the venue unreachable).
+ */
+export interface ReferenceListing {
+  /** the market id on the side the read came through: the aggregator's for a feed read, the venue's for a direct read */
+  marketId: string;
+  /** the venue's own key for the listing when the dialect has one (a strike id; an event id) */
+  key?: string;
+  /** the venue's snapshot timestamp as read, ISO; absent when unstamped or when there was no book */
+  snapshotAtIso?: string;
+}
+
+/** What one reference venue lists for a league, as it answers the catalog: the diagnostic behind a run of "not listed". */
+export interface ReferenceCatalogProbe {
+  id: ReferenceBookId;
+  /** our league code */
+  league: string;
+  /** each query tried, as sent (no host, no key), with what came back */
+  queries: ReferenceCatalogQuery[];
+}
+export interface ReferenceCatalogQuery {
+  query: string;
+  /** markets returned; null when the call failed */
+  count: number | null;
+  /** of them, winner markets not settled/closed */
+  winners: number | null;
+  /** of the winners, those whose outcomes name two clubs of our league's template */
+  ourClubs: number | null;
+  error?: string;
+  /** the venue's own league/sport words on the markets returned, by count, when it puts one on a market */
+  leaguesSeen: Record<string, number>;
+  /** the first few markets, enough to recognise a league by its games */
+  sample: ReferenceCatalogSample[];
+}
+export interface ReferenceCatalogSample {
+  marketId: string;
+  eventId?: string;
+  description: string;
+  marketType: string;
+  status: string;
+  startsIso: string | null;
+  outcomes: string[];
+  /** the venue's league/sport word on this market, when present */
+  league?: string;
+}
 
 export interface ReferenceBookSource {
   id: ReferenceBookId;
   /** the opposing outcome's asks for this pair, fees folded; null with a reason when the venue has no such book */
   read(pair: MatchedPair, now: Date): Promise<ReferenceBook>;
+  /** what the venue lists for one of our leagues, as its catalog answers; absent on dialects with no catalog to ask */
+  catalog?(league: string): Promise<ReferenceCatalogProbe>;
 }
 
 const DAY_MS = 86_400_000;
@@ -192,9 +243,72 @@ export function signedSource(client: VenueClient): ReferenceBookSource {
       if (!hit) return { id: "signed_v3", book: null, reason: "not_listed" };
       const ourOutcome = hit.outcomes.find((o) => clubNamed(clubs.template, clubs.ours, o.name))!;
       const book = await client.getBook(hit.marketId);
-      return { id: "signed_v3", book: asksBook(signedAsksForOpposing(book, ourOutcome.outcomeId, hit.fee), `signed_v3:${hit.marketId}`) };
+      const listing: ReferenceListing = { marketId: hit.marketId, ...(hit.eventId ? { key: hit.eventId } : {}) };
+      return { id: "signed_v3", book: asksBook(signedAsksForOpposing(book, ourOutcome.outcomeId, hit.fee), `signed_v3:${hit.marketId}`), listing };
+    },
+    async catalog(league) {
+      return signedCatalogProbe(client, league);
     },
   };
+}
+
+/** The first few markets of a catalog answer, laid out for the operator. */
+function sampleOf(m: RawVenueMarket): ReferenceCatalogSample {
+  const leagueWord = [m.league, m.sport, m.competition].find((w): w is string => typeof w === "string" && w.trim() !== "");
+  return {
+    marketId: m.marketId,
+    ...(m.eventId ? { eventId: m.eventId } : {}),
+    description: m.description ?? "",
+    marketType: m.marketType ?? "",
+    status: m.status ?? "",
+    startsIso: m.startsTs ? new Date(m.startsTs < 1e12 ? m.startsTs * 1000 : m.startsTs).toISOString() : null,
+    outcomes: (m.outcomes ?? []).map((o) => o.name),
+    ...(leagueWord ? { league: leagueWord } : {}),
+  };
+}
+
+const SAMPLE_SIZE = 12;
+
+/**
+ * Ask the signed-dialect venue what it lists for one of our leagues, two ways: with the league
+ * filter the reader sends, and without it (every winner market, tallied by whatever league word
+ * the venue puts on each, and by whether the outcomes name two clubs of our template). A run of
+ * "not listed" on one league is either a slate the venue has not posted or a league code the
+ * venue spells differently; the two answers side by side tell which.
+ */
+export async function signedCatalogProbe(client: VenueClient, league: string): Promise<ReferenceCatalogProbe> {
+  const template = templateForLeague(league);
+  const clubs = template ? clubsOf(template) : [];
+  const namesTwoClubs = (m: RawVenueMarket): boolean => {
+    if (!template) return false;
+    const hit = new Set<string>();
+    for (const o of m.outcomes ?? []) for (const club of clubs) if (clubNamed(template, club, o.name)) hit.add(club);
+    return hit.size === 2;
+  };
+  const open = (m: RawVenueMarket): boolean => isWinnerMarket(m.marketType ?? "") && !(m.status && /^(settled|closed|cancel|void|suspend)/i.test(m.status));
+  const run = async (query: Record<string, string>): Promise<ReferenceCatalogQuery> => {
+    const sent = Object.entries(query)
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+      .join("&");
+    try {
+      const markets = await client.listMarkets(query);
+      const winners = markets.filter(open);
+      const ours = winners.filter(namesTwoClubs);
+      const leaguesSeen: Record<string, number> = {};
+      for (const m of markets) {
+        const w = sampleOf(m).league;
+        if (w) leaguesSeen[w] = (leaguesSeen[w] ?? 0) + 1;
+      }
+      // our clubs' games first, so a league listed under another code shows in the sample
+      const ordered = [...ours, ...winners.filter((m) => !ours.includes(m)), ...markets.filter((m) => !winners.includes(m))];
+      return { query: sent, count: markets.length, winners: winners.length, ourClubs: ours.length, leaguesSeen, sample: ordered.slice(0, SAMPLE_SIZE).map(sampleOf) };
+    } catch (err) {
+      const words = err instanceof VenueApiError ? `${err.status} ${err.code}: ${err.message}` : String(err instanceof Error ? err.message : err);
+      return { query: sent, count: null, winners: null, ourClubs: null, error: words.slice(0, 160), leaguesSeen: {}, sample: [] };
+    }
+  };
+  const queries = [await run({ league: league.toUpperCase(), marketType: "MONEY", limit: "200" }), await run({ marketType: "MONEY", limit: "200" })];
+  return { id: "signed_v3", league, queries };
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +388,7 @@ export function partnerSource(client: PlaysClient): ReferenceBookSource {
         if (!market) return { id: "partner_mm", book: null, reason: "winner_market_not_listed" };
         const opp = competitorFor(clubs.template, event, clubs.opposing);
         const oppId = opp?.id !== undefined && opp?.id !== null ? String(opp.id) : null;
-        return { id: "partner_mm", book: asksBook(partnerAsksForOpposing(market, clubs.template, clubs.opposing, oppId), `partner_mm:${market.id}`) };
+        return { id: "partner_mm", book: asksBook(partnerAsksForOpposing(market, clubs.template, clubs.opposing, oppId), `partner_mm:${market.id}`), listing: { marketId: String(market.id), key: String(event.event_id) } };
       }
       return { id: "partner_mm", book: null, reason: "not_listed" };
     },

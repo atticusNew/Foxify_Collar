@@ -59,7 +59,7 @@ import {
 import { heldBooks as openHeldBooks, type HeldBooks, type HeldBooksOptions } from "./aggregatorHeldBooks";
 import type { NoAskLevel } from "./kalshiLadder";
 import type { MatchedPair, PmBook, PmBookLevel } from "./types";
-import type { ReferenceBook } from "./venueBooks";
+import type { ReferenceBook, ReferenceListing } from "./venueBooks";
 
 /** Where a book the quote was priced from came from. */
 export type BookOrigin = "aggregator" | "direct";
@@ -288,7 +288,7 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
     const refStreams = referenceStreamsOf(aligned);
     // The venue the feed is relied on for: no listing on the opposing outcome is a state of its
     // own ("not mapped yet"), distinct from a mapping whose book has not opened.
-    if (!refStreams.some((r) => r.id === "aggregated_mm")) out.references.push({ id: "aggregated_mm", book: null, reason: NOT_MAPPED });
+    if (!refStreams.some((r) => r.id === "aggregated_mm")) out.references.push({ id: "aggregated_mm", book: null, reason: NOT_MAPPED, listing: { marketId: aligned.marketId } });
     const streams = [kalshiStream, pmStream, ...refStreams.map((r) => r.stream)].filter((s): s is MarketStream => s !== null);
     if (streams.length === 0) return out;
 
@@ -336,11 +336,12 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
     // book is still the price the venue would trade at. The age rides along for the record.
     for (const { id, stream } of refStreams) {
       const res = results[i++];
-      if (!res.book) out.references.push({ id, book: null, reason: `stream_${res.error.code.toLowerCase()}` });
-      else if (res.book.bids.length === 0 && res.book.asks.length === 0) out.references.push({ id, book: null, reason: MAPPED_NO_BOOK });
+      const listing = listingRef(aligned.marketId, stream, res.book);
+      if (!res.book) out.references.push({ id, book: null, reason: `stream_${res.error.code.toLowerCase()}`, listing });
+      else if (res.book.bids.length === 0 && res.book.asks.length === 0) out.references.push({ id, book: null, reason: MAPPED_NO_BOOK, listing });
       else {
         const ageSec = snapshotAgeSec(res.book, nowMs());
-        out.references.push({ id, book: pmBookFromSnapshot(`${stream.venue}:${aligned.marketId}`, res.book), ...(ageSec === null ? {} : { ageSec }) });
+        out.references.push({ id, book: pmBookFromSnapshot(`${stream.venue}:${aligned.marketId}`, res.book), ...(ageSec === null ? {} : { ageSec }), listing });
       }
     }
     if (out.pmNoBook || out.noAsks) status.readsWithBooks += 1;
@@ -361,6 +362,21 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
   const held = (o: Omit<HeldBooksOptions, "streamUrl" | "wsFactory" | "nowMs"> = {}): HeldBooks => openHeldBooks(signer, { ...o, streamUrl: opts.streamUrl, wsFactory: opts.wsFactory, nowMs });
 
   return { read, status: () => ({ ...status }), referenceStreams, heldBooks: held };
+}
+
+/** The venue's own key for a stream entry: the strike id, the token, the ticker, the market and outcome; the one thing to quote back to the feed. */
+export function streamListingKey(stream: MarketStream): string {
+  if (stream.venue === "PROPHETX") return stream.strikeId;
+  if (stream.venue === "KALSHI") return stream.ticker;
+  if (stream.venue === "POLYMARKET") return stream.tokenId;
+  return `${stream.marketId}/${stream.outcomeId}`;
+}
+
+/** The listing a reference cell was read from, with the snapshot's own timestamp when it carried one. */
+export function listingRef(marketId: string, stream: MarketStream, book: BookSnapshot | null): ReferenceListing {
+  const ts = book ? book.venueTimestamp || book.serverTimestamp : 0;
+  const atIso = ts ? new Date(ts < 1e12 ? ts * 1000 : ts).toISOString() : undefined;
+  return { marketId, key: streamListingKey(stream), ...(atIso ? { snapshotAtIso: atIso } : {}) };
 }
 
 /** The opposing outcome's listings on every venue that is neither route, as reference streams, in listing order. */

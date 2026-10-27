@@ -139,9 +139,9 @@ import {
 } from "../src/eventCollar/crossVenue/lastLeg";
 import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
 import { measureNetting } from "../src/eventCollar/crossVenue/shadowNetting";
-import { venueBreakdown } from "../src/eventCollar/crossVenue/shadowVenues";
+import { venueBreakdown, venueBreakdownCsv } from "../src/eventCollar/crossVenue/shadowVenues";
 import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slateLinkKey, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
-import type { CandidateResult, ScanOptions, ScanState, listGameMarkets, pricingSourceStatus, quoteOne } from "./eventProtectXDemoService";
+import type { CandidateResult, ScanOptions, ScanState, listGameMarkets, pricingSourceStatus, quoteOne, referenceCatalog } from "./eventProtectXDemoService";
 import { HOLDER_ALIAS_RE, holderKeysFromEnv, lockCaller, lockKeyFromEnv, parseLockRequest, readJsonBody } from "../src/eventCollar/crossVenue/lockGate";
 import { ExtTelemetryStore, parseExtTelemetry } from "../src/eventCollar/crossVenue/extTelemetry";
 import { VenueClient, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
@@ -281,6 +281,8 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/netting",
   "/venues",
   "/api/shadow/venues",
+  "/api/shadow/venues.csv",
+  "/api/shadow/venues/catalog",
   "/api/shadow/ext-telemetry/summary",
 ]);
 
@@ -295,6 +297,7 @@ let quoteOneFn: typeof quoteOne | null = null;
 let listGameMarketsFn: typeof listGameMarkets | null = null;
 /** the engine's pricing-source status (the aggregator's feed, then the venues); wired in main() */
 let pricingSourceStatusFn: typeof pricingSourceStatus | null = null;
+let referenceCatalogFn: typeof referenceCatalog | null = null;
 /**
  * LOCK: a real holder's tap (the browser extension over a venue's page) opens a position at
  * their size and fills the hedge through the same executor. Gated by EVENT_SHADOW_LOCK_KEY
@@ -2024,6 +2027,33 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       sendJson(res, 200, { ok: true, ext: extConfig(), ...extTelemetry.summary() });
       return;
     }
+    if (url.pathname === "/api/shadow/venues.csv") {
+      // every venue read of every game in the window, flat, with the listing ids (shadowVenues.ts, venueBreakdownCsv)
+      const daysRaw = Number(url.searchParams.get("days"));
+      const windowDays = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, 365) : 7;
+      const { atIso, positions } = pageData();
+      const breakdown = venueBreakdown(positions, new Date(atIso), { windowDays, maxRows: 10_000 });
+      res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store", "content-disposition": `attachment; filename="venues-${atIso.slice(0, 10)}.csv"` });
+      res.end(venueBreakdownCsv(breakdown));
+      return;
+    }
+    if (url.pathname === "/api/shadow/venues/catalog") {
+      // what a reference venue lists for one league, as its catalog answers: the diagnostic behind "not listed"
+      const league = (url.searchParams.get("league") ?? "nba").toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (!league) {
+        sendJson(res, 400, { ok: false, error: "league required (nba, nfl, mlb)" });
+        return;
+      }
+      if (!referenceCatalogFn) {
+        sendJson(res, 503, { ok: false, error: "engine not loaded yet" });
+        return;
+      }
+      void referenceCatalogFn(league).then(
+        (probe) => sendJson(res, 200, { ok: true, at: new Date().toISOString(), ...probe }),
+        (err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }),
+      );
+      return;
+    }
     if (url.pathname === "/venues" || url.pathname === "/api/shadow/venues") {
       // VENUES, NAMED: every game priced on every venue read, from the ledger's counterfactuals.
       // Operator only (OPERATOR_PATHS); the public record never carries a venue's name.
@@ -2142,6 +2172,7 @@ async function main(): Promise<void> {
   listGameMarketsFn = demo.listGameMarkets;
   protectCutoffMinutes = demo.PROTECT_WINDOW_MINUTES.min;
   pricingSourceStatusFn = demo.pricingSourceStatus;
+  referenceCatalogFn = demo.referenceCatalog;
   heldSource = demo.aggregatorSource();
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console

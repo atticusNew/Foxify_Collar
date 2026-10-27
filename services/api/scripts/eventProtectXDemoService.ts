@@ -101,7 +101,7 @@ import { matchKalshiMarket, parseGameTicker } from "../src/eventCollar/crossVenu
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import { getNoAsks, quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
-import { readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
+import { readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook, type ReferenceCatalogProbe } from "../src/eventCollar/crossVenue/venueBooks";
 import { aggregatorBookSourceFromEnv, type AggregatorBookSource, type AggregatorBookStatus, type BookOrigins } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { farOutGuardFromEnv, farOutVerdict, type FarOutGuardRule } from "../src/eventCollar/crossVenue/farOutGuard";
 import { markGapGuardFromEnv, markGapVerdict, type MarkGapGuardRule } from "../src/eventCollar/crossVenue/markGapGuard";
@@ -383,6 +383,25 @@ console.log(
 /** The operator's view of the pricing source: configured or not, counters, never the key. */
 export function pricingSourceStatus(): { aggregator: AggregatorBookStatus | { configured: false }; notes: string[] } {
   return { aggregator: aggregatorBooks.source ? aggregatorBooks.source.status() : { configured: false }, notes: aggregatorBooks.notes };
+}
+
+/**
+ * What each configured reference venue lists for one of our leagues, as its catalog answers
+ * (venueBooks.ts, signedCatalogProbe): the operator's diagnostic behind a run of "not listed".
+ * Venues whose dialect has no catalog to ask are named with no queries. Never throws.
+ */
+export async function referenceCatalog(league: string): Promise<{ league: string; configured: string[]; notes: string[]; probes: ReferenceCatalogProbe[] }> {
+  const probes = await Promise.all(
+    referenceBooks.sources.map(async (s): Promise<ReferenceCatalogProbe> => {
+      if (!s.catalog) return { id: s.id, league, queries: [] };
+      try {
+        return await s.catalog(league);
+      } catch (err) {
+        return { id: s.id, league, queries: [{ query: "", count: null, winners: null, ourClubs: null, error: String(err instanceof Error ? err.message : err).slice(0, 160), leaguesSeen: {}, sample: [] }] };
+      }
+    }),
+  );
+  return { league, configured: referenceBooks.sources.map((s) => s.id), notes: referenceBooks.notes, probes };
 }
 
 /** The aggregator source itself, for the shadow worker's held books (its lookup and its key stay inside it); null when the key is not set. */

@@ -191,10 +191,17 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
   const op = { headers: { "x-admin-token": "op-secret" } };
   try {
     // operator views are gated: no token, wrong token -> 403; the public record is unaffected
-    for (const p of ["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export", "/api/shadow/netting", "/venues", "/api/shadow/venues"]) {
+    for (const p of ["/report", "/api/shadow/report", "/api/shadow/hedges", "/api/shadow/export", "/api/shadow/netting", "/venues", "/api/shadow/venues", "/api/shadow/venues.csv", "/api/shadow/venues/catalog"]) {
       assert.equal((await fetch(`${base}${p}`)).status, 403, `${p} without a token`);
       assert.equal((await fetch(`${base}${p}?token=wrong`)).status, 403, `${p} with the wrong token`);
     }
+    // the venues CSV answers the operator with the header alone on an empty ledger; the catalog probe waits for the engine
+    const venuesCsv = await fetch(`${base}/api/shadow/venues.csv`, op);
+    assert.equal(venuesCsv.status, 200);
+    assert.match(venuesCsv.headers.get("content-type") ?? "", /text\/csv/);
+    assert.equal((await venuesCsv.text()).trim(), "ticker,league,event,side,event_time,status,read,read_at,hours_to_lock,venue,venue_id,via,state,credit_c,delta_c,ev_cost_bps,best_ask_c,depth_shares,age_sec,market_id,listing_key,snapshot_at,written");
+    const catalog = await fetch(`${base}/api/shadow/venues/catalog?league=nba`, op);
+    assert.equal(catalog.status, 503, "the engine (and its reference sources) is not loaded in this test: the route says so rather than guessing");
     assert.equal((await fetch(`${base}/`)).status, 200);
     assert.equal((await fetch(`${base}/api/shadow`)).status, 200);
     assert.equal((await fetch(`${base}/api/shadow/positions.csv`)).status, 200);

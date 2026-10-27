@@ -174,6 +174,10 @@ export interface RawVenueMarket {
   status: string;
   startsTs: number;
   outcomes: Array<{ outcomeId: string; name: string; status: string }>;
+  /** the venue's own league, sport or competition word on the market, when it puts one there (the catalog probe tallies these) */
+  league?: string;
+  sport?: string;
+  competition?: string;
   /** the venue's fee rule for the market: c x P x (1 - P) per contract, charged always or only once live (numbers arrive as strings) */
   fee?: { coefficient?: number | string; makerCredit?: number | string; charged?: string };
 }
@@ -285,10 +289,21 @@ export class VenueClient {
    * Cached like the single reads.
    */
   async listMoneyMarkets(league: string): Promise<RawVenueMarket[]> {
-    const key = `money:${league.toUpperCase()}`;
+    return this.listMarkets({ league: league.toUpperCase(), marketType: "MONEY", limit: "200" });
+  }
+
+  /**
+   * One page of the catalog's markets under any filter the venue accepts (`league`, `marketType`,
+   * `limit`; none at all for everything), cached by the query like the single reads. The reader
+   * uses it through `listMoneyMarkets`; the catalog probe asks it directly.
+   */
+  async listMarkets(filter: Record<string, string>): Promise<RawVenueMarket[]> {
+    const query = Object.entries(filter)
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+      .join("&");
+    const key = `markets:${query}`;
     const hit = this.marketLists.get(key);
     if (hit && Date.now() - hit.at < this.ttl) return hit.v;
-    const query = `league=${encodeURIComponent(league.toUpperCase())}&marketType=MONEY&limit=200`;
     const body = await this.get<RawVenueMarket[] | { items?: RawVenueMarket[]; markets?: RawVenueMarket[]; next?: string | null }>(this.catalog("/markets"), query);
     const items = Array.isArray(body) ? body : (body?.items ?? body?.markets ?? []);
     const v = items.filter((m) => m && typeof m.marketId === "string" && Array.isArray(m.outcomes));
