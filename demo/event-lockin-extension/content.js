@@ -132,6 +132,12 @@
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const reshape = (n, F, C, K) => ({ floorTotal: F * n + K, capTotal: C * n + K });
+  /** The holder's two outcomes on this row: the lock's terms on its whole contracts, plus the odd payout the lock leaves out when the club wins. */
+  const outcomes = (B, n, F, C, K) => {
+    const r = reshape(n, F, C, K);
+    r.capTotal += oddOf(B);
+    return r;
+  };
   const fmtAt = (iso) => {
     try {
       const d = new Date(iso);
@@ -504,22 +510,38 @@
     while ((m = MONEY.exec(text))) out.push(Number(m[1].replace(/,/g, "")));
     return out;
   };
-  const sizeOf = (stake, payout) => ({
-    contracts: Math.max(1, Math.round(payout)),
-    entryCents: Math.min(99, Math.max(1, Math.round((100 * stake) / payout))),
-    stakeCents: Math.round(stake * 100),
-    payoutCents: Math.round(payout * 100),
-  });
+  /**
+   * A size: what the position pays and cost, to the cent, as the venue prints them; and the whole
+   * contracts the lock covers, never more than the position holds. A position of 15.95 contracts
+   * (Kalshi sells fractions) is locked on 15; the odd $0.95 of payout rides unprotected and is
+   * counted in every figure the holder sees (oddOf). A position under one contract has no size.
+   */
+  const sizeOf = (stake, payout) => {
+    const contracts = Math.floor(payout + 1e-9);
+    if (contracts < 1) return null;
+    return {
+      contracts,
+      entryCents: Math.min(99, Math.max(1, Math.round((100 * stake) / payout))),
+      stakeCents: Math.round(stake * 100),
+      payoutCents: Math.round(payout * 100),
+    };
+  };
   // Kalshi's units are ours: N contracts at c cents each pay $N. A price in cents ("42¢", "@ 42c",
-  // "Avg 42¢") and a contract count ("10 contracts", "10 shares"), or the price and the cost.
-  const CENTS = /(?:^|[^\d.$])(\d{1,2})\s?(?:¢|&cent;|c(?![a-z0-9]))/i;
-  const CONTRACTS = /(\d{1,6}(?:,\d{3})*)\s*(?:contracts?|shares?)\b/i;
-  const sizeOfContracts = (contracts, cents) => ({
-    contracts: Math.max(1, Math.round(contracts)),
-    entryCents: Math.min(99, Math.max(1, Math.round(cents))),
-    stakeCents: Math.round(contracts * cents),
-    payoutCents: Math.round(contracts) * 100,
-  });
+  // "Avg 62.67¢") and a contract count ("10 contracts", "15.95 shares"), or the price and the cost.
+  const CENTS = /(?:^|[^\d.$])(\d{1,2}(?:\.\d+)?)\s?(?:¢|&cent;|c(?![a-z0-9]))/i;
+  const CONTRACTS = /(\d{1,6}(?:,\d{3})*(?:\.\d+)?)\s*(?:contracts?|shares?)\b/i;
+  const sizeOfContracts = (held, cents, costCents) => {
+    const contracts = Math.floor(held + 1e-9);
+    if (contracts < 1) return null;
+    return {
+      contracts,
+      entryCents: Math.min(99, Math.max(1, Math.round(cents))),
+      stakeCents: costCents != null ? costCents : Math.round(held * cents),
+      payoutCents: Math.round(held * 100),
+    };
+  };
+  /** The payout the lock leaves out: the venue's figure less the whole contracts covered (95 for 15.95 contracts); 0 when they agree. */
+  const oddOf = (B) => (B && B.size && B.size.payoutCents ? B.size.payoutCents - 100 * B.size.contracts : 0);
   const centsSize = (text) => {
     const bare = noMoney(text);
     const c = CENTS.exec(bare);
@@ -530,7 +552,8 @@
       const amounts = amountsIn(text);
       // the cost at that price: contracts are the cost over the price
       const cost = labelled(text, /(?:cost|paid|spent|total|amount|avg\s*cost)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i) || amounts[0];
-      if (cost) return sizeOfContracts(Math.round((100 * cost) / cents), cents);
+      // no count printed: the nearest whole contracts the cost buys at that price
+      if (cost) return sizeOfContracts(Math.round((100 * cost) / cents), cents, Math.round(cost * 100));
     }
     if (n) {
       const cost = labelled(text, /(?:cost|paid|spent|amount)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
@@ -625,8 +648,8 @@
     const nm = held ? /(\d{1,6}(?:,\d{3})*(?:\.\d+)?)/.exec(held) : null;
     const n = nm ? Number(nm[1].replace(/,/g, "")) : 0;
     const c = avg ? /(\d{1,2}(?:\.\d+)?)\s?(?:¢|&cent;|c(?![a-z0-9]))/i.exec(avg) : null;
-    if (n > 0 && c && Number(c[1]) > 0 && Number(c[1]) < 100) return sizeOfContracts(n, Number(c[1]));
     const stake = money(at(/^(cost|stake|wager|risk|bet)\b/));
+    if (n > 0 && c && Number(c[1]) > 0 && Number(c[1]) < 100) return sizeOfContracts(n, Number(c[1]), stake ? Math.round(stake * 100) : null);
     if (!stake) return null;
     const payout = money(at(/^(payout|pays|return|total return)\b/));
     if (payout && payout > stake) return sizeOf(stake, payout);
@@ -1111,11 +1134,11 @@
     const rec = B.kind === "winner" ? S.record.get(B.ticker) || st.done : null;
     let line;
     if (rec) {
-      const rs = reshape(rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
+      const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
       if (rec.status === "settled" && rec.result) {
         // the protected outcome is the record's; whether the cash has moved is said beside it,
         // never as "paid" on its own, since the holder can see at the venue whether it has
-        const got = usd(rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal);
+        const got = usd(rec.protectedCents != null ? rec.protectedCents + (rec.result === "yes" ? oddOf(B) : 0) : rec.result === "yes" ? rs.capTotal : rs.floorTotal);
         const cash = cashState(rec);
         line = cash
           ? lineGo("Settled &middot; " + (cash.open ? cash.label : "paid " + esc(got)), cash.open ? "protected outcome " + esc(got) + (cash.sub ? " &middot; " + cash.sub : "") : "every leg paid", "ael-line-on")
@@ -1139,7 +1162,7 @@
       const q = p.quote;
       const t = (q.tiers && q.tiers[st.tier]) || q;
       const n = q.contracts || p.contracts;
-      const rs = reshape(n, t.floorCents, t.capCents, t.creditCents);
+      const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
       const was = B.size && B.size.payoutCents ? " (was " + esc(usd(B.size.payoutCents)) + ")" : "";
       line = lineGo("Lock in &middot; " + esc(usd(rs.floorTotal)) + " if the " + esc(shortOf(B.ticker)) + " lose", "instead of $0 &middot; " + esc(usd(rs.capTotal)) + " if they win" + was + " &middot; +" + esc(usd(t.creditCents)) + " paid now", "");
     }
@@ -1200,6 +1223,18 @@
     return esc(nick) + (pays ? " &middot; pays " + esc(pays) + " if they win" : "") + paid + flip + from;
   };
 
+  /**
+   * One line when the lock covers less than the position pays: whole contracts are locked, the
+   * odd payout rides unprotected and is already counted in the figures. Nothing when they agree.
+   */
+  const oddLine = (B, n) => {
+    const odd = oddOf(B);
+    if (!odd) return "";
+    const covered = usd(100 * n);
+    const pays = usd(B.size.payoutCents);
+    return '<div class="ael-fine">' + (odd > 0 ? "Covers " + esc(covered) + " of the " + esc(pays) + " payout (" + n + " whole contracts); the odd " + esc(usd(odd)) + " rides unprotected and is counted above." : "Covers " + esc(covered) + " (" + n + " whole contracts) on a position paying " + esc(pays) + "; the difference is counted above.") + "</div>";
+  };
+
   /** The three numbers, the floor first: the same strip before the tap and after it. */
   const tiles = (nick, rs, creditCents, was) =>
     '<div class="ael-tiles"><div class="ael-tile ael-k"><div class="ael-l">if ' + esc(nick) + ' lose</div><div class="ael-v">' + esc(usd(rs.floorTotal)) + '</div><div class="ael-was">was $0</div></div>' +
@@ -1225,7 +1260,7 @@
     const offered = q.tiers || {};
     const t = offered[st.tier] || q;
     const n = q.contracts || p.contracts;
-    const rs = reshape(n, t.floorCents, t.capCents, t.creditCents);
+    const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
     // what the position pays unprotected: the venue's figure when we have it, else the contracts
     const was = usd(B.size && B.size.payoutCents ? B.size.payoutCents : 100 * n);
     let seg = "";
@@ -1233,7 +1268,7 @@
     if (keys.length > 1) {
       for (const k of keys) {
         const tt = offered[k];
-        const tr = reshape(n, tt.floorCents, tt.capCents, tt.creditCents);
+        const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
         seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span>" + esc(usd(tr.floorTotal)) + " or " + esc(usd(tr.capTotal)) + " &middot; +" + esc(usd(tt.creditCents)) + "</span></button>";
       }
     }
@@ -1242,6 +1277,7 @@
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") + "</div>" +
       tiles(shortOf(B.ticker), rs, t.creditCents, was) +
       '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '">Lock in &middot; worst case ' + esc(usd(rs.floorTotal)) + "</button>" +
+      oddLine(B, n) +
       '<div class="ael-fine">priced live, locks at your tap' + (p.eventTimeIso ? " &middot; available until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)) : "") + ' &middot; <a href="#" class="ael-how-a">how it works</a></div>' +
       '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap.</p></div>" +
       DISCLOSE;
@@ -1397,7 +1433,7 @@
     // moment later carries none), else read from the service the first time the receipt opens
     if (!st.rcptHedge && rec.hedge && rec.hedge.receiptId) st.rcptHedge = rec.hedge;
     if (st.rcpt && !rec.rehearsal && !st.rcptHedge && !st.rcptBusy && !st.rcptErr) void loadReceipt(B);
-    const rs = reshape(rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
+    const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
     const nick = shortOf(B.ticker);
     const h = st.rcptHedge || rec.hedge;
     const opLine =
@@ -1410,8 +1446,8 @@
     let sum;
     const meta = [];
     if (rec.status === "settled" && rec.result) {
-      const got = rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal;
-      const naked = rec.nakedCents != null ? rec.nakedCents : rec.result === "yes" ? 100 * rec.contracts : 0;
+      const got = rec.protectedCents != null ? rec.protectedCents + (rec.result === "yes" ? oddOf(B) : 0) : rec.result === "yes" ? rs.capTotal : rs.floorTotal;
+      const naked = rec.result !== "yes" ? 0 : B.size && B.size.payoutCents ? B.size.payoutCents : rec.nakedCents != null ? rec.nakedCents : 100 * rec.contracts;
       head = '<span class="ael-ck">&#x2713;</span>Settled &middot; ' + esc(nick) + (rec.result === "yes" ? " won" : " lost");
       // "you end with", not "you received": whether the cash has moved is the next clause
       const cash = cashState(rec);
@@ -1435,6 +1471,7 @@
       '<div class="ael-ph ael-rc"><b>' + head + "</b></div>" +
       '<div class="ael-sum">' + sum + "</div>" +
       (meta.length ? '<div class="ael-meta">' + meta.join(" &middot; ") + "</div>" : "") +
+      (rec.status !== "void" ? oddLine(B, rec.contracts) : "") +
       (st.rcpt && rec.status !== "void" ? receiptHtml(st, rec) : "") +
       opLine +
       (rec.rehearsal ? '<div class="ael-op">Rehearsal: nothing was locked, written or bought. <a href="#" class="ael-reset-a">Reset</a></div>' : "") +
