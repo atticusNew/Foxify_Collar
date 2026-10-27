@@ -18,6 +18,11 @@
  *   POST /portfolio/intra_exchange_instance_transfer {source, destination, amount (centicents),
  *        source_exchange_shard, destination_exchange_shard, source_subaccount, destination_subaccount, client_transfer_id?}
  *                                                -> {transfer_id}; moves cash between exchange shards
+ *   GET  /api_keys                               -> {api_keys[{api_key_id, name, scopes[], subaccount?}]}
+ *   POST /api_keys/generate {name, key_type, subaccount?} -> 201 {api_key_id, key_type, private_key}; the private
+ *                                                   key appears exactly once; `subaccount` restricts the key to
+ *                                                   that subaccount (read and trade there, no transfers, no keys)
+ *   DELETE /api_keys/{id}
  *
  * Shards: Kalshi runs several matching engines and a subaccount's cash is PER SHARD. NFL and the
  * catch-all are shard 0; Basketball, Baseball and Tennis are shard 3. A subaccount that will hedge
@@ -83,6 +88,20 @@ export interface KalshiAccountSnapshot {
   balanceCents: number;
   byShard: KalshiShardBalance[];
   subaccounts: KalshiSubaccountBalance[];
+}
+
+export interface KalshiApiKeyInfo {
+  apiKeyId: string;
+  name: string;
+  scopes: string[];
+  /** the one subaccount the key may act on; null for an unrestricted key */
+  subaccount: number | null;
+}
+
+export interface GeneratedKalshiApiKey extends KalshiApiKeyInfo {
+  keyType: "rsa" | "ed25519";
+  /** PEM; shown once by Kalshi and once by us, stored nowhere here */
+  privateKeyPem: string;
 }
 
 export type UpgradeResult = { ok: true; status: number; tier: KalshiTier } | { ok: false; status: number; reason: string; tier: KalshiTier | null };
@@ -245,6 +264,47 @@ export class KalshiAccountClient {
     return { transferId: raw?.transfer_id ?? "", clientTransferId };
   }
 
+  /** Every API key on the account: ids, names, scopes and which subaccount each is locked to. No secrets. */
+  async listApiKeys(): Promise<KalshiApiKeyInfo[]> {
+    const raw = (await this.call("GET", "/api_keys")) as { api_keys?: Array<{ api_key_id?: string; name?: string; scopes?: string[]; subaccount?: number | null }> } | null;
+    return (raw?.api_keys ?? [])
+      .filter((k) => typeof k.api_key_id === "string")
+      .map((k) => ({ apiKeyId: k.api_key_id as string, name: k.name ?? "", scopes: Array.isArray(k.scopes) ? k.scopes : [], subaccount: typeof k.subaccount === "number" ? k.subaccount : null }));
+  }
+
+  /**
+   * Have Kalshi mint a key pair. With `subaccount`, the key can read and trade that subaccount
+   * only: no transfers, no other subaccounts, no key management. The private key is in the
+   * answer once and nowhere else; the caller shows it once and forgets it.
+   */
+  async generateApiKey(args: { name: string; subaccount?: number; keyType?: "rsa" | "ed25519" }): Promise<GeneratedKalshiApiKey> {
+    const name = args.name.trim();
+    if (!name) throw new Error("kalshi account: a key needs a name");
+    if (args.subaccount !== undefined && (!Number.isInteger(args.subaccount) || args.subaccount < 0 || args.subaccount > 63)) throw new Error("kalshi account: subaccount must be 0-63");
+    const keyType = args.keyType ?? "rsa";
+    const raw = (await this.call("POST", "/api_keys/generate", {
+      name,
+      key_type: keyType,
+      ...(args.subaccount !== undefined ? { subaccount: args.subaccount } : {}),
+    })) as { api_key_id?: string; key_type?: string; private_key?: string } | null;
+    if (!raw?.api_key_id || !raw.private_key) throw new Error("kalshi account: generate returned no key");
+    return {
+      apiKeyId: raw.api_key_id,
+      name,
+      scopes: ["read", "write"],
+      subaccount: args.subaccount ?? null,
+      keyType: raw.key_type === "ed25519" ? "ed25519" : "rsa",
+      privateKeyPem: raw.private_key,
+    };
+  }
+
+  /** Revoke a key. Cannot be undone; a pod holding it stops trading at once. */
+  async deleteApiKey(apiKeyId: string): Promise<void> {
+    const id = apiKeyId.trim();
+    if (!id) throw new Error("kalshi account: delete needs a key id");
+    await this.call("DELETE", `/api_keys/${encodeURIComponent(id)}`);
+  }
+
   private async raw(method: string, endpoint: string, body?: unknown): Promise<{ status: number; text: string }> {
     const url = `${this.base}${endpoint}`;
     const path = new URL(url).pathname;
@@ -255,9 +315,11 @@ export class KalshiAccountClient {
       ...kalshiAuthHeaders(this.creds, ts, method, path),
     };
     const init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
-    if (body !== undefined) {
+    // Kalshi answers 400 invalid_content_type to a bodiless POST (the upgrade) — every write
+    // declares JSON and carries at least an empty object.
+    if (body !== undefined || method !== "GET") {
       headers["content-type"] = "application/json";
-      init.body = JSON.stringify(body);
+      init.body = JSON.stringify(body ?? {});
     }
     const res = await this.fetchImpl(url, init);
     const text = await res.text().catch(() => "");

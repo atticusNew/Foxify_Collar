@@ -41,7 +41,7 @@ function fakeKalshi(routes: Record<string, (seen: Seen) => { status: number; bod
     const route = routes[`${s.method} ${s.path.replace("/trade-api/v2", "")}`];
     if (!route) return new Response(JSON.stringify({ code: "not_found", message: `no route ${s.method} ${s.path}` }), { status: 404 });
     const r = route(s);
-    return new Response(r.body === undefined ? "" : JSON.stringify(r.body), { status: r.status });
+    return new Response(r.body === undefined ? null : JSON.stringify(r.body), { status: r.status });
   }) as typeof fetch;
   return { fetch: fetchImpl, seen };
 }
@@ -104,6 +104,10 @@ test("kalshi account: the upgrade — 201 grants Advanced for good and the tier 
     granted.seen.map((s) => `${s.method} ${s.path}`),
     ["POST /trade-api/v2/account/api_usage_level/upgrade", "GET /trade-api/v2/account/limits"],
   );
+  // Kalshi answers 400 invalid_content_type to a bodiless POST: the upgrade declares JSON and carries {}
+  assert.equal(granted.seen[0].headers["content-type"], "application/json");
+  assert.deepEqual(granted.seen[0].body, {});
+  assert.equal(granted.seen[1].headers["content-type"], undefined, "a GET carries no body and no content type");
 
   const refused = fakeKalshi({
     "POST /account/api_usage_level/upgrade": () => ({ status: 403, body: { code: "forbidden", message: "no api orders" } }),
@@ -199,4 +203,45 @@ test("kalshi account: create a subaccount on a shard; move cash between subaccou
     assert.match(err.message, /HTTP 403 POST \/portfolio\/subaccounts .*advanced tier required/);
     return true;
   });
+});
+
+test("kalshi account: the API keys are listed with their subaccount lock, minted (restricted when asked, private key passed through once) and revoked", async () => {
+  const k = fakeKalshi({
+    "GET /api_keys": () => ({
+      status: 200,
+      body: { api_keys: [{ api_key_id: "key-1", name: "service", scopes: ["read", "write"] }, { api_key_id: "key-pod", name: "parlayx-pod", scopes: ["read", "write"], subaccount: 1 }, { name: "junk without an id" }] },
+    }),
+    "POST /api_keys/generate": (seen) => ({ status: 201, body: { api_key_id: "key-new", key_type: (seen.body as { key_type: string }).key_type, private_key: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----" } }),
+    "DELETE /api_keys/key-pod": () => ({ status: 204 }),
+  });
+  const client = new KalshiAccountClient(creds, { base: BASE, fetchImpl: k.fetch });
+
+  assert.deepEqual(await client.listApiKeys(), [
+    { apiKeyId: "key-1", name: "service", scopes: ["read", "write"], subaccount: null },
+    { apiKeyId: "key-pod", name: "parlayx-pod", scopes: ["read", "write"], subaccount: 1 },
+  ]);
+
+  const minted = await client.generateApiKey({ name: " parlayx-pod ", subaccount: 1 });
+  assert.deepEqual(k.seen[1].body, { name: "parlayx-pod", key_type: "rsa", subaccount: 1 }, "rsa by default, the subaccount restriction on the wire");
+  assert.equal(minted.apiKeyId, "key-new");
+  assert.equal(minted.subaccount, 1);
+  assert.equal(minted.keyType, "rsa");
+  assert.match(minted.privateKeyPem, /BEGIN PRIVATE KEY/);
+
+  const whole = await client.generateApiKey({ name: "whole-account", keyType: "ed25519" });
+  assert.deepEqual(k.seen[2].body, { name: "whole-account", key_type: "ed25519" }, "no subaccount field when unrestricted");
+  assert.equal(whole.subaccount, null);
+  assert.equal(whole.keyType, "ed25519");
+
+  await client.deleteApiKey("key-pod");
+  assert.equal(k.seen[3].method, "DELETE");
+  assert.equal(k.seen[3].path, "/trade-api/v2/api_keys/key-pod");
+  assert.ok(k.seen[3].headers["KALSHI-ACCESS-SIGNATURE"], "the revoke is signed like every call");
+
+  await assert.rejects(client.generateApiKey({ name: "  " }), /needs a name/);
+  await assert.rejects(client.generateApiKey({ name: "x", subaccount: 64 }), /subaccount must be 0-63/);
+  await assert.rejects(client.deleteApiKey(" "), /needs a key id/);
+
+  const empty = fakeKalshi({ "POST /api_keys/generate": () => ({ status: 201, body: { api_key_id: "k" } }) });
+  await assert.rejects(new KalshiAccountClient(creds, { base: BASE, fetchImpl: empty.fetch }).generateApiKey({ name: "x" }), /returned no key/);
 });
