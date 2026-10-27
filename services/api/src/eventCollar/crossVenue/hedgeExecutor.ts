@@ -116,7 +116,7 @@ export interface HedgeFill {
   vsBookCents: number;
   /** true when no order reached a venue (shadow, or a book fill with no order hook) */
   simulated: boolean;
-  ids: { rfqId?: string; quoteId?: string; orderId?: string };
+  ids: { rfqId?: string; quoteId?: string; orderId?: string; venueOrderId?: string };
   /**
    * How the order reached the venue: our own key on the venue ("direct"), or the aggregator's
    * execution pod holding the venue account ("aggregator"). Absent on a simulated fill. On the
