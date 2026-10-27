@@ -56,6 +56,7 @@ export const RETAIL_REFUSAL_COPY: Readonly<Record<string, { code: string; detail
   protection_too_rich: { code: "too_expensive", detail: "Protection is too expensive on this one right now." },
   credit_too_small: { code: "credit_too_small", detail: "The market can't fund a worthwhile credit on this one right now." },
   far_out_no_book: { code: "too_early", detail: "Protection opens closer to the start of this one." },
+  mark_disagreement: { code: "price_unsettled", detail: "The price on this one has not settled yet. Check back closer to the start." },
   market_too_close_to_start: { code: "too_close", detail: "This one starts too soon to protect." },
   mark_out_of_range: { code: "odds_out_of_range", detail: "The odds are outside the range we protect." },
   pm_book_empty: { code: "no_depth", detail: "Not enough depth to protect this size right now." },

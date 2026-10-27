@@ -104,6 +104,7 @@ import { getNoAsks, quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/
 import { readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
 import { aggregatorBookSourceFromEnv, type AggregatorBookSource, type AggregatorBookStatus, type BookOrigins } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { farOutGuardFromEnv, farOutVerdict, type FarOutGuardRule } from "../src/eventCollar/crossVenue/farOutGuard";
+import { markGapGuardFromEnv, markGapVerdict, type MarkGapGuardRule } from "../src/eventCollar/crossVenue/markGapGuard";
 import { readReferencePrints, referencePrintSourcesFromEnv, type ReferencePrint } from "../src/eventCollar/crossVenue/venuePrints";
 import {
   DEFAULT_CROSS_CONFIG,
@@ -152,6 +153,14 @@ export const MIN_CREDIT_RULE = minimumCreditRuleFromEnv(process.env);
  * lost; priced again every scan and opened once a real book shows or the window is reached.
  */
 export const FAR_OUT_GUARD = farOutGuardFromEnv(process.env);
+/**
+ * MARK-GAP GUARD (src/eventCollar/crossVenue/markGapGuard.ts): a cross-venue quote is refused when
+ * the market's own Yes side is wider than EVENT_X_MARK_SPREAD_CENTS (default 20; its mid is a stub,
+ * not a mark) or when that mark sits more than EVENT_X_MARK_GAP_CENTS (default 8) from the price the
+ * hedge venue's best No ask implies for the same side. Catches the far-out stub (49–51¢ mid against
+ * a 77¢ side) the far-out guard lets through once the feed supplies a book. 0 turns a test off.
+ */
+export const MARK_GAP_GUARD = markGapGuardFromEnv(process.env);
 /**
  * EMBED DEMO knobs. `?brand=` on /embed is honoured only for names on the allowlist (fail-closed
  * to "Your Exchange"); the partner console's revenue-share line uses EVENT_X_PARTNER_SHARE_PCT.
@@ -845,9 +854,31 @@ export function applyFarOutGuard(result: CandidateResult, now: Date, rule: FarOu
   return { ...result, quote: { ok: false, code: verdict.code, detail: verdict.detail }, route: null, evBps: null };
 }
 
-/** The scan's post-quote pipeline, in order: minimum credit, the EV-cost ceiling, then the far-out guard. */
+/**
+ * Apply the mark-gap guard: a cross-venue quote whose collar was set around a mark the hedge venue
+ * does not believe (the market's own side a stub, or far from the implied price) becomes a
+ * `mark_disagreement` refusal. The routes examined keep their verdicts (operator information).
+ */
+export function applyMarkGapGuard(result: CandidateResult, rule: MarkGapGuardRule = MARK_GAP_GUARD): CandidateResult {
+  if (!result.quote.ok) return result;
+  const verdict = markGapVerdict(
+    {
+      kind: result.kind,
+      route: result.route,
+      markCents: result.markCents,
+      yesBidCents: result.market.yesBidCents,
+      yesAskCents: result.market.yesAskCents,
+      pmNoBook: result.books.pmNoBook,
+    },
+    rule,
+  );
+  if (!verdict.refuse) return result;
+  return { ...result, quote: { ok: false, code: verdict.code, detail: verdict.detail }, route: null, evBps: null };
+}
+
+/** The scan's post-quote pipeline, in order: minimum credit, the EV-cost ceiling, the far-out guard, then the mark-gap guard. */
 export function applyQuoteRules(result: CandidateResult, now: Date = new Date()): CandidateResult {
-  return applyFarOutGuard(applyEvCeiling(applyMinimumCreditRule(result)), now);
+  return applyMarkGapGuard(applyFarOutGuard(applyEvCeiling(applyMinimumCreditRule(result)), now));
 }
 
 /** One refresh's full result: ranked quotable rows plus the best honest refusal. */
