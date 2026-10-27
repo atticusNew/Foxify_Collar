@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { ShadowAltTerms } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
 import type { ShadowPosition } from "../src/eventCollar/crossVenue/shadowLedger";
-import { VENUE_COLUMNS, refusalWord, venueBreakdown, venueRowFor } from "../src/eventCollar/crossVenue/shadowVenues";
+import { VENUE_COLUMNS, VENUE_CSV_HEADER, refusalWord, venueBreakdown, venueBreakdownCsv, venueCellState, venueRowFor } from "../src/eventCollar/crossVenue/shadowVenues";
 
 const NOW = new Date("2026-10-24T00:00:00.000Z");
 
@@ -46,7 +46,7 @@ function position(over: Partial<ShadowPosition> & { ticker: string }): ShadowPos
       sizeLadder: [],
       routes: { polymarket: ok(300), kalshi_self: ok(260, 140) },
       references: [
-        { id: "aggregated_mm", terms: ok(340, 80), bestAskMilli: 370, depthMilli: 2_500_000, ageSec: 247 },
+        { id: "aggregated_mm", terms: ok(340, 80), bestAskMilli: 370, depthMilli: 2_500_000, ageSec: 247, listing: { marketId: "mkt_sfatl", key: "f1542026d62d185858836622ee2285f3", snapshotAtIso: "2026-10-23T19:55:53.000Z" } },
         { id: "aggregated_other", terms: refused("not_listed"), bestAskMilli: null, depthMilli: 0 },
       ],
     },
@@ -73,7 +73,9 @@ test("venue row: every column in order, written route marked, best book found, r
   assert.equal(px.depthShares, 2500);
   assert.equal(px.ageSec, 247, "the snapshot's age at the read is carried onto the cell");
   assert.equal(px.listed, true);
+  assert.deepEqual(px.listing, { marketId: "mkt_sfatl", key: "f1542026d62d185858836622ee2285f3", snapshotAtIso: "2026-10-23T19:55:53.000Z" }, "the listing ids ride onto the cell");
   const other = by.get("aggregated_other")!;
+  assert.equal(other.listing, undefined, "a read that never reached a listing has no ids");
   assert.equal(other.read, true);
   assert.equal(other.listed, false);
   assert.equal(other.ageSec, null);
@@ -177,4 +179,86 @@ test("refusal words are short and never leak a code shape the operator has to de
   assert.equal(refusalWord("stream_unavailable"), "feed: unavailable");
   assert.equal(refusalWord("stale"), "stale book");
   assert.equal(refusalWord("unreachable: ECONNRESET"), "unreachable");
+});
+
+test("venues csv: one line per game, per read, per venue, with the state in a word and the listing ids beside it; later reads follow the open", () => {
+  const withReads = position({
+    ticker: "KXNFLGAME-26OCT25SFATL-SF",
+    prelock: {
+      at: "2026-10-25T22:20:00.000Z",
+      hoursToLock: 2,
+      markCents: 64,
+      routes: { polymarket: ok(310), kalshi_self: ok(280, 120) },
+      references: [{ id: "aggregated_mm", terms: refused("mapped_no_book"), bestAskMilli: null, depthMilli: 0, listing: { marketId: "mkt_sfatl", key: "f1542026d62d185858836622ee2285f3", snapshotAtIso: "2026-10-25T21:00:00.000Z" } }],
+    } as never,
+  });
+  const b = venueBreakdown([withReads, position({ ticker: "B" })], NOW);
+  const csv = venueBreakdownCsv(b);
+  const lines = csv.trimEnd().split("\n");
+  assert.equal(lines[0], VENUE_CSV_HEADER.join(","));
+  const cols = b.totals.length;
+  // game A: the open read plus the pre-lock read; game B: the open read only
+  assert.equal(lines.length, 1 + cols * 2 + cols);
+  // a quoted cell ("mapped, no book yet") holds a comma, so split as a spreadsheet would
+  const splitCsv = (line: string): string[] => {
+    const out: string[] = [];
+    let cur = "";
+    let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) {
+        if (ch === '"' && line[i + 1] === '"') (cur += '"'), i++;
+        else if (ch === '"') q = false;
+        else cur += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === ",") out.push(cur), (cur = "");
+      else cur += ch;
+    }
+    out.push(cur);
+    return out;
+  };
+  const rows = lines.slice(1).map(splitCsv);
+  const idx = (name: (typeof VENUE_CSV_HEADER)[number]) => VENUE_CSV_HEADER.indexOf(name);
+  const openPx = rows.find((r) => r[idx("ticker")] === "KXNFLGAME-26OCT25SFATL-SF" && r[idx("read")] === "open" && r[idx("venue_id")] === "aggregated_mm")!;
+  assert.ok(openPx);
+  assert.equal(openPx[idx("venue")], "ProphetX", "venues are named here: operator only");
+  assert.equal(openPx[idx("via")], "feed");
+  assert.equal(openPx[idx("state")], "quoted");
+  assert.equal(openPx[idx("credit_c")], "340");
+  assert.equal(openPx[idx("delta_c")], "40");
+  assert.equal(openPx[idx("best_ask_c")], "37");
+  assert.equal(openPx[idx("depth_shares")], "2500");
+  assert.equal(openPx[idx("age_sec")], "247");
+  assert.equal(openPx[idx("market_id")], "mkt_sfatl");
+  assert.equal(openPx[idx("listing_key")], "f1542026d62d185858836622ee2285f3");
+  assert.equal(openPx[idx("snapshot_at")], "2026-10-23T19:55:53.000Z");
+  assert.equal(openPx[idx("read_at")], "2026-10-23T20:00:00.000Z");
+  assert.equal(openPx[idx("hours_to_lock")], "");
+  assert.equal(openPx[idx("written")], "0");
+
+  const prelockPx = rows.find((r) => r[idx("ticker")] === "KXNFLGAME-26OCT25SFATL-SF" && r[idx("read")] === "prelock" && r[idx("venue_id")] === "aggregated_mm")!;
+  assert.ok(prelockPx);
+  assert.equal(prelockPx[idx("state")], "mapped, no book yet", "the feed's state word, so the partner can be asked about it by the ids beside it");
+  assert.equal(prelockPx[idx("credit_c")], "");
+  assert.equal(prelockPx[idx("listing_key")], "f1542026d62d185858836622ee2285f3");
+  assert.equal(prelockPx[idx("snapshot_at")], "2026-10-25T21:00:00.000Z", "when the venue last published the empty line");
+  assert.equal(prelockPx[idx("read_at")], "2026-10-25T22:20:00.000Z");
+  assert.equal(prelockPx[idx("hours_to_lock")], "2");
+
+  const written = rows.find((r) => r[idx("ticker")] === "KXNFLGAME-26OCT25SFATL-SF" && r[idx("read")] === "open" && r[idx("venue_id")] === "polymarket")!;
+  assert.equal(written[idx("written")], "1");
+  assert.equal(written[idx("market_id")], "", "routes carry no listing ids: their books are the record's own");
+  const unlisted = rows.find((r) => r[idx("read")] === "open" && r[idx("venue_id")] === "aggregated_other")!;
+  assert.equal(unlisted[idx("state")], "not listed");
+  assert.equal(unlisted[idx("market_id")], "");
+
+  // the state word in one place
+  assert.equal(venueCellState({ read: false } as never), "unread");
+  assert.equal(venueCellState({ read: true, creditCents: 300 } as never), "quoted");
+  assert.equal(venueCellState({ read: true, creditCents: null, refused: "too thin", listed: true } as never), "too thin");
+  assert.equal(venueCellState({ read: true, creditCents: null, refused: null, listed: false } as never), "unlisted");
+
+  // a title with a comma is quoted, so the file opens in a spreadsheet as it should
+  const comma = venueBreakdownCsv(venueBreakdown([position({ ticker: "Q", eventTitle: 'Giants, the "other" ones' })], NOW));
+  assert.ok(comma.includes('"Giants, the ""other"" ones"'));
 });

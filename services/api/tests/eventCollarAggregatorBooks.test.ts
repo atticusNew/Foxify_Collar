@@ -249,6 +249,12 @@ test("aggregator books: one read supplies the second venue's No book, our market
     assert.ok(r.references[0].book);
     assert.deepEqual(r.references[0].book.asks, [{ priceMilli: 420, sizeMilli: 150_000 }]);
     assert.ok(r.references[0].ageSec !== undefined && r.references[0].ageSec >= 2 && r.references[0].ageSec <= 5, `the snapshot's age rides on the reference: ${r.references[0].ageSec}`);
+    // the listing ids ride along too: the feed's market id, the venue's strike id, the snapshot's own stamp
+    const listing = r.references[0].listing;
+    assert.ok(listing);
+    assert.equal(listing.marketId, MARKET.id);
+    assert.equal(listing.key, PX_TITANS);
+    assert.ok(listing.snapshotAtIso && Math.abs(now.getTime() - Date.parse(listing.snapshotAtIso)) < 10_000, `stamped at the snapshot's time: ${listing.snapshotAtIso}`);
     assert.deepEqual(fake.subscribed[0].map((m) => m.venue), ["KALSHI", "POLYMARKET", "PROPHETX"]);
 
     // the mapping holds: a second read on the same ticker streams again but looks nothing up
@@ -297,7 +303,7 @@ test("aggregator books: a stale snapshot, a book that errors and a silent one ea
     assert.equal(r.noAsks, undefined);
     assert.ok(r.notes.some((n) => /own market: snapshot stale/.test(n)), r.notes.join(" | "));
     assert.ok(r.pmNoBook);
-    assert.deepEqual(r.references, [{ id: "aggregated_mm", book: null, reason: "stream_market_not_yet_open" }]);
+    assert.deepEqual(r.references, [{ id: "aggregated_mm", book: null, reason: "stream_market_not_yet_open", listing: { marketId: MARKET.id, key: PX_TITANS } }], "no snapshot, so no stamp; the ids still say which listing");
 
     fake.books.set(`POLYMARKET:${PM_TITANS}`, "silent");
     const r2 = await src.read(pairWith(PM_TITANS), new Date());
@@ -332,7 +338,12 @@ test("aggregator books: the partner's four mapping states are kept apart on the 
     fake.books.set(`PROPHETX:${PX_TITANS}`, { bids: [], asks: [] });
     const src = aggregatorBookSource(signerFromSecret(KEY_ID, keypair.seedHex), fake.host, { streamUrl: fake.streamUrl, wsFactory, streamTimeoutMs: 2_000 });
     const empty = await src.read(pairWith(PM_TITANS), new Date());
-    assert.deepEqual(empty.references, [{ id: "aggregated_mm", book: null, reason: MAPPED_NO_BOOK }]);
+    assert.equal(empty.references.length, 1);
+    const { listing: emptyListing, ...emptyRest } = empty.references[0];
+    assert.deepEqual(emptyRest, { id: "aggregated_mm", book: null, reason: MAPPED_NO_BOOK });
+    assert.equal(emptyListing?.marketId, MARKET.id);
+    assert.equal(emptyListing?.key, PX_TITANS, "the strike id to quote to the partner about the empty line");
+    assert.ok(emptyListing?.snapshotAtIso, "the empty snapshot's own stamp: when the venue last published nothing");
     assert.ok(empty.pmNoBook && empty.noAsks, "the routes' books are untouched by a reference's state");
     assert.ok(fake.subscribed[0].some((m) => m.venue === "PROPHETX"), "the listing was streamed: it is mapped");
 
@@ -343,7 +354,7 @@ test("aggregator books: the partner's four mapping states are kept apart on the 
     };
     const unmapped = aggregatorBookSource(signerFromSecret(KEY_ID, keypair.seedHex), fake.host, { streamUrl: fake.streamUrl, wsFactory, streamTimeoutMs: 2_000 });
     const none = await unmapped.read(pairWith(PM_TITANS), new Date());
-    assert.deepEqual(none.references, [{ id: "aggregated_mm", book: null, reason: NOT_MAPPED }]);
+    assert.deepEqual(none.references, [{ id: "aggregated_mm", book: null, reason: NOT_MAPPED, listing: { marketId: MARKET.id } }], "the feed's market id alone: there is no listing to key");
     assert.ok(!fake.subscribed[1].some((m) => m.venue === "PROPHETX"), "nothing to subscribe to");
     assert.ok(none.pmNoBook && none.noAsks);
 

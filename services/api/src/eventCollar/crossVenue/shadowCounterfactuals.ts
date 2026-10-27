@@ -28,7 +28,7 @@ import type {
   TakeRule,
 } from "./types";
 import { PROTECTION_TIERS } from "./types";
-import type { ReferenceBook, ReferenceBookId } from "./venueBooks";
+import type { ReferenceBook, ReferenceBookId, ReferenceListing } from "./venueBooks";
 import type { ReferencePrint, ReferencePrintId } from "./venuePrints";
 
 /** One alternative collar as it would have been written, or why it was not. */
@@ -83,6 +83,8 @@ export interface ShadowReferenceQuote {
   depthMilli: number;
   /** the venue's snapshot age when read, whole seconds; absent when the venue did not stamp it */
   ageSec?: number;
+  /** the listing the book (or its absence) was read from: ids to quote back to the feed or the venue; absent when the read never reached one */
+  listing?: ReferenceListing;
 }
 
 /**
@@ -368,11 +370,12 @@ export function referenceQuotesFor(inputs: CounterfactualInputs): ShadowReferenc
   if (!refs || refs.length === 0) return undefined;
   const cfg: CrossSearchConfig = { ...inputs.config, hedgeFeeBps: 0, hedgeFeeFlatCents: 0 };
   return refs.map((ref) => {
-    if (!ref.book) return { id: ref.id, terms: { ok: false, refused: ref.reason }, bestAskMilli: null, depthMilli: 0 };
+    const listing = ref.listing ? { listing: ref.listing } : {};
+    if (!ref.book) return { id: ref.id, terms: { ok: false, refused: ref.reason }, bestAskMilli: null, depthMilli: 0, ...listing };
     const depthMilli = ref.book.asks.reduce((s, l) => s + l.sizeMilli, 0);
     const bestAskMilli = ref.book.asks[0]?.priceMilli ?? null;
     const age = ref.ageSec === undefined ? {} : { ageSec: ref.ageSec };
-    if (!inputs.pair) return { id: ref.id, terms: { ok: false, refused: "route_not_offered" }, bestAskMilli, depthMilli, ...age };
+    if (!inputs.pair) return { id: ref.id, terms: { ok: false, refused: "route_not_offered" }, bestAskMilli, depthMilli, ...age, ...listing };
     const q = quoteCrossWrap({
       pair: inputs.pair,
       markCents: inputs.markCents,
@@ -385,6 +388,6 @@ export function referenceQuotesFor(inputs: CounterfactualInputs): ShadowReferenc
     const terms = altFromQuote(q);
     // the pricer's refusal codes are named for the second book; a reference is just a book
     const refused = !terms.ok ? terms.refused.replace(/^pm_book_/, "book_") : null;
-    return { id: ref.id, terms: refused ? { ok: false, refused } : terms, bestAskMilli, depthMilli, ...age };
+    return { id: ref.id, terms: refused ? { ok: false, refused } : terms, bestAskMilli, depthMilli, ...age, ...listing };
   });
 }

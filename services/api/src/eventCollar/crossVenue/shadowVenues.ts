@@ -18,7 +18,7 @@
 import type { ShadowAltTerms, ShadowBookOpenReread, ShadowBookOpened, ShadowReread } from "./shadowCounterfactuals";
 import type { ShadowPosition } from "./shadowLedger";
 import type { HedgeRoute } from "./types";
-import type { ReferenceBookId } from "./venueBooks";
+import type { ReferenceBookId, ReferenceListing } from "./venueBooks";
 
 export type VenueColumnId = HedgeRoute | ReferenceBookId;
 
@@ -74,6 +74,8 @@ export interface VenueCell {
   refused: string | null;
   /** this venue's book was the one the record wrote from */
   written: boolean;
+  /** the listing the cell was read from (references only): ids to quote back to the feed or the venue; absent when the read never reached one */
+  listing?: ReferenceListing;
 }
 
 export interface VenueGameRow {
@@ -184,15 +186,22 @@ export interface VenueBreakdown {
   rows: VenueGameRow[];
 }
 
-function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written: boolean, liveCredit: number | null, extra?: { bestAskMilli: number | null; depthMilli: number; ageSec?: number }): VenueCell {
+function cellFromTerms(
+  id: VenueColumnId,
+  t: ShadowAltTerms | undefined,
+  written: boolean,
+  liveCredit: number | null,
+  extra?: { bestAskMilli: number | null; depthMilli: number; ageSec?: number; listing?: ReferenceListing },
+): VenueCell {
   const bestAskCents = extra ? (extra.bestAskMilli === null ? null : Math.round(extra.bestAskMilli / 10)) : null;
   const depthShares = extra ? Math.floor(extra.depthMilli / 1000) : null;
   const ageSec = extra?.ageSec ?? null;
-  if (!t) return { id, read: false, listed: false, creditCents: null, deltaCents: null, evCostBps: null, bestAskCents, depthShares, ageSec, refused: null, written: false };
+  const listing = extra?.listing ? { listing: extra.listing } : {};
+  if (!t) return { id, read: false, listed: false, creditCents: null, deltaCents: null, evCostBps: null, bestAskCents, depthShares, ageSec, refused: null, written: false, ...listing };
   if (!t.ok) {
     // a route refused for thinness still had a book; "not offered" / "not listed" / "no book" had none
     const hadBook = extra ? extra.bestAskMilli !== null : /too_thin|credit|too_rich|fee_exceeds/.test(t.refused);
-    return { id, read: true, listed: hadBook, creditCents: null, deltaCents: null, evCostBps: null, bestAskCents, depthShares, ageSec, refused: refusalWord(t.refused), written };
+    return { id, read: true, listed: hadBook, creditCents: null, deltaCents: null, evCostBps: null, bestAskCents, depthShares, ageSec, refused: refusalWord(t.refused), written, ...listing };
   }
   return {
     id,
@@ -206,13 +215,14 @@ function cellFromTerms(id: VenueColumnId, t: ShadowAltTerms | undefined, written
     ageSec,
     refused: null,
     written,
+    ...listing,
   };
 }
 
 /** Every column from one read's routes and references, deltas against `writtenCredit`. */
 function cellsFrom(
   routes: Partial<Record<HedgeRoute, ShadowAltTerms>>,
-  references: ReadonlyArray<{ id: ReferenceBookId; terms: ShadowAltTerms; bestAskMilli: number | null; depthMilli: number; ageSec?: number }>,
+  references: ReadonlyArray<{ id: ReferenceBookId; terms: ShadowAltTerms; bestAskMilli: number | null; depthMilli: number; ageSec?: number; listing?: ReferenceListing }>,
   writtenRoute: HedgeRoute,
   writtenCredit: number | null,
 ): { cells: VenueCell[]; best: VenueColumnId | null } {
@@ -223,7 +233,7 @@ function cellsFrom(
       return cellFromTerms(col.id, routes[route], writtenRoute === route, writtenCredit);
     }
     const ref = refs.get(col.id as ReferenceBookId);
-    return cellFromTerms(col.id, ref?.terms, false, writtenCredit, ref ? { bestAskMilli: ref.bestAskMilli, depthMilli: ref.depthMilli, ageSec: ref.ageSec } : undefined);
+    return cellFromTerms(col.id, ref?.terms, false, writtenCredit, ref ? { bestAskMilli: ref.bestAskMilli, depthMilli: ref.depthMilli, ageSec: ref.ageSec, listing: ref.listing } : undefined);
   });
   const quoted = cells.filter((c) => c.evCostBps !== null);
   const best = quoted.length > 0 ? quoted.reduce((a, b) => (b.evCostBps! < a.evCostBps! ? b : a)).id : null;
@@ -388,4 +398,97 @@ export function venueBreakdown(positions: ShadowPosition[], now: Date, opts: { w
       })),
     rows,
   };
+}
+
+// ---------------------------------------------------------------------------
+// CSV: one line per game, per read, per venue, with the listing ids
+// ---------------------------------------------------------------------------
+
+export const VENUE_CSV_HEADER = [
+  "ticker",
+  "league",
+  "event",
+  "side",
+  "event_time",
+  "status",
+  "read",
+  "read_at",
+  "hours_to_lock",
+  "venue",
+  "venue_id",
+  "via",
+  "state",
+  "credit_c",
+  "delta_c",
+  "ev_cost_bps",
+  "best_ask_c",
+  "depth_shares",
+  "age_sec",
+  "market_id",
+  "listing_key",
+  "snapshot_at",
+  "written",
+] as const;
+
+function csvCell(v: string | number | boolean | null | undefined): string {
+  if (v === null || v === undefined) return "";
+  const s = typeof v === "boolean" ? (v ? "1" : "0") : String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** The cell's one-word state: quoted, or the refusal word, or unlisted/unread. */
+export function venueCellState(c: VenueCell): string {
+  if (!c.read) return "unread";
+  if (c.creditCents !== null) return "quoted";
+  return c.refused ?? (c.listed ? "refused" : "unlisted");
+}
+
+/**
+ * The window laid out flat for a spreadsheet or a partner's ticket: every venue read of every
+ * game, at open and at each later read, with the aggregator's market id, the venue's listing key
+ * and the snapshot's own timestamp beside the state, so a "mapped, no book yet" can be asked
+ * about by id. Operator only: venues are named, and nothing here is a key.
+ */
+export function venueBreakdownCsv(b: VenueBreakdown): string {
+  const nameOf = new Map(b.totals.map((t) => [t.id, t]));
+  const lines: string[] = [VENUE_CSV_HEADER.join(",")];
+  const push = (r: VenueGameRow, read: string, readAt: string, hoursToLock: number | null, c: VenueCell) => {
+    const col = nameOf.get(c.id);
+    lines.push(
+      [
+        r.ticker,
+        r.league,
+        r.eventTitle,
+        r.sideName,
+        r.eventTimeIso,
+        r.status,
+        read,
+        readAt,
+        hoursToLock,
+        col?.name ?? c.id,
+        c.id,
+        col?.via ?? "",
+        venueCellState(c),
+        c.creditCents,
+        c.deltaCents,
+        c.evCostBps,
+        c.bestAskCents,
+        c.depthShares,
+        c.ageSec,
+        c.listing?.marketId ?? null,
+        c.listing?.key ?? null,
+        c.listing?.snapshotAtIso ?? null,
+        c.written,
+      ]
+        .map(csvCell)
+        .join(","),
+    );
+  };
+  for (const r of b.rows) {
+    for (const c of r.cells) push(r, "open", r.openedAt, null, c);
+    // later reads in time order: the book-open read, then the pre-lock read
+    if (r.bookOpen) for (const c of r.bookOpen.cells) push(r, "book_open", r.bookOpen.at, r.bookOpen.hoursToLock, c);
+    if (r.prelock) for (const c of r.prelock.cells) push(r, "prelock", r.prelock.at, r.prelock.hoursToLock, c);
+  }
+  return lines.join("\n") + "\n";
 }

@@ -1383,10 +1383,24 @@ function venueReadHtml(c: VenueCell, written: boolean): string {
   if (!c.read) return "–";
   const age = c.ageSec !== null && c.ageSec > SHOW_AGE_FROM_SEC ? ` · ${ageWord(c.ageSec)} old` : "";
   const ask = c.bestAskCents !== null ? `<i>${c.bestAskCents}¢${c.depthShares !== null && c.depthShares > 0 ? ` × ${intStr(c.depthShares)}` : ""}${age}</i>` : "";
-  if (c.creditCents === null) return `<span class="ref">${escapeHtml(c.refused ?? "refused")}</span>${ask}`;
+  const ids = venueListingHtml(c);
+  if (c.creditCents === null) return `<span class="ref">${escapeHtml(c.refused ?? "refused")}</span>${ask}${ids}`;
   const delta = written || c.deltaCents === null ? "" : `<i class="${c.deltaCents > 0 ? "up" : c.deltaCents < 0 ? "dn" : ""}">${c.deltaCents > 0 ? "+" : ""}${usd(c.deltaCents)}</i>`;
   const ev = c.evCostBps === null ? "" : `<i>ev ${bpsPct(c.evCostBps)}</i>`;
-  return `${usd(c.creditCents)}${delta}${ev}${ask}`;
+  return `${usd(c.creditCents)}${delta}${ev}${ask}${ids}`;
+}
+
+/**
+ * The listing a reference cell was read from, as ids: the venue's key (a strike id) when it has
+ * one, else the aggregator's market id, with everything known in the tooltip. What to quote to
+ * the feed about a "mapped, no book yet" instead of a game name.
+ */
+function venueListingHtml(c: VenueCell): string {
+  const l = c.listing;
+  if (!l) return "";
+  const shown = l.key ?? l.marketId;
+  const title = [`market ${l.marketId}`, l.key ? `key ${l.key}` : "", l.snapshotAtIso ? `snapshot ${l.snapshotAtIso}` : ""].filter(Boolean).join(" · ");
+  return `<i class="tk" title="${escapeHtml(title)}">${escapeHtml(shown)}</i>`;
 }
 
 /**
@@ -1528,6 +1542,7 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
 @media(min-width:700px){.wrap,.topbar .in{max-width:1180px}}
 td.g{text-align:left;white-space:normal;min-width:180px}
 td i{display:block;color:var(--faint);font-style:normal;font-size:11px;font-weight:500}
+td i.tk{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--faint);opacity:.8}
 td i.up{color:var(--green-deep)} td i.dn{color:#8a2a2a}
 td.ref,td .ref{color:var(--faint)}
 td .rd.pl{margin-top:4px;padding-top:3px;border-top:1px dashed var(--line,#ddd)}
@@ -1582,7 +1597,7 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
     <div class="sub" style="margin-bottom:6px">Open games first, next to lock first; then settled, most recent first. Each venue cell is the credit the default tier would have paid from that book, the difference against the credit written, and for reference books the best ask on the opposing outcome and its visible depth in shares. A game that has had its pre-lock read shows that read under the open-time one, marked by the hours it was taken before the lock; a game whose held book was caught opening shows that read too, marked "opened" on the venue that opened.</div>
     <div class="tablewrap"><table>${head}${rows}</table></div>
     ${b.rows.length === 0 ? `<div class="read">Nothing in the window yet.</div>` : ""}
-    <a class="back" href="/report${tq}">Rule comparison</a> <a class="back" href="/api/shadow/venues${tq}">Raw JSON</a> <a class="back" href="/healthz${tq}">Status</a>
+    <a class="back" href="/report${tq}">Rule comparison</a> <a class="back" href="/api/shadow/venues${tq}">Raw JSON</a> <a class="back" href="/api/shadow/venues.csv${tq}${input.windowDays !== 7 ? `${tq ? "&" : "?"}days=${input.windowDays}` : ""}">Every read with listing ids (CSV)</a> <a class="back" href="/api/shadow/venues/catalog${tq}${tq ? "&" : "?"}league=nba">What reference book A lists for a league (JSON)</a> <a class="back" href="/healthz${tq}">Status</a>
   </div>
   <footer>
     Operator view. Venue names appear here and nowhere public. Nothing on this page was traded except the route written. Rendered ${escapeHtml(b.atIso.slice(0, 16).replace("T", " "))} UTC.
