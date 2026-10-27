@@ -104,6 +104,10 @@ test("kalshi account: the upgrade — 201 grants Advanced for good and the tier 
     granted.seen.map((s) => `${s.method} ${s.path}`),
     ["POST /trade-api/v2/account/api_usage_level/upgrade", "GET /trade-api/v2/account/limits"],
   );
+  // Kalshi answers 400 invalid_content_type to a bodiless POST: the upgrade declares JSON and carries {}
+  assert.equal(granted.seen[0].headers["content-type"], "application/json");
+  assert.deepEqual(granted.seen[0].body, {});
+  assert.equal(granted.seen[1].headers["content-type"], undefined, "a GET carries no body and no content type");
 
   const refused = fakeKalshi({
     "POST /account/api_usage_level/upgrade": () => ({ status: 403, body: { code: "forbidden", message: "no api orders" } }),

@@ -315,9 +315,11 @@ export class KalshiAccountClient {
       ...kalshiAuthHeaders(this.creds, ts, method, path),
     };
     const init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
-    if (body !== undefined) {
+    // Kalshi answers 400 invalid_content_type to a bodiless POST (the upgrade) — every write
+    // declares JSON and carries at least an empty object.
+    if (body !== undefined || method !== "GET") {
       headers["content-type"] = "application/json";
-      init.body = JSON.stringify(body);
+      init.body = JSON.stringify(body ?? {});
     }
     const res = await this.fetchImpl(url, init);
     const text = await res.text().catch(() => "");
