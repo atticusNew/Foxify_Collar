@@ -238,6 +238,9 @@ services:
       #   REFERENCE_BOOK_SIGNED_HOST=https://api....   the venue's API host, nothing else needed
       #   REFERENCE_BOOK_SIGNED_KEY_ID=<key id>          optional, with the PEM
       #   REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM=<PKCS8 PEM>
+      #   A key the venue's account-scoped catalog refuses (423 ACCOUNT_LOCKED, 401, 403) is not
+      #   fatal: catalog and book reads fall back to the public catalog for one cache window and
+      #   /api/shadow/venues/catalog says so in `note`. Positions have no public path.
       #   REFERENCE_BOOK_SIGNED_LEAGUES=nba=<venue's word>  optional; a league the venue files under
       #     another word (read it off /api/shadow/venues/catalog?league=nba, leaguesSeen). Unset, a
       #     league that lists nothing under our code is searched once more on the unfiltered page.

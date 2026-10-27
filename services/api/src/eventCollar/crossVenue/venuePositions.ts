@@ -216,12 +216,17 @@ export class VenueApiError extends Error {
   }
 }
 
+/** the account-scoped catalog refusing the key: the public catalog has the same markets and books */
+const CATALOG_FALLBACK_STATUSES = new Set([401, 403, 423]);
+
 export class VenueClient {
   private readonly fetchImpl: typeof fetch;
   private readonly ttl: number;
   private readonly markets = new Map<string, { at: number; v: RawVenueMarket }>();
   private readonly events = new Map<string, { at: number; v: RawVenueEvent }>();
   private readonly marketLists = new Map<string, { at: number; v: RawVenueMarket[] }>();
+  private publicUntil = 0;
+  private signedRefusal: string | null = null;
 
   constructor(private readonly cfg: VenueClientConfig) {
     this.fetchImpl = cfg.fetchImpl ?? fetch;
@@ -233,15 +238,37 @@ export class VenueClient {
     return !this.cfg.signer;
   }
 
-  /** The catalog path for this client: the account-scoped one when signed, the public one otherwise. */
-  private catalog(path: string): string {
-    return this.cfg.signer ? `/v3/catalog${path}` : `/v3/public/catalog${path}`;
+  /**
+   * Why catalog reads are going to the public path on a signed client: the account-scoped catalog
+   * refused the key (locked account, bad key) and the reads fell back. Null when nothing fell back.
+   */
+  get catalogFallbackNote(): string | null {
+    return this.publicUntil > Date.now() && this.signedRefusal ? `signed catalog refused the key (${this.signedRefusal}); reading the public catalog` : null;
   }
 
-  private async get<T>(path: string, query = ""): Promise<T> {
+  /**
+   * A catalog read: the account-scoped path when signed, the public one otherwise. A signed read the
+   * venue refuses for the account (423 locked, 401/403 on the key) is retried on the public catalog,
+   * which publishes the same markets and books, and catalog reads stay public for one cache window
+   * so a locked account costs one refused call per window, not two calls per read. Positions are
+   * never retried this way: they exist only on the signed path.
+   */
+  private async catalogGet<T>(path: string, query = ""): Promise<T> {
+    if (!this.cfg.signer || Date.now() < this.publicUntil) return this.get<T>(`/v3/public/catalog${path}`, query, { unsigned: true });
+    try {
+      return await this.get<T>(`/v3/catalog${path}`, query);
+    } catch (err) {
+      if (!(err instanceof VenueApiError) || !CATALOG_FALLBACK_STATUSES.has(err.status)) throw err;
+      this.publicUntil = Date.now() + this.ttl;
+      this.signedRefusal = `${err.status} ${err.code}`;
+      return this.get<T>(`/v3/public/catalog${path}`, query, { unsigned: true });
+    }
+  }
+
+  private async get<T>(path: string, query = "", opts: { unsigned?: boolean } = {}): Promise<T> {
     const headers = {
       accept: "application/json",
-      ...(this.cfg.signer ? signedHeaders(this.cfg.signer, { method: "GET", path, query, body: "" }) : {}),
+      ...(this.cfg.signer && !opts.unsigned ? signedHeaders(this.cfg.signer, { method: "GET", path, query, body: "" }) : {}),
     };
     const r = await this.fetchImpl(`${this.cfg.host}${path}${query ? `?${query}` : ""}`, { method: "GET", headers });
     const text = await r.text();
@@ -270,7 +297,7 @@ export class VenueClient {
   async getMarket(marketId: string): Promise<RawVenueMarket> {
     const hit = this.markets.get(marketId);
     if (hit && Date.now() - hit.at < this.ttl) return hit.v;
-    const v = await this.get<RawVenueMarket>(this.catalog(`/markets/${encodeURIComponent(marketId)}`));
+    const v = await this.catalogGet<RawVenueMarket>(`/markets/${encodeURIComponent(marketId)}`);
     this.markets.set(marketId, { at: Date.now(), v });
     return v;
   }
@@ -278,7 +305,7 @@ export class VenueClient {
   async getEvent(eventId: string): Promise<RawVenueEvent> {
     const hit = this.events.get(eventId);
     if (hit && Date.now() - hit.at < this.ttl) return hit.v;
-    const v = await this.get<RawVenueEvent>(this.catalog(`/events/${encodeURIComponent(eventId)}`));
+    const v = await this.catalogGet<RawVenueEvent>(`/events/${encodeURIComponent(eventId)}`);
     this.events.set(eventId, { at: Date.now(), v });
     return v;
   }
@@ -304,7 +331,7 @@ export class VenueClient {
     const key = `markets:${query}`;
     const hit = this.marketLists.get(key);
     if (hit && Date.now() - hit.at < this.ttl) return hit.v;
-    const body = await this.get<RawVenueMarket[] | { items?: RawVenueMarket[]; markets?: RawVenueMarket[]; next?: string | null }>(this.catalog("/markets"), query);
+    const body = await this.catalogGet<RawVenueMarket[] | { items?: RawVenueMarket[]; markets?: RawVenueMarket[]; next?: string | null }>("/markets", query);
     const items = Array.isArray(body) ? body : (body?.items ?? body?.markets ?? []);
     const v = items.filter((m) => m && typeof m.marketId === "string" && Array.isArray(m.outcomes));
     this.marketLists.set(key, { at: Date.now(), v });
@@ -314,7 +341,7 @@ export class VenueClient {
 
   /** The live book of one market: resting bids per outcome, best first. Never cached. */
   async getBook(marketId: string): Promise<RawVenueBook> {
-    const v = await this.get<RawVenueBook>(this.catalog(`/markets/${encodeURIComponent(marketId)}/book`));
+    const v = await this.catalogGet<RawVenueBook>(`/markets/${encodeURIComponent(marketId)}/book`);
     if (!v || typeof v !== "object" || !v.orders || typeof v.orders !== "object") {
       throw new VenueApiError(0, "book_shape", `venue book for ${marketId} has no orders`);
     }
