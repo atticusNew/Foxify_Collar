@@ -82,22 +82,24 @@
 // and the Yes price as a percentage), a market page with Yes/No and an order panel in contracts at a
 // price in cents, and a Portfolio page with POSITIONS / ORDERS / HISTORY where each position is
 // "Yes · Club" or "No · Club", N contracts at an average price in cents, with its cost and payout.
+const LEAGUE = "NBA";
 const GAMES = [
-  { id: "KCSEA", day: "Later today", when: "Oct 25 @ 8:20PM", away: ["KC", "Chiefs", "5-0"], home: ["SEA", "Seahawks", "3-3"], yes: [42, 59], vol: "$4,532,120" },
-  { id: "DENARI", day: "Later today", when: "Oct 25 @ 4:25PM", away: ["DEN", "Broncos", "4-2"], home: ["ARI", "Cardinals", "2-4"], yes: [80, 21], vol: "$1,204,660" },
-  { id: "LARLV", day: "Later today", when: "Oct 25 @ 4:05PM", away: ["LAR", "Rams", "2-4"], home: ["LV", "Raiders", "3-3"], yes: [96, 4], vol: "$2,118,004" },
-  { id: "GBDET", day: "Later today", when: "Oct 25 @ 4:25PM", away: ["GB", "Packers", "4-2"], home: ["DET", "Lions", "3-2"], yes: [24, 77], vol: "$3,006,410" },
-  { id: "DALPHI", day: "Tomorrow", when: "Oct 26 @ 8:15PM", away: ["DAL", "Cowboys", "2-4"], home: ["PHI", "Eagles", "5-1"], yes: [68, 32], vol: "$2,980,315" },
+  { id: "BKNBOS", day: "Later today", when: "Oct 27 @ 7:30PM", away: ["BKN", "Nets", "1-3"], home: ["BOS", "Celtics", "3-1"], yes: [21, 80], vol: "$1,812,440" },
+  { id: "DETNYK", day: "Later today", when: "Oct 27 @ 8:00PM", away: ["DET", "Pistons", "2-2"], home: ["NYK", "Knicks", "3-1"], yes: [40, 61], vol: "$2,406,915" },
+  { id: "SACSAS", day: "Later today", when: "Oct 27 @ 8:00PM", away: ["SAC", "Kings", "1-3"], home: ["SAS", "Spurs", "3-1"], yes: [38, 63], vol: "$984,120" },
+  { id: "PORLAL", day: "Later today", when: "Oct 27 @ 11:00PM", away: ["POR", "Trail Blazers", "2-2"], home: ["LAL", "Lakers", "3-1"], yes: [45, 56], vol: "$1,530,002" },
+  { id: "WASCLE", day: "Tomorrow", when: "Oct 28 @ 7:00PM", away: ["WAS", "Wizards", "1-3"], home: ["CLE", "Cavaliers", "4-0"], yes: [25, 76], vol: "$1,102,660" },
+  { id: "NYKCHI", day: "Tomorrow", when: "Oct 28 @ 8:00PM", away: ["NYK", "Knicks", "3-1"], home: ["CHI", "Bulls", "1-3"], yes: [77, 24], vol: "$901,315" },
 ];
-const LEFT = ["NFL", "NCAA Football", "NBA", "Pro Baseball", "NHL", "WNBA"];
+const LEFT = ["NBA", "NFL", "Pro Baseball", "NHL", "NCAA Football", "WNBA"];
 // Positions as the Portfolio lists them. side: yes|no on the named club. open: resting order (ORDERS tab). settled: HISTORY.
 const POS = JSON.parse(sessionStorage.getItem("kalshi-pos") || "null") || [
-  { g: "KCSEA", club: "home", side: "yes", n: 10, c: 59, placed: "Oct 24 · 9:12 PM" },
-  { g: "DALPHI", club: "away", side: "no", n: 15, c: 32, placed: "Oct 24 · 9:20 PM" },
-  { g: "DENARI", club: "away", side: "yes", n: 20, c: 80, placed: "Oct 23 · 6:40 PM" },
-  { g: "KCSEA", club: "home", side: "yes", n: 10, c: 48, spread: "+3.5", placed: "Oct 24 · 9:30 PM" },
-  { g: "GBDET", club: "away", side: "yes", n: 10, c: 40, open: true, placed: "Oct 25 · 11:02 AM" },
-  { g: "BUFCAR", club: "away", side: "yes", n: 10, c: 70, settled: "won", when: "Oct 19 @ 1:00PM", away: ["BUF", "Bills"], home: ["CAR", "Panthers"], placed: "Oct 18 · 7:15 PM" },
+  { g: "DETNYK", club: "home", side: "yes", n: 20, c: 61, placed: "Oct 27 · 12:48 PM" },
+  { g: "BKNBOS", club: "away", side: "no", n: 15, c: 79, placed: "Oct 27 · 12:51 PM" },
+  { g: "PORLAL", club: "home", side: "yes", n: 10, c: 56, placed: "Oct 26 · 6:40 PM" },
+  { g: "DETNYK", club: "home", side: "yes", n: 10, c: 48, spread: "-2.5", placed: "Oct 27 · 12:55 PM" },
+  { g: "SACSAS", club: "home", side: "yes", n: 10, c: 60, open: true, placed: "Oct 27 · 11:02 AM" },
+  { g: "MEMNYK", club: "home", side: "yes", n: 10, c: 70, settled: "won", when: "Oct 25 @ 7:30PM", away: ["MEM", "Grizzlies"], home: ["NYK", "Knicks"], placed: "Oct 24 · 7:15 PM" },
 ];
 const save = () => sessionStorage.setItem("kalshi-pos", JSON.stringify(POS));
 const $ = (s) => document.querySelector(s);
@@ -116,14 +118,14 @@ const sideRow = (g, club) => {
 };
 const listHtml = () => {
   const days = [...new Set(GAMES.map((g) => g.day))];
-  return days.map((d) => "<h2>" + d + "</h2>" + GAMES.filter((g) => g.day === d).map((g) => '<div class="card"><div class="ev"><span class="ico"></span><div><b>' + title(g) + "</b><small>" + g.when + " &middot; NFL</small></div></div>" + sideRow(g, "away") + sideRow(g, "home") + '<div class="vol">' + g.vol + " vol</div></div>").join("")).join("");
+  return days.map((d) => "<h2>" + d + "</h2>" + GAMES.filter((g) => g.day === d).map((g) => '<div class="card"><div class="ev"><span class="ico"></span><div><b>' + title(g) + "</b><small>" + g.when + " &middot; " + LEAGUE + "</small></div></div>" + sideRow(g, "away") + sideRow(g, "home") + '<div class="vol">' + g.vol + " vol</div></div>").join("")).join("");
 };
 const marketHtml = (g) => {
   const t = order.club === "away" ? g.away : g.home;
   const yes = g.yes[order.club === "away" ? 0 : 1];
   const price = order.side === "yes" ? yes : 100 - yes;
   const n = Number(order.n) || 0;
-  return '<a class="back" href="#/">&lsaquo; NFL</a><div class="panel"><div><div class="ptitle">' + title(g) + '</div><div class="psub">' + g.when + " &middot; NFL &middot; " + g.vol + " vol</div>" +
+  return '<a class="back" href="#/">&lsaquo; ' + LEAGUE + '</a><div class="panel"><div><div class="ptitle">' + title(g) + '</div><div class="psub">' + g.when + " &middot; " + LEAGUE + " &middot; " + g.vol + " vol</div>" +
     GAMES.filter((x) => x.id === g.id).map(() => ["away", "home"].map((club) => { const tt = club === "away" ? g.away : g.home; const y = g.yes[club === "away" ? 0 : 1]; return '<div class="card"><div class="ev"><span class="helm" style="background:' + (club === "away" ? "#c33" : "#2a5a9a") + ';width:28px;height:26px;border-radius:50% 50% 40% 40%"></span><div><b>' + tt[0] + " " + tt[1] + " wins</b><small>" + y + "% chance</small></div></div>" +
       '<div class="yn"><button class="y' + (order.club === club && order.side === "yes" ? " sel" : "") + '" data-club="' + club + '" data-side="yes">Yes ' + y + "&cent;</button><button class=\"n" + (order.club === club && order.side === "no" ? " sel" : "") + '" data-club="' + club + '" data-side="no">No ' + (100 - y) + "&cent;</button></div></div>"; }).join("")).join("") +
     "</div>" +

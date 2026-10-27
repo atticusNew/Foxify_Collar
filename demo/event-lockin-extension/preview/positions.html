@@ -94,7 +94,7 @@
 <header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/" id="nav-home"><span class="ico"></span>Home</a><a href="#/"><span class="ico"></span>Sports</a><a href="#/my-trades" id="nav-plays"><span class="ico"></span><span id="pf-nav">My Trades</span></a><a href="#"><span class="ico"></span>Promos</a></div><div class="right"><div class="mode" id="mode"><span class="on" data-mode="cash">Cash</span><span data-mode="points">Points</span></div><div class="search">Search Events, Teams &amp; Players</div><div class="dep">+ Deposit</div><div class="get" id="bal">$2.00 &#x25BE;</div></div></header>
 </div>
 <div class="wrap">
-<aside><a><i style="background:#8ab"></i>Hockey</a><a><i style="background:#cc3"></i>Tennis (M)</a><a><i style="background:#e73"></i>Pro BB (M)</a><a class="on" href="#/"><i style="background:#a63"></i>Pro FB</a><a><i style="background:#a4c"></i>Tennis (W)</a><a><i style="background:#e73"></i>Pro BB (W)</a><a><i style="background:#63c"></i>EPL</a><a><i style="background:#c33"></i>MMA</a><a><i style="background:#c33"></i>La Liga</a><a><i style="background:#3a6"></i>Serie A</a><a><i style="background:#36c"></i>Ligue 1</a><a><i style="background:#c33"></i>US Soccer</a>
+<aside><a><i style="background:#8ab"></i>Hockey</a><a><i style="background:#cc3"></i>Tennis (M)</a><a class="on" href="#/"><i style="background:#e73"></i>Pro BB (M)</a><a><i style="background:#a63"></i>Pro FB</a><a><i style="background:#a4c"></i>Tennis (W)</a><a><i style="background:#e73"></i>Pro BB (W)</a><a><i style="background:#63c"></i>EPL</a><a><i style="background:#c33"></i>MMA</a><a><i style="background:#c33"></i>La Liga</a><a><i style="background:#3a6"></i>Serie A</a><a><i style="background:#36c"></i>Ligue 1</a><a><i style="background:#c33"></i>US Soccer</a>
 <div class="foot">Terms of Use<br>Privacy Policy<br>Responsible Gaming<br>Your Privacy Choices<br>Cookie Preferences<br>About<br>Careers<br>Newsroom<br>Help Center</div></aside>
 <main id="main"></main>
 <div class="right-col"><div id="slip"></div>
@@ -109,30 +109,26 @@
 // A stand-in for the venue's React app: hash routes, a market-order slip with a Cost input and a To Gain
 // line, prices shown as the implied chance (75.9%), and a My Trades page where each trade carries its
 // matching state. Odds are kept American in the data and shown as percentages, as the venue does.
+const LEAGUE = "Pro BB (M)";
 const GAMES = [
-  { id: "SEADEN", when: "Thu 8:15 PM", away: ["SEA", "Seahawks", "3-2"], home: ["DEN", "Broncos", "4-1"], spread: ["+1.5", "-105", "-1.5", "-108"], total: ["O 41.5", "-111", "U 41.5", "-103"], win: ["-132", "+127"], matched: "$212,440" },
-  { id: "HOUJAX", when: "Sun 9:30 AM", away: ["HOU", "Texans", "2-3"], home: ["JAX", "Jaguars", "4-1"], spread: ["+2.5", "+104", "-2.5", "-108"], total: ["O 42.5", "+100", "U 42.5", "-102"], win: ["+130", "-133"], matched: "$257,702" },
-  { id: "PITTB", when: "Sun 1:00 PM", away: ["PIT", "Steelers", "3-2"], home: ["TB", "Buccaneers", "1-4"], spread: ["-2.5", "+100", "+2.5", "-102"], total: ["O 39.5", "+100", "U 39.5", "-102"], win: ["-127", "+125"], matched: "$85,293" },
-  { id: "TENIND", when: "Sun 1:00 PM", away: ["TEN", "Titans", "0-5"], home: ["IND", "Colts", "2-3"], spread: ["+6.5", "+113", "-6.5", "-118"], total: ["O 43.5", "-112", "U 43.5", "+106"], win: ["+292", "-300"], matched: "$12,593" },
-  { id: "ARILAR", when: "Sun 4:05 PM", away: ["ARI", "Cardinals", "1-4"], home: ["LA", "Rams", "2-3"], spread: ["+12.5", "+102", "-12.5", "-104"], total: ["O 51.5", "-104", "U 51.5", "+102"], win: ["+700", "-714"], matched: "$129,924" },
-  { id: "LACKC", when: "Sun 4:25 PM", away: ["LA", "Chargers", "0-5"], home: ["KC", "Chiefs", "4-0"], spread: ["+8.5", "-104", "-8.5", "+104"], total: ["O 42.5", "+102", "U 42.5", "-104"], win: ["+376", "-385"], matched: "$174,873" },
-  { id: "BUFLV", when: "Sun 4:25 PM", away: ["BUF", "Bills", "4-1"], home: ["LV", "Raiders", "3-2"], spread: ["-5.5", "+106", "+5.5", "-112"], total: ["O 53.5", "-102", "U 53.5", "-102"], win: ["-222", "+217"], matched: "$96,310" },
-  { id: "WASSF", when: "Mon 8:15 PM", away: ["WAS", "Commanders", "2-3"], home: ["SF", "49ers", "4-1"], spread: ["+7.5", "-102", "-7.5", "+100"], total: ["O 45.5", "-105", "U 45.5", "+100"], win: ["+330", "-357"], matched: "$140,112" },
+  { id: "BKNBOS", when: "Tue 7:30 PM", away: ["BKN", "Nets", "1-3"], home: ["BOS", "Celtics", "3-1"], spread: ["+11.5", "-108", "-11.5", "-104"], total: ["O 224.5", "-110", "U 224.5", "-104"], win: ["+372", "-385"], matched: "$118,440" },
+  { id: "DETNYK", when: "Tue 8:00 PM", away: ["DET", "Pistons", "2-2"], home: ["NYK", "Knicks", "3-1"], spread: ["+4.5", "-106", "-4.5", "-106"], total: ["O 228.5", "-108", "U 228.5", "-104"], win: ["+152", "-156"], matched: "$206,915" },
+  { id: "SACSAS", when: "Tue 8:00 PM", away: ["SAC", "Kings", "1-3"], home: ["SAS", "Spurs", "3-1"], spread: ["+5.5", "-104", "-5.5", "-108"], total: ["O 230.5", "-106", "U 230.5", "-106"], win: ["+170", "-176"], matched: "$84,120" },
+  { id: "PORLAL", when: "Tue 11:00 PM", away: ["POR", "Trail Blazers", "2-2"], home: ["LAL", "Lakers", "3-1"], spread: ["+2.5", "-104", "-2.5", "-108"], total: ["O 232.5", "-110", "U 232.5", "-102"], win: ["+118", "-124"], matched: "$130,002" },
+  { id: "WASCLE", when: "Wed 7:00 PM", away: ["WAS", "Wizards", "1-3"], home: ["CLE", "Cavaliers", "4-0"], spread: ["+10.5", "-106", "-10.5", "-106"], total: ["O 226.5", "-108", "U 226.5", "-104"], win: ["+310", "-320"], matched: "$52,660" },
+  { id: "NYKCHI", when: "Wed 8:00 PM", away: ["NYK", "Knicks", "3-1"], home: ["CHI", "Bulls", "1-3"], spread: ["-7.5", "-106", "+7.5", "-106"], total: ["O 229.5", "-108", "U 229.5", "-104"], win: ["-330", "+320"], matched: "$61,315" },
 ];
 const slip = { sel: null, stake: "20" };
 let mode = sessionStorage.getItem("mock-mode") || "cash";
 // Open trades, as the venue's My Trades page lists them. Place Trade on the slip adds one (a market order, matched at once).
 // matched: the dollars of the stake another account has taken; 0 is a resting order.
 const PLAYS = JSON.parse(sessionStorage.getItem("mock-trades") || "null") || [
-  { g: "HOUJAX", side: "away", kind: "Moneyline", line: "", odds: "+130", stake: 20, matched: 20, when: "Sun 9:30 AM", away: ["HOU", "Texans"], home: ["JAX", "Jaguars"] },
-  { g: "WASSF", side: "home", kind: "Moneyline", line: "", odds: "-357", stake: 20, matched: 20, when: "Mon 8:15 PM", away: ["WAS", "Commanders"], home: ["SF", "49ers"] },
-  { g: "TENIND", side: "home", kind: "Spread", line: "-6.5", odds: "-118", stake: 10, matched: 10, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
-  { g: "TENIND", side: "away", kind: "Moneyline", line: "", odds: "+292", stake: 5, matched: 5, when: "Sun 1:00 PM", away: ["TEN", "Titans"], home: ["IND", "Colts"] },
-  { g: "PITTB", side: "away", kind: "Moneyline", line: "", odds: "-127", stake: 10, matched: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
-  { g: "PITTB", side: "home", kind: "Moneyline", line: "", odds: "+125", stake: 10, matched: 10, when: "Sun 1:00 PM", away: ["PIT", "Steelers"], home: ["TB", "Buccaneers"] },
-  { g: "SEADEN", side: "home", kind: "Moneyline", line: "", odds: "+127", stake: 10, matched: 10, codeOnly: true, when: "Thu 8:15 PM", away: ["SEA", "Seahawks"], home: ["DEN", "Broncos"] },
-  { g: "BUFLV", side: "away", kind: "Moneyline", line: "", odds: "-222", stake: 20, matched: 10, when: "Sun 4:25 PM", away: ["BUF", "Bills"], home: ["LV", "Raiders"] },
-  { g: "LACKC", side: "home", kind: "Moneyline", line: "", odds: "-385", stake: 10, matched: 0, when: "Sun 4:25 PM", away: ["LA", "Chargers"], home: ["KC", "Chiefs"] },
+  { g: "DETNYK", side: "home", kind: "Moneyline", line: "", odds: "-156", stake: 10, matched: 10, when: "Tue 8:00 PM", away: ["DET", "Pistons"], home: ["NYK", "Knicks"] },
+  { g: "BKNBOS", side: "away", kind: "Moneyline", line: "", odds: "+372", stake: 5, matched: 5, when: "Tue 7:30 PM", away: ["BKN", "Nets"], home: ["BOS", "Celtics"] },
+  { g: "DETNYK", side: "home", kind: "Spread", line: "-4.5", odds: "-106", stake: 10, matched: 10, when: "Tue 8:00 PM", away: ["DET", "Pistons"], home: ["NYK", "Knicks"] },
+  { g: "PORLAL", side: "home", kind: "Moneyline", line: "", odds: "-124", stake: 10, matched: 10, codeOnly: true, when: "Tue 11:00 PM", away: ["POR", "Trail Blazers"], home: ["LAL", "Lakers"] },
+  { g: "SACSAS", side: "away", kind: "Moneyline", line: "", odds: "+170", stake: 20, matched: 10, when: "Tue 8:00 PM", away: ["SAC", "Kings"], home: ["SAS", "Spurs"] },
+  { g: "WASCLE", side: "home", kind: "Moneyline", line: "", odds: "-320", stake: 10, matched: 0, when: "Wed 7:00 PM", away: ["WAS", "Wizards"], home: ["CLE", "Cavaliers"] },
 ];
 const savePlays = () => sessionStorage.setItem("mock-trades", JSON.stringify(PLAYS));
 const $ = (s) => document.querySelector(s);
@@ -142,7 +138,7 @@ const mult = (odds) => { const o = Number(odds); return o > 0 ? 1 + o / 100 : 1 
 const toWin = (stake, odds) => stake * (mult(odds) - 1);
 const tag = (p) => (p.matched <= 0 ? '<span class="tag wait">Unmatched</span>' : p.matched < p.stake ? '<span class="tag part">Partially Matched</span>' : '<span class="tag ok">Matched</span>');
 const show = (odds) => (100 / mult(odds)).toFixed(1) + "%";
-const CITY = { HOU: "Houston", JAX: "Jacksonville", WAS: "Washington", SF: "San Francisco", TEN: "Tennessee", IND: "Indianapolis", PIT: "Pittsburgh", TB: "Tampa Bay", SEA: "Seattle", DEN: "Denver", BUF: "Buffalo", LV: "Las Vegas", LA: "Los Angeles", KC: "Kansas City", ARI: "Arizona" };
+const CITY = { BKN: "Brooklyn", BOS: "Boston", DET: "Detroit", NYK: "New York", SAC: "Sacramento", SAS: "San Antonio", POR: "Portland", LAL: "Los Angeles", WAS: "Washington", CLE: "Cleveland", CHI: "Chicago" };
 const full = (t) => CITY[t[0]] + " " + t[1];
 const refOf = (p, i) => "mo_" + (p.g + i).toLowerCase().slice(0, 2) + "\u2026" + (1000 + i * 731).toString(16).slice(-4);
 // one row of the venue's table: Market, Type, Event/Date, Cost, Price, Payout, Ref ID/Placed, Actions.
@@ -170,8 +166,8 @@ const rows = (g) =>
   '<div class="grid">' + teamRow(g, "away") + cell(g, "away", "Spread", g.spread[0], g.spread[1]) + cell(g, "away", "Total", g.total[0], g.total[1]) + cell(g, "away", "Moneyline", "", g.win[0]) +
   teamRow(g, "home") + cell(g, "home", "Spread", g.spread[2], g.spread[3]) + cell(g, "home", "Total", g.total[2], g.total[3]) + cell(g, "home", "Moneyline", "", g.win[1]) + "</div>";
 const listView = () =>
-  '<h1>Pro FB</h1><div class="subtabs"><span class="on">Games</span><span>Player Props</span><span>Futures</span></div>' +
-  GAMES.map((g) => '<div class="game"><div class="when">' + g.when.split(" ")[0] + " <b>" + g.when.split(" ").slice(1).join(" ") + '</b></div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Moneyline</span></div>' + rows(g) + '<div class="traded">Pro FB &nbsp; Matched: ' + g.matched + " &nbsp; 9 More &rsaquo;</div></div>").join("");
+  '<h1>' + LEAGUE + '</h1><div class="subtabs"><span class="on">Games</span><span>Player Props</span><span>Futures</span></div>' +
+  GAMES.map((g) => '<div class="game"><div class="when">' + g.when.split(" ")[0] + " <b>" + g.when.split(" ").slice(1).join(" ") + '</b></div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Moneyline</span></div>' + rows(g) + '<div class="traded">' + LEAGUE + ' &nbsp; Matched: ' + g.matched + " &nbsp; 9 More &rsaquo;</div></div>").join("");
 const pct = (odds) => Math.round(100 / mult(odds));
 const gameView = (g) =>
   '<a class="back" href="#/">&lsaquo;</a><div class="matchup"><div><div class="jersey"></div><div class="code">' + g.away[0] + '</div></div><div class="center"><b>' + g.when.split(" ").slice(1).join(" ") + "</b>" + g.when.split(" ")[0] + '<span class="blue" style="margin-top:14px;font-weight:900;letter-spacing:.1em;color:#6f7279">EXCHANGE</span></div><div><div class="jersey" style="background:#2a5a9a"></div><div class="code">' + g.home[0] + "</div></div></div>" +
@@ -186,7 +182,7 @@ const slipView = () => {
   const stake = Number(slip.stake) || 0;
   const pickName = t[0] + " " + t[1] + (s.kind === "Spread" ? " " + s.line : "") + (s.kind === "Total" ? " " + s.line : "");
   return '<div class="slip"><div class="slip-h">Market Order &#x25BE;</div>' +
-    '<div class="pick-card"><span class="rm" id="rm">&#x1F5D1;</span><div class="pick">' + pickName + " &middot; " + s.kind + '</div><div class="pick-meta">Pro FB &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + '</div><div class="odds">' + show(s.odds) + '</div><div class="fields"><div class="stake"><label>Cost</label><input id="stake" type="text" inputmode="decimal" value="' + slip.stake + '"></div><div class="stake" style="border-color:#26262d"><label>To Gain</label><b id="towin">' + money(toWin(stake, s.odds)) + "</b></div></div></div></div>" +
+    '<div class="pick-card"><span class="rm" id="rm">&#x1F5D1;</span><div class="pick">' + pickName + " &middot; " + s.kind + '</div><div class="pick-meta">' + LEAGUE + ' &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + '</div><div class="odds">' + show(s.odds) + '</div><div class="fields"><div class="stake"><label>Cost</label><input id="stake" type="text" inputmode="decimal" value="' + slip.stake + '"></div><div class="stake" style="border-color:#26262d"><label>To Gain</label><b id="towin">' + money(toWin(stake, s.odds)) + "</b></div></div></div></div>" +
     '<button class="place">' + (stake > 0 ? "Place Trade" : "Enter a cost") + "<small>Net winnings per market are subject to a 2% fee</small></button>";
 };
 const render = () => {
