@@ -213,7 +213,13 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
   a row dated three weeks back is never read as a pick on the club's next game. The same two
   clubs listed twice (a back-to-back, a home-and-home) are told apart by the card's own words
   (`settleStems`: a date, a weekday, "today" or a clock time, "tomorrow", or a game under way,
-  which is the earlier of the two); words that fit both leave the card unmarked. A row or slip
+  which is the earlier of the two); words that fit both leave the card unmarked, and one listing
+  under a day that is not its own ("Dec 25" over this week's two clubs) is not it either. A board
+  that prints no nicknames at all (Novig's Pro BB (M) cards: "BKN BKN at 0-3 BOS BOS 1-1") names
+  its games by the matchup line (`MATCHUP_RE`: two listed codes joined by "at", "vs" or "@", a
+  record or a second spelling of a code between), and a bare listed code is the way into such a
+  card; codes alone with no matchup word (a score strip) still name nothing. A time line printed
+  as sibling cells ("Today" | "8:05 PM") takes the pill after its last cell. A row or slip
   whose pick is a club the service lists no game for (`unlistedPick`, over every club the tables
   know) gets nothing, never its opponent's next game. Once per page view it posts the anonymous counts
   (`sendTelemetry`). The venue's DOM is never modified; our pills and line are added beside it.

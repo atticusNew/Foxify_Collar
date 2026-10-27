@@ -381,6 +381,12 @@
    * a bare upper-case code that names exactly one market the service can protect this week.
    */
   const CODE_RE = /(^|[^A-Za-z0-9])([A-Z]{2,3})(?![A-Za-z0-9])/g;
+  /**
+   * Two team codes joined as a matchup, as a board with no nicknames prints its cards: "BKN at
+   * BOS"; "DET DET at 3-0 NYK NYK" (each code twice, badge and label, a record between); "SA SAS
+   * at NYK" (two spellings of one club). Groups: away code, its second spelling, home code, its second spelling.
+   */
+  const MATCHUP_RE = /(^|[^A-Za-z0-9])([A-Z]{2,3})(?:\s+([A-Z]{2,3}))?(?:\s+\d{1,2}-\d{1,2})?\s+(?:at|vs\.?|@)\s+(?:\d{1,2}-\d{1,2}\s+)?([A-Z]{2,3})(?:\s+([A-Z]{2,3}))?(?![A-Za-z0-9])/g;
   const LEAGUE_WORDS = [
     [/\b(nfl|pro fb|football)\b/i, "nfl"],
     [/\b(nba|pro bb|basketball)\b/i, "nba"],
@@ -1450,6 +1456,21 @@
       word++;
       for (const t of S.codes.get(m[2]) || []) add(t, false);
     }
+    // ...unless the codes are joined as a matchup ("BKN at BOS", "SA SAS at 1-2 NYK"): a board
+    // that prints no nicknames at all still names its games that way, and the one listed game
+    // both codes share is the card's game
+    MATCHUP_RE.lastIndex = 0;
+    while ((m = MATCHUP_RE.exec(text))) {
+      const away = new Set([m[2], m[3]].filter(Boolean).flatMap((c) => S.codes.get(c) || []));
+      const home = new Set([m[4], m[5]].filter(Boolean).flatMap((c) => S.codes.get(c) || []));
+      const stems = [...away].map(stemOf).filter((st) => [...home].some((t) => stemOf(t) === st));
+      if (new Set(stems).size !== 1) continue;
+      const st = stems[0];
+      word++;
+      for (const t of away) if (stemOf(t) === st) add(t, true);
+      word++;
+      for (const t of home) if (stemOf(t) === st) add(t, true);
+    }
     return [...seen.entries()].filter(([, g]) => g.sides.size >= 2 && g.words.size >= 2 && g.named).map(([st]) => st);
   };
   /**
@@ -1461,9 +1482,18 @@
    */
   const settleStems = (stems, text) => {
     const list = [...new Set(stems)];
-    if (list.length <= 1) return list[0] || null;
+    if (!list.length) return null;
     const one = (hits) => (hits.length === 1 ? hits[0] : null);
     const days = datesIn(text);
+    if (list.length === 1) {
+      // one listing, but the card prints a day: it names the game on that day or none (a "Dec 25"
+      // card of the same two clubs is not this week's game)
+      if (days.size && !dayMatches(list[0], days)) return null;
+      const wds = weekdaysIn(text);
+      const next = gameDate(list[0], 1);
+      if (wds.size && !wds.has(weekdayOf(list[0])) && !(next && wds.has(WEEKDAYS[next.getUTCDay()]))) return null;
+      return list[0];
+    }
     if (days.size) return one(list.filter((s) => dayMatches(s, days)));
     const wds = weekdaysIn(text);
     if (wds.size) return one(list.filter((s) => wds.has(weekdayOf(s))));
@@ -1517,9 +1547,32 @@
       if (!t || t.length > 40 || OURS(n)) continue;
       S.nickRe.lastIndex = 0;
       if (S.nickRe.test(t)) continue;
-      if ((TIME_RE.test(t) || STATE_RE.test(t)) && !(n.parentElement && n.parentElement.closest("h1,h2,h3,h4,h5,h6"))) return n;
+      if ((TIME_RE.test(t) || STATE_RE.test(t)) && !(n.parentElement && n.parentElement.closest("h1,h2,h3,h4,h5,h6"))) return lastOfTimeLine(n);
     }
     return null;
+  };
+  /**
+   * A time line printed as sibling cells ("Today" | "8:05 PM"): the pill follows the last of
+   * them, not the first, so the line reads "Today 8:05 PM [Lock in]" and not "Today [Lock in] 8:05 PM".
+   */
+  const lastOfTimeLine = (n) => {
+    let last = n;
+    for (let sib = n.parentElement && n.parentElement.nextElementSibling, i = 0; sib && i < 3; sib = sib.nextElementSibling, i++) {
+      if (sib.nodeType !== 1 || OURS(sib)) break;
+      // the cell's own words, a pill already sitting in it aside
+      const w = document.createTreeWalker(sib, NodeFilter.SHOW_TEXT);
+      let tn = null;
+      let t = "";
+      for (let x = w.nextNode(); x; x = w.nextNode()) {
+        if (OURS(x) || !norm(x.nodeValue)) continue;
+        tn = x;
+        t += (t ? " " : "") + norm(x.nodeValue);
+      }
+      S.nickRe.lastIndex = 0;
+      if (!tn || t.length > 40 || !TIME_RE.test(t) || S.nickRe.test(t)) break;
+      last = tn;
+    }
+    return last;
   };
   /**
    * From a text naming one or both clubs, the block that is the game's card: the smallest naming
@@ -1534,21 +1587,21 @@
     for (let i = 0; e && e !== document.body && i < 14; i++, e = e.parentElement) {
       const t = wordsOf(e, CARD_MAX_TEXT);
       if (t.length > CARD_MAX_TEXT) break;
-      let games = gamesIn(t);
+      const games = gamesIn(t);
       if (!games.length) continue;
-      // the same two clubs twice in the window: this block's own date, weekday or state picks the game
-      if (games.length > 1) {
-        const one = settleStems(games, t);
-        if (!one) break;
-        games = [one];
-      }
-      if (stem && games[0] !== stem) break;
+      // the same two clubs twice in the window: this block's own date, weekday or state picks the
+      // game; one listing under a day that is not its own is not it either
+      const one = settleStems(games, t);
+      // the block names this one game under a day that is not its own: no card at all
+      if (!one && games.length === 1) return null;
+      if (!one) break;
+      if (stem && one !== stem) break;
       const r = e.getBoundingClientRect();
       if (r.height > CARD_MAX_H || r.width < 120) break;
       // a block that brings in a heading the card had none of is the day's section, not the card
       if (card && !card.querySelector("h1,h2,h3,h4,h5,h6") && e.querySelector("h1,h2,h3,h4,h5,h6")) break;
       card = e;
-      stem = games[0];
+      stem = one;
       if (timeLine(e)) break;
     }
     return card ? { stem, card } : null;
@@ -1572,9 +1625,17 @@
       const text = norm(node.nodeValue);
       if (!text || text.length > 80 || OURS(node)) continue;
       S.nickRe.lastIndex = 0;
-      if (!S.nickRe.test(text)) continue;
+      const named = S.nickRe.test(text);
+      // a board of codes alone ("BKN at BOS"): a bare listed code is the way into its card, and only
+      // the card (its matchup line) can name the game
+      if (!named && !(/^[A-Z]{2,3}$/.test(text) && S.codes.has(text))) continue;
       // the slip has its own line
       if (slipBlock && slipBlock.contains(node)) continue;
+      if (!named) {
+        const c = climbToCard(node);
+        if (c) offer(c.stem, 1, { anchor: null, card: c.card });
+        continue;
+      }
       const titled = gamesIn(text);
       if (titled.length) {
         // two listings of the same two clubs: the title's own date or weekday says which, else neither
