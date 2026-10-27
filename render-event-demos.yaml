@@ -238,6 +238,9 @@ services:
       #   REFERENCE_BOOK_SIGNED_HOST=https://api....   the venue's API host, nothing else needed
       #   REFERENCE_BOOK_SIGNED_KEY_ID=<key id>          optional, with the PEM
       #   REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM=<PKCS8 PEM>
+      #   REFERENCE_BOOK_SIGNED_LEAGUES=nba=<venue's word>  optional; a league the venue files under
+      #     another word (read it off /api/shadow/venues/catalog?league=nba, leaguesSeen). Unset, a
+      #     league that lists nothing under our code is searched once more on the unfiltered page.
       # Partner venue (same account key pair kind as above; only login, tournaments, events and
       # markets are read; dedicated pair, revoke when done):
       #   REFERENCE_BOOK_BEARER_HOST=https://cash.api..../partner

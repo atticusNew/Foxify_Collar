@@ -14,12 +14,14 @@ import {
   REFERENCE_BOOK_WORDS,
   clubFor,
   pairClubs,
+  parseSignedLeagueCodes,
   partnerAskLevel,
   partnerSource,
   readReferenceBooks,
   referenceSourcesFromEnv,
   signedAsksForOpposing,
   signedFeeAppliesPreGame,
+  signedLeagueCode,
   signedSource,
   type ReferenceBookSource,
 } from "../src/eventCollar/crossVenue/venueBooks";
@@ -695,4 +697,111 @@ test("reference books: the signed source's catalog probe asks the league two way
   assert.equal(p2.queries[1].count, null);
   assert.match(p2.queries[1].error ?? "", /400 LEAGUE_REQUIRED/);
   assert.deepEqual(p2.queries[1].sample, []);
+});
+
+// ---------------------------------------------------------------------------
+// a league the venue spells differently: the alias from the env, else the unfiltered fallback
+// ---------------------------------------------------------------------------
+
+function nbaPair(): MatchedPair {
+  const base = pair();
+  return {
+    ...base,
+    league: "nba",
+    kalshi: { ...base.kalshi, ticker: "KXNBAGAME-26SEP20BOSNYK-BOS", eventTicker: "KXNBAGAME-26SEP20BOSNYK", seriesTicker: "KXNBAGAME", title: "Celtics vs Knicks" },
+    pm: { ...base.pm, eventSlug: "nba-bos-nyk-2026-09-20", eventTitle: "Boston Celtics vs. New York Knicks", question: "Boston Celtics vs. New York Knicks", outcomes: ["Celtics", "Knicks"] },
+    parityNote: "both venues settle on the official NBA final result for this game",
+    fingerprint: "nba:BOS:NYK:2026-09-20",
+  };
+}
+
+const NBA_REG_MARKET = {
+  marketId: "m-bos-nyk",
+  eventId: "e9",
+  description: "Celtics @ Knicks",
+  marketType: "MONEY",
+  status: "OPEN",
+  league: "NBA_REG",
+  startsTs: Date.parse(LOCK),
+  outcomes: [
+    { outcomeId: "o-bos", name: "BOS", status: "TBD" },
+    { outcomeId: "o-nyk", name: "NYK", status: "TBD" },
+  ],
+};
+const NBA_BOOK = { marketId: "m-bos-nyk", seq: 1, orders: { "o-bos": [{ orderId: "1", price: "0.550", qty: 20_000 }], "o-nyk": [] } };
+
+/** a venue that files basketball under NBA_REG and answers an unknown league filter with an empty page */
+function nbaRegVenue() {
+  const calls: string[] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    calls.push(url.pathname + url.search);
+    if (/\/book$/.test(url.pathname)) return json(NBA_BOOK);
+    const league = url.searchParams.get("league");
+    const all = [...SIGNED_MARKETS.map((m) => ({ ...m, league: "MLB" })), NBA_REG_MARKET];
+    return json({ items: all.filter((m) => !league || m.league === league), next: null });
+  };
+  return { client: new VenueClient({ host: "https://venue-a.test", fetchImpl }), calls, fetchImpl };
+}
+
+test("reference books: a league the venue spells differently is found on the unfiltered page before it is called unlisted; the env alias asks under the venue's word directly", async () => {
+  // no alias: the league's own query is empty, the whole winner slate is searched once, the game is found
+  const plain = nbaRegVenue();
+  const ref = await signedSource(plain.client).read(nbaPair(), NOW);
+  assert.ok(ref.book, JSON.stringify(ref));
+  assert.deepEqual(ref.book.asks, [{ priceMilli: 450 + Math.ceil((0.06 * 450 * 550) / 1000), sizeMilli: 200_000 }]);
+  assert.deepEqual(ref.listing, { marketId: "m-bos-nyk", key: "e9" });
+  assert.deepEqual(plain.calls, [
+    "/v3/public/catalog/markets?league=NBA&marketType=MONEY&limit=200",
+    "/v3/public/catalog/markets?marketType=MONEY&limit=200",
+    "/v3/public/catalog/markets/m-bos-nyk/book",
+  ]);
+  // the unfiltered page is cached like the league's: a second game costs no new catalog read
+  const other = { ...nbaPair(), kalshi: { ...nbaPair().kalshi, ticker: "KXNBAGAME-26SEP20LALPHX-LAL" }, pm: { ...nbaPair().pm, outcomes: ["Lakers", "Suns"] } };
+  const miss = await signedSource(plain.client).read(other, NOW);
+  assert.ok(!miss.book && miss.reason === "not_listed");
+  assert.equal(plain.calls.length, 3, "both pages were cached");
+
+  // the MLB game is still found under its own code with no second query
+  const mlb = nbaRegVenue();
+  const mref = await signedSource(mlb.client).read(pair(), NOW);
+  assert.ok(mref.book);
+  assert.equal(mlb.calls[0], "/v3/public/catalog/markets?league=MLB&marketType=MONEY&limit=200");
+  assert.equal(mlb.calls.length, 2, "a league the venue spells our way never asks the unfiltered page");
+
+  // the alias: the venue's own word in the first query, no fallback needed
+  const aliased = nbaRegVenue();
+  const aref = await signedSource(aliased.client, { leagueCodes: { nba: "NBA_REG" } }).read(nbaPair(), NOW);
+  assert.ok(aref.book);
+  assert.deepEqual(aliased.calls, ["/v3/public/catalog/markets?league=NBA_REG&marketType=MONEY&limit=200", "/v3/public/catalog/markets/m-bos-nyk/book"]);
+  // and the catalog probe asks under the alias too
+  const probe = await signedSource(aliased.client, { leagueCodes: { nba: "NBA_REG" } }).catalog!("nba");
+  assert.equal(probe.queries[0].query, "league=NBA_REG&marketType=MONEY&limit=200");
+  assert.equal(probe.queries[0].ourClubs, 1);
+
+  // fallback off: the league's own answer is final
+  const strict = nbaRegVenue();
+  const sref = await signedSource(strict.client, { unfilteredFallback: false }).read(nbaPair(), NOW);
+  assert.ok(!sref.book && sref.reason === "not_listed");
+  assert.equal(strict.calls.length, 1);
+});
+
+test("reference books: REFERENCE_BOOK_SIGNED_LEAGUES is league=CODE pairs; a bad entry is a note, an unknown league is dropped, the rest reach the source", async () => {
+  assert.equal(signedLeagueCode("nba"), "NBA");
+  assert.equal(signedLeagueCode("NBA", { nba: "NBA_REG" }), "NBA_REG");
+  const parsed = parseSignedLeagueCodes(" nba=NBA_REG, mlb=MLB nhl=HOCKEY bogus cfb= ");
+  assert.deepEqual(parsed.codes, { nba: "NBA_REG", mlb: "MLB" });
+  assert.equal(parsed.notes.length, 3);
+  assert.match(parsed.notes[0], /"nhl" is not one we cover/);
+  assert.match(parsed.notes[1], /"bogus" is not league=CODE/);
+  assert.match(parsed.notes[2], /"cfb=" is not league=CODE/);
+  assert.deepEqual(parseSignedLeagueCodes(undefined), { codes: {}, notes: [] });
+
+  const venue = nbaRegVenue();
+  const fromEnv = referenceSourcesFromEnv({ REFERENCE_BOOK_SIGNED_HOST: "https://venue-a.test", REFERENCE_BOOK_SIGNED_LEAGUES: "nba=NBA_REG,xyz=1" }, { fetchImpl: venue.fetchImpl });
+  assert.deepEqual(fromEnv.sources.map((s) => s.id), ["signed_v3"]);
+  assert.ok(fromEnv.notes.some((n) => /"xyz" is not one we cover/.test(n)), fromEnv.notes.join(" | "));
+  const probe = await fromEnv.sources[0].catalog!("nba");
+  assert.equal(probe.queries[0].query, "league=NBA_REG&marketType=MONEY&limit=200", "the alias from the env reaches the probe");
+  assert.ok(venue.calls.some((c) => c.includes("league=NBA_REG")));
 });
