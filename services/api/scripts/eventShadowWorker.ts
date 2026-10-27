@@ -663,13 +663,14 @@ function retailOneQuote(res: CandidateResult, evBps: number | null) {
 /**
  * The lock routes (gated by the lock key or the operator token; 404 when no key is configured):
  *   GET  /api/shadow/markets?league=   the games the engine can protect, and which are already on the record
- *   GET  /api/shadow/quote?ticker=&contracts=&entry=   one position, priced now, retail shape
+ *   GET  /api/shadow/quote?ticker=&contracts=&entry=   one position, priced now, retail shape; with the
+ *        operator token, also `routing`: the route that funded it, whether the lock pins it, every route's verdict
  *   POST /api/shadow/lock {ticker, contracts, entryCents?, tier?}   quote again (the lock is at the tap),
  *        write the open record with source "lock", fill the hedge, answer with the terms and the
  *        hedge receipt's outcome (the caller holds the key; it is the operator's own client)
  *   GET  /api/shadow/receipt?ticker=   the lock's terms and the hedge behind them, any time after
  */
-async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: URL, holder: string | null): Promise<void> {
+async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: URL, holder: string | null, operator = false): Promise<void> {
   if (!quoteOneFn || !listGameMarketsFn) {
     sendJson(res, 503, { ok: false, error: "engine_not_ready", message: "the scanner is still loading" });
     return;
@@ -763,7 +764,19 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       return;
     }
     const held = loadShadowPositions(ownLedger).some((p) => p.ticker === parsed.value.ticker);
-    sendJson(res, 200, { ok: true, at: atIso, onRecord: held, ...(holder ? { holder } : {}), ...retailOneQuote(q.result, q.result.evBps) });
+    // The operator also sees the routing: which hedge route funded this quote and what every route
+    // said. On an armed ticker the lock is pinned to Kalshi's own No side, so the verdict there is
+    // what the live hedge will do; on an unarmed one it is the engine's free choice at this size.
+    const routing = operator
+      ? {
+          routing: {
+            route: q.result.route,
+            pinned: lockRouteFor(parsed.value.ticker) ?? null,
+            routesChecked: q.result.routesChecked.map((r) => ({ route: r.route, ok: r.ok, evCostBps: r.evCostBps, creditCents: r.creditCents, ...(r.detail ? { detail: r.detail } : {}) })),
+          },
+        }
+      : {};
+    sendJson(res, 200, { ok: true, at: atIso, onRecord: held, ...(holder ? { holder } : {}), ...retailOneQuote(q.result, q.result.evBps), ...routing });
     return;
   }
   if (url.pathname === "/api/shadow/lock") {
@@ -2038,7 +2051,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         }
         holder = asked ?? null;
       }
-      void handleLockRoutes(req, res, url, holder).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+      void handleLockRoutes(req, res, url, holder, operator).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
       return;
     }
     if (url.pathname === "/api/shadow/reset") {
