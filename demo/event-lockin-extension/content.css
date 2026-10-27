@@ -109,7 +109,7 @@
 /* The block inserted after a position row. Width and left edge are set by the script from the row. */
 .ael-host { display: block; margin: 0; padding: 0; }
 tr.ael-host { display: table-row; }
-tr.ael-host > td { padding: 0 !important; border: 0 !important; }
+tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: normal; text-align: left; }
 /* Capped: the venue's table can be wider than the window, and a card under the Market column
    reads better than a banner across every column. */
 .ael-row { display: block; max-width: 680px; padding: 4px 0 8px; color: var(--ael-fg); font-size: 13px; text-align: left; }

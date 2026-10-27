@@ -165,6 +165,21 @@
     const m = S.byTicker[ticker];
     return (m && nickOf(m)) || ticker;
   };
+  /** The game a market belongs to: the ticker without its side (KXNBAGAME-26OCT27DETNYK). */
+  const stemOf = (ticker) => String(ticker || "").slice(0, String(ticker || "").lastIndexOf("-"));
+  /**
+   * The other club of a market's game, by nickname: the matchup in the ticker (DETNYK) less the
+   * market's own code (NYK), looked up in the market's league. Null when the stem does not parse.
+   */
+  const opponentOf = (ticker) => {
+    const m = S.byTicker[ticker];
+    const part = /\d{2}[A-Z]{3}\d{2}([A-Z]+)$/.exec(stemOf(ticker));
+    if (!m || !part) return null;
+    const code = codeOf(ticker);
+    const pair = part[1];
+    const rest = pair.startsWith(code) ? pair.slice(code.length) : pair.endsWith(code) ? pair.slice(0, -code.length) : null;
+    return rest ? (NICK[String(m.league || "").toLowerCase()] || {})[rest] || null : null;
+  };
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   /**
@@ -415,8 +430,14 @@
       if (list.length < 2) continue;
       const named = list.filter((t) => out.has(t));
       const pick = named.length === 1 ? named : league ? list.filter((t) => leagueOf(t) === league) : list;
-      // one club, several weeks (IND last Sunday's lock, IND next Sunday's game): the row's date or the tab
-      const one = pick.length === 1 ? pick[0] : choose(pick, text);
+      // one club, several weeks (IND last Sunday's lock, IND next Sunday's game): the row's date or
+      // the tab, else the one game it shares with a side already read ("DET at NYK")
+      let one = pick.length === 1 ? pick[0] : choose(pick, text);
+      if (!one) {
+        const stems = new Set([...out.keys()].map(stemOf));
+        const shared = pick.filter((t) => stems.has(stemOf(t)));
+        if (shared.length === 1) one = shared[0];
+      }
       if (one) out.set(one, (out.get(one) || 0) + 1);
       else out.ambiguous = true;
     }
@@ -426,6 +447,7 @@
     const text = spaced(raw);
     const out = new Map();
     if (!S.nickRe) return out;
+    const deferred = [];
     let m;
     S.nickRe.lastIndex = 0;
     while ((m = S.nickRe.exec(text))) {
@@ -439,9 +461,19 @@
           if (hit.length) list = hit;
         }
       }
-      // the same club across weeks: the game day on the row, else the tab
+      // the same club across weeks: the game day on the row, else the tab, else the matchup below
       const ticker = choose(list.map((x) => x.ticker), text);
       if (ticker) out.set(ticker, (out.get(ticker) || 0) + 1);
+      else deferred.push({ key: m[2].toLowerCase(), tickers: list.map((x) => x.ticker) });
+    }
+    // a club with several listed games and nothing on the row to pick one ("NY Knicks", three
+    // games this week) is settled by the matchup: the one game it shares with another club the
+    // text names ("DET Pistons vs NY Knicks" is Oct 27 and no other), or with a side already read
+    for (const d of deferred) {
+      const others = new Set([...out.keys()].map(stemOf));
+      for (const o of deferred) if (o.key !== d.key) for (const t of o.tickers) others.add(stemOf(t));
+      const shared = [...new Set(d.tickers.filter((t) => others.has(stemOf(t))))];
+      if (shared.length === 1) out.set(shared[0], (out.get(shared[0]) || 0) + 1);
       else out.ambiguous = true;
     }
     return out;
@@ -573,7 +605,8 @@
       const t = spaced(norm(r.textContent));
       if (/\$\s?\d/.test(t) || !/\b(cost|stake|wager|risk)\b/i.test(t) || !/\b(payout|to win|to gain|price|odds|return)\b/i.test(t)) continue;
       const cells = cellsOf(r);
-      if (cells) return cells.map((c) => norm(c.textContent).toLowerCase());
+      // a sortable header carries its arrow in the text ("↑Cost"); the word is what is matched
+      if (cells) return cells.map((c) => norm(c.textContent).toLowerCase().replace(/^[^a-z0-9$]+/, ""));
     }
     return null;
   };
@@ -586,6 +619,13 @@
       return i >= 0 ? spaced(norm(cells[i].textContent)) : "";
     };
     const money = (s) => amountsIn(s)[0] || null;
+    // Kalshi's Portfolio says it in our units: a Contracts column and the average price in cents
+    const held = at(/^(contracts|shares|qty|quantity)\b/);
+    const avg = at(/^(avg|average)\b/);
+    const nm = held ? /(\d{1,6}(?:,\d{3})*(?:\.\d+)?)/.exec(held) : null;
+    const n = nm ? Number(nm[1].replace(/,/g, "")) : 0;
+    const c = avg ? /(\d{1,2}(?:\.\d+)?)\s?(?:¢|&cent;|c(?![a-z0-9]))/i.exec(avg) : null;
+    if (n > 0 && c && Number(c[1]) > 0 && Number(c[1]) < 100) return sizeOfContracts(n, Number(c[1]));
     const stake = money(at(/^(cost|stake|wager|risk|bet)\b/));
     if (!stake) return null;
     const payout = money(at(/^(payout|pays|return|total return)\b/));
@@ -730,7 +770,8 @@
       const text = spaced(norm(e.textContent));
       if (text.length > 600) break;
       const r = e.getBoundingClientRect();
-      if (r.height > 320 || r.width > window.innerWidth) break;
+      // wider than the window is the page itself, unless it is a table that scrolls inside its pane
+      if (r.height > 320 || (r.width > window.innerWidth && !e.closest("table"))) break;
       const labels = (text.match(STAKE_LABELS) || []).length;
       if (found) {
         // a block was found without the row's stake and payout labels (a matched/unmatched detail
@@ -756,6 +797,28 @@
   /** The service's confirmed position for one of our markets, when it has one. */
   const svcFor = (ticker) => S.svc.positions.find((p) => p.ticker === ticker) || null;
 
+  /**
+   * The title a venue prints above a position rather than on it. Kalshi's Portfolio groups a
+   * game's positions under one row ("DET Pistons vs NY Knicks") and each position row names its
+   * club alone ("Yes · NY Knicks"). The nearest earlier sibling that carries no money and names a
+   * club the row names is the row's title; other positions in between are stepped over, a title
+   * naming only other clubs ends the search. Its text is read with the row's.
+   */
+  const titleOf = (row, text) => {
+    const named = clubsNamed(text);
+    if (!named.size) return "";
+    for (let e = row.previousElementSibling, i = 0; e && i < 8; e = e.previousElementSibling, i++) {
+      if (OURS(e)) continue;
+      const t = spaced(norm(e.textContent));
+      if (t.length > 300) break;
+      if (amountsIn(t).length) continue;
+      const clubs = clubsNamed(t);
+      if (!clubs.size) continue;
+      return [...clubs.keys()].some((k) => named.has(k)) ? t : "";
+    }
+    return "";
+  };
+
   const findRows = (nodes) => {
     const seen = new Map(); // row element -> { tickers Map, nodes }
     for (const node of nodes) {
@@ -773,14 +836,18 @@
     const rows = [...seen.keys()].filter((r) => ![...seen.keys()].some((o) => o !== r && r.contains(o)));
     const out = [];
     for (const row of rows) {
-      const text = spaced(norm(row.textContent));
-      if (pointsRow(text)) continue;
+      const own = spaced(norm(row.textContent));
+      if (pointsRow(own)) continue;
+      // the row's own text, and the title above it when it names the row's club: Kalshi's position
+      // row says "Yes · NY Knicks", the row over it which game
+      const title = titleOf(row, own);
+      const text = title ? title + " " + own : own;
       const count = sidesIn(text);
       if (!count.size) continue;
       // a block that names three clubs or more, or prices both Yes and No, is a board (a futures
       // list, a game card with both sides to buy), not one position
       if (count.size > 2) continue;
-      if (/(^|[^a-z])yes(?![a-z])/i.test(text) && /(^|[^a-z])no(?![a-z])/i.test(text)) continue;
+      if (/(^|[^a-z])yes(?![a-z])/i.test(own) && /(^|[^a-z])no(?![a-z])/i.test(own)) continue;
       // the pick is a club with no listed game: the row is not protected, and it is never read as a
       // pick on the opponent's next game (an Oct 19 Texans row beside the Nov 1 Jaguars listing)
       if (unlistedPick(text)) continue;
@@ -807,9 +874,14 @@
         if (withSvc.length === 1) ticker = withSvc[0];
       }
       if (!ticker) continue;
+      // the row names a club that is neither the pick nor its opponent in the listed game: it is a
+      // pick on another game (the Pistons game, when the service lists the Knicks' next one only)
+      const opp = opponentOf(ticker);
+      const mine = new Set([shortOf(ticker), opp].filter(Boolean).map((n) => n.toLowerCase()));
+      if (opp && [...clubsNamed(text).keys()].some((k) => !mine.has(k))) continue;
       // Kalshi: a No on the named club is a Yes on the other club of the same game
       let flipped = false;
-      if (VENUE_ID === "kalshi" && sideWord(text) === "no") {
+      if (VENUE_ID === "kalshi" && sideWord(own) === "no") {
         const other = siblingOf(ticker);
         if (!other) continue;
         ticker = other;
@@ -817,13 +889,13 @@
       }
       // a spread or total row is never sized from the winner position the service holds on the same club;
       // an unmatched play is an order, so the service's confirmed position (if any) is a different play
-      const kind = kindIn(text);
+      const kind = kindIn(own);
       // the page's tab decides what its rows are when the rows themselves do not say
-      let match = matchIn(text);
+      let match = matchIn(own);
       if (S.tab === "resting" && match === "matched") match = "unmatched";
       if (S.tab === "settled") match = "settled";
       const svc = kind === "winner" && match === "matched" ? svcFor(ticker) : null;
-      const read = match === "matched" ? tableSize(row) || sizeIn(text) : null;
+      const read = match === "matched" ? tableSize(row) || sizeIn(own) : null;
       out.push({ row, ticker, kind, match, flipped, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
     }
     return out;
@@ -893,12 +965,34 @@
     fitHost(B);
   };
 
+  /** The ancestor a table scrolls sideways in, when the table is wider than it; else null. */
+  const scrollPaneOf = (el) => {
+    for (let e = el.parentElement, i = 0; e && e !== document.body && i < 12; e = e.parentElement, i++) {
+      if (e.scrollWidth <= e.clientWidth + 2) continue;
+      const ox = getComputedStyle(e).overflowX;
+      if (ox === "auto" || ox === "scroll") return e;
+    }
+    return null;
+  };
+
   /** Our block spans the row's own width and left edge. */
   const fitHost = (B) => {
     if (B.card || !B.host || !B.row.isConnected) return;
     // in a table our cell already spans every column; sizing it to the row would widen the table,
     // which widens the row, which would size it again
-    if (B.host.tagName === "TR") return;
+    if (B.host.tagName === "TR") {
+      // a table wider than the pane it scrolls in (Kalshi's Portfolio on a narrow window): our
+      // block keeps to the pane's width and sticks to its left edge, so it stays in view
+      const pane = scrollPaneOf(B.host);
+      if (pane) {
+        B.box.style.position = "sticky";
+        B.box.style.left = "0px";
+        B.box.style.width = Math.max(240, pane.clientWidth) + "px";
+      } else if (B.box.style.position) {
+        B.box.style.position = B.box.style.left = B.box.style.width = "";
+      }
+      return;
+    }
     const rr = B.row.getBoundingClientRect();
     const hr = B.box.getBoundingClientRect();
     if (!rr.width) return;
@@ -1384,7 +1478,6 @@
   const marksOff = () => S.serviceState !== "ok" || (S.ext.marksOff || []).includes(VENUE_ID);
   const marksOn = () => S.settings.showShield === "yes" && !marksOff();
   const slipOn = () => S.settings.showSlip === "yes" && !marksOff();
-  const stemOf = (ticker) => String(ticker).slice(0, String(ticker).lastIndexOf("-"));
   /**
    * A market is open to lock in on the service's word (markets[].protectable). A service built
    * before that field (it answers the markets route but not the telemetry one) says only what is
