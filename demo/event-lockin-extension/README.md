@@ -22,7 +22,8 @@ Before the trade, two quiet things and no more (each can be turned off in Option
   way, or about to start, gets no pill. The page is read only to find each game's card (the block
   naming both clubs), so there is one pill per game, never one per team. Hover or tap the pill
   and our own card opens at once, in the skin ("Protection on this game can be locked in from
-  Portfolio after your pick fills, until 7:35pm ET (45 minutes before kickoff)."); not a browser
+  Portfolio after your pick fills, until 7:35pm ET (45 minutes before kickoff)."; tip-off on a
+  basketball game, first pitch on a baseball game); not a browser
   tooltip, so no delay and no question-mark cursor. The pill swallows its own click so the
   venue's row does not open; a venue that redraws its list gets the same pill back in the same
   place, with an open card moving to it;
@@ -208,7 +209,13 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
   that line or to its own line at the card's foot), and the one line in the slip (`findSlip`: the block with the venue's place-order
   button, the pick named most in it; no stake is read). A club listed twice in the window (this
   Sunday and next) is settled by the date on the line, else by the game whose page this is, else
-  by the club's next game. Once per page view it posts the anonymous counts
+  by the club's next game; a line that prints a game day names the game on that day or none, so
+  a row dated three weeks back is never read as a pick on the club's next game. The same two
+  clubs listed twice (a back-to-back, a home-and-home) are told apart by the card's own words
+  (`settleStems`: a date, a weekday, "today" or a clock time, "tomorrow", or a game under way,
+  which is the earlier of the two); words that fit both leave the card unmarked. A row or slip
+  whose pick is a club the service lists no game for (`unlistedPick`, over every club the tables
+  know) gets nothing, never its opponent's next game. Once per page view it posts the anonymous counts
   (`sendTelemetry`). The venue's DOM is never modified; our pills and line are added beside it.
 - `content.css` the line, the inline panel, the segmented control, the chip. Every colour is a
   variable with the ProphetX values as defaults; `.ael-v-kalshi` and `.ael-v-novig` override them.
