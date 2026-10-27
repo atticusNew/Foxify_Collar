@@ -86,7 +86,9 @@ export type CrossRefusalCode =
   /** a collar was funded, but no tier's credit clears the minimum (25¢ and 0.25% of stake by default) */
   | "credit_too_small"
   /** the cross-venue route priced off a placeholder: days out, the market's own No side empty, no feed book (farOutGuard.ts) */
-  | "far_out_no_book";
+  | "far_out_no_book"
+  /** the cross-venue route priced off a mark the hedge venue disagrees with: the market's own side a stub, or far from the implied price (markGapGuard.ts) */
+  | "mark_disagreement";
 
 export interface CrossRefusal {
   ok: false;
