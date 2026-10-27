@@ -30,6 +30,11 @@
  * REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM and the reads are signed instead. REFERENCE_BOOK_BEARER_HOST +
  * REFERENCE_BOOK_BEARER_ACCESS_KEY + REFERENCE_BOOK_BEARER_SECRET_KEY for the second. Service env
  * only. Either venue alone is fine; neither set, no reference is read and the record carries none.
+ * REFERENCE_BOOK_SIGNED_LEAGUES ("nba=NBA_REG,mlb=MLB") names the first venue's own league word
+ * where it differs from ours; a league not named is asked under our code in upper case. A league
+ * that answers nothing under its code is asked once more without the filter (one cached page of
+ * every winner market) and matched by clubs and start time, so a code the venue spells
+ * differently costs one extra catalog read per cache window, not the whole slate.
  * Outcome names on the first venue are team codes ("PHI", "KC"); the templates' code tables match
  * them, and every code the venue listed for the covered leagues was checked against them. A venue that does not list the game, cannot be reached, or
  * answers in a shape this module does not recognise is recorded as unlisted, never guessed.
@@ -225,21 +230,59 @@ export function signedAsksForOpposing(book: RawVenueBook, ourOutcomeId: string, 
 
 const isWinnerMarket = (type: string) => /^(money|moneyline|money_line|winner|ml|match_winner|game_winner|h2h)$/i.test(type.replace(/[\s-]/g, "_"));
 
-export function signedSource(client: VenueClient): ReferenceBookSource {
+/** our league code (lower case) -> the venue's own league word, where it differs */
+export type SignedLeagueCodes = Record<string, string>;
+
+export interface SignedSourceOptions {
+  leagueCodes?: SignedLeagueCodes;
+  /** ask the whole winner catalog when the league's own query lists no such game (default on) */
+  unfilteredFallback?: boolean;
+}
+
+/** The league word the venue's catalog filter takes for one of our leagues. */
+export function signedLeagueCode(league: string, codes: SignedLeagueCodes = {}): string {
+  return codes[league.toLowerCase()] ?? league.toUpperCase();
+}
+
+/**
+ * REFERENCE_BOOK_SIGNED_LEAGUES as "nba=NBA_REG,mlb=MLB": entries without both sides, or naming a
+ * league no template covers, are reported and dropped.
+ */
+export function parseSignedLeagueCodes(raw: string | undefined): { codes: SignedLeagueCodes; notes: string[] } {
+  const codes: SignedLeagueCodes = {};
+  const notes: string[] = [];
+  for (const entry of (raw ?? "").split(/[,\s]+/).filter(Boolean)) {
+    const eq = entry.indexOf("=");
+    const league = eq > 0 ? entry.slice(0, eq).trim().toLowerCase() : "";
+    const code = eq > 0 ? entry.slice(eq + 1).trim() : "";
+    if (!league || !code) notes.push(`reference book A: league entry "${entry}" is not league=CODE; dropped`);
+    else if (!templateForLeague(league)) notes.push(`reference book A: league "${league}" is not one we cover; dropped`);
+    else codes[league] = code;
+  }
+  return { codes, notes };
+}
+
+const openWinner = (m: RawVenueMarket): boolean => isWinnerMarket(m.marketType ?? "") && !(m.status && /^(settled|closed|cancel|void|suspend)/i.test(m.status));
+
+export function signedSource(client: VenueClient, opts: SignedSourceOptions = {}): ReferenceBookSource {
+  const codes = opts.leagueCodes ?? {};
+  const fallback = opts.unfilteredFallback ?? true;
   return {
     id: "signed_v3",
     async read(pair) {
       const clubs = pairClubs(pair);
       if (!clubs) return { id: "signed_v3", book: null, reason: "league_not_covered" };
-      const markets = await client.listMoneyMarkets(clubs.template.league);
-      const hit = markets.find((m) => {
-        if (!isWinnerMarket(m.marketType)) return false;
-        if (m.status && /^(settled|closed|cancel|void|suspend)/i.test(m.status)) return false;
+      const isOurGame = (m: RawVenueMarket): boolean => {
+        if (!openWinner(m)) return false;
         if (!sameGame(m.startsTs, pair.gameStartTime)) return false;
         const ours = m.outcomes.find((o) => clubNamed(clubs.template, clubs.ours, o.name));
         const opp = m.outcomes.find((o) => clubNamed(clubs.template, clubs.opposing, o.name));
         return Boolean(ours && opp && ours !== opp);
-      });
+      };
+      let hit = (await client.listMoneyMarkets(signedLeagueCode(clubs.template.league, codes))).find(isOurGame);
+      // the venue may spell the league another way; its whole winner slate (one cached page) is
+      // searched by clubs and start time before the game is called unlisted
+      if (!hit && fallback) hit = (await client.listMarkets({ marketType: "MONEY", limit: "200" })).find(isOurGame);
       if (!hit) return { id: "signed_v3", book: null, reason: "not_listed" };
       const ourOutcome = hit.outcomes.find((o) => clubNamed(clubs.template, clubs.ours, o.name))!;
       const book = await client.getBook(hit.marketId);
@@ -247,7 +290,7 @@ export function signedSource(client: VenueClient): ReferenceBookSource {
       return { id: "signed_v3", book: asksBook(signedAsksForOpposing(book, ourOutcome.outcomeId, hit.fee), `signed_v3:${hit.marketId}`), listing };
     },
     async catalog(league) {
-      return signedCatalogProbe(client, league);
+      return signedCatalogProbe(client, league, codes);
     },
   };
 }
@@ -276,7 +319,7 @@ const SAMPLE_SIZE = 12;
  * "not listed" on one league is either a slate the venue has not posted or a league code the
  * venue spells differently; the two answers side by side tell which.
  */
-export async function signedCatalogProbe(client: VenueClient, league: string): Promise<ReferenceCatalogProbe> {
+export async function signedCatalogProbe(client: VenueClient, league: string, codes: SignedLeagueCodes = {}): Promise<ReferenceCatalogProbe> {
   const template = templateForLeague(league);
   const clubs = template ? clubsOf(template) : [];
   const namesTwoClubs = (m: RawVenueMarket): boolean => {
@@ -285,7 +328,7 @@ export async function signedCatalogProbe(client: VenueClient, league: string): P
     for (const o of m.outcomes ?? []) for (const club of clubs) if (clubNamed(template, club, o.name)) hit.add(club);
     return hit.size === 2;
   };
-  const open = (m: RawVenueMarket): boolean => isWinnerMarket(m.marketType ?? "") && !(m.status && /^(settled|closed|cancel|void|suspend)/i.test(m.status));
+  const open = openWinner;
   const run = async (query: Record<string, string>): Promise<ReferenceCatalogQuery> => {
     const sent = Object.entries(query)
       .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
@@ -307,7 +350,7 @@ export async function signedCatalogProbe(client: VenueClient, league: string): P
       return { query: sent, count: null, winners: null, ourClubs: null, error: words.slice(0, 160), leaguesSeen: {}, sample: [] };
     }
   };
-  const queries = [await run({ league: league.toUpperCase(), marketType: "MONEY", limit: "200" }), await run({ marketType: "MONEY", limit: "200" })];
+  const queries = [await run({ league: signedLeagueCode(league, codes), marketType: "MONEY", limit: "200" }), await run({ marketType: "MONEY", limit: "200" })];
   return { id: "signed_v3", league, queries };
 }
 
@@ -414,15 +457,18 @@ export function referenceSourcesFromEnv(env: NodeJS.ProcessEnv = process.env, op
   const signedKeyId = env.REFERENCE_BOOK_SIGNED_KEY_ID?.trim();
   const signedPem = env.REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM?.trim();
   if (signedHost || signedKeyId || signedPem) {
+    const leagues = parseSignedLeagueCodes(env.REFERENCE_BOOK_SIGNED_LEAGUES);
+    notes.push(...leagues.notes);
+    const signedOpts: SignedSourceOptions = { leagueCodes: leagues.codes };
     if (signedHost && signedKeyId && signedPem) {
       try {
-        sources.push(signedSource(new VenueClient({ host: signedHost, signer: signerFromPem(signedKeyId, signedPem), fetchImpl })));
+        sources.push(signedSource(new VenueClient({ host: signedHost, signer: signerFromPem(signedKeyId, signedPem), fetchImpl }), signedOpts));
       } catch (err) {
         notes.push(`reference book A: key unusable (${String(err instanceof Error ? err.message : err)})`);
       }
     } else if (signedHost && !signedKeyId && !signedPem) {
       // the venue publishes its catalog and books unsigned; a reference needs nothing more
-      sources.push(signedSource(new VenueClient({ host: signedHost, fetchImpl })));
+      sources.push(signedSource(new VenueClient({ host: signedHost, fetchImpl }), signedOpts));
       notes.push("reference book A: reading the public catalog (no key set)");
     } else {
       notes.push("reference book A: set the host alone for public reads, or host, key id and private key together; off");
