@@ -140,8 +140,11 @@ services:
       # holder is offered the same deal they would get anywhere, the ceiling judges the cheaper
       # route's cost, and the execution premium is ours, disclosed on the operator's quote as
       # routing.pinnedExecution. Terms worse than the tolerance stay refused.
-      # - key: EVENT_X_PINNED_TOLERANCE_CENTS
-      #   value: "1"
+      # 5: measured on the Oct 27 Pistons-Knicks game at 15 and 25 contracts, Kalshi's terms sit
+      # 1c under on the cap and 5c under on the credit (Knicks), 5c under on the floor (Pistons);
+      # 4 refuses both, 5 stands both. Premium absorbed: 155 and 280 bps of a $15-$25 stake.
+      - key: EVENT_X_PINNED_TOLERANCE_CENTS
+        value: "5"
       # Open mix: crypto strikes roll over hourly and would fill the record (3 of 4 opens on the
       # first book). The product lives on game positions, so crypto is held to a quarter of the
       # trailing day's opens, with a small allowance so an overnight book with no games still
