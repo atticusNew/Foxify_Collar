@@ -132,6 +132,12 @@
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const reshape = (n, F, C, K) => ({ floorTotal: F * n + K, capTotal: C * n + K });
+  /** The holder's two outcomes on this row: the lock's terms on its whole contracts, plus the odd payout the lock leaves out when the club wins. */
+  const outcomes = (B, n, F, C, K) => {
+    const r = reshape(n, F, C, K);
+    r.capTotal += oddOf(B);
+    return r;
+  };
   const fmtAt = (iso) => {
     try {
       const d = new Date(iso);
@@ -164,6 +170,21 @@
   const shortOf = (ticker) => {
     const m = S.byTicker[ticker];
     return (m && nickOf(m)) || ticker;
+  };
+  /** The game a market belongs to: the ticker without its side (KXNBAGAME-26OCT27DETNYK). */
+  const stemOf = (ticker) => String(ticker || "").slice(0, String(ticker || "").lastIndexOf("-"));
+  /**
+   * The other club of a market's game, by nickname: the matchup in the ticker (DETNYK) less the
+   * market's own code (NYK), looked up in the market's league. Null when the stem does not parse.
+   */
+  const opponentOf = (ticker) => {
+    const m = S.byTicker[ticker];
+    const part = /\d{2}[A-Z]{3}\d{2}([A-Z]+)$/.exec(stemOf(ticker));
+    if (!m || !part) return null;
+    const code = codeOf(ticker);
+    const pair = part[1];
+    const rest = pair.startsWith(code) ? pair.slice(code.length) : pair.endsWith(code) ? pair.slice(0, -code.length) : null;
+    return rest ? (NICK[String(m.league || "").toLowerCase()] || {})[rest] || null : null;
   };
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -415,8 +436,14 @@
       if (list.length < 2) continue;
       const named = list.filter((t) => out.has(t));
       const pick = named.length === 1 ? named : league ? list.filter((t) => leagueOf(t) === league) : list;
-      // one club, several weeks (IND last Sunday's lock, IND next Sunday's game): the row's date or the tab
-      const one = pick.length === 1 ? pick[0] : choose(pick, text);
+      // one club, several weeks (IND last Sunday's lock, IND next Sunday's game): the row's date or
+      // the tab, else the one game it shares with a side already read ("DET at NYK")
+      let one = pick.length === 1 ? pick[0] : choose(pick, text);
+      if (!one) {
+        const stems = new Set([...out.keys()].map(stemOf));
+        const shared = pick.filter((t) => stems.has(stemOf(t)));
+        if (shared.length === 1) one = shared[0];
+      }
       if (one) out.set(one, (out.get(one) || 0) + 1);
       else out.ambiguous = true;
     }
@@ -426,6 +453,7 @@
     const text = spaced(raw);
     const out = new Map();
     if (!S.nickRe) return out;
+    const deferred = [];
     let m;
     S.nickRe.lastIndex = 0;
     while ((m = S.nickRe.exec(text))) {
@@ -439,9 +467,19 @@
           if (hit.length) list = hit;
         }
       }
-      // the same club across weeks: the game day on the row, else the tab
+      // the same club across weeks: the game day on the row, else the tab, else the matchup below
       const ticker = choose(list.map((x) => x.ticker), text);
       if (ticker) out.set(ticker, (out.get(ticker) || 0) + 1);
+      else deferred.push({ key: m[2].toLowerCase(), tickers: list.map((x) => x.ticker) });
+    }
+    // a club with several listed games and nothing on the row to pick one ("NY Knicks", three
+    // games this week) is settled by the matchup: the one game it shares with another club the
+    // text names ("DET Pistons vs NY Knicks" is Oct 27 and no other), or with a side already read
+    for (const d of deferred) {
+      const others = new Set([...out.keys()].map(stemOf));
+      for (const o of deferred) if (o.key !== d.key) for (const t of o.tickers) others.add(stemOf(t));
+      const shared = [...new Set(d.tickers.filter((t) => others.has(stemOf(t))))];
+      if (shared.length === 1) out.set(shared[0], (out.get(shared[0]) || 0) + 1);
       else out.ambiguous = true;
     }
     return out;
@@ -472,22 +510,38 @@
     while ((m = MONEY.exec(text))) out.push(Number(m[1].replace(/,/g, "")));
     return out;
   };
-  const sizeOf = (stake, payout) => ({
-    contracts: Math.max(1, Math.round(payout)),
-    entryCents: Math.min(99, Math.max(1, Math.round((100 * stake) / payout))),
-    stakeCents: Math.round(stake * 100),
-    payoutCents: Math.round(payout * 100),
-  });
+  /**
+   * A size: what the position pays and cost, to the cent, as the venue prints them; and the whole
+   * contracts the lock covers, never more than the position holds. A position of 15.95 contracts
+   * (Kalshi sells fractions) is locked on 15; the odd $0.95 of payout rides unprotected and is
+   * counted in every figure the holder sees (oddOf). A position under one contract has no size.
+   */
+  const sizeOf = (stake, payout) => {
+    const contracts = Math.floor(payout + 1e-9);
+    if (contracts < 1) return null;
+    return {
+      contracts,
+      entryCents: Math.min(99, Math.max(1, Math.round((100 * stake) / payout))),
+      stakeCents: Math.round(stake * 100),
+      payoutCents: Math.round(payout * 100),
+    };
+  };
   // Kalshi's units are ours: N contracts at c cents each pay $N. A price in cents ("42¢", "@ 42c",
-  // "Avg 42¢") and a contract count ("10 contracts", "10 shares"), or the price and the cost.
-  const CENTS = /(?:^|[^\d.$])(\d{1,2})\s?(?:¢|&cent;|c(?![a-z0-9]))/i;
-  const CONTRACTS = /(\d{1,6}(?:,\d{3})*)\s*(?:contracts?|shares?)\b/i;
-  const sizeOfContracts = (contracts, cents) => ({
-    contracts: Math.max(1, Math.round(contracts)),
-    entryCents: Math.min(99, Math.max(1, Math.round(cents))),
-    stakeCents: Math.round(contracts * cents),
-    payoutCents: Math.round(contracts) * 100,
-  });
+  // "Avg 62.67¢") and a contract count ("10 contracts", "15.95 shares"), or the price and the cost.
+  const CENTS = /(?:^|[^\d.$])(\d{1,2}(?:\.\d+)?)\s?(?:¢|&cent;|c(?![a-z0-9]))/i;
+  const CONTRACTS = /(\d{1,6}(?:,\d{3})*(?:\.\d+)?)\s*(?:contracts?|shares?)\b/i;
+  const sizeOfContracts = (held, cents, costCents) => {
+    const contracts = Math.floor(held + 1e-9);
+    if (contracts < 1) return null;
+    return {
+      contracts,
+      entryCents: Math.min(99, Math.max(1, Math.round(cents))),
+      stakeCents: costCents != null ? costCents : Math.round(held * cents),
+      payoutCents: Math.round(held * 100),
+    };
+  };
+  /** The payout the lock leaves out: the venue's figure less the whole contracts covered (95 for 15.95 contracts); 0 when they agree. */
+  const oddOf = (B) => (B && B.size && B.size.payoutCents ? B.size.payoutCents - 100 * B.size.contracts : 0);
   const centsSize = (text) => {
     const bare = noMoney(text);
     const c = CENTS.exec(bare);
@@ -498,7 +552,8 @@
       const amounts = amountsIn(text);
       // the cost at that price: contracts are the cost over the price
       const cost = labelled(text, /(?:cost|paid|spent|total|amount|avg\s*cost)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i) || amounts[0];
-      if (cost) return sizeOfContracts(Math.round((100 * cost) / cents), cents);
+      // no count printed: the nearest whole contracts the cost buys at that price
+      if (cost) return sizeOfContracts(Math.round((100 * cost) / cents), cents, Math.round(cost * 100));
     }
     if (n) {
       const cost = labelled(text, /(?:cost|paid|spent|amount)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
@@ -573,7 +628,8 @@
       const t = spaced(norm(r.textContent));
       if (/\$\s?\d/.test(t) || !/\b(cost|stake|wager|risk)\b/i.test(t) || !/\b(payout|to win|to gain|price|odds|return)\b/i.test(t)) continue;
       const cells = cellsOf(r);
-      if (cells) return cells.map((c) => norm(c.textContent).toLowerCase());
+      // a sortable header carries its arrow in the text ("↑Cost"); the word is what is matched
+      if (cells) return cells.map((c) => norm(c.textContent).toLowerCase().replace(/^[^a-z0-9$]+/, ""));
     }
     return null;
   };
@@ -586,7 +642,14 @@
       return i >= 0 ? spaced(norm(cells[i].textContent)) : "";
     };
     const money = (s) => amountsIn(s)[0] || null;
+    // Kalshi's Portfolio says it in our units: a Contracts column and the average price in cents
+    const held = at(/^(contracts|shares|qty|quantity)\b/);
+    const avg = at(/^(avg|average)\b/);
+    const nm = held ? /(\d{1,6}(?:,\d{3})*(?:\.\d+)?)/.exec(held) : null;
+    const n = nm ? Number(nm[1].replace(/,/g, "")) : 0;
+    const c = avg ? /(\d{1,2}(?:\.\d+)?)\s?(?:¢|&cent;|c(?![a-z0-9]))/i.exec(avg) : null;
     const stake = money(at(/^(cost|stake|wager|risk|bet)\b/));
+    if (n > 0 && c && Number(c[1]) > 0 && Number(c[1]) < 100) return sizeOfContracts(n, Number(c[1]), stake ? Math.round(stake * 100) : null);
     if (!stake) return null;
     const payout = money(at(/^(payout|pays|return|total return)\b/));
     if (payout && payout > stake) return sizeOf(stake, payout);
@@ -730,7 +793,8 @@
       const text = spaced(norm(e.textContent));
       if (text.length > 600) break;
       const r = e.getBoundingClientRect();
-      if (r.height > 320 || r.width > window.innerWidth) break;
+      // wider than the window is the page itself, unless it is a table that scrolls inside its pane
+      if (r.height > 320 || (r.width > window.innerWidth && !e.closest("table"))) break;
       const labels = (text.match(STAKE_LABELS) || []).length;
       if (found) {
         // a block was found without the row's stake and payout labels (a matched/unmatched detail
@@ -756,6 +820,28 @@
   /** The service's confirmed position for one of our markets, when it has one. */
   const svcFor = (ticker) => S.svc.positions.find((p) => p.ticker === ticker) || null;
 
+  /**
+   * The title a venue prints above a position rather than on it. Kalshi's Portfolio groups a
+   * game's positions under one row ("DET Pistons vs NY Knicks") and each position row names its
+   * club alone ("Yes · NY Knicks"). The nearest earlier sibling that carries no money and names a
+   * club the row names is the row's title; other positions in between are stepped over, a title
+   * naming only other clubs ends the search. Its text is read with the row's.
+   */
+  const titleOf = (row, text) => {
+    const named = clubsNamed(text);
+    if (!named.size) return "";
+    for (let e = row.previousElementSibling, i = 0; e && i < 8; e = e.previousElementSibling, i++) {
+      if (OURS(e)) continue;
+      const t = spaced(norm(e.textContent));
+      if (t.length > 300) break;
+      if (amountsIn(t).length) continue;
+      const clubs = clubsNamed(t);
+      if (!clubs.size) continue;
+      return [...clubs.keys()].some((k) => named.has(k)) ? t : "";
+    }
+    return "";
+  };
+
   const findRows = (nodes) => {
     const seen = new Map(); // row element -> { tickers Map, nodes }
     for (const node of nodes) {
@@ -773,14 +859,18 @@
     const rows = [...seen.keys()].filter((r) => ![...seen.keys()].some((o) => o !== r && r.contains(o)));
     const out = [];
     for (const row of rows) {
-      const text = spaced(norm(row.textContent));
-      if (pointsRow(text)) continue;
+      const own = spaced(norm(row.textContent));
+      if (pointsRow(own)) continue;
+      // the row's own text, and the title above it when it names the row's club: Kalshi's position
+      // row says "Yes · NY Knicks", the row over it which game
+      const title = titleOf(row, own);
+      const text = title ? title + " " + own : own;
       const count = sidesIn(text);
       if (!count.size) continue;
       // a block that names three clubs or more, or prices both Yes and No, is a board (a futures
       // list, a game card with both sides to buy), not one position
       if (count.size > 2) continue;
-      if (/(^|[^a-z])yes(?![a-z])/i.test(text) && /(^|[^a-z])no(?![a-z])/i.test(text)) continue;
+      if (/(^|[^a-z])yes(?![a-z])/i.test(own) && /(^|[^a-z])no(?![a-z])/i.test(own)) continue;
       // the pick is a club with no listed game: the row is not protected, and it is never read as a
       // pick on the opponent's next game (an Oct 19 Texans row beside the Nov 1 Jaguars listing)
       if (unlistedPick(text)) continue;
@@ -807,9 +897,14 @@
         if (withSvc.length === 1) ticker = withSvc[0];
       }
       if (!ticker) continue;
+      // the row names a club that is neither the pick nor its opponent in the listed game: it is a
+      // pick on another game (the Pistons game, when the service lists the Knicks' next one only)
+      const opp = opponentOf(ticker);
+      const mine = new Set([shortOf(ticker), opp].filter(Boolean).map((n) => n.toLowerCase()));
+      if (opp && [...clubsNamed(text).keys()].some((k) => !mine.has(k))) continue;
       // Kalshi: a No on the named club is a Yes on the other club of the same game
       let flipped = false;
-      if (VENUE_ID === "kalshi" && sideWord(text) === "no") {
+      if (VENUE_ID === "kalshi" && sideWord(own) === "no") {
         const other = siblingOf(ticker);
         if (!other) continue;
         ticker = other;
@@ -817,13 +912,13 @@
       }
       // a spread or total row is never sized from the winner position the service holds on the same club;
       // an unmatched play is an order, so the service's confirmed position (if any) is a different play
-      const kind = kindIn(text);
+      const kind = kindIn(own);
       // the page's tab decides what its rows are when the rows themselves do not say
-      let match = matchIn(text);
+      let match = matchIn(own);
       if (S.tab === "resting" && match === "matched") match = "unmatched";
       if (S.tab === "settled") match = "settled";
       const svc = kind === "winner" && match === "matched" ? svcFor(ticker) : null;
-      const read = match === "matched" ? tableSize(row) || sizeIn(text) : null;
+      const read = match === "matched" ? tableSize(row) || sizeIn(own) : null;
       out.push({ row, ticker, kind, match, flipped, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
     }
     return out;
@@ -893,12 +988,34 @@
     fitHost(B);
   };
 
+  /** The ancestor a table scrolls sideways in, when the table is wider than it; else null. */
+  const scrollPaneOf = (el) => {
+    for (let e = el.parentElement, i = 0; e && e !== document.body && i < 12; e = e.parentElement, i++) {
+      if (e.scrollWidth <= e.clientWidth + 2) continue;
+      const ox = getComputedStyle(e).overflowX;
+      if (ox === "auto" || ox === "scroll") return e;
+    }
+    return null;
+  };
+
   /** Our block spans the row's own width and left edge. */
   const fitHost = (B) => {
     if (B.card || !B.host || !B.row.isConnected) return;
     // in a table our cell already spans every column; sizing it to the row would widen the table,
     // which widens the row, which would size it again
-    if (B.host.tagName === "TR") return;
+    if (B.host.tagName === "TR") {
+      // a table wider than the pane it scrolls in (Kalshi's Portfolio on a narrow window): our
+      // block keeps to the pane's width and sticks to its left edge, so it stays in view
+      const pane = scrollPaneOf(B.host);
+      if (pane) {
+        B.box.style.position = "sticky";
+        B.box.style.left = "0px";
+        B.box.style.width = Math.max(240, pane.clientWidth) + "px";
+      } else if (B.box.style.position) {
+        B.box.style.position = B.box.style.left = B.box.style.width = "";
+      }
+      return;
+    }
     const rr = B.row.getBoundingClientRect();
     const hr = B.box.getBoundingClientRect();
     if (!rr.width) return;
@@ -1017,11 +1134,11 @@
     const rec = B.kind === "winner" ? S.record.get(B.ticker) || st.done : null;
     let line;
     if (rec) {
-      const rs = reshape(rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
+      const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
       if (rec.status === "settled" && rec.result) {
         // the protected outcome is the record's; whether the cash has moved is said beside it,
         // never as "paid" on its own, since the holder can see at the venue whether it has
-        const got = usd(rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal);
+        const got = usd(rec.protectedCents != null ? rec.protectedCents + (rec.result === "yes" ? oddOf(B) : 0) : rec.result === "yes" ? rs.capTotal : rs.floorTotal);
         const cash = cashState(rec);
         line = cash
           ? lineGo("Settled &middot; " + (cash.open ? cash.label : "paid " + esc(got)), cash.open ? "protected outcome " + esc(got) + (cash.sub ? " &middot; " + cash.sub : "") : "every leg paid", "ael-line-on")
@@ -1045,7 +1162,7 @@
       const q = p.quote;
       const t = (q.tiers && q.tiers[st.tier]) || q;
       const n = q.contracts || p.contracts;
-      const rs = reshape(n, t.floorCents, t.capCents, t.creditCents);
+      const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
       const was = B.size && B.size.payoutCents ? " (was " + esc(usd(B.size.payoutCents)) + ")" : "";
       line = lineGo("Lock in &middot; " + esc(usd(rs.floorTotal)) + " if the " + esc(shortOf(B.ticker)) + " lose", "instead of $0 &middot; " + esc(usd(rs.capTotal)) + " if they win" + was + " &middot; +" + esc(usd(t.creditCents)) + " paid now", "");
     }
@@ -1106,6 +1223,18 @@
     return esc(nick) + (pays ? " &middot; pays " + esc(pays) + " if they win" : "") + paid + flip + from;
   };
 
+  /**
+   * One line when the lock covers less than the position pays: whole contracts are locked, the
+   * odd payout rides unprotected and is already counted in the figures. Nothing when they agree.
+   */
+  const oddLine = (B, n) => {
+    const odd = oddOf(B);
+    if (!odd) return "";
+    const covered = usd(100 * n);
+    const pays = usd(B.size.payoutCents);
+    return '<div class="ael-fine">' + (odd > 0 ? "Covers " + esc(covered) + " of the " + esc(pays) + " payout (" + n + " whole contracts); the odd " + esc(usd(odd)) + " rides unprotected and is counted above." : "Covers " + esc(covered) + " (" + n + " whole contracts) on a position paying " + esc(pays) + "; the difference is counted above.") + "</div>";
+  };
+
   /** The three numbers, the floor first: the same strip before the tap and after it. */
   const tiles = (nick, rs, creditCents, was) =>
     '<div class="ael-tiles"><div class="ael-tile ael-k"><div class="ael-l">if ' + esc(nick) + ' lose</div><div class="ael-v">' + esc(usd(rs.floorTotal)) + '</div><div class="ael-was">was $0</div></div>' +
@@ -1131,7 +1260,7 @@
     const offered = q.tiers || {};
     const t = offered[st.tier] || q;
     const n = q.contracts || p.contracts;
-    const rs = reshape(n, t.floorCents, t.capCents, t.creditCents);
+    const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
     // what the position pays unprotected: the venue's figure when we have it, else the contracts
     const was = usd(B.size && B.size.payoutCents ? B.size.payoutCents : 100 * n);
     let seg = "";
@@ -1139,7 +1268,7 @@
     if (keys.length > 1) {
       for (const k of keys) {
         const tt = offered[k];
-        const tr = reshape(n, tt.floorCents, tt.capCents, tt.creditCents);
+        const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
         seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span>" + esc(usd(tr.floorTotal)) + " or " + esc(usd(tr.capTotal)) + " &middot; +" + esc(usd(tt.creditCents)) + "</span></button>";
       }
     }
@@ -1148,6 +1277,7 @@
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") + "</div>" +
       tiles(shortOf(B.ticker), rs, t.creditCents, was) +
       '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '">Lock in &middot; worst case ' + esc(usd(rs.floorTotal)) + "</button>" +
+      oddLine(B, n) +
       '<div class="ael-fine">priced live, locks at your tap' + (p.eventTimeIso ? " &middot; available until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)) : "") + ' &middot; <a href="#" class="ael-how-a">how it works</a></div>' +
       '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap.</p></div>" +
       DISCLOSE;
@@ -1303,7 +1433,7 @@
     // moment later carries none), else read from the service the first time the receipt opens
     if (!st.rcptHedge && rec.hedge && rec.hedge.receiptId) st.rcptHedge = rec.hedge;
     if (st.rcpt && !rec.rehearsal && !st.rcptHedge && !st.rcptBusy && !st.rcptErr) void loadReceipt(B);
-    const rs = reshape(rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
+    const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
     const nick = shortOf(B.ticker);
     const h = st.rcptHedge || rec.hedge;
     const opLine =
@@ -1316,8 +1446,8 @@
     let sum;
     const meta = [];
     if (rec.status === "settled" && rec.result) {
-      const got = rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal;
-      const naked = rec.nakedCents != null ? rec.nakedCents : rec.result === "yes" ? 100 * rec.contracts : 0;
+      const got = rec.protectedCents != null ? rec.protectedCents + (rec.result === "yes" ? oddOf(B) : 0) : rec.result === "yes" ? rs.capTotal : rs.floorTotal;
+      const naked = rec.result !== "yes" ? 0 : B.size && B.size.payoutCents ? B.size.payoutCents : rec.nakedCents != null ? rec.nakedCents : 100 * rec.contracts;
       head = '<span class="ael-ck">&#x2713;</span>Settled &middot; ' + esc(nick) + (rec.result === "yes" ? " won" : " lost");
       // "you end with", not "you received": whether the cash has moved is the next clause
       const cash = cashState(rec);
@@ -1341,6 +1471,7 @@
       '<div class="ael-ph ael-rc"><b>' + head + "</b></div>" +
       '<div class="ael-sum">' + sum + "</div>" +
       (meta.length ? '<div class="ael-meta">' + meta.join(" &middot; ") + "</div>" : "") +
+      (rec.status !== "void" ? oddLine(B, rec.contracts) : "") +
       (st.rcpt && rec.status !== "void" ? receiptHtml(st, rec) : "") +
       opLine +
       (rec.rehearsal ? '<div class="ael-op">Rehearsal: nothing was locked, written or bought. <a href="#" class="ael-reset-a">Reset</a></div>' : "") +
@@ -1384,7 +1515,6 @@
   const marksOff = () => S.serviceState !== "ok" || (S.ext.marksOff || []).includes(VENUE_ID);
   const marksOn = () => S.settings.showShield === "yes" && !marksOff();
   const slipOn = () => S.settings.showSlip === "yes" && !marksOff();
-  const stemOf = (ticker) => String(ticker).slice(0, String(ticker).lastIndexOf("-"));
   /**
    * A market is open to lock in on the service's word (markets[].protectable). A service built
    * before that field (it answers the markets route but not the telemetry one) says only what is
