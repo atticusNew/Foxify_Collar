@@ -131,6 +131,17 @@ services:
       # rows above it are recorded as protection_too_rich refusals, not opened.
       - key: EVENT_X_MAX_EV_COST_BPS
         value: "300"
+      # PINNED EXECUTION. A lock on a ticker armed for live orders is pinned to the venue the
+      # executor can send to (Kalshi's own No side), while the engine still prices both routes.
+      # Unset, the pinned route is judged on its own cost and a lock refuses as too_expensive
+      # whenever Polymarket would have been the cheaper hedge (most NBA nights at small size).
+      # Set to a whole number of cents, the lock stands when the holder's floor, cap and credit on
+      # Kalshi are each within that many cents of the cheaper route's (0 = equal or better): the
+      # holder is offered the same deal they would get anywhere, the ceiling judges the cheaper
+      # route's cost, and the execution premium is ours, disclosed on the operator's quote as
+      # routing.pinnedExecution. Terms worse than the tolerance stay refused.
+      # - key: EVENT_X_PINNED_TOLERANCE_CENTS
+      #   value: "1"
       # Open mix: crypto strikes roll over hourly and would fill the record (3 of 4 opens on the
       # first book). The product lives on game positions, so crypto is held to a quarter of the
       # trailing day's opens, with a small allowance so an overnight book with no games still
