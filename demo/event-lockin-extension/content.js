@@ -176,22 +176,61 @@
    */
   const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
   const DATE_RE = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\b|\b(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?\b/gi;
+  /** The game day in a ticker (KXNFLGAME-26OCT25KCSEA-KC) or a stem (KXNFLGAME-26OCT25KCSEA): [yy, month 1-12, day], or null. */
+  const dayParts = (s) => {
+    const m = /-(\d{2})([A-Z]{3})(\d{2})[A-Z]+(?:-[A-Z]+)?$/.exec(String(s || ""));
+    const mo = m ? MONTHS.indexOf(m[2]) : -1;
+    return mo >= 0 ? [Number(m[1]), mo + 1, Number(m[3])] : null;
+  };
   const gameDayOf = (ticker) => {
-    const m = /-\d{2}([A-Z]{3})(\d{2})[A-Z]+-[A-Z]+$/.exec(String(ticker || ""));
-    const mo = m ? MONTHS.indexOf(m[1]) : -1;
-    return mo >= 0 ? mo + 1 + "-" + Number(m[2]) : null;
+    const d = dayParts(ticker);
+    return d ? d[1] + "-" + d[2] : null;
   };
   /** The game day as a number that sorts (yymmdd from the ticker's 26OCT25), unknown last. */
   const gameOrdinal = (ticker) => {
-    const m = /-(\d{2})([A-Z]{3})(\d{2})[A-Z]+-[A-Z]+$/.exec(String(ticker || ""));
-    const mo = m ? MONTHS.indexOf(m[2]) : -1;
-    return mo >= 0 ? Number(m[1]) * 10000 + (mo + 1) * 100 + Number(m[3]) : Infinity;
+    const d = dayParts(ticker);
+    return d ? d[0] * 10000 + d[1] * 100 + d[2] : Infinity;
   };
-  const datesIn = (text) => {
+  /** The game day as a date at noon Eastern (the ticker's day is Eastern), for its weekday and the day after. */
+  const gameDate = (s, plusDays) => {
+    const d = dayParts(s);
+    return d ? new Date(Date.UTC(2000 + d[0], d[1] - 1, d[2] + (plusDays || 0), 16)) : null;
+  };
+  const dayKey = (date) => {
+    const [mo, day] = date.toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "America/New_York" }).split("/");
+    return Number(mo) + "-" + Number(day);
+  };
+  /**
+   * Does a printed date name this game? The ticker's day, or the day after it: a venue that prints
+   * in UTC puts a 10pm Eastern tip on the next date. Nothing else does; a row dated Oct 19 is not a
+   * pick on the Nov 1 game, whatever club it names.
+   */
+  const dayMatches = (ticker, days) => days.has(gameDayOf(ticker)) || (gameDate(ticker, 1) ? days.has(dayKey(gameDate(ticker, 1))) : false);
+  const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+  const WEEKDAY_RE = /\b(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)(?:day|nesday|rsday|urday)?\b/gi;
+  /** The weekdays a text names, as the three-letter words. */
+  const weekdaysIn = (text) => {
+    const out = new Set();
+    let m;
+    WEEKDAY_RE.lastIndex = 0;
+    while ((m = WEEKDAY_RE.exec(text))) out.add(m[1].slice(0, 3).toLowerCase());
+    return out;
+  };
+  const weekdayOf = (s) => {
+    const d = gameDate(s);
+    return d ? WEEKDAYS[d.getUTCDay()] : null;
+  };
+  const TODAY_RE = /\b(today|tonight)\b/i;
+  const TOMORROW_RE = /\btomorrow\b/i;
+  const UNDER_WAY_RE = /\b(live|in progress|started|final|q[1-4]|[1-4](?:st|nd|rd|th) (?:quarter|half|inning)|halftime|ot)\b/i;
+  const CLOCK_RE = /\b\d{1,2}:\d{2}\s?(?:[ap]\.?m\.?)?\b/i;
+  const datesIn = (text, namedOnly) => {
     const out = new Set();
     let m;
     DATE_RE.lastIndex = 0;
     while ((m = DATE_RE.exec(text))) {
+      // "5/2" may be odds or a count; only a month's name is a date for sure
+      if (namedOnly && !m[1]) continue;
       const mo = m[1] ? MONTHS.indexOf(m[1].slice(0, 3).toUpperCase()) + 1 : Number(m[3]);
       const day = Number(m[2] || m[4]);
       if (mo >= 1 && mo <= 12 && day >= 1 && day <= 31) out.add(mo + "-" + day);
@@ -200,13 +239,15 @@
   };
   const choose = (tickers, text) => {
     const list = [...new Set(tickers)];
-    if (list.length <= 1) return list[0] || null;
-    const days = datesIn(text);
+    if (!list.length) return null;
+    // a row that prints a game day names that game or none: a club's only listed game is not the
+    // pick on a row dated three weeks earlier (the Oct 19 Texans row and the Nov 1 Jaguars game)
+    const days = datesIn(text, list.length === 1);
     if (days.size) {
-      const dated = list.filter((t) => days.has(gameDayOf(t)));
-      if (dated.length === 1) return dated[0];
-      if (dated.length > 1) return null;
+      const dated = list.filter((t) => dayMatches(t, days));
+      return dated.length === 1 ? dated[0] : null;
     }
+    if (list.length === 1) return list[0];
     if (!S.pageOk) {
       // before the trade, a club named without a date: on a game's own page, that game; on a
       // board, the club's next game (the week in view), the page's own date deciding when it prints one
@@ -254,6 +295,34 @@
     }
     const keys = [...S.nicks.keys()].sort((a, b) => b.length - a.length).map(escapeRe);
     S.nickRe = keys.length ? new RegExp("(^|[^a-z0-9])(" + keys.join("|") + ")(?![a-z0-9])", "ig") : null;
+  };
+  /** Every club the tables know, listed or not, as one pattern: what a row names when the service lists no game for it. */
+  const ALL_NICK_RE = (() => {
+    const all = [...new Set(Object.values(NICK).flatMap((t) => Object.values(t)))].map((n) => n.toLowerCase()).sort((a, b) => b.length - a.length).map(escapeRe);
+    return new RegExp("(^|[^a-z0-9])(" + all.join("|") + ")(?![a-z0-9])", "ig");
+  })();
+  /** nickname (lower case) -> times named, over every club the tables know. */
+  const clubsNamed = (text) => {
+    const out = new Map();
+    let m;
+    ALL_NICK_RE.lastIndex = 0;
+    while ((m = ALL_NICK_RE.exec(text))) {
+      const k = m[2].toLowerCase();
+      out.set(k, (out.get(k) || 0) + 1);
+    }
+    return out;
+  };
+  /** The clubs a text names that the service lists no game for (and the holder holds no lock on). */
+  const unlistedNamed = (text) => new Map([...clubsNamed(text)].filter(([k]) => !S.nicks.has(k)));
+  /**
+   * Is the text's pick, the club it names more than any other, one the service lists no game for?
+   * Such a row is not protected; reading it as a pick on the opponent (whose next game is listed)
+   * would price the wrong game. A text naming its clubs equally often decides nothing here.
+   */
+  const unlistedPick = (text) => {
+    const sorted = [...clubsNamed(text).entries()].sort((a, b) => b[1] - a[1]);
+    if (!sorted.length || (sorted.length > 1 && sorted[0][1] === sorted[1][1])) return false;
+    return !S.nicks.has(sorted[0][0]);
   };
 
   const loadMarkets = async () => {
@@ -706,6 +775,9 @@
       // list, a game card with both sides to buy), not one position
       if (count.size > 2) continue;
       if (/(^|[^a-z])yes(?![a-z])/i.test(text) && /(^|[^a-z])no(?![a-z])/i.test(text)) continue;
+      // the pick is a club with no listed game: the row is not protected, and it is never read as a
+      // pick on the opponent's next game (an Oct 19 Texans row beside the Nov 1 Jaguars listing)
+      if (unlistedPick(text)) continue;
       // the pick: a "Team · Winner" style line, else the side named more than once (matchup plus
       // selection), else the one side the service confirms a position on, else the only side
       let ticker = null;
@@ -713,12 +785,16 @@
       if (pick) {
         const s = sidesIn(pick[1]);
         if (s.size === 1) ticker = [...s.keys()][0];
+        // the pick line names a club the service does not list: not its opponent
+        else if (clubsNamed(pick[1]).size) continue;
       }
       if (!ticker) {
         const sorted = [...count.entries()].sort((a, b) => b[1] - a[1]);
         // one side named more often than any other; a side named once alone is the pick only when no
-        // code in the row was left unresolved (else it may be the opponent of an unresolved pick)
-        if ((sorted.length === 1 && (!count.ambiguous || sorted[0][1] >= 2)) || (sorted.length > 1 && sorted[0][1] > sorted[1][1])) ticker = sorted[0][0];
+        // code in the row was left unresolved and no unlisted club is named beside it (else it may be
+        // the opponent of the real pick)
+        const alone = sorted.length === 1 && (!count.ambiguous || sorted[0][1] >= 2) && (sorted[0][1] >= 2 || !unlistedNamed(text).size);
+        if (alone || (sorted.length > 1 && sorted[0][1] > sorted[1][1])) ticker = sorted[0][0];
       }
       if (!ticker) {
         const withSvc = [...count.keys()].filter((t) => svcFor(t));
@@ -859,10 +935,10 @@
     switch (code) {
       case "credit_too_small":
       case "credit_nonpositive":
-        return { why: "The credit at this size is under our minimum.", next: "Protection on this pick starts at a larger position. Check back closer to kickoff; the price moves." };
+        return { why: "The credit at this size is under our minimum.", next: "Protection on this pick starts at a larger position. Check back closer to the start; the price moves." };
       case "too_expensive":
       case "protection_too_rich":
-        return { why: "Protecting this pick costs more than we will pay at the current price.", next: "Check back later; the book moves toward kickoff." };
+        return { why: "Protecting this pick costs more than we will pay at the current price.", next: "Check back later; the book moves toward the start." };
       case "not_offered":
       case "no_matched_market":
       case "league_not_covered":
@@ -877,9 +953,15 @@
           : { why: "This " + V.play + " has not been matched yet.", next: "It is an order until another account takes the other side. Protection prices on the matched stake; check back once it fills." };
       case "settled":
         return { why: "This " + V.play + " settled without protection.", next: "Protection is locked before the game starts. A locked " + V.play + " shows what it paid here once it settles." };
+      case "too_early":
+      case "far_out_no_book":
+        return { why: "It is too early to protect this pick.", next: "Protection opens closer to the start of this one." };
+      case "price_unsettled":
+      case "mark_disagreement":
+        return { why: "The price on this pick has not settled yet.", next: "Check back closer to the start; protection prices once the market agrees on the odds." };
       case "market_too_close_to_start":
       case "market_not_active":
-        return { why: "This game starts too soon to protect.", next: "Protection is available until shortly before kickoff." };
+        return { why: "This game starts too soon to protect.", next: "Protection is available until shortly before the start." };
       case "already_on_record":
         return { why: "This market is already locked.", next: "One lock per market." };
       case "key":
@@ -1317,9 +1399,12 @@
       return "";
     }
   };
+  /** How the game starts, in the league's word: kickoff, tip-off, first pitch. */
+  const START_WORD = { nfl: "kickoff", nba: "tip-off", mlb: "first pitch" };
+  const startWord = (stem) => START_WORD[String((S.markets.find((m) => stemOf(m.ticker) === stem) || {}).league || "").toLowerCase()] || "the start";
   const TIP_WORDS = (stem) => {
     const u = gameUntil(stem);
-    return "Protection on this game can be locked in from " + V.page + " after your pick " + (VENUE_ID === "kalshi" ? "fills" : "is matched") + (u ? ", " + untilWords(u) + " (" + (S.ext.cutoffMinutes || 45) + " minutes before kickoff)." : ".");
+    return "Protection on this game can be locked in from " + V.page + " after your pick " + (VENUE_ID === "kalshi" ? "fills" : "is matched") + (u ? ", " + untilWords(u) + " (" + (S.ext.cutoffMinutes || 45) + " minutes before " + startWord(stem) + ")." : ".");
   };
   /**
    * The games (ticker stems) a text names both clubs of. A nickname shared by two listed games
@@ -1366,6 +1451,29 @@
       for (const t of S.codes.get(m[2]) || []) add(t, false);
     }
     return [...seen.entries()].filter(([, g]) => g.sides.size >= 2 && g.words.size >= 2 && g.named).map(([st]) => st);
+  };
+  /**
+   * One game out of two the same two clubs play inside the window (a back-to-back, a home-and-home):
+   * the card's own words settle it, or nothing is marked. A date names the game on that day; a
+   * weekday the game on that weekday; "today", "tonight" or a bare clock time today's game;
+   * "tomorrow" tomorrow's; a game under way (LIVE, a quarter, Final) is the earlier of the two,
+   * since the later one has not started. Words that fit both games, or neither, settle nothing.
+   */
+  const settleStems = (stems, text) => {
+    const list = [...new Set(stems)];
+    if (list.length <= 1) return list[0] || null;
+    const one = (hits) => (hits.length === 1 ? hits[0] : null);
+    const days = datesIn(text);
+    if (days.size) return one(list.filter((s) => dayMatches(s, days)));
+    const wds = weekdaysIn(text);
+    if (wds.size) return one(list.filter((s) => wds.has(weekdayOf(s))));
+    if (TOMORROW_RE.test(text)) return one(list.filter((s) => gameDayOf(s) === dayKey(new Date(Date.now() + 86_400_000))));
+    if (TODAY_RE.test(text) || CLOCK_RE.test(text)) return one(list.filter((s) => gameDayOf(s) === dayKey(new Date())));
+    if (UNDER_WAY_RE.test(text)) {
+      const sorted = [...list].sort((a, b) => gameOrdinal(a) - gameOrdinal(b));
+      return gameOrdinal(sorted[0]) < gameOrdinal(sorted[1]) ? sorted[0] : null;
+    }
+    return null;
   };
   const CARD_MAX_H = 340;
   const CARD_MAX_TEXT = 700;
@@ -1426,9 +1534,15 @@
     for (let i = 0; e && e !== document.body && i < 14; i++, e = e.parentElement) {
       const t = wordsOf(e, CARD_MAX_TEXT);
       if (t.length > CARD_MAX_TEXT) break;
-      const games = gamesIn(t);
+      let games = gamesIn(t);
       if (!games.length) continue;
-      if (games.length > 1 || (stem && games[0] !== stem)) break;
+      // the same two clubs twice in the window: this block's own date, weekday or state picks the game
+      if (games.length > 1) {
+        const one = settleStems(games, t);
+        if (!one) break;
+        games = [one];
+      }
+      if (stem && games[0] !== stem) break;
       const r = e.getBoundingClientRect();
       if (r.height > CARD_MAX_H || r.width < 120) break;
       // a block that brings in a heading the card had none of is the day's section, not the card
@@ -1462,22 +1576,25 @@
       // the slip has its own line
       if (slipBlock && slipBlock.contains(node)) continue;
       const titled = gamesIn(text);
-      if (titled.length > 1) continue;
-      if (titled.length === 1) {
+      if (titled.length) {
+        // two listings of the same two clubs: the title's own date or weekday says which, else neither
+        const one = settleStems(titled, text);
         // a cut title is a list entry (a sidebar, a "most active" rail), not the game's card
-        if (!clipped(node)) offer(titled[0], 0, { anchor: node, card: null });
+        if (one && !clipped(node)) offer(one, 0, { anchor: node, card: null });
         continue;
       }
       const c = climbToCard(node);
       if (c) offer(c.stem, 1, { anchor: null, card: c.card });
       else {
-        // the club's own tickers; only a name that fits one listed game can carry a pill
+        // the club's own tickers; only a name that fits one listed game, or whose line says which
+        // of the club's games ("Pistons · Tue 7:00 PM"), can carry a pill
         S.nickRe.lastIndex = 0;
         const m = S.nickRe.exec(text);
         const list = m ? S.nicks.get(m[2].toLowerCase()) || [] : [];
         const stems = [...new Set(list.map((x) => stemOf(x.ticker)))];
+        const one = settleStems(stems, text);
         // a label, not a sentence: a club named in running text carries nothing
-        if (stems.length === 1 && text.length <= 40) offer(stems[0], 2, { anchor: node, card: null });
+        if (one && text.length <= 40) offer(one, 2, { anchor: node, card: null });
       }
     }
     return best;
@@ -1658,13 +1775,21 @@
       const block = slipFrom(node);
       if (!block) continue;
       const text = spaced(norm(wordsOf(block, 2000)));
-      if (pointsRow(text) || gamesIn(text).length > 1) return null;
+      if (pointsRow(text)) return null;
+      const games = gamesIn(text);
+      // the same two clubs twice in the window: the slip's date or weekday says which game, else nothing
+      const game = settleStems(games, text);
+      if (games.length > 1 && !game) return null;
+      // the pick is a club with no listed game (its game this week has started; its next is not
+      // listed yet): nothing, never its opponent's next game
+      if (unlistedPick(text)) return null;
       const count = sidesIn(text);
       if (!count.size) return null;
-      const sorted = [...count.entries()].sort((a, b) => b[1] - a[1]);
+      const sorted = [...count.entries()].sort((a, b) => b[1] - a[1]).filter(([t]) => !game || stemOf(t) === game);
+      if (!sorted.length) return null;
       let ticker = sorted.length === 1 || sorted[0][1] > sorted[1][1] ? sorted[0][0] : null;
       // a slip that names both clubs once each ("DEN at ARI"): the game is enough for the pill
-      if (!ticker && gamesIn(text).length === 1) ticker = gameOpen(gamesIn(text)[0])[0] ? gameOpen(gamesIn(text)[0])[0].ticker : sorted[0][0];
+      if (!ticker && game) ticker = gameOpen(game)[0] ? gameOpen(game)[0].ticker : sorted[0][0];
       if (!ticker) return null;
       let flipped = false;
       if (VENUE_ID === "kalshi" && sideWord(text) === "no") {
