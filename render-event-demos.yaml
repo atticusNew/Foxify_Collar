@@ -194,7 +194,26 @@ services:
       #   EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER=25 / EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY=100
       #   EVENT_HEDGE_LIVE_SEND=yes             the only value that sends; anything else is a dry run
       #   EVENT_HEDGE_KILL_SWITCH=1             nothing leaves, whatever else is set
-      # Pre-flight (operator): GET /api/shadow/hedges/preflight?ticker=KX... reads balance and the rails.
+      #   EVENT_HEDGE_LIVE_VIA=aggregator       the order goes through the aggregator's execution pod
+      #                                         instead of our own Kalshi key: the pod holds a numbered
+      #                                         Kalshi subaccount of ours, we sign with a TRADE key bound
+      #                                         to that pod, and the hedge is on the partner's books as
+      #                                         well as the venue's. Same rails, same dry run; the fill
+      #                                         says via "aggregator". Default: direct.
+      #   AGGREGATOR_TRADE_KEY_ID / AGGREGATOR_TRADE_PRIVATE_KEY_HEX   the TRADE key (not the DATA key below);
+      #                                         generated in the partner's portal, private half here only
+      # Pre-flight (operator): GET /api/shadow/hedges/preflight?ticker=KX... reads balance and the rails
+      #   (via aggregator: the pod's identity, its Kalshi cash and whether the key may trade).
+      # The pod (operator): GET /api/shadow/hedges/pod reads the aggregator's side — pod, cash, positions,
+      #   and every receipt on our trail that went that way. ?ticker= narrows the positions.
+      # KALSHI ACCOUNT (operator; needs KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM, in any strategy):
+      #   GET  /api/shadow/kalshi/account                 API tier and grants, cash per shard, subaccounts per shard, what to do next
+      #   POST /api/shadow/kalshi/account/upgrade         the permanent Advanced grant (Kalshi wants one API-created order among the last 100)
+      #   POST /api/shadow/kalshi/subaccounts?shard=0     the next numbered subaccount on that shard (again with ?shard=3 for basketball)
+      #   POST /api/shadow/kalshi/subaccounts/transfer    {"from":0,"to":1,"cents":5000,"shard":0}   cash between subaccounts, one shard
+      #   POST /api/shadow/kalshi/shards/transfer         {"fromShard":0,"toShard":3,"cents":5000}  the primary's cash across shards
+      #   Shards: Kalshi holds a subaccount's cash per matching engine; NFL is shard 0, basketball/baseball/
+      #   tennis shard 3; a subaccount that hedges both needs cash on both. Nothing here places an order.
       # Resend (operator): POST /api/shadow/hedges/resend?ticker=KX... hedges an open lock again when
       #   its hedge never reached the venue (simulated fill on the trail); refuses once a live fill
       #   exists unless &force=1. Orders go to Kalshi's V2 path (POST /portfolio/events/orders).
@@ -257,7 +276,7 @@ services:
       # "reference book C (via the aggregator)", ids aggregated_mm / aggregated_other). Whatever
       # the feed cannot supply for a pair is read from the venue directly, as before; a mapping
       # that disagrees with ours is never priced from. A DATA key is all this needs (it refuses
-      # venue paths); a key with trade capability belongs on its own small pod, not here.
+      # venue paths); the TRADE key that sends orders is AGGREGATOR_TRADE_* under LIVE HEDGE above.
       # Set in the dashboard, never in git. Unset: the venues are read directly, nothing changes.
       #   AGGREGATOR_KEY_ID=<key id>
       #   AGGREGATOR_PRIVATE_KEY_HEX=<64 hex seed, or a PKCS8 PEM>

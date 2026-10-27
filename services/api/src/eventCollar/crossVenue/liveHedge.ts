@@ -8,7 +8,9 @@
  *
  * Rails, checked in this order on every hedge:
  *   kill switch   EVENT_HEDGE_KILL_SWITCH=1          nothing is sent, ever
- *   venue         a live client exists for the venue   (only Kalshi today)
+ *   venue         a live client exists for the venue   (only Kalshi today; our own key on the
+ *                 venue, or the aggregator's pod with EVENT_HEDGE_LIVE_VIA=aggregator — same
+ *                 rails either way, the fill records which path it took)
  *   ticker        EVENT_HEDGE_LIVE_TICKERS=A,B,C      allowlist; empty allows nothing;
  *                 `*` allows any ticker the engine priced (a pilot where holders
  *                 pick their own games); the caps below still bound every order
@@ -43,6 +45,7 @@ import {
   type HedgeIntent,
   type HedgeReceipt,
   type HedgeVenue,
+  type HedgeVia,
 } from "./hedgeExecutor";
 
 /** What the venue reports back for one live order. */
@@ -57,6 +60,10 @@ export interface LiveOrderResult {
   feesCents: number;
   /** the venue's final word on the order (executed, canceled, ...) */
   status: string;
+  /** how the order reached the venue; absent means our own key on the venue */
+  via?: HedgeVia;
+  /** the venue's own id when the order went through an intermediary that issued `orderId` */
+  venueOrderId?: string;
 }
 
 /** Place the order for an intent. Throws when nothing filled or the venue refused. */
@@ -220,12 +227,13 @@ export class LiveHedgeExecutor implements HedgeExecutor {
     try {
       const r = await client(intent, clientOrderId);
       const partial = r.unitsMilli < intent.unitsMilli;
+      const via: HedgeVia = r.via ?? "direct";
       attempts.push({
         strategy: "live",
         step: "order",
         ok: true,
         at: this.clock.now().toISOString(),
-        detail: `order ${r.orderId} ${r.status}: ${units(r.unitsMilli)} of ${units(intent.unitsMilli)} filled at ${r.avgPriceMilli} milli, ${r.costCents}c all in${partial ? " (partial)" : ""}`,
+        detail: `order ${r.orderId}${r.venueOrderId ? ` (venue ${r.venueOrderId})` : ""} ${r.status}${via === "aggregator" ? " via aggregator" : ""}: ${units(r.unitsMilli)} of ${units(intent.unitsMilli)} filled at ${r.avgPriceMilli} milli, ${r.costCents}c all in${partial ? " (partial)" : ""}`,
         orderId: r.orderId,
         unitsMilli: r.unitsMilli,
         costCents: r.costCents,
@@ -241,8 +249,8 @@ export class LiveHedgeExecutor implements HedgeExecutor {
         costCents: r.costCents,
         vsBookCents: bookForFilled - r.costCents,
         simulated: false,
-        ids: { orderId: r.orderId },
-        via: "direct",
+        ids: { orderId: r.orderId, ...(r.venueOrderId ? { venueOrderId: r.venueOrderId } : {}) },
+        via,
       };
       return { ...base, attempts, fill, outcome: "filled_live", fallbackReason: null };
     } catch (err) {

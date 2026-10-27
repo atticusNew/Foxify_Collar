@@ -11,8 +11,13 @@
  *                               dry run on unless EVENT_HEDGE_LIVE_SEND=yes);
  *                               everything the rails hold is simulated at the
  *                               book, with the reason on the receipt
+ *   EVENT_HEDGE_LIVE_VIA=direct      (default) our own Kalshi key sends the order
+ *   EVENT_HEDGE_LIVE_VIA=aggregator  the aggregator's pod sends it with our TRADE
+ *                               key (aggregatorOrders.ts); the pod holds the
+ *                               Kalshi subaccount; the fill says via "aggregator"
  *
- * Credentials: KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PEM; POLY_API_KEY +
+ * Credentials: KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PEM (direct); AGGREGATOR_TRADE_KEY_ID +
+ * AGGREGATOR_TRADE_PRIVATE_KEY_HEX (aggregator; not the DATA key); POLY_API_KEY +
  * POLY_API_SECRET + POLY_API_PASSPHRASE + POLY_ADDRESS. Polymarket acceptance
  * also needs an order signer, which nothing here constructs: without one the
  * Polymarket client is read-only and the executor records that as the reason.
@@ -34,8 +39,10 @@ import {
   type HedgeExecutor,
   type HedgeStrategy,
   type HedgeVenue,
+  type HedgeVia,
   type RfqClient,
 } from "./hedgeExecutor";
+import { AggregatorOrderClient, aggregatorTradeConfigFromEnv } from "./aggregatorOrders";
 import { KalshiOrderClient } from "./kalshiOrders";
 import { KalshiRfqClient, kalshiRfqCredentialsFromEnv } from "./kalshiRfq";
 import { LiveHedgeExecutor, liveRailsFromEnv, sentUnitsMilliOn, type LiveHedgeRails, type LiveOrderHook } from "./liveHedge";
@@ -51,6 +58,8 @@ import {
 export interface LiveHedgeView {
   dryRun: boolean;
   killSwitch: boolean;
+  /** which path a sent order takes: our own key on the venue, or the aggregator's pod */
+  via: HedgeVia;
   /** venues with a live order client (credentials present) */
   venues: HedgeVenue[];
   allowlist: string[];
@@ -73,6 +82,13 @@ export interface HedgeExecutorChoice {
   live: LiveHedgeView | null;
   /** the Kalshi order client when credentials exist in live mode, for the operator's pre-flight */
   kalshiOrders: KalshiOrderClient | null;
+  /** the aggregator's order client when the TRADE key exists in live mode via aggregator; the pod's balance and positions for the pre-flight */
+  aggregatorOrders: AggregatorOrderClient | null;
+}
+
+/** EVENT_HEDGE_LIVE_VIA as the deploy spells it; anything but "aggregator" is the direct path. */
+export function liveViaFromEnv(env: NodeJS.ProcessEnv = process.env): HedgeVia {
+  return (env.EVENT_HEDGE_LIVE_VIA ?? "").trim().toLowerCase() === "aggregator" ? "aggregator" : "direct";
 }
 
 export interface HedgeExecutorEnvOptions {
@@ -82,10 +98,11 @@ export interface HedgeExecutorEnvOptions {
   liveHooks?: Partial<Record<HedgeVenue, LiveOrderHook>>;
 }
 
-function liveView(rails: LiveHedgeRails, venues: HedgeVenue[]): LiveHedgeView {
+function liveView(rails: LiveHedgeRails, venues: HedgeVenue[], via: HedgeVia): LiveHedgeView {
   return {
     dryRun: rails.dryRun,
     killSwitch: rails.killSwitch,
+    via,
     venues,
     allowlist: rails.allowlist,
     anyTicker: rails.anyTicker,
@@ -106,15 +123,31 @@ export function hedgeExecutorFromEnv(
   if (strategy === "book") {
     const notes = ["book: simulated fill at the walked terms"];
     if (builder.note) notes.push(builder.note);
-    return { executor: new BookHedgeExecutor(), strategy, rfqVenues: [], notes, polymarketBuilderCode, live: null, kalshiOrders: null };
+    return { executor: new BookHedgeExecutor(), strategy, rfqVenues: [], notes, polymarketBuilderCode, live: null, kalshiOrders: null, aggregatorOrders: null };
   }
   if (strategy === "live") {
     const rails = liveRailsFromEnv(env);
+    const via = liveViaFromEnv(env);
     const notes: string[] = [];
     const hooks: Partial<Record<HedgeVenue, LiveOrderHook>> = { ...(opts.liveHooks ?? {}) };
     let kalshiOrders: KalshiOrderClient | null = null;
+    let aggregatorOrders: AggregatorOrderClient | null = null;
     const kCreds = kalshiRfqCredentialsFromEnv(env);
-    if (kCreds && !hooks.kalshi) {
+    if (via === "aggregator") {
+      const tCfg = aggregatorTradeConfigFromEnv(env);
+      if (tCfg && !hooks.kalshi) {
+        try {
+          aggregatorOrders = new AggregatorOrderClient(tCfg);
+          hooks.kalshi = aggregatorOrders.hook();
+          notes.push("kalshi: live orders go through the aggregator's pod with the TRADE key; the pod holds the Kalshi subaccount");
+        } catch (err) {
+          notes.push(`kalshi: AGGREGATOR_TRADE_PRIVATE_KEY_HEX unusable (${err instanceof Error ? err.message : String(err)}); live orders impossible; every hedge simulated`);
+        }
+      } else if (!tCfg && !hooks.kalshi) {
+        notes.push("kalshi: EVENT_HEDGE_LIVE_VIA=aggregator but no AGGREGATOR_TRADE_KEY_ID / AGGREGATOR_TRADE_PRIVATE_KEY_HEX; live orders impossible; every hedge simulated");
+      }
+      if (kCreds) notes.push("kalshi: KALSHI_API_KEY_ID is set but sends nothing while via=aggregator; it serves the account routes (tier, subaccounts) only");
+    } else if (kCreds && !hooks.kalshi) {
       kalshiOrders = new KalshiOrderClient(kCreds);
       hooks.kalshi = kalshiOrders.hook();
     } else if (!kCreds && !hooks.kalshi) {
@@ -140,8 +173,9 @@ export function hedgeExecutorFromEnv(
       rfqVenues: [],
       notes,
       polymarketBuilderCode,
-      live: liveView(rails, venues),
+      live: liveView(rails, venues, via),
       kalshiOrders,
+      aggregatorOrders,
     };
   }
   const clients: Partial<Record<HedgeVenue, RfqClient>> = {};
@@ -181,5 +215,6 @@ export function hedgeExecutorFromEnv(
     polymarketBuilderCode,
     live: null,
     kalshiOrders: null,
+    aggregatorOrders: null,
   };
 }

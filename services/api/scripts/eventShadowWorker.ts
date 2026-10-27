@@ -114,6 +114,9 @@ import {
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { sentUnitsMilliOn, tickerArmed } from "../src/eventCollar/crossVenue/liveHedge";
+import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, type KalshiAccountSnapshot } from "../src/eventCollar/crossVenue/kalshiAccount";
+import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
+import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderHoldersHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
 import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
@@ -255,6 +258,14 @@ const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDG
 const LOCK_LEDGER_PATH = process.env.EVENT_SHADOW_LOCK_LEDGER_PATH || join(dirname(LEDGER_PATH), "lock-ledger.jsonl");
 const hedgeChoice = hedgeExecutorFromEnv(process.env, null, { receiptsPath: RECEIPTS_PATH });
 /**
+ * Kalshi account administration (kalshiAccount.ts), with the same key the direct hedge signs
+ * with, in any strategy: the tier (API rate tier, not an account type), the subaccounts and their
+ * cash per shard, and the transfers that put cash where a pod's subaccount will spend it. Reads
+ * and in-account transfers only; nothing here places an order. Operator token. Unset key: 503.
+ */
+const kalshiAccountCreds = kalshiRfqCredentialsFromEnv(process.env);
+const kalshiAccount = kalshiAccountCreds ? new KalshiAccountClient(kalshiAccountCreds) : null;
+/**
  * Operator views (rule comparison, hedge receipts, raw ledger, full CSV) are
  * gated: they are what we are learning, not what was quoted. Same token as the
  * demo's /admin/funnel; fail-closed when unset so the public record is all
@@ -270,6 +281,12 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/hedges",
   "/api/shadow/hedges/preflight",
   "/api/shadow/hedges/resend",
+  "/api/shadow/hedges/pod",
+  "/api/shadow/kalshi/account",
+  "/api/shadow/kalshi/account/upgrade",
+  "/api/shadow/kalshi/subaccounts",
+  "/api/shadow/kalshi/subaccounts/transfer",
+  "/api/shadow/kalshi/shards/transfer",
   "/api/shadow/lock/reset",
   "/api/shadow/cash",
   "/api/shadow/holders",
@@ -841,6 +858,182 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   sendJson(res, 404, { ok: false, error: "not found" });
+}
+
+/** What the Kalshi account still needs before a pod can trade a subaccount of ours, as plain sentences. */
+function kalshiAccountAdvice(s: KalshiAccountSnapshot): string[] {
+  const out: string[] = [];
+  const numbered = [...new Set(s.subaccounts.filter((b) => b.subaccount > 0).map((b) => b.subaccount))].sort((a, b) => a - b);
+  if (!s.tier.canCreateSubaccounts) {
+    out.push(`tier is ${s.tier.usageTier}: creating a subaccount needs Advanced. POST /api/shadow/kalshi/account/upgrade grants it for good once one of the account's last 100 orders was placed through the API (a live hedge counts)`);
+  }
+  if (numbered.length === 0) {
+    out.push("no numbered subaccount yet. POST /api/shadow/kalshi/subaccounts?shard=0 creates subaccount 1 on the default shard; POST again with ?shard=3 provisions the same number for basketball");
+  }
+  for (const n of numbered) {
+    for (const shard of [0, 3]) {
+      const here = s.subaccounts.find((b) => b.subaccount === n && b.exchangeIndex === shard);
+      if (!here || here.cents <= 0) {
+        const primary = s.byShard.find((b) => b.exchangeIndex === shard)?.cents ?? 0;
+        out.push(
+          primary > 0
+            ? `subaccount ${n} holds nothing on shard ${shard} (${KALSHI_SHARDS[shard]}); the primary has ${primary}c there. POST /api/shadow/kalshi/subaccounts/transfer {"from":0,"to":${n},"cents":…,"shard":${shard}}`
+            : `subaccount ${n} and the primary both hold nothing on shard ${shard} (${KALSHI_SHARDS[shard]}). POST /api/shadow/kalshi/shards/transfer {"fromShard":0,"toShard":${shard},"cents":…} first, then fund the subaccount`,
+        );
+      }
+    }
+  }
+  if (numbered.length > 0 && out.length === 0) {
+    out.push(`subaccount ${numbered[0]} is funded on shards 0 and 3. In Kalshi, create an API key restricted to subaccount ${numbered[0]} and give that key to the pod; the pod then trades only that cash`);
+  }
+  return out;
+}
+
+/**
+ * The Kalshi account routes (operator): the account the hedge key signs for, as the pod will use it.
+ *   GET  /api/shadow/kalshi/account                        tier and grants, cash per shard, every subaccount's cash per shard, what to do next
+ *   POST /api/shadow/kalshi/account/upgrade                ask Kalshi for the permanent Advanced grant (403 from Kalshi = no API order among the last 100)
+ *   POST /api/shadow/kalshi/subaccounts?shard=0            create the next numbered subaccount on that shard (again with another shard provisions it there)
+ *   POST /api/shadow/kalshi/subaccounts/transfer           {from, to, cents, shard?}        cash between subaccounts on one shard
+ *   POST /api/shadow/kalshi/shards/transfer                {fromShard, toShard, cents}      the primary's cash from one shard to another
+ * Every write answers with a fresh snapshot. Nothing here places an order.
+ */
+async function handleKalshiAccount(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  if (!kalshiAccount) {
+    sendJson(res, 503, { ok: false, error: "no_kalshi_key", message: "KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM are not set in the service env; the account routes need the account owner's key" });
+    return;
+  }
+  const at = new Date().toISOString();
+  const snapshotBody = async (extra: Record<string, unknown> = {}) => {
+    const s = await kalshiAccount.snapshot();
+    return {
+      ok: true,
+      at,
+      ...extra,
+      tier: s.tier,
+      balanceCents: s.balanceCents,
+      byShard: s.byShard.map((b) => ({ ...b, name: KALSHI_SHARDS[b.exchangeIndex] ?? "unlisted" })),
+      subaccounts: s.subaccounts.map((b) => ({ ...b, shard: KALSHI_SHARDS[b.exchangeIndex] ?? "unlisted" })),
+      shards: KALSHI_SHARDS,
+      next: kalshiAccountAdvice(s),
+    };
+  };
+  const venueError = (err: unknown) => {
+    if (err instanceof KalshiApiError) {
+      sendJson(res, 502, { ok: false, error: "kalshi_refused", status: err.status, message: err.message });
+      return;
+    }
+    sendJson(res, 502, { ok: false, error: "kalshi_unreachable", message: String(err instanceof Error ? err.message : err) });
+  };
+  const mustPost = (hint: string): boolean => {
+    if (req.method === "POST") return true;
+    sendJson(res, 405, { ok: false, error: "method_not_allowed", message: `POST ${url.pathname} ${hint} with the operator token; GET /api/shadow/kalshi/account reads` });
+    return false;
+  };
+  try {
+    if (url.pathname === "/api/shadow/kalshi/account") {
+      sendJson(res, 200, await snapshotBody());
+      return;
+    }
+    if (url.pathname === "/api/shadow/kalshi/account/upgrade") {
+      if (!mustPost("")) return;
+      const r = await kalshiAccount.upgradeToAdvanced();
+      sendJson(res, r.ok ? 200 : 409, { ok: r.ok, at, upgrade: r.ok ? { status: r.status, granted: "advanced", permanent: true } : { status: r.status, reason: r.reason }, tier: r.tier });
+      return;
+    }
+    if (url.pathname === "/api/shadow/kalshi/subaccounts") {
+      if (!mustPost("?shard=0")) return;
+      const shard = Number(url.searchParams.get("shard") ?? 0);
+      if (!Number.isInteger(shard) || shard < 0 || shard > 100) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "shard must be a whole number (0 default/NFL, 3 basketball)" });
+        return;
+      }
+      const created = await kalshiAccount.createSubaccount(shard);
+      sendJson(res, 201, await snapshotBody({ created: { ...created, shard: KALSHI_SHARDS[shard] ?? "unlisted" } }));
+      return;
+    }
+    const body = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>;
+    const int = (k: string): number | null => {
+      const v = typeof body[k] === "number" ? (body[k] as number) : Number(body[k]);
+      return Number.isInteger(v) ? v : null;
+    };
+    if (url.pathname === "/api/shadow/kalshi/subaccounts/transfer") {
+      if (!mustPost('{"from":0,"to":1,"cents":5000,"shard":0}')) return;
+      const from = int("from");
+      const to = int("to");
+      const cents = int("cents");
+      const shard = body.shard === undefined ? 0 : int("shard");
+      if (from === null || to === null || cents === null || shard === null || cents <= 0 || from < 0 || to < 0 || from > 63 || to > 63 || from === to) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "from and to are subaccount numbers 0-63 (0 = primary), different; cents a positive whole number; shard optional (default 0)" });
+        return;
+      }
+      const t = await kalshiAccount.transferBetweenSubaccounts({ from, to, cents, exchangeIndex: shard });
+      sendJson(res, 200, await snapshotBody({ transfer: { from, to, cents, shard, name: KALSHI_SHARDS[shard] ?? "unlisted", ...t } }));
+      return;
+    }
+    if (url.pathname === "/api/shadow/kalshi/shards/transfer") {
+      if (!mustPost('{"fromShard":0,"toShard":3,"cents":5000}')) return;
+      const fromShard = int("fromShard");
+      const toShard = int("toShard");
+      const cents = int("cents");
+      if (fromShard === null || toShard === null || cents === null || cents <= 0 || fromShard < 0 || toShard < 0 || fromShard === toShard) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "fromShard and toShard are shard numbers (0 default/NFL, 3 basketball), different; cents a positive whole number" });
+        return;
+      }
+      const t = await kalshiAccount.transferBetweenShards({ fromShard, toShard, cents });
+      // Kalshi applies it asynchronously; the snapshot may still show the old split for a moment
+      sendJson(res, 202, await snapshotBody({ transfer: { fromShard, toShard, cents, ...t, note: "applied asynchronously by the venue; read /api/shadow/kalshi/account again" } }));
+      return;
+    }
+    sendJson(res, 404, { ok: false, error: "not_found" });
+  } catch (err) {
+    venueError(err);
+  }
+}
+
+/**
+ * GET /api/shadow/hedges/pod (operator): the aggregator's side of the live hedge, read with the
+ * TRADE key: who the key is (pod, capabilities), the pod's Kalshi cash, the positions the pod
+ * holds, and the receipts on our trail that went this way. ?ticker= narrows the positions. The
+ * second book a hedge is on, read from the second book.
+ */
+async function handlePod(res: ServerResponse, url: URL): Promise<void> {
+  const at = new Date().toISOString();
+  const client = hedgeChoice.aggregatorOrders;
+  const receipts = loadHedgeReceipts(RECEIPTS_PATH).filter((r) => r.fill?.via === "aggregator");
+  if (!client) {
+    sendJson(res, 200, {
+      ok: true,
+      at,
+      configured: false,
+      via: hedgeChoice.live?.via ?? null,
+      message:
+        hedgeChoice.strategy !== "live"
+          ? "not in live mode"
+          : hedgeChoice.live?.via !== "aggregator"
+            ? "EVENT_HEDGE_LIVE_VIA is not aggregator; orders go direct"
+            : "EVENT_HEDGE_LIVE_VIA=aggregator but no AGGREGATOR_TRADE_KEY_ID / AGGREGATOR_TRADE_PRIVATE_KEY_HEX",
+      receipts: { viaAggregator: receipts.length },
+    });
+    return;
+  }
+  const ticker = (url.searchParams.get("ticker") ?? "").trim().toUpperCase() || undefined;
+  const settle = async <T>(p: Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: string; status?: number; code?: string }> =>
+    p.then((value) => ({ ok: true as const, value })).catch((err: unknown) => (err instanceof AggregatorApiError ? { ok: false as const, error: err.message, status: err.status, code: err.code } : { ok: false as const, error: String(err instanceof Error ? err.message : err) }));
+  const [identity, available, positions] = await Promise.all([settle(client.whoami()), settle(client.availableCents()), settle(client.positions(ticker))]);
+  const canTrade = identity.ok ? identity.value.capabilities.includes("trade") : null;
+  sendJson(res, 200, {
+    ok: true,
+    at,
+    configured: true,
+    via: "aggregator",
+    key: { id: `…${client.keyId.slice(-4)}`, publicKeyHex: client.publicKeyHex },
+    identity: identity.ok ? { podId: identity.value.podId, scope: identity.value.scope, capabilities: identity.value.capabilities, canTrade } : { error: identity.error, status: identity.status, code: identity.code },
+    balance: available.ok ? { availableCents: available.value } : { error: available.error, status: available.status, code: available.code },
+    positions: positions.ok ? positions.value.map((p) => ({ ...p, shard: shardForTicker(p.ticker) })) : { error: positions.error, status: positions.status, code: positions.code },
+    receipts: { viaAggregator: receipts.length, recent: receipts.slice(-20).reverse() },
+    live: hedgeChoice.live,
+  });
 }
 
 /**
@@ -1661,6 +1854,10 @@ function healthBody(): Record<string, unknown> {
       polymarketBuilderCode: hedgeChoice.polymarketBuilderCode,
       live: hedgeChoice.live,
       notes: hedgeChoice.notes,
+      // the Kalshi account routes (tier, subaccounts, shard cash) need the account owner's key; on or off, never the key
+      kalshiAccountRoutes: Boolean(kalshiAccount),
+      // the aggregator's pod as a sending path: configured when the TRADE key is set and via=aggregator
+      aggregatorPod: Boolean(hedgeChoice.aggregatorOrders),
       receipts: { path: RECEIPTS_PATH, ...ledgerStats(RECEIPTS_PATH) },
       // the books the quote is priced from: the aggregator's feed first when its key is set, the venues directly behind it
       pricingSource: pricingSourceStatusFn ? pricingSourceStatusFn() : { aggregator: { configured: false }, notes: ["engine not loaded yet"] },
@@ -1728,7 +1925,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
   const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
   try {
-    if (OPERATOR_PATHS.has(url.pathname) && !operator) {
+    if ((OPERATOR_PATHS.has(url.pathname) || url.pathname.startsWith("/api/shadow/kalshi/")) && !operator) {
       sendJson(res, 403, {
         ok: false,
         error: adminAuth.enabled ? "bad admin token" : "operator views disabled — set EVENT_X_ADMIN_TOKEN",
@@ -1931,12 +2128,17 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const contracts = Number.isInteger(contractsParam) && contractsParam >= 1 && contractsParam <= 10_000 ? contractsParam : 20;
       const live = hedgeChoice.live;
       const sentToday = sentUnitsMilliOn(loadHedgeReceipts(RECEIPTS_PATH), new Date().toISOString().slice(0, 10)) / 1000;
-      const venueCheck: Promise<{ ok: boolean; balanceCents?: number; error?: string }> = hedgeChoice.kalshiOrders
-        ? hedgeChoice.kalshiOrders
-            .balanceCents()
-            .then((balanceCents) => ({ ok: true, balanceCents }))
-            .catch((err: unknown) => ({ ok: false, error: String(err instanceof Error ? err.message : err) }))
-        : Promise.resolve({ ok: false, error: live ? "no Kalshi credentials in the service env" : "not in live mode" });
+      // the balance behind the sending client: our own Kalshi key, or the pod's Kalshi cash through the aggregator
+      const venueCheck: Promise<{ ok: boolean; via?: string; balanceCents?: number; podId?: string; canTrade?: boolean; error?: string }> = hedgeChoice.aggregatorOrders
+        ? Promise.all([hedgeChoice.aggregatorOrders.whoami(), hedgeChoice.aggregatorOrders.availableCents()])
+            .then(([who, balanceCents]) => ({ ok: who.capabilities.includes("trade"), via: "aggregator", balanceCents, podId: who.podId, canTrade: who.capabilities.includes("trade"), ...(who.capabilities.includes("trade") ? {} : { error: `the key's capabilities are [${who.capabilities.join(", ")}]; it cannot trade` }) }))
+            .catch((err: unknown) => ({ ok: false, via: "aggregator", error: String(err instanceof Error ? err.message : err) }))
+        : hedgeChoice.kalshiOrders
+          ? hedgeChoice.kalshiOrders
+              .balanceCents()
+              .then((balanceCents) => ({ ok: true, via: "direct", balanceCents }))
+              .catch((err: unknown) => ({ ok: false, via: "direct", error: String(err instanceof Error ? err.message : err) }))
+          : Promise.resolve({ ok: false, error: live ? (live.via === "aggregator" ? "no aggregator TRADE key in the service env" : "no Kalshi credentials in the service env") : "not in live mode" });
       const held = new Set(allLocks().map((l) => l.p.ticker));
       const kalshiRouteQuote = async (t: string) => {
         if (!quoteOneFn) return { offered: false as const, code: "engine_not_ready", detail: "the scanner is still loading" };
@@ -2002,6 +2204,14 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/hedges/resend") {
       void handleHedgeResend(req, res, url).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+      return;
+    }
+    if (url.pathname === "/api/shadow/hedges/pod") {
+      void handlePod(res, url).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+      return;
+    }
+    if (url.pathname.startsWith("/api/shadow/kalshi/")) {
+      void handleKalshiAccount(req, res, url).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
       return;
     }
     if (url.pathname === "/api/shadow/lock/reset") {
