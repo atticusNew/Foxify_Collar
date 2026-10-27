@@ -387,6 +387,86 @@ test("applyEvCeiling: a fundable collar above the EV-cost ceiling becomes an hon
   assert.strictEqual(applyEvCeiling(refusedAlready).quote, refusedAlready.quote, "a refusal stays the refusal it was");
 });
 
+test("pinned execution: a lock pinned to the executor's venue stands when the holder's terms match the cheaper route's, and the ceiling judges the cheaper route's cost", async () => {
+  const { applyEvCeiling, applyMinimumCreditRule, pinnedExecutionFor, pinnedToleranceFromEnv } = await import("../scripts/eventProtectXDemoService");
+  const T = (f: number, c: number, cr: number) => ({ ok: true as const, floorCents: f, capCents: c, creditCents: cr, contracts: 20, tier: "balanced" as const, tiers: { balanced: { floorCents: f, capCents: c, creditCents: cr } } }) as unknown as import("../src/eventCollar/crossVenue/types").CrossQuoteResult;
+
+  // the knob: unset is off; 0 is on with equal-or-better; a whole number of cents is the tolerance
+  assert.equal(pinnedToleranceFromEnv(undefined), null);
+  assert.equal(pinnedToleranceFromEnv(""), null);
+  assert.equal(pinnedToleranceFromEnv("0"), 0);
+  assert.equal(pinnedToleranceFromEnv("1"), 1);
+  assert.equal(pinnedToleranceFromEnv("-1"), null);
+  assert.equal(pinnedToleranceFromEnv("x"), null);
+
+  // tonight's Knicks: Kalshi's own No side 377 bps, Polymarket 285; the holder's terms 41/67/49 vs 41/67/48
+  const knicks = { pinned: "kalshi_self" as const, pinnedQuote: T(41, 67, 49), pinnedBps: 377, otherQuote: T(41, 67, 48), otherBps: 285 };
+  assert.equal(pinnedExecutionFor({ ...knicks, toleranceCents: null }), null, "rule off: nothing");
+  const pe = pinnedExecutionFor({ ...knicks, toleranceCents: 0 });
+  assert.deepEqual(pe, {
+    route: "kalshi_self",
+    cheapestRoute: "polymarket",
+    evCostBps: 377,
+    cheapestEvCostBps: 285,
+    premiumBps: 92,
+    terms: { floorCents: 41, capCents: 67, creditCents: 49 },
+    cheapestTerms: { floorCents: 41, capCents: 67, creditCents: 48 },
+    toleranceCents: 0,
+  });
+
+  // the Lakers: the holder's credit on Kalshi is 46c against 70c on Polymarket; a tolerance of a cent does not cover 24
+  const lakers = { pinned: "kalshi_self" as const, pinnedQuote: T(35, 63, 46), pinnedBps: 418, otherQuote: T(35, 63, 70), otherBps: 200 };
+  assert.equal(pinnedExecutionFor({ ...lakers, toleranceCents: 1 }), null);
+  assert.ok(pinnedExecutionFor({ ...lakers, toleranceCents: 24 }), "a tolerance that covers the gap applies");
+  // a cheaper pinned route needs no premium
+  assert.equal(pinnedExecutionFor({ ...knicks, pinnedBps: 200, toleranceCents: 1 }), null);
+  // either route refused: nothing to compare
+  assert.equal(pinnedExecutionFor({ ...knicks, otherQuote: { ok: false, code: "pm_book_empty", detail: "" } as never, otherBps: null, toleranceCents: 1 }), null);
+
+  const base = {
+    kind: "sports" as const,
+    league: "nba",
+    market: { ticker: "KXNBAGAME-26OCT27DETNYK-NYK" } as unknown as import("../src/eventCollar/types").KalshiMarket,
+    pair: null,
+    sideName: "Knicks",
+    eventTitle: "Pistons vs. Knicks",
+    eventTimeIso: "2026-10-28T00:00:00.000Z",
+    parityNote: "",
+    fingerprint: "nba:DETNYK",
+    markCents: 61,
+    position: { contracts: 20, entryCents: 61, entrySource: "entered_now" as const, entryTime: null },
+    quote: T(41, 67, 49),
+    route: "kalshi_self" as const,
+    evBps: 377,
+    routesChecked: [
+      { route: "polymarket" as const, ok: true, evCostBps: 285, creditCents: 48 },
+      { route: "kalshi_self" as const, ok: true, evCostBps: 377, creditCents: 49 },
+    ],
+    books: {},
+  };
+  assert.equal(applyEvCeiling(base).quote.ok, false, "pinned to Kalshi without the rule: 377 bps is over the 300 ceiling");
+  const withRule = { ...base, pinnedExecution: pe! };
+  const kept = applyEvCeiling(withRule);
+  assert.strictEqual(kept, withRule, "with the rule: judged on 285 bps, the quote stands, same object");
+  assert.equal(kept.evBps, 377, "the position's own cost stays honest on the record");
+  const stillRich = applyEvCeiling({ ...withRule, pinnedExecution: { ...pe!, cheapestEvCostBps: 301 } });
+  assert.equal(stillRich.quote.ok, false, "the cheaper route itself over the ceiling: refused");
+  assert.match(!stillRich.quote.ok ? stillRich.quote.detail : "", /3\.01% of expected value/);
+
+  // the minimum-credit rule rewriting the terms (a tier promoted) drops a comparison made on the old ones
+  const twoTiers = { ...T(41, 67, 1), tier: "balanced", tiers: { balanced: { floorCents: 41, capCents: 67, creditCents: 1 }, tight: { floorCents: 30, capCents: 60, creditCents: 90 } } } as unknown as import("../src/eventCollar/crossVenue/types").CrossQuoteResult;
+  const promoted = applyMinimumCreditRule({ ...withRule, quote: twoTiers }, { cents: 25, bpsOfStake: 0 });
+  assert.equal(promoted.quote.ok && promoted.quote.creditCents, 90, "promoted to the clearing tier");
+  assert.equal("pinnedExecution" in promoted, false, "the stale comparison is gone; the ceiling judges the new terms on their own cost");
+  assert.strictEqual(applyMinimumCreditRule(withRule, { cents: 25, bpsOfStake: 0 }), withRule, "terms untouched: the comparison stays");
+  // the venue's quote lists every tier name with the unfunded ones undefined; the rule trims the map but the chosen terms do not move
+  const sparse = { ...T(41, 67, 49), tiers: { balanced: { floorCents: 41, capCents: 67, creditCents: 49 }, tight: undefined, wide: undefined } } as unknown as import("../src/eventCollar/crossVenue/types").CrossQuoteResult;
+  const trimmed = applyMinimumCreditRule({ ...withRule, quote: sparse }, { cents: 25, bpsOfStake: 0 });
+  assert.notStrictEqual(trimmed.quote, sparse, "the tiers map was rewritten");
+  assert.deepEqual(trimmed.pinnedExecution, pe, "same terms: the comparison survives the trim");
+  assert.strictEqual(applyEvCeiling(trimmed), trimmed, "and the ceiling still judges the cheaper route");
+});
+
 test("protectContextFor: attributes the tier the holder locked, falls back to the row's default", async () => {
   const { protectContextFor } = await import("../scripts/eventProtectXDemoService");
   const { quoteLadderWrap } = await import("../src/eventCollar/crossVenue/kalshiLadder");

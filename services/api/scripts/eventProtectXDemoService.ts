@@ -141,6 +141,66 @@ const MAX_CRYPTO_ROWS = Number(process.env.EVENT_X_CRYPTO_ROWS || 2);
  */
 export const MAX_EV_COST_BPS = Number(process.env.EVENT_X_MAX_EV_COST_BPS ?? 300);
 /**
+ * PINNED EXECUTION (EVENT_X_PINNED_TOLERANCE_CENTS; unset = off). A lock on an armed ticker is
+ * pinned to the venue the executor can send an order to, while the engine prices both routes.
+ * When the other route is cheaper for us but the holder's floor, cap and credit on the pinned
+ * route are each within this many cents of it (0 = equal or better), the quote stands and the
+ * EV-cost ceiling is judged on the cheaper route's cost: the holder is offered the same deal they
+ * would get anywhere, and the execution premium is ours, disclosed on the quote. Terms worse than
+ * the tolerance leave the pinned route judged on its own cost, as before.
+ */
+export const PINNED_TOLERANCE_CENTS = pinnedToleranceFromEnv(process.env.EVENT_X_PINNED_TOLERANCE_CENTS);
+export function pinnedToleranceFromEnv(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+export interface PinnedExecution {
+  /** the route the lock is pinned to (where the order goes) */
+  route: HedgeRoute;
+  /** the route the engine would have taken on cost alone */
+  cheapestRoute: HedgeRoute;
+  /** the pinned route's EV cost and the cheaper route's; the ceiling is judged on the latter */
+  evCostBps: number;
+  cheapestEvCostBps: number;
+  premiumBps: number;
+  /** the holder's terms on each, so the receipt can show they match */
+  terms: { floorCents: number; capCents: number; creditCents: number };
+  cheapestTerms: { floorCents: number; capCents: number; creditCents: number };
+  toleranceCents: number;
+}
+
+/**
+ * Whether a pinned route may stand in for the cheaper one: both quotable, the other route cheaper
+ * for us, and the holder's floor, cap and credit on the pinned route each no more than
+ * `toleranceCents` under the other's. Pure; null when the rule is off or does not apply.
+ */
+export function pinnedExecutionFor(args: {
+  pinned: HedgeRoute;
+  pinnedQuote: CrossQuoteResult;
+  pinnedBps: number | null;
+  otherQuote: CrossQuoteResult;
+  otherBps: number | null;
+  toleranceCents: number | null;
+}): PinnedExecution | null {
+  const { pinned, pinnedQuote, pinnedBps, otherQuote, otherBps, toleranceCents } = args;
+  if (toleranceCents === null || !pinnedQuote.ok || !otherQuote.ok || pinnedBps === null || otherBps === null) return null;
+  if (otherBps >= pinnedBps) return null;
+  const within = (ours: number, theirs: number) => ours >= theirs - toleranceCents;
+  if (!within(pinnedQuote.floorCents, otherQuote.floorCents) || !within(pinnedQuote.capCents, otherQuote.capCents) || !within(pinnedQuote.creditCents, otherQuote.creditCents)) return null;
+  return {
+    route: pinned,
+    cheapestRoute: pinned === "kalshi_self" ? "polymarket" : "kalshi_self",
+    evCostBps: pinnedBps,
+    cheapestEvCostBps: otherBps,
+    premiumBps: pinnedBps - otherBps,
+    terms: { floorCents: pinnedQuote.floorCents, capCents: pinnedQuote.capCents, creditCents: pinnedQuote.creditCents },
+    cheapestTerms: { floorCents: otherQuote.floorCents, capCents: otherQuote.capCents, creditCents: otherQuote.creditCents },
+    toleranceCents,
+  };
+}
+/**
  * MINIMUM CREDIT (src/eventCollar/crossVenue/minimumCredit.ts): 25¢ and 0.25% of stake by default
  * (EVENT_X_MIN_CREDIT_CENTS, EVENT_X_MIN_CREDIT_BPS). Applied in the scan, before the ceiling, so
  * the board, the embed and the shadow record offer the same tiers and refuse the same events.
@@ -584,6 +644,14 @@ export interface CandidateResult {
   evBps: number | null;
   routesChecked: RouteCheck[];
   /**
+   * Set when the quote was pinned to the venue the executor can send to, another route was
+   * cheaper for us, and the holder's terms on the pinned route are no worse than that route's
+   * (within PINNED_TOLERANCE_CENTS). The ceiling is then judged on the cheaper route's cost — the
+   * deal the holder is offered is the same deal — and the difference is ours to carry, disclosed
+   * here as the execution premium. Absent when the rule is off or did not apply.
+   */
+  pinnedExecution?: PinnedExecution;
+  /**
    * The live books each route was priced from, kept so the shadow run can
    * re-price the same moment under other rules or sizes (counterfactuals)
    * without another venue call. Absent when the venue was unreachable.
@@ -696,11 +764,20 @@ async function quoteSportsCandidate(
   let route: HedgeRoute | null;
   let quote: CrossQuoteResult;
   let evBps: number | null;
+  let pinnedExecution: PinnedExecution | null = null;
   if (pinRoute) {
     const pinned = pinRoute === "kalshi_self" ? ladderQuote : pmQuote;
     route = pinned.ok ? pinRoute : null;
     quote = pinned;
     evBps = pinned.ok ? (pinRoute === "kalshi_self" ? ladderBps : pmBps) : null;
+    pinnedExecution = pinnedExecutionFor({
+      pinned: pinRoute,
+      pinnedQuote: pinned,
+      pinnedBps: evBps,
+      otherQuote: pinRoute === "kalshi_self" ? pmQuote : ladderQuote,
+      otherBps: pinRoute === "kalshi_self" ? pmBps : ladderBps,
+      toleranceCents: PINNED_TOLERANCE_CENTS,
+    });
   } else if (pmQuote.ok && ladderQuote.ok) {
     const ladderWins = (ladderBps as number) <= (pmBps as number);
     route = ladderWins ? "kalshi_self" : "polymarket";
@@ -741,6 +818,7 @@ async function quoteSportsCandidate(
     route,
     evBps,
     routesChecked,
+    ...(pinnedExecution ? { pinnedExecution } : {}),
     books: {
       ...(pmRes.status === "fulfilled" ? { pmNoBook: pmRes.value } : {}),
       ...(ladderRes.status === "fulfilled" ? { noAsks: ladderRes.value } : {}),
@@ -819,13 +897,16 @@ async function quoteCryptoCandidate(series: string, sel: ShowcaseSelection, now:
  * honest refusal with a code of its own so the receipts count it as a ceiling, not as no depth.
  */
 export function applyEvCeiling(result: CandidateResult, maxEvBps: number = MAX_EV_COST_BPS): CandidateResult {
-  if (maxEvBps <= 0 || !result.quote.ok || result.evBps === null || result.evBps <= maxEvBps) return result;
+  if (maxEvBps <= 0 || !result.quote.ok || result.evBps === null) return result;
+  // pinned execution: the holder's deal is the cheaper route's deal, so that route's cost is what the ceiling judges
+  const judged = result.pinnedExecution ? result.pinnedExecution.cheapestEvCostBps : result.evBps;
+  if (judged <= maxEvBps) return result;
   return {
     ...result,
     quote: {
       ok: false,
       code: "protection_too_rich",
-      detail: `the cheapest route costs ${(result.evBps / 100).toFixed(2)}% of expected value; the ceiling is ${(maxEvBps / 100).toFixed(2)}%`,
+      detail: `the cheapest route costs ${(judged / 100).toFixed(2)}% of expected value; the ceiling is ${(maxEvBps / 100).toFixed(2)}%`,
     },
     route: null,
     evBps: null,
@@ -843,8 +924,14 @@ export function applyMinimumCreditRule(result: CandidateResult, rule = MIN_CREDI
   const quote = applyMinimumCredit(result.quote, rule);
   if (!quote.ok) return { ...result, quote, route: null, evBps: null };
   if (quote === result.quote) return result;
+  // a tier promoted moves the holder's terms, so a pinned-execution comparison made on the old
+  // terms no longer holds; a tiers map merely trimmed leaves the terms, and the comparison, intact
+  const before = result.quote;
+  const termsMoved = quote.tier !== before.tier || quote.floorCents !== before.floorCents || quote.capCents !== before.capCents || quote.creditCents !== before.creditCents;
+  const { pinnedExecution, ...rest } = result;
   return {
-    ...result,
+    ...rest,
+    ...(pinnedExecution && !termsMoved ? { pinnedExecution } : {}),
     quote,
     evBps: evCostBps(result.markCents, quote.floorCents, quote.capCents, quote.creditCents, result.position.contracts),
   };

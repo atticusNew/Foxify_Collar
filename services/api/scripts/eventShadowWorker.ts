@@ -772,6 +772,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
           routing: {
             route: q.result.route,
             pinned: lockRouteFor(parsed.value.ticker) ?? null,
+            ...(q.result.pinnedExecution ? { pinnedExecution: q.result.pinnedExecution } : {}),
             routesChecked: q.result.routesChecked.map((r) => ({ route: r.route, ok: r.ok, evCostBps: r.evCostBps, creditCents: r.creditCents, ...(r.detail ? { detail: r.detail } : {}) })),
           },
         }
