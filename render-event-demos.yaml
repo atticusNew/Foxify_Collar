@@ -207,11 +207,17 @@ services:
       # The pod (operator): GET /api/shadow/hedges/pod reads the aggregator's side — pod, cash, positions,
       #   and every receipt on our trail that went that way. ?ticker= narrows the positions.
       # KALSHI ACCOUNT (operator; needs KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM, in any strategy):
-      #   GET  /api/shadow/kalshi/account                 API tier and grants, cash per shard, subaccounts per shard, what to do next
-      #   POST /api/shadow/kalshi/account/upgrade         the permanent Advanced grant (Kalshi wants one API-created order among the last 100)
-      #   POST /api/shadow/kalshi/subaccounts?shard=0     the next numbered subaccount on that shard (again with ?shard=3 for basketball)
-      #   POST /api/shadow/kalshi/subaccounts/transfer    {"from":0,"to":1,"cents":5000,"shard":0}   cash between subaccounts, one shard
-      #   POST /api/shadow/kalshi/shards/transfer         {"fromShard":0,"toShard":3,"cents":5000}  the primary's cash across shards
+      #   GET /api/shadow/kalshi/account                  API tier and grants, cash per shard, subaccounts per shard, the API keys, what to do next
+      #   GET /api/shadow/kalshi/keys                     the API keys: id, name, which subaccount each is locked to, which one is ours
+      #   Writes are a POST with a JSON body, or — from a browser tab with ?token= — a GET with confirm=yes and the fields in the query:
+      #     /api/shadow/kalshi/account/upgrade?confirm=yes                      the permanent Advanced grant (Kalshi wants one API-created order among the last 100)
+      #     /api/shadow/kalshi/subaccounts?confirm=yes&shard=0                  the next numbered subaccount on that shard (again with shard=3 for basketball)
+      #     /api/shadow/kalshi/subaccounts/transfer?confirm=yes&from=0&to=1&cents=5000&shard=0     cash between subaccounts, one shard
+      #     /api/shadow/kalshi/shards/transfer?confirm=yes&fromShard=0&toShard=3&cents=5000       the primary's cash across shards
+      #     /api/shadow/kalshi/keys?confirm=yes&name=parlayx-pod&subaccount=1  mint a key restricted to that subaccount (omit subaccount for an
+      #                                                                        unrestricted key; keyType=ed25519 optional). The private key is in
+      #                                                                        that one answer and nowhere else: hand it to the pod at once.
+      #     /api/shadow/kalshi/keys/delete?confirm=yes&id=…                     revoke a key (refuses the key this service signs with)
       #   Shards: Kalshi holds a subaccount's cash per matching engine; NFL is shard 0, basketball/baseball/
       #   tennis shard 3; a subaccount that hedges both needs cash on both. Nothing here places an order.
       # Resend (operator): POST /api/shadow/hedges/resend?ticker=KX... hedges an open lock again when

@@ -114,7 +114,7 @@ import {
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { sentUnitsMilliOn, tickerArmed } from "../src/eventCollar/crossVenue/liveHedge";
-import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, type KalshiAccountSnapshot } from "../src/eventCollar/crossVenue/kalshiAccount";
+import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, type KalshiAccountSnapshot, type KalshiApiKeyInfo } from "../src/eventCollar/crossVenue/kalshiAccount";
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderHoldersHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
@@ -287,6 +287,8 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/kalshi/subaccounts",
   "/api/shadow/kalshi/subaccounts/transfer",
   "/api/shadow/kalshi/shards/transfer",
+  "/api/shadow/kalshi/keys",
+  "/api/shadow/kalshi/keys/delete",
   "/api/shadow/lock/reset",
   "/api/shadow/cash",
   "/api/shadow/holders",
@@ -861,14 +863,14 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
 }
 
 /** What the Kalshi account still needs before a pod can trade a subaccount of ours, as plain sentences. */
-function kalshiAccountAdvice(s: KalshiAccountSnapshot): string[] {
+function kalshiAccountAdvice(s: KalshiAccountSnapshot, keys: KalshiApiKeyInfo[]): string[] {
   const out: string[] = [];
   const numbered = [...new Set(s.subaccounts.filter((b) => b.subaccount > 0).map((b) => b.subaccount))].sort((a, b) => a - b);
   if (!s.tier.canCreateSubaccounts) {
-    out.push(`tier is ${s.tier.usageTier}: creating a subaccount needs Advanced. POST /api/shadow/kalshi/account/upgrade grants it for good once one of the account's last 100 orders was placed through the API (a live hedge counts)`);
+    out.push(`tier is ${s.tier.usageTier}: creating a subaccount needs Advanced. /api/shadow/kalshi/account/upgrade?confirm=yes grants it for good once one of the account's last 100 orders was placed through the API (a live hedge counts)`);
   }
   if (numbered.length === 0) {
-    out.push("no numbered subaccount yet. POST /api/shadow/kalshi/subaccounts?shard=0 creates subaccount 1 on the default shard; POST again with ?shard=3 provisions the same number for basketball");
+    out.push("no numbered subaccount yet. /api/shadow/kalshi/subaccounts?confirm=yes&shard=0 creates subaccount 1 on the default shard; again with shard=3 provisions the same number for basketball");
   }
   for (const n of numbered) {
     for (const shard of [0, 3]) {
@@ -877,26 +879,36 @@ function kalshiAccountAdvice(s: KalshiAccountSnapshot): string[] {
         const primary = s.byShard.find((b) => b.exchangeIndex === shard)?.cents ?? 0;
         out.push(
           primary > 0
-            ? `subaccount ${n} holds nothing on shard ${shard} (${KALSHI_SHARDS[shard]}); the primary has ${primary}c there. POST /api/shadow/kalshi/subaccounts/transfer {"from":0,"to":${n},"cents":…,"shard":${shard}}`
-            : `subaccount ${n} and the primary both hold nothing on shard ${shard} (${KALSHI_SHARDS[shard]}). POST /api/shadow/kalshi/shards/transfer {"fromShard":0,"toShard":${shard},"cents":…} first, then fund the subaccount`,
+            ? `subaccount ${n} holds nothing on shard ${shard} (${KALSHI_SHARDS[shard]}); the primary has ${primary}c there. /api/shadow/kalshi/subaccounts/transfer?confirm=yes&from=0&to=${n}&cents=…&shard=${shard}`
+            : `subaccount ${n} and the primary both hold nothing on shard ${shard} (${KALSHI_SHARDS[shard]}). /api/shadow/kalshi/shards/transfer?confirm=yes&fromShard=0&toShard=${shard}&cents=… first, then fund the subaccount`,
         );
       }
     }
   }
-  if (numbered.length > 0 && out.length === 0) {
-    out.push(`subaccount ${numbered[0]} is funded on shards 0 and 3. In Kalshi, create an API key restricted to subaccount ${numbered[0]} and give that key to the pod; the pod then trades only that cash`);
+  if (numbered.length > 0) {
+    const n = numbered[0];
+    const restricted = keys.find((k) => k.subaccount === n);
+    if (!restricted) {
+      out.push(`no API key is restricted to subaccount ${n}. /api/shadow/kalshi/keys?confirm=yes&name=parlayx-pod&subaccount=${n} mints one (private key shown once); that key id and private key are what the pod connects Kalshi with`);
+    } else if (out.length === 0) {
+      out.push(`subaccount ${n} is funded on shards 0 and 3 and key "${restricted.name}" (…${restricted.apiKeyId.slice(-6)}) is restricted to it. Give that key id and its private key to the pod when connecting Kalshi; the pod then trades only that cash`);
+    }
   }
   return out;
 }
 
 /**
  * The Kalshi account routes (operator): the account the hedge key signs for, as the pod will use it.
- *   GET  /api/shadow/kalshi/account                        tier and grants, cash per shard, every subaccount's cash per shard, what to do next
- *   POST /api/shadow/kalshi/account/upgrade                ask Kalshi for the permanent Advanced grant (403 from Kalshi = no API order among the last 100)
- *   POST /api/shadow/kalshi/subaccounts?shard=0            create the next numbered subaccount on that shard (again with another shard provisions it there)
- *   POST /api/shadow/kalshi/subaccounts/transfer           {from, to, cents, shard?}        cash between subaccounts on one shard
- *   POST /api/shadow/kalshi/shards/transfer                {fromShard, toShard, cents}      the primary's cash from one shard to another
- * Every write answers with a fresh snapshot. Nothing here places an order.
+ *   /api/shadow/kalshi/account                 tier and grants, cash per shard, every subaccount's cash per shard, the API keys, what to do next
+ *   /api/shadow/kalshi/account/upgrade         ask Kalshi for the permanent Advanced grant (403 from Kalshi = no API order among the last 100)
+ *   /api/shadow/kalshi/subaccounts             shard=0        create the next numbered subaccount on that shard (again with another shard provisions it there)
+ *   /api/shadow/kalshi/subaccounts/transfer    from, to, cents, shard?       cash between subaccounts on one shard
+ *   /api/shadow/kalshi/shards/transfer         fromShard, toShard, cents     the primary's cash from one shard to another
+ *   /api/shadow/kalshi/keys                    (read) the API keys; (write) name, subaccount?, keyType?   mint a key, restricted to a subaccount when given
+ *   /api/shadow/kalshi/keys/delete             id                            revoke a key
+ * A write is a POST with a JSON body, or — so the operator can act from a browser tab — a GET with
+ * `confirm=yes` and the same fields in the query. Every write answers with a fresh snapshot; a minted
+ * key's private half is in that one answer and nowhere else. Nothing here places an order.
  */
 async function handleKalshiAccount(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   if (!kalshiAccount) {
@@ -905,7 +917,8 @@ async function handleKalshiAccount(req: IncomingMessage, res: ServerResponse, ur
   }
   const at = new Date().toISOString();
   const snapshotBody = async (extra: Record<string, unknown> = {}) => {
-    const s = await kalshiAccount.snapshot();
+    const [s, keysRead] = await Promise.all([kalshiAccount.snapshot(), kalshiAccount.listApiKeys().then((k) => ({ ok: true as const, keys: k })).catch((err: unknown) => ({ ok: false as const, error: String(err instanceof Error ? err.message : err) }))]);
+    const keys = keysRead.ok ? keysRead.keys : [];
     return {
       ok: true,
       at,
@@ -915,7 +928,8 @@ async function handleKalshiAccount(req: IncomingMessage, res: ServerResponse, ur
       byShard: s.byShard.map((b) => ({ ...b, name: KALSHI_SHARDS[b.exchangeIndex] ?? "unlisted" })),
       subaccounts: s.subaccounts.map((b) => ({ ...b, shard: KALSHI_SHARDS[b.exchangeIndex] ?? "unlisted" })),
       shards: KALSHI_SHARDS,
-      next: kalshiAccountAdvice(s),
+      apiKeys: keysRead.ok ? keys.map((k) => ({ ...k, thisService: k.apiKeyId === kalshiAccountCreds?.apiKeyId })) : { error: keysRead.error },
+      next: kalshiAccountAdvice(s, keys),
     };
   };
   const venueError = (err: unknown) => {
@@ -925,9 +939,29 @@ async function handleKalshiAccount(req: IncomingMessage, res: ServerResponse, ur
     }
     sendJson(res, 502, { ok: false, error: "kalshi_unreachable", message: String(err instanceof Error ? err.message : err) });
   };
-  const mustPost = (hint: string): boolean => {
-    if (req.method === "POST") return true;
-    sendJson(res, 405, { ok: false, error: "method_not_allowed", message: `POST ${url.pathname} ${hint} with the operator token; GET /api/shadow/kalshi/account reads` });
+  // a write: POST with a JSON body, or GET ...&confirm=yes with the fields in the query
+  const isPost = req.method === "POST";
+  const body = isPost ? (((await readJsonBody(req)) ?? {}) as Record<string, unknown>) : {};
+  const confirmed = isPost || url.searchParams.get("confirm") === "yes";
+  const field = (k: string): unknown => (body[k] !== undefined ? body[k] : url.searchParams.has(k) ? url.searchParams.get(k) : undefined);
+  const int = (k: string): number | null => {
+    const raw = field(k);
+    const v = typeof raw === "number" ? raw : Number(raw);
+    return raw !== undefined && raw !== "" && Number.isInteger(v) ? v : null;
+  };
+  const str = (k: string): string => String(field(k) ?? "").trim();
+  const mustConfirm = (fields: string): boolean => {
+    if (confirmed) return true;
+    const query = fields
+      .split(", ")
+      .filter(Boolean)
+      .map((f) => `&${f.replace(/\?$/, "")}=…`)
+      .join("");
+    sendJson(res, 405, {
+      ok: false,
+      error: "confirm_required",
+      message: `this writes to the Kalshi account. POST ${url.pathname} with a JSON body {${fields}}, or GET ${url.pathname}?confirm=yes${query} with the operator token`,
+    });
     return false;
   };
   try {
@@ -936,15 +970,15 @@ async function handleKalshiAccount(req: IncomingMessage, res: ServerResponse, ur
       return;
     }
     if (url.pathname === "/api/shadow/kalshi/account/upgrade") {
-      if (!mustPost("")) return;
+      if (!mustConfirm("")) return;
       const r = await kalshiAccount.upgradeToAdvanced();
       sendJson(res, r.ok ? 200 : 409, { ok: r.ok, at, upgrade: r.ok ? { status: r.status, granted: "advanced", permanent: true } : { status: r.status, reason: r.reason }, tier: r.tier });
       return;
     }
     if (url.pathname === "/api/shadow/kalshi/subaccounts") {
-      if (!mustPost("?shard=0")) return;
-      const shard = Number(url.searchParams.get("shard") ?? 0);
-      if (!Number.isInteger(shard) || shard < 0 || shard > 100) {
+      if (!mustConfirm("shard")) return;
+      const shard = field("shard") === undefined ? 0 : int("shard");
+      if (shard === null || shard < 0 || shard > 100) {
         sendJson(res, 400, { ok: false, error: "bad_request", message: "shard must be a whole number (0 default/NFL, 3 basketball)" });
         return;
       }
@@ -952,17 +986,12 @@ async function handleKalshiAccount(req: IncomingMessage, res: ServerResponse, ur
       sendJson(res, 201, await snapshotBody({ created: { ...created, shard: KALSHI_SHARDS[shard] ?? "unlisted" } }));
       return;
     }
-    const body = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>;
-    const int = (k: string): number | null => {
-      const v = typeof body[k] === "number" ? (body[k] as number) : Number(body[k]);
-      return Number.isInteger(v) ? v : null;
-    };
     if (url.pathname === "/api/shadow/kalshi/subaccounts/transfer") {
-      if (!mustPost('{"from":0,"to":1,"cents":5000,"shard":0}')) return;
+      if (!mustConfirm("from, to, cents, shard?")) return;
       const from = int("from");
       const to = int("to");
       const cents = int("cents");
-      const shard = body.shard === undefined ? 0 : int("shard");
+      const shard = field("shard") === undefined ? 0 : int("shard");
       if (from === null || to === null || cents === null || shard === null || cents <= 0 || from < 0 || to < 0 || from > 63 || to > 63 || from === to) {
         sendJson(res, 400, { ok: false, error: "bad_request", message: "from and to are subaccount numbers 0-63 (0 = primary), different; cents a positive whole number; shard optional (default 0)" });
         return;
@@ -972,7 +1001,7 @@ async function handleKalshiAccount(req: IncomingMessage, res: ServerResponse, ur
       return;
     }
     if (url.pathname === "/api/shadow/kalshi/shards/transfer") {
-      if (!mustPost('{"fromShard":0,"toShard":3,"cents":5000}')) return;
+      if (!mustConfirm("fromShard, toShard, cents")) return;
       const fromShard = int("fromShard");
       const toShard = int("toShard");
       const cents = int("cents");
@@ -983,6 +1012,57 @@ async function handleKalshiAccount(req: IncomingMessage, res: ServerResponse, ur
       const t = await kalshiAccount.transferBetweenShards({ fromShard, toShard, cents });
       // Kalshi applies it asynchronously; the snapshot may still show the old split for a moment
       sendJson(res, 202, await snapshotBody({ transfer: { fromShard, toShard, cents, ...t, note: "applied asynchronously by the venue; read /api/shadow/kalshi/account again" } }));
+      return;
+    }
+    if (url.pathname === "/api/shadow/kalshi/keys") {
+      if (!confirmed) {
+        // the read: every key, which subaccount each is locked to, which one is this service's
+        const keys = await kalshiAccount.listApiKeys();
+        sendJson(res, 200, {
+          ok: true,
+          at,
+          apiKeys: keys.map((k) => ({ ...k, thisService: k.apiKeyId === kalshiAccountCreds?.apiKeyId })),
+          mint: "POST /api/shadow/kalshi/keys {name, subaccount?, keyType?} or GET …/keys?confirm=yes&name=parlayx-pod&subaccount=1; the private key is shown once",
+        });
+        return;
+      }
+      const name = str("name");
+      const subaccount = field("subaccount") === undefined || field("subaccount") === "" ? undefined : int("subaccount");
+      const keyTypeRaw = str("keyType").toLowerCase();
+      const keyType = keyTypeRaw === "ed25519" ? "ed25519" : keyTypeRaw === "" || keyTypeRaw === "rsa" ? "rsa" : null;
+      if (!name || name.length > 64 || subaccount === null || (subaccount !== undefined && (subaccount < 0 || subaccount > 63)) || keyType === null) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "name (1-64 chars) is required; subaccount optional 0-63 (restricts the key to that subaccount); keyType optional rsa (default) or ed25519" });
+        return;
+      }
+      const minted = await kalshiAccount.generateApiKey({ name, subaccount, keyType });
+      const { privateKeyPem, ...info } = minted;
+      sendJson(
+        res,
+        201,
+        await snapshotBody({
+          minted: {
+            ...info,
+            privateKeyPem,
+            shownOnce: "Kalshi does not store this private key and neither do we. Copy the key id and the private key into the pod's Kalshi connection now; this answer cannot be fetched again",
+            restricted: subaccount !== undefined ? `this key can read and trade subaccount ${subaccount} only; it cannot move cash or touch other subaccounts` : "this key is unrestricted: the whole account",
+          },
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/api/shadow/kalshi/keys/delete") {
+      if (!mustConfirm("id")) return;
+      const id = str("id");
+      if (!id) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "id names the key to revoke" });
+        return;
+      }
+      if (id === kalshiAccountCreds?.apiKeyId) {
+        sendJson(res, 409, { ok: false, error: "own_key", message: "that is the key this service signs with; revoke it from Kalshi's own page if you mean to" });
+        return;
+      }
+      await kalshiAccount.deleteApiKey(id);
+      sendJson(res, 200, await snapshotBody({ revoked: { apiKeyId: id } }));
       return;
     }
     sendJson(res, 404, { ok: false, error: "not_found" });
