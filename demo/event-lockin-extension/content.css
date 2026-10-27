@@ -112,7 +112,9 @@ tr.ael-host { display: table-row; }
 tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: normal; text-align: left; }
 /* Capped: the venue's table can be wider than the window, and a card under the Market column
    reads better than a banner across every column. */
-.ael-row { display: block; max-width: 680px; padding: 4px 0 8px; color: var(--ael-fg); font-size: 13px; text-align: left; }
+/* Positioned, above a card's "stretched link" overlay (Kalshi lays an absolutely positioned
+   anchor over each card and row); unpositioned, the overlay would take the hover and the tap. */
+.ael-row { display: block; position: relative; z-index: 5; max-width: 680px; padding: 4px 0 8px; color: var(--ael-fg); font-size: 13px; text-align: left; }
 
 /* The line: one button, label and caption, the row's own width. */
 .ael-line {
@@ -279,6 +281,8 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
    opens our own card at once (.ael-tip), so the cursor stays an arrow and the words come in the
    skin. The pill swallows its own click so the venue's row does not open. */
 .ael-pill {
+  position: relative;
+  z-index: 5;
   display: inline-flex;
   align-items: center;
   gap: 5px;
