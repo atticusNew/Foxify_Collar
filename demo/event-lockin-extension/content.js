@@ -128,7 +128,6 @@
     });
 
   const usd = (c) => (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
-  const usd0 = (c) => (c % 100 === 0 ? "$" + (c / 100).toLocaleString("en-US") : usd(c));
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const reshape = (n, F, C, K) => ({ floorTotal: F * n + K, capTotal: C * n + K });
@@ -1124,7 +1123,13 @@
   };
 
   const CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
-  const lineGo = (label, sub, cls) => '<button type="button" class="ael-line ' + (cls || "") + '"><span class="ael-ic">' + (cls === "ael-line-on" ? SHIELD_FILL : SHIELD) + '</span><span class="ael-lt"><b>' + label + "</b>" + (sub ? "<span>" + sub + "</span>" : "") + '</span><span class="ael-chev">' + CHEVRON + "</span></button>";
+  /**
+   * The line is the badge: the filled shield and one word or two in a pill ("Lock in", "Protected",
+   * "Unavailable"), then one sentence in the venue's row type, then the chevron. The pill is solid
+   * once the position is protected; muted while we wait or when protection is off.
+   */
+  const lineGo = (label, fact, cls) =>
+    '<button type="button" class="ael-line ' + (cls || "") + '"><span class="ael-tag"><span class="ael-ic">' + (cls === "ael-line-off" || cls === "ael-line-wait" ? SHIELD : SHIELD_FILL) + "</span><b>" + label + "</b></span>" + (fact ? '<span class="ael-fact">' + fact + "</span>" : "") + '<span class="ael-chev">' + CHEVRON + "</span></button>";
 
   /** The line under the row, from the row's state. */
   const paintRow = (B) => {
@@ -1141,35 +1146,35 @@
         const got = usd(rec.protectedCents != null ? rec.protectedCents + (rec.result === "yes" ? oddOf(B) : 0) : rec.result === "yes" ? rs.capTotal : rs.floorTotal);
         const cash = cashState(rec);
         line = cash
-          ? lineGo("Settled &middot; " + (cash.open ? cash.label : "paid " + esc(got)), cash.open ? "protected outcome " + esc(got) + (cash.sub ? " &middot; " + cash.sub : "") : "every leg paid", "ael-line-on")
-          : lineGo("Settled &middot; protected " + esc(got), "", "ael-line-on");
-      } else if (rec.status === "void") line = lineGo("Protection voided", "no official result; nothing owed", "ael-line-on");
-      else line = lineGo("Protected" + (rec.rehearsal ? " (rehearsal)" : "") + " &middot; " + esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), "whichever way it goes &middot; +" + esc(usd(rec.creditCents)) + " paid", "ael-line-on");
+          ? lineGo("Settled", cash.open ? "Protected outcome <b>" + esc(got) + "</b> &middot; " + cash.label + (cash.sub ? " &middot; " + cash.sub : "") : "Paid <b>" + esc(got) + "</b> &middot; every leg paid.", "ael-line-on")
+          : lineGo("Settled", "Protected outcome <b>" + esc(got) + "</b>.", "ael-line-on");
+      } else if (rec.status === "void") line = lineGo("Voided", "No official result; nothing owed.", "ael-line-on");
+      else line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>, whichever way it goes." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
     } else if (B.kind === "other") {
-      line = lineGo("Protection unavailable", VENUE_ID === "novig" ? "covers Winner picks" : "covers Moneyline picks", "ael-line-off");
+      line = lineGo("Unavailable", "Protection covers " + (VENUE_ID === "novig" ? "Winner" : "Moneyline") + " picks.", "ael-line-off");
     } else if (B.match === "unmatched") {
-      line = lineGo("Protection unavailable", VENUE_ID === "kalshi" ? "waits until the order fills" : "waits until the " + esc(V.play) + " is matched", "ael-line-off");
+      line = lineGo("Unavailable", VENUE_ID === "kalshi" ? "Protection waits until the order fills." : "Protection waits until the " + esc(V.play) + " is matched.", "ael-line-off");
     } else if (B.match === "settled") {
-      line = lineGo("Not protected", "this " + esc(V.play) + " settled without protection", "ael-line-off");
+      line = lineGo("Not protected", "This " + esc(V.play) + " settled without protection.", "ael-line-off");
     } else if (!B.size) {
-      line = lineGo("Lock in", "size not read from the page", "");
+      line = lineGo("Lock in", "Size not read from the page.", "");
     } else if (!st.quote) {
-      line = lineGo("Checking protection&hellip;", "", "ael-line-wait");
+      line = lineGo("Lock in", "Checking protection&hellip;", "ael-line-wait");
     } else if (!st.quote.ok) {
-      line = lineGo("Protection unavailable", esc(refusalWords(st.quote.code, st.quote.message).why.replace(/\.$/, "")), "ael-line-off");
+      line = lineGo("Unavailable", esc(refusalWords(st.quote.code, st.quote.message).why), "ael-line-off");
     } else {
       const p = st.quote.p;
       const q = p.quote;
       const t = (q.tiers && q.tiers[st.tier]) || q;
       const n = q.contracts || p.contracts;
       const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
-      const was = B.size && B.size.payoutCents ? " (was " + esc(usd(B.size.payoutCents)) + ")" : "";
-      line = lineGo("Lock in &middot; " + esc(usd(rs.floorTotal)) + " if the " + esc(shortOf(B.ticker)) + " lose", "instead of $0 &middot; " + esc(usd(rs.capTotal)) + " if they win" + was + " &middot; +" + esc(usd(t.creditCents)) + " paid now", "");
+      // one number on the line: the floor. The rest is one tap away, in the panel.
+      line = lineGo("Lock in", "Lose, and still get <b>" + esc(usd(rs.floorTotal)) + "</b>.", "");
     }
     // repaint only what changed: the venue re-renders often and every scan lands here, so
     // rewriting the same HTML would make the block blink and drop anything typed in it
     if (B.lineHtml !== line || !B.box.querySelector(".ael-line") || !B.box.querySelector(".ael-panel")) {
-      B.box.innerHTML = line + '<div class="ael-panel"></div>';
+      B.box.innerHTML = '<div class="ael-box">' + line + '<div class="ael-panel"></div></div>';
       B.lineHtml = line;
       B.panelHtml = null;
       B.box.querySelector(".ael-line").onclick = () => {
@@ -1196,6 +1201,13 @@
       panel.addEventListener("animationend", () => panel.classList.remove("ael-enter"), { once: true });
     }
     B.box.querySelector(".ael-line").classList.toggle("ael-open", Boolean(st.open));
+    // the lock lands once: the line fills solid for a beat, then settles to Protected
+    if (rec && rec.justNow && !st.flashed) {
+      st.flashed = true;
+      const ln = B.box.querySelector(".ael-line");
+      ln.classList.add("ael-flash");
+      ln.addEventListener("animationend", () => ln.classList.remove("ael-flash"), { once: true });
+    }
     if (st.open) paintPanel(B);
     else B.panelHtml = null;
     fitHost(B);
@@ -1212,15 +1224,13 @@
   const DISCLOSE = '<div class="ael-disclose">Protection by Atticus, a third party; not a product of this venue.</div>';
   const operator = () => S.settings.showHedge === "yes";
 
-  const whoLine = (B, p) => {
-    const nick = shortOf(B.ticker);
-    const size = B.size;
-    const pays = size ? usd(size.payoutCents || size.contracts * 100) : p ? usd0(100 * p.contracts) : "";
-    const paid = size && size.stakeCents ? " &middot; you paid " + esc(usd(size.stakeCents)) : "";
-    const from = operator() && B.from === "page" ? " &middot; read from the page" : "";
+  /** The notes a holder needs once, in the fine print: a Kalshi No read as the other club's Yes; where the size came from (operator). */
+  const notes = (B) => {
+    const out = [];
     // a Kalshi No on the other club is this club's Yes; say so once, in the holder's own words
-    const flip = B.flipped ? " &middot; your No on the " + esc(shortOf(siblingOf(B.ticker) || "")) : "";
-    return esc(nick) + (pays ? " &middot; pays " + esc(pays) + " if they win" : "") + paid + flip + from;
+    if (B.flipped) out.push("your No on the " + esc(shortOf(siblingOf(B.ticker) || "")));
+    if (operator() && B.from === "page") out.push("size read from the page");
+    return out;
   };
 
   /**
@@ -1232,14 +1242,21 @@
     if (!odd) return "";
     const covered = usd(100 * n);
     const pays = usd(B.size.payoutCents);
-    return '<div class="ael-fine">' + (odd > 0 ? "Covers " + esc(covered) + " of the " + esc(pays) + " payout (" + n + " whole contracts); the odd " + esc(usd(odd)) + " rides unprotected and is counted above." : "Covers " + esc(covered) + " (" + n + " whole contracts) on a position paying " + esc(pays) + "; the difference is counted above.") + "</div>";
+    return '<div class="ael-fine">' + (odd > 0 ? "Covers " + esc(covered) + " of the " + esc(pays) + " payout; the odd " + esc(usd(odd)) + " rides unprotected and is counted above." : "Covers " + esc(covered) + " on a position paying " + esc(pays) + "; the difference is counted above.") + "</div>";
   };
 
-  /** The three numbers, the floor first: the same strip before the tap and after it. */
-  const tiles = (nick, rs, creditCents, was) =>
-    '<div class="ael-tiles"><div class="ael-tile ael-k"><div class="ael-l">if ' + esc(nick) + ' lose</div><div class="ael-v">' + esc(usd(rs.floorTotal)) + '</div><div class="ael-was">was $0</div></div>' +
-    '<div class="ael-tile"><div class="ael-l">paid now</div><div class="ael-v">+' + esc(usd(creditCents)) + '</div><div class="ael-was">yours today</div></div>' +
-    '<div class="ael-tile"><div class="ael-l">if they win</div><div class="ael-v">' + esc(usd(rs.capTotal)) + '</div><div class="ael-was">' + (was ? "was " + esc(was) : "") + "</div></div></div>";
+  /**
+   * The slip: three rows with dividers, the way the venue's own ticket lays out a deal. Win, lose
+   * (the floor, the one coloured number), paid to you. Before the tap a third column says what
+   * each was unprotected; after it the two columns stand alone.
+   */
+  const ledgerRow = (label, value, third, cls) => '<div class="ael-lr' + (cls ? " " + cls : "") + '"><span class="ael-l">' + label + "</span><b>" + value + "</b>" + (third != null ? "<s>" + third + "</s>" : "") + "</div>";
+  const ledger = (nick, rs, creditCents, was) =>
+    '<div class="ael-ledger' + (was ? "" : " ael-two") + '">' +
+    ledgerRow(esc(nick) + " win", esc(usd(rs.capTotal)), was ? "was " + esc(was) : null) +
+    ledgerRow(esc(nick) + " lose", esc(usd(rs.floorTotal)), was ? "was $0" : null, "ael-hero") +
+    ledgerRow(was ? "Paid to you now" : "Paid to you", "+" + esc(usd(creditCents)), was ? "today" : null, "ael-last") +
+    "</div>";
 
   const paintPanel = (B) => {
     const st = stateOf(B);
@@ -1272,13 +1289,15 @@
         seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span>" + esc(usd(tr.floorTotal)) + " or " + esc(usd(tr.capTotal)) + " &middot; +" + esc(usd(tt.creditCents)) + "</span></button>";
       }
     }
+    const fine = ["Priced live"];
+    if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
+    fine.push(...notes(B), '<a href="#" class="ael-how-a">how it works</a>');
     const html =
-      '<div class="ael-top"><div class="ael-ph"><b>Worst case ' + esc(usd(rs.floorTotal)) + " instead of $0</b><span>" + whoLine(B, p) + "</span></div>" +
-      (seg ? '<div class="ael-segs">' + seg + "</div>" : "") + "</div>" +
-      tiles(shortOf(B.ticker), rs, t.creditCents, was) +
-      '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '">Lock in &middot; worst case ' + esc(usd(rs.floorTotal)) + "</button>" +
+      (seg ? '<div class="ael-segs">' + seg + "</div>" : "") +
+      ledger(shortOf(B.ticker), rs, t.creditCents, was) +
+      '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in</button>" +
       oddLine(B, n) +
-      '<div class="ael-fine">priced live, locks at your tap' + (p.eventTimeIso ? " &middot; available until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)) : "") + ' &middot; <a href="#" class="ael-how-a">how it works</a></div>' +
+      '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
       '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap.</p></div>" +
       DISCLOSE;
     setPanel(B, panel, html, () => {
@@ -1440,36 +1459,36 @@
       S.settings.showHedge === "yes" && h
         ? '<div class="ael-op">' + (h.simulated ? "hedge held: " + esc(h.fallbackReason || "simulated") : "hedged live on " + esc(h.venue || "Kalshi") + (h.via ? " via " + esc(h.via) : "") + " &middot; order " + esc(h.orderId || "") + " &middot; " + (h.costCents != null ? esc(usd(h.costCents)) : "")) + "</div>"
         : "";
-    // the receipt reads differently from the offer on purpose: a sentence with the numbers, then
-    // one grey line of facts; no tiles, no button, nothing left to choose
-    let head;
-    let sum;
+    // the same slip as the offer, with the locked numbers and no button; then one grey line of
+    // facts ending in the receipt link. Nothing left to choose, nothing to manage.
+    let body;
     const meta = [];
     if (rec.status === "settled" && rec.result) {
       const got = rec.protectedCents != null ? rec.protectedCents + (rec.result === "yes" ? oddOf(B) : 0) : rec.result === "yes" ? rs.capTotal : rs.floorTotal;
       const naked = rec.result !== "yes" ? 0 : B.size && B.size.payoutCents ? B.size.payoutCents : rec.nakedCents != null ? rec.nakedCents : 100 * rec.contracts;
-      head = '<span class="ael-ck">&#x2713;</span>Settled &middot; ' + esc(nick) + (rec.result === "yes" ? " won" : " lost");
-      // "you end with", not "you received": whether the cash has moved is the next clause
+      // "you end with", not "you received": whether the cash has moved is its own row
       const cash = cashState(rec);
-      sum = "You end with <b>" + esc(usd(got)) + "</b> &middot; unprotected it would have paid <b>" + esc(usd(naked)) + "</b>" + (cash ? " &middot; <b>" + cash.label + "</b>" : "");
-      if (rec.settledAt) meta.push("settled " + esc(fmtAt(rec.settledAt)));
+      body =
+        '<div class="ael-ledger ael-two">' +
+        ledgerRow(esc(nick) + (rec.result === "yes" ? " won" : " lost") + " &middot; you end with", esc(usd(got)), null, "ael-hero") +
+        ledgerRow("Unprotected, it would have paid", esc(usd(naked)), null, cash ? "" : "ael-last") +
+        (cash ? ledgerRow("Cash", cash.label, null, "ael-last") : "") +
+        "</div>";
+      if (rec.settledAt) meta.push("Settled " + esc(fmtAt(rec.settledAt)));
       if (cash && cash.open) meta.push(rec.result === "yes" ? "the slice above the cap goes back to the writer; the receipt shows each leg" : "the floor comes to you; the receipt shows each leg");
     } else if (rec.status === "void") {
-      head = "Protection voided";
-      sum = "No official result for this game &middot; nothing owed either way";
+      body = '<div class="ael-ph"><b>Protection voided</b><span>No official result for this game; nothing owed either way.</span></div>';
     } else {
-      head = (rec.justNow ? '<span class="ael-ck">&#x2713;</span>Locked in' : "Protected") + (rec.rehearsal ? " (rehearsal)" : "");
-      sum = "<b>" + esc(usd(rs.floorTotal)) + "</b> if the " + esc(nick) + " lose &middot; <b>" + esc(usd(rs.capTotal)) + "</b> if they win &middot; <b>+" + esc(usd(rec.creditCents)) + "</b> paid now";
-      meta.push("settles on the official result; nothing to manage");
-      if (rec.at) meta.push("locked " + esc(fmtAt(rec.at)));
+      body = ledger(nick, rs, rec.creditCents, null);
+      if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
+      if (rec.rehearsal) meta.push("rehearsal");
     }
     // the receipt's detail is one tap away, never in the way: a link at the end of the facts line
     if (rec.status !== "void") meta.push('<a href="#" class="ael-rcpt-a">' + (st.rcpt ? "hide receipt" : "receipt") + "</a>");
     const recordUrl = (S.baseUrl || "").replace(/\/+$/, "") + "/";
     const html =
-      '<div class="ael-ph ael-rc"><b>' + head + "</b></div>" +
-      '<div class="ael-sum">' + sum + "</div>" +
+      body +
       (meta.length ? '<div class="ael-meta">' + meta.join(" &middot; ") + "</div>" : "") +
       (rec.status !== "void" ? oddLine(B, rec.contracts) : "") +
       (st.rcpt && rec.status !== "void" ? receiptHtml(st, rec) : "") +
