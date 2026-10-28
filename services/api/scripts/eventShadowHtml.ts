@@ -1269,7 +1269,7 @@ export interface HoldersPageInput {
   token: string | null;
 }
 
-const CASH_LEG_WORDS: Record<string, string> = { credit: "credit", floor: "floor", handback: "above the cap" };
+const CASH_LEG_WORDS: Record<string, string> = { credit: "credit", floor: "floor", handback: "above the cap", close: "left early" };
 
 /** One cash leg as the pay run reads it: what is due, what moved, what is left, which way. */
 function cashLegHtml(l: CashLegDue): string {

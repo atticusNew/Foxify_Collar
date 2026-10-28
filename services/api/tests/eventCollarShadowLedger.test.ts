@@ -11,6 +11,7 @@ import {
   POSITIONS_CSV_COLUMNS,
   appendShadowRecord,
   cashDue,
+  closeNetCents,
   hedgeCostOf,
   hedgeUnitsOf,
   loadShadowPositions,
@@ -90,7 +91,30 @@ test("shadow: cash due follows the lock's state; cash lines pay a leg down and n
   assert.deepEqual(cashDue(won).map((d) => [d.leg, d.to, d.dueCents]), [["credit", "holder", 112], ["handback", "writer", (100 - 63) * 20]]);
   assert.deepEqual(cashDue({ ...won, capCents: 100 }).map((d) => d.leg), ["credit"]);
   assert.deepEqual(cashDue({ ...won, status: "void" as const, result: undefined }).map((d) => d.leg), ["credit"]);
-  assert.deepEqual(cashDue({ ...won, status: "closed" as const, result: undefined }).map((d) => d.leg), ["credit"]);
+
+  // left early: the holder's own sale is theirs on the venue; between the parties moves the hedge sale less the
+  // cap slice (closeNetCents = protected - naked - credit), to whichever side it favors; the schedule's close
+  // carries no source, the holder's carries "unwind" and whether the hedge sale was sent
+  const left = join(dir, "left.jsonl");
+  appendShadowRecord(left, { ...OPEN_FIXTURE, source: "lock", contracts: 20 });
+  // funding (100-63) x 20 = 740; hedge sale fetched 700: the holder owes the writer 40 beyond the credit
+  appendShadowRecord(left, { type: "close", at: "2026-09-13T12:00:00.000Z", ticker: t, priced: true, source: "unwind", hedgeSent: false, yesMidCents: 60, yesFillCents: 59, positionProceedsCents: 1150, hedgeProceedsCents: 700, feesCents: 40, protectedAtCloseCents: 1150 + 700 - 740 + 112, protectedAtMidCents: 1240, unwindFrictionCents: 18 });
+  const [closed] = loadShadowPositions(left);
+  assert.equal(closed.status, "closed");
+  assert.equal(closed.closeSource, "unwind");
+  assert.equal(closed.closeHedgeSent, false);
+  assert.equal(closeNetCents(closed), -40);
+  assert.deepEqual(cashDue(closed).map((d) => [d.leg, d.to, d.dueCents]), [["credit", "holder", 112], ["close", "writer", 40]]);
+  appendShadowRecord(left, { type: "cash", at: "2026-09-13T13:00:00.000Z", ticker: t, leg: "close", cents: 40, method: "venue transfer" });
+  assert.deepEqual(cashDue(loadShadowPositions(left)[0])[1], { leg: "close", to: "writer", dueCents: 40, paidCents: 40, outstandingCents: 0, paidAt: "2026-09-13T13:00:00.000Z" });
+  // the hedge sale fetched more than the slice: the difference is owed to the holder; exactly the slice: no leg at all
+  assert.deepEqual(cashDue({ ...closed, protectedCents: 1150 + 790 - 740 + 112 }).map((d) => [d.leg, d.to, d.dueCents]), [["credit", "holder", 112], ["close", "holder", 50]]);
+  assert.deepEqual(cashDue({ ...closed, protectedCents: 1150 + 112 }).map((d) => d.leg), ["credit"]);
+  const scheduled = join(dir, "scheduled.jsonl");
+  appendShadowRecord(scheduled, OPEN_FIXTURE);
+  appendShadowRecord(scheduled, { type: "close", at: "2026-09-13T12:00:00.000Z", ticker: t, priced: true, yesFillCents: 59, positionProceedsCents: 8596, hedgeProceedsCents: 4983, protectedAtCloseCents: 8141 });
+  assert.equal(loadShadowPositions(scheduled)[0].closeSource, "schedule");
+  assert.equal(loadShadowPositions(scheduled)[0].closeHedgeSent, undefined);
 });
 
 test("shadow: writer nets the published take whether the holder won or lost", () => {

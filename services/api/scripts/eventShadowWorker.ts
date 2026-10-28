@@ -68,6 +68,7 @@ import {
   CASH_LEGS,
   appendShadowRecord,
   cashDue,
+  closeNetCents,
   hedgeUnitsOf,
   ledgerStats,
   loadShadowPositions,
@@ -94,6 +95,8 @@ import type { HeldBookOpen, HeldBooks } from "../src/eventCollar/crossVenue/aggr
 import type { ReferenceBookId } from "../src/eventCollar/crossVenue/venueBooks";
 import {
   DEFAULT_CROSS_CONFIG,
+  capTotalCents,
+  floorTotalCents,
   type CrossQuoteResult,
   type CrossSearchConfig,
   type HedgeLeg,
@@ -126,6 +129,8 @@ import {
   getKalshiBookSides,
   quoteEarlyClose,
   type EarlyCloseBooks,
+  type EarlyCloseQuote,
+  type EarlyCloseTerms,
 } from "../src/eventCollar/crossVenue/earlyClose";
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { getComboLegStatus, getComboMarkets } from "../src/eventCollar/crossVenue/polymarketCombos";
@@ -314,6 +319,22 @@ let searchConfig: () => CrossSearchConfig = () => DEFAULT_CROSS_CONFIG;
 /** the lock path's engine calls (eventProtectXDemoService), wired in main() with the scanner */
 let quoteOneFn: typeof quoteOne | null = null;
 let listGameMarketsFn: typeof listGameMarkets | null = null;
+/**
+ * The live books an early close is priced from: the protected market's two sides on Kalshi and,
+ * on a cross-venue route, the hedge token's book. The hedge venue unreachable leaves the hedge
+ * leg unlocatable and the pricer says so. Replaced by the tests (wireLockEngine).
+ */
+let closeBooksFn: (p: Pick<ShadowPosition, "ticker" | "route" | "hedgeTokenId">) => Promise<EarlyCloseBooks> = async (p) => {
+  const books: EarlyCloseBooks = { kalshi: await getKalshiBookSides(p.ticker) };
+  if (p.route === "polymarket" && p.hedgeTokenId) {
+    try {
+      books.pmNoBook = await getPmBook(p.hedgeTokenId);
+    } catch {
+      // the hedge venue unreachable: the pricer records the leg as unlocatable, honestly
+    }
+  }
+  return books;
+};
 /** the engine's pricing-source status (the aggregator's feed, then the venues); wired in main() */
 let pricingSourceStatusFn: typeof pricingSourceStatus | null = null;
 let referenceCatalogFn: typeof referenceCatalog | null = null;
@@ -333,7 +354,7 @@ const LOCK_KEY = lockKeyFromEnv(process.env);
  */
 const HOLDER_KEYS = holderKeysFromEnv(process.env, LOCK_KEY);
 const LOCK_ROUTES_ON = Boolean(LOCK_KEY) || HOLDER_KEYS.holders.length > 0;
-const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/ext-telemetry"]);
+const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry"]);
 /**
  * THE EXTENSION'S SWITCHES, served with the markets list so the service, not the build, decides:
  * EVENT_SHADOW_EXT_MIN_VERSION   the version below which the extension shows "update" and draws nothing
@@ -555,6 +576,101 @@ function hedgeViewOf(receipt: HedgeReceipt) {
   };
 }
 
+/** The locked terms an early close prices against, read off the position as written. */
+function closeTermsOf(p: ShadowPosition): EarlyCloseTerms {
+  return {
+    contracts: p.contracts,
+    floorCents: p.floorCents,
+    capCents: p.capCents,
+    creditCents: p.creditCents,
+    takeCents: p.takeCents,
+    hedgeUnitsMilli: hedgeUnitsOf(p),
+    route: p.route,
+  };
+}
+
+/** The priced lines of a close as the ledger records them; shared by the schedule and the holder's unwind. */
+function closeLinesOf(q: EarlyCloseQuote) {
+  return {
+    yesMidCents: q.yesMidCents,
+    yesFillCents: q.yesFillCents,
+    positionProceedsCents: q.positionProceedsCents,
+    hedgeProceedsCents: q.hedgeProceedsCents,
+    feesCents: q.positionFeesCents + q.hedgeFeesCents,
+    protectedAtCloseCents: q.protectedAtCloseCents,
+    protectedAtMidCents: q.protectedAtMidCents,
+    unwindFrictionCents: q.unwindFrictionCents,
+  };
+}
+
+/**
+ * The holder's view of an early-close quote: what their own sale fetches, what the protection
+ * settles for between us, what they walk away with, against staying to the floor and the cap.
+ * The same shape before the tap (the quote) and after it (the record), so the client paints one.
+ */
+function unwindViewOf(lock: ShadowPosition, q: EarlyCloseQuote) {
+  return {
+    contracts: lock.contracts,
+    /** the holder's own sale: N Yes into the bids at this average, after the venue's fee */
+    yesFillCents: q.yesFillCents,
+    yesMidCents: q.yesMidCents,
+    positionProceedsCents: q.positionProceedsCents,
+    positionFeesCents: q.positionFeesCents,
+    /** between the two parties: our hedge sale less the cap slice sold at the tap; positive is owed to the holder */
+    hedgeProceedsCents: q.hedgeProceedsCents,
+    fundingCents: q.fundingCents,
+    closeNetCents: q.hedgeProceedsCents - q.fundingCents,
+    creditCents: lock.creditCents,
+    /** what the holder ends with: own sale + close net + credit */
+    protectedAtCloseCents: q.protectedAtCloseCents,
+    /** the same sale with no protection ever bought */
+    nakedAtCloseCents: q.nakedAtCloseCents,
+    /** the frictionless reference at the mid, and what crossing both books cost against it */
+    protectedAtMidCents: q.protectedAtMidCents,
+    unwindFrictionCents: q.unwindFrictionCents,
+    /** staying: the two ends of the protected position at settlement */
+    stayFloorCents: floorTotalCents(lock),
+    stayCapCents: capTotalCents(lock),
+  };
+}
+
+/** A lock's close, once it has one, as the receipt and the positions list carry it. */
+function closedViewOf(lock: ShadowPosition) {
+  if (lock.status !== "closed") return {};
+  return {
+    closedAt: lock.closedAt,
+    protectedCents: lock.protectedCents,
+    nakedCents: lock.nakedCents,
+    closeNetCents: closeNetCents(lock),
+    closeYesFillCents: lock.closeYesFillCents,
+    closeYesMidCents: lock.closeYesMidCents,
+    closeFeesCents: lock.closeFeesCents,
+    closeUnwindFrictionCents: lock.closeUnwindFrictionCents,
+    closeSource: lock.closeSource,
+    closeHedgeSent: lock.closeHedgeSent,
+  };
+}
+
+/**
+ * Refuse an unwind the pricers would, before any book is read. Open positions only; the early-close
+ * margin before the lock (the same one the schedule keeps) is the holder's last moment to leave.
+ */
+function unwindRefusal(lock: ShadowPosition | undefined, ticker: string, nowMs: number): { status: number; body: Record<string, unknown> } | null {
+  if (!lock) return { status: 404, body: { ok: false, error: "no_lock", message: ticker ? "This market is not on the record." : "?ticker= names the lock" } };
+  if (lock.status !== "open") {
+    const said = lock.status === "closed" ? "This position was already left early." : lock.status === "settled" ? "This position has settled; there is nothing to leave." : "This position was voided; there is nothing to leave.";
+    return { status: 409, body: { ok: false, error: "not_open", status: lock.status, message: said } };
+  }
+  const lastMs = Date.parse(lock.eventTimeIso) - earlyCloseRule.marginMs;
+  if (!Number.isFinite(lastMs) || nowMs > lastMs) {
+    return {
+      status: 409,
+      body: { ok: false, error: "too_late", message: `Leaving early closes ${Math.round(earlyCloseRule.marginMs / 60_000)} minutes before the start; the protection runs to settlement now.`, lastIso: Number.isFinite(lastMs) ? new Date(lastMs).toISOString() : null },
+    };
+  }
+  return null;
+}
+
 /**
  * The receipt that stands for a lock: the latest live fill on the trail for its ticker since the
  * lock was written; else the latest receipt since then; null when the trail has none (a lock
@@ -669,6 +785,8 @@ function retailOneQuote(res: CandidateResult, evBps: number | null) {
  *        write the open record with source "lock", fill the hedge, answer with the terms and the
  *        hedge receipt's outcome (the caller holds the key; it is the operator's own client)
  *   GET  /api/shadow/receipt?ticker=   the lock's terms and the hedge behind them, any time after
+ *   GET  /api/shadow/unwind/quote?ticker=   leaving early, priced now from the live books (earlyClose.ts), nothing written
+ *   POST /api/shadow/unwind {ticker}   quote again at the tap, write the close line (source "unwind"), answer with it
  */
 async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: URL, holder: string | null, operator = false): Promise<void> {
   if (!quoteOneFn || !listGameMarketsFn) {
@@ -741,6 +859,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
                 capCents: L.capCents,
                 creditCents: L.creditCents,
                 ...(L.result ? { result: L.result, protectedCents: L.protectedCents, nakedCents: L.nakedCents, settledAt: L.settledAt } : {}),
+                ...closedViewOf(L),
               }
             : null,
         };
@@ -842,6 +961,81 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     }
     return;
   }
+  if (url.pathname === "/api/shadow/unwind/quote") {
+    // LEAVE EARLY, PRICED: the holder's open lock sold into the live books on both legs, at this
+    // moment, nothing written. The same pricer the schedule uses (earlyClose.ts); the margin before
+    // the start that the schedule keeps is the holder's last moment too.
+    const ticker = (url.searchParams.get("ticker") ?? "").trim().toUpperCase();
+    const lock = ticker ? loadShadowPositions(ownLedger).find((p) => p.ticker === ticker) : undefined;
+    const refusal = unwindRefusal(lock, ticker, Date.now());
+    if (refusal || !lock) {
+      sendJson(res, refusal?.status ?? 404, { at: atIso, ticker, ...refusal?.body });
+      return;
+    }
+    const q = quoteEarlyClose(closeTermsOf(lock), await closeBooksFn(lock));
+    if (!q.ok) {
+      sendJson(res, 200, { ok: false, at: atIso, ticker, code: q.code, leg: q.leg, message: `${q.leg === "position" ? "Your side's" : "The hedge's"} book cannot take the size right now: ${q.detail}.` });
+      return;
+    }
+    sendJson(res, 200, { ok: true, at: atIso, ticker, ...(holder ? { holder } : {}), lastIso: new Date(Date.parse(lock.eventTimeIso) - earlyCloseRule.marginMs).toISOString(), unwind: unwindViewOf(lock, q) });
+    return;
+  }
+  if (url.pathname === "/api/shadow/unwind") {
+    // LEAVE EARLY, DONE: quote again at the tap (the books moved since the holder read them), write
+    // the close line with source "unwind", answer with what was written. The hedge sale is recorded
+    // at the book's price and not sent: the executor buys the other side and does not sell it yet,
+    // so the operator sells by hand and the line says hedgeSent false until that rail exists.
+    if (req.method !== "POST") {
+      sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST a JSON body {ticker}" });
+      return;
+    }
+    const body = (await readJsonBody(req)) as Record<string, unknown> | null;
+    const ticker = String(body?.ticker ?? "").trim().toUpperCase();
+    if (!ticker) {
+      sendJson(res, 400, { ok: false, error: "bad_request", message: "ticker names the lock" });
+      return;
+    }
+    const flight = inFlightKey(holder, ticker);
+    if (lockInFlight.has(flight)) {
+      sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being written right now." });
+      return;
+    }
+    lockInFlight.add(flight);
+    try {
+      const lock = loadShadowPositions(ownLedger).find((p) => p.ticker === ticker);
+      const refusal = unwindRefusal(lock, ticker, Date.now());
+      if (refusal || !lock) {
+        sendJson(res, refusal?.status ?? 404, { at: atIso, ticker, ...refusal?.body });
+        return;
+      }
+      const q = quoteEarlyClose(closeTermsOf(lock), await closeBooksFn(lock));
+      const at = new Date().toISOString();
+      if (!q.ok) {
+        // the attempt is on the record, as the schedule's are; the position stays open and the holder may try again
+        appendOrAlert({ type: "close", at, ticker, priced: false, reason: `${q.leg} leg: ${q.detail}`, source: "unwind" }, ownLedger);
+        sendJson(res, 200, { ok: false, at, ticker, code: q.code, leg: q.leg, message: `${q.leg === "position" ? "Your side's" : "The hedge's"} book cannot take the size right now: ${q.detail}. Nothing was closed.` });
+        return;
+      }
+      if (!appendOrAlert({ type: "close", at, ticker, priced: true, source: "unwind", hedgeSent: false, ...closeLinesOf(q) }, ownLedger)) {
+        sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: "The record could not be written; nothing was closed." });
+        return;
+      }
+      const closed = loadShadowPositions(ownLedger).find((p) => p.ticker === ticker)!;
+      sendJson(res, 200, {
+        ok: true,
+        at,
+        ticker,
+        ...(holder ? { holder } : {}),
+        status: closed.status,
+        unwind: unwindViewOf(lock, q),
+        hedge: { sent: false, note: "the hedge sale is recorded at the book's price; the operator sells it by hand" },
+        cash: cashDue(closed),
+      });
+    } finally {
+      lockInFlight.delete(flight);
+    }
+    return;
+  }
   if (url.pathname === "/api/shadow/receipt") {
     // The holder's receipt for one lock, any time after the tap: the terms as written and the
     // hedge that stands behind them (hedgeViewOf). The client opens this under "receipt".
@@ -864,8 +1058,10 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         floorCents: lock.floorCents,
         capCents: lock.capCents,
         creditCents: lock.creditCents,
+        eventTimeIso: lock.eventTimeIso,
         ...(lock.tier ? { tier: lock.tier } : {}),
         ...(lock.result ? { result: lock.result, protectedCents: lock.protectedCents, nakedCents: lock.nakedCents, settledAt: lock.settledAt } : {}),
+        ...closedViewOf(lock),
       },
       hedge: receipt ? hedgeViewOf(receipt) : null,
       // what the lock owes and what has been paid, leg by leg; the payments' references stay in the ledger
@@ -1527,45 +1723,13 @@ async function closeTick(): Promise<void> {
     if (now > Date.parse(p.eventTimeIso) - earlyCloseRule.marginMs) continue;
     due += 1;
     try {
-      const books: EarlyCloseBooks = { kalshi: await getKalshiBookSides(p.ticker) };
-      if (p.route === "polymarket" && p.hedgeTokenId) {
-        try {
-          books.pmNoBook = await getPmBook(p.hedgeTokenId);
-        } catch {
-          // the hedge venue unreachable: the pricer records the leg as unlocatable, honestly
-        }
-      }
-      const q = quoteEarlyClose(
-        {
-          contracts: p.contracts,
-          floorCents: p.floorCents,
-          capCents: p.capCents,
-          creditCents: p.creditCents,
-          takeCents: p.takeCents,
-          hedgeUnitsMilli: hedgeUnitsOf(p),
-          route: p.route,
-        },
-        books,
-      );
+      const q = quoteEarlyClose(closeTermsOf(p), await closeBooksFn(p));
       const at = new Date().toISOString();
       if (!q.ok) {
         appendOrAlert({ type: "close", at, ticker: p.ticker, priced: false, reason: `${q.leg} leg: ${q.detail}` });
         continue;
       }
-      appendOrAlert({
-        type: "close",
-        at,
-        ticker: p.ticker,
-        priced: true,
-        yesMidCents: q.yesMidCents,
-        yesFillCents: q.yesFillCents,
-        positionProceedsCents: q.positionProceedsCents,
-        hedgeProceedsCents: q.hedgeProceedsCents,
-        feesCents: q.positionFeesCents + q.hedgeFeesCents,
-        protectedAtCloseCents: q.protectedAtCloseCents,
-        protectedAtMidCents: q.protectedAtMidCents,
-        unwindFrictionCents: q.unwindFrictionCents,
-      });
+      appendOrAlert({ type: "close", at, ticker: p.ticker, priced: true, ...closeLinesOf(q) });
     } catch (err) {
       // venue unreachable; the schedule is still due next tick
       failed += 1;
@@ -2517,9 +2681,10 @@ async function main(): Promise<void> {
 if (process.env.NODE_ENV !== "test") void main();
 
 /** Test seam: the lock routes' engine calls, normally wired in main() from the scanner module. */
-export function wireLockEngine(fns: { quoteOne: typeof quoteOne; listGameMarkets: typeof listGameMarkets; venueClient?: HolderPositionsSource | null }): void {
+export function wireLockEngine(fns: { quoteOne: typeof quoteOne; listGameMarkets: typeof listGameMarkets; venueClient?: HolderPositionsSource | null; closeBooks?: typeof closeBooksFn }): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
+  if (fns.closeBooks) closeBooksFn = fns.closeBooks;
   if (fns.venueClient !== undefined) {
     venueClient = fns.venueClient;
     positionsCache = null;
