@@ -105,7 +105,9 @@ Novig Points on Novig.
 A Kalshi position is **Yes** or **No** on one club, N contracts at an average price in cents.
 Those are our units already: N contracts at 59¢ cost $5.90 and pay $10.00. The reader takes the
 contract count and the cents price off the row ("10 contracts · Avg 59¢"), or the cents price and
-the cost. A **No** on a club is read as a **Yes on the other club of the same game**, which is the
+the cost. Kalshi sells fractional contracts ("15.95 shares"); the fraction is kept and the whole
+position is covered, so a $15.95 payout is protected as $15.95, never 15 contracts and an odd 95
+cents left out. A **No** on a club is read as a **Yes on the other club of the same game**, which is the
 market the service protects: "No · DAL Cowboys, 15 contracts at 32¢" becomes 15 contracts of
 Philadelphia at 32¢, and the panel says "your No on the Cowboys" so the holder knows which row
 it means. Spread markets ("...: Spread") get the muted line. The Portfolio page's tabs are read:
@@ -134,13 +136,16 @@ Two sources, in this order:
    table: the row's figures sit under the column headers Cost, Price and Payout, so the reader pairs
    each cell with its header ("$20.00", "74.68%", "$26.78"); a row that labels its own figures
    ("Cost $20.00", "To Gain $6.78") or shows a price as American odds (-300) is read too. One $1
-   contract per payout dollar, entry price is cost over payout. The panel then says "read from the
-   page". If nothing can be read, the line offers "Price it" with a payout box.
+   contract per payout dollar, to the hundredth, entry price is cost over payout. The panel then
+   says "read from the page". If nothing can be read, the line offers "Price it" with a payout box.
 
-Prices become our units like this: $20 at 74.68% pays $26.78, which is 27 contracts at an entry
-of 75 cents. $5 at 25.5% (+292) pays $19.60: 20 contracts at 26 cents. The
-two sources agree to the cent on the preview board; the page is enough for the recording, the
-service confirms it when the key pair is set.
+Prices become our units like this: $20 at 74.68% pays $26.78, which is 26.78 contracts at an entry
+of 75 cents. $5 at 25.5% (+292) pays $19.60: 19.60 contracts at 26 cents. Kalshi's own fractions
+(15.95 contracts) are the same unit. The whole position is covered, so the slip's figures are the
+venue's figures to the cent; a per-contract price times a fractional size rounds the way the
+service rounds (a payout line half up, the handback down). The two sources agree to the cent on the
+preview board; the page is enough for the recording, the service confirms it when the key pair is
+set.
 
 ## See it before any deposit or trade (the simulations)
 

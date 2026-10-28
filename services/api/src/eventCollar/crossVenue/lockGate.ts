@@ -22,6 +22,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import type { ProtectionTier } from "./types";
+import { roundContracts } from "./types";
 
 export const PROTECTION_TIER_NAMES: readonly ProtectionTier[] = ["tight", "balanced", "wide"];
 
@@ -157,14 +158,22 @@ export interface LockRequest {
   tier?: ProtectionTier;
 }
 
-/** Validate a lock body. Tickers are upper-cased; sizes and prices must be whole numbers in range. */
+/**
+ * Validate a lock body. Tickers are upper-cased; the size is contracts to the hundredth (Kalshi
+ * sells fractions; a $7.69 payout elsewhere is 7.69 contracts), at least one, and prices are whole
+ * cents. A size given finer than a hundredth is refused rather than rounded: the venue's own
+ * figure is always a hundredth, so anything finer is a client bug.
+ */
 export function parseLockRequest(body: unknown): { ok: true; value: LockRequest } | { ok: false; error: string } {
   if (!body || typeof body !== "object") return { ok: false, error: "body must be a JSON object" };
   const b = body as Record<string, unknown>;
   const ticker = typeof b.ticker === "string" ? b.ticker.trim().toUpperCase() : "";
   if (!/^[A-Z0-9][A-Z0-9-]{2,80}$/.test(ticker)) return { ok: false, error: "ticker must be a Kalshi market ticker" };
-  const contracts = typeof b.contracts === "number" ? b.contracts : Number(b.contracts);
-  if (!Number.isInteger(contracts) || contracts < 1 || contracts > 10_000) return { ok: false, error: "contracts must be a whole number from 1 to 10,000" };
+  const raw = typeof b.contracts === "number" ? b.contracts : Number(b.contracts);
+  const contracts = roundContracts(raw);
+  if (!Number.isFinite(raw) || Math.abs(raw - contracts) > 1e-9 || contracts < 1 || contracts > 10_000) {
+    return { ok: false, error: "contracts must be from 1 to 10,000, to the hundredth of a contract" };
+  }
   const value: LockRequest = { ticker, contracts };
   if (b.entryCents !== undefined && b.entryCents !== null) {
     const e = typeof b.entryCents === "number" ? b.entryCents : Number(b.entryCents);

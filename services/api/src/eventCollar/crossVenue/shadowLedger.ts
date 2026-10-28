@@ -16,7 +16,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HedgeRoute, ProtectionTier, TakeRule } from "./types";
-import { PROTECTION_TIERS } from "./types";
+import { capTotalCents, centsDownOf, centsOf, centsUpOf, floorTotalCents, PROTECTION_TIERS } from "./types";
 import type { RuleCheck, RuleEvidence } from "./ruleEvidence";
 import {
   FEE_RULE_LABELS,
@@ -245,8 +245,8 @@ export interface CashLegDue {
  */
 export function cashDue(p: ShadowPosition): CashLegDue[] {
   const owed: Array<{ leg: CashLeg; to: "holder" | "writer"; dueCents: number }> = [{ leg: "credit", to: "holder", dueCents: p.creditCents }];
-  if (p.status === "settled" && p.result === "no") owed.push({ leg: "floor", to: "holder", dueCents: p.floorCents * p.contracts });
-  if (p.status === "settled" && p.result === "yes" && p.capCents < 100) owed.push({ leg: "handback", to: "writer", dueCents: (100 - p.capCents) * p.contracts });
+  if (p.status === "settled" && p.result === "no") owed.push({ leg: "floor", to: "holder", dueCents: centsOf(p.floorCents, p.contracts) });
+  if (p.status === "settled" && p.result === "yes" && p.capCents < 100) owed.push({ leg: "handback", to: "writer", dueCents: fundingOf(p) });
   return owed.map((o) => {
     const lines = (p.cash ?? []).filter((c) => c.leg === o.leg);
     const paidCents = lines.reduce((s, c) => s + c.cents, 0);
@@ -260,9 +260,8 @@ export function settlePayouts(
   p: Pick<ShadowOpenRecord, "contracts" | "floorCents" | "capCents" | "creditCents">,
   result: "yes" | "no",
 ): { protectedCents: number; nakedCents: number; deltaCents: number } {
-  const protectedCents =
-    (result === "yes" ? p.capCents : p.floorCents) * p.contracts + p.creditCents;
-  const nakedCents = result === "yes" ? 100 * p.contracts : 0;
+  const protectedCents = result === "yes" ? capTotalCents(p) : floorTotalCents(p);
+  const nakedCents = result === "yes" ? centsOf(100, p.contracts) : 0;
   return { protectedCents, nakedCents, deltaCents: protectedCents - nakedCents };
 }
 
@@ -273,7 +272,7 @@ type WriterInputs = Pick<
 
 /** The cap slice the holder sells: (100 - cap) x N cents, received by the writer in the YES state. */
 export function fundingOf(p: Pick<ShadowOpenRecord, "contracts" | "capCents">): number {
-  return (100 - p.capCents) * p.contracts;
+  return centsDownOf(100 - p.capCents, p.contracts);
 }
 
 /**
@@ -289,7 +288,7 @@ export function hedgeCostOf(p: WriterInputs): number {
 
 /** NO units the hedge bought, milli. Older records: the pricer's sizing rule, rounded up. */
 export function hedgeUnitsOf(p: WriterInputs): number {
-  return p.hedgeUnitsMilli ?? Math.ceil(((p.floorCents + 100 - p.capCents) * p.contracts * 1000) / 100);
+  return p.hedgeUnitsMilli ?? centsUpOf(p.floorCents + 100 - p.capCents, p.contracts) * 10;
 }
 
 /**
@@ -312,7 +311,7 @@ export function writerPayouts(
   const funding = fundingOf(p);
   const hedgeCost = hedgeCostOf(p);
   const hedgePayout = result === "no" ? Math.round(hedgeUnitsOf(p) / 10) : 0;
-  const holderLeg = result === "yes" ? funding : -p.floorCents * p.contracts;
+  const holderLeg = result === "yes" ? funding : -centsOf(p.floorCents, p.contracts);
   return {
     writerCents: holderLeg + hedgePayout - p.creditCents - hedgeCost,
     hedgePayoutCents: hedgePayout,
@@ -520,7 +519,7 @@ export function summarizeFlow(positions: readonly ShadowPosition[], now: Date = 
     const openedMs = Date.parse(p.at);
     const units = hedgeUnitsOf(p);
     const cost = hedgeCostOf(p);
-    const stake = 100 * p.contracts;
+    const stake = centsOf(100, p.contracts);
     for (const w of openedMs >= sinceMs && openedMs <= nowMs ? [recent, all] : [all]) {
       w.positions += 1;
       w.contractsMilli += units;
@@ -752,7 +751,7 @@ function foldRule(
     const out = altOutcome(alt, contracts, result);
     if (out) {
       book.settled += 1;
-      book.stakeSettledCents += 100 * contracts;
+      book.stakeSettledCents += centsOf(100, contracts);
       book.holderDeltaCents += out.deltaCents;
       book.writerPnlCents += out.writerCents;
     }
@@ -909,7 +908,7 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
       foldRule(row, probe.terms, probe.contracts, result);
       if (probe.terms.ok) {
         row.grossCreditCents += probe.terms.grossCreditCents;
-        row.stakeQuotedCents += 100 * probe.contracts;
+        row.stakeQuotedCents += centsOf(100, probe.contracts);
       }
     }
   }
@@ -1021,7 +1020,7 @@ export function summarizeShadow(positions: ShadowPosition[], now: Date = new Dat
   for (const p of settled) {
     protectedTotalCents += p.protectedCents ?? 0;
     nakedTotalCents += p.nakedCents ?? 0;
-    stakeCents += 100 * p.contracts;
+    stakeCents += centsOf(100, p.contracts);
     if (p.settledAt && (!lastSettledAt || p.settledAt > lastSettledAt)) lastSettledAt = p.settledAt;
 
     const result = p.result ?? "no";
@@ -1038,15 +1037,15 @@ export function summarizeShadow(positions: ShadowPosition[], now: Date = new Dat
     } else {
       w.pnlWhenHolderLostCents += wp.writerCents;
       w.settledWhenHolderLost += 1;
-      w.floorsPaidCents += p.floorCents * p.contracts;
+      w.floorsPaidCents += centsOf(p.floorCents, p.contracts);
     }
     const lg = byLeague[p.league];
     lg.settled += 1;
     lg.pnlCents += wp.writerCents;
-    lg.stakeCents += 100 * p.contracts;
+    lg.stakeCents += centsOf(100, p.contracts);
     for (const sg of [seg(segRoute, p.route), seg(segLeague, p.league), seg(segKind, p.kind)]) {
       sg.settled += 1;
-      sg.stakeSettledCents += 100 * p.contracts;
+      sg.stakeSettledCents += centsOf(100, p.contracts);
       sg.holderDeltaCents += (p.protectedCents ?? 0) - (p.nakedCents ?? 0);
       sg.creditsCents += p.creditCents;
       sg.takeCents += p.takeCents;
@@ -1136,7 +1135,7 @@ export function summarizeClosed(positions: ShadowPosition[]): ShadowClosedSummar
     out.feesCents += p.closeFeesCents ?? 0;
     out.writerPnlCents += p.writerCents ?? 0;
     out.takeBookedCents += p.takeCents;
-    out.stakeCents += 100 * p.contracts;
+    out.stakeCents += centsOf(100, p.contracts);
     if (typeof p.closeProtectedAtMidCents === "number" && typeof p.closeUnwindFrictionCents === "number") {
       out.withMid += 1;
       out.protectedAtMidCents += p.closeProtectedAtMidCents;

@@ -27,6 +27,7 @@
 import { createHash, createPrivateKey, sign as cryptoSign, type KeyObject } from "node:crypto";
 import { LEAGUE_TEMPLATES, type LeagueTemplate } from "./resolutionWhitelist";
 import { outcomeNameMatches } from "./eventMatcher";
+import { roundContracts } from "./types";
 
 export const SCHEME = "NOVIG-V3";
 export const EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -358,11 +359,15 @@ function isPosition(p: unknown): p is RawVenuePosition {
 // units and matching
 // ---------------------------------------------------------------------------
 
-/** The venue's cents-per-contract position in our dollars-per-contract terms. */
+/**
+ * The venue's cents-per-contract position in our dollars-per-contract terms: qty cents of payout
+ * is qty / 100 contracts, to the hundredth (1595 is 15.95 contracts, the venue's own fraction).
+ * Under one contract there is no size to protect.
+ */
 export function positionSize(qty: number, cost: string): { contracts: number; entryCents: number; payoutCents: number; costCents: number } | null {
   const costNum = Number(cost);
   if (!Number.isInteger(qty) || qty <= 0 || !Number.isFinite(costNum) || costNum < 0) return null;
-  const contracts = Math.round(qty / 100);
+  const contracts = roundContracts(qty / 100);
   if (contracts < 1) return null;
   const costCents = Math.round(costNum * 100);
   // average price as a fraction is cost / (qty * 0.01); in cents per $1 contract that is 10000 * cost / qty

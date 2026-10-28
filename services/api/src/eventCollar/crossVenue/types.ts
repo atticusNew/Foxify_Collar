@@ -13,9 +13,51 @@
  * EXACTLY to integer milli units (1000 = $1 / 1 share) so no float enters the
  * credit identity. Cross products land in micro dollars (priceMilli *
  * sizeMilli), converted once to cents rounded AGAINST the holder's credit.
+ *
+ * Position size: contracts to the hundredth. Kalshi sells fractional contracts
+ * (count_fp "15.95"), and a $7.69 payout on an exchange is 7.69 contracts of
+ * $1, so a size is any multiple of 0.01 from 1.00 up. A per-contract figure in
+ * cents times a size can land on a half cent; the helpers below say which way
+ * each such product rounds, and every money line is built from them so the
+ * record's identities hold to the cent.
  */
 
 import type { KalshiMarket } from "../types";
+
+/** A size snapped to the hundredth of a contract (float noise removed). */
+export function roundContracts(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** Exact hundredths of a contract (15.95 -> 1595); the integer the money helpers work in. */
+export function contractHundredths(contracts: number): number {
+  return Math.round(contracts * 100);
+}
+
+/** perContractCents x contracts, rounded half up to the cent: a payout line (floor paid, cap kept). */
+export function centsOf(perContractCents: number, contracts: number): number {
+  return Math.round((perContractCents * contractHundredths(contracts)) / 100);
+}
+
+/** ... rounded UP: a quantity that must never come up short (the hedge the writer must hold). */
+export function centsUpOf(perContractCents: number, contracts: number): number {
+  return Math.ceil((perContractCents * contractHundredths(contracts)) / 100);
+}
+
+/** ... rounded DOWN: a quantity the holder hands back (the funding the cap releases). */
+export function centsDownOf(perContractCents: number, contracts: number): number {
+  return Math.floor((perContractCents * contractHundredths(contracts)) / 100);
+}
+
+/** The holder's two settled outcomes under terms (floor, cap, credit) on a size: whole cents. */
+export function floorTotalCents(t: { floorCents: number; contracts: number; creditCents: number }): number {
+  return centsOf(t.floorCents, t.contracts) + t.creditCents;
+}
+
+/** Cap kept = the whole payout less the funding handed back, so handback + cap total = payout + credit exactly. */
+export function capTotalCents(t: { capCents: number; contracts: number; creditCents: number }): number {
+  return centsOf(100, t.contracts) - centsDownOf(100 - t.capCents, t.contracts) + t.creditCents;
+}
 
 /** One Polymarket market normalized from the Gamma API. */
 export interface PmMarket {
