@@ -27,6 +27,7 @@
   --ael-accent-hover: #0db553;
   --ael-accent-ink: #ffffff;
   --ael-glow: #55e8b9;
+  --ael-accent-text: #55e8b9;
   --ael-accent-line: rgba(11, 162, 73, 0.55);
   --ael-accent-wash: rgba(11, 162, 73, 0.1);
   --ael-accent-wash-2: rgba(11, 162, 73, 0.14);
@@ -57,6 +58,7 @@
   --ael-accent-hover: #05a46e;
   --ael-accent-ink: #ffffff;
   --ael-glow: #06b67a;
+  --ael-accent-text: #059a67;
   --ael-accent-line: rgba(6, 182, 122, 0.55);
   --ael-accent-wash: rgba(6, 182, 122, 0.08);
   --ael-accent-wash-2: rgba(6, 182, 122, 0.12);
@@ -86,6 +88,7 @@
   --ael-accent-hover: #2ea8f0;
   --ael-accent-ink: #ffffff;
   --ael-glow: #5fc1ff;
+  --ael-accent-text: #5fc1ff;
   --ael-accent-line: rgba(23, 155, 231, 0.6);
   --ael-accent-wash: rgba(23, 155, 231, 0.12);
   --ael-accent-wash-2: rgba(23, 155, 231, 0.16);
@@ -114,75 +117,84 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
    reads better than a banner across every column. */
 /* Positioned, above a card's "stretched link" overlay (Kalshi lays an absolutely positioned
    anchor over each card and row); unpositioned, the overlay would take the hover and the tap. */
-.ael-row { display: block; position: relative; z-index: 5; max-width: 680px; padding: 4px 0 8px; color: var(--ael-fg); font-size: 13px; text-align: left; }
+.ael-row { display: block; position: relative; z-index: 5; max-width: 680px; padding: 4px 0 8px; color: var(--ael-fg); font-size: 14px; text-align: left; }
 
-/* The line: one button, label and caption, the row's own width. */
+/* The line is the badge. One box holds the line and, when open, the panel under it: one border,
+   the venue's radius, no card inside a card. The line: the pill (filled shield, "Lock in"), one
+   sentence in the row's type, the chevron. */
+.ael-box { border: 1px solid var(--ael-accent-line); border-radius: var(--ael-radius); background: var(--ael-bg); overflow: hidden; transition: border-color 0.12s, background 0.12s; }
+.ael-box:has(.ael-line-on) { border-color: var(--ael-accent); background: var(--ael-accent-wash); }
+.ael-box:has(.ael-line-off), .ael-box:has(.ael-line-wait) { border-color: var(--ael-border); }
+.ael-box:has(.ael-line-off:hover) { border-color: var(--ael-border-hover); }
 .ael-line {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--ael-accent-line);
-  border-radius: var(--ael-radius);
-  background: var(--ael-accent-wash);
-  color: var(--ael-fg-strong);
+  padding: 7px 10px 7px 7px;
+  border: 0;
+  background: transparent;
+  color: var(--ael-fg);
   cursor: pointer;
   text-align: left;
-  transition: background 0.12s, border-color 0.12s;
+  font: inherit;
 }
-.ael-line:hover { background: var(--ael-accent-wash-3); border-color: var(--ael-accent); }
+.ael-line:hover { background: var(--ael-accent-wash); }
+.ael-line-off:hover, .ael-line-wait:hover { background: var(--ael-bg-raise); }
+.ael-line-wait { cursor: default; }
+/* the pill in the line: the same mark as the game-card badge */
+.ael-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--ael-accent-line);
+  background: var(--ael-accent-wash-2);
+  color: var(--ael-fg-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.ael-tag b { font-weight: 600; }
+.ael-tag .ael-ic { width: 14px; height: 14px; color: var(--ael-glow); }
+.ael-tag .ael-ic svg { width: 14px; height: 14px; }
+.ael-tag svg path:last-child { stroke: var(--ael-bg); }
+/* protected: the pill goes solid in the venue's accent */
+.ael-line-on .ael-tag { background: var(--ael-accent); border-color: var(--ael-accent); color: var(--ael-accent-ink); }
+.ael-line-on .ael-tag .ael-ic { color: var(--ael-accent-ink); }
+.ael-line-on .ael-tag svg path:last-child { stroke: var(--ael-accent); }
+/* waiting or unavailable: muted outline pill */
+.ael-line-off .ael-tag, .ael-line-wait .ael-tag { background: var(--ael-bg-deep); border-color: var(--ael-border-hover); color: var(--ael-soft); }
+.ael-line-off .ael-tag .ael-ic, .ael-line-wait .ael-tag .ael-ic { color: var(--ael-dim); }
 .ael-ic { display: inline-flex; flex: none; width: 18px; height: 18px; align-items: center; justify-content: center; color: var(--ael-glow); }
 .ael-ic svg { width: 16px; height: 16px; display: block; }
-.ael-lt { display: flex; flex: 1; min-width: 0; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.ael-lt b { font-size: 13px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.ael-lt span { font-size: 11px; color: var(--ael-muted); }
-.ael-lt span b { font-size: 11px; color: var(--ael-fg); font-weight: 600; }
+.ael-fact { flex: 1; min-width: 0; font-size: 14px; color: var(--ael-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ael-fact b { font-weight: 600; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; }
+.ael-line-off .ael-fact, .ael-line-wait .ael-fact { color: var(--ael-muted); }
 /* The chevron: the line opens and closes its panel; it turns when the panel is open. */
-.ael-chev { flex: none; width: 14px; height: 14px; color: var(--ael-dim); transition: transform 0.18s ease; }
-.ael-chev svg { width: 14px; height: 14px; display: block; }
+.ael-chev { flex: none; width: 16px; height: 16px; color: var(--ael-dim); transition: transform 0.18s ease; }
+.ael-chev svg { width: 16px; height: 16px; display: block; }
 .ael-line.ael-open .ael-chev { transform: rotate(180deg); color: var(--ael-muted); }
+/* the lock lands: solid for a beat, then Protected */
+.ael-line.ael-flash { animation: ael-flash 0.7s ease-out; }
+@keyframes ael-flash { 0%, 35% { background: var(--ael-accent); } 100% { background: transparent; } }
+.ael-line.ael-flash .ael-fact, .ael-line.ael-flash .ael-fact b, .ael-line.ael-flash .ael-chev { animation: ael-flash-ink 0.7s ease-out; }
+@keyframes ael-flash-ink { 0%, 35% { color: var(--ael-accent-ink); } }
 
-.ael-line-wait { border-color: var(--ael-border); background: var(--ael-bg); cursor: default; }
-.ael-line-wait .ael-ic { color: var(--ael-dim); }
-.ael-line-wait b { color: var(--ael-muted); font-weight: 600; }
-
-/* Unavailable: muted, still a button; the tap says why. */
-.ael-line-off { border-color: var(--ael-border); background: var(--ael-bg); color: var(--ael-muted); }
-.ael-line-off:hover { background: var(--ael-bg-raise); border-color: var(--ael-border-hover); }
-.ael-line-off .ael-ic { color: var(--ael-dim); }
-.ael-line-off b { color: var(--ael-soft); font-weight: 600; }
-
-/* Protected: filled shield, accent outline. */
-.ael-line-on { border-color: var(--ael-accent); background: var(--ael-accent-wash-2); }
-.ael-line-on .ael-ic { color: var(--ael-glow); }
-
-/* The panel under the line, closed by default. */
-.ael-panel { display: none; margin-top: 6px; padding: 12px 14px 10px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg); color: var(--ael-fg); font-size: 13px; }
+/* The panel under the line, closed by default: part of the same box, a divider above it. */
+.ael-panel { display: none; padding: 2px 14px 12px; border-top: 1px solid var(--ael-divider); color: var(--ael-fg); font-size: 14px; }
 .ael-panel.ael-on { display: block; }
 /* The slide-in plays once, at the tap that opens the panel; a repaint never replays it. */
 .ael-panel.ael-enter { animation: ael-open 0.18s ease-out; }
 @keyframes ael-open { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 
-.ael-ph { margin: 0 0 10px; }
-.ael-ph b { display: block; font-size: 14px; font-weight: 700; color: var(--ael-fg-strong); }
-.ael-ph span { display: block; font-size: 11.5px; color: var(--ael-muted); margin-top: 2px; }
-.ael-ph .ael-ck,
-.ael-ck {
-  display: inline-flex;
-  vertical-align: baseline;
-  margin-top: 0;
-  width: 18px;
-  height: 18px;
-  margin: 0 8px -3px 0;
-  border-radius: 50%;
-  background: var(--ael-accent-wash-3);
-  color: var(--ael-glow);
-  font-size: 12px;
-  font-weight: 800;
-  align-items: center;
-  justify-content: center;
-}
+/* A heading with a sentence under it: refusals, a voided lock. */
+.ael-ph { margin: 10px 0 6px; }
+.ael-ph b { display: block; font-size: 14px; font-weight: 600; color: var(--ael-fg-strong); }
+.ael-ph span { display: block; font-size: 12px; color: var(--ael-muted); margin-top: 3px; }
 
 .ael-skel {
   height: 14px;
@@ -190,91 +202,94 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
   background: linear-gradient(90deg, var(--ael-bg-raise) 25%, var(--ael-bg-hover) 50%, var(--ael-bg-raise) 75%);
   background-size: 200% 100%;
   animation: ael-shimmer 1.2s infinite;
-  margin: 8px 0;
+  margin: 12px 0;
 }
 @keyframes ael-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-/* The three numbers, then the button under them, as the venue's own slip does it. */
-.ael-tiles { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 6px; margin: 0 0 8px; }
-.ael-tile { border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 6px 8px 5px; text-align: center; background: var(--ael-bg-deep); }
-.ael-tile.ael-k { background: var(--ael-accent-wash-2); border-color: var(--ael-accent-line); }
-.ael-l { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ael-muted); }
-.ael-v { font-size: 14px; font-weight: 700; margin: 2px 0 1px; font-variant-numeric: tabular-nums; color: var(--ael-fg-strong); }
-.ael-tile.ael-k .ael-v { color: var(--ael-glow); }
-.ael-was { font-size: 10.5px; color: var(--ael-dim); }
+/* The slip: rows with dividers, the venue's type size, right-aligned tabular numbers; the floor
+   is the one coloured figure. Nothing under 12px anywhere in the panel. */
+.ael-ledger { margin: 0; }
+.ael-lr { display: flex; align-items: baseline; gap: 18px; padding: 9px 0; border-bottom: 1px solid var(--ael-divider); }
+.ael-lr.ael-last { border-bottom: 0; }
+.ael-lr .ael-l { flex: 1; min-width: 0; font-size: 14px; color: var(--ael-fg); }
+.ael-lr b { font-size: 15px; font-weight: 600; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ael-lr s { width: 92px; font-size: 12px; color: var(--ael-muted); text-align: right; text-decoration: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ael-hero b { color: var(--ael-accent-text); }
 
 /* Shape of the deal: a small segmented control, visible when the books fund more than one. */
-.ael-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-.ael-top .ael-ph { flex: 1 1 260px; }
-.ael-segs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(150px, auto); gap: 6px; margin: 0 0 8px; }
-.ael-seg { border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg-deep); color: var(--ael-muted); padding: 5px 6px; font-size: 10px; line-height: 1.3; cursor: pointer; text-align: center; }
-.ael-seg b { display: block; color: var(--ael-fg-strong); font-size: 11.5px; margin-bottom: 1px; }
+.ael-segs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(150px, auto); gap: 6px; margin: 10px 0 2px; }
+.ael-seg { border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg-deep); color: var(--ael-muted); padding: 6px 8px; font-size: 12px; line-height: 1.3; cursor: pointer; text-align: center; font-family: inherit; }
+.ael-seg b { display: block; color: var(--ael-fg-strong); font-size: 12.5px; font-weight: 600; margin-bottom: 1px; }
 .ael-seg span { display: block; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ael-seg[aria-pressed="true"] { border-color: var(--ael-accent); box-shadow: 0 0 0 1px var(--ael-accent) inset; background: var(--ael-accent-wash-2); }
 
+/* The button: the badge grown to the row's width. It says Lock in; the price is on the rows above it. */
 .ael-go {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   width: 100%;
-  padding: 9px 16px;
-  margin: 0 0 7px;
+  height: 40px;
+  padding: 0 16px;
+  margin: 8px 0 10px;
   border: 0;
   border-radius: var(--ael-radius);
   background: var(--ael-accent);
   color: var(--ael-accent-ink);
-  font-size: 13px;
-  font-weight: 700;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
 }
 .ael-go:hover { background: var(--ael-accent-hover); }
 .ael-go:disabled { cursor: wait; }
+.ael-go .ael-ic { width: 16px; height: 16px; color: var(--ael-accent-ink); }
+.ael-go .ael-ic svg { width: 16px; height: 16px; }
+.ael-go svg path:last-child { stroke: var(--ael-accent); }
 /* While the lock runs: the button holds its colour, a small ring turns before the stage in words. */
 .ael-go.ael-busy { background: var(--ael-accent); font-weight: 600; }
 .ael-go.ael-busy::before {
   content: "";
   display: inline-block;
-  vertical-align: -3px;
   width: 13px;
   height: 13px;
-  margin-right: 9px;
   border-radius: 50%;
   border: 2px solid var(--ael-ring);
   border-top-color: var(--ael-accent-ink);
   animation: ael-spin 0.8s linear infinite;
 }
 @keyframes ael-spin { to { transform: rotate(360deg); } }
-.ael-go.ael-quiet { background: var(--ael-bg-raise); color: var(--ael-fg-strong); font-size: 12.5px; font-weight: 700; padding: 8px 14px; width: auto; margin: 0; }
+.ael-go.ael-quiet { display: inline-flex; width: auto; height: 36px; margin: 0; padding: 0 14px; background: var(--ael-bg-raise); color: var(--ael-fg-strong); font-size: 13px; }
 .ael-go.ael-quiet:hover { background: var(--ael-bg-hover); }
 
-.ael-fine { font-size: 10.5px; color: var(--ael-dim); text-align: left; margin-bottom: 2px; }
+.ael-fine { font-size: 12px; color: var(--ael-muted); text-align: left; margin: 0 0 4px; line-height: 1.4; }
 .ael-fine a { color: var(--ael-muted); text-decoration: underline; }
 
-.ael-how { display: none; font-size: 12px; color: var(--ael-muted); margin: 8px 0 4px; max-width: 70ch; }
+.ael-how { display: none; font-size: 12.5px; color: var(--ael-soft); margin: 10px 0 6px; max-width: 70ch; line-height: 1.45; }
 .ael-how.ael-on { display: block; }
 .ael-how p { margin: 0 0 6px; }
 
-/* The receipt: a sentence with the numbers, then one grey line of facts. */
-.ael-ph.ael-rc { margin-bottom: 4px; }
-.ael-sum { font-size: 13px; color: var(--ael-soft); margin: 0 0 3px; }
-.ael-sum b { color: var(--ael-fg-strong); font-weight: 700; font-variant-numeric: tabular-nums; }
-.ael-meta { font-size: 11px; color: var(--ael-dim); margin: 0 0 6px; }
+/* After the lock: the slip above, then one grey line of facts ending in the receipt link. */
+.ael-meta { font-size: 12px; color: var(--ael-muted); margin: 10px 0 4px; line-height: 1.4; }
 .ael-meta a { color: var(--ael-muted); text-decoration: underline; }
 .ael-meta a:hover { color: var(--ael-soft); }
 
 /* The receipt's detail, under "receipt": what stands behind the terms, four labelled lines. */
-.ael-rcpt { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 3px; font-size: 11.5px; color: var(--ael-soft); background: var(--ael-bg-deep); border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 8px 10px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+.ael-rcpt { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 4px; font-size: 12px; color: var(--ael-soft); background: rgba(127, 127, 127, 0.1); border-radius: var(--ael-radius); padding: 8px 10px; margin: 2px 0 8px; font-variant-numeric: tabular-nums; line-height: 1.4; }
 .ael-rcpt span { color: var(--ael-dim); }
 .ael-rcpt b { font-weight: 600; color: var(--ael-fg); overflow-wrap: anywhere; }
-.ael-rcpt code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--ael-soft); }
+.ael-rcpt code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--ael-soft); }
 .ael-rcpt .ael-dim { color: var(--ael-muted); font-weight: 500; }
 
-.ael-size-form { display: flex; gap: 8px; align-items: center; margin: 0 0 8px; }
-.ael-size-form input { width: 110px; padding: 7px 10px; border: 1px solid var(--ael-border-hover); border-radius: var(--ael-radius); font-size: 13px; color: var(--ael-fg-strong); background: var(--ael-bg-deep); }
+.ael-size-form { display: flex; gap: 8px; align-items: center; margin: 0 0 10px; }
+.ael-size-form input { width: 120px; height: 36px; padding: 0 10px; border: 1px solid var(--ael-border-hover); border-radius: var(--ael-radius); font: inherit; font-size: 14px; color: var(--ael-fg-strong); background: var(--ael-bg-deep); }
 
-.ael-op { font-size: 11px; color: var(--ael-muted); background: var(--ael-bg-deep); border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 6px 10px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+.ael-op { font-size: 12px; color: var(--ael-muted); background: rgba(127, 127, 127, 0.1); border-radius: var(--ael-radius); padding: 7px 10px; margin: 0 0 8px; font-variant-numeric: tabular-nums; line-height: 1.4; }
 .ael-op a { color: var(--ael-glow); text-decoration: underline; font-weight: 600; }
 
-.ael-disclose { font-size: 10px; color: var(--ael-faint); text-align: left; margin-top: 6px; }
+.ael-disclose { font-size: 12px; color: var(--ael-faint); text-align: left; margin-top: 4px; }
 
 /* Before the trade. The pill: a filled shield and the words "Lock in · until 7:35pm ET" on each
    protectable game's card, after its title or its time line. Not a browser tooltip: hovering
@@ -399,7 +414,6 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-card .ael-row { padding-top: 6px; }
 
 @media (max-width: 560px) {
-  .ael-tiles { grid-template-columns: 1fr 1fr; }
-  .ael-tile.ael-k { grid-column: 1 / -1; order: -1; }
+  .ael-lr s { width: 72px; }
   .ael-segs { grid-auto-flow: row; }
 }

@@ -36,31 +36,35 @@ Before the trade, two quiet things and no more (each can be turned off in Option
 The holder places the play exactly as they do today. The offer itself is on one page, the list
 of open plays. Once a matched play exists, under its row:
 
-1. a **Lock in** line that leads with the floor: "Lock in · $14.71 if the Texans lose", caption
-   "instead of $0 · $25.06 if they win (was $46.00) · +$1.66 paid now". Priced live from the
-   holder's actual size. The floor is the product; the credit is the third number on purpose;
+1. a **Lock in** line that is the badge: the filled shield and "Lock in" in a pill, then one
+   sentence in the row's own type, "Lose, and still get $14.71." Priced live from the holder's
+   actual size. One number on the line; the rest is one tap away;
 2. tapping it (the chevron at the right end turns) opens an **inline panel** under that row (the
-   rows below move down; nothing floats over the slip), a card under the Market column in the
-   venue's type size, never wider than 680px: the headline "Worst case $14.71 instead of $0"
-   with, to its right, the price shapes the book offers right now (**Most now** / **Even** /
-   **Keep more upside**, only the ones that clear the minimum credit; a heavy favourite usually
-   gets one or two); three tiles (if they lose, highlighted; paid now; if they win); the button
-   under them ("Lock in · worst case $14.71"), as the venue's own slip places it; a fine-print
-   line with the kickoff cut-off and "how it works". Tapping the line again closes it;
-3. after the tap, a **Protected** chip on the row: "Protected · $14.71 or $25.06 · whichever way
-   it goes · +$1.66 paid". Its panel is a receipt, shaped unlike the offer on purpose: a check and
-   "Locked in", one sentence with the numbers ("$14.71 if the Texans lose · $25.06 if they win ·
-   +$1.66 paid now"), one grey line of facts (settles on the official result, when it was locked,
-   how long it took) ending in a **receipt** link. Tapping it opens four labelled lines in place:
-   the other side ("19.17 contracts No on Kalshi at 27.4c each with fees"; on any other book,
-   "the other side on Novig"), the cost, the venue's order id and time with how the order got
-   there ("through the aggregator" when it went through the execution pod, "direct" on our own
-   key; the partner is never named), and the record id; a hedge that did not reach the venue
-   reads "covered at the book" with no order line. No tiles, no button. The public record link
-   appears only with the operator setting on;
-4. a play protection does not cover gets a muted **Protection unavailable** line with the reason
-   after it: "covers Moneyline picks" on a spread or total, "waits until the play is matched" on a
-   play that is still an open order, or the live refusal from pricing. Tapping it says what to do.
+   rows below move down; nothing floats over the slip): the same box grows, no card inside a
+   card, never wider than 680px. The panel is a slip, three rows with dividers in the venue's
+   type size: "Texans win $25.06 · was $46.00", "Texans lose $14.71 · was $0" (the floor, the one
+   coloured figure), "Paid to you now +$1.66 · today". Above them, only when the book funds more
+   than one shape, the price shapes offered right now (**Most now** / **Even** / **Keep more
+   upside**; a heavy favourite usually gets one or two). Under them the button, the badge grown to
+   the row's width, reading just "Lock in"; then one fine-print line, "Priced live · until kickoff
+   Sun 1:00pm ET · how it works", and the disclosure. Nothing in the panel is under 12px. Tapping
+   the line again closes it;
+3. after the tap, the line fills solid for a beat and settles as a **Protected** pill with "$14.71
+   or $25.06, whichever way it goes." Its panel is the same slip with the locked numbers and no
+   button ("Texans win $25.06", "Texans lose $14.71", "Paid to you +$1.66"), then one grey line of
+   facts ("Locked Sun 11:02am ET · the other side bought in 4.9s") ending in a **receipt** link.
+   Tapping it opens four labelled lines in place: the other side ("19.17 contracts No on Kalshi at
+   27.4c each with fees"; on any other book, "the other side on Novig"), the cost, the venue's
+   order id and time with how the order got there ("through the aggregator" when it went through
+   the execution pod, "direct" on our own key; the partner is never named), and the record id; a
+   hedge that did not reach the venue reads "covered at the book" with no order line. The public
+   record link appears only with the operator setting on. A settled lock reads "Settled" on the
+   pill, "Protected outcome $25.06." on the line, and in the panel "Texans won · you end with
+   $25.06" over "Unprotected, it would have paid $46.00";
+4. a play protection does not cover gets a muted **Unavailable** pill with the reason after it:
+   "Protection covers Moneyline picks." on a spread or total, "Protection waits until the play is
+   matched." on a play that is still an open order, or the live refusal from pricing. Tapping it
+   says what to do.
 
 That placement is the only staged pixel. Everything behind the tap is the Atticus event service:
 the play is matched to its market, priced from live books at the holder's size, the terms lock,
@@ -223,9 +227,10 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
   whose pick is a club the service lists no game for (`unlistedPick`, over every club the tables
   know) gets nothing, never its opponent's next game. Once per page view it posts the anonymous counts
   (`sendTelemetry`). The venue's DOM is never modified; our pills and line are added beside it.
-- `content.css` the line, the inline panel, the segmented control, the chip. Every colour is a
+- `content.css` the line (a pill and a sentence), the inline panel (the slip: rows with
+  dividers, the button, the fine print), the segmented control, the receipt. Every colour is a
   variable with the ProphetX values as defaults; `.ael-v-kalshi` and `.ael-v-novig` override them.
-  Two-column tiles under 560px.
+  Nothing under 12px; one border around the line and its open panel.
 - `background.js` is the fetch proxy; it attaches `x-lock-key` from extension storage.
 - `options.html` sets the service URL, lock key, Rehearsal, the two before-the-trade items
   (pill, slip line), the anonymous counts, and the operator-only hedge line.
@@ -354,8 +359,8 @@ GET /healthz                                                lock.enabled true, h
    lock key. Leave "show hedge line" off for a customer-facing recording; turn it on for the
    operator cut.
    **Rehearsal** (same page): with it On, the Lock in button walks the whole flow on the live
-   quote, but calls nothing: nothing is locked, written or bought. The result panel says
-   "Locked in (rehearsal)" and offers Reset. Use it to see the screens before real money, then
+   quote, but calls nothing: nothing is locked, written or bought. The line reads Protected with
+   "rehearsal" on it and the panel offers Reset. Use it to see the screens before real money, then
    turn it Off and reload the venue tab before the recording.
 3. On the venue, open the plays page: ProphetX **My Trades** (Cash mode, **Filled** tab), Kalshi
    **Portfolio** (**Positions** tab), Novig **Portfolio** (**Open** tab, cash not points). Each
@@ -376,18 +381,18 @@ Operator actions (token in `x-admin-token`), for the recording day:
 ## Test steps (five minutes, no money)
 
 1. Open the preview My Trades with the extension loaded. Every row has a line under it: Lock in
-   with a price, Protection unavailable with a reason, or Protected.
+   with the floor ("Lose, and still get $x."), Unavailable with a reason, or Protected.
 2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Keep more
-   upside** or **Most now**: the three tiles and the button reprice. Tap **Even**: they return.
+   upside** or **Most now**: the three rows reprice. Tap **Even**: they return.
    Only the shapes the book offers for that pick are listed; a heavy favourite often has one.
-3. Tap **Lock in · worst case $x**. The button reports the stages in words (Pricing from the live
-   book, Writing the record, Buying the other side) under a slow sheen, with whole seconds only
-   past three; the panel then turns into the receipt ("Locked in", the sentence with the three
-   numbers, the facts line with how long it took); the line reads "Protected · $x or $y".
+3. Tap **Lock in**. The button reports the stages in words (Pricing from the live book, Writing
+   the record, Buying the other side) under a slow sheen, with whole seconds only past three; the
+   line flashes solid and settles as the Protected pill with "$x or $y, whichever way it goes.";
+   the panel is the slip with the locked numbers and the facts line with how long it took.
    Tap **receipt** at the end of the facts line: the other side, the cost, the order, the record
    id. Open `/` on the service: the position is there with `source: lock`.
-   With Rehearsal on in the options, the same tap ends on "Locked in (rehearsal)" with a Reset link
-   and nothing reaches the service.
+   With Rehearsal on in the options, the same tap ends on a Protected line marked "rehearsal"
+   with a Reset link, and nothing reaches the service.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).
 5. Tap the Spread row's line: "Protection covers the Moneyline market." Close it.
 6. Open the **Resting** tab. The Chiefs order's line says "waits until the play is matched"; tap
@@ -429,7 +434,7 @@ are widest and clearest there.
 1. **Venue, before and after the play.** The game list with the shields; pick the Winner price;
    the slip's line with the floor at that stake; place the play. Then My Trades, Filled tab,
    with the new play. Tap its Lock in line; the panel opens with the terms; tap **Lock in**.
-   "Locked in", the chip on the row.
+   The line settles as Protected.
 2. **Record.** `/` on the service a moment later: the position appears with `source: lock`, the
    three numbers match the panel. Operator cut: `/api/shadow/hedges` shows the live attempt, order
    id, fill, cost.
