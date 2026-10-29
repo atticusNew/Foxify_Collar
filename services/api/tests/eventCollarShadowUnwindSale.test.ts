@@ -142,8 +142,8 @@ test("shadow worker: on an armed ticker the hedge is bought live at the lock and
     };
     assert.ok(q.ok, JSON.stringify(q));
     assert.equal(seen.at(-1)?.holderVenue, "prophetx", "the venue reaches the engine, lowercased");
-    assert.deepEqual(seen.at(-1)?.executable, { kalshi_self: true, polymarket: false }, "armed and live: only the venue the live executor has a client for");
-    assert.equal(seen.at(-1)?.route, "kalshi_self", "the armed ticker pins the route to Kalshi's own No side");
+    assert.deepEqual(seen.at(-1)?.executable, { kalshi_self: true, polymarket: false, prophetx: false }, "armed and live: only the venue the live executor has a client for");
+    assert.equal(seen.at(-1)?.route, "kalshi_self", "the armed ticker with one live venue pins the route to it: Kalshi's own No side");
     assert.deepEqual([q.routing.holderVenue, q.routing.holderVenueName, q.routing.hedgeVenue, q.routing.hedgeVenueName], ["prophetx", "ProphetX", "kalshi", "Kalshi"]);
     assert.equal(q.routing.allInBps, q.routing.evCostBps + q.routing.tailChargeBps);
     assert.ok(q.routing.tailChargeBps >= 0);
