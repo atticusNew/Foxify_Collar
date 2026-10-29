@@ -68,6 +68,8 @@ export interface LiveOrderResult {
   via?: HedgeVia;
   /** the venue's own id when the order went through an intermediary that issued `orderId` */
   venueOrderId?: string;
+  /** one clause the venue client adds to the trail (a ProphetX sale settles at the game, a windfall of shares) */
+  note?: string;
 }
 
 /** Place the order for an intent. Throws when nothing filled or the venue refused. */
@@ -97,6 +99,9 @@ export const DEFAULT_LIVE_RAILS: LiveHedgeRails = {
 export function tickerArmed(rails: Pick<LiveHedgeRails, "allowlist" | "anyTicker">, instrument: string): boolean {
   return rails.anyTicker || rails.allowlist.includes(instrument.toUpperCase());
 }
+
+/** What the allowlist is checked against for an intent: the game's Kalshi ticker when the instrument is a token or a strike. */
+export const armKeyOf = (intent: Pick<HedgeIntent, "instrument" | "armKey">): string => intent.armKey ?? intent.instrument;
 
 const truthy = (v: string | undefined): boolean => /^(1|true|yes|on)$/i.test((v ?? "").trim());
 
@@ -137,8 +142,8 @@ export function checkRails(
 ): RailRefusal | null {
   if (rails.killSwitch) return { rail: "kill_switch", detail: "kill switch is on; no order leaves" };
   if (!hasClient) return { rail: "venue", detail: `no live client for ${intent.venue}` };
-  if (!tickerArmed(rails, intent.instrument)) {
-    return { rail: "ticker", detail: `${intent.instrument} is not on the live allowlist (${rails.allowlist.length} tickers)` };
+  if (!tickerArmed(rails, armKeyOf(intent))) {
+    return { rail: "ticker", detail: `${armKeyOf(intent)} is not on the live allowlist (${rails.allowlist.length} tickers)` };
   }
   if (intent.unitsMilli > rails.maxUnitsPerOrderMilli) {
     return {
@@ -172,6 +177,11 @@ export function sentUnitsMilliOn(receipts: HedgeReceipt[], dayUtc: string): numb
 /** The order the live path would send, for the dry-run receipt and the operator's eyes. No credentials, no ids. */
 export function describeOrder(intent: HedgeIntent): string {
   const cap = Math.ceil(intent.book.worstPriceMilli / 10);
+  if (intent.venue === "prophetx") {
+    // ProphetX takes no sell: the unwind buys the holder's side's strike at 1 - the worst bid, offsetting the hedge
+    if (actionOf(intent) === "sell") return `prophetx offset ${units(intent.unitsMilli)} shares of strike ${intent.instrument} by buying strike ${intent.offsetInstrument ?? "?"} at or under ${100 - Math.floor(intent.book.worstPriceMilli / 10)}c, fill or kill`;
+    return `prophetx buy ${units(intent.unitsMilli)} shares of strike ${intent.instrument} (${intent.outcome}) at or under ${cap}c, fill or kill`;
+  }
   if (actionOf(intent) === "sell") return `${intent.venue} sell ${units(intent.unitsMilli)} ${intent.outcome} on ${intent.instrument} at or over ${cap}c, immediate or cancel`;
   return `${intent.venue} buy ${units(intent.unitsMilli)} ${intent.outcome} on ${intent.instrument} at or under ${cap}c, immediate or cancel`;
 }
@@ -239,7 +249,7 @@ export class LiveHedgeExecutor implements HedgeExecutor {
         step: "order",
         ok: true,
         at: this.clock.now().toISOString(),
-        detail: `order ${r.orderId}${r.venueOrderId ? ` (venue ${r.venueOrderId})` : ""} ${r.status}${via === "aggregator" ? " via aggregator" : ""}: ${units(r.unitsMilli)} of ${units(intent.unitsMilli)} ${sell ? "sold" : "filled"} at ${r.avgPriceMilli} milli, ${r.costCents}c ${sell ? "net proceeds" : "all in"}${partial ? " (partial)" : ""}`,
+        detail: `order ${r.orderId}${r.venueOrderId ? ` (venue ${r.venueOrderId})` : ""} ${r.status}${via === "aggregator" ? " via aggregator" : ""}: ${units(r.unitsMilli)} of ${units(intent.unitsMilli)} ${sell ? "sold" : "filled"} at ${r.avgPriceMilli} milli, ${r.costCents}c ${sell ? "net proceeds" : "all in"}${partial ? " (partial)" : ""}${r.note ? `; ${r.note}` : ""}`,
         orderId: r.orderId,
         unitsMilli: r.unitsMilli,
         costCents: r.costCents,

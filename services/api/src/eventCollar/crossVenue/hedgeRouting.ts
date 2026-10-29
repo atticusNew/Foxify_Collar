@@ -2,7 +2,9 @@
  * HEDGE ROUTING — which venue the writer's hedge goes to, judged on what it costs all in.
  *
  * The holder's position lives on one venue (Kalshi, ProphetX, Novig; Polymarket in principle).
- * The hedge can go to two (Kalshi's own No side, Polymarket's opposing token). On the night the
+ * The hedge can go to three (Kalshi's own No side, Polymarket's opposing token, ProphetX's
+ * opposing strike through the aggregator's pod), of which EVENT_HEDGE_VENUES names the ones
+ * offered tonight (hedgeVenuesFromEnv). On the night the
  * game is decided every one of these pays the same way, so the cheaper hedge is simply the cheaper
  * hedge. The venues differ only in the TAILS: a tie, a postponement past the venue's window, a
  * game called off without a result, a result the league corrects later. One venue voids and hands
@@ -469,7 +471,32 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
 const round4 = (n: number): number => Math.round(n * 10_000) / 10_000;
 
 /** The hedge venue behind a route. */
-export const hedgeVenueOf = (route: HedgeRoute): SettlementVenue => (route === "kalshi_self" ? "kalshi" : "polymarket");
+export const hedgeVenueOf = (route: HedgeRoute): SettlementVenue => (route === "kalshi_self" ? "kalshi" : route === "prophetx" ? "prophetx" : "polymarket");
+
+/** The route that hedges on a venue, when one does (Novig has none yet). */
+export const routeOfVenue = (venue: SettlementVenue): HedgeRoute | null => (venue === "kalshi" ? "kalshi_self" : venue === "polymarket" ? "polymarket" : venue === "prophetx" ? "prophetx" : null);
+
+/** The holder's words for a route's venue. */
+export const routeName = (route: HedgeRoute): string => (route === "kalshi_self" ? "Kalshi's own No side" : VENUE_NAMES[hedgeVenueOf(route)]);
+
+/**
+ * Which hedge venues are offered tonight. EVENT_HEDGE_VENUES names them (kalshi, polymarket,
+ * prophetx; comma separated, any case); unset or empty, every route is offered. A venue left out
+ * is not priced, not shown and not sent to: the switch for a night when a venue is not yet a
+ * partner's (Polymarket until the aggregator lists Poly US) or not to be shown on a recording.
+ */
+export function hedgeVenuesFromEnv(env: NodeJS.ProcessEnv = process.env): { routes: HedgeRoute[]; source: "env" | "default"; unknown: string[] } {
+  const raw = (env.EVENT_HEDGE_VENUES ?? "").trim();
+  if (!raw) return { routes: ["kalshi_self", "polymarket", "prophetx"], source: "default", unknown: [] };
+  const routes: HedgeRoute[] = [];
+  const unknown: string[] = [];
+  for (const word of raw.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean)) {
+    const route = word === "kalshi" || word === "kalshi_self" ? "kalshi_self" : word === "polymarket" || word === "poly" ? "polymarket" : word === "prophetx" || word === "prophet" ? "prophetx" : null;
+    if (!route) unknown.push(word);
+    else if (!routes.includes(route)) routes.push(route);
+  }
+  return { routes, source: "env", unknown };
+}
 
 export interface RouteGates {
   /** the pairing was verified (same game, same sides) */
@@ -494,6 +521,8 @@ export interface RouteInput {
   evCostBps: number | null;
   /** the collar and the hedge as quoted on this route, for the exposure arithmetic; absent on a refusal */
   hedge?: { unitsMilli: number; avgPriceCents: number; floorCents: number; capCents: number };
+  /** the credit this route's book would pay the holder on the default tier, cents; the holder's own comparison */
+  creditCents?: number | null;
   gates: Omit<RouteGates, "depth">;
   /** the hedge venue's rule row for this market (its own text laid over the table) */
   rules: RuleCells;
@@ -506,6 +535,10 @@ export interface RoutedRoute {
   evCostBps: number | null;
   tailChargeBps: number | null;
   allInBps: number | null;
+  /** what this venue's book would have paid the holder, cents; null when it refused or was not priced */
+  creditCents: number | null;
+  /** the collar this venue's book funded (floor and cap in cents); null on a refusal */
+  terms: { floorCents: number; capCents: number } | null;
   compatible: boolean | null;
   sameContract: boolean;
   gates: RouteGates;
@@ -583,6 +616,8 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
       evCostBps: r.evCostBps,
       tailChargeBps: charge ? charge.chargeBps : null,
       allInBps: allIn,
+      creditCents: r.ok && typeof r.creditCents === "number" ? r.creditCents : null,
+      terms: r.ok && r.hedge ? { floorCents: r.hedge.floorCents, capCents: r.hedge.capCents } : null,
       compatible: charge ? charge.compatible : null,
       sameContract,
       gates,
@@ -592,13 +627,24 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
   });
 
   const passing = routes.filter((r) => r.ok && r.allInBps !== null && !r.gates.detail);
-  const byAllIn = [...passing].sort((a, b) => (a.allInBps as number) - (b.allInBps as number) || (a.route === "kalshi_self" ? -1 : 1));
+  // ties: the holder's own venue first (same instrument, zero basis), then the table's order
+  const rank = (r: RoutedRoute) => (r.sameContract ? 0 : r.route === "kalshi_self" ? 1 : r.route === "prophetx" ? 2 : 3);
+  const byAllIn = [...passing].sort((a, b) => (a.allInBps as number) - (b.allInBps as number) || rank(a) - rank(b));
   let chosen: RoutedRoute | null = null;
   let reason: string;
-  const name = (r: RoutedRoute) => (r.route === "kalshi_self" ? "Kalshi's own No side" : "Polymarket");
+  const name = (r: RoutedRoute) => routeName(r.route);
   const costWords = (r: RoutedRoute) => `${bps(r.allInBps)} all in${r.tailChargeBps ? ` (${bps(r.evCostBps)} on the books, ${bps(r.tailChargeBps)} for the tails)` : ""}`;
   // the route not taken, named with why it was not: its refusal, or the gate it failed
   const otherWords = (r: RoutedRoute | undefined) => (r ? `${name(r)}: ${r.refusal ?? "refused"}` : "no other route was priced");
+  // every route not taken, in one clause: the priced ones with their cost, the rest with why not
+  const othersWords = (taken: RoutedRoute): string => {
+    const rest = routes.filter((r) => r.route !== taken.route);
+    if (rest.length === 0) return "no other route was priced";
+    return rest
+      .sort((a, b) => (a.allInBps ?? Number.POSITIVE_INFINITY) - (b.allInBps ?? Number.POSITIVE_INFINITY) || rank(a) - rank(b))
+      .map((r) => (passing.includes(r) ? `${costWords(r)} on ${name(r)}` : otherWords(r)))
+      .join("; ");
+  };
   if (inputs.pinned) {
     const pinnedRoute = routes.find((r) => r.route === inputs.pinned) ?? null;
     if (pinnedRoute && passing.includes(pinnedRoute)) {
@@ -606,9 +652,9 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
       const other = byAllIn.find((r) => r.route !== pinnedRoute.route);
       reason = other
         ? other.allInBps !== null && pinnedRoute.allInBps !== null && other.allInBps < pinnedRoute.allInBps
-          ? `${name(pinnedRoute)}: the venue the hedge can be sent to tonight; ${costWords(pinnedRoute)} against ${costWords(other)} on ${name(other)}, the difference ours to carry`
-          : `${name(pinnedRoute)}: the venue the hedge can be sent to tonight, and the cheaper all in (${costWords(pinnedRoute)} against ${costWords(other)} on ${name(other)})`
-        : `${name(pinnedRoute)}: the venue the hedge can be sent to tonight; ${costWords(pinnedRoute)}; ${otherWords(routes.find((r) => r.route !== pinnedRoute.route))}`;
+          ? `${name(pinnedRoute)}: the venue the hedge can be sent to tonight; ${costWords(pinnedRoute)} against ${othersWords(pinnedRoute)}, the difference ours to carry`
+          : `${name(pinnedRoute)}: the venue the hedge can be sent to tonight, and the cheaper all in (${costWords(pinnedRoute)} against ${othersWords(pinnedRoute)})`
+        : `${name(pinnedRoute)}: the venue the hedge can be sent to tonight; ${costWords(pinnedRoute)}; ${othersWords(pinnedRoute)}`;
     } else {
       reason = pinnedRoute
         ? `${name(pinnedRoute)} is pinned but ${pinnedRoute.refusal ?? "refused"}; nothing else can be sent`
@@ -620,8 +666,8 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
     const tails = chosen.mismatches.length === 0 ? (chosen.sameContract ? "the holder's own market, so every tail settles with the position" : "it settles like the holder's venue in every tail") : `${chosen.mismatches.map((m) => m.branch).join(", ")} priced in`;
     reason = other
       ? other.ok && other.allInBps !== null && !other.gates.detail
-        ? `${name(chosen)}: cheaper all in, ${costWords(chosen)} against ${costWords(other)} on ${name(other)}; ${tails}`
-        : `${name(chosen)}: ${costWords(chosen)}; ${tails}; ${otherWords(other)}`
+        ? `${name(chosen)}: cheaper all in, ${costWords(chosen)} against ${othersWords(chosen)}; ${tails}`
+        : `${name(chosen)}: ${costWords(chosen)}; ${tails}; ${othersWords(chosen)}`
       : `${name(chosen)}: ${costWords(chosen)}; ${tails}`;
   } else {
     reason = routes.map((r) => otherWords(r)).join("; ") || "no route priced";

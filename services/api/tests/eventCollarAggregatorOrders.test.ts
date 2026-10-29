@@ -297,10 +297,16 @@ test("hedgeExecutorFromEnv: EVENT_HEDGE_LIVE_VIA=aggregator wires the TRADE key'
   });
   assert.ok(armed.aggregatorOrders instanceof AggregatorOrderClient);
   assert.equal(armed.kalshiOrders, null, "the direct client sends nothing while via=aggregator");
-  assert.deepEqual(armed.live?.venues, ["kalshi"]);
+  // the same TRADE key reaches the pod's ProphetX account: two live venues, one key
+  assert.deepEqual(armed.live?.venues, ["kalshi", "prophetx"]);
+  assert.ok(armed.prophetxOrders, "the ProphetX client shares the pod's REST and the key");
+  assert.equal(armed.prophetxOrders?.rest, armed.aggregatorOrders?.rest);
   assert.equal(armed.live?.via, "aggregator");
   assert.equal(armed.live?.dryRun, true);
   assert.match(armed.notes.join(" | "), /live orders go through the aggregator's pod with the TRADE key/);
+  assert.match(armed.notes.join(" | "), /prophetx: live orders go through the aggregator's pod with the TRADE key, fill or kill on the venue's ladder; 2% of net gains provided for at settlement/);
+  assert.match(missing.notes.join(" | "), /prophetx: no TRADE key; live orders impossible/);
+  assert.equal(missing.prophetxOrders, null);
   assert.match(armed.notes.join(" | "), /KALSHI_API_KEY_ID is set but sends nothing while via=aggregator/);
   const shown = JSON.stringify({ live: armed.live, notes: armed.notes });
   assert.ok(!shown.includes(keypair.seedHex) && !shown.includes(KEY_ID), "the view carries neither half of the key");
@@ -313,7 +319,9 @@ test("hedgeExecutorFromEnv: EVENT_HEDGE_LIVE_VIA=aggregator wires the TRADE key'
   const direct = hedgeExecutorFromEnv({ EVENT_HEDGE_STRATEGY: "live", AGGREGATOR_TRADE_KEY_ID: KEY_ID, AGGREGATOR_TRADE_PRIVATE_KEY_HEX: keypair.seedHex });
   assert.equal(direct.live?.via, "direct");
   assert.equal(direct.aggregatorOrders, null);
+  assert.equal(direct.prophetxOrders, null, "ProphetX is reached through the pod only");
   assert.match(direct.notes[0], /no KALSHI_API_KEY_ID/);
+  assert.match(direct.notes.join(" | "), /prophetx: live orders reach the venue only through the aggregator's pod/);
 });
 
 test("hedgeExecutorFromEnv: via aggregator end to end against the fake partner — dry run holds, EVENT_HEDGE_LIVE_SEND=yes sends through the pod and the receipt says so", async () => {

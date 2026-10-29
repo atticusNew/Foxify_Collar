@@ -124,6 +124,10 @@ export type CrossRefusalCode =
   | "pm_book_too_thin"
   | "kalshi_book_empty"
   | "kalshi_book_too_thin"
+  | "prophetx_book_empty"
+  | "prophetx_book_too_thin"
+  /** the venue is not offered as a hedge venue tonight (EVENT_HEDGE_VENUES leaves it out) */
+  | "route_not_offered"
   | "credit_nonpositive"
   /** every route funded a collar, but the cheapest still costs more than the ceiling in EV terms */
   | "protection_too_rich"
@@ -171,10 +175,29 @@ export interface KalshiSelfHedgeLeg {
   costCents: number; // rounded up
 }
 
-export type HedgeLeg = CrossHedgeLeg | KalshiSelfHedgeLeg;
+/**
+ * The ProphetX route: the opposing strike on ProphetX, read and sent through the aggregator's
+ * pod. A strike names both the market and the side; a share of it pays $1 when that side wins.
+ * Prices carry the venue's settlement fee folded in (prophetxOrders.ts), so `costCents` is all in.
+ */
+export interface ProphetXHedgeLeg {
+  action: "buy";
+  venue: "prophetx";
+  outcome: string; // display name of the opposing outcome
+  strikeId: string;
+  /** the holder's own side's strike on the same market, when the mapping names it: what an early close buys to offset */
+  offsetStrikeId?: string;
+  sharesMilli: number; // 1000 = 1 share, rounded UP (never under-hedged)
+  avgPriceMilli: number; // walked average with the fee folded, 1000 = $1
+  worstPriceMilli: number;
+  costCents: number; // rounded up
+}
+
+export type HedgeLeg = CrossHedgeLeg | KalshiSelfHedgeLeg | ProphetXHedgeLeg;
 
 /** Which hedge route funded the quote. */
-export type HedgeRoute = "polymarket" | "kalshi_self";
+export type HedgeRoute = "polymarket" | "kalshi_self" | "prophetx";
+export const HEDGE_ROUTES: readonly HedgeRoute[] = ["kalshi_self", "polymarket", "prophetx"];
 
 /** One route's outcome in a dual-route scan: quotable (with its true EV cost) or an honest refusal. */
 export interface RouteCheck {

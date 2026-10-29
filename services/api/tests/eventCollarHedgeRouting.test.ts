@@ -9,6 +9,7 @@ import {
   DEFAULT_TAIL_PROBABILITIES,
   branchShortfallCents,
   chooseRoute,
+  hedgeVenuesFromEnv,
   kalshiTailCells,
   polymarketTailCells,
   rulesFor,
@@ -185,6 +186,55 @@ test("routing choice: cheapest all in among routes that pass the gates, ties to 
   assert.equal(none.chosen, null);
   assert.match(none.reason, /unreachable/);
   assert.equal(none.probabilities.estimate, true);
+});
+
+test("routing choice, three routes: ProphetX competes against Kalshi on the holder's own venue; the credit rides on every route; the reason names both others", () => {
+  const route = (r: "kalshi_self" | "polymarket" | "prophetx", evCostBps: number, creditCents: number, extra: Partial<RouteInput> = {}): RouteInput => ({
+    route: r,
+    ok: true,
+    evCostBps,
+    creditCents,
+    hedge: { unitsMilli: 7_000, avgPriceCents: 40, floorCents: 40, capCents: 70 },
+    gates: { gameMatch: true, venueOpen: true, executable: true },
+    rules: tableRules(r === "kalshi_self" ? "kalshi" : r === "polymarket" ? "polymarket" : "prophetx", "nba"),
+    ...extra,
+  });
+  const inputs = { holderVenue: "novig" as const, league: "nba", holderRules: tableRules("novig", "nba"), markCents: 60, contracts: 10, probabilities: DEFAULT_TAIL_PROBABILITIES.nba };
+
+  // tonight's two venues: ProphetX pays more for the same protection and wins
+  const px = chooseRoute({ ...inputs, routes: [route("kalshi_self", 20, 240), route("prophetx", -30, 310)] });
+  assert.equal(px.chosen, "prophetx");
+  assert.match(px.reason, /^ProphetX: cheaper all in/);
+  assert.deepEqual(
+    px.routes.map((r) => [r.route, r.hedgeVenue, r.creditCents, r.terms?.floorCents, r.terms?.capCents]),
+    [
+      ["kalshi_self", "kalshi", 240, 40, 70],
+      ["prophetx", "prophetx", 310, 40, 70],
+    ],
+  );
+  // ProphetX not executable tonight (no TRADE key): Kalshi, and the reason says what gate held ProphetX
+  const gated = chooseRoute({ ...inputs, routes: [route("kalshi_self", 20, 240), route("prophetx", -30, 310, { gates: { gameMatch: true, venueOpen: true, executable: false } })] });
+  assert.equal(gated.chosen, "kalshi_self");
+  assert.match(gated.reason, /ProphetX/);
+  assert.match(gated.reason, /cannot be sent|executor|send/i);
+  // all three offered: the reason names the two not taken
+  const three = chooseRoute({ ...inputs, routes: [route("kalshi_self", 20, 240), route("polymarket", 10, 260), route("prophetx", -30, 310)] });
+  assert.equal(three.chosen, "prophetx");
+  assert.match(three.reason, /Kalshi/);
+  assert.match(three.reason, /Polymarket/);
+  assert.equal(three.routes.length, 3);
+  // a route not offered tonight is a refusal with its own code
+  const off = chooseRoute({ ...inputs, routes: [route("kalshi_self", 20, 240), { ...route("polymarket", 0, 0), ok: false, evCostBps: null, creditCents: null, hedge: undefined, refusalCode: "route_not_offered", refusalDetail: "Polymarket is not offered as a hedge venue tonight (EVENT_HEDGE_VENUES)" }] });
+  assert.equal(off.chosen, "kalshi_self");
+  assert.equal(off.routes.find((r) => r.route === "polymarket")?.creditCents, null);
+});
+
+test("routing venues: EVENT_HEDGE_VENUES names the routes offered tonight; unset offers all three; unknown words are reported, never guessed", () => {
+  assert.deepEqual(hedgeVenuesFromEnv({}), { routes: ["kalshi_self", "polymarket", "prophetx"], source: "default", unknown: [] });
+  assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: "kalshi,prophetx" }), { routes: ["kalshi_self", "prophetx"], source: "env", unknown: [] });
+  assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: " Kalshi_self , Poly, prophet, kalshi " }), { routes: ["kalshi_self", "polymarket", "prophetx"], source: "env", unknown: [] });
+  assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: "kalshi,novig,draftkings" }), { routes: ["kalshi_self"], source: "env", unknown: ["novig", "draftkings"] });
+  assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: "   " }).source, "default");
 });
 
 test("routing terms: the tails in the holder's venue's words", () => {
