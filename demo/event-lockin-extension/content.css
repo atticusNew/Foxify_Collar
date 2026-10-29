@@ -113,6 +113,10 @@
 .ael-host { display: block; margin: 0; padding: 0; }
 tr.ael-host { display: table-row; }
 tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: normal; text-align: left; }
+/* Inside a card (a deck of positions laid out side by side): the card's last row, full width, a
+   little room above it and none below since the card's own padding closes it. */
+.ael-host.ael-inside { width: 100%; flex: none; align-self: stretch; margin-top: 6px; }
+.ael-host.ael-inside .ael-row { max-width: none; padding: 0; }
 /* Capped: the venue's table can be wider than the window, and a card under the Market column
    reads better than a banner across every column. */
 /* Positioned, above a card's "stretched link" overlay (Kalshi lays an absolutely positioned

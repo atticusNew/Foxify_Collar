@@ -154,6 +154,24 @@
     const e = node && node.nodeType === 3 ? node.parentElement : node;
     return Boolean(e && e.closest && e.closest(".ael-ui"));
   };
+  /**
+   * An element's text without ours. Under a card our block sits inside the card (see
+   * insertionPoint), so the card's textContent would carry our own words and figures: "Knicks
+   * lose $6.95" would be read back as a second name and a third amount.
+   */
+  const pageText = (e) => {
+    if (!e.querySelector(".ael-ui")) return e.textContent;
+    let out = "";
+    const w = document.createTreeWalker(e, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (OURS(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT) });
+    while (w.nextNode()) out += w.currentNode.nodeValue;
+    return out;
+  };
+  /** An element's height less our blocks inside it: the page's own size of the thing. */
+  const pageHeight = (e, r) => {
+    let h = r.height;
+    for (const ours of e.querySelectorAll(".ael-host")) h -= ours.getBoundingClientRect().height;
+    return h;
+  };
 
   // ── the games the service can protect ───────────────────────────────────────
   // The service lists each side by city (Kalshi's subtitle). The venue prints "IND Colts", so the
@@ -350,7 +368,19 @@
     return !S.nicks.has(sorted[0][0]);
   };
 
+  /**
+   * The service's markets, retried on failure. The service sleeps between demos and takes up to a
+   * minute to wake, and the first call from a fresh tab is the one that finds it asleep: a failed
+   * load tries again at 3s, 8s, 20s and 45s before the five-minute poll takes over, and the
+   * notice says the service is waking rather than unreachable until those are spent. A reload of
+   * the extension itself invalidates this script's runtime (every call then fails the same way);
+   * that is told apart and the notice asks for a page reload instead of retrying forever.
+   */
+  const RETRY_MS = [3_000, 8_000, 20_000, 45_000];
+  let marketsRetry = null;
+  const runtimeGone = (r) => /context invalidated|Extension context/i.test(String((r && r.error) || "")) || !(chrome.runtime && chrome.runtime.id);
   const loadMarkets = async () => {
+    if (S.serviceState === "gone") return;
     const r = await api("/api/shadow/markets", "GET");
     if (r.ok && r.json && r.json.ok && Array.isArray(r.json.markets)) {
       indexMarkets(r.json.markets);
@@ -359,8 +389,19 @@
       S.ext.legacy = !(r.json.ext && typeof r.json.ext === "object");
       // the service names the oldest build it will draw with; an older one shows only the notice
       S.serviceState = S.ext.minVersion && cmpVersion(EXT_VERSION, S.ext.minVersion) < 0 ? "old" : "ok";
+      S.marketsTries = 0;
+    } else if (runtimeGone(r)) {
+      S.serviceState = "gone";
     } else {
       S.serviceState = r.status === 403 ? "key" : r.status === 404 ? "off" : "down";
+      S.marketsTries = (S.marketsTries || 0) + 1;
+      S.downDetail = r.status ? "HTTP " + r.status : r.error || "";
+      if (S.serviceState === "down" && S.marketsTries <= RETRY_MS.length && !marketsRetry) {
+        marketsRetry = setTimeout(() => {
+          marketsRetry = null;
+          void loadMarkets();
+        }, RETRY_MS[S.marketsTries - 1]);
+      }
     }
     scan(true);
   };
@@ -583,7 +624,8 @@
     const matchedM = /(?:^|[^a-z])matched\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i.exec(text);
     const matched = matchedM ? Number(matchedM[1].replace(/,/g, "")) : null;
     const stake = matched != null && matched > 0 && (wager == null || matched <= wager) ? matched : wager;
-    const payout = labelled(text, /(?:payout|pays|returns|max\s*payout|total\s*return)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
+    // Novig's card labels the two figures Amount and To Pay
+    const payout = labelled(text, /(?:payout|pays|to\s*pay|returns|max\s*payout|total\s*return)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
     const toWin = labelled(text, /(?:to\s*win|to\s*gain|profit|win|gain)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
     const bare = noMoney(text);
     const odds = AMERICAN.exec(bare);
@@ -721,7 +763,7 @@
    * The selected tab is the one marked so (aria, data-state, class), else the one drawn apart
    * from the others (lit text or an underline). Nothing decided means the rows speak for themselves.
    */
-  // ProphetX: Resting / Filled / Settled. Kalshi: Positions / Orders / History. Novig: Open / Settled.
+  // ProphetX: Resting / Filled / Settled. Kalshi: Positions / Orders / History. Novig: Active / Settled.
   const TAB_WORDS = /^(resting|open orders?|orders?|unmatched|pending|filled|matched|positions?|open|active|settled|closed|history|past)$/i;
   const tabGroup = (w) => (/^(resting|open orders?|orders?|unmatched|pending)$/i.test(w) ? "resting" : /^(settled|closed|history|past)$/i.test(w) ? "settled" : "filled");
   const MARKED = (el) => {
@@ -786,17 +828,17 @@
    * carries the position's money (two dollar amounts, or one with a wager/payout word), of a
    * row's proportions, with no input in it (that is the order slip) and not the whole page.
    */
-  const STAKE_LABELS = /(wager|stake|risk|cost|bet|payout|to\s*win|to\s*gain|pays)\s*:?\s*\$\s?\d/gi;
+  const STAKE_LABELS = /(wager|stake|risk|cost|bet|amount|payout|to\s*win|to\s*gain|to\s*pay|pays)\s*:?\s*\$\s?\d/gi;
   const rowFrom = (node) => {
     let e = node.parentElement;
     let found = null;
     for (let i = 0; e && e !== document.body && i < 9; i++, e = e.parentElement) {
       if (e.querySelector("input, textarea")) break;
-      const text = spaced(norm(e.textContent));
+      const text = spaced(norm(pageText(e)));
       if (text.length > 600) break;
       const r = e.getBoundingClientRect();
       // wider than the window is the page itself, unless it is a table that scrolls inside its pane
-      if (r.height > 320 || (r.width > window.innerWidth && !e.closest("table"))) break;
+      if (pageHeight(e, r) > 320 || (r.width > window.innerWidth && !e.closest("table"))) break;
       const labels = (text.match(STAKE_LABELS) || []).length;
       if (found) {
         // a block was found without the row's stake and payout labels (a matched/unmatched detail
@@ -810,7 +852,7 @@
         continue;
       }
       const amounts = amountsIn(text);
-      const moneyWords = /\b(wager|stake|payout|to win|to gain|pays|returns|cost|avg|average|contracts|shares|risk|matched|odds)\b/i.test(text);
+      const moneyWords = /\b(wager|stake|amount|payout|to win|to gain|to pay|pays|returns|cost|avg|average|contracts|shares|risk|matched|odds)\b/i.test(text);
       if ((amounts.length >= 2 || (amounts.length >= 1 && moneyWords)) && r.width >= 200 && r.height >= 24) {
         found = e;
         if (labels >= 1) break;
@@ -834,7 +876,7 @@
     if (!named.size) return "";
     for (let e = row.previousElementSibling, i = 0; e && i < 8; e = e.previousElementSibling, i++) {
       if (OURS(e)) continue;
-      const t = spaced(norm(e.textContent));
+      const t = spaced(norm(pageText(e)));
       if (t.length > 300) break;
       if (amountsIn(t).length) continue;
       const clubs = clubsNamed(t);
@@ -861,7 +903,7 @@
     const rows = [...seen.keys()].filter((r) => ![...seen.keys()].some((o) => o !== r && r.contains(o)));
     const out = [];
     for (const row of rows) {
-      const own = spaced(norm(row.textContent));
+      const own = spaced(norm(pageText(row)));
       if (pointsRow(own)) continue;
       // the row's own text, and the title above it when it names the row's club: Kalshi's position
       // row says "Yes · NY Knicks", the row over it which game
@@ -939,8 +981,26 @@
     return st;
   };
 
-  /** Insert after the row, climbing out of flex/grid rows so our block lands under it, not beside it. */
+  /**
+   * A parent that lays its children out side by side AND down: a wrapping flex row or a grid with
+   * more than one column. Novig's Portfolio is such a deck of cards. A block placed after one card
+   * there would land beside it, or after the whole deck; it goes inside the card instead.
+   */
+  const isDeck = (parent) => {
+    const cs = getComputedStyle(parent);
+    if (cs.display.includes("grid")) return (cs.gridTemplateColumns || "").trim().split(/\s+/).filter(Boolean).length > 1;
+    return cs.display.includes("flex") && !cs.flexDirection.startsWith("column") && cs.flexWrap === "wrap" && parent.children.length > 1;
+  };
+  /**
+   * Where our block goes: after the row, climbing out of flex/grid rows so it lands under the row,
+   * not beside it; or, when the row is a card in a deck, inside the card as its last child
+   * (`{ inside: true }`), under the card's own rows.
+   */
   const insertionPoint = (row) => {
+    if (row.parentElement && row.parentElement !== document.body && isDeck(row.parentElement)) {
+      const cs = getComputedStyle(row);
+      if (cs.display === "block" || (cs.display.includes("flex") && cs.flexDirection.startsWith("column"))) return { el: row, inside: true };
+    }
     let target = row;
     for (let i = 0; i < 3 && target.parentElement && target.parentElement !== document.body; i++) {
       const cs = getComputedStyle(target.parentElement);
@@ -948,11 +1008,16 @@
       if (!horizontal) break;
       target = target.parentElement;
     }
-    return target;
+    return { el: target, inside: false };
+  };
+  const placeHost = (host, at) => {
+    if (at.inside) at.el.appendChild(host);
+    else at.el.insertAdjacentElement("afterend", host);
   };
 
   const mountHost = (B) => {
-    const after = insertionPoint(B.row);
+    const at = insertionPoint(B.row);
+    const after = at.el;
     let host;
     if (after.tagName === "TR") {
       host = document.createElement("tr");
@@ -969,22 +1034,25 @@
       B.box = host.firstElementChild;
     }
     host.addEventListener("click", (e) => e.stopPropagation());
-    after.insertAdjacentElement("afterend", host);
+    if (at.inside) host.classList.add("ael-inside");
+    placeHost(host, at);
     B.host = host;
     B.after = after;
+    B.inside = at.inside;
     fitHost(B);
   };
 
   /** An existing block back under its row, as it is; built afresh only when the row's shape changed. */
   const remountHost = (B) => {
-    const after = insertionPoint(B.row);
-    if (!B.host || (after.tagName === "TR") !== (B.host.tagName === "TR")) {
+    const at = insertionPoint(B.row);
+    const after = at.el;
+    if (!B.host || (after.tagName === "TR") !== (B.host.tagName === "TR") || Boolean(B.inside) !== at.inside) {
       B.host && B.host.remove();
       mountHost(B);
       return;
     }
     if (B.after !== after || !B.host.isConnected) {
-      after.insertAdjacentElement("afterend", B.host);
+      placeHost(B.host, at);
       B.after = after;
     }
     fitHost(B);
@@ -1003,6 +1071,11 @@
   /** Our block spans the row's own width and left edge. */
   const fitHost = (B) => {
     if (B.card || !B.host || !B.row.isConnected) return;
+    // inside a card our block is one of its rows: the card's width, no offset
+    if (B.inside) {
+      if (B.box.style.width) B.box.style.marginLeft = B.box.style.width = "";
+      return;
+    }
     // in a table our cell already spans every column; sizing it to the row would widen the table,
     // which widens the row, which would size it again
     if (B.host.tagName === "TR") {
@@ -2194,7 +2267,19 @@
     }
     markGames([]);
     scanSlip([]);
-    paintNotice(S.serviceState === "key" ? "Lock in: the lock key is missing or wrong. Open the extension's settings." : S.serviceState === "off" ? "Lock in: the service has no lock routes configured." : S.serviceState === "down" ? "Lock in: the service is unreachable." : "");
+    paintNotice(
+      S.serviceState === "key"
+        ? "Lock in: the lock key is missing or wrong. Open the extension's settings."
+        : S.serviceState === "off"
+          ? "Lock in: the service has no lock routes configured."
+          : S.serviceState === "gone"
+            ? "Lock in was updated. Reload this page."
+            : S.serviceState === "down"
+              ? (S.marketsTries || 0) <= RETRY_MS.length
+                ? "Lock in: waking the service\u2026"
+                : "Lock in: the service is unreachable" + (S.downDetail ? " (" + S.downDetail + ")." : ".")
+              : "",
+    );
     const nodes = textNodes();
     S.tab = tabState(nodes);
     const found = findRows(nodes);
