@@ -463,6 +463,7 @@ const REFUSAL_WORDS: Record<ListingRefusalCode, string> = {
   kalshi_book_too_thin: "the venue's book is too shallow to hedge a ticket this size",
   far_out_no_book: "days from the start and no venue has a real book yet; priced again inside the window",
   mark_disagreement: "the market's own price has not settled: its side is a stub or sits far from the hedge venue's; priced again next scan",
+  route_gated: "a hedge was priced but no venue could take it tonight: the market closes before the lock or the hedge cannot be sent there",
 };
 
 export interface ListingPageOptions {

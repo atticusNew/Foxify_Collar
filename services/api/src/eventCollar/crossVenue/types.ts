@@ -74,6 +74,8 @@ export interface PmMarket {
   gameStartTime: string | null; // ISO
   endDate: string | null; // ISO
   sportsMarketType: string; // "moneyline" for winner markets
+  /** the venue's resolution text (ties, postponements, cancellations); absent on objects built before routing read it */
+  description?: string;
   active: boolean;
   closed: boolean;
   acceptingOrders: boolean;
@@ -129,6 +131,8 @@ export type CrossRefusalCode =
   | "credit_too_small"
   /** the cross-venue route priced off a placeholder: days out, the market's own No side empty, no feed book (farOutGuard.ts) */
   | "far_out_no_book"
+  /** a route priced, but no gate let it through (the venue closes before the lock, the executor cannot send there); the detail is the routing's reason (hedgeRouting.ts) */
+  | "route_gated"
   /** the cross-venue route priced off a mark the hedge venue disagrees with: the market's own side a stub, or far from the implied price (markGapGuard.ts) */
   | "mark_disagreement";
 

@@ -492,8 +492,8 @@ export interface RouteInput {
   refusalDetail?: string;
   /** the holder's EV cost on this route, bps */
   evCostBps: number | null;
-  /** the hedge as quoted, for the exposure arithmetic; absent on a refusal */
-  hedge?: { unitsMilli: number; avgPriceCents: number };
+  /** the collar and the hedge as quoted on this route, for the exposure arithmetic; absent on a refusal */
+  hedge?: { unitsMilli: number; avgPriceCents: number; floorCents: number; capCents: number };
   gates: Omit<RouteGates, "depth">;
   /** the hedge venue's rule row for this market (its own text laid over the table) */
   rules: RuleCells;
@@ -535,7 +535,8 @@ export interface ChooseRouteInputs {
   holderVenue: SettlementVenue;
   league: string;
   holderRules: RuleCells;
-  terms: Omit<TailTerms, "hedgeUnitsPerContractMilli" | "hedgeAvgPriceCents">;
+  /** the market's mid for the holder's side, cents */
+  markCents: number;
   contracts: number;
   routes: RouteInput[];
   probabilities: TailProbabilities;
@@ -564,7 +565,9 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
             inputs.holderRules,
             r.rules,
             {
-              ...inputs.terms,
+              floorCents: r.hedge.floorCents,
+              capCents: r.hedge.capCents,
+              markCents: inputs.markCents,
               hedgeUnitsPerContractMilli: Math.round(r.hedge.unitsMilli / inputs.contracts),
               hedgeAvgPriceCents: r.hedge.avgPriceCents,
             },
@@ -639,7 +642,7 @@ export interface TailTerm {
   text: string;
 }
 
-const hoursWords = (h?: number): string => (h === undefined ? "its window" : h % 24 === 0 && h > 48 ? `${h / 24} days` : `${h} hours`);
+const hoursWords = (h?: number): string => (h === undefined ? "the venue's window" : h % 24 === 0 && h > 48 ? `${h / 24} days` : `${h} hours`);
 
 /**
  * Step 6: the tails in the holder's venue's words, as the terms. The protection settles on what

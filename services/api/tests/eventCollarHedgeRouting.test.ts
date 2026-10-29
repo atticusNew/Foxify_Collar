@@ -137,7 +137,7 @@ test("routing choice: cheapest all in among routes that pass the gates, ties to 
     route,
     ok: true,
     evCostBps,
-    hedge: { unitsMilli: 6_500, avgPriceCents: 40 },
+    hedge: { unitsMilli: 7_000, avgPriceCents: 40, floorCents: 40, capCents: 70 },
     gates: { gameMatch: true, venueOpen: true, executable: true },
     rules: tableRules(route === "kalshi_self" ? "kalshi" : "polymarket", "nfl"),
     ...extra,
@@ -146,7 +146,7 @@ test("routing choice: cheapest all in among routes that pass the gates, ties to 
     holderVenue: "prophetx" as const,
     league: "nfl",
     holderRules,
-    terms: { floorCents: 45, capCents: 80, markCents: 60 },
+    markCents: 60,
     contracts: 10,
     probabilities: DEFAULT_TAIL_PROBABILITIES.nfl,
   };
