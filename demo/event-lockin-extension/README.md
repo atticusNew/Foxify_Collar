@@ -131,10 +131,30 @@ of the books in the race (0.7.22; the holder sees it win, or sees that another b
 venue priced, "Other side on Kalshi". The fine print then keeps
 only the notes; without routing it falls back to the competition line ("ProphetX $3.10 vs Kalshi
 $2.40, hedged on ProphetX"), else "other side on
-Polymarket" when the hedge venue is not the page's own. Tonight's venues are Kalshi and ProphetX,
-both reached through the aggregator's execution pod (`EVENT_HEDGE_VENUES=kalshi,prophetx`,
+Polymarket" when the hedge venue is not the page's own. The venues in the race are Kalshi and
+ProphetX, both reached through the aggregator's execution pod, and Novig, reached directly with
+the service's own trading key (`EVENT_HEDGE_VENUES=kalshi,prophetx,novig`,
 `EVENT_HEDGE_LIVE_VIA=aggregator`); ProphetX's 2% of net gains at settlement is folded into its
-book before the walk, so the two credits on the line are both all in.
+book before the walk, and Novig's fee (6% × P × (1 − P) per contract, charged on a game market
+only once it is live) is folded in the same way, so every credit on the line is all in.
+
+### The Novig route
+
+Novig is a venue the holder may be sitting on and a hedge venue at once; when its book pays the
+most, the HERE chip wins the race. The service reads Novig's book through the same signed
+catalog read that serves the price reference (`REFERENCE_BOOK_SIGNED_HOST`, falling back to the
+public catalog on `VENUE_API_HOST` when the route is offered), with both outcome ids and the
+market's fee rule carried on the listing. The hedge is a buy of the **opposing** outcome, one
+order, **fill or kill**, at the walked worst price snapped down to the venue's price grid (0.001
+steps to 0.050, 0.005 steps to 0.950, 0.001 steps to 0.999); one of our $1 units is 100 of the
+venue's one-cent contracts. The fee rule is re-read at order time, so a game that has gone live
+unfolds the fee out of the limit before it is sent. Nothing rests: an order the venue leaves open
+is cancelled, and a kill that filled nothing comes back as the venue's own refusal on the receipt
+(the rails then record a simulated fill with the reason, as on every route). **Leave early** on a
+Novig hedge is an offset: the service buys the holder's own outcome against the hedge at
+1 − the walked bid, and the pair settles at the game, so the receipt says the proceeds land then,
+not today. The counterfactual re-reads, the early-close quote and the venue columns on `/`
+carry Novig like the other routes, and the aggregator is never named.
 
 > Disclosure line, shown on every panel and to be read in any published recording (the marker
 > and the slip line are a notice that protection exists; nothing is offered until the play fills):
@@ -393,12 +413,13 @@ The lock routes are off until a key is set.
 | --- | --- | --- |
 | `EVENT_SHADOW_LOCK_KEY` | 12+ random chars | Opens `/api/shadow/markets`, `/api/shadow/quote`, `/api/shadow/positions`, `/api/shadow/lock`, `/api/shadow/receipt`, `/api/shadow/unwind/quote`, `/api/shadow/unwind` to callers with `x-lock-key`. Unset answers 404. |
 | `EVENT_HEDGE_STRATEGY` | `live` | Real orders behind rails. Anything the rails hold is simulated at the book, reason on the receipt. |
-| `EVENT_HEDGE_LIVE_VIA` | `aggregator` for tonight | Orders go through the aggregator's execution pod with the TRADE key, which reaches both Kalshi and ProphetX. Unset (`direct`): Kalshi on our own key, and ProphetX prices on paper only. |
+| `EVENT_HEDGE_LIVE_VIA` | `aggregator` for tonight | Orders go through the aggregator's execution pod with the TRADE key, which reaches both Kalshi and ProphetX. Unset (`direct`): Kalshi on our own key, and ProphetX prices on paper only. Novig is direct in either mode, on `NOVIG_TRADE_KEY_ID`. |
 | `AGGREGATOR_TRADE_KEY_ID`, `AGGREGATOR_TRADE_PRIVATE_KEY_HEX` | from the aggregator | Service only. The DATA key reads books and never sends an order. |
-| `EVENT_HEDGE_VENUES` | `kalshi,prophetx` for tonight | The hedge venues every quote competes. Unset offers all three (Kalshi, ProphetX, Polymarket). Polymarket stays out until the aggregator lists Poly US. Shown on `/healthz` with the operator token. |
+| `EVENT_HEDGE_VENUES` | `kalshi,prophetx,novig` | The hedge venues every quote competes. Unset offers all four (Kalshi, ProphetX, Novig, Polymarket). Polymarket stays out until the aggregator lists Poly US. Shown on `/healthz` with the operator token. |
 | `EVENT_PROPHETX_FEE_BPS` | leave unset (`200`) | ProphetX's 2% of net gains at settlement, folded into its book before every walk and provided for on every fill. |
+| `NOVIG_TRADE_KEY_ID`, `NOVIG_TRADE_PRIVATE_KEY_PEM` | from `venueReadKey.ts subaccount-open` | Service only. The trading key of the service's own Novig subaccount; its cash funds the Novig hedges, fill or kill, direct (no pod). Unset with `novig` offered: the route prices on paper and the receipt says so. The host is `VENUE_API_HOST` (production `https://api.novig.com`; the Paper environment `https://api.paper.novig.com` runs the whole route on play money with no location check). |
 | `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. With `via=aggregator` they serve the account routes and send nothing. |
-| `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap | Allowlist, keyed by the game's Kalshi ticker whichever venue the hedge lands on. Empty allows nothing. Listed tickers are skipped by the hourly scan. With one live venue the route is pinned to it; with two (Kalshi and ProphetX through the pod) nothing is pinned and the routing competes them on price. |
+| `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap | Allowlist, keyed by the game's Kalshi ticker whichever venue the hedge lands on. Empty allows nothing. Listed tickers are skipped by the hourly scan. With one live venue the route is pinned to it; with more (Kalshi and ProphetX through the pod, Novig on our own key) nothing is pinned and the routing competes them on price. |
 | `EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER` | `25` | Per-order cap. |
 | `EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY` | `20` for the first live test, then `100` | Per-day cap, counted from the receipt file, so a restart cannot reset it. |
 | `EVENT_SHADOW_LOCK_LEDGER_PATH` | leave unset | Locks live in `lock-ledger.jsonl` beside the scan's ledger on the same disk. |
@@ -483,10 +504,23 @@ npx tsx scripts/venueReadKey.ts fund --key <id> --dollars 50 --id defund-... --d
 npx tsx scripts/venueReadKey.ts transfer --key <id> --transfer <transfer id>
 ```
 
-When the Novig route is built the service will take `NOVIG_TRADE_KEY_ID` (the printed id) and
-`NOVIG_TRADE_PRIVATE_KEY_PEM` (the contents of `--out`), service env only, never the extension.
-Money on this API is a five-place decimal string ("50.00000"); the client converts to and from
-cents. The venue allows ten live subaccounts.
+The service takes `NOVIG_TRADE_KEY_ID` (the printed id) and `NOVIG_TRADE_PRIVATE_KEY_PEM` (the
+contents of `--out`), service env only, never the extension; with them set and `novig` in
+`EVENT_HEDGE_VENUES` the Novig route is live under the same rails as the others (allowlist by the
+game's Kalshi ticker, per-order and per-day caps, `EVENT_HEDGE_LIVE_SEND=yes`). Money on this
+API is a five-place decimal string ("50.00000"); the client converts to and from cents. The
+venue allows ten live subaccounts. The venue also wants a device geolocation from the Novig app
+within the last three days for the account the key belongs to; without one an order is refused
+with 451 and the receipt carries that reason.
+
+Pre-flight answers a `novig` field: `{ ok: true, keyId: "…last4", balanceCents }` read from the
+subaccount, or `ok: false` with an `error` naming what is missing. Check it before the first live
+lock:
+
+```
+curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" \
+  "https://<service>/api/shadow/hedges/preflight?ticker=KX...&contracts=26" | jq '{live, venue, novig, ticker, notes}'
+```
 
 Pre-flight (operator token):
 

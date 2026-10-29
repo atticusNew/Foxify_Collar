@@ -43,6 +43,7 @@
  * public words are "reference book A" and "reference book B".
  */
 
+import type { NovigHedgeOn } from "./crossVenuePricer";
 import type { LeagueTemplate } from "./resolutionWhitelist";
 import type { MatchedPair, PmBook, PmBookLevel } from "./types";
 import { decimalToMilli } from "./polymarketPublic";
@@ -86,6 +87,21 @@ export interface ReferenceListing {
   key?: string;
   /** the venue's snapshot timestamp as read, ISO; absent when unstamped or when there was no book */
   snapshotAtIso?: string;
+  /**
+   * The two outcomes of the venue's market, ours (the holder's side) and the opposing one (what a
+   * hedge there buys), and the fee rule the book was folded under: what a hedge ROUTE on this
+   * venue needs to send an order (novigOrders.ts). Present on the signed dialect only.
+   */
+  outcomes?: ReferenceOutcomes;
+}
+
+export interface ReferenceOutcomes {
+  ours: { outcomeId: string; name: string };
+  opposing: { outcomeId: string; name: string };
+  /** the fee coefficient and whether the book's levels carry it (pre-game, per the market's rule) */
+  fee: { coefficient: number; folded: boolean };
+  /** the market's status word as the catalog gave it, when it did */
+  marketStatus?: string;
 }
 
 /** What one reference venue lists for a league, as it answers the catalog: the diagnostic behind a run of "not listed". */
@@ -210,24 +226,85 @@ export function signedFeeAppliesPreGame(fee: RawVenueMarket["fee"]): boolean {
   return charged !== "WHEN_LIVE" && charged !== "LIVE_ONLY" && charged !== "NEVER";
 }
 
+/** The market's fee coefficient as the catalog gives it; the venue's published figure when it does not. */
+export function signedFeeCoefficient(fee: RawVenueMarket["fee"]): number {
+  const c = fee?.coefficient === undefined || fee.coefficient === null ? NaN : Number(fee.coefficient);
+  return Number.isFinite(c) && c >= 0 ? c : SIGNED_DEFAULT_FEE_COEFFICIENT;
+}
+
+/** The taker fee on one of our $1 units at a milli price, milli, rounded up against the credit: c x P x (1 - P). */
+export const signedFeeMilli = (coefficient: number, priceMilli: number): number => Math.ceil((coefficient * priceMilli * (1000 - priceMilli)) / 1000);
+
 /**
  * The asks for the opposing outcome from the venue's bids on ours, in exact milli units. With the
  * fee applying, each level's price carries c x P x (1 - P) rounded up against the credit.
  */
 export function signedAsksForOpposing(book: RawVenueBook, ourOutcomeId: string, fee: RawVenueMarket["fee"]): PmBookLevel[] {
   const bids = book.orders[ourOutcomeId] ?? [];
-  const c = fee?.coefficient === undefined || fee.coefficient === null ? NaN : Number(fee.coefficient);
-  const coefficient = Number.isFinite(c) && c >= 0 ? c : SIGNED_DEFAULT_FEE_COEFFICIENT;
+  const coefficient = signedFeeCoefficient(fee);
   const charged = signedFeeAppliesPreGame(fee);
   const levels: PmBookLevel[] = [];
   for (const o of bids) {
     const bidMilli = decimalToMilli(o.price, false);
     if (bidMilli <= 0 || bidMilli >= 1000 || !Number.isInteger(o.qty) || o.qty <= 0) continue;
     const p = 1000 - bidMilli;
-    const feeMilli = charged ? Math.ceil((coefficient * p * (1000 - p)) / 1000) : 0;
+    const feeMilli = charged ? signedFeeMilli(coefficient, p) : 0;
     levels.push({ priceMilli: p + feeMilli, sizeMilli: o.qty * 10 });
   }
   return levels;
+}
+
+/**
+ * The bids for the opposing outcome: what the venue's resting bids on it would pay a hedge that
+ * leaves (novigOrders.ts leaves by buying our outcome at 1 - the bid, so the proceeds are the bid
+ * less the fee on it when the fee applies). Best first, the fee taken off each level rounded up.
+ */
+export function signedBidsForOpposing(book: RawVenueBook, opposingOutcomeId: string, fee: RawVenueMarket["fee"]): PmBookLevel[] {
+  const bids = book.orders[opposingOutcomeId] ?? [];
+  const coefficient = signedFeeCoefficient(fee);
+  const charged = signedFeeAppliesPreGame(fee);
+  const levels: PmBookLevel[] = [];
+  for (const o of bids) {
+    const b = decimalToMilli(o.price, false);
+    if (b <= 0 || b >= 1000 || !Number.isInteger(o.qty) || o.qty <= 0) continue;
+    const feeMilli = charged ? signedFeeMilli(coefficient, b) : 0;
+    if (b - feeMilli <= 0) continue;
+    levels.push({ priceMilli: b - feeMilli, sizeMilli: o.qty * 10 });
+  }
+  return levels.sort((a, b) => b.priceMilli - a.priceMilli);
+}
+
+/**
+ * The Novig hedge route's inputs from the signed-dialect reference read: the opposing outcome's
+ * asks (fee folded as the market's rule says) and the ids an order there needs. Null when the
+ * venue was not read, did not list the game, or the read predates the ids being kept.
+ */
+export function novigRouteOf(references: ReferenceBook[] | undefined): { noBook: PmBook; hedgeOn: NovigHedgeOn; ref: ReferenceBook } | null {
+  const ref = (references ?? []).find((r) => r.id === "signed_v3");
+  if (!ref || !ref.book || !ref.listing?.outcomes) return null;
+  const o = ref.listing.outcomes;
+  return {
+    noBook: ref.book,
+    hedgeOn: { venue: "novig", marketId: ref.listing.marketId, outcomeId: o.opposing.outcomeId, offsetOutcomeId: o.ours.outcomeId, outcome: o.opposing.name },
+    ref,
+  };
+}
+
+/**
+ * One market's book on the signed-dialect venue by its ids, shaped for the hedge route: the
+ * opposing outcome's asks and bids with the fee folded as the market's rule says. What an early
+ * close on the Novig route reads (the ids are on the record), no catalog search needed.
+ */
+export async function signedHedgeBook(client: VenueClient, marketId: string, ourOutcomeId: string, opposingOutcomeId: string): Promise<PmBook> {
+  const [m, book] = await Promise.all([client.getMarket(marketId), client.getBook(marketId)]);
+  const shaped = asksBook(signedAsksForOpposing(book, ourOutcomeId, m.fee), `signed_v3:${marketId}`);
+  return { ...shaped, bids: signedBidsForOpposing(book, opposingOutcomeId, m.fee) };
+}
+
+/** The signed-dialect venue's host for the Novig route's own reads: the reference host, else the holder-positions host. Null when neither is set. */
+export function signedHostFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
+  const host = (env.REFERENCE_BOOK_SIGNED_HOST ?? env.VENUE_API_HOST ?? "").trim().replace(/\/+$/, "");
+  return host || null;
 }
 
 const isWinnerMarket = (type: string) => /^(money|moneyline|money_line|winner|ml|match_winner|game_winner|h2h)$/i.test(type.replace(/[\s-]/g, "_"));
@@ -287,9 +364,21 @@ export function signedSource(client: VenueClient, opts: SignedSourceOptions = {}
       if (!hit && fallback) hit = (await client.listMarkets({ marketType: "MONEY", limit: "200" })).find(isOurGame);
       if (!hit) return { id: "signed_v3", book: null, reason: "not_listed" };
       const ourOutcome = hit.outcomes.find((o) => clubNamed(clubs.template, clubs.ours, o.name))!;
+      const oppOutcome = hit.outcomes.find((o) => clubNamed(clubs.template, clubs.opposing, o.name))!;
       const book = await client.getBook(hit.marketId);
-      const listing: ReferenceListing = { marketId: hit.marketId, ...(hit.eventId ? { key: hit.eventId } : {}) };
-      return { id: "signed_v3", book: asksBook(signedAsksForOpposing(book, ourOutcome.outcomeId, hit.fee), `signed_v3:${hit.marketId}`), listing };
+      const listing: ReferenceListing = {
+        marketId: hit.marketId,
+        ...(hit.eventId ? { key: hit.eventId } : {}),
+        outcomes: {
+          ours: { outcomeId: ourOutcome.outcomeId, name: ourOutcome.name },
+          opposing: { outcomeId: oppOutcome.outcomeId, name: oppOutcome.name },
+          fee: { coefficient: signedFeeCoefficient(hit.fee), folded: signedFeeAppliesPreGame(hit.fee) },
+          ...(hit.status ? { marketStatus: hit.status } : {}),
+        },
+      };
+      // asks for the hedge, and the bids a hedge there could leave against (earlyClose.ts)
+      const shaped = asksBook(signedAsksForOpposing(book, ourOutcome.outcomeId, hit.fee), `signed_v3:${hit.marketId}`);
+      return { id: "signed_v3", book: { ...shaped, bids: signedBidsForOpposing(book, oppOutcome.outcomeId, hit.fee) }, listing };
     },
     async catalog(league) {
       return signedCatalogProbe(client, league, codes);
@@ -456,9 +545,15 @@ export function referenceSourcesFromEnv(env: NodeJS.ProcessEnv = process.env, op
   const sources: ReferenceBookSource[] = [];
   const notes: string[] = [];
   const fetchImpl = withTimeout(opts.fetchImpl ?? fetch, opts.timeoutMs ?? 6000);
-  const signedHost = env.REFERENCE_BOOK_SIGNED_HOST?.trim().replace(/\/+$/, "");
+  let signedHost = env.REFERENCE_BOOK_SIGNED_HOST?.trim().replace(/\/+$/, "");
   const signedKeyId = env.REFERENCE_BOOK_SIGNED_KEY_ID?.trim();
   const signedPem = env.REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM?.trim();
+  // the Novig hedge route prices from this read; offered without a reference host, the venue's
+  // public catalog is read on the host the holder-position reader already uses
+  if (!signedHost && !signedKeyId && !signedPem && novigRouteOffered(env) && env.VENUE_API_HOST?.trim()) {
+    signedHost = env.VENUE_API_HOST.trim().replace(/\/+$/, "");
+    notes.push("reference book A: no REFERENCE_BOOK_SIGNED_HOST; the hedge route on that venue reads its public catalog on VENUE_API_HOST");
+  }
   if (signedHost || signedKeyId || signedPem) {
     const leagues = parseSignedLeagueCodes(env.REFERENCE_BOOK_SIGNED_LEAGUES);
     notes.push(...leagues.notes);
@@ -488,6 +583,13 @@ export function referenceSourcesFromEnv(env: NodeJS.ProcessEnv = process.env, op
     }
   }
   return { sources, notes };
+}
+
+/** Is the signed-dialect venue named as a hedge venue (EVENT_HEDGE_VENUES; unset offers every route)? Mirrors hedgeRouting.hedgeVenuesFromEnv without importing it. */
+export function novigRouteOffered(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.EVENT_HEDGE_VENUES ?? "").trim();
+  if (!raw) return true;
+  return raw.split(",").some((w) => w.trim().toLowerCase() === "novig");
 }
 
 function withTimeout(fetchImpl: typeof fetch, timeoutMs: number): typeof fetch {

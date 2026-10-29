@@ -182,6 +182,11 @@ export function describeOrder(intent: HedgeIntent): string {
     if (actionOf(intent) === "sell") return `prophetx offset ${units(intent.unitsMilli)} shares of strike ${intent.instrument} by buying strike ${intent.offsetInstrument ?? "?"} at or under ${100 - Math.floor(intent.book.worstPriceMilli / 10)}c, fill or kill`;
     return `prophetx buy ${units(intent.unitsMilli)} shares of strike ${intent.instrument} (${intent.outcome}) at or under ${cap}c, fill or kill`;
   }
+  if (intent.venue === "novig") {
+    // Novig takes no sell either: the unwind buys the holder's own outcome at 1 - the worst bid, offsetting the hedge
+    if (actionOf(intent) === "sell") return `novig offset ${units(intent.unitsMilli)} units of outcome ${intent.instrument} by buying outcome ${intent.offsetInstrument ?? "?"} at or under ${100 - Math.floor(intent.book.worstPriceMilli / 10)}c, fill or kill`;
+    return `novig buy ${units(intent.unitsMilli)} units (${units(intent.unitsMilli * 100)} contracts) of outcome ${intent.instrument} (${intent.outcome}) at or under ${cap}c, fill or kill`;
+  }
   if (actionOf(intent) === "sell") return `${intent.venue} sell ${units(intent.unitsMilli)} ${intent.outcome} on ${intent.instrument} at or over ${cap}c, immediate or cancel`;
   return `${intent.venue} buy ${units(intent.unitsMilli)} ${intent.outcome} on ${intent.instrument} at or under ${cap}c, immediate or cancel`;
 }

@@ -101,7 +101,7 @@ import { matchKalshiMarket, parseGameTicker } from "../src/eventCollar/crossVenu
 import { getPmBook } from "../src/eventCollar/crossVenue/polymarketPublic";
 import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import { getNoAsks, quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
-import { readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook, type ReferenceCatalogProbe } from "../src/eventCollar/crossVenue/venueBooks";
+import { novigRouteOf, readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook, type ReferenceCatalogProbe } from "../src/eventCollar/crossVenue/venueBooks";
 import { MAPPED_NO_BOOK, NOT_MAPPED, aggregatorBookSourceFromEnv, type AggregatorBookSource, type AggregatorBookStatus, type BookOrigins, type ProphetXStrikes } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { farOutGuardFromEnv, farOutVerdict, type FarOutGuardRule } from "../src/eventCollar/crossVenue/farOutGuard";
@@ -150,13 +150,23 @@ const MAX_MATCH_ATTEMPTS = 10;
 /** how often each tail happens per league (hedgeRouting.ts), estimates; EVENT_ROUTING_TAIL_PROBS overrides */
 const TAIL_PROBABILITIES = tailProbabilitiesFromEnv(process.env);
 /**
- * Which hedge venues are offered (hedgeRouting.hedgeVenuesFromEnv): EVENT_HEDGE_VENUES=kalshi,prophetx
+ * Which hedge venues are offered (hedgeRouting.hedgeVenuesFromEnv): EVENT_HEDGE_VENUES=kalshi,prophetx,novig
  * leaves Polymarket out of every quote, record and receipt until the aggregator lists Poly US.
  * Unset, every route is offered. Shown on healthz.
  */
 export const HEDGE_VENUES = hedgeVenuesFromEnv(process.env);
 /** ProphetX's fee on net gains at settlement, folded into its book before the walk (prophetxOrders.ts) */
 export const PROPHETX_FEE_BPS = prophetxFeeBpsFromEnv(process.env);
+
+/** Why the Novig route has no book, from the signed-dialect reference's reason (venueBooks.ts). */
+export function novigAbsenceWords(reason: string | undefined): string {
+  if (reason === "not_listed") return "Novig does not list this game yet";
+  if (reason === "league_not_covered") return "Novig's catalog is not read for this league";
+  if (reason?.startsWith("unreachable")) return `Novig could not be reached (${reason.replace(/^unreachable:\s*/, "")})`;
+  if (reason?.startsWith("venue_")) return `Novig answered ${reason.replace(/^venue_/, "").replace(/_/g, " ")}`;
+  if (reason) return `Novig's book was not read (${reason})`;
+  return "Novig's market was read before its outcome ids were kept; priced again next scan";
+}
 
 /** Why the ProphetX route has no book, in the aggregator's four mapping states (aggregatorBooks.ts header). */
 export function prophetxAbsenceWords(reason: string | undefined, notes: string[]): string {
@@ -764,7 +774,7 @@ async function quoteSportsCandidate(
   // the reference column shows); raw venue prices, the fee folded only for the walk
   const pxRef = agg?.references.find((r) => r.id === "aggregated_mm");
   const pxRawBook: PmBook | undefined = pxRef?.book ?? undefined;
-  if (pmRes.status === "rejected" && ladderRes.status === "rejected" && !pxRawBook) {
+  if (pmRes.status === "rejected" && ladderRes.status === "rejected" && !pxRawBook && !references.some((r) => r.id === "signed_v3" && r.book)) {
     throw new Error("both hedge venues unreachable");
   }
 
@@ -811,6 +821,18 @@ async function quoteSportsCandidate(
               outcome: pair.pm.outcomes[pair.pmNoOutcomeIndex],
             },
           });
+  // the Novig route's book is the venue's own market, read as the signed-dialect reference (the
+  // same read the reference column shows), the fee folded as the market's rule says; the ids on
+  // the listing are what an order there needs
+  const nv = novigRouteOf(references);
+  const nvRef = references.find((r) => r.id === "signed_v3");
+  const nvQuote: CrossQuoteResult = !offered.includes("novig")
+    ? notOffered("Novig")
+    : !nvRef
+      ? { ok: false, code: "novig_book_empty", detail: "Novig's book is not read: set REFERENCE_BOOK_SIGNED_HOST or VENUE_API_HOST" }
+      : !nv
+        ? { ok: false, code: "novig_book_empty", detail: novigAbsenceWords(nvRef.reason) }
+        : quoteCrossWrap({ ...base, noBook: nv.noBook, hedgeOn: nv.hedgeOn });
 
   const bpsOf = (q: CrossQuoteResult): number | null =>
     q.ok ? evCostBps(markCents, q.floorCents, q.capCents, q.creditCents, position.contracts) : null;
@@ -818,8 +840,9 @@ async function quoteSportsCandidate(
     polymarket: { quote: pmQuote, bps: bpsOf(pmQuote) },
     kalshi_self: { quote: ladderQuote, bps: bpsOf(ladderQuote) },
     prophetx: { quote: pxQuote, bps: bpsOf(pxQuote) },
+    novig: { quote: nvQuote, bps: bpsOf(nvQuote) },
   };
-  const routesChecked: RouteCheck[] = (["polymarket", "kalshi_self", "prophetx"] as const).map((r) => ({
+  const routesChecked: RouteCheck[] = (["polymarket", "kalshi_self", "prophetx", "novig"] as const).map((r) => ({
     route: r,
     ok: quotes[r].quote.ok,
     evCostBps: quotes[r].bps,
@@ -832,7 +855,7 @@ async function quoteSportsCandidate(
   // holder's own venue (same instrument, zero basis risk). A pinned route is the one the live
   // executor can send to; it is judged like the rest and the reason owns what it costs.
   const holderVenue = routingInputs?.holderVenue ?? "kalshi";
-  const executable = routingInputs?.executable ?? { kalshi_self: true, polymarket: true, prophetx: true };
+  const executable = routingInputs?.executable ?? { kalshi_self: true, polymarket: true, prophetx: true, novig: true };
   const readAt = now.toISOString();
   const kalshiRuleCells = kalshiTailCells(pair.kalshi.rulesSecondary, kalshiRuleUrl(pair.kalshi.ticker, kalshiBase()), readAt);
   const pmRuleCells = polymarketTailCells(pair.pm.description, `https://gamma-api.polymarket.com/events?slug=${pair.pm.eventSlug}`, readAt);
@@ -844,6 +867,8 @@ async function quoteSportsCandidate(
   const pmOpen = pair.pm.active && pair.pm.acceptingOrders && !pair.pm.closed;
   // ProphetX lists a game until it starts and settles it on the result; a strike with a book is open
   const pxOpen = Boolean(pxRawBook);
+  // Novig lists a game market until it goes live (every GOLIVE voids the resting book); a market the catalog lists open with a book is open
+  const nvOpen = Boolean(nv) && !/^(settled|closed|cancel|void|suspend)/i.test(nv?.ref.listing?.outcomes?.marketStatus ?? "");
   const routeInput = (route: HedgeRoute): RouteInput => {
     const q = quotes[route].quote;
     return {
@@ -864,7 +889,7 @@ async function quoteSportsCandidate(
         : {}),
       gates: {
         gameMatch: true,
-        venueOpen: route === "kalshi_self" ? kalshiOpen : route === "prophetx" ? pxOpen : pmOpen,
+        venueOpen: route === "kalshi_self" ? kalshiOpen : route === "prophetx" ? pxOpen : route === "novig" ? nvOpen : pmOpen,
         executable: route === "prophetx" ? executable.prophetx && (agg?.prophetx?.executable ?? true) : executable[route],
       },
       rules: rulesFor(hedgeVenueOf(route), pair.league, route === "kalshi_self" ? kalshiRuleCells : route === "polymarket" ? pmRuleCells : undefined),
@@ -1459,7 +1484,7 @@ export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> 
   const result = applyQuoteRules(
     await quoteSportsCandidate(pair, markCents, now, position, inputs.route, {
       holderVenue: inputs.holderVenue ?? "kalshi",
-      executable: inputs.executable ?? { kalshi_self: true, polymarket: true, prophetx: true },
+      executable: inputs.executable ?? { kalshi_self: true, polymarket: true, prophetx: true, novig: true },
     }),
     now,
   );

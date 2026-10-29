@@ -152,6 +152,8 @@ export interface EarlyCloseTerms {
   route: HedgeRoute;
   /** the ProphetX strike the hedge holds, when the route is ProphetX */
   hedgeStrikeId?: string;
+  /** the Novig market and the two outcomes, when the route is Novig: the hedge outcome held and the holder's own outcome the close buys to offset */
+  novig?: { marketId: string; hedgeOutcomeId: string; offsetOutcomeId: string };
 }
 
 export interface EarlyCloseBooks {
@@ -164,6 +166,11 @@ export interface EarlyCloseBooks {
    * (prophetxOrders.foldProphetXFee) as it was at the lock; absent when it could not be read.
    */
   pxNoBook?: PmBook;
+  /**
+   * The hedge outcome's book on Novig when the route is Novig: its bids are what the hedge could
+   * leave against, the taker fee taken off when the market charges it (venueBooks.signedBidsForOpposing).
+   */
+  nvNoBook?: PmBook;
 }
 
 export interface EarlyCloseQuote {
@@ -195,14 +202,17 @@ export interface EarlyCloseQuote {
    * the No bids' top, average and worst level taken, cents, gross before fees. On ProphetX: the
    * hedge strike's fee-folded bids in milli, and the strike id; the order that realises it is a BUY
    * of the holder's side's strike at 1 - the worst bid, which settles against the hedge at the game
-   * (the proceeds land then, not today). Absent when the hedge is on Polymarket (recorded, not sent).
+   * (the proceeds land then, not today). On Novig the same shape with the market and outcome ids:
+   * the order BUYS the holder's own outcome at 1 - the worst bid. Absent when the hedge is on
+   * Polymarket (recorded, not sent).
    */
   hedgeSale?: HedgeSale;
 }
 
 export type HedgeSale =
   | { venue: "kalshi"; bestPriceCents: number; avgPriceCents: number; worstPriceCents: number; grossCents: number }
-  | { venue: "prophetx"; strikeId: string; bestPriceMilli: number; avgPriceMilli: number; worstPriceMilli: number; grossCents: number; settlesAtGame: true };
+  | { venue: "prophetx"; strikeId: string; bestPriceMilli: number; avgPriceMilli: number; worstPriceMilli: number; grossCents: number; settlesAtGame: true }
+  | { venue: "novig"; marketId: string; outcomeId: string; offsetOutcomeId: string; bestPriceMilli: number; avgPriceMilli: number; worstPriceMilli: number; grossCents: number; settlesAtGame: true };
 
 export type EarlyCloseLeg = "position" | "hedge";
 export type EarlyCloseRefusalCode = "book_empty" | "book_too_thin" | "hedge_unlocatable";
@@ -266,6 +276,21 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
     hedgeProceedsCents = h.proceedsCents;
     hedgeFeesCents = 0; // the venue's settlement fee is inside the folded bids
     hedgeSale = { venue: "prophetx", strikeId: terms.hedgeStrikeId, bestPriceMilli: books.pxNoBook.bids[0].priceMilli, avgPriceMilli: h.avgPriceMilli, worstPriceMilli: h.worstPriceMilli, grossCents: h.proceedsCents, settlesAtGame: true };
+  } else if (terms.route === "novig") {
+    // the bids carry the taker fee already when the market charges it (taken off at the read), so the walk is the net
+    if (!books.nvNoBook || !terms.novig) {
+      return { ok: false, leg: "hedge", code: "hedge_unlocatable", detail: books.nvNoBook ? "the hedge outcome for this position is not on record" : "the hedge outcome's book could not be read on the venue" };
+    }
+    if (books.nvNoBook.bids.length === 0) {
+      return { ok: false, leg: "hedge", code: "book_empty", detail: "no resting bids on the hedge outcome" };
+    }
+    const h = walkPmBids(books.nvNoBook.bids, terms.hedgeUnitsMilli);
+    if (!h) {
+      return { ok: false, leg: "hedge", code: "book_too_thin", detail: "the hedge outcome's bids cannot absorb the hedge right now" };
+    }
+    hedgeProceedsCents = h.proceedsCents;
+    hedgeFeesCents = 0; // the venue's taker fee, when charged, is inside the folded bids
+    hedgeSale = { venue: "novig", marketId: terms.novig.marketId, outcomeId: terms.novig.hedgeOutcomeId, offsetOutcomeId: terms.novig.offsetOutcomeId, bestPriceMilli: books.nvNoBook.bids[0].priceMilli, avgPriceMilli: h.avgPriceMilli, worstPriceMilli: h.worstPriceMilli, grossCents: h.proceedsCents, settlesAtGame: true };
   } else {
     if (!books.pmNoBook) {
       return { ok: false, leg: "hedge", code: "hedge_unlocatable", detail: "the hedge token for this position is not on record" };

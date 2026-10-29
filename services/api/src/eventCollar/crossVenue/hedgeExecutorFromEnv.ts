@@ -17,7 +17,9 @@
  *                               Kalshi subaccount; the fill says via "aggregator"
  *
  * Credentials: KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PEM (direct); AGGREGATOR_TRADE_KEY_ID +
- * AGGREGATOR_TRADE_PRIVATE_KEY_HEX (aggregator; not the DATA key); POLY_API_KEY +
+ * AGGREGATOR_TRADE_PRIVATE_KEY_HEX (aggregator; not the DATA key); NOVIG_TRADE_KEY_ID +
+ * NOVIG_TRADE_PRIVATE_KEY_PEM on VENUE_API_HOST (the service's own trading key on Novig, its
+ * subaccount's cash; novigOrders.ts; in either via mode, the venue is reached directly); POLY_API_KEY +
  * POLY_API_SECRET + POLY_API_PASSPHRASE + POLY_ADDRESS. Polymarket acceptance
  * also needs an order signer, which nothing here constructs: without one the
  * Polymarket client is read-only and the executor records that as the reason.
@@ -44,7 +46,9 @@ import {
 } from "./hedgeExecutor";
 import { AggregatorOrderClient, aggregatorTradeConfigFromEnv } from "./aggregatorOrders";
 import { KalshiOrderClient } from "./kalshiOrders";
+import { NovigOrderClient, novigTradeConfigFromEnv } from "./novigOrders";
 import { ProphetXOrderClient } from "./prophetxOrders";
+import { signerFromPem } from "./venuePositions";
 import { KalshiRfqClient, kalshiRfqCredentialsFromEnv } from "./kalshiRfq";
 import { LiveHedgeExecutor, liveRailsFromEnv, sentUnitsMilliOn, type LiveHedgeRails, type LiveOrderHook } from "./liveHedge";
 import {
@@ -87,6 +91,8 @@ export interface HedgeExecutorChoice {
   aggregatorOrders: AggregatorOrderClient | null;
   /** the pod's ProphetX order client, same key, same mode: its ladder, balance and positions for the pre-flight */
   prophetxOrders: ProphetXOrderClient | null;
+  /** the service's own Novig trading key in live mode: its subaccount's balance for the pre-flight */
+  novigOrders: NovigOrderClient | null;
 }
 
 /** EVENT_HEDGE_LIVE_VIA as the deploy spells it; anything but "aggregator" is the direct path. */
@@ -126,7 +132,7 @@ export function hedgeExecutorFromEnv(
   if (strategy === "book") {
     const notes = ["book: simulated fill at the walked terms"];
     if (builder.note) notes.push(builder.note);
-    return { executor: new BookHedgeExecutor(), strategy, rfqVenues: [], notes, polymarketBuilderCode, live: null, kalshiOrders: null, aggregatorOrders: null, prophetxOrders: null };
+    return { executor: new BookHedgeExecutor(), strategy, rfqVenues: [], notes, polymarketBuilderCode, live: null, kalshiOrders: null, aggregatorOrders: null, prophetxOrders: null, novigOrders: null };
   }
   if (strategy === "live") {
     const rails = liveRailsFromEnv(env);
@@ -136,6 +142,7 @@ export function hedgeExecutorFromEnv(
     let kalshiOrders: KalshiOrderClient | null = null;
     let aggregatorOrders: AggregatorOrderClient | null = null;
     let prophetxOrders: ProphetXOrderClient | null = null;
+    let novigOrders: NovigOrderClient | null = null;
     const kCreds = kalshiRfqCredentialsFromEnv(env);
     if (via === "aggregator") {
       const tCfg = aggregatorTradeConfigFromEnv(env);
@@ -169,6 +176,17 @@ export function hedgeExecutorFromEnv(
     } else if (!kCreds && !hooks.kalshi) {
       notes.push("kalshi: no KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM; live orders impossible; every hedge simulated");
     }
+    // the third live venue: the service's own trading key on Novig, reached directly in either via mode
+    const nCfg = novigTradeConfigFromEnv(env);
+    if (nCfg && !hooks.novig) {
+      try {
+        novigOrders = new NovigOrderClient({ host: nCfg.host, signer: signerFromPem(nCfg.keyId, nCfg.pem) });
+        hooks.novig = novigOrders.hook();
+        notes.push("novig: live orders go to the venue with the service's own trading key (NOVIG_TRADE_KEY_ID), fill or kill on the venue's price grid; the subaccount's cash funds them");
+      } catch (err) {
+        notes.push(`novig: NOVIG_TRADE_PRIVATE_KEY_PEM unusable (${err instanceof Error ? err.message : String(err)}); no live orders there; the route prices on paper only`);
+      }
+    }
     const venues = (Object.keys(hooks) as HedgeVenue[]).filter((v) => hooks[v]);
     notes.push(rails.killSwitch ? "live: KILL SWITCH ON; nothing is sent" : rails.dryRun ? "live: dry run; orders built and held, EVENT_HEDGE_LIVE_SEND=yes to send" : "live: SENDING real orders");
     notes.push(
@@ -180,6 +198,9 @@ export function hedgeExecutorFromEnv(
     );
     notes.push("polymarket: no live order client; book only");
     if (via !== "aggregator" && !hooks.prophetx) notes.push("prophetx: live orders reach the venue only through the aggregator's pod (EVENT_HEDGE_LIVE_VIA=aggregator); the route prices on paper only");
+    if (!nCfg && !hooks.novig) {
+      notes.push(env.NOVIG_TRADE_KEY_ID || env.NOVIG_TRADE_PRIVATE_KEY_PEM ? "novig: NOVIG_TRADE_KEY_ID, NOVIG_TRADE_PRIVATE_KEY_PEM and VENUE_API_HOST must all be set; no live orders there" : "novig: no NOVIG_TRADE_KEY_ID / NOVIG_TRADE_PRIVATE_KEY_PEM; no live orders there; the route prices on paper only");
+    }
     if (builder.note) notes.push(builder.note);
     const receiptsPath = opts.receiptsPath;
     const sentToday = (day: string): number => (receiptsPath ? sentUnitsMilliOn(loadHedgeReceipts(receiptsPath), day) : 0);
@@ -194,6 +215,7 @@ export function hedgeExecutorFromEnv(
       kalshiOrders,
       aggregatorOrders,
       prophetxOrders,
+      novigOrders,
     };
   }
   const clients: Partial<Record<HedgeVenue, RfqClient>> = {};
@@ -235,5 +257,6 @@ export function hedgeExecutorFromEnv(
     kalshiOrders: null,
     aggregatorOrders: null,
     prophetxOrders: null,
+    novigOrders: null,
   };
 }

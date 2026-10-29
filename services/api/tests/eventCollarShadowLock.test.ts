@@ -252,7 +252,7 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal((q as { routing: unknown }).routing, null, "the fake engine judged no routing; the holder sees null, not an empty shape");
     assert.deepEqual(
       seen.at(-1),
-      { ticker: TICKER, contracts: 20, entryCents: 58, route: "kalshi_self", holderVenue: "kalshi", executable: { kalshi_self: true, polymarket: false } },
+      { ticker: TICKER, contracts: 20, entryCents: 58, route: "kalshi_self", holderVenue: "kalshi", executable: { kalshi_self: true, polymarket: false, prophetx: false, novig: false } },
       "an armed ticker is priced on the route the executor can send to; no venue named means Kalshi; dry run still names the venues the live executor has a client for",
     );
 
@@ -370,7 +370,7 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(resend.lock.contracts, 20);
     assert.equal(resend.lock.entryCents, 58);
     assert.equal(resend.lock.floorCents, lock.floorCents);
-    assert.deepEqual(seen.at(-1), { ticker: TICKER, contracts: 20, entryCents: 58, route: "kalshi_self", holderVenue: "kalshi", executable: { kalshi_self: true, polymarket: false } }, "priced as the lock was taken, on the route the executor sends to");
+    assert.deepEqual(seen.at(-1), { ticker: TICKER, contracts: 20, entryCents: 58, route: "kalshi_self", holderVenue: "kalshi", executable: { kalshi_self: true, polymarket: false, prophetx: false, novig: false } }, "priced as the lock was taken, on the route the executor sends to");
     assert.equal(resend.repriced.tier, requested, "the holder's tier");
     assert.equal(resend.repriced.hedgeUnitsMilli, resend.lock.hedgeUnitsMilli, "same book in the fake: same size");
     assert.equal(resend.hedge.route, "kalshi_self");

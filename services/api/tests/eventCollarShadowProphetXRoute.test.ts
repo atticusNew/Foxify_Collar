@@ -167,7 +167,7 @@ test("shadow worker, ProphetX route: two live venues compete (no pin), the lock 
     };
     assert.ok(q.ok, JSON.stringify(q));
     assert.equal(seen.at(-1)?.route, undefined, "two live venues: the routing competes, nothing is pinned");
-    assert.deepEqual(seen.at(-1)?.executable, { kalshi_self: true, polymarket: false, prophetx: true });
+    assert.deepEqual(seen.at(-1)?.executable, { kalshi_self: true, polymarket: false, prophetx: true, novig: false });
     assert.deepEqual([q.routing.holderVenue, q.routing.hedgeVenue, q.routing.hedgeVenueName], ["novig", "prophetx", "ProphetX"]);
     assert.match(q.routing.reason, /^ProphetX: cheaper all in/);
     const px = q.routing.routes.find((r) => r.route === "prophetx")!;

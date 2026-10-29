@@ -463,6 +463,8 @@ const REFUSAL_WORDS: Record<ListingRefusalCode, string> = {
   kalshi_book_too_thin: "the venue's book is too shallow to hedge a ticket this size",
   prophetx_book_empty: "no one is offering the other side on ProphetX right now",
   prophetx_book_too_thin: "ProphetX's book is too shallow to hedge a ticket this size",
+  novig_book_empty: "no one is offering the other side on Novig right now",
+  novig_book_too_thin: "Novig's book is too shallow to hedge a ticket this size",
   route_not_offered: "this venue is not offered as a hedge venue tonight",
   far_out_no_book: "days from the start and no venue has a real book yet; priced again inside the window",
   mark_disagreement: "the market's own price has not settled: its side is a stub or sits far from the hedge venue's; priced again next scan",

@@ -2,7 +2,7 @@
  * HEDGE ROUTING — which venue the writer's hedge goes to, judged on what it costs all in.
  *
  * The holder's position lives on one venue (Kalshi, ProphetX, Novig; Polymarket in principle).
- * The hedge can go to three (Kalshi's own No side, Polymarket's opposing token, ProphetX's
+ * The hedge can go to four (Kalshi's own No side, Polymarket's opposing token, ProphetX's
  * opposing strike through the aggregator's pod), of which EVENT_HEDGE_VENUES names the ones
  * offered tonight (hedgeVenuesFromEnv). On the night the
  * game is decided every one of these pays the same way, so the cheaper hedge is simply the cheaper
@@ -471,27 +471,27 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
 const round4 = (n: number): number => Math.round(n * 10_000) / 10_000;
 
 /** The hedge venue behind a route. */
-export const hedgeVenueOf = (route: HedgeRoute): SettlementVenue => (route === "kalshi_self" ? "kalshi" : route === "prophetx" ? "prophetx" : "polymarket");
+export const hedgeVenueOf = (route: HedgeRoute): SettlementVenue => (route === "kalshi_self" ? "kalshi" : route === "prophetx" ? "prophetx" : route === "novig" ? "novig" : "polymarket");
 
-/** The route that hedges on a venue, when one does (Novig has none yet). */
-export const routeOfVenue = (venue: SettlementVenue): HedgeRoute | null => (venue === "kalshi" ? "kalshi_self" : venue === "polymarket" ? "polymarket" : venue === "prophetx" ? "prophetx" : null);
+/** The route that hedges on a venue. */
+export const routeOfVenue = (venue: SettlementVenue): HedgeRoute | null => (venue === "kalshi" ? "kalshi_self" : venue === "polymarket" ? "polymarket" : venue === "prophetx" ? "prophetx" : venue === "novig" ? "novig" : null);
 
 /** The holder's words for a route's venue. */
 export const routeName = (route: HedgeRoute): string => (route === "kalshi_self" ? "Kalshi's own No side" : VENUE_NAMES[hedgeVenueOf(route)]);
 
 /**
  * Which hedge venues are offered tonight. EVENT_HEDGE_VENUES names them (kalshi, polymarket,
- * prophetx; comma separated, any case); unset or empty, every route is offered. A venue left out
+ * prophetx, novig; comma separated, any case); unset or empty, every route is offered. A venue left out
  * is not priced, not shown and not sent to: the switch for a night when a venue is not yet a
  * partner's (Polymarket until the aggregator lists Poly US) or not to be shown on a recording.
  */
 export function hedgeVenuesFromEnv(env: NodeJS.ProcessEnv = process.env): { routes: HedgeRoute[]; source: "env" | "default"; unknown: string[] } {
   const raw = (env.EVENT_HEDGE_VENUES ?? "").trim();
-  if (!raw) return { routes: ["kalshi_self", "polymarket", "prophetx"], source: "default", unknown: [] };
+  if (!raw) return { routes: ["kalshi_self", "polymarket", "prophetx", "novig"], source: "default", unknown: [] };
   const routes: HedgeRoute[] = [];
   const unknown: string[] = [];
   for (const word of raw.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean)) {
-    const route = word === "kalshi" || word === "kalshi_self" ? "kalshi_self" : word === "polymarket" || word === "poly" ? "polymarket" : word === "prophetx" || word === "prophet" ? "prophetx" : null;
+    const route = word === "kalshi" || word === "kalshi_self" ? "kalshi_self" : word === "polymarket" || word === "poly" ? "polymarket" : word === "prophetx" || word === "prophet" ? "prophetx" : word === "novig" ? "novig" : null;
     if (!route) unknown.push(word);
     else if (!routes.includes(route)) routes.push(route);
   }
@@ -628,7 +628,7 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
 
   const passing = routes.filter((r) => r.ok && r.allInBps !== null && !r.gates.detail);
   // ties: the holder's own venue first (same instrument, zero basis), then the table's order
-  const rank = (r: RoutedRoute) => (r.sameContract ? 0 : r.route === "kalshi_self" ? 1 : r.route === "prophetx" ? 2 : 3);
+  const rank = (r: RoutedRoute) => (r.sameContract ? 0 : r.route === "kalshi_self" ? 1 : r.route === "prophetx" ? 2 : r.route === "novig" ? 3 : 4);
   const byAllIn = [...passing].sort((a, b) => (a.allInBps as number) - (b.allInBps as number) || rank(a) - rank(b));
   let chosen: RoutedRoute | null = null;
   let reason: string;

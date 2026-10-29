@@ -230,10 +230,11 @@ test("routing choice, three routes: ProphetX competes against Kalshi on the hold
 });
 
 test("routing venues: EVENT_HEDGE_VENUES names the routes offered tonight; unset offers all three; unknown words are reported, never guessed", () => {
-  assert.deepEqual(hedgeVenuesFromEnv({}), { routes: ["kalshi_self", "polymarket", "prophetx"], source: "default", unknown: [] });
+  assert.deepEqual(hedgeVenuesFromEnv({}), { routes: ["kalshi_self", "polymarket", "prophetx", "novig"], source: "default", unknown: [] });
   assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: "kalshi,prophetx" }), { routes: ["kalshi_self", "prophetx"], source: "env", unknown: [] });
   assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: " Kalshi_self , Poly, prophet, kalshi " }), { routes: ["kalshi_self", "polymarket", "prophetx"], source: "env", unknown: [] });
-  assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: "kalshi,novig,draftkings" }), { routes: ["kalshi_self"], source: "env", unknown: ["novig", "draftkings"] });
+  assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: "kalshi,novig,draftkings" }), { routes: ["kalshi_self", "novig"], source: "env", unknown: ["draftkings"] });
+  assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: "kalshi,prophetx,novig" }), { routes: ["kalshi_self", "prophetx", "novig"], source: "env", unknown: [] });
   assert.deepEqual(hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: "   " }).source, "default");
 });
 
