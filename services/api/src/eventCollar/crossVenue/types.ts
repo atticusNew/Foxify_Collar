@@ -126,6 +126,8 @@ export type CrossRefusalCode =
   | "kalshi_book_too_thin"
   | "prophetx_book_empty"
   | "prophetx_book_too_thin"
+  | "novig_book_empty"
+  | "novig_book_too_thin"
   /** the venue is not offered as a hedge venue tonight (EVENT_HEDGE_VENUES leaves it out) */
   | "route_not_offered"
   | "credit_nonpositive"
@@ -193,11 +195,32 @@ export interface ProphetXHedgeLeg {
   costCents: number; // rounded up
 }
 
-export type HedgeLeg = CrossHedgeLeg | KalshiSelfHedgeLeg | ProphetXHedgeLeg;
+/**
+ * The Novig route: the opposing outcome on Novig's own market, read from the venue's book and
+ * sent with the service's trading key (novigOrders.ts). An order on Novig is always a buy of an
+ * outcome; a contract pays 1 cent, so one of our $1 units is 100 of them. Prices carry the venue's
+ * taker fee folded in when it applies (game markets charge only once live), so `costCents` is all in.
+ */
+export interface NovigHedgeLeg {
+  action: "buy";
+  venue: "novig";
+  outcome: string; // display name of the opposing outcome
+  marketId: string;
+  /** the opposing outcome: what the hedge buys */
+  outcomeId: string;
+  /** the holder's own outcome on the same market: what an early close buys to offset (the venue takes no sell order) */
+  offsetOutcomeId: string;
+  sharesMilli: number; // 1000 = 1 share ($1 paying), rounded UP (never under-hedged)
+  avgPriceMilli: number; // walked average with the fee folded, 1000 = $1
+  worstPriceMilli: number;
+  costCents: number; // rounded up
+}
+
+export type HedgeLeg = CrossHedgeLeg | KalshiSelfHedgeLeg | ProphetXHedgeLeg | NovigHedgeLeg;
 
 /** Which hedge route funded the quote. */
-export type HedgeRoute = "polymarket" | "kalshi_self" | "prophetx";
-export const HEDGE_ROUTES: readonly HedgeRoute[] = ["kalshi_self", "polymarket", "prophetx"];
+export type HedgeRoute = "polymarket" | "kalshi_self" | "prophetx" | "novig";
+export const HEDGE_ROUTES: readonly HedgeRoute[] = ["kalshi_self", "polymarket", "prophetx", "novig"];
 
 /** One route's outcome in a dual-route scan: quotable (with its true EV cost) or an honest refusal. */
 export interface RouteCheck {

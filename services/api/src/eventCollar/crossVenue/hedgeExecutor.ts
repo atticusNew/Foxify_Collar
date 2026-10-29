@@ -35,7 +35,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HedgeLeg } from "./types";
 
-export type HedgeVenue = "kalshi" | "polymarket" | "prophetx";
+export type HedgeVenue = "kalshi" | "polymarket" | "prophetx" | "novig";
 export type HedgeStrategy = "book" | "rfq" | "live";
 export type HedgeAction = "buy" | "sell";
 export const actionOf = (intent: Pick<HedgeIntent, "action">): HedgeAction => intent.action ?? "buy";
@@ -49,14 +49,16 @@ export const actionOf = (intent: Pick<HedgeIntent, "action">): HedgeAction => in
 export interface HedgeIntent {
   action?: HedgeAction;
   venue: HedgeVenue;
-  /** Kalshi market ticker, Polymarket CLOB token id, or ProphetX strike id */
+  /** Kalshi market ticker, Polymarket CLOB token id, ProphetX strike id, or Novig outcome id */
   instrument: string;
   /**
-   * ProphetX only: the holder's own side's strike on the same market. ProphetX takes no sell
-   * order; a SELL intent there buys this strike instead, which offsets the hedge share for share
-   * and settles the pair at the game (prophetxOrders.ts).
+   * ProphetX and Novig: the holder's own side's strike (outcome) on the same market. Neither venue
+   * takes a sell order; a SELL intent there buys this instead, which offsets the hedge share for
+   * share and settles the pair at the game (prophetxOrders.ts, novigOrders.ts).
    */
   offsetInstrument?: string;
+  /** Novig only: the market both outcomes belong to (the order names the outcome; the trail names the market) */
+  marketId?: string;
   /**
    * The key the live allowlist (EVENT_HEDGE_LIVE_TICKERS) is checked against when the instrument
    * is not a Kalshi ticker: the game's Kalshi ticker, which is how the operator arms a game.
@@ -113,6 +115,27 @@ export function sellIntentForProphetX(args: { strikeId: string; offsetStrikeId: 
   };
 }
 
+/**
+ * The intent that unwinds a Novig hedge (an early close): a buy of the holder's own outcome at or
+ * under 1 - the walked worst bid on the hedge outcome, which offsets the hedge share for share and
+ * settles the pair at the game. Prices in milli as the bid walk gives them; `costCents` is the
+ * gross proceeds-equivalent expected, realised at the game rather than today.
+ */
+export function sellIntentForNovig(args: { marketId: string; outcomeId: string; offsetOutcomeId: string; armKey?: string; unitsMilli: number; bestPriceMilli: number; avgPriceMilli: number; worstPriceMilli: number; grossCents: number }): HedgeIntent {
+  return {
+    action: "sell",
+    venue: "novig",
+    instrument: args.outcomeId,
+    offsetInstrument: args.offsetOutcomeId,
+    marketId: args.marketId,
+    ...(args.armKey ? { armKey: args.armKey } : {}),
+    outcome: "the holder's own outcome",
+    unitsMilli: args.unitsMilli,
+    book: { bestPriceMilli: args.bestPriceMilli, avgPriceMilli: args.avgPriceMilli, worstPriceMilli: args.worstPriceMilli, costCents: args.grossCents },
+    maxCostCents: args.grossCents,
+  };
+}
+
 /** Turn a priced hedge leg into an intent. `bestPriceMilli` is the top of the walked book. `armKey` is the game's Kalshi ticker for a leg on another venue. */
 export function intentFromHedge(hedge: HedgeLeg, bestPriceMilli: number, armKey?: string): HedgeIntent {
   if (hedge.venue === "kalshi") {
@@ -135,6 +158,24 @@ export function intentFromHedge(hedge: HedgeLeg, bestPriceMilli: number, armKey?
       venue: "prophetx",
       instrument: hedge.strikeId,
       ...(hedge.offsetStrikeId ? { offsetInstrument: hedge.offsetStrikeId } : {}),
+      ...(armKey ? { armKey } : {}),
+      outcome: hedge.outcome,
+      unitsMilli: hedge.sharesMilli,
+      book: {
+        bestPriceMilli,
+        avgPriceMilli: hedge.avgPriceMilli,
+        worstPriceMilli: hedge.worstPriceMilli,
+        costCents: hedge.costCents,
+      },
+      maxCostCents: hedge.costCents,
+    };
+  }
+  if (hedge.venue === "novig") {
+    return {
+      venue: "novig",
+      instrument: hedge.outcomeId,
+      offsetInstrument: hedge.offsetOutcomeId,
+      marketId: hedge.marketId,
       ...(armKey ? { armKey } : {}),
       outcome: hedge.outcome,
       unitsMilli: hedge.sharesMilli,
@@ -619,7 +660,7 @@ export function summarizeHedgeReceipts(receipts: HedgeReceipt[]): HedgeReceiptSu
   const s: HedgeReceiptSummary = {
     receipts: receipts.length,
     byOutcome: { filled_rfq: 0, filled_book: 0, filled_live: 0, unfilled: 0 },
-    byVenue: { kalshi: 0, polymarket: 0, prophetx: 0 },
+    byVenue: { kalshi: 0, polymarket: 0, prophetx: 0, novig: 0 },
     rfqSavedCents: 0,
     bookWalkPenaltyCents: 0,
     costCents: 0,
