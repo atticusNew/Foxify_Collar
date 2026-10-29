@@ -25,7 +25,8 @@
  *   DELETE /v1/kalshi/orders/{orderId}     -> the order after the cancel; 409 when it already finished
  *
  * The hedge buys No: on Kalshi that is an ASK on the YES book at 1 - (our worst No price), so the
- * body is the same order kalshiOrders.ts sends, in the partner's spelling. Immediate-or-cancel:
+ * body is the same order kalshiOrders.ts sends, in the partner's spelling. Selling the hedge back
+ * (an early close) is a BID at 1 - (our worst No bid), the same mirror. Immediate-or-cancel:
  * the venue answers with the final state; the partner may relay it a beat later, so the order is
  * read back until it stops moving, anything still resting is cancelled, and the fill is taken from
  * the read (it carries the fees; the submit answer does not). Roundings go against the writer.
@@ -40,7 +41,7 @@
  */
 
 import { AggregatorApiError, DEFAULT_API_HOST, signedHeaders, signerFromSecret, type AggregatorSigner, type Whoami } from "./aggregatorMarkets";
-import type { HedgeIntent } from "./hedgeExecutor";
+import { actionOf, type HedgeIntent } from "./hedgeExecutor";
 import { kalshiTakerFeeCents } from "./kalshiLadder";
 import { contractsFp, fpToMilli } from "./kalshiRfq";
 import { dollarsToMicro } from "./kalshiOrders";
@@ -123,27 +124,29 @@ export interface OrderFill {
 /**
  * What the order read says filled, in milli units and all-in cents. The No average is the partner's
  * own complement when given, else 1 - the Yes average, else the cap. Fees: the exact dollars when
- * given (rounded up), the venue's whole cents next, the taker formula last.
+ * given (rounded up), the venue's whole cents next, the taker formula last. On a sale (`sell`) the
+ * No average is our proceeds per contract and every rounding goes the other way: the average down,
+ * the gross down, the fees up; `costCents` is the net proceeds.
  */
-export function fillOfAggregatorOrder(o: Pick<AggregatorKalshiOrder, "filledCount" | "averageYesPrice" | "averageNoPrice" | "feesCents" | "feesUsd">, capPriceCents: number): OrderFill {
+export function fillOfAggregatorOrder(o: Pick<AggregatorKalshiOrder, "filledCount" | "averageYesPrice" | "averageNoPrice" | "feesCents" | "feesUsd">, capPriceCents: number, sell = false): OrderFill {
   const unitsMilli = fpToMilli(o.filledCount ?? undefined);
   if (unitsMilli <= 0) return { unitsMilli: 0, costCents: 0, feesCents: 0 };
-  let noMicro = dollarsToMicro(o.averageNoPrice ?? undefined, true);
+  let noMicro = dollarsToMicro(o.averageNoPrice ?? undefined, !sell);
   if (noMicro < 0) {
-    const yesMicro = dollarsToMicro(o.averageYesPrice ?? undefined, false);
+    const yesMicro = dollarsToMicro(o.averageYesPrice ?? undefined, sell);
     noMicro = yesMicro >= 0 && yesMicro <= 1_000_000 ? 1_000_000 - yesMicro : capPriceCents * 10_000;
   }
   noMicro = Math.min(999_999, Math.max(1, noMicro));
-  const notional = centsOf(unitsMilli, noMicro);
+  const notional = sell ? Math.floor((unitsMilli * noMicro) / 10_000_000) : centsOf(unitsMilli, noMicro);
   const feeMicro = dollarsToMicro(o.feesUsd ?? undefined, true);
   const feesCents =
     feeMicro >= 0 ? Math.ceil(feeMicro / 10_000) : typeof o.feesCents === "number" && o.feesCents >= 0 ? o.feesCents : kalshiTakerFeeCents(unitsMilli, Math.ceil(noMicro / 10_000));
-  return { unitsMilli, costCents: notional + feesCents, feesCents };
+  return { unitsMilli, costCents: sell ? Math.max(0, notional - feesCents) : notional + feesCents, feesCents };
 }
 
 /** The same from the submit answer alone (no fees on it): the taker formula fills the gap. */
-export function fillOfSubmit(r: AggregatorSubmitResponse, capPriceCents: number): OrderFill {
-  return fillOfAggregatorOrder({ filledCount: r.filledCount, averageYesPrice: r.averagePrice, averageNoPrice: null, feesCents: null, feesUsd: null }, capPriceCents);
+export function fillOfSubmit(r: AggregatorSubmitResponse, capPriceCents: number, sell = false): OrderFill {
+  return fillOfAggregatorOrder({ filledCount: r.filledCount, averageYesPrice: r.averagePrice, averageNoPrice: null, feesCents: null, feesUsd: null }, capPriceCents, sell);
 }
 
 /** The partner's client order id grammar: up to 64 of letters, digits and `- _ : / + =`. */
@@ -198,23 +201,23 @@ export class AggregatorOrderClient {
     return this.cfg.keyId;
   }
 
-  /** The hook the live executor calls. */
+  /** The hook the live executor calls: a buy of No, or a sale of it (intent.action). */
   hook(): LiveOrderHook {
-    return (intent, clientOrderId) => this.placeNo(intent, clientOrderId);
+    return (intent, clientOrderId) => this.place(intent, clientOrderId);
   }
 
-  /** The No price the order will not pay over: the walked worst price in whole cents, rounded up. */
+  /** The No price the order will not cross: the walked worst level in whole cents, rounded up (never over the asks on a buy, never under the bids on a sale). */
   static capCents(intent: HedgeIntent): number {
     return Math.min(99, Math.max(1, Math.ceil(intent.book.worstPriceMilli / 10)));
   }
 
-  /** The partner's body for an intent: an ASK on the YES book at 1 - cap, immediate or cancel. */
+  /** The partner's body for an intent: an ASK on the YES book at 1 - cap (buy No), or a BID there (sell No), immediate or cancel. */
   static orderBody(intent: HedgeIntent, clientOrderId: string): Record<string, unknown> {
     if (intent.venue !== "kalshi") throw new Error(`aggregator orders: intent is for ${intent.venue}; the pod routes Kalshi only`);
     const capCents = AggregatorOrderClient.capCents(intent);
     return {
       ticker: intent.instrument,
-      side: "ASK",
+      side: actionOf(intent) === "sell" ? "BID" : "ASK",
       count: contractsFp(intent.unitsMilli),
       price: ((100 - capCents) / 100).toFixed(4),
       timeInForce: { type: "IOC" },
@@ -223,7 +226,13 @@ export class AggregatorOrderClient {
     };
   }
 
-  async placeNo(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
+  /** Kept under its old name for callers that buy; `place` reads the intent's action. */
+  placeNo(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
+    return this.place(intent, clientOrderId);
+  }
+
+  async place(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
+    const sell = actionOf(intent) === "sell";
     const body = AggregatorOrderClient.orderBody(intent, clientOrderId);
     const capCents = AggregatorOrderClient.capCents(intent);
     const idem = body.clientOrderId as string;
@@ -248,15 +257,15 @@ export class AggregatorOrderClient {
       status = (order?.status ?? status).toUpperCase() || "CANCELLED";
     }
 
-    const fill = order ? fillOfAggregatorOrder(order, capCents) : fillOfSubmit(created, capCents);
+    const fill = order ? fillOfAggregatorOrder(order, capCents, sell) : fillOfSubmit(created, capCents, sell);
     if (fill.unitsMilli <= 0) {
-      throw new Error(`aggregator orders: order ${orderId} ${status || "unknown"} with nothing filled at or under ${capCents}c`);
+      throw new Error(`aggregator orders: order ${orderId} ${status || "unknown"} with nothing ${sell ? "sold at or over" : "filled at or under"} ${capCents}c`);
     }
     return {
       orderId,
       venueOrderId: order?.venueOrderId ?? undefined,
       unitsMilli: fill.unitsMilli,
-      avgPriceMilli: Math.ceil((fill.costCents * 10_000) / fill.unitsMilli),
+      avgPriceMilli: sell ? Math.floor((fill.costCents * 10_000) / fill.unitsMilli) : Math.ceil((fill.costCents * 10_000) / fill.unitsMilli),
       costCents: fill.costCents,
       feesCents: fill.feesCents,
       status: status.toLowerCase() === "filled" ? "executed" : status.toLowerCase() || "unknown",

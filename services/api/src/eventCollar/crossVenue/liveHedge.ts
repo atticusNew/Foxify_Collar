@@ -26,8 +26,11 @@
  *
  * The order itself is a limit buy of the hedge side at or under the walked
  * worst price, immediate-or-cancel: never worse than quoted, never resting.
- * Partial fills are recorded as partial (units filled, cents paid); a zero
- * fill is an error and falls back like any other.
+ * A SELL intent (an early close selling the hedge back) is the same order the
+ * other way: a limit sale at or over the walked worst bid, immediate-or-cancel,
+ * behind the same rails and caps. Partial fills are recorded as partial (units
+ * filled, cents paid or received); a zero fill is an error and falls back like
+ * any other.
  *
  * Nothing here holds credentials. The venue client is injected.
  */
@@ -35,6 +38,7 @@
 import {
   BookHedgeExecutor,
   REAL_CLOCK,
+  actionOf,
   bookWalkPenaltyCents,
   errText,
   receiptId,
@@ -53,9 +57,9 @@ export interface LiveOrderResult {
   orderId: string;
   /** units filled, milli; may be under the intent on a partial */
   unitsMilli: number;
-  /** average all-in price paid per unit, milli dollars */
+  /** average all-in price paid per unit (received per unit, on a sale), milli dollars */
   avgPriceMilli: number;
-  /** all-in cents paid, fees included */
+  /** all-in cents paid, fees included; on a sale the net proceeds, fees taken out */
   costCents: number;
   feesCents: number;
   /** the venue's final word on the order (executed, canceled, ...) */
@@ -168,6 +172,7 @@ export function sentUnitsMilliOn(receipts: HedgeReceipt[], dayUtc: string): numb
 /** The order the live path would send, for the dry-run receipt and the operator's eyes. No credentials, no ids. */
 export function describeOrder(intent: HedgeIntent): string {
   const cap = Math.ceil(intent.book.worstPriceMilli / 10);
+  if (actionOf(intent) === "sell") return `${intent.venue} sell ${units(intent.unitsMilli)} ${intent.outcome} on ${intent.instrument} at or over ${cap}c, immediate or cancel`;
   return `${intent.venue} buy ${units(intent.unitsMilli)} ${intent.outcome} on ${intent.instrument} at or under ${cap}c, immediate or cancel`;
 }
 
@@ -228,12 +233,13 @@ export class LiveHedgeExecutor implements HedgeExecutor {
       const r = await client(intent, clientOrderId);
       const partial = r.unitsMilli < intent.unitsMilli;
       const via: HedgeVia = r.via ?? "direct";
+      const sell = actionOf(intent) === "sell";
       attempts.push({
         strategy: "live",
         step: "order",
         ok: true,
         at: this.clock.now().toISOString(),
-        detail: `order ${r.orderId}${r.venueOrderId ? ` (venue ${r.venueOrderId})` : ""} ${r.status}${via === "aggregator" ? " via aggregator" : ""}: ${units(r.unitsMilli)} of ${units(intent.unitsMilli)} filled at ${r.avgPriceMilli} milli, ${r.costCents}c all in${partial ? " (partial)" : ""}`,
+        detail: `order ${r.orderId}${r.venueOrderId ? ` (venue ${r.venueOrderId})` : ""} ${r.status}${via === "aggregator" ? " via aggregator" : ""}: ${units(r.unitsMilli)} of ${units(intent.unitsMilli)} ${sell ? "sold" : "filled"} at ${r.avgPriceMilli} milli, ${r.costCents}c ${sell ? "net proceeds" : "all in"}${partial ? " (partial)" : ""}`,
         orderId: r.orderId,
         unitsMilli: r.unitsMilli,
         costCents: r.costCents,
@@ -247,7 +253,7 @@ export class LiveHedgeExecutor implements HedgeExecutor {
         unitsMilli: r.unitsMilli,
         avgPriceMilli: r.avgPriceMilli,
         costCents: r.costCents,
-        vsBookCents: bookForFilled - r.costCents,
+        vsBookCents: sell ? r.costCents - bookForFilled : bookForFilled - r.costCents,
         simulated: false,
         ids: { orderId: r.orderId, ...(r.venueOrderId ? { venueOrderId: r.venueOrderId } : {}) },
         via,

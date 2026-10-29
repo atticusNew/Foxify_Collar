@@ -17,8 +17,11 @@
  * V2 quotes everything from the Yes side of one book: `bid` buys Yes, `ask`
  * sells Yes, and selling Yes is buying No at 1 - price. The hedge buys No, so
  * the order is an `ask` priced at 1 - (walked worst No price), immediate-or-
- * cancel. The response is the final state of an IOC order, fills and fees in
- * dollars; our No cost per contract is 1 - average_fill_price. When the venue
+ * cancel. Selling the hedge back (an early close) is the mirror: a `bid` for
+ * Yes at 1 - (walked worst No bid), which sells our No at that bid or better.
+ * The response is the final state of an IOC order, fills and fees in
+ * dollars; our No cost per contract is 1 - average_fill_price (our No proceeds
+ * on a sale, the same figure, rounded the other way). When the venue
  * omits the fee the exact taker formula fills the gap (never under-counted).
  * If the venue leaves contracts resting anyway the remainder is cancelled and
  * the fill is read back, so the order never outlives this call.
@@ -27,7 +30,7 @@
  */
 
 import { kalshiBase } from "../kalshiPublic";
-import type { HedgeIntent } from "./hedgeExecutor";
+import { actionOf, type HedgeIntent } from "./hedgeExecutor";
 import { kalshiTakerFeeCents } from "./kalshiLadder";
 import { contractsFp, fpToMilli, kalshiAuthHeaders, type KalshiRfqCredentials } from "./kalshiRfq";
 import type { LiveOrderHook, LiveOrderResult } from "./liveHedge";
@@ -92,8 +95,12 @@ export interface OrderFill {
   feesCents: number;
 }
 
-/** What the venue says filled, in milli units and all-in cents. Fixed-point fields win over integers. */
-export function fillOfOrder(order: KalshiRawOrder, capPriceCents: number): OrderFill {
+/**
+ * What the venue says filled, in milli units and all-in cents. Fixed-point fields win over
+ * integers. On a sale (`sell`) the legacy cost fields are what we paid for the Yes we bought, so
+ * our No proceeds are the contracts' dollar less that, less fees, rounded down.
+ */
+export function fillOfOrder(order: KalshiRawOrder, capPriceCents: number, sell = false): OrderFill {
   const takerMilli = order.taker_fill_count_fp !== undefined ? fpToMilli(order.taker_fill_count_fp) : (order.taker_fill_count ?? 0) * 1000;
   const makerMilli = order.maker_fill_count_fp !== undefined ? fpToMilli(order.maker_fill_count_fp) : (order.maker_fill_count ?? 0) * 1000;
   let unitsMilli = takerMilli + makerMilli;
@@ -108,6 +115,10 @@ export function fillOfOrder(order: KalshiRawOrder, capPriceCents: number): Order
   const makerFees = order.maker_fees_dollars !== undefined ? dollarsToCents(order.maker_fees_dollars) : (order.maker_fees ?? 0);
   const avgCents = unitsMilli > 0 ? Math.min(99, Math.max(1, Math.ceil((notional * 1000) / unitsMilli))) : capPriceCents;
   const feesCents = takerFees >= 0 ? takerFees + Math.max(0, makerFees) : kalshiTakerFeeCents(unitsMilli, avgCents);
+  if (sell) {
+    const dollarCents = Math.floor(unitsMilli / 10); // every contract pays $1 when it wins; the Yes we bought cost `notional`
+    return { unitsMilli, costCents: Math.max(0, dollarCents - notional - feesCents), feesCents };
+  }
   return { unitsMilli, costCents: notional + feesCents, feesCents };
 }
 
@@ -141,6 +152,24 @@ export function fillOfV2Order(resp: KalshiV2OrderResponse, capPriceCents: number
   return { unitsMilli, costCents: notional + feesCents, feesCents };
 }
 
+/**
+ * The fill of a V2 `bid` placed to sell our No (an early close): the venue's average is the Yes
+ * price we paid, our No proceeds per contract are 1 - it. Roundings go against the writer the
+ * other way round from a buy: the Yes average rounds up so the proceeds round down; fees round
+ * up; cents round down. A fill with no average is read at the floor (the lowest bid we accepted).
+ * `costCents` is the net proceeds, fees taken out.
+ */
+export function fillOfV2Sell(resp: KalshiV2OrderResponse, floorPriceCents: number): OrderFill {
+  const unitsMilli = fpToMilli(resp.fill_count);
+  if (unitsMilli <= 0) return { unitsMilli: 0, costCents: 0, feesCents: 0 };
+  const yesMicro = dollarsToMicro(resp.average_fill_price, true);
+  const noMicro = yesMicro >= 0 && yesMicro <= 1_000_000 ? Math.min(999_999, Math.max(1, 1_000_000 - yesMicro)) : floorPriceCents * 10_000;
+  const gross = Math.floor((unitsMilli * noMicro) / 10_000_000);
+  const feeMicro = dollarsToMicro(resp.average_fee_paid, true);
+  const feesCents = feeMicro >= 0 ? Math.ceil((unitsMilli * feeMicro) / 10_000_000) : kalshiTakerFeeCents(unitsMilli, Math.ceil(noMicro / 10_000));
+  return { unitsMilli, costCents: Math.max(0, gross - feesCents), feesCents };
+}
+
 export interface KalshiOrderClientOptions {
   base?: string;
   fetchImpl?: typeof fetch;
@@ -165,19 +194,23 @@ export class KalshiOrderClient {
     this.timeoutMs = opts.timeoutMs ?? Number(process.env.EVENT_FETCH_TIMEOUT_MS || 8000);
   }
 
-  /** The hook the live executor calls. */
+  /** The hook the live executor calls: a buy of No, or a sale of it (intent.action). */
   hook(): LiveOrderHook {
-    return (intent, clientOrderId) => this.placeNo(intent, clientOrderId);
+    return (intent, clientOrderId) => this.place(intent, clientOrderId);
   }
 
-  /** The No price the order will not pay over: the walked worst price in whole cents, rounded up. */
+  /**
+   * The No price the order will not cross: on a buy the walked worst ask in whole cents, rounded
+   * up (never pay over the walk); on a sale the walked worst bid, rounded up (never sell under it).
+   */
   static capCents(intent: HedgeIntent): number {
     return Math.min(99, Math.max(1, Math.ceil(intent.book.worstPriceMilli / 10)));
   }
 
   /**
    * The V2 order body for an intent: what dry run describes and live sends. Exported for the
-   * receipt and the tests. An `ask` at (1 - cap) is a buy of No at the cap or better.
+   * receipt and the tests. An `ask` at (1 - cap) is a buy of No at the cap or better; a `bid` at
+   * (1 - floor) is a sale of No at the floor or better.
    */
   static orderBody(intent: HedgeIntent, clientOrderId: string): Record<string, unknown> {
     if (intent.venue !== "kalshi") throw new Error(`kalshi orders: intent is for ${intent.venue}`);
@@ -185,7 +218,7 @@ export class KalshiOrderClient {
     return {
       ticker: intent.instrument,
       client_order_id: clientOrderId,
-      side: "ask",
+      side: actionOf(intent) === "sell" ? "bid" : "ask",
       count: contractsFp(intent.unitsMilli),
       price: ((100 - capCents) / 100).toFixed(4),
       time_in_force: "immediate_or_cancel",
@@ -193,21 +226,28 @@ export class KalshiOrderClient {
     };
   }
 
-  async placeNo(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
+  /** Kept under its old name for callers that buy; `place` reads the intent's action. */
+  placeNo(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
+    return this.place(intent, clientOrderId);
+  }
+
+  async place(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
+    const sell = actionOf(intent) === "sell";
     const body = KalshiOrderClient.orderBody(intent, clientOrderId);
     const capCents = KalshiOrderClient.capCents(intent);
     const created = (await this.call("POST", "/portfolio/events/orders", body)) as Partial<KalshiV2OrderResponse> | null;
     if (!created?.order_id) throw new Error("kalshi orders: create returned no order id");
     const orderId = created.order_id;
 
-    let fill = fillOfV2Order({ fill_count: "0.00", remaining_count: "0.00", ...created, order_id: orderId }, capCents);
+    const v2 = { fill_count: "0.00", remaining_count: "0.00", ...created, order_id: orderId };
+    let fill = sell ? fillOfV2Sell(v2, capCents) : fillOfV2Order(v2, capCents);
     let status = fill.unitsMilli > 0 ? "executed" : "canceled";
     // IOC answers with its final state; if the venue rests anything anyway, cancel it and read back
     if (fpToMilli(created.remaining_count) > 0) {
       await this.call("DELETE", `/portfolio/events/orders/${encodeURIComponent(orderId)}`).catch(() => null);
       const read = (await this.call("GET", `/portfolio/orders/${encodeURIComponent(orderId)}`).catch(() => null)) as { order?: KalshiRawOrder } | null;
       if (read?.order) {
-        const legacy = fillOfOrder(read.order, capCents);
+        const legacy = fillOfOrder(read.order, capCents, sell);
         if (legacy.unitsMilli > 0) fill = legacy;
         status = FINAL_STATUSES.has((read.order.status ?? "").toLowerCase()) ? (read.order.status ?? "canceled").toLowerCase() : "canceled";
       } else {
@@ -216,12 +256,13 @@ export class KalshiOrderClient {
     }
 
     if (fill.unitsMilli <= 0) {
-      throw new Error(`kalshi orders: order ${orderId} ${status} with nothing filled at or under ${capCents}c`);
+      throw new Error(`kalshi orders: order ${orderId} ${status} with nothing ${sell ? "sold at or over" : "filled at or under"} ${capCents}c`);
     }
     return {
       orderId,
       unitsMilli: fill.unitsMilli,
-      avgPriceMilli: Math.ceil((fill.costCents * 10_000) / fill.unitsMilli),
+      // the average per unit: rounded up on a buy (never under-counted), down on a sale (never over-counted)
+      avgPriceMilli: sell ? Math.floor((fill.costCents * 10_000) / fill.unitsMilli) : Math.ceil((fill.costCents * 10_000) / fill.unitsMilli),
       costCents: fill.costCents,
       feesCents: fill.feesCents,
       status,

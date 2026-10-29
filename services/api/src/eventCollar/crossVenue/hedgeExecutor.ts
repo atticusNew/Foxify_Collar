@@ -37,9 +37,17 @@ import type { HedgeLeg } from "./types";
 
 export type HedgeVenue = "kalshi" | "polymarket";
 export type HedgeStrategy = "book" | "rfq" | "live";
+export type HedgeAction = "buy" | "sell";
+export const actionOf = (intent: Pick<HedgeIntent, "action">): HedgeAction => intent.action ?? "buy";
 
-/** What the hedge needs to buy, and the book walk it was quoted against. */
+/**
+ * What the hedge needs to buy, and the book walk it was quoted against. A SELL intent (an early
+ * close selling the hedge back) is the same shape read the other way: `book` holds the bids walked
+ * (best = the highest), `costCents` is the proceeds expected, and the order will not sell under
+ * the walked worst bid. `action` absent means buy, as every intent was before the sell rail.
+ */
 export interface HedgeIntent {
+  action?: HedgeAction;
   venue: HedgeVenue;
   /** Kalshi market ticker or Polymarket CLOB token id */
   instrument: string;
@@ -56,6 +64,22 @@ export interface HedgeIntent {
   };
   /** an RFQ fill is accepted only when its all-in cost is at or under this; defaults to the book cost */
   maxCostCents: number;
+}
+
+/**
+ * The intent that sells a Kalshi hedge back into its No bids (an early close). Prices in cents as
+ * the bid walk gives them (earlyClose.walkKalshiBids); `costCents` is the gross proceeds expected.
+ */
+export function sellIntentForKalshi(args: { ticker: string; unitsMilli: number; bestPriceCents: number; avgPriceCents: number; worstPriceCents: number; grossCents: number }): HedgeIntent {
+  return {
+    action: "sell",
+    venue: "kalshi",
+    instrument: args.ticker,
+    outcome: "No",
+    unitsMilli: args.unitsMilli,
+    book: { bestPriceMilli: args.bestPriceCents * 10, avgPriceMilli: args.avgPriceCents * 10, worstPriceMilli: args.worstPriceCents * 10, costCents: args.grossCents },
+    maxCostCents: args.grossCents,
+  };
 }
 
 /** Turn a priced hedge leg into an intent. `bestPriceMilli` is the top of the walked book. */
@@ -101,6 +125,8 @@ export function costCentsAt(unitsMilli: number, priceMilli: number): number {
  * RFQ can win back. Zero when the whole size sat at the best level.
  */
 export function bookWalkPenaltyCents(intent: HedgeIntent): number {
+  // on a sale the walk gave up proceeds against a one-price fill at the top bid
+  if (actionOf(intent) === "sell") return Math.max(0, costCentsAt(intent.unitsMilli, intent.book.bestPriceMilli) - intent.book.costCents);
   return Math.max(0, intent.book.costCents - costCentsAt(intent.unitsMilli, intent.book.bestPriceMilli));
 }
 
@@ -109,8 +135,9 @@ export interface HedgeFill {
   venue: HedgeVenue;
   instrument: string;
   unitsMilli: number;
-  /** average all-in price paid, milli dollars */
+  /** average all-in price paid (received, on a sale), milli dollars */
   avgPriceMilli: number;
+  /** cents that moved: paid on a buy, net proceeds on a sale */
   costCents: number;
   /** cents kept versus the book walk the holder was quoted against; never negative on an accepted fill */
   vsBookCents: number;
@@ -273,7 +300,7 @@ export class BookHedgeExecutor implements HedgeExecutor {
         unitsMilli: intent.unitsMilli,
         avgPriceMilli: r.avgPriceMilli,
         costCents: r.costCents,
-        vsBookCents: intent.book.costCents - r.costCents,
+        vsBookCents: actionOf(intent) === "sell" ? r.costCents - intent.book.costCents : intent.book.costCents - r.costCents,
         simulated: false,
         ids: { orderId: r.orderId },
         via: "direct",
@@ -343,7 +370,8 @@ export class RfqHedgeExecutor implements HedgeExecutor {
       intent,
       bookWalkPenaltyCents: bookWalkPenaltyCents(intent),
     };
-    const rfq = await this.tryRfq(intent, attempts);
+    // the RFQ surface asks makers for the side we buy; a sale goes straight to the book
+    const rfq = actionOf(intent) === "sell" ? { fill: null, reason: "a sale is not put out for quotes; sold into the book" } : await this.tryRfq(intent, attempts);
     if (rfq.fill) {
       return { ...base, attempts, fill: rfq.fill, outcome: "filled_rfq", fallbackReason: null };
     }

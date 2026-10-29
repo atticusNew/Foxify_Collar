@@ -183,6 +183,12 @@ export interface EarlyCloseQuote {
   unwindFrictionCents: number | null;
   /** the writer's result on this position: the published take, by construction */
   writerCents: number;
+  /**
+   * The hedge sale as walked on Kalshi's No bids, for the order that sends it (hedgeExecutor's
+   * sell intent): the top of the bids, the average, the worst level taken, gross cents before
+   * fees. Absent when the hedge is on Polymarket (recorded, not sent).
+   */
+  hedgeSale?: { venue: "kalshi"; bestPriceCents: number; avgPriceCents: number; worstPriceCents: number; grossCents: number };
 }
 
 export type EarlyCloseLeg = "position" | "hedge";
@@ -220,6 +226,7 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
 
   let hedgeProceedsCents: number;
   let hedgeFeesCents: number;
+  let hedgeSale: EarlyCloseQuote["hedgeSale"];
   if (terms.route === "kalshi_self") {
     if (books.kalshi.noBids.length === 0) {
       return { ok: false, leg: "hedge", code: "book_empty", detail: "no resting No bids to sell the hedge into" };
@@ -230,6 +237,7 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
     }
     hedgeProceedsCents = h.proceedsCents;
     hedgeFeesCents = h.feeCents;
+    hedgeSale = { venue: "kalshi", bestPriceCents: books.kalshi.noBids[0].priceCents, avgPriceCents: h.avgPriceCents, worstPriceCents: h.worstPriceCents, grossCents: h.proceedsCents };
   } else {
     if (!books.pmNoBook) {
       return { ok: false, leg: "hedge", code: "hedge_unlocatable", detail: "the hedge token for this position is not on record" };
@@ -271,6 +279,7 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
     protectedAtMidCents,
     unwindFrictionCents: protectedAtMidCents === null ? null : protectedAtMidCents - protectedAtCloseCents,
     writerCents: terms.takeCents,
+    ...(hedgeSale ? { hedgeSale } : {}),
   };
 }
 
