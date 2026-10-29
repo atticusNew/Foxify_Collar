@@ -113,6 +113,7 @@ import { adminAuthorized, parseAdminAuthFromEnv } from "../src/eventCollar/cross
 import {
   appendHedgeReceipt,
   intentFromHedge,
+  sellIntentForNovig,
   loadHedgeReceipts,
   sellIntentForKalshi,
   sellIntentForProphetX,
@@ -159,7 +160,7 @@ import { HOLDER_ALIAS_RE, holderKeysFromEnv, lockCaller, lockKeyFromEnv, parseLo
 import { ExtTelemetryStore, parseExtTelemetry } from "../src/eventCollar/crossVenue/extTelemetry";
 import { VenueClient, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
-import { referenceSourcesFromEnv } from "../src/eventCollar/crossVenue/venueBooks";
+import { novigRouteOf, referenceSourcesFromEnv, signedHedgeBook, signedHostFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
 import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venuePrints";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
 
@@ -256,7 +257,7 @@ const SLATE_KEY = process.env.EVENT_SHADOW_SLATE_KEY;
 const DEMO_URL = (process.env.EVENT_SHADOW_DEMO_URL || "https://atticus-event-demo-cross-venue.onrender.com").replace(/\/+$/, "");
 const RECORD_URL = (process.env.EVENT_SHADOW_PUBLIC_URL || "https://atticus-event-shadow.onrender.com").replace(/\/+$/, "");
 /** the books the hedges are bought on, by public name, keyed by the record's route codes */
-const HEDGE_VENUE_NAMES: Record<string, string> = { kalshi_self: "Kalshi", polymarket: "Polymarket", prophetx: "ProphetX" };
+const HEDGE_VENUE_NAMES: Record<string, string> = { kalshi_self: "Kalshi", polymarket: "Polymarket", prophetx: "ProphetX", novig: "Novig" };
 /**
  * Which hedge venues are offered tonight (EVENT_HEDGE_VENUES, hedgeRouting.hedgeVenuesFromEnv): the
  * same reading the engine quotes with; here for the status page and the routing's words.
@@ -338,7 +339,7 @@ let listGameMarketsFn: typeof listGameMarkets | null = null;
  * folded in as at the lock). The hedge venue unreachable leaves the hedge leg unlocatable and the
  * pricer says so. Replaced by the tests (wireLockEngine).
  */
-let closeBooksFn: (p: Pick<ShadowPosition, "ticker" | "route" | "hedgeTokenId" | "hedgeStrikeId">) => Promise<EarlyCloseBooks> = async (p) => {
+let closeBooksFn: (p: Pick<ShadowPosition, "ticker" | "route" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId">) => Promise<EarlyCloseBooks> = async (p) => {
   const books: EarlyCloseBooks = { kalshi: await getKalshiBookSides(p.ticker) };
   if (p.route === "polymarket" && p.hedgeTokenId) {
     try {
@@ -349,9 +350,20 @@ let closeBooksFn: (p: Pick<ShadowPosition, "ticker" | "route" | "hedgeTokenId" |
   } else if (p.route === "prophetx" && p.hedgeStrikeId && heldSource) {
     const r = await heldSource.bookFor({ venue: "PROPHETX", strikeId: p.hedgeStrikeId }, new Date());
     if (r.book) books.pxNoBook = foldProphetXFee(r.book, PROPHETX_FEE_BPS);
+  } else if (p.route === "novig" && p.hedgeMarketId && p.hedgeOutcomeId && p.hedgeOffsetOutcomeId && novigBookClient) {
+    try {
+      books.nvNoBook = await signedHedgeBook(novigBookClient, p.hedgeMarketId, p.hedgeOffsetOutcomeId, p.hedgeOutcomeId);
+    } catch {
+      // the venue unreachable: the pricer records the leg as unlocatable, honestly
+    }
   }
   return books;
 };
+/** The Novig route's own book reads for an early close (the venue's public catalog on the reference or holder-positions host); null when neither host is set. */
+const novigBookClient: VenueClient | null = (() => {
+  const host = signedHostFromEnv(process.env);
+  return host ? new VenueClient({ host }) : null;
+})();
 /** the engine's pricing-source status (the aggregator's feed, then the venues); wired in main() */
 let pricingSourceStatusFn: typeof pricingSourceStatus | null = null;
 let referenceCatalogFn: typeof referenceCatalog | null = null;
@@ -508,7 +520,7 @@ let positionsCache: { at: number; positions: HolderPosition[] } | null = null;
  * A ticker armed for live orders is hedged on a venue the executor can send to, never on a route
  * the live rails would refuse (the record would carry a simulated fill). With ONE live venue the
  * route is pinned to it and the quote says what the pin cost against the rest. With more than one
- * (Kalshi and ProphetX through the aggregator's pod) nothing is pinned: the routing competes the
+ * (Kalshi and ProphetX through the aggregator's pod, Novig with our own key) nothing is pinned: the routing competes the
  * live venues on price, behind the executable gate, and the holder sees which won and why.
  * Unarmed tickers keep the board's rule.
  */
@@ -516,9 +528,9 @@ const tickerIsArmed = (ticker: string): boolean => Boolean(hedgeChoice.live && t
 const lockRouteFor = (ticker: string): HedgeRoute | undefined => {
   const live = hedgeChoice.live;
   if (!live || !tickerIsArmed(ticker)) return undefined;
-  const reachable = live.venues.filter((v) => v === "kalshi" || v === "prophetx" || v === "polymarket");
+  const reachable = live.venues.filter((v) => v === "kalshi" || v === "prophetx" || v === "polymarket" || v === "novig");
   if (reachable.length !== 1) return undefined;
-  return reachable[0] === "kalshi" ? "kalshi_self" : reachable[0] === "prophetx" ? "prophetx" : "polymarket";
+  return reachable[0] === "kalshi" ? "kalshi_self" : reachable[0] === "prophetx" ? "prophetx" : reachable[0] === "novig" ? "novig" : "polymarket";
 };
 /**
  * Which hedge venues an order can reach for this ticker now (hedgeRouting's executable gate): on
@@ -526,8 +538,8 @@ const lockRouteFor = (ticker: string): HedgeRoute | undefined => {
  */
 const executableFor = (ticker: string): Record<HedgeRoute, boolean> =>
   tickerIsArmed(ticker) && hedgeChoice.live
-    ? { kalshi_self: hedgeChoice.live.venues.includes("kalshi"), polymarket: hedgeChoice.live.venues.includes("polymarket"), prophetx: hedgeChoice.live.venues.includes("prophetx") }
-    : { kalshi_self: true, polymarket: true, prophetx: true };
+    ? { kalshi_self: hedgeChoice.live.venues.includes("kalshi"), polymarket: hedgeChoice.live.venues.includes("polymarket"), prophetx: hedgeChoice.live.venues.includes("prophetx"), novig: hedgeChoice.live.venues.includes("novig") }
+    : { kalshi_self: true, polymarket: true, prophetx: true, novig: true };
 
 /**
  * The price competition in one line a holder can read: what each venue's book would have paid them
@@ -620,7 +632,7 @@ function appendOrAlert(record: Parameters<typeof appendShadowRecord>[1], path: s
  * The position is already on the ledger; a hedge failure is recorded, never
  * allowed to lose the record or stop the scan.
  */
-async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook }): Promise<HedgeReceipt | null> {
+async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; references?: ReferenceBook[] }): Promise<HedgeReceipt | null> {
   const ticker = ref.split("@")[0];
   try {
     const best =
@@ -630,7 +642,9 @@ async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBoo
           : hedge.avgPriceCents * 10
         : hedge.venue === "prophetx"
           ? (books.pxNoBook ? foldProphetXFee(books.pxNoBook, PROPHETX_FEE_BPS).asks[0]?.priceMilli : undefined) ?? hedge.avgPriceMilli
-          : books.pmNoBook?.asks[0]?.priceMilli ?? hedge.avgPriceMilli;
+          : hedge.venue === "novig"
+            ? novigRouteOf(books.references)?.noBook.asks[0]?.priceMilli ?? hedge.avgPriceMilli
+            : books.pmNoBook?.asks[0]?.priceMilli ?? hedge.avgPriceMilli;
     // a leg on another venue is armed by the game's Kalshi ticker (the live allowlist's key)
     const armKey = hedge.venue === "kalshi" ? undefined : ticker;
     const receipt = await hedgeChoice.executor.execute(intentFromHedge(hedge, best, armKey), ref);
@@ -655,7 +669,8 @@ async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBoo
  * the holder's side's strike at or under 1 - the walked worst bid on the hedge strike, which pairs
  * with the hedge share for share and settles at the game (prophetxOrders.ts). The record carries
  * the proceeds that pair fetches; the cash lands at settlement, not today, and the note says so.
- * Without the offset strike on the record the offset is the operator's hand.
+ * Without the offset strike on the record the offset is the operator's hand. A Novig hedge leaves
+ * the same way: the offset buys the holder's own outcome on the venue's market (novigOrders.ts).
  */
 async function sellHedge(
   ticker: string,
@@ -669,12 +684,17 @@ async function sellHedge(
   if (q.hedgeSale.venue === "prophetx" && !lock.hedgeOffsetStrikeId) {
     return { q, sent: false, receipt: null, note: "the hedge is on ProphetX and the holder's side's strike is not on the record; the offset is recorded at the book's price and the operator buys it by hand" };
   }
+  if (q.hedgeSale.venue === "novig" && !lock.hedgeOffsetOutcomeId) {
+    return { q, sent: false, receipt: null, note: "the hedge is on Novig and the holder's own outcome is not on the record; the offset is recorded at the book's price and the operator buys it by hand" };
+  }
   let receipt: HedgeReceipt;
   try {
     const intent =
       q.hedgeSale.venue === "prophetx"
         ? sellIntentForProphetX({ strikeId: q.hedgeSale.strikeId, offsetStrikeId: lock.hedgeOffsetStrikeId as string, armKey: ticker, unitsMilli: lock.hedgeUnitsMilli, bestPriceMilli: q.hedgeSale.bestPriceMilli, avgPriceMilli: q.hedgeSale.avgPriceMilli, worstPriceMilli: q.hedgeSale.worstPriceMilli, grossCents: q.hedgeSale.grossCents })
-        : sellIntentForKalshi({ ticker, unitsMilli: lock.hedgeUnitsMilli, ...q.hedgeSale });
+        : q.hedgeSale.venue === "novig"
+          ? sellIntentForNovig({ marketId: q.hedgeSale.marketId, outcomeId: q.hedgeSale.outcomeId, offsetOutcomeId: q.hedgeSale.offsetOutcomeId, armKey: ticker, unitsMilli: lock.hedgeUnitsMilli, bestPriceMilli: q.hedgeSale.bestPriceMilli, avgPriceMilli: q.hedgeSale.avgPriceMilli, worstPriceMilli: q.hedgeSale.worstPriceMilli, grossCents: q.hedgeSale.grossCents })
+          : sellIntentForKalshi({ ticker, unitsMilli: lock.hedgeUnitsMilli, ...q.hedgeSale });
     receipt = await hedgeChoice.executor.execute(intent, ref);
     appendHedgeReceipt(RECEIPTS_PATH, receipt);
   } catch (err) {
@@ -702,6 +722,10 @@ async function sellHedge(
     const partial = leftMilli > 0 ? `; ${leftMilli / 1000} of ${lock.hedgeUnitsMilli / 1000} not offset, carried at the walked ${worstMilli} milli for the operator's hand` : "";
     return { q: priced, sent: true, receipt, note: `offset on ProphetX, order ${fill.ids.orderId ?? "?"}${via}: ${fill.unitsMilli / 1000} of the holder's side's strike bought against the hedge, ${fill.costCents}c net when the pair settles at the game${partial}` };
   }
+  if (q.hedgeSale.venue === "novig") {
+    const partial = leftMilli > 0 ? `; ${leftMilli / 1000} of ${lock.hedgeUnitsMilli / 1000} not offset, carried at the walked ${worstMilli} milli for the operator's hand` : "";
+    return { q: priced, sent: true, receipt, note: `offset on Novig, order ${fill.ids.orderId ?? "?"}: ${fill.unitsMilli / 1000} of the holder's own outcome bought against the hedge, ${fill.costCents}c net when the pair settles at the game${partial}` };
+  }
   const partial = leftMilli > 0 ? `; ${leftMilli / 1000} of ${lock.hedgeUnitsMilli / 1000} left unsold, carried at the walked ${q.hedgeSale.worstPriceCents}c for the operator to sell by hand` : "";
   return { q: priced, sent: true, receipt, note: `sold on Kalshi, order ${fill.ids.orderId ?? "?"}${via}: ${fill.unitsMilli / 1000} No at ${fill.avgPriceMilli} milli, ${fill.costCents}c net${partial}` };
 }
@@ -716,14 +740,14 @@ function hedgeViewOf(receipt: HedgeReceipt) {
   const fill = receipt.fill;
   // where the other side was bought is the receipt's own fact: a lock quoted on one route may be hedged again on another
   const fillVenue = fill?.venue ?? receipt.intent.venue;
-  const route: HedgeRoute = fillVenue === "polymarket" ? "polymarket" : fillVenue === "prophetx" ? "prophetx" : "kalshi_self";
+  const route: HedgeRoute = fillVenue === "polymarket" ? "polymarket" : fillVenue === "prophetx" ? "prophetx" : fillVenue === "novig" ? "novig" : "kalshi_self";
   return {
     at: receipt.at,
-    /** "buy": the hedge bought at the lock; "sell": the hedge sold back at an early close (on ProphetX, the offset bought; the pair settles at the game) */
+    /** "buy": the hedge bought at the lock; "sell": the hedge sold back at an early close (on ProphetX and Novig, the offset bought; the pair settles at the game) */
     action: receipt.intent.action ?? "buy",
     route,
     venue: HEDGE_VENUE_NAMES[route],
-    ...(route === "prophetx" && (receipt.intent.action ?? "buy") === "sell" ? { settlesAtGame: true } : {}),
+    ...((route === "prophetx" || route === "novig") && (receipt.intent.action ?? "buy") === "sell" ? { settlesAtGame: true } : {}),
     outcome: receipt.outcome,
     simulated: fill?.simulated ?? true,
     unitsMilli: fill?.unitsMilli ?? null,
@@ -749,6 +773,7 @@ function closeTermsOf(p: ShadowPosition): EarlyCloseTerms {
     hedgeUnitsMilli: hedgeUnitsOf(p),
     route: p.route,
     ...(p.hedgeStrikeId ? { hedgeStrikeId: p.hedgeStrikeId } : {}),
+    ...(p.hedgeMarketId && p.hedgeOutcomeId && p.hedgeOffsetOutcomeId ? { novig: { marketId: p.hedgeMarketId, hedgeOutcomeId: p.hedgeOutcomeId, offsetOutcomeId: p.hedgeOffsetOutcomeId } } : {}),
   };
 }
 
@@ -912,6 +937,7 @@ function openRecordFor(
     ...(res.bookOrigins ? { bookOrigins: res.bookOrigins } : {}),
     ...(q.hedge.venue === "polymarket" ? { hedgeTokenId: q.hedge.tokenId } : {}),
     ...(q.hedge.venue === "prophetx" ? { hedgeStrikeId: q.hedge.strikeId, ...(q.hedge.offsetStrikeId ? { hedgeOffsetStrikeId: q.hedge.offsetStrikeId } : {}) } : {}),
+    ...(q.hedge.venue === "novig" ? { hedgeMarketId: q.hedge.marketId, hedgeOutcomeId: q.hedge.outcomeId, hedgeOffsetOutcomeId: q.hedge.offsetOutcomeId } : {}),
     ...(res.routing ? { holderVenue: res.routing.holderVenue, routing: res.routing } : {}),
     // the rule the result will be judged under, as the venue publishes it this second
     rule: pinRule({
@@ -2358,9 +2384,9 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
  * each book was read from stay with the operator (the raw ledger, the full CSV, /venues); a
  * reader can recompute every public row without them.
  */
-function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeOffsetStrikeId" | "bookOrigins" | "holder"> & { cashDue?: ReturnType<typeof cashDue> } {
+function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeOffsetStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId" | "bookOrigins" | "holder"> & { cashDue?: ReturnType<typeof cashDue> } {
   // where the books came from (the partner's feed or the venue), the pre-lock read, the book-open read and whose lock it is are the operator's: /venues, /api/shadow/holders, the raw ledger
-  const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, hedgeTokenId: _tok, hedgeStrikeId: _strike, hedgeOffsetStrikeId: _offset, bookOrigins: _origins, holder: _holder, ...rest } = p;
+  const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, hedgeTokenId: _tok, hedgeStrikeId: _strike, hedgeOffsetStrikeId: _offset, hedgeMarketId: _nvMarket, hedgeOutcomeId: _nvOutcome, hedgeOffsetOutcomeId: _nvOffset, bookOrigins: _origins, holder: _holder, ...rest } = p;
   // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
   return p.source === "lock" ? { ...rest, cashDue: cashDue(p) } : rest;
 }
@@ -2591,6 +2617,13 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
               .then((balanceCents) => ({ ok: true, via: "direct", balanceCents }))
               .catch((err: unknown) => ({ ok: false, via: "direct", error: String(err instanceof Error ? err.message : err) }))
           : Promise.resolve({ ok: false, error: live ? (live.via === "aggregator" ? "no aggregator TRADE key in the service env" : "no Kalshi credentials in the service env") : "not in live mode" });
+      // the third live venue's cash: the Novig subaccount the service's own trading key reaches
+      const novigCheck: Promise<{ ok: boolean; keyId?: string; balanceCents?: number; error?: string } | null> = hedgeChoice.novigOrders
+        ? hedgeChoice.novigOrders
+            .availableCents()
+            .then((balanceCents) => ({ ok: true, keyId: `…${hedgeChoice.novigOrders!.keyId.slice(-4)}`, balanceCents }))
+            .catch((err: unknown) => ({ ok: false, keyId: `…${hedgeChoice.novigOrders!.keyId.slice(-4)}`, error: String(err instanceof Error ? err.message : err) }))
+        : Promise.resolve(live ? (HEDGE_VENUES.routes.includes("novig") ? { ok: false, error: "no NOVIG_TRADE_KEY_ID / NOVIG_TRADE_PRIVATE_KEY_PEM in the service env" } : null) : null);
       const held = new Set(allLocks().map((l) => l.p.ticker));
       const kalshiRouteQuote = async (t: string) => {
         if (!quoteOneFn) return { offered: false as const, code: "engine_not_ready", detail: "the scanner is still loading" };
@@ -2630,7 +2663,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
               return { contracts, checked: markets.length, offered, refused };
             })()
           : Promise.resolve(null);
-      void Promise.all([venueCheck, tickerCheck, scanCheck]).then(([venue, routeQuote, scan]) =>
+      void Promise.all([venueCheck, tickerCheck, scanCheck, novigCheck]).then(([venue, routeQuote, scan, novig]) =>
         sendJson(res, 200, {
           ok: true,
           at: new Date().toISOString(),
@@ -2638,6 +2671,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           live,
           sentTodayContracts: sentToday,
           venue,
+          ...(novig ? { novig } : {}),
           ticker: ticker
             ? {
                 ticker,
