@@ -384,6 +384,21 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.deepEqual(trail.recent.map((r) => r.ref), [TICKER, TICKER]);
     assert.equal(trail.recent[0].id, resend.hedge.receiptId);
 
+    // ?route= names the venue: a word that is no venue is a 400, a venue the executor cannot send
+    // to on this ticker a 409 (nothing priced either way), the one it can is honoured as the pin
+    seen.length = 0;
+    const badRoute = await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}&route=draftkings`, { method: "POST", headers: op });
+    assert.equal(badRoute.status, 400);
+    const noClient = await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}&route=novig`, { method: "POST", headers: op });
+    assert.equal(noClient.status, 409);
+    const noClientBody = (await noClient.json()) as { error: string; executable: Record<string, boolean> };
+    assert.equal(noClientBody.error, "route_not_executable");
+    assert.equal(noClientBody.executable.novig, false);
+    assert.equal(seen.length, 0, "a refused route prices nothing");
+    const named = (await (await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}&route=kalshi`, { method: "POST", headers: op })).json()) as { ok: boolean; pinned: string | null; priorReceipts: number; hedge: { route: string } };
+    assert.deepEqual([named.ok, named.pinned, named.priorReceipts, named.hedge.route], [true, "kalshi_self", 2, "kalshi_self"]);
+    assert.equal(seen.at(-1)?.route, "kalshi_self");
+
     // once a live fill is on the trail the resend refuses (the venue holds the hedge) unless forced
     const liveFill: HedgeReceipt = { ...trail.recent[0], id: "live-1", fill: { ...trail.recent[0].fill!, simulated: false, strategy: "live", ids: { orderId: "ord-live" } }, outcome: "filled_live", fallbackReason: null };
     appendHedgeReceipt(join(dir, "hedge-receipts.jsonl"), liveFill);
@@ -394,7 +409,7 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.deepEqual(heldBody.liveFills.map((f) => [f.receiptId, f.orderId]), [["live-1", "ord-live"]]);
     const forced = (await (await fetch(`${base}/api/shadow/hedges/resend?ticker=${TICKER}&force=1`, { method: "POST", headers: op })).json()) as { ok: boolean; priorReceipts: number };
     assert.equal(forced.ok, true);
-    assert.equal(forced.priorReceipts, 3);
+    assert.equal(forced.priorReceipts, 4);
     // the holder's receipt now stands on the live fill, not the later dry run
     const rcptLive = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { hedge: { receiptId: string; simulated: boolean; orderId: string; via: string } };
     assert.deepEqual([rcptLive.hedge.receiptId, rcptLive.hedge.simulated, rcptLive.hedge.orderId], ["live-1", false, "ord-live"]);
