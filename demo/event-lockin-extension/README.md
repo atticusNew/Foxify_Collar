@@ -603,8 +603,10 @@ GET /healthz                                                lock.enabled true, h
    operator cut.
    **Rehearsal** (same page): with it On, the Lock in button walks the whole flow on the live
    quote, but calls nothing: nothing is locked, written or bought. The line reads Protected with
-   "rehearsal" on it and the panel offers Reset. Use it to see the screens before real money, then
-   turn it Off and reload the venue tab before the recording.
+   "rehearsal" on it and the panel offers Reset. **Leave early** is there too (0.7.31): its sheet
+   is estimated from the live mark rather than priced from the books (the fine print says so), and
+   the tap ends on "Protection removed · rehearsal" with Reset; nothing is sent. Use it to see the
+   screens before real money, then turn it Off and reload the venue tab before the recording.
 3. On the venue, open the plays page: ProphetX **My Trades** (Cash mode, **Filled** tab), Kalshi
    **Portfolio** (**Positions** tab), Novig **Portfolio** (**Open** tab, cash not points). Each
    matched play gets its line; a resting order's line says it has not matched or filled. If the
