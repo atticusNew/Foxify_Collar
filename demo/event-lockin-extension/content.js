@@ -45,7 +45,7 @@
   // one a trader reaches for. Each is named for what it gives, never for what it costs
   const TIER_ORDER = ["wide", "balanced", "tight"];
   const TIER_WORDS = { wide: "Max upside", balanced: "Balanced", tight: "Max floor" };
-  const DEFAULTS = { showHedge: "no", rehearse: "no", showShield: "yes", showSlip: "yes", telemetry: "yes" };
+  const DEFAULTS = { showHedge: "no", rehearse: "no", showShield: "yes", showSlip: "yes", telemetry: "yes", layout: "simple" };
 
   // ── the venue this page belongs to ──────────────────────────────────────────
   // One codebase, three skins. The host name decides; a preview page names its venue in a meta
@@ -937,7 +937,9 @@
     let e = node.parentElement;
     let found = null;
     for (let i = 0; e && e !== document.body && i < 9; i++, e = e.parentElement) {
-      if (e.querySelector("input, textarea")) break;
+      // a block with a field in it is a form, not a position; our own fields (the shape slider,
+      // the typed size) sit inside a deck card and must not turn the card into one
+      if (e.querySelector("input:not(.ael-ui *), textarea:not(.ael-ui *)")) break;
       const text = spaced(norm(pageText(e)));
       if (text.length > 600) break;
       const r = e.getBoundingClientRect();
@@ -1135,7 +1137,7 @@
     const key = B.slip ? B.ticker + "#slip" : B.kind && B.kind !== "winner" ? B.ticker + "#" + B.kind : B.ticker;
     let st = S.st.get(key);
     if (!st) {
-      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, enter: false, how: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptCash: null, rcptBusy: false, rcptErr: "" };
+      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, enter: false, how: false, adjust: false, details: false, rules: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptCash: null, rcptBusy: false, rcptErr: "" };
       S.st.set(key, st);
     }
     return st;
@@ -1441,7 +1443,7 @@
       const n = q.contracts || p.contracts;
       const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
       // one number on the line: the floor. The rest is one tap away, in the panel.
-      line = lineGo("Lock in", "Lose, and still get <b>" + esc(usd(rs.floorTotal)) + "</b>.", "");
+      line = offerLine(rs);
     }
     // repaint only what changed: the venue re-renders often and every scan lands here, so
     // rewriting the same HTML would make the block blink and drop anything typed in it
@@ -1454,6 +1456,9 @@
         if (st.open) st.enter = true;
         else {
           st.how = false;
+          st.adjust = false;
+          st.details = false;
+          st.rules = false;
           // the "Locked in" moment is shown once; the next open is the position's details
           if (st.done) st.done.justNow = false;
           const r = S.record.get(B.ticker);
@@ -1495,6 +1500,14 @@
 
   const DISCLOSE = '<div class="ael-disclose">Protection by Atticus, a third party; not a product of this venue.</div>';
   const operator = () => S.settings.showHedge === "yes";
+  /**
+   * The simple layout (the default): two outcomes, the cash, one pill, and everything else behind
+   * Adjust (the shape, as a slider) and Details (where the other side went, the clock, how it
+   * works, the rules). The full layout (Options) keeps every figure in view for an operator demo.
+   */
+  const simple = () => S.settings.layout !== "full";
+  /** The collapsed offer: the floor, and nothing else. */
+  const offerLine = (rs) => lineGo("Lock in", "Lose, and still get <b>" + esc(usd(rs.floorTotal)) + "</b>.", "");
 
   /** The notes a holder needs once, in the fine print: a Kalshi No read as the other club's Yes; where the size came from (operator). */
   const notes = (B) => {
@@ -1517,6 +1530,71 @@
     ledgerRow(esc(nick) + " lose", esc(usd(rs.floorTotal)), was ? "was $0" : null, "ael-hero") +
     ledgerRow(was ? "Paid to you now" : "Paid to you", "+" + esc(usd(creditCents)), was ? "today" : null, "ael-last") +
     "</div>";
+
+  /**
+   * The simple slip: the two ways the game can go and the cash, nothing a holder has to decode.
+   * Before the tap the third column says what each outcome is without the protection ("of
+   * $15.38", "instead of $0"); after it the figures stand alone.
+   */
+  const simpleLedger = (nick, rs, creditCents, was) =>
+    '<div class="ael-ledger' + (was ? "" : " ael-two") + '">' +
+    ledgerRow(esc(nick) + " win", esc(usd(rs.capTotal)), was ? "of " + esc(was) : null) +
+    ledgerRow(esc(nick) + " lose", esc(usd(rs.floorTotal)), was ? "instead of $0" : null, "ael-hero") +
+    ledgerRow("Cash now", "+" + esc(usd(creditCents)), was ? "" : null, "ael-last") +
+    "</div>";
+
+  /** What the slider reads out to a screen reader at each stop. */
+  const tierValueText = (k, tr, tt) => TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(tt.creditCents) + " now";
+  /**
+   * The shape as a slider: more upside on the left, a higher floor on the right, the stop's name
+   * between the ends. Only the shapes the book offers for this pick are stops (two or three); the
+   * figures above move as it moves, so the trade-off is seen rather than read.
+   */
+  const sliderHtml = (B, n, offered, keys, tier) => {
+    const i = Math.max(0, keys.indexOf(tier));
+    const tt = offered[keys[i]];
+    const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
+    return (
+      '<div class="ael-adjust"><div class="ael-adj-h"><span>More upside</span><b>' + esc(TIER_WORDS[keys[i]]) + "</b><span>Higher floor</span></div>" +
+      '<input type="range" class="ael-range" min="0" max="' + (keys.length - 1) + '" step="1" value="' + i + '" aria-label="Shape of the deal" aria-valuetext="' + esc(tierValueText(keys[i], tr, tt)) + '" /></div>'
+    );
+  };
+
+  /** The four tails for the offer, folded to the cases they cover; open, each in the venue's own words. */
+  const rulesHtml = (rt, open) => {
+    if (!rt || !Array.isArray(rt.tails) || !rt.tails.length) return "";
+    return open
+      ? '<div class="ael-how ael-on ael-rules">' + rt.tails.map((t) => "<p>" + esc(String(t.text || "")) + "</p>").join("") + '<p><a href="#" class="ael-rules-a">hide the rules</a></p></div>'
+      : '<div class="ael-fine">Covers ' + esc(tailSummary(rt.tails)) + ' &middot; <a href="#" class="ael-rules-a">rules</a></div>';
+  };
+
+  /** The offer in the simple layout; a string, so a slide can refresh the figures in place and keep the panel's record of itself true. */
+  const simpleOfferHtml = (B, st, p, q, offered, keys, n, removedLine) => {
+    const t = offered[st.tier] || q;
+    const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
+    const was = usd(centsOf(100, n));
+    const fine = ["Priced live"];
+    if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
+    fine.push(...notes(B));
+    const shopped = pricedRoutes(p.routing).length > 1;
+    const links = (keys.length > 1 ? '<a href="#" class="ael-adj-a"' + (st.adjust ? ' aria-expanded="true"' : "") + ">Adjust</a> &middot; " : "") + '<a href="#" class="ael-det-a"' + (st.details ? ' aria-expanded="true"' : "") + ">" + (st.details ? "Hide details" : "Details") + "</a>";
+    const details = st.details
+      ? '<div class="ael-details">' +
+        venuePick(p.routing) +
+        '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
+        '<div class="ael-how ael-on"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".</p></div>" +
+        rulesHtml(p.routing, st.rules) +
+        "</div>"
+      : "";
+    return (
+      simpleLedger(shortOf(B.ticker), rs, t.creditCents, was) +
+      (st.adjust && keys.length > 1 ? sliderHtml(B, n, offered, keys, st.tier) : "") +
+      '<div class="ael-acts ael-offer-acts"><button type="button" class="ael-go ael-pillgo" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + '</span>Lock in</button><span class="ael-links">' + links + "</span></div>" +
+      removedLine +
+      details +
+      DISCLOSE
+    );
+  };
 
   const paintPanel = (B) => {
     const st = stateOf(B);
@@ -1557,6 +1635,48 @@
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
     // the protection removed earlier on this game, one grey line: what it settled for, and whether that moved
     const removedLine = removed ? '<div class="ael-fine">Earlier protection removed' + (removed.closedAt ? " " + esc(fmtAt(removed.closedAt)) : "") + " &middot; " + signed(closeNetOf(removed)) + " " + (closeNetOf(removed) < 0 ? "due back" : "to you") + (cashState(removed) && !cashState(removed).open ? " &middot; paid" : "") + ".</div>" : "";
+    if (simple()) {
+      const html = simpleOfferHtml(B, st, p, q, offered, keys, n, removedLine);
+      setPanel(B, panel, html, () => {
+        const toggle = (sel, key) => {
+          const a = panel.querySelector(sel);
+          if (a)
+            a.onclick = (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              st[key] = !st[key];
+              paintRow(B);
+            };
+        };
+        toggle(".ael-adj-a", "adjust");
+        toggle(".ael-det-a", "details");
+        toggle(".ael-rules-a", "rules");
+        const range = panel.querySelector(".ael-range");
+        if (range)
+          range.oninput = () => {
+            // the figures follow the thumb in place: a repaint here would rebuild the slider under the drag
+            st.tier = keys[Number(range.value)] || st.tier;
+            const tt = offered[st.tier];
+            const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
+            const vals = panel.querySelectorAll(".ael-ledger .ael-lr > b");
+            if (vals.length >= 3) {
+              vals[0].textContent = usd(tr.capTotal);
+              vals[1].textContent = usd(tr.floorTotal);
+              vals[2].textContent = "+" + usd(tt.creditCents);
+            }
+            const word = panel.querySelector(".ael-adj-h b");
+            if (word) word.textContent = TIER_WORDS[st.tier];
+            range.setAttribute("aria-valuetext", tierValueText(st.tier, tr, tt));
+            const factB = B.box.querySelector(".ael-line .ael-fact b");
+            if (factB) factB.textContent = usd(tr.floorTotal);
+            // the panel and the line now show what a fresh paint would draw; say so, or the next scan redraws them
+            B.panelHtml = simpleOfferHtml(B, st, p, q, offered, keys, n, removedLine);
+            B.lineHtml = offerLine(tr);
+          };
+        panel.querySelector(".ael-go").onclick = () => lockIn(B, n, offered[st.tier] || q);
+      });
+      return;
+    }
     // the venue pick is its own strip above the button; the fine print keeps the competition only when the strip has nothing to show
     const picked = venuePick(p.routing);
     fine.push(...notes(B), ...(picked ? [] : routingNotes(p.routing)), '<a href="#" class="ael-how-a">how it works</a>');
@@ -1639,7 +1759,7 @@
     st.busy = false;
     if (!r.ok || !r.json || !r.json.ok) {
       st.quote = { ok: false, code: (r.json && r.json.code) || "lock_failed", message: (r.json && (r.json.message || r.json.error)) || r.error || "The lock did not go through. Nothing changed." };
-      paintRow(B);
+      paintRow(liveRow(B));
       return;
     }
     st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, routing: r.json.routing || (st.quote && st.quote.p && st.quote.p.routing) || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
@@ -1653,13 +1773,19 @@
     st.rcptCash = null;
     st.leave = null;
     if (r.json.rehearsal) {
-      paintRow(B);
+      paintRow(liveRow(B));
       return;
     }
     S.record.set(B.ticker, st.done);
-    paintRow(B);
+    paintRow(liveRow(B));
     setTimeout(loadRecord, 3000);
   };
+  /**
+   * The row object that stands for this market now. A tap's answer comes seconds later; if the
+   * venue redrew the list meanwhile and the scan rebuilt the row, the one the tap was made on is
+   * off the page, and painting it would leave the live row on the offer until the next pass.
+   */
+  const liveRow = (B) => (B.host && B.host.isConnected ? B : [...S.rows.values()].find((o) => o.ticker === B.ticker && o.kind === B.kind && Boolean(o.slip) === Boolean(B.slip) && o.host && o.host.isConnected) || B);
 
   /**
    * The receipt's detail, under "receipt": what stands behind the terms. Four labelled lines
@@ -1927,18 +2053,23 @@
     } else {
       // leaving is the one thing left to do: a quiet button under the slip, in the venue's raised
       // grey rather than our colour, with what it means beside it; the leave block takes its place
-      const leaveAct = !rec.rehearsal && !st.leave ? '<div class="ael-acts"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>remove the protection, keep your pick</span></div>' : "";
-      body = ledger(nick, rs, rec.creditCents, null) + (st.leave ? leaveHtml(B, rec, rs) : leaveAct);
+      // simple layout: the Details link shares the row with the pill; the facts and the receipt wait behind it
+      const detailsA = simple() ? '<span class="ael-links"><a href="#" class="ael-rcpt-a"' + (st.rcpt ? ' aria-expanded="true"' : "") + ">" + (st.rcpt ? "Hide details" : "Details") + "</a></span>" : "";
+      const leaveAct = !rec.rehearsal && !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>remove the protection, keep your pick</span>' + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
+      body = (simple() ? simpleLedger(nick, rs, rec.creditCents, null) : ledger(nick, rs, rec.creditCents, null)) + (st.leave ? leaveHtml(B, rec, rs) + leaveAct : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
       if (rec.rehearsal) meta.push("rehearsal");
     }
-    // the receipt's detail is one tap away, never in the way: a link at the end of the facts line
-    if (rec.status !== "void") meta.push('<a href="#" class="ael-rcpt-a">' + (st.rcpt ? "hide receipt" : "receipt") + "</a>");
+    // the receipt's detail is one tap away, never in the way: a link at the end of the facts line.
+    // In the simple layout the facts themselves wait behind Details, under the Leave early pill.
+    const foldFacts = simple() && rec.status === "open";
+    if (rec.status !== "void" && !foldFacts) meta.push('<a href="#" class="ael-rcpt-a">' + (st.rcpt ? (simple() ? "hide details" : "hide receipt") : simple() ? "details" : "receipt") + "</a>");
     const recordUrl = (S.baseUrl || "").replace(/\/+$/, "") + "/";
+    const metaLine = meta.length ? '<div class="ael-meta">' + meta.join(" &middot; ") + "</div>" : "";
     const html =
       body +
-      (meta.length ? '<div class="ael-meta">' + meta.join(" &middot; ") + "</div>" : "") +
+      (foldFacts ? (st.rcpt ? metaLine : "") : metaLine) +
       (st.rcpt && rec.status !== "void" ? receiptHtml(st, rec) : "") +
       opLine +
       (rec.rehearsal ? '<div class="ael-op">Rehearsal: nothing was locked, written or bought. <a href="#" class="ael-reset-a">Reset</a></div>' : "") +
@@ -2965,7 +3096,8 @@
     window.addEventListener("resize", () => {
       for (const [, B] of S.rows) fitHost(B);
     });
-    document.addEventListener("input", () => scan(false), true);
+    // the holder typing on the page (a filter, a search) may redraw the list; our own fields do not
+    document.addEventListener("input", (e) => !OURS(e.target) && scan(false), true);
     window.addEventListener("hashchange", () => (hideTip(), scan(true)));
     window.addEventListener("popstate", () => (hideTip(), scan(true)));
   };

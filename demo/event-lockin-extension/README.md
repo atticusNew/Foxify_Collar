@@ -128,6 +128,23 @@ of open plays. Once a matched play exists, under its row:
    side, Max upside moves from floor 20¢ / cap 70¢ to floor 5¢ / cap 90¢: lose $0.71 instead of
    $0, win $9.30 instead of $10.10. The three shapes are named for what they give (Max upside,
    Balanced, Max floor) and listed with the floor, the upside and the cash now.
+
+   **The simple layout** (0.7.31, the default; Options → Layout → Full brings the panel above
+   back for an operator demo). The open panel is three rows and one pill, nothing else in view:
+   "Packers win $6.88 · of $7.69", "Packers lose $1.88 · instead of $0" (the floor, the one
+   coloured figure), "Cash now +$0.42"; then a **Lock in** pill the width of its word, and at the
+   right two small links, **Adjust** and **Details**. Adjust (only when the book funds more than
+   one shape) drops a slider under the rows, "More upside" at the left end, "Higher floor" at
+   the right, the shape's name over the thumb (Max upside / Balanced / Max floor); dragging it
+   reprices the three rows and the collapsed line as it moves, and the shape under the thumb is
+   the one the tap locks. Details opens, under the pill: where the other side goes ("Other side ·
+   Kalshi"), the clock ("Priced live · until kickoff Thu 8:15pm ET"), three short paragraphs on
+   how it works in the holder's own figures ("If Packers lose you end with $4.14 instead of $0.
+   If they win, $5.30 instead of $7.69."), and the four tails folded to one line with a **rules**
+   link. A protected play's panel is the same three rows without the "of" column, the quiet
+   **Leave early** button with its helper, and a **Details** link at the right that opens the
+   receipt in place (the facts line, the other side, the cost, the order, the record, Hedged on,
+   Compared, Rules). Nothing is removed: every figure of the full layout is one tap away.
    The other side is sold back through the same executor that bought it: on an armed ticker with
    sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
    written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the
@@ -608,15 +625,17 @@ Operator actions (token in `x-admin-token`), for the recording day:
 
 1. Open the preview My Trades with the extension loaded. Every row has a line under it: Lock in
    with the floor ("Lose, and still get $x."), Unavailable with a reason, or Protected.
-2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Balanced**
-   or **Max floor**: the three rows reprice. Tap **Max upside**: they return.
-   Only the shapes the book offers for that pick are listed; a heavy favourite often has one.
-3. Tap **Lock in**. The button reports the stages in words (Pricing from the live book, Writing
+2. Tap a Lock in line. The panel opens under that row; the rows below move down: three rows
+   (win, lose, cash now) and the Lock in pill. Tap **Adjust** and drag the slider towards
+   "Higher floor": the three rows and the line reprice as it moves; drag it back: they return.
+   Adjust is only offered when the book funds more than one shape; a heavy favourite often has
+   one. Tap **Details**: the hedge venue, the clock, how it works in these figures, the rules.
+3. Tap **Lock in**. The pill reports the stages in words (Pricing from the live book, Writing
    the record, Buying the other side) under a slow sheen, with whole seconds only past three; the
-   line flashes solid and settles as the Protected pill with "$x or $y, whichever way it goes.";
-   the panel is the slip with the locked numbers and the facts line with how long it took.
-   Tap **receipt** at the end of the facts line: the other side, the cost, the order, the record
-   id. Open `/` on the service: the position is there with `source: lock`.
+   line flashes solid and settles as the Protected pill with "$x or $y · on Kalshi.";
+   the panel is the three rows with the locked numbers, the Leave early button and a Details link.
+   Tap **Details**: the facts line with how long it took, the other side, the cost, the order,
+   the record id. Open `/` on the service: the position is there with `source: lock`.
    With Rehearsal on in the options, the same tap ends on a Protected line marked "rehearsal"
    with a Reset link, and nothing reaches the service.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).
