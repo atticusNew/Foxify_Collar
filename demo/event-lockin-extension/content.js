@@ -622,6 +622,9 @@
   const MONEY = /\$\s?(\d{1,6}(?:,\d{3})*(?:\.\d{1,2})?)/g;
   /** The text without its dollar amounts. Cells can touch ("$20.0074.68%"), so only an amount's own shape is removed, never the digits after it. */
   const noMoney = (text) => text.replace(/\$\s?\d{1,6}(?:,\d{3})*(?:\.\d{1,2})?/g, " ");
+  // a venue's reference for the play ("ID: a49b5764ac7c") is not a figure: its hex can end in a
+  // digit and a c, which reads as a price in cents once the letters and digits are spaced apart
+  const noIds = (text) => String(text).replace(/(^|[^A-Za-z]|[a-z](?=ID))(?:[Ii][Dd]|[Rr]ef(?:erence)?|[Tt]icket)\s*:?\s*#?\s*(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{6,}/g, "$1 ");
   const MULTIPLIER = /(?:^|[^\d.])(\d{1,2}\.\d{1,3})\s?x(?![a-z])/i;
   // American odds: a signed figure of three or more digits that is not a dollar amount (+250, -300)
   const AMERICAN = /(?:^|[^\d.$,])([+-]\d{3,5})(?![\d.,%])/;
@@ -704,7 +707,7 @@
    * or two amounts a multiplier apart.
    */
   const sizeIn = (raw) => {
-    const text = spaced(raw);
+    const text = spaced(noIds(raw));
     // Kalshi says it in our units outright; read those before any dollar pairing
     if (VENUE_ID === "kalshi") {
       const k = centsSize(text);
@@ -1081,7 +1084,10 @@
       let match = matchIn(own);
       if (S.tab === "resting" && match === "matched") match = "unmatched";
       if (S.tab === "settled" || SOLD_RE.test(noMoney(spaced(own)))) match = "settled";
-      const svc = kind === "winner" && match === "matched" ? svcFor(ticker) : null;
+      // the venue's own figure for a position it confirms: a card that reads as matched, or one whose
+      // words say nothing either way (Novig's Active card carries no badge) while the venue holds it
+      const held = kind === "winner" && match !== "settled" ? svcFor(ticker) : null;
+      const svc = held && (match === "matched" || !/(^|[^a-z])unmatched\b/i.test(noMoney(spaced(own)))) ? held : null;
       const read = match === "matched" ? tableSize(row) || sizeIn(own) : null;
       out.push({ row, ticker, kind, match, flipped, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
     }
@@ -2829,8 +2835,10 @@
         S.rows.set(F.row, B);
         mountHost(B);
       } else {
-        // a size the holder typed survives a page that still cannot be read; anything read wins
-        if (F.from !== "none" || B.from !== "entered") {
+        // a size the holder typed survives a page that still cannot be read; anything read wins.
+        // A size the venue confirmed (through the service) is not replaced by a reading of the
+        // page's words on a later pass: the page redraws, the position does not
+        if ((F.from !== "none" || B.from !== "entered") && !(B.from === "service" && F.from !== "service" && svcFor(B.ticker))) {
           B.size = F.size;
           B.from = F.from;
         }
