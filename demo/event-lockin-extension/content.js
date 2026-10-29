@@ -491,7 +491,8 @@
    */
   const removedHere = (ticker, rec) => {
     const r = rec || lockHere(ticker);
-    if (!r || r.status !== "closed") return null;
+    // a rehearsed leave stays on Protection removed until Reset; the service never held the market
+    if (!r || r.status !== "closed" || r.rehearsal) return null;
     const m = S.byTicker[ticker];
     return m && m.onRecord === false ? r : null;
   };
@@ -1420,7 +1421,7 @@
         const net = closeNetOf(rec);
         const cash = cashState(rec);
         const moved = cash ? (cash.open ? (net >= 0 ? " &middot; on its way" : "") : " &middot; paid") : "";
-        line = lineGo("Protection removed", "<b>" + signed(net) + "</b> " + (net < 0 ? "due back" : "to you") + moved + ".", "ael-line-on");
+        line = lineGo("Protection removed", "<b>" + signed(net) + "</b> " + (net < 0 ? "due back" : "to you") + moved + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
       } else {
         // the venue the other side went to, on the line itself, so the pick is visible without opening the panel
         const hv = hedgeVenueOf(rec.routing);
@@ -2000,7 +2001,7 @@
     if (!st.rcptHedge && rec.hedge && rec.hedge.receiptId) st.rcptHedge = rec.hedge;
     if (st.rcpt && !rec.rehearsal && !st.rcptHedge && !st.rcptBusy && !st.rcptErr) void loadReceipt(B);
     // left early: the sale of the other side is on the receipt; read it once
-    if (st.rcpt && rec.status === "closed" && !st.rcptSale && !st.rcptBusy && !st.rcptSaleAsked) {
+    if (st.rcpt && rec.status === "closed" && !rec.rehearsal && !st.rcptSale && !st.rcptBusy && !st.rcptSaleAsked) {
       st.rcptSaleAsked = true;
       st.rcptHedge = null;
       void loadReceipt(B);
@@ -2050,12 +2051,14 @@
       }
       if (rec.justLeft && rec.ms) meta.push("in " + (rec.ms / 1000).toFixed(1) + "s");
       if (cash && cash.open) meta.push(net < 0 ? "the settlement goes back to the writer; the receipt shows each leg" : "the settlement comes to you; the receipt shows each leg");
+      if (rec.rehearsal) meta.push("rehearsal");
     } else {
       // leaving is the one thing left to do: a quiet button under the slip, in the venue's raised
-      // grey rather than our colour, with what it means beside it; the leave block takes its place
+      // grey rather than our colour, with what it means beside it; the leave block takes its place.
+      // A rehearsal has it too, priced from the live mark (rehearsedLeave), so the whole flow can be walked.
       // simple layout: the Details link shares the row with the pill; the facts and the receipt wait behind it
       const detailsA = simple() ? '<span class="ael-links"><a href="#" class="ael-rcpt-a"' + (st.rcpt ? ' aria-expanded="true"' : "") + ">" + (st.rcpt ? "Hide details" : "Details") + "</a></span>" : "";
-      const leaveAct = !rec.rehearsal && !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>remove the protection, keep your pick</span>' + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
+      const leaveAct = !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>remove the protection, keep your pick</span>' + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
       body = (simple() ? simpleLedger(nick, rs, rec.creditCents, null) : ledger(nick, rs, rec.creditCents, null)) + (st.leave ? leaveHtml(B, rec, rs) + leaveAct : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
@@ -2086,6 +2089,8 @@
           st.quoteAt = 0;
           st.rcpt = false;
           st.rcptHedge = null;
+          st.leave = null;
+          st.flashed = false;
           paintRow(B);
         };
       const rcpt = panel.querySelector(".ael-rcpt-a");
@@ -2139,6 +2144,24 @@
     if (!L || L.busy || L.sending) return;
     if (L.q && Date.now() - L.at < REQUOTE_MS) return;
     L.busy = true;
+    if (st.done && st.done.rehearsal) {
+      // rehearsal: no lock exists at the service to price a leave of. The live mark is read from a
+      // fresh quote (a read, nothing written) and the settlement estimated from it
+      const rec = st.done;
+      const path = "/api/shadow/quote?ticker=" + encodeURIComponent(B.ticker) + "&contracts=" + rec.contracts + "&venue=" + encodeURIComponent(VENUE_ID);
+      api(path, "GET").then((r) => {
+        const st2 = stateOf(B);
+        if (!st2.leave) return;
+        st2.leave.busy = false;
+        st2.leave.at = Date.now();
+        const live = r.ok && r.json && typeof r.json.markCents === "number" ? r.json.markCents : null;
+        const was = st2.quote && st2.quote.ok && st2.quote.p ? st2.quote.p.markCents : null;
+        const q = rehearsedLeave(rec, live != null ? live : was);
+        st2.leave = q ? { ...st2.leave, q, lastIso: null, err: null } : { ...st2.leave, q: null, err: { why: "The live price is not in yet.", next: "A moment." } };
+        paintRow(B);
+      });
+      return;
+    }
     api("/api/shadow/unwind/quote?ticker=" + encodeURIComponent(B.ticker), "GET").then((r) => {
       const st2 = stateOf(B);
       if (!st2.leave) return;
@@ -2148,6 +2171,32 @@
       else st2.leave = { ...st2.leave, q: null, err: leaveWords(r) };
       paintRow(B);
     });
+  };
+
+  /**
+   * A leave priced from the mark alone, for a rehearsal (nothing is on the books to sell). The same
+   * shape the service answers with: the hedge's sale (the other side's units at a cent inside the
+   * mark) less the cap slice sold at the tap is the settlement; the position's sale a cent inside.
+   */
+  const rehearsedLeave = (rec, markCents) => {
+    if (typeof markCents !== "number" || !(markCents > 0 && markCents < 100)) return null;
+    const n = rec.contracts;
+    const yesBid = Math.max(1, markCents - 1);
+    const noBid = Math.max(1, 99 - markCents);
+    const hedgeUnits = ((rec.floorCents + 100 - rec.capCents) * n) / 100;
+    const hedgeProceedsCents = Math.round(hedgeUnits * noBid);
+    const fundingCents = Math.floor((100 - rec.capCents) * n);
+    const positionProceedsCents = Math.round(n * yesBid);
+    return {
+      closeNetCents: hedgeProceedsCents - fundingCents,
+      protectedAtCloseCents: positionProceedsCents + hedgeProceedsCents - fundingCents + rec.creditCents,
+      nakedAtCloseCents: positionProceedsCents,
+      yesFillCents: yesBid,
+      yesMidCents: markCents,
+      unwindFrictionCents: null,
+      creditCents: rec.creditCents,
+      rehearsal: true,
+    };
   };
 
   /** Plain words for a leave that cannot happen now. */
@@ -2184,7 +2233,7 @@
     if (Date.now() - L.at >= REQUOTE_MS) setTimeout(() => leaveQuote(B), 0);
     const q = L.q;
     const net = q.closeNetCents;
-    const fine = ["Priced live"];
+    const fine = [q.rehearsal ? "Rehearsal &middot; estimated from the live mark, not the books; nothing is sold" : "Priced live"];
     if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
     if (operator() && q.unwindFrictionCents != null) fine.push("crossing the books costs " + esc(usd(q.unwindFrictionCents)) + " against the mid");
     // the protection alone settles; the pick is the holder's and stays where it is. One signed
@@ -2228,7 +2277,10 @@
       const next = label();
       if (g && g.textContent !== next) g.textContent = next;
     }, 250);
-    const r = await api("/api/shadow/unwind", "POST", { ticker: B.ticker });
+    // rehearsal: the same stages and the same shape of answer, from the estimate; nothing is sent
+    const r = rec.rehearsal
+      ? await new Promise((resolve) => setTimeout(() => resolve({ ok: true, json: { ok: true, at: new Date().toISOString(), unwind: L.q, rehearsal: true } }), 3200))
+      : await api("/api/shadow/unwind", "POST", { ticker: B.ticker });
     clearInterval(tick);
     const st2 = stateOf(B);
     if (!(r.ok && r.json && r.json.ok && r.json.unwind)) {
@@ -2257,10 +2309,15 @@
     if (r.json.hedge && r.json.hedge.sale) st2.rcptSale = r.json.hedge.sale;
     st2.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : st2.rcptCash;
     if (st2.done) st2.done = left;
-    S.record.set(B.ticker, left);
     st2.enter = true;
     B.panelHtml = null;
-    paintRow(B);
+    if (rec.rehearsal) {
+      // the rehearsed record lives in the row's own state; the service's record never held it
+      paintRow(liveRow(B));
+      return;
+    }
+    S.record.set(B.ticker, left);
+    paintRow(liveRow(B));
     // the service's word on the game: a service that frees a market left early offers it again, and the row goes back to Lock in
     void loadMarkets();
     setTimeout(loadRecord, 3000);
