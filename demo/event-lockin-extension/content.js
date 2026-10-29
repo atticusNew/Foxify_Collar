@@ -480,6 +480,18 @@
     const r = S.record.get(ticker);
     return r && venueOfLock(r) !== VENUE_ID && r.status === "open" ? r : null;
   };
+  /**
+   * A lock here whose protection was removed, on a game the service offers again (`onRecord` false
+   * on the market once the service frees a market left early): the row goes back to the offer, and
+   * the removed lock is a grey line on it. A service that still holds the market keeps the row on
+   * Protection removed, so a tap can never meet "already locked".
+   */
+  const removedHere = (ticker, rec) => {
+    const r = rec || lockHere(ticker);
+    if (!r || r.status !== "closed") return null;
+    const m = S.byTicker[ticker];
+    return m && m.onRecord === false ? r : null;
+  };
   const venueNameOf = (id) => (VENUES[id] && VENUES[id].name) || (id === "polymarket" ? "Polymarket" : String(id || ""));
 
   const rememberLock = (ticker, next) => {
@@ -624,7 +636,8 @@
       .replace(/([A-Za-z])(\d)/g, "$1 $2") // "SEA1.71x": a code then the price in the next element
       .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2") // "DENMoneyline"
       .replace(/([A-Za-z])(\$)/g, "$1 $2")
-      .replace(/\b([AP]M)([A-Z]{2,3})(?![A-Za-z0-9])/g, "$1 $2"); // "7:00 PMATL": a clock then the next code
+      .replace(/\b([AP]M)([A-Z]{2,3})(?![A-Za-z0-9])/g, "$1 $2") // "7:00 PMATL": a clock then the next code
+      .replace(/(^|[^A-Za-z0-9])([A-Z]{2,3})\2(?![A-Za-z0-9])/g, "$1$2 $2"); // "CLECLE": a jersey's letters run into the label beside it
   const amountsIn = (text) => {
     const out = [];
     let m;
@@ -1001,10 +1014,20 @@
       // the pick is a club with no listed game: the row is not protected, and it is never read as a
       // pick on the opponent's next game (an Oct 19 Texans row beside the Nov 1 Jaguars listing)
       if (unlistedPick(text)) continue;
-      // the pick: a "Team · Winner" style line, else the side named more than once (matchup plus
-      // selection), else the one side the service confirms a position on, else the only side
+      // the pick: the side the venue itself says the holder has (the service reads their account),
+      // else a "Team · Winner" style line, else the side named more than once (matchup plus
+      // selection), else the only side. The venue's word comes first: a card that prints both
+      // clubs and no pick line (Novig's Active card, "CLE … ATL") is read by what they hold, never
+      // by which club's letters happen to appear more often.
       let ticker = null;
-      const pick = /([A-Z]{2,3}\s+[A-Za-z0-9 .]+?)(?:\s+[+-]?\d+(?:\.\d)?)?\s*(?:[·•|]|to win)\s*(?:Winner|Moneyline|Money Line|ML|Spread|Total|Over|Under)\b/i.exec(text);
+      if (S.svc.configured) {
+        // the one side they hold on the game this card names, whether or not the card's letters
+        // for that club were readable (a jersey's text run into the label reads as "CLECLE")
+        const stems = new Set([...count.keys()].map(stemOf));
+        const held = [...new Set(S.svc.positions.filter((p) => p.ticker && S.byTicker[p.ticker] && stems.has(stemOf(p.ticker))).map((p) => p.ticker))];
+        if (held.length === 1) ticker = held[0];
+      }
+      const pick = ticker ? null : /([A-Z]{2,3}\s+[A-Za-z0-9 .]+?)(?:\s+[+-]?\d+(?:\.\d)?)?\s*(?:[·•|]|to win)\s*(?:Winner|Moneyline|Money Line|ML|Spread|Total|Over|Under)\b/i.exec(text);
       if (pick) {
         const s = sidesIn(pick[1]);
         if (s.size === 1) ticker = [...s.keys()][0];
@@ -1031,11 +1054,13 @@
         const alone = sorted.length === 1 && (!count.ambiguous || sorted[0][1] >= 2) && (sorted[0][1] >= 2 || !unlistedNamed(text).size);
         if (alone || (sorted.length > 1 && sorted[0][1] > sorted[1][1])) ticker = sorted[0][0];
       }
-      if (!ticker) {
-        const withSvc = [...count.keys()].filter((t) => svcFor(t));
-        if (withSvc.length === 1) ticker = withSvc[0];
-      }
       if (!ticker) continue;
+      // the venue says the holder's position on this game is the other club: the card was misread;
+      // no offer on the wrong side (the service refuses such a lock too)
+      if (S.svc.configured && !svcFor(ticker)) {
+        const other = siblingOf(ticker);
+        if (other && svcFor(other)) continue;
+      }
       // the row names a club that is neither the pick nor its opponent in the listed game: it is a
       // pick on another game (the Pistons game, when the service lists the Knicks' next one only)
       const opp = opponentOf(ticker);
@@ -1198,7 +1223,7 @@
   /** The quote at this row's size, refreshed while the page is open; the lock reprices at the tap. */
   const quoteRow = (B) => {
     const st = stateOf(B);
-    if (!B.size || st.done || S.record.has(B.ticker)) return;
+    if (!B.size || (st.done && !removedHere(B.ticker, st.done)) || (S.record.has(B.ticker) && !removedHere(B.ticker))) return;
     const key = B.ticker + ":" + B.size.contracts + ":" + (B.size.entryCents || "");
     if (st.pending || st.busy) return;
     if (st.quoteKey === key && Date.now() - st.quoteAt < REQUOTE_MS) return;
@@ -1262,6 +1287,8 @@
         return { why: "This market is already locked.", next: "One lock per market." };
       case "on_record_elsewhere":
         return { why: message || "This game is already protected.", next: "One lock per game. The protection sits with the pick held there." };
+      case "wrong_side":
+        return { why: message || "Your pick on this game is the other club.", next: "Nothing was locked. Protect the pick from its own card." };
       case "key":
         return { why: "The lock key is missing or wrong.", next: "Open the extension's settings." };
       case "off":
@@ -1280,7 +1307,12 @@
    * paid): what is still owed to the holder, what the holder still owes back, or paid in full.
    * Null when the service's record predates cash legs; the line then says only what settled.
    */
-  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap", close: "Left early" };
+  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap", close: "Protection removed" };
+  /**
+   * Why the protection settles the way it does, in the holder's terms: the pick moved up, so the
+   * upside they sold is worth more now; moved down, so the floor they hold is worth more now.
+   */
+  const closeWhy = (net) => (net < 0 ? "your pick moved up, so the upside you sold is worth more now" : net > 0 ? "your pick moved down, so the floor you hold is worth more now" : "even at today's price");
   const cashState = (rec) => {
     const legs = Array.isArray(rec.cashDue) ? rec.cashDue : null;
     if (!legs || !legs.length) return null;
@@ -1319,8 +1351,10 @@
   const paintRow = (B) => {
     if (!B.box) return;
     const st = stateOf(B);
-    // a lock on this market covers the Winner position; a spread or total row on the same club is not it
-    const rec = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
+    // a lock on this market covers the Winner position; a spread or total row on the same club is not it;
+    // one whose protection was removed on a game offered again is no longer the row's state
+    const held = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
+    const rec = held && removedHere(B.ticker, held) ? null : held;
     // a settled order here was never protected, whatever the record holds for the game elsewhere
     const away = !rec && B.kind === "winner" && B.match !== "settled" ? lockAway(B.ticker) : null;
     let line;
@@ -1338,10 +1372,12 @@
           : lineGo("Settled", "Protected outcome <b>" + esc(got) + "</b>.", "ael-line-on");
       } else if (rec.status === "void") line = lineGo("Voided", "No official result; nothing owed.", "ael-line-on");
       else if (rec.status === "closed") {
-        // left early: what the holder ended with at the live price, the cash beside it as on a settlement
-        const got = usd(rec.protectedCents || 0);
+        // protection removed: what the protection alone settled for, and whether that cash has moved;
+        // the pick itself is still the venue's live position, not ours to describe
+        const net = closeNetOf(rec);
         const cash = cashState(rec);
-        line = lineGo("Left early", "Ended with <b>" + esc(got) + "</b>" + (cash && cash.open ? " &middot; " + cash.label : "") + ".", "ael-line-on");
+        const moved = cash ? (cash.open ? (net >= 0 ? " &middot; on its way" : "") : " &middot; paid") : "";
+        line = lineGo("Protection removed", "<b>" + signed(net) + "</b> " + (net < 0 ? "due back" : "to you") + moved + ".", "ael-line-on");
       } else {
         // the venue the other side went to, on the line itself, so the pick is visible without opening the panel
         const hv = hedgeVenueOf(rec.routing);
@@ -1444,7 +1480,9 @@
   const paintPanel = (B) => {
     const st = stateOf(B);
     const panel = B.box.querySelector(".ael-panel");
-    const rec = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
+    const held = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
+    const removed = held ? removedHere(B.ticker, held) : null;
+    const rec = removed ? null : held;
     if (rec) return paintDetails(B, panel, rec);
     const away = B.kind === "winner" && B.match !== "settled" ? lockAway(B.ticker) : null;
     if (away) return paintRefusal(B, panel, "on_record_elsewhere", "Already protected on " + venueNameOf(away.holderVenue) + ".");
@@ -1476,6 +1514,8 @@
     }
     const fine = ["Priced live"];
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
+    // the protection removed earlier on this game, one grey line: what it settled for, and whether that moved
+    const removedLine = removed ? '<div class="ael-fine">Earlier protection removed' + (removed.closedAt ? " " + esc(fmtAt(removed.closedAt)) : "") + " &middot; " + signed(closeNetOf(removed)) + " " + (closeNetOf(removed) < 0 ? "due back" : "to you") + (cashState(removed) && !cashState(removed).open ? " &middot; paid" : "") + ".</div>" : "";
     // the venue pick is its own strip above the button; the fine print keeps the competition only when the strip has nothing to show
     const picked = venuePick(p.routing);
     fine.push(...notes(B), ...(picked ? [] : routingNotes(p.routing)), '<a href="#" class="ael-how-a">how it works</a>');
@@ -1485,6 +1525,7 @@
       ledger(shortOf(B.ticker), rs, t.creditCents, was) +
       picked +
       '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in</button>" +
+      removedLine +
       '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
       '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".</p></div>" +
       DISCLOSE;
@@ -1563,6 +1604,13 @@
     st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, routing: r.json.routing || (st.quote && st.quote.p && st.quote.p.routing) || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
     st.open = true;
     st.enter = true;
+    // a new lock on a game whose earlier protection was removed: the earlier receipt's sale and cash are not this lock's
+    st.rcpt = false;
+    st.rcptHedge = null;
+    st.rcptSale = null;
+    st.rcptSaleAsked = false;
+    st.rcptCash = null;
+    st.leave = null;
     if (r.json.rehearsal) {
       paintRow(B);
       return;
@@ -1817,20 +1865,18 @@
     } else if (rec.status === "void") {
       body = '<div class="ael-ph"><b>Protection voided</b><span>No official result for this game; nothing owed either way.</span></div>';
     } else if (rec.status === "closed") {
-      // left early: the pick sold at the live price, the protection settled between us at that price,
-      // what the holder ended with. The cash row says whether that settlement has moved.
+      // protection removed: the protection alone settled between us at that moment's price; the pick
+      // is the holder's and stays open on the venue. The cash row says whether the settlement has moved.
       const net = closeNetOf(rec);
       const cash = cashState(rec);
-      const sold = rec.nakedCents != null ? rec.nakedCents : (rec.protectedCents || 0) - net - (rec.creditCents || 0);
       body =
         '<div class="ael-ledger ael-two">' +
-        ledgerRow("Left early &middot; you ended with", esc(usd(rec.protectedCents || 0)), null, "ael-hero") +
-        ledgerRow("Your pick, sold" + (rec.closeYesFillCents != null ? " at " + esc(String(rec.closeYesFillCents)) + "c" : ""), esc(usd(sold))) +
-        ledgerRow("Protection settled", signed(net), null, cash ? "" : "ael-last") +
+        ledgerRow("Protection removed &middot; settled <span class=\"ael-dim\">" + closeWhy(net) + "</span>", signed(net), null, "ael-hero") +
+        ledgerRow("Your pick", "open on " + esc(V.name) + ", unprotected", null, cash ? "" : "ael-last") +
         (cash ? ledgerRow("Cash", cash.label, null, "ael-last") : "") +
         "</div>";
-      if (rec.closedAt) meta.push("Left " + esc(fmtAt(rec.closedAt)));
-      if (rec.closeUnwindFrictionCents != null) meta.push("leaving cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
+      if (rec.closedAt) meta.push("Removed " + esc(fmtAt(rec.closedAt)));
+      if (operator() && rec.closeUnwindFrictionCents != null) meta.push("crossing the books cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
       if (rec.closeHedge) {
         const sale = rec.closeHedge.sale || null;
         meta.push(!rec.closeHedge.sent ? "the other side's sale is on the record" : isOffset(sale) ? "the other side offset on " + esc(sale.venue) + ", settles at the game" : "the other side sold on " + esc((sale && sale.venue) || "Kalshi"));
@@ -1840,7 +1886,7 @@
     } else {
       // leaving is the one thing left to do: a quiet button under the slip, in the venue's raised
       // grey rather than our colour, with what it means beside it; the leave block takes its place
-      const leaveAct = !rec.rehearsal && !st.leave ? '<div class="ael-acts"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>today\'s price instead of the result</span></div>' : "";
+      const leaveAct = !rec.rehearsal && !st.leave ? '<div class="ael-acts"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>remove the protection, keep your pick</span></div>' : "";
       body = ledger(nick, rs, rec.creditCents, null) + (st.leave ? leaveHtml(B, rec, rs) : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
@@ -1965,27 +2011,27 @@
     }
     if (Date.now() - L.at >= REQUOTE_MS) setTimeout(() => leaveQuote(B), 0);
     const q = L.q;
-    const n = (Number(q.contracts) || rec.contracts || 0).toFixed(2).replace(/\.00$/, "");
+    const net = q.closeNetCents;
     const fine = ["Priced live"];
-    if (q.unwindFrictionCents != null) fine.push("leaving costs " + esc(usd(q.unwindFrictionCents)) + " against the mid");
     if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
+    if (operator() && q.unwindFrictionCents != null) fine.push("crossing the books costs " + esc(usd(q.unwindFrictionCents)) + " against the mid");
+    // the protection alone settles; the pick is the holder's and stays where it is. One signed
+    // number, with the honest why: up, the upside they sold is worth more; down, the floor they hold is
     return (
       '<div class="ael-leave">' +
-      '<div class="ael-leave-h"><b>Leave early</b><span>today\'s price instead of the result</span></div>' +
+      '<div class="ael-leave-h"><b>Leave early</b><span>remove the protection, keep your pick</span></div>' +
       '<div class="ael-ledger ael-two">' +
-      ledgerRow("Your pick, sold now <span class=\"ael-dim\">" + esc(n) + " at " + esc(String(q.yesFillCents)) + "c, after fees</span>", esc(usd(q.positionProceedsCents))) +
-      ledgerRow("Protection settles", signed(q.closeNetCents)) +
-      ledgerRow("You end with <span class=\"ael-dim\">your " + esc(usd(q.creditCents)) + " credit kept</span>", esc(usd(q.protectedAtCloseCents)), null, "ael-hero") +
+      ledgerRow("Protection settles <span class=\"ael-dim\">" + closeWhy(net) + "</span>", signed(net) + ' <span class="ael-dim">' + (net < 0 ? "due back" : "to you") + "</span>", null, "ael-hero") +
       ledgerRow("Staying", esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), null, "ael-last") +
       "</div>" +
       '<div class="ael-leave-acts"><button type="button" class="ael-go ael-leave-go">Leave early</button><button type="button" class="ael-go ael-quiet ael-stay">Stay</button></div>' +
       '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
-      '<div class="ael-fine">Leaving settles the protection at today\'s price. Your pick is yours to sell on ' + esc(V.name) + " at that price, or to keep unprotected.</div>" +
+      '<div class="ael-fine">Your pick stays open on ' + esc(V.name) + ", unprotected. The " + esc(usd(q.creditCents)) + " credit paid at the lock is yours; this settlement is separate.</div>" +
       "</div>"
     );
   };
 
-  /** The tap: the service prices again and writes the close; the row becomes Left early. */
+  /** The tap: the service prices again and writes the close; the row becomes Protection removed. */
   const leaveNow = async (B, rec) => {
     const st = stateOf(B);
     const L = st.leave;
@@ -2043,6 +2089,8 @@
     st2.enter = true;
     B.panelHtml = null;
     paintRow(B);
+    // the service's word on the game: a service that frees a market left early offers it again, and the row goes back to Lock in
+    void loadMarkets();
     setTimeout(loadRecord, 3000);
   };
 

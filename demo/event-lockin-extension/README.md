@@ -75,19 +75,34 @@ of open plays. Once a matched play exists, under its row:
    pill, "Protected outcome $25.06." on the line, and in the panel "Texans won · you end with
    $25.06" over "Unprotected, it would have paid $46.00";
 3b. a protected play's open panel ends in a quiet **Leave early** button under the slip, with
-   "today's price instead of the result" beside it. Tapping it opens a block
-   under the slip, priced live from both books (`GET /api/shadow/unwind/quote`): "Your pick, sold
-   now · 15.95 at 61c, after fees $9.45", "Protection settles −$0.57", "You end with · your $0.41
-   credit kept $9.29" (the coloured figure), "Staying $6.95 or $11.90"; a **Leave early** button
-   beside a quiet **Stay**; the fine print says what leaving costs against the mid and until when
-   it is open (the early-close margin, 15 minutes before the start). The tap prices again
+   "remove the protection, keep your pick" beside it. Tapping it opens a block under the slip,
+   priced live from both books (`GET /api/shadow/unwind/quote`), two rows (0.7.25): "Protection
+   settles" with one signed figure and the why in grey ("−$0.57 due back · your pick moved up, so
+   the upside you sold is worth more now"; "+$0.41 to you · your pick moved down, so the floor you
+   hold is worth more now"), and "Staying $6.95 or $11.90"; a **Leave early** button beside a quiet
+   **Stay**; the fine print says it is priced live and until when (the early-close margin, 15
+   minutes before the start), that the pick stays open on the venue unprotected, and that the
+   credit paid at the lock is theirs with this settlement separate. The tap prices again
    (`POST /api/shadow/unwind`), the service writes the close with source `unwind`, and the line
-   settles as **Left early** with "Ended with $9.29 · $0.57 due back." Its panel: "Left early ·
-   you ended with $9.29", "Your pick, sold at 61c $9.45", "Protection settled −$0.57", "Cash $0.57
-   due back", the facts ("Left Wed 8:03pm ET · leaving cost $0.73 against the mid"), the receipt
-   with a **Left early** cash leg. Nothing is reversed: leaving is a new trade at live prices, the
-   protection settling at today's price instead of the official result. The pick itself stays the
-   holder's to sell on the venue at that price, or to keep unprotected; the extension never trades.
+   settles as **Protection removed** with "−$0.57 due back." (or "+$0.41 to you · on its way."). Its
+   panel: "Protection removed · settled −$0.57", "Your pick open on Novig, unprotected", "Cash $0.57
+   due back", the facts ("Removed Wed 8:03pm ET"), the receipt with a **Protection removed** cash
+   leg. What crossing the books cost against the mid appears only with the operator setting on.
+   Nothing is reversed: leaving is a new trade at live prices, the protection alone settling at
+   today's price instead of the official result. When the pick is up that settlement is usually a
+   charge, because the upside sold at the lock is worth more now; the sheet says so before the tap.
+   The pick itself is never touched; the extension never trades. Once the service frees a market
+   left early (`onRecord` false on the market), the row goes back to the **Lock in** offer at the
+   live quote, with one grey line under the button, "Earlier protection removed Thu 7:58pm ET ·
+   −$0.57 due back." (0.7.26); the removed lock stays on the record and the new lock is its next
+   generation. A service that still holds the market keeps the row on Protection removed.
+   **Which club is the pick** (0.7.27): when the service reads the holder's account on the venue
+   (`/api/shadow/positions` answers `configured: true`), the venue's own word on what they hold
+   decides the side of a card before anything printed on it; a card that prints both clubs and
+   no pick line (Novig's Active card, "CLE … ATL") is read by the position, never by which club's
+   letters appear more often. A row the venue says is the other club draws no offer, and the
+   service refuses such a lock with `wrong_side` ("Your pick on this game is Cleveland Cavaliers;
+   protect it from that card."). Without the read key the card's text alone decides, as before.
    The other side is sold back through the same executor that bought it: on an armed ticker with
    sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
    written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the
@@ -108,7 +123,7 @@ of open plays. Once a matched play exists, under its row:
    says what to do. A muted pill (Unavailable, or Lock in while the price is still being checked)
    carries no shield; the word sits centred (0.7.19; before it a dim outline shield read as an
    empty slot on a dark venue and pushed the word off-centre). The filled shield marks the live
-   states only: Lock in with a price, Protected, Settled, Left early.
+   states only: Lock in with a price, Protected, Settled, Protection removed.
 
 That placement is the only staged pixel. Everything behind the tap is the Atticus event service:
 the play is matched to its market, priced from live books at the holder's size, the terms lock,
@@ -433,8 +448,13 @@ The lock routes are off until a key is set.
 
 ### Holder plays from the venue (optional, recommended for the recording)
 
-**Not needed for the recording**: without it the extension reads each row's Cost and To Gain
-from the page and the numbers are the same. It is a confirmation, not a dependency.
+**Set it for a live hedge.** Without it the extension reads each row's Cost and To Gain from the
+page and the numbers are the same, but it also reads **which club is the pick** from the card's
+text alone, and a card that prints both clubs with no pick line can be read as the wrong side.
+With the key set the venue's own word on what the holder holds decides the side, and the service
+refuses a lock on the other club (`wrong_side`). On Novig, that key is the read key below
+(`VENUE_API_KEY_ID` + `VENUE_API_PRIVATE_KEY_PEM`, minted with `venueReadKey.ts mint`, host
+`https://api.novig.com`); the bearer pair in this section is the previous venue's.
 
 The venue issues API keys from its website: the **menu (top right), API Integration**, create a
 token. You get an access key and a secret key; the secret is shown once. Trading API access may
