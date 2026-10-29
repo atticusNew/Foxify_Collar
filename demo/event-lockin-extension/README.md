@@ -126,7 +126,9 @@ cheapest all in. The receipt says where the hedge went and why, and words the ta
 holder's venue's own rules. The offer shows the venue pick as its own strip between the slip and
 the button (0.7.20): "Other side priced on" followed by one chip per venue that priced it with
 its credit ("ProphetX $3.10", "Kalshi $2.40"), the one the hedge goes to filled in the venue's
-accent with the shield; with one venue priced, "Other side on Kalshi". The fine print then keeps
+accent with the shield, and a small HERE tag on the chip of this page's own venue when it is one
+of the books in the race (0.7.21; the holder sees it win, or sees that another book paid more); with one
+venue priced, "Other side on Kalshi". The fine print then keeps
 only the notes; without routing it falls back to the competition line ("ProphetX $3.10 vs Kalshi
 $2.40, hedged on ProphetX"), else "other side on
 Polymarket" when the hedge venue is not the page's own. Tonight's venues are Kalshi and ProphetX,
