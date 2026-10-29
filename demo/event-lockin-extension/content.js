@@ -281,6 +281,27 @@
   };
   const TODAY_RE = /\b(today|tonight)\b/i;
   const TOMORROW_RE = /\btomorrow\b/i;
+  /**
+   * The moment a bet was placed is not the game's day. Novig stamps every card "Placed: Wed 11:33PM",
+   * Kalshi "placed Oct 27 · 12:48 PM": a weekday or date right after such a word is the order's, and
+   * reading it as the game's picked the Cavaliers' Wednesday game for a card on their Thursday one.
+   */
+  const PLACED_RE = new RegExp(
+    "\\b(?:placed|wagered|accepted|created|opened)\\b:?\\s*(?:on\\s+|at\\s+)?" +
+      "(?:(?:sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)(?:day|nesday|rsday|urday)?\\.?,?\\s*)?" +
+      "(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?\\s+\\d{1,2}(?:,?\\s*\\d{4})?|\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?)?" +
+      "\\s*(?:[\\u00b7@,]|at)?\\s*(?:\\d{1,2}:\\d{2}\\s*(?:[ap]\\.?m\\.?)?)?",
+    "gi",
+  );
+  /** The text with its placement stamps taken out: what is left names the game. */
+  const gameWords = (text) => String(text).replace(PLACED_RE, " ");
+  /** The games on the venue's "today" or "tomorrow": the day exactly, else the one whose late tip a UTC venue prints on the next date. */
+  const onRelativeDay = (list, text) => {
+    if (!TODAY_RE.test(text) && !TOMORROW_RE.test(text)) return [];
+    const key = dayKey(new Date(Date.now() + (TOMORROW_RE.test(text) ? 86_400_000 : 0)));
+    const exact = list.filter((t) => gameDayOf(t) === key);
+    return exact.length ? exact : list.filter((t) => dayMatches(t, new Set([key])));
+  };
   const UNDER_WAY_RE = /\b(live|in progress|started|final|q[1-4]|[1-4](?:st|nd|rd|th) (?:quarter|half|inning)|halftime|ot)\b/i;
   const CLOCK_RE = /\b\d{1,2}:\d{2}\s?(?:[ap]\.?m\.?)?\b/i;
   const datesIn = (text, namedOnly) => {
@@ -296,9 +317,10 @@
     }
     return out;
   };
-  const choose = (tickers, text) => {
+  const choose = (tickers, raw) => {
     const list = [...new Set(tickers)];
     if (!list.length) return null;
+    const text = gameWords(raw);
     // a row that prints a game day names that game or none: a club's only listed game is not the
     // pick on a row dated three weeks earlier (the Oct 19 Texans row and the Nov 1 Jaguars game)
     const days = datesIn(text, list.length === 1);
@@ -307,6 +329,9 @@
       return dated.length === 1 ? dated[0] : null;
     }
     if (list.length === 1) return list[0];
+    // the venue's own word for the game day ("8:05 PM Today") outranks a weekday printed elsewhere on the card
+    const rel = onRelativeDay(list, text);
+    if (rel.length === 1) return rel[0];
     // a weekday on the row ("7:00 PM Thu") names the game on that weekday, or the one that tips
     // late enough to print on the next day, as the board's own game chooser reads it
     const wds = weekdaysIn(text);
@@ -2045,9 +2070,10 @@
    * "tomorrow" tomorrow's; a game under way (LIVE, a quarter, Final) is the earlier of the two,
    * since the later one has not started. Words that fit both games, or neither, settle nothing.
    */
-  const settleStems = (stems, text) => {
+  const settleStems = (stems, raw) => {
     const list = [...new Set(stems)];
     if (!list.length) return null;
+    const text = gameWords(raw);
     const one = (hits) => (hits.length === 1 ? hits[0] : null);
     const days = datesIn(text);
     if (list.length === 1) {
