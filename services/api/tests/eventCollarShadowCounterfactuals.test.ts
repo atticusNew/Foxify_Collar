@@ -39,8 +39,12 @@ const NO_ASKS: NoAskLevel[] = [
   { priceCents: 43, qtyMilli: 400_000 },
 ];
 
-/** The live rule under test: tight as default so the minimum fee binds (gross 106c -> share 10c < 38c). */
-const CFG = { ...DEFAULT_CROSS_CONFIG, floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30], capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25], defaultTier: "tight" as const };
+/**
+ * The live rule under test: tight as default so the minimum fee binds (gross 106c -> share 10c < 38c).
+ * The credit line is off so the size ladder re-prices the SAME collar deeper in the book (the
+ * hand-checked figures below); with the line on, the tiers move with size, tested on its own below.
+ */
+const CFG = { ...DEFAULT_CROSS_CONFIG, floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30], capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25], defaultTier: "tight" as const, minimumCredit: { cents: 0, bpsOfStake: 0 } };
 
 function liveQuote(contracts = 150) {
   const q = quoteLadderWrap({
@@ -118,6 +122,16 @@ test("counterfactualsFor: tiers come from the live search; fee rules and sizes a
   const x20 = cf.sizeLadder.find((s) => s.mult === 20);
   assert.ok(x20 && !x20.terms.ok);
   if (x20 && !x20.terms.ok) assert.equal(x20.terms.refused, "kalshi_book_too_thin");
+
+  // with the shipped credit line (5c and 0.25% of stake), the 5x probe's tight collar is the highest
+  // floor that still pays the line on $750 (188c): 45/63 at 986c, not the 48/63 collar paying 3c
+  // that the line would then strike
+  const lined = { ...CFG, minimumCredit: DEFAULT_CROSS_CONFIG.minimumCredit };
+  const cfLined = counterfactualsFor(inputs({ config: lined }), live);
+  const x5Lined = cfLined.sizeLadder.find((s) => s.mult === 5);
+  assert.ok(x5Lined && x5Lined.terms.ok, JSON.stringify(x5Lined));
+  assert.deepEqual([x5Lined.terms.floorCents, x5Lined.terms.capCents, x5Lined.terms.creditCents], [45, 63, 986]);
+  assert.ok(x5.terms.creditCents < 5 && x5.terms.floorCents === 48, "the unlined probe is the 3c collar");
 });
 
 test("counterfactualsFor: a route whose book was not retained is marked, never guessed", () => {
