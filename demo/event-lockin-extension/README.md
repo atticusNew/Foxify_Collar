@@ -61,6 +61,22 @@ of open plays. Once a matched play exists, under its row:
    record link appears only with the operator setting on. A settled lock reads "Settled" on the
    pill, "Protected outcome $25.06." on the line, and in the panel "Texans won · you end with
    $25.06" over "Unprotected, it would have paid $46.00";
+3b. the facts line of a protected play also ends in **leave early**. Tapping it opens a block
+   under the slip, priced live from both books (`GET /api/shadow/unwind/quote`): "Your pick, sold
+   now · 15.95 at 61c, after fees $9.45", "Protection settles −$0.57", "You end with · your $0.41
+   credit kept $9.29" (the coloured figure), "Staying $6.95 or $11.90"; a **Leave early** button
+   beside a quiet **Stay**; the fine print says what leaving costs against the mid and until when
+   it is open (the early-close margin, 15 minutes before the start). The tap prices again
+   (`POST /api/shadow/unwind`), the service writes the close with source `unwind`, and the line
+   settles as **Left early** with "Ended with $9.29 · $0.57 due back." Its panel: "Left early ·
+   you ended with $9.29", "Your pick, sold at 61c $9.45", "Protection settled −$0.57", "Cash $0.57
+   due back", the facts ("Left Wed 8:03pm ET · leaving cost $0.73 against the mid"), the receipt
+   with a **Left early** cash leg. Nothing is reversed: leaving is a new trade at live prices, the
+   protection settling at today's price instead of the official result. The pick itself stays the
+   holder's to sell on the venue at that price, or to keep unprotected; the extension never trades.
+   The hedge sale is on the record at the book's price and not yet sent (the executor buys and
+   does not sell), so the operator sells it by hand; the service's line says `hedgeSent: false`.
+   Too close to the start, or once settled or already left, the block says so and offers Back;
 4. a play protection does not cover gets a muted **Unavailable** pill with the reason after it:
    "Protection covers Moneyline picks." on a spread or total, "Protection waits until the play is
    matched." on a play that is still an open order, or the live refusal from pricing. Tapping it
@@ -313,7 +329,7 @@ The lock routes are off until a key is set.
 
 | Env | Value | Why |
 | --- | --- | --- |
-| `EVENT_SHADOW_LOCK_KEY` | 12+ random chars | Opens `/api/shadow/markets`, `/api/shadow/quote`, `/api/shadow/positions`, `/api/shadow/lock`, `/api/shadow/receipt` to callers with `x-lock-key`. Unset answers 404. |
+| `EVENT_SHADOW_LOCK_KEY` | 12+ random chars | Opens `/api/shadow/markets`, `/api/shadow/quote`, `/api/shadow/positions`, `/api/shadow/lock`, `/api/shadow/receipt`, `/api/shadow/unwind/quote`, `/api/shadow/unwind` to callers with `x-lock-key`. Unset answers 404. |
 | `EVENT_HEDGE_STRATEGY` | `live` | Real Kalshi orders behind rails. Anything the rails hold is simulated at the book, reason on the receipt. |
 | `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. |
 | `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap | Allowlist. Empty allows nothing. Listed tickers are hedged on Kalshi's own No side and skipped by the hourly scan. |

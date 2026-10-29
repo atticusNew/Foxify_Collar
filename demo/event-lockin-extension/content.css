@@ -275,6 +275,17 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-how.ael-on { display: block; }
 .ael-how p { margin: 0 0 6px; }
 
+/* Leaving early: a block under the slip with its own small heading, the live figures as slip
+   rows, the two ways out side by side (the coloured button leaves, the quiet one stays). */
+.ael-leave { margin: 12px 0 2px; padding: 10px 12px 8px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg-deep); }
+.ael-leave-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 2px; }
+.ael-leave-h b { font-size: 14px; font-weight: 600; color: var(--ael-fg-strong); }
+.ael-leave-h span { font-size: 12px; color: var(--ael-muted); }
+.ael-leave .ael-lr .ael-l .ael-dim { color: var(--ael-muted); font-size: 12px; }
+.ael-leave-acts { display: flex; align-items: center; gap: 8px; margin: 8px 0 8px; }
+.ael-leave-acts .ael-go { margin: 0; flex: 1; }
+.ael-leave-acts .ael-go.ael-quiet { flex: none; }
+
 /* After the lock: the slip above, then one grey line of facts ending in the receipt link. */
 .ael-meta { font-size: 12px; color: var(--ael-muted); margin: 10px 0 4px; line-height: 1.4; }
 .ael-meta a { color: var(--ael-muted); text-decoration: underline; }
