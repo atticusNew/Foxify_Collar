@@ -459,7 +459,8 @@ export function matchPosition(
   const league = event?.league ?? "";
   const template = templateForLeague(league);
   if (!template) return { ticker: null, reason: "league_not_covered" };
-  if (!/^(winner|moneyline|money_line|ml|match_winner|game_winner|h2h)$/i.test(market.marketType.replace(/[\s-]/g, "_"))) {
+  // the venue's production catalog types the winner market MONEY (the same word its market filter takes)
+  if (!/^(winner|money|moneyline|money_line|ml|match_winner|game_winner|h2h)$/i.test(market.marketType.replace(/[\s-]/g, "_"))) {
     return { ticker: null, reason: "market_not_covered" };
   }
   const outcome = market.outcomes.find((o) => o.outcomeId === outcomeId);

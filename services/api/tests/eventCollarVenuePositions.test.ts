@@ -166,6 +166,8 @@ test("matcher: the venue's winner outcome maps to our market for that club on th
   assert.deepEqual(matchPosition(market(), event, "o-hou", protectable), { ticker: "KXNFLGAME-26OCT18HOUJAC-HOU" });
   assert.deepEqual(matchPosition(market(), event, "o-jax", protectable), { ticker: "KXNFLGAME-26OCT18HOUJAC-JAC" });
   assert.deepEqual(matchPosition(market({ marketType: "SPREAD" }), event, "o-hou", protectable), { ticker: null, reason: "market_not_covered" });
+  // the production catalog's word for the winner market
+  assert.deepEqual(matchPosition(market({ marketType: "MONEY" }), event, "o-jax", protectable), { ticker: "KXNFLGAME-26OCT18HOUJAC-JAC" });
   assert.deepEqual(matchPosition(market(), { ...event, league: "NHL" }, "o-hou", protectable), { ticker: null, reason: "league_not_covered" });
   assert.deepEqual(matchPosition(market({ startsTs: START + 7 * 86_400_000 }), event, "o-hou", protectable), { ticker: "KXNFLGAME-26OCT25HOUIND-HOU" });
   assert.deepEqual(matchPosition(market({ startsTs: START + 3 * 86_400_000 }), event, "o-hou", protectable), { ticker: null, reason: "no_protectable_market" });
