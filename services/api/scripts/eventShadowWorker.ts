@@ -113,6 +113,7 @@ import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/cross
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { adminAuthorized, parseAdminAuthFromEnv } from "../src/eventCollar/crossVenue/eventFunnel";
 import {
+  BookHedgeExecutor,
   appendHedgeReceipt,
   intentFromHedge,
   sellIntentForNovig,
@@ -668,12 +669,18 @@ function appendOrAlert(record: Parameters<typeof appendShadowRecord>[1], path: s
   }
 }
 
+/** The scan's hedges are recorded at the walked book and never sent, whatever the live rails arm. */
+const PAPER_EXECUTOR = new BookHedgeExecutor();
+const SCAN_PAPER_REASON = "scan: the board's positions are paper; no order placed";
+
 /**
  * Fill the hedge leg through the configured executor and keep the receipt.
  * The position is already on the ledger; a hedge failure is recorded, never
- * allowed to lose the record or stop the scan.
+ * allowed to lose the record or stop the scan. `paper` (the scan) fills at the
+ * walked book and sends nothing: the live rails exist for a holder's tap, and
+ * `EVENT_HEDGE_LIVE_TICKERS=*` must not turn every board row into an order.
  */
-async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; references?: ReferenceBook[] }): Promise<HedgeReceipt | null> {
+async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; references?: ReferenceBook[] }, opts: { paper?: boolean } = {}): Promise<HedgeReceipt | null> {
   const ticker = ref.split("@")[0];
   try {
     const best =
@@ -688,7 +695,9 @@ async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBoo
             : books.pmNoBook?.asks[0]?.priceMilli ?? hedge.avgPriceMilli;
     // a leg on another venue is armed by the game's Kalshi ticker (the live allowlist's key)
     const armKey = hedge.venue === "kalshi" ? undefined : ticker;
-    const receipt = await hedgeChoice.executor.execute(intentFromHedge(hedge, best, armKey), ref);
+    const intent = intentFromHedge(hedge, best, armKey);
+    const paper = Boolean(opts.paper) && hedgeChoice.strategy !== "book";
+    const receipt = paper ? { ...(await PAPER_EXECUTOR.execute(intent, ref)), fallbackReason: SCAN_PAPER_REASON } : await hedgeChoice.executor.execute(intent, ref);
     appendHedgeReceipt(RECEIPTS_PATH, receipt);
     return receipt;
   } catch (err) {
@@ -1926,7 +1935,7 @@ async function scanTick(): Promise<void> {
       appendOrAlert(openRecordFor(res, q, evBps, state.atIso));
       seen.add(res.market.ticker);
       opened.push({ kind: res.kind, at: new Date().toISOString() });
-      await fillHedge(res.market.ticker, q.hedge, res.books);
+      await fillHedge(res.market.ticker, q.hedge, res.books, { paper: true });
     }
     cryptoSkippedLastScan = cryptoSkipped;
     lastScanAt = new Date().toISOString();
@@ -2988,11 +2997,14 @@ export function wireLockEngine(fns: {
   closeBooks?: typeof closeBooksFn;
   /** the executor the hedge (and its sale) goes through, in place of the one the env chose; the rails view stays the env's */
   hedgeExecutor?: HedgeExecutor;
+  /** the board scan a scanTick runs, in place of the scanner module's */
+  scan?: NonNullable<typeof scan>;
 }): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
   if (fns.closeBooks) closeBooksFn = fns.closeBooks;
   if (fns.hedgeExecutor) hedgeChoice.executor = fns.hedgeExecutor;
+  if (fns.scan) scan = fns.scan;
   if (fns.venueClient !== undefined) {
     venueClient = fns.venueClient;
     positionsCache = null;
