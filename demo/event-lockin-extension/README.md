@@ -58,20 +58,22 @@ of open plays. Once a matched play exists, under its row:
    order id and time with how the order got there ("through the aggregator" when it went through
    the execution pod, "direct" on our own key; the partner is never named), and the record id; a
    hedge that did not reach the venue reads "covered at the book" with no order line. Under those,
-   **Hedged on** names the venue the other side went to and why ("ProphetX · cheaper all in…",
-   "Kalshi · the venue the hedge can be sent to tonight…", or "Polymarket · +109 bps all in
-   against +533 bps on Kalshi's own No side"); when two venues priced the other side,
-   **Compared** shows the competition in one line ("ProphetX $3.10 vs Kalshi $2.40, hedged on
-   ProphetX": what each book would have paid for the same protection), and the same line sits in
-   the offer's fine print before the tap; and **If the game** lists the four tails in this venue's
-   own settlement words: a tie, a postponement past the venue's window, a game called off, a
-   corrected result, each with what the venue pays and how the protection settles on it. With the
-   operator setting on, every route the service priced follows with its cost all in (the books
-   plus the tails) and what it would have paid. The public record link
+   **Hedged on** names the venue the other side went to ("ProphetX", "Kalshi"); the reason
+   ("cheaper all in…", "the venue the hedge can be sent to tonight…") follows only with the
+   operator setting on. When two venues priced the other side, **Compared** shows the competition
+   in one line ("ProphetX $3.10 vs Kalshi $2.40, hedged on ProphetX": what each book would have
+   paid for the same protection), and the same line sits in the offer's fine print before the
+   tap. **Rules** is folded to one muted summary ("a tie, a postponement, a game called off, a
+   corrected result") with a **show** link; opening it lists the four tails in this venue's own
+   settlement words, each with what the venue pays and how the protection settles on it, and a
+   **hide** link folds it back. With the operator setting on, every route the service priced
+   follows with its cost all in (the books plus the tails) and what it would have paid. The
+   public record link
    appears only with the operator setting on. A settled lock reads "Settled" on the
    pill, "Protected outcome $25.06." on the line, and in the panel "Texans won · you end with
    $25.06" over "Unprotected, it would have paid $46.00";
-3b. the facts line of a protected play also ends in **leave early**. Tapping it opens a block
+3b. a protected play's open panel ends in a quiet **Leave early** button under the slip, with
+   "today's price instead of the result" beside it. Tapping it opens a block
    under the slip, priced live from both books (`GET /api/shadow/unwind/quote`): "Your pick, sold
    now · 15.95 at 61c, after fees $9.45", "Protection settles −$0.57", "You end with · your $0.41
    credit kept $9.29" (the coloured figure), "Staying $6.95 or $11.90"; a **Leave early** button
@@ -176,10 +178,18 @@ that is covered); the pick is the club the card names twice (header and matchup)
 React Native Web: every run of text sits in its own view with nothing between, which the reader
 spaces out before reading ("GB·1.54xWinnerMATCHEDAmount$5.00..."). Because the cards sit side
 by side, our block goes **inside** the card as its last row, not after it, where it would land
-beside the card or after the whole deck. Spread and Total cards get the muted line ("covers
+beside the card or after the whole deck. The deck is a wrapping flex row and every card in a
+row is stretched to the tallest one (React Native Web's default), so a card grows when a
+neighbour's panel is open, and it grows again by our own block. The reader measures a card by
+its own rows, not the stretched box, and accepts a deck card up to twice a plain row's height
+(640px against 320px); a card that misses one scan keeps its line for six seconds, as long as
+the card is still on the page and still names the pick, before the line is taken down (before
+0.7.15 a stretched card lost its Lock in button and got it back on the next scan, so the button
+blinked). Spread and Total cards get the muted line ("covers
 Winner picks"). Tabs: **Active** and **Settled**. The stand-in `preview/novig.html#/portfolio`
 is built to this layout from a saved screenshot of a real order (GB at 1.54x, $5.00 to pay
-$7.69, Thu 9:15 PM); the first thing to do on the live page is confirm it reads the same.
+$7.69, Thu 9:15 PM), with the same stretching deck; the first thing to do on the live page is
+confirm it reads the same.
 
 ## Where the size comes from
 
@@ -419,6 +429,44 @@ VENUE_API_HOST=https://cash.api.<venue domain>/partner VENUE_API_ACCESS_KEY=... 
 The service also still speaks the signed read-key API of the previous venue
 (`VENUE_API_KEY_ID` + `VENUE_API_PRIVATE_KEY_PEM`, minted with `venueReadKey.ts mint`). Whichever
 pair of variables is set picks the API; set one, not both.
+
+### Novig: reading needs no subaccount, ordering does
+
+Novig's keys come in two scopes. The **management** key (one per trader, made on the Profile
+page) reads every wallet, opens and funds subaccounts and mints other keys; it never places an
+order. A **trading** key addresses exactly one **subaccount** and is the only key that can send
+`POST /v3/orders`. Reading the holder's plays for the protection (what the service does tonight)
+works with the management key or a read key minted from it: the cash wallet's positions come
+back under the management key's id and `venuePositions.ts` already reads them. A subaccount is
+needed only when the service itself orders on Novig (a direct hedge route, not built yet; tonight's
+hedges go to Kalshi and ProphetX through the aggregator). Before that route exists, the venue's
+conditions for an order are worth knowing: the account must be KYC'd, the request may come from a
+data-centre IP but not from a VPN or a restricted state (451), and the venue wants a device
+location from the holder's own Novig app within the last three days or the order is refused.
+Novig has no sell order, so an unwind there would be an offsetting buy of the other outcome, as on
+ProphetX.
+
+The subaccount tooling is in `src/eventCollar/crossVenue/novigAccount.ts` and
+`scripts/venueReadKey.ts`, run from the operator's machine with the management key (the key never
+leaves it; the private PEMs are written mode 600 and nothing prints one):
+
+```
+cd services/api
+export VENUE_API_HOST=https://api.novig.com VENUE_MGMT_KEY_ID=... VENUE_MGMT_KEY_PEM_PATH=~/novig-mgmt.pem
+npx tsx scripts/venueReadKey.ts subaccount-open --out ./novig-trade.pem --label "atticus hedge"
+   # mints an Ed25519 keypair, POST /v3/account/subaccounts with the public half, prints the
+   # trading key id (also the subaccount's address) and the env lines for the service
+npx tsx scripts/venueReadKey.ts subaccounts                       # trading key id, label, balance
+npx tsx scripts/venueReadKey.ts fund --key <trading key id> --dollars 50 --id fund-2026-10-28-1
+   # POST .../transfer {direction fund, amount "50.00000"}; polls until Applied, prints the balance
+npx tsx scripts/venueReadKey.ts fund --key <id> --dollars 50 --id defund-... --defund
+npx tsx scripts/venueReadKey.ts transfer --key <id> --transfer <transfer id>
+```
+
+When the Novig route is built the service will take `NOVIG_TRADE_KEY_ID` (the printed id) and
+`NOVIG_TRADE_PRIVATE_KEY_PEM` (the contents of `--out`), service env only, never the extension.
+Money on this API is a five-place decimal string ("50.00000"); the client converts to and from
+cents. The venue allows ten live subaccounts.
 
 Pre-flight (operator token):
 
