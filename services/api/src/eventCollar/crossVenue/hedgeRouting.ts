@@ -597,6 +597,8 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
   let reason: string;
   const name = (r: RoutedRoute) => (r.route === "kalshi_self" ? "Kalshi's own No side" : "Polymarket");
   const costWords = (r: RoutedRoute) => `${bps(r.allInBps)} all in${r.tailChargeBps ? ` (${bps(r.evCostBps)} on the books, ${bps(r.tailChargeBps)} for the tails)` : ""}`;
+  // the route not taken, named with why it was not: its refusal, or the gate it failed
+  const otherWords = (r: RoutedRoute | undefined) => (r ? `${name(r)}: ${r.refusal ?? "refused"}` : "no other route was priced");
   if (inputs.pinned) {
     const pinnedRoute = routes.find((r) => r.route === inputs.pinned) ?? null;
     if (pinnedRoute && passing.includes(pinnedRoute)) {
@@ -606,7 +608,7 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
         ? other.allInBps !== null && pinnedRoute.allInBps !== null && other.allInBps < pinnedRoute.allInBps
           ? `${name(pinnedRoute)}: the venue the hedge can be sent to tonight; ${costWords(pinnedRoute)} against ${costWords(other)} on ${name(other)}, the difference ours to carry`
           : `${name(pinnedRoute)}: the venue the hedge can be sent to tonight, and the cheaper all in (${costWords(pinnedRoute)} against ${costWords(other)} on ${name(other)})`
-        : `${name(pinnedRoute)}: the venue the hedge can be sent to tonight; ${costWords(pinnedRoute)}; ${routes.find((r) => r.route !== pinnedRoute.route)?.refusal ?? "the other route refused"}`;
+        : `${name(pinnedRoute)}: the venue the hedge can be sent to tonight; ${costWords(pinnedRoute)}; ${otherWords(routes.find((r) => r.route !== pinnedRoute.route))}`;
     } else {
       reason = pinnedRoute
         ? `${name(pinnedRoute)} is pinned but ${pinnedRoute.refusal ?? "refused"}; nothing else can be sent`
@@ -619,10 +621,10 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
     reason = other
       ? other.ok && other.allInBps !== null && !other.gates.detail
         ? `${name(chosen)}: cheaper all in, ${costWords(chosen)} against ${costWords(other)} on ${name(other)}; ${tails}`
-        : `${name(chosen)}: ${costWords(chosen)}; ${tails}; ${name(other)} ${other.refusal ?? "refused"}`
+        : `${name(chosen)}: ${costWords(chosen)}; ${tails}; ${otherWords(other)}`
       : `${name(chosen)}: ${costWords(chosen)}; ${tails}`;
   } else {
-    reason = routes.map((r) => `${name(r)} ${r.refusal ?? "refused"}`).join("; ") || "no route priced";
+    reason = routes.map((r) => otherWords(r)).join("; ") || "no route priced";
   }
 
   return {
