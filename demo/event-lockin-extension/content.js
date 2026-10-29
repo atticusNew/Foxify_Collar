@@ -1637,9 +1637,9 @@
     const v = hedgeVenueOf(rt);
     if (!v) return "";
     const routes = pricedRoutes(rt);
-    if (routes.length < 2) return '<div class="ael-venues"><span class="ael-l">Other side on</span><span class="ael-vchip ael-won"><span class="ael-ic">' + SHIELD_FILL + "</span>" + esc(v) + "</span></div>";
+    if (routes.length < 2) return '<div class="ael-venues"><span class="ael-l">Other side</span><span class="ael-vchip ael-won"><span class="ael-ic">' + SHIELD_FILL + "</span>" + esc(v) + "</span></div>";
     const chips = routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + (r.chosen ? '<span class="ael-ic">' + SHIELD_FILL + "</span>" : "") + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("");
-    return '<div class="ael-venues"><span class="ael-l">Other side priced on</span>' + chips + "</div>";
+    return '<div class="ael-venues"><span class="ael-l">Other side</span>' + chips + "</div>";
   };
   /** How much more the chosen venue pays the holder than the next one, in cents; null without two prices. */
   const venueEdgeCents = (rt) => {

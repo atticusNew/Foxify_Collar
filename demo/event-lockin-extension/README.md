@@ -124,13 +124,14 @@ tail charge in the same bps as the EV cost, applies the hard gates (same game, d
 whole size, venue open until the lock, an order rail that can reach it tonight) and takes the
 cheapest all in. The receipt says where the hedge went and why, and words the tails in the
 holder's venue's own rules. The offer shows the venue pick as its own strip between the slip and
-the button (0.7.20): "Other side priced on" followed by one chip per venue that priced it with
+the button (0.7.20): "Other side" followed by one chip per venue that priced it with
 its credit ("ProphetX $3.10", "Kalshi $2.40"), the one the hedge goes to filled in the venue's
 accent with the shield. Three chips at most (0.7.23): the venue the hedge goes to and this page's
 own venue, when it is one of the books in the race, always stay, and the best of the rest fill the
 places; the home venue carries no label, since the holder knows where they are, and they see it
 win or see that another book paid more. On a venue that is not one of the books (the embed on a
-sportsbook, say) the strip is the race alone. With one venue priced, "Other side on Kalshi". The fine print then keeps
+sportsbook, say) the strip is the race alone. The label is two words and the chips are tight so three
+venues sit on one row in the panel (0.7.24). With one venue priced, "Other side" and the one chip. The fine print then keeps
 only the notes; without routing it falls back to the competition line ("ProphetX $3.10 vs Kalshi
 $2.40, hedged on ProphetX"), else "other side on
 Polymarket" when the hedge venue is not the page's own. The venues in the race are Kalshi and
