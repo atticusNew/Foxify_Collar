@@ -29,6 +29,7 @@ import { dollarsToCents, fetchJsonWithRetry, kalshiBase } from "../kalshiPublic"
 import { kalshiTakerFeeCents } from "./kalshiLadder";
 import { decimalToMilli } from "./polymarketPublic";
 import type { HedgeRoute, PmBook, PmBookLevel } from "./types";
+import { centsDownOf, centsOf, contractHundredths } from "./types";
 
 /** One resting bid on a Kalshi side: what a sell fetches at this level. */
 export interface KalshiBidLevel {
@@ -149,6 +150,8 @@ export interface EarlyCloseTerms {
   /** NO units the hedge bought, milli (1000 = one $1-paying unit) */
   hedgeUnitsMilli: number;
   route: HedgeRoute;
+  /** the ProphetX strike the hedge holds, when the route is ProphetX */
+  hedgeStrikeId?: string;
 }
 
 export interface EarlyCloseBooks {
@@ -156,6 +159,11 @@ export interface EarlyCloseBooks {
   kalshi: KalshiBookSides;
   /** the hedge token's book when the route is cross-venue; absent when it could not be located */
   pmNoBook?: PmBook;
+  /**
+   * The hedge strike's book when the route is ProphetX, the settlement fee already folded in
+   * (prophetxOrders.foldProphetXFee) as it was at the lock; absent when it could not be read.
+   */
+  pxNoBook?: PmBook;
 }
 
 export interface EarlyCloseQuote {
@@ -182,7 +190,19 @@ export interface EarlyCloseQuote {
   unwindFrictionCents: number | null;
   /** the writer's result on this position: the published take, by construction */
   writerCents: number;
+  /**
+   * The hedge sale as walked, for the order that sends it (hedgeExecutor's sell intent). On Kalshi:
+   * the No bids' top, average and worst level taken, cents, gross before fees. On ProphetX: the
+   * hedge strike's fee-folded bids in milli, and the strike id; the order that realises it is a BUY
+   * of the holder's side's strike at 1 - the worst bid, which settles against the hedge at the game
+   * (the proceeds land then, not today). Absent when the hedge is on Polymarket (recorded, not sent).
+   */
+  hedgeSale?: HedgeSale;
 }
+
+export type HedgeSale =
+  | { venue: "kalshi"; bestPriceCents: number; avgPriceCents: number; worstPriceCents: number; grossCents: number }
+  | { venue: "prophetx"; strikeId: string; bestPriceMilli: number; avgPriceMilli: number; worstPriceMilli: number; grossCents: number; settlesAtGame: true };
 
 export type EarlyCloseLeg = "position" | "hedge";
 export type EarlyCloseRefusalCode = "book_empty" | "book_too_thin" | "hedge_unlocatable";
@@ -207,16 +227,19 @@ function yesMidTwiceCents(k: KalshiBookSides): number | null {
 /** Price the close from the books the caller fetched. */
 export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks): EarlyCloseResult {
   const n = terms.contracts;
+  // the size in hundredths of a contract: 15.95 contracts is 1,595 hundredths, 15,950 milli
+  const nH = contractHundredths(n);
   if (books.kalshi.yesBids.length === 0) {
     return { ok: false, leg: "position", code: "book_empty", detail: "no resting yes bids on the protected market" };
   }
-  const pos = walkKalshiBids(books.kalshi.yesBids, n * 1000);
+  const pos = walkKalshiBids(books.kalshi.yesBids, nH * 10);
   if (!pos) {
     return { ok: false, leg: "position", code: "book_too_thin", detail: `the yes bids cannot absorb ${n} contracts right now` };
   }
 
   let hedgeProceedsCents: number;
   let hedgeFeesCents: number;
+  let hedgeSale: EarlyCloseQuote["hedgeSale"];
   if (terms.route === "kalshi_self") {
     if (books.kalshi.noBids.length === 0) {
       return { ok: false, leg: "hedge", code: "book_empty", detail: "no resting No bids to sell the hedge into" };
@@ -227,6 +250,22 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
     }
     hedgeProceedsCents = h.proceedsCents;
     hedgeFeesCents = h.feeCents;
+    hedgeSale = { venue: "kalshi", bestPriceCents: books.kalshi.noBids[0].priceCents, avgPriceCents: h.avgPriceCents, worstPriceCents: h.worstPriceCents, grossCents: h.proceedsCents };
+  } else if (terms.route === "prophetx") {
+    // the bids carry the settlement fee already (folded at the read), so the walk is the net
+    if (!books.pxNoBook || !terms.hedgeStrikeId) {
+      return { ok: false, leg: "hedge", code: "hedge_unlocatable", detail: books.pxNoBook ? "the hedge strike for this position is not on record" : "the hedge strike's book could not be read through the aggregator" };
+    }
+    if (books.pxNoBook.bids.length === 0) {
+      return { ok: false, leg: "hedge", code: "book_empty", detail: "no resting bids on the hedge strike" };
+    }
+    const h = walkPmBids(books.pxNoBook.bids, terms.hedgeUnitsMilli);
+    if (!h) {
+      return { ok: false, leg: "hedge", code: "book_too_thin", detail: "the hedge strike's bids cannot absorb the hedge right now" };
+    }
+    hedgeProceedsCents = h.proceedsCents;
+    hedgeFeesCents = 0; // the venue's settlement fee is inside the folded bids
+    hedgeSale = { venue: "prophetx", strikeId: terms.hedgeStrikeId, bestPriceMilli: books.pxNoBook.bids[0].priceMilli, avgPriceMilli: h.avgPriceMilli, worstPriceMilli: h.worstPriceMilli, grossCents: h.proceedsCents, settlesAtGame: true };
   } else {
     if (!books.pmNoBook) {
       return { ok: false, leg: "hedge", code: "hedge_unlocatable", detail: "the hedge token for this position is not on record" };
@@ -242,16 +281,17 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
     hedgeFeesCents = 0; // Polymarket taker fee is 0 today
   }
 
-  const fundingCents = (100 - terms.capCents) * n;
+  // the same rounding the tap used (types.ts): funding down, the floor line half up
+  const fundingCents = centsDownOf(100 - terms.capCents, n);
   const positionProceedsCents = pos.proceedsCents - pos.feeCents;
   const hedgeNetCents = hedgeProceedsCents - hedgeFeesCents;
   const protectedAtCloseCents = positionProceedsCents + hedgeNetCents - fundingCents + terms.creditCents;
 
   const midTwice = yesMidTwiceCents(books.kalshi);
-  // kept contracts in milli: N (cap - floor) / 100 x 1000 = N (cap - floor) x 10, exact
-  const keptMilli = n * (terms.capCents - terms.floorCents) * 10;
+  // kept x mid in cents: kept = N (cap - floor) / 100 contracts, mid = midTwice / 2 cents, N = nH / 100;
+  // one rounding at the end, exact in integers before it
   const protectedAtMidCents =
-    midTwice === null ? null : Math.round((keptMilli * midTwice) / 2000) + terms.floorCents * n + terms.creditCents;
+    midTwice === null ? null : Math.round((nH * (terms.capCents - terms.floorCents) * midTwice) / 20_000) + centsOf(terms.floorCents, n) + terms.creditCents;
 
   return {
     ok: true,
@@ -267,6 +307,7 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
     protectedAtMidCents,
     unwindFrictionCents: protectedAtMidCents === null ? null : protectedAtMidCents - protectedAtCloseCents,
     writerCents: terms.takeCents,
+    ...(hedgeSale ? { hedgeSale } : {}),
   };
 }
 

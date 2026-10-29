@@ -23,6 +23,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import type { ProtectionTier } from "./types";
 import { roundContracts } from "./types";
+import { isSettlementVenue, type SettlementVenue } from "./hedgeRouting";
 
 export const PROTECTION_TIER_NAMES: readonly ProtectionTier[] = ["tight", "balanced", "wide"];
 
@@ -156,6 +157,8 @@ export interface LockRequest {
   contracts: number;
   entryCents?: number;
   tier?: ProtectionTier;
+  /** where the holder's position lives (the extension's venue); absent, Kalshi */
+  venue?: SettlementVenue;
 }
 
 /**
@@ -185,6 +188,11 @@ export function parseLockRequest(body: unknown): { ok: true; value: LockRequest 
       return { ok: false, error: "tier must be tight, balanced or wide" };
     }
     value.tier = b.tier as ProtectionTier;
+  }
+  if (b.venue !== undefined && b.venue !== null && b.venue !== "") {
+    const v = typeof b.venue === "string" ? b.venue.trim().toLowerCase() : "";
+    if (!isSettlementVenue(v)) return { ok: false, error: "venue must be kalshi, polymarket, prophetx or novig" };
+    value.venue = v;
   }
   return { ok: true, value };
 }

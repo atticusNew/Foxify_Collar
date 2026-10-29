@@ -24,12 +24,28 @@
  *          Prints each open play with its matched stake in our units, or "unmatched" for a resting one.
  *          Which venue is checked follows the env: the key id and PEM select signed, the access key
  *          and secret key select bearer.
+ *
+ *   The subaccount an order needs (novigAccount.ts). On this venue the management key reads every
+ *   wallet and moves money but never places an order; orders come from a `trading` key, which
+ *   reaches one subaccount. The service's own hedge on this venue, once that route is built, needs
+ *   a subaccount opened here. The management key signs all of these (same env as `mint`).
+ *
+ *   subaccount-open  npx tsx scripts/venueReadKey.ts subaccount-open --out ./novig-trade.pem [--label "atticus hedge"]
+ *                    Generates an Ed25519 keypair, opens the subaccount with the public half
+ *                    (POST /v3/account/subaccounts), writes the private half to --out (mode 600) and
+ *                    prints the trading key id, which is also the subaccount's address.
+ *   subaccounts      Lists the live subaccounts: trading key id, label, balance.
+ *   fund             npx tsx scripts/venueReadKey.ts fund --key <trading key id> --dollars 50 --id <unique id> [--defund]
+ *                    Moves cash from the cash wallet into the subaccount (or out with --defund) with
+ *                    --id as the idempotency key, then reads the transfer back until it is Applied.
+ *   transfer         npx tsx scripts/venueReadKey.ts transfer --key <trading key id> --transfer <transfer id>
  */
 
 import { generateKeyPairSync } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { PlaysClient, asVenueMarket, playSize, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
 import { VenueClient, positionSize, signedHeaders, signerFromPem } from "../src/eventCollar/crossVenue/venuePositions";
+import { NOVIG_TRADE_ENV, NovigAccountClient, mintTradingKeypair, type NovigSubaccount } from "../src/eventCollar/crossVenue/novigAccount";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -120,6 +136,74 @@ async function check(): Promise<void> {
   }
 }
 
+// ── the subaccount a trading key addresses (novigAccount.ts) ───────────────────────────────────
+// The management key signs all of these; it stays on the operator's machine like `mint`.
+
+const mgmtClient = (): NovigAccountClient => {
+  const mgmtId = process.env.VENUE_MGMT_KEY_ID?.trim();
+  const mgmtPemPath = process.env.VENUE_MGMT_KEY_PEM_PATH?.trim();
+  if (!mgmtId || !mgmtPemPath) {
+    console.error("needs VENUE_MGMT_KEY_ID and VENUE_MGMT_KEY_PEM_PATH (the management key, from the venue's profile page)");
+    process.exit(2);
+  }
+  return new NovigAccountClient({ host, signer: signerFromPem(mgmtId, readFileSync(mgmtPemPath, "utf8")) });
+};
+const fmtSub = (s: NovigSubaccount): string => `  ${s.keyId}  "${s.label}"  $${(s.balanceCents / 100).toFixed(2)}`;
+
+/** Open a subaccount with a fresh Ed25519 keypair; the private half is the service's trading key. */
+async function subaccountOpen(): Promise<void> {
+  const out = opt("--out");
+  const label = opt("--label") || "atticus hedge";
+  if (!out) {
+    console.error("subaccount-open needs --out <file> [--label <text>]");
+    process.exit(2);
+  }
+  const client = mgmtClient();
+  const kp = mintTradingKeypair();
+  const sub = await client.openSubaccount({ label, publicKeyPem: kp.publicKeyPem, algorithm: kp.algorithm });
+  writeFileSync(out, kp.privateKeyPem, { mode: 0o600 });
+  console.log(`subaccount opened: trading key ${sub.keyId} · label "${sub.label}" · balance $${(sub.balanceCents / 100).toFixed(2)}`);
+  console.log(`trading key's private half written to ${out} (never commit it; lost, nothing can sign as this subaccount again)`);
+  console.log(`fund it: npx tsx scripts/venueReadKey.ts fund --key ${sub.keyId} --dollars 50 --id <unique-id>`);
+  console.log(`service env, when the venue route goes live: ${NOVIG_TRADE_ENV.host}=${host}  ${NOVIG_TRADE_ENV.keyId}=${sub.keyId}  ${NOVIG_TRADE_ENV.pem}=<contents of ${out}>`);
+}
+
+async function subaccounts(): Promise<void> {
+  const rows = await mgmtClient().listSubaccounts();
+  console.log(`${host}: ${rows.length} live subaccount(s)` + (rows.length ? " (trading key id, label, balance)" : ""));
+  for (const s of rows) console.log(fmtSub(s));
+}
+
+/** Move cash into (or out of, --defund) a subaccount, then read the transfer back until it is final. */
+async function fund(): Promise<void> {
+  const keyId = opt("--key");
+  const dollars = Number(opt("--dollars"));
+  const id = opt("--id");
+  if (!keyId || !(dollars > 0) || !id) {
+    console.error("fund needs --key <trading key id> --dollars <amount> --id <unique transfer id> [--defund]");
+    process.exit(2);
+  }
+  const client = mgmtClient();
+  const direction = args.includes("--defund") ? "defund" : "fund";
+  const sent = await client.fund(keyId, { direction, amountCents: Math.round(dollars * 100), clientTransferId: id });
+  console.log(`transfer ${sent.transferId}: ${sent.status} (${sent.direction} $${(sent.amountCents / 100).toFixed(2)})`);
+  const done = sent.status === "Requested" ? await client.waitApplied(keyId, sent.transferId, { tries: 10, delayMs: 1000 }) : sent;
+  if (done.status === "Applied") console.log(`applied. subaccount balance now $${((await client.balance(keyId)).balanceCents / 100).toFixed(2)}`);
+  else if (done.status === "Rejected") console.log(`rejected; the venue found $${((done.actualBalanceCents ?? 0) / 100).toFixed(2)} in the wallet it drew on`);
+  else console.log("still Requested after 10 s: read it again with `transfer --key ... --transfer " + done.transferId + "`; if it stays Requested, the venue's docs say contact support, never retry under a new id");
+}
+
+async function transferStatus(): Promise<void> {
+  const keyId = opt("--key");
+  const transferId = opt("--transfer");
+  if (!keyId || !transferId) {
+    console.error("transfer needs --key <trading key id> --transfer <transfer id>");
+    process.exit(2);
+  }
+  const t = await mgmtClient().transfer(keyId, transferId);
+  console.log(`transfer ${t.transferId}: ${t.status} (${t.direction} $${(t.amountCents / 100).toFixed(2)})` + (t.actualBalanceCents != null ? ` · wallet held $${(t.actualBalanceCents / 100).toFixed(2)}` : ""));
+}
+
 const fail = (err: unknown): void => {
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
@@ -127,7 +211,11 @@ const fail = (err: unknown): void => {
 
 if (cmd === "mint") mint().catch(fail);
 else if (cmd === "check") check().catch(fail);
+else if (cmd === "subaccount-open") subaccountOpen().catch(fail);
+else if (cmd === "subaccounts") subaccounts().catch(fail);
+else if (cmd === "fund") fund().catch(fail);
+else if (cmd === "transfer") transferStatus().catch(fail);
 else {
-  console.error("usage: venueReadKey.ts mint --out <file> | check");
+  console.error("usage: venueReadKey.ts mint --out <file> | check | subaccount-open --out <file> [--label <text>] | subaccounts | fund --key <id> --dollars <n> --id <unique> [--defund] | transfer --key <id> --transfer <id>");
   process.exit(2);
 }

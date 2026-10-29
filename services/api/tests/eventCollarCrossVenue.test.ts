@@ -519,6 +519,29 @@ test("quoteCrossWrap: hedge is never under-sized (rounded up, min order clamped)
   assert.equal(small.creditCents, 65);
 });
 
+test("quoteCrossWrap: hedgeOn prophetx prices the same walk on a ProphetX strike and emits a ProphetX leg with both strikes; its refusals are the venue's", () => {
+  const hedgeOn = { venue: "prophetx" as const, strikeId: "strike-no-9", offsetStrikeId: "strike-yes-9", outcome: "Chicago Cubs" };
+  const px = quoteCrossWrap(baseInputs({ hedgeOn }));
+  const pm = quoteCrossWrap(baseInputs());
+  assert.ok(px.ok && pm.ok, JSON.stringify(px));
+  // the same book, the same collar and credit: only the leg's venue and ids differ
+  assert.deepEqual([px.floorCents, px.capCents, px.creditCents, px.hedge.costCents], [pm.floorCents, pm.capCents, pm.creditCents, pm.hedge.costCents]);
+  assert.equal(px.hedge.venue, "prophetx");
+  if (px.hedge.venue === "prophetx") {
+    assert.deepEqual([px.hedge.strikeId, px.hedge.offsetStrikeId, px.hedge.outcome, px.hedge.sharesMilli, px.hedge.action], ["strike-no-9", "strike-yes-9", "Chicago Cubs", 141_000, "buy"]);
+    assert.equal(px.hedge.worstPriceMilli, 300);
+  }
+  const empty = quoteCrossWrap(baseInputs({ hedgeOn, noBook: fixtureBook({ asks: [] }) }));
+  assert.equal(empty.ok, false);
+  if (!empty.ok) assert.equal(empty.code, "prophetx_book_empty");
+  const thin = quoteCrossWrap(baseInputs({ hedgeOn, noBook: fixtureBook({ asks: [{ priceMilli: 300, sizeMilli: 1000 }] }) }));
+  assert.equal(thin.ok, false);
+  if (!thin.ok) {
+    assert.equal(thin.code, "prophetx_book_too_thin");
+    assert.match(thin.detail, /ProphetX/);
+  }
+});
+
 test("quoteCrossWrap: refusal codes", () => {
   const tooClose = quoteCrossWrap(
     baseInputs({ now: new Date(GAME_START.getTime() - 5 * 60_000) }),

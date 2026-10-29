@@ -66,19 +66,39 @@ export type BookOrigin = "aggregator" | "direct";
 export interface BookOrigins {
   polymarket?: BookOrigin;
   kalshi?: BookOrigin;
+  /** only ever the aggregator: this service has no direct ProphetX order book read */
+  prophetx?: BookOrigin;
 }
 
 export interface AggregatorBooks {
   pmNoBook?: PmBook;
   noAsks?: NoAskLevel[];
   references: ReferenceBook[];
+  /**
+   * The ProphetX strikes of this market as the mapping names them: the opposing side (the hedge
+   * instrument, whose book is the `aggregated_mm` reference) and our side (what an early close
+   * buys to offset). Absent when the venue has no listing on the opposing outcome.
+   */
+  prophetx?: ProphetXStrikes;
   /** why a book is absent, one line per venue; never thrown */
   notes: string[];
   readAtIso: string;
 }
 
+export interface ProphetXStrikes {
+  hedgeStrikeId: string;
+  /** false when the partner marks the opposing listing not executable (no order can be sent to it) */
+  executable: boolean;
+  offsetStrikeId?: string;
+}
+
 export interface AggregatorBookSource {
   read(pair: MatchedPair, now: Date): Promise<AggregatorBooks>;
+  /**
+   * One stream entry's book right now, in the pricer's shape (bids and asks, raw venue prices),
+   * or null with a reason: a ProphetX strike's book for an early close, read by id. Never throws.
+   */
+  bookFor(stream: MarketStream, now: Date): Promise<{ book: PmBook | null; reason?: string; ageSec?: number }>;
   status(): AggregatorBookStatus;
   /**
    * The reference venues' streams for the opposing outcome of our ticker's market, from the same
@@ -289,6 +309,8 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
     // The venue the feed is relied on for: no listing on the opposing outcome is a state of its
     // own ("not mapped yet"), distinct from a mapping whose book has not opened.
     if (!refStreams.some((r) => r.id === "aggregated_mm")) out.references.push({ id: "aggregated_mm", book: null, reason: NOT_MAPPED, listing: { marketId: aligned.marketId } });
+    const px = prophetxStrikesOf(aligned);
+    if (px) out.prophetx = px;
     const streams = [kalshiStream, pmStream, ...refStreams.map((r) => r.stream)].filter((s): s is MarketStream => s !== null);
     if (streams.length === 0) return out;
 
@@ -361,7 +383,43 @@ export function aggregatorBookSource(signer: AggregatorSigner, host: string, opt
 
   const held = (o: Omit<HeldBooksOptions, "streamUrl" | "wsFactory" | "nowMs"> = {}): HeldBooks => openHeldBooks(signer, { ...o, streamUrl: opts.streamUrl, wsFactory: opts.wsFactory, nowMs });
 
-  return { read, status: () => ({ ...status }), referenceStreams, heldBooks: held };
+  const bookFor = async (stream: MarketStream, _now: Date): Promise<{ book: PmBook | null; reason?: string; ageSec?: number }> => {
+    try {
+      if (!clockSynced) {
+        await spaced(() => client.time());
+        clockSynced = true;
+      }
+      const [res] = await readSnapshots(signer, [stream], {
+        streamUrl: opts.streamUrl,
+        wsFactory: opts.wsFactory,
+        timeoutMs: opts.streamTimeoutMs ?? 6_000,
+        retryDelayMs: opts.streamRetryDelayMs,
+        nowSec: () => Math.floor(nowMs() / 1000),
+      });
+      if (!res) return { book: null, reason: "stream_no_answer" };
+      if (!res.book) return { book: null, reason: `stream_${res.error.code.toLowerCase()}` };
+      if (res.book.bids.length === 0 && res.book.asks.length === 0) return { book: null, reason: MAPPED_NO_BOOK };
+      const ageSec = snapshotAgeSec(res.book, nowMs());
+      return { book: pmBookFromSnapshot(streamListingKey(stream), res.book), ...(ageSec === null ? {} : { ageSec }) };
+    } catch (err) {
+      status.lastError = describe(err);
+      return { book: null, reason: `stream_${status.lastError}` };
+    }
+  };
+
+  return { read, bookFor, status: () => ({ ...status }), referenceStreams, heldBooks: held };
+}
+
+/** The ProphetX strikes of an aligned market: the opposing side's (the hedge) and ours (the offset), when listed. */
+export function prophetxStrikesOf(aligned: AlignedPair): ProphetXStrikes | null {
+  const opp = listingOf(aligned.opposing, "PROPHETX");
+  if (!opp || typeof opp.strikeId !== "string" || !opp.strikeId) return null;
+  const ours = listingOf(aligned.ours, "PROPHETX");
+  return {
+    hedgeStrikeId: opp.strikeId,
+    executable: opp.executable !== false,
+    ...(ours && typeof ours.strikeId === "string" && ours.strikeId ? { offsetStrikeId: ours.strikeId } : {}),
+  };
 }
 
 /** The venue's own key for a stream entry: the strike id, the token, the ticker, the market and outcome; the one thing to quote back to the feed. */

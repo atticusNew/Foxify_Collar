@@ -57,10 +57,49 @@ of open plays. Once a matched play exists, under its row:
    27.4c each with fees"; on any other book, "the other side on Novig"), the cost, the venue's
    order id and time with how the order got there ("through the aggregator" when it went through
    the execution pod, "direct" on our own key; the partner is never named), and the record id; a
-   hedge that did not reach the venue reads "covered at the book" with no order line. The public
-   record link appears only with the operator setting on. A settled lock reads "Settled" on the
+   hedge that did not reach the venue reads "covered at the book" with no order line. Under those,
+   **Hedged on** names the venue the other side went to ("ProphetX", "Kalshi"); the reason
+   ("cheaper all in…", "the venue the hedge can be sent to tonight…") follows only with the
+   operator setting on. When two venues priced the other side, **Compared** shows the competition
+   in one line ("ProphetX $3.10 vs Kalshi $2.40, hedged on ProphetX": what each book would have
+   paid for the same protection), and the same line sits in the offer's fine print before the
+   tap. **Rules** is folded to one muted summary ("a tie, a postponement, a game called off, a
+   corrected result") with a **show** link; opening it lists the four tails in this venue's own
+   settlement words, each with what the venue pays and how the protection settles on it, and a
+   **hide** link folds it back. With the operator setting on, every route the service priced
+   follows with its cost all in (the books plus the tails) and what it would have paid. The
+   public record link
+   appears only with the operator setting on. A settled lock reads "Settled" on the
    pill, "Protected outcome $25.06." on the line, and in the panel "Texans won · you end with
    $25.06" over "Unprotected, it would have paid $46.00";
+3b. a protected play's open panel ends in a quiet **Leave early** button under the slip, with
+   "today's price instead of the result" beside it. Tapping it opens a block
+   under the slip, priced live from both books (`GET /api/shadow/unwind/quote`): "Your pick, sold
+   now · 15.95 at 61c, after fees $9.45", "Protection settles −$0.57", "You end with · your $0.41
+   credit kept $9.29" (the coloured figure), "Staying $6.95 or $11.90"; a **Leave early** button
+   beside a quiet **Stay**; the fine print says what leaving costs against the mid and until when
+   it is open (the early-close margin, 15 minutes before the start). The tap prices again
+   (`POST /api/shadow/unwind`), the service writes the close with source `unwind`, and the line
+   settles as **Left early** with "Ended with $9.29 · $0.57 due back." Its panel: "Left early ·
+   you ended with $9.29", "Your pick, sold at 61c $9.45", "Protection settled −$0.57", "Cash $0.57
+   due back", the facts ("Left Wed 8:03pm ET · leaving cost $0.73 against the mid"), the receipt
+   with a **Left early** cash leg. Nothing is reversed: leaving is a new trade at live prices, the
+   protection settling at today's price instead of the official result. The pick itself stays the
+   holder's to sell on the venue at that price, or to keep unprotected; the extension never trades.
+   The other side is sold back through the same executor that bought it: on an armed ticker with
+   sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
+   written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the
+   receipt a **Sold back** row (contracts, price after fees, proceeds, order). A hedge on ProphetX
+   is not sold: the venue takes no sell order, so the service buys the pair of the other side (the
+   holder's own club's strike) at or under 1 − the walked worst bid, fill or kill, which offsets
+   the hedge share for share and settles when the game does; the facts say "the other side offset
+   on ProphetX, settles at the game" and the receipt row reads **Offset on** (contracts of the
+   pair bought, proceeds at the game, order). The holder's own numbers are the same either way:
+   the protection settles between us at today's price; the timing of the writer's hedge cash is
+   the writer's. Where the rails hold it (dry run, kill switch, not armed) or the hedge sits on
+   Polymarket, the sale is recorded at the book's price (`hedgeSent: false`), the facts say "the
+   other side's sale is on the record", and the operator sells by hand.
+   Too close to the start, or once settled or already left, the block says so and offers Back;
 4. a play protection does not cover gets a muted **Unavailable** pill with the reason after it:
    "Protection covers Moneyline picks." on a spread or total, "Protection waits until the play is
    matched." on a play that is still an open order, or the live refusal from pricing. Tapping it
@@ -68,12 +107,23 @@ of open plays. Once a matched play exists, under its row:
 
 That placement is the only staged pixel. Everything behind the tap is the Atticus event service:
 the play is matched to its market, priced from live books at the holder's size, the terms lock,
-the record is written, and the hedge is bought on Kalshi.
+the record is written, and the hedge is bought on whichever of tonight's venues paid more for
+the same protection.
 
 Styled in each venue's own theme, with no brand of ours up top; our name is one line at the foot
-of the panel. The hedge venue on the receipt is whatever the service chose for that lock: Kalshi,
-or the holder's own venue when it has the best price (the "keep it on venue" route, when the
-service offers it).
+of the panel. Every quote and lock names the page's venue (`venue=prophetx|kalshi|novig`), and the
+service routes the hedge against that venue's settlement rules: for each book that can take the
+other side it checks, branch by branch (tie, postponed, called off, corrected), that the hedge
+pays at least what the holder is owed under their own venue's rules, prices any mismatch as a
+tail charge in the same bps as the EV cost, applies the hard gates (same game, depth for the
+whole size, venue open until the lock, an order rail that can reach it tonight) and takes the
+cheapest all in. The receipt says where the hedge went and why, and words the tails in the
+holder's venue's own rules. The offer's fine print carries the competition when two venues priced
+the other side ("ProphetX $3.10 vs Kalshi $2.40, hedged on ProphetX"), else "other side on
+Polymarket" when the hedge venue is not the page's own. Tonight's venues are Kalshi and ProphetX,
+both reached through the aggregator's execution pod (`EVENT_HEDGE_VENUES=kalshi,prophetx`,
+`EVENT_HEDGE_LIVE_VIA=aggregator`); ProphetX's 2% of net gains at settlement is folded into its
+book before the walk, so the two credits on the line are both all in.
 
 > Disclosure line, shown on every panel and to be read in any published recording (the marker
 > and the slip line are a notice that protection exists; nothing is offered until the play fills):
@@ -128,10 +178,18 @@ that is covered); the pick is the club the card names twice (header and matchup)
 React Native Web: every run of text sits in its own view with nothing between, which the reader
 spaces out before reading ("GB·1.54xWinnerMATCHEDAmount$5.00..."). Because the cards sit side
 by side, our block goes **inside** the card as its last row, not after it, where it would land
-beside the card or after the whole deck. Spread and Total cards get the muted line ("covers
+beside the card or after the whole deck. The deck is a wrapping flex row and every card in a
+row is stretched to the tallest one (React Native Web's default), so a card grows when a
+neighbour's panel is open, and it grows again by our own block. The reader measures a card by
+its own rows, not the stretched box, and accepts a deck card up to twice a plain row's height
+(640px against 320px); a card that misses one scan keeps its line for six seconds, as long as
+the card is still on the page and still names the pick, before the line is taken down (before
+0.7.15 a stretched card lost its Lock in button and got it back on the next scan, so the button
+blinked). Spread and Total cards get the muted line ("covers
 Winner picks"). Tabs: **Active** and **Settled**. The stand-in `preview/novig.html#/portfolio`
 is built to this layout from a saved screenshot of a real order (GB at 1.54x, $5.00 to pay
-$7.69, Thu 9:15 PM); the first thing to do on the live page is confirm it reads the same.
+$7.69, Thu 9:15 PM), with the same stretching deck; the first thing to do on the live page is
+confirm it reads the same.
 
 ## Where the size comes from
 
@@ -313,10 +371,14 @@ The lock routes are off until a key is set.
 
 | Env | Value | Why |
 | --- | --- | --- |
-| `EVENT_SHADOW_LOCK_KEY` | 12+ random chars | Opens `/api/shadow/markets`, `/api/shadow/quote`, `/api/shadow/positions`, `/api/shadow/lock`, `/api/shadow/receipt` to callers with `x-lock-key`. Unset answers 404. |
-| `EVENT_HEDGE_STRATEGY` | `live` | Real Kalshi orders behind rails. Anything the rails hold is simulated at the book, reason on the receipt. |
-| `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. |
-| `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap | Allowlist. Empty allows nothing. Listed tickers are hedged on Kalshi's own No side and skipped by the hourly scan. |
+| `EVENT_SHADOW_LOCK_KEY` | 12+ random chars | Opens `/api/shadow/markets`, `/api/shadow/quote`, `/api/shadow/positions`, `/api/shadow/lock`, `/api/shadow/receipt`, `/api/shadow/unwind/quote`, `/api/shadow/unwind` to callers with `x-lock-key`. Unset answers 404. |
+| `EVENT_HEDGE_STRATEGY` | `live` | Real orders behind rails. Anything the rails hold is simulated at the book, reason on the receipt. |
+| `EVENT_HEDGE_LIVE_VIA` | `aggregator` for tonight | Orders go through the aggregator's execution pod with the TRADE key, which reaches both Kalshi and ProphetX. Unset (`direct`): Kalshi on our own key, and ProphetX prices on paper only. |
+| `AGGREGATOR_TRADE_KEY_ID`, `AGGREGATOR_TRADE_PRIVATE_KEY_HEX` | from the aggregator | Service only. The DATA key reads books and never sends an order. |
+| `EVENT_HEDGE_VENUES` | `kalshi,prophetx` for tonight | The hedge venues every quote competes. Unset offers all three (Kalshi, ProphetX, Polymarket). Polymarket stays out until the aggregator lists Poly US. Shown on `/healthz` with the operator token. |
+| `EVENT_PROPHETX_FEE_BPS` | leave unset (`200`) | ProphetX's 2% of net gains at settlement, folded into its book before every walk and provided for on every fill. |
+| `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. With `via=aggregator` they serve the account routes and send nothing. |
+| `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap | Allowlist, keyed by the game's Kalshi ticker whichever venue the hedge lands on. Empty allows nothing. Listed tickers are skipped by the hourly scan. With one live venue the route is pinned to it; with two (Kalshi and ProphetX through the pod) nothing is pinned and the routing competes them on price. |
 | `EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER` | `25` | Per-order cap. |
 | `EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY` | `20` for the first live test, then `100` | Per-day cap, counted from the receipt file, so a restart cannot reset it. |
 | `EVENT_SHADOW_LOCK_LEDGER_PATH` | leave unset | Locks live in `lock-ledger.jsonl` beside the scan's ledger on the same disk. |
@@ -367,6 +429,44 @@ VENUE_API_HOST=https://cash.api.<venue domain>/partner VENUE_API_ACCESS_KEY=... 
 The service also still speaks the signed read-key API of the previous venue
 (`VENUE_API_KEY_ID` + `VENUE_API_PRIVATE_KEY_PEM`, minted with `venueReadKey.ts mint`). Whichever
 pair of variables is set picks the API; set one, not both.
+
+### Novig: reading needs no subaccount, ordering does
+
+Novig's keys come in two scopes. The **management** key (one per trader, made on the Profile
+page) reads every wallet, opens and funds subaccounts and mints other keys; it never places an
+order. A **trading** key addresses exactly one **subaccount** and is the only key that can send
+`POST /v3/orders`. Reading the holder's plays for the protection (what the service does tonight)
+works with the management key or a read key minted from it: the cash wallet's positions come
+back under the management key's id and `venuePositions.ts` already reads them. A subaccount is
+needed only when the service itself orders on Novig (a direct hedge route, not built yet; tonight's
+hedges go to Kalshi and ProphetX through the aggregator). Before that route exists, the venue's
+conditions for an order are worth knowing: the account must be KYC'd, the request may come from a
+data-centre IP but not from a VPN or a restricted state (451), and the venue wants a device
+location from the holder's own Novig app within the last three days or the order is refused.
+Novig has no sell order, so an unwind there would be an offsetting buy of the other outcome, as on
+ProphetX.
+
+The subaccount tooling is in `src/eventCollar/crossVenue/novigAccount.ts` and
+`scripts/venueReadKey.ts`, run from the operator's machine with the management key (the key never
+leaves it; the private PEMs are written mode 600 and nothing prints one):
+
+```
+cd services/api
+export VENUE_API_HOST=https://api.novig.com VENUE_MGMT_KEY_ID=... VENUE_MGMT_KEY_PEM_PATH=~/novig-mgmt.pem
+npx tsx scripts/venueReadKey.ts subaccount-open --out ./novig-trade.pem --label "atticus hedge"
+   # mints an Ed25519 keypair, POST /v3/account/subaccounts with the public half, prints the
+   # trading key id (also the subaccount's address) and the env lines for the service
+npx tsx scripts/venueReadKey.ts subaccounts                       # trading key id, label, balance
+npx tsx scripts/venueReadKey.ts fund --key <trading key id> --dollars 50 --id fund-2026-10-28-1
+   # POST .../transfer {direction fund, amount "50.00000"}; polls until Applied, prints the balance
+npx tsx scripts/venueReadKey.ts fund --key <id> --dollars 50 --id defund-... --defund
+npx tsx scripts/venueReadKey.ts transfer --key <id> --transfer <transfer id>
+```
+
+When the Novig route is built the service will take `NOVIG_TRADE_KEY_ID` (the printed id) and
+`NOVIG_TRADE_PRIVATE_KEY_PEM` (the contents of `--out`), service env only, never the extension.
+Money on this API is a five-place decimal string ("50.00000"); the client converts to and from
+cents. The venue allows ten live subaccounts.
 
 Pre-flight (operator token):
 

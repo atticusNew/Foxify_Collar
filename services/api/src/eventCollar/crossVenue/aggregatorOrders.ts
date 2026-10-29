@@ -25,7 +25,8 @@
  *   DELETE /v1/kalshi/orders/{orderId}     -> the order after the cancel; 409 when it already finished
  *
  * The hedge buys No: on Kalshi that is an ASK on the YES book at 1 - (our worst No price), so the
- * body is the same order kalshiOrders.ts sends, in the partner's spelling. Immediate-or-cancel:
+ * body is the same order kalshiOrders.ts sends, in the partner's spelling. Selling the hedge back
+ * (an early close) is a BID at 1 - (our worst No bid), the same mirror. Immediate-or-cancel:
  * the venue answers with the final state; the partner may relay it a beat later, so the order is
  * read back until it stops moving, anything still resting is cancelled, and the fill is taken from
  * the read (it carries the fees; the submit answer does not). Roundings go against the writer.
@@ -40,7 +41,7 @@
  */
 
 import { AggregatorApiError, DEFAULT_API_HOST, signedHeaders, signerFromSecret, type AggregatorSigner, type Whoami } from "./aggregatorMarkets";
-import type { HedgeIntent } from "./hedgeExecutor";
+import { actionOf, type HedgeIntent } from "./hedgeExecutor";
 import { kalshiTakerFeeCents } from "./kalshiLadder";
 import { contractsFp, fpToMilli } from "./kalshiRfq";
 import { dollarsToMicro } from "./kalshiOrders";
@@ -123,27 +124,29 @@ export interface OrderFill {
 /**
  * What the order read says filled, in milli units and all-in cents. The No average is the partner's
  * own complement when given, else 1 - the Yes average, else the cap. Fees: the exact dollars when
- * given (rounded up), the venue's whole cents next, the taker formula last.
+ * given (rounded up), the venue's whole cents next, the taker formula last. On a sale (`sell`) the
+ * No average is our proceeds per contract and every rounding goes the other way: the average down,
+ * the gross down, the fees up; `costCents` is the net proceeds.
  */
-export function fillOfAggregatorOrder(o: Pick<AggregatorKalshiOrder, "filledCount" | "averageYesPrice" | "averageNoPrice" | "feesCents" | "feesUsd">, capPriceCents: number): OrderFill {
+export function fillOfAggregatorOrder(o: Pick<AggregatorKalshiOrder, "filledCount" | "averageYesPrice" | "averageNoPrice" | "feesCents" | "feesUsd">, capPriceCents: number, sell = false): OrderFill {
   const unitsMilli = fpToMilli(o.filledCount ?? undefined);
   if (unitsMilli <= 0) return { unitsMilli: 0, costCents: 0, feesCents: 0 };
-  let noMicro = dollarsToMicro(o.averageNoPrice ?? undefined, true);
+  let noMicro = dollarsToMicro(o.averageNoPrice ?? undefined, !sell);
   if (noMicro < 0) {
-    const yesMicro = dollarsToMicro(o.averageYesPrice ?? undefined, false);
+    const yesMicro = dollarsToMicro(o.averageYesPrice ?? undefined, sell);
     noMicro = yesMicro >= 0 && yesMicro <= 1_000_000 ? 1_000_000 - yesMicro : capPriceCents * 10_000;
   }
   noMicro = Math.min(999_999, Math.max(1, noMicro));
-  const notional = centsOf(unitsMilli, noMicro);
+  const notional = sell ? Math.floor((unitsMilli * noMicro) / 10_000_000) : centsOf(unitsMilli, noMicro);
   const feeMicro = dollarsToMicro(o.feesUsd ?? undefined, true);
   const feesCents =
     feeMicro >= 0 ? Math.ceil(feeMicro / 10_000) : typeof o.feesCents === "number" && o.feesCents >= 0 ? o.feesCents : kalshiTakerFeeCents(unitsMilli, Math.ceil(noMicro / 10_000));
-  return { unitsMilli, costCents: notional + feesCents, feesCents };
+  return { unitsMilli, costCents: sell ? Math.max(0, notional - feesCents) : notional + feesCents, feesCents };
 }
 
 /** The same from the submit answer alone (no fees on it): the taker formula fills the gap. */
-export function fillOfSubmit(r: AggregatorSubmitResponse, capPriceCents: number): OrderFill {
-  return fillOfAggregatorOrder({ filledCount: r.filledCount, averageYesPrice: r.averagePrice, averageNoPrice: null, feesCents: null, feesUsd: null }, capPriceCents);
+export function fillOfSubmit(r: AggregatorSubmitResponse, capPriceCents: number, sell = false): OrderFill {
+  return fillOfAggregatorOrder({ filledCount: r.filledCount, averageYesPrice: r.averagePrice, averageNoPrice: null, feesCents: null, feesUsd: null }, capPriceCents, sell);
 }
 
 /** The partner's client order id grammar: up to 64 of letters, digits and `- _ : / + =`. */
@@ -156,6 +159,8 @@ export interface AggregatorOrderClientOptions {
   fetchImpl?: typeof fetch;
   nowSec?: () => number;
   timeoutMs?: number;
+  /** share one signed surface (and its clock) with another venue client on the same pod */
+  rest?: AggregatorPodRest;
   /** how long to wait between order reads while the partner relays the venue's answer */
   settleWaitMs?: number;
   /** how many reads before the order is treated as resting and cancelled */
@@ -163,27 +168,81 @@ export interface AggregatorOrderClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export class AggregatorOrderClient {
-  readonly venue = "kalshi" as const;
-  readonly via = "aggregator" as const;
-  private readonly signer: AggregatorSigner;
+/**
+ * The pod's signed REST surface, shared by every venue the pod routes (Kalshi here, ProphetX in
+ * prophetxOrders.ts): one TRADE key, one clock offset, one request shape.
+ */
+export class AggregatorPodRest {
+  readonly signer: AggregatorSigner;
   private readonly fetchImpl: typeof fetch;
   private readonly nowSec: () => number;
   private readonly timeoutMs: number;
-  private readonly settleWaitMs: number;
-  private readonly settleReads: number;
-  private readonly sleep: (ms: number) => Promise<void>;
   private offsetSec = 0;
   private clockSynced = false;
 
   constructor(
-    private readonly cfg: AggregatorTradeConfig,
-    opts: AggregatorOrderClientOptions = {},
+    readonly cfg: AggregatorTradeConfig,
+    opts: Pick<AggregatorOrderClientOptions, "fetchImpl" | "nowSec" | "timeoutMs"> = {},
   ) {
     this.signer = signerFromSecret(cfg.keyId, cfg.secret);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.nowSec = opts.nowSec ?? (() => Math.floor(Date.now() / 1000));
     this.timeoutMs = opts.timeoutMs ?? Number(process.env.EVENT_FETCH_TIMEOUT_MS || 8000);
+  }
+
+  /** One GET /v1/time, so the signatures carry the partner's clock rather than ours. Failure is not fatal. */
+  async syncClock(): Promise<void> {
+    if (this.clockSynced) return;
+    this.clockSynced = true;
+    try {
+      const { time } = await this.request<{ time: number }>("GET", "/v1/time");
+      if (Number.isFinite(time)) this.offsetSec = Math.round(time - this.nowSec());
+    } catch {
+      this.offsetSec = 0;
+    }
+  }
+
+  async request<T>(method: string, path: string, o: { query?: string; body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
+    const query = o.query ?? "";
+    const bodyText = o.body === undefined ? "" : JSON.stringify(o.body);
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      "user-agent": "atticus-event-hedge",
+      ...signedHeaders(this.signer, { method, path, query, body: bodyText, idempotencyKey: o.idempotencyKey }, this.nowSec() + this.offsetSec),
+    };
+    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
+    if (bodyText) {
+      headers["content-type"] = "application/json";
+      init.body = bodyText;
+    }
+    const res = await this.fetchImpl(`${this.cfg.host}${path}${query ? `?${query}` : ""}`, init);
+    const text = await res.text().catch(() => "");
+    let json: unknown = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    if (res.ok) return json as T;
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const err = (json ?? {}) as { error?: { code?: string; message?: string } };
+    throw new AggregatorApiError(res.status, err.error?.code ?? `http_${res.status}`, err.error?.message ?? `aggregator ${res.status} on ${method} ${path}`, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null);
+  }
+}
+
+export class AggregatorOrderClient {
+  readonly venue = "kalshi" as const;
+  readonly via = "aggregator" as const;
+  readonly rest: AggregatorPodRest;
+  private readonly settleWaitMs: number;
+  private readonly settleReads: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+
+  constructor(
+    private readonly cfg: AggregatorTradeConfig,
+    opts: AggregatorOrderClientOptions = {},
+  ) {
+    this.rest = opts.rest ?? new AggregatorPodRest(cfg, opts);
     this.settleWaitMs = opts.settleWaitMs ?? 300;
     this.settleReads = opts.settleReads ?? 5;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -191,30 +250,30 @@ export class AggregatorOrderClient {
 
   /** Safe to print: what the partner registered against the key id. */
   get publicKeyHex(): string {
-    return this.signer.publicKeyHex;
+    return this.rest.signer.publicKeyHex;
   }
 
   get keyId(): string {
     return this.cfg.keyId;
   }
 
-  /** The hook the live executor calls. */
+  /** The hook the live executor calls: a buy of No, or a sale of it (intent.action). */
   hook(): LiveOrderHook {
-    return (intent, clientOrderId) => this.placeNo(intent, clientOrderId);
+    return (intent, clientOrderId) => this.place(intent, clientOrderId);
   }
 
-  /** The No price the order will not pay over: the walked worst price in whole cents, rounded up. */
+  /** The No price the order will not cross: the walked worst level in whole cents, rounded up (never over the asks on a buy, never under the bids on a sale). */
   static capCents(intent: HedgeIntent): number {
     return Math.min(99, Math.max(1, Math.ceil(intent.book.worstPriceMilli / 10)));
   }
 
-  /** The partner's body for an intent: an ASK on the YES book at 1 - cap, immediate or cancel. */
+  /** The partner's body for an intent: an ASK on the YES book at 1 - cap (buy No), or a BID there (sell No), immediate or cancel. */
   static orderBody(intent: HedgeIntent, clientOrderId: string): Record<string, unknown> {
     if (intent.venue !== "kalshi") throw new Error(`aggregator orders: intent is for ${intent.venue}; the pod routes Kalshi only`);
     const capCents = AggregatorOrderClient.capCents(intent);
     return {
       ticker: intent.instrument,
-      side: "ASK",
+      side: actionOf(intent) === "sell" ? "BID" : "ASK",
       count: contractsFp(intent.unitsMilli),
       price: ((100 - capCents) / 100).toFixed(4),
       timeInForce: { type: "IOC" },
@@ -223,7 +282,13 @@ export class AggregatorOrderClient {
     };
   }
 
-  async placeNo(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
+  /** Kept under its old name for callers that buy; `place` reads the intent's action. */
+  placeNo(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
+    return this.place(intent, clientOrderId);
+  }
+
+  async place(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
+    const sell = actionOf(intent) === "sell";
     const body = AggregatorOrderClient.orderBody(intent, clientOrderId);
     const capCents = AggregatorOrderClient.capCents(intent);
     const idem = body.clientOrderId as string;
@@ -248,15 +313,15 @@ export class AggregatorOrderClient {
       status = (order?.status ?? status).toUpperCase() || "CANCELLED";
     }
 
-    const fill = order ? fillOfAggregatorOrder(order, capCents) : fillOfSubmit(created, capCents);
+    const fill = order ? fillOfAggregatorOrder(order, capCents, sell) : fillOfSubmit(created, capCents, sell);
     if (fill.unitsMilli <= 0) {
-      throw new Error(`aggregator orders: order ${orderId} ${status || "unknown"} with nothing filled at or under ${capCents}c`);
+      throw new Error(`aggregator orders: order ${orderId} ${status || "unknown"} with nothing ${sell ? "sold at or over" : "filled at or under"} ${capCents}c`);
     }
     return {
       orderId,
       venueOrderId: order?.venueOrderId ?? undefined,
       unitsMilli: fill.unitsMilli,
-      avgPriceMilli: Math.ceil((fill.costCents * 10_000) / fill.unitsMilli),
+      avgPriceMilli: sell ? Math.floor((fill.costCents * 10_000) / fill.unitsMilli) : Math.ceil((fill.costCents * 10_000) / fill.unitsMilli),
       costCents: fill.costCents,
       feesCents: fill.feesCents,
       status: status.toLowerCase() === "filled" ? "executed" : status.toLowerCase() || "unknown",
@@ -305,42 +370,11 @@ export class AggregatorOrderClient {
     }
   }
 
-  /** One GET /v1/time, so the signatures carry the partner's clock rather than ours. Failure is not fatal. */
-  private async syncClock(): Promise<void> {
-    if (this.clockSynced) return;
-    this.clockSynced = true;
-    try {
-      const { time } = await this.request<{ time: number }>("GET", "/v1/time");
-      if (Number.isFinite(time)) this.offsetSec = Math.round(time - this.nowSec());
-    } catch {
-      this.offsetSec = 0;
-    }
+  private syncClock(): Promise<void> {
+    return this.rest.syncClock();
   }
 
-  private async request<T>(method: string, path: string, o: { query?: string; body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
-    const query = o.query ?? "";
-    const bodyText = o.body === undefined ? "" : JSON.stringify(o.body);
-    const headers: Record<string, string> = {
-      accept: "application/json",
-      "user-agent": "atticus-event-hedge",
-      ...signedHeaders(this.signer, { method, path, query, body: bodyText, idempotencyKey: o.idempotencyKey }, this.nowSec() + this.offsetSec),
-    };
-    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
-    if (bodyText) {
-      headers["content-type"] = "application/json";
-      init.body = bodyText;
-    }
-    const res = await this.fetchImpl(`${this.cfg.host}${path}${query ? `?${query}` : ""}`, init);
-    const text = await res.text().catch(() => "");
-    let json: unknown = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      json = null;
-    }
-    if (res.ok) return json as T;
-    const retryAfter = Number(res.headers.get("retry-after"));
-    const err = (json ?? {}) as { error?: { code?: string; message?: string } };
-    throw new AggregatorApiError(res.status, err.error?.code ?? `http_${res.status}`, err.error?.message ?? `aggregator ${res.status} on ${method} ${path}`, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null);
+  private request<T>(method: string, path: string, o: { query?: string; body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
+    return this.rest.request<T>(method, path, o);
   }
 }

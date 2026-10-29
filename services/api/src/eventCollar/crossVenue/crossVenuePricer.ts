@@ -30,11 +30,24 @@ import type {
   CrossHedgeLeg,
   CrossQuoteResult,
   CrossSearchConfig,
+  HedgeLeg,
   PmBook,
   PmBookLevel,
+  ProphetXHedgeLeg,
 } from "./types";
 import type { MatchedPair } from "./types";
 import { enumerateCollars, evCostBps, refuseUnfunded, selectTiers } from "./collarSearch";
+
+/**
+ * The ProphetX route priced through the same walk: the opposing strike's asks (fee folded by the
+ * caller, prophetxOrders.ts) in the book's shape, the leg a ProphetX leg, the refusals ProphetX's.
+ */
+export interface ProphetXHedgeOn {
+  venue: "prophetx";
+  strikeId: string;
+  offsetStrikeId?: string;
+  outcome: string;
+}
 
 export interface CrossPricerInputs {
   pair: MatchedPair;
@@ -45,6 +58,8 @@ export interface CrossPricerInputs {
   /** live CLOB book for the OPPOSING outcome token (the hedge instrument) */
   noBook: PmBook;
   config: CrossSearchConfig;
+  /** absent: Polymarket's opposing token (tokenId from the pair); given: the ProphetX strike */
+  hedgeOn?: ProphetXHedgeOn;
 }
 
 /**
@@ -95,16 +110,44 @@ export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
       detail: `mark ${markCents}c is outside the quotable ${cfg.markLowerBoundCents}c-${cfg.markUpperBoundCents}c band`,
     };
   }
-  const { noBook } = inputs;
+  const { noBook, hedgeOn } = inputs;
+  const opposing = hedgeOn ? hedgeOn.outcome : pair.pm.outcomes[pair.pmNoOutcomeIndex];
   if (noBook.asks.length === 0) {
     return {
       ok: false,
-      code: "pm_book_empty",
-      detail: `no executable asks on the opposing outcome (${pair.pm.outcomes[pair.pmNoOutcomeIndex]})`,
+      code: hedgeOn ? "prophetx_book_empty" : "pm_book_empty",
+      detail: hedgeOn ? `no executable asks on the opposing strike (${opposing}) on ProphetX` : `no executable asks on the opposing outcome (${opposing})`,
     };
   }
 
   const minSharesMilli = Math.max(1, noBook.minOrderSizeShares) * 1000;
+  const legFor = (walk: NonNullable<ReturnType<typeof walkPmAsks>>, sharesMilli: number, hedgeCostCents: number): HedgeLeg => {
+    if (hedgeOn) {
+      const leg: ProphetXHedgeLeg = {
+        action: "buy",
+        venue: "prophetx",
+        outcome: hedgeOn.outcome,
+        strikeId: hedgeOn.strikeId,
+        ...(hedgeOn.offsetStrikeId ? { offsetStrikeId: hedgeOn.offsetStrikeId } : {}),
+        sharesMilli,
+        avgPriceMilli: walk.avgPriceMilli,
+        worstPriceMilli: walk.worstPriceMilli,
+        costCents: hedgeCostCents,
+      };
+      return leg;
+    }
+    const leg: CrossHedgeLeg = {
+      action: "buy",
+      venue: "polymarket",
+      outcome: opposing,
+      tokenId: pair.pm.tokenIds[pair.pmNoOutcomeIndex],
+      sharesMilli,
+      avgPriceMilli: walk.avgPriceMilli,
+      worstPriceMilli: walk.worstPriceMilli,
+      costCents: hedgeCostCents,
+    };
+    return leg;
+  };
 
   const search = enumerateCollars({
     markCents,
@@ -120,26 +163,16 @@ export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
       const hedgeCostCents = Math.ceil(walk.costMicroUsd / 10_000);
       const feesCents =
         cfg.hedgeFeeFlatCents + Math.ceil((hedgeCostCents * cfg.hedgeFeeBps) / 10_000);
-      const hedge: CrossHedgeLeg = {
-        action: "buy",
-        venue: "polymarket",
-        outcome: pair.pm.outcomes[pair.pmNoOutcomeIndex],
-        tokenId: pair.pm.tokenIds[pair.pmNoOutcomeIndex],
-        sharesMilli,
-        avgPriceMilli: walk.avgPriceMilli,
-        worstPriceMilli: walk.worstPriceMilli,
-        costCents: hedgeCostCents,
-      };
-      return { ok: true, costCents: hedgeCostCents, feesCents, hedge };
+      return { ok: true, costCents: hedgeCostCents, feesCents, hedge: legFor(walk, sharesMilli, hedgeCostCents) };
     },
   });
 
   if (search.candidates.length === 0) {
+    const venueWords = hedgeOn ? "ProphetX's" : "the opposing venue's";
     return refuseUnfunded(search, cfg, {
-      shortfall:
-        "the opposing venue's live book cannot fund a positive credit on any quotable floor/cap right now",
-      thin: "pm_book_too_thin",
-      thinDetail: "the opposing venue's book lacks the depth to hedge this size leg-for-leg",
+      shortfall: `${venueWords} live book cannot fund a positive credit on any quotable floor/cap right now`,
+      thin: hedgeOn ? "prophetx_book_too_thin" : "pm_book_too_thin",
+      thinDetail: `${venueWords} book lacks the depth to hedge this size leg-for-leg`,
       none: "no quotable floor/cap combination for this pair",
     });
   }

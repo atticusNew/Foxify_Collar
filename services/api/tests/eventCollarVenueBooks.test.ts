@@ -602,8 +602,9 @@ test("reference books: the routing comparison carries one row per reference, cou
   assert.ok(html.includes("Reference books are other regulated US exchanges"));
   assert.doesNotMatch(html, /novig|prophet/i, "the page never names a reference venue");
   assert.doesNotMatch(html, /\u2014/, "no em dashes");
-  // JSON the operator exports carries the dialect ids, not venue names
-  assert.doesNotMatch(JSON.stringify(positions), /novig|prophet/i);
+  // JSON the operator exports carries the dialect ids, not venue names; the hedge route's own code
+  // ("prophetx", a venue the record hedges on and names) is the one word that is not a reference's
+  assert.doesNotMatch(JSON.stringify(positions).replace(/"prophetx":/g, '"":'), /novig|prophet/i);
   // a record with no references renders the card as before
   const plain = renderShadowReportHtml({ atIso: "2026-09-21T00:00:00.000Z", summary: summarizeShadow(loadShadowPositions(path).filter((p) => p.ticker === "BEFORE")) });
   assert.ok(!plain.includes("reference book"));
