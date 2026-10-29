@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Atticus Earn & Protect: Lock in",
-  "version": "0.7.24",
+  "version": "0.7.25",
   "description": "Lock in a floor on a matched sports pick, on the venue's own page (ProphetX My Trades, Kalshi Portfolio, Novig Portfolio), in that venue's skin. Before the trade, one small 'Lock in' pill on each game the service can protect, and the same pill in the order slip. Pricing, the record and the hedge run in the Atticus event service; this extension holds no venue credentials and is placement only.",
   "permissions": [
     "storage"
