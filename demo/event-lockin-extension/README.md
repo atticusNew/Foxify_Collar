@@ -57,8 +57,14 @@ of open plays. Once a matched play exists, under its row:
    27.4c each with fees"; on any other book, "the other side on Novig"), the cost, the venue's
    order id and time with how the order got there ("through the aggregator" when it went through
    the execution pod, "direct" on our own key; the partner is never named), and the record id; a
-   hedge that did not reach the venue reads "covered at the book" with no order line. The public
-   record link appears only with the operator setting on. A settled lock reads "Settled" on the
+   hedge that did not reach the venue reads "covered at the book" with no order line. Under those,
+   **Hedged on** names the venue the other side went to and why ("Kalshi · the venue the hedge can
+   be sent to tonight…", or "Polymarket · +109 bps all in against +533 bps on Kalshi's own No
+   side"), and **If the game** lists the four tails in this venue's own settlement words: a tie, a
+   postponement past the venue's window, a game called off, a corrected result, each with what the
+   venue pays and how the protection settles on it. With the operator setting on, every route the
+   service priced follows with its cost all in (the books plus the tails). The public record link
+   appears only with the operator setting on. A settled lock reads "Settled" on the
    pill, "Protected outcome $25.06." on the line, and in the panel "Texans won · you end with
    $25.06" over "Unprotected, it would have paid $46.00";
 3b. the facts line of a protected play also ends in **leave early**. Tapping it opens a block
@@ -74,8 +80,13 @@ of open plays. Once a matched play exists, under its row:
    with a **Left early** cash leg. Nothing is reversed: leaving is a new trade at live prices, the
    protection settling at today's price instead of the official result. The pick itself stays the
    holder's to sell on the venue at that price, or to keep unprotected; the extension never trades.
-   The hedge sale is on the record at the book's price and not yet sent (the executor buys and
-   does not sell), so the operator sells it by hand; the service's line says `hedgeSent: false`.
+   The other side is sold back through the same executor that bought it: on an armed ticker with
+   sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
+   written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the
+   receipt a **Sold back** row (contracts, price after fees, proceeds, order). Where the rails hold
+   it (dry run, kill switch, not armed) or the hedge sits on Polymarket, the sale is recorded at
+   the book's price (`hedgeSent: false`), the facts say "the other side's sale is on the record",
+   and the operator sells by hand.
    Too close to the start, or once settled or already left, the block says so and offers Back;
 4. a play protection does not cover gets a muted **Unavailable** pill with the reason after it:
    "Protection covers Moneyline picks." on a spread or total, "Protection waits until the play is
@@ -87,9 +98,15 @@ the play is matched to its market, priced from live books at the holder's size, 
 the record is written, and the hedge is bought on Kalshi.
 
 Styled in each venue's own theme, with no brand of ours up top; our name is one line at the foot
-of the panel. The hedge venue on the receipt is whatever the service chose for that lock: Kalshi,
-or the holder's own venue when it has the best price (the "keep it on venue" route, when the
-service offers it).
+of the panel. Every quote and lock names the page's venue (`venue=prophetx|kalshi|novig`), and the
+service routes the hedge against that venue's settlement rules: for each book that can take the
+other side it checks, branch by branch (tie, postponed, called off, corrected), that the hedge
+pays at least what the holder is owed under their own venue's rules, prices any mismatch as a
+tail charge in the same bps as the EV cost, applies the hard gates (same game, depth for the
+whole size, venue open until the lock, an order rail that can reach it tonight) and takes the
+cheapest all in. The receipt says where the hedge went and why, and words the tails in the
+holder's venue's own rules. The offer's fine print adds "other side on Polymarket" when the hedge
+venue is not the page's own.
 
 > Disclosure line, shown on every panel and to be read in any published recording (the marker
 > and the slip line are a notice that protection exists; nothing is offered until the play fills):

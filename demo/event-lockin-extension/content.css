@@ -432,3 +432,6 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
   .ael-lr s { width: 72px; }
   .ael-segs { grid-auto-flow: row; }
 }
+/* the tails on the receipt: one sentence per line, in the venue's settlement words */
+.ael-rcpt .ael-tails i { display: block; font-style: normal; font-weight: 500; color: var(--ael-soft); margin: 0 0 3px; }
+.ael-rcpt .ael-tails i:last-child { margin-bottom: 0; }

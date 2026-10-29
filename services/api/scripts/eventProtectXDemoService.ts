@@ -125,11 +125,27 @@ import { applyMinimumCredit, describeMinimumCredit, minimumCreditRuleFromEnv } f
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { activityFromShadowBody } from "../src/eventCollar/crossVenue/activityRetail";
 import { getKalshiBookSides, quoteEarlyClose, type EarlyCloseBooks } from "../src/eventCollar/crossVenue/earlyClose";
+import {
+  chooseRoute,
+  kalshiTailCells,
+  polymarketTailCells,
+  rulesFor,
+  tailProbabilities,
+  tailProbabilitiesFromEnv,
+  type HedgeRouting,
+  type RouteInput,
+  type SettlementVenue,
+} from "../src/eventCollar/crossVenue/hedgeRouting";
+import { roundContracts } from "../src/eventCollar/crossVenue/types";
+import { kalshiRuleUrl } from "../src/eventCollar/crossVenue/ruleEvidence";
+import { kalshiBase } from "../src/eventCollar/kalshiPublic";
 
 const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
 const LEDGER_PATH = process.env.EVENT_X_LEDGER_PATH || "/tmp/event-demo/cross-quotes.jsonl";
 const MAX_MATCH_ATTEMPTS = 10;
+/** how often each tail happens per league (hedgeRouting.ts), estimates; EVENT_ROUTING_TAIL_PROBS overrides */
+const TAIL_PROBABILITIES = tailProbabilitiesFromEnv(process.env);
 /** Scanner board caps: how many pairings get live-quoted per refresh. */
 const MAX_BOARD_ROWS = Number(process.env.EVENT_X_BOARD_ROWS || 6);
 const MAX_CRYPTO_ROWS = Number(process.env.EVENT_X_CRYPTO_ROWS || 2);
@@ -652,6 +668,12 @@ export interface CandidateResult {
    */
   pinnedExecution?: PinnedExecution;
   /**
+   * How the hedge venue was chosen against the holder's venue (hedgeRouting.ts): each route's
+   * all-in cost (EV plus the tails priced), the gates, the reason, the tails in the holder's
+   * venue's words. Sports only; the board judges it with the holder on Kalshi.
+   */
+  routing?: HedgeRouting;
+  /**
    * The live books each route was priced from, kept so the shadow run can
    * re-price the same moment under other rules or sizes (counterfactuals)
    * without another venue call. Absent when the venue was unreachable.
@@ -691,6 +713,11 @@ async function quoteSportsCandidate(
    * and disclosed in routesChecked. A pinned route that refuses is the quote's refusal.
    */
   pinRoute?: HedgeRoute,
+  /**
+   * Where the holder's position lives and which venues the executor can send to now. Absent (the
+   * board), the holder is on Kalshi and both routes are on paper.
+   */
+  routingInputs?: { holderVenue: SettlementVenue; executable: Record<HedgeRoute, boolean> },
 ): Promise<CandidateResult> {
   const position = given ?? (await showcasePositionFor(pair.kalshi.ticker, markCents));
 
@@ -759,8 +786,50 @@ async function quoteSportsCandidate(
     },
   ];
 
-  // Route selection: the holder gets the cheaper protection in true EV terms.
-  // Ties go to the self-hedge route (same instrument, zero basis risk).
+  // Route selection (hedgeRouting.ts): every route's cost all in, the holder's EV cost plus the
+  // tails priced against the holder's venue, behind the gates; the cheapest wins, ties to the
+  // self-hedge route (same instrument, zero basis risk). A pinned route is the one the live
+  // executor can send to; it is judged like the rest and the reason owns what it costs.
+  const holderVenue = routingInputs?.holderVenue ?? "kalshi";
+  const executable = routingInputs?.executable ?? { kalshi_self: true, polymarket: true };
+  const readAt = now.toISOString();
+  const kalshiRuleCells = kalshiTailCells(pair.kalshi.rulesSecondary, kalshiRuleUrl(pair.kalshi.ticker, kalshiBase()), readAt);
+  const pmRuleCells = polymarketTailCells(pair.pm.description, `https://gamma-api.polymarket.com/events?slug=${pair.pm.eventSlug}`, readAt);
+  const holderRules = rulesFor(holderVenue, pair.league, holderVenue === "kalshi" ? kalshiRuleCells : holderVenue === "polymarket" ? pmRuleCells : undefined);
+  const gameStartMs = Date.parse(pair.gameStartTime);
+  const kalshiOpen = pair.kalshi.status === "active" && Date.parse(pair.kalshi.closeTime) >= gameStartMs;
+  // Gamma's endDate is a nominal date (7pm ET on game day whatever the tip-off), not when the book
+  // closes: a Polymarket game market takes orders until it resolves. Open means accepting orders.
+  const pmOpen = pair.pm.active && pair.pm.acceptingOrders && !pair.pm.closed;
+  const routeInput = (route: HedgeRoute, q: CrossQuoteResult, evBps: number | null): RouteInput => ({
+    route,
+    ok: q.ok,
+    ...(q.ok ? {} : { refusalCode: q.code, refusalDetail: q.detail }),
+    evCostBps: evBps,
+    ...(q.ok
+      ? {
+          hedge: {
+            unitsMilli: "sharesMilli" in q.hedge ? q.hedge.sharesMilli : q.hedge.contractsMilli,
+            avgPriceCents: "sharesMilli" in q.hedge ? Math.ceil(q.hedge.avgPriceMilli / 10) : q.hedge.avgPriceCents,
+            floorCents: q.floorCents,
+            capCents: q.capCents,
+          },
+        }
+      : {}),
+    gates: { gameMatch: true, venueOpen: route === "kalshi_self" ? kalshiOpen : pmOpen, executable: executable[route] },
+    rules: rulesFor(route === "kalshi_self" ? "kalshi" : "polymarket", pair.league, route === "kalshi_self" ? kalshiRuleCells : pmRuleCells),
+  });
+  const routing = chooseRoute({
+    holderVenue,
+    league: pair.league,
+    holderRules,
+    markCents,
+    contracts: position.contracts,
+    routes: [routeInput("polymarket", pmQuote, pmBps), routeInput("kalshi_self", ladderQuote, ladderBps)],
+    probabilities: tailProbabilities(pair.league, TAIL_PROBABILITIES),
+    ...(pinRoute ? { pinned: pinRoute } : {}),
+  });
+
   let route: HedgeRoute | null;
   let quote: CrossQuoteResult;
   let evBps: number | null;
@@ -778,19 +847,19 @@ async function quoteSportsCandidate(
       otherBps: pinRoute === "kalshi_self" ? pmBps : ladderBps,
       toleranceCents: PINNED_TOLERANCE_CENTS,
     });
-  } else if (pmQuote.ok && ladderQuote.ok) {
-    const ladderWins = (ladderBps as number) <= (pmBps as number);
-    route = ladderWins ? "kalshi_self" : "polymarket";
-    quote = ladderWins ? ladderQuote : pmQuote;
-    evBps = ladderWins ? ladderBps : pmBps;
-  } else if (pmQuote.ok) {
-    route = "polymarket";
+  } else if (routing.chosen) {
+    route = routing.chosen;
+    quote = route === "kalshi_self" ? ladderQuote : pmQuote;
+    evBps = route === "kalshi_self" ? ladderBps : pmBps;
+  } else if (pmQuote.ok && !ladderQuote.ok) {
+    // priced but gated off (the venue closes early, the executor cannot send): the quote stands, the record says why it was not taken
+    route = null;
     quote = pmQuote;
-    evBps = pmBps;
+    evBps = null;
   } else if (ladderQuote.ok) {
-    route = "kalshi_self";
+    route = null;
     quote = ladderQuote;
-    evBps = ladderBps;
+    evBps = null;
   } else {
     route = null;
     evBps = null;
@@ -800,6 +869,10 @@ async function quoteSportsCandidate(
       pmQuote.code === "pm_book_empty" && ladderQuote.code !== "kalshi_book_empty"
         ? ladderQuote
         : pmQuote;
+  }
+  // a priced route that no gate lets through is a refusal to the holder, in the gate's words
+  if (route === null && quote.ok) {
+    quote = { ok: false, code: "route_gated", detail: routing.reason };
   }
 
   return {
@@ -819,6 +892,7 @@ async function quoteSportsCandidate(
     evBps,
     routesChecked,
     ...(pinnedExecution ? { pinnedExecution } : {}),
+    routing,
     books: {
       ...(pmRes.status === "fulfilled" ? { pmNoBook: pmRes.value } : {}),
       ...(ladderRes.status === "fulfilled" ? { noAsks: ladderRes.value } : {}),
@@ -1282,6 +1356,10 @@ export interface OneQuoteInputs {
   now?: Date;
   /** hedge route to pin (see quoteSportsCandidate); absent, the cheaper route wins as on the board */
   route?: HedgeRoute;
+  /** where the holder's position lives (hedgeRouting.ts); absent, Kalshi */
+  holderVenue?: SettlementVenue;
+  /** which hedge venues the executor can send to now; absent, both on paper */
+  executable?: Record<HedgeRoute, boolean>;
 }
 
 export type OneQuoteResult = { ok: true; result: CandidateResult } | { ok: false; code: string; detail: string };
@@ -1295,8 +1373,8 @@ export type OneQuoteResult = { ok: true; result: CandidateResult } | { ok: false
 export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> {
   const now = inputs.now ?? new Date();
   const ticker = inputs.ticker.trim().toUpperCase();
-  if (!Number.isInteger(inputs.contracts) || inputs.contracts < 1 || inputs.contracts > 10_000) {
-    return { ok: false, code: "bad_size", detail: "contracts must be a whole number from 1 to 10,000" };
+  if (!Number.isFinite(inputs.contracts) || Math.abs(inputs.contracts - roundContracts(inputs.contracts)) > 1e-9 || inputs.contracts < 1 || inputs.contracts > 10_000) {
+    return { ok: false, code: "bad_size", detail: "contracts must be from 1 to 10,000, to the hundredth of a contract" };
   }
   if (inputs.entryCents !== undefined && (!Number.isInteger(inputs.entryCents) || inputs.entryCents < 1 || inputs.entryCents > 99)) {
     return { ok: false, code: "bad_entry", detail: "entry must be whole cents from 1 to 99" };
@@ -1325,7 +1403,13 @@ export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> 
     entrySource: "entered_now",
     entryTime: null,
   };
-  const result = applyQuoteRules(await quoteSportsCandidate(pair, markCents, now, position, inputs.route), now);
+  const result = applyQuoteRules(
+    await quoteSportsCandidate(pair, markCents, now, position, inputs.route, {
+      holderVenue: inputs.holderVenue ?? "kalshi",
+      executable: inputs.executable ?? { kalshi_self: true, polymarket: true },
+    }),
+    now,
+  );
   return { ok: true, result };
 }
 

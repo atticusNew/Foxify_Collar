@@ -18,6 +18,7 @@ import { dirname } from "node:path";
 import type { HedgeRoute, ProtectionTier, TakeRule } from "./types";
 import { capTotalCents, centsDownOf, centsOf, centsUpOf, floorTotalCents, PROTECTION_TIERS } from "./types";
 import type { RuleCheck, RuleEvidence } from "./ruleEvidence";
+import type { HedgeRouting, SettlementVenue } from "./hedgeRouting";
 import {
   FEE_RULE_LABELS,
   SIZE_LADDER_MULTS,
@@ -87,6 +88,14 @@ export interface ShadowOpenRecord {
    * an input to the payout.
    */
   rule?: RuleEvidence | null;
+  /**
+   * Where the holder's position lives (hedgeRouting.SettlementVenue) and how the hedge venue was
+   * chosen against it: every route's all-in cost, the tails that differ and what they were priced
+   * at, the gates, the reason. Absent on records before routing was judged on the tails (every one
+   * of those was the cheaper EV, holder venue unknown).
+   */
+  holderVenue?: SettlementVenue;
+  routing?: HedgeRouting;
   /**
    * How the position came to be on the record. Absent: the scan opened it (the shadow's own
    * simulated holder). "lock": a person tapped Lock in on a real position of this size, through

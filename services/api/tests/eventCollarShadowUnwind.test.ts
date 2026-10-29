@@ -143,13 +143,15 @@ test("shadow worker unwind routes: a lock is priced into the live books, then cl
       ok: boolean;
       status: string;
       unwind: { yesFillCents: number; protectedAtCloseCents: number; closeNetCents: number; creditCents: number; positionProceedsCents: number };
-      hedge: { sent: boolean; note: string };
+      hedge: { sent: boolean; note: string; sale?: { action: string; simulated: boolean; via: string; unitsMilli: number } };
       cash: Array<{ leg: string; to: string; dueCents: number }>;
     };
     assert.ok(done.ok, JSON.stringify(done));
     assert.equal(done.status, "closed");
     assert.equal(done.unwind.yesFillCents, 61, "priced again at the tap, not from the quote the holder read");
-    assert.equal(done.hedge.sent, false, "the hedge sale is on the record, not at the venue");
+    assert.equal(done.hedge.sent, false, "the book executor simulates: the hedge sale is on the record, not at the venue");
+    assert.match(done.hedge.note, /recorded at the book's price and not sent \(.*\); the operator sells it by hand$/);
+    assert.deepEqual([done.hedge.sale?.action, done.hedge.sale?.simulated, done.hedge.sale?.via, done.hedge.sale?.unitsMilli], ["sell", true, "book", open.hedgeUnitsMilli], "the sale's receipt is on the trail all the same");
     const closeLeg = done.cash.find((c) => c.leg === "close");
     assert.ok(closeLeg, "the close leg is owed");
     assert.equal(closeLeg.dueCents, Math.abs(done.unwind.closeNetCents));
@@ -166,8 +168,15 @@ test("shadow worker unwind routes: a lock is priced into the live books, then cl
     assert.equal(closed.nakedCents, done.unwind.positionProceedsCents);
 
     // the receipt carries the close; a second leave is refused, so is a second quote
-    const rcpt = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { lock: { status: string; closedAt: string; protectedCents: number; closeNetCents: number; closeYesFillCents: number; closeSource: string; closeHedgeSent: boolean; eventTimeIso: string }; cash: Array<{ leg: string }> };
+    const rcpt = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as {
+      lock: { status: string; closedAt: string; protectedCents: number; closeNetCents: number; closeYesFillCents: number; closeSource: string; closeHedgeSent: boolean; eventTimeIso: string };
+      hedge: { action: string };
+      hedgeSale: { action: string; simulated: boolean } | null;
+      cash: Array<{ leg: string }>;
+    };
     assert.equal(rcpt.lock.status, "closed");
+    assert.equal(rcpt.hedge.action, "buy");
+    assert.deepEqual([rcpt.hedgeSale?.action, rcpt.hedgeSale?.simulated], ["sell", true], "the receipt carries the sale beside the buy");
     assert.equal(rcpt.lock.closedAt, rec.at);
     assert.equal(rcpt.lock.closeYesFillCents, 61);
     assert.equal(rcpt.lock.closeSource, "unwind");

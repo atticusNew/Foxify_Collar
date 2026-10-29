@@ -42,6 +42,7 @@ export function refusalWord(code: string): string {
   if (code === "credit_nonpositive" || code === "credit_too_small") return "no credit";
   if (code === "protection_too_rich") return "too rich";
   if (code === "far_out_no_book") return "too early";
+  if (code === "route_gated") return "no route";
   if (code === "mark_disagreement") return "mark unsettled";
   if (code === "book_not_retained") return "not kept";
   if (code === "fee_exceeds_gross") return "fee > gross";
