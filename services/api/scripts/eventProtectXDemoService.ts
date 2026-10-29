@@ -518,10 +518,20 @@ export function aggregatorSource(): AggregatorBookSource | null {
   return aggregatorBooks.source;
 }
 
+/** A comma list of cent offsets from the env ("3,5,8,…"), or the default grid when unset or junk. */
+function offsetsFromEnv(raw: string | undefined, dflt: number[]): number[] {
+  if (!raw || !raw.trim()) return dflt;
+  const out = [...new Set(raw.split(",").map((v) => Number(v.trim())).filter((n) => Number.isInteger(n) && n > 0 && n < 100))].sort((a, b) => a - b);
+  return out.length ? out : dflt;
+}
+
 export function searchConfig(): CrossSearchConfig {
   const minTake = process.env.EVENT_X_MIN_TAKE_BPS;
   return {
     ...DEFAULT_CROSS_CONFIG,
+    // how far under the mark a floor and over it a cap may sit; the defaults reach 45c either way
+    floorOffsetsCents: offsetsFromEnv(process.env.EVENT_X_FLOOR_OFFSETS, DEFAULT_CROSS_CONFIG.floorOffsetsCents),
+    capOffsetsCents: offsetsFromEnv(process.env.EVENT_X_CAP_OFFSETS, DEFAULT_CROSS_CONFIG.capOffsetsCents),
     takeBps: Number(process.env.EVENT_X_TAKE_BPS || DEFAULT_CROSS_CONFIG.takeBps),
     minTakeBpsOfStake:
       minTake !== undefined && minTake !== "" ? Math.max(0, Number(minTake)) : DEFAULT_CROSS_CONFIG.minTakeBpsOfStake,

@@ -44,8 +44,11 @@ of open plays. Once a matched play exists, under its row:
    card, never wider than 680px. The panel is a slip, three rows with dividers in the venue's
    type size: "Texans win $25.06 · was $46.00", "Texans lose $14.71 · was $0" (the floor, the one
    coloured figure), "Paid to you now +$1.66 · today". Above them, only when the book funds more
-   than one shape, the price shapes offered right now (**Most now** / **Even** / **Keep more
-   upside**; a heavy favourite usually gets one or two). Under them the button, the badge grown to
+   than one shape, the price shapes offered right now (**Max upside** / **Balanced** / **Max
+   floor**, each with its floor, its upside and the cash now: "Floor $0.71 · Upside $9.30 · +$0.21
+   now"; a heavy favourite usually gets one or two). Max upside is first and pre-selected: it is
+   the shape the service heads the quote with (0.7.30, see "Which shape comes first" below).
+   Under them the button, the badge grown to
    the row's width, reading just "Lock in"; then one fine-print line, "Priced live · until kickoff
    Sun 1:00pm ET · how it works", and the disclosure. Nothing in the panel is under 12px. Tapping
    the line again closes it;
@@ -113,6 +116,18 @@ of open plays. Once a matched play exists, under its row:
    rather than offered. A venue's reference for the play ("ID: a49b5764ac7c") is never read as
    a figure. The tiers share the row's width, two or three of them, and a tier's credit drops to
    a second line rather than being cut off.
+
+   **Which shape comes first** (0.7.30, with the service). At the hedge price a collar is
+   even-money: every cent of floor costs about a cent of cap, and the credit is cap the holder
+   did not keep. So the service now heads the quote with the most upside (`EVENT_X_DEFAULT_TIER`
+   defaults to `wide`; the extension pre-selects whatever tier heads the quote rather than
+   Balanced), the search grid reaches 45¢ either side of the mark instead of 30 under and 25 over
+   (`EVENT_X_FLOOR_OFFSETS`, `EVENT_X_CAP_OFFSETS`, comma lists of cents), and the absolute
+   minimum credit is 5¢ (`EVENT_X_MIN_CREDIT_CENTS`; the 0.25%-of-stake line is unchanged, so
+   positions over $20 are not affected by it). On a 10-contract pick at 50¢ against a 52¢ other
+   side, Max upside moves from floor 20¢ / cap 70¢ to floor 5¢ / cap 90¢: lose $0.71 instead of
+   $0, win $9.30 instead of $10.10. The three shapes are named for what they give (Max upside,
+   Balanced, Max floor) and listed with the floor, the upside and the cash now.
    The other side is sold back through the same executor that bought it: on an armed ticker with
    sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
    written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the
@@ -593,8 +608,8 @@ Operator actions (token in `x-admin-token`), for the recording day:
 
 1. Open the preview My Trades with the extension loaded. Every row has a line under it: Lock in
    with the floor ("Lose, and still get $x."), Unavailable with a reason, or Protected.
-2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Keep more
-   upside** or **Most now**: the three rows reprice. Tap **Even**: they return.
+2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Balanced**
+   or **Max floor**: the three rows reprice. Tap **Max upside**: they return.
    Only the shapes the book offers for that pick are listed; a heavy favourite often has one.
 3. Tap **Lock in**. The button reports the stages in words (Pricing from the live book, Writing
    the record, Buying the other side) under a slow sheen, with whole seconds only past three; the

@@ -98,14 +98,14 @@ test("embed: a sportsbook shell lists games only; the generic shell and ?kind= d
   assert.ok(renderEventEmbedHtml({ brand: "Your Exchange", sportsOnly: true }).includes("var SPORTS_ONLY=true;"), "?kind=sports narrows any shell");
 });
 
-test("embed: the minimum-credit rule hides negligible tiers: 25¢ and 0.25% of stake, whichever is more", () => {
-  assert.equal(worthOffering(25, 10), true, "25¢ on $10 clears both");
-  assert.equal(worthOffering(24, 10), false, "24¢ never clears");
+test("embed: the minimum-credit rule hides negligible tiers: 5¢ and 0.25% of stake, whichever is more", () => {
+  assert.equal(worthOffering(5, 10), true, "5¢ on $10 clears both");
+  assert.equal(worthOffering(4, 10), false, "4¢ never clears");
   assert.equal(worthOffering(37, 150), false, "0.25% of $150 is 38¢; 37¢ is under");
   assert.equal(worthOffering(38, 150), true);
   assert.equal(worthOffering(0, 1), false);
   const html = renderEventEmbedHtml({ brand: "ProphetX" });
-  assert.ok(html.includes("var MIN_CREDIT_CENTS=25,MIN_CREDIT_BPS=25;"), "the page script runs the same rule");
+  assert.ok(html.includes("var MIN_CREDIT_CENTS=5,MIN_CREDIT_BPS=25;"), "the page script runs the same rule");
   assert.ok(html.includes("function worthIt(t,n){return !!t&&t.creditCents>=Math.max(MIN_CREDIT_CENTS,Math.round(n*100*MIN_CREDIT_BPS/10000))}"));
   assert.ok(html.includes("The market can\\'t fund a worthwhile credit on this one right now."), "when no tier clears, the sheet refuses rather than offering pennies");
   assert.ok(html.includes("function defaultTier(offered){return offered.balanced?'balanced':offered.tight?'tight':offered.wide?'wide':null}"), "one shape by default: Balanced, then the next that clears");
