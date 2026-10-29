@@ -109,8 +109,9 @@ export function fillOfOrder(order: KalshiRawOrder, capPriceCents: number, sell =
   }
   const takerCost = order.taker_fill_cost_dollars !== undefined ? dollarsToCents(order.taker_fill_cost_dollars) : (order.taker_fill_cost ?? -1);
   const makerCost = order.maker_fill_cost_dollars !== undefined ? dollarsToCents(order.maker_fill_cost_dollars) : (order.maker_fill_cost ?? 0);
-  // a venue that reports no cost on a fill is read at the cap, never under
-  const notional = takerCost >= 0 ? takerCost + Math.max(0, makerCost) : Math.ceil((unitsMilli * capPriceCents) / 1000);
+  // a venue that reports no cost on a fill is read at the cap, never under: on a buy our No cost at
+  // the cap; on a sale the Yes we paid for at 1 - the floor (our No sold at the lowest bid we accepted)
+  const notional = takerCost >= 0 ? takerCost + Math.max(0, makerCost) : Math.ceil((unitsMilli * (sell ? 100 - capPriceCents : capPriceCents)) / 1000);
   const takerFees = order.taker_fees_dollars !== undefined ? dollarsToCents(order.taker_fees_dollars) : (order.taker_fees ?? -1);
   const makerFees = order.maker_fees_dollars !== undefined ? dollarsToCents(order.maker_fees_dollars) : (order.maker_fees ?? 0);
   const avgCents = unitsMilli > 0 ? Math.min(99, Math.max(1, Math.ceil((notional * 1000) / unitsMilli))) : capPriceCents;

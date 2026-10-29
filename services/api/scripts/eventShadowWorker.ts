@@ -115,6 +115,7 @@ import {
   loadHedgeReceipts,
   sellIntentForKalshi,
   summarizeHedgeReceipts,
+  type HedgeExecutor,
   type HedgeReceipt,
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
@@ -993,18 +994,17 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     // Every caller sees where the hedge would go and why (hedgeRouting.ts): the holder's venue, the
     // hedge venue, each route's cost all in, the tails in their venue's words. The operator also
     // sees the engine's own route verdicts and the pin.
+    const view = routingViewOf(q.result.routing);
     const routing = {
-      routing: {
-        ...routingViewOf(q.result.routing),
-        ...(operator
-          ? {
-              route: q.result.route,
-              pinned: lockRouteFor(parsed.value.ticker) ?? null,
-              ...(q.result.pinnedExecution ? { pinnedExecution: q.result.pinnedExecution } : {}),
-              routesChecked: q.result.routesChecked.map((r) => ({ route: r.route, ok: r.ok, evCostBps: r.evCostBps, creditCents: r.creditCents, ...(r.detail ? { detail: r.detail } : {}) })),
-            }
-          : {}),
-      },
+      routing: operator
+        ? {
+            ...(view ?? {}),
+            route: q.result.route,
+            pinned: lockRouteFor(parsed.value.ticker) ?? null,
+            ...(q.result.pinnedExecution ? { pinnedExecution: q.result.pinnedExecution } : {}),
+            routesChecked: q.result.routesChecked.map((r) => ({ route: r.route, ok: r.ok, evCostBps: r.evCostBps, creditCents: r.creditCents, ...(r.detail ? { detail: r.detail } : {}) })),
+          }
+        : view,
     };
     sendJson(res, 200, { ok: true, at: atIso, onRecord: held, ...(holder ? { holder } : {}), ...retailOneQuote(q.result, q.result.evBps), ...routing });
     return;
@@ -1673,7 +1673,7 @@ async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url:
   lockInFlight.add(flight);
   try {
     const atIso = new Date().toISOString();
-    const q = await quoteOneFn({ ticker, contracts: lock.contracts, entryCents: lock.entryCents, route: "kalshi_self" });
+    const q = await quoteOneFn({ ticker, contracts: lock.contracts, entryCents: lock.entryCents, route: "kalshi_self", holderVenue: lock.holderVenue ?? "kalshi", executable: executableFor(ticker) });
     if (!q.ok) {
       sendJson(res, 200, { ok: false, at: atIso, ticker, code: q.code, message: q.detail });
       return;
@@ -2797,10 +2797,18 @@ async function main(): Promise<void> {
 if (process.env.NODE_ENV !== "test") void main();
 
 /** Test seam: the lock routes' engine calls, normally wired in main() from the scanner module. */
-export function wireLockEngine(fns: { quoteOne: typeof quoteOne; listGameMarkets: typeof listGameMarkets; venueClient?: HolderPositionsSource | null; closeBooks?: typeof closeBooksFn }): void {
+export function wireLockEngine(fns: {
+  quoteOne: typeof quoteOne;
+  listGameMarkets: typeof listGameMarkets;
+  venueClient?: HolderPositionsSource | null;
+  closeBooks?: typeof closeBooksFn;
+  /** the executor the hedge (and its sale) goes through, in place of the one the env chose; the rails view stays the env's */
+  hedgeExecutor?: HedgeExecutor;
+}): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
   if (fns.closeBooks) closeBooksFn = fns.closeBooks;
+  if (fns.hedgeExecutor) hedgeChoice.executor = fns.hedgeExecutor;
   if (fns.venueClient !== undefined) {
     venueClient = fns.venueClient;
     positionsCache = null;
