@@ -106,12 +106,12 @@ let mode = sessionStorage.getItem("novig-mode") || "cash";
 // price and Buy More. The first is a real one (Oct 28, 2026): GB at 1.54x, $5.00 to pay $7.69, on
 // CAR at GB, Thursday 9:15 PM.
 const ORDERS = JSON.parse(sessionStorage.getItem("novig-orders") || "null") || [
-  { code: "GB", kind: "Winner", m: "1.54", amount: 5, matched: 5, type: "take", pay: "7.69", sell: "4.96", placed: "6:47PM", id: "a9cdbd1fe3b36", away: "CAR", home: "GB", when: "9:15 PM", day: "Thu" },
-  { code: "NYK", kind: "Winner", m: "1.65", amount: 10, matched: 10, type: "take", sell: "10.12", placed: "12:48PM", id: "b31e0f77c2a90", away: "DET", home: "NYK", when: "8:00 PM", day: "Tue" },
-  { code: "BOS", kind: "Winner", m: "1.30", amount: 20, matched: 0, type: "make", sell: null, placed: "12:51PM", id: "c7d2a1e45f6b8", away: "BKN", home: "BOS", when: "7:30 PM", day: "Tue" },
-  { code: "SAS", kind: "Spread", line: "+4.5", m: "1.91", amount: 10, matched: 10, type: "take", sell: "9.70", placed: "12:55PM", id: "d0f9e8c7b6a54", away: "SAC", home: "SAS", when: "8:00 PM", day: "Tue" },
-  { code: "NYK", kind: "Winner", m: "1.75", amount: 10, matched: 10, type: "take", settled: "won", paid: "17.50", placed: "6:02PM", id: "e5a4b3c2d1f09", away: "MEM", home: "NYK", when: "7:30 PM", day: "Sat" },
-  { code: "LAL", kind: "Winner", m: "2.10", amount: 5, matched: 5, type: "take", settled: "lost", paid: "0.00", placed: "9:40PM", id: "f1e2d3c4b5a67", away: "POR", home: "LAL", when: "11:00 PM", day: "Sat" },
+  { code: "GB", kind: "Winner", m: "1.54", amount: 5, matched: 5, type: "take", pay: "7.69", sell: "4.96", placed: "Wed 6:47PM", id: "a9cdbd1fe3b36", away: "CAR", home: "GB", when: "9:15 PM", day: "Thu" },
+  { code: "NYK", kind: "Winner", m: "1.65", amount: 10, matched: 10, type: "take", sell: "10.12", placed: "Tue 12:48PM", id: "b31e0f77c2a90", away: "DET", home: "NYK", when: "8:00 PM", day: "Tue" },
+  { code: "BOS", kind: "Winner", m: "1.30", amount: 20, matched: 0, type: "make", sell: null, placed: "Tue 12:51PM", id: "c7d2a1e45f6b8", away: "BKN", home: "BOS", when: "7:30 PM", day: "Tue" },
+  { code: "SAS", kind: "Spread", line: "+4.5", m: "1.91", amount: 10, matched: 10, type: "take", sell: "9.70", placed: "Tue 12:55PM", id: "d0f9e8c7b6a54", away: "SAC", home: "SAS", when: "8:00 PM", day: "Tue" },
+  { code: "NYK", kind: "Winner", m: "1.75", amount: 10, matched: 10, type: "take", settled: "won", paid: "17.50", placed: "Fri 6:02PM", id: "e5a4b3c2d1f09", away: "MEM", home: "NYK", when: "7:30 PM", day: "Sat" },
+  { code: "LAL", kind: "Winner", m: "2.10", amount: 5, matched: 5, type: "take", settled: "lost", paid: "0.00", placed: "Sat 9:40PM", id: "f1e2d3c4b5a67", away: "POR", home: "LAL", when: "11:00 PM", day: "Sat" },
 ];
 const save = () => sessionStorage.setItem("novig-orders", JSON.stringify(ORDERS));
 const $ = (s) => document.querySelector(s);
@@ -151,7 +151,7 @@ const card = (o) => {
   const amts = V(V(T("Amount", "lab") + T(money(o.amount), "val")) + T("&#x203A;", "ar") + V(T(o.settled ? "Paid" : "To Pay", "lab") + T(money(o.settled ? Number(o.paid) : toPay(o)), "val"), "r"), "rw pc-a");
   const game = V(V('<span class="helm"></span>' + T(o.away, "code"), "rw") + V(T(o.when, "when") + T(o.day, "day"), "mid") + V(T(o.home, "code") + '<span class="helm" style="background:#2a5a3a"></span>', "rw"), "rw pc-g");
   const btns = o.settled ? "" : V(V(T(o.matched > 0 ? "Sell " + money(Number(o.sell)) : "Cancel"), "b sell", ' role="button" tabindex="0"') + V(T("Buy More &middot; " + o.m + "x"), "b buy", ' role="button" tabindex="0"'), "rw pc-b");
-  return V(V(head, "rw pc-h") + amts + game + btns + V("<i></i>" + T("Share"), "rw pc-s") + V(T("ID: " + o.id) + T("Placed " + o.placed), "rw pc-f"), "pc");
+  return V(V(head, "rw pc-h") + amts + game + btns + V("<i></i>" + T("Share"), "rw pc-s") + V(T("ID: " + o.id) + T("Placed: " + o.placed), "rw pc-f"), "pc");
 };
 const TABS = ["active", "settled"];
 const portfolioHtml = (tab, filter) => {
@@ -188,7 +188,7 @@ const render = () => {
     if (!s || amount <= 0) return;
     const g = GAMES.find((x) => x.id === s.g);
     const t = s.side === "away" ? g.away : g.home;
-    ORDERS.unshift({ code: t[0], kind: s.kind, line: s.line, m: s.m, amount, matched: slip.type === "take" ? amount : 0, type: slip.type, sell: (amount * 0.99).toFixed(2), placed: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).replace(" ", ""), id: Math.random().toString(16).slice(2, 15), away: g.away[0], home: g.home[0], when: g.when, day: "" });
+    ORDERS.unshift({ code: t[0], kind: s.kind, line: s.line, m: s.m, amount, matched: slip.type === "take" ? amount : 0, type: slip.type, sell: (amount * 0.99).toFixed(2), placed: new Date().toLocaleDateString("en-US", { weekday: "short" }) + " " + new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).replace(" ", ""), id: Math.random().toString(16).slice(2, 15), away: g.away[0], home: g.home[0], when: g.when, day: "" });
     save();
     slip.sel = null;
     location.hash = "#/portfolio";

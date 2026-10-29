@@ -190,7 +190,11 @@ Winner picks"). The card names clubs by code only ("CLE · 7:00 PM Thu · ATL"),
 name two listed games in one week (CLE is the Cavaliers on Thursday and the Browns on Sunday,
 ATL the Hawks and the Falcons): the reader pairs the two codes to the one game both can mean,
 and a weekday on the card settles a club's game on that day (0.7.16; before it such a card got
-no line at all while a code with one listed game, GB, read fine). Tabs: **Active** and
+no line at all while a code with one listed game, GB, read fine). The card's placement stamp
+("Placed: Wed 11:33PM") is not the game's day: the reader takes such stamps out before it looks
+for a date or weekday, and the venue's own "Today" / "Tomorrow" on the game line is read first
+(0.7.18; before it a Cavaliers card placed on a Wednesday read as the Cavaliers' Wednesday game,
+already played, and got no line while the Thursday game it was on went unread). Tabs: **Active** and
 **Settled**. The stand-in `preview/novig.html#/portfolio`
 is built to this layout from a saved screenshot of a real order (GB at 1.54x, $5.00 to pay
 $7.69, Thu 9:15 PM), with the same stretching deck; the first thing to do on the live page is
