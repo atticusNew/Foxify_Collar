@@ -570,18 +570,22 @@ are widest and clearest there.
 3. **Settlement.** After the game, the position's settled row on the record and, on the venue's
    Settled tab, the chip's details panel: what the holder ends with, what the play alone would
    have paid, and where the money stands ("$8.00 owed to you", then "paid in full" once the
-   operator records the payment with `POST /api/shadow/cash`). Settled plays that were never
-   locked read "Not protected".
+   operator records the payment with `POST /api/shadow/cash`). A settled play that was never
+   locked here gets no line at all (0.7.17; before it, "Not protected"), and a play the venue
+   shows as sold or cashed out reads as settled whatever tab it sits in.
 
 Rules the service enforces, so plan the game around them:
 
 - The lock must be at least 45 minutes before start and inside 7 days.
 - One lock per game per holder, whichever venue the pick sits on: the record is keyed by the
-  Kalshi market. A second tap on the same game is refused with "already locked", and the same
-  game held on another venue reads "Protected on ProphetX already" there (the lock carries the
-  venue it was made from, `holderVenue`; a lock made before 0.7.13 carries none and shows as
-  Protected on every venue's page). Protecting the same game on two venues at once would need
-  the record keyed by venue as well; not built.
+  Kalshi market, and a lock that has closed or settled still holds the market (the ledger cannot
+  open the same market twice), so a game left early can be locked again only after
+  `POST /api/shadow/lock/reset?ticker=`. A second tap on the same game is refused with "already
+  locked". A lock belongs to the venue it was made from (`holderVenue` on the record; a lock
+  written without one, before 0.7.13, is Kalshi's, the service's default) and draws only on that
+  venue's page: an open lock reads "Protected on ProphetX already" on another venue's card of the
+  same game, and a lock closed or settled elsewhere says nothing there. Protecting the same game
+  on two venues at once would need the record keyed by venue as well; not built.
 - The play must be matched. Place it as a Market Order so it fills at once; a limit order that
   rests is refused until it matches.
 - The size you hold at the venue should be the size you lock. Play and hedge settle on the same
