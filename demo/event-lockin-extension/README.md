@@ -103,7 +103,10 @@ of open plays. Once a matched play exists, under its row:
 4. a play protection does not cover gets a muted **Unavailable** pill with the reason after it:
    "Protection covers Moneyline picks." on a spread or total, "Protection waits until the play is
    matched." on a play that is still an open order, or the live refusal from pricing. Tapping it
-   says what to do.
+   says what to do. A muted pill (Unavailable, or Lock in while the price is still being checked)
+   carries no shield; the word sits centred (0.7.19; before it a dim outline shield read as an
+   empty slot on a dark venue and pushed the word off-centre). The filled shield marks the live
+   states only: Lock in with a price, Protected, Settled, Left early.
 
 That placement is the only staged pixel. Everything behind the tap is the Atticus event service:
 the play is matched to its market, priced from live books at the holder's size, the terms lock,

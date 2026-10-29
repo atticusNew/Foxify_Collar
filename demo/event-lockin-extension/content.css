@@ -170,9 +170,8 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-line-on .ael-tag { background: var(--ael-accent); border-color: var(--ael-accent); color: var(--ael-accent-ink); }
 .ael-line-on .ael-tag .ael-ic { color: var(--ael-accent-ink); }
 .ael-line-on .ael-tag svg path:last-child { stroke: var(--ael-accent); }
-/* waiting or unavailable: muted outline pill */
-.ael-line-off .ael-tag, .ael-line-wait .ael-tag { background: var(--ael-bg-deep); border-color: var(--ael-border-hover); color: var(--ael-soft); }
-.ael-line-off .ael-tag .ael-ic, .ael-line-wait .ael-tag .ael-ic { color: var(--ael-dim); }
+/* waiting or unavailable: muted outline pill, no shield, the word centred (even padding) */
+.ael-line-off .ael-tag, .ael-line-wait .ael-tag { padding: 3px 10px; background: var(--ael-bg-deep); border-color: var(--ael-border-hover); color: var(--ael-soft); }
 .ael-ic { display: inline-flex; flex: none; width: 18px; height: 18px; align-items: center; justify-content: center; color: var(--ael-glow); }
 .ael-ic svg { width: 16px; height: 16px; display: block; }
 .ael-fact { flex: 1; min-width: 0; font-size: 14px; color: var(--ael-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
