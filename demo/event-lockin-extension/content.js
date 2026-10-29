@@ -415,7 +415,8 @@
    */
   const rememberLock = (ticker, next) => {
     const prev = S.record.get(ticker);
-    S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), justLeft: Boolean(prev.justLeft), ms: prev.ms, hedge: next.hedge || prev.hedge || null } : next);
+    // the tap's own answers (the hedge, the routing, the sale at the leave) are kept: the public record carries none of them
+    S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), justLeft: Boolean(prev.justLeft), ms: prev.ms, hedge: next.hedge || prev.hedge || null, routing: next.routing || prev.routing || null, closeHedge: next.closeHedge || prev.closeHedge || null } : next);
     // a lock on a game the service no longer lists joins the index so its row is still found
     if (!S.byTicker[ticker] && next.league) indexMarkets(S.markets);
   };
@@ -1109,7 +1110,9 @@
     if (st.pending || st.busy) return;
     if (st.quoteKey === key && Date.now() - st.quoteAt < REQUOTE_MS) return;
     st.pending = true;
-    const path = "/api/shadow/quote?ticker=" + encodeURIComponent(B.ticker) + "&contracts=" + B.size.contracts + (B.size.entryCents ? "&entry=" + B.size.entryCents : "");
+    // the venue this page is: the service routes the hedge against its settlement rules (which book
+    // takes the other side tonight, and what the tails cost) and words the terms in its rules
+    const path = "/api/shadow/quote?ticker=" + encodeURIComponent(B.ticker) + "&contracts=" + B.size.contracts + (B.size.entryCents ? "&entry=" + B.size.entryCents : "") + "&venue=" + encodeURIComponent(VENUE_ID);
     api(path, "GET").then((r) => {
       st.pending = false;
       st.quoteAt = Date.now();
@@ -1366,7 +1369,7 @@
     }
     const fine = ["Priced live"];
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
-    fine.push(...notes(B), '<a href="#" class="ael-how-a">how it works</a>');
+    fine.push(...notes(B), ...routingNotes(p.routing), '<a href="#" class="ael-how-a">how it works</a>');
     const html =
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") +
       ledger(shortOf(B.ticker), rs, t.creditCents, was) +
@@ -1437,8 +1440,8 @@
     // locked, written or bought. The panel says so and offers a reset.
     const r =
       S.settings.rehearse === "yes"
-        ? await new Promise((resolve) => setTimeout(() => resolve({ ok: true, json: { ok: true, at: new Date().toISOString(), contracts: n, floorCents: t.floorCents, capCents: t.capCents, creditCents: t.creditCents, sideName: shortOf(B.ticker), eventTimeIso: st.quote.p.eventTimeIso, hedge: { simulated: true, fallbackReason: "rehearsal" }, rehearsal: true } }), 3600))
-        : await api("/api/shadow/lock", "POST", { ticker: B.ticker, contracts: n, entryCents: (B.size && B.size.entryCents) || undefined, tier: st.tier || undefined });
+        ? await new Promise((resolve) => setTimeout(() => resolve({ ok: true, json: { ok: true, at: new Date().toISOString(), contracts: n, floorCents: t.floorCents, capCents: t.capCents, creditCents: t.creditCents, sideName: shortOf(B.ticker), eventTimeIso: st.quote.p.eventTimeIso, hedge: { simulated: true, fallbackReason: "rehearsal" }, routing: st.quote.p.routing || null, rehearsal: true } }), 3600))
+        : await api("/api/shadow/lock", "POST", { ticker: B.ticker, contracts: n, entryCents: (B.size && B.size.entryCents) || undefined, tier: st.tier || undefined, venue: VENUE_ID });
     clearInterval(tick);
     st.busy = false;
     if (!r.ok || !r.json || !r.json.ok) {
@@ -1446,7 +1449,7 @@
       paintRow(B);
       return;
     }
-    st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
+    st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, routing: r.json.routing || (st.quote && st.quote.p && st.quote.p.routing) || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
     st.open = true;
     st.enter = true;
     if (r.json.rehearsal) {
@@ -1466,6 +1469,48 @@
    * no order line; the holder's protection is on the record either way. The reason stays with
    * the operator's hedge line.
    */
+  /**
+   * Where the other side goes, as the service judged it (GET /api/shadow/quote and the lock answer
+   * carry `routing`; the receipt carries the one judged at the tap): the hedge venue and why, each
+   * route's cost all in, and the four tails (tie, postponed, called off, corrected) in this venue's
+   * own settlement words. The holder sees the venue and the terms; the operator also sees the costs.
+   */
+  const hedgeVenueOf = (rt) => (rt && rt.hedgeVenueName) || null;
+  /** One grey note in the offer's fine print when the other side is bought somewhere other than this page's venue. */
+  const routingNotes = (rt) => {
+    const v = hedgeVenueOf(rt);
+    if (!v || !rt.holderVenueName || v === rt.holderVenueName) return [];
+    return ["other side on " + esc(v)];
+  };
+  const bps = (x) => (x == null ? "" : (x >= 0 ? "+" : "") + Math.round(x) + " bps");
+  /** The receipt's routing rows: "Other side on", the terms for the tails, and (operator) every route's cost. */
+  const routingRows = (row, rt) => {
+    if (!rt) return "";
+    const lines = [];
+    const v = hedgeVenueOf(rt);
+    if (v) lines.push(row("Hedged on", esc(v) + (rt.reason ? ' <span class="ael-dim">&middot; ' + esc(rt.reason) + "</span>" : "")));
+    if (Array.isArray(rt.tails) && rt.tails.length) {
+      lines.push(row("If the game", '<span class="ael-tails">' + rt.tails.map((t) => "<i>" + esc(String(t.text || "")) + "</i>").join("") + "</span>"));
+    }
+    if (operator() && Array.isArray(rt.routes)) {
+      for (const r of rt.routes) {
+        const name = esc(r.hedgeVenue === "polymarket" ? "Polymarket" : "Kalshi");
+        lines.push(row(name, r.ok ? esc(bps(r.allInBps)) + ' <span class="ael-dim">all in (' + esc(bps(r.evCostBps)) + " books, " + esc(bps(r.tailChargeBps)) + " tails)" + (r.gate ? " &middot; " + esc(r.gate) : "") + (r.compatible === false ? " &middot; tails differ" : "") + "</span>" : '<span class="ael-dim">' + esc(r.refusal || r.gate || "not offered") + "</span>"));
+      }
+    }
+    return lines.join("");
+  };
+  /** The sale of the other side at a leave, as the receipt has it (hedgeSale): sent to the venue, or on the record for the operator's hand. */
+  const saleRow = (row, sale, rec) => {
+    const sent = sale ? !sale.simulated : rec && rec.closeHedge ? Boolean(rec.closeHedge.sent) : null;
+    if (sent === null && !sale) return "";
+    const venue = (sale && sale.venue) || "Kalshi";
+    if (sent) {
+      const units = sale && sale.unitsMilli != null ? (sale.unitsMilli / 1000).toFixed(2).replace(/\.00$/, "") : null;
+      return row("Sold back", (units ? esc(units) + " contracts on " : "on ") + esc(venue) + (sale && sale.avgPriceMilli != null ? " at " + esc((sale.avgPriceMilli / 10).toFixed(1)) + "c each after fees" : "") + (sale && sale.costCents != null ? " &middot; " + esc(usd(sale.costCents)) : "") + (sale && sale.orderId ? ' <span class="ael-dim">&middot; order <code>' + esc(String(sale.orderId).slice(0, 8)) + "&hellip;</code></span>" : ""));
+    }
+    return row("Sold back", '<span class="ael-dim">recorded at the book\'s price on ' + esc(venue) + "; settled by hand</span>");
+  };
   /** How the order reached the venue, as the receipt says it: through the aggregator's pod, or on our own key. The partner is never named. */
   const viaWords = (h) => (h && h.via === "aggregator" ? ' <span class="ael-dim">&middot; through the aggregator</span>' : h && h.via === "direct" ? ' <span class="ael-dim">&middot; direct</span>' : "");
   const receiptHtml = (st, rec) => {
@@ -1497,11 +1542,13 @@
       }
       if (h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
     }
+    if (rec.status === "closed") lines.push(saleRow(row, st.rcptSale || null, rec));
+    lines.push(routingRows(row, st.rcptRouting || rec.routing || null));
     // the money between the two parties, leg by leg, as the record has it: the credit from the
     // tap, and at settlement the floor to the holder or the slice above the cap back to the writer
     const legs = Array.isArray(st.rcptCash) && st.rcptCash.length ? st.rcptCash : Array.isArray(rec.cashDue) ? rec.cashDue : [];
     for (const l of legs) if (LEG_WORDS[l.leg]) lines.push(row(LEG_WORDS[l.leg], legLine(l)));
-    return '<div class="ael-rcpt">' + lines.join("") + "</div>";
+    return '<div class="ael-rcpt">' + lines.filter(Boolean).join("") + "</div>";
   };
 
   /** Read the hedge view for a lock from the service once, then paint; the tap's own answer is used when present. */
@@ -1513,6 +1560,8 @@
     st.rcptBusy = false;
     if (r.ok && r.json && r.json.ok) {
       st.rcptHedge = r.json.hedge || null;
+      st.rcptRouting = r.json.routing || null;
+      st.rcptSale = r.json.hedgeSale || null;
       st.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : null;
       st.rcptErr = r.json.hedge ? "" : "no hedge on the trail for this lock";
     } else st.rcptErr = (r.json && (r.json.message || r.json.error)) || r.error || "could not read the receipt";
@@ -1526,6 +1575,12 @@
     // moment later carries none), else read from the service the first time the receipt opens
     if (!st.rcptHedge && rec.hedge && rec.hedge.receiptId) st.rcptHedge = rec.hedge;
     if (st.rcpt && !rec.rehearsal && !st.rcptHedge && !st.rcptBusy && !st.rcptErr) void loadReceipt(B);
+    // left early: the sale of the other side is on the receipt; read it once
+    if (st.rcpt && rec.status === "closed" && !st.rcptSale && !st.rcptBusy && !st.rcptSaleAsked) {
+      st.rcptSaleAsked = true;
+      st.rcptHedge = null;
+      void loadReceipt(B);
+    }
     const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
     const nick = shortOf(B.ticker);
     const h = st.rcptHedge || rec.hedge;
@@ -1567,6 +1622,7 @@
         "</div>";
       if (rec.closedAt) meta.push("Left " + esc(fmtAt(rec.closedAt)));
       if (rec.closeUnwindFrictionCents != null) meta.push("leaving cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
+      if (rec.closeHedge) meta.push(rec.closeHedge.sent ? "the other side sold on " + esc((rec.closeHedge.sale && rec.closeHedge.sale.venue) || "Kalshi") : "the other side's sale is on the record");
       if (rec.justLeft && rec.ms) meta.push("in " + (rec.ms / 1000).toFixed(1) + "s");
       if (cash && cash.open) meta.push(net < 0 ? "the settlement goes back to the writer; the receipt shows each leg" : "the settlement comes to you; the receipt shows each leg");
     } else {
@@ -1753,10 +1809,12 @@
       closeYesFillCents: u.yesFillCents,
       closeUnwindFrictionCents: u.unwindFrictionCents,
       cashDue: Array.isArray(r.json.cash) ? r.json.cash : rec.cashDue,
+      closeHedge: r.json.hedge || null,
       justLeft: true,
       ms: Date.now() - t0,
     };
     st2.leave = null;
+    if (r.json.hedge && r.json.hedge.sale) st2.rcptSale = r.json.hedge.sale;
     st2.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : st2.rcptCash;
     if (st2.done) st2.done = left;
     S.record.set(B.ticker, left);
