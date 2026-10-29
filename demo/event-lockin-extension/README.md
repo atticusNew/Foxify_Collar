@@ -186,7 +186,12 @@ its own rows, not the stretched box, and accepts a deck card up to twice a plain
 the card is still on the page and still names the pick, before the line is taken down (before
 0.7.15 a stretched card lost its Lock in button and got it back on the next scan, so the button
 blinked). Spread and Total cards get the muted line ("covers
-Winner picks"). Tabs: **Active** and **Settled**. The stand-in `preview/novig.html#/portfolio`
+Winner picks"). The card names clubs by code only ("CLE · 7:00 PM Thu · ATL"), and a code can
+name two listed games in one week (CLE is the Cavaliers on Thursday and the Browns on Sunday,
+ATL the Hawks and the Falcons): the reader pairs the two codes to the one game both can mean,
+and a weekday on the card settles a club's game on that day (0.7.16; before it such a card got
+no line at all while a code with one listed game, GB, read fine). Tabs: **Active** and
+**Settled**. The stand-in `preview/novig.html#/portfolio`
 is built to this layout from a saved screenshot of a real order (GB at 1.54x, $5.00 to pay
 $7.69, Thu 9:15 PM), with the same stretching deck; the first thing to do on the live page is
 confirm it reads the same.
@@ -571,7 +576,12 @@ are widest and clearest there.
 Rules the service enforces, so plan the game around them:
 
 - The lock must be at least 45 minutes before start and inside 7 days.
-- One lock per Kalshi market. A second tap on the same game is refused with "already locked".
+- One lock per game per holder, whichever venue the pick sits on: the record is keyed by the
+  Kalshi market. A second tap on the same game is refused with "already locked", and the same
+  game held on another venue reads "Protected on ProphetX already" there (the lock carries the
+  venue it was made from, `holderVenue`; a lock made before 0.7.13 carries none and shows as
+  Protected on every venue's page). Protecting the same game on two venues at once would need
+  the record keyed by venue as well; not built.
 - The play must be matched. Place it as a Market Order so it fills at once; a limit order that
   rests is refused until it matches.
 - The size you hold at the venue should be the size you lock. Play and hedge settle on the same

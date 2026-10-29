@@ -307,6 +307,16 @@
       return dated.length === 1 ? dated[0] : null;
     }
     if (list.length === 1) return list[0];
+    // a weekday on the row ("7:00 PM Thu") names the game on that weekday, or the one that tips
+    // late enough to print on the next day, as the board's own game chooser reads it
+    const wds = weekdaysIn(text);
+    if (wds.size) {
+      const onDay = list.filter((t) => {
+        const next = gameDate(t, 1);
+        return wds.has(weekdayOf(t)) || (next && wds.has(WEEKDAYS[next.getUTCDay()]));
+      });
+      if (onDay.length === 1) return onDay[0];
+    }
     if (!S.pageOk) {
       // before the trade, a club named without a date: on a game's own page, that game; on a
       // board, the club's next game (the week in view), the page's own date deciding when it prints one
@@ -429,6 +439,21 @@
    * moment, how long it took, the hedge behind it. The refreshes carry none of that, and a panel
    * whose words change under the holder a few seconds after the tap reads as a glitch.
    */
+  /**
+   * The record's lock on this market as this page's own: a lock made from another venue's page
+   * (the record says where, `holderVenue`) protects the holder's pick there, not the same game
+   * held here. Older locks carry no venue and read as this page's. `lockAway` is the other case.
+   */
+  const lockHere = (ticker) => {
+    const r = S.record.get(ticker);
+    return r && r.holderVenue && r.holderVenue !== VENUE_ID ? null : r || null;
+  };
+  const lockAway = (ticker) => {
+    const r = S.record.get(ticker);
+    return r && r.holderVenue && r.holderVenue !== VENUE_ID ? r : null;
+  };
+  const venueNameOf = (id) => (VENUES[id] && VENUES[id].name) || (id === "polymarket" ? "Polymarket" : String(id || ""));
+
   const rememberLock = (ticker, next) => {
     const prev = S.record.get(ticker);
     // the tap's own answers (the hedge, the routing, the sale at the leave) are kept: the public record carries none of them
@@ -504,7 +529,11 @@
       // the tab, else the one game it shares with a side already read ("DET at NYK")
       let one = pick.length === 1 ? pick[0] : choose(pick, text);
       if (!one) {
+        // the one game this code shares with another code on the row, resolved or not: a card that
+        // prints only "CLE … ATL" names the Cavaliers at the Hawks, the game both codes can mean,
+        // not the Browns' or the Falcons' Sunday (the week lists all four)
         const stems = new Set([...out.keys()].map(stemOf));
+        for (const other of found) if (other !== list) for (const t of other) stems.add(stemOf(t));
         const shared = pick.filter((t) => stems.has(stemOf(t)));
         if (shared.length === 1) one = shared[0];
       }
@@ -566,7 +595,8 @@
       .replace(/(\d)([A-Z])/g, "$1 $2") // "2.60Unmatched" splits; "49ers" and "76ers" stay whole
       .replace(/([A-Za-z])(\d)/g, "$1 $2") // "SEA1.71x": a code then the price in the next element
       .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2") // "DENMoneyline"
-      .replace(/([A-Za-z])(\$)/g, "$1 $2");
+      .replace(/([A-Za-z])(\$)/g, "$1 $2")
+      .replace(/\b([AP]M)([A-Z]{2,3})(?![A-Za-z0-9])/g, "$1 $2"); // "7:00 PMATL": a clock then the next code
   const amountsIn = (text) => {
     const out = [];
     let m;
@@ -1188,6 +1218,8 @@
         return { why: "This game starts too soon to protect.", next: "Protection is available until shortly before the start." };
       case "already_on_record":
         return { why: "This market is already locked.", next: "One lock per market." };
+      case "on_record_elsewhere":
+        return { why: message || "This game is already protected.", next: "One lock per game. The protection sits with the pick held there." };
       case "key":
         return { why: "The lock key is missing or wrong.", next: "Open the extension's settings." };
       case "off":
@@ -1242,9 +1274,13 @@
     if (!B.box) return;
     const st = stateOf(B);
     // a lock on this market covers the Winner position; a spread or total row on the same club is not it
-    const rec = B.kind === "winner" ? S.record.get(B.ticker) || st.done : null;
+    const rec = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
+    // a settled order here was never protected, whatever the record holds for the game elsewhere
+    const away = !rec && B.kind === "winner" && B.match !== "settled" ? lockAway(B.ticker) : null;
     let line;
-    if (rec) {
+    if (away) {
+      line = lineGo("Unavailable", "Protected on " + esc(venueNameOf(away.holderVenue)) + " already.", "ael-line-off");
+    } else if (rec) {
       const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
       if (rec.status === "settled" && rec.result) {
         // the protected outcome is the record's; whether the cash has moved is said beside it,
@@ -1360,8 +1396,10 @@
   const paintPanel = (B) => {
     const st = stateOf(B);
     const panel = B.box.querySelector(".ael-panel");
-    const rec = B.kind === "winner" ? S.record.get(B.ticker) || st.done : null;
+    const rec = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
     if (rec) return paintDetails(B, panel, rec);
+    const away = B.kind === "winner" && B.match !== "settled" ? lockAway(B.ticker) : null;
+    if (away) return paintRefusal(B, panel, "on_record_elsewhere", "Already protected on " + venueNameOf(away.holderVenue) + ".");
     if (B.kind === "other") return paintRefusal(B, panel, "spread", "");
     if (B.match === "unmatched") return paintRefusal(B, panel, "unmatched", "");
     if (B.match === "settled") return paintRefusal(B, panel, "settled", "");
