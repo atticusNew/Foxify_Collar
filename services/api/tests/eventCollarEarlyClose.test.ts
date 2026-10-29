@@ -183,6 +183,30 @@ test("early close: the cross-venue hedge sells into the Polymarket book; a missi
   assert.ok(!noHedgeBids.ok && noHedgeBids.leg === "hedge" && noHedgeBids.code === "book_empty");
 });
 
+test("early close: a ProphetX hedge is priced on the strike's fee-folded bids and hands the order its offset; no strike on record or no book is an honest refusal", () => {
+  const pxTerms: EarlyCloseTerms = { ...TERMS, route: "prophetx", hedgeStrikeId: "strike-no-1" };
+  const kalshi = { yesBids: [{ priceCents: 60, qtyMilli: 1_000_000 }], noBids: [] as Array<{ priceCents: number; qtyMilli: number }> };
+  // the worker folds the fee before handing the book over: a raw 0.40 bid reads 392 here
+  const pxNoBook = { tokenId: "strike-no-1", asks: [], bids: [{ priceMilli: 392, sizeMilli: 1_000_000 }], minOrderSizeShares: 1, tickMilli: 1 };
+  const ok = quoteEarlyClose(pxTerms, { kalshi, pxNoBook });
+  assert.ok(ok.ok, JSON.stringify(ok));
+  assert.equal(ok.hedgeProceedsCents, Math.floor((133_500 * 392) / 10_000), "133.5 shares x $0.392, the settlement fee inside the folded bid");
+  assert.equal(ok.hedgeFeesCents, 0);
+  assert.deepEqual(ok.hedgeSale, { venue: "prophetx", strikeId: "strike-no-1", bestPriceMilli: 392, avgPriceMilli: 392, worstPriceMilli: 392, grossCents: ok.hedgeProceedsCents, settlesAtGame: true });
+  assert.equal(ok.protectedAtCloseCents, 8748 + ok.hedgeProceedsCents - 5550 + 112);
+
+  const noBook = quoteEarlyClose(pxTerms, { kalshi });
+  assert.ok(!noBook.ok && noBook.leg === "hedge" && noBook.code === "hedge_unlocatable");
+  assert.match(!noBook.ok ? noBook.detail : "", /could not be read through the aggregator/);
+  const noStrike = quoteEarlyClose({ ...pxTerms, hedgeStrikeId: undefined }, { kalshi, pxNoBook });
+  assert.ok(!noStrike.ok && noStrike.leg === "hedge" && noStrike.code === "hedge_unlocatable");
+  assert.match(!noStrike.ok ? noStrike.detail : "", /not on record/);
+  const thin = quoteEarlyClose(pxTerms, { kalshi, pxNoBook: { ...pxNoBook, bids: [{ priceMilli: 392, sizeMilli: 10 }] } });
+  assert.ok(!thin.ok && thin.leg === "hedge" && thin.code === "book_too_thin");
+  const empty = quoteEarlyClose(pxTerms, { kalshi, pxNoBook: { ...pxNoBook, bids: [] } });
+  assert.ok(!empty.ok && empty.leg === "hedge" && empty.code === "book_empty");
+});
+
 test("early close: the schedule is a deterministic draw per ticker, inside the window, off when the share is 0", () => {
   assert.equal(tickerHash("KXMLBGAME-TEST-TB"), tickerHash("KXMLBGAME-TEST-TB"));
   assert.notEqual(tickerHash("A"), tickerHash("B"));

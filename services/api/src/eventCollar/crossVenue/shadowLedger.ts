@@ -83,6 +83,13 @@ export interface ShadowOpenRecord {
    */
   hedgeTokenId?: string;
   /**
+   * The ProphetX strike the hedge bought, so an early close can read its live book through the
+   * aggregator, and the holder's side's strike on the same market, which the close BUYS to offset
+   * the hedge (the venue takes no sell order; prophetxOrders.ts). Absent on other routes.
+   */
+  hedgeStrikeId?: string;
+  hedgeOffsetStrikeId?: string;
+  /**
    * The venue's rule text as published at open, pinned (sha256, source URL, the text). Null when
    * the venue published none; absent on records before 2026-10-11. Evidence for the result, never
    * an input to the payout.

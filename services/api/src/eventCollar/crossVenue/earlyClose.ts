@@ -150,6 +150,8 @@ export interface EarlyCloseTerms {
   /** NO units the hedge bought, milli (1000 = one $1-paying unit) */
   hedgeUnitsMilli: number;
   route: HedgeRoute;
+  /** the ProphetX strike the hedge holds, when the route is ProphetX */
+  hedgeStrikeId?: string;
 }
 
 export interface EarlyCloseBooks {
@@ -157,6 +159,11 @@ export interface EarlyCloseBooks {
   kalshi: KalshiBookSides;
   /** the hedge token's book when the route is cross-venue; absent when it could not be located */
   pmNoBook?: PmBook;
+  /**
+   * The hedge strike's book when the route is ProphetX, the settlement fee already folded in
+   * (prophetxOrders.foldProphetXFee) as it was at the lock; absent when it could not be read.
+   */
+  pxNoBook?: PmBook;
 }
 
 export interface EarlyCloseQuote {
@@ -184,12 +191,18 @@ export interface EarlyCloseQuote {
   /** the writer's result on this position: the published take, by construction */
   writerCents: number;
   /**
-   * The hedge sale as walked on Kalshi's No bids, for the order that sends it (hedgeExecutor's
-   * sell intent): the top of the bids, the average, the worst level taken, gross cents before
-   * fees. Absent when the hedge is on Polymarket (recorded, not sent).
+   * The hedge sale as walked, for the order that sends it (hedgeExecutor's sell intent). On Kalshi:
+   * the No bids' top, average and worst level taken, cents, gross before fees. On ProphetX: the
+   * hedge strike's fee-folded bids in milli, and the strike id; the order that realises it is a BUY
+   * of the holder's side's strike at 1 - the worst bid, which settles against the hedge at the game
+   * (the proceeds land then, not today). Absent when the hedge is on Polymarket (recorded, not sent).
    */
-  hedgeSale?: { venue: "kalshi"; bestPriceCents: number; avgPriceCents: number; worstPriceCents: number; grossCents: number };
+  hedgeSale?: HedgeSale;
 }
+
+export type HedgeSale =
+  | { venue: "kalshi"; bestPriceCents: number; avgPriceCents: number; worstPriceCents: number; grossCents: number }
+  | { venue: "prophetx"; strikeId: string; bestPriceMilli: number; avgPriceMilli: number; worstPriceMilli: number; grossCents: number; settlesAtGame: true };
 
 export type EarlyCloseLeg = "position" | "hedge";
 export type EarlyCloseRefusalCode = "book_empty" | "book_too_thin" | "hedge_unlocatable";
@@ -238,6 +251,21 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
     hedgeProceedsCents = h.proceedsCents;
     hedgeFeesCents = h.feeCents;
     hedgeSale = { venue: "kalshi", bestPriceCents: books.kalshi.noBids[0].priceCents, avgPriceCents: h.avgPriceCents, worstPriceCents: h.worstPriceCents, grossCents: h.proceedsCents };
+  } else if (terms.route === "prophetx") {
+    // the bids carry the settlement fee already (folded at the read), so the walk is the net
+    if (!books.pxNoBook || !terms.hedgeStrikeId) {
+      return { ok: false, leg: "hedge", code: "hedge_unlocatable", detail: books.pxNoBook ? "the hedge strike for this position is not on record" : "the hedge strike's book could not be read through the aggregator" };
+    }
+    if (books.pxNoBook.bids.length === 0) {
+      return { ok: false, leg: "hedge", code: "book_empty", detail: "no resting bids on the hedge strike" };
+    }
+    const h = walkPmBids(books.pxNoBook.bids, terms.hedgeUnitsMilli);
+    if (!h) {
+      return { ok: false, leg: "hedge", code: "book_too_thin", detail: "the hedge strike's bids cannot absorb the hedge right now" };
+    }
+    hedgeProceedsCents = h.proceedsCents;
+    hedgeFeesCents = 0; // the venue's settlement fee is inside the folded bids
+    hedgeSale = { venue: "prophetx", strikeId: terms.hedgeStrikeId, bestPriceMilli: books.pxNoBook.bids[0].priceMilli, avgPriceMilli: h.avgPriceMilli, worstPriceMilli: h.worstPriceMilli, grossCents: h.proceedsCents, settlesAtGame: true };
   } else {
     if (!books.pmNoBook) {
       return { ok: false, leg: "hedge", code: "hedge_unlocatable", detail: "the hedge token for this position is not on record" };

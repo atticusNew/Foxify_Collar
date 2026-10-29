@@ -44,6 +44,7 @@ import {
 } from "./hedgeExecutor";
 import { AggregatorOrderClient, aggregatorTradeConfigFromEnv } from "./aggregatorOrders";
 import { KalshiOrderClient } from "./kalshiOrders";
+import { ProphetXOrderClient } from "./prophetxOrders";
 import { KalshiRfqClient, kalshiRfqCredentialsFromEnv } from "./kalshiRfq";
 import { LiveHedgeExecutor, liveRailsFromEnv, sentUnitsMilliOn, type LiveHedgeRails, type LiveOrderHook } from "./liveHedge";
 import {
@@ -84,6 +85,8 @@ export interface HedgeExecutorChoice {
   kalshiOrders: KalshiOrderClient | null;
   /** the aggregator's order client when the TRADE key exists in live mode via aggregator; the pod's balance and positions for the pre-flight */
   aggregatorOrders: AggregatorOrderClient | null;
+  /** the pod's ProphetX order client, same key, same mode: its ladder, balance and positions for the pre-flight */
+  prophetxOrders: ProphetXOrderClient | null;
 }
 
 /** EVENT_HEDGE_LIVE_VIA as the deploy spells it; anything but "aggregator" is the direct path. */
@@ -123,7 +126,7 @@ export function hedgeExecutorFromEnv(
   if (strategy === "book") {
     const notes = ["book: simulated fill at the walked terms"];
     if (builder.note) notes.push(builder.note);
-    return { executor: new BookHedgeExecutor(), strategy, rfqVenues: [], notes, polymarketBuilderCode, live: null, kalshiOrders: null, aggregatorOrders: null };
+    return { executor: new BookHedgeExecutor(), strategy, rfqVenues: [], notes, polymarketBuilderCode, live: null, kalshiOrders: null, aggregatorOrders: null, prophetxOrders: null };
   }
   if (strategy === "live") {
     const rails = liveRailsFromEnv(env);
@@ -132,6 +135,7 @@ export function hedgeExecutorFromEnv(
     const hooks: Partial<Record<HedgeVenue, LiveOrderHook>> = { ...(opts.liveHooks ?? {}) };
     let kalshiOrders: KalshiOrderClient | null = null;
     let aggregatorOrders: AggregatorOrderClient | null = null;
+    let prophetxOrders: ProphetXOrderClient | null = null;
     const kCreds = kalshiRfqCredentialsFromEnv(env);
     if (via === "aggregator") {
       const tCfg = aggregatorTradeConfigFromEnv(env);
@@ -145,6 +149,18 @@ export function hedgeExecutorFromEnv(
         }
       } else if (!tCfg && !hooks.kalshi) {
         notes.push("kalshi: EVENT_HEDGE_LIVE_VIA=aggregator but no AGGREGATOR_TRADE_KEY_ID / AGGREGATOR_TRADE_PRIVATE_KEY_HEX; live orders impossible; every hedge simulated");
+      }
+      // the same pod, the same key, the venue's ProphetX account: the second live venue
+      if (tCfg && !hooks.prophetx) {
+        try {
+          prophetxOrders = new ProphetXOrderClient(tCfg, aggregatorOrders ? { rest: aggregatorOrders.rest } : {});
+          hooks.prophetx = prophetxOrders.hook();
+          notes.push(`prophetx: live orders go through the aggregator's pod with the TRADE key, fill or kill on the venue's ladder; ${prophetxOrders.feeBps / 100}% of net gains provided for at settlement (EVENT_PROPHETX_FEE_BPS)`);
+        } catch (err) {
+          notes.push(`prophetx: client could not be built (${err instanceof Error ? err.message : String(err)}); no live orders there`);
+        }
+      } else if (!tCfg && !hooks.prophetx) {
+        notes.push("prophetx: no TRADE key; live orders impossible; the route prices on paper only");
       }
       if (kCreds) notes.push("kalshi: KALSHI_API_KEY_ID is set but sends nothing while via=aggregator; it serves the account routes (tier, subaccounts) only");
     } else if (kCreds && !hooks.kalshi) {
@@ -163,6 +179,7 @@ export function hedgeExecutorFromEnv(
           : `live: ${rails.allowlist.length} ticker(s) allowlisted; caps ${rails.maxUnitsPerOrderMilli / 1000} per order, ${rails.maxUnitsPerDayMilli / 1000} per day`,
     );
     notes.push("polymarket: no live order client; book only");
+    if (via !== "aggregator" && !hooks.prophetx) notes.push("prophetx: live orders reach the venue only through the aggregator's pod (EVENT_HEDGE_LIVE_VIA=aggregator); the route prices on paper only");
     if (builder.note) notes.push(builder.note);
     const receiptsPath = opts.receiptsPath;
     const sentToday = (day: string): number => (receiptsPath ? sentUnitsMilliOn(loadHedgeReceipts(receiptsPath), day) : 0);
@@ -176,6 +193,7 @@ export function hedgeExecutorFromEnv(
       live: liveView(rails, venues, via),
       kalshiOrders,
       aggregatorOrders,
+      prophetxOrders,
     };
   }
   const clients: Partial<Record<HedgeVenue, RfqClient>> = {};
@@ -216,5 +234,6 @@ export function hedgeExecutorFromEnv(
     live: null,
     kalshiOrders: null,
     aggregatorOrders: null,
+    prophetxOrders: null,
   };
 }

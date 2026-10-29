@@ -159,6 +159,8 @@ export interface AggregatorOrderClientOptions {
   fetchImpl?: typeof fetch;
   nowSec?: () => number;
   timeoutMs?: number;
+  /** share one signed surface (and its clock) with another venue client on the same pod */
+  rest?: AggregatorPodRest;
   /** how long to wait between order reads while the partner relays the venue's answer */
   settleWaitMs?: number;
   /** how many reads before the order is treated as resting and cancelled */
@@ -166,27 +168,81 @@ export interface AggregatorOrderClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export class AggregatorOrderClient {
-  readonly venue = "kalshi" as const;
-  readonly via = "aggregator" as const;
-  private readonly signer: AggregatorSigner;
+/**
+ * The pod's signed REST surface, shared by every venue the pod routes (Kalshi here, ProphetX in
+ * prophetxOrders.ts): one TRADE key, one clock offset, one request shape.
+ */
+export class AggregatorPodRest {
+  readonly signer: AggregatorSigner;
   private readonly fetchImpl: typeof fetch;
   private readonly nowSec: () => number;
   private readonly timeoutMs: number;
-  private readonly settleWaitMs: number;
-  private readonly settleReads: number;
-  private readonly sleep: (ms: number) => Promise<void>;
   private offsetSec = 0;
   private clockSynced = false;
 
   constructor(
-    private readonly cfg: AggregatorTradeConfig,
-    opts: AggregatorOrderClientOptions = {},
+    readonly cfg: AggregatorTradeConfig,
+    opts: Pick<AggregatorOrderClientOptions, "fetchImpl" | "nowSec" | "timeoutMs"> = {},
   ) {
     this.signer = signerFromSecret(cfg.keyId, cfg.secret);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.nowSec = opts.nowSec ?? (() => Math.floor(Date.now() / 1000));
     this.timeoutMs = opts.timeoutMs ?? Number(process.env.EVENT_FETCH_TIMEOUT_MS || 8000);
+  }
+
+  /** One GET /v1/time, so the signatures carry the partner's clock rather than ours. Failure is not fatal. */
+  async syncClock(): Promise<void> {
+    if (this.clockSynced) return;
+    this.clockSynced = true;
+    try {
+      const { time } = await this.request<{ time: number }>("GET", "/v1/time");
+      if (Number.isFinite(time)) this.offsetSec = Math.round(time - this.nowSec());
+    } catch {
+      this.offsetSec = 0;
+    }
+  }
+
+  async request<T>(method: string, path: string, o: { query?: string; body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
+    const query = o.query ?? "";
+    const bodyText = o.body === undefined ? "" : JSON.stringify(o.body);
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      "user-agent": "atticus-event-hedge",
+      ...signedHeaders(this.signer, { method, path, query, body: bodyText, idempotencyKey: o.idempotencyKey }, this.nowSec() + this.offsetSec),
+    };
+    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
+    if (bodyText) {
+      headers["content-type"] = "application/json";
+      init.body = bodyText;
+    }
+    const res = await this.fetchImpl(`${this.cfg.host}${path}${query ? `?${query}` : ""}`, init);
+    const text = await res.text().catch(() => "");
+    let json: unknown = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    if (res.ok) return json as T;
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const err = (json ?? {}) as { error?: { code?: string; message?: string } };
+    throw new AggregatorApiError(res.status, err.error?.code ?? `http_${res.status}`, err.error?.message ?? `aggregator ${res.status} on ${method} ${path}`, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null);
+  }
+}
+
+export class AggregatorOrderClient {
+  readonly venue = "kalshi" as const;
+  readonly via = "aggregator" as const;
+  readonly rest: AggregatorPodRest;
+  private readonly settleWaitMs: number;
+  private readonly settleReads: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+
+  constructor(
+    private readonly cfg: AggregatorTradeConfig,
+    opts: AggregatorOrderClientOptions = {},
+  ) {
+    this.rest = opts.rest ?? new AggregatorPodRest(cfg, opts);
     this.settleWaitMs = opts.settleWaitMs ?? 300;
     this.settleReads = opts.settleReads ?? 5;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -194,7 +250,7 @@ export class AggregatorOrderClient {
 
   /** Safe to print: what the partner registered against the key id. */
   get publicKeyHex(): string {
-    return this.signer.publicKeyHex;
+    return this.rest.signer.publicKeyHex;
   }
 
   get keyId(): string {
@@ -314,42 +370,11 @@ export class AggregatorOrderClient {
     }
   }
 
-  /** One GET /v1/time, so the signatures carry the partner's clock rather than ours. Failure is not fatal. */
-  private async syncClock(): Promise<void> {
-    if (this.clockSynced) return;
-    this.clockSynced = true;
-    try {
-      const { time } = await this.request<{ time: number }>("GET", "/v1/time");
-      if (Number.isFinite(time)) this.offsetSec = Math.round(time - this.nowSec());
-    } catch {
-      this.offsetSec = 0;
-    }
+  private syncClock(): Promise<void> {
+    return this.rest.syncClock();
   }
 
-  private async request<T>(method: string, path: string, o: { query?: string; body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
-    const query = o.query ?? "";
-    const bodyText = o.body === undefined ? "" : JSON.stringify(o.body);
-    const headers: Record<string, string> = {
-      accept: "application/json",
-      "user-agent": "atticus-event-hedge",
-      ...signedHeaders(this.signer, { method, path, query, body: bodyText, idempotencyKey: o.idempotencyKey }, this.nowSec() + this.offsetSec),
-    };
-    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
-    if (bodyText) {
-      headers["content-type"] = "application/json";
-      init.body = bodyText;
-    }
-    const res = await this.fetchImpl(`${this.cfg.host}${path}${query ? `?${query}` : ""}`, init);
-    const text = await res.text().catch(() => "");
-    let json: unknown = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      json = null;
-    }
-    if (res.ok) return json as T;
-    const retryAfter = Number(res.headers.get("retry-after"));
-    const err = (json ?? {}) as { error?: { code?: string; message?: string } };
-    throw new AggregatorApiError(res.status, err.error?.code ?? `http_${res.status}`, err.error?.message ?? `aggregator ${res.status} on ${method} ${path}`, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null);
+  private request<T>(method: string, path: string, o: { query?: string; body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
+    return this.rest.request<T>(method, path, o);
   }
 }
