@@ -38,6 +38,8 @@
   const POLL_RECORD_MS = 60_000;
   const REQUOTE_MS = 60_000;
   const SCAN_MIN_GAP_MS = 500;
+  // a row still on the page that one scan could not read keeps its block this long before it is dropped
+  const ROW_GRACE_MS = 6_000;
   // the three shapes the service prices, shown only when the book offers more than one
   const TIER_ORDER = ["tight", "balanced", "wide"];
   const TIER_WORDS = { tight: "Most now", balanced: "Even", wide: "Keep more upside" };
@@ -166,11 +168,25 @@
     while (w.nextNode()) out += w.currentNode.nodeValue;
     return out;
   };
-  /** An element's height less our blocks inside it: the page's own size of the thing. */
+  /**
+   * The page's own height of a block: the extent of its children that are not ours, never its box.
+   * The box lies two ways. A card in a deck is stretched to the tallest card on its line (a flex
+   * row's default), so when our panel opens inside one card every card beside it grows with it;
+   * and a card that holds our block is taller by our block and its margin. Either would read a
+   * position as a page-sized block and drop its line. A block with no element children is its box.
+   */
   const pageHeight = (e, r) => {
-    let h = r.height;
-    for (const ours of e.querySelectorAll(".ael-host")) h -= ours.getBoundingClientRect().height;
-    return h;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const c of e.children) {
+      if (c.classList.contains("ael-ui")) continue;
+      const cr = c.getBoundingClientRect();
+      if (!cr.height && !cr.width) continue;
+      if (cr.top < top) top = cr.top;
+      if (cr.bottom > bottom) bottom = cr.bottom;
+    }
+    if (top === Infinity) return r.height;
+    return Math.min(r.height, bottom - top);
   };
 
   // ── the games the service can protect ───────────────────────────────────────
@@ -301,9 +317,11 @@
       const sorted = [...list].sort((a, b) => gameOrdinal(a) - gameOrdinal(b));
       return gameOrdinal(sorted[0]) < gameOrdinal(sorted[1]) ? sorted[0] : null;
     }
+    // a lock left early is still the venue's live position (the pick is the holder's to sell), so the
+    // active tabs keep it; only the game's own settlement moves it to the settled tab
     const settledLock = (t) => {
       const r = S.record.get(t);
-      return Boolean(r && r.status !== "open");
+      return Boolean(r && (r.status === "settled" || r.status === "void"));
     };
     const byTab = S.tab === "settled" ? list.filter(settledLock) : list.filter((t) => !settledLock(t));
     return byTab.length === 1 ? byTab[0] : null;
@@ -413,7 +431,8 @@
    */
   const rememberLock = (ticker, next) => {
     const prev = S.record.get(ticker);
-    S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), ms: prev.ms, hedge: next.hedge || prev.hedge || null } : next);
+    // the tap's own answers (the hedge, the routing, the sale at the leave) are kept: the public record carries none of them
+    S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), justLeft: Boolean(prev.justLeft), ms: prev.ms, hedge: next.hedge || prev.hedge || null, routing: next.routing || prev.routing || null, closeHedge: next.closeHedge || prev.closeHedge || null } : next);
     // a lock on a game the service no longer lists joins the index so its row is still found
     if (!S.byTicker[ticker] && next.league) indexMarkets(S.markets);
   };
@@ -837,8 +856,12 @@
       const text = spaced(norm(pageText(e)));
       if (text.length > 600) break;
       const r = e.getBoundingClientRect();
-      // wider than the window is the page itself, unless it is a table that scrolls inside its pane
-      if (pageHeight(e, r) > 320 || (r.width > window.innerWidth && !e.closest("table"))) break;
+      // wider than the window is the page itself, unless it is a table that scrolls inside its pane;
+      // taller than a row is a list, unless it is one card of a deck (a Novig order card runs to
+      // its buttons, share line and id), which is one position however tall it stands
+      const h = pageHeight(e, r);
+      if (h > 320 && !(h <= 640 && e.parentElement && e.parentElement !== document.body && isDeck(e.parentElement))) break;
+      if (r.width > window.innerWidth && !e.closest("table")) break;
       const labels = (text.match(STAKE_LABELS) || []).length;
       if (found) {
         // a block was found without the row's stake and payout labels (a matched/unmatched detail
@@ -989,7 +1012,8 @@
   const isDeck = (parent) => {
     const cs = getComputedStyle(parent);
     if (cs.display.includes("grid")) return (cs.gridTemplateColumns || "").trim().split(/\s+/).filter(Boolean).length > 1;
-    return cs.display.includes("flex") && !cs.flexDirection.startsWith("column") && cs.flexWrap === "wrap" && parent.children.length > 1;
+    // a wrapping row is a deck with one card in it as with five: the one card is read and placed the same way
+    return cs.display.includes("flex") && !cs.flexDirection.startsWith("column") && cs.flexWrap === "wrap";
   };
   /**
    * Where our block goes: after the row, climbing out of flex/grid rows so it lands under the row,
@@ -1107,7 +1131,9 @@
     if (st.pending || st.busy) return;
     if (st.quoteKey === key && Date.now() - st.quoteAt < REQUOTE_MS) return;
     st.pending = true;
-    const path = "/api/shadow/quote?ticker=" + encodeURIComponent(B.ticker) + "&contracts=" + B.size.contracts + (B.size.entryCents ? "&entry=" + B.size.entryCents : "");
+    // the venue this page is: the service routes the hedge against its settlement rules (which book
+    // takes the other side tonight, and what the tails cost) and words the terms in its rules
+    const path = "/api/shadow/quote?ticker=" + encodeURIComponent(B.ticker) + "&contracts=" + B.size.contracts + (B.size.entryCents ? "&entry=" + B.size.entryCents : "") + "&venue=" + encodeURIComponent(VENUE_ID);
     api(path, "GET").then((r) => {
       st.pending = false;
       st.quoteAt = Date.now();
@@ -1180,16 +1206,20 @@
    * paid): what is still owed to the holder, what the holder still owes back, or paid in full.
    * Null when the service's record predates cash legs; the line then says only what settled.
    */
-  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap" };
+  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap", close: "Left early" };
   const cashState = (rec) => {
     const legs = Array.isArray(rec.cashDue) ? rec.cashDue : null;
     if (!legs || !legs.length) return null;
     const toYou = legs.filter((l) => l.to === "holder").reduce((s, l) => s + (l.outstandingCents || 0), 0);
     const back = legs.filter((l) => l.to === "writer").reduce((s, l) => s + (l.outstandingCents || 0), 0);
     if (toYou > 0) return { label: esc(usd(toYou)) + " owed to you", sub: "on its way", open: true };
-    if (back > 0) return { label: esc(usd(back)) + " due back", sub: "the slice above the cap", open: true };
+    // what is owed back: the slice above the cap on a win, or the protection's settlement on a leave
+    if (back > 0) return { label: esc(usd(back)) + " due back", sub: legs.some((l) => l.leg === "close" && l.to === "writer" && l.outstandingCents > 0) ? "the protection's settlement" : "the slice above the cap", open: true };
     return { label: "paid in full", sub: "", open: false };
   };
+  /** What a leave moved between the two parties beyond the credit: the record's own totals, or the tap's answer. */
+  const closeNetOf = (rec) => (rec.closeNetCents != null ? rec.closeNetCents : (rec.protectedCents || 0) - (rec.nakedCents || 0) - (rec.creditCents || 0));
+  const signed = (c) => (c < 0 ? "\u2212" : "+") + esc(usd(Math.abs(c)));
   const legLine = (l) => {
     const who = l.to === "holder" ? "to you" : "back to the writer";
     const amount = (l.to === "holder" && l.leg === "credit" ? "+" : "") + esc(usd(l.dueCents));
@@ -1225,7 +1255,12 @@
           ? lineGo("Settled", cash.open ? "Protected outcome <b>" + esc(got) + "</b> &middot; " + cash.label + (cash.sub ? " &middot; " + cash.sub : "") : "Paid <b>" + esc(got) + "</b> &middot; every leg paid.", "ael-line-on")
           : lineGo("Settled", "Protected outcome <b>" + esc(got) + "</b>.", "ael-line-on");
       } else if (rec.status === "void") line = lineGo("Voided", "No official result; nothing owed.", "ael-line-on");
-      else line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>, whichever way it goes." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
+      else if (rec.status === "closed") {
+        // left early: what the holder ended with at the live price, the cash beside it as on a settlement
+        const got = usd(rec.protectedCents || 0);
+        const cash = cashState(rec);
+        line = lineGo("Left early", "Ended with <b>" + esc(got) + "</b>" + (cash && cash.open ? " &middot; " + cash.label : "") + ".", "ael-line-on");
+      } else line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>, whichever way it goes." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
     } else if (B.kind === "other") {
       line = lineGo("Unavailable", "Protection covers " + (VENUE_ID === "novig" ? "Winner" : "Moneyline") + " picks.", "ael-line-off");
     } else if (B.match === "unmatched") {
@@ -1261,7 +1296,7 @@
           // the "Locked in" moment is shown once; the next open is the position's details
           if (st.done) st.done.justNow = false;
           const r = S.record.get(B.ticker);
-          if (r) r.justNow = false;
+          if (r) r.justNow = r.justLeft = false;
         }
         paintRow(B);
       };
@@ -1355,7 +1390,7 @@
     }
     const fine = ["Priced live"];
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
-    fine.push(...notes(B), '<a href="#" class="ael-how-a">how it works</a>');
+    fine.push(...notes(B), ...routingNotes(p.routing), '<a href="#" class="ael-how-a">how it works</a>');
     const html =
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") +
       ledger(shortOf(B.ticker), rs, t.creditCents, was) +
@@ -1426,8 +1461,8 @@
     // locked, written or bought. The panel says so and offers a reset.
     const r =
       S.settings.rehearse === "yes"
-        ? await new Promise((resolve) => setTimeout(() => resolve({ ok: true, json: { ok: true, at: new Date().toISOString(), contracts: n, floorCents: t.floorCents, capCents: t.capCents, creditCents: t.creditCents, sideName: shortOf(B.ticker), eventTimeIso: st.quote.p.eventTimeIso, hedge: { simulated: true, fallbackReason: "rehearsal" }, rehearsal: true } }), 3600))
-        : await api("/api/shadow/lock", "POST", { ticker: B.ticker, contracts: n, entryCents: (B.size && B.size.entryCents) || undefined, tier: st.tier || undefined });
+        ? await new Promise((resolve) => setTimeout(() => resolve({ ok: true, json: { ok: true, at: new Date().toISOString(), contracts: n, floorCents: t.floorCents, capCents: t.capCents, creditCents: t.creditCents, sideName: shortOf(B.ticker), eventTimeIso: st.quote.p.eventTimeIso, hedge: { simulated: true, fallbackReason: "rehearsal" }, routing: st.quote.p.routing || null, rehearsal: true } }), 3600))
+        : await api("/api/shadow/lock", "POST", { ticker: B.ticker, contracts: n, entryCents: (B.size && B.size.entryCents) || undefined, tier: st.tier || undefined, venue: VENUE_ID });
     clearInterval(tick);
     st.busy = false;
     if (!r.ok || !r.json || !r.json.ok) {
@@ -1435,7 +1470,7 @@
       paintRow(B);
       return;
     }
-    st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
+    st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, routing: r.json.routing || (st.quote && st.quote.p && st.quote.p.routing) || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
     st.open = true;
     st.enter = true;
     if (r.json.rehearsal) {
@@ -1455,6 +1490,87 @@
    * no order line; the holder's protection is on the record either way. The reason stays with
    * the operator's hedge line.
    */
+  /**
+   * Where the other side goes, as the service judged it (GET /api/shadow/quote and the lock answer
+   * carry `routing`; the receipt carries the one judged at the tap): the hedge venue and why, each
+   * route's cost all in, and the four tails (tie, postponed, called off, corrected) in this venue's
+   * own settlement words. The holder sees the venue and the terms; the operator also sees the costs.
+   */
+  const hedgeVenueOf = (rt) => (rt && rt.hedgeVenueName) || null;
+  /**
+   * The price competition in one line, as the service words it (`routing.comparison`): what each
+   * venue's book would have paid for the same protection and which one the other side went to
+   * ("ProphetX $3.10 vs Kalshi $2.40, hedged on ProphetX"). Null when only one venue priced.
+   */
+  const comparisonOf = (rt) => (rt && typeof rt.comparison === "string" && rt.comparison ? rt.comparison : null);
+  /**
+   * Grey notes in the offer's fine print: the competition when two venues priced the other side,
+   * else where the other side is bought when that is not this page's venue.
+   */
+  const routingNotes = (rt) => {
+    const cmp = comparisonOf(rt);
+    if (cmp) return [esc(cmp)];
+    const v = hedgeVenueOf(rt);
+    if (!v || !rt.holderVenueName || v === rt.holderVenueName) return [];
+    return ["other side on " + esc(v)];
+  };
+  const bps = (x) => (x == null ? "" : (x >= 0 ? "+" : "") + Math.round(x) + " bps");
+  /** The four tails in a few words, for the folded rules line: what the venue's rules cover. */
+  const TAIL_WORDS = { tie: "a tie", postponed: "a postponement", abandoned: "a game called off", corrected: "a corrected result" };
+  const tailSummary = (tails) => {
+    const words = tails.map((t) => TAIL_WORDS[t.branch]).filter(Boolean);
+    return words.length ? words.join(", ") : tails.length + " cases";
+  };
+  /**
+   * The receipt's routing rows: "Hedged on" (the venue; the service's reason is the operator's),
+   * the competition when two venues priced the other side, the rules for the tails folded to one
+   * line that opens on a tap (`rulesOpen`), and (operator) every route's cost.
+   */
+  const routingRows = (row, rt, rulesOpen) => {
+    if (!rt) return "";
+    const lines = [];
+    const v = hedgeVenueOf(rt);
+    if (v) lines.push(row("Hedged on", esc(v) + (operator() && rt.reason ? ' <span class="ael-dim">&middot; ' + esc(rt.reason) + "</span>" : "")));
+    const cmp = comparisonOf(rt);
+    if (cmp) lines.push(row("Compared", esc(cmp)));
+    if (Array.isArray(rt.tails) && rt.tails.length) {
+      lines.push(
+        row(
+          "Rules",
+          rulesOpen
+            ? '<span class="ael-tails">' + rt.tails.map((t) => "<i>" + esc(String(t.text || "")) + "</i>").join("") + '<a href="#" class="ael-rules-a">hide</a></span>'
+            : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + '</span> <a href="#" class="ael-rules-a">show</a>',
+        ),
+      );
+    }
+    if (operator() && Array.isArray(rt.routes)) {
+      for (const r of rt.routes) {
+        const name = esc(r.hedgeVenueName || (r.hedgeVenue === "polymarket" ? "Polymarket" : r.hedgeVenue === "prophetx" ? "ProphetX" : "Kalshi"));
+        const credit = r.creditCents != null ? " &middot; pays " + esc(usd(r.creditCents)) : "";
+        lines.push(row(name, r.ok ? esc(bps(r.allInBps)) + ' <span class="ael-dim">all in (' + esc(bps(r.evCostBps)) + " books, " + esc(bps(r.tailChargeBps)) + " tails)" + credit + (r.gate ? " &middot; " + esc(r.gate) : "") + (r.compatible === false ? " &middot; tails differ" : "") + "</span>" : '<span class="ael-dim">' + esc(r.refusal || r.gate || "not offered") + "</span>"));
+      }
+    }
+    return lines.join("");
+  };
+  /** A sale on ProphetX is an offset: the other side's pair bought, settling against the hedge at the game (the service marks it settlesAtGame). */
+  const isOffset = (sale) => Boolean(sale && (sale.settlesAtGame || /prophetx/i.test(String(sale.venue || ""))));
+  /** The sale of the other side at a leave, as the receipt has it (hedgeSale): sent to the venue, or on the record for the operator's hand. */
+  const saleRow = (row, sale, rec) => {
+    const sent = sale ? !sale.simulated : rec && rec.closeHedge ? Boolean(rec.closeHedge.sent) : null;
+    if (sent === null && !sale) return "";
+    const venue = (sale && sale.venue) || "Kalshi";
+    const units = sale && sale.unitsMilli != null ? (sale.unitsMilli / 1000).toFixed(2).replace(/\.00$/, "") : null;
+    const order = sale && sale.orderId ? ' <span class="ael-dim">&middot; order <code>' + esc(String(sale.orderId).slice(0, 8)) + "&hellip;</code></span>" : "";
+    if (sent && isOffset(sale)) {
+      // ProphetX takes no sell order: the other side is offset by buying its pair, which settles at the game
+      return row("Offset on", esc(venue) + (units ? " &middot; " + esc(units) + " contracts of the pair bought" : "") + (sale && sale.costCents != null ? " &middot; " + esc(usd(sale.costCents)) + " at the game" : "") + ' <span class="ael-dim">&middot; the pair settles when the game does</span>' + order);
+    }
+    if (sent) {
+      return row("Sold back", (units ? esc(units) + " contracts on " : "on ") + esc(venue) + (sale && sale.avgPriceMilli != null ? " at " + esc((sale.avgPriceMilli / 10).toFixed(1)) + "c each after fees" : "") + (sale && sale.costCents != null ? " &middot; " + esc(usd(sale.costCents)) : "") + order);
+    }
+    if (isOffset(sale) || /prophetx/i.test(venue)) return row("Offset on", '<span class="ael-dim">' + esc(venue) + "; recorded at the book's price, the pair bought by hand</span>");
+    return row("Sold back", '<span class="ael-dim">recorded at the book\'s price on ' + esc(venue) + "; settled by hand</span>");
+  };
   /** How the order reached the venue, as the receipt says it: through the aggregator's pod, or on our own key. The partner is never named. */
   const viaWords = (h) => (h && h.via === "aggregator" ? ' <span class="ael-dim">&middot; through the aggregator</span>' : h && h.via === "direct" ? ' <span class="ael-dim">&middot; direct</span>' : "");
   const receiptHtml = (st, rec) => {
@@ -1486,11 +1602,13 @@
       }
       if (h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
     }
+    if (rec.status === "closed") lines.push(saleRow(row, st.rcptSale || null, rec));
+    lines.push(routingRows(row, st.rcptRouting || rec.routing || null, Boolean(st.rcptRules)));
     // the money between the two parties, leg by leg, as the record has it: the credit from the
     // tap, and at settlement the floor to the holder or the slice above the cap back to the writer
     const legs = Array.isArray(st.rcptCash) && st.rcptCash.length ? st.rcptCash : Array.isArray(rec.cashDue) ? rec.cashDue : [];
     for (const l of legs) if (LEG_WORDS[l.leg]) lines.push(row(LEG_WORDS[l.leg], legLine(l)));
-    return '<div class="ael-rcpt">' + lines.join("") + "</div>";
+    return '<div class="ael-rcpt">' + lines.filter(Boolean).join("") + "</div>";
   };
 
   /** Read the hedge view for a lock from the service once, then paint; the tap's own answer is used when present. */
@@ -1502,6 +1620,8 @@
     st.rcptBusy = false;
     if (r.ok && r.json && r.json.ok) {
       st.rcptHedge = r.json.hedge || null;
+      st.rcptRouting = r.json.routing || null;
+      st.rcptSale = r.json.hedgeSale || null;
       st.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : null;
       st.rcptErr = r.json.hedge ? "" : "no hedge on the trail for this lock";
     } else st.rcptErr = (r.json && (r.json.message || r.json.error)) || r.error || "could not read the receipt";
@@ -1515,6 +1635,12 @@
     // moment later carries none), else read from the service the first time the receipt opens
     if (!st.rcptHedge && rec.hedge && rec.hedge.receiptId) st.rcptHedge = rec.hedge;
     if (st.rcpt && !rec.rehearsal && !st.rcptHedge && !st.rcptBusy && !st.rcptErr) void loadReceipt(B);
+    // left early: the sale of the other side is on the receipt; read it once
+    if (st.rcpt && rec.status === "closed" && !st.rcptSale && !st.rcptBusy && !st.rcptSaleAsked) {
+      st.rcptSaleAsked = true;
+      st.rcptHedge = null;
+      void loadReceipt(B);
+    }
     const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
     const nick = shortOf(B.ticker);
     const h = st.rcptHedge || rec.hedge;
@@ -1541,8 +1667,32 @@
       if (cash && cash.open) meta.push(rec.result === "yes" ? "the slice above the cap goes back to the writer; the receipt shows each leg" : "the floor comes to you; the receipt shows each leg");
     } else if (rec.status === "void") {
       body = '<div class="ael-ph"><b>Protection voided</b><span>No official result for this game; nothing owed either way.</span></div>';
+    } else if (rec.status === "closed") {
+      // left early: the pick sold at the live price, the protection settled between us at that price,
+      // what the holder ended with. The cash row says whether that settlement has moved.
+      const net = closeNetOf(rec);
+      const cash = cashState(rec);
+      const sold = rec.nakedCents != null ? rec.nakedCents : (rec.protectedCents || 0) - net - (rec.creditCents || 0);
+      body =
+        '<div class="ael-ledger ael-two">' +
+        ledgerRow("Left early &middot; you ended with", esc(usd(rec.protectedCents || 0)), null, "ael-hero") +
+        ledgerRow("Your pick, sold" + (rec.closeYesFillCents != null ? " at " + esc(String(rec.closeYesFillCents)) + "c" : ""), esc(usd(sold))) +
+        ledgerRow("Protection settled", signed(net), null, cash ? "" : "ael-last") +
+        (cash ? ledgerRow("Cash", cash.label, null, "ael-last") : "") +
+        "</div>";
+      if (rec.closedAt) meta.push("Left " + esc(fmtAt(rec.closedAt)));
+      if (rec.closeUnwindFrictionCents != null) meta.push("leaving cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
+      if (rec.closeHedge) {
+        const sale = rec.closeHedge.sale || null;
+        meta.push(!rec.closeHedge.sent ? "the other side's sale is on the record" : isOffset(sale) ? "the other side offset on " + esc(sale.venue) + ", settles at the game" : "the other side sold on " + esc((sale && sale.venue) || "Kalshi"));
+      }
+      if (rec.justLeft && rec.ms) meta.push("in " + (rec.ms / 1000).toFixed(1) + "s");
+      if (cash && cash.open) meta.push(net < 0 ? "the settlement goes back to the writer; the receipt shows each leg" : "the settlement comes to you; the receipt shows each leg");
     } else {
-      body = ledger(nick, rs, rec.creditCents, null);
+      // leaving is the one thing left to do: a quiet button under the slip, in the venue's raised
+      // grey rather than our colour, with what it means beside it; the leave block takes its place
+      const leaveAct = !rec.rehearsal && !st.leave ? '<div class="ael-acts"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>today\'s price instead of the result</span></div>' : "";
+      body = ledger(nick, rs, rec.creditCents, null) + (st.leave ? leaveHtml(B, rec, rs) : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
       if (rec.rehearsal) meta.push("rehearsal");
@@ -1581,7 +1731,170 @@
           if (st.rcpt) st.rcptErr = "";
           paintRow(B);
         };
+      const rules = panel.querySelector(".ael-rules-a");
+      if (rules)
+        rules.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const st = stateOf(B);
+          st.rcptRules = !st.rcptRules;
+          paintRow(B);
+        };
+      const leave = panel.querySelector(".ael-leave-a");
+      if (leave)
+        leave.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          stateOf(B).leave = { at: 0 };
+          paintRow(B);
+        };
+      const stay = panel.querySelector(".ael-stay");
+      if (stay)
+        stay.onclick = () => {
+          stateOf(B).leave = null;
+          paintRow(B);
+        };
+      const go = panel.querySelector(".ael-leave-go");
+      if (go) go.onclick = () => leaveNow(B, rec);
     });
+  };
+
+  // ── leaving early ─────────────────────────────────────────────────────────────────────────
+  // A protected position can be left before the start: the protection settles at today's price
+  // instead of the official result. The service prices it from the live books (the pick sold
+  // into its bids, our hedge sold into its), the holder reads the figures, then taps once more;
+  // the tap prices again. Nothing is reversed: it is a new trade at live prices, the record says so.
+
+  /** Read the live leave quote once, then again when it has gone stale while the block is open. */
+  const leaveQuote = (B) => {
+    const st = stateOf(B);
+    const L = st.leave;
+    if (!L || L.busy || L.sending) return;
+    if (L.q && Date.now() - L.at < REQUOTE_MS) return;
+    L.busy = true;
+    api("/api/shadow/unwind/quote?ticker=" + encodeURIComponent(B.ticker), "GET").then((r) => {
+      const st2 = stateOf(B);
+      if (!st2.leave) return;
+      st2.leave.busy = false;
+      st2.leave.at = Date.now();
+      if (r.ok && r.json && r.json.ok && r.json.unwind) st2.leave = { ...st2.leave, q: r.json.unwind, lastIso: r.json.lastIso || null, err: null };
+      else st2.leave = { ...st2.leave, q: null, err: leaveWords(r) };
+      paintRow(B);
+    });
+  };
+
+  /** Plain words for a leave that cannot happen now. */
+  const leaveWords = (r) => {
+    const j = (r && r.json) || {};
+    if (!r || !r.ok || !j) return { why: "Live pricing is unavailable right now.", next: "Try again in a moment." };
+    switch (j.error || j.code) {
+      case "too_late":
+        return { why: "Too late to leave; the start is close.", next: "The protection runs to the official result now." + (j.lastIso ? " Leaving closed " + fmtAt(j.lastIso) + "." : "") };
+      case "not_open":
+        return { why: j.status === "closed" ? "This position was already left." : "This position has settled.", next: "" };
+      case "book_empty":
+      case "book_too_thin":
+        return { why: (j.leg === "hedge" ? "The hedge's" : "Your side's") + " book cannot take the size right now.", next: "Check back in a few minutes; the book refills." };
+      case "lock_in_flight":
+        return { why: "This position is being written right now.", next: "A moment." };
+      default:
+        return { why: j.message || "Leaving is unavailable right now.", next: "" };
+    }
+  };
+
+  /** The leave block under the slip: the live figures, the two ways out, the fine print. */
+  const leaveHtml = (B, rec, rs) => {
+    const st = stateOf(B);
+    const L = st.leave;
+    if (!L.q && !L.err) {
+      // the first read is on its way
+      if (!L.busy) setTimeout(() => leaveQuote(B), 0);
+      return '<div class="ael-leave"><div class="ael-skel"></div><div class="ael-skel" style="width:70%"></div></div>';
+    }
+    if (!L.q) {
+      return '<div class="ael-leave"><div class="ael-ph"><b>' + esc(L.err.why) + "</b>" + (L.err.next ? "<span>" + esc(L.err.next) + "</span>" : "") + '</div><div class="ael-leave-acts"><button type="button" class="ael-go ael-quiet ael-stay">Back</button></div></div>';
+    }
+    if (Date.now() - L.at >= REQUOTE_MS) setTimeout(() => leaveQuote(B), 0);
+    const q = L.q;
+    const n = (Number(q.contracts) || rec.contracts || 0).toFixed(2).replace(/\.00$/, "");
+    const fine = ["Priced live"];
+    if (q.unwindFrictionCents != null) fine.push("leaving costs " + esc(usd(q.unwindFrictionCents)) + " against the mid");
+    if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
+    return (
+      '<div class="ael-leave">' +
+      '<div class="ael-leave-h"><b>Leave early</b><span>today\'s price instead of the result</span></div>' +
+      '<div class="ael-ledger ael-two">' +
+      ledgerRow("Your pick, sold now <span class=\"ael-dim\">" + esc(n) + " at " + esc(String(q.yesFillCents)) + "c, after fees</span>", esc(usd(q.positionProceedsCents))) +
+      ledgerRow("Protection settles", signed(q.closeNetCents)) +
+      ledgerRow("You end with <span class=\"ael-dim\">your " + esc(usd(q.creditCents)) + " credit kept</span>", esc(usd(q.protectedAtCloseCents)), null, "ael-hero") +
+      ledgerRow("Staying", esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), null, "ael-last") +
+      "</div>" +
+      '<div class="ael-leave-acts"><button type="button" class="ael-go ael-leave-go">Leave early</button><button type="button" class="ael-go ael-quiet ael-stay">Stay</button></div>' +
+      '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
+      '<div class="ael-fine">Leaving settles the protection at today\'s price. Your pick is yours to sell on ' + esc(V.name) + " at that price, or to keep unprotected.</div>" +
+      "</div>"
+    );
+  };
+
+  /** The tap: the service prices again and writes the close; the row becomes Left early. */
+  const leaveNow = async (B, rec) => {
+    const st = stateOf(B);
+    const L = st.leave;
+    if (!L || L.sending) return;
+    L.sending = true;
+    const go = B.box.querySelector(".ael-leave-go");
+    const stay = B.box.querySelector(".ael-stay");
+    if (stay) stay.disabled = true;
+    const t0 = Date.now();
+    const STAGES = ["Pricing from the live books…", "Writing the record…"];
+    const label = () => {
+      const s = (Date.now() - t0) / 1000;
+      return STAGES[Math.min(STAGES.length - 1, Math.floor(s / 1.5))] + (s >= 3 ? " " + Math.floor(s) + "s" : "");
+    };
+    if (go) {
+      go.disabled = true;
+      go.classList.add("ael-busy");
+      go.textContent = label();
+    }
+    const tick = setInterval(() => {
+      const g = B.box && B.box.querySelector(".ael-leave-go");
+      const next = label();
+      if (g && g.textContent !== next) g.textContent = next;
+    }, 250);
+    const r = await api("/api/shadow/unwind", "POST", { ticker: B.ticker });
+    clearInterval(tick);
+    const st2 = stateOf(B);
+    if (!(r.ok && r.json && r.json.ok && r.json.unwind)) {
+      // refused or unreachable: the position is still protected; say why, offer the way back
+      st2.leave = { at: Date.now(), q: null, err: leaveWords(r) };
+      B.panelHtml = null;
+      paintRow(B);
+      return;
+    }
+    const u = r.json.unwind;
+    const left = {
+      ...rec,
+      status: "closed",
+      closedAt: r.json.at,
+      protectedCents: u.protectedAtCloseCents,
+      nakedCents: u.nakedAtCloseCents,
+      closeNetCents: u.closeNetCents,
+      closeYesFillCents: u.yesFillCents,
+      closeUnwindFrictionCents: u.unwindFrictionCents,
+      cashDue: Array.isArray(r.json.cash) ? r.json.cash : rec.cashDue,
+      closeHedge: r.json.hedge || null,
+      justLeft: true,
+      ms: Date.now() - t0,
+    };
+    st2.leave = null;
+    if (r.json.hedge && r.json.hedge.sale) st2.rcptSale = r.json.hedge.sale;
+    st2.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : st2.rcptCash;
+    if (st2.done) st2.done = left;
+    S.record.set(B.ticker, left);
+    st2.enter = true;
+    B.panelHtml = null;
+    paintRow(B);
+    setTimeout(loadRecord, 3000);
   };
 
   // ── before the trade: one pill per protectable game, and the same pill in the slip ───────
@@ -2319,14 +2632,25 @@
         B.flipped = F.flipped;
         if (!B.host.isConnected) remountHost(B);
       }
+      B.missedAt = 0;
       quoteRow(B);
       paintRow(B);
     }
     for (const [row, B] of S.rows) {
-      if (!live.has(row) || !row.isConnected) {
-        B.host && B.host.remove();
-        S.rows.delete(row);
+      if (row.isConnected && live.has(row)) continue;
+      // a row still on the page that one pass could not read (the venue mid-redraw, a figure
+      // momentarily blank) keeps its block for a few seconds rather than blinking out and back;
+      // a row that left the page, or that no longer names the play, lets go at once
+      const named = row.isConnected && B.host && B.host.isConnected ? sidesIn(spaced(norm(pageText(row)))) : null;
+      if (named && (named.has(B.ticker) || (B.flipped && named.has(siblingOf(B.ticker))))) {
+        if (!B.missedAt) {
+          B.missedAt = now;
+          continue;
+        }
+        if (now - B.missedAt < ROW_GRACE_MS) continue;
       }
+      B.host && B.host.remove();
+      S.rows.delete(row);
     }
     paintCard(found.length === 0 && S.svc.configured && S.svc.positions.length > 0);
     S.counts.rows = S.rows.size;

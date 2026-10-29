@@ -131,6 +131,29 @@ test("early close: a spread is paid by the user on both legs; the writer's resul
   assert.equal(q.writerCents, 12);
 });
 
+test("early close: a fractional size is priced to the hundredth, with the tap's rounding on funding and the floor line", () => {
+  // Kalshi's 15.95 contracts, floor 45 cap 80 credit 30c, hedge (45+100-80) x 15.95 = 1036.75 -> 1037 units
+  const frac: EarlyCloseTerms = { contracts: 15.95, floorCents: 45, capCents: 80, creditCents: 30, takeCents: 5, hedgeUnitsMilli: 10_370, route: "kalshi_self" };
+  const q = quoteEarlyClose(frac, {
+    kalshi: { yesBids: [{ priceCents: 62, qtyMilli: 1_000_000 }], noBids: [{ priceCents: 38, qtyMilli: 1_000_000 }] },
+  });
+  assert.ok(q.ok);
+  // own sale: 15,950 milli x 62c = 988,900 milli cents -> 988c; fee ceil(7 x 15950 x 62 x 38 / 1e7) = ceil(26.3) = 27
+  assert.equal(q.positionProceedsCents, 988 - 27);
+  assert.equal(q.positionFeesCents, 27);
+  // hedge: 10,370 milli x 38c = 394,060 -> 394c; fee ceil(7 x 10370 x 38 x 62 / 1e7) = ceil(17.1) = 18
+  assert.equal(q.hedgeProceedsCents, 394 - 18);
+  // funding rounds down like the tap: 20 x 15.95 = 319.0
+  assert.equal(q.fundingCents, 319);
+  assert.equal(q.protectedAtCloseCents, 961 + 376 - 319 + 30);
+  // at the mid: kept 15.95 x 35 / 100 = 5.5825 contracts x 62c = 346.1 -> 346; floor 45 x 15.95 = 717.75 -> 718; + 30
+  assert.equal(q.yesMidCents, 62);
+  assert.equal(q.protectedAtMidCents, 346 + 718 + 30);
+  assert.equal(q.unwindFrictionCents, 1094 - 1048);
+  const thin = quoteEarlyClose(frac, { kalshi: { yesBids: [{ priceCents: 62, qtyMilli: 15_940 }], noBids: [{ priceCents: 38, qtyMilli: 1_000_000 }] } });
+  assert.ok(!thin.ok && thin.code === "book_too_thin", "15.94 contracts of depth do not take 15.95");
+});
+
 test("early close: the cross-venue hedge sells into the Polymarket book; a missing token or thin book is an honest refusal", () => {
   const pmTerms: EarlyCloseTerms = { ...TERMS, route: "polymarket" };
   const kalshi = { yesBids: [{ priceCents: 60, qtyMilli: 1_000_000 }], noBids: [] as Array<{ priceCents: number; qtyMilli: number }> };
@@ -158,6 +181,30 @@ test("early close: the cross-venue hedge sells into the Polymarket book; a missi
   assert.ok(!thinPos.ok && thinPos.leg === "position" && thinPos.code === "book_too_thin");
   const noHedgeBids = quoteEarlyClose(TERMS, { kalshi: { yesBids: [{ priceCents: 60, qtyMilli: 1_000_000 }], noBids: [] } });
   assert.ok(!noHedgeBids.ok && noHedgeBids.leg === "hedge" && noHedgeBids.code === "book_empty");
+});
+
+test("early close: a ProphetX hedge is priced on the strike's fee-folded bids and hands the order its offset; no strike on record or no book is an honest refusal", () => {
+  const pxTerms: EarlyCloseTerms = { ...TERMS, route: "prophetx", hedgeStrikeId: "strike-no-1" };
+  const kalshi = { yesBids: [{ priceCents: 60, qtyMilli: 1_000_000 }], noBids: [] as Array<{ priceCents: number; qtyMilli: number }> };
+  // the worker folds the fee before handing the book over: a raw 0.40 bid reads 392 here
+  const pxNoBook = { tokenId: "strike-no-1", asks: [], bids: [{ priceMilli: 392, sizeMilli: 1_000_000 }], minOrderSizeShares: 1, tickMilli: 1 };
+  const ok = quoteEarlyClose(pxTerms, { kalshi, pxNoBook });
+  assert.ok(ok.ok, JSON.stringify(ok));
+  assert.equal(ok.hedgeProceedsCents, Math.floor((133_500 * 392) / 10_000), "133.5 shares x $0.392, the settlement fee inside the folded bid");
+  assert.equal(ok.hedgeFeesCents, 0);
+  assert.deepEqual(ok.hedgeSale, { venue: "prophetx", strikeId: "strike-no-1", bestPriceMilli: 392, avgPriceMilli: 392, worstPriceMilli: 392, grossCents: ok.hedgeProceedsCents, settlesAtGame: true });
+  assert.equal(ok.protectedAtCloseCents, 8748 + ok.hedgeProceedsCents - 5550 + 112);
+
+  const noBook = quoteEarlyClose(pxTerms, { kalshi });
+  assert.ok(!noBook.ok && noBook.leg === "hedge" && noBook.code === "hedge_unlocatable");
+  assert.match(!noBook.ok ? noBook.detail : "", /could not be read through the aggregator/);
+  const noStrike = quoteEarlyClose({ ...pxTerms, hedgeStrikeId: undefined }, { kalshi, pxNoBook });
+  assert.ok(!noStrike.ok && noStrike.leg === "hedge" && noStrike.code === "hedge_unlocatable");
+  assert.match(!noStrike.ok ? noStrike.detail : "", /not on record/);
+  const thin = quoteEarlyClose(pxTerms, { kalshi, pxNoBook: { ...pxNoBook, bids: [{ priceMilli: 392, sizeMilli: 10 }] } });
+  assert.ok(!thin.ok && thin.leg === "hedge" && thin.code === "book_too_thin");
+  const empty = quoteEarlyClose(pxTerms, { kalshi, pxNoBook: { ...pxNoBook, bids: [] } });
+  assert.ok(!empty.ok && empty.leg === "hedge" && empty.code === "book_empty");
 });
 
 test("early close: the schedule is a deterministic draw per ticker, inside the window, off when the share is 0", () => {

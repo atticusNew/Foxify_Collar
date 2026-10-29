@@ -26,8 +26,11 @@
  *
  * The order itself is a limit buy of the hedge side at or under the walked
  * worst price, immediate-or-cancel: never worse than quoted, never resting.
- * Partial fills are recorded as partial (units filled, cents paid); a zero
- * fill is an error and falls back like any other.
+ * A SELL intent (an early close selling the hedge back) is the same order the
+ * other way: a limit sale at or over the walked worst bid, immediate-or-cancel,
+ * behind the same rails and caps. Partial fills are recorded as partial (units
+ * filled, cents paid or received); a zero fill is an error and falls back like
+ * any other.
  *
  * Nothing here holds credentials. The venue client is injected.
  */
@@ -35,6 +38,7 @@
 import {
   BookHedgeExecutor,
   REAL_CLOCK,
+  actionOf,
   bookWalkPenaltyCents,
   errText,
   receiptId,
@@ -53,9 +57,9 @@ export interface LiveOrderResult {
   orderId: string;
   /** units filled, milli; may be under the intent on a partial */
   unitsMilli: number;
-  /** average all-in price paid per unit, milli dollars */
+  /** average all-in price paid per unit (received per unit, on a sale), milli dollars */
   avgPriceMilli: number;
-  /** all-in cents paid, fees included */
+  /** all-in cents paid, fees included; on a sale the net proceeds, fees taken out */
   costCents: number;
   feesCents: number;
   /** the venue's final word on the order (executed, canceled, ...) */
@@ -64,6 +68,8 @@ export interface LiveOrderResult {
   via?: HedgeVia;
   /** the venue's own id when the order went through an intermediary that issued `orderId` */
   venueOrderId?: string;
+  /** one clause the venue client adds to the trail (a ProphetX sale settles at the game, a windfall of shares) */
+  note?: string;
 }
 
 /** Place the order for an intent. Throws when nothing filled or the venue refused. */
@@ -93,6 +99,9 @@ export const DEFAULT_LIVE_RAILS: LiveHedgeRails = {
 export function tickerArmed(rails: Pick<LiveHedgeRails, "allowlist" | "anyTicker">, instrument: string): boolean {
   return rails.anyTicker || rails.allowlist.includes(instrument.toUpperCase());
 }
+
+/** What the allowlist is checked against for an intent: the game's Kalshi ticker when the instrument is a token or a strike. */
+export const armKeyOf = (intent: Pick<HedgeIntent, "instrument" | "armKey">): string => intent.armKey ?? intent.instrument;
 
 const truthy = (v: string | undefined): boolean => /^(1|true|yes|on)$/i.test((v ?? "").trim());
 
@@ -133,8 +142,8 @@ export function checkRails(
 ): RailRefusal | null {
   if (rails.killSwitch) return { rail: "kill_switch", detail: "kill switch is on; no order leaves" };
   if (!hasClient) return { rail: "venue", detail: `no live client for ${intent.venue}` };
-  if (!tickerArmed(rails, intent.instrument)) {
-    return { rail: "ticker", detail: `${intent.instrument} is not on the live allowlist (${rails.allowlist.length} tickers)` };
+  if (!tickerArmed(rails, armKeyOf(intent))) {
+    return { rail: "ticker", detail: `${armKeyOf(intent)} is not on the live allowlist (${rails.allowlist.length} tickers)` };
   }
   if (intent.unitsMilli > rails.maxUnitsPerOrderMilli) {
     return {
@@ -168,6 +177,12 @@ export function sentUnitsMilliOn(receipts: HedgeReceipt[], dayUtc: string): numb
 /** The order the live path would send, for the dry-run receipt and the operator's eyes. No credentials, no ids. */
 export function describeOrder(intent: HedgeIntent): string {
   const cap = Math.ceil(intent.book.worstPriceMilli / 10);
+  if (intent.venue === "prophetx") {
+    // ProphetX takes no sell: the unwind buys the holder's side's strike at 1 - the worst bid, offsetting the hedge
+    if (actionOf(intent) === "sell") return `prophetx offset ${units(intent.unitsMilli)} shares of strike ${intent.instrument} by buying strike ${intent.offsetInstrument ?? "?"} at or under ${100 - Math.floor(intent.book.worstPriceMilli / 10)}c, fill or kill`;
+    return `prophetx buy ${units(intent.unitsMilli)} shares of strike ${intent.instrument} (${intent.outcome}) at or under ${cap}c, fill or kill`;
+  }
+  if (actionOf(intent) === "sell") return `${intent.venue} sell ${units(intent.unitsMilli)} ${intent.outcome} on ${intent.instrument} at or over ${cap}c, immediate or cancel`;
   return `${intent.venue} buy ${units(intent.unitsMilli)} ${intent.outcome} on ${intent.instrument} at or under ${cap}c, immediate or cancel`;
 }
 
@@ -228,12 +243,13 @@ export class LiveHedgeExecutor implements HedgeExecutor {
       const r = await client(intent, clientOrderId);
       const partial = r.unitsMilli < intent.unitsMilli;
       const via: HedgeVia = r.via ?? "direct";
+      const sell = actionOf(intent) === "sell";
       attempts.push({
         strategy: "live",
         step: "order",
         ok: true,
         at: this.clock.now().toISOString(),
-        detail: `order ${r.orderId}${r.venueOrderId ? ` (venue ${r.venueOrderId})` : ""} ${r.status}${via === "aggregator" ? " via aggregator" : ""}: ${units(r.unitsMilli)} of ${units(intent.unitsMilli)} filled at ${r.avgPriceMilli} milli, ${r.costCents}c all in${partial ? " (partial)" : ""}`,
+        detail: `order ${r.orderId}${r.venueOrderId ? ` (venue ${r.venueOrderId})` : ""} ${r.status}${via === "aggregator" ? " via aggregator" : ""}: ${units(r.unitsMilli)} of ${units(intent.unitsMilli)} ${sell ? "sold" : "filled"} at ${r.avgPriceMilli} milli, ${r.costCents}c ${sell ? "net proceeds" : "all in"}${partial ? " (partial)" : ""}${r.note ? `; ${r.note}` : ""}`,
         orderId: r.orderId,
         unitsMilli: r.unitsMilli,
         costCents: r.costCents,
@@ -247,7 +263,7 @@ export class LiveHedgeExecutor implements HedgeExecutor {
         unitsMilli: r.unitsMilli,
         avgPriceMilli: r.avgPriceMilli,
         costCents: r.costCents,
-        vsBookCents: bookForFilled - r.costCents,
+        vsBookCents: sell ? r.costCents - bookForFilled : bookForFilled - r.costCents,
         simulated: false,
         ids: { orderId: r.orderId, ...(r.venueOrderId ? { venueOrderId: r.venueOrderId } : {}) },
         via,

@@ -35,14 +35,33 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HedgeLeg } from "./types";
 
-export type HedgeVenue = "kalshi" | "polymarket";
+export type HedgeVenue = "kalshi" | "polymarket" | "prophetx";
 export type HedgeStrategy = "book" | "rfq" | "live";
+export type HedgeAction = "buy" | "sell";
+export const actionOf = (intent: Pick<HedgeIntent, "action">): HedgeAction => intent.action ?? "buy";
 
-/** What the hedge needs to buy, and the book walk it was quoted against. */
+/**
+ * What the hedge needs to buy, and the book walk it was quoted against. A SELL intent (an early
+ * close selling the hedge back) is the same shape read the other way: `book` holds the bids walked
+ * (best = the highest), `costCents` is the proceeds expected, and the order will not sell under
+ * the walked worst bid. `action` absent means buy, as every intent was before the sell rail.
+ */
 export interface HedgeIntent {
+  action?: HedgeAction;
   venue: HedgeVenue;
-  /** Kalshi market ticker or Polymarket CLOB token id */
+  /** Kalshi market ticker, Polymarket CLOB token id, or ProphetX strike id */
   instrument: string;
+  /**
+   * ProphetX only: the holder's own side's strike on the same market. ProphetX takes no sell
+   * order; a SELL intent there buys this strike instead, which offsets the hedge share for share
+   * and settles the pair at the game (prophetxOrders.ts).
+   */
+  offsetInstrument?: string;
+  /**
+   * The key the live allowlist (EVENT_HEDGE_LIVE_TICKERS) is checked against when the instrument
+   * is not a Kalshi ticker: the game's Kalshi ticker, which is how the operator arms a game.
+   */
+  armKey?: string;
   /** display name of what is bought ("No", or the opposing outcome) */
   outcome: string;
   /** 1000 = 1 contract / 1 share */
@@ -58,8 +77,44 @@ export interface HedgeIntent {
   maxCostCents: number;
 }
 
-/** Turn a priced hedge leg into an intent. `bestPriceMilli` is the top of the walked book. */
-export function intentFromHedge(hedge: HedgeLeg, bestPriceMilli: number): HedgeIntent {
+/**
+ * The intent that sells a Kalshi hedge back into its No bids (an early close). Prices in cents as
+ * the bid walk gives them (earlyClose.walkKalshiBids); `costCents` is the gross proceeds expected.
+ */
+export function sellIntentForKalshi(args: { ticker: string; unitsMilli: number; bestPriceCents: number; avgPriceCents: number; worstPriceCents: number; grossCents: number }): HedgeIntent {
+  return {
+    action: "sell",
+    venue: "kalshi",
+    instrument: args.ticker,
+    outcome: "No",
+    unitsMilli: args.unitsMilli,
+    book: { bestPriceMilli: args.bestPriceCents * 10, avgPriceMilli: args.avgPriceCents * 10, worstPriceMilli: args.worstPriceCents * 10, costCents: args.grossCents },
+    maxCostCents: args.grossCents,
+  };
+}
+
+/**
+ * The intent that unwinds a ProphetX hedge (an early close): a buy of the holder's side's strike
+ * at or under 1 - the walked worst bid on the hedge strike, which offsets the hedge share for
+ * share. Prices in milli as the bid walk gives them (earlyClose.walkPmBids); `costCents` is the
+ * gross proceeds-equivalent expected, realised at the game rather than today.
+ */
+export function sellIntentForProphetX(args: { strikeId: string; offsetStrikeId: string; armKey?: string; unitsMilli: number; bestPriceMilli: number; avgPriceMilli: number; worstPriceMilli: number; grossCents: number }): HedgeIntent {
+  return {
+    action: "sell",
+    venue: "prophetx",
+    instrument: args.strikeId,
+    offsetInstrument: args.offsetStrikeId,
+    ...(args.armKey ? { armKey: args.armKey } : {}),
+    outcome: "the opposing strike",
+    unitsMilli: args.unitsMilli,
+    book: { bestPriceMilli: args.bestPriceMilli, avgPriceMilli: args.avgPriceMilli, worstPriceMilli: args.worstPriceMilli, costCents: args.grossCents },
+    maxCostCents: args.grossCents,
+  };
+}
+
+/** Turn a priced hedge leg into an intent. `bestPriceMilli` is the top of the walked book. `armKey` is the game's Kalshi ticker for a leg on another venue. */
+export function intentFromHedge(hedge: HedgeLeg, bestPriceMilli: number, armKey?: string): HedgeIntent {
   if (hedge.venue === "kalshi") {
     return {
       venue: "kalshi",
@@ -75,9 +130,27 @@ export function intentFromHedge(hedge: HedgeLeg, bestPriceMilli: number): HedgeI
       maxCostCents: hedge.costCents,
     };
   }
+  if (hedge.venue === "prophetx") {
+    return {
+      venue: "prophetx",
+      instrument: hedge.strikeId,
+      ...(hedge.offsetStrikeId ? { offsetInstrument: hedge.offsetStrikeId } : {}),
+      ...(armKey ? { armKey } : {}),
+      outcome: hedge.outcome,
+      unitsMilli: hedge.sharesMilli,
+      book: {
+        bestPriceMilli,
+        avgPriceMilli: hedge.avgPriceMilli,
+        worstPriceMilli: hedge.worstPriceMilli,
+        costCents: hedge.costCents,
+      },
+      maxCostCents: hedge.costCents,
+    };
+  }
   return {
     venue: "polymarket",
     instrument: hedge.tokenId,
+    ...(armKey ? { armKey } : {}),
     outcome: hedge.outcome,
     unitsMilli: hedge.sharesMilli,
     book: {
@@ -101,6 +174,8 @@ export function costCentsAt(unitsMilli: number, priceMilli: number): number {
  * RFQ can win back. Zero when the whole size sat at the best level.
  */
 export function bookWalkPenaltyCents(intent: HedgeIntent): number {
+  // on a sale the walk gave up proceeds against a one-price fill at the top bid
+  if (actionOf(intent) === "sell") return Math.max(0, costCentsAt(intent.unitsMilli, intent.book.bestPriceMilli) - intent.book.costCents);
   return Math.max(0, intent.book.costCents - costCentsAt(intent.unitsMilli, intent.book.bestPriceMilli));
 }
 
@@ -109,8 +184,9 @@ export interface HedgeFill {
   venue: HedgeVenue;
   instrument: string;
   unitsMilli: number;
-  /** average all-in price paid, milli dollars */
+  /** average all-in price paid (received, on a sale), milli dollars */
   avgPriceMilli: number;
+  /** cents that moved: paid on a buy, net proceeds on a sale */
   costCents: number;
   /** cents kept versus the book walk the holder was quoted against; never negative on an accepted fill */
   vsBookCents: number;
@@ -273,7 +349,7 @@ export class BookHedgeExecutor implements HedgeExecutor {
         unitsMilli: intent.unitsMilli,
         avgPriceMilli: r.avgPriceMilli,
         costCents: r.costCents,
-        vsBookCents: intent.book.costCents - r.costCents,
+        vsBookCents: actionOf(intent) === "sell" ? r.costCents - intent.book.costCents : intent.book.costCents - r.costCents,
         simulated: false,
         ids: { orderId: r.orderId },
         via: "direct",
@@ -343,7 +419,8 @@ export class RfqHedgeExecutor implements HedgeExecutor {
       intent,
       bookWalkPenaltyCents: bookWalkPenaltyCents(intent),
     };
-    const rfq = await this.tryRfq(intent, attempts);
+    // the RFQ surface asks makers for the side we buy; a sale goes straight to the book
+    const rfq = actionOf(intent) === "sell" ? { fill: null, reason: "a sale is not put out for quotes; sold into the book" } : await this.tryRfq(intent, attempts);
     if (rfq.fill) {
       return { ...base, attempts, fill: rfq.fill, outcome: "filled_rfq", fallbackReason: null };
     }
@@ -542,7 +619,7 @@ export function summarizeHedgeReceipts(receipts: HedgeReceipt[]): HedgeReceiptSu
   const s: HedgeReceiptSummary = {
     receipts: receipts.length,
     byOutcome: { filled_rfq: 0, filled_book: 0, filled_live: 0, unfilled: 0 },
-    byVenue: { kalshi: 0, polymarket: 0 },
+    byVenue: { kalshi: 0, polymarket: 0, prophetx: 0 },
     rfqSavedCents: 0,
     bookWalkPenaltyCents: 0,
     costCents: 0,

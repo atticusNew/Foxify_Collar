@@ -26,6 +26,8 @@ export type VenueColumnId = HedgeRoute | ReferenceBookId;
 export const VENUE_COLUMNS: ReadonlyArray<{ id: VenueColumnId; name: string; via: "direct" | "feed"; kind: "route" | "reference" }> = [
   { id: "kalshi_self", name: "Kalshi, own No side", via: "direct", kind: "route" },
   { id: "polymarket", name: "Polymarket", via: "direct", kind: "route" },
+  // the hedge route on ProphetX: the same strike the reference column reads, priced with the settlement fee folded in
+  { id: "prophetx", name: "ProphetX, hedge route", via: "feed", kind: "route" },
   { id: "aggregated_mm", name: "ProphetX", via: "feed", kind: "reference" },
   { id: "partner_mm", name: "ProphetX", via: "direct", kind: "reference" },
   { id: "signed_v3", name: "Novig", via: "direct", kind: "reference" },
@@ -42,6 +44,7 @@ export function refusalWord(code: string): string {
   if (code === "credit_nonpositive" || code === "credit_too_small") return "no credit";
   if (code === "protection_too_rich") return "too rich";
   if (code === "far_out_no_book") return "too early";
+  if (code === "route_gated") return "no route";
   if (code === "mark_disagreement") return "mark unsettled";
   if (code === "book_not_retained") return "not kept";
   if (code === "fee_exceeds_gross") return "fee > gross";
@@ -359,7 +362,8 @@ export function venueBreakdown(positions: ShadowPosition[], now: Date, opts: { w
   }
   const kept = new Set<VenueColumnId>();
   for (const t of totals.values()) if (t.read > 0 || t.prelock.read > 0 || t.bookOpen.read > 0) kept.add(t.id);
-  // the two routes are always shown: they are what the record chooses between
+  // the two original routes are always shown: they are what the record chose between from the
+  // start; the ProphetX route joins once a read has priced it
   kept.add("kalshi_self");
   kept.add("polymarket");
 

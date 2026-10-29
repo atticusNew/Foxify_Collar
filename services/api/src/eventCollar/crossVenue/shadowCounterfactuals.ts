@@ -17,6 +17,8 @@
 import { computeTake, evCostBps } from "./collarSearch";
 import { quoteCrossWrap } from "./crossVenuePricer";
 import { quoteLadderWrap, type NoAskLevel } from "./kalshiLadder";
+import { DEFAULT_PROPHETX_FEE_BPS, foldProphetXFee } from "./prophetxOrders";
+import type { ProphetXStrikes } from "./aggregatorBooks";
 import type {
   CollarTerms,
   CrossQuoteResult,
@@ -66,8 +68,8 @@ export interface ShadowSizeProbe {
   terms: ShadowAltTerms;
 }
 
-/** The hedge routes the scan examines; the record writes the cheaper one. */
-export const ROUTE_LABELS = ["kalshi_self", "polymarket"] as const satisfies readonly HedgeRoute[];
+/** The hedge routes the scan examines; the record writes the one the routing chose. */
+export const ROUTE_LABELS = ["kalshi_self", "polymarket", "prophetx"] as const satisfies readonly HedgeRoute[];
 
 /**
  * REFERENCE. The default tier re-priced on another regulated exchange's book for the same game,
@@ -152,7 +154,10 @@ export interface CounterfactualInputs {
   contracts: number;
   now: Date;
   config: CrossSearchConfig;
-  books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; references?: ReferenceBook[]; prints?: ReferencePrint[] };
+  /** `pxNoBook` is the ProphetX hedge strike's book at raw venue prices; the fee is folded here before the walk */
+  books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; prophetx?: ProphetXStrikes; references?: ReferenceBook[]; prints?: ReferencePrint[] };
+  /** ProphetX's fee on net gains, bps; the venue's published rate when absent */
+  prophetxFeeBps?: number;
 }
 
 export function hedgeUnitsOfTerms(t: CollarTerms): number {
@@ -185,6 +190,16 @@ export function requote(inputs: CounterfactualInputs, config: CrossSearchConfig,
   if (inputs.route === "polymarket") {
     if (!inputs.books.pmNoBook || !inputs.pair) return null;
     return quoteCrossWrap({ ...base, pair: inputs.pair, noBook: inputs.books.pmNoBook });
+  }
+  if (inputs.route === "prophetx") {
+    const px = inputs.books.prophetx;
+    if (!inputs.books.pxNoBook || !px || !inputs.pair) return null;
+    return quoteCrossWrap({
+      ...base,
+      pair: inputs.pair,
+      noBook: foldProphetXFee(inputs.books.pxNoBook, inputs.prophetxFeeBps ?? DEFAULT_PROPHETX_FEE_BPS),
+      hedgeOn: { venue: "prophetx", strikeId: px.hedgeStrikeId, ...(px.offsetStrikeId ? { offsetStrikeId: px.offsetStrikeId } : {}), outcome: inputs.pair.pm.outcomes[inputs.pair.pmNoOutcomeIndex] },
+    });
   }
   if (!inputs.books.noAsks) return null;
   return quoteLadderWrap({
@@ -250,7 +265,7 @@ export function counterfactualsFor(
   for (const route of ROUTE_LABELS) {
     if (route === inputs.route) {
       routes[route] = altFromTerms(live);
-    } else if (route === "polymarket" && !inputs.pair) {
+    } else if (route !== "kalshi_self" && !inputs.pair) {
       routes[route] = { ok: false, refused: "route_not_offered" };
     } else {
       const q = requote({ ...inputs, route }, inputs.config, inputs.contracts);
@@ -318,7 +333,7 @@ const UNREACHABLE: ShadowAltTerms = { ok: false, refused: "unreachable" };
 export function rereadQuotesFor(inputs: CounterfactualInputs): { routes: Record<HedgeRoute, ShadowAltTerms>; references?: ShadowReferenceQuote[] } {
   const routes = {} as Record<HedgeRoute, ShadowAltTerms>;
   for (const route of ROUTE_LABELS) {
-    if (route === "polymarket" && !inputs.pair) {
+    if (route !== "kalshi_self" && !inputs.pair) {
       routes[route] = { ok: false, refused: "route_not_offered" };
       continue;
     }

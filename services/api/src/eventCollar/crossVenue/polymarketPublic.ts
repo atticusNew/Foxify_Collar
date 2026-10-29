@@ -83,6 +83,7 @@ export function parsePmMarket(
     gameStartTime: normalizeGammaTime(raw.gameStartTime),
     endDate: typeof raw.endDate === "string" ? raw.endDate : null,
     sportsMarketType: String(raw.sportsMarketType ?? ""),
+    ...(typeof raw.description === "string" && raw.description.trim() ? { description: raw.description } : {}),
     active: raw.active === true,
     closed: raw.closed === true,
     acceptingOrders: raw.acceptingOrders === true,
