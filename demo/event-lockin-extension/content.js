@@ -1280,7 +1280,12 @@
    * paid): what is still owed to the holder, what the holder still owes back, or paid in full.
    * Null when the service's record predates cash legs; the line then says only what settled.
    */
-  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap", close: "Left early" };
+  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap", close: "Protection removed" };
+  /**
+   * Why the protection settles the way it does, in the holder's terms: the pick moved up, so the
+   * upside they sold is worth more now; moved down, so the floor they hold is worth more now.
+   */
+  const closeWhy = (net) => (net < 0 ? "your pick moved up, so the upside you sold is worth more now" : net > 0 ? "your pick moved down, so the floor you hold is worth more now" : "even at today's price");
   const cashState = (rec) => {
     const legs = Array.isArray(rec.cashDue) ? rec.cashDue : null;
     if (!legs || !legs.length) return null;
@@ -1338,10 +1343,12 @@
           : lineGo("Settled", "Protected outcome <b>" + esc(got) + "</b>.", "ael-line-on");
       } else if (rec.status === "void") line = lineGo("Voided", "No official result; nothing owed.", "ael-line-on");
       else if (rec.status === "closed") {
-        // left early: what the holder ended with at the live price, the cash beside it as on a settlement
-        const got = usd(rec.protectedCents || 0);
+        // protection removed: what the protection alone settled for, and whether that cash has moved;
+        // the pick itself is still the venue's live position, not ours to describe
+        const net = closeNetOf(rec);
         const cash = cashState(rec);
-        line = lineGo("Left early", "Ended with <b>" + esc(got) + "</b>" + (cash && cash.open ? " &middot; " + cash.label : "") + ".", "ael-line-on");
+        const moved = cash ? (cash.open ? (net >= 0 ? " &middot; on its way" : "") : " &middot; paid") : "";
+        line = lineGo("Protection removed", "<b>" + signed(net) + "</b> " + (net < 0 ? "due back" : "to you") + moved + ".", "ael-line-on");
       } else {
         // the venue the other side went to, on the line itself, so the pick is visible without opening the panel
         const hv = hedgeVenueOf(rec.routing);
@@ -1817,20 +1824,18 @@
     } else if (rec.status === "void") {
       body = '<div class="ael-ph"><b>Protection voided</b><span>No official result for this game; nothing owed either way.</span></div>';
     } else if (rec.status === "closed") {
-      // left early: the pick sold at the live price, the protection settled between us at that price,
-      // what the holder ended with. The cash row says whether that settlement has moved.
+      // protection removed: the protection alone settled between us at that moment's price; the pick
+      // is the holder's and stays open on the venue. The cash row says whether the settlement has moved.
       const net = closeNetOf(rec);
       const cash = cashState(rec);
-      const sold = rec.nakedCents != null ? rec.nakedCents : (rec.protectedCents || 0) - net - (rec.creditCents || 0);
       body =
         '<div class="ael-ledger ael-two">' +
-        ledgerRow("Left early &middot; you ended with", esc(usd(rec.protectedCents || 0)), null, "ael-hero") +
-        ledgerRow("Your pick, sold" + (rec.closeYesFillCents != null ? " at " + esc(String(rec.closeYesFillCents)) + "c" : ""), esc(usd(sold))) +
-        ledgerRow("Protection settled", signed(net), null, cash ? "" : "ael-last") +
+        ledgerRow("Protection removed &middot; settled <span class=\"ael-dim\">" + closeWhy(net) + "</span>", signed(net), null, "ael-hero") +
+        ledgerRow("Your pick", "open on " + esc(V.name) + ", unprotected", null, cash ? "" : "ael-last") +
         (cash ? ledgerRow("Cash", cash.label, null, "ael-last") : "") +
         "</div>";
-      if (rec.closedAt) meta.push("Left " + esc(fmtAt(rec.closedAt)));
-      if (rec.closeUnwindFrictionCents != null) meta.push("leaving cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
+      if (rec.closedAt) meta.push("Removed " + esc(fmtAt(rec.closedAt)));
+      if (operator() && rec.closeUnwindFrictionCents != null) meta.push("crossing the books cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
       if (rec.closeHedge) {
         const sale = rec.closeHedge.sale || null;
         meta.push(!rec.closeHedge.sent ? "the other side's sale is on the record" : isOffset(sale) ? "the other side offset on " + esc(sale.venue) + ", settles at the game" : "the other side sold on " + esc((sale && sale.venue) || "Kalshi"));
@@ -1840,7 +1845,7 @@
     } else {
       // leaving is the one thing left to do: a quiet button under the slip, in the venue's raised
       // grey rather than our colour, with what it means beside it; the leave block takes its place
-      const leaveAct = !rec.rehearsal && !st.leave ? '<div class="ael-acts"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>today\'s price instead of the result</span></div>' : "";
+      const leaveAct = !rec.rehearsal && !st.leave ? '<div class="ael-acts"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>remove the protection, keep your pick</span></div>' : "";
       body = ledger(nick, rs, rec.creditCents, null) + (st.leave ? leaveHtml(B, rec, rs) : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
@@ -1965,27 +1970,27 @@
     }
     if (Date.now() - L.at >= REQUOTE_MS) setTimeout(() => leaveQuote(B), 0);
     const q = L.q;
-    const n = (Number(q.contracts) || rec.contracts || 0).toFixed(2).replace(/\.00$/, "");
+    const net = q.closeNetCents;
     const fine = ["Priced live"];
-    if (q.unwindFrictionCents != null) fine.push("leaving costs " + esc(usd(q.unwindFrictionCents)) + " against the mid");
     if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
+    if (operator() && q.unwindFrictionCents != null) fine.push("crossing the books costs " + esc(usd(q.unwindFrictionCents)) + " against the mid");
+    // the protection alone settles; the pick is the holder's and stays where it is. One signed
+    // number, with the honest why: up, the upside they sold is worth more; down, the floor they hold is
     return (
       '<div class="ael-leave">' +
-      '<div class="ael-leave-h"><b>Leave early</b><span>today\'s price instead of the result</span></div>' +
+      '<div class="ael-leave-h"><b>Leave early</b><span>remove the protection, keep your pick</span></div>' +
       '<div class="ael-ledger ael-two">' +
-      ledgerRow("Your pick, sold now <span class=\"ael-dim\">" + esc(n) + " at " + esc(String(q.yesFillCents)) + "c, after fees</span>", esc(usd(q.positionProceedsCents))) +
-      ledgerRow("Protection settles", signed(q.closeNetCents)) +
-      ledgerRow("You end with <span class=\"ael-dim\">your " + esc(usd(q.creditCents)) + " credit kept</span>", esc(usd(q.protectedAtCloseCents)), null, "ael-hero") +
+      ledgerRow("Protection settles <span class=\"ael-dim\">" + closeWhy(net) + "</span>", signed(net) + ' <span class="ael-dim">' + (net < 0 ? "due back" : "to you") + "</span>", null, "ael-hero") +
       ledgerRow("Staying", esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), null, "ael-last") +
       "</div>" +
       '<div class="ael-leave-acts"><button type="button" class="ael-go ael-leave-go">Leave early</button><button type="button" class="ael-go ael-quiet ael-stay">Stay</button></div>' +
       '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
-      '<div class="ael-fine">Leaving settles the protection at today\'s price. Your pick is yours to sell on ' + esc(V.name) + " at that price, or to keep unprotected.</div>" +
+      '<div class="ael-fine">Your pick stays open on ' + esc(V.name) + ", unprotected. The " + esc(usd(q.creditCents)) + " credit paid at the lock is yours; this settlement is separate.</div>" +
       "</div>"
     );
   };
 
-  /** The tap: the service prices again and writes the close; the row becomes Left early. */
+  /** The tap: the service prices again and writes the close; the row becomes Protection removed. */
   const leaveNow = async (B, rec) => {
     const st = stateOf(B);
     const L = st.leave;

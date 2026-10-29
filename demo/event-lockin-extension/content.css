@@ -294,7 +294,8 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-leave-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 2px; }
 .ael-leave-h b { font-size: 14px; font-weight: 600; color: var(--ael-fg-strong); }
 .ael-leave-h span { font-size: 12px; color: var(--ael-muted); }
-.ael-leave .ael-lr .ael-l .ael-dim { color: var(--ael-muted); font-size: 12px; }
+.ael-lr .ael-l .ael-dim { color: var(--ael-muted); font-size: 12px; }
+.ael-lr b .ael-dim { font-weight: 400; font-size: 12px; color: var(--ael-muted); }
 .ael-leave-acts { display: flex; align-items: center; gap: 8px; margin: 8px 0 8px; }
 .ael-leave-acts .ael-go { margin: 0; flex: 1; }
 .ael-leave-acts .ael-go.ael-quiet { flex: none; }
