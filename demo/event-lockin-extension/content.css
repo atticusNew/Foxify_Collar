@@ -286,6 +286,11 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-leave-acts .ael-go { margin: 0; flex: 1; }
 .ael-leave-acts .ael-go.ael-quiet { flex: none; }
 
+/* After the lock: the one thing left to do as a quiet button under the slip, what it means beside it. */
+.ael-acts { display: flex; align-items: center; gap: 10px; margin: 10px 0 0; }
+.ael-acts .ael-go.ael-quiet { flex: none; }
+.ael-acts span { font-size: 12px; color: var(--ael-muted); line-height: 1.3; }
+
 /* After the lock: the slip above, then one grey line of facts ending in the receipt link. */
 .ael-meta { font-size: 12px; color: var(--ael-muted); margin: 10px 0 4px; line-height: 1.4; }
 .ael-meta a { color: var(--ael-muted); text-decoration: underline; }
@@ -432,6 +437,8 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
   .ael-lr s { width: 72px; }
   .ael-segs { grid-auto-flow: row; }
 }
-/* the tails on the receipt: one sentence per line, in the venue's settlement words */
+/* the rules on the receipt: folded to the cases they cover and a "show"; open, one sentence per line in the venue's settlement words */
+.ael-rcpt .ael-rules-a { color: var(--ael-muted); font-weight: 500; text-decoration: underline; }
+.ael-rcpt .ael-rules-a:hover { color: var(--ael-soft); }
 .ael-rcpt .ael-tails i { display: block; font-style: normal; font-weight: 500; color: var(--ael-soft); margin: 0 0 3px; }
-.ael-rcpt .ael-tails i:last-child { margin-bottom: 0; }
+.ael-rcpt .ael-tails .ael-rules-a { display: inline-block; margin-top: 2px; }

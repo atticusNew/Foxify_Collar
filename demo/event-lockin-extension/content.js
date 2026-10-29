@@ -38,6 +38,8 @@
   const POLL_RECORD_MS = 60_000;
   const REQUOTE_MS = 60_000;
   const SCAN_MIN_GAP_MS = 500;
+  // a row still on the page that one scan could not read keeps its block this long before it is dropped
+  const ROW_GRACE_MS = 6_000;
   // the three shapes the service prices, shown only when the book offers more than one
   const TIER_ORDER = ["tight", "balanced", "wide"];
   const TIER_WORDS = { tight: "Most now", balanced: "Even", wide: "Keep more upside" };
@@ -166,11 +168,25 @@
     while (w.nextNode()) out += w.currentNode.nodeValue;
     return out;
   };
-  /** An element's height less our blocks inside it: the page's own size of the thing. */
+  /**
+   * The page's own height of a block: the extent of its children that are not ours, never its box.
+   * The box lies two ways. A card in a deck is stretched to the tallest card on its line (a flex
+   * row's default), so when our panel opens inside one card every card beside it grows with it;
+   * and a card that holds our block is taller by our block and its margin. Either would read a
+   * position as a page-sized block and drop its line. A block with no element children is its box.
+   */
   const pageHeight = (e, r) => {
-    let h = r.height;
-    for (const ours of e.querySelectorAll(".ael-host")) h -= ours.getBoundingClientRect().height;
-    return h;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const c of e.children) {
+      if (c.classList.contains("ael-ui")) continue;
+      const cr = c.getBoundingClientRect();
+      if (!cr.height && !cr.width) continue;
+      if (cr.top < top) top = cr.top;
+      if (cr.bottom > bottom) bottom = cr.bottom;
+    }
+    if (top === Infinity) return r.height;
+    return Math.min(r.height, bottom - top);
   };
 
   // ── the games the service can protect ───────────────────────────────────────
@@ -840,8 +856,12 @@
       const text = spaced(norm(pageText(e)));
       if (text.length > 600) break;
       const r = e.getBoundingClientRect();
-      // wider than the window is the page itself, unless it is a table that scrolls inside its pane
-      if (pageHeight(e, r) > 320 || (r.width > window.innerWidth && !e.closest("table"))) break;
+      // wider than the window is the page itself, unless it is a table that scrolls inside its pane;
+      // taller than a row is a list, unless it is one card of a deck (a Novig order card runs to
+      // its buttons, share line and id), which is one position however tall it stands
+      const h = pageHeight(e, r);
+      if (h > 320 && !(h <= 640 && e.parentElement && e.parentElement !== document.body && isDeck(e.parentElement))) break;
+      if (r.width > window.innerWidth && !e.closest("table")) break;
       const labels = (text.match(STAKE_LABELS) || []).length;
       if (found) {
         // a block was found without the row's stake and payout labels (a matched/unmatched detail
@@ -992,7 +1012,8 @@
   const isDeck = (parent) => {
     const cs = getComputedStyle(parent);
     if (cs.display.includes("grid")) return (cs.gridTemplateColumns || "").trim().split(/\s+/).filter(Boolean).length > 1;
-    return cs.display.includes("flex") && !cs.flexDirection.startsWith("column") && cs.flexWrap === "wrap" && parent.children.length > 1;
+    // a wrapping row is a deck with one card in it as with five: the one card is read and placed the same way
+    return cs.display.includes("flex") && !cs.flexDirection.startsWith("column") && cs.flexWrap === "wrap";
   };
   /**
    * Where our block goes: after the row, climbing out of flex/grid rows so it lands under the row,
@@ -1494,16 +1515,33 @@
     return ["other side on " + esc(v)];
   };
   const bps = (x) => (x == null ? "" : (x >= 0 ? "+" : "") + Math.round(x) + " bps");
-  /** The receipt's routing rows: "Hedged on", the competition, the terms for the tails, and (operator) every route's cost. */
-  const routingRows = (row, rt) => {
+  /** The four tails in a few words, for the folded rules line: what the venue's rules cover. */
+  const TAIL_WORDS = { tie: "a tie", postponed: "a postponement", abandoned: "a game called off", corrected: "a corrected result" };
+  const tailSummary = (tails) => {
+    const words = tails.map((t) => TAIL_WORDS[t.branch]).filter(Boolean);
+    return words.length ? words.join(", ") : tails.length + " cases";
+  };
+  /**
+   * The receipt's routing rows: "Hedged on" (the venue; the service's reason is the operator's),
+   * the competition when two venues priced the other side, the rules for the tails folded to one
+   * line that opens on a tap (`rulesOpen`), and (operator) every route's cost.
+   */
+  const routingRows = (row, rt, rulesOpen) => {
     if (!rt) return "";
     const lines = [];
     const v = hedgeVenueOf(rt);
-    if (v) lines.push(row("Hedged on", esc(v) + (rt.reason ? ' <span class="ael-dim">&middot; ' + esc(rt.reason) + "</span>" : "")));
+    if (v) lines.push(row("Hedged on", esc(v) + (operator() && rt.reason ? ' <span class="ael-dim">&middot; ' + esc(rt.reason) + "</span>" : "")));
     const cmp = comparisonOf(rt);
     if (cmp) lines.push(row("Compared", esc(cmp)));
     if (Array.isArray(rt.tails) && rt.tails.length) {
-      lines.push(row("If the game", '<span class="ael-tails">' + rt.tails.map((t) => "<i>" + esc(String(t.text || "")) + "</i>").join("") + "</span>"));
+      lines.push(
+        row(
+          "Rules",
+          rulesOpen
+            ? '<span class="ael-tails">' + rt.tails.map((t) => "<i>" + esc(String(t.text || "")) + "</i>").join("") + '<a href="#" class="ael-rules-a">hide</a></span>'
+            : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + '</span> <a href="#" class="ael-rules-a">show</a>',
+        ),
+      );
     }
     if (operator() && Array.isArray(rt.routes)) {
       for (const r of rt.routes) {
@@ -1565,7 +1603,7 @@
       if (h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
     }
     if (rec.status === "closed") lines.push(saleRow(row, st.rcptSale || null, rec));
-    lines.push(routingRows(row, st.rcptRouting || rec.routing || null));
+    lines.push(routingRows(row, st.rcptRouting || rec.routing || null, Boolean(st.rcptRules)));
     // the money between the two parties, leg by leg, as the record has it: the credit from the
     // tap, and at settlement the floor to the holder or the slice above the cap back to the writer
     const legs = Array.isArray(st.rcptCash) && st.rcptCash.length ? st.rcptCash : Array.isArray(rec.cashDue) ? rec.cashDue : [];
@@ -1651,12 +1689,13 @@
       if (rec.justLeft && rec.ms) meta.push("in " + (rec.ms / 1000).toFixed(1) + "s");
       if (cash && cash.open) meta.push(net < 0 ? "the settlement goes back to the writer; the receipt shows each leg" : "the settlement comes to you; the receipt shows each leg");
     } else {
-      body = ledger(nick, rs, rec.creditCents, null) + (st.leave ? leaveHtml(B, rec, rs) : "");
+      // leaving is the one thing left to do: a quiet button under the slip, in the venue's raised
+      // grey rather than our colour, with what it means beside it; the leave block takes its place
+      const leaveAct = !rec.rehearsal && !st.leave ? '<div class="ael-acts"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>today\'s price instead of the result</span></div>' : "";
+      body = ledger(nick, rs, rec.creditCents, null) + (st.leave ? leaveHtml(B, rec, rs) : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
       if (rec.rehearsal) meta.push("rehearsal");
-      // leaving is the one thing left to do; a quiet link, never a second button under the slip
-      if (!rec.rehearsal && !st.leave) meta.push('<a href="#" class="ael-leave-a">leave early</a>');
     }
     // the receipt's detail is one tap away, never in the way: a link at the end of the facts line
     if (rec.status !== "void") meta.push('<a href="#" class="ael-rcpt-a">' + (st.rcpt ? "hide receipt" : "receipt") + "</a>");
@@ -1690,6 +1729,15 @@
           const st = stateOf(B);
           st.rcpt = !st.rcpt;
           if (st.rcpt) st.rcptErr = "";
+          paintRow(B);
+        };
+      const rules = panel.querySelector(".ael-rules-a");
+      if (rules)
+        rules.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const st = stateOf(B);
+          st.rcptRules = !st.rcptRules;
           paintRow(B);
         };
       const leave = panel.querySelector(".ael-leave-a");
@@ -2584,14 +2632,25 @@
         B.flipped = F.flipped;
         if (!B.host.isConnected) remountHost(B);
       }
+      B.missedAt = 0;
       quoteRow(B);
       paintRow(B);
     }
     for (const [row, B] of S.rows) {
-      if (!live.has(row) || !row.isConnected) {
-        B.host && B.host.remove();
-        S.rows.delete(row);
+      if (row.isConnected && live.has(row)) continue;
+      // a row still on the page that one pass could not read (the venue mid-redraw, a figure
+      // momentarily blank) keeps its block for a few seconds rather than blinking out and back;
+      // a row that left the page, or that no longer names the play, lets go at once
+      const named = row.isConnected && B.host && B.host.isConnected ? sidesIn(spaced(norm(pageText(row)))) : null;
+      if (named && (named.has(B.ticker) || (B.flipped && named.has(siblingOf(B.ticker))))) {
+        if (!B.missedAt) {
+          B.missedAt = now;
+          continue;
+        }
+        if (now - B.missedAt < ROW_GRACE_MS) continue;
       }
+      B.host && B.host.remove();
+      S.rows.delete(row);
     }
     paintCard(found.length === 0 && S.svc.configured && S.svc.positions.length > 0);
     S.counts.rows = S.rows.size;
