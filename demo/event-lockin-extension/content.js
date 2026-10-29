@@ -1294,10 +1294,14 @@
   /**
    * The line is the badge: the filled shield and one word or two in a pill ("Lock in", "Protected",
    * "Unavailable"), then one sentence in the venue's row type, then the chevron. The pill is solid
-   * once the position is protected; muted while we wait or when protection is off.
+   * once the position is protected; muted while we wait or when protection is off. A muted pill
+   * carries no shield: the dim outline read as an empty slot on a dark venue and left the word
+   * sitting off-centre, so the word stands alone, centred.
    */
-  const lineGo = (label, fact, cls) =>
-    '<button type="button" class="ael-line ' + (cls || "") + '"><span class="ael-tag"><span class="ael-ic">' + (cls === "ael-line-off" || cls === "ael-line-wait" ? SHIELD : SHIELD_FILL) + "</span><b>" + label + "</b></span>" + (fact ? '<span class="ael-fact">' + fact + "</span>" : "") + '<span class="ael-chev">' + CHEVRON + "</span></button>";
+  const lineGo = (label, fact, cls) => {
+    const muted = cls === "ael-line-off" || cls === "ael-line-wait";
+    return '<button type="button" class="ael-line ' + (cls || "") + '"><span class="ael-tag">' + (muted ? "" : '<span class="ael-ic">' + SHIELD_FILL + "</span>") + "<b>" + label + "</b></span>" + (fact ? '<span class="ael-fact">' + fact + "</span>" : "") + '<span class="ael-chev">' + CHEVRON + "</span></button>";
+  };
 
   /** The line under the row, from the row's state. */
   const paintRow = (B) => {
