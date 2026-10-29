@@ -628,11 +628,14 @@ are widest and clearest there.
 Rules the service enforces, so plan the game around them:
 
 - The lock must be at least 45 minutes before start and inside 7 days.
-- One lock per game per holder, whichever venue the pick sits on: the record is keyed by the
-  Kalshi market, and a lock that has closed or settled still holds the market (the ledger cannot
-  open the same market twice), so a game left early can be locked again only after
-  `POST /api/shadow/lock/reset?ticker=`. A second tap on the same game is refused with "already
-  locked". A lock belongs to the venue it was made from (`holderVenue` on the record; a lock
+- One open lock per game per holder, whichever venue the pick sits on: the record is keyed by the
+  Kalshi market. A settled or voided lock still holds the market. A lock whose protection was
+  removed (Leave early) frees it: the game is offered again, and the next lock is the next
+  generation on the record (`generation: 2` on the receipt and the positions list); the removed
+  lock stays on the record, closed, with its own settlement and cash legs, and the public record
+  counts both. A second tap while a lock is open is refused with "already locked".
+  `POST /api/shadow/lock/reset?ticker=` still takes every generation off the record at once. A
+  lock belongs to the venue it was made from (`holderVenue` on the record; a lock
   written without one, before 0.7.13, is Kalshi's, the service's default) and draws only on that
   venue's page: an open lock reads "Protected on ProphetX already" on another venue's card of the
   same game, and a lock closed or settled elsewhere says nothing there. Protecting the same game
