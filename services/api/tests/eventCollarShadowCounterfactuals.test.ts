@@ -40,7 +40,7 @@ const NO_ASKS: NoAskLevel[] = [
 ];
 
 /** The live rule under test: tight as default so the minimum fee binds (gross 106c -> share 10c < 38c). */
-const CFG = { ...DEFAULT_CROSS_CONFIG, defaultTier: "tight" as const };
+const CFG = { ...DEFAULT_CROSS_CONFIG, floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30], capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25], defaultTier: "tight" as const };
 
 function liveQuote(contracts = 150) {
   const q = quoteLadderWrap({

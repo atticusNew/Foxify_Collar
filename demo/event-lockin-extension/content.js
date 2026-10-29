@@ -41,8 +41,10 @@
   // a row still on the page that one scan could not read keeps its block this long before it is dropped
   const ROW_GRACE_MS = 6_000;
   // the three shapes the service prices, shown only when the book offers more than one
-  const TIER_ORDER = ["tight", "balanced", "wide"];
-  const TIER_WORDS = { tight: "Most now", balanced: "Even", wide: "Keep more upside" };
+  // the shapes, the most upside first: that is the one the service heads the quote with, and the
+  // one a trader reaches for. Each is named for what it gives, never for what it costs
+  const TIER_ORDER = ["wide", "balanced", "tight"];
+  const TIER_WORDS = { wide: "Max upside", balanced: "Balanced", tight: "Max floor" };
   const DEFAULTS = { showHedge: "no", rehearse: "no", showShield: "yes", showSlip: "yes", telemetry: "yes" };
 
   // ── the venue this page belongs to ──────────────────────────────────────────
@@ -1281,7 +1283,8 @@
         if (!q || !q.ok) st.quote = { ok: false, code: (q && q.code) || "unavailable", message: (q && q.detail) || "" };
         else {
           st.quote = { ok: true, p: r.json };
-          if (!st.tier || !(q.tiers && q.tiers[st.tier])) st.tier = q.tiers && q.tiers.balanced ? "balanced" : q.tier;
+          // the service's own default heads the quote (the most upside unless it is configured otherwise)
+          if (!st.tier || !(q.tiers && q.tiers[st.tier])) st.tier = q.tier;
         }
       }
       if (B.slip) paintSlip(B);
@@ -1547,7 +1550,7 @@
       for (const k of keys) {
         const tt = offered[k];
         const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
-        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>" + esc(usd(tr.floorTotal)) + " or " + esc(usd(tr.capTotal)) + "</i> <i>&middot; +" + esc(usd(tt.creditCents)) + "</i></span></button>";
+        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>Floor " + esc(usd(tr.floorTotal)) + " &middot;</i> <i>Upside " + esc(usd(tr.capTotal)) + " &middot;</i> <i>+" + esc(usd(tt.creditCents)) + " now</i></span></button>";
       }
     }
     const fine = ["Priced live"];
