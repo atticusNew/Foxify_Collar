@@ -82,6 +82,7 @@
     nickRe: null,
     tab: null, // "resting" | "filled" | "settled" | null, from the page's tabs
     svc: { configured: false, positions: [], at: 0, error: null },
+    svcSize: new Map(), // ticker -> the last position the service confirmed on it, kept through a read that misses it
     record: new Map(), // ticker -> the public record's lock position (open or settled)
     rows: new Map(), // row element -> binding { row, host, ticker, size, kind, from }
     st: new Map(), // ticker -> { quote, quoteAt, quoteKey, tier, open, how, busy, done }
@@ -507,7 +508,13 @@
     const r = await api("/api/shadow/positions", "GET");
     if (r.ok && r.json && r.json.ok) {
       S.svc = { configured: Boolean(r.json.configured), positions: Array.isArray(r.json.positions) ? r.json.positions : [], at: Date.now(), error: null };
-      for (const p of S.svc.positions) if (p.ticker && p.lock) rememberLock(p.ticker, { ...p.lock, ticker: p.ticker, fromSvc: true });
+      // a read on which the venue described every market is the whole truth (a sold position is
+      // gone from it); one on which a lookup failed adds to what earlier reads confirmed
+      if (S.svc.positions.every((p) => p.reason !== "market_lookup_failed")) S.svcSize.clear();
+      for (const p of S.svc.positions) {
+        if (p.ticker) S.svcSize.set(p.ticker, p);
+        if (p.ticker && p.lock) rememberLock(p.ticker, { ...p.lock, ticker: p.ticker, fromSvc: true });
+      }
     } else if (r.ok && r.json && r.json.configured) {
       S.svc = { ...S.svc, configured: true, error: r.json.message || "venue read failed" };
     }
@@ -962,6 +969,28 @@
 
   /** The service's confirmed position for one of our markets, when it has one. */
   const svcFor = (ticker) => S.svc.positions.find((p) => p.ticker === ticker) || null;
+  /**
+   * The position the service confirms on a market, or the last one it confirmed there: one read
+   * at the venue that fails to describe a market (a lookup timed out, a rate limit) must not make
+   * the page's own figures take over for twenty seconds and hand back after. The card still on the
+   * Active tab is the venue's word that the position stands; a sale moves it off that tab.
+   */
+  const svcHeld = (ticker) => svcFor(ticker) || (S.svc.configured && S.svcSize.get(ticker)) || null;
+  /**
+   * A figure read from the page's words that cannot be a position on this market: a price under a
+   * cent (no venue sells one), or a payout out of all proportion to the multiplier the row itself
+   * prints (a card at 2.00x does not hold a play paying 168 times its stake). Such a reading is
+   * noise in the text (an id, a balance, a figure from another block), and no size is better than it.
+   */
+  const plausible = (size, text) => {
+    if (!size || !size.stakeCents || !size.payoutCents) return size;
+    const ratio = size.payoutCents / size.stakeCents;
+    if (ratio > 100) return null;
+    const mult = MULTIPLIER.exec(spaced(text));
+    const m = mult ? Number(mult[1]) : 0;
+    if (m > 1 && (ratio > 10 * m || ratio * 10 < m)) return null;
+    return size;
+  };
 
   /**
    * The title a venue prints above a position rather than on it. Kalshi's Portfolio groups a
@@ -1027,7 +1056,10 @@
         // the one side they hold on the game this card names, whether or not the card's letters
         // for that club were readable (a jersey's text run into the label reads as "CLECLE")
         const stems = new Set([...count.keys()].map(stemOf));
-        const held = [...new Set(S.svc.positions.filter((p) => p.ticker && S.byTicker[p.ticker] && stems.has(stemOf(p.ticker))).map((p) => p.ticker))];
+        // the positions this read confirmed and the ones an earlier read did: one read that failed
+        // to describe a market at the venue does not turn the card back over to its letters
+        const known = [...S.svc.positions, ...S.svcSize.values()];
+        const held = [...new Set(known.filter((p) => p.ticker && S.byTicker[p.ticker] && stems.has(stemOf(p.ticker))).map((p) => p.ticker))];
         if (held.length === 1) ticker = held[0];
       }
       const pick = ticker ? null : /([A-Z]{2,3}\s+[A-Za-z0-9 .]+?)(?:\s+[+-]?\d+(?:\.\d)?)?\s*(?:[·•|]|to win)\s*(?:Winner|Moneyline|Money Line|ML|Spread|Total|Over|Under)\b/i.exec(text);
@@ -1060,9 +1092,9 @@
       if (!ticker) continue;
       // the venue says the holder's position on this game is the other club: the card was misread;
       // no offer on the wrong side (the service refuses such a lock too)
-      if (S.svc.configured && !svcFor(ticker)) {
+      if (S.svc.configured && !svcHeld(ticker)) {
         const other = siblingOf(ticker);
-        if (other && svcFor(other)) continue;
+        if (other && svcHeld(other)) continue;
       }
       // the row names a club that is neither the pick nor its opponent in the listed game: it is a
       // pick on another game (the Pistons game, when the service lists the Knicks' next one only)
@@ -1086,9 +1118,9 @@
       if (S.tab === "settled" || SOLD_RE.test(noMoney(spaced(own)))) match = "settled";
       // the venue's own figure for a position it confirms: a card that reads as matched, or one whose
       // words say nothing either way (Novig's Active card carries no badge) while the venue holds it
-      const held = kind === "winner" && match !== "settled" ? svcFor(ticker) : null;
+      const held = kind === "winner" && match !== "settled" ? svcHeld(ticker) : null;
       const svc = held && (match === "matched" || !/(^|[^a-z])unmatched\b/i.test(noMoney(spaced(own)))) ? held : null;
-      const read = match === "matched" ? tableSize(row) || sizeIn(own) : null;
+      const read = match === "matched" ? plausible(tableSize(row) || sizeIn(own), own) : null;
       out.push({ row, ticker, kind, match, flipped, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
     }
     return out;
@@ -1515,7 +1547,7 @@
       for (const k of keys) {
         const tt = offered[k];
         const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
-        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span>" + esc(usd(tr.floorTotal)) + " or " + esc(usd(tr.capTotal)) + " &middot; +" + esc(usd(tt.creditCents)) + "</span></button>";
+        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>" + esc(usd(tr.floorTotal)) + " or " + esc(usd(tr.capTotal)) + "</i> <i>&middot; +" + esc(usd(tt.creditCents)) + "</i></span></button>";
       }
     }
     const fine = ["Priced live"];
@@ -2746,6 +2778,23 @@
 
   // ── the scan ────────────────────────────────────────────────────────────────
   let scanTimer = null;
+  /**
+   * One play, one block. A page that names the same pick in two places (a card and a copy of it
+   * mid-redraw, a list and its detail) is quoted once: the quote is kept per market, so two rows
+   * sized differently would take turns at it and the offer would swing between their figures.
+   * The row whose size the venue confirmed is kept, else the one read from the page, else the first.
+   */
+  const rowRank = (F) => (F.match === "settled" ? 0 : F.from === "service" ? 3 : F.from === "page" ? 2 : 1);
+  const onePerPlay = (found) => {
+    const best = new Map();
+    for (const F of found) {
+      const k = F.ticker + "#" + F.kind;
+      const cur = best.get(k);
+      if (!cur || rowRank(F) > rowRank(cur)) best.set(k, F);
+    }
+    const keep = new Set(best.values());
+    return found.filter((F) => keep.has(F));
+  };
   const scan = (force) => {
     const now = Date.now();
     if (!force && now - S.lastScan < SCAN_MIN_GAP_MS) {
@@ -2799,7 +2848,7 @@
     );
     const nodes = textNodes();
     S.tab = tabState(nodes);
-    const found = findRows(nodes);
+    const found = onePerPlay(findRows(nodes));
     const live = new Set();
     // a venue that redraws its list hands us new row elements for the same plays; the block we
     // already built for a play moves under its new row as it is, rather than being built again
@@ -2838,7 +2887,7 @@
         // a size the holder typed survives a page that still cannot be read; anything read wins.
         // A size the venue confirmed (through the service) is not replaced by a reading of the
         // page's words on a later pass: the page redraws, the position does not
-        if ((F.from !== "none" || B.from !== "entered") && !(B.from === "service" && F.from !== "service" && svcFor(B.ticker))) {
+        if ((F.from !== "none" || B.from !== "entered") && !(B.from === "service" && F.from !== "service" && svcHeld(B.ticker))) {
           B.size = F.size;
           B.from = F.from;
         }
@@ -2923,6 +2972,6 @@
   // inert inside the extension (isolated world); lets a page-level harness read state when it injects this file
   if (window.__AEL_DEBUG) {
     window.__ael = S;
-    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, findSlip, findGames, gamesIn, markGames, indexMarkets, kindIn, venue: VENUE_ID };
+    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, findSlip, findGames, gamesIn, markGames, indexMarkets, kindIn, loadPositions, scan, plausible, venue: VENUE_ID };
   }
 })();

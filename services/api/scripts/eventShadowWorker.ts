@@ -520,6 +520,25 @@ const referencePrints = (() => {
 const POSITIONS_TTL_MS = Number(process.env.EVENT_SHADOW_POSITIONS_TTL_MS || 20_000);
 let positionsCache: { at: number; positions: HolderPosition[] } | null = null;
 /**
+ * Read the holder's positions again once the cache is stale. A position whose market the venue
+ * failed to describe on this pass (a lookup that timed out or was rate limited) keeps the match
+ * the last pass made for it, so a passing fault at the venue does not make a position drop out of
+ * our market and back in between two reads.
+ */
+async function refreshPositions(fresh = false): Promise<HolderPosition[]> {
+  if (!venueClient || !listGameMarketsFn) return [];
+  if (positionsCache && !fresh && Date.now() - positionsCache.at <= POSITIONS_TTL_MS) return positionsCache.positions;
+  const markets = await listGameMarketsFn();
+  const read = await venueClient.holderPositions(markets);
+  const before = new Map((positionsCache?.positions ?? []).map((p) => [p.id, p]));
+  const positions = read.map((p) => {
+    const prev = before.get(p.id);
+    return !p.ticker && p.reason === "market_lookup_failed" && prev?.ticker ? { ...prev, contracts: p.contracts, entryCents: p.entryCents, costCents: p.costCents, payoutCents: p.payoutCents } : p;
+  });
+  positionsCache = { at: Date.now(), positions };
+  return positions;
+}
+/**
  * The holder's position on the OTHER club of this market's game, as the venue reports it, when
  * their account is readable and they hold nothing on this market. Null otherwise: no key, a read
  * that failed (the lock then proceeds as it does with no key at all), a position on this side, or
@@ -527,16 +546,14 @@ let positionsCache: { at: number; positions: HolderPosition[] } | null = null;
  */
 async function heldOtherSideOf(ticker: string): Promise<HolderPosition | null> {
   if (!venueClient || !listGameMarketsFn) return null;
+  let positions: HolderPosition[];
   try {
-    if (!positionsCache || Date.now() - positionsCache.at > POSITIONS_TTL_MS) {
-      const markets = await listGameMarketsFn();
-      positionsCache = { at: Date.now(), positions: await venueClient.holderPositions(markets) };
-    }
+    positions = await refreshPositions();
   } catch {
     return null;
   }
   const stem = ticker.slice(0, ticker.lastIndexOf("-") + 1);
-  const onGame = positionsCache.positions.filter((p) => p.ticker && p.ticker.startsWith(stem));
+  const onGame = positions.filter((p) => p.ticker && p.ticker.startsWith(stem));
   if (onGame.some((p) => p.ticker === ticker)) return null;
   return onGame.find((p) => p.ticker !== ticker) ?? null;
 }
@@ -1048,14 +1065,15 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, { ok: true, at: atIso, configured: false, positions: [], ...(venueClientNote ? { note: venueClientNote } : {}) });
       return;
     }
-    if (!positionsCache || Date.now() - positionsCache.at > POSITIONS_TTL_MS || url.searchParams.get("fresh") === "1") {
-      try {
-        const markets = await listGameMarketsFn();
-        positionsCache = { at: Date.now(), positions: await venueClient.holderPositions(markets) };
-      } catch (err) {
-        sendJson(res, 200, { ok: false, at: atIso, configured: true, error: "venue_read_failed", message: String(err instanceof Error ? err.message : err) });
-        return;
-      }
+    try {
+      await refreshPositions(url.searchParams.get("fresh") === "1");
+    } catch (err) {
+      sendJson(res, 200, { ok: false, at: atIso, configured: true, error: "venue_read_failed", message: String(err instanceof Error ? err.message : err) });
+      return;
+    }
+    if (!positionsCache) {
+      sendJson(res, 200, { ok: false, at: atIso, configured: true, error: "venue_read_failed", message: "no read yet" });
+      return;
     }
     // what the record already holds for each matched market: the client shows Protected, not Lock in
     const locks = new Map(currentShadowPositions(loadShadowPositions(ownLedger)).map((p) => [p.ticker, p]));
