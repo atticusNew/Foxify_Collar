@@ -39,7 +39,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
-import { type CollarSearchResult, enumerateCollars, refuseUnfunded, selectTiers } from "./collarSearch";
+import { type CollarSearchResult, enumerateCollars, refuseUnfunded, selectTiers, tierCreditLineCents } from "./collarSearch";
 import { walkPmAsks } from "./crossVenuePricer";
 import { pickWords } from "./pickWords";
 import type { ComboLegMarket, ComboLegStatus } from "./polymarketCombos";
@@ -427,7 +427,7 @@ export type LastLegQuote =
 export function quoteLastLeg(input: LastLegQuoteInputs): LastLegQuote {
   const grid = lastLegCollars(input);
   if (!grid.ok) return grid;
-  const sel = selectTiers(grid.search.candidates, input.entryCents, input.config.defaultTier);
+  const sel = selectTiers(grid.search.candidates, input.entryCents, input.config.defaultTier, tierCreditLineCents(input.config, input.contracts));
   return { ok: true, ...sel.terms, tier: sel.tier, tiers: sel.tiers, candidatesConsidered: grid.search.candidates.length };
 }
 

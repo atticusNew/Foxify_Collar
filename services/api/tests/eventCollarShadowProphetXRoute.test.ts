@@ -54,7 +54,8 @@ function pair(): MatchedPair {
 /** Both offered routes priced from their books, judged by hedgeRouting against a Novig holder. */
 function candidate(contracts: number, entryCents: number): CandidateResult {
   const p = pair();
-  const base = { markCents: 60, entryCents, contracts, now: new Date(), config: DEFAULT_CROSS_CONFIG };
+  // the fixture's books were laid out for the balanced tier on the 30c-under / 25c-over grid; the tier policy is tested elsewhere
+  const base = { markCents: 60, entryCents, contracts, now: new Date(), config: { ...DEFAULT_CROSS_CONFIG, floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30], capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25], defaultTier: "balanced" as const } };
   const kq: CrossQuoteResult = quoteLadderWrap({ ...base, pair: { kalshi: { ticker: TICKER }, gameStartTime: START }, noAsks: NO_ASKS });
   const pxq: CrossQuoteResult = quoteCrossWrap({ ...base, pair: p, noBook: foldProphetXFee(PX_RAW, 200), hedgeOn: { venue: "prophetx", strikeId: STRIKES.hedgeStrikeId, offsetStrikeId: STRIKES.offsetStrikeId, outcome: "Los Angeles Lakers" } });
   assert.ok(kq.ok && pxq.ok, JSON.stringify({ kq, pxq }));

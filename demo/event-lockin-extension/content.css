@@ -283,6 +283,35 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 @keyframes ael-spin { to { transform: rotate(360deg); } }
 .ael-go.ael-quiet { display: inline-flex; width: auto; height: 36px; margin: 0; padding: 0 14px; background: var(--ael-bg-raise); color: var(--ael-fg-strong); font-size: 13px; }
 .ael-go.ael-quiet:hover { background: var(--ael-bg-hover); }
+/* Simple layout: the action is the pill from the line, solid, at a finger's height; the quiet
+   links (Adjust · Details) sit on the same row, pushed to the right. The row wraps on a narrow card. */
+.ael-go.ael-pillgo { display: inline-flex; width: auto; min-height: 36px; height: auto; margin: 0; padding: 7px 16px 7px 12px; border-radius: 999px; font-size: 14px; white-space: normal; text-align: left; }
+.ael-go.ael-pillgo.ael-busy { padding-left: 14px; }
+.ael-offer-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0 2px; }
+.ael-offer-acts .ael-links { margin-left: auto; font-size: 13px; color: var(--ael-muted); white-space: nowrap; }
+.ael-offer-acts .ael-links a { color: var(--ael-muted); text-decoration: underline; text-underline-offset: 2px; padding: 6px 2px; }
+.ael-offer-acts .ael-links a:hover, .ael-offer-acts .ael-links a[aria-expanded="true"] { color: var(--ael-fg-strong); }
+/* the helper beside a button gives way first, so Details keeps its place at the right of the row */
+.ael-offer-acts > span:not(.ael-links) { flex: 1 1 60px; min-width: 60px; font-size: 12px; color: var(--ael-muted); line-height: 1.3; }
+
+/* Adjust: the shape as a slider under the slip. More upside to the left, a higher floor to the
+   right, the stop's name between the ends; two or three stops, the figures above follow the thumb. */
+.ael-adjust { margin: 8px 0 0; padding: 8px 2px 0; }
+.ael-adj-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--ael-muted); }
+.ael-adj-h b { font-size: 13px; font-weight: 600; color: var(--ael-fg-strong); }
+.ael-range { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 32px; margin: 2px 0 0; background: transparent; cursor: pointer; outline: none; }
+.ael-range::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--ael-border-hover); }
+.ael-range::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; margin-top: -9px; border-radius: 50%; background: var(--ael-accent); border: 3px solid var(--ael-bg); box-shadow: 0 0 0 1.5px var(--ael-accent); }
+.ael-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 1.5px var(--ael-accent), 0 0 0 5px var(--ael-accent-wash-3); }
+.ael-range::-moz-range-track { height: 4px; border-radius: 2px; background: var(--ael-border-hover); }
+.ael-range::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--ael-accent); border: 3px solid var(--ael-bg); box-shadow: 0 0 0 1.5px var(--ael-accent); }
+
+/* Details: the venue strip, the clock, how it works and the rules, one block under the pill. */
+.ael-details { margin: 10px 0 2px; padding-top: 2px; border-top: 1px solid var(--ael-divider); }
+.ael-details .ael-venues { border-top: 0; padding-top: 8px; }
+.ael-details .ael-how { margin: 8px 0 6px; }
+.ael-details .ael-fine a { color: var(--ael-muted); }
+.ael-rules p { color: var(--ael-muted); }
 
 .ael-fine { font-size: 12px; color: var(--ael-muted); text-align: left; margin: 0 0 4px; line-height: 1.4; }
 .ael-fine a { color: var(--ael-muted); text-decoration: underline; }
@@ -459,3 +488,7 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-rcpt .ael-rules-a:hover { color: var(--ael-soft); }
 .ael-rcpt .ael-tails i { display: block; font-style: normal; font-weight: 500; color: var(--ael-soft); margin: 0 0 3px; }
 .ael-rcpt .ael-tails .ael-rules-a { display: inline-block; margin-top: 2px; }
+/* motion is a courtesy, never a requirement */
+@media (prefers-reduced-motion: reduce) {
+  .ael-panel.ael-enter, .ael-line.ael-flash, .ael-line.ael-flash .ael-fact, .ael-line.ael-flash .ael-fact b, .ael-line.ael-flash .ael-chev, .ael-chev { animation: none; transition: none; }
+}

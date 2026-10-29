@@ -2,9 +2,10 @@
  * MINIMUM CREDIT — the one rule that decides whether a fundable collar is worth offering.
  *
  * A tier is offered only when its credit is at least `cents` and at least `bpsOfStake` of the
- * stake (100¢ × contracts). Defaults: 25¢ and 0.25%. On a 150-contract position that is 38¢. A
- * collar paying 3¢ on $150 is technically fundable and practically an insult; below the line we
- * refuse rather than offer pennies.
+ * stake (100¢ × contracts). Defaults: 5¢ and 0.25%. On a 150-contract position that is 38¢; on a
+ * 10-contract one, 5¢. The credit is the leftover of the collar, not its point (every cent of
+ * credit is a cent of cap the holder did not keep), so the absolute line only stops pennies that
+ * would not cover a transfer; below it we refuse rather than offer them.
  *
  * The rule runs SERVER-SIDE, in the scan, so the board, the embed and the shadow record all see
  * the same quote: the same tiers offered, the same default, the same refusals. The embed's page
@@ -12,23 +13,19 @@
  * show a tier the server would not.
  *
  * Promotion: when the default tier is under the line but another tier clears, that tier becomes
- * the top-level terms (Balanced first, then Safest, then Most upside). When nothing clears the
+ * the top-level terms (Most upside first, then Balanced, then the highest floor). When nothing clears the
  * quote becomes a refusal, `credit_too_small`, counted in the receipts as its own reason.
  */
 
-import type { CollarTerms, CrossQuote, CrossQuoteResult, ProtectionTier } from "./types";
+import { type CollarTerms, type CrossQuote, type CrossQuoteResult, DEFAULT_CROSS_CONFIG, type MinimumCreditRule, type ProtectionTier } from "./types";
 
-export interface MinimumCreditRule {
-  /** absolute floor on the credit, cents */
-  cents: number;
-  /** floor on the credit as bps of stake (100¢ × contracts) */
-  bpsOfStake: number;
-}
+export type { MinimumCreditRule } from "./types";
 
-export const DEFAULT_MINIMUM_CREDIT: MinimumCreditRule = { cents: 25, bpsOfStake: 25 };
+/** The shipped rule; the search config carries the same object so the tiers are chosen against the line they are later judged on. */
+export const DEFAULT_MINIMUM_CREDIT: MinimumCreditRule = DEFAULT_CROSS_CONFIG.minimumCredit as MinimumCreditRule;
 
-/** The order a promoted tier is chosen in when the quoted default is under the line. */
-const PROMOTION_ORDER: readonly ProtectionTier[] = ["balanced", "tight", "wide"];
+/** The order a promoted tier is chosen in when the quoted default is under the line: the most upside first. */
+const PROMOTION_ORDER: readonly ProtectionTier[] = ["wide", "balanced", "tight"];
 
 export function minimumCreditRuleFromEnv(env: NodeJS.ProcessEnv): MinimumCreditRule {
   const num = (v: string | undefined, dflt: number): number => {

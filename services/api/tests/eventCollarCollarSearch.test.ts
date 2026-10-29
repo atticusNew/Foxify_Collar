@@ -6,8 +6,10 @@ import {
   refuseUnfunded,
   selectTiers,
   TIER_RULES,
+  tierCreditLineCents,
   type HedgeProbe,
 } from "../src/eventCollar/crossVenue/collarSearch";
+import { applyMinimumCredit, minimumCreditCents } from "../src/eventCollar/crossVenue/minimumCredit";
 import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import {
@@ -20,6 +22,18 @@ import {
 } from "../src/eventCollar/crossVenue/types";
 
 const GAME_START = new Date("2026-09-13T18:20:00Z");
+
+/**
+ * The grid the hand-checked figures below were worked on: 30c under the mark to 25c over it, the
+ * balanced tier heading the quote. The shipped defaults reach 45c either side and head the quote
+ * with the most upside; those are tested on their own at the end of this file.
+ */
+const LEGACY_CONFIG: CrossSearchConfig = {
+  ...DEFAULT_CROSS_CONFIG,
+  floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30],
+  capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25],
+  defaultTier: "balanced",
+};
 const NOW = new Date(GAME_START.getTime() - 6 * 3_600_000);
 
 /** A real-looking Kalshi No side at mark 60: fair 40c, asks 41/42/43 with modest depth. */
@@ -37,7 +51,7 @@ function ladder(overrides: Partial<Parameters<typeof quoteLadderWrap>[0]> = {}) 
     contracts: 150,
     now: NOW,
     noAsks: PROD_NO_ASKS,
-    config: DEFAULT_CROSS_CONFIG,
+    config: LEGACY_CONFIG,
     ...overrides,
   });
 }
@@ -188,8 +202,8 @@ test("tiers on a production-like No side: three distinct collars on the floor ax
 
 test("defaultTier picks which tier heads the quote; the others ride along unchanged", () => {
   const balanced = ladder();
-  const tight = ladder({ config: { ...DEFAULT_CROSS_CONFIG, defaultTier: "tight" } });
-  const wide = ladder({ config: { ...DEFAULT_CROSS_CONFIG, defaultTier: "wide" } });
+  const tight = ladder({ config: { ...LEGACY_CONFIG, defaultTier: "tight" } });
+  const wide = ladder({ config: { ...LEGACY_CONFIG, defaultTier: "wide" } });
   assert.ok(balanced.ok && tight.ok && wide.ok);
   assert.equal(tight.tier, "tight");
   assert.equal(tight.floorCents, 48);
@@ -241,8 +255,8 @@ test("tiers collapse when they resolve to the same collar; the default still res
 test("tight tier still prefers a floor at or above entry when the venues fund one", () => {
   // Entry 45: floors 48 and 40 both fundable; 48 >= 45 protects entry -> tight = 48.
   // Entry 49: no fundable floor protects entry -> highest floor wins anyway (48).
-  const a = ladder({ entryCents: 45, config: { ...DEFAULT_CROSS_CONFIG, defaultTier: "tight" } });
-  const b = ladder({ entryCents: 49, config: { ...DEFAULT_CROSS_CONFIG, defaultTier: "tight" } });
+  const a = ladder({ entryCents: 45, config: { ...LEGACY_CONFIG, defaultTier: "tight" } });
+  const b = ladder({ entryCents: 49, config: { ...LEGACY_CONFIG, defaultTier: "tight" } });
   assert.ok(a.ok && b.ok);
   assert.equal(a.floorCents, 48);
   assert.equal(b.floorCents, 48);
@@ -269,7 +283,7 @@ test("cross-venue route carries tiers with the same rules (fat-gap fixture)", ()
     minOrderSizeShares: 5,
     tickMilli: 10,
   };
-  const q = quoteCrossWrap({ pair, markCents: 62, entryCents: 41, contracts: 150, now: NOW, noBook, config: DEFAULT_CROSS_CONFIG });
+  const q = quoteCrossWrap({ pair, markCents: 62, entryCents: 41, contracts: 150, now: NOW, noBook, config: LEGACY_CONFIG });
   assert.ok(q.ok, JSON.stringify(q));
   assert.equal(q.tier, "balanced");
   // tight is the legacy hand-computed collar (59/65, credit 918); it is still there under its name
@@ -285,4 +299,78 @@ test("cross-venue route carries tiers with the same rules (fat-gap fixture)", ()
   assert.equal(q.tiers.balanced?.capCents, 70);
   assert.equal(q.floorCents, 47);
   assert.equal(q.hedge.venue, "polymarket");
+});
+
+// ------------------------------------------------------- shipped defaults
+
+test("shipped defaults: the grid reaches 45c either side of the mark and the most upside heads the quote", () => {
+  assert.equal(DEFAULT_CROSS_CONFIG.defaultTier, "wide");
+  assert.equal(Math.max(...DEFAULT_CROSS_CONFIG.floorOffsetsCents), 45);
+  assert.equal(Math.max(...DEFAULT_CROSS_CONFIG.capOffsetsCents), 45);
+  // tonight's shape: 10.1 contracts at a 50c mark, the other side offered at 52c, no venue fee
+  const hedgeFor = (digitalCents: number) => ({ ok: true as const, costCents: Math.ceil((digitalCents * 52) / 100), feesCents: 0, hedge: { action: "buy", venue: "kalshi", outcome: "No", ticker: "T", contractsMilli: digitalCents * 10, avgPriceCents: 52, worstPriceCents: 52, costCents: Math.ceil((digitalCents * 52) / 100) } as CollarTerms["hedge"] });
+  const search = enumerateCollars({ markCents: 50, contracts: 10.1, config: DEFAULT_CROSS_CONFIG, hedgeFor });
+  const sel = selectTiers(search.candidates, 50, DEFAULT_CROSS_CONFIG.defaultTier);
+  assert.equal(sel.tier, "wide");
+  // the most upside: the 5c floor (the grid's lowest, 45 under the mark) under the highest cap the
+  // other side funds there; on the legacy grid the same search stopped at floor 20 / cap 75
+  // (cap 70 once the old 25c minimum credit was applied)
+  assert.equal(sel.terms.floorCents, 5);
+  assert.ok(sel.terms.capCents >= 85, `cap ${sel.terms.capCents}`);
+  assert.ok(sel.terms.creditCents > 0);
+  const legacy = selectTiers(enumerateCollars({ markCents: 50, contracts: 10.1, config: LEGACY_CONFIG, hedgeFor }).candidates, 50, "wide");
+  assert.equal(legacy.terms.floorCents, 20);
+  assert.equal(legacy.terms.capCents, 75);
+  // the tight and balanced tiers are still there and still ordered by floor
+  const t = sel.tiers.tight as CollarTerms;
+  const b = sel.tiers.balanced as CollarTerms;
+  assert.ok(t.floorCents > b.floorCents && b.floorCents > sel.terms.floorCents);
+});
+
+test("the tiers are chosen against the credit line, so Max upside is not a penny collar the line then strikes", () => {
+  // Packers at 64c, 15.38 contracts ($10), the other side at 36/37c: on the 30c grid the highest
+  // cap at the lowest floor (34/79) pays 3c, the highest floor (54/67) pays 2c. Chosen with no
+  // line, both tiers are then struck by the 5c minimum and the quote promotes to Balanced alone.
+  const packers = {
+    pair: { kalshi: { ticker: "KXNFLGAME-26OCT29CARGB-GB" }, gameStartTime: GAME_START.toISOString() },
+    markCents: 64,
+    entryCents: 65,
+    contracts: 15.38,
+    now: NOW,
+    noAsks: [
+      { priceCents: 36, qtyMilli: 2_000_000 },
+      { priceCents: 37, qtyMilli: 20_000_000 },
+    ],
+  };
+  const unlined = quoteLadderWrap({ ...packers, config: { ...LEGACY_CONFIG, defaultTier: "wide", minimumCredit: { cents: 0, bpsOfStake: 0 } } });
+  assert.ok(unlined.ok);
+  assert.deepEqual([unlined.tiers.wide?.capCents, unlined.tiers.wide?.creditCents], [79, 3]);
+  const struck = applyMinimumCredit(unlined);
+  assert.ok(struck.ok);
+  assert.equal(struck.tier, "balanced");
+  assert.deepEqual(Object.keys(struck.tiers), ["balanced"]);
+
+  // chosen against the line: the highest cap at that floor that still pays it (34/76, 32c), the
+  // highest floor that pays it (52/67, 14c); all three tiers survive the rule, the quote heads wide
+  const lined = quoteLadderWrap({ ...packers, config: { ...LEGACY_CONFIG, defaultTier: "wide" } });
+  assert.ok(lined.ok);
+  assert.equal(minimumCreditCents(15.38), 5);
+  assert.deepEqual([lined.tiers.wide?.floorCents, lined.tiers.wide?.capCents, lined.tiers.wide?.creditCents], [34, 76, 32]);
+  assert.deepEqual([lined.tiers.tight?.floorCents, lined.tiers.tight?.capCents, lined.tiers.tight?.creditCents], [52, 67, 14]);
+  assert.equal(lined.tiers.balanced?.floorCents, 44);
+  const kept = applyMinimumCredit(lined);
+  assert.ok(kept.ok);
+  assert.equal(kept, lined);
+  assert.equal(kept.tier, "wide");
+  assert.deepEqual(Object.keys(kept.tiers).sort(), ["balanced", "tight", "wide"]);
+
+  // the line the tiers are chosen against is the one the quote is later judged on
+  assert.equal(tierCreditLineCents(DEFAULT_CROSS_CONFIG, 15.38), minimumCreditCents(15.38));
+  assert.equal(tierCreditLineCents({ minimumCredit: { cents: 25, bpsOfStake: 25 } }, 150), 38);
+  assert.equal(tierCreditLineCents({}, 150), minimumCreditCents(150));
+
+  // nothing clears: the tiers come from everything, so the refusal downstream names the best credit
+  const none = selectTiers(unlined.tiers.wide ? [unlined.tiers.wide] : [], 65, "wide", 50);
+  assert.equal(none.terms.creditCents, 3);
+  assert.equal(applyMinimumCredit({ ...unlined, tiers: { wide: none.terms }, ...none.terms, tier: "wide" }, { cents: 50, bpsOfStake: 0 }).ok, false);
 });

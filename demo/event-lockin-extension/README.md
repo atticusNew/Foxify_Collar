@@ -44,8 +44,11 @@ of open plays. Once a matched play exists, under its row:
    card, never wider than 680px. The panel is a slip, three rows with dividers in the venue's
    type size: "Texans win $25.06 · was $46.00", "Texans lose $14.71 · was $0" (the floor, the one
    coloured figure), "Paid to you now +$1.66 · today". Above them, only when the book funds more
-   than one shape, the price shapes offered right now (**Most now** / **Even** / **Keep more
-   upside**; a heavy favourite usually gets one or two). Under them the button, the badge grown to
+   than one shape, the price shapes offered right now (**Max upside** / **Balanced** / **Max
+   floor**, each with its floor, its upside and the cash now: "Floor $0.71 · Upside $9.30 · +$0.21
+   now"; a heavy favourite usually gets one or two). Max upside is first and pre-selected: it is
+   the shape the service heads the quote with (0.7.30, see "Which shape comes first" below).
+   Under them the button, the badge grown to
    the row's width, reading just "Lock in"; then one fine-print line, "Priced live · until kickoff
    Sun 1:00pm ET · how it works", and the disclosure. Nothing in the panel is under 12px. Tapping
    the line again closes it;
@@ -113,6 +116,35 @@ of open plays. Once a matched play exists, under its row:
    rather than offered. A venue's reference for the play ("ID: a49b5764ac7c") is never read as
    a figure. The tiers share the row's width, two or three of them, and a tier's credit drops to
    a second line rather than being cut off.
+
+   **Which shape comes first** (0.7.30, with the service). At the hedge price a collar is
+   even-money: every cent of floor costs about a cent of cap, and the credit is cap the holder
+   did not keep. So the service now heads the quote with the most upside (`EVENT_X_DEFAULT_TIER`
+   defaults to `wide`; the extension pre-selects whatever tier heads the quote rather than
+   Balanced), the search grid reaches 45¢ either side of the mark instead of 30 under and 25 over
+   (`EVENT_X_FLOOR_OFFSETS`, `EVENT_X_CAP_OFFSETS`, comma lists of cents), and the absolute
+   minimum credit is 5¢ (`EVENT_X_MIN_CREDIT_CENTS`; the 0.25%-of-stake line is unchanged, so
+   positions over $20 are not affected by it). On a 10-contract pick at 50¢ against a 52¢ other
+   side, Max upside moves from floor 20¢ / cap 70¢ to floor 5¢ / cap 90¢: lose $0.71 instead of
+   $0, win $9.30 instead of $10.10. The three shapes are named for what they give (Max upside,
+   Balanced, Max floor) and listed with the floor, the upside and the cash now.
+
+   **The simple layout** (0.7.31, the default; Options → Layout → Full brings the panel above
+   back for an operator demo). The open panel is three rows and one pill, nothing else in view:
+   "Packers win $6.88 · of $7.69", "Packers lose $1.88 · instead of $0" (the floor, the one
+   coloured figure), "Cash now +$0.42"; then a **Lock in** pill the width of its word, and at the
+   right two small links, **Adjust** and **Details**. Adjust (only when the book funds more than
+   one shape) drops a slider under the rows, "More upside" at the left end, "Higher floor" at
+   the right, the shape's name over the thumb (Max upside / Balanced / Max floor); dragging it
+   reprices the three rows and the collapsed line as it moves, and the shape under the thumb is
+   the one the tap locks. Details opens, under the pill: where the other side goes ("Other side ·
+   Kalshi"), the clock ("Priced live · until kickoff Thu 8:15pm ET"), three short paragraphs on
+   how it works in the holder's own figures ("If Packers lose you end with $4.14 instead of $0.
+   If they win, $5.30 instead of $7.69."), and the four tails folded to one line with a **rules**
+   link. A protected play's panel is the same three rows without the "of" column, the quiet
+   **Leave early** button with its helper, and a **Details** link at the right that opens the
+   receipt in place (the facts line, the other side, the cost, the order, the record, Hedged on,
+   Compared, Rules). Nothing is removed: every figure of the full layout is one tap away.
    The other side is sold back through the same executor that bought it: on an armed ticker with
    sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
    written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the
@@ -593,15 +625,17 @@ Operator actions (token in `x-admin-token`), for the recording day:
 
 1. Open the preview My Trades with the extension loaded. Every row has a line under it: Lock in
    with the floor ("Lose, and still get $x."), Unavailable with a reason, or Protected.
-2. Tap a Lock in line. The panel opens under that row; the rows below move down. Tap **Keep more
-   upside** or **Most now**: the three rows reprice. Tap **Even**: they return.
-   Only the shapes the book offers for that pick are listed; a heavy favourite often has one.
-3. Tap **Lock in**. The button reports the stages in words (Pricing from the live book, Writing
+2. Tap a Lock in line. The panel opens under that row; the rows below move down: three rows
+   (win, lose, cash now) and the Lock in pill. Tap **Adjust** and drag the slider towards
+   "Higher floor": the three rows and the line reprice as it moves; drag it back: they return.
+   Adjust is only offered when the book funds more than one shape; a heavy favourite often has
+   one. Tap **Details**: the hedge venue, the clock, how it works in these figures, the rules.
+3. Tap **Lock in**. The pill reports the stages in words (Pricing from the live book, Writing
    the record, Buying the other side) under a slow sheen, with whole seconds only past three; the
-   line flashes solid and settles as the Protected pill with "$x or $y, whichever way it goes.";
-   the panel is the slip with the locked numbers and the facts line with how long it took.
-   Tap **receipt** at the end of the facts line: the other side, the cost, the order, the record
-   id. Open `/` on the service: the position is there with `source: lock`.
+   line flashes solid and settles as the Protected pill with "$x or $y · on Kalshi.";
+   the panel is the three rows with the locked numbers, the Leave early button and a Details link.
+   Tap **Details**: the facts line with how long it took, the other side, the cost, the order,
+   the record id. Open `/` on the service: the position is there with `source: lock`.
    With Rehearsal on in the options, the same tap ends on a Protected line marked "rehearsal"
    with a Reset link, and nothing reaches the service.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).

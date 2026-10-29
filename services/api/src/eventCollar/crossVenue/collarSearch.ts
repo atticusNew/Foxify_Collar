@@ -22,6 +22,7 @@ import type {
   ProtectionTier,
   TakeRule,
 } from "./types";
+import { minimumCreditCents } from "./minimumCredit";
 import { centsDownOf, centsUpOf, PROTECTION_TIERS } from "./types";
 
 /**
@@ -200,6 +201,11 @@ export interface TierSelection {
   tiers: Partial<Record<ProtectionTier, CollarTerms>>;
 }
 
+/** The credit a tier must pay to be chosen: the rule on the config (or the shipped one) at this size. */
+export function tierCreditLineCents(cfg: Pick<CrossSearchConfig, "minimumCredit">, contracts: number): number {
+  return minimumCreditCents(contracts, cfg.minimumCredit);
+}
+
 /**
  * Resolve the three tiers from the fundable set. Requires at least one
  * candidate. The requested default always resolves (to whichever surviving
@@ -208,13 +214,22 @@ export interface TierSelection {
  * The tiers live on the floor axis because that is the question a holder is
  * really answering ("how far below today's value may I fall?"); the cap is
  * then whatever the venues fund at that floor, chosen by each tier's rule.
+ *
+ * `minCreditCents` is the minimum-credit line: each tier is chosen among the
+ * collars that clear it, so the most-upside tier is the highest cap at the
+ * lowest floor that still pays the line, not a penny collar the line then
+ * strikes (which took the whole tier with it). When nothing clears, the tiers
+ * are chosen from everything so the caller's refusal names the best credit.
  */
 export function selectTiers(
-  candidates: CollarTerms[],
+  allCandidates: CollarTerms[],
   entryCents: number,
   defaultTier: ProtectionTier,
+  minCreditCents = 0,
 ): TierSelection {
-  if (candidates.length === 0) throw new Error("selectTiers needs at least one candidate");
+  if (allCandidates.length === 0) throw new Error("selectTiers needs at least one candidate");
+  const clearing = allCandidates.filter((c) => c.creditCents >= minCreditCents);
+  const candidates = clearing.length > 0 ? clearing : allCandidates;
   const tight = pick(candidates, (c, b) => tightBetter(c, b, entryCents)) as CollarTerms;
   const wide = pick(candidates, wideBetter) as CollarTerms;
   // Balanced: the fundable floor nearest the midpoint of tight's and wide's

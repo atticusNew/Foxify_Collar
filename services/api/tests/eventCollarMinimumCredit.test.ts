@@ -28,14 +28,14 @@ process.env.EVENT_X_ADMIN_TOKEN = "t0ken";
 
 const T0 = Date.parse("2026-09-18T12:00:00.000Z");
 
-test("minimum credit: the line is 25¢ or 0.25% of stake, whichever is more; env overrides; junk falls back", () => {
-  assert.deepEqual(DEFAULT_MINIMUM_CREDIT, { cents: 25, bpsOfStake: 25 });
-  assert.equal(minimumCreditCents(10), 25, "$10 staked: the absolute floor binds");
+test("minimum credit: the line is 5¢ or 0.25% of stake, whichever is more; env overrides; junk falls back", () => {
+  assert.deepEqual(DEFAULT_MINIMUM_CREDIT, { cents: 5, bpsOfStake: 25 });
+  assert.equal(minimumCreditCents(10), 5, "$10 staked: the absolute floor binds (0.25% is 2.5¢)");
   assert.equal(minimumCreditCents(150), 38, "$150 staked: 0.25% = 37.5¢ rounds to 38¢");
   assert.equal(minimumCreditCents(1000), 250, "$1,000 staked: $2.50");
   assert.equal(clearsMinimumCredit(38, 150), true);
   assert.equal(clearsMinimumCredit(37, 150), false);
-  assert.equal(describeMinimumCredit(), "25¢ and 0.25% of stake, whichever is more");
+  assert.equal(describeMinimumCredit(), "5¢ and 0.25% of stake, whichever is more");
   assert.deepEqual(minimumCreditRuleFromEnv({}), DEFAULT_MINIMUM_CREDIT);
   assert.deepEqual(minimumCreditRuleFromEnv({ EVENT_X_MIN_CREDIT_CENTS: "50", EVENT_X_MIN_CREDIT_BPS: "10" }), { cents: 50, bpsOfStake: 10 });
   assert.deepEqual(minimumCreditRuleFromEnv({ EVENT_X_MIN_CREDIT_CENTS: "abc", EVENT_X_MIN_CREDIT_BPS: "-4" }), DEFAULT_MINIMUM_CREDIT, "junk and negatives fall back");
@@ -43,6 +43,8 @@ test("minimum credit: the line is 25¢ or 0.25% of stake, whichever is more; env
 });
 
 /** A production-shaped ladder quote with three distinct tiers, hand-checked in the collarSearch tests. */
+/** The grid the hand-checked figures were worked on (30c under the mark, Balanced heading the quote); the shipped defaults are tested in the collarSearch tests. */
+const LEGACY_CONFIG = { ...DEFAULT_CROSS_CONFIG, floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30], capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25], defaultTier: "balanced" as const };
 function ladderQuote(): CrossQuote {
   const q = quoteLadderWrap({
     pair: { kalshi: { ticker: "KXNFLGAME-26SEP27CARCLE-CAR" }, gameStartTime: new Date(T0 + 6 * 3_600_000).toISOString() },
@@ -55,7 +57,7 @@ function ladderQuote(): CrossQuote {
       { priceCents: 42, qtyMilli: 300_000 },
       { priceCents: 43, qtyMilli: 900_000 },
     ],
-    config: DEFAULT_CROSS_CONFIG,
+    config: LEGACY_CONFIG,
   });
   assert.ok(q.ok);
   return q;
@@ -84,14 +86,19 @@ test("applyMinimumCredit: tiers under the line drop; the default stays when it c
   assert.ok(trimmed.tiers[q.tier], "the default is still in the offered set");
 
   // 3. a quote whose default is the smallest tier (Safest at 40¢ heads it): a line of 41¢ drops it and
-  //    promotes Balanced (390¢) to the top-level terms, take, hedge leg and EV cost included
+  //    promotes the most upside first; here the line is set between Most upside and Balanced so the
+  //    promotion lands on Balanced (390¢), take, hedge leg and EV cost included
   const tight = q.tiers.tight as CollarTerms;
   const balanced = q.tiers.balanced as CollarTerms;
-  assert.ok(tight && balanced && tight.creditCents < balanced.creditCents, "fixture: Safest pays less than Balanced");
+  const wide = q.tiers.wide as CollarTerms;
+  assert.ok(tight && balanced && wide && tight.creditCents < wide.creditCents && wide.creditCents < balanced.creditCents, "fixture: Safest pays less than Most upside, which pays less than Balanced");
   const headedByTight: CrossQuote = { ...q, ...tight, tier: "tight" };
-  const promoted = applyMinimumCredit(headedByTight, { cents: tight.creditCents + 1, bpsOfStake: 0 });
+  const upsideFirst = applyMinimumCredit(headedByTight, { cents: tight.creditCents + 1, bpsOfStake: 0 });
+  assert.ok(upsideFirst.ok);
+  assert.equal(upsideFirst.tier, "wide", "Most upside is promoted first when it clears");
+  const promoted = applyMinimumCredit(headedByTight, { cents: wide.creditCents + 1, bpsOfStake: 0 });
   assert.ok(promoted.ok);
-  assert.equal(promoted.tier, "balanced", "Balanced is promoted first");
+  assert.equal(promoted.tier, "balanced", "then Balanced");
   assert.equal(promoted.creditCents, balanced.creditCents, "top-level credit is the promoted tier's");
   assert.equal(promoted.floorCents, balanced.floorCents);
   assert.equal(promoted.capCents, balanced.capCents);
@@ -101,11 +108,10 @@ test("applyMinimumCredit: tiers under the line drop; the default stays when it c
   assert.ok(!promoted.tiers.tight, "the old default is no longer offered");
   assert.equal(promoted.contracts, q.contracts);
   assert.equal(promoted.kalshiTicker, q.kalshiTicker, "everything not in the terms is unchanged");
-  // when Balanced is under the line too, Safest is next, then Most upside
-  const wide = q.tiers.wide as CollarTerms;
-  const onlyWide = applyMinimumCredit({ ...q, tiers: { tight, balanced: { ...balanced, creditCents: 1 }, wide } }, { cents: Math.max(tight.creditCents, 2), bpsOfStake: 0 });
-  assert.ok(onlyWide.ok);
-  assert.equal(onlyWide.tier, tight.creditCents >= 2 ? "tight" : "wide");
+  // when Most upside and Balanced are both under the line, Safest is what is left
+  const onlyTight = applyMinimumCredit({ ...q, tiers: { tight: { ...tight, creditCents: 500 }, balanced: { ...balanced, creditCents: 1 }, wide: { ...wide, creditCents: 1 } }, tier: "balanced" }, { cents: 2, bpsOfStake: 0 });
+  assert.ok(onlyTight.ok);
+  assert.equal(onlyTight.tier, "tight");
 
   // 4. a line above every credit: an honest refusal that names the best credit and the line
   const best = Math.max(...Object.values(credits));
@@ -160,7 +166,9 @@ test("demo service: the rule runs in the scan before the ceiling; the EV cost fo
   const headedByTight = { ...base, quote: { ...q, ...tight, tier: "tight" as const }, evBps: evCostBps(60, tight.floorCents, tight.capCents, tight.creditCents, 150) };
   const promoted = applyMinimumCreditRule(headedByTight as never, { cents: tight.creditCents + 1, bpsOfStake: 0 });
   assert.ok(promoted.quote.ok);
-  assert.equal(promoted.quote.tier, "balanced");
+  // the first tier in promotion order (the most upside first) whose credit clears the raised line
+  const expectedTier = (["wide", "balanced"] as const).find((name) => (credits[name] ?? 0) > tight.creditCents);
+  assert.equal(promoted.quote.tier, expectedTier);
   assert.equal(promoted.evBps, evCostBps(60, promoted.quote.floorCents, promoted.quote.capCents, promoted.quote.creditCents, 150), "EV cost re-derived from the promoted terms");
   assert.notEqual(promoted.evBps, headedByTight.evBps);
   assert.equal(promoted.route, "kalshi_self", "the route is unchanged");
@@ -237,7 +245,7 @@ test("demo service: POST /api/admin/reset archives the quote ledger and the funn
       assert.match(a.to, /\.\d{4}-\d{2}-\d{2}T\d{6}Z\.archived\.jsonl?$|\.archived\.json$/);
       assert.ok(existsSync(a.to), `${a.to} exists`);
     }
-    assert.equal(body.rules.minimumCredit, "25¢ and 0.25% of stake, whichever is more", "the reset names the rules the new window runs under");
+    assert.equal(body.rules.minimumCredit, "5¢ and 0.25% of stake, whichever is more", "the reset names the rules the new window runs under");
     assert.equal(body.rules.maxEvCostBps, 300);
     assert.equal(existsSync(ledgerPath), false, "the live ledger path is empty until the next scan writes it");
     const after = (await (await fetch(`${base}/api/admin/funnel?token=t0ken`)).json()) as { funnel: { pageLoads7d: Array<{ byPage: Record<string, number> }> } };

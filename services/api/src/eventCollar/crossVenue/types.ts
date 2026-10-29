@@ -294,6 +294,14 @@ export interface CrossQuote extends CollarTerms {
 
 export type CrossQuoteResult = CrossQuote | CrossRefusal;
 
+/** The minimum-credit rule (minimumCredit.ts): a collar is offered only when its credit clears both. */
+export interface MinimumCreditRule {
+  /** absolute floor on the credit, cents */
+  cents: number;
+  /** floor on the credit as bps of stake (100¢ × contracts) */
+  bpsOfStake: number;
+}
+
 export interface CrossSearchConfig {
   floorOffsetsCents: number[];
   capOffsetsCents: number[];
@@ -319,11 +327,20 @@ export interface CrossSearchConfig {
   hedgeFeeFlatCents: number;
   /** the tier whose terms become the top-level quote (the others ride along) */
   defaultTier: ProtectionTier;
+  /**
+   * The credit line the tiers are chosen against: a tier resolves to the best collar by its rule
+   * among those that clear the line, so "most upside" is the highest cap at the lowest floor
+   * that still pays the holder something, not a penny collar the line then removes (which used
+   * to drop the tier altogether and promote the quote to Balanced). Unset = the shipped rule.
+   */
+  minimumCredit?: MinimumCreditRule;
 }
 
 export const DEFAULT_CROSS_CONFIG: CrossSearchConfig = {
-  floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30],
-  capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25],
+  // the grid reaches 45c either side of the mark: at even odds a cent of floor costs a cent of
+  // cap, so the most-upside collar (a 5c floor under a 90c cap) needs both ends open
+  floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30, 35, 40, 45],
+  capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 35, 40, 45],
   maxCapCents: 97,
   minFloorCents: 5,
   minCapHeadroomCents: 3,
@@ -335,5 +352,8 @@ export const DEFAULT_CROSS_CONFIG: CrossSearchConfig = {
   deMinimisTakeCents: 5,
   hedgeFeeBps: 0,
   hedgeFeeFlatCents: 0,
-  defaultTier: "balanced",
+  // the holder keeps the most of their win by default; the credit is what is left over, not the point
+  defaultTier: "wide",
+  // 5c and 0.25% of stake, whichever is more (minimumCredit.ts carries the rule's words)
+  minimumCredit: { cents: 5, bpsOfStake: 25 },
 };

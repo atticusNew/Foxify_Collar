@@ -37,7 +37,7 @@ import type {
   ProphetXHedgeLeg,
 } from "./types";
 import type { MatchedPair } from "./types";
-import { enumerateCollars, evCostBps, refuseUnfunded, selectTiers } from "./collarSearch";
+import { enumerateCollars, evCostBps, refuseUnfunded, selectTiers, tierCreditLineCents } from "./collarSearch";
 
 /**
  * The ProphetX route priced through the same walk: the opposing strike's asks (fee folded by the
@@ -212,7 +212,7 @@ export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
     });
   }
 
-  const sel = selectTiers(search.candidates, entryCents, cfg.defaultTier);
+  const sel = selectTiers(search.candidates, entryCents, cfg.defaultTier, tierCreditLineCents(cfg, contracts));
   return {
     ok: true,
     kalshiTicker: pair.kalshi.ticker,
