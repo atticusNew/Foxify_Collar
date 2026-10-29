@@ -1604,14 +1604,29 @@
     if (!v || !rt.holderVenueName || v === rt.holderVenueName) return [];
     return ["other side on " + esc(v)];
   };
-  /** The routes that priced the other side, best credit first; the chosen one flagged. */
+  /** How many venues the strip shows at most; the rest of the race stays on the operator's receipt. */
+  const VENUE_CHIPS_MAX = 3;
+  /**
+   * The routes that priced the other side, best credit first; the chosen one flagged. Capped at
+   * VENUE_CHIPS_MAX: the venue the hedge goes to and this page's own venue (when it is one of the
+   * books in the race) always stay, the best of the rest fill the remaining places. The holder
+   * knows where they are, so the home venue is not labelled; it is simply there with its price.
+   */
   const pricedRoutes = (rt) => {
     if (!rt || !Array.isArray(rt.routes)) return [];
     const chosen = rt.hedgeVenueName || null;
-    return rt.routes
+    const home = rt.holderVenueName || null;
+    const all = rt.routes
       .filter((r) => r && r.creditCents != null && r.hedgeVenueName)
-      .map((r) => ({ venue: r.hedgeVenueName, creditCents: r.creditCents, chosen: r.hedgeVenueName === chosen, here: Boolean(rt.holderVenueName) && r.hedgeVenueName === rt.holderVenueName }))
+      .map((r) => ({ venue: r.hedgeVenueName, creditCents: r.creditCents, chosen: r.hedgeVenueName === chosen }))
       .sort((a, b) => b.creditCents - a.creditCents || (a.chosen ? -1 : 1));
+    if (all.length <= VENUE_CHIPS_MAX) return all;
+    const kept = all.filter((r) => r.chosen || r.venue === home);
+    for (const r of all) {
+      if (kept.length >= VENUE_CHIPS_MAX) break;
+      if (!kept.includes(r)) kept.push(r);
+    }
+    return kept.sort((a, b) => b.creditCents - a.creditCents || (a.chosen ? -1 : 1));
   };
   /**
    * The venue pick, shown, not footnoted: each venue that priced the other side with what it would
@@ -1622,10 +1637,8 @@
     const v = hedgeVenueOf(rt);
     if (!v) return "";
     const routes = pricedRoutes(rt);
-    // "here" marks this page's own venue when it is one of the books in the race: the holder sees it win, or sees why it did not
-    const here = (name) => (rt.holderVenueName && name === rt.holderVenueName ? '<i class="ael-here">&middot; here</i>' : "");
-    if (routes.length < 2) return '<div class="ael-venues"><span class="ael-l">Other side on</span><span class="ael-vchip ael-won"><span class="ael-ic">' + SHIELD_FILL + "</span>" + esc(v) + here(v) + "</span></div>";
-    const chips = routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + (r.chosen ? '<span class="ael-ic">' + SHIELD_FILL + "</span>" : "") + esc(r.venue) + here(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("");
+    if (routes.length < 2) return '<div class="ael-venues"><span class="ael-l">Other side on</span><span class="ael-vchip ael-won"><span class="ael-ic">' + SHIELD_FILL + "</span>" + esc(v) + "</span></div>";
+    const chips = routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + (r.chosen ? '<span class="ael-ic">' + SHIELD_FILL + "</span>" : "") + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("");
     return '<div class="ael-venues"><span class="ael-l">Other side priced on</span>' + chips + "</div>";
   };
   /** How much more the chosen venue pays the holder than the next one, in cents; null without two prices. */
@@ -1659,7 +1672,7 @@
       lines.push(
         row(
           "Compared",
-          '<span class="ael-vchips">' + routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + esc(r.venue) + (r.here ? '<i class="ael-here">&middot; here</i>' : "") + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("") + (edge > 0 ? '<span class="ael-dim ael-edge">' + esc(usd(edge)) + " more for you</span>" : "") + "</span>",
+          '<span class="ael-vchips">' + routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("") + (edge > 0 ? '<span class="ael-dim ael-edge">' + esc(usd(edge)) + " more for you</span>" : "") + "</span>",
         ),
       );
     } else {
