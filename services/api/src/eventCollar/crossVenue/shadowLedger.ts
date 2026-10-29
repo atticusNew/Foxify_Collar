@@ -131,6 +131,18 @@ export interface ShadowCloseRecord {
   protectedAtMidCents?: number | null;
   /** protectedAtMid minus protectedAtClose: what crossing both books cost (null without a mid) */
   unwindFrictionCents?: number | null;
+  /**
+   * Who left. Absent: the scan's schedule (a showcase position, nobody paid). "unwind": the holder
+   * of a lock tapped Leave early, through the unwind endpoint; the terms were quoted again at the
+   * tap and this line is what they were.
+   */
+  source?: "unwind";
+  /**
+   * With source "unwind": whether the hedge sale was sent to its venue. False records the sale at
+   * the book's price without an order behind it (the executor buys and does not sell yet); the
+   * operator sells by hand and the receipt says so.
+   */
+  hedgeSent?: boolean;
 }
 
 /** The market finalized on Kalshi with an official result. */
@@ -156,10 +168,12 @@ export interface ShadowVoidRecord {
  * recorded it. The record's other lines say what is owed (the credit at the tap; at settlement
  * the floor to the holder when the side lost, or the slice above the cap back to the writer when
  * it won); this line says a payment happened. Direction follows the leg. Several lines may pay
- * one leg. The scan's showcase positions never carry one: nobody is paid on paper.
+ * one leg. The scan's showcase positions never carry one: nobody is paid on paper. A lock the
+ * holder left early owes one "close" leg instead of floor or handback: what our hedge sale
+ * fetched less the cap slice, to the holder when positive, to the writer when negative.
  */
-export type CashLeg = "credit" | "floor" | "handback";
-export const CASH_LEGS: readonly CashLeg[] = ["credit", "floor", "handback"];
+export type CashLeg = "credit" | "floor" | "handback" | "close";
+export const CASH_LEGS: readonly CashLeg[] = ["credit", "floor", "handback", "close"];
 export interface ShadowCashRecord {
   type: "cash";
   at: string;
@@ -214,6 +228,9 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   closeFeesCents?: number;
   closeProtectedAtMidCents?: number | null;
   closeUnwindFrictionCents?: number | null;
+  /** closed only: the schedule or the holder's own Leave early; with "unwind", whether the hedge sale went to the venue */
+  closeSource?: "schedule" | "unwind";
+  closeHedgeSent?: boolean;
   /** an early close was attempted and a leg had no depth; the position runs to settlement */
   closeUnpriced?: { at: string; reason: string };
   /** payments recorded on this lock, oldest first; the reference and note stay in the raw ledger */
@@ -240,13 +257,19 @@ export interface CashLegDue {
  * What a lock owes and to whom, from its terms and its state, with the cash lines applied. The
  * credit is owed to the holder from the tap. A settled position adds one leg: the floor to the
  * holder when the side lost, the slice above the cap to the writer when it won (none when the
- * cap is $1). A void or closed position owes nothing beyond the credit; a close is settled at
- * live prices on the books, not between the two parties.
+ * cap is $1). A void position owes nothing beyond the credit. A closed one owes the close leg:
+ * the holder's own sale is theirs on the venue, so between the two parties what moves is our
+ * hedge sale less the cap slice the holder sold at the tap (closeNetCents), to whichever side it
+ * favors; nothing when it nets to zero.
  */
 export function cashDue(p: ShadowPosition): CashLegDue[] {
   const owed: Array<{ leg: CashLeg; to: "holder" | "writer"; dueCents: number }> = [{ leg: "credit", to: "holder", dueCents: p.creditCents }];
   if (p.status === "settled" && p.result === "no") owed.push({ leg: "floor", to: "holder", dueCents: centsOf(p.floorCents, p.contracts) });
   if (p.status === "settled" && p.result === "yes" && p.capCents < 100) owed.push({ leg: "handback", to: "writer", dueCents: fundingOf(p) });
+  if (p.status === "closed") {
+    const net = closeNetCents(p);
+    if (net !== 0) owed.push({ leg: "close", to: net > 0 ? "holder" : "writer", dueCents: Math.abs(net) });
+  }
   return owed.map((o) => {
     const lines = (p.cash ?? []).filter((c) => c.leg === o.leg);
     const paidCents = lines.reduce((s, c) => s + c.cents, 0);
@@ -269,6 +292,16 @@ type WriterInputs = Pick<
   ShadowOpenRecord,
   "contracts" | "floorCents" | "capCents" | "creditCents" | "takeCents" | "hedgeCostCents" | "hedgeUnitsMilli"
 >;
+
+/**
+ * What a close moves between the parties beyond the credit: hedge sale minus the cap slice. By the
+ * close identity (protected = own sale + hedge sale - funding + credit) this is protected - naked -
+ * credit, so it is read off the position's own totals; positive favors the holder.
+ */
+export function closeNetCents(p: Pick<ShadowPosition, "status" | "protectedCents" | "nakedCents" | "creditCents">): number {
+  if (p.status !== "closed") return 0;
+  return (p.protectedCents ?? 0) - (p.nakedCents ?? 0) - p.creditCents;
+}
 
 /** The cap slice the holder sells: (100 - cap) x N cents, received by the writer in the YES state. */
 export function fundingOf(p: Pick<ShadowOpenRecord, "contracts" | "capCents">): number {
@@ -435,6 +468,8 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
         closeFeesCents: rec.feesCents ?? 0,
         closeProtectedAtMidCents: rec.protectedAtMidCents ?? null,
         closeUnwindFrictionCents: rec.unwindFrictionCents ?? null,
+        closeSource: rec.source ?? "schedule",
+        ...(rec.source === "unwind" ? { closeHedgeSent: rec.hedgeSent ?? false } : {}),
       });
     }
   }

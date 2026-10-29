@@ -301,9 +301,11 @@
       const sorted = [...list].sort((a, b) => gameOrdinal(a) - gameOrdinal(b));
       return gameOrdinal(sorted[0]) < gameOrdinal(sorted[1]) ? sorted[0] : null;
     }
+    // a lock left early is still the venue's live position (the pick is the holder's to sell), so the
+    // active tabs keep it; only the game's own settlement moves it to the settled tab
     const settledLock = (t) => {
       const r = S.record.get(t);
-      return Boolean(r && r.status !== "open");
+      return Boolean(r && (r.status === "settled" || r.status === "void"));
     };
     const byTab = S.tab === "settled" ? list.filter(settledLock) : list.filter((t) => !settledLock(t));
     return byTab.length === 1 ? byTab[0] : null;
@@ -413,7 +415,7 @@
    */
   const rememberLock = (ticker, next) => {
     const prev = S.record.get(ticker);
-    S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), ms: prev.ms, hedge: next.hedge || prev.hedge || null } : next);
+    S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), justLeft: Boolean(prev.justLeft), ms: prev.ms, hedge: next.hedge || prev.hedge || null } : next);
     // a lock on a game the service no longer lists joins the index so its row is still found
     if (!S.byTicker[ticker] && next.league) indexMarkets(S.markets);
   };
@@ -1180,16 +1182,20 @@
    * paid): what is still owed to the holder, what the holder still owes back, or paid in full.
    * Null when the service's record predates cash legs; the line then says only what settled.
    */
-  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap" };
+  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap", close: "Left early" };
   const cashState = (rec) => {
     const legs = Array.isArray(rec.cashDue) ? rec.cashDue : null;
     if (!legs || !legs.length) return null;
     const toYou = legs.filter((l) => l.to === "holder").reduce((s, l) => s + (l.outstandingCents || 0), 0);
     const back = legs.filter((l) => l.to === "writer").reduce((s, l) => s + (l.outstandingCents || 0), 0);
     if (toYou > 0) return { label: esc(usd(toYou)) + " owed to you", sub: "on its way", open: true };
-    if (back > 0) return { label: esc(usd(back)) + " due back", sub: "the slice above the cap", open: true };
+    // what is owed back: the slice above the cap on a win, or the protection's settlement on a leave
+    if (back > 0) return { label: esc(usd(back)) + " due back", sub: legs.some((l) => l.leg === "close" && l.to === "writer" && l.outstandingCents > 0) ? "the protection's settlement" : "the slice above the cap", open: true };
     return { label: "paid in full", sub: "", open: false };
   };
+  /** What a leave moved between the two parties beyond the credit: the record's own totals, or the tap's answer. */
+  const closeNetOf = (rec) => (rec.closeNetCents != null ? rec.closeNetCents : (rec.protectedCents || 0) - (rec.nakedCents || 0) - (rec.creditCents || 0));
+  const signed = (c) => (c < 0 ? "\u2212" : "+") + esc(usd(Math.abs(c)));
   const legLine = (l) => {
     const who = l.to === "holder" ? "to you" : "back to the writer";
     const amount = (l.to === "holder" && l.leg === "credit" ? "+" : "") + esc(usd(l.dueCents));
@@ -1225,7 +1231,12 @@
           ? lineGo("Settled", cash.open ? "Protected outcome <b>" + esc(got) + "</b> &middot; " + cash.label + (cash.sub ? " &middot; " + cash.sub : "") : "Paid <b>" + esc(got) + "</b> &middot; every leg paid.", "ael-line-on")
           : lineGo("Settled", "Protected outcome <b>" + esc(got) + "</b>.", "ael-line-on");
       } else if (rec.status === "void") line = lineGo("Voided", "No official result; nothing owed.", "ael-line-on");
-      else line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>, whichever way it goes." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
+      else if (rec.status === "closed") {
+        // left early: what the holder ended with at the live price, the cash beside it as on a settlement
+        const got = usd(rec.protectedCents || 0);
+        const cash = cashState(rec);
+        line = lineGo("Left early", "Ended with <b>" + esc(got) + "</b>" + (cash && cash.open ? " &middot; " + cash.label : "") + ".", "ael-line-on");
+      } else line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>, whichever way it goes." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
     } else if (B.kind === "other") {
       line = lineGo("Unavailable", "Protection covers " + (VENUE_ID === "novig" ? "Winner" : "Moneyline") + " picks.", "ael-line-off");
     } else if (B.match === "unmatched") {
@@ -1261,7 +1272,7 @@
           // the "Locked in" moment is shown once; the next open is the position's details
           if (st.done) st.done.justNow = false;
           const r = S.record.get(B.ticker);
-          if (r) r.justNow = false;
+          if (r) r.justNow = r.justLeft = false;
         }
         paintRow(B);
       };
@@ -1541,11 +1552,30 @@
       if (cash && cash.open) meta.push(rec.result === "yes" ? "the slice above the cap goes back to the writer; the receipt shows each leg" : "the floor comes to you; the receipt shows each leg");
     } else if (rec.status === "void") {
       body = '<div class="ael-ph"><b>Protection voided</b><span>No official result for this game; nothing owed either way.</span></div>';
+    } else if (rec.status === "closed") {
+      // left early: the pick sold at the live price, the protection settled between us at that price,
+      // what the holder ended with. The cash row says whether that settlement has moved.
+      const net = closeNetOf(rec);
+      const cash = cashState(rec);
+      const sold = rec.nakedCents != null ? rec.nakedCents : (rec.protectedCents || 0) - net - (rec.creditCents || 0);
+      body =
+        '<div class="ael-ledger ael-two">' +
+        ledgerRow("Left early &middot; you ended with", esc(usd(rec.protectedCents || 0)), null, "ael-hero") +
+        ledgerRow("Your pick, sold" + (rec.closeYesFillCents != null ? " at " + esc(String(rec.closeYesFillCents)) + "c" : ""), esc(usd(sold))) +
+        ledgerRow("Protection settled", signed(net), null, cash ? "" : "ael-last") +
+        (cash ? ledgerRow("Cash", cash.label, null, "ael-last") : "") +
+        "</div>";
+      if (rec.closedAt) meta.push("Left " + esc(fmtAt(rec.closedAt)));
+      if (rec.closeUnwindFrictionCents != null) meta.push("leaving cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
+      if (rec.justLeft && rec.ms) meta.push("in " + (rec.ms / 1000).toFixed(1) + "s");
+      if (cash && cash.open) meta.push(net < 0 ? "the settlement goes back to the writer; the receipt shows each leg" : "the settlement comes to you; the receipt shows each leg");
     } else {
-      body = ledger(nick, rs, rec.creditCents, null);
+      body = ledger(nick, rs, rec.creditCents, null) + (st.leave ? leaveHtml(B, rec, rs) : "");
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
       if (rec.rehearsal) meta.push("rehearsal");
+      // leaving is the one thing left to do; a quiet link, never a second button under the slip
+      if (!rec.rehearsal && !st.leave) meta.push('<a href="#" class="ael-leave-a">leave early</a>');
     }
     // the receipt's detail is one tap away, never in the way: a link at the end of the facts line
     if (rec.status !== "void") meta.push('<a href="#" class="ael-rcpt-a">' + (st.rcpt ? "hide receipt" : "receipt") + "</a>");
@@ -1581,7 +1611,159 @@
           if (st.rcpt) st.rcptErr = "";
           paintRow(B);
         };
+      const leave = panel.querySelector(".ael-leave-a");
+      if (leave)
+        leave.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          stateOf(B).leave = { at: 0 };
+          paintRow(B);
+        };
+      const stay = panel.querySelector(".ael-stay");
+      if (stay)
+        stay.onclick = () => {
+          stateOf(B).leave = null;
+          paintRow(B);
+        };
+      const go = panel.querySelector(".ael-leave-go");
+      if (go) go.onclick = () => leaveNow(B, rec);
     });
+  };
+
+  // ── leaving early ─────────────────────────────────────────────────────────────────────────
+  // A protected position can be left before the start: the protection settles at today's price
+  // instead of the official result. The service prices it from the live books (the pick sold
+  // into its bids, our hedge sold into its), the holder reads the figures, then taps once more;
+  // the tap prices again. Nothing is reversed: it is a new trade at live prices, the record says so.
+
+  /** Read the live leave quote once, then again when it has gone stale while the block is open. */
+  const leaveQuote = (B) => {
+    const st = stateOf(B);
+    const L = st.leave;
+    if (!L || L.busy || L.sending) return;
+    if (L.q && Date.now() - L.at < REQUOTE_MS) return;
+    L.busy = true;
+    api("/api/shadow/unwind/quote?ticker=" + encodeURIComponent(B.ticker), "GET").then((r) => {
+      const st2 = stateOf(B);
+      if (!st2.leave) return;
+      st2.leave.busy = false;
+      st2.leave.at = Date.now();
+      if (r.ok && r.json && r.json.ok && r.json.unwind) st2.leave = { ...st2.leave, q: r.json.unwind, lastIso: r.json.lastIso || null, err: null };
+      else st2.leave = { ...st2.leave, q: null, err: leaveWords(r) };
+      paintRow(B);
+    });
+  };
+
+  /** Plain words for a leave that cannot happen now. */
+  const leaveWords = (r) => {
+    const j = (r && r.json) || {};
+    if (!r || !r.ok || !j) return { why: "Live pricing is unavailable right now.", next: "Try again in a moment." };
+    switch (j.error || j.code) {
+      case "too_late":
+        return { why: "Too late to leave; the start is close.", next: "The protection runs to the official result now." + (j.lastIso ? " Leaving closed " + fmtAt(j.lastIso) + "." : "") };
+      case "not_open":
+        return { why: j.status === "closed" ? "This position was already left." : "This position has settled.", next: "" };
+      case "book_empty":
+      case "book_too_thin":
+        return { why: (j.leg === "hedge" ? "The hedge's" : "Your side's") + " book cannot take the size right now.", next: "Check back in a few minutes; the book refills." };
+      case "lock_in_flight":
+        return { why: "This position is being written right now.", next: "A moment." };
+      default:
+        return { why: j.message || "Leaving is unavailable right now.", next: "" };
+    }
+  };
+
+  /** The leave block under the slip: the live figures, the two ways out, the fine print. */
+  const leaveHtml = (B, rec, rs) => {
+    const st = stateOf(B);
+    const L = st.leave;
+    if (!L.q && !L.err) {
+      // the first read is on its way
+      if (!L.busy) setTimeout(() => leaveQuote(B), 0);
+      return '<div class="ael-leave"><div class="ael-skel"></div><div class="ael-skel" style="width:70%"></div></div>';
+    }
+    if (!L.q) {
+      return '<div class="ael-leave"><div class="ael-ph"><b>' + esc(L.err.why) + "</b>" + (L.err.next ? "<span>" + esc(L.err.next) + "</span>" : "") + '</div><div class="ael-leave-acts"><button type="button" class="ael-go ael-quiet ael-stay">Back</button></div></div>';
+    }
+    if (Date.now() - L.at >= REQUOTE_MS) setTimeout(() => leaveQuote(B), 0);
+    const q = L.q;
+    const n = (Number(q.contracts) || rec.contracts || 0).toFixed(2).replace(/\.00$/, "");
+    const fine = ["Priced live"];
+    if (q.unwindFrictionCents != null) fine.push("leaving costs " + esc(usd(q.unwindFrictionCents)) + " against the mid");
+    if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
+    return (
+      '<div class="ael-leave">' +
+      '<div class="ael-leave-h"><b>Leave early</b><span>today\'s price instead of the result</span></div>' +
+      '<div class="ael-ledger ael-two">' +
+      ledgerRow("Your pick, sold now <span class=\"ael-dim\">" + esc(n) + " at " + esc(String(q.yesFillCents)) + "c, after fees</span>", esc(usd(q.positionProceedsCents))) +
+      ledgerRow("Protection settles", signed(q.closeNetCents)) +
+      ledgerRow("You end with <span class=\"ael-dim\">your " + esc(usd(q.creditCents)) + " credit kept</span>", esc(usd(q.protectedAtCloseCents)), null, "ael-hero") +
+      ledgerRow("Staying", esc(usd(rs.floorTotal)) + " or " + esc(usd(rs.capTotal)), null, "ael-last") +
+      "</div>" +
+      '<div class="ael-leave-acts"><button type="button" class="ael-go ael-leave-go">Leave early</button><button type="button" class="ael-go ael-quiet ael-stay">Stay</button></div>' +
+      '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
+      '<div class="ael-fine">Leaving settles the protection at today\'s price. Your pick is yours to sell on ' + esc(V.name) + " at that price, or to keep unprotected.</div>" +
+      "</div>"
+    );
+  };
+
+  /** The tap: the service prices again and writes the close; the row becomes Left early. */
+  const leaveNow = async (B, rec) => {
+    const st = stateOf(B);
+    const L = st.leave;
+    if (!L || L.sending) return;
+    L.sending = true;
+    const go = B.box.querySelector(".ael-leave-go");
+    const stay = B.box.querySelector(".ael-stay");
+    if (stay) stay.disabled = true;
+    const t0 = Date.now();
+    const STAGES = ["Pricing from the live books…", "Writing the record…"];
+    const label = () => {
+      const s = (Date.now() - t0) / 1000;
+      return STAGES[Math.min(STAGES.length - 1, Math.floor(s / 1.5))] + (s >= 3 ? " " + Math.floor(s) + "s" : "");
+    };
+    if (go) {
+      go.disabled = true;
+      go.classList.add("ael-busy");
+      go.textContent = label();
+    }
+    const tick = setInterval(() => {
+      const g = B.box && B.box.querySelector(".ael-leave-go");
+      const next = label();
+      if (g && g.textContent !== next) g.textContent = next;
+    }, 250);
+    const r = await api("/api/shadow/unwind", "POST", { ticker: B.ticker });
+    clearInterval(tick);
+    const st2 = stateOf(B);
+    if (!(r.ok && r.json && r.json.ok && r.json.unwind)) {
+      // refused or unreachable: the position is still protected; say why, offer the way back
+      st2.leave = { at: Date.now(), q: null, err: leaveWords(r) };
+      B.panelHtml = null;
+      paintRow(B);
+      return;
+    }
+    const u = r.json.unwind;
+    const left = {
+      ...rec,
+      status: "closed",
+      closedAt: r.json.at,
+      protectedCents: u.protectedAtCloseCents,
+      nakedCents: u.nakedAtCloseCents,
+      closeNetCents: u.closeNetCents,
+      closeYesFillCents: u.yesFillCents,
+      closeUnwindFrictionCents: u.unwindFrictionCents,
+      cashDue: Array.isArray(r.json.cash) ? r.json.cash : rec.cashDue,
+      justLeft: true,
+      ms: Date.now() - t0,
+    };
+    st2.leave = null;
+    st2.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : st2.rcptCash;
+    if (st2.done) st2.done = left;
+    S.record.set(B.ticker, left);
+    st2.enter = true;
+    B.panelHtml = null;
+    paintRow(B);
+    setTimeout(loadRecord, 3000);
   };
 
   // ── before the trade: one pill per protectable game, and the same pill in the slip ───────

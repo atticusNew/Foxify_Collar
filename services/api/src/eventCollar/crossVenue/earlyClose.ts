@@ -29,6 +29,7 @@ import { dollarsToCents, fetchJsonWithRetry, kalshiBase } from "../kalshiPublic"
 import { kalshiTakerFeeCents } from "./kalshiLadder";
 import { decimalToMilli } from "./polymarketPublic";
 import type { HedgeRoute, PmBook, PmBookLevel } from "./types";
+import { centsDownOf, centsOf, contractHundredths } from "./types";
 
 /** One resting bid on a Kalshi side: what a sell fetches at this level. */
 export interface KalshiBidLevel {
@@ -207,10 +208,12 @@ function yesMidTwiceCents(k: KalshiBookSides): number | null {
 /** Price the close from the books the caller fetched. */
 export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks): EarlyCloseResult {
   const n = terms.contracts;
+  // the size in hundredths of a contract: 15.95 contracts is 1,595 hundredths, 15,950 milli
+  const nH = contractHundredths(n);
   if (books.kalshi.yesBids.length === 0) {
     return { ok: false, leg: "position", code: "book_empty", detail: "no resting yes bids on the protected market" };
   }
-  const pos = walkKalshiBids(books.kalshi.yesBids, n * 1000);
+  const pos = walkKalshiBids(books.kalshi.yesBids, nH * 10);
   if (!pos) {
     return { ok: false, leg: "position", code: "book_too_thin", detail: `the yes bids cannot absorb ${n} contracts right now` };
   }
@@ -242,16 +245,17 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
     hedgeFeesCents = 0; // Polymarket taker fee is 0 today
   }
 
-  const fundingCents = (100 - terms.capCents) * n;
+  // the same rounding the tap used (types.ts): funding down, the floor line half up
+  const fundingCents = centsDownOf(100 - terms.capCents, n);
   const positionProceedsCents = pos.proceedsCents - pos.feeCents;
   const hedgeNetCents = hedgeProceedsCents - hedgeFeesCents;
   const protectedAtCloseCents = positionProceedsCents + hedgeNetCents - fundingCents + terms.creditCents;
 
   const midTwice = yesMidTwiceCents(books.kalshi);
-  // kept contracts in milli: N (cap - floor) / 100 x 1000 = N (cap - floor) x 10, exact
-  const keptMilli = n * (terms.capCents - terms.floorCents) * 10;
+  // kept x mid in cents: kept = N (cap - floor) / 100 contracts, mid = midTwice / 2 cents, N = nH / 100;
+  // one rounding at the end, exact in integers before it
   const protectedAtMidCents =
-    midTwice === null ? null : Math.round((keptMilli * midTwice) / 2000) + terms.floorCents * n + terms.creditCents;
+    midTwice === null ? null : Math.round((nH * (terms.capCents - terms.floorCents) * midTwice) / 20_000) + centsOf(terms.floorCents, n) + terms.creditCents;
 
   return {
     ok: true,
