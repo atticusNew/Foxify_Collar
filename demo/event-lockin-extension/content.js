@@ -1476,39 +1476,61 @@
    * own settlement words. The holder sees the venue and the terms; the operator also sees the costs.
    */
   const hedgeVenueOf = (rt) => (rt && rt.hedgeVenueName) || null;
-  /** One grey note in the offer's fine print when the other side is bought somewhere other than this page's venue. */
+  /**
+   * The price competition in one line, as the service words it (`routing.comparison`): what each
+   * venue's book would have paid for the same protection and which one the other side went to
+   * ("ProphetX $3.10 vs Kalshi $2.40, hedged on ProphetX"). Null when only one venue priced.
+   */
+  const comparisonOf = (rt) => (rt && typeof rt.comparison === "string" && rt.comparison ? rt.comparison : null);
+  /**
+   * Grey notes in the offer's fine print: the competition when two venues priced the other side,
+   * else where the other side is bought when that is not this page's venue.
+   */
   const routingNotes = (rt) => {
+    const cmp = comparisonOf(rt);
+    if (cmp) return [esc(cmp)];
     const v = hedgeVenueOf(rt);
     if (!v || !rt.holderVenueName || v === rt.holderVenueName) return [];
     return ["other side on " + esc(v)];
   };
   const bps = (x) => (x == null ? "" : (x >= 0 ? "+" : "") + Math.round(x) + " bps");
-  /** The receipt's routing rows: "Other side on", the terms for the tails, and (operator) every route's cost. */
+  /** The receipt's routing rows: "Hedged on", the competition, the terms for the tails, and (operator) every route's cost. */
   const routingRows = (row, rt) => {
     if (!rt) return "";
     const lines = [];
     const v = hedgeVenueOf(rt);
     if (v) lines.push(row("Hedged on", esc(v) + (rt.reason ? ' <span class="ael-dim">&middot; ' + esc(rt.reason) + "</span>" : "")));
+    const cmp = comparisonOf(rt);
+    if (cmp) lines.push(row("Compared", esc(cmp)));
     if (Array.isArray(rt.tails) && rt.tails.length) {
       lines.push(row("If the game", '<span class="ael-tails">' + rt.tails.map((t) => "<i>" + esc(String(t.text || "")) + "</i>").join("") + "</span>"));
     }
     if (operator() && Array.isArray(rt.routes)) {
       for (const r of rt.routes) {
-        const name = esc(r.hedgeVenue === "polymarket" ? "Polymarket" : "Kalshi");
-        lines.push(row(name, r.ok ? esc(bps(r.allInBps)) + ' <span class="ael-dim">all in (' + esc(bps(r.evCostBps)) + " books, " + esc(bps(r.tailChargeBps)) + " tails)" + (r.gate ? " &middot; " + esc(r.gate) : "") + (r.compatible === false ? " &middot; tails differ" : "") + "</span>" : '<span class="ael-dim">' + esc(r.refusal || r.gate || "not offered") + "</span>"));
+        const name = esc(r.hedgeVenueName || (r.hedgeVenue === "polymarket" ? "Polymarket" : r.hedgeVenue === "prophetx" ? "ProphetX" : "Kalshi"));
+        const credit = r.creditCents != null ? " &middot; pays " + esc(usd(r.creditCents)) : "";
+        lines.push(row(name, r.ok ? esc(bps(r.allInBps)) + ' <span class="ael-dim">all in (' + esc(bps(r.evCostBps)) + " books, " + esc(bps(r.tailChargeBps)) + " tails)" + credit + (r.gate ? " &middot; " + esc(r.gate) : "") + (r.compatible === false ? " &middot; tails differ" : "") + "</span>" : '<span class="ael-dim">' + esc(r.refusal || r.gate || "not offered") + "</span>"));
       }
     }
     return lines.join("");
   };
+  /** A sale on ProphetX is an offset: the other side's pair bought, settling against the hedge at the game (the service marks it settlesAtGame). */
+  const isOffset = (sale) => Boolean(sale && (sale.settlesAtGame || /prophetx/i.test(String(sale.venue || ""))));
   /** The sale of the other side at a leave, as the receipt has it (hedgeSale): sent to the venue, or on the record for the operator's hand. */
   const saleRow = (row, sale, rec) => {
     const sent = sale ? !sale.simulated : rec && rec.closeHedge ? Boolean(rec.closeHedge.sent) : null;
     if (sent === null && !sale) return "";
     const venue = (sale && sale.venue) || "Kalshi";
-    if (sent) {
-      const units = sale && sale.unitsMilli != null ? (sale.unitsMilli / 1000).toFixed(2).replace(/\.00$/, "") : null;
-      return row("Sold back", (units ? esc(units) + " contracts on " : "on ") + esc(venue) + (sale && sale.avgPriceMilli != null ? " at " + esc((sale.avgPriceMilli / 10).toFixed(1)) + "c each after fees" : "") + (sale && sale.costCents != null ? " &middot; " + esc(usd(sale.costCents)) : "") + (sale && sale.orderId ? ' <span class="ael-dim">&middot; order <code>' + esc(String(sale.orderId).slice(0, 8)) + "&hellip;</code></span>" : ""));
+    const units = sale && sale.unitsMilli != null ? (sale.unitsMilli / 1000).toFixed(2).replace(/\.00$/, "") : null;
+    const order = sale && sale.orderId ? ' <span class="ael-dim">&middot; order <code>' + esc(String(sale.orderId).slice(0, 8)) + "&hellip;</code></span>" : "";
+    if (sent && isOffset(sale)) {
+      // ProphetX takes no sell order: the other side is offset by buying its pair, which settles at the game
+      return row("Offset on", esc(venue) + (units ? " &middot; " + esc(units) + " contracts of the pair bought" : "") + (sale && sale.costCents != null ? " &middot; " + esc(usd(sale.costCents)) + " at the game" : "") + ' <span class="ael-dim">&middot; the pair settles when the game does</span>' + order);
     }
+    if (sent) {
+      return row("Sold back", (units ? esc(units) + " contracts on " : "on ") + esc(venue) + (sale && sale.avgPriceMilli != null ? " at " + esc((sale.avgPriceMilli / 10).toFixed(1)) + "c each after fees" : "") + (sale && sale.costCents != null ? " &middot; " + esc(usd(sale.costCents)) : "") + order);
+    }
+    if (isOffset(sale) || /prophetx/i.test(venue)) return row("Offset on", '<span class="ael-dim">' + esc(venue) + "; recorded at the book's price, the pair bought by hand</span>");
     return row("Sold back", '<span class="ael-dim">recorded at the book\'s price on ' + esc(venue) + "; settled by hand</span>");
   };
   /** How the order reached the venue, as the receipt says it: through the aggregator's pod, or on our own key. The partner is never named. */
@@ -1622,7 +1644,10 @@
         "</div>";
       if (rec.closedAt) meta.push("Left " + esc(fmtAt(rec.closedAt)));
       if (rec.closeUnwindFrictionCents != null) meta.push("leaving cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
-      if (rec.closeHedge) meta.push(rec.closeHedge.sent ? "the other side sold on " + esc((rec.closeHedge.sale && rec.closeHedge.sale.venue) || "Kalshi") : "the other side's sale is on the record");
+      if (rec.closeHedge) {
+        const sale = rec.closeHedge.sale || null;
+        meta.push(!rec.closeHedge.sent ? "the other side's sale is on the record" : isOffset(sale) ? "the other side offset on " + esc(sale.venue) + ", settles at the game" : "the other side sold on " + esc((sale && sale.venue) || "Kalshi"));
+      }
       if (rec.justLeft && rec.ms) meta.push("in " + (rec.ms / 1000).toFixed(1) + "s");
       if (cash && cash.open) meta.push(net < 0 ? "the settlement goes back to the writer; the receipt shows each leg" : "the settlement comes to you; the receipt shows each leg");
     } else {
