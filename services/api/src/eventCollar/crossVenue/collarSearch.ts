@@ -22,7 +22,7 @@ import type {
   ProtectionTier,
   TakeRule,
 } from "./types";
-import { PROTECTION_TIERS } from "./types";
+import { centsDownOf, centsUpOf, PROTECTION_TIERS } from "./types";
 
 /**
  * The true cost of the protection in expected-value terms at the market's own
@@ -118,14 +118,16 @@ export function enumerateCollars(inputs: CollarSearchInputs): CollarSearchResult
 
   for (const floorCents of floors) {
     for (const capCents of caps) {
-      const digitalCents = (floorCents + 100 - capCents) * contracts;
+      // the NO-state payout the writer must hold, never short; the funding the cap releases, never
+      // over-counted (a fractional size can put either on a half cent)
+      const digitalCents = centsUpOf(floorCents + 100 - capCents, contracts);
       if (digitalCents <= 0) continue;
       const probe = inputs.hedgeFor(digitalCents);
       if (!probe.ok) {
         sawThinBook = true;
         continue;
       }
-      const fundingCents = (100 - capCents) * contracts;
+      const fundingCents = centsDownOf(100 - capCents, contracts);
       const grossCreditCents = fundingCents - probe.costCents - probe.feesCents;
       if (grossCreditCents <= 0) {
         bestShortfallCents = Math.min(bestShortfallCents, -grossCreditCents);

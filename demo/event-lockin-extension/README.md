@@ -6,7 +6,7 @@ One extension, three venues, each in its own skin:
 | --- | --- | --- | --- |
 | ProphetX (`prophetx.co`) | **My Trades**, Resting / Filled / Settled | cost, price as the implied chance or American odds, payout | near-black, the venue's green |
 | Kalshi (`kalshi.com`) | **Portfolio**, Positions / Orders / History | Yes or No on a club, N contracts at a price in cents | white, near-black type, the venue's green |
-| Novig (`novig.us`) | **Portfolio**, Open / Settled | Winner at a decimal multiplier (1.25x), Take or Make, wager and payout | black, dark-grey cards, the venue's blue |
+| Novig (`novig.com`, `novig.us`) | **Portfolio**, Active / Settled | one card per order: code and multiplier (GB · 1.54x), Winner, MATCHED, Amount and To Pay | black, dark-grey cards, the venue's blue |
 
 The host name picks the venue. It sets the colours (CSS variables on every block we draw), the
 words ("play", "position", "order") and the reading rules below. Everything else is the same
@@ -105,7 +105,9 @@ Novig Points on Novig.
 A Kalshi position is **Yes** or **No** on one club, N contracts at an average price in cents.
 Those are our units already: N contracts at 59¢ cost $5.90 and pay $10.00. The reader takes the
 contract count and the cents price off the row ("10 contracts · Avg 59¢"), or the cents price and
-the cost. A **No** on a club is read as a **Yes on the other club of the same game**, which is the
+the cost. Kalshi sells fractional contracts ("15.95 shares"); the fraction is kept and the whole
+position is covered, so a $15.95 payout is protected as $15.95, never 15 contracts and an odd 95
+cents left out. A **No** on a club is read as a **Yes on the other club of the same game**, which is the
 market the service protects: "No · DAL Cowboys, 15 contracts at 32¢" becomes 15 contracts of
 Philadelphia at 32¢, and the panel says "your No on the Cowboys" so the holder knows which row
 it means. Spread markets ("...: Spread") get the muted line. The Portfolio page's tabs are read:
@@ -115,11 +117,21 @@ settled.
 ### Novig
 
 A Novig order is a Winner, Spread or Total at a decimal multiplier. **Take** fills now at the
-best price; **Make** rests until another account takes it, and the row says **Unmatched** until
-then (muted line, "waits until the order is matched"). The reader takes the wager and the payout
-from the row ("Wager $20.00 · Payout $24.70"); the payout is net of the venue's fee on winnings,
-so $20 at 1.25x pays $24.70, not $25.00, and the reader pairs them anyway. Spread and Total rows
-get the muted line ("covers Winner picks"). Tabs: **Open** and **Settled**.
+best price; **Make** rests until another account takes it, and the card says **UNMATCHED** until
+then (muted line, "waits until the order is matched"). The Portfolio (Oct 2026) is a deck of
+cards, one per order, laid out side by side: the pick's code and multiplier ("GB · 1.54x"),
+"Winner" under it, a MATCHED badge, **Amount** and **To Pay** ("$5.00", "$7.69"), the matchup with
+its start ("CAR · 9:15 PM Thu · GB"), **Sell** at the live price and **Buy More**, then Share, the
+order id and when it was placed. The reader takes Amount as the stake and To Pay as the payout
+(To Pay is the venue's own figure, a cent or so off the rounded multiplier, and it is the figure
+that is covered); the pick is the club the card names twice (header and matchup). The page is
+React Native Web: every run of text sits in its own view with nothing between, which the reader
+spaces out before reading ("GB·1.54xWinnerMATCHEDAmount$5.00..."). Because the cards sit side
+by side, our block goes **inside** the card as its last row, not after it, where it would land
+beside the card or after the whole deck. Spread and Total cards get the muted line ("covers
+Winner picks"). Tabs: **Active** and **Settled**. The stand-in `preview/novig.html#/portfolio`
+is built to this layout from a saved screenshot of a real order (GB at 1.54x, $5.00 to pay
+$7.69, Thu 9:15 PM); the first thing to do on the live page is confirm it reads the same.
 
 ## Where the size comes from
 
@@ -134,13 +146,16 @@ Two sources, in this order:
    table: the row's figures sit under the column headers Cost, Price and Payout, so the reader pairs
    each cell with its header ("$20.00", "74.68%", "$26.78"); a row that labels its own figures
    ("Cost $20.00", "To Gain $6.78") or shows a price as American odds (-300) is read too. One $1
-   contract per payout dollar, entry price is cost over payout. The panel then says "read from the
-   page". If nothing can be read, the line offers "Price it" with a payout box.
+   contract per payout dollar, to the hundredth, entry price is cost over payout. The panel then
+   says "read from the page". If nothing can be read, the line offers "Price it" with a payout box.
 
-Prices become our units like this: $20 at 74.68% pays $26.78, which is 27 contracts at an entry
-of 75 cents. $5 at 25.5% (+292) pays $19.60: 20 contracts at 26 cents. The
-two sources agree to the cent on the preview board; the page is enough for the recording, the
-service confirms it when the key pair is set.
+Prices become our units like this: $20 at 74.68% pays $26.78, which is 26.78 contracts at an entry
+of 75 cents. $5 at 25.5% (+292) pays $19.60: 19.60 contracts at 26 cents. Kalshi's own fractions
+(15.95 contracts) are the same unit. The whole position is covered, so the slip's figures are the
+venue's figures to the cent; a per-contract price times a fractional size rounds the way the
+service rounds (a payout line half up, the handback down). The two sources agree to the cent on the
+preview board; the page is enough for the recording, the service confirms it when the key pair is
+set.
 
 ## See it before any deposit or trade (the simulations)
 
@@ -251,6 +266,15 @@ The extension draws; the service decides. Two things ride with `GET /api/shadow/
   draws nothing but a notice to update, on every page. `marksOff` (env
   `EVENT_SHADOW_EXT_MARKS_OFF`, comma list of `prophetx,kalshi,novig`): the pills and slip line
   are off on those venues until the switch is cleared, with no new build. `cutoffMinutes`.
+
+When the markets call fails, the notice at the bottom left says why. The service sleeps between
+demos and takes up to a minute to wake, and a fresh tab's first call is the one that finds it
+asleep: the call is retried at 3s, 8s, 20s and 45s ("Lock in: waking the service…") before the
+five-minute poll takes over, and only once those are spent does the notice say unreachable, with
+the HTTP status or the error in brackets. A reload of the extension (Load unpacked again, an
+update) invalidates the script already running in open tabs; that case is told apart and the
+notice says "Lock in was updated. Reload this page." rather than retrying forever. A 403 is the
+lock key ("missing or wrong"), a 404 a service with no lock routes.
 
 A service deployed from a build before these fields (markets rows without `protectable`, no `ext`)
 still draws: the pill goes on every listed game not already on the record, as 0.6 did, with no

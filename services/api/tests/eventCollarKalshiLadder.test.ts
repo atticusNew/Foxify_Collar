@@ -239,3 +239,24 @@ test("quoteLadderWrap: refusal codes", () => {
     assert.ok((rich.bestShortfallCents ?? 0) > 0);
   }
 });
+
+test("quoteLadderWrap: a fractional size (Kalshi's 15.95 contracts) prices to the cent; the hedge rounds up, the funding rounds down", () => {
+  const result = quoteLadderWrap(baseInputs({ contracts: 15.95 }));
+  assert.ok(result.ok, JSON.stringify(result));
+  assert.equal(result.contracts, 15.95);
+  assert.equal(result.floorCents, 59);
+  assert.equal(result.capCents, 65);
+  // digital 94c x 15.95 = 1499.3c -> 1500c of No payout = 15,000 milli contracts (never short)
+  assert.equal(result.hedge.venue, "kalshi");
+  if (result.hedge.venue === "kalshi") {
+    assert.equal(result.hedge.contractsMilli, 15_000);
+    assert.equal(result.hedge.costCents, 450);
+  }
+  // funding 35c x 15.95 = 558.25c -> 558c (never over-counted); every figure is an integer cent
+  for (const k of ["creditCents", "grossCreditCents", "takeCents", "feesCents"] as const) {
+    assert.ok(Number.isInteger(result[k]), `${k} is whole cents: ${result[k]}`);
+  }
+  assert.equal(result.grossCreditCents, 558 - 450 - result.feesCents);
+  // the identity the ledger derives the hedge cost from holds on the fraction too
+  assert.equal(558 - result.creditCents - result.takeCents, 450 + result.feesCents);
+});

@@ -94,7 +94,7 @@ const GAMES = [
 const LEFT = ["NBA", "NFL", "Pro Baseball", "NHL", "NCAA Football", "WNBA"];
 // Positions as the Portfolio lists them. side: yes|no on the named club. open: resting order (ORDERS tab). settled: HISTORY.
 const POS = JSON.parse(sessionStorage.getItem("kalshi-pos") || "null") || [
-  { g: "DETNYK", club: "home", side: "yes", n: 20, c: 61, placed: "Oct 27 · 12:48 PM" },
+  { g: "DETNYK", club: "home", side: "yes", n: 15.95, c: 62, placed: "Oct 27 · 12:48 PM" },
   { g: "BKNBOS", club: "away", side: "no", n: 15, c: 79, placed: "Oct 27 · 12:51 PM" },
   { g: "PORLAL", club: "home", side: "yes", n: 10, c: 56, placed: "Oct 26 · 6:40 PM" },
   { g: "DETNYK", club: "home", side: "yes", n: 10, c: 48, spread: "-2.5", placed: "Oct 27 · 12:55 PM" },
@@ -138,13 +138,13 @@ const posRow = (p) => {
   const t = p.club === "away" ? g.away : g.home;
   const mkt = title(g) + (p.spread ? ": Spread" : "");
   const chip = '<span class="chip ' + p.side + '">' + (p.side === "yes" ? "Yes" : "No") + "</span>" + t[0] + " " + t[1] + (p.spread ? " " + p.spread : "");
-  const cost = p.n * p.c;
+  const cost = Math.round(p.n * p.c);
   const val = p.settled ? (p.settled === "won" ? p.n * 100 : 0) : Math.round(p.n * (p.c + 2));
   const right = p.open
     ? '<div class="num">Limit<b>' + p.c + '&cent;</b></div><div class="num">Cost<b>' + usd(cost) + '</b></div><span class="st">Resting</span>'
     : p.settled
       ? '<div class="num">Cost<b>' + usd(cost) + '</b></div><div class="num">Payout<b class="' + (p.settled === "won" ? "g" : "") + '">' + usd(val) + '</b></div><span class="st">Settled &middot; ' + p.settled + "</span>"
-      : '<div class="num">Cost<b>' + usd(cost) + '</b></div><div class="num">To win<b>' + usd(p.n * 100) + '</b></div><div class="num">Value<b class="g">' + usd(val) + '</b></div><button class="sell">Sell</button>';
+      : '<div class="num">Cost<b>' + usd(cost) + '</b></div><div class="num">To win<b>' + usd(Math.round(p.n * 100)) + '</b></div><div class="num">Value<b class="g">' + usd(val) + '</b></div><button class="sell">Sell</button>';
   return '<div class="pos"><span class="ico"></span><div><div class="t">' + mkt + '</div><div class="m">' + chip + " &middot; " + p.n + " contracts &middot; Avg " + p.c + "&cent; &middot; " + g.when + " &middot; placed " + p.placed + "</div></div>" + right + "</div>";
 };
 const TABS = ["positions", "orders", "history"];

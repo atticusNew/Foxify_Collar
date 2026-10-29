@@ -19,6 +19,7 @@ import {
   summarizeShadow,
   writerPayouts,
   type ShadowOpenRecord,
+  type ShadowPosition,
 } from "../src/eventCollar/crossVenue/shadowLedger";
 import { getMarketResult } from "../src/eventCollar/kalshiPublic";
 import { MIN_SLICE_EVENTS, interleaveByLeague, renderShadowHtml } from "../scripts/eventShadowHtml";
@@ -484,4 +485,28 @@ test("shadow: page renders the honest record", () => {
   assert.ok(!html.includes("\u2014"), "no em dashes in visible copy");
   assert.ok(!/resolution/i.test(html), "banned vocabulary");
   assert.ok(html.includes(`href="https://event.earnandprotect.xyz/">back to the demo</a>`), "back link goes to the front door (the embed), not the board");
+});
+
+test("shadow: a fractional position (7.69 contracts, a $7.69 payout) settles to whole cents and the legs still add up", () => {
+  const p = { ...OPEN_FIXTURE, contracts: 7.69, floorCents: 52, capCents: 63, creditCents: 7, takeCents: 1 };
+  const yes = settlePayouts(p, "yes");
+  const no = settlePayouts(p, "no");
+  // naked: $7.69 exactly; floor 52c x 7.69 = 399.88c -> $4.00 + credit; funding 37c x 7.69 = 284.53c -> 284c, kept = 769 - 284
+  assert.equal(yes.nakedCents, 769);
+  assert.equal(no.protectedCents, 400 + 7);
+  assert.equal(yes.protectedCents, 769 - 284 + 7);
+  for (const v of [yes.protectedCents, yes.nakedCents, yes.deltaCents, no.protectedCents, no.deltaCents]) assert.ok(Number.isInteger(v), String(v));
+  // what each side owes: the floor to the holder on a loss, the slice above the cap back on a win, whole cents both
+  const lost = { ...p, status: "settled", result: "no", settledAt: "2026-09-14T00:00:00.000Z" } as ShadowPosition;
+  const won = { ...p, status: "settled", result: "yes", settledAt: "2026-09-14T00:00:00.000Z" } as ShadowPosition;
+  assert.deepEqual(cashDue(lost).map((d) => [d.leg, d.to, d.dueCents]), [["credit", "holder", 7], ["floor", "holder", 400]]);
+  assert.deepEqual(cashDue(won).map((d) => [d.leg, d.to, d.dueCents]), [["credit", "holder", 7], ["handback", "writer", 284]]);
+  // handback + what the holder keeps = payout + credit, to the cent
+  assert.equal(284 + yes.protectedCents, 769 + 7);
+  // the writer's two states still net to the same number: the hedge is sized up to cover the fraction
+  const wy = writerPayouts(p, "yes");
+  const wn = writerPayouts(p, "no");
+  assert.equal(wy.fundingCents, 284);
+  assert.ok(Number.isInteger(wy.writerCents) && Number.isInteger(wn.writerCents));
+  assert.ok(wn.writerCents >= wy.writerCents, `NO state never worse than YES after the round-up: ${wn.writerCents} vs ${wy.writerCents}`);
 });

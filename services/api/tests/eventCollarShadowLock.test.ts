@@ -31,15 +31,21 @@ test("lock gate: a key under 12 chars is no key; header or query must match exac
   assert.equal(lockAuthorized(null, { "x-lock-key": "" }, ""), false);
 });
 
-test("lock request: ticker upper-cased and shaped; contracts, entry and tier validated by name", () => {
+test("lock request: ticker upper-cased and shaped; contracts to the hundredth, entry and tier validated by name", () => {
   const ok = parseLockRequest({ ticker: " kxnbagame-26oct14lalbos-bos ", contracts: 20, entryCents: 58, tier: "balanced" });
   assert.deepEqual(ok, { ok: true, value: { ticker: "KXNBAGAME-26OCT14LALBOS-BOS", contracts: 20, entryCents: 58, tier: "balanced" } });
   assert.deepEqual(parseLockRequest({ ticker: "KX-A", contracts: "20" }), { ok: true, value: { ticker: "KX-A", contracts: 20 } });
+  // Kalshi sells fractions and a $7.69 payout is 7.69 contracts: hundredths are a size, finer is a client bug
+  assert.deepEqual(parseLockRequest({ ticker: "KX-A", contracts: "15.95" }), { ok: true, value: { ticker: "KX-A", contracts: 15.95 } });
+  assert.deepEqual(parseLockRequest({ ticker: "KX-A", contracts: 7.69 }), { ok: true, value: { ticker: "KX-A", contracts: 7.69 } });
+  assert.deepEqual(parseLockRequest({ ticker: "KX-A", contracts: 1.0 }), { ok: true, value: { ticker: "KX-A", contracts: 1 } });
   for (const [body, re] of [
     [null, /JSON object/],
     [{ ticker: "", contracts: 1 }, /ticker/],
     [{ ticker: "KX-A", contracts: 0 }, /contracts/],
-    [{ ticker: "KX-A", contracts: 2.5 }, /contracts/],
+    [{ ticker: "KX-A", contracts: 0.99 }, /contracts/],
+    [{ ticker: "KX-A", contracts: 2.505 }, /hundredth/],
+    [{ ticker: "KX-A", contracts: "abc" }, /contracts/],
     [{ ticker: "KX-A", contracts: 10_001 }, /contracts/],
     [{ ticker: "KX-A", contracts: 1, entryCents: 100 }, /entryCents/],
     [{ ticker: "KX-A", contracts: 1, tier: "loose" }, /tier/],

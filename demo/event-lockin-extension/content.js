@@ -130,13 +130,18 @@
   const usd = (c) => (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
-  const reshape = (n, F, C, K) => ({ floorTotal: F * n + K, capTotal: C * n + K });
-  /** The holder's two outcomes on this row: the lock's terms on its whole contracts, plus the odd payout the lock leaves out when the club wins. */
-  const outcomes = (B, n, F, C, K) => {
-    const r = reshape(n, F, C, K);
-    r.capTotal += oddOf(B);
-    return r;
-  };
+  /**
+   * Money on a size. A size is contracts to the hundredth (Kalshi sells fractions; a $7.69 payout
+   * is 7.69 contracts), so a per-contract figure times it can land on a half cent. The service's
+   * rule, mirrored here so the slip and the record agree: a payout line rounds half up; the
+   * funding the cap releases (what is handed back on a win) rounds down, and the cap total is the
+   * whole payout less that, so handback + kept = payout + credit to the cent.
+   */
+  const hundredths = (n) => Math.round(n * 100);
+  const centsOf = (per, n) => Math.round((per * hundredths(n)) / 100);
+  const centsDownOf = (per, n) => Math.floor((per * hundredths(n)) / 100);
+  /** The holder's two outcomes on this row under terms (floor, cap, credit) on n contracts. */
+  const outcomes = (B, n, F, C, K) => ({ floorTotal: centsOf(F, n) + K, capTotal: centsOf(100, n) - centsDownOf(100 - C, n) + K });
   const fmtAt = (iso) => {
     try {
       const d = new Date(iso);
@@ -148,6 +153,24 @@
   const OURS = (node) => {
     const e = node && node.nodeType === 3 ? node.parentElement : node;
     return Boolean(e && e.closest && e.closest(".ael-ui"));
+  };
+  /**
+   * An element's text without ours. Under a card our block sits inside the card (see
+   * insertionPoint), so the card's textContent would carry our own words and figures: "Knicks
+   * lose $6.95" would be read back as a second name and a third amount.
+   */
+  const pageText = (e) => {
+    if (!e.querySelector(".ael-ui")) return e.textContent;
+    let out = "";
+    const w = document.createTreeWalker(e, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (OURS(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT) });
+    while (w.nextNode()) out += w.currentNode.nodeValue;
+    return out;
+  };
+  /** An element's height less our blocks inside it: the page's own size of the thing. */
+  const pageHeight = (e, r) => {
+    let h = r.height;
+    for (const ours of e.querySelectorAll(".ael-host")) h -= ours.getBoundingClientRect().height;
+    return h;
   };
 
   // ── the games the service can protect ───────────────────────────────────────
@@ -345,7 +368,19 @@
     return !S.nicks.has(sorted[0][0]);
   };
 
+  /**
+   * The service's markets, retried on failure. The service sleeps between demos and takes up to a
+   * minute to wake, and the first call from a fresh tab is the one that finds it asleep: a failed
+   * load tries again at 3s, 8s, 20s and 45s before the five-minute poll takes over, and the
+   * notice says the service is waking rather than unreachable until those are spent. A reload of
+   * the extension itself invalidates this script's runtime (every call then fails the same way);
+   * that is told apart and the notice asks for a page reload instead of retrying forever.
+   */
+  const RETRY_MS = [3_000, 8_000, 20_000, 45_000];
+  let marketsRetry = null;
+  const runtimeGone = (r) => /context invalidated|Extension context/i.test(String((r && r.error) || "")) || !(chrome.runtime && chrome.runtime.id);
   const loadMarkets = async () => {
+    if (S.serviceState === "gone") return;
     const r = await api("/api/shadow/markets", "GET");
     if (r.ok && r.json && r.json.ok && Array.isArray(r.json.markets)) {
       indexMarkets(r.json.markets);
@@ -354,8 +389,19 @@
       S.ext.legacy = !(r.json.ext && typeof r.json.ext === "object");
       // the service names the oldest build it will draw with; an older one shows only the notice
       S.serviceState = S.ext.minVersion && cmpVersion(EXT_VERSION, S.ext.minVersion) < 0 ? "old" : "ok";
+      S.marketsTries = 0;
+    } else if (runtimeGone(r)) {
+      S.serviceState = "gone";
     } else {
       S.serviceState = r.status === 403 ? "key" : r.status === 404 ? "off" : "down";
+      S.marketsTries = (S.marketsTries || 0) + 1;
+      S.downDetail = r.status ? "HTTP " + r.status : r.error || "";
+      if (S.serviceState === "down" && S.marketsTries <= RETRY_MS.length && !marketsRetry) {
+        marketsRetry = setTimeout(() => {
+          marketsRetry = null;
+          void loadMarkets();
+        }, RETRY_MS[S.marketsTries - 1]);
+      }
     }
     scan(true);
   };
@@ -510,13 +556,13 @@
     return out;
   };
   /**
-   * A size: what the position pays and cost, to the cent, as the venue prints them; and the whole
-   * contracts the lock covers, never more than the position holds. A position of 15.95 contracts
-   * (Kalshi sells fractions) is locked on 15; the odd $0.95 of payout rides unprotected and is
-   * counted in every figure the holder sees (oddOf). A position under one contract has no size.
+   * A size: what the position pays and cost, to the cent, as the venue prints them, and the
+   * contracts the lock covers: one $1 contract per payout dollar, to the hundredth, so the whole
+   * position is covered (15.95 contracts on Kalshi, 7.69 for a $7.69 payout elsewhere). A position
+   * under one contract has no size.
    */
   const sizeOf = (stake, payout) => {
-    const contracts = Math.floor(payout + 1e-9);
+    const contracts = Math.round(payout * 100) / 100;
     if (contracts < 1) return null;
     return {
       contracts,
@@ -530,7 +576,7 @@
   const CENTS = /(?:^|[^\d.$])(\d{1,2}(?:\.\d+)?)\s?(?:¢|&cent;|c(?![a-z0-9]))/i;
   const CONTRACTS = /(\d{1,6}(?:,\d{3})*(?:\.\d+)?)\s*(?:contracts?|shares?)\b/i;
   const sizeOfContracts = (held, cents, costCents) => {
-    const contracts = Math.floor(held + 1e-9);
+    const contracts = Math.round(held * 100) / 100;
     if (contracts < 1) return null;
     return {
       contracts,
@@ -539,8 +585,6 @@
       payoutCents: Math.round(held * 100),
     };
   };
-  /** The payout the lock leaves out: the venue's figure less the whole contracts covered (95 for 15.95 contracts); 0 when they agree. */
-  const oddOf = (B) => (B && B.size && B.size.payoutCents ? B.size.payoutCents - 100 * B.size.contracts : 0);
   const centsSize = (text) => {
     const bare = noMoney(text);
     const c = CENTS.exec(bare);
@@ -551,8 +595,8 @@
       const amounts = amountsIn(text);
       // the cost at that price: contracts are the cost over the price
       const cost = labelled(text, /(?:cost|paid|spent|total|amount|avg\s*cost)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i) || amounts[0];
-      // no count printed: the nearest whole contracts the cost buys at that price
-      if (cost) return sizeOfContracts(Math.round((100 * cost) / cents), cents, Math.round(cost * 100));
+      // no count printed: the contracts the cost buys at that price, to the hundredth
+      if (cost) return sizeOfContracts(Math.round((10_000 * cost) / cents) / 100, cents, Math.round(cost * 100));
     }
     if (n) {
       const cost = labelled(text, /(?:cost|paid|spent|amount)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
@@ -580,7 +624,8 @@
     const matchedM = /(?:^|[^a-z])matched\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i.exec(text);
     const matched = matchedM ? Number(matchedM[1].replace(/,/g, "")) : null;
     const stake = matched != null && matched > 0 && (wager == null || matched <= wager) ? matched : wager;
-    const payout = labelled(text, /(?:payout|pays|returns|max\s*payout|total\s*return)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
+    // Novig's card labels the two figures Amount and To Pay
+    const payout = labelled(text, /(?:payout|pays|to\s*pay|returns|max\s*payout|total\s*return)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
     const toWin = labelled(text, /(?:to\s*win|to\s*gain|profit|win|gain)\s*:?\s*\$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
     const bare = noMoney(text);
     const odds = AMERICAN.exec(bare);
@@ -718,7 +763,7 @@
    * The selected tab is the one marked so (aria, data-state, class), else the one drawn apart
    * from the others (lit text or an underline). Nothing decided means the rows speak for themselves.
    */
-  // ProphetX: Resting / Filled / Settled. Kalshi: Positions / Orders / History. Novig: Open / Settled.
+  // ProphetX: Resting / Filled / Settled. Kalshi: Positions / Orders / History. Novig: Active / Settled.
   const TAB_WORDS = /^(resting|open orders?|orders?|unmatched|pending|filled|matched|positions?|open|active|settled|closed|history|past)$/i;
   const tabGroup = (w) => (/^(resting|open orders?|orders?|unmatched|pending)$/i.test(w) ? "resting" : /^(settled|closed|history|past)$/i.test(w) ? "settled" : "filled");
   const MARKED = (el) => {
@@ -783,17 +828,17 @@
    * carries the position's money (two dollar amounts, or one with a wager/payout word), of a
    * row's proportions, with no input in it (that is the order slip) and not the whole page.
    */
-  const STAKE_LABELS = /(wager|stake|risk|cost|bet|payout|to\s*win|to\s*gain|pays)\s*:?\s*\$\s?\d/gi;
+  const STAKE_LABELS = /(wager|stake|risk|cost|bet|amount|payout|to\s*win|to\s*gain|to\s*pay|pays)\s*:?\s*\$\s?\d/gi;
   const rowFrom = (node) => {
     let e = node.parentElement;
     let found = null;
     for (let i = 0; e && e !== document.body && i < 9; i++, e = e.parentElement) {
       if (e.querySelector("input, textarea")) break;
-      const text = spaced(norm(e.textContent));
+      const text = spaced(norm(pageText(e)));
       if (text.length > 600) break;
       const r = e.getBoundingClientRect();
       // wider than the window is the page itself, unless it is a table that scrolls inside its pane
-      if (r.height > 320 || (r.width > window.innerWidth && !e.closest("table"))) break;
+      if (pageHeight(e, r) > 320 || (r.width > window.innerWidth && !e.closest("table"))) break;
       const labels = (text.match(STAKE_LABELS) || []).length;
       if (found) {
         // a block was found without the row's stake and payout labels (a matched/unmatched detail
@@ -807,7 +852,7 @@
         continue;
       }
       const amounts = amountsIn(text);
-      const moneyWords = /\b(wager|stake|payout|to win|to gain|pays|returns|cost|avg|average|contracts|shares|risk|matched|odds)\b/i.test(text);
+      const moneyWords = /\b(wager|stake|amount|payout|to win|to gain|to pay|pays|returns|cost|avg|average|contracts|shares|risk|matched|odds)\b/i.test(text);
       if ((amounts.length >= 2 || (amounts.length >= 1 && moneyWords)) && r.width >= 200 && r.height >= 24) {
         found = e;
         if (labels >= 1) break;
@@ -831,7 +876,7 @@
     if (!named.size) return "";
     for (let e = row.previousElementSibling, i = 0; e && i < 8; e = e.previousElementSibling, i++) {
       if (OURS(e)) continue;
-      const t = spaced(norm(e.textContent));
+      const t = spaced(norm(pageText(e)));
       if (t.length > 300) break;
       if (amountsIn(t).length) continue;
       const clubs = clubsNamed(t);
@@ -858,7 +903,7 @@
     const rows = [...seen.keys()].filter((r) => ![...seen.keys()].some((o) => o !== r && r.contains(o)));
     const out = [];
     for (const row of rows) {
-      const own = spaced(norm(row.textContent));
+      const own = spaced(norm(pageText(row)));
       if (pointsRow(own)) continue;
       // the row's own text, and the title above it when it names the row's club: Kalshi's position
       // row says "Yes · NY Knicks", the row over it which game
@@ -936,8 +981,26 @@
     return st;
   };
 
-  /** Insert after the row, climbing out of flex/grid rows so our block lands under it, not beside it. */
+  /**
+   * A parent that lays its children out side by side AND down: a wrapping flex row or a grid with
+   * more than one column. Novig's Portfolio is such a deck of cards. A block placed after one card
+   * there would land beside it, or after the whole deck; it goes inside the card instead.
+   */
+  const isDeck = (parent) => {
+    const cs = getComputedStyle(parent);
+    if (cs.display.includes("grid")) return (cs.gridTemplateColumns || "").trim().split(/\s+/).filter(Boolean).length > 1;
+    return cs.display.includes("flex") && !cs.flexDirection.startsWith("column") && cs.flexWrap === "wrap" && parent.children.length > 1;
+  };
+  /**
+   * Where our block goes: after the row, climbing out of flex/grid rows so it lands under the row,
+   * not beside it; or, when the row is a card in a deck, inside the card as its last child
+   * (`{ inside: true }`), under the card's own rows.
+   */
   const insertionPoint = (row) => {
+    if (row.parentElement && row.parentElement !== document.body && isDeck(row.parentElement)) {
+      const cs = getComputedStyle(row);
+      if (cs.display === "block" || (cs.display.includes("flex") && cs.flexDirection.startsWith("column"))) return { el: row, inside: true };
+    }
     let target = row;
     for (let i = 0; i < 3 && target.parentElement && target.parentElement !== document.body; i++) {
       const cs = getComputedStyle(target.parentElement);
@@ -945,11 +1008,16 @@
       if (!horizontal) break;
       target = target.parentElement;
     }
-    return target;
+    return { el: target, inside: false };
+  };
+  const placeHost = (host, at) => {
+    if (at.inside) at.el.appendChild(host);
+    else at.el.insertAdjacentElement("afterend", host);
   };
 
   const mountHost = (B) => {
-    const after = insertionPoint(B.row);
+    const at = insertionPoint(B.row);
+    const after = at.el;
     let host;
     if (after.tagName === "TR") {
       host = document.createElement("tr");
@@ -966,22 +1034,25 @@
       B.box = host.firstElementChild;
     }
     host.addEventListener("click", (e) => e.stopPropagation());
-    after.insertAdjacentElement("afterend", host);
+    if (at.inside) host.classList.add("ael-inside");
+    placeHost(host, at);
     B.host = host;
     B.after = after;
+    B.inside = at.inside;
     fitHost(B);
   };
 
   /** An existing block back under its row, as it is; built afresh only when the row's shape changed. */
   const remountHost = (B) => {
-    const after = insertionPoint(B.row);
-    if (!B.host || (after.tagName === "TR") !== (B.host.tagName === "TR")) {
+    const at = insertionPoint(B.row);
+    const after = at.el;
+    if (!B.host || (after.tagName === "TR") !== (B.host.tagName === "TR") || Boolean(B.inside) !== at.inside) {
       B.host && B.host.remove();
       mountHost(B);
       return;
     }
     if (B.after !== after || !B.host.isConnected) {
-      after.insertAdjacentElement("afterend", B.host);
+      placeHost(B.host, at);
       B.after = after;
     }
     fitHost(B);
@@ -1000,6 +1071,11 @@
   /** Our block spans the row's own width and left edge. */
   const fitHost = (B) => {
     if (B.card || !B.host || !B.row.isConnected) return;
+    // inside a card our block is one of its rows: the card's width, no offset
+    if (B.inside) {
+      if (B.box.style.width) B.box.style.marginLeft = B.box.style.width = "";
+      return;
+    }
     // in a table our cell already spans every column; sizing it to the row would widen the table,
     // which widens the row, which would size it again
     if (B.host.tagName === "TR") {
@@ -1143,7 +1219,7 @@
       if (rec.status === "settled" && rec.result) {
         // the protected outcome is the record's; whether the cash has moved is said beside it,
         // never as "paid" on its own, since the holder can see at the venue whether it has
-        const got = usd(rec.protectedCents != null ? rec.protectedCents + (rec.result === "yes" ? oddOf(B) : 0) : rec.result === "yes" ? rs.capTotal : rs.floorTotal);
+        const got = usd(rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal);
         const cash = cashState(rec);
         line = cash
           ? lineGo("Settled", cash.open ? "Protected outcome <b>" + esc(got) + "</b> &middot; " + cash.label + (cash.sub ? " &middot; " + cash.sub : "") : "Paid <b>" + esc(got) + "</b> &middot; every leg paid.", "ael-line-on")
@@ -1234,18 +1310,6 @@
   };
 
   /**
-   * One line when the lock covers less than the position pays: whole contracts are locked, the
-   * odd payout rides unprotected and is already counted in the figures. Nothing when they agree.
-   */
-  const oddLine = (B, n) => {
-    const odd = oddOf(B);
-    if (!odd) return "";
-    const covered = usd(100 * n);
-    const pays = usd(B.size.payoutCents);
-    return '<div class="ael-fine">' + (odd > 0 ? "Covers " + esc(covered) + " of the " + esc(pays) + " payout; the odd " + esc(usd(odd)) + " rides unprotected and is counted above." : "Covers " + esc(covered) + " on a position paying " + esc(pays) + "; the difference is counted above.") + "</div>";
-  };
-
-  /**
    * The slip: three rows with dividers, the way the venue's own ticket lays out a deal. Win, lose
    * (the floor, the one coloured number), paid to you. Before the tap a third column says what
    * each was unprotected; after it the two columns stand alone.
@@ -1278,8 +1342,8 @@
     const t = offered[st.tier] || q;
     const n = q.contracts || p.contracts;
     const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
-    // what the position pays unprotected: the venue's figure when we have it, else the contracts
-    const was = usd(B.size && B.size.payoutCents ? B.size.payoutCents : 100 * n);
+    // what the position pays unprotected: $1 a contract, the venue's own figure to the cent
+    const was = usd(centsOf(100, n));
     let seg = "";
     const keys = TIER_ORDER.filter((k) => offered[k]);
     if (keys.length > 1) {
@@ -1296,7 +1360,6 @@
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") +
       ledger(shortOf(B.ticker), rs, t.creditCents, was) +
       '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in</button>" +
-      oddLine(B, n) +
       '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
       '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap.</p></div>" +
       DISCLOSE;
@@ -1320,7 +1383,7 @@
     const w = refusalWords(code, message);
     const sizeForm =
       code === "no_size"
-        ? '<div class="ael-size-form"><input type="number" min="1" max="10000" step="1" placeholder="pays $" aria-label="Payout in dollars" /><button type="button" class="ael-go ael-quiet">Price it</button></div>'
+        ? '<div class="ael-size-form"><input type="number" min="1" max="10000" step="0.01" placeholder="pays $" aria-label="Payout in dollars" /><button type="button" class="ael-go ael-quiet">Price it</button></div>'
         : "";
     const fine = code === "spread" || code === "no_size" || code === "unmatched" ? "" : '<div class="ael-fine">Protection is offered when the market pays for it.</div>';
     const html = '<div class="ael-ph"><b>' + esc(w.why) + "</b>" + (w.next ? "<span>" + esc(w.next) + "</span>" : "") + "</div>" + sizeForm + fine + DISCLOSE;
@@ -1328,9 +1391,9 @@
       if (sizeForm) {
         const inp = panel.querySelector("input");
         panel.querySelector(".ael-quiet").onclick = () => {
-          const pays = Math.round(Number(inp.value) || 0);
+          const pays = Math.round((Number(inp.value) || 0) * 100) / 100;
           if (pays < 1) return;
-          B.size = { contracts: pays, entryCents: null, stakeCents: 0, payoutCents: pays * 100 };
+          B.size = { contracts: pays, entryCents: null, stakeCents: 0, payoutCents: Math.round(pays * 100) };
           B.from = "entered";
           quoteRow(B);
           paintRow(B);
@@ -1464,8 +1527,8 @@
     let body;
     const meta = [];
     if (rec.status === "settled" && rec.result) {
-      const got = rec.protectedCents != null ? rec.protectedCents + (rec.result === "yes" ? oddOf(B) : 0) : rec.result === "yes" ? rs.capTotal : rs.floorTotal;
-      const naked = rec.result !== "yes" ? 0 : B.size && B.size.payoutCents ? B.size.payoutCents : rec.nakedCents != null ? rec.nakedCents : 100 * rec.contracts;
+      const got = rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal;
+      const naked = rec.result !== "yes" ? 0 : rec.nakedCents != null ? rec.nakedCents : centsOf(100, rec.contracts);
       // "you end with", not "you received": whether the cash has moved is its own row
       const cash = cashState(rec);
       body =
@@ -1490,7 +1553,6 @@
     const html =
       body +
       (meta.length ? '<div class="ael-meta">' + meta.join(" &middot; ") + "</div>" : "") +
-      (rec.status !== "void" ? oddLine(B, rec.contracts) : "") +
       (st.rcpt && rec.status !== "void" ? receiptHtml(st, rec) : "") +
       opLine +
       (rec.rehearsal ? '<div class="ael-op">Rehearsal: nothing was locked, written or bought. <a href="#" class="ael-reset-a">Reset</a></div>' : "") +
@@ -2205,7 +2267,19 @@
     }
     markGames([]);
     scanSlip([]);
-    paintNotice(S.serviceState === "key" ? "Lock in: the lock key is missing or wrong. Open the extension's settings." : S.serviceState === "off" ? "Lock in: the service has no lock routes configured." : S.serviceState === "down" ? "Lock in: the service is unreachable." : "");
+    paintNotice(
+      S.serviceState === "key"
+        ? "Lock in: the lock key is missing or wrong. Open the extension's settings."
+        : S.serviceState === "off"
+          ? "Lock in: the service has no lock routes configured."
+          : S.serviceState === "gone"
+            ? "Lock in was updated. Reload this page."
+            : S.serviceState === "down"
+              ? (S.marketsTries || 0) <= RETRY_MS.length
+                ? "Lock in: waking the service\u2026"
+                : "Lock in: the service is unreachable" + (S.downDetail ? " (" + S.downDetail + ")." : ".")
+              : "",
+    );
     const nodes = textNodes();
     S.tab = tabState(nodes);
     const found = findRows(nodes);

@@ -106,11 +106,13 @@ test("venue config: all three of host, key id and PEM or nothing", () => {
   assert.deepEqual(venueConfigFromEnv({ VENUE_API_HOST: "https://api.example/", VENUE_API_KEY_ID: " k ", VENUE_API_PRIVATE_KEY_PEM: "pem" }), { host: "https://api.example", keyId: "k", pem: "pem" });
 });
 
-test("units: the venue's 1-cent contracts become our $1 contracts; qty 2000 at $11.40 is 20 contracts at 57c paying $20", () => {
+test("units: the venue's 1-cent contracts become our $1 contracts to the hundredth; qty 2000 at $11.40 is 20 contracts at 57c paying $20, qty 3703 is 37.03", () => {
   assert.deepEqual(positionSize(2000, "11.40000"), { contracts: 20, entryCents: 57, payoutCents: 2000, costCents: 1140 });
-  assert.deepEqual(positionSize(3703, "20.00000"), { contracts: 37, entryCents: 54, payoutCents: 3703, costCents: 2000 });
-  assert.deepEqual(positionSize(150, "0.99"), { contracts: 2, entryCents: 66, payoutCents: 150, costCents: 99 });
+  assert.deepEqual(positionSize(3703, "20.00000"), { contracts: 37.03, entryCents: 54, payoutCents: 3703, costCents: 2000 });
+  assert.deepEqual(positionSize(1595, "9.89"), { contracts: 15.95, entryCents: 62, payoutCents: 1595, costCents: 989 });
+  assert.deepEqual(positionSize(150, "0.99"), { contracts: 1.5, entryCents: 66, payoutCents: 150, costCents: 99 });
   assert.equal(positionSize(40, "0.20"), null);
+  assert.equal(positionSize(99, "0.50"), null);
   assert.equal(positionSize(0, "0"), null);
   assert.equal(positionSize(2000, "abc"), null);
 });

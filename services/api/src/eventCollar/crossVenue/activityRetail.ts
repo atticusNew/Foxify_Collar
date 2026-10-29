@@ -13,6 +13,8 @@
  * Money is integer cents. Nothing here prices or settles anything.
  */
 
+import { capTotalCents, floorTotalCents } from "./types";
+
 export type ActivityState = "settled" | "closed";
 export type ActivityOutcome = "won" | "lost" | "closed";
 
@@ -95,8 +97,8 @@ export function activityRow(p: ActivitySource): ActivityRow | null {
     endedCents: p.protectedCents,
     withoutCents: p.nakedCents,
     creditCents: p.creditCents,
-    floorTotalCents: p.floorCents * p.contracts + p.creditCents,
-    capTotalCents: p.capCents * p.contracts + p.creditCents,
+    floorTotalCents: floorTotalCents(p),
+    capTotalCents: capTotalCents(p),
   };
 }
 

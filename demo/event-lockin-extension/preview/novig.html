@@ -49,15 +49,31 @@
   .promos{border-top:1px solid #1c1c1c;margin-top:16px;padding-top:12px;font-size:12px;font-weight:600}
   .place{position:fixed;right:12px;bottom:12px;width:226px;background:#179be7;color:#fff;border:0;border-radius:8px;padding:11px 12px;font-weight:700;font-size:13px;text-align:center;cursor:pointer}
   .place small{display:block;font-weight:500;font-size:10.5px;opacity:.85}
-  /* portfolio */
-  .psum{display:flex;gap:26px;margin:0 0 18px;font-size:11px;color:#beb9b6}.psum b{display:block;color:#fff;font-size:18px;font-weight:700;margin-top:2px}
-  .ptabs{display:flex;gap:22px;font-size:13px;margin:0 0 14px;color:#beb9b6;border-bottom:1px solid #1c1c1c}.ptabs a{padding:0 2px 8px}.ptabs a.active{color:#fff;font-weight:600;border-bottom:2px solid #179be7;margin-bottom:-1px}
-  .ord{display:grid;grid-template-columns:1fr auto auto auto auto auto;gap:18px;align-items:center;padding:12px 14px;border-radius:10px;background:#1c1c1c;margin-bottom:8px}
-  .ord .nm{font-weight:600;font-size:13px}.ord .meta{font-size:10.5px;color:#beb9b6;margin-top:3px}
-  .ord .num{text-align:right;font-size:10px;color:#beb9b6;min-width:70px}.ord .num b{display:block;color:#fff8f4;font-size:13px;font-weight:600;margin-top:2px}
-  .ord .mult{color:#179be7;font-weight:600;font-size:13px}
-  .tag{border-radius:999px;padding:4px 10px;font-size:10.5px;font-weight:600;white-space:nowrap}.tag.take{background:#061f3a;color:#5fc1ff}.tag.make{background:#242424;color:#beb9b6;border:1px solid #2a2a2a}
-  .tag.ok{background:#0f2b1d;color:#39d98a}.tag.wait{background:#242424;color:#beb9b6}.tag.won{background:#0f2b1d;color:#39d98a}.tag.lost{background:#2b0f12;color:#ff6b6b}
+  /* portfolio: the real page's layout (Oct 2026). Portfolio and its balance, three figures, the
+     Active | Settled tabs (the chosen one outlined), a filter row, then one card per order. React
+     Native Web puts every run of text in its own view with no whitespace between, which is how
+     the cards are built here too. */
+  .pf-h{font-size:18px;font-weight:700;margin:6px 0 2px}.pf-bal{font-size:20px;font-weight:700;margin:0 0 14px}
+  .psum{display:flex;gap:30px;margin:0 0 20px;padding-bottom:16px;border-bottom:1px solid #1c1c1c;font-size:10.5px;color:#beb9b6}.psum b{display:block;color:#fff;font-size:13px;font-weight:700;margin-top:3px}
+  .ptabs{display:flex;gap:14px;font-size:13px;margin:0 0 14px;color:#beb9b6}.ptabs a{padding:4px 7px;border:1px solid transparent;border-radius:3px}.ptabs a.on{color:#fff;font-weight:600;border-color:#9a9a9a}
+  .pfil{display:flex;gap:8px;align-items:center;margin:0 0 14px}.pfil .f{background:#242424;border-radius:999px;padding:5px 12px;font-size:11px;color:#fff}.pfil .f.on{background:#179be7}
+  .pfil .fl{border:1px solid #333;border-radius:6px;padding:5px 10px;font-size:11px;color:#fff;margin-right:8px}
+  .cards{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start}
+  .pc{width:440px;background:#161616;border:1px solid #262626;border-radius:12px;padding:14px 16px 10px}
+  .css-view{display:flex;flex-direction:column;position:relative;box-sizing:border-box;min-width:0;min-height:0}
+  .rw{flex-direction:row;align-items:center}
+  .t{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pc-h{justify-content:space-between;margin-bottom:12px}
+  .pc-h .helm{width:26px;height:22px;border-radius:50% 50% 40% 40%;background:#2a5a3a;margin-right:10px}
+  .pc-h .nm{font-size:13.5px;font-weight:700}.pc-h .dot{color:#beb9b6;margin:0 5px}.pc-h .mult{color:#5fc1ff;font-weight:700;font-size:13.5px}.pc-h .kind{color:#beb9b6;font-size:11px;margin-top:2px}
+  .badge{border-radius:4px;padding:3px 7px;font-size:9.5px;font-weight:700;letter-spacing:.04em}.badge.ok{background:#0f2b1d;color:#39d98a}.badge.wait{background:#2a2a2a;color:#beb9b6}.badge.won{background:#0f2b1d;color:#39d98a}.badge.lost{background:#2b0f12;color:#ff6b6b}
+  .pc-a{justify-content:space-between;margin-bottom:12px}.pc-a .lab{font-size:10.5px;color:#beb9b6}.pc-a .val{font-size:15px;font-weight:700;margin-top:2px}.pc-a .r{align-items:flex-end}.pc-a .ar{color:#555;font-size:16px}
+  .pc-g{background:#1f1f1f;border-radius:8px;padding:9px 12px;justify-content:space-between;margin-bottom:10px}
+  .pc-g .helm{width:22px;height:19px;border-radius:50% 50% 40% 40%;background:#2b6cb0}.pc-g .code{font-size:13px;font-weight:700;margin:0 8px}
+  .pc-g .mid{align-items:center}.pc-g .when{font-size:11px;color:#5fc1ff;font-weight:600}.pc-g .day{font-size:10.5px;color:#beb9b6}
+  .pc-b{gap:10px;margin-bottom:10px}.pc-b .b{flex:1;border-radius:6px;padding:8px 0;align-items:center;font-size:12px;font-weight:700;cursor:pointer}.pc-b .sell{background:#2ecc71;color:#06260f}.pc-b .buy{background:#1f1f1f;color:#fff;border:1px solid #333}
+  .pc-s{font-size:11px;color:#fff;margin:0 0 8px;align-items:center}.pc-s i{display:inline-block;width:10px;height:10px;border:1.5px solid #fff;border-radius:2px;margin-right:6px}
+  .pc-f{justify-content:space-between;font-size:9.5px;color:#777}
   .pempty{color:#beb9b6;padding:40px 0;text-align:center}
 </style></head>
 <body>
@@ -84,13 +100,17 @@ const GAMES = [
 ];
 const slip = { sel: null, amount: "20", type: "take" };
 let mode = sessionStorage.getItem("novig-mode") || "cash";
-// Orders as the Portfolio lists them. matched: dollars taken; a Make that nobody has taken yet is Unmatched.
+// Orders as the Portfolio shows them, one card each: the pick's code and multiplier, Winner or the
+// market, MATCHED or UNMATCHED, Amount and To Pay, the matchup with its start, Sell at the live
+// price and Buy More. The first is a real one (Oct 28, 2026): GB at 1.54x, $5.00 to pay $7.69, on
+// CAR at GB, Thursday 9:15 PM.
 const ORDERS = JSON.parse(sessionStorage.getItem("novig-orders") || "null") || [
-  { g: "KCSEA", side: "home", kind: "Winner", line: "", m: "1.71", amount: 20, matched: 20, type: "take", placed: "Oct 25, 11:20 AM" },
-  { g: "DALPHI", side: "home", kind: "Winner", line: "", m: "1.44", amount: 20, matched: 20, type: "take", placed: "Oct 24, 9:05 PM" },
-  { g: "KCSEA", side: "away", kind: "Spread", line: "+3.5", m: "1.70", amount: 10, matched: 10, type: "take", placed: "Oct 25, 11:22 AM" },
-  { g: "KCSEA", side: "away", kind: "Winner", line: "", m: "2.50", amount: 20, matched: 0, type: "make", placed: "Oct 25, 11:30 AM" },
-  { g: "BUFCAR", side: "away", kind: "Winner", line: "", m: "1.40", amount: 20, matched: 20, type: "take", settled: "won", placed: "Oct 18, 7:10 PM", away: ["BUF", "Bills"], home: ["CAR", "Panthers"], when: "Oct 19 1:00 PM" },
+  { code: "GB", kind: "Winner", m: "1.54", amount: 5, matched: 5, type: "take", pay: "7.69", sell: "4.96", placed: "6:47PM", id: "a9cdbd1fe3b36", away: "CAR", home: "GB", when: "9:15 PM", day: "Thu" },
+  { code: "NYK", kind: "Winner", m: "1.65", amount: 10, matched: 10, type: "take", sell: "10.12", placed: "12:48PM", id: "b31e0f77c2a90", away: "DET", home: "NYK", when: "8:00 PM", day: "Tue" },
+  { code: "BOS", kind: "Winner", m: "1.30", amount: 20, matched: 0, type: "make", sell: null, placed: "12:51PM", id: "c7d2a1e45f6b8", away: "BKN", home: "BOS", when: "7:30 PM", day: "Tue" },
+  { code: "SAS", kind: "Spread", line: "+4.5", m: "1.91", amount: 10, matched: 10, type: "take", sell: "9.70", placed: "12:55PM", id: "d0f9e8c7b6a54", away: "SAC", home: "SAS", when: "8:00 PM", day: "Tue" },
+  { code: "NYK", kind: "Winner", m: "1.75", amount: 10, matched: 10, type: "take", settled: "won", paid: "17.50", placed: "6:02PM", id: "e5a4b3c2d1f09", away: "MEM", home: "NYK", when: "7:30 PM", day: "Sat" },
+  { code: "LAL", kind: "Winner", m: "2.10", amount: 5, matched: 5, type: "take", settled: "lost", paid: "0.00", placed: "9:40PM", id: "f1e2d3c4b5a67", away: "POR", home: "LAL", when: "11:00 PM", day: "Sat" },
 ];
 const save = () => sessionStorage.setItem("novig-orders", JSON.stringify(ORDERS));
 const $ = (s) => document.querySelector(s);
@@ -119,23 +139,36 @@ const slipHtml = () => {
     '<div class="promos">Available Promos (5)</div>' +
     '<button class="place">' + (amount > 0 ? (slip.type === "take" ? "Place Order" : "Place Make Order") : "Enter an amount") + "<small>" + (slip.type === "take" ? "Fills at the best available price" : "Rests until another account takes it") + "</small></button>";
 };
-const orderRow = (o) => {
-  const g = gameOf(o);
-  const t = o.side === "away" ? g.away : g.home;
-  const status = o.settled ? '<span class="tag ' + o.settled + '">' + (o.settled === "won" ? "Won" : "Lost") + "</span>" : o.matched <= 0 ? '<span class="tag wait">Unmatched</span>' : o.matched < o.amount ? '<span class="tag wait">Partially matched</span>' : '<span class="tag ok">Matched</span>';
-  return '<div class="ord"><div><div class="nm">' + t[0] + (o.line ? " " + o.line : "") + " - " + o.kind + '</div><div class="meta">Pro FB &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + " &middot; placed " + o.placed + '</div></div><span class="tag ' + o.type + '">' + (o.type === "take" ? "Take" : "Make") + '</span><span class="mult">' + o.m + 'x</span><div class="num">Wager<b>' + money(o.amount) + '</b></div><div class="num">Payout<b>' + money(payout(o.amount, o.m, o.type)) + "</b></div>" + status + "</div>";
+const T = (txt, cls) => '<div dir="auto" class="t ' + (cls || "") + '">' + txt + "</div>";
+const V = (inner, cls, extra) => '<div class="css-view ' + (cls || "") + '"' + (extra || "") + ">" + inner + "</div>";
+// the card's To Pay as the venue prints it: about the amount times the multiplier, from the exact
+// price behind the rounded multiplier ($5.00 at 1.54x pays $7.69, not $7.70)
+const toPay = (o) => (o.pay != null ? Number(o.pay) : o.amount * Number(o.m));
+const card = (o) => {
+  const badge = o.settled ? '<div class="badge ' + o.settled + '">' + o.settled.toUpperCase() + "</div>" : o.matched <= 0 ? '<div class="badge wait">UNMATCHED</div>' : '<div class="badge ok">MATCHED</div>';
+  const head = V('<span class="helm"></span>' + V(V(T(o.code + (o.line ? " " + o.line : ""), "nm") + T("&middot;", "dot") + T(o.m + "x", "mult"), "rw") + T(o.kind, "kind")), "rw") + badge;
+  const amts = V(V(T("Amount", "lab") + T(money(o.amount), "val")) + T("&#x203A;", "ar") + V(T(o.settled ? "Paid" : "To Pay", "lab") + T(money(o.settled ? Number(o.paid) : toPay(o)), "val"), "r"), "rw pc-a");
+  const game = V(V('<span class="helm"></span>' + T(o.away, "code"), "rw") + V(T(o.when, "when") + T(o.day, "day"), "mid") + V(T(o.home, "code") + '<span class="helm" style="background:#2a5a3a"></span>', "rw"), "rw pc-g");
+  const btns = o.settled ? "" : V(V(T(o.matched > 0 ? "Sell " + money(Number(o.sell)) : "Cancel"), "b sell", ' role="button" tabindex="0"') + V(T("Buy More &middot; " + o.m + "x"), "b buy", ' role="button" tabindex="0"'), "rw pc-b");
+  return V(V(head, "rw pc-h") + amts + game + btns + V("<i></i>" + T("Share"), "rw pc-s") + V(T("ID: " + o.id) + T("Placed " + o.placed), "rw pc-f"), "pc");
 };
-const TABS = ["open", "settled"];
-const portfolioHtml = (tab) => {
-  const list = tab === "settled" ? ORDERS.filter((o) => o.settled) : ORDERS.filter((o) => !o.settled);
-  return "<h1>Portfolio</h1>" + '<div class="psum"><div>Balance<b>' + money(70) + "</b></div><div>In play<b>" + money(ORDERS.filter((o) => !o.settled).reduce((s, o) => s + o.amount, 0)) + "</b></div><div>Potential payout<b>" + money(ORDERS.filter((o) => !o.settled && o.matched > 0).reduce((s, o) => s + payout(o.matched, o.m, o.type), 0)) + "</b></div></div>" +
-    '<div class="ptabs">' + TABS.map((t) => '<a href="#/portfolio/' + t + '"' + (t === tab ? ' class="active"' : "") + ">" + t[0].toUpperCase() + t.slice(1) + "</a>").join("") + "</div>" +
-    (list.length ? list.map(orderRow).join("") : '<div class="pempty">No ' + tab + " orders</div>");
+const TABS = ["active", "settled"];
+const portfolioHtml = (tab, filter) => {
+  let list = tab === "settled" ? ORDERS.filter((o) => o.settled) : ORDERS.filter((o) => !o.settled);
+  if (filter !== "all") list = list.filter((o) => o.type === filter);
+  const open = ORDERS.filter((o) => !o.settled).reduce((s, o) => s + o.amount, 0);
+  return '<div class="pf-h">Portfolio</div><div class="pf-bal">' + money(69.99) + "</div>" +
+    '<div class="psum"><div>Cash Balance<b>' + money(15) + "</b></div><div>Open Positions<b>" + money(open) + "</b></div><div>Trade Credits<b>" + money(50) + " &#x24D8;</b></div></div>" +
+    '<div class="ptabs">' + TABS.map((t) => '<a href="#/portfolio/' + t + '"' + (t === tab ? ' class="on"' : "") + ">" + t[0].toUpperCase() + t.slice(1) + "</a>").join("") + "</div>" +
+    '<div class="pfil"><span class="fl">Filter &#x2630;</span>' + ["all", "take", "make"].map((f) => '<span class="f' + (f === filter ? " on" : "") + '" data-f="' + f + '">' + f[0].toUpperCase() + f.slice(1) + "</span>").join("") + "</div>" +
+    (list.length ? '<div class="cards">' + list.map(card).join("") + "</div>" : '<div class="pempty">No ' + tab + " orders</div>");
 };
+let pfFilter = "all";
 const render = () => {
   const h = location.hash || "#/";
-  const pm = /^#\/portfolio(?:\/(open|settled))?/.exec(h);
-  $("#main").innerHTML = pm ? portfolioHtml(pm[1] || "open") : listHtml();
+  const pm = /^#\/portfolio(?:\/(active|open|settled))?/.exec(h);
+  $("#main").innerHTML = pm ? portfolioHtml(pm[1] === "settled" ? "settled" : "active", pfFilter) : listHtml();
+  for (const f of document.querySelectorAll(".pfil .f")) f.onclick = () => { pfFilter = f.dataset.f; render(); };
   $("#slip").innerHTML = slipHtml();
   $("#nav-pf").className = pm ? "on" : "";
   $("#nav-home").className = pm ? "" : "on";
@@ -152,7 +185,9 @@ const render = () => {
     const s = slip.sel;
     const amount = Number(slip.amount) || 0;
     if (!s || amount <= 0) return;
-    ORDERS.unshift({ g: s.g, side: s.side, kind: s.kind, line: s.line, m: s.m, amount, matched: slip.type === "take" ? amount : 0, type: slip.type, placed: "Oct 25, " + new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) });
+    const g = GAMES.find((x) => x.id === s.g);
+    const t = s.side === "away" ? g.away : g.home;
+    ORDERS.unshift({ code: t[0], kind: s.kind, line: s.line, m: s.m, amount, matched: slip.type === "take" ? amount : 0, type: slip.type, sell: (amount * 0.99).toFixed(2), placed: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).replace(" ", ""), id: Math.random().toString(16).slice(2, 15), away: g.away[0], home: g.home[0], when: g.when, day: "" });
     save();
     slip.sel = null;
     location.hash = "#/portfolio";
