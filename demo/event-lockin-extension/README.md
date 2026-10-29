@@ -91,7 +91,11 @@ of open plays. Once a matched play exists, under its row:
    Nothing is reversed: leaving is a new trade at live prices, the protection alone settling at
    today's price instead of the official result. When the pick is up that settlement is usually a
    charge, because the upside sold at the lock is worth more now; the sheet says so before the tap.
-   The pick itself is never touched; the extension never trades.
+   The pick itself is never touched; the extension never trades. Once the service frees a market
+   left early (`onRecord` false on the market), the row goes back to the **Lock in** offer at the
+   live quote, with one grey line under the button, "Earlier protection removed Thu 7:58pm ET ·
+   −$0.57 due back." (0.7.26); the removed lock stays on the record and the new lock is its next
+   generation. A service that still holds the market keeps the row on Protection removed.
    The other side is sold back through the same executor that bought it: on an armed ticker with
    sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
    written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the

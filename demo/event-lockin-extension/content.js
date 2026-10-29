@@ -480,6 +480,18 @@
     const r = S.record.get(ticker);
     return r && venueOfLock(r) !== VENUE_ID && r.status === "open" ? r : null;
   };
+  /**
+   * A lock here whose protection was removed, on a game the service offers again (`onRecord` false
+   * on the market once the service frees a market left early): the row goes back to the offer, and
+   * the removed lock is a grey line on it. A service that still holds the market keeps the row on
+   * Protection removed, so a tap can never meet "already locked".
+   */
+  const removedHere = (ticker, rec) => {
+    const r = rec || lockHere(ticker);
+    if (!r || r.status !== "closed") return null;
+    const m = S.byTicker[ticker];
+    return m && m.onRecord === false ? r : null;
+  };
   const venueNameOf = (id) => (VENUES[id] && VENUES[id].name) || (id === "polymarket" ? "Polymarket" : String(id || ""));
 
   const rememberLock = (ticker, next) => {
@@ -1198,7 +1210,7 @@
   /** The quote at this row's size, refreshed while the page is open; the lock reprices at the tap. */
   const quoteRow = (B) => {
     const st = stateOf(B);
-    if (!B.size || st.done || S.record.has(B.ticker)) return;
+    if (!B.size || (st.done && !removedHere(B.ticker, st.done)) || (S.record.has(B.ticker) && !removedHere(B.ticker))) return;
     const key = B.ticker + ":" + B.size.contracts + ":" + (B.size.entryCents || "");
     if (st.pending || st.busy) return;
     if (st.quoteKey === key && Date.now() - st.quoteAt < REQUOTE_MS) return;
@@ -1324,8 +1336,10 @@
   const paintRow = (B) => {
     if (!B.box) return;
     const st = stateOf(B);
-    // a lock on this market covers the Winner position; a spread or total row on the same club is not it
-    const rec = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
+    // a lock on this market covers the Winner position; a spread or total row on the same club is not it;
+    // one whose protection was removed on a game offered again is no longer the row's state
+    const held = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
+    const rec = held && removedHere(B.ticker, held) ? null : held;
     // a settled order here was never protected, whatever the record holds for the game elsewhere
     const away = !rec && B.kind === "winner" && B.match !== "settled" ? lockAway(B.ticker) : null;
     let line;
@@ -1451,7 +1465,9 @@
   const paintPanel = (B) => {
     const st = stateOf(B);
     const panel = B.box.querySelector(".ael-panel");
-    const rec = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
+    const held = B.kind === "winner" ? lockHere(B.ticker) || st.done : null;
+    const removed = held ? removedHere(B.ticker, held) : null;
+    const rec = removed ? null : held;
     if (rec) return paintDetails(B, panel, rec);
     const away = B.kind === "winner" && B.match !== "settled" ? lockAway(B.ticker) : null;
     if (away) return paintRefusal(B, panel, "on_record_elsewhere", "Already protected on " + venueNameOf(away.holderVenue) + ".");
@@ -1483,6 +1499,8 @@
     }
     const fine = ["Priced live"];
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
+    // the protection removed earlier on this game, one grey line: what it settled for, and whether that moved
+    const removedLine = removed ? '<div class="ael-fine">Earlier protection removed' + (removed.closedAt ? " " + esc(fmtAt(removed.closedAt)) : "") + " &middot; " + signed(closeNetOf(removed)) + " " + (closeNetOf(removed) < 0 ? "due back" : "to you") + (cashState(removed) && !cashState(removed).open ? " &middot; paid" : "") + ".</div>" : "";
     // the venue pick is its own strip above the button; the fine print keeps the competition only when the strip has nothing to show
     const picked = venuePick(p.routing);
     fine.push(...notes(B), ...(picked ? [] : routingNotes(p.routing)), '<a href="#" class="ael-how-a">how it works</a>');
@@ -1492,6 +1510,7 @@
       ledger(shortOf(B.ticker), rs, t.creditCents, was) +
       picked +
       '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in</button>" +
+      removedLine +
       '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
       '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".</p></div>" +
       DISCLOSE;
@@ -1570,6 +1589,13 @@
     st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, routing: r.json.routing || (st.quote && st.quote.p && st.quote.p.routing) || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
     st.open = true;
     st.enter = true;
+    // a new lock on a game whose earlier protection was removed: the earlier receipt's sale and cash are not this lock's
+    st.rcpt = false;
+    st.rcptHedge = null;
+    st.rcptSale = null;
+    st.rcptSaleAsked = false;
+    st.rcptCash = null;
+    st.leave = null;
     if (r.json.rehearsal) {
       paintRow(B);
       return;
@@ -2048,6 +2074,8 @@
     st2.enter = true;
     B.panelHtml = null;
     paintRow(B);
+    // the service's word on the game: a service that frees a market left early offers it again, and the row goes back to Lock in
+    void loadMarkets();
     setTimeout(loadRecord, 3000);
   };
 
