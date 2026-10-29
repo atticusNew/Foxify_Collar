@@ -33,7 +33,7 @@ import {
 export interface ShadowOpenRecord {
   type: "open";
   at: string;
-  /** Kalshi market ticker — the position key; one position per market, ever. */
+  /** Kalshi market ticker — the position key; one open position per market at a time (a market left early may be locked again) */
   ticker: string;
   kind: "sports" | "crypto";
   league: string;
@@ -257,6 +257,12 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   closeHedgeSent?: boolean;
   /** an early close was attempted and a leg had no depth; the position runs to settlement */
   closeUnpriced?: { at: string; reason: string };
+  /**
+   * Which lock on this market this is: a market whose protection was removed (closed) may be
+   * locked again, and the new lock is the next generation. Absent on the first (1). Every
+   * generation stays on the record with its own settlement; only the latest can be open.
+   */
+  generation?: number;
   /** payments recorded on this lock, oldest first; the reference and note stay in the raw ledger */
   cash?: Array<{ at: string; leg: CashLeg; cents: number; method?: string }>;
   /** the pre-lock re-read, when one has happened (operator information, like the counterfactuals) */
@@ -412,10 +418,16 @@ export function ledgerStats(path: string): { exists: boolean; bytes: number; rec
   };
 }
 
-/** Replay the JSONL into current positions. Unreadable lines are skipped, never fatal. */
+/**
+ * Replay the JSONL into positions. Unreadable lines are skipped, never fatal. The current lock on
+ * each market comes first, in the order the markets were first opened; earlier generations (locks
+ * whose protection was removed before the market was locked again) follow, every one still on the
+ * record with its own settlement. `currentShadowPositions` keeps only the former.
+ */
 export function loadShadowPositions(path: string): ShadowPosition[] {
   if (!existsSync(path)) return [];
   const byTicker = new Map<string, ShadowPosition>();
+  const earlier: ShadowPosition[] = [];
   for (const line of readFileSync(path, "utf8").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -426,9 +438,12 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
       continue;
     }
     if (rec.type === "open") {
-      if (byTicker.has(rec.ticker)) continue; // first quote wins; replays cannot double-open
+      const prev = byTicker.get(rec.ticker);
+      // first quote wins; replays cannot double-open. A market whose protection was removed opens again as the next generation
+      if (prev && prev.status !== "closed") continue;
       const { type: _t, ...fields } = rec;
-      byTicker.set(rec.ticker, { ...fields, status: "open" });
+      if (prev) earlier.push(prev);
+      byTicker.set(rec.ticker, { ...fields, status: "open", ...(prev ? { generation: (prev.generation ?? 1) + 1 } : {}) });
     } else if (rec.type === "settle") {
       const pos = byTicker.get(rec.ticker);
       if (!pos || pos.status !== "open") continue;
@@ -449,11 +464,23 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
       if (!pos || pos.status !== "open") continue;
       byTicker.set(rec.ticker, { ...pos, status: "void", voidReason: rec.reason });
     } else if (rec.type === "cash") {
-      // a payment lands on the position in any state; one that names no position is noise
-      const pos = byTicker.get(rec.ticker);
-      if (!pos || !CASH_LEGS.includes(rec.leg) || !Number.isInteger(rec.cents) || rec.cents <= 0) continue;
+      // a payment lands on the position in any state; one that names no position is noise. The
+      // settlement of a removed protection lands on the lock that was removed, which may be an
+      // earlier generation once the market was locked again
+      const cur = byTicker.get(rec.ticker);
+      if (!cur || !CASH_LEGS.includes(rec.leg) || !Number.isInteger(rec.cents) || rec.cents <= 0) continue;
       const line = { at: rec.at, leg: rec.leg, cents: rec.cents, ...(rec.method ? { method: rec.method } : {}) };
-      byTicker.set(rec.ticker, { ...pos, cash: [...(pos.cash ?? []), line] });
+      let pastAt = -1;
+      if (rec.leg === "close" && cur.status !== "closed") {
+        for (let i = earlier.length - 1; i >= 0; i--) {
+          if (earlier[i].ticker === rec.ticker && earlier[i].status === "closed") {
+            pastAt = i;
+            break;
+          }
+        }
+      }
+      if (pastAt >= 0) earlier[pastAt] = { ...earlier[pastAt], cash: [...(earlier[pastAt].cash ?? []), line] };
+      else byTicker.set(rec.ticker, { ...cur, cash: [...(cur.cash ?? []), line] });
     } else if (rec.type === "reread") {
       // one read per position per phase, the first; it lands in any state (the position may have settled since)
       const pos = byTicker.get(rec.ticker);
@@ -497,7 +524,19 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
       });
     }
   }
-  return [...byTicker.values()];
+  return [...byTicker.values(), ...earlier];
+}
+
+/** The current lock on each market: the first position per ticker as loadShadowPositions orders them. */
+export function currentShadowPositions(positions: ShadowPosition[]): ShadowPosition[] {
+  const seen = new Set<string>();
+  return positions.filter((p) => (seen.has(p.ticker) ? false : (seen.add(p.ticker), true)));
+}
+
+/** Whether a market can be locked by this ledger's holder: no lock on it, or the current lock's protection was removed. */
+export function lockable(positions: ShadowPosition[], ticker: string): boolean {
+  const cur = positions.find((p) => p.ticker === ticker);
+  return !cur || cur.status === "closed";
 }
 
 export interface ShadowSummary {

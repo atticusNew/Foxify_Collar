@@ -190,6 +190,29 @@ test("shadow worker unwind routes: a lock is priced into the live books, then cl
     assert.equal((await fetch(`${base}/api/shadow/unwind/quote?ticker=${TICKER}`, { headers: key })).status, 409);
     assert.equal(readFileSync(ledger, "utf8").trim().split("\n").length, 3, "a refused leave writes nothing");
 
+    // the protection removed, the market is this holder's to lock again: the markets list offers it, the quote
+    // says it is not on record, the lock writes a second generation; the first stays on the record, closed
+    const marketsAfter = (await (await fetch(`${base}/api/shadow/markets`, { headers: key })).json()) as { markets: Array<{ ticker: string; onRecord: boolean; protectable: boolean }> };
+    const offered = marketsAfter.markets.find((m) => m.ticker === TICKER);
+    assert.deepEqual([offered?.onRecord, offered?.protectable], [false, true], "a market left early is offered again");
+    const requote = (await (await fetch(`${base}/api/shadow/quote?ticker=${TICKER}&contracts=8&entryCents=61`, { headers: key })).json()) as { ok: boolean; onRecord: boolean };
+    assert.deepEqual([requote.ok, requote.onRecord], [true, false]);
+    const relock = (await (await post("/api/shadow/lock", { ticker: TICKER, contracts: 8, entryCents: 61 })).json()) as { ok: boolean; contracts: number; status?: string };
+    assert.ok(relock.ok, JSON.stringify(relock));
+    assert.equal(relock.contracts, 8);
+    const gens = loadShadowPositions(ledger);
+    assert.deepEqual(gens.map((p) => [p.status, p.contracts, p.generation]), [["open", 8, 2], ["closed", 15.95, undefined]], "the new lock first, the removed one behind it");
+    const rcpt2 = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { lock: { status: string; contracts: number; generation?: number }; hedge: { action: string; at: string } };
+    assert.deepEqual([rcpt2.lock.status, rcpt2.lock.contracts, rcpt2.lock.generation], ["open", 8, 2], "the receipt is the current lock's");
+    assert.equal(rcpt2.hedge.action, "buy");
+    assert.ok(rcpt2.hedge.at >= rec.at, "the receipt's hedge is the new lock's, not the removed one's");
+    assert.equal(((await post("/api/shadow/lock", { ticker: TICKER, contracts: 8, entryCents: 61 })).status), 409, "one open lock per market still");
+    // the second lock can leave too; both generations then sit closed on the record and the market is open to a third
+    const leftAgain = (await (await post("/api/shadow/unwind", { ticker: TICKER })).json()) as { ok: boolean; status: string };
+    assert.deepEqual([leftAgain.ok, leftAgain.status], [true, "closed"]);
+    assert.deepEqual(loadShadowPositions(ledger).map((p) => [p.status, p.generation ?? 1]), [["closed", 2], ["closed", 1]]);
+    assert.equal(((await (await fetch(`${base}/api/shadow/markets`, { headers: key })).json()) as { markets: Array<{ ticker: string; protectable: boolean }> }).markets.find((m) => m.ticker === TICKER)?.protectable, true);
+
     // inside the margin before the start (a lock written three hours ago, the start ten minutes out): too late
     // to leave, the protection runs to settlement
     const { status: _s, ...openRec } = open;
@@ -201,7 +224,7 @@ test("shadow worker unwind routes: a lock is priced into the live books, then cl
     assert.equal(lateBody.error, "too_late");
     assert.equal(Date.parse(lateBody.lastIso), Date.parse(START_SOON) - 15 * 60_000);
     assert.equal((await post("/api/shadow/unwind", { ticker: SOON })).status, 409);
-    assert.deepEqual(booksAsked, [TICKER, TICKER, TICKER, TICKER], "no book is read for a refusal");
+    assert.deepEqual(booksAsked, [TICKER, TICKER, TICKER, TICKER, TICKER], "no book is read for a refusal (the fifth read is the second generation's leave)");
   } finally {
     await new Promise<void>((r) => worker.server.close(() => r()));
   }

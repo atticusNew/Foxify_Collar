@@ -15,6 +15,8 @@ import {
   hedgeCostOf,
   hedgeUnitsOf,
   loadShadowPositions,
+  lockable,
+  currentShadowPositions,
   positionsCsv,
   settlePayouts,
   summarizeShadow,
@@ -115,6 +117,52 @@ test("shadow: cash due follows the lock's state; cash lines pay a leg down and n
   appendShadowRecord(scheduled, { type: "close", at: "2026-09-13T12:00:00.000Z", ticker: t, priced: true, yesFillCents: 59, positionProceedsCents: 8596, hedgeProceedsCents: 4983, protectedAtCloseCents: 8141 });
   assert.equal(loadShadowPositions(scheduled)[0].closeSource, "schedule");
   assert.equal(loadShadowPositions(scheduled)[0].closeHedgeSent, undefined);
+});
+
+test("shadow: a market whose protection was removed can be locked again; the new lock is the next generation, the old one keeps its settlement and its cash", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shadow-relock-"));
+  const path = join(dir, "lock.jsonl");
+  const t = OPEN_FIXTURE.ticker;
+  appendShadowRecord(path, { ...OPEN_FIXTURE, source: "lock", contracts: 20 });
+  // open: a second open is a replay, not a new lock
+  appendShadowRecord(path, { ...OPEN_FIXTURE, source: "lock", contracts: 30, at: "2026-09-12T16:05:00.000Z" });
+  assert.equal(loadShadowPositions(path).length, 1);
+  assert.equal(lockable(loadShadowPositions(path), t), false);
+  // the protection is removed: the market is lockable again, the record still holds the closed lock
+  appendShadowRecord(path, { type: "close", at: "2026-09-13T12:00:00.000Z", ticker: t, priced: true, source: "unwind", hedgeSent: false, yesMidCents: 60, yesFillCents: 59, positionProceedsCents: 1150, hedgeProceedsCents: 700, feesCents: 40, protectedAtCloseCents: 1150 + 700 - 740 + 112, protectedAtMidCents: 1240, unwindFrictionCents: 18 });
+  assert.equal(lockable(loadShadowPositions(path), t), true);
+  assert.equal(lockable(loadShadowPositions(path), "KX-NOBODY"), true);
+  // locked again at a new size: the current lock is the new one, first in the list; the old one follows, closed, generation 1
+  appendShadowRecord(path, { ...OPEN_FIXTURE, source: "lock", contracts: 10, at: "2026-09-13T12:30:00.000Z", creditCents: 56, takeCents: 6 });
+  const all = loadShadowPositions(path);
+  assert.equal(all.length, 2);
+  assert.deepEqual(all.map((p) => [p.status, p.contracts, p.generation]), [["open", 10, 2], ["closed", 20, undefined]]);
+  assert.deepEqual(currentShadowPositions(all).map((p) => [p.ticker, p.status, p.generation]), [[t, "open", 2]]);
+  assert.equal(lockable(all, t), false);
+  // the removed protection's settlement is paid: the cash lands on the closed lock, not the new one
+  appendShadowRecord(path, { type: "cash", at: "2026-09-13T13:00:00.000Z", ticker: t, leg: "close", cents: 40, method: "venue transfer" });
+  // the new lock's credit is paid: that one lands on the new lock
+  appendShadowRecord(path, { type: "cash", at: "2026-09-13T13:01:00.000Z", ticker: t, leg: "credit", cents: 56 });
+  const [cur, old] = loadShadowPositions(path);
+  assert.deepEqual(cashDue(old).map((d) => [d.leg, d.to, d.dueCents, d.paidCents]), [["credit", "holder", 112, 0], ["close", "writer", 40, 40]]);
+  assert.deepEqual(cashDue(cur).map((d) => [d.leg, d.to, d.dueCents, d.paidCents]), [["credit", "holder", 56, 56]]);
+  // the new lock settles on its own; the old one is untouched; the summary counts both and the identity holds on each
+  appendShadowRecord(path, { type: "settle", at: "2026-09-13T21:00:00.000Z", ticker: t, result: "yes" });
+  const after = loadShadowPositions(path);
+  assert.deepEqual(after.map((p) => [p.status, p.generation]), [["settled", 2], ["closed", undefined]]);
+  assert.equal(after[0].writerCents, 6);
+  assert.equal(after[1].writerCents, 12);
+  const summary = summarizeShadow(after);
+  assert.equal(summary.settledCount, 1);
+  assert.equal(summary.closed.count, 1);
+  // a third generation after a second removal
+  const again = join(dir, "again.jsonl");
+  appendShadowRecord(again, { ...OPEN_FIXTURE, source: "lock" });
+  appendShadowRecord(again, { type: "close", at: "2026-09-13T12:00:00.000Z", ticker: t, priced: true, source: "unwind", yesFillCents: 59, positionProceedsCents: 8596, hedgeProceedsCents: 4983, protectedAtCloseCents: 8141 });
+  appendShadowRecord(again, { ...OPEN_FIXTURE, source: "lock", at: "2026-09-13T12:10:00.000Z" });
+  appendShadowRecord(again, { type: "close", at: "2026-09-13T12:20:00.000Z", ticker: t, priced: true, source: "unwind", yesFillCents: 59, positionProceedsCents: 8596, hedgeProceedsCents: 4983, protectedAtCloseCents: 8141 });
+  appendShadowRecord(again, { ...OPEN_FIXTURE, source: "lock", at: "2026-09-13T12:30:00.000Z" });
+  assert.deepEqual(loadShadowPositions(again).map((p) => [p.status, p.generation ?? 1]), [["open", 3], ["closed", 1], ["closed", 2]]);
 });
 
 test("shadow: writer nets the published take whether the holder won or lost", () => {

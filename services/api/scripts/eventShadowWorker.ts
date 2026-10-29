@@ -72,6 +72,8 @@ import {
   hedgeUnitsOf,
   ledgerStats,
   loadShadowPositions,
+  lockable,
+  currentShadowPositions,
   positionsCsv,
   summarizeShadow,
   type CashLeg,
@@ -457,7 +459,8 @@ function findLock(ticker: string, holder: string | null | undefined): { ok: true
     const lock = loadShadowPositions(path).find((p) => p.ticker === ticker);
     return lock ? { ok: true, lock, path, holder } : { ok: false, status: 404, error: "no_lock", message: `no lock on the record for ${ticker}${holder ? ` by ${holder}` : ""}` };
   }
-  const hits = allLocks().filter((l) => l.p.ticker === ticker);
+  // one hit per ledger: the current lock on the market, not the earlier generations behind it
+  const hits = allLocks().filter((l) => l.p.ticker === ticker).filter((l, i, all) => all.findIndex((o) => o.path === l.path) === i);
   if (hits.length === 0) return { ok: false, status: 404, error: "no_lock", message: `no lock on the record for ${ticker}` };
   if (hits.length > 1) {
     const holders = hits.map((h) => h.holder ?? "(shared)");
@@ -991,7 +994,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
   // this caller's own locks: what they see as Protected, what they may not lock twice
   const ownLedger = lockLedgerPathFor(holder);
   if (url.pathname === "/api/shadow/markets") {
-    const held = new Set(loadShadowPositions(ownLedger).map((p) => p.ticker));
+    // held: a lock this holder has on the market that is open, settled or void; one whose protection was removed frees the market
+    const held = new Set(loadShadowPositions(ownLedger).filter((p) => p.status !== "closed").map((p) => p.ticker));
     const league = url.searchParams.get("league") ?? undefined;
     const markets = await listGameMarketsFn(league);
     sendJson(res, 200, {
@@ -1033,7 +1037,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       }
     }
     // what the record already holds for each matched market: the client shows Protected, not Lock in
-    const locks = new Map(loadShadowPositions(ownLedger).map((p) => [p.ticker, p]));
+    const locks = new Map(currentShadowPositions(loadShadowPositions(ownLedger)).map((p) => [p.ticker, p]));
     sendJson(res, 200, {
       ok: true,
       at: atIso,
@@ -1052,6 +1056,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
                 floorCents: L.floorCents,
                 capCents: L.capCents,
                 creditCents: L.creditCents,
+                ...(L.generation ? { generation: L.generation } : {}),
                 ...(L.result ? { result: L.result, protectedCents: L.protectedCents, nakedCents: L.nakedCents, settledAt: L.settledAt } : {}),
                 ...closedViewOf(L),
               }
@@ -1084,7 +1089,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, { ok: false, at: atIso, ticker: parsed.value.ticker, code: q.code, message: q.detail });
       return;
     }
-    const held = loadShadowPositions(ownLedger).some((p) => p.ticker === parsed.value.ticker);
+    const held = !lockable(loadShadowPositions(ownLedger), parsed.value.ticker);
     // The operator also sees the routing: which hedge route funded this quote and what every route
     // said. On an armed ticker the lock is pinned to Kalshi's own No side, so the verdict there is
     // what the live hedge will do; on an unarmed one it is the engine's free choice at this size.
@@ -1122,7 +1127,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being locked right now." });
       return;
     }
-    if (loadShadowPositions(ownLedger).some((p) => p.ticker === ticker)) {
+    if (!lockable(loadShadowPositions(ownLedger), ticker)) {
       sendJson(res, 409, { ok: false, error: "already_on_record", message: "This market is already locked; one lock per market." });
       return;
     }
@@ -1268,6 +1273,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         capCents: lock.capCents,
         creditCents: lock.creditCents,
         eventTimeIso: lock.eventTimeIso,
+        ...(lock.generation ? { generation: lock.generation } : {}),
         ...(lock.tier ? { tier: lock.tier } : {}),
         ...(lock.result ? { result: lock.result, protectedCents: lock.protectedCents, nakedCents: lock.nakedCents, settledAt: lock.settledAt } : {}),
         ...closedViewOf(lock),
@@ -2624,7 +2630,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
             .then((balanceCents) => ({ ok: true, keyId: `…${hedgeChoice.novigOrders!.keyId.slice(-4)}`, balanceCents }))
             .catch((err: unknown) => ({ ok: false, keyId: `…${hedgeChoice.novigOrders!.keyId.slice(-4)}`, error: String(err instanceof Error ? err.message : err) }))
         : Promise.resolve(live ? (HEDGE_VENUES.routes.includes("novig") ? { ok: false, error: "no NOVIG_TRADE_KEY_ID / NOVIG_TRADE_PRIVATE_KEY_PEM in the service env" } : null) : null);
-      const held = new Set(allLocks().map((l) => l.p.ticker));
+      const held = new Set(allLocks().filter((l) => l.p.status !== "closed").map((l) => l.p.ticker));
       const kalshiRouteQuote = async (t: string) => {
         if (!quoteOneFn) return { offered: false as const, code: "engine_not_ready", detail: "the scanner is still loading" };
         const q = await quoteOneFn({ ticker: t, contracts, route: "kalshi_self" });
