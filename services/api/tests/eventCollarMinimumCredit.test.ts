@@ -166,7 +166,9 @@ test("demo service: the rule runs in the scan before the ceiling; the EV cost fo
   const headedByTight = { ...base, quote: { ...q, ...tight, tier: "tight" as const }, evBps: evCostBps(60, tight.floorCents, tight.capCents, tight.creditCents, 150) };
   const promoted = applyMinimumCreditRule(headedByTight as never, { cents: tight.creditCents + 1, bpsOfStake: 0 });
   assert.ok(promoted.quote.ok);
-  assert.equal(promoted.quote.tier, "balanced");
+  // the first tier in promotion order (the most upside first) whose credit clears the raised line
+  const expectedTier = (["wide", "balanced"] as const).find((name) => (credits[name] ?? 0) > tight.creditCents);
+  assert.equal(promoted.quote.tier, expectedTier);
   assert.equal(promoted.evBps, evCostBps(60, promoted.quote.floorCents, promoted.quote.capCents, promoted.quote.creditCents, 150), "EV cost re-derived from the promoted terms");
   assert.notEqual(promoted.evBps, headedByTight.evBps);
   assert.equal(promoted.route, "kalshi_self", "the route is unchanged");

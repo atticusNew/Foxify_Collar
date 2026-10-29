@@ -294,6 +294,14 @@ export interface CrossQuote extends CollarTerms {
 
 export type CrossQuoteResult = CrossQuote | CrossRefusal;
 
+/** The minimum-credit rule (minimumCredit.ts): a collar is offered only when its credit clears both. */
+export interface MinimumCreditRule {
+  /** absolute floor on the credit, cents */
+  cents: number;
+  /** floor on the credit as bps of stake (100¢ × contracts) */
+  bpsOfStake: number;
+}
+
 export interface CrossSearchConfig {
   floorOffsetsCents: number[];
   capOffsetsCents: number[];
@@ -319,6 +327,13 @@ export interface CrossSearchConfig {
   hedgeFeeFlatCents: number;
   /** the tier whose terms become the top-level quote (the others ride along) */
   defaultTier: ProtectionTier;
+  /**
+   * The credit line the tiers are chosen against: a tier resolves to the best collar by its rule
+   * among those that clear the line, so "most upside" is the highest cap at the lowest floor
+   * that still pays the holder something, not a penny collar the line then removes (which used
+   * to drop the tier altogether and promote the quote to Balanced). Unset = the shipped rule.
+   */
+  minimumCredit?: MinimumCreditRule;
 }
 
 export const DEFAULT_CROSS_CONFIG: CrossSearchConfig = {
@@ -339,4 +354,6 @@ export const DEFAULT_CROSS_CONFIG: CrossSearchConfig = {
   hedgeFeeFlatCents: 0,
   // the holder keeps the most of their win by default; the credit is what is left over, not the point
   defaultTier: "wide",
+  // 5c and 0.25% of stake, whichever is more (minimumCredit.ts carries the rule's words)
+  minimumCredit: { cents: 5, bpsOfStake: 25 },
 };

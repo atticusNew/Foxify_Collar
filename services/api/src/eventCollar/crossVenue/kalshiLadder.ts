@@ -22,7 +22,7 @@ import type {
   CrossSearchConfig,
   KalshiSelfHedgeLeg,
 } from "./types";
-import { enumerateCollars, refuseUnfunded, selectTiers } from "./collarSearch";
+import { enumerateCollars, refuseUnfunded, selectTiers, tierCreditLineCents } from "./collarSearch";
 
 /** One level of No-side executable depth (derived from a yes bid). */
 export interface NoAskLevel {
@@ -199,7 +199,7 @@ export function quoteLadderWrap(inputs: LadderPricerInputs): CrossQuoteResult {
     });
   }
 
-  const sel = selectTiers(search.candidates, entryCents, cfg.defaultTier);
+  const sel = selectTiers(search.candidates, entryCents, cfg.defaultTier, tierCreditLineCents(cfg, contracts));
   return {
     ok: true,
     kalshiTicker: pair.kalshi.ticker,

@@ -250,9 +250,10 @@ export function pinnedExecutionFor(args: {
   };
 }
 /**
- * MINIMUM CREDIT (src/eventCollar/crossVenue/minimumCredit.ts): 25¢ and 0.25% of stake by default
- * (EVENT_X_MIN_CREDIT_CENTS, EVENT_X_MIN_CREDIT_BPS). Applied in the scan, before the ceiling, so
- * the board, the embed and the shadow record offer the same tiers and refuse the same events.
+ * MINIMUM CREDIT (src/eventCollar/crossVenue/minimumCredit.ts): 5¢ and 0.25% of stake by default
+ * (EVENT_X_MIN_CREDIT_CENTS, EVENT_X_MIN_CREDIT_BPS). The tiers are chosen against the line in
+ * the search (searchConfig below), and the scan applies it again before the ceiling, so the
+ * board, the embed and the shadow record offer the same tiers and refuse the same events.
  */
 export const MIN_CREDIT_RULE = minimumCreditRuleFromEnv(process.env);
 /**
@@ -536,6 +537,8 @@ export function searchConfig(): CrossSearchConfig {
     minTakeBpsOfStake:
       minTake !== undefined && minTake !== "" ? Math.max(0, Number(minTake)) : DEFAULT_CROSS_CONFIG.minTakeBpsOfStake,
     defaultTier: parseTier(process.env.EVENT_X_DEFAULT_TIER),
+    // the tiers resolve among collars that clear the credit line, so Max upside is never a penny collar the line then strikes
+    minimumCredit: MIN_CREDIT_RULE,
   };
 }
 

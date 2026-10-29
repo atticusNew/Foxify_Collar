@@ -17,16 +17,12 @@
  * quote becomes a refusal, `credit_too_small`, counted in the receipts as its own reason.
  */
 
-import type { CollarTerms, CrossQuote, CrossQuoteResult, ProtectionTier } from "./types";
+import { type CollarTerms, type CrossQuote, type CrossQuoteResult, DEFAULT_CROSS_CONFIG, type MinimumCreditRule, type ProtectionTier } from "./types";
 
-export interface MinimumCreditRule {
-  /** absolute floor on the credit, cents */
-  cents: number;
-  /** floor on the credit as bps of stake (100¢ × contracts) */
-  bpsOfStake: number;
-}
+export type { MinimumCreditRule } from "./types";
 
-export const DEFAULT_MINIMUM_CREDIT: MinimumCreditRule = { cents: 5, bpsOfStake: 25 };
+/** The shipped rule; the search config carries the same object so the tiers are chosen against the line they are later judged on. */
+export const DEFAULT_MINIMUM_CREDIT: MinimumCreditRule = DEFAULT_CROSS_CONFIG.minimumCredit as MinimumCreditRule;
 
 /** The order a promoted tier is chosen in when the quoted default is under the line: the most upside first. */
 const PROMOTION_ORDER: readonly ProtectionTier[] = ["wide", "balanced", "tight"];
