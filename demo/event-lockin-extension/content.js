@@ -1012,6 +1012,18 @@
         else if (clubsNamed(pick[1]).size) continue;
       }
       if (!ticker) {
+        // a card head of code, bullet, multiplier and market ("CLE • 2.02x Winner", Novig) names the
+        // pick outright: the row's side with that code, however often the opponent is printed below
+        const head = /(^|[^A-Za-z0-9])([A-Z]{2,3})\s*[·•]?\s*\d+(?:\.\d+)?\s?x\s*(?:Winner|Moneyline|Money Line|ML|Spread|Total)\b/.exec(text);
+        if (head) {
+          const codes = [head[2], ...(CODE_ALIAS[head[2]] || [])];
+          const byCode = [...count.keys()].filter((t) => codes.includes(codeOf(t)));
+          if (byCode.length === 1) ticker = byCode[0];
+          // the head names a club none of the row's sides resolve to: never read as the opponent
+          else if (!byCode.length && S.codes.has(head[2])) continue;
+        }
+      }
+      if (!ticker) {
         const sorted = [...count.entries()].sort((a, b) => b[1] - a[1]);
         // one side named more often than any other; a side named once alone is the pick only when no
         // code in the row was left unresolved and no unlisted club is named beside it (else it may be
@@ -1330,7 +1342,11 @@
         const got = usd(rec.protectedCents || 0);
         const cash = cashState(rec);
         line = lineGo("Left early", "Ended with <b>" + esc(got) + "</b>" + (cash && cash.open ? " &middot; " + cash.label : "") + ".", "ael-line-on");
-      } else line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>, whichever way it goes." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
+      } else {
+        // the venue the other side went to, on the line itself, so the pick is visible without opening the panel
+        const hv = hedgeVenueOf(rec.routing);
+        line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>" + (hv ? " &middot; on " + esc(hv) : ", whichever way it goes") + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
+      }
     } else if (B.kind === "other") {
       line = lineGo("Unavailable", "Protection covers " + (VENUE_ID === "novig" ? "Winner" : "Moneyline") + " picks.", "ael-line-off");
     } else if (B.match === "unmatched") {
@@ -1460,13 +1476,17 @@
     }
     const fine = ["Priced live"];
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
-    fine.push(...notes(B), ...routingNotes(p.routing), '<a href="#" class="ael-how-a">how it works</a>');
+    // the venue pick is its own strip above the button; the fine print keeps the competition only when the strip has nothing to show
+    const picked = venuePick(p.routing);
+    fine.push(...notes(B), ...(picked ? [] : routingNotes(p.routing)), '<a href="#" class="ael-how-a">how it works</a>');
+    const shopped = pricedRoutes(p.routing).length > 1;
     const html =
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") +
       ledger(shortOf(B.ticker), rs, t.creditCents, was) +
+      picked +
       '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in</button>" +
       '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
-      '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap.</p></div>" +
+      '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".</p></div>" +
       DISCLOSE;
     setPanel(B, panel, html, () => {
       for (const c of panel.querySelectorAll("[data-tier]"))
@@ -1584,6 +1604,35 @@
     if (!v || !rt.holderVenueName || v === rt.holderVenueName) return [];
     return ["other side on " + esc(v)];
   };
+  /** The routes that priced the other side, best credit first; the chosen one flagged. */
+  const pricedRoutes = (rt) => {
+    if (!rt || !Array.isArray(rt.routes)) return [];
+    const chosen = rt.hedgeVenueName || null;
+    return rt.routes
+      .filter((r) => r && r.creditCents != null && r.hedgeVenueName)
+      .map((r) => ({ venue: r.hedgeVenueName, creditCents: r.creditCents, chosen: r.hedgeVenueName === chosen }))
+      .sort((a, b) => b.creditCents - a.creditCents || (a.chosen ? -1 : 1));
+  };
+  /**
+   * The venue pick, shown, not footnoted: each venue that priced the other side with what it would
+   * have paid the holder for the same protection, the one the hedge goes to marked. One venue priced
+   * reads "Other side on Kalshi". Nothing when the service sent no routing.
+   */
+  const venuePick = (rt) => {
+    const v = hedgeVenueOf(rt);
+    if (!v) return "";
+    const routes = pricedRoutes(rt);
+    if (routes.length < 2) return '<div class="ael-venues"><span class="ael-l">Other side on</span><span class="ael-vchip ael-won"><span class="ael-ic">' + SHIELD_FILL + "</span>" + esc(v) + "</span></div>";
+    const chips = routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + (r.chosen ? '<span class="ael-ic">' + SHIELD_FILL + "</span>" : "") + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("");
+    return '<div class="ael-venues"><span class="ael-l">Other side priced on</span>' + chips + "</div>";
+  };
+  /** How much more the chosen venue pays the holder than the next one, in cents; null without two prices. */
+  const venueEdgeCents = (rt) => {
+    const routes = pricedRoutes(rt);
+    const won = routes.find((r) => r.chosen);
+    const other = routes.find((r) => !r.chosen);
+    return won && other ? won.creditCents - other.creditCents : null;
+  };
   const bps = (x) => (x == null ? "" : (x >= 0 ? "+" : "") + Math.round(x) + " bps");
   /** The four tails in a few words, for the folded rules line: what the venue's rules cover. */
   const TAIL_WORDS = { tie: "a tie", postponed: "a postponement", abandoned: "a game called off", corrected: "a corrected result" };
@@ -1601,8 +1650,20 @@
     const lines = [];
     const v = hedgeVenueOf(rt);
     if (v) lines.push(row("Hedged on", esc(v) + (operator() && rt.reason ? ' <span class="ael-dim">&middot; ' + esc(rt.reason) + "</span>" : "")));
-    const cmp = comparisonOf(rt);
-    if (cmp) lines.push(row("Compared", esc(cmp)));
+    // the competition as chips (each venue's credit for the same protection, the winner marked) and the edge in dollars
+    const routes = pricedRoutes(rt);
+    if (routes.length > 1) {
+      const edge = venueEdgeCents(rt);
+      lines.push(
+        row(
+          "Compared",
+          '<span class="ael-vchips">' + routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("") + (edge > 0 ? '<span class="ael-dim ael-edge">' + esc(usd(edge)) + " more for you</span>" : "") + "</span>",
+        ),
+      );
+    } else {
+      const cmp = comparisonOf(rt);
+      if (cmp) lines.push(row("Compared", esc(cmp)));
+    }
     if (Array.isArray(rt.tails) && rt.tails.length) {
       lines.push(
         row(
@@ -1664,7 +1725,10 @@
       // Kalshi holds the other side as No on the club; any other book holds it as the other club
       const side = /kalshi/i.test(venue) ? "No on " + esc(venue) : "the other side on " + esc(venue);
       if (h.simulated) {
-        lines.push(row("Other side", (units ? esc(units) + " contracts " : "") + "covered at the book" + (h.costCents != null ? " &middot; " + esc(usd(h.costCents)) : "")));
+        // nothing reached the venue: say so, and (operator) the rail or fallback that held it
+        const why = operator() && h.fallbackReason ? ' <span class="ael-dim">&middot; ' + esc(String(h.fallbackReason)) + "</span>" : "";
+        lines.push(row("Other side", (units ? esc(units) + " contracts " : "") + "priced at " + esc(venue) + "'s book" + (h.costCents != null ? " &middot; " + esc(usd(h.costCents)) : "")));
+        lines.push(row("Order", '<span class="ael-dim">not sent; covered at the book</span>' + why));
       } else {
         lines.push(row("Other side", esc(units || "") + " contracts " + side + (h.avgPriceMilli != null ? " at " + esc((h.avgPriceMilli / 10).toFixed(1)) + "c each with fees" : "")));
         if (h.costCents != null) lines.push(row("Cost", esc(usd(h.costCents)) + ' <span class="ael-dim">all in</span>'));

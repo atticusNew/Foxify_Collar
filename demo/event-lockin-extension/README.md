@@ -50,20 +50,22 @@ of open plays. Once a matched play exists, under its row:
    Sun 1:00pm ET · how it works", and the disclosure. Nothing in the panel is under 12px. Tapping
    the line again closes it;
 3. after the tap, the line fills solid for a beat and settles as a **Protected** pill with "$14.71
-   or $25.06, whichever way it goes." Its panel is the same slip with the locked numbers and no
+   or $25.06 · on ProphetX." (the hedge venue on the line itself; "whichever way it goes" when the
+   record carries no routing). Its panel is the same slip with the locked numbers and no
    button ("Texans win $25.06", "Texans lose $14.71", "Paid to you +$1.66"), then one grey line of
    facts ("Locked Sun 11:02am ET · the other side bought in 4.9s") ending in a **receipt** link.
    Tapping it opens four labelled lines in place: the other side ("19.17 contracts No on Kalshi at
    27.4c each with fees"; on any other book, "the other side on Novig"), the cost, the venue's
    order id and time with how the order got there ("through the aggregator" when it went through
    the execution pod, "direct" on our own key; the partner is never named), and the record id; a
-   hedge that did not reach the venue reads "covered at the book" with no order line. Under those,
-   **Hedged on** names the venue the other side went to ("ProphetX", "Kalshi"); the reason
-   ("cheaper all in…", "the venue the hedge can be sent to tonight…") follows only with the
-   operator setting on. When two venues priced the other side, **Compared** shows the competition
-   in one line ("ProphetX $3.10 vs Kalshi $2.40, hedged on ProphetX": what each book would have
-   paid for the same protection), and the same line sits in the offer's fine print before the
-   tap. **Rules** is folded to one muted summary ("a tie, a postponement, a game called off, a
+   hedge that did not reach the venue reads "priced at ProphetX's book" with an **Order** line
+   that says "not sent; covered at the book" (the operator setting adds the rail or fallback that
+   held it: "rail ticker: … is not on the live allowlist"). Under those, **Hedged on** names the
+   venue the other side went to ("ProphetX", "Kalshi"); the reason ("cheaper all in…", "the venue
+   the hedge can be sent to tonight…") follows only with the operator setting on. When two venues
+   priced the other side, **Compared** shows the competition as chips, one per venue with what
+   its book would have paid for the same protection, the winner filled in the venue's accent with
+   the shield, and the edge in dollars ("$0.60 more for you") (0.7.20). **Rules** is folded to one muted summary ("a tie, a postponement, a game called off, a
    corrected result") with a **show** link; opening it lists the four tails in this venue's own
    settlement words, each with what the venue pays and how the protection settles on it, and a
    **hide** link folds it back. With the operator setting on, every route the service priced
@@ -121,8 +123,12 @@ pays at least what the holder is owed under their own venue's rules, prices any 
 tail charge in the same bps as the EV cost, applies the hard gates (same game, depth for the
 whole size, venue open until the lock, an order rail that can reach it tonight) and takes the
 cheapest all in. The receipt says where the hedge went and why, and words the tails in the
-holder's venue's own rules. The offer's fine print carries the competition when two venues priced
-the other side ("ProphetX $3.10 vs Kalshi $2.40, hedged on ProphetX"), else "other side on
+holder's venue's own rules. The offer shows the venue pick as its own strip between the slip and
+the button (0.7.20): "Other side priced on" followed by one chip per venue that priced it with
+its credit ("ProphetX $3.10", "Kalshi $2.40"), the one the hedge goes to filled in the venue's
+accent with the shield; with one venue priced, "Other side on Kalshi". The fine print then keeps
+only the notes; without routing it falls back to the competition line ("ProphetX $3.10 vs Kalshi
+$2.40, hedged on ProphetX"), else "other side on
 Polymarket" when the hedge venue is not the page's own. Tonight's venues are Kalshi and ProphetX,
 both reached through the aggregator's execution pod (`EVENT_HEDGE_VENUES=kalshi,prophetx`,
 `EVENT_HEDGE_LIVE_VIA=aggregator`); ProphetX's 2% of net gains at settlement is folded into its
