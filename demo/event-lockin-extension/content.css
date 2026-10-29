@@ -230,6 +230,8 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-vchip b { font-weight: 600; color: var(--ael-fg-strong); }
 .ael-vchip.ael-won { border-color: var(--ael-accent); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); }
 .ael-vchip.ael-won b { color: var(--ael-accent-text); }
+.ael-vchip .ael-here { font-style: normal; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ael-muted); border: 1px solid var(--ael-border); border-radius: 4px; padding: 0 4px; line-height: 1.4; }
+.ael-vchip.ael-won .ael-here { color: var(--ael-accent-text); border-color: var(--ael-accent); }
 .ael-vchip .ael-ic { width: 12px; height: 12px; color: var(--ael-accent-text); }
 .ael-vchip .ael-ic svg { width: 12px; height: 12px; }
 

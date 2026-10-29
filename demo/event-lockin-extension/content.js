@@ -1610,7 +1610,7 @@
     const chosen = rt.hedgeVenueName || null;
     return rt.routes
       .filter((r) => r && r.creditCents != null && r.hedgeVenueName)
-      .map((r) => ({ venue: r.hedgeVenueName, creditCents: r.creditCents, chosen: r.hedgeVenueName === chosen }))
+      .map((r) => ({ venue: r.hedgeVenueName, creditCents: r.creditCents, chosen: r.hedgeVenueName === chosen, here: Boolean(rt.holderVenueName) && r.hedgeVenueName === rt.holderVenueName }))
       .sort((a, b) => b.creditCents - a.creditCents || (a.chosen ? -1 : 1));
   };
   /**
@@ -1622,8 +1622,10 @@
     const v = hedgeVenueOf(rt);
     if (!v) return "";
     const routes = pricedRoutes(rt);
-    if (routes.length < 2) return '<div class="ael-venues"><span class="ael-l">Other side on</span><span class="ael-vchip ael-won"><span class="ael-ic">' + SHIELD_FILL + "</span>" + esc(v) + "</span></div>";
-    const chips = routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + (r.chosen ? '<span class="ael-ic">' + SHIELD_FILL + "</span>" : "") + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("");
+    // "here" marks this page's own venue when it is one of the books in the race: the holder sees it win, or sees why it did not
+    const here = (name) => (rt.holderVenueName && name === rt.holderVenueName ? '<i class="ael-here">here</i>' : "");
+    if (routes.length < 2) return '<div class="ael-venues"><span class="ael-l">Other side on</span><span class="ael-vchip ael-won"><span class="ael-ic">' + SHIELD_FILL + "</span>" + esc(v) + here(v) + "</span></div>";
+    const chips = routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + (r.chosen ? '<span class="ael-ic">' + SHIELD_FILL + "</span>" : "") + esc(r.venue) + here(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("");
     return '<div class="ael-venues"><span class="ael-l">Other side priced on</span>' + chips + "</div>";
   };
   /** How much more the chosen venue pays the holder than the next one, in cents; null without two prices. */
@@ -1657,7 +1659,7 @@
       lines.push(
         row(
           "Compared",
-          '<span class="ael-vchips">' + routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("") + (edge > 0 ? '<span class="ael-dim ael-edge">' + esc(usd(edge)) + " more for you</span>" : "") + "</span>",
+          '<span class="ael-vchips">' + routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + esc(r.venue) + (r.here ? '<i class="ael-here">here</i>' : "") + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("") + (edge > 0 ? '<span class="ael-dim ael-edge">' + esc(usd(edge)) + " more for you</span>" : "") + "</span>",
         ),
       );
     } else {
