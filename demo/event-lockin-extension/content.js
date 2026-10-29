@@ -440,17 +440,20 @@
    * whose words change under the holder a few seconds after the tap reads as a glitch.
    */
   /**
-   * The record's lock on this market as this page's own: a lock made from another venue's page
-   * (the record says where, `holderVenue`) protects the holder's pick there, not the same game
-   * held here. Older locks carry no venue and read as this page's. `lockAway` is the other case.
+   * The record's lock on this market as this page's own. A lock belongs to the venue it was made
+   * from (`holderVenue` on the record; a lock written without one is Kalshi's, the service's
+   * default): it protects the holder's pick there and nowhere else, so the same game held on
+   * another venue is not it. `lockAway` is an open lock on another venue, which bars this one
+   * (one lock per game); a lock closed or settled elsewhere says nothing here.
    */
+  const venueOfLock = (r) => String((r && r.holderVenue) || "kalshi").toLowerCase();
   const lockHere = (ticker) => {
     const r = S.record.get(ticker);
-    return r && r.holderVenue && r.holderVenue !== VENUE_ID ? null : r || null;
+    return r && venueOfLock(r) === VENUE_ID ? r : null;
   };
   const lockAway = (ticker) => {
     const r = S.record.get(ticker);
-    return r && r.holderVenue && r.holderVenue !== VENUE_ID ? r : null;
+    return r && venueOfLock(r) !== VENUE_ID && r.status === "open" ? r : null;
   };
   const venueNameOf = (id) => (VENUES[id] && VENUES[id].name) || (id === "polymarket" ? "Polymarket" : String(id || ""));
 
@@ -764,6 +767,8 @@
     return "winner";
   };
   /** Matched, or still an order. A row that says only Unmatched (no matched part, not partially matched) is an order. */
+  /** A play the holder has already sold or cashed out is closed at the venue: settled to us. "Sell" (the button) is not it. */
+  const SOLD_RE = /\b(sold|cashed out|cash(?:ed)? out)\b/i;
   const matchIn = (raw) => {
     const text = spaced(raw);
     const bare = noMoney(text);
@@ -1013,7 +1018,7 @@
       // the page's tab decides what its rows are when the rows themselves do not say
       let match = matchIn(own);
       if (S.tab === "resting" && match === "matched") match = "unmatched";
-      if (S.tab === "settled") match = "settled";
+      if (S.tab === "settled" || SOLD_RE.test(noMoney(spaced(own)))) match = "settled";
       const svc = kind === "winner" && match === "matched" ? svcFor(ticker) : null;
       const read = match === "matched" ? tableSize(row) || sizeIn(own) : null;
       out.push({ row, ticker, kind, match, flipped, size: svc ? { contracts: svc.contracts, entryCents: svc.entryCents, stakeCents: svc.costCents, payoutCents: svc.payoutCents } : read, from: svc ? "service" : read ? "page" : "none" });
@@ -1301,8 +1306,6 @@
       line = lineGo("Unavailable", "Protection covers " + (VENUE_ID === "novig" ? "Winner" : "Moneyline") + " picks.", "ael-line-off");
     } else if (B.match === "unmatched") {
       line = lineGo("Unavailable", VENUE_ID === "kalshi" ? "Protection waits until the order fills." : "Protection waits until the " + esc(V.play) + " is matched.", "ael-line-off");
-    } else if (B.match === "settled") {
-      line = lineGo("Not protected", "This " + esc(V.play) + " settled without protection.", "ael-line-off");
     } else if (!B.size) {
       line = lineGo("Lock in", "Size not read from the page.", "");
     } else if (!st.quote) {
@@ -2639,6 +2642,15 @@
     // already built for a play moves under its new row as it is, rather than being built again
     const orphans = [...S.rows.values()].filter((B) => !B.row.isConnected);
     for (const F of found) {
+      // a settled play that was never locked here is the venue's own business: no line under it
+      if (F.match === "settled" && !lockHere(F.ticker)) {
+        const old = S.rows.get(F.row);
+        if (old) {
+          old.host && old.host.remove();
+          S.rows.delete(F.row);
+        }
+        continue;
+      }
       live.add(F.row);
       let B = S.rows.get(F.row);
       if (B && B.ticker !== F.ticker) {
