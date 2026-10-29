@@ -30,7 +30,7 @@ import type {
   TakeRule,
 } from "./types";
 import { PROTECTION_TIERS } from "./types";
-import type { ReferenceBook, ReferenceBookId, ReferenceListing } from "./venueBooks";
+import { novigRouteOf, type ReferenceBook, type ReferenceBookId, type ReferenceListing } from "./venueBooks";
 import type { ReferencePrint, ReferencePrintId } from "./venuePrints";
 
 /** One alternative collar as it would have been written, or why it was not. */
@@ -69,7 +69,7 @@ export interface ShadowSizeProbe {
 }
 
 /** The hedge routes the scan examines; the record writes the one the routing chose. */
-export const ROUTE_LABELS = ["kalshi_self", "polymarket", "prophetx"] as const satisfies readonly HedgeRoute[];
+export const ROUTE_LABELS = ["kalshi_self", "polymarket", "prophetx", "novig"] as const satisfies readonly HedgeRoute[];
 
 /**
  * REFERENCE. The default tier re-priced on another regulated exchange's book for the same game,
@@ -154,7 +154,7 @@ export interface CounterfactualInputs {
   contracts: number;
   now: Date;
   config: CrossSearchConfig;
-  /** `pxNoBook` is the ProphetX hedge strike's book at raw venue prices; the fee is folded here before the walk */
+  /** `pxNoBook` is the ProphetX hedge strike's book at raw venue prices; the fee is folded here before the walk; the Novig route prices from the signed-dialect reference in `references` */
   books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; prophetx?: ProphetXStrikes; references?: ReferenceBook[]; prints?: ReferencePrint[] };
   /** ProphetX's fee on net gains, bps; the venue's published rate when absent */
   prophetxFeeBps?: number;
@@ -200,6 +200,11 @@ export function requote(inputs: CounterfactualInputs, config: CrossSearchConfig,
       noBook: foldProphetXFee(inputs.books.pxNoBook, inputs.prophetxFeeBps ?? DEFAULT_PROPHETX_FEE_BPS),
       hedgeOn: { venue: "prophetx", strikeId: px.hedgeStrikeId, ...(px.offsetStrikeId ? { offsetStrikeId: px.offsetStrikeId } : {}), outcome: inputs.pair.pm.outcomes[inputs.pair.pmNoOutcomeIndex] },
     });
+  }
+  if (inputs.route === "novig") {
+    const nv = novigRouteOf(inputs.books.references);
+    if (!nv || !inputs.pair) return null;
+    return quoteCrossWrap({ ...base, pair: inputs.pair, noBook: nv.noBook, hedgeOn: nv.hedgeOn });
   }
   if (!inputs.books.noAsks) return null;
   return quoteLadderWrap({

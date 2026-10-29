@@ -28,6 +28,8 @@ export const VENUE_COLUMNS: ReadonlyArray<{ id: VenueColumnId; name: string; via
   { id: "polymarket", name: "Polymarket", via: "direct", kind: "route" },
   // the hedge route on ProphetX: the same strike the reference column reads, priced with the settlement fee folded in
   { id: "prophetx", name: "ProphetX, hedge route", via: "feed", kind: "route" },
+  // the hedge route on Novig: the same market the signed_v3 reference reads, priced from the same read
+  { id: "novig", name: "Novig, hedge route", via: "direct", kind: "route" },
   { id: "aggregated_mm", name: "ProphetX", via: "feed", kind: "reference" },
   { id: "partner_mm", name: "ProphetX", via: "direct", kind: "reference" },
   { id: "signed_v3", name: "Novig", via: "direct", kind: "reference" },

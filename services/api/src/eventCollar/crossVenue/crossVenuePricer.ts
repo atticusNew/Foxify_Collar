@@ -31,6 +31,7 @@ import type {
   CrossQuoteResult,
   CrossSearchConfig,
   HedgeLeg,
+  NovigHedgeLeg,
   PmBook,
   PmBookLevel,
   ProphetXHedgeLeg,
@@ -49,6 +50,25 @@ export interface ProphetXHedgeOn {
   outcome: string;
 }
 
+/**
+ * The Novig route priced through the same walk: the opposing outcome's asks on the venue's own
+ * market (the fee folded by the book reader when it applies, venueBooks.ts), the leg a Novig leg.
+ */
+export interface NovigHedgeOn {
+  venue: "novig";
+  marketId: string;
+  /** the opposing outcome: what the hedge buys */
+  outcomeId: string;
+  /** the holder's own outcome: what an early close buys to offset */
+  offsetOutcomeId: string;
+  outcome: string;
+}
+
+export type HedgeOn = ProphetXHedgeOn | NovigHedgeOn;
+
+/** The venue's name for the refusal words. */
+const hedgeOnName = (h: HedgeOn): string => (h.venue === "novig" ? "Novig" : "ProphetX");
+
 export interface CrossPricerInputs {
   pair: MatchedPair;
   markCents: number;
@@ -58,8 +78,8 @@ export interface CrossPricerInputs {
   /** live CLOB book for the OPPOSING outcome token (the hedge instrument) */
   noBook: PmBook;
   config: CrossSearchConfig;
-  /** absent: Polymarket's opposing token (tokenId from the pair); given: the ProphetX strike */
-  hedgeOn?: ProphetXHedgeOn;
+  /** absent: Polymarket's opposing token (tokenId from the pair); given: the ProphetX strike or the Novig outcome */
+  hedgeOn?: HedgeOn;
 }
 
 /**
@@ -115,13 +135,28 @@ export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
   if (noBook.asks.length === 0) {
     return {
       ok: false,
-      code: hedgeOn ? "prophetx_book_empty" : "pm_book_empty",
-      detail: hedgeOn ? `no executable asks on the opposing strike (${opposing}) on ProphetX` : `no executable asks on the opposing outcome (${opposing})`,
+      code: hedgeOn ? (hedgeOn.venue === "novig" ? "novig_book_empty" : "prophetx_book_empty") : "pm_book_empty",
+      detail: hedgeOn ? `no executable asks on the opposing ${hedgeOn.venue === "novig" ? "outcome" : "strike"} (${opposing}) on ${hedgeOnName(hedgeOn)}` : `no executable asks on the opposing outcome (${opposing})`,
     };
   }
 
   const minSharesMilli = Math.max(1, noBook.minOrderSizeShares) * 1000;
   const legFor = (walk: NonNullable<ReturnType<typeof walkPmAsks>>, sharesMilli: number, hedgeCostCents: number): HedgeLeg => {
+    if (hedgeOn?.venue === "novig") {
+      const leg: NovigHedgeLeg = {
+        action: "buy",
+        venue: "novig",
+        outcome: hedgeOn.outcome,
+        marketId: hedgeOn.marketId,
+        outcomeId: hedgeOn.outcomeId,
+        offsetOutcomeId: hedgeOn.offsetOutcomeId,
+        sharesMilli,
+        avgPriceMilli: walk.avgPriceMilli,
+        worstPriceMilli: walk.worstPriceMilli,
+        costCents: hedgeCostCents,
+      };
+      return leg;
+    }
     if (hedgeOn) {
       const leg: ProphetXHedgeLeg = {
         action: "buy",
@@ -168,10 +203,10 @@ export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
   });
 
   if (search.candidates.length === 0) {
-    const venueWords = hedgeOn ? "ProphetX's" : "the opposing venue's";
+    const venueWords = hedgeOn ? `${hedgeOnName(hedgeOn)}'s` : "the opposing venue's";
     return refuseUnfunded(search, cfg, {
       shortfall: `${venueWords} live book cannot fund a positive credit on any quotable floor/cap right now`,
-      thin: hedgeOn ? "prophetx_book_too_thin" : "pm_book_too_thin",
+      thin: hedgeOn ? (hedgeOn.venue === "novig" ? "novig_book_too_thin" : "prophetx_book_too_thin") : "pm_book_too_thin",
       thinDetail: `${venueWords} book lacks the depth to hedge this size leg-for-leg`,
       none: "no quotable floor/cap combination for this pair",
     });

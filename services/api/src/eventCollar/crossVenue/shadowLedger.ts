@@ -90,6 +90,14 @@ export interface ShadowOpenRecord {
   hedgeStrikeId?: string;
   hedgeOffsetStrikeId?: string;
   /**
+   * The Novig market and outcome the hedge bought, so an early close can read its live book on
+   * the venue, and the holder's own outcome on the same market, which the close BUYS to offset
+   * the hedge (the venue takes no sell order; novigOrders.ts). Absent on other routes.
+   */
+  hedgeMarketId?: string;
+  hedgeOutcomeId?: string;
+  hedgeOffsetOutcomeId?: string;
+  /**
    * The venue's rule text as published at open, pinned (sha256, source URL, the text). Null when
    * the venue published none; absent on records before 2026-10-11. Evidence for the result, never
    * an input to the payout.

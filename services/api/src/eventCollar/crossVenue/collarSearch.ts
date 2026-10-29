@@ -256,7 +256,7 @@ export function selectTiers(
 export function refuseUnfunded(
   search: CollarSearchResult,
   cfg: CrossSearchConfig,
-  words: { shortfall: string; thin: "pm_book_too_thin" | "kalshi_book_too_thin" | "prophetx_book_too_thin"; thinDetail: string; none: string },
+  words: { shortfall: string; thin: "pm_book_too_thin" | "kalshi_book_too_thin" | "prophetx_book_too_thin" | "novig_book_too_thin"; thinDetail: string; none: string },
 ): CrossRefusal {
   if (search.feeEaten > 0) {
     return {
