@@ -226,9 +226,14 @@ test("reference books: the signed source finds the game in the league's winner m
     { priceMilli: 380, sizeMilli: 300_000 },
     { priceMilli: 390, sizeMilli: 500_000 },
   ]);
-  assert.deepEqual(ref.book.bids, []);
+  // the opposing outcome's own bids, what a hedge there could leave against: 0.370 x 10,000 contracts; a game market charges no fee pre-game
+  assert.deepEqual(ref.book.bids, [{ priceMilli: 370, sizeMilli: 100_000 }]);
   assert.equal(ref.book.tokenId, "signed_v3:m-nyy-bos");
-  assert.deepEqual(ref.listing, { marketId: "m-nyy-bos", key: "e1" }, "the venue's market and event ids ride on the reference");
+  assert.deepEqual(
+    ref.listing,
+    { marketId: "m-nyy-bos", key: "e1", outcomes: { ours: { outcomeId: "o-nyy", name: "NYY" }, opposing: { outcomeId: "o-bos", name: "BOS" }, fee: { coefficient: 0.06, folded: false }, marketStatus: "OPEN" } },
+    "the venue's market and event ids ride on the reference, with the two outcomes and the fee rule a hedge route there needs",
+  );
   assert.equal(calls.length, 2, "one catalog read, one book read");
   assert.equal(calls[0].path, "/v3/catalog/markets?league=MLB&marketType=MONEY&limit=200");
   assert.equal(calls[1].path, "/v3/catalog/markets/m-nyy-bos/book");
@@ -603,8 +608,8 @@ test("reference books: the routing comparison carries one row per reference, cou
   assert.doesNotMatch(html, /novig|prophet/i, "the page never names a reference venue");
   assert.doesNotMatch(html, /\u2014/, "no em dashes");
   // JSON the operator exports carries the dialect ids, not venue names; the hedge route's own code
-  // ("prophetx", a venue the record hedges on and names) is the one word that is not a reference's
-  assert.doesNotMatch(JSON.stringify(positions).replace(/"prophetx":/g, '"":'), /novig|prophet/i);
+  // ("prophetx", "novig": venues the record hedges on and names) are the words that are not a reference's
+  assert.doesNotMatch(JSON.stringify(positions).replace(/"(prophetx|novig)":/g, '"":'), /novig|prophet/i);
   // a record with no references renders the card as before
   const plain = renderShadowReportHtml({ atIso: "2026-09-21T00:00:00.000Z", summary: summarizeShadow(loadShadowPositions(path).filter((p) => p.ticker === "BEFORE")) });
   assert.ok(!plain.includes("reference book"));
@@ -751,7 +756,7 @@ test("reference books: a league the venue spells differently is found on the unf
   const ref = await signedSource(plain.client).read(nbaPair(), NOW);
   assert.ok(ref.book, JSON.stringify(ref));
   assert.deepEqual(ref.book.asks, [{ priceMilli: 450 + Math.ceil((0.06 * 450 * 550) / 1000), sizeMilli: 200_000 }]);
-  assert.deepEqual(ref.listing, { marketId: "m-bos-nyk", key: "e9" });
+  assert.deepEqual(ref.listing, { marketId: "m-bos-nyk", key: "e9", outcomes: { ours: { outcomeId: "o-bos", name: "BOS" }, opposing: { outcomeId: "o-nyk", name: "NYK" }, fee: { coefficient: 0.06, folded: true }, marketStatus: "OPEN" } });
   assert.deepEqual(plain.calls, [
     "/v3/public/catalog/markets?league=NBA&marketType=MONEY&limit=200",
     "/v3/public/catalog/markets?marketType=MONEY&limit=200",
