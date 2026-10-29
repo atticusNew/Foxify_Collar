@@ -96,6 +96,13 @@ of open plays. Once a matched play exists, under its row:
    live quote, with one grey line under the button, "Earlier protection removed Thu 7:58pm ET ·
    −$0.57 due back." (0.7.26); the removed lock stays on the record and the new lock is its next
    generation. A service that still holds the market keeps the row on Protection removed.
+   **Which club is the pick** (0.7.27): when the service reads the holder's account on the venue
+   (`/api/shadow/positions` answers `configured: true`), the venue's own word on what they hold
+   decides the side of a card before anything printed on it; a card that prints both clubs and
+   no pick line (Novig's Active card, "CLE … ATL") is read by the position, never by which club's
+   letters appear more often. A row the venue says is the other club draws no offer, and the
+   service refuses such a lock with `wrong_side` ("Your pick on this game is Cleveland Cavaliers;
+   protect it from that card."). Without the read key the card's text alone decides, as before.
    The other side is sold back through the same executor that bought it: on an armed ticker with
    sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
    written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the
@@ -441,8 +448,13 @@ The lock routes are off until a key is set.
 
 ### Holder plays from the venue (optional, recommended for the recording)
 
-**Not needed for the recording**: without it the extension reads each row's Cost and To Gain
-from the page and the numbers are the same. It is a confirmation, not a dependency.
+**Set it for a live hedge.** Without it the extension reads each row's Cost and To Gain from the
+page and the numbers are the same, but it also reads **which club is the pick** from the card's
+text alone, and a card that prints both clubs with no pick line can be read as the wrong side.
+With the key set the venue's own word on what the holder holds decides the side, and the service
+refuses a lock on the other club (`wrong_side`). On Novig, that key is the read key below
+(`VENUE_API_KEY_ID` + `VENUE_API_PRIVATE_KEY_PEM`, minted with `venueReadKey.ts mint`, host
+`https://api.novig.com`); the bearer pair in this section is the previous venue's.
 
 The venue issues API keys from its website: the **menu (top right), API Integration**, create a
 token. You get an access key and a secret key; the secret is shown once. Trading API access may

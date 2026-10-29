@@ -159,6 +159,7 @@ const protectable = [
   { ticker: "KXNFLGAME-26OCT18HOUJAC-JAC", league: "nfl", sideName: "Jacksonville", title: "Texans at Jaguars Winner?", dateIso: "2026-10-18" },
   { ticker: "KXNFLGAME-26OCT25HOUIND-HOU", league: "nfl", sideName: "Houston", title: "Texans at Colts Winner?", dateIso: "2026-10-25" },
   { ticker: "KXNBAGAME-26OCT18HOUSAS-HOU", league: "nba", sideName: "Houston", title: "Rockets at Spurs Winner?", dateIso: "2026-10-18" },
+  { ticker: "KXNBAGAME-26OCT18HOUSAS-SAS", league: "nba", sideName: "San Antonio", title: "Rockets at Spurs Winner?", dateIso: "2026-10-18" },
 ];
 
 test("matcher: the venue's winner outcome maps to our market for that club on that day; spreads, other leagues and far dates do not", () => {
@@ -299,6 +300,68 @@ test("shadow worker /api/shadow/positions: configured:false without a venue key;
     assert.equal(text.includes("m-1"), false);
     body = full;
     assert.ok(body.ok);
+  } finally {
+    worker.server.close();
+    worker.wireLockEngine({ quoteOne: quoteOne as never, listGameMarkets: listGameMarkets as never, venueClient: null });
+  }
+});
+
+test("shadow worker /api/shadow/lock: with the holder's account readable, a lock on the club they do not hold while they hold the other is refused wrong_side; their own side and an unread game pass the guard", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shadow-wrong-side-"));
+  process.env.NODE_ENV = "test";
+  process.env.EVENT_SHADOW_LEDGER_PATH = join(dir, "ledger.jsonl");
+  process.env.EVENT_SHADOW_LOCK_LEDGER_PATH = join(dir, "lock-ledger.jsonl");
+  process.env.EVENT_SHADOW_LOCK_KEY = "lock-key-for-positions-test";
+  delete process.env.VENUE_API_HOST;
+  const worker = await import("../scripts/eventShadowWorker");
+  const listGameMarkets = async () => protectable.map((m) => ({ ...m, closeTimeIso: new Date(START).toISOString(), markCents: 57 }));
+  // the quote never offers: a request that reaches it answers not_offered, which is the proof it passed the side guard
+  const quoteOne = async () => ({ ok: false as const, code: "not_offered" as const, detail: "test" });
+  // the venue says the holder has the Texans (o-hou) on the Texans/Jaguars game and the Spurs (o-sas) on the Rockets/Spurs game
+  const nbaMarket = market({ marketId: "m-3", eventId: "e-3", description: "Rockets vs. Spurs", outcomes: [{ outcomeId: "o-hou3", name: "HOU Rockets", status: "TBD" }, { outcomeId: "o-sas", name: "SAS Spurs", status: "TBD" }] });
+  const nbaEvent: RawVenueEvent = { eventId: "e-3", description: "Rockets vs. Spurs", sport: "Basketball", league: "NBA", status: "OPEN_PREGAME", startsTs: START };
+  const { client } = fakeVenue(
+    [
+      { marketId: "m-1", outcomeId: "o-hou", qty: 2000, cost: "11.40000" },
+      { marketId: "m-3", outcomeId: "o-sas", qty: 1000, cost: "5.00000" },
+    ],
+    [market(), nbaMarket],
+    [event, nbaEvent],
+  );
+  worker.wireLockEngine({ quoteOne: quoteOne as never, listGameMarkets: listGameMarkets as never, venueClient: { kind: "signed", holderPositions: (p) => holderPositions(client, p) } });
+  await new Promise<void>((resolve) => worker.server.listen(0, "127.0.0.1", () => resolve()));
+  const port = (worker.server.address() as AddressInfo).port;
+  const base = `http://127.0.0.1:${port}`;
+  const lock = (ticker: string) =>
+    fetch(`${base}/api/shadow/lock`, { method: "POST", headers: { "x-lock-key": "lock-key-for-positions-test", "content-type": "application/json" }, body: JSON.stringify({ ticker, contracts: 10, venue: "novig" }) });
+  try {
+    // the Jaguars side: the venue holds the other club for this holder
+    let r = await lock("KXNFLGAME-26OCT18HOUJAC-JAC");
+    assert.equal(r.status, 409);
+    let body = (await r.json()) as { ok: boolean; error?: string; code?: string; message?: string; heldTicker?: string };
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "wrong_side");
+    assert.equal(body.code, "wrong_side");
+    assert.equal(body.heldTicker, "KXNFLGAME-26OCT18HOUJAC-HOU");
+    assert.match(body.message ?? "", /Your pick on this game is HOU Texans/);
+    // nothing of the venue leaks in the refusal
+    assert.equal(JSON.stringify(body).toLowerCase().includes("novig"), false);
+    // the Rockets side of the other game: the venue holds the Spurs for this holder
+    r = await lock("KXNBAGAME-26OCT18HOUSAS-HOU");
+    assert.equal(r.status, 409);
+    body = (await r.json()) as typeof body;
+    assert.equal(body.error, "wrong_side");
+    assert.equal(body.heldTicker, "KXNBAGAME-26OCT18HOUSAS-SAS");
+    // the Spurs side: their own club, the guard lets it through to the quote
+    r = await lock("KXNBAGAME-26OCT18HOUSAS-SAS");
+    assert.equal(r.status, 200);
+    body = (await r.json()) as typeof body;
+    assert.equal(body.code, "not_offered");
+    // a game the venue shows no position on: not the guard's business
+    r = await lock("KXNFLGAME-26OCT25HOUIND-HOU");
+    assert.equal(r.status, 200);
+    body = (await r.json()) as typeof body;
+    assert.equal(body.code, "not_offered");
   } finally {
     worker.server.close();
     worker.wireLockEngine({ quoteOne: quoteOne as never, listGameMarkets: listGameMarkets as never, venueClient: null });

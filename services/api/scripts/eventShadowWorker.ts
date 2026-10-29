@@ -520,6 +520,27 @@ const referencePrints = (() => {
 const POSITIONS_TTL_MS = Number(process.env.EVENT_SHADOW_POSITIONS_TTL_MS || 20_000);
 let positionsCache: { at: number; positions: HolderPosition[] } | null = null;
 /**
+ * The holder's position on the OTHER club of this market's game, as the venue reports it, when
+ * their account is readable and they hold nothing on this market. Null otherwise: no key, a read
+ * that failed (the lock then proceeds as it does with no key at all), a position on this side, or
+ * none on the game.
+ */
+async function heldOtherSideOf(ticker: string): Promise<HolderPosition | null> {
+  if (!venueClient || !listGameMarketsFn) return null;
+  try {
+    if (!positionsCache || Date.now() - positionsCache.at > POSITIONS_TTL_MS) {
+      const markets = await listGameMarketsFn();
+      positionsCache = { at: Date.now(), positions: await venueClient.holderPositions(markets) };
+    }
+  } catch {
+    return null;
+  }
+  const stem = ticker.slice(0, ticker.lastIndexOf("-") + 1);
+  const onGame = positionsCache.positions.filter((p) => p.ticker && p.ticker.startsWith(stem));
+  if (onGame.some((p) => p.ticker === ticker)) return null;
+  return onGame.find((p) => p.ticker !== ticker) ?? null;
+}
+/**
  * A ticker armed for live orders is hedged on a venue the executor can send to, never on a route
  * the live rails would refuse (the record would carry a simulated fill). With ONE live venue the
  * route is pinned to it and the quote says what the pin cost against the rest. With more than one
@@ -1129,6 +1150,13 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     }
     if (!lockable(loadShadowPositions(ownLedger), ticker)) {
       sendJson(res, 409, { ok: false, error: "already_on_record", message: "This market is already locked; one lock per market." });
+      return;
+    }
+    // the venue's own word on the holder's side: when their account is readable and it holds the
+    // other club of this game and not this one, the card was misread; no lock, no wrong-way hedge
+    const other = await heldOtherSideOf(ticker);
+    if (other) {
+      sendJson(res, 409, { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; protect it from that card.`, heldTicker: other.ticker });
       return;
     }
     lockInFlight.add(flight);

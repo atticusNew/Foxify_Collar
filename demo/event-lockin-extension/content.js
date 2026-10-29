@@ -636,7 +636,8 @@
       .replace(/([A-Za-z])(\d)/g, "$1 $2") // "SEA1.71x": a code then the price in the next element
       .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2") // "DENMoneyline"
       .replace(/([A-Za-z])(\$)/g, "$1 $2")
-      .replace(/\b([AP]M)([A-Z]{2,3})(?![A-Za-z0-9])/g, "$1 $2"); // "7:00 PMATL": a clock then the next code
+      .replace(/\b([AP]M)([A-Z]{2,3})(?![A-Za-z0-9])/g, "$1 $2") // "7:00 PMATL": a clock then the next code
+      .replace(/(^|[^A-Za-z0-9])([A-Z]{2,3})\2(?![A-Za-z0-9])/g, "$1$2 $2"); // "CLECLE": a jersey's letters run into the label beside it
   const amountsIn = (text) => {
     const out = [];
     let m;
@@ -1013,10 +1014,20 @@
       // the pick is a club with no listed game: the row is not protected, and it is never read as a
       // pick on the opponent's next game (an Oct 19 Texans row beside the Nov 1 Jaguars listing)
       if (unlistedPick(text)) continue;
-      // the pick: a "Team · Winner" style line, else the side named more than once (matchup plus
-      // selection), else the one side the service confirms a position on, else the only side
+      // the pick: the side the venue itself says the holder has (the service reads their account),
+      // else a "Team · Winner" style line, else the side named more than once (matchup plus
+      // selection), else the only side. The venue's word comes first: a card that prints both
+      // clubs and no pick line (Novig's Active card, "CLE … ATL") is read by what they hold, never
+      // by which club's letters happen to appear more often.
       let ticker = null;
-      const pick = /([A-Z]{2,3}\s+[A-Za-z0-9 .]+?)(?:\s+[+-]?\d+(?:\.\d)?)?\s*(?:[·•|]|to win)\s*(?:Winner|Moneyline|Money Line|ML|Spread|Total|Over|Under)\b/i.exec(text);
+      if (S.svc.configured) {
+        // the one side they hold on the game this card names, whether or not the card's letters
+        // for that club were readable (a jersey's text run into the label reads as "CLECLE")
+        const stems = new Set([...count.keys()].map(stemOf));
+        const held = [...new Set(S.svc.positions.filter((p) => p.ticker && S.byTicker[p.ticker] && stems.has(stemOf(p.ticker))).map((p) => p.ticker))];
+        if (held.length === 1) ticker = held[0];
+      }
+      const pick = ticker ? null : /([A-Z]{2,3}\s+[A-Za-z0-9 .]+?)(?:\s+[+-]?\d+(?:\.\d)?)?\s*(?:[·•|]|to win)\s*(?:Winner|Moneyline|Money Line|ML|Spread|Total|Over|Under)\b/i.exec(text);
       if (pick) {
         const s = sidesIn(pick[1]);
         if (s.size === 1) ticker = [...s.keys()][0];
@@ -1043,11 +1054,13 @@
         const alone = sorted.length === 1 && (!count.ambiguous || sorted[0][1] >= 2) && (sorted[0][1] >= 2 || !unlistedNamed(text).size);
         if (alone || (sorted.length > 1 && sorted[0][1] > sorted[1][1])) ticker = sorted[0][0];
       }
-      if (!ticker) {
-        const withSvc = [...count.keys()].filter((t) => svcFor(t));
-        if (withSvc.length === 1) ticker = withSvc[0];
-      }
       if (!ticker) continue;
+      // the venue says the holder's position on this game is the other club: the card was misread;
+      // no offer on the wrong side (the service refuses such a lock too)
+      if (S.svc.configured && !svcFor(ticker)) {
+        const other = siblingOf(ticker);
+        if (other && svcFor(other)) continue;
+      }
       // the row names a club that is neither the pick nor its opponent in the listed game: it is a
       // pick on another game (the Pistons game, when the service lists the Knicks' next one only)
       const opp = opponentOf(ticker);
@@ -1274,6 +1287,8 @@
         return { why: "This market is already locked.", next: "One lock per market." };
       case "on_record_elsewhere":
         return { why: message || "This game is already protected.", next: "One lock per game. The protection sits with the pick held there." };
+      case "wrong_side":
+        return { why: message || "Your pick on this game is the other club.", next: "Nothing was locked. Protect the pick from its own card." };
       case "key":
         return { why: "The lock key is missing or wrong.", next: "Open the extension's settings." };
       case "off":
