@@ -322,8 +322,10 @@ export interface CrossSearchConfig {
 }
 
 export const DEFAULT_CROSS_CONFIG: CrossSearchConfig = {
-  floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30],
-  capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25],
+  // the grid reaches 45c either side of the mark: at even odds a cent of floor costs a cent of
+  // cap, so the most-upside collar (a 5c floor under a 90c cap) needs both ends open
+  floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30, 35, 40, 45],
+  capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 35, 40, 45],
   maxCapCents: 97,
   minFloorCents: 5,
   minCapHeadroomCents: 3,
@@ -335,5 +337,6 @@ export const DEFAULT_CROSS_CONFIG: CrossSearchConfig = {
   deMinimisTakeCents: 5,
   hedgeFeeBps: 0,
   hedgeFeeFlatCents: 0,
-  defaultTier: "balanced",
+  // the holder keeps the most of their win by default; the credit is what is left over, not the point
+  defaultTier: "wide",
 };
