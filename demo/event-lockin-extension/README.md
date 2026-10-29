@@ -103,11 +103,16 @@ of open plays. Once a matched play exists, under its row:
    letters appear more often. A row the venue says is the other club draws no offer, and the
    service refuses such a lock with `wrong_side` ("Your pick on this game is Cleveland Cavaliers;
    protect it from that card."). Without the read key the card's text alone decides, as before.
-   The size follows the same rule (0.7.28): a position the venue confirms is sized from it (contracts,
-   entry, cost, payout) and keeps that size through every redraw of the page, whatever the
-   card's figures read as on a later pass, so the offer no longer alternates between the
-   venue's number and a reading of the card's words. A venue's reference for the play ("ID:
-   a49b5764ac7c") is never read as a figure.
+   The size follows the same rule (0.7.28, 0.7.29): a position the venue confirms is sized from
+   it (contracts, entry, cost, payout) and keeps that size through every redraw of the page and
+   through a read of the account that misses it (the service itself carries a position's market
+   over a lookup the venue failed), whatever the card's figures read as on a later pass. A page
+   that names the same play in two places draws one block, quoted once, from the row the venue
+   sized. A figure read from the page's words that cannot be a position on the market (a price
+   under a cent, a payout out of all proportion to the multiplier the row prints) is set aside
+   rather than offered. A venue's reference for the play ("ID: a49b5764ac7c") is never read as
+   a figure. The tiers share the row's width, two or three of them, and a tier's credit drops to
+   a second line rather than being cut off.
    The other side is sold back through the same executor that bought it: on an armed ticker with
    sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
    written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the

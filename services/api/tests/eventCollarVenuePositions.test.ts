@@ -370,6 +370,58 @@ test("shadow worker /api/shadow/lock: with the holder's account readable, a lock
   }
 });
 
+test("shadow worker /api/shadow/positions: a read on which the venue fails to describe a position's market keeps the match the last read made", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shadow-positions-carry-"));
+  process.env.NODE_ENV = "test";
+  process.env.EVENT_SHADOW_LEDGER_PATH = join(dir, "ledger.jsonl");
+  process.env.EVENT_SHADOW_LOCK_LEDGER_PATH = join(dir, "lock-ledger.jsonl");
+  process.env.EVENT_SHADOW_LOCK_KEY = "lock-key-for-positions-test";
+  delete process.env.VENUE_API_HOST;
+  const worker = await import("../scripts/eventShadowWorker");
+  const listGameMarkets = async () => protectable.map((m) => ({ ...m, closeTimeIso: new Date(START).toISOString(), markCents: 57 }));
+  const quoteOne = async () => ({ ok: false as const, code: "not_offered" as const, detail: "test" });
+  const { client } = fakeVenue([{ marketId: "m-1", outcomeId: "o-hou", qty: 2000, cost: "11.40000" }], [market()], [event]);
+  let venueDown = false;
+  const flaky = {
+    listPositions: () => client.listPositions(),
+    getEvent: (id: string) => client.getEvent(id),
+    getMarket: async (id: string) => {
+      if (venueDown) throw new Error("timeout");
+      return client.getMarket(id);
+    },
+  };
+  worker.wireLockEngine({ quoteOne: quoteOne as never, listGameMarkets: listGameMarkets as never, venueClient: { kind: "signed", holderPositions: (p) => holderPositions(flaky as never, p) } });
+  await new Promise<void>((resolve) => worker.server.listen(0, "127.0.0.1", () => resolve()));
+  const port = (worker.server.address() as AddressInfo).port;
+  const read = async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/api/shadow/positions?fresh=1`, { headers: { "x-lock-key": "lock-key-for-positions-test" } });
+    assert.equal(r.status, 200);
+    return (await r.json()) as { ok: boolean; configured: boolean; positions: Array<{ id: string; ticker: string | null; reason?: string; contracts: number }> };
+  };
+  try {
+    let body = await read();
+    assert.equal(body.ok, true, JSON.stringify(body));
+    assert.equal(body.positions.length, 1);
+    assert.equal(body.positions[0].ticker, "KXNFLGAME-26OCT18HOUJAC-HOU");
+    assert.equal(body.positions[0].contracts, 20);
+    // the venue's market lookup fails on the next read: the position keeps its market, the figures are this read's
+    venueDown = true;
+    body = await read();
+    assert.equal(body.ok, true);
+    assert.equal(body.positions.length, 1);
+    assert.equal(body.positions[0].ticker, "KXNFLGAME-26OCT18HOUJAC-HOU");
+    assert.equal(body.positions[0].reason, undefined);
+    assert.equal(body.positions[0].contracts, 20);
+    // and the venue back: the same answer
+    venueDown = false;
+    body = await read();
+    assert.equal(body.positions[0].ticker, "KXNFLGAME-26OCT18HOUJAC-HOU");
+  } finally {
+    worker.server.close();
+    worker.wireLockEngine({ quoteOne: quoteOne as never, listGameMarkets: listGameMarkets as never, venueClient: null });
+  }
+});
+
 test("league templates expose the names the matcher relies on", () => {
   for (const t of LEAGUE_TEMPLATES) assert.ok(Object.keys(t.teamNames).length >= 30, t.league);
 });
