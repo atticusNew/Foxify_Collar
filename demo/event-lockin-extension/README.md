@@ -561,6 +561,22 @@ The service also still speaks the signed read-key API of the previous venue
 (`VENUE_API_KEY_ID` + `VENUE_API_PRIVATE_KEY_PEM`, minted with `venueReadKey.ts mint`). Whichever
 pair of variables is set picks the API; set one, not both.
 
+**When a Novig line comes and goes (0.7.34).** On the live Portfolio the button has appeared and
+then gone within a few seconds and not come back; DevTools showed no `.ael-host` in the page at
+all, so the block was taken down, not hidden. Three readings can take a line down, and 0.7.34
+closes each: the page's heading redrawn without its role after hydration turned the page from
+the plays page back into a board (now the plays-page verdict holds for a route until the route
+itself changes); the tab reader taking **Settled** for the selected tab on a page where the
+selected tab is marked by colour alone, which turned every row settled (now a card that wears
+its own MATCHED or UNMATCHED badge is what it says, whatever the tabs read); and a React redraw
+that replaces a card's children, taking our block out while the card stays (now the block is
+put back while the card still names the pick, within the six-second grace). With the operator
+setting on (Show hedge: yes), the extension's console (DevTools → Console, context "Lock in")
+names every row it skips and why ("row skipped: prices Yes and No, a board"), every line it
+takes down and why ("row dropped: reads as settled (tab settled)", "page: no longer the plays
+page"), and a state line whenever the picture changes (route, plays-page verdict, tab, the
+service's positions, the rows). If a line still goes, that console is what to send.
+
 ### Novig: reading needs no subaccount, ordering does
 
 Novig's keys come in two scopes. The **management** key (one per trader, made on the Profile
@@ -569,8 +585,15 @@ order. A **trading** key addresses exactly one **subaccount** and is the only ke
 `POST /v3/orders`. Reading the holder's plays for the protection (what the service does tonight)
 works with the management key or a read key minted from it: the cash wallet's positions come
 back under the management key's id and `venuePositions.ts` already reads them. A subaccount is
-needed only when the service itself orders on Novig (a direct hedge route, not built yet; tonight's
-hedges go to Kalshi and ProphetX through the aggregator). Before that route exists, the venue's
+needed only when the service itself orders on Novig. The management key answers positions for
+**every** wallet in the account, the service's hedge subaccount among them, and a hedge bought
+there is the other side of the holder's own game: left in, the holder read would carry both
+sides (a Texans position and a Jaguars one on the same game) and the extension would misread
+the holder's card. So the holder read leaves out the wallet whose key equals or contains
+`NOVIG_TRADE_KEY_ID` (the trading key id is the subaccount's address), and any label named in
+`VENUE_API_EXCLUDE_WALLETS` (comma-separated); `venueReadKey.ts check` prints the wallets it
+read and the one it left out. Set `NOVIG_TRADE_KEY_ID` on the worker and this is automatic.
+Before the route is used in anger, the venue's
 conditions for an order are worth knowing: the account must be KYC'd, the request may come from a
 data-centre IP but not from a VPN or a restricted state (451), and the venue wants a device
 location from the holder's own Novig app within the last three days or the order is refused.

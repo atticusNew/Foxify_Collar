@@ -48,7 +48,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { PlaysClient, asVenueMarket, playSize, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
-import { VenueClient, positionSize, signedHeaders, signerFromPem } from "../src/eventCollar/crossVenue/venuePositions";
+import { VenueClient, positionSize, signedHeaders, signerFromPem, excludedWalletsFromEnv } from "../src/eventCollar/crossVenue/venuePositions";
 import { NOVIG_TRADE_ENV, NovigAccountClient, mintTradingKeypair, type NovigSubaccount } from "../src/eventCollar/crossVenue/novigAccount";
 import { NovigOrderClient } from "../src/eventCollar/crossVenue/novigOrders";
 
@@ -123,9 +123,10 @@ async function check(): Promise<void> {
     console.error("check needs VENUE_API_KEY_ID and VENUE_API_PRIVATE_KEY_PEM (or VENUE_API_PRIVATE_KEY_PEM_PATH), or VENUE_API_ACCESS_KEY and VENUE_API_SECRET_KEY");
     process.exit(2);
   }
-  const client = new VenueClient({ host, signer: signerFromPem(keyId, pem) });
+  const client = new VenueClient({ host, signer: signerFromPem(keyId, pem), excludeWallets: excludedWalletsFromEnv() });
   const raw = await client.listPositions();
-  console.log(`${host}: ${raw.length} open position(s)`);
+  const w = client.walletsRead;
+  console.log(`${host}: ${raw.length} open position(s)` + (w.read.length || w.excluded.length ? ` · wallets read: ${w.read.join(", ") || "none"}` + (w.excluded.length ? ` · left out (the hedge subaccount): ${w.excluded.join(", ")}` : "") : ""));
   for (const p of raw) {
     const size = positionSize(p.qty, p.cost);
     let line = `  qty ${p.qty} cost $${p.cost}`;

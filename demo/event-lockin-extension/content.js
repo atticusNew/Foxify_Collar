@@ -89,6 +89,8 @@
     rows: new Map(), // row element -> binding { row, host, ticker, size, kind, from }
     st: new Map(), // ticker -> { quote, quoteAt, quoteKey, tier, open, how, busy, done }
     pageOk: false,
+    playsRoute: null, // the route (path + hash) last judged the plays page; the judgment holds until the route changes
+    diagLine: "", // the last state line written to the console (operator setting), so it is written only when it changes
     serviceState: "loading",
     lastScan: 0,
     cardRows: new Map(), // position id -> binding (fallback card)
@@ -1037,7 +1039,11 @@
     const out = [];
     for (const row of rows) {
       const own = spaced(norm(pageText(row)));
-      if (pointsRow(own)) continue;
+      const skip = (why) => diag("row skipped: " + why, own.slice(0, 160));
+      if (pointsRow(own)) {
+        skip("a points row");
+        continue;
+      }
       // the row's own text, and the title above it when it names the row's club: Kalshi's position
       // row says "Yes · NY Knicks", the row over it which game
       const title = titleOf(row, own);
@@ -1046,11 +1052,20 @@
       if (!count.size) continue;
       // a block that names three clubs or more, or prices both Yes and No, is a board (a futures
       // list, a game card with both sides to buy), not one position
-      if (count.size > 2) continue;
-      if (/(^|[^a-z])yes(?![a-z])/i.test(own) && /(^|[^a-z])no(?![a-z])/i.test(own)) continue;
+      if (count.size > 2) {
+        skip("names " + count.size + " clubs, a board");
+        continue;
+      }
+      if (/(^|[^a-z])yes(?![a-z])/i.test(own) && /(^|[^a-z])no(?![a-z])/i.test(own)) {
+        skip("prices Yes and No, a board");
+        continue;
+      }
       // the pick is a club with no listed game: the row is not protected, and it is never read as a
       // pick on the opponent's next game (an Oct 19 Texans row beside the Nov 1 Jaguars listing)
-      if (unlistedPick(text)) continue;
+      if (unlistedPick(text)) {
+        skip("the pick is a club with no listed game");
+        continue;
+      }
       // the pick: the side the venue itself says the holder has (the service reads their account),
       // else a "Team · Winner" style line, else the side named more than once (matchup plus
       // selection), else the only side. The venue's word comes first: a card that prints both
@@ -1072,7 +1087,10 @@
         const s = sidesIn(pick[1]);
         if (s.size === 1) ticker = [...s.keys()][0];
         // the pick line names a club the service does not list: not its opponent
-        else if (clubsNamed(pick[1]).size) continue;
+        else if (clubsNamed(pick[1]).size) {
+          skip("the pick line names an unlisted club");
+          continue;
+        }
       }
       if (!ticker) {
         // a card head of code, bullet, multiplier and market ("CLE • 2.02x Winner", Novig) names the
@@ -1083,7 +1101,10 @@
           const byCode = [...count.keys()].filter((t) => codes.includes(codeOf(t)));
           if (byCode.length === 1) ticker = byCode[0];
           // the head names a club none of the row's sides resolve to: never read as the opponent
-          else if (!byCode.length && S.codes.has(head[2])) continue;
+          else if (!byCode.length && S.codes.has(head[2])) {
+            skip("the card head's code " + head[2] + " resolves to none of the row's sides");
+            continue;
+          }
         }
       }
       if (!ticker) {
@@ -1094,18 +1115,27 @@
         const alone = sorted.length === 1 && (!count.ambiguous || sorted[0][1] >= 2) && (sorted[0][1] >= 2 || !unlistedNamed(text).size);
         if (alone || (sorted.length > 1 && sorted[0][1] > sorted[1][1])) ticker = sorted[0][0];
       }
-      if (!ticker) continue;
+      if (!ticker) {
+        skip("no side decided: " + [...count.entries()].map(([t, n]) => t + "x" + n).join(" "));
+        continue;
+      }
       // the venue says the holder's position on this game is the other club: the card was misread;
       // no offer on the wrong side (the service refuses such a lock too)
       if (S.svc.configured && !svcHeld(ticker)) {
         const other = siblingOf(ticker);
-        if (other && svcHeld(other)) continue;
+        if (other && svcHeld(other)) {
+          skip("read as " + ticker + " but the service says the holder's side is " + other);
+          continue;
+        }
       }
       // the row names a club that is neither the pick nor its opponent in the listed game: it is a
       // pick on another game (the Pistons game, when the service lists the Knicks' next one only)
       const opp = opponentOf(ticker);
       const mine = new Set([shortOf(ticker), opp].filter(Boolean).map((n) => n.toLowerCase()));
-      if (opp && [...clubsNamed(text).keys()].some((k) => !mine.has(k))) continue;
+      if (opp && [...clubsNamed(text).keys()].some((k) => !mine.has(k))) {
+        skip("names a club outside the " + ticker + " game");
+        continue;
+      }
       // Kalshi: a No on the named club is a Yes on the other club of the same game
       let flipped = false;
       if (VENUE_ID === "kalshi" && sideWord(own) === "no") {
@@ -1117,10 +1147,13 @@
       // a spread or total row is never sized from the winner position the service holds on the same club;
       // an unmatched play is an order, so the service's confirmed position (if any) is a different play
       const kind = kindIn(own);
-      // the page's tab decides what its rows are when the rows themselves do not say
+      // the page's tab decides what its rows are when the rows themselves do not say; a card that
+      // wears its own badge (Novig's MATCHED, UNMATCHED) is what it says, whatever the tab reader
+      // made of the page's tabs (a misread tab must not take every line down)
       let match = matchIn(own);
-      if (S.tab === "resting" && match === "matched") match = "unmatched";
-      if (S.tab === "settled" || SOLD_RE.test(noMoney(spaced(own)))) match = "settled";
+      const badge = /(^|[^a-z])(un)?matched(?![a-z])/i.test(noMoney(spaced(own)));
+      if (S.tab === "resting" && match === "matched" && !badge) match = "unmatched";
+      if ((S.tab === "settled" && !badge) || SOLD_RE.test(noMoney(spaced(own)))) match = "settled";
       // the venue's own figure for a position it confirms: a card that reads as matched, or one whose
       // words say nothing either way (Novig's Active card carries no badge) while the venue holds it
       const held = kind === "winner" && match !== "settled" ? svcHeld(ticker) : null;
@@ -1500,6 +1533,24 @@
 
   const DISCLOSE = '<div class="ael-disclose">Protection by Atticus, a third party; not a product of this venue.</div>';
   const operator = () => S.settings.showHedge === "yes";
+  /**
+   * Diagnostics, operator setting only: why a row was dropped or skipped, and the scan's state
+   * when it changes, on the extension's console (DevTools, context "Lock in"). A venue's page is
+   * a rendering we read by heuristics; when a line vanishes, these say which judgment moved.
+   */
+  const diag = (what, detail) => {
+    if (!operator()) return;
+    try {
+      console.info("[Lock in " + EXT_VERSION + "] " + what, detail === undefined ? "" : detail);
+    } catch {}
+  };
+  const diagState = () => {
+    if (!operator()) return;
+    const line = JSON.stringify({ route: location.pathname + location.hash, plays: S.pageOk, tab: S.tab, service: S.serviceState, svc: S.svc.configured ? S.svc.positions.map((p) => p.ticker) : "off", rows: [...S.rows.values()].map((B) => B.ticker + ":" + B.match + ":" + B.from) });
+    if (line === S.diagLine) return;
+    S.diagLine = line;
+    diag("state", line);
+  };
   /**
    * The simple layout (the default): two outcomes, the cash, one pill, and everything else behind
    * Adjust (the shape, as a slider) and Details (where the other side went, the clock, how it
@@ -3110,7 +3161,15 @@
     clearTimeout(scanTimer);
     scanTimer = null;
     S.lastScan = now;
-    S.pageOk = onPortfolioPage();
+    // the plays page is judged once per route: a heading the page draws late, or redraws without
+    // its role, must not turn the page back into a board and take every line down with it
+    const route = location.pathname + location.hash;
+    const plays = onPortfolioPage();
+    if (plays) S.playsRoute = route;
+    else if (S.playsRoute && S.playsRoute !== route) S.playsRoute = null;
+    const wasOk = S.pageOk;
+    S.pageOk = plays || S.playsRoute === route;
+    if (wasOk && !S.pageOk) diag("page: no longer the plays page", route);
     if (S.serviceState === "old") {
       // too old for the service: nothing is drawn but the notice, on every page
       for (const [, B] of S.rows) B.host && B.host.remove();
@@ -3124,6 +3183,7 @@
     if (!S.pageOk) {
       for (const [, B] of S.rows) B.host && B.host.remove();
       S.rows.clear();
+      diagState();
       paintCard(false);
       paintNotice("");
       // before the trade: the pill on each protectable game's card, and in the slip
@@ -3164,6 +3224,7 @@
       if (F.match === "settled" && !lockHere(F.ticker)) {
         const old = S.rows.get(F.row);
         if (old) {
+          diag("row dropped: reads as settled (tab " + S.tab + ")", F.ticker);
           old.host && old.host.remove();
           S.rows.delete(F.row);
         }
@@ -3172,6 +3233,7 @@
       live.add(F.row);
       let B = S.rows.get(F.row);
       if (B && B.ticker !== F.ticker) {
+        diag("row rebuilt: the side changed " + B.ticker + " -> " + F.ticker);
         B.host.remove();
         B = null;
       }
@@ -3211,17 +3273,22 @@
       // a row still on the page that one pass could not read (the venue mid-redraw, a figure
       // momentarily blank) keeps its block for a few seconds rather than blinking out and back;
       // a row that left the page, or that no longer names the play, lets go at once
-      const named = row.isConnected && B.host && B.host.isConnected ? sidesIn(spaced(norm(pageText(row)))) : null;
+      const named = row.isConnected ? sidesIn(spaced(norm(pageText(row)))) : null;
       if (named && (named.has(B.ticker) || (B.flipped && named.has(siblingOf(B.ticker))))) {
+        // a redraw that pulled our block out of a row still on the page puts it back for the grace
+        if (B.host && !B.host.isConnected) remountHost(B);
         if (!B.missedAt) {
           B.missedAt = now;
+          diag("row missed one scan, line kept " + ROW_GRACE_MS / 1000 + "s", B.ticker);
           continue;
         }
         if (now - B.missedAt < ROW_GRACE_MS) continue;
       }
+      diag("row dropped: " + (!row.isConnected ? "the row left the page" + (orphans.includes(B) ? " and no new row read as " + B.ticker : "") : B.missedAt ? "the row stopped reading as a position for " + ROW_GRACE_MS / 1000 + "s" : "the row no longer names the pick"), B.ticker);
       B.host && B.host.remove();
       S.rows.delete(row);
     }
+    diagState();
     paintCard(found.length === 0 && S.svc.configured && S.svc.positions.length > 0);
     S.counts.rows = S.rows.size;
     S.counts.offers = [...S.rows.values()].filter((B) => { const st = S.st.get(B.ticker); return st && st.quote && st.quote.ok; }).length;
