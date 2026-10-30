@@ -68,11 +68,20 @@ of open plays. Once a matched play exists, under its row:
    the hedge can be sent to tonight…") follows only with the operator setting on. When two venues
    priced the other side, **Compared** shows the competition as chips, one per venue with what
    its book would have paid for the same protection, the winner filled in the venue's accent with
-   the shield, and the edge in dollars ("$0.60 more for you") (0.7.20). **Rules** is folded to one muted summary ("a tie, a postponement, a game called off, a
-   corrected result") with a **show** link; opening it lists the four tails in this venue's own
-   settlement words, each with what the venue pays and how the protection settles on it, and a
-   **hide** link folds it back. With the operator setting on, every route the service priced
-   follows with its cost all in (the books plus the tails) and what it would have paid. The
+   the shield, and the edge in dollars ("$0.60 more for you") (0.7.20). **Rules** is a toggle in
+   the label column (the same chevron toggle as Details) with the four cases beside it while
+   folded ("tie · postponement · called off · corrected result"); open, it is a grid, one case a
+   row, "If the game… ends in a tie → Novig pays each side $0.50 · the protection settles on that
+   $0.50", read from the routing's rule cells (the treatment per branch); the venue's own
+   sentence is the row's tooltip (0.7.32). **Terms** follows: the rule text the record pinned at
+   the lock and when ("pinned Fri 7:12pm ET · checked again at settlement"; "Kalshi's rules
+   pinned…" when the pin is the reference market's text and the position is on another venue),
+   linked to the venue's own page, the sha256 in the tooltip; after settlement it reads "held ·
+   read at the lock and again at settlement, same words" or "venue edited its rules". The service
+   sends it on the tap's answer and on `/api/shadow/receipt` as `rule` (venue, sourceUrl,
+   readAtIso, sha256, state, and after settlement checkedAtIso and unchanged; never the text).
+   With the operator setting on, the record id and every route the service priced follow, each
+   with its cost all in (the books plus the tails) and what it would have paid. The
    public record link
    appears only with the operator setting on. A settled lock reads "Settled" on the
    pill, "Protected outcome $25.06." on the line, and in the panel "Texans won · you end with
@@ -133,18 +142,24 @@ of open plays. Once a matched play exists, under its row:
    back for an operator demo). The open panel is three rows and one pill, nothing else in view:
    "Packers win $6.88 · of $7.69", "Packers lose $1.88 · instead of $0" (the floor, the one
    coloured figure), "Cash now +$0.42"; then a **Lock in** pill the width of its word, and at the
-   right two small links, **Adjust** and **Details**. Adjust (only when the book funds more than
-   one shape) drops a slider under the rows, "More upside" at the left end, "Higher floor" at
-   the right, the shape's name over the thumb (Max upside / Balanced / Max floor); dragging it
-   reprices the three rows and the collapsed line as it moves, and the shape under the thumb is
-   the one the tap locks. Details opens, under the pill: where the other side goes ("Other side ·
-   Kalshi"), the clock ("Priced live · until kickoff Thu 8:15pm ET"), three short paragraphs on
-   how it works in the holder's own figures ("If Packers lose you end with $4.14 instead of $0.
-   If they win, $5.30 instead of $7.69."), and the four tails folded to one line with a **rules**
-   link. A protected play's panel is the same three rows without the "of" column, the quiet
-   **Leave early** button with its helper, and a **Details** link at the right that opens the
-   receipt in place (the facts line, the other side, the cost, the order, the record, Hedged on,
-   Compared, Rules). Nothing is removed: every figure of the full layout is one tap away.
+   right one toggle, **Details** (0.7.32: the label holds still and a chevron turns; the same
+   toggle shape serves Details and Rules everywhere, in the offer, under the protected slip and
+   inside the receipt). Details opens, under the pill: first the shape as a slider (only when the
+   book funds more than one shape), "More upside" at the left end, "Higher floor" at the right,
+   the shape's name over the thumb (Max upside / Balanced / Max floor); dragging it reprices the
+   three rows, the collapsed line and the how-it-works figures as it moves, and the shape under
+   the thumb is the one the tap locks. Then where the other side goes ("Other side · Kalshi"),
+   the clock ("Priced live · until kickoff Thu 8:15pm ET"), how it works as three lines (the sale
+   that pays the cash now; "Packers lose: $4.14 instead of $0. Packers win: $5.30 instead of
+   $7.69."; settles on the same official result, the other side bought the second you tap), and
+   a **Rules** row: the toggle with the four cases beside it while folded, the grid when open
+   (one case a row, what the venue does and what the protection does). A protected play's panel
+   is the same three rows without the "of" column, the quiet **Leave early** button (its meaning
+   is the leave sheet's header, not a sentence on the row), the **Details** toggle at the right,
+   and the facts line in view under them ("Locked Fri 7:12pm ET · the other side bought in
+   1.3s"). Details opens the receipt in place, in the story's order: Hedged on, Compared, the
+   other side, the cost, the order, Rules, Terms, the cash legs (the record id is the operator's).
+   Nothing is removed: every figure of the full layout is one tap away.
    The other side is sold back through the same executor that bought it: on an armed ticker with
    sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
    written at what the venue paid, the facts line adding "the other side sold on Kalshi" and the
@@ -633,10 +648,11 @@ Operator actions (token in `x-admin-token`), for the recording day:
 1. Open the preview My Trades with the extension loaded. Every row has a line under it: Lock in
    with the floor ("Lose, and still get $x."), Unavailable with a reason, or Protected.
 2. Tap a Lock in line. The panel opens under that row; the rows below move down: three rows
-   (win, lose, cash now) and the Lock in pill. Tap **Adjust** and drag the slider towards
-   "Higher floor": the three rows and the line reprice as it moves; drag it back: they return.
-   Adjust is only offered when the book funds more than one shape; a heavy favourite often has
-   one. Tap **Details**: the hedge venue, the clock, how it works in these figures, the rules.
+   (win, lose, cash now) and the Lock in pill. Tap **Details** and drag the slider towards
+   "Higher floor": the three rows, the line and the how-it-works figures reprice as it moves;
+   drag it back: they return. The slider is only offered when the book funds more than one
+   shape; a heavy favourite often has one. Under it: the hedge venue, the clock, how it works in
+   these figures, and **Rules**, which opens to the grid of the four cases.
 3. Tap **Lock in**. The pill reports the stages in words (Pricing from the live book, Writing
    the record, Buying the other side) under a slow sheen, with whole seconds only past three; the
    line flashes solid and settles as the Protected pill with "$x or $y · on Kalshi.";
