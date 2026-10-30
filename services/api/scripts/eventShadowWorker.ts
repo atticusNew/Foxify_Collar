@@ -107,7 +107,7 @@ import {
 } from "../src/eventCollar/crossVenue/types";
 import type { NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { getMarketResult, kalshiBase } from "../src/eventCollar/kalshiPublic";
-import { checkRule, kalshiRuleText, kalshiRuleUrl, pinRule } from "../src/eventCollar/crossVenue/ruleEvidence";
+import { checkRule, kalshiRuleText, kalshiRuleUrl, pinRule, ruleStateLabel } from "../src/eventCollar/crossVenue/ruleEvidence";
 import { VENUE_NAMES, hedgeVenueOf, hedgeVenuesFromEnv, type HedgeRouting, type SettlementVenue } from "../src/eventCollar/crossVenue/hedgeRouting";
 import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
@@ -602,6 +602,24 @@ export function comparisonLineOf(r: HedgeRouting): string | null {
  * each route cost all in, and the tails in their venue's words. The rule cells' sources stay on the
  * record (the receipt links the venue's text; the holder's page says the treatment).
  */
+/**
+ * The rule the result will be judged under, as the holder's receipt shows it: which venue's text was
+ * pinned, where it is published, when it was read, its fingerprint, and (after settlement) whether the
+ * second read matched. The text itself stays on the record; the venue's page has the current words.
+ */
+function ruleViewOf(p: Pick<ShadowPosition, "rule" | "ruleCheck">) {
+  if (!p.rule) return null;
+  return {
+    venue: p.rule.venue,
+    sourceUrl: p.rule.sourceUrl,
+    readAtIso: p.rule.readAtIso,
+    sha256: p.rule.sha256,
+    // "terms kept at open" until settlement reads again; then "terms held" or "venue edited its rules"
+    state: ruleStateLabel(p.ruleCheck),
+    ...(p.ruleCheck ? { checkedAtIso: p.ruleCheck.readAtIso, unchanged: p.ruleCheck.unchanged } : {}),
+  };
+}
+
 function routingViewOf(r: HedgeRouting | undefined) {
   if (!r) return null;
   const chosen = r.routes.find((x) => x.route === r.chosen) ?? null;
@@ -1223,6 +1241,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         creditCents: chosen.creditCents,
         hedge: receipt ? hedgeViewOf(receipt) : null,
         routing: routingViewOf(result.routing),
+        // the rule pinned with the record, so the receipt the tap opens says so without a second read
+        rule: record.type === "open" ? ruleViewOf(record) : null,
       });
     } finally {
       lockInFlight.delete(flight);
@@ -1338,6 +1358,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       hedgeSale: sale ? hedgeViewOf(sale) : null,
       // where the hedge went against the holder's venue and why, with the tails in the venue's words; null on locks before routing was judged
       routing: routingViewOf(lock.routing),
+      // the rule text pinned at the lock and, once settled, whether the venue's text still matched
+      rule: ruleViewOf(lock),
       // what the lock owes and what has been paid, leg by leg; the payments' references stay in the ledger
       cash: cashDue(lock),
     });
