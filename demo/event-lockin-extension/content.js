@@ -1138,7 +1138,7 @@
     const key = B.slip ? B.ticker + "#slip" : B.kind && B.kind !== "winner" ? B.ticker + "#" + B.kind : B.ticker;
     let st = S.st.get(key);
     if (!st) {
-      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, enter: false, how: false, adjust: false, details: false, rules: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptCash: null, rcptBusy: false, rcptErr: "" };
+      st = { quote: null, quoteAt: 0, quoteKey: "", tier: null, open: false, enter: false, how: false, details: false, rules: false, busy: false, done: null, pending: false, rcpt: false, rcptHedge: null, rcptRule: null, rcptCash: null, rcptBusy: false, rcptLoaded: false, rcptErr: "" };
       S.st.set(key, st);
     }
     return st;
@@ -1457,7 +1457,6 @@
         if (st.open) st.enter = true;
         else {
           st.how = false;
-          st.adjust = false;
           st.details = false;
           st.rules = false;
           // the "Locked in" moment is shown once; the next open is the position's details
@@ -1561,12 +1560,48 @@
     );
   };
 
-  /** The four tails for the offer, folded to the cases they cover; open, each in the venue's own words. */
+  /**
+   * One toggle everywhere (Details, Rules): the label stays, the chevron turns, aria-expanded says
+   * which. The same shape in the offer, under the protected slip and inside the receipt.
+   */
+  const toggleA = (cls, label, open) => '<a href="#" class="ael-tg ' + cls + '" aria-expanded="' + (open ? "true" : "false") + '">' + label + '<span class="ael-tgc">' + CHEVRON + "</span></a>";
+
+  /** How it works, as three lines a holder can scan: the sale, the two outcomes, what is left to do. */
+  const howList = (nick, rs, was, shopped) =>
+    '<ul class="ael-howl">' +
+    "<li>You sell part of this position at today's price and keep the rest. That is the cash now.</li>" +
+    "<li>" + esc(nick) + " lose: <b>" + esc(usd(rs.floorTotal)) + "</b> instead of $0. " + esc(nick) + " win: <b>" + esc(usd(rs.capTotal)) + "</b> instead of " + esc(was) + ".</li>" +
+    "<li>Settles on the same official result as your pick; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + ".</li>" +
+    "</ul>";
+
+  /**
+   * The rules as a grid, one case a row: what the venue does with the position, and (dim) what the
+   * protection does with it, read from the routing's rule cells (treatment per branch). The venue's
+   * own sentence is the row's tooltip; a routing without cells falls back to the sentences.
+   */
+  const CASE_WORDS = { tie: "ends in a tie", postponed: "is postponed", abandoned: "is called off, no official result", corrected: "has its result corrected later" };
+  const VENUE_DOES = { half: "pays each side $0.50", void: "voids the pick and returns the stake", fair: "settles at the fair price when the news broke", hold: "keeps the market open until it is played", stands: "settles on the result as first announced", resettle: "settles again on the corrected result" };
+  const PROTECTION_DOES = { half: "the protection settles on that $0.50", void: "the protection is void too; you keep the credit", fair: "the protection settles on that price", hold: "the protection waits with it", stands: "so does the protection", resettle: "so does the protection" };
+  const hoursWords = (h) => (h % 24 === 0 && h > 48 ? h / 24 + " days" : h + " hours");
+  const rulesGrid = (rt) => {
+    const cells = rt.rules || {};
+    const venue = rt.holderVenueName || V.name;
+    const rows = rt.tails.map((t) => {
+      const c = cells[t.branch] || {};
+      const does = VENUE_DOES[c.treatment];
+      let when = CASE_WORDS[t.branch] || String(t.branch || "");
+      if (t.branch === "postponed" && does && c.treatment !== "hold" && c.windowHours) when += " past " + hoursWords(c.windowHours);
+      const right = does ? esc(venue) + " " + does + ' <span class="ael-dim">&middot; ' + PROTECTION_DOES[c.treatment] + "</span>" : esc(String(t.text || ""));
+      const tip = ' title="' + esc(String(t.text || "")) + '"';
+      return '<div class="ael-rg"><span' + tip + ">" + esc(when) + "</span><b" + tip + ">" + right + "</b></div>";
+    });
+    return '<div class="ael-rgrid"><div class="ael-rgh">If the game&hellip;</div>' + rows.join("") + "</div>";
+  };
+
+  /** The rules row: the toggle, the cases it covers while folded, the grid when open. */
   const rulesHtml = (rt, open) => {
     if (!rt || !Array.isArray(rt.tails) || !rt.tails.length) return "";
-    return open
-      ? '<div class="ael-how ael-on ael-rules">' + rt.tails.map((t) => "<p>" + esc(String(t.text || "")) + "</p>").join("") + '<p><a href="#" class="ael-rules-a">hide the rules</a></p></div>'
-      : '<div class="ael-fine">Covers ' + esc(tailSummary(rt.tails)) + ' &middot; <a href="#" class="ael-rules-a">rules</a></div>';
+    return '<div class="ael-rulesrow">' + toggleA("ael-rules-a", "Rules", open) + (open ? "" : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + "</span>") + "</div>" + (open ? rulesGrid(rt) : "");
   };
 
   /** The offer in the simple layout; a string, so a slide can refresh the figures in place and keep the panel's record of itself true. */
@@ -1578,19 +1613,19 @@
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
     fine.push(...notes(B));
     const shopped = pricedRoutes(p.routing).length > 1;
-    const links = (keys.length > 1 ? '<a href="#" class="ael-adj-a"' + (st.adjust ? ' aria-expanded="true"' : "") + ">Adjust</a> &middot; " : "") + '<a href="#" class="ael-det-a"' + (st.details ? ' aria-expanded="true"' : "") + ">" + (st.details ? "Hide details" : "Details") + "</a>";
+    // one toggle beside the pill; the shape (slider), the venues, the clock, how it works and the rules wait behind it
     const details = st.details
       ? '<div class="ael-details">' +
+        (keys.length > 1 ? sliderHtml(B, n, offered, keys, st.tier) : "") +
         venuePick(p.routing) +
         '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
-        '<div class="ael-how ael-on"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".</p></div>" +
+        howList(shortOf(B.ticker), rs, was, shopped) +
         rulesHtml(p.routing, st.rules) +
         "</div>"
       : "";
     return (
       simpleLedger(shortOf(B.ticker), rs, t.creditCents, was) +
-      (st.adjust && keys.length > 1 ? sliderHtml(B, n, offered, keys, st.tier) : "") +
-      '<div class="ael-acts ael-offer-acts"><button type="button" class="ael-go ael-pillgo" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + '</span>Lock in</button><span class="ael-links">' + links + "</span></div>" +
+      '<div class="ael-acts ael-offer-acts"><button type="button" class="ael-go ael-pillgo" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + '</span>Lock in</button><span class="ael-links">' + toggleA("ael-det-a", "Details", st.details) + "</span></div>" +
       removedLine +
       details +
       DISCLOSE
@@ -1649,7 +1684,6 @@
               paintRow(B);
             };
         };
-        toggle(".ael-adj-a", "adjust");
         toggle(".ael-det-a", "details");
         toggle(".ael-rules-a", "rules");
         const range = panel.querySelector(".ael-range");
@@ -1872,11 +1906,12 @@
     return words.length ? words.join(", ") : tails.length + " cases";
   };
   /**
-   * The receipt's routing rows: "Hedged on" (the venue; the service's reason is the operator's),
-   * the competition when two venues priced the other side, the rules for the tails folded to one
-   * line that opens on a tap (`rulesOpen`), and (operator) every route's cost.
+   * The receipt's routing rows, in the story's order: "Hedged on" (the venue; the service's reason
+   * is the operator's) and the competition when two venues priced the other side (routeHeadRows);
+   * then, after the order itself, the rules as the grid behind a toggle (`rulesOpen`), the pinned
+   * terms, and (operator) every route's cost (rulesRows).
    */
-  const routingRows = (row, rt, rulesOpen) => {
+  const routeHeadRows = (row, rt) => {
     if (!rt) return "";
     const lines = [];
     const v = hedgeVenueOf(rt);
@@ -1895,17 +1930,38 @@
       const cmp = comparisonOf(rt);
       if (cmp) lines.push(row("Compared", esc(cmp)));
     }
-    if (Array.isArray(rt.tails) && rt.tails.length) {
-      lines.push(
-        row(
-          "Rules",
-          rulesOpen
-            ? '<span class="ael-tails">' + rt.tails.map((t) => "<i>" + esc(String(t.text || "")) + "</i>").join("") + '<a href="#" class="ael-rules-a">hide</a></span>'
-            : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + '</span> <a href="#" class="ael-rules-a">show</a>',
-        ),
-      );
+    return lines.join("");
+  };
+  /**
+   * The terms row: which rule text the record pinned at the lock, when, and what the second read
+   * at settlement found. The fingerprint is the tooltip; the words link to the venue's own page.
+   * A pin of another venue's text (the reference market) names that venue.
+   */
+  const termsRow = (row, rule, holderVenue) => {
+    if (!rule) return "";
+    const whose = rule.venue && holderVenue && rule.venue !== holderVenue ? esc(venueNameOf(rule.venue)) + "'s rules " : "";
+    let words, note;
+    if (rule.unchanged === true) {
+      words = whose + "held";
+      note = "read at the lock and again at settlement, same words";
+    } else if (rule.unchanged === false) {
+      words = whose ? whose.replace(/ $/, "") + ": edited by the venue" : "venue edited its rules";
+      note = "the payout followed the official result; the words at the lock are on the record";
+    } else {
+      words = whose + "pinned" + (rule.readAtIso ? " " + esc(fmtAt(rule.readAtIso)) : "");
+      note = "checked again at settlement";
     }
-    if (operator() && Array.isArray(rt.routes)) {
+    const linked = rule.sourceUrl ? '<a href="' + esc(rule.sourceUrl) + '" target="_blank" rel="noopener" class="ael-terms-a">' + words + "</a>" : words;
+    return row("Terms", "<span" + (rule.sha256 ? ' title="fingerprint sha256 ' + esc(rule.sha256) + '"' : "") + ">" + linked + '</span> <span class="ael-dim">&middot; ' + note + "</span>");
+  };
+  const rulesRows = (row, rt, rulesOpen, rule) => {
+    const lines = [];
+    if (rt && Array.isArray(rt.tails) && rt.tails.length) {
+      lines.push(row(toggleA("ael-rules-a", "Rules", rulesOpen), rulesOpen ? "" : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + "</span>"));
+      if (rulesOpen) lines.push('<div class="ael-rcpt-wide">' + rulesGrid(rt) + "</div>");
+    }
+    lines.push(termsRow(row, rule, rt ? rt.holderVenue : null));
+    if (rt && operator() && Array.isArray(rt.routes)) {
       for (const r of rt.routes) {
         const name = esc(r.hedgeVenueName || (r.hedgeVenue === "polymarket" ? "Polymarket" : r.hedgeVenue === "prophetx" ? "ProphetX" : "Kalshi"));
         const credit = r.creditCents != null ? " &middot; pays " + esc(usd(r.creditCents)) : "";
@@ -1947,7 +2003,8 @@
         "</div>"
       );
     }
-    const lines = [];
+    const rt = st.rcptRouting || rec.routing || null;
+    const lines = [routeHeadRows(row, rt)];
     if (st.rcptBusy && !h) lines.push(row("Receipt", '<span class="ael-dim">reading&hellip;</span>'));
     else if (!h) lines.push(row("Receipt", '<span class="ael-dim">' + esc(st.rcptErr || "not available right now") + "</span>"));
     else {
@@ -1965,10 +2022,11 @@
         if (h.costCents != null) lines.push(row("Cost", esc(usd(h.costCents)) + ' <span class="ael-dim">all in</span>'));
         if (h.orderId) lines.push(row("Order", "<code>" + esc(String(h.orderId).slice(0, 8)) + "&hellip;</code> " + esc(venue) + viaWords(h) + (h.at ? ' <span class="ael-dim">&middot; ' + esc(fmtAt(h.at)) + "</span>" : "")));
       }
-      if (h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
+      // the record's own id is the operator's handle; the holder has the order
+      if (operator() && h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
     }
     if (rec.status === "closed") lines.push(saleRow(row, st.rcptSale || null, rec));
-    lines.push(routingRows(row, st.rcptRouting || rec.routing || null, Boolean(st.rcptRules)));
+    lines.push(rulesRows(row, rt, Boolean(st.rcptRules), st.rcptRule || rec.rule || null));
     // the money between the two parties, leg by leg, as the record has it: the credit from the
     // tap, and at settlement the floor to the holder or the slice above the cap back to the writer
     const legs = Array.isArray(st.rcptCash) && st.rcptCash.length ? st.rcptCash : Array.isArray(rec.cashDue) ? rec.cashDue : [];
@@ -1979,16 +2037,19 @@
   /** Read the hedge view for a lock from the service once, then paint; the tap's own answer is used when present. */
   const loadReceipt = async (B) => {
     const st = stateOf(B);
-    if (st.rcptBusy || st.rcptHedge) return;
+    if (st.rcptBusy || st.rcptLoaded) return;
     st.rcptBusy = true;
     const r = await api("/api/shadow/receipt?ticker=" + encodeURIComponent(B.ticker), "GET");
     st.rcptBusy = false;
     if (r.ok && r.json && r.json.ok) {
-      st.rcptHedge = r.json.hedge || null;
+      st.rcptLoaded = true;
+      // the tap's own hedge view stands when the trail has none yet
+      st.rcptHedge = r.json.hedge || st.rcptHedge || null;
       st.rcptRouting = r.json.routing || null;
+      st.rcptRule = r.json.rule || null;
       st.rcptSale = r.json.hedgeSale || null;
       st.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : null;
-      st.rcptErr = r.json.hedge ? "" : "no hedge on the trail for this lock";
+      st.rcptErr = st.rcptHedge ? "" : "no hedge on the trail for this lock";
     } else st.rcptErr = (r.json && (r.json.message || r.json.error)) || r.error || "could not read the receipt";
     paintRow(B);
   };
@@ -1999,11 +2060,13 @@
     // the hedge behind the receipt: the tap's own answer, kept once seen (the record refresh a
     // moment later carries none), else read from the service the first time the receipt opens
     if (!st.rcptHedge && rec.hedge && rec.hedge.receiptId) st.rcptHedge = rec.hedge;
-    if (st.rcpt && !rec.rehearsal && !st.rcptHedge && !st.rcptBusy && !st.rcptErr) void loadReceipt(B);
+    // one read of the receipt when the tap's answer is not enough: no hedge view, or no pinned rule for the Terms row
+    if (st.rcpt && !rec.rehearsal && !st.rcptLoaded && !st.rcptBusy && !st.rcptErr && (!st.rcptHedge || !(st.rcptRule || rec.rule))) void loadReceipt(B);
     // left early: the sale of the other side is on the receipt; read it once
     if (st.rcpt && rec.status === "closed" && !rec.rehearsal && !st.rcptSale && !st.rcptBusy && !st.rcptSaleAsked) {
       st.rcptSaleAsked = true;
       st.rcptHedge = null;
+      st.rcptLoaded = false;
       void loadReceipt(B);
     }
     const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
@@ -2056,23 +2119,26 @@
       // leaving is the one thing left to do: a quiet button under the slip, in the venue's raised
       // grey rather than our colour, with what it means beside it; the leave block takes its place.
       // A rehearsal has it too, priced from the live mark (rehearsedLeave), so the whole flow can be walked.
-      // simple layout: the Details link shares the row with the pill; the facts and the receipt wait behind it
-      const detailsA = simple() ? '<span class="ael-links"><a href="#" class="ael-rcpt-a"' + (st.rcpt ? ' aria-expanded="true"' : "") + ">" + (st.rcpt ? "Hide details" : "Details") + "</a></span>" : "";
-      const leaveAct = !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button><span>remove the protection, keep your pick</span>' + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
+      // simple layout: the Details toggle shares the row with the pill, and the pill's meaning waits
+      // for the leave sheet (its header says it); the receipt waits behind Details
+      const detailsA = simple() ? '<span class="ael-links">' + toggleA("ael-rcpt-a", "Details", st.rcpt) + "</span>" : "";
+      const leaveAct = !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button>' + (simple() ? "" : "<span>remove the protection, keep your pick</span>") + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
       body = (simple() ? simpleLedger(nick, rs, rec.creditCents, null) : ledger(nick, rs, rec.creditCents, null)) + (st.leave ? leaveHtml(B, rec, rs) + leaveAct : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
       if (rec.rehearsal) meta.push("rehearsal");
     }
-    // the receipt's detail is one tap away, never in the way: a link at the end of the facts line.
-    // In the simple layout the facts themselves wait behind Details, under the Leave early pill.
-    const foldFacts = simple() && rec.status === "open";
-    if (rec.status !== "void" && !foldFacts) meta.push('<a href="#" class="ael-rcpt-a">' + (st.rcpt ? (simple() ? "hide details" : "hide receipt") : simple() ? "details" : "receipt") + "</a>");
+    // the receipt's detail is one tap away, never in the way. Simple layout: the facts line stays in
+    // view (the lock's moment is the tap's proof) and the Details toggle sits under the slip, in the
+    // pill's row when there is one. Full layout: a "receipt" link at the end of the facts line.
+    const detailsRow = simple() && rec.status !== "void" && rec.status !== "open" ? '<div class="ael-acts ael-offer-acts"><span class="ael-links">' + toggleA("ael-rcpt-a", "Details", st.rcpt) + "</span></div>" : "";
+    if (rec.status !== "void" && !simple()) meta.push('<a href="#" class="ael-rcpt-a">' + (st.rcpt ? "hide receipt" : "receipt") + "</a>");
     const recordUrl = (S.baseUrl || "").replace(/\/+$/, "") + "/";
     const metaLine = meta.length ? '<div class="ael-meta">' + meta.join(" &middot; ") + "</div>" : "";
     const html =
       body +
-      (foldFacts ? (st.rcpt ? metaLine : "") : metaLine) +
+      metaLine +
+      detailsRow +
       (st.rcpt && rec.status !== "void" ? receiptHtml(st, rec) : "") +
       opLine +
       (rec.rehearsal ? '<div class="ael-op">Rehearsal: nothing was locked, written or bought. <a href="#" class="ael-reset-a">Reset</a></div>' : "") +
@@ -2089,6 +2155,8 @@
           st.quoteAt = 0;
           st.rcpt = false;
           st.rcptHedge = null;
+          st.rcptRule = null;
+          st.rcptLoaded = false;
           st.leave = null;
           st.flashed = false;
           paintRow(B);
