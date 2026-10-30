@@ -218,6 +218,7 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-lr b { font-size: 15px; font-weight: 600; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ael-lr s { width: 92px; font-size: 12px; color: var(--ael-muted); text-align: right; text-decoration: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ael-hero b { color: var(--ael-accent-text); }
+.ael-hero b.ael-pay { color: var(--ael-fg-strong); }
 
 /* The venue pick: a strip above the button naming each venue that priced the other side with what
    it would have paid, the one the hedge goes to filled in the venue's accent. Chips wrap on narrow
@@ -348,6 +349,10 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-leave-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 2px; }
 .ael-leave-h b { font-size: 14px; font-weight: 600; color: var(--ael-fg-strong); }
 .ael-leave-h span { font-size: 12px; color: var(--ael-muted); }
+.ael-leave-why { margin: 6px 0 2px; }
+.ael-leave-why .ael-tg { font-size: 12px; }
+.ael-leave-why .ael-fine { margin-top: 4px; }
+.ael-line-hedge .ael-tag { border-style: dashed; }
 .ael-lr .ael-l .ael-dim { color: var(--ael-muted); font-size: 12px; }
 .ael-lr b .ael-dim { font-weight: 400; font-size: 12px; color: var(--ael-muted); }
 .ael-leave-acts { display: flex; align-items: center; gap: 8px; margin: 8px 0 8px; }

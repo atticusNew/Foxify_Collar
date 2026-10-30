@@ -17,6 +17,7 @@ import type { EarlyCloseBooks } from "../src/eventCollar/crossVenue/earlyClose";
 import { actionOf, type HedgeIntent } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { DEFAULT_TAIL_PROBABILITIES, chooseRoute, tableRules, type HedgeRouting } from "../src/eventCollar/crossVenue/hedgeRouting";
 import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
+import { venueRulesText } from "../src/eventCollar/crossVenue/ruleEvidence";
 import { LiveHedgeExecutor, type LiveOrderHook } from "../src/eventCollar/crossVenue/liveHedge";
 import { loadShadowPositions, type ShadowCloseRecord, type ShadowOpenRecord } from "../src/eventCollar/crossVenue/shadowLedger";
 import { DEFAULT_CROSS_CONFIG, type CrossQuoteResult } from "../src/eventCollar/crossVenue/types";
@@ -188,6 +189,13 @@ test("shadow worker: on an armed ticker the hedge is bought live at the lock and
     assert.equal(openLine.routing?.chosen, "kalshi_self");
     assert.equal(openLine.routing?.holderVenue, "prophetx");
     assert.equal(openLine.hedgeUnitsMilli, lock.hedge.unitsMilli);
+    // the Terms a ProphetX holder reads are ProphetX's published rules, never Kalshi's market text (that is the reference pin, kept apart)
+    const pxRules = tableRules("prophetx", openLine.league);
+    assert.deepEqual([openLine.rule?.venue, openLine.rule?.basis, openLine.rule?.text], ["prophetx", "rules", venueRulesText(pxRules)]);
+    assert.ok("referenceRule" in openLine && (openLine.referenceRule === null || openLine.referenceRule?.venue === "kalshi"), "the Kalshi market text is the reference pin, recorded even when the fixture's market publishes none");
+    const rcptPin = (await (await fetch(`${base}/api/shadow/receipt?ticker=${TICKER}`, { headers: key })).json()) as { rule: { venue: string; venueName: string; basis: string; sourceUrl: string } };
+    assert.deepEqual([rcptPin.rule.venue, rcptPin.rule.venueName, rcptPin.rule.basis], ["prophetx", "ProphetX", "rules"]);
+    assert.equal(rcptPin.rule.sourceUrl, pxRules.postponed.source.split(" ; ")[0]);
 
     // the leave: quoted into the books, the sale sent through the hook (all but two contracts fill),
     // the close written at what the venue paid plus the remainder at the walked worst bid
