@@ -479,7 +479,7 @@ The lock routes are off until a key is set.
 | `EVENT_PROPHETX_FEE_BPS` | leave unset (`200`) | ProphetX's 2% of net gains at settlement, folded into its book before every walk and provided for on every fill. |
 | `NOVIG_TRADE_KEY_ID`, `NOVIG_TRADE_PRIVATE_KEY_PEM` | from `venueReadKey.ts subaccount-open` | Service only. The trading key of the service's own Novig subaccount; its cash funds the Novig hedges, fill or kill, direct (no pod). Unset with `novig` offered: the route prices on paper and the receipt says so. The host is `VENUE_API_HOST` (production `https://api.novig.com`; the Paper environment `https://api.paper.novig.com` runs the whole route on play money with no location check). |
 | `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. With `via=aggregator` they serve the account routes and send nothing. |
-| `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap | Allowlist, keyed by the game's Kalshi ticker whichever venue the hedge lands on. Empty allows nothing. Listed tickers are skipped by the hourly scan. With one live venue the route is pinned to it; with more (Kalshi and ProphetX through the pod, Novig on our own key) nothing is pinned and the routing competes them on price. |
+| `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap; `*` while rehearsing on many games | Allowlist, keyed by the game's Kalshi ticker whichever venue the hedge lands on. Empty allows nothing. `*` arms every market the service lists, so any tap by any holder key sends a real order, still under the caps below. The hourly scan's board positions are paper whatever is armed (their receipts say `scan: the board's positions are paper`); only a holder's tap, leave or an operator resend can send. Listed tickers are skipped by the hourly scan. With one live venue the route is pinned to it; with more (Kalshi and ProphetX through the pod, Novig on our own key) nothing is pinned and the routing competes them on price. |
 | `EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER` | `25` | Per-order cap. |
 | `EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY` | `20` for the first live test, then `100` | Per-day cap, counted from the receipt file, so a restart cannot reset it. |
 | `EVENT_SHADOW_LOCK_LEDGER_PATH` | leave unset | Locks live in `lock-ledger.jsonl` beside the scan's ledger on the same disk. |
@@ -567,6 +567,11 @@ npx tsx scripts/venueReadKey.ts fund --key <trading key id> --dollars 50 --id fu
    # POST .../transfer {direction fund, amount "50.00000"}; polls until Applied, prints the balance
 npx tsx scripts/venueReadKey.ts fund --key <id> --dollars 50 --id defund-... --defund
 npx tsx scripts/venueReadKey.ts transfer --key <id> --transfer <transfer id>
+VENUE_API_HOST=https://api.novig.com NOVIG_TRADE_KEY_ID=<id> NOVIG_TRADE_PRIVATE_KEY_PEM_PATH=./novig-trade.pem \
+  npx tsx scripts/venueReadKey.ts trade-check
+   # the pair as the service will use it: signs the subaccount balance read with the trading key
+   # (the pre-flight's read). Passes with the balance, or says why not: a management or read-only
+   # key id ("does not reach a subaccount"), a PEM from another key, a PEM that does not parse
 ```
 
 The service takes `NOVIG_TRADE_KEY_ID` (the printed id) and `NOVIG_TRADE_PRIVATE_KEY_PEM` (the
@@ -618,7 +623,7 @@ Operator actions (token in `x-admin-token`), for the recording day:
 | Call | What it does |
 | --- | --- |
 | `GET /api/shadow/hedges/preflight?ticker=KX...&contracts=N` | Balance, rails, and whether the tap would be offered and sent. Reads only. |
-| `POST /api/shadow/hedges/resend?ticker=KX...` | Hedges an open lock again when its hedge never reached the venue (simulated fill on the trail). Refuses once a live fill exists unless `&force=1`. |
+| `POST /api/shadow/hedges/resend?ticker=KX...` | Hedges an open lock again when its hedge never reached the venue (simulated fill on the trail). Routed as a tap is now: the one live venue, or the live venues competed on price. `&route=kalshi|prophetx|novig` names the venue instead (a venue with no live client on this ticker is refused). Refuses once a live fill exists unless `&force=1`. |
 | `POST /api/shadow/lock/reset?ticker=KX...` | Takes one lock off the record (its lines move to an archive beside the ledger) so the market can be locked again; the row goes back to the offer on the next poll. Names any live fill the venue still holds for the old lock, which is yours to sell or keep. |
 | `GET /api/shadow/hedges` | The hedge trail: every receipt, order ids, fills, reasons. Each live fill says `via`: `direct` (our own venue key) or `aggregator` (the execution pod). |
 | `GET /holders?token=...` | One page per holder key: their locks, what is owed each way, and the `POST /api/shadow/cash` line to record a payment. The JSON is `GET /api/shadow/holders`. |

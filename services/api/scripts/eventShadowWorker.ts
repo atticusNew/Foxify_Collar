@@ -108,11 +108,12 @@ import {
 import type { NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { getMarketResult, kalshiBase } from "../src/eventCollar/kalshiPublic";
 import { checkRule, kalshiRuleText, kalshiRuleUrl, pinRule } from "../src/eventCollar/crossVenue/ruleEvidence";
-import { VENUE_NAMES, hedgeVenuesFromEnv, type HedgeRouting, type SettlementVenue } from "../src/eventCollar/crossVenue/hedgeRouting";
+import { VENUE_NAMES, hedgeVenueOf, hedgeVenuesFromEnv, type HedgeRouting, type SettlementVenue } from "../src/eventCollar/crossVenue/hedgeRouting";
 import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { adminAuthorized, parseAdminAuthFromEnv } from "../src/eventCollar/crossVenue/eventFunnel";
 import {
+  BookHedgeExecutor,
   appendHedgeReceipt,
   intentFromHedge,
   sellIntentForNovig,
@@ -668,12 +669,18 @@ function appendOrAlert(record: Parameters<typeof appendShadowRecord>[1], path: s
   }
 }
 
+/** The scan's hedges are recorded at the walked book and never sent, whatever the live rails arm. */
+const PAPER_EXECUTOR = new BookHedgeExecutor();
+const SCAN_PAPER_REASON = "scan: the board's positions are paper; no order placed";
+
 /**
  * Fill the hedge leg through the configured executor and keep the receipt.
  * The position is already on the ledger; a hedge failure is recorded, never
- * allowed to lose the record or stop the scan.
+ * allowed to lose the record or stop the scan. `paper` (the scan) fills at the
+ * walked book and sends nothing: the live rails exist for a holder's tap, and
+ * `EVENT_HEDGE_LIVE_TICKERS=*` must not turn every board row into an order.
  */
-async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; references?: ReferenceBook[] }): Promise<HedgeReceipt | null> {
+async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; references?: ReferenceBook[] }, opts: { paper?: boolean } = {}): Promise<HedgeReceipt | null> {
   const ticker = ref.split("@")[0];
   try {
     const best =
@@ -688,7 +695,9 @@ async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBoo
             : books.pmNoBook?.asks[0]?.priceMilli ?? hedge.avgPriceMilli;
     // a leg on another venue is armed by the game's Kalshi ticker (the live allowlist's key)
     const armKey = hedge.venue === "kalshi" ? undefined : ticker;
-    const receipt = await hedgeChoice.executor.execute(intentFromHedge(hedge, best, armKey), ref);
+    const intent = intentFromHedge(hedge, best, armKey);
+    const paper = Boolean(opts.paper) && hedgeChoice.strategy !== "book";
+    const receipt = paper ? { ...(await PAPER_EXECUTOR.execute(intent, ref)), fallbackReason: SCAN_PAPER_REASON } : await hedgeChoice.executor.execute(intent, ref);
     appendHedgeReceipt(RECEIPTS_PATH, receipt);
     return receipt;
   } catch (err) {
@@ -1777,9 +1786,12 @@ function handleLockReset(req: IncomingMessage, res: ServerResponse, url: URL): v
 /**
  * POST /api/shadow/hedges/resend?ticker=&holder= (operator): a lock whose hedge never reached the venue
  * (the trail shows a simulated fill, e.g. the venue refused the order) is hedged again. The same
- * position is priced on Kalshi's own No side now and sent through the executor and its rails; one
- * more receipt lands on the trail under the same ref. The lock's terms do not move: the record is
- * as quoted at the tap. Refused while a live fill is already on the trail for it unless ?force=1.
+ * position is priced now as a tap would be (pinned to the one live venue, or the live venues
+ * competed behind the executable gate) and sent through the executor and its rails; one more
+ * receipt lands on the trail under the same ref. `?route=kalshi|prophetx|novig` names the venue
+ * instead, for a venue that keeps refusing; a venue the executor cannot send to on this ticker is
+ * refused. The lock's terms do not move: the record is as quoted at the tap. Refused while a live
+ * fill is already on the trail for it unless ?force=1.
  */
 async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   if (req.method !== "POST") {
@@ -1814,6 +1826,21 @@ async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url:
     sendJson(res, 409, { ok: false, error: "already_live", message: `the venue already holds a fill for ${ticker}; ?force=1 to send another`, liveFills });
     return;
   }
+  const routeWord = (url.searchParams.get("route") ?? "").trim();
+  const executable = executableFor(ticker);
+  let route: HedgeRoute | undefined = lockRouteFor(ticker);
+  if (routeWord) {
+    const named = hedgeVenuesFromEnv({ EVENT_HEDGE_VENUES: routeWord }).routes[0];
+    if (!named) {
+      sendJson(res, 400, { ok: false, error: "bad_request", message: `?route= is one of kalshi, prophetx, novig, polymarket; "${routeWord}" is none of them` });
+      return;
+    }
+    if (!executable[named]) {
+      sendJson(res, 409, { ok: false, error: "route_not_executable", message: `${VENUE_NAMES[hedgeVenueOf(named)]} cannot be sent to on ${ticker}: no live client for it`, executable });
+      return;
+    }
+    route = named;
+  }
   const flight = inFlightKey(holder, ticker);
   if (lockInFlight.has(flight)) {
     sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being locked right now." });
@@ -1822,7 +1849,7 @@ async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url:
   lockInFlight.add(flight);
   try {
     const atIso = new Date().toISOString();
-    const q = await quoteOneFn({ ticker, contracts: lock.contracts, entryCents: lock.entryCents, route: "kalshi_self", holderVenue: lock.holderVenue ?? "kalshi", executable: executableFor(ticker) });
+    const q = await quoteOneFn({ ticker, contracts: lock.contracts, entryCents: lock.entryCents, route, holderVenue: lock.holderVenue ?? "kalshi", executable });
     if (!q.ok) {
       sendJson(res, 200, { ok: false, at: atIso, ticker, code: q.code, message: q.detail });
       return;
@@ -1840,6 +1867,8 @@ async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url:
       ticker,
       ...(holder ? { holder } : {}),
       allowlisted: tickerIsArmed(ticker),
+      // the route this send was held to: the operator's ?route=, else the one live venue; null when the live venues competed
+      pinned: route ?? null,
       lock: {
         at: lock.at,
         contracts: lock.contracts,
@@ -1906,7 +1935,7 @@ async function scanTick(): Promise<void> {
       appendOrAlert(openRecordFor(res, q, evBps, state.atIso));
       seen.add(res.market.ticker);
       opened.push({ kind: res.kind, at: new Date().toISOString() });
-      await fillHedge(res.market.ticker, q.hedge, res.books);
+      await fillHedge(res.market.ticker, q.hedge, res.books, { paper: true });
     }
     cryptoSkippedLastScan = cryptoSkipped;
     lastScanAt = new Date().toISOString();
@@ -2968,11 +2997,14 @@ export function wireLockEngine(fns: {
   closeBooks?: typeof closeBooksFn;
   /** the executor the hedge (and its sale) goes through, in place of the one the env chose; the rails view stays the env's */
   hedgeExecutor?: HedgeExecutor;
+  /** the board scan a scanTick runs, in place of the scanner module's */
+  scan?: NonNullable<typeof scan>;
 }): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
   if (fns.closeBooks) closeBooksFn = fns.closeBooks;
   if (fns.hedgeExecutor) hedgeChoice.executor = fns.hedgeExecutor;
+  if (fns.scan) scan = fns.scan;
   if (fns.venueClient !== undefined) {
     venueClient = fns.venueClient;
     positionsCache = null;
