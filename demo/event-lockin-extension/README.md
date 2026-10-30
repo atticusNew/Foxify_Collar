@@ -567,6 +567,11 @@ npx tsx scripts/venueReadKey.ts fund --key <trading key id> --dollars 50 --id fu
    # POST .../transfer {direction fund, amount "50.00000"}; polls until Applied, prints the balance
 npx tsx scripts/venueReadKey.ts fund --key <id> --dollars 50 --id defund-... --defund
 npx tsx scripts/venueReadKey.ts transfer --key <id> --transfer <transfer id>
+VENUE_API_HOST=https://api.novig.com NOVIG_TRADE_KEY_ID=<id> NOVIG_TRADE_PRIVATE_KEY_PEM_PATH=./novig-trade.pem \
+  npx tsx scripts/venueReadKey.ts trade-check
+   # the pair as the service will use it: signs the subaccount balance read with the trading key
+   # (the pre-flight's read). Passes with the balance, or says why not: a management or read-only
+   # key id ("does not reach a subaccount"), a PEM from another key, a PEM that does not parse
 ```
 
 The service takes `NOVIG_TRADE_KEY_ID` (the printed id) and `NOVIG_TRADE_PRIVATE_KEY_PEM` (the
