@@ -509,6 +509,8 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-rcpt .ael-tg:hover, .ael-rcpt .ael-tg[aria-expanded="true"] { color: var(--ael-soft); }
 .ael-rcpt .ael-rcpt-wide { grid-column: 1 / -1; }
 .ael-rcpt .ael-rgrid { margin: 0 0 2px; }
+.ael-rcpt .ael-rg > span { color: var(--ael-muted); }
+.ael-rcpt .ael-rg > b { font-weight: 500; color: var(--ael-soft); }
 .ael-rcpt a.ael-terms-a { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
 .ael-rcpt a.ael-terms-a:hover { color: var(--ael-fg-strong); }
 /* motion is a courtesy, never a requirement */

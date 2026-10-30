@@ -1570,7 +1570,7 @@
   const howList = (nick, rs, was, shopped) =>
     '<ul class="ael-howl">' +
     "<li>You sell part of this position at today's price and keep the rest. That is the cash now.</li>" +
-    "<li>" + esc(nick) + " lose: <b>" + esc(usd(rs.floorTotal)) + "</b> instead of $0. " + esc(nick) + " win: <b>" + esc(usd(rs.capTotal)) + "</b> instead of " + esc(was) + ".</li>" +
+    "<li>" + esc(nick) + ' lose: <b class="ael-hl-floor">' + esc(usd(rs.floorTotal)) + "</b> instead of $0. " + esc(nick) + ' win: <b class="ael-hl-cap">' + esc(usd(rs.capTotal)) + "</b> instead of " + esc(was) + ".</li>" +
     "<li>Settles on the same official result as your pick; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + ".</li>" +
     "</ul>";
 
@@ -1701,6 +1701,11 @@
             }
             const word = panel.querySelector(".ael-adj-h b");
             if (word) word.textContent = TIER_WORDS[st.tier];
+            // the how-it-works line quotes the same two figures
+            const hlFloor = panel.querySelector(".ael-hl-floor");
+            if (hlFloor) hlFloor.textContent = usd(tr.floorTotal);
+            const hlCap = panel.querySelector(".ael-hl-cap");
+            if (hlCap) hlCap.textContent = usd(tr.capTotal);
             range.setAttribute("aria-valuetext", tierValueText(st.tier, tr, tt));
             const factB = B.box.querySelector(".ael-line .ael-fact b");
             if (factB) factB.textContent = usd(tr.floorTotal);
@@ -1900,10 +1905,10 @@
   };
   const bps = (x) => (x == null ? "" : (x >= 0 ? "+" : "") + Math.round(x) + " bps");
   /** The four tails in a few words, for the folded rules line: what the venue's rules cover. */
-  const TAIL_WORDS = { tie: "a tie", postponed: "a postponement", abandoned: "a game called off", corrected: "a corrected result" };
+  const TAIL_WORDS = { tie: "tie", postponed: "postponement", abandoned: "called off", corrected: "corrected result" };
   const tailSummary = (tails) => {
     const words = tails.map((t) => TAIL_WORDS[t.branch]).filter(Boolean);
-    return words.length ? words.join(", ") : tails.length + " cases";
+    return words.length ? words.join(" \u00b7 ") : tails.length + " cases";
   };
   /**
    * The receipt's routing rows, in the story's order: "Hedged on" (the venue; the service's reason
