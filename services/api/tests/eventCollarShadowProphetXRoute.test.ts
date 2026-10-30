@@ -22,6 +22,7 @@ import { DEFAULT_TAIL_PROBABILITIES, chooseRoute, tableRules, type HedgeRouting 
 import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { LiveHedgeExecutor, type LiveOrderHook } from "../src/eventCollar/crossVenue/liveHedge";
 import { foldProphetXFee } from "../src/eventCollar/crossVenue/prophetxOrders";
+import { pinVenueRules, venueRulesText } from "../src/eventCollar/crossVenue/ruleEvidence";
 import { loadShadowPositions, type ShadowCloseRecord, type ShadowOpenRecord } from "../src/eventCollar/crossVenue/shadowLedger";
 import { DEFAULT_CROSS_CONFIG, type CrossQuoteResult, type KalshiMarket, type MatchedPair, type PmBook } from "../src/eventCollar/crossVenue/types";
 import type { CandidateResult, GameMarketRow, OneQuoteInputs, OneQuoteResult } from "../scripts/eventProtectXDemoService";
@@ -240,10 +241,23 @@ test("shadow worker, ProphetX route: two live venues compete (no pin), the lock 
       hedge: { venue: string; orderId: string; simulated: boolean };
       hedgeSale: { venue: string; orderId: string; settlesAtGame?: boolean };
       routing: { hedgeVenue: string; comparison: string };
+      rule: { venue: string; venueName: string; basis: string; sourceUrl: string; readAtIso: string; sha256: string; state: string };
     };
     assert.deepEqual([rcpt.hedge.venue, rcpt.hedge.orderId, rcpt.hedge.simulated], ["ProphetX", "px-buy-1", false]);
     assert.deepEqual([rcpt.hedgeSale.venue, rcpt.hedgeSale.orderId, rcpt.hedgeSale.settlesAtGame], ["ProphetX", "px-offset-1", true]);
     assert.equal(rcpt.routing.comparison, q.routing.comparison);
+    // the Terms the holder reads are their own venue's: Novig's published league rules, the sentences the routing priced
+    // the tails from, with Novig's page and the day they were read; the Kalshi market text (empty in this fixture) is the
+    // reference pin, kept apart on the record
+    const novigRules = tableRules("novig", "nba");
+    assert.deepEqual([rcpt.rule.venue, rcpt.rule.venueName, rcpt.rule.basis, rcpt.rule.state], ["novig", "Novig", "rules", "terms kept at open"]);
+    assert.equal(rcpt.rule.sourceUrl, novigRules.postponed.source.split(" ; ")[0]);
+    assert.equal(rcpt.rule.readAtIso, novigRules.postponed.asOf);
+    assert.equal(rcpt.rule.sha256, pinVenueRules({ venue: "novig", marketId: TICKER, cells: novigRules })!.sha256);
+    const opened = readFileSync(ledger, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as ShadowOpenRecord).find((r) => r.type === "open")!;
+    assert.equal(opened.rule?.basis, "rules");
+    assert.equal(opened.rule?.text, venueRulesText(novigRules));
+    assert.equal(opened.referenceRule, null, "the Kalshi market published no text in this fixture: the reference pin is recorded as missing, not omitted");
   } finally {
     await new Promise<void>((r) => worker.server.close(() => r()));
   }
