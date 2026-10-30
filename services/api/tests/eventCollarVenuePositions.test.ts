@@ -17,6 +17,7 @@ import {
   canonicalQuery,
   canonicalString,
   clubMatches,
+  excludedWalletsFromEnv,
   holderPositions,
   matchPosition,
   positionSize,
@@ -24,6 +25,7 @@ import {
   signerFromPem,
   templateForLeague,
   venueConfigFromEnv,
+  walletExcluded,
   type RawVenueEvent,
   type RawVenueMarket,
   type RawVenuePosition,
@@ -175,7 +177,7 @@ test("matcher: the venue's winner outcome maps to our market for that club on th
 });
 
 /** A venue that answers the three routes from memory and records what it was asked. */
-function fakeVenue(positions: RawVenuePosition[] | Record<string, RawVenuePosition[]>, markets: RawVenueMarket[], events: RawVenueEvent[]) {
+function fakeVenue(positions: RawVenuePosition[] | Record<string, RawVenuePosition[]>, markets: RawVenueMarket[], events: RawVenueEvent[], excludeWallets?: string[]) {
   const calls: string[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -196,9 +198,40 @@ function fakeVenue(positions: RawVenuePosition[] | Record<string, RawVenuePositi
     return new Response("{}", { status: 404 });
   }) as typeof fetch;
   const { privateKey } = generateKeyPairSync("ed25519");
-  const client = new VenueClient({ host: "https://venue.test", signer: signerFromPem("key-1", privateKey.export({ type: "pkcs8", format: "pem" }).toString()), fetchImpl });
+  const client = new VenueClient({ host: "https://venue.test", signer: signerFromPem("key-1", privateKey.export({ type: "pkcs8", format: "pem" }).toString()), fetchImpl, ...(excludeWallets ? { excludeWallets } : {}) });
   return { client, calls };
 }
+
+test("holder positions: the service's hedge subaccount sits in the holder's account and is left out of the holder read; the wallets kept and dropped are reported", async () => {
+  const HEDGE_KEY = "0f7b0eea-e67f-4b48-a2e4-e12c54f8decc";
+  const jax = market({ marketId: "m-1" });
+  // the holder's Texans in the cash wallet; the service's hedge, Jaguars on the same market, in its subaccount
+  const byWallet = {
+    "wallet-cash": [{ marketId: "m-1", outcomeId: "o-hou", qty: 2000, cost: "11.40000" }],
+    [`subaccount:${HEDGE_KEY}`]: [{ marketId: "m-1", outcomeId: "o-jax", qty: 300, cost: "1.50000" }],
+  };
+  // without the exclusion both sides come back as the holder's
+  const both = await fakeVenue(byWallet, [jax], [event]).client.listPositions();
+  assert.equal(both.length, 2);
+  // with it, the hedge wallet is dropped by its key id, whatever label the venue wraps it in
+  const { client } = fakeVenue(byWallet, [jax], [event], [HEDGE_KEY]);
+  const mine = await client.listPositions();
+  assert.deepEqual(mine.map((p) => p.outcomeId), ["o-hou"]);
+  assert.deepEqual(client.walletsRead, { read: ["wallet-cash"], excluded: [`subaccount:${HEDGE_KEY}`] });
+  const rows = await holderPositions(client, protectable);
+  assert.deepEqual(rows.map((r) => r.ticker), ["KXNFLGAME-26OCT18HOUJAC-HOU"], "the holder's side only; the hedge never reads as a position of theirs");
+  // a bare-array answer (a single-wallet key) has no wallets to filter
+  const flat = fakeVenue([{ marketId: "m-1", outcomeId: "o-hou", qty: 2000, cost: "11.40000" }], [jax], [event], [HEDGE_KEY]);
+  assert.equal((await flat.client.listPositions()).length, 1);
+  assert.deepEqual(flat.client.walletsRead, { read: [], excluded: [] });
+  // the match: equal or containing, case-insensitive; nothing matches an empty entry
+  assert.equal(walletExcluded(HEDGE_KEY.toUpperCase(), [HEDGE_KEY]), true);
+  assert.equal(walletExcluded("wallet-cash", [HEDGE_KEY]), false);
+  assert.equal(walletExcluded("wallet-cash", [""]), false);
+  // the env: the hedge trading key id, plus any label the operator names
+  assert.deepEqual(excludedWalletsFromEnv({} as NodeJS.ProcessEnv), []);
+  assert.deepEqual(excludedWalletsFromEnv({ NOVIG_TRADE_KEY_ID: ` ${HEDGE_KEY} `, VENUE_API_EXCLUDE_WALLETS: "hedge, ,promo" } as NodeJS.ProcessEnv), [HEDGE_KEY, "hedge", "promo"]);
+});
 
 test("holder positions: a management-scope answer (object by wallet) is flattened, sized, matched, cached; a missing market keeps the row with a reason", async () => {
   const spread = market({ marketId: "m-2", marketType: "SPREAD", outcomes: [{ outcomeId: "o-hou-sp", name: "HOU Texans -2.5", status: "TBD" }] });

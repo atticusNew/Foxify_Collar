@@ -161,7 +161,7 @@ import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, 
 import type { CandidateResult, ScanOptions, ScanState, listGameMarkets, pricingSourceStatus, quoteOne, referenceCatalog } from "./eventProtectXDemoService";
 import { HOLDER_ALIAS_RE, holderKeysFromEnv, lockCaller, lockKeyFromEnv, parseLockRequest, readJsonBody } from "../src/eventCollar/crossVenue/lockGate";
 import { ExtTelemetryStore, parseExtTelemetry } from "../src/eventCollar/crossVenue/extTelemetry";
-import { VenueClient, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
+import { VenueClient, excludedWalletsFromEnv, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
 import { novigRouteOf, referenceSourcesFromEnv, signedHedgeBook, signedHostFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
 import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venuePrints";
@@ -498,7 +498,8 @@ let venueClientNote: string | null = null;
   const bearer = playsConfigFromEnv(process.env);
   if (signed) {
     try {
-      const c = new VenueClient({ host: signed.host, signer: signerFromPem(signed.keyId, signed.pem) });
+      // the holder's wallets only: the service's hedge subaccount sits in the same account and is left out
+      const c = new VenueClient({ host: signed.host, signer: signerFromPem(signed.keyId, signed.pem), excludeWallets: excludedWalletsFromEnv(process.env) });
       venueClient = { kind: "signed", holderPositions: (p) => holderPositions(c, p) };
     } catch (err) {
       venueClientNote = `venue positions: key unusable (${String(err instanceof Error ? err.message : err)})`;

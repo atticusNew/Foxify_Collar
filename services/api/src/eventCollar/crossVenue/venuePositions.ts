@@ -149,6 +149,15 @@ export interface VenueClientConfig {
   fetchImpl?: typeof fetch;
   /** market and event lookups are cached this long; the catalog barely moves pre-game */
   catalogTtlMs?: number;
+  /**
+   * Wallets whose positions are not the holder's. A management-scope key answers positions for
+   * every wallet in the account, and the service's own hedge subaccount is one of them: once a
+   * hedge is bought there, the read of "what the holder owns" would carry the other side of the
+   * holder's own game. A wallet is excluded when its key in the answer equals, or contains, one
+   * of these (case-insensitive): the hedge trading key id (the subaccount's address) and any label
+   * the operator names.
+   */
+  excludeWallets?: string[];
 }
 
 export function venueConfigFromEnv(env: NodeJS.ProcessEnv = process.env): { host: string; keyId: string; pem: string } | null {
@@ -158,6 +167,31 @@ export function venueConfigFromEnv(env: NodeJS.ProcessEnv = process.env): { host
   if (!host || !keyId || !pem) return null;
   return { host, keyId, pem };
 }
+
+/**
+ * The wallets a holder read leaves out: the service's hedge subaccount (NOVIG_TRADE_KEY_ID, the
+ * trading key id that is also the subaccount's address) and any wallet label named in
+ * VENUE_API_EXCLUDE_WALLETS (comma-separated). Empty when neither is set.
+ */
+export function excludedWalletsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {
+  const out = new Set<string>();
+  const hedge = env.NOVIG_TRADE_KEY_ID?.trim();
+  if (hedge) out.add(hedge);
+  for (const w of (env.VENUE_API_EXCLUDE_WALLETS ?? "").split(",")) {
+    const t = w.trim();
+    if (t) out.add(t);
+  }
+  return [...out];
+}
+
+/** true when a wallet's key in the positions answer names one of the excluded wallets */
+export const walletExcluded = (wallet: string, excluded: ReadonlyArray<string>): boolean => {
+  const w = wallet.trim().toLowerCase();
+  return excluded.some((x) => {
+    const e = x.trim().toLowerCase();
+    return Boolean(e) && (w === e || w.includes(e));
+  });
+};
 
 /** A position as the venue reports it. Nothing derived. */
 export interface RawVenuePosition {
@@ -228,6 +262,7 @@ export class VenueClient {
   private readonly marketLists = new Map<string, { at: number; v: RawVenueMarket[] }>();
   private publicUntil = 0;
   private signedRefusal: string | null = null;
+  private wallets: { read: string[]; excluded: string[] } = { read: [], excluded: [] };
 
   constructor(private readonly cfg: VenueClientConfig) {
     this.fetchImpl = cfg.fetchImpl ?? fetch;
@@ -286,13 +321,41 @@ export class VenueClient {
     return json as T;
   }
 
-  /** Every open position across every wallet the key can read (a management-scope key answers an object keyed by wallet). */
+  /**
+   * Every open position across every wallet the key can read (a management-scope key answers an
+   * object keyed by wallet), less the wallets `excludeWallets` names: the service's own hedge
+   * subaccount is in the same account as the holder, and its positions are not theirs.
+   */
   async listPositions(): Promise<RawVenuePosition[]> {
     if (!this.cfg.signer) throw new VenueApiError(0, "unsigned", "positions need a signed key; this client reads the public catalog only");
     const body = await this.get<RawVenuePosition[] | Record<string, RawVenuePosition[]>>("/v3/portfolio/positions");
-    if (Array.isArray(body)) return body.filter(isPosition);
-    if (body && typeof body === "object") return Object.values(body).flat().filter(isPosition);
+    if (Array.isArray(body)) {
+      this.wallets = { read: [], excluded: [] };
+      return body.filter(isPosition);
+    }
+    if (body && typeof body === "object") {
+      const excluded = this.cfg.excludeWallets ?? [];
+      const read: string[] = [];
+      const dropped: string[] = [];
+      const out: RawVenuePosition[] = [];
+      for (const [wallet, positions] of Object.entries(body)) {
+        if (walletExcluded(wallet, excluded)) {
+          dropped.push(wallet);
+          continue;
+        }
+        read.push(wallet);
+        if (Array.isArray(positions)) out.push(...positions.filter(isPosition));
+      }
+      this.wallets = { read, excluded: dropped };
+      return out;
+    }
+    this.wallets = { read: [], excluded: [] };
     return [];
+  }
+
+  /** The wallet keys the last positions read kept and left out (empty on a bare-array answer). */
+  get walletsRead(): { read: string[]; excluded: string[] } {
+    return this.wallets;
   }
 
   async getMarket(marketId: string): Promise<RawVenueMarket> {
