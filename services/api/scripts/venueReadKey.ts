@@ -39,6 +39,10 @@
  *                    Moves cash from the cash wallet into the subaccount (or out with --defund) with
  *                    --id as the idempotency key, then reads the transfer back until it is Applied.
  *   transfer         npx tsx scripts/venueReadKey.ts transfer --key <trading key id> --transfer <transfer id>
+ *   trade-check      npx tsx scripts/venueReadKey.ts trade-check
+ *                    env: VENUE_API_HOST, NOVIG_TRADE_KEY_ID, NOVIG_TRADE_PRIVATE_KEY_PEM (or ..._PEM_PATH), exactly
+ *                    as the service has them. Signs the subaccount balance read with the trading key (the
+ *                    service's pre-flight read); says whether the pair reaches a subaccount, and why not.
  */
 
 import { generateKeyPairSync } from "node:crypto";
@@ -46,6 +50,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { PlaysClient, asVenueMarket, playSize, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
 import { VenueClient, positionSize, signedHeaders, signerFromPem } from "../src/eventCollar/crossVenue/venuePositions";
 import { NOVIG_TRADE_ENV, NovigAccountClient, mintTradingKeypair, type NovigSubaccount } from "../src/eventCollar/crossVenue/novigAccount";
+import { NovigOrderClient } from "../src/eventCollar/crossVenue/novigOrders";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -204,6 +209,49 @@ async function transferStatus(): Promise<void> {
   console.log(`transfer ${t.transferId}: ${t.status} (${t.direction} $${(t.amountCents / 100).toFixed(2)})` + (t.actualBalanceCents != null ? ` · wallet held $${(t.actualBalanceCents / 100).toFixed(2)}` : ""));
 }
 
+/**
+ * Check the trading key as the service will use it: the subaccount's balance read, signed with
+ * the key the env names (the same read the service's pre-flight makes). Passes only for the pair
+ * a `subaccount-open` wrote: the key id it printed and the PEM in its --out file.
+ */
+async function tradeCheck(): Promise<void> {
+  const keyId = process.env.NOVIG_TRADE_KEY_ID?.trim();
+  const pem = process.env.NOVIG_TRADE_PRIVATE_KEY_PEM?.trim() || (process.env.NOVIG_TRADE_PRIVATE_KEY_PEM_PATH ? readFileSync(process.env.NOVIG_TRADE_PRIVATE_KEY_PEM_PATH, "utf8") : "");
+  if (!keyId || !pem) {
+    console.error("trade-check needs NOVIG_TRADE_KEY_ID and NOVIG_TRADE_PRIVATE_KEY_PEM (or NOVIG_TRADE_PRIVATE_KEY_PEM_PATH); VENUE_API_HOST as the service has it");
+    process.exit(2);
+  }
+  const tail = `…${keyId.slice(-4)}`;
+  let signer;
+  try {
+    signer = signerFromPem(keyId, pem);
+  } catch (err) {
+    console.log(`trading key ${tail}: the PEM does not parse (${String(err instanceof Error ? err.message : err)}); on the service, paste the whole file including its BEGIN and END lines`);
+    process.exit(1);
+  }
+  const client = new NovigOrderClient({ host, signer });
+  try {
+    const balanceCents = await client.availableCents();
+    console.log(`${host}: trading key ${tail} reaches its subaccount · balance $${(balanceCents / 100).toFixed(2)}`);
+    console.log(`this pair is what the service needs: ${NOVIG_TRADE_ENV.host}=${host}  ${NOVIG_TRADE_ENV.keyId}=${keyId}  ${NOVIG_TRADE_ENV.pem}=<this PEM>`);
+    if (balanceCents === 0) console.log("the subaccount holds nothing; fund it before a tap: fund --key " + keyId + " --dollars 50 --id <unique id>");
+  } catch (err) {
+    const msg = String(err instanceof Error ? err.message : err);
+    console.log(`${host}: trading key ${tail} FAILED the balance read: ${msg}`);
+    if (/does not reach a subaccount|SCOPE_INSUFFICIENT|\b403\b/.test(msg)) {
+      console.log("  this key id is a management or read-only key, not a subaccount's trading key. Run `subaccounts` with the management key and use the trading key id it lists; the PEM is the --out file from that subaccount-open.");
+    } else if (/\b401\b|signature|unauthori[sz]ed|invalid key/i.test(msg)) {
+      console.log("  the key id is known but this PEM does not sign for it: the PEM is from another key (a mint, or a different subaccount-open). The id and the PEM must come from the same subaccount-open run.");
+    }
+    process.exit(1);
+  }
+  if (process.env.VENUE_MGMT_KEY_ID?.trim() && process.env.VENUE_MGMT_KEY_PEM_PATH?.trim()) {
+    const rows = await mgmtClient().listSubaccounts();
+    const mine = rows.find((s) => s.keyId === keyId);
+    console.log(mine ? `the management key lists it: subaccount "${mine.label}" · $${(mine.balanceCents / 100).toFixed(2)}` : `the management key does not list it among its ${rows.length} subaccount(s)`);
+  }
+}
+
 const fail = (err: unknown): void => {
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
@@ -215,7 +263,8 @@ else if (cmd === "subaccount-open") subaccountOpen().catch(fail);
 else if (cmd === "subaccounts") subaccounts().catch(fail);
 else if (cmd === "fund") fund().catch(fail);
 else if (cmd === "transfer") transferStatus().catch(fail);
+else if (cmd === "trade-check") tradeCheck().catch(fail);
 else {
-  console.error("usage: venueReadKey.ts mint --out <file> | check | subaccount-open --out <file> [--label <text>] | subaccounts | fund --key <id> --dollars <n> --id <unique> [--defund] | transfer --key <id> --transfer <id>");
+  console.error("usage: venueReadKey.ts mint --out <file> | check | subaccount-open --out <file> [--label <text>] | subaccounts | fund --key <id> --dollars <n> --id <unique> [--defund] | transfer --key <id> --transfer <id> | trade-check");
   process.exit(2);
 }
