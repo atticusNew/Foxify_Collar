@@ -292,8 +292,18 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
       ok: boolean;
       lock: { status: string; contracts: number; floorCents: number; tier: string };
       hedge: { receiptId: string; simulated: boolean; venue: string; unitsMilli: number; costCents: number };
+      rule: { venue: string; sourceUrl: string; readAtIso: string; sha256: string; state: string; checkedAtIso?: string } | null;
     };
     assert.equal(rcpt.ok, true);
+    // the pinned rule rides on the receipt: fingerprint, source, when read; no text, no check before settlement
+    assert.ok(rcpt.rule, "the receipt carries the rule pinned with the lock");
+    assert.equal(rcpt.rule.venue, "kalshi");
+    assert.match(rcpt.rule.sha256, /^[0-9a-f]{64}$/);
+    assert.ok(rcpt.rule.sourceUrl.includes(TICKER));
+    assert.equal(rcpt.rule.state, "terms kept at open");
+    assert.equal(rcpt.rule.checkedAtIso, undefined);
+    assert.equal("text" in rcpt.rule, false, "the rule text stays on the record");
+    assert.deepEqual(lock.rule, rcpt.rule, "the tap's answer carries the same pin");
     assert.equal(rcpt.lock.status, "open");
     assert.equal(rcpt.lock.contracts, 20);
     assert.equal(rcpt.lock.floorCents, lock.floorCents);
