@@ -107,8 +107,8 @@ import {
 } from "../src/eventCollar/crossVenue/types";
 import type { NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { getMarketResult, kalshiBase } from "../src/eventCollar/kalshiPublic";
-import { checkRule, kalshiRuleText, kalshiRuleUrl, pinRule, ruleStateLabel } from "../src/eventCollar/crossVenue/ruleEvidence";
-import { VENUE_NAMES, hedgeVenueOf, hedgeVenuesFromEnv, type HedgeRouting, type SettlementVenue } from "../src/eventCollar/crossVenue/hedgeRouting";
+import { checkRule, kalshiRuleText, kalshiRuleUrl, pinRule, pinVenueRules, ruleStateLabel, venueRulesText, type RuleEvidence } from "../src/eventCollar/crossVenue/ruleEvidence";
+import { VENUE_NAMES, hedgeVenueOf, hedgeVenuesFromEnv, rulesFor, type HedgeRouting, type SettlementVenue } from "../src/eventCollar/crossVenue/hedgeRouting";
 import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { adminAuthorized, parseAdminAuthFromEnv } from "../src/eventCollar/crossVenue/eventFunnel";
@@ -611,6 +611,9 @@ function ruleViewOf(p: Pick<ShadowPosition, "rule" | "ruleCheck">) {
   if (!p.rule) return null;
   return {
     venue: p.rule.venue,
+    venueName: VENUE_NAMES[p.rule.venue],
+    /** "market": the market's own text read live at the pin; "rules": the venue's published league rules as read on readAtIso */
+    basis: p.rule.basis ?? "market",
     sourceUrl: p.rule.sourceUrl,
     readAtIso: p.rule.readAtIso,
     sha256: p.rule.sha256,
@@ -1007,16 +1010,41 @@ function openRecordFor(
     ...(q.hedge.venue === "prophetx" ? { hedgeStrikeId: q.hedge.strikeId, ...(q.hedge.offsetStrikeId ? { hedgeOffsetStrikeId: q.hedge.offsetStrikeId } : {}) } : {}),
     ...(q.hedge.venue === "novig" ? { hedgeMarketId: q.hedge.marketId, hedgeOutcomeId: q.hedge.outcomeId, hedgeOffsetOutcomeId: q.hedge.offsetOutcomeId } : {}),
     ...(res.routing ? { holderVenue: res.routing.holderVenue, routing: res.routing } : {}),
-    // the rule the result will be judged under, as the venue publishes it this second
-    rule: pinRule({
-      venue: "kalshi",
-      marketId: res.market.ticker,
-      ruleText: kalshiRuleText(res.market),
-      sourceUrl: kalshiRuleUrl(res.market.ticker, kalshiBase()),
-      readAtIso: new Date().toISOString(),
-    }),
+    // the rule the holder's payout will be judged under: the holder's venue's own text (for a
+    // ProphetX or Novig holder its published league rules, with Kalshi's market text kept as the
+    // reference the result is read from); for a Kalshi holder the market's text this second
+    ...rulePinsFor(res),
     ...(source ? { source, entryCents: res.position.entryCents } : {}),
   };
+}
+
+/**
+ * The pins an opening record carries. A Kalshi holder: `rule` is the market's own text as read now.
+ * A holder elsewhere: `rule` is that venue's published rules for the league (the sentences the
+ * routing priced the tails from, hashed, with the venue's page and the read date), and
+ * `referenceRule` is the Kalshi market text, the market the result is read from at settlement.
+ */
+function rulePinsFor(res: CandidateResult): { rule: RuleEvidence | null; referenceRule?: RuleEvidence | null } {
+  const kalshi = pinRule({
+    venue: "kalshi",
+    marketId: res.market.ticker,
+    ruleText: kalshiRuleText(res.market),
+    sourceUrl: kalshiRuleUrl(res.market.ticker, kalshiBase()),
+    readAtIso: new Date().toISOString(),
+  });
+  const holder = res.routing?.holderVenue;
+  if (!holder || holder === "kalshi" || !res.routing) return { rule: kalshi };
+  return { rule: pinVenueRules({ venue: holder, marketId: res.market.ticker, cells: res.routing.holderRules }), referenceRule: kalshi };
+}
+
+/**
+ * The text a pin is checked against at settlement: a market pin against the market's text as the
+ * result read carries it; a venue-rules pin against the same venue's rules for the league as they
+ * read now (the record's own table, so an edit to the sentences since the pin is said).
+ */
+function ruleTextNowFor(p: ShadowPosition, result: { rulesPrimary?: string | null; rulesSecondary?: string | null }): string {
+  if (p.rule?.basis === "rules" && p.holderVenue) return venueRulesText(rulesFor(p.holderVenue, p.league));
+  return kalshiRuleText(result);
 }
 
 /** The retail shape of a quoted game for the lock client: the event, the odds, the terms. Nothing about the hedge. */
@@ -1988,9 +2016,13 @@ async function settleTick(): Promise<void> {
       if (r.result === "yes" || r.result === "no") {
         const at = new Date().toISOString();
         // the same read that carries the result carries the rule; compared to the pin, said either way
-        const ruleCheck = checkRule(p.rule, kalshiRuleText(r), at);
+        const ruleCheck = checkRule(p.rule, ruleTextNowFor(p, r), at);
         if (ruleCheck.unchanged === false) {
           void alerter({ kind: "rule_changed", message: `${p.ticker} (${p.eventTitle}) settled ${r.result} under a rule text that changed since open: ${p.rule?.sha256.slice(0, 12)} -> ${ruleCheck.sha256?.slice(0, 12)}` });
+        }
+        const referenceRuleCheck = p.referenceRule ? checkRule(p.referenceRule, kalshiRuleText(r), at) : undefined;
+        if (referenceRuleCheck?.unchanged === false) {
+          void alerter({ kind: "rule_changed", message: `${p.ticker} (${p.eventTitle}) settled ${r.result}; the Kalshi reference market's text changed since open: ${p.referenceRule?.sha256.slice(0, 12)} -> ${referenceRuleCheck.sha256?.slice(0, 12)}` });
         }
         appendOrAlert(
           {
@@ -1999,6 +2031,7 @@ async function settleTick(): Promise<void> {
             ticker: p.ticker,
             result: r.result,
             ruleCheck,
+            ...(referenceRuleCheck ? { referenceRuleCheck } : {}),
           },
           path,
         );

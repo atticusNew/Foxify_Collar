@@ -18,15 +18,25 @@
  */
 
 import { createHash } from "node:crypto";
+import { TAIL_BRANCHES, type RuleCells, type SettlementVenue, type TailBranch } from "./hedgeRouting";
 
-export type RuleVenue = "kalshi" | "polymarket";
+export type RuleVenue = SettlementVenue;
+
+/**
+ * What the pinned text is. `market`: the market's own rule text, read live from the venue's API
+ * at the pin (Kalshi, Polymarket). `rules`: the venue's published rules for the league, the four
+ * tail sentences the routing read on the date given (ProphetX, Novig: no per-market text to
+ * read, and the help pages sit behind a browser check). Absent on pins before the field: market.
+ */
+export type RuleBasis = "market" | "rules";
 
 export interface RuleEvidence {
   venue: RuleVenue;
-  /** the venue's own key: a Kalshi ticker, a Polymarket slug */
+  /** the market the pin belongs to: a Kalshi ticker, a Polymarket slug; the reference ticker for a venue-rules pin */
   marketId: string;
   /** the public read the text came from; the same request shows the same text */
   sourceUrl: string;
+  basis?: RuleBasis;
   /** sha256 of the normalized rule text, hex */
   sha256: string;
   /** normalized text length, bytes */
@@ -190,6 +200,54 @@ export const gammaRuleText = (m: { description?: string | null; resolutionSource
 
 /** Gamma's by-slug read, which answers for open and closed markets alike. */
 export const gammaRuleUrl = (slug: string, base: string): string => `${base.replace(/\/$/, "")}/markets/slug/${encodeURIComponent(slug)}`;
+
+const TAIL_HEADS: Record<TailBranch, string> = { tie: "Tie", postponed: "Postponed", abandoned: "Called off", corrected: "Corrected result" };
+
+/**
+ * A venue's published rules for one league as one text: the four tail sentences the routing
+ * read (hedgeRouting's rule cells), each under its case, in the order the Rules grid prints
+ * them. The excerpt is the venue's sentence where its text names the case and the reading it
+ * was priced at where it does not; the cell says which. The grid and the Terms row are then one
+ * record: the words a holder reads on the card are the words that were hashed.
+ */
+export function venueRulesText(cells: RuleCells): string {
+  return TAIL_BRANCHES.map((b) => `${TAIL_HEADS[b]}: ${normalizeRuleText(cells[b].excerpt)}`).join("\n");
+}
+
+/**
+ * Where the cells were read: the page the most cells cite (the first of a "a ; b" pair; ties go
+ * to the earlier case), and the latest read date among them.
+ */
+export function venueRulesSource(cells: RuleCells): { sourceUrl: string; readAtIso: string } {
+  const counts = new Map<string, number>();
+  let readAtIso = "";
+  for (const b of TAIL_BRANCHES) {
+    const c = cells[b];
+    const url = c.source.split(" ; ")[0].trim();
+    counts.set(url, (counts.get(url) ?? 0) + 1);
+    if (c.asOf > readAtIso) readAtIso = c.asOf;
+  }
+  let sourceUrl = "";
+  let best = 0;
+  for (const [url, n] of counts) {
+    if (n > best) {
+      best = n;
+      sourceUrl = url;
+    }
+  }
+  return { sourceUrl, readAtIso };
+}
+
+/**
+ * Pin a venue's published rules for the holder's league (ProphetX, Novig: venues without a
+ * per-market rule text). The hash is of the four sentences; the URL is the venue's page; the
+ * date is when the sentences were read, not when the position opened.
+ */
+export function pinVenueRules(input: { venue: RuleVenue; marketId: string; cells: RuleCells }): RuleEvidence | null {
+  const { sourceUrl, readAtIso } = venueRulesSource(input.cells);
+  const pinned = pinRule({ venue: input.venue, marketId: input.marketId, ruleText: venueRulesText(input.cells), sourceUrl, readAtIso });
+  return pinned ? { ...pinned, basis: "rules" } : null;
+}
 
 // ── The record's one line ────────────────────────────────────────────────────
 
