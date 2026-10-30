@@ -20,13 +20,17 @@ import {
   kalshiRuleUrl,
   normalizeRuleText,
   pinRule,
+  pinVenueRules,
   ruleDiff,
   ruleEvidenceLine,
   ruleHash,
   ruleStateLabel,
   shortHash,
   summarizeRuleEvidence,
+  venueRulesSource,
+  venueRulesText,
 } from "../src/eventCollar/crossVenue/ruleEvidence";
+import { rulesFor } from "../src/eventCollar/crossVenue/hedgeRouting";
 import { getMarketResult, parseKalshiMarket } from "../src/eventCollar/kalshiPublic";
 import { appendShadowRecord, loadShadowPositions, settlePayouts, summarizeShadow, type ShadowOpenRecord } from "../src/eventCollar/crossVenue/shadowLedger";
 import { DEFAULT_LAST_LEG_CONFIG, legCandidates, replayLastLeg, runLastLegTick, summarizeLegRules, type LastLegRecord } from "../src/eventCollar/crossVenue/lastLeg";
@@ -72,6 +76,44 @@ test("rule evidence: pin carries venue, key, source URL, hash, bytes and an exce
   assert.equal(short?.excerpt, "Short rule.", "a short rule is its own excerpt");
   assert.equal(pinRule({ venue: "kalshi", marketId: "X", ruleText: "", sourceUrl: "u", readAtIso: at }), null);
   assert.equal(pinRule({ venue: "kalshi", marketId: "X", ruleText: undefined, sourceUrl: "u", readAtIso: at }), null);
+});
+
+test("rule evidence: a venue without per-market text pins its published league rules: the four grid sentences, the venue's page, the read date", () => {
+  const px = rulesFor("prophetx", "nba");
+  const text = venueRulesText(px);
+  const lines = text.split("\n");
+  assert.equal(lines.length, 4);
+  assert.deepEqual(
+    lines.map((l) => l.split(":")[0]),
+    ["Tie", "Postponed", "Called off", "Corrected result"],
+    "one line per tail, in the order the Rules grid prints them",
+  );
+  assert.ok(lines[0].includes(px.tie.excerpt), "the venue's sentence, verbatim");
+  const src = venueRulesSource(px);
+  assert.equal(src.sourceUrl, px.tie.source, "every ProphetX cell cites the Football Rules page");
+  assert.equal(src.readAtIso, px.tie.asOf);
+
+  const nv = rulesFor("novig", "nba");
+  assert.equal(venueRulesSource(nv).sourceUrl, nv.postponed.source.split(" ; ")[0], "Novig's cells cite two pages; the one most cells cite wins, the first of a pair");
+
+  const pin = pinVenueRules({ venue: "prophetx", marketId: "KXNBAGAME-26OCT30CHIBKN-CHI", cells: px });
+  assert.ok(pin);
+  assert.equal(pin.venue, "prophetx");
+  assert.equal(pin.basis, "rules");
+  assert.equal(pin.marketId, "KXNBAGAME-26OCT30CHIBKN-CHI", "the reference ticker names the market the pin belongs to");
+  assert.equal(pin.sourceUrl, px.tie.source);
+  assert.equal(pin.readAtIso, px.tie.asOf, "the date the sentences were read, not the lock time");
+  assert.equal(pin.sha256, ruleHash(text));
+  assert.equal(pin.text, text);
+  assert.ok(pin.excerpt.startsWith("Tie:"));
+
+  // the settlement read: the same table, same words, holds; a reworded sentence is a change
+  const at = "2026-10-31T04:00:00.000Z";
+  assert.equal(checkRule(pin, venueRulesText(rulesFor("prophetx", "nba")), at).unchanged, true);
+  const edited = { ...px, corrected: { ...px.corrected, excerpt: `${px.corrected.excerpt} Edited.` } };
+  assert.equal(checkRule(pin, venueRulesText(edited), at).unchanged, false);
+  // a Kalshi market pin carries no basis field; the view reads that as "market"
+  assert.equal(pinRule({ venue: "kalshi", marketId: "T", ruleText: PRIMARY, sourceUrl: "u", readAtIso: at })!.basis, undefined);
 });
 
 test("rule evidence: the second read says unchanged, changed, or that it could not compare", () => {

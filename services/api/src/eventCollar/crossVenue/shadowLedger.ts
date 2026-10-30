@@ -104,6 +104,12 @@ export interface ShadowOpenRecord {
    */
   rule?: RuleEvidence | null;
   /**
+   * When the holder's venue is not Kalshi, `rule` pins that venue's published rules (basis
+   * "rules") and this pins the Kalshi reference market's text, the market the result is read
+   * from at settlement. Absent on Kalshi positions and on records before 2026-10-30.
+   */
+  referenceRule?: RuleEvidence | null;
+  /**
    * Where the holder's position lives (hedgeRouting.SettlementVenue) and how the hedge venue was
    * chosen against it: every route's all-in cost, the tails that differ and what they were priced
    * at, the gates, the reason. Absent on records before routing was judged on the tails (every one
@@ -177,6 +183,8 @@ export interface ShadowSettleRecord {
   result: "yes" | "no";
   /** the rule text read again at this settlement, against the pin (ruleEvidence.checkRule); absent before 2026-10-11 */
   ruleCheck?: RuleCheck;
+  /** the Kalshi reference market's text read again, against `referenceRule`; only where that pin exists */
+  referenceRuleCheck?: RuleCheck;
 }
 
 /** The market never produced a result (e.g. postponed and rebooked). */
@@ -232,6 +240,7 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   result?: "yes" | "no";
   settledAt?: string;
   ruleCheck?: RuleCheck;
+  referenceRuleCheck?: RuleCheck;
   voidReason?: string;
   /**
    * Total with protection. Settled: (cap if yes, floor if no) x contracts + credit.
@@ -455,6 +464,7 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
         result: rec.result,
         settledAt: rec.at,
         ...(rec.ruleCheck ? { ruleCheck: rec.ruleCheck } : {}),
+        ...(rec.referenceRuleCheck ? { referenceRuleCheck: rec.referenceRuleCheck } : {}),
         ...pay,
         writerCents: writer.writerCents,
         hedgePayoutCents: writer.hedgePayoutCents,
