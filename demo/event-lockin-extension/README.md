@@ -561,6 +561,27 @@ The service also still speaks the signed read-key API of the previous venue
 (`VENUE_API_KEY_ID` + `VENUE_API_PRIVATE_KEY_PEM`, minted with `venueReadKey.ts mint`). Whichever
 pair of variables is set picks the API; set one, not both.
 
+**The hedge's own card on Novig (0.7.35).** The service's Novig hedges are bought in a subaccount
+of the holder's own Novig account, so the holder's Portfolio shows them as cards beside their
+own picks: the other side of a 76ers lock held on ProphetX appears as a Knicks card on Novig. That
+card is not theirs to protect (a lock on it would hedge the hedge, and Novig nets the two sides
+in one account and pays the guarantee out early, which is what happened on Oct 30), so on Novig
+the extension marks it **Hedge** ("The other side of your 76ers on ProphetX"), muted and with no
+button; a tap says what it is and that it settles with that lock. The extension knows it from the
+public record alone: an open lock held on another venue whose chosen route is Novig, on the
+other club of the card's game. The service refuses such a lock as well (`own_hedge`, 409) should
+a stale tab send one. Novig only, for now: on Kalshi and ProphetX the hedges go through the
+aggregator and never show as the holder's cards. The line is the confirmation the recording
+wants after a ProphetX lock: open Novig's Portfolio and the hedge is there, named for what it is.
+
+**Leave early (0.7.35).** One plain line, `To leave now · You pay $0.30` or `You get $0.30`, then
+`Net · −$0.12 after the $0.18 paid to you at the lock`, then `Staying · $1.88 or $18.93`, the two
+buttons, and a **Why** toggle that opens the reason (the pick moved up, so the upside sold is
+worth more than the floor held, or the reverse) and the standing note that the pick stays open on
+the venue unprotected and the credit is theirs either way. "Due back" is gone everywhere: a
+leave's settlement reads "you paid $0.30" / "$0.30 paid to you" on the line, in the receipt's
+earlier-protection note and in the cash state ("you owe $0.30" for a slice above the cap).
+
 **When a Novig line comes and goes (0.7.34).** On the live Portfolio the button has appeared and
 then gone within a few seconds and not come back; DevTools showed no `.ael-host` in the page at
 all, so the block was taken down, not hidden. Three readings can take a line down, and 0.7.34
