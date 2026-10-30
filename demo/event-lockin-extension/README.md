@@ -74,10 +74,15 @@ of open plays. Once a matched play exists, under its row:
    row, "If the game… ends in a tie → Novig pays each side $0.50 · the protection settles on that
    $0.50", read from the routing's rule cells (the treatment per branch); the venue's own
    sentence is the row's tooltip (0.7.32). **Terms** follows: the rule text the record pinned at
-   the lock and when ("pinned Fri 7:12pm ET · checked again at settlement"; "Kalshi's rules
-   pinned…" when the pin is the reference market's text and the position is on another venue),
-   linked to the venue's own page, the sha256 in the tooltip; after settlement it reads "held ·
-   read at the lock and again at settlement, same words" or "venue edited its rules". The service
+   the lock and when, linked to the venue's own page, the sha256 in the tooltip. On Kalshi the pin
+   is the market's own text ("pinned Fri 7:12pm ET · checked again at settlement"). On ProphetX
+   and Novig, venues with no per-market text, the pin is the holder's venue's published rules
+   for the league: the four sentences the Rules grid shows, hashed, with the venue's page and the
+   day they were read ("ProphetX rules read Oct 28 · the sentences under Rules; checked again at
+   settlement") (0.7.33; the service keeps Kalshi's market text as a second, reference pin on the
+   record). A pin of another venue's text names it ("Kalshi's rules pinned…"). After settlement
+   it reads "held · read at the lock and again at settlement, same words" or "venue edited its
+   rules". The service
    sends it on the tap's answer and on `/api/shadow/receipt` as `rule` (venue, sourceUrl,
    readAtIso, sha256, state, and after settlement checkedAtIso and unchanged; never the text).
    With the operator setting on, the record id and every route the service priced follow, each
@@ -203,7 +208,12 @@ own venue, when it is one of the books in the race, always stay, and the best of
 places; the home venue carries no label, since the holder knows where they are, and they see it
 win or see that another book paid more. On a venue that is not one of the books (the embed on a
 sportsbook, say) the strip is the race alone. The label is two words and the chips are tight so three
-venues sit on one row in the panel (0.7.24). With one venue priced, "Other side" and the one chip. The fine print then keeps
+venues sit on one row in the panel (0.7.24). With one venue priced, "Other side" and the one chip. When this page's own venue
+is in the race but priced nothing, it still appears, last, as a muted dashed chip with the reason in
+two words ("ProphetX · not mapped" when the aggregator has no mapping for the game there, "not
+listed", "closed", else "no price"), the service's sentence in its tooltip; the holder always sees
+the venue they are standing on, and the chips stay the competition, so a missing chip never reads
+as a missing venue (0.7.33). The same chip sits in the receipt's **Compared** row. The fine print then keeps
 only the notes; without routing it falls back to the competition line ("ProphetX $3.10 vs Kalshi
 $2.40, hedged on ProphetX"), else "other side on
 Polymarket" when the hedge venue is not the page's own. The venues in the race are Kalshi and

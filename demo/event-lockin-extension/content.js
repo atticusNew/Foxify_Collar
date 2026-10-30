@@ -1612,7 +1612,7 @@
     const fine = ["Priced live"];
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
     fine.push(...notes(B));
-    const shopped = pricedRoutes(p.routing).length > 1;
+    const shopped = pricedCount(p.routing) > 1;
     // one toggle beside the pill; the shape (slider), the venues, the clock, how it works and the rules wait behind it
     const details = st.details
       ? '<div class="ael-details">' +
@@ -1720,7 +1720,7 @@
     // the venue pick is its own strip above the button; the fine print keeps the competition only when the strip has nothing to show
     const picked = venuePick(p.routing);
     fine.push(...notes(B), ...(picked ? [] : routingNotes(p.routing)), '<a href="#" class="ael-how-a">how it works</a>');
-    const shopped = pricedRoutes(p.routing).length > 1;
+    const shopped = pricedCount(p.routing) > 1;
     const html =
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") +
       ledger(shortOf(B.ticker), rs, t.creditCents, was) +
@@ -1867,6 +1867,25 @@
    * books in the race) always stay, the best of the rest fill the remaining places. The holder
    * knows where they are, so the home venue is not labelled; it is simply there with its price.
    */
+  /**
+   * Two words for a venue that priced nothing, on its muted chip: the aggregator has no mapping
+   * for the game there, the venue has no listing, or its book could not take the size. The
+   * service's full sentence is the chip's tooltip.
+   */
+  const unpricedWord = (r) => {
+    const why = String((r && (r.refusal || r.gate)) || "").toLowerCase();
+    if (/not mapped/.test(why)) return "not mapped";
+    if (/not list|no listing|does not offer/.test(why)) return "not listed";
+    if (/closes before|closed/.test(why)) return "closed";
+    return "no price";
+  };
+  /**
+   * The chips in the race: every venue that priced the other side, best credit first, the one the
+   * hedge goes to and this page's own venue always kept, VENUE_CHIPS_MAX at most; then, when this
+   * page's own venue priced nothing, that venue as a muted chip with the two-word reason (the
+   * holder always sees the venue they are standing on; a missing chip would read as a missing
+   * venue). A muted chip has no creditCents.
+   */
   const pricedRoutes = (rt) => {
     if (!rt || !Array.isArray(rt.routes)) return [];
     const chosen = rt.hedgeVenueName || null;
@@ -1875,32 +1894,41 @@
       .filter((r) => r && r.creditCents != null && r.hedgeVenueName)
       .map((r) => ({ venue: r.hedgeVenueName, creditCents: r.creditCents, chosen: r.hedgeVenueName === chosen }))
       .sort((a, b) => b.creditCents - a.creditCents || (a.chosen ? -1 : 1));
-    if (all.length <= VENUE_CHIPS_MAX) return all;
+    const homeUnpriced = home && !all.some((r) => r.venue === home) ? rt.routes.find((r) => r && r.hedgeVenueName === home) : null;
+    const muted = homeUnpriced ? [{ venue: home, creditCents: null, chosen: false, why: unpricedWord(homeUnpriced), detail: String(homeUnpriced.refusal || homeUnpriced.gate || "") }] : [];
+    if (all.length <= VENUE_CHIPS_MAX) return all.concat(muted);
     const kept = all.filter((r) => r.chosen || r.venue === home);
     for (const r of all) {
       if (kept.length >= VENUE_CHIPS_MAX) break;
       if (!kept.includes(r)) kept.push(r);
     }
-    return kept.sort((a, b) => b.creditCents - a.creditCents || (a.chosen ? -1 : 1));
+    return kept.sort((a, b) => b.creditCents - a.creditCents || (a.chosen ? -1 : 1)).concat(muted);
+  };
+  /** How many venues priced the other side (muted chips do not count). */
+  const pricedCount = (rt) => pricedRoutes(rt).filter((r) => r.creditCents != null).length;
+  /** One chip: a priced venue with its credit (the winner in the accent, shielded when `shield`), or a muted venue with its two words. */
+  const venueChip = (r, shield) => {
+    if (r.creditCents == null) return '<span class="ael-vchip ael-mute"' + (r.detail ? ' title="' + esc(r.detail) + '"' : "") + ">" + esc(r.venue) + ' <span class="ael-why">&middot; ' + esc(r.why) + "</span></span>";
+    return '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + (shield && r.chosen ? '<span class="ael-ic">' + SHIELD_FILL + "</span>" : "") + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>";
   };
   /**
    * The venue pick, shown, not footnoted: each venue that priced the other side with what it would
-   * have paid the holder for the same protection, the one the hedge goes to marked. One venue priced
-   * reads "Other side on Kalshi". Nothing when the service sent no routing.
+   * have paid the holder for the same protection, the one the hedge goes to marked; this page's own
+   * venue muted with the reason when it priced nothing. One venue priced and nothing to mute reads
+   * "Other side on Kalshi". Nothing when the service sent no routing.
    */
   const venuePick = (rt) => {
     const v = hedgeVenueOf(rt);
     if (!v) return "";
     const routes = pricedRoutes(rt);
     if (routes.length < 2) return '<div class="ael-venues"><span class="ael-l">Other side</span><span class="ael-vchip ael-won"><span class="ael-ic">' + SHIELD_FILL + "</span>" + esc(v) + "</span></div>";
-    const chips = routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + (r.chosen ? '<span class="ael-ic">' + SHIELD_FILL + "</span>" : "") + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("");
-    return '<div class="ael-venues"><span class="ael-l">Other side</span>' + chips + "</div>";
+    return '<div class="ael-venues"><span class="ael-l">Other side</span>' + routes.map((r) => venueChip(r, true)).join("") + "</div>";
   };
-  /** How much more the chosen venue pays the holder than the next one, in cents; null without two prices. */
+  /** How much more the chosen venue pays the holder than the next priced one, in cents; null without two prices. */
   const venueEdgeCents = (rt) => {
     const routes = pricedRoutes(rt);
     const won = routes.find((r) => r.chosen);
-    const other = routes.find((r) => !r.chosen);
+    const other = routes.find((r) => !r.chosen && r.creditCents != null);
     return won && other ? won.creditCents - other.creditCents : null;
   };
   const bps = (x) => (x == null ? "" : (x >= 0 ? "+" : "") + Math.round(x) + " bps");
@@ -1928,7 +1956,7 @@
       lines.push(
         row(
           "Compared",
-          '<span class="ael-vchips">' + routes.map((r) => '<span class="ael-vchip' + (r.chosen ? " ael-won" : "") + '">' + esc(r.venue) + " <b>" + esc(usd(r.creditCents)) + "</b></span>").join("") + (edge > 0 ? '<span class="ael-dim ael-edge">' + esc(usd(edge)) + " more for you</span>" : "") + "</span>",
+          '<span class="ael-vchips">' + routes.map((r) => venueChip(r, false)).join("") + (edge > 0 ? '<span class="ael-dim ael-edge">' + esc(usd(edge)) + " more for you</span>" : "") + "</span>",
         ),
       );
     } else {
@@ -1937,24 +1965,38 @@
     }
     return lines.join("");
   };
+  /** A day on its own ("Oct 28") for a date-only read stamp; a timestamp prints as fmtAt. */
+  const fmtRead = (iso) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso))) return fmtAt(iso);
+    try {
+      return new Date(iso + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
+    } catch {
+      return String(iso);
+    }
+  };
   /**
    * The terms row: which rule text the record pinned at the lock, when, and what the second read
    * at settlement found. The fingerprint is the tooltip; the words link to the venue's own page.
-   * A pin of another venue's text (the reference market) names that venue.
+   * A market pin (Kalshi) reads "pinned Fri 7:02pm ET"; a pin of the holder's venue's published
+   * rules (ProphetX, Novig: basis "rules", the four sentences the Rules grid shows) names the venue
+   * and the day the sentences were read ("ProphetX rules read Oct 28"). A pin of another venue's
+   * text (the reference market) names that venue.
    */
   const termsRow = (row, rule, holderVenue) => {
     if (!rule) return "";
-    const whose = rule.venue && holderVenue && rule.venue !== holderVenue ? esc(venueNameOf(rule.venue)) + "'s rules " : "";
+    const published = rule.basis === "rules";
+    const vname = rule.venueName || venueNameOf(rule.venue);
+    const whose = rule.venue && holderVenue && rule.venue !== holderVenue ? esc(vname) + "'s rules " : published ? esc(vname) + " rules " : "";
     let words, note;
     if (rule.unchanged === true) {
       words = whose + "held";
-      note = "read at the lock and again at settlement, same words";
+      note = published ? "the published rules at the lock and at settlement, same words" : "read at the lock and again at settlement, same words";
     } else if (rule.unchanged === false) {
       words = whose ? whose.replace(/ $/, "") + ": edited by the venue" : "venue edited its rules";
       note = "the payout followed the official result; the words at the lock are on the record";
     } else {
-      words = whose + "pinned" + (rule.readAtIso ? " " + esc(fmtAt(rule.readAtIso)) : "");
-      note = "checked again at settlement";
+      words = whose + (published ? "read" : "pinned") + (rule.readAtIso ? " " + esc(fmtRead(rule.readAtIso)) : "");
+      note = published ? "the sentences under Rules; checked again at settlement" : "checked again at settlement";
     }
     const linked = rule.sourceUrl ? '<a href="' + esc(rule.sourceUrl) + '" target="_blank" rel="noopener" class="ael-terms-a">' + words + "</a>" : words;
     return row("Terms", "<span" + (rule.sha256 ? ' title="fingerprint sha256 ' + esc(rule.sha256) + '"' : "") + ">" + linked + '</span> <span class="ael-dim">&middot; ' + note + "</span>");
