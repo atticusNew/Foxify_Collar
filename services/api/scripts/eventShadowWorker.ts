@@ -546,6 +546,25 @@ async function refreshPositions(fresh = false): Promise<HolderPosition[]> {
  * that failed (the lock then proceeds as it does with no key at all), a position on this side, or
  * none on the game.
  */
+/**
+ * The service's own hedge, seen from the venue it was bought on. A Novig holder's Portfolio shows
+ * the hedge subaccount's positions beside their own, so the other side of an open lock held
+ * elsewhere and hedged on Novig appears as a card of theirs; a lock on it would hedge the hedge,
+ * and the venue nets the two sides in one account and pays out early. Novig only, for now: on
+ * Kalshi and ProphetX the hedges go through the aggregator and never show as the holder's cards.
+ * Returns the lock the hedge belongs to, or null.
+ */
+function ownHedgeOn(ticker: string, venue: SettlementVenue, ledger: string): ShadowPosition | null {
+  if (venue !== "novig") return null;
+  const stem = ticker.slice(0, ticker.lastIndexOf("-") + 1);
+  for (const p of loadShadowPositions(ledger)) {
+    if (p.status !== "open" || p.source !== "lock" || p.ticker === ticker || !p.ticker.startsWith(stem)) continue;
+    const route = p.routing?.chosen ?? null;
+    if (route && hedgeVenueOf(route) === venue && (p.holderVenue ?? "kalshi") !== venue) return p;
+  }
+  return null;
+}
+
 async function heldOtherSideOf(ticker: string): Promise<HolderPosition | null> {
   if (!venueClient || !listGameMarketsFn) return null;
   let positions: HolderPosition[];
@@ -1231,6 +1250,12 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     const other = await heldOtherSideOf(ticker);
     if (other) {
       sendJson(res, 409, { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; protect it from that card.`, heldTicker: other.ticker });
+      return;
+    }
+    // the card is the protection's own hedge for a lock held on another venue: not theirs to protect
+    const ours = ownHedgeOn(ticker, venue ?? "kalshi", ownLedger);
+    if (ours) {
+      sendJson(res, 409, { ok: false, error: "own_hedge", code: "own_hedge", message: `This position is the protection's own hedge for your ${ours.sideName} on ${VENUE_NAMES[ours.holderVenue ?? "kalshi"]}.`, lockTicker: ours.ticker });
       return;
     }
     lockInFlight.add(flight);
