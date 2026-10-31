@@ -142,8 +142,12 @@ export interface BrandTheme {
   sportsOnly?: boolean;
 }
 
-/** The generic host: a neutral slate that belongs to no brand, on a light shell. */
-export const GENERIC_THEME: BrandTheme = { accent: "#3D4F73", accentInk: "#ffffff", skin: "light" };
+/**
+ * The generic host, what a visitor with no ?brand= link sees: the dark shell most sportsbooks ship,
+ * with the sportsbook green DraftKings uses, so the cold first screen reads as a book's app rather
+ * than a slate mock-up. `?skin=light` still flips it.
+ */
+export const GENERIC_THEME: BrandTheme = { accent: "#53D337", accentInk: "#0f1115", skin: "dark" };
 
 /**
  * Basic, recognisable colourways for the hosts a partner would expect to see. Just enough for the
@@ -726,7 +730,9 @@ ${cardBlock}<aside class="pitch">
     var muted=/ael-line-(off|wait)/.test(cls||'');
     return '<button type="button" class="ael-line '+(cls||'')+(open?' ael-open':'')+'" data-act="toggle"><span class="ael-tag">'+(muted?'':'<span class="ael-ic">'+SHIELD_FILL+'</span>')+'<b>'+label+'</b></span>'+(fact?'<span class="ael-fact">'+fact+'</span>':'')+'<span class="ael-chev">'+CHEVRON+'</span></button>';
   }
-  function toggleA(act,label,open){return '<a href="#" class="ael-tg" data-act="'+act+'" aria-expanded="'+(open?'true':'false')+'">'+label+'<span class="ael-tgc">'+CHEVRON+'</span></a>'}
+  function toggleA(act,label,open,tip){return '<a href="#" class="ael-tg" data-act="'+act+'" aria-expanded="'+(open?'true':'false')+'"'+(tip?' title="'+esc(tip)+'"':'')+'>'+label+'<span class="ael-tgc">'+CHEVRON+'</span></a>'}
+  /* how it works, one breath; lives on the Details toggle's hover rather than as a row, so the panel stays three rows tall */
+  var HOW='You sell part of the position today and keep the rest. The other side is bought the second you tap; it settles on the same official result, nothing to manage.';
   function drow(label,value,cls){return '<span class="ael-dl'+(cls?' '+cls:'')+'">'+label+'</span><span class="ael-dv'+(cls?' '+cls:'')+'">'+value+'</span>'}
   function ledgerRow(label,value,was,cls){return '<div class="ael-lr'+(cls?' '+cls:'')+'"><span class="ael-l">'+label+'</span><b>'+value+'</b>'+(was===null?'':'<s>'+was+'</s>')+'</div>'}
   /* the slip: win, lose, cash now; the "of/instead of" column only while the position is unprotected */
@@ -751,14 +757,13 @@ ${cardBlock}<aside class="pitch">
     var tip=[];for(i=0;i<priced.length;i++)tip.push(priced[i].venue+' '+usd(Math.round(priced[i].creditCents*k)));for(i=0;i<muted.length;i++)tip.push(muted[i].venue+': '+(muted[i].why||'not offered'));
     return {html:parts.join(' &middot; '),tip:tip.join(' \\u00b7 '),shopped:priced.length>1&&!(v.edgeCents!=null&&v.edgeCents<0)};
   }
-  /* Details behind the toggle, as rows in one grammar: Shape, Other side, Until, How; no figures in How, the figures are the slip */
+  /* Details behind the toggle, as rows in one grammar: Shape, Other side, Until; the figures are the slip, the How is the toggle's hover */
   function detailRows(r,st,n,keys){
     var rows=[],o=otherSide(vvOf(r.kalshiTicker),n);
     if(keys.length>1)rows.push(drow('Shape',shapeSegs(st,n,keys),'ael-dshape'));
     if(o)rows.push(drow('Other side','<span'+(o.tip?' title="'+esc(o.tip)+'"':'')+'>'+o.html+'</span>'));
     else if(S.vvBusy)rows.push(drow('Other side','<span class="ael-dim">asking the venues&hellip;</span>'));
     rows.push(drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; priced live</span>'));
-    rows.push(drow('How','You sell part of the position today and keep the rest. The other side is bought the second you tap'+(o&&o.shopped?', at the best price across the venues that quoted it':'')+'; it settles on the same official result, nothing to manage.'));
     return '<div class="ael-details"><div class="ael-drows">'+rows.join('')+'</div></div>';
   }
   var WORDMARK=${JSON.stringify(ATTICUS_WORDMARK_GOLD_DATA_URI)};
@@ -774,7 +779,7 @@ ${cardBlock}<aside class="pitch">
     var rs=reshape(n,t.floorCents,t.capCents,t.creditCents),keys=TIER_ORDER.filter(function(k){return !!st.offered[k]});
     var busy=!!st.stage;
     return ledger(r,rs,t.creditCents,Math.round(100*n),false)+
-      '<div class="ael-acts">'+(busy?'<span class="ael-stage">'+esc(st.stage)+'</span>':'<button type="button" class="ael-go" data-act="go"><span class="ael-ic">'+SHIELD_FILL+'</span>Lock in</button>')+toggleA('details','Details',st.details)+'</div>'+
+      '<div class="ael-acts">'+(busy?'<span class="ael-stage">'+esc(st.stage)+'</span>':'<button type="button" class="ael-go" data-act="go"><span class="ael-ic">'+SHIELD_FILL+'</span>Lock in</button>')+toggleA('details','Details',st.details,HOW)+'</div>'+
       removedLine(st)+
       (st.details?detailRows(r,st,n,keys):'')+powered();
   }
