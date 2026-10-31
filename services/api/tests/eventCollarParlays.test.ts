@@ -324,13 +324,13 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(html.includes("data-expand=\"'+esc(t.id)+'\"") && html.includes("S.expanded[ex]=!S.expanded[ex]"));
   assert.ok(html.includes("<b>Last pick</b>") && html.includes("<b>'+t.picksOpen+' picks open</b>") && html.includes("h out</i>"), "row headers: one line each");
   assert.ok(html.includes("track('parlay_tab')") && html.includes("track('parlay_tap',parlayId(id))") && html.includes("track('parlay_lock',parlayId(t.id))"));
-  assert.ok(html.includes("Parlays: a floor and a credit at the last pick, never before"), "the pitch names it");
+  assert.ok(html.includes('<span data-tab="Parlays">Parlays</span>') && html.includes("tab=parlays"), "the tab is live and deep-linkable; the pitch speaks to the venue, not to each tab");
   assert.ok(html.includes("if(/[?&]tab=parlays\\b/i.test(location.search))switchTab('Parlays')"), "?tab=parlays deep-links to the tab");
   const parlayScript = html.slice(html.indexOf("PARLAYS:"), html.indexOf("document.addEventListener('click'"));
   assert.ok(parlayScript.length > 1000 && !/polymarket|kalshi|hedg|writer|\btake\b/i.test(parlayScript), "no venue names or mechanics in the parlay copy");
   assert.ok(!html.includes("\u2014"), "no em dash");
 
   for (const a of ["parlay_tab", "parlay_tap", "parlay_lock"]) assert.ok(isEventAction(a), a);
-  assert.equal(EVENT_ACTIONS.length, 11);
+  assert.equal(EVENT_ACTIONS.length, 14);
   assert.ok(isValidTicker("LL_0A1B2C3D4E5F"), "the ticket id upper-cased passes the funnel's ticker rule");
 });

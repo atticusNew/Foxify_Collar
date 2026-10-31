@@ -72,7 +72,7 @@ test("embed: a partner shell's record link is its own slate page with a key for 
 
   const html = renderEventEmbedHtml({ brand: "Wire Markets", trackRecordUrl: wm.url, recordIsSlate: true });
   assert.ok(html.includes(`<a href="${wm.url.replace(/&/g, "&amp;")}">Wire Markets record</a>`), "both record links go to the slate, labelled with the brand");
-  assert.equal(html.split(`href="${wm.url}"`).length - 1, 2, "the pitch link and the phone link");
+  assert.equal(html.split(`href="${wm.url}"`).length - 1, 3, "the pitch link, the phone's and the desktop table's");
   assert.ok(html.includes('<a href="/partner?brand=Wire%20Markets">Partner console</a>'), "the partner console keeps the brand");
   assert.ok(!html.includes('href="/receipts"') && !html.includes('href="/board"'), "the whole-book pages are off a shell whose record is its own slate");
   assert.ok(html.includes("Partner console</a></div>"), "the partner row ends at the console");
@@ -108,104 +108,146 @@ test("embed: the minimum-credit rule hides negligible tiers: 5¢ and 0.25% of st
   assert.ok(html.includes("var MIN_CREDIT_CENTS=5,MIN_CREDIT_BPS=25;"), "the page script runs the same rule");
   assert.ok(html.includes("function worthIt(t,n){return !!t&&t.creditCents>=Math.max(MIN_CREDIT_CENTS,Math.round(n*100*MIN_CREDIT_BPS/10000))}"));
   assert.ok(html.includes("The market can\\'t fund a worthwhile credit on this one right now."), "when no tier clears, the sheet refuses rather than offering pennies");
-  assert.ok(html.includes("function defaultTier(offered){return offered.balanced?'balanced':offered.tight?'tight':offered.wide?'wide':null}"), "one shape by default: Balanced, then the next that clears");
+  assert.ok(html.includes("function defaultTier(offered,q){if(q&&q.tier&&offered[q.tier])return q.tier;for(var i=0;i<TIER_ORDER.length;i++)if(offered[TIER_ORDER[i]])return TIER_ORDER[i];return null}"), "one shape by default: the one the service heads the quote with, else the first in the extension's order that clears");
 });
 
-test("embed: the host shell is theirs, the button and the sheet are ours; copy is outcomes, not mechanics", () => {
+test("embed: the host shell is theirs, the line and the panel are ours (the extension's, in the host's colours); copy is outcomes, not mechanics", () => {
   const html = renderEventEmbedHtml({ brand: "ProphetX", skin: "light" });
   assert.ok(html.includes("<title>ProphetX · Positions</title>"), "the host's name on the tab");
   assert.ok(html.includes('<div class="brand"><i>P</i>ProphetX</div>'), "and on the shell");
-  assert.ok(html.includes('class="tabs"') && html.includes(">Positions</span>"), "a host positions list, not our board");
   assert.ok(html.includes('<div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Activity">Activity</span></div>'), "three tabs, all live");
   assert.ok(!html.includes('data-tab="Markets"') && !html.includes("Positions and Parlays are live here"), "no Markets tab and no dead-tab toast: browsing is the host's product");
   assert.ok(html.includes("if(tab==='Positions'||tab==='Parlays'||tab==='Activity'){switchTab(tab);return}"), "every tab switches");
-  assert.ok(html.includes('id="bal">Cash $412.50<'), "a plausible balance, not $0.00");
+  // two shells, one state: the phone, and a venue's desktop My Trades table; the control shows only on a wide stage
+  assert.ok(html.includes('<div class="seg shellseg" role="group" aria-label="Shell"><button type="button" data-shell="phone" aria-pressed="true">Phone</button><button type="button" data-shell="table" aria-pressed="false">Desktop</button></div>'), "a segmented control picks the shell");
+  assert.ok(html.includes(".seg.shellseg{display:none}") && html.includes(".seg.shellseg{display:inline-flex}"), "hidden on a phone, shown on desktop");
+  assert.ok(html.includes('<nav><span>Markets</span><span class="on">My Trades</span><span>Account</span></nav>'), "the table wears the venue's own nav");
+  assert.ok(html.includes('<div class="thead"><span>Position</span><span>Stake</span><span>Price</span><span>Payout</span><span>Placed</span></div>'), "a table of the venue's columns");
+  assert.ok(html.includes("var into=S.shell==='table'?el('tbody'):el('list');"), "one painter, two targets");
+  assert.ok(html.includes("host=(S.shell==='table'?el('tbody'):el('list')).querySelector('.ael-row[data-row=\"'+t.replace(/\"/g,'')+'\"]')"), "a row repaint finds the shown shell's copy, never the hidden one");
+  assert.ok(html.includes("if(/[?&]shell=table\\b/i.test(location.search)&&window.matchMedia&&window.matchMedia('(min-width:900px)').matches)setShell('table');"), "?shell=table deep-links the table, on a stage wide enough to hold it");
+  // realistic rows: a stake from the ticker, contracts at the entry price, payout, placed a while back
+  assert.ok(html.includes("var STAKES=[1000,2500,5000,10000,2000,4000,7500,1500];") && html.includes("function sizeOf(r){"), "varied sizes, stable per ticker");
+  assert.ok(html.includes("n=Math.round(stake/r.entryCents*100)/100"), "contracts are what the stake bought at the entry price");
+  assert.ok(html.includes('<div class="facts"><span>Stake<b>\'+usd(z.stakeCents)+\'</b></span><span>Price<b>\'+r.entryCents+\'¢</b></span><span>Payout<b>\'+usd(z.payoutCents)+\'</b></span><span>Placed<b>\'+esc(fmtAt(z.placedIso))+\'</b></span></div>'), "the row's facts as a venue prints them");
+  assert.ok(html.includes("function scaled(t,q,n){var k=n/(q.contracts||n||1);return {floorCents:t.floorCents,capCents:t.capCents,creditCents:Math.round(t.creditCents*k)}}"), "the quote's credit scales to the row's size; the floor and the cap are per contract");
+  // cash: a plausible balance in both shells, every change through addCash, the pulse beside it
+  assert.ok(html.includes('<span id="bal" data-bal>Cash $412.50</span>') && html.includes('<div class="bal"><span data-bal>Cash $412.50</span></div>'), "a plausible balance on the phone and the table");
   assert.ok(html.includes("cash:41250"), "and the script starts from it");
-  // the credit is "paid now": cash is seen taking it
-  assert.ok(html.includes('<div class="bal"><i class="delta" id="delta" aria-hidden="true"></i><span id="bal">Cash $412.50</span></div>'), "a pulse slot beside the balance");
-  assert.ok(html.includes("function addCash(cents){") && html.includes("d.textContent=(cents>0?'+':'-')+usd(Math.abs(cents))") && html.includes("d.className='delta on'+(cents<0?' down':'')"), "every change prints +$x, or -$x in the down colour on a reset");
+  assert.ok(html.includes("function paintCash(){var bs=document.querySelectorAll('[data-bal]');"), "one repaint reaches every balance");
+  assert.ok(html.includes("function addCash(cents){") && html.includes("d.textContent=(cents>0?'+':'-')+usd(Math.abs(cents))") && html.includes("d.className='delta on'+(cents<0?' down':'')"), "every change prints +$x, or -$x in the down colour");
   assert.ok(html.includes("deltaT=setTimeout(function(){d.className='delta'},1900)") && html.includes("@keyframes delta{"), "then it is gone");
-  assert.ok(html.includes("if(S.open||S.openParlay){pendingDelta+=cents;return}") && html.includes("el('sheet').className='sheet';if(pendingDelta){var d=pendingDelta;pendingDelta=0;pulse(d)}"), "behind a sheet the pulse waits for Done, when the corner is visible again");
+  assert.ok(html.includes("if(S.openParlay){pendingDelta+=cents;return}") && html.includes("el('sheet').className='sheet';if(pendingDelta){var d=pendingDelta;pendingDelta=0;pulse(d)}"), "behind the parlay sheet the pulse waits for Done");
   assert.equal((html.match(/S\.cash[+-]=/g) ?? []).length, 1, "no cash change bypasses the pulse");
-  for (const call of ["addCash(t.creditCents);", "addCash(added);", "addCash(L.creditCents);", "addCash(-(pu.creditCents+(pu.closed?pu.closed.addedCents:0)));", "addCash(-S.lockedBy[ul].lock.creditCents);"]) assert.ok(html.includes(call), call);
-  assert.ok(html.includes('data-protect="') && html.includes("</svg>Lock in</button>"), "one Lock in button per row");
-  assert.ok(html.includes('id="sheet"') && html.includes('role="dialog"'), "the sheet is a dialog over the host");
-  assert.ok(html.includes("protection by") && html.includes("data:image/png;base64"), "the sheet carries our wordmark, inlined");
-  assert.ok(html.includes(".sheet .eyebrow img{height:20px;display:block}"), "the wordmark in Atticus gold, 20px, full strength: brand colour, legible on the sheet");
-  assert.ok(!html.includes("brightness(0)"), "never recoloured");
-  assert.ok(html.includes(".pitch img{height:24px;display:block;margin-bottom:22px}"), "24px on the desktop pitch");
-  assert.ok(!html.includes("data:image/jpeg"), "the black-tile mark is gone from the embed");
-  assert.ok(html.includes("Lock in this position"), "the sheet is titled with the bettor's verb");
-  assert.ok(html.includes(">if it loses<") && html.includes(">paid now<") && html.includes(">if it wins<"), "three tiles, three outcomes");
-  assert.ok(html.includes('<div class="was">was $0</div>') && html.includes("<div class=\"was\">was '+usd0(100*n)+'</div>"), "each outcome tile shows what it was without protection");
-  assert.ok(html.includes("Lock in · +'+usd(t.creditCents)+' now"), "the button says what you get");
-  assert.ok(html.includes("function reshape(n,F,C,K){return {kept:n*(C-F)/100, cashCents:F*n+K"), "the reshape identity stays in code");
-  assert.ok(html.includes("ends <b>'+usd(p.floorTotal)+'</b> or <b>'+usd(p.capTotal)+'</b> · <b>'+usd(p.creditCents)+'</b> paid now"), "a protected row reads as two endings and the credit");
-  assert.ok(html.includes("' contracts · ends $0 or '+usd0(100*r.contracts)+'"), "an unprotected row reads as two endings too");
-  assert.ok(!html.includes("contracts</b> kept") && !html.includes("set aside"), "no contracts-kept or cash-set-aside mechanics on the row");
-  assert.ok(html.includes("&#x2713; Locked in") && html.includes('<h2 id="sh-h">Locked in</h2>'), "locked-in badge and done state");
-  assert.ok(html.includes('">reset · demo only</button>'), "the reset says it is demo only");
-  assert.ok(html.includes('<button class="closeb" data-close="\'+esc(r.kalshiTicker)+\'">close early</button>'), "a protected row offers close early");
-  assert.ok(html.includes('<div class="lock">locked at your tap · an early exit is a new trade at live prices</div>'), "a protected row states the lock");
-  assert.ok(html.includes("Terms lock at your tap; the other side is bought in the same second."), "the sheet explains the lock and the demo reset");
-  assert.ok(html.includes("fetch('/api/close-quote?'+qs") && html.includes("Close early · '+usd(c.leaveWithCents)+' now"), "close early quotes live and prices the button");
-  assert.ok(html.includes("a new trade, not a reversal") && html.includes("Leaving costs the spread on both sides"), "the close sheet says what leaving is and what it costs");
-  assert.ok(html.includes("closed early · left with <b>") && html.includes("&#x2713; Closed"), "a closed row shows what the user left with");
-  assert.ok(html.includes('class="chips'+"'+(S.adjust?' on':'')+'"), "tiers are hidden until adjust is tapped");
-  assert.ok(html.includes('id="sh-adjust">adjust</a>'), "one shape by default, adjust on request");
-  assert.ok(html.includes("if(keys.length>1)"), "adjust is offered only when more than one tier clears");
-  assert.ok(html.includes("/api/showcase?ticker="), "the sheet prices from the retail showcase endpoint");
-  assert.ok(html.includes("<b>Not right now.</b> '+esc(detail)"), "refusals render the server's retail sentence");
-  assert.ok(html.includes("track('protect_on',ticker,S.tier)") && html.includes("track('row_tap',ticker)"), "taps flow into the same funnel");
-  assert.ok(html.includes("You sell part of this position at today\\'s price and keep the rest. That is why you are paid now."), "how it works: the sale framing, not set-aside");
-  assert.ok(html.includes("The credit you see is the credit you get."), "the fee is explained as netted, once");
-  assert.ok(html.includes("Nothing to manage. It settles with your position."), "passive after the tap");
-  assert.ok(html.includes("<span>Demo. Simulated positions at live prices; nothing is bought.</span><a href=\"https://atticus-event-shadow.onrender.com\">Track record</a></div>"), "the phone note: the disclaimer, then the one link on its own line");
-  assert.ok(html.includes(".host-note span,.host-note a{display:block}") && html.includes(".host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap"), "the link never wraps or strands mid-sentence");
+  for (const call of ["addCash(tt.creditCents);", "addCash(net);", "addCash(41250-S.cash);", "addCash(L.creditCents);", "addCash(-S.lockedBy[ul].lock.creditCents);"]) assert.ok(html.includes(call), call);
+  // the line: the extension's pill and sentence under every row; the panel opens under it, no sheet for positions
+  assert.ok(html.includes("function lineGo(label,fact,cls,open){") && html.includes('class="ael-line \'+(cls||\'\')+(open?\' ael-open\':\'\')+\'" data-act="toggle"><span class="ael-tag">'), "one Lock in line per row, a button that opens the panel");
+  assert.ok(html.includes("return lineGo('Lock in','Lose, and still get <b>'+usd(floor)+'</b>.','',st.open);"), "the line says the one thing that matters");
+  assert.ok(html.includes("if(st.lock)return lineGo('Protected','<b>'+usd(st.lock.floorTotal)+'</b> or '+usd(st.lock.capTotal)"), "locked: Protected, the two endings");
+  assert.ok(html.includes("return lineGo('Unavailable',esc(st.err||'The market can\\'t fund a worthwhile credit right now.'),'ael-line-off',st.open);"), "refused: Unavailable, the reason");
+  assert.ok(html.includes("if(!st.q)return '<div class=\"ael-wait\">Pricing from the live book&hellip;</div>';"), "a loading line, not skeleton bars");
+  assert.ok(!html.includes("Lock in this position") && !html.includes("confirmProtect") && !html.includes("data-protect="), "the positions sheet is gone");
+  assert.ok(html.includes('id="sheet"') && html.includes('role="dialog"') && html.includes("Lock in your parlay"), "the sheet remains for the parlays, which have no row to open under");
+  assert.ok(html.includes('<div class="pow">Powered by <img src="data:image/png;base64'), "the sheet's foot names us in the wordmark, host first");
+  assert.ok(!html.includes("protection by") && !html.includes(".sheet .eyebrow"), "no eyebrow over the host's sheet");
+  assert.ok(!html.includes("brightness(0)") && !html.includes("data:image/jpeg"), "never recoloured; the black tile is gone");
+  // the slip: win, lose, cash now, with the "of/instead of" column until the lock
+  assert.ok(html.includes("ledgerRow(win,usd(rs.capTotal),locked?null:'of '+usd(was))+ledgerRow(lose,usd(rs.floorTotal),locked?null:'instead of $0','ael-hero')+ledgerRow('Cash now','+'+usd(credit),locked?null:'','ael-last')"), "three rows: the win, the lose as the hero, the cash now");
+  assert.ok(html.includes("win=r.kind==='crypto'?'Settles yes':name+' win',lose=r.kind==='crypto'?'Settles no':name+' lose'"), "named for the pick");
+  assert.ok(html.includes("function reshape(n,F,C,K){return {kept:n*(C-F)/100, cashCents:Math.round(F*n)+K"), "the reshape identity stays in code");
+  assert.ok(html.includes('<button type="button" class="ael-go" data-act="go"><span class="ael-ic">\'+SHIELD_FILL+\'</span>Lock in</button>'), "the pill says the verb; the figures are the slip");
+  assert.ok(html.includes("var stages=['Pricing from the live book\\u2026','Writing the record\\u2026','Buying the other side\\u2026']"), "the lock reports its stages in words");
+  // Details: five rows in one grammar, no figures in How
+  assert.ok(html.includes("var TIER_ORDER=['wide','balanced','tight'];") && html.includes("var TIER_WORDS={wide:'Max upside',balanced:'Balanced',tight:'Max floor'};"), "the extension's shapes, in its order and its words");
+  assert.ok(html.includes("if(keys.length>1)rows.push(drow('Shape',shapeSegs(st,n,keys),'ael-dshape'));"), "Shape as a segmented control, only when more than one clears");
+  assert.ok(html.includes('class="ael-shape-b" data-act="shape" data-tier="\'+k+\'" aria-pressed="\'+(k===st.tier)+\'"'), "pressed state on the chosen shape");
+  assert.ok(html.includes("rows.push(drow('Other side','<span'+(o.tip?' title=\"'+esc(o.tip)+'\"':'')+'>'+o.html+'</span>'));"), "Other side: the venue, the race, every venue's figure in the tooltip");
+  assert.ok(html.includes("if(priced.length>1){parts.push('best of '+priced.length+' venues');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}"), "the winner and what it saved the trader");
+  assert.ok(html.includes("rows.push(drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class=\"ael-dim\">&middot; priced live</span>'));"), "Until");
+  assert.ok(html.includes("rows.push(drow('How','You sell part of the position today and keep the rest. The other side is bought the second you tap'"), "How: the sale framing, two sentences, no figures");
+  assert.ok(!html.includes("set aside") && !html.includes("contracts</b> kept"), "no set-aside or contracts-kept mechanics");
+  // the protected row: Leave early and Details; the receipt in the same grammar
+  assert.ok(html.includes('<button type="button" class="ael-go ael-quiet" data-act="leave">Leave early</button>\'+toggleA(\'rcpt\',\'Details\',st.rcpt)'), "Leave early beside Details");
+  assert.ok(!html.includes("close early") && !html.includes("Close early"), "'Leave early' everywhere, never 'close early'");
+  assert.ok(html.includes("Locked '+esc(L.at)+' &middot; the other side bought in '+L.secs+'s'"), "the facts line: when, and how fast the other side was bought");
+  assert.ok(html.includes("rows.push('<span>Other side</span><b><b>'+esc(venue)+'</b> &middot; '+L.contracts+' contracts of the other side at '+price.toFixed(1)+'c'+cmp+' <span class=\"ael-dim\">&middot; priced at the book; demo, nothing bought</span></b>');"), "the receipt's Other side names the venue and says the demo bought nothing");
+  for (const row of ["<span>Cost</span>", "<span>Until</span>", "<span>Paid to you</span>"]) assert.ok(html.includes(row), `receipt row ${row}`);
+  // leave early: live figures, two ways out, Why behind a toggle; the pick stays
+  assert.ok(html.includes("fetch('/api/close-quote?'+qs") && html.includes("st.leave.q={net:Math.round((c.leaveWithCents-c.withoutProtectionCents-base.creditCents)*k),at:Date.now()};"), "the exit is priced live and scaled to the row");
+  assert.ok(html.includes('<div class="ael-leave-h">Leave early<span>remove the protection, keep your pick</span></div>'), "what leaving is");
+  assert.ok(html.includes("<div class=\"ael-wait\">Pricing your exit&hellip;</div>"), "a loading line while the exit is priced");
+  assert.ok(html.includes("var hero=net<0?'You pay <b class=\"ael-pay\">'+usd(-net)+'</b>':net>0?'You get <b>'+usd(net)+'</b>':'Nothing owed either way';"), "to leave now: pay, get, or nothing");
+  assert.ok(html.includes('<button type="button" class="ael-go" data-act="leavego">Leave early</button><button type="button" class="ael-go ael-quiet" data-act="stay">Stay</button>'), "two ways out");
+  assert.ok(html.includes("Your pick stays open on '+esc(BRAND)+', unprotected. The '+usd(credit)+' paid at the lock is yours either way."), "the pick stays; the credit is kept");
+  assert.ok(html.includes("Earlier protection removed '+esc(m.at)"), "a row that left early says so when it is priced again");
+  // the host's footer: the disclaimer, the links, the credit; reset lives there now
+  assert.ok(html.includes('<div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <b>Atticus</b> &middot; routed via ParlayX</span></div>'), "the phone note: disclaimer, record and reset on one line, the credit under");
+  assert.ok(html.includes(".host-note span,.host-note a,.host-note .pow,.host-note .links{display:block}") && html.includes(".host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap"), "deliberate lines; a link never strands mid-sentence");
+  assert.ok(!html.includes('">reset · demo only</button>') || html.includes('data-unlock="'), "no reset button on a protected position row; the footer link resets the demo");
+  assert.ok(html.includes("if(b.hasAttribute('data-reset')){e.preventDefault();resetDemo();return}"), "the footer link resets");
+  assert.ok(html.includes("function powered(){return '<div class=\"ael-pow\">Powered by <b>Atticus</b> &middot; routed via ParlayX where partnered</div>'}"), "the panel's foot: host first, us second, the partner named");
   assert.ok(!html.includes('<a href="/board">Board</a>') && !html.includes('<a href="/receipts">Receipts</a></div>'), "board and receipts are off the phone");
-  assert.ok(html.includes('<aside class="pitch">') && html.includes("Protection inside your app.") && html.includes("One JSON quote in, one receipt out"), "desktop: the pitch beside the phone");
-  assert.ok(html.includes("One button on every open position."), "the pitch speaks to the partner, not the integrator");
-  assert.ok(html.includes("We price the protection and hedge it leg for leg; you keep the flow, the ledger and the relationship."), "the subline carries the deal and never claims we carry risk");
-  assert.ok(!html.includes("carry the risk"), "the record says we carry no outcome risk; the pitch must not contradict it");
-  assert.ok(html.includes("Demo positions are simulated at live prices. The record also carries locks on a real position, hedged with real orders on Kalshi."), "labelled a demonstration, plainly, and the record's real locks named");
-  assert.ok(html.includes('<b>For partners</b><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="/partner?brand=ProphetX">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a>'), "desktop: every partner surface in one row, the console opened as this brand");
+  // the pitch: the venue's value, not the integrator's
+  assert.ok(html.includes('<aside class="pitch">') && html.includes("<h1>One tap. Any prediction market.</h1>"), "desktop: the pitch beside the mock");
+  assert.ok(html.includes("One line under every open position. Your traders lock a floor and get paid today, on your page. We price the other side at every venue, buy it where it is cheapest, and share the spread with you."), "the lede carries the deal");
+  for (const li of ["<li><b>Every venue priced, every time.</b></li>", "<li><b>Your venue first when it is best,</b> never when it is not.</li>", "<li><b>The trader stays on your page.</b></li>", "<li><b>Plus a share of the spread:</b>"]) assert.ok(html.includes(li), li);
+  assert.ok(html.includes('<div class="routed">Hedges mapped and routed through ParlayX where partnered.</div>'), "the partner named once, plainly");
+  assert.ok(html.includes("Tap <b>Lock in</b> on any row, or switch to <b>Venue view</b> &rarr;"), "the try line uses the same verb and points at the toggle");
+  assert.ok(!html.includes("carry the risk") && !html.includes("One JSON quote in"), "no risk claim; no integrator talk");
+  assert.ok(html.includes("Demo positions are simulated at live prices. The record also carries locks on real positions, hedged with real orders on Kalshi, Novig and ProphetX."), "labelled a demonstration, the record's real venues named");
+  assert.ok(html.includes('<b>For partners</b><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="/partner?brand=ProphetX">Partner console</a><a href="/receipts">Receipts</a><a href="/board">Full board</a>'), "every partner surface in one row, the console opened as this brand");
   const plain = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND });
-  assert.ok(plain.includes('<a href="/partner">Partner console</a>'), "the default brand opens the console unbranded");
+  assert.ok(plain.includes('<a href="/partner">Partner console</a>') && plain.includes("var VV_URL='/api/venue-view'+\"\";"), "the default brand opens the console and the venue view unbranded");
+  assert.ok(html.includes("var VV_URL='/api/venue-view'+\"?brand=ProphetX\";"), "a branded shell asks the venue view as itself");
   const custom = renderEventEmbedHtml({ brand: "ProphetX", trackRecordUrl: "https://tr.example", minCredit: { cents: 50, bpsOfStake: 10 } });
   assert.ok(custom.includes('href="https://tr.example">Track record</a>'), "the track record URL comes from the server");
   assert.ok(custom.includes("var MIN_CREDIT_CENTS=50,MIN_CREDIT_BPS=10;"), "the page mirrors the server's minimum-credit rule");
   assert.ok(html.includes("@media(min-width:900px)") && html.includes(".host-note,.scrim,.sheet,.toast{position:absolute}"), "on desktop the sheet stays inside the phone frame");
-  assert.ok(html.includes("far=dt.getTime()-Date.now()>86400000") && html.includes("month:'short',day:'numeric'"), "past 24h out the row shows the date, so next Sunday's game never reads as today's");
-  // The phone is retail copy: outcomes, never mechanics. The desktop pitch aside speaks to the partner and may say "hedge".
-  const phone = html.replace(/<aside class="pitch">[\s\S]*?<\/aside>/, "");
-  assert.ok(phone.length < html.length, "the pitch aside is present and excluded from the retail leak check");
+  assert.ok(html.includes("far=dt.getTime()-Date.now()>86400000") && html.includes("month:'short',day:'numeric'"), "past 24h out the row shows the date");
+  // Venue view: the host's side of the same rows, from the retail-safe endpoint; never a token
+  assert.ok(html.includes('<div class="seg viewseg" role="group" aria-label="View"><button type="button" data-view="trader" aria-pressed="true">Trader view</button><button type="button" data-view="venue" aria-pressed="false">Venue view</button></div>'), "Trader view / Venue view");
+  assert.ok(html.includes("fetch(VV_URL,{cache:'no-store'})") && !html.includes("token"), "read from /api/venue-view, no token anywhere in the page");
+  assert.ok(html.includes('<div class="vnote"><b>What the trader does not see.</b> Every venue asked for the other side, which one got it and why, what the hedge cost, and your share of the spread. Your venue first when it is best, never when it is not.</div>'), "the view says what it is");
+  for (const row of ["<span>Quotes</span>", "<span>Other side</span>", "<span>Hedge cost</span>", "<span>Spread</span>"]) assert.ok(html.includes(row), `venue row ${row}`);
+  assert.ok(html.includes("your book: it paid the trader the most") && html.includes("more than your book did for the same protection, so the other side went there. You take a share of the spread instead.") && html.includes("so the other side went to the best venue that did."), "the winner and why, in the host's words, for each case");
+  assert.ok(html.includes("<b>your share '+usd(share)+'</b> <span class=\"ael-dim\">('+S.vv.sharePct+'%)</span>"), "the host's share of the spread, with the rule");
+  assert.ok(html.includes('.vq i.host:after{content:"yours"'), "the host's own quote is marked");
+  assert.ok(html.includes("if(view==='venue'){track('venue_view');if(!S.vv&&!S.vvBusy)loadVenueView()}") && html.includes("if(/[?&]view=venue\\b/i.test(location.search))setView('venue');"), "the funnel knows; ?view=venue deep-links");
+  assert.ok(html.includes("track('protect_on',t,st.tier)") && html.includes("track('row_tap',t)") && html.includes("track('tier_pick',t,st.tier)") && html.includes("track('close_early',t,L.tier)"), "taps flow into the same funnel");
+  // The trader's copy is outcomes, never mechanics. The pitch and the Venue view speak to the venue and may say "hedge"; the
+  // trader's panel may name the venue that took the other side, since the receipt names it on the real extension too.
+  const trader = html
+    .replace(/<aside class="pitch">[\s\S]*?<\/aside>/, "")
+    .replace(/<div class="vnote">[\s\S]*?<\/div>/, "")
+    .replace(/\/\* ---- VENUE VIEW:[\s\S]*?function paintVenue\(\)\{[\s\S]*?\n  \}\n/, "")
+    .replace(/'\/api\/venue-view'|Venue view|routed via ParlayX/g, "");
+  assert.ok(trader.length < html.length - 2000, "the pitch and the venue view are present and excluded from the retail leak check");
   for (const leak of ["Kalshi", "Polymarket", "hedge", "route", "take", "instId", "OKX", "tight", "wide"]) {
-    assert.ok(!new RegExp(`\\b${leak}\\b`).test(phone.replace(/protection by/g, "").replace(/'tight'|'wide'|tight:|wide:|offered\.tight|offered\.wide/g, "")), `"${leak}" is not on the embedded page as copy`);
+    assert.ok(!new RegExp(`\\b${leak}\\b`).test(trader.replace(/'tight'|'wide'|tight:|wide:|offered\.tight|offered\.wide/g, "")), `"${leak}" is not in the trader's copy`);
   }
   assert.ok(!html.includes("—"), "no em dash in any copy");
-  // "Protect" is the name of the line (Earn & Protect), never the bettor's verb: on a positions list it reads as the house
-  // conceding its product needs protecting. The phone says "Lock in"; the sheet eyebrow "protection by" names us, not the tap.
-  const phoneCopy = phone.replace(/Earn &amp; Protect|Earn & Protect|protection by|data-protect|protectedBy|\.protected|' protected'|confirmProtect|protect_\w+|protects\.\w+|pos protected/g, "");
-  assert.ok(!/\bProtect(ed)?\b/.test(phoneCopy), "no Protect/Protected as copy on the phone");
-  assert.ok(!/without protection|positions to protect|Protection is only/.test(phoneCopy), "the lock, not protection, in the phone's sentences");
-  assert.ok(html.includes("Tap <b>Lock in</b> on any row"), "the pitch uses the same verb");
+  // "Protect" is the name of the line (Earn & Protect), never the bettor's verb. The line says "Lock in"; a locked row says
+  // "Protected" as its state, and "protection" is the thing one leaves, as on the extension.
+  const traderCopy = trader.replace(/Earn &amp; Protect|Earn & Protect|protectedBy|\.protected|' protected'|protect_\w+|protects\.\w+|pos protected|protectedHtml|lineGo\('Protected'/g, "");
+  assert.ok(!/\bProtect\b/.test(traderCopy), "no Protect as the verb in the trader's copy");
+  assert.ok(!/without protection|positions to protect|Protection is only/.test(traderCopy), "the lock, not protection, in the trader's sentences");
   const dark = renderEventEmbedHtml({ brand: "Your Exchange", skin: "dark" });
   assert.ok(dark.includes("--bg:#0f1115"), "dark skin flips the host shell");
-  assert.ok(dark.includes(".sheet{position:fixed") && dark.includes("background:#fff;color:var(--ep-ink)"), "the sheet keeps its own look in a dark host");
+  assert.ok(dark.includes(".sheet{position:fixed") && dark.includes("background:var(--card);color:var(--ink)"), "the sheet is the host's card now, in a dark host too");
   assert.ok(renderEventEmbedHtml({ brand: "A&B \"x\"", skin: "light" }).includes("A&amp;B &quot;x&quot;"), "the brand is escaped");
 });
 
-test("embed: the live recording sits in the pitch column, plays only on tap, carries the Kalshi sentence and the extension disclaimer, and can be pointed elsewhere or left out", () => {
+test("embed: the live recording sits in the pitch column, plays only on tap, names ProphetX and Novig and carries the extension disclaimer, and can be pointed elsewhere or left out", () => {
   const html = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND });
   assert.ok(html.includes('<div class="live"><div class="live-h">Seen live</div>'), "the block is labelled");
   assert.ok(html.includes('<video controls preload="none" playsinline poster="/media/lockin-live.jpg" src="/media/lockin-live.mp4"></video>'), "default: the bundled file, no autoplay, nothing fetched until play");
-  assert.ok(html.includes("A real position on a real exchange, locked and hedged on Kalshi, then settled on the official result: $13.85 instead of $0. Receipt on screen."), "the one sentence names Kalshi and the settlement");
-  assert.ok(html.includes("Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue."), "the disclaimer travels with the clip");
+  assert.ok(html.includes("A real position on ProphetX, locked in one tap. The other side was bought on Novig, the best price of the venues that quoted it; the receipt names both."), "the one sentence names both venues and the comparison");
+  assert.ok(html.includes("Shown through a browser extension on the venues' pages. Not affiliated with or endorsed by any venue."), "the disclaimer travels with the clip");
   assert.ok(html.includes('<meta property="og:video" content="/media/lockin-live.mp4" />') && html.includes('<meta property="og:image" content="/media/lockin-live.jpg" />'), "a shared link previews the clip");
   const aside = /<aside class="pitch">([\s\S]*?)<\/aside>/.exec(html)?.[1] || "";
   const order = [aside.indexOf("Tap <b>Lock in</b>"), aside.indexOf('class="live"'), aside.indexOf("<b>For partners</b>")];
   assert.ok(order[0] > 0 && order[0] < order[1] && order[1] < order[2], "under the try line, above the partner links");
-  assert.ok(html.includes(".pitch .live video{display:block;width:100%;aspect-ratio:1920/1244"), "sized to the clip's frame so the column does not jump when it loads");
+  assert.ok(html.includes(".pitch .live video{display:block;width:100%;aspect-ratio:16/9"), "sized to the new clip's 16:9 frame so the column does not jump when it loads");
   const cdn = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND, liveVideo: { src: "https://cdn.example/a.mp4", poster: "https://cdn.example/a.jpg" } });
   assert.ok(cdn.includes('poster="https://cdn.example/a.jpg" src="https://cdn.example/a.mp4"') && cdn.includes('<meta property="og:video" content="https://cdn.example/a.mp4" />'), "a CDN URL replaces both the player and the preview");
   const escaped = renderEventEmbedHtml({ brand: DEFAULT_EMBED_BRAND, liveVideo: { src: 'x"><script>', poster: "p" } });
@@ -374,8 +416,9 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     assert.ok(card.includes('href="https://wa.me/17186643497"') && card.includes('href="tel:+17186643497">+1 718 664 3497</a>'), "WhatsApp and tel from the one number");
     assert.ok(card.includes('href="https://www.linkedin.com/in/michael-william-5888ba263/"'), "LinkedIn is behind the QR, not on the paper");
     assert.ok(card.includes("Priced across venues, hedged leg for leg on the cheaper book; refused when no book can fund it. Every quote, hedge, refusal and result on a public record."), "the sentence matches the printed card");
-    assert.ok(card.includes("Not affiliated with or endorsed by the venue."), "the extension disclaimer travels with the clip");
-    assert.ok(!/ProphetX|Novig/.test(card.replace(/Your Exchange/g, "")), "no venue named on the card landing");
+    assert.ok(card.includes("Shown through a browser extension on the venues' pages. Not affiliated with or endorsed by any venue."), "the extension disclaimer travels with the clip");
+    const landing = /<section class="cardland">[\s\S]*?<\/section>/.exec(card)?.[0] || "";
+    assert.ok(landing.length > 500 && !/ProphetX|Novig|Kalshi/.test(landing), "no venue named on the card landing itself; the pitch beside it may name the clip's venues");
     const vcf = await fetch(`${base}/contact.vcf`);
     assert.equal(vcf.status, 200);
     assert.match(vcf.headers.get("content-type") ?? "", /text\/vcard/);
@@ -408,6 +451,14 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     const retail = (await (await fetch(`${base}/api/showcase`)).json()) as { board: unknown[] };
     assert.deepEqual(retail.board, []);
     assert.deepEqual(forbiddenKeysIn(retail), []);
+
+    // /api/venue-view: the host's side, no token, brand-gated like the shell
+    const vv = await fetch(`${base}/api/venue-view?brand=prophetx`);
+    assert.equal(vv.status, 200);
+    assert.deepEqual(await vv.json(), { ok: true, at: "2026-09-20T18:00:00.000Z", retail: true, sharePct: 40, hostVenue: "ProphetX", rows: [] }, "an allowlisted venue brand is the host venue; the share is EVENT_X_PARTNER_SHARE_PCT");
+    const vvOff = (await (await fetch(`${base}/api/venue-view?brand=Kalshi`)).json()) as { hostVenue: string | null };
+    assert.equal(vvOff.hostVenue, null, "a brand off the allowlist falls back to the default host, which is no venue");
+    assert.ok(root.includes("var VV_URL='/api/venue-view'+\"\";") && root.includes('data-view="venue"'), "the shell asks for it and offers the toggle");
 
     const funnel = (await (await fetch(`${base}/api/admin/funnel?token=t0ken`)).json()) as { funnel: { pageLoads7d: Array<{ byPage: Record<string, number> }> } };
     const embedLoads = funnel.funnel.pageLoads7d.reduce((n, d) => n + (d.byPage.embed ?? 0), 0);

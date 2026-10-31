@@ -1757,6 +1757,110 @@ function centsParam(url: URL, key: string, lo: number, hi: number): number | nul
   return v >= lo && v <= hi ? v : null;
 }
 
+/** The hedge routes' public names, and the route a host brand is when it is itself a venue the layer hedges on. */
+export const VENUE_VIEW_ROUTE_NAMES: Readonly<Record<HedgeRoute, string>> = { kalshi_self: "Kalshi", polymarket: "Polymarket", prophetx: "ProphetX", novig: "Novig" };
+export function hostRouteOf(brand: string): HedgeRoute | null {
+  const key = brand.toLowerCase().replace(/\s+/g, "");
+  return key === "kalshi" ? "kalshi_self" : key === "polymarket" ? "polymarket" : key === "prophetx" ? "prophetx" : key === "novig" ? "novig" : null;
+}
+/** One route's refusal in two or three words, for a venue that priced nothing. */
+export function venueViewRefusalWord(detail: string | undefined): string {
+  const d = (detail ?? "").toLowerCase();
+  if (!d) return "not offered";
+  if (/not mapped|no mapping|unmapped/.test(d)) return "not mapped";
+  if (/no depth|empty|too thin|no book/.test(d)) return "no depth";
+  if (/not matched|no verified|pairing/.test(d)) return "no match";
+  if (/gate|allowlist|tonight/.test(d)) return "not open";
+  return "not offered";
+}
+
+export interface VenueViewRow {
+  kalshiTicker: string;
+  sideName: string;
+  league: string;
+  eventTimeIso: string;
+  contracts: number;
+  creditCents: number;
+  /** every venue asked for the other side: what each would have paid the trader for the same protection, the winner marked */
+  venues: Array<{ venue: string; creditCents: number | null; chosen: boolean; why?: string; host: boolean }>;
+  hedgeVenue: string | null;
+  /** how much more the winner paid than the next priced venue, cents (null without two prices) */
+  edgeCents: number | null;
+  /** the other side: what it cost to buy, all in, cents */
+  hedgeCostCents: number | null;
+  /** the spread kept on this lock, cents, and the host's share of it under the published rule */
+  spreadCents: number;
+  hostShareCents: number;
+  evCostBps: number | null;
+}
+
+export interface VenueViewPayload {
+  ok: boolean;
+  at: string;
+  retail: true;
+  sharePct: number;
+  hostVenue: string | null;
+  rows: VenueViewRow[];
+  error?: string;
+}
+
+/**
+ * GET /api/venue-view — the embed's Venue view: for every position on the board, what the trader
+ * never sees and the venue wants to: the quotes compared across venues, which one the other side
+ * went to and by how much it won, what the hedge cost, and the spread with the host's share of it.
+ * Retail-safe by construction: venue names and dollar figures from the scan, no keys, no raw
+ * refusal detail (two words per refused venue), no record ids. The winner is the venue that pays
+ * the trader most; a tie goes to the host when the host is itself one of the venues asked.
+ */
+export function venueViewPayload(state: ScanState, brand: string, sharePct: number): VenueViewPayload {
+  const hostRoute = hostRouteOf(brand);
+  const rows: VenueViewRow[] = [];
+  for (const s of state.rows) {
+    const r = s.res;
+    if (!r.quote.ok) continue;
+    const q = r.quote;
+    const priced = r.routesChecked.filter((c) => c.ok && c.creditCents != null);
+    let winner: HedgeRoute | null = null;
+    for (const c of priced) {
+      if (winner === null) winner = c.route;
+      else {
+        const w = priced.find((x) => x.route === winner)!;
+        if (c.creditCents! > w.creditCents! || (c.creditCents === w.creditCents && c.route === hostRoute)) winner = c.route;
+      }
+    }
+    const sorted = [...r.routesChecked].sort((a, b) => (b.creditCents ?? -1) - (a.creditCents ?? -1));
+    const venues = sorted.map((c) => {
+      const pricedHere = c.ok && c.creditCents != null;
+      return {
+        venue: VENUE_VIEW_ROUTE_NAMES[c.route],
+        creditCents: pricedHere ? c.creditCents! : null,
+        chosen: c.route === winner,
+        host: c.route === hostRoute,
+        ...(pricedHere ? {} : { why: venueViewRefusalWord(c.detail) }),
+      };
+    });
+    const credits = priced.map((c) => c.creditCents!).sort((a, b) => b - a);
+    const edgeCents = credits.length > 1 ? credits[0] - credits[1] : null;
+    const spreadCents = Math.max(0, q.takeCents ?? 0);
+    rows.push({
+      kalshiTicker: r.market.ticker,
+      sideName: r.sideName,
+      league: r.league,
+      eventTimeIso: r.eventTimeIso,
+      contracts: r.position.contracts,
+      creditCents: q.creditCents,
+      venues,
+      hedgeVenue: winner ? VENUE_VIEW_ROUTE_NAMES[winner] : null,
+      edgeCents,
+      hedgeCostCents: q.hedge ? q.hedge.costCents : null,
+      spreadCents,
+      hostShareCents: Math.round((spreadCents * sharePct) / 100),
+      evCostBps: s.evBps,
+    });
+  }
+  return { ok: true, at: state.atIso, retail: true, sharePct, hostVenue: hostRoute ? VENUE_VIEW_ROUTE_NAMES[hostRoute] : null, rows };
+}
+
 /**
  * GET /api/close-quote?ticker=&floor=&cap=&credit= — what leaving a protected position pays
  * RIGHT NOW. Terms locked at the tap come from the page (validated, never re-derived: the lock
@@ -1887,6 +1991,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (url.pathname === "/api/close-quote") {
       await handleCloseQuote(req, res, url);
+      return;
+    }
+    if (url.pathname === "/api/venue-view") {
+      // the host's side of the same positions, for the embed's Venue view; retail-safe, no token
+      const brand = resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND);
+      sendJson(res, 200, venueViewPayload(await getCachedScan(), brand, PARTNER_SHARE_PCT));
       return;
     }
     if (url.pathname === "/api/parlays") {
