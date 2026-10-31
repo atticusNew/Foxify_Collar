@@ -1417,7 +1417,7 @@
    * paid): what is still owed to the holder, what the holder still owes back, or paid in full.
    * Null when the service's record predates cash legs; the line then says only what settled.
    */
-  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap", close: "Protection removed" };
+  const LEG_WORDS = { credit: "Paid to you", floor: "Floor", handback: "Above the cap", close: "Protection removed" };
   /**
    * Why the protection settles the way it does, in the holder's terms: the pick moved up, so the
    * upside they sold is worth more now; moved down, so the floor they hold is worth more now.
@@ -1441,6 +1441,8 @@
     const amount = (l.to === "holder" && l.leg === "credit" ? "+" : "") + esc(usd(l.dueCents));
     if (l.outstandingCents === 0 && l.paidCents > 0) return amount + ' <span class="ael-dim">&middot; paid ' + (l.paidAt ? esc(fmtAt(l.paidAt)) : "") + "</span>";
     if (l.paidCents > 0) return amount + ' <span class="ael-dim">&middot; ' + esc(usd(l.paidCents)) + " paid, " + esc(usd(l.outstandingCents)) + " owed " + who + "</span>";
+    // the credit is the holder's from the tap; it clears with the position, so "owed" would read as late
+    if (l.leg === "credit" && l.to === "holder") return amount + ' <span class="ael-dim">&middot; credited at the lock; settles with the position</span>';
     return amount + ' <span class="ael-dim">&middot; owed ' + who + "</span>";
   };
 
@@ -1630,22 +1632,22 @@
     ledgerRow("Cash now", "+" + esc(usd(creditCents)), was ? "" : null, "ael-last") +
     "</div>";
 
-  /** What the slider reads out to a screen reader at each stop. */
-  const tierValueText = (k, tr, tt) => TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(tt.creditCents) + " now";
   /**
-   * The shape as a slider: more upside on the left, a higher floor on the right, the stop's name
-   * between the ends. Only the shapes the book offers for this pick are stops (two or three); the
-   * figures above move as it moves, so the trade-off is seen rather than read.
+   * The shape as a segmented control: one button per shape the book offers for this pick (two or
+   * three), the chosen one pressed. A tap repaints the slip above with that shape's figures, so the
+   * trade-off is seen in the three lines rather than read off the control. Each button reads its
+   * figures to a screen reader.
    */
-  const sliderHtml = (B, n, offered, keys, tier) => {
-    const i = Math.max(0, keys.indexOf(tier));
-    const tt = offered[keys[i]];
-    const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
-    return (
-      '<div class="ael-adjust"><div class="ael-adj-h"><span>More upside</span><b>' + esc(TIER_WORDS[keys[i]]) + "</b><span>Higher floor</span></div>" +
-      '<input type="range" class="ael-range" min="0" max="' + (keys.length - 1) + '" step="1" value="' + i + '" aria-label="Shape of the deal" aria-valuetext="' + esc(tierValueText(keys[i], tr, tt)) + '" /></div>'
-    );
-  };
+  const shapeSegs = (B, n, offered, keys, tier) =>
+    '<div class="ael-shape" role="group" aria-label="Shape of the deal">' +
+    keys
+      .map((k) => {
+        const tt = offered[k];
+        const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
+        return '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (k === tier) + '" aria-label="' + esc(TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(tt.creditCents) + " now") + '">' + esc(TIER_WORDS[k]) + "</button>";
+      })
+      .join("") +
+    "</div>";
 
   /**
    * One toggle everywhere (Details, Rules): the label stays, the chevron turns, aria-expanded says
@@ -1653,13 +1655,55 @@
    */
   const toggleA = (cls, label, open) => '<a href="#" class="ael-tg ' + cls + '" aria-expanded="' + (open ? "true" : "false") + '">' + label + '<span class="ael-tgc">' + CHEVRON + "</span></a>";
 
-  /** How it works, as three lines a holder can scan: the sale, the two outcomes, what is left to do. */
-  const howList = (nick, rs, was, shopped) =>
-    '<ul class="ael-howl">' +
-    "<li>You sell part of this position at today's price and keep the rest. That is the cash now.</li>" +
-    "<li>" + esc(nick) + ' lose: <b class="ael-hl-floor">' + esc(usd(rs.floorTotal)) + "</b> instead of $0. " + esc(nick) + ' win: <b class="ael-hl-cap">' + esc(usd(rs.capTotal)) + "</b> instead of " + esc(was) + ".</li>" +
-    "<li>Settles on the same official result as your pick; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + ".</li>" +
-    "</ul>";
+  /** One row of the details: a dim label, then the value; `wide` spans both columns (the rules grid). */
+  const drow = (label, value, cls) => '<span class="ael-dl' + (cls ? " " + cls : "") + '">' + label + '</span><span class="ael-dv' + (cls ? " " + cls : "") + '">' + value + "</span>";
+  const dwide = (html) => '<div class="ael-dwide">' + html + "</div>";
+
+  /**
+   * Where the other side goes, as one sentence: the venue, how many venues it beat and by how much
+   * for the holder ("Novig · best of 3 venues · $0.06 more for you"); each venue's figure is the
+   * row's tooltip. This page's own venue, when it priced nothing, is named with the two-word reason,
+   * so the holder always sees the venue they are standing on. Empty without routing.
+   */
+  const otherSideWords = (rt) => {
+    const v = hedgeVenueOf(rt);
+    if (!v) return null;
+    const routes = pricedRoutes(rt);
+    const priced = routes.filter((r) => r.creditCents != null);
+    const muted = routes.find((r) => r.creditCents == null);
+    const parts = ["<b>" + esc(v) + "</b>"];
+    if (priced.length > 1) {
+      parts.push("best of " + priced.length + " venues");
+      const edge = venueEdgeCents(rt);
+      if (edge > 0) parts.push(esc(usd(edge)) + " more for you");
+    } else if (comparisonPrices(rt)) parts.push(esc(comparisonPrices(rt)));
+    if (muted) parts.push('<span class="ael-dim">' + esc(muted.venue) + " " + esc(muted.why) + "</span>");
+    const tip = priced.length > 1 ? priced.map((r) => r.venue + " " + usd(r.creditCents)).join(" \u00b7 ") + (muted ? " \u00b7 " + muted.venue + ": " + (muted.detail || muted.why) : "") : muted && muted.detail ? muted.venue + ": " + muted.detail : "";
+    return { html: parts.join(" &middot; "), tip };
+  };
+
+  /**
+   * Details behind the offer's toggle, as rows in one grammar: Shape (the segmented control, when
+   * the book offers more than one), Other side (the venue, the race in a few words), Until (the
+   * clock and the fine print), Rules (the toggle and the four cases, the grid when open), How (two
+   * sentences, no figures: the figures are the three lines above).
+   */
+  const detailRows = (B, st, p, offered, keys, n, fine, shopped) => {
+    const rows = [];
+    if (keys.length > 1) rows.push(drow("Shape", shapeSegs(B, n, offered, keys, st.tier), "ael-dshape"));
+    const other = otherSideWords(p.routing);
+    if (other) rows.push(drow("Other side", "<span" + (other.tip ? ' title="' + esc(other.tip) + '"' : "") + ">" + other.html + "</span>"));
+    const until = p.eventTimeIso ? esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)) : null;
+    const finer = fine.filter((f) => f !== "Priced live");
+    rows.push(drow(until ? "Until" : "Priced", (until ? until + ' <span class="ael-dim">&middot; priced live' : '<span class="ael-dim">live') + (finer.length ? " &middot; " + finer.join(" &middot; ") : "") + "</span>"));
+    const rt = p.routing;
+    if (rt && Array.isArray(rt.tails) && rt.tails.length) {
+      rows.push(drow(toggleA("ael-rules-a", "Rules", st.rules), st.rules ? "" : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + "</span>"));
+      if (st.rules) rows.push(dwide(rulesGrid(rt)));
+    }
+    rows.push(drow("How", "You sell part of the position today and keep the rest. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + "; it settles on the same official result, nothing to manage."));
+    return '<div class="ael-drows">' + rows.join("") + "</div>";
+  };
 
   /**
    * The rules as a grid, one case a row: what the venue does with the position, and (dim) what the
@@ -1685,31 +1729,16 @@
     return '<div class="ael-rgrid"><div class="ael-rgh">If the game&hellip;</div>' + rows.join("") + "</div>";
   };
 
-  /** The rules row: the toggle, the cases it covers while folded, the grid when open. */
-  const rulesHtml = (rt, open) => {
-    if (!rt || !Array.isArray(rt.tails) || !rt.tails.length) return "";
-    return '<div class="ael-rulesrow">' + toggleA("ael-rules-a", "Rules", open) + (open ? "" : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + "</span>") + "</div>" + (open ? rulesGrid(rt) : "");
-  };
-
   /** The offer in the simple layout; a string, so a slide can refresh the figures in place and keep the panel's record of itself true. */
   const simpleOfferHtml = (B, st, p, q, offered, keys, n, removedLine) => {
     const t = offered[st.tier] || q;
     const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
     const was = usd(centsOf(100, n));
-    const fine = ["Priced live"];
-    if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
-    fine.push(...notes(B));
+    // the clock is the Until row's; the rest of the fine print rides on that row
+    const fine = ["Priced live", ...notes(B)];
     const shopped = pricedCount(p.routing) > 1;
-    // one toggle beside the pill; the shape (slider), the venues, the clock, how it works and the rules wait behind it
-    const details = st.details
-      ? '<div class="ael-details">' +
-        (keys.length > 1 ? sliderHtml(B, n, offered, keys, st.tier) : "") +
-        venuePick(p.routing) +
-        '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
-        howList(shortOf(B.ticker), rs, was, shopped) +
-        rulesHtml(p.routing, st.rules) +
-        "</div>"
-      : "";
+    // one toggle beside the pill; the shape, the other side, the clock, the rules and how it works wait behind it as rows
+    const details = st.details ? '<div class="ael-details">' + detailRows(B, st, p, offered, keys, n, fine, shopped) + "</div>" : "";
     return (
       simpleLedger(shortOf(B.ticker), rs, t.creditCents, was) +
       '<div class="ael-acts ael-offer-acts"><button type="button" class="ael-go ael-pillgo" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + '</span>Lock in</button><span class="ael-links">' + toggleA("ael-det-a", "Details", st.details) + "</span></div>" +
@@ -1735,7 +1764,7 @@
     if (B.match === "settled") return paintRefusal(B, panel, "settled", "");
     if (!B.size) return paintRefusal(B, panel, "no_size", "");
     if (!st.quote) {
-      setPanel(B, panel, '<div class="ael-skel"></div><div class="ael-skel" style="width:70%"></div>');
+      setPanel(B, panel, '<div class="ael-wait">Pricing from the live book&hellip;</div>');
       return;
     }
     if (!st.quote.ok) return paintRefusal(B, panel, st.quote.code, st.quote.message);
@@ -1775,32 +1804,13 @@
         };
         toggle(".ael-det-a", "details");
         toggle(".ael-rules-a", "rules");
-        const range = panel.querySelector(".ael-range");
-        if (range)
-          range.oninput = () => {
-            // the figures follow the thumb in place: a repaint here would rebuild the slider under the drag
-            st.tier = keys[Number(range.value)] || st.tier;
-            const tt = offered[st.tier];
-            const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
-            const vals = panel.querySelectorAll(".ael-ledger .ael-lr > b");
-            if (vals.length >= 3) {
-              vals[0].textContent = usd(tr.capTotal);
-              vals[1].textContent = usd(tr.floorTotal);
-              vals[2].textContent = "+" + usd(tt.creditCents);
-            }
-            const word = panel.querySelector(".ael-adj-h b");
-            if (word) word.textContent = TIER_WORDS[st.tier];
-            // the how-it-works line quotes the same two figures
-            const hlFloor = panel.querySelector(".ael-hl-floor");
-            if (hlFloor) hlFloor.textContent = usd(tr.floorTotal);
-            const hlCap = panel.querySelector(".ael-hl-cap");
-            if (hlCap) hlCap.textContent = usd(tr.capTotal);
-            range.setAttribute("aria-valuetext", tierValueText(st.tier, tr, tt));
-            const factB = B.box.querySelector(".ael-line .ael-fact b");
-            if (factB) factB.textContent = usd(tr.floorTotal);
-            // the panel and the line now show what a fresh paint would draw; say so, or the next scan redraws them
-            B.panelHtml = simpleOfferHtml(B, st, p, q, offered, keys, n, removedLine);
-            B.lineHtml = offerLine(tr);
+        // a tap on a shape repaints the slip and the line with that shape's figures
+        for (const c of panel.querySelectorAll(".ael-shape-b"))
+          c.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            st.tier = c.getAttribute("data-tier") || st.tier;
+            paintRow(B);
           };
         panel.querySelector(".ael-go").onclick = () => lockIn(B, n, offered[st.tier] || q);
       });
@@ -1937,6 +1947,11 @@
    * ("ProphetX $3.10 vs Kalshi $2.40, hedged on ProphetX"). Null when only one venue priced.
    */
   const comparisonOf = (rt) => (rt && typeof rt.comparison === "string" && rt.comparison ? rt.comparison : null);
+  /** The same line beside a row that already names the venue: the prices only, the "hedged on X" clause dropped. */
+  const comparisonPrices = (rt) => {
+    const cmp = comparisonOf(rt);
+    return cmp ? cmp.replace(/,?\s*hedged on [^,]+$/i, "") : null;
+  };
   /**
    * Grey notes in the offer's fine print: the competition when two venues priced the other side,
    * else where the other side is bought when that is not this page's venue.
@@ -2028,31 +2043,24 @@
     return words.length ? words.join(" \u00b7 ") : tails.length + " cases";
   };
   /**
-   * The receipt's routing rows, in the story's order: "Hedged on" (the venue; the service's reason
-   * is the operator's) and the competition when two venues priced the other side (routeHeadRows);
-   * then, after the order itself, the rules as the grid behind a toggle (`rulesOpen`), the pinned
-   * terms, and (operator) every route's cost (rulesRows).
+   * The competition, folded into the receipt's Other side row as a dim tail: how many venues
+   * priced the other side and what the winner saved the holder ("best of 3 venues, $0.06 more for
+   * you"), each venue's figure in the tooltip; a single comparison in words when only one priced.
+   * The service's reason for the pick is the operator's. Empty without routing.
    */
-  const routeHeadRows = (row, rt) => {
+  const compareTail = (rt) => {
     if (!rt) return "";
-    const lines = [];
-    const v = hedgeVenueOf(rt);
-    if (v) lines.push(row("Hedged on", esc(v) + (operator() && rt.reason ? ' <span class="ael-dim">&middot; ' + esc(rt.reason) + "</span>" : "")));
-    // the competition as chips (each venue's credit for the same protection, the winner marked) and the edge in dollars
     const routes = pricedRoutes(rt);
-    if (routes.length > 1) {
+    const priced = routes.filter((r) => r.creditCents != null);
+    let words = "";
+    let tip = "";
+    if (priced.length > 1) {
       const edge = venueEdgeCents(rt);
-      lines.push(
-        row(
-          "Compared",
-          '<span class="ael-vchips">' + routes.map((r) => venueChip(r, false)).join("") + (edge > 0 ? '<span class="ael-dim ael-edge">' + esc(usd(edge)) + " more for you</span>" : "") + "</span>",
-        ),
-      );
-    } else {
-      const cmp = comparisonOf(rt);
-      if (cmp) lines.push(row("Compared", esc(cmp)));
-    }
-    return lines.join("");
+      words = "best of " + priced.length + " venues" + (edge > 0 ? ", " + esc(usd(edge)) + " more for you" : "");
+      tip = priced.map((r) => r.venue + " " + usd(r.creditCents)).join(" \u00b7 ");
+    } else if (comparisonPrices(rt)) words = esc(comparisonPrices(rt));
+    if (operator() && rt.reason) words += (words ? " &middot; " : "") + esc(rt.reason);
+    return words ? ' <span class="ael-dim"' + (tip ? ' title="' + esc(tip) + '"' : "") + ">&middot; " + words + "</span>" : "";
   };
   /** A day on its own ("Oct 28") for a date-only read stamp; a timestamp prints as fmtAt. */
   const fmtRead = (iso) => {
@@ -2140,23 +2148,26 @@
       );
     }
     const rt = st.rcptRouting || rec.routing || null;
-    const lines = [routeHeadRows(row, rt)];
-    if (st.rcptBusy && !h) lines.push(row("Receipt", '<span class="ael-dim">reading&hellip;</span>'));
-    else if (!h) lines.push(row("Receipt", '<span class="ael-dim">' + esc(st.rcptErr || "not available right now") + "</span>"));
+    const lines = [];
+    // the venue the routing named stands in while the hedge view is read, or when it never comes
+    const named = hedgeVenueOf(rt);
+    if (st.rcptBusy && !h) lines.push(row("Other side", (named ? "<b>" + esc(named) + "</b>" : "") + '<span class="ael-dim">' + (named ? " &middot; " : "") + "reading&hellip;</span>"));
+    else if (!h) lines.push(row("Other side", (named ? "<b>" + esc(named) + "</b>" : "") + '<span class="ael-dim">' + (named ? " &middot; " : "") + esc(st.rcptErr || "not available right now") + "</span>"));
     else {
       const units = h.unitsMilli != null ? (h.unitsMilli / 1000).toFixed(2).replace(/\.00$/, "") : null;
       const venue = h.venue || "Kalshi";
       // Kalshi holds the other side as No on the club; any other book holds it as the other club
-      const side = /kalshi/i.test(venue) ? "No on " + esc(venue) : "the other side on " + esc(venue);
+      const side = /kalshi/i.test(venue) ? "contracts of No" : "contracts of the other side";
+      // the order itself rides on the row: its handle and the rail it took; the moment is the Locked line's
+      const order = h.orderId ? ' <span class="ael-dim">&middot; order <code>' + esc(String(h.orderId).slice(0, 8)) + "&hellip;</code></span>" + viaWords(h) : "";
       if (h.simulated) {
         // nothing reached the venue: say so, and (operator) the rail or fallback that held it
         const why = operator() && h.fallbackReason ? ' <span class="ael-dim">&middot; ' + esc(String(h.fallbackReason)) + "</span>" : "";
-        lines.push(row("Other side", (units ? esc(units) + " contracts " : "") + "priced at " + esc(venue) + "'s book" + (h.costCents != null ? " &middot; " + esc(usd(h.costCents)) : "")));
-        lines.push(row("Order", '<span class="ael-dim">not sent; covered at the book</span>' + why));
+        lines.push(row("Other side", (units ? esc(units) + " contracts " : "") + "priced at <b>" + esc(venue) + "</b>'s book" + compareTail(rt) + ' <span class="ael-dim">&middot; not sent; covered at the book</span>' + why));
+        if (h.costCents != null) lines.push(row("Cost", esc(usd(h.costCents)) + ' <span class="ael-dim">at the book</span>'));
       } else {
-        lines.push(row("Other side", esc(units || "") + " contracts " + side + (h.avgPriceMilli != null ? " at " + esc((h.avgPriceMilli / 10).toFixed(1)) + "c each with fees" : "")));
+        lines.push(row("Other side", "<b>" + esc(venue) + "</b> &middot; " + esc(units || "") + " " + side + (h.avgPriceMilli != null ? " at " + esc((h.avgPriceMilli / 10).toFixed(1)) + "c with fees" : "") + compareTail(rt) + order));
         if (h.costCents != null) lines.push(row("Cost", esc(usd(h.costCents)) + ' <span class="ael-dim">all in</span>'));
-        if (h.orderId) lines.push(row("Order", "<code>" + esc(String(h.orderId).slice(0, 8)) + "&hellip;</code> " + esc(venue) + viaWords(h) + (h.at ? ' <span class="ael-dim">&middot; ' + esc(fmtAt(h.at)) + "</span>" : "")));
       }
       // the record's own id is the operator's handle; the holder has the order
       if (operator() && h.receiptId) lines.push(row("Record", "<code>" + esc(h.receiptId) + "</code>"));
@@ -2438,7 +2449,7 @@
     if (!L.q && !L.err) {
       // the first read is on its way
       if (!L.busy) setTimeout(() => leaveQuote(B), 0);
-      return '<div class="ael-leave"><div class="ael-skel"></div><div class="ael-skel" style="width:70%"></div></div>';
+      return '<div class="ael-leave"><div class="ael-wait">Pricing your exit&hellip;</div></div>';
     }
     if (!L.q) {
       return '<div class="ael-leave"><div class="ael-ph"><b>' + esc(L.err.why) + "</b>" + (L.err.next ? "<span>" + esc(L.err.next) + "</span>" : "") + '</div><div class="ael-leave-acts"><button type="button" class="ael-go ael-quiet ael-stay">Back</button></div></div>';

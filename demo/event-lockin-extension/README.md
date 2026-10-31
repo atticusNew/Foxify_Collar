@@ -149,21 +149,24 @@ of open plays. Once a matched play exists, under its row:
    coloured figure), "Cash now +$0.42"; then a **Lock in** pill the width of its word, and at the
    right one toggle, **Details** (0.7.32: the label holds still and a chevron turns; the same
    toggle shape serves Details and Rules everywhere, in the offer, under the protected slip and
-   inside the receipt). Details opens, under the pill: first the shape as a slider (only when the
-   book funds more than one shape), "More upside" at the left end, "Higher floor" at the right,
-   the shape's name over the thumb (Max upside / Balanced / Max floor); dragging it reprices the
-   three rows, the collapsed line and the how-it-works figures as it moves, and the shape under
-   the thumb is the one the tap locks. Then where the other side goes ("Other side · Kalshi"),
-   the clock ("Priced live · until kickoff Thu 8:15pm ET"), how it works as three lines (the sale
-   that pays the cash now; "Packers lose: $4.14 instead of $0. Packers win: $5.30 instead of
-   $7.69."; settles on the same official result, the other side bought the second you tap), and
-   a **Rules** row: the toggle with the four cases beside it while folded, the grid when open
-   (one case a row, what the venue does and what the protection does). A protected play's panel
+   inside the receipt). Details opens, under the pill, as five rows in one grammar (0.7.36: a dim
+   label on the left, the value on the right, one type size, two tones): **Shape**, a segmented
+   control (Max upside / Balanced / Max floor, only when the book funds more than one shape; a
+   tap repaints the three rows and the collapsed line with that shape's figures, and the pressed
+   one is what the tap locks); **Other side**, one sentence ("Novig · best of 2 venues · $0.11
+   more for you", this page's venue named with its two-word reason when it priced nothing; each
+   venue's figure in the tooltip); **Until**, the clock ("tip-off Tue 8:00pm ET · priced live");
+   **Rules**, the toggle with the four cases beside it while folded, the grid when open (one case
+   a row, what the venue does and what the protection does); **How**, two sentences with no
+   figures (the figures are the three rows above). A protected play's panel
    is the same three rows without the "of" column, the quiet **Leave early** button (its meaning
    is the leave sheet's header, not a sentence on the row), the **Details** toggle at the right,
    and the facts line in view under them ("Locked Fri 7:12pm ET · the other side bought in
-   1.3s"). Details opens the receipt in place, in the story's order: Hedged on, Compared, the
-   other side, the cost, the order, Rules, Terms, the cash legs (the record id is the operator's).
+   1.3s"). Details opens the receipt in place as the same grammar, five rows: **Other side**
+   (the venue, the contracts and price, the competition in a dim tail, the order id and the
+   rail), **Cost**, **Rules**, **Terms**, **Paid to you** (the cash legs; the record id is the
+   operator's). While the book is read, the panel is one line of words ("Pricing from the live
+   book…", "Pricing your exit…" in the leave sheet), not bars.
    Nothing is removed: every figure of the full layout is one tap away.
    The other side is sold back through the same executor that bought it: on an armed ticker with
    sending on, a Kalshi order at or over the walked worst bid (immediate or cancel), the close
@@ -574,6 +577,19 @@ a stale tab send one. Novig only, for now: on Kalshi and ProphetX the hedges go 
 aggregator and never show as the holder's cards. The line is the confirmation the recording
 wants after a ProphetX lock: open Novig's Portfolio and the hedge is there, named for what it is.
 
+**Details as rows (0.7.36).** The Details block had grown five visual grammars stacked under one
+pill: a slider with its own heading, a strip of venue chips, a fine-print line, a bulleted
+how-it-works that repeated the slip's figures, and a rules row. On the recording it read as a
+lot of writing. 0.7.36 makes it five rows in one grammar, label left and value right, with the
+shape as a segmented control (the three words were already the slider's stops; a tap repaints
+the slip instead of the figures following a thumb) and How reduced to two sentences with no
+figures. The receipt follows: Hedged on, Compared and Order fold into the Other side row (the
+venue in bold, the race as a dim tail with each venue's figure in the tooltip, the order id and
+rail at the end; the lock's timestamp is the facts line's, so it is not repeated), the cash leg
+reads **Paid to you** rather than "Credit · owed to you", and a credit not yet marked paid reads
+"credited at the lock; settles with the position". The loading skeletons are gone: "Pricing from
+the live book…" and "Pricing your exit…" are the one line while the book answers.
+
 **Leave early (0.7.35).** One plain line, `To leave now · You pay $0.30` or `You get $0.30`, then
 `Net · −$0.12 after the $0.18 paid to you at the lock`, then `Staying · $1.88 or $18.93`, the two
 buttons, and a **Why** toggle that opens the reason (the pick moved up, so the upside sold is
@@ -702,17 +718,17 @@ Operator actions (token in `x-admin-token`), for the recording day:
 1. Open the preview My Trades with the extension loaded. Every row has a line under it: Lock in
    with the floor ("Lose, and still get $x."), Unavailable with a reason, or Protected.
 2. Tap a Lock in line. The panel opens under that row; the rows below move down: three rows
-   (win, lose, cash now) and the Lock in pill. Tap **Details** and drag the slider towards
-   "Higher floor": the three rows, the line and the how-it-works figures reprice as it moves;
-   drag it back: they return. The slider is only offered when the book funds more than one
-   shape; a heavy favourite often has one. Under it: the hedge venue, the clock, how it works in
-   these figures, and **Rules**, which opens to the grid of the four cases.
+   (win, lose, cash now) and the Lock in pill. Tap **Details** and tap **Max floor** on the
+   Shape control: the three rows and the line reprice; tap **Max upside**: they return. The
+   control is only offered when the book funds more than one shape; a heavy favourite often has
+   one. Under it: Other side (the venue and the race), Until (the clock), **Rules**, which opens
+   to the grid of the four cases, and How in two sentences.
 3. Tap **Lock in**. The pill reports the stages in words (Pricing from the live book, Writing
    the record, Buying the other side) under a slow sheen, with whole seconds only past three; the
    line flashes solid and settles as the Protected pill with "$x or $y · on Kalshi.";
    the panel is the three rows with the locked numbers, the Leave early button and a Details link.
-   Tap **Details**: the facts line with how long it took, the other side, the cost, the order,
-   the record id. Open `/` on the service: the position is there with `source: lock`.
+   Tap **Details**: the facts line with how long it took, then Other side (venue, contracts,
+   price, the race, the order), Cost, Rules, Terms, Paid to you. Open `/` on the service: the position is there with `source: lock`.
    With Rehearsal on in the options, the same tap ends on a Protected line marked "rehearsal"
    with a Reset link, and nothing reaches the service.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).

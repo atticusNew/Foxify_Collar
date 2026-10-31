@@ -199,15 +199,8 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-ph b { display: block; font-size: 14px; font-weight: 600; color: var(--ael-fg-strong); }
 .ael-ph span { display: block; font-size: 12px; color: var(--ael-muted); margin-top: 3px; }
 
-.ael-skel {
-  height: 14px;
-  border-radius: 6px;
-  background: linear-gradient(90deg, var(--ael-bg-raise) 25%, var(--ael-bg-hover) 50%, var(--ael-bg-raise) 75%);
-  background-size: 200% 100%;
-  animation: ael-shimmer 1.2s infinite;
-  margin: 12px 0;
-}
-@keyframes ael-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+/* Waiting on the book: one line of words in the muted tone, no bars. */
+.ael-wait { font-size: 13px; color: var(--ael-muted); padding: 12px 0; line-height: 1.4; }
 
 /* The slip: rows with dividers, the venue's type size, right-aligned tabular numbers; the floor
    is the one coloured figure. Nothing under 12px anywhere in the panel. */
@@ -225,8 +218,6 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
    cards; the label keeps its own line then. */
 .ael-venues { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; padding: 9px 0 2px; border-top: 1px solid var(--ael-divider); }
 .ael-venues .ael-l { font-size: 12px; color: var(--ael-muted); margin-right: 2px; white-space: nowrap; }
-.ael-vchips { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; vertical-align: middle; }
-.ael-vchips .ael-edge { white-space: nowrap; }
 .ael-vchip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--ael-border); border-radius: 999px; padding: 3px 8px; font-size: 12px; line-height: 1.3; color: var(--ael-muted); background: var(--ael-bg-deep); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ael-vchip b { font-weight: 600; color: var(--ael-fg-strong); }
 .ael-vchip.ael-won { border-color: var(--ael-accent); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); }
@@ -300,14 +291,7 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-tgc { display: inline-flex; width: 14px; height: 14px; transition: transform 0.18s ease; }
 .ael-tgc svg { width: 14px; height: 14px; display: block; }
 .ael-tg[aria-expanded="true"] .ael-tgc { transform: rotate(180deg); }
-/* How it works: three lines, not a paragraph */
-.ael-howl { margin: 8px 0 6px; padding: 0 0 0 16px; font-size: 12.5px; color: var(--ael-soft); line-height: 1.45; max-width: 70ch; }
-.ael-howl li { margin: 0 0 4px; }
-.ael-howl b { font-weight: 600; color: var(--ael-fg); }
-/* Rules: its own row (toggle, then the cases it covers while folded); open, a grid with one case a row */
-.ael-rulesrow { display: flex; align-items: center; gap: 8px; margin: 2px 0 0; font-size: 12px; color: var(--ael-muted); min-width: 0; }
-.ael-rulesrow .ael-tg { padding-left: 0; }
-.ael-rulesrow .ael-dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Rules open: a grid with one case a row */
 .ael-rgrid { display: flex; flex-direction: column; gap: 5px; font-size: 12px; line-height: 1.4; margin: 2px 0 6px; }
 .ael-rgh { color: var(--ael-dim); font-size: 11.5px; }
 .ael-rg { display: grid; grid-template-columns: 8.5em 1fr; column-gap: 10px; align-items: baseline; }
@@ -317,24 +301,25 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 /* the helper beside a button gives way first, so Details keeps its place at the right of the row */
 .ael-offer-acts > span:not(.ael-links) { flex: 1 1 60px; min-width: 60px; font-size: 12px; color: var(--ael-muted); line-height: 1.3; }
 
-/* Adjust: the shape as a slider under the slip. More upside to the left, a higher floor to the
-   right, the stop's name between the ends; two or three stops, the figures above follow the thumb. */
-.ael-adjust { margin: 8px 0 0; padding: 8px 2px 0; }
-.ael-adj-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--ael-muted); }
-.ael-adj-h b { font-size: 13px; font-weight: 600; color: var(--ael-fg-strong); }
-.ael-range { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 32px; margin: 2px 0 0; background: transparent; cursor: pointer; outline: none; }
-.ael-range::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--ael-border-hover); }
-.ael-range::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; margin-top: -9px; border-radius: 50%; background: var(--ael-accent); border: 3px solid var(--ael-bg); box-shadow: 0 0 0 1.5px var(--ael-accent); }
-.ael-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 1.5px var(--ael-accent), 0 0 0 5px var(--ael-accent-wash-3); }
-.ael-range::-moz-range-track { height: 4px; border-radius: 2px; background: var(--ael-border-hover); }
-.ael-range::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--ael-accent); border: 3px solid var(--ael-bg); box-shadow: 0 0 0 1.5px var(--ael-accent); }
-
-/* Details: the venue strip, the clock, how it works and the rules, one block under the pill. */
-.ael-details { margin: 10px 0 2px; padding-top: 2px; border-top: 1px solid var(--ael-divider); }
-.ael-details .ael-venues { border-top: 0; padding-top: 8px; }
-.ael-details .ael-how { margin: 8px 0 6px; }
-.ael-details .ael-fine a { color: var(--ael-muted); }
-.ael-rules p { color: var(--ael-muted); }
+/* Details: five rows in one grammar under the pill. A dim label on the left, the value on the
+   right, every row the same size and the same two tones; the rules grid spans both columns. */
+.ael-details { margin: 10px 0 2px; padding-top: 8px; border-top: 1px solid var(--ael-divider); }
+.ael-drows { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 7px; align-items: baseline; font-size: 12.5px; line-height: 1.45; margin: 0 0 8px; }
+.ael-dl { color: var(--ael-muted); white-space: nowrap; }
+.ael-dl .ael-tg { font-size: 12.5px; padding: 0; color: var(--ael-muted); }
+.ael-dl .ael-tg:hover, .ael-dl .ael-tg[aria-expanded="true"] { color: var(--ael-fg-strong); }
+.ael-dv { color: var(--ael-soft); min-width: 0; overflow-wrap: anywhere; }
+.ael-dv b { font-weight: 600; color: var(--ael-fg-strong); }
+.ael-dv .ael-dim { color: var(--ael-muted); }
+.ael-dwide { grid-column: 1 / -1; }
+.ael-dwide .ael-rgrid { margin: 0 0 2px; }
+/* Shape: a segmented control, one button a shape, the chosen one in the venue's accent. */
+.ael-dl.ael-dshape, .ael-dv.ael-dshape { align-self: center; margin-bottom: 3px; }
+.ael-shape { display: inline-flex; border: 1px solid var(--ael-border); border-radius: 8px; padding: 2px; background: var(--ael-bg-deep); gap: 2px; max-width: 100%; }
+.ael-shape-b { appearance: none; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ael-muted); font: inherit; font-size: 12.5px; font-weight: 500; line-height: 1.2; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+.ael-shape-b:hover { color: var(--ael-fg-strong); }
+.ael-shape-b[aria-pressed="true"] { border-color: var(--ael-accent); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); font-weight: 600; }
+.ael-shape-b:focus-visible { outline: 2px solid var(--ael-accent); outline-offset: 1px; }
 
 .ael-fine { font-size: 12px; color: var(--ael-muted); text-align: left; margin: 0 0 4px; line-height: 1.4; }
 .ael-fine a { color: var(--ael-muted); text-decoration: underline; }
@@ -373,6 +358,7 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-rcpt { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 4px; font-size: 12px; color: var(--ael-soft); background: rgba(127, 127, 127, 0.1); border-radius: var(--ael-radius); padding: 8px 10px; margin: 2px 0 8px; font-variant-numeric: tabular-nums; line-height: 1.4; }
 .ael-rcpt span { color: var(--ael-dim); }
 .ael-rcpt b { font-weight: 600; color: var(--ael-fg); overflow-wrap: anywhere; }
+.ael-rcpt b b { color: var(--ael-fg-strong); }
 .ael-rcpt code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--ael-soft); }
 .ael-rcpt .ael-dim { color: var(--ael-muted); font-weight: 500; }
 
