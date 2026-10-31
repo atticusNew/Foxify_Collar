@@ -79,6 +79,25 @@ services:
         value: "25"
       - key: EVENT_X_MIN_CREDIT_BPS
         value: "25"
+      # Which hedge venues are offered tonight (kalshi, prophetx, novig, polymarket; comma
+      # separated). A venue left out is not priced, not shown in the Venue view and never sent
+      # to. Unset, every route is offered, which puts Polymarket on the board; the demo shows
+      # Kalshi, ProphetX and Novig.
+      - key: EVENT_HEDGE_VENUES
+        value: "kalshi,prophetx,novig"
+      # NOVIG BOOK. The Novig route prices from the venue's own market, read as the signed-dialect
+      # reference book (the same read atticus-event-shadow calls "reference book A"). Without a
+      # host the route is offered but every row reads "not read". The catalog and books are
+      # PUBLIC, so the host alone turns the read on; the key pair is optional and only switches
+      # the reads to the account-scoped paths. Set in the dashboard, never in git; copy the
+      # values from atticus-event-shadow (Render does not share env between services).
+      #   REFERENCE_BOOK_SIGNED_HOST=https://api....   the venue's API host, nothing else needed
+      #   REFERENCE_BOOK_SIGNED_KEY_ID=<key id>          optional, with the PEM
+      #   REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM=<PKCS8 PEM>
+      #   REFERENCE_BOOK_SIGNED_LEAGUES=nba=<venue's word>  optional; copy if the shadow sets it
+      # With no REFERENCE_BOOK_SIGNED_HOST the route falls back to VENUE_API_HOST when that is set.
+      - key: REFERENCE_BOOK_SIGNED_HOST
+        sync: false
       # Embed demo (/): host names honoured on ?brand=, comma-separated; anything
       # else renders as EVENT_X_EMBED_BRAND. These names carry a colourway and a
       # light/dark shell (scripts/eventProtectEmbedHtml.ts BRAND_PRESETS); any
