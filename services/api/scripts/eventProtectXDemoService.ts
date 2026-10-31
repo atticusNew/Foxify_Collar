@@ -1790,7 +1790,7 @@ export interface VenueViewRow {
   /** every venue asked for the other side: what each would have paid the trader for the same protection, the winner marked */
   venues: Array<{ venue: string; creditCents: number | null; chosen: boolean; why?: string; host: boolean }>;
   hedgeVenue: string | null;
-  /** how much more the winner paid than the next priced venue, cents (null without two prices) */
+  /** how much more the winner pays the trader than the next priced venue, cents; negative when the scan chose on all-in cost (null without two prices) */
   edgeCents: number | null;
   /** the other side: what it cost to buy, all in, cents */
   hedgeCostCents: number | null;
@@ -1812,29 +1812,34 @@ export interface VenueViewPayload {
 
 /**
  * GET /api/venue-view — the embed's Venue view: for every position on the board, what the trader
- * never sees and the venue wants to: the quotes compared across venues, which one the other side
- * went to and by how much it won, what the hedge cost, and the spread with the host's share of it.
- * Retail-safe by construction: venue names and dollar figures from the scan, no keys, no raw
- * refusal detail (two words per refused venue), no record ids. The winner is the venue that pays
- * the trader most; a tie goes to the host when the host is itself one of the venues asked.
+ * never sees and the venue wants to: the quotes compared across the venues offered tonight
+ * (EVENT_HEDGE_VENUES; a venue left out is not shown), which one the other side goes to and by
+ * how much it beat the next price, what the hedge costs, and the spread with the host's share.
+ * The winner is the route the scan chose (the one the lock would send to); without one, the
+ * venue paying the trader most, a tie going to the host when the host is itself a venue asked.
+ * Retail-safe by construction: venue names and dollar figures, no keys, no raw refusal detail
+ * (two words per refused venue), no record ids.
  */
-export function venueViewPayload(state: ScanState, brand: string, sharePct: number): VenueViewPayload {
+export function venueViewPayload(state: ScanState, brand: string, sharePct: number, offered: readonly HedgeRoute[] = HEDGE_VENUES.routes): VenueViewPayload {
   const hostRoute = hostRouteOf(brand);
   const rows: VenueViewRow[] = [];
   for (const s of state.rows) {
     const r = s.res;
     if (!r.quote.ok) continue;
     const q = r.quote;
-    const priced = r.routesChecked.filter((c) => c.ok && c.creditCents != null);
-    let winner: HedgeRoute | null = null;
-    for (const c of priced) {
-      if (winner === null) winner = c.route;
-      else {
-        const w = priced.find((x) => x.route === winner)!;
-        if (c.creditCents! > w.creditCents! || (c.creditCents === w.creditCents && c.route === hostRoute)) winner = c.route;
+    const checked = r.routesChecked.filter((c) => offered.includes(c.route));
+    const priced = checked.filter((c) => c.ok && c.creditCents != null);
+    let winner: HedgeRoute | null = r.route && offered.includes(r.route) && priced.some((c) => c.route === r.route) ? r.route : null;
+    if (winner === null) {
+      for (const c of priced) {
+        if (winner === null) winner = c.route;
+        else {
+          const w = priced.find((x) => x.route === winner)!;
+          if (c.creditCents! > w.creditCents! || (c.creditCents === w.creditCents && c.route === hostRoute)) winner = c.route;
+        }
       }
     }
-    const sorted = [...r.routesChecked].sort((a, b) => (b.creditCents ?? -1) - (a.creditCents ?? -1));
+    const sorted = [...checked].sort((a, b) => (b.creditCents ?? -1) - (a.creditCents ?? -1));
     const venues = sorted.map((c) => {
       const pricedHere = c.ok && c.creditCents != null;
       return {
@@ -1845,9 +1850,13 @@ export function venueViewPayload(state: ScanState, brand: string, sharePct: numb
         ...(pricedHere ? {} : { why: venueViewRefusalWord(c.detail) }),
       };
     });
-    const credits = priced.map((c) => c.creditCents!).sort((a, b) => b - a);
-    const edgeCents = credits.length > 1 ? credits[0] - credits[1] : null;
+    const winnerCredit = winner ? priced.find((c) => c.route === winner)!.creditCents! : null;
+    const nextBest = priced.filter((c) => c.route !== winner).map((c) => c.creditCents!).sort((a, b) => b - a)[0];
+    const edgeCents = winnerCredit !== null && nextBest !== undefined ? winnerCredit - nextBest : null;
     const spreadCents = Math.max(0, q.takeCents ?? 0);
+    // the hedge's cost is known for the route the scan priced; for another winner it follows from the
+    // credits (same floor, cap and spread: what one venue pays the trader more, it costs less to buy)
+    const hedgeCostCents = q.hedge ? (winner === r.route || winnerCredit === null ? q.hedge.costCents : q.hedge.costCents + q.creditCents - winnerCredit) : null;
     rows.push({
       kalshiTicker: r.market.ticker,
       sideName: r.sideName,
@@ -1858,7 +1867,7 @@ export function venueViewPayload(state: ScanState, brand: string, sharePct: numb
       venues,
       hedgeVenue: winner ? VENUE_VIEW_ROUTE_NAMES[winner] : null,
       edgeCents,
-      hedgeCostCents: q.hedge ? q.hedge.costCents : null,
+      hedgeCostCents,
       spreadCents,
       hostShareCents: Math.round((spreadCents * sharePct) / 100),
       evCostBps: s.evBps,
