@@ -546,7 +546,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   .thead{padding:10px 10px 8px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
   .trow{padding:12px 10px 4px;font-size:14px;font-variant-numeric:tabular-nums}
   .trow .tname{font-weight:650}
-  .trow .tname small{display:block;font-weight:400;color:var(--faint);font-size:12px;margin-top:2px}
+  .trow .tname small{display:block;font-weight:400;color:var(--faint);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .trow .tmuted{color:var(--dim)}
   .tgrp{margin:12px 10px 0;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
   .tline{padding:0 10px 10px;border-bottom:1px solid var(--line)}

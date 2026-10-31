@@ -37,8 +37,13 @@
  * host's app: their positions list in their colours (brand: EVENT_X_EMBED_BRAND
  * by default, `?brand=` honoured only on EVENT_X_BRAND_ALLOWLIST; a recognised
  * brand brings its colourway and light/dark shell, `?skin=` overrides) with
- * our Protect button on every row; the sheet prices from the same scan and the
- * row reshapes to "ends floor or cap · credit paid now". The board is GET /board.
+ * the extension's Lock in line under every row; the panel opens under the row,
+ * prices from the same scan and leaves the row reading "Protected · floor or
+ * cap". Two shells (a phone, and a venue's desktop My Trades table; `?shell=table`)
+ * and two views: the trader's, and Venue view (`?view=venue`), the host's side of
+ * the same rows read from GET /api/venue-view (retail-safe, no token: venues
+ * compared, the winner, two-word refusals, hedge cost, the spread and the host's
+ * share). The board is GET /board.
  * GET /partner
  * (operator token) is the host's console: volume protected, credits paid to
  * their users, cost of protection, own-book share, refusals, revenue share
@@ -1767,6 +1772,7 @@ export function hostRouteOf(brand: string): HedgeRoute | null {
 export function venueViewRefusalWord(detail: string | undefined): string {
   const d = (detail ?? "").toLowerCase();
   if (!d) return "not offered";
+  if (/not read|no aggregator key|is not set|not configured/.test(d)) return "not read";
   if (/not mapped|no mapping|unmapped/.test(d)) return "not mapped";
   if (/no depth|empty|too thin|no book/.test(d)) return "no depth";
   if (/not matched|no verified|pairing/.test(d)) return "no match";

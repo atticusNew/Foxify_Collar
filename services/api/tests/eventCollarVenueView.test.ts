@@ -61,7 +61,7 @@ test("embed: /api/venue-view is the host's side of the board, retail-safe: venue
   const text = JSON.stringify(p);
   assert.doesNotMatch(text, /0xsecret|0xdeadbeef|pairing|kalshi_self|polymarket|prophetx|pmEventSlug|tokenId|KXNFLGAME-C/, "no ids, raw detail, route keys or refused rows");
   for (const [detail, word] of [
-    ["no mapping for this game", "not mapped"], ["book empty on the No side", "no depth"], ["no verified pairing", "no match"], ["venue gate: not tonight", "not open"], ["something else", "not offered"], [undefined, "not offered"],
+    ["ProphetX's book is read through the aggregator, and no aggregator key is set", "not read"], ["no mapping for this game", "not mapped"], ["book empty on the No side", "no depth"], ["no verified pairing", "no match"], ["venue gate: not tonight", "not open"], ["something else", "not offered"], [undefined, "not offered"],
   ] as const) assert.equal(venueViewRefusalWord(detail), word, String(detail));
   assert.deepEqual([hostRouteOf("Kalshi"), hostRouteOf("prophet x"), hostRouteOf("Wire Markets")], ["kalshi_self", "prophetx", null]);
 });
