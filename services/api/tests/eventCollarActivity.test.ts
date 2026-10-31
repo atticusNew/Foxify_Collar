@@ -84,14 +84,15 @@ test("activity: most recent first, capped, counts before the cap; the shadow bod
 test("embed: three live tabs and no Markets; Positions grouped by league with crypto last; Activity lists this session's taps, then the record's finished rows, outcomes only", () => {
   const html = renderEventEmbedHtml({ brand: "ProphetX" });
   assert.ok(html.includes('<div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Activity">Activity</span></div>'));
-  assert.ok(!html.includes("Markets"), "no Markets tab anywhere in the shell");
+  assert.ok(!html.includes('data-tab="Markets"'), "no Markets tab on the phone: browsing is the host's product");
+  assert.ok(html.includes("<nav><span>Markets</span><span class=\"on\">My Trades</span><span>Account</span></nav>"), "the desktop table shell wears the venue's own nav, My Trades selected; it is decoration, not a tab");
   assert.ok(!html.includes("toast('Demo:"), "no dead-tab toast is left");
 
   // grouping
   assert.ok(html.includes("function groupRows(rows){"));
   assert.ok(html.includes("k=r.kind==='crypto'?'crypto':String(r.league||'other').toLowerCase()"), "crypto is its own group whatever its league field says");
   assert.ok(html.includes("out.sort(function(a,b){return a.next-b.next});") && html.includes("if(by.crypto)out.push(by.crypto);"), "the league with the nearest game first, crypto last");
-  assert.ok(html.includes("if(groups.length>1)html+='<div class=\"grp\"><span>'+esc(g.key.toUpperCase())+' &middot; '+g.rows.length+'</span></div>';"), "a header per league with its count; one league alone gets none");
+  assert.ok(html.includes("if(groups.length>1)html+=S.shell==='table'?'<div class=\"tgrp\">'+esc(g.key.toUpperCase())+' &middot; '+g.rows.length+'</div>':'<div class=\"grp\"><span>'+esc(g.key.toUpperCase())+' &middot; '+g.rows.length+'</span></div>';"), "a header per league with its count, in either shell; one league alone gets none");
 
   // activity tab
   assert.ok(html.includes("if(S.tab==='Activity'){paintActivity();return}"));
@@ -99,8 +100,8 @@ test("embed: three live tabs and no Markets; Positions grouped by league with cr
   assert.ok(html.includes("if(tab==='Activity'){track('activity_tab');if(!S.activity)loadActivity()}"), "the funnel knows the tab was opened");
   assert.ok(isEventAction("activity_tab"));
   assert.ok(html.includes('<div class="grp"><span>This session</span></div>'), "the visitor's own taps sit on top");
-  assert.ok(html.includes("locked in'+(when?' &middot; '+esc(fmtEt(when)):'')") && html.includes("closed early '+esc(p.closed.at)"), "locks and early closes made here are listed");
-  assert.ok(html.includes("sideName:r?r.sideName:'',league:r?r.league:'',eventTimeIso:r?r.eventTimeIso:''};") && html.includes("var name=p.sideName||r.sideName||k"), "the lock keeps the row's words, so it is still listed after the board re-scans and drops the row");
+  assert.ok(html.includes("locked in'+(when?' &middot; '+esc(fmtEt(when)):'')") && html.includes("protection removed '+esc(st.removed.at)"), "locks and early leaves made here are listed");
+  assert.ok(html.includes("sideName:r.sideName,league:r.league,eventTimeIso:r.eventTimeIso};") && html.includes("var name=(p&&p.sideName)||r.sideName||k"), "the lock keeps the row's words, so it is still listed after the board re-scans and drops the row");
   assert.ok(html.includes("S.lockedBy[t.id]={size:t.size,lock:L,leagues:leaguesOf(t)};") && html.includes("'+t.size+'-pick parlay</div><div class=\"meta\">'+t.leagues+' &middot; locked in</div>"), "parlay locks too, from their own snapshot");
   assert.ok(html.includes("<span>Finished &middot; '+(!SPORTS_ONLY&&total>rows.length?'last '+rows.length+' of '+total:rows.length)+'</span>"), "the record's full count is said when the feed is a cut of it");
   assert.ok(html.includes("(closed?'closed early':won?'won':'lost')"), "the row's state in one word");

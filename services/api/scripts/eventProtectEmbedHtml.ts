@@ -76,8 +76,8 @@ export interface EmbedOptions {
    */
   recordIsSlate?: boolean;
   /**
-   * The live recording: a real position on a real exchange, locked and hedged on Kalshi,
-   * shown in the pitch column under the bullets. `null` leaves the block out.
+   * The live recording: a real position on ProphetX locked in one tap, the other side bought on
+   * Novig, shown in the pitch column under the try line. `null` leaves the block out.
    */
   liveVideo?: LiveVideo | null;
   /**
@@ -208,7 +208,7 @@ function renderCardLanding(c: CardContact, video: LiveVideo | null, trackRecordU
   const name = escapeHtml(`${c.givenName} ${c.familyName}`.trim());
   const videoBlock = video
     ? `<video controls preload="metadata" playsinline poster="${escapeHtml(video.poster)}" src="${escapeHtml(video.src)}"></video>` +
-      `<p class="cl-cap"><b>Seen live on a real position, locked Thursday and settled Sunday.</b> Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p>`
+      `<p class="cl-cap"><b>Seen live on a real position, locked in one tap; the receipt names the venue that took the other side.</b> Shown through a browser extension on the venues' pages. Not affiliated with or endorsed by any venue.</p>`
     : "";
   return `<section class="cardland"><div class="in">
   <img class="cl-logo" src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
@@ -240,8 +240,8 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const videoBlock = video
     ? `<div class="live"><div class="live-h">Seen live</div>` +
       `<video controls preload="none" playsinline poster="${escapeHtml(video.poster)}" src="${escapeHtml(video.src)}"></video>` +
-      `<p>A real position on a real exchange, locked and hedged on Kalshi, then settled on the official result: $13.85 instead of $0. Receipt on screen.</p>` +
-      `<p class="live-fine">Shown through a browser extension on the venue's page. Not affiliated with or endorsed by the venue.</p></div>`
+      `<p>A real position on ProphetX, locked in one tap. The other side was bought on Novig, the best price of the venues that quoted it; the receipt names both.</p>` +
+      `<p class="live-fine">Shown through a browser extension on the venues' pages. Not affiliated with or endorsed by any venue.</p></div>`
     : "";
   const card = opts.card ?? null;
   const cardBlock = card ? renderCardLanding(card, video, trackRecordUrl, recordLabel, brandQ) : "";
@@ -253,17 +253,17 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
 <meta name="robots" content="noindex" />
 <link rel="icon" href="data:," />
 <title>${brand} · Positions</title>
-<meta name="description" content="How Earn &amp; Protect sits inside a prediction market's positions list: one Lock in button per row, one sheet, one tap. Demonstration; positions are simulated, prices are live." />${videoMeta}
+<meta name="description" content="One tap. Any prediction market. How Earn &amp; Protect sits inside a venue's positions list: one Lock in line per row, priced across venues, hedged where it is cheapest. Demonstration; positions are simulated, prices are live." />${videoMeta}
 <style>
 :root{
   ${
     dark
-      ? `--bg:#0f1115; --card:#171a21; --card2:#1d212a; --line:#262b36; --ink:#f3f5f8; --dim:#9aa3b2; --faint:#6b7382; --up:#3ccf91; --down:#ff6b6b; --frame:rgba(255,255,255,.14);`
-      : `--bg:#f4f5f7; --card:#ffffff; --card2:#f7f8fa; --line:#e6e8ec; --ink:#0f1115; --dim:#5f6775; --faint:#98a0ad; --up:#1d9a63; --down:#d64545; --frame:rgba(0,0,0,.12);`
+      ? `--bg:#0f1115; --card:#171a21; --card2:#1d212a; --line:#262b36; --ink:#f3f5f8; --dim:#9aa3b2; --faint:#6b7382; --up:#3ccf91; --down:#ff6b6b; --frame:rgba(255,255,255,.14); --wash:rgba(255,255,255,.06);`
+      : `--bg:#f4f5f7; --card:#ffffff; --card2:#f7f8fa; --line:#e6e8ec; --ink:#0f1115; --dim:#5f6775; --faint:#98a0ad; --up:#1d9a63; --down:#d64545; --frame:rgba(0,0,0,.12); --wash:rgba(0,0,0,.04);`
   }
   --accent:${theme.accent}; --accent-ink:${theme.accentInk};
   --stage:#eceef2; --stage-ink:#0f1115; --stage-dim:#5f6775;
-  --ep-green:#00b67a; --ep-deep:#014737; --ep-ink:#050d0a; --ep-dim:#5c6a64; --ep-faint:#98a49e; --ep-line:#e4e7e7; --ep-card2:#f2f4f4;
+  --ep-green:#00b67a; --gold:#C9A227;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -273,14 +273,14 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 /* ---- the card's landing: a phone that scanned the card sees this instead of the demo ---- */
 .cardland{display:none}
 .stage.from-card .cardland{display:block;background:#0a0a0b;color:#e9e6dc;min-height:100vh;padding:34px 22px calc(40px + env(safe-area-inset-bottom))}
-.stage.from-card .phone{display:none}
+.stage.from-card .demo{display:none}
 .cardland .in{max-width:460px;margin:0 auto}
 .cardland .cl-logo{height:30px;display:block}
 .cardland .cl-eyebrow{margin-top:12px;font-size:11px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:#C9A227}
 .cardland h1{margin-top:22px;font-size:30px;line-height:1.1;letter-spacing:-.02em;font-weight:700;color:#f6f3ea}
 .cardland h1 b{color:#2ec27e}
 .cardland .cl-lede{margin-top:12px;font-size:16px;line-height:1.5;color:#c9c6bc}
-.cardland video{display:block;width:100%;aspect-ratio:1920/1244;margin-top:22px;border-radius:12px;background:#0e0e10}
+.cardland video{display:block;width:100%;aspect-ratio:16/9;margin-top:22px;border-radius:12px;background:#0e0e10}
 .cardland .cl-cap{margin-top:10px;font-size:12.5px;line-height:1.45;color:#8e8b82}
 .cardland .cl-cap b{color:#c9c6bc;font-weight:600}
 .cardland .cl-btns{display:grid;gap:10px;margin-top:24px}
@@ -291,19 +291,26 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .cardland .cl-who{margin-top:26px;padding-top:16px;border-top:1px solid rgba(255,255,255,.1);font-size:13.5px;line-height:1.6;color:#9a978d}
 .cardland .cl-who b{display:block;color:#f6f3ea;font-weight:600;font-size:15px}
 .cardland .cl-who a{color:#c9c6bc;text-decoration:none}
+/* ---- the controls above the mock: which shell, whose view ---- */
+.ctl{display:flex;align-items:center;justify-content:center;gap:10px;padding:10px 12px 0;flex-wrap:wrap}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;background:var(--card);gap:2px}
+.seg button{appearance:none;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--dim);font:inherit;font-size:12.5px;font-weight:600;padding:5px 12px;cursor:pointer;white-space:nowrap}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.seg.shellseg{display:none}
+/* ---- the phone shell ---- */
 .phone{max-width:430px;margin:0 auto;min-height:100vh;background:var(--bg);position:relative}
 .host-top{padding:14px 16px 8px;display:flex;align-items:center;justify-content:space-between}
-.host-top .brand{font-weight:700;font-size:17px;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
-.host-top .brand i{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:7px;background:var(--accent);color:var(--accent-ink);font-style:normal;font-size:12px;font-weight:800}
-.host-top .bal{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums;font-size:13px;color:var(--dim)}
-.host-top .delta{font-style:normal;font-weight:700;font-size:12px;color:var(--up);opacity:0}
-.host-top .delta.down{color:var(--down)}
-.host-top .delta.on{animation:delta 1.8s ease-out forwards}
+.brand{font-weight:700;font-size:17px;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+.brand i{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:7px;background:var(--accent);color:var(--accent-ink);font-style:normal;font-size:12px;font-weight:800}
+.bal{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums;font-size:13px;color:var(--dim)}
+.delta{font-style:normal;font-weight:700;font-size:12px;color:var(--up);opacity:0}
+.delta.down{color:var(--down)}
+.delta.on{animation:delta 1.8s ease-out forwards}
 @keyframes delta{0%{opacity:0;transform:translateY(5px)}15%{opacity:1;transform:none}70%{opacity:1;transform:none}100%{opacity:0;transform:translateY(-5px)}}
 .tabs{display:flex;gap:18px;padding:0 16px;border-bottom:1px solid var(--line)}
 .tabs span{padding:8px 0 10px;font-size:14px;color:var(--faint);font-weight:600;cursor:pointer;user-select:none}
 .tabs span.on{color:var(--ink);border-bottom:2px solid var(--accent);cursor:default}
-.list{padding:8px 12px 110px}
+.list{padding:8px 12px 120px}
 .pos{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 12px 10px;margin:8px 0}
 .pos .h{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
 .pos .name{font-weight:650;font-size:15px;line-height:1.25}
@@ -314,19 +321,24 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos .pl i{font-style:normal;color:var(--faint);font-size:12px}
 .pos .f{display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:10px}
 .pos .size{color:var(--dim);font-size:13px;font-variant-numeric:tabular-nums}
-.pbtn{appearance:none;border:0;border-radius:999px;padding:7px 13px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;background:var(--ep-green);color:#fff;display:inline-flex;align-items:center;gap:6px;box-shadow:0 1px 0 rgba(0,0,0,.06)}
+/* the position's own facts, as a venue prints them: stake, price, payout, placed */
+.pos .facts{display:flex;gap:14px;margin-top:9px;padding-top:8px;border-top:1px solid var(--line);font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums;flex-wrap:wrap}
+.pos .facts span b{display:block;color:var(--ink);font-weight:600;font-size:13px}
+.pos.has-line{padding-bottom:12px}
+.pbtn{appearance:none;border:0;border-radius:999px;padding:7px 13px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;background:var(--accent);color:var(--accent-ink);display:inline-flex;align-items:center;gap:6px}
 .pbtn:disabled{opacity:.6;cursor:default}
 .pbtn svg{width:13px;height:13px}
-.pos.protected{border-color:rgba(0,182,122,.45)}
-.pos .shield{display:inline-flex;align-items:center;gap:5px;background:rgba(0,182,122,.12);color:var(--ep-green);font-size:12px;font-weight:700;border-radius:999px;padding:3px 9px}
+.pbtn.off{background:var(--card2);color:var(--faint);box-shadow:none;cursor:default;border:1px solid var(--line)}
+.pbtn.full{flex:1;justify-content:center;padding:9px 13px}
+.pos.protected{border-color:var(--accent)}
+.pos .shield{display:inline-flex;align-items:center;gap:5px;background:var(--wash);color:var(--accent);font-size:12px;font-weight:700;border-radius:999px;padding:3px 9px}
+.pos .shield.grey{background:var(--card2);color:var(--dim)}
 .pos .terms{margin-top:8px;font-size:13px;color:var(--dim);line-height:1.5;font-variant-numeric:tabular-nums}
 .pos .terms b{color:var(--ink);font-weight:650}
 .pos .lock{margin-top:4px;font-size:11.5px;color:var(--faint);line-height:1.45}
 .pos .undo{color:var(--faint);font-size:11.5px;cursor:pointer;background:none;border:0;font:inherit;padding:2px 4px;opacity:.75}
 .pos .undo:hover{text-decoration:underline;opacity:1}
-.pos .acts{display:inline-flex;align-items:center;gap:8px}
-.pos .closeb{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:650;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 11px}
-.pos .closeb:hover{border-color:var(--ep-green);color:var(--ep-green)}
+.pos .f.end{justify-content:flex-end}
 /* ---- parlays: the picks, their marks, and the lock that only exists at the last pick ---- */
 .pos.parlay{padding:10px 12px 9px}
 .parlay .pl b,.parlay .pl i{display:inline;font-size:14px}
@@ -334,18 +346,14 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .picks{margin-top:7px;display:flex;flex-direction:column;gap:3px}
 .pick{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--faint);line-height:1.35}
 .pick i{font-style:normal;width:15px;height:15px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:800;flex-shrink:0;background:var(--card2);color:var(--faint);border:1px solid var(--line)}
-.pick.hit i{background:rgba(0,182,122,.14);color:var(--ep-green);border-color:transparent}
+.pick.hit i{background:var(--wash);color:var(--up);border-color:transparent}
 .pick.miss i{background:rgba(255,107,107,.14);color:var(--down);border-color:transparent}
 .pick span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pick span b{font-weight:600;color:var(--ink)}
 .pick.miss span b{text-decoration:line-through;color:var(--dim)}
 .pick em{font-style:normal;color:var(--faint);font-size:11.5px;white-space:nowrap;font-variant-numeric:tabular-nums}
-.pick.hit em{color:var(--ep-green)}
+.pick.hit em{color:var(--up)}
 .pick.miss em{color:var(--down)}
-.pbtn.off{background:var(--card2);color:var(--faint);box-shadow:none;cursor:default;border:1px solid var(--line)}
-.pbtn.full{flex:1;justify-content:center;padding:9px 13px}
-.pos .f.end{justify-content:flex-end}
-.pos .shield.grey{background:var(--card2);color:var(--dim)}
 .why{appearance:none;background:none;border:0;padding:0;font:inherit;font-size:12.5px;color:var(--dim);text-align:left;cursor:pointer;flex:1;line-height:1.4}
 .why:after{content:" \\203A";color:var(--faint)}
 .note{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 4px 0;color:var(--faint);font-size:11.5px;line-height:1.4}
@@ -361,66 +369,151 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos.act .terms{margin-top:5px;font-size:12.5px}
 .empty{padding:30px 16px;color:var(--faint);text-align:center;font-size:14px}
 .host-note{position:fixed;left:0;right:0;bottom:0;padding:10px 16px 14px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.45;background:linear-gradient(to top,var(--bg) 70%,transparent);pointer-events:none}
-/* two deliberate lines (the disclaimer, then the link): never a sentence that wraps and strands the link */
-.host-note span,.host-note a{display:block}
-.host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap;margin-top:2px}
+/* deliberate lines (the disclaimer, the links, the credit): never a sentence that wraps and strands a link */
+.host-note span,.host-note a,.host-note .pow,.host-note .links{display:block}
+.host-note .links{display:flex;justify-content:center;gap:14px;margin-top:2px}
+.host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap;display:inline}
+.host-note .pow{margin-top:4px;color:var(--faint)}
+.host-note .pow b{color:var(--dim);font-weight:600}
 .toast{position:fixed;left:50%;bottom:64px;transform:translate(-50%,8px);background:var(--ink);color:var(--bg);font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;white-space:nowrap;z-index:5}
 .toast.on{opacity:.96;transform:translate(-50%,0)}
-/* ---- the sheet: ours, same in any host ---- */
+/* ---- the line and the panel: the extension's, in the host's colours ---- */
+.ael-row{margin:10px 0 0}
+.ael-line{display:flex;align-items:center;gap:10px;width:100%;appearance:none;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:12px;padding:8px 10px;font:inherit;cursor:pointer;text-align:left}
+.ael-line:hover{border-color:var(--accent)}
+.ael-line.ael-open{border-color:var(--accent);border-bottom-left-radius:0;border-bottom-right-radius:0}
+.ael-tag{display:inline-flex;align-items:center;gap:5px;border:1.5px solid var(--accent);color:var(--accent);border-radius:999px;padding:3px 10px;font-size:12.5px;font-weight:700;white-space:nowrap;line-height:1.3}
+.ael-tag .ael-ic{display:inline-flex;width:13px;height:13px}.ael-tag .ael-ic svg{width:13px;height:13px}
+.ael-line-on .ael-tag{background:var(--accent);color:var(--accent-ink)}
+.ael-line-off .ael-tag,.ael-line-wait .ael-tag{border-color:var(--line);color:var(--faint)}
+.ael-line-flash .ael-tag{animation:aelflash 1.1s ease-out}
+@keyframes aelflash{0%,40%{background:var(--accent);color:var(--accent-ink)}100%{background:var(--accent);color:var(--accent-ink)}}
+.ael-fact{flex:1;min-width:0;font-size:14px;color:var(--ink);line-height:1.35}.ael-fact b{font-weight:650}
+.ael-chev{flex:none;width:16px;height:16px;color:var(--faint);transition:transform .18s ease}.ael-chev svg{width:16px;height:16px;display:block}
+.ael-open .ael-chev{transform:rotate(180deg)}
+.ael-panel{border:1px solid var(--accent);border-top:0;border-radius:0 0 12px 12px;background:var(--card);padding:2px 12px 10px;animation:aelopen .16s ease-out}
+@keyframes aelopen{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+.ael-wait{font-size:13px;color:var(--dim);padding:12px 0;line-height:1.4}
+.ael-lr{display:flex;align-items:baseline;gap:14px;padding:9px 0;border-bottom:1px solid var(--line)}
+.ael-lr.ael-last{border-bottom:0}
+.ael-lr .ael-l{flex:1;min-width:0;font-size:14px;color:var(--ink)}
+.ael-lr b{font-size:15px;font-weight:650;color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ael-lr s{width:88px;font-size:12px;color:var(--faint);text-align:right;text-decoration:none;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ael-hero b{color:var(--up)}
+.ael-acts{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}
+.ael-go{appearance:none;border:0;border-radius:999px;background:var(--accent);color:var(--accent-ink);font:inherit;font-weight:700;font-size:14px;padding:9px 16px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.ael-go .ael-ic{display:inline-flex;width:14px;height:14px}.ael-go .ael-ic svg{width:14px;height:14px}
+.ael-go.ael-quiet{background:var(--card2);color:var(--ink);border:1px solid var(--line)}
+.ael-go:disabled{opacity:.75;cursor:default}
+.ael-stage{font-size:13px;color:var(--dim)}
+.ael-tg{display:inline-flex;align-items:center;gap:3px;color:var(--dim);text-decoration:none;font-size:13px;font-weight:500;padding:6px 2px;white-space:nowrap}
+.ael-tg:hover,.ael-tg[aria-expanded="true"]{color:var(--ink)}
+.ael-tgc{display:inline-flex;width:14px;height:14px;transition:transform .18s ease}.ael-tgc svg{width:14px;height:14px;display:block}
+.ael-tg[aria-expanded="true"] .ael-tgc{transform:rotate(180deg)}
+.ael-fine{font-size:12px;color:var(--faint);margin:8px 0 0;line-height:1.4}
+.ael-fine b{color:var(--dim);font-weight:600}
+/* Details: rows in one grammar, a dim label and the value, the same two tones everywhere */
+.ael-details{margin:10px 0 2px;padding-top:8px;border-top:1px solid var(--line)}
+.ael-drows{display:grid;grid-template-columns:max-content 1fr;column-gap:14px;row-gap:7px;align-items:baseline;font-size:12.5px;line-height:1.45;margin:0 0 8px}
+.ael-dl{color:var(--faint);white-space:nowrap}
+.ael-dv{color:var(--dim);min-width:0;overflow-wrap:anywhere}
+.ael-dv b{font-weight:600;color:var(--ink)}
+.ael-dim{color:var(--faint)}
+.ael-dshape{align-self:center;margin-bottom:3px}
+.ael-shape{display:inline-flex;border:1px solid var(--line);border-radius:8px;padding:2px;background:var(--card2);gap:2px;max-width:100%}
+.ael-shape-b{appearance:none;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:12.5px;font-weight:500;line-height:1.2;padding:5px 10px;cursor:pointer;white-space:nowrap}
+.ael-shape-b:hover{color:var(--ink)}
+.ael-shape-b[aria-pressed="true"]{border-color:var(--accent);background:var(--wash);color:var(--ink);font-weight:600}
+/* the receipt: the same rows on a quiet ground */
+.ael-rcpt{display:grid;grid-template-columns:max-content 1fr;column-gap:14px;row-gap:5px;font-size:12px;color:var(--dim);background:var(--wash);border-radius:10px;padding:8px 10px;margin:6px 0 4px;font-variant-numeric:tabular-nums;line-height:1.4}
+.ael-rcpt>span{color:var(--faint)}
+.ael-rcpt>b{font-weight:500;color:var(--dim);overflow-wrap:anywhere}
+.ael-rcpt>b b{font-weight:600;color:var(--ink)}
+.ael-rcpt code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+/* leave early: the live figures, two ways out, the reason behind a toggle */
+.ael-leave{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+.ael-leave-h{font-size:14px;font-weight:650;color:var(--ink)}
+.ael-leave-h span{font-weight:400;color:var(--faint);font-size:12.5px;margin-left:6px}
+.ael-leave .ael-lr .ael-l{font-size:13.5px}
+.ael-leave .ael-pay{color:var(--ink)}
+.ael-leave-acts{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
+.ael-leave-acts .ael-tg{margin-left:auto}
+.ael-why{font-size:12.5px;color:var(--dim);line-height:1.5;margin-top:6px}
+.ael-why p{margin:0 0 4px}
+.ael-pow{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--faint);margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+.ael-pow b{color:var(--dim);font-weight:600}
+.ael-pow img{height:12px;display:block;opacity:.9}
+/* ---- the venue view: the host's side of the same rows ---- */
+.vnote{margin:10px 4px 2px;font-size:12.5px;color:var(--dim);line-height:1.5}
+.vnote b{color:var(--ink);font-weight:600}
+.vcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin:8px 0}
+.vcard .h{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.vcard .name{font-weight:650;font-size:15px;line-height:1.25}
+.vcard .meta{color:var(--faint);font-size:12px;margin-top:2px}
+.vcard .vstate{font-size:12px;color:var(--dim);white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}
+.vcard .vstate.on{color:var(--accent);font-weight:600}
+.vrows{display:grid;grid-template-columns:max-content 1fr;column-gap:14px;row-gap:6px;margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:12.5px;line-height:1.45;font-variant-numeric:tabular-nums}
+.vrows>span{color:var(--faint);white-space:nowrap}
+.vrows>b{font-weight:500;color:var(--dim);overflow-wrap:anywhere}
+.vrows>b b{font-weight:600;color:var(--ink)}
+.vrows .vq{display:inline-flex;flex-wrap:wrap;gap:5px}
+.vq i{font-style:normal;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:999px;padding:2px 8px;font-size:12px;color:var(--dim);white-space:nowrap}
+.vq i b{color:var(--ink)}
+.vq i.won{border-color:var(--accent);color:var(--ink);background:var(--wash)}
+.vq i.host{border-style:solid}
+.vq i.host:after{content:"yours";font-size:10.5px;color:var(--accent);font-weight:700;letter-spacing:.02em}
+.vq i.mute{border-style:dashed;color:var(--faint)}
+/* ---- the sheet: the parlays' and the notes' (the positions use the panel) ---- */
 .scrim{position:fixed;inset:0;background:rgba(5,13,10,.5);opacity:0;pointer-events:none;transition:opacity .18s;z-index:8}
 .scrim.on{opacity:1;pointer-events:auto}
-.sheet{position:fixed;left:0;right:0;bottom:0;margin:0 auto;max-width:430px;background:#fff;color:var(--ep-ink);border-radius:18px 18px 0 0;padding:10px 16px calc(16px + env(safe-area-inset-bottom));transform:translateY(105%);transition:transform .22s cubic-bezier(.2,.8,.2,1);box-shadow:0 -12px 40px rgba(0,0,0,.18);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;z-index:9}
+.sheet{position:fixed;left:0;right:0;bottom:0;margin:0 auto;max-width:430px;background:var(--card);color:var(--ink);border-radius:18px 18px 0 0;padding:10px 16px calc(16px + env(safe-area-inset-bottom));transform:translateY(105%);transition:transform .22s cubic-bezier(.2,.8,.2,1);box-shadow:0 -12px 40px rgba(0,0,0,.18);z-index:9}
 .sheet.on{transform:translateY(0)}
-.sheet .grab{width:38px;height:4px;border-radius:2px;background:#dfe3e2;margin:0 auto 12px}
-.sheet .eyebrow{display:flex;align-items:center;justify-content:space-between;color:var(--ep-faint);font-size:11.5px;letter-spacing:.02em}
-.sheet .eyebrow img{height:20px;display:block}
-.sheet h2{font-size:19px;font-weight:700;letter-spacing:-.01em;margin-top:8px;color:var(--ep-ink)}
-.sheet .who{color:var(--ep-dim);font-size:13.5px;margin-top:2px}
+.sheet .grab{width:38px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 12px}
+.sheet h2{font-size:19px;font-weight:700;letter-spacing:-.01em;margin-top:8px;color:var(--ink)}
+.sheet .who{color:var(--dim);font-size:13.5px;margin-top:2px}
 .tiles{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:14px}
-.tile{background:var(--ep-card2);border-radius:12px;padding:10px 10px 9px;text-align:left}
-.tile .l{color:var(--ep-dim);font-size:11.5px}
+.tile{background:var(--card2);border-radius:12px;padding:10px 10px 9px;text-align:left}
+.tile .l{color:var(--dim);font-size:11.5px}
 .tile .v{font-weight:700;font-size:17px;margin-top:2px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
-.tile .was{color:var(--ep-faint);font-size:11px;margin-top:2px;font-variant-numeric:tabular-nums}
-.tile.k .v{color:var(--ep-green)}
-.chips{display:none;gap:6px;margin-top:12px}
-.chips.on{display:flex}
-.chip{flex:1;appearance:none;border:1px solid var(--ep-line);background:#fff;border-radius:10px;padding:7px 6px;font:inherit;font-size:12px;color:var(--ep-dim);cursor:pointer;font-variant-numeric:tabular-nums;line-height:1.35}
-.chip b{display:block;color:var(--ep-ink);font-size:12.5px}
-.chip[aria-pressed="true"]{border-color:var(--ep-green);background:rgba(0,182,122,.07)}
-.chip[aria-pressed="true"] b{color:var(--ep-green)}
-.go{appearance:none;border:0;width:100%;margin-top:14px;border-radius:12px;padding:14px;background:var(--ep-green);color:#fff;font:inherit;font-weight:700;font-size:16px;cursor:pointer;font-variant-numeric:tabular-nums}
+.tile .was{color:var(--faint);font-size:11px;margin-top:2px;font-variant-numeric:tabular-nums}
+.tile.k .v{color:var(--up)}
+.go{appearance:none;border:0;width:100%;margin-top:14px;border-radius:12px;padding:14px;background:var(--accent);color:var(--accent-ink);font:inherit;font-weight:700;font-size:16px;cursor:pointer;font-variant-numeric:tabular-nums}
 .go:disabled{opacity:.55;cursor:default}
-.go.quiet{background:#fff;color:var(--ep-ink);border:1px solid var(--ep-line)}
-.sheet .fine{color:var(--ep-faint);font-size:11.5px;text-align:center;margin-top:9px;line-height:1.45}
-.sheet .fine a{color:var(--ep-dim)}
-.sheet .refusal{background:var(--ep-card2);border-radius:12px;padding:14px;margin-top:14px;color:var(--ep-ink);font-size:14.5px;line-height:1.5}
+.go.quiet{background:var(--card2);color:var(--ink);border:1px solid var(--line)}
+.sheet .fine{color:var(--faint);font-size:11.5px;text-align:center;margin-top:9px;line-height:1.45}
+.sheet .fine a{color:var(--dim)}
+.sheet .refusal{background:var(--card2);border-radius:12px;padding:14px;margin-top:14px;color:var(--ink);font-size:14.5px;line-height:1.5}
 .sheet .refusal b{font-weight:700}
-.sheet .how{display:none;margin-top:12px;color:var(--ep-dim);font-size:13px;line-height:1.55}
+.sheet .how{display:none;margin-top:12px;color:var(--dim);font-size:13px;line-height:1.55}
 .sheet .how.on{display:block}
 .sheet .how p{margin:4px 0}
 .sheet .done{text-align:center;padding:10px 0 2px}
-.sheet .done .ck{width:52px;height:52px;border-radius:50%;background:rgba(0,182,122,.12);color:var(--ep-green);display:inline-flex;align-items:center;justify-content:center;font-size:26px;font-weight:700}
+.sheet .done .ck{width:52px;height:52px;border-radius:50%;background:var(--wash);color:var(--up);display:inline-flex;align-items:center;justify-content:center;font-size:26px;font-weight:700}
 .sheet .done h2{margin-top:10px}
-.sheet .done .sum{margin-top:6px;color:var(--ep-dim);font-size:14px;font-variant-numeric:tabular-nums;line-height:1.55}
-.sheet .done .sum b{color:var(--ep-ink)}
-.skel{height:14px;border-radius:7px;background:var(--ep-card2);margin-top:8px;animation:pulse 1.2s infinite}
-@keyframes pulse{0%,100%{opacity:.6}50%{opacity:1}}
-/* ---- desktop: the pitch beside a phone; the sheet and scrim stay inside the phone ---- */
+.sheet .done .sum{margin-top:6px;color:var(--dim);font-size:14px;font-variant-numeric:tabular-nums;line-height:1.55}
+.sheet .done .sum b{color:var(--ink)}
+.sheet .pow{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:12px;font-size:11.5px;color:var(--faint)}
+.sheet .pow img{height:12px;display:block}
+/* ---- the desktop table shell: hidden until the stage is broad enough ---- */
+.table{display:none}
+/* ---- desktop: the pitch beside the mock; the sheet and scrim stay inside the phone ---- */
 @media(min-width:900px){
   body{background:var(--stage);color:var(--stage-ink)}
-  .stage{display:grid;grid-template-columns:minmax(300px,420px) 400px;gap:72px;align-items:center;justify-content:center;padding:40px 32px;min-height:100vh}
-  .pitch{display:block;color:var(--stage-ink)}
+  .stage{display:grid;grid-template-columns:minmax(300px,400px) minmax(400px,800px);gap:56px;align-items:start;justify-content:center;padding:40px 32px;min-height:100vh}
+  .pitch{display:block;color:var(--stage-ink);position:sticky;top:40px}
   .pitch img{height:24px;display:block;margin-bottom:22px}
-  .pitch h1{font-size:34px;line-height:1.12;letter-spacing:-.02em;font-weight:700}
+  .pitch h1{font-size:36px;line-height:1.1;letter-spacing:-.02em;font-weight:700}
   .pitch p{color:var(--stage-dim);font-size:16px;line-height:1.55;margin-top:14px;max-width:34em}
   .pitch ul{list-style:none;margin-top:18px;color:var(--stage-ink);font-size:15px;line-height:1.5}
   .pitch li{padding:6px 0 6px 22px;position:relative}
   .pitch li:before{content:"";position:absolute;left:0;top:13px;width:9px;height:9px;border-radius:50%;background:var(--ep-green)}
+  .pitch li b{font-weight:650}
+  .pitch .routed{margin-top:14px;font-size:13.5px;color:var(--stage-dim)}
   .pitch .try{margin-top:22px;color:var(--stage-ink);font-weight:600;font-size:15px}
   .pitch .try b{color:var(--ep-green)}
   .pitch .live{margin-top:26px;max-width:420px}
   .pitch .live-h{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ep-green);margin-bottom:8px}
-  .pitch .live video{display:block;width:100%;aspect-ratio:1920/1244;border-radius:10px;background:#0e0e10;box-shadow:0 14px 40px rgba(15,17,21,.18)}
+  .pitch .live video{display:block;width:100%;aspect-ratio:16/9;border-radius:10px;background:#0e0e10;box-shadow:0 14px 40px rgba(15,17,21,.18)}
   .pitch .live p{margin-top:10px;font-size:14px;line-height:1.5;color:var(--stage-ink)}
   .pitch .live p.live-fine{margin-top:4px;font-size:12px;color:var(--stage-dim)}
   .pitch .partners{margin-top:30px;padding-top:16px;border-top:1px solid rgba(15,17,21,.1);color:var(--stage-dim);font-size:12.5px}
@@ -428,13 +521,39 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   .pitch .partners a{color:var(--stage-ink);text-decoration:none;border-bottom:1px solid rgba(15,17,21,.25);margin-right:12px}
   .pitch .partners a:hover{border-bottom-color:var(--stage-ink)}
   .pitch .foot{margin-top:14px;color:var(--stage-dim);font-size:12.5px}
-  .phone{margin:0;width:400px;height:min(820px,calc(100vh - 80px));min-height:560px;border-radius:40px;border:1px solid var(--frame);box-shadow:0 30px 80px rgba(15,17,21,.22),0 2px 6px rgba(15,17,21,.08);overflow:hidden;display:flex;flex-direction:column;color:var(--ink)}
+  .demo{display:flex;flex-direction:column;align-items:center;gap:14px;color:var(--ink)}
+  .ctl{padding:0}
+  .seg.shellseg{display:inline-flex}
+  .seg{background:#fff;border-color:rgba(15,17,21,.14)}
+  .seg button{color:var(--stage-dim)}
+  .seg button[aria-pressed="true"]{background:var(--stage-ink);color:#fff;border-color:var(--stage-ink)}
+  .phone{margin:0;width:400px;height:min(820px,calc(100vh - 140px));min-height:560px;border-radius:40px;border:1px solid var(--frame);box-shadow:0 30px 80px rgba(15,17,21,.22),0 2px 6px rgba(15,17,21,.08);overflow:hidden;display:flex;flex-direction:column;color:var(--ink);background:var(--bg)}
+  .demo.shell-table .phone{display:none}
   .host-top{padding-top:22px}
-  .list{flex:1;min-height:0;overflow:auto;padding-bottom:64px}
+  .list{flex:1;min-height:0;overflow:auto;padding-bottom:84px}
   .host-note,.scrim,.sheet,.toast{position:absolute}
   .sheet{max-width:none;padding-bottom:22px}
   .stage.from-card .cardland{display:none}
-  .stage.from-card .phone{display:flex}
+  .stage.from-card .demo{display:flex}
+  /* the desktop table: a venue's My Trades page, the line under each row as the recording shows it */
+  .demo.shell-table .table{display:flex;flex-direction:column;width:100%;max-width:800px;height:min(820px,calc(100vh - 140px));min-height:560px;background:var(--bg);color:var(--ink);border:1px solid var(--frame);border-radius:14px;box-shadow:0 30px 80px rgba(15,17,21,.22),0 2px 6px rgba(15,17,21,.08);overflow:hidden;position:relative}
+  .tbar{display:flex;align-items:center;gap:26px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card)}
+  .tbar nav{display:flex;gap:18px;font-size:13.5px;color:var(--faint);font-weight:600}
+  .tbar nav span.on{color:var(--ink);border-bottom:2px solid var(--accent);padding-bottom:2px}
+  .tbar .bal{margin-left:auto}
+  .tbody{flex:1;min-height:0;overflow:auto;padding:6px 16px 70px}
+  .thead,.trow{display:grid;grid-template-columns:minmax(0,2.2fr) 1fr 1fr 1fr 1.3fr;gap:12px;align-items:center}
+  .thead{padding:10px 10px 8px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+  .trow{padding:12px 10px 4px;font-size:14px;font-variant-numeric:tabular-nums}
+  .trow .tname{font-weight:650}
+  .trow .tname small{display:block;font-weight:400;color:var(--faint);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .trow .tmuted{color:var(--dim)}
+  .tgrp{margin:12px 10px 0;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+  .tline{padding:0 10px 10px;border-bottom:1px solid var(--line)}
+  .tline .ael-row{margin-top:6px}
+  .table .host-note{position:absolute}
+  .table .vcard{margin:8px 10px}
+  .table .vnote{margin:10px 14px 2px}
 }
 </style>
 </head>
@@ -442,46 +561,64 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 <div class="stage${card ? " from-card" : ""}">
 ${cardBlock}<aside class="pitch">
   <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
-  <h1>Protection inside your app.</h1>
-  <p>One button on every open position. Your users lock a floor and get paid today. We price the protection and hedge it leg for leg; you keep the flow, the ledger and the relationship.</p>
+  <h1>One tap. Any prediction market.</h1>
+  <p>One line under every open position. Your traders lock a floor and get paid today, on your page. We price the other side at every venue, buy it where it is cheapest, and share the spread with you.</p>
   <ul>
-    <li>One JSON quote in, one receipt out</li>
-    <li>Your brand, your ledger, your official result</li>
-    <li>Refuses when the market can't fund a credit</li>
-    <li>Parlays: a floor and a credit at the last pick, never before</li>
+    <li><b>Every venue priced, every time.</b></li>
+    <li><b>Your venue first when it is best,</b> never when it is not.</li>
+    <li><b>The trader stays on your page.</b></li>
+    <li><b>Plus a share of the spread:</b> a revenue line on hedges that used to leave your platform or never happen.</li>
   </ul>
-  <div class="try">Tap <b>Lock in</b> on any row, or open <b>Parlays</b> &rarr;</div>
+  <div class="routed">Hedges mapped and routed through ParlayX where partnered.</div>
+  <div class="try">Tap <b>Lock in</b> on any row, or switch to <b>Venue view</b> &rarr;</div>
   ${videoBlock}
   <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">${recordLabel}</a><a href="/partner${brandQ}">Partner console</a>${opts.recordIsSlate ? "" : '<a href="/receipts">Receipts</a><a href="/board">Full board</a>'}</div>
-  <div class="foot">Demo positions are simulated at live prices. The record also carries locks on a real position, hedged with real orders on Kalshi.</div>
+  <div class="foot">Demo positions are simulated at live prices. The record also carries locks on real positions, hedged with real orders on Kalshi, Novig and ProphetX.</div>
 </aside>
+<div class="demo shell-phone" id="demo">
+<div class="ctl">
+  <div class="seg shellseg" role="group" aria-label="Shell"><button type="button" data-shell="phone" aria-pressed="true">Phone</button><button type="button" data-shell="table" aria-pressed="false">Desktop</button></div>
+  <div class="seg viewseg" role="group" aria-label="View"><button type="button" data-view="trader" aria-pressed="true">Trader view</button><button type="button" data-view="venue" aria-pressed="false">Venue view</button></div>
+</div>
 <div class="phone" id="phone">
   <div class="host-top">
     <div class="brand"><i>${initial}</i>${brand}</div>
-    <div class="bal"><i class="delta" id="delta" aria-hidden="true"></i><span id="bal">Cash $412.50</span></div>
+    <div class="bal"><i class="delta" id="delta" aria-hidden="true"></i><span id="bal" data-bal>Cash $412.50</span></div>
   </div>
   <div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
-  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><a href="${trackRecordUrl}">${recordLabel}</a></div>
+  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <b>Atticus</b> &middot; routed via ParlayX</span></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="scrim" id="scrim"></div>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-h">
     <div class="grab"></div>
-    <div class="eyebrow"><span>protection by</span><img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" /></div>
     <div id="sh-body"></div>
+    <div class="pow">Powered by <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" /></div>
   </div>
+</div>
+<div class="table" id="table">
+  <div class="tbar"><div class="brand"><i>${initial}</i>${brand}</div><nav><span>Markets</span><span class="on">My Trades</span><span>Account</span></nav><div class="bal"><span data-bal>Cash $412.50</span></div></div>
+  <div class="tbody" id="tbody"><div class="empty">loading your positions…</div></div>
+  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <b>Atticus</b> &middot; routed via ParlayX</span></div>
+</div>
 </div>
 </div>
 <script>
 (function(){
   'use strict';
-  var S={rows:[],byTicker:{},protectedBy:{},open:null,quote:null,offered:{},tier:'balanced',how:false,adjust:false,cash:41250,
-    tab:'Positions',parlays:null,parlaysErr:null,byParlay:{},lockedBy:{},openParlay:null,showSettled:false,expanded:{},
+  var S={rows:[],byTicker:{},R:{},cash:41250,tab:'Positions',shell:'phone',view:'trader',vv:null,vvErr:null,vvBusy:false,
+    parlays:null,parlaysErr:null,byParlay:{},lockedBy:{},openParlay:null,showSettled:false,expanded:{},
     activity:null,activityErr:null,activityShown:25};
-  var TIER_ORDER=['tight','balanced','wide'];
-  var TIER_WORDS={tight:'Safest',balanced:'Balanced',wide:'Most upside'};
+  /* the three shapes in the extension's order: the most upside first, the highest floor last */
+  var TIER_ORDER=['wide','balanced','tight'];
+  var TIER_WORDS={wide:'Max upside',balanced:'Balanced',tight:'Max floor'};
   var MIN_CREDIT_CENTS=${Math.round(minCredit.cents)},MIN_CREDIT_BPS=${Number(minCredit.bpsOfStake)};
   var SPORTS_ONLY=${sportsOnly ? "true" : "false"};
+  var BRAND=${JSON.stringify(opts.brand)};
+  var VV_URL='/api/venue-view'+${JSON.stringify(brandQ)};
+  var SHIELD='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>';
+  var SHIELD_FILL='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5l8 3v6.1c0 5.1-3.5 8.3-8 9.9-4.5-1.6-8-4.8-8-9.9V5.5l8-3zm-1.1 12.6l5-5-1.4-1.4-3.6 3.6-1.7-1.7-1.4 1.4 3.1 3.1z"/></svg>';
+  var CHEVRON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
   var SID=(function(){
     try{
       var k='epx_sid',v=sessionStorage.getItem(k);
@@ -501,19 +638,20 @@ ${cardBlock}<aside class="pitch">
   function usd(c){return (c/100).toLocaleString('en-US',{style:'currency',currency:'USD'})}
   /* CASH MOVES ON SCREEN: the credit is "paid now", so the number in the corner has to be seen
      taking it. Every change to cash goes through addCash: the balance updates at once, and a +$x
-     (or -$x on a reset) sits beside it for under two seconds, then is gone. While a sheet is up the
-     corner is behind the scrim, so the pulse waits for the sheet to close and fires then, when the
-     eye is back on the list. */
+     (or -$x on a leave or a reset) sits beside it for under two seconds, then is gone. While a
+     sheet is up the corner is behind the scrim, so the pulse waits for the sheet to close and
+     fires then, when the eye is back on the list. */
   var deltaT=null,pendingDelta=0;
   function pulse(cents){
     var d=el('delta');d.textContent=(cents>0?'+':'-')+usd(Math.abs(cents));d.className='delta';void d.offsetWidth;d.className='delta on'+(cents<0?' down':'');
     clearTimeout(deltaT);deltaT=setTimeout(function(){d.className='delta'},1900);
   }
+  function paintCash(){var bs=document.querySelectorAll('[data-bal]');for(var i=0;i<bs.length;i++)bs[i].textContent='Cash '+usd(S.cash)}
   function addCash(cents){
     if(!cents)return;
     S.cash+=cents;
-    el('bal').textContent='Cash '+usd(S.cash);
-    if(S.open||S.openParlay){pendingDelta+=cents;return}
+    paintCash();
+    if(S.openParlay){pendingDelta+=cents;return}
     pulse(cents);
   }
   /* whole dollars read as whole dollars: $150, not $150.00 */
@@ -531,19 +669,39 @@ ${cardBlock}<aside class="pitch">
       return day+(far?' · ':' ')+tm+' ET';
     }catch(e){return ''}
   }
+  function fmtNow(){try{return new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return 'now'}}
+  function fmtAt(iso){try{var d=new Date(iso);return d.toLocaleDateString('en-US',{weekday:'short',timeZone:'America/New_York'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return ''}}
+  /* "tip-off" for a game on a court, "kickoff" on a field, "first pitch" on a diamond, "start" otherwise */
+  function startWord(r){var l=String(r.league||'').toLowerCase();return r.kind==='crypto'?'settles':l==='nba'||l==='wnba'||l==='ncaab'?'tip-off':l==='nfl'||l==='ncaaf'||l==='epl'||l==='mls'?'kickoff':l==='mlb'?'first pitch':'start'}
   /* On a binary contract, floor F / cap C / credit K on n contracts is the same thing as keeping
      n*(C-F)/100 contracts and setting F*n + K aside in cash. The user only ever sees the two
      endings, floorTotal and capTotal, and the credit paid today; the rest is how it is built. */
-  function reshape(n,F,C,K){return {kept:n*(C-F)/100, cashCents:F*n+K, floorTotal:F*n+K, capTotal:C*n+K}}
+  function reshape(n,F,C,K){return {kept:n*(C-F)/100, cashCents:Math.round(F*n)+K, floorTotal:Math.round(F*n)+K, capTotal:Math.round(C*n)+K}}
   /* the minimum-credit rule: 25¢ and 0.25% of stake, whichever is more */
   function worthIt(t,n){return !!t&&t.creditCents>=Math.max(MIN_CREDIT_CENTS,Math.round(n*100*MIN_CREDIT_BPS/10000))}
-  function offeredTiers(q){
-    var n=q.contracts,out={},k,i;
-    if(q.tiers){for(i=0;i<TIER_ORDER.length;i++){k=TIER_ORDER[i];if(worthIt(q.tiers[k],n))out[k]=q.tiers[k]}}
-    else if(worthIt(q,n)){out.balanced={floorCents:q.floorCents,capCents:q.capCents,creditCents:q.creditCents}}
+  /* REAL SIZES: the board quotes one showcase size; a positions list has a $10 pick beside a $100
+     one. Each row takes a stake from the ticker (stable across repaints and reloads), its contracts
+     are what that stake bought at the entry price, and every figure the quote carries is scaled to
+     it. The hash also places the order a few hours or days back, as a venue would print it. */
+  var STAKES=[1000,2500,5000,10000,2000,4000,7500,1500];
+  function hash(s){var h=7;for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return h}
+  function sizeOf(r){
+    var h=hash(r.kalshiTicker),stake=STAKES[h%STAKES.length],n=Math.round(stake/r.entryCents*100)/100;
+    return {stakeCents:stake,contracts:n,payoutCents:Math.round(n*100),placedIso:new Date(Date.now()-(((h>>>4)%70)+2)*3600000).toISOString()};
+  }
+  /* a tier's terms at this row's size: the floor and the cap are per contract, the credit scales with the size */
+  function scaled(t,q,n){var k=n/(q.contracts||n||1);return {floorCents:t.floorCents,capCents:t.capCents,creditCents:Math.round(t.creditCents*k)}}
+  function offeredTiers(q,n){
+    var out={},k,i;
+    if(q.tiers){for(i=0;i<TIER_ORDER.length;i++){k=TIER_ORDER[i];if(q.tiers[k]){var s=scaled(q.tiers[k],q,n);if(worthIt(s,n))out[k]=s}}}
+    else{var s1=scaled(q,q,n);if(worthIt(s1,n))out.balanced=s1}
     return out;
   }
-  function defaultTier(offered){return offered.balanced?'balanced':offered.tight?'tight':offered.wide?'wide':null}
+  /* the shape the service heads the quote with, when it clears; else the first that does */
+  function defaultTier(offered,q){if(q&&q.tier&&offered[q.tier])return q.tier;for(var i=0;i<TIER_ORDER.length;i++)if(offered[TIER_ORDER[i]])return TIER_ORDER[i];return null}
+  function stateOf(t){return S.R[t]||(S.R[t]={open:false,q:null,busy:false,err:null,offered:{},tier:null,details:false,lock:null,rcpt:false,leave:null,removed:null,stage:'',flash:false})}
+  function vvOf(t){if(!S.vv||!S.vv.rows)return null;for(var i=0;i<S.vv.rows.length;i++)if(S.vv.rows[i].kalshiTicker===t)return S.vv.rows[i];return null}
+  function shortOf(r){return String(r.sideName||'').replace(/\\s+\\$.*$/,'')}
 
   /* POSITIONS, GROUPED: a flat list with Bitcoin strikes between NFL and NBA rows looks like no
      real app. Rows are grouped by league, the league with the nearest game first, crypto last;
@@ -557,164 +715,287 @@ ${cardBlock}<aside class="pitch">
     if(by.crypto)out.push(by.crypto);
     return out;
   }
-  function paintList(){
-    if(S.tab==='Parlays'){paintParlays();return}
-    if(S.tab==='Activity'){paintActivity();return}
-    var list=el('list');
-    if(!S.rows.length){list.innerHTML='<div class="empty">'+esc(S.err||'No open positions to lock in right now.')+'</div>';return}
-    var html='',groups=groupRows(S.rows),g,gi;
+
+  /* ---- THE LINE AND THE PANEL: the extension's block, rendered against the host's rows ---- */
+  function lineGo(label,fact,cls,open){
+    var muted=/ael-line-(off|wait)/.test(cls||'');
+    return '<button type="button" class="ael-line '+(cls||'')+(open?' ael-open':'')+'" data-act="toggle"><span class="ael-tag">'+(muted?'':'<span class="ael-ic">'+SHIELD_FILL+'</span>')+'<b>'+label+'</b></span>'+(fact?'<span class="ael-fact">'+fact+'</span>':'')+'<span class="ael-chev">'+CHEVRON+'</span></button>';
+  }
+  function toggleA(act,label,open){return '<a href="#" class="ael-tg" data-act="'+act+'" aria-expanded="'+(open?'true':'false')+'">'+label+'<span class="ael-tgc">'+CHEVRON+'</span></a>'}
+  function drow(label,value,cls){return '<span class="ael-dl'+(cls?' '+cls:'')+'">'+label+'</span><span class="ael-dv'+(cls?' '+cls:'')+'">'+value+'</span>'}
+  function ledgerRow(label,value,was,cls){return '<div class="ael-lr'+(cls?' '+cls:'')+'"><span class="ael-l">'+label+'</span><b>'+value+'</b>'+(was===null?'':'<s>'+was+'</s>')+'</div>'}
+  /* the slip: win, lose, cash now; the "of/instead of" column only while the position is unprotected */
+  function ledger(r,rs,credit,was,locked){
+    var name=esc(shortOf(r)),win=r.kind==='crypto'?'Settles yes':name+' win',lose=r.kind==='crypto'?'Settles no':name+' lose';
+    return '<div class="ael-ledger">'+ledgerRow(win,usd(rs.capTotal),locked?null:'of '+usd(was))+ledgerRow(lose,usd(rs.floorTotal),locked?null:'instead of $0','ael-hero')+ledgerRow('Cash now','+'+usd(credit),locked?null:'','ael-last')+'</div>';
+  }
+  function shapeSegs(st,n,keys){
+    var h='<div class="ael-shape" role="group" aria-label="Shape of the deal">';
+    for(var i=0;i<keys.length;i++){var k=keys[i],tt=st.offered[k],tr=reshape(n,tt.floorCents,tt.capCents,tt.creditCents);
+      h+='<button type="button" class="ael-shape-b" data-act="shape" data-tier="'+k+'" aria-pressed="'+(k===st.tier)+'" aria-label="'+esc(TIER_WORDS[k]+': win '+usd(tr.capTotal)+', lose '+usd(tr.floorTotal)+', '+usd(tt.creditCents)+' now')+'">'+TIER_WORDS[k]+'</button>'}
+    return h+'</div>';
+  }
+  /* where the other side goes, in one sentence: the venue, the race, what the winner saved the trader; each venue's figure in the tooltip */
+  function otherSide(v,n){
+    if(!v||!v.hedgeVenue)return null;
+    var k=n/(v.contracts||n||1),priced=[],muted=[],i;
+    for(i=0;i<v.venues.length;i++)(v.venues[i].creditCents!=null?priced:muted).push(v.venues[i]);
+    var parts=['<b>'+esc(v.hedgeVenue)+'</b>'+(v.hedgeVenue===S.vv.hostVenue?' <span class="ael-dim">(this venue)</span>':'')];
+    if(priced.length>1){parts.push('best of '+priced.length+' venues');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}
+    for(i=0;i<muted.length;i++)if(muted[i].host)parts.push('<span class="ael-dim">'+esc(muted[i].venue)+' '+esc(muted[i].why||'not offered')+'</span>');
+    var tip=[];for(i=0;i<priced.length;i++)tip.push(priced[i].venue+' '+usd(Math.round(priced[i].creditCents*k)));for(i=0;i<muted.length;i++)tip.push(muted[i].venue+': '+(muted[i].why||'not offered'));
+    return {html:parts.join(' &middot; '),tip:tip.join(' \\u00b7 '),shopped:priced.length>1};
+  }
+  /* Details behind the toggle, as rows in one grammar: Shape, Other side, Until, How; no figures in How, the figures are the slip */
+  function detailRows(r,st,n,keys){
+    var rows=[],o=otherSide(vvOf(r.kalshiTicker),n);
+    if(keys.length>1)rows.push(drow('Shape',shapeSegs(st,n,keys),'ael-dshape'));
+    if(o)rows.push(drow('Other side','<span'+(o.tip?' title="'+esc(o.tip)+'"':'')+'>'+o.html+'</span>'));
+    else if(S.vvBusy)rows.push(drow('Other side','<span class="ael-dim">asking the venues&hellip;</span>'));
+    rows.push(drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; priced live</span>'));
+    rows.push(drow('How','You sell part of the position today and keep the rest. The other side is bought the second you tap'+(o&&o.shopped?', at the best price across the venues that quoted it':'')+'; it settles on the same official result, nothing to manage.'));
+    return '<div class="ael-details"><div class="ael-drows">'+rows.join('')+'</div></div>';
+  }
+  function powered(){return '<div class="ael-pow">Powered by <b>Atticus</b> &middot; routed via ParlayX where partnered</div>'}
+  function removedLine(st){
+    var m=st.removed;if(!m)return '';
+    return '<div class="ael-fine">Earlier protection removed '+esc(m.at)+' &middot; '+(m.net<0?'you paid '+usd(-m.net):m.net>0?usd(m.net)+' paid to you':'nothing owed either way')+'.</div>';
+  }
+  /* the offer: the slip at the chosen shape, the pill, Details */
+  function offerHtml(r,st){
+    var n=sizeOf(r).contracts,t=st.offered[st.tier];
+    if(!t)return '<div class="ael-wait">'+esc(st.err||'Protection isn\\'t available on this position right now.')+'</div>'+powered();
+    var rs=reshape(n,t.floorCents,t.capCents,t.creditCents),keys=TIER_ORDER.filter(function(k){return !!st.offered[k]});
+    var busy=!!st.stage;
+    return ledger(r,rs,t.creditCents,Math.round(100*n),false)+
+      '<div class="ael-acts">'+(busy?'<span class="ael-stage">'+esc(st.stage)+'</span>':'<button type="button" class="ael-go" data-act="go"><span class="ael-ic">'+SHIELD_FILL+'</span>Lock in</button>')+toggleA('details','Details',st.details)+'</div>'+
+      removedLine(st)+
+      (st.details?detailRows(r,st,n,keys):'')+powered();
+  }
+  /* the receipt: the same grammar, fewer rows; the other side priced at the venue's book, nothing bought in the demo */
+  function receiptHtml(r,st){
+    var L=st.lock,v=vvOf(r.kalshiTicker),k=L.contracts/((v&&v.contracts)||L.contracts||1),rows=[];
+    var venue=v&&v.hedgeVenue?v.hedgeVenue:'the best venue',price=100-(r.markCents||50);
+    var cmp='';
+    if(v){var priced=v.venues.filter(function(x){return x.creditCents!=null});if(priced.length>1)cmp=' <span class="ael-dim">&middot; best of '+priced.length+' venues'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for you':'')+'</span>'}
+    rows.push('<span>Other side</span><b><b>'+esc(venue)+'</b> &middot; '+L.contracts+' contracts of the other side at '+price.toFixed(1)+'c'+cmp+' <span class="ael-dim">&middot; priced at the book; demo, nothing bought</span></b>');
+    rows.push('<span>Cost</span><b>'+usd(v&&v.hedgeCostCents!=null?Math.round(v.hedgeCostCents*k):Math.round(L.contracts*price))+' <span class="ael-dim">all in</span></b>');
+    rows.push('<span>Until</span><b>'+esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; settles on the official result</span></b>');
+    rows.push('<span>Paid to you</span><b>+'+usd(L.creditCents)+' <span class="ael-dim">&middot; paid '+esc(L.at)+'</span></b>');
+    return '<div class="ael-rcpt">'+rows.join('')+'</div>';
+  }
+  /* the leave block: the live figures, the two ways out, the reason behind Why */
+  function leaveHtml(r,st){
+    var L=st.lock,lv=st.leave;
+    var head='<div class="ael-leave"><div class="ael-leave-h">Leave early<span>remove the protection, keep your pick</span></div>';
+    if(!lv.q&&!lv.err)return head+'<div class="ael-wait">Pricing your exit&hellip;</div></div>';
+    if(!lv.q)return head+'<div class="ael-wait">'+esc(lv.err)+'</div><div class="ael-leave-acts"><button type="button" class="ael-go ael-quiet" data-act="stay">Back</button></div></div>';
+    var net=lv.q.net,credit=L.creditCents,allIn=credit+net;
+    var hero=net<0?'You pay <b class="ael-pay">'+usd(-net)+'</b>':net>0?'You get <b>'+usd(net)+'</b>':'Nothing owed either way';
+    var netWords=allIn<0?'<b>\\u2212'+usd(-allIn)+'</b> after the '+usd(credit)+' paid to you at the lock':allIn>0?'<b>+'+usd(allIn)+'</b> ahead, with the '+usd(credit)+' paid to you at the lock':'even, with the '+usd(credit)+' paid to you at the lock';
+    var why=(net<0?'Your pick moved up since the lock, so the upside you sold is worth more than the floor you hold; leaving settles that difference.':net>0?'Your pick moved down since the lock, so the floor you hold is worth more than the upside you sold; leaving pays you that difference.':'Your pick is where it was at the lock; the floor and the upside cancel.')+
+      '</p><p>Your pick stays open on '+esc(BRAND)+', unprotected. The '+usd(credit)+' paid at the lock is yours either way.';
+    return head+
+      '<div class="ael-lr"><span class="ael-l">To leave now</span><b>'+hero+'</b></div>'+
+      '<div class="ael-lr"><span class="ael-l">Net</span><b style="font-weight:400;font-size:13px">'+netWords+'</b></div>'+
+      '<div class="ael-lr ael-last"><span class="ael-l">Staying</span><b>'+usd(L.floorTotal)+' or '+usd(L.capTotal)+'</b></div>'+
+      '<div class="ael-leave-acts"><button type="button" class="ael-go" data-act="leavego">Leave early</button><button type="button" class="ael-go ael-quiet" data-act="stay">Stay</button>'+toggleA('why','Why',lv.why)+'</div>'+
+      (lv.why?'<div class="ael-why"><p>'+why+'</p></div>':'')+
+      '<div class="ael-fine">Priced live &middot; until '+esc(fmtEt(new Date(Date.parse(r.eventTimeIso)-45*60000).toISOString()))+'</div></div>';
+  }
+  /* the protected position: the slip with the locked numbers, Leave early and Details, the facts line, the receipt */
+  function protectedHtml(r,st){
+    var L=st.lock,rs={floorTotal:L.floorTotal,capTotal:L.capTotal};
+    var v=vvOf(r.kalshiTicker),venue=v&&v.hedgeVenue?v.hedgeVenue:null;
+    return ledger(r,rs,L.creditCents,0,true)+
+      (st.leave?'':'<div class="ael-acts"><button type="button" class="ael-go ael-quiet" data-act="leave">Leave early</button>'+toggleA('rcpt','Details',st.rcpt)+'</div>')+
+      (st.leave?leaveHtml(r,st):'<div class="ael-fine">Locked '+esc(L.at)+' &middot; the other side bought in '+L.secs+'s'+(venue?' on <b>'+esc(venue)+'</b>':'')+'</div>'+(st.rcpt?receiptHtml(r,st):''))+
+      powered();
+  }
+  function lineHtml(r,st){
+    var n=sizeOf(r).contracts;
+    if(st.lock)return lineGo('Protected','<b>'+usd(st.lock.floorTotal)+'</b> or '+usd(st.lock.capTotal)+(vvOf(r.kalshiTicker)&&vvOf(r.kalshiTicker).hedgeVenue?' &middot; on '+esc(vvOf(r.kalshiTicker).hedgeVenue)+'.':'.'),'ael-line-on'+(st.flash?' ael-line-flash':''),st.open);
+    if(st.q&&!st.offered[st.tier])return lineGo('Unavailable',esc(st.err||'The market can\\'t fund a worthwhile credit right now.'),'ael-line-off',st.open);
+    var t=st.offered[st.tier];
+    var floor=t?reshape(n,t.floorCents,t.capCents,t.creditCents).floorTotal:(function(){var k=n/(r.contracts||n||1);return Math.round(r.floorCents*n)+Math.round(r.creditCents*k)})();
+    return lineGo('Lock in','Lose, and still get <b>'+usd(floor)+'</b>.','',st.open);
+  }
+  function panelHtml(r,st){
+    if(st.lock)return protectedHtml(r,st);
+    if(!st.q)return '<div class="ael-wait">Pricing from the live book&hellip;</div>';
+    return offerHtml(r,st);
+  }
+  function rowBlockHtml(r){var st=stateOf(r.kalshiTicker);return '<div class="ael-row" data-row="'+esc(r.kalshiTicker)+'">'+lineHtml(r,st)+(st.open?'<div class="ael-panel">'+panelHtml(r,st)+'</div>':'')+'</div>'}
+  function paintRow(t){
+    /* both shells may hold the row; only the shown one is repainted */
+    var r=S.byTicker[t],st=stateOf(t),host=(S.shell==='table'?el('tbody'):el('list')).querySelector('.ael-row[data-row="'+t.replace(/"/g,'')+'"]');
+    if(!r||!host)return;
+    host.innerHTML=lineHtml(r,st)+(st.open?'<div class="ael-panel">'+panelHtml(r,st)+'</div>':'');
+    var pos=host.closest('.pos');if(pos)pos.className='pos has-line'+(st.lock?' protected':'');
+  }
+  /* the row's facts as a venue prints them */
+  function factsHtml(r,z){return '<div class="facts"><span>Stake<b>'+usd(z.stakeCents)+'</b></span><span>Price<b>'+r.entryCents+'¢</b></span><span>Payout<b>'+usd(z.payoutCents)+'</b></span><span>Placed<b>'+esc(fmtAt(z.placedIso))+'</b></span></div>'}
+  function paintPositions(){
+    var into=S.shell==='table'?el('tbody'):el('list');
+    if(!S.rows.length){into.innerHTML='<div class="empty">'+esc(S.err||'No open positions to lock in right now.')+'</div>';return}
+    var html='',groups=groupRows(S.rows),g,gi,i,r,z,pl,when,st;
+    if(S.shell==='table')html+='<div class="thead"><span>Position</span><span>Stake</span><span>Price</span><span>Payout</span><span>Placed</span></div>';
     for(gi=0;gi<groups.length;gi++){
-    g=groups[gi];
-    if(groups.length>1)html+='<div class="grp"><span>'+esc(g.key.toUpperCase())+' &middot; '+g.rows.length+'</span></div>';
-    for(var i=0;i<g.rows.length;i++){
-      var r=g.rows[i],p=S.protectedBy[r.kalshiTicker];
-      var pl=(r.markCents-r.entryCents)*r.contracts;
-      var when=r.kind==='crypto'?'settles '+fmtEt(r.eventTimeIso):fmtEt(r.eventTimeIso);
-      html+='<div class="pos'+(p?' protected':'')+'" data-ticker="'+esc(r.kalshiTicker)+'">'+
-        '<div class="h"><div><div class="name">'+esc(r.sideName)+'</div><div class="meta">'+esc(r.league.toUpperCase())+' · '+esc(when)+'</div></div>'+
-        '<div class="pl '+(pl>0?'up':pl<0?'down':'')+'"><b>'+(pl>=0?'+':'-')+usd(Math.abs(pl))+'</b><i>'+r.markCents+'¢ now</i></div></div>';
-      if(p&&p.closed){
-        html+='<div class="terms">closed early · left with <b>'+usd(p.closed.leaveWithCents)+'</b> · vs <b>'+usd(p.closed.withoutProtectionCents)+'</b> without the lock</div>'+
-          '<div class="lock">a new trade at the live prices of '+esc(p.closed.at)+' · your '+usd(p.creditCents)+' credit stayed yours</div>'+
-          '<div class="f"><span class="shield">&#x2713; Closed</span><button class="undo" data-undo="'+esc(r.kalshiTicker)+'">reset · demo only</button></div>';
-      }else if(p){
-        html+='<div class="terms">ends <b>'+usd(p.floorTotal)+'</b> or <b>'+usd(p.capTotal)+'</b> · <b>'+usd(p.creditCents)+'</b> paid now</div>'+
-          '<div class="lock">locked at your tap · an early exit is a new trade at live prices</div>'+
-          '<div class="f"><span class="shield">&#x2713; Locked in</span><span class="acts"><button class="closeb" data-close="'+esc(r.kalshiTicker)+'">close early</button><button class="undo" data-undo="'+esc(r.kalshiTicker)+'">reset · demo only</button></span></div>';
-      }else{
-        html+='<div class="f"><span class="size">'+r.contracts+' contracts · ends $0 or '+usd0(100*r.contracts)+'</span>'+
-          '<button class="pbtn" data-protect="'+esc(r.kalshiTicker)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>Lock in</button></div>';
+      g=groups[gi];
+      if(groups.length>1)html+=S.shell==='table'?'<div class="tgrp">'+esc(g.key.toUpperCase())+' &middot; '+g.rows.length+'</div>':'<div class="grp"><span>'+esc(g.key.toUpperCase())+' &middot; '+g.rows.length+'</span></div>';
+      for(i=0;i<g.rows.length;i++){
+        r=g.rows[i];z=sizeOf(r);st=stateOf(r.kalshiTicker);
+        pl=Math.round((r.markCents-r.entryCents)*z.contracts);
+        when=r.kind==='crypto'?'settles '+fmtEt(r.eventTimeIso):fmtEt(r.eventTimeIso);
+        if(S.shell==='table'){
+          html+='<div class="trow"><div class="tname">'+esc(r.sideName)+'<small>'+esc(r.league.toUpperCase())+' &middot; '+esc(when)+' &middot; <span class="'+(pl>0?'up':pl<0?'down':'')+'">'+(pl>=0?'+':'-')+usd(Math.abs(pl))+'</span> &middot; '+r.markCents+'¢ now</small></div>'+
+            '<div>'+usd(z.stakeCents)+'</div><div class="tmuted">'+r.entryCents+'¢</div><div>'+usd(z.payoutCents)+'</div><div class="tmuted">'+esc(fmtAt(z.placedIso))+'</div></div>'+
+            '<div class="tline">'+rowBlockHtml(r)+'</div>';
+        }else{
+          html+='<div class="pos has-line'+(st.lock?' protected':'')+'" data-ticker="'+esc(r.kalshiTicker)+'">'+
+            '<div class="h"><div><div class="name">'+esc(r.sideName)+'</div><div class="meta">'+esc(r.league.toUpperCase())+' · '+esc(when)+'</div></div>'+
+            '<div class="pl '+(pl>0?'up':pl<0?'down':'')+'"><b>'+(pl>=0?'+':'-')+usd(Math.abs(pl))+'</b><i>'+r.markCents+'¢ now</i></div></div>'+
+            factsHtml(r,z)+rowBlockHtml(r)+'</div>';
+        }
       }
-      html+='</div>';
     }
-    }
-    list.innerHTML=html;
-    el('bal').textContent='Cash '+usd(S.cash);
+    into.innerHTML=html;
+    paintCash();
   }
 
-  function openSheet(ticker){
-    S.open=ticker;S.quote=null;S.offered={};S.how=false;S.adjust=false;
-    el('scrim').className='scrim on';el('sheet').className='sheet on';
-    var r=S.byTicker[ticker];
-    el('sh-body').innerHTML='<h2 id="sh-h">Lock in this position</h2><div class="who">'+esc(r?r.sideName:'')+' · '+(r?r.contracts:'')+' contracts</div><div class="skel"></div><div class="skel" style="width:70%"></div><div class="skel" style="width:40%"></div>';
-    track('row_tap',ticker);
-    fetch('/api/showcase?ticker='+encodeURIComponent(ticker),{cache:'no-store'}).then(function(x){return x.json()}).then(function(p){
-      if(S.open!==ticker)return;
-      S.quote=p&&p.quote?p.quote:null;
-      if(S.quote&&S.quote.ok){S.offered=offeredTiers(S.quote);S.tier=defaultTier(S.offered)}
-      paintSheet(p);
-    }).catch(function(){if(S.open===ticker)paintSheet(null)});
+  /* ---- VENUE VIEW: the host's side of the same rows. What the trader never sees and the venue
+     wants to: every venue asked for the other side, which one got it and by how much, what the
+     hedge cost, and the spread with the host's share of it. Read from /api/venue-view, retail-safe. */
+  function venueCardHtml(v){
+    var r=S.byTicker[v.kalshiTicker]||{},z=r.kalshiTicker?sizeOf(r):{contracts:v.contracts,stakeCents:0},st=stateOf(v.kalshiTicker),k=z.contracts/(v.contracts||z.contracts||1),i;
+    var chips='<span class="vq">';
+    for(i=0;i<v.venues.length;i++){var x=v.venues[i];
+      chips+=x.creditCents==null?'<i class="mute'+(x.host?' host':'')+'">'+esc(x.venue)+' &middot; '+esc(x.why||'not offered')+'</i>':'<i class="'+(x.chosen?'won':'')+(x.host?' host':'')+'">'+esc(x.venue)+' <b>'+usd(Math.round(x.creditCents*k))+'</b></i>'}
+    chips+='</span>';
+    var hostV=S.vv.hostVenue,won=v.hedgeVenue,why;
+    var hostRow=null;for(i=0;i<v.venues.length;i++)if(v.venues[i].host)hostRow=v.venues[i];
+    if(!won)why='no venue could fund the other side right now';
+    else if(hostV&&won===hostV)why='<b>'+esc(won)+'</b>, your book: it paid the trader the most'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' over the next venue':'')+'. The hedge stays with you.';
+    else if(hostV&&hostRow&&hostRow.creditCents!=null)why='<b>'+esc(won)+'</b>: it paid the trader '+usd(Math.round(v.edgeCents*k))+' more than your book did for the same protection, so the other side went there. You take a share of the spread instead.';
+    else if(hostV)why='<b>'+esc(won)+'</b>: your book '+esc(hostRow?hostRow.why||'did not price it':'did not price it')+' on this game, so the other side went to the best venue that did. You take a share of the spread.';
+    else why='<b>'+esc(won)+'</b>: the best price of the venues that quoted it'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for the trader':'')+'.';
+    var state=st.lock?'<div class="vstate on">Locked by the trader &middot; '+esc(st.lock.at)+'</div>':'<div class="vstate">Offered &middot; +'+usd(Math.round(v.creditCents*k))+' to the trader</div>';
+    var spread=Math.round(v.spreadCents*k),share=Math.round(v.hostShareCents*k);
+    return '<div class="vcard"><div class="h"><div><div class="name">'+esc(v.sideName)+'</div><div class="meta">'+esc(String(v.league||'').toUpperCase())+' &middot; '+esc(fmtEt(v.eventTimeIso))+(z.stakeCents?' &middot; '+usd(z.stakeCents)+' at '+r.entryCents+'¢':'')+'</div></div>'+state+'</div>'+
+      '<div class="vrows"><span>Quotes</span><b>'+chips+'</b>'+
+      '<span>Other side</span><b>'+why+'</b>'+
+      '<span>Hedge cost</span><b>'+(v.hedgeCostCents!=null?usd(Math.round(v.hedgeCostCents*k))+' <span class="ael-dim">all in, bought the second the trader taps</span>':'<span class="ael-dim">not priced</span>')+'</b>'+
+      '<span>Spread</span><b>'+(spread>0?usd(spread)+' on this lock &middot; <b>your share '+usd(share)+'</b> <span class="ael-dim">('+S.vv.sharePct+'%)</span>':'<span class="ael-dim">waived on this lock</span>')+'</b></div></div>';
   }
-  function closeSheet(){S.open=null;S.openParlay=null;el('scrim').className='scrim';el('sheet').className='sheet';if(pendingDelta){var d=pendingDelta;pendingDelta=0;pulse(d)}}
+  function paintVenue(){
+    var into=S.shell==='table'?el('tbody'):el('list');
+    var html='<div class="vnote"><b>What the trader does not see.</b> Every venue asked for the other side, which one got it and why, what the hedge cost, and your share of the spread. Your venue first when it is best, never when it is not.</div>';
+    if(!S.vv){into.innerHTML=html+'<div class="empty">'+esc(S.vvErr||'asking the venues…')+'</div>';return}
+    var rows=S.vv.rows||[];
+    if(SPORTS_ONLY)rows=rows.filter(function(v){var r=S.byTicker[v.kalshiTicker];return !r||r.kind!=='crypto'});
+    if(!rows.length){into.innerHTML=html+'<div class="empty">Nothing priced right now.</div>';return}
+    for(var i=0;i<rows.length;i++)html+=venueCardHtml(rows[i]);
+    into.innerHTML=html;
+    paintCash();
+  }
+  function loadVenueView(){
+    S.vvBusy=true;
+    fetch(VV_URL,{cache:'no-store'}).then(function(x){return x.json()}).then(function(p){
+      S.vvBusy=false;
+      if(!p||!p.ok){S.vv=null;S.vvErr=(p&&p.error)||'The venue view is unavailable right now.';if(S.view==='venue')paintList();return}
+      S.vv=p;S.vvErr=null;
+      if(S.view==='venue')paintList();else for(var t in S.R)if(Object.prototype.hasOwnProperty.call(S.R,t)&&S.R[t].open)paintRow(t);
+    }).catch(function(){S.vvBusy=false;S.vv=null;S.vvErr='The venue view is unavailable right now.';if(S.view==='venue')paintList()});
+  }
 
-  function paintSheet(p){
-    var r=S.byTicker[S.open]||{};
-    var q=S.quote;
-    var body=el('sh-body');
-    var t=q&&q.ok&&S.tier?S.offered[S.tier]:null;
-    if(!q||!q.ok||!t){
-      var detail=q&&q.ok?'The market can\\'t fund a worthwhile credit on this one right now.':(q&&q.detail?q.detail:(p&&p.error?p.error:'Live pricing is unavailable right now.'));
-      body.innerHTML='<h2 id="sh-h">Lock in this position</h2><div class="who">'+esc(r.sideName||'')+'</div>'+
-        '<div class="refusal"><b>Not right now.</b> '+esc(detail)+'</div>'+
-        '<button class="go quiet" id="sh-close">Close</button>'+
-        '<div class="fine">The lock is only offered when the market pays you for it.</div>';
-      el('sh-close').onclick=closeSheet;return;
+  function paintList(){
+    if(S.shell!=='table'){
+      if(S.tab==='Parlays'){paintParlays();return}
+      if(S.tab==='Activity'){paintActivity();return}
     }
-    var n=q.contracts||r.contracts,rs=reshape(n,t.floorCents,t.capCents,t.creditCents);
-    var keys=Object.keys(S.offered),chips='';
-    if(keys.length>1){
-      for(var i=0;i<TIER_ORDER.length;i++){var k=TIER_ORDER[i],tt=S.offered[k];if(!tt)continue;var tr=reshape(n,tt.floorCents,tt.capCents,tt.creditCents);
-        chips+='<button class="chip" data-tier="'+k+'" aria-pressed="'+(k===S.tier)+'"><b>'+TIER_WORDS[k]+'</b>'+usd(tr.floorTotal)+' or '+usd(tr.capTotal)+'<br>+'+usd(tt.creditCents)+' now</button>';}
-    }
-    body.innerHTML='<h2 id="sh-h">Lock in this position</h2><div class="who">'+esc(r.sideName||'')+' · '+n+' contracts · '+(r.markCents||q.markCents||'')+'¢ now</div>'+
-      '<div class="tiles"><div class="tile"><div class="l">if it loses</div><div class="v">'+usd(rs.floorTotal)+'</div><div class="was">was $0</div></div>'+
-      '<div class="tile k"><div class="l">paid now</div><div class="v">+'+usd(t.creditCents)+'</div><div class="was">yours today</div></div>'+
-      '<div class="tile"><div class="l">if it wins</div><div class="v">'+usd(rs.capTotal)+'</div><div class="was">was '+usd0(100*n)+'</div></div></div>'+
-      (chips?'<div class="chips'+(S.adjust?' on':'')+'" id="chips">'+chips+'</div>':'')+
-      '<button class="go" id="sh-go">Lock in · +'+usd(t.creditCents)+' now</button>'+
-      '<div class="fine">priced live · locks at your tap'+(chips?' · <a href="#" id="sh-adjust">adjust</a>':'')+' · <a href="#" id="sh-how">how it works</a></div>'+
-      '<div class="how'+(S.how?' on':'')+'" id="how"><p>You sell part of this position at today\\'s price and keep the rest. That is why you are paid now.</p><p>If '+esc(r.sideName||'your side')+' loses you end with '+usd(rs.floorTotal)+' instead of $0. If it wins, '+usd(rs.capTotal)+' instead of '+usd0(100*n)+'.</p><p>The credit you see is the credit you get. It settles on the same official result as your position; nothing to manage.</p><p>Terms lock at your tap; the other side is bought in the same second. Want out early? Tap close early on the card: a new trade priced from the live books, never a free reversal. The reset is demo only: nothing is bought here, so it simply clears the row.</p></div>';
-    var cs=body.querySelectorAll('[data-tier]');
-    for(var j=0;j<cs.length;j++)cs[j].onclick=function(){S.tier=this.getAttribute('data-tier');S.adjust=true;track('tier_pick',S.open,S.tier);paintSheet(p)};
-    if(el('sh-adjust'))el('sh-adjust').onclick=function(e){e.preventDefault();S.adjust=!S.adjust;el('chips').className='chips'+(S.adjust?' on':'')};
-    el('sh-how').onclick=function(e){e.preventDefault();S.how=!S.how;el('how').className='how'+(S.how?' on':'')};
-    el('sh-go').onclick=function(){confirmProtect(q,n,t)};
+    if(S.view==='venue'){paintVenue();return}
+    paintPositions();
   }
 
-  function confirmProtect(q,n,t){
-    var ticker=S.open,r=S.byTicker[ticker];
-    var rs=reshape(n,t.floorCents,t.capCents,t.creditCents);
-    /* the row's words ride along: the board re-scans every minute and may drop the row, and the Activity tab still has to list the lock */
-    S.protectedBy[ticker]={kept:rs.kept,cashCents:rs.cashCents,floorTotal:rs.floorTotal,capTotal:rs.capTotal,creditCents:t.creditCents,floorCents:t.floorCents,capCents:t.capCents,tier:S.tier,closed:null,
-      sideName:r?r.sideName:'',league:r?r.league:'',eventTimeIso:r?r.eventTimeIso:''};
-    addCash(t.creditCents);
-    track('protect_on',ticker,S.tier);
-    el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Locked in</h2>'+
-      '<div class="sum">'+esc(r?r.sideName:'')+'<br>ends <b>'+usd(rs.floorTotal)+'</b> or <b>'+usd(rs.capTotal)+'</b><br><b>+'+usd(t.creditCents)+'</b> added to your cash</div></div>'+
-      '<button class="go" id="sh-done">Done</button><div class="fine">Nothing to manage. It settles with your position.</div>';
-    el('sh-done').onclick=function(){closeSheet();paintList()};
-    paintList();
+  /* ---- the taps on a row ---- */
+  function openRow(t){
+    var st=stateOf(t);
+    st.open=!st.open;
+    if(st.open&&!st.q&&!st.busy)loadQuote(t);
+    if(st.open)track('row_tap',t);
+    paintRow(t);
   }
-
-  /* CLOSE EARLY: the other half of "terms lock at your tap". Leaving is a new trade priced from the
-     live books this second: the user's contracts sold into the bids, the other side sold into its
-     bids, the protection settled at what both fetched. The credit paid at the tap stays theirs. */
-  function openCloseSheet(ticker){
-    var p=S.protectedBy[ticker],r=S.byTicker[ticker];
-    if(!p||p.closed)return;
-    S.open=ticker;S.how=false;
-    el('scrim').className='scrim on';el('sheet').className='sheet on';
-    el('sh-body').innerHTML='<h2 id="sh-h">Leave early</h2><div class="who">'+esc(r?r.sideName:'')+' · '+(r?r.contracts:'')+' contracts</div><div class="skel"></div><div class="skel" style="width:70%"></div><div class="skel" style="width:40%"></div>';
-    track('close_quote',ticker,p.tier);
-    var qs='ticker='+encodeURIComponent(ticker)+'&floor='+p.floorCents+'&cap='+p.capCents+'&credit='+p.creditCents;
+  function loadQuote(t){
+    var st=stateOf(t),r=S.byTicker[t];st.busy=true;
+    fetch('/api/showcase?ticker='+encodeURIComponent(t),{cache:'no-store'}).then(function(x){return x.json()}).then(function(p){
+      st.busy=false;
+      var q=p&&p.quote?p.quote:null;
+      if(!q){st.q={ok:false};st.err=(p&&p.error)||'Live pricing is unavailable right now.';paintRow(t);return}
+      st.q=q;
+      if(q.ok){st.offered=offeredTiers(q,sizeOf(r).contracts);st.tier=defaultTier(st.offered,q);st.err=st.tier?null:'The market can\\'t fund a worthwhile credit on this one right now.'}
+      else st.err=q.detail||'Protection isn\\'t available on this position right now.';
+      paintRow(t);
+    }).catch(function(){st.busy=false;st.q={ok:false};st.err='Live pricing is unavailable right now.';paintRow(t)});
+  }
+  /* the lock, in stages the pill reports in words; the record is the page's own */
+  function lockIn(t){
+    var st=stateOf(t),r=S.byTicker[t],tt=st.offered[st.tier];if(!tt||st.stage)return;
+    var n=sizeOf(r).contracts,rs=reshape(n,tt.floorCents,tt.capCents,tt.creditCents),t0=Date.now();
+    var stages=['Pricing from the live book\\u2026','Writing the record\\u2026','Buying the other side\\u2026'],i=0;
+    st.stage=stages[0];paintRow(t);
+    var step=setInterval(function(){
+      i++;
+      if(i<stages.length){st.stage=stages[i];paintRow(t);return}
+      clearInterval(step);
+      st.stage='';
+      st.lock={tier:st.tier,floorCents:tt.floorCents,capCents:tt.capCents,creditCents:tt.creditCents,contracts:n,floorTotal:rs.floorTotal,capTotal:rs.capTotal,at:fmtNow(),secs:((Date.now()-t0)/1000).toFixed(1),
+        sideName:r.sideName,league:r.league,eventTimeIso:r.eventTimeIso};
+      st.details=false;st.flash=true;
+      addCash(tt.creditCents);
+      track('protect_on',t,st.tier);
+      paintRow(t);
+      setTimeout(function(){st.flash=false;paintRow(t)},1200);
+    },700+Math.floor(Math.random()*400));
+  }
+  /* LEAVE EARLY: the protection alone is settled at the live books this second; the pick stays. */
+  function leaveQuote(t){
+    var st=stateOf(t),L=st.lock;if(!L||!st.leave)return;
+    var r=S.byTicker[t],qc=st.q&&st.q.ok?st.q:null,n=L.contracts,base=qc?(qc.tiers&&qc.tiers[L.tier]?qc.tiers[L.tier]:qc):null;
+    if(!base){st.leave.err='Live pricing is unavailable right now. Your terms stay locked.';paintRow(t);return}
+    var qs='ticker='+encodeURIComponent(t)+'&floor='+L.floorCents+'&cap='+L.capCents+'&credit='+base.creditCents;
+    track('close_quote',t,L.tier);
     fetch('/api/close-quote?'+qs,{cache:'no-store'}).then(function(x){return x.json()}).then(function(c){
-      if(S.open!==ticker)return;
-      paintCloseSheet(c,p,r);
-    }).catch(function(){if(S.open===ticker)paintCloseSheet(null,p,r)});
+      if(!st.leave)return;
+      if(!c||!c.ok){st.leave.err=(c&&c.message)||'Live pricing is unavailable right now. Your terms stay locked.';paintRow(t);return}
+      var k=n/(c.contracts||qc.contracts||n);
+      st.leave.q={net:Math.round((c.leaveWithCents-c.withoutProtectionCents-base.creditCents)*k),at:Date.now()};
+      paintRow(t);
+    }).catch(function(){if(st.leave){st.leave.err='Live pricing is unavailable right now. Your terms stay locked.';paintRow(t)}});
   }
-  function paintCloseSheet(c,p,r){
-    var body=el('sh-body');
-    if(!c||!c.ok){
-      body.innerHTML='<h2 id="sh-h">Leave early</h2><div class="who">'+esc(r?r.sideName:'')+'</div>'+
-        '<div class="refusal"><b>Not right now.</b> '+esc(c&&c.message?c.message:'Live pricing is unavailable right now. Your terms stay locked.')+'</div>'+
-        '<button class="go quiet" id="sh-close">Keep it</button>'+
-        '<div class="fine">Hold to the lock and it ends '+usd(p.floorTotal)+' or '+usd(p.capTotal)+', as quoted.</div>';
-      el('sh-close').onclick=closeSheet;return;
-    }
-    var n=c.contracts||(r?r.contracts:0),mid=c.midCents!=null?c.midCents+'¢ now':'';
-    var cost=c.costVsMidCents!=null?usd(Math.max(0,c.costVsMidCents)):null;
-    body.innerHTML='<h2 id="sh-h">Leave early</h2><div class="who">'+esc(r?r.sideName:'')+' · '+n+' contracts'+(mid?' · '+mid:'')+'</div>'+
-      '<div class="tiles"><div class="tile k"><div class="l">leave with</div><div class="v">'+usd(c.leaveWithCents)+'</div><div class="was">now, credit included</div></div>'+
-      '<div class="tile"><div class="l">or hold</div><div class="v">'+usd(p.floorTotal)+'</div><div class="was">or '+usd(p.capTotal)+' at the lock</div></div>'+
-      '<div class="tile"><div class="l">without the lock</div><div class="v">'+usd(c.withoutProtectionCents)+'</div><div class="was">selling now</div></div></div>'+
-      '<button class="go" id="sh-go">Close early · '+usd(c.leaveWithCents)+' now</button>'+
-      '<div class="fine">priced live this second · a new trade, not a reversal · <a href="#" id="sh-how">how it works</a></div>'+
-      '<div class="how'+(S.how?' on':'')+'" id="how"><p>You sell your contracts into the live bids and the other side is sold into its bids in the same second. The lock settles at what both fetched; the '+usd(p.creditCents)+' paid at your tap stays yours.</p>'+
-      (cost?'<p>Leaving costs the spread on both sides: '+cost+' against the mid right now. Hold to the lock and there is no spread to pay.</p>':'')+
-      '<p>Demo only: nothing is sold. The row closes and the cash lands in your balance.</p></div>';
-    el('sh-how').onclick=function(e){e.preventDefault();S.how=!S.how;el('how').className='how'+(S.how?' on':'')};
-    el('sh-go').onclick=function(){confirmClose(c,p,r)};
+  function leaveGo(t){
+    var st=stateOf(t),L=st.lock,lv=st.leave;if(!L||!lv||!lv.q)return;
+    var net=lv.q.net;
+    st.removed={at:fmtNow(),net:net};
+    addCash(net);
+    track('close_early',t,L.tier);
+    st.lock=null;st.leave=null;st.rcpt=false;
+    paintRow(t);
   }
-  function confirmClose(c,p,r){
-    var ticker=S.open,added=c.leaveWithCents-p.creditCents;
-    p.closed={leaveWithCents:c.leaveWithCents,withoutProtectionCents:c.withoutProtectionCents,at:fmtNow(),addedCents:added};
-    addCash(added);
-    track('close_early',ticker,p.tier);
-    el('sh-body').innerHTML='<div class="done"><div class="ck">&#x2713;</div><h2 id="sh-h">Closed</h2>'+
-      '<div class="sum">'+esc(r?r.sideName:'')+'<br>left with <b>'+usd(c.leaveWithCents)+'</b> in total<br><b>'+(added>=0?'+':'-')+usd(Math.abs(added))+'</b> to your cash now, your <b>'+usd(p.creditCents)+'</b> credit already counted</div></div>'+
-      '<button class="go" id="sh-done">Done</button><div class="fine">A new trade at live prices. Nothing left to settle.</div>';
-    el('sh-done').onclick=function(){closeSheet();paintList()};
+  function resetDemo(){
+    var t;for(t in S.R)if(Object.prototype.hasOwnProperty.call(S.R,t))delete S.R[t];
+    for(t in S.lockedBy)if(Object.prototype.hasOwnProperty.call(S.lockedBy,t))delete S.lockedBy[t];
+    addCash(41250-S.cash);
+    track('protect_undo');
     paintList();
   }
-  function fmtNow(){try{return new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return 'now'}}
-  function fmtAt(iso){try{var d=new Date(iso);return d.toLocaleDateString('en-US',{weekday:'short',timeZone:'America/New_York'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return ''}}
 
   /* PARLAYS: the shadow's simulated tickets, read through /api/parlays in retail shape. Three states
      on a row. Two or more picks open: no lock, and the row says so (there is no market for the pair of
      games, so nothing to price it against). One pick open: the lock priced from the live book at the
      moment, or the reason it was refused, a tap away in full. Settled or busted: one line under a
      collapsed Settled group, the full comparison on tap. The lock tap here is simulated on top of the
-     shadow's terms; nothing is re-priced in the browser. */
+     shadow's terms; nothing is re-priced in the browser. The parlays keep the sheet: a ticket has no
+     row of its own in the venue's list to open under. */
   var PICK_MARK={hit:'&#x2713;',miss:'&#x2717;',open:'&middot;',partial:'&frac12;'};
   function parlayId(id){return String(id||'').toUpperCase()}
   /* "Cowboys vs Buccaneers": the side in ink, the rest of the matchup faint; soccer picks arrive as "Brighton to win" with nothing after */
@@ -726,7 +1007,7 @@ ${cardBlock}<aside class="pitch">
   function leaguesOf(t){var seen={},out=[];for(var i=0;i<t.picks.length;i++){var l=String(t.picks[i].league||'').toUpperCase();if(l&&!seen[l]){seen[l]=1;out.push(l)}}return out.join(' &middot; ')}
   function missedPick(t){for(var j=0;j<t.picks.length;j++)if(t.picks[j].state==='miss')return t.picks[j];return null}
   function metaHtml(t){var win=t.paysCents-t.stakeCents,lg=leaguesOf(t);return usd0(t.stakeCents)+' to win '+usd0(win)+(lg?' &middot; '+lg:'')}
-  function lockIcon(){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>'}
+  function lockIcon(){return SHIELD}
   /* a ticket still in play: the full card */
   function inPlayHtml(t){
     var L=t.lock,locked=!!S.lockedBy[t.id],head='',foot='';
@@ -786,9 +1067,9 @@ ${cardBlock}<aside class="pitch">
       if(S.showSettled)for(i=0;i<done.length;i++)html+=decidedHtml(done[i]);
     }
     list.innerHTML=html;
-    el('bal').textContent='Cash '+usd(S.cash);
+    paintCash();
   }
-  /* ACTIVITY: what finished. First this session's own taps (locks and early closes made here,
+  /* ACTIVITY: what finished. First this session's own taps (locks and early leaves made here,
      simulated, so a visitor finds what they just did where a real app would put it), then the
      record's finished positions through /api/activity in retail shape: settled at the venue's
      official result or closed early, most recent first. A row reads as what it ended at with
@@ -796,11 +1077,11 @@ ${cardBlock}<aside class="pitch">
      first number and said. Nothing here is re-priced. */
   function fmtDay(iso){try{var d=new Date(iso);return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',timeZone:'America/New_York'}).replace(',','')}catch(e){return ''}}
   function sessionHtml(){
-    var html='',k,r,p,t,L;
-    for(k in S.protectedBy){if(!Object.prototype.hasOwnProperty.call(S.protectedBy,k))continue;p=S.protectedBy[k];r=S.byTicker[k]||{};
-      var name=p.sideName||r.sideName||k,lg=String(p.league||r.league||'').toUpperCase(),when=p.eventTimeIso||r.eventTimeIso;
-      if(p.closed)html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; closed early '+esc(p.closed.at)+'</div></div><div class="pl"><b>'+usd(p.closed.leaveWithCents)+'</b><i>vs '+usd(p.closed.withoutProtectionCents)+' without</i></div></div></div>';
-      else html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; locked in'+(when?' &middot; '+esc(fmtEt(when)):'')+'</div></div><div class="pl"><b>'+usd(p.floorTotal)+' or '+usd(p.capTotal)+'</b><i>'+usd(p.creditCents)+' paid now</i></div></div></div>';
+    var html='',k,r,p,t,L,st;
+    for(k in S.R){if(!Object.prototype.hasOwnProperty.call(S.R,k))continue;st=S.R[k];r=S.byTicker[k]||{};p=st.lock;
+      var name=(p&&p.sideName)||r.sideName||k,lg=String((p&&p.league)||r.league||'').toUpperCase(),when=(p&&p.eventTimeIso)||r.eventTimeIso;
+      if(st.removed)html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; protection removed '+esc(st.removed.at)+'</div></div><div class="pl"><b>'+(st.removed.net<0?'you paid '+usd(-st.removed.net):st.removed.net>0?usd(st.removed.net)+' paid to you':'nothing owed')+'</b><i>the pick stays open</i></div></div></div>';
+      else if(p)html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; locked in'+(when?' &middot; '+esc(fmtEt(when)):'')+'</div></div><div class="pl"><b>'+usd(p.floorTotal)+' or '+usd(p.capTotal)+'</b><i>'+usd(p.creditCents)+' paid now</i></div></div></div>';
     }
     for(k in S.lockedBy){if(!Object.prototype.hasOwnProperty.call(S.lockedBy,k))continue;t=S.lockedBy[k];L=t.lock;
       html+='<div class="pos act"><div class="h"><div><div class="name">'+t.size+'-pick parlay</div><div class="meta">'+t.leagues+' &middot; locked in</div></div><div class="pl"><b>'+usd(L.floorTotalCents)+' or '+usd(L.capTotalCents)+'</b><i>'+usd(L.creditCents)+' paid now</i></div></div></div>';
@@ -828,7 +1109,7 @@ ${cardBlock}<aside class="pitch">
     for(i=0;i<n;i++)html+=activityRowHtml(rows[i]);
     if(rows.length>n)html+='<div class="grp" style="justify-content:center"><button data-more="activity">Show '+Math.min(25,rows.length-n)+' more</button></div>';
     list.innerHTML=html;
-    el('bal').textContent='Cash '+usd(S.cash);
+    paintCash();
   }
   function loadActivity(){
     fetch('/api/activity',{cache:'no-store'}).then(function(x){return x.json()}).then(function(p){
@@ -839,11 +1120,12 @@ ${cardBlock}<aside class="pitch">
   }
   function openActivityInfoSheet(){
     openPlainSheet('activity-info','<h2 id="sh-h">About this activity</h2>'+
-      '<div class="how on"><p>Anything you lock in or close here shows at the top for this session. It is simulated: nothing is bought.</p>'+
+      '<div class="how on"><p>Anything you lock in or leave here shows at the top for this session. It is simulated: nothing is bought.</p>'+
       '<p>Below that is our public record: positions we have been protecting on paper at live prices, settled at the venue\\'s official result or closed early. Each row says what it ended at with the lock and what the same position would have ended at without one. The amount paid at open is inside the first number.</p></div>');
   }
+  function closeSheet(){S.openParlay=null;el('scrim').className='scrim';el('sheet').className='sheet';if(pendingDelta){var d=pendingDelta;pendingDelta=0;pulse(d)}}
   function openPlainSheet(key,body){
-    S.openParlay=key;S.open=null;S.how=false;
+    S.openParlay=key;
     el('scrim').className='scrim on';el('sheet').className='sheet on';
     el('sh-body').innerHTML=body+'<button class="go quiet" id="sh-done">Got it</button>';
     el('sh-done').onclick=closeSheet;
@@ -864,10 +1146,11 @@ ${cardBlock}<aside class="pitch">
       '<div class="refusal">'+esc(t.lockRefused.charAt(0).toUpperCase()+t.lockRefused.slice(1))+'.</div>'+
       '<div class="how on"><p>The lock is re-priced every '+(P.pricedEveryMinutes||10)+' minutes while the last game is still ahead. When the market can fund it, the button lights up on this row.</p></div>');
   }
+  var sheetHow=false;
   function openParlaySheet(id){
     var t=S.byParlay[id];if(!t||!t.lock)return;
     var L=t.lock,last=t.picks[t.picks.length-1];
-    S.openParlay=id;S.open=null;S.how=false;
+    S.openParlay=id;sheetHow=false;
     el('scrim').className='scrim on';el('sheet').className='sheet on';
     track('parlay_tap',parlayId(id));
     el('sh-body').innerHTML='<h2 id="sh-h">Lock in your parlay</h2><div class="who">'+esc(last.outcome)+' is the last pick &middot; worth '+usd(L.worthCents)+' at fair</div>'+
@@ -879,7 +1162,7 @@ ${cardBlock}<aside class="pitch">
       '<div class="how" id="how"><p>Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket: it guarantees '+usd(L.floorTotalCents)+' if '+esc(last.outcome)+' misses, pays '+usd(L.creditCents)+' now, and leaves the upside to '+usd(L.capTotalCents)+' if it hits.</p>'+
       '<p>It is priced only when one pick is left. With two picks open there is no market for the pair of games, so no lock is offered yet.</p>'+
       '<p>The ticket is ours, built from public game markets at the prices when it was built. The terms are the ones the live market on the last pick funded at that second; nothing is bought.</p></div>';
-    el('sh-how').onclick=function(e){e.preventDefault();S.how=!S.how;el('how').className='how'+(S.how?' on':'')};
+    el('sh-how').onclick=function(e){e.preventDefault();sheetHow=!sheetHow;el('how').className='how'+(sheetHow?' on':'')};
     el('sh-go').onclick=function(){confirmParlayLock(t)};
   }
   function confirmParlayLock(t){
@@ -909,10 +1192,45 @@ ${cardBlock}<aside class="pitch">
       if(S.tab==='Parlays')paintList();
     }).catch(function(){S.parlays=null;S.parlaysErr='Parlays are unavailable right now.';if(S.tab==='Parlays')paintList()});
   }
+  function setShell(shell){
+    if(S.shell===shell)return;
+    S.shell=shell;
+    el('demo').className='demo shell-'+shell;
+    var bs=document.querySelectorAll('[data-shell]');for(var i=0;i<bs.length;i++)bs[i].setAttribute('aria-pressed',String(bs[i].getAttribute('data-shell')===shell));
+    track(shell==='table'?'shell_table':'shell_phone');
+    paintList();
+  }
+  function setView(view){
+    if(S.view===view)return;
+    S.view=view;
+    var bs=document.querySelectorAll('[data-view]');for(var i=0;i<bs.length;i++)bs[i].setAttribute('aria-pressed',String(bs[i].getAttribute('data-view')===view));
+    if(view==='venue'){track('venue_view');if(!S.vv&&!S.vvBusy)loadVenueView()}
+    paintList();
+  }
 
   document.addEventListener('click',function(e){
-    var b=e.target.closest?e.target.closest('[data-protect],[data-undo],[data-close],[data-tab],[data-parlay],[data-unlock],[data-info],[data-why],[data-settled],[data-expand],[data-more]'):null;
+    var a=e.target.closest?e.target.closest('[data-act]'):null;
+    if(a){
+      var row=a.closest('.ael-row'),t=row?row.getAttribute('data-row'):null,st=t?stateOf(t):null,act=a.getAttribute('data-act');
+      if(!t)return;
+      if(a.tagName==='A')e.preventDefault();
+      e.stopPropagation();
+      if(act==='toggle'){openRow(t);return}
+      if(act==='details'){st.details=!st.details;paintRow(t);return}
+      if(act==='shape'){st.tier=a.getAttribute('data-tier')||st.tier;track('tier_pick',t,st.tier);paintRow(t);return}
+      if(act==='go'){lockIn(t);return}
+      if(act==='rcpt'){st.rcpt=!st.rcpt;paintRow(t);return}
+      if(act==='leave'){st.leave={q:null,err:null,why:false};paintRow(t);leaveQuote(t);return}
+      if(act==='stay'){st.leave=null;paintRow(t);return}
+      if(act==='why'){if(st.leave)st.leave.why=!st.leave.why;paintRow(t);return}
+      if(act==='leavego'){leaveGo(t);return}
+      return;
+    }
+    var b=e.target.closest?e.target.closest('[data-reset],[data-shell],[data-view],[data-tab],[data-parlay],[data-unlock],[data-info],[data-why],[data-settled],[data-expand],[data-more]'):null;
     if(!b)return;
+    if(b.hasAttribute('data-reset')){e.preventDefault();resetDemo();return}
+    var sh=b.getAttribute('data-shell');if(sh){setShell(sh);return}
+    var vw=b.getAttribute('data-view');if(vw){setView(vw);return}
     if(b.hasAttribute('data-info')){if(b.getAttribute('data-info')==='activity')openActivityInfoSheet();else openInfoSheet();return}
     if(b.hasAttribute('data-more')){S.activityShown+=25;paintList();return}
     var why=b.getAttribute('data-why');
@@ -920,12 +1238,6 @@ ${cardBlock}<aside class="pitch">
     if(b.hasAttribute('data-settled')){S.showSettled=!S.showSettled;paintList();return}
     var ex=b.getAttribute('data-expand');
     if(ex){S.expanded[ex]=!S.expanded[ex];paintList();return}
-    var t=b.getAttribute('data-protect');
-    if(t){openSheet(t);return}
-    var c=b.getAttribute('data-close');
-    if(c){openCloseSheet(c);return}
-    var u=b.getAttribute('data-undo');
-    if(u&&S.protectedBy[u]){var pu=S.protectedBy[u];addCash(-(pu.creditCents+(pu.closed?pu.closed.addedCents:0)));delete S.protectedBy[u];track('protect_undo',u);paintList();return}
     var pid=b.getAttribute('data-parlay');
     if(pid){openParlaySheet(pid);return}
     var ul=b.getAttribute('data-unlock');
@@ -946,9 +1258,14 @@ ${cardBlock}<aside class="pitch">
     }).catch(function(){S.rows=[];S.err='Positions are unavailable right now.';paintList()});
   }
   load();
-  /* ?tab=parlays or ?tab=activity opens on that tab, so a link can land a partner on those rows directly */
-  try{if(/[?&]tab=parlays\\b/i.test(location.search))switchTab('Parlays');else if(/[?&]tab=activity\\b/i.test(location.search))switchTab('Activity')}catch(e){}
-  setInterval(function(){if(S.open||S.openParlay)return;if(S.tab==='Parlays')loadParlays();else if(S.tab==='Activity')loadActivity();else load()},60000);
+  loadVenueView();
+  /* ?tab=parlays or ?tab=activity opens on that tab; ?view=venue opens the host's side; ?shell=table opens the desktop table, so a link can land a partner there directly */
+  try{
+    if(/[?&]tab=parlays\\b/i.test(location.search))switchTab('Parlays');else if(/[?&]tab=activity\\b/i.test(location.search))switchTab('Activity');
+    if(/[?&]shell=table\\b/i.test(location.search)&&window.matchMedia&&window.matchMedia('(min-width:900px)').matches)setShell('table');
+    if(/[?&]view=venue\\b/i.test(location.search))setView('venue');
+  }catch(e){}
+  setInterval(function(){if(S.openParlay)return;for(var t in S.R)if(Object.prototype.hasOwnProperty.call(S.R,t)&&(S.R[t].open||S.R[t].lock))return;if(S.tab==='Parlays')loadParlays();else if(S.tab==='Activity')loadActivity();else{load();loadVenueView()}},60000);
 })();
 </script>
 </body>
