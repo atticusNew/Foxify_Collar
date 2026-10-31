@@ -111,6 +111,15 @@ test("embed: the minimum-credit rule hides negligible tiers: 5¢ and 0.25% of st
   assert.ok(html.includes("function defaultTier(offered,q){if(q&&q.tier&&offered[q.tier])return q.tier;for(var i=0;i<TIER_ORDER.length;i++)if(offered[TIER_ORDER[i]])return TIER_ORDER[i];return null}"), "one shape by default: the one the service heads the quote with, else the first in the extension's order that clears");
 });
 
+test("embed: the page script parses, for every skin and brand shape", () => {
+  for (const opts of [{ brand: "ProphetX" }, { brand: "Your Exchange", skin: "dark" as const }, { brand: "A&B \"x\"" }, { brand: DEFAULT_EMBED_BRAND, liveVideo: null }]) {
+    const html = renderEventEmbedHtml(opts);
+    const js = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
+    assert.ok(js.length > 10_000, "the script is in the page");
+    assert.doesNotThrow(() => new Function(js), `the page script parses for ${JSON.stringify(opts)}`);
+  }
+});
+
 test("embed: the host shell is theirs, the line and the panel are ours (the extension's, in the host's colours); copy is outcomes, not mechanics", () => {
   const html = renderEventEmbedHtml({ brand: "ProphetX", skin: "light" });
   assert.ok(html.includes("<title>ProphetX · Positions</title>"), "the host's name on the tab");
@@ -162,7 +171,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(html.includes("if(keys.length>1)rows.push(drow('Shape',shapeSegs(st,n,keys),'ael-dshape'));"), "Shape as a segmented control, only when more than one clears");
   assert.ok(html.includes('class="ael-shape-b" data-act="shape" data-tier="\'+k+\'" aria-pressed="\'+(k===st.tier)+\'"'), "pressed state on the chosen shape");
   assert.ok(html.includes("rows.push(drow('Other side','<span'+(o.tip?' title=\"'+esc(o.tip)+'\"':'')+'>'+o.html+'</span>'));"), "Other side: the venue, the race, every venue's figure in the tooltip");
-  assert.ok(html.includes("if(priced.length>1){parts.push('best of '+priced.length+' venues');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}"), "the winner and what it saved the trader");
+  assert.ok(html.includes("else{parts.push('best of '+priced.length+' venues');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}") && html.includes("parts.push('of '+priced.length+' venues, chosen on all-in cost')"), "the winner and what it saved the trader; never 'best of' when the scan chose on all-in cost");
   assert.ok(html.includes("rows.push(drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class=\"ael-dim\">&middot; priced live</span>'));"), "Until");
   assert.ok(html.includes("rows.push(drow('How','You sell part of the position today and keep the rest. The other side is bought the second you tap'"), "How: the sale framing, two sentences, no figures");
   assert.ok(!html.includes("set aside") && !html.includes("contracts</b> kept"), "no set-aside or contracts-kept mechanics");
@@ -181,11 +190,14 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(html.includes("Your pick stays open on '+esc(BRAND)+', unprotected. The '+usd(credit)+' paid at the lock is yours either way."), "the pick stays; the credit is kept");
   assert.ok(html.includes("Earlier protection removed '+esc(m.at)"), "a row that left early says so when it is priced again");
   // the host's footer: the disclaimer, the links, the credit; reset lives there now
-  assert.ok(html.includes('<div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <b>Atticus</b> &middot; routed via ParlayX</span></div>'), "the phone note: disclaimer, record and reset on one line, the credit under");
-  assert.ok(html.includes(".host-note span,.host-note a,.host-note .pow,.host-note .links{display:block}") && html.includes(".host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap"), "deliberate lines; a link never strands mid-sentence");
+  assert.ok(html.includes('<div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <img src="data:image/png;base64'), "the phone note: disclaimer, record and reset on one line, the credit under with the wordmark");
+  assert.ok(html.includes(".host-note span,.host-note a,.host-note .pow,.host-note .links{display:block}") && html.includes(".host-note a{color:var(--dim);white-space:nowrap"), "deliberate lines; a link never strands mid-sentence");
   assert.ok(!html.includes('">reset · demo only</button>') || html.includes('data-unlock="'), "no reset button on a protected position row; the footer link resets the demo");
   assert.ok(html.includes("if(b.hasAttribute('data-reset')){e.preventDefault();resetDemo();return}"), "the footer link resets");
-  assert.ok(html.includes("function powered(){return '<div class=\"ael-pow\">Powered by <b>Atticus</b> &middot; routed via ParlayX where partnered</div>'}"), "the panel's foot: host first, us second, the partner named");
+  assert.ok(html.includes("function powered(){return '<div class=\"ael-pow\"><span>Powered by</span><img src=\"'+WORDMARK+'\" alt=\"Atticus\"><span>&middot; routed via ParlayX</span></div>'}"), "the panel's foot: host first, our wordmark second, the partner named; whole words that wrap as a unit");
+  assert.ok(html.includes(".ael-dl.ael-dshape,.ael-dv.ael-dshape{grid-column:1/-1}") && html.includes(".ael-shape{display:flex;width:100%;") && html.includes(".ael-shape-b{appearance:none;flex:1 1 0;min-width:0;"), "Shape takes its own full-width row and the three words share it, so none spills off a phone");
+  assert.ok(html.includes(".host-note{padding:14px 16px calc(22px + env(safe-area-inset-bottom));") && html.includes(".list{padding:8px 12px 16px}"), "on a phone the note sits at the end of the list, never over a panel");
+  assert.ok(html.includes("  .host-note{left:0;right:0;bottom:0;padding:28px 16px 14px;background:linear-gradient(to top,var(--bg) 78%,transparent);pointer-events:none}"), "inside the desktop frame it overlays the bottom on a gradient tall enough to cover the words under it");
   assert.ok(!html.includes('<a href="/board">Board</a>') && !html.includes('<a href="/receipts">Receipts</a></div>'), "board and receipts are off the phone");
   // the pitch: the venue's value, not the integrator's
   assert.ok(html.includes('<aside class="pitch">') && html.includes("<h1>One tap. Any prediction market.</h1>"), "desktop: the pitch beside the mock");
@@ -220,7 +232,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
     .replace(/<aside class="pitch">[\s\S]*?<\/aside>/, "")
     .replace(/<div class="vnote">[\s\S]*?<\/div>/, "")
     .replace(/\/\* ---- VENUE VIEW:[\s\S]*?function paintVenue\(\)\{[\s\S]*?\n  \}\n/, "")
-    .replace(/'\/api\/venue-view'|Venue view|routed via ParlayX/g, "");
+    .replace(/'\/api\/venue-view'|Venue view|routed via ParlayX|chosen on all-in cost/g, "");
   assert.ok(trader.length < html.length - 2000, "the pitch and the venue view are present and excluded from the retail leak check");
   for (const leak of ["Kalshi", "Polymarket", "hedge", "route", "take", "instId", "OKX", "tight", "wide"]) {
     assert.ok(!new RegExp(`\\b${leak}\\b`).test(trader.replace(/'tight'|'wide'|tight:|wide:|offered\.tight|offered\.wide/g, "")), `"${leak}" is not in the trader's copy`);
