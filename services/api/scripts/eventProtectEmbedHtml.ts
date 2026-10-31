@@ -310,7 +310,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .tabs{display:flex;gap:18px;padding:0 16px;border-bottom:1px solid var(--line)}
 .tabs span{padding:8px 0 10px;font-size:14px;color:var(--faint);font-weight:600;cursor:pointer;user-select:none}
 .tabs span.on{color:var(--ink);border-bottom:2px solid var(--accent);cursor:default}
-.list{padding:8px 12px 120px}
+.list{padding:8px 12px 16px}
 .pos{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 12px 10px;margin:8px 0}
 .pos .h{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
 .pos .name{font-weight:650;font-size:15px;line-height:1.25}
@@ -368,13 +368,14 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .pos.act .meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pos.act .terms{margin-top:5px;font-size:12.5px}
 .empty{padding:30px 16px;color:var(--faint);text-align:center;font-size:14px}
-.host-note{position:fixed;left:0;right:0;bottom:0;padding:10px 16px 14px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.45;background:linear-gradient(to top,var(--bg) 70%,transparent);pointer-events:none}
+/* on a phone the note sits at the end of the list, so it never covers a panel; inside the desktop frame it overlays the bottom on a gradient */
+.host-note{padding:14px 16px calc(22px + env(safe-area-inset-bottom));text-align:center;color:var(--faint);font-size:11.5px;line-height:1.5}
 /* deliberate lines (the disclaimer, the links, the credit): never a sentence that wraps and strands a link */
 .host-note span,.host-note a,.host-note .pow,.host-note .links{display:block}
 .host-note .links{display:flex;justify-content:center;gap:14px;margin-top:2px}
-.host-note a{color:var(--dim);pointer-events:auto;white-space:nowrap;display:inline}
-.host-note .pow{margin-top:4px;color:var(--faint)}
-.host-note .pow b{color:var(--dim);font-weight:600}
+.host-note a{color:var(--dim);white-space:nowrap;display:inline}
+.host-note .pow{display:flex;align-items:center;justify-content:center;gap:5px;margin-top:5px;color:var(--faint);white-space:nowrap}
+.host-note .pow img{height:11px;display:block;opacity:.95}
 .toast{position:fixed;left:50%;bottom:64px;transform:translate(-50%,8px);background:var(--ink);color:var(--bg);font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;white-space:nowrap;z-index:5}
 .toast.on{opacity:.96;transform:translate(-50%,0)}
 /* ---- the line and the panel: the extension's, in the host's colours ---- */
@@ -419,9 +420,11 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .ael-dv{color:var(--dim);min-width:0;overflow-wrap:anywhere}
 .ael-dv b{font-weight:600;color:var(--ink)}
 .ael-dim{color:var(--faint)}
-.ael-dshape{align-self:center;margin-bottom:3px}
-.ael-shape{display:inline-flex;border:1px solid var(--line);border-radius:8px;padding:2px;background:var(--card2);gap:2px;max-width:100%}
-.ael-shape-b{appearance:none;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:12.5px;font-weight:500;line-height:1.2;padding:5px 10px;cursor:pointer;white-space:nowrap}
+.ael-dl.ael-dshape,.ael-dv.ael-dshape{grid-column:1/-1}
+.ael-dl.ael-dshape{margin-bottom:-3px}
+.ael-dv.ael-dshape{margin-bottom:3px}
+.ael-shape{display:flex;width:100%;border:1px solid var(--line);border-radius:8px;padding:2px;background:var(--card2);gap:2px}
+.ael-shape-b{appearance:none;flex:1 1 0;min-width:0;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:12.5px;font-weight:500;line-height:1.2;padding:6px 4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
 .ael-shape-b:hover{color:var(--ink)}
 .ael-shape-b[aria-pressed="true"]{border-color:var(--accent);background:var(--wash);color:var(--ink);font-weight:600}
 /* the receipt: the same rows on a quiet ground */
@@ -440,9 +443,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .ael-leave-acts .ael-tg{margin-left:auto}
 .ael-why{font-size:12.5px;color:var(--dim);line-height:1.5;margin-top:6px}
 .ael-why p{margin:0 0 4px}
-.ael-pow{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--faint);margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
-.ael-pow b{color:var(--dim);font-weight:600}
-.ael-pow img{height:12px;display:block;opacity:.9}
+.ael-pow{display:flex;align-items:center;flex-wrap:wrap;gap:4px 5px;font-size:11.5px;line-height:1.3;color:var(--faint);margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+.ael-pow span{white-space:nowrap}
+.ael-pow img{height:11px;display:block;opacity:.95}
 /* ---- the venue view: the host's side of the same rows ---- */
 .vnote{margin:10px 4px 2px;font-size:12.5px;color:var(--dim);line-height:1.5}
 .vnote b{color:var(--ink);font-weight:600}
@@ -530,8 +533,10 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   .phone{margin:0;width:400px;height:min(820px,calc(100vh - 140px));min-height:560px;border-radius:40px;border:1px solid var(--frame);box-shadow:0 30px 80px rgba(15,17,21,.22),0 2px 6px rgba(15,17,21,.08);overflow:hidden;display:flex;flex-direction:column;color:var(--ink);background:var(--bg)}
   .demo.shell-table .phone{display:none}
   .host-top{padding-top:22px}
-  .list{flex:1;min-height:0;overflow:auto;padding-bottom:84px}
+  .list{flex:1;min-height:0;overflow:auto;padding-bottom:120px}
   .host-note,.scrim,.sheet,.toast{position:absolute}
+  .host-note{left:0;right:0;bottom:0;padding:28px 16px 14px;background:linear-gradient(to top,var(--bg) 78%,transparent);pointer-events:none}
+  .host-note a{pointer-events:auto}
   .sheet{max-width:none;padding-bottom:22px}
   .stage.from-card .cardland{display:none}
   .stage.from-card .demo{display:flex}
@@ -541,7 +546,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   .tbar nav{display:flex;gap:18px;font-size:13.5px;color:var(--faint);font-weight:600}
   .tbar nav span.on{color:var(--ink);border-bottom:2px solid var(--accent);padding-bottom:2px}
   .tbar .bal{margin-left:auto}
-  .tbody{flex:1;min-height:0;overflow:auto;padding:6px 16px 70px}
+  .tbody{flex:1;min-height:0;overflow:auto;padding:6px 16px 120px}
   .thead,.trow{display:grid;grid-template-columns:minmax(0,2.2fr) 1fr 1fr 1fr 1.3fr;gap:12px;align-items:center}
   .thead{padding:10px 10px 8px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
   .trow{padding:12px 10px 4px;font-size:14px;font-variant-numeric:tabular-nums}
@@ -551,7 +556,7 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
   .tgrp{margin:12px 10px 0;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
   .tline{padding:0 10px 10px;border-bottom:1px solid var(--line)}
   .tline .ael-row{margin-top:6px}
-  .table .host-note{position:absolute}
+  .table .host-note{position:absolute;left:0;right:0;bottom:0}
   .table .vcard{margin:8px 10px}
   .table .vnote{margin:10px 14px 2px}
 }
@@ -587,7 +592,7 @@ ${cardBlock}<aside class="pitch">
   </div>
   <div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
-  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <b>Atticus</b> &middot; routed via ParlayX</span></div>
+  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" /> &middot; routed via ParlayX</span></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="scrim" id="scrim"></div>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-h">
@@ -599,7 +604,7 @@ ${cardBlock}<aside class="pitch">
 <div class="table" id="table">
   <div class="tbar"><div class="brand"><i>${initial}</i>${brand}</div><nav><span>Markets</span><span class="on">My Trades</span><span>Account</span></nav><div class="bal"><span data-bal>Cash $412.50</span></div></div>
   <div class="tbody" id="tbody"><div class="empty">loading your positions…</div></div>
-  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <b>Atticus</b> &middot; routed via ParlayX</span></div>
+  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" /> &middot; routed via ParlayX</span></div>
 </div>
 </div>
 </div>
@@ -741,10 +746,10 @@ ${cardBlock}<aside class="pitch">
     var k=n/(v.contracts||n||1),priced=[],muted=[],i;
     for(i=0;i<v.venues.length;i++)(v.venues[i].creditCents!=null?priced:muted).push(v.venues[i]);
     var parts=['<b>'+esc(v.hedgeVenue)+'</b>'+(v.hedgeVenue===S.vv.hostVenue?' <span class="ael-dim">(this venue)</span>':'')];
-    if(priced.length>1){parts.push('best of '+priced.length+' venues');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}
+    if(priced.length>1){if(v.edgeCents!=null&&v.edgeCents<0)parts.push('of '+priced.length+' venues, chosen on all-in cost');else{parts.push('best of '+priced.length+' venues');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}}
     for(i=0;i<muted.length;i++)if(muted[i].host)parts.push('<span class="ael-dim">'+esc(muted[i].venue)+' '+esc(muted[i].why||'not offered')+'</span>');
     var tip=[];for(i=0;i<priced.length;i++)tip.push(priced[i].venue+' '+usd(Math.round(priced[i].creditCents*k)));for(i=0;i<muted.length;i++)tip.push(muted[i].venue+': '+(muted[i].why||'not offered'));
-    return {html:parts.join(' &middot; '),tip:tip.join(' \\u00b7 '),shopped:priced.length>1};
+    return {html:parts.join(' &middot; '),tip:tip.join(' \\u00b7 '),shopped:priced.length>1&&!(v.edgeCents!=null&&v.edgeCents<0)};
   }
   /* Details behind the toggle, as rows in one grammar: Shape, Other side, Until, How; no figures in How, the figures are the slip */
   function detailRows(r,st,n,keys){
@@ -756,7 +761,8 @@ ${cardBlock}<aside class="pitch">
     rows.push(drow('How','You sell part of the position today and keep the rest. The other side is bought the second you tap'+(o&&o.shopped?', at the best price across the venues that quoted it':'')+'; it settles on the same official result, nothing to manage.'));
     return '<div class="ael-details"><div class="ael-drows">'+rows.join('')+'</div></div>';
   }
-  function powered(){return '<div class="ael-pow">Powered by <b>Atticus</b> &middot; routed via ParlayX where partnered</div>'}
+  var WORDMARK=${JSON.stringify(ATTICUS_WORDMARK_GOLD_DATA_URI)};
+  function powered(){return '<div class="ael-pow"><span>Powered by</span><img src="'+WORDMARK+'" alt="Atticus"><span>&middot; routed via ParlayX</span></div>'}
   function removedLine(st){
     var m=st.removed;if(!m)return '';
     return '<div class="ael-fine">Earlier protection removed '+esc(m.at)+' &middot; '+(m.net<0?'you paid '+usd(-m.net):m.net>0?usd(m.net)+' paid to you':'nothing owed either way')+'.</div>';
@@ -777,7 +783,7 @@ ${cardBlock}<aside class="pitch">
     var L=st.lock,v=vvOf(r.kalshiTicker),k=L.contracts/((v&&v.contracts)||L.contracts||1),rows=[];
     var venue=v&&v.hedgeVenue?v.hedgeVenue:'the best venue',price=100-(r.markCents||50);
     var cmp='';
-    if(v){var priced=v.venues.filter(function(x){return x.creditCents!=null});if(priced.length>1)cmp=' <span class="ael-dim">&middot; best of '+priced.length+' venues'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for you':'')+'</span>'}
+    if(v){var priced=v.venues.filter(function(x){return x.creditCents!=null});if(priced.length>1)cmp=' <span class="ael-dim">&middot; '+(v.edgeCents!=null&&v.edgeCents<0?'of '+priced.length+' venues, chosen on all-in cost':'best of '+priced.length+' venues'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for you':''))+'</span>'}
     rows.push('<span>Other side</span><b><b>'+esc(venue)+'</b> &middot; '+L.contracts+' contracts of the other side at '+price.toFixed(1)+'c'+cmp+' <span class="ael-dim">&middot; priced at the book; demo, nothing bought</span></b>');
     rows.push('<span>Cost</span><b>'+usd(v&&v.hedgeCostCents!=null?Math.round(v.hedgeCostCents*k):Math.round(L.contracts*price))+' <span class="ael-dim">all in</span></b>');
     rows.push('<span>Until</span><b>'+esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; settles on the official result</span></b>');
@@ -875,8 +881,9 @@ ${cardBlock}<aside class="pitch">
     var hostV=S.vv.hostVenue,won=v.hedgeVenue,why;
     var hostRow=null;for(i=0;i<v.venues.length;i++)if(v.venues[i].host)hostRow=v.venues[i];
     if(!won)why='no venue could fund the other side right now';
+    else if(v.edgeCents!=null&&v.edgeCents<0)why='<b>'+esc(won)+'</b>: chosen on all-in cost once the tails of the game are priced, though another venue quoted '+usd(Math.round(-v.edgeCents*k))+' more'+(hostV&&won===hostV?'. The hedge stays with you.':hostV?'. You take a share of the spread.':'.');
     else if(hostV&&won===hostV)why='<b>'+esc(won)+'</b>, your book: it paid the trader the most'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' over the next venue':'')+'. The hedge stays with you.';
-    else if(hostV&&hostRow&&hostRow.creditCents!=null)why='<b>'+esc(won)+'</b>: it paid the trader '+usd(Math.round(v.edgeCents*k))+' more than your book did for the same protection, so the other side went there. You take a share of the spread instead.';
+    else if(hostV&&hostRow&&hostRow.creditCents!=null)why='<b>'+esc(won)+'</b>: it paid the trader '+usd(Math.round(Math.max(0,v.edgeCents||0)*k))+' more than your book did for the same protection, so the other side went there. You take a share of the spread instead.';
     else if(hostV)why='<b>'+esc(won)+'</b>: your book '+esc(hostRow?hostRow.why||'did not price it':'did not price it')+' on this game, so the other side went to the best venue that did. You take a share of the spread.';
     else why='<b>'+esc(won)+'</b>: the best price of the venues that quoted it'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for the trader':'')+'.';
     var state=st.lock?'<div class="vstate on">Locked by the trader &middot; '+esc(st.lock.at)+'</div>':'<div class="vstate">Offered &middot; +'+usd(Math.round(v.creditCents*k))+' to the trader</div>';
@@ -892,8 +899,12 @@ ${cardBlock}<aside class="pitch">
     var html='<div class="vnote"><b>What the trader does not see.</b> Every venue asked for the other side, which one got it and why, what the hedge cost, and your share of the spread. Your venue first when it is best, never when it is not.</div>';
     if(!S.vv){into.innerHTML=html+'<div class="empty">'+esc(S.vvErr||'asking the venues…')+'</div>';return}
     var rows=S.vv.rows||[];
-    if(SPORTS_ONLY)rows=rows.filter(function(v){var r=S.byTicker[v.kalshiTicker];return !r||r.kind!=='crypto'});
+    /* the venue's side of the rows the list shows: a sportsbook shell has no crypto rows, so none here either */
+    if(SPORTS_ONLY&&S.rows.length)rows=rows.filter(function(v){var r=S.byTicker[v.kalshiTicker];return !!r&&r.kind!=='crypto'});
     if(!rows.length){into.innerHTML=html+'<div class="empty">Nothing priced right now.</div>';return}
+    /* the same order as the positions list: league groups by the nearest game, crypto last */
+    var order={},n=0,gs=groupRows(S.rows),gi,ri;for(gi=0;gi<gs.length;gi++)for(ri=0;ri<gs[gi].rows.length;ri++)order[gs[gi].rows[ri].kalshiTicker]=n++;
+    rows=rows.slice().sort(function(a,b){return (order[a.kalshiTicker]==null?1e9:order[a.kalshiTicker])-(order[b.kalshiTicker]==null?1e9:order[b.kalshiTicker])});
     for(var i=0;i<rows.length;i++)html+=venueCardHtml(rows[i]);
     into.innerHTML=html;
     paintCash();
