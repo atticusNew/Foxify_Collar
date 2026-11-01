@@ -416,7 +416,6 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .ael-tgc{display:inline-flex;width:14px;height:14px;transition:transform .18s ease}.ael-tgc svg{width:14px;height:14px;display:block}
 .ael-tg[aria-expanded="true"] .ael-tgc{transform:rotate(180deg)}
 .ael-fine{font-size:12px;color:var(--faint);margin:8px 0 0;line-height:1.4}
-.ael-how{font-size:12px;color:var(--dim);margin:8px 0 0;line-height:1.45}
 .ael-fine b{color:var(--dim);font-weight:600}
 /* Details: rows in one grammar, a dim label and the value, the same two tones everywhere */
 .ael-details{margin:10px 0 2px;padding-top:8px;border-top:1px solid var(--line)}
@@ -732,7 +731,7 @@ ${cardBlock}<aside class="pitch">
     return '<button type="button" class="ael-line '+(cls||'')+(open?' ael-open':'')+'" data-act="toggle"><span class="ael-tag">'+(muted?'':'<span class="ael-ic">'+SHIELD_FILL+'</span>')+'<b>'+label+'</b></span>'+(fact?'<span class="ael-fact">'+fact+'</span>':'')+'<span class="ael-chev">'+CHEVRON+'</span></button>';
   }
   function toggleA(act,label,open){return '<a href="#" class="ael-tg" data-act="'+act+'" aria-expanded="'+(open?'true':'false')+'">'+label+'<span class="ael-tgc">'+CHEVRON+'</span></a>'}
-  /* what the trader is selling, in one line under the slip, where the decision is made; a Details row would push the panel taller, a hover would miss every phone */
+  /* what the trader is selling, as the last Details row: the slip already shows the trade, this says it in words for whoever asks; one tap away, and a place the record can point to */
   var HOW='You sell part of the upside today for the floor and the cash now. The other side is bought the second you tap and settles on the same official result.';
   function drow(label,value,cls){return '<span class="ael-dl'+(cls?' '+cls:'')+'">'+label+'</span><span class="ael-dv'+(cls?' '+cls:'')+'">'+value+'</span>'}
   function ledgerRow(label,value,was,cls){return '<div class="ael-lr'+(cls?' '+cls:'')+'"><span class="ael-l">'+label+'</span><b>'+value+'</b>'+(was===null?'':'<s>'+was+'</s>')+'</div>'}
@@ -758,13 +757,14 @@ ${cardBlock}<aside class="pitch">
     var tip=[];for(i=0;i<priced.length;i++)tip.push(priced[i].venue+' '+usd(Math.round(priced[i].creditCents*k)));for(i=0;i<muted.length;i++)tip.push(muted[i].venue+': '+(muted[i].why||'not offered'));
     return {html:parts.join(' &middot; '),tip:tip.join(' \\u00b7 '),shopped:priced.length>1&&!(v.edgeCents!=null&&v.edgeCents<0)};
   }
-  /* Details behind the toggle, as rows in one grammar: Shape, Other side, Until; the figures are the slip, the How is the line under it */
+  /* Details behind the toggle, as rows in one grammar: Shape, Other side, Until, How; the figures are the slip */
   function detailRows(r,st,n,keys){
     var rows=[],o=otherSide(vvOf(r.kalshiTicker),n);
     if(keys.length>1)rows.push(drow('Shape',shapeSegs(st,n,keys),'ael-dshape'));
     if(o)rows.push(drow('Other side','<span'+(o.tip?' title="'+esc(o.tip)+'"':'')+'>'+o.html+'</span>'));
     else if(S.vvBusy)rows.push(drow('Other side','<span class="ael-dim">asking the venues&hellip;</span>'));
     rows.push(drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; priced live</span>'));
+    rows.push(drow('How',HOW));
     return '<div class="ael-details"><div class="ael-drows">'+rows.join('')+'</div></div>';
   }
   var WORDMARK=${JSON.stringify(ATTICUS_WORDMARK_GOLD_DATA_URI)};
@@ -780,7 +780,6 @@ ${cardBlock}<aside class="pitch">
     var rs=reshape(n,t.floorCents,t.capCents,t.creditCents),keys=TIER_ORDER.filter(function(k){return !!st.offered[k]});
     var busy=!!st.stage;
     return ledger(r,rs,t.creditCents,Math.round(100*n),false)+
-      '<div class="ael-how">'+HOW+'</div>'+
       '<div class="ael-acts">'+(busy?'<span class="ael-stage">'+esc(st.stage)+'</span>':'<button type="button" class="ael-go" data-act="go"><span class="ael-ic">'+SHIELD_FILL+'</span>Lock in</button>')+toggleA('details','Details',st.details)+'</div>'+
       removedLine(st)+
       (st.details?detailRows(r,st,n,keys):'')+powered();
