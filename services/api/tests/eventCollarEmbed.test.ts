@@ -168,7 +168,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(html.includes("function reshape(n,F,C,K){return {kept:n*(C-F)/100, cashCents:Math.round(F*n)+K"), "the reshape identity stays in code");
   assert.ok(html.includes('<button type="button" class="ael-go" data-act="go"><span class="ael-ic">\'+SHIELD_FILL+\'</span>Lock in</button>'), "the pill says the verb; the figures are the slip");
   assert.ok(html.includes("var stages=['Pricing from the live book\\u2026','Writing the record\\u2026','Buying the other side\\u2026']"), "the lock reports its stages in words");
-  // Details: three rows in one grammar; the How is the toggle's hover, never a row
+  // Details: three rows in one grammar; the How is one line under the slip, never a row
   assert.ok(html.includes("var TIER_ORDER=['wide','balanced','tight'];") && html.includes("var TIER_WORDS={wide:'Max upside',balanced:'Balanced',tight:'Max floor'};"), "the extension's shapes, in its order and its words");
   assert.ok(html.includes("if(keys.length>1)rows.push(drow('Shape',shapeSegs(st,n,keys),'ael-dshape'));"), "Shape as a segmented control, only when more than one clears");
   assert.ok(html.includes('class="ael-shape-b" data-act="shape" data-tier="\'+k+\'" aria-pressed="\'+(k===st.tier)+\'"'), "pressed state on the chosen shape");
@@ -176,7 +176,9 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(html.includes("else{parts.push('best of '+priced.length+' venues');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}") && html.includes("parts.push('of '+priced.length+' venues, chosen on all-in cost')"), "the winner and what it saved the trader; never 'best of' when the scan chose on all-in cost");
   assert.ok(html.includes("rows.push(drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class=\"ael-dim\">&middot; priced live</span>'));"), "Until");
   assert.ok(!html.includes("drow('How'"), "no How row; the panel stays three rows tall");
-  assert.ok(html.includes("var HOW='You sell part of the position today and keep the rest. The other side is bought the second you tap; it settles on the same official result, nothing to manage.';") && html.includes("toggleA('details','Details',st.details,HOW)"), "the How sentence rides the Details toggle's title");
+  assert.ok(html.includes("var HOW='You sell part of the upside today for the floor and the cash now. The other side is bought the second you tap and settles on the same official result.';"), "the How names what is sold, in one breath");
+  assert.ok(html.includes("return ledger(r,rs,t.creditCents,Math.round(100*n),false)+\n      '<div class=\"ael-how\">'+HOW+'</div>'+"), "and sits under the slip, above Lock in, on every width");
+  assert.ok(html.includes(".ael-how{font-size:12px;color:var(--dim);"), "in the dim ink, not the faint");
   assert.ok(!html.includes("set aside") && !html.includes("contracts</b> kept"), "no set-aside or contracts-kept mechanics");
   // the protected row: Leave early and Details; the receipt in the same grammar
   assert.ok(html.includes('<button type="button" class="ael-go ael-quiet" data-act="leave">Leave early</button>\'+toggleA(\'rcpt\',\'Details\',st.rcpt)'), "Leave early beside Details");
