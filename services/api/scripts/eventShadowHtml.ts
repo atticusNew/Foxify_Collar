@@ -21,6 +21,7 @@ export const RULE_CHECK_NOTE =
   "\u201cTerms held\u201d means the same words both times; \u201cvenue edited its rules\u201d means the venue changed the wording while the position was open, and the row opens to show the edit. " +
   "Payouts follow the venue's official result either way.";
 import type { CashLegDue, RuleBook, ShadowPosition, ShadowSegment, ShadowSummary } from "../src/eventCollar/crossVenue/shadowLedger";
+import type { RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
 import type { NettingReport } from "../src/eventCollar/crossVenue/shadowNetting";
 import type { VenueSlate } from "../src/eventCollar/crossVenue/venueSlate";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
@@ -72,6 +73,8 @@ export interface ShadowPageInput {
   hedges?: { strategy: HedgeStrategy; rfqVenues: string[]; summary: HedgeReceiptSummary };
   /** the parlay moment (lastLeg.ts); absent on instances with the last-leg shadow off */
   parlays?: ParlayCardInput;
+  /** how often the engine priced an event and declined, and why (shadowRefusals.ts); absent on instances before refusals were kept */
+  refusals?: RefusalSummary;
 }
 
 /** One public line on hedge fills: how they are filled and how many. The receipts themselves are the operator's. */
@@ -445,6 +448,53 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       : s.firstOpenedAt
         ? `since ${utcDay(s.firstOpenedAt)} UTC; nothing settled yet`
         : "no positions yet";
+  // WHAT PROTECTED TRADERS KEPT. The figure the industry does not publish, at the top of the page in
+  // plain words: what the same positions returned with and without protection, who the floor paid,
+  // that our side's result is the take and not the trader's loss, how often we said no and why, and
+  // what leaving early paid. Every number is already on the page below; this block is where a
+  // sceptic should be able to stop reading.
+  const keptCard = (() => {
+    const rf = input.refusals;
+    const refusedCell = rf && rf.priced > 0 && rf.refusedPct !== null ? `${rf.refusedPct.toFixed(rf.refusedPct >= 10 ? 0 : 1)}%` : "–";
+    const savesCell = s.settledCount > 0 ? `${Math.round((100 * s.floorSaves) / s.settledCount)}%` : "–";
+    const lines: string[] = [];
+    if (s.settledCount === 0) lines.push("Nothing has settled yet. This block fills as events settle against their official results.");
+    else {
+      lines.push(
+        `Across ${intStr(s.settledCount)} settled events the same positions returned ${usd(s.protectedTotalCents)} with protection and ${usd(s.nakedTotalCents)} without, marked at the official result. ` +
+          (s.deltaTotalCents >= 0 ? `Protection came out ${usd(s.deltaTotalCents)} ahead.` : `Protection cost ${usd(-s.deltaTotalCents)}, ${s.nakedTotalCents > 0 ? `${((100 * -s.deltaTotalCents) / s.nakedTotalCents).toFixed(1)}% of the unprotected outcome` : "in total"}${s.quotedAvgEvBps !== null && s.quotedAvgEvBps >= 0 ? `; ${(s.quotedAvgEvBps / 100).toFixed(1)}% was quoted up front` : ""}. Quoted is the expectation at the market's odds; realized is what this sample did.`),
+      );
+      lines.push(`On ${intStr(s.floorSaves)} of those ${intStr(s.settledCount)} (${savesCell}) the pick lost and the floor paid. Those are the traders who would otherwise have walked away with nothing.`);
+      if (id.settled > 0)
+        lines.push(
+          id.holds
+            ? `Our side netted ${signedUsd(id.writerPnlCents)} on them against ${usd(id.takeBookedCents)} of take booked. The hedge pays the floor, the slice above the cap pays the hedge; nothing we earn depends on who won, and nothing we earn is a trader's loss.`
+            : `Our side netted ${signedUsd(id.writerPnlCents)} on them against ${usd(id.takeBookedCents)} of take booked, a gap outside rounding; the operator report has the positions.`,
+        );
+    }
+    if (rf && rf.priced > 0) {
+      const reasons = rf.byReason.map((r) => `${r.reason} ${intStr(r.count)}`).join(", ");
+      lines.push(
+        rf.refused === 0
+          ? `Of ${intStr(rf.priced)} events the engine priced, none was refused.`
+          : `Of ${intStr(rf.priced)} events the engine priced, ${intStr(rf.refused)} (${refusedCell}) were refused rather than offered${reasons ? `: ${reasons}` : ""}. A refusal is written down like an offer, so the record is the whole board.`,
+      );
+    }
+    const c = s.closed;
+    if (c && c.count > 0) lines.push(`${intStr(c.count)} traders left before the game at live prices and walked away with ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} unprotected; we carried no price risk on the exit.`);
+    return `  <div class="card">
+    <h2>What protected traders actually kept</h2>
+    <div class="sub" style="margin-bottom:8px">The figure the industry does not publish: what the same positions returned with and without protection, marked at the official result, and how often we said no.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n">${usd(s.protectedTotalCents)}</div><div class="l">with protection, settled</div></div>
+      <div class="bignum"><div class="n">${usd(s.nakedTotalCents)}</div><div class="l">without protection, settled</div></div>
+      <div class="bignum"><div class="n green">${savesCell}</div><div class="l">the pick lost, the floor paid</div></div>
+      <div class="bignum"><div class="n">${refusedCell}</div><div class="l">of events priced were refused</div></div>
+    </div>
+    ${lines.map((l) => `<div class="read" style="margin-top:10px">${escapeHtml(l)}</div>`).join("\n    ")}
+  </div>
+`;
+  })();
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -471,7 +521,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     </div>
     <div class="period">${escapeHtml(periodLine)}</div>
   </div>
-  <div class="card">
+${keptCard}  <div class="card">
     <h2>We carry no outcome risk</h2>
     <div class="sub" style="margin-bottom:8px">Leg for leg, what we earn on a settled event must equal the published take: the hedge pays the floor, the cap slice pays the hedge, and nothing depends on who won.</div>
     <div class="bignums">

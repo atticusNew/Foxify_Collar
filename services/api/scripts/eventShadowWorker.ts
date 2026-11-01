@@ -165,6 +165,7 @@ import { VenueClient, excludedWalletsFromEnv, holderPositions, signerFromPem, ve
 import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
 import { novigRouteOf, referenceSourcesFromEnv, signedHedgeBook, signedHostFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
 import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venuePrints";
+import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -271,6 +272,12 @@ const PROPHETX_FEE_BPS = prophetxFeeBpsFromEnv(process.env);
 
 /** one line per hedge: which strategy filled it, at what, and why the other did not */
 const RECEIPTS_PATH = process.env.EVENT_HEDGE_RECEIPTS_PATH || join(dirname(LEDGER_PATH), "hedge-receipts.jsonl");
+/** one entry per market the scan priced and declined, with the engine's reason (shadowRefusals.ts) */
+const REFUSALS_PATH = process.env.EVENT_SHADOW_REFUSALS_PATH || join(dirname(LEDGER_PATH), "scan-refusals.json");
+/** the record's refusal figures against the positions it holds; read on every page */
+function refusalSummary(positions: ReadonlyArray<{ ticker: string; kind: string }>): RefusalSummary {
+  return summarizeRefusals(loadRefusals(REFUSALS_PATH), positions);
+}
 /**
  * A real holder's locks live in their own ledger beside the scan's. The scan opens one showcase
  * position per market; a holder may lock the same market, so the two cannot share a file keyed by
@@ -2013,6 +2020,8 @@ async function scanTick(): Promise<void> {
       opened.push({ kind: res.kind, at: new Date().toISOString() });
       await fillHedge(res.market.ticker, q.hedge, res.books, { paper: true });
     }
+    // the candidates the engine priced and declined this scan, kept so the record can say how often it says no
+    if (state.refused && state.refused.length > 0) saveRefusals(REFUSALS_PATH, recordScanRefusals(loadRefusals(REFUSALS_PATH), state.refused, state.atIso));
     cryptoSkippedLastScan = cryptoSkipped;
     lastScanAt = new Date().toISOString();
     lastScanOkMs = Date.now();
@@ -2664,6 +2673,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         ok: true,
         at: atIso,
         summary: publicSummary(summarizeShadow(positions)),
+        refusals: refusalSummary(positions),
         settled: settled.map(publicPosition),
         open: open.map(publicPosition),
         closed: closed.map(publicPosition),
@@ -3000,6 +3010,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         renderShadowHtml({
           atIso,
           summary: summarizeShadow(positions),
+          refusals: refusalSummary(positions),
           open,
           settled,
           closed,

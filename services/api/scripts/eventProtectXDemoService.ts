@@ -1164,6 +1164,23 @@ export interface ScanState {
   rows: Array<{ res: CandidateResult; evBps: number }>;
   fallback: CandidateResult | null;
   fetchFailures: number;
+  /**
+   * Every candidate the scan priced and declined, with the engine's reason: the other half of
+   * the board. The shadow keeps these so the record can say how often protection is refused and
+   * why; the demo board ignores them. Absent on states built before refusals were kept.
+   */
+  refused?: ScanRefusal[];
+}
+
+/** One candidate the scan quoted and refused: the market, its kind and the engine's reason code. */
+export interface ScanRefusal {
+  ticker: string;
+  kind: "sports" | "crypto";
+  league: string;
+  sideName: string;
+  eventTimeIso: string;
+  code: string;
+  detail?: string;
 }
 
 /**
@@ -1216,8 +1233,13 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
   // credit, fall back to the best pairing's honest refusal. Any single fetch
   // failure skips that candidate instead of taking the service down.
   const scanned: Array<{ res: CandidateResult; evBps: number }> = [];
+  const refused: ScanRefusal[] = [];
   let fallback: CandidateResult | null = null;
   let fetchFailures = 0;
+  const noteRefusal = (r: CandidateResult): void => {
+    if (r.quote.ok) return;
+    refused.push({ ticker: r.market.ticker, kind: r.kind, league: r.league, sideName: r.sideName, eventTimeIso: r.eventTimeIso, code: r.quote.code, ...(r.quote.detail ? { detail: r.quote.detail } : {}) });
+  };
   // Two strikes and out: fetchJsonWithRetry already retries each call, so a
   // second candidate-level failure means the venue is unreachable, not flaky.
   const FETCH_FAILURE_LIMIT = 2;
@@ -1274,7 +1296,7 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
     if (result.quote.ok && result.evBps !== null) {
       scanned.push({ res: result, evBps: result.evBps });
       c.rows += 1;
-    }
+    } else noteRefusal(result);
     return true;
   };
 
@@ -1324,7 +1346,7 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
       if (result.quote.ok && result.evBps !== null) {
         scanned.push({ res: result, evBps: result.evBps });
         cryptoRows += 1;
-      }
+      } else noteRefusal(result);
     }
   }
 
@@ -1357,7 +1379,7 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
     );
   }
 
-  return { atIso: now.toISOString(), rows: scanned, fallback, fetchFailures };
+  return { atIso: now.toISOString(), rows: scanned, fallback, fetchFailures, refused };
 }
 
 /* ------------------------------------------------------------------------------------------ */
