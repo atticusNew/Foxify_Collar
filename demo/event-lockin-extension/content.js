@@ -351,6 +351,15 @@
       });
       if (onDay.length === 1) return onDay[0];
     }
+    // a row that says its game is under way ("Live Q2 4:43", "Halftime") names the club's game in
+    // progress: the listed one the service says has started, else the earliest listed (a club
+    // plays one game at a time; the service lists tonight's game through the night beside next week's)
+    if (UNDER_WAY_RE.test(text)) {
+      const started = list.filter((t) => (S.byTicker[t] || {}).notProtectable === "in_progress");
+      if (started.length === 1) return started[0];
+      const sorted = [...list].sort((a, b) => gameOrdinal(a) - gameOrdinal(b));
+      if (gameOrdinal(sorted[0]) < gameOrdinal(sorted[1])) return sorted[0];
+    }
     if (!S.pageOk) {
       // before the trade, a club named without a date: on a game's own page, that game; on a
       // board, the club's next game (the week in view), the page's own date deciding when it prints one
@@ -1074,51 +1083,94 @@
   // ticket is a single on that last pick, paying To Pay if it hits, and is read as one.
   // The card's text runs neighbouring views together with nothing between, and two runs of
   // capitals cannot be told apart by shape: "SEA, BALMATCHED" (the codes, then the badge), "Mon
-  // SEABAL Winner" (one leg's home code, the next leg's pick), "Thu BALID:" (the bar, the id). A
-  // run longer than a code is read against the clubs known (the service's list, the nickname
-  // tables): the code is the known prefix, or, for a pick glued to the bar before it, the known suffix.
+  // SEASEABAL Winner" (one leg's home jersey and label, the next leg's pick), "Thu BALBALTRADE
+  // CREDIT" (the bar, the badge under it). A run longer than a code is read against the clubs
+  // known (the service's list, the nickname tables).
   const knownCode = (c) => S.codes.has(c) || Object.values(NICK).some((t) => Object.prototype.hasOwnProperty.call(t, c));
   const codePrefix = (run) => {
     if (run.length <= 4) return run;
     for (let len = Math.min(4, run.length - 1); len >= 2; len--) if (knownCode(run.slice(0, len))) return run.slice(0, len);
     return null;
   };
-  const codeSuffix = (run) => {
-    if (run.length <= 4) return run;
-    for (let len = Math.min(4, run.length - 1); len >= 2; len--) if (knownCode(run.slice(-len))) return run.slice(-len);
-    return null;
-  };
   const BADGE_TAIL = /(?:UN)?MATCHED$|SETTLED$|PENDING$|WON$|LOST$|VOID$/;
-  const LEG_RE = /(^|[^A-Za-z0-9])([A-Z]{2,8})(\s+[+-]\d+(?:\.\d+)?)?\s+(Winner|Moneyline|Money Line|ML|Spread|Total|Over|Under)(?![A-Za-z])/g;
-  const DAY_WORD = "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Today|Tomorrow|Tonight)";
-  // the game's bar under a leg: away code, the clock and the day in either order, home code ("CHI 8:15 PM Mon SEA", "CHI Mon 8:15 PM at SEA")
-  const LEG_GAME_RE = new RegExp("^\\s*([A-Z]{2,4})\\s+(?:(\\d{1,2}:\\d{2}\\s*[AP]M)\\s+)?(?:(" + DAY_WORD + ")[a-z]*\\.?\\s+)?(?:(\\d{1,2}:\\d{2}\\s*[AP]M)\\s+)?(?:(?:at|vs\\.?|@)\\s+)?([A-Z]{2,8})(?![a-z0-9])");
+  /**
+   * A run of capitals as the clubs it is made of: "SEASEABAL" (a jersey's letters, the label
+   * beside it, the next leg's pick) is SEA, SEA, BAL; "BALMATCHED" is BAL and the badge. The
+   * split where every piece is a known club wins; failing that, the known head and whatever is
+   * left; a run with no known head stays one word (a badge, "TRADE").
+   */
+  const splitCodes = (run) => {
+    if (run.length <= 4) return [run];
+    let partial = null;
+    for (let len = Math.min(4, run.length - 1); len >= 2; len--) {
+      const head = run.slice(0, len);
+      if (!knownCode(head)) continue;
+      const rest = splitCodes(run.slice(len));
+      if (rest.every((c) => c.length <= 4 && knownCode(c))) return [head, ...rest];
+      if (!partial) partial = [head, ...rest];
+    }
+    return partial || [run];
+  };
+  /** The card's words one by one, runs of capitals split into clubs, a trailing colon or period dropped ("ID:", "Thu."). */
+  const cardTokens = (text) =>
+    String(text)
+      .split(/[\s,\u00b7\u2022|]+/)
+      .filter(Boolean)
+      .map((t) => t.replace(/[:.]+$/, ""))
+      .filter(Boolean)
+      .flatMap((t) => (/^[A-Z]{5,}$/.test(t) ? splitCodes(t) : [t]));
+  const MARKET_WORD_RE = /^(Winner|Moneyline|ML|Spread|Total|Over|Under)$/i;
+  const SPREAD_TOKEN_RE = /^[+-]\d+(?:\.\d+)?$/;
+  const DAY_TOKEN_RE = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun|Today|Tomorrow|Tonight)[a-z]*$/i;
+  // capitals on a card that are not clubs
+  const NOT_CODES = new Set(["AM", "PM", "ID", "ET", "PT", "CT", "MT", "OT", "TV", "VS", "AT", "SGP", "LIVE", "TBD", "WON", "LOST", "VOID"]);
+  // where a leg's bar ends and the card's own chrome begins: the badge, the buttons, the id and the placement stamp
+  const SEGMENT_END_RE = /^(ID|Placed|TRADE|CREDIT|Buy|Share|Hide|Show|Sell|Cash|Amount|To)$/i;
+  const codeToken = (t) => /^[A-Z]{2,4}$/.test(t) && !NOT_CODES.has(t) && knownCode(t);
   const PARLAY_HEAD_RE = /(\d{1,2})\s*[- ]?Legs?\s+Parlay/i;
+  /**
+   * The legs on a parlay card, from its words in order. A leg is a club code and the market word
+   * ("SEA Winner", "SAS +4.5 Spread"); its bar runs from there to the next leg or the card's own
+   * chrome, in whatever order the venue draws it (jerseys repeat the codes, the clock and the day
+   * come either way round): the one other club in it is the opponent, the first weekday the day.
+   */
+  const legsIn = (text) => {
+    const tk = cardTokens(text);
+    const heads = [];
+    for (let i = 0; i < tk.length; i++) {
+      if (!codeToken(tk[i])) continue;
+      let k = i + 1;
+      if (k < tk.length && SPREAD_TOKEN_RE.test(tk[k])) k++;
+      const spread = k > i + 1;
+      let w = tk[k] || "";
+      if (/^Money$/i.test(w) && /^Line$/i.test(tk[k + 1] || "")) {
+        w = "Moneyline";
+        k++;
+      }
+      if (!MARKET_WORD_RE.test(w)) continue;
+      heads.push({ at: i, end: k + 1, code: tk[i], kind: !spread && /^(Winner|Moneyline|ML)$/i.test(w) ? "winner" : "other" });
+    }
+    return heads.map((h, i) => {
+      const stop = i + 1 < heads.length ? heads[i + 1].at : tk.length;
+      const mine = [h.code, ...(CODE_ALIAS[h.code] || [])];
+      const others = new Set();
+      let day = null;
+      for (let j = h.end; j < stop; j++) {
+        const t = tk[j];
+        if (SEGMENT_END_RE.test(t)) break;
+        if (codeToken(t) && !mine.includes(t)) others.add(t);
+        else if (!day && DAY_TOKEN_RE.test(t)) day = t.slice(0, 1).toUpperCase() + t.slice(1, 3).toLowerCase() + (/^(Today|Tomorrow|Tonight)/i.test(t) ? t.slice(3).toLowerCase() : "");
+      }
+      // the bar names this club and one other; a bar naming two other clubs is not this leg's
+      return { code: h.code, opp: others.size === 1 ? [...others][0] : null, day, kind: h.kind };
+    });
+  };
   const parlayIn = (text) => {
     const head = PARLAY_HEAD_RE.exec(text);
     if (!head) return null;
     const n = Number(head[1]);
     if (!(n >= 2 && n <= 12)) return null;
-    const legs = [];
-    let m;
-    LEG_RE.lastIndex = 0;
-    while ((m = LEG_RE.exec(text))) {
-      const code = codeSuffix(m[2]);
-      if (!code) continue;
-      const kind = !m[3] && /^(Winner|Moneyline|Money Line|ML)$/i.test(m[4]) ? "winner" : "other";
-      const game = LEG_GAME_RE.exec(text.slice(m.index + m[0].length));
-      let opp = null;
-      let day = null;
-      const home = game ? codePrefix(game[5]) : null;
-      if (game && home) {
-        const mine = [code, ...(CODE_ALIAS[code] || [])];
-        const others = [game[1], home].filter((c) => !mine.includes(c));
-        // the bar names this club and one other; a bar naming two other clubs is another leg's
-        if (others.length === 1) opp = others[0];
-        day = game[3] || null;
-      }
-      legs.push({ code, opp, day, kind });
-    }
+    const legs = legsIn(text);
     if (legs.length === n) return { n, legs, from: "legs" };
     // legs hidden: the picks are the comma list of codes after the head ("SEA, BAL"), the last one
     // often run into the badge beside it; the game and the market wait behind Show Legs
@@ -3702,6 +3754,6 @@
   // inert inside the extension (isolated world); lets a page-level harness read state when it injects this file
   if (window.__AEL_DEBUG) {
     window.__ael = S;
-    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, findSlip, findGames, gamesIn, markGames, indexMarkets, kindIn, loadPositions, scan, plausible, parlayIn, picksKey, venue: VENUE_ID };
+    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, findSlip, findGames, gamesIn, markGames, indexMarkets, kindIn, loadPositions, scan, plausible, parlayIn, legsIn, cardTokens, spaced, norm, picksKey, venue: VENUE_ID };
   }
 })();

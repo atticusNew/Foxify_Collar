@@ -612,6 +612,19 @@ filter now compares ET calendar dates, so a game is listed through its own night
 game is listed as `notProtectable: "in_progress"`, and its card reads **Unavailable · This game is
 in play.** rather than "starts too soon".
 
+**The legs as the real card prints them (0.7.39).** With the legs shown, the real Novig card still
+read as its bare codes and asked for Show Legs. Its jerseys carry the club's letters as text, so a
+leg's bar runs "CHI CHI 8:15 PM Mon SEASEABAL Winner": the home jersey, its label and the next
+leg's pick in one run of nine capitals, which no code pattern could take apart, so only the first
+leg was read. The legs are now read from the card's words in order: a run of capitals is split
+into the clubs it is made of against the clubs known (SEA, SEA, BAL; BAL and the badge), a leg is
+a club code and the market word, and its bar is whatever lies between it and the next leg or the
+card's own chrome (TRADE CREDIT, Buy More, the id), in any order: the one other club in it is the
+opponent, the first weekday the day. The same night the Eagles card, in play, lost its line once
+the service listed tonight's game beside next week's: a card that says its game is under way
+("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
+started, else the earliest.
+
 **The hedge's own card on Novig (0.7.35).** The service's Novig hedges are bought in a subaccount
 of the holder's own Novig account, so the holder's Portfolio shows them as cards beside their
 own picks: the other side of a 76ers lock held on ProphetX appears as a Knicks card on Novig. That
