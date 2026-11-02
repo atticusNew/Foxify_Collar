@@ -50,7 +50,9 @@
  *
  * WHAT IS PUBLIC: the record (/, /api/shadow, /api/shadow/positions.csv, /api/shadow/parlays)
  * carries quoted terms, official results, both sides' money and the two books the hedges were
- * bought on. Everything that is a study rather than a receipt (rule counterfactuals, hedge
+ * bought on; /api/shadow/scoreboard (and .csv) is the venue scoreboard drawn from it by week
+ * (venueScoreboard.ts: which venue took the other side, by how much, how often each priced,
+ * the refusals), venue-named, for industry readers. Everything that is a study rather than a receipt (rule counterfactuals, hedge
  * receipts, the last-leg tickets, netting measured on the book) is an operator view. A new
  * measurement joins the operator views first; it reaches the record only by decision.
  *
@@ -171,6 +173,7 @@ import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar
 import { novigRouteOf, referenceSourcesFromEnv, signedHedgeBook, signedHostFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
 import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venuePrints";
 import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
+import { venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
@@ -2836,6 +2839,24 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         summary: summarizeLastLeg(tickets),
         tickets: tickets.sort((a, b) => b.at.localeCompare(a.at)),
       });
+      return;
+    }
+    if (url.pathname === "/api/shadow/scoreboard" || url.pathname === "/api/shadow/scoreboard.csv") {
+      // PUBLIC, INDUSTRY SHAPE: the venue scoreboard by week (venueScoreboard.ts), computed from
+      // the record on each request so it moves as the record does. Venue-named on purpose: this is
+      // the hedger's comparison of the venues, for industry readers, not a holder's screen. Nothing
+      // of the writer's book is in it. ?weeks=N (1..26, default 8). CORS open: the record is public.
+      const weeks = Number(url.searchParams.get("weeks") ?? "8");
+      const positions = allPositions();
+      const sb = venueScoreboard({ positions, refusals: loadRefusals(REFUSALS_PATH), tickets: loadLastLegTickets(LASTLEG_PATH), weeks: Number.isFinite(weeks) ? weeks : 8 });
+      const headers = { "cache-control": "public, max-age=300", "access-control-allow-origin": "*" };
+      if (url.pathname.endsWith(".csv")) {
+        res.writeHead(200, { ...headers, "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="venue-scoreboard-${sb.at.slice(0, 10)}.csv"` });
+        res.end(venueScoreboardCsv(sb));
+        return;
+      }
+      res.writeHead(200, { ...headers, "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(sb));
       return;
     }
     if (url.pathname === "/api/shadow/parlays") {
