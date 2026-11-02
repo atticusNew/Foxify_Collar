@@ -148,6 +148,7 @@ import {
 import { roundContracts } from "../src/eventCollar/crossVenue/types";
 import { kalshiRuleUrl } from "../src/eventCollar/crossVenue/ruleEvidence";
 import { kalshiBase } from "../src/eventCollar/kalshiPublic";
+import { etDateOf } from "../src/eventCollar/crossVenue/parlayPicks";
 
 const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
@@ -650,8 +651,11 @@ function showcaseWindowOk(pair: MatchedPair, now: Date): boolean {
  * Cheap horizon pre-filter from the game date in the Kalshi ticker: a league
  * that plays weekly lists next week's slate too, and those games would burn
  * match attempts only to fail the showcase window afterwards. Unparseable
- * tickers pass through (the matcher decides). One day of slack covers ET vs
- * UTC and the 7-day edge.
+ * tickers pass through (the matcher decides). The ticker's date is the game's
+ * ET calendar date, so it is compared with today's ET date (whole days): an
+ * evening game stays listed through its own night, when a UTC clock has already
+ * rolled to the next date, and through the next day; one day of slack covers
+ * the 7-day edge.
  */
 export function gameDateWithinHorizon(
   ticker: string,
@@ -662,8 +666,9 @@ export function gameDateWithinHorizon(
   const parsed = parseGameTicker(ticker, template);
   if (!parsed) return true;
   const gameMs = Date.parse(`${parsed.dateIso}T00:00:00Z`);
-  if (!Number.isFinite(gameMs)) return true;
-  const days = (gameMs - now.getTime()) / 86_400_000;
+  const todayMs = Date.parse(`${etDateOf(now.getTime())}T00:00:00Z`);
+  if (!Number.isFinite(gameMs) || !Number.isFinite(todayMs)) return true;
+  const days = Math.round((gameMs - todayMs) / 86_400_000);
   return days >= -1 && days <= horizonDays + 1;
 }
 

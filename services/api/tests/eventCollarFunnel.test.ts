@@ -207,6 +207,12 @@ test("board budget: next week's slate is skipped before it burns match attempts"
   assert.equal(gameDateWithinHorizon("KXNFLGAME-26SEP27LVNO-NO", nfl, now), false, "next Sunday, day 9");
   assert.equal(gameDateWithinHorizon("KXNFLGAME-26SEP18XXYY-XX", nfl, now), true, "unparseable teams pass through to the matcher");
   assert.equal(gameDateWithinHorizon("KXNFLGAME-26SEP10INDKC-KC", nfl, now), false, "already played");
+  // an evening game stays listed through its own night: 9:32pm ET on Nov 1 is already Nov 2 in UTC
+  const sundayNight = new Date("2026-11-02T02:32:00Z");
+  assert.equal(gameDateWithinHorizon("KXNFLGAME-26NOV01PHIWAS-PHI", nfl, sundayNight), true, "tonight's game, in play");
+  assert.equal(gameDateWithinHorizon("KXNFLGAME-26OCT31XXYY-XX", nfl, sundayNight), true, "unparseable teams pass through to the matcher");
+  assert.equal(gameDateWithinHorizon("KXNFLGAME-26OCT30INDKC-KC", nfl, sundayNight), false, "two ET days back");
+  assert.equal(gameDateWithinHorizon("KXNFLGAME-26NOV10INDKC-KC", nfl, sundayNight), false, "nine ET days out");
 });
 
 test("board budget: the shadow's held markets are stepped over without spending a match attempt", async () => {
