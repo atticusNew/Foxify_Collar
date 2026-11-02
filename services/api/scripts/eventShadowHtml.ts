@@ -644,7 +644,7 @@ export function lastLegCard(input: NonNullable<ShadowReportInput["lastLeg"]>, to
   const period = s.firstTicketAt ? `since ${utcDay(s.firstTicketAt)} UTC` : "not started";
   return `<div class="card">
     <h2>Last leg</h2>
-    <div class="sub" style="margin-bottom:8px">Does "lock in your parlay before the last leg" fund a credit? Tickets of ${escapeHtml(s.bySize.map((r) => r.size).join(", ") || "2 to 5")} favourites at a $${(input.stakeCents / 100).toFixed(0)} stake are built from Polymarket's public combo-leg catalog the way a bettor builds them, tracked leg by leg, and when every leg but the last has hit the compressed position is quoted with the live book's collar on the last leg's own book. Prices, results and quotes are real; the tickets are simulated, because the venue publishes no list of real ones.</div>
+    <div class="sub" style="margin-bottom:8px">Does "lock in your parlay before the last leg" fund a credit? Tickets of ${escapeHtml(s.bySize.map((r) => r.size).join(", ") || "2 to 5")} favourites at a $${(input.stakeCents / 100).toFixed(0)} stake are built from Polymarket's public combo-leg catalog the way a bettor builds them, tracked leg by leg, and when every leg but the last has hit the compressed position is quoted the way a single is: the engine's own quote on the last leg's game market, every hedge venue offered tonight read and the cheapest all-in route taken (legs are built only on games the engine lists). Prices, results and quotes are real; the tickets are simulated, because the venue publishes no list of real ones.</div>
     <div class="bignums">
       <div class="bignum"><div class="n">${s.tickets}</div><div class="l">tickets built</div></div>
       <div class="bignum"><div class="n">${s.reachedLastLeg}</div><div class="l">reached the last leg</div></div>
@@ -1087,7 +1087,7 @@ export function parlayMomentCard(input: ParlayCardInput): string {
       : `On ${st.withProtection} settled locked tickets our P&L is ${signedUsd(st.writerCents)} against ${usd(st.takeBookedCents)} of take booked: ${st.identityHolds ? "the identity holds, we carried no outcome risk on the last pick." : "a gap outside rounding; the operator report has the tickets."}`;
   return `  <div class="card">
     <h2>Lock, sell or hold: the parlay moment</h2>
-    <div class="sub" style="margin-bottom:8px">A bettor whose parlay has every leg in but the last has three choices. Sell is a cash-out at fair (the ticket's value before any spread). Lock is the collar on the last leg: a floor, a cap, and a credit paid at the tap, hedged on the last leg's own book. Hold is the naked ticket. Tickets here are simulated from the public slate (2 to 5 favourites, $${(input.stakeCents / 100).toFixed(0)} stake); prices, results and quotes are real.</div>
+    <div class="sub" style="margin-bottom:8px">A bettor whose parlay has every leg in but the last has three choices. Sell is a cash-out at fair (the ticket's value before any spread). Lock is the collar on the last leg: a floor, a cap, and a credit paid at the tap, hedged on whichever venue the router chose for the last leg's game, as a single is. Hold is the naked ticket. Tickets here are simulated from the public slate (2 to 5 favourites, $${(input.stakeCents / 100).toFixed(0)} stake); prices, results and quotes are real.</div>
     <div class="bignums">
       <div class="bignum"><div class="n">${ll.tickets}</div><div class="l">tickets built</div></div>
       <div class="bignum"><div class="n">${ll.reachedLastLeg}</div><div class="l">reached the last leg</div></div>
@@ -1103,7 +1103,7 @@ export function parlayMomentCard(input: ParlayCardInput): string {
     </table></div>`
         : ""
     }
-    <div class="rule">Lock ends shows the two endings with the credit included. Paid columns fill when the last game settles. A ticket with two or more legs still open is never quoted: that would mean hedging the product of two games, and no book quotes it. Nothing is bought; the lock is priced from the live book the hedge would have been bought on.</div>
+    <div class="rule">Lock ends shows the two endings with the credit included. Paid columns fill when the last game settles. A ticket with two or more legs still open is never quoted: that would mean hedging the product of two games, and no book quotes it. Nothing is bought; the lock is priced from the live book of the venue the hedge would have been sent to.</div>
     ${refusalRows ? `<div class="rule" style="margin-top:8px">Lock not offered, and why, across ${ll.attempts} attempts:</div>${refusalRows}` : ""}
     <div class="read" style="margin-top:8px">${escapeHtml(identityLine)}</div>
     ${input.rules && input.rules.pinned > 0 ? `<div class="read" style="margin-top:6px">${escapeHtml(ruleEvidenceLine(input.rules, "leg"))}</div>` : ""}

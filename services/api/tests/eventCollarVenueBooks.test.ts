@@ -795,10 +795,10 @@ test("reference books: a league the venue spells differently is found on the unf
 test("reference books: REFERENCE_BOOK_SIGNED_LEAGUES is league=CODE pairs; a bad entry is a note, an unknown league is dropped, the rest reach the source", async () => {
   assert.equal(signedLeagueCode("nba"), "NBA");
   assert.equal(signedLeagueCode("NBA", { nba: "NBA_REG" }), "NBA_REG");
-  const parsed = parseSignedLeagueCodes(" nba=NBA_REG, mlb=MLB nhl=HOCKEY bogus cfb= ");
+  const parsed = parseSignedLeagueCodes(" nba=NBA_REG, mlb=MLB wnba=HOOPS bogus cfb= ");
   assert.deepEqual(parsed.codes, { nba: "NBA_REG", mlb: "MLB" });
   assert.equal(parsed.notes.length, 3);
-  assert.match(parsed.notes[0], /"nhl" is not one we cover/);
+  assert.match(parsed.notes[0], /"wnba" is not one we cover/);
   assert.match(parsed.notes[1], /"bogus" is not league=CODE/);
   assert.match(parsed.notes[2], /"cfb=" is not league=CODE/);
   assert.deepEqual(parseSignedLeagueCodes(undefined), { codes: {}, notes: [] });

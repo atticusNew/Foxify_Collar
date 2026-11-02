@@ -14,11 +14,13 @@ import {
   lastLegConfigFromEnv,
   lastLegCsv,
   legCandidates,
+  marketForLeg,
   momentRecord,
   protectedPerContract,
   quoteLastLeg,
   replayLastLeg,
   runLastLegTick,
+  type RoutedQuote,
   sharesFor,
   summarizeLastLeg,
   ticketIdFor,
@@ -30,7 +32,7 @@ import {
 } from "../src/eventCollar/crossVenue/lastLeg";
 import { getComboLegStatus, legStatusFromGamma, parseComboMarket, type ComboLegMarket, type ComboLegStatus } from "../src/eventCollar/crossVenue/polymarketCombos";
 import { lastLegCard } from "../scripts/eventShadowHtml";
-import { DEFAULT_CROSS_CONFIG, type PmBook } from "../src/eventCollar/crossVenue/types";
+import { type CrossHedgeLeg, DEFAULT_CROSS_CONFIG, PARLAY_LAST_PICK_TIER, type PmBook } from "../src/eventCollar/crossVenue/types";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -642,6 +644,135 @@ test("runLastLegTick: a ticket whose legs never resolve is voided after the grac
   assert.equal(r.voided, 1);
   assert.equal(io.load()[0].status, "void");
   assert.equal(r.catalogPages, 0, "ticketsPerSize 0 never reads the catalog");
+});
+
+// ── the router: legs on the service's game markets, the moment quoted as a single ──
+
+const NFL_MARKETS = [
+  { ticker: "KXNFLGAME-26OCT10DALPHI-DAL", league: "nfl", sideName: "Dallas" },
+  { ticker: "KXNFLGAME-26OCT10DALPHI-PHI", league: "nfl", sideName: "Philadelphia" },
+  { ticker: "KXNFLGAME-26OCT11CHISEA-CHI", league: "nfl", sideName: "Chicago" },
+  { ticker: "KXNFLGAME-26OCT11CHISEA-SEA", league: "nfl", sideName: "Seattle" },
+  { ticker: "KXNHLGAME-26OCT10PITANA-PIT", league: "nhl", sideName: "Pittsburgh" },
+];
+
+test("marketForLeg: the pairing read in reverse — the leg's slug, side and outcome name pick exactly one game market; the wrong side, a doubtful name, another league or two fits pick none", () => {
+  const sea = { league: "nfl", slug: "nfl-chi-sea-2026-10-11", side: 1 as const, outcome: "Seahawks" };
+  assert.equal(marketForLeg(sea, NFL_MARKETS)?.ticker, "KXNFLGAME-26OCT11CHISEA-SEA");
+  assert.equal(marketForLeg({ ...sea, side: 0, outcome: "Bears" }, NFL_MARKETS)?.ticker, "KXNFLGAME-26OCT11CHISEA-CHI");
+  // Kalshi's ticker carries the ET date; a Polymarket slug dated the next UTC day still finds it
+  assert.equal(marketForLeg({ ...sea, slug: "nfl-chi-sea-2026-10-12" }, NFL_MARKETS)?.ticker, "KXNFLGAME-26OCT11CHISEA-SEA");
+  assert.equal(marketForLeg({ ...sea, slug: "nfl-chi-sea-2026-10-10" }, NFL_MARKETS), null, "the day before is another game");
+  assert.equal(marketForLeg({ ...sea, outcome: "Bears" }, NFL_MARKETS), null, "the outcome name must verify against the club the side code names");
+  assert.equal(marketForLeg({ ...sea, league: "nhl" }, NFL_MARKETS), null, "another league's market never fits");
+  assert.equal(marketForLeg({ league: "nfl", slug: "nfl-gb-det-2026-10-10", side: 0, outcome: "Packers" }, NFL_MARKETS), null, "a game the service does not list");
+  assert.equal(marketForLeg({ league: "nhl", slug: "nhl-pit-ana-2026-10-10", side: 0, outcome: "Penguins" }, NFL_MARKETS)?.ticker, "KXNHLGAME-26OCT10PITANA-PIT", "an NHL leg maps through the NHL template");
+  const twice = [...NFL_MARKETS, { ticker: "KXNFLGAME-26OCT11CHISEA-SEA", league: "nfl", sideName: "Seattle" }];
+  assert.equal(marketForLeg(sea, twice), null, "two fits is no fit");
+});
+
+test("runLastLegTick with a router: only legs on the service's game markets are built (their tickers kept), the moment is quoted through the router with the route on the record, and a pre-router ticket maps at its moment or is refused", async () => {
+  const ledger: string[] = [];
+  const catalog = [
+    parseComboMarket(catalogRow("nfl-dal-phi-2026-10-10", "DP", ["0.7", "0.3"], 900, { outcomes: ["Cowboys", "Eagles"] })) as ComboLegMarket,
+    parseComboMarket(catalogRow("nfl-chi-sea-2026-10-11", "CS", ["0.35", "0.65"], 1000, { outcomes: ["Bears", "Seahawks"] })) as ComboLegMarket,
+    parseComboMarket(catalogRow("nfl-gb-det-2026-10-10", "GD", ["0.6", "0.4"], 500, { outcomes: ["Packers", "Lions"] })) as ComboLegMarket, // not on the service's slate
+    parseComboMarket(catalogRow("epl-ars-che-2026-10-10", "AC", ["0.6", "0.4"], 5000, { outcomes: ["Arsenal", "Chelsea"], tags: ["sports", "epl"] })) as ComboLegMarket, // a league with no game markets
+  ];
+  let gamma: Record<string, Record<string, unknown>> = {
+    "nfl-dal-phi-2026-10-10": gammaRow("nfl-dal-phi-2026-10-10", "DP", SAT_13, { outcomes: '["Cowboys", "Eagles"]' }),
+    "nfl-chi-sea-2026-10-11": gammaRow("nfl-chi-sea-2026-10-11", "CS", SUN_20, { outcomes: '["Bears", "Seahawks"]', outcomePrices: '["0.35", "0.65"]' }),
+    "nfl-gb-det-2026-10-10": gammaRow("nfl-gb-det-2026-10-10", "GD", SAT_16, { outcomes: '["Packers", "Lions"]', outcomePrices: '["0.6", "0.4"]' }),
+    "epl-ars-che-2026-10-10": gammaRow("epl-ars-che-2026-10-10", "AC", SAT_16, { outcomes: '["Arsenal", "Chelsea"]', outcomePrices: '["0.6", "0.4"]' }),
+  };
+  let now = FRI_NOON;
+  const quotes: Array<{ ticker: string; contracts: number; entryCents: number }> = [];
+  const calls = { markets: 0, book: 0 };
+  const routed = (contracts: number, entryCents: number): RoutedQuote => {
+    const q = quoteLastLeg({ contracts, markCents: 60, entryCents, minutesToStart: 600, noBook: noBook("x", 410), noOutcome: "Bears", config: DEFAULT_CROSS_CONFIG });
+    assert.ok(q.ok);
+    const h = q.hedge as CrossHedgeLeg;
+    return { ok: true, markCents: 60, route: "novig", terms: q, hedgeUnitsMilli: h.sharesMilli, hedgeCostCents: h.costCents };
+  };
+  const io = {
+    nowMs: () => now,
+    catalog: async () => ({ markets: catalog, pagesFetched: 1, exhausted: true }),
+    legStatus: async (slug: string) => (gamma[slug] ? legStatusFromGamma(gamma[slug]) : null),
+    noBook: async (tokenId: string) => {
+      calls.book += 1;
+      return noBook(tokenId, 410);
+    },
+    load: () => replayLastLeg(ledger),
+    append: (r: LastLegRecord) => {
+      ledger.push(JSON.stringify(r));
+    },
+    router: {
+      markets: async () => {
+        calls.markets += 1;
+        return NFL_MARKETS;
+      },
+      quote: async (input: { ticker: string; contracts: number; entryCents: number }) => {
+        quotes.push(input);
+        return routed(input.contracts, input.entryCents);
+      },
+    },
+  };
+  const cfg = { ...DEFAULT_LAST_LEG_CONFIG, legCounts: [2], ticketsPerSize: 1 };
+
+  // Friday: the Packers game has no market on the service, so it is never a leg; the EPL game is not even a candidate
+  const r1 = await runLastLegTick(io, cfg, DEFAULT_CROSS_CONFIG);
+  assert.equal(r1.ticketsBuilt, 1);
+  assert.equal(r1.candidates, 2, "the two legs with a game market");
+  assert.equal(r1.candidatesUnroutable, 1, "the Packers leg");
+  assert.equal(calls.markets, 1, "the service's slate is read once per tick");
+  let tickets = io.load();
+  assert.deepEqual(tickets[0].legs.map((l) => [l.conditionId, l.ticker]), [["DP", "KXNFLGAME-26OCT10DALPHI-DAL"], ["CS", "KXNFLGAME-26OCT11CHISEA-SEA"]], "each leg keeps the market its side maps to");
+
+  // Two tickets from before the router: one whose last leg maps to a listed game, one whose last leg does not
+  ledger.push(JSON.stringify({ ...ticketRec("ll_old_ok", [["DP", 700, 0, SAT_13], ["CS", 650, 1, SUN_20]]), legs: [
+    { conditionId: "DP", slug: "nfl-dal-phi-2026-10-10", title: "Cowboys vs Eagles", league: "nfl", side: 0, outcome: "Cowboys", priceMilli: 700, yesTokenId: "DP-t0", noTokenId: "DP-t1", gameStartIso: iso(SAT_13) },
+    { conditionId: "CS", slug: "nfl-chi-sea-2026-10-11", title: "Bears vs Seahawks", league: "nfl", side: 1, outcome: "Seahawks", priceMilli: 650, yesTokenId: "CS-t1", noTokenId: "CS-t0", gameStartIso: iso(SUN_20) },
+  ] }));
+  ledger.push(JSON.stringify({ ...ticketRec("ll_old_epl", [["DP", 700, 0, SAT_13], ["AC", 600, 0, SUN_20]]), legs: [
+    { conditionId: "DP", slug: "nfl-dal-phi-2026-10-10", title: "Cowboys vs Eagles", league: "nfl", side: 0, outcome: "Cowboys", priceMilli: 700, yesTokenId: "DP-t0", noTokenId: "DP-t1", gameStartIso: iso(SAT_13) },
+    { conditionId: "AC", slug: "epl-ars-che-2026-10-11", title: "Arsenal vs Chelsea", league: "epl", side: 0, outcome: "Arsenal", priceMilli: 600, yesTokenId: "AC-t0", noTokenId: "AC-t1", gameStartIso: iso(SUN_20) },
+  ] }));
+
+  // Sunday morning: the Cowboys won; every ticket is at its last pick
+  now = SUN_20 - 12 * 3_600_000;
+  gamma = { ...gamma, "nfl-dal-phi-2026-10-10": resolvedRow("nfl-dal-phi-2026-10-10", "DP", SAT_13, '["1", "0"]') };
+  const r2 = await runLastLegTick(io, cfg, DEFAULT_CROSS_CONFIG);
+  assert.equal(r2.legsResolved, 3);
+  assert.equal(r2.momentsAttempted, 3);
+  assert.equal(r2.momentsQuoted, 2, "the built ticket and the old ticket whose last leg maps; the EPL last leg is refused");
+  assert.equal(calls.book, 0, "no moment is priced off the last leg's own book when a router is present");
+  assert.equal(quotes.length, 2);
+  tickets = io.load();
+  const built = tickets.find((t) => t.ticketId !== "ll_old_ok" && t.ticketId !== "ll_old_epl")!;
+  const contracts = compressedContracts(built.sharesMilli, 1000);
+  assert.deepEqual(quotes[0], { ticker: "KXNFLGAME-26OCT11CHISEA-SEA", contracts, entryCents: Math.ceil(2_000 / contracts) }, "the size is the compressed position, the entry what the stake paid per contract");
+  assert.equal(built.status, "last_leg");
+  assert.ok(built.quote?.ok);
+  assert.equal(built.quote?.route, "novig", "the route the router chose is on the record");
+  assert.equal(built.quote?.ticker, "KXNFLGAME-26OCT11CHISEA-SEA");
+  assert.equal(built.quote?.markCents, 60);
+  assert.equal(built.quote?.ticketValueCents, contracts * 60);
+  assert.equal(built.quote?.hedgeTokenId, undefined);
+  assert.equal(built.quote?.tier, PARLAY_LAST_PICK_TIER);
+  const oldOk = tickets.find((t) => t.ticketId === "ll_old_ok")!;
+  assert.equal(oldOk.quote?.ticker, "KXNFLGAME-26OCT11CHISEA-SEA", "a pre-router leg maps at its moment");
+  const oldEpl = tickets.find((t) => t.ticketId === "ll_old_epl")!;
+  assert.equal(oldEpl.quote, undefined);
+  assert.deepEqual(oldEpl.refusals, { no_matched_market: 1 }, "a last leg on no listed game is refused, not quoted off one book");
+
+  // Monday: the Seahawks won; the routed moment settles on the same identity as before
+  now = SUN_20 + 6 * 3_600_000;
+  gamma = { ...gamma, "nfl-chi-sea-2026-10-11": resolvedRow("nfl-chi-sea-2026-10-11", "CS", SUN_20, '["0", "1"]') };
+  await runLastLegTick(io, cfg, DEFAULT_CROSS_CONFIG);
+  const s = summarizeLastLeg(io.load());
+  assert.equal(s.settled.withProtection, 2);
+  assert.equal(s.settled.identityHolds, true, "the writer keeps exactly the take on a routed moment too");
+  assert.match(lastLegCsv(io.load()), /,novig,/, "the route is a CSV column");
 });
 
 // ── config and the card ───────────────────────────────────────────────────────

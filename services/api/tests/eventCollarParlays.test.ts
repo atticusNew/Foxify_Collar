@@ -10,6 +10,7 @@ import {
   compressedContracts,
   lockVersusSell,
   momentRecord,
+  routedMomentRecord,
   quoteLastLeg,
   replayLastLeg,
   sharesFor,
@@ -23,7 +24,7 @@ import { legWords } from "../src/eventCollar/crossVenue/lastLeg";
 import { EVENT_ACTIONS, isEventAction, isValidTicker } from "../src/eventCollar/crossVenue/eventFunnel";
 import { forbiddenKeysIn } from "../src/eventCollar/retailShowcase";
 import { summarizeShadow } from "../src/eventCollar/crossVenue/shadowLedger";
-import { DEFAULT_CROSS_CONFIG, type PmBook } from "../src/eventCollar/crossVenue/types";
+import { type CrossHedgeLeg, DEFAULT_CROSS_CONFIG, type PmBook } from "../src/eventCollar/crossVenue/types";
 import { parlayMomentCard, renderShadowHtml } from "../scripts/eventShadowHtml";
 import { renderEventEmbedHtml } from "../scripts/eventProtectEmbedHtml";
 
@@ -84,8 +85,19 @@ function fixture() {
     assert.ok(q.ok, q.ok ? "" : q.detail);
     return momentRecord({ at: iso(at), ticketId: t.ticketId, minutesToStart, decidedProductMilli: 1000, contracts, markCents: 60, entryCents: 30 }, q);
   };
+  /* a moment the router priced: the same terms, on a named game market and route (the ledger settles it the same way) */
+  const routedFor = (t: LastLegTicketRecord, lastCond: string, minutesToStart: number, at: number, route: "novig" | "prophetx" | "kalshi_self" | "polymarket") => {
+    const contracts = compressedContracts(t.sharesMilli, 1000);
+    const q = quoteLastLeg({ contracts, markCents: 60, entryCents: 30, minutesToStart, noBook: noBook(`${lastCond}-t1`, 410), noOutcome: "Home", config: DEFAULT_CROSS_CONFIG });
+    assert.ok(q.ok, q.ok ? "" : q.detail);
+    const h = q.hedge as CrossHedgeLeg;
+    return routedMomentRecord(
+      { at: iso(at), ticketId: t.ticketId, minutesToStart, decidedProductMilli: 1000, contracts, entryCents: 30, ticker: `KXNFLGAME-26OCT10XX${lastCond}-${lastCond}` },
+      { ok: true, markCents: 60, route, terms: q, hedgeUnitsMilli: h.sharesMilli, hedgeCostCents: h.costCents },
+    );
+  };
   const qLast = quoteFor(last, "E", 480, SUN_20 - 8 * 3_600_000);
-  const qHit = quoteFor(settledHit, "I", 180, SAT_20 - 2 * 3_600_000);
+  const qHit = routedFor(settledHit, "I", 180, SAT_20 - 2 * 3_600_000, "novig");
   const qMiss = quoteFor(settledMiss, "J", 180, SAT_20 - 2 * 3_600_000);
   const refusal = momentRecord(
     { at: iso(SUN_20 - 8 * 3_600_000), ticketId: "ll_refused", minutesToStart: 480, decidedProductMilli: 1000, contracts: 30, markCents: 60, entryCents: 30 },
@@ -149,7 +161,11 @@ test("retailParlayTicket: picks with their marks, the three row states, the lock
     floorTotalCents: (qLast.floorCents as number) * contracts + (qLast.creditCents as number),
     capTotalCents: (qLast.capCents as number) * contracts + (qLast.creditCents as number),
     creditCents: qLast.creditCents,
+    venue: null,
   });
+  assert.equal(by.ll_hit.lock?.venue, "Novig", "a lock the router priced says where the other side goes, by public name");
+  assert.equal(qHit.route, "novig");
+  assert.equal(qHit.hedgeTokenId, undefined, "no Polymarket token on a route to another venue");
   assert.ok(atLast.lock!.floorTotalCents > 0 && atLast.lock!.capTotalCents > atLast.lock!.floorTotalCents);
   assert.equal(atLast.lockRefused, null);
 
@@ -296,7 +312,12 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   const html = renderEventEmbedHtml({ brand: "Wire Markets" });
   assert.ok(html.includes('<span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span>'), "a live tab, not a toast");
   assert.ok(html.includes("fetch('/api/parlays',{cache:'no-store'})"));
-  assert.ok(html.includes("Lock in opens at your last pick"), "two or more picks open");
+  // two or more picks open: the extension's heading and the why behind Details, not a dead button
+  assert.ok(!html.includes("Lock in opens at your last pick"), "no disabled button before the last pick");
+  assert.ok(html.includes('<div class="popen"><b>Protection opens at your last pick.</b><a href="#" class="ael-tg" data-details="\'+esc(t.id)+\'"'), "two or more picks open: one heading, a Details toggle");
+  assert.ok(html.includes("With '+t.picksOpen+' picks open the ticket pays only if every one hits, so there is nothing yet to protect.") && html.includes("The picks are read again every '+(P.pricedEveryMinutes||10)+' minutes; the lock is priced at the last pick."), "the why, behind Details");
+  assert.ok(html.includes("S.details[dt]=!S.details[dt]") && html.includes("expanded:{},details:{}"), "Details toggles per ticket");
+  assert.ok(html.includes("var PICK_MARK={hit:'&#x2713;',miss:'&#x2717;',open:'',partial:'&frac12;'}") && html.includes(".pick i{font-style:normal;width:15px;height:15px;border-radius:4px"), "a box per pick: empty open, a check hit, a cross missed");
   assert.ok(html.includes("Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button>"), "one pick open with a priced lock");
   assert.ok(html.includes("No lock right now: '+esc(t.lockRefusedShort||t.lockRefused)+'</button>"), "one pick open, refused: one clause on the row");
   assert.ok(html.includes("function openWhySheet(id)") && html.includes("<h2 id=\"sh-h\">No lock right now</h2>") && html.includes("esc(t.lockRefused.charAt(0).toUpperCase()+t.lockRefused.slice(1))"), "the full reason a tap away");
@@ -304,6 +325,7 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(html.includes("locked it would have paid") && html.includes("no lock was priced before the last game"), "settled, lock against ticket");
   assert.ok(html.includes("no lock exists before the last pick"), "busted");
   assert.ok(html.includes("Lock in your parlay") && html.includes(">if it misses<") && html.includes(">if it hits<"), "the sheet: two endings and the credit");
+  assert.ok(html.includes('<div class="tile k"><div class="l">if it misses</div>') && html.includes('<div class="tile"><div class="l">paid now</div>'), "the floor is the figure in colour, as on the extension; the credit is plain");
   assert.ok(html.includes("Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket"), "the cash-out comparison");
   assert.ok(html.includes("With two picks open there is no market for the pair of games, so no lock is offered yet."));
   // honesty: one line on the tab, the long version behind the info button, and the confusing sentence gone
@@ -311,7 +333,12 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(html.includes("<h2 id=\"sh-h\">About these tickets</h2>") && html.includes("These tickets are ours, not copied from anyone.") && html.includes("built from public game markets at the prices when it was built."));
   assert.ok(html.includes("The lock is priced from the live market on the last pick and refreshed every") && html.includes("<p>Nothing is bought.</p>"));
   assert.ok(!html.includes("publishes no list"), "the 'venue publishes no list of real ones' sentence is off the phone");
-  assert.ok(html.includes("from the live book, '+L.hoursBefore+'h before the game"), "the quote carries its time");
+  assert.ok(html.includes("from the live book'+otherSideWords(L)+', '+L.hoursBefore+'h before the game"), "the quote carries its time and, when the lock names it, the venue the other side goes to");
+  // the venue is data from the lock (lock.venue), never a name written into the page: the row, the locked line and the sheet all read it
+  assert.ok(html.includes("function otherSideWords(L){return L&&L.venue?' &middot; other side on <b>'+esc(L.venue)+'</b>':''}"));
+  assert.ok(html.includes("(L.venue?'<div class=\"terms\">Other side &middot; <b>'+esc(L.venue)+'</b> <span class=\"ael-dim\">&middot; best price across the venues asked</span></div>':'')"), "the row says where the other side goes, as the Positions tab does for a single");
+  assert.ok(html.includes("locked at your tap'+otherSideWords(L)+' &middot; terms priced"));
+  assert.ok(html.includes("every venue we work with is asked for the other side and the best price wins'+(L.venue?' (this one: '+esc(L.venue)+')':'')+'.</p>"), "how it works: priced like a single, across venues");
   // the picks: the side in ink, the matchup after it; the leagues of the ticket, not just the last pick's
   assert.ok(html.includes("<span><b>'+esc(p.outcome)+'</b>'+v+'</span>") && html.includes("/^(vs|at) /.test(vs)"));
   assert.ok(html.includes("var vs=p.versus==null?p.game:p.versus"), "a record that predates `versus` still shows the game title");

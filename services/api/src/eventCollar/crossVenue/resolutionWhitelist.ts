@@ -119,6 +119,38 @@ const NBA_TEAMS: TeamTable = {
   WAS: [["was"], "Washington Wizards"], WSH: [["was"], "Washington Wizards"],
 };
 
+/**
+ * NHL winner markets: one objective final result on both venues (overtime and the shootout
+ * count, so no tie in the regular season), no doubleheaders. Kalshi codes read from the live
+ * 2026-27 slate on 2026-11-02 (KXNHLGAME-26NOV08PITANA-PIT: no start time encoded, like NFL);
+ * Polymarket slug codes read from the same week's game markets (`nhl-{away}-{home}-{date}`,
+ * all 32 clubs: cal, lak, las, mon, utah where Kalshi has CGY, LA, VGK, MTL, UTA). The common
+ * alternate spellings ride as extra keys, as WAS/WSH does for NFL.
+ */
+const NHL_TEAMS: TeamTable = {
+  ANA: [["ana"], "Anaheim Ducks"], BOS: [["bos"], "Boston Bruins"],
+  BUF: [["buf"], "Buffalo Sabres"], CAR: [["car"], "Carolina Hurricanes"],
+  CBJ: [["cbj"], "Columbus Blue Jackets"], CGY: [["cal", "cgy"], "Calgary Flames"],
+  CAL: [["cal", "cgy"], "Calgary Flames"], CHI: [["chi"], "Chicago Blackhawks"],
+  COL: [["col"], "Colorado Avalanche"], DAL: [["dal"], "Dallas Stars"],
+  DET: [["det"], "Detroit Red Wings"], EDM: [["edm"], "Edmonton Oilers"],
+  FLA: [["fla"], "Florida Panthers"], LA: [["lak", "la"], "Los Angeles Kings"],
+  LAK: [["lak", "la"], "Los Angeles Kings"], MIN: [["min"], "Minnesota Wild"],
+  MTL: [["mon", "mtl"], "Montreal Canadiens"], MON: [["mon", "mtl"], "Montreal Canadiens"],
+  NJ: [["nj", "njd"], "New Jersey Devils"], NJD: [["nj", "njd"], "New Jersey Devils"],
+  NSH: [["nsh"], "Nashville Predators"], NYI: [["nyi"], "New York Islanders"],
+  NYR: [["nyr"], "New York Rangers"], OTT: [["ott"], "Ottawa Senators"],
+  PHI: [["phi"], "Philadelphia Flyers"], PIT: [["pit"], "Pittsburgh Penguins"],
+  SEA: [["sea"], "Seattle Kraken"], SJ: [["sj", "sjs"], "San Jose Sharks"],
+  SJS: [["sj", "sjs"], "San Jose Sharks"], STL: [["stl"], "St. Louis Blues"],
+  TB: [["tb", "tbl"], "Tampa Bay Lightning"], TBL: [["tb", "tbl"], "Tampa Bay Lightning"],
+  TOR: [["tor"], "Toronto Maple Leafs"], UTA: [["utah", "uta"], "Utah Mammoth"],
+  UTAH: [["utah", "uta"], "Utah Mammoth"], VAN: [["van"], "Vancouver Canucks"],
+  VGK: [["las", "vgk", "veg"], "Vegas Golden Knights"], VEG: [["las", "vgk", "veg"], "Vegas Golden Knights"],
+  WPG: [["wpg"], "Winnipeg Jets"], WSH: [["wsh", "was"], "Washington Capitals"],
+  WAS: [["wsh", "was"], "Washington Capitals"],
+};
+
 export const LEAGUE_TEMPLATES: LeagueTemplate[] = [
   {
     league: "mlb",
@@ -149,6 +181,16 @@ export const LEAGUE_TEMPLATES: LeagueTemplate[] = [
     pmMarketType: "moneyline",
     parityNote:
       "both venues settle on the official NBA final result for this game; pairs are suspended when start times or postponement handling differ",
+  },
+  {
+    league: "nhl",
+    kalshiSeries: "KXNHLGAME",
+    pmSlugPrefix: "nhl",
+    teamCodeAliases: aliasesOf(NHL_TEAMS),
+    teamNames: namesOf(NHL_TEAMS),
+    pmMarketType: "moneyline",
+    parityNote:
+      "both venues settle on the official NHL final result for this game, overtime and shootout included; pairs are suspended when start times or postponement handling differ",
   },
 ];
 
