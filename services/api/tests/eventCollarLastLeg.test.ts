@@ -280,6 +280,12 @@ test("quoteLastLeg: a favourite last leg with a tight NO book funds a credit; th
   assert.equal(funding - hedge.costCents - q.feesCents - q.takeCents, q.creditCents, "funding - hedge - fees - take = credit");
   assert.ok(q.tiers.tight || q.tiers.balanced || q.tiers.wide);
   assert.ok(q.candidatesConsidered > 0);
+  // the ticket heads with the highest floor, not the live book's default (Max upside): the holder
+  // weighs the lock against cash-out, so the guaranteed figure leads; the other shapes ride along
+  assert.equal(DEFAULT_CROSS_CONFIG.defaultTier, "wide", "the single's default is still the most upside");
+  assert.equal(q.tier, "tight");
+  assert.equal(q.floorCents, Math.max(...Object.values(q.tiers).map((t) => t.floorCents)), "no funded shape guarantees more");
+  if (q.tiers.wide) assert.ok(q.tiers.wide.floorCents < q.floorCents && q.tiers.wide.capCents > q.capCents, "Max upside still offered under it");
 });
 
 test("quoteLastLeg: honest refusals — under one contract, too close to kickoff, mark out of band, empty book, unfundable book", () => {

@@ -97,6 +97,7 @@ import type { HeldBookOpen, HeldBooks } from "../src/eventCollar/crossVenue/aggr
 import type { ReferenceBookId } from "../src/eventCollar/crossVenue/venueBooks";
 import {
   DEFAULT_CROSS_CONFIG,
+  PARLAY_LAST_PICK_TIER,
   capTotalCents,
   floorTotalCents,
   type CrossQuoteResult,
@@ -104,6 +105,7 @@ import {
   type HedgeLeg,
   type HedgeRoute,
   type PmBook,
+  type ProtectionTier,
 } from "../src/eventCollar/crossVenue/types";
 import type { NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { getMarketResult, getSettledMarkets, kalshiBase, type KalshiSettledMarket } from "../src/eventCollar/kalshiPublic";
@@ -1127,9 +1129,22 @@ function retailOneQuote(res: CandidateResult, evBps: number | null) {
 }
 
 /**
+ * The same quote headed at another of its tiers, when the venues funded it: the top-level terms
+ * become that tier's, the others ride along unchanged. A parlay at its last pick heads with the
+ * highest floor (PARLAY_LAST_PICK_TIER); a single keeps the engine's default.
+ */
+function headedAt(res: CandidateResult, tier: ProtectionTier): CandidateResult {
+  if (!res.quote.ok) return res;
+  const terms = res.quote.tiers[tier];
+  if (!terms || res.quote.tier === tier) return res;
+  return { ...res, quote: { ...res.quote, ...terms, tier }, evBps: terms.evCostBps };
+}
+
+/**
  * The lock routes (gated by the lock key or the operator token; 404 when no key is configured):
  *   GET  /api/shadow/markets?league=   the games the engine can protect, and which are already on the record
- *   GET  /api/shadow/quote?ticker=&contracts=&entry=&venue=   one position, priced now, retail shape, with
+ *   GET  /api/shadow/quote?ticker=&contracts=&entry=&venue=&parlay=   one position, priced now, retail shape (parlay=1:
+ *        a ticket at its last pick, headed at the highest floor rather than the default tier), with
  *        `routing` (hedgeRouting.ts): the holder's venue (`venue`: kalshi, prophetx, novig; absent Kalshi), the
  *        hedge venue chosen against it and why, each route's cost all in (EV plus the tails priced), the tails
  *        in the holder's venue's words; with the operator token, also the engine's route verdicts and the pin
@@ -1263,6 +1278,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, { ok: false, at: atIso, ticker: parsed.value.ticker, code: q.code, message: q.detail });
       return;
     }
+    // a parlay at its last pick (parlay=1) heads with the highest floor; the other shapes ride along
+    const result = url.searchParams.get("parlay") === "1" ? headedAt(q.result, PARLAY_LAST_PICK_TIER) : q.result;
     const held = !lockable(loadShadowPositions(ownLedger), parsed.value.ticker);
     // The operator also sees the routing: which hedge route funded this quote and what every route
     // said. On an armed ticker the lock is pinned to Kalshi's own No side, so the verdict there is
@@ -1270,19 +1287,19 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     // Every caller sees where the hedge would go and why (hedgeRouting.ts): the holder's venue, the
     // hedge venue, each route's cost all in, the tails in their venue's words. The operator also
     // sees the engine's own route verdicts and the pin.
-    const view = routingViewOf(q.result.routing);
+    const view = routingViewOf(result.routing);
     const routing = {
       routing: operator
         ? {
             ...(view ?? {}),
-            route: q.result.route,
+            route: result.route,
             pinned: lockRouteFor(parsed.value.ticker) ?? null,
-            ...(q.result.pinnedExecution ? { pinnedExecution: q.result.pinnedExecution } : {}),
-            routesChecked: q.result.routesChecked.map((r) => ({ route: r.route, ok: r.ok, evCostBps: r.evCostBps, creditCents: r.creditCents, ...(r.detail ? { detail: r.detail } : {}) })),
+            ...(result.pinnedExecution ? { pinnedExecution: result.pinnedExecution } : {}),
+            routesChecked: result.routesChecked.map((r) => ({ route: r.route, ok: r.ok, evCostBps: r.evCostBps, creditCents: r.creditCents, ...(r.detail ? { detail: r.detail } : {}) })),
           }
         : view,
     };
-    sendJson(res, 200, { ok: true, at: atIso, onRecord: held, ...(holder ? { holder } : {}), ...retailOneQuote(q.result, q.result.evBps), ...routing });
+    sendJson(res, 200, { ok: true, at: atIso, onRecord: held, ...(holder ? { holder } : {}), ...retailOneQuote(result, result.evBps), ...routing });
     return;
   }
   if (url.pathname === "/api/shadow/lock") {
@@ -1342,8 +1359,9 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         sendJson(res, 200, { ok: false, at: atIso, ticker, code: retail && !retail.ok ? retail.code : "unavailable", message: retail && !retail.ok ? retail.detail : "Protection isn't available on this position right now." });
         return;
       }
-      // the tier the holder chose, when the venues funded it; else the quote's default
-      const chosen = tier && result.quote.tiers[tier] ? { ...result.quote, ...result.quote.tiers[tier], tier } : result.quote;
+      // the tier the holder chose, when the venues funded it; else a parlay's highest floor; else the quote's default
+      const want = tier ?? (parlay ? PARLAY_LAST_PICK_TIER : undefined);
+      const chosen = want && result.quote.tiers[want] ? { ...result.quote, ...result.quote.tiers[want], tier: want } : result.quote;
       const evBps = chosen.tier === result.quote.tier ? result.evBps : chosen.evCostBps;
       const base = openRecordFor(result, chosen, evBps, atIso, "lock");
       const record = parlay && parlayView ? { ...base, parlay: parlayRecordOf(parlayView, parlay.stakeCents, parlay.payoutCents) } : base;

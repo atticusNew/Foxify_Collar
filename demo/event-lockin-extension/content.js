@@ -1566,7 +1566,9 @@
     st.pending = true;
     // the venue this page is: the service routes the hedge against its settlement rules (which book
     // takes the other side tonight, and what the tails cost) and words the terms in its rules
-    const path = "/api/shadow/quote?ticker=" + encodeURIComponent(B.ticker) + "&contracts=" + B.size.contracts + (B.size.entryCents ? "&entry=" + B.size.entryCents : "") + "&venue=" + encodeURIComponent(VENUE_ID);
+    // a parlay at its last pick asks for the quote headed at the highest floor (parlay=1): the
+    // holder weighs the lock against cash-out, so the guaranteed figure leads; Shape still lists all three
+    const path = "/api/shadow/quote?ticker=" + encodeURIComponent(B.ticker) + "&contracts=" + B.size.contracts + (B.size.entryCents ? "&entry=" + B.size.entryCents : "") + "&venue=" + encodeURIComponent(VENUE_ID) + (B.parlay ? "&parlay=1" : "");
     api(path, "GET").then((r) => {
       st.pending = false;
       st.quoteAt = Date.now();

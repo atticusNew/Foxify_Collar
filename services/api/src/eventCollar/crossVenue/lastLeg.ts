@@ -46,7 +46,7 @@ import type { ComboLegMarket, ComboLegStatus } from "./polymarketCombos";
 import { gammaBase } from "./polymarketPublic";
 import { checkRule, gammaRuleText, gammaRuleUrl, pinRule, summarizeRuleEvidence, type RuleCheck, type RuleEvidence, type RuleEvidenceSummary } from "./ruleEvidence";
 import { writerPayouts } from "./shadowLedger";
-import type { CollarTerms, CrossHedgeLeg, CrossRefusal, CrossSearchConfig, PmBook, ProtectionTier, TakeRule } from "./types";
+import { PARLAY_LAST_PICK_TIER, type CollarTerms, type CrossHedgeLeg, type CrossRefusal, type CrossSearchConfig, type PmBook, type ProtectionTier, type TakeRule } from "./types";
 
 // ── configuration ─────────────────────────────────────────────────────────────
 
@@ -421,13 +421,15 @@ export type LastLegQuote =
 
 /**
  * The event collar on the compressed position, hedged on the last leg's NO
- * book. Same grid, same fee rule, same tiers as the live book; the only
- * difference is that the contracts came from a ticket.
+ * book. Same grid, same fee rule, same tiers as the live book; the contracts
+ * came from a ticket, and the quote heads with the highest floor rather than
+ * the live book's default tier (PARLAY_LAST_PICK_TIER: the holder weighs the
+ * lock against cash-out, so the guaranteed figure leads).
  */
 export function quoteLastLeg(input: LastLegQuoteInputs): LastLegQuote {
   const grid = lastLegCollars(input);
   if (!grid.ok) return grid;
-  const sel = selectTiers(grid.search.candidates, input.entryCents, input.config.defaultTier, tierCreditLineCents(input.config, input.contracts));
+  const sel = selectTiers(grid.search.candidates, input.entryCents, PARLAY_LAST_PICK_TIER, tierCreditLineCents(input.config, input.contracts));
   return { ok: true, ...sel.terms, tier: sel.tier, tiers: sel.tiers, candidatesConsidered: grid.search.candidates.length };
 }
 

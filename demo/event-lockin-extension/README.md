@@ -625,6 +625,14 @@ the service listed tonight's game beside next week's: a card that says its game 
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
 
+**A parlay's lock heads with the highest floor (0.7.41).** At the last pick the quote is asked
+for with `parlay=1`, and the service heads it at **Max floor** instead of Max upside: the holder
+has won every other pick, the number they weigh the lock against is the venue's cash-out, and
+their stake is small against what the ticket pays, so the shape with the biggest guaranteed figure
+is the one that reads right ("Lock in $40" beside a $43 cash-out, with the win still above it).
+Singles keep Max upside. The Shape row under Details still lists all three, and a chosen shape is
+the one locked; the service applies the same default when a parlay lock arrives without one.
+
 **The parlay's panel as a ticket (0.7.40).** Under a parlay the panel is one heading, the picks
 as a list and a Details toggle, as the demo's Parlays tab draws a ticket: a box per pick (empty
 while it is open, a check once it hit, a cross when it missed), the club and its market, and at

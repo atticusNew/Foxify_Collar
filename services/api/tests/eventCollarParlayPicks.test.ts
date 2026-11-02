@@ -258,12 +258,24 @@ test("shadow worker: /api/shadow/picks places a parlay's picks; the lock at the 
     assert.equal(((await wrong.json()) as { error: string }).error, "parlay_not_last_pick");
     assert.equal(seen.length, 0, "nothing was priced for a refused parlay");
 
-    const lockRes = await post({ ticker: BAL, contracts: 66.18, entryCents: 15, venue: "novig", tier: "wide", parlay });
+    // the quote for a ticket at its last pick heads with the highest floor (parlay=1); a single keeps the default
+    type Q = { ok: boolean; quote: { tier: string; floorCents: number; capCents: number; tiers: Record<string, { floorCents: number; capCents: number }> } };
+    const single = (await (await fetch(`${base}/api/shadow/quote?ticker=${BAL}&contracts=66.18&entry=15&venue=novig`, { headers: key })).json()) as Q;
+    const ticket = (await (await fetch(`${base}/api/shadow/quote?ticker=${BAL}&contracts=66.18&entry=15&venue=novig&parlay=1`, { headers: key })).json()) as Q;
+    assert.equal(single.quote.tier, "wide", "a single heads with the most upside");
+    assert.equal(ticket.quote.tier, "tight", "a parlay at its last pick heads with the highest floor");
+    assert.ok(ticket.quote.floorCents > single.quote.floorCents && ticket.quote.capCents < single.quote.capCents);
+    assert.deepEqual(ticket.quote.tiers, single.quote.tiers, "the same shapes ride along under either heading");
+    assert.deepEqual(forbiddenKeysIn(ticket), []);
+
+    // a parlay lock with no tier named takes the highest floor; the record says which tier it is
+    const lockRes = await post({ ticker: BAL, contracts: 66.18, entryCents: 15, venue: "novig", parlay });
     assert.equal(lockRes.status, 200, await lockRes.clone().text());
-    const lock = (await lockRes.json()) as { ok: boolean; ticker: string; contracts: number; parlay: { picks: Array<{ ticker: string; state: string }>; stakeCents: number; payoutCents: number } };
+    const lock = (await lockRes.json()) as { ok: boolean; ticker: string; contracts: number; tier?: string; floorCents?: number; parlay: { picks: Array<{ ticker: string; state: string }>; stakeCents: number; payoutCents: number } };
     assert.equal(lock.ok, true);
     assert.equal(lock.ticker, BAL);
     assert.equal(lock.contracts, 66.18);
+    assert.equal(lock.floorCents, ticket.quote.floorCents, "locked at the highest floor");
     assert.deepEqual(lock.parlay, { picks: [{ ticker: SEA, sideName: "Seattle", eventTitle: "Bears at Seahawks Winner?", state: "won" }, { ticker: BAL, sideName: "Baltimore", eventTitle: "Jaguars at Ravens Winner?", state: "open" }], stakeCents: 1000, payoutCents: 6618 });
     assert.deepEqual(forbiddenKeysIn(lock.parlay), []);
 
