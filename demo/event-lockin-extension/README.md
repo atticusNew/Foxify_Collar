@@ -598,6 +598,20 @@ so it read as a position, and with one block per game the carousel's Eagles card
 holder's own Eagles card should have had. Those words now skip the row ("row skipped: a featured
 parlay to buy, not a position" on the operator console) before any club is counted.
 
+**A tall card in one column, and a game in play (0.7.38).** On the first live night the parlay
+card lost its line the moment Show Legs opened it: with the legs shown the card stands over 320px,
+and a block that tall is taken for a list unless it is one card of a deck (a wrapping row); on a
+narrow window Novig lays its cards in one column, which is no deck, so the card was dropped and
+the Eagles card beside it, in play, had no line at all. A block with exactly one "N Leg Parlay"
+head and one row's worth of stake labels is now one card up to 1400px wherever it stands. The
+Eagles card had a second cause on the service: the horizon pre-filter compared the game's date
+with the UTC clock, so from 7pm ET an evening game counted as yesterday's and left
+`/api/shadow/markets`; without the market listed, PHI fit two games and the card was skipped. The
+filter now compares ET calendar dates, so a game is listed through its own night and the next day
+(and the Thursday night Ravens stays listed through its 7:00–7:30pm ET lock window). A started
+game is listed as `notProtectable: "in_progress"`, and its card reads **Unavailable · This game is
+in play.** rather than "starts too soon".
+
 **The hedge's own card on Novig (0.7.35).** The service's Novig hedges are bought in a subaccount
 of the holder's own Novig account, so the holder's Portfolio shows them as cards beside their
 own picks: the other side of a 76ers lock held on ProphetX appears as a Knicks card on Novig. That
