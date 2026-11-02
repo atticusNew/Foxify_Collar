@@ -2062,8 +2062,10 @@
     if (v.state === "busted" || v.state === "won") return null;
     if (v.state === "unknown") {
       const u = (v.picks || []).find((p) => p.state === "unknown");
+      // a bare code fits more than one listed game (the venue lists weeks ahead): the legs settle it, so ask for them rather than refuse
       const legsHelp = P.from === "codes" && u && !/official result/.test(u.why || "");
-      return { tag: "Unavailable", cls: "ael-line-off", line: legsHelp ? "Tap Show Legs so your picks can be read." : esc(pickWhy(u)), head: pickWhy(u), next: legsHelp ? "Tap Show Legs on the card: each leg names its game." : "The picks are read again every minute." };
+      if (legsHelp) return { tag: "Lock in", cls: "ael-line-wait", line: "Tap Show Legs so your picks can be read.", head: pickWhy(u), next: "Tap Show Legs on the card: each leg names its game." };
+      return { tag: "Unavailable", cls: "ael-line-off", line: esc(pickWhy(u)), head: pickWhy(u), next: "The picks are read again every minute." };
     }
     if (v.state === "open") {
       const at = latestOpenOf(v);
