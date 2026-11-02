@@ -37,6 +37,8 @@
   const POLL_POSITIONS_MS = 15_000;
   const POLL_RECORD_MS = 60_000;
   const REQUOTE_MS = 60_000;
+  // a parlay's picks are read again this often: a pick that hit turns the ticket into a single on its last pick
+  const POLL_PICKS_MS = 60_000;
   const SCAN_MIN_GAP_MS = 500;
   // a row still on the page that one scan could not read keeps its block this long before it is dropped
   const ROW_GRACE_MS = 6_000;
@@ -98,6 +100,7 @@
     pills: new Map(), // game stem -> { el, html }: the pill on each protectable game's card
     tip: null, // the hover card open over a pill
     slip: null, // the order slip's binding while a protectable pick sits in it
+    parlays: new Map(), // picks key ("SEA:CHI:Mon,BAL:JAX:Thu") -> { view, at, pending, error }: the service's read of a parlay's picks
     ext: {}, // the service's switches for the extension: minVersion, marksOff, cutoffMinutes
     counts: { games: 0, marks: 0, slip: 0, slipMarked: 0, rows: 0, offers: 0, unread: 0 },
     tele: { key: null, timer: null },
@@ -968,13 +971,15 @@
       // the typed size) sit inside a deck card and must not turn the card into one
       if (e.querySelector("input:not(.ael-ui *), textarea:not(.ael-ui *)")) break;
       const text = spaced(norm(pageText(e)));
-      if (text.length > 600) break;
+      // a parlay card with its legs shown runs on past a single's card, in words and in height: one block each leg
+      const parlay = /\bLegs?\s+Parlay\b/i.test(text);
+      if (text.length > (parlay ? 1200 : 600)) break;
       const r = e.getBoundingClientRect();
       // wider than the window is the page itself, unless it is a table that scrolls inside its pane;
       // taller than a row is a list, unless it is one card of a deck (a Novig order card runs to
       // its buttons, share line and id), which is one position however tall it stands
       const h = pageHeight(e, r);
-      if (h > 320 && !(h <= 640 && e.parentElement && e.parentElement !== document.body && isDeck(e.parentElement))) break;
+      if (h > 320 && !(h <= (parlay ? 1400 : 640) && e.parentElement && e.parentElement !== document.body && isDeck(e.parentElement))) break;
       if (r.width > window.innerWidth && !e.closest("table")) break;
       const labels = (text.match(STAKE_LABELS) || []).length;
       if (found) {
@@ -1045,6 +1050,142 @@
     return "";
   };
 
+  /**
+   * Novig's Portfolio opens with a carousel of featured parlays to buy: a themed name and an SGP
+   * tag, "Placed This Order", the picks with "(vs WSH)" and player props ("57+ Rushing Yards"), a
+   * price and "Add to Slip". Each names two clubs and carries money, so it reads as a position
+   * unless its own words rule it out. They are offers, not positions; none gets a line.
+   */
+  const PROMO_RE = /(^|[^A-Za-z])SGP(?![A-Za-z])|Placed This Order|\(vs\.?\s+[A-Z]{2,5}\)|(^|[^\d.])\d{1,3}\+\s+(?:Points|Rushing|Passing|Receiving|Touchdowns?|Yards|Assists|Rebounds|Threes|Strikeouts|Hits|Saves|Goals|Shots)\b|Add to Slip/i;
+
+  // ── parlays ─────────────────────────────────────────────────────────────────
+  // A parlay card ("2 Leg Parlay · 6.62x", the codes "SEA, BAL", MATCHED, Amount, To Pay) is read
+  // as its picks. With its legs shown each pick is "SEA Winner" over the game's bar ("CHI 8:15 PM
+  // Mon SEA"): the club, the market, the opponent and the day. The service places each pick on a
+  // listed game and says where it stands (open, hit, missed); once every pick but one has hit the
+  // ticket is a single on that last pick, paying To Pay if it hits, and is read as one.
+  // The card's text runs neighbouring views together with nothing between, and two runs of
+  // capitals cannot be told apart by shape: "SEA, BALMATCHED" (the codes, then the badge), "Mon
+  // SEABAL Winner" (one leg's home code, the next leg's pick), "Thu BALID:" (the bar, the id). A
+  // run longer than a code is read against the clubs known (the service's list, the nickname
+  // tables): the code is the known prefix, or, for a pick glued to the bar before it, the known suffix.
+  const knownCode = (c) => S.codes.has(c) || Object.values(NICK).some((t) => Object.prototype.hasOwnProperty.call(t, c));
+  const codePrefix = (run) => {
+    if (run.length <= 4) return run;
+    for (let len = Math.min(4, run.length - 1); len >= 2; len--) if (knownCode(run.slice(0, len))) return run.slice(0, len);
+    return null;
+  };
+  const codeSuffix = (run) => {
+    if (run.length <= 4) return run;
+    for (let len = Math.min(4, run.length - 1); len >= 2; len--) if (knownCode(run.slice(-len))) return run.slice(-len);
+    return null;
+  };
+  const BADGE_TAIL = /(?:UN)?MATCHED$|SETTLED$|PENDING$|WON$|LOST$|VOID$/;
+  const LEG_RE = /(^|[^A-Za-z0-9])([A-Z]{2,8})(\s+[+-]\d+(?:\.\d+)?)?\s+(Winner|Moneyline|Money Line|ML|Spread|Total|Over|Under)(?![A-Za-z])/g;
+  const DAY_WORD = "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Today|Tomorrow|Tonight)";
+  // the game's bar under a leg: away code, the clock and the day in either order, home code ("CHI 8:15 PM Mon SEA", "CHI Mon 8:15 PM at SEA")
+  const LEG_GAME_RE = new RegExp("^\\s*([A-Z]{2,4})\\s+(?:(\\d{1,2}:\\d{2}\\s*[AP]M)\\s+)?(?:(" + DAY_WORD + ")[a-z]*\\.?\\s+)?(?:(\\d{1,2}:\\d{2}\\s*[AP]M)\\s+)?(?:(?:at|vs\\.?|@)\\s+)?([A-Z]{2,8})(?![a-z0-9])");
+  const PARLAY_HEAD_RE = /(\d{1,2})\s*[- ]?Legs?\s+Parlay/i;
+  const parlayIn = (text) => {
+    const head = PARLAY_HEAD_RE.exec(text);
+    if (!head) return null;
+    const n = Number(head[1]);
+    if (!(n >= 2 && n <= 12)) return null;
+    const legs = [];
+    let m;
+    LEG_RE.lastIndex = 0;
+    while ((m = LEG_RE.exec(text))) {
+      const code = codeSuffix(m[2]);
+      if (!code) continue;
+      const kind = !m[3] && /^(Winner|Moneyline|Money Line|ML)$/i.test(m[4]) ? "winner" : "other";
+      const game = LEG_GAME_RE.exec(text.slice(m.index + m[0].length));
+      let opp = null;
+      let day = null;
+      const home = game ? codePrefix(game[5]) : null;
+      if (game && home) {
+        const mine = [code, ...(CODE_ALIAS[code] || [])];
+        const others = [game[1], home].filter((c) => !mine.includes(c));
+        // the bar names this club and one other; a bar naming two other clubs is another leg's
+        if (others.length === 1) opp = others[0];
+        day = game[3] || null;
+      }
+      legs.push({ code, opp, day, kind });
+    }
+    if (legs.length === n) return { n, legs, from: "legs" };
+    // legs hidden: the picks are the comma list of codes after the head ("SEA, BAL"), the last one
+    // often run into the badge beside it; the game and the market wait behind Show Legs
+    const list = /(^|[^A-Za-z0-9])([A-Z]{2,4}(?:\s*,\s*[A-Z]{2,4})*\s*,\s*[A-Z]{2,12})/.exec(text.slice(head.index + head[0].length));
+    const codes = list ? list[2].replace(BADGE_TAIL, "").split(/\s*,\s*/).map(codePrefix) : [];
+    if (codes.length === n && codes.every(Boolean)) return { n, legs: codes.map((code) => ({ code, opp: null, day: null, kind: null })), from: "codes" };
+    return { n, legs: [], from: "none" };
+  };
+  /** The picks as the service takes them: code, opponent and day, colon-joined; the picks comma-joined. */
+  const picksKey = (legs) => legs.map((l) => l.code + (l.opp || l.day ? ":" + (l.opp || "") : "") + (l.day ? ":" + l.day : "")).join(",");
+  /**
+   * The service's read of a parlay's picks, by key: what is cached, and a read started when there
+   * is none or the last is a minute old. The scan runs again when an answer lands, so the card's
+   * line follows it. Null for the view until the first answer.
+   */
+  const picksFor = (key) => {
+    let e = S.parlays.get(key);
+    if (!e) {
+      e = { view: null, at: 0, pending: false, error: null };
+      S.parlays.set(key, e);
+      if (S.parlays.size > 40) S.parlays.delete(S.parlays.keys().next().value);
+    }
+    if (!e.pending && Date.now() - e.at > POLL_PICKS_MS) {
+      e.pending = true;
+      api("/api/shadow/picks?picks=" + encodeURIComponent(key), "GET").then((r) => {
+        e.pending = false;
+        e.at = Date.now();
+        if (!r.ok || !r.json) e.error = r.status === 403 ? "key" : r.status === 404 ? "picks_off" : "down";
+        else if (!r.json.ok) e.error = r.json.code || r.json.error || "unavailable";
+        else {
+          e.error = null;
+          e.view = r.json;
+        }
+        scan(true);
+      });
+    }
+    return e;
+  };
+  /** The pick on a view the ticket now stands on: the one open pick, once every other has hit. */
+  const lastPickOf = (view) => (view && view.state === "last_pick" && view.lastPick) || null;
+  /** The open pick that starts last: where protection opens on a ticket with two or more open. */
+  const latestOpenOf = (view) => {
+    if (!view || !Array.isArray(view.picks)) return null;
+    const open = view.picks.filter((p) => p.state === "open").sort((a, b) => Date.parse(a.startsIso || 0) - Date.parse(b.startsIso || 0));
+    return open.length ? open[open.length - 1] : null;
+  };
+  /** The club's word for a pick: the nickname when the market is listed, else the service's side name, else the code. */
+  const pickWord = (p) => (p.ticker && S.byTicker[p.ticker] ? shortOf(p.ticker) : p.sideName || p.code);
+  /**
+   * A parlay card as a binding. Until the picks are read, and while two or more are open, the
+   * binding is the ticket itself (kind "parlay"; the line says when protection opens). At the
+   * last pick, with the legs read (so the pick's market is certain), it is a winner binding on
+   * that market sized to what the ticket pays: the scan rebuilds the row's block as a single's.
+   */
+  const parlayRow = (row, P, own, skip) => {
+    if (P.from === "none") {
+      skip("a " + P.n + "-leg parlay whose picks could not be read");
+      return null;
+    }
+    let match = matchIn(own);
+    const badge = /(^|[^a-z])(un)?matched(?![a-z])/i.test(noMoney(spaced(own)));
+    if (S.tab === "resting" && match === "matched" && !badge) match = "unmatched";
+    if ((S.tab === "settled" && !badge) || SOLD_RE.test(noMoney(spaced(own)))) match = "settled";
+    const size = match === "matched" ? plausible(sizeIn(own), own) : null;
+    const key = picksKey(P.legs);
+    const e = picksFor(key);
+    const parlay = { n: P.n, legs: P.legs, from: P.from, key, view: e.view, error: e.error };
+    const last = lastPickOf(e.view);
+    if (last && P.from === "legs" && size && !last.live && S.byTicker[last.ticker]) {
+      const leg = P.legs.find((l) => l.code === last.code);
+      if (leg && leg.kind === "winner") return { row, ticker: last.ticker, kind: "winner", match, flipped: false, size, from: "page", parlay };
+    }
+    return { row, ticker: "parlay:" + key, kind: "parlay", match, flipped: false, size, from: size ? "page" : "none", parlay };
+  };
+
   const findRows = (nodes) => {
     const seen = new Map(); // row element -> { tickers Map, nodes }
     for (const node of nodes) {
@@ -1072,6 +1213,17 @@
       };
       if (pointsRow(own)) {
         skip("a points row");
+        continue;
+      }
+      if (PROMO_RE.test(own)) {
+        skip("a featured parlay to buy, not a position");
+        continue;
+      }
+      // a parlay ticket: read as its picks, never as a board of clubs
+      const P = parlayIn(own);
+      if (P) {
+        const F = parlayRow(row, P, own, skip);
+        if (F) out.push(F);
         continue;
       }
       // the row's own text, and the title above it when it names the row's club: Kalshi's position
@@ -1329,6 +1481,8 @@
   /** The quote at this row's size, refreshed while the page is open; the lock reprices at the tap. */
   const quoteRow = (B) => {
     const st = stateOf(B);
+    // a parlay with two or more picks open has no one market to price; it is priced once it is a single
+    if (B.kind === "parlay") return;
     if (!B.size || (st.done && !removedHere(B.ticker, st.done)) || (S.record.has(B.ticker) && !removedHere(B.ticker))) return;
     if (ourHedgeOn(B.ticker)) return;
     const key = B.ticker + ":" + B.size.contracts + ":" + (B.size.entryCents || "");
@@ -1407,6 +1561,20 @@
         return { why: "The service is unreachable.", next: "Try again in a moment." };
       case "no_size":
         return { why: "The size of this position could not be read.", next: "Enter it below to price protection." };
+      case "picks_off":
+        return { why: "This service build does not read parlays yet.", next: "" };
+      case "parlay_not_last_pick":
+        return { why: "Protection opens at your last pick.", next: "With two or more picks open there is nothing yet to protect; the ticket pays only if every pick hits." };
+      case "parlay_busted":
+        return { why: "A pick on this ticket missed.", next: "" };
+      case "parlay_settled":
+        return { why: "Every pick on this ticket has hit; it is settled.", next: "" };
+      case "parlay_pick_unknown":
+        return { why: "A pick on this ticket could not be placed on a listed game.", next: "Tap Show Legs on the card and check back; the picks are read again every minute." };
+      case "parlay_in_play":
+        return { why: "Your last pick has started.", next: "Protection is locked before the game starts." };
+      case "parlay_size":
+        return { why: "The ticket's amount and payout do not read as a size.", next: "" };
       default:
         return { why: message || "Protection isn't available on this position right now.", next: "" };
     }
@@ -1498,6 +1666,11 @@
         const hv = hedgeVenueOf(rec.routing);
         line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>" + (hv ? " &middot; on " + esc(hv) : ", whichever way it goes") + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
       }
+    } else if (B.kind === "parlay") {
+      line = parlayLine(B);
+      // a ticket that is over (a pick missed, or every pick hit) is the venue's to show; no line under it
+      if (B.host) B.host.style.display = line ? "" : "none";
+      if (!line) return;
     } else if (B.kind === "other") {
       line = lineGo("Unavailable", "Protection covers " + (VENUE_ID === "novig" ? "Winner" : "Moneyline") + " picks.", "ael-line-off");
     } else if (B.match === "unmatched") {
@@ -1603,6 +1776,8 @@
     const out = [];
     // a Kalshi No on the other club is this club's Yes; say so once, in the holder's own words
     if (B.flipped) out.push("your No on the " + esc(shortOf(siblingOf(B.ticker) || "")));
+    // a parlay at its last pick: the ticket is now this one pick, sized to what it pays (the Picks row lists the rest)
+    if (B.parlay) out.push("your " + B.parlay.n + "-leg parlay's last pick");
     if (operator() && B.from === "page") out.push("size read from the page");
     return out;
   };
@@ -1701,6 +1876,8 @@
       rows.push(drow(toggleA("ael-rules-a", "Rules", st.rules), st.rules ? "" : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + "</span>"));
       if (st.rules) rows.push(dwide(rulesGrid(rt)));
     }
+    // a parlay at its last pick: the picks behind this single, the ones that hit and the one it stands on
+    if (B.parlay && B.parlay.view && Array.isArray(B.parlay.view.picks)) rows.push(drow("Picks", picksHtml(B.parlay.view)));
     rows.push(drow("How", "You sell part of the position today and keep the rest. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + "; it settles on the same official result, nothing to manage."));
     return '<div class="ael-drows">' + rows.join("") + "</div>";
   };
@@ -1759,6 +1936,7 @@
     if (ours) return paintRefusal(B, panel, "own_hedge", "This is the protection on your " + (shortOf(ours.ticker) || ours.sideName || "pick") + ", bought here by Atticus when you locked in on " + venueNameOf(ours.holderVenue) + (ours.at ? " (" + fmtAt(ours.at) + ")" : "") + ". It settles with that lock; there is nothing to do on it here.");
     const away = B.kind === "winner" && B.match !== "settled" ? lockAway(B.ticker) : null;
     if (away) return paintRefusal(B, panel, "on_record_elsewhere", "Already protected on " + venueNameOf(away.holderVenue) + ".");
+    if (B.kind === "parlay") return paintParlayPanel(B, panel);
     if (B.kind === "other") return paintRefusal(B, panel, "spread", "");
     if (B.match === "unmatched") return paintRefusal(B, panel, "unmatched", "");
     if (B.match === "settled") return paintRefusal(B, panel, "settled", "");
@@ -1845,6 +2023,80 @@
     });
   };
 
+  // ── a parlay card's line and panel ──────────────────────────────────────────
+  /** The service's reason a pick could not be placed, in the holder's words, naming the pick. */
+  const pickWhy = (u) => {
+    const who = u ? pickWord(u) : "a pick";
+    const why = String((u && u.why) || "");
+    if (/no listed game/.test(why)) return "Your " + who + " pick is not on a listed game.";
+    if (/games fit/.test(why)) return "Your " + who + " pick fits more than one game.";
+    if (/official result/.test(why)) return "Your " + who + " pick is waiting on the official result.";
+    return "Your " + who + " pick could not be read.";
+  };
+  /** The picks, one a line: the club, then (dim) hit, missed, the start, or why it could not be placed. */
+  const picksHtml = (v) =>
+    (v.picks || [])
+      .map((p) => {
+        const word = p.state === "won" ? "hit" : p.state === "lost" ? "missed" : p.state === "open" ? (p.live ? "in play" : p.startsIso ? fmtAt(p.startsIso) : "open") : /games fit/.test(p.why || "") ? "which game?" : /no listed game/.test(p.why || "") ? "not listed" : "unread";
+        return "<b>" + esc(pickWord(p)) + '</b> <span class="ael-dim">&middot; ' + esc(word) + "</span>";
+      })
+      .join("<br>");
+  /**
+   * Where a parlay stands, as the line and the panel's heading say it. Null for the line when the
+   * ticket is over (a pick missed, or every pick hit): that is the venue's to show. Two or more
+   * picks open: muted, with the pick protection opens at and its start. The last pick: the legs
+   * must be shown (so the pick's market is certain), the pick a Winner, the game not started.
+   */
+  const parlayState = (B) => {
+    const P = B.parlay || {};
+    const v = P.view;
+    const market = VENUE_ID === "novig" ? "Winner" : "Moneyline";
+    if (B.match === "unmatched") return { tag: "Unavailable", cls: "ael-line-off", line: "Protection waits until the " + esc(V.play) + " is matched.", head: "This ticket has not been matched yet.", next: "Protection prices on the matched stake; check back once it fills." };
+    if (!v) {
+      if (P.error) {
+        const w = refusalWords(P.error, "");
+        return { tag: "Unavailable", cls: "ael-line-off", line: esc(w.why), head: w.why, next: w.next };
+      }
+      return { tag: "Lock in", cls: "ael-line-wait", line: "Reading your picks&hellip;", head: "Reading your picks\u2026", next: "Each pick is placed on its game to see where the ticket stands." };
+    }
+    if (v.state === "busted" || v.state === "won") return null;
+    if (v.state === "unknown") {
+      const u = (v.picks || []).find((p) => p.state === "unknown");
+      const legsHelp = P.from === "codes" && u && !/official result/.test(u.why || "");
+      return { tag: "Unavailable", cls: "ael-line-off", line: legsHelp ? "Tap Show Legs so your picks can be read." : esc(pickWhy(u)), head: pickWhy(u), next: legsHelp ? "Tap Show Legs on the card: each leg names its game." : "The picks are read again every minute." };
+    }
+    if (v.state === "open") {
+      const at = latestOpenOf(v);
+      return {
+        tag: "Lock in",
+        cls: "ael-line-off",
+        // short enough for a venue's card: the club and its day; the clock is in the panel's Picks row
+        line: "Opens at your last pick" + (at ? " &middot; <b>" + esc(pickWord(at)) + "</b>" + (at.startsIso ? " " + esc(fmtAt(at.startsIso).split(" ")[0]) : "") : "") + ".",
+        head: "Protection opens at your last pick.",
+        next: "With " + v.open + " picks open the ticket pays only if every one hits, so there is nothing yet to protect. Once all but one have hit, the last pick is a single and can be locked in before it starts, for what the ticket pays.",
+      };
+    }
+    const last = v.lastPick || {};
+    const who = pickWord(last);
+    if (!B.size) return { tag: "Unavailable", cls: "ael-line-off", line: "The ticket's amount and payout could not be read.", head: "The ticket's amount and payout could not be read.", next: "" };
+    if (P.from === "codes") return { tag: "Lock in", cls: "ael-line-wait", line: "Tap Show Legs to price protection on your last pick, <b>" + esc(who) + "</b>.", head: "Your last pick is up: " + who + ".", next: "Tap Show Legs on the card so the pick's game is certain; protection prices here." };
+    const leg = P.legs.find((l) => l.code === last.code);
+    if (leg && leg.kind !== "winner") return { tag: "Unavailable", cls: "ael-line-off", line: "Protection covers " + market + " picks.", head: "Protection covers " + market + " picks.", next: "Your last pick, " + who + ", is another market." };
+    if (last.live) return { tag: "Unavailable", cls: "ael-line-off", line: "Your last pick, <b>" + esc(who) + "</b>, has started.", head: "Your last pick has started.", next: "Protection is locked before the game starts." };
+    if (!S.byTicker[last.ticker]) return { tag: "Unavailable", cls: "ael-line-off", line: "No hedge book for your last pick yet.", head: "No hedge book for your last pick yet.", next: "Protection reaches more games as venues are added." };
+    return { tag: "Lock in", cls: "ael-line-wait", line: "Checking protection&hellip;", head: "Pricing protection on your last pick.", next: "" };
+  };
+  const parlayLine = (B) => {
+    const s = parlayState(B);
+    return s ? lineGo(s.tag, s.line, s.cls) : null;
+  };
+  const paintParlayPanel = (B, panel) => {
+    const s = parlayState(B) || { head: "This ticket has settled.", next: "" };
+    const v = (B.parlay || {}).view;
+    const picks = v && Array.isArray(v.picks) && v.picks.length ? '<div class="ael-drows">' + drow("Picks", picksHtml(v)) + "</div>" : "";
+    setPanel(B, panel, '<div class="ael-ph"><b>' + esc(s.head) + "</b>" + (s.next ? "<span>" + esc(s.next) + "</span>" : "") + "</div>" + picks + DISCLOSE);
+  };
+
   const paintRefusal = (B, panel, code, message) => {
     const w = refusalWords(code, message);
     const sizeForm =
@@ -1868,6 +2120,17 @@
     });
   };
 
+  /**
+   * The parlay behind a last-pick lock, as the service re-reads it at the tap: the picks as the
+   * card showed them (code, opponent, day) and the ticket's stake and payout. The service places
+   * the picks again itself and refuses a lock that is not at the last pick, so a card read wrong
+   * here cannot write a record.
+   */
+  const parlayBody = (B) => ({
+    picks: B.parlay.legs.map((l) => ({ code: l.code, ...(l.opp ? { opp: l.opp } : {}), ...(l.day ? { day: l.day } : {}) })),
+    stakeCents: B.size.stakeCents,
+    payoutCents: B.size.payoutCents,
+  });
   const lockIn = async (B, n, t) => {
     const st = stateOf(B);
     if (st.busy) return;
@@ -1893,7 +2156,7 @@
     const r =
       S.settings.rehearse === "yes"
         ? await new Promise((resolve) => setTimeout(() => resolve({ ok: true, json: { ok: true, at: new Date().toISOString(), contracts: n, floorCents: t.floorCents, capCents: t.capCents, creditCents: t.creditCents, sideName: shortOf(B.ticker), eventTimeIso: st.quote.p.eventTimeIso, hedge: { simulated: true, fallbackReason: "rehearsal" }, routing: st.quote.p.routing || null, rehearsal: true } }), 3600))
-        : await api("/api/shadow/lock", "POST", { ticker: B.ticker, contracts: n, entryCents: (B.size && B.size.entryCents) || undefined, tier: st.tier || undefined, venue: VENUE_ID });
+        : await api("/api/shadow/lock", "POST", { ticker: B.ticker, contracts: n, entryCents: (B.size && B.size.entryCents) || undefined, tier: st.tier || undefined, venue: VENUE_ID, ...(B.parlay && B.size ? { parlay: parlayBody(B) } : {}) });
     clearInterval(tick);
     st.busy = false;
     if (!r.ok || !r.json || !r.json.ok) {
@@ -1901,7 +2164,7 @@
       paintRow(liveRow(B));
       return;
     }
-    st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, routing: r.json.routing || (st.quote && st.quote.p && st.quote.p.routing) || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
+    st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, routing: r.json.routing || (st.quote && st.quote.p && st.quote.p.routing) || null, parlay: r.json.parlay || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
     st.open = true;
     st.enter = true;
     // a new lock on a game whose earlier protection was removed: the earlier receipt's sale and cash are not this lock's
@@ -1981,6 +2244,7 @@
     if (/not mapped/.test(why)) return "not mapped";
     if (/not list|no listing|does not offer/.test(why)) return "not listed";
     if (/closes before|closed/.test(why)) return "closed";
+    if (/own account/.test(why)) return "own account";
     return "no price";
   };
   /**
@@ -2273,6 +2537,9 @@
       body = (simple() ? simpleLedger(nick, rs, rec.creditCents, null) : ledger(nick, rs, rec.creditCents, null)) + (st.leave ? leaveHtml(B, rec, rs) + leaveAct : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
+      // a parlay's last pick: the earlier picks that hit stand behind this single
+      const picks = rec.parlay && Array.isArray(rec.parlay.picks) ? rec.parlay.picks : B.parlay && B.parlay.view ? B.parlay.view.picks : null;
+      if (picks && picks.length) meta.push("the last pick of your " + picks.length + "-leg parlay &middot; " + picks.filter((p) => p.state === "won").map((p) => esc(pickWord(p))).join(", ") + " hit");
       if (rec.rehearsal) meta.push("rehearsal");
     }
     // the receipt's detail is one tap away, never in the way. Simple layout: the facts line stays in
@@ -3328,6 +3595,7 @@
         B.kind = F.kind;
         B.match = F.match;
         B.flipped = F.flipped;
+        B.parlay = F.parlay || null;
         if (!B.host.isConnected) remountHost(B);
       }
       B.missedAt = 0;
@@ -3412,6 +3680,6 @@
   // inert inside the extension (isolated world); lets a page-level harness read state when it injects this file
   if (window.__AEL_DEBUG) {
     window.__ael = S;
-    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, findSlip, findGames, gamesIn, markGames, indexMarkets, kindIn, loadPositions, scan, plausible, venue: VENUE_ID };
+    window.__aelFns = { sidesIn, rowFrom, findRows, textNodes, tableSize, sizeIn, tabState, centsSize, sideWord, siblingOf, findSlip, findGames, gamesIn, markGames, indexMarkets, kindIn, loadPositions, scan, plausible, parlayIn, picksKey, venue: VENUE_ID };
   }
 })();

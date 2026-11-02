@@ -504,6 +504,7 @@ The lock routes are off until a key is set.
 | `EVENT_HEDGE_LIVE_VIA` | `aggregator` for tonight | Orders go through the aggregator's execution pod with the TRADE key, which reaches both Kalshi and ProphetX. Unset (`direct`): Kalshi on our own key, and ProphetX prices on paper only. Novig is direct in either mode, on `NOVIG_TRADE_KEY_ID`. |
 | `AGGREGATOR_TRADE_KEY_ID`, `AGGREGATOR_TRADE_PRIVATE_KEY_HEX` | from the aggregator | Service only. The DATA key reads books and never sends an order. |
 | `EVENT_HEDGE_VENUES` | `kalshi,prophetx,novig` | The hedge venues every quote competes. Unset offers all four (Kalshi, ProphetX, Novig, Polymarket). Polymarket stays out until the aggregator lists Poly US. Shown on `/healthz` with the operator token. |
+| `EVENT_HEDGE_SAME_ACCOUNT_VENUES` | leave unset for tonight | Venues where the service's hedge sits in the holder's own account (Novig's subaccount is one), named `novig`. Set, a hedge is not routed to the same venue the holder stands on there: Novig nets the two sides in one account and pays the guarantee out early (Oct 30). Unset by default because for the live parlay test the Novig subaccount is the one funded hedge venue, and Novig cannot net a parlay against a single. |
 | `EVENT_PROPHETX_FEE_BPS` | leave unset (`200`) | ProphetX's 2% of net gains at settlement, folded into its book before every walk and provided for on every fill. |
 | `NOVIG_TRADE_KEY_ID`, `NOVIG_TRADE_PRIVATE_KEY_PEM` | from `venueReadKey.ts subaccount-open` | Service only. The trading key of the service's own Novig subaccount; its cash funds the Novig hedges, fill or kill, direct (no pod). Unset with `novig` offered: the route prices on paper and the receipt says so. The host is `VENUE_API_HOST` (production `https://api.novig.com`; the Paper environment `https://api.paper.novig.com` runs the whole route on play money with no location check). |
 | `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. With `via=aggregator` they serve the account routes and send nothing. |
@@ -563,6 +564,39 @@ VENUE_API_HOST=https://cash.api.<venue domain>/partner VENUE_API_ACCESS_KEY=... 
 The service also still speaks the signed read-key API of the previous venue
 (`VENUE_API_KEY_ID` + `VENUE_API_PRIVATE_KEY_PEM`, minted with `venueReadKey.ts mint`). Whichever
 pair of variables is set picks the API; set one, not both.
+
+**Parlays (0.7.37).** A parlay is protected at its last pick only. With two or more picks open
+there is no one market to buy the other side of, and the ticket pays only if every pick hits; once
+all but one have hit, the ticket is a single on the last pick, paying To Pay if it hits and
+nothing if it misses, and it is locked in like any single for what the ticket pays (one contract
+per payout dollar, the entry price the stake over the payout). The extension reads a parlay card
+("2 Leg Parlay · 6.62x", the codes "SEA, BAL", MATCHED, Amount and To Pay) as its picks and asks
+the service where they stand (`GET /api/shadow/picks?picks=SEA:CHI:Mon,BAL:JAX:Thu`: each pick is
+placed on one listed game, open or settled this fortnight, by club code and, when the card's legs
+are shown, the opponent and the day; the answer is open, hit, missed, or which game?). The line
+follows: **Lock in · Reading your picks…** (muted) while the service answers; **Lock in · Opens
+at your last pick · Ravens Thu.** (muted; the panel lists the picks and says why) with two or
+more open; nothing at all once a pick has missed or every pick has hit (the ticket is the venue's
+to show); **Unavailable · Tap Show Legs so your picks can be read.** when a bare code fits two
+games (SEA is the Seahawks and the Mariners). At the last pick the card must have its legs shown,
+so the pick's market is certain (**Lock in · Tap Show Legs to price protection on your last pick,
+Ravens.** until then), the pick must be a Winner, and the game must not have started; then the
+card gets a single's offer on that market, **Lock in · Lose, and still get $20.59.**, with a
+**Picks** row in Details (Seahawks · hit, Ravens · Thu 8:15pm ET). The lock carries a `parlay`
+block (the picks as read, the stake and payout); the service places the picks again itself and
+refuses a lock that is not at the last pick (`parlay_not_last_pick`), on a busted or settled
+ticket (`parlay_busted`, `parlay_settled`), on a pick it cannot place (`parlay_pick_unknown`),
+after kickoff (`parlay_in_play`) or for more than the ticket pays (`parlay_size`), so a card read
+wrong cannot write a record; the record and the Protected panel carry the picks. A ticket's picks
+are read again every minute, so a pick that hits turns the card's line on its own. Novig cards
+first; the reader is generic (an "N Leg Parlay" head, "CODE Winner" legs over a game bar).
+
+**Featured parlays are not positions (0.7.37).** Novig's Portfolio opens with a carousel of
+featured parlays to buy (a themed name and an SGP tag, "Placed This Order", picks "(vs WSH)" and
+player props "57+ Rushing Yards", a price and Add to Slip). Each names two clubs and carries money,
+so it read as a position, and with one block per game the carousel's Eagles card took the line the
+holder's own Eagles card should have had. Those words now skip the row ("row skipped: a featured
+parlay to buy, not a position" on the operator console) before any club is counted.
 
 **The hedge's own card on Novig (0.7.35).** The service's Novig hedges are bought in a subaccount
 of the holder's own Novig account, so the holder's Portfolio shows them as cards beside their

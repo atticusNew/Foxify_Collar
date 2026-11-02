@@ -76,6 +76,20 @@
   .pc-s{font-size:11px;color:#fff;margin:0 0 8px;align-items:center}.pc-s i{display:inline-block;width:10px;height:10px;border:1.5px solid #fff;border-radius:2px;margin-right:6px}
   .pc-f{justify-content:space-between;font-size:9.5px;color:#777}
   .pempty{color:#beb9b6;padding:40px 0;text-align:center}
+  /* featured parlays: the carousel the real Portfolio opens with (Nov 2026), one themed ticket per
+     card, each naming its picks "(vs WSH)" and a player prop, a price and Add to Slip */
+  .feat-h{display:flex;justify-content:space-between;font-size:13px;font-weight:600;margin:0 0 8px}.feat-h span{color:#beb9b6;font-weight:400;font-size:11px}
+  .feat{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px;margin:0 0 18px}
+  .fc{flex:none;width:300px;background:#161616;border:1px solid #262626;border-radius:12px;padding:12px 14px}
+  .fc .fh{justify-content:space-between;margin-bottom:8px}.fc .fn{font-size:13px;font-weight:700}.fc .sgp{background:#2a2a2a;color:#beb9b6;border-radius:4px;padding:2px 6px;font-size:9.5px;font-weight:700;margin-left:8px}
+  .fc .fp{font-size:10.5px;color:#beb9b6;margin-bottom:8px}
+  .fc .leg{font-size:12px;padding:3px 0}.fc .leg b{font-weight:600}.fc .leg small{color:#beb9b6;margin-left:4px}
+  .fc .ff{justify-content:space-between;margin-top:8px;align-items:center}.fc .fm{font-size:13px;font-weight:700;color:#5fc1ff}.fc .fm small{display:block;color:#beb9b6;font-size:10px;font-weight:400}.fc .add{background:#179be7;color:#fff;border-radius:6px;padding:7px 12px;font-size:11.5px;font-weight:700}
+  /* a parlay card: the head says the legs and the multiplier, the codes under it; Show Legs opens one bar per pick */
+  .pc .codes{font-size:11px;color:#beb9b6;margin-top:2px}
+  .pc .credit{display:inline-block;background:#2a2318;color:#f0b35b;border-radius:4px;padding:2px 6px;font-size:9px;font-weight:700;letter-spacing:.04em;margin:0 0 10px}
+  .pc .legs-a{font-size:11.5px;color:#5fc1ff;font-weight:600;margin:0 0 8px;cursor:pointer;align-items:center}.pc .legs-a i{display:inline-block;width:0;height:0;border:4px solid transparent;border-top-color:#5fc1ff;margin-left:6px;transform:translateY(2px)}
+  .pc .lg{margin:0 0 8px}.pc .lg .pick{display:block;font-size:12.5px;font-weight:700;margin:0 0 4px;grid-template-columns:none}
 </style></head>
 <body>
 <div class="strip"><span>Hockey <span class="live">Live</span> 3rd 05:42 <b>FLA</b>2 <b>CHI</b>2</span><span>La Liga <span class="live">Live</span> 78' <b>Real Madrid</b>1 <b>Barcelona</b>1</span><span>Pro FB <span class="live">Halftime</span> <b>DEN</b>13 <b>ARI</b>6</span><span>Pro FB <span class="live">Q2 1:47</span> <b>LAR</b>21 <b>LV</b>3</span><span>Pro FB <span class="live">Q2 1:44</span> <b>GB</b>7 <b>DET</b>10</span><span>Pro BB (M) <span class="live">Live</span> Q1 01:21 <b>LAL</b>25 <b>UTA</b>37</span><span>Pro FB <span class="blue">Today 8:20 PM</span> <b>KC</b> 2.38x <b>SEA</b> 1.71x</span><span>Pro FB <span class="blue">Tomorrow 8:15 PM</span> <b>DAL</b> 1.44x <b>PHI</b> 3.14x</span></div>
@@ -105,7 +119,10 @@ let mode = sessionStorage.getItem("novig-mode") || "cash";
 // market, MATCHED or UNMATCHED, Amount and To Pay, the matchup with its start, Sell at the live
 // price and Buy More. The first is a real one (Oct 28, 2026): GB at 1.54x, $5.00 to pay $7.69, on
 // CAR at GB, Thursday 9:15 PM.
+// The parlay is a real one (Nov 1, 2026, trade credit): two legs at 6.62x, $9.99 to pay $66.18, SEA
+// Winner (CHI at SEA, Mon 8:15 PM) and BAL Winner (JAX at BAL, Thu 8:15 PM); its legs open under Show Legs.
 const ORDERS = JSON.parse(sessionStorage.getItem("novig-orders") || "null") || [
+  { parlay: 2, m: "6.62", amount: 9.99, matched: 9.99, type: "take", pay: "66.18", credit: true, placed: "Sun 8:24PM", id: "7c1e9a2d4b8f0", legs: [{ code: "SEA", kind: "Winner", away: "CHI", home: "SEA", when: "8:15 PM", day: "Mon" }, { code: "BAL", kind: "Winner", away: "JAX", home: "BAL", when: "8:15 PM", day: "Thu" }] },
   { code: "GB", kind: "Winner", m: "1.54", amount: 5, matched: 5, type: "take", pay: "7.69", sell: "4.96", placed: "Wed 6:47PM", id: "a9cdbd1fe3b36", away: "CAR", home: "GB", when: "9:15 PM", day: "Thu" },
   { code: "NYK", kind: "Winner", m: "1.65", amount: 10, matched: 10, type: "take", sell: "10.12", placed: "Tue 12:48PM", id: "b31e0f77c2a90", away: "DET", home: "NYK", when: "8:00 PM", day: "Tue" },
   { code: "BOS", kind: "Winner", m: "1.30", amount: 20, matched: 0, type: "make", sell: null, placed: "Tue 12:51PM", id: "c7d2a1e45f6b8", away: "BKN", home: "BOS", when: "7:30 PM", day: "Tue" },
@@ -145,14 +162,36 @@ const V = (inner, cls, extra) => '<div class="css-view ' + (cls || "") + '"' + (
 // the card's To Pay as the venue prints it: about the amount times the multiplier, from the exact
 // price behind the rounded multiplier ($5.00 at 1.54x pays $7.69, not $7.70)
 const toPay = (o) => (o.pay != null ? Number(o.pay) : o.amount * Number(o.m));
+const gameBar = (g) => V(V('<span class="helm"></span>' + T(g.away, "code"), "rw") + V(T(g.when, "when") + T(g.day, "day"), "mid") + V(T(g.home, "code") + '<span class="helm" style="background:#2a5a3a"></span>', "rw"), "rw pc-g");
+const legsOpen = new Set(JSON.parse(sessionStorage.getItem("novig-legs") || "[]"));
 const card = (o) => {
   const badge = o.settled ? '<div class="badge ' + o.settled + '">' + o.settled.toUpperCase() + "</div>" : o.matched <= 0 ? '<div class="badge wait">UNMATCHED</div>' : '<div class="badge ok">MATCHED</div>';
-  const head = V('<span class="helm"></span>' + V(V(T(o.code + (o.line ? " " + o.line : ""), "nm") + T("&middot;", "dot") + T(o.m + "x", "mult"), "rw") + T(o.kind, "kind")), "rw") + badge;
   const amts = V(V(T("Amount", "lab") + T(money(o.amount), "val")) + T("&#x203A;", "ar") + V(T(o.settled ? "Paid" : "To Pay", "lab") + T(money(o.settled ? Number(o.paid) : toPay(o)), "val"), "r"), "rw pc-a");
-  const game = V(V('<span class="helm"></span>' + T(o.away, "code"), "rw") + V(T(o.when, "when") + T(o.day, "day"), "mid") + V(T(o.home, "code") + '<span class="helm" style="background:#2a5a3a"></span>', "rw"), "rw pc-g");
+  if (o.parlay) {
+    // the parlay card: "2 Leg Parlay · 6.62x" with the codes under it, the amounts, TRADE CREDIT, Buy
+    // More and Share, then Show Legs; open, one "SEA Winner" line and game bar per leg
+    const open = legsOpen.has(o.id);
+    const head = V('<span class="helm"></span>' + V(V(T(o.parlay + " Leg Parlay", "nm") + T("&middot;", "dot") + T(o.m + "x", "mult"), "rw") + T(o.legs.map((l) => l.code).join(", "), "codes")), "rw") + badge;
+    const btns = V(V(T("Buy More"), "b buy", ' role="button" tabindex="0"') + V(T("Share"), "b buy", ' role="button" tabindex="0"'), "rw pc-b");
+    const legsA = V(T(open ? "Hide Legs" : "Show Legs") + "<i></i>", "rw legs-a", ' role="button" tabindex="0" data-legs="' + o.id + '"');
+    const legs = open ? V(o.legs.map((l) => V(T(l.code + " " + l.kind, "pick") + gameBar(l))).join(""), "lg") : "";
+    return V(V(head, "rw pc-h") + amts + (o.credit ? '<span class="credit">TRADE CREDIT</span>' : "") + btns + legsA + legs + V(T("ID: " + o.id) + T("Placed: " + o.placed), "rw pc-f"), "pc");
+  }
+  const head = V('<span class="helm"></span>' + V(V(T(o.code + (o.line ? " " + o.line : ""), "nm") + T("&middot;", "dot") + T(o.m + "x", "mult"), "rw") + T(o.kind, "kind")), "rw") + badge;
   const btns = o.settled ? "" : V(V(T(o.matched > 0 ? "Sell " + money(Number(o.sell)) : "Cancel"), "b sell", ' role="button" tabindex="0"') + V(T("Buy More &middot; " + o.m + "x"), "b buy", ' role="button" tabindex="0"'), "rw pc-b");
-  return V(V(head, "rw pc-h") + amts + game + btns + V("<i></i>" + T("Share"), "rw pc-s") + V(T("ID: " + o.id) + T("Placed: " + o.placed), "rw pc-f"), "pc");
+  return V(V(head, "rw pc-h") + amts + gameBar(o) + btns + V("<i></i>" + T("Share"), "rw pc-s") + V(T("ID: " + o.id) + T("Placed: " + o.placed), "rw pc-f"), "pc");
 };
+// the featured parlays the Portfolio opens with, as the real page printed them (Nov 1, 2026)
+const FEATURED = [
+  { name: "Fly Eagles Fly", sgp: true, n: 302, legs: [["PHI Winner", "(vs WSH)"], ["Saquon Barkley 57+ Rushing Yards", "Yes"], ["Dallas Goedert 1+ Touchdowns", "Yes"]], m: "6.10", stake: 20, pay: "122.00" },
+  { name: "Da Big Bad Bears", sgp: true, n: 109, legs: [["CHI Winner", "(vs SEA)"], ["Caleb Williams 300+ Passing Yards", "Yes"], ["DJ Moore 1+ Touchdowns", "Yes"]], m: "12.50", stake: 10, pay: "125.00" },
+  { name: "Lumen Field Of Dreams", sgp: true, n: 70, legs: [["SEA -3.5", "(vs CHI)"], ["Sam Darnold 300+ Passing Yards", "Yes"], ["Jaxon Smith-Njigba 1+ Touchdowns", "Yes"]], m: "9.80", stake: 10, pay: "98.00" },
+  { name: "Mid Major Magic", sgp: false, n: 41, legs: [["SJSU -8.5", "(vs UTSA)"], ["NIU -7.5", "(vs GRAM)"], ["UAB +4.5", "(vs MCN)"], ["APP +3.5", "(vs Merrimack)"]], m: "14.20", stake: 10, pay: "142.00" },
+];
+const featuredHtml = () =>
+  '<div class="feat-h">Featured Parlays<span>See all &rsaquo;</span></div><div class="feat">' +
+  FEATURED.map((f) => V(V(T(f.name, "fn") + (f.sgp ? '<span class="sgp">SGP</span>' : ""), "rw fh") + T(f.n + " Placed This Order", "fp") + f.legs.map((l) => '<div class="leg"><b>' + l[0] + "</b><small>" + l[1] + "</small></div>").join("") + V(V(T(f.m + "x", "fm") + T(money(f.stake) + " &rarr; " + money(Number(f.pay)), "fm")) + V(T("Add to Slip"), "add", ' role="button" tabindex="0"'), "rw ff"), "fc")).join("") +
+  "</div>";
 const TABS = ["active", "settled"];
 const portfolioHtml = (tab, filter) => {
   let list = tab === "settled" ? ORDERS.filter((o) => o.settled) : ORDERS.filter((o) => !o.settled);
@@ -162,6 +201,7 @@ const portfolioHtml = (tab, filter) => {
     '<div class="psum"><div>Cash Balance<b>' + money(15) + "</b></div><div>Open Positions<b>" + money(open) + "</b></div><div>Trade Credits<b>" + money(50) + " &#x24D8;</b></div></div>" +
     '<div class="ptabs">' + TABS.map((t) => '<a href="#/portfolio/' + t + '"' + (t === tab ? ' class="on"' : "") + ">" + t[0].toUpperCase() + t.slice(1) + "</a>").join("") + "</div>" +
     '<div class="pfil"><span class="fl">Filter &#x2630;</span>' + ["all", "take", "make"].map((f) => '<span class="f' + (f === filter ? " on" : "") + '" data-f="' + f + '">' + f[0].toUpperCase() + f.slice(1) + "</span>").join("") + "</div>" +
+    (tab === "active" && !sessionStorage.getItem("novig-nofeat") ? featuredHtml() : "") +
     (list.length ? '<div class="cards">' + list.map(card).join("") + "</div>" : '<div class="pempty">No ' + tab + " orders</div>");
 };
 let pfFilter = "all";
@@ -170,6 +210,7 @@ const render = () => {
   const pm = /^#\/portfolio(?:\/(active|open|settled))?/.exec(h);
   $("#main").innerHTML = pm ? portfolioHtml(pm[1] === "settled" ? "settled" : "active", pfFilter) : listHtml();
   for (const f of document.querySelectorAll(".pfil .f")) f.onclick = () => { pfFilter = f.dataset.f; render(); };
+  for (const a of document.querySelectorAll(".legs-a")) a.onclick = () => { legsOpen.has(a.dataset.legs) ? legsOpen.delete(a.dataset.legs) : legsOpen.add(a.dataset.legs); sessionStorage.setItem("novig-legs", JSON.stringify([...legsOpen])); render(); };
   $("#slip").innerHTML = slipHtml();
   $("#nav-pf").className = pm ? "on" : "";
   $("#nav-home").className = pm ? "" : "on";
