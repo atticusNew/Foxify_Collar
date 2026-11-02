@@ -73,7 +73,7 @@
   .badge{border-radius:4px;padding:3px 7px;font-size:9.5px;font-weight:700;letter-spacing:.04em}.badge.ok{background:#0f2b1d;color:#39d98a}.badge.wait{background:#2a2a2a;color:#beb9b6}.badge.won{background:#0f2b1d;color:#39d98a}.badge.lost{background:#2b0f12;color:#ff6b6b}
   .pc-a{justify-content:space-between;margin-bottom:12px}.pc-a .lab{font-size:10.5px;color:#beb9b6}.pc-a .val{font-size:15px;font-weight:700;margin-top:2px}.pc-a .r{align-items:flex-end}.pc-a .ar{color:#555;font-size:16px}
   .pc-g{background:#1f1f1f;border-radius:8px;padding:9px 12px;justify-content:space-between;margin-bottom:10px}
-  .pc-g .helm{width:22px;height:19px;border-radius:50% 50% 40% 40%;background:#2b6cb0}.pc-g .code{font-size:13px;font-weight:700;margin:0 8px}
+  .pc-g .helm{width:22px;height:19px;border-radius:50% 50% 40% 40%;background:#2b6cb0;display:inline-flex;align-items:center;justify-content:center}.pc-g .helm b{font-size:6px;color:#fff;font-weight:800}.pc .pc-s2{justify-content:space-between;align-items:center;margin:6px 0 4px}.pc .pc-s2 .legs-a{margin:0}.pc-g .code{font-size:13px;font-weight:700;margin:0 8px}
   .pc-g .mid{align-items:center}.pc-g .when{font-size:11px;color:#5fc1ff;font-weight:600}.pc-g .day{font-size:10.5px;color:#beb9b6}
   .pc-b{gap:10px;margin-bottom:10px}.pc-b .b{flex:1;border-radius:6px;padding:8px 0;align-items:center;font-size:12px;font-weight:700;cursor:pointer}.pc-b .sell{background:#2ecc71;color:#06260f}.pc-b .buy{background:#1f1f1f;color:#fff;border:1px solid #333}
   .pc-s{font-size:11px;color:#fff;margin:0 0 8px;align-items:center}.pc-s i{display:inline-block;width:10px;height:10px;border:1.5px solid #fff;border-radius:2px;margin-right:6px}
@@ -92,7 +92,7 @@
   .pc .codes{font-size:11px;color:#beb9b6;margin-top:2px}
   .pc .credit{display:inline-block;background:#2a2318;color:#f0b35b;border-radius:4px;padding:2px 6px;font-size:9px;font-weight:700;letter-spacing:.04em;margin:0 0 10px}
   .pc .legs-a{font-size:11.5px;color:#5fc1ff;font-weight:600;margin:0 0 8px;cursor:pointer;align-items:center}.pc .legs-a i{display:inline-block;width:0;height:0;border:4px solid transparent;border-top-color:#5fc1ff;margin-left:6px;transform:translateY(2px)}
-  .pc .lg{margin:0 0 8px}.pc .lg .pick{display:block;font-size:12.5px;font-weight:700;margin:0 0 4px;grid-template-columns:none}
+  .pc .lg{margin:0 0 8px}.pc .lg .pick{display:block;font-size:12.5px;font-weight:700;margin:0;grid-template-columns:none}.pc .lg .kind{display:block;font-size:11px;color:#beb9b6;margin:0 0 6px}.pc .pc-s2 .rw{font-size:11px;color:#fff;align-items:center}.pc .pc-s2 i{display:inline-block;width:10px;height:10px;border:1.5px solid #fff;border-radius:2px;margin-right:6px}
 </style></head>
 <body>
 <div class="strip"><span>Hockey <span class="live">Live</span> 3rd 05:42 <b>FLA</b>2 <b>CHI</b>2</span><span>La Liga <span class="live">Live</span> 78' <b>Real Madrid</b>1 <b>Barcelona</b>1</span><span>Pro FB <span class="live">Halftime</span> <b>DEN</b>13 <b>ARI</b>6</span><span>Pro FB <span class="live">Q2 1:47</span> <b>LAR</b>21 <b>LV</b>3</span><span>Pro FB <span class="live">Q2 1:44</span> <b>GB</b>7 <b>DET</b>10</span><span>Pro BB (M) <span class="live">Live</span> Q1 01:21 <b>LAL</b>25 <b>UTA</b>37</span><span>Pro FB <span class="blue">Today 8:20 PM</span> <b>KC</b> 2.38x <b>SEA</b> 1.71x</span><span>Pro FB <span class="blue">Tomorrow 8:15 PM</span> <b>DAL</b> 1.44x <b>PHI</b> 3.14x</span></div>
@@ -167,9 +167,11 @@ const V = (inner, cls, extra) => '<div class="css-view ' + (cls || "") + '"' + (
 // the card's To Pay as the venue prints it: about the amount times the multiplier, from the exact
 // price behind the rounded multiplier ($5.00 at 1.54x pays $7.69, not $7.70)
 const toPay = (o) => (o.pay != null ? Number(o.pay) : o.amount * Number(o.m));
+// the jerseys carry the club's letters as text, so the bar's text runs "CHICHI … SEASEA" as on the real page
+const helm = (code, bg) => '<span class="helm"' + (bg ? ' style="background:' + bg + '"' : "") + '><b>' + code + "</b></span>";
 const gameBar = (g) => g.score
-  ? V(V('<span class="helm"></span>' + T(g.away, "code"), "rw") + V(T(g.when, "live") + T(g.score, "score"), "mid") + V(T(g.home, "code") + '<span class="helm" style="background:#2a5a3a"></span>', "rw"), "rw pc-g")
-  : V(V('<span class="helm"></span>' + T(g.away, "code"), "rw") + V(T(g.when, "when") + T(g.day, "day"), "mid") + V(T(g.home, "code") + '<span class="helm" style="background:#2a5a3a"></span>', "rw"), "rw pc-g");
+  ? V(V(helm(g.away) + T(g.away, "code"), "rw") + V(T(g.when, "live") + T(g.score, "score"), "mid") + V(T(g.home, "code") + helm(g.home, "#2a5a3a"), "rw"), "rw pc-g")
+  : V(V(helm(g.away) + T(g.away, "code"), "rw") + V(T(g.when, "when") + T(g.day, "day"), "mid") + V(T(g.home, "code") + helm(g.home, "#2a5a3a"), "rw"), "rw pc-g");
 const legsOpen = new Set(JSON.parse(sessionStorage.getItem("novig-legs") || "[]"));
 const card = (o) => {
   const badge = o.settled ? '<div class="badge ' + o.settled + '">' + o.settled.toUpperCase() + "</div>" : o.matched <= 0 ? '<div class="badge wait">UNMATCHED</div>' : '<div class="badge ok">MATCHED</div>';
@@ -179,10 +181,12 @@ const card = (o) => {
     // More and Share, then Show Legs; open, one "SEA Winner" line and game bar per leg
     const open = legsOpen.has(o.id);
     const head = V('<span class="helm"></span>' + V(V(T(o.parlay + " Leg Parlay", "nm") + T("&middot;", "dot") + T(o.m + "x", "mult"), "rw") + T(o.legs.map((l) => l.code).join(", "), "codes")), "rw") + badge;
-    const btns = V(V(T("Buy More"), "b buy", ' role="button" tabindex="0"') + V(T("Share"), "b buy", ' role="button" tabindex="0"'), "rw pc-b");
+    const btns = V(V(T("Buy More"), "b buy", ' role="button" tabindex="0"'), "rw pc-b");
     const legsA = V(T(open ? "Hide Legs" : "Show Legs") + "<i></i>", "rw legs-a", ' role="button" tabindex="0" data-legs="' + o.id + '"');
-    const legs = open ? V(o.legs.map((l) => V(T(l.code + " " + l.kind, "pick") + gameBar(l))).join(""), "lg") : "";
-    return V(V(head, "rw pc-h") + amts + (o.credit ? '<span class="credit">TRADE CREDIT</span>' : "") + btns + legsA + legs + V(T("ID: " + o.id) + T("Placed: " + o.placed), "rw pc-f"), "pc");
+    // as the real card lays it out (Nov 1, 2026): the legs under the amounts, each the code over the
+    // market word, then TRADE CREDIT, Buy More, Share beside Show Legs, the id and the stamp
+    const legs = open ? V(o.legs.map((l) => V(V(T(l.code, "pick") + T(l.kind, "kind")) + gameBar(l))).join(""), "lg") : "";
+    return V(V(head, "rw pc-h") + amts + legs + (o.credit ? '<span class="credit">TRADE CREDIT</span>' : "") + btns + V(V("<i></i>" + T("Share"), "rw") + legsA, "rw pc-s2") + V(T("ID: " + o.id) + T("Placed: " + o.placed), "rw pc-f"), "pc");
   }
   const head = V('<span class="helm"></span>' + V(V(T(o.code + (o.line ? " " + o.line : ""), "nm") + T("&middot;", "dot") + T(o.m + "x", "mult"), "rw") + T(o.kind, "kind")), "rw") + badge;
   const btns = o.settled ? "" : o.nosell ? V(V(T("Buy More &middot; " + (o.buyM || o.m) + "x"), "b buy", ' role="button" tabindex="0"'), "rw pc-b") : V(V(T(o.matched > 0 ? "Sell " + money(Number(o.sell)) : "Cancel"), "b sell", ' role="button" tabindex="0"') + V(T("Buy More &middot; " + o.m + "x"), "b buy", ' role="button" tabindex="0"'), "rw pc-b");
