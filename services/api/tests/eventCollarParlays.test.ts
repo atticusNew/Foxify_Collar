@@ -336,7 +336,7 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(html.includes("from the live book'+otherSideWords(L)+', '+L.hoursBefore+'h before the game"), "the quote carries its time and, when the lock names it, the venue the other side goes to");
   // the venue is data from the lock (lock.venue), never a name written into the page: the row, the locked line and the sheet all read it
   assert.ok(html.includes("function otherSideWords(L){return L&&L.venue?' &middot; other side on <b>'+esc(L.venue)+'</b>':''}"));
-  assert.ok(html.includes("(L.venue?'<div class=\"terms\">Other side &middot; <b>'+esc(L.venue)+'</b> <span class=\"ael-dim\">&middot; best price across the venues asked</span></div>':'')"), "the row says where the other side goes, as the Positions tab does for a single");
+  assert.ok(html.includes("(L.venue?'<div class=\"terms\">Other side &middot; <b>'+esc(L.venue)+'</b> <span class=\"ael-dim\">&middot; best price across the venues asked, venue fees included</span></div>':'')"), "the row says where the other side goes, fees in the comparison, as the Positions tab does for a single");
   assert.ok(html.includes("locked at your tap'+otherSideWords(L)+' &middot; terms priced"));
   assert.ok(html.includes("every venue we work with is asked for the other side and the best price wins'+(L.venue?' (this one: '+esc(L.venue)+')':'')+'.</p>"), "how it works: priced like a single, across venues");
   // the picks: the side in ink, the matchup after it; the leagues of the ticket, not just the last pick's
