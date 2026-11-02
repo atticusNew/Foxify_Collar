@@ -11,6 +11,7 @@ import type { LastLegTicket } from "../src/eventCollar/crossVenue/lastLeg";
 import type { ShadowPosition } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { RefusalMap } from "../src/eventCollar/crossVenue/shadowRefusals";
 import type { HedgeRoute } from "../src/eventCollar/crossVenue/types";
+import { renderScoreboardHtml } from "../scripts/eventScoreboardHtml";
 import { SCOREBOARD_METHODOLOGY, venueFeeCentsPerUnit, venueFeeOnHedge, venueScoreboard, venueScoreboardCsv, weekLabel, weekMondayOf } from "../src/eventCollar/crossVenue/venueScoreboard";
 
 const NOW = new Date("2026-11-02T18:00:00.000Z"); // Monday Nov 2, 1pm ET
@@ -146,6 +147,29 @@ test("venueFeeOnHedge: each venue's schedule at the price the other side was bou
 });
 
 const round = (x: number | null): number | null => (x === null ? null : Math.round(x * 1000) / 1000);
+
+test("renderScoreboardHtml: the same table as a page — a card per week with a row per venue (shares, edge, fee, availability), the fee schedules, the methodology, JSON and CSV links; nothing of the writer's book", () => {
+  const positions: ShadowPosition[] = [
+    position({ ticker: "BAL", at: "2026-10-27T20:00:00.000Z", route: "novig", contracts: 100, routing: routing([routed("novig", true, 300, 120), routed("kalshi", true, 240, 200)]) }),
+    position({ ticker: "LAL", at: "2026-10-28T20:00:00.000Z", route: "kalshi_self", league: "nba", contracts: 50, source: "lock", eventTitle: "<Lakers> & Celtics" }),
+  ];
+  const sb = venueScoreboard({ positions, refusals: {}, tickets: [ticket({ ok: true, at: "2026-10-30T20:00:00.000Z", contracts: 66, route: "novig", hedgeCostCents: 2500 })], now: NOW, weeks: 2 });
+  const html = renderScoreboardHtml({ scoreboard: sb, weeks: 2 });
+  assert.ok(html.startsWith("<!doctype html>"));
+  assert.ok(html.includes("Week of Oct 26 – Nov 1"));
+  assert.ok(html.includes("Week of Nov 2 – 8"));
+  assert.ok(html.includes("Nothing on the record this week."), "an empty week says so instead of an empty table");
+  assert.ok(html.includes("3 positions (2 singles, 1 parlay) · 216 contracts · $25 of the other side bought · 1 real tap."));
+  assert.ok(html.includes('<td class="v">Novig</td><td class="hi">66.7%<i>1 win</i></td><td class="hi">100%<i>1 win</i></td><td class="hi">0.60¢<i>80 bps all in · n 1</i></td><td>0.00¢<i>n 2</i></td><td>100%<i>1 of 1 asked</i></td>'));
+  assert.ok(html.includes('<td class="v">Kalshi</td><td class="hi">33.3%<i>1 win</i></td><td>—</td><td>—</td><td>0.91¢<i>n 1</i></td><td>100%<i>1 of 1 asked</i></td>'));
+  assert.ok(html.includes("By league: <b>NFL</b> 2 positions (Novig 100%) · <b>NBA</b> 1 position (Kalshi 100%)."));
+  assert.ok(html.includes('href="/api/shadow/scoreboard?weeks=2"') && html.includes('href="/api/shadow/scoreboard.csv?weeks=2" download'));
+  for (const r of sb.feeRules) assert.ok(html.includes(r.rule.replace(/&/g, "&amp;")), r.venue);
+  assert.ok(html.includes(SCOREBOARD_METHODOLOGY.replace(/'/g, "'").replace(/&/g, "&amp;").replace(/"/g, "&quot;")));
+  assert.equal(html.includes("<Lakers>"), false, "nothing from the record is placed in the page unescaped");
+  assert.equal(/writer|holder|take/i.test(html.replace(SCOREBOARD_METHODOLOGY, "")), false, "no writer-side words outside the methodology");
+  assert.equal(/<script/i.test(html), false, "server-rendered, no script");
+});
 
 test("venueScoreboardCsv: an all row per week with totals and refusals, a row per venue with shares, edge and availability", () => {
   const positions: ShadowPosition[] = [
