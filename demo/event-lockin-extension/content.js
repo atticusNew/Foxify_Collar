@@ -357,6 +357,17 @@
     if (UNDER_WAY_RE.test(text)) {
       const started = list.filter((t) => (S.byTicker[t] || {}).notProtectable === "in_progress");
       if (started.length === 1) return started[0];
+      // the service reads the holder's account: of the club's games, the one they hold a position on
+      const mine = list.filter((t) => svcHeld(t));
+      if (mine.length === 1) return mine[0];
+      // a game that tipped in the last four hours is the one under way (the service marks a game in
+      // progress only when it paired it with a start; a mark out of range on a live book says nothing)
+      const now = Date.now();
+      const playing = list.filter((t) => {
+        const at = Date.parse((S.byTicker[t] || {}).startIso || "");
+        return Number.isFinite(at) && at <= now && now - at < 4 * 3_600_000;
+      });
+      if (playing.length === 1) return playing[0];
       const sorted = [...list].sort((a, b) => gameOrdinal(a) - gameOrdinal(b));
       if (gameOrdinal(sorted[0]) < gameOrdinal(sorted[1])) return sorted[0];
     }
@@ -1148,7 +1159,7 @@
         k++;
       }
       if (!MARKET_WORD_RE.test(w)) continue;
-      heads.push({ at: i, end: k + 1, code: tk[i], kind: !spread && /^(Winner|Moneyline|ML)$/i.test(w) ? "winner" : "other" });
+      heads.push({ at: i, end: k + 1, code: tk[i], kind: !spread && /^(Winner|Moneyline|ML)$/i.test(w) ? "winner" : "other", market: (spread ? tk[i + 1] + " " : "") + w });
     }
     return heads.map((h, i) => {
       const stop = i + 1 < heads.length ? heads[i + 1].at : tk.length;
@@ -1162,7 +1173,7 @@
         else if (!day && DAY_TOKEN_RE.test(t)) day = t.slice(0, 1).toUpperCase() + t.slice(1, 3).toLowerCase() + (/^(Today|Tomorrow|Tonight)/i.test(t) ? t.slice(3).toLowerCase() : "");
       }
       // the bar names this club and one other; a bar naming two other clubs is not this leg's
-      return { code: h.code, opp: others.size === 1 ? [...others][0] : null, day, kind: h.kind };
+      return { code: h.code, opp: others.size === 1 ? [...others][0] : null, day, kind: h.kind, market: h.market };
     });
   };
   const parlayIn = (text) => {
@@ -1291,7 +1302,11 @@
       const title = titleOf(row, own);
       const text = title ? title + " " + own : own;
       const count = sidesIn(text);
-      if (!count.size) continue;
+      if (!count.size) {
+        // the row's codes name clubs with more than one listed game and nothing on the row settles which
+        skip("no side read: " + (count.ambiguous ? "its codes fit more than one listed game" : "no listed club"));
+        continue;
+      }
       // a block that names three clubs or more, or prices both Yes and No, is a board (a futures
       // list, a game card with both sides to buy), not one position
       if (count.size > 2) {
@@ -1949,7 +1964,7 @@
       if (st.rules) rows.push(dwide(rulesGrid(rt)));
     }
     // a parlay at its last pick: the picks behind this single, the ones that hit and the one it stands on
-    if (B.parlay && B.parlay.view && Array.isArray(B.parlay.view.picks)) rows.push(drow("Picks", picksHtml(B.parlay.view)));
+    if (B.parlay && B.parlay.view && Array.isArray(B.parlay.view.picks)) rows.push(drow("Picks", pickListHtml(B, B.parlay.view), "ael-dpicks"));
     rows.push(drow("How", "You sell part of the position today and keep the rest. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + "; it settles on the same official result, nothing to manage."));
     return '<div class="ael-drows">' + rows.join("") + "</div>";
   };
@@ -2105,14 +2120,26 @@
     if (/official result/.test(why)) return "Your " + who + " pick is waiting on the official result.";
     return "Your " + who + " pick could not be read.";
   };
-  /** The picks, one a line: the club, then (dim) hit, missed, the start, or why it could not be placed. */
-  const picksHtml = (v) =>
+  /** A pick's state in one word for the list's right edge: hit, missed, in play, its start, or why it could not be placed. */
+  const pickStateWord = (p) => (p.state === "won" ? "hit" : p.state === "lost" ? "missed" : p.state === "open" ? (p.live ? "in play" : p.startsIso ? fmtAt(p.startsIso) : "open") : /games fit/.test(p.why || "") ? "which game?" : /no listed game/.test(p.why || "") ? "not listed" : "unread");
+  /**
+   * The picks as a list, as the demo's Parlays tab draws a ticket: a box each (empty while the
+   * pick is open, a check once it hit, a cross when it missed), the club and its market, and at
+   * the right edge the start or how it ended. The card above prints the legs; this is the ticket
+   * as the service placed it, at a glance.
+   */
+  const PICK_MARK = { won: "&#x2713;", lost: "&#x2717;", open: "", unknown: "?" };
+  const pickListHtml = (B, v) =>
+    '<div class="ael-picks">' +
     (v.picks || [])
       .map((p) => {
-        const word = p.state === "won" ? "hit" : p.state === "lost" ? "missed" : p.state === "open" ? (p.live ? "in play" : p.startsIso ? fmtAt(p.startsIso) : "open") : /games fit/.test(p.why || "") ? "which game?" : /no listed game/.test(p.why || "") ? "not listed" : "unread";
-        return "<b>" + esc(pickWord(p)) + '</b> <span class="ael-dim">&middot; ' + esc(word) + "</span>";
+        const leg = ((B.parlay || {}).legs || []).find((l) => l.code === p.code) || {};
+        const market = leg.market || (leg.kind === "winner" ? (VENUE_ID === "novig" ? "Winner" : "Moneyline") : "");
+        const cls = p.state === "won" ? "ael-pick-hit" : p.state === "lost" ? "ael-pick-miss" : p.state === "unknown" ? "ael-pick-unk" : "ael-pick-open";
+        return '<div class="ael-pick ' + cls + '"><i>' + (PICK_MARK[p.state] || "") + "</i><span><b>" + esc(pickWord(p)) + "</b>" + (market ? ' <span class="ael-dim">&middot; ' + esc(market) + "</span>" : "") + "</span><em>" + esc(pickStateWord(p)) + "</em></div>";
       })
-      .join("<br>");
+      .join("") +
+    "</div>";
   /**
    * Where a parlay stands, as the line and the panel's heading say it. Null for the line when the
    * ticket is over (a pick missed, or every pick hit): that is the venue's to show. Two or more
@@ -2164,11 +2191,29 @@
     const s = parlayState(B);
     return s ? lineGo(s.tag, s.line, s.cls) : null;
   };
+  /**
+   * The parlay's panel before it is a single: one heading, the picks as a list, and the words
+   * (why nothing is priced yet, when the picks are read again) behind a Details toggle, so the
+   * block under the card is as spare as the card.
+   */
   const paintParlayPanel = (B, panel) => {
+    const st = stateOf(B);
     const s = parlayState(B) || { head: "This ticket has settled.", next: "" };
     const v = (B.parlay || {}).view;
-    const picks = v && Array.isArray(v.picks) && v.picks.length ? '<div class="ael-drows">' + drow("Picks", picksHtml(v)) + "</div>" : "";
-    setPanel(B, panel, '<div class="ael-ph"><b>' + esc(s.head) + "</b>" + (s.next ? "<span>" + esc(s.next) + "</span>" : "") + "</div>" + picks + DISCLOSE);
+    const picks = v && Array.isArray(v.picks) && v.picks.length ? pickListHtml(B, v) : "";
+    const fine = [s.next, v && !/read again/.test(s.next || "") ? "The picks are read again every minute; the line follows." : ""].filter(Boolean);
+    const detailsA = fine.length ? '<div class="ael-acts ael-offer-acts ael-parlay-acts"><span class="ael-links">' + toggleA("ael-det-a", "Details", st.details) + "</span></div>" : "";
+    const details = fine.length && st.details ? '<div class="ael-details">' + fine.map((f) => '<div class="ael-fine">' + esc(f) + "</div>").join("") + "</div>" : "";
+    setPanel(B, panel, '<div class="ael-ph"><b>' + esc(s.head) + "</b></div>" + picks + detailsA + details + DISCLOSE, () => {
+      const a = panel.querySelector(".ael-det-a");
+      if (a)
+        a.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          st.details = !st.details;
+          paintRow(B);
+        };
+    });
   };
 
   const paintRefusal = (B, panel, code, message) => {

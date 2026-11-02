@@ -625,6 +625,16 @@ the service listed tonight's game beside next week's: a card that says its game 
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
 
+**The parlay's panel as a ticket (0.7.40).** Under a parlay the panel is one heading, the picks
+as a list and a Details toggle, as the demo's Parlays tab draws a ticket: a box per pick (empty
+while it is open, a check once it hit, a cross when it missed), the club and its market, and at
+the right edge the start or how it ended ("Seahawks · Winner … Mon 8:15pm ET"; "Seahawks · Winner
+… hit"). The words (why nothing is priced before the last pick, that the picks are read again
+every minute) wait behind Details, so the block is as spare as the card above it. A card that
+says its game is under way and names a club with two listed games now also takes the game the
+service says the holder holds, else the one that tipped in the last four hours; a row whose codes
+all fit more than one game says so on the operator console ("row skipped: no side read").
+
 **The hedge's own card on Novig (0.7.35).** The service's Novig hedges are bought in a subaccount
 of the holder's own Novig account, so the holder's Portfolio shows them as cards beside their
 own picks: the other side of a 76ers lock held on ProphetX appears as a Knicks card on Novig. That
