@@ -357,3 +357,12 @@ export const DEFAULT_CROSS_CONFIG: CrossSearchConfig = {
   // 5c and 0.25% of stake, whichever is more (minimumCredit.ts carries the rule's words)
   minimumCredit: { cents: 5, bpsOfStake: 25 },
 };
+
+/**
+ * A parlay at its last pick heads with the highest floor, not the default tier. The holder has
+ * already won every other pick and the thing they fear is the zero; the number they weigh the lock
+ * against is the venue's cash-out, so the guaranteed figure is the headline. Their stake is tiny
+ * against what the ticket pays, so the tight tier's entry rule is met by every candidate and the
+ * tier resolves to the highest floor the book funds. The other shapes still ride along.
+ */
+export const PARLAY_LAST_PICK_TIER: ProtectionTier = "tight";

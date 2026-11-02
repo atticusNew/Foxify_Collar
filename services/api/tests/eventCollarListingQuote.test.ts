@@ -122,9 +122,11 @@ test("quote: the collar with the highest worst case is chosen from the whole gri
     if (credit > 0) bestWorst = Math.max(bestWorst, c.floorCents * 3570 + credit);
   }
   assert.equal(q.lockWorstCents, bestWorst, "no funded collar guarantees the seller more");
-  const balanced = quoteLastLeg({ contracts: 3570, markCents: 10, entryCents: 6, minutesToStart: 1e6, noBook: s.noBook, noOutcome: "No", config: DEFAULT_CROSS_CONFIG });
-  assert.ok(balanced.ok);
-  assert.ok(q.lockWorstCents >= balanced.floorCents * 3570 + balanced.creditCents - carryCents((balanced.hedge.costCents ?? 0) + balanced.feesCents, 5, 50), "at least the balanced tier's worst case");
+  // the ticket quote heads at the highest floor; the live book's default shape (the most upside) rides along under it
+  const ticket = quoteLastLeg({ contracts: 3570, markCents: 10, entryCents: 6, minutesToStart: 1e6, noBook: s.noBook, noOutcome: "No", config: DEFAULT_CROSS_CONFIG });
+  assert.ok(ticket.ok);
+  const shaped = ticket.tiers[DEFAULT_CROSS_CONFIG.defaultTier] ?? ticket;
+  assert.ok(q.lockWorstCents >= shaped.floorCents * 3570 + shaped.creditCents - carryCents((shaped.hedge.costCents ?? 0) + shaped.feesCents, 5, 50), "at least the default shape's worst case");
 
   // Identity: holder legs by hand; writer = take + carry whichever way the leg settles.
   const win = settleListing(row, "yes");
