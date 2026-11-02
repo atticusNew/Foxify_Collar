@@ -738,15 +738,46 @@ test("runLastLegTick with a router: only legs on the service's game markets are 
     { conditionId: "AC", slug: "epl-ars-che-2026-10-11", title: "Arsenal vs Chelsea", league: "epl", side: 0, outcome: "Arsenal", priceMilli: 600, yesTokenId: "AC-t0", noTokenId: "AC-t1", gameStartIso: iso(SUN_20) },
   ] }));
 
+  // Two more from before the router, already at their last pick and already priced off the NO book (no route on the quote)
+  const seaLeg = { conditionId: "CS", slug: "nfl-chi-sea-2026-10-11", title: "Bears vs Seahawks", league: "nfl", side: 1 as const, outcome: "Seahawks", priceMilli: 650, yesTokenId: "CS-t1", noTokenId: "CS-t0", gameStartIso: iso(SUN_20) };
+  const eplLeg = { conditionId: "AC", slug: "epl-ars-che-2026-10-11", title: "Arsenal vs Chelsea", league: "epl", side: 0 as const, outcome: "Arsenal", priceMilli: 600, yesTokenId: "AC-t0", noTokenId: "AC-t1", gameStartIso: iso(SUN_20) };
+  const dpLeg = { conditionId: "DP", slug: "nfl-dal-phi-2026-10-10", title: "Cowboys vs Eagles", league: "nfl", side: 0 as const, outcome: "Cowboys", priceMilli: 700, yesTokenId: "DP-t0", noTokenId: "DP-t1", gameStartIso: iso(SAT_13) };
+  for (const [id, last] of [["ll_old_priced", seaLeg], ["ll_old_priced_epl", eplLeg]] as const) {
+    const rec = { ...ticketRec(id, [["DP", 700, 0, SAT_13], [last.conditionId, last.priceMilli, last.side, SUN_20]]), legs: [dpLeg, last] };
+    ledger.push(JSON.stringify(rec));
+    ledger.push(JSON.stringify({ type: "leg", at: iso(SAT_16), ticketId: id, conditionId: "DP", valueMilli: 1000 }));
+    const c = compressedContracts(rec.sharesMilli, 1000);
+    const old = quoteLastLeg({ contracts: c, markCents: 60, entryCents: Math.ceil(2_000 / c), minutesToStart: 1500, noBook: noBook("x", 410), noOutcome: "x", config: DEFAULT_CROSS_CONFIG });
+    assert.ok(old.ok);
+    ledger.push(JSON.stringify(momentRecord({ at: iso(SAT_16 + 3_600_000), ticketId: id, minutesToStart: 1500, decidedProductMilli: 1000, contracts: c, markCents: 60, entryCents: Math.ceil(2_000 / c) }, old)));
+  }
+  const pricedBefore = io.load().find((t) => t.ticketId === "ll_old_priced")!;
+  assert.ok(pricedBefore.quote?.ok && !pricedBefore.quote.route, "priced before the router: a quote with no route");
+
   // Sunday morning: the Cowboys won; every ticket is at its last pick
   now = SUN_20 - 12 * 3_600_000;
   gamma = { ...gamma, "nfl-dal-phi-2026-10-10": resolvedRow("nfl-dal-phi-2026-10-10", "DP", SAT_13, '["1", "0"]') };
   const r2 = await runLastLegTick(io, cfg, DEFAULT_CROSS_CONFIG);
   assert.equal(r2.legsResolved, 3);
-  assert.equal(r2.momentsAttempted, 3);
-  assert.equal(r2.momentsQuoted, 2, "the built ticket and the old ticket whose last leg maps; the EPL last leg is refused");
+  assert.equal(r2.momentsAttempted, 5, "three first moments and the two pre-router quotes priced once more through the router");
+  assert.equal(r2.momentsQuoted, 3, "the built ticket, the old ticket whose last leg maps, the re-priced one; the EPL last legs are refused");
   assert.equal(calls.book, 0, "no moment is priced off the last leg's own book when a router is present");
-  assert.equal(quotes.length, 2);
+  assert.equal(quotes.length, 3);
+  {
+    const re = io.load().find((t) => t.ticketId === "ll_old_priced")!;
+    assert.equal(re.attempts, 2, "both attempts stay on the record");
+    assert.equal(re.quote?.route, "novig", "the routed quote supersedes the one priced before the router");
+    assert.equal(re.quote?.at, iso(now), "the ticket's quote is the routed one");
+    const reEpl = io.load().find((t) => t.ticketId === "ll_old_priced_epl")!;
+    assert.equal(reEpl.attempts, 2);
+    assert.deepEqual(reEpl.refusals, { no_matched_market: 1 });
+    assert.ok(reEpl.quote?.ok && !reEpl.quote.route, "a refusal does not take away the quote the ticket already had");
+    // the next tick leaves both alone: the re-pricing happens once
+    const r3 = await runLastLegTick(io, cfg, DEFAULT_CROSS_CONFIG);
+    assert.equal(r3.momentsAttempted, 1, "only the never-quoted EPL ticket is tried again, as before");
+    assert.equal(io.load().find((t) => t.ticketId === "ll_old_priced")!.attempts, 2, "a routed quote is not priced again");
+    assert.equal(io.load().find((t) => t.ticketId === "ll_old_priced_epl")!.attempts, 2, "one attempt after the old quote, and the ticket is left with it");
+  }
   tickets = io.load();
   const built = tickets.find((t) => t.ticketId !== "ll_old_ok" && t.ticketId !== "ll_old_epl")!;
   const contracts = compressedContracts(built.sharesMilli, 1000);
@@ -763,14 +794,14 @@ test("runLastLegTick with a router: only legs on the service's game markets are 
   assert.equal(oldOk.quote?.ticker, "KXNFLGAME-26OCT11CHISEA-SEA", "a pre-router leg maps at its moment");
   const oldEpl = tickets.find((t) => t.ticketId === "ll_old_epl")!;
   assert.equal(oldEpl.quote, undefined);
-  assert.deepEqual(oldEpl.refusals, { no_matched_market: 1 }, "a last leg on no listed game is refused, not quoted off one book");
+  assert.deepEqual(oldEpl.refusals, { no_matched_market: 2 }, "a last leg on no listed game is refused (on both ticks so far), not quoted off one book");
 
   // Monday: the Seahawks won; the routed moment settles on the same identity as before
   now = SUN_20 + 6 * 3_600_000;
   gamma = { ...gamma, "nfl-chi-sea-2026-10-11": resolvedRow("nfl-chi-sea-2026-10-11", "CS", SUN_20, '["0", "1"]') };
   await runLastLegTick(io, cfg, DEFAULT_CROSS_CONFIG);
   const s = summarizeLastLeg(io.load());
-  assert.equal(s.settled.withProtection, 2);
+  assert.equal(s.settled.withProtection, 3, "the built ticket, the old one mapped at its moment, the one re-priced through the router");
   assert.equal(s.settled.identityHolds, true, "the writer keeps exactly the take on a routed moment too");
   assert.match(lastLegCsv(io.load()), /,novig,/, "the route is a CSV column");
 });

@@ -758,7 +758,8 @@ export function replayLastLeg(lines: readonly string[]): LastLegTicket[] {
         attempts: t.attempts + 1,
         refusals,
         lastAttemptAt: rec.at,
-        quote: t.quote ?? (rec.ok ? rec : undefined), // first priced quote wins
+        // first priced quote wins, except that a routed quote supersedes one priced off the NO book before the router
+        quote: rec.ok && (!t.quote || (!t.quote.route && rec.route)) ? rec : t.quote,
       });
     } else if (rec.type === "void") {
       byId.set(rec.ticketId, { ...t, status: "void", voidReason: rec.reason });
@@ -1172,9 +1173,13 @@ export async function runLastLegTick(io: LastLegIo, cfg: LastLegConfig, search: 
   }
 
   // 2) Quote the moment on tickets whose other legs have all hit and whose last game is still ahead.
+  // A ticket priced on the last leg's own NO book before the router (no route on its quote, no
+  // attempt since) is priced once more through the router while its window is open; both attempts
+  // stay on the record and the routed one is the ticket's (replayLastLeg).
   tickets = io.load();
   for (const t of tickets) {
-    if (t.status !== "last_leg" || t.quote) continue;
+    if (t.status !== "last_leg") continue;
+    if (t.quote && !(io.router && !t.quote.route && t.lastAttemptAt === t.quote.at)) continue;
     const last = t.legs[t.legs.length - 1];
     const minutesToStart = (Date.parse(last.gameStartIso) - nowMs) / 60_000;
     if (minutesToStart < search.minMinutesToStart) continue; // the window has closed; the ticket runs to settlement unquoted
