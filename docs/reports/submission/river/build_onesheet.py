@@ -114,6 +114,8 @@ def numbers(snap: dict) -> dict:
         "take": usd(ident["takeBookedCents"]),
         "gap": usd(ident["gapCents"]),
         "holds": ident["holds"] and p["settled"]["identityHolds"],
+        "cost_realized": f"{abs(s['realizedDeltaBpsOfStake']) / 100:.1f}%",
+        "cost_quoted": f"{s['quotedAvgEvBps'] / 100:.1f}%",
         "leagues": ", ".join(LEAGUE_WORDS.get(k, k.upper()) for k in w["byLeague"]),
         "tickets": p["tickets"],
         "locks_priced": p["locksPriced"],
@@ -140,9 +142,9 @@ def numbers(snap: dict) -> dict:
                 for v in sb["venues"]
                 if v in singles or v in parl or v in fees or v in avail
             ],
-            "novig_priced": avail.get("Novig", {}).get("pricedPct"),
-            "prophetx_priced": avail.get("ProphetX", {}).get("pricedPct"),
             "asked": full["availability"]["n"],
+            # positions put to every venue where no second book could price: asked less those with a runner-up
+            "single_book": full["availability"]["n"] - full["edge"]["n"],
         },
         "weeks": WEEKS,
         "weeks_n": sum(wk["n"] for wk in weeks),
@@ -166,7 +168,7 @@ def venue_table(wk: dict) -> str:
         return f"{x['avgFeeCentsPerContract']:.2f}&cent;" if x and x["avgFeeCentsPerContract"] is not None else "<span class=dash>n/a</span>"
 
     def avail(x: dict | None) -> str:
-        return f"<b>{x['pricedPct']:g}%</b> <i>{x['priced']} of {x['asked']}</i>" if x else "<span class=dash>not asked</span>"
+        return f"<b>{x['pricedPct']:g}%</b> <i>{x['priced']} of {x['asked']}</i>" if x else "<span class=dash>n/a</span>"
 
     rows = "".join(
         f"<tr><td class=v>{r['venue']}</td><td>{share(r['singles'])}</td>{f'<td>{share(r[chr(112)+chr(97)+chr(114)+chr(108)+chr(97)+chr(121)+chr(115)])}</td>' if with_parlays else ''}<td>{fee(r['fee'])}</td><td>{avail(r['avail'])}</td></tr>"
@@ -181,12 +183,6 @@ def venue_table(wk: dict) -> str:
 def page(n: dict) -> str:
     assert n["holds"], "the identity does not hold on the live record; do not print a page that says it does"
     wk = n["week"]
-    thin = []
-    if wk["novig_priced"] is not None:
-        thin.append(f"Novig priced {pct(wk['novig_priced'])} of the time it was asked")
-    if wk["prophetx_priced"] is not None:
-        thin.append(f"ProphetX {pct(wk['prophetx_priced'])}")
-    thin_line = "; ".join(thin) if thin else "every venue asked priced"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Atticus for River Markets · one sheet</title>
 <style>
@@ -258,7 +254,7 @@ td .dash{{color:{FAINT}}}
 
 <div>
 <h1>The other side of retail protection, pre-game, across your venues.</h1>
-<p class="lede">A retail holder on Kalshi, ProphetX or Novig taps <b>Lock in</b> on a position they already hold and gets a <b>floor and a cap</b> for a credit paid now. Atticus prices it and buys the other side on the exchange's book, at the <b>cheapest venue all in, venue fees included</b>. Nothing bilateral: the holder's position stays on the exchange, and so does ours. What comes out is a flow your venues do not carry today: <b>the opposing outcome of what retail already holds, bought pre-game, with no view.</b></p>
+<p class="lede">A retail holder on Kalshi, ProphetX or Novig taps <b>Lock in</b> on a position they already hold and gets a <b>floor and a cap</b> for a credit paid now. Atticus prices it and buys the other side on the exchange's book, at the <b>cheapest venue all in, venue fees included</b>. No off-exchange trade: the holder's position stays on the exchange, and so does the other side. What comes out is a flow your venues do not carry today: <b>the opposing outcome of what retail already holds, bought pre-game, with no view.</b></p>
 </div>
 
 <div class="grid">
@@ -267,9 +263,9 @@ td .dash{{color:{FAINT}}}
 <section>
 <h2>What it is worth to an execution layer</h2>
 <div class="tiles">
-  <div class="tile"><h3>Flow your desks do not have</h3><p>Every order is the opposite side of a position a retail holder owns, placed pre-game with no view: the least informed flow in the market. Today it meets whoever is on the screen.</p></div>
-  <div class="tile"><h3>A client already on your venues</h3><p>We built a cross-venue router because none existed: ask every venue, rank all in with fees and settlement rules folded in. That is your stack's work; <b>one integration beats four adapters.</b></p></div>
-  <div class="tile"><h3>Demand the screens cannot fill</h3><p>Last week {thin_line}. <b>{wk['refused']} of {wk['priced']} markets</b> were declined: the other side cost too much on the screens to leave a worthwhile credit. Measured weekly, by venue, in public.</p></div>
+  <div class="tile"><h3>Flow your desks only meet on the screen</h3><p>Every order is the opposite side of a position a retail holder owns, placed pre-game: the holder is reducing a position, not expressing a view. About as uninformed as flow gets. Today it meets whoever is on the screen.</p></div>
+  <div class="tile"><h3>A client already on your venues</h3><p>We built a cross-venue router because this flow needed one: ask every venue, rank all in with fees and settlement rules folded in. That is your stack's work; <b>one integration beats four adapters.</b></p></div>
+  <div class="tile"><h3>Demand the screens cannot fill</h3><p>Last week, of {wk['asked']} positions put to every venue, <b>{wk['single_book']} had one book</b> able to price the other side. <b>{wk['refused']} of {wk['priced']} markets</b> were declined: the other side cost too much on the screens to leave a worthwhile credit. Measured weekly, in public.</p></div>
 </div>
 </section>
 
@@ -277,17 +273,17 @@ td .dash{{color:{FAINT}}}
 <h2>The record, live since {n['since']}</h2>
 <div class="nums">
   <div class="num"><div class="n">{n['protected']:,}</div><div class="l">positions protected, {n['settled']:,} settled</div></div>
-  <div class="num"><div class="n g">{n['credits']}</div><div class="l">paid to holders at the tap</div></div>
+  <div class="num"><div class="n g">{n['cost_realized']}</div><div class="l">cost of the floor, of stake, realized ({n['cost_quoted']} quoted)</div></div>
   <div class="num"><div class="n">{n['floor_pct']}%</div><div class="l">floor saves: holder finished above the unprotected outcome</div></div>
-  <div class="num"><div class="n">{n['weeks_n']:,}</div><div class="l">positions priced in the last {n['weeks']} weeks, {n['weeks_taps']} of them real taps</div></div>
+  <div class="num"><div class="n">{n['weeks_n']:,}</div><div class="l">positions priced in the last {n['weeks']} weeks</div></div>
 </div>
-<div class="ident"><div class="big">{n['pnl']} <i>our P&amp;L</i><br>{n['take']} <i>take booked</i></div><p><b>Gap {n['gap']} on all {n['settled']:,} settled positions:</b> our P&amp;L equals the take booked at quote time, to the cent. We earn the published take and nothing on the result. {n['leagues']}; {n['tickets']} parlay tickets, {n['locks_priced']} locks priced at the last pick. Every row public, with a receipt; refusals recorded beside the fills.</p></div>
+<div class="ident"><div class="big">Gap {n['gap']}<br><i>on {n['settled']:,} settled</i></div><p><b>Our P&amp;L equals the take booked at quote time, to the cent, across every settled position.</b> We earn the published take and nothing on the result; the holder's credit is net of it. {n['leagues']}; {n['tickets']} parlay tickets, {n['locks_priced']} locks priced at the last pick. Every row public, with a receipt; refusals recorded beside the fills.</p></div>
 </section>
 
 <section>
 <h2>Where the other side went · {wk['label']}</h2>
 {venue_table(wk)}
-<p class="cap"><b>{wk['n']} positions</b> ({wk['singles_n']} singles, {wk['parlays_n']} parlay locks at the last pick), {wk['contracts']:,} contracts, {wk['notional']} of the other side bought, {wk['taps']} real taps. Kalshi prices every time because it is the market's own book; the others are asked for the same position at the same second. Fee: each venue's schedule at the price paid. Edge over the runner-up and refusals by reason are on the scoreboard.</p>
+<p class="cap"><b>{wk['n']} positions</b> ({wk['singles_n']} singles, {wk['parlays_n']} parlay locks at the last pick), {wk['contracts']:,} contracts. Kalshi prices every time because it is the market's own book; the others are asked for the same position at the same second. Polymarket is priced on a separate path that records the winner, not the asks, so it has no availability figure. Fee: each venue's schedule at the price paid. Edge over the runner-up and refusals by reason are on the scoreboard.</p>
 </section>
 
 </div>
@@ -297,12 +293,12 @@ td .dash{{color:{FAINT}}}
 <h2>How it fits, in sequence</h2>
 <div class="st"><div class="k now">Now</div><p>Live across your venues with our own router. The record and the venue scoreboard are public and weekly: <b>the flow and its venue comparison are there to read</b>, nothing to integrate.</p></div>
 <div class="st"><div class="k">Next</div><p>The other side routed through River's execution API in place of four venue adapters; your desks see it on the screens first. One client, one new flow type. <b>Size grows with the venues' holders, not on a promise.</b></p></div>
-<div class="st"><div class="k later">Later</div><p>Where the screens are thin, a quote request for the other side at size to your desks, filled on the venue, screen as fallback: the shape our perpetuals stack runs today. Positions and margin consolidated across venues as your capital work ships. <b>The hedge is paid for by the credit</b>: the most capital-efficient leg you will carry.</p></div>
+<div class="st"><div class="k later">Later</div><p>Where the screens are thin, a quote request for the other side at size to your desks, filled on the venue, screen as fallback: the shape our perpetuals stack runs today. Positions and margin consolidated across venues as your capital work ships. <b>The hedge is paid for by the credit</b>: a leg that funds itself is the easiest one to finance.</p></div>
 </div>
 
 <div class="phonebox">
   <div class="phone"><img src="phone_positions.png" alt="The positions list with Lock in on every row"></div>
-  <p class="pcap"><b>The retail origin.</b> Their venue's shell, our line under every position: one tap, two endings, cash now. The receipt names the venue that took the other side. A browser extension on the venues' pages, or an embed.</p>
+  <p class="pcap"><b>The retail origin.</b> Their venue's shell, our line under every position: one tap, two endings, cash now. The receipt names the venue that took the other side. Delivered as an embed in the venue's app or as a browser extension.</p>
 </div>
 
 </div>

@@ -38,7 +38,9 @@ Rebuild on the day you send so the numbers match the record that day. Retake `ph
 
 ## What the page does and does not claim
 
-- The venue table is the last full New York week on the scoreboard (the current week is partial). Kalshi prices 100% of the time because the positions are Kalshi markets, so its own book is always there; the caption says so.
+- The venue table is the last full New York week on the scoreboard (the current week is partial). Kalshi prices 100% of the time because the positions are Kalshi markets, so its own book is always there; the caption says so. Polymarket is priced on the older two-book path, which records the winner and no per-venue asks, so its availability cell is n/a and the caption says why.
+- "N had one book able to price the other side" is the positions put to every venue less those with a priced runner-up (availability n minus edge n). It names no venue as thin; the table carries the per-venue figures for the reader who wants them.
+- No dollar P&L or take figure is on the page; the identity is stated as the gap on settled positions. The cost of the floor is given as a percentage of stake (realized, with quoted beside it). Tap counts are not on the page; the footer says the record is simulated except the taps.
 - The parlays column is drawn only when a venue won a parlay lock that week; parlay locks priced before the router recorded a venue show in the count and not in the table.
 - "Positions on the record are simulated at live prices except the taps" is the footer's disclaimer, and the record's own methodology says the same.
 - Venues are named in the open, as on the public scoreboard, because the reader is an execution layer. No venue is called a partner.
