@@ -135,6 +135,7 @@ import {
   chooseRoute,
   hedgeVenueOf,
   hedgeVenuesFromEnv,
+  sameAccountVenuesFromEnv,
   kalshiTailCells,
   polymarketTailCells,
   rulesFor,
@@ -160,6 +161,8 @@ const TAIL_PROBABILITIES = tailProbabilitiesFromEnv(process.env);
  * Unset, every route is offered. Shown on healthz.
  */
 export const HEDGE_VENUES = hedgeVenuesFromEnv(process.env);
+/** venues whose hedge wallet is a subaccount of the holder's own account (hedgeRouting.sameAccountVenuesFromEnv): no hedge there for a holder standing on them */
+export const SAME_ACCOUNT_VENUES = sameAccountVenuesFromEnv(process.env);
 /** ProphetX's fee on net gains at settlement, folded into its book before the walk (prophetxOrders.ts) */
 export const PROPHETX_FEE_BPS = prophetxFeeBpsFromEnv(process.env);
 
@@ -909,6 +912,7 @@ async function quoteSportsCandidate(
         gameMatch: true,
         venueOpen: route === "kalshi_self" ? kalshiOpen : route === "prophetx" ? pxOpen : route === "novig" ? nvOpen : pmOpen,
         executable: route === "prophetx" ? executable.prophetx && (agg?.prophetx?.executable ?? true) : executable[route],
+        ...(SAME_ACCOUNT_VENUES.has(holderVenue) && hedgeVenueOf(route) === holderVenue ? { sameAccount: true } : {}),
       },
       rules: rulesFor(hedgeVenueOf(route), pair.league, route === "kalshi_self" ? kalshiRuleCells : route === "polymarket" ? pmRuleCells : undefined),
     };
