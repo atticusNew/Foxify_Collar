@@ -309,6 +309,7 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(html.includes("locked it would have paid") && html.includes("no lock was priced before the last game"), "settled, lock against ticket");
   assert.ok(html.includes("no lock exists before the last pick"), "busted");
   assert.ok(html.includes("Lock in your parlay") && html.includes(">if it misses<") && html.includes(">if it hits<"), "the sheet: two endings and the credit");
+  assert.ok(html.includes('<div class="tile k"><div class="l">if it misses</div>') && html.includes('<div class="tile"><div class="l">paid now</div>'), "the floor is the figure in colour, as on the extension; the credit is plain");
   assert.ok(html.includes("Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket"), "the cash-out comparison");
   assert.ok(html.includes("With two picks open there is no market for the pair of games, so no lock is offered yet."));
   // honesty: one line on the tab, the long version behind the info button, and the confusing sentence gone

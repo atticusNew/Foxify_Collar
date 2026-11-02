@@ -1182,8 +1182,8 @@ ${cardBlock}<aside class="pitch">
     el('scrim').className='scrim on';el('sheet').className='sheet on';
     track('parlay_tap',parlayId(id));
     el('sh-body').innerHTML='<h2 id="sh-h">Lock in your parlay</h2><div class="who">'+esc(last.outcome)+' is the last pick &middot; worth '+usd(L.worthCents)+' at fair</div>'+
-      '<div class="tiles"><div class="tile"><div class="l">if it misses</div><div class="v">'+usd(L.floorTotalCents)+'</div><div class="was">was $0</div></div>'+
-      '<div class="tile k"><div class="l">paid now</div><div class="v">+'+usd(L.creditCents)+'</div><div class="was">yours today</div></div>'+
+      '<div class="tiles"><div class="tile k"><div class="l">if it misses</div><div class="v">'+usd(L.floorTotalCents)+'</div><div class="was">was $0</div></div>'+
+      '<div class="tile"><div class="l">paid now</div><div class="v">+'+usd(L.creditCents)+'</div><div class="was">yours today</div></div>'+
       '<div class="tile"><div class="l">if it hits</div><div class="v">'+usd(L.capTotalCents)+'</div><div class="was">was '+usd(t.paysCents)+'</div></div></div>'+
       '<button class="go" id="sh-go">Lock in '+usd(L.floorTotalCents)+' &middot; +'+usd(L.creditCents)+' now</button>'+
       '<div class="fine">priced '+esc(fmtAt(L.quotedAt))+' from the live book, '+L.hoursBefore+'h before the game &middot; <a href="#" id="sh-how">how it works</a></div>'+
