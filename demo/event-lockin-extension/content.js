@@ -972,16 +972,24 @@
       if (e.querySelector("input:not(.ael-ui *), textarea:not(.ael-ui *)")) break;
       const text = spaced(norm(pageText(e)));
       // a parlay card with its legs shown runs on past a single's card, in words and in height: one block each leg
-      const parlay = /\bLegs?\s+Parlay\b/i.test(text);
+      const parlayHeads = (text.match(/\bLegs?\s+Parlay\b/gi) || []).length;
+      const parlay = parlayHeads > 0;
       if (text.length > (parlay ? 1200 : 600)) break;
       const r = e.getBoundingClientRect();
+      const labels = (text.match(STAKE_LABELS) || []).length;
       // wider than the window is the page itself, unless it is a table that scrolls inside its pane;
       // taller than a row is a list, unless it is one card of a deck (a Novig order card runs to
-      // its buttons, share line and id), which is one position however tall it stands
+      // its buttons, share line and id), which is one position however tall it stands; a parlay
+      // card with its legs shown is one position too when the deck runs in one column (a narrow
+      // window, a phone): one parlay head and one row's worth of stake labels, never a list's
       const h = pageHeight(e, r);
-      if (h > 320 && !(h <= (parlay ? 1400 : 640) && e.parentElement && e.parentElement !== document.body && isDeck(e.parentElement))) break;
+      if (h > 320) {
+        const inDeck = e.parentElement && e.parentElement !== document.body && isDeck(e.parentElement);
+        const oneCard = h <= (parlay ? 1400 : 640) && inDeck;
+        const oneParlay = parlayHeads === 1 && labels <= 2 && h <= 1400;
+        if (!oneCard && !oneParlay) break;
+      }
       if (r.width > window.innerWidth && !e.closest("table")) break;
-      const labels = (text.match(STAKE_LABELS) || []).length;
       if (found) {
         // a block was found without the row's stake and payout labels (a matched/unmatched detail
         // can carry two amounts on its own): keep climbing, within the same limits, to the ancestor
@@ -1579,6 +1587,18 @@
         return { why: message || "Protection isn't available on this position right now.", next: "" };
     }
   };
+  /**
+   * The refusal in the row's own terms: the service refuses a started game as "too close to
+   * start", which reads wrong under a card showing the score; its market list says the game is in
+   * progress, and that is what the line says.
+   */
+  const refusalWordsFor = (B, code, message) => {
+    const m = B && B.ticker ? S.byTicker[B.ticker] : null;
+    if ((code === "market_too_close_to_start" || code === "market_not_active") && m && m.notProtectable === "in_progress") {
+      return { why: "This game is in play.", next: "Protection is locked before the game starts." };
+    }
+    return refusalWords(code, message);
+  };
 
   /**
    * Where the money stands on a lock, from the record's cash legs (what each leg owes, what was
@@ -1680,7 +1700,7 @@
     } else if (!st.quote) {
       line = lineGo("Lock in", "Checking protection&hellip;", "ael-line-wait");
     } else if (!st.quote.ok) {
-      line = lineGo("Unavailable", esc(refusalWords(st.quote.code, st.quote.message).why), "ael-line-off");
+      line = lineGo("Unavailable", esc(refusalWordsFor(B, st.quote.code, st.quote.message).why), "ael-line-off");
     } else {
       const p = st.quote.p;
       const q = p.quote;
@@ -2100,7 +2120,7 @@
   };
 
   const paintRefusal = (B, panel, code, message) => {
-    const w = refusalWords(code, message);
+    const w = refusalWordsFor(B, code, message);
     const sizeForm =
       code === "no_size"
         ? '<div class="ael-size-form"><input type="number" min="1" max="10000" step="0.01" placeholder="pays $" aria-label="Payout in dollars" /><button type="button" class="ael-go ael-quiet">Price it</button></div>'
