@@ -1,15 +1,15 @@
 {
- "at": "2026-11-02T21:02:54.257Z",
+ "at": "2026-11-02T21:15:04.276Z",
  "shadow": {
-  "openCount": 202,
-  "settledCount": 1120,
+  "openCount": 198,
+  "settledCount": 1124,
   "voidCount": 2,
-  "floorSaves": 480,
+  "floorSaves": 484,
   "capGiveups": 640,
-  "protectedTotalCents": 9192980,
+  "protectedTotalCents": 9208188,
   "nakedTotalCents": 9546960,
-  "deltaTotalCents": -353980,
-  "realizedDeltaBpsOfStake": -212,
+  "deltaTotalCents": -338772,
+  "realizedDeltaBpsOfStake": -202,
   "quotedAvgEvBps": 253,
   "routeSplit": {
    "polymarket": 623,
@@ -18,21 +18,21 @@
    "prophetx": 1
   },
   "firstOpenedAt": "2026-09-12T17:07:57.832Z",
-  "lastSettledAt": "2026-11-02T05:05:11.117Z",
+  "lastSettledAt": "2026-11-02T21:04:28.670Z",
   "writer": {
-   "settledPnlCents": 48700,
+   "settledPnlCents": 48852,
    "settledPnlBpsOfStake": 29,
    "pnlWhenHolderWonCents": 26908,
-   "pnlWhenHolderLostCents": 21792,
+   "pnlWhenHolderLostCents": 21944,
    "settledWhenHolderWon": 640,
-   "settledWhenHolderLost": 480,
+   "settledWhenHolderLost": 484,
    "capSlicesKeptCents": 3090973,
-   "floorsPaidCents": 2338088,
-   "creditsPaidCents": 398905,
-   "hedgeCostCents": 5730254,
-   "hedgePayoutsCents": 5424974,
-   "takeBookedCents": 48699,
-   "takeLockedOpenCents": 7839,
+   "floorsPaidCents": 2352638,
+   "creditsPaidCents": 399563,
+   "hedgeCostCents": 5740094,
+   "hedgePayoutsCents": 5450174,
+   "takeBookedCents": 48851,
+   "takeLockedOpenCents": 7687,
    "byLeague": {
     "mlb": {
      "settled": 240,
@@ -41,10 +41,10 @@
      "stakeCents": 3600000
     },
     "crypto": {
-     "settled": 492,
-     "open": 25,
-     "pnlCents": 16532,
-     "stakeCents": 7380000
+     "settled": 496,
+     "open": 21,
+     "pnlCents": 16684,
+     "stakeCents": 7440000
     },
     "nfl": {
      "settled": 156,
@@ -67,13 +67,13 @@
    }
   },
   "identity": {
-   "settled": 1120,
-   "writerPnlCents": 48700,
-   "takeBookedCents": 48699,
+   "settled": 1124,
+   "writerPnlCents": 48852,
+   "takeBookedCents": 48851,
    "gapCents": 1,
    "gapBpsOfStake": 0,
-   "hedgeNetCents": -305280,
-   "holderLegsNetCents": 353980,
+   "hedgeNetCents": -289920,
+   "holderLegsNetCents": 338772,
    "holds": true
   },
   "segments": {
@@ -91,14 +91,14 @@
     },
     "kalshi_self": {
      "opened": 785,
-     "settled": 560,
-     "stakeSettledCents": 8374200,
+     "settled": 564,
+     "stakeSettledCents": 8434200,
      "quotedAvgEvBps": 323,
-     "holderDeltaCents": -251258,
-     "holderDeltaBpsOfStake": -300,
-     "creditsCents": 130552,
-     "takeCents": 18568,
-     "writerPnlCents": 18568
+     "holderDeltaCents": -236050,
+     "holderDeltaBpsOfStake": -280,
+     "creditsCents": 131210,
+     "takeCents": 18720,
+     "writerPnlCents": 18720
     },
     "novig": {
      "opened": 29,
@@ -137,14 +137,14 @@
     },
     "crypto": {
      "opened": 555,
-     "settled": 492,
-     "stakeSettledCents": 7380000,
+     "settled": 496,
+     "stakeSettledCents": 7440000,
      "quotedAvgEvBps": 277,
-     "holderDeltaCents": -174881,
-     "holderDeltaBpsOfStake": -237,
-     "creditsCents": 115069,
-     "takeCents": 16532,
-     "writerPnlCents": 16532
+     "holderDeltaCents": -159673,
+     "holderDeltaBpsOfStake": -215,
+     "creditsCents": 115727,
+     "takeCents": 16684,
+     "writerPnlCents": 16684
     },
     "nfl": {
      "opened": 206,
@@ -194,14 +194,14 @@
     },
     "crypto": {
      "opened": 555,
-     "settled": 492,
-     "stakeSettledCents": 7380000,
+     "settled": 496,
+     "stakeSettledCents": 7440000,
      "quotedAvgEvBps": 277,
-     "holderDeltaCents": -174881,
-     "holderDeltaBpsOfStake": -237,
-     "creditsCents": 115069,
-     "takeCents": 16532,
-     "writerPnlCents": 16532
+     "holderDeltaCents": -159673,
+     "holderDeltaBpsOfStake": -215,
+     "creditsCents": 115727,
+     "takeCents": 16684,
+     "writerPnlCents": 16684
     }
    }
   },
@@ -230,15 +230,15 @@
    }
   },
   "flow": {
-   "asOf": "2026-11-02T21:02:54.420Z",
+   "asOf": "2026-11-02T21:15:04.482Z",
    "windowDays": 30,
    "last30Days": {
-    "positions": 762,
-    "contractsMilli": 66681830,
-    "contracts": 66682,
-    "hedgeNotionalCents": 3036351,
-    "stakeCents": 11350086,
-    "since": "2026-10-03T21:02:54.420Z"
+    "positions": 761,
+    "contractsMilli": 66560330,
+    "contracts": 66560,
+    "hedgeNotionalCents": 3033153,
+    "stakeCents": 11335086,
+    "since": "2026-10-03T21:15:04.482Z"
    },
    "allTime": {
     "positions": 1438,
@@ -281,7 +281,7 @@
   "firstTicketAt": "2026-10-08T22:00:34.215Z"
  },
  "scoreboard": {
-  "at": "2026-11-02T21:02:55.112Z",
+  "at": "2026-11-02T21:15:05.184Z",
   "venues": [
    "Kalshi",
    "Polymarket",
