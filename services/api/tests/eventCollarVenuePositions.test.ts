@@ -138,7 +138,8 @@ test("club matcher: nickname or full name matches, a shared city word does not, 
   assert.equal(clubMatches(mlb, mlb.teamNames.BOS, "White Sox"), false);
   assert.equal(clubMatches(mlb, mlb.teamNames.CWS, "Chicago White Sox"), true);
   assert.equal(clubMatches(mlb, mlb.teamNames.CWS, "Chicago"), false); // Cubs share it
-  assert.equal(templateForLeague("NHL"), null);
+  assert.equal(templateForLeague("NHL")?.league, "nhl");
+  assert.equal(templateForLeague("WNBA"), null);
 });
 
 const START = Date.UTC(2026, 9, 18, 13, 30); // Sun Oct 18 2026 9:30am ET
@@ -170,7 +171,7 @@ test("matcher: the venue's winner outcome maps to our market for that club on th
   assert.deepEqual(matchPosition(market({ marketType: "SPREAD" }), event, "o-hou", protectable), { ticker: null, reason: "market_not_covered" });
   // the production catalog's word for the winner market
   assert.deepEqual(matchPosition(market({ marketType: "MONEY" }), event, "o-jax", protectable), { ticker: "KXNFLGAME-26OCT18HOUJAC-JAC" });
-  assert.deepEqual(matchPosition(market(), { ...event, league: "NHL" }, "o-hou", protectable), { ticker: null, reason: "league_not_covered" });
+  assert.deepEqual(matchPosition(market(), { ...event, league: "WNBA" }, "o-hou", protectable), { ticker: null, reason: "league_not_covered" });
   assert.deepEqual(matchPosition(market({ startsTs: START + 7 * 86_400_000 }), event, "o-hou", protectable), { ticker: "KXNFLGAME-26OCT25HOUIND-HOU" });
   assert.deepEqual(matchPosition(market({ startsTs: START + 3 * 86_400_000 }), event, "o-hou", protectable), { ticker: null, reason: "no_protectable_market" });
   assert.deepEqual(matchPosition(market(), event, "o-nope", protectable), { ticker: null, reason: "outcome_unknown" });

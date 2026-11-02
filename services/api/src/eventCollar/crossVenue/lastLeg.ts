@@ -33,6 +33,16 @@
  *   last leg pays its value clamped to [floor, cap] (a collar on a value).
  *   The writer's result is the published take, whoever won (writerPayouts).
  *
+ * The router (2026-11-02). A moment is a single on the last game, so it is
+ * quoted the way a single is: through the service's own quote (LastLegRouter,
+ * wired to quoteOne), which reads every hedge venue offered tonight and takes
+ * the cheapest all-in route, headed at the parlay tier. For that a leg must be
+ * one of the service's game markets: a catalog leg is built only when it maps
+ * to one (marketForLeg, the pairing read in reverse), and the moment record
+ * carries the route the quote chose. Without a router the tick quotes the
+ * last leg's own NO book, as it did before; a ticket built before the router
+ * whose last leg maps to no game market is refused, not quoted off one book.
+ *
  * Money is integer cents, milli shares and milli prices throughout.
  */
 
@@ -41,12 +51,14 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { type CollarSearchResult, enumerateCollars, refuseUnfunded, selectTiers, tierCreditLineCents } from "./collarSearch";
 import { walkPmAsks } from "./crossVenuePricer";
+import { candidateSlugs, parseGameTicker, sideNameVerified } from "./eventMatcher";
 import { pickWords } from "./pickWords";
 import type { ComboLegMarket, ComboLegStatus } from "./polymarketCombos";
 import { gammaBase } from "./polymarketPublic";
+import { LEAGUE_TEMPLATES, templateForSeries } from "./resolutionWhitelist";
 import { checkRule, gammaRuleText, gammaRuleUrl, pinRule, summarizeRuleEvidence, type RuleCheck, type RuleEvidence, type RuleEvidenceSummary } from "./ruleEvidence";
 import { writerPayouts } from "./shadowLedger";
-import { PARLAY_LAST_PICK_TIER, type CollarTerms, type CrossHedgeLeg, type CrossRefusal, type CrossSearchConfig, type PmBook, type ProtectionTier, type TakeRule } from "./types";
+import { PARLAY_LAST_PICK_TIER, type CollarTerms, type CrossHedgeLeg, type CrossRefusal, type CrossSearchConfig, type HedgeRoute, type PmBook, type ProtectionTier, type TakeRule } from "./types";
 
 // ── configuration ─────────────────────────────────────────────────────────────
 
@@ -72,7 +84,7 @@ export interface LastLegConfig {
   windowMs: number;
   /** every leg starts at least this far out when the ticket is built */
   minLeadMs: number;
-  /** slug prefixes accepted as sports leagues */
+  /** slug prefixes accepted as sports leagues; by default the leagues the service has game markets for, since a leg must map to one to be routed */
   leagues: string[];
   /** pages of the public combo catalog read per tick (100 markets each) */
   catalogPages: number;
@@ -93,7 +105,7 @@ export const DEFAULT_LAST_LEG_CONFIG: LastLegConfig = {
   minGapMs: 4 * 3_600_000,
   windowMs: 72 * 3_600_000,
   minLeadMs: 2 * 3_600_000,
-  leagues: ["nfl", "nba", "mlb", "nhl", "cfb", "ncaaf", "cbb", "ncaab", "wnba", "epl", "ucl", "lal", "bun", "sea", "lig", "mls"],
+  leagues: LEAGUE_TEMPLATES.map((t) => t.pmSlugPrefix),
   catalogPages: 30,
   voidAfterMs: 72 * 3_600_000,
 };
@@ -152,6 +164,8 @@ export interface TicketLeg {
   gameStartIso: string;
   /** the venue's rule text pinned when the ticket was built (sha256, source URL, excerpt); null when none was published; absent before 2026-10-11 */
   rule?: RuleEvidence | null;
+  /** the service's game market for this leg's side (marketForLeg), the one its moment is quoted on; absent on tickets built before the router (2026-11-02) */
+  ticker?: string;
 }
 
 /** A leg eligible for a ticket: catalog row joined with its Gamma status, the favourite side chosen. */
@@ -200,7 +214,8 @@ export interface LastLegMomentRecord {
   /** the ticket's fair value at the moment on the contracts basis, cents (what a cash-out at fair would pay) */
   ticketValueCents: number;
   ok: boolean;
-  code?: CrossRefusal["code"];
+  /** a CrossRefusalCode, or one of the service quote's own refusals on a routed moment (market_not_active, not_offered, bad_size) */
+  code?: CrossRefusal["code"] | string;
   detail?: string;
   floorCents?: number;
   capCents?: number;
@@ -213,8 +228,13 @@ export interface LastLegMomentRecord {
   hedgeSharesMilli?: number;
   hedgeCostCents?: number;
   feesCents?: number;
+  /** the Polymarket token the hedge was priced on; absent when the route was another venue */
   hedgeTokenId?: string;
   candidatesConsidered?: number;
+  /** the hedge route the router chose for the moment; absent on moments priced on the last leg's own NO book before the router */
+  route?: HedgeRoute;
+  /** the service's game market the routed moment was quoted on */
+  ticker?: string;
 }
 
 export interface LastLegVoidRecord {
@@ -522,6 +542,92 @@ export function momentRecord(
     feesCents: q.feesCents,
     hedgeTokenId: hedge.tokenId,
     candidatesConsidered: q.candidatesConsidered,
+  };
+}
+
+// ── the router: the moment quoted as a single ─────────────────────────────────
+
+/** One of the service's game markets, as much of it as a leg needs to find its own. */
+export interface RoutedMarket {
+  ticker: string;
+  league: string;
+  /** the side the market pays on, as the venue names it ("Seattle") */
+  sideName: string;
+}
+
+/** What the service's quote says about the moment: the terms on the route it chose, or its refusal. */
+export type RoutedQuote =
+  | {
+      ok: true;
+      /** the protected market's mid at the quote, cents */
+      markCents: number;
+      route: HedgeRoute;
+      terms: CollarTerms & { tier: ProtectionTier; candidatesConsidered?: number };
+      /** units of the other side the hedge buys, milli ($1-paying) */
+      hedgeUnitsMilli: number;
+      hedgeCostCents: number;
+      /** the Polymarket token when that was the route */
+      hedgeTokenId?: string;
+    }
+  | { ok: false; code: string; detail: string };
+
+/**
+ * The service's own quote, injected: `markets` lists the game markets a leg may map to, `quote`
+ * prices one of them at a size the way the lock path does (every hedge venue offered tonight
+ * read, the cheapest all-in route taken, headed at the parlay tier).
+ */
+export interface LastLegRouter {
+  markets: () => Promise<readonly RoutedMarket[]>;
+  quote: (input: { ticker: string; contracts: number; entryCents: number }) => Promise<RoutedQuote>;
+}
+
+/**
+ * The service's game market for a catalog leg: the pairing read in reverse. A market fits when
+ * its league's template parses its ticker, the ticker's slug candidates (the forward pairing's
+ * own list, both dates) name the leg's slug, the market pays on the club the bettor is on
+ * (away or home by the leg's outcome index, as Polymarket lists sports outcomes), and the
+ * market's side name verifies against that outcome. Exactly one fit; two or none is null.
+ */
+export function marketForLeg<M extends RoutedMarket>(leg: Pick<TicketLeg, "league" | "slug" | "side" | "outcome">, markets: readonly M[]): M | null {
+  const fits = markets.filter((m) => {
+    if (m.league.toLowerCase() !== leg.league.toLowerCase()) return false;
+    const template = templateForSeries(m.ticker.slice(0, m.ticker.indexOf("-")));
+    const parsed = template ? parseGameTicker(m.ticker, template) : null;
+    if (!template || !parsed) return false;
+    if (parsed.sideCode !== (leg.side === 0 ? parsed.awayCode : parsed.homeCode)) return false;
+    if (!candidateSlugs(parsed, template).includes(leg.slug)) return false;
+    return sideNameVerified(template, parsed.sideCode, m.sideName, leg.outcome);
+  });
+  return fits.length === 1 ? fits[0] : null;
+}
+
+/** A moment record from the router's answer, the same fields the ledger settles on. */
+export function routedMomentRecord(
+  base: Pick<LastLegMomentRecord, "at" | "ticketId" | "minutesToStart" | "decidedProductMilli" | "contracts" | "entryCents" | "ticker">,
+  q: RoutedQuote,
+): LastLegMomentRecord {
+  if (!q.ok) return { type: "moment", ...base, markCents: 0, ticketValueCents: 0, ok: false, code: q.code, detail: q.detail };
+  const t = q.terms;
+  return {
+    type: "moment",
+    ...base,
+    markCents: q.markCents,
+    ticketValueCents: base.contracts * q.markCents,
+    ok: true,
+    floorCents: t.floorCents,
+    capCents: t.capCents,
+    creditCents: t.creditCents,
+    grossCreditCents: t.grossCreditCents,
+    takeCents: t.takeCents,
+    takeRule: t.takeRule,
+    tier: t.tier,
+    evCostBps: t.evCostBps,
+    hedgeSharesMilli: q.hedgeUnitsMilli,
+    hedgeCostCents: q.hedgeCostCents,
+    feesCents: t.feesCents,
+    ...(q.hedgeTokenId ? { hedgeTokenId: q.hedgeTokenId } : {}),
+    ...(t.candidatesConsidered !== undefined ? { candidatesConsidered: t.candidatesConsidered } : {}),
+    route: q.route,
   };
 }
 
@@ -859,7 +965,7 @@ export function lastLegCsv(tickets: readonly LastLegTicket[]): string {
   const head = [
     "ticket_id", "built_at", "size", "stake_cents", "combo_price_milli", "shares_milli", "legs", "last_leg", "last_leg_start", "status",
     "decided_product_milli", "attempts", "refusals", "quoted_at", "minutes_to_start", "contracts", "mark_cents", "entry_cents", "ticket_value_cents",
-    "floor_cents", "cap_cents", "credit_cents", "take_cents", "tier", "ev_cost_bps", "hedge_shares_milli", "hedge_cost_cents",
+    "floor_cents", "cap_cents", "credit_cents", "take_cents", "tier", "ev_cost_bps", "hedge_shares_milli", "hedge_cost_cents", "route",
     "result", "last_leg_value_milli", "naked_cents", "protected_cents", "delta_cents", "writer_cents",
   ];
   const cell = (v: unknown): string => {
@@ -875,7 +981,7 @@ export function lastLegCsv(tickets: readonly LastLegTicket[]): string {
       return [
         t.ticketId, t.at, t.size, t.stakeCents, t.comboPriceMilli, t.sharesMilli, t.legs.map((l) => `${l.slug}/${l.outcome}`).join(" + "), last.slug, last.gameStartIso, t.status,
         t.decidedProductMilli, t.attempts, Object.entries(t.refusals).map(([k, n]) => `${k}:${n}`).join(";"), q?.at, q?.minutesToStart, q?.contracts, q?.markCents, q?.entryCents, q?.ticketValueCents,
-        q?.floorCents, q?.capCents, q?.creditCents, q?.takeCents, q?.tier, q?.evCostBps, q?.hedgeSharesMilli, q?.hedgeCostCents,
+        q?.floorCents, q?.capCents, q?.creditCents, q?.takeCents, q?.tier, q?.evCostBps, q?.hedgeSharesMilli, q?.hedgeCostCents, q?.route,
         o?.result, o?.lastLegValueMilli, o?.nakedCents, o?.protectedCents, o?.deltaCents, o?.writerCents,
       ]
         .map(cell)
@@ -1001,6 +1107,8 @@ export interface LastLegIo {
   noBook: (tokenId: string) => Promise<PmBook>;
   load: () => LastLegTicket[];
   append: (record: LastLegRecord) => void;
+  /** the service's quote; present, legs are built only on its game markets and the moment is quoted through it */
+  router?: LastLegRouter;
 }
 
 export interface LastLegTickReport {
@@ -1009,7 +1117,10 @@ export interface LastLegTickReport {
   momentsAttempted: number;
   momentsQuoted: number;
   ticketsBuilt: number;
+  /** eligible legs; with a router, those that map to one of its game markets */
   candidates: number;
+  /** eligible legs the router had no game market for, dropped before any ticket was built */
+  candidatesUnroutable: number;
   catalogPages: number;
   voided: number;
   /** per-leg or per-ticket failures; the tick continues past each */
@@ -1022,13 +1133,20 @@ export interface LastLegTickReport {
  * stepped over; the ledger is only ever appended to.
  */
 export async function runLastLegTick(io: LastLegIo, cfg: LastLegConfig, search: CrossSearchConfig): Promise<LastLegTickReport> {
-  const report: LastLegTickReport = { legsChecked: 0, legsResolved: 0, momentsAttempted: 0, momentsQuoted: 0, ticketsBuilt: 0, candidates: 0, catalogPages: 0, voided: 0, errors: [] };
+  const report: LastLegTickReport = { legsChecked: 0, legsResolved: 0, momentsAttempted: 0, momentsQuoted: 0, ticketsBuilt: 0, candidates: 0, candidatesUnroutable: 0, catalogPages: 0, voided: 0, errors: [] };
   const nowMs = io.nowMs();
   const nowIso = new Date(nowMs).toISOString();
   const statusCache = new Map<string, ComboLegStatus | null>();
   const status = async (slug: string): Promise<ComboLegStatus | null> => {
     if (!statusCache.has(slug)) statusCache.set(slug, await io.legStatus(slug));
     return statusCache.get(slug) ?? null;
+  };
+  // the router's game markets, read once per tick and only when a step needs them
+  let routedMarkets: readonly RoutedMarket[] | null = null;
+  const gameMarkets = async (): Promise<readonly RoutedMarket[]> => {
+    if (!io.router) return [];
+    if (!routedMarkets) routedMarkets = await io.router.markets();
+    return routedMarkets;
   };
 
   // 1) Resolve legs on every ticket still in play.
@@ -1062,6 +1180,25 @@ export async function runLastLegTick(io: LastLegIo, cfg: LastLegConfig, search: 
     if (minutesToStart < search.minMinutesToStart) continue; // the window has closed; the ticket runs to settlement unquoted
     report.momentsAttempted += 1;
     try {
+      if (io.router) {
+        // The moment as a single: the last leg's game market, quoted the way the lock path quotes one.
+        const base = { at: nowIso, ticketId: t.ticketId, minutesToStart, decidedProductMilli: t.decidedProductMilli };
+        const ticker = last.ticker ?? marketForLeg(last, await gameMarkets())?.ticker ?? null;
+        if (!ticker) {
+          io.append(routedMomentRecord({ ...base, contracts: 0, entryCents: 0 }, { ok: false, code: "no_matched_market", detail: "the last pick maps to none of the service's game markets" }));
+          continue;
+        }
+        const contracts = compressedContracts(t.sharesMilli, t.decidedProductMilli);
+        if (contracts < 1) {
+          io.append(routedMomentRecord({ ...base, contracts, entryCents: 0, ticker }, { ok: false, code: "credit_nonpositive", detail: "the compressed position is under one contract; nothing to protect" }));
+          continue;
+        }
+        const entryCents = Math.min(99, Math.max(1, Math.ceil(t.stakeCents / contracts)));
+        const q = await io.router.quote({ ticker, contracts, entryCents });
+        io.append(routedMomentRecord({ ...base, contracts, entryCents, ticker }, q));
+        if (q.ok) report.momentsQuoted += 1;
+        continue;
+      }
       const s = await status(last.slug);
       const markCents = s && s.yesPriceMilli >= 0 ? Math.round((last.side === 0 ? s.yesPriceMilli : 1000 - s.yesPriceMilli) / 10) : -1;
       if (!s || markCents < 0 || s.closed) {
@@ -1114,7 +1251,18 @@ export async function runLastLegTick(io: LastLegIo, cfg: LastLegConfig, search: 
           report.errors.push(`catalog ${m.slug}: ${String(err instanceof Error ? err.message : err)}`);
         }
       }
-      const cands = legCandidates(rows, cfg, nowMs);
+      let cands = legCandidates(rows, cfg, nowMs);
+      if (io.router) {
+        // only a leg the service has a game market for can be routed at its moment; the rest are not built
+        const markets = await gameMarkets();
+        const routable: LegCandidate[] = [];
+        for (const c of cands) {
+          const m = marketForLeg(c, markets);
+          if (m) routable.push({ ...c, ticker: m.ticker });
+          else report.candidatesUnroutable += 1;
+        }
+        cands = routable;
+      }
       report.candidates = cands.length;
       const built = buildTickets(cands, cfg, tickets, nowIso, room);
       for (const rec of built) io.append(rec);

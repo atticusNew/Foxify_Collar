@@ -14,7 +14,7 @@ import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/
 import { parseLockRequest } from "../src/eventCollar/crossVenue/lockGate";
 import { parsePickQueries, resolvePicks, verifyParlayLock, type PickMarket } from "../src/eventCollar/crossVenue/parlayPicks";
 import { loadShadowPositions } from "../src/eventCollar/crossVenue/shadowLedger";
-import { DEFAULT_CROSS_CONFIG, type CrossQuoteResult } from "../src/eventCollar/crossVenue/types";
+import { DEFAULT_CROSS_CONFIG, PARLAY_LAST_PICK_TIER, type CrossQuoteResult } from "../src/eventCollar/crossVenue/types";
 import { forbiddenKeysIn } from "../src/eventCollar/retailShowcase";
 import type { KalshiSettledMarket } from "../src/eventCollar/kalshiPublic";
 import type { CandidateResult, GameMarketRow, OneQuoteInputs, OneQuoteResult } from "../scripts/eventProtectXDemoService";
@@ -304,4 +304,50 @@ test("shadow worker: /api/shadow/picks places a parlay's picks; the lock at the 
   } finally {
     await new Promise<void>((r) => worker.server.close(() => r()));
   }
+});
+
+test("shadow worker: the last-leg router prices a simulated ticket's moment through the engine as a single, headed at the parlay tier", async () => {
+  process.env.NODE_ENV = "test";
+  process.env.EVENT_HEDGE_STRATEGY = "live";
+  process.env.EVENT_HEDGE_LIVE_TICKERS = BAL;
+  delete process.env.EVENT_HEDGE_LIVE_SEND;
+  const worker = await import("../scripts/eventShadowWorker");
+  const start = new Date(Date.now() + 3 * 3_600_000).toISOString();
+  const markets: GameMarketRow[] = [
+    { ticker: BAL, league: "nfl", sideName: "Baltimore", title: "Jaguars at Ravens Winner?", dateIso: "2026-11-05", closeTimeIso: start, markCents: 70, startIso: start, protectable: true, protectableUntilIso: start },
+  ];
+  const seen: OneQuoteInputs[] = [];
+  let answer: OneQuoteResult | null = null;
+  worker.wireLockEngine({
+    listGameMarkets: async () => markets,
+    quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => {
+      seen.push(inputs);
+      return answer ?? { ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 70, start) };
+    },
+    settledMarkets: async () => [],
+  });
+  const router = worker.lastLegRouter();
+  assert.ok(router, "wired engine: the router is there");
+  assert.deepEqual((await router.markets()).map((m) => m.ticker), [BAL], "legs are built from the engine's own game list");
+
+  const q = await router.quote({ ticker: BAL, contracts: 66, entryCents: 15 });
+  assert.ok(q.ok, JSON.stringify(q));
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].ticker, BAL);
+  assert.equal(seen[0].contracts, 66);
+  assert.equal(seen[0].entryCents, 15);
+  assert.equal(seen[0].holderVenue, "kalshi");
+  assert.equal(seen[0].route, "kalshi_self", "the pinned live route for this ticker, as a lock would take");
+  assert.equal(q.route, "kalshi_self");
+  assert.equal(q.markCents, 70);
+  assert.equal(q.terms.tier, PARLAY_LAST_PICK_TIER, "headed at the highest floor, as the extension's parlay quote is");
+  assert.equal(q.terms.tier, "tight");
+  assert.ok(q.hedgeUnitsMilli > 0, "Kalshi self-hedge: units from contractsMilli");
+  assert.ok(q.hedgeCostCents > 0);
+  assert.equal("hedgeTokenId" in q, false, "no Polymarket token on a Kalshi route");
+  assert.deepEqual(forbiddenKeysIn({ venue: q.route }), [], "a route name is not a forbidden key");
+
+  answer = { ok: false, code: "route_not_offered", detail: "polymarket is not offered tonight" };
+  const refused = await router.quote({ ticker: BAL, contracts: 66, entryCents: 15 });
+  assert.deepEqual(refused, { ok: false, code: "route_not_offered", detail: "polymarket is not offered tonight" }, "the engine's refusal passes through to the moment record");
 });

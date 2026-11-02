@@ -155,7 +155,9 @@ import {
   runLastLegTick,
   summarizeLastLeg,
   summarizeLegRules,
+  type LastLegRouter,
   type LastLegTickReport,
+  type RoutedQuote,
 } from "../src/eventCollar/crossVenue/lastLeg";
 import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
 import { measureNetting } from "../src/eventCollar/crossVenue/shadowNetting";
@@ -2443,9 +2445,44 @@ async function holdTick(): Promise<void> {
   }
 }
 
+/**
+ * The last-leg shadow's router: the engine's own quote (quoteOne), exactly as the lock path calls
+ * it for a parlay at its last pick — every hedge venue offered tonight read, the route pinned or
+ * competed as the live executor allows for this ticker, the terms headed at the parlay tier — so a
+ * simulated ticket's moment is priced where a real one's lock would be sent. Null until the engine
+ * is wired (main()); the tick then quotes nothing rather than quoting off one book.
+ */
+export function lastLegRouter(): LastLegRouter | null {
+  const quote = quoteOneFn;
+  const markets = listGameMarketsFn;
+  if (!quote || !markets) return null;
+  return {
+    markets: () => markets(),
+    quote: async ({ ticker, contracts, entryCents }): Promise<RoutedQuote> => {
+      const q = await quote({ ticker, contracts, entryCents, route: lockRouteFor(ticker), holderVenue: "kalshi", executable: executableFor(ticker) });
+      if (!q.ok) return { ok: false, code: q.code, detail: q.detail };
+      const r = headedAt(q.result, PARLAY_LAST_PICK_TIER);
+      if (!r.quote.ok) return { ok: false, code: r.quote.code, detail: r.quote.detail };
+      const h = r.quote.hedge;
+      const route: HedgeRoute = r.route ?? (h.venue === "kalshi" ? "kalshi_self" : h.venue);
+      return {
+        ok: true,
+        markCents: r.markCents,
+        route,
+        terms: r.quote,
+        hedgeUnitsMilli: "sharesMilli" in h ? h.sharesMilli : h.contractsMilli,
+        hedgeCostCents: h.costCents,
+        ...(h.venue === "polymarket" ? { hedgeTokenId: h.tokenId } : {}),
+      };
+    },
+  };
+}
+
 /** Resolve legs, quote the moment, build tickets: one pass of the last-leg shadow. */
 async function lastLegTick(): Promise<void> {
   if (!lastLegCfg.enabled) return;
+  const router = lastLegRouter();
+  if (!router) return; // the engine is not wired yet: no tickets built, no moment priced off one book
   try {
     lastLastLegReport = await runLastLegTick(
       {
@@ -2455,6 +2492,7 @@ async function lastLegTick(): Promise<void> {
         noBook: (tokenId) => getPmBook(tokenId),
         load: () => loadLastLegTickets(LASTLEG_PATH),
         append: (record) => appendLastLegRecord(LASTLEG_PATH, record),
+        router,
       },
       lastLegCfg,
       searchConfig(),
