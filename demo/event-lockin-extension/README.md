@@ -625,6 +625,16 @@ the service listed tonight's game beside next week's: a card that says its game 
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
 
+**NHL cards read like NFL and NBA (0.7.42).** The nickname table carries the 32 NHL clubs
+(Ducks … Capitals) and the league word reads "NHL", "Pro Hky" and "Hockey", so a Rangers at
+Bruins card on any of the three venues resolves to its Kalshi game market
+(`KXNHLGAME-…`) the way a Ravens card does, and a parlay with an NHL pick places that pick. The
+service maps the league on its side in the same release (Kalshi `KXNHLGAME` to Polymarket
+`nhl-<away>-<home>-<date>`, the routing table's NHL rows); the extension has nothing else to
+learn. Codes that differ between venues are aliased (LA/LAK, CGY/CAL, MTL/MON, NJ/NJD, SJ/SJS,
+TB/TBL, UTA/UTAH, VGK/VEG), and LA now stands for the Rams, the Chargers or the Kings until the
+league word decides.
+
 **A parlay's lock heads with the highest floor (0.7.41).** At the last pick the quote is asked
 for with `parlay=1`, and the service heads it at **Max floor** instead of Max upside: the holder
 has won every other pick, the number they weigh the lock against is the venue's cash-out, and
