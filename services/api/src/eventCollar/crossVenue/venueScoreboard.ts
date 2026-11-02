@@ -3,8 +3,9 @@
  *
  * Volume tables say where people trade. This says where the other side of a protected position
  * was cheapest to take, all in, on the same games in the same week: which venue's book won the
- * hedge and by how much, how often each venue priced at all when asked, how often no venue could
- * fund a floor, and how much was routed. It is computed from the record on every request (the
+ * hedge and by how much, what the winning venue's fee schedule charged on it, how often each
+ * venue priced at all when asked, how often no venue could fund a floor, and how much was routed.
+ * It is computed from the record on every request (the
  * scan's ledger, the holders' lock ledgers, the refusals file, the parlay ledger), so it is as
  * live as the record. Written for an industry reader: venue names in the open, `n` on every
  * cell, and nothing of the writer's book (no take, no P&L, no holder deltas) — those stay on the
@@ -15,7 +16,7 @@
 
 import { hedgeVenueOf, SETTLEMENT_VENUES, VENUE_NAMES, type SettlementVenue } from "./hedgeRouting";
 import type { LastLegTicket } from "./lastLeg";
-import type { ShadowPosition } from "./shadowLedger";
+import { hedgeUnitsOf, type ShadowPosition } from "./shadowLedger";
 import { REFUSAL_REASON_ORDER, refusalReason, type RefusalEntry, type RefusalMap, type RefusalReason } from "./shadowRefusals";
 
 const NY = "America/New_York";
@@ -77,6 +78,70 @@ export interface VenueEdge {
   avgEdgeAllInBps: number | null;
 }
 
+/**
+ * The fee each venue charges on the other side, as the engine folds it into that venue's book
+ * before the routes are compared (the schedules the pricer uses; as of the date given). The
+ * scoreboard shows what that came to per contract on the hedges a venue won, so a reader can see
+ * how much of a venue's edge is its fee schedule. Worded without "taker": the public table is
+ * checked for writer-side words, and the industry reader knows which side pays.
+ */
+export const VENUE_FEE_RULES: Record<SettlementVenue, { rule: string; asOf: string }> = {
+  kalshi: { rule: "0.07 × P × (1 − P) per contract, charged at match to the side crossing the book; at most 1.75¢ at P = 50¢", asOf: "2026-11-02" },
+  polymarket: { rule: "the engine's configured rate on the hedge's cost, as recorded on each hedge (zero as configured today)", asOf: "2026-11-02" },
+  prophetx: { rule: "2% of net gains at settlement, nothing at match; folded as 2 × (1 − P) cents per contract", asOf: "2026-11-02" },
+  novig: { rule: "none pre-game, either side; 0.06 × P × (1 − P) on the side crossing the book while the game is live (our hedges are pre-game)", asOf: "2026-11-02" },
+};
+
+/**
+ * The venue's fee on one $1 unit of the other side bought at P (cents, 0..100), cents, by its
+ * schedule; null where the schedule is not a formula of the price (Polymarket: read off the record).
+ */
+export function venueFeeCentsPerUnit(venue: SettlementVenue, priceCents: number): number | null {
+  const p = Math.min(0.99, Math.max(0.01, priceCents / 100));
+  if (venue === "kalshi") return 7 * p * (1 - p);
+  if (venue === "prophetx") return 2 * (1 - p);
+  if (venue === "novig") return 0;
+  return null;
+}
+
+interface HedgeForFee {
+  contracts: number;
+  /** $1 units of the other side bought */
+  units: number;
+  hedgeCostCents?: number;
+  markCents: number;
+  feesCents?: number;
+}
+
+/**
+ * The winning venue's fee on a hedge, cents per contract of the position (so it reads against the
+ * edge column): the schedule at the price the other side was bought at, times the units bought,
+ * over the contracts protected. Polymarket's is the fee the record carries.
+ */
+export function venueFeeOnHedge(venue: SettlementVenue, h: HedgeForFee): number | null {
+  if (!(h.contracts > 0)) return null;
+  if (venue === "polymarket") return h.feesCents === undefined ? null : h.feesCents / h.contracts;
+  const priceCents = h.hedgeCostCents !== undefined && h.units > 0 ? h.hedgeCostCents / h.units : 100 - h.markCents;
+  const perUnit = venueFeeCentsPerUnit(venue, priceCents);
+  if (perUnit === null) return null;
+  const units = h.units > 0 ? h.units : h.contracts;
+  return (perUnit * units) / h.contracts;
+}
+
+export interface VenueFee {
+  venue: string;
+  /** hedges this venue won that the fee could be worked out on */
+  n: number;
+  /** the venue's fee on the other side, cents per contract of the position, averaged over those hedges */
+  avgFeeCentsPerContract: number | null;
+}
+
+export interface FeeRule {
+  venue: string;
+  rule: string;
+  asOf: string;
+}
+
 export interface LeagueCut {
   league: string;
   n: number;
@@ -102,6 +167,8 @@ export interface ScoreboardWeek {
   parlays: { n: number; contracts: number; otherSide: VenueShare[]; unrouted: number };
   /** which venue won, and by how much, when more than one venue priced the same position */
   edge: { n: number; byVenue: VenueEdge[] };
+  /** what the winning venue's fee schedule charged on the other side, by venue, cents per contract of the position */
+  fees: { n: number; byVenue: VenueFee[] };
   /** how often each venue priced when asked, positions with route verdicts on the record */
   availability: { n: number; byVenue: VenueAvailability[] };
   /** markets the engine priced this week and declined: no venue could fund a worthwhile floor, or the market is not one we protect */
@@ -116,11 +183,13 @@ export interface VenueScoreboard {
   /** what the table is, and is not, in one paragraph */
   methodology: string;
   venues: string[];
+  /** each venue's fee schedule on the other side, as the engine folds it into that venue's book before routes are compared */
+  feeRules: FeeRule[];
   weeks: ScoreboardWeek[];
 }
 
 export const SCOREBOARD_METHODOLOGY =
-  "One row per week (Monday to Sunday, New York). A position is a protected single on a game market, or a parlay ticket priced at its last pick, each hedged leg for leg: the engine asks every venue it works with for the other side and takes the cheapest all in, venue fees and each venue's settlement rules included. Other side: which venue won, weighted by contracts. Edge: how much more the winning book paid the holder than the runner-up, where more than one venue priced. Availability: how often a venue priced at all when asked. Refusals: markets priced and declined because no venue could fund a worthwhile floor, or the market is not one we protect. Taps are real holders' locks; the rest are the record's simulated positions at live prices. Nothing of the writer's book is in this table.";
+  "One row per week (Monday to Sunday, New York). A position is a protected single on a game market, or a parlay ticket priced at its last pick, each hedged leg for leg: the engine asks every venue it works with for the other side and takes the cheapest all in, venue fees and each venue's settlement rules included. Other side: which venue won, weighted by contracts. Edge: how much more the winning book paid the holder than the runner-up, where more than one venue priced; it is after each venue's fees. Fees: what the winning venue's schedule charged on the other side, cents per contract of the position, worked from the price the other side was bought at (the schedules are listed under feeRules). Availability: how often a venue priced at all when asked. Refusals: markets priced and declined because no venue could fund a worthwhile floor, or the market is not one we protect. Taps are real holders' locks; the rest are the record's simulated positions at live prices. Nothing of the writer's book is in this table.";
 
 interface Tally {
   n: number;
@@ -170,6 +239,15 @@ function edges(t: Record<SettlementVenue, EdgeTally>): VenueEdge[] {
     .sort((a, b) => b.n - a.n);
 }
 
+type FeeTally = number[];
+const feeTally = (): Record<SettlementVenue, FeeTally> => ({ kalshi: [], polymarket: [], prophetx: [], novig: [] });
+
+function fees(t: Record<SettlementVenue, FeeTally>): VenueFee[] {
+  return SETTLEMENT_VENUES.filter((v) => t[v].length > 0)
+    .map((v) => ({ venue: VENUE_NAMES[v], n: t[v].length, avgFeeCentsPerContract: mean(t[v]) }))
+    .sort((a, b) => b.n - a.n);
+}
+
 interface WeekAcc {
   from: string;
   n: number;
@@ -179,6 +257,7 @@ interface WeekAcc {
   singles: Record<SettlementVenue, Tally> & { all: Tally };
   parlays: Record<SettlementVenue, Tally> & { all: Tally; unrouted: number };
   edge: Record<SettlementVenue, EdgeTally> & { n: number };
+  fees: Record<SettlementVenue, FeeTally> & { n: number };
   avail: Record<SettlementVenue, AvailTally> & { n: number };
   refusals: RefusalEntry[];
   offered: number;
@@ -194,6 +273,7 @@ const newWeek = (from: string): WeekAcc => ({
   singles: { ...venueTally(), all: { n: 0, contracts: 0 } },
   parlays: { ...venueTally(), all: { n: 0, contracts: 0 }, unrouted: 0 },
   edge: { ...edgeTally(), n: 0 },
+  fees: { ...feeTally(), n: 0 },
   avail: { ...availTally(), n: 0 },
   refusals: [],
   offered: 0,
@@ -237,6 +317,14 @@ function foldRouting(acc: WeekAcc, league: ReturnType<typeof leagueOf>, p: Shado
     const runnerUp = Math.min(...others.map((r) => r.allInBps ?? Infinity));
     if (Number.isFinite(runnerUp)) acc.edge[winner].edgeAllInBps.push(runnerUp - won.allInBps);
   }
+}
+
+/** The winning venue's fee on a hedge, folded into the week's fee tally where it can be worked out. */
+function foldFee(acc: WeekAcc, venue: SettlementVenue, h: HedgeForFee): void {
+  const fee = venueFeeOnHedge(venue, h);
+  if (fee === null) return;
+  acc.fees.n += 1;
+  acc.fees[venue].push(fee);
 }
 
 export interface ScoreboardInputs {
@@ -286,6 +374,7 @@ export function venueScoreboard(inp: ScoreboardInputs): VenueScoreboard {
     l.otherSide[venue].n += 1;
     l.otherSide[venue].contracts += p.contracts;
     foldRouting(w, l, p);
+    foldFee(w, venue, { contracts: p.contracts, units: hedgeUnitsOf(p) / 1000, hedgeCostCents: p.hedgeCostCents, markCents: p.markCents, feesCents: p.feesCents });
   }
 
   // parlays: tickets priced at their last pick, by the venue the router sent the other side to
@@ -312,6 +401,7 @@ export function venueScoreboard(inp: ScoreboardInputs): VenueScoreboard {
     l.contracts += q.contracts;
     l.otherSide[venue].n += 1;
     l.otherSide[venue].contracts += q.contracts;
+    foldFee(w, venue, { contracts: q.contracts, units: (q.hedgeSharesMilli ?? 0) / 1000, hedgeCostCents: q.hedgeCostCents, markCents: q.markCents, feesCents: q.feesCents });
   }
 
   // refusals: a market priced and declined, placed in the week it was first refused; one the record later quoted is not a refusal
@@ -331,6 +421,7 @@ export function venueScoreboard(inp: ScoreboardInputs): VenueScoreboard {
       const { all: sAll, ...sVen } = w.singles;
       const { all: pAll, unrouted, ...pVen } = w.parlays;
       const { n: eN, ...eVen } = w.edge;
+      const { n: fN, ...fVen } = w.fees;
       const { n: aN, ...aVen } = w.avail;
       return {
         from: w.from,
@@ -343,6 +434,7 @@ export function venueScoreboard(inp: ScoreboardInputs): VenueScoreboard {
         singles: { n: sAll.n, contracts: round2(sAll.contracts), otherSide: shares(sVen) },
         parlays: { n: pAll.n, contracts: round2(pAll.contracts), otherSide: shares(pVen), unrouted },
         edge: { n: eN, byVenue: edges(eVen) },
+        fees: { n: fN, byVenue: fees(fVen) },
         availability: { n: aN, byVenue: availability(aVen) },
         refusals: {
           refused,
@@ -357,7 +449,15 @@ export function venueScoreboard(inp: ScoreboardInputs): VenueScoreboard {
       };
     });
 
-  return { ok: true, at: now.toISOString(), live: true, methodology: SCOREBOARD_METHODOLOGY, venues: SETTLEMENT_VENUES.map((v) => VENUE_NAMES[v]), weeks };
+  return {
+    ok: true,
+    at: now.toISOString(),
+    live: true,
+    methodology: SCOREBOARD_METHODOLOGY,
+    venues: SETTLEMENT_VENUES.map((v) => VENUE_NAMES[v]),
+    feeRules: SETTLEMENT_VENUES.map((v) => ({ venue: VENUE_NAMES[v], ...VENUE_FEE_RULES[v] })),
+    weeks,
+  };
 }
 
 /**
@@ -371,6 +471,7 @@ export function venueScoreboardCsv(sb: VenueScoreboard): string {
     "singles_won", "singles_contracts", "singles_share_pct",
     "parlays_won", "parlays_contracts", "parlays_share_pct",
     "edge_n", "avg_edge_cents_per_contract", "avg_edge_all_in_bps",
+    "fee_n", "avg_fee_cents_per_contract",
     "asked", "priced", "priced_pct",
     "refused", "markets_priced", "refused_pct",
   ];
@@ -379,7 +480,7 @@ export function venueScoreboardCsv(sb: VenueScoreboard): string {
   const rows: string[] = [head.join(",")];
   for (const w of sb.weeks) {
     rows.push(
-      [w.from, w.to, w.label, "all", w.n, w.taps, w.contracts, w.notionalCents, w.singles.n, w.singles.contracts, 100, w.parlays.n, w.parlays.contracts, 100, w.edge.n, null, null, w.availability.n, null, null, w.refusals.refused, w.refusals.priced, w.refusals.refusedPct]
+      [w.from, w.to, w.label, "all", w.n, w.taps, w.contracts, w.notionalCents, w.singles.n, w.singles.contracts, 100, w.parlays.n, w.parlays.contracts, 100, w.edge.n, null, null, w.fees.n, null, w.availability.n, null, null, w.refusals.refused, w.refusals.priced, w.refusals.refusedPct]
         .map(cell)
         .join(","),
     );
@@ -387,10 +488,11 @@ export function venueScoreboardCsv(sb: VenueScoreboard): string {
       const s = w.singles.otherSide.find((x) => x.venue === venue);
       const p = w.parlays.otherSide.find((x) => x.venue === venue);
       const e = w.edge.byVenue.find((x) => x.venue === venue);
+      const f = w.fees.byVenue.find((x) => x.venue === venue);
       const a = w.availability.byVenue.find((x) => x.venue === venue);
-      if (!s && !p && !e && !a) continue;
+      if (!s && !p && !e && !f && !a) continue;
       rows.push(
-        [w.from, w.to, w.label, venue, null, null, null, null, s?.n ?? 0, s?.contracts ?? 0, s?.sharePct ?? 0, p?.n ?? 0, p?.contracts ?? 0, p?.sharePct ?? 0, e?.n ?? 0, e?.avgEdgeCentsPerContract ?? null, e?.avgEdgeAllInBps ?? null, a?.asked ?? 0, a?.priced ?? 0, a?.pricedPct ?? null, null, null, null]
+        [w.from, w.to, w.label, venue, null, null, null, null, s?.n ?? 0, s?.contracts ?? 0, s?.sharePct ?? 0, p?.n ?? 0, p?.contracts ?? 0, p?.sharePct ?? 0, e?.n ?? 0, e?.avgEdgeCentsPerContract ?? null, e?.avgEdgeAllInBps ?? null, f?.n ?? 0, f?.avgFeeCentsPerContract ?? null, a?.asked ?? 0, a?.priced ?? 0, a?.pricedPct ?? null, null, null, null]
           .map(cell)
           .join(","),
       );
