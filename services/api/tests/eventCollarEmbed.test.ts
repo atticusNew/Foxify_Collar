@@ -173,7 +173,8 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(html.includes("if(keys.length>1)rows.push(drow('Shape',shapeSegs(st,n,keys),'ael-dshape'));"), "Shape as a segmented control, only when more than one clears");
   assert.ok(html.includes('class="ael-shape-b" data-act="shape" data-tier="\'+k+\'" aria-pressed="\'+(k===st.tier)+\'"'), "pressed state on the chosen shape");
   assert.ok(html.includes("rows.push(drow('Other side','<span'+(o.tip?' title=\"'+esc(o.tip)+'\"':'')+'>'+o.html+'</span>'));"), "Other side: the venue, the race, every venue's figure in the tooltip");
-  assert.ok(html.includes("else{parts.push('best of '+priced.length+' venues');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}") && html.includes("parts.push('of '+priced.length+' venues, chosen on all-in cost')"), "the winner and what it saved the trader; never 'best of' when the scan chose on all-in cost");
+  assert.ok(html.includes("else{parts.push('best of '+priced.length+' venues, venue fees included');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}") && html.includes("parts.push('of '+priced.length+' venues, cheapest all-in, venue fees included')"), "the winner and what it saved the trader, fees said to be in the comparison; never 'best of' when the scan chose on all-in cost");
+  assert.ok(html.includes("'</b>: cheapest all-in, venue fees included, once the tails of the game are priced, though another venue quoted '"), "the venue view's why-line says the same: all in, fees included");
   assert.ok(html.includes("rows.push(drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class=\"ael-dim\">&middot; priced live</span>'));"), "Until");
   assert.ok(html.includes("var HOW='You sell part of the upside today for the floor and the cash now. The other side is bought the second you tap and settles on the same official result.';"), "the How names what is sold, in one breath");
   assert.ok(html.includes("rows.push(drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class=\"ael-dim\">&middot; priced live</span>'));\n    rows.push(drow('How',HOW));"), "and is the last Details row, after Until, in the same grammar");
@@ -237,7 +238,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
     .replace(/<aside class="pitch">[\s\S]*?<\/aside>/, "")
     .replace(/<div class="vnote">[\s\S]*?<\/div>/, "")
     .replace(/\/\* ---- VENUE VIEW:[\s\S]*?function paintVenue\(\)\{[\s\S]*?\n  \}\n/, "")
-    .replace(/'\/api\/venue-view'|Venue view|routed via ParlayX|chosen on all-in cost/g, "");
+    .replace(/'\/api\/venue-view'|Venue view|routed via ParlayX|cheapest all-in, venue fees included/g, "");
   assert.ok(trader.length < html.length - 2000, "the pitch and the venue view are present and excluded from the retail leak check");
   for (const leak of ["Kalshi", "Polymarket", "hedge", "route", "take", "instId", "OKX", "tight", "wide"]) {
     assert.ok(!new RegExp(`\\b${leak}\\b`).test(trader.replace(/'tight'|'wide'|tight:|wide:|offered\.tight|offered\.wide/g, "")), `"${leak}" is not in the trader's copy`);

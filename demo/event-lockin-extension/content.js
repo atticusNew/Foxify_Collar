@@ -1927,8 +1927,8 @@
 
   /**
    * Where the other side goes, as one sentence: the venue, how many venues it beat and by how much
-   * for the holder ("Novig · best of 3 venues · $0.06 more for you"); each venue's figure is the
-   * row's tooltip. This page's own venue, when it priced nothing, is named with the two-word reason,
+   * for the holder ("Novig · best of 3 venues, venue fees included · $0.06 more for you"), the
+   * comparison said to be after each venue's fees; each venue's figure is the row's tooltip. This page's own venue, when it priced nothing, is named with the two-word reason,
    * so the holder always sees the venue they are standing on. Empty without routing.
    */
   const otherSideWords = (rt) => {
@@ -1939,7 +1939,7 @@
     const muted = routes.find((r) => r.creditCents == null);
     const parts = ["<b>" + esc(v) + "</b>"];
     if (priced.length > 1) {
-      parts.push("best of " + priced.length + " venues");
+      parts.push("best of " + priced.length + " venues, venue fees included");
       const edge = venueEdgeCents(rt);
       if (edge > 0) parts.push(esc(usd(edge)) + " more for you");
     } else if (comparisonPrices(rt)) parts.push(esc(comparisonPrices(rt)));
@@ -2443,7 +2443,7 @@
     let tip = "";
     if (priced.length > 1) {
       const edge = venueEdgeCents(rt);
-      words = "best of " + priced.length + " venues" + (edge > 0 ? ", " + esc(usd(edge)) + " more for you" : "");
+      words = "best of " + priced.length + " venues, venue fees included" + (edge > 0 ? ", " + esc(usd(edge)) + " more for you" : "");
       tip = priced.map((r) => r.venue + " " + usd(r.creditCents)).join(" \u00b7 ");
     } else if (comparisonPrices(rt)) words = esc(comparisonPrices(rt));
     if (operator() && rt.reason) words += (words ? " &middot; " : "") + esc(rt.reason);
@@ -2496,7 +2496,7 @@
       for (const r of rt.routes) {
         const name = esc(r.hedgeVenueName || (r.hedgeVenue === "polymarket" ? "Polymarket" : r.hedgeVenue === "prophetx" ? "ProphetX" : "Kalshi"));
         const credit = r.creditCents != null ? " &middot; pays " + esc(usd(r.creditCents)) : "";
-        lines.push(row(name, r.ok ? esc(bps(r.allInBps)) + ' <span class="ael-dim">all in (' + esc(bps(r.evCostBps)) + " books, " + esc(bps(r.tailChargeBps)) + " tails)" + credit + (r.gate ? " &middot; " + esc(r.gate) : "") + (r.compatible === false ? " &middot; tails differ" : "") + "</span>" : '<span class="ael-dim">' + esc(r.refusal || r.gate || "not offered") + "</span>"));
+        lines.push(row(name, r.ok ? esc(bps(r.allInBps)) + ' <span class="ael-dim">all in (' + esc(bps(r.evCostBps)) + " books with fees, " + esc(bps(r.tailChargeBps)) + " tails)" + credit + (r.gate ? " &middot; " + esc(r.gate) : "") + (r.compatible === false ? " &middot; tails differ" : "") + "</span>" : '<span class="ael-dim">' + esc(r.refusal || r.gate || "not offered") + "</span>"));
       }
     }
     return lines.join("");

@@ -50,9 +50,9 @@
  *
  * WHAT IS PUBLIC: the record (/, /api/shadow, /api/shadow/positions.csv, /api/shadow/parlays)
  * carries quoted terms, official results, both sides' money and the two books the hedges were
- * bought on; /api/shadow/scoreboard (and .csv) is the venue scoreboard drawn from it by week
- * (venueScoreboard.ts: which venue took the other side, by how much, how often each priced,
- * the refusals), venue-named, for industry readers. Everything that is a study rather than a receipt (rule counterfactuals, hedge
+ * bought on; /api/shadow/scoreboard (and .csv, and the /scoreboard page) is the venue scoreboard
+ * drawn from it by week (venueScoreboard.ts: which venue took the other side, by how much, what
+ * its fee schedule charged, how often each priced, the refusals), venue-named, for industry readers. Everything that is a study rather than a receipt (rule counterfactuals, hedge
  * receipts, the last-leg tickets, netting measured on the book) is an operator view. A new
  * measurement joins the operator views first; it reaches the record only by decision.
  *
@@ -135,6 +135,7 @@ import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, typ
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderHoldersHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
+import { renderScoreboardHtml } from "./eventScoreboardHtml";
 import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import {
@@ -2841,15 +2842,22 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       });
       return;
     }
-    if (url.pathname === "/api/shadow/scoreboard" || url.pathname === "/api/shadow/scoreboard.csv") {
+    if (url.pathname === "/api/shadow/scoreboard" || url.pathname === "/api/shadow/scoreboard.csv" || url.pathname === "/scoreboard") {
       // PUBLIC, INDUSTRY SHAPE: the venue scoreboard by week (venueScoreboard.ts), computed from
       // the record on each request so it moves as the record does. Venue-named on purpose: this is
       // the hedger's comparison of the venues, for industry readers, not a holder's screen. Nothing
       // of the writer's book is in it. ?weeks=N (1..26, default 8). CORS open: the record is public.
-      const weeks = Number(url.searchParams.get("weeks") ?? "8");
+      // /scoreboard is the same table as a page, with the JSON and CSV links at the top.
+      const weeksRaw = Number(url.searchParams.get("weeks") ?? "8");
+      const weeks = Number.isFinite(weeksRaw) ? Math.min(26, Math.max(1, Math.floor(weeksRaw))) : 8;
       const positions = allPositions();
-      const sb = venueScoreboard({ positions, refusals: loadRefusals(REFUSALS_PATH), tickets: loadLastLegTickets(LASTLEG_PATH), weeks: Number.isFinite(weeks) ? weeks : 8 });
+      const sb = venueScoreboard({ positions, refusals: loadRefusals(REFUSALS_PATH), tickets: loadLastLegTickets(LASTLEG_PATH), weeks });
       const headers = { "cache-control": "public, max-age=300", "access-control-allow-origin": "*" };
+      if (url.pathname === "/scoreboard") {
+        res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" });
+        res.end(renderScoreboardHtml({ scoreboard: sb, weeks }));
+        return;
+      }
       if (url.pathname.endsWith(".csv")) {
         res.writeHead(200, { ...headers, "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="venue-scoreboard-${sb.at.slice(0, 10)}.csv"` });
         res.end(venueScoreboardCsv(sb));

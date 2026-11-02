@@ -38,7 +38,7 @@ function demoUrl(): string {
   return process.env.EVENT_SHADOW_DEMO_URL || "https://event.earnandprotect.xyz/";
 }
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -108,7 +108,7 @@ const ROUTE_WORDS: Record<string, string> = {
   polymarket: "hedged cross-venue on the same game",
 };
 
-const SHADOW_CSS = `
+export const SHADOW_CSS = `
 :root{
   --bg:#f6f7f7; --card:#ffffff; --card2:#f2f4f4; --line:#e4e7e7;
   --ink:#050d0a; --dim:#5c6a64; --faint:#98a49e;

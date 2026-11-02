@@ -153,9 +153,9 @@ of open plays. Once a matched play exists, under its row:
    label on the left, the value on the right, one type size, two tones): **Shape**, a segmented
    control (Max upside / Balanced / Max floor, only when the book funds more than one shape; a
    tap repaints the three rows and the collapsed line with that shape's figures, and the pressed
-   one is what the tap locks); **Other side**, one sentence ("Novig · best of 2 venues · $0.11
-   more for you", this page's venue named with its two-word reason when it priced nothing; each
-   venue's figure in the tooltip); **Until**, the clock ("tip-off Tue 8:00pm ET · priced live");
+   one is what the tap locks); **Other side**, one sentence ("Novig · best of 2 venues, venue
+   fees included · $0.11 more for you", this page's venue named with its two-word reason when it
+   priced nothing; each venue's figure in the tooltip); **Until**, the clock ("tip-off Tue 8:00pm ET · priced live");
    **Rules**, the toggle with the four cases beside it while folded, the grid when open (one case
    a row, what the venue does and what the protection does); **How**, two sentences with no
    figures (the figures are the three rows above). A protected play's panel
@@ -624,6 +624,15 @@ opponent, the first weekday the day. The same night the Eagles card, in play, lo
 the service listed tonight's game beside next week's: a card that says its game is under way
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
+
+**The comparison says the fees are in it (0.7.43).** The Other side sentence and the compare
+tail on the collapsed line read "best of 3 venues, venue fees included" where they read "best of
+3 venues": the service compares the venues all in, each venue's fee schedule folded into its book
+before the routes are ranked (Kalshi's 0.07·P·(1−P) at match, ProphetX's 2% of net gains at
+settlement, Novig's none pre-game), and the words now say so, the same words as the demo embed.
+The operator's per-venue rows say "books with fees" for the book leg of the all-in figure. The
+same release puts the fee on the public venue scoreboard (`/api/shadow/scoreboard`, the
+`/scoreboard` page) per venue per week. No behaviour changed.
 
 **NHL cards read like NFL and NBA (0.7.42).** The nickname table carries the 32 NHL clubs
 (Ducks … Capitals) and the league word reads "NHL", "Pro Hky" and "Hockey", so a Rangers at

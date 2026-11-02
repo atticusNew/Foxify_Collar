@@ -758,7 +758,7 @@ ${cardBlock}<aside class="pitch">
     var k=n/(v.contracts||n||1),priced=[],muted=[],i;
     for(i=0;i<v.venues.length;i++)(v.venues[i].creditCents!=null?priced:muted).push(v.venues[i]);
     var parts=['<b>'+esc(v.hedgeVenue)+'</b>'+(v.hedgeVenue===S.vv.hostVenue?' <span class="ael-dim">(this venue)</span>':'')];
-    if(priced.length>1){if(v.edgeCents!=null&&v.edgeCents<0)parts.push('of '+priced.length+' venues, chosen on all-in cost');else{parts.push('best of '+priced.length+' venues');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}}
+    if(priced.length>1){if(v.edgeCents!=null&&v.edgeCents<0)parts.push('of '+priced.length+' venues, cheapest all-in, venue fees included');else{parts.push('best of '+priced.length+' venues, venue fees included');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}}
     for(i=0;i<muted.length;i++)if(muted[i].host)parts.push('<span class="ael-dim">'+esc(muted[i].venue)+' '+esc(muted[i].why||'not offered')+'</span>');
     var tip=[];for(i=0;i<priced.length;i++)tip.push(priced[i].venue+' '+usd(Math.round(priced[i].creditCents*k)));for(i=0;i<muted.length;i++)tip.push(muted[i].venue+': '+(muted[i].why||'not offered'));
     return {html:parts.join(' &middot; '),tip:tip.join(' \\u00b7 '),shopped:priced.length>1&&!(v.edgeCents!=null&&v.edgeCents<0)};
@@ -795,7 +795,7 @@ ${cardBlock}<aside class="pitch">
     var L=st.lock,v=vvOf(r.kalshiTicker),k=L.contracts/((v&&v.contracts)||L.contracts||1),rows=[];
     var venue=v&&v.hedgeVenue?v.hedgeVenue:'the best venue',price=100-(r.markCents||50);
     var cmp='';
-    if(v){var priced=v.venues.filter(function(x){return x.creditCents!=null});if(priced.length>1)cmp=' <span class="ael-dim">&middot; '+(v.edgeCents!=null&&v.edgeCents<0?'of '+priced.length+' venues, chosen on all-in cost':'best of '+priced.length+' venues'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for you':''))+'</span>'}
+    if(v){var priced=v.venues.filter(function(x){return x.creditCents!=null});if(priced.length>1)cmp=' <span class="ael-dim">&middot; '+(v.edgeCents!=null&&v.edgeCents<0?'of '+priced.length+' venues, cheapest all-in, venue fees included':'best of '+priced.length+' venues, venue fees included'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for you':''))+'</span>'}
     rows.push('<span>Other side</span><b><b>'+esc(venue)+'</b> &middot; '+L.contracts+' contracts of the other side at '+price.toFixed(1)+'c'+cmp+' <span class="ael-dim">&middot; priced at the book; demo, nothing bought</span></b>');
     rows.push('<span>Cost</span><b>'+usd(v&&v.hedgeCostCents!=null?Math.round(v.hedgeCostCents*k):Math.round(L.contracts*price))+' <span class="ael-dim">all in</span></b>');
     rows.push('<span>Until</span><b>'+esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; settles on the official result</span></b>');
@@ -893,7 +893,7 @@ ${cardBlock}<aside class="pitch">
     var hostV=S.vv.hostVenue,won=v.hedgeVenue,why;
     var hostRow=null;for(i=0;i<v.venues.length;i++)if(v.venues[i].host)hostRow=v.venues[i];
     if(!won)why='no venue could fund the other side right now';
-    else if(v.edgeCents!=null&&v.edgeCents<0)why='<b>'+esc(won)+'</b>: chosen on all-in cost once the tails of the game are priced, though another venue quoted '+usd(Math.round(-v.edgeCents*k))+' more'+(hostV&&won===hostV?'. The hedge stays with you.':hostV?'. You take a share of the spread.':'.');
+    else if(v.edgeCents!=null&&v.edgeCents<0)why='<b>'+esc(won)+'</b>: cheapest all-in, venue fees included, once the tails of the game are priced, though another venue quoted '+usd(Math.round(-v.edgeCents*k))+' more'+(hostV&&won===hostV?'. The hedge stays with you.':hostV?'. You take a share of the spread.':'.');
     else if(hostV&&won===hostV)why='<b>'+esc(won)+'</b>, your book: it paid the trader the most'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' over the next venue':'')+'. The hedge stays with you.';
     else if(hostV&&hostRow&&hostRow.creditCents!=null)why='<b>'+esc(won)+'</b>: it paid the trader '+usd(Math.round(Math.max(0,v.edgeCents||0)*k))+' more than your book did for the same protection, so the other side went there. You take a share of the spread instead.';
     else if(hostV)why='<b>'+esc(won)+'</b>: your book '+esc(hostRow?hostRow.why||'did not price it':'did not price it')+' on this game, so the other side went to the best venue that did. You take a share of the spread.';
@@ -1052,7 +1052,7 @@ ${cardBlock}<aside class="pitch">
     }else if(L){
       head='<b>worth '+usd(L.worthCents)+'</b> <i>&middot; '+L.hoursBefore+'h out</i>';
       /* the venue the other side goes to, as the Positions tab says it for a single: data from the lock, never a name written here */
-      foot=(L.venue?'<div class="terms">Other side &middot; <b>'+esc(L.venue)+'</b> <span class="ael-dim">&middot; best price across the venues asked</span></div>':'')+
+      foot=(L.venue?'<div class="terms">Other side &middot; <b>'+esc(L.venue)+'</b> <span class="ael-dim">&middot; best price across the venues asked, venue fees included</span></div>':'')+
         '<div class="f"><button class="pbtn full" data-parlay="'+esc(t.id)+'">'+lockIcon()+'Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button></div>';
     }else{
       head='<b>Last pick</b>';
