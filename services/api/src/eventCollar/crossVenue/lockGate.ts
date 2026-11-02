@@ -24,6 +24,7 @@ import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import type { ProtectionTier } from "./types";
 import { roundContracts } from "./types";
 import { isSettlementVenue, type SettlementVenue } from "./hedgeRouting";
+import { parsePickQueries, type PickQuery } from "./parlayPicks";
 
 export const PROTECTION_TIER_NAMES: readonly ProtectionTier[] = ["tight", "balanced", "wide"];
 
@@ -159,6 +160,40 @@ export interface LockRequest {
   tier?: ProtectionTier;
   /** where the holder's position lives (the extension's venue); absent, Kalshi */
   venue?: SettlementVenue;
+  /**
+   * The position is a parlay at its last pick (parlayPicks.ts): the picks as the card showed them,
+   * the stake and what the ticket pays. The ticker is the last pick's market; the service checks
+   * the ticket stands where the client says before it locks.
+   */
+  parlay?: { picks: PickQuery[]; stakeCents: number; payoutCents: number };
+}
+
+/** The parlay block of a lock body, validated; null when absent, an error string when malformed. */
+function parseParlay(raw: unknown): { ok: true; value: LockRequest["parlay"] | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (!raw || typeof raw !== "object") return { ok: false, error: "parlay must be an object {picks, stakeCents, payoutCents}" };
+  const p = raw as Record<string, unknown>;
+  const picksRaw = Array.isArray(p.picks) ? p.picks : null;
+  if (!picksRaw || picksRaw.length < 2) return { ok: false, error: "parlay.picks must list at least two picks" };
+  const picks = parsePickQueries(
+    picksRaw
+      .map((x) => {
+        if (!x || typeof x !== "object") return "";
+        const q = x as Record<string, unknown>;
+        return [q.code, q.opp, q.day]
+          .map((v) => (typeof v === "string" ? v.trim() : ""))
+          .join(":")
+          .replace(/:+$/, "");
+      })
+      .join(","),
+  );
+  if (!picks || picks.length !== picksRaw.length) return { ok: false, error: "parlay.picks must be club codes, each with an optional opponent code and day" };
+  const stake = typeof p.stakeCents === "number" ? p.stakeCents : Number(p.stakeCents);
+  const payout = typeof p.payoutCents === "number" ? p.payoutCents : Number(p.payoutCents);
+  if (!Number.isInteger(stake) || stake < 1 || !Number.isInteger(payout) || payout <= stake || payout > 100_000_000) {
+    return { ok: false, error: "parlay.stakeCents and parlay.payoutCents must be whole cents, the payout above the stake" };
+  }
+  return { ok: true, value: { picks, stakeCents: stake, payoutCents: payout } };
 }
 
 /**
@@ -194,5 +229,8 @@ export function parseLockRequest(body: unknown): { ok: true; value: LockRequest 
     if (!isSettlementVenue(v)) return { ok: false, error: "venue must be kalshi, polymarket, prophetx or novig" };
     value.venue = v;
   }
+  const parlay = parseParlay(b.parlay);
+  if (!parlay.ok) return parlay;
+  if (parlay.value) value.parlay = parlay.value;
   return { ok: true, value };
 }

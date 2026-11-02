@@ -19,6 +19,7 @@ import type { HedgeRoute, ProtectionTier, TakeRule } from "./types";
 import { capTotalCents, centsDownOf, centsOf, centsUpOf, floorTotalCents, PROTECTION_TIERS } from "./types";
 import type { RuleCheck, RuleEvidence } from "./ruleEvidence";
 import type { HedgeRouting, SettlementVenue } from "./hedgeRouting";
+import type { ParlayRecord } from "./parlayPicks";
 import {
   FEE_RULE_LABELS,
   SIZE_LADDER_MULTS,
@@ -131,6 +132,12 @@ export interface ShadowOpenRecord {
    * and the ticker stays the key inside each file. Operator views only; the public record strips it.
    */
   holder?: string;
+  /**
+   * With source "lock": the position is a parlay locked at its last pick (parlayPicks.ts). The
+   * earlier picks and that they hit, the last pick the lock stands on, the ticket's stake and
+   * what it pays; the lock's contracts are one per payout dollar. Public: a holder's words only.
+   */
+  parlay?: ParlayRecord;
 }
 
 /**

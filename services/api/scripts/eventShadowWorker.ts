@@ -106,7 +106,8 @@ import {
   type PmBook,
 } from "../src/eventCollar/crossVenue/types";
 import type { NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
-import { getMarketResult, kalshiBase } from "../src/eventCollar/kalshiPublic";
+import { getMarketResult, getSettledMarkets, kalshiBase, type KalshiSettledMarket } from "../src/eventCollar/kalshiPublic";
+import { PICK_SERIES, parlayRecordOf, parsePickQueries, resolvePicks, verifyParlayLock, type PickMarket, type PickQuery, type PicksView } from "../src/eventCollar/crossVenue/parlayPicks";
 import { checkRule, kalshiRuleText, kalshiRuleUrl, pinRule, pinVenueRules, ruleStateLabel, venueRulesText, type RuleEvidence } from "../src/eventCollar/crossVenue/ruleEvidence";
 import { VENUE_NAMES, hedgeVenueOf, hedgeVenuesFromEnv, rulesFor, type HedgeRouting, type SettlementVenue } from "../src/eventCollar/crossVenue/hedgeRouting";
 import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
@@ -343,6 +344,40 @@ let searchConfig: () => CrossSearchConfig = () => DEFAULT_CROSS_CONFIG;
 let quoteOneFn: typeof quoteOne | null = null;
 let listGameMarketsFn: typeof listGameMarkets | null = null;
 /**
+ * PARLAY PICKS (parlayPicks.ts): a ticket's picks are placed on the week's open game markets and
+ * on the markets settled in the last two weeks, which carry the results of the picks already
+ * played. The settled lists are read from Kalshi's public API per league and kept a minute; the
+ * tests replace the reader.
+ */
+const PICKS_SETTLED_LOOKBACK_MS = 14 * 86_400_000;
+const PICKS_SETTLED_TTL_MS = 60_000;
+let settledMarketsFn: (series: string, sinceMs: number) => Promise<KalshiSettledMarket[]> = getSettledMarkets;
+const settledCache = new Map<string, { at: number; rows: KalshiSettledMarket[] }>();
+async function pickMarkets(now = new Date()): Promise<PickMarket[]> {
+  if (!listGameMarketsFn) return [];
+  const open = (await listGameMarketsFn()).map(
+    (m): PickMarket => ({ ticker: m.ticker, league: m.league, sideName: m.sideName, title: m.title, startIso: m.startIso ?? m.closeTimeIso, settled: false }),
+  );
+  const seen = new Set(open.map((m) => m.ticker));
+  const settled: PickMarket[] = [];
+  for (const { league, series } of PICK_SERIES) {
+    const hit = settledCache.get(series);
+    let rows = hit && now.getTime() - hit.at < PICKS_SETTLED_TTL_MS ? hit.rows : null;
+    if (!rows) {
+      try {
+        rows = await settledMarketsFn(series, now.getTime() - PICKS_SETTLED_LOOKBACK_MS);
+        settledCache.set(series, { at: now.getTime(), rows });
+      } catch {
+        // a league whose settled list could not be read leaves its picks unknown, never guessed
+        rows = hit?.rows ?? [];
+      }
+    }
+    for (const m of rows) if (!seen.has(m.ticker)) settled.push({ ticker: m.ticker, league, sideName: m.subtitle, title: m.title, startIso: null, settled: true, result: m.result });
+  }
+  return [...open, ...settled];
+}
+const picksViewFor = async (queries: readonly PickQuery[], now = new Date()): Promise<PicksView> => resolvePicks(queries, await pickMarkets(now), now);
+/**
  * The live books an early close is priced from: the protected market's two sides on Kalshi and,
  * on a cross-venue route, the hedge token's book (Polymarket, read from the venue) or the hedge
  * strike's book (ProphetX, read through the aggregator's stream by strike id, the settlement fee
@@ -393,7 +428,7 @@ const LOCK_KEY = lockKeyFromEnv(process.env);
  */
 const HOLDER_KEYS = holderKeysFromEnv(process.env, LOCK_KEY);
 const LOCK_ROUTES_ON = Boolean(LOCK_KEY) || HOLDER_KEYS.holders.length > 0;
-const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry"]);
+const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/picks", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry"]);
 /**
  * THE EXTENSION'S SWITCHES, served with the markets list so the service, not the build, decides:
  * EVENT_SHADOW_EXT_MIN_VERSION   the version below which the extension shows "update" and draws nothing
@@ -1098,7 +1133,13 @@ function retailOneQuote(res: CandidateResult, evBps: number | null) {
  *        `routing` (hedgeRouting.ts): the holder's venue (`venue`: kalshi, prophetx, novig; absent Kalshi), the
  *        hedge venue chosen against it and why, each route's cost all in (EV plus the tails priced), the tails
  *        in the holder's venue's words; with the operator token, also the engine's route verdicts and the pin
- *   POST /api/shadow/lock {ticker, contracts, entryCents?, tier?, venue?}   quote again (the lock is at the tap),
+ *   GET  /api/shadow/picks?picks=SEA:CHI:Mon,BAL:JAX:Thu   a parlay's picks placed on the markets (open game
+ *        markets and those settled in the last two weeks): each open, won or lost; whether the ticket is at its
+ *        last pick and which market that is (parlayPicks.ts)
+ *   POST /api/shadow/lock {ticker, contracts, entryCents?, tier?, venue?, parlay?}   quote again (the lock is at the tap),
+ *        with `parlay` {picks, stakeCents, payoutCents} the position is a parlay at its last pick: the picks are
+ *        read again here and the lock is refused (409 parlay_busted, parlay_not_last_pick, parlay_size…) unless
+ *        every other pick hit, `ticker` is the one left and has not started, and the size is at most the payout;
  *        write the open record with source "lock" (holderVenue and routing on it), fill the hedge on the
  *        chosen venue, answer with the terms, the hedge receipt's outcome and the routing
  *   GET  /api/shadow/receipt?ticker=   the lock's terms, the hedge behind them and the routing, any time after
@@ -1126,6 +1167,18 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       // a market this holder already locked is on record, not protectable again
       markets: markets.map((m) => ({ ...m, onRecord: held.has(m.ticker), protectable: m.protectable && !held.has(m.ticker), ...(held.has(m.ticker) ? { notProtectable: "on_record" } : {}), live: tickerIsArmed(m.ticker) })),
     });
+    return;
+  }
+  if (url.pathname === "/api/shadow/picks") {
+    // a parlay's picks placed on the service's markets, each open, won or lost, and whether the
+    // ticket is at its last pick (parlayPicks.ts): what the extension draws under a parlay card
+    const queries = parsePickQueries(url.searchParams.get("picks"));
+    if (!queries || queries.length < 2) {
+      sendJson(res, 400, { ok: false, error: "bad_request", message: "picks must list two or more club codes, each as CODE[:OPP[:DAY]], comma separated" });
+      return;
+    }
+    const view = await picksViewFor(queries);
+    sendJson(res, 200, { ok: true, at: atIso, ...view });
     return;
   }
   if (url.pathname === "/api/shadow/ext-telemetry") {
@@ -1242,7 +1295,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 400, { ok: false, error: "bad_request", message: parsed.error });
       return;
     }
-    const { ticker, contracts, entryCents, tier, venue } = parsed.value;
+    const { ticker, contracts, entryCents, tier, venue, parlay } = parsed.value;
     const flight = inFlightKey(holder, ticker);
     if (lockInFlight.has(flight)) {
       sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being locked right now." });
@@ -1251,6 +1304,17 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     if (!lockable(loadShadowPositions(ownLedger), ticker)) {
       sendJson(res, 409, { ok: false, error: "already_on_record", message: "This market is already locked; one lock per market." });
       return;
+    }
+    // a parlay is locked at its last pick only, on the service's own read of the picks: every other
+    // pick hit, this market is the one left and has not started, the size is at most what it pays
+    let parlayView: PicksView | null = null;
+    if (parlay) {
+      parlayView = await picksViewFor(parlay.picks);
+      const check = verifyParlayLock(parlayView, ticker, contracts, parlay.stakeCents, parlay.payoutCents);
+      if (!check.ok) {
+        sendJson(res, 409, { ok: false, error: check.code, code: check.code, message: check.message, picks: parlayView.picks });
+        return;
+      }
     }
     // the venue's own word on the holder's side: when their account is readable and it holds the
     // other club of this game and not this one, the card was misread; no lock, no wrong-way hedge
@@ -1281,7 +1345,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       // the tier the holder chose, when the venues funded it; else the quote's default
       const chosen = tier && result.quote.tiers[tier] ? { ...result.quote, ...result.quote.tiers[tier], tier } : result.quote;
       const evBps = chosen.tier === result.quote.tier ? result.evBps : chosen.evCostBps;
-      const record = openRecordFor(result, chosen, evBps, atIso, "lock");
+      const base = openRecordFor(result, chosen, evBps, atIso, "lock");
+      const record = parlay && parlayView ? { ...base, parlay: parlayRecordOf(parlayView, parlay.stakeCents, parlay.payoutCents) } : base;
       if (!appendOrAlert(holder ? { ...record, holder } : record, ownLedger)) {
         sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: "The record could not be written; nothing was locked." });
         return;
@@ -1304,6 +1369,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         routing: routingViewOf(result.routing),
         // the rule pinned with the record, so the receipt the tap opens says so without a second read
         rule: record.type === "open" ? ruleViewOf(record) : null,
+        ...(record.parlay ? { parlay: record.parlay } : {}),
       });
     } finally {
       lockInFlight.delete(flight);
@@ -3091,9 +3157,15 @@ export function wireLockEngine(fns: {
   hedgeExecutor?: HedgeExecutor;
   /** the board scan a scanTick runs, in place of the scanner module's */
   scan?: NonNullable<typeof scan>;
+  /** the settled game markets a parlay's picks are read against, in place of Kalshi's public list */
+  settledMarkets?: typeof settledMarketsFn;
 }): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
+  if (fns.settledMarkets) {
+    settledMarketsFn = fns.settledMarkets;
+    settledCache.clear();
+  }
   if (fns.closeBooks) closeBooksFn = fns.closeBooks;
   if (fns.hedgeExecutor) hedgeChoice.executor = fns.hedgeExecutor;
   if (fns.scan) scan = fns.scan;

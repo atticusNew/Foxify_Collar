@@ -498,6 +498,18 @@ export function hedgeVenuesFromEnv(env: NodeJS.ProcessEnv = process.env): { rout
   return { routes, source: "env", unknown };
 }
 
+/**
+ * Venues where the service's hedge wallet is a subaccount of the holder's own account (Novig, where
+ * the hedge subaccount sits under the holder's login): EVENT_HEDGE_SAME_ACCOUNT_VENUES names them,
+ * comma separated. A holder standing on such a venue is not hedged there (RouteGates.sameAccount).
+ * Unset: no venue is.
+ */
+export function sameAccountVenuesFromEnv(env: NodeJS.ProcessEnv = process.env): Set<SettlementVenue> {
+  const out = new Set<SettlementVenue>();
+  for (const w of (env.EVENT_HEDGE_SAME_ACCOUNT_VENUES ?? "").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean)) if (isSettlementVenue(w)) out.add(w);
+  return out;
+}
+
 export interface RouteGates {
   /** the pairing was verified (same game, same sides) */
   gameMatch: boolean;
@@ -507,6 +519,12 @@ export interface RouteGates {
   venueOpen: boolean;
   /** the executor can send to this venue now (live: a client and the rails; paper: always) */
   executable: boolean;
+  /**
+   * The hedge would sit in a wallet of the holder's own account on this venue (the service's hedge
+   * subaccount on Novig): the venue nets the two sides and pays the position out early, so the route
+   * is closed for a holder standing on that venue (EVENT_HEDGE_SAME_ACCOUNT_VENUES). Absent: not so.
+   */
+  sameAccount?: boolean;
   /** words for whichever gate failed, if one did */
   detail?: string;
 }
@@ -589,7 +607,7 @@ export function chooseRoute(inputs: ChooseRouteInputs): HedgeRouting {
     const hedgeVenue = hedgeVenueOf(r.route);
     const depth = r.ok || !/too_thin|book_empty/.test(r.refusalCode ?? "");
     const gates: RouteGates = { ...r.gates, depth };
-    const failed = !gates.gameMatch ? "the game match is not verified" : !depth ? "the book cannot take the size" : !gates.venueOpen ? "the venue's market closes before the lock" : !gates.executable ? "the executor cannot send to this venue now" : null;
+    const failed = !gates.gameMatch ? "the game match is not verified" : !depth ? "the book cannot take the size" : !gates.venueOpen ? "the venue's market closes before the lock" : !gates.executable ? "the executor cannot send to this venue now" : gates.sameAccount ? "the hedge would sit in the holder's own account here, and the venue nets the two sides" : null;
     if (failed) gates.detail = failed;
     const sameContract = inputs.holderVenue === hedgeVenue;
     const charge =
