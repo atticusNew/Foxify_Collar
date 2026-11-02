@@ -78,13 +78,15 @@ const NOVIG_NFL_WINNER = "https://ludlow-filings.s3.us-east-1.amazonaws.com/nfl-
 const NOVIG_FVS = "https://support.novig.com/en/articles/16163706-what-is-fair-value-settlement-fvs";
 const NOVIG_SETTLEMENT = "https://support.novig.com/en/articles/10336135-how-settlement-works-grading-disputes-and-voided-trades";
 const READ = "2026-10-28";
+/** the NHL rows were read later, from the first week of the 2026-27 slate */
+const READ_NHL = "2026-11-02";
 
-const cell = (treatment: TailTreatment, confirmed: boolean, source: string, excerpt: string, windowHours?: number): RuleCell => ({
+const cell = (treatment: TailTreatment, confirmed: boolean, source: string, excerpt: string, windowHours?: number, asOf: string = READ): RuleCell => ({
   treatment,
   ...(windowHours !== undefined ? { windowHours } : {}),
   confirmed,
   source,
-  asOf: READ,
+  asOf,
   excerpt,
 });
 
@@ -101,6 +103,8 @@ const PM_NBA = "If the game is postponed, this market will remain open until the
 const PM_MLB =
   "If the game is postponed, this market will remain open until the game has been completed. If the game is canceled entirely, with no make-up game, or ends in a tie, this market will resolve 50-50.";
 const PM_NFL_2022 = "If the game ends in a tie, this market will resolve 50-50. If the game is not completed by November 13 (11:59:59 PM ET), this market will resolve 50-50.";
+const PM_NHL =
+  "If the game is postponed, this market will remain open until the game has been completed. If the game is canceled entirely, with no make-up game, this market will resolve 50-50. The result will be determined based on the final score including any overtime periods and shootouts.";
 
 const PX_TIE = "If, after the completion of overtime, the result remains tied, all orders on the outright event winner contract shall be void and collateral shall be returned to the applicable accounts.";
 const PX_NFL_POSTPONED =
@@ -141,6 +145,12 @@ const TABLE: Record<SettlementVenue, Record<string, RuleCells>> = {
       abandoned: cell("fair", true, KALSHI_SERIES_URL("KXMLBGAME"), KALSHI_MLB_POSTPONED),
       corrected: cell("stands", false, KALSHI_SERIES_URL("KXMLBGAME"), NOT_STATED),
     },
+    nhl: {
+      tie: cell("half", false, KALSHI_SERIES_URL("KXNHLGAME"), "no tie clause (the league plays overtime and a shootout until a winner); Kalshi's football text pays $0.50 a side", undefined, READ_NHL),
+      postponed: cell("fair", true, KALSHI_SERIES_URL("KXNHLGAME"), KALSHI_NBA_POSTPONED, 48, READ_NHL),
+      abandoned: cell("fair", true, KALSHI_SERIES_URL("KXNHLGAME"), KALSHI_NBA_POSTPONED, undefined, READ_NHL),
+      corrected: cell("stands", false, KALSHI_SERIES_URL("KXNHLGAME"), NOT_STATED, undefined, READ_NHL),
+    },
   },
   polymarket: {
     nfl: {
@@ -160,6 +170,12 @@ const TABLE: Record<SettlementVenue, Record<string, RuleCells>> = {
       postponed: cell("hold", true, PM_MARKET_URL("mlb-mil-tb-2026-10-28"), PM_MLB),
       abandoned: cell("half", true, PM_MARKET_URL("mlb-mil-tb-2026-10-28"), PM_MLB),
       corrected: cell("stands", false, PM_MARKET_URL("mlb-mil-tb-2026-10-28"), NOT_STATED),
+    },
+    nhl: {
+      tie: cell("half", false, PM_MARKET_URL("nhl-pit-ana-2026-11-08"), "no tie clause (the league plays overtime and a shootout until a winner); Polymarket's baseball text pays 50-50", undefined, READ_NHL),
+      postponed: cell("hold", true, PM_MARKET_URL("nhl-pit-ana-2026-11-08"), PM_NHL, undefined, READ_NHL),
+      abandoned: cell("half", true, PM_MARKET_URL("nhl-pit-ana-2026-11-08"), PM_NHL, undefined, READ_NHL),
+      corrected: cell("stands", false, PM_MARKET_URL("nhl-pit-ana-2026-11-08"), NOT_STATED, undefined, READ_NHL),
     },
   },
   prophetx: {
@@ -181,6 +197,12 @@ const TABLE: Record<SettlementVenue, Record<string, RuleCells>> = {
       abandoned: cell("void", false, PROPHETX_FOOTBALL, `${NOT_STATED} (ProphetX's football text voids and returns collateral)`),
       corrected: cell("resettle", false, PROPHETX_FOOTBALL, PX_RESETTLE),
     },
+    nhl: {
+      tie: cell("void", false, PROPHETX_FOOTBALL, "no tie in the league; ProphetX voids ties where they occur", undefined, READ_NHL),
+      postponed: cell("void", false, PROPHETX_FOOTBALL, `${NOT_STATED} (ProphetX's football text voids and returns collateral)`, undefined, READ_NHL),
+      abandoned: cell("void", false, PROPHETX_FOOTBALL, `${NOT_STATED} (ProphetX's football text voids and returns collateral)`, undefined, READ_NHL),
+      corrected: cell("resettle", false, PROPHETX_FOOTBALL, PX_RESETTLE, undefined, READ_NHL),
+    },
   },
   novig: {
     nfl: {
@@ -200,6 +222,12 @@ const TABLE: Record<SettlementVenue, Record<string, RuleCells>> = {
       postponed: cell("fair", false, NOVIG_SETTLEMENT, "For most markets if an event is postponed and rescheduled within 48 hours the trades will still be considered active. [A void is paid at Fair Market Value.]", 48),
       abandoned: cell("fair", false, NOVIG_SETTLEMENT, "A trade is voided if the event is cancelled ... When a trade is voided, you will be paid out at the Fair Market Value."),
       corrected: cell("stands", false, NOVIG_SETTLEMENT, NOT_STATED),
+    },
+    nhl: {
+      tie: cell("half", false, NOVIG_NFL_WINNER, "no tie in the league; Novig's football contract pays $0.50 a side", undefined, READ_NHL),
+      postponed: cell("fair", false, NOVIG_SETTLEMENT, "For most markets if an event is postponed and rescheduled within 48 hours the trades will still be considered active. [A void is paid at Fair Market Value.]", 48, READ_NHL),
+      abandoned: cell("fair", false, NOVIG_SETTLEMENT, "A trade is voided if the event is cancelled ... When a trade is voided, you will be paid out at the Fair Market Value.", undefined, READ_NHL),
+      corrected: cell("stands", false, NOVIG_SETTLEMENT, NOT_STATED, undefined, READ_NHL),
     },
   },
 };
@@ -275,6 +303,7 @@ export const DEFAULT_TAIL_PROBABILITIES: Record<string, TailProbabilities> = {
   nfl: { tie: 0.004, postponed: 0.002, abandoned: 0.001, corrected: 0.0002 },
   nba: { tie: 0, postponed: 0.003, abandoned: 0.001, corrected: 0.0002 },
   mlb: { tie: 0.0005, postponed: 0.015, abandoned: 0.003, corrected: 0.0002 },
+  nhl: { tie: 0, postponed: 0.003, abandoned: 0.001, corrected: 0.0002 },
 };
 
 export function tailProbabilitiesFromEnv(env: NodeJS.ProcessEnv = process.env): Record<string, TailProbabilities> {

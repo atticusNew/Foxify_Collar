@@ -29,7 +29,7 @@ const c2 = (n: number): number => Math.round(n * 100) / 100;
 
 test("routing table: every venue and league has four cells with a source and a sentence", () => {
   for (const venue of ["kalshi", "polymarket", "prophetx", "novig"] as const) {
-    for (const league of ["nfl", "nba", "mlb"]) {
+    for (const league of ["nfl", "nba", "mlb", "nhl"]) {
       const row = tableRules(venue, league);
       for (const b of ["tie", "postponed", "abandoned", "corrected"] as const) {
         assert.ok(row[b].source.startsWith("http"), `${venue} ${league} ${b} source`);
@@ -43,9 +43,18 @@ test("routing table: every venue and league has four cells with a source and a s
   assert.equal(tableRules("prophetx", "nfl").tie.treatment, "void");
   assert.equal(tableRules("novig", "nfl").tie.treatment, "half");
   assert.equal(tableRules("polymarket", "nba").postponed.treatment, "hold");
+  // NHL rows were read from the live text on 2026-11-02: Kalshi's 48-hour fair-price clause, Polymarket's hold-then-50-50
+  assert.equal(tableRules("kalshi", "nhl").postponed.treatment, "fair");
+  assert.equal(tableRules("kalshi", "nhl").postponed.confirmed, true);
+  assert.equal(tableRules("kalshi", "nhl").postponed.asOf, "2026-11-02");
+  assert.equal(tableRules("polymarket", "nhl").postponed.treatment, "hold");
+  assert.equal(tableRules("polymarket", "nhl").abandoned.treatment, "half");
+  assert.match(tableRules("polymarket", "nhl").abandoned.excerpt, /shootout/);
+  assert.equal(tableRules("prophetx", "nhl").tie.treatment, "void");
+  assert.equal(tableRules("novig", "nhl").postponed.confirmed, false, "Novig's hockey text was not read; the general rule stands unconfirmed");
   // an unknown league inherits a row with nothing confirmed
-  const nhl = tableRules("kalshi", "nhl");
-  assert.ok(Object.values(nhl).every((c) => c.confirmed === false));
+  const wnba = tableRules("kalshi", "wnba");
+  assert.ok(Object.values(wnba).every((c) => c.confirmed === false));
 });
 
 test("routing text: Kalshi's rules_secondary and Polymarket's description read into cells", () => {

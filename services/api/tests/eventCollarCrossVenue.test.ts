@@ -273,6 +273,47 @@ test("NBA template: Kalshi opening-slate ticker parses; NFL WAS/JAC tickers pars
   assert.equal(candidateSlugs(jac, nfl)[0], "nfl-jax-den-2026-09-20");
 });
 
+test("NHL template: the live 2026-27 slate parses, Polymarket's own codes come first where they differ, every club verifies by name", () => {
+  const nhl = templateForSeries("KXNHLGAME");
+  assert.ok(nhl);
+  // live 2026-11-02: KXNHLGAME-26NOV08PITANA-PIT, subtitle "Pittsburgh", no start time; Polymarket nhl-pit-ana-2026-11-08 (8:00pm ET)
+  const p = parseGameTicker("KXNHLGAME-26NOV08PITANA-PIT", nhl);
+  assert.ok(p);
+  assert.equal(p.dateIso, "2026-11-08");
+  assert.equal(p.hhmm, null);
+  assert.deepEqual([p.awayCode, p.homeCode, p.sideCode], ["PIT", "ANA", "PIT"]);
+  assert.equal(candidateSlugs(p, nhl)[0], "nhl-pit-ana-2026-11-08");
+  assert.ok(gameDateAgrees(p, "2026-11-09T01:00:00Z"), "an 8pm ET start is the ticker's date");
+  // the clubs the two venues spell differently: Kalshi CGY/LA/VGK/MTL/UTA, Polymarket cal/lak/las/mon/utah
+  const cgy = parseGameTicker("KXNHLGAME-26NOV08PHICGY-PHI", nhl);
+  assert.ok(cgy);
+  assert.equal(candidateSlugs(cgy, nhl)[0], "nhl-phi-cal-2026-11-08");
+  const la = parseGameTicker("KXNHLGAME-26NOV04SJLA-LA", nhl);
+  assert.ok(la);
+  assert.deepEqual([la.awayCode, la.homeCode], ["SJ", "LA"]);
+  assert.equal(candidateSlugs(la, nhl)[0], "nhl-sj-lak-2026-11-04");
+  const vgk = parseGameTicker("KXNHLGAME-26NOV02VGKBOS-BOS", nhl);
+  assert.ok(vgk);
+  assert.equal(candidateSlugs(vgk, nhl)[0], "nhl-las-bos-2026-11-02");
+  const uta = parseGameTicker("KXNHLGAME-26NOV03UTATOR-UTA", nhl);
+  assert.ok(uta);
+  assert.equal(candidateSlugs(uta, nhl)[0], "nhl-utah-tor-2026-11-03");
+  // Kalshi's city subtitles and Polymarket's nicknames both verify against the club name, two-word nicknames included
+  assert.ok(sideNameVerified(nhl, "TOR", "Toronto", "Maple Leafs"));
+  assert.ok(sideNameVerified(nhl, "VGK", "Vegas", "Golden Knights"));
+  assert.ok(sideNameVerified(nhl, "CBJ", "Columbus", "Blue Jackets"));
+  assert.ok(sideNameVerified(nhl, "NYI", "New York I", "Islanders"));
+  assert.ok(sideNameVerified(nhl, "NYR", "New York R", "Rangers"));
+  assert.ok(sideNameVerified(nhl, "STL", "St. Louis", "Blues"));
+  assert.ok(sideNameVerified(nhl, "UTA", "Utah", "Utah"));
+  assert.ok(!sideNameVerified(nhl, "NYI", "New York I", "Rangers"));
+  for (const code of Object.keys(nhl.teamCodeAliases)) {
+    assert.ok(nhl.teamCodeAliases[code].length > 0, code);
+    assert.ok(nhl.teamNames[code], code);
+  }
+  assert.equal(new Set(Object.values(nhl.teamNames)).size, 32);
+});
+
 test("every whitelist team table splits unambiguously for every ordered pair of codes", () => {
   for (const t of LEAGUE_TEMPLATES) {
     const codes = Object.keys(t.teamCodeAliases);

@@ -687,7 +687,7 @@ ${cardBlock}<aside class="pitch">
   function fmtNow(){try{return new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return 'now'}}
   function fmtAt(iso){try{var d=new Date(iso);return d.toLocaleDateString('en-US',{weekday:'short',timeZone:'America/New_York'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return ''}}
   /* "tip-off" for a game on a court, "kickoff" on a field, "first pitch" on a diamond, "start" otherwise */
-  function startWord(r){var l=String(r.league||'').toLowerCase();return r.kind==='crypto'?'settles':l==='nba'||l==='wnba'||l==='ncaab'?'tip-off':l==='nfl'||l==='ncaaf'||l==='epl'||l==='mls'?'kickoff':l==='mlb'?'first pitch':'start'}
+  function startWord(r){var l=String(r.league||'').toLowerCase();return r.kind==='crypto'?'settles':l==='nba'||l==='wnba'||l==='ncaab'?'tip-off':l==='nfl'||l==='ncaaf'||l==='epl'||l==='mls'?'kickoff':l==='mlb'?'first pitch':l==='nhl'?'puck drop':'start'}
   /* On a binary contract, floor F / cap C / credit K on n contracts is the same thing as keeping
      n*(C-F)/100 contracts and setting F*n + K aside in cash. The user only ever sees the two
      endings, floorTotal and capTotal, and the credit paid today; the rest is how it is built. */
