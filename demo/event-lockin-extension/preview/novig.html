@@ -60,6 +60,9 @@
   .pfil .fl{border:1px solid #333;border-radius:6px;padding:5px 10px;font-size:11px;color:#fff;margin-right:8px}
   /* the deck keeps React Native Web's default, align-items: stretch: the cards on one line stand as tall as the tallest */
   .cards{display:flex;flex-wrap:wrap;gap:14px}
+  /* the live Portfolio on a desktop window (Nov 2026): one column of cards, no wrap, so the deck is a plain column */
+  body.onecol .cards{flex-direction:column;flex-wrap:nowrap;align-items:flex-start}
+  .pc-g .score{font-size:13px;font-weight:700;margin:0 6px}.pc-g .live{color:#ff8a3d;font-size:10.5px;font-weight:600}
   .pc{width:440px;background:#161616;border:1px solid #262626;border-radius:12px;padding:14px 16px 10px}
   .css-view{display:flex;flex-direction:column;position:relative;box-sizing:border-box;min-width:0;min-height:0}
   .rw{flex-direction:row;align-items:center}
@@ -123,6 +126,8 @@ let mode = sessionStorage.getItem("novig-mode") || "cash";
 // Winner (CHI at SEA, Mon 8:15 PM) and BAL Winner (JAX at BAL, Thu 8:15 PM); its legs open under Show Legs.
 const ORDERS = JSON.parse(sessionStorage.getItem("novig-orders") || "null") || [
   { parlay: 2, m: "6.62", amount: 9.99, matched: 9.99, type: "take", pay: "66.18", credit: true, placed: "Sun 8:24PM", id: "7c1e9a2d4b8f0", legs: [{ code: "SEA", kind: "Winner", away: "CHI", home: "SEA", when: "8:15 PM", day: "Mon" }, { code: "BAL", kind: "Winner", away: "JAX", home: "BAL", when: "8:15 PM", day: "Thu" }] },
+  // the Eagles single as the live card printed it once the game was under way: the bar carries "Live Q2 4:45" and the score, no day
+  { code: "PHI", kind: "Winner", m: "3.33", amount: 10, matched: 10, type: "take", pay: "33.33", credit: true, nosell: true, buyM: "2.53", placed: "Sun 5:00PM", id: "9b0d7a5e3c1f2", away: "PHI", home: "WAS", when: "Live Q2 4:45", score: "10 - 10", day: "" },
   { code: "GB", kind: "Winner", m: "1.54", amount: 5, matched: 5, type: "take", pay: "7.69", sell: "4.96", placed: "Wed 6:47PM", id: "a9cdbd1fe3b36", away: "CAR", home: "GB", when: "9:15 PM", day: "Thu" },
   { code: "NYK", kind: "Winner", m: "1.65", amount: 10, matched: 10, type: "take", sell: "10.12", placed: "Tue 12:48PM", id: "b31e0f77c2a90", away: "DET", home: "NYK", when: "8:00 PM", day: "Tue" },
   { code: "BOS", kind: "Winner", m: "1.30", amount: 20, matched: 0, type: "make", sell: null, placed: "Tue 12:51PM", id: "c7d2a1e45f6b8", away: "BKN", home: "BOS", when: "7:30 PM", day: "Tue" },
@@ -162,7 +167,9 @@ const V = (inner, cls, extra) => '<div class="css-view ' + (cls || "") + '"' + (
 // the card's To Pay as the venue prints it: about the amount times the multiplier, from the exact
 // price behind the rounded multiplier ($5.00 at 1.54x pays $7.69, not $7.70)
 const toPay = (o) => (o.pay != null ? Number(o.pay) : o.amount * Number(o.m));
-const gameBar = (g) => V(V('<span class="helm"></span>' + T(g.away, "code"), "rw") + V(T(g.when, "when") + T(g.day, "day"), "mid") + V(T(g.home, "code") + '<span class="helm" style="background:#2a5a3a"></span>', "rw"), "rw pc-g");
+const gameBar = (g) => g.score
+  ? V(V('<span class="helm"></span>' + T(g.away, "code"), "rw") + V(T(g.when, "live") + T(g.score, "score"), "mid") + V(T(g.home, "code") + '<span class="helm" style="background:#2a5a3a"></span>', "rw"), "rw pc-g")
+  : V(V('<span class="helm"></span>' + T(g.away, "code"), "rw") + V(T(g.when, "when") + T(g.day, "day"), "mid") + V(T(g.home, "code") + '<span class="helm" style="background:#2a5a3a"></span>', "rw"), "rw pc-g");
 const legsOpen = new Set(JSON.parse(sessionStorage.getItem("novig-legs") || "[]"));
 const card = (o) => {
   const badge = o.settled ? '<div class="badge ' + o.settled + '">' + o.settled.toUpperCase() + "</div>" : o.matched <= 0 ? '<div class="badge wait">UNMATCHED</div>' : '<div class="badge ok">MATCHED</div>';
@@ -178,8 +185,8 @@ const card = (o) => {
     return V(V(head, "rw pc-h") + amts + (o.credit ? '<span class="credit">TRADE CREDIT</span>' : "") + btns + legsA + legs + V(T("ID: " + o.id) + T("Placed: " + o.placed), "rw pc-f"), "pc");
   }
   const head = V('<span class="helm"></span>' + V(V(T(o.code + (o.line ? " " + o.line : ""), "nm") + T("&middot;", "dot") + T(o.m + "x", "mult"), "rw") + T(o.kind, "kind")), "rw") + badge;
-  const btns = o.settled ? "" : V(V(T(o.matched > 0 ? "Sell " + money(Number(o.sell)) : "Cancel"), "b sell", ' role="button" tabindex="0"') + V(T("Buy More &middot; " + o.m + "x"), "b buy", ' role="button" tabindex="0"'), "rw pc-b");
-  return V(V(head, "rw pc-h") + amts + gameBar(o) + btns + V("<i></i>" + T("Share"), "rw pc-s") + V(T("ID: " + o.id) + T("Placed: " + o.placed), "rw pc-f"), "pc");
+  const btns = o.settled ? "" : o.nosell ? V(V(T("Buy More &middot; " + (o.buyM || o.m) + "x"), "b buy", ' role="button" tabindex="0"'), "rw pc-b") : V(V(T(o.matched > 0 ? "Sell " + money(Number(o.sell)) : "Cancel"), "b sell", ' role="button" tabindex="0"') + V(T("Buy More &middot; " + o.m + "x"), "b buy", ' role="button" tabindex="0"'), "rw pc-b");
+  return V(V(head, "rw pc-h") + amts + (o.credit ? '<span class="credit">TRADE CREDIT</span>' : "") + gameBar(o) + btns + V("<i></i>" + T("Share"), "rw pc-s") + V(T("ID: " + o.id) + T("Placed: " + o.placed), "rw pc-f"), "pc");
 };
 // the featured parlays the Portfolio opens with, as the real page printed them (Nov 1, 2026)
 const FEATURED = [
@@ -207,6 +214,7 @@ const portfolioHtml = (tab, filter) => {
 let pfFilter = "all";
 const render = () => {
   const h = location.hash || "#/";
+  document.body.classList.toggle("onecol", Boolean(sessionStorage.getItem("novig-onecol")));
   const pm = /^#\/portfolio(?:\/(active|open|settled))?/.exec(h);
   $("#main").innerHTML = pm ? portfolioHtml(pm[1] === "settled" ? "settled" : "active", pfFilter) : listHtml();
   for (const f of document.querySelectorAll(".pfil .f")) f.onclick = () => { pfFilter = f.dataset.f; render(); };
