@@ -1032,6 +1032,8 @@ ${cardBlock}<aside class="pitch">
   function missedPick(t){for(var j=0;j<t.picks.length;j++)if(t.picks[j].state==='miss')return t.picks[j];return null}
   function metaHtml(t){var win=t.paysCents-t.stakeCents,lg=leaguesOf(t);return usd0(t.stakeCents)+' to win '+usd0(win)+(lg?' &middot; '+lg:'')}
   function lockIcon(){return SHIELD}
+  /* " · other side on Novig" when the lock says where it goes; nothing when it does not */
+  function otherSideWords(L){return L&&L.venue?' &middot; other side on <b>'+esc(L.venue)+'</b>':''}
   /* a ticket still in play: the full card */
   function inPlayHtml(t){
     var L=t.lock,locked=!!S.lockedBy[t.id],head='',foot='';
@@ -1045,11 +1047,13 @@ ${cardBlock}<aside class="pitch">
     }else if(L&&locked){
       head='<b>worth '+usd(L.worthCents)+'</b> <i>&middot; '+L.hoursBefore+'h out</i>';
       foot='<div class="terms">ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b> &middot; <b>'+usd(L.creditCents)+'</b> paid now</div>'+
-        '<div class="lock">locked at your tap &middot; terms priced '+esc(fmtAt(L.quotedAt))+' from the live book</div>'+
+        '<div class="lock">locked at your tap'+otherSideWords(L)+' &middot; terms priced '+esc(fmtAt(L.quotedAt))+' from the live book</div>'+
         '<div class="f"><span class="shield">&#x2713; Locked</span><button class="undo" data-unlock="'+esc(t.id)+'">reset &middot; demo only</button></div>';
     }else if(L){
       head='<b>worth '+usd(L.worthCents)+'</b> <i>&middot; '+L.hoursBefore+'h out</i>';
-      foot='<div class="f"><button class="pbtn full" data-parlay="'+esc(t.id)+'">'+lockIcon()+'Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button></div>';
+      /* the venue the other side goes to, as the Positions tab says it for a single: data from the lock, never a name written here */
+      foot=(L.venue?'<div class="terms">Other side &middot; <b>'+esc(L.venue)+'</b> <span class="ael-dim">&middot; best price across the venues asked</span></div>':'')+
+        '<div class="f"><button class="pbtn full" data-parlay="'+esc(t.id)+'">'+lockIcon()+'Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button></div>';
     }else{
       head='<b>Last pick</b>';
       foot='<div class="f">'+(t.lockRefused
@@ -1186,9 +1190,10 @@ ${cardBlock}<aside class="pitch">
       '<div class="tile"><div class="l">paid now</div><div class="v">+'+usd(L.creditCents)+'</div><div class="was">yours today</div></div>'+
       '<div class="tile"><div class="l">if it hits</div><div class="v">'+usd(L.capTotalCents)+'</div><div class="was">was '+usd(t.paysCents)+'</div></div></div>'+
       '<button class="go" id="sh-go">Lock in '+usd(L.floorTotalCents)+' &middot; +'+usd(L.creditCents)+' now</button>'+
-      '<div class="fine">priced '+esc(fmtAt(L.quotedAt))+' from the live book, '+L.hoursBefore+'h before the game &middot; <a href="#" id="sh-how">how it works</a></div>'+
+      '<div class="fine">priced '+esc(fmtAt(L.quotedAt))+' from the live book'+otherSideWords(L)+', '+L.hoursBefore+'h before the game &middot; <a href="#" id="sh-how">how it works</a></div>'+
       '<div class="how" id="how"><p>Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket: it guarantees '+usd(L.floorTotalCents)+' if '+esc(last.outcome)+' misses, pays '+usd(L.creditCents)+' now, and leaves the upside to '+usd(L.capTotalCents)+' if it hits.</p>'+
       '<p>It is priced only when one pick is left. With two picks open there is no market for the pair of games, so no lock is offered yet.</p>'+
+      '<p>At the last pick the ticket is one position on one game, so it is priced like a single: every venue we work with is asked for the other side and the best price wins'+(L.venue?' (this one: '+esc(L.venue)+')':'')+'.</p>'+
       '<p>The ticket is ours, built from public game markets at the prices when it was built. The terms are the ones the live market on the last pick funded at that second; nothing is bought.</p></div>';
     el('sh-how').onclick=function(e){e.preventDefault();sheetHow=!sheetHow;el('how').className='how'+(sheetHow?' on':'')};
     el('sh-go').onclick=function(){confirmParlayLock(t)};

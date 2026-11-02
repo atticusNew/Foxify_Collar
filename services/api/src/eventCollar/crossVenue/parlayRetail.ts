@@ -15,9 +15,12 @@
  *   settled or busted         what the ticket paid against what the lock would have paid
  *
  * Retail words only: no hedge legs, no take, no token ids. Ticket picks are `picks` (the
- * public word, and `legs` is a hedge word on the retail tripwire). Money is integer cents.
+ * public word, and `legs` is a hedge word on the retail tripwire). The one venue word is the
+ * lock's `venue`: where the other side goes, by public name, as the Positions tab says it for a
+ * single ("Other side · Novig"). Money is integer cents.
  */
 
+import { hedgeVenueOf, VENUE_NAMES } from "./hedgeRouting";
 import type { LastLegSummary, LastLegTicket, LockVsSellSummary } from "./lastLeg";
 import { compressedContracts, summarizeLegRules } from "./lastLeg";
 import { pickWords } from "./pickWords";
@@ -95,6 +98,8 @@ export interface ParlayLock {
   /** if the last pick hits, credit included */
   capTotalCents: number;
   creditCents: number;
+  /** where the other side goes, by public name ("Novig"); null on a lock priced before the router chose venues */
+  venue: string | null;
 }
 
 export interface ParlayResult {
@@ -208,6 +213,7 @@ export function retailParlayTicket(t: LastLegTicket): ParlayTicket {
           floorTotalCents: q.floorCents * q.contracts + q.creditCents,
           capTotalCents: q.capCents * q.contracts + q.creditCents,
           creditCents: q.creditCents,
+          venue: q.route ? VENUE_NAMES[hedgeVenueOf(q.route)] : null,
         }
       : null;
   const state = stateOf(t);
