@@ -349,9 +349,15 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .parlay .pl i{font-size:12px}
 .picks{margin-top:7px;display:flex;flex-direction:column;gap:3px}
 .pick{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--faint);line-height:1.35}
-.pick i{font-style:normal;width:15px;height:15px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:800;flex-shrink:0;background:var(--card2);color:var(--faint);border:1px solid var(--line)}
-.pick.hit i{background:var(--wash);color:var(--up);border-color:transparent}
-.pick.miss i{background:rgba(255,107,107,.14);color:var(--down);border-color:transparent}
+.pick i{font-style:normal;width:15px;height:15px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0;color:var(--faint);border:1.5px solid var(--dim);box-sizing:border-box}
+.pick.hit i{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.pick.miss i{background:rgba(255,107,107,.18);color:var(--down);border-color:transparent}
+/* two or more picks open: the heading the extension's panel carries, the why behind Details */
+.popen{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px;padding-top:8px;border-top:1px solid var(--line)}
+.popen b{font-size:13px;font-weight:600;color:var(--ink);line-height:1.35}
+.popen .ael-tg{padding:2px 0;flex:none}
+.pdet{margin-top:6px;font-size:12px;color:var(--faint);line-height:1.45}
+.pdet p{margin:0 0 4px}
 .pick span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pick span b{font-weight:600;color:var(--ink)}
 .pick.miss span b{text-decoration:line-through;color:var(--dim)}
@@ -616,7 +622,7 @@ ${cardBlock}<aside class="pitch">
 (function(){
   'use strict';
   var S={rows:[],byTicker:{},R:{},cash:41250,tab:'Positions',shell:'phone',view:'trader',vv:null,vvErr:null,vvBusy:false,
-    parlays:null,parlaysErr:null,byParlay:{},lockedBy:{},openParlay:null,showSettled:false,expanded:{},
+    parlays:null,parlaysErr:null,byParlay:{},lockedBy:{},openParlay:null,showSettled:false,expanded:{},details:{},
     activity:null,activityErr:null,activityShown:25};
   /* the three shapes in the extension's order: the most upside first, the highest floor last */
   var TIER_ORDER=['wide','balanced','tight'];
@@ -1013,7 +1019,8 @@ ${cardBlock}<aside class="pitch">
      collapsed Settled group, the full comparison on tap. The lock tap here is simulated on top of the
      shadow's terms; nothing is re-priced in the browser. The parlays keep the sheet: a ticket has no
      row of its own in the venue's list to open under. */
-  var PICK_MARK={hit:'&#x2713;',miss:'&#x2717;',open:'&middot;',partial:'&frac12;'};
+  /* a box per pick, as the extension's panel draws a ticket: empty while the pick is open, a check once it hit, a cross when it missed */
+  var PICK_MARK={hit:'&#x2713;',miss:'&#x2717;',open:'',partial:'&frac12;'};
   function parlayId(id){return String(id||'').toUpperCase()}
   /* "Cowboys vs Buccaneers": the side in ink, the rest of the matchup faint; soccer picks arrive as "Brighton to win" with nothing after */
   function pickHtml(p){
@@ -1029,8 +1036,12 @@ ${cardBlock}<aside class="pitch">
   function inPlayHtml(t){
     var L=t.lock,locked=!!S.lockedBy[t.id],head='',foot='';
     if(t.state==='open'){
+      /* nothing to price yet: one heading, the why behind Details (the extension's panel, in the host's colours) */
+      var det=!!S.details[t.id],P=S.parlays||{};
       head='<b>'+t.picksOpen+' picks open</b>';
-      foot='<div class="f end"><button class="pbtn off" disabled>Lock in opens at your last pick</button></div>';
+      foot='<div class="popen"><b>Protection opens at your last pick.</b><a href="#" class="ael-tg" data-details="'+esc(t.id)+'" aria-expanded="'+(det?'true':'false')+'">Details<span class="ael-tgc">'+CHEVRON+'</span></a></div>'+
+        (det?'<div class="pdet"><p>With '+t.picksOpen+' picks open the ticket pays only if every one hits, so there is nothing yet to protect. Once all but one have hit, the last pick is a single and can be locked in before it starts, for what the ticket pays.</p>'+
+        '<p>The picks are read again every '+(P.pricedEveryMinutes||10)+' minutes; the lock is priced at the last pick.</p></div>':'');
     }else if(L&&locked){
       head='<b>worth '+usd(L.worthCents)+'</b> <i>&middot; '+L.hoursBefore+'h out</i>';
       foot='<div class="terms">ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b> &middot; <b>'+usd(L.creditCents)+'</b> paid now</div>'+
@@ -1243,9 +1254,11 @@ ${cardBlock}<aside class="pitch">
       if(act==='leavego'){leaveGo(t);return}
       return;
     }
-    var b=e.target.closest?e.target.closest('[data-reset],[data-shell],[data-view],[data-tab],[data-parlay],[data-unlock],[data-info],[data-why],[data-settled],[data-expand],[data-more]'):null;
+    var b=e.target.closest?e.target.closest('[data-reset],[data-shell],[data-view],[data-tab],[data-parlay],[data-unlock],[data-info],[data-why],[data-settled],[data-expand],[data-details],[data-more]'):null;
     if(!b)return;
     if(b.hasAttribute('data-reset')){e.preventDefault();resetDemo();return}
+    var dt=b.getAttribute('data-details');
+    if(dt){e.preventDefault();S.details[dt]=!S.details[dt];paintList();return}
     var sh=b.getAttribute('data-shell');if(sh){setShell(sh);return}
     var vw=b.getAttribute('data-view');if(vw){setView(vw);return}
     if(b.hasAttribute('data-info')){if(b.getAttribute('data-info')==='activity')openActivityInfoSheet();else openInfoSheet();return}
