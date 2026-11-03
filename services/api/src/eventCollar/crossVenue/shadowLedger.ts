@@ -27,6 +27,7 @@ import {
   type ShadowAltTerms,
   type ShadowBookOpenReread,
   type ShadowCounterfactuals,
+  type ShadowInGameReread,
   type ShadowReread,
 } from "./shadowCounterfactuals";
 
@@ -238,7 +239,9 @@ export interface ShadowCashRecord {
 export type ShadowRereadRecord =
   | ({ type: "reread"; ticker: string; phase: "prelock" } & ShadowReread)
   /** the same read taken when a held reference book first showed levels (shadowCounterfactuals.ShadowBookOpenReread); one per position */
-  | ({ type: "reread"; ticker: string; phase: "book_open" } & ShadowBookOpenReread);
+  | ({ type: "reread"; ticker: string; phase: "book_open" } & ShadowBookOpenReread)
+  /** the same read taken a fixed number of minutes after the start, in play (shadowCounterfactuals.ShadowInGameReread); one per position */
+  | ({ type: "reread"; ticker: string; phase: "in_game" } & ShadowInGameReread);
 
 export type ShadowRecord = ShadowOpenRecord | ShadowSettleRecord | ShadowVoidRecord | ShadowCloseRecord | ShadowCashRecord | ShadowRereadRecord;
 
@@ -285,6 +288,8 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   prelock?: ShadowReread;
   /** the read taken the moment a held reference book opened, when the record caught one (operator information) */
   bookOpen?: ShadowBookOpenReread;
+  /** the in-game read, when the game has had one (never on the public record) */
+  inGame?: ShadowInGameReread;
 }
 
 /** One leg of cash the lock owes, and how much of it has been paid. */
@@ -510,6 +515,10 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
         if (pos.bookOpen) continue;
         const { type: _t, ticker: _k, phase: _p, ...reread } = rec;
         byTicker.set(rec.ticker, { ...pos, bookOpen: reread });
+      } else if (rec.phase === "in_game") {
+        if (pos.inGame) continue;
+        const { type: _t, ticker: _k, phase: _p, ...reread } = rec;
+        byTicker.set(rec.ticker, { ...pos, inGame: reread });
       }
     } else if (rec.type === "close") {
       const pos = byTicker.get(rec.ticker);

@@ -5,6 +5,9 @@
  * per cell, per-venue totals at the pre-lock read), and the worker's tick with a fake engine.
  * Then the held books: the worker's hold tick against a fake feed source, the book-open re-read
  * it writes when a held book opens, its fold (bookOpen), and the venues layout of that read.
+ * Then the in-game read: the same read a fixed number of minutes after the start, its fold
+ * (inGame), the venues layout and CSV of it, and the worker's tick with a fake engine, which asks
+ * the engine with the window set aside and writes nothing to the public record.
  */
 
 import assert from "node:assert/strict";
@@ -16,9 +19,9 @@ import { join } from "node:path";
 
 import { quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
-import { counterfactualsFor, rereadQuotesFor, type CounterfactualInputs, type ShadowAltTerms } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
+import { counterfactualsFor, inPlayConfig, rereadQuotesFor, type CounterfactualInputs, type ShadowAltTerms } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
 import { appendShadowRecord, loadShadowPositions, type ShadowOpenRecord, type ShadowPosition } from "../src/eventCollar/crossVenue/shadowLedger";
-import { venueBreakdown, venuePrelockFor, venueRowFor } from "../src/eventCollar/crossVenue/shadowVenues";
+import { venueBreakdown, venueBreakdownCsv, venueInGameFor, venuePrelockFor, venueRowFor } from "../src/eventCollar/crossVenue/shadowVenues";
 import { DEFAULT_CROSS_CONFIG, type CrossQuoteResult, type MatchedPair, type PmBook } from "../src/eventCollar/crossVenue/types";
 import type { ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
 import type { AggregatorBookSource, ReferenceStream } from "../src/eventCollar/crossVenue/aggregatorBooks";
@@ -274,9 +277,9 @@ test("venues: the pre-lock read is laid out under the open-time one, deltas agai
 // the worker's tick with a fake engine
 // ---------------------------------------------------------------------------
 
-function candidate(ticker: string, start: string, over: Partial<CandidateResult> = {}): CandidateResult {
+function candidate(ticker: string, start: string, over: Partial<CandidateResult> = {}, config = DEFAULT_CROSS_CONFIG): CandidateResult {
   const pair = pmPair(ticker, start);
-  const quote = quoteCrossWrap({ pair, markCents: 58, entryCents: 58, contracts: 150, now: new Date(), noBook: PM_NO_BOOK, config: DEFAULT_CROSS_CONFIG });
+  const quote = quoteCrossWrap({ pair, markCents: 58, entryCents: 58, contracts: 150, now: new Date(), noBook: PM_NO_BOOK, config });
   assert.ok(quote.ok, JSON.stringify(quote));
   return {
     kind: "sports",
@@ -571,4 +574,235 @@ test("shadow worker hold tick: every open game inside the hold window is held on
     worker.wireHeldBooks(null);
   }
   assert.equal(fake.closedCount(), 1, "the connection is closed when the source is unwired");
+});
+
+// ---------------------------------------------------------------------------
+// the in-game read: fold, layout, and the worker's tick
+// ---------------------------------------------------------------------------
+
+test("inPlayConfig: both pricers refuse past the start under the record's config and price under the in-play one; the mark band and the rest still apply", () => {
+  const start = "2026-09-20T17:00:00.000Z";
+  const inPlay = new Date("2026-09-20T17:20:00.000Z");
+  const pair = pmPair("KXMLBGAME-26SEP20NYYBOS-NYY", start);
+  const pm = quoteCrossWrap({ pair, markCents: 66, entryCents: 55, contracts: 150, now: inPlay, noBook: PM_NO_BOOK, config: CFG });
+  assert.ok(!pm.ok && pm.code === "market_too_close_to_start");
+  const k = quoteLadderWrap({ pair: { kalshi: { ticker: pair.kalshi.ticker }, gameStartTime: start }, markCents: 66, entryCents: 55, contracts: 150, now: inPlay, noAsks: NO_ASKS, config: CFG });
+  assert.ok(!k.ok && k.code === "market_too_close_to_start");
+  const cfg = inPlayConfig(CFG);
+  assert.equal(cfg.defaultTier, CFG.defaultTier, "only the lead-time gate changes");
+  const pmIn = quoteCrossWrap({ pair, markCents: 66, entryCents: 55, contracts: 150, now: inPlay, noBook: PM_NO_BOOK, config: cfg });
+  assert.ok(pmIn.ok, JSON.stringify(pmIn));
+  const kIn = quoteLadderWrap({ pair: { kalshi: { ticker: pair.kalshi.ticker }, gameStartTime: start }, markCents: 66, entryCents: 55, contracts: 150, now: inPlay, noAsks: NO_ASKS, config: cfg });
+  assert.ok(kIn.ok, JSON.stringify(kIn));
+  const wide = quoteCrossWrap({ pair, markCents: 97, entryCents: 55, contracts: 150, now: inPlay, noBook: PM_NO_BOOK, config: cfg });
+  assert.ok(!wide.ok && wide.code === "mark_out_of_range", "a game nearly decided is still out of the band");
+  // the re-read prices every route and reference the same way
+  const r = rereadQuotesFor(inputs({ markCents: 66, now: inPlay, config: cfg }));
+  assert.ok(r.routes.polymarket.ok && r.routes.kalshi_self.ok);
+  assert.ok(r.references?.find((x) => x.id === "aggregated_mm")?.terms.ok);
+  const rOld = rereadQuotesFor(inputs({ markCents: 66, now: inPlay }));
+  assert.ok(!rOld.routes.polymarket.ok && !rOld.routes.kalshi_self.ok, "under the record's config nothing prices in play");
+});
+
+test("ledger: an in_game reread folds onto the position as inGame beside the pre-lock read, first one wins; the unread form is kept as is", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shadow-ingame-"));
+  const path = join(dir, "ledger.jsonl");
+  const live = quoteCrossWrap({ pair: pmPair(), markCents: 60, entryCents: 55, contracts: 150, now: NOW, noBook: PM_NO_BOOK, config: CFG });
+  assert.ok(live.ok);
+  appendShadowRecord(path, openRecord("A", LOCK, live));
+  appendShadowRecord(path, openRecord("B", LOCK, live));
+  const fresh = rereadQuotesFor(inputs({ ticker: "A" }));
+  appendShadowRecord(path, { type: "reread", at: "2026-09-20T15:00:00.000Z", ticker: "A", phase: "prelock", hoursToLock: 2, markCents: 58, ...fresh });
+  appendShadowRecord(path, { type: "reread", at: "2026-09-20T17:20:00.000Z", ticker: "A", phase: "in_game", hoursToLock: -0.3, minutesIn: 20, markCents: 66, protectedBook: { yesBidCents: 63, yesAskCents: 69 }, ...fresh });
+  appendShadowRecord(path, { type: "reread", at: "2026-09-20T17:40:00.000Z", ticker: "A", phase: "in_game", hoursToLock: -0.7, minutesIn: 40, markCents: 70, ...fresh });
+  appendShadowRecord(path, { type: "settle", at: "2026-09-20T21:00:00.000Z", ticker: "A", result: "yes" });
+  appendShadowRecord(path, { type: "reread", at: "2026-09-20T17:20:00.000Z", ticker: "B", phase: "in_game", hoursToLock: -0.3, minutesIn: 20.2, unread: "market_not_active" });
+  const byTicker = new Map(loadShadowPositions(path).map((p) => [p.ticker, p]));
+  const a = byTicker.get("A");
+  assert.ok(a?.inGame && !("unread" in a.inGame));
+  assert.ok(a.prelock, "the pre-lock read is kept beside it");
+  assert.equal(a.status, "settled");
+  assert.equal(a.inGame.minutesIn, 20, "the first in-game read stands");
+  assert.equal(a.inGame.hoursToLock, -0.3);
+  assert.equal(a.inGame.markCents, 66);
+  assert.deepEqual(a.inGame.protectedBook, { yesBidCents: 63, yesAskCents: 69 });
+  assert.deepEqual(a.inGame.routes, fresh.routes);
+  const b = byTicker.get("B");
+  assert.ok(b?.inGame && "unread" in b.inGame);
+  assert.equal(b.inGame.unread, "market_not_active");
+  assert.equal(b.inGame.minutesIn, 20.2);
+});
+
+test("venues: the in-game read is laid out under the others with its minutes and the protected market's spread; totals and the CSV carry it; a game without one is unchanged", () => {
+  const live = quoteCrossWrap({ pair: pmPair(), markCents: 60, entryCents: 55, contracts: 150, now: NOW, noBook: PM_NO_BOOK, config: CFG });
+  assert.ok(live.ok);
+  const { type: _t, ...fields } = openRecord("A", LOCK, live);
+  // in play the second venue's book is still there, a touch dearer; Kalshi's No side is gone; the reference still lists
+  const dearer: PmBook = { ...PM_NO_BOOK, asks: [{ priceMilli: 420, sizeMilli: 600_000 }] };
+  const fresh = rereadQuotesFor(inputs({ markCents: 66, books: { pmNoBook: dearer, references } }));
+  assert.ok(fresh.routes.polymarket.ok && !fresh.routes.kalshi_self.ok);
+  const read = { at: "2026-09-20T17:20:00.000Z", hoursToLock: -0.3, minutesIn: 20, markCents: 66, protectedBook: { yesBidCents: 63, yesAskCents: 69 }, ...fresh };
+  const ig = venueInGameFor(read, "polymarket");
+  assert.equal(ig.minutesIn, 20);
+  assert.deepEqual(ig.protectedBook, { yesBidCents: 63, yesAskCents: 69 });
+  assert.equal(ig.markCents, 66);
+  assert.equal(ig.writtenCreditCents, fresh.routes.polymarket.creditCents);
+  assert.equal(ig.cells.find((c) => c.id === "polymarket")?.written, true);
+  assert.equal(ig.cells.find((c) => c.id === "kalshi_self")?.refused, "unreachable");
+  assert.ok((ig.cells.find((c) => c.id === "aggregated_mm")?.creditCents ?? 0) > 0);
+  const un = venueInGameFor({ at: "x", hoursToLock: -0.4, minutesIn: 23.5, unread: "mark_out_of_range" }, "polymarket");
+  assert.equal(un.unread, "mark_out_of_range");
+  assert.equal(un.protectedBook, null);
+  assert.ok(un.cells.every((c) => !c.read));
+
+  const position: ShadowPosition = { ...fields, status: "open", inGame: read };
+  const row = venueRowFor(position);
+  assert.ok(row?.inGame);
+  assert.equal(row.prelock, undefined);
+  assert.deepEqual(row.inGame.cells.map((c) => c.id), row.cells.map((c) => c.id), "same columns, same order");
+
+  const b = venueBreakdown(
+    [position, { ...fields, ticker: "B", status: "open" }, { ...fields, ticker: "C", status: "settled", result: "yes", inGame: { at: "x", hoursToLock: -0.4, minutesIn: 24, unread: "market_not_active" } }],
+    new Date("2026-09-20T18:00:00.000Z"),
+  );
+  assert.deepEqual(b.inGame, { read: 1, unread: 1, avgMinutesIn: 22, avgSpreadCents: 6 });
+  assert.deepEqual(b.prelock, { read: 0, unread: 0 }, "the pre-lock totals do not count it");
+  const t = Object.fromEntries(b.totals.map((x) => [x.id, x]));
+  assert.equal(t.polymarket.read, 3, "open-time reads unchanged");
+  assert.equal(t.polymarket.inGame.read, 1);
+  assert.equal(t.polymarket.inGame.quoted, 1);
+  assert.equal(t.polymarket.prelock.read, 0);
+  assert.equal(t.kalshi_self.inGame.read, 1);
+  assert.equal(t.kalshi_self.inGame.quoted, 0);
+  assert.equal(t.aggregated_mm.inGame.read, 1);
+  assert.equal(t.aggregated_mm.inGame.quoted, 1);
+  assert.equal(t.aggregated_mm.inGame.bothQuoted, 1);
+  assert.equal(t.aggregated_mm.inGame.avgDeltaCents, ig.cells.find((c) => c.id === "aggregated_mm")?.deltaCents);
+  assert.equal(b.rows.find((r) => r.ticker === "B")?.inGame, undefined);
+
+  const csv = venueBreakdownCsv(b).split("\n");
+  const inGameLines = csv.filter((l) => l.includes(",in_game,"));
+  const kept = b.rows.find((r) => r.ticker === "A")!.cells.length;
+  assert.equal(inGameLines.length, 2 * kept, "one line per kept venue for each game read in play, the unread one included");
+  const pmLine = inGameLines.find((l) => l.startsWith("A,") && l.includes(",polymarket,"))!;
+  assert.ok(pmLine.includes(",-0.3,"), `hours to lock negative past the start: ${pmLine}`);
+  assert.ok(pmLine.includes(",quoted,"));
+  const openLinesA = csv.filter((l) => l.startsWith("A,") && l.includes(",open,open,"));
+  assert.equal(openLinesA.length, kept, "the open-time lines are unchanged");
+});
+
+test("shadow worker in-game tick: open games a fixed number of minutes into play are read once, with the window set aside, at their size, and written beside the open; too early or too late is not read; structural refusals are final; an unreachable venue is retried; the read is the operator's", async () => {
+  const scanLedger = process.env.EVENT_SHADOW_LEDGER_PATH!;
+  const lockLedger = process.env.EVENT_SHADOW_LOCK_LEDGER_PATH!;
+  const m = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+  // the open-time terms, written days before the start as the record does
+  const live = quoteCrossWrap({ pair: pmPair("M", m(600)), markCents: 60, entryCents: 55, contracts: 150, now: new Date(), noBook: PM_NO_BOOK, config: CFG });
+  assert.ok(live.ok, JSON.stringify(live));
+  const opened = { at: m(-600) };
+  // M: 25 minutes in, due. N: 5 minutes in, not yet. O: 70 minutes in, past the late margin, never. P: due, the engine refuses structurally (the market closed on the result).
+  // Q: due, the venues down once. R: crypto, never. S: a holder's lock, 30 minutes in, due. T: 40 minutes out, not started.
+  // U: due by the record's start, but the pairing says the start was pushed back: asked again, nothing written.
+  appendShadowRecord(scanLedger, openRecord("M", m(-25), live, opened));
+  appendShadowRecord(scanLedger, openRecord("N", m(-5), live, opened));
+  appendShadowRecord(scanLedger, openRecord("O", m(-70), live, opened));
+  appendShadowRecord(scanLedger, openRecord("P", m(-30), live, opened));
+  appendShadowRecord(scanLedger, openRecord("Q", m(-35), live, opened));
+  appendShadowRecord(scanLedger, { ...openRecord("R", m(-25), live, opened), kind: "crypto", league: "crypto", route: "kalshi_self" });
+  appendShadowRecord(lockLedger, openRecord("S", m(-30), live, { ...opened, source: "lock", entryCents: 52, contracts: 20 }));
+  appendShadowRecord(scanLedger, openRecord("T", m(40), live, opened));
+  appendShadowRecord(scanLedger, openRecord("U", m(-22), live, opened));
+
+  const worker = await import("../scripts/eventShadowWorker");
+  const seen: OneQuoteInputs[] = [];
+  let qDown = true;
+  worker.wireLockEngine({
+    listGameMarkets: async () => [],
+    quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => {
+      seen.push(inputs);
+      if (inputs.ticker === "P") return { ok: false, code: "market_not_active", detail: "closed" };
+      if (inputs.ticker === "U") return { ok: false, code: "not_started", detail: "delayed" };
+      if (inputs.ticker === "Q" && qDown) throw new Error("venue unreachable");
+      const start = inputs.ticker === "S" ? m(-30) : m(-25);
+      const pair = pmPair(inputs.ticker, start);
+      // the engine's own quote refuses in play (the lead-time gate); the books it read still come back, which is what the shadow re-prices from
+      const refused: CrossQuoteResult = { ok: false, code: "market_too_close_to_start", detail: "the game starts in 0m; pre-game protection needs at least 10m" };
+      return { ok: true, result: { ...candidate(inputs.ticker, start, {}, inPlayConfig(DEFAULT_CROSS_CONFIG)), markCents: 66, market: { ...pair.kalshi, yesBidCents: 63, yesAskCents: 69 }, quote: refused, route: null, evBps: null } };
+    },
+  });
+
+  await worker.inGameTick();
+  assert.deepEqual(seen.map((s) => s.ticker).sort(), ["M", "P", "Q", "S", "U"], "only open games inside their in-game minute, on both ledgers");
+  assert.ok(seen.every((s) => s.inGame === true), "every ask has the window set aside");
+  assert.equal(seen.find((s) => s.ticker === "S")?.contracts, 20, "at the holder's size");
+  assert.equal(seen.find((s) => s.ticker === "S")?.entryCents, 52, "and their entry");
+
+  const scan1 = new Map(loadShadowPositions(scanLedger).map((p) => [p.ticker, p]));
+  const mRead = scan1.get("M")?.inGame;
+  assert.ok(mRead && !("unread" in mRead), "M has its read");
+  assert.ok(mRead.minutesIn >= 25 && mRead.minutesIn <= 25.5, `minutes in ${mRead.minutesIn}`);
+  assert.ok(mRead.hoursToLock <= -0.4 && mRead.hoursToLock >= -0.5, `hours to lock ${mRead.hoursToLock}`);
+  assert.equal(mRead.markCents, 66);
+  assert.deepEqual(mRead.protectedBook, { yesBidCents: 63, yesAskCents: 69 });
+  assert.ok(mRead.routes.polymarket.ok && mRead.routes.kalshi_self.ok);
+  assert.equal(mRead.references?.length, 2);
+  assert.equal(scan1.get("M")?.prelock, undefined, "the in-game read is its own phase");
+  assert.equal(scan1.get("N")?.inGame, undefined, "too early");
+  assert.equal(scan1.get("O")?.inGame, undefined, "too late: the read is of its minute or not at all");
+  const pRead = scan1.get("P")?.inGame;
+  assert.ok(pRead && "unread" in pRead && pRead.unread === "market_not_active");
+  assert.equal(scan1.get("Q")?.inGame, undefined, "the unreachable one is not written");
+  assert.equal(scan1.get("R")?.inGame, undefined);
+  assert.equal(scan1.get("T")?.inGame, undefined);
+  assert.equal(scan1.get("U")?.inGame, undefined, "a start pushed back is not an unread");
+  const sRead = loadShadowPositions(lockLedger).find((p) => p.ticker === "S")?.inGame;
+  assert.ok(sRead && !("unread" in sRead), "the lock ledger got its own line");
+
+  // next tick: Q's venue is back; M, P and S are not asked again
+  qDown = false;
+  seen.length = 0;
+  await worker.inGameTick();
+  assert.deepEqual(seen.map((s) => s.ticker).sort(), ["Q", "U"]);
+  assert.ok(loadShadowPositions(scanLedger).find((p) => p.ticker === "Q")?.inGame);
+  seen.length = 0;
+  await worker.inGameTick();
+  assert.deepEqual(seen.map((s) => s.ticker), ["U"], "only the delayed start is still asked");
+  // the pre-lock tick leaves games in play alone
+  await worker.rereadTick();
+  assert.ok(!seen.some((s) => ["M", "P", "Q", "S", "O"].includes(s.ticker)), "nothing in play is read for the pre-lock");
+
+  await new Promise<void>((r) => worker.server.listen(0, "127.0.0.1", () => r()));
+  const base = `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`;
+  try {
+    const v = (await (await fetch(`${base}/api/shadow/venues?token=op-secret`)).json()) as {
+      inGame: { read: number; unread: number; avgMinutesIn: number | null; avgSpreadCents: number | null };
+      totals: Array<{ id: string; inGame: { read: number; quoted: number } }>;
+      rows: Array<{ ticker: string; inGame?: { minutesIn: number; unread: string | null; protectedBook: { yesBidCents: number; yesAskCents: number } | null; cells: Array<{ id: string; creditCents: number | null }> } }>;
+    };
+    assert.equal(v.inGame.read, 3, "M, Q and S");
+    assert.equal(v.inGame.unread, 1, "P");
+    assert.equal(v.inGame.avgSpreadCents, 6);
+    const rowM = v.rows.find((r) => r.ticker === "M");
+    assert.ok(rowM?.inGame && rowM.inGame.unread === null);
+    assert.deepEqual(rowM.inGame.protectedBook, { yesBidCents: 63, yesAskCents: 69 });
+    assert.ok(rowM.inGame.cells.find((x) => x.id === "aggregated_mm")?.creditCents);
+    assert.equal(v.totals.find((t) => t.id === "aggregated_mm")!.inGame.quoted, 3);
+    const html = await (await fetch(`${base}/venues?token=op-secret`)).text();
+    assert.match(html, /By venue, in play/);
+    assert.match(html, /in play T\+25(\.\d)?m/);
+    assert.match(html, /\(63\/69\)/);
+    assert.match(html, /priced again in play/);
+    assert.match(html, /market closed/);
+    const csv = await (await fetch(`${base}/api/shadow/venues.csv?token=op-secret`)).text();
+    assert.ok(csv.split("\n").some((l) => l.startsWith("M,") && l.includes(",in_game,")));
+    const health = (await (await fetch(`${base}/healthz?token=op-secret`)).json()) as { inGame: { minutes: number; lateMinutes: number; dueLastTick: number; writtenLastTick: number; lastError: string | null } };
+    assert.equal(health.inGame.minutes, 20);
+    assert.equal(health.inGame.lateMinutes, 30);
+    assert.equal(health.inGame.lastError, null);
+    const publicHealth = JSON.stringify(await (await fetch(`${base}/healthz`)).json());
+    assert.ok(!publicHealth.includes("inGame"));
+    const pub = JSON.stringify(await (await fetch(`${base}/api/shadow`)).json());
+    assert.ok(!pub.includes("inGame") && !pub.includes("protectedBook") && !pub.includes("minutesIn"), "the public record never carries the in-game read");
+  } finally {
+    await new Promise<void>((r) => worker.server.close(() => r()));
+  }
 });
