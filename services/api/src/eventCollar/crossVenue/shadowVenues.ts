@@ -15,7 +15,7 @@
  * Nothing here re-reads a venue; it is the ledger, arranged.
  */
 
-import type { ShadowAltTerms, ShadowBookOpenReread, ShadowBookOpened, ShadowReread } from "./shadowCounterfactuals";
+import type { ShadowAltTerms, ShadowBookOpenReread, ShadowBookOpened, ShadowInGameReread, ShadowReread } from "./shadowCounterfactuals";
 import type { ShadowPosition } from "./shadowLedger";
 import type { HedgeRoute } from "./types";
 import type { ReferenceBookId, ReferenceListing } from "./venueBooks";
@@ -111,10 +111,15 @@ export interface VenueGameRow {
   prelock?: VenuePrelock;
   /** the read taken when a held reference book opened, when the record caught one */
   bookOpen?: VenueBookOpen;
+  /** the in-game read, when the game has had one: the same columns a fixed number of minutes after the start */
+  inGame?: VenueInGame;
 }
 
 /** The book-open read laid out like the pre-lock one, plus which venue opened and how it was caught. */
 export type VenueBookOpen = VenuePrelock & { opened: ShadowBookOpened };
+
+/** The in-game read laid out like the pre-lock one, plus how far into the game it was taken and the protected market's own spread then. */
+export type VenueInGame = VenuePrelock & { minutesIn: number; protectedBook: { yesBidCents: number; yesAskCents: number } | null };
 
 /** The pre-lock read laid out like the open-time one; `unread` when the books could not be read then. */
 export interface VenuePrelock {
@@ -159,6 +164,20 @@ export interface VenueTotals {
   prelock: VenuePrelockTotals;
   /** the same counts at the book-open read, over the games whose held book opened */
   bookOpen: VenuePrelockTotals;
+  /** the same counts at the in-game read, over the games that had one */
+  inGame: VenuePrelockTotals;
+}
+
+/** Over the window's games: how many were priced again in play, and how the protected market's spread read then. */
+export interface VenueInGameTotals {
+  /** games with an in-game read that priced */
+  read: number;
+  /** games read in play whose books could not then be read for a reason that would not change (the market closed, the odds out of range) */
+  unread: number;
+  /** over every in-game read: mean minutes from the start to the read, one decimal */
+  avgMinutesIn: number | null;
+  /** over the in-game reads that priced: mean width of the protected market's own spread, cents, one decimal */
+  avgSpreadCents: number | null;
 }
 
 /** Over the window's games: how many held books opened, how, and how far before the lock. */
@@ -188,6 +207,8 @@ export interface VenueBreakdown {
   prelock: { read: number; unread: number };
   /** games in the window whose held reference book opened, and when */
   bookOpen: VenueBookOpenTotals;
+  /** games in the window priced again in play, and how the protected market read then */
+  inGame: VenueInGameTotals;
   totals: VenueTotals[];
   rows: VenueGameRow[];
 }
@@ -263,6 +284,11 @@ export function venueBookOpenFor(reread: ShadowBookOpenReread, writtenRoute: Hed
   return { ...venuePrelockFor(reread, writtenRoute), opened: reread.opened };
 }
 
+/** The in-game read laid out the same way, carrying the minutes into the game and the protected market's spread at that read. */
+export function venueInGameFor(reread: ShadowInGameReread, writtenRoute: HedgeRoute): VenueInGame {
+  return { ...venuePrelockFor(reread, writtenRoute), minutesIn: reread.minutesIn, protectedBook: reread.protectedBook ?? null };
+}
+
 /** One game's cells in column order; null when the position predates route counterfactuals or is not a game. */
 export function venueRowFor(p: ShadowPosition): VenueGameRow | null {
   const cf = p.counterfactuals;
@@ -270,6 +296,7 @@ export function venueRowFor(p: ShadowPosition): VenueGameRow | null {
   const { cells, best } = cellsFrom(cf.routes, cf.references ?? [], p.route, p.creditCents);
   const prelock = p.prelock ? venuePrelockFor(p.prelock, p.route) : undefined;
   const bookOpen = p.bookOpen ? venueBookOpenFor(p.bookOpen, p.route) : undefined;
+  const inGame = p.inGame ? venueInGameFor(p.inGame, p.route) : undefined;
   return {
     ticker: p.ticker,
     league: p.league,
@@ -289,6 +316,7 @@ export function venueRowFor(p: ShadowPosition): VenueGameRow | null {
     cells,
     ...(prelock ? { prelock } : {}),
     ...(bookOpen ? { bookOpen } : {}),
+    ...(inGame ? { inGame } : {}),
   };
 }
 
@@ -304,15 +332,16 @@ export function venueBreakdown(positions: ShadowPosition[], now: Date, opts: { w
   const rowsAll = inWindow.map(venueRowFor).filter((r): r is VenueGameRow => r !== null);
 
   type ReadTally = VenuePrelockTotals & { deltaSum: number };
-  type Tally = VenueTotals & { deltaSum: number; prelock: ReadTally; bookOpen: ReadTally };
+  type Tally = VenueTotals & { deltaSum: number; prelock: ReadTally; bookOpen: ReadTally; inGame: ReadTally };
   const emptyRead = (): ReadTally => ({ read: 0, listed: 0, quoted: 0, best: 0, avgDeltaCents: null, bothQuoted: 0, deltaSum: 0 });
   const totals = new Map<VenueColumnId, Tally>();
   for (const col of VENUE_COLUMNS) {
-    totals.set(col.id, { ...col, read: 0, listed: 0, quoted: 0, written: 0, best: 0, avgDeltaCents: null, bothQuoted: 0, deltaSum: 0, prelock: emptyRead(), bookOpen: emptyRead() });
+    totals.set(col.id, { ...col, read: 0, listed: 0, quoted: 0, written: 0, best: 0, avgDeltaCents: null, bothQuoted: 0, deltaSum: 0, prelock: emptyRead(), bookOpen: emptyRead(), inGame: emptyRead() });
   }
   const origins = { feed: 0, direct: 0, unknown: 0 };
   const prelock = { read: 0, unread: 0 };
   const bookOpen = { read: 0, unread: 0, live: 0, atHold: 0, hoursSum: 0, hoursN: 0, hoursSumLive: 0, hoursNLive: 0 };
+  const inGame = { read: 0, unread: 0, minutesSum: 0, minutesN: 0, spreadSum: 0, spreadN: 0 };
   /** one later read's cells onto that read's per-venue tally */
   const tallyRead = (read: VenuePrelock, pick: (t: Tally) => ReadTally) => {
     for (const c of read.cells) {
@@ -357,13 +386,24 @@ export function venueBreakdown(positions: ShadowPosition[], now: Date, opts: { w
       bookOpen.hoursN += 1;
       tallyRead(r.bookOpen, (t) => t.bookOpen);
     }
+    if (r.inGame) {
+      if (r.inGame.unread !== null) inGame.unread += 1;
+      else inGame.read += 1;
+      inGame.minutesSum += r.inGame.minutesIn;
+      inGame.minutesN += 1;
+      if (r.inGame.protectedBook) {
+        inGame.spreadSum += r.inGame.protectedBook.yesAskCents - r.inGame.protectedBook.yesBidCents;
+        inGame.spreadN += 1;
+      }
+      tallyRead(r.inGame, (t) => t.inGame);
+    }
     const o = r.bookOrigins;
     if (!o) origins.unknown += 1;
     else if (o.polymarket === "aggregator" || o.kalshi === "aggregator") origins.feed += 1;
     else origins.direct += 1;
   }
   const kept = new Set<VenueColumnId>();
-  for (const t of totals.values()) if (t.read > 0 || t.prelock.read > 0 || t.bookOpen.read > 0) kept.add(t.id);
+  for (const t of totals.values()) if (t.read > 0 || t.prelock.read > 0 || t.bookOpen.read > 0 || t.inGame.read > 0) kept.add(t.id);
   // the two original routes are always shown: they are what the record chose between from the
   // start; the ProphetX route joins once a read has priced it
   kept.add("kalshi_self");
@@ -376,6 +416,7 @@ export function venueBreakdown(positions: ShadowPosition[], now: Date, opts: { w
     cells: r.cells.filter((c) => kept.has(c.id)),
     ...(r.prelock ? { prelock: { ...r.prelock, cells: r.prelock.cells.filter((c) => kept.has(c.id)) } } : {}),
     ...(r.bookOpen ? { bookOpen: { ...r.bookOpen, cells: r.bookOpen.cells.filter((c) => kept.has(c.id)) } } : {}),
+    ...(r.inGame ? { inGame: { ...r.inGame, cells: r.inGame.cells.filter((c) => kept.has(c.id)) } } : {}),
   }));
   const since = rowsAll.reduce<string | null>((s, r) => (s === null || r.openedAt < s ? r.openedAt : s), null);
   const finishRead = ({ deltaSum, ...t }: ReadTally): VenuePrelockTotals => ({ ...t, avgDeltaCents: t.bothQuoted > 0 ? Math.round(deltaSum / t.bothQuoted) : null });
@@ -395,13 +436,20 @@ export function venueBreakdown(positions: ShadowPosition[], now: Date, opts: { w
       avgHoursToLock: tenth(bookOpen.hoursSum, bookOpen.hoursN),
       avgHoursToLockLive: tenth(bookOpen.hoursSumLive, bookOpen.hoursNLive),
     },
+    inGame: {
+      read: inGame.read,
+      unread: inGame.unread,
+      avgMinutesIn: tenth(inGame.minutesSum, inGame.minutesN),
+      avgSpreadCents: tenth(inGame.spreadSum, inGame.spreadN),
+    },
     totals: [...totals.values()]
       .filter((t) => kept.has(t.id))
-      .map(({ deltaSum, prelock: pl, bookOpen: bo, ...t }) => ({
+      .map(({ deltaSum, prelock: pl, bookOpen: bo, inGame: ig, ...t }) => ({
         ...t,
         avgDeltaCents: t.bothQuoted > 0 ? Math.round(deltaSum / t.bothQuoted) : null,
         prelock: finishRead(pl),
         bookOpen: finishRead(bo),
+        inGame: finishRead(ig),
       })),
     rows,
   };
@@ -493,9 +541,10 @@ export function venueBreakdownCsv(b: VenueBreakdown): string {
   };
   for (const r of b.rows) {
     for (const c of r.cells) push(r, "open", r.openedAt, null, c);
-    // later reads in time order: the book-open read, then the pre-lock read
+    // later reads in time order: the book-open read, the pre-lock read, then the in-game read (hours to lock negative: past the start)
     if (r.bookOpen) for (const c of r.bookOpen.cells) push(r, "book_open", r.bookOpen.at, r.bookOpen.hoursToLock, c);
     if (r.prelock) for (const c of r.prelock.cells) push(r, "prelock", r.prelock.at, r.prelock.hoursToLock, c);
+    if (r.inGame) for (const c of r.inGame.cells) push(r, "in_game", r.inGame.at, r.inGame.hoursToLock, c);
   }
   return lines.join("\n") + "\n";
 }

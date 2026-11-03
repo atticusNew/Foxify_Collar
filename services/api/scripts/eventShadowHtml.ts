@@ -29,7 +29,7 @@ import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossV
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { REFERENCE_BOOK_WORDS } from "../src/eventCollar/crossVenue/venueBooks";
 import type { HeldBooksStatus } from "../src/eventCollar/crossVenue/aggregatorHeldBooks";
-import type { VenueBookOpen, VenueBreakdown, VenueCell, VenuePrelock } from "../src/eventCollar/crossVenue/shadowVenues";
+import type { VenueBookOpen, VenueBreakdown, VenueCell, VenueInGame, VenuePrelock } from "../src/eventCollar/crossVenue/shadowVenues";
 import type { AggregatorBookStatus } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { REFERENCE_PRINT_WORDS } from "../src/eventCollar/crossVenue/venuePrints";
 
@@ -1455,21 +1455,23 @@ function venueListingHtml(c: VenueCell): string {
 
 /**
  * A venue's cell: the open-time read, and under it the pre-lock read when the game has had one
- * ("T-2.0h"), each laid out the same way. The written route's cell is highlighted at open; at the
- * pre-lock read the deltas are against that same route as it priced then.
+ * ("T-2.0h") and the in-game read when it has had that ("T+20m"), each laid out the same way. The
+ * written route's cell is highlighted at open; at the later reads the deltas are against that
+ * same route as it priced then.
  */
-function venueCellHtml(c: VenueCell, prelock: VenuePrelock | undefined, bookOpen: VenueBookOpen | undefined, written: boolean): string {
+function venueCellHtml(c: VenueCell, prelock: VenuePrelock | undefined, bookOpen: VenueBookOpen | undefined, inGame: VenueInGame | undefined, written: boolean): string {
   const open = venueReadHtml(c, written);
-  if (!prelock && !bookOpen) return `<td class="${written ? "hi" : ""}${!c.read || c.creditCents === null ? " ref" : ""}">${open}</td>`;
+  if (!prelock && !bookOpen && !inGame) return `<td class="${written ? "hi" : ""}${!c.read || c.creditCents === null ? " ref" : ""}">${open}</td>`;
   const later = (read: VenuePrelock, label: string): string => {
     const pc = read.cells.find((x) => x.id === c.id);
     const body = read.unread !== null ? `<span class="ref">${escapeHtml(refusalWordForPage(read.unread))}</span>` : pc ? venueReadHtml(pc, written) : "–";
     return `<div class="rd pl"><b>${label}</b>${body}</div>`;
   };
-  // in time order: the open-time read, the moment a held book opened, then the fixed pre-lock read
+  // in time order: the open-time read, the moment a held book opened, the fixed pre-lock read, then the in-game read
   const lines = [`<div class="rd">${open}</div>`];
   if (bookOpen) lines.push(later(bookOpen, `${bookOpen.opened.venue === c.id ? "opened" : "at open"} T-${bookOpen.hoursToLock}h`));
   if (prelock) lines.push(later(prelock, `T-${prelock.hoursToLock}h`));
+  if (inGame) lines.push(later(inGame, `in play T+${inGame.minutesIn}m`));
   return `<td class="${written ? "hi" : ""}">${lines.join("")}</td>`;
 }
 
@@ -1498,7 +1500,12 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
       const routeName = r.route === "kalshi_self" ? "Kalshi" : "Polymarket";
       const mark = r.prelock && r.prelock.markCents !== null && r.prelock.markCents !== r.markCents ? `${r.markCents}¢<i>T-${r.prelock.hoursToLock}h ${r.prelock.markCents}¢</i>` : `${r.markCents}¢`;
       const openedTag = r.bookOpen ? ` · ${venueNameOf(b, r.bookOpen.opened.venue)} opened T-${r.bookOpen.hoursToLock}h${r.bookOpen.opened.caught === "at_hold" ? " (before the hold)" : ""}` : "";
-      return `<tr class="${r.status}"><td class="g"><b>${escapeHtml(r.eventTitle)}</b><i>${escapeHtml(r.league.toUpperCase())}${r.status !== "open" ? ` · ${escapeHtml(r.status)}` : ""}${origin ? ` · ${origin}` : ""}${r.prelock ? " · re-read" : ""}${escapeHtml(openedTag)}</i></td><td>${escapeHtml(r.sideName)}<i>${r.contracts} @ ${r.markCents}¢</i></td><td>${escapeHtml(shortEt(r.eventTimeIso))}</td><td>${mark}</td><td class="hi">${routeName}<i>floor ${r.floorCents}¢ · cap ${r.capCents}¢</i></td>${r.cells.map((c) => venueCellHtml(c, r.prelock, r.bookOpen, c.written)).join("")}</tr>`;
+      const inPlayTag = r.inGame
+        ? r.inGame.unread !== null
+          ? ` · in play T+${r.inGame.minutesIn}m: ${refusalWordForPage(r.inGame.unread)}`
+          : ` · in play T+${r.inGame.minutesIn}m${r.inGame.markCents !== null ? ` mark ${r.inGame.markCents}¢` : ""}${r.inGame.protectedBook ? ` (${r.inGame.protectedBook.yesBidCents}/${r.inGame.protectedBook.yesAskCents})` : ""}`
+        : "";
+      return `<tr class="${r.status}"><td class="g"><b>${escapeHtml(r.eventTitle)}</b><i>${escapeHtml(r.league.toUpperCase())}${r.status !== "open" ? ` · ${escapeHtml(r.status)}` : ""}${origin ? ` · ${origin}` : ""}${r.prelock ? " · re-read" : ""}${escapeHtml(openedTag)}${escapeHtml(inPlayTag)}</i></td><td>${escapeHtml(r.sideName)}<i>${r.contracts} @ ${r.markCents}¢</i></td><td>${escapeHtml(shortEt(r.eventTimeIso))}</td><td>${mark}</td><td class="hi">${routeName}<i>floor ${r.floorCents}¢ · cap ${r.capCents}¢</i></td>${r.cells.map((c) => venueCellHtml(c, r.prelock, r.bookOpen, r.inGame, c.written)).join("")}</tr>`;
     })
     .join("");
 
@@ -1563,6 +1570,34 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
     return parts.join(" ") + holding;
   })();
 
+  // the in-game read, per venue, over the games that had one
+  const inGameRows =
+    b.inGame.read > 0
+      ? b.totals
+          .filter((t) => t.inGame.read > 0)
+          .map(
+            (t) =>
+              `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.inGame.read}</td><td>${t.inGame.listed}</td><td>${t.inGame.quoted}</td><td class="hi">${t.inGame.best}</td><td>${t.inGame.avgDeltaCents === null ? "–" : `${t.inGame.avgDeltaCents > 0 ? "+" : ""}${usd(t.inGame.avgDeltaCents)}<i>over ${t.inGame.bothQuoted}</i>`}</td></tr>`,
+          )
+          .join("")
+      : "";
+  const inGameLine = (() => {
+    const ig = b.inGame;
+    if (ig.read === 0 && ig.unread === 0) return "No game has reached its in-game read yet; the first one priced in play begins this table.";
+    const parts = [
+      `${ig.read + ig.unread} game${ig.read + ig.unread === 1 ? "" : "s"} priced again in play${ig.avgMinutesIn === null ? "" : `, on average ${ig.avgMinutesIn} minutes after the start`}${ig.avgSpreadCents === null ? "" : `; the protected market's own spread averaged ${ig.avgSpreadCents}¢ then`}${ig.unread > 0 ? `; ${ig.unread} could not be priced (the market had closed on the result or the odds had left the range)` : ""}.`,
+    ];
+    const funded = b.totals.filter((t) => t.inGame.read > 0);
+    for (const t of funded) {
+      parts.push(
+        `${t.name}${t.via === "feed" ? " (feed)" : ""} listed ${t.inGame.listed} of ${t.inGame.read} in play and would have funded ${t.inGame.quoted}; cheapest on ${t.inGame.best}${
+          t.inGame.avgDeltaCents === null ? "" : `, ${t.inGame.avgDeltaCents >= 0 ? "+" : "-"}${usd(Math.abs(t.inGame.avgDeltaCents))} credit against the route written as it priced then, over ${t.inGame.bothQuoted}`
+        }.`,
+      );
+    }
+    return parts.join(" ");
+  })();
+
   const richestLine = (() => {
     const quotedRefs = b.totals.filter((t) => t.kind === "reference" && t.quoted > 0);
     if (b.positions === 0) return "No sports game has been priced on more than one route yet; the next scan that quotes a game begins the table.";
@@ -1615,6 +1650,7 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
       <div class="bignum"><div class="n">${b.totals.filter((t) => t.kind === "reference" && (t.quoted > 0 || t.prelock.quoted > 0)).length}</div><div class="l">other venues that funded a game</div></div>
       <div class="bignum"><div class="n">${b.prelock.read}</div><div class="l">priced again before the lock</div></div>
       <div class="bignum"><div class="n">${b.bookOpen.read + b.bookOpen.unread}</div><div class="l">caught a book opening</div></div>
+      <div class="bignum"><div class="n">${b.inGame.read}</div><div class="l">priced again in play</div></div>
       <div class="bignum"><div class="n">${ps.configured ? "on" : "off"}</div><div class="l">aggregator feed</div></div>
     </div>
     <div class="read" style="margin-top:10px">${feedLine} ${escapeHtml(originLine)}</div>
@@ -1643,8 +1679,15 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
   </div>
 
   <div class="card">
+    <h2>By venue, in play</h2>
+    ${inGameRows ? `<div class="tablewrap"><table><tr><th>venue</th><th>read</th><th>listed</th><th>funded</th><th>cheapest</th><th>credit vs written</th></tr>${inGameRows}</table></div>` : ""}
+    <div class="read">${escapeHtml(inGameLine)}</div>
+    <div class="rule">The same columns a fixed number of minutes after the start, while the game is in play: which venues still carry a book on the opposing outcome, what the default tier would pay from those books at the position's size, and the protected market's own bid and ask at that minute (on each game's row). This is the measurement in-play protection would need before anyone is offered it; the lock itself still closes 45 minutes before the start. Nothing on this table was filled, and the public record does not carry it.</div>
+  </div>
+
+  <div class="card">
     <h2>By game</h2>
-    <div class="sub" style="margin-bottom:6px">Open games first, next to lock first; then settled, most recent first. Each venue cell is the credit the default tier would have paid from that book, the difference against the credit written, and for reference books the best ask on the opposing outcome and its visible depth in shares. A game that has had its pre-lock read shows that read under the open-time one, marked by the hours it was taken before the lock; a game whose held book was caught opening shows that read too, marked "opened" on the venue that opened.</div>
+    <div class="sub" style="margin-bottom:6px">Open games first, next to lock first; then settled, most recent first. Each venue cell is the credit the default tier would have paid from that book, the difference against the credit written, and for reference books the best ask on the opposing outcome and its visible depth in shares. A game that has had its pre-lock read shows that read under the open-time one, marked by the hours it was taken before the lock; a game whose held book was caught opening shows that read too, marked "opened" on the venue that opened; a game priced again in play shows that read last, marked by the minutes after the start.</div>
     <div class="tablewrap"><table>${head}${rows}</table></div>
     ${b.rows.length === 0 ? `<div class="read">Nothing in the window yet.</div>` : ""}
     <a class="back" href="/report${tq}">Rule comparison</a> <a class="back" href="/api/shadow/venues${tq}">Raw JSON</a> <a class="back" href="/api/shadow/venues.csv${tq}${input.windowDays !== 7 ? `${tq ? "&" : "?"}days=${input.windowDays}` : ""}">Every read with listing ids (CSV)</a> <a class="back" href="/api/shadow/venues/catalog${tq}${tq ? "&" : "?"}league=nba">What reference book A lists for a league (JSON)</a> <a class="back" href="/healthz${tq}">Status</a>

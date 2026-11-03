@@ -1487,6 +1487,12 @@ export interface OneQuoteInputs {
   holderVenue?: SettlementVenue;
   /** which hedge venues the executor can send to now; absent, both on paper */
   executable?: Record<HedgeRoute, boolean>;
+  /**
+   * The shadow's in-game read (eventShadowWorker, measurement only): the game must have started,
+   * and the lock window is not applied, since the question is what the books would price in play.
+   * Never set on the lock path, which keeps the window as it is.
+   */
+  inGame?: boolean;
 }
 
 export type OneQuoteResult = { ok: true; result: CandidateResult } | { ok: false; code: string; detail: string };
@@ -1523,7 +1529,11 @@ export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> 
     pairCache.set(ticker, pair);
   }
   if (!pair) return { ok: false, code: "no_matched_market", detail: "Protection isn't offered on this event yet." };
-  if (!showcaseWindowOk(pair, now)) return { ok: false, code: "market_too_close_to_start", detail: "This one starts too soon to protect." };
+  if (inputs.inGame) {
+    if (protectWindow(pair.gameStartTime, now).why !== "in_progress") return { ok: false, code: "not_started", detail: "The game has not started; the in-game read waits for it." };
+  } else if (!showcaseWindowOk(pair, now)) {
+    return { ok: false, code: "market_too_close_to_start", detail: "This one starts too soon to protect." };
+  }
   const position: ReturnType<typeof buildShowcasePosition> = {
     contracts: inputs.contracts,
     entryCents: inputs.entryCents ?? markCents,

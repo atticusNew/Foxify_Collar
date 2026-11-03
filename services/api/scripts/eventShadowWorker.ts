@@ -28,6 +28,8 @@
  *      EVENT_SHADOW_CRYPTO_SHARE_MAX (default 0.5) · EVENT_SHADOW_CRYPTO_FLOOR_PER_DAY (default 4)
  *      EVENT_SHADOW_REREAD_HOURS (price every open game again on every venue this long before its
  *      lock, default 2; 0 = off) · EVENT_SHADOW_REREAD_MS (how often that is checked, default 60s)
+ *      EVENT_SHADOW_IN_GAME_MINUTES (price every open game again on every venue this long after its
+ *      start, in play, default 20; 0 = off; the read is taken on the same timer as the pre-lock one)
  *      EVENT_SHADOW_HOLD_HOURS (hold the feed's reference books for every open game this long before
  *      its lock and price it again the moment one opens, default 48; 0 = off; needs the aggregator
  *      key) · EVENT_SHADOW_HOLD_MS (how often the holds are reconciled, default 60s)
@@ -90,6 +92,7 @@ import {
 } from "../src/eventCollar/crossVenue/shadowAlerts";
 import {
   counterfactualsFor,
+  inPlayConfig,
   rereadQuotesFor,
   type ShadowBookOpened,
   type ShadowCounterfactuals,
@@ -212,6 +215,29 @@ let lastRereadError: string | null = null;
 let rereadDueLastTick = 0;
 let rereadWrittenLastTick = 0;
 let rereadInFlight = false;
+
+/**
+ * IN-GAME RE-READ: every open game is priced again the same way a fixed number of minutes after
+ * its start, while it is in play (shadowCounterfactuals.ShadowInGameReread). The question it
+ * answers is whether a floor could be priced at all once the game has begun: which venues still
+ * carry a book on the opposing outcome, how wide the protected market's own spread has gone, and
+ * what the default tier would pay from those books at the position's size. Measurement only: the
+ * lock window stays at 45 minutes before the start, nothing is hedged in play, and the read is the
+ * operator's (/venues, the CSV), never the public record's. A game whose read-minute passed while
+ * the worker was away is not read late: the read is of that minute or not at all.
+ */
+const IN_GAME_MINUTES = (() => {
+  const raw = process.env.EVENT_SHADOW_IN_GAME_MINUTES;
+  const n = Number(raw);
+  return raw !== undefined && raw.trim() !== "" && Number.isFinite(n) && n >= 0 && n <= 240 ? n : 20;
+})();
+/** how long after its read-minute a game is still read (the venues down, the worker restarting): past this, it goes unread */
+const IN_GAME_LATE_MINUTES = 30;
+let lastInGameAt: string | null = null;
+let lastInGameError: string | null = null;
+let inGameDueLastTick = 0;
+let inGameWrittenLastTick = 0;
+let inGameInFlight = false;
 
 /**
  * HELD BOOKS: for every open game inside this window the worker keeps a subscription on the
@@ -2291,6 +2317,88 @@ async function rereadTick(): Promise<void> {
   }
 }
 
+/**
+ * Price every open game that is inside its in-game minute and has no in-game read yet: the
+ * engine's own quote path with the window set aside (quoteOne's inGame), then both routes and
+ * each reference re-priced at the position's size, written to the position's own ledger as an
+ * `in_game` re-read with the minutes into the game and the protected market's own spread. A read
+ * the engine refuses for a reason that will not change (the market closed, the odds out of range)
+ * is written as `unread`; a venue that is unreachable is retried next tick, within the late margin.
+ */
+async function inGameTick(): Promise<void> {
+  if (!quoteOneFn || IN_GAME_MINUTES <= 0 || inGameInFlight) return;
+  inGameInFlight = true;
+  const now = Date.now();
+  let due = 0;
+  let written = 0;
+  let failed = 0;
+  try {
+    const onBoth = ledgerPaths().flatMap((path) => loadShadowPositions(path).map((p) => ({ p, path })));
+    for (const { p, path } of onBoth) {
+      if (p.status !== "open" || p.kind !== "sports" || p.inGame) continue;
+      const eventMs = Date.parse(p.eventTimeIso);
+      if (!Number.isFinite(eventMs)) continue;
+      const minutesIn = (now - eventMs) / 60_000;
+      if (minutesIn < IN_GAME_MINUTES || minutesIn > IN_GAME_MINUTES + IN_GAME_LATE_MINUTES) continue;
+      due += 1;
+      if (written + failed >= REREAD_MAX_PER_TICK) continue;
+      try {
+        const q = await quoteOneFn({ ticker: p.ticker, contracts: p.contracts, entryCents: p.entryCents, inGame: true });
+        const at = new Date().toISOString();
+        const sinceStartMs = Date.parse(at) - eventMs;
+        const stamp = { hoursToLock: -Math.round((sinceStartMs / 3_600_000) * 10) / 10, minutesIn: Math.round((sinceStartMs / 60_000) * 10) / 10 };
+        if (!q.ok) {
+          // the pairing's start is later than the record's (a delayed start): not in play yet, asked again next tick
+          if (q.code === "not_started") continue;
+          // a structural refusal (the market closed on the result, the odds out of range): final for this position
+          if (appendOrAlert({ type: "reread", at, ticker: p.ticker, phase: "in_game", ...stamp, unread: q.code }, path)) written += 1;
+          continue;
+        }
+        const res = q.result;
+        const { routes, references } = rereadQuotesFor({
+          route: p.route,
+          ticker: p.ticker,
+          lockTimeIso: p.eventTimeIso,
+          pair: res.pair,
+          markCents: res.markCents,
+          entryCents: p.entryCents ?? res.markCents,
+          contracts: p.contracts,
+          now: new Date(at),
+          config: inPlayConfig(searchConfig()),
+          books: res.books,
+          prophetxFeeBps: PROPHETX_FEE_BPS,
+        });
+        const ok = appendOrAlert(
+          {
+            type: "reread",
+            at,
+            ticker: p.ticker,
+            phase: "in_game",
+            ...stamp,
+            markCents: res.markCents,
+            protectedBook: { yesBidCents: res.market.yesBidCents, yesAskCents: res.market.yesAskCents },
+            routes,
+            ...(references ? { references } : {}),
+            ...(res.bookOrigins ? { bookOrigins: res.bookOrigins } : {}),
+          },
+          path,
+        );
+        if (ok) written += 1;
+      } catch (err) {
+        // the venues unreachable for this one; due again next tick while inside the late margin
+        failed += 1;
+        lastInGameError = `${p.ticker}: ${String(err instanceof Error ? err.message : err)}`;
+      }
+    }
+    if (failed === 0) lastInGameError = null;
+  } finally {
+    inGameInFlight = false;
+    inGameDueLastTick = due;
+    inGameWrittenLastTick = written;
+    lastInGameAt = new Date().toISOString();
+  }
+}
+
 /** The hold key for one game's reference venue, and back. */
 const holdKey = (ticker: string, id: ReferenceBookId) => `${ticker}|${id}`;
 const splitHoldKey = (key: string): { ticker: string; id: ReferenceBookId } => {
@@ -2562,6 +2670,7 @@ function healthBody(): Record<string, unknown> {
     earlyClose: { ...earlyCloseRule, everyMs: CLOSE_MS, lastCloseAt, lastCloseError, closeDueLastTick },
     // the pre-lock read: on or off, how far before the lock, the last tick's counters
     reread: { hours: REREAD_HOURS, everyMs: REREAD_MS, lastAt: lastRereadAt, lastError: lastRereadError, dueLastTick: rereadDueLastTick, writtenLastTick: rereadWrittenLastTick },
+    inGame: { minutes: IN_GAME_MINUTES, lateMinutes: IN_GAME_LATE_MINUTES, everyMs: REREAD_MS, lastAt: lastInGameAt, lastError: lastInGameError, dueLastTick: inGameDueLastTick, writtenLastTick: inGameWrittenLastTick },
     // the held books: on or off (and why), the window, what is held and in which state, opens written
     heldBooks: {
       hours: HOLD_HOURS,
@@ -2681,9 +2790,9 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
  * each book was read from stay with the operator (the raw ledger, the full CSV, /venues); a
  * reader can recompute every public row without them.
  */
-function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeOffsetStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId" | "bookOrigins" | "holder"> & { cashDue?: ReturnType<typeof cashDue> } {
-  // where the books came from (the partner's feed or the venue), the pre-lock read, the book-open read and whose lock it is are the operator's: /venues, /api/shadow/holders, the raw ledger
-  const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, hedgeTokenId: _tok, hedgeStrikeId: _strike, hedgeOffsetStrikeId: _offset, hedgeMarketId: _nvMarket, hedgeOutcomeId: _nvOutcome, hedgeOffsetOutcomeId: _nvOffset, bookOrigins: _origins, holder: _holder, ...rest } = p;
+function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "inGame" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeOffsetStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId" | "bookOrigins" | "holder"> & { cashDue?: ReturnType<typeof cashDue> } {
+  // where the books came from (the partner's feed or the venue), the pre-lock, book-open and in-game reads and whose lock it is are the operator's: /venues, /api/shadow/holders, the raw ledger
+  const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, inGame: _inGame, hedgeTokenId: _tok, hedgeStrikeId: _strike, hedgeOffsetStrikeId: _offset, hedgeMarketId: _nvMarket, hedgeOutcomeId: _nvOutcome, hedgeOffsetOutcomeId: _nvOffset, bookOrigins: _origins, holder: _holder, ...rest } = p;
   // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
   return p.source === "lock" ? { ...rest, cashDue: cashDue(p) } : rest;
 }
@@ -3199,6 +3308,7 @@ async function main(): Promise<void> {
     console.log(
       `[event-shadow] listening on :${PORT} · ledger ${LEDGER_PATH} · scan every ${Math.round(SCAN_MS / 60_000)}m · settle every ${Math.round(SETTLE_MS / 60_000)}m · early closes ${earlyCloseRule.sharePct}% of the book` +
         (REREAD_HOURS > 0 ? ` · pre-lock re-read ${REREAD_HOURS}h before each lock` : " · pre-lock re-read off") +
+        (IN_GAME_MINUTES > 0 ? ` · in-game re-read ${IN_GAME_MINUTES}m after each start` : " · in-game re-read off") +
         (heldSource && HOLD_HOURS > 0 ? ` · held books ${HOLD_HOURS}h before each lock` : ` · held books off (${heldSource ? "EVENT_SHADOW_HOLD_HOURS=0" : "aggregator key not set"})`) +
         (lastLegCfg.enabled
           ? ` · last-leg shadow every ${Math.round(lastLegCfg.tickMs / 60_000)}m (${lastLegCfg.legCounts.join("/")}-leg tickets, $${(lastLegCfg.stakeCents / 100).toFixed(0)} stake, ledger ${LASTLEG_PATH})`
@@ -3218,6 +3328,10 @@ async function main(): Promise<void> {
     if (REREAD_HOURS > 0) {
       void rereadTick();
       setInterval(() => void rereadTick(), REREAD_MS);
+    }
+    if (IN_GAME_MINUTES > 0) {
+      void inGameTick();
+      setInterval(() => void inGameTick(), REREAD_MS);
     }
     if (heldSource && HOLD_HOURS > 0) {
       void holdTick();
@@ -3269,4 +3383,4 @@ export function wireHeldBooks(source: AggregatorBookSource | null): void {
   heldSource = source;
 }
 
-export { server, scanTick, settleTick, closeTick, lastLegTick, rereadTick, holdTick };
+export { server, scanTick, settleTick, closeTick, lastLegTick, rereadTick, inGameTick, holdTick };

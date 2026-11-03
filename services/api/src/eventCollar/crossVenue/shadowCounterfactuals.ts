@@ -328,7 +328,34 @@ export interface ShadowBookOpened {
 }
 export type ShadowBookOpenReread = ShadowReread & { opened: ShadowBookOpened };
 
+/**
+ * IN-GAME RE-READ. The same read, taken a fixed number of minutes after the start, while the game
+ * is in play. It measures whether a floor could be priced at all once the game has begun (which
+ * venues still carry a book on the opposing outcome, how wide the protected market's own spread
+ * has gone, what the default tier would pay from those books at the position's size), which is
+ * the question "could this be protected in play" needs answered before anyone is offered it.
+ * `hoursToLock` is negative here (hours past the start, one decimal); `minutesIn` is the same
+ * figure the way the read is scheduled. Measurement only: nothing is hedged in play, the window
+ * the lock path enforces (protectWindow) is unchanged, and the public record never carries it.
+ */
+export type ShadowInGameReread = ShadowReread & {
+  /** minutes from the start to this read, one decimal */
+  minutesIn: number;
+  /** the protected market's own bid and ask at this read; in play the spread is the measure. Absent on the unread form. */
+  protectedBook?: { yesBidCents: number; yesAskCents: number };
+};
+
 const UNREACHABLE: ShadowAltTerms = { ok: false, refused: "unreachable" };
+
+/**
+ * The search config for an in-game read: the pricers' lead-time gate (minMinutesToStart, 10
+ * minutes before the start for anything the record writes) set aside, so the books can be priced
+ * past the start. Everything else prices as the record does. For the measurement only: the lock
+ * path never sees this config, and the engine's own quote still refuses in play.
+ */
+export function inPlayConfig(cfg: CrossSearchConfig): CrossSearchConfig {
+  return { ...cfg, minMinutesToStart: Number.NEGATIVE_INFINITY };
+}
 
 /**
  * Each route and each reference from one fresh read of the books. Unlike counterfactualsFor there
