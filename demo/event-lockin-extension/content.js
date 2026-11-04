@@ -648,9 +648,11 @@
       scan(true);
       return;
     }
-    // the venue's own page, in its own tab; this page waits for the service's word
-    const tab = window.open(r.json.url, "_blank", "noopener");
-    if (!tab) S.connect.err = "Your browser blocked the venue's sign-in tab. Allow pop-ups for this site and try again.";
+    // the venue's own page, in its own tab (noopener: the venue's tab gets no handle on this page,
+    // and so window.open hands back nothing to judge by); this page waits for the service's word,
+    // and keeps the link in view in case the browser held the tab back
+    S.connect.url = r.json.url;
+    window.open(r.json.url, "_blank", "noopener");
     const poll = async () => {
       if (!S.connect.busy) return;
       const m = await api("/api/shadow/member", "GET");
@@ -2095,7 +2097,9 @@
     if (sale) {
       // the holder's own sale, as the venue's book prices it now: how many of their contracts sell, at what, how many ride
       rows.push(drow("Sale", saleWords(t, n, p.member) + (t.depthLimited ? ' <span class="ael-dim">&middot; the bids run out there</span>' : "")));
-      const cmp = comparedWords(p.compared);
+      // the comparison follows the shape picked, when the hedge routes priced that shape
+      const cmpBase = p.compared;
+      const cmp = comparedWords(cmpBase && cmpBase.ok && cmpBase.tiers && cmpBase.tiers[st.tier] ? Object.assign({}, cmpBase, cmpBase.tiers[st.tier]) : cmpBase);
       if (cmp) rows.push(drow("Compared", cmp));
     } else {
       const other = otherSideWords(p.routing);
@@ -2104,7 +2108,8 @@
     const until = p.eventTimeIso ? esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)) : null;
     const finer = fine.filter((f) => f !== "Priced live");
     rows.push(drow(until ? "Until" : "Priced", (until ? until + ' <span class="ael-dim">&middot; priced live' : '<span class="ael-dim">live') + (finer.length ? " &middot; " + finer.join(" &middot; ") : "") + "</span>"));
-    const rt = rulesOf(p);
+    // a member's shapes each carry their own tails (the riding count differs); the picked one speaks
+    const rt = rulesOf(MEMBER && t && Array.isArray(t.tails) && t.tails.length ? { tails: t.tails, rules: p.rules } : p);
     if (rt && Array.isArray(rt.tails) && rt.tails.length) {
       rows.push(drow(toggleA("ael-rules-a", "Rules", st.rules), st.rules ? "" : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + "</span>"));
       if (st.rules) rows.push(dwide(rulesGrid(rt)));
@@ -2923,7 +2928,7 @@
       const leaveAct = !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button>' + (simple() ? "" : "<span>remove the protection, keep your pick</span>") + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
       body = (simple() ? simpleLedger(nick, rs, cashOf(rec), null, sale) : ledger(nick, rs, cashOf(rec), null, sale)) + (st.leave ? leaveHtml(B, rec, rs) + leaveAct : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
-      if (rec.justNow && rec.ms) meta.push((sale ? "sold in " : rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
+      if (rec.justNow && rec.ms) meta.push((sale ? "sold " : rec.hedge && !rec.hedge.simulated ? "the other side bought " : "") + (rec.ms < 100 ? "at once" : "in " + (rec.ms / 1000).toFixed(1) + "s"));
       // a member's sale that filled short of the shape asked: said once here; the figures above are the fill's
       if (sale && rec.memberSale && rec.memberSale.requestedContracts != null && rec.memberSale.soldContracts < rec.memberSale.requestedContracts) meta.push(rec.memberSale.soldContracts + " of the " + rec.memberSale.requestedContracts + " asked sold; the rest rides");
       // a parlay's last pick: the earlier picks that hit stand behind this single
@@ -3882,6 +3887,7 @@
         '<div class="ael-connect">' +
         '<div class="ael-ph"><b>' + (waiting ? "Waiting for " + esc(V.name) + "\u2026" : "Protect your " + esc(V.name) + " positions") + "</b><span>" + (waiting ? "Sign in on the " + esc(V.name) + " tab that opened and approve the connection. This page updates on its own once it is done." : "Connect your " + esc(V.name) + " account once. You sign in on " + esc(V.name) + "'s own page and approve reading your portfolio and placing orders in your account; this extension never sees your login or your keys, and the lock is your own sale into " + esc(V.name) + "'s book.") + "</span></div>" +
         (why ? '<div class="ael-fine">' + why + "</div>" : "") +
+        (waiting && S.connect.url ? '<div class="ael-fine">No tab opened? <a href="' + esc(S.connect.url) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(V.name) + "'s sign-in page</a>.</div>" : "") +
         (S.connect.err ? '<div class="ael-fine ael-err">' + esc(S.connect.err) + "</div>" : "") +
         '<div class="ael-acts ael-offer-acts">' +
         (waiting ? '<button type="button" class="ael-go ael-quiet ael-connect-stop">Cancel</button>' : '<button type="button" class="ael-go ael-pillgo ael-connect-go"><span class="ael-ic">' + SHIELD_FILL + "</span>Connect " + esc(V.name) + " account</button>") +
@@ -3965,13 +3971,21 @@
     for (const p of S.svc.positions) {
       live.add(p.id);
       let B = S.cardRows.get(p.id);
+      // a member's own sale leaves fewer contracts in the account: the line says what rides and what sold
+      const sold = p.lock && p.lock.status === "open" && p.lock.memberSale && p.lock.memberSale.soldContracts > 0 ? p.lock.memberSale.soldContracts : 0;
+      const posHtml = "<b>" + esc(p.side || "position") + "</b><span>" + esc(p.event || "") + (p.startsIso ? " &middot; " + esc(fmtAt(p.startsIso)) : "") + " &middot; " + (sold ? p.contracts + " riding, " + sold + " sold" : "pays " + esc(usd(p.payoutCents))) + "</span>";
       if (!B) {
         const item = document.createElement("div");
         item.className = "ael-ui ael-card-row";
-        item.innerHTML = '<div class="ael-card-pos"><b>' + esc(p.side || "position") + "</b><span>" + esc(p.event || "") + (p.startsIso ? " &middot; " + esc(fmtAt(p.startsIso)) : "") + " &middot; pays " + esc(usd(p.payoutCents)) + "</span></div>" + '<div class="ael-ui ael-row"></div>';
+        item.innerHTML = '<div class="ael-card-pos">' + posHtml + "</div>" + '<div class="ael-ui ael-row"></div>';
         body.appendChild(item);
         B = { row: item, host: item, box: item.querySelector(".ael-row"), ticker: p.ticker || "__" + p.id, kind: "winner", match: "matched", size: { contracts: p.contracts, entryCents: p.entryCents, stakeCents: p.costCents, payoutCents: p.payoutCents }, from: "service", card: true };
         S.cardRows.set(p.id, B);
+      } else {
+        const pos = B.row.querySelector(".ael-card-pos");
+        if (pos && pos.innerHTML !== posHtml) pos.innerHTML = posHtml;
+        // the account's size is the offer's size, once nothing open stands on it
+        if (!(p.lock && p.lock.status === "open")) B.size = { contracts: p.contracts, entryCents: p.entryCents, stakeCents: p.costCents, payoutCents: p.payoutCents };
       }
       if (B.ticker.startsWith("__")) {
         const st = stateOf(B);
@@ -4054,11 +4068,12 @@
     if (MEMBER) {
       // a member venue: no row on its page is read (the positions come from the holder's connected
       // account), so the card is the surface, on every page of the venue; the pre-trade pills on
-      // the game cards and in the slip read the page as they do anywhere
+      // the game cards and in the slip read the page as they do anywhere, except on the portfolio
+      // page, where a pill beside a held position would only double the card
       for (const [, B] of S.rows) B.host && B.host.remove();
       S.rows.clear();
       paintNotice("");
-      const nodes = textNodes();
+      const nodes = S.pageOk ? [] : textNodes();
       markGames(nodes);
       const slipWas = S.slip && S.slip.block;
       scanSlip(nodes);
