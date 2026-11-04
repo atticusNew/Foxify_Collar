@@ -31,6 +31,62 @@ import {
   type ShadowReread,
 } from "./shadowCounterfactuals";
 
+/**
+ * How a position's protection was funded: a hedge bought on one of the routes, or, on the
+ * member-app venue, the holder's own partial sale into their venue's bid ("member_sale": nothing
+ * bought anywhere, no capital of ours, no cash between the parties). Not a HedgeRoute: the
+ * routing never competes it.
+ */
+export type LedgerRoute = HedgeRoute | "member_sale";
+
+/**
+ * The facts of a member's own sale, as the venue confirmed them (memberSale.ts). Whole-contract
+ * totals in cents: the per-contract floor and cap on the record are these divided down, for the
+ * tables; the settlement reads these.
+ */
+export interface MemberSaleRecord {
+  /** contracts the venue filled on the sell, and the contracts still riding to the game */
+  soldContracts: number;
+  keptContracts: number;
+  /** the walked limit the order was sent at, and the average the fills came back at, cents */
+  limitPriceCents: number;
+  avgPriceCents: number;
+  /** what the fills paid into the member's own balance, cents, before the venue's own fee on them */
+  cashNowCents: number;
+  /** the venue's fee on the fills, cents, when the fills read carried it */
+  feeCents?: number;
+  /** the two ends: cash now (the side lost), cash now plus $1 on every riding contract (it won) */
+  floorTotalCents: number;
+  capTotalCents: number;
+  /** the venue's order: its id, its terminal status, what was asked and what filled */
+  orderId: string | null;
+  clientOrderId: string;
+  status: string;
+  requestedContracts: number;
+  /** the hedge routes priced in the background at the sale, nothing sent (absent when none could be) */
+  compared?: MemberSaleComparison;
+}
+
+/**
+ * The background comparison: the same size priced on the hedge routes at the moment of the sale,
+ * nothing sent anywhere. What a hedged lock would have paid up front and left at each end, so
+ * the member's own sale can be read against it.
+ */
+export interface MemberSaleComparison {
+  at: string;
+  ok: boolean;
+  /** why nothing was priced, when ok is false */
+  reason?: string;
+  tier?: ProtectionTier;
+  creditCents?: number;
+  floorTotalCents?: number;
+  capTotalCents?: number;
+  /** the route that would have been chosen, and each route's credit for the same protection */
+  chosen?: HedgeRoute | null;
+  routes?: Array<{ route: HedgeRoute; ok: boolean; creditCents: number | null; allInBps: number | null }>;
+  sent: false;
+}
+
 /** One simulated position opened from a live board quote. */
 export interface ShadowOpenRecord {
   type: "open";
@@ -50,7 +106,7 @@ export interface ShadowOpenRecord {
   creditCents: number;
   /** quoted cost of protection, bps of naked EV (negative = protection beats naked) */
   evCostBps: number;
-  route: HedgeRoute;
+  route: LedgerRoute;
   feesCents: number;
   takeCents: number;
   /**
@@ -139,6 +195,27 @@ export interface ShadowOpenRecord {
    * what it pays; the lock's contracts are one per payout dollar. Public: a holder's words only.
    */
   parlay?: ParlayRecord;
+  /**
+   * With route "member_sale": the member's own sale as their venue confirmed it. The floor and cap
+   * totals here are what settlement pays; the per-contract floorCents and capCents above are those
+   * divided down for the tables. creditCents is 0: nothing was paid by anyone but the venue's bid.
+   */
+  memberSale?: MemberSaleRecord;
+}
+
+/** A member's buy-back at an early leave (route "member_sale"): the sold contracts bought again from the venue's offers. */
+export interface MemberBuyBackRecord {
+  /** contracts asked for (the ones sold at the lock) and the contracts the venue filled */
+  requestedContracts: number;
+  boughtContracts: number;
+  limitPriceCents: number;
+  avgPriceCents: number;
+  /** what the fills cost out of the member's own balance, cents, before the venue's fee */
+  costCents: number;
+  feeCents?: number;
+  orderId: string | null;
+  clientOrderId: string;
+  status: string;
 }
 
 /**
@@ -181,6 +258,13 @@ export interface ShadowCloseRecord {
    * operator sells by hand and the receipt says so.
    */
   hedgeSent?: boolean;
+  /**
+   * With route "member_sale" and source "unwind": the buy-back as the venue confirmed it. Here
+   * protectedAtCloseCents is the net cash the lock left in the member's balance (the sale less the
+   * buy-back) with the position back to its size, positionProceedsCents is 0 (nothing was sold
+   * naked) and hedgeProceedsCents is 0.
+   */
+  memberBuyBack?: MemberBuyBackRecord;
 }
 
 /** The market finalized on Kalshi with an official result. */
@@ -290,6 +374,8 @@ export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
   bookOpen?: ShadowBookOpenReread;
   /** the in-game read, when the game has had one (never on the public record) */
   inGame?: ShadowInGameReread;
+  /** closed, route "member_sale": the buy-back as the venue confirmed it */
+  closeMemberBuyBack?: MemberBuyBackRecord;
 }
 
 /** One leg of cash the lock owes, and how much of it has been paid. */
@@ -314,6 +400,8 @@ export interface CashLegDue {
  * favors; nothing when it nets to zero.
  */
 export function cashDue(p: ShadowPosition): CashLegDue[] {
+  // a member's own sale: every dollar moved inside their own venue account; nothing is owed between the parties
+  if (p.route === "member_sale") return [];
   const owed: Array<{ leg: CashLeg; to: "holder" | "writer"; dueCents: number }> = [{ leg: "credit", to: "holder", dueCents: p.creditCents }];
   if (p.status === "settled" && p.result === "no") owed.push({ leg: "floor", to: "holder", dueCents: centsOf(p.floorCents, p.contracts) });
   if (p.status === "settled" && p.result === "yes" && p.capCents < 100) owed.push({ leg: "handback", to: "writer", dueCents: fundingOf(p) });
@@ -331,10 +419,11 @@ export function cashDue(p: ShadowPosition): CashLegDue[] {
 
 /** Outcome math for one settled position — the same totals the app banner shows. */
 export function settlePayouts(
-  p: Pick<ShadowOpenRecord, "contracts" | "floorCents" | "capCents" | "creditCents">,
+  p: Pick<ShadowOpenRecord, "contracts" | "floorCents" | "capCents" | "creditCents"> & Partial<Pick<ShadowOpenRecord, "memberSale">>,
   result: "yes" | "no",
 ): { protectedCents: number; nakedCents: number; deltaCents: number } {
-  const protectedCents = result === "yes" ? capTotalCents(p) : floorTotalCents(p);
+  // a member's own sale settles on its whole-contract totals: the cash the fills paid, plus $1 on every riding contract when the side won
+  const protectedCents = p.memberSale ? (result === "yes" ? p.memberSale.capTotalCents : p.memberSale.floorTotalCents) : result === "yes" ? capTotalCents(p) : floorTotalCents(p);
   const nakedCents = result === "yes" ? centsOf(100, p.contracts) : 0;
   return { protectedCents, nakedCents, deltaCents: protectedCents - nakedCents };
 }
@@ -342,7 +431,8 @@ export function settlePayouts(
 type WriterInputs = Pick<
   ShadowOpenRecord,
   "contracts" | "floorCents" | "capCents" | "creditCents" | "takeCents" | "hedgeCostCents" | "hedgeUnitsMilli"
->;
+> &
+  Partial<Pick<ShadowOpenRecord, "route">>;
 
 /**
  * What a close moves between the parties beyond the credit: hedge sale minus the cap slice. By the
@@ -392,6 +482,8 @@ export function writerPayouts(
   p: WriterInputs,
   result: "yes" | "no",
 ): { writerCents: number; hedgePayoutCents: number; hedgeCostCents: number; fundingCents: number } {
+  // a member's own sale: no writer, no hedge, no funding; every figure is zero by construction
+  if (p.route === "member_sale") return { writerCents: 0, hedgePayoutCents: 0, hedgeCostCents: 0, fundingCents: 0 };
   const funding = fundingOf(p);
   const hedgeCost = hedgeCostOf(p);
   const hedgePayout = result === "no" ? Math.round(hedgeUnitsOf(p) / 10) : 0;
@@ -547,6 +639,7 @@ export function loadShadowPositions(path: string): ShadowPosition[] {
         closeUnwindFrictionCents: rec.unwindFrictionCents ?? null,
         closeSource: rec.source ?? "schedule",
         ...(rec.source === "unwind" ? { closeHedgeSent: rec.hedgeSent ?? false } : {}),
+        ...(rec.memberBuyBack ? { closeMemberBuyBack: rec.memberBuyBack } : {}),
       });
     }
   }

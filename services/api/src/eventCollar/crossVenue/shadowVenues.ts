@@ -294,7 +294,8 @@ export function venueInGameFor(reread: ShadowInGameReread, writtenRoute: HedgeRo
 /** One game's cells in column order; null when the position predates route counterfactuals or is not a game. */
 export function venueRowFor(p: ShadowPosition): VenueGameRow | null {
   const cf = p.counterfactuals;
-  if (p.kind !== "sports" || !cf?.routes) return null;
+  // a member's own sale bought nothing on any book: no venue row to compare
+  if (p.kind !== "sports" || !cf?.routes || p.route === "member_sale") return null;
   const { cells, best } = cellsFrom(cf.routes, cf.references ?? [], p.route, p.creditCents);
   const prelock = p.prelock ? venuePrelockFor(p.prelock, p.route) : undefined;
   const bookOpen = p.bookOpen ? venueBookOpenFor(p.bookOpen, p.route) : undefined;

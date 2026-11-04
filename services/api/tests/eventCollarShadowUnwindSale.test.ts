@@ -136,7 +136,7 @@ test("shadow worker: on an armed ticker the hedge is bought live at the lock and
     // the quote carries the holder's venue to the engine and answers with the routing in the holder's words
     const bad = await fetch(`${base}/api/shadow/quote?ticker=${TICKER}&contracts=10&venue=draftkings`, { headers: key });
     assert.equal(bad.status, 400);
-    assert.match(((await bad.json()) as { message: string }).message, /venue must be kalshi, polymarket, prophetx or novig/);
+    assert.match(((await bad.json()) as { message: string }).message, /venue must be kalshi, polymarket, prophetx, novig or stx/);
     const q = (await (await fetch(`${base}/api/shadow/quote?ticker=${TICKER}&contracts=15.95&venue=ProphetX`, { headers: key })).json()) as {
       ok: boolean;
       routing: { holderVenue: string; holderVenueName: string; hedgeVenue: string; hedgeVenueName: string; reason: string; evCostBps: number; tailChargeBps: number; allInBps: number; compatible: boolean; routes: Array<{ route: string; ok: boolean; refusal?: string }>; tails: Array<{ branch: string; text: string }>; rules: Record<string, { treatment: string; confirmed: boolean; source: string }>; route?: string };
