@@ -184,7 +184,7 @@ import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venu
 import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
 import { venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
-import { MemberApiError, MemberSessions, clientOrderIdFor, leagueOfCompetition, matchMemberMarket, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, winnerClubOf, type MemberBalance, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
+import { ComboLegMemory, MemberApiError, MemberSessions, clientOrderIdFor, leagueOfCompetition, matchMemberMarket, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, winnerClubOf, type MemberBalance, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
 import { askLevels, bidLevels, buyBackRecordOf, executeLimitOrder, memberTailTerms, priceString, quoteBuyBack, quoteSaleTiers, saleEvCostBps, saleRecordOf, type ExecuteOptions, type OrderOutcome, type SaleTierQuote } from "../src/eventCollar/crossVenue/memberSale";
 import type { MemberSaleComparison, MemberSaleRecord } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
@@ -808,6 +808,13 @@ let memberOrderOpts: ExecuteOptions = { waitMs: positiveMs(process.env.MEMBER_AP
 const MEMBER_COMPARE_WAIT_MS = positiveMs(process.env.MEMBER_APP_COMPARE_WAIT_MS, 4000);
 const memberPositionsCache = new Map<string, { at: number; positions: MemberHolderPosition[] }>();
 
+/** where a combination's picks were placed, kept beside the token store so a played leg still reads its result after a restart */
+let comboLegMemoryInst: ComboLegMemory | null = null;
+const comboLegMemory = (): ComboLegMemory => {
+  if (!comboLegMemoryInst) comboLegMemoryInst = new ComboLegMemory(memberSessions ? join(dirname(memberSessions.cfg.storePath), "member-combo-legs.json") : null);
+  return comboLegMemoryInst;
+};
+
 /** The member's positions on our markets, read again once the cache is stale (the same keep-last-match rule as refreshPositions). */
 async function refreshMemberPositions(member: string, fresh = false): Promise<MemberHolderPosition[]> {
   if (!memberSessions || !listGameMarketsFn) return [];
@@ -826,7 +833,7 @@ async function refreshMemberPositions(member: string, fresh = false): Promise<Me
     }
     return out;
   };
-  const read = await memberHolderPositions(memberSessions.client(member), markets, memberSessions.cfg.competitionCodes, listings);
+  const read = await memberHolderPositions(memberSessions.client(member), markets, memberSessions.cfg.competitionCodes, listings, comboLegMemory());
   const before = new Map((hit?.positions ?? []).map((p) => [p.id, p]));
   const positions = read.map((p) => {
     const prev = before.get(p.id);

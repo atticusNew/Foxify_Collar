@@ -23,6 +23,7 @@ import {
   MemberSessions,
   MemberTokenStore,
   authorizeUrl,
+  ComboLegMemory,
   comboLegs,
   comboPickWords,
   isComboMarket,
@@ -416,6 +417,26 @@ test("member positions: longs on full-game winner markets map to our market by l
     [["den-1", "Denver Broncos", "Denver Broncos at Carolina Panthers", "pending"], ["atl-1", "Atlanta Hawks", "Atlanta Hawks at Washington Wizards", "live"], ["hou-2", "Houston Texans", "Houston Texans at Jacksonville Jaguars", "pending"], [null, "Falcons", "", "pending"]],
   );
   assert.deepEqual((await comboLegs(client, combo, new Map())).map((l) => [l.marketId, l.side, l.state]), [[null, "Broncos", "pending"], [null, "Hawks", "pending"], [null, "Texans", "pending"], [null, "Falcons", "pending"]], "no listings: the words alone");
+  assert.deepEqual(legs.map((l) => l.priceCents), [null, null, null, null], "the fixture's markets carry no price");
+
+  // the placements are remembered: once a leg's game has been played it leaves the open listing, and the leg is
+  // read again by id for its result (the settlement price when the result word is not one we know)
+  const memDir = mkdtempSync(join(tmpdir(), "combo-legs-"));
+  const memPath = join(memDir, "member-combo-legs.json");
+  const priced = listings.map((l) => (l.market_id === "den-1" ? { ...l, last_traded_price: "0.6100" } : l));
+  const byId = new Map(priced.map((l) => [l.market_id, l]));
+  const idReads: string[][] = [];
+  const idClient = { markets: async (ids: string[]) => { idReads.push(ids); return ids.map((id) => byId.get(id)).filter((x): x is RawOutcomeMarket => Boolean(x)); } } as unknown as MemberClient;
+  const first = await comboLegs(idClient, combo, new Map(), async () => priced, new ComboLegMemory(memPath));
+  assert.deepEqual(first.map((l) => [l.marketId, l.priceCents]), [["den-1", 61], ["atl-1", null], ["hou-2", null], [null, null]], "the leg's price rides along");
+  assert.deepEqual(JSON.parse(readFileSync(memPath, "utf8")).combos[combo.market_id], { Broncos: "den-1", Hawks: "atl-1", Texans: "hou-2" }, "placements on disk, by combination then pick");
+  // the games are played: the Broncos won (the venue's word), the Hawks lost (settled at zero, no word we know), the Texans are still open
+  byId.set("den-1", { ...byId.get("den-1")!, status: "settled", event_status: "completed", result: "won", last_traded_price: "1.0000" });
+  byId.set("atl-1", { ...byId.get("atl-1")!, status: "settled", event_status: "completed", result: "resolved", settled_at: "2026-11-05T03:00:00Z", price: "0.0000", last_traded_price: "0.0000" });
+  idReads.length = 0;
+  const second = await comboLegs(idClient, combo, new Map(), async () => [byId.get("hou-2")!], new ComboLegMemory(memPath));
+  assert.deepEqual(idReads, [["den-1", "atl-1", "hou-2"]], "a fresh memory re-reads every placed leg by id");
+  assert.deepEqual(second.map((l) => [l.marketId, l.state, l.priceCents]), [["den-1", "won", null], ["atl-1", "lost", null], ["hou-2", "pending", null], [null, "pending", null]]);
 });
 
 test("member sale on the ledger: settlement pays the sale's own totals, the writer owes and takes nothing, cashDue is empty, a buy-back close carries its facts", () => {

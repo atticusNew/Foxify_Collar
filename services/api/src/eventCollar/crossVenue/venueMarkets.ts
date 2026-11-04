@@ -80,6 +80,7 @@ export interface RawOutcomeMarket {
   description?: string | null;
   /** pending until settled, then the venue's word for the outcome */
   result?: string | null;
+  settled_at?: string | null;
   /** the venue's event type; "combo" on a combination */
   event_type?: string | null;
   recent_trades?: Array<{ timestamp?: string | null; price?: string | null; quantity?: string | null }> | null;

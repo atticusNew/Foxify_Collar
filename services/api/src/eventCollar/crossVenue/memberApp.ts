@@ -821,7 +821,67 @@ export interface MemberParlayLeg {
   event: string;
   startsIso: string | null;
   state: "pending" | "live" | "won" | "lost" | "void";
+  /** the venue's price on the leg's own market now, cents of $1; null when the leg has no market or no price */
+  priceCents?: number | null;
 }
+
+/**
+ * Where a combination's picks were placed, by combination market id then pick, kept across reads:
+ * once a leg's game has been played it leaves the venue's open listing, and only its id lets the
+ * leg be read again for its result. File-backed when given a path (beside the token store), so a
+ * restart keeps the placements too.
+ */
+export class ComboLegMemory {
+  private cache: Map<string, Record<string, string>> | null = null;
+  constructor(private readonly path: string | null = null) {}
+
+  private load(): Map<string, Record<string, string>> {
+    if (this.cache) return this.cache;
+    const out = new Map<string, Record<string, string>>();
+    if (this.path && existsSync(this.path)) {
+      try {
+        const file = JSON.parse(readFileSync(this.path, "utf8")) as { v?: number; combos?: Record<string, Record<string, string>> };
+        for (const [combo, picks] of Object.entries(file.combos ?? {})) if (picks && typeof picks === "object") out.set(combo, { ...picks });
+      } catch {
+        // an unreadable file is an empty memory; the next write replaces it
+      }
+    }
+    this.cache = out;
+    return out;
+  }
+
+  get(combo: string): Record<string, string> {
+    return { ...(this.load().get(combo) ?? {}) };
+  }
+
+  set(combo: string, pick: string, marketId: string): void {
+    const all = this.load();
+    const picks = all.get(combo) ?? {};
+    if (picks[pick] === marketId) return;
+    picks[pick] = marketId;
+    all.set(combo, picks);
+    // a long memory of settled tickets is no use; keep the latest few hundred combinations
+    while (all.size > 400) all.delete(all.keys().next().value as string);
+    if (!this.path) return;
+    try {
+      mkdirSync(dirname(this.path), { recursive: true });
+      const tmp = `${this.path}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ v: 1, combos: Object.fromEntries(all) }), { encoding: "utf8", mode: 0o600 });
+      renameSync(tmp, this.path);
+    } catch {
+      // the memory stands in the process; the file is a convenience across restarts
+    }
+  }
+}
+
+/** The venue's price on a market now, as cents of a $1 contract: the last trade when there is one, else the venue's mark. */
+const legPriceCents = (m: RawOutcomeMarket | null): number | null => {
+  if (!m) return null;
+  const maxPrice = outcomeMaxPrice(m);
+  const raw = Number(m.last_traded_price ?? m.price);
+  if (!Number.isFinite(raw) || raw < 0 || !(maxPrice > 0)) return null;
+  return Math.round((raw / maxPrice) * 100);
+};
 
 /** the shapes a combination's legs arrive in: a nested market, or a reference to one plus a few words */
 interface RawComboLeg extends Partial<RawOutcomeMarket> {
@@ -837,6 +897,12 @@ const legState = (leg: RawComboLeg, m: RawOutcomeMarket | null, nowMs: number): 
   if (/\b(void|cancel|abandon|push)/.test(words)) return "void";
   if (/\b(won|win|hit|yes|settled_yes)\b/.test(words)) return "won";
   if (/\b(lost|lose|miss|settled_no)\b/.test(words) || /\bno\b/.test(words)) return "lost";
+  // a settled market whose result word is not one of the above: the settlement price says which way it went
+  if (m && (m.settled_at || /settled|closed|resolved/.test(words))) {
+    const px = legPriceCents(m);
+    if (px !== null && px >= 99) return "won";
+    if (px !== null && px <= 1) return "lost";
+  }
   const start = leg.event_start ?? m?.event_start ?? null;
   const startMs = start ? Date.parse(start) : NaN;
   if (/in_play|in_progress|live|started|in-play/.test(words) || (Number.isFinite(startMs) && startMs <= nowMs && !/pre_open|open|settled|closed|completed/.test(words))) return "live";
@@ -904,16 +970,27 @@ export function legMarketFor(pick: string, combo: RawOutcomeMarket, listings: Ra
  * A combination's legs as the page lists them. A leg may arrive as a nested market or as a
  * market id (ids not already read are fetched once for the whole position list); the venue's own
  * combinations arrive as words only, each matched to the club's game in the listings when the
- * caller supplies them, else listed by the word with no game under it.
+ * caller supplies them, else listed by the word with no game under it. A placement is remembered
+ * (`memory`) and read again by id on later passes, so a leg whose game has been played, and so
+ * has left the open listing, still shows its result.
  */
-export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { legs?: unknown }, known: Map<string, RawOutcomeMarket>, listings?: () => Promise<RawOutcomeMarket[]>): Promise<MemberParlayLeg[]> {
+export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { legs?: unknown }, known: Map<string, RawOutcomeMarket>, listings?: () => Promise<RawOutcomeMarket[]>, memory?: ComboLegMemory): Promise<MemberParlayLeg[]> {
   const nowMs = Date.now();
   const raw = Array.isArray(m.legs) ? (m.legs as RawComboLeg[]).filter((l) => l && typeof l === "object") : [];
   if (!raw.length) {
     const picks = comboPickWords(m);
     if (!picks.length) return [];
+    const placed = memory ? memory.get(m.market_id) : {};
+    const rereads = [...new Set(picks.map((p) => placed[p]).filter((id): id is string => typeof id === "string" && !known.has(id)))];
+    if (rereads.length) {
+      try {
+        for (const fetched of await client.markets(rereads)) known.set(fetched.market_id, fetched);
+      } catch {
+        // the placements stand; the legs list from the listing or by their words this pass
+      }
+    }
     let listed: RawOutcomeMarket[] = [];
-    if (listings) {
+    if (listings && picks.some((p) => !(placed[p] && known.has(placed[p])))) {
       try {
         listed = await listings();
       } catch {
@@ -921,10 +998,15 @@ export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { le
       }
     }
     return picks.map((pick) => {
-      const mk = legMarketFor(pick, m, listed, nowMs);
+      let mk = placed[pick] ? known.get(placed[pick]) ?? null : null;
+      if (!mk) {
+        mk = legMarketFor(pick, m, listed, nowMs);
+        if (mk && memory) memory.set(m.market_id, pick, mk.market_id);
+      }
       const club = mk ? winnerClubOf(mk) : null;
       const event = (mk?.event_title ?? "").trim() || (club ? [club.side === "away" ? club.name : club.opponent, club.side === "home" ? club.name : club.opponent].filter(Boolean).join(" at ") : "");
-      return { marketId: mk?.market_id ?? null, side: club?.name ?? pick, event, startsIso: mk?.event_start ? new Date(mk.event_start).toISOString() : null, state: legState({}, mk, nowMs) };
+      const state = legState({}, mk, nowMs);
+      return { marketId: mk?.market_id ?? null, side: club?.name ?? pick, event, startsIso: mk?.event_start ? new Date(mk.event_start).toISOString() : null, state, priceCents: state === "won" || state === "lost" || state === "void" ? null : legPriceCents(mk) };
     });
   }
   const ids = raw.map((l) => l.market?.market_id ?? l.market_id ?? null).filter((id): id is string => typeof id === "string" && !known.has(id) && !raw.some((l) => l.market?.market_id === id));
@@ -942,7 +1024,8 @@ export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { le
     const side = club?.name ?? (l.group_title ?? mk?.group_title ?? l.symbol ?? mk?.symbol ?? l.specifier ?? "").trim();
     const event = (l.event_title ?? mk?.event_title ?? "").trim() || (club ? [club.side === "away" ? club.name : club.opponent, club.side === "home" ? club.name : club.opponent].filter(Boolean).join(" at ") : "");
     const start = l.event_start ?? mk?.event_start ?? null;
-    return { marketId: id, side: side || "Pick", event, startsIso: start ? new Date(start).toISOString() : null, state: legState(l, mk, nowMs) };
+    const state = legState(l, mk, nowMs);
+    return { marketId: id, side: side || "Pick", event, startsIso: start ? new Date(start).toISOString() : null, state, priceCents: state === "won" || state === "lost" || state === "void" ? null : legPriceCents(mk) };
   });
 }
 
@@ -951,9 +1034,9 @@ export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { le
  * contract, like ours; the entry is the average open premium as cents of that (the venue writes a
  * long's premium negative, cash out, so its size is read and not its sign). Shorts and closed
  * positions are left out: a lock sells part of a long. `listings` gives the venue's game listings
- * when asked, read only when a combination needs its legs placed.
+ * when asked, read only when a combination needs its legs placed; `memory` keeps the placements.
  */
-export async function memberHolderPositions(client: MemberClient, protectable: ProtectableMarket[], codes: OutcomeCompetitionCodes, listings?: () => Promise<RawOutcomeMarket[]>): Promise<MemberHolderPosition[]> {
+export async function memberHolderPositions(client: MemberClient, protectable: ProtectableMarket[], codes: OutcomeCompetitionCodes, listings?: () => Promise<RawOutcomeMarket[]>, memory?: ComboLegMemory): Promise<MemberHolderPosition[]> {
   const raw = (await client.positions()).filter((p) => Number(p.position) > 0);
   const ids = [...new Set(raw.map((p) => p.market_id))];
   let markets = new Map<string, RawOutcomeMarket>();
@@ -985,7 +1068,7 @@ export async function memberHolderPositions(client: MemberClient, protectable: P
     const matched = matchMemberMarket(m, league, protectable);
     const event = (m.event_title ?? "").trim() || (club ? [club.side === "away" ? club.name : club.opponent, club.side === "home" ? club.name : club.opponent].filter(Boolean).join(" at ") : "");
     const parlay = matched.ticker === null && matched.reason === "parlay";
-    const legs = parlay ? await comboLegs(client, m, markets, listings) : undefined;
+    const legs = parlay ? await comboLegs(client, m, markets, listings, memory) : undefined;
     // a combination's own start is its last leg's on the wire; the page wants the first leg's when the legs are placed
     const firstLegIso = (legs ?? []).map((l) => l.startsIso).filter((x): x is string => Boolean(x)).sort()[0] ?? null;
     const multiplier = Number(p.multiplier);
