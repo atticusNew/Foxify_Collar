@@ -734,6 +734,8 @@ const MEMBER_APP_VENUE_URL = (process.env.MEMBER_APP_VENUE_URL ?? "").trim().rep
  */
 const MEMBER_APP_HOSTNAME = (process.env.MEMBER_APP_HOSTNAME ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "") || null;
 const MEMBER_APP_ORIGIN = MEMBER_APP_HOSTNAME ? `https://${MEMBER_APP_HOSTNAME}` : null;
+/** where each member's connect began (the page's own host, or "" for the record URL), so the venue's callback sends them back to the same origin, where their cookie is */
+const memberConnectOrigin = new Map<string, string>();
 const isMemberAppHost = (req: IncomingMessage): boolean => {
   if (!MEMBER_APP_HOSTNAME) return false;
   const fwd = req.headers["x-forwarded-host"];
@@ -2065,6 +2067,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     }
     if (url.pathname === "/api/shadow/member/connect") {
       const { url: authorize } = memberSessions.beginConnect(member);
+      memberConnectOrigin.set(member, isMemberAppHost(req) && MEMBER_APP_ORIGIN ? MEMBER_APP_ORIGIN : "");
       sendJson(res, 200, { ok: true, at: atIso, ...(holder ? { holder } : {}), member: memberView(member), url: authorize });
       return;
     }
@@ -3817,7 +3820,9 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           if (r.member) memberPositionsCache.delete(r.member);
           if (r.member && isMemberAlias(r.member)) {
             // the hosted page's member: back to the page, which says connected (or why not) in place
-            res.writeHead(302, { location: r.ok ? `${MEMBER_APP_PATH}?connected=1` : `${MEMBER_APP_PATH}?error=${encodeURIComponent(r.message)}`, "cache-control": "no-store" });
+            const origin = memberConnectOrigin.get(r.member) ?? "";
+            memberConnectOrigin.delete(r.member);
+            res.writeHead(302, { location: `${origin}${MEMBER_APP_PATH}` + (r.ok ? "?connected=1" : `?error=${encodeURIComponent(r.message)}`), "cache-control": "no-store" });
             res.end();
             return;
           }

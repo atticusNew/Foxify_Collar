@@ -805,6 +805,17 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.ok(forwarded.status === 200 && forwarded.text.includes("Lock in · STX positions"), "behind the proxy, the forwarded host names the page");
     const dflt = await onHost("/embed/event-lockin.js", { host: "atticus-event-shadow.onrender.com" });
     assert.notEqual(dflt.status, 302, "the default host is untouched");
+    // a connect begun on the page's host comes back to the page's host after the venue's callback (the cookie lives there),
+    // even though the callback itself is registered on the record URL
+    const hostCookieRaw = await new Promise<string>((resolve, reject) => {
+      const req = httpRequest(`${base}/`, { headers: { host: "stx.lockin.test" }, setHost: false }, (res) => { res.resume(); res.on("end", () => resolve(String(res.headers["set-cookie"]?.[0] ?? "").split(";")[0])); });
+      req.on("error", reject); req.end();
+    });
+    const hostConnect = await onHost("/api/shadow/member/connect", { host: "stx.lockin.test", cookie: hostCookieRaw, "x-member-app": "1" });
+    assert.equal(hostConnect.status, 200, hostConnect.text);
+    const hostCode = venue.issueCode(JSON.parse(hostConnect.text).url);
+    const hostBack = await fetch(`${base}/api/shadow/member/callback?code=${hostCode.code}&state=${hostCode.state}`, { redirect: "manual" });
+    assert.deepEqual([hostBack.status, hostBack.headers.get("location")], [302, "https://stx.lockin.test/app?connected=1"]);
     const revisit = await fetch(`${base}/app`, { headers: ck });
     assert.equal(revisit.headers.get("set-cookie"), null, "a returning cookie is kept, not replaced");
     let cm = await get<Any>("/api/shadow/member", ck);
