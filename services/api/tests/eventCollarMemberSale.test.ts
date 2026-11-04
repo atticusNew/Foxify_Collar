@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -463,6 +463,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
   process.env.EVENT_SHADOW_LOCK_KEY = "lock-key-0123456789";
   delete process.env.MEMBER_APP_HOST;
   process.env.MEMBER_APP_VENUE_URL = "https://demo.venue.test/";
+  process.env.MEMBER_APP_HOSTNAME = "https://stx.lockin.test/";
   const worker = await import("../scripts/eventShadowWorker");
   const venue = await fakeVenue();
   venue.markets["m-bos"] = market("m-bos", "Boston Celtics", "Los Angeles Lakers", START, [["0.54", "25"], ["0.53", "40"]], [["0.56", "100"]]);
@@ -572,6 +573,12 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
       ],
     );
     assert.deepEqual([pos.body.positions[4].reason, pos.body.positions[4].event, typeof pos.body.cutoffMinutes], ["parlay", "BOS / MIA / DET combo", "number"]);
+    // the combo's legs, as the page lists them: each leg's club (read from the leg's market), its game and where it stands
+    assert.deepEqual(
+      pos.body.positions[4].legs.map((l: Any) => [l.marketId, l.side, l.event, l.startsIso, l.state]),
+      [["m-bos", "Boston Celtics", "Los Angeles Lakers at Boston Celtics", START, "pending"], ["m-mia", "Miami Heat", "New York Knicks at Miami Heat", START, "pending"], ["m-det", "Detroit Pistons", "Chicago Bulls at Detroit Pistons", START, "pending"]],
+    );
+    assert.equal(pos.body.positions[0].legs, undefined, "a single market has no legs");
     assert.equal(pos.body.positions[0].market, undefined, "the venue's market payload stays on the service");
 
     // the games a member could protect: our protectable markets the venue lists too, each with the venue's event
@@ -592,6 +599,8 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.equal(venue.catalogueReads, 1);
     await get<Any>("/api/shadow/member/games");
     assert.equal(venue.catalogueReads, 1, "the catalogue is shared and kept");
+    // the club as the venue names it, and which side of the game it is, so the row reads as the portfolio does
+    assert.deepEqual(games.body.games.map((g: Any) => [g.side, g.opponent, g.home]), [["Detroit Pistons", "Chicago Bulls", true], ["Sacramento Kings", "Golden State Warriors", true], ["Boston Celtics", "Los Angeles Lakers", true], ["Miami Heat", "New York Knicks", true]]);
 
     // the quote: three tiers from the bids, the comparison priced on the hedge routes beside them, nothing sent
     q = await get<Any>(`/api/shadow/quote?ticker=${TICKER}&contracts=50&venue=stx`);
@@ -695,6 +704,10 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const health = await get<Any>("/healthz", { "x-admin-token": "op-secret" });
     assert.deepEqual([health.body.lock.member.configured, health.body.lock.member.venue, health.body.lock.member.host, health.body.lock.member.members.length, health.body.lock.member.members[0].member, health.body.lock.member.members[0].userId], [true, "stx", venue.base, 1, "shared", "u1"]);
     assert.ok(!JSON.stringify(health.body).includes("stxapp_"), "no token in the health body");
+    // the page's host, and what the listing endpoint's books looked like (the 48c question: do listed winners carry distinct best bids?)
+    assert.equal(health.body.lock.member.hostname, "stx.lockin.test");
+    const cat = health.body.lock.member.catalogue.NBA;
+    assert.deepEqual([cat.markets, cat.winners, cat.winnersWithBids, cat.distinctBestBids, cat.sample.marketId, cat.sample.bids[0]], [6, 5, 5, 5, "m-bos", { price: "0.54", quantity: "25" }]);
     const holders = await get<Any>("/api/shadow/holders", { "x-admin-token": "op-secret" });
     assert.deepEqual(holders.body.holders[0].positions.map((p: Any) => [p.ticker, p.route, p.cash]).sort(), [[TICKER, "member_sale", []], [TICKER2, "member_sale", []]].sort());
 
@@ -767,6 +780,31 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     }
     assert.equal((await fetch(`${base}/app/nope.png`)).status, 404);
     const ck = { cookie: setCookie.split(";")[0] };
+    // THE PAGE'S OWN HOST (MEMBER_APP_HOSTNAME): the root is the page, the page's files and the API answer
+    // as always, and any other path is sent to the record URL, so nothing venue-neutral is served under a venue's name
+    // (fetch drops a custom Host header, so the raw client; Render fronts the service, so x-forwarded-host counts too)
+    const onHost = (path: string, hostHeader: Record<string, string> = { host: "stx.lockin.test" }) =>
+      new Promise<{ status: number; location: string | null; text: string }>((resolve, reject) => {
+        const req = httpRequest(`${base}${path}`, { headers: hostHeader, setHost: false }, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, location: (res.headers.location as string | undefined) ?? null, text }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    const rootOnHost = await onHost("/");
+    assert.equal(rootOnHost.status, 200);
+    assert.ok(rootOnHost.text.includes("Lock in · STX positions"), "the root on the page's host is the page");
+    assert.equal((await onHost("/app/stx.png")).status, 200);
+    assert.equal((await onHost("/api/shadow/member")).status, 403, "the API stays on the host (no cookie here, so refused there, not redirected)");
+    const embed = await onHost("/embed/event-lockin.js?x=1");
+    assert.deepEqual([embed.status, embed.location], [302, "https://atticus-event-shadow.onrender.com/embed/event-lockin.js?x=1"]);
+    const forwarded = await onHost("/", { host: "atticus-event-shadow.onrender.com", "x-forwarded-host": "stx.lockin.test" });
+    assert.ok(forwarded.status === 200 && forwarded.text.includes("Lock in · STX positions"), "behind the proxy, the forwarded host names the page");
+    const dflt = await onHost("/embed/event-lockin.js", { host: "atticus-event-shadow.onrender.com" });
+    assert.notEqual(dflt.status, 302, "the default host is untouched");
     const revisit = await fetch(`${base}/app`, { headers: ck });
     assert.equal(revisit.headers.get("set-cookie"), null, "a returning cookie is kept, not replaced");
     let cm = await get<Any>("/api/shadow/member", ck);
