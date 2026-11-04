@@ -375,10 +375,21 @@ games listed, past locks):
   Texans, Falcons"`, the description naming each with "Won", the specifier counting them) and its
   own start is the last leg's. The service reads the words and places each on the club's game in
   STX's listings (the first game after the ticket was bought, no later than a day past the
-  ticket's own date), so a leg has its game, tip-off and state; a pick with no listed game stays
-  a word with "Pending" beside it. STX writes a long's average premium negative (cash out), so
-  the entry is read as its size. Locked positions come first, then the offers. After a lock a toast says "+$16.18 in your STX balance · 20 riding" and the Protected
-  panel's meta line says the balance now.
+  ticket's own date), so a leg has its game, tip-off and STX's price on it; a pick with no
+  listed game stays a word with a dash beside it. Placements are remembered beside the token store
+  (`member-combo-legs.json`), and a placed leg is read again by id on every pass, so once its game
+  has been played and has left the open listing the leg still turns to **Hit** or **Missed**
+  (the venue's result word, or the settlement price). The ticket's line is a status, never a
+  promise: "4 legs · first tips Sun 1:00 PM ET", "1 live · 0 of 4 hit", "2 of 4 hit · next
+  Sun 4:05 PM ET", "Missed · Hawks", "All 4 hit · settles on STX"; the panel says why there is no
+  Lock in: STX's combo market has no bids to sell into, so the ticket rides to settlement. STX
+  writes a long's average premium negative (cash out), so the entry is read as its size. Locked
+  positions come first, then the offers. After a lock a one-line toast says "Locked in · +$16.18
+  to your STX balance", the balance figure counts up to its new value with a "+$16.18" badge
+  beside it for a few seconds, and on a phone the balance strip is sticky under the tabs (handle
+  and figure on one line), so the credit lands in view without leaving the row just locked. The
+  footer is the disclosure line and Privacy · How this works (Disconnect too on a phone, where
+  the header hides it); the public record is no longer linked from a member's page.
 - **Games** lists the games this service can protect that STX lists right now, by day (**Today**,
   **Tomorrow**, then the weekday; two days at a time, "Show 3 more games on later days" for the
   rest), with filters when there is more than one league and an **In your portfolio** filter when
