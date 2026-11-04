@@ -143,6 +143,7 @@ import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMark
 import { FEE_RULE_TEXT, renderHoldersHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
 import { renderScoreboardHtml } from "./eventScoreboardHtml";
 import { memberAppHtml } from "./memberAppHtml";
+import { ATTICUS_BIRD_PNG, ATTICUS_WORDMARK_PNG, ICON_180_PNG, ICON_192_PNG, ICON_512_PNG, STX_LOGO_PNG } from "./memberAppAssets";
 import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import {
@@ -183,11 +184,11 @@ import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venu
 import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
 import { venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
-import { MemberApiError, MemberSessions, clientOrderIdFor, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
+import { MemberApiError, MemberSessions, clientOrderIdFor, leagueOfCompetition, matchMemberMarket, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, winnerClubOf, type MemberBalance, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
 import { askLevels, bidLevels, buyBackRecordOf, executeLimitOrder, memberTailTerms, priceString, quoteBuyBack, quoteSaleTiers, saleEvCostBps, saleRecordOf, type ExecuteOptions, type OrderOutcome, type SaleTierQuote } from "../src/eventCollar/crossVenue/memberSale";
 import type { MemberSaleComparison, MemberSaleRecord } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
-import { outcomeMaxPrice } from "../src/eventCollar/crossVenue/venueBooks";
+import { outcomeBids, outcomeCompetitionCode, outcomeMaxPrice } from "../src/eventCollar/crossVenue/venueBooks";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
 const LEDGER_PATH = process.env.EVENT_SHADOW_LEDGER_PATH || "/tmp/event-demo/shadow-ledger.jsonl";
@@ -471,7 +472,7 @@ const LOCK_KEY = lockKeyFromEnv(process.env);
  */
 const HOLDER_KEYS = holderKeysFromEnv(process.env, LOCK_KEY);
 const LOCK_ROUTES_ON = Boolean(LOCK_KEY) || HOLDER_KEYS.holders.length > 0;
-const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/picks", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry", "/api/shadow/member", "/api/shadow/member/connect", "/api/shadow/member/disconnect"]);
+const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/picks", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry", "/api/shadow/member", "/api/shadow/member/connect", "/api/shadow/member/disconnect", "/api/shadow/member/account", "/api/shadow/member/games", "/api/shadow/member/history"]);
 /**
  * THE EXTENSION'S SWITCHES, served with the markets list so the service, not the build, decides:
  * EVENT_SHADOW_EXT_MIN_VERSION   the version below which the extension shows "update" and draws nothing
@@ -724,7 +725,35 @@ const MEMBER_COOKIE_MAX_AGE_S = 180 * 86_400;
 const MEMBER_ALIAS_PREFIX = "m-";
 const memberApp = memberAppConfigFromEnv(process.env, { redirectUri: `${RECORD_URL}${MEMBER_CALLBACK_PATH}`, storePath: join(dirname(LOCK_LEDGER_PATH), "member-tokens.json") });
 let memberSessions: MemberSessions | null = memberApp.config ? new MemberSessions(memberApp.config) : null;
-const MEMBER_APP_VENUE_URL = (process.env.MEMBER_APP_VENUE_URL ?? "").trim() || null;
+const MEMBER_APP_VENUE_URL = (process.env.MEMBER_APP_VENUE_URL ?? "").trim().replace(/\/+$/, "") || null;
+/** the page's files under /app/: the marks, the icons, the manifest (so the page can live on a home screen) */
+const MEMBER_APP_FILES: Record<string, { type: string; body: Buffer }> = {
+  "stx.png": { type: "image/png", body: STX_LOGO_PNG },
+  "bird.png": { type: "image/png", body: ATTICUS_BIRD_PNG },
+  "atticus.png": { type: "image/png", body: ATTICUS_WORDMARK_PNG },
+  "icon-180.png": { type: "image/png", body: ICON_180_PNG },
+  "icon-192.png": { type: "image/png", body: ICON_192_PNG },
+  "icon-512.png": { type: "image/png", body: ICON_512_PNG },
+  "manifest.webmanifest": {
+    type: "application/manifest+json",
+    body: Buffer.from(
+      JSON.stringify({
+        name: `Lock in · ${VENUE_NAMES[MEMBER_VENUE]}`,
+        short_name: "Lock in",
+        start_url: `${MEMBER_APP_PATH}?source=home`,
+        scope: `${MEMBER_APP_PATH}`,
+        display: "standalone",
+        background_color: "#010101",
+        theme_color: "#010101",
+        icons: [
+          { src: `${MEMBER_APP_PATH}/icon-192.png`, sizes: "192x192", type: "image/png" },
+          { src: `${MEMBER_APP_PATH}/icon-512.png`, sizes: "512x512", type: "image/png", purpose: "any maskable" },
+        ],
+      }),
+      "utf8",
+    ),
+  },
+};
 
 /** The cookie's value, when the request carries one of the right shape; nothing is trusted beyond its shape. */
 function memberCookieValue(req: IncomingMessage): string | null {
@@ -780,6 +809,120 @@ async function refreshMemberPositions(member: string, fresh = false): Promise<Me
 function memberView(member: string) {
   if (!memberSessions) return null;
   return { venue: MEMBER_VENUE, venueName: VENUE_NAMES[MEMBER_VENUE], configured: true, ...memberSessions.state(member) };
+}
+
+/** the balance is read again after this long; a lock or a buy-back reads it fresh */
+const MEMBER_BALANCE_TTL_MS = 10_000;
+const memberBalanceCache = new Map<string, { at: number; balance: MemberBalance | null; scope: boolean }>();
+const memberProfileChecked = new Set<string>();
+
+/**
+ * The member's account as the page's top line shows it: the handle and avatar the venue shows
+ * them under, and the balance the sale lands in. A grant without balance.read (connected before
+ * the scope was asked) says so, so the page can offer the reconnect; nothing else fails on it.
+ */
+async function memberAccount(member: string, fresh: boolean): Promise<{ profile: { handle: string | null; avatarUrl: string | null }; balance: MemberBalance | null; balanceScope: boolean }> {
+  const st = memberSessions!.state(member);
+  const profile = st.connected ? { handle: st.handle, avatarUrl: st.avatarUrl } : { handle: null, avatarUrl: null };
+  if (st.connected && !st.handle && !memberProfileChecked.has(member)) {
+    // a handle set after the connect, or a connect whose profile read missed: once per process
+    memberProfileChecked.add(member);
+    try {
+      await memberSessions!.refreshProfile(member);
+      const again = memberSessions!.state(member);
+      if (again.connected) Object.assign(profile, { handle: again.handle, avatarUrl: again.avatarUrl });
+    } catch {
+      // the ids stay as they were
+    }
+  }
+  const hit = memberBalanceCache.get(member);
+  if (hit && !fresh && Date.now() - hit.at <= MEMBER_BALANCE_TTL_MS) return { profile, balance: hit.balance, balanceScope: hit.scope };
+  let balance: MemberBalance | null = null;
+  let scope = true;
+  try {
+    balance = await memberSessions!.client(member).balance();
+  } catch (err) {
+    if (err instanceof MemberApiError && err.code === "insufficient_scope") scope = false;
+    else throw err;
+  }
+  memberBalanceCache.set(member, { at: Date.now(), balance, scope });
+  return { profile, balance, balanceScope: scope };
+}
+
+/** the venue's competition listing, shared by every member (it is the public catalogue), kept 45 s */
+const memberCatalogCache = new Map<string, { at: number; markets: RawOutcomeMarket[] }>();
+const MEMBER_CATALOG_TTL_MS = 45_000;
+async function memberCompetitionMarkets(member: string, competition: string): Promise<RawOutcomeMarket[]> {
+  const key = competition.toUpperCase();
+  const hit = memberCatalogCache.get(key);
+  if (hit && Date.now() - hit.at <= MEMBER_CATALOG_TTL_MS) return hit.markets;
+  const markets = await memberSessions!.client(member).listCompetitionMarkets(key);
+  memberCatalogCache.set(key, { at: Date.now(), markets });
+  return markets;
+}
+
+/**
+ * THE GAMES A MEMBER COULD PROTECT: every protectable market of ours that the venue lists too,
+ * with the venue's own market and event (the page links the member to the event on the venue to
+ * buy; this service never buys for anyone), the best bid there now, and what a Max floor lock
+ * would keep of it per contract. Grouped by game on the page. Only leagues the venue has a
+ * competition code for are read.
+ */
+async function memberGames(member: string, held: Set<string>): Promise<{ games: Array<Record<string, unknown>>; leagues: string[]; readAt: string }> {
+  const rows = (await listGameMarketsFn!()).filter((m) => m.protectable && m.startIso);
+  const codes = memberSessions!.cfg.competitionCodes;
+  const leagues = [...new Set(rows.map((r) => r.league))];
+  const byTicker = new Map<string, { market: RawOutcomeMarket; league: string }>();
+  for (const league of leagues) {
+    const code = outcomeCompetitionCode(league, codes);
+    let markets: RawOutcomeMarket[];
+    try {
+      markets = await memberCompetitionMarkets(member, code);
+    } catch {
+      continue;
+    }
+    const protectable = rows.filter((r) => r.league === league).map((r) => ({ ticker: r.ticker, league: r.league, dateIso: r.dateIso, sideName: r.sideName, title: r.title }));
+    for (const m of markets) {
+      if (!winnerClubOf(m)) continue;
+      const matched = matchMemberMarket(m, leagueOfCompetition(m.competition, codes) ?? league, protectable);
+      if (matched.ticker && !byTicker.has(matched.ticker)) byTicker.set(matched.ticker, { market: m, league });
+    }
+  }
+  const games = rows
+    .map((r) => {
+      const hit = byTicker.get(r.ticker);
+      if (!hit) return null;
+      const m = hit.market;
+      const maxPrice = outcomeMaxPrice(m);
+      const bids = outcomeBids(m);
+      const bestBidCents = bids[0] ? Math.round(bids[0].priceMilli / 10) : null;
+      const last = Number(m.last_traded_price ?? m.price);
+      const lastCents = Number.isFinite(last) && last > 0 ? Math.round((last / maxPrice) * 100) : null;
+      const eventId = m.event_id ?? m.grouping_id?.split(":")[0] ?? null;
+      return {
+        ticker: r.ticker,
+        league: r.league,
+        side: r.sideName,
+        event: (m.event_title ?? "").trim() || r.title,
+        startIso: r.startIso,
+        untilIso: r.protectableUntilIso,
+        markCents: r.markCents,
+        held: held.has(r.ticker),
+        venue: {
+          marketId: m.market_id,
+          eventId,
+          url: MEMBER_APP_VENUE_URL && eventId ? `${MEMBER_APP_VENUE_URL}/events/${encodeURIComponent(eventId)}` : null,
+          trading: m.trading !== false,
+          bestBidCents,
+          lastCents,
+          // a Max floor lock sells 80% into the bid: what each contract keeps on a loss
+          floorFromCents: bestBidCents === null ? null : Math.floor(bestBidCents * 0.8),
+        },
+      };
+    })
+    .filter((g): g is NonNullable<typeof g> => g !== null)
+    .sort((a, b) => Date.parse(a.startIso as string) - Date.parse(b.startIso as string) || String(a.event).localeCompare(String(b.event)));
+  return { games, leagues, readAt: new Date().toISOString() };
 }
 
 /** A member API failure as a lock refusal: what the venue said, what the member can do. Nothing is written on any of these. */
@@ -1835,12 +1978,50 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     sendJson(res, 200, { ok: true, at: atIso });
     return;
   }
-  if (url.pathname === "/api/shadow/member" || url.pathname === "/api/shadow/member/connect" || url.pathname === "/api/shadow/member/disconnect") {
-    // THE MEMBER'S CONNECTION: state, the venue's authorize URL to open, or the disconnect. The
-    // member is this caller (their holder alias; "shared" on the shared key). Never a token.
+  if (url.pathname.startsWith("/api/shadow/member")) {
+    // THE MEMBER'S CONNECTION: state, the venue's authorize URL to open, or the disconnect; and
+    // the page's reads beside it: account (handle, balance), games (what the venue lists that we
+    // protect) and history (this member's own records). The member is this caller (their holder
+    // alias; "shared" on the shared key). Never a token.
     const member = memberKeyOf(holder);
     if (!memberSessions) {
       sendJson(res, 404, { ok: false, error: "member_app_off", message: "The member app is not configured on this service.", ...(memberApp.notes.length ? { notes: memberApp.notes } : {}) });
+      return;
+    }
+    if (url.pathname === "/api/shadow/member/account" || url.pathname === "/api/shadow/member/games") {
+      if (!memberSessions.state(member).connected) {
+        sendJson(res, 409, { ok: false, error: "member_not_connected", code: "member_not_connected", message: `Connect your ${VENUE_NAMES[MEMBER_VENUE]} account first.`, member: memberView(member) });
+        return;
+      }
+      try {
+        if (url.pathname === "/api/shadow/member/account") {
+          const a = await memberAccount(member, url.searchParams.get("fresh") === "1");
+          sendJson(res, 200, { ok: true, at: atIso, ...(holder ? { holder } : {}), member: memberView(member), ...a });
+          return;
+        }
+        const held = new Set(currentShadowPositions(loadShadowPositions(ownLedger)).filter((p) => p.status !== "closed").map((p) => p.ticker));
+        let positions: MemberHolderPosition[] = [];
+        try {
+          positions = await refreshMemberPositions(member, false);
+        } catch {
+          // the games list stands without the holdings; the rows say "in your portfolio" only when known
+        }
+        for (const p of positions) if (p.ticker) held.add(p.ticker);
+        const g = await memberGames(member, held);
+        sendJson(res, 200, { ok: true, at: atIso, ...(holder ? { holder } : {}), cutoffMinutes: protectCutoffMinutes, venueUrl: MEMBER_APP_VENUE_URL, ...g });
+      } catch (err) {
+        const r = memberRefusal(err);
+        sendJson(res, r.status, { at: atIso, ...r.body });
+      }
+      return;
+    }
+    if (url.pathname === "/api/shadow/member/history") {
+      // every lock this member ever made, newest first: open ones are on Portfolio, the rest is History
+      const all = loadShadowPositions(ownLedger)
+        .filter((L) => L.holderVenue === MEMBER_VENUE || L.route === "member_sale")
+        .map((L) => ({ ticker: L.ticker, league: L.league, side: L.sideName, event: L.eventTitle, ...lockSummaryOf(L) }))
+        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+      sendJson(res, 200, { ok: true, at: atIso, ...(holder ? { holder } : {}), records: all });
       return;
     }
     if (url.pathname === "/api/shadow/member/connect") {
@@ -1909,6 +2090,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       configured: true,
       ...(holder ? { holder } : {}),
       readAt: new Date(Math.max(venueReadAt ?? 0, memberReadAt ?? 0)).toISOString(),
+      cutoffMinutes: protectCutoffMinutes,
       ...(notes.length ? { note: notes.join("; ") } : {}),
       ...(mv ? { member: mv } : {}),
       positions: [
@@ -3591,6 +3773,17 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           sendHtml(res, r.ok ? 200 : 400, memberCallbackHtml(r.ok, r.ok ? `Your ${VENUE_NAMES[MEMBER_VENUE]} account is connected. You can close this tab and go back to the game.` : r.message));
         })
         .catch((err: unknown) => sendHtml(res, 500, memberCallbackHtml(false, `Something failed on our side: ${String(err instanceof Error ? err.message : err)}`)));
+      return;
+    }
+    if (url.pathname.startsWith(`${MEMBER_APP_PATH}/`) && url.pathname !== `${MEMBER_APP_PATH}/`) {
+      // the page's own files: the marks, the home-screen icons and the manifest; nothing personal, cached long
+      const file = MEMBER_APP_FILES[url.pathname.slice(MEMBER_APP_PATH.length + 1)];
+      if (!file) {
+        sendJson(res, 404, { ok: false, error: "not found" });
+        return;
+      }
+      res.writeHead(200, { "content-type": file.type, "cache-control": "public, max-age=86400", "content-length": String(file.body.length) });
+      res.end(file.body);
       return;
     }
     if (url.pathname === MEMBER_APP_PATH || url.pathname === `${MEMBER_APP_PATH}/`) {

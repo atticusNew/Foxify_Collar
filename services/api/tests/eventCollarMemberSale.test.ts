@@ -69,6 +69,10 @@ interface FakeVenue {
   revoked: string[];
   positions: RawMemberPosition[];
   markets: Record<string, RawOutcomeMarket>;
+  /** the account's balance in dollars, as the venue would say it */
+  balance: string;
+  balanceReads: number;
+  catalogueReads: number;
 }
 
 function market(id: string, home: string, away: string, start: string, bids: Array<[string, string]>, offers: Array<[string, string]>, maxPrice = "1.00"): RawOutcomeMarket {
@@ -114,6 +118,9 @@ async function fakeVenue(): Promise<FakeVenue> {
     revoked: [],
     positions: [],
     markets: {},
+    balance: "250.00",
+    balanceReads: 0,
+    catalogueReads: 0,
   };
   const json = (res: ServerResponse, status: number, body: unknown) => {
     res.writeHead(status, { "content-type": "application/json" });
@@ -131,7 +138,7 @@ async function fakeVenue(): Promise<FakeVenue> {
     const rt = `stxapp_rt_${V.tokensIssued}_${"y".repeat(20)}`;
     access.set(at, Date.now());
     refresh.add(rt);
-    json(res, 200, { access_token: at, refresh_token: rt, token_type: "Bearer", expires_in: 3600, scope: "profile.read portfolio.read orders.read orders.write" });
+    json(res, 200, { access_token: at, refresh_token: rt, token_type: "Bearer", expires_in: 3600, scope: "profile.read balance.read portfolio.read orders.read orders.write" });
   };
   const server = createServer((req, res) => {
     void (async () => {
@@ -164,9 +171,20 @@ async function fakeVenue(): Promise<FakeVenue> {
       }
       const bearer = (req.headers.authorization ?? "").replace(/^Bearer /, "");
       if (!access.has(bearer)) return json(res, 401, { error: "Missing or invalid OAuth access token" });
-      if (url.pathname === "/api/v1/me") return json(res, 200, { user_id: "u1", account_id: "a1" });
+      if (url.pathname === "/api/v1/me") return json(res, 200, { me: { user_id: "u1", account_id: "a1", handle: "celtics_fan", avatar_url: "/avatars/u1.png" } });
+      if (url.pathname === "/api/v1/account/balance") {
+        V.balanceReads += 1;
+        return json(res, 200, { balance: { account_balance: V.balance, available_balance: V.balance } });
+      }
       if (url.pathname === "/api/v1/positions") return json(res, 200, { positions: V.positions });
       if (url.pathname === "/api/v1/markets") {
+        const competitions = url.searchParams.get("competitions");
+        if (competitions) {
+          // the public catalogue, one page: every listed market of the competition
+          V.catalogueReads += 1;
+          const statuses = (url.searchParams.get("status") ?? "").split(",");
+          return json(res, 200, { cursor: null, markets: Object.values(V.markets).filter((m) => m.competition === competitions && statuses.includes(m.status ?? "")) });
+        }
         const ids = (url.searchParams.get("market_ids") ?? "").split(",");
         return json(res, 200, { markets: ids.map((id) => V.markets[id]).filter(Boolean) });
       }
@@ -193,6 +211,8 @@ async function fakeVenue(): Promise<FakeVenue> {
         // the position shrinks or grows at the venue as the fills land
         const pos = V.positions.find((p) => p.market_id === body.market_id);
         if (pos) pos.position = (Number(pos.position) + (body.action === "sell" ? -filled : filled)).toFixed(2);
+        const moved = fills.reduce((s, f) => s + Number(f.filled) * Number(f.price), 0);
+        V.balance = (Number(V.balance) + (body.action === "sell" ? moved : -moved)).toFixed(2);
         const { fills: _f, ...pub } = o;
         return json(res, 201, { order: pub });
       }
@@ -244,7 +264,7 @@ test("member app: the token key reads hex or base64 and refuses the rest; the co
   assert.ok(!noKey.notes.join(" ").includes("sec"), "notes never carry a value");
   const full = memberAppConfigFromEnv({ MEMBER_APP_HOST: "https://demo.stxapp.io/", MEMBER_APP_CLIENT_ID: "cid", MEMBER_APP_CLIENT_SECRET: "sec", MEMBER_APP_TOKEN_KEY: KEY_HEX, REFERENCE_BOOK_OUTCOME_COMPETITIONS: "nba=NBA" }, dflt);
   assert.ok(full.config);
-  assert.deepEqual([full.config.host, full.config.redirectUri, full.config.storePath, full.config.scopes], ["https://demo.stxapp.io", dflt.redirectUri, dflt.storePath, "profile.read portfolio.read orders.read orders.write"]);
+  assert.deepEqual([full.config.host, full.config.redirectUri, full.config.storePath, full.config.scopes], ["https://demo.stxapp.io", dflt.redirectUri, dflt.storePath, "profile.read balance.read portfolio.read orders.read orders.write"]);
   assert.deepEqual(full.config.competitionCodes, { nba: "NBA" });
   const { verifier, challenge } = pkcePair();
   assert.ok(verifier.length >= 43 && verifier.length <= 128);
@@ -253,7 +273,7 @@ test("member app: the token key reads hex or base64 and refuses the rest; the co
   assert.equal(`${u.origin}${u.pathname}`, "https://demo.stxapp.io/oauth/authorize");
   assert.deepEqual(
     ["response_type", "client_id", "redirect_uri", "scope", "state", "code_challenge", "code_challenge_method"].map((k) => u.searchParams.get(k)),
-    ["code", "cid", dflt.redirectUri, "profile.read portfolio.read orders.read orders.write", "st-1", challenge, "S256"],
+    ["code", "cid", dflt.redirectUri, "profile.read balance.read portfolio.read orders.read orders.write", "st-1", challenge, "S256"],
   );
 });
 
@@ -442,17 +462,23 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
   process.env.EVENT_X_ADMIN_TOKEN = "op-secret";
   process.env.EVENT_SHADOW_LOCK_KEY = "lock-key-0123456789";
   delete process.env.MEMBER_APP_HOST;
+  process.env.MEMBER_APP_VENUE_URL = "https://demo.venue.test/";
   const worker = await import("../scripts/eventShadowWorker");
   const venue = await fakeVenue();
   venue.markets["m-bos"] = market("m-bos", "Boston Celtics", "Los Angeles Lakers", START, [["0.54", "25"], ["0.53", "40"]], [["0.56", "100"]]);
   venue.markets["m-mia"] = market("m-mia", "Miami Heat", "New York Knicks", START, [["0.61", "100"]], [["0.63", "100"]]);
   venue.markets["m-det"] = market("m-det", "Detroit Pistons", "Chicago Bulls", START, [["0.48", "100"]], [["0.50", "100"]]);
   venue.markets["m-den"] = market("m-den", "Denver Nuggets", "Phoenix Suns", START_SOON, [["0.70", "100"]], [["0.72", "100"]]);
+  // listed on the venue, protectable here, not held by the member: the Games tab's "Buy on STX" row
+  venue.markets["m-sac"] = market("m-sac", "Sacramento Kings", "Golden State Warriors", START, [["0.45", "60"]], [["0.47", "60"]]);
+  // a combo (parlay): a multi-leg market the member holds; shown, never protected
+  venue.markets["m-combo"] = { ...market("m-combo", "", "", START, [], []), rules: "combo", event_title: "", symbol: "BOS / MIA / DET combo", participants: [], legs: [{ market_id: "m-bos" }, { market_id: "m-mia" }, { market_id: "m-det" }] } as RawOutcomeMarket;
   venue.positions = [
     { market_id: "m-bos", position: "50.00", average_open_premium: "0.42" },
     { market_id: "m-mia", position: "40.00", average_open_premium: "0.55" },
     { market_id: "m-det", position: "10.00", average_open_premium: "0.45" },
     { market_id: "m-den", position: "10.00", average_open_premium: "0.65" },
+    { market_id: "m-combo", position: "5.00", average_open_premium: "0.20" },
   ];
   const { config } = memberAppConfigFromEnv(
     { MEMBER_APP_HOST: venue.base, MEMBER_APP_CLIENT_ID: "cid", MEMBER_APP_CLIENT_SECRET: "sec", MEMBER_APP_TOKEN_KEY: KEY_HEX, MEMBER_APP_TOKENS_PATH: join(dir, "member-tokens.json"), REFERENCE_BOOK_OUTCOME_COMPETITIONS: "nba=NBA" },
@@ -461,7 +487,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
   assert.ok(config);
   const sessions = new MemberSessions(config);
   const row = (ticker: string, sideName: string, startIso: string): GameMarketRow => ({ ticker, league: "nba", sideName, title: "Winner?", dateIso: startIso.slice(0, 10), closeTimeIso: startIso, markCents: 60, startIso, protectable: true, protectableUntilIso: startIso });
-  const markets: GameMarketRow[] = [row(TICKER, "Boston Celtics", START), row(TICKER2, "Miami Heat", START), row(TICKER3, "Detroit Pistons", START), row(SOON, "Denver Nuggets", START_SOON)];
+  const markets: GameMarketRow[] = [row(TICKER, "Boston Celtics", START), row(TICKER2, "Miami Heat", START), row(TICKER3, "Detroit Pistons", START), row(SOON, "Denver Nuggets", START_SOON), row("KXNBAGAME-26OCT14GSWSAC-SAC", "Sacramento Kings", START)];
   const seen: OneQuoteInputs[] = [];
   worker.wireLockEngine({
     listGameMarkets: async () => markets,
@@ -491,6 +517,10 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.deepEqual([m.status, m.body.member.venue, m.body.member.venueName, m.body.member.configured, m.body.member.connected, m.body.member.reason], [200, "stx", "STX", true, false, "not_connected"]);
     let pos = await get<Any>("/api/shadow/positions");
     assert.deepEqual([pos.body.configured, pos.body.positions, pos.body.member.connected], [false, [], false]);
+    const acct0 = await get<Any>("/api/shadow/member/account");
+    assert.deepEqual([acct0.status, acct0.body.code], [409, "member_not_connected"]);
+    const games0 = await get<Any>("/api/shadow/member/games");
+    assert.equal(games0.status, 409);
     // a quote before connecting is refused in words
     let q = await get<Any>(`/api/shadow/quote?ticker=${TICKER}&contracts=50&venue=stx`);
     assert.deepEqual([q.status, q.body.code, q.body.message], [409, "member_not_connected", "Connect your STX account first."]);
@@ -514,8 +544,18 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const again = await fetch(`${base}/api/shadow/member/callback?code=${code}&state=${state}`);
     assert.equal(again.status, 400, "the state is one-time");
     m = await get<Any>("/api/shadow/member");
-    assert.deepEqual([m.body.member.connected, m.body.member.userId, m.body.member.accountId, m.body.member.scope], [true, "u1", "a1", "profile.read portfolio.read orders.read orders.write"]);
+    assert.deepEqual([m.body.member.connected, m.body.member.userId, m.body.member.accountId, m.body.member.scope], [true, "u1", "a1", "profile.read balance.read portfolio.read orders.read orders.write"]);
+    assert.deepEqual([m.body.member.handle, m.body.member.avatarUrl], ["celtics_fan", `${venue.base}/avatars/u1.png`], "the handle and avatar the venue shows them under; a relative avatar is made absolute on the venue");
     assert.equal(venue.tokensIssued, 1);
+
+    // the account line: the handle and the balance the sale lands in, cents; the balance is kept ten seconds unless asked fresh
+    let acct = await get<Any>("/api/shadow/member/account");
+    assert.equal(acct.status, 200, JSON.stringify(acct.body));
+    assert.deepEqual([acct.body.profile.handle, acct.body.balance.accountCents, acct.body.balance.availableCents, acct.body.balanceScope], ["celtics_fan", 25000, 25000, true]);
+    acct = await get<Any>("/api/shadow/member/account");
+    assert.equal(venue.balanceReads, 1, "cached");
+    acct = await get<Any>("/api/shadow/member/account?fresh=1");
+    assert.equal(venue.balanceReads, 2);
 
     // positions: the member's longs on our markets, each carrying its venue, none locked yet
     pos = await get<Any>("/api/shadow/positions");
@@ -527,9 +567,32 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
         [TICKER2, "stx", 40, 55, null],
         [TICKER3, "stx", 10, 45, null],
         [SOON, "stx", 10, 65, null],
+        // the parlay is on the list too, so the page mirrors the account; it says why it has no Lock in line
+        [null, "stx", 5, 20, null],
       ],
     );
+    assert.deepEqual([pos.body.positions[4].reason, pos.body.positions[4].event, typeof pos.body.cutoffMinutes], ["parlay", "BOS / MIA / DET combo", "number"]);
     assert.equal(pos.body.positions[0].market, undefined, "the venue's market payload stays on the service");
+
+    // the games a member could protect: our protectable markets the venue lists too, each with the venue's event
+    // to buy on (we never buy for anyone), its best bid and what a Max floor lock keeps of it; held ones say so
+    const games = await get<Any>("/api/shadow/member/games");
+    assert.equal(games.status, 200, JSON.stringify(games.body));
+    assert.deepEqual([games.body.venueUrl, games.body.leagues, typeof games.body.cutoffMinutes], ["https://demo.venue.test", ["nba"], "number"]);
+    assert.deepEqual(
+      games.body.games.map((g: Any) => [g.ticker, g.side, g.event, g.held, g.venue.marketId, g.venue.url, g.venue.bestBidCents, g.venue.floorFromCents]),
+      // soonest game first, then by event name
+      [
+        [SOON, "Denver Nuggets", "Phoenix Suns at Denver Nuggets", true, "m-den", "https://demo.venue.test/events/ev-m-den", 70, 56],
+        [TICKER3, "Detroit Pistons", "Chicago Bulls at Detroit Pistons", true, "m-det", "https://demo.venue.test/events/ev-m-det", 48, 38],
+        ["KXNBAGAME-26OCT14GSWSAC-SAC", "Sacramento Kings", "Golden State Warriors at Sacramento Kings", false, "m-sac", "https://demo.venue.test/events/ev-m-sac", 45, 36],
+        [TICKER, "Boston Celtics", "Los Angeles Lakers at Boston Celtics", true, "m-bos", "https://demo.venue.test/events/ev-m-bos", 54, 43],
+        [TICKER2, "Miami Heat", "New York Knicks at Miami Heat", true, "m-mia", "https://demo.venue.test/events/ev-m-mia", 61, 48],
+      ],
+    );
+    assert.equal(venue.catalogueReads, 1);
+    await get<Any>("/api/shadow/member/games");
+    assert.equal(venue.catalogueReads, 1, "the catalogue is shared and kept");
 
     // the quote: three tiers from the bids, the comparison priced on the hedge routes beside them, nothing sent
     q = await get<Any>(`/api/shadow/quote?ticker=${TICKER}&contracts=50&venue=stx`);
@@ -577,6 +640,9 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.equal(s.marketId, undefined, "the venue's market id stays in the ledger");
     assert.equal(s.clientOrderId, undefined);
     assert.deepEqual([lock.body.hedge, lock.body.routing], [null, null]);
+    // the balance moved by the sale's cash; the page reads it fresh after a lock
+    acct = await get<Any>("/api/shadow/member/account?fresh=1");
+    assert.equal(acct.body.balance.accountCents, 25000 + 1615);
     assert.deepEqual([lock.body.compared.ok, lock.body.compared.sent], [true, false]);
     assert.deepEqual([lock.body.rule.venue, lock.body.rule.venueName, lock.body.rule.basis], ["stx", "STX", "rules"]);
     assert.equal(lock.body.tails.length, 4);
@@ -653,6 +719,14 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.equal(pos.body.positions.find((p: Any) => p.ticker === TICKER).contracts, 50, "the position is back to its size at the venue");
     const leaveTwice = await post<Any>("/api/shadow/unwind", { ticker: TICKER });
     assert.deepEqual([leaveTwice.status, leaveTwice.body.error], [409, "not_open"]);
+    // history: every lock this member made, newest first, with its state
+    const hist = await get<Any>("/api/shadow/member/history");
+    assert.equal(hist.status, 200);
+    assert.deepEqual(hist.body.records.map((r: Any) => [r.ticker, r.side, r.status, r.route, r.tier, r.memberSale?.soldContracts]), [
+      [TICKER2, "Miami Heat", "open", "member_sale", "tight", 30],
+      [TICKER, "Boston Celtics", "closed", "member_sale", "balanced", 30],
+    ]);
+    assert.deepEqual([hist.body.records[1].memberSale.marketId, hist.body.records[1].memberSale.clientOrderId, hist.body.records[1].memberBuyBack.boughtContracts, hist.body.records[1].closeNetCents], [undefined, undefined, 30, -65], "the member's own order ids ride along, the venue's market id does not");
 
     // the bearer is rotated when it runs short, through the refresh, once
     const grant = sessions.store.get("shared")!;
@@ -681,6 +755,18 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const html = await page.text();
     assert.ok(html.includes("Lock in · STX positions") && html.includes("Protection by Atticus") && html.includes('"venueName":"STX"'), "the page's words");
     assert.ok(!html.includes("lock-key-") && !html.includes("stxapp_") && !html.includes("op-secret"), "no key of any kind on the page");
+    assert.ok(html.includes('rel="manifest" href="/app/manifest.webmanifest"') && html.includes('src="/app/stx.png"') && html.includes('src="/app/bird.png"'), "the marks and the manifest are the page's own files");
+    // the page's files: the marks, the icons, the manifest; anything else under /app/ is not found
+    const manifest = await fetch(`${base}/app/manifest.webmanifest`);
+    assert.equal(manifest.headers.get("content-type"), "application/manifest+json");
+    const mj = (await manifest.json()) as Any;
+    assert.deepEqual([mj.name, mj.short_name, mj.start_url, mj.scope, mj.display, mj.icons.length], ["Lock in · STX", "Lock in", "/app?source=home", "/app", "standalone", 2]);
+    for (const f of ["stx.png", "bird.png", "atticus.png", "icon-180.png", "icon-192.png", "icon-512.png"]) {
+      const r = await fetch(`${base}/app/${f}`);
+      const bytes = Buffer.from(await r.arrayBuffer());
+      assert.deepEqual([f, r.status, r.headers.get("content-type"), bytes.subarray(1, 4).toString("ascii")], [f, 200, "image/png", "PNG"]);
+    }
+    assert.equal((await fetch(`${base}/app/nope.png`)).status, 404);
     const ck = { cookie: setCookie.split(";")[0] };
     const revisit = await fetch(`${base}/app`, { headers: ck });
     assert.equal(revisit.headers.get("set-cookie"), null, "a returning cookie is kept, not replaced");
