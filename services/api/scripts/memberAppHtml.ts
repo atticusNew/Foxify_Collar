@@ -70,7 +70,7 @@ ${CSS}
 <main id="main" class="main"><div class="ael-wait">Loading…</div></main>
 <footer class="foot">
   <div class="foot-l">Protection by <img class="amark" src="/app/atticus.png" alt="Atticus">, a third party; not a product of ${esc(o.venueName)}.</div>
-  <div class="foot-r"><a href="${esc(o.recordUrl)}" rel="noopener">Public record</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg" aria-expanded="false">How this works</button><span class="dot">·</span><a href="/app/privacy">Privacy</a><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect ${esc(o.venueName)}</button></span></div>
+  <div class="foot-r"><a href="/app/privacy">Privacy</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg" aria-expanded="false">How this works</button><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect ${esc(o.venueName)}</button></span></div>
   <div class="about" id="about" hidden>
     <p>A lock sells part of a position you hold on ${esc(o.venueName)} into ${esc(o.venueName)}'s own bids, in your own account, at that moment's price. The cash lands in your ${esc(o.venueName)} balance right away; the rest of the position rides to the game as it always did. Win, and the riding contracts still pay. Lose, and you keep the cash.</p>
     <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Leave early buys the same contracts back from ${esc(o.venueName)}'s offers. Every order is placed in your account under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke that consent there at any time. This page never holds your money, your login or your keys. Every lock is written to a <a href="${esc(o.recordUrl)}" rel="noopener">public record</a> in neutral words, with no account ids.</p>
@@ -220,15 +220,15 @@ img { display: block; }
 .tabs button[aria-selected="true"] .n { background: var(--ael-accent); color: var(--ael-accent-ink); }
 
 .main { flex: 1; width: 100%; max-width: 760px; margin: 0 auto; padding: 22px 20px 44px; }
-.foot { padding: 18px 20px 26px; font-size: 12.5px; color: var(--ael-dim); border-top: 1px solid #1a1a1a; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; max-width: 760px; margin: 0 auto; width: 100%; }
-.foot-l { display: inline; line-height: 1.7; }
+.foot { padding: 18px 20px 28px; font-size: 12.5px; color: var(--ael-dim); border-top: 1px solid #1a1a1a; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; max-width: 760px; margin: 0 auto; width: 100%; }
+.foot-l { display: inline; line-height: 1.7; color: var(--ael-dim); }
+.foot-r a, .foot-r button.lnk { color: var(--ael-dim); text-decoration: none; font-size: 12.5px; background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
+.foot-r a:hover, .foot-r button.lnk:hover { color: var(--ael-soft); text-decoration: underline; text-underline-offset: 2px; }
 .foot .amark { height: 14px; width: auto; display: inline-block; vertical-align: middle; position: relative; top: -1px; margin: 0 2px; }
 .foot-r { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .foot-r a, .foot-r .lnk { white-space: nowrap; }
 .foot a { color: var(--ael-muted); }
 .foot .dot { color: var(--ael-faint); }
-.foot .lnk { background: none; border: 0; padding: 0; color: var(--ael-muted); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; font-size: 12.5px; }
-.foot .lnk:hover, .foot a:hover { color: var(--ael-fg-strong); }
 .about { flex-basis: 100%; color: var(--ael-muted); font-size: 12.5px; line-height: 1.5; max-width: 70ch; }
 .about p { margin: 6px 0; }
 .about[hidden] { display: none; }
@@ -346,7 +346,11 @@ h2.grp[hidden] { display: none; }
 .leg .ls { flex: none; font-size: 11.5px; color: var(--ael-muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .leg .ls.live { color: var(--ael-live); }
 .leg .ls.won { color: var(--ael-accent-text); }
-.leg .ls.lost { text-decoration: line-through; color: var(--ael-dim); }
+.leg .ls.lost { color: var(--ael-live); }
+.leg .ls.void { color: var(--ael-dim); }
+.leg .lp { flex: none; font-size: 12.5px; color: var(--ael-soft); font-variant-numeric: tabular-nums; letter-spacing: 0; text-transform: none; }
+.leg .lp.dim { color: var(--ael-faint); }
+.leg .ls .lp { color: inherit; opacity: 0.85; margin-left: 2px; }
 .legs-h { font-size: 12px; color: var(--ael-dim); margin: 8px 0 2px; letter-spacing: 0.04em; text-transform: uppercase; }
 
 /* the games: what the venue lists that we protect, by day */
@@ -391,6 +395,13 @@ h2.grp[hidden] { display: none; }
 /* the toast: one line, at the foot */
 .toast { position: fixed; left: 50%; bottom: calc(22px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(8px); background: var(--ael-bg-raise); border: 1px solid var(--ael-accent-line); color: var(--ael-fg-strong); font-size: 14px; padding: 11px 16px; border-radius: 999px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5); z-index: 7; opacity: 0; transition: opacity 0.2s, transform 0.2s; white-space: nowrap; }
 .toast b { color: var(--ael-accent-text); font-variant-numeric: tabular-nums; }
+.toast { display: inline-flex; align-items: center; gap: 9px; }
+.toast .tt { min-width: 0; }
+.toast .tk { flex: none; width: 16px; height: 16px; border-radius: 50%; background: var(--ael-accent); position: relative; }
+.toast .tk::after { content: ""; position: absolute; left: 5px; top: 2px; width: 4px; height: 8px; border: solid #050505; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.bal .delta { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--ael-accent-text); background: var(--ael-accent-wash, rgba(245, 158, 11, 0.14)); border: 1px solid var(--ael-accent-line); font-variant-numeric: tabular-nums; animation: ael-rise 0.35s ease-out; vertical-align: 2px; }
+.bal .delta.neg { color: var(--ael-soft); background: var(--ael-bg); border-color: var(--ael-border); }
+@keyframes ael-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .toast.on { opacity: 1; transform: translateX(-50%); }
 .toast[hidden] { display: none; }
 
@@ -517,8 +528,14 @@ h2.grp[hidden] { display: none; }
   .day-h { top: calc(52px + 53px + env(safe-area-inset-top)); }
   .main { padding: 16px 14px 32px; }
   h1 { font-size: 20px; margin-bottom: 12px; }
-  .bal { padding: 11px 12px; }
-  .bal b { font-size: 17px; }
+  /* the balance stays in view while the rows scroll, one line: who, then the figure; the credit lands where the eye already is */
+  .bal { position: sticky; top: calc(52px + 53px + env(safe-area-inset-top)); z-index: 2; padding: 9px 12px; gap: 8px 10px; flex-wrap: nowrap; align-items: center; margin-bottom: 14px; box-shadow: 0 10px 18px -12px rgba(0, 0, 0, 0.9); }
+  .bal .who { flex-basis: auto; margin: 0; min-width: 0; }
+  .bal .who b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 34vw; }
+  .bal .fig { margin-left: auto; white-space: nowrap; font-size: 12px; }
+  .bal b { font-size: 16px; }
+  .bal .av, .bal .r { display: none; }
+  .bal .delta { margin-left: 6px; padding: 1px 7px; font-size: 12px; }
   .pos { padding: 14px 0 12px; }
   .pos-t .name { font-size: 15px; }
   .pos .pays { font-size: 14px; }
@@ -530,15 +547,16 @@ h2.grp[hidden] { display: none; }
   .ael-drows .ael-dl:first-child { margin-top: 0; }
   .ael-leave-acts { flex-wrap: wrap; }
   .ael-leave-acts .ael-go.ael-quiet { flex: 1; }
-  .foot { flex-direction: column; align-items: flex-start; gap: 8px; }
-  .foot-r { margin-left: 0; }
+  .foot { flex-direction: column; align-items: center; text-align: center; gap: 6px; padding-bottom: calc(26px + env(safe-area-inset-bottom)); }
+  .foot-r { margin-left: 0; justify-content: center; }
   .game { padding-left: 12px; }
   .side { flex-wrap: wrap; row-gap: 8px; }
   .side .sn { flex-basis: calc(100% - 44px); }
   .side .px { order: 3; }
   .side .buy, .side .have { order: 4; margin-left: auto; }
   .connect { margin-top: 14px; padding: 22px 18px 16px; }
-  .toast { max-width: calc(100% - 28px); white-space: normal; text-align: center; border-radius: 14px; bottom: calc(96px + env(safe-area-inset-bottom)); }
+  .toast { max-width: calc(100% - 28px); border-radius: 14px; bottom: calc(24px + env(safe-area-inset-bottom)); padding: 10px 14px; font-size: 13.5px; }
+  .toast .tt { white-space: normal; text-align: left; line-height: 1.35; }
 }
 @media (max-width: 400px) {
   .ael-fact { white-space: normal; line-height: 1.3; }
@@ -639,7 +657,7 @@ const JS = String.raw`
   };
   const reasonWords = (p) => {
     switch (p.reason) {
-      case "parlay": return ["Parlay", "Protection on parlays is coming; this one rides as it is.", "parlay"];
+      case "parlay": return ["Parlay", VN + "'s combo market has no bids to sell into; this ticket rides to settlement.", "parlay"];
       case "league_not_covered": return ["Not covered", "This league isn't covered yet.", ""];
       case "market_not_covered": return ["Not covered", "Only game-winner positions can be protected.", ""];
       case "no_protectable_market": return ["Not listed", "This game isn't listed for protection.", ""];
@@ -649,7 +667,7 @@ const JS = String.raw`
     }
   };
 
-  const S = { tab: "portfolio", screen: "", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, games: null, gamesErr: null, gLeague: "all", gAll: false, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0, connecting: false, hsTip: false };
+  const S = { tab: "portfolio", screen: "", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, games: null, gamesErr: null, gLeague: "all", gAll: false, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0, delta: null, connecting: false, hsTip: false };
   const main = document.getElementById("main");
   const acct = document.getElementById("acct");
   const tabs = document.getElementById("tabs");
@@ -684,7 +702,7 @@ const JS = String.raw`
   let toastT = 0;
   const toast = (html) => {
     if (!toastEl) return;
-    toastEl.innerHTML = html; toastEl.hidden = false;
+    toastEl.innerHTML = '<span class="tk" aria-hidden="true"></span><span class="tt">' + html + "</span>"; toastEl.hidden = false;
     requestAnimationFrame(() => toastEl.classList.add("on"));
     clearTimeout(toastT);
     toastT = setTimeout(() => { toastEl.classList.remove("on"); setTimeout(() => { toastEl.hidden = true; }, 250); }, 3600);
@@ -826,8 +844,14 @@ const JS = String.raw`
   const legsHtml = (p) => {
     const legs = p.legs || [];
     if (!legs.length) return "";
-    const word = { pending: "Pending", live: "Live", won: "Hit", lost: "Missed", void: "Void" };
-    return '<div class="legs-h">' + legs.length + " legs</div><div class=\"legs\">" + legs.map((l) => '<div class="leg"><span class="ld ' + esc(l.state) + '"></span><span class="ln">' + esc(l.side) + (l.event || l.startsIso ? "<small>" + esc(opponentWords(l.side, l.event)) + (l.startsIso ? (l.event ? " · " : "") + esc(fmtAt(l.startsIso)) : "") + "</small>" : "") + '</span><span class="ls ' + esc(l.state) + '">' + (word[l.state] || "Pending") + "</span></div>").join("") + "</div>";
+    const word = { live: "Live", won: "Hit", lost: "Missed", void: "Void" };
+    return '<div class="legs-h">' + legs.length + " legs</div><div class=\"legs\">" + legs.map((l) => {
+      const done = l.state === "won" || l.state === "lost" || l.state === "void";
+      const sub = (l.event ? esc(opponentWords(l.side, l.event)) : "") + (done ? (l.event ? " · " : "") + "Final" : l.startsIso ? (l.event ? " · " : "") + esc(fmtAt(l.startsIso)) : "");
+      const right = l.state === "pending" ? (l.priceCents != null ? '<span class="lp">' + cents(l.priceCents) + "</span>" : '<span class="lp dim">—</span>')
+        : '<span class="ls ' + esc(l.state) + '">' + word[l.state] + (l.state === "live" && l.priceCents != null ? ' <span class="lp">' + cents(l.priceCents) + "</span>" : "") + "</span>";
+      return '<div class="leg"><span class="ld ' + esc(l.state) + '"></span><span class="ln">' + esc(l.side) + (sub ? "<small>" + sub + "</small>" : "") + "</span>" + right + "</div>";
+    }).join("") + "</div>";
   };
   const rowHtml = (p) => {
     const st = stateOf(p.ticker || p.id);
@@ -838,14 +862,16 @@ const JS = String.raw`
       const w = reasonWords(p);
       if (w[2] === "parlay") {
         const legs = p.legs || [], n = legs.length;
-        const hit = legs.filter((l) => l.state === "won").length, live = legs.filter((l) => l.state === "live").length, lost = legs.filter((l) => l.state === "lost").length;
-        const parts = [];
-        if (lost) parts.push("<b>" + lost + "</b> leg" + (lost > 1 ? "s" : "") + " missed");
-        else if (hit) parts.push("<b>" + hit + " of " + n + "</b> legs hit so far");
-        if (live && !lost) parts.push("<b>" + live + "</b> live now");
-        parts.push(n ? "protection on parlays is coming" : esc(w[1]));
-        const fact = parts.join(" · ");
-        return '<div class="ael-box">' + lineHtml("off", esc(w[0]), fact, st.open, "parlay") + (st.open && n ? '<div class="ael-panel ael-on">' + legsHtml(p) + '<div class="ael-fine">This ticket rides as it is; protection on the last open leg is coming.</div>' + DISCLOSE + "</div>" : "") + "</div>";
+        const hit = legs.filter((l) => l.state === "won").length, live = legs.filter((l) => l.state === "live").length, lost = legs.filter((l) => l.state === "lost");
+        const nextIso = legs.filter((l) => l.state === "pending" && l.startsIso).map((l) => l.startsIso).sort()[0];
+        let fact;
+        if (!n) fact = esc(w[1]);
+        else if (lost.length) fact = "<b>Missed</b> · " + esc(lost.map((l) => nickOf(l.side)).join(", "));
+        else if (hit === n) fact = "<b>All " + n + " hit</b> · settles on " + esc(VN);
+        else if (live) fact = "<b>" + live + " live</b> · " + hit + " of " + n + " hit";
+        else if (hit) fact = "<b>" + hit + " of " + n + " hit</b>" + (nextIso ? " · next " + esc(fmtAt(nextIso)) : "");
+        else fact = "<b>" + n + " legs</b>" + (nextIso ? " · first tips " + esc(fmtAt(nextIso)) : "");
+        return '<div class="ael-box">' + lineHtml("off", esc(w[0]), fact, st.open, "parlay") + (st.open && n ? '<div class="ael-panel ael-on">' + legsHtml(p) + '<div class="ael-fine">' + esc(VN) + "'s combo market has no bids to sell into, so this ticket rides to settlement. Last-leg protection through this service is a separate step.</div>" + DISCLOSE + "</div>" : "") + "</div>";
       }
       return '<div class="ael-box">' + lineHtml("off", esc(w[0]), esc(w[1]), false, w[2]) + "</div>";
     }
@@ -943,9 +969,9 @@ const JS = String.raw`
       st.lock = r.json; st.open = true; S.flash = p.ticker;
       paintRow(p); paintTabs();
       const ms = r.json.memberSale || {};
-      toast("<b>" + signed(ms.cashNowCents || 0) + "</b> in your " + esc(VN) + " balance · " + ms.keptContracts + " riding");
+      toast("Locked in · <b>" + signed(ms.cashNowCents || 0) + "</b> to your " + esc(VN) + " balance");
       setTimeout(() => void loadPositions(true), 1500);
-      setTimeout(async () => { await loadAccount(true); const a = S.account; if (a && a.balance && a.balance.accountCents != null) { st.cashAfter = a.balance.accountCents; S.pulse = Date.now(); paintBalance(); paintRow(p); } }, 1200);
+      setTimeout(async () => { await loadAccount(true); const a = S.account; if (a && a.balance && a.balance.accountCents != null) { st.cashAfter = a.balance.accountCents; creditBalance(ms.cashNowCents || 0); paintRow(p); } }, 1200);
       return;
     }
     const w = refusalWords(r.json || { code: r.ok ? "unavailable" : "venue_unreachable" });
@@ -975,9 +1001,9 @@ const JS = String.raw`
       st.leave = false; st.open = true; st.quote = null; st.quoteAt = 0; st.rcpt = null; st.lock = null; st.cashAfter = null;
       p.lock = null;
       paintRow(p); paintTabs();
-      toast("Bought back " + st.closedNow.contracts + " · <b>" + signed(st.closedNow.netCents) + "</b> net in your " + esc(VN) + " balance");
+      toast("Left early · <b>" + signed(st.closedNow.netCents) + "</b> net to your " + esc(VN) + " balance");
       setTimeout(() => void loadPositions(true), 1500);
-      setTimeout(() => { void loadAccount(true).then(() => { S.pulse = Date.now(); paintBalance(); }); }, 1200);
+      setTimeout(() => { void loadAccount(true).then(() => creditBalance(-(st.closedNow.costCents || 0))); }, 1200);
       S.history = null; void loadHistory();
       return;
     }
@@ -1018,10 +1044,23 @@ const JS = String.raw`
     if (a.balanceScope === false) return '<div class="bal">' + who + '<span>' + esc(VN) + ' balance</span><span>not shared with this page yet</span><span class="r"><button type="button" class="lnk" id="reconnect">Reconnect to show it</button></span></div>';
     const b = a.balance || {};
     const pulse = Date.now() - S.pulse < 2000 ? " pulse" : "";
-    return '<div class="bal">' + who + '<span class="' + pulse.trim() + '">' + esc(VN) + ' balance <b>' + (b.accountCents != null ? usd(b.accountCents) : "—") + "</b></span>" + (b.availableCents != null && b.availableCents !== b.accountCents ? '<span class="av">available ' + usd(b.availableCents) + "</span>" : "") + '<span class="r" id="bal-at"></span></div>';
+    const delta = S.delta && Date.now() - S.delta.at < 6000 ? '<span class="delta' + (S.delta.cents < 0 ? " neg" : "") + '">' + signed(S.delta.cents) + "</span>" : "";
+    return '<div class="bal">' + who + '<span class="fig' + pulse + '">' + esc(VN) + ' balance <b id="bal-fig">' + (b.accountCents != null ? usd(b.accountCents) : "—") + "</b>" + delta + "</span>" + (b.availableCents != null && b.availableCents !== b.accountCents ? '<span class="av">available ' + usd(b.availableCents) + "</span>" : "") + '<span class="r" id="bal-at"></span></div>';
   };
   const stampBalance = () => { const a = document.getElementById("bal-at"); if (a) a.textContent = S.acctAt ? "updated " + ago(S.acctAt) : ""; };
   const paintBalance = () => { const el = document.getElementById("bal"); if (el && setHtml(el, balanceHtml())) { const rc = document.getElementById("reconnect"); if (rc) rc.onclick = () => void connect(); } stampBalance(); };
+  // the balance after a lock or a buy-back: the figure counts from where it was to where it is, a signed badge beside it for a few seconds
+  const creditBalance = (cents) => {
+    const a = S.account, b = a && a.balance;
+    if (!b || b.accountCents == null || !cents) return;
+    S.delta = { cents, at: Date.now() }; S.pulse = Date.now();
+    paintBalance();
+    const fig = document.getElementById("bal-fig");
+    const to = b.accountCents, from = to - cents, t0 = performance.now(), ms = 650;
+    const step = (t) => { const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3); if (fig && fig.isConnected) fig.textContent = usd(Math.round(from + (to - from) * e)); if (k < 1) requestAnimationFrame(step); };
+    if (fig) requestAnimationFrame(step);
+    setTimeout(() => { S.delta = null; paintBalance(); }, 6200);
+  };
   const hsTipHtml = () => '<div class="note" id="hs-tip"><div class="hs"><p><b>Add Lock in to your home screen</b> for one tap back here after a buy on ' + esc(VN) + ". " + (/iPhone|iPad/.test(navigator.userAgent) ? "Tap Share, then <b>Add to Home Screen</b>." : "Open the browser menu, then <b>Add to Home screen</b>.") + '</p></div><button type="button" class="x" aria-label="Dismiss">×</button></div>';
   const skeleton = (n) => { let h = ""; for (let i = 0; i < n; i++) h += '<div class="skrow"><div class="sk a"></div><div class="sk b"></div><div class="sk c"></div></div>'; return h; };
   const portfolioScaffold = () => {
