@@ -69,8 +69,8 @@ ${CSS}
 <nav class="tabs" id="tabs" aria-label="Sections" hidden></nav>
 <main id="main" class="main"><div class="ael-wait">Loading…</div></main>
 <footer class="foot">
-  <div class="foot-l">Protection by <img class="amark" src="/app/atticus.png" alt="Atticus">, a third party; not a product of ${esc(o.venueName)}.</div>
-  <div class="foot-r"><a href="/app/privacy">Privacy</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg" aria-expanded="false">How this works</button><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect ${esc(o.venueName)}</button></span></div>
+  <div class="foot-l"><span class="fd">Protection by <img class="amark" src="/app/atticus.png" alt="Atticus">, a third party; not a product of ${esc(o.venueName)}.</span><span class="fm"><img class="amark" src="/app/atticus.png" alt="Atticus"><span>Third-party protection; not a product of ${esc(o.venueName)}.</span></span></div>
+  <div class="foot-r"><a href="/app/privacy">Privacy</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg" aria-expanded="false">How this works</button><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect<span class="fd"> ${esc(o.venueName)}</span></button></span></div>
   <div class="about" id="about" hidden>
     <p>A lock sells part of a position you hold on ${esc(o.venueName)} into ${esc(o.venueName)}'s own bids, in your own account, at that moment's price. The cash lands in your ${esc(o.venueName)} balance right away; the rest of the position rides to the game as it always did. Win, and the riding contracts still pay. Lose, and you keep the cash.</p>
     <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Leave early buys the same contracts back from ${esc(o.venueName)}'s offers. Every order is placed in your account under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke that consent there at any time. This page never holds your money, your login or your keys. Every lock is written to a <a href="${esc(o.recordUrl)}" rel="noopener">public record</a> in neutral words, with no account ids.</p>
@@ -222,6 +222,7 @@ img { display: block; }
 .main { flex: 1; width: 100%; max-width: 760px; margin: 0 auto; padding: 22px 20px 44px; }
 .foot { padding: 18px 20px 28px; font-size: 12.5px; color: var(--ael-dim); border-top: 1px solid #1a1a1a; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; max-width: 760px; margin: 0 auto; width: 100%; }
 .foot-l { display: inline; line-height: 1.7; color: var(--ael-dim); }
+.foot .fm { display: none; }
 .foot-r a, .foot-r button.lnk { color: var(--ael-dim); text-decoration: none; font-size: 12.5px; background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
 .foot-r a:hover, .foot-r button.lnk:hover { color: var(--ael-soft); text-decoration: underline; text-underline-offset: 2px; }
 .foot .amark { height: 14px; width: auto; display: inline-block; vertical-align: middle; position: relative; top: -1px; margin: 0 2px; }
@@ -233,7 +234,7 @@ img { display: block; }
 .about p { margin: 6px 0; }
 .about[hidden] { display: none; }
 .foot #disconnect-foot { display: none; }
-@media (max-width: 640px) { .foot #disconnect-foot:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; } }
+@media (max-width: 640px) { .foot #disconnect-foot:not([hidden]) { display: inline-flex; align-items: center; gap: 6px; } }
 
 h1 { font-size: 22px; font-weight: 700; margin: 0 0 14px; color: var(--ael-fg-strong); letter-spacing: -0.01em; display: flex; align-items: baseline; gap: 12px; }
 h1 small { font-size: 13px; font-weight: 500; color: var(--ael-dim); margin-left: auto; }
@@ -547,8 +548,14 @@ h2.grp[hidden] { display: none; }
   .ael-drows .ael-dl:first-child { margin-top: 0; }
   .ael-leave-acts { flex-wrap: wrap; }
   .ael-leave-acts .ael-go.ael-quiet { flex: 1; }
-  .foot { flex-direction: column; align-items: center; text-align: center; gap: 6px; padding-bottom: calc(26px + env(safe-area-inset-bottom)); }
-  .foot-r { margin-left: 0; justify-content: center; }
+  /* three short centred lines, each one line from 320px up: the mark, the disclosure, the links */
+  .foot { flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 16px 14px calc(24px + env(safe-area-inset-bottom)); font-size: 12px; }
+  .foot .fd { display: none; }
+  .foot .fm { display: flex; flex-direction: column; align-items: center; gap: 5px; white-space: nowrap; }
+  .foot .fm .amark { height: 13px; margin: 0; top: 0; opacity: 0.9; }
+  .foot-r { margin-left: 0; justify-content: center; flex-wrap: nowrap; gap: 6px; font-size: 12px; }
+  .foot-r a, .foot-r button.lnk { font-size: 12px; }
+  .foot .about { text-align: left; }
   .game { padding-left: 12px; }
   .side { flex-wrap: wrap; row-gap: 8px; }
   .side .sn { flex-basis: calc(100% - 44px); }
