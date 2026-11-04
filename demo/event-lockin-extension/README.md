@@ -341,33 +341,66 @@ the page's own `x-member-app: 1` header (a form on another site cannot send it).
 sees the login, the authorization code or a token: the service holds the connection (sealed on
 its disk, refreshed and revoked by it).
 
+The connect screen says what will happen before the tap: three numbered steps (sign in on STX's
+own page; one Allow screen, with the five permissions listed as chips; back here with your
+positions), a short **Why place orders?** note (a lock is a sell order for part of your position,
+nothing else is ever placed, revocable on STX), then the one button. On return the page shows a
+spinner ("Connecting your STX account…"), then a check ("STX connected · Reading your
+positions…"), then the portfolio; a refusal on STX's page comes back to the same connect screen
+with a red note ("STX didn't connect … Nothing is connected; your account is untouched"). On a
+phone's browser (not yet on the home screen) a dismissable note under the balance says how to add
+it to the home screen, for one tap back after a buy on STX.
+
 The page is laid out like STX's own app. The top bar carries STX's mark (a link back to STX when
 `MEMBER_APP_VENUE_URL` is set), our bird and the word Lock in, the member's avatar and @handle as
-STX shows them, Disconnect, and a **Back to STX** pill. Three tabs:
+STX shows them, Disconnect, and a **Back to STX** pill. Three tabs, each with a count (open locks,
+games listed, past locks):
 
 - **Portfolio** mirrors the STX account. A balance strip first (**STX balance $1,250.40**, read
   from `balance.read`; it re-reads after every lock and buy-back and the figure pulses amber when
   it moves; a connection made before the scope was asked says "not shared with this page yet ·
-  Reconnect to show it"). Then every open long position, the same facts STX shows (contracts,
-  average, the game, tip-off, pays $N), collapsed to one line each: the protectable ones carry
-  the Lock in line ("Lose, and still get $16.18") and the tap opens the panel (the two outcomes,
-  the cash row **In your STX balance now**, the Shape control, the Lock in pill, Details); the rest
-  sit under **Not protectable right now** with a muted pill and plain words: **Too close** (inside
-  the cutoff; the row also says "Lock in until 3:17 AM" while it is open), **In play**, **Parlay**
-  ("Protection on parlays is coming; this one rides as it is"), a market or a league the service
-  does not cover. Locked positions come first, then the offers. After a lock the Protected panel's
-  meta line says "+$16.18 in your STX balance · now $1,266.58".
-- **Games** lists the games this service can protect that STX lists right now, grouped by game
-  with tip-off and the last moment to lock, each side with STX's best bid and what a Max floor
-  lock would keep per contract on a loss, and **Buy on STX ↗** (a link to the event on STX; this
-  service never buys for anyone) or **In your portfolio** when the member already holds it.
-- **History** lists every past lock with its state (Left early · net −$0.62 · bought back 30 at
-  56¢; Settled; Void) and the same Details behind the line. Open locks stay on Portfolio.
+  Reconnect to show it"; the strip says "updated 12s ago" and the words move on their own). Then
+  every open long position, laid out as a row: a club mark (the club's initials on a colour of its
+  own), **Boston Celtics** to win, the opponent and tip-off ("vs Los Angeles Lakers · Wed 7:30 PM
+  ET"), **pays $50.00** on the right, and chips under the name (50 contracts · 30 sold · avg 42¢ ·
+  Lock in until 6:45 PM). The protectable ones carry the Lock in line ("Lose, and still get
+  $16.18"; when STX's book is thin it adds "· STX's book takes 20 of 30") and the tap opens the
+  panel (the two outcomes, the cash row **In your STX balance now**, the Shape control, the Lock in
+  pill, Details); the rest sit under **Not protectable right now** with a toned pill and plain
+  words: **Too close** (inside the cutoff), **In play** (a red dot), **Parlay** (violet; "3-leg
+  Combo", the picks under the name, and the tap opens the legs: each pick, its game and tip-off,
+  and where it stands, Pending · Live · Hit · Missed · Void; "protection on the last open leg is
+  coming"), a market or a league the service does not cover. Locked positions come first, then the
+  offers. After a lock a toast says "+$16.18 in your STX balance · 20 riding" and the Protected
+  panel's meta line says the balance now.
+- **Games** lists the games this service can protect that STX lists right now, by day (**Today**,
+  **Tomorrow**, then the weekday; two days at a time, "Show 3 more games on later days" for the
+  rest), with filters when there is more than one league and an **In your portfolio** filter when
+  any are held. Each game: the league badge, the title, tip-off, the last moment to lock; each
+  side as a tile with the club mark, home or away and the opponent, STX's best bid as an amber
+  price chip (**54¢**), what a Max floor lock would keep per contract on a loss (**floor ≈ 43¢**),
+  and **Buy on STX ↗** (a link to the event on STX; this service never buys for anyone) or **In
+  your portfolio** when the member already holds it (held games lead their day, with an amber
+  edge). The club names are STX's own, so the row reads as the portfolio does.
+- **History** lists every past lock as a row (the club mark, the game, chips: 30 of 50 sold ·
+  Balanced · locked Nov 4) with its state on the line (Left early · net −$0.62 · bought back 30 at
+  56¢; Settled; Void) and the same Details behind it. Open locks stay on Portfolio.
+
+Nothing on the page repaints wholesale. The frame is drawn once; rows are keyed and patched in
+place only when their own words change; the balance and the stamps are touched on their own, so a
+poll never reloads an image, closes an open panel or moves the scroll. Pull down at the top on a
+phone to re-read everything at once. While the first read lands the rows are skeletons, not
+"reading…".
 
 The shape a member picks is remembered on the device (Balanced to start). The page is
 installable (a web manifest under `/app/`, icons, standalone display) and re-reads the account
 and the positions whenever it comes back into view: after a buy on STX, after a look at the
-balance, from the home screen. Its foot: "Protection by Atticus, a third party; not a product of
+balance, from the home screen. It can carry its own host: set `MEMBER_APP_HOSTNAME`
+(`stx.earnandprotect.xyz`) and add that domain to the same Render service (Settings → Custom
+Domains; a CNAME at the registrar to the service's onrender host; Render issues the certificate).
+On that host `/` is the page and `/app/*` and `/api/*` answer as always; any other path is sent to
+the record URL, so the public record and the embed are never served under a venue's name. STX's
+app registration does not change: the callback stays the record URL's. Its foot: "Protection by Atticus, a third party; not a product of
 STX", the public record, **How this works** (the sale in plain words, the consent given on STX's
 own page and revocable there, what the page never holds), and on a phone Disconnect. Everything
 below about the sale, Details, Compared and Leave early is the page's behaviour too; the two

@@ -726,6 +726,20 @@ const MEMBER_ALIAS_PREFIX = "m-";
 const memberApp = memberAppConfigFromEnv(process.env, { redirectUri: `${RECORD_URL}${MEMBER_CALLBACK_PATH}`, storePath: join(dirname(LOCK_LEDGER_PATH), "member-tokens.json") });
 let memberSessions: MemberSessions | null = memberApp.config ? new MemberSessions(memberApp.config) : null;
 const MEMBER_APP_VENUE_URL = (process.env.MEMBER_APP_VENUE_URL ?? "").trim().replace(/\/+$/, "") || null;
+/**
+ * The page's own host, when it has one (a subdomain pointed at this service): there the root is
+ * the page, the page's files and the API answer as always, and every other path (the public
+ * record, the embed, the operator views) is sent to the record URL, so the venue-neutral public
+ * pages are never served under a host named for a venue.
+ */
+const MEMBER_APP_HOSTNAME = (process.env.MEMBER_APP_HOSTNAME ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "") || null;
+const MEMBER_APP_ORIGIN = MEMBER_APP_HOSTNAME ? `https://${MEMBER_APP_HOSTNAME}` : null;
+const isMemberAppHost = (req: IncomingMessage): boolean => {
+  if (!MEMBER_APP_HOSTNAME) return false;
+  const fwd = req.headers["x-forwarded-host"];
+  const host = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0].trim() || req.headers.host || "";
+  return host.split(":")[0].toLowerCase() === MEMBER_APP_HOSTNAME;
+};
 /** the page's files under /app/: the marks, the icons, the manifest (so the page can live on a home screen) */
 const MEMBER_APP_FILES: Record<string, { type: string; body: Buffer }> = {
   "stx.png": { type: "image/png", body: STX_LOGO_PNG },
@@ -852,12 +866,26 @@ async function memberAccount(member: string, fresh: boolean): Promise<{ profile:
 /** the venue's competition listing, shared by every member (it is the public catalogue), kept 45 s */
 const memberCatalogCache = new Map<string, { at: number; markets: RawOutcomeMarket[] }>();
 const MEMBER_CATALOG_TTL_MS = 45_000;
+/** what the listing endpoint's books look like, per competition, for the operator: does the list carry depth at all, and one market's top of book as the wire gave it */
+const memberCatalogSample = new Map<string, Record<string, unknown>>();
 async function memberCompetitionMarkets(member: string, competition: string): Promise<RawOutcomeMarket[]> {
   const key = competition.toUpperCase();
   const hit = memberCatalogCache.get(key);
   if (hit && Date.now() - hit.at <= MEMBER_CATALOG_TTL_MS) return hit.markets;
   const markets = await memberSessions!.client(member).listCompetitionMarkets(key);
   memberCatalogCache.set(key, { at: Date.now(), markets });
+  const winners = markets.filter((m) => winnerClubOf(m));
+  const withBids = winners.filter((m) => (m.bids ?? []).length > 0);
+  const bestBids = withBids.map((m) => outcomeBids(m)[0]?.priceMilli ?? 0);
+  const one = withBids[0] ?? winners[0] ?? null;
+  memberCatalogSample.set(key, {
+    readAt: new Date().toISOString(),
+    markets: markets.length,
+    winners: winners.length,
+    winnersWithBids: withBids.length,
+    distinctBestBids: new Set(bestBids).size,
+    ...(one ? { sample: { marketId: one.market_id, status: one.status ?? null, trading: one.trading ?? null, price: one.price ?? null, lastTradedPrice: one.last_traded_price ?? null, bids: (one.bids ?? []).slice(0, 3), offers: (one.offers ?? []).slice(0, 3) } } : {}),
+  });
   return markets;
 }
 
@@ -901,10 +929,14 @@ async function memberGames(member: string, held: Set<string>): Promise<{ games: 
       const last = Number(m.last_traded_price ?? m.price);
       const lastCents = Number.isFinite(last) && last > 0 ? Math.round((last / maxPrice) * 100) : null;
       const eventId = m.event_id ?? m.grouping_id?.split(":")[0] ?? null;
+      const club = winnerClubOf(m);
       return {
         ticker: r.ticker,
         league: r.league,
-        side: r.sideName,
+        // the club as the venue names it, so the row reads as the portfolio does
+        side: club?.name ?? r.sideName,
+        opponent: club?.opponent ?? null,
+        home: club ? club.side === "home" : null,
         event: (m.event_title ?? "").trim() || r.title,
         startIso: r.startIso,
         untilIso: r.protectableUntilIso,
@@ -1134,7 +1166,11 @@ function memberRulesView(league: string, kept: number) {
 /** The HTML page the venue's redirect lands on: one sentence, no script, nothing of the grant on it. */
 function memberCallbackHtml(ok: boolean, message: string): string {
   const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] as string);
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><title>${ok ? "Connected" : "Not connected"}</title><style>body{font:16px/1.5 -apple-system,system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#0b0f14;color:#e6edf3}main{max-width:28rem;padding:2rem;text-align:center}h1{font-size:1.25rem;margin:0 0 .5rem}p{margin:0;color:#9fb0c0}</style></head><body><main><h1>${ok ? "Connected" : "Not connected"}</h1><p>${esc(message)}</p></main></body></html>`;
+  const venue = VENUE_NAMES[MEMBER_VENUE];
+  const mark = ok
+    ? `<svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="#f9ae1c"/><path d="m15 25 6 6 12-14" stroke="#1a1200" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+    : `<svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="#1d1d1d" stroke="#3a3a3a" stroke-width="2"/><path d="M17 17l14 14M31 17 17 31" stroke="#d1d1d1" stroke-width="3" stroke-linecap="round"/></svg>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#010101"><title>${ok ? "Connected" : "Not connected"}</title><style>body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#010101;color:#f4f4f4}main{max-width:26rem;margin:16px;padding:28px 26px 22px;text-align:center;background:#1d1d1d;border:1px solid #2e2e2e;border-radius:14px}svg{width:48px;height:48px;margin:0 auto 14px;display:block}h1{font-size:19px;margin:0 0 8px;color:#fff}p{margin:0 0 16px;color:#b9b9b9}a.go{display:inline-flex;align-items:center;justify-content:center;height:44px;padding:0 22px;border-radius:999px;background:#f9ae1c;color:#1a1200;font-weight:600;text-decoration:none}.fine{font-size:12.5px;color:#818181;margin:14px 0 0}</style></head><body><main>${mark}<h1>${ok ? `${esc(venue)} connected` : "Not connected"}</h1><p>${esc(message)}</p>${ok ? "" : `<a class="go" href="${MEMBER_APP_PATH}">Try again</a>`}<div class="fine">Protection by Atticus, a third party; not a product of ${esc(venue)}.</div></main></body></html>`;
 }
 
 function sendHtml(res: ServerResponse, status: number, html: string): void {
@@ -3649,6 +3685,8 @@ function healthBody(): Record<string, unknown> {
               orderWaitMs: memberOrderOpts.waitMs ?? 3000,
               compareWaitMs: MEMBER_COMPARE_WAIT_MS,
               members: memberSessions.summary(),
+              ...(MEMBER_APP_HOSTNAME ? { hostname: MEMBER_APP_HOSTNAME } : {}),
+              ...(memberCatalogSample.size ? { catalogue: Object.fromEntries(memberCatalogSample) } : {}),
             }
           : {}),
         ...(memberApp.notes.length ? { notes: memberApp.notes } : {}),
@@ -3744,6 +3782,16 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
   const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
   try {
+    if (isMemberAppHost(req)) {
+      // the page's own host: the root is the page; the page's files, the member callback and the
+      // API stay; everything else lives on the record URL
+      if (url.pathname === "/") url.pathname = MEMBER_APP_PATH;
+      else if (!(url.pathname.startsWith(MEMBER_APP_PATH) || url.pathname.startsWith("/api/") || url.pathname === "/healthz")) {
+        res.writeHead(302, { location: `${RECORD_URL}${url.pathname}${url.search}`, "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+    }
     if ((OPERATOR_PATHS.has(url.pathname) || url.pathname.startsWith("/api/shadow/kalshi/")) && !operator) {
       sendJson(res, 403, {
         ok: false,

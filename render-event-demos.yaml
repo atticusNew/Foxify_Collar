@@ -312,6 +312,15 @@ services:
       #   MEMBER_APP_VENUE_URL=https://...       optional; the venue's web app (e.g. https://demo.stxapp.io): the page's
       #                                         Back to STX pill, the venue mark's link, and the Games tab's Buy on STX
       #                                         links to <url>/events/<event_id> (unset: no links, the rows still show)
+      #   MEMBER_APP_HOSTNAME=stx.earnandprotect.xyz
+      #                                         optional; the page's own host, a custom domain on this same service
+      #                                         (Render: Settings → Custom Domains → add it; a CNAME at the registrar to
+      #                                         the service's onrender host; Render issues the certificate). On that host
+      #                                         / is the page, /app/* and /api/* answer as always, and every other path
+      #                                         (the record, the embed, the operator views) is sent to RECORD_URL, so
+      #                                         nothing venue-neutral is served under a venue's name. The venue sees the
+      #                                         same callback either way (it is RECORD_URL's), so nothing changes on the
+      #                                         app registration. Unset: the page lives at RECORD_URL/app only.
       #   MEMBER_APP_ORDER_WAIT_MS=3000          optional; how long a member's limit order rests before
       #                                         the rest is cancelled and the record written from the fills
       #   MEMBER_APP_COMPARE_WAIT_MS=4000        optional; the bound on the background comparison priced
