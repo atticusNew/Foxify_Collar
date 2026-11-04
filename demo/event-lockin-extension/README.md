@@ -326,18 +326,35 @@ confirm it reads the same.
 
 ### STX
 
-STX is read through the holder's own account, not its page. The card (the same card the other
-venues fall back to when no row can be read) is the surface here, bottom right on every page of
-the venue, in STX's skin, dismissable with ×. Before the connection it carries one thing:
-**Connect STX account**. The tap asks the service for STX's own authorize page and opens it in a
-new tab; the holder signs in to STX there and approves reading their portfolio and placing
-orders in their own account (`profile.read portfolio.read orders.read orders.write`); STX sends
-the browser back to the service, whose page says "Your STX account is connected"; the card on
-this page updates on its own within a few seconds. This extension never sees the login, the
-authorization code or a token: the service holds the connection (sealed on its disk, refreshed
-and revoked by it), keyed to the holder's lock key, and the background worker's lock key header
-is the only credential in the extension, as on every venue. The card's foot says "STX connected
-Tue 7:02pm ET · Disconnect"; Disconnect revokes the grant at STX and forgets it.
+**The hosted page is the STX surface; this extension is optional there.** The service serves
+`GET /app` (the record URL plus `/app`), a single page in STX's own skin (near-black, dark-grey
+panels, amber) with the same Lock in line, panel, Details and Leave early as the demo embed.
+A member opens it, taps **Connect STX account**, signs in on STX's own page in the same tab,
+approves reading their portfolio and placing orders in their own account (`profile.read
+portfolio.read orders.read orders.write`), and lands back on the page with their positions
+listed, each with a Lock in line. Nothing to install, no lock key to paste: the page's session
+is a cookie the service sets on the first visit (HttpOnly, SameSite=Lax, Secure behind https,
+180 days), and the member's holder alias is a hash of it (`m-…`), so no secret is in a ledger
+file name. Cookie callers are a **member-only lane**: positions come from the connected account
+and never from our own venue keys, quote and lock refuse any venue but STX (403 `member_only`),
+and every POST needs the page's own `x-member-app: 1` header (a form on another site cannot
+send it). The page never sees the login, the authorization code or a token: the service holds
+the connection (sealed on its disk, refreshed and revoked by it). Its foot says "STX connected
+Tue 7:02pm ET · Disconnect"; Disconnect revokes the grant at STX and forgets it. Everything
+below about the sale, Details, Compared and Leave early is the page's behaviour too; the two
+surfaces call the same routes.
+
+The extension still knows STX (`stxapp.io`) for a holder who already runs it on the other venues:
+there STX is read through the holder's own account, not its page, and the card (the same card
+the other venues fall back to when no row can be read) is the surface, bottom right on every
+page of the venue, in STX's skin, dismissable with ×. Before the connection it carries one
+thing: **Connect STX account**. The tap asks the service for STX's own authorize page and opens
+it in a new tab (with a plain link under it when a popup blocker eats the tab); after the
+approval the card updates on its own within a few seconds. The extension never sees a token
+either: the connection is keyed to the holder's lock key, and the background worker's lock key
+header is the only credential in the extension, as on every venue. On the venue's own portfolio
+page the pre-trade pills stay away from the position rows; the card is the only thing we draw
+there.
 
 Connected, the card lists the holder's long positions on games the service can protect (one row
 per Winner market, sized from the account: 50 contracts at an average 42¢; a $2 contract counts
@@ -372,9 +389,10 @@ the fills; the position is whole again, unprotected. A book too thin for the who
 so, and the rest stays sold (and protected).
 
 Pre-game only, as everywhere: the service refuses a lock inside 45 minutes of the start. Parlays
-are not protected on STX. The pre-trade pills (game cards, slip) read STX's page as on any venue.
-The public record carries the lock with STX's own route word and no venue ids; the operator's
-holders page says "own sale" in the route column.
+are not protected on STX. The public record carries the lock with STX's own route word and no
+venue ids; the operator's holders page says "own sale" in the route column. In Details, the
+Shape control moves Sale, Compared and the Rules grid together: each tier carries its own
+comparison and its own tails, so the row the member reads is the shape they picked.
 
 ## Where the size comes from
 
@@ -684,10 +702,14 @@ the service listed tonight's game beside next week's: a card that says its game 
 started, else the earliest.
 
 **STX, through the member's own account (0.7.44).** A fourth venue and the first member venue.
-The host `stxapp.io` picks an amber skin; no row on the page is read: the card is the surface on
-every page, with **Connect STX account** before the connection (the venue's own consent screen in
-a new tab; the service holds the tokens, this extension never sees them) and the account's long
-positions on protectable games after it. The lock is the holder's own partial sale into STX's
+The primary surface is not this extension but the service's own hosted page, `GET /app`, in
+STX's skin with the demo's Lock in line (connect in the same tab, a cookie session, a
+member-only lane; see **STX** above). In the extension, the host `stxapp.io` picks an amber
+skin; no row on the page is read: the card is the surface on every page, with **Connect STX
+account** before the connection (the venue's own consent screen in a new tab, a plain link under
+it when the tab is blocked; the service holds the tokens, this extension never sees them) and
+the account's long positions on protectable games after it, the header saying "10 riding, 40
+sold" once a lock is open. The lock is the holder's own partial sale into STX's
 bids, nothing hedged: the cash row reads "In your STX balance now", the Protected line "… · on
 STX", Details carries the sale as filled (sold, price, STX order, still riding) and the
 background comparison on the hedge routes ("priced, nothing sent"), Leave early is "Buy back N at

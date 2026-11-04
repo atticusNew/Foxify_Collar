@@ -286,11 +286,18 @@ services:
       #   EVENT_SHADOW_POSITIONS_TTL_MS=20000    how long one read is reused
       # MEMBER APP (optional; the one-market-per-outcome venue's OAuth app, so a MEMBER of that venue
       # can connect their own account and lock in as their own partial sale into its book, in their
-      # own account: nothing hedged, no credit, no take, no capital of ours. The extension never holds
+      # own account: nothing hedged, no credit, no take, no capital of ours. The member's surface is
+      # the service's own hosted page, GET /app (the venue's skin, the demo's Lock in line; nothing to
+      # install): its session is a cookie the service sets (HttpOnly, SameSite=Lax, Secure behind
+      # https, 180 days) and the member's holder alias is a hash of it, m-<16 hex>, so no secret is
+      # in a ledger file name. Cookie callers are a member-only lane: positions never read our own
+      # venue keys, quote/lock refuse any venue but this one (403 member_only), POSTs need the page's
+      # x-member-app: 1 header. The extension's STX card is the optional second surface. Neither holds
       # a token; the service does, sealed. Register a Web app at the venue's developer portal with the
       # callback below and the service's egress IP on the app's allow-list for the write scope. Set in
-      # the dashboard, never in git. Unset: the member routes answer 404 member_app_off and the
-      # extension's STX card says the service is not set up for it. Needs EVENT_SHADOW_LOCK_KEY.)
+      # the dashboard, never in git. Unset: the member routes answer 404 member_app_off, /app says the
+      # service is not set up for it, and the extension's STX card says the same. Needs
+      # EVENT_SHADOW_LOCK_KEY.)
       #   MEMBER_APP_HOST=https://demo....       the venue's API host (also its authorize and token host)
       #   MEMBER_APP_CLIENT_ID=<app client id>
       #   MEMBER_APP_CLIENT_SECRET=<app client secret>   client_secret_basic on the token exchange
@@ -300,14 +307,17 @@ services:
       #                                         which must be the callback registered on the app, exactly
       #   MEMBER_APP_TOKENS_PATH=...             optional; default member-tokens.json beside the lock ledger
       #   MEMBER_APP_SCOPES=...                  optional; default "profile.read portfolio.read orders.read orders.write"
+      #   MEMBER_APP_VENUE_URL=https://...       optional; where the hosted page's venue name links (unset: plain text)
       #   MEMBER_APP_ORDER_WAIT_MS=3000          optional; how long a member's limit order rests before
       #                                         the rest is cancelled and the record written from the fills
       #   MEMBER_APP_COMPARE_WAIT_MS=4000        optional; the bound on the background comparison priced
       #                                         on the hedge routes beside the member's sale (0 turns it
       #                                         off); priced, nothing sent, written as memberSale.compared
       #   The competition map is REFERENCE_BOOK_OUTCOME_COMPETITIONS (shared with the reference read).
-      # Routes (lock key): GET /api/shadow/member (state), GET /api/shadow/member/connect (the authorize
-      #   URL to open), GET /api/shadow/member/callback (keyless; the venue's redirect, one-time state),
+      # Routes (lock key, or the page's cookie): GET /app (the hosted page; sets the cookie once),
+      #   GET /api/shadow/member (state), GET /api/shadow/member/connect (the authorize URL to open),
+      #   GET /api/shadow/member/callback (keyless; the venue's redirect, one-time state; a page
+      #   member is sent back to /app?connected=1 or /app?error=...),
       #   POST /api/shadow/member/disconnect (revokes). /api/shadow/positions lists the member's longs
       #   on our markets with venue:"stx"; /api/shadow/quote?venue=stx prices the three tiers from the
       #   member's own bid depth; /api/shadow/lock on that venue is one limit sell to its fills;
