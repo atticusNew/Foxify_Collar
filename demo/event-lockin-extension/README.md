@@ -327,20 +327,49 @@ confirm it reads the same.
 ### STX
 
 **The hosted page is the STX surface; this extension is optional there.** The service serves
-`GET /app` (the record URL plus `/app`), a single page in STX's own skin (near-black, dark-grey
-panels, amber) with the same Lock in line, panel, Details and Leave early as the demo embed.
-A member opens it, taps **Connect STX account**, signs in on STX's own page in the same tab,
-approves reading their portfolio and placing orders in their own account (`profile.read
-portfolio.read orders.read orders.write`), and lands back on the page with their positions
-listed, each with a Lock in line. Nothing to install, no lock key to paste: the page's session
-is a cookie the service sets on the first visit (HttpOnly, SameSite=Lax, Secure behind https,
-180 days), and the member's holder alias is a hash of it (`m-…`), so no secret is in a ledger
-file name. Cookie callers are a **member-only lane**: positions come from the connected account
-and never from our own venue keys, quote and lock refuse any venue but STX (403 `member_only`),
-and every POST needs the page's own `x-member-app: 1` header (a form on another site cannot
-send it). The page never sees the login, the authorization code or a token: the service holds
-the connection (sealed on its disk, refreshed and revoked by it). Its foot says "STX connected
-Tue 7:02pm ET · Disconnect"; Disconnect revokes the grant at STX and forgets it. Everything
+`GET /app` (the record URL plus `/app`), a single page built for a phone in STX's own skin
+(near-black, dark-grey panels, amber), with the same Lock in line, panel, Details and Leave
+early as the demo embed. A member opens it, taps **Connect STX account**, signs in on STX's own
+page in the same tab, approves reading their profile, balance and portfolio and placing orders
+in their own account (`profile.read balance.read portfolio.read orders.read orders.write`), and
+lands back on the page. Nothing to install, no lock key to paste: the page's session is a cookie
+the service sets on the first visit (HttpOnly, SameSite=Lax, Secure behind https, 180 days), and
+the member's holder alias is a hash of it (`m-…`), so no secret is in a ledger file name. Cookie
+callers are a **member-only lane**: positions come from the connected account and never from our
+own venue keys, quote and lock refuse any venue but STX (403 `member_only`), and every POST needs
+the page's own `x-member-app: 1` header (a form on another site cannot send it). The page never
+sees the login, the authorization code or a token: the service holds the connection (sealed on
+its disk, refreshed and revoked by it).
+
+The page is laid out like STX's own app. The top bar carries STX's mark (a link back to STX when
+`MEMBER_APP_VENUE_URL` is set), our bird and the word Lock in, the member's avatar and @handle as
+STX shows them, Disconnect, and a **Back to STX** pill. Three tabs:
+
+- **Portfolio** mirrors the STX account. A balance strip first (**STX balance $1,250.40**, read
+  from `balance.read`; it re-reads after every lock and buy-back and the figure pulses amber when
+  it moves; a connection made before the scope was asked says "not shared with this page yet ·
+  Reconnect to show it"). Then every open long position, the same facts STX shows (contracts,
+  average, the game, tip-off, pays $N), collapsed to one line each: the protectable ones carry
+  the Lock in line ("Lose, and still get $16.18") and the tap opens the panel (the two outcomes,
+  the cash row **In your STX balance now**, the Shape control, the Lock in pill, Details); the rest
+  sit under **Not protectable right now** with a muted pill and plain words: **Too close** (inside
+  the cutoff; the row also says "Lock in until 3:17 AM" while it is open), **In play**, **Parlay**
+  ("Protection on parlays is coming; this one rides as it is"), a market or a league the service
+  does not cover. Locked positions come first, then the offers. After a lock the Protected panel's
+  meta line says "+$16.18 in your STX balance · now $1,266.58".
+- **Games** lists the games this service can protect that STX lists right now, grouped by game
+  with tip-off and the last moment to lock, each side with STX's best bid and what a Max floor
+  lock would keep per contract on a loss, and **Buy on STX ↗** (a link to the event on STX; this
+  service never buys for anyone) or **In your portfolio** when the member already holds it.
+- **History** lists every past lock with its state (Left early · net −$0.62 · bought back 30 at
+  56¢; Settled; Void) and the same Details behind the line. Open locks stay on Portfolio.
+
+The shape a member picks is remembered on the device (Balanced to start). The page is
+installable (a web manifest under `/app/`, icons, standalone display) and re-reads the account
+and the positions whenever it comes back into view: after a buy on STX, after a look at the
+balance, from the home screen. Its foot: "Protection by Atticus, a third party; not a product of
+STX", the public record, **How this works** (the sale in plain words, the consent given on STX's
+own page and revocable there, what the page never holds), and on a phone Disconnect. Everything
 below about the sale, Details, Compared and Leave early is the page's behaviour too; the two
 surfaces call the same routes.
 
@@ -702,9 +731,11 @@ the service listed tonight's game beside next week's: a card that says its game 
 started, else the earliest.
 
 **STX, through the member's own account (0.7.44).** A fourth venue and the first member venue.
-The primary surface is not this extension but the service's own hosted page, `GET /app`, in
-STX's skin with the demo's Lock in line (connect in the same tab, a cookie session, a
-member-only lane; see **STX** above). In the extension, the host `stxapp.io` picks an amber
+The primary surface is not this extension but the service's own hosted page, `GET /app`, built
+for a phone in STX's skin with the demo's Lock in line (connect in the same tab, a cookie
+session, a member-only lane; STX's mark and our bird in the bar, the member's handle and STX
+balance, Portfolio / Games / History tabs, every position listed with the unprotectable ones
+muted with their reason, parlays among them; a web manifest; see **STX** above). In the extension, the host `stxapp.io` picks an amber
 skin; no row on the page is read: the card is the surface on every page, with **Connect STX
 account** before the connection (the venue's own consent screen in a new tab, a plain link under
 it when the tab is blocked; the service holds the tokens, this extension never sees them) and
