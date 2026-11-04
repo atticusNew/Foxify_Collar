@@ -106,7 +106,13 @@ const utcDay = (iso: string): string => iso.slice(0, 10);
 const ROUTE_WORDS: Record<string, string> = {
   kalshi_self: "hedged on the market's own No side",
   polymarket: "hedged cross-venue on the same game",
+  prophetx: "hedged cross-venue on the same game",
+  novig: "hedged cross-venue on the same game",
+  // a member's own sale: part of the position sold into the bid in their own account, nothing hedged
+  member_sale: "the holder's own partial sale, nothing hedged",
 };
+/** the operator's short name for where a lock's other side went (the holders page) */
+const ROUTE_SHORT: Record<string, string> = { kalshi_self: "Kalshi", polymarket: "Polymarket", prophetx: "ProphetX", novig: "Novig", member_sale: "own sale" };
 
 export const SHADOW_CSS = `
 :root{
@@ -1339,7 +1345,7 @@ export function renderHoldersHtml(input: HoldersPageInput): string {
           const owedToWriter = p.cash.filter((c) => c.to === "writer").reduce((s, c) => s + c.outstandingCents, 0);
           const standing = owedToHolder > 0 ? `<b class="owe">${usd(owedToHolder)}</b><i>owed to holder</i>` : owedToWriter > 0 ? `<b class="back">${usd(owedToWriter)}</b><i>owed back</i>` : `<b class="sq">square</b><i>every leg paid</i>`;
           const result = p.status === "settled" ? ` · ${p.result === "yes" ? `${escapeHtml(p.sideName)} won` : p.result === "no" ? `${escapeHtml(p.sideName)} lost` : escapeHtml(p.result ?? "")}` : p.status === "open" ? "" : ` · ${escapeHtml(p.status)}`;
-          return `<tr class="${escapeHtml(p.status)}"><td class="g"><b>${escapeHtml(p.eventTitle)}</b><i>${escapeHtml(p.sideName)} · ${escapeHtml(shortEt(p.eventTimeIso))}${result}</i><i class="tk">${escapeHtml(p.ticker)}</i></td><td>${p.contracts}<i>${p.entryCents !== null ? `@ ${p.entryCents}¢` : ""}</i></td><td>${p.floorCents}¢ / ${p.capCents}¢<i>+${usd(p.creditCents)} credit</i></td><td>${escapeHtml(p.route === "kalshi_self" ? "Kalshi" : "Polymarket")}<i>locked ${escapeHtml(shortEt(p.at))}</i></td><td class="legs">${p.cash.map(cashLegHtml).join("")}</td><td class="st">${standing}</td></tr>`;
+          return `<tr class="${escapeHtml(p.status)}"><td class="g"><b>${escapeHtml(p.eventTitle)}</b><i>${escapeHtml(p.sideName)} · ${escapeHtml(shortEt(p.eventTimeIso))}${result}</i><i class="tk">${escapeHtml(p.ticker)}</i></td><td>${p.contracts}<i>${p.entryCents !== null ? `@ ${p.entryCents}¢` : ""}</i></td><td>${p.floorCents}¢ / ${p.capCents}¢<i>+${usd(p.creditCents)} credit</i></td><td>${escapeHtml(ROUTE_SHORT[p.route] ?? p.route)}<i>locked ${escapeHtml(shortEt(p.at))}</i></td><td class="legs">${p.cash.map(cashLegHtml).join("")}</td><td class="st">${standing}</td></tr>`;
         })
         .join("");
       const name = h.holder === "(shared)" ? "shared key" : h.holder;

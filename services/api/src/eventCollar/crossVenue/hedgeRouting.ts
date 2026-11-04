@@ -35,9 +35,14 @@
 
 import type { HedgeRoute } from "./types";
 
-export type SettlementVenue = "kalshi" | "polymarket" | "prophetx" | "novig";
-export const SETTLEMENT_VENUES: readonly SettlementVenue[] = ["kalshi", "polymarket", "prophetx", "novig"];
-export const VENUE_NAMES: Record<SettlementVenue, string> = { kalshi: "Kalshi", polymarket: "Polymarket", prophetx: "ProphetX", novig: "Novig" };
+/**
+ * Where a holder's position can live. "stx" is the outcome-market exchange whose members connect
+ * their own account (memberApp.ts): a holder venue only, never a hedge venue; its lock is the
+ * member's own sale into the venue's bid (route "member_sale"), so no route hedges there.
+ */
+export type SettlementVenue = "kalshi" | "polymarket" | "prophetx" | "novig" | "stx";
+export const SETTLEMENT_VENUES: readonly SettlementVenue[] = ["kalshi", "polymarket", "prophetx", "novig", "stx"];
+export const VENUE_NAMES: Record<SettlementVenue, string> = { kalshi: "Kalshi", polymarket: "Polymarket", prophetx: "ProphetX", novig: "Novig", stx: "STX" };
 
 export const isSettlementVenue = (v: unknown): v is SettlementVenue => typeof v === "string" && (SETTLEMENT_VENUES as readonly string[]).includes(v);
 
@@ -117,6 +122,23 @@ const NOVIG_POSTPONED =
   "If the game does not Commence within the window, the Contract will settle to Void, unless the Exchange has formally rescheduled it or it begins within 48 hours of its original start time. [Void settles at Fair Value: the price the market was trading at immediately before the disrupting news became known.]";
 const NOVIG_ABANDONED =
   "Absent an official winner or a tie determined on the field, the Contract settles to Void. [Void settles at Fair Value.]";
+
+/** the outcome-market exchange's developer docs, read 2026-11-03: market shape (the push) and market status (cancelled, voided) */
+const STX_MARKET_SHAPE = "https://docs.stxapp.io/concepts/market-shape/";
+const STX_MARKET_STATUS = "https://docs.stxapp.io/concepts/market-status/";
+const READ_STX = "2026-11-03";
+const STX_TIE = "push applies to a home_winner or away_winner market whose game ends level: neither side won, so it settles at max_price / 2.";
+const STX_VOIDED = "voided: Cancellation confirmed; void settlements generated. [What a void settlement pays is not stated in the text read.]";
+/**
+ * On this venue a lock is the member's own partial sale (route "member_sale"): the contracts
+ * sold are sold, whatever the tail; only the contracts still riding meet these cells.
+ */
+const STX_ROW = (league: string): RuleCells => ({
+  tie: cell("half", true, STX_MARKET_SHAPE, STX_TIE, undefined, READ_STX),
+  postponed: cell("void", false, STX_MARKET_STATUS, `${league}: ${NOT_STATED} (the venue's status table cancels and voids a market; the window before that is not stated)`, undefined, READ_STX),
+  abandoned: cell("void", false, STX_MARKET_STATUS, STX_VOIDED, undefined, READ_STX),
+  corrected: cell("stands", false, STX_MARKET_STATUS, NOT_STATED, undefined, READ_STX),
+});
 
 /**
  * The table. One row per venue per league we quote. Kalshi and Polymarket rows were read from
@@ -230,6 +252,7 @@ const TABLE: Record<SettlementVenue, Record<string, RuleCells>> = {
       corrected: cell("stands", false, NOVIG_SETTLEMENT, NOT_STATED, undefined, READ_NHL),
     },
   },
+  stx: { nfl: STX_ROW("nfl"), nba: STX_ROW("nba"), mlb: STX_ROW("mlb"), nhl: STX_ROW("nhl") },
 };
 
 /** The table's row for a venue and league; an unknown league takes the NFL row with every cell unconfirmed. */

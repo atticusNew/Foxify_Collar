@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>STX (stand-in)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ael-venue" content="stx">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#010101;color:#f4f4f4;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px}
+  a{color:inherit;text-decoration:none}
+  header{display:flex;align-items:center;gap:28px;padding:0 28px;height:56px;border-bottom:1px solid #1d1d1d;position:sticky;top:0;background:#010101;z-index:5}
+  .logo{font-weight:900;font-size:22px;letter-spacing:.06em;color:#f9ae1c}
+  nav{display:flex;gap:24px;font-size:13px;color:#9a9a9a;font-weight:600}nav a.on{color:#fff}
+  .right{margin-left:auto;display:flex;gap:14px;align-items:center;font-size:12px;color:#9a9a9a}
+  .bal{background:#1d1d1d;border-radius:8px;padding:6px 12px;color:#fff;font-weight:700}
+  .dep{background:#f9ae1c;color:#1a1200;border-radius:8px;padding:7px 14px;font-weight:800}
+  .wrap{display:grid;grid-template-columns:210px 1fr;min-height:110vh}
+  aside{border-right:1px solid #1d1d1d;padding:22px 18px;font-size:13px;color:#d1d1d1}
+  aside .h{font-size:10.5px;letter-spacing:.12em;color:#818181;font-weight:700;margin:0 0 10px}
+  aside a{display:block;padding:8px 10px;border-radius:8px;margin-bottom:2px}aside a.on{background:#1d1d1d;color:#fff}
+  main{padding:24px 36px 80px;max-width:900px}
+  h1{font-size:22px;margin:0 0 6px}.sub{color:#9a9a9a;font-size:13px;margin:0 0 20px}
+  .tabs{display:flex;gap:24px;border-bottom:1px solid #1d1d1d;margin-bottom:8px;font-size:13px;font-weight:600;color:#818181}
+  .tabs a{padding:0 2px 10px}.tabs a.on{color:#fff;border-bottom:2px solid #f9ae1c}
+  .pos{display:grid;grid-template-columns:1fr auto auto auto;gap:18px;align-items:center;padding:16px 6px;border-bottom:1px solid #1d1d1d}
+  .pos .t{font-size:15px;font-weight:600}.pos .m{font-size:12.5px;color:#9a9a9a;margin-top:3px}
+  .pos .num{text-align:right;font-size:11.5px;color:#9a9a9a;min-width:96px}.pos .num b{display:block;color:#fff;font-size:14px;font-weight:600;margin-top:2px}
+  .pos .num .g{color:#f9ae1c}
+  .pos .btn{border:1px solid #2e2e2e;border-radius:8px;padding:8px 16px;background:#141414;color:#fff;font-weight:600;font-size:13px;cursor:pointer}
+  h2{font-size:16px;margin:34px 0 12px;color:#d1d1d1}
+  .card{border:1px solid #1d1d1d;border-radius:12px;padding:14px 16px;margin-bottom:12px;background:#0a0a0a}
+  .card .when{font-size:11.5px;color:#9a9a9a;margin-bottom:8px}.card .when b{color:#f9ae1c;font-weight:600}
+  .side{display:flex;justify-content:space-between;align-items:center;padding:7px 0}
+  .side .nm{font-size:14px;font-weight:600}.side small{color:#9a9a9a;font-weight:400;margin-left:6px}
+  .side .px{border:1px solid #2e2e2e;border-radius:8px;padding:6px 12px;font-size:12.5px;color:#f9ae1c;font-weight:700;min-width:70px;text-align:center;background:#141414}
+  .note{color:#5c5c5c;font-size:11.5px;margin-top:30px;line-height:1.5}
+</style></head>
+<body>
+<header><a class="logo" href="#/">STX</a><nav><a href="#/">Markets</a><a>Live</a><a href="#/portfolio" class="on">Portfolio</a><a>Activity</a></nav>
+<div class="right"><span class="bal">$1,240.60</span><span class="dep">Deposit</span></div></header>
+<div class="wrap">
+<aside>
+  <div class="h">SPORTS</div>
+  <a href="#/" class="on">NBA</a><a>NFL</a><a>NHL</a><a>MLB</a>
+  <div class="h" style="margin-top:22px">ACCOUNT</div>
+  <a href="#/portfolio">Portfolio</a><a>Orders</a><a>Settlements</a><a>API keys</a>
+</aside>
+<main>
+  <h1>Portfolio</h1>
+  <p class="sub">Open positions settle at $1.00 a contract on the official result.</p>
+  <div class="tabs"><a class="on">Positions</a><a>Orders</a><a>History</a></div>
+  <div class="pos"><div><div class="t">Boston Celtics to win</div><div class="m">Los Angeles Lakers at Boston Celtics &middot; Tonight 7:30 PM ET</div></div>
+    <div class="num">Contracts<b>50</b></div><div class="num">Avg price<b>$0.42</b></div><div class="num">Last<b class="g">$0.55</b></div></div>
+  <div class="pos"><div><div class="t">Miami Heat to win</div><div class="m">New York Knicks at Miami Heat &middot; Tonight 8:00 PM ET</div></div>
+    <div class="num">Contracts<b>40</b></div><div class="num">Avg price<b>$0.55</b></div><div class="num">Last<b class="g">$0.62</b></div></div>
+  <div class="pos"><div><div class="t">Detroit Pistons to win</div><div class="m">Chicago Bulls at Detroit Pistons &middot; Tonight 7:00 PM ET</div></div>
+    <div class="num">Contracts<b>10</b></div><div class="num">Avg price<b>$0.45</b></div><div class="num">Last<b class="g">$0.49</b></div></div>
+  <p class="note">A stand-in for the STX web app, built to a dark page with the venue's amber. Nothing on this page is read by the
+  extension: on STX the positions come from the connected member account at the service, and the card bottom right is
+  the surface. The rows above are here only so the page looks like a portfolio while the card is walked.</p>
+</main>
+</div>
+</body></html>

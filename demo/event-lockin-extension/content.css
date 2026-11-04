@@ -6,7 +6,7 @@
 
    Skins. Every colour below is a variable set on the roots we draw (.ael-host, .ael-card,
    .ael-note, .ael-pill, .ael-slip, .ael-tip). The defaults are the ProphetX theme: near-black, white, the venue's green. The
-   script adds a venue class to each root (.ael-v-kalshi, .ael-v-novig) and the skin overrides
+   script adds a venue class to each root (.ael-v-kalshi, .ael-v-novig, .ael-v-stx) and the skin overrides
    the variables there; nothing else in the file knows which venue it is on. */
 
 :where(.ael-host, .ael-card, .ael-note, .ael-pill, .ael-slip, .ael-tip) {
@@ -94,6 +94,37 @@
   --ael-accent-wash-2: rgba(23, 155, 231, 0.16);
   --ael-accent-wash-3: rgba(23, 155, 231, 0.22);
   --ael-shadow: rgba(0, 0, 0, 0.6);
+  --ael-ring: rgba(255, 255, 255, 0.35);
+  --ael-radius: 6px;
+  --ael-radius-lg: 12px;
+}
+
+/* STX: near-black page (#010101), dark-grey panels, light type, the venue's amber as the one
+   accent; the amber is bright, so the ink on a filled pill is dark. */
+.ael-v-stx {
+  --ael-fg: #f4f4f4;
+  --ael-fg-strong: #ffffff;
+  --ael-soft: #d1d1d1;
+  --ael-muted: #9a9a9a;
+  --ael-dim: #818181;
+  --ael-faint: #5c5c5c;
+  --ael-bg: #141414;
+  --ael-bg-deep: #0a0a0a;
+  --ael-bg-raise: #1d1d1d;
+  --ael-bg-hover: #262626;
+  --ael-border: #2e2e2e;
+  --ael-border-hover: #3a3a3a;
+  --ael-divider: #262626;
+  --ael-accent: #f9ae1c;
+  --ael-accent-hover: #ffc91a;
+  --ael-accent-ink: #1a1200;
+  --ael-glow: #ffe233;
+  --ael-accent-text: #ffc91a;
+  --ael-accent-line: rgba(249, 174, 28, 0.6);
+  --ael-accent-wash: rgba(249, 174, 28, 0.12);
+  --ael-accent-wash-2: rgba(249, 174, 28, 0.16);
+  --ael-accent-wash-3: rgba(249, 174, 28, 0.22);
+  --ael-shadow: rgba(0, 0, 0, 0.65);
   --ael-ring: rgba(255, 255, 255, 0.35);
   --ael-radius: 6px;
   --ael-radius-lg: 12px;
@@ -510,6 +541,18 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-card-pos b { display: block; font-size: 14px; font-weight: 700; color: var(--ael-fg-strong); }
 .ael-card-pos span { display: block; font-size: 11.5px; color: var(--ael-muted); margin-top: 2px; }
 .ael-card .ael-row { padding-top: 6px; }
+/* a member venue: the card is the surface. One block before the connection (Connect), the rows
+   after it, a foot naming the connection and the way out. */
+.ael-card-state { padding: 2px 0 4px; }
+.ael-card-state .ael-ph { margin: 8px 0 6px; }
+.ael-card-state .ael-ph span { line-height: 1.45; }
+.ael-connect .ael-acts { margin-top: 10px; }
+.ael-connect .ael-fine { margin: 6px 0 0; }
+.ael-fine.ael-err { color: var(--ael-fg-strong); }
+.ael-card-empty { padding: 6px 0 4px; line-height: 1.45; }
+.ael-card-f { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 16px 10px; font-size: 11.5px; color: var(--ael-muted); border-top: 1px solid var(--ael-divider); }
+.ael-card-f a { color: var(--ael-muted); text-decoration: underline; }
+.ael-card-f a:hover { color: var(--ael-soft); }
 
 @media (max-width: 560px) {
   .ael-lr s { width: 72px; }

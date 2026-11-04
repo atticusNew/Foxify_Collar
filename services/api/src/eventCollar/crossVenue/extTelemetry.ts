@@ -6,7 +6,7 @@
  * read on the operator's views and resets with the process.
  */
 
-export const EXT_VENUES = ["prophetx", "kalshi", "novig", "preview"] as const;
+export const EXT_VENUES = ["prophetx", "kalshi", "novig", "stx", "preview"] as const;
 export type ExtVenue = (typeof EXT_VENUES)[number];
 export const EXT_PAGES = ["board", "game", "plays", "other"] as const;
 export type ExtPage = (typeof EXT_PAGES)[number];

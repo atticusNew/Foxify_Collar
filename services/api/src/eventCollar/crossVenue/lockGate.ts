@@ -226,7 +226,7 @@ export function parseLockRequest(body: unknown): { ok: true; value: LockRequest 
   }
   if (b.venue !== undefined && b.venue !== null && b.venue !== "") {
     const v = typeof b.venue === "string" ? b.venue.trim().toLowerCase() : "";
-    if (!isSettlementVenue(v)) return { ok: false, error: "venue must be kalshi, polymarket, prophetx or novig" };
+    if (!isSettlementVenue(v)) return { ok: false, error: "venue must be kalshi, polymarket, prophetx, novig or stx" };
     value.venue = v;
   }
   const parlay = parseParlay(b.parlay);

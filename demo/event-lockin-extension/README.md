@@ -1,16 +1,21 @@
 # Atticus Earn & Protect: Lock in (browser extension)
 
-One extension, three venues, each in its own skin:
+One extension, four venues, each in its own skin:
 
 | Venue | Page it draws on | How the venue says a play | Skin |
 | --- | --- | --- | --- |
 | ProphetX (`prophetx.co`) | **My Trades**, Resting / Filled / Settled | cost, price as the implied chance or American odds, payout | near-black, the venue's green |
 | Kalshi (`kalshi.com`) | **Portfolio**, Positions / Orders / History | Yes or No on a club, N contracts at a price in cents | white, near-black type, the venue's green |
 | Novig (`novig.com`, `novig.us`) | **Portfolio**, Active / Settled | one card per order: code and multiplier (GB · 1.54x), Winner, MATCHED, Amount and To Pay | black, dark-grey cards, the venue's blue |
+| STX (`stxapp.io`) | the **positions block** (our card), on every page of the venue; the page itself is not read | the member's own account, read by the service once the member connects it; N contracts at a price in dollars | near-black, dark-grey panels, the venue's amber |
 
 The host name picks the venue. It sets the colours (CSS variables on every block we draw), the
 words ("play", "position", "order") and the reading rules below. Everything else is the same
-code: the line, the panel, the lock, the receipt.
+code: the line, the panel, the lock, the receipt. STX is the one **member venue**: the holder
+connects their own STX account to the service once (the venue's own consent screen), the
+positions come from that account rather than from the page, and the lock is the holder's own
+partial sale into STX's book, in their own account, with nothing hedged anywhere (see **STX**
+below).
 
 Before the trade, two quiet things and no more (each can be turned off in Options):
 
@@ -319,6 +324,76 @@ is built to this layout from a saved screenshot of a real order (GB at 1.54x, $5
 $7.69, Thu 9:15 PM), with the same stretching deck; the first thing to do on the live page is
 confirm it reads the same.
 
+### STX
+
+**The hosted page is the STX surface; this extension is optional there.** The service serves
+`GET /app` (the record URL plus `/app`), a single page in STX's own skin (near-black, dark-grey
+panels, amber) with the same Lock in line, panel, Details and Leave early as the demo embed.
+A member opens it, taps **Connect STX account**, signs in on STX's own page in the same tab,
+approves reading their portfolio and placing orders in their own account (`profile.read
+portfolio.read orders.read orders.write`), and lands back on the page with their positions
+listed, each with a Lock in line. Nothing to install, no lock key to paste: the page's session
+is a cookie the service sets on the first visit (HttpOnly, SameSite=Lax, Secure behind https,
+180 days), and the member's holder alias is a hash of it (`m-…`), so no secret is in a ledger
+file name. Cookie callers are a **member-only lane**: positions come from the connected account
+and never from our own venue keys, quote and lock refuse any venue but STX (403 `member_only`),
+and every POST needs the page's own `x-member-app: 1` header (a form on another site cannot
+send it). The page never sees the login, the authorization code or a token: the service holds
+the connection (sealed on its disk, refreshed and revoked by it). Its foot says "STX connected
+Tue 7:02pm ET · Disconnect"; Disconnect revokes the grant at STX and forgets it. Everything
+below about the sale, Details, Compared and Leave early is the page's behaviour too; the two
+surfaces call the same routes.
+
+The extension still knows STX (`stxapp.io`) for a holder who already runs it on the other venues:
+there STX is read through the holder's own account, not its page, and the card (the same card
+the other venues fall back to when no row can be read) is the surface, bottom right on every
+page of the venue, in STX's skin, dismissable with ×. Before the connection it carries one
+thing: **Connect STX account**. The tap asks the service for STX's own authorize page and opens
+it in a new tab (with a plain link under it when a popup blocker eats the tab); after the
+approval the card updates on its own within a few seconds. The extension never sees a token
+either: the connection is keyed to the holder's lock key, and the background worker's lock key
+header is the only credential in the extension, as on every venue. On the venue's own portfolio
+page the pre-trade pills stay away from the position rows; the card is the only thing we draw
+there.
+
+Connected, the card lists the holder's long positions on games the service can protect (one row
+per Winner market, sized from the account: 50 contracts at an average 42¢; a $2 contract counts
+as two), each with the same Lock in line as a Kalshi row. A short, a Spread or Total market, or a
+game the service does not list gets no row or a muted one with the reason.
+
+**The lock is the holder's own sale.** On the other venues the service buys the other side of the
+pick on a hedge venue and pays the holder a credit; the floor and the cap are the collar's terms.
+On STX nothing is hedged and no one is on the other side: the three shapes sell 40%, 60% or 80% of
+the position (Max upside, Balanced, Max floor) into STX's own bids at the walked price, and the
+floor is simply the cash the sale pays (the side lost: the holder keeps the cash and the riding
+contracts pay $0), the cap that cash plus $1 on every riding contract (the side won). So the cash
+row reads **In your STX balance now +$10.80** rather than Cash now; the panel, the Shape control
+and the Protected line are otherwise the same. The tap sends one limit sell for the shape's share
+at the walked price, waits briefly, cancels the rest and writes the record from the fills, never
+from the quote: a partial fill is a smaller sale with more riding, said once on the facts line
+("28 of the 30 asked sold; the rest rides"), and no fill writes nothing ("STX's bid moved before
+the order reached it; nothing was sold", priced again in a few seconds). Details carries the sale
+as STX filled it (**Sold 28 of 50 at 54¢ · STX order 1a2b3c… · 22 still riding**), the cash with
+STX's fee when the fills carried one, the riding contracts, and **Compared**: at the moment of
+the sale the service priced the same size on the hedge routes (Kalshi, Polymarket, ProphetX,
+Novig) against STX's rules and wrote what a hedged lock would have paid, nothing sent anywhere
+("Kalshi would have paid $1.20 now, then $20.40 or $40.80 · priced, nothing sent"); the Rules
+grid and the Terms row are STX's own rule row, pinned at the lock, and the tails say the sold
+contracts stay sold whatever the venue does with the riding ones.
+
+**Leave early is a buy-back.** The block reads "Buy back 30 at 56¢ · costs $16.80", the round
+trip's net against the cash the sale paid ("−$0.65 on the round trip: you sold at 54¢, the offers
+are higher now"), and what staying holds; the button says the order it sends. The service buys
+the sold contracts back from STX's offers in the holder's own account and writes the close from
+the fills; the position is whole again, unprotected. A book too thin for the whole buy-back says
+so, and the rest stays sold (and protected).
+
+Pre-game only, as everywhere: the service refuses a lock inside 45 minutes of the start. Parlays
+are not protected on STX. The public record carries the lock with STX's own route word and no
+venue ids; the operator's holders page says "own sale" in the route column. In Details, the
+Shape control moves Sale, Compared and the Rules grid together: each tier carries its own
+comparison and its own tails, so the row the member reads is the shape they picked.
+
 ## Where the size comes from
 
 Two sources, in this order:
@@ -358,6 +433,7 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
    open http://127.0.0.1:8812/preview/positions.html#/my-trades    # ProphetX: My Trades
    open http://127.0.0.1:8812/preview/kalshi.html#/portfolio        # Kalshi: Portfolio
    open http://127.0.0.1:8812/preview/novig.html#/portfolio         # Novig: Portfolio
+   open http://127.0.0.1:8812/preview/stx.html#/portfolio           # STX: the card is the surface (connect, then positions)
    ```
 
    If you started the server one folder up, the addresses begin with
@@ -435,7 +511,7 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
 - `background.js` is the fetch proxy; it attaches `x-lock-key` from extension storage.
 - `options.html` sets the service URL, lock key, Rehearsal, the two before-the-trade items
   (pill, slip line), the anonymous counts, and the operator-only hedge line.
-- `preview/positions.html`, `preview/kalshi.html`, `preview/novig.html` are the stand-in boards;
+- `preview/positions.html`, `preview/kalshi.html`, `preview/novig.html`, `preview/stx.html` are the stand-in boards;
   `preview/fixtures/` takes saved copies of the real pages (its README says how; not committed).
 - `pack.mjs` builds `dist/lock-in-<version>/` and `.zip` for the store. `PRIVACY.md` is the
   privacy policy the store listing links to; it ships inside the build.
@@ -624,6 +700,21 @@ opponent, the first weekday the day. The same night the Eagles card, in play, lo
 the service listed tonight's game beside next week's: a card that says its game is under way
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
+
+**STX, through the member's own account (0.7.44).** A fourth venue and the first member venue.
+The primary surface is not this extension but the service's own hosted page, `GET /app`, in
+STX's skin with the demo's Lock in line (connect in the same tab, a cookie session, a
+member-only lane; see **STX** above). In the extension, the host `stxapp.io` picks an amber
+skin; no row on the page is read: the card is the surface on every page, with **Connect STX
+account** before the connection (the venue's own consent screen in a new tab, a plain link under
+it when the tab is blocked; the service holds the tokens, this extension never sees them) and
+the account's long positions on protectable games after it, the header saying "10 riding, 40
+sold" once a lock is open. The lock is the holder's own partial sale into STX's
+bids, nothing hedged: the cash row reads "In your STX balance now", the Protected line "… · on
+STX", Details carries the sale as filled (sold, price, STX order, still riding) and the
+background comparison on the hedge routes ("priced, nothing sent"), Leave early is "Buy back N at
+X¢". Positions from the service now carry their venue, and a page lists only its own venue's.
+Telemetry accepts `stx`. See **STX** above.
 
 **The comparison says the fees are in it (0.7.43).** The Other side sentence and the compare
 tail on the collapsed line read "best of 3 venues, venue fees included" where they read "best of

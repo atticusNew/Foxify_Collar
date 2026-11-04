@@ -65,6 +65,7 @@
  *   -d '{"ticker":"KX...","leg":"floor","cents":1200,"method":"venue transfer","ref":"..."}' https://<service>/api/shadow/cash`).
  */
 
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join } from "node:path";
@@ -103,8 +104,10 @@ import type { ReferenceBookId } from "../src/eventCollar/crossVenue/venueBooks";
 import {
   DEFAULT_CROSS_CONFIG,
   PARLAY_LAST_PICK_TIER,
+  PROTECTION_TIERS,
   capTotalCents,
   floorTotalCents,
+  roundContracts,
   type CrossQuoteResult,
   type CrossSearchConfig,
   type HedgeLeg,
@@ -139,6 +142,7 @@ import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalsh
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderHoldersHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
 import { renderScoreboardHtml } from "./eventScoreboardHtml";
+import { memberAppHtml } from "./memberAppHtml";
 import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import {
@@ -179,6 +183,11 @@ import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venu
 import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
 import { venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
+import { MemberApiError, MemberSessions, clientOrderIdFor, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
+import { askLevels, bidLevels, buyBackRecordOf, executeLimitOrder, memberTailTerms, priceString, quoteBuyBack, quoteSaleTiers, saleEvCostBps, saleRecordOf, type ExecuteOptions, type OrderOutcome, type SaleTierQuote } from "../src/eventCollar/crossVenue/memberSale";
+import type { MemberSaleComparison, MemberSaleRecord } from "../src/eventCollar/crossVenue/shadowLedger";
+import type { RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
+import { outcomeMaxPrice } from "../src/eventCollar/crossVenue/venueBooks";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
 const LEDGER_PATH = process.env.EVENT_SHADOW_LEDGER_PATH || "/tmp/event-demo/shadow-ledger.jsonl";
@@ -462,11 +471,11 @@ const LOCK_KEY = lockKeyFromEnv(process.env);
  */
 const HOLDER_KEYS = holderKeysFromEnv(process.env, LOCK_KEY);
 const LOCK_ROUTES_ON = Boolean(LOCK_KEY) || HOLDER_KEYS.holders.length > 0;
-const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/picks", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry"]);
+const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/picks", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry", "/api/shadow/member", "/api/shadow/member/connect", "/api/shadow/member/disconnect"]);
 /**
  * THE EXTENSION'S SWITCHES, served with the markets list so the service, not the build, decides:
  * EVENT_SHADOW_EXT_MIN_VERSION   the version below which the extension shows "update" and draws nothing
- * EVENT_SHADOW_EXT_MARKS_OFF     venues (comma list: prophetx,kalshi,novig) whose marks are off for now
+ * EVENT_SHADOW_EXT_MARKS_OFF     venues (comma list: prophetx,kalshi,novig,stx) whose marks are off for now
  */
 const EXT_MIN_VERSION = (process.env.EVENT_SHADOW_EXT_MIN_VERSION ?? "").trim() || null;
 const EXT_MARKS_OFF = new Set(
@@ -634,7 +643,7 @@ function ownHedgeOn(ticker: string, venue: SettlementVenue, ledger: string): Sha
   if (venue !== "novig") return null;
   const stem = ticker.slice(0, ticker.lastIndexOf("-") + 1);
   for (const p of loadShadowPositions(ledger)) {
-    if (p.status !== "open" || p.source !== "lock" || p.ticker === ticker || !p.ticker.startsWith(stem)) continue;
+    if (p.status !== "open" || p.source !== "lock" || p.route === "member_sale" || p.ticker === ticker || !p.ticker.startsWith(stem)) continue;
     const route = p.routing?.chosen ?? null;
     if (route && hedgeVenueOf(route) === venue && (p.holderVenue ?? "kalshi") !== venue) return p;
   }
@@ -678,6 +687,560 @@ const executableFor = (ticker: string): Record<HedgeRoute, boolean> =>
   tickerIsArmed(ticker) && hedgeChoice.live
     ? { kalshi_self: hedgeChoice.live.venues.includes("kalshi"), polymarket: hedgeChoice.live.venues.includes("polymarket"), prophetx: hedgeChoice.live.venues.includes("prophetx"), novig: hedgeChoice.live.venues.includes("novig") }
     : { kalshi_self: true, polymarket: true, prophetx: true, novig: true };
+
+/**
+ * MEMBER APP (crossVenue/memberApp.ts, crossVenue/memberSale.ts). On the outcome-market exchange
+ * (hedgeRouting venue "stx") the member connects their own account through the venue's OAuth and
+ * a lock is their own limit sell of part of the position into the venue's bid: the cash lands in
+ * their balance, the rest rides to the game. No hedge, no counterparty, no capital or fee of ours;
+ * the record carries it as route "member_sale", floor and cap read off the fills. The member is
+ * the lock caller (a holder alias from EVENT_SHADOW_HOLDER_KEYS, "shared" for the shared key);
+ * the extension never holds a token. In the background the same size is priced on the hedge
+ * routes and written beside the sale, nothing sent (memberSale.compared).
+ *   GET  /api/shadow/member                       this caller's connection state (never a token)
+ *   GET  /api/shadow/member/connect               {url}: the venue's authorize page the browser opens
+ *   GET  /api/shadow/member/callback?code&state   the venue's redirect, keyless (the one-time state is the key); an HTML page
+ *   POST /api/shadow/member/disconnect            revoke at the venue (best effort) and drop the tokens
+ * Env: MEMBER_APP_HOST · MEMBER_APP_CLIENT_ID · MEMBER_APP_CLIENT_SECRET · MEMBER_APP_TOKEN_KEY (32 bytes)
+ *      · MEMBER_APP_REDIRECT_URI (default <public url>/api/shadow/member/callback) · MEMBER_APP_TOKENS_PATH
+ *      · MEMBER_APP_SCOPES · MEMBER_APP_ORDER_WAIT_MS (default 3000) · MEMBER_APP_COMPARE_WAIT_MS (default 4000; 0 = off)
+ *      · MEMBER_APP_VENUE_URL (the venue's own web app, linked from the hosted page's top bar)
+ *
+ * THE HOSTED PAGE (memberAppHtml.ts), GET /app: the member's own surface, no extension to install.
+ * Its session is a cookie this service sets on the first visit (HttpOnly, SameSite=Lax, Secure on
+ * https; never the token, never a key). A valid cookie names a holder alias `m-<16 hex>` (a hash
+ * of the cookie, so no ledger file carries the secret) and that alias is the member on every
+ * route above and on the lock routes, in the member's own lane only: positions read no venue
+ * account of ours, quote and lock are the member venue's alone (any other venue is 403), leave
+ * early and the receipt see that alias's own ledger. POSTs from the cookie must carry the
+ * x-member-app header, which a cross-site form cannot. The venue's redirect sends a cookie
+ * member back to /app, not to the one-line page the extension's flow lands on.
+ */
+const MEMBER_VENUE = "stx" as const;
+const MEMBER_CALLBACK_PATH = "/api/shadow/member/callback";
+const MEMBER_APP_PATH = "/app";
+const MEMBER_COOKIE = "ael_member";
+const MEMBER_COOKIE_MAX_AGE_S = 180 * 86_400;
+const MEMBER_ALIAS_PREFIX = "m-";
+const memberApp = memberAppConfigFromEnv(process.env, { redirectUri: `${RECORD_URL}${MEMBER_CALLBACK_PATH}`, storePath: join(dirname(LOCK_LEDGER_PATH), "member-tokens.json") });
+let memberSessions: MemberSessions | null = memberApp.config ? new MemberSessions(memberApp.config) : null;
+const MEMBER_APP_VENUE_URL = (process.env.MEMBER_APP_VENUE_URL ?? "").trim() || null;
+
+/** The cookie's value, when the request carries one of the right shape; nothing is trusted beyond its shape. */
+function memberCookieValue(req: IncomingMessage): string | null {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k !== MEMBER_COOKIE) continue;
+    const v = rest.join("=").trim();
+    return /^[A-Za-z0-9_-]{43}$/.test(v) ? v : null;
+  }
+  return null;
+}
+/** The holder alias a cookie stands for: a hash of it, so the alias may sit in a file name and a log line. */
+const memberAliasOf = (cookie: string): string => `${MEMBER_ALIAS_PREFIX}${createHash("sha256").update(cookie, "ascii").digest("hex").slice(0, 16)}`;
+const isMemberAlias = (holder: string | null): boolean => Boolean(holder && holder.startsWith(MEMBER_ALIAS_PREFIX));
+/** The cookie member on this request, when the member app is on and the cookie is sound; null otherwise. */
+function memberCookieHolder(req: IncomingMessage): string | null {
+  if (!memberSessions) return null;
+  const v = memberCookieValue(req);
+  return v ? memberAliasOf(v) : null;
+}
+function memberCookieHeader(value: string): string {
+  const secure = RECORD_URL.startsWith("https://") ? "; Secure" : "";
+  return `${MEMBER_COOKIE}=${value}; Path=/; Max-Age=${MEMBER_COOKIE_MAX_AGE_S}; HttpOnly; SameSite=Lax${secure}`;
+}
+const positiveMs = (raw: string | undefined, dflt: number): number => {
+  const n = Number(raw);
+  return raw !== undefined && raw.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : dflt;
+};
+/** how long a member's order may rest on the venue before the rest is cancelled; the tests shorten it */
+let memberOrderOpts: ExecuteOptions = { waitMs: positiveMs(process.env.MEMBER_APP_ORDER_WAIT_MS, 3000) };
+const MEMBER_COMPARE_WAIT_MS = positiveMs(process.env.MEMBER_APP_COMPARE_WAIT_MS, 4000);
+const memberPositionsCache = new Map<string, { at: number; positions: MemberHolderPosition[] }>();
+
+/** The member's positions on our markets, read again once the cache is stale (the same keep-last-match rule as refreshPositions). */
+async function refreshMemberPositions(member: string, fresh = false): Promise<MemberHolderPosition[]> {
+  if (!memberSessions || !listGameMarketsFn) return [];
+  const hit = memberPositionsCache.get(member);
+  if (hit && !fresh && Date.now() - hit.at <= POSITIONS_TTL_MS) return hit.positions;
+  const markets = await listGameMarketsFn();
+  const read = await memberHolderPositions(memberSessions.client(member), markets, memberSessions.cfg.competitionCodes);
+  const before = new Map((hit?.positions ?? []).map((p) => [p.id, p]));
+  const positions = read.map((p) => {
+    const prev = before.get(p.id);
+    return !p.ticker && p.reason === "market_lookup_failed" && prev?.ticker ? { ...prev, contracts: p.contracts, entryCents: p.entryCents, costCents: p.costCents, payoutCents: p.payoutCents } : p;
+  });
+  memberPositionsCache.set(member, { at: Date.now(), positions });
+  return positions;
+}
+
+/** This caller's member connection as the client sees it: on or off and why, never a token. Null when the member app is not configured. */
+function memberView(member: string) {
+  if (!memberSessions) return null;
+  return { venue: MEMBER_VENUE, venueName: VENUE_NAMES[MEMBER_VENUE], configured: true, ...memberSessions.state(member) };
+}
+
+/** A member API failure as a lock refusal: what the venue said, what the member can do. Nothing is written on any of these. */
+function memberRefusal(err: unknown): { status: number; body: Record<string, unknown> } {
+  if (err instanceof MemberApiError) {
+    switch (err.code) {
+      case "not_connected":
+        return { status: 409, body: { ok: false, error: "member_not_connected", code: "member_not_connected", message: `Connect your ${VENUE_NAMES[MEMBER_VENUE]} account first.` } };
+      case "insufficient_scope":
+        return { status: 409, body: { ok: false, error: "member_scope", code: "member_scope", message: `Your ${VENUE_NAMES[MEMBER_VENUE]} connection does not allow ${err.scope === "orders.write" ? "orders" : err.scope ?? "this"}; reconnect and allow it.`, scope: err.scope ?? null } };
+      case "terms_required":
+        return { status: 409, body: { ok: false, error: "member_terms", code: "member_terms", message: `${VENUE_NAMES[MEMBER_VENUE]} needs you to accept its terms first.`, termsUrl: err.termsUrl ?? null } };
+      case "ip_not_allowed":
+        return { status: 409, body: { ok: false, error: "member_ip", code: "member_ip", message: `${VENUE_NAMES[MEMBER_VENUE]} refused the order from this service's address; the operator has to allowlist it.` } };
+      case "unauthorized":
+        return { status: 409, body: { ok: false, error: "member_not_connected", code: "member_not_connected", message: `Your ${VENUE_NAMES[MEMBER_VENUE]} connection lapsed; connect it again.` } };
+      default:
+        return { status: 502, body: { ok: false, error: "venue_refused", code: "venue_refused", message: `${VENUE_NAMES[MEMBER_VENUE]} refused: ${err.message}` } };
+    }
+  }
+  return { status: 502, body: { ok: false, error: "venue_unreachable", code: "venue_unreachable", message: `${VENUE_NAMES[MEMBER_VENUE]} could not be reached: ${String(err instanceof Error ? err.message : err)}` } };
+}
+
+/** What the member's lock is priced from: their position, the venue's market and book, our game row, the three tiers. */
+interface MemberPriced {
+  member: string;
+  pos: MemberHolderPosition;
+  market: RawOutcomeMarket;
+  maxPrice: number;
+  /** the holder's size in our $1 contracts, and in the venue's own contracts */
+  contracts: number;
+  venueContracts: number;
+  entryCents: number;
+  game: { league: string; sideName: string; eventTitle: string; eventTimeIso: string; markCents: number };
+  tiers: Record<ProtectionTier, SaleTierQuote | null>;
+  bestBidCents: number | null;
+  bidDepth: number;
+}
+
+/**
+ * Price a member's lock on one market: refuse before the book is read when the account is not
+ * connected, holds nothing on the market (or holds the other club), holds less than asked, or the
+ * game is inside the pre-game cutoff; then the three tiers from the venue's bids as they stand.
+ */
+async function memberPriced(member: string, ticker: string, contracts: number, entryCents: number | undefined, fresh: boolean): Promise<{ ok: true; priced: MemberPriced } | { ok: false; status: number; body: Record<string, unknown> }> {
+  if (!memberSessions) return { ok: false, status: 404, body: { ok: false, error: "member_app_off", code: "member_app_off", message: "The member app is not configured on this service." } };
+  if (!memberSessions.state(member).connected) return { ok: false, status: 409, body: { ok: false, error: "member_not_connected", code: "member_not_connected", message: `Connect your ${VENUE_NAMES[MEMBER_VENUE]} account first.` } };
+  let positions: MemberHolderPosition[];
+  try {
+    positions = await refreshMemberPositions(member, fresh);
+  } catch (err) {
+    return { ok: false, ...memberRefusal(err) };
+  }
+  const stem = ticker.slice(0, ticker.lastIndexOf("-") + 1);
+  const pos = positions.find((p) => p.ticker === ticker);
+  if (!pos) {
+    const other = positions.find((p) => p.ticker && p.ticker.startsWith(stem));
+    if (other) return { ok: false, status: 409, body: { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; protect it from that card.`, heldTicker: other.ticker } };
+    return { ok: false, status: 409, body: { ok: false, error: "not_held", code: "not_held", message: `Your ${VENUE_NAMES[MEMBER_VENUE]} account holds nothing on this market.` } };
+  }
+  if (contracts > pos.contracts + 1e-9) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this market; the lock can cover up to that.`, held: pos.contracts } };
+  let market = pos.market;
+  if (!market) {
+    try {
+      market = (await memberSessions.client(member).markets([pos.marketId]))[0] ?? null;
+    } catch (err) {
+      return { ok: false, ...memberRefusal(err) };
+    }
+    if (!market) return { ok: false, status: 502, body: { ok: false, error: "venue_refused", code: "venue_refused", message: `${VENUE_NAMES[MEMBER_VENUE]} did not describe the market.` } };
+  }
+  const row = (await listGameMarketsFn!()).find((m) => m.ticker === ticker);
+  const eventTimeIso = row?.startIso ?? pos.startsIso ?? null;
+  if (!row || !eventTimeIso || !row.league) return { ok: false, status: 200, body: { ok: false, code: "not_offered", message: "Protection isn't offered on this market." } };
+  const startMs = Date.parse(eventTimeIso);
+  const now = Date.now();
+  if (!Number.isFinite(startMs) || startMs <= now) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: "This game has started; the lock is pre-game only." } };
+  if (startMs - now < protectCutoffMinutes * 60_000) return { ok: false, status: 200, body: { ok: false, code: "market_too_close_to_start", message: `This one starts too soon to protect (locks close ${protectCutoffMinutes} minutes before the start).`, untilIso: new Date(startMs - protectCutoffMinutes * 60_000).toISOString() } };
+  const maxPrice = outcomeMaxPrice(market);
+  const venueContracts = Math.floor(contracts / maxPrice + 1e-9);
+  const bids = bidLevels(market);
+  const tiers = quoteSaleTiers({ positionContracts: venueContracts, maxPrice, bids });
+  if (!tiers.wide && !tiers.balanced && !tiers.tight) return { ok: false, status: 200, body: { ok: false, code: "no_bids", message: `${VENUE_NAMES[MEMBER_VENUE]} shows no bids on this market right now; nothing to sell into.` } };
+  return {
+    ok: true,
+    priced: {
+      member,
+      pos,
+      market,
+      maxPrice,
+      contracts,
+      venueContracts,
+      entryCents: entryCents ?? pos.entryCents,
+      game: { league: row.league, sideName: row.sideName, eventTitle: row.title, eventTimeIso, markCents: row.markCents },
+      tiers,
+      bestBidCents: bids[0] ? Math.round((bids[0].price / maxPrice) * 100) : null,
+      bidDepth: Math.floor(bids.reduce((s, l) => s + l.quantity, 0)),
+    },
+  };
+}
+
+/** per-contract figure for the tables from a whole-position total: the totals on the sale are what settlement pays */
+const perContract = (totalCents: number, contracts: number): number => (contracts > 0 ? Math.round(totalCents / contracts) : 0);
+
+/** One tier of a member sale as the client paints it: the tier's own totals ride beside the per-contract figures the shared slip reads. */
+function saleTierView(t: SaleTierQuote, contracts: number, maxPrice: number, markCents: number) {
+  return {
+    floorCents: perContract(t.floorTotalCents, contracts),
+    capCents: perContract(t.capTotalCents, contracts),
+    creditCents: 0,
+    evCostBps: saleEvCostBps(t, contracts / maxPrice, maxPrice, markCents),
+    floorTotalCents: t.floorTotalCents,
+    capTotalCents: t.capTotalCents,
+    cashNowCents: t.cashNowCents,
+    soldContracts: roundContracts(t.soldContracts * maxPrice),
+    keptContracts: roundContracts(t.keptContracts * maxPrice),
+    limitPriceCents: t.limitPriceCents,
+    avgPriceCents: t.avgPriceCents,
+    depthLimited: t.depthLimited,
+  };
+}
+
+/** The sale as the holder's own views carry it: their order id is theirs to see; the venue's market id and our client id stay in the ledger. */
+function memberSaleViewOf(s: MemberSaleRecord) {
+  const { marketId: _m, clientOrderId: _c, compared: _cmp, ...rest } = s;
+  return { ...rest, venue: MEMBER_VENUE, venueName: VENUE_NAMES[MEMBER_VENUE] };
+}
+
+/**
+ * The background comparison: the same size priced on the hedge routes now, against the member's
+ * venue's rules, nothing sent. Bounded, so a slow venue never holds the member's own sale; what
+ * came back in time is written, and "timed_out" otherwise.
+ */
+async function memberComparison(ticker: string, contracts: number, entryCents: number, at: string, tier?: ProtectionTier): Promise<{ compared: MemberSaleComparison; result: CandidateResult | null }> {
+  if (!quoteOneFn || MEMBER_COMPARE_WAIT_MS <= 0) return { compared: { at, ok: false, reason: "off", sent: false }, result: null };
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<"timed_out">((r) => {
+    timer = setTimeout(() => r("timed_out"), MEMBER_COMPARE_WAIT_MS);
+  });
+  try {
+    const q = await Promise.race([quoteOneFn({ ticker, contracts, entryCents, holderVenue: MEMBER_VENUE, executable: executableFor(ticker) }).catch((err: unknown) => ({ ok: false as const, code: "unreachable", detail: String(err instanceof Error ? err.message : err) })), timeout]);
+    if (q === "timed_out") return { compared: { at, ok: false, reason: "timed_out", sent: false }, result: null };
+    if (!q.ok) return { compared: { at, ok: false, reason: q.code, sent: false }, result: null };
+    const res = q.result;
+    if (!res.quote.ok) return { compared: { at, ok: false, reason: res.quote.code, sent: false }, result: res };
+    const r = res.routing;
+    // the same shape the member chose, when the hedge routes fund it; else the quote's own head
+    const shape = tier && res.quote.tiers[tier] ? { ...res.quote, ...res.quote.tiers[tier], tier } : res.quote;
+    return {
+      compared: {
+        at,
+        ok: true,
+        tier: shape.tier,
+        creditCents: shape.creditCents,
+        floorTotalCents: floorTotalCents(shape),
+        capTotalCents: capTotalCents(shape),
+        chosen: r?.chosen ?? res.route,
+        routes: r
+          ? r.routes.map((x) => ({ route: x.route, ok: x.ok, creditCents: x.creditCents ?? null, allInBps: x.allInBps ?? null }))
+          : res.routesChecked.map((x) => ({ route: x.route, ok: x.ok, creditCents: x.creditCents ?? null, allInBps: null })),
+        sent: false,
+      },
+      result: res,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** The comparison as the client paints it: each route's venue named, the chosen one, what a hedged lock would have paid. Null when none was priced. */
+function comparedViewOf(c: MemberSaleComparison | undefined, result: CandidateResult | null = null) {
+  if (!c) return null;
+  const name = (route: HedgeRoute) => HEDGE_VENUE_NAMES[route] ?? route;
+  // on a quote, every shape the hedge routes fund, so the client's Compared follows the shape the member picks
+  const q = result?.quote.ok ? result.quote : null;
+  const tiers = q ? Object.fromEntries(Object.entries(q.tiers).filter(([, t]) => t).map(([k, t]) => [k, { creditCents: t!.creditCents, floorTotalCents: floorTotalCents({ ...q, ...t! }), capTotalCents: capTotalCents({ ...q, ...t! }) }])) : null;
+  return {
+    ...(tiers && Object.keys(tiers).length ? { tiers } : {}),
+    at: c.at,
+    ok: c.ok,
+    sent: false,
+    ...(c.reason ? { reason: c.reason } : {}),
+    ...(c.ok
+      ? {
+          tier: c.tier,
+          creditCents: c.creditCents,
+          floorTotalCents: c.floorTotalCents,
+          capTotalCents: c.capTotalCents,
+          chosen: c.chosen ?? null,
+          chosenName: c.chosen ? name(c.chosen) : null,
+          routes: (c.routes ?? []).map((r) => ({ ...r, venue: name(r.route) })),
+          priced: (c.routes ?? []).filter((r) => r.ok).length,
+        }
+      : {}),
+  };
+}
+
+/** The rule cells of the member's venue for the league, as the client's rules grid reads them, and the tails in the member's words. */
+function memberRulesView(league: string, kept: number) {
+  const cells = rulesFor(MEMBER_VENUE, league);
+  return {
+    tails: memberTailTerms(VENUE_NAMES[MEMBER_VENUE], cells, kept),
+    rules: Object.fromEntries(Object.entries(cells).map(([b, c]) => [b, { treatment: c.treatment, ...(c.windowHours !== undefined ? { windowHours: c.windowHours } : {}), confirmed: c.confirmed, source: c.source, asOf: c.asOf }])),
+  };
+}
+
+/** The HTML page the venue's redirect lands on: one sentence, no script, nothing of the grant on it. */
+function memberCallbackHtml(ok: boolean, message: string): string {
+  const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] as string);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><title>${ok ? "Connected" : "Not connected"}</title><style>body{font:16px/1.5 -apple-system,system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#0b0f14;color:#e6edf3}main{max-width:28rem;padding:2rem;text-align:center}h1{font-size:1.25rem;margin:0 0 .5rem}p{margin:0;color:#9fb0c0}</style></head><body><main><h1>${ok ? "Connected" : "Not connected"}</h1><p>${esc(message)}</p></main></body></html>`;
+}
+
+function sendHtml(res: ServerResponse, status: number, html: string): void {
+  res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" });
+  res.end(html);
+}
+
+/**
+ * A MEMBER'S LOCK: price again at the tap (fresh positions, fresh book), send the sell as one limit
+ * order at the walked price for the tier's share, wait briefly, cancel the rest, read the fills.
+ * The record is written from the fills, never from the quote: a partial fill is a smaller sale
+ * with more riding, and no fill writes nothing. The comparison on the hedge routes runs while the
+ * order rests and is written beside the sale, nothing sent.
+ */
+async function memberLock(res: ServerResponse, holder: string | null, ticker: string, contracts: number, entryCents: number | undefined, tier: ProtectionTier | undefined, ownLedger: string, atIso: string): Promise<void> {
+  const member = memberKeyOf(holder);
+  const priced = await memberPriced(member, ticker, contracts, entryCents, true);
+  if (!priced.ok) {
+    sendJson(res, priced.status, { at: atIso, ticker, ...priced.body });
+    return;
+  }
+  const P = priced.priced;
+  const want = tier ?? (P.tiers[searchConfig().defaultTier] ? searchConfig().defaultTier : (PROTECTION_TIERS.find((t) => P.tiers[t]) as ProtectionTier));
+  const t = P.tiers[want];
+  if (!t) {
+    sendJson(res, 200, { ok: false, at: atIso, ticker, code: "no_bids", message: `${VENUE_NAMES[MEMBER_VENUE]}'s bids cannot fund that shape right now; pick another.` });
+    return;
+  }
+  // the comparison starts now and runs while the order rests: the member's own sale never waits on the other venues
+  const cmp = memberComparison(ticker, P.contracts, P.entryCents, atIso, want);
+  const clientOrderId = clientOrderIdFor("lock", ticker);
+  let outcome: OrderOutcome;
+  try {
+    outcome = await executeLimitOrder(
+      memberSessions!.client(member),
+      { action: "sell", market_id: P.pos.marketId, order_type: "limit", price: priceString(t.limitPriceCents), quantity: String(t.soldContracts), client_order_id: clientOrderId },
+      memberOrderOpts,
+    );
+  } catch (err) {
+    void cmp.catch(() => undefined);
+    const r = memberRefusal(err);
+    sendJson(res, r.status, { at: atIso, ticker, ...r.body });
+    return;
+  }
+  // the position changed at the venue; the next read is fresh
+  memberPositionsCache.delete(member);
+  if (outcome.filled <= 0) {
+    void cmp.catch(() => undefined);
+    sendJson(res, 200, { ok: false, at: atIso, ticker, code: "not_filled", message: `${VENUE_NAMES[MEMBER_VENUE]}'s bid moved before the order reached it; nothing was sold.`, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
+    return;
+  }
+  const sale = saleRecordOf(outcome, { marketId: P.pos.marketId, positionContracts: P.venueContracts, maxPrice: P.maxPrice, limitPriceCents: t.limitPriceCents, clientOrderId, requested: t.soldContracts });
+  const { compared, result } = await cmp;
+  const at = new Date().toISOString();
+  const record: Parameters<typeof appendShadowRecord>[1] = {
+    type: "open",
+    at,
+    ticker,
+    kind: "sports",
+    league: P.game.league,
+    sideName: P.game.sideName,
+    eventTitle: P.game.eventTitle,
+    eventTimeIso: P.game.eventTimeIso,
+    contracts: P.contracts,
+    markCents: P.game.markCents,
+    floorCents: perContract(sale.floorTotalCents, P.contracts),
+    capCents: perContract(sale.capTotalCents, P.contracts),
+    creditCents: 0,
+    evCostBps: saleEvCostBps({ soldContracts: outcome.filled, cashNowCents: sale.cashNowCents }, P.venueContracts, P.maxPrice, P.game.markCents),
+    route: "member_sale",
+    feesCents: sale.feeCents ?? 0,
+    takeCents: 0,
+    hedgeCostCents: 0,
+    hedgeUnitsMilli: 0,
+    tier: want,
+    holderVenue: MEMBER_VENUE,
+    source: "lock",
+    entryCents: P.entryCents,
+    memberSale: { ...sale, compared },
+    // the member's venue's published rules for the league, pinned; the Kalshi market the result is read from, when the comparison read it
+    rule: pinVenueRules({ venue: MEMBER_VENUE, marketId: ticker, cells: rulesFor(MEMBER_VENUE, P.game.league) }),
+    ...(result ? { referenceRule: pinRule({ venue: "kalshi", marketId: ticker, ruleText: kalshiRuleText(result.market), sourceUrl: kalshiRuleUrl(ticker, kalshiBase()), readAtIso: at }) } : {}),
+    ...(holder ? { holder } : {}),
+  };
+  if (!appendOrAlert(record, ownLedger)) {
+    sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: `The record could not be written; your sale on ${VENUE_NAMES[MEMBER_VENUE]} stands (order ${sale.orderId ?? "unknown"}).`, memberSale: memberSaleViewOf(sale) });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    at,
+    ticker,
+    ...(holder ? { holder } : {}),
+    sideName: P.game.sideName,
+    eventTitle: P.game.eventTitle,
+    eventTimeIso: P.game.eventTimeIso,
+    contracts: P.contracts,
+    tier: want,
+    floorCents: record.floorCents,
+    capCents: record.capCents,
+    creditCents: 0,
+    floorTotalCents: sale.floorTotalCents,
+    capTotalCents: sale.capTotalCents,
+    route: "member_sale",
+    memberSale: memberSaleViewOf(sale),
+    partial: sale.soldContracts < sale.requestedContracts,
+    member: memberView(member),
+    ...memberRulesView(P.game.league, sale.keptContracts),
+    compared: comparedViewOf(compared),
+    hedge: null,
+    routing: null,
+    rule: ruleViewOf(record),
+  });
+}
+
+/** The buy-back priced from the member's venue's offers: the contracts sold at the lock, bought again at the walked price. */
+async function memberBuyBackPriced(holder: string | null, lock: ShadowPosition): Promise<{ ok: true; member: string; market: RawOutcomeMarket; maxPrice: number; bb: NonNullable<ReturnType<typeof quoteBuyBack>>; midCents: number | null; sale: MemberSaleRecord } | { ok: false; status: number; body: Record<string, unknown> }> {
+  const sale = lock.memberSale;
+  if (!sale) return { ok: false, status: 409, body: { ok: false, error: "no_sale", code: "no_sale", message: "This lock carries no sale to buy back." } };
+  const member = memberKeyOf(holder);
+  if (!memberSessions) return { ok: false, status: 404, body: { ok: false, error: "member_app_off", code: "member_app_off", message: "The member app is not configured on this service." } };
+  if (!memberSessions.state(member).connected) return { ok: false, status: 409, body: { ok: false, error: "member_not_connected", code: "member_not_connected", message: `Connect your ${VENUE_NAMES[MEMBER_VENUE]} account first.` } };
+  let market: RawOutcomeMarket | undefined;
+  try {
+    market = (await memberSessions.client(member).markets([sale.marketId]))[0];
+  } catch (err) {
+    return { ok: false, ...memberRefusal(err) };
+  }
+  if (!market) return { ok: false, status: 502, body: { ok: false, error: "venue_refused", code: "venue_refused", message: `${VENUE_NAMES[MEMBER_VENUE]} did not describe the market.` } };
+  const maxPrice = outcomeMaxPrice(market);
+  const want = Math.floor(sale.soldContracts / maxPrice + 1e-9);
+  const asks = askLevels(market);
+  const bb = quoteBuyBack(asks, want, maxPrice);
+  if (!bb) return { ok: false, status: 200, body: { ok: false, code: "no_offers", message: `${VENUE_NAMES[MEMBER_VENUE]} shows no offers on this market right now; the contracts you sold cannot be bought back.` } };
+  const bids = bidLevels(market);
+  const midCents = bids[0] && asks[0] ? Math.round(((bids[0].price + asks[0].price) / 2 / maxPrice) * 100) : null;
+  return { ok: true, member, market, maxPrice, bb, midCents, sale };
+}
+
+/**
+ * The member's view of leaving early, before the tap (the quote) and after it (what filled): the
+ * buy-back, the sale it undoes, what the round trip leaves in their balance with the position back
+ * at its size, against staying to the floor and the cap. The same shape both times.
+ */
+function memberUnwindViewOf(lock: ShadowPosition, sale: MemberSaleRecord, bb: { wantContracts: number; contracts: number; limitPriceCents: number; avgPriceCents: number; costCents: number; depthLimited?: boolean }, maxPrice: number, midCents: number | null) {
+  const bought = roundContracts(bb.contracts * maxPrice);
+  return {
+    route: "member_sale" as const,
+    venue: MEMBER_VENUE,
+    venueName: VENUE_NAMES[MEMBER_VENUE],
+    contracts: lock.contracts,
+    buyBack: { wantContracts: roundContracts(bb.wantContracts * maxPrice), contracts: bought, limitPriceCents: bb.limitPriceCents, avgPriceCents: bb.avgPriceCents, costCents: bb.costCents, depthLimited: bb.depthLimited ?? false },
+    cashNowCents: sale.cashNowCents,
+    soldContracts: sale.soldContracts,
+    /** the sale less the buy-back: what the round trip leaves in the member's balance */
+    protectedAtCloseCents: sale.cashNowCents - bb.costCents,
+    nakedAtCloseCents: 0,
+    closeNetCents: sale.cashNowCents - bb.costCents,
+    creditCents: 0,
+    yesMidCents: midCents,
+    protectedAtMidCents: midCents !== null ? sale.cashNowCents - Math.round(bought * midCents) : null,
+    stayFloorCents: sale.floorTotalCents,
+    stayCapCents: sale.capTotalCents,
+  };
+}
+
+/** The member's settlement on their venue for the sale's market, best effort: null when not connected, unread or none yet. */
+async function memberSettlementOf(holder: string | null, sale: MemberSaleRecord) {
+  const member = memberKeyOf(holder);
+  if (!memberSessions || !memberSessions.state(member).connected) return null;
+  try {
+    const rows = await memberSessions.client(member).settlements([sale.marketId]);
+    const s = rows.find((r) => r.market_id === sale.marketId);
+    return s ? { type: s.type, closingPrice: s.closing_price, quantity: s.quantity, fee: s.fee, grossPnl: s.gross_pnl, realizedPnl: s.realized_pnl, time: s.time } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A MEMBER'S LEAVE: price the buy-back again at the tap, send the buy as one limit order at the
+ * walked price, wait briefly, cancel the rest, read the fills. The close line is written from the
+ * fills: the sale less what the buy-back cost is what the round trip left in the member's balance;
+ * a partial buy-back is written as such (the rest stays sold). No fill writes nothing.
+ */
+async function memberUnwind(res: ServerResponse, holder: string | null, lock: ShadowPosition, ownLedger: string, atIso: string): Promise<void> {
+  const bp = await memberBuyBackPriced(holder, lock);
+  if (!bp.ok) {
+    sendJson(res, bp.status, { at: atIso, ticker: lock.ticker, ...bp.body });
+    return;
+  }
+  const clientOrderId = clientOrderIdFor("leave", lock.ticker);
+  let outcome: OrderOutcome;
+  try {
+    outcome = await executeLimitOrder(
+      memberSessions!.client(bp.member),
+      { action: "buy", market_id: bp.sale.marketId, order_type: "limit", price: priceString(bp.bb.limitPriceCents), quantity: String(bp.bb.contracts), client_order_id: clientOrderId },
+      memberOrderOpts,
+    );
+  } catch (err) {
+    const r = memberRefusal(err);
+    sendJson(res, r.status, { at: atIso, ticker: lock.ticker, ...r.body });
+    return;
+  }
+  memberPositionsCache.delete(bp.member);
+  if (outcome.filled <= 0) {
+    sendJson(res, 200, { ok: false, at: atIso, ticker: lock.ticker, code: "not_filled", message: `${VENUE_NAMES[MEMBER_VENUE]}'s offers moved before the order reached them; nothing was bought back and the protection stands.`, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
+    return;
+  }
+  const back = buyBackRecordOf(outcome, { maxPrice: bp.maxPrice, limitPriceCents: bp.bb.limitPriceCents, clientOrderId, requested: bp.bb.contracts });
+  const at = new Date().toISOString();
+  const protectedAtCloseCents = bp.sale.cashNowCents - back.costCents;
+  const protectedAtMidCents = bp.midCents !== null ? bp.sale.cashNowCents - Math.round(back.boughtContracts * bp.midCents) : null;
+  const ok = appendOrAlert(
+    {
+      type: "close",
+      at,
+      ticker: lock.ticker,
+      priced: true,
+      source: "unwind",
+      hedgeSent: false,
+      yesMidCents: bp.midCents,
+      yesFillCents: back.avgPriceCents,
+      positionProceedsCents: 0,
+      hedgeProceedsCents: 0,
+      feesCents: back.feeCents ?? 0,
+      protectedAtCloseCents,
+      protectedAtMidCents,
+      unwindFrictionCents: protectedAtMidCents !== null ? protectedAtMidCents - protectedAtCloseCents : null,
+      memberBuyBack: back,
+    },
+    ownLedger,
+  );
+  if (!ok) {
+    sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: `The record could not be written; your buy-back on ${VENUE_NAMES[MEMBER_VENUE]} stands (order ${back.orderId ?? "unknown"}).`, memberBuyBack: back });
+    return;
+  }
+  const closed = loadShadowPositions(ownLedger).find((p) => p.ticker === lock.ticker)!;
+  sendJson(res, 200, {
+    ok: true,
+    at,
+    ticker: lock.ticker,
+    ...(holder ? { holder } : {}),
+    status: closed.status,
+    route: "member_sale",
+    unwind: memberUnwindViewOf(lock, bp.sale, { wantContracts: bp.bb.wantContracts, contracts: outcome.filled, limitPriceCents: bp.bb.limitPriceCents, avgPriceCents: back.avgPriceCents, costCents: back.costCents, depthLimited: back.boughtContracts < back.requestedContracts }, bp.maxPrice, bp.midCents),
+    memberBuyBack: back,
+    partial: back.boughtContracts < back.requestedContracts,
+    hedge: { sent: false, note: "no hedge on a member's own sale; the contracts were bought back in your own account" },
+    cash: [],
+  });
+}
 
 /**
  * The price competition in one line a holder can read: what each venue's book would have paid them
@@ -931,6 +1494,8 @@ function hedgeViewOf(receipt: HedgeReceipt) {
 
 /** The locked terms an early close prices against, read off the position as written. */
 function closeTermsOf(p: ShadowPosition): EarlyCloseTerms {
+  // a member's own sale has no hedge leg to price; its leave is a buy-back on the member's venue (the unwind routes branch before this)
+  if (p.route === "member_sale") throw new Error(`${p.ticker}: a member sale is not priced by the early-close pricer`);
   return {
     contracts: p.contracts,
     floorCents: p.floorCents,
@@ -986,6 +1551,31 @@ function unwindViewOf(lock: ShadowPosition, q: EarlyCloseQuote) {
     /** staying: the two ends of the protected position at settlement */
     stayFloorCents: floorTotalCents(lock),
     stayCapCents: capTotalCents(lock),
+  };
+}
+
+/**
+ * A lock as the positions list and the receipt carry it: the terms, the tier, the result once
+ * settled, the close once left. A member's own sale adds its facts and its whole-position totals,
+ * which are what settlement pays (the per-contract figures are those divided down).
+ */
+function lockSummaryOf(L: ShadowPosition) {
+  return {
+    at: L.at,
+    status: L.status,
+    contracts: L.contracts,
+    floorCents: L.floorCents,
+    capCents: L.capCents,
+    creditCents: L.creditCents,
+    route: L.route,
+    eventTimeIso: L.eventTimeIso,
+    ...(L.generation ? { generation: L.generation } : {}),
+    ...(L.tier ? { tier: L.tier } : {}),
+    ...(L.holderVenue ? { holderVenue: L.holderVenue } : {}),
+    ...(L.memberSale ? { memberSale: memberSaleViewOf(L.memberSale), floorTotalCents: L.memberSale.floorTotalCents, capTotalCents: L.memberSale.capTotalCents, compared: comparedViewOf(L.memberSale.compared) } : {}),
+    ...(L.result ? { result: L.result, protectedCents: L.protectedCents, nakedCents: L.nakedCents, settledAt: L.settledAt } : {}),
+    ...closedViewOf(L),
+    ...(L.closeMemberBuyBack ? { memberBuyBack: L.closeMemberBuyBack } : {}),
   };
 }
 
@@ -1193,7 +1783,10 @@ function headedAt(res: CandidateResult, tier: ProtectionTier): CandidateResult {
  *   GET  /api/shadow/unwind/quote?ticker=   leaving early, priced now from the live books (earlyClose.ts), nothing written
  *   POST /api/shadow/unwind {ticker}   quote again at the tap, write the close line (source "unwind"), answer with it
  */
-async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: URL, holder: string | null, operator = false): Promise<void> {
+async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: URL, holder: string | null, operator = false, memberOnly = false): Promise<void> {
+  // a cookie member (the hosted page) acts in the member venue's lane alone: never a venue account
+  // of ours, never a quote or a lock that the protection would hedge with our capital
+  const memberOnlyRefusal = () => sendJson(res, 403, { ok: false, error: "member_only", code: "member_only", message: `This session can only protect positions in your own ${VENUE_NAMES[MEMBER_VENUE]} account.` });
   if (!quoteOneFn || !listGameMarketsFn) {
     sendJson(res, 503, { ok: false, error: "engine_not_ready", message: "the scanner is still loading" });
     return;
@@ -1242,48 +1835,87 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     sendJson(res, 200, { ok: true, at: atIso });
     return;
   }
+  if (url.pathname === "/api/shadow/member" || url.pathname === "/api/shadow/member/connect" || url.pathname === "/api/shadow/member/disconnect") {
+    // THE MEMBER'S CONNECTION: state, the venue's authorize URL to open, or the disconnect. The
+    // member is this caller (their holder alias; "shared" on the shared key). Never a token.
+    const member = memberKeyOf(holder);
+    if (!memberSessions) {
+      sendJson(res, 404, { ok: false, error: "member_app_off", message: "The member app is not configured on this service.", ...(memberApp.notes.length ? { notes: memberApp.notes } : {}) });
+      return;
+    }
+    if (url.pathname === "/api/shadow/member/connect") {
+      const { url: authorize } = memberSessions.beginConnect(member);
+      sendJson(res, 200, { ok: true, at: atIso, ...(holder ? { holder } : {}), member: memberView(member), url: authorize });
+      return;
+    }
+    if (url.pathname === "/api/shadow/member/disconnect") {
+      if (req.method !== "POST") {
+        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST to disconnect" });
+        return;
+      }
+      const had = await memberSessions.disconnect(member);
+      memberPositionsCache.delete(member);
+      sendJson(res, 200, { ok: true, at: atIso, ...(holder ? { holder } : {}), disconnected: had, member: memberView(member) });
+      return;
+    }
+    sendJson(res, 200, { ok: true, at: atIso, ...(holder ? { holder } : {}), member: memberView(member) });
+    return;
+  }
   if (url.pathname === "/api/shadow/positions") {
-    if (!venueClient) {
-      sendJson(res, 200, { ok: true, at: atIso, configured: false, positions: [], ...(venueClientNote ? { note: venueClientNote } : {}) });
+    const member = memberKeyOf(holder);
+    const mv = memberView(member);
+    const memberOn = Boolean(mv && mv.connected);
+    const ownVenue = memberOnly ? null : venueClient;
+    if (!ownVenue && !memberOn) {
+      sendJson(res, 200, { ok: true, at: atIso, configured: false, positions: [], ...(venueClientNote && !memberOnly ? { note: venueClientNote } : {}), ...(mv ? { member: mv } : {}) });
       return;
     }
-    try {
-      await refreshPositions(url.searchParams.get("fresh") === "1");
-    } catch (err) {
-      sendJson(res, 200, { ok: false, at: atIso, configured: true, error: "venue_read_failed", message: String(err instanceof Error ? err.message : err) });
-      return;
+    const fresh = url.searchParams.get("fresh") === "1";
+    // the holder's venue account (read-only key) and their connected member account, side by side; each read fails on its own
+    const notes: string[] = [];
+    let venueRows: HolderPosition[] = [];
+    let venueReadAt: number | null = null;
+    if (ownVenue) {
+      try {
+        venueRows = await refreshPositions(fresh);
+        venueReadAt = positionsCache?.at ?? null;
+      } catch (err) {
+        notes.push(`venue read failed: ${String(err instanceof Error ? err.message : err)}`);
+      }
     }
-    if (!positionsCache) {
-      sendJson(res, 200, { ok: false, at: atIso, configured: true, error: "venue_read_failed", message: "no read yet" });
+    let memberRows: MemberHolderPosition[] = [];
+    let memberReadAt: number | null = null;
+    if (memberOn) {
+      try {
+        memberRows = await refreshMemberPositions(member, fresh);
+        memberReadAt = memberPositionsCache.get(member)?.at ?? null;
+      } catch (err) {
+        notes.push(`${VENUE_NAMES[MEMBER_VENUE]} read failed: ${memberRefusal(err).body.message as string}`);
+      }
+    }
+    if (venueReadAt === null && memberReadAt === null) {
+      sendJson(res, 200, { ok: false, at: atIso, configured: true, error: "venue_read_failed", message: notes.join("; ") || "no read yet", ...(mv ? { member: mv } : {}) });
       return;
     }
     // what the record already holds for each matched market: the client shows Protected, not Lock in
     const locks = new Map(currentShadowPositions(loadShadowPositions(ownLedger)).map((p) => [p.ticker, p]));
+    const lockOf = (ticker: string | null) => {
+      const L = ticker ? locks.get(ticker) : undefined;
+      return L ? lockSummaryOf(L) : null;
+    };
     sendJson(res, 200, {
       ok: true,
       at: atIso,
       configured: true,
       ...(holder ? { holder } : {}),
-      readAt: new Date(positionsCache.at).toISOString(),
-      positions: positionsCache.positions.map((p) => {
-        const L = p.ticker ? locks.get(p.ticker) : undefined;
-        return {
-          ...p,
-          lock: L
-            ? {
-                at: L.at,
-                status: L.status,
-                contracts: L.contracts,
-                floorCents: L.floorCents,
-                capCents: L.capCents,
-                creditCents: L.creditCents,
-                ...(L.generation ? { generation: L.generation } : {}),
-                ...(L.result ? { result: L.result, protectedCents: L.protectedCents, nakedCents: L.nakedCents, settledAt: L.settledAt } : {}),
-                ...closedViewOf(L),
-              }
-            : null,
-        };
-      }),
+      readAt: new Date(Math.max(venueReadAt ?? 0, memberReadAt ?? 0)).toISOString(),
+      ...(notes.length ? { note: notes.join("; ") } : {}),
+      ...(mv ? { member: mv } : {}),
+      positions: [
+        ...venueRows.map((p) => ({ ...p, lock: lockOf(p.ticker) })),
+        // the member's positions carry their venue, so a client on another venue's page leaves them alone
+        ...memberRows.map(({ market: _m, marketId: _id, ...p }) => ({ ...p, venue: MEMBER_VENUE, lock: lockOf(p.ticker) })),
+      ],
     });
     return;
   }
@@ -1296,6 +1928,52 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     });
     if (!parsed.ok) {
       sendJson(res, 400, { ok: false, error: "bad_request", message: parsed.error });
+      return;
+    }
+    if (memberOnly && parsed.value.venue !== MEMBER_VENUE) {
+      memberOnlyRefusal();
+      return;
+    }
+    if (parsed.value.venue === MEMBER_VENUE) {
+      // A MEMBER'S QUOTE: the three tiers from their venue's bids at their size, the comparison on
+      // the hedge routes beside it (priced, nothing sent), the tails in their venue's words.
+      const member = memberKeyOf(holder);
+      const priced = await memberPriced(member, parsed.value.ticker, parsed.value.contracts, parsed.value.entryCents, url.searchParams.get("fresh") === "1");
+      if (!priced.ok) {
+        sendJson(res, priced.status, { at: atIso, ticker: parsed.value.ticker, ...priced.body });
+        return;
+      }
+      const P = priced.priced;
+      const held = !lockable(loadShadowPositions(ownLedger), parsed.value.ticker);
+      // each shape carries its own tails: the riding count the venue's rules speak of is that shape's
+      const tiers = Object.fromEntries(
+        Object.entries(P.tiers)
+          .filter(([, t]) => t)
+          .map(([k, t]) => {
+            const v = saleTierView(t as SaleTierQuote, P.contracts, P.maxPrice, P.game.markCents);
+            return [k, { ...v, tails: memberRulesView(P.game.league, v.keptContracts).tails }];
+          }),
+      );
+      const dflt = P.tiers[searchConfig().defaultTier] ? searchConfig().defaultTier : (Object.keys(tiers)[0] as ProtectionTier);
+      const head = tiers[dflt];
+      const cmp = await memberComparison(parsed.value.ticker, P.contracts, P.entryCents, atIso, dflt);
+      sendJson(res, 200, {
+        ok: true,
+        at: atIso,
+        onRecord: held,
+        ...(holder ? { holder } : {}),
+        ticker: parsed.value.ticker,
+        kind: "sports",
+        ...P.game,
+        contracts: P.contracts,
+        entryCents: P.entryCents,
+        route: "member_sale",
+        quote: { ok: true, contracts: P.contracts, markCents: P.game.markCents, entryCents: P.entryCents, ...head, tier: dflt, tiers, quotedAt: atIso },
+        evCostBps: head.evCostBps,
+        member: { ...memberView(member), held: P.pos.contracts, bestBidCents: P.bestBidCents, bidDepth: P.bidDepth },
+        ...memberRulesView(P.game.league, head.keptContracts),
+        compared: comparedViewOf(cmp.compared, cmp.result),
+      });
       return;
     }
     const q = await quoteOneFn({
@@ -1345,6 +2023,10 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       return;
     }
     const { ticker, contracts, entryCents, tier, venue, parlay } = parsed.value;
+    if (memberOnly && venue !== MEMBER_VENUE) {
+      memberOnlyRefusal();
+      return;
+    }
     const flight = inFlightKey(holder, ticker);
     if (lockInFlight.has(flight)) {
       sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being locked right now." });
@@ -1352,6 +2034,19 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     }
     if (!lockable(loadShadowPositions(ownLedger), ticker)) {
       sendJson(res, 409, { ok: false, error: "already_on_record", message: "This market is already locked; one lock per market." });
+      return;
+    }
+    if (venue === MEMBER_VENUE) {
+      if (parlay) {
+        sendJson(res, 409, { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VENUE_NAMES[MEMBER_VENUE]}; the lock sells part of one position.` });
+        return;
+      }
+      lockInFlight.add(flight);
+      try {
+        await memberLock(res, holder, ticker, contracts, entryCents, tier, ownLedger, atIso);
+      } finally {
+        lockInFlight.delete(flight);
+      }
       return;
     }
     // a parlay is locked at its last pick only, on the service's own read of the picks: every other
@@ -1437,12 +2132,23 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, refusal?.status ?? 404, { at: atIso, ticker, ...refusal?.body });
       return;
     }
+    const lastIso = new Date(Date.parse(lock.eventTimeIso) - earlyCloseRule.marginMs).toISOString();
+    if (lock.route === "member_sale") {
+      // a member's leave is a buy-back of the contracts they sold, priced from their venue's offers now
+      const bp = await memberBuyBackPriced(holder, lock);
+      if (!bp.ok) {
+        sendJson(res, bp.status, { at: atIso, ticker, ...bp.body });
+        return;
+      }
+      sendJson(res, 200, { ok: true, at: atIso, ticker, ...(holder ? { holder } : {}), lastIso, unwind: memberUnwindViewOf(lock, bp.sale, bp.bb, bp.maxPrice, bp.midCents) });
+      return;
+    }
     const q = quoteEarlyClose(closeTermsOf(lock), await closeBooksFn(lock));
     if (!q.ok) {
       sendJson(res, 200, { ok: false, at: atIso, ticker, code: q.code, leg: q.leg, message: `${q.leg === "position" ? "Your side's" : "The hedge's"} book cannot take the size right now: ${q.detail}.` });
       return;
     }
-    sendJson(res, 200, { ok: true, at: atIso, ticker, ...(holder ? { holder } : {}), lastIso: new Date(Date.parse(lock.eventTimeIso) - earlyCloseRule.marginMs).toISOString(), unwind: unwindViewOf(lock, q) });
+    sendJson(res, 200, { ok: true, at: atIso, ticker, ...(holder ? { holder } : {}), lastIso, unwind: unwindViewOf(lock, q) });
     return;
   }
   if (url.pathname === "/api/shadow/unwind") {
@@ -1470,6 +2176,10 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       const refusal = unwindRefusal(lock, ticker, Date.now());
       if (refusal || !lock) {
         sendJson(res, refusal?.status ?? 404, { at: atIso, ticker, ...refusal?.body });
+        return;
+      }
+      if (lock.route === "member_sale") {
+        await memberUnwind(res, holder, lock, ownLedger, atIso);
         return;
       }
       const q = quoteEarlyClose(closeTermsOf(lock), await closeBooksFn(lock));
@@ -1510,6 +2220,30 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 404, { ok: false, error: "no_lock", message: ticker ? "This market is not on the record." : "?ticker= names the lock" });
       return;
     }
+    if (lock.route === "member_sale" && lock.memberSale) {
+      // a member's receipt: the sale as the venue filled it, the comparison priced beside it (nothing
+      // sent), the tails in their venue's words, the venue's own settlement line once it has one
+      const s = lock.memberSale;
+      sendJson(res, 200, {
+        ok: true,
+        at: atIso,
+        ticker,
+        ...(holder ? { holder } : {}),
+        route: "member_sale",
+        lock: lockSummaryOf(lock),
+        memberSale: memberSaleViewOf(s),
+        compared: comparedViewOf(s.compared),
+        ...memberRulesView(lock.league, s.keptContracts),
+        ...(lock.closeMemberBuyBack ? { memberBuyBack: lock.closeMemberBuyBack } : {}),
+        venueSettlement: await memberSettlementOf(holder, s),
+        hedge: null,
+        hedgeSale: null,
+        routing: null,
+        rule: ruleViewOf(lock),
+        cash: [],
+      });
+      return;
+    }
     const receipt = receiptForLock(hedgeRefFor(ticker, holder), lock.at);
     const sale = lock.status === "closed" && lock.closeSource === "unwind" ? receiptForLock(hedgeRefFor(ticker, holder), lock.at, "sell") : null;
     sendJson(res, 200, {
@@ -1517,19 +2251,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       at: atIso,
       ticker,
       ...(holder ? { holder } : {}),
-      lock: {
-        at: lock.at,
-        status: lock.status,
-        contracts: lock.contracts,
-        floorCents: lock.floorCents,
-        capCents: lock.capCents,
-        creditCents: lock.creditCents,
-        eventTimeIso: lock.eventTimeIso,
-        ...(lock.generation ? { generation: lock.generation } : {}),
-        ...(lock.tier ? { tier: lock.tier } : {}),
-        ...(lock.result ? { result: lock.result, protectedCents: lock.protectedCents, nakedCents: lock.nakedCents, settledAt: lock.settledAt } : {}),
-        ...closedViewOf(lock),
-      },
+      lock: lockSummaryOf(lock),
       hedge: receipt ? hedgeViewOf(receipt) : null,
       // the hedge sold back when the holder left early: the sale's receipt (sent or simulated); null otherwise
       hedgeSale: sale ? hedgeViewOf(sale) : null,
@@ -2259,7 +2981,8 @@ async function rereadTick(): Promise<void> {
   try {
     const onBoth = ledgerPaths().flatMap((path) => loadShadowPositions(path).map((p) => ({ p, path })));
     for (const { p, path } of onBoth) {
-      if (p.status !== "open" || p.kind !== "sports" || p.prelock) continue;
+      // a member's own sale has no hedge route to re-read; its comparison was written with the sale
+      if (p.status !== "open" || p.kind !== "sports" || p.prelock || p.route === "member_sale") continue;
       const eventMs = Date.parse(p.eventTimeIso);
       if (!Number.isFinite(eventMs) || eventMs <= now || eventMs - now > REREAD_HOURS * 3_600_000) continue;
       due += 1;
@@ -2335,7 +3058,7 @@ async function inGameTick(): Promise<void> {
   try {
     const onBoth = ledgerPaths().flatMap((path) => loadShadowPositions(path).map((p) => ({ p, path })));
     for (const { p, path } of onBoth) {
-      if (p.status !== "open" || p.kind !== "sports" || p.inGame) continue;
+      if (p.status !== "open" || p.kind !== "sports" || p.inGame || p.route === "member_sale") continue;
       const eventMs = Date.parse(p.eventTimeIso);
       if (!Number.isFinite(eventMs)) continue;
       const minutesIn = (now - eventMs) / 60_000;
@@ -2436,7 +3159,7 @@ async function drainOpens(): Promise<void> {
       const { ticker, id } = splitHoldKey(item.ev.key);
       const hold = holdsByTicker.get(ticker);
       const pos = hold ? loadShadowPositions(hold.path).find((p) => p.ticker === ticker) : undefined;
-      if (!hold || !pos || pos.bookOpen || pos.status !== "open") {
+      if (!hold || !pos || pos.bookOpen || pos.status !== "open" || pos.route === "member_sale") {
         releaseHolds(ticker);
         continue;
       }
@@ -2726,6 +3449,25 @@ function healthBody(): Record<string, unknown> {
       ...(HOLDER_KEYS.notes.length ? { holderNotes: HOLDER_KEYS.notes } : {}),
       // the holder's venue account, read-only: configured or not, never the key
       holderPositions: { configured: Boolean(venueClient), ...(venueClient ? { api: venueClient.kind } : {}), ...(venueClientNote ? { note: venueClientNote } : {}), lastReadAt: positionsCache ? new Date(positionsCache.at).toISOString() : null },
+      // the member app (memberApp.ts): on or off and why, where the store is, who is connected by alias and venue id; never a token, a code or the secret
+      member: {
+        configured: Boolean(memberSessions),
+        venue: MEMBER_VENUE,
+        ...(memberSessions
+          ? {
+              host: memberSessions.cfg.host,
+              redirectUri: memberSessions.cfg.redirectUri,
+              page: `${RECORD_URL}${MEMBER_APP_PATH}`,
+              ...(MEMBER_APP_VENUE_URL ? { venueUrl: MEMBER_APP_VENUE_URL } : {}),
+              scopes: memberSessions.cfg.scopes,
+              tokensPath: memberSessions.cfg.storePath,
+              orderWaitMs: memberOrderOpts.waitMs ?? 3000,
+              compareWaitMs: MEMBER_COMPARE_WAIT_MS,
+              members: memberSessions.summary(),
+            }
+          : {}),
+        ...(memberApp.notes.length ? { notes: memberApp.notes } : {}),
+      },
     },
     hedge: {
       strategy: hedgeChoice.strategy,
@@ -2793,8 +3535,16 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
 function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "inGame" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeOffsetStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId" | "bookOrigins" | "holder"> & { cashDue?: ReturnType<typeof cashDue> } {
   // where the books came from (the partner's feed or the venue), the pre-lock, book-open and in-game reads and whose lock it is are the operator's: /venues, /api/shadow/holders, the raw ledger
   const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, inGame: _inGame, hedgeTokenId: _tok, hedgeStrikeId: _strike, hedgeOffsetStrikeId: _offset, hedgeMarketId: _nvMarket, hedgeOutcomeId: _nvOutcome, hedgeOffsetOutcomeId: _nvOffset, bookOrigins: _origins, holder: _holder, ...rest } = p;
+  // a member's own sale: the venue's order ids and market id stay with the operator; the sale's figures are public
+  const pub = rest.memberSale ? { ...rest, memberSale: publicMemberSale(rest.memberSale), ...(rest.closeMemberBuyBack ? { closeMemberBuyBack: publicMemberBuyBack(rest.closeMemberBuyBack) } : {}) } : rest;
   // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
-  return p.source === "lock" ? { ...rest, cashDue: cashDue(p) } : rest;
+  return p.source === "lock" ? { ...pub, cashDue: cashDue(p) } : pub;
+}
+function publicMemberSale(s: MemberSaleRecord): MemberSaleRecord {
+  return { ...s, marketId: "", orderId: null, clientOrderId: "" };
+}
+function publicMemberBuyBack(b: NonNullable<ShadowPosition["closeMemberBuyBack"]>): NonNullable<ShadowPosition["closeMemberBuyBack"]> {
+  return { ...b, orderId: null, clientOrderId: "" };
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -2820,15 +3570,55 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       sendJson(res, 200, operator ? healthBody() : publicHealthBody());
       return;
     }
+    if (url.pathname === MEMBER_CALLBACK_PATH) {
+      // THE VENUE'S REDIRECT after the member allowed (or refused) the connection: keyless, since the
+      // browser arrives from the venue; the one-time state the service issued is what is checked.
+      // The code is exchanged server to server; the page says connected or not, nothing more.
+      if (!memberSessions) {
+        sendJson(res, 404, { ok: false, error: "not found" });
+        return;
+      }
+      void memberSessions
+        .finishConnect({ code: url.searchParams.get("code"), state: url.searchParams.get("state"), error: url.searchParams.get("error"), error_description: url.searchParams.get("error_description") })
+        .then((r) => {
+          if (r.member) memberPositionsCache.delete(r.member);
+          if (r.member && isMemberAlias(r.member)) {
+            // the hosted page's member: back to the page, which says connected (or why not) in place
+            res.writeHead(302, { location: r.ok ? `${MEMBER_APP_PATH}?connected=1` : `${MEMBER_APP_PATH}?error=${encodeURIComponent(r.message)}`, "cache-control": "no-store" });
+            res.end();
+            return;
+          }
+          sendHtml(res, r.ok ? 200 : 400, memberCallbackHtml(r.ok, r.ok ? `Your ${VENUE_NAMES[MEMBER_VENUE]} account is connected. You can close this tab and go back to the game.` : r.message));
+        })
+        .catch((err: unknown) => sendHtml(res, 500, memberCallbackHtml(false, `Something failed on our side: ${String(err instanceof Error ? err.message : err)}`)));
+      return;
+    }
+    if (url.pathname === MEMBER_APP_PATH || url.pathname === `${MEMBER_APP_PATH}/`) {
+      // THE HOSTED MEMBER PAGE: the session cookie is set here, once, and the page does the rest
+      // against the routes below with it. No key is ever on the page.
+      const headers: Record<string, string> = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" };
+      if (memberSessions && !memberCookieValue(req)) headers["set-cookie"] = memberCookieHeader(randomBytes(32).toString("base64url"));
+      res.writeHead(200, headers);
+      res.end(memberAppHtml({ venueName: VENUE_NAMES[MEMBER_VENUE], configured: Boolean(memberSessions), recordUrl: RECORD_URL, ...(MEMBER_APP_VENUE_URL ? { venueUrl: MEMBER_APP_VENUE_URL } : {}) }));
+      return;
+    }
     if (LOCK_PATHS.has(url.pathname)) {
       // No key configured: the routes do not exist. Wrong or missing key: 403, like the operator views.
       // A holder's key names the holder; the shared key and the operator act with no holder, and the
       // operator may act as one with ?holder= (a lock entered for a person by hand).
+      const caller = lockCaller(LOCK_KEY, HOLDER_KEYS.holders, req.headers, url.searchParams.get("lock"));
+      if (!operator && !caller) {
+        // the hosted page's member: the cookie names them, and a POST must carry the page's own header
+        const cookieHolder = memberCookieHolder(req);
+        if (cookieHolder && (req.method === "GET" || req.headers["x-member-app"] === "1")) {
+          void handleLockRoutes(req, res, url, cookieHolder, false, true).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+          return;
+        }
+      }
       if (!LOCK_ROUTES_ON && !operator) {
         sendJson(res, 404, { ok: false, error: "not found" });
         return;
       }
-      const caller = lockCaller(LOCK_KEY, HOLDER_KEYS.holders, req.headers, url.searchParams.get("lock"));
       if (!operator && !caller) {
         sendJson(res, 403, { ok: false, error: "bad lock key" });
         return;
@@ -3358,9 +4148,18 @@ export function wireLockEngine(fns: {
   scan?: NonNullable<typeof scan>;
   /** the settled game markets a parlay's picks are read against, in place of Kalshi's public list */
   settledMarkets?: typeof settledMarketsFn;
+  /** the member app's sessions (a fake venue behind them), in place of the env's; null turns the member routes off */
+  memberSessions?: MemberSessions | null;
+  /** how long a member's order rests before the rest is cancelled, and how often it is polled */
+  memberOrder?: ExecuteOptions;
 }): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
+  if (fns.memberSessions !== undefined) {
+    memberSessions = fns.memberSessions;
+    memberPositionsCache.clear();
+  }
+  if (fns.memberOrder) memberOrderOpts = fns.memberOrder;
   if (fns.settledMarkets) {
     settledMarketsFn = fns.settledMarkets;
     settledCache.clear();

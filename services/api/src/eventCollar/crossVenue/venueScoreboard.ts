@@ -90,6 +90,8 @@ export const VENUE_FEE_RULES: Record<SettlementVenue, { rule: string; asOf: stri
   polymarket: { rule: "the engine's configured rate on the hedge's cost, as recorded on each hedge (zero as configured today)", asOf: "2026-11-02" },
   prophetx: { rule: "2% of net gains at settlement, nothing at match; folded as 2 × (1 − P) cents per contract", asOf: "2026-11-02" },
   novig: { rule: "none pre-game, either side; 0.06 × P × (1 − P) on the side crossing the book while the game is live (our hedges are pre-game)", asOf: "2026-11-02" },
+  // a holder venue only: no hedge is ever bought there, so no fee row is ever folded for it
+  stx: { rule: "a per-account fee schedule on the member's own fills; no hedge is bought on this venue", asOf: "2026-11-03" },
 };
 
 /**
@@ -196,7 +198,10 @@ interface Tally {
   contracts: number;
 }
 
-const venueTally = (): Record<SettlementVenue, Tally> => ({ kalshi: { n: 0, contracts: 0 }, polymarket: { n: 0, contracts: 0 }, prophetx: { n: 0, contracts: 0 }, novig: { n: 0, contracts: 0 } });
+/** the venues a hedge can be bought on: every settlement venue but the member-sale one */
+const HEDGE_SIDE_VENUES: readonly SettlementVenue[] = SETTLEMENT_VENUES.filter((v) => v !== "stx");
+
+const venueTally = (): Record<SettlementVenue, Tally> => ({ kalshi: { n: 0, contracts: 0 }, polymarket: { n: 0, contracts: 0 }, prophetx: { n: 0, contracts: 0 }, novig: { n: 0, contracts: 0 }, stx: { n: 0, contracts: 0 } });
 
 const round1 = (x: number): number => Math.round(x * 10) / 10;
 const round2 = (x: number): number => Math.round(x * 100) / 100;
@@ -212,7 +217,7 @@ interface AvailTally {
   asked: number;
   priced: number;
 }
-const availTally = (): Record<SettlementVenue, AvailTally> => ({ kalshi: { asked: 0, priced: 0 }, polymarket: { asked: 0, priced: 0 }, prophetx: { asked: 0, priced: 0 }, novig: { asked: 0, priced: 0 } });
+const availTally = (): Record<SettlementVenue, AvailTally> => ({ kalshi: { asked: 0, priced: 0 }, polymarket: { asked: 0, priced: 0 }, prophetx: { asked: 0, priced: 0 }, novig: { asked: 0, priced: 0 }, stx: { asked: 0, priced: 0 } });
 
 function availability(t: Record<SettlementVenue, AvailTally>): VenueAvailability[] {
   return SETTLEMENT_VENUES.filter((v) => t[v].asked > 0)
@@ -230,6 +235,7 @@ const edgeTally = (): Record<SettlementVenue, EdgeTally> => ({
   polymarket: { n: 0, edgeCentsPerContract: [], edgeAllInBps: [] },
   prophetx: { n: 0, edgeCentsPerContract: [], edgeAllInBps: [] },
   novig: { n: 0, edgeCentsPerContract: [], edgeAllInBps: [] },
+  stx: { n: 0, edgeCentsPerContract: [], edgeAllInBps: [] },
 });
 const mean = (xs: number[]): number | null => (xs.length ? round2(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
 
@@ -240,7 +246,7 @@ function edges(t: Record<SettlementVenue, EdgeTally>): VenueEdge[] {
 }
 
 type FeeTally = number[];
-const feeTally = (): Record<SettlementVenue, FeeTally> => ({ kalshi: [], polymarket: [], prophetx: [], novig: [] });
+const feeTally = (): Record<SettlementVenue, FeeTally> => ({ kalshi: [], polymarket: [], prophetx: [], novig: [], stx: [] });
 
 function fees(t: Record<SettlementVenue, FeeTally>): VenueFee[] {
   return SETTLEMENT_VENUES.filter((v) => t[v].length > 0)
@@ -303,6 +309,7 @@ function foldRouting(acc: WeekAcc, league: ReturnType<typeof leagueOf>, p: Shado
       league.avail[r.hedgeVenue].priced += 1;
     }
   }
+  if (p.route === "member_sale") return;
   const winner = hedgeVenueOf(p.route);
   const won = routes.find((r) => r.hedgeVenue === winner && r.ok);
   const others = routes.filter((r) => r.hedgeVenue !== winner && r.ok);
@@ -358,6 +365,8 @@ export function venueScoreboard(inp: ScoreboardInputs): VenueScoreboard {
     onBook.add(p.ticker);
     const w = weekFor(p.at);
     if (!w) continue;
+    // a member's own sale on their venue took no other side anywhere: nothing for a venue column
+    if (p.route === "member_sale") continue;
     const venue = hedgeVenueOf(p.route);
     w.n += 1;
     w.offered += 1;
@@ -454,8 +463,9 @@ export function venueScoreboard(inp: ScoreboardInputs): VenueScoreboard {
     at: now.toISOString(),
     live: true,
     methodology: SCOREBOARD_METHODOLOGY,
-    venues: SETTLEMENT_VENUES.map((v) => VENUE_NAMES[v]),
-    feeRules: SETTLEMENT_VENUES.map((v) => ({ venue: VENUE_NAMES[v], ...VENUE_FEE_RULES[v] })),
+    // the venues that take the other side; a holder-only venue (a member's own sale) has no column
+    venues: HEDGE_SIDE_VENUES.map((v) => VENUE_NAMES[v]),
+    feeRules: HEDGE_SIDE_VENUES.map((v) => ({ venue: VENUE_NAMES[v], ...VENUE_FEE_RULES[v] })),
     weeks,
   };
 }
