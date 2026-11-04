@@ -45,6 +45,10 @@ export type LedgerRoute = HedgeRoute | "member_sale";
  * tables; the settlement reads these.
  */
 export interface MemberSaleRecord {
+  /** the venue's market the sale was on (the buy-back and the settlement read need it); operator views only */
+  marketId: string;
+  /** the venue's max_price for the market in cents (usually 100): a venue contract is this many of ours per dollar */
+  maxPriceCents: number;
   /** contracts the venue filled on the sell, and the contracts still riding to the game */
   soldContracts: number;
   keptContracts: number;

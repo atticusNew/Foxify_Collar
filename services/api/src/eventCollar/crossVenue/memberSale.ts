@@ -301,10 +301,12 @@ export async function executeLimitOrder(client: MemberClient, body: PlaceOrderBo
 // ---------------------------------------------------------------------------
 
 /** The sale as the ledger keeps it, from what the venue filled. Contracts in our $1 units. */
-export function saleRecordOf(o: OrderOutcome, p: { positionContracts: number; maxPrice: number; limitPriceCents: number; clientOrderId: string; requested: number }): MemberSaleRecord {
+export function saleRecordOf(o: OrderOutcome, p: { marketId: string; positionContracts: number; maxPrice: number; limitPriceCents: number; clientOrderId: string; requested: number }): MemberSaleRecord {
   const sold = roundContracts(o.filled * p.maxPrice);
   const kept = roundContracts(p.positionContracts * p.maxPrice - sold);
   return {
+    marketId: p.marketId,
+    maxPriceCents: Math.round(p.maxPrice * 100),
     soldContracts: sold,
     keptContracts: kept,
     limitPriceCents: p.limitPriceCents,
