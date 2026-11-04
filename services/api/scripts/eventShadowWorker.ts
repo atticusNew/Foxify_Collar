@@ -142,7 +142,7 @@ import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalsh
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderHoldersHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
 import { renderScoreboardHtml } from "./eventScoreboardHtml";
-import { memberAppHtml } from "./memberAppHtml";
+import { memberAppHtml, memberPrivacyHtml } from "./memberAppHtml";
 import { ATTICUS_BIRD_PNG, ATTICUS_WORDMARK_PNG, ICON_180_PNG, ICON_192_PNG, ICON_512_PNG, STX_LOGO_PNG } from "./memberAppAssets";
 import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
@@ -365,6 +365,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/lock/reset",
   "/api/shadow/cash",
   "/api/shadow/holders",
+  "/api/shadow/member/raw",
   "/holders",
   "/api/shadow/export",
   "/api/shadow/reset",
@@ -734,6 +735,8 @@ const MEMBER_APP_VENUE_URL = (process.env.MEMBER_APP_VENUE_URL ?? "").trim().rep
  */
 const MEMBER_APP_HOSTNAME = (process.env.MEMBER_APP_HOSTNAME ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "") || null;
 const MEMBER_APP_ORIGIN = MEMBER_APP_HOSTNAME ? `https://${MEMBER_APP_HOSTNAME}` : null;
+/** who a member writes to for removal, named on the privacy page; the sentence is left out when unset */
+const MEMBER_APP_CONTACT = (process.env.MEMBER_APP_CONTACT ?? "").trim() || null;
 /** where each member's connect began (the page's own host, or "" for the record URL), so the venue's callback sends them back to the same origin, where their cookie is */
 const memberConnectOrigin = new Map<string, string>();
 const isMemberAppHost = (req: IncomingMessage): boolean => {
@@ -3789,6 +3792,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       // the page's own host: the root is the page; the page's files, the member callback and the
       // API stay; everything else lives on the record URL
       if (url.pathname === "/") url.pathname = MEMBER_APP_PATH;
+      else if (url.pathname === "/privacy") url.pathname = `${MEMBER_APP_PATH}/privacy`;
       else if (!(url.pathname.startsWith(MEMBER_APP_PATH) || url.pathname.startsWith("/api/") || url.pathname === "/healthz")) {
         res.writeHead(302, { location: `${RECORD_URL}${url.pathname}${url.search}`, "cache-control": "no-store" });
         res.end();
@@ -3829,6 +3833,10 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           sendHtml(res, r.ok ? 200 : 400, memberCallbackHtml(r.ok, r.ok ? `Your ${VENUE_NAMES[MEMBER_VENUE]} account is connected. You can close this tab and go back to the game.` : r.message));
         })
         .catch((err: unknown) => sendHtml(res, 500, memberCallbackHtml(false, `Something failed on our side: ${String(err instanceof Error ? err.message : err)}`)));
+      return;
+    }
+    if (url.pathname === `${MEMBER_APP_PATH}/privacy`) {
+      sendHtml(res, 200, memberPrivacyHtml({ venueName: VENUE_NAMES[MEMBER_VENUE], recordUrl: RECORD_URL, appUrl: isMemberAppHost(req) ? "/" : MEMBER_APP_PATH, ...(MEMBER_APP_CONTACT ? { contact: MEMBER_APP_CONTACT } : {}) }));
       return;
     }
     if (url.pathname.startsWith(`${MEMBER_APP_PATH}/`) && url.pathname !== `${MEMBER_APP_PATH}/`) {
@@ -4187,6 +4195,48 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/holders") {
       sendJson(res, 200, holdersSummary());
+      return;
+    }
+    if (url.pathname === "/api/shadow/member/raw") {
+      // THE OPERATOR'S RAW READ of one member's venue account, as the wire gives it: the positions list
+      // unfiltered, the markets for their ids, which ids the markets endpoint did not return, a few
+      // probes of paths the docs do not settle (where a combination might live), and the listing
+      // endpoint's books. For fitting the reader to the real venue; no token is ever in the body.
+      if (!memberSessions) {
+        sendJson(res, 404, { ok: false, error: "member_app_off" });
+        return;
+      }
+      const members = memberSessions.summary();
+      const member = url.searchParams.get("holder") ?? url.searchParams.get("member") ?? (members.length === 1 ? members[0].member : null);
+      if (!member || !members.some((m) => m.member === member)) {
+        sendJson(res, 400, { ok: false, error: "member", message: "name a connected member with ?holder=<alias>", members: members.map((m) => m.member) });
+        return;
+      }
+      void (async () => {
+        const client = memberSessions!.client(member);
+        const raw = await client.positionsRaw();
+        const list = (raw as { positions?: Array<Record<string, unknown>> } | null)?.positions ?? [];
+        const ids = [...new Set(list.map((p) => p?.market_id).filter((id): id is string => typeof id === "string"))];
+        let markets: RawOutcomeMarket[] = [];
+        let marketsError: string | null = null;
+        try {
+          markets = await client.markets(ids);
+        } catch (err) {
+          marketsError = String(err instanceof Error ? err.message : err);
+        }
+        const have = new Set(markets.map((m) => m.market_id));
+        const probes: Record<string, { status: number; body: unknown }> = {};
+        for (const path of ["/api/v1/combos", "/api/v1/account/combos", "/api/v1/positions?include=combos", "/api/v1/markets?types=combo&limit=5", "/api/v1/orders?status=filled&limit=5"]) probes[path] = await client.probe(path);
+        sendJson(res, 200, {
+          ok: true,
+          at: new Date().toISOString(),
+          member,
+          positions: { count: list.length, dropped: list.filter((p) => !(typeof p?.market_id === "string" && (typeof p?.position === "string" || typeof p?.position === "number"))), raw },
+          markets: { asked: ids.length, returned: markets.length, missing: ids.filter((id) => !have.has(id)), ...(marketsError ? { error: marketsError } : {}), raw: markets },
+          probes,
+          ...(memberCatalogSample.size ? { catalogue: Object.fromEntries(memberCatalogSample) } : {}),
+        });
+      })().catch((err: unknown) => sendJson(res, 502, { ok: false, error: "venue_read_failed", message: String(err instanceof Error ? err.message : err) }));
       return;
     }
     if (url.pathname === "/api/shadow/ext-telemetry/summary") {

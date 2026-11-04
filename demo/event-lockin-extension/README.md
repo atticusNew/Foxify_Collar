@@ -402,7 +402,10 @@ On that host `/` is the page and `/app/*` and `/api/*` answer as always; any oth
 the record URL, so the public record and the embed are never served under a venue's name. STX's
 app registration does not change: the callback stays the record URL's. Its foot: "Protection by Atticus, a third party; not a product of
 STX", the public record, **How this works** (the sale in plain words, the consent given on STX's
-own page and revocable there, what the page never holds), and on a phone Disconnect. Everything
+own page and revocable there, what the page never holds), **Privacy** (`/app/privacy`, or
+`/privacy` on the page's own host: what the page reads, writes, stores and never holds, in the
+same skin; the URL the STX app registration asks for; `MEMBER_APP_CONTACT` names who to write
+to), and on a phone Disconnect. Everything
 below about the sale, Details, Compared and Leave early is the page's behaviour too; the two
 surfaces call the same routes.
 

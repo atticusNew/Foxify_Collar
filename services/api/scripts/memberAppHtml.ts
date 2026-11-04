@@ -70,7 +70,7 @@ ${CSS}
 <main id="main" class="main"><div class="ael-wait">Loading…</div></main>
 <footer class="foot">
   <div class="foot-l">Protection by <img class="amark" src="/app/atticus.png" alt="Atticus">, a third party; not a product of ${esc(o.venueName)}.</div>
-  <div class="foot-r"><a href="${esc(o.recordUrl)}" rel="noopener">Public record</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg" aria-expanded="false">How this works</button><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect ${esc(o.venueName)}</button></span></div>
+  <div class="foot-r"><a href="${esc(o.recordUrl)}" rel="noopener">Public record</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg" aria-expanded="false">How this works</button><span class="dot">·</span><a href="/app/privacy">Privacy</a><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect ${esc(o.venueName)}</button></span></div>
   <div class="about" id="about" hidden>
     <p>A lock sells part of a position you hold on ${esc(o.venueName)} into ${esc(o.venueName)}'s own bids, in your own account, at that moment's price. The cash lands in your ${esc(o.venueName)} balance right away; the rest of the position rides to the game as it always did. Win, and the riding contracts still pay. Lose, and you keep the cash.</p>
     <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Leave early buys the same contracts back from ${esc(o.venueName)}'s offers. Every order is placed in your account under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke that consent there at any time. This page never holds your money, your login or your keys. Every lock is written to a <a href="${esc(o.recordUrl)}" rel="noopener">public record</a> in neutral words, with no account ids.</p>
@@ -81,6 +81,81 @@ ${CSS}
 <script>
 ${JS}
 </script>
+</body>
+</html>`;
+}
+
+export interface PrivacyPageOptions {
+  venueName: string;
+  recordUrl: string;
+  /** the page's URL, for the way back */
+  appUrl: string;
+  /** who to write to for removal; the sentence is left out when unset */
+  contact?: string;
+}
+
+/** THE PRIVACY PAGE: what the page reads, writes, stores and never holds, in plain words, in the same skin. Linked from the foot and named on the venue's app registration. */
+export function memberPrivacyHtml(o: PrivacyPageOptions): string {
+  const V = esc(o.venueName);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#010101">
+<link rel="icon" type="image/png" sizes="192x192" href="/app/icon-192.png">
+<title>Privacy · Lock in for ${V}</title>
+<style>
+${CSS}
+.doc { max-width: 680px; margin: 0 auto; padding: 8px 0 20px; }
+.doc h1 { margin-bottom: 4px; }
+.doc .when { font-size: 12.5px; color: var(--ael-dim); margin: 0 0 22px; }
+.doc h2 { font-size: 15px; font-weight: 700; color: var(--ael-fg-strong); margin: 22px 0 6px; }
+.doc p { margin: 0 0 10px; color: var(--ael-soft); font-size: 14.5px; line-height: 1.6; }
+.doc p b { color: var(--ael-fg-strong); font-weight: 600; }
+.doc ul { margin: 0 0 10px; padding-left: 20px; color: var(--ael-soft); font-size: 14.5px; line-height: 1.6; }
+.doc .back { display: inline-flex; align-items: center; gap: 6px; margin: 26px 0 0; padding: 9px 14px; border: 1px solid var(--ael-border); border-radius: 999px; color: var(--ael-soft); text-decoration: none; font-size: 13.5px; }
+.doc .back:hover { border-color: var(--ael-border-hover); color: var(--ael-fg-strong); }
+</style>
+</head>
+<body class="ael-v-stx">
+<header class="top">
+  <div class="brand"><a class="venue" href="${esc(o.appUrl)}" aria-label="Lock in"><img class="vmark" src="/app/stx.png" alt="${V}"></a><span class="sep" aria-hidden="true"></span><span class="app"><img src="/app/bird.png" alt="">Lock in</span></div>
+</header>
+<main class="main"><article class="doc">
+<h1>Privacy</h1>
+<p class="when">How the Lock in page for ${V} handles what it reads.</p>
+
+<h2>What this page reads from ${V}</h2>
+<p>With your consent, given on ${V}'s own page: your ${V} user id, account id, handle and avatar; your balance; your open positions; and your orders. Positions and balance are read when you open the page and kept for at most fifteen seconds.</p>
+
+<h2>What it writes</h2>
+<p>Only the orders you tap: <b>one sell</b> for part of a position you hold, and, if you choose to leave early, <b>one buy</b> of the same contracts. Nothing else is ever placed. Every order is attributed to this app in your ${V} order history.</p>
+
+<h2>What it stores</h2>
+<ul>
+<li>The connection token ${V} issues, sealed (AES-GCM) on our server and deleted when you disconnect here or revoke the app on ${V}.</li>
+<li>A record of each lock: the market, the size, the prices, the times.</li>
+</ul>
+<p>It never stores your ${V} login, a payment method or money. <b>Your funds stay in your ${V} account at all times.</b></p>
+
+<h2>The public record</h2>
+<p>Each lock is also written to a <a href="${esc(o.recordUrl)}" rel="noopener">public record</a> in neutral words (the market, the size, the prices) with no account id, handle or name.</p>
+
+<h2>Who else sees it</h2>
+<p>No one. No analytics, no advertising, nothing sold or shared. Pricing a lock reads other venues' public order books; none of your data is sent to them.</p>
+
+<h2>Your session</h2>
+<p>A random id in an HttpOnly cookie, kept 180 days, so the page knows which connection is yours. No tracking cookies.</p>
+
+<h2>Your control</h2>
+<p>Disconnect on the page, or revoke the app on ${V}; either ends our access at once and deletes the token.${o.contact ? ` Write to <a href="mailto:${esc(o.contact)}">${esc(o.contact)}</a> to have lock records that name your alias removed from our server; the public record keeps its neutral entries.` : ""}</p>
+
+<h2>Who we are</h2>
+<p>Atticus, a third party. This is not a product of ${V}.</p>
+<a class="back" href="${esc(o.appUrl)}">← Back to Lock in</a>
+</article></main>
 </body>
 </html>`;
 }
@@ -105,6 +180,8 @@ body {
 a { color: inherit; }
 button { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--ael-accent); outline-offset: 2px; border-radius: 6px; }
+:focus:not(:focus-visible) { outline: 0; }
 img { display: block; }
 
 /* pull to refresh */
@@ -146,7 +223,8 @@ img { display: block; }
 .foot { padding: 18px 20px 26px; font-size: 12.5px; color: var(--ael-dim); border-top: 1px solid #1a1a1a; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; max-width: 760px; margin: 0 auto; width: 100%; }
 .foot-l { display: inline; line-height: 1.7; }
 .foot .amark { height: 14px; width: auto; display: inline-block; vertical-align: middle; position: relative; top: -1px; margin: 0 2px; }
-.foot-r { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+.foot-r { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.foot-r a, .foot-r .lnk { white-space: nowrap; }
 .foot a { color: var(--ael-muted); }
 .foot .dot { color: var(--ael-faint); }
 .foot .lnk { background: none; border: 0; padding: 0; color: var(--ael-muted); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; font-size: 12.5px; }
@@ -162,6 +240,7 @@ h1 small { font-size: 13px; font-weight: 500; color: var(--ael-dim); margin-left
 h2.grp { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ael-dim); margin: 26px 0 6px; }
 h2.grp[hidden] { display: none; }
 .sub { color: var(--ael-muted); font-size: 13.5px; margin: -6px 0 16px; line-height: 1.5; }
+.sub b { color: var(--ael-soft); font-weight: 600; }
 .note { font-size: 13px; color: var(--ael-soft); background: var(--ael-bg-raise); border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 10px 12px; margin: 0 0 14px; display: flex; align-items: center; gap: 12px; }
 .note.err { border-color: rgba(255, 107, 107, 0.5); color: #ffb4b4; }
 .note.ok { border-color: var(--ael-accent-line); }
@@ -231,23 +310,26 @@ h2.grp[hidden] { display: none; }
 .pos-t .name small { font-weight: 500; font-size: 13px; color: var(--ael-muted); margin-left: 5px; }
 .pos-t .evt { font-size: 13px; color: var(--ael-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pos-t .evt b { font-weight: 500; color: var(--ael-soft); }
-.pos .pays { flex: none; text-align: right; font-size: 15px; font-weight: 700; color: var(--ael-accent); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pos .pays { flex: none; text-align: right; font-size: 15px; font-weight: 700; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pos .pays small { display: block; font-weight: 500; font-size: 11px; color: var(--ael-dim); letter-spacing: 0.04em; text-transform: uppercase; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0 48px; }
-.chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 6px; background: var(--ael-bg-raise); border: 1px solid var(--ael-border); color: var(--ael-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; font-size: 12px; line-height: 1; padding: 0 8px; border-radius: 6px; background: var(--ael-bg-raise); border: 1px solid var(--ael-border); color: var(--ael-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .chip b { font-weight: 600; color: var(--ael-soft); }
 .chip.sold { border-color: var(--ael-accent-line); background: var(--ael-accent-wash); color: var(--ael-accent-text); }
 .chip.sold b { color: var(--ael-accent-text); }
 .chip.until { color: var(--ael-dim); }
 .chip.until svg { width: 11px; height: 11px; }
-.chip.price { background: var(--ael-accent); border-color: var(--ael-accent); color: var(--ael-accent-ink); font-weight: 700; font-size: 12.5px; padding: 5px 9px; }
-.chip.floor { border-color: var(--ael-accent-line); color: var(--ael-soft); }
-.chip.floor b { color: var(--ael-fg-strong); }
-.chip.lg { background: transparent; color: var(--ael-dim); font-weight: 600; letter-spacing: 0.06em; font-size: 10.5px; padding: 4px 6px; }
+.chip.price { background: var(--ael-bg-deep); border-color: var(--ael-accent-line); color: var(--ael-fg-strong); font-weight: 700; font-size: 12.5px; padding: 0 9px; }
+.chip.price small { font-weight: 500; font-size: 10.5px; color: var(--ael-dim); letter-spacing: 0.04em; text-transform: uppercase; }
+.chip.floor { color: var(--ael-soft); }
+.chip.floor b { color: var(--ael-accent-text); }
+.chip.lg { background: transparent; color: var(--ael-dim); font-weight: 600; letter-spacing: 0.06em; font-size: 10.5px; padding: 0 6px; height: 20px; }
 .pos.muted .pos-t .name { color: var(--ael-soft); }
 .pos.muted .pays { color: var(--ael-muted); }
+.pos.muted .mark:not(.parlay) { filter: saturate(0.35); opacity: 0.85; }
+.pos.muted .chip { color: var(--ael-dim); }
 .pos .ael-row { margin: 11px 0 0 48px; }
-.empty { color: var(--ael-muted); font-size: 14px; padding: 28px 0; text-align: center; line-height: 1.5; }
+.empty { color: var(--ael-muted); font-size: 14px; padding: 26px 18px; text-align: center; line-height: 1.5; border: 1px dashed var(--ael-border); border-radius: var(--ael-radius-lg); margin: 4px 0 0; }
 .empty a { color: var(--ael-accent-text); }
 .status { font-size: 12px; color: var(--ael-dim); margin: 12px 0 0; text-align: right; }
 
@@ -276,6 +358,7 @@ h2.grp[hidden] { display: none; }
 .day { margin: 0 0 8px; }
 .day-h { position: sticky; top: calc(56px + 45px + env(safe-area-inset-top)); z-index: 2; background: #010101; padding: 10px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ael-dim); display: flex; align-items: baseline; gap: 10px; }
 .day-h small { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--ael-faint); }
+.day-h small.n { margin-left: auto; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--ael-bg-raise); color: var(--ael-soft); font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; }
 .game { position: relative; padding: 14px 0 14px 14px; border-bottom: 1px solid #1c1c1c; }
 .game::before { content: ""; position: absolute; left: 0; top: 16px; bottom: 16px; width: 3px; border-radius: 3px; background: transparent; }
 .game.held::before { background: var(--ael-accent); }
@@ -288,6 +371,8 @@ h2.grp[hidden] { display: none; }
 .sides { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .side { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg); }
 .side.held { border-color: var(--ael-accent-line); background: var(--ael-accent-wash); }
+.side .mk { position: relative; flex: none; display: inline-flex; }
+.side .mk i { position: absolute; right: -3px; bottom: -3px; width: 14px; height: 14px; border-radius: 50%; background: var(--ael-bg-deep); border: 1px solid var(--ael-border-hover); color: var(--ael-soft); font: 700 8.5px/12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-style: normal; text-align: center; }
 .side .sn { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 600; color: var(--ael-fg-strong); }
 .side .sn small { display: block; font-size: 12px; font-weight: 400; color: var(--ael-muted); margin-top: 1px; }
 .side .px { display: inline-flex; align-items: center; gap: 6px; flex: none; }
@@ -373,7 +458,8 @@ h2.grp[hidden] { display: none; }
 .ael-go.ael-pillgo { display: inline-flex; width: auto; min-height: 44px; height: auto; margin: 0; padding: 9px 20px 9px 14px; border-radius: 999px; font-size: 15px; white-space: normal; text-align: left; }
 .ael-offer-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0 2px; }
 .ael-offer-acts .ael-links { margin-left: auto; font-size: 13.5px; color: var(--ael-muted); white-space: nowrap; }
-.ael-tg { display: inline-flex; align-items: center; gap: 3px; color: var(--ael-muted); text-decoration: none; font-size: 13.5px; font-weight: 500; padding: 8px 2px; white-space: nowrap; cursor: pointer; background: none; border: 0; font-family: inherit; }
+.ael-tg { display: inline-flex; align-items: center; gap: 3px; min-height: 36px; color: var(--ael-muted); text-decoration: none; font-size: 13.5px; font-weight: 500; padding: 8px 2px; white-space: nowrap; cursor: pointer; background: none; border: 0; font-family: inherit; }
+@media (pointer: coarse) { .ael-tg, .gbar .f, .foot .lnk, .foot a, .acct .lnk, .note .x { min-height: 44px; } .ael-dl .ael-tg { min-height: 36px; } }
 .ael-tg:hover, .ael-tg[aria-expanded="true"] { color: var(--ael-fg-strong); }
 .ael-tgc { display: inline-flex; width: 14px; height: 14px; transition: transform 0.18s ease; }
 .ael-tgc svg { width: 14px; height: 14px; display: block; }
@@ -452,7 +538,21 @@ h2.grp[hidden] { display: none; }
   .side .px { order: 3; }
   .side .buy, .side .have { order: 4; margin-left: auto; }
   .connect { margin-top: 14px; padding: 22px 18px 16px; }
-  .toast { max-width: calc(100% - 28px); white-space: normal; text-align: center; border-radius: 14px; }
+  .toast { max-width: calc(100% - 28px); white-space: normal; text-align: center; border-radius: 14px; bottom: calc(96px + env(safe-area-inset-bottom)); }
+}
+@media (max-width: 400px) {
+  .ael-fact { white-space: normal; line-height: 1.3; }
+  .ael-line { gap: 10px; padding: 8px 10px 8px 7px; }
+  .ael-tag { padding: 4px 9px 4px 7px; font-size: 12px; gap: 5px; }
+  .ael-line-off .ael-tag, .ael-line-wait .ael-tag { padding: 4px 9px; }
+  .pos-t .name { font-size: 14.5px; }
+  .pos .pays { font-size: 13.5px; }
+  .ael-lr s { width: 64px; }
+}
+@media (max-width: 360px) {
+  .acct .back span { display: none; }
+  .acct .back { padding: 6px 8px; }
+  .brand .app { display: none; }
 }
 `;
 
@@ -749,7 +849,7 @@ const JS = String.raw`
       panel = st.open ? '<div class="ael-panel ael-on">' + detailsHtml(p, st, true) + DISCLOSE + "</div>" : "";
     } else if (lock) {
       const ms = lock.memberSale || {};
-      line = lineHtml("on", "Protected", "<b>" + usd(lock.floorTotalCents) + "</b> or <b>" + usd(lock.capTotalCents) + "</b> · on " + esc(VN) + ".", st.open);
+      line = lineHtml("on", "Protected", "<b>" + usd(lock.floorTotalCents) + "</b> or <b>" + usd(lock.capTotalCents) + "</b>" + '<span class="ael-dim"> · locked</span>', st.open);
       if (st.open) {
         const meta = ["Locked " + esc(fmtAt(lock.at))];
         if (st.justNow && st.ms) meta.push("sold " + (st.ms < 100 ? "at once" : "in " + (st.ms / 1000).toFixed(1) + "s"));
@@ -776,7 +876,7 @@ const JS = String.raw`
     } else {
       const t = tierOf(st), o = outcomes(t);
       const limited = t.depthLimited ? ' <span class="ael-dim">· ' + VN + "'s book takes " + t.soldContracts + " of " + wantOf(st, p.contracts) + "</span>" : "";
-      line = lineHtml("offer", "Lock in", "Lose, and still get <b>" + usd(o.floor) + "</b>." + limited, st.open);
+      line = lineHtml("offer", "Lock in", "Still get <b>" + usd(o.floor) + "</b> if " + esc(nick) + " lose." + limited, st.open);
       if (st.open) {
         const busy = st.busy === "lock";
         panel = '<div class="ael-panel ael-on">' + slipRows(nick, o, p.contracts, false) +
@@ -945,7 +1045,7 @@ const JS = String.raw`
   // ---- the games ----
   const gameKey = (g) => g.event + "|" + g.startIso;
   const gamesScaffold = () => {
-    main.innerHTML = "<h1>Games</h1>" + '<p class="sub">Games this service can protect that ' + esc(VN) + " lists right now. Buy a winner on " + esc(VN) + "; back here, the position carries its Lock in line. The amber price is " + esc(VN) + "'s best bid; the floor is what a Max floor lock would keep per contract on a loss.</p>" + '<div class="gbar" id="gbar"></div><div id="glist"></div><div id="gmore"></div><div class="status" id="g-at"></div>';
+    main.innerHTML = "<h1>Games</h1>" + '<p class="sub">Games this service can protect that ' + esc(VN) + " lists right now. Buy a winner on " + esc(VN) + "; back here, the position carries its Lock in line. <b>Bid</b> is " + esc(VN) + "'s best bid right now; <b>floor</b> is what a Max floor lock keeps per contract on a loss.</p>" + '<div class="gbar" id="gbar"></div><div id="glist"></div><div id="gmore"></div><div class="status" id="g-at"></div>';
   };
   const leagueWord = (l) => String(l || "").toUpperCase();
   const syncGames = () => {
@@ -976,7 +1076,7 @@ const JS = String.raw`
     syncList(glist, dayItems, (d) => d.day, "day", (el, d) => {
       if (!el.firstChild) el.innerHTML = '<div class="day-h"></div><div class="dgames"></div>';
       const [w, sub] = dayLabel(d.day);
-      setHtml(el.querySelector(".day-h"), esc(w) + (sub ? "<small>" + esc(sub) + "</small>" : "") + "<small>" + d.games.length + (d.games.length === 1 ? " game" : " games") + "</small>");
+      setHtml(el.querySelector(".day-h"), esc(w) + (sub ? "<small>" + esc(sub) + "</small>" : "") + '<small class="n">' + d.games.length + "</small>");
       syncList(el.querySelector(".dgames"), d.games, (g) => g.key, "game", (gel, g) => {
         gel.classList.toggle("held", g.held);
         const first = g.sides[0];
@@ -984,9 +1084,9 @@ const JS = String.raw`
         const html = '<div class="game-h"><span class="chip lg">' + esc(leagueWord(first.league)) + "</span><b>" + esc(first.event) + '</b><span class="gt">' + CLOCK + esc(fmtAt(first.startIso)) + "</span>" + (until ? '<span class="until">Lock in until ' + esc(fmtClock(until)) + "</span>" : "") + '</div><div class="sides">' +
           g.sides.map((s) => {
             const v = s.venue || {};
-            const px = v.bestBidCents != null ? '<span class="chip price">' + cents(v.bestBidCents) + "</span>" + (v.floorFromCents != null ? '<span class="chip floor">floor ≈ <b>' + cents(v.floorFromCents) + "</b></span>" : "") : v.lastCents != null ? '<span class="chip">last ' + cents(v.lastCents) + "</span>" : '<span class="chip">no bid yet</span>';
+            const px = v.bestBidCents != null ? '<span class="chip price"><small>bid</small>' + cents(v.bestBidCents) + "</span>" + (v.floorFromCents != null ? '<span class="chip floor">floor ≈ <b>' + cents(v.floorFromCents) + "</b></span>" : "") : v.lastCents != null ? '<span class="chip">last ' + cents(v.lastCents) + "</span>" : '<span class="chip">no bid yet</span>';
             const act = s.held ? '<a class="have" href="#" data-tab="portfolio">In your portfolio</a>' : v.url ? '<a class="buy" href="' + esc(v.url) + '" target="_blank" rel="noopener">Buy on ' + esc(VN) + OUT + "</a>" : "";
-            return '<div class="side' + (s.held ? " held" : "") + '">' + markHtml(s.side, "sm") + '<div class="sn">' + esc(s.side) + "<small>" + (s.home === true ? "home" : s.home === false ? "away" : "") + (s.opponent ? (s.home === true ? " · vs " : s.home === false ? " · at " : "") + esc(s.opponent) : "") + '</small></div><div class="px">' + px + "</div>" + act + "</div>";
+            return '<div class="side' + (s.held ? " held" : "") + '"><span class="mk">' + markHtml(s.side, "sm") + (s.home === true ? '<i title="home">H</i>' : s.home === false ? '<i title="away">A</i>' : "") + '</span><div class="sn">' + esc(s.side) + "<small>" + (s.opponent ? (s.home === false ? "at " : "vs ") + esc(s.opponent) : "") + '</small></div><div class="px">' + px + "</div>" + act + "</div>";
           }).join("") + "</div>";
         if (setHtml(gel, html)) gel.querySelectorAll("[data-tab]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); showTab("portfolio"); }; });
       });

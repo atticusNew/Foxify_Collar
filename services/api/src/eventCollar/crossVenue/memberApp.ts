@@ -358,7 +358,8 @@ export class MemberTokenStore {
 export interface RawMemberPosition {
   market_id: string;
   event_id?: string | null;
-  position: string;
+  /** contracts held, as the venue writes it: a decimal string on single markets; a number has been seen too */
+  position: string | number;
   average_open_premium?: string | null;
   premium?: string | null;
   open_risk?: string | null;
@@ -510,7 +511,29 @@ export class MemberClient {
 
   async positions(): Promise<RawMemberPosition[]> {
     const r = await this.call<{ positions?: RawMemberPosition[] }>("GET", "/api/v1/positions");
-    return (r.positions ?? []).filter((p) => p && typeof p.market_id === "string" && typeof p.position === "string");
+    return (r.positions ?? []).filter((p) => p && typeof p.market_id === "string" && (typeof p.position === "string" || typeof p.position === "number"));
+  }
+
+  /** the positions list as the wire gave it, nothing filtered: the operator's raw read */
+  async positionsRaw(): Promise<unknown> {
+    return this.call<unknown>("GET", "/api/v1/positions");
+  }
+
+  /** one GET as the wire answers it, never throwing: status and the first part of the body. For the operator's probes of paths the docs do not settle. */
+  async probe(path: string): Promise<{ status: number; body: unknown }> {
+    try {
+      const r = await this.fetchImpl(`${this.cfg.host}${path}`, { headers: { accept: "application/json", "user-agent": MEMBER_APP_USER_AGENT, authorization: `Bearer ${await this.cfg.token()}` } });
+      const text = await r.text();
+      let body: unknown = text.slice(0, 4000);
+      try {
+        body = JSON.parse(text);
+      } catch {
+        // kept as text
+      }
+      return { status: r.status, body };
+    } catch (err) {
+      return { status: 0, body: String(err instanceof Error ? err.message : err) };
+    }
   }
 
   /** the named markets, fresh, with their books (a member token reads the same catalogue the app token does) */
