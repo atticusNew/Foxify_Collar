@@ -257,7 +257,7 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
 <meta name="robots" content="noindex" />
 <link rel="icon" href="data:," />
 <title>${brand} · Positions</title>
-<meta name="description" content="One tap. Any prediction market. How Earn &amp; Protect sits inside a venue's positions list: one Lock in line per row, priced across venues, hedged where it is cheapest. Demonstration; positions are simulated, prices are live." />${videoMeta}
+<meta name="description" content="One tap. Any prediction market. How Earn &amp; Protect sits inside a venue's positions list: one Lock in line per row, priced against every venue, filled where the trader holds the position. Demonstration; positions are simulated, prices are live." />${videoMeta}
 <style>
 :root{
   ${
@@ -577,14 +577,14 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 ${cardBlock}<aside class="pitch">
   <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
   <h1>One tap. Any prediction market.</h1>
-  <p>One line under every open position. Your traders lock a floor and get paid today, on your page. We price the other side at every venue, buy it where it is cheapest, and share the spread with you.</p>
+  <p>One line under every open position. Your traders lock a floor and get paid today, on your page, in their own account on your book. Priced against every venue we read; filled where they hold it.</p>
   <ul>
-    <li><b>Every venue priced, every time.</b></li>
-    <li><b>Your venue first when it is best,</b> never when it is not.</li>
+    <li><b>Filled on your book,</b> in the trader's own account: order flow from your own members that did not exist before.</li>
+    <li><b>Every venue priced, every time,</b> so you and your traders see what the same protection was worth elsewhere.</li>
     <li><b>The trader stays on your page.</b></li>
-    <li><b>Plus a share of the spread:</b> a revenue line on hedges that used to leave your platform or never happen.</li>
+    <li><b>No fee to the trader, no counterparty, no capital of yours.</b></li>
   </ul>
-  <div class="routed">Hedges mapped and routed through ParlayX where partnered.</div>
+  <div class="routed">When your book cannot fund a lock, the record says so. With your say-so the other side can be bought elsewhere, through ParlayX where partnered.</div>
   <div class="try">Tap <b>Lock in</b> on any row, or switch to <b>Venue view</b> &rarr;</div>
   ${videoBlock}
   <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">${recordLabel}</a><a href="/partner${brandQ}">Partner console</a>${opts.recordIsSlate ? "" : '<a href="/receipts">Receipts</a><a href="/board">Full board</a>'}</div>
@@ -908,7 +908,7 @@ ${cardBlock}<aside class="pitch">
   }
   function paintVenue(){
     var into=S.shell==='table'?el('tbody'):el('list');
-    var html='<div class="vnote"><b>What the trader does not see.</b> Every venue asked for the other side, which one got it and why, what the hedge cost, and your share of the spread. Your venue first when it is best, never when it is not.</div>';
+    var html='<div class="vnote"><b>What the trader does not see.</b> Every venue asked for the other side, what each would have paid, and where this lock filled. Your book first; elsewhere only when your book cannot fund it and you have said so.</div>';
     if(!S.vv){into.innerHTML=html+'<div class="empty">'+esc(S.vvErr||'asking the venues…')+'</div>';return}
     var rows=S.vv.rows||[];
     /* the venue's side of the rows the list shows: a sportsbook shell has no crypto rows, so none here either */

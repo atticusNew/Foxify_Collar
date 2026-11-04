@@ -362,11 +362,15 @@ games listed, past locks):
   Reconnect to show it"; the strip says "updated 12s ago" and the words move on their own). Then
   every open long position, laid out as a row: a club mark (the club's initials on a colour of its
   own), **Boston Celtics** to win, the opponent and tip-off ("vs Los Angeles Lakers · Wed 7:30 PM
-  ET"), **pays $50.00** on the right, and chips under the name (50 contracts · 30 sold · avg 42¢ ·
-  Lock in until 6:45 PM). The protectable ones carry the Lock in line ("Lose, and still get
-  $16.18"; when STX's book is thin it adds "· STX's book takes 20 of 30") and the tap opens the
-  panel (the two outcomes, the cash row **In your STX balance now**, the Shape control, the Lock in
-  pill, Details); the rest sit under **Not protectable right now** with a toned pill and plain
+  ET"), **pays $50.00** on the right, and the Lock in line. That is the whole closed row: club,
+  game, the one figure, the button. The chips (50 contracts · 30 sold · avg 42¢ · Lock in until
+  6:45 PM) sit at the top of the open panel, not under the header. The protectable ones carry the
+  Lock in line ("Lose, and still get $16.18"; when STX's book is thin it adds "· STX's book takes
+  20 of 30") and the tap opens the panel (the chips, the two outcomes, the cash row **In your STX
+  balance now**, the Shape control, the Lock in pill, Details; under Details, **Elsewhere** says
+  what the best of the other venues would have paid for the same protection, "priced for the
+  record, nothing sent; your position is on STX, so the sale fills there"); the rest sit under
+  **Not protectable right now** with a toned pill and plain
   words: **Too close** (inside the cutoff), **In play** (a red dot), **Parlay** (violet; "3-leg
   Combo", the picks under the name, and the tap opens the legs: each pick, its game and tip-off,
   and where it stands, Pending · Live · Hit · Missed · Void; "protection on the last open leg is
@@ -393,6 +397,23 @@ games listed, past locks):
   STX."; Privacy · How this works · Disconnect, the last because the header hides it at that
   width). On touch the three links keep a 44px target but their words sit on one centred
   baseline, in one colour; the public record is no longer linked from a member's page.
+
+  **In play** (`MEMBER_APP_IN_PLAY=1` on the service; off by default). With it on, a member may
+  lock while the game is on, and the pre-game cutoff no longer applies: the sale is their own limit
+  sell into STX's bids, so no one here carries the game's risk and there is nothing to cut off. The
+  row's header says **Live** (a red dot) in place of the tip-off; live rows sort first; the row
+  re-quotes every 5 s instead of every 60 s; the chip reads "Lock in while the game is on" (pre-game,
+  "Lock in before or during the game"); the open panel says "The game is on and this price moves.
+  STX holds in-play orders 5s before they can match; you never get less than the price shown, and if
+  the bid moves away first fewer or none sell and this row says so." The service reads the market's
+  `in_play_delay_sec` and lets the order rest that long on top of the usual wait, so the order
+  outlives STX's hold; the button's words during the hold are "In STX's 5s in-play hold…". A market
+  STX has paused (`trading: false`, or `status: suspended`) is refused **Paused** ("try again in a
+  few seconds"); a finished one (`closed`, `resulted`, `completed`) is **Final**. A nothing-filled
+  live lock says the bid moved away during the hold. The quote and the lock answer carry `live` and
+  `inPlayDelaySec`; `/healthz` carries `inPlay`. Off, a started game is still "pre-game only" and the
+  cutoff stands. Ask the venue two things before turning it on: that member OAuth tokens may trade
+  in play, and the delay it applies.
 - **Games** lists the games this service can protect that STX lists right now, by day (**Today**,
   **Tomorrow**, then the weekday; two days at a time, "Show 3 more games on later days" for the
   rest), with filters when there is more than one league and an **In your portfolio** filter when
