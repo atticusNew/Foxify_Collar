@@ -11,9 +11,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   PARTNER_WINNINGS_FEE,
+  REFERENCE_BOOK_IDS,
   REFERENCE_BOOK_WORDS,
   clubFor,
+  outcomeAsks,
+  outcomeBids,
+  outcomeGameFor,
+  outcomePriceMilli,
+  outcomeSizeMilli,
+  outcomeSource,
   pairClubs,
+  parseOutcomeCompetitionCodes,
   parseSignedLeagueCodes,
   partnerAskLevel,
   partnerSource,
@@ -25,6 +33,8 @@ import {
   signedSource,
   type ReferenceBookSource,
 } from "../src/eventCollar/crossVenue/venueBooks";
+import { MARKETS_USER_AGENT, MarketsClient, marketsSignerFromPem, marketsSigningMessage, type RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
+import { VENUE_COLUMNS } from "../src/eventCollar/crossVenue/shadowVenues";
 import { VenueApiError, VenueClient, signerFromPem, templateForLeague } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, payoutMultiple } from "../src/eventCollar/crossVenue/venuePlays";
 import { counterfactualsFor, type CounterfactualInputs } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
@@ -413,6 +423,311 @@ test("reference books: the partner source finds the event through the covered to
 // configuration: fail closed; a venue that throws is unreachable, never a failed quote
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// outcome_v1: one market per outcome; the opposing team's market's offers are the asks, best last on the wire
+// ---------------------------------------------------------------------------
+
+/** the pair's game as the venue lists it: two winner markets on one event, participants away-first, offers sorted best LAST */
+const OUTCOME_MARKETS: RawOutcomeMarket[] = [
+  {
+    market_id: "mk-bos",
+    event_id: "ev-1",
+    grouping_id: "ev-1:moneyline:full",
+    grouping_name: "Moneyline",
+    rules: "home_winner",
+    specifier: null,
+    status: "open",
+    trading: true,
+    event_start: "2026-09-20T17:10:00Z",
+    event_title: "NYY @ BOS",
+    competition: "MLB",
+    sport: "Baseball",
+    max_price: "1.0000",
+    position: "Boston Red Sox",
+    group_title: "Red Sox",
+    timestamp: "2026-09-20T10:59:58.000000Z",
+    participants: [
+      { name: "New York Yankees", role: "away", short_name: "Yankees", abbreviation: "NYY" },
+      { name: "Boston Red Sox", role: "home", short_name: "Red Sox", abbreviation: "BOS" },
+    ],
+    bids: [
+      { price: "0.3700", quantity: "100.00" },
+      { price: "0.3500", quantity: "40.00" },
+    ],
+    // best offer LAST, as the venue sorts both arrays by price descending
+    offers: [
+      { price: "0.3900", quantity: "500.00" },
+      { price: "0.3812", quantity: "300.00" },
+    ],
+  },
+  {
+    market_id: "mk-nyy",
+    event_id: "ev-1",
+    grouping_id: "ev-1:moneyline:full",
+    grouping_name: "Moneyline",
+    rules: "away_winner",
+    specifier: null,
+    status: "open",
+    trading: true,
+    event_start: "2026-09-20T17:10:00Z",
+    event_title: "NYY @ BOS",
+    competition: "MLB",
+    max_price: "1.0000",
+    position: "New York Yankees",
+    participants: [
+      { name: "New York Yankees", role: "away", abbreviation: "NYY" },
+      { name: "Boston Red Sox", role: "home", abbreviation: "BOS" },
+    ],
+    bids: [{ price: "0.6000", quantity: "80.00" }],
+    offers: [{ price: "0.6300", quantity: "20.00" }],
+  },
+  // the same game's spread ladder shares the event, not the moneyline set: never a winner market
+  { market_id: "mk-spread", event_id: "ev-1", grouping_id: "ev-1:spread:full", rules: "spread", specifier: "-1.5", status: "open", trading: true, event_start: "2026-09-20T17:10:00Z", max_price: "1.0000", offers: [{ price: "0.5000", quantity: "10.00" }] },
+  // another game
+  {
+    market_id: "mk-sf",
+    event_id: "ev-2",
+    grouping_id: "ev-2:moneyline:full",
+    rules: "home_winner",
+    status: "open",
+    trading: true,
+    event_start: "2026-09-20T20:00:00Z",
+    max_price: "1.0000",
+    participants: [
+      { name: "Los Angeles Dodgers", role: "away", abbreviation: "LAD" },
+      { name: "San Francisco Giants", role: "home", abbreviation: "SF" },
+    ],
+    offers: [{ price: "0.5000", quantity: "10.00" }],
+  },
+];
+
+/** the venue as it answers: every read needs the three signed headers or a bearer and a User-Agent; markets paged under {cursor, markets} */
+function outcomeFakeVenue(markets: RawOutcomeMarket[], opts: { auth?: "key" | "app"; pageSize?: number; tokenFails?: boolean; rateLimit?: boolean } = {}) {
+  const calls: Array<{ method: string; path: string; headers: Record<string, string>; body?: string }> = [];
+  let tokensIssued = 0;
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const headers = Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v]));
+    calls.push({ method: init?.method ?? "GET", path: url.pathname + url.search, headers, ...(typeof init?.body === "string" ? { body: init.body } : {}) });
+    if (!headers["user-agent"]) return json({ error: "user agent required" }, 403);
+    if (url.pathname === "/oauth/token") {
+      if (opts.tokenFails) return json({ error: "invalid_client" }, 401);
+      if (!headers.authorization?.startsWith("Basic ")) return json({ error: "invalid_client" }, 401);
+      tokensIssued++;
+      return json({ access_token: `stxapp_at_${tokensIssued}`, token_type: "bearer", expires_in: 3600, scope: "market_data" });
+    }
+    const signed = headers["x-stx-access-key"] && headers["x-stx-access-timestamp"] && headers["x-stx-access-signature"];
+    const bearer = headers.authorization?.startsWith("Bearer stxapp_at_");
+    if (!signed && !bearer) return json({ error: "Missing or invalid API key credentials" }, 401);
+    if (opts.rateLimit) return json({ error: "slow down" }, 429);
+    if (url.pathname !== "/api/v1/markets") return json({ error: "not found" }, 404);
+    const ids = url.searchParams.get("market_ids");
+    if (ids) return json({ cursor: null, markets: markets.filter((m) => ids.split(",").includes(m.market_id)) });
+    const comp = url.searchParams.get("competitions");
+    const list = markets.filter((m) => !comp || (m.competition ?? "MLB").toUpperCase() === comp.toUpperCase());
+    const size = opts.pageSize ?? 200;
+    const from = Number(url.searchParams.get("cursor") ?? 0);
+    const page = list.slice(from, from + size);
+    return json({ cursor: from + size < list.length ? String(from + size) : null, markets: page });
+  };
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+  const client = new MarketsClient({
+    host: "https://venue-d.test",
+    ...(opts.auth === "app" ? { app: { clientId: "cid", clientSecret: "csecret" } } : { signer: marketsSignerFromPem("kid-d", pem) }),
+    fetchImpl,
+  });
+  return { client, calls, tokensIssued: () => tokensIssued };
+}
+
+test("reference books: the outcome dialect's signing is the venue's test vector byte for byte (ms timestamp + METHOD + path, plain Ed25519, standard base64)", () => {
+  // the vector the venue publishes for checking an implementation; the key exists only for this
+  const pem = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f\n-----END PRIVATE KEY-----";
+  const signer = marketsSignerFromPem("kid", pem);
+  assert.equal(marketsSigningMessage("1700000000000", "post", "/api/v1/me"), "1700000000000POST/api/v1/me");
+  assert.equal(signer.sign("1700000000000POST/api/v1/me"), "ZFJ0qEoHt8TLKbGP+UhJ77BNy/Cdf7+oqbQzwynaM5XM0Yphmq5t1YWumC+5pLaDk/xY9EG3h4brxVdodYloCA==");
+  // the escaped-newline form an env var carries loads the same key
+  assert.equal(marketsSignerFromPem("kid", pem.replace(/\n/g, "\\n")).sign("x"), signer.sign("x"));
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  assert.throws(() => marketsSignerFromPem("kid", privateKey.export({ type: "pkcs8", format: "pem" }) as string), /Ed25519/);
+  assert.throws(() => new MarketsClient({ host: "https://x.test" }), /signed key or an app client/);
+});
+
+test("reference books: outcome dialect prices scale by the market's max_price into milli per $1, asks rounded up, bids down, sizes in contracts x max_price", () => {
+  assert.equal(outcomePriceMilli("0.3812", 1, true), 382, "an ask rounds up against the credit");
+  assert.equal(outcomePriceMilli("0.3812", 1, false), 381, "a bid rounds down");
+  assert.equal(outcomePriceMilli("0.3900", 1, true), 390, "an exact level is itself, not the next one");
+  assert.equal(outcomePriceMilli("0.5700", 1, false), 570);
+  assert.equal(outcomePriceMilli("38.12", 100, true), 382, "a $100 contract's $38.12 is the same 38.2% of payout");
+  assert.equal(outcomePriceMilli("", 1, true), -1);
+  assert.equal(outcomePriceMilli(null, 1, true), -1);
+  assert.equal(outcomePriceMilli("abc", 1, true), -1);
+  assert.equal(outcomeSizeMilli("300.00", 1), 300_000, "300 $1 contracts are 300 shares");
+  assert.equal(outcomeSizeMilli("3.00", 100), 300_000, "3 contracts paying $100 are 300 of our $1 shares");
+  assert.equal(outcomeSizeMilli("0", 1), 0);
+  assert.equal(outcomeSizeMilli(undefined, 1), 0);
+  const asks = outcomeAsks(OUTCOME_MARKETS[0]);
+  assert.deepEqual(asks, [
+    { priceMilli: 390, sizeMilli: 500_000 },
+    { priceMilli: 382, sizeMilli: 300_000 },
+  ], "offers are taken in the venue's order; the book shaper sorts them");
+  assert.deepEqual(outcomeBids(OUTCOME_MARKETS[0]), [
+    { priceMilli: 370, sizeMilli: 100_000 },
+    { priceMilli: 350, sizeMilli: 40_000 },
+  ]);
+  // a level at or past the payout, or with no size, is dropped
+  const odd: RawOutcomeMarket = { market_id: "x", max_price: "1.0000", offers: [{ price: "1.0000", quantity: "5" }, { price: "0.0000", quantity: "5" }, { price: "0.5000", quantity: "0" }, { price: "0.4000", quantity: "2" }] };
+  assert.deepEqual(outcomeAsks(odd), [{ priceMilli: 400, sizeMilli: 2000 }]);
+  assert.deepEqual(outcomeAsks({ market_id: "y", offers: null }), []);
+});
+
+test("reference books: the outcome dialect finds the game by its participants and start, takes the OPPOSING team's market, and ignores the spread ladder on the same event", () => {
+  const clubs = pairClubs(pair())!;
+  const game = outcomeGameFor(OUTCOME_MARKETS, pair(), clubs);
+  assert.ok(game);
+  assert.equal(game.eventId, "ev-1");
+  assert.equal(game.ours.market_id, "mk-nyy", "our side is the Yankees, the away market");
+  assert.equal(game.opposing.market_id, "mk-bos", "the hedge instrument is the Red Sox market");
+  // a game the venue does not list
+  const other = { ...pair(), kalshi: { ...pair().kalshi, ticker: "KXMLBGAME-26SEP20HOUSEA-HOU" }, pm: { ...pair().pm, outcomes: ["Astros", "Mariners"] } };
+  assert.equal(outcomeGameFor(OUTCOME_MARKETS, other, pairClubs(other)!), null);
+  // same clubs on another day is another game
+  assert.equal(outcomeGameFor(OUTCOME_MARKETS, { ...pair(), gameStartTime: "2026-09-10T17:00:00.000Z" }, clubs), null);
+  // the pair the other way round: ours is Boston, the opposing market is the Yankees'
+  const flipped = { ...pair(), kalshi: { ...pair().kalshi, ticker: "KXMLBGAME-26SEP20NYYBOS-BOS" }, pmYesOutcomeIndex: 1, pmNoOutcomeIndex: 0 };
+  const g2 = outcomeGameFor(OUTCOME_MARKETS, flipped, pairClubs(flipped)!);
+  assert.equal(g2?.opposing.market_id, "mk-nyy");
+  // no participants on the payload: the two winner markets' own side labels decide
+  const unnamed = OUTCOME_MARKETS.slice(0, 2).map((m) => ({ ...m, participants: null }));
+  assert.equal(outcomeGameFor(unnamed, pair(), clubs)?.opposing.market_id, "mk-bos");
+  // a winner market without its grouping id is still a winner market; one in another set is not
+  assert.equal(outcomeGameFor(OUTCOME_MARKETS.slice(0, 2).map((m) => ({ ...m, grouping_id: null })), pair(), clubs)?.opposing.market_id, "mk-bos");
+  assert.equal(outcomeGameFor(OUTCOME_MARKETS.slice(0, 2).map((m) => ({ ...m, grouping_id: "ev-1:moneyline:r1" })), pair(), clubs), null, "a first-period winner is not the game");
+});
+
+test("reference books: the outcome source signs every read with the three headers and a User-Agent, pages the competition, caches it, and carries the market, event and both outcome ids", async () => {
+  const { client, calls } = outcomeFakeVenue(OUTCOME_MARKETS, { pageSize: 2 });
+  const src = outcomeSource(client);
+  const ref = await src.read(pair(), NOW);
+  assert.equal(ref.id, "outcome_v1");
+  assert.ok(ref.book, JSON.stringify(ref));
+  assert.deepEqual(ref.book.asks, [
+    { priceMilli: 382, sizeMilli: 300_000 },
+    { priceMilli: 390, sizeMilli: 500_000 },
+  ], "the opposing market's offers, best first once shaped");
+  assert.deepEqual(ref.book.bids, [
+    { priceMilli: 370, sizeMilli: 100_000 },
+    { priceMilli: 350, sizeMilli: 40_000 },
+  ]);
+  assert.equal(ref.book.tokenId, "outcome_v1:mk-bos");
+  assert.deepEqual(ref.listing, {
+    marketId: "mk-bos",
+    key: "ev-1",
+    snapshotAtIso: "2026-09-20T10:59:58.000000Z",
+    outcomes: { ours: { outcomeId: "mk-nyy", name: "New York Yankees" }, opposing: { outcomeId: "mk-bos", name: "Boston Red Sox" }, fee: { coefficient: 0, folded: false }, marketStatus: "open" },
+  });
+  assert.deepEqual(
+    calls.map((c) => c.path),
+    ["/api/v1/markets?competitions=MLB&status=open,pre_open&limit=200", "/api/v1/markets?competitions=MLB&status=open,pre_open&limit=200&cursor=2"],
+    "two pages of two, then the cursor is null",
+  );
+  for (const c of calls) {
+    assert.equal(c.headers["x-stx-access-key"], "kid-d");
+    assert.match(c.headers["x-stx-access-timestamp"], /^\d{13}$/);
+    assert.ok(c.headers["x-stx-access-signature"]);
+    assert.equal(c.headers["user-agent"], MARKETS_USER_AGENT);
+    assert.equal(c.headers.authorization, undefined);
+  }
+  // the competition list is cached for the window
+  await src.read(pair(), NOW);
+  assert.equal(calls.length, 2);
+  // the other game is not on the venue
+  const other = { ...pair(), kalshi: { ...pair().kalshi, ticker: "KXMLBGAME-26SEP20HOUSEA-HOU" }, pm: { ...pair().pm, outcomes: ["Astros", "Mariners"] } };
+  const miss = await src.read(other, NOW);
+  assert.ok(!miss.book && miss.reason === "not_listed");
+  // a league with no template is not read at all
+  const nope = await src.read({ ...pair(), league: "cricket" }, NOW);
+  assert.ok(!nope.book && nope.reason === "league_not_covered");
+  assert.equal(calls.length, 2, "neither miss asked the venue again");
+});
+
+test("reference books: a suspended opposing market is recorded as the state with its listing, never as a price; pre_open keeps its book with the status word", async () => {
+  const halted = OUTCOME_MARKETS.map((m) => (m.market_id === "mk-bos" ? { ...m, trading: false } : m));
+  const ref = await outcomeSource(outcomeFakeVenue(halted).client).read(pair(), NOW);
+  assert.ok(!ref.book && ref.reason === "market_suspended");
+  assert.equal(ref.listing?.marketId, "mk-bos", "the listing rides on the refusal so the cell can be asked about by id");
+  assert.equal(ref.listing?.outcomes?.marketStatus, "suspended");
+  const early = OUTCOME_MARKETS.map((m) => (m.market_id === "mk-bos" ? { ...m, status: "pre_open" } : m));
+  const ref2 = await outcomeSource(outcomeFakeVenue(early).client).read(pair(), NOW);
+  assert.ok(ref2.book && ref2.book.asks.length === 2);
+  assert.equal(ref2.listing?.outcomes?.marketStatus, "pre_open");
+});
+
+test("reference books: with an app client the outcome dialect fetches one client-credentials token with the secret as HTTP Basic, reuses it, and replaces it once on a 401", async () => {
+  const { client, calls, tokensIssued } = outcomeFakeVenue(OUTCOME_MARKETS, { auth: "app" });
+  assert.equal(client.authWord, "app token");
+  const src = outcomeSource(client);
+  const ref = await src.read(pair(), NOW);
+  assert.ok(ref.book);
+  assert.equal(calls[0].path, "/oauth/token");
+  assert.equal(calls[0].method, "POST");
+  assert.equal(calls[0].headers.authorization, `Basic ${Buffer.from("cid:csecret").toString("base64")}`);
+  assert.equal(calls[0].body, "grant_type=client_credentials&scope=market_data");
+  assert.equal(calls[1].headers.authorization, "Bearer stxapp_at_1");
+  assert.equal(calls[1].headers["x-stx-access-key"], undefined, "nothing is signed on the app path");
+  assert.equal(tokensIssued(), 1);
+  // another competition's read reuses the token
+  const nba = { ...pair(), league: "nba", kalshi: { ...pair().kalshi, ticker: "KXNBAGAME-26SEP20BOSLAL-BOS" }, pm: { ...pair().pm, outcomes: ["Celtics", "Lakers"] } };
+  await src.read(nba, NOW);
+  assert.equal(tokensIssued(), 1);
+  assert.equal(calls.at(-1)?.path, "/api/v1/markets?competitions=NBA&status=open,pre_open&limit=200");
+  // a token the venue stops honouring (revoked; its hour over by the venue's clock) is replaced once, and the read goes through
+  const stale = outcomeFakeVenue(OUTCOME_MARKETS, { auth: "app" });
+  (stale.client as unknown as { token: unknown }).token = { value: "expired", until: Date.now() + 60_000 };
+  await stale.client.listCompetitionMarkets("NHL");
+  const paths = stale.calls.map((c) => `${c.method} ${c.path.split("?")[0]} ${c.headers.authorization ?? ""}`);
+  assert.deepEqual(paths, ["GET /api/v1/markets Bearer expired", "POST /oauth/token Basic Y2lkOmNzZWNyZXQ=", "GET /api/v1/markets Bearer stxapp_at_1"]);
+  // the token endpoint refusing is a venue code, never a crash
+  const refused = outcomeFakeVenue(OUTCOME_MARKETS, { auth: "app", tokenFails: true });
+  const refs = await readReferenceBooks([outcomeSource(refused.client)], pair(), NOW);
+  assert.equal(refs[0].reason, "venue_invalid_client");
+  const limited = outcomeFakeVenue(OUTCOME_MARKETS, { rateLimit: true });
+  assert.equal((await readReferenceBooks([outcomeSource(limited.client)], pair(), NOW))[0].reason, "venue_rate_limit_exceeded");
+});
+
+test("reference books: the outcome source's catalog probe tallies the competition's markets, winner markets and our clubs' games, and says how the venue was read", async () => {
+  const { client } = outcomeFakeVenue(OUTCOME_MARKETS);
+  const probe = await outcomeSource(client, { competitionCodes: { nhl: "NHL_X" } }).catalog!("mlb");
+  assert.equal(probe.id, "outcome_v1");
+  assert.equal(probe.queries.length, 1);
+  const q = probe.queries[0];
+  assert.equal(q.query, "competitions=MLB&status=open,pre_open&limit=200");
+  assert.equal(q.count, 4);
+  assert.equal(q.winners, 3, "two moneyline sides on one game, one on another; the spread is not a winner");
+  assert.equal(q.ourClubs, 3, "every winner market names two clubs of our template");
+  assert.deepEqual(q.leaguesSeen, { MLB: 2 }, "tallied from the markets that carry a competition word");
+  assert.equal(q.sample[0].marketType, "home_winner");
+  assert.deepEqual(q.sample[0].outcomes, ["New York Yankees", "Boston Red Sox"]);
+  assert.equal(q.sample[0].startsIso, "2026-09-20T17:10:00.000Z");
+  assert.match(probe.note ?? "", /signed key/);
+  const aliased = await outcomeSource(client, { competitionCodes: { mlb: "MLB_REG" } }).catalog!("mlb");
+  assert.equal(aliased.queries[0].query, "competitions=MLB_REG&status=open,pre_open&limit=200");
+  assert.equal(aliased.queries[0].count, 0, "the venue files nothing under that code");
+  const { codes, notes } = parseOutcomeCompetitionCodes("nba=NBA, nhl=HOCKEY, bad, cricket=IPL");
+  assert.deepEqual(codes, { nba: "NBA", nhl: "HOCKEY" });
+  assert.equal(notes.length, 2);
+  assert.match(notes[0], /reference book D.*not league=CODE/);
+  assert.match(notes[1], /reference book D.*not one we cover/);
+});
+
+test("reference books: the outcome dialect has a public word, a venues column, and never a venue name on the public side", () => {
+  assert.ok(REFERENCE_BOOK_IDS.includes("outcome_v1"));
+  assert.equal(REFERENCE_BOOK_WORDS.outcome_v1, "reference book D");
+  const col = VENUE_COLUMNS.find((c) => c.id === "outcome_v1");
+  assert.deepEqual(col, { id: "outcome_v1", name: "STX", via: "direct", kind: "reference" }, "the operator page names the venue; the record does not");
+  for (const word of Object.values(REFERENCE_BOOK_WORDS)) assert.doesNotMatch(word, /stx|novig|prophet|kalshi/i);
+});
+
 test("reference books: nothing configured reads nothing; a half-set venue is a note, not a guess; both set, both read", () => {
   assert.deepEqual(referenceSourcesFromEnv({}), { sources: [], notes: [] });
   // the first venue's catalog is public: the host alone is a working reference
@@ -441,6 +756,34 @@ test("reference books: nothing configured reads nothing; a half-set venue is a n
   const badKey = referenceSourcesFromEnv({ REFERENCE_BOOK_SIGNED_HOST: "https://a.test", REFERENCE_BOOK_SIGNED_KEY_ID: "kid", REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM: "not a key" });
   assert.equal(badKey.sources.length, 0);
   assert.match(badKey.notes[0], /key unusable/);
+
+  // the third dialect publishes nothing unauthenticated: the host alone is a note, not a public read
+  const dHostOnly = referenceSourcesFromEnv({ REFERENCE_BOOK_OUTCOME_HOST: "https://d.test/" });
+  assert.equal(dHostOnly.sources.length, 0);
+  assert.match(dHostOnly.notes[0], /reference book D: set the host with a key id and private key, or with an app client id and secret/);
+  const dKey = referenceSourcesFromEnv({ REFERENCE_BOOK_OUTCOME_HOST: "https://d.test/", REFERENCE_BOOK_OUTCOME_KEY_ID: "kid", REFERENCE_BOOK_OUTCOME_PRIVATE_KEY_PEM: pem });
+  assert.deepEqual(dKey.sources.map((s) => s.id), ["outcome_v1"]);
+  assert.deepEqual(dKey.notes, []);
+  const dApp = referenceSourcesFromEnv({ REFERENCE_BOOK_OUTCOME_HOST: "https://d.test", REFERENCE_BOOK_OUTCOME_CLIENT_ID: "cid", REFERENCE_BOOK_OUTCOME_CLIENT_SECRET: "verysecret", REFERENCE_BOOK_OUTCOME_COMPETITIONS: "nba=NBA" });
+  assert.deepEqual(dApp.sources.map((s) => s.id), ["outcome_v1"]);
+  assert.match(dApp.notes[0], /app token/);
+  for (const n of dApp.notes) assert.doesNotMatch(n, /verysecret|cid/, "a note never carries a credential");
+  const dHalfApp = referenceSourcesFromEnv({ REFERENCE_BOOK_OUTCOME_HOST: "https://d.test", REFERENCE_BOOK_OUTCOME_CLIENT_ID: "cid" });
+  assert.equal(dHalfApp.sources.length, 0);
+  const dBadKey = referenceSourcesFromEnv({ REFERENCE_BOOK_OUTCOME_HOST: "https://d.test", REFERENCE_BOOK_OUTCOME_KEY_ID: "kid", REFERENCE_BOOK_OUTCOME_PRIVATE_KEY_PEM: "not a key" });
+  assert.equal(dBadKey.sources.length, 0);
+  assert.match(dBadKey.notes[0], /reference book D: key unusable/);
+  // all three on at once
+  const all = referenceSourcesFromEnv({
+    REFERENCE_BOOK_SIGNED_HOST: "https://a.test/",
+    REFERENCE_BOOK_BEARER_HOST: "https://b.test/partner",
+    REFERENCE_BOOK_BEARER_ACCESS_KEY: "ak",
+    REFERENCE_BOOK_BEARER_SECRET_KEY: "sk",
+    REFERENCE_BOOK_OUTCOME_HOST: "https://d.test",
+    REFERENCE_BOOK_OUTCOME_KEY_ID: "kid",
+    REFERENCE_BOOK_OUTCOME_PRIVATE_KEY_PEM: pem,
+  });
+  assert.deepEqual(all.sources.map((s) => s.id), ["signed_v3", "partner_mm", "outcome_v1"]);
 });
 
 test("reference books: readReferenceBooks runs every source and turns a throw into an unreachable reason", async () => {

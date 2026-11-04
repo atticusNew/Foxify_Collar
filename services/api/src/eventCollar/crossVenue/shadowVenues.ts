@@ -33,6 +33,8 @@ export const VENUE_COLUMNS: ReadonlyArray<{ id: VenueColumnId; name: string; via
   { id: "aggregated_mm", name: "ProphetX", via: "feed", kind: "reference" },
   { id: "partner_mm", name: "ProphetX", via: "direct", kind: "reference" },
   { id: "signed_v3", name: "Novig", via: "direct", kind: "reference" },
+  // the one-market-per-outcome dialect (venueMarkets.ts): read on its demo exchange until its US production host opens
+  { id: "outcome_v1", name: "STX", via: "direct", kind: "reference" },
   { id: "aggregated_other", name: "another venue", via: "feed", kind: "reference" },
 ];
 
