@@ -24,6 +24,13 @@
  *     winnings at settlement, so a winning share pays 1 - 0.02 x (1 - p) rather than $1; the
  *     price per effective $1 of payout is p / (1 - 0.02 x (1 - p)) and the size shrinks by the
  *     same factor. Same ask-book shape out the other end.
+ *   - outcome_v1: one market per OUTCOME (venueMarkets.ts). A moneyline is two markets, home and
+ *     away, sharing a grouping id; each has its own book of dollar-string levels below the
+ *     market's `max_price`, offers sorted with the best LAST. The opposing team's market's offers
+ *     are the asks, scaled by `max_price` into our milli-per-$1 units, with size in contracts x
+ *     `max_price` dollars. The venue's fee schedule is per account and not on the market, so the
+ *     book is recorded gross of it (fee coefficient 0, not folded); the operator reads that off
+ *     the listing. Read with an Ed25519 key (ms timestamp + method + path) or an app token.
  *
  * Credentials: REFERENCE_BOOK_SIGNED_HOST alone reads the first venue's PUBLIC catalog and books
  * (it publishes both unsigned, which is all a reference needs); add REFERENCE_BOOK_SIGNED_KEY_ID +
@@ -38,9 +45,14 @@
  * Outcome names on the first venue are team codes ("PHI", "KC"); the templates' code tables match
  * them, and every code the venue listed for the covered leagues was checked against them. A venue that does not list the game, cannot be reached, or
  * answers in a shape this module does not recognise is recorded as unlisted, never guessed.
+ * REFERENCE_BOOK_OUTCOME_HOST with either REFERENCE_BOOK_OUTCOME_KEY_ID + REFERENCE_BOOK_OUTCOME_PRIVATE_KEY_PEM
+ * (a signed, read-only key) or REFERENCE_BOOK_OUTCOME_CLIENT_ID + REFERENCE_BOOK_OUTCOME_CLIENT_SECRET
+ * (an app registered for market data) for the third; it publishes nothing unauthenticated, so
+ * the host alone is a note. REFERENCE_BOOK_OUTCOME_COMPETITIONS ("nba=NBA,ncaaf=NCAAF") names its
+ * competition code where it differs from our league code in upper case.
  *
  * Nothing here names a venue in anything the record publishes: the ids are the dialects, the
- * public words are "reference book A" and "reference book B".
+ * public words are "reference book A", "reference book B" and "reference book D".
  */
 
 import type { NovigHedgeOn } from "./crossVenuePricer";
@@ -48,10 +60,11 @@ import type { LeagueTemplate } from "./resolutionWhitelist";
 import type { MatchedPair, PmBook, PmBookLevel } from "./types";
 import { decimalToMilli } from "./polymarketPublic";
 import { PlaysApiError, PlaysClient, payoutMultiple, type RawMarket, type RawSelection, type RawSportEvent } from "./venuePlays";
+import { MarketsApiError, MarketsClient, marketsSignerFromPem, type RawOutcomeMarket, type RawMarketLevel, type RawMarketParticipant } from "./venueMarkets";
 import { VenueApiError, VenueClient, clubMatches, signerFromPem, templateForLeague, type RawVenueBook, type RawVenueMarket } from "./venuePositions";
 
 /** Stable ledger keys. The dialect, not the venue. */
-export const REFERENCE_BOOK_IDS = ["signed_v3", "partner_mm", "aggregated_mm", "aggregated_other"] as const;
+export const REFERENCE_BOOK_IDS = ["signed_v3", "partner_mm", "aggregated_mm", "aggregated_other", "outcome_v1"] as const;
 export type ReferenceBookId = (typeof REFERENCE_BOOK_IDS)[number];
 
 /** What the public page and the operator report call each reference. Never the venue. */
@@ -62,6 +75,8 @@ export const REFERENCE_BOOK_WORDS: Record<ReferenceBookId, string> = {
   aggregated_mm: "reference book B (via the aggregator)",
   // any further venue the aggregator aligns that this service has no direct read for
   aggregated_other: "reference book C (via the aggregator)",
+  // the one-market-per-outcome dialect (venueMarkets.ts), read directly
+  outcome_v1: "reference book D",
 };
 
 /**
@@ -90,7 +105,9 @@ export interface ReferenceListing {
   /**
    * The two outcomes of the venue's market, ours (the holder's side) and the opposing one (what a
    * hedge there buys), and the fee rule the book was folded under: what a hedge ROUTE on this
-   * venue needs to send an order (novigOrders.ts). Present on the signed dialect only.
+   * venue needs to send an order (novigOrders.ts). Present on the dialects whose catalog carries
+   * an id per outcome: the signed one, and the one-market-per-outcome one (where each outcome id
+   * is that outcome's own market id).
    */
   outcomes?: ReferenceOutcomes;
 }
@@ -98,7 +115,7 @@ export interface ReferenceListing {
 export interface ReferenceOutcomes {
   ours: { outcomeId: string; name: string };
   opposing: { outcomeId: string; name: string };
-  /** the fee coefficient and whether the book's levels carry it (pre-game, per the market's rule) */
+  /** the fee coefficient and whether the book's levels carry it (pre-game, per the market's rule); 0 and not folded when the venue's fee is per account and not on the market */
   fee: { coefficient: number; folded: boolean };
   /** the market's status word as the catalog gave it, when it did */
   marketStatus?: string;
@@ -531,6 +548,236 @@ export function partnerSource(client: PlaysClient): ReferenceBookSource {
 }
 
 // ---------------------------------------------------------------------------
+// outcome_v1: one market per outcome; the opposing team's market IS the hedge instrument
+// ---------------------------------------------------------------------------
+
+/** our league code (lower case) -> the venue's competition code, where it differs */
+export type OutcomeCompetitionCodes = Record<string, string>;
+
+/** The competition code the venue's market filter takes for one of our leagues. */
+export function outcomeCompetitionCode(league: string, codes: OutcomeCompetitionCodes = {}): string {
+  return codes[league.toLowerCase()] ?? league.toUpperCase();
+}
+
+/** REFERENCE_BOOK_OUTCOME_COMPETITIONS as "nba=NBA,ncaaf=NCAAF": entries without both sides, or naming a league no template covers, are reported and dropped. */
+export function parseOutcomeCompetitionCodes(raw: string | undefined): { codes: OutcomeCompetitionCodes; notes: string[] } {
+  const codes: OutcomeCompetitionCodes = {};
+  const notes: string[] = [];
+  for (const entry of (raw ?? "").split(/[,\s]+/).filter(Boolean)) {
+    const eq = entry.indexOf("=");
+    const league = eq > 0 ? entry.slice(0, eq).trim().toLowerCase() : "";
+    const code = eq > 0 ? entry.slice(eq + 1).trim() : "";
+    if (!league || !code) notes.push(`reference book D: competition entry "${entry}" is not league=CODE; dropped`);
+    else if (!templateForLeague(league)) notes.push(`reference book D: league "${league}" is not one we cover; dropped`);
+    else codes[league] = code;
+  }
+  return { codes, notes };
+}
+
+/** The market's settlement value in dollars; 1 when the field is missing or unreadable (the venue's usual value). */
+export function outcomeMaxPrice(m: Pick<RawOutcomeMarket, "max_price">): number {
+  const v = Number(m.max_price);
+  return Number.isFinite(v) && v > 0 ? v : 1;
+}
+
+/**
+ * A dollar-string price on a market paying `maxPrice` as milli per $1 of payout: price / max x
+ * 1000, rounded up for an ask (against the credit) and down for a bid. -1 when unreadable.
+ */
+export function outcomePriceMilli(price: string | number | null | undefined, maxPrice: number, roundUp: boolean): number {
+  const p = Number(price);
+  if (price === null || price === undefined || String(price).trim() === "" || !Number.isFinite(p) || p < 0) return -1;
+  const milli = (p / maxPrice) * 1000;
+  // a value a hair off an integer from binary decimals is that integer, not the next one
+  const snapped = Math.abs(milli - Math.round(milli)) < 1e-6 ? Math.round(milli) : milli;
+  return roundUp ? Math.ceil(snapped) : Math.floor(snapped);
+}
+
+/** Contracts on a market paying `maxPrice` as milli of our $1 shares: quantity x max x 1000, rounded down. */
+export function outcomeSizeMilli(quantity: string | number | null | undefined, maxPrice: number): number {
+  const q = Number(quantity);
+  if (quantity === null || quantity === undefined || !Number.isFinite(q) || q <= 0) return 0;
+  return Math.floor(q * maxPrice * 1000 + 1e-6);
+}
+
+const outcomeLevels = (levels: RawMarketLevel[] | null | undefined, maxPrice: number, roundUp: boolean): PmBookLevel[] => {
+  const out: PmBookLevel[] = [];
+  for (const l of levels ?? []) {
+    if (!l || typeof l !== "object") continue;
+    const priceMilli = outcomePriceMilli(l.price, maxPrice, roundUp);
+    const sizeMilli = outcomeSizeMilli(l.quantity, maxPrice);
+    if (priceMilli <= 0 || priceMilli >= 1000 || sizeMilli <= 0) continue;
+    out.push({ priceMilli, sizeMilli });
+  }
+  return out;
+};
+
+/** The opposing market's offers as asks per $1 of payout, in any order (asksBook sorts). The venue lists them best LAST; nothing here depends on that. */
+export const outcomeAsks = (m: RawOutcomeMarket): PmBookLevel[] => outcomeLevels(m.offers, outcomeMaxPrice(m), true);
+
+/** The opposing market's bids, best first: what a hedge there could sell back into. */
+export const outcomeBids = (m: RawOutcomeMarket): PmBookLevel[] => outcomeLevels(m.bids, outcomeMaxPrice(m), false).sort((a, b) => b.priceMilli - a.priceMilli);
+
+/** full-game two-way winner markets only: the rule word for each side of the fixture */
+const WINNER_RULES: Record<string, "home" | "away"> = { home_winner: "home", away_winner: "away" };
+
+const isOutcomeWinner = (m: RawOutcomeMarket): boolean => {
+  const rules = (m.rules ?? "").toLowerCase();
+  if (!(rules in WINNER_RULES)) return false;
+  const g = m.grouping_id ?? "";
+  return g === "" || /:moneyline:full$/i.test(g);
+};
+
+const participantNames = (p: RawMarketParticipant): string[] => [p.name, p.short_name, p.abbreviation].filter((n): n is string => typeof n === "string" && n.trim() !== "");
+
+/** Which side of the fixture a club plays, from the market's participants; null when they do not name it. */
+export function outcomeSideOf(template: LeagueTemplate, m: RawOutcomeMarket, club: string): "home" | "away" | null {
+  for (const p of m.participants ?? []) {
+    const role = (p?.role ?? "").toLowerCase();
+    if (role !== "home" && role !== "away") continue;
+    // the abbreviation is a code ("DUKE"); clubNamed takes codes and names alike
+    if (participantNames(p).some((n) => clubNamed(template, club, n))) return role;
+  }
+  return null;
+}
+
+/** The side label of a winner market as the venue writes it: the position, else the group title, else the rule word. */
+const outcomeSideName = (m: RawOutcomeMarket): string => [m.position, m.group_title].find((s): s is string => typeof s === "string" && s.trim() !== "") ?? (m.rules ?? "");
+
+export interface OutcomeGame {
+  eventId: string;
+  ours: RawOutcomeMarket;
+  opposing: RawOutcomeMarket;
+}
+
+/**
+ * The pair's game among a competition's markets: the event whose participants are our two clubs
+ * on different sides and whose start is this game's, with the winner market of each side. When a
+ * market carries no participants, the two winner markets' own side labels (position / group
+ * title) are matched instead. Null when the venue does not list it.
+ */
+export function outcomeGameFor(markets: RawOutcomeMarket[], pair: MatchedPair, clubs: { template: LeagueTemplate; ours: string; opposing: string }): OutcomeGame | null {
+  const byEvent = new Map<string, RawOutcomeMarket[]>();
+  for (const m of markets) {
+    if (!isOutcomeWinner(m)) continue;
+    const eventId = m.event_id ?? m.grouping_id?.split(":")[0] ?? "";
+    if (!eventId) continue;
+    const list = byEvent.get(eventId) ?? [];
+    list.push(m);
+    byEvent.set(eventId, list);
+  }
+  for (const [eventId, list] of byEvent) {
+    const startMs = list.map((m) => (m.event_start ? Date.parse(m.event_start) : NaN)).find((t) => Number.isFinite(t)) ?? 0;
+    if (!sameGame(startMs, pair.gameStartTime)) continue;
+    const any = list[0];
+    let ourSide = outcomeSideOf(clubs.template, any, clubs.ours);
+    let oppSide = outcomeSideOf(clubs.template, any, clubs.opposing);
+    let ours: RawOutcomeMarket | undefined;
+    let opposing: RawOutcomeMarket | undefined;
+    if (ourSide && oppSide && ourSide !== oppSide) {
+      ours = list.find((m) => WINNER_RULES[(m.rules ?? "").toLowerCase()] === ourSide);
+      opposing = list.find((m) => WINNER_RULES[(m.rules ?? "").toLowerCase()] === oppSide);
+    } else if (!(any.participants ?? []).length) {
+      ours = list.find((m) => clubNamed(clubs.template, clubs.ours, outcomeSideName(m)));
+      opposing = list.find((m) => clubNamed(clubs.template, clubs.opposing, outcomeSideName(m)));
+      ourSide = ours ? WINNER_RULES[(ours.rules ?? "").toLowerCase()] : null;
+      oppSide = opposing ? WINNER_RULES[(opposing.rules ?? "").toLowerCase()] : null;
+      if (ourSide && ourSide === oppSide) continue;
+    }
+    if (ours && opposing && ours.market_id !== opposing.market_id) return { eventId, ours, opposing };
+  }
+  return null;
+}
+
+export interface OutcomeSourceOptions {
+  competitionCodes?: OutcomeCompetitionCodes;
+}
+
+export function outcomeSource(client: MarketsClient, opts: OutcomeSourceOptions = {}): ReferenceBookSource {
+  const codes = opts.competitionCodes ?? {};
+  return {
+    id: "outcome_v1",
+    async read(pair) {
+      const clubs = pairClubs(pair);
+      if (!clubs) return { id: "outcome_v1", book: null, reason: "league_not_covered" };
+      const markets = await client.listCompetitionMarkets(outcomeCompetitionCode(clubs.template.league, codes));
+      const game = outcomeGameFor(markets, pair, clubs);
+      if (!game) return { id: "outcome_v1", book: null, reason: "not_listed" };
+      const opp = game.opposing;
+      const status = opp.trading === false ? "suspended" : (opp.status ?? "").toLowerCase() || undefined;
+      const listing: ReferenceListing = {
+        marketId: opp.market_id,
+        key: game.eventId,
+        ...(opp.timestamp ? { snapshotAtIso: opp.timestamp } : {}),
+        outcomes: {
+          ours: { outcomeId: game.ours.market_id, name: outcomeSideName(game.ours) },
+          opposing: { outcomeId: opp.market_id, name: outcomeSideName(opp) },
+          // the venue's fee is a per-account schedule, not a field on the market: the book is gross of it
+          fee: { coefficient: 0, folded: false },
+          ...(status ? { marketStatus: status } : {}),
+        },
+      };
+      // a market not taking orders has levels nobody can hit; recorded as the state, not as a price
+      if (opp.trading === false) return { id: "outcome_v1", book: null, reason: "market_suspended", listing };
+      const shaped = asksBook(outcomeAsks(opp), `outcome_v1:${opp.market_id}`);
+      return { id: "outcome_v1", book: { ...shaped, bids: outcomeBids(opp) }, listing };
+    },
+    async catalog(league) {
+      return outcomeCatalogProbe(client, league, codes);
+    },
+  };
+}
+
+const outcomeSample = (m: RawOutcomeMarket): ReferenceCatalogSample => {
+  const startMs = m.event_start ? Date.parse(m.event_start) : NaN;
+  const leagueWord = [m.competition, m.sport].find((w): w is string => typeof w === "string" && w.trim() !== "");
+  return {
+    marketId: m.market_id,
+    ...(m.event_id ? { eventId: m.event_id } : {}),
+    description: m.event_title ?? m.symbol ?? "",
+    marketType: m.rules ?? "",
+    status: m.trading === false ? "suspended" : (m.status ?? ""),
+    startsIso: Number.isFinite(startMs) ? new Date(startMs).toISOString() : null,
+    outcomes: (m.participants ?? []).map((p) => p?.name ?? p?.abbreviation ?? "").filter(Boolean),
+    ...(leagueWord ? { league: leagueWord } : {}),
+  };
+};
+
+/**
+ * What the one-market-per-outcome venue lists for one of our leagues under the competition code
+ * the reader sends: how many markets, how many winner markets, how many of those name two clubs
+ * of our template, and the first few, so a run of "not listed" can be told from a competition
+ * code the venue spells differently.
+ */
+export async function outcomeCatalogProbe(client: MarketsClient, league: string, codes: OutcomeCompetitionCodes = {}): Promise<ReferenceCatalogProbe> {
+  const template = templateForLeague(league);
+  const clubs = template ? clubsOf(template) : [];
+  const namesTwoClubs = (m: RawOutcomeMarket): boolean => {
+    if (!template) return false;
+    const hit = new Set<string>();
+    for (const p of m.participants ?? []) for (const club of clubs) if (participantNames(p).some((n) => clubNamed(template, club, n))) hit.add(club);
+    return hit.size === 2;
+  };
+  const code = outcomeCompetitionCode(league, codes);
+  const sent = `competitions=${encodeURIComponent(code)}&status=open,pre_open&limit=200`;
+  try {
+    const markets = await client.listCompetitionMarkets(code);
+    const winners = markets.filter(isOutcomeWinner);
+    const ours = winners.filter(namesTwoClubs);
+    const leaguesSeen: Record<string, number> = {};
+    for (const m of markets) {
+      const w = outcomeSample(m).league;
+      if (w) leaguesSeen[w] = (leaguesSeen[w] ?? 0) + 1;
+    }
+    const ordered = [...ours, ...winners.filter((m) => !ours.includes(m)), ...markets.filter((m) => !winners.includes(m))];
+    return { id: "outcome_v1", league, queries: [{ query: sent, count: markets.length, winners: winners.length, ourClubs: ours.length, leaguesSeen, sample: ordered.slice(0, SAMPLE_SIZE).map(outcomeSample) }], note: `read with ${client.authWord}` };
+  } catch (err) {
+    const words = err instanceof MarketsApiError ? `${err.status} ${err.code}: ${err.message}` : String(err instanceof Error ? err.message : err);
+    return { id: "outcome_v1", league, queries: [{ query: sent, count: null, winners: null, ourClubs: null, error: words.slice(0, 160), leaguesSeen: {}, sample: [] }], note: `read with ${client.authWord}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // configuration and the read that never throws
 // ---------------------------------------------------------------------------
 
@@ -582,6 +829,30 @@ export function referenceSourcesFromEnv(env: NodeJS.ProcessEnv = process.env, op
       notes.push("reference book B: host, access key and secret key must all be set; off");
     }
   }
+  const outcomeHost = env.REFERENCE_BOOK_OUTCOME_HOST?.trim().replace(/\/+$/, "");
+  const outcomeKeyId = env.REFERENCE_BOOK_OUTCOME_KEY_ID?.trim();
+  const outcomePem = env.REFERENCE_BOOK_OUTCOME_PRIVATE_KEY_PEM?.trim();
+  const outcomeClientId = env.REFERENCE_BOOK_OUTCOME_CLIENT_ID?.trim();
+  const outcomeClientSecret = env.REFERENCE_BOOK_OUTCOME_CLIENT_SECRET?.trim();
+  if (outcomeHost || outcomeKeyId || outcomePem || outcomeClientId || outcomeClientSecret) {
+    const competitions = parseOutcomeCompetitionCodes(env.REFERENCE_BOOK_OUTCOME_COMPETITIONS);
+    notes.push(...competitions.notes);
+    const outcomeOpts: OutcomeSourceOptions = { competitionCodes: competitions.codes };
+    if (outcomeHost && outcomeKeyId && outcomePem) {
+      try {
+        sources.push(outcomeSource(new MarketsClient({ host: outcomeHost, signer: marketsSignerFromPem(outcomeKeyId, outcomePem), fetchImpl }), outcomeOpts));
+        if (outcomeClientId || outcomeClientSecret) notes.push("reference book D: both a key and an app client are set; reading with the signed key");
+      } catch (err) {
+        notes.push(`reference book D: key unusable (${String(err instanceof Error ? err.message : err)})`);
+      }
+    } else if (outcomeHost && outcomeClientId && outcomeClientSecret && !outcomeKeyId && !outcomePem) {
+      sources.push(outcomeSource(new MarketsClient({ host: outcomeHost, app: { clientId: outcomeClientId, clientSecret: outcomeClientSecret }, fetchImpl }), outcomeOpts));
+      notes.push("reference book D: reading with an app token (market data scope)");
+    } else {
+      // the venue publishes nothing unauthenticated: the host alone cannot read
+      notes.push("reference book D: set the host with a key id and private key, or with an app client id and secret; off");
+    }
+  }
   return { sources, notes };
 }
 
@@ -608,7 +879,7 @@ export async function readReferenceBooks(sources: ReferenceBookSource[], pair: M
     if (r.status === "fulfilled") return r.value;
     const err = r.reason;
     // the venue answered with a code (rate limit, bad key): keep the code; anything else is unreachable
-    if ((err instanceof VenueApiError || err instanceof PlaysApiError) && err.status > 0) {
+    if ((err instanceof VenueApiError || err instanceof PlaysApiError || err instanceof MarketsApiError) && err.status > 0) {
       return { id: sources[i].id, book: null, reason: `venue_${err.code.toLowerCase().replace(/[^a-z0-9]+/g, "_")}` };
     }
     return { id: sources[i].id, book: null, reason: `unreachable: ${String(err instanceof Error ? err.message : err).slice(0, 80)}` };

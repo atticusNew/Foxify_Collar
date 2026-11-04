@@ -307,6 +307,18 @@ services:
       #   REFERENCE_BOOK_BEARER_HOST=https://cash.api..../partner
       #   REFERENCE_BOOK_BEARER_ACCESS_KEY=<access key>
       #   REFERENCE_BOOK_BEARER_SECRET_KEY=<secret key>
+      # One-market-per-outcome venue (dialect id outcome_v1, public word "reference book D"; only
+      # GET /api/v1/markets is read; it publishes nothing unauthenticated, so the host alone is a
+      # note). Its demo exchange is a paper book with no money on it: point the host there until
+      # its US production host opens. EITHER a read-only signed key (Ed25519; mint it under the
+      # account's API keys with read scope only) OR an app registered for market data:
+      #   REFERENCE_BOOK_OUTCOME_HOST=https://demo....          the venue's API host
+      #   REFERENCE_BOOK_OUTCOME_KEY_ID=<key id>                 with the PEM
+      #   REFERENCE_BOOK_OUTCOME_PRIVATE_KEY_PEM=<PKCS8 PEM>     "\n" escapes accepted
+      #   REFERENCE_BOOK_OUTCOME_CLIENT_ID=<app client id>       or: with the secret; token fetched
+      #   REFERENCE_BOOK_OUTCOME_CLIENT_SECRET=<app client secret>   and reused for its hour
+      #   REFERENCE_BOOK_OUTCOME_COMPETITIONS=nba=NBA             optional; a league the venue files
+      #     under another competition code (read it off /api/shadow/venues/catalog?league=nba)
       # Status: the operator state's hedge.referenceBooks lists which are configured, never the keys.
       # AGGREGATOR FEED (optional; the cross-venue data partner's signed API and orderbook stream).
       # With the key set, every sports quote reads its books from the feed FIRST: the opposing
