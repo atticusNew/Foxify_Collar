@@ -18,7 +18,8 @@
  *
  * Scopes asked: portfolio.read (positions, settlements), orders.read (orders, fills),
  * orders.write (the sell and its cancel; the venue requires an IP allowlist for it), profile.read
- * (whose account this is, by id). No scope moves money off the venue.
+ * (whose account this is: id, handle, avatar), balance.read (the balance the sale lands in, so
+ * the page can show it move). No scope moves money off the venue.
  *
  * Env (service only): MEMBER_APP_HOST · MEMBER_APP_CLIENT_ID · MEMBER_APP_CLIENT_SECRET ·
  * MEMBER_APP_REDIRECT_URI (exactly as registered) · MEMBER_APP_TOKEN_KEY (32 bytes, hex or
@@ -37,7 +38,7 @@ import { roundContracts } from "./types";
 import type { LeagueTemplate } from "./resolutionWhitelist";
 
 export const MEMBER_APP_USER_AGENT = "atticus-event-shadow/0.1 (member app)";
-export const MEMBER_DEFAULT_SCOPES = "profile.read portfolio.read orders.read orders.write";
+export const MEMBER_DEFAULT_SCOPES = "profile.read balance.read portfolio.read orders.read orders.write";
 
 // ---------------------------------------------------------------------------
 // config
@@ -167,6 +168,9 @@ export interface MemberGrant {
   /** whose account, by the venue's ids (profile.read); never a name */
   userId?: string | null;
   accountId?: string | null;
+  /** the member's public handle and avatar path on the venue (profile.read), as the venue shows them on its own leaderboard */
+  handle?: string | null;
+  avatarUrl?: string | null;
 }
 
 interface TokenResponse {
@@ -198,7 +202,7 @@ async function tokenPost(cfg: Pick<MemberAppConfig, "host" | "clientId" | "clien
   return { status: r.status, json };
 }
 
-function grantOf(json: TokenResponse, nowMs: number, prev?: Pick<MemberGrant, "connectedAtIso" | "userId" | "accountId" | "refreshToken">): MemberGrant {
+function grantOf(json: TokenResponse, nowMs: number, prev?: Pick<MemberGrant, "connectedAtIso" | "userId" | "accountId" | "refreshToken" | "handle" | "avatarUrl">): MemberGrant {
   const life = typeof json.expires_in === "number" && json.expires_in > 0 ? json.expires_in : 3600;
   return {
     accessToken: json.access_token as string,
@@ -210,6 +214,8 @@ function grantOf(json: TokenResponse, nowMs: number, prev?: Pick<MemberGrant, "c
     ...(prev ? { refreshedAtIso: new Date(nowMs).toISOString() } : {}),
     userId: prev?.userId ?? null,
     accountId: prev?.accountId ?? null,
+    handle: prev?.handle ?? null,
+    avatarUrl: prev?.avatarUrl ?? null,
   };
 }
 
@@ -397,6 +403,25 @@ export interface RawMemberSettlement {
   time?: string;
 }
 
+export interface RawMemberMe {
+  user_id?: string | null;
+  account_id?: string | null;
+  handle?: string | null;
+  /** a path relative to the venue's host, `/avatars/{handle}.svg`; null without a handle */
+  avatar_url?: string | null;
+}
+
+export interface RawMemberBalance {
+  account_balance?: string | number | null;
+  available_balance?: string | number | null;
+}
+
+export interface MemberBalance {
+  accountCents: number | null;
+  availableCents: number | null;
+  atIso: string;
+}
+
 export interface PlaceOrderBody {
   action: "buy" | "sell";
   market_id: string;
@@ -450,9 +475,37 @@ export class MemberClient {
     return json as T;
   }
 
-  /** whose account the bearer is: the venue's ids only (profile.read) */
-  async me(): Promise<{ user_id?: string | null; account_id?: string | null }> {
-    return this.call("GET", "/api/v1/me");
+  /** whose account the bearer is: the venue's ids, the public handle and avatar path (profile.read). The venue wraps it in `me`. */
+  async me(): Promise<RawMemberMe> {
+    const r = await this.call<{ me?: RawMemberMe } | RawMemberMe>("GET", "/api/v1/me");
+    return ((r as { me?: RawMemberMe }).me ?? (r as RawMemberMe)) || {};
+  }
+
+  /** the account's balance (balance.read): what the sale lands in; cents of a dollar */
+  async balance(): Promise<MemberBalance> {
+    const r = await this.call<{ balance?: RawMemberBalance } | RawMemberBalance>("GET", "/api/v1/account/balance");
+    const b = ((r as { balance?: RawMemberBalance }).balance ?? (r as RawMemberBalance)) || {};
+    const cents = (v: string | number | null | undefined): number | null => {
+      const n = Number(v);
+      return v === null || v === undefined || v === "" || !Number.isFinite(n) ? null : Math.round(n * 100);
+    };
+    return { accountCents: cents(b.account_balance), availableCents: cents(b.available_balance), atIso: new Date().toISOString() };
+  }
+
+  /**
+   * A competition's open and pre-open markets, every page (a member token reads the same
+   * catalogue an app token does): how the hosted page lists the games a member could protect.
+   */
+  async listCompetitionMarkets(competition: string, maxPages = 8): Promise<RawOutcomeMarket[]> {
+    const out: RawOutcomeMarket[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < maxPages; page++) {
+      const r: { cursor?: string | null; markets?: RawOutcomeMarket[] | null } = await this.call("GET", `/api/v1/markets?competitions=${encodeURIComponent(competition.toUpperCase())}&status=open,pre_open&limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      out.push(...(r.markets ?? []).filter((m) => m && typeof m.market_id === "string"));
+      cursor = r.cursor ?? null;
+      if (!cursor) break;
+    }
+    return out;
   }
 
   async positions(): Promise<RawMemberPosition[]> {
@@ -512,7 +565,7 @@ const TOKEN_SLACK_MS = 90_000;
 
 export type MemberState =
   | { connected: false; reason: "not_connected" | "grant_revoked" | "account_pending" | "refresh_failed"; detail?: string }
-  | { connected: true; since: string; scope: string; userId: string | null; accountId: string | null; expiresAtIso: string };
+  | { connected: true; since: string; scope: string; userId: string | null; accountId: string | null; handle: string | null; avatarUrl: string | null; expiresAtIso: string };
 
 /**
  * The service's hold on every connected member: the store, the pending connects (state ->
@@ -566,7 +619,7 @@ export class MemberSessions {
     // whose account, by id: best effort, the grant stands without it
     try {
       const me = await new MemberClient({ host: this.cfg.host, token: async () => grant.accessToken, fetchImpl: this.fetchImpl }).me();
-      grant = { ...grant, userId: me.user_id ?? null, accountId: me.account_id ?? null };
+      grant = { ...grant, userId: me.user_id ?? null, accountId: me.account_id ?? null, handle: me.handle ?? null, avatarUrl: me.avatar_url ?? null };
     } catch {
       // profile.read not granted, or the venue busy: the ids stay null
     }
@@ -589,7 +642,15 @@ export class MemberSessions {
       const f = this.lastFailure.get(member);
       return f ? { connected: false, reason: f.reason, detail: f.detail } : { connected: false, reason: "not_connected" };
     }
-    return { connected: true, since: g.connectedAtIso, scope: g.scope, userId: g.userId ?? null, accountId: g.accountId ?? null, expiresAtIso: new Date(g.expiresAtMs).toISOString() };
+    return { connected: true, since: g.connectedAtIso, scope: g.scope, userId: g.userId ?? null, accountId: g.accountId ?? null, handle: g.handle ?? null, avatarUrl: g.avatarUrl ? (g.avatarUrl.startsWith("http") ? g.avatarUrl : `${this.cfg.host}${g.avatarUrl}`) : null, expiresAtIso: new Date(g.expiresAtMs).toISOString() };
+  }
+
+  /** The profile re-read once (a handle set after the connect): the grant keeps what the venue says now. */
+  async refreshProfile(member: string): Promise<void> {
+    const g = this.store.get(member);
+    if (!g) return;
+    const me = await this.client(member).me();
+    this.store.set(member, { ...(this.store.get(member) ?? g), userId: me.user_id ?? g.userId ?? null, accountId: me.account_id ?? g.accountId ?? null, handle: me.handle ?? null, avatarUrl: me.avatar_url ?? null });
   }
 
   /** A fresh bearer: the stored one while it has slack, else rotated once (one refresh in flight per member). */
@@ -680,8 +741,20 @@ export function winnerClubOf(m: RawOutcomeMarket): { side: "home" | "away"; name
   return ours ? { side, name: ours, opponent: other ?? "" } : null;
 }
 
+/**
+ * A combination market (the venue's parlay: one market over two to five legs, agreed by request
+ * for quote and traded on its own thin book afterwards). The venue marks it by its legs; the rule
+ * word is read too in case a listing carries no legs.
+ */
+export function isComboMarket(m: RawOutcomeMarket & { legs?: unknown; combo?: unknown }): boolean {
+  if (Array.isArray(m.legs) && m.legs.length >= 2) return true;
+  if (m.combo && typeof m.combo === "object") return true;
+  return /combo|combination|parlay|multi/i.test(`${m.rules ?? ""} ${m.specifier ?? ""}`);
+}
+
 /** The protectable market this venue market maps to: same league, our side's club, the game within a day and a half. */
 export function matchMemberMarket(m: RawOutcomeMarket, league: string | null, protectable: ProtectableMarket[]): { ticker: string } | { ticker: null; reason: string } {
+  if (isComboMarket(m)) return { ticker: null, reason: "parlay" };
   const template: LeagueTemplate | null = league ? templateForLeague(league) : null;
   if (!template) return { ticker: null, reason: "league_not_covered" };
   const club = winnerClubOf(m);
@@ -752,7 +825,7 @@ export async function memberHolderPositions(client: MemberClient, protectable: P
       ...(matched.ticker === null ? { reason: matched.reason } : {}),
       league,
       side: club?.name ?? (m.group_title ?? "").trim(),
-      event,
+      event: event || (matched.ticker === null && matched.reason === "parlay" ? (m.symbol ?? "").trim() : ""),
       startsIso: m.event_start ? new Date(m.event_start).toISOString() : null,
       marketType: (m.rules ?? "").trim(),
     });
