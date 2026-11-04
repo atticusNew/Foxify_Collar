@@ -7,15 +7,20 @@
  * of ours, no fee.
  *
  * Three tabs. Portfolio: the balance the sale lands in, every open position (the protectable ones
- * with the line, the others muted with the reason, so nothing the venue shows is missing here).
- * Games: what the venue lists that the service protects, with a link to buy on the venue (this
- * page never buys for anyone). History: this member's past locks and their receipts.
+ * with the line, the others muted with the reason and, for a combination, its legs, so nothing
+ * the venue shows is missing here). Games: what the venue lists that the service protects, by
+ * day, with a link to buy on the venue (this page never buys for anyone). History: this member's
+ * past locks and their receipts.
  *
  * The page holds no token and no key. Its session is a cookie the service set (HttpOnly), which
  * the service turns into the member's holder alias; every call goes to this origin with that
  * cookie and the x-member-app header, and the service answers for this member alone. It can live
  * on a phone's home screen (manifest under /app/), and re-reads the account whenever it comes
  * back into view, so a buy on the venue shows here on return.
+ *
+ * Painting is keyed: the header is drawn once per identity, each row is patched in place only
+ * when its own words change, lists are reconciled by key, so a poll never repaints the page or
+ * reloads an image, and the scroll position and an open panel stay where they were.
  *
  * One file, no build step, no dependency: the HTML, the CSS in the venue's palette (the same
  * variables as the extension's `.ael-v-stx` skin, so the two surfaces read the same) and the
@@ -56,6 +61,7 @@ ${CSS}
 </style>
 </head>
 <body class="ael-v-stx">
+<div class="ptr" id="ptr" aria-hidden="true"><span class="ptr-i"></span><span class="ptr-t">Pull to refresh</span></div>
 <header class="top">
   <div class="brand">${o.venueUrl ? `<a class="venue" href="${esc(o.venueUrl)}" rel="noopener" aria-label="${esc(o.venueName)}">${venueMark}</a>` : `<span class="venue">${venueMark}</span>`}<span class="sep" aria-hidden="true"></span><span class="app"><img src="/app/bird.png" alt="">Lock in</span></div>
   <div class="acct" id="acct"></div>
@@ -70,6 +76,7 @@ ${CSS}
     <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Leave early buys the same contracts back from ${esc(o.venueName)}'s offers. Every order is placed in your account under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke that consent there at any time. This page never holds your money, your login or your keys. Every lock is written to a <a href="${esc(o.recordUrl)}" rel="noopener">public record</a> in neutral words, with no account ids.</p>
   </div>
 </footer>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <script>window.AEL_CFG = ${cfg};</script>
 <script>
 ${JS}
@@ -88,16 +95,24 @@ body {
   --ael-border: #2e2e2e; --ael-border-hover: #3a3a3a; --ael-divider: #262626;
   --ael-accent: #f9ae1c; --ael-accent-hover: #ffc91a; --ael-accent-ink: #1a1200; --ael-glow: #ffe233; --ael-accent-text: #ffc91a;
   --ael-accent-line: rgba(249, 174, 28, 0.6); --ael-accent-wash: rgba(249, 174, 28, 0.12); --ael-accent-wash-2: rgba(249, 174, 28, 0.16); --ael-accent-wash-3: rgba(249, 174, 28, 0.22);
+  --ael-live: #ff5c5c; --ael-parlay: #b48cff; --ael-parlay-wash: rgba(180, 140, 255, 0.14); --ael-parlay-line: rgba(180, 140, 255, 0.45);
   --ael-ring: rgba(255, 255, 255, 0.35); --ael-radius: 8px; --ael-radius-lg: 14px;
   background: #010101; color: var(--ael-fg);
   font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased; min-height: 100vh; display: flex; flex-direction: column;
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: env(safe-area-inset-bottom); overscroll-behavior-y: contain;
 }
 a { color: inherit; }
 button { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 img { display: block; }
+
+/* pull to refresh */
+.ptr { position: fixed; top: 0; left: 0; right: 0; height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 12.5px; color: var(--ael-muted); background: #010101; z-index: 6; transition: height 0.15s ease-out; }
+.ptr.ptr-on { height: 44px; }
+.ptr-i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--ael-border-hover); border-top-color: var(--ael-accent); }
+.ptr.ptr-busy .ptr-i { animation: ael-spin 0.8s linear infinite; }
+.ptr.ptr-ready .ptr-i { border-color: var(--ael-accent); }
 
 /* the top bar: the venue's mark, our bird and the word, the account */
 .top { display: flex; align-items: center; gap: 18px; padding: 0 20px; height: 56px; border-bottom: 1px solid #1a1a1a; background: #010101; position: sticky; top: 0; z-index: 4; padding-top: env(safe-area-inset-top); }
@@ -139,14 +154,22 @@ img { display: block; }
 .about { flex-basis: 100%; color: var(--ael-muted); font-size: 12.5px; line-height: 1.5; max-width: 70ch; }
 .about p { margin: 6px 0; }
 .about[hidden] { display: none; }
+.foot #disconnect-foot { display: none; }
+@media (max-width: 640px) { .foot #disconnect-foot:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; } }
 
-h1 { font-size: 22px; font-weight: 700; margin: 0 0 14px; color: var(--ael-fg-strong); letter-spacing: -0.01em; }
+h1 { font-size: 22px; font-weight: 700; margin: 0 0 14px; color: var(--ael-fg-strong); letter-spacing: -0.01em; display: flex; align-items: baseline; gap: 12px; }
+h1 small { font-size: 13px; font-weight: 500; color: var(--ael-dim); margin-left: auto; }
 h2.grp { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ael-dim); margin: 26px 0 6px; }
+h2.grp[hidden] { display: none; }
 .sub { color: var(--ael-muted); font-size: 13.5px; margin: -6px 0 16px; line-height: 1.5; }
 .note { font-size: 13px; color: var(--ael-soft); background: var(--ael-bg-raise); border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 10px 12px; margin: 0 0 14px; display: flex; align-items: center; gap: 12px; }
 .note.err { border-color: rgba(255, 107, 107, 0.5); color: #ffb4b4; }
 .note.ok { border-color: var(--ael-accent-line); }
+.note .x { margin-left: auto; background: none; border: 0; color: var(--ael-dim); font-size: 18px; line-height: 1; padding: 2px 4px; cursor: pointer; flex: none; }
+.note .x:hover { color: var(--ael-fg-strong); }
 .note .ael-go { margin: 0; width: auto; height: 32px; font-size: 13px; flex: none; }
+.note p { margin: 0; line-height: 1.5; }
+.note .hs b { color: var(--ael-fg-strong); font-weight: 600; }
 
 /* the balance strip: what the sale lands in */
 .bal { display: flex; align-items: baseline; gap: 10px 16px; flex-wrap: wrap; padding: 12px 14px; margin: 0 0 18px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg-raise); font-size: 13px; color: var(--ael-muted); }
@@ -154,71 +177,149 @@ h2.grp { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transfo
 .bal .av { font-variant-numeric: tabular-nums; }
 .bal .pulse b { color: var(--ael-accent-text); animation: ael-pulse 1.4s ease-out; }
 @keyframes ael-pulse { 0% { color: var(--ael-glow); } 100% { color: var(--ael-accent-text); } }
-.bal .r { margin-left: auto; }
+.bal .r { margin-left: auto; font-size: 12px; color: var(--ael-dim); }
 .bal .who { display: none; align-items: center; gap: 7px; color: var(--ael-soft); flex-basis: 100%; margin-bottom: -2px; }
 .bal .who img { width: 20px; height: 20px; border-radius: 50%; background: var(--ael-bg-raise); }
 .bal .who b { font-size: 13px; color: var(--ael-fg-strong); font-weight: 600; }
-.foot #disconnect-foot { display: none; }
-@media (max-width: 640px) { .foot #disconnect-foot:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; } }
 .bal .lnk { background: none; border: 0; padding: 0; color: var(--ael-soft); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; font-size: 13px; }
 
-/* the connect card: one thing to do */
-.connect { max-width: 520px; margin: 40px auto 0; background: var(--ael-bg-raise); border: 1px solid var(--ael-border); border-radius: var(--ael-radius-lg); padding: 26px 26px 20px; }
+/* the connect card: one thing to do, and what happens when you do it */
+.connect { max-width: 520px; margin: 32px auto 0; background: var(--ael-bg-raise); border: 1px solid var(--ael-border); border-radius: var(--ael-radius-lg); padding: 26px 26px 20px; }
 .connect h2 { margin: 0 0 8px; font-size: 19px; color: var(--ael-fg-strong); }
 .connect p { margin: 0 0 14px; color: var(--ael-soft); font-size: 14px; line-height: 1.5; }
-.connect ul { margin: 0 0 16px; padding-left: 18px; color: var(--ael-muted); font-size: 13px; line-height: 1.6; }
-.connect .ael-go { margin: 6px 0 10px; height: 44px; }
+.connect .ael-go { margin: 6px 0 14px; height: 46px; }
+.steps { display: flex; flex-direction: column; gap: 10px; margin: 0 0 18px; padding: 0; list-style: none; counter-reset: s; }
+.steps li { display: flex; gap: 12px; align-items: flex-start; font-size: 13.5px; color: var(--ael-soft); line-height: 1.45; }
+.steps li::before { counter-increment: s; content: counter(s); flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--ael-accent-wash-2); border: 1px solid var(--ael-accent-line); color: var(--ael-accent-text); font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; margin-top: 1px; }
+.steps li b { color: var(--ael-fg-strong); font-weight: 600; }
+.steps li small { display: block; color: var(--ael-muted); font-size: 12.5px; margin-top: 2px; }
+.perm { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+.perm span { font-size: 11.5px; padding: 3px 8px; border-radius: 999px; background: var(--ael-bg-deep); border: 1px solid var(--ael-border); color: var(--ael-muted); }
+.whyw { font-size: 12.5px; color: var(--ael-muted); margin: 0 0 16px; line-height: 1.5; padding: 10px 12px; border-left: 2px solid var(--ael-accent-line); background: var(--ael-bg); border-radius: 0 var(--ael-radius) var(--ael-radius) 0; }
+.whyw b { color: var(--ael-soft); font-weight: 600; }
+.connecting { text-align: center; padding: 48px 26px 40px; }
+.connecting .spin { width: 44px; height: 44px; margin: 0 auto 16px; border-radius: 50%; border: 3px solid var(--ael-border-hover); border-top-color: var(--ael-accent); animation: ael-spin 0.9s linear infinite; }
+.connecting .ok { width: 44px; height: 44px; margin: 0 auto 16px; border-radius: 50%; background: var(--ael-accent); display: flex; align-items: center; justify-content: center; animation: ael-pop 0.35s ease-out; }
+.connecting .ok svg { width: 24px; height: 24px; }
+@keyframes ael-pop { from { transform: scale(0.6); opacity: 0; } to { transform: none; opacity: 1; } }
+.connecting h2 { margin: 0 0 6px; }
+.connecting p { margin: 0; color: var(--ael-muted); }
+.denied { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; margin: 0 0 16px; border: 1px solid rgba(255, 107, 107, 0.4); background: rgba(255, 92, 92, 0.08); border-radius: var(--ael-radius); font-size: 13.5px; color: var(--ael-soft); line-height: 1.5; }
+.denied svg { width: 18px; height: 18px; flex: none; margin-top: 2px; color: #ff8a8a; }
+.denied b { color: var(--ael-fg-strong); display: block; }
+
+/* skeletons while the first read lands */
+.sk { border-radius: 6px; background: linear-gradient(90deg, #161616 25%, #1f1f1f 37%, #161616 63%); background-size: 400% 100%; animation: ael-sk 1.4s ease infinite; }
+@keyframes ael-sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+.skrow { padding: 16px 0 14px; border-bottom: 1px solid #1c1c1c; }
+.skrow .sk { height: 14px; margin: 0 0 10px; }
+.skrow .sk.a { width: 46%; height: 17px; }
+.skrow .sk.b { width: 70%; }
+.skrow .sk.c { width: 100%; height: 46px; border-radius: var(--ael-radius); margin: 12px 0 0; }
 
 /* the portfolio: the venue's own rows, the Lock in line under each */
 .rows { display: flex; flex-direction: column; }
 .pos { padding: 16px 0 14px; border-bottom: 1px solid #1c1c1c; }
 .pos:last-child { border-bottom: 0; }
-.pos-h { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
-.pos-h .name { font-size: 16px; font-weight: 700; color: var(--ael-fg-strong); letter-spacing: -0.01em; }
-.pos-h .pays { margin-left: auto; font-size: 15px; font-weight: 700; color: var(--ael-accent); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.pos-h .pays small { font-weight: 500; font-size: 12px; color: var(--ael-dim); margin-right: 5px; }
-.pos .meta { font-size: 13px; color: var(--ael-muted); margin-top: 3px; display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; }
-.pos .meta b { font-weight: 600; color: var(--ael-soft); font-variant-numeric: tabular-nums; }
-.pos .meta .sold { color: var(--ael-accent-text); }
-.pos .meta .d { color: var(--ael-faint); }
-.pos .meta .until { color: var(--ael-dim); }
-.pos.muted .name { color: var(--ael-soft); }
+.pos-h { display: flex; align-items: center; gap: 12px; }
+.mark { flex: none; width: 36px; height: 36px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; color: #fff; background: #333; text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3); }
+.mark.sm { width: 30px; height: 30px; font-size: 11px; }
+.mark.parlay { background: var(--ael-parlay-wash); border: 1px solid var(--ael-parlay-line); color: var(--ael-parlay); }
+.mark.parlay svg { width: 16px; height: 16px; }
+.pos-t { flex: 1; min-width: 0; }
+.pos-t .name { font-size: 16px; font-weight: 700; color: var(--ael-fg-strong); letter-spacing: -0.01em; line-height: 1.25; }
+.pos-t .name small { font-weight: 500; font-size: 13px; color: var(--ael-muted); margin-left: 5px; }
+.pos-t .evt { font-size: 13px; color: var(--ael-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pos-t .evt b { font-weight: 500; color: var(--ael-soft); }
+.pos .pays { flex: none; text-align: right; font-size: 15px; font-weight: 700; color: var(--ael-accent); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pos .pays small { display: block; font-weight: 500; font-size: 11px; color: var(--ael-dim); letter-spacing: 0.04em; text-transform: uppercase; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0 48px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 6px; background: var(--ael-bg-raise); border: 1px solid var(--ael-border); color: var(--ael-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chip b { font-weight: 600; color: var(--ael-soft); }
+.chip.sold { border-color: var(--ael-accent-line); background: var(--ael-accent-wash); color: var(--ael-accent-text); }
+.chip.sold b { color: var(--ael-accent-text); }
+.chip.until { color: var(--ael-dim); }
+.chip.until svg { width: 11px; height: 11px; }
+.chip.price { background: var(--ael-accent); border-color: var(--ael-accent); color: var(--ael-accent-ink); font-weight: 700; font-size: 12.5px; padding: 5px 9px; }
+.chip.floor { border-color: var(--ael-accent-line); color: var(--ael-soft); }
+.chip.floor b { color: var(--ael-fg-strong); }
+.chip.lg { background: transparent; color: var(--ael-dim); font-weight: 600; letter-spacing: 0.06em; font-size: 10.5px; padding: 4px 6px; }
+.pos.muted .pos-t .name { color: var(--ael-soft); }
 .pos.muted .pays { color: var(--ael-muted); }
-.pos .ael-row { margin-top: 11px; }
+.pos .ael-row { margin: 11px 0 0 48px; }
 .empty { color: var(--ael-muted); font-size: 14px; padding: 28px 0; text-align: center; line-height: 1.5; }
+.empty a { color: var(--ael-accent-text); }
 .status { font-size: 12px; color: var(--ael-dim); margin: 12px 0 0; text-align: right; }
 
-/* the games: what the venue lists that we protect */
-.game { padding: 14px 0 12px; border-bottom: 1px solid #1c1c1c; }
-.game-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+/* a combination's legs */
+.legs { display: flex; flex-direction: column; margin: 0 0 4px; }
+.leg { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--ael-divider); font-size: 13.5px; }
+.leg:last-child { border-bottom: 0; }
+.leg .ld { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ael-faint); }
+.leg .ld.live { background: var(--ael-live); box-shadow: 0 0 0 3px rgba(255, 92, 92, 0.18); }
+.leg .ld.won { background: var(--ael-accent); }
+.leg .ld.lost { background: var(--ael-border-hover); }
+.leg .ln { flex: 1; min-width: 0; color: var(--ael-fg); }
+.leg .ln small { display: block; color: var(--ael-muted); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.leg .ls { flex: none; font-size: 11.5px; color: var(--ael-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.leg .ls.live { color: var(--ael-live); }
+.leg .ls.won { color: var(--ael-accent-text); }
+.leg .ls.lost { text-decoration: line-through; color: var(--ael-dim); }
+.legs-h { font-size: 12px; color: var(--ael-dim); margin: 8px 0 2px; letter-spacing: 0.04em; text-transform: uppercase; }
+
+/* the games: what the venue lists that we protect, by day */
+.gbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 18px; }
+.gbar .f { font-size: 12.5px; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--ael-border); background: transparent; color: var(--ael-muted); cursor: pointer; }
+.gbar .f:hover { color: var(--ael-fg-strong); border-color: var(--ael-border-hover); }
+.gbar .f[aria-pressed="true"] { background: var(--ael-bg-raise); border-color: var(--ael-border-hover); color: var(--ael-fg-strong); font-weight: 600; }
+.gbar .n { margin-left: auto; font-size: 12px; color: var(--ael-dim); }
+.day { margin: 0 0 8px; }
+.day-h { position: sticky; top: calc(56px + 45px + env(safe-area-inset-top)); z-index: 2; background: #010101; padding: 10px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ael-dim); display: flex; align-items: baseline; gap: 10px; }
+.day-h small { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--ael-faint); }
+.game { position: relative; padding: 14px 0 14px 14px; border-bottom: 1px solid #1c1c1c; }
+.game::before { content: ""; position: absolute; left: 0; top: 16px; bottom: 16px; width: 3px; border-radius: 3px; background: transparent; }
+.game.held::before { background: var(--ael-accent); }
+.game-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.game-h .lg { flex: none; }
 .game-h b { font-size: 15px; font-weight: 700; color: var(--ael-fg-strong); }
-.game-h span { font-size: 12.5px; color: var(--ael-muted); }
+.game-h .gt { font-size: 12.5px; color: var(--ael-muted); display: inline-flex; align-items: center; gap: 5px; }
+.game-h .gt svg { width: 12px; height: 12px; color: var(--ael-dim); }
 .game-h .until { margin-left: auto; font-size: 12px; color: var(--ael-dim); white-space: nowrap; }
 .sides { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-.side { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg); }
-.side .sn { flex: 1; min-width: 0; font-size: 14px; color: var(--ael-fg); }
-.side .sn small { display: block; font-size: 12px; color: var(--ael-muted); margin-top: 2px; }
-.side .sn small b { color: var(--ael-soft); font-weight: 600; }
-.side .buy { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--ael-accent-line); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.side { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg); }
+.side.held { border-color: var(--ael-accent-line); background: var(--ael-accent-wash); }
+.side .sn { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 600; color: var(--ael-fg-strong); }
+.side .sn small { display: block; font-size: 12px; font-weight: 400; color: var(--ael-muted); margin-top: 1px; }
+.side .px { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.side .buy { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 8px 13px; border-radius: 999px; border: 1px solid var(--ael-accent-line); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
 .side .buy:hover { background: var(--ael-accent-wash-3); }
 .side .buy svg { width: 12px; height: 12px; }
-.side .have { flex: none; font-size: 12.5px; color: var(--ael-accent-text); font-weight: 600; white-space: nowrap; }
-.side .have a { color: inherit; }
+.side .have { flex: none; font-size: 12px; font-weight: 600; color: var(--ael-accent-text); white-space: nowrap; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--ael-accent-line); text-decoration: none; }
+.more { display: block; width: 100%; margin: 16px 0 0; height: 42px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: transparent; color: var(--ael-soft); font-size: 14px; cursor: pointer; }
+.more:hover { border-color: var(--ael-border-hover); color: var(--ael-fg-strong); }
 
 /* history */
 .hist { padding: 14px 0 12px; border-bottom: 1px solid #1c1c1c; }
-.hist .meta { font-size: 12.5px; color: var(--ael-muted); margin: 0 0 8px; }
-.hist .meta b { color: var(--ael-soft); font-weight: 600; }
+.hist .pos-h { margin-bottom: 10px; }
+.hist .pos-t .name { font-size: 15px; }
+
+/* the toast: one line, at the foot */
+.toast { position: fixed; left: 50%; bottom: calc(22px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(8px); background: var(--ael-bg-raise); border: 1px solid var(--ael-accent-line); color: var(--ael-fg-strong); font-size: 14px; padding: 11px 16px; border-radius: 999px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5); z-index: 7; opacity: 0; transition: opacity 0.2s, transform 0.2s; white-space: nowrap; }
+.toast b { color: var(--ael-accent-text); font-variant-numeric: tabular-nums; }
+.toast.on { opacity: 1; transform: translateX(-50%); }
+.toast[hidden] { display: none; }
 
 /* the line, the panel and the slip: the extension's grammar, the venue's palette */
 .ael-row { display: block; position: relative; max-width: 680px; padding: 0; color: var(--ael-fg); font-size: 14px; text-align: left; }
 .ael-box { border: 1px solid var(--ael-accent-line); border-radius: var(--ael-radius); background: var(--ael-bg); overflow: hidden; transition: border-color 0.12s, background 0.12s; }
 .ael-box:has(.ael-line-on) { border-color: var(--ael-accent); background: var(--ael-accent-wash); }
 .ael-box:has(.ael-line-off), .ael-box:has(.ael-line-wait) { border-color: var(--ael-border); background: transparent; }
+.ael-box:has(.t-parlay) { border-color: var(--ael-parlay-line); background: var(--ael-parlay-wash); }
 .ael-line { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 8px 12px 8px 8px; border: 0; background: transparent; color: var(--ael-fg); cursor: pointer; text-align: left; font: inherit; }
 .ael-line:hover { background: var(--ael-accent-wash); }
 .ael-line-off:hover, .ael-line-wait:hover { background: transparent; }
-.ael-line-wait, .ael-line-off { cursor: default; }
+.ael-line-wait, .ael-line-off:not(.t-parlay):not(.t-hist) { cursor: default; }
+.ael-line-off.t-hist:hover { background: var(--ael-bg-raise); }
 .ael-tag { display: inline-flex; flex: none; align-items: center; gap: 6px; padding: 4px 11px 4px 8px; border-radius: 999px; border: 1px solid var(--ael-accent-line); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); font-size: 12.5px; font-weight: 600; line-height: 16px; white-space: nowrap; }
 .ael-tag .ael-ic { width: 14px; height: 14px; color: var(--ael-glow); }
 .ael-tag .ael-ic svg { width: 14px; height: 14px; }
@@ -227,11 +328,16 @@ h2.grp { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transfo
 .ael-line-on .ael-tag .ael-ic { color: var(--ael-accent-ink); }
 .ael-line-on .ael-tag svg path:last-child { stroke: var(--ael-accent); }
 .ael-line-off .ael-tag, .ael-line-wait .ael-tag { padding: 4px 11px; background: var(--ael-bg-deep); border-color: var(--ael-border-hover); color: var(--ael-soft); }
+.ael-line-off.t-live .ael-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ael-live); box-shadow: 0 0 0 3px rgba(255, 92, 92, 0.2); }
+.ael-line-off.t-close .ael-tag { color: var(--ael-muted); }
+.ael-line-off.t-parlay .ael-tag { background: var(--ael-parlay-wash); border-color: var(--ael-parlay-line); color: var(--ael-parlay); }
+.ael-line-off.t-parlay:hover { background: var(--ael-parlay-wash); }
 .ael-ic { display: inline-flex; flex: none; width: 18px; height: 18px; align-items: center; justify-content: center; color: var(--ael-glow); }
 .ael-ic svg { width: 16px; height: 16px; display: block; }
 .ael-fact { flex: 1; min-width: 0; font-size: 14px; color: var(--ael-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hist .ael-fact { white-space: normal; line-height: 1.35; }
 .ael-fact b { font-weight: 600; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; }
+.ael-fact .ael-dim { color: var(--ael-muted); font-size: 12.5px; }
 .ael-line-off .ael-fact, .ael-line-wait .ael-fact { color: var(--ael-muted); white-space: normal; }
 .ael-chev { flex: none; width: 16px; height: 16px; color: var(--ael-dim); transition: transform 0.18s ease; }
 .ael-chev svg { width: 16px; height: 16px; display: block; }
@@ -322,14 +428,15 @@ h2.grp { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transfo
   .tabs button { flex: 1; padding: 9px 0; border-radius: 8px; font-size: 13.5px; }
   .tabs button[aria-selected="true"] { background: var(--ael-bg-raise); }
   .tabs button[aria-selected="true"]::after { display: none; }
+  .day-h { top: calc(52px + 53px + env(safe-area-inset-top)); }
   .main { padding: 16px 14px 32px; }
   h1 { font-size: 20px; margin-bottom: 12px; }
   .bal { padding: 11px 12px; }
   .bal b { font-size: 17px; }
-  .bal .r { font-size: 12px; }
   .pos { padding: 14px 0 12px; }
-  .pos-h .name { font-size: 15px; }
-  .pos-h .pays { font-size: 14px; }
+  .pos-t .name { font-size: 15px; }
+  .pos .pays { font-size: 14px; }
+  .chips, .pos .ael-row { margin-left: 0; }
   .ael-lr s { width: 72px; }
   .ael-offer-acts .ael-go.ael-pillgo { flex: 1; justify-content: center; }
   .ael-drows { grid-template-columns: 1fr; row-gap: 3px; }
@@ -339,8 +446,13 @@ h2.grp { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transfo
   .ael-leave-acts .ael-go.ael-quiet { flex: 1; }
   .foot { flex-direction: column; align-items: flex-start; gap: 8px; }
   .foot-r { margin-left: 0; }
-  .side { flex-wrap: wrap; }
-  .side .buy, .side .have { margin-left: auto; }
+  .game { padding-left: 12px; }
+  .side { flex-wrap: wrap; row-gap: 8px; }
+  .side .sn { flex-basis: calc(100% - 44px); }
+  .side .px { order: 3; }
+  .side .buy, .side .have { order: 4; margin-left: auto; }
+  .connect { margin-top: 14px; padding: 22px 18px 16px; }
+  .toast { max-width: calc(100% - 28px); white-space: normal; text-align: center; border-radius: 14px; }
 }
 `;
 
@@ -351,21 +463,51 @@ const JS = String.raw`
   const POLL_POS_MS = 15000, REQUOTE_MS = 60000, POLL_ACCT_MS = 30000;
   const TIER_ORDER = ["wide", "balanced", "tight"];
   const TIER_WORDS = { wide: "Max upside", balanced: "Balanced", tight: "Max floor" };
-  const TIER_KEY = "ael_tier";
+  const TIER_KEY = "ael_tier", HS_KEY = "ael_hs_tip";
   const SHIELD = '<span class="ael-ic"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5 4.5 5.6v6.2c0 4.6 3.1 8.6 7.5 9.7 4.4-1.1 7.5-5.1 7.5-9.7V5.6L12 2.5z"/><path d="m8.8 12.2 2.1 2.1 4.3-4.6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
   const CHEV = '<span class="ael-chev"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>';
   const TGC = '<span class="ael-tgc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>';
   const OUT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3H3v10h10v-3M9 3h4v4M13 3 7 9"/></svg>';
+  const CLOCK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.6"/></svg>';
+  const LAYERS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5 14 5.5 8 8.5 2 5.5z"/><path d="m2 8.5 6 3 6-3"/><path d="m2 11.5 6 3 6-3"/></svg>';
+  const WARN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5 1.8 13.5h12.4z"/><path d="M8 6.5v3.2M8 11.6v.2"/></svg>';
+  const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="#1a1200" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
   const DISCLOSE = '<div class="ael-fine">Protection by Atticus, a third party; not a product of ' + VN + '.</div>';
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const usd = (c) => (c < 0 ? "-" : "") + "$" + (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const signed = (c) => (c >= 0 ? "+" : "-") + "$" + (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const cents = (c) => c + "\u00a2";
-  const fmtAt = (iso) => { const d = new Date(iso); if (isNaN(d)) return ""; return d.toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).replace(",", "") + " ET"; };
-  const fmtClock = (iso) => { const d = new Date(iso); if (isNaN(d)) return ""; return d.toLocaleString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }); };
-  const fmtDay = (iso) => { const d = new Date(iso); if (isNaN(d)) return ""; return d.toLocaleString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" }); };
+  const TZ = "America/New_York";
+  const fmtAt = (iso) => { const d = new Date(iso); if (isNaN(d)) return ""; return d.toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: TZ }).replace(",", "") + " ET"; };
+  const fmtClock = (iso) => { const d = new Date(iso); if (isNaN(d)) return ""; return d.toLocaleString("en-US", { hour: "numeric", minute: "2-digit", timeZone: TZ }); };
+  const fmtDay = (iso) => { const d = new Date(iso); if (isNaN(d)) return ""; return d.toLocaleString("en-US", { month: "short", day: "numeric", timeZone: TZ }); };
+  const dayKey = (iso) => { const d = new Date(iso); if (isNaN(d)) return ""; return d.toLocaleDateString("en-CA", { timeZone: TZ }); };
+  const dayLabel = (key) => {
+    const today = dayKey(new Date().toISOString());
+    const tomorrow = dayKey(new Date(Date.now() + 86400000).toISOString());
+    if (key === today) return ["Today", ""];
+    if (key === tomorrow) return ["Tomorrow", ""];
+    const d = new Date(key + "T12:00:00-05:00");
+    return [d.toLocaleDateString("en-US", { weekday: "long", timeZone: TZ }), d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: TZ })];
+  };
+  const ago = (ms) => { const s = Math.max(0, Math.round((Date.now() - ms) / 1000)); if (s < 8) return "just now"; if (s < 60) return s + "s ago"; const m = Math.round(s / 60); if (m < 60) return m + " min ago"; return fmtClock(new Date(ms).toISOString()); };
   const nickOf = (side) => { const w = String(side || "").trim().split(/\s+/); return w.length ? w[w.length - 1] : "Your side"; };
   const minsTo = (iso) => Math.round((Date.parse(iso) - Date.now()) / 60000);
+  const initials = (name) => { const w = String(name || "").replace(/[^A-Za-z0-9 ]/g, "").trim().split(/\s+/).filter(Boolean); if (!w.length) return "?"; if (w.length === 1) return w[0].slice(0, 3).toUpperCase(); return w.map((x) => x[0]).join("").slice(0, 3).toUpperCase(); };
+  const hue = (name) => { let h = 0; for (const ch of String(name || "")) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
+  const markHtml = (name, cls) => '<span class="mark' + (cls ? " " + cls : "") + '" style="background:hsl(' + hue(name) + ' 38% 32%)">' + esc(initials(name)) + "</span>";
+  const PARLAY_MARK = '<span class="mark parlay">' + LAYERS + "</span>";
+  /** the other club, from the venue's "Away at Home" title and our side: "at Home" or "vs Away" */
+  const opponentWords = (side, event) => {
+    const e = String(event || ""), s = String(side || "");
+    if (!e || !s) return e;
+    const at = e.indexOf(" at ");
+    if (at < 0) return e;
+    const away = e.slice(0, at).trim(), home = e.slice(at + 4).trim();
+    if (away === s || away.endsWith(s) || s.endsWith(away)) return "at " + home;
+    if (home === s || home.endsWith(s) || s.endsWith(home)) return "vs " + away;
+    return e;
+  };
   const api = async (path, method, body) => {
     try {
       const r = await fetch(path, { method: method || "GET", credentials: "same-origin", cache: "no-store", headers: Object.assign({ accept: "application/json", "x-member-app": "1" }, body !== undefined ? { "content-type": "application/json" } : {}), body: body !== undefined ? JSON.stringify(body) : undefined });
@@ -397,47 +539,87 @@ const JS = String.raw`
   };
   const reasonWords = (p) => {
     switch (p.reason) {
-      case "parlay": return ["Parlay", "Protection on parlays is coming; this one rides as it is."];
-      case "league_not_covered": return ["Not covered", "This league isn't covered yet."];
-      case "market_not_covered": return ["Not covered", "Only game-winner positions can be protected."];
-      case "no_protectable_market": return ["Not listed", "This game isn't listed for protection."];
-      case "market_unknown": return ["Unavailable", VN + " didn't describe this market."];
-      case "market_lookup_failed": return ["Unavailable", VN + " didn't describe this market just now."];
-      default: return ["Unavailable", "Protection isn't available on this position."];
+      case "parlay": return ["Parlay", "Protection on parlays is coming; this one rides as it is.", "parlay"];
+      case "league_not_covered": return ["Not covered", "This league isn't covered yet.", ""];
+      case "market_not_covered": return ["Not covered", "Only game-winner positions can be protected.", ""];
+      case "no_protectable_market": return ["Not listed", "This game isn't listed for protection.", ""];
+      case "market_unknown": return ["Unavailable", VN + " didn't describe this market.", ""];
+      case "market_lookup_failed": return ["Unavailable", VN + " didn't describe this market just now.", ""];
+      default: return ["Unavailable", "Protection isn't available on this position.", ""];
     }
   };
 
-  const S = { tab: "portfolio", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, games: null, gamesErr: null, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0 };
+  const S = { tab: "portfolio", screen: "", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, games: null, gamesErr: null, gLeague: "all", gAll: false, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0, connecting: false, hsTip: false };
   const main = document.getElementById("main");
   const acct = document.getElementById("acct");
   const tabs = document.getElementById("tabs");
+  const toastEl = document.getElementById("toast");
   const savedTier = (() => { try { const t = localStorage.getItem(TIER_KEY); return TIER_ORDER.includes(t) ? t : null; } catch (e) { return null; } })();
   const rememberTier = (t) => { try { localStorage.setItem(TIER_KEY, t); } catch (e) {} };
   const stateOf = (ticker) => { let st = S.st.get(ticker); if (!st) { st = { open: false, tier: savedTier || "balanced", quote: null, quoteAt: 0, details: false, rules: false, how: false, lock: null, rcpt: null, leave: false, leaveQ: null, busy: null, err: null, justNow: false, ms: 0, cashAfter: null }; S.st.set(ticker, st); } return st; };
+  const standalone = () => (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
+  const phone = () => window.matchMedia && window.matchMedia("(max-width: 640px)").matches;
+
+  // ---- keyed painting: patch what changed, keep the rest ----
+  // compared against the last string written, not the browser's own serialisation of it (which
+  // differs: entities, attribute order), so an unchanged row is never touched
+  const setHtml = (el, html) => { if (el && el.__h !== html) { el.innerHTML = html; el.__h = html; return true; } return false; };
+  /** reconcile a container's children with a list: one child per key, in order; new children are made, stale ones removed, kept ones patched in place */
+  const syncList = (container, items, keyOf, cls, patch) => {
+    if (!container) return;
+    const have = new Map();
+    for (const el of Array.from(container.children)) have.set(el.getAttribute("data-k"), el);
+    let i = 0;
+    for (const it of items) {
+      const k = keyOf(it);
+      let el = have.get(k);
+      if (!el) { el = document.createElement("div"); el.className = cls; el.setAttribute("data-k", k); }
+      have.delete(k);
+      patch(el, it);
+      if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null);
+      i++;
+    }
+    have.forEach((el) => el.remove());
+  };
+  let toastT = 0;
+  const toast = (html) => {
+    if (!toastEl) return;
+    toastEl.innerHTML = html; toastEl.hidden = false;
+    requestAnimationFrame(() => toastEl.classList.add("on"));
+    clearTimeout(toastT);
+    toastT = setTimeout(() => { toastEl.classList.remove("on"); setTimeout(() => { toastEl.hidden = true; }, 250); }, 3600);
+  };
 
   // ---- the connect screen ----
   const connectHtml = (why) => {
     const m = S.member || {};
     const reason = m.reason === "grant_revoked" ? "Your " + VN + " connection was revoked. Connect again when you are ready." : m.reason === "account_pending" ? "Your " + VN + " account is still pending on their side; connect again once it is open." : m.reason === "refresh_failed" ? "Your " + VN + " connection lapsed. Connect again to continue." : "";
     return '<div class="connect"><h2>Protect your ' + esc(VN) + ' positions</h2>' +
-      '<p>Connect your ' + esc(VN) + ' account once. You sign in on ' + esc(VN) + "'s own page and approve reading your portfolio and placing orders in your account. This page never sees your login or your keys.</p>" +
-      "<ul><li>A lock sells part of a position into " + esc(VN) + "'s bids: the cash lands in your " + esc(VN) + " balance now, the rest rides to the game.</li><li>No one else is on the other side; nothing is hedged for you; no fee.</li><li>Leave early buys the same contracts back from " + esc(VN) + "'s offers.</li></ul>" +
-      (reason ? '<div class="ael-fine">' + esc(reason) + "</div>" : "") +
-      (why ? '<div class="ael-fine ael-err">' + esc(why) + "</div>" : "") +
+      '<p>A lock sells part of a position you hold into ' + esc(VN) + "'s bids, in your own account: the cash lands in your " + esc(VN) + " balance now, the rest rides to the game. No one else is on the other side, nothing is hedged for you, no fee.</p>" +
+      (why ? '<div class="denied">' + WARN + "<div><b>" + esc(VN) + " didn't connect</b>" + esc(why) + " Nothing is connected; your account is untouched.</div></div>" : "") +
+      (reason ? '<div class="ael-fine" style="margin-bottom:12px">' + esc(reason) + "</div>" : "") +
+      '<ol class="steps">' +
+        "<li><div><b>Sign in on " + esc(VN) + "</b><small>" + esc(VN) + "'s own page, in this tab. This page never sees your login.</small></div></li>" +
+        "<li><div><b>Allow once</b><small>One approve screen lists five permissions. Tap Allow.</small>" +
+          '<div class="perm"><span>read profile</span><span>read balance</span><span>read portfolio</span><span>read orders</span><span>place orders</span></div></div></li>' +
+        "<li><div><b>Back here, with your positions</b><small>Each one the service can protect carries its Lock in line.</small></div></li>" +
+      "</ol>" +
+      '<div class="whyw"><b>Why place orders?</b> A lock is a sell order for part of your position, placed in your account at the price you see. Nothing else is ever placed, and you can revoke this on ' + esc(VN) + " at any time.</div>" +
       '<button type="button" class="ael-go" id="connect">' + SHIELD + "Connect " + esc(VN) + " account</button>" + DISCLOSE + "</div>";
   };
+  const connectingHtml = (done) => '<div class="connect connecting">' + (done ? '<div class="ok">' + CHECK + "</div><h2>" + esc(VN) + " connected</h2><p>Reading your positions…</p>" : '<div class="spin"></div><h2>Connecting your ' + esc(VN) + " account…</h2><p>One moment.</p>") + "</div>";
   const connect = async () => {
     const b = document.getElementById("connect") || document.getElementById("reconnect");
     if (b) { b.disabled = true; b.classList.add("ael-busy"); b.textContent = "Opening " + VN + "…"; }
     const r = await api("/api/shadow/member/connect");
     if (r.ok && r.json && r.json.ok && r.json.url) { location.href = r.json.url; return; }
-    main.innerHTML = connectHtml(r.status === 404 ? "This service is not set up for " + VN + " accounts." : words(r.json, "The service could not start the connection."));
-    bind();
+    S.screen = ""; S.flashErr = r.status === 404 ? "This service is not set up for " + VN + " accounts." : words(r.json, "The service could not start the connection.");
+    render();
   };
   const disconnect = async () => {
     const r = await api("/api/shadow/member/disconnect", "POST", {});
     if (r.ok && r.json && r.json.member) S.member = r.json.member;
-    S.positions = []; S.account = null; S.games = null; S.history = null; S.st.clear();
+    S.positions = []; S.account = null; S.games = null; S.history = null; S.st.clear(); S.posAt = 0;
     render();
   };
 
@@ -457,6 +639,7 @@ const JS = String.raw`
   };
   const tierOf = (st) => { const q = st.quote && st.quote.quote; if (!q) return null; return (q.tiers && q.tiers[st.tier]) || q; };
   const outcomes = (t) => ({ floor: t.floorTotalCents, cap: t.capTotalCents, cash: t.cashNowCents != null ? t.cashNowCents : t.creditCents || 0 });
+  const wantOf = (st, contracts) => Math.round(contracts * (TIER_ORDER.indexOf(st.tier) + 2) / 5);
   const slipRows = (nick, o, n, sale) => {
     return '<div class="ael-ledger">' +
       '<div class="ael-lr"><span class="ael-l">' + esc(nick) + ' win</span><b>' + usd(o.cap) + '</b><s>of ' + usd(n * 100) + '</s></div>' +
@@ -531,13 +714,20 @@ const JS = String.raw`
   };
 
   // ---- one position's line and panel ----
-  const lineHtml = (kind, tag, fact, open) => '<button type="button" class="ael-line ael-line-' + kind + (open ? " ael-open" : "") + '"' + (kind === "off" || kind === "wait" ? ' tabindex="-1"' : "") + '><span class="ael-tag">' + (kind === "on" || kind === "offer" ? SHIELD : "") + "<b>" + tag + "</b></span><span class=\"ael-fact\">" + fact + "</span>" + (kind === "off" || kind === "wait" ? "" : CHEV) + "</button>";
+  const inertLine = (kind, tone) => kind === "wait" || (kind === "off" && tone !== "parlay" && tone !== "hist");
+  const lineHtml = (kind, tag, fact, open, tone) => '<button type="button" class="ael-line ael-line-' + kind + (open ? " ael-open" : "") + (tone ? " t-" + tone : "") + '"' + (inertLine(kind, tone) ? ' tabindex="-1"' : "") + '><span class="ael-tag">' + (kind === "on" || kind === "offer" ? SHIELD : "") + "<b>" + tag + "</b></span><span class=\"ael-fact\">" + fact + "</span>" + (inertLine(kind, tone) ? "" : CHEV) + "</button>";
   const timing = (p) => {
     if (!p.startsIso) return null;
     const m = minsTo(p.startsIso);
-    if (m <= 0) return ["In play", "The game has started; protection is pre-game only."];
-    if (m < (S.cutoff || 45)) return ["Too close", "Starts in " + m + " min; locks close " + (S.cutoff || 45) + " minutes before the start."];
+    if (m <= 0) return ["In play", "The game has started; protection is pre-game only.", "live"];
+    if (m < (S.cutoff || 45)) return ["Too close", "Starts in " + m + " min; locks close " + (S.cutoff || 45) + " minutes before the start.", "close"];
     return null;
+  };
+  const legsHtml = (p) => {
+    const legs = p.legs || [];
+    if (!legs.length) return "";
+    const word = { pending: "Pending", live: "Live", won: "Hit", lost: "Missed", void: "Void" };
+    return '<div class="legs-h">' + legs.length + " legs</div><div class=\"legs\">" + legs.map((l) => '<div class="leg"><span class="ld ' + esc(l.state) + '"></span><span class="ln">' + esc(l.side) + (l.event || l.startsIso ? "<small>" + esc(opponentWords(l.side, l.event)) + (l.startsIso ? (l.event ? " · " : "") + esc(fmtAt(l.startsIso)) : "") + "</small>" : "") + '</span><span class="ls ' + esc(l.state) + '">' + (word[l.state] || "Pending") + "</span></div>").join("") + "</div>";
   };
   const rowHtml = (p) => {
     const st = stateOf(p.ticker || p.id);
@@ -546,7 +736,12 @@ const JS = String.raw`
     let line, panel = "";
     if (!p.ticker) {
       const w = reasonWords(p);
-      return '<div class="ael-box">' + lineHtml("off", esc(w[0]), esc(w[1]), false) + "</div>";
+      if (w[2] === "parlay") {
+        const hit = (p.legs || []).filter((l) => l.state === "won").length, n = (p.legs || []).length;
+        const fact = n ? (hit ? "<b>" + hit + " of " + n + "</b> legs hit so far · " : "") + "protection on parlays is coming" : esc(w[1]);
+        return '<div class="ael-box">' + lineHtml("off", esc(w[0]), fact, st.open, "parlay") + (st.open && n ? '<div class="ael-panel ael-on">' + legsHtml(p) + '<div class="ael-fine">This ticket rides as it is; protection on the last open leg is coming.</div>' + DISCLOSE + "</div>" : "") + "</div>";
+      }
+      return '<div class="ael-box">' + lineHtml("off", esc(w[0]), esc(w[1]), false, w[2]) + "</div>";
     }
     if (lock && lock.status === "settled") {
       const won = lock.result === "win" || lock.result === "yes";
@@ -572,20 +767,21 @@ const JS = String.raw`
       panel = st.open ? '<div class="ael-panel ael-on"><div class="ael-ph"><b>Your position is whole again</b><span>' + c.contracts + " bought back on " + esc(VN) + " for " + usd(c.costCents) + "; the sale had paid " + usd(c.cashCents) + ". Unprotected now; a new offer follows once the book is read again.</span></div>" + DISCLOSE + "</div>" : "";
     } else if (timing(p) && !(st.quote && st.quote.ok)) {
       const w = timing(p);
-      line = lineHtml("off", w[0], esc(w[1]), false);
+      line = lineHtml("off", w[0], esc(w[1]), false, w[2]);
     } else if (!st.quote) {
       line = lineHtml("wait", "Lock in", "Pricing from " + esc(VN) + "'s book…", false);
     } else if (!st.quote.ok) {
       const w = refusalWords(st.quote);
-      line = lineHtml("off", w[0], esc(w[1]), false);
+      line = lineHtml("off", w[0], esc(w[1]), false, w[0] === "In play" ? "live" : w[0] === "Too close" ? "close" : "");
     } else {
       const t = tierOf(st), o = outcomes(t);
-      line = lineHtml("offer", "Lock in", "Lose, and still get <b>" + usd(o.floor) + "</b>.", st.open);
+      const limited = t.depthLimited ? ' <span class="ael-dim">· ' + VN + "'s book takes " + t.soldContracts + " of " + wantOf(st, p.contracts) + "</span>" : "";
+      line = lineHtml("offer", "Lock in", "Lose, and still get <b>" + usd(o.floor) + "</b>." + limited, st.open);
       if (st.open) {
         const busy = st.busy === "lock";
         panel = '<div class="ael-panel ael-on">' + slipRows(nick, o, p.contracts, false) +
           shapeHtml(st) +
-          (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">Only ' + t.soldContracts + " of the " + Math.round(p.contracts * (TIER_ORDER.indexOf(st.tier) + 2) / 5) + " this shape would sell can sell at this price right now; the rest rides.</div>" : "") +
+          (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">' + esc(VN) + "'s bids take " + t.soldContracts + " of the " + wantOf(st, p.contracts) + " this shape would sell right now; the rest rides. The figures above are for the " + t.soldContracts + ".</div>" : "") +
           '<div class="ael-offer-acts"><button type="button" class="ael-go ael-pillgo' + (busy ? " ael-busy" : "") + '" data-act="lock"' + (busy ? " disabled" : "") + ">" + (busy ? esc(st.busyWords || "Selling into the bid…") : SHIELD + "Lock in") + '</button><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" +
           (st.err ? '<div class="ael-fine ael-err">' + esc(st.err) + "</div>" : "") +
           (st.details ? detailsHtml(p, st, false) : "") + DISCLOSE + "</div>";
@@ -593,20 +789,20 @@ const JS = String.raw`
     }
     return '<div class="ael-box">' + line + panel + "</div>";
   };
-  const rowEl = (p) => document.querySelector('[data-pos="' + CSS.escape(p.ticker || p.id) + '"] .ael-row');
+  const posKey = (p) => p.ticker || p.id;
+  const rowEl = (p) => document.querySelector('.pos[data-k="' + CSS.escape(posKey(p)) + '"] .ael-row');
   const paintRow = (p) => {
     const el = rowEl(p);
     if (!el) return;
-    const html = rowHtml(p);
-    if (el.innerHTML !== html) { el.innerHTML = html; bindRow(el, p); }
+    if (setHtml(el, rowHtml(p))) bindRow(el, p);
     const head = el.parentElement && el.parentElement.querySelector(".pos-h-wrap");
-    if (head) { const h = posHead(p); if (head.innerHTML !== h) head.innerHTML = h; }
-    if (S.flash === p.ticker) { S.flash = null; const l = el.querySelector(".ael-line"); if (l) l.classList.add("ael-flash"); }
+    if (head) setHtml(head, posHead(p));
+    if (S.flash && S.flash === p.ticker) { S.flash = null; const l = el.querySelector(".ael-line"); if (l) l.classList.add("ael-flash"); }
   };
   const bindRow = (el, p) => {
-    const st = stateOf(p.ticker || p.id);
+    const st = stateOf(posKey(p));
     const line = el.querySelector(".ael-line");
-    if (line && !line.classList.contains("ael-line-wait") && !line.classList.contains("ael-line-off")) line.onclick = () => { st.open = !st.open; if (st.open && p.lock && p.lock.status !== "closed" && !st.rcpt) loadReceipt(p); paintRow(p); };
+    if (line && !line.classList.contains("ael-line-wait") && !(line.classList.contains("ael-line-off") && !line.classList.contains("t-parlay"))) line.onclick = () => { st.open = !st.open; if (st.open && p.lock && p.lock.status !== "closed" && !st.rcpt && p.ticker) loadReceipt(p); paintRow(p); };
     el.querySelectorAll("[data-tg]").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); const k = b.getAttribute("data-tg"); st[k] = !st[k]; paintRow(p); }; });
     el.querySelectorAll(".ael-shape-b").forEach((b) => { b.onclick = () => { st.tier = b.getAttribute("data-tier"); rememberTier(st.tier); paintRow(p); }; });
     el.querySelectorAll("[data-act]").forEach((b) => {
@@ -639,7 +835,9 @@ const JS = String.raw`
       st.justNow = true; st.ms = Date.now() - t0; st.rcpt = null; st.details = false; st.cashAfter = null;
       p.lock = { at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: 0, route: "member_sale", floorTotalCents: r.json.floorTotalCents, capTotalCents: r.json.capTotalCents, memberSale: r.json.memberSale, compared: r.json.compared, tails: r.json.tails, rules: r.json.rules };
       st.lock = r.json; st.open = true; S.flash = p.ticker;
-      paintRow(p);
+      paintRow(p); paintTabs();
+      const ms = r.json.memberSale || {};
+      toast("<b>" + signed(ms.cashNowCents || 0) + "</b> in your " + esc(VN) + " balance · " + ms.keptContracts + " riding");
       setTimeout(() => void loadPositions(true), 1500);
       setTimeout(async () => { await loadAccount(true); const a = S.account; if (a && a.balance && a.balance.accountCents != null) { st.cashAfter = a.balance.accountCents; S.pulse = Date.now(); paintBalance(); paintRow(p); } }, 1200);
       return;
@@ -670,10 +868,11 @@ const JS = String.raw`
       st.closedNow = { at: Date.now(), contracts: bb.contracts != null ? bb.contracts : back.boughtContracts || 0, avgPriceCents: bb.avgPriceCents != null ? bb.avgPriceCents : back.avgPriceCents || 0, costCents: bb.costCents != null ? bb.costCents : back.costCents || 0, cashCents: u.cashNowCents || 0, netCents: u.closeNetCents || 0 };
       st.leave = false; st.open = true; st.quote = null; st.quoteAt = 0; st.rcpt = null; st.lock = null; st.cashAfter = null;
       p.lock = null;
-      paintRow(p);
+      paintRow(p); paintTabs();
+      toast("Bought back " + st.closedNow.contracts + " · <b>" + signed(st.closedNow.netCents) + "</b> net in your " + esc(VN) + " balance");
       setTimeout(() => void loadPositions(true), 1500);
       setTimeout(() => { void loadAccount(true).then(() => { S.pulse = Date.now(); paintBalance(); }); }, 1200);
-      S.history = null;
+      S.history = null; void loadHistory();
       return;
     }
     st.leaveQ = r.json || { ok: false, code: r.ok ? "unavailable" : "venue_unreachable" };
@@ -682,125 +881,201 @@ const JS = String.raw`
 
   // ---- the portfolio ----
   const posHead = (p) => {
+    const parlay = p.reason === "parlay";
     const sold = p.lock && p.lock.status === "open" && p.lock.memberSale && p.lock.memberSale.soldContracts > 0 ? p.lock.memberSale.soldContracts : 0;
     const tm = p.ticker ? timing(p) : null;
-    const until = p.ticker && p.startsIso && !tm && !(p.lock && p.lock.status !== "closed") ? '<span class="d">·</span><span class="until">Lock in until ' + esc(fmtClock(Date.parse(p.startsIso) - (S.cutoff || 45) * 60000)) + "</span>" : "";
-    const what = p.reason === "parlay" ? esc(p.side || p.event || "Parlay") : esc(p.side || "Position") + " to win";
-    return '<div class="pos-h"><div class="name">' + what + '</div><div class="pays"><small>pays</small>' + usd(p.payoutCents) + "</div></div>" +
-      '<div class="meta"><b>' + p.contracts + "</b> contracts" + (sold ? '<span class="d">·</span><span class="sold">' + sold + " sold</span>" : "") + (p.entryCents != null ? '<span class="d">·</span>avg ' + cents(p.entryCents) : "") + (p.event ? '<span class="d">·</span>' + esc(p.event) : "") + (p.startsIso ? '<span class="d">·</span>' + esc(fmtAt(p.startsIso)) : "") + until + "</div>";
+    const legs = p.legs || [];
+    const name = parlay ? esc((legs.length ? legs.length + "-leg " : "") + "Combo") : esc(p.side || "Position") + "<small>to win</small>";
+    const evt = parlay ? (legs.length ? esc(legs.map((l) => nickOf(l.side)).join(" · ")) : esc(p.event || "")) : "<b>" + esc(opponentWords(p.side, p.event)) + "</b>" + (p.startsIso ? " · " + esc(fmtAt(p.startsIso)) : "");
+    const chips = ['<span class="chip"><b>' + p.contracts + "</b> contracts</span>"];
+    if (sold) chips.push('<span class="chip sold"><b>' + sold + "</b> sold</span>");
+    if (p.entryCents != null) chips.push('<span class="chip">avg <b>' + cents(p.entryCents) + "</b></span>");
+    if (parlay && p.startsIso) chips.push('<span class="chip">first leg ' + esc(fmtAt(p.startsIso)) + "</span>");
+    if (p.ticker && p.startsIso && !tm && !(p.lock && p.lock.status !== "closed")) chips.push('<span class="chip until">' + CLOCK + "Lock in until " + esc(fmtClock(Date.parse(p.startsIso) - (S.cutoff || 45) * 60000)) + "</span>");
+    return '<div class="pos-h">' + (parlay ? PARLAY_MARK : markHtml(p.side)) + '<div class="pos-t"><div class="name">' + name + '</div><div class="evt">' + evt + '</div></div><div class="pays"><small>pays</small>' + usd(p.payoutCents) + "</div></div>" +
+      '<div class="chips">' + chips.join("") + "</div>";
   };
-  const posHtml = (p) => '<div class="pos' + (p.ticker ? "" : " muted") + '" data-pos="' + esc(p.ticker || p.id) + '"><div class="pos-h-wrap">' + posHead(p) + '</div><div class="ael-row">' + rowHtml(p) + "</div></div>";
+  const patchPos = (el, p) => {
+    if (!el.firstChild) el.innerHTML = '<div class="pos-h-wrap"></div><div class="ael-row"></div>';
+    el.classList.toggle("muted", !p.ticker);
+    setHtml(el.querySelector(".pos-h-wrap"), posHead(p));
+    const row = el.querySelector(".ael-row");
+    if (setHtml(row, rowHtml(p))) bindRow(row, p);
+  };
   const balanceHtml = () => {
     const a = S.account;
-    if (!a) return '<div class="bal"><span>' + esc(VN) + ' balance</span><span class="ael-dim">reading…</span></div>';
-    if (a.balanceScope === false) return '<div class="bal"><span>' + esc(VN) + ' balance</span><span>not shared with this page yet</span><span class="r"><button type="button" class="lnk" id="reconnect">Reconnect to show it</button></span></div>';
-    const b = a.balance || {};
-    const pulse = Date.now() - S.pulse < 2000 ? " pulse" : "";
     const m = S.member || {};
     const who = m.connected ? '<span class="who">' + (m.avatarUrl ? '<img src="' + esc(m.avatarUrl) + '" alt="">' : "") + "<b>" + (m.handle ? "@" + esc(m.handle) : esc(VN) + " account") + "</b></span>" : "";
-    return '<div class="bal">' + who + '<span class="' + pulse.trim() + '">' + esc(VN) + ' balance <b>' + (b.accountCents != null ? usd(b.accountCents) : "—") + "</b></span>" + (b.availableCents != null && b.availableCents !== b.accountCents ? '<span class="av">available ' + usd(b.availableCents) + "</span>" : "") + '<span class="r">' + (b.atIso ? "read " + esc(fmtAt(b.atIso)) : "") + "</span></div>";
+    if (!a) return '<div class="bal">' + who + '<span>' + esc(VN) + ' balance</span><span class="sk" style="width:90px;height:18px"></span></div>';
+    if (a.balanceScope === false) return '<div class="bal">' + who + '<span>' + esc(VN) + ' balance</span><span>not shared with this page yet</span><span class="r"><button type="button" class="lnk" id="reconnect">Reconnect to show it</button></span></div>';
+    const b = a.balance || {};
+    const pulse = Date.now() - S.pulse < 2000 ? " pulse" : "";
+    return '<div class="bal">' + who + '<span class="' + pulse.trim() + '">' + esc(VN) + ' balance <b>' + (b.accountCents != null ? usd(b.accountCents) : "—") + "</b></span>" + (b.availableCents != null && b.availableCents !== b.accountCents ? '<span class="av">available ' + usd(b.availableCents) + "</span>" : "") + '<span class="r" id="bal-at"></span></div>';
   };
-  const paintBalance = () => { const el = document.getElementById("bal"); if (el) { el.innerHTML = balanceHtml(); const rc = document.getElementById("reconnect"); if (rc) rc.onclick = () => void connect(); } };
-  const portfolioHtml = () => {
+  const stampBalance = () => { const a = document.getElementById("bal-at"); if (a) a.textContent = S.acctAt ? "updated " + ago(S.acctAt) : ""; };
+  const paintBalance = () => { const el = document.getElementById("bal"); if (el && setHtml(el, balanceHtml())) { const rc = document.getElementById("reconnect"); if (rc) rc.onclick = () => void connect(); } stampBalance(); };
+  const hsTipHtml = () => '<div class="note" id="hs-tip"><div class="hs"><p><b>Add Lock in to your home screen</b> for one tap back here after a buy on ' + esc(VN) + ". " + (/iPhone|iPad/.test(navigator.userAgent) ? "Tap Share, then <b>Add to Home Screen</b>." : "Open the browser menu, then <b>Add to Home screen</b>.") + '</p></div><button type="button" class="x" aria-label="Dismiss">×</button></div>';
+  const skeleton = (n) => { let h = ""; for (let i = 0; i < n; i++) h += '<div class="skrow"><div class="sk a"></div><div class="sk b"></div><div class="sk c"></div></div>'; return h; };
+  const portfolioScaffold = () => {
+    main.innerHTML = "<h1>Portfolio</h1>" + '<div id="bal"></div><div id="notes"></div><div id="grp-live" class="rows"></div><h2 class="grp" id="grp-rest-h" hidden>Not protectable right now</h2><div id="grp-rest" class="rows"></div><div id="empty"></div><div class="status" id="pos-at"></div>';
+    paintBalance();
+  };
+  const syncPortfolio = () => {
+    if (S.screen !== "portfolio") return;
+    paintBalance();
     const list = S.positions;
     const live = list.filter((p) => p.ticker && p.lock && p.lock.status !== "closed");
     const offer = list.filter((p) => p.ticker && !(p.lock && p.lock.status !== "closed") && !timing(p));
     const rest = list.filter((p) => !p.ticker || (!(p.lock && p.lock.status !== "closed") && timing(p)));
-    return "<h1>Portfolio</h1>" +
-      '<div id="bal">' + balanceHtml() + "</div>" +
-      (S.flashOk && Date.now() < S.flashOkUntil ? '<div class="note ok">' + esc(S.flashOk) + "</div>" : "") +
-      (S.posErr ? '<div class="note err">' + esc(S.posErr) + "</div>" : "") +
-      (list.length ? '<div class="rows">' + live.concat(offer).map(posHtml).join("") + "</div>" + (rest.length ? '<h2 class="grp">Not protectable right now</h2><div class="rows">' + rest.map(posHtml).join("") + "</div>" : "") : S.posAt ? '<div class="empty">No open positions in your ' + esc(VN) + " account. Buy a game winner on " + esc(VN) + " and it shows here with its Lock in line; the Games tab lists the ones this service protects.</div>" : '<div class="ael-wait">Reading your positions…</div>') +
-      (S.posAt ? '<div class="status">Positions read ' + esc(fmtAt(new Date(S.posAt).toISOString())) + "</div>" : "");
+    let notes = "";
+    if (S.flashOk && Date.now() < S.flashOkUntil) notes += '<div class="note ok">' + esc(S.flashOk) + "</div>";
+    if (S.posErr) notes += '<div class="note err">' + esc(S.posErr) + "</div>";
+    if (S.hsTip) notes += hsTipHtml();
+    if (setHtml(document.getElementById("notes"), notes)) { const x = document.querySelector("#hs-tip .x"); if (x) x.onclick = () => { S.hsTip = false; try { localStorage.setItem(HS_KEY, "1"); } catch (e) {} syncPortfolio(); }; }
+    syncList(document.getElementById("grp-live"), live.concat(offer), posKey, "pos", patchPos);
+    document.getElementById("grp-rest-h").hidden = !rest.length;
+    syncList(document.getElementById("grp-rest"), rest, posKey, "pos", patchPos);
+    const empty = document.getElementById("empty");
+    setHtml(empty, list.length ? "" : S.posAt ? '<div class="empty">No open positions in your ' + esc(VN) + " account.<br>Buy a game winner on " + esc(VN) + ' and it shows here with its Lock in line; <a href="#games" data-tab="games">the Games tab</a> lists the ones this service protects.</div>' : skeleton(3));
+    empty.querySelectorAll("[data-tab]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); showTab("games"); }; });
+    setHtml(document.getElementById("pos-at"), S.posAt ? "Positions updated " + esc(ago(S.posAt)) : "");
+    offer.forEach((p) => void quoteFor(p, false));
   };
 
   // ---- the games ----
-  const gamesHtml = () => {
-    if (S.gamesErr) return "<h1>Games</h1>" + '<div class="note err">' + esc(S.gamesErr) + "</div>";
-    if (!S.games) return "<h1>Games</h1>" + '<div class="ael-wait">Reading what ' + esc(VN) + " lists…</div>";
-    const g = S.games.games || [];
-    const byEvent = new Map();
-    g.forEach((x) => { const k = (x.event || "") + "|" + (x.startIso || ""); if (!byEvent.has(k)) byEvent.set(k, []); byEvent.get(k).push(x); });
-    const vurl = S.games.venueUrl || CFG.venueUrl;
-    let html = "<h1>Games</h1>" + '<p class="sub">Games this service can protect that ' + esc(VN) + " lists right now. Buy a winner on " + esc(VN) + "; back here, the position carries its Lock in line.</p>";
-    if (!g.length) return html + '<div class="empty">Nothing protectable on ' + esc(VN) + " right now. Games appear here once both " + esc(VN) + " and this service list them.</div>";
-    byEvent.forEach((sides, k) => {
-      const first = sides[0];
-      html += '<div class="game"><div class="game-h"><b>' + esc(first.event) + "</b><span>" + esc(fmtAt(first.startIso)) + "</span>" + (first.startIso ? '<span class="until">Lock in until ' + esc(fmtClock(Math.min(Date.parse(first.startIso) - (S.cutoff || 45) * 60000, first.untilIso ? Date.parse(first.untilIso) : Infinity))) + "</span>" : "") + '</div><div class="sides">' +
-        sides.map((s) => {
-          const v = s.venue || {};
-          const priceWords = v.bestBidCents != null ? "<b>" + cents(v.bestBidCents) + "</b> bid on " + esc(VN) + (v.floorFromCents != null ? " · a Max floor lock keeps about <b>" + cents(v.floorFromCents) + "</b> a contract on a loss" : "") : "no bid on " + esc(VN) + " yet";
-          const act = s.held ? '<span class="have"><a href="#" data-tab="portfolio">In your portfolio</a></span>' : v.url ? '<a class="buy" href="' + esc(v.url) + '" rel="noopener">Buy on ' + esc(VN) + OUT + "</a>" : vurl ? '<a class="buy" href="' + esc(vurl) + '" rel="noopener">Open ' + esc(VN) + OUT + "</a>" : "";
-          return '<div class="side"><div class="sn">' + esc(s.side) + " to win<small>" + priceWords + "</small></div>" + act + "</div>";
-        }).join("") + "</div></div>";
+  const gameKey = (g) => g.event + "|" + g.startIso;
+  const gamesScaffold = () => {
+    main.innerHTML = "<h1>Games</h1>" + '<p class="sub">Games this service can protect that ' + esc(VN) + " lists right now. Buy a winner on " + esc(VN) + "; back here, the position carries its Lock in line. The amber price is " + esc(VN) + "'s best bid; the floor is what a Max floor lock would keep per contract on a loss.</p>" + '<div class="gbar" id="gbar"></div><div id="glist"></div><div id="gmore"></div><div class="status" id="g-at"></div>';
+  };
+  const leagueWord = (l) => String(l || "").toUpperCase();
+  const syncGames = () => {
+    if (S.screen !== "games") return;
+    const G = S.games;
+    const glist = document.getElementById("glist");
+    if (S.gamesErr) { setHtml(glist, '<div class="note err">' + esc(S.gamesErr) + "</div>"); return; }
+    if (!G) { setHtml(glist, skeleton(3)); return; }
+    const all = G.games || [];
+    const leagues = Array.from(new Set(all.map((g) => g.league))).sort();
+    const heldN = all.filter((g) => g.held).length;
+    const bar = (leagues.length > 1 ? [["all", "All"]].concat(leagues.map((l) => [l, leagueWord(l)])) : []).concat(heldN ? [["held", "In your portfolio"]] : []);
+    if (setHtml(document.getElementById("gbar"), bar.length ? bar.map(([k, w]) => '<button type="button" class="f" data-f="' + esc(k) + '" aria-pressed="' + (S.gLeague === k) + '">' + esc(w) + "</button>").join("") + '<span class="n">' + all.length + " games</span>" : "")) {
+      document.querySelectorAll("#gbar [data-f]").forEach((b) => { b.onclick = () => { S.gLeague = b.getAttribute("data-f"); S.gAll = false; syncGames(); window.scrollTo({ top: 0 }); }; });
+    }
+    const filtered = all.filter((g) => S.gLeague === "all" || (S.gLeague === "held" ? g.held : g.league === S.gLeague));
+    // by game, then by day; held games first within a day
+    const byGame = new Map();
+    for (const g of filtered) { const k = gameKey(g); if (!byGame.has(k)) byGame.set(k, []); byGame.get(k).push(g); }
+    const games = Array.from(byGame.values()).map((sides) => ({ key: gameKey(sides[0]), sides, held: sides.some((s) => s.held), day: dayKey(sides[0].startIso), startIso: sides[0].startIso }));
+    games.sort((a, b) => a.day.localeCompare(b.day) || (b.held - a.held) || Date.parse(a.startIso) - Date.parse(b.startIso) || a.key.localeCompare(b.key));
+    const days = Array.from(new Set(games.map((g) => g.day)));
+    const shownDays = S.gAll || days.length <= 2 ? days : days.slice(0, 2);
+    const hidden = games.filter((g) => !shownDays.includes(g.day)).length;
+    const dayItems = shownDays.map((d) => ({ day: d, games: games.filter((g) => g.day === d) }));
+    if (!games.length) { setHtml(glist, '<div class="empty">' + (all.length ? "Nothing here under this filter." : "Nothing protectable on " + esc(VN) + " right now. Games appear here once both " + esc(VN) + " and this service list them.") + "</div>"); setHtml(document.getElementById("gmore"), ""); return; }
+    if (glist.firstChild && glist.firstChild.className !== "day") glist.innerHTML = "";
+    syncList(glist, dayItems, (d) => d.day, "day", (el, d) => {
+      if (!el.firstChild) el.innerHTML = '<div class="day-h"></div><div class="dgames"></div>';
+      const [w, sub] = dayLabel(d.day);
+      setHtml(el.querySelector(".day-h"), esc(w) + (sub ? "<small>" + esc(sub) + "</small>" : "") + "<small>" + d.games.length + (d.games.length === 1 ? " game" : " games") + "</small>");
+      syncList(el.querySelector(".dgames"), d.games, (g) => g.key, "game", (gel, g) => {
+        gel.classList.toggle("held", g.held);
+        const first = g.sides[0];
+        const until = first.startIso ? Math.min(Date.parse(first.startIso) - (S.cutoff || 45) * 60000, first.untilIso ? Date.parse(first.untilIso) : Infinity) : null;
+        const html = '<div class="game-h"><span class="chip lg">' + esc(leagueWord(first.league)) + "</span><b>" + esc(first.event) + '</b><span class="gt">' + CLOCK + esc(fmtAt(first.startIso)) + "</span>" + (until ? '<span class="until">Lock in until ' + esc(fmtClock(until)) + "</span>" : "") + '</div><div class="sides">' +
+          g.sides.map((s) => {
+            const v = s.venue || {};
+            const px = v.bestBidCents != null ? '<span class="chip price">' + cents(v.bestBidCents) + "</span>" + (v.floorFromCents != null ? '<span class="chip floor">floor ≈ <b>' + cents(v.floorFromCents) + "</b></span>" : "") : v.lastCents != null ? '<span class="chip">last ' + cents(v.lastCents) + "</span>" : '<span class="chip">no bid yet</span>';
+            const act = s.held ? '<a class="have" href="#" data-tab="portfolio">In your portfolio</a>' : v.url ? '<a class="buy" href="' + esc(v.url) + '" target="_blank" rel="noopener">Buy on ' + esc(VN) + OUT + "</a>" : "";
+            return '<div class="side' + (s.held ? " held" : "") + '">' + markHtml(s.side, "sm") + '<div class="sn">' + esc(s.side) + "<small>" + (s.home === true ? "home" : s.home === false ? "away" : "") + (s.opponent ? (s.home === true ? " · vs " : s.home === false ? " · at " : "") + esc(s.opponent) : "") + '</small></div><div class="px">' + px + "</div>" + act + "</div>";
+          }).join("") + "</div>";
+        if (setHtml(gel, html)) gel.querySelectorAll("[data-tab]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); showTab("portfolio"); }; });
+      });
     });
-    html += '<div class="status">' + esc(VN) + " read " + esc(fmtAt(S.games.readAt)) + "</div>";
-    return html;
+    if (setHtml(document.getElementById("gmore"), hidden ? '<button type="button" class="more" id="gmore-b">Show ' + hidden + " more " + (hidden === 1 ? "game" : "games") + " on later days</button>" : "")) { const b = document.getElementById("gmore-b"); if (b) b.onclick = () => { S.gAll = true; syncGames(); }; }
+    setHtml(document.getElementById("g-at"), G.readAt ? esc(VN) + " updated " + esc(ago(Date.parse(G.readAt))) : "");
   };
 
   // ---- the history ----
   const histWords = (r) => {
     const nick = nickOf(r.side);
-    if (r.status === "settled") { const won = r.result === "yes" || r.result === "win"; return ["Settled", nick + (won ? " won · " : " lost · ") + "<b>" + usd(won ? (r.capTotalCents || r.protectedCents || 0) : (r.floorTotalCents || r.protectedCents || 0)) + "</b> all in"]; }
-    if (r.status === "closed") { const bb = r.memberBuyBack; return ["Left early", "net <b>" + signed(r.closeNetCents || 0) + "</b>" + (bb ? " · bought back " + bb.boughtContracts + " at " + cents(bb.avgPriceCents) : "")]; }
-    if (r.status === "void") return ["Void", "the game was called off; the sale stands, the riding contracts were settled by " + VN];
-    return ["Protected", "<b>" + usd(r.floorTotalCents || 0) + "</b> or <b>" + usd(r.capTotalCents || 0) + "</b>"];
+    if (r.status === "settled") { const won = r.result === "yes" || r.result === "win"; return ["Settled", nick + (won ? " won · " : " lost · ") + "<b>" + usd(won ? (r.capTotalCents || r.protectedCents || 0) : (r.floorTotalCents || r.protectedCents || 0)) + "</b> all in", won ? "on" : "off"]; }
+    if (r.status === "closed") { const bb = r.memberBuyBack; return ["Left early", "net <b>" + signed(r.closeNetCents || 0) + "</b>" + (bb ? " · bought back " + bb.boughtContracts + " at " + cents(bb.avgPriceCents) : ""), "off"]; }
+    if (r.status === "void") return ["Void", "the game was called off; the sale stands, the riding contracts were settled by " + VN, "off"];
+    return ["Protected", "<b>" + usd(r.floorTotalCents || 0) + "</b> or <b>" + usd(r.capTotalCents || 0) + "</b>", "on"];
   };
-  const historyHtml = () => {
-    if (!S.history) return "<h1>History</h1>" + '<div class="ael-wait">Reading your record…</div>';
+  const histKey = (r) => "h:" + r.ticker + ":" + r.at;
+  const historyScaffold = () => { main.innerHTML = "<h1>History</h1>" + '<div id="hlist" class="rows"></div><div id="hempty"></div>'; };
+  const syncHistory = () => {
+    if (S.screen !== "history") return;
+    const hlist = document.getElementById("hlist");
+    if (!S.history) { setHtml(document.getElementById("hempty"), skeleton(2)); return; }
     const past = S.history.filter((r) => r.status !== "open");
-    let html = "<h1>History</h1>";
-    if (!past.length) return html + '<div class="empty">No past locks yet. Settled and closed locks live here with their receipts; open ones are on Portfolio.</div>';
-    html += '<div class="rows">' + past.map((r) => {
-      const st = stateOf("h:" + r.ticker + ":" + r.at);
+    setHtml(document.getElementById("hempty"), past.length ? "" : '<div class="empty">No past locks yet.<br>Settled and closed locks live here with their receipts; open ones are on Portfolio.</div>');
+    syncList(hlist, past, histKey, "hist", (el, r) => {
+      const st = stateOf(histKey(r));
       const w = histWords(r);
       const ms = r.memberSale || {};
-      return '<div class="hist" data-pos="' + esc("h:" + r.ticker + ":" + r.at) + '"><div class="meta"><b>' + esc(r.side) + " to win</b> · " + esc(r.event || "") + (r.eventTimeIso ? " · " + esc(fmtDay(r.eventTimeIso)) : "") + (ms.soldContracts != null ? " · sold " + ms.soldContracts + " of " + (ms.soldContracts + ms.keptContracts) : "") + '</div><div class="ael-row"><div class="ael-box">' + lineHtml("on", w[0], w[1], st.open) + (st.open ? '<div class="ael-panel ael-on">' + detailsHtml({ contracts: r.contracts }, st, true, r) + '<div class="ael-meta">Locked ' + esc(fmtAt(r.at)) + (r.closedAt ? " · left " + esc(fmtAt(r.closedAt)) : r.settledAt ? " · settled " + esc(fmtAt(r.settledAt)) : "") + "</div>" + DISCLOSE + "</div>" : "") + "</div></div></div>";
-    }).join("") + "</div>";
-    return html;
-  };
-  const bindHistory = () => {
-    S.history && S.history.forEach((r) => {
-      const key = "h:" + r.ticker + ":" + r.at;
-      const el = document.querySelector('[data-pos="' + CSS.escape(key) + '"]');
-      if (!el) return;
-      const st = stateOf(key);
-      const line = el.querySelector(".ael-line");
-      if (line) line.onclick = () => { st.open = !st.open; render(); };
-      el.querySelectorAll("[data-tg]").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); st[b.getAttribute("data-tg")] = !st[b.getAttribute("data-tg")]; render(); }; });
+      const chips = [];
+      if (ms.soldContracts != null) chips.push('<span class="chip sold"><b>' + ms.soldContracts + "</b> of " + (ms.soldContracts + ms.keptContracts) + " sold</span>");
+      if (r.tier) chips.push('<span class="chip">' + esc(TIER_WORDS[r.tier] || r.tier) + "</span>");
+      chips.push('<span class="chip">locked ' + esc(fmtDay(r.at)) + "</span>");
+      const html = '<div class="pos-h">' + markHtml(r.side) + '<div class="pos-t"><div class="name">' + esc(r.side) + '<small>to win</small></div><div class="evt"><b>' + esc(opponentWords(r.side, r.event)) + "</b>" + (r.eventTimeIso ? " · " + esc(fmtAt(r.eventTimeIso)) : "") + "</div></div></div>" +
+        '<div class="chips">' + chips.join("") + "</div>" +
+        '<div class="ael-row"><div class="ael-box">' + lineHtml(w[2], w[0], w[1], st.open, w[2] === "off" ? "hist" : "") + (st.open ? '<div class="ael-panel ael-on">' + detailsHtml({ contracts: r.contracts }, st, true, r) + '<div class="ael-meta">Locked ' + esc(fmtAt(r.at)) + (r.closedAt ? " · left " + esc(fmtAt(r.closedAt)) : r.settledAt ? " · settled " + esc(fmtAt(r.settledAt)) : "") + "</div>" + DISCLOSE + "</div>" : "") + "</div></div>";
+      if (setHtml(el, html)) {
+        const line = el.querySelector(".ael-line");
+        if (line) line.onclick = () => { st.open = !st.open; syncHistory(); };
+        el.querySelectorAll("[data-tg]").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); st[b.getAttribute("data-tg")] = !st[b.getAttribute("data-tg")]; syncHistory(); }; });
+      }
     });
   };
 
   // ---- the frame ----
-  const acctHtml = () => {
-    const m = S.member;
+  let acctKey = null;
+  const paintAcct = () => {
+    const m = S.member || {};
+    const key = [Boolean(m.connected), m.handle || "", m.avatarUrl || ""].join("|");
+    if (key === acctKey) return;
+    acctKey = key;
     const back = CFG.venueUrl ? '<a class="back" href="' + esc(CFG.venueUrl) + '" rel="noopener"><span><span class="l">Back to </span>' + esc(VN) + "</span>" + OUT + "</a>" : "";
-    if (!(m && m.connected)) return back;
-    const who = '<span class="who">' + (m.avatarUrl ? '<img src="' + esc(m.avatarUrl) + '" alt="">' : "") + (m.handle ? "<b>@" + esc(m.handle) + "</b>" : '<b>' + esc(VN) + " connected</b>") + "</span>";
-    return who + '<button type="button" class="lnk" id="disconnect">Disconnect</button>' + back;
+    acct.innerHTML = (m.connected ? '<span class="who">' + (m.avatarUrl ? '<img src="' + esc(m.avatarUrl) + '" alt="">' : "") + (m.handle ? "<b>@" + esc(m.handle) + "</b>" : '<b>' + esc(VN) + " connected</b>") + '</span><button type="button" class="lnk" id="disconnect">Disconnect</button>' : "") + back;
+    const d = document.getElementById("disconnect"); if (d) d.onclick = (e) => { e.preventDefault(); void disconnect(); };
+    const df = document.getElementById("disconnect-foot"); if (df) { df.hidden = !m.connected; const b = document.getElementById("disconnect-foot-btn"); if (b) b.onclick = () => void disconnect(); }
   };
   const tabsHtml = () => {
     const live = S.positions.filter((p) => p.ticker && p.lock && p.lock.status !== "closed").length;
     const past = S.history ? S.history.filter((r) => r.status !== "open").length : 0;
-    const games = S.games ? (S.games.games || []).length : 0;
+    const games = S.games ? new Set((S.games.games || []).map(gameKey)).size : 0;
     return [["portfolio", "Portfolio", live], ["games", "Games", games], ["history", "History", past]].map(([k, w, n]) => '<button type="button" role="tab" data-tab="' + k + '" aria-selected="' + (S.tab === k) + '">' + w + (n ? '<span class="n">' + n + "</span>" : "") + "</button>").join("");
   };
-  const render = () => {
-    acct.innerHTML = acctHtml();
-    const d = document.getElementById("disconnect"); if (d) d.onclick = (e) => { e.preventDefault(); void disconnect(); };
-    const df = document.getElementById("disconnect-foot"); if (df) { df.hidden = !(S.member && S.member.connected); const b = document.getElementById("disconnect-foot-btn"); if (b) b.onclick = () => void disconnect(); }
-    if (!CFG.configured) { tabs.hidden = true; main.innerHTML = '<div class="connect"><h2>Not set up</h2><p>This service is not set up for ' + esc(VN) + " accounts.</p></div>"; return; }
+  const paintTabs = () => { if (setHtml(tabs, tabsHtml())) tabs.querySelectorAll("[data-tab]").forEach((b) => { b.onclick = () => showTab(b.getAttribute("data-tab")); }); };
+  const screenOf = () => {
+    if (!CFG.configured) return "off";
     const m = S.member;
-    if (!m) { tabs.hidden = true; main.innerHTML = '<div class="ael-wait">Checking your ' + esc(VN) + " connection…</div>"; return; }
-    if (!m.connected) { tabs.hidden = true; main.innerHTML = connectHtml(S.flashErr); S.flashErr = null; bind(); return; }
-    tabs.hidden = false; tabs.innerHTML = tabsHtml();
-    tabs.querySelectorAll("[data-tab]").forEach((b) => { b.onclick = () => showTab(b.getAttribute("data-tab")); });
-    if (S.tab === "games") { main.innerHTML = gamesHtml(); main.querySelectorAll("[data-tab]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); showTab(a.getAttribute("data-tab")); }; }); return; }
-    if (S.tab === "history") { main.innerHTML = historyHtml(); bindHistory(); return; }
-    main.innerHTML = portfolioHtml();
-    const rc = document.getElementById("reconnect"); if (rc) rc.onclick = () => void connect();
-    S.positions.forEach((p) => { const el = rowEl(p); if (el) bindRow(el, p); });
-    S.positions.forEach((p) => { if (p.ticker && !(p.lock && p.lock.status !== "closed") && !timing(p)) void quoteFor(p, false); });
+    if (!m) return "checking";
+    if (!m.connected) return "connect";
+    if (S.connecting) return "connecting";
+    return S.tab;
+  };
+  const render = () => {
+    paintAcct();
+    const screen = screenOf();
+    const connected = S.member && S.member.connected && !S.connecting;
+    tabs.hidden = !connected;
+    if (connected) paintTabs();
+    if (screen !== S.screen) {
+      S.screen = screen;
+      if (screen === "off") main.innerHTML = '<div class="connect"><h2>Not set up</h2><p>This service is not set up for ' + esc(VN) + " accounts.</p></div>";
+      else if (screen === "checking") main.innerHTML = skeleton(2);
+      else if (screen === "connect") { main.innerHTML = connectHtml(S.flashErr); S.flashErr = null; const c = document.getElementById("connect"); if (c) c.onclick = () => void connect(); }
+      else if (screen === "connecting") main.innerHTML = connectingHtml(false);
+      else if (screen === "portfolio") portfolioScaffold();
+      else if (screen === "games") gamesScaffold();
+      else if (screen === "history") historyScaffold();
+    }
+    if (screen === "portfolio") syncPortfolio();
+    else if (screen === "games") syncGames();
+    else if (screen === "history") syncHistory();
   };
   const showTab = (t) => {
     S.tab = t;
@@ -810,7 +1085,6 @@ const JS = String.raw`
     if (t === "history" && !S.history) void loadHistory();
     window.scrollTo({ top: 0 });
   };
-  const bind = () => { const c = document.getElementById("connect"); if (c) c.onclick = () => void connect(); };
   const loadMember = async () => {
     const r = await api("/api/shadow/member");
     if (r.ok && r.json && r.json.member) S.member = r.json.member;
@@ -820,8 +1094,8 @@ const JS = String.raw`
   const loadAccount = async (fresh) => {
     if (!(S.member && S.member.connected)) return;
     const r = await api("/api/shadow/member/account" + (fresh ? "?fresh=1" : ""));
-    if (r.ok && r.json && r.json.ok) { S.account = r.json; S.acctAt = Date.now(); if (r.json.member) S.member = r.json.member; }
-    else if (r.ok && r.json && r.json.member) S.member = r.json.member;
+    if (r.ok && r.json && r.json.ok) { S.account = r.json; S.acctAt = Date.now(); if (r.json.member) S.member = r.json.member; paintAcct(); }
+    else if (r.ok && r.json && r.json.member) { S.member = r.json.member; paintAcct(); }
   };
   const loadPositions = async (fresh) => {
     if (!(S.member && S.member.connected)) return;
@@ -830,46 +1104,72 @@ const JS = String.raw`
     if (r.ok && r.json && r.json.ok) {
       if (r.json.cutoffMinutes) S.cutoff = r.json.cutoffMinutes;
       const rows = (r.json.positions || []).filter((p) => p.venue === "stx");
-      const before = new Map(S.positions.map((p) => [p.ticker || p.id, p]));
-      S.positions = rows.map((p) => { const key = p.ticker || p.id; const prev = before.get(key); const st = stateOf(key); const was = prev && prev.lock && prev.lock.status !== "closed"; const is = p.lock && p.lock.status !== "closed"; if (was && !is && !st.closedNow) { st.quote = null; st.quoteAt = 0; } if (is && st.closedNow) st.closedNow = null; return p; });
+      const before = new Map(S.positions.map((p) => [posKey(p), p]));
+      S.positions = rows.map((p) => { const key = posKey(p); const prev = before.get(key); const st = stateOf(key); const was = prev && prev.lock && prev.lock.status !== "closed"; const is = p.lock && p.lock.status !== "closed"; if (was && !is && !st.closedNow) { st.quote = null; st.quoteAt = 0; } if (is && st.closedNow) st.closedNow = null; return p; });
       S.posAt = Date.now(); S.posErr = null;
     } else if (r.ok && r.json && r.json.error === "venue_read_failed") S.posErr = VN + " could not be read: " + (r.json.message || "");
     else if (!r.ok) S.posErr = "The service could not be reached.";
-    if (S.tab === "portfolio" || !(S.member && S.member.connected)) render(); else { tabs.innerHTML = tabsHtml(); tabs.querySelectorAll("[data-tab]").forEach((b) => { b.onclick = () => showTab(b.getAttribute("data-tab")); }); }
+    if (S.connecting) { S.connecting = false; main.innerHTML = connectingHtml(true); S.screen = "connecting-done"; await new Promise((res) => setTimeout(res, 900)); }
+    render();
   };
   const loadGames = async () => {
     const r = await api("/api/shadow/member/games");
     if (r.ok && r.json && r.json.ok) { S.games = r.json; S.gamesErr = null; }
     else S.gamesErr = r.ok ? words(r.json, VN + " could not be read.") : "The service could not be reached.";
-    if (S.tab === "games") render(); else { tabs.innerHTML = tabsHtml(); tabs.querySelectorAll("[data-tab]").forEach((b) => { b.onclick = () => showTab(b.getAttribute("data-tab")); }); }
+    render();
   };
   const loadHistory = async () => {
     const r = await api("/api/shadow/member/history");
     if (r.ok && r.json && r.json.ok) S.history = r.json.records || [];
-    if (S.tab === "history") render(); else { tabs.innerHTML = tabsHtml(); tabs.querySelectorAll("[data-tab]").forEach((b) => { b.onclick = () => showTab(b.getAttribute("data-tab")); }); }
+    render();
   };
   const refreshAll = async (fresh) => {
     if (!(S.member && S.member.connected)) { await loadMember(); render(); if (!(S.member && S.member.connected)) return; }
-    await Promise.all([loadAccount(fresh), loadPositions(fresh)]);
-    if (S.tab === "portfolio") paintBalance();
-    if (S.games) void loadGames();
-    if (S.history) void loadHistory();
+    await Promise.all([loadAccount(fresh), loadPositions(fresh), S.games ? loadGames() : Promise.resolve(), S.history ? loadHistory() : Promise.resolve()]);
+    render();
   };
+
+  // ---- pull to refresh (a phone, at the top) ----
+  const ptr = document.getElementById("ptr");
+  (() => {
+    let y0 = null, pulling = false;
+    const T = 72;
+    document.addEventListener("touchstart", (e) => { if (window.scrollY <= 0 && e.touches.length === 1) { y0 = e.touches[0].clientY; pulling = false; } else y0 = null; }, { passive: true });
+    document.addEventListener("touchmove", (e) => {
+      if (y0 === null) return;
+      const dy = e.touches[0].clientY - y0;
+      if (dy > 12 && window.scrollY <= 0) { pulling = true; ptr.classList.add("ptr-on"); ptr.classList.toggle("ptr-ready", dy > T); ptr.querySelector(".ptr-t").textContent = dy > T ? "Release to refresh" : "Pull to refresh"; }
+    }, { passive: true });
+    document.addEventListener("touchend", async () => {
+      if (y0 === null) return;
+      const ready = ptr.classList.contains("ptr-ready");
+      y0 = null;
+      if (!pulling) return;
+      if (!ready) { ptr.classList.remove("ptr-on", "ptr-ready"); return; }
+      ptr.classList.add("ptr-busy"); ptr.querySelector(".ptr-t").textContent = "Refreshing…";
+      await refreshAll(true);
+      ptr.classList.remove("ptr-on", "ptr-ready", "ptr-busy");
+    }, { passive: true });
+  })();
+
   const start = async () => {
     const q = new URLSearchParams(location.search);
-    if (q.get("connected") === "1") { S.flashOk = "Your " + VN + " account is connected."; S.flashOkUntil = Date.now() + 20000; }
+    if (q.get("connected") === "1") S.connecting = true;
     if (q.get("error")) S.flashErr = q.get("error");
     if (q.has("connected") || q.has("error") || q.has("source")) history.replaceState(null, "", location.pathname + location.hash);
     if (location.hash === "#games" || location.hash === "#history") S.tab = location.hash.slice(1);
+    try { S.hsTip = phone() && !standalone() && !localStorage.getItem(HS_KEY); } catch (e) { S.hsTip = false; }
     await loadMember();
+    if (S.connecting && !(S.member && S.member.connected)) S.connecting = false;
     render();
     await Promise.all([loadAccount(false), loadPositions(false)]);
-    if (S.tab === "portfolio") paintBalance();
     void loadHistory();
     void loadGames();
     setInterval(() => void loadPositions(false), POLL_POS_MS);
-    setInterval(() => { void loadAccount(false).then(() => { if (S.tab === "portfolio") paintBalance(); }); }, POLL_ACCT_MS);
-    setInterval(() => S.positions.forEach((p) => { const st = stateOf(p.ticker || p.id); if (p.ticker && !(p.lock && p.lock.status !== "closed") && !st.busy && !st.open && !timing(p)) void quoteFor(p, false); }), 5000);
+    setInterval(() => void loadAccount(false).then(paintBalance), POLL_ACCT_MS);
+    setInterval(() => { if (S.screen === "portfolio") S.positions.forEach((p) => { const st = stateOf(posKey(p)); if (p.ticker && !(p.lock && p.lock.status !== "closed") && !st.busy && !st.open && !timing(p)) void quoteFor(p, false); }); }, 5000);
+    // the relative stamps, without repainting anything else
+    setInterval(() => { stampBalance(); const b = document.getElementById("pos-at"); if (b && S.posAt) b.textContent = "Positions updated " + ago(S.posAt); const g = document.getElementById("g-at"); if (g && S.games && S.games.readAt) g.textContent = VN + " updated " + ago(Date.parse(S.games.readAt)); }, 10000);
     // back from the venue (a buy, a look at the balance) or from the home screen: read again at once
     let last = Date.now();
     const back = () => { if (document.visibilityState === "visible" && Date.now() - last > 2500) { last = Date.now(); void refreshAll(true); } };
