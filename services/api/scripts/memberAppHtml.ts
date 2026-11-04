@@ -223,7 +223,7 @@ img { display: block; }
 .foot { padding: 18px 20px 28px; font-size: 12.5px; color: var(--ael-dim); border-top: 1px solid #1a1a1a; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; max-width: 760px; margin: 0 auto; width: 100%; }
 .foot-l { display: inline; line-height: 1.7; color: var(--ael-dim); }
 .foot .fm { display: none; }
-.foot-r a, .foot-r button.lnk { color: var(--ael-dim); text-decoration: none; font-size: 12.5px; background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
+.foot-r a, .foot-r button.lnk { color: var(--ael-muted); text-decoration: none; font-size: 12.5px; background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
 .foot-r a:hover, .foot-r button.lnk:hover { color: var(--ael-soft); text-decoration: underline; text-underline-offset: 2px; }
 .foot .amark { height: 14px; width: auto; display: inline-block; vertical-align: middle; position: relative; top: -1px; margin: 0 2px; }
 .foot-r { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
@@ -471,7 +471,9 @@ h2.grp[hidden] { display: none; }
 .ael-offer-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0 2px; }
 .ael-offer-acts .ael-links { margin-left: auto; font-size: 13.5px; color: var(--ael-muted); white-space: nowrap; }
 .ael-tg { display: inline-flex; align-items: center; gap: 3px; min-height: 36px; color: var(--ael-muted); text-decoration: none; font-size: 13.5px; font-weight: 500; padding: 8px 2px; white-space: nowrap; cursor: pointer; background: none; border: 0; font-family: inherit; }
-@media (pointer: coarse) { .ael-tg, .gbar .f, .foot .lnk, .foot a, .acct .lnk, .note .x { min-height: 44px; } .ael-dl .ael-tg { min-height: 36px; } }
+@media (pointer: coarse) { .ael-tg, .gbar .f, .acct .lnk, .note .x { min-height: 44px; } .ael-dl .ael-tg { min-height: 36px; } }
+/* touch: the foot links keep a 44px target but the words stay centred on one baseline (a blockified anchor otherwise sits at the top of its box while buttons centre theirs); the row's extra height is pulled back so the rhythm stays tight */
+@media (pointer: coarse) { .foot-r a, .foot-r .lnk { display: inline-flex; align-items: center; min-height: 44px; } .foot-r { margin-top: -12px; margin-bottom: -14px; } }
 .ael-tg:hover, .ael-tg[aria-expanded="true"] { color: var(--ael-fg-strong); }
 .ael-tgc { display: inline-flex; width: 14px; height: 14px; transition: transform 0.18s ease; }
 .ael-tgc svg { width: 14px; height: 14px; display: block; }
@@ -552,7 +554,7 @@ h2.grp[hidden] { display: none; }
   .foot { flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 16px 14px calc(24px + env(safe-area-inset-bottom)); font-size: 12px; }
   .foot .fd { display: none; }
   .foot .fm { display: flex; flex-direction: column; align-items: center; gap: 5px; white-space: nowrap; }
-  .foot .fm .amark { height: 13px; margin: 0; top: 0; opacity: 0.9; }
+  .foot .fm .amark { height: 15px; margin: 0 0 1px; top: 0; opacity: 0.9; }
   .foot-r { margin-left: 0; justify-content: center; flex-wrap: nowrap; gap: 6px; font-size: 12px; }
   .foot-r a, .foot-r button.lnk { font-size: 12px; }
   .foot .about { text-align: left; }

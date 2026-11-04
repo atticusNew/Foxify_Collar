@@ -391,7 +391,8 @@ games listed, past locks):
   footer is the disclosure line and Privacy · How this works; on a phone it is three short centred
   lines that each fit from 320px up (the Atticus mark; "Third-party protection; not a product of
   STX."; Privacy · How this works · Disconnect, the last because the header hides it at that
-  width); the public record is no longer linked from a member's page.
+  width). On touch the three links keep a 44px target but their words sit on one centred
+  baseline, in one colour; the public record is no longer linked from a member's page.
 - **Games** lists the games this service can protect that STX lists right now, by day (**Today**,
   **Tomorrow**, then the weekday; two days at a time, "Show 3 more games on later days" for the
   rest), with filters when there is more than one league and an **In your portfolio** filter when
