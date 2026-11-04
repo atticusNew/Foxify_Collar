@@ -74,6 +74,15 @@ export interface RawOutcomeMarket {
   symbol?: string | null;
   timestamp?: string | null;
   in_play_delay_sec?: number | null;
+  /** the market's question in words; on a combination it is the picks, comma-separated ("Broncos, Hawks, Texans, Falcons") */
+  question?: string | null;
+  /** the rules text; on a combination it names each leg with what it must do ("…every leg lands: Broncos Won, Hawks Won.") */
+  description?: string | null;
+  /** pending until settled, then the venue's word for the outcome */
+  result?: string | null;
+  /** the venue's event type; "combo" on a combination */
+  event_type?: string | null;
+  recent_trades?: Array<{ timestamp?: string | null; price?: string | null; quantity?: string | null }> | null;
 }
 
 interface MarketsPage {

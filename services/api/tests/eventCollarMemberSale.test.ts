@@ -23,7 +23,11 @@ import {
   MemberSessions,
   MemberTokenStore,
   authorizeUrl,
+  comboLegs,
+  comboPickWords,
+  isComboMarket,
   leagueOfCompetition,
+  legMarketFor,
   matchMemberMarket,
   memberAppConfigFromEnv,
   memberHolderPositions,
@@ -377,6 +381,41 @@ test("member positions: longs on full-game winner markets map to our market by l
     ],
   );
   assert.ok(rows[0].market, "the market read with the positions rides along for the sale's book");
+
+  // a combination as the venue sends it (the demo account's 4-leg, trimmed): no legs, the picks in words
+  const combo: RawOutcomeMarket = {
+    market_id: "f12ab7b4", position: "Won / Won / Won / Won", grouping_name: "Combo", symbol: "STXCOMBO-E09F1490A68-FFBD3361B3B", price: "0.1055", result: "pending", max_price: "1.0000", group_title: "Combo", rules: "combo_rule",
+    event_title: "4-Leg Combo", event_start: "2026-11-08T21:05:00.000000Z", question: "Broncos, Hawks, Texans, Falcons", description: "A combination settling into its ceiling only if every leg lands: Broncos Won, Hawks Won, Texans Won, Falcons Won.",
+    event_type: "combo", competition: "Combo", event_status: "in_progress", specifier: "WON|WON|WON|WON", status: "open", sport: "Combo", offers: [], bids: [], participants: [],
+    recent_trades: [{ timestamp: "2026-11-04T04:19:17.999535Z", quantity: "9.00", price: "0.1055" }],
+  };
+  assert.equal(isComboMarket(combo), true);
+  assert.deepEqual(comboPickWords(combo), ["Broncos", "Hawks", "Texans", "Falcons"]);
+  assert.deepEqual(comboPickWords({ ...combo, question: "Will the Broncos win?" }), ["Broncos", "Hawks", "Texans", "Falcons"], "a question that is a question: the description names the legs");
+  assert.deepEqual(comboPickWords({ ...combo, question: null, description: null }), ["Leg 1", "Leg 2", "Leg 3", "Leg 4"], "the specifier still counts them");
+  const nfl = (id: string, home: string, away: string, start: string, rules: "home_winner" | "away_winner", status = "scheduled"): RawOutcomeMarket => ({
+    ...market(id, home, away, start, [], []), rules, competition: "NFL", event_status: status,
+    participants: [{ name: home, role: "home", short_name: home.split(" ").pop() }, { name: away, role: "away", short_name: away.split(" ").pop() }],
+  });
+  const listings = [
+    nfl("den-1", "Carolina Panthers", "Denver Broncos", "2026-11-08T18:00:00Z", "away_winner"),
+    nfl("den-2", "Denver Broncos", "Las Vegas Raiders", "2026-11-15T21:25:00Z", "home_winner"), // the week after: not the ticket's game
+    nfl("den-0", "Denver Broncos", "Houston Texans", "2026-11-01T21:25:00Z", "home_winner"), // before the buy: not the ticket's game
+    { ...nfl("atl-1", "Washington Wizards", "Atlanta Hawks", "2026-11-05T00:00:00Z", "away_winner", "in_progress"), competition: "NBA" },
+    nfl("hou-1", "Jacksonville Jaguars", "Houston Texans", "2026-11-08T18:00:00Z", "home_winner"), // the Texans are the away side; the home winner is the Jaguars' market
+    nfl("hou-2", "Jacksonville Jaguars", "Houston Texans", "2026-11-08T18:00:00Z", "away_winner"),
+  ];
+  const at = Date.parse("2026-11-05T01:00:00Z");
+  assert.equal(legMarketFor("Broncos", combo, listings, at)?.market_id, "den-1", "the club's first game after the buy and before the ticket's last leg");
+  assert.equal(legMarketFor("Hawks", combo, listings, at)?.market_id, "atl-1");
+  assert.equal(legMarketFor("Texans", combo, listings, at)?.market_id, "hou-2", "the market on the pick's own side");
+  assert.equal(legMarketFor("Falcons", combo, listings, at), null, "no game listed: the pick stays a word");
+  const legs = await comboLegs(client, combo, new Map(), async () => listings);
+  assert.deepEqual(
+    legs.map((l) => [l.marketId, l.side, l.event, l.state]),
+    [["den-1", "Denver Broncos", "Denver Broncos at Carolina Panthers", "pending"], ["atl-1", "Atlanta Hawks", "Atlanta Hawks at Washington Wizards", "live"], ["hou-2", "Houston Texans", "Houston Texans at Jacksonville Jaguars", "pending"], [null, "Falcons", "", "pending"]],
+  );
+  assert.deepEqual((await comboLegs(client, combo, new Map())).map((l) => [l.marketId, l.side, l.state]), [[null, "Broncos", "pending"], [null, "Hawks", "pending"], [null, "Texans", "pending"], [null, "Falcons", "pending"]], "no listings: the words alone");
 });
 
 test("member sale on the ledger: settlement pays the sale's own totals, the writer owes and takes nothing, cashDue is empty, a buy-back close carries its facts", () => {
@@ -474,12 +513,22 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
   venue.markets["m-sac"] = market("m-sac", "Sacramento Kings", "Golden State Warriors", START, [["0.45", "60"]], [["0.47", "60"]]);
   // a combo (parlay): a multi-leg market the member holds; shown, never protected
   venue.markets["m-combo"] = { ...market("m-combo", "", "", START, [], []), rules: "combo", event_title: "", symbol: "BOS / MIA / DET combo", participants: [], legs: [{ market_id: "m-bos" }, { market_id: "m-mia" }, { market_id: "m-det" }] } as RawOutcomeMarket;
+  // a combo as the venue really sends it (read off the demo account): no leg list, the picks as words in the
+  // question and description, the specifier counting them, its own start set to the last leg's; one pick
+  // (the Suns) is a club the venue does not list a game for in the window, so it stays a word
+  venue.markets["m-combo-wire"] = {
+    ...market("m-combo-wire", "", "", START_SOON, [], []), rules: "combo_rule", event_type: "combo", competition: "Combo", sport: "Combo", event_title: "3-Leg Combo", group_title: "Combo", symbol: "STXCOMBO-AAA-BBB",
+    question: "Celtics, Kings, Suns", description: "A combination settling into its ceiling only if every leg lands: Celtics Won, Kings Won, Suns Won.", specifier: "WON|WON|WON", result: "pending", event_status: "in_progress", participants: [],
+    recent_trades: [{ timestamp: new Date(Date.now() - 3_600_000).toISOString(), price: "0.1055", quantity: "9.00" }],
+  } as RawOutcomeMarket;
+  // the venue writes a long's premium negative (cash out); the size is the entry
   venue.positions = [
-    { market_id: "m-bos", position: "50.00", average_open_premium: "0.42" },
+    { market_id: "m-bos", position: "50.00", average_open_premium: "-0.42" },
     { market_id: "m-mia", position: "40.00", average_open_premium: "0.55" },
-    { market_id: "m-det", position: "10.00", average_open_premium: "0.45" },
+    { market_id: "m-det", position: "10.00", average_open_premium: "-0.45" },
     { market_id: "m-den", position: "10.00", average_open_premium: "0.65" },
     { market_id: "m-combo", position: "5.00", average_open_premium: "0.20" },
+    { market_id: "m-combo-wire", position: "9.00", average_open_premium: "-0.1100", premium: "-0.9495", multiplier: 9.47 },
   ];
   const { config } = memberAppConfigFromEnv(
     { MEMBER_APP_HOST: venue.base, MEMBER_APP_CLIENT_ID: "cid", MEMBER_APP_CLIENT_SECRET: "sec", MEMBER_APP_TOKEN_KEY: KEY_HEX, MEMBER_APP_TOKENS_PATH: join(dir, "member-tokens.json"), REFERENCE_BOOK_OUTCOME_COMPETITIONS: "nba=NBA" },
@@ -568,17 +617,29 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
         [TICKER2, "stx", 40, 55, null],
         [TICKER3, "stx", 10, 45, null],
         [SOON, "stx", 10, 65, null],
-        // the parlay is on the list too, so the page mirrors the account; it says why it has no Lock in line
+        // the parlays are on the list too, so the page mirrors the account; each says why it has no Lock in line
         [null, "stx", 5, 20, null],
+        [null, "stx", 9, 11, null],
       ],
+      "a negative premium is the entry's size",
     );
+    assert.deepEqual(pos.body.positions.map((p: Any) => p.costCents), [2100, 2200, 450, 650, 100, 99], "cost is what was paid, never negative");
     assert.deepEqual([pos.body.positions[4].reason, pos.body.positions[4].event, typeof pos.body.cutoffMinutes], ["parlay", "BOS / MIA / DET combo", "number"]);
     // the combo's legs, as the page lists them: each leg's club (read from the leg's market), its game and where it stands
     assert.deepEqual(
       pos.body.positions[4].legs.map((l: Any) => [l.marketId, l.side, l.event, l.startsIso, l.state]),
       [["m-bos", "Boston Celtics", "Los Angeles Lakers at Boston Celtics", START, "pending"], ["m-mia", "Miami Heat", "New York Knicks at Miami Heat", START, "pending"], ["m-det", "Detroit Pistons", "Chicago Bulls at Detroit Pistons", START, "pending"]],
     );
+    // the venue's own combo: the picks come as words and are placed on the venue's listings (the club's next game
+    // after the buy); a pick with no listed game stays a word; the row's start is the first leg's, not the ticket's
+    const wire = pos.body.positions[5];
+    assert.deepEqual([wire.reason, wire.side, wire.multiplier, wire.startsIso], ["parlay", "Combo", 9.47, START]);
+    assert.deepEqual(
+      wire.legs.map((l: Any) => [l.marketId, l.side, l.event, l.startsIso, l.state]),
+      [["m-bos", "Boston Celtics", "Los Angeles Lakers at Boston Celtics", START, "pending"], ["m-sac", "Sacramento Kings", "Golden State Warriors at Sacramento Kings", START, "pending"], [null, "Suns", "", null, "pending"]],
+    );
     assert.equal(pos.body.positions[0].legs, undefined, "a single market has no legs");
+    assert.equal(pos.body.positions[0].multiplier, undefined);
     assert.equal(pos.body.positions[0].market, undefined, "the venue's market payload stays on the service");
 
     // the games a member could protect: our protectable markets the venue lists too, each with the venue's event
@@ -830,7 +891,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.deepEqual([rawNo.status, rawNo.body.error, rawNo.body.members.length], [400, "member", 1]);
     const raw = await get<Any>("/api/shadow/member/raw", { "x-admin-token": "op-secret" });
     assert.equal(raw.status, 200, JSON.stringify(raw.body).slice(0, 300));
-    assert.deepEqual([raw.body.positions.count, raw.body.positions.dropped.length, raw.body.markets.asked, raw.body.markets.returned, raw.body.markets.missing, Object.keys(raw.body.probes).length, typeof raw.body.catalogue.NBA.distinctBestBids], [5, 0, 5, 5, [], 5, "number"]);
+    assert.deepEqual([raw.body.positions.count, raw.body.positions.dropped.length, raw.body.markets.asked, raw.body.markets.returned, raw.body.markets.missing, Object.keys(raw.body.probes).length, typeof raw.body.catalogue.NBA.distinctBestBids], [6, 0, 6, 6, [], 5, "number"]);
     assert.ok(!JSON.stringify(raw.body).includes("stxapp_"), "no token in the raw read");
     const revisit = await fetch(`${base}/app`, { headers: ck });
     assert.equal(revisit.headers.get("set-cookie"), null, "a returning cookie is kept, not replaced");

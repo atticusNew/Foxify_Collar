@@ -360,8 +360,11 @@ export interface RawMemberPosition {
   event_id?: string | null;
   /** contracts held, as the venue writes it: a decimal string on single markets; a number has been seen too */
   position: string | number;
+  /** the average price paid per contract; the venue writes a long's as a negative (cash out), so the sign is not read */
   average_open_premium?: string | null;
   premium?: string | null;
+  /** on a combination: what a contract pays per dollar staked (the inverse of its price), as the venue shows it */
+  multiplier?: number | string | null;
   open_risk?: string | null;
   max_potential_profit?: string | null;
 }
@@ -766,13 +769,13 @@ export function winnerClubOf(m: RawOutcomeMarket): { side: "home" | "away"; name
 
 /**
  * A combination market (the venue's parlay: one market over two to five legs, agreed by request
- * for quote and traded on its own thin book afterwards). The venue marks it by its legs; the rule
- * word is read too in case a listing carries no legs.
+ * for quote and traded on its own thin book afterwards). On the wire it is `event_type: "combo"`
+ * with `rules: "combo_rule"`; a legs list is read too should a venue ever send one.
  */
 export function isComboMarket(m: RawOutcomeMarket & { legs?: unknown; combo?: unknown }): boolean {
   if (Array.isArray(m.legs) && m.legs.length >= 2) return true;
   if (m.combo && typeof m.combo === "object") return true;
-  return /combo|combination|parlay|multi/i.test(`${m.rules ?? ""} ${m.specifier ?? ""}`);
+  return /combo|combination|parlay|multi/i.test(`${m.event_type ?? ""} ${m.rules ?? ""} ${m.specifier ?? ""}`);
 }
 
 /** The protectable market this venue market maps to: same league, our side's club, the game within a day and a half. */
@@ -806,6 +809,8 @@ export interface MemberHolderPosition extends HolderPosition {
   maxPrice: number;
   /** a combination's legs, when the position is one (shown, not protected) */
   legs?: MemberParlayLeg[];
+  /** a combination's payout per dollar staked, as the venue shows it */
+  multiplier?: number;
 }
 
 /** One leg of a combination market as the page lists it: the pick, its game, where it stands. */
@@ -828,22 +833,100 @@ interface RawComboLeg extends Partial<RawOutcomeMarket> {
 }
 
 const legState = (leg: RawComboLeg, m: RawOutcomeMarket | null, nowMs: number): MemberParlayLeg["state"] => {
-  const words = [leg.result, leg.outcome, leg.settlement, leg.leg_status, leg.status, m?.status, m?.event_status].filter((w): w is string => typeof w === "string").join(" ").toLowerCase();
+  const words = [leg.result, leg.outcome, leg.settlement, leg.leg_status, leg.status, m?.result, m?.status, m?.event_status].filter((w): w is string => typeof w === "string").join(" ").toLowerCase();
   if (/\b(void|cancel|abandon|push)/.test(words)) return "void";
   if (/\b(won|win|hit|yes|settled_yes)\b/.test(words)) return "won";
   if (/\b(lost|lose|miss|settled_no)\b/.test(words) || /\bno\b/.test(words)) return "lost";
   const start = leg.event_start ?? m?.event_start ?? null;
   const startMs = start ? Date.parse(start) : NaN;
-  if (/in_play|live|started|in-play/.test(words) || (Number.isFinite(startMs) && startMs <= nowMs && !/pre_open|open|settled|closed/.test(words))) return "live";
+  if (/in_play|in_progress|live|started|in-play/.test(words) || (Number.isFinite(startMs) && startMs <= nowMs && !/pre_open|open|settled|closed|completed/.test(words))) return "live";
   return "pending";
 };
 
 /**
- * A combination's legs as the page lists them. A leg may arrive as a nested market or as a
- * market id; ids not already read are fetched once for the whole position list.
+ * The picks a combination names, in its own words. The wire gives no leg list: the question is
+ * the picks comma-separated ("Broncos, Hawks, Texans, Falcons"), the description names each with
+ * what it must do ("…every leg lands: Broncos Won, Hawks Won."), and the specifier counts them
+ * ("WON|WON|WON|WON"). The question is read first, the description second; the count is the
+ * specifier's when neither names them.
  */
-export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { legs?: unknown }, known: Map<string, RawOutcomeMarket>): Promise<MemberParlayLeg[]> {
+export function comboPickWords(m: RawOutcomeMarket): string[] {
+  const split = (s: string) => s.split(/\s*,\s*|\s+\/\s+/).map((w) => w.trim()).filter(Boolean);
+  const q = (m.question ?? "").trim();
+  if (q && !/\?$/.test(q)) {
+    const picks = split(q);
+    if (picks.length >= 2) return picks;
+  }
+  const d = (m.description ?? "").trim();
+  const after = d.includes(":") ? d.slice(d.indexOf(":") + 1) : "";
+  if (after) {
+    const picks = split(after.replace(/\.\s*$/, "")).map((w) => w.replace(/\s+(won|win|wins|lost|lose|over|under|yes|no)\s*$/i, "").trim()).filter(Boolean);
+    if (picks.length >= 2) return picks;
+  }
+  const n = (m.specifier ?? "").split("|").filter(Boolean).length;
+  return n >= 2 ? Array.from({ length: n }, (_, i) => `Leg ${i + 1}`) : [];
+}
+
+/** A pick's word against a market's club: the venue's short name ("Broncos"), the club's last word, or the whole name. */
+export function pickNamesClub(pick: string, m: RawOutcomeMarket): boolean {
+  const club = winnerClubOf(m);
+  if (!club) return false;
+  const want = pick.trim().toLowerCase();
+  if (!want) return false;
+  const ours = (m.participants ?? []).find((p) => (p.name ?? "").trim() === club.name);
+  const short = (ours?.short_name ?? "").trim().toLowerCase();
+  const full = club.name.toLowerCase();
+  return want === full || (short !== "" && want === short) || want === full.split(/\s+/).pop();
+}
+
+/**
+ * The venue's market a pick stands on, out of the venue's listings: the club's first game at or
+ * after the combination was bought (its first trade; failing that, a day ago) and no later than
+ * a day past the combination's own start, which the wire sets to its last leg's. A club that plays
+ * every other night lists several games; the first after the buy is the one on the ticket.
+ */
+export function legMarketFor(pick: string, combo: RawOutcomeMarket, listings: RawOutcomeMarket[], nowMs = Date.now()): RawOutcomeMarket | null {
+  const trades = (combo.recent_trades ?? []).map((t) => Date.parse(t.timestamp ?? "")).filter((t) => Number.isFinite(t));
+  const boughtMs = trades.length ? Math.min(...trades) : nowMs - DAY_MS;
+  const lastMs = combo.event_start ? Date.parse(combo.event_start) : NaN;
+  const ceiling = Number.isFinite(lastMs) ? lastMs + DAY_MS : Number.POSITIVE_INFINITY;
+  const games = listings
+    .filter((m) => pickNamesClub(pick, m))
+    .map((m) => ({ m, start: m.event_start ? Date.parse(m.event_start) : NaN }))
+    .filter((x) => Number.isFinite(x.start) && x.start <= ceiling)
+    .sort((a, b) => a.start - b.start);
+  // a game that tipped before the buy is one the venue would not have sold a leg on; allow a few hours for a listing's rounding
+  const after = games.find((x) => x.start >= boughtMs - 3 * 3_600_000);
+  return (after ?? games[games.length - 1])?.m ?? null;
+}
+
+/**
+ * A combination's legs as the page lists them. A leg may arrive as a nested market or as a
+ * market id (ids not already read are fetched once for the whole position list); the venue's own
+ * combinations arrive as words only, each matched to the club's game in the listings when the
+ * caller supplies them, else listed by the word with no game under it.
+ */
+export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { legs?: unknown }, known: Map<string, RawOutcomeMarket>, listings?: () => Promise<RawOutcomeMarket[]>): Promise<MemberParlayLeg[]> {
+  const nowMs = Date.now();
   const raw = Array.isArray(m.legs) ? (m.legs as RawComboLeg[]).filter((l) => l && typeof l === "object") : [];
+  if (!raw.length) {
+    const picks = comboPickWords(m);
+    if (!picks.length) return [];
+    let listed: RawOutcomeMarket[] = [];
+    if (listings) {
+      try {
+        listed = await listings();
+      } catch {
+        // the legs still list by their words
+      }
+    }
+    return picks.map((pick) => {
+      const mk = legMarketFor(pick, m, listed, nowMs);
+      const club = mk ? winnerClubOf(mk) : null;
+      const event = (mk?.event_title ?? "").trim() || (club ? [club.side === "away" ? club.name : club.opponent, club.side === "home" ? club.name : club.opponent].filter(Boolean).join(" at ") : "");
+      return { marketId: mk?.market_id ?? null, side: club?.name ?? pick, event, startsIso: mk?.event_start ? new Date(mk.event_start).toISOString() : null, state: legState({}, mk, nowMs) };
+    });
+  }
   const ids = raw.map((l) => l.market?.market_id ?? l.market_id ?? null).filter((id): id is string => typeof id === "string" && !known.has(id) && !raw.some((l) => l.market?.market_id === id));
   if (ids.length) {
     try {
@@ -852,7 +935,6 @@ export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { le
       // the legs still list with what the combo said
     }
   }
-  const nowMs = Date.now();
   return raw.map((l) => {
     const id = l.market?.market_id ?? l.market_id ?? null;
     const mk = l.market ?? (id ? known.get(id) ?? null : null) ?? (l.participants || l.rules ? (l as RawOutcomeMarket) : null);
@@ -866,10 +948,12 @@ export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { le
 
 /**
  * The member's long positions on our markets. Each venue market pays max_price (usually $1) a
- * contract, like ours; the entry is the average open premium as cents of that. Shorts and closed
- * positions are left out: a lock sells part of a long.
+ * contract, like ours; the entry is the average open premium as cents of that (the venue writes a
+ * long's premium negative, cash out, so its size is read and not its sign). Shorts and closed
+ * positions are left out: a lock sells part of a long. `listings` gives the venue's game listings
+ * when asked, read only when a combination needs its legs placed.
  */
-export async function memberHolderPositions(client: MemberClient, protectable: ProtectableMarket[], codes: OutcomeCompetitionCodes): Promise<MemberHolderPosition[]> {
+export async function memberHolderPositions(client: MemberClient, protectable: ProtectableMarket[], codes: OutcomeCompetitionCodes, listings?: () => Promise<RawOutcomeMarket[]>): Promise<MemberHolderPosition[]> {
   const raw = (await client.positions()).filter((p) => Number(p.position) > 0);
   const ids = [...new Set(raw.map((p) => p.market_id))];
   let markets = new Map<string, RawOutcomeMarket>();
@@ -887,10 +971,10 @@ export async function memberHolderPositions(client: MemberClient, protectable: P
     // our contract pays $1; the venue's pays max_price, so a $2 contract is two of ours
     const contracts = roundContracts(qty * maxPrice);
     if (!(contracts >= 1)) continue;
-    const premium = Number(p.average_open_premium);
+    const premium = Math.abs(Number(p.average_open_premium));
     const entryMilli = Number.isFinite(premium) && premium > 0 ? outcomePriceMilli(premium, maxPrice, false) : -1;
     const entryCents = entryMilli > 0 ? Math.min(99, Math.max(1, Math.round(entryMilli / 10))) : 50;
-    const costCents = Number.isFinite(premium) ? Math.round(premium * qty * 100) : Math.round(contracts * entryCents);
+    const costCents = Number.isFinite(premium) && premium > 0 ? Math.round(premium * qty * 100) : Math.round(contracts * entryCents);
     const base = { id: positionId(p.market_id, "long"), marketId: p.market_id, market: m, maxPrice, contracts, entryCents, payoutCents: Math.round(contracts * 100), costCents };
     if (!m) {
       out.push({ ...base, ticker: null, reason: lookupFailed ? "market_lookup_failed" : "market_unknown", league: null, side: "", event: "", startsIso: null, marketType: "" });
@@ -901,7 +985,10 @@ export async function memberHolderPositions(client: MemberClient, protectable: P
     const matched = matchMemberMarket(m, league, protectable);
     const event = (m.event_title ?? "").trim() || (club ? [club.side === "away" ? club.name : club.opponent, club.side === "home" ? club.name : club.opponent].filter(Boolean).join(" at ") : "");
     const parlay = matched.ticker === null && matched.reason === "parlay";
-    const legs = parlay ? await comboLegs(client, m, markets) : undefined;
+    const legs = parlay ? await comboLegs(client, m, markets, listings) : undefined;
+    // a combination's own start is its last leg's on the wire; the page wants the first leg's when the legs are placed
+    const firstLegIso = (legs ?? []).map((l) => l.startsIso).filter((x): x is string => Boolean(x)).sort()[0] ?? null;
+    const multiplier = Number(p.multiplier);
     out.push({
       ...base,
       ticker: matched.ticker,
@@ -909,9 +996,10 @@ export async function memberHolderPositions(client: MemberClient, protectable: P
       league,
       side: club?.name ?? ((m.group_title ?? "").trim() || (parlay ? `${legs?.length ?? 0}-leg combo` : "")),
       event: event || (parlay ? (m.symbol ?? "").trim() || (legs ?? []).map((l) => l.side).filter(Boolean).join(" / ") : ""),
-      startsIso: m.event_start ? new Date(m.event_start).toISOString() : parlay ? (legs ?? []).map((l) => l.startsIso).filter((x): x is string => Boolean(x)).sort()[0] ?? null : null,
+      startsIso: parlay ? firstLegIso ?? (m.event_start ? new Date(m.event_start).toISOString() : null) : m.event_start ? new Date(m.event_start).toISOString() : null,
       marketType: (m.rules ?? "").trim(),
       ...(legs ? { legs } : {}),
+      ...(parlay && Number.isFinite(multiplier) && multiplier > 0 ? { multiplier } : {}),
     });
   }
   return out;
