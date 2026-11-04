@@ -473,7 +473,7 @@ const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shado
 /**
  * THE EXTENSION'S SWITCHES, served with the markets list so the service, not the build, decides:
  * EVENT_SHADOW_EXT_MIN_VERSION   the version below which the extension shows "update" and draws nothing
- * EVENT_SHADOW_EXT_MARKS_OFF     venues (comma list: prophetx,kalshi,novig) whose marks are off for now
+ * EVENT_SHADOW_EXT_MARKS_OFF     venues (comma list: prophetx,kalshi,novig,stx) whose marks are off for now
  */
 const EXT_MIN_VERSION = (process.env.EVENT_SHADOW_EXT_MIN_VERSION ?? "").trim() || null;
 const EXT_MARKS_OFF = new Set(

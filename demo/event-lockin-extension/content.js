@@ -21,9 +21,12 @@
 // play is an order, not a position, so it gets the muted line and the tap says it waits for the
 // match. A partially matched play is sized on its matched part.
 //
-// Venues: one script, three skins. ProphetX (My Trades, prices as the implied chance or American
+// Venues: one script, four skins. ProphetX (My Trades, prices as the implied chance or American
 // odds), Kalshi (Portfolio, Yes/No contracts priced in cents; a No on one club is read as the
-// other club's Yes) and Novig (Portfolio, decimal multipliers, Take fills now and Make rests).
+// other club's Yes), Novig (Portfolio, decimal multipliers, Take fills now and Make rests) and
+// STX (a member venue: the holder connects their own account to the service once, on the venue's
+// consent screen; the positions come from the service's read of that account, never from the
+// page, and the lock is the holder's own partial sale into the venue's book, nothing hedged).
 // The host name picks the venue; it sets the colours, the words and the reading rules below.
 //
 // Selector strategy: the venue's web app is a React SPA with no stable ids, so rows are found by
@@ -50,14 +53,17 @@
   const DEFAULTS = { showHedge: "no", rehearse: "no", showShield: "yes", showSlip: "yes", telemetry: "yes", layout: "simple" };
 
   // ── the venue this page belongs to ──────────────────────────────────────────
-  // One codebase, three skins. The host name decides; a preview page names its venue in a meta
+  // One codebase, four skins. The host name decides; a preview page names its venue in a meta
   // tag. The venue sets the colours (a class on every root we draw), the word for a play, and a
   // few reading rules: Kalshi prices in cents and counts contracts, with a Yes and a No side on
   // each club; Novig prices as multipliers (1.25x) and rests a Make order until it is taken.
+  // A `member` venue is read through the holder's own connected account at the service, not from
+  // its page: the positions block is the surface there, and the lock is the holder's own sale.
   const VENUES = {
     prophetx: { name: "ProphetX", host: /(^|\.)prophetx\.(co|dev)$/, play: "play", plays: "plays", page: "My Trades", matched: "matched" },
     kalshi: { name: "Kalshi", host: /(^|\.)kalshi\.com$/, play: "position", plays: "positions", page: "Portfolio", matched: "filled" },
     novig: { name: "Novig", host: /(^|\.)novig\.(us|com)$/, play: "order", plays: "orders", page: "Portfolio", matched: "matched" },
+    stx: { name: "STX", host: /(^|\.)stxapp\.io$/, play: "position", plays: "positions", page: "Portfolio", matched: "filled", member: true },
   };
   const detectVenue = () => {
     const host = String(location.hostname || "").toLowerCase();
@@ -65,11 +71,15 @@
     const meta = document.querySelector('meta[name="ael-venue"]');
     if (meta && VENUES[meta.getAttribute("content")]) return meta.getAttribute("content");
     // the stand-in boards, and saved copies of the real pages dropped in preview/fixtures/<venue>-*.html
-    const m = /\/preview\/(?:fixtures\/)?(prophetx|kalshi|novig)[-.]/i.exec(location.pathname);
+    const m = /\/preview\/(?:fixtures\/)?(prophetx|kalshi|novig|stx)[-.]/i.exec(location.pathname);
     return m ? m[1].toLowerCase() : "prophetx";
   };
   const VENUE_ID = detectVenue();
   const V = VENUES[VENUE_ID];
+  /** A member venue: positions from the holder's connected account, the lock their own sale (see the STX notes above). */
+  const MEMBER = Boolean(V.member);
+  /** A lock written as the holder's own sale on their venue, nothing hedged; the record and every view say `route`. */
+  const isSale = (x) => Boolean(x && x.route === "member_sale");
   /** The class every root we draw carries, so the skin's variables cascade into it. */
   const SKIN = "ael-v-" + VENUE_ID;
 
@@ -87,6 +97,8 @@
     tab: null, // "resting" | "filled" | "settled" | null, from the page's tabs
     svc: { configured: false, positions: [], at: 0, error: null },
     svcSize: new Map(), // ticker -> the last position the service confirmed on it, kept through a read that misses it
+    member: null, // the holder's connection to a member venue as the service reports it ({ venue, connected, reason, since ... }); never a token
+    connect: { busy: false, timer: null, until: 0, err: "" }, // the consent flow in progress: a tab opened on the venue, the service asked until it says connected
     record: new Map(), // ticker -> the public record's lock position (open or settled)
     rows: new Map(), // row element -> binding { row, host, ticker, size, kind, from }
     st: new Map(), // ticker -> { quote, quoteAt, quoteKey, tier, open, how, busy, done }
@@ -153,6 +165,18 @@
   const centsDownOf = (per, n) => Math.floor((per * hundredths(n)) / 100);
   /** The holder's two outcomes on this row under terms (floor, cap, credit) on n contracts. */
   const outcomes = (B, n, F, C, K) => ({ floorTotal: centsOf(F, n) + K, capTotal: centsOf(100, n) - centsDownOf(100 - C, n) + K });
+  /**
+   * The two outcomes of a quoted shape or a lock. A hedged lock's are the terms times the size
+   * (above). A member's own sale carries its totals whole (the cash the fills paid, plus $1 on
+   * every riding contract): the per-contract figures on it are rounded for the record's columns
+   * and would not re-multiply to the cent, so the totals the service wrote are used as they are.
+   */
+  const outcomesOf = (B, n, t) => (t && t.floorTotalCents != null && t.capTotalCents != null ? { floorTotal: t.floorTotalCents, capTotal: t.capTotalCents } : outcomes(B, n, t.floorCents, t.capCents, t.creditCents || 0));
+  const recOutcomes = (B, rec) => (rec.memberSale && rec.memberSale.floorTotalCents != null ? { floorTotal: rec.memberSale.floorTotalCents, capTotal: rec.memberSale.capTotalCents } : outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents));
+  /** What a shape or a lock puts in the holder's hands at the tap: the credit on a hedged lock; on a member's sale, what the fills paid into their own balance. */
+  const cashOf = (t) => (t && t.cashNowCents != null ? t.cashNowCents : t && t.memberSale && t.memberSale.cashNowCents != null ? t.memberSale.cashNowCents : (t && t.creditCents) || 0);
+  /** The cash row's label: a hedged lock pays the holder; a member's sale lands in their own venue balance. */
+  const cashLabel = (sale, now) => (sale ? "In your " + esc(V.name) + " balance" + (now ? " now" : "") : now ? "Cash now" : "Paid to you");
   const fmtAt = (iso) => {
     try {
       const d = new Date(iso);
@@ -550,17 +574,28 @@
 
   const rememberLock = (ticker, next) => {
     const prev = S.record.get(ticker);
-    // the tap's own answers (the hedge, the routing, the sale at the leave) are kept: the public record carries none of them
-    S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), justLeft: Boolean(prev.justLeft), ms: prev.ms, hedge: next.hedge || prev.hedge || null, routing: next.routing || prev.routing || null, closeHedge: next.closeHedge || prev.closeHedge || null } : next);
+    // the tap's own answers (the hedge, the routing, the sale at the leave; on a member's sale the
+    // comparison, the tails and the rules) are kept: the public record carries none of them
+    S.record.set(ticker, prev ? { ...next, justNow: Boolean(prev.justNow), justLeft: Boolean(prev.justLeft), ms: prev.ms, hedge: next.hedge || prev.hedge || null, routing: next.routing || prev.routing || null, closeHedge: next.closeHedge || prev.closeHedge || null, memberSale: next.memberSale || prev.memberSale || null, memberBuyBack: next.memberBuyBack || prev.memberBuyBack || null, compared: next.compared || prev.compared || null, tails: next.tails || prev.tails || null, rules: next.rules || prev.rules || null } : next);
     // a lock on a game the service no longer lists joins the index so its row is still found
     if (!S.byTicker[ticker] && next.league) indexMarkets(S.markets);
   };
 
-  /** The service's confirmation of what the account holds, when it has a read key. */
+  /**
+   * The service's confirmation of what the account holds, when it has a read key for the holder's
+   * venue account or the holder's own connection to a member venue. Each position names its venue
+   * when the service read more than one; a page shows only its own venue's, so a holder's STX
+   * positions never appear under their Kalshi portfolio or the other way round.
+   */
+  const onThisVenue = (p) => !p.venue || String(p.venue).toLowerCase() === VENUE_ID;
   const loadPositions = async () => {
     const r = await api("/api/shadow/positions", "GET");
+    if (r.ok && r.json && r.json.member && typeof r.json.member === "object") S.member = r.json.member;
     if (r.ok && r.json && r.json.ok) {
-      S.svc = { configured: Boolean(r.json.configured), positions: Array.isArray(r.json.positions) ? r.json.positions : [], at: Date.now(), error: null };
+      const mine = (Array.isArray(r.json.positions) ? r.json.positions : []).filter(onThisVenue);
+      // a member venue is configured for this page only once the holder's account is connected
+      const configured = MEMBER ? Boolean(S.member && S.member.connected) : Boolean(r.json.configured);
+      S.svc = { configured, positions: mine, at: Date.now(), error: null };
       // a read on which the venue described every market is the whole truth (a sold position is
       // gone from it); one on which a lookup failed adds to what earlier reads confirmed
       if (S.svc.positions.every((p) => p.reason !== "market_lookup_failed")) S.svcSize.clear();
@@ -582,6 +617,73 @@
       if (!Array.isArray(list)) continue;
       for (const p of list) if (p && p.source === "lock" && p.ticker) rememberLock(p.ticker, p);
     }
+    scan(true);
+  };
+
+  // ── a member venue: the holder's own account, connected once at the service ─────────────
+  // The service holds the connection (the tokens, sealed, on its disk); this extension holds
+  // nothing of it and never sees the venue's API. Connect asks the service for the venue's own
+  // consent page and opens it in a new tab; the holder signs in to the venue there and approves
+  // reading their portfolio and placing orders in their own account. The venue sends the browser
+  // back to the service, which says "connected"; meanwhile this page asks the service every few
+  // seconds until it agrees, then reads the positions.
+  const CONNECT_POLL_MS = 3_000;
+  const CONNECT_WAIT_MS = 5 * 60_000;
+  /** The connection as the service reports it: on, or off and why. Sets the member state; the card reads it. */
+  const loadMember = async () => {
+    if (!MEMBER) return;
+    const r = await api("/api/shadow/member", "GET");
+    if (r.ok && r.json && r.json.member && typeof r.json.member === "object") S.member = r.json.member;
+    else if (r.ok && r.status === 404) S.member = { venue: VENUE_ID, configured: false, connected: false, reason: "member_app_off" };
+    else if (r.ok && r.status === 403) S.member = { venue: VENUE_ID, configured: true, connected: false, reason: "key" };
+    scan(true);
+  };
+  const connectMember = async () => {
+    if (S.connect.busy) return;
+    S.connect = { busy: true, timer: null, until: Date.now() + CONNECT_WAIT_MS, err: "" };
+    scan(true);
+    const r = await api("/api/shadow/member/connect", "GET");
+    if (!(r.ok && r.json && r.json.ok && r.json.url)) {
+      S.connect = { busy: false, timer: null, until: 0, err: r.status === 403 ? "The lock key is missing or wrong. Open the extension's settings." : (r.json && (r.json.message || r.json.error)) || r.error || "The service could not start the connection." };
+      scan(true);
+      return;
+    }
+    // the venue's own page, in its own tab; this page waits for the service's word
+    const tab = window.open(r.json.url, "_blank", "noopener");
+    if (!tab) S.connect.err = "Your browser blocked the venue's sign-in tab. Allow pop-ups for this site and try again.";
+    const poll = async () => {
+      if (!S.connect.busy) return;
+      const m = await api("/api/shadow/member", "GET");
+      if (m.ok && m.json && m.json.member) S.member = m.json.member;
+      if (S.member && S.member.connected) {
+        S.connect = { busy: false, timer: null, until: 0, err: "" };
+        void loadPositions();
+        return;
+      }
+      if (Date.now() > S.connect.until) {
+        S.connect = { busy: false, timer: null, until: 0, err: "The venue did not send you back in time. Try again." };
+        scan(true);
+        return;
+      }
+      S.connect.timer = setTimeout(poll, CONNECT_POLL_MS);
+    };
+    S.connect.timer = setTimeout(poll, CONNECT_POLL_MS);
+    scan(true);
+  };
+  /** Cancel a connect still waiting on the venue (the tab was closed, the holder changed their mind). */
+  const stopConnect = () => {
+    clearTimeout(S.connect.timer);
+    S.connect = { busy: false, timer: null, until: 0, err: "" };
+    scan(true);
+  };
+  const disconnectMember = async () => {
+    if (S.connect.busy) return;
+    S.connect = { ...S.connect, busy: true };
+    const r = await api("/api/shadow/member/disconnect", "POST", {});
+    if (r.ok && r.json && r.json.member) S.member = r.json.member;
+    S.connect = { busy: false, timer: null, until: 0, err: r.ok && r.json && r.json.ok ? "" : (r.json && (r.json.message || r.json.error)) || r.error || "The service could not disconnect." };
+    S.svc = { configured: false, positions: [], at: Date.now(), error: null };
+    S.svcSize.clear();
     scan(true);
   };
 
@@ -1654,6 +1756,30 @@
         return { why: "Your last pick has started.", next: "Protection is locked before the game starts." };
       case "parlay_size":
         return { why: "The ticket's amount and payout do not read as a size.", next: "" };
+      // a member venue: the holder's own account at the service, and their own sale into its book
+      case "member_app_off":
+        return { why: "This service is not set up for " + V.name + " accounts.", next: "" };
+      case "member_not_connected":
+        return { why: "Connect your " + V.name + " account first.", next: "Protection prices from the positions in your account. Connect in the " + V.name + " block; nothing is stored in this extension." };
+      case "member_scope":
+        return { why: "Your " + V.name + " connection does not allow orders.", next: "Disconnect and connect again, approving portfolio and orders." };
+      case "member_terms":
+        return { why: V.name + " asks you to accept its API terms first.", next: message || "Accept them on " + V.name + ", then try again." };
+      case "member_ip":
+        return { why: V.name + " did not allow the request from the service.", next: "The service's address must be on your app's allow-list at " + V.name + "." };
+      case "not_held":
+        return { why: "You do not hold this market on " + V.name + ".", next: "Protection covers the positions in your connected account." };
+      case "size":
+        return { why: message || "That is more than you hold on " + V.name + ".", next: "" };
+      case "no_bids":
+        return { why: V.name + " shows no bids on this market right now.", next: "Protection is your own sale into the book; check back when it has bids." };
+      case "not_filled":
+        return { why: message || V.name + "'s bid moved before the order reached it; nothing was sold.", next: "Nothing changed. Try again." };
+      case "parlay_unsupported":
+        return { why: "Parlays are not protected on " + V.name + ".", next: "" };
+      case "venue_refused":
+      case "venue_unreachable":
+        return { why: message || V.name + " did not answer.", next: "Try again in a moment." };
       default:
         return { why: message || "Protection isn't available on this position right now.", next: "" };
     }
@@ -1735,7 +1861,7 @@
     } else if (away) {
       line = lineGo("Unavailable", "Protected on " + esc(venueNameOf(away.holderVenue)) + " already.", "ael-line-off");
     } else if (rec) {
-      const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
+      const rs = recOutcomes(B, rec);
       if (rec.status === "settled" && rec.result) {
         // the protected outcome is the record's; whether the cash has moved is said beside it,
         // never as "paid" on its own, since the holder can see at the venue whether it has
@@ -1751,10 +1877,16 @@
         const net = closeNetOf(rec);
         const cash = cashState(rec);
         const moved = cash ? (cash.open ? (net >= 0 ? " &middot; on its way" : "") : " &middot; paid") : "";
-        line = lineGo("Protection removed", (net < 0 ? "You paid <b>" + esc(usd(-net)) + "</b>" : net > 0 ? "<b>" + esc(usd(net)) + "</b> paid to you" : "Nothing owed either way") + moved + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
+        // a member's sale is left by buying the contracts back: the round trip's net is in their own balance already
+        const bb = isSale(rec) ? rec.memberBuyBack : null;
+        const words = bb
+          ? "Bought back " + bb.boughtContracts + " at " + bb.avgPriceCents + "&cent; &middot; " + (net < 0 ? "the round trip cost <b>" + esc(usd(-net)) + "</b>" : net > 0 ? "<b>" + esc(usd(net)) + "</b> kept from the round trip" : "the round trip came out even")
+          : net < 0 ? "You paid <b>" + esc(usd(-net)) + "</b>" : net > 0 ? "<b>" + esc(usd(net)) + "</b> paid to you" : "Nothing owed either way";
+        line = lineGo("Protection removed", words + moved + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
       } else {
-        // the venue the other side went to, on the line itself, so the pick is visible without opening the panel
-        const hv = hedgeVenueOf(rec.routing);
+        // the venue the other side went to, on the line itself, so the pick is visible without opening
+        // the panel; a member's own sale has no other side, and the line names their venue
+        const hv = isSale(rec) ? V.name : hedgeVenueOf(rec.routing);
         line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>" + (hv ? " &middot; on " + esc(hv) : ", whichever way it goes") + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
       }
     } else if (B.kind === "parlay") {
@@ -1777,7 +1909,7 @@
       const q = p.quote;
       const t = (q.tiers && q.tiers[st.tier]) || q;
       const n = q.contracts || p.contracts;
-      const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
+      const rs = outcomesOf(B, n, t);
       // one number on the line: the floor. The rest is one tap away, in the panel.
       line = offerLine(rs);
     }
@@ -1879,23 +2011,24 @@
    * each was unprotected; after it the two columns stand alone.
    */
   const ledgerRow = (label, value, third, cls) => '<div class="ael-lr' + (cls ? " " + cls : "") + '"><span class="ael-l">' + label + "</span><b>" + value + "</b>" + (third != null ? "<s>" + third + "</s>" : "") + "</div>";
-  const ledger = (nick, rs, creditCents, was) =>
+  const ledger = (nick, rs, creditCents, was, sale) =>
     '<div class="ael-ledger' + (was ? "" : " ael-two") + '">' +
     ledgerRow(esc(nick) + " win", esc(usd(rs.capTotal)), was ? "was " + esc(was) : null) +
     ledgerRow(esc(nick) + " lose", esc(usd(rs.floorTotal)), was ? "was $0" : null, "ael-hero") +
-    ledgerRow(was ? "Paid to you now" : "Paid to you", "+" + esc(usd(creditCents)), was ? "today" : null, "ael-last") +
+    ledgerRow(cashLabel(sale, Boolean(was)), "+" + esc(usd(creditCents)), was ? "today" : null, "ael-last") +
     "</div>";
 
   /**
    * The simple slip: the two ways the game can go and the cash, nothing a holder has to decode.
    * Before the tap the third column says what each outcome is without the protection ("of
-   * $15.38", "instead of $0"); after it the figures stand alone.
+   * $15.38", "instead of $0"); after it the figures stand alone. On a member's sale the cash row
+   * is what the sale put in their own venue balance ("In your STX balance now"), not a credit.
    */
-  const simpleLedger = (nick, rs, creditCents, was) =>
+  const simpleLedger = (nick, rs, creditCents, was, sale) =>
     '<div class="ael-ledger' + (was ? "" : " ael-two") + '">' +
     ledgerRow(esc(nick) + " win", esc(usd(rs.capTotal)), was ? "of " + esc(was) : null) +
     ledgerRow(esc(nick) + " lose", esc(usd(rs.floorTotal)), was ? "instead of $0" : null, "ael-hero") +
-    ledgerRow("Cash now", "+" + esc(usd(creditCents)), was ? "" : null, "ael-last") +
+    ledgerRow(cashLabel(sale, true), "+" + esc(usd(creditCents)), was ? "" : null, "ael-last") +
     "</div>";
 
   /**
@@ -1909,8 +2042,8 @@
     keys
       .map((k) => {
         const tt = offered[k];
-        const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
-        return '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (k === tier) + '" aria-label="' + esc(TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(tt.creditCents) + " now") + '">' + esc(TIER_WORDS[k]) + "</button>";
+        const tr = outcomesOf(B, n, tt);
+        return '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (k === tier) + '" aria-label="' + esc(TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(cashOf(tt)) + " now") + '">' + esc(TIER_WORDS[k]) + "</button>";
       })
       .join("") +
     "</div>";
@@ -1956,21 +2089,73 @@
    */
   const detailRows = (B, st, p, offered, keys, n, fine, shopped) => {
     const rows = [];
+    const sale = isSale(p);
+    const t = offered[st.tier] || p.quote || {};
     if (keys.length > 1) rows.push(drow("Shape", shapeSegs(B, n, offered, keys, st.tier), "ael-dshape"));
-    const other = otherSideWords(p.routing);
-    if (other) rows.push(drow("Other side", "<span" + (other.tip ? ' title="' + esc(other.tip) + '"' : "") + ">" + other.html + "</span>"));
+    if (sale) {
+      // the holder's own sale, as the venue's book prices it now: how many of their contracts sell, at what, how many ride
+      rows.push(drow("Sale", saleWords(t, n, p.member) + (t.depthLimited ? ' <span class="ael-dim">&middot; the bids run out there</span>' : "")));
+      const cmp = comparedWords(p.compared);
+      if (cmp) rows.push(drow("Compared", cmp));
+    } else {
+      const other = otherSideWords(p.routing);
+      if (other) rows.push(drow("Other side", "<span" + (other.tip ? ' title="' + esc(other.tip) + '"' : "") + ">" + other.html + "</span>"));
+    }
     const until = p.eventTimeIso ? esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)) : null;
     const finer = fine.filter((f) => f !== "Priced live");
     rows.push(drow(until ? "Until" : "Priced", (until ? until + ' <span class="ael-dim">&middot; priced live' : '<span class="ael-dim">live') + (finer.length ? " &middot; " + finer.join(" &middot; ") : "") + "</span>"));
-    const rt = p.routing;
+    const rt = rulesOf(p);
     if (rt && Array.isArray(rt.tails) && rt.tails.length) {
       rows.push(drow(toggleA("ael-rules-a", "Rules", st.rules), st.rules ? "" : '<span class="ael-dim">' + esc(tailSummary(rt.tails)) + "</span>"));
       if (st.rules) rows.push(dwide(rulesGrid(rt)));
     }
     // a parlay at its last pick: the picks behind this single, the ones that hit and the one it stands on
     if (B.parlay && B.parlay.view && Array.isArray(B.parlay.view.picks)) rows.push(drow("Picks", pickListHtml(B, B.parlay.view), "ael-dpicks"));
-    rows.push(drow("How", "You sell part of the position today and keep the rest. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + "; it settles on the same official result, nothing to manage."));
+    rows.push(
+      drow(
+        "How",
+        sale
+          ? "You sell part of your position into " + esc(V.name) + "'s own book today, in your own account, and keep the rest riding. No one is on the other side and nothing is hedged: the cash from the sale is yours now, and the contracts you keep settle on the official result as they always would."
+          : "You sell part of the position today and keep the rest. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + "; it settles on the same official result, nothing to manage.",
+      ),
+    );
     return '<div class="ael-drows">' + rows.join("") + "</div>";
+  };
+
+  /**
+   * A member's sale in one line: "Sell 20 of 50 at 54¢ · 30 still riding" before the tap (the
+   * shape's share of their position into the venue's bids), "Sold 28 of 50 at 54¢ · order 1a2b3c…
+   * · 22 still riding" after it (what filled; a partial fill is said as it is).
+   */
+  const saleWords = (t, n, member) => {
+    const held = (member && member.held) || n;
+    const sold = t.soldContracts != null ? t.soldContracts : null;
+    if (sold == null) return "";
+    const price = t.avgPriceCents != null && t.orderId !== undefined ? t.avgPriceCents : t.limitPriceCents;
+    const order = t.orderId ? ' <span class="ael-dim">&middot; ' + esc(V.name) + " order <code>" + esc(String(t.orderId).slice(0, 8)) + "&hellip;</code></span>" : "";
+    const verb = t.orderId !== undefined ? "Sold" : "Sell";
+    const kept = t.keptContracts != null ? t.keptContracts : Math.max(0, held - sold);
+    return "<b>" + verb + " " + sold + " of " + held + "</b> at " + price + "&cent;" + order + (kept > 0 ? ' <span class="ael-dim">&middot; ' + kept + " still riding</span>" : "");
+  };
+  /**
+   * The comparison the service ran in the background on a member's sale: what a hedged lock on the
+   * other venues would have paid at the same moment, nothing sent anywhere. One line: the venue
+   * that would have taken the other side and its figures, or why nothing priced. The holder sees
+   * their own sale against the hedged route; the operator reads the same.
+   */
+  const comparedWords = (c) => {
+    if (!c) return null;
+    if (!c.ok) return '<span class="ael-dim">no hedged price came back' + (c.reason === "timed_out" ? " in time" : c.reason === "off" ? "; the comparison is off" : "") + " &middot; nothing was sent</span>";
+    const who = c.chosenName ? "<b>" + esc(c.chosenName) + "</b>" : "a hedged lock";
+    const count = c.priced > 1 ? " (best of " + c.priced + " venues)" : "";
+    return who + count + " would have paid " + esc(usd(c.creditCents || 0)) + " now, then " + esc(usd(c.floorTotalCents || 0)) + " or " + esc(usd(c.capTotalCents || 0)) + ' <span class="ael-dim">&middot; priced, nothing sent</span>';
+  };
+  /** The tails and the rule cells a quote or a lock carries: on the routing for a hedged lock, at the top for a member's sale. */
+  const rulesOf = (p) => {
+    if (!p) return null;
+    if (p.routing && Array.isArray(p.routing.tails)) return p.routing;
+    if (Array.isArray(p.tails) && p.tails.length) return { tails: p.tails, rules: p.rules || {}, holderVenue: VENUE_ID, holderVenueName: V.name };
+    return null;
   };
 
   /**
@@ -2000,7 +2185,7 @@
   /** The offer in the simple layout; a string, so a slide can refresh the figures in place and keep the panel's record of itself true. */
   const simpleOfferHtml = (B, st, p, q, offered, keys, n, removedLine) => {
     const t = offered[st.tier] || q;
-    const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
+    const rs = outcomesOf(B, n, t);
     const was = usd(centsOf(100, n));
     // the clock is the Until row's; the rest of the fine print rides on that row
     const fine = ["Priced live", ...notes(B)];
@@ -2008,7 +2193,7 @@
     // one toggle beside the pill; the shape, the other side, the clock, the rules and how it works wait behind it as rows
     const details = st.details ? '<div class="ael-details">' + detailRows(B, st, p, offered, keys, n, fine, shopped) + "</div>" : "";
     return (
-      simpleLedger(shortOf(B.ticker), rs, t.creditCents, was) +
+      simpleLedger(shortOf(B.ticker), rs, cashOf(t), was, isSale(p)) +
       '<div class="ael-acts ael-offer-acts"><button type="button" class="ael-go ael-pillgo" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + '</span>Lock in</button><span class="ael-links">' + toggleA("ael-det-a", "Details", st.details) + "</span></div>" +
       removedLine +
       details +
@@ -2042,7 +2227,7 @@
     const offered = q.tiers || {};
     const t = offered[st.tier] || q;
     const n = q.contracts || p.contracts;
-    const rs = outcomes(B, n, t.floorCents, t.capCents, t.creditCents);
+    const rs = outcomesOf(B, n, t);
     // what the position pays unprotected: $1 a contract, the venue's own figure to the cent
     const was = usd(centsOf(100, n));
     let seg = "";
@@ -2050,8 +2235,8 @@
     if (keys.length > 1) {
       for (const k of keys) {
         const tt = offered[k];
-        const tr = outcomes(B, n, tt.floorCents, tt.capCents, tt.creditCents);
-        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>Floor " + esc(usd(tr.floorTotal)) + " &middot;</i> <i>Upside " + esc(usd(tr.capTotal)) + " &middot;</i> <i>+" + esc(usd(tt.creditCents)) + " now</i></span></button>";
+        const tr = outcomesOf(B, n, tt);
+        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>Floor " + esc(usd(tr.floorTotal)) + " &middot;</i> <i>Upside " + esc(usd(tr.capTotal)) + " &middot;</i> <i>+" + esc(usd(cashOf(tt))) + " now</i></span></button>";
       }
     }
     const fine = ["Priced live"];
@@ -2089,14 +2274,15 @@
     const picked = venuePick(p.routing);
     fine.push(...notes(B), ...(picked ? [] : routingNotes(p.routing)), '<a href="#" class="ael-how-a">how it works</a>');
     const shopped = pricedCount(p.routing) > 1;
+    const sale = isSale(p);
     const html =
       (seg ? '<div class="ael-segs">' + seg + "</div>" : "") +
-      ledger(shortOf(B.ticker), rs, t.creditCents, was) +
+      ledger(shortOf(B.ticker), rs, cashOf(t), was, sale) +
       picked +
       '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in</button>" +
       removedLine +
       '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
-      '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".</p></div>" +
+      '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>" + (sale ? "It is your own sale into " + esc(V.name) + "'s book, in your own account; nothing is hedged and no one is on the other side. The contracts you keep settle on the official result as they always would." : "It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".") + "</p></div>" +
       DISCLOSE;
     setPanel(B, panel, html, () => {
       for (const c of panel.querySelectorAll("[data-tier]"))
@@ -2262,7 +2448,7 @@
     go.disabled = true;
     const t0 = Date.now();
     // the stages in words, a slow sheen, and whole seconds only once it has taken a few: calm to watch
-    const STAGES = ["Pricing from the live book…", "Writing the record…", "Buying the other side…"];
+    const STAGES = isSale(st.quote && st.quote.p) ? ["Pricing from " + V.name + "'s book…", "Selling into the bid…", "Writing the record…"] : ["Pricing from the live book…", "Writing the record…", "Buying the other side…"];
     const label = () => {
       const s = (Date.now() - t0) / 1000;
       return STAGES[Math.min(STAGES.length - 1, Math.floor(s / 1.5))] + (s >= 3 ? " " + Math.floor(s) + "s" : "");
@@ -2284,15 +2470,43 @@
     st.busy = false;
     if (!r.ok || !r.json || !r.json.ok) {
       st.quote = { ok: false, code: (r.json && r.json.code) || "lock_failed", message: (r.json && (r.json.message || r.json.error)) || r.error || "The lock did not go through. Nothing changed." };
+      // a member's sell that found no bid: nothing changed, so the offer is priced again soon rather than in a minute
+      if (st.quote.code === "not_filled") st.quoteAt = Date.now() - REQUOTE_MS + 8_000;
       paintRow(liveRow(B));
       return;
     }
-    st.done = { ticker: B.ticker, at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: r.json.creditCents, sideName: r.json.sideName, eventTimeIso: r.json.eventTimeIso, hedge: r.json.hedge || null, routing: r.json.routing || (st.quote && st.quote.p && st.quote.p.routing) || null, parlay: r.json.parlay || null, justNow: true, ms: Date.now() - t0, rehearsal: Boolean(r.json.rehearsal) };
+    st.done = {
+      ticker: B.ticker,
+      at: r.json.at,
+      status: "open",
+      contracts: r.json.contracts,
+      floorCents: r.json.floorCents,
+      capCents: r.json.capCents,
+      creditCents: r.json.creditCents,
+      sideName: r.json.sideName,
+      eventTimeIso: r.json.eventTimeIso,
+      hedge: r.json.hedge || null,
+      routing: r.json.routing || (st.quote && st.quote.p && st.quote.p.routing) || null,
+      parlay: r.json.parlay || null,
+      // a member's own sale: what filled (a partial fill is a smaller sale with more riding), the comparison, the terms
+      route: r.json.route || null,
+      memberSale: r.json.memberSale || null,
+      partial: Boolean(r.json.partial),
+      compared: r.json.compared || null,
+      tails: r.json.tails || null,
+      rules: r.json.rules || null,
+      rule: r.json.rule || null,
+      justNow: true,
+      ms: Date.now() - t0,
+      rehearsal: Boolean(r.json.rehearsal),
+    };
     st.open = true;
     st.enter = true;
     // a new lock on a game whose earlier protection was removed: the earlier receipt's sale and cash are not this lock's
     st.rcpt = false;
     st.rcptHedge = null;
+    st.rcptMember = null;
+    st.rcptLoaded = false;
     st.rcptSale = null;
     st.rcptSaleAsked = false;
     st.rcptCash = null;
@@ -2534,6 +2748,7 @@
         "</div>"
       );
     }
+    if (isSale(rec)) return saleReceiptHtml(st, rec, row);
     const rt = st.rcptRouting || rec.routing || null;
     const lines = [];
     // the venue the routing named stands in while the hedge view is read, or when it never comes
@@ -2568,6 +2783,35 @@
     return '<div class="ael-rcpt">' + lines.filter(Boolean).join("") + "</div>";
   };
 
+  /**
+   * A member's receipt: their own sale as the venue filled it (sold, price, order, riding), what it
+   * put in their balance, the comparison the service priced beside it, the rules and the pinned
+   * terms; after a leave, the buy-back; after the game, the venue's own settlement line when the
+   * service could read it. Nothing here is a hedge: there is none.
+   */
+  const saleReceiptHtml = (st, rec, row) => {
+    const m = st.rcptMember || {};
+    const sale = m.memberSale || rec.memberSale || null;
+    const lines = [];
+    if (!sale) lines.push(row("Sale", '<span class="ael-dim">' + (st.rcptBusy ? "reading&hellip;" : esc(st.rcptErr || "not available right now")) + "</span>"));
+    else {
+      const partial = sale.requestedContracts != null && sale.soldContracts < sale.requestedContracts;
+      lines.push(row("Sold", saleWords(sale, rec.contracts, null) + (partial ? ' <span class="ael-dim">&middot; ' + sale.requestedContracts + " asked; the rest of the order was cancelled</span>" : "")));
+      lines.push(row(cashLabel(true, false), esc(usd(sale.cashNowCents)) + (sale.feeCents ? ' <span class="ael-dim">&middot; ' + esc(V.name) + " fee " + esc(usd(sale.feeCents)) + "</span>" : "") + (sale.status ? ' <span class="ael-dim">&middot; ' + esc(String(sale.status).replace(/_/g, " ")) + "</span>" : "")));
+      if (sale.keptContracts > 0) lines.push(row("Still riding", sale.keptContracts + " contracts" + ' <span class="ael-dim">&middot; pay ' + esc(usd(sale.keptContracts * 100)) + " on a win, $0 on a loss, as they always did</span>"));
+    }
+    const cmp = comparedWords(m.compared || rec.compared || null);
+    if (cmp) lines.push(row("Compared", cmp));
+    if (rec.status === "closed") {
+      const bb = m.memberBuyBack || rec.memberBuyBack || null;
+      if (bb) lines.push(row("Bought back", "<b>" + bb.boughtContracts + "</b> at " + bb.avgPriceCents + "&cent; &middot; " + esc(usd(bb.costCents)) + (bb.orderId ? ' <span class="ael-dim">&middot; ' + esc(V.name) + " order <code>" + esc(String(bb.orderId).slice(0, 8)) + "&hellip;</code></span>" : "") + (bb.requestedContracts != null && bb.boughtContracts < bb.requestedContracts ? ' <span class="ael-dim">&middot; ' + bb.requestedContracts + " asked; the rest stays sold</span>" : "")));
+    }
+    if (m.settlement && m.settlement.type) lines.push(row(esc(V.name) + " settled", esc(String(m.settlement.type).replace(/_/g, " ")) + (m.settlement.closingPrice != null ? " at " + esc(String(m.settlement.closingPrice)) : "") + (m.settlement.realizedPnl != null ? ' <span class="ael-dim">&middot; realized ' + esc(String(m.settlement.realizedPnl)) + "</span>" : "")));
+    const rt = rulesOf({ tails: m.tails || rec.tails, rules: m.rules || rec.rules });
+    lines.push(rulesRows(row, rt, Boolean(st.rcptRules), st.rcptRule || rec.rule || null));
+    return '<div class="ael-rcpt">' + lines.filter(Boolean).join("") + "</div>";
+  };
+
   /** Read the hedge view for a lock from the service once, then paint; the tap's own answer is used when present. */
   const loadReceipt = async (B) => {
     const st = stateOf(B);
@@ -2583,7 +2827,9 @@
       st.rcptRule = r.json.rule || null;
       st.rcptSale = r.json.hedgeSale || null;
       st.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : null;
-      st.rcptErr = st.rcptHedge ? "" : "no hedge on the trail for this lock";
+      // a member's sale: the receipt carries the sale, the comparison, the terms, the buy-back and the venue's settlement; no hedge is expected
+      if (isSale(r.json)) st.rcptMember = { memberSale: r.json.memberSale || null, compared: r.json.compared || null, tails: r.json.tails || null, rules: r.json.rules || null, memberBuyBack: r.json.memberBuyBack || null, settlement: r.json.venueSettlement || null };
+      st.rcptErr = st.rcptHedge || isSale(r.json) ? "" : "no hedge on the trail for this lock";
     } else st.rcptErr = (r.json && (r.json.message || r.json.error)) || r.error || "could not read the receipt";
     paintRow(B);
   };
@@ -2603,8 +2849,9 @@
       st.rcptLoaded = false;
       void loadReceipt(B);
     }
-    const rs = outcomes(B, rec.contracts, rec.floorCents, rec.capCents, rec.creditCents);
+    const rs = recOutcomes(B, rec);
     const nick = shortOf(B.ticker);
+    const sale = isSale(rec);
     const h = st.rcptHedge || rec.hedge;
     const opLine =
       S.settings.showHedge === "yes" && h
@@ -2629,6 +2876,23 @@
       if (cash && cash.open) meta.push(rec.result === "yes" ? "the slice above the cap goes back to the writer; the receipt shows each leg" : "the floor comes to you; the receipt shows each leg");
     } else if (rec.status === "void") {
       body = '<div class="ael-ph"><b>Protection voided</b><span>No official result for this game; nothing owed either way.</span></div>';
+    } else if (rec.status === "closed" && sale) {
+      // a member's sale left early: they bought the contracts back in their own account. The round
+      // trip's net (the sale less the buy-back) is already in their balance; the position is whole again
+      const net = closeNetOf(rec);
+      const bb = (st.rcptMember && st.rcptMember.memberBuyBack) || rec.memberBuyBack || null;
+      const back = bb ? bb.boughtContracts : rec.memberSale ? rec.memberSale.soldContracts : null;
+      const sold = rec.memberSale ? rec.memberSale.soldContracts : null;
+      const whole = back != null && sold != null && back >= sold;
+      body =
+        '<div class="ael-ledger ael-two">' +
+        ledgerRow("Protection removed &middot; <span class=\"ael-dim\">" + (bb ? "bought back " + bb.boughtContracts + " at " + bb.avgPriceCents + "&cent;" : "bought back") + "</span>", signed(net), null, "ael-hero") +
+        ledgerRow("Your position", (whole ? "whole again" : back != null && sold != null ? back + " of " + sold + " bought back; the rest stays sold" : "back") + " on " + esc(V.name) + ", unprotected", null, "ael-last") +
+        "</div>";
+      if (rec.closedAt) meta.push("Removed " + esc(fmtAt(rec.closedAt)));
+      meta.push(net < 0 ? "the round trip cost " + esc(usd(-net)) + ": the price rose after you sold" : net > 0 ? esc(usd(net)) + " kept from the round trip: the price fell after you sold" : "the round trip came out even");
+      if (operator() && rec.closeUnwindFrictionCents != null) meta.push("crossing the book cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
+      if (rec.justLeft && rec.ms) meta.push("in " + (rec.ms / 1000).toFixed(1) + "s");
     } else if (rec.status === "closed") {
       // protection removed: the protection alone settled between us at that moment's price; the pick
       // is the holder's and stays open on the venue. The cash row says whether the settlement has moved.
@@ -2657,9 +2921,11 @@
       // for the leave sheet (its header says it); the receipt waits behind Details
       const detailsA = simple() ? '<span class="ael-links">' + toggleA("ael-rcpt-a", "Details", st.rcpt) + "</span>" : "";
       const leaveAct = !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button>' + (simple() ? "" : "<span>remove the protection, keep your pick</span>") + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
-      body = (simple() ? simpleLedger(nick, rs, rec.creditCents, null) : ledger(nick, rs, rec.creditCents, null)) + (st.leave ? leaveHtml(B, rec, rs) + leaveAct : leaveAct);
+      body = (simple() ? simpleLedger(nick, rs, cashOf(rec), null, sale) : ledger(nick, rs, cashOf(rec), null, sale)) + (st.leave ? leaveHtml(B, rec, rs) + leaveAct : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
-      if (rec.justNow && rec.ms) meta.push((rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
+      if (rec.justNow && rec.ms) meta.push((sale ? "sold in " : rec.hedge && !rec.hedge.simulated ? "the other side bought in " : "in ") + (rec.ms / 1000).toFixed(1) + "s");
+      // a member's sale that filled short of the shape asked: said once here; the figures above are the fill's
+      if (sale && rec.memberSale && rec.memberSale.requestedContracts != null && rec.memberSale.soldContracts < rec.memberSale.requestedContracts) meta.push(rec.memberSale.soldContracts + " of the " + rec.memberSale.requestedContracts + " asked sold; the rest rides");
       // a parlay's last pick: the earlier picks that hit stand behind this single
       const picks = rec.parlay && Array.isArray(rec.parlay.picks) ? rec.parlay.picks : B.parlay && B.parlay.view ? B.parlay.view.picks : null;
       if (picks && picks.length) meta.push("the last pick of your " + picks.length + "-leg parlay &middot; " + picks.filter((p) => p.state === "won").map((p) => esc(pickWord(p))).join(", ") + " hit");
@@ -2692,6 +2958,7 @@
           st.quoteAt = 0;
           st.rcpt = false;
           st.rcptHedge = null;
+          st.rcptMember = null;
           st.rcptRule = null;
           st.rcptLoaded = false;
           st.leave = null;
@@ -2827,6 +3094,19 @@
         return { why: (j.leg === "hedge" ? "The hedge's" : "Your side's") + " book cannot take the size right now.", next: "Check back in a few minutes; the book refills." };
       case "lock_in_flight":
         return { why: "This position is being written right now.", next: "A moment." };
+      // a member's sale is left by buying the contracts back from the venue's offers
+      case "no_offers":
+        return { why: V.name + " shows no offers on this market right now.", next: "The contracts you sold cannot be bought back until it does; check back in a few minutes." };
+      case "not_filled":
+        return { why: j.message || V.name + "'s offers moved before the order reached them.", next: "Nothing was bought back; the protection stands. Try again." };
+      case "member_not_connected":
+      case "member_scope":
+      case "member_terms":
+      case "member_ip":
+      case "member_app_off":
+      case "venue_refused":
+      case "venue_unreachable":
+        return refusalWords(j.error || j.code, j.message);
       default:
         return { why: j.message || "Leaving is unavailable right now.", next: "" };
     }
@@ -2846,6 +3126,7 @@
     }
     if (Date.now() - L.at >= REQUOTE_MS) setTimeout(() => leaveQuote(B), 0);
     const q = L.q;
+    if (isSale(q) && q.buyBack) return buyBackHtml(B, rec, rs, L, q);
     const net = q.closeNetCents;
     const credit = q.creditCents || 0;
     const allIn = credit + net;
@@ -2874,6 +3155,39 @@
     );
   };
 
+  /**
+   * Leaving a member's sale: buy back what was sold, from the venue's own offers, in the holder's
+   * own account. The block says the one thing that happens ("Buy back 30 at 56¢ · $16.80"), what
+   * the round trip leaves against the cash the sale paid, and what staying holds; the button says
+   * the order it sends. A book too thin for the whole buy-back says so: the rest would stay sold.
+   */
+  const buyBackHtml = (B, rec, rs, L, q) => {
+    const bb = q.buyBack;
+    const net = q.closeNetCents;
+    const short = bb.contracts < bb.wantContracts;
+    const hero = "<b>" + bb.contracts + " at " + bb.limitPriceCents + "&cent;</b> &middot; costs <b" + (net < 0 ? ' class="ael-pay"' : "") + ">" + esc(usd(bb.costCents)) + "</b>";
+    const netWords = net < 0 ? "<b>" + signed(net) + "</b> on the round trip: you sold at " + (rec.memberSale ? rec.memberSale.avgPriceCents : "") + "&cent;, the offers are higher now" : net > 0 ? "<b>" + signed(net) + "</b> kept from the round trip: you sold at " + (rec.memberSale ? rec.memberSale.avgPriceCents : "") + "&cent;, the offers are lower now" : "even: the offers are where you sold";
+    const why = [];
+    why.push("You sold " + q.soldContracts + " contracts into " + esc(V.name) + "'s bids at the lock, for " + esc(usd(q.cashNowCents)) + ". Leaving buys them back from its offers now, in your own account; the difference is the cost of having been protected.");
+    why.push(short ? "The offers hold " + bb.contracts + " of the " + bb.wantContracts + " right now; the rest would stay sold, and the protection stays on those." : "Your position is whole again after the buy-back, unprotected, and settles on the official result as it always would.");
+    const fine = ["Priced live from " + esc(V.name) + "'s offers"];
+    if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
+    if (bb.avgPriceCents && bb.avgPriceCents !== bb.limitPriceCents) fine.push("about " + bb.avgPriceCents + "&cent; average, " + bb.limitPriceCents + "&cent; at most");
+    return (
+      '<div class="ael-leave">' +
+      '<div class="ael-leave-h"><b>Leave early</b><span>buy back what you sold, keep the whole position</span></div>' +
+      '<div class="ael-ledger ael-two">' +
+      ledgerRow("Buy back", hero, null, "ael-hero") +
+      ledgerRow("Net", netWords, null, "") +
+      ledgerRow("Staying", esc(usd(q.stayFloorCents != null ? q.stayFloorCents : rs.floorTotal)) + " or " + esc(usd(q.stayCapCents != null ? q.stayCapCents : rs.capTotal)), null, "ael-last") +
+      "</div>" +
+      '<div class="ael-leave-acts"><button type="button" class="ael-go ael-leave-go">Buy back ' + bb.contracts + " at " + bb.limitPriceCents + '&cent;</button><button type="button" class="ael-go ael-quiet ael-stay">Stay</button></div>' +
+      '<div class="ael-leave-why">' + toggleA("ael-why-a", "Why", Boolean(L.whyOpen)) + (L.whyOpen ? why.map((w) => '<div class="ael-fine">' + w + "</div>").join("") : "") + "</div>" +
+      '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
+      "</div>"
+    );
+  };
+
   /** The tap: the service prices again and writes the close; the row becomes Protection removed. */
   const leaveNow = async (B, rec) => {
     const st = stateOf(B);
@@ -2884,7 +3198,7 @@
     const stay = B.box.querySelector(".ael-stay");
     if (stay) stay.disabled = true;
     const t0 = Date.now();
-    const STAGES = ["Pricing from the live books…", "Writing the record…"];
+    const STAGES = isSale(rec) ? ["Pricing from " + V.name + "'s offers…", "Buying back…", "Writing the record…"] : ["Pricing from the live books…", "Writing the record…"];
     const label = () => {
       const s = (Date.now() - t0) / 1000;
       return STAGES[Math.min(STAGES.length - 1, Math.floor(s / 1.5))] + (s >= 3 ? " " + Math.floor(s) + "s" : "");
@@ -2913,6 +3227,7 @@
       return;
     }
     const u = r.json.unwind;
+    const sale = isSale(rec) || isSale(r.json);
     const left = {
       ...rec,
       status: "closed",
@@ -2923,11 +3238,17 @@
       closeYesFillCents: u.yesFillCents,
       closeUnwindFrictionCents: u.unwindFrictionCents,
       cashDue: Array.isArray(r.json.cash) ? r.json.cash : rec.cashDue,
-      closeHedge: r.json.hedge || null,
+      // a member's sale has no other side to sell: the buy-back is the whole of the leave
+      closeHedge: sale ? null : r.json.hedge || null,
+      memberBuyBack: r.json.memberBuyBack || null,
       justLeft: true,
       ms: Date.now() - t0,
     };
     st2.leave = null;
+    if (sale) {
+      st2.rcptMember = { ...(st2.rcptMember || {}), memberBuyBack: r.json.memberBuyBack || null };
+      st2.rcptLoaded = false;
+    }
     if (r.json.hedge && r.json.hedge.sale) st2.rcptSale = r.json.hedge.sale;
     st2.rcptCash = Array.isArray(r.json.cash) ? r.json.cash : st2.rcptCash;
     if (st2.done) st2.done = left;
@@ -3527,13 +3848,63 @@
     c = document.createElement("div");
     c.id = "ael-card";
     c.className = "ael-ui ael-card " + SKIN;
-    c.innerHTML = '<div class="ael-card-h"><span>Your ' + esc(V.plays) + ' &middot; protection</span><button type="button" class="ael-x" aria-label="Hide">&times;</button></div><div class="ael-card-b"></div>';
+    c.innerHTML = '<div class="ael-card-h"><span>' + (MEMBER ? "Your " + esc(V.name) + " " + esc(V.plays) : "Your " + esc(V.plays)) + ' &middot; protection</span><button type="button" class="ael-x" aria-label="Hide">&times;</button></div><div class="ael-card-b"></div>';
     c.querySelector(".ael-x").onclick = () => {
       c.style.display = "none";
       S.cardHidden = true;
     };
     document.body.appendChild(c);
     return c;
+  };
+
+  /**
+   * On a member venue the card is the surface, not a fallback: the venue's page is not read, and
+   * the positions come from the holder's connected account. Before the connection it carries the
+   * one thing to do (Connect), and while the service cannot answer it says why, in place of the
+   * bottom-left notice. Null once the positions can be listed.
+   */
+  const memberCardState = () => {
+    if (!MEMBER) return null;
+    const line = (b, s) => '<div class="ael-ph"><b>' + b + "</b>" + (s ? "<span>" + s + "</span>" : "") + "</div>";
+    if (S.serviceState === "key") return line("The lock key is missing or wrong.", "Open the extension's settings.");
+    if (S.serviceState === "off") return line("The service has no lock routes configured.", "");
+    if (S.serviceState === "gone") return line("Lock in was updated.", "Reload this page.");
+    if (S.serviceState === "down") return line((S.marketsTries || 0) <= RETRY_MS.length ? "Waking the service\u2026" : "The service is unreachable.", S.downDetail || "");
+    if (S.serviceState !== "ok") return line("Checking the service\u2026", "");
+    const m = S.member;
+    if (!m) return line("Checking your " + esc(V.name) + " connection\u2026", "");
+    if (m.configured === false || m.reason === "member_app_off") return line("This service is not set up for " + esc(V.name) + " accounts.", "");
+    if (m.reason === "key") return line("The lock key is missing or wrong.", "Open the extension's settings.");
+    if (!m.connected) {
+      const why = m.reason === "grant_revoked" ? "Your " + esc(V.name) + " connection was revoked. Connect again when you are ready." : m.reason === "account_pending" ? "Your " + esc(V.name) + " account is still pending on their side; connect again once it is open." : m.reason === "refresh_failed" ? "Your " + esc(V.name) + " connection lapsed. Connect again to continue." : "";
+      const waiting = S.connect.busy;
+      return (
+        '<div class="ael-connect">' +
+        '<div class="ael-ph"><b>' + (waiting ? "Waiting for " + esc(V.name) + "\u2026" : "Protect your " + esc(V.name) + " positions") + "</b><span>" + (waiting ? "Sign in on the " + esc(V.name) + " tab that opened and approve the connection. This page updates on its own once it is done." : "Connect your " + esc(V.name) + " account once. You sign in on " + esc(V.name) + "'s own page and approve reading your portfolio and placing orders in your account; this extension never sees your login or your keys, and the lock is your own sale into " + esc(V.name) + "'s book.") + "</span></div>" +
+        (why ? '<div class="ael-fine">' + why + "</div>" : "") +
+        (S.connect.err ? '<div class="ael-fine ael-err">' + esc(S.connect.err) + "</div>" : "") +
+        '<div class="ael-acts ael-offer-acts">' +
+        (waiting ? '<button type="button" class="ael-go ael-quiet ael-connect-stop">Cancel</button>' : '<button type="button" class="ael-go ael-pillgo ael-connect-go"><span class="ael-ic">' + SHIELD_FILL + "</span>Connect " + esc(V.name) + " account</button>") +
+        "</div>" +
+        DISCLOSE +
+        "</div>"
+      );
+    }
+    return null;
+  };
+  /** The card's foot on a member venue: connected, and the way out. */
+  const memberCardFoot = () => (MEMBER && S.member && S.member.connected ? "<span>" + esc(V.name) + " connected" + (S.member.since ? " " + esc(fmtAt(S.member.since)) : "") + '</span><a href="#" class="ael-disconnect-a">Disconnect</a>' : "");
+  const bindMemberCard = (c) => {
+    const go = c.querySelector(".ael-connect-go");
+    if (go) go.onclick = () => void connectMember();
+    const stop = c.querySelector(".ael-connect-stop");
+    if (stop) stop.onclick = () => stopConnect();
+    const off = c.querySelector(".ael-disconnect-a");
+    if (off)
+      off.onclick = (e) => {
+        e.preventDefault();
+        void disconnectMember();
+      };
   };
 
   const paintCard = (show) => {
@@ -3546,6 +3917,50 @@
     if (S.cardHidden) return;
     c.style.display = "";
     const body = c.querySelector(".ael-card-b");
+    const state = memberCardState();
+    let foot = c.querySelector(".ael-card-f");
+    if (state) {
+      // one block in place of the rows; the rows come back once the positions can be read
+      for (const [id, B] of S.cardRows) {
+        B.row.remove();
+        S.cardRows.delete(id);
+      }
+      let st = body.querySelector(".ael-card-state");
+      if (!st) {
+        st = document.createElement("div");
+        st.className = "ael-ui ael-card-state";
+        body.appendChild(st);
+      }
+      if (st.innerHTML !== state) {
+        st.innerHTML = state;
+        bindMemberCard(st);
+      }
+      if (foot) foot.remove();
+      return;
+    }
+    const stale = body.querySelector(".ael-card-state");
+    if (stale) stale.remove();
+    const footHtml = memberCardFoot();
+    if (footHtml) {
+      if (!foot) {
+        foot = document.createElement("div");
+        foot.className = "ael-ui ael-card-f";
+        c.appendChild(foot);
+      }
+      if (foot.innerHTML !== footHtml) {
+        foot.innerHTML = footHtml;
+        bindMemberCard(foot);
+      }
+    } else if (foot) foot.remove();
+    let empty = body.querySelector(".ael-card-empty");
+    if (MEMBER && S.svc.positions.length === 0) {
+      if (!empty) {
+        empty = document.createElement("div");
+        empty.className = "ael-ui ael-card-empty ael-fine";
+        body.appendChild(empty);
+      }
+      empty.textContent = S.svc.error ? V.name + " could not be read: " + S.svc.error : S.svc.at ? "No positions on games the service can protect right now. A Winner pick on a listed game shows here once it is in your account." : "Reading your positions\u2026";
+    } else if (empty) empty.remove();
     const live = new Set();
     for (const p of S.svc.positions) {
       live.add(p.id);
@@ -3634,6 +4049,26 @@
       markGames([]);
       scanSlip([]);
       paintNotice("Lock in: update the extension. This build (" + EXT_VERSION + ") is below the service's minimum (" + S.ext.minVersion + ").");
+      return;
+    }
+    if (MEMBER) {
+      // a member venue: no row on its page is read (the positions come from the holder's connected
+      // account), so the card is the surface, on every page of the venue; the pre-trade pills on
+      // the game cards and in the slip read the page as they do anywhere
+      for (const [, B] of S.rows) B.host && B.host.remove();
+      S.rows.clear();
+      paintNotice("");
+      const nodes = textNodes();
+      markGames(nodes);
+      const slipWas = S.slip && S.slip.block;
+      scanSlip(nodes);
+      if ((S.slip && S.slip.block) !== slipWas) markGames(nodes);
+      paintCard(true);
+      S.counts.rows = S.cardRows.size;
+      S.counts.offers = [...S.cardRows.values()].filter((B) => { const st = S.st.get(B.ticker); return st && st.quote && st.quote.ok; }).length;
+      S.counts.unread = 0;
+      diagState();
+      teleTick();
       return;
     }
     if (!S.pageOk) {
@@ -3775,15 +4210,17 @@
     S.settings = await loadSettings();
     S.baseUrl = S.settings.baseUrl || "https://atticus-event-shadow.onrender.com";
     await loadMarkets();
+    if (MEMBER) await loadMember();
     void loadPositions();
     void loadRecord();
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     setInterval(loadMarkets, POLL_MARKETS_MS);
     setInterval(() => {
-      if (S.pageOk) void loadPositions();
+      // a member venue's card stands on every page, so its positions are kept fresh everywhere
+      if (S.pageOk || (MEMBER && S.member && S.member.connected)) void loadPositions();
     }, POLL_POSITIONS_MS);
     setInterval(() => {
-      if (S.pageOk) void loadRecord();
+      if (S.pageOk || MEMBER) void loadRecord();
     }, POLL_RECORD_MS);
     setInterval(() => scan(false), 2_000);
     setInterval(() => {
