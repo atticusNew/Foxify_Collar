@@ -49,7 +49,8 @@
  * (a signed, read-only key) or REFERENCE_BOOK_OUTCOME_CLIENT_ID + REFERENCE_BOOK_OUTCOME_CLIENT_SECRET
  * (an app registered for market data) for the third; it publishes nothing unauthenticated, so
  * the host alone is a note. REFERENCE_BOOK_OUTCOME_COMPETITIONS ("nba=NBA,ncaaf=NCAAF") names its
- * competition code where it differs from our league code in upper case.
+ * competition code where it differs from our league code in upper case; REFERENCE_BOOK_OUTCOME_MAX_PAGES
+ * (default 10 pages of 200) bounds one competition read, since the venue lists 60+ markets a game.
  *
  * Nothing here names a venue in anything the record publishes: the ids are the dialects, the
  * public words are "reference book A", "reference book B" and "reference book D".
@@ -60,7 +61,7 @@ import type { LeagueTemplate } from "./resolutionWhitelist";
 import type { MatchedPair, PmBook, PmBookLevel } from "./types";
 import { decimalToMilli } from "./polymarketPublic";
 import { PlaysApiError, PlaysClient, payoutMultiple, type RawMarket, type RawSelection, type RawSportEvent } from "./venuePlays";
-import { MarketsApiError, MarketsClient, marketsSignerFromPem, type RawOutcomeMarket, type RawMarketLevel, type RawMarketParticipant } from "./venueMarkets";
+import { MarketsApiError, MarketsClient, marketsSignerFromPem, outcomeMaxPagesFromEnv, type RawOutcomeMarket, type RawMarketLevel, type RawMarketParticipant } from "./venueMarkets";
 import { VenueApiError, VenueClient, clubMatches, signerFromPem, templateForLeague, type RawVenueBook, type RawVenueMarket } from "./venuePositions";
 
 /** Stable ledger keys. The dialect, not the venue. */
@@ -770,7 +771,8 @@ export async function outcomeCatalogProbe(client: MarketsClient, league: string,
       if (w) leaguesSeen[w] = (leaguesSeen[w] ?? 0) + 1;
     }
     const ordered = [...ours, ...winners.filter((m) => !ours.includes(m)), ...markets.filter((m) => !winners.includes(m))];
-    return { id: "outcome_v1", league, queries: [{ query: sent, count: markets.length, winners: winners.length, ourClubs: ours.length, leaguesSeen, sample: ordered.slice(0, SAMPLE_SIZE).map(outcomeSample) }], note: `read with ${client.authWord}` };
+    const capped = client.lastListTruncated(code) ? `; the ${client.pageCap}-page cap stopped the list short, raise REFERENCE_BOOK_OUTCOME_MAX_PAGES` : "";
+    return { id: "outcome_v1", league, queries: [{ query: sent, count: markets.length, winners: winners.length, ourClubs: ours.length, leaguesSeen, sample: ordered.slice(0, SAMPLE_SIZE).map(outcomeSample) }], note: `read with ${client.authWord}${capped}` };
   } catch (err) {
     const words = err instanceof MarketsApiError ? `${err.status} ${err.code}: ${err.message}` : String(err instanceof Error ? err.message : err);
     return { id: "outcome_v1", league, queries: [{ query: sent, count: null, winners: null, ourClubs: null, error: words.slice(0, 160), leaguesSeen: {}, sample: [] }], note: `read with ${client.authWord}` };
@@ -838,15 +840,16 @@ export function referenceSourcesFromEnv(env: NodeJS.ProcessEnv = process.env, op
     const competitions = parseOutcomeCompetitionCodes(env.REFERENCE_BOOK_OUTCOME_COMPETITIONS);
     notes.push(...competitions.notes);
     const outcomeOpts: OutcomeSourceOptions = { competitionCodes: competitions.codes };
+    const maxPages = outcomeMaxPagesFromEnv(env.REFERENCE_BOOK_OUTCOME_MAX_PAGES);
     if (outcomeHost && outcomeKeyId && outcomePem) {
       try {
-        sources.push(outcomeSource(new MarketsClient({ host: outcomeHost, signer: marketsSignerFromPem(outcomeKeyId, outcomePem), fetchImpl }), outcomeOpts));
+        sources.push(outcomeSource(new MarketsClient({ host: outcomeHost, signer: marketsSignerFromPem(outcomeKeyId, outcomePem), fetchImpl, maxPages }), outcomeOpts));
         if (outcomeClientId || outcomeClientSecret) notes.push("reference book D: both a key and an app client are set; reading with the signed key");
       } catch (err) {
         notes.push(`reference book D: key unusable (${String(err instanceof Error ? err.message : err)})`);
       }
     } else if (outcomeHost && outcomeClientId && outcomeClientSecret && !outcomeKeyId && !outcomePem) {
-      sources.push(outcomeSource(new MarketsClient({ host: outcomeHost, app: { clientId: outcomeClientId, clientSecret: outcomeClientSecret }, fetchImpl }), outcomeOpts));
+      sources.push(outcomeSource(new MarketsClient({ host: outcomeHost, app: { clientId: outcomeClientId, clientSecret: outcomeClientSecret }, fetchImpl, maxPages }), outcomeOpts));
       notes.push("reference book D: reading with an app token (market data scope)");
     } else {
       // the venue publishes nothing unauthenticated: the host alone cannot read

@@ -33,7 +33,7 @@ import {
   signedSource,
   type ReferenceBookSource,
 } from "../src/eventCollar/crossVenue/venueBooks";
-import { MARKETS_USER_AGENT, MarketsClient, marketsSignerFromPem, marketsSigningMessage, type RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
+import { DEFAULT_MAX_PAGES, MARKETS_USER_AGENT, MarketsClient, marketsSignerFromPem, marketsSigningMessage, outcomeMaxPagesFromEnv, type RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
 import { VENUE_COLUMNS } from "../src/eventCollar/crossVenue/shadowVenues";
 import { VenueApiError, VenueClient, signerFromPem, templateForLeague } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, payoutMultiple } from "../src/eventCollar/crossVenue/venuePlays";
@@ -502,7 +502,7 @@ const OUTCOME_MARKETS: RawOutcomeMarket[] = [
 ];
 
 /** the venue as it answers: every read needs the three signed headers or a bearer and a User-Agent; markets paged under {cursor, markets} */
-function outcomeFakeVenue(markets: RawOutcomeMarket[], opts: { auth?: "key" | "app"; pageSize?: number; tokenFails?: boolean; rateLimit?: boolean } = {}) {
+function outcomeFakeVenue(markets: RawOutcomeMarket[], opts: { auth?: "key" | "app"; pageSize?: number; tokenFails?: boolean; rateLimit?: boolean; maxPages?: number } = {}) {
   const calls: Array<{ method: string; path: string; headers: Record<string, string>; body?: string }> = [];
   let tokensIssued = 0;
   const fetchImpl: typeof fetch = async (input, init) => {
@@ -535,6 +535,7 @@ function outcomeFakeVenue(markets: RawOutcomeMarket[], opts: { auth?: "key" | "a
   const client = new MarketsClient({
     host: "https://venue-d.test",
     ...(opts.auth === "app" ? { app: { clientId: "cid", clientSecret: "csecret" } } : { signer: marketsSignerFromPem("kid-d", pem) }),
+    ...(opts.maxPages !== undefined ? { maxPages: opts.maxPages } : {}),
     fetchImpl,
   });
   return { client, calls, tokensIssued: () => tokensIssued };
@@ -718,6 +719,29 @@ test("reference books: the outcome source's catalog probe tallies the competitio
   assert.equal(notes.length, 2);
   assert.match(notes[0], /reference book D.*not league=CODE/);
   assert.match(notes[1], /reference book D.*not one we cover/);
+});
+
+test("reference books: the outcome dialect's page cap is 10 by default, set by REFERENCE_BOOK_OUTCOME_MAX_PAGES, and a list it stops short is said so in the probe", async () => {
+  assert.equal(outcomeMaxPagesFromEnv(undefined), DEFAULT_MAX_PAGES);
+  assert.equal(DEFAULT_MAX_PAGES, 10);
+  assert.equal(outcomeMaxPagesFromEnv("25"), 25);
+  assert.equal(outcomeMaxPagesFromEnv("0"), DEFAULT_MAX_PAGES);
+  assert.equal(outcomeMaxPagesFromEnv("2.5"), DEFAULT_MAX_PAGES);
+  assert.equal(outcomeMaxPagesFromEnv("99"), DEFAULT_MAX_PAGES);
+  // 4 markets, pages of 2, cap of 1 page: 2 read, a cursor left to follow
+  const { client: capped, calls } = outcomeFakeVenue(OUTCOME_MARKETS, { pageSize: 2, maxPages: 1 });
+  const list = await capped.listCompetitionMarkets("MLB");
+  assert.equal(list.length, 2);
+  assert.equal(calls.length, 1, "one page read, the second not asked for");
+  assert.equal(capped.lastListTruncated("MLB"), true);
+  assert.equal(capped.pageCap, 1);
+  const probe = await outcomeSource(capped).catalog!("mlb");
+  assert.match(probe.note ?? "", /1-page cap stopped the list short, raise REFERENCE_BOOK_OUTCOME_MAX_PAGES/);
+  // the full list is not flagged
+  const full = outcomeFakeVenue(OUTCOME_MARKETS, { pageSize: 2 }).client;
+  await full.listCompetitionMarkets("MLB");
+  assert.equal(full.lastListTruncated("MLB"), false);
+  assert.doesNotMatch((await outcomeSource(full).catalog!("mlb")).note ?? "", /cap/);
 });
 
 test("reference books: the outcome dialect has a public word, a venues column, and never a venue name on the public side", () => {

@@ -319,6 +319,9 @@ services:
       #   REFERENCE_BOOK_OUTCOME_CLIENT_SECRET=<app client secret>   and reused for its hour
       #   REFERENCE_BOOK_OUTCOME_COMPETITIONS=nba=NBA             optional; a league the venue files
       #     under another competition code (read it off /api/shadow/venues/catalog?league=nba)
+      #   REFERENCE_BOOK_OUTCOME_MAX_PAGES=10                     optional; pages of 200 per competition
+      #     read. The venue lists 60+ markets a game, so a full NFL week passes 1,000; the catalog
+      #     probe's note says when the cap stopped a list short.
       # Status: the operator state's hedge.referenceBooks lists which are configured, never the keys.
       # AGGREGATOR FEED (optional; the cross-venue data partner's signed API and orderbook stream).
       # With the key set, every sports quote reads its books from the feed FIRST: the opposing

@@ -123,33 +123,54 @@ export interface MarketsClientConfig {
   fetchImpl?: typeof fetch;
   /** a competition's market list is cached this long; the book levels on it are a snapshot, so the cache is short */
   catalogTtlMs?: number;
-  /** pages of 200 followed per competition before the list is taken as complete */
+  /**
+   * Pages of 200 followed per competition before the list is taken as complete. The venue lists
+   * every prop, spread and total of a game beside its two winner markets (60+ per game), soonest
+   * game first, so a full NFL week runs past 1,000 markets; a cap that stops short reads a far
+   * game as not listed. Default 10 (2,000 markets).
+   */
   maxPages?: number;
   now?: () => number;
 }
 
 /** how much of the token's hour is left unused, so a read never carries a token that expires in flight */
 const TOKEN_SLACK_MS = 60_000;
+export const DEFAULT_MAX_PAGES = 10;
+
+/** REFERENCE_BOOK_OUTCOME_MAX_PAGES: a whole number of pages, 1 to 50; anything else is the default. */
+export function outcomeMaxPagesFromEnv(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= 50 ? n : DEFAULT_MAX_PAGES;
+}
 
 export class MarketsClient {
   private readonly fetchImpl: typeof fetch;
   private readonly ttl: number;
   private readonly maxPages: number;
   private readonly now: () => number;
-  private readonly lists = new Map<string, { at: number; v: RawOutcomeMarket[] }>();
+  private readonly lists = new Map<string, { at: number; v: RawOutcomeMarket[]; truncated: boolean }>();
   private token: { value: string; until: number } | null = null;
 
   constructor(private readonly cfg: MarketsClientConfig) {
     if (!cfg.signer && !cfg.app) throw new Error("markets client: a signed key or an app client is needed; the venue publishes nothing unauthenticated");
     this.fetchImpl = cfg.fetchImpl ?? fetch;
     this.ttl = cfg.catalogTtlMs ?? 45_000;
-    this.maxPages = cfg.maxPages ?? 5;
+    this.maxPages = cfg.maxPages ?? DEFAULT_MAX_PAGES;
     this.now = cfg.now ?? Date.now;
   }
 
   /** "signed key" or "app token": what the operator view says about how the venue is read; never a credential */
   get authWord(): string {
     return this.cfg.app ? "app token" : "signed key";
+  }
+
+  get pageCap(): number {
+    return this.maxPages;
+  }
+
+  /** Did the last read of this competition stop at the page cap with a cursor still to follow? */
+  lastListTruncated(competition: string): boolean {
+    return this.lists.get(competition.toUpperCase())?.truncated ?? false;
   }
 
   /**
@@ -170,7 +191,7 @@ export class MarketsClient {
       cursor = res.cursor ?? null;
       if (!cursor) break;
     }
-    this.lists.set(key, { at: this.now(), v: out });
+    this.lists.set(key, { at: this.now(), v: out, truncated: cursor !== null });
     return out;
   }
 
