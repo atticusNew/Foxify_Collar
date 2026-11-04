@@ -1746,6 +1746,8 @@
         return { why: "The size of this position could not be read.", next: "Enter it below to price protection." };
       case "picks_off":
         return { why: "This service build does not read parlays yet.", next: "" };
+      case "parlay":
+        return { why: "Protection on parlays is coming; this one rides as it is.", next: "" };
       case "parlay_not_last_pick":
         return { why: "Protection opens at your last pick.", next: "With two or more picks open there is nothing yet to protect; the ticket pays only if every pick hits." };
       case "parlay_busted":

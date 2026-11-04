@@ -306,20 +306,32 @@ services:
       #   MEMBER_APP_REDIRECT_URI=...            optional; default RECORD_URL + /api/shadow/member/callback,
       #                                         which must be the callback registered on the app, exactly
       #   MEMBER_APP_TOKENS_PATH=...             optional; default member-tokens.json beside the lock ledger
-      #   MEMBER_APP_SCOPES=...                  optional; default "profile.read portfolio.read orders.read orders.write"
-      #   MEMBER_APP_VENUE_URL=https://...       optional; where the hosted page's venue name links (unset: plain text)
+      #   MEMBER_APP_SCOPES=...                  optional; default "profile.read balance.read portfolio.read orders.read orders.write"
+      #                                         (balance.read must be ticked on the app's registration; a member who
+      #                                         connected before it was asked sees "Reconnect to show it" on the page)
+      #   MEMBER_APP_VENUE_URL=https://...       optional; the venue's web app (e.g. https://demo.stxapp.io): the page's
+      #                                         Back to STX pill, the venue mark's link, and the Games tab's Buy on STX
+      #                                         links to <url>/events/<event_id> (unset: no links, the rows still show)
       #   MEMBER_APP_ORDER_WAIT_MS=3000          optional; how long a member's limit order rests before
       #                                         the rest is cancelled and the record written from the fills
       #   MEMBER_APP_COMPARE_WAIT_MS=4000        optional; the bound on the background comparison priced
       #                                         on the hedge routes beside the member's sale (0 turns it
       #                                         off); priced, nothing sent, written as memberSale.compared
       #   The competition map is REFERENCE_BOOK_OUTCOME_COMPETITIONS (shared with the reference read).
-      # Routes (lock key, or the page's cookie): GET /app (the hosted page; sets the cookie once),
-      #   GET /api/shadow/member (state), GET /api/shadow/member/connect (the authorize URL to open),
+      # Routes (lock key, or the page's cookie): GET /app (the hosted page; sets the cookie once;
+      #   /app/stx.png, bird.png, atticus.png, icon-*.png and manifest.webmanifest are its files),
+      #   GET /api/shadow/member (state: connected, handle, avatarUrl, scope),
+      #   GET /api/shadow/member/account (handle, avatar, balance in cents, balanceScope; ?fresh=1),
+      #   GET /api/shadow/member/games (protectable games the venue lists, joined by club and date,
+      #   with the venue's market and event id, best bid, the Max floor keep, held; the competition
+      #   catalogue is shared and kept 45 s), GET /api/shadow/member/history (every lock, newest first),
+      #   GET /api/shadow/member/connect (the authorize URL to open),
       #   GET /api/shadow/member/callback (keyless; the venue's redirect, one-time state; a page
       #   member is sent back to /app?connected=1 or /app?error=...),
       #   POST /api/shadow/member/disconnect (revokes). /api/shadow/positions lists the member's longs
-      #   on our markets with venue:"stx"; /api/shadow/quote?venue=stx prices the three tiers from the
+      #   with venue:"stx" (the protectable ones with their ticker; the rest with a reason: parlay,
+      #   market_not_covered, league_not_covered, no_protectable_market) and cutoffMinutes;
+      #   /api/shadow/quote?venue=stx prices the three tiers from the
       #   member's own bid depth; /api/shadow/lock on that venue is one limit sell to its fills;
       #   /api/shadow/unwind buys the contracts back. Status: healthz lock.member, never a token.
       # REFERENCE BOOKS (optional; other regulated US exchanges listing the same games, read on every
