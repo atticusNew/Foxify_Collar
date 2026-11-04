@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -671,6 +671,59 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     q = await get<Any>(`/api/shadow/quote?ticker=${TICKER2}&contracts=10&venue=stx`);
     assert.equal(q.body.code, "member_not_connected");
     assert.equal(readFileSync(join(dir, "member-tokens.json"), "utf8").includes("stxapp_"), false);
+
+    // THE HOSTED PAGE (/app): the service sets a session cookie, once; the cookie is the caller on the
+    // member routes, as an alias m-<hex>, and its lane is the member venue's alone
+    const page = await fetch(`${base}/app`);
+    assert.equal(page.status, 200);
+    const setCookie = page.headers.get("set-cookie") ?? "";
+    assert.match(setCookie, /^ael_member=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=\d+; HttpOnly; SameSite=Lax(; Secure)?$/, "HttpOnly, Lax; Secure only behind https");
+    const html = await page.text();
+    assert.ok(html.includes("Lock in · STX positions") && html.includes("Protection by Atticus") && html.includes('"venueName":"STX"'), "the page's words");
+    assert.ok(!html.includes("lock-key-") && !html.includes("stxapp_") && !html.includes("op-secret"), "no key of any kind on the page");
+    const ck = { cookie: setCookie.split(";")[0] };
+    const revisit = await fetch(`${base}/app`, { headers: ck });
+    assert.equal(revisit.headers.get("set-cookie"), null, "a returning cookie is kept, not replaced");
+    let cm = await get<Any>("/api/shadow/member", ck);
+    assert.equal(cm.status, 200);
+    assert.match(cm.body.holder, /^m-[0-9a-f]{16}$/, "the cookie's alias is a hash of it");
+    assert.equal(cm.body.member.connected, false);
+    const alias = cm.body.holder as string;
+    // a POST from the cookie alone is refused: the page sends its own header, a cross-site form cannot
+    const noHeader = await fetch(`${base}/api/shadow/member/disconnect`, { method: "POST", headers: { ...ck, "content-type": "application/json" }, body: "{}" });
+    assert.equal(noHeader.status, 403);
+    // beyond the member lane: a quote or a lock the protection would hedge with our capital is refused
+    const otherQuote = await get<Any>(`/api/shadow/quote?ticker=${TICKER}&contracts=10&venue=kalshi`, ck);
+    assert.deepEqual([otherQuote.status, otherQuote.body.code], [403, "member_only"]);
+    const pageHeaders = { ...ck, "x-member-app": "1", "content-type": "application/json" };
+    const otherLock = await fetch(`${base}/api/shadow/lock`, { method: "POST", headers: pageHeaders, body: JSON.stringify({ ticker: TICKER, contracts: 10, venue: "kalshi" }) });
+    assert.equal(otherLock.status, 403);
+    // connect from the page: the venue's redirect sends a page member back to the page, not to the one-line tab
+    const cc = await get<Any>("/api/shadow/member/connect", ck);
+    assert.equal(cc.status, 200);
+    const issued = venue.issueCode(cc.body.url);
+    const back = await fetch(`${base}/api/shadow/member/callback?code=${issued.code}&state=${issued.state}`, { redirect: "manual" });
+    assert.deepEqual([back.status, back.headers.get("location")], [302, "/app?connected=1"]);
+    cm = await get<Any>("/api/shadow/member", ck);
+    assert.equal(cm.body.member.connected, true);
+    // positions: the member's own venue rows, every one marked with the venue; no holder-key account of ours is read
+    const cp = await get<Any>("/api/shadow/positions", ck);
+    assert.ok(cp.body.ok && cp.body.positions.length >= 3 && cp.body.positions.every((p: Any) => p.venue === "stx"), JSON.stringify(cp.body));
+    // a lock from the page: the member's own sale, written to the alias's own ledger; the shared ledger is untouched
+    const sharedBefore = loadShadowPositions(ledger).length;
+    const cl = await fetch(`${base}/api/shadow/lock`, { method: "POST", headers: pageHeaders, body: JSON.stringify({ ticker: TICKER, contracts: 50, venue: "stx" }) });
+    const clb = (await cl.json()) as Any;
+    assert.equal(cl.status, 200, JSON.stringify(clb));
+    assert.deepEqual([clb.ok, clb.route, clb.holder, clb.memberSale.soldContracts], [true, "member_sale", alias, 20]);
+    assert.ok(existsSync(join(dir, `lock-ledger-${alias}.jsonl`)), "the alias's own ledger");
+    assert.equal(loadShadowPositions(ledger).length, sharedBefore);
+    const cpos = await get<Any>("/api/shadow/positions", ck);
+    assert.equal(cpos.body.positions.find((p: Any) => p.ticker === TICKER).lock.status, "open");
+    // disconnect from the page, with its header
+    const cdc = await fetch(`${base}/api/shadow/member/disconnect`, { method: "POST", headers: pageHeaders, body: "{}" });
+    assert.equal(cdc.status, 200);
+    cm = await get<Any>("/api/shadow/member", ck);
+    assert.equal(cm.body.member.connected, false);
   } finally {
     worker.server.close();
     venue.close();

@@ -65,6 +65,7 @@
  *   -d '{"ticker":"KX...","leg":"floor","cents":1200,"method":"venue transfer","ref":"..."}' https://<service>/api/shadow/cash`).
  */
 
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join } from "node:path";
@@ -141,6 +142,7 @@ import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalsh
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderHoldersHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
 import { renderScoreboardHtml } from "./eventScoreboardHtml";
+import { memberAppHtml } from "./memberAppHtml";
 import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import {
@@ -702,11 +704,53 @@ const executableFor = (ticker: string): Record<HedgeRoute, boolean> =>
  * Env: MEMBER_APP_HOST · MEMBER_APP_CLIENT_ID · MEMBER_APP_CLIENT_SECRET · MEMBER_APP_TOKEN_KEY (32 bytes)
  *      · MEMBER_APP_REDIRECT_URI (default <public url>/api/shadow/member/callback) · MEMBER_APP_TOKENS_PATH
  *      · MEMBER_APP_SCOPES · MEMBER_APP_ORDER_WAIT_MS (default 3000) · MEMBER_APP_COMPARE_WAIT_MS (default 4000; 0 = off)
+ *      · MEMBER_APP_VENUE_URL (the venue's own web app, linked from the hosted page's top bar)
+ *
+ * THE HOSTED PAGE (memberAppHtml.ts), GET /app: the member's own surface, no extension to install.
+ * Its session is a cookie this service sets on the first visit (HttpOnly, SameSite=Lax, Secure on
+ * https; never the token, never a key). A valid cookie names a holder alias `m-<16 hex>` (a hash
+ * of the cookie, so no ledger file carries the secret) and that alias is the member on every
+ * route above and on the lock routes, in the member's own lane only: positions read no venue
+ * account of ours, quote and lock are the member venue's alone (any other venue is 403), leave
+ * early and the receipt see that alias's own ledger. POSTs from the cookie must carry the
+ * x-member-app header, which a cross-site form cannot. The venue's redirect sends a cookie
+ * member back to /app, not to the one-line page the extension's flow lands on.
  */
 const MEMBER_VENUE = "stx" as const;
 const MEMBER_CALLBACK_PATH = "/api/shadow/member/callback";
+const MEMBER_APP_PATH = "/app";
+const MEMBER_COOKIE = "ael_member";
+const MEMBER_COOKIE_MAX_AGE_S = 180 * 86_400;
+const MEMBER_ALIAS_PREFIX = "m-";
 const memberApp = memberAppConfigFromEnv(process.env, { redirectUri: `${RECORD_URL}${MEMBER_CALLBACK_PATH}`, storePath: join(dirname(LOCK_LEDGER_PATH), "member-tokens.json") });
 let memberSessions: MemberSessions | null = memberApp.config ? new MemberSessions(memberApp.config) : null;
+const MEMBER_APP_VENUE_URL = (process.env.MEMBER_APP_VENUE_URL ?? "").trim() || null;
+
+/** The cookie's value, when the request carries one of the right shape; nothing is trusted beyond its shape. */
+function memberCookieValue(req: IncomingMessage): string | null {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k !== MEMBER_COOKIE) continue;
+    const v = rest.join("=").trim();
+    return /^[A-Za-z0-9_-]{43}$/.test(v) ? v : null;
+  }
+  return null;
+}
+/** The holder alias a cookie stands for: a hash of it, so the alias may sit in a file name and a log line. */
+const memberAliasOf = (cookie: string): string => `${MEMBER_ALIAS_PREFIX}${createHash("sha256").update(cookie, "ascii").digest("hex").slice(0, 16)}`;
+const isMemberAlias = (holder: string | null): boolean => Boolean(holder && holder.startsWith(MEMBER_ALIAS_PREFIX));
+/** The cookie member on this request, when the member app is on and the cookie is sound; null otherwise. */
+function memberCookieHolder(req: IncomingMessage): string | null {
+  if (!memberSessions) return null;
+  const v = memberCookieValue(req);
+  return v ? memberAliasOf(v) : null;
+}
+function memberCookieHeader(value: string): string {
+  const secure = RECORD_URL.startsWith("https://") ? "; Secure" : "";
+  return `${MEMBER_COOKIE}=${value}; Path=/; Max-Age=${MEMBER_COOKIE_MAX_AGE_S}; HttpOnly; SameSite=Lax${secure}`;
+}
 const positiveMs = (raw: string | undefined, dflt: number): number => {
   const n = Number(raw);
   return raw !== undefined && raw.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : dflt;
@@ -868,7 +912,7 @@ function memberSaleViewOf(s: MemberSaleRecord) {
  * venue's rules, nothing sent. Bounded, so a slow venue never holds the member's own sale; what
  * came back in time is written, and "timed_out" otherwise.
  */
-async function memberComparison(ticker: string, contracts: number, entryCents: number, at: string): Promise<{ compared: MemberSaleComparison; result: CandidateResult | null }> {
+async function memberComparison(ticker: string, contracts: number, entryCents: number, at: string, tier?: ProtectionTier): Promise<{ compared: MemberSaleComparison; result: CandidateResult | null }> {
   if (!quoteOneFn || MEMBER_COMPARE_WAIT_MS <= 0) return { compared: { at, ok: false, reason: "off", sent: false }, result: null };
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<"timed_out">((r) => {
@@ -881,14 +925,16 @@ async function memberComparison(ticker: string, contracts: number, entryCents: n
     const res = q.result;
     if (!res.quote.ok) return { compared: { at, ok: false, reason: res.quote.code, sent: false }, result: res };
     const r = res.routing;
+    // the same shape the member chose, when the hedge routes fund it; else the quote's own head
+    const shape = tier && res.quote.tiers[tier] ? { ...res.quote, ...res.quote.tiers[tier], tier } : res.quote;
     return {
       compared: {
         at,
         ok: true,
-        tier: res.quote.tier,
-        creditCents: res.quote.creditCents,
-        floorTotalCents: floorTotalCents(res.quote),
-        capTotalCents: capTotalCents(res.quote),
+        tier: shape.tier,
+        creditCents: shape.creditCents,
+        floorTotalCents: floorTotalCents(shape),
+        capTotalCents: capTotalCents(shape),
         chosen: r?.chosen ?? res.route,
         routes: r
           ? r.routes.map((x) => ({ route: x.route, ok: x.ok, creditCents: x.creditCents ?? null, allInBps: x.allInBps ?? null }))
@@ -903,10 +949,14 @@ async function memberComparison(ticker: string, contracts: number, entryCents: n
 }
 
 /** The comparison as the client paints it: each route's venue named, the chosen one, what a hedged lock would have paid. Null when none was priced. */
-function comparedViewOf(c: MemberSaleComparison | undefined) {
+function comparedViewOf(c: MemberSaleComparison | undefined, result: CandidateResult | null = null) {
   if (!c) return null;
   const name = (route: HedgeRoute) => HEDGE_VENUE_NAMES[route] ?? route;
+  // on a quote, every shape the hedge routes fund, so the client's Compared follows the shape the member picks
+  const q = result?.quote.ok ? result.quote : null;
+  const tiers = q ? Object.fromEntries(Object.entries(q.tiers).filter(([, t]) => t).map(([k, t]) => [k, { creditCents: t!.creditCents, floorTotalCents: floorTotalCents({ ...q, ...t! }), capTotalCents: capTotalCents({ ...q, ...t! }) }])) : null;
   return {
+    ...(tiers && Object.keys(tiers).length ? { tiers } : {}),
     at: c.at,
     ok: c.ok,
     sent: false,
@@ -968,7 +1018,7 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     return;
   }
   // the comparison starts now and runs while the order rests: the member's own sale never waits on the other venues
-  const cmp = memberComparison(ticker, P.contracts, P.entryCents, atIso);
+  const cmp = memberComparison(ticker, P.contracts, P.entryCents, atIso, want);
   const clientOrderId = clientOrderIdFor("lock", ticker);
   let outcome: OrderOutcome;
   try {
@@ -1733,7 +1783,10 @@ function headedAt(res: CandidateResult, tier: ProtectionTier): CandidateResult {
  *   GET  /api/shadow/unwind/quote?ticker=   leaving early, priced now from the live books (earlyClose.ts), nothing written
  *   POST /api/shadow/unwind {ticker}   quote again at the tap, write the close line (source "unwind"), answer with it
  */
-async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: URL, holder: string | null, operator = false): Promise<void> {
+async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: URL, holder: string | null, operator = false, memberOnly = false): Promise<void> {
+  // a cookie member (the hosted page) acts in the member venue's lane alone: never a venue account
+  // of ours, never a quote or a lock that the protection would hedge with our capital
+  const memberOnlyRefusal = () => sendJson(res, 403, { ok: false, error: "member_only", code: "member_only", message: `This session can only protect positions in your own ${VENUE_NAMES[MEMBER_VENUE]} account.` });
   if (!quoteOneFn || !listGameMarketsFn) {
     sendJson(res, 503, { ok: false, error: "engine_not_ready", message: "the scanner is still loading" });
     return;
@@ -1812,8 +1865,9 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     const member = memberKeyOf(holder);
     const mv = memberView(member);
     const memberOn = Boolean(mv && mv.connected);
-    if (!venueClient && !memberOn) {
-      sendJson(res, 200, { ok: true, at: atIso, configured: false, positions: [], ...(venueClientNote ? { note: venueClientNote } : {}), ...(mv ? { member: mv } : {}) });
+    const ownVenue = memberOnly ? null : venueClient;
+    if (!ownVenue && !memberOn) {
+      sendJson(res, 200, { ok: true, at: atIso, configured: false, positions: [], ...(venueClientNote && !memberOnly ? { note: venueClientNote } : {}), ...(mv ? { member: mv } : {}) });
       return;
     }
     const fresh = url.searchParams.get("fresh") === "1";
@@ -1821,7 +1875,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     const notes: string[] = [];
     let venueRows: HolderPosition[] = [];
     let venueReadAt: number | null = null;
-    if (venueClient) {
+    if (ownVenue) {
       try {
         venueRows = await refreshPositions(fresh);
         venueReadAt = positionsCache?.at ?? null;
@@ -1876,6 +1930,10 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 400, { ok: false, error: "bad_request", message: parsed.error });
       return;
     }
+    if (memberOnly && parsed.value.venue !== MEMBER_VENUE) {
+      memberOnlyRefusal();
+      return;
+    }
     if (parsed.value.venue === MEMBER_VENUE) {
       // A MEMBER'S QUOTE: the three tiers from their venue's bids at their size, the comparison on
       // the hedge routes beside it (priced, nothing sent), the tails in their venue's words.
@@ -1887,10 +1945,18 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       }
       const P = priced.priced;
       const held = !lockable(loadShadowPositions(ownLedger), parsed.value.ticker);
-      const tiers = Object.fromEntries(Object.entries(P.tiers).filter(([, t]) => t).map(([k, t]) => [k, saleTierView(t as SaleTierQuote, P.contracts, P.maxPrice, P.game.markCents)]));
+      // each shape carries its own tails: the riding count the venue's rules speak of is that shape's
+      const tiers = Object.fromEntries(
+        Object.entries(P.tiers)
+          .filter(([, t]) => t)
+          .map(([k, t]) => {
+            const v = saleTierView(t as SaleTierQuote, P.contracts, P.maxPrice, P.game.markCents);
+            return [k, { ...v, tails: memberRulesView(P.game.league, v.keptContracts).tails }];
+          }),
+      );
       const dflt = P.tiers[searchConfig().defaultTier] ? searchConfig().defaultTier : (Object.keys(tiers)[0] as ProtectionTier);
       const head = tiers[dflt];
-      const cmp = await memberComparison(parsed.value.ticker, P.contracts, P.entryCents, atIso);
+      const cmp = await memberComparison(parsed.value.ticker, P.contracts, P.entryCents, atIso, dflt);
       sendJson(res, 200, {
         ok: true,
         at: atIso,
@@ -1906,7 +1972,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         evCostBps: head.evCostBps,
         member: { ...memberView(member), held: P.pos.contracts, bestBidCents: P.bestBidCents, bidDepth: P.bidDepth },
         ...memberRulesView(P.game.league, head.keptContracts),
-        compared: comparedViewOf(cmp.compared),
+        compared: comparedViewOf(cmp.compared, cmp.result),
       });
       return;
     }
@@ -1957,6 +2023,10 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       return;
     }
     const { ticker, contracts, entryCents, tier, venue, parlay } = parsed.value;
+    if (memberOnly && venue !== MEMBER_VENUE) {
+      memberOnlyRefusal();
+      return;
+    }
     const flight = inFlightKey(holder, ticker);
     if (lockInFlight.has(flight)) {
       sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being locked right now." });
@@ -3387,6 +3457,8 @@ function healthBody(): Record<string, unknown> {
           ? {
               host: memberSessions.cfg.host,
               redirectUri: memberSessions.cfg.redirectUri,
+              page: `${RECORD_URL}${MEMBER_APP_PATH}`,
+              ...(MEMBER_APP_VENUE_URL ? { venueUrl: MEMBER_APP_VENUE_URL } : {}),
               scopes: memberSessions.cfg.scopes,
               tokensPath: memberSessions.cfg.storePath,
               orderWaitMs: memberOrderOpts.waitMs ?? 3000,
@@ -3510,20 +3582,43 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         .finishConnect({ code: url.searchParams.get("code"), state: url.searchParams.get("state"), error: url.searchParams.get("error"), error_description: url.searchParams.get("error_description") })
         .then((r) => {
           if (r.member) memberPositionsCache.delete(r.member);
+          if (r.member && isMemberAlias(r.member)) {
+            // the hosted page's member: back to the page, which says connected (or why not) in place
+            res.writeHead(302, { location: r.ok ? `${MEMBER_APP_PATH}?connected=1` : `${MEMBER_APP_PATH}?error=${encodeURIComponent(r.message)}`, "cache-control": "no-store" });
+            res.end();
+            return;
+          }
           sendHtml(res, r.ok ? 200 : 400, memberCallbackHtml(r.ok, r.ok ? `Your ${VENUE_NAMES[MEMBER_VENUE]} account is connected. You can close this tab and go back to the game.` : r.message));
         })
         .catch((err: unknown) => sendHtml(res, 500, memberCallbackHtml(false, `Something failed on our side: ${String(err instanceof Error ? err.message : err)}`)));
+      return;
+    }
+    if (url.pathname === MEMBER_APP_PATH || url.pathname === `${MEMBER_APP_PATH}/`) {
+      // THE HOSTED MEMBER PAGE: the session cookie is set here, once, and the page does the rest
+      // against the routes below with it. No key is ever on the page.
+      const headers: Record<string, string> = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" };
+      if (memberSessions && !memberCookieValue(req)) headers["set-cookie"] = memberCookieHeader(randomBytes(32).toString("base64url"));
+      res.writeHead(200, headers);
+      res.end(memberAppHtml({ venueName: VENUE_NAMES[MEMBER_VENUE], configured: Boolean(memberSessions), recordUrl: RECORD_URL, ...(MEMBER_APP_VENUE_URL ? { venueUrl: MEMBER_APP_VENUE_URL } : {}) }));
       return;
     }
     if (LOCK_PATHS.has(url.pathname)) {
       // No key configured: the routes do not exist. Wrong or missing key: 403, like the operator views.
       // A holder's key names the holder; the shared key and the operator act with no holder, and the
       // operator may act as one with ?holder= (a lock entered for a person by hand).
+      const caller = lockCaller(LOCK_KEY, HOLDER_KEYS.holders, req.headers, url.searchParams.get("lock"));
+      if (!operator && !caller) {
+        // the hosted page's member: the cookie names them, and a POST must carry the page's own header
+        const cookieHolder = memberCookieHolder(req);
+        if (cookieHolder && (req.method === "GET" || req.headers["x-member-app"] === "1")) {
+          void handleLockRoutes(req, res, url, cookieHolder, false, true).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+          return;
+        }
+      }
       if (!LOCK_ROUTES_ON && !operator) {
         sendJson(res, 404, { ok: false, error: "not found" });
         return;
       }
-      const caller = lockCaller(LOCK_KEY, HOLDER_KEYS.holders, req.headers, url.searchParams.get("lock"));
       if (!operator && !caller) {
         sendJson(res, 403, { ok: false, error: "bad lock key" });
         return;
