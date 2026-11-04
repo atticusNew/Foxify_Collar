@@ -849,6 +849,10 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const html = await page.text();
     assert.ok(html.includes("Lock in · STX positions") && html.includes("Protection by Atticus") && html.includes('"venueName":"STX"'), "the page's words");
     assert.ok(!html.includes("lock-key-") && !html.includes("stxapp_") && !html.includes("op-secret"), "no key of any kind on the page");
+    // the row's figures sit inside the open panel (chipsHtml), not under the header; the header is club, game, pays
+    assert.ok(html.includes("const chipsHtml = (p) =>") && html.includes(`'<div class="ael-panel ael-on">' + chipsHtml(p) + slipRows(nick, o, p.contracts, false)`) && !html.includes(`"</div></div>" +\n      '<div class="chips">'`), "chips live in the panel");
+    assert.ok(html.includes('<div class="ael-dl">Elsewhere</div>') && html.includes("priced for the record, nothing sent; your position is on ") && html.includes("filled where you hold the position, on STX"), "every venue priced, filled where held");
+    assert.ok(html.includes("const isLive = (p) => !!(S.inPlay && p.ticker") && html.includes('case "market_suspended": return ["Paused"') && html.includes("holds in-play orders \" + delay + \"s before they can match"), "the page knows the in-play words");
     assert.ok(html.includes('rel="manifest" href="/app/manifest.webmanifest"') && html.includes('src="/app/stx.png"') && html.includes('src="/app/bird.png"'), "the marks and the manifest are the page's own files");
     // the page's files: the marks, the icons, the manifest; anything else under /app/ is not found
     const manifest = await fetch(`${base}/app/manifest.webmanifest`);
@@ -956,6 +960,46 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.equal(cdc.status, 200);
     cm = await get<Any>("/api/shadow/member", ck);
     assert.equal(cm.body.member.connected, false);
+
+    // IN PLAY (MEMBER_APP_IN_PLAY): a lock while the game is on is the same limit sell into the venue's
+    // bids; the cutoff no longer applies; the venue's hold on in-play orders is waited out; a paused or
+    // finished market is refused in words. Off (the default), a started game is still pre-game only.
+    const LIVE = "KXNBAGAME-26OCT14INDMIL-MIL";
+    const START_LIVE = new Date(Date.now() - 20 * 60_000).toISOString();
+    venue.markets["m-mil"] = { ...market("m-mil", "Milwaukee Bucks", "Indiana Pacers", START_LIVE, [["0.66", "100"]], [["0.68", "100"]]), event_status: "in_progress", in_play_delay_sec: 5 };
+    venue.markets["m-mil-paused"] = { ...market("m-mil-paused", "Orlando Magic", "Atlanta Hawks", START_LIVE, [["0.40", "100"]], [["0.42", "100"]]), event_status: "in_progress", trading: false, in_play_delay_sec: 5 };
+    venue.markets["m-mil-over"] = { ...market("m-mil-over", "Utah Jazz", "Portland Trail Blazers", START_LIVE, [], []), status: "closed", event_status: "completed" };
+    venue.positions.push({ market_id: "m-mil", position: "20.00", average_open_premium: "-0.60" }, { market_id: "m-mil-paused", position: "10.00", average_open_premium: "-0.35" }, { market_id: "m-mil-over", position: "10.00", average_open_premium: "-0.50" });
+    markets.push(row(LIVE, "Milwaukee Bucks", START_LIVE), row("KXNBAGAME-26OCT14ATLORL-ORL", "Orlando Magic", START_LIVE), row("KXNBAGAME-26OCT14PORUTA-UTA", "Utah Jazz", START_LIVE));
+    const liveConnect = await get<Any>("/api/shadow/member/connect");
+    const rcode = venue.issueCode(liveConnect.body.url);
+    assert.equal((await fetch(`${base}/api/shadow/member/callback?code=${rcode.code}&state=${rcode.state}`)).status, 200);
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    assert.equal(pos.body.inPlay, false, "off by default");
+    assert.ok(pos.body.positions.some((p: Any) => p.ticker === LIVE), "a started game the member holds is on the list");
+    q = await get<Any>(`/api/shadow/quote?ticker=${LIVE}&contracts=20&venue=stx`);
+    assert.deepEqual([q.body.ok, q.body.code, q.body.message], [false, "market_not_active", "This game has started; the lock is pre-game only."]);
+    q = await get<Any>(`/api/shadow/quote?ticker=${SOON}&contracts=10&venue=stx`);
+    assert.equal(q.body.code, "market_too_close_to_start");
+    // on
+    worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: true });
+    pos = await get<Any>("/api/shadow/positions");
+    assert.equal(pos.body.inPlay, true);
+    q = await get<Any>(`/api/shadow/quote?ticker=${SOON}&contracts=10&venue=stx`);
+    assert.deepEqual([q.status, q.body.ok, q.body.live], [200, true, false], "inside the old cutoff, pre-game: quoted, not live");
+    q = await get<Any>(`/api/shadow/quote?ticker=${LIVE}&contracts=20&venue=stx`);
+    assert.equal(q.status, 200, JSON.stringify(q.body));
+    assert.deepEqual([q.body.ok, q.body.live, q.body.inPlayDelaySec, q.body.quote.tiers.balanced.limitPriceCents], [true, true, 5, 66], "the game on: priced from the bids as they stand, the venue's hold named");
+    q = await get<Any>(`/api/shadow/quote?ticker=KXNBAGAME-26OCT14ATLORL-ORL&contracts=10&venue=stx`);
+    assert.deepEqual([q.body.ok, q.body.code, q.body.message], [false, "market_suspended", "STX has paused this market for the moment; try again in a few seconds."]);
+    q = await get<Any>(`/api/shadow/quote?ticker=KXNBAGAME-26OCT14PORUTA-UTA&contracts=10&venue=stx`);
+    assert.deepEqual([q.body.ok, q.body.code, q.body.message], [false, "market_not_active", "This game is over; STX is settling it."]);
+    const liveLock = await post<Any>("/api/shadow/lock", { ticker: LIVE, contracts: 20, tier: "balanced", venue: "stx" });
+    assert.equal(liveLock.status, 200, JSON.stringify(liveLock.body));
+    assert.deepEqual([liveLock.body.ok, liveLock.body.route, liveLock.body.live, liveLock.body.inPlayDelaySec, liveLock.body.memberSale.soldContracts, liveLock.body.memberSale.limitPriceCents], [true, "member_sale", true, 5, 12, 66], "the sale is the member's own limit sell, as pre-game");
+    const liveOrder = venue.orders.find((o: Any) => o.market_id === "m-mil");
+    assert.deepEqual([liveOrder.action, liveOrder.order_type, liveOrder.price, liveOrder.quantity], ["sell", "limit", "0.66", "12"]);
+    worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: false });
   } finally {
     worker.server.close();
     venue.close();

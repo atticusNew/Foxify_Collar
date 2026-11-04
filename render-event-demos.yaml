@@ -326,6 +326,11 @@ services:
       #                                         is what the venue's app registration asks for as the privacy URL
       #   MEMBER_APP_ORDER_WAIT_MS=3000          optional; how long a member's limit order rests before
       #                                         the rest is cancelled and the record written from the fills
+      #   MEMBER_APP_IN_PLAY=1                   optional; off by default. On: a member may lock while the
+      #                                         game is on and the pre-game cutoff no longer applies; the
+      #                                         order rests the market's in_play_delay_sec longer so it
+      #                                         outlives the venue's hold. Confirm with the venue first that
+      #                                         member OAuth tokens may trade in play.
       #   MEMBER_APP_COMPARE_WAIT_MS=4000        optional; the bound on the background comparison priced
       #                                         on the hedge routes beside the member's sale (0 turns it
       #                                         off); priced, nothing sent, written as memberSale.compared

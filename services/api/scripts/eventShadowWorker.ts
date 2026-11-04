@@ -806,6 +806,25 @@ const positiveMs = (raw: string | undefined, dflt: number): number => {
 /** how long a member's order may rest on the venue before the rest is cancelled; the tests shorten it */
 let memberOrderOpts: ExecuteOptions = { waitMs: positiveMs(process.env.MEMBER_APP_ORDER_WAIT_MS, 3000) };
 const MEMBER_COMPARE_WAIT_MS = positiveMs(process.env.MEMBER_APP_COMPARE_WAIT_MS, 4000);
+/**
+ * MEMBER_APP_IN_PLAY=1: a member may lock while the game is on, and the pre-game cutoff no longer
+ * applies (the sale is their own limit sell into the venue's bids; no one here carries the game's
+ * risk, so there is nothing to cut off). The venue holds an in-play order for the market's delay
+ * before it can match, so the order rests at least that long past the usual wait. Off: pre-game only.
+ */
+let memberInPlay = /^(1|true|yes|on)$/i.test(process.env.MEMBER_APP_IN_PLAY ?? "");
+const LIVE_EVENT_WORDS = /in_progress|in_play|in-play|live|started|underway/;
+const OVER_WORDS = /closed|resulted|settled|cancel|void|completed|final/;
+/** the game is on at the venue's own word, or on the clock when the venue gives none */
+const marketLive = (m: RawOutcomeMarket, startMs: number, nowMs: number): boolean => {
+  const ev = String(m.event_status ?? "").toLowerCase();
+  if (LIVE_EVENT_WORDS.test(ev)) return true;
+  if (OVER_WORDS.test(ev)) return false;
+  return Number.isFinite(startMs) && startMs <= nowMs;
+};
+const inPlayDelaySecOf = (m: RawOutcomeMarket): number => Math.max(0, Number(m.in_play_delay_sec) || 0);
+/** the order's rest when the game is on: the venue's delay on top of the usual wait, so the order outlives the hold */
+const memberOrderOptsFor = (live: boolean, delaySec: number): ExecuteOptions => (live && delaySec > 0 ? { ...memberOrderOpts, waitMs: (memberOrderOpts.waitMs ?? 3000) + delaySec * 1000 } : memberOrderOpts);
 const memberPositionsCache = new Map<string, { at: number; positions: MemberHolderPosition[] }>();
 
 /** where a combination's picks were placed, kept beside the token store so a played leg still reads its result after a restart */
@@ -1018,12 +1037,16 @@ interface MemberPriced {
   tiers: Record<ProtectionTier, SaleTierQuote | null>;
   bestBidCents: number | null;
   bidDepth: number;
+  /** the game is on (only with MEMBER_APP_IN_PLAY); the venue's hold on an in-play order, seconds */
+  live: boolean;
+  inPlayDelaySec: number;
 }
 
 /**
  * Price a member's lock on one market: refuse before the book is read when the account is not
- * connected, holds nothing on the market (or holds the other club), holds less than asked, or the
- * game is inside the pre-game cutoff; then the three tiers from the venue's bids as they stand.
+ * connected, holds nothing on the market (or holds the other club), holds less than asked, the
+ * game is over or paused, or (in-play off) the game has started or is inside the pre-game cutoff;
+ * then the three tiers from the venue's bids as they stand.
  */
 async function memberPriced(member: string, ticker: string, contracts: number, entryCents: number | undefined, fresh: boolean): Promise<{ ok: true; priced: MemberPriced } | { ok: false; status: number; body: Record<string, unknown> }> {
   if (!memberSessions) return { ok: false, status: 404, body: { ok: false, error: "member_app_off", code: "member_app_off", message: "The member app is not configured on this service." } };
@@ -1056,8 +1079,16 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
   if (!row || !eventTimeIso || !row.league) return { ok: false, status: 200, body: { ok: false, code: "not_offered", message: "Protection isn't offered on this market." } };
   const startMs = Date.parse(eventTimeIso);
   const now = Date.now();
-  if (!Number.isFinite(startMs) || startMs <= now) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: "This game has started; the lock is pre-game only." } };
-  if (startMs - now < protectCutoffMinutes * 60_000) return { ok: false, status: 200, body: { ok: false, code: "market_too_close_to_start", message: `This one starts too soon to protect (locks close ${protectCutoffMinutes} minutes before the start).`, untilIso: new Date(startMs - protectCutoffMinutes * 60_000).toISOString() } };
+  const VN = VENUE_NAMES[MEMBER_VENUE];
+  const statusWords = `${market.status ?? ""} ${market.event_status ?? ""}`.toLowerCase();
+  if (!Number.isFinite(startMs) || OVER_WORDS.test(statusWords)) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: `This game is over; ${VN} is settling it.` } };
+  const live = memberInPlay && marketLive(market, startMs, now);
+  if (!memberInPlay) {
+    if (startMs <= now) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: "This game has started; the lock is pre-game only." } };
+    if (startMs - now < protectCutoffMinutes * 60_000) return { ok: false, status: 200, body: { ok: false, code: "market_too_close_to_start", message: `This one starts too soon to protect (locks close ${protectCutoffMinutes} minutes before the start).`, untilIso: new Date(startMs - protectCutoffMinutes * 60_000).toISOString() } };
+  }
+  // the venue pauses a market for a moment at a score or a review: nothing matches until it resumes
+  if (market.trading === false || /suspend/.test(statusWords)) return { ok: false, status: 200, body: { ok: false, code: "market_suspended", message: `${VN} has paused this market for the moment; try again in a few seconds.` } };
   const maxPrice = outcomeMaxPrice(market);
   const venueContracts = Math.floor(contracts / maxPrice + 1e-9);
   const bids = bidLevels(market);
@@ -1078,6 +1109,8 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
       tiers,
       bestBidCents: bids[0] ? Math.round((bids[0].price / maxPrice) * 100) : null,
       bidDepth: Math.floor(bids.reduce((s, l) => s + l.quantity, 0)),
+      live,
+      inPlayDelaySec: live ? inPlayDelaySecOf(market) : 0,
     },
   };
 }
@@ -1231,7 +1264,7 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     outcome = await executeLimitOrder(
       memberSessions!.client(member),
       { action: "sell", market_id: P.pos.marketId, order_type: "limit", price: priceString(t.limitPriceCents), quantity: String(t.soldContracts), client_order_id: clientOrderId },
-      memberOrderOpts,
+      memberOrderOptsFor(P.live, P.inPlayDelaySec),
     );
   } catch (err) {
     void cmp.catch(() => undefined);
@@ -1243,7 +1276,8 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
   memberPositionsCache.delete(member);
   if (outcome.filled <= 0) {
     void cmp.catch(() => undefined);
-    sendJson(res, 200, { ok: false, at: atIso, ticker, code: "not_filled", message: `${VENUE_NAMES[MEMBER_VENUE]}'s bid moved before the order reached it; nothing was sold.`, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
+    const why = P.live && P.inPlayDelaySec > 0 ? `${VENUE_NAMES[MEMBER_VENUE]} held the order for its ${P.inPlayDelaySec}s in-play delay and the bid moved away before it could match; nothing was sold.` : `${VENUE_NAMES[MEMBER_VENUE]}'s bid moved before the order reached it; nothing was sold.`;
+    sendJson(res, 200, { ok: false, at: atIso, ticker, code: "not_filled", live: P.live, message: why, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
     return;
   }
   const sale = saleRecordOf(outcome, { marketId: P.pos.marketId, positionContracts: P.venueContracts, maxPrice: P.maxPrice, limitPriceCents: t.limitPriceCents, clientOrderId, requested: t.soldContracts });
@@ -1301,6 +1335,8 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     route: "member_sale",
     memberSale: memberSaleViewOf(sale),
     partial: sale.soldContracts < sale.requestedContracts,
+    live: P.live,
+    ...(P.live ? { inPlayDelaySec: P.inPlayDelaySec } : {}),
     member: memberView(member),
     ...memberRulesView(P.game.league, sale.keptContracts),
     compared: comparedViewOf(compared),
@@ -1392,7 +1428,8 @@ async function memberUnwind(res: ServerResponse, holder: string | null, lock: Sh
     outcome = await executeLimitOrder(
       memberSessions!.client(bp.member),
       { action: "buy", market_id: bp.sale.marketId, order_type: "limit", price: priceString(bp.bb.limitPriceCents), quantity: String(bp.bb.contracts), client_order_id: clientOrderId },
-      memberOrderOpts,
+      // a buy-back during the game waits out the venue's in-play hold too
+      memberOrderOptsFor(marketLive(bp.market, Date.parse(lock.eventTimeIso), Date.now()), inPlayDelaySecOf(bp.market)),
     );
   } catch (err) {
     const r = memberRefusal(err);
@@ -2071,7 +2108,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         }
         for (const p of positions) if (p.ticker) held.add(p.ticker);
         const g = await memberGames(member, held);
-        sendJson(res, 200, { ok: true, at: atIso, ...(holder ? { holder } : {}), cutoffMinutes: protectCutoffMinutes, venueUrl: MEMBER_APP_VENUE_URL, ...g });
+        sendJson(res, 200, { ok: true, at: atIso, ...(holder ? { holder } : {}), cutoffMinutes: protectCutoffMinutes, inPlay: memberInPlay, venueUrl: MEMBER_APP_VENUE_URL, ...g });
       } catch (err) {
         const r = memberRefusal(err);
         sendJson(res, r.status, { at: atIso, ...r.body });
@@ -2155,6 +2192,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       ...(holder ? { holder } : {}),
       readAt: new Date(Math.max(venueReadAt ?? 0, memberReadAt ?? 0)).toISOString(),
       cutoffMinutes: protectCutoffMinutes,
+      inPlay: memberInPlay,
       ...(notes.length ? { note: notes.join("; ") } : {}),
       ...(mv ? { member: mv } : {}),
       positions: [
@@ -2214,6 +2252,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         contracts: P.contracts,
         entryCents: P.entryCents,
         route: "member_sale",
+        live: P.live,
+        ...(P.live ? { inPlayDelaySec: P.inPlayDelaySec } : {}),
         quote: { ok: true, contracts: P.contracts, markCents: P.game.markCents, entryCents: P.entryCents, ...head, tier: dflt, tiers, quotedAt: atIso },
         evCostBps: head.evCostBps,
         member: { ...memberView(member), held: P.pos.contracts, bestBidCents: P.bestBidCents, bidDepth: P.bidDepth },
@@ -3708,6 +3748,7 @@ function healthBody(): Record<string, unknown> {
               scopes: memberSessions.cfg.scopes,
               tokensPath: memberSessions.cfg.storePath,
               orderWaitMs: memberOrderOpts.waitMs ?? 3000,
+              inPlay: memberInPlay,
               compareWaitMs: MEMBER_COMPARE_WAIT_MS,
               members: memberSessions.summary(),
               ...(MEMBER_APP_HOSTNAME ? { hostname: MEMBER_APP_HOSTNAME } : {}),
@@ -4470,6 +4511,8 @@ export function wireLockEngine(fns: {
   memberSessions?: MemberSessions | null;
   /** how long a member's order rests before the rest is cancelled, and how often it is polled */
   memberOrder?: ExecuteOptions;
+  /** whether a member may lock while the game is on, in place of MEMBER_APP_IN_PLAY */
+  memberInPlay?: boolean;
 }): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
@@ -4478,6 +4521,7 @@ export function wireLockEngine(fns: {
     memberPositionsCache.clear();
   }
   if (fns.memberOrder) memberOrderOpts = fns.memberOrder;
+  if (fns.memberInPlay !== undefined) memberInPlay = fns.memberInPlay;
   if (fns.settledMarkets) {
     settledMarketsFn = fns.settledMarkets;
     settledCache.clear();
