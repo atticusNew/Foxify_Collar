@@ -816,6 +816,22 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const hostCode = venue.issueCode(JSON.parse(hostConnect.text).url);
     const hostBack = await fetch(`${base}/api/shadow/member/callback?code=${hostCode.code}&state=${hostCode.state}`, { redirect: "manual" });
     assert.deepEqual([hostBack.status, hostBack.headers.get("location")], [302, "https://stx.lockin.test/app?connected=1"]);
+    // the privacy page: at /privacy on the page's host, /app/privacy everywhere; linked from the page's foot
+    const privHost = await onHost("/privacy");
+    assert.ok(privHost.status === 200 && privHost.text.includes("<h1>Privacy</h1>") && privHost.text.includes('href="/"'), "privacy on the page's host, back to /");
+    const privDflt = await fetch(`${base}/app/privacy`);
+    assert.ok(privDflt.status === 200 && (await privDflt.text()).includes("Your funds stay in your STX account"), "privacy on the default host");
+    assert.ok(html.includes('href="/app/privacy">Privacy</a>'), "the foot links it");
+
+    // THE OPERATOR'S RAW READ of a member's venue account: operator only; the positions list unfiltered, the
+    // markets for their ids and which were missing, the probes, the catalogue sample; no token anywhere
+    assert.equal((await get<Any>("/api/shadow/member/raw")).status, 403, "lock key is not enough");
+    const rawNo = await get<Any>("/api/shadow/member/raw?holder=m-nobody", { "x-admin-token": "op-secret" });
+    assert.deepEqual([rawNo.status, rawNo.body.error, rawNo.body.members.length], [400, "member", 1]);
+    const raw = await get<Any>("/api/shadow/member/raw", { "x-admin-token": "op-secret" });
+    assert.equal(raw.status, 200, JSON.stringify(raw.body).slice(0, 300));
+    assert.deepEqual([raw.body.positions.count, raw.body.positions.dropped.length, raw.body.markets.asked, raw.body.markets.returned, raw.body.markets.missing, Object.keys(raw.body.probes).length, typeof raw.body.catalogue.NBA.distinctBestBids], [5, 0, 5, 5, [], 5, "number"]);
+    assert.ok(!JSON.stringify(raw.body).includes("stxapp_"), "no token in the raw read");
     const revisit = await fetch(`${base}/app`, { headers: ck });
     assert.equal(revisit.headers.get("set-cookie"), null, "a returning cookie is kept, not replaced");
     let cm = await get<Any>("/api/shadow/member", ck);
