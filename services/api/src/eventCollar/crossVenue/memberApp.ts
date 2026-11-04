@@ -781,6 +781,64 @@ export interface MemberHolderPosition extends HolderPosition {
   market: RawOutcomeMarket | null;
   /** the venue's max_price for the market, dollars (usually 1) */
   maxPrice: number;
+  /** a combination's legs, when the position is one (shown, not protected) */
+  legs?: MemberParlayLeg[];
+}
+
+/** One leg of a combination market as the page lists it: the pick, its game, where it stands. */
+export interface MemberParlayLeg {
+  marketId: string | null;
+  /** the pick as the venue names it (the club, or the market's own words) */
+  side: string;
+  event: string;
+  startsIso: string | null;
+  state: "pending" | "live" | "won" | "lost" | "void";
+}
+
+/** the shapes a combination's legs arrive in: a nested market, or a reference to one plus a few words */
+interface RawComboLeg extends Partial<RawOutcomeMarket> {
+  market?: RawOutcomeMarket | null;
+  result?: string | null;
+  outcome?: string | null;
+  settlement?: string | null;
+  leg_status?: string | null;
+}
+
+const legState = (leg: RawComboLeg, m: RawOutcomeMarket | null, nowMs: number): MemberParlayLeg["state"] => {
+  const words = [leg.result, leg.outcome, leg.settlement, leg.leg_status, leg.status, m?.status, m?.event_status].filter((w): w is string => typeof w === "string").join(" ").toLowerCase();
+  if (/\b(void|cancel|abandon|push)/.test(words)) return "void";
+  if (/\b(won|win|hit|yes|settled_yes)\b/.test(words)) return "won";
+  if (/\b(lost|lose|miss|settled_no)\b/.test(words) || /\bno\b/.test(words)) return "lost";
+  const start = leg.event_start ?? m?.event_start ?? null;
+  const startMs = start ? Date.parse(start) : NaN;
+  if (/in_play|live|started|in-play/.test(words) || (Number.isFinite(startMs) && startMs <= nowMs && !/pre_open|open|settled|closed/.test(words))) return "live";
+  return "pending";
+};
+
+/**
+ * A combination's legs as the page lists them. A leg may arrive as a nested market or as a
+ * market id; ids not already read are fetched once for the whole position list.
+ */
+export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { legs?: unknown }, known: Map<string, RawOutcomeMarket>): Promise<MemberParlayLeg[]> {
+  const raw = Array.isArray(m.legs) ? (m.legs as RawComboLeg[]).filter((l) => l && typeof l === "object") : [];
+  const ids = raw.map((l) => l.market?.market_id ?? l.market_id ?? null).filter((id): id is string => typeof id === "string" && !known.has(id) && !raw.some((l) => l.market?.market_id === id));
+  if (ids.length) {
+    try {
+      for (const fetched of await client.markets([...new Set(ids)])) known.set(fetched.market_id, fetched);
+    } catch {
+      // the legs still list with what the combo said
+    }
+  }
+  const nowMs = Date.now();
+  return raw.map((l) => {
+    const id = l.market?.market_id ?? l.market_id ?? null;
+    const mk = l.market ?? (id ? known.get(id) ?? null : null) ?? (l.participants || l.rules ? (l as RawOutcomeMarket) : null);
+    const club = mk ? winnerClubOf(mk) : null;
+    const side = club?.name ?? (l.group_title ?? mk?.group_title ?? l.symbol ?? mk?.symbol ?? l.specifier ?? "").trim();
+    const event = (l.event_title ?? mk?.event_title ?? "").trim() || (club ? [club.side === "away" ? club.name : club.opponent, club.side === "home" ? club.name : club.opponent].filter(Boolean).join(" at ") : "");
+    const start = l.event_start ?? mk?.event_start ?? null;
+    return { marketId: id, side: side || "Pick", event, startsIso: start ? new Date(start).toISOString() : null, state: legState(l, mk, nowMs) };
+  });
 }
 
 /**
@@ -819,15 +877,18 @@ export async function memberHolderPositions(client: MemberClient, protectable: P
     const club = winnerClubOf(m);
     const matched = matchMemberMarket(m, league, protectable);
     const event = (m.event_title ?? "").trim() || (club ? [club.side === "away" ? club.name : club.opponent, club.side === "home" ? club.name : club.opponent].filter(Boolean).join(" at ") : "");
+    const parlay = matched.ticker === null && matched.reason === "parlay";
+    const legs = parlay ? await comboLegs(client, m, markets) : undefined;
     out.push({
       ...base,
       ticker: matched.ticker,
       ...(matched.ticker === null ? { reason: matched.reason } : {}),
       league,
-      side: club?.name ?? (m.group_title ?? "").trim(),
-      event: event || (matched.ticker === null && matched.reason === "parlay" ? (m.symbol ?? "").trim() : ""),
-      startsIso: m.event_start ? new Date(m.event_start).toISOString() : null,
+      side: club?.name ?? ((m.group_title ?? "").trim() || (parlay ? `${legs?.length ?? 0}-leg combo` : "")),
+      event: event || (parlay ? (m.symbol ?? "").trim() || (legs ?? []).map((l) => l.side).filter(Boolean).join(" / ") : ""),
+      startsIso: m.event_start ? new Date(m.event_start).toISOString() : parlay ? (legs ?? []).map((l) => l.startsIso).filter((x): x is string => Boolean(x)).sort()[0] ?? null : null,
       marketType: (m.rules ?? "").trim(),
+      ...(legs ? { legs } : {}),
     });
   }
   return out;
