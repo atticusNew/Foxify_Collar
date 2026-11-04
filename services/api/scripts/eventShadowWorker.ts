@@ -869,7 +869,9 @@ async function memberCompetitionMarkets(member: string, competition: string): Pr
  * competition code for are read.
  */
 async function memberGames(member: string, held: Set<string>): Promise<{ games: Array<Record<string, unknown>>; leagues: string[]; readAt: string }> {
-  const rows = (await listGameMarketsFn!()).filter((m) => m.protectable && m.startIso);
+  // games still outside the cutoff: a game a lock can no longer be placed on is not one to buy for protection
+  const nowMs = Date.now();
+  const rows = (await listGameMarketsFn!()).filter((m) => m.protectable && m.startIso && Date.parse(m.startIso) - protectCutoffMinutes * 60_000 > nowMs);
   const codes = memberSessions!.cfg.competitionCodes;
   const leagues = [...new Set(rows.map((r) => r.league))];
   const byTicker = new Map<string, { market: RawOutcomeMarket; league: string }>();
@@ -1015,7 +1017,8 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
       contracts,
       venueContracts,
       entryCents: entryCents ?? pos.entryCents,
-      game: { league: row.league, sideName: row.sideName, eventTitle: row.title, eventTimeIso, markCents: row.markCents },
+      // the game's name as the venue gives it (Away at Home); our market's title otherwise
+      game: { league: row.league, sideName: row.sideName, eventTitle: pos.event || row.title, eventTimeIso, markCents: row.markCents },
       tiers,
       bestBidCents: bids[0] ? Math.round((bids[0].price / maxPrice) * 100) : null,
       bidDepth: Math.floor(bids.reduce((s, l) => s + l.quantity, 0)),

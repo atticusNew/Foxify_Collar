@@ -581,9 +581,8 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.deepEqual([games.body.venueUrl, games.body.leagues, typeof games.body.cutoffMinutes], ["https://demo.venue.test", ["nba"], "number"]);
     assert.deepEqual(
       games.body.games.map((g: Any) => [g.ticker, g.side, g.event, g.held, g.venue.marketId, g.venue.url, g.venue.bestBidCents, g.venue.floorFromCents]),
-      // soonest game first, then by event name
+      // soonest game first, then by event name; the game inside the cutoff (Denver, 30 min out) is not listed
       [
-        [SOON, "Denver Nuggets", "Phoenix Suns at Denver Nuggets", true, "m-den", "https://demo.venue.test/events/ev-m-den", 70, 56],
         [TICKER3, "Detroit Pistons", "Chicago Bulls at Detroit Pistons", true, "m-det", "https://demo.venue.test/events/ev-m-det", 48, 38],
         ["KXNBAGAME-26OCT14GSWSAC-SAC", "Sacramento Kings", "Golden State Warriors at Sacramento Kings", false, "m-sac", "https://demo.venue.test/events/ev-m-sac", 45, 36],
         [TICKER, "Boston Celtics", "Los Angeles Lakers at Boston Celtics", true, "m-bos", "https://demo.venue.test/events/ev-m-bos", 54, 43],
