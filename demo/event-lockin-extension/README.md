@@ -370,8 +370,14 @@ games listed, past locks):
   words: **Too close** (inside the cutoff), **In play** (a red dot), **Parlay** (violet; "3-leg
   Combo", the picks under the name, and the tap opens the legs: each pick, its game and tip-off,
   and where it stands, Pending · Live · Hit · Missed · Void; "protection on the last open leg is
-  coming"), a market or a league the service does not cover. Locked positions come first, then the
-  offers. After a lock a toast says "+$16.18 in your STX balance · 20 riding" and the Protected
+  coming"; a **9.47× payout** chip), a market or a league the service does not cover. STX's own
+  combination market carries no leg list: the picks are words (`question: "Broncos, Hawks,
+  Texans, Falcons"`, the description naming each with "Won", the specifier counting them) and its
+  own start is the last leg's. The service reads the words and places each on the club's game in
+  STX's listings (the first game after the ticket was bought, no later than a day past the
+  ticket's own date), so a leg has its game, tip-off and state; a pick with no listed game stays
+  a word with "Pending" beside it. STX writes a long's average premium negative (cash out), so
+  the entry is read as its size. Locked positions come first, then the offers. After a lock a toast says "+$16.18 in your STX balance · 20 riding" and the Protected
   panel's meta line says the balance now.
 - **Games** lists the games this service can protect that STX lists right now, by day (**Today**,
   **Tomorrow**, then the weekday; two days at a time, "Show 3 more games on later days" for the

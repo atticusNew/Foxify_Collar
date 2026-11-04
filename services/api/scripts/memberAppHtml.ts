@@ -837,8 +837,14 @@ const JS = String.raw`
     if (!p.ticker) {
       const w = reasonWords(p);
       if (w[2] === "parlay") {
-        const hit = (p.legs || []).filter((l) => l.state === "won").length, n = (p.legs || []).length;
-        const fact = n ? (hit ? "<b>" + hit + " of " + n + "</b> legs hit so far · " : "") + "protection on parlays is coming" : esc(w[1]);
+        const legs = p.legs || [], n = legs.length;
+        const hit = legs.filter((l) => l.state === "won").length, live = legs.filter((l) => l.state === "live").length, lost = legs.filter((l) => l.state === "lost").length;
+        const parts = [];
+        if (lost) parts.push("<b>" + lost + "</b> leg" + (lost > 1 ? "s" : "") + " missed");
+        else if (hit) parts.push("<b>" + hit + " of " + n + "</b> legs hit so far");
+        if (live && !lost) parts.push("<b>" + live + "</b> live now");
+        parts.push(n ? "protection on parlays is coming" : esc(w[1]));
+        const fact = parts.join(" · ");
         return '<div class="ael-box">' + lineHtml("off", esc(w[0]), fact, st.open, "parlay") + (st.open && n ? '<div class="ael-panel ael-on">' + legsHtml(p) + '<div class="ael-fine">This ticket rides as it is; protection on the last open leg is coming.</div>' + DISCLOSE + "</div>" : "") + "</div>";
       }
       return '<div class="ael-box">' + lineHtml("off", esc(w[0]), esc(w[1]), false, w[2]) + "</div>";
@@ -990,7 +996,9 @@ const JS = String.raw`
     const chips = ['<span class="chip"><b>' + p.contracts + "</b> contracts</span>"];
     if (sold) chips.push('<span class="chip sold"><b>' + sold + "</b> sold</span>");
     if (p.entryCents != null) chips.push('<span class="chip">avg <b>' + cents(p.entryCents) + "</b></span>");
-    if (parlay && p.startsIso) chips.push('<span class="chip">first leg ' + esc(fmtAt(p.startsIso)) + "</span>");
+    if (parlay && p.multiplier) chips.push('<span class="chip"><b>' + (Math.round(p.multiplier * 100) / 100) + "×</b> payout</span>");
+    // the legs' first tip-off when the legs were placed; else the ticket's own date, which STX sets to its last leg
+    if (parlay && p.startsIso) chips.push('<span class="chip">' + (legs.some((l) => l.startsIso) ? "first leg " : "last leg ") + esc(fmtAt(p.startsIso)) + "</span>");
     if (p.ticker && p.startsIso && !tm && !(p.lock && p.lock.status !== "closed")) chips.push('<span class="chip until">' + CLOCK + "Lock in until " + esc(fmtClock(Date.parse(p.startsIso) - (S.cutoff || 45) * 60000)) + "</span>");
     return '<div class="pos-h">' + (parlay ? PARLAY_MARK : markHtml(p.side)) + '<div class="pos-t"><div class="name">' + name + '</div><div class="evt">' + evt + '</div></div><div class="pays"><small>pays</small>' + usd(p.payoutCents) + "</div></div>" +
       '<div class="chips">' + chips.join("") + "</div>";

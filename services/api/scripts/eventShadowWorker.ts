@@ -814,7 +814,19 @@ async function refreshMemberPositions(member: string, fresh = false): Promise<Me
   const hit = memberPositionsCache.get(member);
   if (hit && !fresh && Date.now() - hit.at <= POSITIONS_TTL_MS) return hit.positions;
   const markets = await listGameMarketsFn();
-  const read = await memberHolderPositions(memberSessions.client(member), markets, memberSessions.cfg.competitionCodes);
+  // a combination's legs are placed on the venue's own listings (every competition it has a code for), read only when one is held
+  const listings = async (): Promise<RawOutcomeMarket[]> => {
+    const out: RawOutcomeMarket[] = [];
+    for (const code of new Set(Object.values(memberSessions!.cfg.competitionCodes))) {
+      try {
+        out.push(...(await memberCompetitionMarkets(member, code)));
+      } catch {
+        // a competition that would not list leaves its legs as words
+      }
+    }
+    return out;
+  };
+  const read = await memberHolderPositions(memberSessions.client(member), markets, memberSessions.cfg.competitionCodes, listings);
   const before = new Map((hit?.positions ?? []).map((p) => [p.id, p]));
   const positions = read.map((p) => {
     const prev = before.get(p.id);
