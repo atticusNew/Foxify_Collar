@@ -244,6 +244,12 @@ h2.grp { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transfo
 h2.grp[hidden] { display: none; }
 .sub { color: var(--ael-muted); font-size: 13.5px; margin: -6px 0 16px; line-height: 1.5; }
 .sub b { color: var(--ael-soft); font-weight: 600; }
+.sub.help { margin-top: -8px; padding: 8px 12px; border-left: 2px solid var(--ael-edge); color: var(--ael-soft); font-size: 13px; }
+.sub.help[hidden] { display: none; }
+/* the ? beside a heading: one tap for what a word means, nothing on the page until then */
+.qm { flex: none; width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1px solid var(--ael-edge); background: transparent; color: var(--ael-muted); font-size: 12.5px; font-weight: 600; line-height: 1; cursor: pointer; align-self: center; }
+.qm:hover, .qm[aria-expanded="true"] { color: var(--ael-fg-strong); border-color: var(--ael-edge-hover); }
+@media (pointer: coarse) { .qm { width: 28px; height: 28px; } }
 .note { font-size: 13px; color: var(--ael-soft); background: var(--ael-bg-raise); border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 10px 12px; margin: 0 0 14px; display: flex; align-items: center; gap: 12px; }
 .note.err { border-color: rgba(255, 107, 107, 0.5); color: #ffb4b4; }
 .note.ok { border-color: var(--ael-accent-line); }
@@ -478,6 +484,8 @@ h2.grp[hidden] { display: none; }
 .ael-go.ael-pillgo { display: inline-flex; width: auto; min-height: 44px; height: auto; margin: 0; padding: 9px 20px 9px 14px; border-radius: 999px; font-size: 15px; white-space: normal; text-align: left; }
 .ael-offer-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0 2px; }
 .ael-offer-acts .ael-links { margin-left: auto; font-size: 13.5px; color: var(--ael-muted); white-space: nowrap; }
+.ael-offer-acts.ael-tight { margin-top: 6px; }
+.ael-offer-acts.ael-tight .ael-fine { margin: 0; }
 .ael-tg { display: inline-flex; align-items: center; gap: 3px; min-height: 36px; color: var(--ael-muted); text-decoration: none; font-size: 13.5px; font-weight: 500; padding: 8px 2px; white-space: nowrap; cursor: pointer; background: none; border: 0; font-family: inherit; }
 @media (pointer: coarse) { .ael-tg, .gbar .f, .acct .lnk, .note .x { min-height: 44px; } .ael-dl .ael-tg { min-height: 36px; } }
 /* touch: the foot links keep a 44px target but the words stay centred on one baseline (a blockified anchor otherwise sits at the top of its box while buttons centre theirs); the row's extra height is pulled back so the rhythm stays tight */
@@ -679,7 +687,7 @@ const JS = String.raw`
   };
   const reasonWords = (p) => {
     switch (p.reason) {
-      case "parlay": return ["Parlay", VN + "'s combo market has no bids to sell into; this ticket rides to settlement.", "parlay"];
+      case "parlay": return ["Parlay", "Rides to settlement on " + VN + ".", "parlay"];
       case "league_not_covered": return ["Not covered", "This league isn't covered yet.", ""];
       case "market_not_covered": return ["Not covered", "Only game-winner positions can be protected.", ""];
       case "no_protectable_market": return ["Not listed", "This game isn't listed for protection.", ""];
@@ -822,7 +830,7 @@ const JS = String.raw`
     let rows = "";
     if (!locked) {
       rows += '<div class="ael-dl">Sale</div><div class="ael-dv">Sell <b>' + t.soldContracts + " of " + p.contracts + "</b> at about " + cents(t.avgPriceCents) + " into " + esc(VN) + "'s bids · " + t.keptContracts + " keep riding</div>";
-      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts into " + esc(VN) + "'s bids now, at the best prices there; " + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p><p>The same protection is priced against every other venue this service reads, for the record (under Elsewhere); the order itself fills on " + esc(VN) + ", where you hold the position.</p></div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
+      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts into " + esc(VN) + "'s bids now, at the best prices there; " + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p><p>The same protection is priced against every other venue this service reads, for the record (under Elsewhere); the order itself fills on " + esc(VN) + ", where you hold the position.</p>" + (q.live ? "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so.</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
     } else {
       const ms = src.memberSale;
       if (ms) rows += '<div class="ael-dl">Sold</div><div class="ael-dv">' + saleWords(ms) + "</div>";
@@ -850,7 +858,7 @@ const JS = String.raw`
     return '<div class="ael-leave"><div class="ael-leave-h"><b>Buy back ' + bb.contracts + " at " + cents(bb.avgPriceCents) + "</b><span>costs " + usd(bb.costCents) + (bb.contracts < bb.wantContracts ? " · only " + bb.contracts + " of " + bb.wantContracts + " offered" : "") + "</span></div>" +
       '<div class="ael-ledger"><div class="ael-lr"><span class="ael-l">Sold for</span><b>' + usd(u.cashNowCents) + '</b><s></s></div><div class="ael-lr ael-hero"><span class="ael-l">Net, after the buy-back</span><b>' + signed(net) + '</b><s>in your balance</s></div><div class="ael-lr ael-last"><span class="ael-l">Staying</span><b>' + usd(u.stayFloorCents) + " or " + usd(u.stayCapCents) + '</b><s></s></div></div>' +
       '<div class="ael-leave-acts"><button type="button" class="ael-go" data-act="leave">' + (st.busy === "leave" ? esc(st.busyWords || "Buying back…") : "Buy back " + bb.contracts + " at " + cents(bb.avgPriceCents)) + '</button><button type="button" class="ael-go ael-quiet" data-act="stay">Stay protected</button></div>' +
-      '<div class="ael-fine">Your position is whole again and unprotected; the round trip\'s cost is the difference above.' + (q.lastIso ? " You can leave until " + esc(fmtAt(q.lastIso)) + "." : "") + "</div></div>";
+      '<div class="ael-fine">Whole again, unprotected · the net above is the round trip' + (q.lastIso ? " · until " + esc(fmtAt(q.lastIso)) : "") + "</div></div>";
   };
 
   // ---- one position's line and panel ----
@@ -877,6 +885,8 @@ const JS = String.raw`
       return '<div class="leg"><span class="ld ' + esc(l.state) + '"></span><span class="ln">' + esc(l.side) + (sub ? "<small>" + sub + "</small>" : "") + "</span>" + right + "</div>";
     }).join("") + "</div>";
   };
+  // the word budget: a closed row is the tag, one figure and at most six words; a helper line inside an open
+  // panel is one line at 375px (about 45 characters); anything longer belongs under Details or in How it works
   const rowHtml = (p) => {
     const st = stateOf(p.ticker || p.id);
     const nick = nickOf(p.side);
@@ -895,7 +905,9 @@ const JS = String.raw`
         else if (live) fact = "<b>" + live + " live</b> · " + hit + " of " + n + " hit";
         else if (hit) fact = "<b>" + hit + " of " + n + " hit</b>" + (nextIso ? " · next " + esc(fmtAt(nextIso)) : "");
         else fact = "<b>" + n + " legs</b>" + (nextIso ? " · first tips " + esc(fmtAt(nextIso)) : "");
-        return '<div class="ael-box">' + lineHtml("off", esc(w[0]), fact, st.open, "parlay") + (st.open && n ? '<div class="ael-panel ael-on">' + chipsHtml(p) + legsHtml(p) + '<div class="ael-fine">' + esc(VN) + "'s combo market has no bids to sell into, so this ticket rides to settlement. Last-leg protection through this service is a separate step.</div>" + DISCLOSE + "</div>" : "") + "</div>";
+        // one line under the legs; the why lives behind Details, like every other row
+        const why = st.details ? '<div class="ael-details"><div class="ael-drows"><div class="ael-dl">Why</div><div class="ael-dv">' + esc(VN) + "'s combo market has no bids to sell into, so a combo cannot be partly sold the way a single pick can.</div>" + '<div class="ael-dl">Last pick</div><div class="ael-dv">Protecting the last open pick on its own is a separate step; it is not on this page yet.</div></div></div>' : "";
+        return '<div class="ael-box">' + lineHtml("off", esc(w[0]), fact, st.open, "parlay") + (st.open && n ? '<div class="ael-panel ael-on">' + chipsHtml(p) + legsHtml(p) + '<div class="ael-offer-acts ael-tight"><span class="ael-fine">Rides to settlement on ' + esc(VN) + '.</span><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" + why + DISCLOSE + "</div>" : "") + "</div>";
       }
       return '<div class="ael-box">' + lineHtml("off", esc(w[0]), esc(w[1]), false, w[2]) + "</div>";
     }
@@ -920,7 +932,7 @@ const JS = String.raw`
     } else if (st.closedNow && !(st.quote && st.quote.ok)) {
       const c = st.closedNow;
       line = lineHtml("off", "Unprotected", "Protection removed · bought back " + c.contracts + " at " + cents(c.avgPriceCents) + " · net <b>" + signed(c.netCents) + "</b>", st.open);
-      panel = st.open ? '<div class="ael-panel ael-on">' + chipsHtml(p) + '<div class="ael-ph"><b>Your position is whole again</b><span>' + c.contracts + " bought back on " + esc(VN) + " for " + usd(c.costCents) + "; the sale had paid " + usd(c.cashCents) + ". Unprotected now; a new offer follows once the book is read again.</span></div>" + DISCLOSE + "</div>" : "";
+      panel = st.open ? '<div class="ael-panel ael-on">' + chipsHtml(p) + '<div class="ael-ph"><b>Whole again, unprotected</b><span>' + c.contracts + " bought back for " + usd(c.costCents) + " · the sale paid " + usd(c.cashCents) + " · a new offer follows</span></div>" + DISCLOSE + "</div>" : "";
     } else if (timing(p) && !(st.quote && st.quote.ok)) {
       const w = timing(p);
       line = lineHtml("off", w[0], esc(w[1]), false, w[2]);
@@ -938,8 +950,8 @@ const JS = String.raw`
         const busy = st.busy === "lock";
         panel = '<div class="ael-panel ael-on">' + chipsHtml(p) + slipRows(nick, o, p.contracts, false) +
           shapeHtml(st) +
-          (live ? '<div class="ael-fine ael-live" style="margin-top:8px">The game is on and this price moves. ' + (delay ? esc(VN) + " holds in-play orders " + delay + "s before they can match; you" : "You") + " never get less than the price shown, and if the bid moves away first fewer or none sell and this row says so.</div>" : "") +
-          (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">' + esc(VN) + "'s bids take " + t.soldContracts + " of the " + wantOf(st, p.contracts) + " this shape would sell right now; the rest rides. The figures above are for the " + t.soldContracts + ".</div>" : "") +
+          (live ? '<div class="ael-fine ael-live" style="margin-top:8px">Live price · never less than shown' + (delay ? " · " + esc(VN) + " holds in-play orders " + delay + "s" : "") + "</div>" : "") +
+          (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">' + esc(VN) + "'s bids take " + t.soldContracts + " of " + wantOf(st, p.contracts) + " · the rest rides</div>" : "") +
           '<div class="ael-offer-acts"><button type="button" class="ael-go ael-pillgo' + (busy ? " ael-busy" : "") + '" data-act="lock"' + (busy ? " disabled" : "") + ">" + (busy ? esc(st.busyWords || "Selling into the bid…") : SHIELD + "Lock in") + '</button><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" +
           (st.err ? '<div class="ael-fine ael-err">' + esc(st.err) + "</div>" : "") +
           (st.details ? detailsHtml(p, st, false) : "") + DISCLOSE + "</div>";
@@ -1099,7 +1111,7 @@ const JS = String.raw`
   const hsTipHtml = () => '<div class="note" id="hs-tip"><div class="hs"><p><b>Add Lock in to your home screen</b> for one tap back here after a buy on ' + esc(VN) + ". " + (/iPhone|iPad/.test(navigator.userAgent) ? "Tap Share, then <b>Add to Home Screen</b>." : "Open the browser menu, then <b>Add to Home screen</b>.") + '</p></div><button type="button" class="x" aria-label="Dismiss">×</button></div>';
   const skeleton = (n) => { let h = ""; for (let i = 0; i < n; i++) h += '<div class="skrow"><div class="sk a"></div><div class="sk b"></div><div class="sk c"></div></div>'; return h; };
   const portfolioScaffold = () => {
-    main.innerHTML = "<h1>Portfolio</h1>" + '<div id="bal"></div><div id="notes"></div><div id="grp-live" class="rows"></div><h2 class="grp" id="grp-rest-h" hidden>Not protectable right now</h2><div id="grp-rest" class="rows"></div><div id="empty"></div><div class="status" id="pos-at"></div>';
+    main.innerHTML = "<h1>Portfolio</h1>" + '<div id="bal"></div><div id="notes"></div><div id="grp-live" class="rows"></div><h2 class="grp" id="grp-rest-h" hidden>Not protectable</h2><div id="grp-rest" class="rows"></div><div id="empty"></div><div class="status" id="pos-at"></div>';
     paintBalance();
   };
   const syncPortfolio = () => {
@@ -1128,7 +1140,10 @@ const JS = String.raw`
   // ---- the games ----
   const gameKey = (g) => g.event + "|" + g.startIso;
   const gamesScaffold = () => {
-    main.innerHTML = "<h1>Games</h1>" + '<p class="sub">Games this service can protect that ' + esc(VN) + " lists right now. Buy a winner on " + esc(VN) + "; back here, the position carries its Lock in line. <b>Bid</b> is " + esc(VN) + "'s best bid right now; <b>floor</b> is what a Max floor lock keeps per contract on a loss.</p>" + '<div class="gbar" id="gbar"></div><div id="glist"></div><div id="gmore"></div><div class="status" id="g-at"></div>';
+    // one line; what the two chips mean sits behind the ? beside the heading
+    main.innerHTML = '<h1>Games<button type="button" class="qm" id="g-help" aria-expanded="false" aria-label="What bid and floor mean">?</button></h1>' + '<p class="sub">Buy a side on ' + esc(VN) + ". It lands here with its Lock in line.</p>" + '<p class="sub help" id="g-help-p" hidden><b>Bid</b> is ' + esc(VN) + "'s best bid right now. <b>Floor</b> is what a Max floor lock keeps per contract on a loss.</p>" + '<div class="gbar" id="gbar"></div><div id="glist"></div><div id="gmore"></div><div class="status" id="g-at"></div>';
+    const h = document.getElementById("g-help"), hp = document.getElementById("g-help-p");
+    if (h && hp) h.onclick = () => { hp.hidden = !hp.hidden; h.setAttribute("aria-expanded", String(!hp.hidden)); };
   };
   const leagueWord = (l) => String(l || "").toUpperCase();
   const syncGames = () => {
