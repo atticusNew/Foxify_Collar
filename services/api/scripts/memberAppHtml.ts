@@ -864,7 +864,7 @@ const JS = String.raw`
     let rows = "";
     if (!locked) {
       rows += '<div class="ael-dl">Sale</div><div class="ael-dv">Sell <b>' + t.soldContracts + " of " + p.contracts + "</b> at about " + cents(t.avgPriceCents) + " into " + esc(VN) + "'s bids · " + t.keptContracts + " keep riding</div>";
-      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts into " + esc(VN) + "'s bids now, at the best prices there; " + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p><p>The same protection is priced against every other venue this service reads, for the record (under Elsewhere); the order itself fills on " + esc(VN) + ", where you hold the position.</p>" + (q.live ? "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so.</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
+      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts into " + esc(VN) + "'s bids now, at the best prices there; " + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p><p>The same protection is priced against every other venue this service reads, for the record (under Elsewhere); the order itself fills on " + esc(VN) + ", where you hold the position.</p>" + (q.live ? "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so." + (Number(q.inPlayDelaySec) > 0 ? " " + esc(VN) + " holds in-play orders " + Number(q.inPlayDelaySec) + "s before they can match." : "") + "</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
     } else {
       const ms = src.memberSale;
       if (ms) rows += '<div class="ael-dl">Sold</div><div class="ael-dv">' + saleWords(ms) + "</div>";
@@ -984,7 +984,7 @@ const JS = String.raw`
         const busy = st.busy === "lock";
         panel = '<div class="ael-panel ael-on">' + chipsHtml(p) + slipRows(nick, o, p.contracts, false) +
           shapeHtml(st) +
-          (live ? '<div class="ael-fine ael-live" style="margin-top:8px">Live price · never less than shown' + (delay ? " · " + esc(VN) + " holds in-play orders " + delay + "s" : "") + "</div>" : "") +
+          (live ? '<div class="ael-fine ael-live" style="margin-top:8px">Live price · never less than shown</div>' : "") +
           (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">' + esc(VN) + "'s bids take " + t.soldContracts + " of " + wantOf(st, p.contracts) + " · the rest rides</div>" : "") +
           '<div class="ael-offer-acts"><button type="button" class="ael-go ael-pillgo' + (busy ? " ael-busy" : "") + '" data-act="lock"' + (busy ? " disabled" : "") + ">" + (busy ? esc(st.busyWords || "Selling into the bid…") : SHIELD + "Lock in") + '</button><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" +
           (st.err ? '<div class="ael-fine ael-err">' + esc(st.err) + "</div>" : "") +
@@ -1145,7 +1145,7 @@ const JS = String.raw`
   };
   const hsTipHtml = () => '<div class="note" id="hs-tip"><div class="hs"><p><b>Add Lock in to your home screen</b> for one tap back here after a buy on ' + esc(VN) + ". " + (/iPhone|iPad/.test(navigator.userAgent) ? "Tap Share, then <b>Add to Home Screen</b>." : "Open the browser menu, then <b>Add to Home screen</b>.") + '</p></div><button type="button" class="x" aria-label="Dismiss">×</button></div>';
   // the three steps, once: a strip on the first connected visit (gone on × or after the first lock) and the empty portfolio's words
-  const TSTEPS = '<ol class="tsteps"><li><b>Buy a side</b> on ' + esc(VN) + "</li><li><b>Tap Lock in</b> here</li><li><b>Keep the floor</b>, win or lose</li></ol>";
+  const TSTEPS = '<ol class="tsteps"><li><span><b>Buy a side</b> on ' + esc(VN) + "</span></li><li><span><b>Tap Lock in</b> here</span></li><li><span><b>Keep the floor</b>, win or lose</span></li></ol>";
   const tourHtml = () => '<div class="note tour" id="tour">' + TSTEPS + '<button type="button" class="lnk" id="tour-how">How it works</button><button type="button" class="x" aria-label="Dismiss">×</button></div>';
   const tourDone = () => { S.tour = false; try { localStorage.setItem(TOUR_KEY, "1"); } catch (e) {} };
   const skeleton = (n) => { let h = ""; for (let i = 0; i < n; i++) h += '<div class="skrow"><div class="sk a"></div><div class="sk b"></div><div class="sk c"></div></div>'; return h; };
@@ -1164,8 +1164,9 @@ const JS = String.raw`
     let notes = "";
     if (S.flashOk && Date.now() < S.flashOkUntil) notes += '<div class="note ok">' + esc(S.flashOk) + "</div>";
     if (S.posErr) notes += '<div class="note err">' + esc(S.posErr) + "</div>";
-    if (S.tour && list.length) notes += tourHtml();
-    if (S.hsTip) notes += hsTipHtml();
+    const tour = S.tour && list.length > 0;
+    if (tour) notes += tourHtml();
+    if (S.hsTip && !tour) notes += hsTipHtml(); // one note at a time: the home-screen tip waits for the strip to go
     if (setHtml(document.getElementById("notes"), notes)) {
       const x = document.querySelector("#hs-tip .x"); if (x) x.onclick = () => { S.hsTip = false; try { localStorage.setItem(HS_KEY, "1"); } catch (e) {} syncPortfolio(); };
       const tx = document.querySelector("#tour .x"); if (tx) tx.onclick = () => { tourDone(); syncPortfolio(); };
