@@ -357,14 +357,12 @@ h2.grp[hidden] { display: none; }
 .pos .pays .since { display: block; margin-top: 3px; font-size: 12px; font-weight: 600; line-height: 1; }
 .pos .pays .since.up { color: var(--ael-up); }
 .pos .pays .since.dn { color: var(--ael-dim); }
-/* History's tally: what the locks have done against riding every ticket out */
-.tally { padding: 14px 16px; margin: 0 0 18px; border: 1px solid var(--ael-edge); border-radius: var(--ael-radius-lg); background: var(--ael-bg-raise); }
-.tally .tl { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ael-dim); }
-.tally .tn { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 4px; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; }
-.tally .tn small { font-size: 13px; font-weight: 500; letter-spacing: 0; color: var(--ael-muted); }
+/* History's tally: the same strip as Portfolio's balance; the figure in the balance's weight, the breakdown as fine print under it */
+.tally { display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; padding: 12px 14px; margin: 0 0 18px; border: 1px solid var(--ael-edge); border-radius: var(--ael-radius); background: var(--ael-bg-raise); font-size: 13px; color: var(--ael-muted); }
+.tally .tn { font-size: 18px; font-weight: 700; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 .tally.up .tn { color: var(--ael-up); }
-.tally .tb { margin-top: 8px; font-size: 13px; line-height: 1.45; color: var(--ael-muted); }
-.tally .tb b { font-weight: 600; color: var(--ael-fg-strong); }
+.tally .tb { flex-basis: 100%; font-size: 12.5px; line-height: 1.4; color: var(--ael-dim); }
+.tally .tb b { font-weight: 600; color: var(--ael-soft); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0 48px; }
 .chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; font-size: 12px; line-height: 1; padding: 0 8px; border-radius: 6px; background: var(--ael-bg-raise); border: 1px solid var(--ael-border); color: var(--ael-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .chip b { font-weight: 600; color: var(--ael-soft); }
@@ -1312,11 +1310,11 @@ const JS = String.raw`
     const leftNet = left.reduce((s, r) => s + (r.closeNetCents || 0), 0);
     const net = kept - gaveUp + leftNet;
     const bits = [];
-    if (lost.length) bits.push(lost.length + (lost.length === 1 ? " loss paid <b>" : " losses paid <b>") + usd(kept) + "</b> instead of $0");
+    if (lost.length) bits.push(lost.length + (lost.length === 1 ? " loss paid <b>" : " losses paid <b>") + usd(kept) + "</b>, not $0");
     else bits.push("no loss yet");
-    if (won.length) bits.push(won.length + (won.length === 1 ? " win gave up " : " wins gave up ") + usd(gaveUp) + " of upside");
-    if (left.length) bits.push(left.length + " left early, net " + signed(leftNet));
-    return '<div class="tally' + (net > 0 ? " up" : "") + '"><div class="tl">Lock in, so far</div><div class="tn">' + signed(net) + "<small>vs riding every ticket out</small></div>" + '<div class="tb">' + bits.join(" · ") + "</div></div>";
+    if (won.length) bits.push(won.length + (won.length === 1 ? " win gave up " : " wins gave up ") + usd(gaveUp));
+    if (left.length) bits.push(left.length + " left early " + signed(leftNet));
+    return '<div class="tally' + (net > 0 ? " up" : "") + '"><span>Lock in, so far</span><span class="tn">' + signed(net) + "</span><span>vs riding it out</span>" + '<div class="tb">' + bits.join(" · ") + "</div></div>";
   };
   const syncHistory = () => {
     if (S.screen !== "history") return;

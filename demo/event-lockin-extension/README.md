@@ -509,11 +509,11 @@ games listed, past locks):
   and **Buy on STX ↗** (a link to the event on STX; this service never buys for anyone) or **In
   your portfolio** when the member already holds it (held games lead their day, with an amber
   edge). The club names are STX's own, so the row reads as the portfolio does.
-- **History** opens with a tally, **Lock in, so far**: what the locks have done against riding
-  every ticket out, from the record's own settled figures ("+$25.52 vs riding every ticket out ·
-  2 losses paid $27.08 instead of $0 · 1 win gave up $1.56 of upside · 1 left early, net −$2.00");
-  green when positive, plain when not, never projected, absent until something has settled or
-  closed. Then it lists every past lock as a row (the club mark, the game, chips: 30 of 50 sold ·
+- **History** opens with a tally strip, the same frame as Portfolio's balance: **Lock in, so far
+  +$25.52** vs riding it out, the figure in the balance's weight, and under it in fine print what
+  the locks did, from the record's own settled figures ("2 losses paid $27.08, not $0 · 1 win gave
+  up $1.56 · 1 left early −$2.00"); green when positive, plain when not, never projected, absent
+  until something has settled or closed. Then it lists every past lock as a row (the club mark, the game, chips: 30 of 50 sold ·
   Balanced · locked Nov 4) with its state on the line (Left early · net −$0.62 · bought back 30 at
   56¢; Settled; Void) and the same Details behind it. Open locks stay on Portfolio.
 
