@@ -807,12 +807,12 @@ const positiveMs = (raw: string | undefined, dflt: number): number => {
 let memberOrderOpts: ExecuteOptions = { waitMs: positiveMs(process.env.MEMBER_APP_ORDER_WAIT_MS, 3000) };
 const MEMBER_COMPARE_WAIT_MS = positiveMs(process.env.MEMBER_APP_COMPARE_WAIT_MS, 4000);
 /**
- * MEMBER_APP_IN_PLAY=1: a member may lock while the game is on, and the pre-game cutoff no longer
- * applies (the sale is their own limit sell into the venue's bids; no one here carries the game's
- * risk, so there is nothing to cut off). The venue holds an in-play order for the market's delay
- * before it can match, so the order rests at least that long past the usual wait. Off: pre-game only.
+ * In play, on unless MEMBER_APP_IN_PLAY=0: a member may lock while the game is on, and the pre-game
+ * cutoff does not apply (the sale is their own limit sell into the venue's bids; no one here carries
+ * the game's risk, so there is nothing to cut off). The venue holds an in-play order for the market's
+ * delay before it can match, so the order rests at least that long past the usual wait. Off: pre-game only.
  */
-let memberInPlay = /^(1|true|yes|on)$/i.test(process.env.MEMBER_APP_IN_PLAY ?? "");
+let memberInPlay = !/^(0|false|no|off)$/i.test(process.env.MEMBER_APP_IN_PLAY ?? "");
 const LIVE_EVENT_WORDS = /in_progress|in_play|in-play|live|started|underway/;
 const OVER_WORDS = /closed|resulted|settled|cancel|void|completed|final/;
 /** the game is on at the venue's own word, or on the clock when the venue gives none */
@@ -4511,7 +4511,7 @@ export function wireLockEngine(fns: {
   memberSessions?: MemberSessions | null;
   /** how long a member's order rests before the rest is cancelled, and how often it is polled */
   memberOrder?: ExecuteOptions;
-  /** whether a member may lock while the game is on, in place of MEMBER_APP_IN_PLAY */
+  /** whether a member may lock while the game is on, in place of MEMBER_APP_IN_PLAY (on unless set to 0) */
   memberInPlay?: boolean;
 }): void {
   quoteOneFn = fns.quoteOne;

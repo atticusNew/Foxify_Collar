@@ -569,6 +569,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     venueClient: null,
     memberSessions: sessions,
     memberOrder: { waitMs: 60, pollMs: 5 },
+    memberInPlay: false, // pre-game only for the first checks; the in-play block turns it on (the service's own default)
   });
   await new Promise<void>((r) => worker.server.listen(0, "127.0.0.1", () => r()));
   const base = `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`;
@@ -986,7 +987,8 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const rcode = venue.issueCode(liveConnect.body.url);
     assert.equal((await fetch(`${base}/api/shadow/member/callback?code=${rcode.code}&state=${rcode.state}`)).status, 200);
     pos = await get<Any>("/api/shadow/positions?fresh=1");
-    assert.equal(pos.body.inPlay, false, "off by default");
+    assert.equal(pos.body.inPlay, false, "off, as wired for the pre-game checks");
+    assert.ok(/let memberInPlay = !\/\^\(0\|false\|no\|off\)\$\/i\.test\(process\.env\.MEMBER_APP_IN_PLAY/.test(readFileSync(new URL("../scripts/eventShadowWorker.ts", import.meta.url), "utf8")), "in play is on unless MEMBER_APP_IN_PLAY=0");
     assert.ok(pos.body.positions.some((p: Any) => p.ticker === LIVE), "a started game the member holds is on the list");
     q = await get<Any>(`/api/shadow/quote?ticker=${LIVE}&contracts=20&venue=stx`);
     assert.deepEqual([q.body.ok, q.body.code, q.body.message], [false, "market_not_active", "This game has started; the lock is pre-game only."]);
