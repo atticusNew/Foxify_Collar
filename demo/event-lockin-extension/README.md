@@ -422,14 +422,14 @@ games listed, past locks):
   choices never run past the panel's edge (older Safari's wider system font did that with the
   nowrap pill row).
 
-  **In play** (`MEMBER_APP_IN_PLAY=1` on the service; off by default). With it on, a member may
-  lock while the game is on, and the pre-game cutoff no longer applies: the sale is their own limit
+  **In play** (on; `MEMBER_APP_IN_PLAY=0` on the service makes the page pre-game only). A member may
+  lock while the game is on, and the pre-game cutoff does not apply: the sale is their own limit
   sell into STX's bids, so no one here carries the game's risk and there is nothing to cut off. The
   row's header says **Live** (a red dot) in place of the tip-off; live rows sort first; the row
   re-quotes every 5 s instead of every 60 s; the chip reads "Lock in while the game is on" (pre-game,
-  "Lock in before or during the game"); the open panel says "The game is on and this price moves.
-  STX holds in-play orders 5s before they can match; you never get less than the price shown, and if
-  the bid moves away first fewer or none sell and this row says so." The service reads the market's
+  "Lock in before or during the game"); the open panel says "Live price · never less than shown",
+  and How (under Details) adds that the price moves, that fewer or none sell if the bid moves away
+  first, and that STX holds in-play orders 5s before they can match. The service reads the market's
   `in_play_delay_sec` and lets the order rest that long on top of the usual wait, so the order
   outlives STX's hold; the button's words during the hold are "In STX's 5s in-play hold…". A market
   STX has paused (`trading: false`, or `status: suspended`) is refused **Paused** ("try again in a
