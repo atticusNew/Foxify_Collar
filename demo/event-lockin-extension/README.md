@@ -363,7 +363,11 @@ games listed, past locks):
   every open long position, laid out as a row: a club mark (the club's initials on a colour of its
   own), **Boston Celtics** to win, the opponent and tip-off ("vs Los Angeles Lakers · Wed 7:30 PM
   ET"), **pays $50.00** on the right, and the Lock in line. That is the whole closed row: club,
-  game, the one figure, the button. The figures (50 contracts · 30 sold · avg 42¢; a parlay's
+  game, the one figure, the button. Under **pays**, an unlocked ticket says what it has done
+  since it was bought, in money ("up $6.00" in green, "down $1.50" dim): the venue's top bid on
+  every contract against what was paid (the last trade on a combo), from the positions read, no
+  quote needed; the sums behind it ("paid $21.00 (avg 42¢) · worth $27.00 at STX's 54¢ bid") are
+  the Position row under Details. The figures (50 contracts · 30 sold · avg 42¢; a parlay's
   multiplier) and the lock window are the first two rows under Details, **Position** and
   **Window**, not chips at the top of the open panel pushing the offer down; the one window
   worth a line under the button is a hard deadline ("Lock in until 6:45 PM ET") when in play is
@@ -505,7 +509,11 @@ games listed, past locks):
   and **Buy on STX ↗** (a link to the event on STX; this service never buys for anyone) or **In
   your portfolio** when the member already holds it (held games lead their day, with an amber
   edge). The club names are STX's own, so the row reads as the portfolio does.
-- **History** lists every past lock as a row (the club mark, the game, chips: 30 of 50 sold ·
+- **History** opens with a tally, **Lock in, so far**: what the locks have done against riding
+  every ticket out, from the record's own settled figures ("+$25.52 vs riding every ticket out ·
+  2 losses paid $27.08 instead of $0 · 1 win gave up $1.56 of upside · 1 left early, net −$2.00");
+  green when positive, plain when not, never projected, absent until something has settled or
+  closed. Then it lists every past lock as a row (the club mark, the game, chips: 30 of 50 sold ·
   Balanced · locked Nov 4) with its state on the line (Left early · net −$0.62 · bought back 30 at
   56¢; Settled; Void) and the same Details behind it. Open locks stay on Portfolio.
 
