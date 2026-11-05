@@ -1108,7 +1108,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.deepEqual([comboOff.ticker, comboOff.reason, comboOff.combo, pos.body.comboRfq], [null, "parlay", undefined, undefined], "off: the combo is shown, not protected");
     q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
     assert.deepEqual([q.status, q.body.code], [409, "parlay_unsupported"]);
-    assert.ok(/let memberComboRfq = \/\^\(1\|true\|yes\|on\)\$\/i\.test\(process\.env\.MEMBER_APP_COMBO_RFQ/.test(readFileSync(new URL("../scripts/eventShadowWorker.ts", import.meta.url), "utf8")), "off unless MEMBER_APP_COMBO_RFQ is set");
+    assert.ok(/let memberComboRfq: ComboRfqMode = comboRfqModeOf\(process\.env\.MEMBER_APP_COMBO_RFQ\)/.test(readFileSync(new URL("../scripts/eventShadowWorker.ts", import.meta.url), "utf8")), "off unless MEMBER_APP_COMBO_RFQ is set");
     // on: the combo row carries its synthetic ticker and the combo mark; the legs still read as a combo's
     wireCombo(true);
     pos = await get<Any>("/api/shadow/positions?fresh=1");
@@ -1210,7 +1210,24 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const settledCombo = ledgerNow.find((p) => p.ticker === COMBO3)!;
     assert.deepEqual([settledCombo.status, settledCombo.result, settledCombo.ruleCheck?.unchanged], ["settled", "yes", true], "settled on the venue's word, the ticket's text unchanged since the pin");
     assert.equal(ledgerNow.find((p) => p.ticker === COMBO)?.status, "open", "the other combo's last leg is hours out: untouched");
-    // off again2: the locked combo still reads as locked on the page (the record stands), the unlocked ones as they always have
+    // preview (MEMBER_APP_COMBO_RFQ=preview): the flow before the venue quotes. The combo rows quote from a stand-in bid a
+    // tenth under the ticket's last price, the page is told it is a preview, nothing is asked of the venue, and the tap is refused in words
+    worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: true, memberComboRfq: "preview" });
+    venue.rfqMode = "off"; // the real venue: no quote path at all
+    const rfqsBefore = venue.rfqs.length;
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    assert.deepEqual([pos.body.comboRfq, pos.body.positions.find((p: Any) => p.event === "3-Leg Combo").ticker], ["preview", COMBO2], "preview: the rows are quotable and the payload says which mode");
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO2}&contracts=9&venue=stx`);
+    assert.equal(q.status, 200, JSON.stringify(q.body));
+    // the wire combo's last trade is 0.1055 → 11¢; the stand-in bid is floor(11 × 0.9) = 9¢ on the Max floor size (7 of 9)
+    assert.deepEqual([q.body.ok, q.body.combo, q.body.rfq.preview, q.body.rfq.id, q.body.rfq.priceCents, q.body.rfq.quantity, q.body.markCents, q.body.quote.tiers.tight.soldContracts, q.body.quote.tiers.tight.cashNowCents], [true, true, true, "preview", 9, 7, 11, 7, 63]);
+    assert.equal(venue.rfqs.length, rfqsBefore, "nothing asked of the venue");
+    const pv = await post<Any>("/api/shadow/lock", { ticker: COMBO2, contracts: 9, tier: "wide", venue: "stx" });
+    assert.deepEqual([pv.status, pv.body.ok, pv.body.code, pv.body.combo], [200, false, "combo_preview", true], JSON.stringify(pv.body));
+    assert.match(pv.body.message, /^A preview: STX's cash-out quote isn't live yet, so nothing was sold\./);
+    assert.deepEqual([venue.positions.find((p) => p.market_id === "m-combo-wire")!.position, venue.orders.length, loadShadowPositions(ledger).some((p) => p.ticker === COMBO2)], ["9.00", ordersBefore, false], "nothing sold, nothing written");
+    venue.rfqMode = "quote";
+    // off again: the locked combo still reads as locked on the page (the record stands), the unlocked ones as they always have
     wireCombo(false);
     pos = await get<Any>("/api/shadow/positions?fresh=1");
     assert.deepEqual([pos.body.positions.find((p: Any) => p.event === "BOS / MIA / DET combo").ticker, pos.body.comboRfq], [null, undefined]);

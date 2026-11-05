@@ -337,7 +337,11 @@ services:
       #                                         word for the combo market. The venue has not shipped the
       #                                         quote path and its shape in memberApp.ts is assumed: leave
       #                                         off until the docs land and the three open questions in
-      #                                         demo/event-lockin-extension/README.md (Combos) are answered
+      #                                         demo/event-lockin-extension/README.md (Combos) are answered.
+      #                                         =preview: the combo rows quote from a stand-in bid, said
+      #                                         to be a preview on the page, nothing asked of the venue,
+      #                                         the tap refused in words (combo_preview); for seeing the
+      #                                         flow on the deployed page before the venue quotes
       #   MEMBER_APP_COMPARE_WAIT_MS=4000        optional; the bound on the background comparison priced
       #                                         on the hedge routes beside the member's sale (0 turns it
       #                                         off); priced, nothing sent, written as memberSale.compared

@@ -819,8 +819,15 @@ let memberInPlay = !/^(0|false|no|off)$/i.test(process.env.MEMBER_APP_IN_PLAY ??
  * quote instead of a book (a combo market has none). The venue has not shipped the quote path,
  * and its shape in the client is assumed (memberApp.ts, RawMemberRfq): off, a combo row reads as
  * it always has, riding to settlement. No leave early on a combo: there is nothing to buy it back from.
+ * MEMBER_APP_COMBO_RFQ=preview shows the flow before the venue quotes: the combo rows quote from a
+ * stand-in bid (a tenth under the ticket's own last price), said to be a preview on the page, and
+ * the tap is refused in words (combo_preview); nothing is asked of the venue and nothing is sold.
  */
-let memberComboRfq = /^(1|true|yes|on)$/i.test(process.env.MEMBER_APP_COMBO_RFQ ?? "");
+type ComboRfqMode = "off" | "on" | "preview";
+const comboRfqModeOf = (v: string | undefined): ComboRfqMode => (/^preview$/i.test(v ?? "") ? "preview" : /^(1|true|yes|on)$/i.test(v ?? "") ? "on" : "off");
+let memberComboRfq: ComboRfqMode = comboRfqModeOf(process.env.MEMBER_APP_COMBO_RFQ);
+/** a stand-in quote in preview: this far under the ticket's last price */
+const COMBO_PREVIEW_HAIRCUT = 0.9;
 const LIVE_EVENT_WORDS = /in_progress|in_play|in-play|live|started|underway/;
 const OVER_WORDS = /closed|resulted|settled|cancel|void|completed|final/;
 /** the game is on at the venue's own word, or on the clock when the venue gives none */
@@ -1048,8 +1055,8 @@ interface MemberPriced {
   /** the game is on (only with MEMBER_APP_IN_PLAY); the venue's hold on an in-play order, seconds */
   live: boolean;
   inPlayDelaySec: number;
-  /** a combination ticket: the venue's quote the tiers were read from, and the legs it carries (MEMBER_APP_COMBO_RFQ) */
-  combo?: { bid: RfqBid; legs: number };
+  /** a combination ticket: the venue's quote the tiers were read from, and the legs it carries (MEMBER_APP_COMBO_RFQ); preview: a stand-in bid, nothing asked of the venue */
+  combo?: { bid: RfqBid; legs: number; preview: boolean };
 }
 
 type MemberPricedResult = { ok: true; priced: MemberPriced } | { ok: false; status: number; body: Record<string, unknown> };
@@ -1131,7 +1138,7 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
 
 /** A member's combination ticket is a quotable row only with MEMBER_APP_COMBO_RFQ on and the ticket still live: no leg missed, not every leg in. */
 const comboLockable = (p: MemberHolderPosition): boolean => {
-  if (!memberComboRfq || p.reason !== "parlay") return false;
+  if (memberComboRfq === "off" || p.reason !== "parlay") return false;
   const legs = p.legs ?? [];
   if (legs.some((l) => l.state === "lost")) return false;
   return !(legs.length > 0 && legs.every((l) => l.state === "won" || l.state === "void"));
@@ -1148,7 +1155,7 @@ const comboPositionOf = (positions: MemberHolderPosition[], ticker: string): Mem
  */
 async function memberComboPriced(member: string, ticker: string, contracts: number, entryCents: number | undefined, positions: MemberHolderPosition[]): Promise<MemberPricedResult> {
   const VN = VENUE_NAMES[MEMBER_VENUE];
-  if (!memberComboRfq) return { ok: false, status: 409, body: { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VN}; the lock sells part of one position.` } };
+  if (memberComboRfq === "off") return { ok: false, status: 409, body: { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VN}; the lock sells part of one position.` } };
   const pos = comboPositionOf(positions, ticker);
   if (!pos) return { ok: false, status: 409, body: { ok: false, error: "not_held", code: "not_held", message: `Your ${VN} account holds no such combo.` } };
   if (contracts > pos.contracts + 1e-9) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this ticket; the lock can cover up to that.`, held: pos.contracts } };
@@ -1174,13 +1181,25 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
   const maxPrice = outcomeMaxPrice(market);
   const venueContracts = Math.floor(contracts / maxPrice + 1e-9);
   const askFor = Math.max(1, Math.floor(venueContracts * SALE_SHARE.tight));
+  // the ticket's own last price, as the venue shows it (the market's field, else its last trade), per $1
+  const lastTrade = (market.recent_trades ?? []).map((t) => Number(t?.price)).filter((x) => Number.isFinite(x) && x > 0).at(-1);
+  const lastPx = Number(market.last_traded_price ?? market.price ?? lastTrade);
+  const lastCents = Number.isFinite(lastPx) && lastPx > 0 && lastPx < maxPrice ? Math.round((lastPx / maxPrice) * 100) : null;
+  const preview = memberComboRfq === "preview";
   let bid: RfqBid;
-  try {
-    bid = await requestRfqBid(client, { market_id: pos.marketId, action: "sell", quantity: String(askFor), client_rfq_id: clientOrderIdFor("rfq", ticker) }, maxPrice, memberOrderOpts);
-  } catch (err) {
-    // the venue has not shipped the quote path: its 404 is "not yet", not an outage
-    if (err instanceof MemberApiError && err.status === 404) return { ok: false, status: 200, body: { ok: false, code: "combo_quotes_unavailable", message: `${VN} isn't quoting combo tickets yet.` } };
-    return { ok: false, ...memberRefusal(err) };
+  if (preview) {
+    // a stand-in bid a tenth under the ticket's last price (its entry when the venue shows none); nothing is asked of the venue
+    const standIn = Math.max(1, Math.floor((lastCents ?? pos.entryCents) * COMBO_PREVIEW_HAIRCUT));
+    const price = (standIn / 100) * maxPrice;
+    bid = { rfq: { id: "preview", status: "quoted", market_id: pos.marketId, action: "sell", quantity: String(askFor), price: price.toFixed(2), client_rfq_id: null }, level: { price, quantity: askFor }, reason: null, expiresAtIso: null };
+  } else {
+    try {
+      bid = await requestRfqBid(client, { market_id: pos.marketId, action: "sell", quantity: String(askFor), client_rfq_id: clientOrderIdFor("rfq", ticker) }, maxPrice, memberOrderOpts);
+    } catch (err) {
+      // the venue has not shipped the quote path: its 404 is "not yet", not an outage
+      if (err instanceof MemberApiError && err.status === 404) return { ok: false, status: 200, body: { ok: false, code: "combo_quotes_unavailable", message: `${VN} isn't quoting combo tickets yet.` } };
+      return { ok: false, ...memberRefusal(err) };
+    }
   }
   if (!bid.level) {
     const why = bid.reason === "declined" ? `${VN}'s makers passed on this ticket right now.` : bid.reason === "expired" ? `${VN}'s quote lapsed before it could be read; try again.` : `${VN} did not price this ticket in time; try again.`;
@@ -1189,9 +1208,8 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
   const tiers = quoteSaleTiers({ positionContracts: venueContracts, maxPrice, bids: [bid.level] });
   if (!tiers.wide && !tiers.balanced && !tiers.tight) return { ok: false, status: 200, body: { ok: false, code: "no_bids", message: `${VN}'s quote cannot fund a shape at this size.` } };
   const bidCents = Math.round((bid.level.price / maxPrice) * 100);
-  const lastPx = Number(market.last_traded_price ?? market.price);
   // the mark is the ticket's own last price when the venue shows one, the quote otherwise
-  const markCents = Number.isFinite(lastPx) && lastPx > 0 && lastPx < maxPrice ? Math.round((lastPx / maxPrice) * 100) : bidCents;
+  const markCents = lastCents ?? bidCents;
   return {
     ok: true,
     priced: {
@@ -1208,7 +1226,7 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
       bidDepth: Math.floor(bid.level.quantity),
       live,
       inPlayDelaySec: 0,
-      combo: { bid, legs: legs.length },
+      combo: { bid, legs: legs.length, preview },
     },
   };
 }
@@ -1353,6 +1371,10 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     return;
   }
   const P = priced.priced;
+  if (P.combo?.preview) {
+    sendJson(res, 200, { ok: false, at: atIso, ticker, code: "combo_preview", combo: true, message: `A preview: ${VENUE_NAMES[MEMBER_VENUE]}'s cash-out quote isn't live yet, so nothing was sold. The figures shown are a stand-in bid.` });
+    return;
+  }
   const want = tier ?? (P.tiers[searchConfig().defaultTier] ? searchConfig().defaultTier : (PROTECTION_TIERS.find((t) => P.tiers[t]) as ProtectionTier));
   const t = P.tiers[want];
   if (!t) {
@@ -2333,7 +2355,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
           return { ...p, ticker, ...(ticker !== p.ticker ? { combo: true } : {}), venue: MEMBER_VENUE, lock: lockOf(ticker) };
         }),
       ],
-      ...(memberComboRfq ? { comboRfq: true } : {}),
+      ...(memberComboRfq !== "off" ? { comboRfq: memberComboRfq === "preview" ? "preview" : true } : {}),
     });
     return;
   }
@@ -2390,7 +2412,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         live: P.live,
         ...(P.live ? { inPlayDelaySec: P.inPlayDelaySec } : {}),
         // a combination: the quote the shapes were read from, so the page can say where the bid came from and how long it stands
-        ...(P.combo ? { combo: true, rfq: { id: P.combo.bid.rfq.id, quantity: P.bidDepth, priceCents: P.bestBidCents, expiresAtIso: P.combo.bid.expiresAtIso, legs: P.combo.legs } } : {}),
+        ...(P.combo ? { combo: true, rfq: { id: P.combo.bid.rfq.id, quantity: P.bidDepth, priceCents: P.bestBidCents, expiresAtIso: P.combo.bid.expiresAtIso, legs: P.combo.legs, preview: P.combo.preview } } : {}),
         quote: { ok: true, contracts: P.contracts, markCents: P.game.markCents, entryCents: P.entryCents, ...head, tier: dflt, tiers, quotedAt: atIso },
         evCostBps: head.evCostBps,
         member: { ...memberView(member), held: P.pos.contracts, bestBidCents: P.bestBidCents, bidDepth: P.bidDepth },
@@ -4686,8 +4708,8 @@ export function wireLockEngine(fns: {
   memberOrder?: ExecuteOptions;
   /** whether a member may lock while the game is on, in place of MEMBER_APP_IN_PLAY (on unless set to 0) */
   memberInPlay?: boolean;
-  /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ (off unless set) */
-  memberComboRfq?: boolean;
+  /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ (off unless set); "preview" quotes from a stand-in and refuses the tap */
+  memberComboRfq?: boolean | "preview";
 }): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
@@ -4698,7 +4720,7 @@ export function wireLockEngine(fns: {
   if (fns.memberOrder) memberOrderOpts = fns.memberOrder;
   if (fns.memberInPlay !== undefined) memberInPlay = fns.memberInPlay;
   if (fns.memberComboRfq !== undefined) {
-    memberComboRfq = fns.memberComboRfq;
+    memberComboRfq = fns.memberComboRfq === "preview" ? "preview" : fns.memberComboRfq ? "on" : "off";
     memberPositionsCache.clear();
   }
   if (fns.settledMarkets) {

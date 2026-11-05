@@ -444,7 +444,8 @@ games listed, past locks):
   cutoff stands. Ask the venue two things before turning it on: that member OAuth tokens may trade
   in play, and the delay it applies.
 
-  **Combos through STX's quote** (off; `MEMBER_APP_COMBO_RFQ=1` on the service turns it on). A
+  **Combos through STX's quote** (off; `MEMBER_APP_COMBO_RFQ=1` on the service turns it on;
+  `MEMBER_APP_COMBO_RFQ=preview` shows the flow before STX quotes, see the end of this paragraph). A
   combo (parlay) ticket has no resting book, so it cannot be partly sold into bids the way a single
   can. STX is building a "cash out" request-for-quote for combo holders; when it ships, the same
   OAuth path and `orders.write` scope carry it (confirmed by STX), and this flag protects any
@@ -481,7 +482,15 @@ games listed, past locks):
   real field names and whether partial sizes are quoted (the client takes the quantity the venue
   returns), how long a quote stands (the tap re-asks, so a few seconds is enough), and that the
   accepted fill posts as a regular order so the ticket's size drops in the portfolio read (the
-  record and the page both lean on that).
+  record and the page both lean on that). **Preview** (`MEMBER_APP_COMBO_RFQ=preview`) is for
+  seeing the page before STX ships the quote path: every live combo row quotes from a stand-in bid a
+  tenth under the ticket's own last price (its entry when STX shows none), the open panel says
+  "Preview · a stand-in bid, not STX's quote" in amber, nothing is asked of STX, and the tap is
+  refused in words under the button ("A preview: STX's cash-out quote isn't live yet, so nothing
+  was sold."; `combo_preview`); no record is written and the ticket is untouched. On a combo whose
+  leg is in play the live line is "Live price" alone (the tap re-asks the makers; "never less than
+  shown" is a single's limit-order promise and is not made here). `/api/shadow/positions` says
+  `comboRfq: "preview"`, the quote carries `rfq.preview: true`.
 - **Games** lists the games this service can protect that STX lists right now, by day (**Today**,
   **Tomorrow**, then the weekday; two days at a time, "Show 3 more games on later days" for the
   rest), with filters when there is more than one league and an **In your portfolio** filter when
