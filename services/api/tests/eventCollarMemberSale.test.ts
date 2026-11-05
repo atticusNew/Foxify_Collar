@@ -917,7 +917,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const setCookie = page.headers.get("set-cookie") ?? "";
     assert.match(setCookie, /^ael_member=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=\d+; HttpOnly; SameSite=Lax(; Secure)?$/, "HttpOnly, Lax; Secure only behind https");
     const html = await page.text();
-    assert.ok(html.includes("Lock in · STX positions") && html.includes("Protection by Atticus") && html.includes('"venueName":"STX"'), "the page's words");
+    assert.ok(html.includes("Lock in · STX positions") && html.includes('<div class="ael-disclose">Protection by Atticus') && html.includes(".ael-disclose { font-size: 11px; color: var(--ael-dim); text-align: center;") && html.includes('"venueName":"STX"'), "the page's words");
     assert.ok(!html.includes("lock-key-") && !html.includes("stxapp_") && !html.includes("op-secret"), "no key of any kind on the page");
     // the row's figures (contracts, sold, average, a parlay's multiplier) and the lock window are the first Details rows, not chips at
     // the top of the open panel pushing the offer down; the header is club, game, pays; a combo's legs sit under the button
