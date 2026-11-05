@@ -330,6 +330,14 @@ services:
       #                                         game is on and the pre-game cutoff does not apply; the
       #                                         order rests the market's in_play_delay_sec longer so it
       #                                         outlives the venue's hold. 0 makes the page pre-game only.
+      #   MEMBER_APP_COMBO_RFQ=1                 optional; off by default. On: a member's combo (parlay)
+      #                                         ticket is quoted and partly sold through the venue's
+      #                                         request-for-quote (any leg, not only the last); no leave
+      #                                         early on a combo; the record settles on the venue's own
+      #                                         word for the combo market. The venue has not shipped the
+      #                                         quote path and its shape in memberApp.ts is assumed: leave
+      #                                         off until the docs land and the three open questions in
+      #                                         demo/event-lockin-extension/README.md (Combos) are answered
       #   MEMBER_APP_COMPARE_WAIT_MS=4000        optional; the bound on the background comparison priced
       #                                         on the hedge routes beside the member's sale (0 turns it
       #                                         off); priced, nothing sent, written as memberSale.compared

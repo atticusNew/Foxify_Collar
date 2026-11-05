@@ -443,6 +443,45 @@ games listed, past locks):
   `inPlayDelaySec`; `/healthz` carries `inPlay`. Off, a started game is still "pre-game only" and the
   cutoff stands. Ask the venue two things before turning it on: that member OAuth tokens may trade
   in play, and the delay it applies.
+
+  **Combos through STX's quote** (off; `MEMBER_APP_COMBO_RFQ=1` on the service turns it on). A
+  combo (parlay) ticket has no resting book, so it cannot be partly sold into bids the way a single
+  can. STX is building a "cash out" request-for-quote for combo holders; when it ships, the same
+  OAuth path and `orders.write` scope carry it (confirmed by STX), and this flag protects any
+  combo the member holds, any leg, not only the last: part of the ticket is sold to STX's makers at
+  the price they quote, the rest rides to settlement. Built now against an **assumed** API shape
+  (`memberApp.ts`, `RawMemberRfq`: `POST /api/v1/rfqs {market_id, action:"sell", quantity,
+  client_rfq_id}` answers a quote, priced at once or on `GET /api/v1/rfqs/{id}`, with a price per
+  contract, the quantity the makers will take, when it lapses and a status; `POST
+  /api/v1/rfqs/{id}/accept {quantity, price}` fills it and answers with the order the fill posted
+  as). Only the field names would change when the real docs land. On: a live combo row (no leg
+  missed, not every leg in) carries a synthetic ticker `STXCOMBO-<market id>` and `combo: true`
+  on `/api/shadow/positions` (the payload says `comboRfq: true`), and the page quotes and locks it
+  like a single, in the ticket's own words: "Still get $0.90 if a leg misses.", the ledger **All
+  legs hit** / **A leg misses**, "Bid from STX's makers · the rest rides to settlement", the legs
+  listed in the open panel, Details "Sell 3 of 9 at about 30¢ to STX's makers · 6 keep riding"
+  and one Rules sentence (STX's own combo rules; a voided leg drops out and the ticket re-prices).
+  The quote asks STX's makers for one bid on the largest shape's size (Max floor, 80% of the
+  ticket) and reads it as one book level, so the three shapes walk it like a book and a maker
+  taking fewer than asked is a depth-limited shape; the row re-quotes every 60 s, never every 5 s
+  (each quote is a request to the makers). The tap asks again and accepts that quote for the
+  shape's size, so the fill is at the price the makers stand at, never more than the makers
+  offered; the fill posts as a regular order, the ticket shrinks in the positions read and the
+  cash lands in the balance like any sale. The record is `route: member_sale` with
+  `memberSale.combo` (the quote's id, price, expiry, the legs), no Kalshi comparison (Details has
+  no Elsewhere row), the ticket's own text pinned as STX describes it, and it settles on STX's
+  own word for the combo market after the last leg (not on a Kalshi result). **No leave early on a
+  combo** (`combo_no_buyback`): there are no offers to buy a combo back from; the panel says
+  "Stays to settlement." Refusals in words: **Not yet** (`combo_quotes_unavailable`, STX's quote
+  path answers 404), **Missed** (`combo_missed`), **All hit** (`combo_settling`), **Quote
+  lapsed** (`quote_lapsed`, the quote expired between the tap and the accept; nothing sold), and
+  the makers passing or not pricing in time reads as no bids. Off (the default), a combo row
+  reads as before, "Rides to settlement on STX.", and a synthetic ticker is refused
+  (`parlay_unsupported`). Three things to settle with STX before turning it on: the quote path's
+  real field names and whether partial sizes are quoted (the client takes the quantity the venue
+  returns), how long a quote stands (the tap re-asks, so a few seconds is enough), and that the
+  accepted fill posts as a regular order so the ticket's size drops in the portfolio read (the
+  record and the page both lean on that).
 - **Games** lists the games this service can protect that STX lists right now, by day (**Today**,
   **Tomorrow**, then the weekday; two days at a time, "Show 3 more games on later days" for the
   rest), with filters when there is more than one league and an **In your portfolio** filter when
