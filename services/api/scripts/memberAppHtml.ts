@@ -168,6 +168,8 @@ body {
   --ael-fg: #f4f4f4; --ael-fg-strong: #ffffff; --ael-soft: #d1d1d1; --ael-muted: #9a9a9a; --ael-dim: #818181; --ael-faint: #5c5c5c;
   --ael-bg: #141414; --ael-bg-deep: #0a0a0a; --ael-bg-raise: #1d1d1d; --ael-bg-hover: #262626;
   --ael-border: #2e2e2e; --ael-border-hover: #3a3a3a; --ael-divider: #262626;
+  /* the edge: a hairline that reads on the page's black and on a raised or amber-washed panel alike; controls and the balance strip carry it (the grey border above vanishes on both) */
+  --ael-edge: rgba(255, 255, 255, 0.13); --ael-edge-hover: rgba(255, 255, 255, 0.24);
   --ael-accent: #f9ae1c; --ael-accent-hover: #ffc91a; --ael-accent-ink: #1a1200; --ael-glow: #ffe233; --ael-accent-text: #ffc91a;
   --ael-accent-line: rgba(249, 174, 28, 0.6); --ael-accent-wash: rgba(249, 174, 28, 0.12); --ael-accent-wash-2: rgba(249, 174, 28, 0.16); --ael-accent-wash-3: rgba(249, 174, 28, 0.22);
   --ael-live: #ff5c5c; --ael-parlay: #b48cff; --ael-parlay-wash: rgba(180, 140, 255, 0.14); --ael-parlay-line: rgba(180, 140, 255, 0.45);
@@ -205,8 +207,8 @@ img { display: block; }
 .acct .who b { font-weight: 600; color: var(--ael-fg-strong); overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
 .acct a, .acct .lnk { color: var(--ael-muted); text-decoration: none; background: none; border: 0; padding: 6px 0; cursor: pointer; font-size: 13px; }
 .acct a:hover, .acct .lnk:hover { color: var(--ael-fg-strong); }
-.acct .back { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border: 1px solid var(--ael-border); border-radius: 999px; color: var(--ael-soft); }
-.acct .back:hover { border-color: var(--ael-border-hover); color: var(--ael-fg-strong); }
+.acct .back { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border: 1px solid var(--ael-edge); border-radius: 999px; color: var(--ael-soft); }
+.acct .back:hover { border-color: var(--ael-edge-hover); color: var(--ael-fg-strong); }
 .acct .back svg { width: 12px; height: 12px; }
 
 /* the tabs: a row under the bar; a segmented bar on a phone */
@@ -252,7 +254,7 @@ h2.grp[hidden] { display: none; }
 .note .hs b { color: var(--ael-fg-strong); font-weight: 600; }
 
 /* the balance strip: what the sale lands in */
-.bal { display: flex; align-items: baseline; gap: 10px 16px; flex-wrap: wrap; padding: 12px 14px; margin: 0 0 18px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg-raise); font-size: 13px; color: var(--ael-muted); }
+.bal { display: flex; align-items: baseline; gap: 10px 16px; flex-wrap: wrap; padding: 12px 14px; margin: 0 0 18px; border: 1px solid var(--ael-edge); border-radius: var(--ael-radius); background: var(--ael-bg-raise); font-size: 13px; color: var(--ael-muted); }
 .bal b { font-size: 18px; font-weight: 700; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 .bal .av { font-variant-numeric: tabular-nums; }
 .bal .pulse b { color: var(--ael-accent-text); animation: ael-pulse 1.4s ease-out; }
@@ -361,9 +363,9 @@ h2.grp[hidden] { display: none; }
 
 /* the games: what the venue lists that we protect, by day */
 .gbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 18px; }
-.gbar .f { font-size: 12.5px; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--ael-border); background: transparent; color: var(--ael-muted); cursor: pointer; }
-.gbar .f:hover { color: var(--ael-fg-strong); border-color: var(--ael-border-hover); }
-.gbar .f[aria-pressed="true"] { background: var(--ael-bg-raise); border-color: var(--ael-border-hover); color: var(--ael-fg-strong); font-weight: 600; }
+.gbar .f { font-size: 12.5px; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--ael-edge); background: transparent; color: var(--ael-muted); cursor: pointer; }
+.gbar .f:hover { color: var(--ael-fg-strong); border-color: var(--ael-edge-hover); }
+.gbar .f[aria-pressed="true"] { background: var(--ael-bg-raise); border-color: var(--ael-edge-hover); color: var(--ael-fg-strong); font-weight: 600; }
 .gbar .n { margin-left: auto; font-size: 12px; color: var(--ael-dim); }
 .day { margin: 0 0 8px; }
 .day-h { position: sticky; top: calc(56px + 45px + env(safe-area-inset-top)); z-index: 2; background: #010101; padding: 10px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ael-dim); display: flex; align-items: baseline; gap: 10px; }
@@ -390,8 +392,8 @@ h2.grp[hidden] { display: none; }
 .side .buy:hover { background: var(--ael-accent-wash-3); }
 .side .buy svg { width: 12px; height: 12px; }
 .side .have { flex: none; font-size: 12px; font-weight: 600; color: var(--ael-accent-text); white-space: nowrap; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--ael-accent-line); text-decoration: none; }
-.more { display: block; width: 100%; margin: 16px 0 0; height: 42px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: transparent; color: var(--ael-soft); font-size: 14px; cursor: pointer; }
-.more:hover { border-color: var(--ael-border-hover); color: var(--ael-fg-strong); }
+.more { display: block; width: 100%; margin: 16px 0 0; height: 42px; border: 1px solid var(--ael-edge); border-radius: var(--ael-radius); background: transparent; color: var(--ael-soft); font-size: 14px; cursor: pointer; }
+.more:hover { border-color: var(--ael-edge-hover); color: var(--ael-fg-strong); }
 
 /* history */
 .hist { padding: 14px 0 12px; border-bottom: 1px solid #1c1c1c; }
@@ -470,8 +472,9 @@ h2.grp[hidden] { display: none; }
 .ael-go svg path:last-child { stroke: var(--ael-accent); }
 .ael-go.ael-busy::before { content: ""; display: inline-block; width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--ael-ring); border-top-color: var(--ael-accent-ink); animation: ael-spin 0.8s linear infinite; }
 @keyframes ael-spin { to { transform: rotate(360deg); } }
-.ael-go.ael-quiet { display: inline-flex; width: auto; height: 40px; margin: 0; padding: 0 14px; background: var(--ael-bg-raise); color: var(--ael-fg-strong); font-size: 14px; }
-.ael-go.ael-quiet:hover { background: var(--ael-bg-hover); }
+/* the quiet button (Leave early, Stay protected): outlined, so it reads as a button on the amber panel and on the plain row alike, under the filled Lock in and above the plain Details link */
+.ael-go.ael-quiet { display: inline-flex; width: auto; height: 40px; margin: 0; padding: 0 14px; border: 1px solid var(--ael-edge); background: transparent; color: var(--ael-fg-strong); font-size: 14px; }
+.ael-go.ael-quiet:hover { border-color: var(--ael-edge-hover); background: var(--ael-bg-raise); }
 .ael-go.ael-pillgo { display: inline-flex; width: auto; min-height: 44px; height: auto; margin: 0; padding: 9px 20px 9px 14px; border-radius: 999px; font-size: 15px; white-space: normal; text-align: left; }
 .ael-offer-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0 2px; }
 .ael-offer-acts .ael-links { margin-left: auto; font-size: 13.5px; color: var(--ael-muted); white-space: nowrap; }
@@ -498,8 +501,8 @@ h2.grp[hidden] { display: none; }
 .ael-rg > b { font-weight: 500; color: var(--ael-soft); overflow-wrap: anywhere; }
 .ael-shape-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0 0; }
 .ael-shape-row > span { font-size: 12.5px; color: var(--ael-muted); }
-.ael-shape { display: inline-flex; border: 1px solid var(--ael-border); border-radius: 10px; padding: 3px; background: var(--ael-bg-deep); gap: 2px; max-width: 100%; }
-.ael-shape-b { appearance: none; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--ael-muted); font: inherit; font-size: 13px; font-weight: 500; line-height: 1.2; padding: 7px 12px; cursor: pointer; white-space: nowrap; min-height: 34px; }
+.ael-shape { display: inline-flex; border: 1px solid var(--ael-edge); border-radius: 10px; padding: 3px; background: var(--ael-bg-deep); gap: 2px; max-width: 100%; }
+.ael-shape-b { appearance: none; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--ael-muted); font: inherit; font-size: 13px; font-weight: 500; line-height: 1.2; padding: 7px 12px; cursor: pointer; white-space: nowrap; min-height: 34px; text-align: center; }
 .ael-shape-b:hover { color: var(--ael-fg-strong); }
 .ael-shape-b[aria-pressed="true"] { border-color: var(--ael-accent); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); font-weight: 600; }
 .ael-fine { font-size: 12.5px; color: var(--ael-muted); text-align: left; margin: 0 0 4px; line-height: 1.45; }
@@ -531,7 +534,7 @@ h2.grp[hidden] { display: none; }
   .bal .who { display: inline-flex; }
   .tabs { top: calc(52px + env(safe-area-inset-top)); gap: 0; padding: 8px 14px; }
   .tabs button { flex: 1; padding: 9px 0; border-radius: 8px; font-size: 13.5px; }
-  .tabs button[aria-selected="true"] { background: var(--ael-bg-raise); }
+  .tabs button[aria-selected="true"] { background: var(--ael-bg-raise); box-shadow: inset 0 0 0 1px var(--ael-edge); }
   .tabs button[aria-selected="true"]::after { display: none; }
   .day-h { top: calc(52px + 53px + env(safe-area-inset-top)); }
   .main { padding: 16px 14px 32px; }
@@ -555,6 +558,10 @@ h2.grp[hidden] { display: none; }
   .ael-drows .ael-dl:first-child { margin-top: 0; }
   .ael-leave-acts { flex-wrap: wrap; }
   .ael-leave-acts .ael-go.ael-quiet { flex: 1; }
+  /* the shape: the label on its own line, the three choices in three equal cells across the panel; a nowrap pill row overflowed the panel's edge on older Safari, where the system font runs wider */
+  .ael-shape-row { flex-direction: column; align-items: stretch; gap: 6px; }
+  .ael-shape { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); width: 100%; box-sizing: border-box; }
+  .ael-shape-b { min-width: 0; padding: 7px 4px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; }
   /* three short centred lines, each one line from 320px up: the mark, the disclosure, the links */
   .foot { flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 16px 14px calc(24px + env(safe-area-inset-bottom)); font-size: 12px; }
   .foot .fd { display: none; }
