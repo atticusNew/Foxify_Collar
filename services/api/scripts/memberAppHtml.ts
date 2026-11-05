@@ -70,12 +70,23 @@ ${CSS}
 <main id="main" class="main"><div class="ael-wait">Loading…</div></main>
 <footer class="foot">
   <div class="foot-l"><span class="fd">Protection by <img class="amark" src="/app/atticus.png" alt="Atticus">, a third party; not a product of ${esc(o.venueName)}.</span><span class="fm"><img class="amark" src="/app/atticus.png" alt="Atticus"><span>Third-party protection; not a product of ${esc(o.venueName)}.</span></span></div>
-  <div class="foot-r"><a href="/app/privacy">Privacy</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg" aria-expanded="false">How this works</button><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect<span class="fd"> ${esc(o.venueName)}</span></button></span></div>
-  <div class="about" id="about" hidden>
-    <p>A lock sells part of a position you hold on ${esc(o.venueName)} into ${esc(o.venueName)}'s own bids, in your own account, at that moment's price. The cash lands in your ${esc(o.venueName)} balance right away; the rest of the position rides to the game as it always did. Win, and the riding contracts still pay. Lose, and you keep the cash.</p>
-    <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Leave early buys the same contracts back from ${esc(o.venueName)}'s offers. Every order is placed in your account under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke that consent there at any time. This page never holds your money, your login or your keys. Every lock is priced against every venue this service reads and filled where you hold the position, on ${esc(o.venueName)}; the record keeps what the others would have paid. Every lock is written to a <a href="${esc(o.recordUrl)}" rel="noopener">public record</a> in neutral words, with no account ids.</p>
-  </div>
+  <div class="foot-r"><a href="/app/privacy">Privacy</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg">How it works</button><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect<span class="fd"> ${esc(o.venueName)}</span></button></span></div>
 </footer>
+<!-- how it works: the one place the page explains itself; opened from the foot, the first-visit strip and the empty portfolio -->
+<div class="sheet" id="how" hidden role="dialog" aria-modal="true" aria-labelledby="how-h">
+  <div class="sheet-c">
+    <button type="button" class="x" aria-label="Close">×</button>
+    <h2 id="how-h">How Lock in works</h2>
+    <ol class="steps">
+      <li><div><b>Buy a side on ${esc(o.venueName)}</b><small>A game winner, any size. It shows here with its Lock in line.</small></div></li>
+      <li><div><b>Tap Lock in</b><small>Part of the position sells into ${esc(o.venueName)}'s bids, in your own account. The cash lands in your ${esc(o.venueName)} balance now.</small></div></li>
+      <li><div><b>Keep the floor, win or lose</b><small>Lose, and the cash is yours. Win, and the rest still pays. Leave early buys it back any time before the game.</small></div></li>
+    </ol>
+    <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Every order is placed under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke it there at any time. This page never holds your money, your login or your keys.</p>
+    <p>Every lock is priced against every venue this service reads and filled where you hold the position, on ${esc(o.venueName)}; the record keeps what the others would have paid. Every lock is written to a public record in neutral words, with no account ids.</p>
+    <div class="links"><a href="/app/privacy">Privacy</a><a href="${esc(o.recordUrl)}" rel="noopener">Public record</a></div>
+  </div>
+</div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <script>window.AEL_CFG = ${cfg};</script>
 <script>
@@ -232,10 +243,31 @@ img { display: block; }
 .foot-r a, .foot-r .lnk { white-space: nowrap; }
 .foot a { color: var(--ael-muted); }
 .foot .dot { color: var(--ael-faint); }
-.about { flex-basis: 100%; color: var(--ael-muted); font-size: 12.5px; line-height: 1.5; max-width: 70ch; }
-.about p { margin: 6px 0; }
-.about[hidden] { display: none; }
 .foot #disconnect-foot { display: none; }
+
+/* the three steps: a strip on the first visit, the empty portfolio, and the top of How it works */
+.tsteps { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; padding: 0; list-style: none; counter-reset: s; flex: 1; min-width: 0; }
+.tsteps li { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ael-muted); white-space: nowrap; }
+.tsteps li::before { counter-increment: s; content: counter(s); flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--ael-accent-wash-2); border: 1px solid var(--ael-accent-line); color: var(--ael-accent-text); font-size: 11.5px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.tsteps li b { color: var(--ael-fg-strong); font-weight: 600; }
+.note.tour { position: relative; flex-wrap: wrap; gap: 8px 16px; padding: 10px 40px 10px 12px; border-color: var(--ael-edge); }
+.note.tour .lnk { background: none; border: 0; padding: 0; color: var(--ael-soft); text-decoration: underline; text-underline-offset: 2px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.note.tour .x { position: absolute; top: 8px; right: 8px; margin: 0; }
+.empty .tsteps { justify-content: center; margin: 0 0 14px; }
+.empty p { margin: 0; }
+
+/* how it works: a card in the middle on a desk, a sheet from the bottom on a phone */
+.sheet { position: fixed; inset: 0; z-index: 8; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0, 0, 0, 0.62); }
+.sheet[hidden] { display: none; }
+.sheet-c { position: relative; width: 100%; max-width: 520px; max-height: calc(100vh - 40px); overflow: auto; background: var(--ael-bg-raise); border: 1px solid var(--ael-edge); border-radius: var(--ael-radius-lg); padding: 22px 22px 18px; color: var(--ael-soft); font-size: 14px; line-height: 1.5; animation: ael-pop 0.2s ease-out; }
+.sheet-c h2 { margin: 0 0 16px; font-size: 19px; color: var(--ael-fg-strong); padding-right: 36px; }
+.sheet-c .x { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; padding: 0; border-radius: 50%; border: 1px solid var(--ael-edge); background: transparent; color: var(--ael-muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.sheet-c .x:hover { color: var(--ael-fg-strong); border-color: var(--ael-edge-hover); }
+.sheet-c .steps { margin-bottom: 16px; }
+.sheet-c p { margin: 0 0 10px; color: var(--ael-muted); font-size: 13px; }
+.sheet-c .links { display: flex; gap: 16px; margin-top: 12px; font-size: 13px; }
+.sheet-c .links a { color: var(--ael-soft); }
+@keyframes ael-up { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (max-width: 640px) { .foot #disconnect-foot:not([hidden]) { display: inline-flex; align-items: center; gap: 6px; } }
 
 h1 { font-size: 22px; font-weight: 700; margin: 0 0 14px; color: var(--ael-fg-strong); letter-spacing: -0.01em; display: flex; align-items: baseline; gap: 12px; }
@@ -577,7 +609,9 @@ h2.grp[hidden] { display: none; }
   .foot .fm .amark { height: 15px; margin: 0 0 1px; top: 0; opacity: 0.9; }
   .foot-r { margin-left: 0; justify-content: center; flex-wrap: nowrap; gap: 6px; font-size: 12px; }
   .foot-r a, .foot-r button.lnk { font-size: 12px; }
-  .foot .about { text-align: left; }
+  .note.tour .tsteps { flex-direction: column; gap: 6px; }
+  .sheet { align-items: flex-end; padding: 0; }
+  .sheet-c { max-width: none; max-height: 88vh; border-radius: 16px 16px 0 0; border-bottom: 0; padding: 20px 18px calc(18px + env(safe-area-inset-bottom)); animation: ael-up 0.22s ease-out; }
   .game { padding-left: 12px; }
   .side { flex-wrap: wrap; row-gap: 8px; }
   .side .sn { flex-basis: calc(100% - 44px); }
@@ -610,7 +644,7 @@ const JS = String.raw`
   const POLL_POS_MS = 15000, REQUOTE_MS = 60000, REQUOTE_LIVE_MS = 5000, POLL_ACCT_MS = 30000;
   const TIER_ORDER = ["wide", "balanced", "tight"];
   const TIER_WORDS = { wide: "Max upside", balanced: "Balanced", tight: "Max floor" };
-  const TIER_KEY = "ael_tier", HS_KEY = "ael_hs_tip";
+  const TIER_KEY = "ael_tier", HS_KEY = "ael_hs_tip", TOUR_KEY = "ael_tour";
   const SHIELD = '<span class="ael-ic"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5 4.5 5.6v6.2c0 4.6 3.1 8.6 7.5 9.7 4.4-1.1 7.5-5.1 7.5-9.7V5.6L12 2.5z"/><path d="m8.8 12.2 2.1 2.1 4.3-4.6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
   const CHEV = '<span class="ael-chev"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>';
   const TGC = '<span class="ael-tgc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>';
@@ -697,7 +731,7 @@ const JS = String.raw`
     }
   };
 
-  const S = { tab: "portfolio", screen: "", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, inPlay: false, games: null, gamesErr: null, gLeague: "all", gAll: false, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0, delta: null, connecting: false, hsTip: false };
+  const S = { tab: "portfolio", screen: "", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, inPlay: false, games: null, gamesErr: null, gLeague: "all", gAll: false, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0, delta: null, connecting: false, hsTip: false, tour: false };
   const main = document.getElementById("main");
   const acct = document.getElementById("acct");
   const tabs = document.getElementById("tabs");
@@ -1006,6 +1040,7 @@ const JS = String.raw`
       st.justNow = true; st.ms = Date.now() - t0; st.rcpt = null; st.details = false; st.cashAfter = null;
       p.lock = { at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: 0, route: "member_sale", floorTotalCents: r.json.floorTotalCents, capTotalCents: r.json.capTotalCents, memberSale: r.json.memberSale, compared: r.json.compared, tails: r.json.tails, rules: r.json.rules };
       st.lock = r.json; st.open = true; S.flash = p.ticker;
+      if (S.tour) { tourDone(); syncPortfolio(); }
       paintRow(p); paintTabs();
       const ms = r.json.memberSale || {};
       toast("Locked in · <b>" + signed(ms.cashNowCents || 0) + "</b> to your " + esc(VN) + " balance");
@@ -1109,6 +1144,10 @@ const JS = String.raw`
     setTimeout(() => { S.delta = null; paintBalance(); }, 6200);
   };
   const hsTipHtml = () => '<div class="note" id="hs-tip"><div class="hs"><p><b>Add Lock in to your home screen</b> for one tap back here after a buy on ' + esc(VN) + ". " + (/iPhone|iPad/.test(navigator.userAgent) ? "Tap Share, then <b>Add to Home Screen</b>." : "Open the browser menu, then <b>Add to Home screen</b>.") + '</p></div><button type="button" class="x" aria-label="Dismiss">×</button></div>';
+  // the three steps, once: a strip on the first connected visit (gone on × or after the first lock) and the empty portfolio's words
+  const TSTEPS = '<ol class="tsteps"><li><b>Buy a side</b> on ' + esc(VN) + "</li><li><b>Tap Lock in</b> here</li><li><b>Keep the floor</b>, win or lose</li></ol>";
+  const tourHtml = () => '<div class="note tour" id="tour">' + TSTEPS + '<button type="button" class="lnk" id="tour-how">How it works</button><button type="button" class="x" aria-label="Dismiss">×</button></div>';
+  const tourDone = () => { S.tour = false; try { localStorage.setItem(TOUR_KEY, "1"); } catch (e) {} };
   const skeleton = (n) => { let h = ""; for (let i = 0; i < n; i++) h += '<div class="skrow"><div class="sk a"></div><div class="sk b"></div><div class="sk c"></div></div>'; return h; };
   const portfolioScaffold = () => {
     main.innerHTML = "<h1>Portfolio</h1>" + '<div id="bal"></div><div id="notes"></div><div id="grp-live" class="rows"></div><h2 class="grp" id="grp-rest-h" hidden>Not protectable</h2><div id="grp-rest" class="rows"></div><div id="empty"></div><div class="status" id="pos-at"></div>';
@@ -1125,14 +1164,21 @@ const JS = String.raw`
     let notes = "";
     if (S.flashOk && Date.now() < S.flashOkUntil) notes += '<div class="note ok">' + esc(S.flashOk) + "</div>";
     if (S.posErr) notes += '<div class="note err">' + esc(S.posErr) + "</div>";
+    if (S.tour && list.length) notes += tourHtml();
     if (S.hsTip) notes += hsTipHtml();
-    if (setHtml(document.getElementById("notes"), notes)) { const x = document.querySelector("#hs-tip .x"); if (x) x.onclick = () => { S.hsTip = false; try { localStorage.setItem(HS_KEY, "1"); } catch (e) {} syncPortfolio(); }; }
+    if (setHtml(document.getElementById("notes"), notes)) {
+      const x = document.querySelector("#hs-tip .x"); if (x) x.onclick = () => { S.hsTip = false; try { localStorage.setItem(HS_KEY, "1"); } catch (e) {} syncPortfolio(); };
+      const tx = document.querySelector("#tour .x"); if (tx) tx.onclick = () => { tourDone(); syncPortfolio(); };
+      const th = document.getElementById("tour-how"); if (th) th.onclick = openHow;
+    }
     syncList(document.getElementById("grp-live"), live.concat(offer), posKey, "pos", patchPos);
     document.getElementById("grp-rest-h").hidden = !rest.length;
     syncList(document.getElementById("grp-rest"), rest, posKey, "pos", patchPos);
     const empty = document.getElementById("empty");
-    setHtml(empty, list.length ? "" : S.posAt ? '<div class="empty">No open positions in your ' + esc(VN) + " account.<br>Buy a game winner on " + esc(VN) + ' and it shows here with its Lock in line; <a href="#games" data-tab="games">the Games tab</a> lists the ones this service protects.</div>' : skeleton(3));
-    empty.querySelectorAll("[data-tab]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); showTab("games"); }; });
+    if (setHtml(empty, list.length ? "" : S.posAt ? '<div class="empty">' + TSTEPS + "<p>No open positions in your " + esc(VN) + ' account yet · <a href="#games" data-tab="games">see the games</a> · <a href="#" id="empty-how">how it works</a></p></div>' : skeleton(3))) {
+      empty.querySelectorAll("[data-tab]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); showTab("games"); }; });
+      const eh = document.getElementById("empty-how"); if (eh) eh.onclick = (e) => { e.preventDefault(); openHow(); };
+    }
     setHtml(document.getElementById("pos-at"), S.posAt ? "Positions updated " + esc(ago(S.posAt)) : "");
     offer.forEach((p) => void quoteFor(p, false));
   };
@@ -1358,6 +1404,7 @@ const JS = String.raw`
     if (q.has("connected") || q.has("error") || q.has("source")) history.replaceState(null, "", location.pathname + location.hash);
     if (location.hash === "#games" || location.hash === "#history") S.tab = location.hash.slice(1);
     try { S.hsTip = phone() && !standalone() && !localStorage.getItem(HS_KEY); } catch (e) { S.hsTip = false; }
+    try { S.tour = !localStorage.getItem(TOUR_KEY); } catch (e) { S.tour = false; }
     await loadMember();
     if (S.connecting && !(S.member && S.member.connected)) S.connecting = false;
     render();
@@ -1376,8 +1423,17 @@ const JS = String.raw`
     window.addEventListener("focus", back);
     window.addEventListener("pageshow", (e) => { if (e.persisted) back(); });
   };
-  const aboutTg = document.getElementById("about-tg"), about = document.getElementById("about");
-  if (aboutTg && about) aboutTg.onclick = () => { const on = about.hidden; about.hidden = !on; aboutTg.setAttribute("aria-expanded", String(on)); };
+  // how it works: one sheet; the foot, the first-visit strip and the empty portfolio open it; ×, the backdrop or Esc close it
+  const how = document.getElementById("how");
+  let howFrom = null;
+  const openHow = () => { if (!how) return; howFrom = document.activeElement; how.hidden = false; document.body.style.overflow = "hidden"; const x = how.querySelector(".x"); if (x) x.focus(); };
+  const closeHow = () => { if (!how || how.hidden) return; how.hidden = true; document.body.style.overflow = ""; if (howFrom && howFrom.focus) howFrom.focus(); howFrom = null; };
+  if (how) {
+    how.addEventListener("click", (e) => { if (e.target === how || e.target.closest(".x")) closeHow(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeHow(); });
+  }
+  const aboutTg = document.getElementById("about-tg");
+  if (aboutTg) aboutTg.onclick = openHow;
   void start();
 })();
 `;
