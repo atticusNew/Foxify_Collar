@@ -275,10 +275,13 @@ h2.grp[hidden] { display: none; }
 .sub b { color: var(--ael-soft); font-weight: 600; }
 .sub.help { margin-top: -8px; padding: 8px 12px; border-left: 2px solid var(--ael-edge); color: var(--ael-soft); font-size: 13px; }
 .sub.help[hidden] { display: none; }
-/* the ? beside a heading: one tap for what a word means, nothing on the page until then */
-.qm { flex: none; width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1px solid var(--ael-edge); background: transparent; color: var(--ael-muted); font-size: 12.5px; font-weight: 600; line-height: 1; cursor: pointer; align-self: center; }
-.qm:hover, .qm[aria-expanded="true"] { color: var(--ael-fg-strong); border-color: var(--ael-edge-hover); }
-@media (pointer: coarse) { .qm { width: 28px; height: 28px; } }
+/* the i beside a heading: one tap for what a word means, nothing on the page until then; dim, amber once open */
+.qm { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; margin-left: -4px; border: 0; border-radius: 50%; background: transparent; color: var(--ael-dim); cursor: pointer; align-self: center; }
+.qm svg { width: 17px; height: 17px; display: block; }
+.qm:hover { color: var(--ael-soft); }
+.qm[aria-expanded="true"] { color: var(--ael-accent-text); }
+.sub.help { border-left-color: var(--ael-accent-line); }
+@media (pointer: coarse) { .qm { width: 32px; height: 32px; margin-left: -8px; } }
 .note { font-size: 13px; color: var(--ael-soft); background: var(--ael-bg-raise); border: 1px solid var(--ael-border); border-radius: var(--ael-radius); padding: 10px 12px; margin: 0 0 14px; display: flex; align-items: center; gap: 12px; }
 .note.err { border-color: rgba(255, 107, 107, 0.5); color: #ffb4b4; }
 .note.ok { border-color: var(--ael-accent-line); }
@@ -426,7 +429,8 @@ h2.grp[hidden] { display: none; }
 .side .buy { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 8px 13px; border-radius: 999px; border: 1px solid var(--ael-accent-line); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
 .side .buy:hover { background: var(--ael-accent-wash-3); }
 .side .buy svg { width: 12px; height: 12px; }
-.side .have { flex: none; font-size: 12px; font-weight: 600; color: var(--ael-accent-text); white-space: nowrap; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--ael-accent-line); text-decoration: none; }
+.side .have { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--ael-accent-text); white-space: nowrap; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--ael-accent-line); text-decoration: none; }
+.side .have svg { width: 12px; height: 12px; }
 .more { display: block; width: 100%; margin: 16px 0 0; height: 42px; border: 1px solid var(--ael-edge); border-radius: var(--ael-radius); background: transparent; color: var(--ael-soft); font-size: 14px; cursor: pointer; }
 .more:hover { border-color: var(--ael-edge-hover); color: var(--ael-fg-strong); }
 
@@ -609,10 +613,15 @@ h2.grp[hidden] { display: none; }
   .sheet { align-items: flex-end; padding: 0; }
   .sheet-c { max-width: none; max-height: 88vh; border-radius: 16px 16px 0 0; border-bottom: 0; padding: 20px 18px calc(18px + env(safe-area-inset-bottom)); animation: ael-up 0.22s ease-out; }
   .game { padding-left: 12px; }
-  .side { flex-wrap: wrap; row-gap: 8px; }
-  .side .sn { flex-basis: calc(100% - 44px); }
-  .side .px { order: 3; }
-  .side .buy, .side .have { order: 4; margin-left: auto; }
+  /* the filter bar is one row (it scrolls sideways if it ever has to; the count is on the tab); a tile is the mark, the name and the action on one row, the two price chips under them, at every width */
+  .gbar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; margin: 0 -14px 16px; padding: 0 14px; }
+  .gbar::-webkit-scrollbar { display: none; }
+  .gbar .f { flex: none; }
+  .gbar .n { display: none; }
+  .side { flex-wrap: wrap; row-gap: 8px; column-gap: 10px; }
+  .side .sn { flex: 1; min-width: 0; }
+  .side .buy, .side .have { order: 3; flex: none; margin-left: auto; }
+  .side .px { order: 4; flex-basis: 100%; flex-wrap: wrap; }
   .connect { margin-top: 14px; padding: 22px 18px 16px; }
   .toast { max-width: calc(100% - 28px); border-radius: 14px; bottom: calc(24px + env(safe-area-inset-bottom)); padding: 10px 14px; font-size: 13.5px; }
   .toast .tt { white-space: normal; text-align: left; line-height: 1.35; }
@@ -646,6 +655,8 @@ const JS = String.raw`
   const TGC = '<span class="ael-tgc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>';
   const OUT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3H3v10h10v-3M9 3h4v4M13 3 7 9"/></svg>';
   const CLOCK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.6"/></svg>';
+  const INFO = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.4"/><path d="M8 7.2v4"/><path d="M8 4.9v.2"/></svg>';
+  const TICK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7"/></svg>';
   const LAYERS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5 14 5.5 8 8.5 2 5.5z"/><path d="m2 8.5 6 3 6-3"/><path d="m2 11.5 6 3 6-3"/></svg>';
   const WARN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5 1.8 13.5h12.4z"/><path d="M8 6.5v3.2M8 11.6v.2"/></svg>';
   const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="#1a1200" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
@@ -1176,7 +1187,7 @@ const JS = String.raw`
   const gameKey = (g) => g.event + "|" + g.startIso;
   const gamesScaffold = () => {
     // one line; what the two chips mean sits behind the ? beside the heading
-    main.innerHTML = '<h1>Games<button type="button" class="qm" id="g-help" aria-expanded="false" aria-label="What bid and floor mean">?</button></h1>' + '<p class="sub">Buy a side on ' + esc(VN) + ". It lands here with its Lock in line.</p>" + '<p class="sub help" id="g-help-p" hidden><b>Bid</b> is ' + esc(VN) + "'s best bid right now. <b>Floor</b> is what a Max floor lock keeps per contract on a loss.</p>" + '<div class="gbar" id="gbar"></div><div id="glist"></div><div id="gmore"></div><div class="status" id="g-at"></div>';
+    main.innerHTML = '<h1>Games<button type="button" class="qm" id="g-help" aria-expanded="false" aria-label="What bid and floor mean">' + INFO + "</button></h1>" + '<p class="sub">Buy a side on ' + esc(VN) + ". It lands here with its Lock in line.</p>" + '<p class="sub help" id="g-help-p" hidden><b>Bid</b> is ' + esc(VN) + "'s best bid right now. <b>Floor</b> is what a Max floor lock keeps per contract on a loss.</p>" + '<div class="gbar" id="gbar"></div><div id="glist"></div><div id="gmore"></div><div class="status" id="g-at"></div>';
     const h = document.getElementById("g-help"), hp = document.getElementById("g-help-p");
     if (h && hp) h.onclick = () => { hp.hidden = !hp.hidden; h.setAttribute("aria-expanded", String(!hp.hidden)); };
   };
@@ -1190,7 +1201,7 @@ const JS = String.raw`
     const all = G.games || [];
     const leagues = Array.from(new Set(all.map((g) => g.league))).sort();
     const heldN = all.filter((g) => g.held).length;
-    const bar = (leagues.length > 1 ? [["all", "All"]].concat(leagues.map((l) => [l, leagueWord(l)])) : []).concat(heldN ? [["held", "In your portfolio"]] : []);
+    const bar = (leagues.length > 1 ? [["all", "All"]].concat(leagues.map((l) => [l, leagueWord(l)])) : []).concat(heldN ? [["held", "Portfolio"]] : []);
     if (setHtml(document.getElementById("gbar"), bar.length ? bar.map(([k, w]) => '<button type="button" class="f" data-f="' + esc(k) + '" aria-pressed="' + (S.gLeague === k) + '">' + esc(w) + "</button>").join("") + '<span class="n">' + all.length + " games</span>" : "")) {
       document.querySelectorAll("#gbar [data-f]").forEach((b) => { b.onclick = () => { S.gLeague = b.getAttribute("data-f"); S.gAll = false; syncGames(); window.scrollTo({ top: 0 }); }; });
     }
@@ -1218,7 +1229,7 @@ const JS = String.raw`
           g.sides.map((s) => {
             const v = s.venue || {};
             const px = v.bestBidCents != null ? '<span class="chip price"><small>bid</small>' + cents(v.bestBidCents) + "</span>" + (v.floorFromCents != null ? '<span class="chip floor">floor ≈ <b>' + cents(v.floorFromCents) + "</b></span>" : "") : v.lastCents != null ? '<span class="chip">last ' + cents(v.lastCents) + "</span>" : '<span class="chip">no bid yet</span>';
-            const act = s.held ? '<a class="have" href="#" data-tab="portfolio">In your portfolio</a>' : v.url ? '<a class="buy" href="' + esc(v.url) + '" target="_blank" rel="noopener">Buy on ' + esc(VN) + OUT + "</a>" : "";
+            const act = s.held ? '<a class="have" href="#" data-tab="portfolio">' + TICK + "Held</a>" : v.url ? '<a class="buy" href="' + esc(v.url) + '" target="_blank" rel="noopener">Buy on ' + esc(VN) + OUT + "</a>" : "";
             return '<div class="side' + (s.held ? " held" : "") + '"><span class="mk">' + markHtml(s.side, "sm") + (s.home === true ? '<i title="home">H</i>' : s.home === false ? '<i title="away">A</i>' : "") + '</span><div class="sn">' + esc(s.side) + "<small>" + (s.opponent ? (s.home === false ? "at " : "vs ") + esc(s.opponent) : "") + '</small></div><div class="px">' + px + "</div>" + act + "</div>";
           }).join("") + "</div>";
         if (setHtml(gel, html)) gel.querySelectorAll("[data-tab]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); showTab("portfolio"); }; });
