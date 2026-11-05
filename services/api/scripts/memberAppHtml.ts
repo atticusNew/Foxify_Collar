@@ -921,7 +921,11 @@ const JS = String.raw`
   const inertLine = (kind, tone) => kind === "wait" || (kind === "off" && tone !== "parlay" && tone !== "hist");
   const lineHtml = (kind, tag, fact, open, tone) => '<button type="button" class="ael-line ael-line-' + kind + (open ? " ael-open" : "") + (tone ? " t-" + tone : "") + '"' + (inertLine(kind, tone) ? ' tabindex="-1"' : "") + '><span class="ael-tag">' + (kind === "on" || kind === "offer" ? SHIELD : "") + "<b>" + tag + "</b></span><span class=\"ael-fact\">" + fact + "</span>" + (inertLine(kind, tone) ? "" : CHEV) + "</button>";
   // the game is on and the service locks in play: the row quotes every few seconds and says so
-  const isLive = (p) => !!(S.inPlay && p.ticker && p.startsIso && Date.parse(p.startsIso) <= Date.now());
+  // a combo's next decision is its next open leg: live when a leg is on now, "starts" at the next unplayed leg's tip-off
+  // (a leg final from last night does not make the ticket live or started); a single is its game
+  const comboLegs = (p) => (p.legs && p.legs.length ? p.legs : null);
+  const nextStartOf = (p) => { const legs = comboLegs(p); if (!legs) return p.startsIso; const open = legs.filter((l) => (l.state === "pending" || l.state === "live") && l.startsIso).map((l) => l.startsIso).sort(); return open[0] || p.startsIso; };
+  const isLive = (p) => { if (!S.inPlay || !p.ticker) return false; const legs = comboLegs(p); if (legs) return legs.some((l) => l.state === "live"); return !!(p.startsIso && Date.parse(p.startsIso) <= Date.now()); };
   const timing = (p) => {
     if (!p.startsIso || S.inPlay) return null;
     const m = minsTo(p.startsIso);
@@ -1134,7 +1138,7 @@ const JS = String.raw`
     if (parlay && p.multiplier) chips.push('<span class="chip"><b>' + (Math.round(p.multiplier * 100) / 100) + "×</b> payout</span>");
     // the legs' first tip-off when the legs were placed; else the ticket's own date, which STX sets to its last leg
     if (parlay && p.startsIso) chips.push('<span class="chip">' + (legs.some((l) => l.startsIso) ? "first leg " : "last leg ") + esc(fmtAt(p.startsIso)) + "</span>");
-    if (p.ticker && p.startsIso && !tm && !(p.lock && p.lock.status !== "closed")) chips.push('<span class="chip until">' + CLOCK + (S.inPlay ? (isLive(p) ? "Lock in while the game is on" : "Lock in before or during the game") : "Lock in until " + esc(fmtClock(Date.parse(p.startsIso) - (S.cutoff || 45) * 60000))) + "</span>");
+    if (p.ticker && p.startsIso && !tm && !(p.lock && p.lock.status !== "closed")) chips.push('<span class="chip until">' + CLOCK + (S.inPlay ? (isLive(p) ? (p.combo ? "Lock in while a leg is on" : "Lock in while the game is on") : "Lock in before or during the game") : "Lock in until " + esc(fmtClock(Date.parse(p.startsIso) - (S.cutoff || 45) * 60000))) + "</span>");
     return '<div class="chips">' + chips.join("") + "</div>";
   };
   const patchPos = (el, p) => {
@@ -1181,8 +1185,9 @@ const JS = String.raw`
     if (S.screen !== "portfolio") return;
     paintBalance();
     const list = S.positions;
-    const live = list.filter((p) => p.ticker && p.lock && p.lock.status !== "closed");
-    const byStart = (a, b) => (isLive(b) - isLive(a)) || (Date.parse(a.startsIso || 0) || 0) - (Date.parse(b.startsIso || 0) || 0);
+    // both groups: a live game (or a live leg) first, then whatever starts next; the venue's own order breaks ties
+    const byStart = (a, b) => (isLive(b) - isLive(a)) || (Date.parse(nextStartOf(a) || 0) || 0) - (Date.parse(nextStartOf(b) || 0) || 0);
+    const live = list.filter((p) => p.ticker && p.lock && p.lock.status !== "closed").sort(byStart);
     const offer = list.filter((p) => p.ticker && !(p.lock && p.lock.status !== "closed") && !timing(p)).sort(byStart);
     const rest = list.filter((p) => !p.ticker || (!(p.lock && p.lock.status !== "closed") && timing(p)));
     let notes = "";
