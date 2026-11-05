@@ -919,8 +919,11 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const html = await page.text();
     assert.ok(html.includes("Lock in · STX positions") && html.includes("Protection by Atticus") && html.includes('"venueName":"STX"'), "the page's words");
     assert.ok(!html.includes("lock-key-") && !html.includes("stxapp_") && !html.includes("op-secret"), "no key of any kind on the page");
-    // the row's figures sit inside the open panel (chipsHtml), not under the header; the header is club, game, pays
-    assert.ok(html.includes("const chipsHtml = (p) =>") && html.includes(`'<div class="ael-panel ael-on">' + chipsHtml(p) + (p.combo ? legsHtml(p) : "") + slipRows(nick, o, p.contracts, false, p.combo)`) && !html.includes(`"</div></div>" +\n      '<div class="chips">'`), "chips live in the panel");
+    // the row's figures (contracts, sold, average, a parlay's multiplier) and the lock window are the first Details rows, not chips at
+    // the top of the open panel pushing the offer down; the header is club, game, pays; a combo's legs sit under the button
+    assert.ok(html.includes("const positionRows = (p) =>") && html.includes("let rows = positionRows(p);") && html.includes('<div class="ael-dl">Position</div>') && html.includes('<div class="ael-dl">Window</div>') && !html.includes("chipsHtml") && !html.includes('class="chip until"'), "the figures are Details rows");
+    assert.ok(html.includes(`'<div class="ael-panel ael-on">' + slipRows(nick, o, p.contracts, false, p.combo)`) && html.includes(`(st.err ? '<div class="ael-fine ael-err">' + esc(st.err) + "</div>" : "") +\n          (p.combo ? legsHtml(p) : "") +`), "the offer first, a combo's legs under the button");
+    assert.ok(html.includes(`(!S.inPlay && p.startsIso ? '<div class="ael-fine" style="margin-top:8px">Lock in until ' + cutoffClock(p) + "</div>" : "")`), "a hard deadline is the one window worth a line under the button");
     // the order: both groups live first then soonest, a combo by its next open leg (a leg final last night does not make it live or started)
     assert.ok(html.includes("const nextStartOf = (p) =>") && html.includes("return legs.some((l) => l.state === \"live\")") && html.includes("const live = list.filter((p) => p.ticker && p.lock && p.lock.status !== \"closed\").sort(byStart);") && html.includes("(Date.parse(nextStartOf(a) || 0) || 0) - (Date.parse(nextStartOf(b) || 0) || 0)"), "protected and offers both sorted; a combo by its next open leg");
     assert.ok(html.includes('<div class="ael-dl">Elsewhere</div>') && html.includes("priced for the record, nothing sent; your position is on ") && html.includes("filled where you hold the position, on STX"), "every venue priced, filled where held");

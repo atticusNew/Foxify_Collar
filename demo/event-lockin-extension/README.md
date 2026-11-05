@@ -363,11 +363,14 @@ games listed, past locks):
   every open long position, laid out as a row: a club mark (the club's initials on a colour of its
   own), **Boston Celtics** to win, the opponent and tip-off ("vs Los Angeles Lakers · Wed 7:30 PM
   ET"), **pays $50.00** on the right, and the Lock in line. That is the whole closed row: club,
-  game, the one figure, the button. The chips (50 contracts · 30 sold · avg 42¢ · Lock in until
-  6:45 PM) sit at the top of the open panel, not under the header. The protectable ones carry the
-  Lock in line ("Lose, and still get $16.18"; when STX's book is thin it adds "· STX's book takes
-  20 of 30") and the tap opens the panel (the chips, the two outcomes, the cash row **In your STX
-  balance now**, the Shape control, the Lock in pill, Details; under Details, **Elsewhere** says
+  game, the one figure, the button. The figures (50 contracts · 30 sold · avg 42¢; a parlay's
+  multiplier) and the lock window are the first two rows under Details, **Position** and
+  **Window**, not chips at the top of the open panel pushing the offer down; the one window
+  worth a line under the button is a hard deadline ("Lock in until 6:45 PM ET") when in play is
+  off. The protectable ones carry the Lock in line ("Lose, and still get $16.18"; when STX's
+  book is thin it adds "· STX's book takes 20 of 30") and the tap opens the panel (the two
+  outcomes, the cash row **In your STX balance now**, the Shape control, the Lock in pill,
+  Details; a combo's legs sit under the pill; under Details, **Elsewhere** says
   what the best of the other venues would have paid for the same protection, "priced for the
   record, nothing sent; your position is on STX, so the sale fills there"); the rest sit under
   **Not protectable** with a toned pill and plain
