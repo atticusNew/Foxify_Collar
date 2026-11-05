@@ -69,6 +69,21 @@ export interface MemberSaleRecord {
   requestedContracts: number;
   /** the hedge routes priced in the background at the sale, nothing sent (absent when none could be) */
   compared?: MemberSaleComparison;
+  /**
+   * A combination (parlay) ticket sold in part through the venue's request-for-quote instead of
+   * the book: the quote accepted, the legs it carried. The result is read from the venue's own
+   * combo market at settlement, not from a Kalshi reference. Absent on a single-market sale.
+   */
+  combo?: MemberComboSale;
+}
+
+export interface MemberComboSale {
+  /** the venue's quote the sale accepted, and the price per contract it quoted, cents */
+  rfqId: string | null;
+  quotedPriceCents: number;
+  /** when the venue said the quote would lapse, when it said */
+  expiresAtIso: string | null;
+  legs: number;
 }
 
 /**
