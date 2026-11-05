@@ -405,16 +405,21 @@ games listed, past locks):
   price · never less than shown", "STX's bids take 6 of 10 · the rest rides", "Whole again,
   unprotected · the net above is the round trip"); anything longer lives under Details or in How
   it works. **Games** is a heading, one line ("Buy a side on STX. It lands here with its Lock in
-  line.") and a **?** beside the heading for what the two chips mean (Bid is STX's best bid right
-  now; Floor is what a Max floor lock keeps per contract on a loss). **How it works** is one
+  line.") and a small **i** beside the heading (dim; amber once open) for what the two chips mean
+  (Bid is STX's best bid right now; Floor is what a Max floor lock keeps per contract on a loss).
+  The filter pill is **Portfolio**, a held side's tile says **Held** with a tick, and on a phone
+  the filter bar is one row (it scrolls sideways if it ever has to; the count is on the tab) while
+  a tile is the mark, the name and the action on one row with the two price chips under them, so
+  nothing drops to a stray line at any width. Every row opens on **Max upside**; a shape picked on
+  one row carries to the rows opened after it this visit and no further (a remembered Max floor had
+  been greeting members as the default). **How it works** is one
   sheet (a card in the middle on a desk, a sheet from the bottom on a phone; ×, the backdrop or
   Esc close it): the three steps with a line under each (Buy a side on STX · Tap Lock in · Keep
   the floor, win or lose), then the plain words (no one on the other side, nothing hedged, no
   fee; the consent given on STX's own page and revocable there; what the page never holds; priced
   against every venue, filled where you hold it; the public record), then Privacy and the public
-  record. The same three steps appear once as a strip under the balance on the first connected
-  visit (gone on × or after the first lock, `localStorage` `ael_tour`; the home-screen tip waits
-  its turn) and as the empty portfolio's words. The controls carry one edge hairline
+  record. The same three steps are the empty portfolio's words; the first look at a portfolio
+  with positions is the balance and the rows, nothing else. The controls carry one edge hairline
   (`--ael-edge`, white at 13%): Leave early and Stay protected are outlined, under the filled
   Lock in and above the plain Details link; the league pills, the balance strip, the Back pill,
   Show more and the phone's selected tab segment carry the same line. On a phone the Shape
@@ -422,14 +427,14 @@ games listed, past locks):
   choices never run past the panel's edge (older Safari's wider system font did that with the
   nowrap pill row).
 
-  **In play** (`MEMBER_APP_IN_PLAY=1` on the service; off by default). With it on, a member may
-  lock while the game is on, and the pre-game cutoff no longer applies: the sale is their own limit
+  **In play** (on; `MEMBER_APP_IN_PLAY=0` on the service makes the page pre-game only). A member may
+  lock while the game is on, and the pre-game cutoff does not apply: the sale is their own limit
   sell into STX's bids, so no one here carries the game's risk and there is nothing to cut off. The
   row's header says **Live** (a red dot) in place of the tip-off; live rows sort first; the row
   re-quotes every 5 s instead of every 60 s; the chip reads "Lock in while the game is on" (pre-game,
-  "Lock in before or during the game"); the open panel says "The game is on and this price moves.
-  STX holds in-play orders 5s before they can match; you never get less than the price shown, and if
-  the bid moves away first fewer or none sell and this row says so." The service reads the market's
+  "Lock in before or during the game"); the open panel says "Live price · never less than shown",
+  and How (under Details) adds that the price moves, that fewer or none sell if the bid moves away
+  first, and that STX holds in-play orders 5s before they can match. The service reads the market's
   `in_play_delay_sec` and lets the order rest that long on top of the usual wait, so the order
   outlives STX's hold; the button's words during the hold are "In STX's 5s in-play hold…". A market
   STX has paused (`trading: false`, or `status: suspended`) is refused **Paused** ("try again in a

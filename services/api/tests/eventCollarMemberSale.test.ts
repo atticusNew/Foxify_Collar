@@ -569,6 +569,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     venueClient: null,
     memberSessions: sessions,
     memberOrder: { waitMs: 60, pollMs: 5 },
+    memberInPlay: false, // pre-game only for the first checks; the in-play block turns it on (the service's own default)
   });
   await new Promise<void>((r) => worker.server.listen(0, "127.0.0.1", () => r()));
   const base = `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`;
@@ -855,11 +856,13 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.ok(html.includes("const isLive = (p) => !!(S.inPlay && p.ticker") && html.includes('case "market_suspended": return ["Paused"') && html.includes("Live price · never less than shown"), "the page knows the in-play words");
     // the word budget: one line under a parlay's legs with the why under Details; Games is a heading, one line and a ? for bid and floor; the group header is two words
     assert.ok(html.includes("Rides to settlement on ' + esc(VN) + '.</span>") && html.includes('<div class="ael-dl">Why</div>') && !html.includes("Last-leg protection through this service is a separate step"), "a parlay's panel is one line, the why behind Details");
-    assert.ok(html.includes("It lands here with its Lock in line.</p>") && html.includes('id="g-help" aria-expanded="false"') && html.includes('id="g-help-p" hidden><b>Bid</b> is') && html.includes(">Not protectable</h2>"), "Games is one line with a ?");
+    assert.ok(html.includes("It lands here with its Lock in line.</p>") && html.includes('id="g-help" aria-expanded="false" aria-label="What bid and floor mean">\' + INFO + "</button>') && html.includes('id="g-help-p" hidden><b>Bid</b> is') && html.includes(">Not protectable</h2>"), "Games is one line with an i");
+    assert.ok(html.includes('[["held", "Portfolio"]]') && html.includes("data-tab=\"portfolio\">' + TICK + \"Held</a>\"") && html.includes(".side .buy, .side .have { order: 3; flex: none; margin-left: auto; }") && html.includes(".gbar { flex-wrap: nowrap; overflow-x: auto;"), "short pills; the tile's action on the first row, the filter bar one row");
+    assert.ok(html.includes('let pickedTier = "wide";') && html.includes("tier: pickedTier,") && !html.includes("ael_tier"), "every row opens on Max upside; nothing remembered across visits");
     assert.ok(html.includes("the rest rides</div>") && html.includes("<b>Whole again, unprotected</b>"), "the helper lines are one line each");
-    // how it works: one sheet in the page, opened from the foot, the first-visit strip and the empty portfolio; the strip is three steps and goes on × or after the first lock
+    // how it works: one sheet in the page, opened from the foot and the empty portfolio
     assert.ok(html.includes('<div class="sheet" id="how" hidden role="dialog"') && html.includes("How Lock in works") && html.includes("Keep the floor, win or lose") && html.includes('id="about-tg">How it works</button>') && !html.includes('id="about" hidden'), "the sheet replaces the foot's paragraphs");
-    assert.ok(html.includes('const TSTEPS = \'<ol class="tsteps">') && html.includes('id="tour-how">How it works</button>') && html.includes("if (S.tour) { tourDone(); syncPortfolio(); }") && html.includes('id="empty-how">how it works</a>'), "the strip, once; the empty portfolio carries the steps");
+    assert.ok(html.includes('const TSTEPS = \'<ol class="tsteps">') && html.includes('id="empty-how">how it works</a>') && !html.includes("tourHtml") && !html.includes("ael_tour"), "the empty portfolio carries the steps; no strip on first open");
     // the edge hairline on the controls; the shape control is an equal-cell grid on a phone
     assert.ok(html.includes("--ael-edge: rgba(255, 255, 255, 0.13)") && html.includes(".ael-go.ael-quiet { display: inline-flex; width: auto; height: 40px; margin: 0; padding: 0 14px; border: 1px solid var(--ael-edge)") && html.includes(".gbar .f { font-size: 12.5px; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--ael-edge)") && html.includes(".ael-shape { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); width: 100%;"), "the edge and the shape grid");
     assert.ok(html.includes('rel="manifest" href="/app/manifest.webmanifest"') && html.includes('src="/app/stx.png"') && html.includes('src="/app/bird.png"'), "the marks and the manifest are the page's own files");
@@ -984,7 +987,8 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const rcode = venue.issueCode(liveConnect.body.url);
     assert.equal((await fetch(`${base}/api/shadow/member/callback?code=${rcode.code}&state=${rcode.state}`)).status, 200);
     pos = await get<Any>("/api/shadow/positions?fresh=1");
-    assert.equal(pos.body.inPlay, false, "off by default");
+    assert.equal(pos.body.inPlay, false, "off, as wired for the pre-game checks");
+    assert.ok(/let memberInPlay = !\/\^\(0\|false\|no\|off\)\$\/i\.test\(process\.env\.MEMBER_APP_IN_PLAY/.test(readFileSync(new URL("../scripts/eventShadowWorker.ts", import.meta.url), "utf8")), "in play is on unless MEMBER_APP_IN_PLAY=0");
     assert.ok(pos.body.positions.some((p: Any) => p.ticker === LIVE), "a started game the member holds is on the list");
     q = await get<Any>(`/api/shadow/quote?ticker=${LIVE}&contracts=20&venue=stx`);
     assert.deepEqual([q.body.ok, q.body.code, q.body.message], [false, "market_not_active", "This game has started; the lock is pre-game only."]);
