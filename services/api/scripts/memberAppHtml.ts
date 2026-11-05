@@ -640,7 +640,7 @@ const JS = String.raw`
   const POLL_POS_MS = 15000, REQUOTE_MS = 60000, REQUOTE_LIVE_MS = 5000, POLL_ACCT_MS = 30000;
   const TIER_ORDER = ["wide", "balanced", "tight"];
   const TIER_WORDS = { wide: "Max upside", balanced: "Balanced", tight: "Max floor" };
-  const TIER_KEY = "ael_tier", HS_KEY = "ael_hs_tip";
+  const HS_KEY = "ael_hs_tip";
   const SHIELD = '<span class="ael-ic"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5 4.5 5.6v6.2c0 4.6 3.1 8.6 7.5 9.7 4.4-1.1 7.5-5.1 7.5-9.7V5.6L12 2.5z"/><path d="m8.8 12.2 2.1 2.1 4.3-4.6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
   const CHEV = '<span class="ael-chev"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>';
   const TGC = '<span class="ael-tgc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>';
@@ -732,9 +732,10 @@ const JS = String.raw`
   const acct = document.getElementById("acct");
   const tabs = document.getElementById("tabs");
   const toastEl = document.getElementById("toast");
-  const savedTier = (() => { try { const t = localStorage.getItem(TIER_KEY); return TIER_ORDER.includes(t) ? t : null; } catch (e) { return null; } })();
-  const rememberTier = (t) => { try { localStorage.setItem(TIER_KEY, t); } catch (e) {} };
-  const stateOf = (ticker) => { let st = S.st.get(ticker); if (!st) { st = { open: false, tier: savedTier || "balanced", quote: null, quoteAt: 0, details: false, rules: false, how: false, lock: null, rcpt: null, leave: false, leaveQ: null, busy: null, err: null, justNow: false, ms: 0, cashAfter: null }; S.st.set(ticker, st); } return st; };
+  // every row opens on Max upside; a shape picked on one row carries to the rows opened after it this visit, and no further (a remembered Max floor had been greeting members as the default)
+  let pickedTier = "wide";
+  const rememberTier = (t) => { pickedTier = t; };
+  const stateOf = (ticker) => { let st = S.st.get(ticker); if (!st) { st = { open: false, tier: pickedTier, quote: null, quoteAt: 0, details: false, rules: false, how: false, lock: null, rcpt: null, leave: false, leaveQ: null, busy: null, err: null, justNow: false, ms: 0, cashAfter: null }; S.st.set(ticker, st); } return st; };
   const standalone = () => (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
   const phone = () => window.matchMedia && window.matchMedia("(max-width: 640px)").matches;
 
