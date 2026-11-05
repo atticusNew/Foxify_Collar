@@ -357,12 +357,18 @@ h2.grp[hidden] { display: none; }
 .pos .pays .since { display: block; margin-top: 3px; font-size: 12px; font-weight: 600; line-height: 1; }
 .pos .pays .since.up { color: var(--ael-up); }
 .pos .pays .since.dn { color: var(--ael-dim); }
-/* History's tally: the same strip as Portfolio's balance; the figure in the balance's weight, the breakdown as fine print under it */
-.tally { display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; padding: 12px 14px; margin: 0 0 18px; border: 1px solid var(--ael-edge); border-radius: var(--ael-radius); background: var(--ael-bg-raise); font-size: 13px; color: var(--ael-muted); }
-.tally .tn { font-size: 18px; font-weight: 700; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-.tally.up .tn { color: var(--ael-up); }
-.tally .tb { flex-basis: 100%; font-size: 12.5px; line-height: 1.4; color: var(--ael-dim); }
-.tally .tb b { font-weight: 600; color: var(--ael-soft); }
+/* History's tally: Portfolio's balance strip to the pixel (the same rules, the same narrow-screen rules); a tap opens the breakdown under it */
+.tally { display: flex; align-items: baseline; gap: 10px 16px; flex-wrap: wrap; width: 100%; padding: 12px 14px; margin: 0 0 18px; border: 1px solid var(--ael-edge); border-radius: var(--ael-radius); background: var(--ael-bg-raise); font: inherit; font-size: 13px; color: var(--ael-muted); text-align: left; cursor: pointer; }
+.tally .tl { color: var(--ael-soft); font-weight: 600; }
+.tally .fig { margin-left: auto; white-space: nowrap; display: inline-flex; align-items: baseline; gap: 6px; }
+.tally b { font-size: 18px; font-weight: 700; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.tally.up b { color: var(--ael-up); }
+.tally .ael-tgc { width: 12px; height: 12px; color: var(--ael-dim); align-self: center; }
+.tally .ael-tgc svg { width: 12px; height: 12px; }
+.tally[aria-expanded="true"] .ael-tgc { transform: rotate(180deg); }
+.tally .tb { display: none; flex-basis: 100%; font-size: 12.5px; line-height: 1.4; color: var(--ael-dim); }
+.tally[aria-expanded="true"] .tb { display: block; }
+.tally .tb b { font-size: inherit; font-weight: 600; color: var(--ael-soft); letter-spacing: 0; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0 48px; }
 .chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; font-size: 12px; line-height: 1; padding: 0 8px; border-radius: 6px; background: var(--ael-bg-raise); border: 1px solid var(--ael-border); color: var(--ael-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .chip b { font-weight: 600; color: var(--ael-soft); }
@@ -598,6 +604,10 @@ h2.grp[hidden] { display: none; }
   .bal b { font-size: 16px; }
   .bal .av, .bal .r { display: none; }
   .bal .delta { margin-left: 6px; padding: 1px 7px; font-size: 12px; }
+  .tally { padding: 9px 12px; gap: 8px 10px; flex-wrap: nowrap; align-items: center; margin-bottom: 14px; }
+  .tally[aria-expanded="true"] { flex-wrap: wrap; }
+  .tally .fig { font-size: 12px; }
+  .tally b { font-size: 16px; }
   .pos { padding: 14px 0 12px; }
   .pos-t .name { font-size: 15px; }
   .pos .pays { font-size: 14px; }
@@ -1314,14 +1324,14 @@ const JS = String.raw`
     else bits.push("no loss yet");
     if (won.length) bits.push(won.length + (won.length === 1 ? " win gave up " : " wins gave up ") + usd(gaveUp));
     if (left.length) bits.push(left.length + " left early " + signed(leftNet));
-    return '<div class="tally' + (net > 0 ? " up" : "") + '"><span>Lock in, so far</span><span class="tn">' + signed(net) + "</span><span>vs riding it out</span>" + '<div class="tb">' + bits.join(" · ") + "</div></div>";
+    return '<button type="button" class="tally' + (net > 0 ? " up" : "") + '" aria-expanded="' + !!S.tallyOpen + '"><span class="tl">Lock in, so far</span><span class="fig">vs riding it out <b>' + signed(net) + "</b>" + TGC + '</span><span class="tb">' + bits.join(" · ") + "</span></button>";
   };
   const syncHistory = () => {
     if (S.screen !== "history") return;
     const hlist = document.getElementById("hlist");
     if (!S.history) { setHtml(document.getElementById("hempty"), skeleton(2)); return; }
     const past = S.history.filter((r) => r.status !== "open");
-    setHtml(document.getElementById("htally"), tallyHtml(past));
+    if (setHtml(document.getElementById("htally"), tallyHtml(past))) { const t = document.querySelector("#htally .tally"); if (t) t.onclick = () => { S.tallyOpen = !S.tallyOpen; syncHistory(); }; }
     setHtml(document.getElementById("hempty"), past.length ? "" : '<div class="empty">No past locks yet.<br>Settled and closed locks live here with their receipts; open ones are on Portfolio.</div>');
     syncList(hlist, past, histKey, "hist", (el, r) => {
       const st = stateOf(histKey(r));
