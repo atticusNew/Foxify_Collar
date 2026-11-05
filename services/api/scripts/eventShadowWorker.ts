@@ -1840,16 +1840,21 @@ function closedViewOf(lock: ShadowPosition) {
 }
 
 /**
- * Refuse an unwind the pricers would, before any book is read. Open positions only; the early-close
- * margin before the lock (the same one the schedule keeps) is the holder's last moment to leave.
+ * Refuse an unwind the pricers would, before any book is read. Open positions only; on the hedged
+ * routes the early-close margin before the lock (the same one the schedule keeps) is the holder's
+ * last moment to leave. A member's sale has no such moment while in play is on: the leave is a
+ * buy-back of their own contracts on their own venue, so it stands for as long as the venue trades
+ * the market (a live game included); the venue's own close is the end of it.
  */
+const leaveLastMsOf = (lock: ShadowPosition): number | null => (lock.route === "member_sale" && memberInPlay ? null : Date.parse(lock.eventTimeIso) - earlyCloseRule.marginMs);
 function unwindRefusal(lock: ShadowPosition | undefined, ticker: string, nowMs: number): { status: number; body: Record<string, unknown> } | null {
   if (!lock) return { status: 404, body: { ok: false, error: "no_lock", message: ticker ? "This market is not on the record." : "?ticker= names the lock" } };
   if (lock.status !== "open") {
     const said = lock.status === "closed" ? "This position was already left early." : lock.status === "settled" ? "This position has settled; there is nothing to leave." : "This position was voided; there is nothing to leave.";
     return { status: 409, body: { ok: false, error: "not_open", status: lock.status, message: said } };
   }
-  const lastMs = Date.parse(lock.eventTimeIso) - earlyCloseRule.marginMs;
+  const lastMs = leaveLastMsOf(lock);
+  if (lastMs === null) return null;
   if (!Number.isFinite(lastMs) || nowMs > lastMs) {
     return {
       status: 409,
@@ -2410,7 +2415,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
   if (url.pathname === "/api/shadow/unwind/quote") {
     // LEAVE EARLY, PRICED: the holder's open lock sold into the live books on both legs, at this
     // moment, nothing written. The same pricer the schedule uses (earlyClose.ts); the margin before
-    // the start that the schedule keeps is the holder's last moment too.
+    // the start that the schedule keeps is the holder's last moment too. A member's sale is bought
+    // back from their venue's offers instead, during the game as well when in play is on.
     const ticker = (url.searchParams.get("ticker") ?? "").trim().toUpperCase();
     const lock = ticker ? loadShadowPositions(ownLedger).find((p) => p.ticker === ticker) : undefined;
     const refusal = unwindRefusal(lock, ticker, Date.now());
@@ -2418,7 +2424,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, refusal?.status ?? 404, { at: atIso, ticker, ...refusal?.body });
       return;
     }
-    const lastIso = new Date(Date.parse(lock.eventTimeIso) - earlyCloseRule.marginMs).toISOString();
+    const lastMs = leaveLastMsOf(lock);
+    const lastIso = lastMs === null ? null : new Date(lastMs).toISOString();
     if (lock.route === "member_sale") {
       // a member's leave is a buy-back of the contracts they sold, priced from their venue's offers now
       const bp = await memberBuyBackPriced(holder, lock);
