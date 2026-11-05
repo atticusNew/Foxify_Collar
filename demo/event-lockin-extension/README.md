@@ -362,7 +362,8 @@ games listed, past locks):
   Reconnect to show it"; the strip says "updated 12s ago" and the words move on their own). Then
   every open long position, laid out as a row: a club mark (the club's initials on a colour of its
   own), **Boston Celtics** to win, the opponent and tip-off ("vs Los Angeles Lakers · Wed 7:30 PM
-  ET"), **pays $50.00** on the right, and the Lock in line. That is the whole closed row: club,
+  ET"; under 400px the line wraps rather than clips, the dot staying with the time or the Live
+  tag), **pays $50.00** on the right, and the Lock in line. That is the whole closed row: club,
   game, the one figure, the button. Under **pays**, an unlocked ticket says what it has done
   since it was bought, in money ("up $6.00" in green, "down $1.50" dim): the venue's top bid on
   every contract against what was paid (the last trade on a combo), from the positions read, no
@@ -511,7 +512,8 @@ games listed, past locks):
   edge). The club names are STX's own, so the row reads as the portfolio does.
 - **History** opens with a tally strip that is Portfolio's balance strip to the pixel (the same
   rules, the same narrow-screen rules, measured equal at 375px): **Lock in, so far** on the left,
-  "vs riding it out **+$25.52**" on the right, a small chevron; a tap opens one line of fine print
+  "vs riding it out **+$25.52**" on the right (under 400px the figure alone; the label never
+  wraps), a small chevron; a tap opens one line of fine print
   under it with what the locks did, from the record's own settled figures ("2 losses paid $27.08,
   not $0 · 1 win gave up $1.56 · 1 left early −$2.00"); green when positive, plain when not, never
   projected, absent until something has settled or closed. Then it lists every past lock as a row (the club mark, the game, chips: 30 of 50 sold ·

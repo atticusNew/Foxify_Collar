@@ -351,6 +351,7 @@ h2.grp[hidden] { display: none; }
 .pos-t .name small { font-weight: 500; font-size: 13px; color: var(--ael-muted); margin-left: 5px; }
 .pos-t .evt { font-size: 13px; color: var(--ael-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pos-t .evt b { font-weight: 500; color: var(--ael-soft); }
+.pos-t .evt .nb { white-space: nowrap; }
 .pos .pays { flex: none; text-align: right; font-size: 15px; font-weight: 700; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pos .pays small { display: block; font-weight: 500; font-size: 11px; color: var(--ael-dim); letter-spacing: 0.04em; text-transform: uppercase; }
 /* what the ticket has done since it was bought, under what it pays: the one figure a holder acts on */
@@ -359,8 +360,8 @@ h2.grp[hidden] { display: none; }
 .pos .pays .since.dn { color: var(--ael-dim); }
 /* History's tally: Portfolio's balance strip to the pixel (the same rules, the same narrow-screen rules); a tap opens the breakdown under it */
 .tally { display: flex; align-items: baseline; gap: 10px 16px; flex-wrap: wrap; width: 100%; padding: 12px 14px; margin: 0 0 18px; border: 1px solid var(--ael-edge); border-radius: var(--ael-radius); background: var(--ael-bg-raise); font: inherit; font-size: 13px; color: var(--ael-muted); text-align: left; cursor: pointer; }
-.tally .tl { color: var(--ael-soft); font-weight: 600; }
-.tally .fig { margin-left: auto; white-space: nowrap; display: inline-flex; align-items: baseline; gap: 6px; }
+.tally .tl { color: var(--ael-soft); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tally .fig { margin-left: auto; flex: none; white-space: nowrap; display: inline-flex; align-items: baseline; gap: 6px; }
 .tally b { font-size: 18px; font-weight: 700; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 .tally.up b { color: var(--ael-up); }
 .tally .ael-tgc { width: 12px; height: 12px; color: var(--ael-dim); align-self: center; }
@@ -648,6 +649,8 @@ h2.grp[hidden] { display: none; }
 }
 @media (max-width: 400px) {
   .ael-fact { white-space: normal; line-height: 1.3; }
+  .tally .vs { display: none; }
+  .pos-t .evt { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.3; }
   .ael-line { gap: 10px; padding: 8px 10px 8px 7px; }
   .ael-tag { padding: 4px 9px 4px 7px; font-size: 12px; gap: 5px; }
   .ael-line-off .ael-tag, .ael-line-wait .ael-tag { padding: 4px 9px; }
@@ -1149,7 +1152,7 @@ const JS = String.raw`
     const legs = p.legs || [];
     const name = parlay ? esc((legs.length ? legs.length + "-leg " : "") + "Combo") : esc(p.side || "Position") + "<small>to win</small>";
     const live = isLive(p);
-    const evt = parlay ? (legs.length ? esc(legs.map((l) => nickOf(l.side)).join(" · ")) : esc(p.event || "")) : "<b>" + esc(opponentWords(p.side, p.event)) + "</b>" + (live ? ' · <span class="live-tag"><i></i>Live</span>' : p.startsIso ? " · " + esc(fmtAt(p.startsIso)) : "");
+    const evt = parlay ? (legs.length ? esc(legs.map((l) => nickOf(l.side)).join(" · ")) : esc(p.event || "")) : "<b>" + esc(opponentWords(p.side, p.event)) + "</b>" + (live ? ' <span class="nb">· <span class="live-tag"><i></i>Live</span></span>' : p.startsIso ? ' <span class="nb">· ' + esc(fmtAt(p.startsIso)) + "</span>" : "");
     const w = p.ticker && !(p.lock && p.lock.status !== "closed") ? worthOf(p) : null;
     const since = w && w.since ? '<span class="since ' + (w.since > 0 ? "up" : "dn") + '">' + sinceWords(w.since) + "</span>" : "";
     return '<div class="pos-h">' + (parlay ? PARLAY_MARK : markHtml(p.side)) + '<div class="pos-t"><div class="name">' + name + '</div><div class="evt">' + evt + '</div></div><div class="pays"><small>pays</small>' + usd(p.payoutCents) + since + "</div></div>";
@@ -1324,7 +1327,7 @@ const JS = String.raw`
     else bits.push("no loss yet");
     if (won.length) bits.push(won.length + (won.length === 1 ? " win gave up " : " wins gave up ") + usd(gaveUp));
     if (left.length) bits.push(left.length + " left early " + signed(leftNet));
-    return '<button type="button" class="tally' + (net > 0 ? " up" : "") + '" aria-expanded="' + !!S.tallyOpen + '"><span class="tl">Lock in, so far</span><span class="fig">vs riding it out <b>' + signed(net) + "</b>" + TGC + '</span><span class="tb">' + bits.join(" · ") + "</span></button>";
+    return '<button type="button" class="tally' + (net > 0 ? " up" : "") + '" aria-expanded="' + !!S.tallyOpen + '"><span class="tl">Lock in, so far</span><span class="fig"><span class="vs">vs riding it out</span><b>' + signed(net) + "</b>" + TGC + '</span><span class="tb">vs riding it out · ' + bits.join(" · ") + "</span></button>";
   };
   const syncHistory = () => {
     if (S.screen !== "history") return;
