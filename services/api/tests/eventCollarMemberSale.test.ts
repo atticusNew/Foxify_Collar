@@ -26,6 +26,7 @@ import {
   ComboLegMemory,
   comboLegs,
   comboPickWords,
+  comboTickerOf,
   isComboMarket,
   leagueOfCompetition,
   legMarketFor,
@@ -34,8 +35,10 @@ import {
   memberHolderPositions,
   pkcePair,
   tokenKeyFrom,
+  marketResultWord,
   type RawMemberOrder,
   type RawMemberPosition,
+  type RawMemberRfq,
 } from "../src/eventCollar/crossVenue/memberApp";
 import { memberTailTerms, quoteBuyBack, quoteSaleTiers, saleEvCostBps, walkLevels } from "../src/eventCollar/crossVenue/memberSale";
 import { appendShadowRecord, cashDue, loadShadowPositions, settlePayouts, writerPayouts } from "../src/eventCollar/crossVenue/shadowLedger";
@@ -78,6 +81,15 @@ interface FakeVenue {
   balance: string;
   balanceReads: number;
   catalogueReads: number;
+  /** the combo request-for-quote path (assumed shape): every request received, and how the venue answers the next one */
+  rfqs: Array<Record<string, unknown>>;
+  rfqMode: "quote" | "pending" | "decline" | "off";
+  /** the makers' price per contract, and the most they take (partials); the quote's life */
+  rfqPrice: string;
+  rfqTake: number | null;
+  rfqLifeMs: number;
+  /** how the venue answers an accept: fill it, or say the quote lapsed */
+  acceptMode: "fill" | "expired";
 }
 
 function market(id: string, home: string, away: string, start: string, bids: Array<[string, string]>, offers: Array<[string, string]>, maxPrice = "1.00"): RawOutcomeMarket {
@@ -126,7 +138,14 @@ async function fakeVenue(): Promise<FakeVenue> {
     balance: "250.00",
     balanceReads: 0,
     catalogueReads: 0,
+    rfqs: [],
+    rfqMode: "quote",
+    rfqPrice: "0.30",
+    rfqTake: null,
+    rfqLifeMs: 30_000,
+    acceptMode: "fill",
   };
+  const rfqs = new Map<string, RawMemberRfq & { pending: boolean }>();
   const json = (res: ServerResponse, status: number, body: unknown) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
@@ -240,6 +259,54 @@ async function fakeVenue(): Promise<FakeVenue> {
         return json(res, 200, { fills });
       }
       if (url.pathname === "/api/v1/portfolio/settlements") return json(res, 200, { settlements: [] });
+      // THE COMBO QUOTE PATH, as assumed (memberApp.ts, RawMemberRfq): a bid asked on a size, priced at once or on the
+      // next read, for at most what the makers take; accepted, the fill posts as a regular order, so the ticket shrinks
+      // in the positions read and the balance moves, like any sale
+      if (url.pathname === "/api/v1/rfqs" && req.method === "POST") {
+        if (V.rfqMode === "off") return json(res, 404, { error: "not found" });
+        const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        V.rfqs.push(body);
+        const id = `rfq-${++seq}`;
+        const want = Number(body.quantity);
+        const take = V.rfqTake === null ? want : Math.min(want, V.rfqTake);
+        const q: RawMemberRfq & { pending: boolean } =
+          V.rfqMode === "decline"
+            ? { id, status: "declined", market_id: String(body.market_id), action: "sell", quantity: null, price: null, client_rfq_id: String(body.client_rfq_id), rejection_reason: "no maker", pending: false }
+            : { id, status: V.rfqMode === "pending" ? "pending" : "quoted", market_id: String(body.market_id), action: "sell", quantity: V.rfqMode === "pending" ? null : String(take), price: V.rfqMode === "pending" ? null : V.rfqPrice, expires_at: new Date(Date.now() + V.rfqLifeMs).toISOString(), client_rfq_id: String(body.client_rfq_id), pending: V.rfqMode === "pending" };
+        rfqs.set(id, q);
+        const { pending: _p, ...pub } = q;
+        return json(res, 201, { rfq: pub });
+      }
+      const rfqOne = /^\/api\/v1\/rfqs\/([^/]+)$/.exec(url.pathname);
+      if (rfqOne && req.method === "GET") {
+        const q = rfqs.get(decodeURIComponent(rfqOne[1]));
+        if (!q) return json(res, 404, { error: "not found" });
+        if (q.pending) {
+          // priced on the read after the request
+          const want = Number(V.rfqs.at(-1)?.quantity);
+          Object.assign(q, { pending: false, status: "quoted", price: V.rfqPrice, quantity: String(V.rfqTake === null ? want : Math.min(want, V.rfqTake)) });
+        }
+        const { pending: _p, ...pub } = q;
+        return json(res, 200, { rfq: pub });
+      }
+      const rfqAccept = /^\/api\/v1\/rfqs\/([^/]+)\/accept$/.exec(url.pathname);
+      if (rfqAccept && req.method === "POST") {
+        const q = rfqs.get(decodeURIComponent(rfqAccept[1]));
+        if (!q) return json(res, 404, { error: "not found" });
+        const body = JSON.parse(await readBody(req)) as { quantity: string; price: string };
+        if (V.acceptMode === "expired" || q.status !== "quoted" || Date.parse(q.expires_at ?? "") <= Date.now()) return json(res, 410, { error: "rfq expired" });
+        if (Number(body.quantity) > Number(q.quantity) || body.price !== q.price) return json(res, 400, { error: "accept does not match the quote" });
+        q.status = "accepted";
+        const id = `ord-${++seq}`;
+        const filled = Number(body.quantity);
+        const o = { id, status: "filled", action: "sell", market_id: String(q.market_id), order_type: "rfq", price: q.price ?? "", quantity: String(filled), filled: String(filled), avg_price: q.price, client_order_id: q.client_rfq_id ?? null, fills: [{ price: q.price ?? "", filled: String(filled) }] };
+        orders.set(id, o);
+        const pos = V.positions.find((p) => p.market_id === q.market_id);
+        if (pos) pos.position = (Number(pos.position) - filled).toFixed(2);
+        V.balance = (Number(V.balance) + filled * Number(q.price)).toFixed(2);
+        const { fills: _f, ...pub } = o;
+        return json(res, 201, { order: pub });
+      }
       return json(res, 404, { error: "not found" });
     })().catch((err: unknown) => json(res, 500, { error: String(err) }));
   });
@@ -521,6 +588,8 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
   process.env.EVENT_HEDGE_RECEIPTS_PATH = join(dir, "hedge-receipts.jsonl");
   process.env.EVENT_X_ADMIN_TOKEN = "op-secret";
   process.env.EVENT_SHADOW_LOCK_KEY = "lock-key-0123456789";
+  // a combo record settles as soon as its last leg has started, so the combo block below can read the venue's word; every other record here is hours out
+  process.env.EVENT_SHADOW_SETTLE_GRACE_MS = "0";
   delete process.env.MEMBER_APP_HOST;
   process.env.MEMBER_APP_VENUE_URL = "https://demo.venue.test/";
   process.env.MEMBER_APP_HOSTNAME = "https://stx.lockin.test/";
@@ -851,7 +920,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.ok(html.includes("Lock in · STX positions") && html.includes("Protection by Atticus") && html.includes('"venueName":"STX"'), "the page's words");
     assert.ok(!html.includes("lock-key-") && !html.includes("stxapp_") && !html.includes("op-secret"), "no key of any kind on the page");
     // the row's figures sit inside the open panel (chipsHtml), not under the header; the header is club, game, pays
-    assert.ok(html.includes("const chipsHtml = (p) =>") && html.includes(`'<div class="ael-panel ael-on">' + chipsHtml(p) + slipRows(nick, o, p.contracts, false)`) && !html.includes(`"</div></div>" +\n      '<div class="chips">'`), "chips live in the panel");
+    assert.ok(html.includes("const chipsHtml = (p) =>") && html.includes(`'<div class="ael-panel ael-on">' + chipsHtml(p) + (p.combo ? legsHtml(p) : "") + slipRows(nick, o, p.contracts, false, p.combo)`) && !html.includes(`"</div></div>" +\n      '<div class="chips">'`), "chips live in the panel");
     assert.ok(html.includes('<div class="ael-dl">Elsewhere</div>') && html.includes("priced for the record, nothing sent; your position is on ") && html.includes("filled where you hold the position, on STX"), "every venue priced, filled where held");
     assert.ok(html.includes("const isLive = (p) => !!(S.inPlay && p.ticker") && html.includes('case "market_suspended": return ["Paused"') && html.includes("Live price · never less than shown"), "the page knows the in-play words");
     // the word budget: one line under a parlay's legs with the why under Details; Games is a heading, one line and a ? for bid and floor; the group header is two words
@@ -1028,6 +1097,124 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const liveBuy = venue.orders.at(-1) as Any;
     assert.deepEqual([liveBuy.action, liveBuy.market_id, liveBuy.price, liveBuy.quantity], ["buy", "m-mil", "0.68", "12"], "the buy-back is a limit at the offer, in the member's own account");
     worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: false });
+
+    // ---- a combination ticket, protected through the venue's quote (MEMBER_APP_COMBO_RFQ) ----
+    // Off (the default): a combo row reads as it always has, no ticker, riding to settlement; its synthetic ticker is refused.
+    const COMBO = comboTickerOf("m-combo");
+    assert.equal(COMBO, "STXCOMBO-M-COMBO");
+    const wireCombo = (on: boolean) => worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: true, memberComboRfq: on });
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    const comboOff = pos.body.positions.find((p: Any) => p.event === "BOS / MIA / DET combo");
+    assert.deepEqual([comboOff.ticker, comboOff.reason, comboOff.combo, pos.body.comboRfq], [null, "parlay", undefined, undefined], "off: the combo is shown, not protected");
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
+    assert.deepEqual([q.status, q.body.code], [409, "parlay_unsupported"]);
+    assert.ok(/let memberComboRfq = \/\^\(1\|true\|yes\|on\)\$\/i\.test\(process\.env\.MEMBER_APP_COMBO_RFQ/.test(readFileSync(new URL("../scripts/eventShadowWorker.ts", import.meta.url), "utf8")), "off unless MEMBER_APP_COMBO_RFQ is set");
+    // on: the combo row carries its synthetic ticker and the combo mark; the legs still read as a combo's
+    wireCombo(true);
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    const comboOn = pos.body.positions.find((p: Any) => p.event === "BOS / MIA / DET combo");
+    assert.deepEqual([comboOn.ticker, comboOn.combo, comboOn.reason, comboOn.legs.length, comboOn.contracts, pos.body.comboRfq], [COMBO, true, "parlay", 3, 5, true], "on: quotable, still a combo on the page");
+    // the venue has not shipped the quote path: its 404 is "not yet", not an outage
+    venue.rfqMode = "off";
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
+    assert.deepEqual([q.status, q.body.ok, q.body.code], [200, false, "combo_quotes_unavailable"]);
+    // quoted: one bid asked on the largest shape's size (80% of 5 = 4), read as one level, the three shapes walked from it
+    venue.rfqMode = "quote";
+    venue.rfqPrice = "0.30";
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
+    assert.equal(q.status, 200, JSON.stringify(q.body));
+    assert.deepEqual([q.body.ok, q.body.combo, q.body.route, q.body.rfq.quantity, q.body.rfq.priceCents, q.body.rfq.legs, typeof q.body.rfq.expiresAtIso], [true, true, "member_sale", 4, 30, 3, "string"]);
+    const T = q.body.quote.tiers;
+    assert.deepEqual(
+      [T.wide.soldContracts, T.wide.cashNowCents, T.wide.capTotalCents, T.balanced.soldContracts, T.balanced.cashNowCents, T.tight.soldContracts, T.tight.cashNowCents, T.tight.capTotalCents, T.tight.depthLimited],
+      [2, 60, 360, 3, 90, 4, 120, 220, false],
+      "cash now is the quote on the sold share; the cap adds $1 on every riding contract",
+    );
+    assert.deepEqual([q.body.tails, q.body.rules, typeof q.body.comboNote, q.body.compared], [[], {}, "string", null], "no league tails and no Kalshi comparison on a combo: one sentence on the venue's combo rules");
+    assert.deepEqual([q.body.league, q.body.sideName, q.body.eventTitle, q.body.eventTimeIso], [q.body.league, "3-leg combo", "BOS / MIA / DET combo", START], "the record settles after the last leg");
+    const askedFirst = venue.rfqs.at(-1) as Any;
+    assert.deepEqual([askedFirst.market_id, askedFirst.action, askedFirst.quantity, /^atticus-rfq-/.test(askedFirst.client_rfq_id)], ["m-combo", "sell", "4", true], "the request names the ticket, the sell side, the size and our id");
+    // partials: the makers take 3 of the 4 asked; Max floor is depth-limited, Max upside is not
+    venue.rfqTake = 3;
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
+    assert.deepEqual([q.body.quote.tiers.tight.soldContracts, q.body.quote.tiers.tight.depthLimited, q.body.quote.tiers.wide.soldContracts, q.body.quote.tiers.wide.depthLimited, q.body.rfq.quantity], [3, true, 2, false, 3]);
+    venue.rfqTake = null;
+    // priced on the read after the request: the same answer, one poll later
+    venue.rfqMode = "pending";
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
+    assert.deepEqual([q.body.ok, q.body.quote.tiers.balanced.cashNowCents], [true, 90], "a quote priced after the request is read on the poll");
+    // declined: no shape, in words
+    venue.rfqMode = "decline";
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
+    assert.deepEqual([q.body.ok, q.body.code, q.body.rfq, q.body.message], [false, "no_bids", "declined", "STX's makers passed on this ticket right now."]);
+    // the lock: a fresh quote at the tap, accepted for the shape's size; the fill posts as a regular order, so the
+    // ticket shrinks in the positions read and the balance rises by the cash, like any sale
+    venue.rfqMode = "quote";
+    const balBefore = Number(venue.balance);
+    const ordersBefore = venue.orders.length;
+    const clk = await post<Any>("/api/shadow/lock", { ticker: COMBO, contracts: 5, tier: "balanced", venue: "stx" });
+    assert.equal(clk.status, 200, JSON.stringify(clk.body));
+    assert.deepEqual(
+      [clk.body.ok, clk.body.combo, clk.body.route, clk.body.tier, clk.body.memberSale.soldContracts, clk.body.memberSale.keptContracts, clk.body.memberSale.cashNowCents, clk.body.floorTotalCents, clk.body.capTotalCents, clk.body.partial],
+      [true, true, "member_sale", "balanced", 3, 2, 90, 90, 290, false],
+      "3 of 5 sold at the quoted 30¢: $0.90 now, $2.90 if every leg hits",
+    );
+    assert.deepEqual([clk.body.memberSale.combo.quotedPriceCents, clk.body.memberSale.combo.legs, typeof clk.body.memberSale.combo.rfqId, clk.body.compared.ok, clk.body.compared.reason, clk.body.tails, typeof clk.body.comboNote], [30, 3, "string", false, "combo", [], "string"]);
+    assert.equal(venue.orders.length, ordersBefore, "no order of ours was placed: the accept is the venue's");
+    assert.equal(venue.balance, (balBefore + 0.9).toFixed(2), "the quote's cash landed in the member's balance");
+    assert.equal(venue.positions.find((p) => p.market_id === "m-combo")!.position, "2.00", "the ticket's size dropped at the venue");
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    const comboLocked = pos.body.positions.find((p: Any) => p.ticker === COMBO);
+    assert.deepEqual([comboLocked.contracts, comboLocked.lock.status, comboLocked.lock.route, comboLocked.lock.floorCents], [2, "open", "member_sale", clk.body.floorCents], "the positions read shows the smaller ticket with its lock");
+    assert.deepEqual([clk.body.rule.venue, clk.body.rule.basis, typeof clk.body.rule.sha256], ["stx", "market", "string"], "the ticket's own text pinned, as the venue describes it");
+    // the receipt and the history carry it; a second lock on the same ticket is refused; leave early has nothing to buy back from
+    const crc = await get<Any>(`/api/shadow/receipt?ticker=${COMBO}`);
+    assert.deepEqual([crc.status, crc.body.combo, crc.body.memberSale.soldContracts, crc.body.tails, typeof crc.body.comboNote, crc.body.memberSale.marketId], [200, true, 3, [], "string", undefined]);
+    const chist = await get<Any>("/api/shadow/member/history");
+    assert.ok(chist.body.records.some((r: Any) => r.ticker === COMBO && r.memberSale?.combo?.legs === 3), "the combo lock is on the member's history, marked as one");
+    const again2 = await post<Any>("/api/shadow/lock", { ticker: COMBO, contracts: 2, tier: "wide", venue: "stx" });
+    assert.deepEqual([again2.status, again2.body.error], [409, "already_on_record"]);
+    const cuq = await get<Any>(`/api/shadow/unwind/quote?ticker=${COMBO}`);
+    assert.deepEqual([cuq.status, cuq.body.code], [409, "combo_no_buyback"]);
+    const cun = await post<Any>("/api/shadow/unwind", { ticker: COMBO });
+    assert.deepEqual([cun.status, cun.body.code], [409, "combo_no_buyback"]);
+    // the quote lapses between the tap and the accept: nothing sold, said in words, the ticket untouched
+    const COMBO2 = comboTickerOf("m-combo-wire");
+    venue.acceptMode = "expired";
+    const lapsed = await post<Any>("/api/shadow/lock", { ticker: COMBO2, contracts: 9, tier: "wide", venue: "stx" });
+    assert.deepEqual([lapsed.status, lapsed.body.ok, lapsed.body.code], [200, false, "quote_lapsed"], JSON.stringify(lapsed.body));
+    assert.equal(venue.positions.find((p) => p.market_id === "m-combo-wire")!.position, "9.00");
+    venue.acceptMode = "fill";
+    // a ticket with a leg already missed, or every leg in, is not quoted
+    venue.markets["m-combo-missed"] = { ...market("m-combo-missed", "", "", START, [], []), rules: "combo", event_title: "", symbol: "UTA / POR combo", participants: [], legs: [{ market_id: "m-mil-over", result: "lost" }, { market_id: "m-det" }] } as RawOutcomeMarket;
+    venue.positions.push({ market_id: "m-combo-missed", position: "4.00", average_open_premium: "0.25" });
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    const missed = pos.body.positions.find((p: Any) => p.event === "UTA / POR combo");
+    assert.deepEqual([missed.ticker, missed.combo, missed.legs.map((l: Any) => l.state)], [null, undefined, ["lost", "pending"]], "a missed leg: shown as it always was, nothing to protect");
+    // settlement: the record settles after the last leg on the venue's own word for the ticket, the pinned text checked.
+    // A ticket whose legs are on (in play) settles as soon as the venue says; here the venue says the ticket won.
+    venue.markets["m-combo-live"] = { ...market("m-combo-live", "", "", START_LIVE, [], []), rules: "combo", event_title: "", symbol: "MIL / ORL combo", participants: [], description: "A combination settling into its ceiling only if every leg lands: Bucks Won, Magic Won.", legs: [{ market_id: "m-mil" }, { market_id: "m-mil-paused" }] } as RawOutcomeMarket;
+    venue.positions.push({ market_id: "m-combo-live", position: "10.00", average_open_premium: "0.20" });
+    const COMBO3 = comboTickerOf("m-combo-live");
+    venue.rfqPrice = "0.45";
+    const ll = await post<Any>("/api/shadow/lock", { ticker: COMBO3, contracts: 10, tier: "wide", venue: "stx" });
+    assert.equal(ll.status, 200, JSON.stringify(ll.body));
+    assert.deepEqual([ll.body.ok, ll.body.live, ll.body.memberSale.soldContracts, ll.body.memberSale.cashNowCents, ll.body.eventTimeIso], [true, true, 4, 180, START_LIVE], "legs in play: quoted and sold, the record dated to the last leg's start");
+    await worker.settleTick();
+    let ledgerNow = loadShadowPositions(ledger);
+    assert.equal(ledgerNow.find((p) => p.ticker === COMBO3)?.status, "open", "no word from the venue yet: the record waits");
+    venue.markets["m-combo-live"] = { ...venue.markets["m-combo-live"], status: "settled", result: "won", settled_at: new Date().toISOString() };
+    assert.equal(marketResultWord(venue.markets["m-combo-live"]), "yes");
+    await worker.settleTick();
+    ledgerNow = loadShadowPositions(ledger);
+    const settledCombo = ledgerNow.find((p) => p.ticker === COMBO3)!;
+    assert.deepEqual([settledCombo.status, settledCombo.result, settledCombo.ruleCheck?.unchanged], ["settled", "yes", true], "settled on the venue's word, the ticket's text unchanged since the pin");
+    assert.equal(ledgerNow.find((p) => p.ticker === COMBO)?.status, "open", "the other combo's last leg is hours out: untouched");
+    // off again2: the locked combo still reads as locked on the page (the record stands), the unlocked ones as they always have
+    wireCombo(false);
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    assert.deepEqual([pos.body.positions.find((p: Any) => p.event === "BOS / MIA / DET combo").ticker, pos.body.comboRfq], [null, undefined]);
+    worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: false, memberComboRfq: false });
   } finally {
     worker.server.close();
     venue.close();

@@ -1453,7 +1453,7 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     floorTotalCents: sale.floorTotalCents,
     capTotalCents: sale.capTotalCents,
     route: "member_sale",
-    memberSale: memberSaleViewOf(sale),
+    memberSale: memberSaleViewOf({ ...sale, ...(combo ? { combo } : {}) }),
     partial: sale.soldContracts < sale.requestedContracts,
     live: P.live,
     ...(P.live ? { inPlayDelaySec: P.inPlayDelaySec } : {}),
