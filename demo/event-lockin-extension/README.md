@@ -370,7 +370,7 @@ games listed, past locks):
   balance now**, the Shape control, the Lock in pill, Details; under Details, **Elsewhere** says
   what the best of the other venues would have paid for the same protection, "priced for the
   record, nothing sent; your position is on STX, so the sale fills there"); the rest sit under
-  **Not protectable right now** with a toned pill and plain
+  **Not protectable** with a toned pill and plain
   words: **Too close** (inside the cutoff), **In play** (a red dot), **Parlay** (violet; "3-leg
   Combo", the picks under the name, and the tap opens the legs: each pick, its game and tip-off,
   and where it stands, Pending · Live · Hit · Missed · Void; "protection on the last open leg is
@@ -385,18 +385,42 @@ games listed, past locks):
   has been played and has left the open listing the leg still turns to **Hit** or **Missed**
   (the venue's result word, or the settlement price). The ticket's line is a status, never a
   promise: "4 legs · first tips Sun 1:00 PM ET", "1 live · 0 of 4 hit", "2 of 4 hit · next
-  Sun 4:05 PM ET", "Missed · Hawks", "All 4 hit · settles on STX"; the panel says why there is no
-  Lock in: STX's combo market has no bids to sell into, so the ticket rides to settlement. STX
+  Sun 4:05 PM ET", "Missed · Hawks", "All 4 hit · settles on STX"; under the legs the panel says
+  one thing, "Rides to settlement on STX.", and its Details hold the why (STX's combo market has
+  no bids to sell into, so a combo cannot be partly sold the way a single pick can; protecting the
+  last open pick on its own is a separate step, not on this page yet). STX
   writes a long's average premium negative (cash out), so the entry is read as its size. Locked
   positions come first, then the offers. After a lock a one-line toast says "Locked in · +$16.18
   to your STX balance", the balance figure counts up to its new value with a "+$16.18" badge
   beside it for a few seconds, and on a phone the balance strip is sticky under the tabs (handle
   and figure on one line), so the credit lands in view without leaving the row just locked. The
-  footer is the disclosure line and Privacy · How this works; on a phone it is three short centred
+  footer is the disclosure line and Privacy · How it works; on a phone it is three short centred
   lines that each fit from 320px up (the Atticus mark; "Third-party protection; not a product of
-  STX."; Privacy · How this works · Disconnect, the last because the header hides it at that
+  STX."; Privacy · How it works · Disconnect, the last because the header hides it at that
   width). On touch the three links keep a 44px target but their words sit on one centred
   baseline, in one colour; the public record is no longer linked from a member's page.
+
+  The word budget, which the page keeps: a closed row is the tag, one figure and at most six
+  words; a helper line inside an open panel is one line at 375px (about 45 characters: "Live
+  price · never less than shown", "STX's bids take 6 of 10 · the rest rides", "Whole again,
+  unprotected · the net above is the round trip"); anything longer lives under Details or in How
+  it works. **Games** is a heading, one line ("Buy a side on STX. It lands here with its Lock in
+  line.") and a **?** beside the heading for what the two chips mean (Bid is STX's best bid right
+  now; Floor is what a Max floor lock keeps per contract on a loss). **How it works** is one
+  sheet (a card in the middle on a desk, a sheet from the bottom on a phone; ×, the backdrop or
+  Esc close it): the three steps with a line under each (Buy a side on STX · Tap Lock in · Keep
+  the floor, win or lose), then the plain words (no one on the other side, nothing hedged, no
+  fee; the consent given on STX's own page and revocable there; what the page never holds; priced
+  against every venue, filled where you hold it; the public record), then Privacy and the public
+  record. The same three steps appear once as a strip under the balance on the first connected
+  visit (gone on × or after the first lock, `localStorage` `ael_tour`; the home-screen tip waits
+  its turn) and as the empty portfolio's words. The controls carry one edge hairline
+  (`--ael-edge`, white at 13%): Leave early and Stay protected are outlined, under the filled
+  Lock in and above the plain Details link; the league pills, the balance strip, the Back pill,
+  Show more and the phone's selected tab segment carry the same line. On a phone the Shape
+  control is a full-width grid of equal cells with the label on its own line, so the three
+  choices never run past the panel's edge (older Safari's wider system font did that with the
+  nowrap pill row).
 
   **In play** (`MEMBER_APP_IN_PLAY=1` on the service; off by default). With it on, a member may
   lock while the game is on, and the pre-game cutoff no longer applies: the sale is their own limit
@@ -442,8 +466,8 @@ Domains; a CNAME at the registrar to the service's onrender host; Render issues 
 On that host `/` is the page and `/app/*` and `/api/*` answer as always; any other path is sent to
 the record URL, so the public record and the embed are never served under a venue's name. STX's
 app registration does not change: the callback stays the record URL's. Its foot: "Protection by Atticus, a third party; not a product of
-STX", the public record, **How this works** (the sale in plain words, the consent given on STX's
-own page and revocable there, what the page never holds), **Privacy** (`/app/privacy`, or
+STX", the public record, **How it works** (a sheet: the three steps, the sale in plain words, the
+consent given on STX's own page and revocable there, what the page never holds), **Privacy** (`/app/privacy`, or
 `/privacy` on the page's own host: what the page reads, writes, stores and never holds, in the
 same skin; the URL the STX app registration asks for; `MEMBER_APP_CONTACT` names who to write
 to), and on a phone Disconnect. Everything
