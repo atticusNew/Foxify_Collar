@@ -72,7 +72,7 @@ ${CSS}
   <div class="foot-l"><span class="fd">Protection by <img class="amark" src="/app/atticus.png" alt="Atticus">, a third party; not a product of ${esc(o.venueName)}.</span><span class="fm"><img class="amark" src="/app/atticus.png" alt="Atticus"><span>Third-party protection; not a product of ${esc(o.venueName)}.</span></span></div>
   <div class="foot-r"><a href="/app/privacy">Privacy</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg">How it works</button><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect<span class="fd"> ${esc(o.venueName)}</span></button></span></div>
 </footer>
-<!-- how it works: the one place the page explains itself; opened from the foot, the first-visit strip and the empty portfolio -->
+<!-- how it works: the one place the page explains itself; opened from the foot and the empty portfolio -->
 <div class="sheet" id="how" hidden role="dialog" aria-modal="true" aria-labelledby="how-h">
   <div class="sheet-c">
     <button type="button" class="x" aria-label="Close">×</button>
@@ -245,14 +245,11 @@ img { display: block; }
 .foot .dot { color: var(--ael-faint); }
 .foot #disconnect-foot { display: none; }
 
-/* the three steps: a strip on the first visit, the empty portfolio, and the top of How it works */
+/* the three steps: the empty portfolio's words (How it works carries the same three with a line under each) */
 .tsteps { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; padding: 0; list-style: none; counter-reset: s; flex: 1; min-width: 0; }
 .tsteps li { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ael-muted); white-space: nowrap; }
 .tsteps li::before { counter-increment: s; content: counter(s); flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--ael-accent-wash-2); border: 1px solid var(--ael-accent-line); color: var(--ael-accent-text); font-size: 11.5px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
 .tsteps li b { color: var(--ael-fg-strong); font-weight: 600; }
-.note.tour { position: relative; flex-wrap: wrap; gap: 8px 16px; padding: 10px 40px 10px 12px; border-color: var(--ael-edge); }
-.note.tour .lnk { background: none; border: 0; padding: 0; color: var(--ael-soft); text-decoration: underline; text-underline-offset: 2px; font-size: 13px; cursor: pointer; white-space: nowrap; }
-.note.tour .x { position: absolute; top: 8px; right: 8px; margin: 0; }
 .empty .tsteps { justify-content: center; margin: 0 0 14px; }
 .empty p { margin: 0; }
 
@@ -609,7 +606,6 @@ h2.grp[hidden] { display: none; }
   .foot .fm .amark { height: 15px; margin: 0 0 1px; top: 0; opacity: 0.9; }
   .foot-r { margin-left: 0; justify-content: center; flex-wrap: nowrap; gap: 6px; font-size: 12px; }
   .foot-r a, .foot-r button.lnk { font-size: 12px; }
-  .note.tour .tsteps { flex-direction: column; gap: 6px; }
   .sheet { align-items: flex-end; padding: 0; }
   .sheet-c { max-width: none; max-height: 88vh; border-radius: 16px 16px 0 0; border-bottom: 0; padding: 20px 18px calc(18px + env(safe-area-inset-bottom)); animation: ael-up 0.22s ease-out; }
   .game { padding-left: 12px; }
@@ -644,7 +640,7 @@ const JS = String.raw`
   const POLL_POS_MS = 15000, REQUOTE_MS = 60000, REQUOTE_LIVE_MS = 5000, POLL_ACCT_MS = 30000;
   const TIER_ORDER = ["wide", "balanced", "tight"];
   const TIER_WORDS = { wide: "Max upside", balanced: "Balanced", tight: "Max floor" };
-  const TIER_KEY = "ael_tier", HS_KEY = "ael_hs_tip", TOUR_KEY = "ael_tour";
+  const TIER_KEY = "ael_tier", HS_KEY = "ael_hs_tip";
   const SHIELD = '<span class="ael-ic"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5 4.5 5.6v6.2c0 4.6 3.1 8.6 7.5 9.7 4.4-1.1 7.5-5.1 7.5-9.7V5.6L12 2.5z"/><path d="m8.8 12.2 2.1 2.1 4.3-4.6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
   const CHEV = '<span class="ael-chev"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>';
   const TGC = '<span class="ael-tgc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>';
@@ -731,7 +727,7 @@ const JS = String.raw`
     }
   };
 
-  const S = { tab: "portfolio", screen: "", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, inPlay: false, games: null, gamesErr: null, gLeague: "all", gAll: false, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0, delta: null, connecting: false, hsTip: false, tour: false };
+  const S = { tab: "portfolio", screen: "", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, inPlay: false, games: null, gamesErr: null, gLeague: "all", gAll: false, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0, delta: null, connecting: false, hsTip: false };
   const main = document.getElementById("main");
   const acct = document.getElementById("acct");
   const tabs = document.getElementById("tabs");
@@ -1040,7 +1036,6 @@ const JS = String.raw`
       st.justNow = true; st.ms = Date.now() - t0; st.rcpt = null; st.details = false; st.cashAfter = null;
       p.lock = { at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: 0, route: "member_sale", floorTotalCents: r.json.floorTotalCents, capTotalCents: r.json.capTotalCents, memberSale: r.json.memberSale, compared: r.json.compared, tails: r.json.tails, rules: r.json.rules };
       st.lock = r.json; st.open = true; S.flash = p.ticker;
-      if (S.tour) { tourDone(); syncPortfolio(); }
       paintRow(p); paintTabs();
       const ms = r.json.memberSale || {};
       toast("Locked in · <b>" + signed(ms.cashNowCents || 0) + "</b> to your " + esc(VN) + " balance");
@@ -1144,10 +1139,8 @@ const JS = String.raw`
     setTimeout(() => { S.delta = null; paintBalance(); }, 6200);
   };
   const hsTipHtml = () => '<div class="note" id="hs-tip"><div class="hs"><p><b>Add Lock in to your home screen</b> for one tap back here after a buy on ' + esc(VN) + ". " + (/iPhone|iPad/.test(navigator.userAgent) ? "Tap Share, then <b>Add to Home Screen</b>." : "Open the browser menu, then <b>Add to Home screen</b>.") + '</p></div><button type="button" class="x" aria-label="Dismiss">×</button></div>';
-  // the three steps, once: a strip on the first connected visit (gone on × or after the first lock) and the empty portfolio's words
+  // the three steps: the empty portfolio's words (and the top of How it works, in the page's own HTML)
   const TSTEPS = '<ol class="tsteps"><li><span><b>Buy a side</b> on ' + esc(VN) + "</span></li><li><span><b>Tap Lock in</b> here</span></li><li><span><b>Keep the floor</b>, win or lose</span></li></ol>";
-  const tourHtml = () => '<div class="note tour" id="tour">' + TSTEPS + '<button type="button" class="lnk" id="tour-how">How it works</button><button type="button" class="x" aria-label="Dismiss">×</button></div>';
-  const tourDone = () => { S.tour = false; try { localStorage.setItem(TOUR_KEY, "1"); } catch (e) {} };
   const skeleton = (n) => { let h = ""; for (let i = 0; i < n; i++) h += '<div class="skrow"><div class="sk a"></div><div class="sk b"></div><div class="sk c"></div></div>'; return h; };
   const portfolioScaffold = () => {
     main.innerHTML = "<h1>Portfolio</h1>" + '<div id="bal"></div><div id="notes"></div><div id="grp-live" class="rows"></div><h2 class="grp" id="grp-rest-h" hidden>Not protectable</h2><div id="grp-rest" class="rows"></div><div id="empty"></div><div class="status" id="pos-at"></div>';
@@ -1164,14 +1157,8 @@ const JS = String.raw`
     let notes = "";
     if (S.flashOk && Date.now() < S.flashOkUntil) notes += '<div class="note ok">' + esc(S.flashOk) + "</div>";
     if (S.posErr) notes += '<div class="note err">' + esc(S.posErr) + "</div>";
-    const tour = S.tour && list.length > 0;
-    if (tour) notes += tourHtml();
-    if (S.hsTip && !tour) notes += hsTipHtml(); // one note at a time: the home-screen tip waits for the strip to go
-    if (setHtml(document.getElementById("notes"), notes)) {
-      const x = document.querySelector("#hs-tip .x"); if (x) x.onclick = () => { S.hsTip = false; try { localStorage.setItem(HS_KEY, "1"); } catch (e) {} syncPortfolio(); };
-      const tx = document.querySelector("#tour .x"); if (tx) tx.onclick = () => { tourDone(); syncPortfolio(); };
-      const th = document.getElementById("tour-how"); if (th) th.onclick = openHow;
-    }
+    if (S.hsTip) notes += hsTipHtml();
+    if (setHtml(document.getElementById("notes"), notes)) { const x = document.querySelector("#hs-tip .x"); if (x) x.onclick = () => { S.hsTip = false; try { localStorage.setItem(HS_KEY, "1"); } catch (e) {} syncPortfolio(); }; }
     syncList(document.getElementById("grp-live"), live.concat(offer), posKey, "pos", patchPos);
     document.getElementById("grp-rest-h").hidden = !rest.length;
     syncList(document.getElementById("grp-rest"), rest, posKey, "pos", patchPos);
@@ -1405,7 +1392,6 @@ const JS = String.raw`
     if (q.has("connected") || q.has("error") || q.has("source")) history.replaceState(null, "", location.pathname + location.hash);
     if (location.hash === "#games" || location.hash === "#history") S.tab = location.hash.slice(1);
     try { S.hsTip = phone() && !standalone() && !localStorage.getItem(HS_KEY); } catch (e) { S.hsTip = false; }
-    try { S.tour = !localStorage.getItem(TOUR_KEY); } catch (e) { S.tour = false; }
     await loadMember();
     if (S.connecting && !(S.member && S.member.connected)) S.connecting = false;
     render();
@@ -1424,7 +1410,7 @@ const JS = String.raw`
     window.addEventListener("focus", back);
     window.addEventListener("pageshow", (e) => { if (e.persisted) back(); });
   };
-  // how it works: one sheet; the foot, the first-visit strip and the empty portfolio open it; ×, the backdrop or Esc close it
+  // how it works: one sheet; the foot and the empty portfolio open it; ×, the backdrop or Esc close it
   const how = document.getElementById("how");
   let howFrom = null;
   const openHow = () => { if (!how) return; howFrom = document.activeElement; how.hidden = false; document.body.style.overflow = "hidden"; const x = how.querySelector(".x"); if (x) x.focus(); };
