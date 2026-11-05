@@ -440,6 +440,66 @@ export interface PlaceOrderBody {
 /** The live statuses: the order is still working. Anything else is terminal. */
 export const LIVE_ORDER_STATUSES = new Set(["created", "requested", "accepted", "delayed", "open"]);
 
+/**
+ * THE COMBO REQUEST FOR QUOTE (assumed shape; the venue has not shipped it). A combination market
+ * has no resting book, so part of a ticket is sold by asking the venue's makers for a bid on a
+ * size and accepting it. Assumed, to be confirmed against the venue's docs when they land:
+ * POST /api/v1/rfqs {market_id, action:"sell", quantity, client_rfq_id} answers a quote that is
+ * either priced at once or priced on a later GET /api/v1/rfqs/{id}; it carries a price per
+ * contract, the quantity the makers will take (at most what was asked: partials), when it lapses,
+ * and a status (quoted / pending / expired / declined). POST /api/v1/rfqs/{id}/accept
+ * {quantity, price} fills it, and the fill posts as a regular order (orders.write), so the fills
+ * read and the positions read see it like any sale. Only the field names here would change.
+ */
+export interface RawMemberRfq {
+  id: string;
+  status: string;
+  market_id?: string;
+  action?: string;
+  /** the size the makers will take, at most what was asked */
+  quantity?: string | null;
+  /** per contract, dollars; null until priced */
+  price?: string | null;
+  expires_at?: string | null;
+  client_rfq_id?: string | null;
+  rejection_reason?: string | null;
+}
+
+export interface RfqRequestBody {
+  market_id: string;
+  action: "sell";
+  quantity: string;
+  client_rfq_id: string;
+}
+
+/** the quote is still being priced */
+export const PENDING_RFQ_STATUSES = new Set(["created", "requested", "pending", "open"]);
+/** the quote stands and can be accepted */
+export const QUOTED_RFQ_STATUSES = new Set(["quoted", "priced", "active", "ready"]);
+
+/** The synthetic ticker a combination ticket is keyed by on the record and on the page (it has no Kalshi market): the venue's market id, upper-cased, after the prefix. */
+export const COMBO_TICKER_PREFIX = "STXCOMBO-";
+export const comboTickerOf = (marketId: string): string => `${COMBO_TICKER_PREFIX}${marketId.toUpperCase().replace(/[^A-Z0-9-]/g, "-")}`;
+export const isComboTicker = (ticker: string): boolean => ticker.startsWith(COMBO_TICKER_PREFIX);
+
+/**
+ * The venue's own word on a settled market, as the record reads a result: yes (the ticket paid),
+ * no (it did not), null while pending. The settlement price stands in when the word is not one
+ * of the known ones.
+ */
+export function marketResultWord(m: RawOutcomeMarket): "yes" | "no" | null {
+  const words = [m.result, m.status, m.event_status].filter((w): w is string => typeof w === "string").join(" ").toLowerCase();
+  if (/\b(void|cancel|abandon|push)/.test(words)) return null;
+  if (/\b(won|win|hit|yes|settled_yes)\b/.test(words)) return "yes";
+  if (/\b(lost|lose|miss|settled_no|no)\b/.test(words)) return "no";
+  if (m.settled_at || /settled|resolved/.test(words)) {
+    const px = legPriceCents(m);
+    if (px !== null && px >= 99) return "yes";
+    if (px !== null && px <= 1) return "no";
+  }
+  return null;
+}
+
 export interface MemberClientConfig {
   host: string;
   /** a bearer for the member, fresh (the session refreshes it); null when the member is not connected */
@@ -579,6 +639,27 @@ export class MemberClient {
     if (marketIds.length === 0) return [];
     const r = await this.call<{ settlements?: RawMemberSettlement[] }>("GET", `/api/v1/portfolio/settlements?market_ids=${encodeURIComponent(marketIds.join(","))}`);
     return r.settlements ?? [];
+  }
+
+  /** ask the venue's makers for a bid on part of a combination ticket (assumed shape; see RawMemberRfq) */
+  async requestRfq(body: RfqRequestBody): Promise<RawMemberRfq> {
+    const r = await this.call<{ rfq?: RawMemberRfq } | RawMemberRfq>("POST", "/api/v1/rfqs", body);
+    const q = (r as { rfq?: RawMemberRfq }).rfq ?? (r as RawMemberRfq);
+    if (!q || typeof q.id !== "string") throw new MemberApiError(0, "rfq_shape", "the venue answered the quote request without an id");
+    return q;
+  }
+
+  async rfq(rfqId: string): Promise<RawMemberRfq> {
+    const r = await this.call<{ rfq?: RawMemberRfq } | RawMemberRfq>("GET", `/api/v1/rfqs/${encodeURIComponent(rfqId)}`);
+    return (r as { rfq?: RawMemberRfq }).rfq ?? (r as RawMemberRfq);
+  }
+
+  /** accept the quote at the size and price it stands at; the venue answers with the order the fill posted as */
+  async acceptRfq(rfqId: string, body: { quantity: string; price: string }): Promise<RawMemberOrder> {
+    const r = await this.call<{ order?: RawMemberOrder } | RawMemberOrder>("POST", `/api/v1/rfqs/${encodeURIComponent(rfqId)}/accept`, body);
+    const o = (r as { order?: RawMemberOrder }).order ?? (r as RawMemberOrder);
+    if (!o || typeof o.id !== "string") throw new MemberApiError(0, "order_shape", "the venue answered the accept without an order id");
+    return o;
   }
 }
 
@@ -1089,4 +1170,4 @@ export async function memberHolderPositions(client: MemberClient, protectable: P
 }
 
 /** an id of ours on the venue's order, so a placement whose answer was lost can be found and never sent twice */
-export const clientOrderIdFor = (kind: "lock" | "leave", ticker: string): string => `atticus-${kind}-${ticker.toLowerCase().slice(-24)}-${randomUUID().slice(0, 8)}`;
+export const clientOrderIdFor = (kind: "lock" | "leave" | "rfq", ticker: string): string => `atticus-${kind}-${ticker.toLowerCase().slice(-24)}-${randomUUID().slice(0, 8)}`;

@@ -722,6 +722,12 @@ const JS = String.raw`
       case "already_on_record": return ["Protected", "This market is already locked."];
       case "lock_in_flight": return ["One moment", "This position is being locked right now."];
       case "venue_unreachable": return ["Unavailable", VN + " could not be reached."];
+      case "combo_quotes_unavailable": return ["Not yet", VN + " isn't quoting combo tickets yet."];
+      case "combo_missed": return ["Missed", "A leg missed; the ticket has settled its way."];
+      case "combo_settling": return ["All hit", "Every leg hit; " + VN + " is settling it."];
+      case "quote_lapsed": return ["Quote lapsed", VN + "'s quote lapsed before the tap reached it; nothing was sold."];
+      case "combo_no_buyback": return ["Stays to settlement", "A combo lock has nothing to buy back from."];
+      case "combo_preview": return ["Preview", "A preview: " + VN + "'s cash-out quote isn't live yet, so nothing was sold."];
       case "venue_refused": return ["Unavailable", words(p, VN + " refused the order.")];
       default: return ["Unavailable", words(p, "Protection isn't available on this position right now.")];
     }
@@ -816,7 +822,8 @@ const JS = String.raw`
   // ---- quotes and the slip ----
   const quoteFor = async (p, force) => {
     const st = stateOf(p.ticker);
-    if (!force && st.quote && Date.now() - st.quoteAt < (isLive(p) && st.quote.ok ? REQUOTE_LIVE_MS : REQUOTE_MS)) return;
+    // a combo's quote is a request to the venue's makers, not a book read: never every few seconds
+    if (!force && st.quote && Date.now() - st.quoteAt < (isLive(p) && st.quote.ok && !p.combo ? REQUOTE_LIVE_MS : REQUOTE_MS)) return;
     if (st.closedNow && Date.now() - st.closedNow.at < 8000) return;
     if (st.quoting) return;
     st.quoting = true;
@@ -830,10 +837,11 @@ const JS = String.raw`
   const tierOf = (st) => { const q = st.quote && st.quote.quote; if (!q) return null; return (q.tiers && q.tiers[st.tier]) || q; };
   const outcomes = (t) => ({ floor: t.floorTotalCents, cap: t.capTotalCents, cash: t.cashNowCents != null ? t.cashNowCents : t.creditCents || 0 });
   const wantOf = (st, contracts) => Math.round(contracts * (TIER_ORDER.indexOf(st.tier) + 2) / 5);
-  const slipRows = (nick, o, n, sale) => {
+  // a combo's two ends are the ticket's, not a club's: every leg in, or one out
+  const slipRows = (nick, o, n, sale, combo) => {
     return '<div class="ael-ledger">' +
-      '<div class="ael-lr"><span class="ael-l">' + esc(nick) + ' win</span><b>' + usd(o.cap) + '</b><s>of ' + usd(n * 100) + '</s></div>' +
-      '<div class="ael-lr ael-hero"><span class="ael-l">' + esc(nick) + ' lose</span><b>' + usd(o.floor) + '</b><s>instead of $0</s></div>' +
+      '<div class="ael-lr"><span class="ael-l">' + (combo ? "All legs hit" : esc(nick) + " win") + '</span><b>' + usd(o.cap) + '</b><s>of ' + usd(n * 100) + '</s></div>' +
+      '<div class="ael-lr ael-hero"><span class="ael-l">' + (combo ? "A leg misses" : esc(nick) + " lose") + '</span><b>' + usd(o.floor) + '</b><s>instead of $0</s></div>' +
       '<div class="ael-lr ael-last"><span class="ael-l">In your ' + esc(VN) + ' balance' + (sale ? '' : ' now') + '</span><b>' + signed(o.cash) + '</b><s></s></div>' +
       "</div>";
   };
@@ -871,8 +879,8 @@ const JS = String.raw`
     const t = locked ? null : tierOf(st);
     let rows = "";
     if (!locked) {
-      rows += '<div class="ael-dl">Sale</div><div class="ael-dv">Sell <b>' + t.soldContracts + " of " + p.contracts + "</b> at about " + cents(t.avgPriceCents) + " into " + esc(VN) + "'s bids · " + t.keptContracts + " keep riding</div>";
-      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts into " + esc(VN) + "'s bids now, at the best prices there; " + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p><p>The same protection is priced against every other venue this service reads, for the record (under Elsewhere); the order itself fills on " + esc(VN) + ", where you hold the position.</p>" + (q.live ? "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so." + (Number(q.inPlayDelaySec) > 0 ? " " + esc(VN) + " holds in-play orders " + Number(q.inPlayDelaySec) + "s before they can match." : "") + "</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
+      rows += '<div class="ael-dl">Sale</div><div class="ael-dv">Sell <b>' + t.soldContracts + " of " + p.contracts + "</b> at about " + cents(t.avgPriceCents) + (p.combo ? " to " + esc(VN) + "'s makers · " : " into " + esc(VN) + "'s bids · ") + t.keptContracts + " keep riding</div>";
+      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts " + (p.combo ? "to " + esc(VN) + "'s makers now, at the price they quoted for this ticket; " : "into " + esc(VN) + "'s bids now, at the best prices there; ") + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p><p>The same protection is priced against every other venue this service reads, for the record (under Elsewhere); the order itself fills on " + esc(VN) + ", where you hold the position.</p>" + (q.live ? (p.combo ? "<p>A leg is on, so the price moves; the tap asks " + esc(VN) + "'s makers again and sells at what they quote then, never more than they offer." : "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so.") + (Number(q.inPlayDelaySec) > 0 ? " " + esc(VN) + " holds in-play orders " + Number(q.inPlayDelaySec) + "s before they can match." : "") + "</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
     } else {
       const ms = src.memberSale;
       if (ms) rows += '<div class="ael-dl">Sold</div><div class="ael-dv">' + saleWords(ms) + "</div>";
@@ -883,9 +891,14 @@ const JS = String.raw`
     }
     const cmpRaw = locked ? src.compared : q.compared;
     const cmp = !locked && cmpRaw && cmpRaw.ok && cmpRaw.tiers && cmpRaw.tiers[st.tier] ? Object.assign({}, cmpRaw, cmpRaw.tiers[st.tier]) : cmpRaw;
-    if (cmp) rows += '<div class="ael-dl">Elsewhere</div><div class="ael-dv">' + comparedWords(cmp) + "</div>";
-    rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="rules" aria-expanded="' + st.rules + '">Rules' + TGC + "</button></div><div class=\"ael-dv\">" + (st.rules ? "" : '<span class="ael-dim">tie · postponement · called off · corrected result</span>') + "</div>";
-    if (st.rules) rows += '<div class="ael-dwide">' + rulesGrid(src, t) + "</div>";
+    // a combo has no twin on another venue to price against: no Elsewhere row
+    if (cmp && !p.combo) rows += '<div class="ael-dl">Elsewhere</div><div class="ael-dv">' + comparedWords(cmp) + "</div>";
+    // a combo settles under the venue's own combo rules, one sentence; a single has the league's tails behind Rules
+    if (p.combo) rows += '<div class="ael-dl">Rules</div><div class="ael-dv">' + esc((src && src.comboNote) || (VN + " settles the riding contracts by its own combo rules: a voided leg drops out and the ticket re-prices. The contracts you sold stay sold.")) + "</div>";
+    else {
+      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="rules" aria-expanded="' + st.rules + '">Rules' + TGC + "</button></div><div class=\"ael-dv\">" + (st.rules ? "" : '<span class="ael-dim">tie · postponement · called off · corrected result</span>') + "</div>";
+      if (st.rules) rows += '<div class="ael-dwide">' + rulesGrid(src, t) + "</div>";
+    }
     rows += '<div class="ael-dl">Terms</div><div class="ael-dv">' + termsWords(src) + "</div>";
     return '<div class="ael-details"><div class="ael-drows">' + rows + "</div></div>";
   };
@@ -956,7 +969,7 @@ const JS = String.raw`
     }
     if (lock && lock.status === "settled") {
       const won = lock.result === "win" || lock.result === "yes";
-      line = lineHtml("on", "Settled", nick + (won ? " won: " : " lost: ") + "<b>" + usd(won ? lock.capTotalCents || lock.protectedCents : lock.floorTotalCents || lock.protectedCents) + "</b> all in", st.open);
+      line = lineHtml("on", "Settled", (p.combo ? (won ? "All legs hit: " : "A leg missed: ") : nick + (won ? " won: " : " lost: ")) + "<b>" + usd(won ? lock.capTotalCents || lock.protectedCents : lock.floorTotalCents || lock.protectedCents) + "</b> all in", st.open);
       panel = st.open ? '<div class="ael-panel ael-on">' + chipsHtml(p) + detailsHtml(p, st, true) + DISCLOSE + "</div>" : "";
     } else if (lock) {
       const ms = lock.memberSale || {};
@@ -966,9 +979,10 @@ const JS = String.raw`
         if (st.justNow && st.ms) meta.push("sold " + (st.ms < 100 ? "at once" : "in " + (st.ms / 1000).toFixed(1) + "s"));
         if (ms.requestedContracts != null && ms.soldContracts < ms.requestedContracts) meta.push(ms.soldContracts + " of the " + ms.requestedContracts + " asked sold; the rest rides");
         if (st.cashAfter != null) meta.push("<b>" + signed(ms.cashNowCents || 0) + "</b> in your " + esc(VN) + " balance · now <b>" + usd(st.cashAfter) + "</b>");
-        panel = '<div class="ael-panel ael-on">' + chipsHtml(p) + slipRows(nick, { floor: lock.floorTotalCents, cap: lock.capTotalCents, cash: ms.cashNowCents || 0 }, ms.soldContracts + ms.keptContracts, true) +
-          (st.leave ? leaveHtml(p, st) : "") +
-          (!st.leave ? '<div class="ael-acts ael-offer-acts"><button type="button" class="ael-go ael-quiet" data-act="leave-open">Leave early</button><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" : "") +
+        // a combo lock has nothing to buy back from (no offers on a combo market): no Leave early, the legs in its place
+        panel = '<div class="ael-panel ael-on">' + chipsHtml(p) + (p.combo ? legsHtml(p) : "") + slipRows(nick, { floor: lock.floorTotalCents, cap: lock.capTotalCents, cash: ms.cashNowCents || 0 }, ms.soldContracts + ms.keptContracts, true, p.combo) +
+          (st.leave && !p.combo ? leaveHtml(p, st) : "") +
+          (!st.leave || p.combo ? '<div class="ael-acts ael-offer-acts">' + (p.combo ? '<span class="ael-fine">Stays to settlement.</span>' : '<button type="button" class="ael-go ael-quiet" data-act="leave-open">Leave early</button>') + '<span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" : "") +
           '<div class="ael-meta">' + meta.join(" · ") + "</div>" +
           (st.details ? detailsHtml(p, st, true) : "") + DISCLOSE + "</div>";
       }
@@ -980,21 +994,24 @@ const JS = String.raw`
       const w = timing(p);
       line = lineHtml("off", w[0], esc(w[1]), false, w[2]);
     } else if (!st.quote) {
-      line = lineHtml("wait", "Lock in", "Pricing from " + esc(VN) + "'s book…", false);
+      line = lineHtml("wait", "Lock in", p.combo ? "Asking " + esc(VN) + "'s makers for a bid…" : "Pricing from " + esc(VN) + "'s book…", false);
     } else if (!st.quote.ok) {
       const w = refusalWords(st.quote);
       line = lineHtml("off", w[0], esc(w[1]), false, w[0] === "In play" ? "live" : w[0] === "Too close" || w[0] === "Paused" ? "close" : "");
     } else {
       const t = tierOf(st), o = outcomes(t);
-      const limited = t.depthLimited ? ' <span class="ael-dim">· ' + VN + "'s book takes " + t.soldContracts + " of " + wantOf(st, p.contracts) + "</span>" : "";
+      const takers = p.combo ? "makers" : "bids";
+      const limited = t.depthLimited ? ' <span class="ael-dim">· ' + VN + "'s " + takers + " take " + t.soldContracts + " of " + wantOf(st, p.contracts) + "</span>" : "";
       const live = !!st.quote.live, delay = live ? Number(st.quote.inPlayDelaySec) || 0 : 0;
-      line = lineHtml("offer", "Lock in", "Still get <b>" + usd(o.floor) + "</b> if " + esc(nick) + " lose." + limited, st.open);
+      const preview = !!(p.combo && st.quote.rfq && st.quote.rfq.preview);
+      line = lineHtml("offer", "Lock in", "Still get <b>" + usd(o.floor) + "</b> if " + (p.combo ? "a leg misses." : esc(nick) + " lose.") + limited, st.open);
       if (st.open) {
         const busy = st.busy === "lock";
-        panel = '<div class="ael-panel ael-on">' + chipsHtml(p) + slipRows(nick, o, p.contracts, false) +
+        panel = '<div class="ael-panel ael-on">' + chipsHtml(p) + (p.combo ? legsHtml(p) : "") + slipRows(nick, o, p.contracts, false, p.combo) +
           shapeHtml(st) +
-          (live ? '<div class="ael-fine ael-live" style="margin-top:8px">Live price · never less than shown</div>' : "") +
-          (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">' + esc(VN) + "'s bids take " + t.soldContracts + " of " + wantOf(st, p.contracts) + " · the rest rides</div>" : "") +
+          (p.combo ? '<div class="ael-fine' + (preview ? " ael-warn" : "") + '" style="margin-top:8px">' + (preview ? "Preview · a stand-in bid, not " + esc(VN) + "'s quote" : "Bid from " + esc(VN) + "'s makers · the rest rides to settlement") + "</div>" : "") +
+          (live ? '<div class="ael-fine ael-live" style="margin-top:8px">' + (p.combo ? "Live price" : "Live price · never less than shown") + "</div>" : "") +
+          (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">' + esc(VN) + "'s " + takers + " take " + t.soldContracts + " of " + wantOf(st, p.contracts) + " · the rest rides</div>" : "") +
           '<div class="ael-offer-acts"><button type="button" class="ael-go ael-pillgo' + (busy ? " ael-busy" : "") + '" data-act="lock"' + (busy ? " disabled" : "") + ">" + (busy ? esc(st.busyWords || "Selling into the bid…") : SHIELD + "Lock in") + '</button><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" +
           (st.err ? '<div class="ael-fine ael-err">' + esc(st.err) + "</div>" : "") +
           (st.details ? detailsHtml(p, st, false) : "") + DISCLOSE + "</div>";
@@ -1038,7 +1055,7 @@ const JS = String.raw`
     if (st.busy) return;
     st.busy = "lock"; st.err = null;
     const delay = st.quote && st.quote.live ? Number(st.quote.inPlayDelaySec) || 0 : 0;
-    const stages = ["Pricing from " + VN + "'s book…", delay ? "In " + VN + "'s " + delay + "s in-play hold…" : "Selling into the bid…", delay ? "Selling into the bid…" : "Writing the record…"];
+    const stages = p.combo ? ["Asking " + VN + "'s makers…", "Taking the quote…", "Writing the record…"] : ["Pricing from " + VN + "'s book…", delay ? "In " + VN + "'s " + delay + "s in-play hold…" : "Selling into the bid…", delay ? "Selling into the bid…" : "Writing the record…"];
     let i = 0; st.busyWords = stages[0]; paintRow(p);
     const tick = setInterval(() => { i = Math.min(i + 1, stages.length - 1); st.busyWords = stages[i]; paintRow(p); }, delay ? Math.max(900, (delay * 1000) / 2) : 900);
     const t0 = Date.now();
@@ -1047,7 +1064,7 @@ const JS = String.raw`
     st.busy = null;
     if (r.ok && r.json && r.json.ok) {
       st.justNow = true; st.ms = Date.now() - t0; st.rcpt = null; st.details = false; st.cashAfter = null;
-      p.lock = { at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: 0, route: "member_sale", floorTotalCents: r.json.floorTotalCents, capTotalCents: r.json.capTotalCents, memberSale: r.json.memberSale, compared: r.json.compared, tails: r.json.tails, rules: r.json.rules };
+      p.lock = { at: r.json.at, status: "open", contracts: r.json.contracts, floorCents: r.json.floorCents, capCents: r.json.capCents, creditCents: 0, route: "member_sale", floorTotalCents: r.json.floorTotalCents, capTotalCents: r.json.capTotalCents, memberSale: r.json.memberSale, compared: r.json.compared, tails: r.json.tails, rules: r.json.rules, comboNote: r.json.comboNote };
       st.lock = r.json; st.open = true; S.flash = p.ticker;
       paintRow(p); paintTabs();
       const ms = r.json.memberSale || {};

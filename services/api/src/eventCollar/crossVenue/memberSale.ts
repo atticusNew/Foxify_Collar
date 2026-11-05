@@ -17,13 +17,19 @@
  * the walked worst price. Both are pure functions over the venue's book until `executeLimitOrder`,
  * which is the only thing here that sends anything, and it sends for the member, under the
  * member's own consent, inside the member's own account.
+ *
+ * A combination (parlay) ticket has no resting book. There the bid comes from the venue's
+ * request-for-quote (`requestRfqBid`): one quote on the largest tier's size, read as a single
+ * level, so the same tier arithmetic and the same record apply; the lock accepts the quote
+ * (`acceptRfq`) and the fill posts as an order, read like any sale. Off unless the service turns
+ * it on: the venue has not shipped the quote path, and its shape here is assumed.
  */
 
 import type { ProtectionTier } from "./types";
 import { PROTECTION_TIERS, roundContracts } from "./types";
 import type { RawOutcomeMarket } from "./venueMarkets";
 import { outcomeMaxPrice } from "./venueBooks";
-import { LIVE_ORDER_STATUSES, MemberApiError, type MemberClient, type PlaceOrderBody, type RawMemberFill, type RawMemberOrder } from "./memberApp";
+import { LIVE_ORDER_STATUSES, MemberApiError, PENDING_RFQ_STATUSES, QUOTED_RFQ_STATUSES, type MemberClient, type PlaceOrderBody, type RawMemberFill, type RawMemberOrder, type RawMemberRfq, type RfqRequestBody } from "./memberApp";
 import type { MemberBuyBackRecord, MemberSaleRecord } from "./shadowLedger";
 import type { RuleCells, TailTerm } from "./hedgeRouting";
 
@@ -248,13 +254,25 @@ export async function executeLimitOrder(client: MemberClient, body: PlaceOrderBo
       // the fills below are what count
     }
   }
+  const o = await outcomeFromFills(client, order, cur, body.action === "sell", body.price);
+  const status = o.status;
+  const note =
+    o.filled === 0
+      ? `nothing filled at ${body.price} within ${Math.round(waitMs / 1000)}s; the order was ${cancelled ? "cancelled" : status}`
+      : o.filled < want
+        ? `${o.filled} of ${want} filled at ${body.price} or better; the rest ${cancelled ? "cancelled" : status}`
+        : `${o.filled} filled at ${body.price} or better`;
+  return { ...o, note };
+}
+
+/** The fills are the truth: read them for the order, the order's own figures standing in when the fills read is empty. */
+async function outcomeFromFills(client: MemberClient, order: RawMemberOrder, cur: RawMemberOrder, sell: boolean, fallbackPrice: string): Promise<Omit<OrderOutcome, "note">> {
   let fills: RawMemberFill[] = [];
   try {
     fills = await client.fills([order.id]);
   } catch {
     fills = [];
   }
-  const sell = body.action === "sell";
   let filled = 0;
   let gross = 0;
   let fee = 0;
@@ -273,27 +291,84 @@ export async function executeLimitOrder(client: MemberClient, body: PlaceOrderBo
   if (filled === 0 && Number(cur.filled ?? 0) > 0) {
     // the fills read came back empty but the order says it filled: the order's own figures stand in
     filled = Number(cur.filled);
-    gross = filled * Number(cur.avg_price ?? body.price);
+    gross = filled * Number(cur.avg_price ?? fallbackPrice);
   }
-  const status = cur.status ?? order.status;
   const avg = filled > 0 ? gross / filled : 0;
-  const note =
-    filled === 0
-      ? `nothing filled at ${body.price} within ${Math.round(waitMs / 1000)}s; the order was ${cancelled ? "cancelled" : status}`
-      : filled < want
-        ? `${filled} of ${want} filled at ${body.price} or better; the rest ${cancelled ? "cancelled" : status}`
-        : `${filled} filled at ${body.price} or better`;
   return {
     order: cur,
     orderId: order.id,
-    status,
+    status: cur.status ?? order.status,
     filled,
     avgPriceCents: filled > 0 ? (sell ? Math.floor(avg * 100 + 1e-6) : Math.ceil(avg * 100 - 1e-6)) : 0,
     grossCents: sell ? centsDown(gross) : centsUp(gross),
     ...(feeKnown ? { feeCents: Math.round(fee * 100) } : {}),
     fills,
-    note,
   };
+}
+
+// ---------------------------------------------------------------------------
+// a combination ticket: the bid from the venue's request for quote
+// ---------------------------------------------------------------------------
+
+/** The venue's quote as the tier arithmetic reads it: one bid level, or none. */
+export interface RfqBid {
+  rfq: RawMemberRfq;
+  /** per contract, dollars; the level the tiers walk */
+  level: VenueLevel | null;
+  /** why there is no level: the venue declined, the quote lapsed, or no price came in time */
+  reason: "declined" | "expired" | "unpriced" | null;
+  expiresAtIso: string | null;
+}
+
+/**
+ * Ask for a bid on `body.quantity` contracts and wait (polling) for the venue to price it. The
+ * quote is read as one bid level at the price and the size the makers will take, so the tiers
+ * walk it like a book: a maker taking fewer than asked is a depth-limited tier, as on a thin book.
+ */
+export async function requestRfqBid(client: MemberClient, body: RfqRequestBody, maxPrice: number, opts: ExecuteOptions = {}): Promise<RfqBid> {
+  const waitMs = opts.waitMs ?? 3000;
+  const pollMs = opts.pollMs ?? 400;
+  const sleep = opts.sleep ?? defaultSleep;
+  const now = opts.now ?? Date.now;
+  let cur = await client.requestRfq(body);
+  const started = now();
+  const priced = (q: RawMemberRfq) => q.price !== null && q.price !== undefined && Number.isFinite(Number(q.price)) && !PENDING_RFQ_STATUSES.has(q.status);
+  while (!priced(cur) && PENDING_RFQ_STATUSES.has(cur.status) && now() - started < waitMs) {
+    await sleep(pollMs);
+    try {
+      cur = await client.rfq(cur.id);
+    } catch {
+      // a read that fails leaves the last answer; the loop ends on time
+    }
+  }
+  const expiresAtIso = cur.expires_at ? new Date(cur.expires_at).toISOString() : null;
+  const status = (cur.status ?? "").toLowerCase();
+  if (/declin|reject|refus/.test(status)) return { rfq: cur, level: null, reason: "declined", expiresAtIso };
+  if (/expir|lapse/.test(status) || (expiresAtIso && Date.parse(expiresAtIso) <= now())) return { rfq: cur, level: null, reason: "expired", expiresAtIso };
+  if (!priced(cur) || !(QUOTED_RFQ_STATUSES.has(status) || !PENDING_RFQ_STATUSES.has(status))) return { rfq: cur, level: null, reason: "unpriced", expiresAtIso };
+  const level = levelsOf([{ price: String(cur.price), quantity: String(cur.quantity ?? body.quantity) }], maxPrice)[0] ?? null;
+  return { rfq: cur, level, reason: level ? null : "unpriced", expiresAtIso };
+}
+
+/**
+ * Accept the quote for `quantity` at its price. The venue answers with the order the fill posted
+ * as; the fills are read for it like any sale (the fill may be smaller than the quote: a partial).
+ */
+export async function acceptRfq(client: MemberClient, bid: RfqBid, quantity: number): Promise<OrderOutcome> {
+  if (!bid.level) throw new MemberApiError(0, "rfq_unpriced", "the quote carries no price to accept");
+  const price = bid.level.price.toFixed(2);
+  const order = await client.acceptRfq(bid.rfq.id, { quantity: String(quantity), price });
+  let cur = order;
+  if (LIVE_ORDER_STATUSES.has(cur.status) && Number(cur.filled ?? 0) < quantity) {
+    try {
+      cur = await client.order(order.id);
+    } catch {
+      // the fills below are what count
+    }
+  }
+  const o = await outcomeFromFills(client, order, cur, true, price);
+  const note = o.filled === 0 ? `the quote at ${price} was accepted but nothing filled; the order was ${o.status}` : o.filled < quantity ? `${o.filled} of ${quantity} filled at ${price} on the quote` : `${o.filled} filled at ${price} on the quote`;
+  return { ...o, note };
 }
 
 // ---------------------------------------------------------------------------
