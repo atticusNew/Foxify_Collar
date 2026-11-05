@@ -890,7 +890,8 @@ const JS = String.raw`
     }
     const cmpRaw = locked ? src.compared : q.compared;
     const cmp = !locked && cmpRaw && cmpRaw.ok && cmpRaw.tiers && cmpRaw.tiers[st.tier] ? Object.assign({}, cmpRaw, cmpRaw.tiers[st.tier]) : cmpRaw;
-    if (cmp) rows += '<div class="ael-dl">Elsewhere</div><div class="ael-dv">' + comparedWords(cmp) + "</div>";
+    // a combo has no twin on another venue to price against: no Elsewhere row
+    if (cmp && !p.combo) rows += '<div class="ael-dl">Elsewhere</div><div class="ael-dv">' + comparedWords(cmp) + "</div>";
     // a combo settles under the venue's own combo rules, one sentence; a single has the league's tails behind Rules
     if (p.combo) rows += '<div class="ael-dl">Rules</div><div class="ael-dv">' + esc((src && src.comboNote) || (VN + " settles the riding contracts by its own combo rules: a voided leg drops out and the ticket re-prices. The contracts you sold stay sold.")) + "</div>";
     else {
