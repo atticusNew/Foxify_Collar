@@ -358,13 +358,10 @@ h2.grp[hidden] { display: none; }
 .chip b { font-weight: 600; color: var(--ael-soft); }
 .chip.sold { border-color: var(--ael-accent-line); background: var(--ael-accent-wash); color: var(--ael-accent-text); }
 .chip.sold b { color: var(--ael-accent-text); }
-.chip.until { color: var(--ael-dim); }
-.ael-panel .chips { margin: 0 0 12px; }
 .live-tag { display: inline-flex; align-items: center; gap: 5px; color: var(--ael-soft); font-weight: 500; }
 .live-tag i { width: 7px; height: 7px; border-radius: 50%; background: #e5484d; box-shadow: 0 0 0 3px rgba(229, 72, 77, 0.18); animation: ael-live 1.6s ease-in-out infinite; }
 @keyframes ael-live { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .ael-fine.ael-live { color: var(--ael-muted); }
-.chip.until svg { width: 11px; height: 11px; }
 .chip.price { background: var(--ael-bg-deep); border-color: var(--ael-accent-line); color: var(--ael-fg-strong); font-weight: 700; font-size: 12.5px; padding: 0 9px; }
 .chip.price small { font-weight: 500; font-size: 10.5px; color: var(--ael-dim); letter-spacing: 0.04em; text-transform: uppercase; }
 .chip.floor { color: var(--ael-soft); }
@@ -398,6 +395,7 @@ h2.grp[hidden] { display: none; }
 .leg .lp.dim { color: var(--ael-faint); }
 .leg .ls .lp { color: inherit; opacity: 0.85; margin-left: 2px; }
 .legs-h { font-size: 12px; color: var(--ael-dim); margin: 8px 0 2px; letter-spacing: 0.04em; text-transform: uppercase; }
+.ael-offer-acts + .legs-h { margin-top: 14px; }
 
 /* the games: what the venue lists that we protect, by day */
 .gbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 18px; }
@@ -877,7 +875,7 @@ const JS = String.raw`
     const src = locked ? (src0 || st.rcpt || st.lock || p.lock || {}) : q;
     const o = locked ? null : outcomes(tierOf(st));
     const t = locked ? null : tierOf(st);
-    let rows = "";
+    let rows = positionRows(p);
     if (!locked) {
       rows += '<div class="ael-dl">Sale</div><div class="ael-dv">Sell <b>' + t.soldContracts + " of " + p.contracts + "</b> at about " + cents(t.avgPriceCents) + (p.combo ? " to " + esc(VN) + "'s makers · " : " into " + esc(VN) + "'s bids · ") + t.keptContracts + " keep riding</div>";
       rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts " + (p.combo ? "to " + esc(VN) + "'s makers now, at the price they quoted for this ticket; " : "into " + esc(VN) + "'s bids now, at the best prices there; ") + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p><p>The same protection is priced against every other venue this service reads, for the record (under Elsewhere); the order itself fills on " + esc(VN) + ", where you hold the position.</p>" + (q.live ? (p.combo ? "<p>A leg is on, so the price moves; the tap asks " + esc(VN) + "'s makers again and sells at what they quote then, never more than they offer." : "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so.") + (Number(q.inPlayDelaySec) > 0 ? " " + esc(VN) + " holds in-play orders " + Number(q.inPlayDelaySec) + "s before they can match." : "") + "</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
@@ -966,15 +964,15 @@ const JS = String.raw`
         else if (hit) fact = "<b>" + hit + " of " + n + " hit</b>" + (nextIso ? " · next " + esc(fmtAt(nextIso)) : "");
         else fact = "<b>" + n + " legs</b>" + (nextIso ? " · first tips " + esc(fmtAt(nextIso)) : "");
         // one line under the legs; the why lives behind Details, like every other row
-        const why = st.details ? '<div class="ael-details"><div class="ael-drows"><div class="ael-dl">Why</div><div class="ael-dv">' + esc(VN) + "'s combo market has no bids to sell into, so a combo cannot be partly sold the way a single pick can.</div>" + '<div class="ael-dl">Last pick</div><div class="ael-dv">Protecting the last open pick on its own is a separate step; it is not on this page yet.</div></div></div>' : "";
-        return '<div class="ael-box">' + lineHtml("off", esc(w[0]), fact, st.open, "parlay") + (st.open && n ? '<div class="ael-panel ael-on">' + chipsHtml(p) + legsHtml(p) + '<div class="ael-offer-acts ael-tight"><span class="ael-fine">Rides to settlement on ' + esc(VN) + '.</span><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" + why + DISCLOSE + "</div>" : "") + "</div>";
+        const why = st.details ? '<div class="ael-details"><div class="ael-drows">' + positionRows(p) + '<div class="ael-dl">Why</div><div class="ael-dv">' + esc(VN) + "'s combo market has no bids to sell into, so a combo cannot be partly sold the way a single pick can.</div>" + '<div class="ael-dl">Last pick</div><div class="ael-dv">Protecting the last open pick on its own is a separate step; it is not on this page yet.</div></div></div>' : "";
+        return '<div class="ael-box">' + lineHtml("off", esc(w[0]), fact, st.open, "parlay") + (st.open && n ? '<div class="ael-panel ael-on">' + legsHtml(p) + '<div class="ael-offer-acts ael-tight"><span class="ael-fine">Rides to settlement on ' + esc(VN) + '.</span><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" + why + DISCLOSE + "</div>" : "") + "</div>";
       }
       return '<div class="ael-box">' + lineHtml("off", esc(w[0]), esc(w[1]), false, w[2]) + "</div>";
     }
     if (lock && lock.status === "settled") {
       const won = lock.result === "win" || lock.result === "yes";
       line = lineHtml("on", "Settled", (p.combo ? (won ? "All legs hit: " : "A leg missed: ") : nick + (won ? " won: " : " lost: ")) + "<b>" + usd(won ? lock.capTotalCents || lock.protectedCents : lock.floorTotalCents || lock.protectedCents) + "</b> all in", st.open);
-      panel = st.open ? '<div class="ael-panel ael-on">' + chipsHtml(p) + detailsHtml(p, st, true) + DISCLOSE + "</div>" : "";
+      panel = st.open ? '<div class="ael-panel ael-on">' + detailsHtml(p, st, true) + DISCLOSE + "</div>" : "";
     } else if (lock) {
       const ms = lock.memberSale || {};
       line = lineHtml("on", "Protected", "<b>" + usd(lock.floorTotalCents) + "</b> or <b>" + usd(lock.capTotalCents) + "</b>" + '<span class="ael-dim"> · locked</span>', st.open);
@@ -984,9 +982,10 @@ const JS = String.raw`
         if (ms.requestedContracts != null && ms.soldContracts < ms.requestedContracts) meta.push(ms.soldContracts + " of the " + ms.requestedContracts + " asked sold; the rest rides");
         if (st.cashAfter != null) meta.push("<b>" + signed(ms.cashNowCents || 0) + "</b> in your " + esc(VN) + " balance · now <b>" + usd(st.cashAfter) + "</b>");
         // a combo lock has nothing to buy back from (no offers on a combo market): no Leave early, the legs in its place
-        panel = '<div class="ael-panel ael-on">' + chipsHtml(p) + (p.combo ? legsHtml(p) : "") + slipRows(nick, { floor: lock.floorTotalCents, cap: lock.capTotalCents, cash: ms.cashNowCents || 0 }, ms.soldContracts + ms.keptContracts, true, p.combo) +
+        panel = '<div class="ael-panel ael-on">' + slipRows(nick, { floor: lock.floorTotalCents, cap: lock.capTotalCents, cash: ms.cashNowCents || 0 }, ms.soldContracts + ms.keptContracts, true, p.combo) +
           (st.leave && !p.combo ? leaveHtml(p, st) : "") +
           (!st.leave || p.combo ? '<div class="ael-acts ael-offer-acts">' + (p.combo ? '<span class="ael-fine">Stays to settlement.</span>' : '<button type="button" class="ael-go ael-quiet" data-act="leave-open">Leave early</button>') + '<span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" : "") +
+          (p.combo ? legsHtml(p) : "") +
           '<div class="ael-meta">' + meta.join(" · ") + "</div>" +
           (st.details ? detailsHtml(p, st, true) : "") + DISCLOSE + "</div>";
       }
@@ -1011,13 +1010,15 @@ const JS = String.raw`
       line = lineHtml("offer", "Lock in", "Still get <b>" + usd(o.floor) + "</b> if " + (p.combo ? "a leg misses." : esc(nick) + " lose.") + limited, st.open);
       if (st.open) {
         const busy = st.busy === "lock";
-        panel = '<div class="ael-panel ael-on">' + chipsHtml(p) + (p.combo ? legsHtml(p) : "") + slipRows(nick, o, p.contracts, false, p.combo) +
+        panel = '<div class="ael-panel ael-on">' + slipRows(nick, o, p.contracts, false, p.combo) +
           shapeHtml(st) +
           (p.combo ? '<div class="ael-fine' + (preview ? " ael-warn" : "") + '" style="margin-top:8px">' + (preview ? "Preview · a stand-in bid, not " + esc(VN) + "'s quote" : "Bid from " + esc(VN) + "'s makers · the rest rides to settlement") + "</div>" : "") +
           (live ? '<div class="ael-fine ael-live" style="margin-top:8px">' + (p.combo ? "Live price" : "Live price · never less than shown") + "</div>" : "") +
           (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">' + esc(VN) + "'s " + takers + " take " + t.soldContracts + " of " + wantOf(st, p.contracts) + " · the rest rides</div>" : "") +
           '<div class="ael-offer-acts"><button type="button" class="ael-go ael-pillgo' + (busy ? " ael-busy" : "") + '" data-act="lock"' + (busy ? " disabled" : "") + ">" + (busy ? esc(st.busyWords || "Selling into the bid…") : SHIELD + "Lock in") + '</button><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" +
           (st.err ? '<div class="ael-fine ael-err">' + esc(st.err) + "</div>" : "") +
+          (p.combo ? legsHtml(p) : "") +
+          (!S.inPlay && p.startsIso ? '<div class="ael-fine" style="margin-top:8px">Lock in until ' + cutoffClock(p) + "</div>" : "") +
           (st.details ? detailsHtml(p, st, false) : "") + DISCLOSE + "</div>";
       }
     }
@@ -1126,21 +1127,24 @@ const JS = String.raw`
     const evt = parlay ? (legs.length ? esc(legs.map((l) => nickOf(l.side)).join(" · ")) : esc(p.event || "")) : "<b>" + esc(opponentWords(p.side, p.event)) + "</b>" + (live ? ' · <span class="live-tag"><i></i>Live</span>' : p.startsIso ? " · " + esc(fmtAt(p.startsIso)) : "");
     return '<div class="pos-h">' + (parlay ? PARLAY_MARK : markHtml(p.side)) + '<div class="pos-t"><div class="name">' + name + '</div><div class="evt">' + evt + '</div></div><div class="pays"><small>pays</small>' + usd(p.payoutCents) + "</div></div>";
   };
-  // the figures behind the row: contracts, what was sold, the average, a parlay's payout and legs' date, the lock window; shown inside the open panel, never on the closed row
-  const chipsHtml = (p) => {
+  // the figures behind the row, as the first Details rows: the position in one line (contracts, what was sold, the average, a parlay's
+  // multiplier), then the lock window; never on the closed row, never at the top of the open panel, where they pushed the offer down
+  const positionRows = (p) => {
+    if (!p.ticker) return "";
     const parlay = p.reason === "parlay";
     const sold = p.lock && p.lock.status === "open" && p.lock.memberSale && p.lock.memberSale.soldContracts > 0 ? p.lock.memberSale.soldContracts : 0;
-    const tm = p.ticker ? timing(p) : null;
-    const legs = p.legs || [];
-    const chips = ['<span class="chip"><b>' + p.contracts + "</b> contracts</span>"];
-    if (sold) chips.push('<span class="chip sold"><b>' + sold + "</b> sold</span>");
-    if (p.entryCents != null) chips.push('<span class="chip">avg <b>' + cents(p.entryCents) + "</b></span>");
-    if (parlay && p.multiplier) chips.push('<span class="chip"><b>' + (Math.round(p.multiplier * 100) / 100) + "×</b> payout</span>");
-    // the legs' first tip-off when the legs were placed; else the ticket's own date, which STX sets to its last leg
-    if (parlay && p.startsIso) chips.push('<span class="chip">' + (legs.some((l) => l.startsIso) ? "first leg " : "last leg ") + esc(fmtAt(p.startsIso)) + "</span>");
-    if (p.ticker && p.startsIso && !tm && !(p.lock && p.lock.status !== "closed")) chips.push('<span class="chip until">' + CLOCK + (S.inPlay ? (isLive(p) ? (p.combo ? "Lock in while a leg is on" : "Lock in while the game is on") : "Lock in before or during the game") : "Lock in until " + esc(fmtClock(Date.parse(p.startsIso) - (S.cutoff || 45) * 60000))) + "</span>");
-    return '<div class="chips">' + chips.join("") + "</div>";
+    const bits = ["<b>" + p.contracts + "</b> contracts"];
+    if (sold) bits.push("<b>" + sold + "</b> sold");
+    if (p.entryCents != null) bits.push("avg " + cents(p.entryCents));
+    if (parlay && p.multiplier) bits.push((Math.round(p.multiplier * 100) / 100) + "× payout");
+    // a parlay whose legs carry no dates: the ticket's own date, which STX sets to its last leg; legs with dates show them in the list
+    if (parlay && p.startsIso && !(p.legs || []).some((l) => l.startsIso)) bits.push("last leg " + esc(fmtAt(p.startsIso)));
+    let rows = '<div class="ael-dl">Position</div><div class="ael-dv">' + bits.join(" · ") + "</div>";
+    if (p.startsIso && !timing(p) && !(p.lock && p.lock.status !== "closed")) rows += '<div class="ael-dl">Window</div><div class="ael-dv">' + windowWords(p) + "</div>";
+    return rows;
   };
+  const windowWords = (p) => S.inPlay ? (isLive(p) ? (p.combo ? "While a leg is on" : "While the game is on") : "Before or during the game") : "Until " + cutoffClock(p);
+  const cutoffClock = (p) => esc(fmtClock(Date.parse(p.startsIso) - (S.cutoff || 45) * 60000));
   const patchPos = (el, p) => {
     if (!el.firstChild) el.innerHTML = '<div class="pos-h-wrap"></div><div class="ael-row"></div>';
     el.classList.toggle("muted", !p.ticker);
