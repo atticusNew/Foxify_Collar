@@ -80,7 +80,7 @@ ${CSS}
     <ol class="steps">
       <li><div><b>Buy a side on ${esc(o.venueName)}</b><small>A game winner, any size. It shows here with its Lock in line.</small></div></li>
       <li><div><b>Tap Lock in</b><small>Part of the position sells into ${esc(o.venueName)}'s bids, in your own account. The cash lands in your ${esc(o.venueName)} balance now.</small></div></li>
-      <li><div><b>Keep the floor, win or lose</b><small>Lose, and the cash is yours. Win, and the rest still pays. Leave early buys it back any time before the game.</small></div></li>
+      <li><div><b>Keep the floor, win or lose</b><small>Lose, and the cash is yours. Win, and the rest still pays. Leave early buys it back any time before it settles.</small></div></li>
     </ol>
     <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Every order is placed under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke it there at any time. This page never holds your money, your login or your keys.</p>
     <p>Every lock is priced against every venue this service reads and filled where you hold the position, on ${esc(o.venueName)}; the record keeps what the others would have paid. Every lock is written to a public record in neutral words, with no account ids.</p>
@@ -900,7 +900,7 @@ const JS = String.raw`
     return '<div class="ael-leave"><div class="ael-leave-h"><b>Buy back ' + bb.contracts + " at " + cents(bb.avgPriceCents) + "</b><span>costs " + usd(bb.costCents) + (bb.contracts < bb.wantContracts ? " · only " + bb.contracts + " of " + bb.wantContracts + " offered" : "") + "</span></div>" +
       '<div class="ael-ledger"><div class="ael-lr"><span class="ael-l">Sold for</span><b>' + usd(u.cashNowCents) + '</b><s></s></div><div class="ael-lr ael-hero"><span class="ael-l">Net, after the buy-back</span><b>' + signed(net) + '</b><s>in your balance</s></div><div class="ael-lr ael-last"><span class="ael-l">Staying</span><b>' + usd(u.stayFloorCents) + " or " + usd(u.stayCapCents) + '</b><s></s></div></div>' +
       '<div class="ael-leave-acts"><button type="button" class="ael-go" data-act="leave">' + (st.busy === "leave" ? esc(st.busyWords || "Buying back…") : "Buy back " + bb.contracts + " at " + cents(bb.avgPriceCents)) + '</button><button type="button" class="ael-go ael-quiet" data-act="stay">Stay protected</button></div>' +
-      '<div class="ael-fine">Whole again, unprotected · the net above is the round trip' + (q.lastIso ? " · until " + esc(fmtAt(q.lastIso)) : "") + "</div></div>";
+      '<div class="ael-fine">Whole again, unprotected · the net above is the round trip' + (q.lastIso ? " · until " + esc(fmtAt(q.lastIso)) : isLive(p) ? " · live price, never more than shown" : "") + "</div></div>";
   };
 
   // ---- one position's line and panel ----

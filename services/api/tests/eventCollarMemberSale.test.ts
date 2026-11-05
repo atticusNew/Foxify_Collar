@@ -858,6 +858,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.ok(html.includes("Rides to settlement on ' + esc(VN) + '.</span>") && html.includes('<div class="ael-dl">Why</div>') && !html.includes("Last-leg protection through this service is a separate step"), "a parlay's panel is one line, the why behind Details");
     assert.ok(html.includes("It lands here with its Lock in line.</p>") && html.includes('id="g-help" aria-expanded="false" aria-label="What bid and floor mean">\' + INFO + "</button>') && html.includes('id="g-help-p" hidden><b>Bid</b> is') && html.includes(">Not protectable</h2>"), "Games is one line with an i");
     assert.ok(html.includes('[["held", "Portfolio"]]') && html.includes("data-tab=\"portfolio\">' + TICK + \"Held</a>\"") && html.includes(".side .buy, .side .have { order: 3; flex: none; margin-left: auto; }") && html.includes(".gbar { flex-wrap: nowrap; overflow-x: auto;"), "short pills; the tile's action on the first row, the filter bar one row");
+    assert.ok(html.includes("Leave early buys it back any time before it settles.") && html.includes('isLive(p) ? " · live price, never more than shown"'), "leaving stands during the game");
     assert.ok(html.includes('let pickedTier = "wide";') && html.includes("tier: pickedTier,") && !html.includes("ael_tier"), "every row opens on Max upside; nothing remembered across visits");
     assert.ok(html.includes("the rest rides</div>") && html.includes("<b>Whole again, unprotected</b>"), "the helper lines are one line each");
     // how it works: one sheet in the page, opened from the foot and the empty portfolio
@@ -1012,6 +1013,19 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.deepEqual([liveLock.body.ok, liveLock.body.route, liveLock.body.live, liveLock.body.inPlayDelaySec, liveLock.body.memberSale.soldContracts, liveLock.body.memberSale.limitPriceCents], [true, "member_sale", true, 5, 12, 66], "the sale is the member's own limit sell, as pre-game");
     const liveOrder = venue.orders.find((o: Any) => o.market_id === "m-mil");
     assert.deepEqual([liveOrder.action, liveOrder.order_type, liveOrder.price, liveOrder.quantity], ["sell", "limit", "0.66", "12"]);
+    // leave early during the game: the pre-start margin is the hedged routes' last moment, not a member sale's while in play is on; off, it stands for the sale too
+    worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: false });
+    let luq = await get<Any>(`/api/shadow/unwind/quote?ticker=${LIVE}`);
+    assert.deepEqual([luq.status, luq.body.error], [409, "too_late"], "in play off: the margin before the start closes the leave");
+    worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: true });
+    luq = await get<Any>(`/api/shadow/unwind/quote?ticker=${LIVE}`);
+    assert.equal(luq.status, 200, JSON.stringify(luq.body));
+    assert.deepEqual([luq.body.ok, luq.body.lastIso, luq.body.unwind.soldContracts, luq.body.unwind.buyBack.contracts, luq.body.unwind.buyBack.limitPriceCents], [true, null, 12, 12, 68], "the buy-back priced from the offers as they stand; no last moment");
+    const lun = await post<Any>("/api/shadow/unwind", { ticker: LIVE });
+    assert.equal(lun.status, 200, JSON.stringify(lun.body));
+    assert.deepEqual([lun.body.ok, lun.body.status, lun.body.route, lun.body.memberBuyBack.boughtContracts], [true, "closed", "member_sale", 12]);
+    const liveBuy = venue.orders.at(-1) as Any;
+    assert.deepEqual([liveBuy.action, liveBuy.market_id, liveBuy.price, liveBuy.quantity], ["buy", "m-mil", "0.68", "12"], "the buy-back is a limit at the offer, in the member's own account");
     worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: false });
   } finally {
     worker.server.close();

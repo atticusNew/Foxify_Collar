@@ -521,7 +521,12 @@ trip's net against the cash the sale paid ("−$0.65 on the round trip: you sold
 are higher now"), and what staying holds; the button says the order it sends. The service buys
 the sold contracts back from STX's offers in the holder's own account and writes the close from
 the fills; the position is whole again, unprotected. A book too thin for the whole buy-back says
-so, and the rest stays sold (and protected).
+so, and the rest stays sold (and protected). While in play is on, the leave stands during the game
+too: the 15-minute margin before the start is the hedged routes' last moment (the schedule's early
+close prices the hedge's book), not a member sale's, whose buy-back is their own order on their own
+venue for as long as STX trades the market. The quote carries `lastIso: null` on a live row and the
+block's last line says "live price, never more than shown" (the buy-back is a limit at the offer and
+waits out STX's in-play hold like the sale did). With in play off the margin applies to the sale too.
 
 Pre-game only, as everywhere: the service refuses a lock inside 45 minutes of the start. Parlays
 are not protected on STX. The public record carries the lock with STX's own route word and no
