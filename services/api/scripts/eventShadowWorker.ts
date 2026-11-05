@@ -184,8 +184,8 @@ import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venu
 import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
 import { venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
-import { ComboLegMemory, MemberApiError, MemberSessions, clientOrderIdFor, leagueOfCompetition, matchMemberMarket, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, winnerClubOf, type MemberBalance, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
-import { askLevels, bidLevels, buyBackRecordOf, executeLimitOrder, memberTailTerms, priceString, quoteBuyBack, quoteSaleTiers, saleEvCostBps, saleRecordOf, type ExecuteOptions, type OrderOutcome, type SaleTierQuote } from "../src/eventCollar/crossVenue/memberSale";
+import { ComboLegMemory, MemberApiError, MemberSessions, clientOrderIdFor, comboTickerOf, isComboTicker, leagueOfCompetition, marketResultWord, matchMemberMarket, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, winnerClubOf, type MemberBalance, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
+import { SALE_SHARE, acceptRfq, askLevels, bidLevels, buyBackRecordOf, executeLimitOrder, memberTailTerms, priceString, quoteBuyBack, quoteSaleTiers, requestRfqBid, saleEvCostBps, saleRecordOf, type ExecuteOptions, type OrderOutcome, type RfqBid, type SaleTierQuote } from "../src/eventCollar/crossVenue/memberSale";
 import type { MemberSaleComparison, MemberSaleRecord } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
 import { outcomeBids, outcomeCompetitionCode, outcomeMaxPrice } from "../src/eventCollar/crossVenue/venueBooks";
@@ -813,6 +813,14 @@ const MEMBER_COMPARE_WAIT_MS = positiveMs(process.env.MEMBER_APP_COMPARE_WAIT_MS
  * delay before it can match, so the order rests at least that long past the usual wait. Off: pre-game only.
  */
 let memberInPlay = !/^(0|false|no|off)$/i.test(process.env.MEMBER_APP_IN_PLAY ?? "");
+/**
+ * Combos, off unless MEMBER_APP_COMBO_RFQ=1: a member's combination (parlay) ticket is protected
+ * the same way a single is, part of it sold, with the bid coming from the venue's request for
+ * quote instead of a book (a combo market has none). The venue has not shipped the quote path,
+ * and its shape in the client is assumed (memberApp.ts, RawMemberRfq): off, a combo row reads as
+ * it always has, riding to settlement. No leave early on a combo: there is nothing to buy it back from.
+ */
+let memberComboRfq = /^(1|true|yes|on)$/i.test(process.env.MEMBER_APP_COMBO_RFQ ?? "");
 const LIVE_EVENT_WORDS = /in_progress|in_play|in-play|live|started|underway/;
 const OVER_WORDS = /closed|resulted|settled|cancel|void|completed|final/;
 /** the game is on at the venue's own word, or on the clock when the venue gives none */
@@ -1040,15 +1048,20 @@ interface MemberPriced {
   /** the game is on (only with MEMBER_APP_IN_PLAY); the venue's hold on an in-play order, seconds */
   live: boolean;
   inPlayDelaySec: number;
+  /** a combination ticket: the venue's quote the tiers were read from, and the legs it carries (MEMBER_APP_COMBO_RFQ) */
+  combo?: { bid: RfqBid; legs: number };
 }
+
+type MemberPricedResult = { ok: true; priced: MemberPriced } | { ok: false; status: number; body: Record<string, unknown> };
 
 /**
  * Price a member's lock on one market: refuse before the book is read when the account is not
  * connected, holds nothing on the market (or holds the other club), holds less than asked, the
  * game is over or paused, or (in-play off) the game has started or is inside the pre-game cutoff;
- * then the three tiers from the venue's bids as they stand.
+ * then the three tiers from the venue's bids as they stand. A combination ticket (its synthetic
+ * ticker) is priced from the venue's quote instead (memberComboPriced).
  */
-async function memberPriced(member: string, ticker: string, contracts: number, entryCents: number | undefined, fresh: boolean): Promise<{ ok: true; priced: MemberPriced } | { ok: false; status: number; body: Record<string, unknown> }> {
+async function memberPriced(member: string, ticker: string, contracts: number, entryCents: number | undefined, fresh: boolean): Promise<MemberPricedResult> {
   if (!memberSessions) return { ok: false, status: 404, body: { ok: false, error: "member_app_off", code: "member_app_off", message: "The member app is not configured on this service." } };
   if (!memberSessions.state(member).connected) return { ok: false, status: 409, body: { ok: false, error: "member_not_connected", code: "member_not_connected", message: `Connect your ${VENUE_NAMES[MEMBER_VENUE]} account first.` } };
   let positions: MemberHolderPosition[];
@@ -1057,6 +1070,7 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
   } catch (err) {
     return { ok: false, ...memberRefusal(err) };
   }
+  if (isComboTicker(ticker)) return memberComboPriced(member, ticker, contracts, entryCents, positions);
   const stem = ticker.slice(0, ticker.lastIndexOf("-") + 1);
   const pos = positions.find((p) => p.ticker === ticker);
   if (!pos) {
@@ -1111,6 +1125,90 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
       bidDepth: Math.floor(bids.reduce((s, l) => s + l.quantity, 0)),
       live,
       inPlayDelaySec: live ? inPlayDelaySecOf(market) : 0,
+    },
+  };
+}
+
+/** A member's combination ticket is a quotable row only with MEMBER_APP_COMBO_RFQ on and the ticket still live: no leg missed, not every leg in. */
+const comboLockable = (p: MemberHolderPosition): boolean => {
+  if (!memberComboRfq || p.reason !== "parlay") return false;
+  const legs = p.legs ?? [];
+  if (legs.some((l) => l.state === "lost")) return false;
+  return !(legs.length > 0 && legs.every((l) => l.state === "won" || l.state === "void"));
+};
+
+/** The member's combination ticket the synthetic ticker names, among their positions. */
+const comboPositionOf = (positions: MemberHolderPosition[], ticker: string): MemberHolderPosition | undefined => positions.find((p) => p.reason === "parlay" && comboTickerOf(p.marketId) === ticker);
+
+/**
+ * Price a member's lock on a combination ticket: the same refusals as a single, then one quote
+ * asked of the venue's makers on the largest shape's size (Max floor, 80%), read as one bid level
+ * so the three shapes walk it like a book. Nothing is accepted here; the lock asks again at the
+ * tap and accepts that quote.
+ */
+async function memberComboPriced(member: string, ticker: string, contracts: number, entryCents: number | undefined, positions: MemberHolderPosition[]): Promise<MemberPricedResult> {
+  const VN = VENUE_NAMES[MEMBER_VENUE];
+  if (!memberComboRfq) return { ok: false, status: 409, body: { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VN}; the lock sells part of one position.` } };
+  const pos = comboPositionOf(positions, ticker);
+  if (!pos) return { ok: false, status: 409, body: { ok: false, error: "not_held", code: "not_held", message: `Your ${VN} account holds no such combo.` } };
+  if (contracts > pos.contracts + 1e-9) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this ticket; the lock can cover up to that.`, held: pos.contracts } };
+  const legs = pos.legs ?? [];
+  if (legs.some((l) => l.state === "lost")) return { ok: false, status: 200, body: { ok: false, code: "combo_missed", message: "A leg missed; this ticket has settled its way." } };
+  if (legs.length > 0 && legs.every((l) => l.state === "won" || l.state === "void")) return { ok: false, status: 200, body: { ok: false, code: "combo_settling", message: `Every leg hit; ${VN} is settling this ticket.` } };
+  const client = memberSessions!.client(member);
+  let market: RawOutcomeMarket | undefined;
+  try {
+    market = (await client.markets([pos.marketId]))[0];
+  } catch (err) {
+    return { ok: false, ...memberRefusal(err) };
+  }
+  if (!market) return { ok: false, status: 502, body: { ok: false, error: "venue_refused", code: "venue_refused", message: `${VN} did not describe the ticket.` } };
+  const statusWords = `${market.status ?? ""} ${market.event_status ?? ""}`.toLowerCase();
+  if (OVER_WORDS.test(statusWords) || market.settled_at) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: `This ticket is over; ${VN} is settling it.` } };
+  // the record settles after the last leg; the page's first-leg start stays on the position
+  const lastLegIso = legs.map((l) => l.startsIso).filter((x): x is string => Boolean(x)).sort().at(-1) ?? (market.event_start ? new Date(market.event_start).toISOString() : null) ?? pos.startsIso;
+  if (!lastLegIso || !Number.isFinite(Date.parse(lastLegIso))) return { ok: false, status: 200, body: { ok: false, code: "not_offered", message: "Protection isn't offered on this ticket: no leg has a start time." } };
+  const live = legs.some((l) => l.state === "live") || LIVE_EVENT_WORDS.test(statusWords);
+  if (live && !memberInPlay) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: "A leg is in play; the lock is pre-game only." } };
+  if (market.trading === false || /suspend/.test(statusWords)) return { ok: false, status: 200, body: { ok: false, code: "market_suspended", message: `${VN} has paused this ticket for the moment; try again in a few seconds.` } };
+  const maxPrice = outcomeMaxPrice(market);
+  const venueContracts = Math.floor(contracts / maxPrice + 1e-9);
+  const askFor = Math.max(1, Math.floor(venueContracts * SALE_SHARE.tight));
+  let bid: RfqBid;
+  try {
+    bid = await requestRfqBid(client, { market_id: pos.marketId, action: "sell", quantity: String(askFor), client_rfq_id: clientOrderIdFor("rfq", ticker) }, maxPrice, memberOrderOpts);
+  } catch (err) {
+    // the venue has not shipped the quote path: its 404 is "not yet", not an outage
+    if (err instanceof MemberApiError && err.status === 404) return { ok: false, status: 200, body: { ok: false, code: "combo_quotes_unavailable", message: `${VN} isn't quoting combo tickets yet.` } };
+    return { ok: false, ...memberRefusal(err) };
+  }
+  if (!bid.level) {
+    const why = bid.reason === "declined" ? `${VN}'s makers passed on this ticket right now.` : bid.reason === "expired" ? `${VN}'s quote lapsed before it could be read; try again.` : `${VN} did not price this ticket in time; try again.`;
+    return { ok: false, status: 200, body: { ok: false, code: "no_bids", rfq: bid.reason, message: why } };
+  }
+  const tiers = quoteSaleTiers({ positionContracts: venueContracts, maxPrice, bids: [bid.level] });
+  if (!tiers.wide && !tiers.balanced && !tiers.tight) return { ok: false, status: 200, body: { ok: false, code: "no_bids", message: `${VN}'s quote cannot fund a shape at this size.` } };
+  const bidCents = Math.round((bid.level.price / maxPrice) * 100);
+  const lastPx = Number(market.last_traded_price ?? market.price);
+  // the mark is the ticket's own last price when the venue shows one, the quote otherwise
+  const markCents = Number.isFinite(lastPx) && lastPx > 0 && lastPx < maxPrice ? Math.round((lastPx / maxPrice) * 100) : bidCents;
+  return {
+    ok: true,
+    priced: {
+      member,
+      pos,
+      market,
+      maxPrice,
+      contracts,
+      venueContracts,
+      entryCents: entryCents ?? pos.entryCents,
+      game: { league: pos.league ?? "combo", sideName: pos.side || `${legs.length}-leg combo`, eventTitle: pos.event || (market.symbol ?? "").trim() || "Combo", eventTimeIso: lastLegIso, markCents },
+      tiers,
+      bestBidCents: bidCents,
+      bidDepth: Math.floor(bid.level.quantity),
+      live,
+      inPlayDelaySec: 0,
+      combo: { bid, legs: legs.length },
     },
   };
 }
@@ -1212,7 +1310,12 @@ function comparedViewOf(c: MemberSaleComparison | undefined, result: CandidateRe
 }
 
 /** The rule cells of the member's venue for the league, as the client's rules grid reads them, and the tails in the member's words. */
-function memberRulesView(league: string, kept: number) {
+/** The text a combination ticket's pin is over: the venue's description of the legs and what each must do, its rules word, its specifier. */
+const comboRuleText = (m: RawOutcomeMarket): string => [m.description, m.question, m.rules, m.specifier].filter((s): s is string => typeof s === "string" && s.trim() !== "").join("\n");
+
+function memberRulesView(league: string, kept: number, combo = false) {
+  // a combination settles under the venue's own combo rules (a voided leg drops out and the ticket re-prices), not a league's tails; the page shows the one sentence under Details
+  if (combo) return { tails: [], rules: {}, comboNote: `${VENUE_NAMES[MEMBER_VENUE]} settles the ${kept} riding contract${kept === 1 ? "" : "s"} by its own combo rules: a voided leg drops out and the ticket re-prices. The contracts you sold stay sold.` };
   const cells = rulesFor(MEMBER_VENUE, league);
   return {
     tails: memberTailTerms(VENUE_NAMES[MEMBER_VENUE], cells, kept),
@@ -1256,18 +1359,27 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     sendJson(res, 200, { ok: false, at: atIso, ticker, code: "no_bids", message: `${VENUE_NAMES[MEMBER_VENUE]}'s bids cannot fund that shape right now; pick another.` });
     return;
   }
-  // the comparison starts now and runs while the order rests: the member's own sale never waits on the other venues
-  const cmp = memberComparison(ticker, P.contracts, P.entryCents, atIso, want);
-  const clientOrderId = clientOrderIdFor("lock", ticker);
+  // the comparison starts now and runs while the order rests: the member's own sale never waits on the other venues.
+  // A combination has no Kalshi twin to price against: nothing is compared.
+  const cmp = P.combo ? Promise.resolve({ compared: { at: atIso, ok: false as const, reason: "combo", sent: false as const }, result: null }) : memberComparison(ticker, P.contracts, P.entryCents, atIso, want);
+  const clientOrderId = P.combo ? (P.combo.bid.rfq.client_rfq_id ?? clientOrderIdFor("rfq", ticker)) : clientOrderIdFor("lock", ticker);
   let outcome: OrderOutcome;
   try {
-    outcome = await executeLimitOrder(
-      memberSessions!.client(member),
-      { action: "sell", market_id: P.pos.marketId, order_type: "limit", price: priceString(t.limitPriceCents), quantity: String(t.soldContracts), client_order_id: clientOrderId },
-      memberOrderOptsFor(P.live, P.inPlayDelaySec),
-    );
+    outcome = P.combo
+      ? // the quote the tap priced is the one accepted, for the shape's size (never more than the makers offered)
+        await acceptRfq(memberSessions!.client(member), P.combo.bid, t.soldContracts)
+      : await executeLimitOrder(
+          memberSessions!.client(member),
+          { action: "sell", market_id: P.pos.marketId, order_type: "limit", price: priceString(t.limitPriceCents), quantity: String(t.soldContracts), client_order_id: clientOrderId },
+          memberOrderOptsFor(P.live, P.inPlayDelaySec),
+        );
   } catch (err) {
     void cmp.catch(() => undefined);
+    memberPositionsCache.delete(member);
+    if (P.combo && err instanceof MemberApiError && (err.status === 409 || err.status === 410 || /expir|lapse/i.test(err.message))) {
+      sendJson(res, 200, { ok: false, at: atIso, ticker, code: "quote_lapsed", message: `${VENUE_NAMES[MEMBER_VENUE]}'s quote lapsed before the tap reached it; nothing was sold. Price again.` });
+      return;
+    }
     const r = memberRefusal(err);
     sendJson(res, r.status, { at: atIso, ticker, ...r.body });
     return;
@@ -1276,13 +1388,18 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
   memberPositionsCache.delete(member);
   if (outcome.filled <= 0) {
     void cmp.catch(() => undefined);
-    const why = P.live && P.inPlayDelaySec > 0 ? `${VENUE_NAMES[MEMBER_VENUE]} held the order for its ${P.inPlayDelaySec}s in-play delay and the bid moved away before it could match; nothing was sold.` : `${VENUE_NAMES[MEMBER_VENUE]}'s bid moved before the order reached it; nothing was sold.`;
+    const why = P.combo
+      ? `${VENUE_NAMES[MEMBER_VENUE]} accepted the quote but nothing filled; nothing was sold.`
+      : P.live && P.inPlayDelaySec > 0
+        ? `${VENUE_NAMES[MEMBER_VENUE]} held the order for its ${P.inPlayDelaySec}s in-play delay and the bid moved away before it could match; nothing was sold.`
+        : `${VENUE_NAMES[MEMBER_VENUE]}'s bid moved before the order reached it; nothing was sold.`;
     sendJson(res, 200, { ok: false, at: atIso, ticker, code: "not_filled", live: P.live, message: why, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
     return;
   }
   const sale = saleRecordOf(outcome, { marketId: P.pos.marketId, positionContracts: P.venueContracts, maxPrice: P.maxPrice, limitPriceCents: t.limitPriceCents, clientOrderId, requested: t.soldContracts });
   const { compared, result } = await cmp;
   const at = new Date().toISOString();
+  const combo = P.combo ? { rfqId: P.combo.bid.rfq.id ?? null, quotedPriceCents: t.limitPriceCents, expiresAtIso: P.combo.bid.expiresAtIso, legs: P.combo.legs } : undefined;
   const record: Parameters<typeof appendShadowRecord>[1] = {
     type: "open",
     at,
@@ -1307,9 +1424,12 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     holderVenue: MEMBER_VENUE,
     source: "lock",
     entryCents: P.entryCents,
-    memberSale: { ...sale, compared },
-    // the member's venue's published rules for the league, pinned; the Kalshi market the result is read from, when the comparison read it
-    rule: pinVenueRules({ venue: MEMBER_VENUE, marketId: ticker, cells: rulesFor(MEMBER_VENUE, P.game.league) }),
+    memberSale: { ...sale, compared, ...(combo ? { combo } : {}) },
+    // the member's venue's published rules for the league, pinned; the Kalshi market the result is read from, when the comparison read it.
+    // A combination pins the ticket's own text as the venue describes it: the result is read from that market at settlement.
+    rule: combo
+      ? pinRule({ venue: MEMBER_VENUE, marketId: P.pos.marketId, ruleText: comboRuleText(P.market), sourceUrl: `${MEMBER_APP_VENUE_URL ?? memberSessions!.cfg.host}/markets/${encodeURIComponent(P.pos.marketId)}`, readAtIso: at })
+      : pinVenueRules({ venue: MEMBER_VENUE, marketId: ticker, cells: rulesFor(MEMBER_VENUE, P.game.league) }),
     ...(result ? { referenceRule: pinRule({ venue: "kalshi", marketId: ticker, ruleText: kalshiRuleText(result.market), sourceUrl: kalshiRuleUrl(ticker, kalshiBase()), readAtIso: at }) } : {}),
     ...(holder ? { holder } : {}),
   };
@@ -1337,8 +1457,9 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     partial: sale.soldContracts < sale.requestedContracts,
     live: P.live,
     ...(P.live ? { inPlayDelaySec: P.inPlayDelaySec } : {}),
+    ...(combo ? { combo: true } : {}),
     member: memberView(member),
-    ...memberRulesView(P.game.league, sale.keptContracts),
+    ...memberRulesView(P.game.league, sale.keptContracts, Boolean(combo)),
     compared: comparedViewOf(compared),
     hedge: null,
     routing: null,
@@ -1853,6 +1974,8 @@ function unwindRefusal(lock: ShadowPosition | undefined, ticker: string, nowMs: 
     const said = lock.status === "closed" ? "This position was already left early." : lock.status === "settled" ? "This position has settled; there is nothing to leave." : "This position was voided; there is nothing to leave.";
     return { status: 409, body: { ok: false, error: "not_open", status: lock.status, message: said } };
   }
+  // a combination sold through the venue's quote has nothing to buy it back from: the lock stands to settlement
+  if (lock.memberSale?.combo) return { status: 409, body: { ok: false, error: "combo_no_buyback", code: "combo_no_buyback", message: `A combo lock stays to settlement; ${VENUE_NAMES[MEMBER_VENUE]} has no offers to buy a combo back from.` } };
   const lastMs = leaveLastMsOf(lock);
   if (lastMs === null) return null;
   if (!Number.isFinite(lastMs) || nowMs > lastMs) {
@@ -2202,9 +2325,15 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       ...(mv ? { member: mv } : {}),
       positions: [
         ...venueRows.map((p) => ({ ...p, lock: lockOf(p.ticker) })),
-        // the member's positions carry their venue, so a client on another venue's page leaves them alone
-        ...memberRows.map(({ market: _m, marketId: _id, ...p }) => ({ ...p, venue: MEMBER_VENUE, lock: lockOf(p.ticker) })),
+        // the member's positions carry their venue, so a client on another venue's page leaves them alone.
+        // A combination ticket the venue will quote (MEMBER_APP_COMBO_RFQ) carries its synthetic ticker, so the page quotes and locks it like a single.
+        ...memberRows.map((row) => {
+          const { market: _m, marketId: _id, ...p } = row;
+          const ticker = comboLockable(row) ? comboTickerOf(row.marketId) : p.ticker;
+          return { ...p, ticker, ...(ticker !== p.ticker ? { combo: true } : {}), venue: MEMBER_VENUE, lock: lockOf(ticker) };
+        }),
       ],
+      ...(memberComboRfq ? { comboRfq: true } : {}),
     });
     return;
   }
@@ -2240,12 +2369,13 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
           .filter(([, t]) => t)
           .map(([k, t]) => {
             const v = saleTierView(t as SaleTierQuote, P.contracts, P.maxPrice, P.game.markCents);
-            return [k, { ...v, tails: memberRulesView(P.game.league, v.keptContracts).tails }];
+            return [k, { ...v, tails: memberRulesView(P.game.league, v.keptContracts, Boolean(P.combo)).tails }];
           }),
       );
       const dflt = P.tiers[searchConfig().defaultTier] ? searchConfig().defaultTier : (Object.keys(tiers)[0] as ProtectionTier);
       const head = tiers[dflt];
-      const cmp = await memberComparison(parsed.value.ticker, P.contracts, P.entryCents, atIso, dflt);
+      // a combination has no Kalshi twin to compare against
+      const cmp = P.combo ? { compared: undefined, result: null } : await memberComparison(parsed.value.ticker, P.contracts, P.entryCents, atIso, dflt);
       sendJson(res, 200, {
         ok: true,
         at: atIso,
@@ -2259,10 +2389,12 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         route: "member_sale",
         live: P.live,
         ...(P.live ? { inPlayDelaySec: P.inPlayDelaySec } : {}),
+        // a combination: the quote the shapes were read from, so the page can say where the bid came from and how long it stands
+        ...(P.combo ? { combo: true, rfq: { id: P.combo.bid.rfq.id, quantity: P.bidDepth, priceCents: P.bestBidCents, expiresAtIso: P.combo.bid.expiresAtIso, legs: P.combo.legs } } : {}),
         quote: { ok: true, contracts: P.contracts, markCents: P.game.markCents, entryCents: P.entryCents, ...head, tier: dflt, tiers, quotedAt: atIso },
         evCostBps: head.evCostBps,
         member: { ...memberView(member), held: P.pos.contracts, bestBidCents: P.bestBidCents, bidDepth: P.bidDepth },
-        ...memberRulesView(P.game.league, head.keptContracts),
+        ...memberRulesView(P.game.league, head.keptContracts, Boolean(P.combo)),
         compared: comparedViewOf(cmp.compared, cmp.result),
       });
       return;
@@ -2526,7 +2658,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         lock: lockSummaryOf(lock),
         memberSale: memberSaleViewOf(s),
         compared: comparedViewOf(s.compared),
-        ...memberRulesView(lock.league, s.keptContracts),
+        ...(s.combo ? { combo: true } : {}),
+        ...memberRulesView(lock.league, s.keptContracts, Boolean(s.combo)),
         ...(lock.closeMemberBuyBack ? { memberBuyBack: lock.closeMemberBuyBack } : {}),
         venueSettlement: await memberSettlementOf(holder, s),
         hedge: null,
@@ -3166,6 +3299,35 @@ async function scanTick(): Promise<void> {
   await healthTick();
 }
 
+/**
+ * A combination ticket sold through the member's venue has no Kalshi market to read: the result
+ * is the venue's own word on the combo market, read with the member's connection (the holder's
+ * when the record names one), the pinned text checked against the market's description as it
+ * reads now. Voided like any record when no word comes in time.
+ */
+async function settleComboRecord(p: ShadowPosition, path: string, now: number): Promise<void> {
+  const eventMs = Date.parse(p.eventTimeIso);
+  const marketId = p.memberSale?.marketId;
+  if (!memberSessions || !marketId) throw new Error(`${p.ticker}: the member app is off; the combo's result cannot be read`);
+  const member = memberKeyOf(p.holder ?? null);
+  if (!memberSessions.state(member).connected) throw new Error(`${p.ticker}: the member's ${VENUE_NAMES[MEMBER_VENUE]} connection is not open; the combo's result waits`);
+  const m = (await memberSessions.client(member).markets([marketId]))[0];
+  const word = m ? marketResultWord(m) : null;
+  if (word) {
+    const at = new Date().toISOString();
+    const ruleCheck = checkRule(p.rule, m ? comboRuleText(m) : null, at);
+    if (ruleCheck.unchanged === false) {
+      void alerter({ kind: "rule_changed", message: `${p.ticker} (${p.eventTitle}) settled ${word} under a combo text that changed since open: ${p.rule?.sha256.slice(0, 12)} -> ${ruleCheck.sha256?.slice(0, 12)}` });
+    }
+    appendOrAlert({ type: "settle", at, ticker: p.ticker, result: word, ruleCheck }, path);
+  } else if (now > eventMs + VOID_AFTER_MS) {
+    const reason = `no result on the venue's combo market ${Math.round(VOID_AFTER_MS / 3_600_000)}h after the last leg`;
+    if (appendOrAlert({ type: "void", at: new Date().toISOString(), ticker: p.ticker, reason }, path)) {
+      void alerter({ kind: "position_voided", message: `${p.ticker} (${p.eventTitle}) voided: ${reason}` });
+    }
+  }
+}
+
 /** Mark past events against their official results; void the unresolvable. */
 async function settleTick(): Promise<void> {
   const now = Date.now();
@@ -3178,6 +3340,10 @@ async function settleTick(): Promise<void> {
     if (!Number.isFinite(eventMs) || now < eventMs + SETTLE_GRACE_MS) continue;
     due += 1;
     try {
+      if (p.memberSale?.combo) {
+        await settleComboRecord(p, path, now);
+        continue;
+      }
       const r = await getMarketResult(p.ticker);
       if (r.result === "yes" || r.result === "no") {
         const at = new Date().toISOString();
@@ -4520,6 +4686,8 @@ export function wireLockEngine(fns: {
   memberOrder?: ExecuteOptions;
   /** whether a member may lock while the game is on, in place of MEMBER_APP_IN_PLAY (on unless set to 0) */
   memberInPlay?: boolean;
+  /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ (off unless set) */
+  memberComboRfq?: boolean;
 }): void {
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
@@ -4529,6 +4697,10 @@ export function wireLockEngine(fns: {
   }
   if (fns.memberOrder) memberOrderOpts = fns.memberOrder;
   if (fns.memberInPlay !== undefined) memberInPlay = fns.memberInPlay;
+  if (fns.memberComboRfq !== undefined) {
+    memberComboRfq = fns.memberComboRfq;
+    memberPositionsCache.clear();
+  }
   if (fns.settledMarkets) {
     settledMarketsFn = fns.settledMarkets;
     settledCache.clear();
