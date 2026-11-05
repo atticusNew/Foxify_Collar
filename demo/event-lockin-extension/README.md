@@ -390,7 +390,9 @@ games listed, past locks):
   no bids to sell into, so a combo cannot be partly sold the way a single pick can; protecting the
   last open pick on its own is a separate step, not on this page yet). STX
   writes a long's average premium negative (cash out), so the entry is read as its size. Locked
-  positions come first, then the offers. After a lock a one-line toast says "Locked in · +$16.18
+  positions come first, then the offers; both groups read live first, then whatever starts next
+  (STX's own order breaks ties), and a combo sorts by its next open leg, so a leg already final
+  does not make the ticket live or started. After a lock a one-line toast says "Locked in · +$16.18
   to your STX balance", the balance figure counts up to its new value with a "+$16.18" badge
   beside it for a few seconds, and on a phone the balance strip is sticky under the tabs (handle
   and figure on one line), so the credit lands in view without leaving the row just locked. The
