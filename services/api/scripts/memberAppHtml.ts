@@ -183,7 +183,7 @@ body {
   --ael-edge: rgba(255, 255, 255, 0.13); --ael-edge-hover: rgba(255, 255, 255, 0.24);
   --ael-accent: #f9ae1c; --ael-accent-hover: #ffc91a; --ael-accent-ink: #1a1200; --ael-glow: #ffe233; --ael-accent-text: #ffc91a;
   --ael-accent-line: rgba(249, 174, 28, 0.6); --ael-accent-wash: rgba(249, 174, 28, 0.12); --ael-accent-wash-2: rgba(249, 174, 28, 0.16); --ael-accent-wash-3: rgba(249, 174, 28, 0.22);
-  --ael-live: #ff5c5c; --ael-parlay: #b48cff; --ael-parlay-wash: rgba(180, 140, 255, 0.14); --ael-parlay-line: rgba(180, 140, 255, 0.45);
+  --ael-live: #ff5c5c; --ael-up: #4fd48a; --ael-parlay: #b48cff; --ael-parlay-wash: rgba(180, 140, 255, 0.14); --ael-parlay-line: rgba(180, 140, 255, 0.45);
   --ael-ring: rgba(255, 255, 255, 0.35); --ael-radius: 8px; --ael-radius-lg: 14px;
   background: #010101; color: var(--ael-fg);
   font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -353,6 +353,18 @@ h2.grp[hidden] { display: none; }
 .pos-t .evt b { font-weight: 500; color: var(--ael-soft); }
 .pos .pays { flex: none; text-align: right; font-size: 15px; font-weight: 700; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pos .pays small { display: block; font-weight: 500; font-size: 11px; color: var(--ael-dim); letter-spacing: 0.04em; text-transform: uppercase; }
+/* what the ticket has done since it was bought, under what it pays: the one figure a holder acts on */
+.pos .pays .since { display: block; margin-top: 3px; font-size: 12px; font-weight: 600; line-height: 1; }
+.pos .pays .since.up { color: var(--ael-up); }
+.pos .pays .since.dn { color: var(--ael-dim); }
+/* History's tally: what the locks have done against riding every ticket out */
+.tally { padding: 14px 16px; margin: 0 0 18px; border: 1px solid var(--ael-edge); border-radius: var(--ael-radius-lg); background: var(--ael-bg-raise); }
+.tally .tl { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ael-dim); }
+.tally .tn { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 4px; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; }
+.tally .tn small { font-size: 13px; font-weight: 500; letter-spacing: 0; color: var(--ael-muted); }
+.tally.up .tn { color: var(--ael-up); }
+.tally .tb { margin-top: 8px; font-size: 13px; line-height: 1.45; color: var(--ael-muted); }
+.tally .tb b { font-weight: 600; color: var(--ael-fg-strong); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0 48px; }
 .chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; font-size: 12px; line-height: 1; padding: 0 8px; border-radius: 6px; background: var(--ael-bg-raise); border: 1px solid var(--ael-border); color: var(--ael-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .chip b { font-weight: 600; color: var(--ael-soft); }
@@ -925,6 +937,9 @@ const JS = String.raw`
   // (a leg final from last night does not make the ticket live or started); a single is its game
   const comboLegs = (p) => (p.legs && p.legs.length ? p.legs : null);
   const nextStartOf = (p) => { const legs = comboLegs(p); if (!legs) return p.startsIso; const open = legs.filter((l) => (l.state === "pending" || l.state === "live") && l.startsIso).map((l) => l.startsIso).sort(); return open[0] || p.startsIso; };
+  // what the ticket is worth now against what it cost: the venue's top bid on every contract (the last trade on a combo, which has no bids)
+  const worthOf = (p) => { const px = p.bidCents != null ? p.bidCents : p.lastCents; if (px == null || !p.contracts || p.costCents == null) return null; const worth = Math.round(p.contracts * px); return { worth, px, bid: p.bidCents != null, since: worth - p.costCents }; };
+  const sinceWords = (c) => (c > 0 ? "up " : "down ") + usd(Math.abs(c));
   const isLive = (p) => { if (!S.inPlay || !p.ticker) return false; const legs = comboLegs(p); if (legs) return legs.some((l) => l.state === "live"); return !!(p.startsIso && Date.parse(p.startsIso) <= Date.now()); };
   const timing = (p) => {
     if (!p.startsIso || S.inPlay) return null;
@@ -1127,7 +1142,9 @@ const JS = String.raw`
     const name = parlay ? esc((legs.length ? legs.length + "-leg " : "") + "Combo") : esc(p.side || "Position") + "<small>to win</small>";
     const live = isLive(p);
     const evt = parlay ? (legs.length ? esc(legs.map((l) => nickOf(l.side)).join(" · ")) : esc(p.event || "")) : "<b>" + esc(opponentWords(p.side, p.event)) + "</b>" + (live ? ' · <span class="live-tag"><i></i>Live</span>' : p.startsIso ? " · " + esc(fmtAt(p.startsIso)) : "");
-    return '<div class="pos-h">' + (parlay ? PARLAY_MARK : markHtml(p.side)) + '<div class="pos-t"><div class="name">' + name + '</div><div class="evt">' + evt + '</div></div><div class="pays"><small>pays</small>' + usd(p.payoutCents) + "</div></div>";
+    const w = p.ticker && !(p.lock && p.lock.status !== "closed") ? worthOf(p) : null;
+    const since = w && w.since ? '<span class="since ' + (w.since > 0 ? "up" : "dn") + '">' + sinceWords(w.since) + "</span>" : "";
+    return '<div class="pos-h">' + (parlay ? PARLAY_MARK : markHtml(p.side)) + '<div class="pos-t"><div class="name">' + name + '</div><div class="evt">' + evt + '</div></div><div class="pays"><small>pays</small>' + usd(p.payoutCents) + since + "</div></div>";
   };
   // the figures behind the row, as the first Details rows: the position in one line (contracts, what was sold, the average, a parlay's
   // multiplier), then the lock window; never on the closed row, never at the top of the open panel, where they pushed the offer down
@@ -1137,7 +1154,10 @@ const JS = String.raw`
     const sold = p.lock && p.lock.status === "open" && p.lock.memberSale && p.lock.memberSale.soldContracts > 0 ? p.lock.memberSale.soldContracts : 0;
     const bits = ["<b>" + p.contracts + "</b> contracts"];
     if (sold) bits.push("<b>" + sold + "</b> sold");
-    if (p.entryCents != null) bits.push("avg " + cents(p.entryCents));
+    if (p.costCents != null) bits.push("paid " + usd(p.costCents) + (p.entryCents != null ? " (avg " + cents(p.entryCents) + ")" : ""));
+    else if (p.entryCents != null) bits.push("avg " + cents(p.entryCents));
+    const w = !sold && !(p.lock && p.lock.status !== "closed") ? worthOf(p) : null;
+    if (w) bits.push("worth " + usd(w.worth) + " at " + esc(VN) + "'s " + cents(w.px) + (w.bid ? " bid" : " last trade") + (w.since ? " · " + sinceWords(w.since) : ""));
     if (parlay && p.multiplier) bits.push((Math.round(p.multiplier * 100) / 100) + "× payout");
     // a parlay whose legs carry no dates: the ticket's own date, which STX sets to its last leg; legs with dates show them in the list
     if (parlay && p.startsIso && !(p.legs || []).some((l) => l.startsIso)) bits.push("last leg " + esc(fmtAt(p.startsIso)));
@@ -1278,12 +1298,32 @@ const JS = String.raw`
     return ["Protected", "<b>" + usd(r.floorTotalCents || 0) + "</b> or <b>" + usd(r.capTotalCents || 0) + "</b>", "on"];
   };
   const histKey = (r) => "h:" + r.ticker + ":" + r.at;
-  const historyScaffold = () => { main.innerHTML = "<h1>History</h1>" + '<div id="hlist" class="rows"></div><div id="hempty"></div>'; };
+  const historyScaffold = () => { main.innerHTML = "<h1>History</h1>" + '<div id="htally"></div><div id="hlist" class="rows"></div><div id="hempty"></div>'; };
+  // what the locks have done, in money, against riding every ticket out: a loss paid the floor instead of $0, a win paid the cap instead
+  // of the full payout, an early leave its round trip. The record's own settled figures, summed; nothing projected.
+  const tallyHtml = (past) => {
+    const isWin = (r) => r.result === "yes" || r.result === "win";
+    const settled = past.filter((r) => r.status === "settled" && r.protectedCents != null);
+    const left = past.filter((r) => r.status === "closed");
+    if (!settled.length && !left.length) return "";
+    const won = settled.filter(isWin), lost = settled.filter((r) => !isWin(r));
+    const kept = lost.reduce((s, r) => s + (r.protectedCents || 0), 0);
+    const gaveUp = won.reduce((s, r) => s + Math.max(0, (r.nakedCents || 0) - (r.protectedCents || 0)), 0);
+    const leftNet = left.reduce((s, r) => s + (r.closeNetCents || 0), 0);
+    const net = kept - gaveUp + leftNet;
+    const bits = [];
+    if (lost.length) bits.push(lost.length + (lost.length === 1 ? " loss paid <b>" : " losses paid <b>") + usd(kept) + "</b> instead of $0");
+    else bits.push("no loss yet");
+    if (won.length) bits.push(won.length + (won.length === 1 ? " win gave up " : " wins gave up ") + usd(gaveUp) + " of upside");
+    if (left.length) bits.push(left.length + " left early, net " + signed(leftNet));
+    return '<div class="tally' + (net > 0 ? " up" : "") + '"><div class="tl">Lock in, so far</div><div class="tn">' + signed(net) + "<small>vs riding every ticket out</small></div>" + '<div class="tb">' + bits.join(" · ") + "</div></div>";
+  };
   const syncHistory = () => {
     if (S.screen !== "history") return;
     const hlist = document.getElementById("hlist");
     if (!S.history) { setHtml(document.getElementById("hempty"), skeleton(2)); return; }
     const past = S.history.filter((r) => r.status !== "open");
+    setHtml(document.getElementById("htally"), tallyHtml(past));
     setHtml(document.getElementById("hempty"), past.length ? "" : '<div class="empty">No past locks yet.<br>Settled and closed locks live here with their receipts; open ones are on Portfolio.</div>');
     syncList(hlist, past, histKey, "hist", (el, r) => {
       const st = stateOf(histKey(r));

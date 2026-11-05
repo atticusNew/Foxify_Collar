@@ -715,6 +715,8 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
       "a negative premium is the entry's size",
     );
     assert.deepEqual(pos.body.positions.map((p: Any) => p.costCents), [2100, 2200, 450, 650, 100, 99], "cost is what was paid, never negative");
+    // what the venue pays for each now (the top bid), so the page can say "worth $27.00 · up $6.00" against the cost without a quote
+    assert.deepEqual(pos.body.positions.slice(0, 2).map((p: Any) => [p.bidCents, p.lastCents]), [[54, null], [61, null]], "the top bid rides with the row");
     assert.deepEqual([pos.body.positions[4].reason, pos.body.positions[4].event, typeof pos.body.cutoffMinutes], ["parlay", "BOS / MIA / DET combo", "number"]);
     // the combo's legs, as the page lists them: each leg's club (read from the leg's market), its game and where it stands
     assert.deepEqual(
@@ -923,6 +925,10 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     // the top of the open panel pushing the offer down; the header is club, game, pays; a combo's legs sit under the button
     assert.ok(html.includes("const positionRows = (p) =>") && html.includes("let rows = positionRows(p);") && html.includes('<div class="ael-dl">Position</div>') && html.includes('<div class="ael-dl">Window</div>') && !html.includes("chipsHtml") && !html.includes('class="chip until"'), "the figures are Details rows");
     assert.ok(html.includes(`'<div class="ael-panel ael-on">' + slipRows(nick, o, p.contracts, false, p.combo)`) && html.includes(`(st.err ? '<div class="ael-fine ael-err">' + esc(st.err) + "</div>" : "") +\n          (p.combo ? legsHtml(p) : "") +`), "the offer first, a combo's legs under the button");
+    // the one figure a holder acts on, under what the ticket pays: up or down since they bought, from the venue's bid on every contract; the
+    // sums behind it in the Position row; History opens with what the locks have done against riding every ticket out
+    assert.ok(html.includes("const worthOf = (p) =>") && html.includes(`'<span class="since ' + (w.since > 0 ? "up" : "dn") + '">' + sinceWords(w.since)`) && html.includes(`"worth " + usd(w.worth) + " at " + esc(VN) + "'s " + cents(w.px) + (w.bid ? " bid" : " last trade")`), "up or down since bought, on the row and in Details");
+    assert.ok(html.includes("const tallyHtml = (past) =>") && html.includes('<div class="tl">Lock in, so far</div>') && html.includes("<small>vs riding every ticket out</small>") && html.includes('"</b> instead of $0");') && html.includes('setHtml(document.getElementById("htally"), tallyHtml(past));'), "History's tally");
     assert.ok(html.includes(`(!S.inPlay && p.startsIso ? '<div class="ael-fine" style="margin-top:8px">Lock in until ' + cutoffClock(p) + "</div>" : "")`), "a hard deadline is the one window worth a line under the button");
     // the order: both groups live first then soonest, a combo by its next open leg (a leg final last night does not make it live or started)
     assert.ok(html.includes("const nextStartOf = (p) =>") && html.includes("return legs.some((l) => l.state === \"live\")") && html.includes("const live = list.filter((p) => p.ticker && p.lock && p.lock.status !== \"closed\").sort(byStart);") && html.includes("(Date.parse(nextStartOf(a) || 0) || 0) - (Date.parse(nextStartOf(b) || 0) || 0)"), "protected and offers both sorted; a combo by its next open leg");

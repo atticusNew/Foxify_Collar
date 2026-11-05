@@ -2349,10 +2349,16 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         ...venueRows.map((p) => ({ ...p, lock: lockOf(p.ticker) })),
         // the member's positions carry their venue, so a client on another venue's page leaves them alone.
         // A combination ticket the venue will quote (MEMBER_APP_COMBO_RFQ) carries its synthetic ticker, so the page quotes and locks it like a single.
+        // Each row also carries what the venue pays for it now (the top bid; the last trade when there is no bid, a combo), so the
+        // page can say what the ticket is worth against what it cost without a quote.
         ...memberRows.map((row) => {
-          const { market: _m, marketId: _id, ...p } = row;
+          const { market: m, marketId: _id, ...p } = row;
           const ticker = comboLockable(row) ? comboTickerOf(row.marketId) : p.ticker;
-          return { ...p, ticker, ...(ticker !== p.ticker ? { combo: true } : {}), venue: MEMBER_VENUE, lock: lockOf(ticker) };
+          const bids = m ? bidLevels(m) : [];
+          const last = m ? Number(m.last_traded_price ?? m.price) : NaN;
+          const bidCents = bids[0] ? Math.round((bids[0].price / row.maxPrice) * 100) : null;
+          const lastCents = Number.isFinite(last) && last > 0 && last < row.maxPrice ? Math.round((last / row.maxPrice) * 100) : null;
+          return { ...p, ticker, ...(ticker !== p.ticker ? { combo: true } : {}), bidCents, lastCents, venue: MEMBER_VENUE, lock: lockOf(ticker) };
         }),
       ],
       ...(memberComboRfq !== "off" ? { comboRfq: memberComboRfq === "preview" ? "preview" : true } : {}),
