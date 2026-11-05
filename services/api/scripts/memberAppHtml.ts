@@ -546,6 +546,8 @@ h2.grp[hidden] { display: none; }
 .ael-shape-b[aria-pressed="true"] { border-color: var(--ael-accent); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); font-weight: 600; }
 .ael-fine { font-size: 12.5px; color: var(--ael-muted); text-align: left; margin: 0 0 4px; line-height: 1.45; }
 .ael-fine.ael-err { color: #ffb4b4; }
+/* the third-party line that closes every open panel: one small centred line, with room to spare at 375px */
+.ael-disclose { font-size: 11px; color: var(--ael-dim); text-align: center; margin: 12px 0 0; line-height: 1.4; letter-spacing: 0.01em; }
 .ael-fine.ael-warn { color: var(--ael-accent-text); }
 .ael-how { font-size: 13px; color: var(--ael-soft); margin: 6px 0 6px; max-width: 70ch; line-height: 1.5; }
 .ael-how p { margin: 0 0 6px; }
@@ -658,7 +660,7 @@ const JS = String.raw`
   const LAYERS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5 14 5.5 8 8.5 2 5.5z"/><path d="m2 8.5 6 3 6-3"/><path d="m2 11.5 6 3 6-3"/></svg>';
   const WARN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5 1.8 13.5h12.4z"/><path d="M8 6.5v3.2M8 11.6v.2"/></svg>';
   const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="#1a1200" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
-  const DISCLOSE = '<div class="ael-fine">Protection by Atticus, a third party; not a product of ' + VN + '.</div>';
+  const DISCLOSE = '<div class="ael-disclose">Protection by Atticus, a third party; not a product of ' + VN + '.</div>';
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const usd = (c) => (c < 0 ? "-" : "") + "$" + (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const signed = (c) => (c >= 0 ? "+" : "-") + "$" + (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
