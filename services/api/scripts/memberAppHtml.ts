@@ -898,7 +898,8 @@ const JS = String.raw`
     const u = q.unwind, bb = u.buyBack;
     const net = u.closeNetCents;
     return '<div class="ael-leave"><div class="ael-leave-h"><b>Buy back ' + bb.contracts + " at " + cents(bb.avgPriceCents) + "</b><span>costs " + usd(bb.costCents) + (bb.contracts < bb.wantContracts ? " · only " + bb.contracts + " of " + bb.wantContracts + " offered" : "") + "</span></div>" +
-      '<div class="ael-ledger"><div class="ael-lr"><span class="ael-l">Sold for</span><b>' + usd(u.cashNowCents) + '</b><s></s></div><div class="ael-lr ael-hero"><span class="ael-l">Net, after the buy-back</span><b>' + signed(net) + '</b><s>in your balance</s></div><div class="ael-lr ael-last"><span class="ael-l">Staying</span><b>' + usd(u.stayFloorCents) + " or " + usd(u.stayCapCents) + '</b><s></s></div></div>' +
+      // no note column in this narrower box: a fixed-width note ("in your balance") ran past the box's edge on a phone
+      '<div class="ael-ledger"><div class="ael-lr"><span class="ael-l">Sold for</span><b>' + usd(u.cashNowCents) + '</b></div><div class="ael-lr ael-hero"><span class="ael-l">Net to your ' + esc(VN) + ' balance</span><b>' + signed(net) + '</b></div><div class="ael-lr ael-last"><span class="ael-l">Staying</span><b>' + usd(u.stayFloorCents) + " or " + usd(u.stayCapCents) + "</b></div></div>" +
       '<div class="ael-leave-acts"><button type="button" class="ael-go" data-act="leave">' + (st.busy === "leave" ? esc(st.busyWords || "Buying back…") : "Buy back " + bb.contracts + " at " + cents(bb.avgPriceCents)) + '</button><button type="button" class="ael-go ael-quiet" data-act="stay">Stay protected</button></div>' +
       '<div class="ael-fine">Whole again, unprotected · the net above is the round trip' + (q.lastIso ? " · until " + esc(fmtAt(q.lastIso)) : isLive(p) ? " · live price, never more than shown" : "") + "</div></div>";
   };
@@ -972,9 +973,9 @@ const JS = String.raw`
           (st.details ? detailsHtml(p, st, true) : "") + DISCLOSE + "</div>";
       }
     } else if (st.closedNow && !(st.quote && st.quote.ok)) {
+      // the row closes on the leave; this line holds the receipt until the fresh offer takes its place
       const c = st.closedNow;
-      line = lineHtml("off", "Unprotected", "Protection removed · bought back " + c.contracts + " at " + cents(c.avgPriceCents) + " · net <b>" + signed(c.netCents) + "</b>", st.open);
-      panel = st.open ? '<div class="ael-panel ael-on">' + chipsHtml(p) + '<div class="ael-ph"><b>Whole again, unprotected</b><span>' + c.contracts + " bought back for " + usd(c.costCents) + " · the sale paid " + usd(c.cashCents) + " · a new offer follows</span></div>" + DISCLOSE + "</div>" : "";
+      line = lineHtml("off", "Unprotected", "Bought back " + c.contracts + " at " + cents(c.avgPriceCents) + " · net <b>" + signed(c.netCents) + "</b>", false);
     } else if (timing(p) && !(st.quote && st.quote.ok)) {
       const w = timing(p);
       line = lineHtml("off", w[0], esc(w[1]), false, w[2]);
@@ -1079,7 +1080,8 @@ const JS = String.raw`
     if (r.ok && r.json && r.json.ok) {
       const u = r.json.unwind || {}, bb = u.buyBack || {}, back = r.json.memberBuyBack || {};
       st.closedNow = { at: Date.now(), contracts: bb.contracts != null ? bb.contracts : back.boughtContracts || 0, avgPriceCents: bb.avgPriceCents != null ? bb.avgPriceCents : back.avgPriceCents || 0, costCents: bb.costCents != null ? bb.costCents : back.costCents || 0, cashCents: u.cashNowCents || 0, netCents: u.closeNetCents || 0 };
-      st.leave = false; st.open = true; st.quote = null; st.quoteAt = 0; st.rcpt = null; st.lock = null; st.cashAfter = null;
+      // the row folds to its line and forgets what was open in the panel, so the offer that follows opens clean
+      st.leave = false; st.open = false; st.details = false; st.rules = false; st.how = false; st.quote = null; st.quoteAt = 0; st.rcpt = null; st.lock = null; st.cashAfter = null;
       p.lock = null;
       paintRow(p); paintTabs();
       toast("Left early · <b>" + signed(st.closedNow.netCents) + "</b> net to your " + esc(VN) + " balance");

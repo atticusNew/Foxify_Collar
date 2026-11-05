@@ -516,9 +516,12 @@ Novig) against STX's rules and wrote what a hedged lock would have paid, nothing
 grid and the Terms row are STX's own rule row, pinned at the lock, and the tails say the sold
 contracts stay sold whatever the venue does with the riding ones.
 
-**Leave early is a buy-back.** The block reads "Buy back 30 at 56¢ · costs $16.80", the round
-trip's net against the cash the sale paid ("−$0.65 on the round trip: you sold at 54¢, the offers
-are higher now"), and what staying holds; the button says the order it sends. The service buys
+**Leave early is a buy-back.** The block reads "Buy back 30 at 56¢ · costs $16.80", then three
+rows with no note column (Sold for, Net to your STX balance, Staying; the fixed-width note the slip's
+ledger carries ran past this narrower box's edge on a phone), and the button says the order it
+sends. On the tap the row folds to its line ("Unprotected · Bought back 30 at 56¢ · net −$0.65")
+and forgets what was open in its panel, so the fresh offer that takes the line's place a few seconds
+later opens clean. The service buys
 the sold contracts back from STX's offers in the holder's own account and writes the close from
 the fills; the position is whole again, unprotected. A book too thin for the whole buy-back says
 so, and the rest stays sold (and protected). While in play is on, the leave stands during the game
