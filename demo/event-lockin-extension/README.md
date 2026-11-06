@@ -375,9 +375,10 @@ games listed, past locks):
   off. The protectable ones carry the Lock in line ("Lose, and still get $16.18"; when STX's
   book is thin it adds "· STX's book takes 20 of 30") and the tap opens the panel (the two
   outcomes, the cash row **In your STX balance now**, the Shape control, the Lock in pill,
-  Details; a combo's legs sit under the pill; under Details, **Elsewhere** says
-  what the best of the other venues would have paid for the same protection, "priced for the
-  record, nothing sent; your position is on STX, so the sale fills there"); the rest sit under
+  Details; a combo's legs sit under the pill). What the other venues would have paid for the same
+  protection is priced at the sale and kept in the record (**Compared**, below), not shown on the
+  page: the member's position is on STX and the sale fills there, so the page has no reason to
+  point anywhere else. The rest sit under
   **Not protectable** with a toned pill and plain
   words: **Too close** (inside the cutoff), **In play** (a red dot), **Parlay** (violet; "3-leg
   Combo", the picks under the name, and the tap opens the legs: each pick, its game and tip-off,
@@ -479,8 +480,8 @@ games listed, past locks):
   shape's size, so the fill is at the price the makers stand at, never more than the makers
   offered; the fill posts as a regular order, the ticket shrinks in the positions read and the
   cash lands in the balance like any sale. The record is `route: member_sale` with
-  `memberSale.combo` (the quote's id, price, expiry, the legs), no Kalshi comparison (Details has
-  no Elsewhere row), the ticket's own text pinned as STX describes it, and it settles on STX's
+  `memberSale.combo` (the quote's id, price, expiry, the legs), no Kalshi comparison (a combo has
+  no twin elsewhere to price), the ticket's own text pinned as STX describes it, and it settles on STX's
   own word for the combo market after the last leg (not on a Kalshi result). **No leave early on a
   combo** (`combo_no_buyback`): there are no offers to buy a combo back from; the panel says
   "Stays to settlement." Refusals in words: **Not yet** (`combo_quotes_unavailable`, STX's quote
