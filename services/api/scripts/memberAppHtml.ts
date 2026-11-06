@@ -83,7 +83,7 @@ ${CSS}
       <li><div><b>Keep the floor, win or lose</b><small>Lose, and the cash is yours. Win, and the rest still pays. Leave early buys it back any time before it settles.</small></div></li>
     </ol>
     <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Every order is placed under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke it there at any time. This page never holds your money, your login or your keys.</p>
-    <p>Every lock is priced against every venue this service reads and filled where you hold the position, on ${esc(o.venueName)}; the record keeps what the others would have paid. Every lock is written to a public record in neutral words, with no account ids.</p>
+    <p>Every lock fills on ${esc(o.venueName)}, where you hold the position, and is written to a public record in neutral words, with no account ids.</p>
     <div class="links"><a href="/app/privacy">Privacy</a><a href="${esc(o.recordUrl)}" rel="noopener">Public record</a></div>
   </div>
 </div>
@@ -888,13 +888,6 @@ const JS = String.raw`
     const order = ms.orderId ? " · " + VN + " order <code>" + esc(String(ms.orderId).slice(0, 8)) + "…</code>" : "";
     return "<b>Sold " + ms.soldContracts + " of " + (ms.soldContracts + ms.keptContracts) + " at " + cents(ms.avgPriceCents) + "</b>" + order + " · " + ms.keptContracts + " still riding" + (ms.feeCents ? ' <span class="ael-dim">· ' + VN + " fee " + usd(ms.feeCents) + "</span>" : "");
   };
-  const comparedWords = (c) => {
-    if (!c) return "";
-    if (!c.ok) return '<span class="ael-dim">The other venues could not be priced at the time' + (c.reason ? " (" + esc(c.reason) + ")" : "") + "; the sale fills on " + esc(VN) + " either way.</span>";
-    const who = c.chosenName || "Another venue";
-    const of = c.priced > 1 ? " (best of " + c.priced + " venues)" : "";
-    return "<b>" + esc(who) + esc(of) + "</b> would have paid " + usd(c.creditCents) + " now, then " + usd(c.floorTotalCents) + " or " + usd(c.capTotalCents) + ' <span class="ael-dim">· priced for the record, nothing sent; your position is on ' + esc(VN) + ", so the sale fills there</span>";
-  };
   const detailsHtml = (p, st, locked, src0) => {
     const q = st.quote;
     const src = locked ? (src0 || st.rcpt || st.lock || p.lock || {}) : q;
@@ -903,7 +896,7 @@ const JS = String.raw`
     let rows = positionRows(p);
     if (!locked) {
       rows += '<div class="ael-dl">Sale</div><div class="ael-dv">Sell <b>' + t.soldContracts + " of " + p.contracts + "</b> at about " + cents(t.avgPriceCents) + (p.combo ? " to " + esc(VN) + "'s makers · " : " into " + esc(VN) + "'s bids · ") + t.keptContracts + " keep riding</div>";
-      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts " + (p.combo ? "to " + esc(VN) + "'s makers now, at the price they quoted for this ticket; " : "into " + esc(VN) + "'s bids now, at the best prices there; ") + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p><p>The same protection is priced against every other venue this service reads, for the record (under Elsewhere); the order itself fills on " + esc(VN) + ", where you hold the position.</p>" + (q.live ? (p.combo ? "<p>A leg is on, so the price moves; the tap asks " + esc(VN) + "'s makers again and sells at what they quote then, never more than they offer." : "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so.") + (Number(q.inPlayDelaySec) > 0 ? " " + esc(VN) + " holds in-play orders " + Number(q.inPlayDelaySec) + "s before they can match." : "") + "</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
+      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts " + (p.combo ? "to " + esc(VN) + "'s makers now, at the price they quoted for this ticket; " : "into " + esc(VN) + "'s bids now, at the best prices there; ") + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p>" + (q.live ? (p.combo ? "<p>A leg is on, so the price moves; the tap asks " + esc(VN) + "'s makers again and sells at what they quote then, never more than they offer." : "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so.") + (Number(q.inPlayDelaySec) > 0 ? " " + esc(VN) + " holds in-play orders " + Number(q.inPlayDelaySec) + "s before they can match." : "") + "</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
     } else {
       const ms = src.memberSale;
       if (ms) rows += '<div class="ael-dl">Sold</div><div class="ael-dv">' + saleWords(ms) + "</div>";
@@ -912,10 +905,7 @@ const JS = String.raw`
       if (src.memberBuyBack) rows += '<div class="ael-dl">Bought back</div><div class="ael-dv"><b>' + src.memberBuyBack.boughtContracts + " at " + cents(src.memberBuyBack.avgPriceCents) + "</b> · cost " + usd(src.memberBuyBack.costCents) + (src.memberBuyBack.orderId ? ' <span class="ael-dim">· ' + VN + " order <code>" + esc(String(src.memberBuyBack.orderId).slice(0, 8)) + "…</code></span>" : "") + "</div>";
       if (src.venueSettlement) rows += '<div class="ael-dl">' + esc(VN) + ' settled</div><div class="ael-dv"><b>' + esc(src.venueSettlement.result || "") + "</b>" + (src.venueSettlement.payoutCents != null ? " · " + usd(src.venueSettlement.payoutCents) + " on the riding contracts" : "") + "</div>";
     }
-    const cmpRaw = locked ? src.compared : q.compared;
-    const cmp = !locked && cmpRaw && cmpRaw.ok && cmpRaw.tiers && cmpRaw.tiers[st.tier] ? Object.assign({}, cmpRaw, cmpRaw.tiers[st.tier]) : cmpRaw;
-    // a combo has no twin on another venue to price against: no Elsewhere row
-    if (cmp && !p.combo) rows += '<div class="ael-dl">Elsewhere</div><div class="ael-dv">' + comparedWords(cmp) + "</div>";
+    // the other venues' prices (compared) stay in the record, not on the page: the position is here and the sale fills here
     // a combo settles under the venue's own combo rules, one sentence; a single has the league's tails behind Rules
     if (p.combo) rows += '<div class="ael-dl">Rules</div><div class="ael-dv">' + esc((src && src.comboNote) || (VN + " settles the riding contracts by its own combo rules: a voided leg drops out and the ticket re-prices. The contracts you sold stay sold.")) + "</div>";
     else {
