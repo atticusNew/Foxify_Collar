@@ -141,6 +141,8 @@ export interface OperatorBoardRow {
   sideName: string;
   eventTitle: string;
   eventTimeIso: string;
+  /** the game is on and the board quotes it in play */
+  live: boolean;
   markCents: number;
   contracts: number;
   entryCents: number;
@@ -239,6 +241,7 @@ export const retailCrossPayload = (p: OperatorCrossPayload): RetailCrossPayload 
     sideName: r.sideName,
     eventTitle: r.eventTitle,
     eventTimeIso: r.eventTimeIso,
+    live: r.live,
     markCents: r.markCents,
     contracts: r.contracts,
     entryCents: r.entryCents,

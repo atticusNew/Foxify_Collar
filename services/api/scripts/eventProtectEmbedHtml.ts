@@ -430,6 +430,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 .ael-dv{color:var(--dim);min-width:0;overflow-wrap:anywhere}
 .ael-dv b{font-weight:600;color:var(--ink)}
 .ael-dim{color:var(--faint)}
+.live-tag{display:inline-flex;align-items:center;gap:5px;color:var(--ink);font-weight:600}
+.live-tag i{width:7px;height:7px;border-radius:50%;background:#e5484d;box-shadow:0 0 0 3px rgba(229,72,77,.18);animation:ael-live 1.6s ease-in-out infinite}
+@keyframes ael-live{0%,100%{opacity:1}50%{opacity:.45}}
 .ael-dl.ael-dshape,.ael-dv.ael-dshape{grid-column:1/-1}
 .ael-dl.ael-dshape{margin-bottom:-3px}
 .ael-dv.ael-dshape{margin-bottom:3px}
@@ -687,6 +690,11 @@ ${cardBlock}<aside class="pitch">
   function fmtNow(){try{return new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return 'now'}}
   function fmtAt(iso){try{var d=new Date(iso);return d.toLocaleDateString('en-US',{weekday:'short',timeZone:'America/New_York'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).toLowerCase().replace(' ','')+' ET'}catch(e){return ''}}
   /* "tip-off" for a game on a court, "kickoff" on a field, "first pitch" on a diamond, "start" otherwise */
+  /* a game the board quotes in play: the service says so on the row (EVENT_X_IN_PLAY); the header says Live in place of the tip-off */
+  function isLive(r){return !!(r&&r.live&&r.kind!=='crypto')}
+  var LIVE_TAG='<span class="live-tag"><i></i>Live</span>';
+  /* the pre-game cutoff is 45 minutes before tip-off; a row still on the board inside that (the service quotes through tip-off when in play is on) is priced until tip-off */
+  function untilIso(r){var cut=Date.parse(r.eventTimeIso)-45*60000;return new Date(cut>Date.now()?cut:Date.parse(r.eventTimeIso)).toISOString()}
   function startWord(r){var l=String(r.league||'').toLowerCase();return r.kind==='crypto'?'settles':l==='nba'||l==='wnba'||l==='ncaab'?'tip-off':l==='nfl'||l==='ncaaf'||l==='epl'||l==='mls'?'kickoff':l==='mlb'?'first pitch':l==='nhl'?'puck drop':'start'}
   /* On a binary contract, floor F / cap C / credit K on n contracts is the same thing as keeping
      n*(C-F)/100 contracts and setting F*n + K aside in cash. The user only ever sees the two
@@ -720,13 +728,14 @@ ${cardBlock}<aside class="pitch">
 
   /* POSITIONS, GROUPED: a flat list with Bitcoin strikes between NFL and NBA rows looks like no
      real app. Rows are grouped by league, the league with the nearest game first, crypto last;
-     inside a group the rows keep the board's order. One league alone needs no header. */
+     inside a group the rows keep the board's order, except that a game on (live) leads. One league alone needs no header. */
   function groupRows(rows){
     var groups=[],by={},i,r,k,t;
     for(i=0;i<rows.length;i++){r=rows[i];k=r.kind==='crypto'?'crypto':String(r.league||'other').toLowerCase();t=Date.parse(r.eventTimeIso)||Infinity;
       if(!by[k]){by[k]={key:k,rows:[],next:t};groups.push(by[k])}by[k].rows.push(r);if(t<by[k].next)by[k].next=t}
     var out=[];for(i=0;i<groups.length;i++)if(groups[i].key!=='crypto')out.push(groups[i]);
     out.sort(function(a,b){return a.next-b.next});
+    for(i=0;i<out.length;i++)out[i].rows=out[i].rows.filter(isLive).concat(out[i].rows.filter(function(x){return !isLive(x)}));
     if(by.crypto)out.push(by.crypto);
     return out;
   }
@@ -769,7 +778,7 @@ ${cardBlock}<aside class="pitch">
     if(keys.length>1)rows.push(drow('Shape',shapeSegs(st,n,keys),'ael-dshape'));
     if(o)rows.push(drow('Other side','<span'+(o.tip?' title="'+esc(o.tip)+'"':'')+'>'+o.html+'</span>'));
     else if(S.vvBusy)rows.push(drow('Other side','<span class="ael-dim">asking the venues&hellip;</span>'));
-    rows.push(drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; priced live</span>'));
+    rows.push(isLive(r)?drow('Until','the final whistle <span class="ael-dim">&middot; priced from the live book; the price moves with the game</span>'):drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; priced live</span>'));
     rows.push(drow('How',HOW));
     return '<div class="ael-details"><div class="ael-drows">'+rows.join('')+'</div></div>';
   }
@@ -798,7 +807,7 @@ ${cardBlock}<aside class="pitch">
     if(v){var priced=v.venues.filter(function(x){return x.creditCents!=null});if(priced.length>1)cmp=' <span class="ael-dim">&middot; '+(v.edgeCents!=null&&v.edgeCents<0?'of '+priced.length+' venues, cheapest all-in, venue fees included':'best of '+priced.length+' venues, venue fees included'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for you':''))+'</span>'}
     rows.push('<span>Other side</span><b><b>'+esc(venue)+'</b> &middot; '+L.contracts+' contracts of the other side at '+price.toFixed(1)+'c'+cmp+' <span class="ael-dim">&middot; priced at the book; demo, nothing bought</span></b>');
     rows.push('<span>Cost</span><b>'+usd(v&&v.hedgeCostCents!=null?Math.round(v.hedgeCostCents*k):Math.round(L.contracts*price))+' <span class="ael-dim">all in</span></b>');
-    rows.push('<span>Until</span><b>'+esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; settles on the official result</span></b>');
+    rows.push('<span>Until</span><b>'+(isLive(r)?'the final whistle':esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso)))+' <span class="ael-dim">&middot; settles on the official result</span></b>');
     rows.push('<span>Paid to you</span><b>+'+usd(L.creditCents)+' <span class="ael-dim">&middot; paid '+esc(L.at)+'</span></b>');
     return '<div class="ael-rcpt">'+rows.join('')+'</div>';
   }
@@ -819,7 +828,7 @@ ${cardBlock}<aside class="pitch">
       '<div class="ael-lr ael-last"><span class="ael-l">Staying</span><b>'+usd(L.floorTotal)+' or '+usd(L.capTotal)+'</b></div>'+
       '<div class="ael-leave-acts"><button type="button" class="ael-go" data-act="leavego">Leave early</button><button type="button" class="ael-go ael-quiet" data-act="stay">Stay</button>'+toggleA('why','Why',lv.why)+'</div>'+
       (lv.why?'<div class="ael-why"><p>'+why+'</p></div>':'')+
-      '<div class="ael-fine">Priced live &middot; until '+esc(fmtEt(new Date(Date.parse(r.eventTimeIso)-45*60000).toISOString()))+'</div></div>';
+      '<div class="ael-fine">Priced live &middot; '+(isLive(r)?'while the game is on':'until '+esc(fmtEt(untilIso(r))))+'</div></div>';
   }
   /* the protected position: the slip with the locked numbers, Leave early and Details, the facts line, the receipt */
   function protectedHtml(r,st){
@@ -864,14 +873,14 @@ ${cardBlock}<aside class="pitch">
       for(i=0;i<g.rows.length;i++){
         r=g.rows[i];z=sizeOf(r);st=stateOf(r.kalshiTicker);
         pl=Math.round((r.markCents-r.entryCents)*z.contracts);
-        when=r.kind==='crypto'?'settles '+fmtEt(r.eventTimeIso):fmtEt(r.eventTimeIso);
+        when=isLive(r)?LIVE_TAG:esc(r.kind==='crypto'?'settles '+fmtEt(r.eventTimeIso):fmtEt(r.eventTimeIso));
         if(S.shell==='table'){
-          html+='<div class="trow"><div class="tname">'+esc(r.sideName)+'<small>'+esc(r.league.toUpperCase())+' &middot; '+esc(when)+' &middot; <span class="'+(pl>0?'up':pl<0?'down':'')+'">'+(pl>=0?'+':'-')+usd(Math.abs(pl))+'</span> &middot; '+r.markCents+'¢ now</small></div>'+
+          html+='<div class="trow"><div class="tname">'+esc(r.sideName)+'<small>'+esc(r.league.toUpperCase())+' &middot; '+when+' &middot; <span class="'+(pl>0?'up':pl<0?'down':'')+'">'+(pl>=0?'+':'-')+usd(Math.abs(pl))+'</span> &middot; '+r.markCents+'¢ now</small></div>'+
             '<div>'+usd(z.stakeCents)+'</div><div class="tmuted">'+r.entryCents+'¢</div><div>'+usd(z.payoutCents)+'</div><div class="tmuted">'+esc(fmtAt(z.placedIso))+'</div></div>'+
             '<div class="tline">'+rowBlockHtml(r)+'</div>';
         }else{
           html+='<div class="pos has-line'+(st.lock?' protected':'')+'" data-ticker="'+esc(r.kalshiTicker)+'">'+
-            '<div class="h"><div><div class="name">'+esc(r.sideName)+'</div><div class="meta">'+esc(r.league.toUpperCase())+' · '+esc(when)+'</div></div>'+
+            '<div class="h"><div><div class="name">'+esc(r.sideName)+'</div><div class="meta">'+esc(r.league.toUpperCase())+' · '+when+'</div></div>'+
             '<div class="pl '+(pl>0?'up':pl<0?'down':'')+'"><b>'+(pl>=0?'+':'-')+usd(Math.abs(pl))+'</b><i>'+r.markCents+'¢ now</i></div></div>'+
             factsHtml(r,z)+rowBlockHtml(r)+'</div>';
         }
@@ -944,6 +953,7 @@ ${cardBlock}<aside class="pitch">
   function openRow(t){
     var st=stateOf(t);
     st.open=!st.open;
+    if(!st.open)stopRequote(st);
     if(st.open&&!st.q&&!st.busy)loadQuote(t);
     if(st.open)track('row_tap',t);
     paintRow(t);
@@ -955,14 +965,21 @@ ${cardBlock}<aside class="pitch">
       var q=p&&p.quote?p.quote:null;
       if(!q){st.q={ok:false};st.err=(p&&p.error)||'Live pricing is unavailable right now.';paintRow(t);return}
       st.q=q;
-      if(q.ok){st.offered=offeredTiers(q,sizeOf(r).contracts);st.tier=defaultTier(st.offered,q);st.err=st.tier?null:'The market can\\'t fund a worthwhile credit on this one right now.'}
+      if(q.ok){st.offered=offeredTiers(q,sizeOf(r).contracts);st.tier=st.tier&&st.offered[st.tier]?st.tier:defaultTier(st.offered,q);st.err=st.tier?null:'The market can\\'t fund a worthwhile credit on this one right now.'}
       else st.err=q.detail||'Protection isn\\'t available on this position right now.';
       paintRow(t);
-    }).catch(function(){st.busy=false;st.q={ok:false};st.err='Live pricing is unavailable right now.';paintRow(t)});
+      requote(t);
+    }).catch(function(){st.busy=false;st.q={ok:false};st.err='Live pricing is unavailable right now.';paintRow(t);requote(t)});
   }
+  /* a game in play re-prices while its panel is open: the books move with the game, so the offer
+     on screen is never older than the board's own refresh; the chosen shape stays chosen */
+  var REQUOTE_MS=20000;
+  function requote(t){var st=stateOf(t),r=S.byTicker[t];stopRequote(st);if(!r||!isLive(r)||!st.open||st.lock||st.stage)return;st.tm=setTimeout(function(){st.tm=null;if(st.open&&!st.lock&&!st.stage&&!st.busy)loadQuote(t)},REQUOTE_MS)}
+  function stopRequote(st){if(st.tm){clearTimeout(st.tm);st.tm=null}}
   /* the lock, in stages the pill reports in words; the record is the page's own */
   function lockIn(t){
     var st=stateOf(t),r=S.byTicker[t],tt=st.offered[st.tier];if(!tt||st.stage)return;
+    stopRequote(st);
     var n=sizeOf(r).contracts,rs=reshape(n,tt.floorCents,tt.capCents,tt.creditCents),t0=Date.now();
     var stages=['Pricing from the live book\\u2026','Writing the record\\u2026','Buying the other side\\u2026'],i=0;
     st.stage=stages[0];paintRow(t);

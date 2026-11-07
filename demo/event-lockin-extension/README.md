@@ -731,7 +731,11 @@ The extension draws; the service decides. Two things ride with `GET /api/shadow/
 - each market's `startIso`, `protectable`, `protectableUntilIso` and, when not protectable, why
   (`in_progress`, `too_close`, `far_out`, `unpaired`, `mark_out_of_range`, `on_record`). The
   window is one rule for the board, the quote and the pill: `PROTECT_WINDOW_MINUTES` in
-  `eventProtectXDemoService.ts`, 45 minutes to 7 days before kickoff;
+  `eventProtectXDemoService.ts`, 45 minutes to 7 days before kickoff. (The public demo board at
+  event.earnandprotect.xyz is the one exception: with `EVENT_X_IN_PLAY=1` a game that has started
+  stays on its board, marked Live, quoted from the books as they stand for `EVENT_X_IN_PLAY_HOURS`
+  after tip-off, and re-priced while its panel is open. That is the board's rule only; the record's
+  lock path, the extension's `protectable` and the shadow keep this window.)
 - `ext`: the switches. `minVersion` (env `EVENT_SHADOW_EXT_MIN_VERSION`): an extension below it
   draws nothing but a notice to update, on every page. `marksOff` (env
   `EVENT_SHADOW_EXT_MARKS_OFF`, comma list of `prophetx,kalshi,novig`): the pills and slip line
