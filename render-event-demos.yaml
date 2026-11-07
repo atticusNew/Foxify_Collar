@@ -79,6 +79,12 @@ services:
         value: "25"
       - key: EVENT_X_MIN_CREDIT_BPS
         value: "25"
+      # In play: a game that has started stays on the board and is quoted from the books as
+      # they stand, for EVENT_X_IN_PLAY_HOURS after tip-off (default 4). The row says Live in
+      # place of the tip-off and re-prices while its panel is open. The board's rule only: the
+      # shadow record's lock path (the other service, same module) keeps the pre-game window.
+      - key: EVENT_X_IN_PLAY
+        value: "1"
       # Which hedge venues are offered tonight (kalshi, prophetx, novig, polymarket; comma
       # separated). A venue left out is not priced, not shown in the Venue view and never sent
       # to. Unset, every route is offered, which puts Polymarket on the board; the demo shows

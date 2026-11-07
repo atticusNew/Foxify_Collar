@@ -73,6 +73,9 @@
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
  *      EVENT_X_VIDEO_URL / EVENT_X_VIDEO_POSTER_URL (the live recording on the demo page;
  *      default the bundled file at /media/lockin-live.mp4; "off" hides the block)
+ *      EVENT_X_IN_PLAY (1: a game that has started stays on the board and quotes in play from the
+ *      books as they stand, for EVENT_X_IN_PLAY_HOURS after tip-off, default 4; off by default.
+ *      The board's rule only: the record's lock path keeps the pre-game window.)
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -110,6 +113,7 @@ import { novigRouteOf, readReferenceBooks, referenceSourcesFromEnv, type Referen
 import { MAPPED_NO_BOOK, NOT_MAPPED, aggregatorBookSourceFromEnv, type AggregatorBookSource, type AggregatorBookStatus, type BookOrigins, type ProphetXStrikes } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { farOutGuardFromEnv, farOutVerdict, type FarOutGuardRule } from "../src/eventCollar/crossVenue/farOutGuard";
+import { inPlayConfig } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
 import { markGapGuardFromEnv, markGapVerdict, type MarkGapGuardRule } from "../src/eventCollar/crossVenue/markGapGuard";
 import { readReferencePrints, referencePrintSourcesFromEnv, type ReferencePrint } from "../src/eventCollar/crossVenue/venuePrints";
 import {
@@ -562,6 +566,8 @@ export interface BoardRow {
   eventTitle: string;
   /** when protection locks: game start (sports) or market close (crypto), ISO */
   eventTimeIso: string;
+  /** the game is on and the board is quoting it in play (EVENT_X_IN_PLAY); never on crypto */
+  live: boolean;
   markCents: number;
   /** the simulated position behind the row: size and the real print it was entered at */
   contracts: number;
@@ -648,6 +654,26 @@ function showcaseWindowOk(pair: MatchedPair, now: Date): boolean {
 }
 
 /**
+ * IN PLAY on the demo board (EVENT_X_IN_PLAY=1; off by default). A game that has started stays on
+ * the board and quotes from the books as they stand during the game, for up to EVENT_X_IN_PLAY_HOURS
+ * (default 4) after tip-off; the market's own status still has to be active and its odds in range,
+ * so a decided game drops off on its own. This is the board's rule only: the lock path the record
+ * uses (quoteOne, the shadow's locks on real positions) keeps the pre-game window regardless.
+ */
+export const IN_PLAY = process.env.EVENT_X_IN_PLAY === "1" || process.env.EVENT_X_IN_PLAY === "true";
+export const IN_PLAY_MAX_MS = Number(process.env.EVENT_X_IN_PLAY_HOURS || 4) * 3_600_000;
+export function boardWindowOk(startIso: string, now: Date, inPlay = IN_PLAY): { open: boolean; live: boolean } {
+  const w = protectWindow(startIso, now);
+  if (w.open) return { open: true, live: false };
+  if (!inPlay) return { open: false, live: false };
+  // continuous once in play is on: the last 45 minutes before tip-off stay on the board (not yet
+  // live), then the game is quoted live until the bound
+  if (w.why === "too_close") return { open: true, live: false };
+  if (w.why === "in_progress" && now.getTime() - new Date(startIso).getTime() <= IN_PLAY_MAX_MS) return { open: true, live: true };
+  return { open: false, live: false };
+}
+
+/**
  * Cheap horizon pre-filter from the game date in the Kalshi ticker: a league
  * that plays weekly lists next week's slate too, and those games would burn
  * match attempts only to fail the showcase window afterwards. Unparseable
@@ -670,6 +696,17 @@ export function gameDateWithinHorizon(
   if (!Number.isFinite(gameMs) || !Number.isFinite(todayMs)) return true;
   const days = Math.round((gameMs - todayMs) / 86_400_000);
   return days >= -1 && days <= horizonDays + 1;
+}
+
+/**
+ * In play on: the games under way lead a league's ranking, in the ranking's own order among
+ * themselves, so the board reaches them inside its match budget; the rest follow unchanged. The
+ * kickoffs come from the pairing, cached, the same read listGameMarkets makes.
+ */
+async function liveFirst<T extends { m: KalshiMarket }>(ranked: T[], template: LeagueTemplate, now: Date): Promise<T[]> {
+  const starts = await Promise.all(ranked.map((c) => kickoffFor(c.m, template).catch(() => null)));
+  const live = starts.map((iso) => (iso ? boardWindowOk(iso, now).live : false));
+  return ranked.map((c, i) => ({ c, i })).sort((a, b) => Number(live[b.i]) - Number(live[a.i]) || a.i - b.i).map((x) => x.c);
 }
 
 /** Candidate ordering: quotable band first, moderately-favored side, tight spread. */
@@ -777,6 +814,12 @@ async function quoteSportsCandidate(
    * board), the holder is on Kalshi and both routes are on paper.
    */
   routingInputs?: { holderVenue: SettlementVenue; executable: Record<HedgeRoute, boolean> },
+  /**
+   * The game is on and the board quotes it in play (EVENT_X_IN_PLAY): the pricers' lead-time gate
+   * is set aside, the same config the shadow's in-game read uses; everything else prices as the
+   * record does. Only the board scan sets this.
+   */
+  inPlay = false,
 ): Promise<CandidateResult> {
   const position = given ?? (await showcasePositionFor(pair.kalshi.ticker, markCents));
 
@@ -810,7 +853,7 @@ async function quoteSportsCandidate(
     entryCents: position.entryCents,
     contracts: position.contracts,
     now,
-    config: searchConfig(),
+    config: inPlay ? inPlayConfig(searchConfig()) : searchConfig(),
   };
   const notOffered = (venue: string): CrossQuoteResult => ({ ok: false, code: "route_not_offered", detail: `${venue} is not offered as a hedge venue tonight (EVENT_HEDGE_VENUES)` });
   const pmQuote: CrossQuoteResult = !offered.includes("polymarket")
@@ -1271,7 +1314,8 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
       countFailure();
       continue;
     }
-    const ranked = rankCandidates(markets, template, now);
+    let ranked = rankCandidates(markets, template, now);
+    if (IN_PLAY && ranked.length > 0) ranked = await liveFirst(ranked, template, now);
     if (ranked.length > 0) cursors.push({ template, ranked, next: 0, attempts: 0, rows: 0 });
   }
   const quota = leagueRowQuota(cursors.length, MAX_BOARD_ROWS);
@@ -1294,10 +1338,14 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
     } catch {
       return !countFailure();
     }
-    if (!pair || !showcaseWindowOk(pair, now)) return true;
+    const window = pair ? boardWindowOk(pair.gameStartTime, now) : null;
+    if (!pair || !window?.open) return true;
+    // one side per game in play: both sides lead the ranking (which side the book funds moves with
+    // the game), and the first that quotes takes the row
+    if (window.live && scanned.some((s) => s.res.market.eventTicker === cand.m.eventTicker)) return true;
     let result: CandidateResult;
     try {
-      result = applyQuoteRules(await quoteSportsCandidate(pair, cand.mark, now), now);
+      result = applyQuoteRules(await quoteSportsCandidate(pair, cand.mark, now, undefined, undefined, undefined, window.live), now);
     } catch {
       return !countFailure();
     }
@@ -1565,6 +1613,7 @@ export function payloadFromScan(state: ScanState, ticker?: string): CrossShowcas
       sideName: s.res.sideName,
       eventTitle: s.res.eventTitle,
       eventTimeIso: s.res.eventTimeIso,
+      live: s.res.kind === "sports" && boardWindowOk(s.res.eventTimeIso, new Date(state.atIso)).live,
       markCents: s.res.markCents,
       contracts: s.res.position.contracts,
       entryCents: s.res.position.entryCents,
@@ -2010,7 +2059,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // brandRecordLinks says where a branded shell's record link goes: "slate" when
       // EVENT_SHADOW_SLATE_KEY is set (the same value as the shadow service), else the
       // full public record. A boolean about configuration, never the value.
-      sendJson(res, h.ready ? 200 : 503, { ok: h.ready, warm: h.warm, service: "event-protect-cross-venue-demo", brandRecordLinks: SLATE_KEY?.trim() ? "slate" : "full record" });
+      sendJson(res, h.ready ? 200 : 503, { ok: h.ready, warm: h.warm, service: "event-protect-cross-venue-demo", inPlay: IN_PLAY, brandRecordLinks: SLATE_KEY?.trim() ? "slate" : "full record" });
       return;
     }
     if (serveMedia(req, res, url.pathname, MEDIA_DIR)) return;
