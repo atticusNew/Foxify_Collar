@@ -191,6 +191,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return sendJson(res, 200, {
       ok: true,
       service: "btc-curve-report",
+      commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
+      branch: process.env.RENDER_GIT_BRANCH || null,
       warm: Boolean(latest),
       at: latest?.at ?? null,
       cycles,
