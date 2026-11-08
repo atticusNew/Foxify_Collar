@@ -15,6 +15,15 @@
 #                                   Kalshi + Polymarket public APIs are proven
 #                                   reachable from US networks.
 #
+#   atticus-btc-curve               Read-only BTC curve report: Kalshi and
+#                                   Polymarket US strike ladders side by side
+#                                   against the Deribit-implied distribution,
+#                                   gaps over time, cost of latency, static vs
+#                                   dynamic hedge replays, Lock in along the
+#                                   hourly ladder. Region singapore (Deribit and
+#                                   OKX reachable). Disk keeps the snapshots.
+#                                   docs/btc-curve-report.md
+#
 #   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com,
 #                                   for operator machines whose ISP blocks it
 #                                   (observed: silent connect timeouts). Local
@@ -39,6 +48,35 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+
+  - type: web
+    name: atticus-btc-curve
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/btcCurveReportService.ts
+    healthCheckPath: /healthz
+    # One snapshot a minute is ~55 KB on disk; 21 days of retention is ~1.7 GB.
+    disk:
+      name: btc-curve-data
+      mountPath: /var/data
+      sizeGB: 3
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BTC_CURVE_DATA_DIR
+        value: /var/data/btc-curve
+      - key: BTC_CURVE_INTERVAL_SEC
+        value: "60"
+      - key: BTC_CURVE_RETAIN_DAYS
+        value: "21"
+      # Optional. When set, the page and JSON are only served with ?k=<token>
+      # (an unlisted link for a reader). Set in the dashboard, not here.
+      # - key: BTC_CURVE_TOKEN
+      #   sync: false
 
   - type: web
     name: atticus-event-demo-cross-venue
