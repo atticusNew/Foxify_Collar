@@ -166,6 +166,16 @@ const TAIL_PROBABILITIES = tailProbabilitiesFromEnv(process.env);
  * Unset, every route is offered. Shown on healthz.
  */
 export const HEDGE_VENUES = hedgeVenuesFromEnv(process.env);
+/**
+ * Whether the public page names the venues the other side is priced on and routed to
+ * (EVENT_X_NAME_HEDGE_VENUES=1). Off by default: the page says "best of 3 venues" and the
+ * Venue view letters them (Venue A, B, C; a host that is itself one of them keeps its name),
+ * the pitch copy stops naming the recording's venues and the routing partner, and the Parlays
+ * tab drops the lock's venue word. Nothing stops being tracked: the scan, the ledger, the
+ * receipts and every operator surface carry the real names; only the retail JSON and the page
+ * are masked.
+ */
+export const NAME_HEDGE_VENUES = process.env.EVENT_X_NAME_HEDGE_VENUES === "1";
 /** venues whose hedge wallet is a subaccount of the holder's own account (hedgeRouting.sameAccountVenuesFromEnv): no hedge there for a holder standing on them */
 export const SAME_ACCOUNT_VENUES = sameAccountVenuesFromEnv(process.env);
 /** ProphetX's fee on net gains at settlement, folded into its book before the walk (prophetxOrders.ts) */
@@ -380,7 +390,23 @@ function shadowReadThrough(source: string, shape: (body: string) => string): (no
     return inflight;
   };
 }
-const fetchParlays = shadowReadThrough(PARLAYS_SOURCE, (body) => body);
+/**
+ * The one venue word in the parlays' retail shape is the lock's `venue` (where the other side
+ * goes). With venue naming off it is nulled on the way through; the shadow's own record keeps it.
+ */
+export function maskParlayVenues(body: string): string {
+  const strip = (x: unknown): unknown => {
+    if (Array.isArray(x)) return x.map(strip);
+    if (x && typeof x === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(x as Record<string, unknown>)) out[k] = k === "venue" && typeof v === "string" ? null : strip(v);
+      return out;
+    }
+    return x;
+  };
+  return JSON.stringify(strip(JSON.parse(body)));
+}
+const fetchParlays = shadowReadThrough(PARLAYS_SOURCE, (body) => (NAME_HEDGE_VENUES ? body : maskParlayVenues(body)));
 
 /**
  * ACTIVITY: the demo's Activity tab lists the record's finished positions (settled at the
@@ -1896,8 +1922,22 @@ export interface VenueViewPayload {
   retail: true;
   sharePct: number;
   hostVenue: string | null;
+  /** false when the venues are lettered rather than named (EVENT_X_NAME_HEDGE_VENUES unset); the page then keeps the trader's lines venue-free */
+  venuesNamed: boolean;
   rows: VenueViewRow[];
   error?: string;
+}
+
+/**
+ * The venues' public names, or with naming off a stable letter per route (the same letter means
+ * the same venue on every row and every day) with the host's own book still named: the host
+ * knows who it is, and the point of the view is where the other side went relative to it.
+ */
+export function venueViewNames(hostRoute: HedgeRoute | null, nameVenues: boolean): Record<HedgeRoute, string> {
+  if (nameVenues) return { ...VENUE_VIEW_ROUTE_NAMES };
+  const letters: Record<HedgeRoute, string> = { kalshi_self: "Venue A", polymarket: "Venue B", prophetx: "Venue C", novig: "Venue D" };
+  if (hostRoute) letters[hostRoute] = VENUE_VIEW_ROUTE_NAMES[hostRoute];
+  return letters;
 }
 
 /**
@@ -1907,11 +1947,18 @@ export interface VenueViewPayload {
  * how much it beat the next price, what the hedge costs, and the spread with the host's share.
  * The winner is the route the scan chose (the one the lock would send to); without one, the
  * venue paying the trader most, a tie going to the host when the host is itself a venue asked.
- * Retail-safe by construction: venue names and dollar figures, no keys, no raw refusal detail
- * (two words per refused venue), no record ids.
+ * Retail-safe by construction: venue names (or letters, with EVENT_X_NAME_HEDGE_VENUES unset) and
+ * dollar figures, no keys, no raw refusal detail (two words per refused venue), no record ids.
  */
-export function venueViewPayload(state: ScanState, brand: string, sharePct: number, offered: readonly HedgeRoute[] = HEDGE_VENUES.routes): VenueViewPayload {
+export function venueViewPayload(
+  state: ScanState,
+  brand: string,
+  sharePct: number,
+  offered: readonly HedgeRoute[] = HEDGE_VENUES.routes,
+  nameVenues: boolean = NAME_HEDGE_VENUES,
+): VenueViewPayload {
   const hostRoute = hostRouteOf(brand);
+  const NAMES = venueViewNames(hostRoute, nameVenues);
   const rows: VenueViewRow[] = [];
   for (const s of state.rows) {
     const r = s.res;
@@ -1933,7 +1980,7 @@ export function venueViewPayload(state: ScanState, brand: string, sharePct: numb
     const venues = sorted.map((c) => {
       const pricedHere = c.ok && c.creditCents != null;
       return {
-        venue: VENUE_VIEW_ROUTE_NAMES[c.route],
+        venue: NAMES[c.route],
         creditCents: pricedHere ? c.creditCents! : null,
         chosen: c.route === winner,
         host: c.route === hostRoute,
@@ -1955,7 +2002,7 @@ export function venueViewPayload(state: ScanState, brand: string, sharePct: numb
       contracts: r.position.contracts,
       creditCents: q.creditCents,
       venues,
-      hedgeVenue: winner ? VENUE_VIEW_ROUTE_NAMES[winner] : null,
+      hedgeVenue: winner ? NAMES[winner] : null,
       edgeCents,
       hedgeCostCents,
       spreadCents,
@@ -1963,7 +2010,7 @@ export function venueViewPayload(state: ScanState, brand: string, sharePct: numb
       evCostBps: s.evBps,
     });
   }
-  return { ok: true, at: state.atIso, retail: true, sharePct, hostVenue: hostRoute ? VENUE_VIEW_ROUTE_NAMES[hostRoute] : null, rows };
+  return { ok: true, at: state.atIso, retail: true, sharePct, hostVenue: hostRoute ? VENUE_VIEW_ROUTE_NAMES[hostRoute] : null, venuesNamed: nameVenues, rows };
 }
 
 /**
@@ -2138,6 +2185,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           trackRecordUrl: record.url,
           recordIsSlate: record.slate,
           liveVideo: LIVE_VIDEO,
+          nameVenues: NAME_HEDGE_VENUES,
           card: url.searchParams.get("from") === "card" ? CARD_CONTACT : null,
           // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
           skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,
