@@ -5,6 +5,8 @@
 
 import type { LatencyRow, BucketRow, GapSeries, LadderVolTable, StrikeVolRow, YearEndVenueCell, YearEndVolTable } from "./analytics";
 import type { LadderView, ReportData } from "./report";
+import { takerFeeCents } from "./analytics";
+import type { VenueQuote } from "./types";
 
 const esc = (s: unknown): string =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
@@ -227,6 +229,43 @@ function strikeVolsHtml(d: ReportData): string {
     .join("")}${daily.map((t) => strikeVolTable(t, `${VENUE_NAME[t.venue]} daily ladder, 5 PM ET`)).join("")}`;
 }
 
+/**
+ * The other way to collect a venue's excess: sell its resting bids where they sit above the smile and hedge
+ * on listed options instead of on the other venue. Sized at the venue's own bid depth, before the option
+ * hedge's cost, fees and minimum sizes; the crosses note above is the version hedged venue to venue.
+ */
+function bidsOverSmileNote(v: LadderView): string {
+  const per = (pick: (r: BucketRow) => VenueQuote | null, theta: (q: VenueQuote) => number) => {
+    let usdTotal = 0;
+    let contracts = 0;
+    let buckets = 0;
+    let best: { label: string; usd: number; bid: number; model: number; qty: number } | null = null;
+    for (const r of v.rows) {
+      const q = pick(r);
+      if (!q || r.modelCents === null || !(q.bidQty > 0)) continue;
+      // half a cent of allowance for the model's wing error: flat extrapolation beyond listed strikes reads deep buckets near zero
+      const edge = q.bidCents - takerFeeCents(theta(q), q.bidCents) - r.modelCents - 0.5;
+      if (edge <= 0) continue;
+      const usdHere = (edge * q.bidQty) / 100;
+      usdTotal += usdHere;
+      contracts += q.bidQty;
+      buckets += 1;
+      if (!best || usdHere > best.usd) best = { label: r.label, usd: usdHere, bid: q.bidCents, model: r.modelCents, qty: q.bidQty };
+    }
+    return { usdTotal, contracts, buckets, best };
+  };
+  const k = per((r) => r.kalshi, (q) => q.feeTheta);
+  const p = per((r) => r.poly, (q) => q.feeTheta);
+  if (!k.buckets && !p.buckets) return "";
+  const line = (name: string, x: ReturnType<typeof per>) =>
+    x.buckets
+      ? `${name}: ${usd(x.usdTotal, 0)} over ${x.buckets} bucket${x.buckets > 1 ? "s" : ""}, ${num(x.contracts, 0)} contracts bid${
+          x.best ? `; largest ${esc(x.best.label)}, bid ${c(x.best.bid, 1)} vs smile ${c(x.best.model, 2)} on ${num(x.best.qty, 0)} contracts, ${usd(x.best.usd, 0)}` : ""
+        }`
+      : `${name}: none`;
+  return `<div class="note"><b>Resting bids over the smile, hedged on listed options instead:</b> ${line("Kalshi", k)}. ${line("Polymarket US", p)}. Bid minus taker fee minus option-implied value minus half a cent of allowance for the model's wing error, times the venue's own bid depth. Before the option hedge's cost (the far strikes are cheap but not free), minimum sizes and the pin risk of a short tail. The crosses above are the version hedged venue to venue, capped by the thinner book.</div>`;
+}
+
 function yearEndVolsHtml(t: YearEndVolTable | null): string {
   if (!t) return "";
   const pct = (x: number | null, dp = 0) => (x === null ? "–" : `${x.toFixed(dp)}%`);
@@ -303,6 +342,7 @@ ${
     ? `<div class="note"><b>Executable crosses:</b> ${crosses.length} bucket${crosses.length > 1 ? "s" : ""} with one venue's offer under the other's bid after both taker fees. Widest ${signed(Math.max(...crosses.map((r) => r.cross!.edgeCents)), 2)} per contract. Total at resting depth ${usd(crosses.reduce((a, r) => a + (r.cross!.edgeCents * r.cross!.qty) / 100, 0), 2)}, before order-level fee rounding. Cents per contract; depth to collect it is small.</div>`
     : '<div class="note">No executable cross after taker fees this snapshot. Gaps are inside the fee band.</div>'
 }
+${range ? bidsOverSmileNote(range) : ""}
 ${yearEndVolsHtml(d.yearEndVols)}
 <h3>One-touch ladders: high and low of the year</h3>
 <p class="dim">Touch fair value is a model (reflection principle, smile vol at the barrier), not a market read. Gap to model indicative only.</p>
