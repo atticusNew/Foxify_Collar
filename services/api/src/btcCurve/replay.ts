@@ -83,6 +83,10 @@ export interface ReplaySummary {
   recent: ReplayEvent[];
 }
 
+/** A replay opens only with between 20 minutes and 2 hours to the close, so the sample is one horizon. */
+export const MIN_HORIZON_MS = 20 * 60_000;
+export const MAX_HORIZON_MS = 2 * 60 * 60_000;
+
 function yearsBetween(fromMs: number, toMs: number): number {
   return Math.max(1 / (365.25 * 24 * 60), (toMs - fromMs) / (365.25 * 86_400_000));
 }
@@ -133,6 +137,9 @@ export class ReplayEngine {
         this.state = { open: [], done: [] };
       }
     }
+    // Only hourly-horizon events belong in this sample. An earlier reader could open a replay on
+    // the series' next-day 5 PM contract; drop any such in-flight event rather than settle it.
+    this.state.open = this.state.open.filter((e) => e.settlesAtMs - Date.parse(e.openedAt) <= MAX_HORIZON_MS);
   }
 
   private persist(): void {
@@ -158,7 +165,9 @@ export class ReplayEngine {
       const above = hourly.buckets.filter((b) => b.kind === "above" && b.level !== undefined);
       const atm = above.sort((a, b) => Math.abs((a.level ?? 0) - spotUsd) - Math.abs((b.level ?? 0) - spotUsd))[0];
       const q = atm ? hourly.quotes.find((x) => x.venue === "kalshi" && x.bucketKey === atm.key) : undefined;
-      if (atm && q && q.bidCents > 0 && q.askCents > 0 && q.askCents <= 99 && Number.isFinite(settlesAtMs)) {
+      const horizonMs = settlesAtMs - nowMs;
+      const hourlyHorizon = horizonMs >= MIN_HORIZON_MS && horizonMs <= MAX_HORIZON_MS;
+      if (atm && q && q.bidCents > 0 && q.askCents > 0 && q.askCents <= 99 && hourlyHorizon) {
         const strike = atm.level ?? 0;
         const br = bracketCalls(options, strike, settlesAtMs);
         const smile = nearestSmile(smiles, settlesAtMs);

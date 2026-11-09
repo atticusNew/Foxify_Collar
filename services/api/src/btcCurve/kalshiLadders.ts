@@ -19,8 +19,10 @@ export const KALSHI_YEAR_END = {
   touchDown: "KXBTCMINY",
 } as const;
 export const KALSHI_HOURLY = "KXBTCD";
+/** An "hourly" ladder is one closing within this long; the series also lists tomorrow's 5 PM ET contract. */
+export const HOURLY_WINDOW_MS = 90 * 60_000;
 
-interface RawMarket {
+export interface RawMarket {
   ticker: string;
   event_ticker: string;
   status: string;
@@ -215,9 +217,16 @@ export async function readKalshiLadders(
     }
   }
 
-  // Hourly: the open event closing soonest that still has at least 30 minutes to run.
-  let hourly: Ladder | null = null;
-  const now = Date.now();
+  return { yearEnd, hourly: hourlyLadderFrom(hourlyRaw, hourlyTheta, Date.now()) };
+}
+
+/**
+ * The hourly ladder: the open KXBTCD event closing soonest within the next 90 minutes (and not
+ * inside its last two). The series also carries the next day's 5 PM ET contract, listed ~24h
+ * ahead; without the window it would stand in as "the hourly" whenever the current hour is not
+ * listed yet or is about to close. Exported for tests.
+ */
+export function hourlyLadderFrom(hourlyRaw: RawMarket[], hourlyTheta: number, nowMs: number): Ladder | null {
   const byEvent = new Map<string, RawMarket[]>();
   for (const m of hourlyRaw) {
     const list = byEvent.get(m.event_ticker) ?? [];
@@ -226,23 +235,20 @@ export async function readKalshiLadders(
   }
   const events = [...byEvent.entries()]
     .map(([ev, ms]) => ({ ev, ms, closeMs: Date.parse(ms[0].close_time) }))
-    .filter((e) => Number.isFinite(e.closeMs) && e.closeMs - now > 30 * 60_000)
+    .filter((e) => Number.isFinite(e.closeMs) && e.closeMs - nowMs > 2 * 60_000 && e.closeMs - nowMs <= HOURLY_WINDOW_MS)
     .sort((a, b) => a.closeMs - b.closeMs);
-  if (events.length) {
-    const { ev, ms } = events[0];
-    const settlesAt = ms[0].close_time;
-    const buckets: Bucket[] = [];
-    const quotes: VenueQuote[] = [];
-    for (const m of ms) {
-      const b = bucketFromKalshi(m, settlesAt, "above");
-      if (!b) continue;
-      buckets.push(b);
-      quotes.push(quoteFromKalshi(m, b.key, hourlyTheta));
-    }
-    hourly = { id: `btc-hourly:${ev}`, title: `Bitcoin price at ${settlesAt} (hourly)`, settlesAt, buckets: sortBuckets(buckets), quotes, model: {} };
+  if (!events.length) return null;
+  const { ev, ms } = events[0];
+  const settlesAt = ms[0].close_time;
+  const buckets: Bucket[] = [];
+  const quotes: VenueQuote[] = [];
+  for (const m of ms) {
+    const b = bucketFromKalshi(m, settlesAt, "above");
+    if (!b) continue;
+    buckets.push(b);
+    quotes.push(quoteFromKalshi(m, b.key, hourlyTheta));
   }
-
-  return { yearEnd, hourly };
+  return { id: `btc-hourly:${ev}`, title: `Kalshi hourly ladder ${ev}`, settlesAt, buckets: sortBuckets(buckets), quotes, model: {} };
 }
 
 /** Low price to high price; the open-ended tails fall into place by their own level. */
