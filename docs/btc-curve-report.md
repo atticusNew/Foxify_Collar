@@ -20,10 +20,9 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
    (sub-penny), Polymarket US bid/ask (whole cents), the option-implied probability, Kalshi −
    Poly, each venue − model, and any executable cross net of both venues' taker fees with the
    dollars available at the resting depth. Two notes total it: the executable crosses summed at
-   resting depth (the venue-to-venue arb, capped by the thinner book), and the same venue's
-   resting bids sold against option-implied value and hedged on listed options instead, summed
-   at the venue's own bid depth after taker fee and a half-cent wing allowance, before the
-   option hedge's cost. The one-touch ladders ("how high / how low this
+   resting depth (the venue-to-venue arb, capped by the thinner book), and each venue's
+   resting bids above option-implied value, summed at the venue's own bid depth after taker fee
+   and a half-cent wing allowance (the options market as referee, not a hedge venue). The one-touch ladders ("how high / how low this
    year") follow with a model caveat. Polymarket-US-only ladders are listed after.
 2. **The hourly ladder** (Kalshi KXBTCD, 120 strikes $100 apart) against the smile from the
    nearest Deribit expiry, with the vol each side is pricing the hour at: a lognormal
