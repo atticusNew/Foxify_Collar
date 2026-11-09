@@ -3,9 +3,9 @@
  * history window, the replay engine and the collar ladder. Pure assembly; no I/O.
  */
 
-import { bucketRows, distributionRows, gapSeries, latencyTable, type BucketRow, type GapSeries, type LatencyRow } from "./analytics";
+import { bucketRows, distributionRows, gapSeries, ladderImpliedVol, latencyTable, realizedVolPct, type BucketRow, type GapSeries, type LadderVol, type LatencyRow } from "./analytics";
 import type { CollarLadder } from "./collarLadder";
-import { buildSmiles } from "./model";
+import { buildSmiles, ivAt, nearestSmile } from "./model";
 import type { ReplaySummary } from "./replay";
 import type { HistoryPoint } from "./store";
 import type { IndexCandle, Ladder, Snapshot } from "./types";
@@ -34,6 +34,8 @@ export interface ReportData {
   intervalSec: number;
   yearEnd: LadderView[];
   hourly: LadderView | null;
+  /** the vol each side is pricing the hour at: the venue's ladder, the listed smile at the money, the index realised */
+  hourlyVol: { ladder: LadderVol | null; smilePct: number | null; smileExpiry: string | null; realized: { pct: number; n: number } | null; minutesToClose: number } | null;
   polyOnly: LadderView[];
   latency: LatencyRow[];
   latencyYearEnd: LatencyRow[];
@@ -85,6 +87,20 @@ export function buildReport(input: {
   const hourlyLadder = s.ladders.find((l) => l.id.startsWith("btc-hourly:")) ?? null;
   const polyOnly = s.ladders.filter((l) => l.id.startsWith("poly:")).map((l) => ladderView(l, history));
   const yearEndSettle = yearEnd[0] ? Date.parse(yearEnd[0].settlesAt) : null;
+  const hourlyView = hourlyLadder ? ladderView(hourlyLadder, history) : null;
+  let hourlyVol: ReportData["hourlyVol"] = null;
+  if (hourlyLadder && hourlyView) {
+    const settleMs = Date.parse(hourlyLadder.settlesAt);
+    const T = (settleMs - nowMs) / (365.25 * 86_400_000);
+    const smile = nearestSmile(smiles, settleMs);
+    hourlyVol = {
+      ladder: ladderImpliedVol(hourlyView.rows, "kalshi", s.spotUsd, T),
+      smilePct: smile ? Math.round(ivAt(smile, s.spotUsd) * 1000) / 10 : null,
+      smileExpiry: smile?.expiry ?? null,
+      realized: realizedVolPct(input.candles, 60),
+      minutesToClose: Math.round((settleMs - nowMs) / 60_000),
+    };
+  }
   return {
     at: s.at,
     spotUsd: s.spotUsd,
@@ -93,7 +109,8 @@ export function buildReport(input: {
     historyPoints: history.length,
     intervalSec: input.intervalSec,
     yearEnd,
-    hourly: hourlyLadder ? ladderView(hourlyLadder, history) : null,
+    hourly: hourlyView,
+    hourlyVol,
     polyOnly,
     latency: latencyTable(input.candles, smiles, hourlyLadder ? Date.parse(hourlyLadder.settlesAt) : null, nowMs),
     latencyYearEnd: latencyTable(input.candles, smiles, yearEndSettle, nowMs),
