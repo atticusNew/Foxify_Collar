@@ -62,6 +62,14 @@ function ladderTable(v: LadderView, opts: { showPoly: boolean }): string {
   return `<div class="tbl"><table>${head}${rows}${sums}</table></div>`;
 }
 
+/** A Polymarket US ladder with no Kalshi mate: the two-sided strikes only, so a 150-strike hourly range ladder reads as the dozen that trade. */
+function polyOnlyTable(v: LadderView): string {
+  const twoSided = v.rows.filter((r) => r.poly && r.poly.bidCents > 0 && r.poly.askCents > 0 && r.poly.askCents < 100);
+  const head = `<p class="dim">${esc(v.title)} · settles ${et(v.settlesAt)} · ${twoSided.length} of ${v.rows.length} strikes two-sided</p>`;
+  if (!twoSided.length) return head;
+  return head + ladderTable({ ...v, rows: twoSided, sumKalshi: null, sumPoly: null, sumModel: null }, { showPoly: true });
+}
+
 /** Grouped bars: three sources per bucket. */
 function distributionSvg(v: LadderView): string {
   const d = v.distribution;
@@ -348,7 +356,7 @@ ${yearEndVolsHtml(d.yearEndVols)}
 <p class="dim">Touch fair value is a model (reflection principle, smile vol at the barrier), not a market read. Gap to model indicative only.</p>
 ${high ? ladderTable(high, { showPoly: high.venues.includes("polymarket_us") }) : ""}
 ${low ? ladderTable(low, { showPoly: low.venues.includes("polymarket_us") }) : ""}
-${d.polyOnly.length ? `<h3>Polymarket US only</h3>${d.polyOnly.map((v) => `<p class="dim">${esc(v.title)} · settles ${et(v.settlesAt)}</p>${ladderTable(v, { showPoly: true })}`).join("")}` : ""}
+${d.polyOnly.length ? `<h3>Polymarket US only</h3><p class="dim">Ladders with no Kalshi contract sharing the close (the range twins of the hourly and daily, the Friday weekly). Two-sided strikes only.</p>${d.polyOnly.map((v) => polyOnlyTable(v)).join("")}` : ""}
 
 <h2>2 · Hourly ladder vs options</h2>
 ${hourlyHtml(d)}

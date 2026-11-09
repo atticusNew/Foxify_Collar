@@ -153,7 +153,7 @@ export function buildReport(input: {
     health: s.health,
     notes: {
       polyUsShortDated:
-        "Polymarket US documents 15-minute and hourly Up/Down windows and hourly, daily and weekly BTC strike ladders; listed in its preprod environment, production date per its changelog. Picked up here by series the cycle they appear.",
+        "Polymarket US lists the hourly ladder (strikes $100 apart, no 5 PM ET hour), the 5 PM ET daily ($250 apart, none on Fridays) and the Friday weekly, all settling on BRTI like Kalshi's KXBTCD. Same strike and same close: the same contract on two venues. Read here by series every cycle; the Polymarket US columns above fill when its ladder shares the Kalshi close.",
     },
   };
 }
