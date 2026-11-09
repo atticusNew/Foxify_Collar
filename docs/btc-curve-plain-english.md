@@ -28,6 +28,16 @@ the time of the snapshot you are looking at, and how long we have been collectin
 Coinbase. They pay on BRTI, a once-a-second blend of several exchanges. If you hedge against
 anything else you own the difference.
 
+**The key and the six tiles.** Under the strip, two labels that then sit on every heading:
+Reference (what the venues and the options market show on their own; he has all of this
+already) and Engine (what pricing every contract against the options market adds; this is
+the part he does not have). Then six tiles with the story in numbers: the hourly ladder's vol
+against the options market right now, the same gap averaged over the window, the daily
+ladder's skew against the options market, the year-end tail three ways, the two dollar
+notes, and the hedge replay's three averages. If he reads nothing else, he reads these.
+
+**Picture.** The legend on a map, then the six numbers you would text someone.
+
 ---
 
 ## Section 1: "Year-end 2026 curve: Kalshi vs Polymarket US vs options"
@@ -217,8 +227,9 @@ it; the market-making version is a different business."
 
 ## Section 3: gaps over time
 
-**What it is.** The Kalshi-minus-Poly and venue-minus-model differences for the main bands,
-tracked over time.
+**What it is.** The Kalshi-minus-Poly difference for every band, tracked over time. Four
+numbers up top (average gap, widest band, how many bands sit a cent or more apart, which one
+flickers most); the 28-row table with sparklines is folded under "All 28 buckets".
 
 **Picture.** A heart-rate chart. A healthy market shows small noise around zero. A persistent
 offset is a venue that's slow or thin. A spike that reverts is a one-off.
@@ -227,7 +238,21 @@ offset is a venue that's slow or thin. A spike that reverts is a one-off.
 
 ---
 
-## Section 4: "Cost of latency"
+## Section 4: "Cost of latency", and the 15-minute contract
+
+**The 15-minute block, under the latency tables.** Kalshi's shortest Bitcoin contract: every
+quarter hour, "up" pays $1 if the index average in the last minute of the window is at or
+above the average in the minute before it opened. One strike, set at the open. The page
+shows the window, the strike, where the index is now, Kalshi's up/down price, and two
+"fair" readings of it: one at the options market's vol, one at the index's own realised vol
+over the last hour. For a quarter hour the second is the better referee; a one-day vol
+averages quiet hours with busy ones. Then the latency table priced on this exact contract,
+and a small table of how far Kalshi's price sat from fair in past windows, by minutes to
+close.
+
+**Picture.** A coin that is already in the air. The question is not heads or tails, it is
+how far it has tipped and how many seconds are left. The options market is a weak referee
+here and the page says so; the cost of being late is the number that matters.
 
 **What it is.** How far the settlement index moved in 1, 5, 15 and 60 seconds over the past
 hour, and what that move is worth in cents on a $1 at-the-money contract, separately for an
@@ -298,6 +323,17 @@ settled since the collector started. It's not back-tested. One an hour, honestly
 ---
 
 ## Section 6: "Lock in on the daily ladder"
+
+**Off for this reader** (the deployed page does not show it unless switched on). If he asks
+where the product is: a Kalshi contract pays 0 or 100. A floor of 30 and a cap of 65 pay 30
+or 65, which is exactly what you get by selling 65% of the position at the bid and keeping
+the rest, and on a deep 1¢-wide book the partial sale pays more (38¢ cash vs a 30¢ floor and
+a 1¢ credit on Nov 9). The pricer knows it and refuses 13 of 14 strikes. Lock in is for the
+books where you cannot sell at the mid: thin, one-sided, in-play, size. That is the sports
+page, not this one. The sentence: "a collar on a deep binary is a partial sale with extra
+steps; the product belongs where the book will not take the other side."
+
+When switched on, the section reads as follows.
 
 **What it is.** Our product, quoted on Kalshi's 5 PM ET daily strikes, from the customer's side.
 Someone holds a Kalshi "above $X" contract worth 45¢. We offer: a floor (the least they'll

@@ -39,7 +39,12 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
    mean |gap|, max, last). Persistent gaps are quoting differences; flicker is latency.
 4. **What being late costs.** |Δ BRTI| over 1/5/15/60 s from one-second prints over the last
    hour (median, p90, worst), priced on a $1 at-the-money digital of the hourly and the year-end
-   tenor via the option-implied digital delta.
+   tenor via the option-implied digital delta. Under it, the **15-minute up/down** (Kalshi
+   KXBTC15M, one strike per window set at the open): Kalshi's price against P(up) at the listed
+   vol for the strike and at the index's realised vol over the last hour, the latency table priced
+   on this contract at its current moneyness, and Kalshi mid minus P(up) over past windows in the
+   history by minutes to close. Kalshi lists only the current window; the block is empty for the
+   last 30 seconds of each quarter hour.
 5. **Static vs dynamic hedge.** For every hourly ladder seen with 20 minutes to 2 hours left,
    one $1 ATM digital is sold at the venue mid and carried to settlement two ways from the same
    snapshots: a listed call spread bought at the offer and sold back at the bid on the first
@@ -58,20 +63,28 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
    and each mid's residual against a one-vol fit. One table per venue quoting the ladder (Kalshi
    today; Polymarket US when its short-dated ladders leave preprod). Strikes within a quarter of a
    standard deviation of the centre are blank (no vega).
-6. **Lock in on the daily ladder.** Holder-side terms (floor, cap, credit, upside given up) per
-   strike of Kalshi's 5 PM ET daily contract (KXBTCD, 80 strikes $250 apart; the hourly is used
-   only when no daily is listed), priced leg-for-leg off OKX option books with the same pricer as
-   the public BTC demo. Writer economics (take, legs cost) are omitted unless
-   `BTC_CURVE_SHOW_TAKE=1`.
+6. **Lock in on the daily ladder.** Off by default (`BTC_CURVE_COLLAR=1` enables): on a deep
+   binary a floor and cap replicate as a partial sale at the bid, and the daily ladder refuses
+   most strikes. When on: holder-side terms (floor, cap, credit, upside given up) per strike of
+   Kalshi's 5 PM ET daily contract (KXBTCD, 80 strikes $250 apart; the hourly is used only when no
+   daily is listed), priced leg-for-leg off OKX option books with the same pricer as the public
+   BTC demo; refused strikes folded into one line. Writer economics (take, legs cost) are omitted
+   unless `BTC_CURVE_SHOW_TAKE=1`.
+
+Page furniture: a key under the strip (Reference: what the venues and the options market show on
+their own; Engine: what pricing against the listed options market adds) with the tag on every
+heading; six tiles filled from the data (hourly vol vs listed now, hourly premium over the window,
+daily skew vs listed, year-end tail three ways, the two dollar notes, the replay's three means);
+§3 folded behind a four-number strip.
 
 ## Data
 
 | Source | Endpoint | Used for |
 | --- | --- | --- |
-| Kalshi public API | `/markets?series_ticker=` (KXBTCY, KXBTCMAXY, KXBTCMINY, KXBTCD), `/markets/{t}/orderbook`, `/series/{t}` | ladders, depth, fee multiplier |
+| Kalshi public API | `/markets?series_ticker=` (KXBTCY, KXBTCMAXY, KXBTCMINY, KXBTCD, KXBTC15M), `/markets/{t}/orderbook`, `/series/{t}` | ladders, depth, fee multiplier |
 | Polymarket US Retail API (no key) | `/v1/series`, `/v1/events?seriesId=`, `/v1/markets/{slug}/book`, `/v1/asset-prices/history` | ladders (typed `assetPriceTerms`), depth, `feeCoefficient`, BRTI 1-second candles |
 | Deribit public | `/public/get_book_summary_by_currency?currency=BTC&kind=option`, `/public/get_index_price` | smile per expiry, spot fallback |
-| OKX public | instruments, `/market/books` | hedge legs for §6 |
+| OKX public | instruments, `/market/books` | hedge legs for §6 (when enabled) |
 
 Fee formula on both venues: `Θ · C · p · (1 − p)` with the market's own coefficient (Kalshi
 `round up(M × 0.07 × C × P × (1−P))`, KXBTCY has `fee_multiplier 0`, KXBTCD and the touch

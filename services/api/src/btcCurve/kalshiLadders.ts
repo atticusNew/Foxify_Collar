@@ -19,6 +19,9 @@ export const KALSHI_YEAR_END = {
   touchDown: "KXBTCMINY",
 } as const;
 export const KALSHI_HOURLY = "KXBTCD";
+/** Fifteen-minute up/down: one market per window, strike = the 60-second BRTI average before the window opened. */
+export const KALSHI_15M = "KXBTC15M";
+export const FIFTEEN_WINDOW_MS = 16 * 60_000;
 /** An "hourly" ladder is one closing within this long; the series also lists tomorrow's 5 PM ET contract. */
 export const HOURLY_WINDOW_MS = 90 * 60_000;
 
@@ -164,6 +167,8 @@ export interface KalshiLadderSet {
   hourly: Ladder | null;
   /** the 5 PM ET daily contract in the same series, when listed */
   daily: Ladder | null;
+  /** the current 15-minute up/down window (one strike), when listed */
+  fifteen: Ladder | null;
 }
 
 /**
@@ -174,14 +179,16 @@ export async function readKalshiLadders(
   opts: { withDepth?: boolean; fetchImpl?: typeof fetch } = {},
 ): Promise<KalshiLadderSet> {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const [rangeRaw, upRaw, downRaw, hourlyRaw, rangeTheta, touchTheta, hourlyTheta] = await Promise.all([
+  const [rangeRaw, upRaw, downRaw, hourlyRaw, fifteenRaw, rangeTheta, touchTheta, hourlyTheta, fifteenTheta] = await Promise.all([
     fetchOpenMarkets(KALSHI_YEAR_END.range, fetchImpl),
     fetchOpenMarkets(KALSHI_YEAR_END.touchUp, fetchImpl),
     fetchOpenMarkets(KALSHI_YEAR_END.touchDown, fetchImpl),
     fetchOpenMarkets(KALSHI_HOURLY, fetchImpl),
+    fetchOpenMarkets(KALSHI_15M, fetchImpl).catch(() => [] as RawMarket[]),
     fetchFeeTheta(KALSHI_YEAR_END.range, fetchImpl).catch(() => 0),
     fetchFeeTheta(KALSHI_YEAR_END.touchUp, fetchImpl).catch(() => 0.07),
     fetchFeeTheta(KALSHI_HOURLY, fetchImpl).catch(() => 0.07),
+    fetchFeeTheta(KALSHI_15M, fetchImpl).catch(() => 0.07),
   ]);
 
   const yearEnd: Ladder[] = [];
@@ -204,14 +211,32 @@ export async function readKalshiLadders(
 
   const hourly = hourlyLadderFrom(hourlyRaw, hourlyTheta, Date.now());
   const daily = dailyLadderFrom(hourlyRaw, hourlyTheta, Date.now());
+  const fifteen = fifteenLadderFrom(fifteenRaw, fifteenTheta, Date.now());
 
   if (opts.withDepth) {
-    // every year-end quote, and the hourly's and daily's two-sided strikes (the far wings have no book to read)
+    // every year-end quote, and the short-dated ladders' two-sided strikes (the far wings have no book to read)
     const twoSided = (l: Ladder | null) => (l ? l.quotes.filter((q) => q.bidCents > 0 && q.askCents < 100) : []);
-    await withDepth([...yearEnd.flatMap((l) => l.quotes), ...twoSided(hourly), ...twoSided(daily)], fetchImpl);
+    await withDepth([...yearEnd.flatMap((l) => l.quotes), ...twoSided(hourly), ...twoSided(daily), ...twoSided(fifteen)], fetchImpl);
   }
 
-  return { yearEnd, hourly, daily };
+  return { yearEnd, hourly, daily, fifteen };
+}
+
+/**
+ * The current 15-minute window: the KXBTC15M market closing soonest, more than 30 seconds out
+ * and within 16 minutes. One strike per window (the index average before the open), so the
+ * ladder has one bucket. Exported for tests.
+ */
+export function fifteenLadderFrom(raw: RawMarket[], theta: number, nowMs: number): Ladder | null {
+  const open = raw
+    .map((m) => ({ m, closeMs: Date.parse(m.close_time) }))
+    .filter((e) => Number.isFinite(e.closeMs) && e.closeMs - nowMs > 30_000 && e.closeMs - nowMs <= FIFTEEN_WINDOW_MS)
+    .sort((a, b) => a.closeMs - b.closeMs);
+  if (!open.length) return null;
+  const { m } = open[0];
+  const b = bucketFromKalshi(m, m.close_time, "above");
+  if (!b) return null;
+  return { id: `btc-15m:${m.event_ticker}`, title: `Kalshi 15-minute up/down ${m.event_ticker}`, settlesAt: m.close_time, buckets: [b], quotes: [quoteFromKalshi(m, b.key, theta)], model: {} };
 }
 
 /** Best-level sizes onto each quote, a few books at a time so the public rate limit is not tripped. */

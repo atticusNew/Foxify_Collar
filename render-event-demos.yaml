@@ -73,6 +73,9 @@ services:
         value: "60"
       - key: BTC_CURVE_RETAIN_DAYS
         value: "21"
+      # §6 (Lock in on the daily ladder, hedge legs on OKX) is off unless this is "1".
+      # - key: BTC_CURVE_COLLAR
+      #   value: "1"
       # Optional. When set, the page and JSON are only served with ?k=<token>
       # (an unlisted link for a reader). Set in the dashboard, not here.
       # - key: BTC_CURVE_TOKEN

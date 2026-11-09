@@ -3,7 +3,7 @@
  * history window, the replay engine and the collar ladder. Pure assembly; no I/O.
  */
 
-import { bucketRows, distributionRows, gapSeries, hourlyVolPoint, ladderStrikeVols, latencyTable, volPremiumByHorizon, yearEndStrikeVols, type BucketRow, type GapSeries, type LadderVolTable, type LatencyRow, type VolPremiumRow, type YearEndVolTable } from "./analytics";
+import { bucketRows, distributionRows, fifteenMinuteView, gapSeries, hourlyVolPoint, ladderStrikeVols, latencyTable, volPremiumByHorizon, yearEndStrikeVols, type BucketRow, type FifteenMinuteView, type GapSeries, type LadderVolTable, type LatencyRow, type VolPremiumRow, type YearEndVolTable } from "./analytics";
 import type { CollarLadder } from "./collarLadder";
 import { buildSmiles, nearestSmile, type Smile } from "./model";
 import type { ReplaySummary } from "./replay";
@@ -47,6 +47,8 @@ export interface ReportData {
   polyOnly: LadderView[];
   latency: LatencyRow[];
   latencyYearEnd: LatencyRow[];
+  /** the live 15-minute up/down contract against the option-implied P(up), with latency priced on it */
+  fifteen: FifteenMinuteView | null;
   replay: ReplaySummary;
   collar: CollarLadder | null;
   health: Snapshot["health"];
@@ -123,6 +125,7 @@ export function buildReport(input: {
   const hourlyLadder = s.ladders.find((l) => l.id.startsWith("btc-hourly:")) ?? null;
   const dailyLadder = s.ladders.find((l) => l.id.startsWith("btc-daily:")) ?? null;
   const rangeLadder = s.ladders.find((l) => l.id === "btc-yearend-2026-range") ?? null;
+  const fifteenLadder = s.ladders.find((l) => l.id.startsWith("btc-15m:")) ?? null;
   const polyOnly = s.ladders.filter((l) => l.id.startsWith("poly:")).map((l) => ladderView(l, history));
   const yearEndSettle = yearEnd[0] ? Date.parse(yearEnd[0].settlesAt) : null;
   const hourlyView = hourlyLadder ? ladderView(hourlyLadder, history) : null;
@@ -148,6 +151,7 @@ export function buildReport(input: {
     polyOnly,
     latency: latencyTable(input.candles, smiles, hourlyLadder ? Date.parse(hourlyLadder.settlesAt) : null, nowMs),
     latencyYearEnd: latencyTable(input.candles, smiles, yearEndSettle, nowMs),
+    fifteen: fifteenLadder ? fifteenMinuteView(fifteenLadder, smiles, s.spotUsd, input.candles, nowMs, history) : null,
     replay: input.replay,
     collar: input.collar,
     health: s.health,
