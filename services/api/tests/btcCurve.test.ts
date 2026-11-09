@@ -10,11 +10,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { aboveKey, belowKey, keyLevel } from "../src/btcCurve/keys";
-import { bucketFromKalshi, dollarsToCentsExact, sortBuckets, topDepthFromOrderbook } from "../src/btcCurve/kalshiLadders";
+import { bucketFromKalshi, dollarsToCentsExact, hourlyLadderFrom, sortBuckets, topDepthFromOrderbook } from "../src/btcCurve/kalshiLadders";
 import { bucketFromPolyUs, laddersFromEvents, moneyCents } from "../src/btcCurve/polyUsLadders";
 import { expiryTagToMs, parseSummary, selectRows } from "../src/btcCurve/deribitChain";
 import { black76Call, buildSmiles, digitalDelta, ivAt, modelBucket, normCdf, probAbove, probTouch, type Smile } from "../src/btcCurve/model";
-import { bucketRows, findCross, gapSeries, latencyTable, mergeLadders, takerFeeCents } from "../src/btcCurve/analytics";
+import { bucketRows, findCross, gapSeries, ladderImpliedVol, latencyTable, mergeLadders, realizedVolPct, takerFeeCents } from "../src/btcCurve/analytics";
 import { SnapshotStore, toHistoryPoint } from "../src/btcCurve/store";
 import { ReplayEngine, bracketCalls } from "../src/btcCurve/replay";
 import { buildReport } from "../src/btcCurve/report";
@@ -53,6 +53,24 @@ test("bucket keys: the same contract gets the same key on both venues, including
 
   // hourly ladder: "$85,250 or above" is listed as strictly above 85,249.99
   assert.equal(k({ strike_type: "greater", floor_strike: 85249.99 }, "above")?.key, "above:85250");
+
+  // the hourly pick: the series lists the current hour and tomorrow's 5 PM ET contract side by side
+  const now = Date.UTC(2026, 10, 8, 23, 50, 0);
+  const raw = (event_ticker: string, close_time: string) => ({
+    ticker: `${event_ticker}-T74249.99`,
+    event_ticker,
+    status: "open",
+    close_time,
+    strike_type: "greater",
+    floor_strike: 74249.99,
+    yes_bid_dollars: "0.4500",
+    yes_ask_dollars: "0.4600",
+  });
+  const thisHour = raw("KXBTCD-26NOV0819", "2026-11-09T00:00:00Z");
+  const tomorrow5pm = raw("KXBTCD-26NOV0917", "2026-11-09T22:00:00Z");
+  assert.equal(hourlyLadderFrom([tomorrow5pm, thisHour], 0.07, now)?.id, "btc-hourly:KXBTCD-26NOV0819", "ten minutes left still counts");
+  assert.equal(hourlyLadderFrom([tomorrow5pm], 0.07, now), null, "a 22-hour contract is not the hourly ladder");
+  assert.equal(hourlyLadderFrom([thisHour], 0.07, Date.UTC(2026, 10, 8, 23, 59, 0)), null, "inside the last two minutes nothing is picked");
   // not a BTC contract → not a bucket
   assert.equal(bucketFromPolyUs({ slug: "aec-nfl-x", assetPriceTerms: { asset: { symbol: "eth" } } } as never), null);
   assert.equal(bucketFromPolyUs({ slug: "aec-nfl-x" } as never), null);
@@ -184,6 +202,14 @@ test("model: the normal CDF, a flat smile reproduces N(d2), a tiling ladder sums
   assert.equal(smiles.length, 1);
   assert.equal(smiles[0].points[0].iv, 0.6, "below the forward the put's vol is the one kept");
   assert.ok(digitalDelta(smile, 74900, 0.01) > 0, "a digital gains value as spot rises");
+
+  // minutes before a close the digital is nearly a step; the difference quotient must not smear it
+  const fourMinutes = 4 / (365.25 * 24 * 60);
+  const nearClose: Smile = { ...flat, forward: 74601, points: [73000, 74000, 75000, 76000].map((strike) => ({ strike, iv: 0.7 })) };
+  const sN = 0.7 * Math.sqrt(fourMinutes);
+  const exact = normCdf((Math.log(74601 / 74500) - 0.5 * sN * sN) / sN);
+  assert.ok(exact > 0.7, `spot $101 over the strike with 4 minutes left at 70% vol is a ${(exact * 100).toFixed(0)}% digital`);
+  assert.ok(Math.abs(probAbove(nearClose, 74500, fourMinutes) - exact) < 0.01, "the numerical digital matches N(d2) minutes before the close");
 });
 
 function q(venue: VenueQuote["venue"], key: string, bid: number, ask: number, theta: number, bidQty = 0, askQty = 0): VenueQuote {
@@ -285,6 +311,46 @@ test("latency: index moves over 1/5/15/60s from one-second prints, priced on an 
   assert.equal(latencyTable([], [smile], null, nowMs)[0].n, 0);
 });
 
+test("ladder vol: the forward and vol a venue's hourly ladder is priced at are recovered from its mids; realised vol from one-minute returns", () => {
+  // a ladder quoted at 80% vol around $74,500 with 55 minutes to run, 1¢ wide
+  const F = 74500;
+  const T = 55 / (365.25 * 24 * 60);
+  const s = 0.8 * Math.sqrt(T);
+  const quotes: VenueQuote[] = [];
+  const buckets = [];
+  for (let K = 73500; K <= 75500; K += 100) {
+    const p = normCdf((Math.log(F / K) - 0.5 * s * s) / s) * 100;
+    buckets.push({ key: `above:${K}`, kind: "above" as const, level: K, settlesAt: SETTLE });
+    quotes.push(q("kalshi", `above:${K}`, Math.round(p * 10) / 10 - 0.5, Math.round(p * 10) / 10 + 0.5, 0.07));
+  }
+  const ladder: Ladder = { id: "btc-hourly:t", title: "t", settlesAt: SETTLE, buckets, quotes, model: {} };
+  // the index print is 40 dollars stale; the fit should not be fooled by it
+  const fit = ladderImpliedVol(bucketRows(ladder), "kalshi", F - 40, T);
+  assert.ok(fit, "enough two-sided strikes to fit");
+  assert.ok(Math.abs((fit?.ladderPct ?? 0) - 80) < 2, `recovers 80% vol (got ${fit?.ladderPct}%)`);
+  assert.ok(Math.abs((fit?.forwardUsd ?? 0) - F) < 15, `recovers the centre (got $${fit?.forwardUsd})`);
+  assert.ok((fit?.rmsCents ?? 9) < 0.3, "and fits the mids to a fraction of a cent");
+  assert.equal(ladderImpliedVol(bucketRows(ladder), "polymarket_us", F, T), null, "no Polymarket US mids → no fit");
+
+  // realised vol: ±1 bp every second alternates, so one-minute returns net to zero…
+  const flat = [];
+  let px = 74000;
+  for (let t = 0; t < 3600; t += 1) {
+    px += t % 2 === 0 ? 7.4 : -7.4;
+    flat.push({ ts: 1_700_000_000 + t, open: px, high: px, low: px, close: px });
+  }
+  assert.ok((realizedVolPct(flat, 60)?.pct ?? 1) < 1, "an alternating tick path has no one-minute variance");
+  // …while a path that steps 10 bps every minute realises 10 bps · sqrt(525,960) ≈ 72.5%
+  const trend = [];
+  px = 74000;
+  for (let t = 0; t < 3600; t += 1) {
+    if (t % 60 === 0 && t > 0) px *= Math.floor(t / 60) % 2 === 0 ? 1.001 : 1 / 1.001;
+    trend.push({ ts: 1_700_000_000 + t, open: px, high: px, low: px, close: px });
+  }
+  const rv = realizedVolPct(trend, 60);
+  assert.ok(rv && Math.abs(rv.pct - 72.5) < 1.5, `10 bp per minute is 72.5% annualised (got ${rv?.pct}%)`);
+});
+
 test("replay: one ATM digital per hourly ladder is carried to settlement naked, with a static spread and with a dynamic delta; state survives a restart", () => {
   const dir = mkdtempSync(join(tmpdir(), "btc-replay-"));
   const statePath = join(dir, "state.json");
@@ -358,6 +424,25 @@ test("replay: one ATM digital per hourly ladder is carried to settlement naked, 
   // seen before → not reopened
   again.observe(hourly, 74320, chain, settleMs + 180_000);
   assert.equal(again.getOpen().length, 0);
+
+  // only hourly horizons enter the sample: tomorrow's 5 PM contract and a ladder in its last minutes are both skipped
+  const farSettle = t0 + 22 * 3_600_000;
+  const far: Ladder = { ...hourly, id: "btc-hourly:KXBTCD-26NOV1017", settlesAt: new Date(farSettle).toISOString() };
+  again.observe(far, 74320, chain, t0);
+  assert.equal(again.getOpen().length, 0, "a 22-hour contract is not an hourly replay");
+  const late: Ladder = { ...hourly, id: "btc-hourly:KXBTCD-26NOV0918" };
+  again.observe(late, 74320, chain, settleMs - 10 * 60_000);
+  assert.equal(again.getOpen().length, 0, "ten minutes to the close is too late to open");
+  again.observe(late, 74320, chain, settleMs - 25 * 60_000);
+  assert.equal(again.getOpen().length, 1, "25 minutes to the close opens");
+
+  // a legacy state file holding a multi-hour event is purged on load
+  const legacy = JSON.parse(readFileSync(statePath, "utf8")) as { open: Array<{ settlesAtMs: number; openedAt: string }> };
+  legacy.open.push({ ...legacy.open[0], settlesAtMs: farSettle, openedAt: new Date(t0).toISOString() });
+  writeFileSync(statePath, JSON.stringify(legacy));
+  const purged = new ReplayEngine(statePath, logPath, 2);
+  assert.equal(purged.getOpen().length, 1);
+  assert.equal(purged.getOpen()[0].settlesAtMs, settleMs);
 });
 
 test("store: snapshots append to a day file, reload into the history window, and old days are swept", () => {

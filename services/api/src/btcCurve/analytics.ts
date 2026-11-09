@@ -4,7 +4,7 @@
  * Pure functions over snapshots and history; no I/O.
  */
 
-import { digitalDelta, nearestSmile, type Smile } from "./model";
+import { digitalDelta, nearestSmile, normCdf, type Smile } from "./model";
 import type { HistoryPoint } from "./store";
 import type { IndexCandle, Ladder, VenueQuote } from "./types";
 
@@ -247,6 +247,97 @@ export function latencyTable(
       n: moves.length,
     };
   });
+}
+
+export interface LadderVol {
+  /** lognormal vol (annualised, %) that best fits the venue's two-sided mids as N(d2) digitals */
+  ladderPct: number;
+  /** the forward the same fit puts the ladder's centre at, USD */
+  forwardUsd: number;
+  /** strikes used in the fit */
+  n: number;
+  /** root-mean-square miss of that fit, cents */
+  rmsCents: number;
+}
+
+/**
+ * The single vol a venue's "above X" ladder is priced at: fit a forward and a σ so that N(d2)
+ * digitals with `T` years to run match the two-sided mids between 5¢ and 95¢. Fitting the
+ * forward as well keeps a few seconds' index lag out of the vol; it also says where the
+ * venue's makers think spot is. One number a reader can hold against the listed option vol
+ * and the index's realised vol.
+ */
+export function ladderImpliedVol(rows: BucketRow[], venue: "kalshi" | "polymarket_us", spot: number, T: number): LadderVol | null {
+  if (!(spot > 0) || !(T > 0)) return null;
+  const pts: Array<{ K: number; p: number }> = [];
+  for (const r of rows) {
+    if (!r.key.startsWith("above:")) continue;
+    const K = Number(r.key.slice("above:".length));
+    const m = midCents(venue === "kalshi" ? r.kalshi : r.poly);
+    if (!(K > 0) || m === null || m < 5 || m > 95) continue;
+    pts.push({ K, p: m / 100 });
+  }
+  if (pts.length < 3) return null;
+  const sqT = Math.sqrt(T);
+  const sse = (F: number, iv: number) => {
+    const s = iv * sqT;
+    let e = 0;
+    for (const { K, p } of pts) {
+      const q = normCdf((Math.log(F / K) - 0.5 * s * s) / s);
+      e += (q - p) * (q - p);
+    }
+    return e;
+  };
+  let bestF = spot;
+  let bestIv = 0.5;
+  let bestE = Number.POSITIVE_INFINITY;
+  // coarse grid in both, then a fine pass around the winner
+  for (const [fStep, ivStep, fSpan, ivLo, ivHi, f0, iv0] of [
+    [0.001, 1.05, 0.02, 0.05, 4, spot, 0.5],
+    [0.0001, 1.005, 0.0025, 0, 0, 0, 0],
+  ] as Array<[number, number, number, number, number, number, number]>) {
+    const centerF = f0 || bestF;
+    const lo = ivLo || bestIv / 1.1;
+    const hi = ivHi || bestIv * 1.1;
+    for (let F = centerF * (1 - fSpan); F <= centerF * (1 + fSpan); F += centerF * fStep) {
+      for (let iv = lo; iv <= hi; iv *= ivStep) {
+        const e = sse(F, iv);
+        if (e < bestE) {
+          bestE = e;
+          bestF = F;
+          bestIv = iv;
+        }
+      }
+    }
+  }
+  return {
+    ladderPct: Math.round(bestIv * 1000) / 10,
+    forwardUsd: Math.round(bestF),
+    n: pts.length,
+    rmsCents: Math.round(Math.sqrt(bestE / pts.length) * 10000) / 100,
+  };
+}
+
+/** Annualised realised vol (%) of the index from `stepSec`-spaced closes across the candles. */
+export function realizedVolPct(candles: IndexCandle[], stepSec = 60): { pct: number; n: number } | null {
+  const byTs = new Map<number, number>();
+  for (const c of candles) byTs.set(c.ts, c.close);
+  const ts = [...byTs.keys()].sort((a, b) => a - b);
+  if (ts.length < 2) return null;
+  const rets: number[] = [];
+  let last = ts[0];
+  for (const t of ts) {
+    if (t - last < stepSec) continue;
+    const a = byTs.get(last);
+    const b = byTs.get(t);
+    if (a && b) rets.push(Math.log(b / a));
+    last = t;
+  }
+  if (rets.length < 10) return null;
+  const mean = rets.reduce((x, y) => x + y, 0) / rets.length;
+  const varr = rets.reduce((x, y) => x + (y - mean) * (y - mean), 0) / rets.length;
+  const perYear = (365.25 * 86_400) / stepSec;
+  return { pct: Math.round(Math.sqrt(varr * perYear) * 1000) / 10, n: rets.length };
 }
 
 /** Implied distribution across a range ladder: per bucket, each source's probability mass in cents. */

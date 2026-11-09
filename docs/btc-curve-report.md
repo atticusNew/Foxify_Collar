@@ -13,24 +13,36 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
 ## What the page shows
 
 1. **The curve.** Year-end 2026 is the one tenor both venues list as the same contract today:
-   28 buckets of $5,000 ("Bitcoin price at the end of 2026"), the same BRTI fixing, the same
-   instant (Jan 1 2027 05:00 UTC). Each bucket: Kalshi bid/ask (sub-penny), Polymarket US
-   bid/ask (whole cents), the option-implied probability, Kalshi − Poly, each venue − model, and
-   any executable cross net of both venues' taker fees. The one-touch ladders ("how high / how
-   low this year") follow with a model caveat. Polymarket-US-only ladders are listed after.
-2. **The hourly ladder** (Kalshi KXBTCD) against the smile from the nearest Deribit expiry.
-   Polymarket US's 15-minute, hourly, daily and weekly BTC families are documented but listed
-   only in its preprod environment as of Nov 2026; the reader discovers them by series the
-   cycle they reach production.
+   28 buckets of $5,000 ("Bitcoin price at the end of 2026"), the same index (BRTI), the same
+   instant (Jan 1 2027 05:00 UTC). The settlement statistic differs: Kalshi takes the simple
+   average of the last 60 one-second prints, Polymarket US the 20% trimmed mean of the same 60
+   (the venues' one-touch ladders both use the trimmed mean). Each bucket: Kalshi bid/ask
+   (sub-penny), Polymarket US bid/ask (whole cents), the option-implied probability, Kalshi −
+   Poly, each venue − model, and any executable cross net of both venues' taker fees with the
+   dollars available at the resting depth. The one-touch ladders ("how high / how low this
+   year") follow with a model caveat. Polymarket-US-only ladders are listed after.
+2. **The hourly ladder** (Kalshi KXBTCD, 120 strikes $100 apart) against the smile from the
+   nearest Deribit expiry, with the vol each side is pricing the hour at: a lognormal
+   (forward, σ) fit to the ladder's two-sided mids, the Deribit at-the-money mark IV, and the
+   index's realised vol over the last hour from one-minute returns. On the first live evening
+   the ladder fit at ~72% against ~45% listed and ~62% realised: the venue's makers charge a
+   vol premium on the hour, which is what the "Kalshi − model" column shows and what a hedged
+   writer collects in §5. "The hourly ladder" is the KXBTCD event closing within 90 minutes;
+   the series also lists tomorrow's 5 PM ET contract a day ahead and that one is never used as
+   the hourly. Polymarket US's 15-minute, hourly, daily and weekly BTC families are documented
+   but listed only in its preprod environment as of Nov 2026; the reader discovers them by
+   series the cycle they reach production.
 3. **Gaps over time.** Per bucket, Kalshi mid − Poly mid across the history window (sparkline,
    mean |gap|, max, last). Persistent gaps are quoting differences; flicker is latency.
 4. **What being late costs.** |Δ BRTI| over 1/5/15/60 s from one-second prints over the last
    hour (median, p90, worst), priced on a $1 at-the-money digital of the hourly and the year-end
    tenor via the option-implied digital delta.
-5. **Static vs dynamic hedge.** For every hourly ladder seen, one $1 ATM digital is sold at the
-   venue mid and carried to settlement two ways from the same snapshots: a listed call spread
-   bought at the offer and sold back at the bid at the close, and an option-implied delta in spot
-   rebalanced each snapshot at 2 bps. Settlement is the BRTI 60-second average the venues use.
+5. **Static vs dynamic hedge.** For every hourly ladder seen with 20 minutes to 2 hours left,
+   one $1 ATM digital is sold at the venue mid and carried to settlement two ways from the same
+   snapshots: a listed call spread bought at the offer and sold back at the bid on the first
+   snapshot after the close, and an option-implied delta in spot rebalanced each snapshot at
+   2 bps with no cap near the close. Settlement is the simple BRTI 60-second average Kalshi uses.
+   In-flight events with a longer horizon (from before the 90-minute rule) are dropped on load.
 6. **Lock in along the ladder.** Holder-side terms (floor, cap, credit, upside given up) per
    strike of the current hourly ladder, priced leg-for-leg off OKX option books with the same
    pricer as the public BTC demo. Writer economics (take, legs cost) are omitted unless
@@ -46,8 +58,10 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
 | OKX public | instruments, `/market/books` | hedge legs for §6 |
 
 Fee formula on both venues: `Θ · C · p · (1 − p)` with the market's own coefficient (Kalshi
-KXBTCY has `fee_multiplier 0`; KXBTCD is quadratic Θ = 0.07; Polymarket US publishes
-`feeCoefficient` per market, 0.095 on the year-end ladders today).
+`round up(M × 0.07 × C × P × (1−P))`, KXBTCY has `fee_multiplier 0`, KXBTCD and the touch
+series 1; Polymarket US publishes `feeCoefficient` per market, 0.095 on the year-end ladders
+today, which is its Tier 1 taker rate; Tier 4 is 0.0695 and rounding is to the nearest cent).
+The page shows per-contract fees unrounded and says so.
 
 Bucket keys normalise thresholds to the inclusive side so "strictly above 149,999.99" (Kalshi)
 and "at or above 150,000" (Polymarket US) are the same key, `above:150000`.
@@ -56,7 +70,10 @@ and "at or above 150,000" (Polymarket US) are the same key, `above:150000`.
 
 Smile per expiry from the out-of-the-money side's mark IV, linear in log-moneyness, flat wings;
 Black-76 on the expiry's forward, zero rate. `P(S_T > K) = −∂C/∂K` numerically so the skew is
-in the digital; a range is the difference of two. Touch probabilities use the reflection
+in the digital; a range is the difference of two. The difference step is capped at a fifth of
+one standard deviation of the terminal move, so minutes before an hourly close (when the digital
+is nearly a step) the quotient does not smear it; without the cap a $101-in-the-money digital
+with four minutes left read 71% instead of 76%. Touch probabilities use the reflection
 principle with the smile's IV at the barrier. The year-end option expiry (Dec 25 08:00 UTC) is
 six days before the venue settlement; the smile's IV is kept and the bucket's own time to
 settlement is used.

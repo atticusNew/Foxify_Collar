@@ -121,10 +121,15 @@ export function nearestSmile(smiles: Smile[], settlesAtMs: number): Smile | null
   return best;
 }
 
-/** P(S_T > K) with the smile in the digital: −∂C/∂K by central difference. */
+/**
+ * P(S_T > K) with the smile in the digital: −∂C/∂K by central difference. The step h is
+ * capped at a fifth of one standard deviation of the terminal move, so that minutes before
+ * a close (when the digital is nearly a step) the difference quotient does not smear it.
+ */
 export function probAbove(smile: Smile, K: number, T: number): number {
   if (T <= 0) return smile.forward > K ? 1 : 0;
-  const h = Math.max(K * 0.0025, 1);
+  const sT = ivAt(smile, K) * Math.sqrt(T);
+  const h = Math.max(1, Math.min(K * 0.0025, 0.2 * K * sT));
   const call = (k: number) => black76Call(smile.forward, k, ivAt(smile, k), T);
   const p = -(call(K + h) - call(K - h)) / (2 * h);
   return Math.min(1, Math.max(0, p));
@@ -182,7 +187,8 @@ export function modelBucket(smiles: Smile[], bucket: Bucket, nowMs: number): Mod
 
 /** Sensitivity of P(S_T > K) to spot, per $1 of spot (for the cost-of-latency table). */
 export function digitalDelta(smile: Smile, K: number, T: number): number {
-  const dS = Math.max(smile.forward * 0.0005, 1);
+  const sT = ivAt(smile, K) * Math.sqrt(Math.max(T, 0));
+  const dS = Math.max(1, Math.min(smile.forward * 0.0005, 0.1 * smile.forward * sT));
   const up: Smile = { ...smile, forward: smile.forward + dS };
   const dn: Smile = { ...smile, forward: smile.forward - dS };
   return (probAbove(up, K, T) - probAbove(dn, K, T)) / (2 * dS);
