@@ -14,7 +14,7 @@ import { bucketFromKalshi, dailyLadderFrom, dollarsToCentsExact, hourlyLadderFro
 import { bucketFromPolyUs, laddersFromEvents, moneyCents } from "../src/btcCurve/polyUsLadders";
 import { expiryTagToMs, parseSummary, selectRows } from "../src/btcCurve/deribitChain";
 import { black76Call, buildSmiles, digitalDelta, forwardFor, ivAt, modelBucket, normCdf, probAbove, probTouch, type Smile } from "../src/btcCurve/model";
-import { bucketRows, findCross, gapSeries, hourlyVolPoint, ladderImpliedVol, latencyTable, mergeLadders, realizedVolPct, takerFeeCents, volPremiumByHorizon } from "../src/btcCurve/analytics";
+import { bucketRows, digitalImpliedVol, findCross, gapSeries, hourlyVolPoint, ladderImpliedVol, ladderStrikeVols, latencyTable, mergeLadders, realizedVolPct, takerFeeCents, volPremiumByHorizon } from "../src/btcCurve/analytics";
 import { SnapshotStore, toHistoryPoint } from "../src/btcCurve/store";
 import { ReplayEngine, bracketCalls } from "../src/btcCurve/replay";
 import { buildReport, termBasis } from "../src/btcCurve/report";
@@ -394,6 +394,42 @@ test("ladder vol: the forward and vol a venue's hourly ladder is priced at are r
   );
   assert.ok(Math.abs(bands[0].meanPremiumPts - ((point.ladderPct as number) + 70) / 2 + 50) < 0.2, "premium is ladder minus listed, averaged in the band");
   assert.equal(bands[1].meanPremiumPts, 60);
+});
+
+test("strike vols: each Kalshi bid/ask inverts to a vol band on the fitted centre; the listed vol lands inside where the venue quotes the smile and below where it charges a premium", () => {
+  const F = 74500;
+  const T = 55 / (365.25 * 24 * 60);
+  const sqT = Math.sqrt(T);
+  // the inversion is the inverse of N(d2): round trip at 80% on both sides of the centre
+  for (const K of [73800, 75200]) {
+    const p = normCdf((Math.log(F / K) - 0.5 * 0.64 * T) / (0.8 * sqT));
+    assert.ok(Math.abs((digitalImpliedVol(p, F, K, T) ?? 0) - 0.8) < 1e-6, `round trip at ${K}`);
+  }
+  assert.equal(digitalImpliedVol(0.999, F, 75200, T), null, "a price no vol reaches returns null");
+
+  // a ladder quoted at 60% vol below the centre and 90% above it, 1¢ wide; the smile is flat at 60%
+  const quotes: VenueQuote[] = [];
+  const buckets = [];
+  for (let K = 73500; K <= 75500; K += 100) {
+    const iv = K < F ? 0.6 : 0.9;
+    const p = normCdf((Math.log(F / K) - 0.5 * iv * iv * T) / (iv * sqT)) * 100;
+    buckets.push({ key: `above:${K}`, kind: "above" as const, level: K, settlesAt: SETTLE });
+    quotes.push(q("kalshi", `above:${K}`, Math.round(p * 10) / 10 - 0.5, Math.round(p * 10) / 10 + 0.5, 0.07));
+  }
+  const ladder: Ladder = { id: "btc-hourly:t", title: "t", settlesAt: SETTLE, buckets, quotes, model: {} };
+  const settleMs = Date.parse(SETTLE);
+  const listed: Smile = { expiry: "L", expiryMs: settleMs + 3_600_000, forward: F, points: [70000, 74500, 80000].map((strike) => ({ strike, iv: 0.6 })) };
+  const t = ladderStrikeVols(ladder, [listed], F, settleMs - 55 * 60_000);
+  assert.ok(t, "a fit and rows");
+  const atm = t!.rows.filter((r) => r.volLoPct === null);
+  assert.ok(atm.length >= 1 && atm.every((r) => Math.abs(r.strikeUsd - t!.centreUsd) < t!.stdevUsd), "strikes at the centre are left blank");
+  const lowSide = t!.rows.filter((r) => r.strikeUsd < F - t!.stdevUsd && r.listedVs !== null);
+  const highSide = t!.rows.filter((r) => r.strikeUsd > F + t!.stdevUsd && r.listedVs !== null);
+  assert.ok(lowSide.length && lowSide.every((r) => r.listedVs === "inside"), `60% quotes hold a 60% smile inside the band (${lowSide.map((r) => r.listedVs)})`);
+  assert.ok(highSide.length && highSide.every((r) => r.listedVs === "venue_over"), `90% quotes sit over a 60% smile (${highSide.map((r) => r.listedVs)})`);
+  assert.ok(highSide.every((r) => (r.volLoPct ?? 0) > 80 && (r.volHiPct ?? 999) < 100), "and the band brackets 90%");
+  assert.ok(t!.skew && t!.skew.venuePts < -20 && t!.skew.smilePts === 0, `venue skew reads below minus above (${t!.skew?.venuePts}), smile flat`);
+  assert.ok(Math.abs(t!.fitPct - 75) < 10, `one vol for the whole ladder lands between the two sides (${t!.fitPct}%)`);
 });
 
 test("replay: one ATM digital per hourly ladder is carried to settlement naked, with a static spread and with a dynamic delta; state survives a restart", () => {

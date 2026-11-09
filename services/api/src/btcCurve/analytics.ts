@@ -318,6 +318,168 @@ export function ladderImpliedVol(rows: BucketRow[], venue: "kalshi" | "polymarke
   };
 }
 
+export interface StrikeVolRow {
+  strikeUsd: number;
+  label: string;
+  bidCents: number;
+  askCents: number;
+  bidQty: number;
+  askQty: number;
+  /**
+   * The vol band the venue's two sides imply for an "above K" digital on the fitted centre, % annualised,
+   * low to high (bid and ask swap sides across the centre). Null within a quarter of a standard deviation of the
+   * centre, where a digital carries almost no vol, or when no vol in 2–500% reproduces the price.
+   */
+  volLoPct: number | null;
+  volHiPct: number | null;
+  volMidPct: number | null;
+  /** Deribit mark IV at the strike, % */
+  smilePct: number | null;
+  /** where the listed vol sits against the venue's band */
+  listedVs: "inside" | "venue_over" | "venue_under" | null;
+  /** venue mid minus the one-vol fit at this strike, cents */
+  fitResidualCents: number | null;
+}
+
+export interface LadderVolTable {
+  ladderId: string;
+  settlesAt: string;
+  minutesToClose: number;
+  /** the one-vol fit the residual column is read against */
+  fitPct: number;
+  /** the strike where the venue's mids cross 50¢; the centre the bands are inverted on */
+  centreUsd: number;
+  rmsCents: number;
+  /** one standard deviation of the fit over the time left, USD */
+  stdevUsd: number;
+  rows: StrikeVolRow[];
+  /** strikes with a vol band, and how many of them hold the listed vol inside it */
+  withBand: number;
+  inside: number;
+  /** mean mid vol below the centre minus above it, vol points, for the venue and for the smile at the same strikes */
+  skew: { venuePts: number; smilePts: number; n: number } | null;
+}
+
+/** The strike at which a venue's "above K" mids cross 50¢, interpolated between neighbours; null without a crossing. */
+export function ladderCentre(rows: BucketRow[]): number | null {
+  const pts = rows
+    .filter((r) => r.key.startsWith("above:"))
+    .map((r) => ({ K: Number(r.key.slice("above:".length)), m: midCents(r.kalshi) }))
+    .filter((x): x is { K: number; m: number } => x.K > 0 && x.m !== null)
+    .sort((a, b) => a.K - b.K);
+  for (let i = 1; i < pts.length; i += 1) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    if (a.m >= 50 && b.m < 50 && a.m !== b.m) return a.K + ((a.m - 50) / (a.m - b.m)) * (b.K - a.K);
+  }
+  return null;
+}
+
+/** σ such that an "above K" digital with T years left prices at p on forward F; null when none in [2%, 500%]. */
+export function digitalImpliedVol(p: number, F: number, K: number, T: number): number | null {
+  if (!(p > 0 && p < 1) || !(F > 0) || !(K > 0) || !(T > 0)) return null;
+  const price = (iv: number) => {
+    const s = iv * Math.sqrt(T);
+    return normCdf((Math.log(F / K) - 0.5 * s * s) / s);
+  };
+  let lo = 0.02;
+  let hi = 5;
+  const fLo = price(lo) - p;
+  const fHi = price(hi) - p;
+  if (fLo === 0) return lo;
+  if (fHi === 0) return hi;
+  if (Math.sign(fLo) === Math.sign(fHi)) return null;
+  for (let i = 0; i < 60; i += 1) {
+    const mid = (lo + hi) / 2;
+    const f = price(mid) - p;
+    if (Math.sign(f) === Math.sign(fLo)) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/**
+ * The market maker's read of a venue's "above X" ladder: each strike's bid and ask turned into the vol
+ * that reproduces it on the ladder's own fitted centre, set beside the listed vol at that strike. A band
+ * that holds the listed vol is a strike quoted off the smile; a band above it is a strike the venue
+ * charges a premium on; the residual against the one-vol fit says how consistent the strikes are with
+ * each other.
+ */
+export function ladderStrikeVols(ladder: Ladder, smiles: Smile[], spot: number, nowMs: number): LadderVolTable | null {
+  const settleMs = Date.parse(ladder.settlesAt);
+  const T = Math.max(0, (settleMs - nowMs) / (365.25 * 86_400_000));
+  const rows = bucketRows(ladder);
+  const fit = ladderImpliedVol(rows, "kalshi", spot, T);
+  if (!fit || !(T > 0)) return null;
+  const smile = nearestSmile(smiles, settleMs);
+  // Centre for the inversion: where the venue's mids cross 50¢, read off the ladder itself. The one-vol
+  // fit's centre would absorb any skew between the two sides; the 50¢ point does not.
+  const F = ladderCentre(rows) ?? fit.forwardUsd;
+  const sigma = fit.ladderPct / 100;
+  const s = sigma * Math.sqrt(T);
+  const out: StrikeVolRow[] = [];
+  const below: Array<{ venue: number; smile: number }> = [];
+  const above: Array<{ venue: number; smile: number }> = [];
+  const pct = (iv: number | null) => (iv === null ? null : Math.round(iv * 1000) / 10);
+  for (const r of rows) {
+    if (!r.key.startsWith("above:") || !r.kalshi) continue;
+    const K = Number(r.key.slice("above:".length));
+    const mid = midCents(r.kalshi);
+    if (!(K > 0) || mid === null || mid < 5 || mid > 95) continue;
+    const fitted = normCdf((Math.log(fit.forwardUsd / K) - 0.5 * s * s) / s) * 100;
+    const nearCentre = Math.abs(Math.log(F / K)) < 0.25 * s;
+    const vb = nearCentre ? null : digitalImpliedVol(r.kalshi.bidCents / 100, F, K, T);
+    const va = nearCentre ? null : digitalImpliedVol(r.kalshi.askCents / 100, F, K, T);
+    const vm = nearCentre ? null : digitalImpliedVol(mid / 100, F, K, T);
+    const lo = vb !== null && va !== null ? Math.min(vb, va) : null;
+    const hi = vb !== null && va !== null ? Math.max(vb, va) : null;
+    const smileIv = smile ? ivAt(smile, K) : null;
+    let listedVs: StrikeVolRow["listedVs"] = null;
+    if (lo !== null && hi !== null && smileIv !== null) {
+      listedVs = smileIv < lo ? "venue_over" : smileIv > hi ? "venue_under" : "inside";
+    }
+    if (vm !== null && smileIv !== null) (K < F ? below : above).push({ venue: vm, smile: smileIv });
+    out.push({
+      strikeUsd: K,
+      label: r.label,
+      bidCents: r.kalshi.bidCents,
+      askCents: r.kalshi.askCents,
+      bidQty: r.kalshi.bidQty,
+      askQty: r.kalshi.askQty,
+      volLoPct: pct(lo),
+      volHiPct: pct(hi),
+      volMidPct: pct(vm),
+      smilePct: pct(smileIv),
+      listedVs,
+      fitResidualCents: Math.round((mid - fitted) * 100) / 100,
+    });
+  }
+  if (!out.length) return null;
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const skew =
+    below.length && above.length
+      ? {
+          venuePts: Math.round((mean(below.map((x) => x.venue)) - mean(above.map((x) => x.venue))) * 1000) / 10,
+          smilePts: Math.round((mean(below.map((x) => x.smile)) - mean(above.map((x) => x.smile))) * 1000) / 10,
+          n: below.length + above.length,
+        }
+      : null;
+  const withBand = out.filter((r) => r.listedVs !== null);
+  return {
+    ladderId: ladder.id,
+    settlesAt: ladder.settlesAt,
+    minutesToClose: Math.round((settleMs - nowMs) / 60_000),
+    fitPct: fit.ladderPct,
+    centreUsd: Math.round(F),
+    rmsCents: fit.rmsCents,
+    stdevUsd: Math.round(F * s),
+    rows: out,
+    withBand: withBand.length,
+    inside: withBand.filter((r) => r.listedVs === "inside").length,
+    skew,
+  };
+}
+
 /** Annualised realised vol (%) of the index from `stepSec`-spaced closes across the candles. */
 export function realizedVolPct(candles: IndexCandle[], stepSec = 60): { pct: number; n: number } | null {
   const byTs = new Map<number, number>();

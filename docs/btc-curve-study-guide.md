@@ -258,6 +258,70 @@ Polymarket US has documented hourly/daily/weekly BTC ladders, but as of Nov 2026
 in its preprod environment only. The reader will pick them up automatically when they reach
 production; the note under the table says so.
 
+### "Kalshi ladders, strike by strike, in vol" (the market maker's table)
+
+The strip gives one vol for the whole ladder. This table answers the next question a desk
+asks: what vol is each strike actually quoted at, and are the strikes consistent with each
+other and with the listed market. Two tables: the current hourly and the 5 PM ET daily.
+
+How a row is built. Take the strike's bid and ask on Kalshi. Each is the price of a digital,
+so each can be turned into the vol that reproduces it, given a centre and the time left. The
+centre is read off the ladder itself: the strike where Kalshi's mids cross 50¢ (not the
+one-vol fit's centre, which would absorb skew; not BRTI, which can be seconds stale). The two
+vols are the band in the "Venue vol, bid to ask" column. Next to it: Deribit's vol at that
+strike, read off the smile. "Listed vs band" says where the listed vol sits: inside the band
+(Kalshi is quoting the smile at that strike), venue over (Kalshi charges more vol than the
+options market), venue under (Kalshi is cheaper). The last column is each mid against one vol
+for the whole ladder, in cents; a large residual is a strike out of line with its neighbours.
+
+The blanks. A digital at the money has almost no vega: at the 50¢ strike a cent of spread is
+many vol points, so the inversion says nothing. Strikes within a quarter of a standard
+deviation of the centre are left blank and the bands widen toward it. That is correct
+behaviour, not a gap; a market maker will recognise it immediately.
+
+The strip above each table: how many strikes with a band hold the listed vol inside it, the
+centre, one standard deviation to the close in dollars, the one-vol fit and its rms miss, and
+skew: mean vol below the centre minus mean vol above it, for the venue and for Deribit at the
+same strikes.
+
+What the first readings showed (Nov 8, late evening). Daily ladder, about 18 hours to
+close: Deribit carried a put skew of +3 to +4 vol points (downside strikes dearer than
+upside); Kalshi's daily was flat, skew between −0.5 and +0.6 depending on the cycle. So the
+venue sat under the smile on the downside strikes (39 to 45% against 42 to 47%), over it on
+the upside strikes (40 to 44% against 39 to 41%), and inside only near the centre, one to
+seven strikes of seventeen as the books moved. Hourly, 35 to 40 minutes to close: four or
+five strikes with a band, all under the listed vol (28 to 31% against 33 to 35%). The one-vol
+fit missed the mids by under a cent rms on both, so the strikes are consistent with each
+other; what they are not consistent with is the shape of the listed smile.
+
+What that means, in order of how much it matters:
+
+- Kalshi's makers are quoting one vol across the ladder. The options market is not. The
+  difference is a skew the venue is not charging for. That is the single most useful thing on
+  the page for someone who trades options: it is a shape mispricing, not a level mispricing,
+  and shape is what a desk hedges and a retail trader never sees.
+- For a market maker it reads as: the upside strikes on Kalshi are rich against listed vol,
+  the downside strikes cheap. Whether that is tradable depends on fees, depth (the small
+  numbers under bid/ask) and the settlement conventions in §1; the page gives all three.
+- For us it is the input the product has been missing. Lock in prices its legs off listed
+  option books while the holder's contract is marked on Kalshi. Where the two disagree on
+  vol, the collar's terms look cheap or dear against the Kalshi mark, and this table says
+  strike by strike which way. Today the pricer uses the live books alone and refuses where
+  they cannot fund a floor; the venue-versus-listed difference is the information that would
+  let it choose strikes deliberately rather than by trial. That is a build step, not a page
+  setting, and it is the one this table points at.
+
+Caveats to say before he does. The smile used for the hourly is the nearest listed daily
+expiry's vol applied to a 38-minute horizon; no sub-daily term structure is observable. The
+listed vol is Deribit's mark, a mid, so "inside the band" compares a venue bid/ask with a
+listed mid, not two spreads. The bands use the venue's best bid and ask only; depth is shown,
+not weighted. The reading changes through the day; this table is the current cycle, the
+"by time to close" table above it is the history.
+
+The sentence to have ready: "Kalshi quotes one vol across the ladder; Deribit quotes a
+skew. The venue is under listed vol on the downside and over it on the upside. The product
+hedges on listed vol, so that difference is the ground it stands on."
+
 ---
 
 ## 4. Section 3: gaps over time
@@ -525,11 +589,15 @@ property, not a policy.
 7. **How long has it been collecting?** The strip says. Be upfront that §3, the §2 premium
    table and §5 are young, and that the §5 tiles will look harsh until the sample grows (and
    why: per-contract costs, not a book).
+8. **What does the strike-by-strike table say?** Kalshi quotes one vol across the ladder,
+   Deribit quotes a skew. Venue under listed vol on the downside strikes, over on the upside.
+   Blanks at the money are correct: a digital there has no vega. The product hedges on
+   listed vol, so the difference is its ground.
 9. **Why does §6 mostly refuse?** Because away from the money the floor (a put spread off
    live books, plus fees, haircut and margin) costs more than the upside given up can fund;
    the pricer refuses rather than quoting a loser. It quotes the daily contract now (the
    right tenor; tested, same result), and the one strike it quotes is the at-the-money one.
-8. **Is any of this trading?** No. The service has no keys. It can be audited as such.
+10. **Is any of this trading?** No. The service has no keys. It can be audited as such.
 
 ## 11. What stays off the table
 

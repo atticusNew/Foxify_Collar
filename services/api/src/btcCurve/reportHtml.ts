@@ -3,7 +3,7 @@
  * Readable on a phone, printable, refreshes itself on the collector's cadence.
  */
 
-import type { LatencyRow, BucketRow, GapSeries } from "./analytics";
+import type { LatencyRow, BucketRow, GapSeries, LadderVolTable, StrikeVolRow } from "./analytics";
 import type { LadderView, ReportData } from "./report";
 
 const esc = (s: unknown): string =>
@@ -193,7 +193,35 @@ function hourlyHtml(d: ReportData): string {
         )
         .join("")}</table></div>`
     : "";
-  return `<p class="dim">${esc(v.title)} · closes ${et(v.settlesAt)} · smile: Deribit ${esc(v.modelExpiry ?? "")}</p>${volStrip}${premiumNote}${ladderTable({ ...v, rows }, { showPoly: v.venues.includes("polymarket_us") })}${premiumTable}`;
+  return `<p class="dim">${esc(v.title)} · closes ${et(v.settlesAt)} · smile: Deribit ${esc(v.modelExpiry ?? "")}</p>${volStrip}${premiumNote}${ladderTable({ ...v, rows }, { showPoly: v.venues.includes("polymarket_us") })}${premiumTable}${strikeVolsHtml(d)}`;
+}
+
+function strikeVolTable(t: LadderVolTable, title: string): string {
+  const pct = (x: number | null) => (x === null ? "–" : `${x.toFixed(0)}%`);
+  const cls = (r: StrikeVolRow) => (r.listedVs === "venue_over" ? "warm" : r.listedVs === "venue_under" ? "cool" : "");
+  const rows = t.rows
+    .map(
+      (r) =>
+        `<tr><td class="lbl">${esc(r.label)}</td><td>${r.bidCents.toFixed(1)} / ${r.askCents.toFixed(1)}<small>${r.bidQty || r.askQty ? `${num(r.bidQty)} × ${num(r.askQty)}` : "–"}</small></td><td class="${cls(r)}">${
+          r.volLoPct === null ? '<span class="dim">at the money</span>' : `${pct(r.volLoPct)} – ${pct(r.volHiPct)}`
+        }</td><td>${pct(r.smilePct)}</td><td class="${cls(r)}">${
+          r.listedVs === null ? "–" : r.listedVs === "inside" ? "inside" : r.listedVs === "venue_over" ? "venue over" : "venue under"
+        }</td><td>${signed(r.fitResidualCents ?? 0, 2)}</td></tr>`,
+    )
+    .join("");
+  const summary = `<div class="strip"><span>Listed vol inside the venue's band <b>${t.inside} of ${t.withBand}</b> <small>strikes with a band</small></span><span>Centre, 50¢ point <b>$${num(t.centreUsd)}</b> <small>1σ to close $${num(t.stdevUsd)}</small></span><span>One-vol fit <b>${t.fitPct.toFixed(0)}%</b> <small>rms ${c(t.rmsCents)}</small></span>${
+    t.skew ? `<span>Skew, below − above centre <b>${t.skew.venuePts > 0 ? "+" : ""}${t.skew.venuePts.toFixed(1)} pts</b> <small>venue · Deribit ${t.skew.smilePts > 0 ? "+" : ""}${t.skew.smilePts.toFixed(1)} pts · ${t.skew.n} strikes</small></span>` : ""
+  }<span>Closes in <b>${t.minutesToClose} min</b></span></div>`;
+  return `<h3>${esc(title)}</h3>${summary}<div class="tbl"><table><tr><th>Strike</th><th>Kalshi<br><small>bid / ask · depth</small></th><th>Venue vol, bid to ask<br><small>band</small></th><th>Deribit vol<br><small>at strike</small></th><th>Listed vs band</th><th>Mid − one-vol fit<br><small>cents</small></th></tr>${rows}</table></div>`;
+}
+
+function strikeVolsHtml(d: ReportData): string {
+  const { hourly, daily } = d.strikeVols;
+  if (!hourly && !daily) return "";
+  return `<h3>Kalshi ladders, strike by strike, in vol</h3>
+<p>Each strike's bid and ask converted to the vol that reproduces it as a digital on the ladder's own centre (the strike where mids cross 50¢), beside Deribit's vol at the same strike. Band holding the listed vol: quoted off the smile. Band above it: the venue charges a premium at that strike. Band below: the venue is under the smile. Last column: each mid against one vol for the whole ladder; a large residual is a strike out of line with its neighbours. Strikes within a quarter of a standard deviation of the centre are left blank, and bands widen toward it; a digital at the money carries almost no vol, so a cent of spread is many vol points there.</p>${
+    hourly ? strikeVolTable(hourly, "Hourly ladder") : ""
+  }${daily ? strikeVolTable(daily, "Daily ladder, 5 PM ET") : ""}`;
 }
 
 export function renderReportHtml(d: ReportData, opts: { refreshSec?: number } = {}): string {
@@ -215,7 +243,7 @@ p{margin:6px 0}.dim{color:var(--dim)}small{color:var(--dim);font-size:12px;displ
 .strip{display:flex;flex-wrap:wrap;gap:10px 22px;margin:12px 0 4px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fafafa}.strip b{font-variant-numeric:tabular-nums}
 .tbl{overflow-x:auto;margin:8px 0}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:14px}th{font-weight:600;text-align:left;color:var(--dim);font-size:12px;border-bottom:1px solid var(--line);padding:6px 8px;vertical-align:bottom;white-space:nowrap}
 td{padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:top}td.cross{white-space:normal;min-width:150px;font-size:12px}td.lbl{font-weight:500}td small{display:block;color:var(--dim);font-size:11px}
-.hot{color:var(--hot);font-weight:600}.warm{color:var(--warm)}.cross{color:var(--ok)}tr.sum td{font-weight:600;background:#fafafa}tr.ref td{color:var(--dim)}
+.hot{color:var(--hot);font-weight:600}.warm{color:var(--warm)}.cool{color:var(--k)}.cross{color:var(--ok)}tr.sum td{font-weight:600;background:#fafafa}tr.ref td{color:var(--dim)}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:8px 0}.kpis div{border:1px solid var(--line);border-radius:8px;padding:10px 12px}.kpis b{display:block;font-size:20px;margin:2px 0;font-variant-numeric:tabular-nums}
 svg.dist{width:100%;height:auto;display:block;margin-top:6px}svg.dist rect.k{fill:var(--k)}svg.dist rect.p{fill:var(--p)}svg.dist rect.m{fill:var(--m);opacity:.75}svg.dist .ax{font-size:9px;fill:var(--dim)}svg.dist .grid{stroke:var(--line);stroke-width:1}
 .legend{display:flex;gap:16px;font-size:12px;color:var(--dim);margin:4px 0 0}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.legend .k{background:var(--k)}.legend .p{background:var(--p)}.legend .m{background:var(--m)}
