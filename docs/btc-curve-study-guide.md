@@ -140,10 +140,31 @@ desk would actually trade intraday, and it is where the option model gets a hard
 there is no option expiring at the top of the hour, so the smile from the nearest Deribit
 expiry (tomorrow 08:00 UTC) is used with the hour's own time to run.
 
-Nov 8: across 23 two-sided strikes, Kalshi's mid was on average 0.13¢ from the model and
-never more than 3.2¢ away. That is the single most reassuring number on the page for an
-options person: the retail hourly ladder is priced consistently with the listed vol
-surface.
+### The vol strip (the most important four numbers on the page)
+
+Above the table, three volatilities for the same hour:
+
+- **Kalshi's ladder is priced at 72% vol.** Fit a lognormal (a centre price and a σ) to the
+  ladder's 19 two-sided mids. The fit misses by under 1¢ rms, so the ladder really is one
+  clean lognormal; the centre ($74,631 on the first evening, $22 above the BRTI print) is
+  where Kalshi's makers think spot is.
+- **Listed options at the money, 45%.** Deribit's mark IV for the expiry nearest the hour
+  (tomorrow 08:00 UTC).
+- **Index realised, last hour, 62%.** The standard deviation of BRTI's one-minute returns
+  over the last 60 minutes, annualised.
+
+What it says: Kalshi's hourly makers charge roughly 1.6× the listed vol for the hour, and
+on this particular hour realised vol sat in between. The gap column under it ("Kalshi −
+model", showing −8¢ on strikes under spot and +13¢ on strikes over it) is that vol premium
+expressed per strike, not a model error. A writer who sells the hourly ladder at Kalshi's
+price and hedges at the listed vol is collecting that premium; a buyer is paying it. That
+is the pricing-plus-hedging story in one strip, and it is the thing to walk through first.
+
+On the model side, there is one technical fix that matters here: the digital probability
+is a numerical derivative, and minutes before a close the digital is nearly a step. The
+difference step is capped at a fifth of a standard deviation of the remaining move so the
+quotient does not smear it (without the cap, a digital $101 in the money with four minutes
+left read 71% instead of 76%).
 
 Two housekeeping points the page handles:
 
@@ -321,18 +342,21 @@ cannot place an order or see an account. That is a design property, not a policy
 
 1. **Same contract?** Same bands, same index, same instant; Kalshi simple average vs Poly
    trimmed mean of the same 60 seconds. One-touch rules match on both.
-2. **Why Deribit for fair value and OKX for the hedge?** Deribit has the deepest listed BTC
+2. **Why is the hourly ladder so far from the model?** Because Kalshi prices the hour at
+   ~72% vol and the listed market at ~45%. The strip shows both, plus realised. It is a
+   premium, and §5 is the running tally of what hedging it at the listed vol earns or costs.
+3. **Why Deribit for fair value and OKX for the hedge?** Deribit has the deepest listed BTC
    vol surface, so it is the best fair-value reference. OKX is where our existing pricer
    already reads executable books leg by leg. Both are public reads.
-3. **Why is Poly's sum 117¢?** 1¢ ticks on 28 buckets. It is a market-structure fact, not a
+4. **Why is Poly's sum 117¢?** 1¢ ticks on 28 buckets. It is a market-structure fact, not a
    mispricing, and it is why the cross column is mostly Poly-offer against Kalshi-bid.
-4. **Why are the crosses so small?** Because the venues are efficient to within fees, which
+5. **Why are the crosses so small?** Because the venues are efficient to within fees, which
    is the finding. Cents per contract, single-digit dollars at the resting depth.
-5. **What would change with CME as the reference?** §5 and §6 numbers (basis and carry);
+6. **What would change with CME as the reference?** §5 and §6 numbers (basis and carry);
    nothing in §1–§4.
-6. **How long has it been collecting?** The strip says. Be upfront that §3 and §5 are
+7. **How long has it been collecting?** The strip says. Be upfront that §3 and §5 are
    young.
-7. **Is any of this trading?** No. The service has no keys. It can be audited as such.
+8. **Is any of this trading?** No. The service has no keys. It can be audited as such.
 
 ## 11. What stays off the table
 
