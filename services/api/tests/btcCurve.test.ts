@@ -14,7 +14,7 @@ import { bucketFromKalshi, dollarsToCentsExact, hourlyLadderFrom, sortBuckets, t
 import { bucketFromPolyUs, laddersFromEvents, moneyCents } from "../src/btcCurve/polyUsLadders";
 import { expiryTagToMs, parseSummary, selectRows } from "../src/btcCurve/deribitChain";
 import { black76Call, buildSmiles, digitalDelta, forwardFor, ivAt, modelBucket, normCdf, probAbove, probTouch, type Smile } from "../src/btcCurve/model";
-import { bucketRows, findCross, gapSeries, ladderImpliedVol, latencyTable, mergeLadders, realizedVolPct, takerFeeCents } from "../src/btcCurve/analytics";
+import { bucketRows, findCross, gapSeries, hourlyVolPoint, ladderImpliedVol, latencyTable, mergeLadders, realizedVolPct, takerFeeCents, volPremiumByHorizon } from "../src/btcCurve/analytics";
 import { SnapshotStore, toHistoryPoint } from "../src/btcCurve/store";
 import { ReplayEngine, bracketCalls } from "../src/btcCurve/replay";
 import { buildReport, termBasis } from "../src/btcCurve/report";
@@ -364,6 +364,32 @@ test("ladder vol: the forward and vol a venue's hourly ladder is priced at are r
   }
   const rv = realizedVolPct(trend, 60);
   assert.ok(rv && Math.abs(rv.pct - 72.5) < 1.5, `10 bp per minute is 72.5% annualised (got ${rv?.pct}%)`);
+
+  // one reading per cycle, then the premium over the listed vol by time to close across the window
+  const settleMs = Date.parse(SETTLE);
+  const nowMs = settleMs - 55 * 60_000;
+  const listed: Smile = { expiry: "L", expiryMs: settleMs + 3_600_000, forward: F, points: [70000, 74500, 80000].map((strike) => ({ strike, iv: 0.5 })) };
+  const point = hourlyVolPoint(ladder, [listed], F - 40, trend, nowMs);
+  assert.equal(point.minutesToClose, 55);
+  assert.ok(point.ladderPct !== null && Math.abs(point.ladderPct - 80) < 2 && point.smilePct === 50, "ladder 80%, listed 50%");
+  const history = [
+    { at: "", atMs: 1, spotUsd: F, ladders: {}, hourlyVol: point },
+    { at: "", atMs: 2, spotUsd: F, ladders: {}, hourlyVol: { ...point, ladderId: "btc-hourly:u", minutesToClose: 50, ladderPct: 70 } },
+    { at: "", atMs: 3, spotUsd: F, ladders: {}, hourlyVol: { ...point, minutesToClose: 4, ladderPct: 110 } },
+    { at: "", atMs: 4, spotUsd: F, ladders: {}, hourlyVol: { ...point, minutesToClose: 20, ladderPct: null } },
+    { at: "", atMs: 5, spotUsd: F, ladders: {} },
+  ];
+  const bands = volPremiumByHorizon(history);
+  assert.deepEqual(
+    bands.map((b) => [b.label, b.n, b.hours]),
+    [
+      ["45–90 min", 2, 2],
+      ["2–5 min", 1, 1],
+    ],
+    "readings without a fit are skipped, empty bands are omitted",
+  );
+  assert.ok(Math.abs(bands[0].meanPremiumPts - ((point.ladderPct as number) + 70) / 2 + 50) < 0.2, "premium is ladder minus listed, averaged in the band");
+  assert.equal(bands[1].meanPremiumPts, 60);
 });
 
 test("replay: one ATM digital per hourly ladder is carried to settlement naked, with a static spread and with a dynamic delta; state survives a restart", () => {
@@ -523,13 +549,13 @@ test("report page: the three sources, the gaps, the latency table and the replay
     "buy Poly 15¢ → sell Kalshi 16.9¢",
     "+0.69¢",
     "13.8 ct",
-    "Executable crosses right now",
+    "Executable crosses:",
     "Sum of mids",
     "Gaps over time",
-    "What being late costs",
+    "Cost of latency",
     "Static vs dynamic hedge",
     "1 in flight",
-    "Lock in along the ladder",
+    "Lock in on the hourly ladder",
     "40¢",
     "70¢",
     "refused · mark 8c is outside",

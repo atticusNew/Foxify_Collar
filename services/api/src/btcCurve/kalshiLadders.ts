@@ -200,24 +200,35 @@ export async function readKalshiLadders(
   build(upRaw, "touch_up", "btc-yearend-2026-high", "How high will Bitcoin get this year", touchTheta);
   build(downRaw, "touch_down", "btc-yearend-2026-low", "How low will Bitcoin get this year", touchTheta);
 
+  const hourly = hourlyLadderFrom(hourlyRaw, hourlyTheta, Date.now());
+
   if (opts.withDepth) {
-    const range = yearEnd.find((l) => l.id === "btc-yearend-2026-range");
-    if (range) {
-      await Promise.all(
-        range.quotes.map(async (q) => {
-          try {
-            const d = await fetchTopDepth(q.id, fetchImpl);
-            q.bidQty = d.bidQty;
-            q.askQty = d.askQty;
-          } catch {
-            // depth is a nicety; the top of book stands without it
-          }
-        }),
-      );
-    }
+    // every year-end quote, and the hourly's two-sided strikes (the far wings have no book to read)
+    const wanted: VenueQuote[] = [
+      ...yearEnd.flatMap((l) => l.quotes),
+      ...(hourly ? hourly.quotes.filter((q) => q.bidCents > 0 && q.askCents < 100) : []),
+    ];
+    await withDepth(wanted, fetchImpl);
   }
 
-  return { yearEnd, hourly: hourlyLadderFrom(hourlyRaw, hourlyTheta, Date.now()) };
+  return { yearEnd, hourly };
+}
+
+/** Best-level sizes onto each quote, a few books at a time so the public rate limit is not tripped. */
+async function withDepth(quotes: VenueQuote[], fetchImpl: typeof fetch, concurrency = 8): Promise<void> {
+  const queue = [...quotes];
+  const worker = async () => {
+    for (let q = queue.shift(); q; q = queue.shift()) {
+      try {
+        const d = await fetchTopDepth(q.id, fetchImpl);
+        q.bidQty = d.bidQty;
+        q.askQty = d.askQty;
+      } catch {
+        // depth is a nicety; the top of book stands without it
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
 }
 
 /**
