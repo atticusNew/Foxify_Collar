@@ -152,12 +152,28 @@ export function probTouch(forward: number, H: number, iv: number, T: number, up:
   return Math.min(1, Math.max(0, a + b));
 }
 
+/** Buckets settling sooner than this are priced on the settlement index itself, not the option forward. */
+export const SPOT_FORWARD_HORIZON_MS = 24 * 60 * 60_000;
+
+/**
+ * The forward the model prices a bucket on. Within a day of settlement the carry is under a
+ * basis point, and the contract settles on BRTI, so the index reading is the forward; the
+ * listed option forward (Deribit's own index plus the futures premium to its expiry, read a
+ * few seconds apart) would only add timing noise where the digital is steepest. Longer out,
+ * the expiry's own forward carries the term basis the market is paying for.
+ */
+export function forwardFor(smile: Smile, settlesMs: number, nowMs: number, spotUsd?: number): number {
+  if (spotUsd && spotUsd > 0 && settlesMs - nowMs <= SPOT_FORWARD_HORIZON_MS) return spotUsd;
+  return smile.forward;
+}
+
 /** Model point for one bucket, or null when there is no usable smile. */
-export function modelBucket(smiles: Smile[], bucket: Bucket, nowMs: number): ModelPoint | null {
+export function modelBucket(smiles: Smile[], bucket: Bucket, nowMs: number, spotUsd?: number): ModelPoint | null {
   const settlesMs = Date.parse(bucket.settlesAt);
   if (!Number.isFinite(settlesMs)) return null;
-  const smile = nearestSmile(smiles, settlesMs);
-  if (!smile) return null;
+  const base = nearestSmile(smiles, settlesMs);
+  if (!base) return null;
+  const smile: Smile = { ...base, forward: forwardFor(base, settlesMs, nowMs, spotUsd) };
   const T = Math.max(0, (settlesMs - nowMs) / (365.25 * 86_400_000));
   switch (bucket.kind) {
     case "range": {

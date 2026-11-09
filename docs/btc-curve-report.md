@@ -69,7 +69,12 @@ and "at or above 150,000" (Polymarket US) are the same key, `above:150000`.
 ## Model
 
 Smile per expiry from the out-of-the-money side's mark IV, linear in log-moneyness, flat wings;
-Black-76 on the expiry's forward, zero rate. `P(S_T > K) = −∂C/∂K` numerically so the skew is
+Black-76, zero rate. The forward is the expiry's own (Deribit `underlying_price`, which carries the
+term basis; shown as a strip above §1) for buckets settling more than a day out, and the BRTI
+reading itself for buckets settling within a day: the carry is under a basis point there, the
+contract settles on BRTI, and the option forward is read seconds apart from the index and wanders
+±5 bps around it cycle to cycle, which near an hourly close is several points of probability at
+the money. The replay's delta uses the same spot it marks P&L in. `P(S_T > K) = −∂C/∂K` numerically so the skew is
 in the digital; a range is the difference of two. The difference step is capped at a fifth of
 one standard deviation of the terminal move, so minutes before an hourly close (when the digital
 is nearly a step) the quotient does not smear it; without the cap a $101-in-the-money digital
@@ -99,5 +104,10 @@ BTC_CURVE_PORT=8860 BTC_CURVE_DATA_DIR=/tmp/btc-curve npx tsx scripts/btcCurveRe
 ## What it does not do
 
 It does not trade, hold keys, or see an account. It does not read Polymarket US's authenticated
-or institutional APIs. It does not use CME futures as the hedge reference (spot BRTI stands in
-for the first pass; the production version would reference the CME BTC future).
+or institutional APIs. It does not use CME futures as the hedge reference: CME market data is
+licensed, so spot BRTI is the hedge mark and Deribit's dated future stands in for the term basis.
+On an hourly digital the delta notional is ~$50–150 per $1 of contract, so 5 bp of intra-hour
+basis is 2–7¢ of zero-mean tracking error that §5 does not carry. The static spread is unwound at
+the first snapshot after settlement (up to ~2½ minutes late); the delta is flattened at the
+settlement value. Deribit's inverse (BTC-settled) premium is converted at spot each snapshot; the
+dropped second-order term is well under a cent.

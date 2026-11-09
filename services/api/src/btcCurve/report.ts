@@ -5,7 +5,7 @@
 
 import { bucketRows, distributionRows, gapSeries, ladderImpliedVol, latencyTable, realizedVolPct, type BucketRow, type GapSeries, type LadderVol, type LatencyRow } from "./analytics";
 import type { CollarLadder } from "./collarLadder";
-import { buildSmiles, ivAt, nearestSmile } from "./model";
+import { buildSmiles, ivAt, nearestSmile, type Smile } from "./model";
 import type { ReplaySummary } from "./replay";
 import type { HistoryPoint } from "./store";
 import type { IndexCandle, Ladder, Snapshot } from "./types";
@@ -36,6 +36,8 @@ export interface ReportData {
   hourly: LadderView | null;
   /** the vol each side is pricing the hour at: the venue's ladder, the listed smile at the money, the index realised */
   hourlyVol: { ladder: LadderVol | null; smilePct: number | null; smileExpiry: string | null; realized: { pct: number; n: number } | null; minutesToClose: number } | null;
+  /** the term basis the year-end buckets are priced on: the listed option forward against the settlement index */
+  basis: { expiry: string; forwardUsd: number; spotUsd: number; pct: number; annualisedPct: number; daysToExpiry: number } | null;
   polyOnly: LadderView[];
   latency: LatencyRow[];
   latencyYearEnd: LatencyRow[];
@@ -49,6 +51,22 @@ function sumMids(rows: BucketRow[], pick: (r: BucketRow) => number | null): numb
   const vals = rows.filter((r) => r.key.startsWith("range:") || r.key.startsWith("above:") || r.key.startsWith("below:")).map(pick);
   if (!vals.length || vals.some((v) => v === null)) return null;
   return Math.round(vals.reduce((a, b) => (a as number) + (b as number), 0) as number);
+}
+
+/** Forward over spot for one listed expiry, simple and annualised (what a desk compares with the futures basis). */
+export function termBasis(smile: Smile | null, spotUsd: number, nowMs: number): ReportData["basis"] {
+  if (!smile || !(spotUsd > 0) || !(smile.forward > 0)) return null;
+  const days = (smile.expiryMs - nowMs) / 86_400_000;
+  if (!(days > 0.5)) return null;
+  const pct = (smile.forward / spotUsd - 1) * 100;
+  return {
+    expiry: smile.expiry,
+    forwardUsd: Math.round(smile.forward),
+    spotUsd: Math.round(spotUsd),
+    pct: Math.round(pct * 100) / 100,
+    annualisedPct: Math.round(((pct / days) * 365.25) * 10) / 10,
+    daysToExpiry: Math.round(days * 10) / 10,
+  };
 }
 
 export function ladderView(l: Ladder, history: HistoryPoint[]): LadderView {
@@ -101,6 +119,7 @@ export function buildReport(input: {
       minutesToClose: Math.round((settleMs - nowMs) / 60_000),
     };
   }
+  const basis = yearEndSettle ? termBasis(nearestSmile(smiles, yearEndSettle), s.spotUsd, nowMs) : null;
   return {
     at: s.at,
     spotUsd: s.spotUsd,
@@ -111,6 +130,7 @@ export function buildReport(input: {
     yearEnd,
     hourly: hourlyView,
     hourlyVol,
+    basis,
     polyOnly,
     latency: latencyTable(input.candles, smiles, hourlyLadder ? Date.parse(hourlyLadder.settlesAt) : null, nowMs),
     latencyYearEnd: latencyTable(input.candles, smiles, yearEndSettle, nowMs),

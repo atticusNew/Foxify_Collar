@@ -128,7 +128,7 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
   const smiles = buildSmiles(options);
   for (const l of ladders) {
     for (const b of l.buckets) {
-      const m = modelBucket(smiles, b, nowMs);
+      const m = modelBucket(smiles, b, nowMs, spotUsd);
       if (m) l.model[b.key] = m;
     }
   }
