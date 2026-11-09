@@ -171,7 +171,7 @@ export class ReplayEngine {
         const strike = atm.level ?? 0;
         const br = bracketCalls(options, strike, settlesAtMs);
         const smile = nearestSmile(smiles, settlesAtMs);
-        const delta = smile ? digitalDelta(smile, strike, yearsBetween(nowMs, settlesAtMs)) : 0;
+        const delta = smile ? digitalDelta({ ...smile, forward: spotUsd }, strike, yearsBetween(nowMs, settlesAtMs)) : 0;
         const ev: ReplayEvent = {
           id: hourly.id,
           settlesAt: hourly.settlesAt,
@@ -210,7 +210,7 @@ export class ReplayEngine {
       const d = ev.dynamicHedge;
       d.pnlUsd += d.delta * (spotUsd - d.lastSpot);
       const smile = nearestSmile(smiles, ev.settlesAtMs);
-      const next = smile ? digitalDelta(smile, ev.strike, yearsBetween(nowMs, ev.settlesAtMs)) : d.delta;
+      const next = smile ? digitalDelta({ ...smile, forward: spotUsd }, ev.strike, yearsBetween(nowMs, ev.settlesAtMs)) : d.delta;
       const traded = Math.abs(next - d.delta) * spotUsd;
       d.feesUsd += (traded * this.feeBps) / 10_000;
       d.turnoverUsd += traded;

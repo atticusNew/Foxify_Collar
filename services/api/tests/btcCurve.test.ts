@@ -13,11 +13,11 @@ import { aboveKey, belowKey, keyLevel } from "../src/btcCurve/keys";
 import { bucketFromKalshi, dollarsToCentsExact, hourlyLadderFrom, sortBuckets, topDepthFromOrderbook } from "../src/btcCurve/kalshiLadders";
 import { bucketFromPolyUs, laddersFromEvents, moneyCents } from "../src/btcCurve/polyUsLadders";
 import { expiryTagToMs, parseSummary, selectRows } from "../src/btcCurve/deribitChain";
-import { black76Call, buildSmiles, digitalDelta, ivAt, modelBucket, normCdf, probAbove, probTouch, type Smile } from "../src/btcCurve/model";
+import { black76Call, buildSmiles, digitalDelta, forwardFor, ivAt, modelBucket, normCdf, probAbove, probTouch, type Smile } from "../src/btcCurve/model";
 import { bucketRows, findCross, gapSeries, ladderImpliedVol, latencyTable, mergeLadders, realizedVolPct, takerFeeCents } from "../src/btcCurve/analytics";
 import { SnapshotStore, toHistoryPoint } from "../src/btcCurve/store";
 import { ReplayEngine, bracketCalls } from "../src/btcCurve/replay";
-import { buildReport } from "../src/btcCurve/report";
+import { buildReport, termBasis } from "../src/btcCurve/report";
 import { renderReportHtml } from "../src/btcCurve/reportHtml";
 import type { Ladder, OptionRow, Snapshot, VenueQuote } from "../src/btcCurve/types";
 
@@ -210,6 +210,21 @@ test("model: the normal CDF, a flat smile reproduces N(d2), a tiling ladder sums
   const exact = normCdf((Math.log(74601 / 74500) - 0.5 * sN * sN) / sN);
   assert.ok(exact > 0.7, `spot $101 over the strike with 4 minutes left at 70% vol is a ${(exact * 100).toFixed(0)}% digital`);
   assert.ok(Math.abs(probAbove(nearClose, 74500, fourMinutes) - exact) < 0.01, "the numerical digital matches N(d2) minutes before the close");
+
+  // a bucket settling within the day is priced on the settlement index, not the listed forward read seconds apart
+  const soon = new Date(now + 30 * 60_000).toISOString();
+  const nearSmile: Smile = { ...nearClose, expiry: "9NOV26", expiryMs: now + 7 * 3_600_000, forward: 74650 };
+  const atm = { key: "above:74600", kind: "above" as const, level: 74600, settlesAt: soon };
+  const onSpot = modelBucket([nearSmile], atm as never, now, 74600)?.p ?? NaN;
+  const onForward = modelBucket([nearSmile], atm as never, now)?.p ?? NaN;
+  assert.ok(Math.abs(onSpot - 0.5) < 0.02, `at the money on BRTI the hourly digital is ~50% (got ${(onSpot * 100).toFixed(1)}%)`);
+  assert.ok(onForward > onSpot + 0.03, "the $50-higher option forward would have read it several points richer");
+  assert.equal(forwardFor(nearSmile, Date.parse(SETTLE), now, 74600), 74650, "far out, the expiry's own forward (term basis) is kept");
+
+  const basis = termBasis({ ...smile, forward: 75694 }, 75115, now);
+  assert.ok(basis && Math.abs(basis.pct - 0.77) < 0.01 && basis.daysToExpiry > 45 && basis.daysToExpiry < 47, `term basis +0.77% over ${basis?.daysToExpiry} days`);
+  assert.ok(basis && Math.abs(basis.annualisedPct - (0.77 / basis.daysToExpiry) * 365.25) < 0.11, "annualised from the simple basis over the days to expiry");
+  assert.equal(termBasis(null, 75115, now), null);
 });
 
 function q(venue: VenueQuote["venue"], key: string, bid: number, ask: number, theta: number, bidQty = 0, askQty = 0): VenueQuote {
