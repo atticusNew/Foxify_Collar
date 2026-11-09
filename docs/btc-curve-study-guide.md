@@ -247,7 +247,7 @@ Three housekeeping points the page handles:
 
 - The KXBTCD series also lists **tomorrow's 5 PM ET** contract a day ahead. The page only
   treats an event closing within 90 minutes as "the hourly ladder", so that 22-hour contract
-  never stands in for the hour. (It is the natural tenor for §6; see that section.)
+  never stands in for the hour. (§6 quotes on it instead; see that section.)
 - Rows with a mid under 1.5¢ or over 98.5¢ are hidden (far-out-of-the-money noise).
 - Venue books, the option chain and the index are read in one cycle but not at one instant.
   BTC moves $30–60 in a typical minute; that alone is a few points on an hourly strike near
@@ -406,41 +406,47 @@ are named, bounded and symmetric.
 
 ---
 
-## 7. Section 6: "Lock in on the hourly ladder"
+## 7. Section 6: "Lock in on the daily ladder"
 
-Our product, quoted on the same hourly strikes, from the **holder's** side.
+Our product, quoted on Kalshi's 5 PM ET daily strikes, from the **holder's** side.
 
-### The tenor problem, and what to do about it
+### Why most rows refuse, and the tenor
 
-On the hourly ladder most rows say "refused". That is correct behaviour and a weak last
-impression. The reason is structural: the floor and cap are built from listed puts that
-expire at 08:00 UTC, hours to a day after the hourly close, so the legs carry far more time
-value than a one-hour contract can pay for; the credit goes negative except right at the
-money, and the pricer says so instead of quoting a bad number. An hour is simply the wrong
-tenor for a collar hedged on listed options.
+On the first evening 1 strike in 16 quoted; the rest said "refused: live option books cannot
+fund a positive credit on any quotable floor/cap". The pricer is doing its job. A collar is
+funded by the upside the holder gives up (everything above the cap) and spends that on the
+floor, which is a put spread bought leg for leg off OKX books, plus the exchange fee on each
+spread, plus a 5% haircut because the option legs expire after the contract closes, plus the
+writer's margin. It searches a grid of floors and caps and quotes the best pair that leaves a
+positive credit; when no pair does, it refuses. Away from the money the floor protection costs
+about what it protects, so nothing clears. Near the money the contract has real optionality to
+give up, and that is where the one quote appears.
 
-Three options were weighed on Nov 8:
+Tenor was the first suspect and it was tested on Nov 8. Section 6 now quotes on Kalshi's
+5 PM ET daily contract (same KXBTCD series, 80 strikes $250 apart; the contract the hourly
+selector has to exclude), with the hourly only as a fallback when no daily is listed. On the
+daily the legs expire 10 hours after a 20-hour contract instead of hours after a one-hour one,
+so the haircut is honest rather than generous. It quoted the same way: one strike, at the
+money. So the tenor was the right change (a collar on an hourly was never the product) but it
+is not what drives the refusals; the cost of the floor against the value of the upside is.
+Three honest ways to read that for Ted:
 
-- **Keep as is.** Honest, consistent with the rest of the page, but the section mostly shows
-  refusals and Ted's last impression of the product is a wall of grey.
-- **Remove it for now.** Clean, but then the page shows everyone else's prices and none of
-  ours, and the point of the section is that the product is priced on the same inputs as
-  the venues.
-- **Quote it on the daily contract instead.** Kalshi lists a 5 PM ET daily in the same
-  KXBTCD series (80 strikes $250 apart, listed a day ahead; the same contract the hourly
-  selector has to exclude). Its close is 10 hours before the next listed expiry on a 20-hour
-  tenor, so the legs are a reasonable match, the books are deeper per strike, and the rows
-  will quote floor / cap / credit instead of refusing. The collar pricer is tenor-agnostic;
-  the change is to hand it the daily ladder, which the collector already parses.
+- Refusals are the pricer declining to write a collar that loses the writer money at the
+  sizes shown. That is the opposite of a formula that always says yes.
+- The economics work where the contract is worth hedging, which is near the money. The page
+  quotes 100 contracts; the legs are walked through the book at that size.
+- The lever that would open more strikes is on the cost side (which venue hedges the legs,
+  the fee per spread, the haircut), not on the tenor. That is a build conversation, not a
+  page setting.
 
-Recommendation: the third. It is a small, low-risk change (one selector plus a heading), it
-turns the section from refusals into quotes, and it is a more honest demonstration of what
-the product is for. The hourly stays in §2 and §5, where its frequent settlement is the
-whole point. If it is not done before the link goes out, the sentence to have ready is:
-"the hourly is the wrong tenor for a collar on listed options; the pricer refuses rather than
-quoting a bad number, and the daily is the natural tenor."
+The sentence to have ready: "it refuses when the legs cost more than the upside can fund
+after fees; on these contracts that is most strikes away from the money, and the one it
+quotes is the one that matters."
 
-A holder owns a Kalshi "above $X" contract currently worth, say, 45¢. Lock in offers them:
+What the page says in the heading and the line under it: "Lock in on the daily ladder",
+then "Daily close Nov 9, 5:00 PM ET · hedge legs: listed BTC option books · per $1 contract,
+100 contracts". If no daily is listed the heading reads "hourly" and the current hour is
+used.
 
 - **Floor**: the least they will end up with even if the contract goes to zero.
 - **Cap**: the most they will end up with even if the contract pays $1.
@@ -519,8 +525,10 @@ property, not a policy.
 7. **How long has it been collecting?** The strip says. Be upfront that §3, the §2 premium
    table and §5 are young, and that the §5 tiles will look harsh until the sample grows (and
    why: per-contract costs, not a book).
-9. **Why does §6 mostly refuse?** Wrong tenor for a collar on listed options; the pricer
-   refuses rather than quoting a bad number. The daily contract is the natural tenor.
+9. **Why does §6 mostly refuse?** Because away from the money the floor (a put spread off
+   live books, plus fees, haircut and margin) costs more than the upside given up can fund;
+   the pricer refuses rather than quoting a loser. It quotes the daily contract now (the
+   right tenor; tested, same result), and the one strike it quotes is the at-the-money one.
 8. **Is any of this trading?** No. The service has no keys. It can be audited as such.
 
 ## 11. What stays off the table

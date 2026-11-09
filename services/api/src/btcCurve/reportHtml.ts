@@ -149,12 +149,16 @@ function replayHtml(d: ReportData): string {
     .join("")}</table></div>`;
 }
 
+function collarTenor(d: ReportData): "daily" | "hourly" {
+  return d.collar?.ladderId.startsWith("btc-daily:") ? "daily" : "hourly";
+}
+
 function collarHtml(d: ReportData): string {
   const col = d.collar;
   if (!col) return '<p class="dim">Not quoted this cycle.</p>';
   if (col.error) return `<p class="dim">${esc(col.error)}</p>`;
   if (!col.rows.length) return '<p class="dim">No strike with a mark inside the quotable band this cycle.</p>';
-  return `<p class="dim">Hourly close ${et(col.settlesAt)} · hedge legs: listed BTC option books · per $1 contract, 100 contracts</p><div class="tbl"><table><tr><th>Strike</th><th>Mark</th><th>Floor</th><th>Cap</th><th>Credit to holder</th><th>Upside given up<br><small>100¢ − cap</small></th><th>Hedge expiry</th><th></th></tr>${col.rows
+  return `<p class="dim">${esc(col.ladderId.replace(/^btc-/, "").replace(/:.*$/, "").replace(/^\w/, (ch) => ch.toUpperCase()))} close ${et(col.settlesAt)} · hedge legs: listed BTC option books · per $1 contract, 100 contracts</p><div class="tbl"><table><tr><th>Strike</th><th>Mark</th><th>Floor</th><th>Cap</th><th>Credit to holder</th><th>Upside given up<br><small>100¢ − cap</small></th><th>Hedge expiry</th><th></th></tr>${col.rows
     .map((r) =>
       r.ok
         ? `<tr><td class="lbl">${esc(r.label)}</td><td>${r.markCents}¢</td><td><b>${r.floorCents}¢</b></td><td><b>${r.capCents}¢</b></td><td><b>${c(r.creditCents, 0)}</b></td><td>${c(r.upsideGivenUpCents, 0)}</td><td>${esc(r.hedgeExpiry)}<br><small>${esc(
@@ -261,8 +265,8 @@ ${range ? gapsTable(range.gaps, range.venues.includes("polymarket_us")) : ""}
 <p>Each hourly ladder seen with 20 min to 2 h left: one $1 at-the-money digital sold at Kalshi mid, carried to settlement from the same snapshots. Static: listed call spread bracketing the strike, bought at offer, sold at bid on the first snapshot after close. Dynamic: option-implied digital delta in spot, rebalanced every snapshot through the close, 2 bps on traded notional. Settlement: Kalshi's simple 60-second BRTI average. Naked: premium kept minus payout. Figures per $1 contract; negative is a loss to the writer. Per-contract hedging is the worst case; a book nets delta across strikes and hours.</p>
 ${replayHtml(d)}
 
-<h2>6 · Lock in on the hourly ladder</h2>
-<p>Holder-side terms per strike on the current hourly ladder: floor, cap, credit at settlement. Priced leg for leg off live listed option books. Give-up shown. Refusals shown with reason.</p>
+<h2>6 · Lock in on the ${collarTenor(d)} ladder</h2>
+<p>Holder-side terms per strike on Kalshi's ${collarTenor(d) === "daily" ? "5 PM ET daily contract (KXBTCD)" : "current hourly ladder"}: floor, cap, credit at settlement. Priced leg for leg off live listed option books, exchange fees and the writer's margin included. Give-up shown. A strike is refused when no floor/cap pair leaves a positive credit after the legs, fees and margin; away from the money that is the usual outcome.</p>
 ${collarHtml(d)}
 
 <h2>Notes and limits</h2>

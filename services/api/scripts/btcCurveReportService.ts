@@ -129,7 +129,7 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
   const polyLadders = poly ?? [];
   const used = new Set<string>();
   const ladders: Ladder[] = [];
-  for (const k of [...(kalshi?.yearEnd ?? []), ...(kalshi?.hourly ? [kalshi.hourly] : [])]) {
+  for (const k of [...(kalshi?.yearEnd ?? []), ...(kalshi?.hourly ? [kalshi.hourly] : []), ...(kalshi?.daily ? [kalshi.daily] : [])]) {
     const fam = family(k);
     const mates = polyLadders.filter(
       (p) => !used.has(p.id) && family(p) === fam && Math.abs(Date.parse(p.settlesAt) - Date.parse(k.settlesAt)) <= 60 * 60_000,
@@ -166,8 +166,10 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
     }
   }
 
-  if (COLLAR_ON && hourly && spotUsd > 0) {
-    collar = await timed("okx", health, () => quoteCollarLadder(hourly, spotUsd, now, { showTake: SHOW_TAKE }));
+  // Lock in is quoted on the daily contract (the tenor a collar on listed options fits); the hourly only when no daily is listed.
+  const collarLadder = ladders.find((l) => l.id.startsWith("btc-daily:")) ?? hourly;
+  if (COLLAR_ON && collarLadder && spotUsd > 0) {
+    collar = await timed("okx", health, () => quoteCollarLadder(collarLadder, spotUsd, now, { showTake: SHOW_TAKE }));
   }
 
   if (!collectingSince) {

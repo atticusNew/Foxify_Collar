@@ -208,9 +208,9 @@ settled since the collector started. It's not back-tested. One an hour, honestly
 
 ---
 
-## Section 6: "Lock in on the hourly ladder"
+## Section 6: "Lock in on the daily ladder"
 
-**What it is.** Our product, quoted on the same hourly strikes, from the customer's side.
+**What it is.** Our product, quoted on Kalshi's 5 PM ET daily strikes, from the customer's side.
 Someone holds a Kalshi "above $X" contract worth 45¢. We offer: a floor (the least they'll
 walk away with), a cap (the most), and a credit (cents paid to them for accepting the cap).
 "Upside given up" is stated plainly as 100¢ minus the cap.
@@ -220,22 +220,29 @@ the floor, in exchange for giving up the part above the cap, and we pay you a li
 trade. Every quote is built by actually pricing the two option legs that back it on a live
 public book, at the sizes shown.
 
-**Refusals.** When the books can't fund a quote, or the strike's too far out, or the hour's
-too close, the row says "refused" and why. Refusals on the page are a feature: they prove
+**Refusals.** When the books can't fund a quote, or the strike's too far out, or the close
+is too near, the row says "refused" and why. Refusals on the page are a feature: they prove
 the quotes come from real depth, not from a formula that always says yes.
 
-**Why most hourly rows refuse.** The floor and cap are built from listed options that expire
-hours to a day after the hourly close. On a one-hour contract those options carry far more
-time value than the contract can pay for, so the credit goes negative and the pricer says no
-rather than quoting a bad number. An hour is the wrong tenor for this product; a day is the
-natural one. Kalshi lists a 5 PM ET daily in the same series, and the plan is to quote
-Lock in on that instead (the pricer doesn't care which ladder it's handed). Until then, the
-sentence is: "wrong tenor for a collar on listed options; it refuses rather than guess; the
-daily is where it quotes."
+**Why most rows refuse.** A collar is paid for by the upside you give up above the cap, and
+that money buys the floor, which is a put spread bought off live OKX option books, plus the
+exchange fee on each spread, plus a 5% haircut because the options expire after the contract
+closes, plus our margin. The pricer tries a grid of floors and caps and quotes the best pair
+that leaves you a positive credit. When no pair does, it says no. Away from the money the
+floor costs about what it protects, so nothing clears; near the money there is real upside to
+give up, and that is where the quote appears. The section now quotes Kalshi's 5 PM ET daily
+contract instead of the hourly, which is the right tenor for a collar (the options expire 10
+hours after a 20-hour contract instead of hours after a one-hour one). It was tested and
+quotes the same way: one strike, at the money. So the tenor is right and the refusals are
+about cost, not time.
 
-**What's not shown.** Our take and the exact leg costs. A sharp reader can estimate them from
-what is shown; that's fine and normal for any structured product. We don't print the formula
-or the rate.
+**If asked "why only one quote?"** "It refuses when the floor costs more than the upside
+can pay for, after fees. On these contracts that's most strikes away from the money. The one
+it quotes is the one that matters, and it's built from real books at the size shown." Then move on.
+
+**Picture.** A locksmith who won't sell you a $40 lock for a $20 bike. Not because he can't
+cut the key, because you'd be worse off. The one bike he'll quote on is the one worth
+locking.
 
 ---
 
@@ -273,8 +280,9 @@ move funds or see an account.* That isn't a policy. There's nothing on the machi
    near a pin. Per contract both are expensive; a book nets them.
 7. The replay is live hours only, not a back-test. The count is small because it's honest,
    and the early tiles look harsh because they're per contract.
-8. Lock in's refusals are real; the quotes come from live books at shown sizes. The hourly
-   is the wrong tenor; the daily is the natural one.
+8. Lock in's refusals are real; the quotes come from live books at shown sizes. It quotes
+   the daily; it refuses where the floor costs more than the upside funds, which is away
+   from the money.
 9. BRTI is the settlement price; CME is the hedge instrument; the basis between them is on
    the page.
 10. Nothing trades. No keys exist on the service.
