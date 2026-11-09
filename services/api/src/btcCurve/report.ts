@@ -3,7 +3,7 @@
  * history window, the replay engine and the collar ladder. Pure assembly; no I/O.
  */
 
-import { bucketRows, distributionRows, gapSeries, hourlyVolPoint, latencyTable, volPremiumByHorizon, type BucketRow, type GapSeries, type LatencyRow, type VolPremiumRow } from "./analytics";
+import { bucketRows, distributionRows, gapSeries, hourlyVolPoint, ladderStrikeVols, latencyTable, volPremiumByHorizon, type BucketRow, type GapSeries, type LadderVolTable, type LatencyRow, type VolPremiumRow } from "./analytics";
 import type { CollarLadder } from "./collarLadder";
 import { buildSmiles, nearestSmile, type Smile } from "./model";
 import type { ReplaySummary } from "./replay";
@@ -38,6 +38,8 @@ export interface ReportData {
   hourlyVol: HourlyVolPoint | null;
   /** the same reading over the window, by time to close */
   volPremium: VolPremiumRow[];
+  /** strike by strike: the vol band each Kalshi bid/ask implies against the listed vol, hourly and 5 PM ET daily */
+  strikeVols: { hourly: LadderVolTable | null; daily: LadderVolTable | null };
   /** the term basis the year-end buckets are priced on: the listed option forward against the settlement index */
   basis: { expiry: string; forwardUsd: number; spotUsd: number; pct: number; annualisedPct: number; daysToExpiry: number } | null;
   polyOnly: LadderView[];
@@ -105,6 +107,7 @@ export function buildReport(input: {
   const smiles = buildSmiles(s.options);
   const yearEnd = s.ladders.filter((l) => l.id.startsWith("btc-yearend-")).map((l) => ladderView(l, history));
   const hourlyLadder = s.ladders.find((l) => l.id.startsWith("btc-hourly:")) ?? null;
+  const dailyLadder = s.ladders.find((l) => l.id.startsWith("btc-daily:")) ?? null;
   const polyOnly = s.ladders.filter((l) => l.id.startsWith("poly:")).map((l) => ladderView(l, history));
   const yearEndSettle = yearEnd[0] ? Date.parse(yearEnd[0].settlesAt) : null;
   const hourlyView = hourlyLadder ? ladderView(hourlyLadder, history) : null;
@@ -121,6 +124,10 @@ export function buildReport(input: {
     hourly: hourlyView,
     hourlyVol,
     volPremium: volPremiumByHorizon(history),
+    strikeVols: {
+      hourly: hourlyLadder && s.spotUsd > 0 ? ladderStrikeVols(hourlyLadder, smiles, s.spotUsd, nowMs) : null,
+      daily: dailyLadder && s.spotUsd > 0 ? ladderStrikeVols(dailyLadder, smiles, s.spotUsd, nowMs) : null,
+    },
     basis,
     polyOnly,
     latency: latencyTable(input.candles, smiles, hourlyLadder ? Date.parse(hourlyLadder.settlesAt) : null, nowMs),

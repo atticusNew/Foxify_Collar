@@ -43,6 +43,11 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
    snapshot after the close, and an option-implied delta in spot rebalanced each snapshot at
    2 bps with no cap near the close. Settlement is the simple BRTI 60-second average Kalshi uses.
    In-flight events with a longer horizon (from before the 90-minute rule) are dropped on load.
+5b. **Strike by strike, in vol.** Under §2: each Kalshi bid and ask on the hourly and the 5 PM ET
+   daily ladder inverted to the vol that reproduces it as a digital on the ladder's own 50¢ centre,
+   beside Deribit's vol at that strike; listed-vs-band, skew (below minus above centre) for both,
+   and each mid's residual against a one-vol fit. Strikes within a quarter of a standard deviation
+   of the centre are blank (no vega).
 6. **Lock in on the daily ladder.** Holder-side terms (floor, cap, credit, upside given up) per
    strike of Kalshi's 5 PM ET daily contract (KXBTCD, 80 strikes $250 apart; the hourly is used
    only when no daily is listed), priced leg-for-leg off OKX option books with the same pricer as

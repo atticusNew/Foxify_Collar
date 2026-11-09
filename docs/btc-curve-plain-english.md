@@ -124,6 +124,37 @@ move in Bitcoin swings an at-the-money strike by several points. Our reads of th
 the index are a few seconds apart, so single-row differences in the last minutes are inside
 the noise. The page says this under "Timing" in the notes.
 
+**The last table in the section ("Kalshi ladders, strike by strike, in vol").** The strip
+gave one vol for the whole ladder. This takes each strike's bid and ask and converts them into
+the vol they imply, then puts Deribit's vol for the same strike next to them. If Deribit's
+number sits inside Kalshi's bid-to-ask band, Kalshi is quoting the options market at that
+strike. If Kalshi's band is above, Kalshi charges more than the options market. If below,
+Kalshi is cheaper. Done for the current hourly and for the 5 PM ET daily.
+
+**Picture.** Two shops pricing the same set of umbrellas by size. One shop charges the same
+markup on every size. The other charges more for the big ones. Line them up size by size and
+you can see exactly which sizes to buy in one shop and sell in the other.
+
+**What it showed on the first night.** Kalshi priced every strike on the daily at about the
+same vol. Deribit did not: it charged more for the downside strikes than the upside, the way
+options markets usually do. So Kalshi was cheaper than the options market on every downside
+strike and dearer on every upside strike. That is a shape difference, not a level difference,
+and it is the single most useful thing on the page for someone who trades options.
+
+**Why it matters to us.** Lock in builds its floor and cap from listed options, while the
+customer's contract is priced on Kalshi. Where the two disagree, our terms look cheap or dear
+against what the customer sees on Kalshi, and this table shows which strikes go which way.
+Today the pricer only asks the option books whether a floor can be funded; this table is the
+information that would let it pick strikes on purpose. That is the next build step.
+
+**The blanks.** Strikes at the money are left blank on purpose. A contract at 50¢ barely
+moves when vol changes, so a one-cent spread there could mean almost any vol. Saying so is
+correct; a market maker will nod.
+
+**If asked "is that tradable?"** "The table shows the vol difference. Whether it pays depends
+on fees, depth and the settlement rules, all of which are on the page. We built the product on
+it; the market-making version is a different business."
+
 ---
 
 ## Section 3: gaps over time
@@ -268,7 +299,7 @@ move funds or see an account.* That isn't a policy. There's nothing on the machi
 
 ---
 
-## Ten things to be able to say without looking
+## Eleven things to be able to say without looking
 
 1. Same contract on both venues; same index, same instant; one averaging footnote.
 2. Kalshi's year-end sums to ~100¢, Poly's to ~117¢; that's whole-cent ticks, not alpha.
@@ -280,12 +311,15 @@ move funds or see an account.* That isn't a policy. There's nothing on the machi
    near a pin. Per contract both are expensive; a book nets them.
 7. The replay is live hours only, not a back-test. The count is small because it's honest,
    and the early tiles look harsh because they're per contract.
-8. Lock in's refusals are real; the quotes come from live books at shown sizes. It quotes
+8. Kalshi quotes one vol across its ladders; Deribit quotes a skew. Kalshi is under on the
+   downside strikes and over on the upside. Our hedge is priced on listed vol, so that
+   difference is the ground the product stands on.
+9. Lock in's refusals are real; the quotes come from live books at shown sizes. It quotes
    the daily; it refuses where the floor costs more than the upside funds, which is away
    from the money.
-9. BRTI is the settlement price; CME is the hedge instrument; the basis between them is on
+10. BRTI is the settlement price; CME is the hedge instrument; the basis between them is on
    the page.
-10. Nothing trades. No keys exist on the service.
+11. Nothing trades. No keys exist on the service.
 
 ---
 
