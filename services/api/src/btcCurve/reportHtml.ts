@@ -230,9 +230,9 @@ function strikeVolsHtml(d: ReportData): string {
 }
 
 /**
- * The other way to collect a venue's excess: sell its resting bids where they sit above the smile and hedge
- * on listed options instead of on the other venue. Sized at the venue's own bid depth, before the option
- * hedge's cost, fees and minimum sizes; the crosses note above is the version hedged venue to venue.
+ * The dollar version of "which venue is rich, and where": each venue's resting bids above option-implied
+ * value, at the venue's own bid depth. The options market is the reference here, not a hedge venue; the
+ * crosses note above is the part of this the other venue lets a cross-venue trader collect today.
  */
 function bidsOverSmileNote(v: LadderView): string {
   const per = (pick: (r: BucketRow) => VenueQuote | null, theta: (q: VenueQuote) => number) => {
@@ -263,7 +263,7 @@ function bidsOverSmileNote(v: LadderView): string {
           x.best ? `; largest ${esc(x.best.label)}, bid ${c(x.best.bid, 1)} vs smile ${c(x.best.model, 2)} on ${num(x.best.qty, 0)} contracts, ${usd(x.best.usd, 0)}` : ""
         }`
       : `${name}: none`;
-  return `<div class="note"><b>Resting bids over the smile, hedged on listed options instead:</b> ${line("Kalshi", k)}. ${line("Polymarket US", p)}. Bid minus taker fee minus option-implied value minus half a cent of allowance for the model's wing error, times the venue's own bid depth. Before the option hedge's cost (the far strikes are cheap but not free), minimum sizes and the pin risk of a short tail. The crosses above are the version hedged venue to venue, capped by the thinner book.</div>`;
+  return `<div class="note"><b>Resting bids above option-implied value:</b> ${line("Kalshi", k)}. ${line("Polymarket US", p)}. Bid minus taker fee minus option-implied value minus half a cent of allowance for the model's wing error, times the venue's own bid depth. What each venue's bidders are paying above the options market, in size. The crosses above are the part of it the other venue lets you collect today; the rest is a view those bidders hold that neither the other venue nor the options market shares. Not a trade by itself: selling it alone takes the tail.</div>`;
 }
 
 function yearEndVolsHtml(t: YearEndVolTable | null): string {
