@@ -1,5 +1,5 @@
 /**
- * Lock in along the ladder: for every strike on the hourly ladder with a quotable mark, the
+ * Lock in along the ladder: for every strike on the given ladder (the daily by default) with a quotable mark, the
  * floor / cap / credit a holder would be offered, priced leg-for-leg off live listed option
  * books (the same pricer the public BTC demo uses). Holder-facing numbers only by default;
  * the writer's economics stay out of the payload unless the operator turns them on.
@@ -55,14 +55,14 @@ function searchConfig(indexPxUsd: number): WrapSearchConfig {
 }
 
 export async function quoteCollarLadder(
-  hourly: Ladder,
+  ladder: Ladder,
   spotUsd: number,
   now: Date,
   opts: { contracts?: number; showTake?: boolean; fetchImpl?: typeof fetch } = {},
 ): Promise<CollarLadder> {
   const contracts = opts.contracts ?? 100;
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const out: CollarLadder = { at: now.toISOString(), ladderId: hourly.id, settlesAt: hourly.settlesAt, rows: [], hedgeVenue: "okx" };
+  const out: CollarLadder = { at: now.toISOString(), ladderId: ladder.id, settlesAt: ladder.settlesAt, rows: [], hedgeVenue: "okx" };
   let instruments: Awaited<ReturnType<typeof getBtcOptionInstruments>>;
   try {
     instruments = await getBtcOptionInstruments(fetchImpl);
@@ -70,13 +70,13 @@ export async function quoteCollarLadder(
     out.error = `hedge venue unreachable from this machine (${(err as Error).message.slice(0, 80)})`;
     return out;
   }
-  const resolutionTime = new Date(hourly.settlesAt);
+  const resolutionTime = new Date(ladder.settlesAt);
   const expiry = nearestExpiryAtOrAfter(instruments, resolutionTime);
   const cfg = searchConfig(spotUsd);
-  const candidates = hourly.buckets
+  const candidates = ladder.buckets
     .filter((b) => b.kind === "above" && b.level !== undefined)
     .map((b) => {
-      const q = hourly.quotes.find((x) => x.venue === "kalshi" && x.bucketKey === b.key);
+      const q = ladder.quotes.find((x) => x.venue === "kalshi" && x.bucketKey === b.key);
       const mark = q && q.bidCents > 0 && q.askCents > 0 && q.askCents <= 99 ? Math.round((q.bidCents + q.askCents) / 2) : 0;
       return { b, mark };
     })

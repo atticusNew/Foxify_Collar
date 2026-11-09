@@ -43,9 +43,10 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
    snapshot after the close, and an option-implied delta in spot rebalanced each snapshot at
    2 bps with no cap near the close. Settlement is the simple BRTI 60-second average Kalshi uses.
    In-flight events with a longer horizon (from before the 90-minute rule) are dropped on load.
-6. **Lock in along the ladder.** Holder-side terms (floor, cap, credit, upside given up) per
-   strike of the current hourly ladder, priced leg-for-leg off OKX option books with the same
-   pricer as the public BTC demo. Writer economics (take, legs cost) are omitted unless
+6. **Lock in on the daily ladder.** Holder-side terms (floor, cap, credit, upside given up) per
+   strike of Kalshi's 5 PM ET daily contract (KXBTCD, 80 strikes $250 apart; the hourly is used
+   only when no daily is listed), priced leg-for-leg off OKX option books with the same pricer as
+   the public BTC demo. Writer economics (take, legs cost) are omitted unless
    `BTC_CURVE_SHOW_TAKE=1`.
 
 ## Data

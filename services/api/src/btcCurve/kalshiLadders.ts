@@ -162,6 +162,8 @@ export async function fetchTopDepth(
 export interface KalshiLadderSet {
   yearEnd: Ladder[];
   hourly: Ladder | null;
+  /** the 5 PM ET daily contract in the same series, when listed */
+  daily: Ladder | null;
 }
 
 /**
@@ -201,17 +203,15 @@ export async function readKalshiLadders(
   build(downRaw, "touch_down", "btc-yearend-2026-low", "How low will Bitcoin get this year", touchTheta);
 
   const hourly = hourlyLadderFrom(hourlyRaw, hourlyTheta, Date.now());
+  const daily = dailyLadderFrom(hourlyRaw, hourlyTheta, Date.now());
 
   if (opts.withDepth) {
-    // every year-end quote, and the hourly's two-sided strikes (the far wings have no book to read)
-    const wanted: VenueQuote[] = [
-      ...yearEnd.flatMap((l) => l.quotes),
-      ...(hourly ? hourly.quotes.filter((q) => q.bidCents > 0 && q.askCents < 100) : []),
-    ];
-    await withDepth(wanted, fetchImpl);
+    // every year-end quote, and the hourly's and daily's two-sided strikes (the far wings have no book to read)
+    const twoSided = (l: Ladder | null) => (l ? l.quotes.filter((q) => q.bidCents > 0 && q.askCents < 100) : []);
+    await withDepth([...yearEnd.flatMap((l) => l.quotes), ...twoSided(hourly), ...twoSided(daily)], fetchImpl);
   }
 
-  return { yearEnd, hourly };
+  return { yearEnd, hourly, daily };
 }
 
 /** Best-level sizes onto each quote, a few books at a time so the public rate limit is not tripped. */
@@ -238,15 +238,32 @@ async function withDepth(quotes: VenueQuote[], fetchImpl: typeof fetch, concurre
  * listed yet or is about to close. Exported for tests.
  */
 export function hourlyLadderFrom(hourlyRaw: RawMarket[], hourlyTheta: number, nowMs: number): Ladder | null {
+  return kxbtcdLadderFrom(hourlyRaw, hourlyTheta, nowMs, 2 * 60_000, HOURLY_WINDOW_MS, "hourly");
+}
+
+/** Daily contracts in the KXBTCD series close more than 90 minutes out and within this horizon. */
+export const DAILY_WINDOW_MS = 36 * 60 * 60_000;
+
+/**
+ * The daily ladder: the KXBTCD event (the 5 PM ET contract, 80 strikes $250 apart) closing
+ * soonest beyond the hourly window and within 36 hours. The natural tenor for Lock in: a
+ * collar hedged on listed options needs the legs' expiry close to the contract's close
+ * relative to its life, which an hourly contract cannot offer. Exported for tests.
+ */
+export function dailyLadderFrom(hourlyRaw: RawMarket[], theta: number, nowMs: number): Ladder | null {
+  return kxbtcdLadderFrom(hourlyRaw, theta, nowMs, HOURLY_WINDOW_MS, DAILY_WINDOW_MS, "daily");
+}
+
+function kxbtcdLadderFrom(raw: RawMarket[], theta: number, nowMs: number, minAheadMs: number, maxAheadMs: number, kind: "hourly" | "daily"): Ladder | null {
   const byEvent = new Map<string, RawMarket[]>();
-  for (const m of hourlyRaw) {
+  for (const m of raw) {
     const list = byEvent.get(m.event_ticker) ?? [];
     list.push(m);
     byEvent.set(m.event_ticker, list);
   }
   const events = [...byEvent.entries()]
     .map(([ev, ms]) => ({ ev, ms, closeMs: Date.parse(ms[0].close_time) }))
-    .filter((e) => Number.isFinite(e.closeMs) && e.closeMs - nowMs > 2 * 60_000 && e.closeMs - nowMs <= HOURLY_WINDOW_MS)
+    .filter((e) => Number.isFinite(e.closeMs) && e.closeMs - nowMs > minAheadMs && e.closeMs - nowMs <= maxAheadMs)
     .sort((a, b) => a.closeMs - b.closeMs);
   if (!events.length) return null;
   const { ev, ms } = events[0];
@@ -257,9 +274,9 @@ export function hourlyLadderFrom(hourlyRaw: RawMarket[], hourlyTheta: number, no
     const b = bucketFromKalshi(m, settlesAt, "above");
     if (!b) continue;
     buckets.push(b);
-    quotes.push(quoteFromKalshi(m, b.key, hourlyTheta));
+    quotes.push(quoteFromKalshi(m, b.key, theta));
   }
-  return { id: `btc-hourly:${ev}`, title: `Kalshi hourly ladder ${ev}`, settlesAt, buckets: sortBuckets(buckets), quotes, model: {} };
+  return { id: `btc-${kind}:${ev}`, title: `Kalshi ${kind} ladder ${ev}`, settlesAt, buckets: sortBuckets(buckets), quotes, model: {} };
 }
 
 /** Low price to high price; the open-ended tails fall into place by their own level. */

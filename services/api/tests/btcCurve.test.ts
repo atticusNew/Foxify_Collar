@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { aboveKey, belowKey, keyLevel } from "../src/btcCurve/keys";
-import { bucketFromKalshi, dollarsToCentsExact, hourlyLadderFrom, sortBuckets, topDepthFromOrderbook } from "../src/btcCurve/kalshiLadders";
+import { bucketFromKalshi, dailyLadderFrom, dollarsToCentsExact, hourlyLadderFrom, sortBuckets, topDepthFromOrderbook } from "../src/btcCurve/kalshiLadders";
 import { bucketFromPolyUs, laddersFromEvents, moneyCents } from "../src/btcCurve/polyUsLadders";
 import { expiryTagToMs, parseSummary, selectRows } from "../src/btcCurve/deribitChain";
 import { black76Call, buildSmiles, digitalDelta, forwardFor, ivAt, modelBucket, normCdf, probAbove, probTouch, type Smile } from "../src/btcCurve/model";
@@ -71,6 +71,10 @@ test("bucket keys: the same contract gets the same key on both venues, including
   assert.equal(hourlyLadderFrom([tomorrow5pm, thisHour], 0.07, now)?.id, "btc-hourly:KXBTCD-26NOV0819", "ten minutes left still counts");
   assert.equal(hourlyLadderFrom([tomorrow5pm], 0.07, now), null, "a 22-hour contract is not the hourly ladder");
   assert.equal(hourlyLadderFrom([thisHour], 0.07, Date.UTC(2026, 10, 8, 23, 59, 0)), null, "inside the last two minutes nothing is picked");
+  // the daily pick is the complement: the 5 PM ET contract beyond the hourly window, never the current hour
+  assert.equal(dailyLadderFrom([tomorrow5pm, thisHour], 0.07, now)?.id, "btc-daily:KXBTCD-26NOV0917", "tomorrow's 5 PM contract is the daily ladder");
+  assert.equal(dailyLadderFrom([thisHour], 0.07, now), null, "the current hour is never the daily");
+  assert.equal(dailyLadderFrom([tomorrow5pm], 0.07, Date.UTC(2026, 10, 8, 4, 0, 0)), null, "beyond 36 hours nothing is picked");
   // not a BTC contract → not a bucket
   assert.equal(bucketFromPolyUs({ slug: "aec-nfl-x", assetPriceTerms: { asset: { symbol: "eth" } } } as never), null);
   assert.equal(bucketFromPolyUs({ slug: "aec-nfl-x" } as never), null);
@@ -555,7 +559,7 @@ test("report page: the three sources, the gaps, the latency table and the replay
     "Cost of latency",
     "Static vs dynamic hedge",
     "1 in flight",
-    "Lock in on the hourly ladder",
+    "Lock in on the",
     "40¢",
     "70¢",
     "refused · mark 8c is outside",

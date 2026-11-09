@@ -30,7 +30,7 @@ anything else you own the difference.
 
 ---
 
-## Section 1: the curve
+## Section 1: "Year-end 2026 curve: Kalshi vs Polymarket US vs options"
 
 **What it is.** Bitcoin's year-end price chopped into 28 bands, $5,000 wide. Exactly one band
 wins. Each band's price is the market's probability it wins. Kalshi's price, Polymarket US's
@@ -57,9 +57,15 @@ when most are worth a cent or less. It tells you Poly's wings are expensive to b
 reasonable to sell.
 
 **The "Cross" column.** Where you could buy a band on one venue and sell the same band on
-the other for more, after both venues' fees, at the size actually resting in the books. These
-are a few cents on a few hundred dollars. That's the finding: the two venues are efficient
-to within fees. A big number here would mean something was wrong.
+the other for more, after both venues' fees, at the size actually resting in the books. Look
+at the size printed with each one. The real crosses are in the deep wings, half a cent to a
+cent on thousands of contracts, because Poly quotes in whole cents and Kalshi in fractions.
+The ones near the middle that look bigger are on a tenth of a contract and mean nothing.
+Overall: cents on tens of dollars. The two venues are efficient to within fees. A big number
+here would mean something was wrong.
+
+**The small grey numbers under each price.** Resting size at the best bid and offer, in
+contracts. That's the "how much could you actually do" number.
 
 **Fees.** Kalshi's year-end bands are fee-free. Everything else charges a fee that's biggest
 at 50¢ and shrinks toward 0¢ and 100¢. We use the published retail rate and say so; a
@@ -75,7 +81,7 @@ beyond. The model for those is a formula, not a market read, and the page says s
 
 ---
 
-## Section 2: the hourly ladder
+## Section 2: "Hourly ladder vs options"
 
 **What it is.** Kalshi also sells "will Bitcoin be above $X at the top of the hour", a new
 ladder every hour, strikes $100 apart. The page shows the current hour's ladder against the
@@ -84,17 +90,30 @@ options model.
 **Picture.** The year-end market is a season-long bet. The hourly is a bet on the next
 play. Same underlying, totally different speed.
 
-**The four numbers above the table (the vol strip).** This is the heart of the pricing story.
+**The numbers above the table (the vol strip).** This is the heart of the pricing story.
 
-- *Kalshi's ladder is priced at ~X% vol.* Back out, from Kalshi's own prices, how wild they
-  think the next hour is.
-- *Listed options at the money: ~Y%.* How wild the professional options market says the
-  same period is.
-- *Index realised, last hour: ~Z%.* How wild it actually was over the past hour.
+- *Kalshi ladder implied vol X%.* Back out, from Kalshi's own prices, how wild they think the
+  next hour is.
+- *Deribit ATM IV Y%.* How wild the professional options market says the same period is.
+- *BRTI realised vol, 1h Z%.* How wild it actually was over the past hour.
+- *Closes in N min.*
 
 When X is well above Y, Kalshi's buyers are paying a premium over the pro market for the
 same hour. That premium is what a writer who sells on Kalshi and hedges in the options
 market collects. When Z is between them, the writer is being paid fairly for the risk.
+
+**The table under the ladder ("Ladder vol minus listed vol, by time to close").** The strip
+is one moment. This table is the same reading, every minute since the collector started,
+grouped by how long the hour had left: 45–90 minutes, 30–45, 15–30, 5–15, 2–5. It shows the
+premium Kalshi charges over the options market as an average and a range in each band, plus
+how many hours it's based on.
+
+**Picture.** Surge pricing. The strip tells you the fare right now. The table tells you
+whether the fare goes up as the deadline gets closer, and by how much, across every ride
+so far. Nobody publishes this; it's the first thing to show him.
+
+**If asked "is the premium constant?"** No. On the first night it went from 1.6× the listed
+vol to equal to it within a couple of hours. That's the point of the table.
 
 **If asked "why is the hourly so far from your model?"** Because Kalshi prices the hour at a
 higher vol than the options market does. The strip shows both. It's a premium, not a model
@@ -119,7 +138,7 @@ offset is a venue that's slow or thin. A spike that reverts is a one-off.
 
 ---
 
-## Section 4: what being late costs
+## Section 4: "Cost of latency"
 
 **What it is.** How far the settlement index moved in 1, 5, 15 and 60 seconds over the past
 hour, and what that move is worth in cents on a $1 at-the-money contract, separately for an
@@ -136,7 +155,7 @@ paying for and where.
 
 ---
 
-## Section 5: static vs dynamic hedge
+## Section 5: "Static vs dynamic hedge, per hourly contract"
 
 **What it is.** Every hour, the page pretends to sell one $1 at-the-money hourly contract at
 Kalshi's price and then protects itself two ways using the actual option prices at the time.
@@ -155,9 +174,24 @@ the promise. Two ways to cover yourself:
 - *Naked* is the third column: do nothing and hope. Over many hours it shows the raw edge in
   selling at Kalshi's price.
 
-**The tiles.** How many hours have been replayed; the average outcome per $1 for each way;
-and the "p90 stray", which is how far from the premium the result landed on a bad hour. A
-small stray is a hedge that worked. A big stray is a hedge that didn't.
+**The tiles.** How many hours have settled; the average P&L per $1 for each way; and the
+"p90 |P&L − premium|", which is how far from the premium the result landed on a bad hour. A
+small number is a hedge that worked. A big one is a hedge that didn't.
+
+**What the first hours showed.** The hedges lost more than doing nothing. The umbrella
+(spread) cost 54–61¢ per $1 of promise because the option market's bid/ask on a one-day
+option is wide. The adjust-every-minute version paid 17–26¢ in fees per $1 because an hourly
+bet near the strike makes you trade 10 to 25 times your position size over the hour.
+
+**Picture.** Insuring one umbrella at a time at a kiosk that charges a fee every time you
+open or close it. Expensive. A shop insuring a thousand umbrellas nets out most of the
+opening and closing and pays the fee once on what's left. The line above the tiles says it:
+"per-contract hedging is the worst case; a book nets delta across strikes and hours."
+
+**If asked "so why would anyone write these?"** Because Section 2 is the price Kalshi's
+makers charge for exactly these costs. Section 2 is the revenue line, Section 5 is the cost
+line, and a book is what turns one into the other. Say that before the tiles are read as a
+failure.
 
 **Sanity check you can do live.** If "Settled" is at or above "Strike", "Paid" is $1 and
 "Naked" is sold-price minus 100¢. Otherwise "Paid" is $0 and "Naked" equals the sold price.
@@ -174,9 +208,9 @@ settled since the collector started. It's not back-tested. One an hour, honestly
 
 ---
 
-## Section 6: Lock in along the ladder
+## Section 6: "Lock in on the daily ladder"
 
-**What it is.** Our product, quoted on the same hourly strikes, from the customer's side.
+**What it is.** Our product, quoted on Kalshi's 5 PM ET daily strikes, from the customer's side.
 Someone holds a Kalshi "above $X" contract worth 45¢. We offer: a floor (the least they'll
 walk away with), a cap (the most), and a credit (cents paid to them for accepting the cap).
 "Upside given up" is stated plainly as 100¢ minus the cap.
@@ -186,13 +220,29 @@ the floor, in exchange for giving up the part above the cap, and we pay you a li
 trade. Every quote is built by actually pricing the two option legs that back it on a live
 public book, at the sizes shown.
 
-**Refusals.** When the books can't fund a quote, or the strike's too far out, or the hour's
-too close, the row says "refused" and why. Refusals on the page are a feature: they prove
+**Refusals.** When the books can't fund a quote, or the strike's too far out, or the close
+is too near, the row says "refused" and why. Refusals on the page are a feature: they prove
 the quotes come from real depth, not from a formula that always says yes.
 
-**What's not shown.** Our take and the exact leg costs. A sharp reader can estimate them from
-what is shown; that's fine and normal for any structured product. We don't print the formula
-or the rate.
+**Why most rows refuse.** A collar is paid for by the upside you give up above the cap, and
+that money buys the floor, which is a put spread bought off live OKX option books, plus the
+exchange fee on each spread, plus a 5% haircut because the options expire after the contract
+closes, plus our margin. The pricer tries a grid of floors and caps and quotes the best pair
+that leaves you a positive credit. When no pair does, it says no. Away from the money the
+floor costs about what it protects, so nothing clears; near the money there is real upside to
+give up, and that is where the quote appears. The section now quotes Kalshi's 5 PM ET daily
+contract instead of the hourly, which is the right tenor for a collar (the options expire 10
+hours after a 20-hour contract instead of hours after a one-hour one). It was tested and
+quotes the same way: one strike, at the money. So the tenor is right and the refusals are
+about cost, not time.
+
+**If asked "why only one quote?"** "It refuses when the floor costs more than the upside
+can pay for, after fees. On these contracts that's most strikes away from the money. The one
+it quotes is the one that matters, and it's built from real books at the size shown." Then move on.
+
+**Picture.** A locksmith who won't sell you a $40 lock for a $20 bike. Not because he can't
+cut the key, because you'd be worse off. The one bike he'll quote on is the one worth
+locking.
 
 ---
 
@@ -204,8 +254,9 @@ or the rate.
 
 **Why it's there.** For a reader like Ted, this section does more for credibility than any
 other. It says we know where the edges are. Each line answers a question he would have asked
-within a minute: are you rounding, which fee tier, which vol, which forward, is the hedge
-cost realistic near a pin, where's the basis, is latency yours or the index's.
+within a minute: are you rounding, which fee tier, which vol, which forward, are your reads
+simultaneous (no, and here's what that's worth), is the hedge cost realistic near a pin,
+where's the basis, is latency yours or the index's.
 
 ---
 
@@ -222,11 +273,16 @@ move funds or see an account.* That isn't a policy. There's nothing on the machi
 1. Same contract on both venues; same index, same instant; one averaging footnote.
 2. Kalshi's year-end sums to ~100¢, Poly's to ~117¢; that's whole-cent ticks, not alpha.
 3. Crosses are cents on hundreds of dollars; the venues are efficient to within fees.
-4. The hourly trades at a higher vol than the options market; that's the writer's premium.
+4. The hourly trades at its own vol, usually above the options market's; the table by time
+   to close shows how much and when. That's the writer's premium.
 5. A second of lateness is nothing on year-end and cents on the hourly; the table sizes it.
-6. Static hedge: known cost, ramp not cliff. Dynamic: cheaper, path-dependent, bad near a pin.
-7. The replay is live hours only, not a back-test. The count is small because it's honest.
-8. Lock in's refusals are real; the quotes come from live books at shown sizes.
+6. Static hedge: known cost, ramp not cliff. Dynamic: fees on turnover, path-dependent, bad
+   near a pin. Per contract both are expensive; a book nets them.
+7. The replay is live hours only, not a back-test. The count is small because it's honest,
+   and the early tiles look harsh because they're per contract.
+8. Lock in's refusals are real; the quotes come from live books at shown sizes. It quotes
+   the daily; it refuses where the floor costs more than the upside funds, which is away
+   from the money.
 9. BRTI is the settlement price; CME is the hedge instrument; the basis between them is on
    the page.
 10. Nothing trades. No keys exist on the service.
