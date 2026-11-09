@@ -152,7 +152,7 @@ test("persistence: the window's readings, how often the gap kept this sign, its 
   const l = ladder();
   const set = horizonSet("hourly", l, null, 74812, NOW, history, urls);
   assert.ok(set);
-  assert.equal(set.pairs[1].persistence, null, "nothing before the first reading");
+  assert.equal(JSON.stringify(set.pairs[1].persistence), "null", "nothing before the first reading");
   for (let i = 0; i < 5; i += 1) recordGaps(history, [set], NOW + i * 10_000, 60 * 60_000);
   const h = history.get(gapHistoryKey(SETTLE, "above:74750"));
   assert.equal(h?.length, 5);
@@ -211,33 +211,38 @@ test("page: the bundle, both tables, the lock arithmetic, the links, the refresh
     bundle: bundleOf([hourly, daily]),
     health: { kalshi: { ok: true, ms: 40 }, polymarket_us: { ok: false, ms: 20000, detail: "no answer within 20s" } },
   };
-  const html = renderPairsHtml(d, { token: "abc" });
+  const html = renderPairsHtml(d, { token: "abc", base: "/pairs", launchUrl: "https://engine.example/btc" });
   for (const needle of [
-    "BTC pairs: Kalshi and Polymarket US, at the money",
+    "BTC pairs <small>Kalshi and Polymarket US",
     "$74,812",
-    "The bundle",
-    "Open both venues",
-    'data-k="https://kalshi.com/markets/kxbtcd/x/kxbtcd-26nov0917"',
-    'data-p="https://polymarket.us/event/btc-above-day-2026-11-09"',
+    `Cleanest now <b>$${d.bundle[0].strike.toLocaleString("en-US")}</b>`,
     "Next close, the 5 PM ET contract",
     "Daily, 5 PM ET",
-    "$74,750</b> or above",
-    "At the money",
-    "Both sides, cheapest",
-    "No on Kalshi",
-    "same sign 100%",
-    "clean score",
+    "$74,750</b><small>at the money",
+    "cleanest</span>",
+    'data-id="KXBTCD-26NOV0917-T74749.99"',
+    'data-open="https://kalshi.com/markets/kxbtcd/x/kxbtcd-26nov0917|https://polymarket.us/event/btc-above-day-2026-11-09"',
+    ">Launch</button>",
+    "Yes P 55 + No K 46 + fees 4.09¢ · 100",
+    "100% same sign · 3",
     "polymarket_us no answer within 20s",
-    "fetch('/fragment?k=abc&t='",
-    "Nothing here places an order",
+    'value="https://engine.example/btc"',
+    'var BASE="/pairs",Q="?k=abc&"',
+    "fetch(BASE+'/fragment'+Q+'t='",
+    "fetch(BASE+'/api/pair'+Q+'id='",
+    "<code>GET /pairs/api/bundle</code>",
+    "<code>GET /pairs/api/stream</code>",
+    "nothing here places an order.",
   ]) {
     assert.ok(html.includes(needle), `page shows ${needle}`);
   }
   assert.ok(!html.includes("—"), "no em dash in the page");
-  assert.ok(!/Hourly<\/h2>/.test(html), "the 5 PM close is not called hourly");
+  assert.ok(!/Hourly, next close<\/h2>/.test(html), "the 5 PM close is not called hourly");
   assert.ok(renderPairsBody(d).startsWith('<div class="strip">'), "the fragment is the body only");
+  assert.equal((html.match(/>Launch<\/button>/g) ?? []).length, 6, "one Launch per pair");
 
-  const empty = renderPairsHtml({ ...d, hourly: null, daily: null, bundle: [] });
-  assert.ok(empty.includes("No strike is two-sided on both venues right now"));
-  assert.ok(empty.includes("the 5 PM hour belongs to the daily"));
+  const bare = renderPairsHtml({ ...d, hourly: null, daily: null, bundle: [] });
+  assert.ok(bare.includes("no strike two-sided on both"));
+  assert.ok(bare.includes("No contract closes within 90 minutes on either venue."));
+  assert.ok(bare.includes('var BASE="",Q="?"'), "no base and no token: root-relative fetches");
 });
