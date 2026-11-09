@@ -33,6 +33,39 @@ Where the index comes from: Polymarket US republishes BRTI one-second candles on
 price-history endpoint, and that is what the page reads. On Nov 8 it sat $20 from Deribit's
 own BTC index at the same second, which is normal (different constituent exchanges).
 
+### CME versus BRTI: which one is "the" price
+
+They are two different kinds of thing, and the page uses each for what it is.
+
+- **BRTI** is a spot index: once a second, CF Benchmarks blends live trades from a set of
+  spot exchanges (Coinbase, Kraken, Bitstamp, Gemini, itBit, LMAX Digital and whichever
+  others pass its constituent criteria that year) into one number. It is
+  what both event venues **settle** on. So "where will BRTI be at 8 PM" is the only question
+  the hourly contract asks, and "where will BRTI be at midnight Dec 31" is the only question
+  the year-end contract asks. There is no choice here: the reference for the probability has
+  to be the thing the contract pays on.
+- **CME Bitcoin futures** are a different instrument: a dated contract on the CME that
+  settles on CF Benchmarks' **BRR** (the Bitcoin Reference Rate, a once-a-day 4 PM London
+  fix built from the same family of exchanges), not on BRTI. A future trades at spot plus
+  carry ("the basis"), typically a few percent annualised in a calm market, more when the
+  market is leveraged long. It is what a Chicago desk **hedges with**, because it is
+  regulated, margined, and clears where their capital already sits.
+
+So "should we use CME instead?" splits into two answers. For the probability column: no, the
+contract settles on BRTI, and the probability has to be of BRTI; using a future would put a
+carry term into a question that has none. For the hedge: yes, a desk like Ted's would hold
+the delta in CME futures rather than spot, and that is exactly the limit the page states
+under "Reference". What a CME desk needs from us is (a) the settlement index and statistic
+stated precisely, which the page does, and (b) the basis they would carry, which the page
+now shows as a strip above §1: Deribit's December forward over BRTI, simple and annualised.
+A Deribit dated future and the CME December future are arbitraged against each other by the
+same firms, so that basis is within a handful of basis points of CME's. CME's own quotes are
+licensed data, which is why the page does not print them.
+
+The day-to-day difference between BRTI and Deribit's index (the one the options live on) is
+a few basis points and random in sign; the hourly model is priced on BRTI directly so that
+difference, and the few seconds between reads, do not leak into the near-the-money strikes.
+
 ---
 
 ## 2. Section 1: the curve
@@ -160,18 +193,33 @@ expressed per strike, not a model error. A writer who sells the hourly ladder at
 price and hedges at the listed vol is collecting that premium; a buyer is paying it. That
 is the pricing-plus-hedging story in one strip, and it is the thing to walk through first.
 
-On the model side, there is one technical fix that matters here: the digital probability
-is a numerical derivative, and minutes before a close the digital is nearly a step. The
-difference step is capped at a fifth of a standard deviation of the remaining move so the
-quotient does not smear it (without the cap, a digital $101 in the money with four minutes
-left read 71% instead of 76%).
+Two model details, both already in the deployed version (they are described here so you
+know they exist, not because anything is pending):
 
-Two housekeeping points the page handles:
+- **The near-close step cap.** The digital probability is a numerical derivative, and minutes
+  before a close the digital is nearly a step. The difference step is capped at a fifth of a
+  standard deviation of the remaining move so the quotient does not smear it. Before the cap,
+  a digital $101 in the money with four minutes left read 71% instead of the correct 76%; a
+  test now pins it within one point of the closed form.
+- **The hourly is priced on BRTI, not on Deribit's forward.** For the year-end buckets the
+  model uses Deribit's own forward for the expiry, because it carries the term basis the
+  market is paying (shown as a strip above §1). For anything settling within a day, the carry
+  is under a basis point and the contract settles on BRTI, so the model uses the BRTI reading
+  itself and takes only the vol from the smile. Deribit's forward is read a few seconds apart
+  from BRTI and wandered ±5 bps (about $40) around it from cycle to cycle; at five minutes to
+  the close, $40 is several points of probability on the at-the-money strike. The hedge
+  replay's delta uses the same spot it marks P&L in, for the same reason.
+
+Three housekeeping points the page handles:
 
 - The KXBTCD series also lists **tomorrow's 5 PM ET** contract a day ahead. The page only
   treats an event closing within 90 minutes as "the hourly ladder", so that 22-hour contract
   never stands in for the hour.
 - Rows with a mid under 1.5¢ or over 98.5¢ are hidden (far-out-of-the-money noise).
+- Venue books, the option chain and the index are read in one cycle but not at one instant.
+  BTC moves $30–60 in a typical minute; that alone is a few points on an hourly strike near
+  the money in its last minutes. The page says so under "Timing" in the notes. Single-row
+  gaps inside that band are noise; the vol strip and the replay averages are what survive it.
 
 Polymarket US has documented hourly/daily/weekly BTC ladders, but as of Nov 2026 they are
 in its preprod environment only. The reader will pick them up automatically when they reach
@@ -279,10 +327,33 @@ Naked should be (Sold at − 100¢); otherwise Paid is $0 and Naked equals Sold 
 It shows, on real contracts at real prices, the trade-off a desk lives with: a static hedge
 costs a known amount up front and leaves tracking error because the hedge instrument is a
 $500-wide ramp rather than a step; a dynamic hedge is cheaper on average but its cost is
-path-dependent and blows up near a pin. It does **not** model CME basis (it hedges to spot
-BRTI), does not model Deribit's inverse-settlement nuance beyond converting BTC-denominated
-prices at spot, and takes the first snapshot after the close (up to ~2½ minutes late) for
-the unwind.
+path-dependent and blows up near a pin.
+
+Three things it leaves out, all stated on the page under "Notes and limits". Showing them is
+the right call: each is a question a desk would ask within the first minute, and each has a
+size you can put on it.
+
+1. **CME basis is not carried.** The dynamic leg is marked against spot BRTI. A desk would
+   hold the delta in CME futures (or micros) and the futures-minus-spot basis moves around
+   inside the hour. How much it matters: the delta notional on an hourly $1 digital is about
+   $50 one hour out and $150 with ten minutes left, so a 5 bp basis move is 2–7¢ of extra
+   tracking error on that leg. It is zero-mean (it does not bias the average), but it would
+   widen the p90 stray a little. Why it is not on the page: CME market data is licensed, not
+   public, so the service cannot read it; Deribit's dated future stands in for the term basis
+   you see above §1.
+2. **Deribit's inverse settlement is approximated.** Deribit options are priced and paid in
+   BTC. The replay converts to dollars at spot each snapshot. The exact treatment carries a
+   second-order term, roughly (premium in BTC) × (dollar move); on a spread worth a few
+   hundred dollars of notional per $1 digital that term is well under a cent.
+3. **The spread's unwind is up to ~2½ minutes after the close.** The delta leg is flattened
+   at the settlement value itself (exact). The static spread is sold back at Deribit's quotes
+   on the first snapshot after settlement (90-second grace plus up to one 60-second cycle),
+   so its unwind includes that much post-close drift, again zero-mean. Fix available if asked:
+   interpolate Deribit's marks to the settlement instant.
+
+None of these changes the direction of any finding; all three widen the error bars on §5
+by a few cents. That is what "first pass" should mean to a careful reader: the shortcuts
+are named, bounded and symmetric.
 
 ---
 
@@ -323,8 +394,10 @@ This is the "we know" list. Each item is a question a careful reader would other
 | Sub-penny kept; whole-cent Poly; mids need two sides; depth is best level only | "Are you rounding?" "Is the depth the whole book?" |
 | Taker fees only, unrounded; Kalshi rounds up, Poly to nearest; Poly's 0.095 is its Tier 1, Tier 4 is 0.0695 (0.64¢ narrower at 50¢); rebates ignored | "A desk pays less than retail, so your crosses understate." Correct, and quantified. |
 | Smile construction; 6d 21h expiry gap; touches are a model | "Which vol did you use and how did you bridge the expiry?" |
-| Replay: 20 min–2 h horizon, unwind up to 2½ min late, $500 strike spacing, no rebalance cap | "Is the dynamic cost realistic near a pin?" No, it is pessimistic, and says so. |
-| Spot BRTI, not CME | "Where's the basis?" Deferred to the production version, affects §5–§6 only. |
+| Model: year-end on Deribit's forward (basis strip above §1), within-a-day on the BRTI reading itself | "Which forward are you on, and does the hourly see the same price Kalshi does?" |
+| Timing: books, chain and index read in one cycle, not one instant; $30–60 per minute of BTC | "Is a single hourly row gap real?" Not inside that band. |
+| Replay: 20 min–2 h horizon; delta flattened at the settlement value, spread unwound up to 2½ min late; $500 strike spacing; no rebalance cap; inverse term dropped | "Is the dynamic cost realistic near a pin?" No, it is pessimistic, and says so. |
+| Spot BRTI, not CME; CME data is licensed; 5 bp of basis is 2–7¢ of tracking error on the dynamic leg | "Where's the basis?" Sized, zero-mean, not in §5. |
 | Latency measures the index, not a venue's path | "Is this your round-trip time?" No. |
 
 ---
@@ -352,8 +425,13 @@ cannot place an order or see an account. That is a design property, not a policy
    mispricing, and it is why the cross column is mostly Poly-offer against Kalshi-bid.
 5. **Why are the crosses so small?** Because the venues are efficient to within fees, which
    is the finding. Cents per contract, single-digit dollars at the resting depth.
-6. **What would change with CME as the reference?** §5 and §6 numbers (basis and carry);
-   nothing in §1–§4.
+6. **What would change with CME as the reference?** Nothing in §1–§4, which compare venues
+   to each other and to the listed smile. In §5 the dynamic leg would pick up basis noise
+   worth a few cents of tracking error and a desk's real financing; §6 would price the floor
+   and cap off futures-settled options instead of Deribit/OKX's BTC-settled ones. The term
+   basis itself is already on the page (the strip above §1): Deribit's December forward over
+   BRTI, simple and annualised, which is the number a CME desk would compare with the
+   December future.
 7. **How long has it been collecting?** The strip says. Be upfront that §3 and §5 are
    young.
 8. **Is any of this trading?** No. The service has no keys. It can be audited as such.
