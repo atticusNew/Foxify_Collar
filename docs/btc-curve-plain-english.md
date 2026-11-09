@@ -64,17 +64,17 @@ The ones near the middle that look bigger are on a tenth of a contract and mean 
 Overall: cents on tens of dollars. The two venues are efficient to within fees. A big number
 here would mean something was wrong.
 
-**The line "Resting bids over the smile".** Same idea, bigger hedge. Instead of buying the
-cheap venue and selling the dear one, sell the dear venue's bids and cover the risk with real
-options on Deribit. It adds up what those bids are worth above the options price, at the
-size actually bid, after the venue's fee and a half-cent of slack for our model being rough
-in the far wings. First night: Kalshi about $47, Polymarket US about $1,200, most of it one
-band ("$150,000 or above", where 123,000 contracts were bid at a cent against an options
-value near zero). Before the cost of the options hedge, so it is a ceiling, not a profit. The
-simple real-world read of the whole page is these two lines: venue to venue, a couple of
-hundred dollars a night; venue against the options market, low thousands, concentrated in
-one or two far-upside bands on Poly. Everything else on the page explains why it is that
-small.
+**The line "Resting bids above option-implied value".** The dollar version of "which venue
+is rich". It adds up what each venue's bidders are paying above the options-market price,
+at the size actually bid, after the venue's fee and a half-cent of slack for our model being
+rough in the far wings. First night: Kalshi about $47, Polymarket US about $1,200, most of
+it one band ("$150,000 or above", where 123,000 contracts were bid at a cent against an
+options value near zero). The options market is the referee, not a place anyone here
+trades. The crosses line is the part of this the other venue lets you collect today; the
+rest is a view Poly's bidders hold that nobody else shares. The simple real-world read of
+the whole page is these two lines: venue to venue, a couple of hundred dollars a night;
+venue against the options market, low thousands, concentrated in one or two far-upside
+bands on Poly. Everything else on the page explains why it is that small.
 
 **The small grey numbers under each price.** Resting size at the best bid and offer, in
 contracts. That's the "how much could you actually do" number.

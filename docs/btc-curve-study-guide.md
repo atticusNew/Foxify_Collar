@@ -130,27 +130,27 @@ of money; a +0.7¢ cross on 8,000 contracts is $57. The first evening's 14–17 
 $167–$203. That is the venue-to-venue arb, and it is capped by the thinner book (Kalshi's
 sub-cent bids and offers in the wings).
 
-The second note, **"Resting bids over the smile, hedged on listed options instead"**, is the
-larger version of the same fact and the one a market maker would act on. Instead of buying
-the cheap venue, sell the rich venue's resting bids and hedge the tail on Deribit, where the
-far strikes are cheap but not free. It sums (bid − taker fee − option-implied value − ½¢
-allowance for the model's wing error) × the venue's own bid depth, per venue, and names the
-biggest bucket. First evening: Kalshi $47 over 5 buckets; Polymarket US $1,238 over 12
-buckets, $486 of it one bucket ("$150,000 or above", 1¢ bid on 123k contracts against an
-option value near zero). Before the option hedge's cost, minimum sizes and the pin risk of a
-short tail, so read it as an upper bound on what the resting books are worth to a seller,
-and read the two notes together: the venue-to-venue version is a few hundred dollars because
-the hedge is Kalshi's thin wing; the option-hedged version is low thousands because the
-hedge is Deribit's depth. Both are small. That is the finding, not a disappointment: the two
-retail books are within fees of each other and within a cent or two of the option market
-everywhere except the far upside, where Poly's 1¢ tick and its tail bidders leave a few
-hundred dollars a night on the table.
+The second note, **"Resting bids above option-implied value"**, is the dollar version of the
+market maker's question (which venue is rich, and where). For each venue it sums (bid − taker
+fee − option-implied value − ½¢ allowance for the model's wing error) × the venue's own bid
+depth, and names the biggest bucket. First evening: Kalshi $47 over 5 buckets; Polymarket US
+$1,238 over 12 buckets, $486 of it one bucket ("$150,000 or above", 1¢ bid on 123k contracts
+against an option value near zero). The options market is the referee here, not a venue
+anyone on the page trades: the number says what Poly's bidders are paying above what the
+options market thinks those bands are worth, in size. The crosses note is the part of it the
+other venue lets a cross-venue trader collect today (a few hundred dollars, capped by Kalshi's
+thin sub-cent wing); the rest is a view Poly's bidders hold that neither Kalshi nor the
+options market shares. Selling it alone takes the tail, so it is not a trade by itself; it is
+a map of where the excess sits and how much of it there is. Both numbers are small. That is
+the finding, not a disappointment: the two retail books are within fees of each other and
+within a cent or two of the option market everywhere except the far upside, where Poly's 1¢
+tick and its tail bidders leave a few hundred dollars a night on the table.
 
 Below the table, **Sum of mids**: add up all 28 mids. A perfectly fair book sums to 100¢
 (exactly one bucket pays). Nov 8: Kalshi 100¢, Polymarket US 115–122¢, option model 100¢. Only
 about 3¢ of Poly's excess is the whole-cent tick (0¢-bid buckets read as zero); the rest is
 real 1¢ bids in size on tail buckets the option market prices near zero. This is a one-glance
-quality read on each venue's market-making, and the "resting bids over the smile" note prices
+quality read on each venue's market-making, and the "resting bids above option-implied value" note prices
 that excess in dollars.
 
 ### The chart above the table

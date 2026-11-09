@@ -665,7 +665,7 @@ test("report page: the three sources, the gaps, the latency table and the replay
     "13.8 ct",
     "Executable crosses:",
     // 21¢ bid − 1.58¢ fee − 18.4¢ model − 0.5¢ allowance = 0.52¢ on 1,000 contracts
-    "Resting bids over the smile",
+    "Resting bids above option-implied value",
     "Kalshi: none. Polymarket US: $5 over 1 bucket",
     "Sum of mids",
     "Gaps over time",
