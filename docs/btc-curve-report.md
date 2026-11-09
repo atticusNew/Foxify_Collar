@@ -43,11 +43,18 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
    snapshot after the close, and an option-implied delta in spot rebalanced each snapshot at
    2 bps with no cap near the close. Settlement is the simple BRTI 60-second average Kalshi uses.
    In-flight events with a longer horizon (from before the 90-minute rule) are dropped on load.
-5b. **Strike by strike, in vol.** Under §2: each Kalshi bid and ask on the hourly and the 5 PM ET
+1b. **Bucket boundaries in vol.** Under §1: each venue's range mids summed above each $5,000 line,
+   normalised by the venue's own sum of mids, inverted to vol on the venue's own 50% point (so level
+   and shape are kept apart), with a band from the same sum over bids and asks, Deribit's vol at the
+   line, listed-vs-band, skew per source, raw tail mass per source (no normalisation), and flags
+   for tails fatter than any lognormal and for lines where 0¢-bid buckets dominate a venue's raw
+   sum. A 0¢-bid bucket is read as zero mass.
+5b. **Strike by strike, in vol.** Under §2: each venue's bid and ask on the hourly and the 5 PM ET
    daily ladder inverted to the vol that reproduces it as a digital on the ladder's own 50¢ centre,
    beside Deribit's vol at that strike; listed-vs-band, skew (below minus above centre) for both,
-   and each mid's residual against a one-vol fit. Strikes within a quarter of a standard deviation
-   of the centre are blank (no vega).
+   and each mid's residual against a one-vol fit. One table per venue quoting the ladder (Kalshi
+   today; Polymarket US when its short-dated ladders leave preprod). Strikes within a quarter of a
+   standard deviation of the centre are blank (no vega).
 6. **Lock in on the daily ladder.** Holder-side terms (floor, cap, credit, upside given up) per
    strike of Kalshi's 5 PM ET daily contract (KXBTCD, 80 strikes $250 apart; the hourly is used
    only when no daily is listed), priced leg-for-leg off OKX option books with the same pricer as

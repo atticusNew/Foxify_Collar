@@ -157,6 +157,91 @@ Two honest approximations, both stated on the page: the option expiry is 6 days 
 before the venue settlement, so the smile's vol is kept and each bucket's own time to
 settlement is used; and zero interest rate (immaterial at this horizon for a probability).
 
+### "Bucket boundaries in vol: Kalshi vs Polymarket US vs Deribit"
+
+The cents table above it says how far each venue is from the options market per bucket. This
+table splits that into two things a desk keeps separate: level (where each venue thinks the
+centre is) and shape (how each venue spreads probability around its centre), both in vol.
+
+How it is built. Each venue's 28 range mids are summed from the top down, so every $5,000
+line gets a probability of finishing above it. A bucket bid at 0¢ is read as zero rather than
+as half its 1¢ offer (a 0¢/1¢ quote is "nobody pays a cent", not a half-cent view). Each
+venue's sum is then divided by its own total so both read on the same scale. The 50% point of
+each venue's curve is its median, shown in the strip against the median the Deribit forward
+implies at the at-the-money vol. Then each line's probability is turned into the vol that
+reproduces it as a digital on the venue's own centre. That last choice matters: inverting on
+the Deribit forward would make a venue that simply sits higher read as skewed. On the venue's
+own centre, the vol columns are shape only. The band under each vol is the same sum done over
+the venue's bids and over its asks. Deribit's vol at the line is read off the Dec 25 smile.
+
+The blanks and the labels. Lines where a venue's probability is under 5% or over 95% are
+blank (a digital there says nothing about vol). The line nearest each venue's centre is blank
+(no vega). "Band open" means one side of the bid/ask sum fell outside 5 to 95%. "Above any
+lognormal" means the venue puts more weight past that line than any single vol can produce
+on its own centre: a tail fatter than the model. A row note says where 0¢-bid buckets were a
+fifth or more of a venue's raw sum above a line.
+
+The tail-mass line in the strip. Raw mids, no normalisation, summed over the buckets wholly
+beyond about one standard deviation each side of the forward (the lines are named). Same
+contracts on all three sources, so it is the one number in this table nobody can argue with.
+
+What Polymarket US is and is not. On Nov 8 Poly's mids summed to 115 to 122¢ against Kalshi's
+100¢. Only about 3¢ of that was the 0¢/1¢ tick floor. The rest was resting 1¢ bids, in size,
+on buckets worth a fraction of a cent: tens of thousands of contracts bid at 1¢ on "$130,000
+to $135,000", over a hundred thousand at 1¢ on "$150,000 or above", each worth about a
+hundredth of a cent on the smile. Those are real orders you can sell to, and section 1's
+"executable crosses" note is where they show up as trades (buy Kalshi at 0.6¢, sell Poly at
+1¢). So Poly's book is not wrong, it is not a coherent distribution: it carries more
+probability than $1 can pay out, and the excess sits in the tails, mostly the upper one.
+Normalising spreads that excess across every line, which pushes Poly's 50% point up and its
+body probabilities down. That is why Poly's vol columns are shown with wide bands and should
+be read as a description of where its book is heavy, not as a measurement of its shape. The
+tail-mass line says it without a model: on Nov 8, mass at or above $90,000 was Kalshi 16¢,
+Poly 28¢, Deribit 8¢.
+
+What the first reading showed (Nov 8, late evening, 53 days to settlement):
+
+- Level. Kalshi's median sat about 2.7 to 2.8% above the listed median; Polymarket US's 4.7
+  to 5.8% as its book moved. Both venues see a higher year-end centre than the options
+  market. For Kalshi that is a clean level disagreement a desk would price as a forward
+  trade. For Poly, part of it is the upside tail mass pulling the normalised curve up.
+- Shape, Kalshi. Under Deribit on every downside line with a band (36 to 45% against 41 to
+  48%) and over it on every upside line (43 to 47% against 38 to 43%); zero of seven inside.
+  Skew (vol below the forward minus above) about −1.3 for Kalshi against +2.2 for Deribit.
+  The same pattern as the daily ladder in section 2: Kalshi runs a flat vol where the
+  options market runs a put skew, and here it leans slightly the other way.
+- Tails, both venues. Mass at or above $90,000: Kalshi 16¢, Poly 28¢, Deribit 8¢. Both
+  venues carry about twice to three and a half times the options market's upside tail.
+  Below $65,000: Kalshi 14.5¢, Poly 21.5¢, Deribit 16.6¢; Kalshi slightly under the options
+  market on the downside, Poly over on both sides.
+- Shape, Polymarket US. Bands two to four times wider than Kalshi's, because a cent of
+  spread on each of 10 to 20 buckets adds up. Inside on the downside (the band is wide enough
+  to hold anything), over on the upside by a lot. Read with the paragraph above: heavy
+  upside tail, incoherent sum, whole-cent tick.
+
+What it means. Two venues, same contract, same index, same instant, both sitting higher than
+the options market and both heavier in the upside tail, with Kalshi's book tight enough to
+read a shape from (flat vol against Deribit's put skew) and Poly's not. For a desk: the level
+gap is one trade, the shape gap another, and the upside tail on both venues is the most
+directly executable of the three because the crosses in section 1 are the same fact in cents.
+For us: the same shape finding as section 2, on the long tenor, confirmed by the one venue
+whose book can carry it.
+
+Caveats. Each venue's 50% point is interpolated between $5,000 lines, so it is good to about
+a thousand dollars, which is about 1.3% of the level; the 3% and 5% are real, their second
+digit is not. The Deribit vol is a mark (a mid), so "inside" compares a venue's bid/ask band
+with a listed mid. The Dec 25 expiry is six days and 21 hours before settlement; the smile's
+vol is used with the venue's time to settlement, the same shortcut as the model column.
+Normalising by the sum assumes the overround is spread evenly across buckets; on Poly it is
+in the tails, which is why its vol columns are a description, not a measurement. The skew
+numbers are means of mid vols over the lines with a band, so the venue and Deribit skews are
+over slightly different line sets when one venue is blank where the other is not.
+
+The sentence to have ready: "Both venues sit a few percent above the options market's
+centre and both carry two to three times its upside tail. Kalshi's book is tight enough to
+read a shape from: flat vol where Deribit has a put skew. Poly's book sums to 115¢ with the
+excess in 1¢ bids on the tails; you can sell those, but you cannot read a shape from them."
+
 ### "One-touch ladders: high and low of the year"
 
 One-touch contracts: pays $1 if BRTI ever trades above (or below) the level before year-end.
@@ -258,11 +343,14 @@ Polymarket US has documented hourly/daily/weekly BTC ladders, but as of Nov 2026
 in its preprod environment only. The reader will pick them up automatically when they reach
 production; the note under the table says so.
 
-### "Kalshi ladders, strike by strike, in vol" (the market maker's table)
+### "Short-dated ladders, strike by strike, in vol" (the market maker's table)
 
 The strip gives one vol for the whole ladder. This table answers the next question a desk
 asks: what vol is each strike actually quoted at, and are the strikes consistent with each
-other and with the listed market. Two tables: the current hourly and the 5 PM ET daily.
+other and with the listed market. One table per venue that quotes the ladder, for the current
+hourly and the 5 PM ET daily. Today that is Kalshi only; Polymarket US's hourly and daily
+BTC ladders are documented but still in its preprod environment, and the moment they are
+live a Polymarket US table appears here automatically with no change to the page.
 
 How a row is built. Take the strike's bid and ask on Kalshi. Each is the price of a digital,
 so each can be turned into the vol that reproduces it, given a centre and the time left. The
@@ -589,10 +677,13 @@ property, not a policy.
 7. **How long has it been collecting?** The strip says. Be upfront that §3, the §2 premium
    table and §5 are young, and that the §5 tiles will look harsh until the sample grows (and
    why: per-contract costs, not a book).
-8. **What does the strike-by-strike table say?** Kalshi quotes one vol across the ladder,
-   Deribit quotes a skew. Venue under listed vol on the downside strikes, over on the upside.
-   Blanks at the money are correct: a digital there has no vega. The product hedges on
-   listed vol, so the difference is its ground.
+8. **What do the vol tables say?** Kalshi quotes one vol across its ladders, Deribit quotes
+   a skew: venue under listed vol on the downside strikes, over on the upside, on the daily
+   and on the year-end alike. On the year-end both venues also sit a few percent above the
+   options market's centre and carry two to three times its upside tail; the table keeps
+   level and shape apart. Poly's book sums to 115¢ with the excess in 1¢ bids on tail
+   buckets: sellable, not readable as a shape. Blanks at the money are correct: a digital
+   there has no vega.
 9. **Why does §6 mostly refuse?** Because away from the money the floor (a put spread off
    live books, plus fees, haircut and margin) costs more than the upside given up can fund;
    the pricer refuses rather than quoting a loser. It quotes the daily contract now (the

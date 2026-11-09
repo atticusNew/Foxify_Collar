@@ -343,6 +343,7 @@ export interface StrikeVolRow {
 
 export interface LadderVolTable {
   ladderId: string;
+  venue: "kalshi" | "polymarket_us";
   settlesAt: string;
   minutesToClose: number;
   /** the one-vol fit the residual column is read against */
@@ -361,10 +362,10 @@ export interface LadderVolTable {
 }
 
 /** The strike at which a venue's "above K" mids cross 50¢, interpolated between neighbours; null without a crossing. */
-export function ladderCentre(rows: BucketRow[]): number | null {
+export function ladderCentre(rows: BucketRow[], venue: "kalshi" | "polymarket_us" = "kalshi"): number | null {
   const pts = rows
     .filter((r) => r.key.startsWith("above:"))
-    .map((r) => ({ K: Number(r.key.slice("above:".length)), m: midCents(r.kalshi) }))
+    .map((r) => ({ K: Number(r.key.slice("above:".length)), m: midCents(venue === "kalshi" ? r.kalshi : r.poly) }))
     .filter((x): x is { K: number; m: number } => x.K > 0 && x.m !== null)
     .sort((a, b) => a.K - b.K);
   for (let i = 1; i < pts.length; i += 1) {
@@ -375,7 +376,11 @@ export function ladderCentre(rows: BucketRow[]): number | null {
   return null;
 }
 
-/** σ such that an "above K" digital with T years left prices at p on forward F; null when none in [2%, 500%]. */
+/**
+ * σ such that an "above K" digital with T years left prices at p on forward F; null when none in [2%, 500%].
+ * A digital's price is monotone in σ only up to σ² = 2·|ln(F/K)|/T (beyond it the drift term wins and
+ * the price turns back), so the search stops there and returns the lower, economically meaningful root.
+ */
 export function digitalImpliedVol(p: number, F: number, K: number, T: number): number | null {
   if (!(p > 0 && p < 1) || !(F > 0) || !(K > 0) || !(T > 0)) return null;
   const price = (iv: number) => {
@@ -383,7 +388,8 @@ export function digitalImpliedVol(p: number, F: number, K: number, T: number): n
     return normCdf((Math.log(F / K) - 0.5 * s * s) / s);
   };
   let lo = 0.02;
-  let hi = 5;
+  let hi = Math.min(5, Math.sqrt((2 * Math.abs(Math.log(F / K))) / T));
+  if (!(hi > lo)) return null;
   const fLo = price(lo) - p;
   const fHi = price(hi) - p;
   if (fLo === 0) return lo;
@@ -405,16 +411,16 @@ export function digitalImpliedVol(p: number, F: number, K: number, T: number): n
  * charges a premium on; the residual against the one-vol fit says how consistent the strikes are with
  * each other.
  */
-export function ladderStrikeVols(ladder: Ladder, smiles: Smile[], spot: number, nowMs: number): LadderVolTable | null {
+export function ladderStrikeVols(ladder: Ladder, smiles: Smile[], spot: number, nowMs: number, venue: "kalshi" | "polymarket_us" = "kalshi"): LadderVolTable | null {
   const settleMs = Date.parse(ladder.settlesAt);
   const T = Math.max(0, (settleMs - nowMs) / (365.25 * 86_400_000));
   const rows = bucketRows(ladder);
-  const fit = ladderImpliedVol(rows, "kalshi", spot, T);
+  const fit = ladderImpliedVol(rows, venue, spot, T);
   if (!fit || !(T > 0)) return null;
   const smile = nearestSmile(smiles, settleMs);
   // Centre for the inversion: where the venue's mids cross 50¢, read off the ladder itself. The one-vol
   // fit's centre would absorb any skew between the two sides; the 50¢ point does not.
-  const F = ladderCentre(rows) ?? fit.forwardUsd;
+  const F = ladderCentre(rows, venue) ?? fit.forwardUsd;
   const sigma = fit.ladderPct / 100;
   const s = sigma * Math.sqrt(T);
   const out: StrikeVolRow[] = [];
@@ -422,14 +428,15 @@ export function ladderStrikeVols(ladder: Ladder, smiles: Smile[], spot: number, 
   const above: Array<{ venue: number; smile: number }> = [];
   const pct = (iv: number | null) => (iv === null ? null : Math.round(iv * 1000) / 10);
   for (const r of rows) {
-    if (!r.key.startsWith("above:") || !r.kalshi) continue;
+    const quote = venue === "kalshi" ? r.kalshi : r.poly;
+    if (!r.key.startsWith("above:") || !quote) continue;
     const K = Number(r.key.slice("above:".length));
-    const mid = midCents(r.kalshi);
+    const mid = midCents(quote);
     if (!(K > 0) || mid === null || mid < 5 || mid > 95) continue;
     const fitted = normCdf((Math.log(fit.forwardUsd / K) - 0.5 * s * s) / s) * 100;
     const nearCentre = Math.abs(Math.log(F / K)) < 0.25 * s;
-    const vb = nearCentre ? null : digitalImpliedVol(r.kalshi.bidCents / 100, F, K, T);
-    const va = nearCentre ? null : digitalImpliedVol(r.kalshi.askCents / 100, F, K, T);
+    const vb = nearCentre ? null : digitalImpliedVol(quote.bidCents / 100, F, K, T);
+    const va = nearCentre ? null : digitalImpliedVol(quote.askCents / 100, F, K, T);
     const vm = nearCentre ? null : digitalImpliedVol(mid / 100, F, K, T);
     const lo = vb !== null && va !== null ? Math.min(vb, va) : null;
     const hi = vb !== null && va !== null ? Math.max(vb, va) : null;
@@ -442,10 +449,10 @@ export function ladderStrikeVols(ladder: Ladder, smiles: Smile[], spot: number, 
     out.push({
       strikeUsd: K,
       label: r.label,
-      bidCents: r.kalshi.bidCents,
-      askCents: r.kalshi.askCents,
-      bidQty: r.kalshi.bidQty,
-      askQty: r.kalshi.askQty,
+      bidCents: quote.bidCents,
+      askCents: quote.askCents,
+      bidQty: quote.bidQty,
+      askQty: quote.askQty,
       volLoPct: pct(lo),
       volHiPct: pct(hi),
       volMidPct: pct(vm),
@@ -467,6 +474,7 @@ export function ladderStrikeVols(ladder: Ladder, smiles: Smile[], spot: number, 
   const withBand = out.filter((r) => r.listedVs !== null);
   return {
     ladderId: ladder.id,
+    venue,
     settlesAt: ladder.settlesAt,
     minutesToClose: Math.round((settleMs - nowMs) / 60_000),
     fitPct: fit.ladderPct,
@@ -477,6 +485,229 @@ export function ladderStrikeVols(ladder: Ladder, smiles: Smile[], spot: number, 
     withBand: withBand.length,
     inside: withBand.filter((r) => r.listedVs === "inside").length,
     skew,
+  };
+}
+
+export interface YearEndVenueCell {
+  /** normalised probability of finishing above the boundary, % of the venue's own sum of mids */
+  pct: number;
+  /** the vol that reproduces the mid probability as a digital on the listed forward; null in the wings and at the centre */
+  volPct: number | null;
+  /** the band from summing the venue's bids and its asks above the boundary instead of its mids, % vol, low to high */
+  volLoPct: number | null;
+  volHiPct: number | null;
+  /** where the listed vol sits against that band */
+  listedVs: "inside" | "venue_over" | "venue_under" | null;
+  /** the mid probability is in range but no lognormal vol on the venue's own centre reaches it: a tail fatter than any lognormal */
+  unreachable: boolean;
+  /**
+   * Share of the raw mid-sum above K that came from buckets bid at 0¢ and was read as zero instead of the mid
+   * (a 0¢/1¢ quote is "nobody pays a cent", not a half-cent view). High in the wings on a whole-cent book.
+   */
+  tickShare: number;
+}
+
+export interface YearEndVolRow {
+  /** bucket boundary: the lower bound of a range bucket, read as "above K" */
+  strikeUsd: number;
+  kalshi: YearEndVenueCell | null;
+  poly: YearEndVenueCell | null;
+  /** Deribit mark IV at the boundary, % */
+  smilePct: number;
+}
+
+export interface YearEndVolTable {
+  settlesAt: string;
+  expiry: string;
+  /** the listed forward, and the median it implies at the at-the-money vol (F·e^(−σ²T/2)) */
+  forwardUsd: number;
+  listedMedianUsd: number;
+  daysToSettle: number;
+  /** each venue's sum of mids across the tiling ladder, cents, and the part of it from 0¢-bid buckets that is read as zero */
+  kalshiSumCents: number | null;
+  polySumCents: number | null;
+  kalshiTickCents: number | null;
+  polyTickCents: number | null;
+  /**
+   * Where each venue's cumulative curve crosses 50%, interpolated between boundaries: the venue's median. Each
+   * venue's vols are inverted on its own centre (median lifted to a forward at the listed ATM vol), so the vol
+   * columns compare shape and the centres compare level; a venue that simply sits higher does not read as skew.
+   */
+  kalshiCentreUsd: number | null;
+  polyCentreUsd: number | null;
+  rows: YearEndVolRow[];
+  /** mean mid vol at boundaries below the forward minus above it, vol points */
+  skew: { kalshiPts: number | null; polyPts: number | null; smilePts: number | null };
+  /**
+   * Raw mid mass in the tails, cents of $1, no normalisation: the same contracts on each source. Where a venue's
+   * sum of mids runs over 100¢, this says which tail the excess sits in.
+   */
+  tails: { upperFromUsd: number; lowerToUsd: number; kalshi: [number, number] | null; poly: [number, number] | null; model: [number, number] | null };
+  /** boundaries with a band, and how many hold the listed vol inside it */
+  inside: { kalshi: [number, number]; poly: [number, number] };
+}
+
+interface Cumulative {
+  /** sum of mids as quoted, and the part of it from 0¢-bid buckets */
+  sum: number;
+  tick: number;
+  /** by boundary: cumulative above it from mids, bids and asks, each as a fraction of the mid sum; and the tick-floor share */
+  at: Map<number, { mid: number; bid: number; ask: number; tick: number }>;
+  centre: number | null;
+}
+
+/**
+ * The year-end range ladder read as vol per bucket boundary, both venues against the listed smile.
+ * Each venue's range mids are summed above each boundary into a cumulative "above K" and divided by
+ * the venue's own sum. A bucket bid at 0¢ is read as zero, not as half its offer: on a whole-cent book
+ * fifteen tail buckets at 0¢/1¢ would otherwise add 7¢ of probability that nobody will pay for, which
+ * is most of why Polymarket US's mids sum near 120¢. The same sum over bids and over asks gives a band:
+ * on $5,000 buckets near the forward a digital has little vega, so a few cents of accumulated tick
+ * is many vol points, and the band says so rather than the mid pretending otherwise. Inverted on the
+ * listed expiry's forward, the same forward §1 prices the buckets on.
+ */
+export function yearEndStrikeVols(range: Ladder, smiles: Smile[], nowMs: number): YearEndVolTable | null {
+  const settleMs = Date.parse(range.settlesAt);
+  const T = (settleMs - nowMs) / (365.25 * 86_400_000);
+  const smile = nearestSmile(smiles, settleMs);
+  if (!smile || !(T > 0) || !(smile.forward > 0)) return null;
+  const F = smile.forward;
+  const rows = bucketRows(range)
+    .filter((r) => r.key.startsWith("range:") || r.key.startsWith("above:") || r.key.startsWith("below:"))
+    .map((r) => ({ r, level: r.key.startsWith("below:") ? -Infinity : Number(r.key.split(":")[1].split("-")[0]) }))
+    .sort((a, b) => a.level - b.level);
+  if (rows.length < 4) return null;
+  const cumulative = (pick: (r: BucketRow) => VenueQuote | null): Cumulative | null => {
+    const quotes = rows.map(({ r }) => pick(r));
+    const mids = quotes.map((qq) => midCents(qq));
+    if (mids.some((m) => m === null)) return null;
+    const rawSum = (mids as number[]).reduce((a, b) => a + b, 0);
+    // a 0¢ bid is read as zero mass; the mid of a 0¢/1¢ quote is the tick, not a view
+    const mass = (mids as number[]).map((m, i) => ((quotes[i] as VenueQuote).bidCents === 0 ? 0 : m));
+    const tickTotal = rawSum - mass.reduce((a, b) => a + b, 0);
+    const sum = rawSum - tickTotal;
+    if (!(sum > 0)) return null;
+    const at: Cumulative["at"] = new Map();
+    let mid = 0;
+    let raw = 0;
+    let bid = 0;
+    let ask = 0;
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const qq = quotes[i] as VenueQuote;
+      mid += mass[i];
+      raw += mids[i] as number;
+      bid += Math.max(0, qq.bidCents);
+      ask += qq.askCents;
+      if (Number.isFinite(rows[i].level)) at.set(rows[i].level, { mid: mid / sum, bid: bid / sum, ask: ask / sum, tick: raw > 0 ? (raw - mid) / raw : 0 });
+    }
+    const pts = [...at.entries()].sort((a, b) => a[0] - b[0]);
+    let centre: number | null = null;
+    for (let i = 1; i < pts.length; i += 1) {
+      const [k0, c0] = pts[i - 1];
+      const [k1, c1] = pts[i];
+      if (c0.mid >= 0.5 && c1.mid < 0.5 && c0.mid !== c1.mid) {
+        centre = k0 + ((c0.mid - 0.5) / (c0.mid - c1.mid)) * (k1 - k0);
+        break;
+      }
+    }
+    return { sum: rawSum, tick: tickTotal, at, centre };
+  };
+  const kalshi = cumulative((r) => r.kalshi);
+  const poly = cumulative((r) => r.poly);
+  if (!kalshi && !poly) return null;
+  const atmIv = ivAt(smile, F);
+  const atmS = atmIv * Math.sqrt(T);
+  const listedMedian = F * Math.exp(-0.5 * atmS * atmS);
+  // each venue's own forward: its median lifted by the same lognormal correction
+  const forwardOf = (c: Cumulative | null) => (c && c.centre !== null ? c.centre * Math.exp(0.5 * atmS * atmS) : F);
+  const Fk = forwardOf(kalshi);
+  const Fp = forwardOf(poly);
+  const pct = (x: number | null) => (x === null ? null : Math.round(x * 1000) / 10);
+  const inRange = (p: number) => p >= 0.05 && p <= 0.95;
+  const cell = (c: { mid: number; bid: number; ask: number; tick: number } | undefined, Fv: number, level: number, smileIv: number): YearEndVenueCell | null => {
+    if (!c) return null;
+    const nearCentre = Math.abs(Math.log(Fv / level)) < 0.25 * atmS;
+    const inv = (p: number) => (!inRange(p) || nearCentre ? null : digitalImpliedVol(p, Fv, level, T));
+    const vm = inv(c.mid);
+    const v1 = inv(Math.min(c.bid, 0.999));
+    const v2 = inv(Math.min(c.ask, 0.999));
+    const lo = v1 !== null && v2 !== null ? Math.min(v1, v2) : null;
+    const hi = v1 !== null && v2 !== null ? Math.max(v1, v2) : null;
+    const listedVs: YearEndVenueCell["listedVs"] = lo === null || hi === null ? null : smileIv < lo ? "venue_over" : smileIv > hi ? "venue_under" : "inside";
+    return {
+      pct: pct(c.mid) as number,
+      volPct: pct(vm),
+      volLoPct: pct(lo),
+      volHiPct: pct(hi),
+      listedVs,
+      unreachable: vm === null && inRange(c.mid) && !nearCentre,
+      tickShare: Math.round(c.tick * 100) / 100,
+    };
+  };
+  const out: YearEndVolRow[] = [];
+  const below = { k: [] as number[], p: [] as number[], s: [] as number[] };
+  const above = { k: [] as number[], p: [] as number[], s: [] as number[] };
+  for (const { level } of rows) {
+    if (!Number.isFinite(level) || !(level > 0)) continue;
+    const kc = kalshi?.at.get(level);
+    const pc = poly?.at.get(level);
+    if (!(kc && inRange(kc.mid)) && !(pc && inRange(pc.mid))) continue;
+    const sv = ivAt(smile, level);
+    const k = cell(kc, Fk, level, sv);
+    const p = cell(pc, Fp, level, sv);
+    const side = level < F ? below : above;
+    if (k?.volPct !== null && k?.volPct !== undefined) side.k.push(k.volPct);
+    if (p?.volPct !== null && p?.volPct !== undefined) side.p.push(p.volPct);
+    if ((k && k.volPct !== null) || (p && p.volPct !== null)) side.s.push(sv * 100);
+    out.push({ strikeUsd: level, kalshi: k, poly: p, smilePct: pct(sv) as number });
+  }
+  if (!out.length) return null;
+  const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const skewOf = (lo: number[], hi: number[]) => {
+    const a = mean(lo);
+    const b = mean(hi);
+    return a === null || b === null ? null : Math.round((a - b) * 10) / 10;
+  };
+  // tails: the buckets wholly beyond the lines nearest ±1 standard deviation from the forward
+  const upperFrom = Math.min(...rows.filter((x) => Number.isFinite(x.level) && x.level >= F * Math.exp(atmS)).map((x) => x.level));
+  const lowerTo = Math.max(...rows.filter((x) => Number.isFinite(x.level) && x.level > 0 && x.level < F * Math.exp(-atmS)).map((x) => x.level)) + 5000;
+  const tailMass = (pick: (r: BucketRow) => number | null): [number, number] | null => {
+    let up = 0;
+    let down = 0;
+    for (const { r, level } of rows) {
+      const m = pick(r);
+      if (m === null) return null;
+      if (Number.isFinite(level) && level >= upperFrom) up += m;
+      if (!Number.isFinite(level) || level + 5000 <= lowerTo) down += m;
+    }
+    return [Math.round(up * 10) / 10, Math.round(down * 10) / 10];
+  };
+  const insideOf = (pick: (r: YearEndVolRow) => YearEndVenueCell | null): [number, number] => {
+    const banded = out.map(pick).filter((c): c is YearEndVenueCell => !!c && c.listedVs !== null);
+    return [banded.filter((c) => c.listedVs === "inside").length, banded.length];
+  };
+  return {
+    settlesAt: range.settlesAt,
+    expiry: smile.expiry,
+    forwardUsd: Math.round(F),
+    listedMedianUsd: Math.round(listedMedian),
+    daysToSettle: Math.round((settleMs - nowMs) / 86_400_000),
+    kalshiSumCents: kalshi ? Math.round(kalshi.sum) : null,
+    polySumCents: poly ? Math.round(poly.sum) : null,
+    kalshiTickCents: kalshi ? Math.round(kalshi.tick * 10) / 10 : null,
+    polyTickCents: poly ? Math.round(poly.tick * 10) / 10 : null,
+    kalshiCentreUsd: kalshi && kalshi.centre !== null ? Math.round(kalshi.centre) : null,
+    polyCentreUsd: poly && poly.centre !== null ? Math.round(poly.centre) : null,
+    rows: out,
+    skew: { kalshiPts: skewOf(below.k, above.k), polyPts: skewOf(below.p, above.p), smilePts: skewOf(below.s, above.s) },
+    inside: { kalshi: insideOf((r) => r.kalshi), poly: insideOf((r) => r.poly) },
+    tails: {
+      upperFromUsd: Number.isFinite(upperFrom) ? upperFrom : 0,
+      lowerToUsd: Number.isFinite(lowerTo) ? lowerTo : 0,
+      kalshi: tailMass((r) => midCents(r.kalshi)),
+      poly: tailMass((r) => midCents(r.poly)),
+      model: tailMass((r) => r.modelCents),
+    },
   };
 }
 

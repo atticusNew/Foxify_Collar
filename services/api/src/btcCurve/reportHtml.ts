@@ -3,7 +3,7 @@
  * Readable on a phone, printable, refreshes itself on the collector's cadence.
  */
 
-import type { LatencyRow, BucketRow, GapSeries, LadderVolTable, StrikeVolRow } from "./analytics";
+import type { LatencyRow, BucketRow, GapSeries, LadderVolTable, StrikeVolRow, YearEndVenueCell, YearEndVolTable } from "./analytics";
 import type { LadderView, ReportData } from "./report";
 
 const esc = (s: unknown): string =>
@@ -215,13 +215,46 @@ function strikeVolTable(t: LadderVolTable, title: string): string {
   return `<h3>${esc(title)}</h3>${summary}<div class="tbl"><table><tr><th>Strike</th><th>Kalshi<br><small>bid / ask · depth</small></th><th>Venue vol, bid to ask<br><small>band</small></th><th>Deribit vol<br><small>at strike</small></th><th>Listed vs band</th><th>Mid − one-vol fit<br><small>cents</small></th></tr>${rows}</table></div>`;
 }
 
+const VENUE_NAME = { kalshi: "Kalshi", polymarket_us: "Polymarket US" } as const;
+
 function strikeVolsHtml(d: ReportData): string {
   const { hourly, daily } = d.strikeVols;
-  if (!hourly && !daily) return "";
-  return `<h3>Kalshi ladders, strike by strike, in vol</h3>
-<p>Each strike's bid and ask converted to the vol that reproduces it as a digital on the ladder's own centre (the strike where mids cross 50¢), beside Deribit's vol at the same strike. Band holding the listed vol: quoted off the smile. Band above it: the venue charges a premium at that strike. Band below: the venue is under the smile. Last column: each mid against one vol for the whole ladder; a large residual is a strike out of line with its neighbours. Strikes within a quarter of a standard deviation of the centre are left blank, and bands widen toward it; a digital at the money carries almost no vol, so a cent of spread is many vol points there.</p>${
-    hourly ? strikeVolTable(hourly, "Hourly ladder") : ""
-  }${daily ? strikeVolTable(daily, "Daily ladder, 5 PM ET") : ""}`;
+  if (!hourly.length && !daily.length) return "";
+  const venues = [...new Set([...hourly, ...daily].map((t) => t.venue))].map((v) => VENUE_NAME[v]).join(" and ");
+  return `<h3>Short-dated ladders, strike by strike, in vol</h3>
+<p>Each strike's bid and ask converted to the vol that reproduces it as a digital on the ladder's own centre (the strike where mids cross 50¢), beside Deribit's vol at the same strike. Band holding the listed vol: quoted off the smile. Band above it: the venue charges a premium at that strike. Band below: the venue is under the smile. Last column: each mid against one vol for the whole ladder; a large residual is a strike out of line with its neighbours. Strikes within a quarter of a standard deviation of the centre are left blank, and bands widen toward it; a digital at the money carries almost no vol, so a cent of spread is many vol points there. One table per venue quoting the ladder: ${esc(venues)}.</p>${hourly
+    .map((t) => strikeVolTable(t, `${VENUE_NAME[t.venue]} hourly ladder`))
+    .join("")}${daily.map((t) => strikeVolTable(t, `${VENUE_NAME[t.venue]} daily ladder, 5 PM ET`)).join("")}`;
+}
+
+function yearEndVolsHtml(t: YearEndVolTable | null): string {
+  if (!t) return "";
+  const pct = (x: number | null, dp = 0) => (x === null ? "–" : `${x.toFixed(dp)}%`);
+  const pts = (x: number | null) => (x === null ? "–" : `${x > 0 ? "+" : ""}${x.toFixed(1)}`);
+  const vsWord = (v: YearEndVenueCell["listedVs"]) => (v === null ? "–" : v === "inside" ? "inside" : v === "venue_over" ? "venue over" : "venue under");
+  const vsCls = (v: YearEndVenueCell["listedVs"]) => (v === "venue_over" ? "warm" : v === "venue_under" ? "cool" : v === null ? "dim" : "");
+  const venueCells = (c: YearEndVenueCell | null) => {
+    if (!c) return '<td class="dim">–</td><td class="dim">–</td><td class="dim">–</td>';
+    const tick = c.tickShare >= 0.2 ? `<small>0¢-bid buckets were ${Math.round(c.tickShare * 100)}% of the raw sum</small>` : "";
+    const band = c.unreachable
+      ? '<span class="dim">above any lognormal</span>'
+      : c.volPct === null
+        ? '<span class="dim">–</span>'
+        : `${pct(c.volPct)}<small>${c.volLoPct === null ? "band open" : `${pct(c.volLoPct)} – ${pct(c.volHiPct)}`}</small>`;
+    return `<td>${pct(c.pct, 1)}${tick}</td><td class="${vsCls(c.listedVs)}">${band}</td><td class="${vsCls(c.listedVs)}">${vsWord(c.listedVs)}</td>`;
+  };
+  const rows = t.rows.map((r) => `<tr><td class="lbl">$${num(r.strikeUsd)} or above</td>${venueCells(r.kalshi)}${venueCells(r.poly)}<td>${pct(r.smilePct)}</td></tr>`).join("");
+  const rel = (x: number | null) => (x === null ? "" : ` (${x >= t.listedMedianUsd ? "+" : ""}${(((x - t.listedMedianUsd) / t.listedMedianUsd) * 100).toFixed(1)}%)`);
+  const strip = `<div class="strip"><span>Listed median <b>$${num(t.listedMedianUsd)}</b> <small>Deribit ${esc(t.expiry)} forward $${num(t.forwardUsd)} at ATM vol · ${t.daysToSettle} days to settlement</small></span><span>Venue 50% point <b>${
+    t.kalshiCentreUsd !== null ? `$${num(t.kalshiCentreUsd)}${rel(t.kalshiCentreUsd)}` : "–"
+  } · ${t.polyCentreUsd !== null ? `$${num(t.polyCentreUsd)}${rel(t.polyCentreUsd)}` : "–"}</b> <small>Kalshi · Polymarket US, vs listed median</small></span><span>Sum of mids <b>${t.kalshiSumCents !== null ? `${t.kalshiSumCents}¢` : "–"} · ${
+    t.polySumCents !== null ? `${t.polySumCents}¢` : "–"
+  }</b> <small>0¢-bid buckets read as zero: ${t.kalshiTickCents !== null ? `${t.kalshiTickCents}¢` : "–"} · ${t.polyTickCents !== null ? `${t.polyTickCents}¢` : "–"} of that; rest normalised to 100</small></span><span>Listed vol inside the band <b>${t.inside.kalshi[0]} of ${t.inside.kalshi[1]} · ${t.inside.poly[0]} of ${t.inside.poly[1]}</b> <small>Kalshi · Polymarket US</small></span><span>Tail mass, ≥ $${num(t.tails.upperFromUsd)} · &lt; $${num(t.tails.lowerToUsd)} <b>${["kalshi", "poly", "model"].map((k) => {
+    const v = t.tails[k as "kalshi" | "poly" | "model"];
+    return v ? `${v[0].toFixed(1)}¢ · ${v[1].toFixed(1)}¢` : "–";
+  }).join(" | ")}</b> <small>Kalshi | Polymarket US | Deribit, raw mids, cents of $1</small></span><span>Skew, below − above listed forward <b>${pts(t.skew.kalshiPts)} · ${pts(t.skew.polyPts)} · ${pts(t.skew.smilePts)} pts</b> <small>Kalshi · Polymarket US · Deribit, mid vols</small></span></div>`;
+  return `<h3>Bucket boundaries in vol: Kalshi vs Polymarket US vs Deribit</h3>
+<p>Range mids summed above each $5,000 line into P(above), each venue divided by its own sum; a bucket bid at 0¢ counts as zero. Inverted to vol on the venue's own 50% point: the vol columns compare shape, the strip compares level. Band: the same sum over bids and over asks; near the centre on $5,000 buckets a digital has little vega, so the band is wide there. Deribit vol at the line beside. Inside: shape agrees. Venue over or under: it does not, and the band is narrow enough to say so. Above any lognormal: more weight past the line than any single vol allows. Wings under 5% or over 95% and the line at the centre are blank. Tail mass in the strip is raw mids, no normalisation, same contracts on all three sources. A venue whose mids sum well past 100¢ is not a coherent distribution; normalising spreads the excess over every line, so read its vol columns as where its book is heavy, with the band as the limit of what it can say.</p>${strip}<div class="tbl"><table><tr><th rowspan="2">Boundary</th><th colspan="3">Kalshi</th><th colspan="3">Polymarket US</th><th rowspan="2">Deribit vol<br><small>at boundary</small></th></tr><tr><th>P(above)<br><small>normalised</small></th><th>Vol<br><small>mid · bid to ask band</small></th><th>Listed vs band</th><th>P(above)<br><small>normalised</small></th><th>Vol<br><small>mid · bid to ask band</small></th><th>Listed vs band</th></tr>${rows}</table></div>`;
 }
 
 export function renderReportHtml(d: ReportData, opts: { refreshSec?: number } = {}): string {
@@ -270,6 +303,7 @@ ${
     ? `<div class="note"><b>Executable crosses:</b> ${crosses.length} bucket${crosses.length > 1 ? "s" : ""} with one venue's offer under the other's bid after both taker fees. Widest ${signed(Math.max(...crosses.map((r) => r.cross!.edgeCents)), 2)} per contract. Total at resting depth ${usd(crosses.reduce((a, r) => a + (r.cross!.edgeCents * r.cross!.qty) / 100, 0), 2)}, before order-level fee rounding. Cents per contract; depth to collect it is small.</div>`
     : '<div class="note">No executable cross after taker fees this snapshot. Gaps are inside the fee band.</div>'
 }
+${yearEndVolsHtml(d.yearEndVols)}
 <h3>One-touch ladders: high and low of the year</h3>
 <p class="dim">Touch fair value is a model (reflection principle, smile vol at the barrier), not a market read. Gap to model indicative only.</p>
 ${high ? ladderTable(high, { showPoly: high.venues.includes("polymarket_us") }) : ""}
