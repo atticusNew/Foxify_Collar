@@ -33,6 +33,16 @@
 #                                   (all three venues are US). Disk keeps the
 #                                   snapshots. docs/sports-venues-report.md
 #
+#   atticus-btc-pairs               Read-only BTC pairs page for a trader: the
+#                                   same above/below contract on Kalshi and
+#                                   Polymarket US at the money and one strike
+#                                   each way, hourly and 5 PM ET daily, scored
+#                                   for how cleanly both venues quote it, best
+#                                   pairs bundled with one button that opens
+#                                   both venues. 10-second cycle. Region
+#                                   virginia (US East, nearest the venues).
+#                                   docs/btc-pairs.md
+#
 #   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com,
 #                                   for operator machines whose ISP blocks it
 #                                   (observed: silent connect timeouts). Local
@@ -115,6 +125,36 @@ services:
       # (an unlisted link for a reader). Set in the dashboard, not here.
       # - key: SPORTS_VENUES_TOKEN
       #   sync: false
+
+  - type: web
+    name: atticus-btc-pairs
+    runtime: node
+    plan: starter
+    region: virginia
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/btcPairsService.ts
+    healthCheckPath: /healthz
+    # Gap history only: one short line per 10-second cycle, three days kept, well under 50 MB.
+    disk:
+      name: btc-pairs-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BTC_PAIRS_DATA_DIR
+        value: /var/data/btc-pairs
+      - key: BTC_PAIRS_INTERVAL_SEC
+        value: "10"
+      # Optional. When set, the page and JSON are only served with ?k=<token>. Set in the dashboard.
+      # - key: BTC_PAIRS_TOKEN
+      #   sync: false
+      # Optional. Kalshi event page pattern once confirmed in a browser; {event} is the event
+      # ticker in lower case (kxbtcd-26nov0917). Default is the KXBTCD series page.
+      # - key: BTC_PAIRS_KALSHI_URL
+      #   value: https://kalshi.com/markets/kxbtcd/bitcoin-price-abovebelow/{event}
 
   - type: web
     name: atticus-event-demo-cross-venue
