@@ -14,7 +14,7 @@ import { bucketFromKalshi, dailyLadderFrom, dollarsToCentsExact, hourlyLadderFro
 import { bucketFromPolyUs, laddersFromEvents, moneyCents } from "../src/btcCurve/polyUsLadders";
 import { expiryTagToMs, parseSummary, selectRows } from "../src/btcCurve/deribitChain";
 import { black76Call, buildSmiles, digitalDelta, forwardFor, ivAt, modelBucket, normCdf, probAbove, probTouch, type Smile } from "../src/btcCurve/model";
-import { bucketRows, digitalImpliedVol, findCross, gapSeries, hourlyVolPoint, ladderImpliedVol, ladderStrikeVols, latencyTable, mergeLadders, realizedVolPct, takerFeeCents, volPremiumByHorizon } from "../src/btcCurve/analytics";
+import { bucketRows, digitalImpliedVol, findCross, gapSeries, hourlyVolPoint, ladderImpliedVol, ladderStrikeVols, latencyTable, mergeLadders, realizedVolPct, takerFeeCents, volPremiumByHorizon, yearEndStrikeVols } from "../src/btcCurve/analytics";
 import { SnapshotStore, toHistoryPoint } from "../src/btcCurve/store";
 import { ReplayEngine, bracketCalls } from "../src/btcCurve/replay";
 import { buildReport, termBasis } from "../src/btcCurve/report";
@@ -430,6 +430,75 @@ test("strike vols: each Kalshi bid/ask inverts to a vol band on the fitted centr
   assert.ok(highSide.every((r) => (r.volLoPct ?? 0) > 80 && (r.volHiPct ?? 999) < 100), "and the band brackets 90%");
   assert.ok(t!.skew && t!.skew.venuePts < -20 && t!.skew.smilePts === 0, `venue skew reads below minus above (${t!.skew?.venuePts}), smile flat`);
   assert.ok(Math.abs(t!.fitPct - 75) < 10, `one vol for the whole ladder lands between the two sides (${t!.fitPct}%)`);
+  assert.equal(t!.venue, "kalshi");
+  assert.equal(ladderStrikeVols(ladder, [listed], F, settleMs - 55 * 60_000, "polymarket_us"), null, "no Polymarket US quotes, no Polymarket US table");
+  // the same ladder quoted by Polymarket US at a flat 60% in whole cents reads inside everywhere it has a band
+  const polyQuotes = buckets.map((b) => {
+    const p = normCdf((Math.log(F / b.level) - 0.5 * 0.36 * T) / (0.6 * sqT)) * 100;
+    return q("polymarket_us", b.key, Math.floor(p), Math.floor(p) + 1, 0.095);
+  });
+  const tp = ladderStrikeVols({ ...ladder, quotes: [...quotes, ...polyQuotes] }, [listed], F, settleMs - 55 * 60_000, "polymarket_us");
+  // whole-cent rounding is half a cent of noise, which near the centre is several vol points: most strikes read inside, not all
+  assert.ok(tp && tp.venue === "polymarket_us" && tp.withBand >= 8 && tp.inside >= 0.75 * tp.withBand, `Polymarket US quoted at the smile in whole cents reads inside on most banded strikes (${tp?.inside}/${tp?.withBand})`);
+  const offPoly = tp!.rows.filter((r) => r.listedVs !== null && r.listedVs !== "inside");
+  assert.ok(offPoly.every((r) => Math.abs(r.strikeUsd - tp!.centreUsd) < tp!.stdevUsd), "and the ones that do not are the tick-noise strikes near the centre");
+});
+
+test("year-end boundaries in vol: range mids summed above each boundary and normalised invert to the vol each venue prices the tail at; a skewed venue reads as skew, a whole-cent overround does not bias it", () => {
+  // true distribution: a smile with 10 points of put skew across the ladder, Dec expiry forward 75,000, 53 days
+  const F = 75000;
+  const nowMs = Date.parse("2026-11-09T05:00:00Z");
+  const settleMs = Date.parse("2027-01-01T05:00:00Z");
+  const T = (settleMs - nowMs) / (365.25 * 86_400_000);
+  const ivOf = (K: number) => Math.max(0.3, 0.45 - 0.1 * Math.log(K / F) * 5);
+  const pAbove = (K: number) => {
+    const s = ivOf(K) * Math.sqrt(T);
+    return normCdf((Math.log(F / K) - 0.5 * s * s) / s);
+  };
+  const edges = [];
+  for (let K = 20000; K <= 150000; K += 5000) edges.push(K);
+  const buckets = [{ key: "below:19999.99", kind: "below" as const, upper: 19999.99, settlesAt: "2027-01-01T05:00:00Z" }];
+  const kalshi: VenueQuote[] = [];
+  const poly: VenueQuote[] = [];
+  const massOf = (key: string, lo: number, hi: number | null) => (hi === null ? pAbove(lo) : pAbove(lo) - pAbove(hi)) * 100;
+  const push = (key: string, mass: number) => {
+    // Kalshi: sub-penny, 0.2¢ wide; Polymarket US: whole cents, 1¢ wide, and the whole book runs 17% rich
+    kalshi.push(q("kalshi", key, Math.max(0, Math.round(mass * 10) / 10 - 0.1), Math.round(mass * 10) / 10 + 0.1, 0));
+    const rich = mass * 1.17;
+    poly.push(q("polymarket_us", key, Math.max(0, Math.floor(rich)), Math.floor(rich) + 1, 0.095));
+  };
+  push("below:19999.99", 100 - pAbove(20000) * 100);
+  for (let i = 0; i < edges.length - 1; i += 1) {
+    const key = `range:${edges[i]}-${edges[i + 1] - 0.01}`;
+    buckets.push({ key, kind: "range", lower: edges[i], upper: edges[i + 1] - 0.01, settlesAt: "2027-01-01T05:00:00Z" } as never);
+    push(key, massOf(key, edges[i], edges[i + 1]));
+  }
+  buckets.push({ key: "above:150000", kind: "above", level: 150000, settlesAt: "2027-01-01T05:00:00Z" } as never);
+  push("above:150000", massOf("above:150000", 150000, null));
+  const ladder: Ladder = { id: "btc-yearend-2026-range", title: "t", settlesAt: "2027-01-01T05:00:00Z", buckets, quotes: [...kalshi, ...poly], model: {} };
+  const smile: Smile = { expiry: "25DEC26", expiryMs: settleMs - 6 * 86_400_000, forward: F, points: edges.map((strike) => ({ strike, iv: ivOf(strike) })) };
+  const t = yearEndStrikeVols(ladder, [smile], nowMs);
+  assert.ok(t, "a table");
+  assert.ok(t!.kalshiSumCents !== null && Math.abs(t!.kalshiSumCents - 100) <= 1, `Kalshi sums to 100 (${t!.kalshiSumCents})`);
+  assert.ok(t!.polySumCents !== null && t!.polySumCents >= 115 && t!.polySumCents <= 125, `Poly's whole-cent book sums rich (${t!.polySumCents})`);
+  const banded = t!.rows.filter((r) => r.kalshi?.volPct !== null && r.kalshi?.volPct !== undefined);
+  assert.ok(banded.length >= 4, `several boundaries carry a vol (${banded.length})`);
+  for (const r of banded) {
+    const k = r.kalshi!;
+    assert.ok(Math.abs((k.volPct as number) - r.smilePct) < 1.5, `Kalshi quoted at the smile reads back the smile at $${r.strikeUsd} (${k.volPct} vs ${r.smilePct})`);
+    assert.equal(k.listedVs, "inside", `and the 0.2¢ band holds it at $${r.strikeUsd} (${k.volLoPct} – ${k.volHiPct} vs ${r.smilePct})`);
+  }
+  // Polymarket US's whole-cent book: the band is wide (a cent per bucket summed), so the listed vol lands inside on most boundaries,
+  // and in the upper wing the 0/1¢ tail buckets are flagged as tick floor with the mid vol biased up
+  const polyBanded = t!.rows.filter((r) => r.poly?.listedVs);
+  assert.ok(polyBanded.length >= 4 && t!.inside.poly[0] >= 0.75 * t!.inside.poly[1], `Poly, normalised, holds the smile inside its band on most boundaries (${t!.inside.poly.join("/")})`);
+  const wing = t!.rows.find((r) => r.strikeUsd === 90000);
+  assert.ok(wing && wing.poly && wing.poly.tickShare >= 0.2 && (wing.poly.volPct as number) > wing.smilePct + 3, `the tick floor is flagged and the wing mid vol is biased up (${wing?.poly?.tickShare}, ${wing?.poly?.volPct} vs ${wing?.smilePct})`);
+  assert.ok(t!.rows.some((r) => r.strikeUsd > F && r.kalshi?.volPct !== null), "the branch bound keeps upside boundaries invertible");
+  assert.ok(t!.skew.smilePts !== null && t!.skew.smilePts > 3, `the listed skew is read (${t!.skew.smilePts})`);
+  assert.ok(t!.skew.kalshiPts !== null && Math.abs(t!.skew.kalshiPts - (t!.skew.smilePts as number)) < 3, `and the venue priced on it shows the same skew (${t!.skew.kalshiPts})`);
+  assert.ok(t!.rows.every((r) => r.strikeUsd !== 75000 || r.kalshi?.volPct === null), "the boundary at the forward is blank");
+  assert.ok(t!.kalshiCentreUsd !== null && Math.abs(t!.kalshiCentreUsd - F * Math.exp(-0.5 * 0.45 * 0.45 * T)) < 1500, `the venue's 50% point sits near the forward (${t!.kalshiCentreUsd})`);
 });
 
 test("replay: one ATM digital per hourly ladder is carried to settlement naked, with a static spread and with a dynamic delta; state survives a restart", () => {
