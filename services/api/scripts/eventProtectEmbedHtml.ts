@@ -81,6 +81,14 @@ export interface EmbedOptions {
    */
   liveVideo?: LiveVideo | null;
   /**
+   * Whether the page names the venues the other side is priced on and routed to, and the
+   * routing partner. Default true (the function renders what it is told); the service passes
+   * EVENT_X_NAME_HEDGE_VENUES, off by default. Off: the pitch copy says "the venues" and "the
+   * best of the venues that quoted it", the panel's foot drops the partner, the trader's lines
+   * drop "on <venue>", and the Venue view shows the lettered names the server sends.
+   */
+  nameVenues?: boolean;
+  /**
    * The business card's landing (`?from=card`). A phone that scanned the card gets the sentence,
    * the clip, "Save contact" (a vCard) and the links instead of landing cold inside the demo;
    * a desktop still gets the full page. `null`/absent renders the page as usual.
@@ -241,10 +249,13 @@ export function renderEventEmbedHtml(opts: EmbedOptions): string {
   const video = opts.liveVideo === undefined ? DEFAULT_LIVE_VIDEO : opts.liveVideo;
   // the recording: a shared link previews it, and the pitch column plays it on tap, never on its own
   const videoMeta = video ? `\n<meta property="og:video" content="${escapeHtml(video.src)}" />\n<meta property="og:video:type" content="video/mp4" />\n<meta property="og:image" content="${escapeHtml(video.poster)}" />` : "";
+  const nameVenues = opts.nameVenues ?? true;
   const videoBlock = video
     ? `<div class="live"><div class="live-h">Seen live</div>` +
       `<video controls preload="none" playsinline poster="${escapeHtml(video.poster)}" src="${escapeHtml(video.src)}"></video>` +
-      `<p>A real position on ProphetX, locked in one tap. The other side was bought on Novig, the best price of the venues that quoted it; the receipt names both.</p>` +
+      (nameVenues
+        ? `<p>A real position on ProphetX, locked in one tap. The other side was bought on Novig, the best price of the venues that quoted it; the receipt names both.</p>`
+        : `<p>A real position on a live venue, locked in one tap. The other side was bought on the best price of the venues that quoted it; the receipt carries both legs.</p>`) +
       `<p class="live-fine">Shown through a browser extension on the venues' pages. Not affiliated with or endorsed by any venue.</p></div>`
     : "";
   const card = opts.card ?? null;
@@ -587,11 +598,11 @@ ${cardBlock}<aside class="pitch">
     <li><b>The trader stays on your page.</b></li>
     <li><b>No fee to the trader, no counterparty, no capital of yours.</b></li>
   </ul>
-  <div class="routed">When your book cannot fund a lock, the record says so. With your say-so the other side can be bought elsewhere, through ParlayX where partnered.</div>
+  <div class="routed">When your book cannot fund a lock, the record says so. With your say-so the other side can be bought elsewhere${nameVenues ? ", through ParlayX where partnered" : ""}.</div>
   <div class="try">Tap <b>Lock in</b> on any row, or switch to <b>Venue view</b> &rarr;</div>
   ${videoBlock}
   <div class="partners"><b>For partners</b><a href="${trackRecordUrl}">${recordLabel}</a><a href="/partner${brandQ}">Partner console</a>${opts.recordIsSlate ? "" : '<a href="/receipts">Receipts</a><a href="/board">Full board</a>'}</div>
-  <div class="foot">Demo positions are simulated at live prices. The record also carries locks on real positions, hedged with real orders on Kalshi, Novig and ProphetX.</div>
+  <div class="foot">Demo positions are simulated at live prices. The record also carries locks on real positions, hedged with real orders${nameVenues ? " on Kalshi, Novig and ProphetX" : " on the venues"}.</div>
 </aside>
 <div class="demo shell-phone" id="demo">
 <div class="ctl">
@@ -605,7 +616,7 @@ ${cardBlock}<aside class="pitch">
   </div>
   <div class="tabs"><span class="on" data-tab="Positions">Positions</span><span data-tab="Parlays">Parlays</span><span data-tab="Activity">Activity</span></div>
   <div class="list" id="list"><div class="empty" id="loading">loading your positions…</div></div>
-  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" /> &middot; routed via ParlayX</span></div>
+  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />${nameVenues ? " &middot; routed via ParlayX" : ""}</span></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="scrim" id="scrim"></div>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-h">
@@ -617,7 +628,7 @@ ${cardBlock}<aside class="pitch">
 <div class="table" id="table">
   <div class="tbar"><div class="brand"><i>${initial}</i>${brand}</div><nav><span>Markets</span><span class="on">My Trades</span><span>Account</span></nav><div class="bal"><span data-bal>Cash $412.50</span></div></div>
   <div class="tbody" id="tbody"><div class="empty">loading your positions…</div></div>
-  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" /> &middot; routed via ParlayX</span></div>
+  <div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="${trackRecordUrl}">${recordLabel}</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />${nameVenues ? " &middot; routed via ParlayX" : ""}</span></div>
 </div>
 </div>
 </div>
@@ -766,10 +777,12 @@ ${cardBlock}<aside class="pitch">
     if(!v||!v.hedgeVenue)return null;
     var k=n/(v.contracts||n||1),priced=[],muted=[],i;
     for(i=0;i<v.venues.length;i++)(v.venues[i].creditCents!=null?priced:muted).push(v.venues[i]);
-    var parts=['<b>'+esc(v.hedgeVenue)+'</b>'+(v.hedgeVenue===S.vv.hostVenue?' <span class="ael-dim">(this venue)</span>':'')];
-    if(priced.length>1){if(v.edgeCents!=null&&v.edgeCents<0)parts.push('of '+priced.length+' venues, cheapest all-in, venue fees included');else{parts.push('best of '+priced.length+' venues, venue fees included');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}}
+    var w=venueWord(v),byCost=v.edgeCents!=null&&v.edgeCents<0,parts=[];
+    if(w){parts.push('<b>'+esc(w)+'</b>'+(w===S.vv.hostVenue?' <span class="ael-dim">(this venue)</span>':''));
+      if(priced.length>1){if(byCost)parts.push('of '+priced.length+' venues, cheapest all-in, venue fees included');else{parts.push('best of '+priced.length+' venues, venue fees included');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}}}
+    else{parts.push(priced.length>1?'<b>'+(byCost?'cheapest all-in':'best')+' of '+priced.length+' venues</b> &middot; venue fees included':'<b>another venue</b> &middot; venue fees included');if(!byCost&&priced.length>1&&v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}
     for(i=0;i<muted.length;i++)if(muted[i].host)parts.push('<span class="ael-dim">'+esc(muted[i].venue)+' '+esc(muted[i].why||'not offered')+'</span>');
-    var tip=[];for(i=0;i<priced.length;i++)tip.push(priced[i].venue+' '+usd(Math.round(priced[i].creditCents*k)));for(i=0;i<muted.length;i++)tip.push(muted[i].venue+': '+(muted[i].why||'not offered'));
+    var tip=[];if(NAME_VENUES){for(i=0;i<priced.length;i++)tip.push(priced[i].venue+' '+usd(Math.round(priced[i].creditCents*k)));for(i=0;i<muted.length;i++)tip.push(muted[i].venue+': '+(muted[i].why||'not offered'))}
     return {html:parts.join(' &middot; '),tip:tip.join(' \\u00b7 '),shopped:priced.length>1&&!(v.edgeCents!=null&&v.edgeCents<0)};
   }
   /* Details behind the toggle, as rows in one grammar: Shape, Other side, Until, How; the figures are the slip */
@@ -783,7 +796,10 @@ ${cardBlock}<aside class="pitch">
     return '<div class="ael-details"><div class="ael-drows">'+rows.join('')+'</div></div>';
   }
   var WORDMARK=${JSON.stringify(ATTICUS_WORDMARK_GOLD_DATA_URI)};
-  function powered(){return '<div class="ael-pow"><span>Powered by</span><img src="'+WORDMARK+'" alt="Atticus"><span>&middot; routed via ParlayX</span></div>'}
+  var NAME_VENUES=${nameVenues ? "true" : "false"},ROUTED_VIA=${nameVenues ? "'<span>&middot; routed via ParlayX</span>'" : "''"};
+  function powered(){return '<div class="ael-pow"><span>Powered by</span><img src="'+WORDMARK+'" alt="Atticus">'+ROUTED_VIA+'</div>'}
+  /* the venue word on the trader's lines: the name when named; with naming off, the host's own book by name and any other venue not at all */
+  function venueWord(v){if(!v||!v.hedgeVenue)return null;if(NAME_VENUES||(S.vv&&v.hedgeVenue===S.vv.hostVenue))return v.hedgeVenue;return null}
   function removedLine(st){
     var m=st.removed;if(!m)return '';
     return '<div class="ael-fine">Earlier protection removed '+esc(m.at)+' &middot; '+(m.net<0?'you paid '+usd(-m.net):m.net>0?usd(m.net)+' paid to you':'nothing owed either way')+'.</div>';
@@ -802,7 +818,7 @@ ${cardBlock}<aside class="pitch">
   /* the receipt: the same grammar, fewer rows; the other side priced at the venue's book, nothing bought in the demo */
   function receiptHtml(r,st){
     var L=st.lock,v=vvOf(r.kalshiTicker),k=L.contracts/((v&&v.contracts)||L.contracts||1),rows=[];
-    var venue=v&&v.hedgeVenue?v.hedgeVenue:'the best venue',price=100-(r.markCents||50);
+    var venue=venueWord(v)||'the best venue',price=100-(r.markCents||50);
     var cmp='';
     if(v){var priced=v.venues.filter(function(x){return x.creditCents!=null});if(priced.length>1)cmp=' <span class="ael-dim">&middot; '+(v.edgeCents!=null&&v.edgeCents<0?'of '+priced.length+' venues, cheapest all-in, venue fees included':'best of '+priced.length+' venues, venue fees included'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for you':''))+'</span>'}
     rows.push('<span>Other side</span><b><b>'+esc(venue)+'</b> &middot; '+L.contracts+' contracts of the other side at '+price.toFixed(1)+'c'+cmp+' <span class="ael-dim">&middot; priced at the book; demo, nothing bought</span></b>');
@@ -833,7 +849,7 @@ ${cardBlock}<aside class="pitch">
   /* the protected position: the slip with the locked numbers, Leave early and Details, the facts line, the receipt */
   function protectedHtml(r,st){
     var L=st.lock,rs={floorTotal:L.floorTotal,capTotal:L.capTotal};
-    var v=vvOf(r.kalshiTicker),venue=v&&v.hedgeVenue?v.hedgeVenue:null;
+    var v=vvOf(r.kalshiTicker),venue=venueWord(v);
     return ledger(r,rs,L.creditCents,0,true)+
       (st.leave?'':'<div class="ael-acts"><button type="button" class="ael-go ael-quiet" data-act="leave">Leave early</button>'+toggleA('rcpt','Details',st.rcpt)+'</div>')+
       (st.leave?leaveHtml(r,st):'<div class="ael-fine">Locked '+esc(L.at)+' &middot; the other side bought in '+L.secs+'s'+(venue?' on <b>'+esc(venue)+'</b>':'')+'</div>'+(st.rcpt?receiptHtml(r,st):''))+
@@ -841,7 +857,7 @@ ${cardBlock}<aside class="pitch">
   }
   function lineHtml(r,st){
     var n=sizeOf(r).contracts;
-    if(st.lock)return lineGo('Protected','<b>'+usd(st.lock.floorTotal)+'</b> or '+usd(st.lock.capTotal)+(vvOf(r.kalshiTicker)&&vvOf(r.kalshiTicker).hedgeVenue?' &middot; on '+esc(vvOf(r.kalshiTicker).hedgeVenue)+'.':'.'),'ael-line-on'+(st.flash?' ael-line-flash':''),st.open);
+    if(st.lock)return lineGo('Protected','<b>'+usd(st.lock.floorTotal)+'</b> or '+usd(st.lock.capTotal)+(venueWord(vvOf(r.kalshiTicker))?' &middot; on '+esc(venueWord(vvOf(r.kalshiTicker)))+'.':'.'),'ael-line-on'+(st.flash?' ael-line-flash':''),st.open);
     if(st.q&&!st.offered[st.tier])return lineGo('Unavailable',esc(st.err||'The market can\\'t fund a worthwhile credit right now.'),'ael-line-off',st.open);
     var t=st.offered[st.tier];
     var floor=t?reshape(n,t.floorCents,t.capCents,t.creditCents).floorTotal:(function(){var k=n/(r.contracts||n||1);return Math.round(r.floorCents*n)+Math.round(r.creditCents*k)})();
@@ -1049,7 +1065,7 @@ ${cardBlock}<aside class="pitch">
   function missedPick(t){for(var j=0;j<t.picks.length;j++)if(t.picks[j].state==='miss')return t.picks[j];return null}
   function metaHtml(t){var win=t.paysCents-t.stakeCents,lg=leaguesOf(t);return usd0(t.stakeCents)+' to win '+usd0(win)+(lg?' &middot; '+lg:'')}
   function lockIcon(){return SHIELD}
-  /* " · other side on Novig" when the lock says where it goes; nothing when it does not */
+  /* " · other side on <venue>" when the lock says where it goes (the record names it only with venue naming on); nothing when it does not */
   function otherSideWords(L){return L&&L.venue?' &middot; other side on <b>'+esc(L.venue)+'</b>':''}
   /* a ticket still in play: the full card */
   function inPlayHtml(t){

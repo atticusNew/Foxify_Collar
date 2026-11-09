@@ -167,6 +167,14 @@ services:
       # Kalshi, ProphetX and Novig.
       - key: EVENT_HEDGE_VENUES
         value: "kalshi,prophetx,novig"
+      # Whether the public page names the venues the other side is priced on and routed to,
+      # and the routing partner. Unset (the default), the page says "best of 3 venues", the
+      # Venue view letters them (Venue A, B, C; a host that is itself one of them keeps its
+      # name), the recording's caption and the footer stop naming venues, and the Parlays tab
+      # drops the lock's venue word. Everything is still tracked and named on the ledger, the
+      # receipts and the operator surfaces. Set to "1" to name them on the page again.
+      # - key: EVENT_X_NAME_HEDGE_VENUES
+      #   value: "1"
       # NOVIG BOOK. The Novig route prices from the venue's own market, read as the signed-dialect
       # reference book (the same read atticus-event-shadow calls "reference book A"). Without a
       # host the route is offered but every row reads "not read". The catalog and books are

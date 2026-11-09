@@ -206,7 +206,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(html.includes(".host-note span,.host-note a,.host-note .pow,.host-note .links{display:block}") && html.includes(".host-note a{color:var(--dim);white-space:nowrap"), "deliberate lines; a link never strands mid-sentence");
   assert.ok(!html.includes('">reset · demo only</button>') || html.includes('data-unlock="'), "no reset button on a protected position row; the footer link resets the demo");
   assert.ok(html.includes("if(b.hasAttribute('data-reset')){e.preventDefault();resetDemo();return}"), "the footer link resets");
-  assert.ok(html.includes("function powered(){return '<div class=\"ael-pow\"><span>Powered by</span><img src=\"'+WORDMARK+'\" alt=\"Atticus\"><span>&middot; routed via ParlayX</span></div>'}"), "the panel's foot: host first, our wordmark second, the partner named; whole words that wrap as a unit");
+  assert.ok(html.includes("ROUTED_VIA='<span>&middot; routed via ParlayX</span>';") && html.includes("function powered(){return '<div class=\"ael-pow\"><span>Powered by</span><img src=\"'+WORDMARK+'\" alt=\"Atticus\">'+ROUTED_VIA+'</div>'}"), "the panel's foot: host first, our wordmark second, the partner named only when venues are named; whole words that wrap as a unit");
   assert.ok(html.includes(".ael-dl.ael-dshape,.ael-dv.ael-dshape{grid-column:1/-1}") && html.includes(".ael-shape{display:flex;width:100%;") && html.includes(".ael-shape-b{appearance:none;flex:1 1 0;min-width:0;"), "Shape takes its own full-width row and the three words share it, so none spills off a phone");
   assert.ok(html.includes(".host-note{padding:14px 16px calc(22px + env(safe-area-inset-bottom));") && html.includes(".list{padding:8px 12px 16px}"), "on a phone the note sits at the end of the list, never over a panel");
   assert.ok(html.includes("  .host-note{left:0;right:0;bottom:0;padding:28px 16px 14px;background:linear-gradient(to top,var(--bg) 78%,transparent);pointer-events:none}"), "inside the desktop frame it overlays the bottom on a gradient tall enough to cover the words under it");
@@ -365,7 +365,7 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
       res.end(JSON.stringify({ ok: true, at: "2026-10-11T18:00:00.000Z", summary: {}, settled: [settled], open: [{ ...settled, status: "open" }], closed: [] }));
       return;
     }
-    res.end(JSON.stringify({ ok: true, at: "2026-10-10T12:00:00.000Z", enabled: true, stakeCents: 2000, pricedEveryMinutes: 10, summary: { tickets: 1 }, tickets: [{ id: "ll_x", state: "open", picksOpen: 2, picks: [] }] }));
+    res.end(JSON.stringify({ ok: true, at: "2026-10-10T12:00:00.000Z", enabled: true, stakeCents: 2000, pricedEveryMinutes: 10, summary: { tickets: 1 }, tickets: [{ id: "ll_x", state: "open", picksOpen: 2, picks: [], lock: { creditCents: 120, venue: "Novig" } }] }));
   });
   await new Promise<void>((r) => shadow.listen(0, "127.0.0.1", () => r()));
   const shadowBase = `http://127.0.0.1:${(shadow.address() as AddressInfo).port}`;
@@ -382,10 +382,12 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     shadowMode = "ok";
     const warm = await fetch(`${base}/api/parlays`);
     assert.equal(warm.status, 200);
-    const warmBody = (await warm.json()) as { ok: boolean; tickets: Array<{ id: string }>; pricedEveryMinutes: number };
+    const warmBody = (await warm.json()) as { ok: boolean; tickets: Array<{ id: string; lock: { creditCents: number; venue: string | null } }>; pricedEveryMinutes: number };
     assert.equal(warmBody.ok, true);
-    assert.equal(warmBody.tickets[0].id, "ll_x", "the shadow's body, passed through untouched");
+    assert.equal(warmBody.tickets[0].id, "ll_x", "the shadow's body, passed through");
     assert.equal(warmBody.pricedEveryMinutes, 10);
+    assert.deepEqual(warmBody.tickets[0].lock, { creditCents: 120, venue: null }, "venue naming off (EVENT_X_NAME_HEDGE_VENUES unset): the lock's venue word is dropped on the way through, the figures kept");
+    assert.ok(!JSON.stringify(warmBody).includes("Novig"), "no venue name in the parlays body");
     const hitsAfterWarm = shadowHits;
     shadowMode = "down";
     const cached = await fetch(`${base}/api/parlays`);
@@ -480,7 +482,7 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     // /api/venue-view: the host's side, no token, brand-gated like the shell
     const vv = await fetch(`${base}/api/venue-view?brand=prophetx`);
     assert.equal(vv.status, 200);
-    assert.deepEqual(await vv.json(), { ok: true, at: "2026-09-20T18:00:00.000Z", retail: true, sharePct: 40, hostVenue: "ProphetX", rows: [] }, "an allowlisted venue brand is the host venue; the share is EVENT_X_PARTNER_SHARE_PCT");
+    assert.deepEqual(await vv.json(), { ok: true, at: "2026-09-20T18:00:00.000Z", retail: true, sharePct: 40, hostVenue: "ProphetX", venuesNamed: false, rows: [] }, "an allowlisted venue brand is the host venue; the share is EVENT_X_PARTNER_SHARE_PCT; venues lettered unless EVENT_X_NAME_HEDGE_VENUES=1");
     const vvOff = (await (await fetch(`${base}/api/venue-view?brand=Kalshi`)).json()) as { hostVenue: string | null };
     assert.equal(vvOff.hostVenue, null, "a brand off the allowlist falls back to the default host, which is no venue");
     assert.ok(root.includes("var VV_URL='/api/venue-view'+\"\";") && root.includes('data-view="venue"'), "the shell asks for it and offers the toggle");
@@ -494,4 +496,24 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     await new Promise<void>((r) => server.close(() => r()));
     await new Promise<void>((r) => shadow.close(() => r()));
   }
+});
+
+test("embed: with venue naming off (the service's default) the page names no hedge venue and no routing partner; named, it reads as before", () => {
+  const off = renderEventEmbedHtml({ brand: "DraftKings", nameVenues: false });
+  const on = renderEventEmbedHtml({ brand: "DraftKings", nameVenues: true });
+  const dflt = renderEventEmbedHtml({ brand: "DraftKings" });
+  for (const needle of ["ProphetX", "Novig", "Kalshi, Novig", "ParlayX"]) {
+    assert.ok(!off.includes(needle), `naming off: the page does not say ${needle}`);
+    assert.ok(on.includes(needle), `naming on: the page says ${needle}`);
+  }
+  assert.ok(off.includes("var NAME_VENUES=false,ROUTED_VIA='';") && on.includes("var NAME_VENUES=true,ROUTED_VIA='<span>&middot; routed via ParlayX</span>';") && dflt.includes("var NAME_VENUES=true,"), "the page script knows; the partner string is not in the masked page at all; the render default is named, the service decides");
+  assert.ok(off.includes("A real position on a live venue, locked in one tap. The other side was bought on the best price of the venues that quoted it; the receipt carries both legs."), "the recording's caption without the venues");
+  assert.ok(off.includes("With your say-so the other side can be bought elsewhere.</div>"), "the routed line without the partner");
+  assert.ok(off.includes("hedged with real orders on the venues.</div>"), "the footer without the venues");
+  // the trader's lines go through one word: the name when named, the host's own book by name, any other venue not at all
+  assert.ok(off.includes("function venueWord(v){if(!v||!v.hedgeVenue)return null;if(NAME_VENUES||(S.vv&&v.hedgeVenue===S.vv.hostVenue))return v.hedgeVenue;return null}"));
+  assert.ok(off.includes("var venue=venueWord(v)||'the best venue'") && off.includes("venue=venueWord(v);") && off.includes("(venueWord(vvOf(r.kalshiTicker))?' &middot; on '"), "receipt, protected line and the row's line all use it");
+  assert.ok(off.includes("parts.push(priced.length>1?'<b>'+(byCost?'cheapest all-in':'best')+' of '+priced.length+' venues</b> &middot; venue fees included':'<b>another venue</b> &middot; venue fees included')"), "Other side without a name: the race, not the venue");
+  assert.ok(off.includes("var tip=[];if(NAME_VENUES){"), "and no per-venue tooltip");
+  assert.ok(!off.includes("\u2014"), "no em dash");
 });

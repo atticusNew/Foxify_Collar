@@ -42,7 +42,7 @@ test("embed: /api/venue-view is the host's side of the board, retail-safe: venue
     ],
   } as unknown as ScanState;
   const offered = ["kalshi_self", "prophetx", "novig"] as const;
-  const p = venueViewPayload(state, "ProphetX", 40, offered);
+  const p = venueViewPayload(state, "ProphetX", 40, offered, true);
   assert.deepEqual([p.ok, p.retail, p.sharePct, p.hostVenue, p.at, p.rows.length], [true, true, 40, "ProphetX", "2026-10-30T18:00:00.000Z", 3]);
   const a = p.rows[0];
   assert.deepEqual(
@@ -60,7 +60,7 @@ test("embed: /api/venue-view is the host's side of the board, retail-safe: venue
   assert.deepEqual([b.edgeCents, b.hedgeCostCents, b.spreadCents, b.hostShareCents], [null, null, 0, 0], "one venue shown: no edge; no spread, no share; no hedge priced, no cost");
   const d = p.rows[2];
   assert.deepEqual([d.hedgeVenue, d.edgeCents, d.hedgeCostCents, d.venues.map((v) => v.venue + (v.chosen ? "*" : ""))], ["Kalshi", -60, 5000, ["Novig", "Kalshi*"]], "the scan's route wins even when another venue quoted more; the edge says by how much it lost on the quote");
-  const everyRoute = venueViewPayload(state, "Your Exchange", 50, ["kalshi_self", "polymarket", "prophetx", "novig"]);
+  const everyRoute = venueViewPayload(state, "Your Exchange", 50, ["kalshi_self", "polymarket", "prophetx", "novig"], true);
   assert.equal(everyRoute.hostVenue, null, "a host that is not a venue the layer hedges on has no own quote");
   assert.equal(everyRoute.rows[0].hedgeVenue, "Polymarket", "offered, Polymarket is shown and wins row A on the quote");
   assert.equal(everyRoute.rows[0].hedgeCostCents, 7200 + 450 - 900, "its cost follows from the credits");
@@ -72,4 +72,26 @@ test("embed: /api/venue-view is the host's side of the board, retail-safe: venue
     ["ProphetX's book is read through the aggregator, and no aggregator key is set", "not read"], ["no mapping for this game", "not mapped"], ["book empty on the No side", "no depth"], ["no verified pairing", "no match"], ["venue gate: not tonight", "not open"], ["something else", "not offered"], [undefined, "not offered"],
   ] as const) assert.equal(venueViewRefusalWord(detail), word, String(detail));
   assert.deepEqual([hostRouteOf("Kalshi"), hostRouteOf("prophet x"), hostRouteOf("Wire Markets")], ["kalshi_self", "prophetx", null]);
+
+  // Venue naming off (the default; EVENT_X_NAME_HEDGE_VENUES unset): the same rows, the same
+  // figures, the venues lettered with the same letter for the same venue on every row, the host's
+  // own book still named, and no venue's public name anywhere but the host's.
+  const masked = venueViewPayload(state, "ProphetX", 40, offered, false);
+  assert.equal(masked.venuesNamed, false);
+  assert.equal(masked.hostVenue, "ProphetX", "the host knows who it is");
+  assert.deepEqual(
+    masked.rows[0].venues,
+    [
+      { venue: "Venue D", creditCents: 450, chosen: true, host: false },
+      { venue: "Venue A", creditCents: 400, chosen: false, host: false },
+      { venue: "ProphetX", creditCents: null, chosen: false, host: true, why: "no match" },
+    ],
+    "lettered, best first, the host by name",
+  );
+  assert.deepEqual([masked.rows[0].hedgeVenue, masked.rows[1].hedgeVenue, masked.rows[2].hedgeVenue], ["Venue D", "ProphetX", "Venue A"], "the winner by letter; the host by name when it wins");
+  assert.deepEqual([masked.rows[0].edgeCents, masked.rows[0].hedgeCostCents, masked.rows[2].edgeCents], [50, 7200, -60], "the figures are untouched");
+  assert.doesNotMatch(JSON.stringify(masked).replace(/ProphetX/g, ""), /Kalshi|Novig|Polymarket/, "no other venue's name travels");
+  const maskedNoHost = venueViewPayload(state, "Your Exchange", 50, ["kalshi_self", "polymarket", "prophetx", "novig"], false);
+  assert.deepEqual([maskedNoHost.hostVenue, maskedNoHost.rows[0].hedgeVenue, maskedNoHost.rows[0].venues.map((v) => v.venue)], [null, "Venue B", ["Venue B", "Venue D", "Venue A", "Venue C"]], "a host that is not a venue we hedge on: every venue lettered");
+  assert.equal(venueViewPayload(state, "ProphetX", 40, offered).venuesNamed, false, "the default follows the env, unset here");
 });
