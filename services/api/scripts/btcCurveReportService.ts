@@ -34,7 +34,7 @@ import { readKalshiLadders } from "../src/btcCurve/kalshiLadders";
 import { fetchBrtiCandles, readPolyUsLadders } from "../src/btcCurve/polyUsLadders";
 import { fetchChain, fetchDeribitIndex, selectRows } from "../src/btcCurve/deribitChain";
 import { buildSmiles, modelBucket } from "../src/btcCurve/model";
-import { mergeLadders } from "../src/btcCurve/analytics";
+import { hourlyVolPoint, mergeLadders } from "../src/btcCurve/analytics";
 import { SnapshotStore } from "../src/btcCurve/store";
 import { ReplayEngine } from "../src/btcCurve/replay";
 import { quoteCollarLadder, type CollarLadder } from "../src/btcCurve/collarLadder";
@@ -68,15 +68,30 @@ function family(l: Ladder): Family {
   return k === "touch_up" || k === "touch_down" || k === "above" ? k : "range";
 }
 
+/**
+ * Ceiling on one source per cycle. Each request already carries its own per-attempt timeout,
+ * but a read that fans out into many requests can still stall for minutes when name
+ * resolution or a socket hangs below the abort signal (one Polymarket US read ran 840 s on
+ * Nov 8). Past the deadline the source is recorded as down for the cycle and the cycle goes on
+ * with the other sources, so an hourly settlement is never missed waiting on a book.
+ */
+const SOURCE_DEADLINE_MS = Math.max(10_000, Number(process.env.BTC_CURVE_SOURCE_DEADLINE_MS || 45_000));
+
 async function timed<T>(name: string, health: Snapshot["health"], fn: () => Promise<T>): Promise<T | null> {
   const t0 = Date.now();
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer within ${SOURCE_DEADLINE_MS / 1000}s`)), SOURCE_DEADLINE_MS);
+  });
   try {
-    const v = await fn();
+    const v = await Promise.race([fn(), deadline]);
     health[name] = { ok: true, ms: Date.now() - t0 };
     return v;
   } catch (err) {
     health[name] = { ok: false, ms: Date.now() - t0, detail: (err as Error).message.slice(0, 120) };
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -100,7 +115,9 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
   ]);
 
   if (brti && brti.length) candles = brti;
-  let spotUsd = candles.length ? candles[candles.length - 1].close : 0;
+  // a fresh BRTI print only; when the index read failed this cycle the kept candles still serve
+  // the latency table but the spot comes from Deribit's index rather than a minute-old close
+  let spotUsd = brti && brti.length ? brti[brti.length - 1].close : 0;
   let spotSource: Snapshot["spotSource"] = "brti";
   if (!(spotUsd > 0)) {
     const idx = await timed("deribit_index", health, () => fetchDeribitIndex());
@@ -133,11 +150,12 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
     }
   }
 
+  const hourly = ladders.find((l) => l.id.startsWith("btc-hourly:")) ?? null;
   const snapshot: Snapshot = { at: now.toISOString(), spotUsd, spotSource, ladders, options, health };
+  if (hourly && spotUsd > 0) snapshot.hourlyVol = hourlyVolPoint(hourly, smiles, spotUsd, candles, nowMs);
   store.append(snapshot);
 
   // Hedge replay: open on the hourly ladder, step everything, settle what is due.
-  const hourly = ladders.find((l) => l.id.startsWith("btc-hourly:")) ?? null;
   if (spotUsd > 0) replay.observe(hourly, spotUsd, options, nowMs);
   for (const ev of replay.dueForSettlement(nowMs)) {
     try {

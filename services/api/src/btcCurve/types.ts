@@ -110,6 +110,23 @@ export interface Snapshot {
   options: OptionRow[];
   /** per-venue fetch health this cycle */
   health: Record<string, { ok: boolean; ms: number; detail?: string }>;
+  /** the vol each side priced the hour at, this cycle (absent before Nov 9 2026 snapshots) */
+  hourlyVol?: HourlyVolPoint;
+}
+
+/** One reading of the hourly ladder's implied vol against the listed and realised vol. */
+export interface HourlyVolPoint {
+  ladderId: string;
+  minutesToClose: number;
+  /** lognormal fit to the ladder's two-sided mids, % annualised; null when fewer than 4 strikes fit */
+  ladderPct: number | null;
+  ladderCentreUsd: number | null;
+  rmsCents: number | null;
+  /** Deribit mark IV at spot for the expiry nearest the close, % */
+  smilePct: number | null;
+  smileExpiry: string | null;
+  /** BRTI realised over the last hour of one-minute returns, % annualised */
+  realizedPct: number | null;
 }
 
 /** One 1-second BRTI candle (Polymarket US asset-price endpoint). */

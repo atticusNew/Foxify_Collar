@@ -3,12 +3,12 @@
  * history window, the replay engine and the collar ladder. Pure assembly; no I/O.
  */
 
-import { bucketRows, distributionRows, gapSeries, ladderImpliedVol, latencyTable, realizedVolPct, type BucketRow, type GapSeries, type LadderVol, type LatencyRow } from "./analytics";
+import { bucketRows, distributionRows, gapSeries, hourlyVolPoint, latencyTable, volPremiumByHorizon, type BucketRow, type GapSeries, type LatencyRow, type VolPremiumRow } from "./analytics";
 import type { CollarLadder } from "./collarLadder";
-import { buildSmiles, ivAt, nearestSmile, type Smile } from "./model";
+import { buildSmiles, nearestSmile, type Smile } from "./model";
 import type { ReplaySummary } from "./replay";
 import type { HistoryPoint } from "./store";
-import type { IndexCandle, Ladder, Snapshot } from "./types";
+import type { HourlyVolPoint, IndexCandle, Ladder, Snapshot } from "./types";
 
 export interface LadderView {
   id: string;
@@ -35,7 +35,9 @@ export interface ReportData {
   yearEnd: LadderView[];
   hourly: LadderView | null;
   /** the vol each side is pricing the hour at: the venue's ladder, the listed smile at the money, the index realised */
-  hourlyVol: { ladder: LadderVol | null; smilePct: number | null; smileExpiry: string | null; realized: { pct: number; n: number } | null; minutesToClose: number } | null;
+  hourlyVol: HourlyVolPoint | null;
+  /** the same reading over the window, by time to close */
+  volPremium: VolPremiumRow[];
   /** the term basis the year-end buckets are priced on: the listed option forward against the settlement index */
   basis: { expiry: string; forwardUsd: number; spotUsd: number; pct: number; annualisedPct: number; daysToExpiry: number } | null;
   polyOnly: LadderView[];
@@ -106,19 +108,7 @@ export function buildReport(input: {
   const polyOnly = s.ladders.filter((l) => l.id.startsWith("poly:")).map((l) => ladderView(l, history));
   const yearEndSettle = yearEnd[0] ? Date.parse(yearEnd[0].settlesAt) : null;
   const hourlyView = hourlyLadder ? ladderView(hourlyLadder, history) : null;
-  let hourlyVol: ReportData["hourlyVol"] = null;
-  if (hourlyLadder && hourlyView) {
-    const settleMs = Date.parse(hourlyLadder.settlesAt);
-    const T = (settleMs - nowMs) / (365.25 * 86_400_000);
-    const smile = nearestSmile(smiles, settleMs);
-    hourlyVol = {
-      ladder: ladderImpliedVol(hourlyView.rows, "kalshi", s.spotUsd, T),
-      smilePct: smile ? Math.round(ivAt(smile, s.spotUsd) * 1000) / 10 : null,
-      smileExpiry: smile?.expiry ?? null,
-      realized: realizedVolPct(input.candles, 60),
-      minutesToClose: Math.round((settleMs - nowMs) / 60_000),
-    };
-  }
+  const hourlyVol: ReportData["hourlyVol"] = s.hourlyVol ?? (hourlyLadder ? hourlyVolPoint(hourlyLadder, smiles, s.spotUsd, input.candles, nowMs) : null);
   const basis = yearEndSettle ? termBasis(nearestSmile(smiles, yearEndSettle), s.spotUsd, nowMs) : null;
   return {
     at: s.at,
@@ -130,6 +120,7 @@ export function buildReport(input: {
     yearEnd,
     hourly: hourlyView,
     hourlyVol,
+    volPremium: volPremiumByHorizon(history),
     basis,
     polyOnly,
     latency: latencyTable(input.candles, smiles, hourlyLadder ? Date.parse(hourlyLadder.settlesAt) : null, nowMs),
@@ -139,7 +130,7 @@ export function buildReport(input: {
     health: s.health,
     notes: {
       polyUsShortDated:
-        "Polymarket US has documented 15-minute and hourly Up/Down windows plus hourly, daily and weekly strike ladders on BTC; they are listed in its preprod environment and reach production on a date it announces in its changelog. This reader discovers them by series the cycle they appear.",
+        "Polymarket US documents 15-minute and hourly Up/Down windows and hourly, daily and weekly BTC strike ladders; listed in its preprod environment, production date per its changelog. Picked up here by series the cycle they appear.",
     },
   };
 }

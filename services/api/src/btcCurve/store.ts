@@ -6,7 +6,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { expiryTagToMs } from "./deribitChain";
-import type { Ladder, ModelPoint, OptionRow, Snapshot, VenueQuote } from "./types";
+import type { Ladder, ModelPoint, OptionRow, Snapshot, VenueQuote, HourlyVolPoint } from "./types";
 
 /** Option rows on disk: one tuple per instrument, expiry / strike / type come back from the name. */
 type OptionTuple = [string, number, number, number, number, number, number];
@@ -71,6 +71,7 @@ export interface HistoryPoint {
   spotUsd: number;
   /** ladderId → bucketKey → [kalshiBid, kalshiAsk, polyBid, polyAsk, modelP·100] (−1 when absent) */
   ladders: Record<string, Record<string, [number, number, number, number, number]>>;
+  hourlyVol?: HourlyVolPoint;
 }
 
 export function toHistoryPoint(s: Snapshot): HistoryPoint {
@@ -85,7 +86,7 @@ export function toHistoryPoint(s: Snapshot): HistoryPoint {
     }
     ladders[l.id] = row;
   }
-  return { at: s.at, atMs: Date.parse(s.at), spotUsd: s.spotUsd, ladders };
+  return { at: s.at, atMs: Date.parse(s.at), spotUsd: s.spotUsd, ladders, ...(s.hourlyVol ? { hourlyVol: s.hourlyVol } : {}) };
 }
 
 export class SnapshotStore {

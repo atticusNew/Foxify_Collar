@@ -4,9 +4,9 @@
  * Pure functions over snapshots and history; no I/O.
  */
 
-import { digitalDelta, nearestSmile, normCdf, type Smile } from "./model";
+import { digitalDelta, ivAt, nearestSmile, normCdf, type Smile } from "./model";
 import type { HistoryPoint } from "./store";
-import type { IndexCandle, Ladder, VenueQuote } from "./types";
+import type { HourlyVolPoint, IndexCandle, Ladder, VenueQuote } from "./types";
 
 /** Taker fee in cents for one $1 contract at price p cents: Θ · p · (1 − p), rounded up to the cent. */
 export function takerFeeCents(theta: number, priceCents: number): number {
@@ -345,4 +345,74 @@ export function distributionRows(l: Ladder): Array<{ label: string; kalshi: numb
   return bucketRows(l)
     .filter((r) => r.key.startsWith("range:") || r.key.startsWith("above:") || r.key.startsWith("below:"))
     .map((r) => ({ label: r.label, kalshi: midCents(r.kalshi), poly: midCents(r.poly), model: r.modelCents }));
+}
+
+/** The hourly vol reading for one cycle: the venue's ladder, the listed smile at spot, the index realised. */
+export function hourlyVolPoint(hourly: Ladder, smiles: Smile[], spot: number, candles: IndexCandle[], nowMs: number): HourlyVolPoint {
+  const settleMs = Date.parse(hourly.settlesAt);
+  const T = Math.max(0, (settleMs - nowMs) / (365.25 * 86_400_000));
+  const smile = nearestSmile(smiles, settleMs);
+  const fit = ladderImpliedVol(bucketRows(hourly), "kalshi", spot, T);
+  const realized = realizedVolPct(candles, 60);
+  return {
+    ladderId: hourly.id,
+    minutesToClose: Math.round((settleMs - nowMs) / 60_000),
+    ladderPct: fit ? fit.ladderPct : null,
+    ladderCentreUsd: fit ? fit.forwardUsd : null,
+    rmsCents: fit ? fit.rmsCents : null,
+    smilePct: smile && spot > 0 ? Math.round(ivAt(smile, spot) * 1000) / 10 : null,
+    smileExpiry: smile?.expiry ?? null,
+    realizedPct: realized ? realized.pct : null,
+  };
+}
+
+export interface VolPremiumRow {
+  /** minutes-to-close band, inclusive lower bound, exclusive upper */
+  label: string;
+  n: number;
+  hours: number;
+  meanLadderPct: number;
+  meanSmilePct: number;
+  /** ladder minus listed, vol points */
+  meanPremiumPts: number;
+  minPremiumPts: number;
+  maxPremiumPts: number;
+  meanRealizedPct: number | null;
+}
+
+const PREMIUM_BANDS: Array<[number, number, string]> = [
+  [45, 91, "45–90 min"],
+  [30, 45, "30–45 min"],
+  [15, 30, "15–30 min"],
+  [5, 15, "5–15 min"],
+  [2, 5, "2–5 min"],
+];
+
+/**
+ * How far over (or under) the listed vol the venue prices the hour, by time to close, over
+ * the history window. Readings need both a ladder fit and a listed vol; a band with no
+ * readings is omitted.
+ */
+export function volPremiumByHorizon(history: HistoryPoint[]): VolPremiumRow[] {
+  const pts = history.map((h) => h.hourlyVol).filter((v): v is HourlyVolPoint => !!v && v.ladderPct !== null && v.smilePct !== null);
+  const out: VolPremiumRow[] = [];
+  for (const [lo, hi, label] of PREMIUM_BANDS) {
+    const band = pts.filter((v) => v.minutesToClose >= lo && v.minutesToClose < hi);
+    if (!band.length) continue;
+    const prem = band.map((v) => (v.ladderPct as number) - (v.smilePct as number));
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const realized = band.map((v) => v.realizedPct).filter((x): x is number => x !== null);
+    out.push({
+      label,
+      n: band.length,
+      hours: new Set(band.map((v) => v.ladderId)).size,
+      meanLadderPct: Math.round(mean(band.map((v) => v.ladderPct as number)) * 10) / 10,
+      meanSmilePct: Math.round(mean(band.map((v) => v.smilePct as number)) * 10) / 10,
+      meanPremiumPts: Math.round(mean(prem) * 10) / 10,
+      minPremiumPts: Math.round(Math.min(...prem) * 10) / 10,
+      maxPremiumPts: Math.round(Math.max(...prem) * 10) / 10,
+      meanRealizedPct: realized.length ? Math.round(mean(realized) * 10) / 10 : null,
+    });
+  }
+  return out;
 }
