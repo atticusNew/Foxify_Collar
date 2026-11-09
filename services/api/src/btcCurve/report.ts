@@ -3,7 +3,7 @@
  * history window, the replay engine and the collar ladder. Pure assembly; no I/O.
  */
 
-import { bucketRows, distributionRows, gapSeries, hourlyVolPoint, ladderStrikeVols, latencyTable, volPremiumByHorizon, type BucketRow, type GapSeries, type LadderVolTable, type LatencyRow, type VolPremiumRow } from "./analytics";
+import { bucketRows, distributionRows, gapSeries, hourlyVolPoint, ladderStrikeVols, latencyTable, volPremiumByHorizon, yearEndStrikeVols, type BucketRow, type GapSeries, type LadderVolTable, type LatencyRow, type VolPremiumRow, type YearEndVolTable } from "./analytics";
 import type { CollarLadder } from "./collarLadder";
 import { buildSmiles, nearestSmile, type Smile } from "./model";
 import type { ReplaySummary } from "./replay";
@@ -38,8 +38,10 @@ export interface ReportData {
   hourlyVol: HourlyVolPoint | null;
   /** the same reading over the window, by time to close */
   volPremium: VolPremiumRow[];
-  /** strike by strike: the vol band each Kalshi bid/ask implies against the listed vol, hourly and 5 PM ET daily */
-  strikeVols: { hourly: LadderVolTable | null; daily: LadderVolTable | null };
+  /** strike by strike: the vol band each venue's bid/ask implies against the listed vol, hourly and 5 PM ET daily, one table per venue with quotes */
+  strikeVols: { hourly: LadderVolTable[]; daily: LadderVolTable[] };
+  /** the year-end range ladder's bucket boundaries in vol, both venues against the listed smile */
+  yearEndVols: YearEndVolTable | null;
   /** the term basis the year-end buckets are priced on: the listed option forward against the settlement index */
   basis: { expiry: string; forwardUsd: number; spotUsd: number; pct: number; annualisedPct: number; daysToExpiry: number } | null;
   polyOnly: LadderView[];
@@ -49,6 +51,18 @@ export interface ReportData {
   collar: CollarLadder | null;
   health: Snapshot["health"];
   notes: { polyUsShortDated: string };
+}
+
+/** One strike-by-strike table per venue that quotes the ladder two-sided. */
+function strikeVolTables(ladder: Ladder | null, smiles: Smile[], spotUsd: number, nowMs: number): LadderVolTable[] {
+  if (!ladder || !(spotUsd > 0)) return [];
+  const out: LadderVolTable[] = [];
+  for (const venue of ["kalshi", "polymarket_us"] as const) {
+    if (!ladder.quotes.some((q) => q.venue === venue)) continue;
+    const t = ladderStrikeVols(ladder, smiles, spotUsd, nowMs, venue);
+    if (t) out.push(t);
+  }
+  return out;
 }
 
 function sumMids(rows: BucketRow[], pick: (r: BucketRow) => number | null): number | null {
@@ -108,6 +122,7 @@ export function buildReport(input: {
   const yearEnd = s.ladders.filter((l) => l.id.startsWith("btc-yearend-")).map((l) => ladderView(l, history));
   const hourlyLadder = s.ladders.find((l) => l.id.startsWith("btc-hourly:")) ?? null;
   const dailyLadder = s.ladders.find((l) => l.id.startsWith("btc-daily:")) ?? null;
+  const rangeLadder = s.ladders.find((l) => l.id === "btc-yearend-2026-range") ?? null;
   const polyOnly = s.ladders.filter((l) => l.id.startsWith("poly:")).map((l) => ladderView(l, history));
   const yearEndSettle = yearEnd[0] ? Date.parse(yearEnd[0].settlesAt) : null;
   const hourlyView = hourlyLadder ? ladderView(hourlyLadder, history) : null;
@@ -125,9 +140,10 @@ export function buildReport(input: {
     hourlyVol,
     volPremium: volPremiumByHorizon(history),
     strikeVols: {
-      hourly: hourlyLadder && s.spotUsd > 0 ? ladderStrikeVols(hourlyLadder, smiles, s.spotUsd, nowMs) : null,
-      daily: dailyLadder && s.spotUsd > 0 ? ladderStrikeVols(dailyLadder, smiles, s.spotUsd, nowMs) : null,
+      hourly: strikeVolTables(hourlyLadder, smiles, s.spotUsd, nowMs),
+      daily: strikeVolTables(dailyLadder, smiles, s.spotUsd, nowMs),
     },
+    yearEndVols: rangeLadder ? yearEndStrikeVols(rangeLadder, smiles, nowMs) : null,
     basis,
     polyOnly,
     latency: latencyTable(input.candles, smiles, hourlyLadder ? Date.parse(hourlyLadder.settlesAt) : null, nowMs),

@@ -75,6 +75,35 @@ high-volume firm pays less (the note gives the lower tier and how much it would 
 averages the last 60 seconds plainly; Polymarket US throws out the top and bottom 20% first.
 In a quiet final minute they're identical. We state it so no one has to find it.
 
+**The table "Bucket boundaries in vol" (after the crosses).** The same year-end bands, read a
+different way. Instead of cents per band it asks two questions a trader keeps separate: where
+does each venue think the centre is, and how widely does it spread the odds around that
+centre. The strip answers the first: Kalshi's 50% point and Poly's, against the centre the
+options market implies. The table answers the second, line by line, in vol, with Deribit's
+number beside each.
+
+**Picture.** Two forecasters and a weather model. One question is whether they expect the
+same average temperature (level). A separate question is whether they expect the same spread
+of hot and cold days (shape). This table keeps them apart; the cents table above it mixes
+them.
+
+**What it showed on the first night.** Both venues put their centre a few percent above the
+options market's (Kalshi about 3%, Poly about 5%; the lines are $5,000 apart so take the
+first digit, not the second). On shape, Kalshi was cheaper than the
+options market on every downside line and dearer on every upside line, the same pattern as
+its daily ladder in Section 2. Poly's numbers point the same way but its whole-cent ticks
+make the bands under each vol two to four times wider, so it can say less precisely.
+
+**The grey bits.** "Band open" and blanks are lines where the venue's odds are too extreme
+(under 5% or over 95%) or too close to the centre to say anything about vol. "Above any
+lognormal" means the venue puts more weight past that line than any single vol could; a
+fatter tail than the model. "Tick floor" marks Poly lines where the 0¢-bid, 1¢-offer
+buckets far out make up a fifth or more of the odds above the line; that is the tick talking,
+not a view.
+
+**If asked "why not just use the cents table?"** "Cents mix level and shape. A desk hedges
+them differently: level with a future, shape with options. This separates them."
+
 **"How high / how low this year."** Separate bands for "does Bitcoin *touch* $X at any
 point", not "does it *finish* there". Touching is roughly twice as likely as finishing
 beyond. The model for those is a formula, not a market read, and the page says so.
@@ -124,12 +153,14 @@ move in Bitcoin swings an at-the-money strike by several points. Our reads of th
 the index are a few seconds apart, so single-row differences in the last minutes are inside
 the noise. The page says this under "Timing" in the notes.
 
-**The last table in the section ("Kalshi ladders, strike by strike, in vol").** The strip
-gave one vol for the whole ladder. This takes each strike's bid and ask and converts them into
+**The last table in the section ("Short-dated ladders, strike by strike, in vol").** The
+strip gave one vol for the whole ladder. This takes each strike's bid and ask and converts them into
 the vol they imply, then puts Deribit's vol for the same strike next to them. If Deribit's
 number sits inside Kalshi's bid-to-ask band, Kalshi is quoting the options market at that
 strike. If Kalshi's band is above, Kalshi charges more than the options market. If below,
-Kalshi is cheaper. Done for the current hourly and for the 5 PM ET daily.
+Kalshi is cheaper. Done for the current hourly and for the 5 PM ET daily, one table per venue
+that quotes them; today that is Kalshi, and Polymarket US appears automatically the day its
+short-dated BTC ladders leave preprod.
 
 **Picture.** Two shops pricing the same set of umbrellas by size. One shop charges the same
 markup on every size. The other charges more for the big ones. Line them up size by size and
@@ -312,8 +343,9 @@ move funds or see an account.* That isn't a policy. There's nothing on the machi
 7. The replay is live hours only, not a back-test. The count is small because it's honest,
    and the early tiles look harsh because they're per contract.
 8. Kalshi quotes one vol across its ladders; Deribit quotes a skew. Kalshi is under on the
-   downside strikes and over on the upside. Our hedge is priced on listed vol, so that
-   difference is the ground the product stands on.
+   downside strikes and over on the upside, on the daily and the year-end alike. On the
+   year-end both venues also sit a few percent above the options market's centre. Our hedge
+   is priced on listed vol, so that difference is the ground the product stands on.
 9. Lock in's refusals are real; the quotes come from live books at shown sizes. It quotes
    the daily; it refuses where the floor costs more than the upside funds, which is away
    from the money.
