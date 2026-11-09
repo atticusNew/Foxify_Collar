@@ -32,9 +32,14 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
    vol premium on the hour, which is what the "Kalshi − model" column shows and what a hedged
    writer collects in §5. "The hourly ladder" is the KXBTCD event closing within 90 minutes;
    the series also lists tomorrow's 5 PM ET contract a day ahead and that one is never used as
-   the hourly. Polymarket US's 15-minute, hourly, daily and weekly BTC families are documented
-   but listed only in its preprod environment as of Nov 2026; the reader discovers them by
-   series the cycle they reach production.
+   the hourly. Polymarket US lists the same intraday families in production (series
+   `btc-strike-hourly`, strikes $100 apart, no 5 PM ET hour; `btc-strike-daily`, 5 PM ET, $250
+   apart, none on Fridays; `btc-strike-weekly`, Friday 5 PM ET; and `btc-range-*` twins), all
+   settling on BRTI, so the hourly and daily tables carry a Polymarket US column whenever its
+   ladder shares the Kalshi close. Until Nov 9 2026 the reader read only the first 200 series
+   and missed these (they sit on the second page) and did not parse the production
+   `ASSET_PRICE_MARKET_TYPE_ABOVE_BELOW` label; both fixed. Polymarket-US-only ladders (the
+   range twins, the weekly) show their two-sided strikes under §1.
 3. **Gaps over time.** Per bucket, Kalshi mid − Poly mid across the history window (sparkline,
    mean |gap|, max, last). Persistent gaps are quoting differences; flicker is latency.
 4. **What being late costs.** |Δ BRTI| over 1/5/15/60 s from one-second prints over the last

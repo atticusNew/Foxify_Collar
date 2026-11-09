@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { aboveKey, belowKey, keyLevel } from "../src/btcCurve/keys";
 import { bucketFromKalshi, dailyLadderFrom, dollarsToCentsExact, hourlyLadderFrom, sortBuckets, topDepthFromOrderbook } from "../src/btcCurve/kalshiLadders";
-import { bucketFromPolyUs, laddersFromEvents, moneyCents } from "../src/btcCurve/polyUsLadders";
+import { bucketFromPolyUs, fetchAllSeries, fetchSeriesIdsBySlug, laddersFromEvents, moneyCents } from "../src/btcCurve/polyUsLadders";
 import { expiryTagToMs, parseSummary, selectRows } from "../src/btcCurve/deribitChain";
 import { black76Call, buildSmiles, digitalDelta, forwardFor, ivAt, modelBucket, normCdf, probAbove, probTouch, type Smile } from "../src/btcCurve/model";
 import { bucketRows, digitalImpliedVol, findCross, gapSeries, hourlyVolPoint, ladderImpliedVol, ladderStrikeVols, latencyTable, mergeLadders, realizedVolPct, takerFeeCents, volPremiumByHorizon, yearEndStrikeVols } from "../src/btcCurve/analytics";
@@ -53,6 +53,9 @@ test("bucket keys: the same contract gets the same key on both venues, including
 
   // hourly ladder: "$85,250 or above" is listed as strictly above 85,249.99
   assert.equal(k({ strike_type: "greater", floor_strike: 85249.99 }, "above")?.key, "above:85250");
+  // Polymarket US production labels its hourly/daily/weekly strike ladders ABOVE_BELOW (the documented schema says STRIKE); same key
+  assert.equal(p("cpc-btc-above-hr-2026-11-09-2100z-85250", { marketType: "ASSET_PRICE_MARKET_TYPE_ABOVE_BELOW", strike: money("85250"), horizon: "hourly" })?.key, "above:85250");
+  assert.equal(p("cpc-btc-above-day-2026-11-09-85250", { marketType: "ASSET_PRICE_MARKET_TYPE_STRIKE", strike: money("85250") })?.key, "above:85250");
 
   // the hourly pick: the series lists the current hour and tomorrow's 5 PM ET contract side by side
   const now = Date.UTC(2026, 10, 8, 23, 50, 0);
@@ -128,6 +131,27 @@ test("venue parsing: Kalshi sub-penny prices keep their fraction, depth reads th
     ["2026-12-01T05:00:00Z", SETTLE],
   );
   assert.equal(ladders[0].quotes[0].feeTheta, 0.095);
+});
+
+test("Polymarket US discovery pages through the series list: the automated BTC families sit past the first 200 entries", async () => {
+  const calls: string[] = [];
+  const page = (from: number, n: number, extra: Array<{ id: string; slug: string }> = []) =>
+    [...Array.from({ length: n }, (_, i) => ({ id: String(from + i), slug: `other-${from + i}` })), ...extra].slice(0, 200);
+  const fetchImpl = (async (url: string) => {
+    calls.push(url);
+    const offset = Number(new URL(url).searchParams.get("offset") ?? 0);
+    const series =
+      offset === 0
+        ? page(0, 199, [{ id: "101", slug: "btc" }])
+        : offset === 200
+          ? page(200, 150, [{ id: "377", slug: "btc-strike-hourly" }, { id: "379", slug: "btc-strike-daily" }])
+          : [];
+    return new Response(JSON.stringify({ series }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  const all = await fetchAllSeries(fetchImpl);
+  assert.equal(all.length, 352);
+  assert.equal(calls.length, 2, "a short page ends the walk");
+  assert.deepEqual(await fetchSeriesIdsBySlug(["btc-strike-hourly", "btc-strike-daily", "btc-strike-never"], fetchImpl), ["377", "379"]);
 });
 
 test("deribit chain: instrument names parse, the kept subset covers the nearest expiries and the one by each settlement", () => {
@@ -677,7 +701,7 @@ test("report page: the three sources, the gaps, the latency table and the replay
     "70¢",
     "refused · mark 8c is outside",
     "polymarket_us HTTP 503",
-    "preprod environment",
+    "the same contract on two venues",
     'http-equiv="refresh" content="60"',
     "noindex",
   ]) {

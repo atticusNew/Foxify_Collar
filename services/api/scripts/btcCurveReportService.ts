@@ -23,8 +23,15 @@
  *       BTC_CURVE_SHOW_TAKE     (1 shows the writer's take in §6; default off)
  *       BTC_CURVE_RETAIN_DAYS   (default 21; older day files are deleted)
  *       BTC_CURVE_COLLAR        (0 disables the §6 OKX quotes; default on)
+ *       BTC_CURVE_PAIRS         (0 disables the BTC pairs page mounted at /pairs; default on)
+ *       BTC_PAIRS_*             (the pairs collector: INTERVAL_SEC 10, DATA_DIR under the curve
+ *                               data dir, LAUNCH_URL, KALSHI_URL; see scripts/btcPairsService.ts)
  *       POLY_US_EXTRA_EVENT_SLUGS  comma-separated Polymarket US event slugs to add
  *       POLY_US_REST_BASE / KALSHI_REST_BASE / DERIBIT_REST_BASE / OKX_REST_BASE (relays)
+ *
+ * /pairs is the BTC pairs UI (Kalshi and Polymarket US, at the money and one strike each way,
+ * Launch button) served from this process so it costs no second web service; its JSON lives
+ * under /pairs/api/* and shares this service's token.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -40,6 +47,7 @@ import { ReplayEngine } from "../src/btcCurve/replay";
 import { quoteCollarLadder, type CollarLadder } from "../src/btcCurve/collarLadder";
 import { buildReport } from "../src/btcCurve/report";
 import { renderReportHtml } from "../src/btcCurve/reportHtml";
+import { pairsCollectorFromEnv, type PairsCollector } from "../src/btcCurve/pairsCollector";
 import type { IndexCandle, Ladder, OptionRow, Snapshot } from "../src/btcCurve/types";
 
 const PORT = Number(process.env.BTC_CURVE_PORT || process.env.PORT || 8860);
@@ -49,6 +57,8 @@ const TOKEN = process.env.BTC_CURVE_TOKEN || "";
 const SHOW_TAKE = process.env.BTC_CURVE_SHOW_TAKE === "1";
 const COLLAR_ON = process.env.BTC_CURVE_COLLAR !== "0";
 const EXTRA_SLUGS = (process.env.POLY_US_EXTRA_EVENT_SLUGS || "").split(",").map((s) => s.trim()).filter(Boolean);
+const PAIRS_BASE = "/pairs";
+const pairs: PairsCollector | null = process.env.BTC_CURVE_PAIRS !== "0" ? pairsCollectorFromEnv(process.env, { dataDir: join(DATA_DIR, "pairs") }) : null;
 
 const store = new SnapshotStore(DATA_DIR, { retainDays: Number(process.env.BTC_CURVE_RETAIN_DAYS || 21) });
 const replay = new ReplayEngine(join(DATA_DIR, "replay-state.json"), join(DATA_DIR, "replays.jsonl"));
@@ -220,12 +230,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       replays: replay.summary().n,
       inFlight: replay.getOpen().length,
       lastError: lastError || undefined,
+      pairs: pairs ? pairs.health() : undefined,
     });
   }
   if (!authorized(url)) {
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("not found");
     return;
+  }
+  if (pairs && (url.pathname === PAIRS_BASE || url.pathname.startsWith(`${PAIRS_BASE}/`))) {
+    const sub = url.pathname.slice(PAIRS_BASE.length).replace(/\/$/, "") || "/";
+    if (pairs.handle(req, res, sub, url, { base: PAIRS_BASE, token: TOKEN || undefined })) return;
   }
   if (url.pathname === "/api/report") {
     const data = buildReportData();
@@ -274,6 +289,7 @@ if (process.env.NODE_ENV !== "test") {
       console.error(`[btc-curve] request failed: ${(err as Error).message}`);
       if (!res.headersSent) sendJson(res, 500, { ok: false });
     });
-  }).listen(PORT, () => console.log(`[btc-curve] listening on :${PORT}`));
+  }).listen(PORT, () => console.log(`[btc-curve] listening on :${PORT}${pairs ? ` · pairs at ${PAIRS_BASE}` : ""}`));
   void loop();
+  pairs?.start();
 }
