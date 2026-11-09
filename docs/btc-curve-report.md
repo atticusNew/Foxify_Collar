@@ -46,8 +46,9 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
 1b. **Bucket boundaries in vol.** Under §1: each venue's range mids summed above each $5,000 line,
    normalised by the venue's own sum of mids, inverted to vol on the venue's own 50% point (so level
    and shape are kept apart), with a band from the same sum over bids and asks, Deribit's vol at the
-   line, listed-vs-band, skew per source, and flags for tails fatter than any lognormal and for
-   Polymarket US tick-floor lines.
+   line, listed-vs-band, skew per source, raw tail mass per source (no normalisation), and flags
+   for tails fatter than any lognormal and for lines where 0¢-bid buckets dominate a venue's raw
+   sum. A 0¢-bid bucket is read as zero mass.
 5b. **Strike by strike, in vol.** Under §2: each venue's bid and ask on the hourly and the 5 PM ET
    daily ladder inverted to the vol that reproduces it as a digital on the ladder's own 50¢ centre,
    beside Deribit's vol at that strike; listed-vs-band, skew (below minus above centre) for both,

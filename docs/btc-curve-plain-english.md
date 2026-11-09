@@ -89,17 +89,32 @@ them.
 
 **What it showed on the first night.** Both venues put their centre a few percent above the
 options market's (Kalshi about 3%, Poly about 5%; the lines are $5,000 apart so take the
-first digit, not the second). On shape, Kalshi was cheaper than the
-options market on every downside line and dearer on every upside line, the same pattern as
-its daily ladder in Section 2. Poly's numbers point the same way but its whole-cent ticks
-make the bands under each vol two to four times wider, so it can say less precisely.
+first digit, not the second). On shape, Kalshi was cheaper than the options market on every
+downside line and dearer on every upside line, the same pattern as its daily ladder in
+Section 2. Both venues carried two to three times the options market's probability of
+finishing above $90,000.
+
+**What is going on with Poly.** Poly's 28 bands add up to about 115¢, when a coherent set of
+odds adds to 100¢. Only a sliver of that is the tick (a band nobody will bid on shows 0¢ bid,
+1¢ offer, and we read it as zero). Most of it is real: people have tens of thousands of
+contracts bid at 1¢ on bands like "$130,000 to $135,000" that the options market says are
+worth a hundredth of a cent. Those bids are real orders you can sell to; Section 1's
+"executable crosses" lists them. But a book that promises more than $1 of payout is not a
+distribution you can read a shape from, and spreading the excess across every band (which
+normalising does) pushes Poly's centre up and its body down. So Poly's vol numbers are shown
+with wide bands and should be read as "here is where Poly's book is heavy", not as a
+measurement. The "tail mass" line in the strip says it with no model at all: on the first
+night, odds of finishing at or above $90,000 were Kalshi 16¢, Poly 28¢, options market 8¢.
+
+**Picture.** A raffle that has sold 115 tickets for a 100-ticket draw, with the extra
+tickets all on the long-shot numbers. You can tell the organiser is heavy on long shots.
+You cannot tell much about how they weigh the middle numbers.
 
 **The grey bits.** "Band open" and blanks are lines where the venue's odds are too extreme
 (under 5% or over 95%) or too close to the centre to say anything about vol. "Above any
 lognormal" means the venue puts more weight past that line than any single vol could; a
-fatter tail than the model. "Tick floor" marks Poly lines where the 0¢-bid, 1¢-offer
-buckets far out make up a fifth or more of the odds above the line; that is the tick talking,
-not a view.
+fatter tail than the model. A small note under a Poly number says when the 0¢-bid bands were
+a fifth or more of the raw odds above that line.
 
 **If asked "why not just use the cents table?"** "Cents mix level and shape. A desk hedges
 them differently: level with a future, shape with options. This separates them."
@@ -344,8 +359,10 @@ move funds or see an account.* That isn't a policy. There's nothing on the machi
    and the early tiles look harsh because they're per contract.
 8. Kalshi quotes one vol across its ladders; Deribit quotes a skew. Kalshi is under on the
    downside strikes and over on the upside, on the daily and the year-end alike. On the
-   year-end both venues also sit a few percent above the options market's centre. Our hedge
-   is priced on listed vol, so that difference is the ground the product stands on.
+   year-end both venues sit a few percent above the options market's centre and carry two
+   to three times its upside tail; Poly's book sums to 115¢ with the excess in 1¢ bids you
+   can sell to but cannot read a shape from. Our hedge is priced on listed vol, so that
+   difference is the ground the product stands on.
 9. Lock in's refusals are real; the quotes come from live books at shown sizes. It quotes
    the daily; it refuses where the floor costs more than the upside funds, which is away
    from the money.

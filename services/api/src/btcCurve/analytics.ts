@@ -501,8 +501,8 @@ export interface YearEndVenueCell {
   /** the mid probability is in range but no lognormal vol on the venue's own centre reaches it: a tail fatter than any lognormal */
   unreachable: boolean;
   /**
-   * Share of the cumulative above K that comes from buckets bid at 0¢, i.e. from the tick floor rather than a
-   * two-sided price. High in the wings on a whole-cent book; the vol there is the tick, not a view.
+   * Share of the raw mid-sum above K that came from buckets bid at 0¢ and was read as zero instead of the mid
+   * (a 0¢/1¢ quote is "nobody pays a cent", not a half-cent view). High in the wings on a whole-cent book.
    */
   tickShare: number;
 }
@@ -523,9 +523,11 @@ export interface YearEndVolTable {
   forwardUsd: number;
   listedMedianUsd: number;
   daysToSettle: number;
-  /** each venue's sum of mids across the tiling ladder, cents (what the normalisation divides by) */
+  /** each venue's sum of mids across the tiling ladder, cents, and the part of it from 0¢-bid buckets that is read as zero */
   kalshiSumCents: number | null;
   polySumCents: number | null;
+  kalshiTickCents: number | null;
+  polyTickCents: number | null;
   /**
    * Where each venue's cumulative curve crosses 50%, interpolated between boundaries: the venue's median. Each
    * venue's vols are inverted on its own centre (median lifted to a forward at the listed ATM vol), so the vol
@@ -536,12 +538,19 @@ export interface YearEndVolTable {
   rows: YearEndVolRow[];
   /** mean mid vol at boundaries below the forward minus above it, vol points */
   skew: { kalshiPts: number | null; polyPts: number | null; smilePts: number | null };
+  /**
+   * Raw mid mass in the tails, cents of $1, no normalisation: the same contracts on each source. Where a venue's
+   * sum of mids runs over 100¢, this says which tail the excess sits in.
+   */
+  tails: { upperFromUsd: number; lowerToUsd: number; kalshi: [number, number] | null; poly: [number, number] | null; model: [number, number] | null };
   /** boundaries with a band, and how many hold the listed vol inside it */
   inside: { kalshi: [number, number]; poly: [number, number] };
 }
 
 interface Cumulative {
+  /** sum of mids as quoted, and the part of it from 0¢-bid buckets */
   sum: number;
+  tick: number;
   /** by boundary: cumulative above it from mids, bids and asks, each as a fraction of the mid sum; and the tick-floor share */
   at: Map<number, { mid: number; bid: number; ask: number; tick: number }>;
   centre: number | null;
@@ -550,8 +559,9 @@ interface Cumulative {
 /**
  * The year-end range ladder read as vol per bucket boundary, both venues against the listed smile.
  * Each venue's range mids are summed above each boundary into a cumulative "above K" and divided by
- * the venue's own sum of mids (Polymarket US's whole-cent ticks put its sum near 117¢; without the
- * normalisation every Poly vol would be biased). The same sum over bids and over asks gives a band:
+ * the venue's own sum. A bucket bid at 0¢ is read as zero, not as half its offer: on a whole-cent book
+ * fifteen tail buckets at 0¢/1¢ would otherwise add 7¢ of probability that nobody will pay for, which
+ * is most of why Polymarket US's mids sum near 120¢. The same sum over bids and over asks gives a band:
  * on $5,000 buckets near the forward a digital has little vega, so a few cents of accumulated tick
  * is many vol points, and the band says so rather than the mid pretending otherwise. Inverted on the
  * listed expiry's forward, the same forward §1 prices the buckets on.
@@ -571,20 +581,24 @@ export function yearEndStrikeVols(range: Ladder, smiles: Smile[], nowMs: number)
     const quotes = rows.map(({ r }) => pick(r));
     const mids = quotes.map((qq) => midCents(qq));
     if (mids.some((m) => m === null)) return null;
-    const sum = (mids as number[]).reduce((a, b) => a + b, 0);
+    const rawSum = (mids as number[]).reduce((a, b) => a + b, 0);
+    // a 0¢ bid is read as zero mass; the mid of a 0¢/1¢ quote is the tick, not a view
+    const mass = (mids as number[]).map((m, i) => ((quotes[i] as VenueQuote).bidCents === 0 ? 0 : m));
+    const tickTotal = rawSum - mass.reduce((a, b) => a + b, 0);
+    const sum = rawSum - tickTotal;
     if (!(sum > 0)) return null;
     const at: Cumulative["at"] = new Map();
     let mid = 0;
+    let raw = 0;
     let bid = 0;
     let ask = 0;
-    let tick = 0;
     for (let i = rows.length - 1; i >= 0; i -= 1) {
       const qq = quotes[i] as VenueQuote;
-      mid += mids[i] as number;
+      mid += mass[i];
+      raw += mids[i] as number;
       bid += Math.max(0, qq.bidCents);
       ask += qq.askCents;
-      if (qq.bidCents === 0) tick += mids[i] as number;
-      if (Number.isFinite(rows[i].level)) at.set(rows[i].level, { mid: mid / sum, bid: bid / sum, ask: ask / sum, tick: mid > 0 ? tick / mid : 0 });
+      if (Number.isFinite(rows[i].level)) at.set(rows[i].level, { mid: mid / sum, bid: bid / sum, ask: ask / sum, tick: raw > 0 ? (raw - mid) / raw : 0 });
     }
     const pts = [...at.entries()].sort((a, b) => a[0] - b[0]);
     let centre: number | null = null;
@@ -596,7 +610,7 @@ export function yearEndStrikeVols(range: Ladder, smiles: Smile[], nowMs: number)
         break;
       }
     }
-    return { sum, at, centre };
+    return { sum: rawSum, tick: tickTotal, at, centre };
   };
   const kalshi = cumulative((r) => r.kalshi);
   const poly = cumulative((r) => r.poly);
@@ -654,6 +668,20 @@ export function yearEndStrikeVols(range: Ladder, smiles: Smile[], nowMs: number)
     const b = mean(hi);
     return a === null || b === null ? null : Math.round((a - b) * 10) / 10;
   };
+  // tails: the buckets wholly beyond the lines nearest ±1 standard deviation from the forward
+  const upperFrom = Math.min(...rows.filter((x) => Number.isFinite(x.level) && x.level >= F * Math.exp(atmS)).map((x) => x.level));
+  const lowerTo = Math.max(...rows.filter((x) => Number.isFinite(x.level) && x.level > 0 && x.level < F * Math.exp(-atmS)).map((x) => x.level)) + 5000;
+  const tailMass = (pick: (r: BucketRow) => number | null): [number, number] | null => {
+    let up = 0;
+    let down = 0;
+    for (const { r, level } of rows) {
+      const m = pick(r);
+      if (m === null) return null;
+      if (Number.isFinite(level) && level >= upperFrom) up += m;
+      if (!Number.isFinite(level) || level + 5000 <= lowerTo) down += m;
+    }
+    return [Math.round(up * 10) / 10, Math.round(down * 10) / 10];
+  };
   const insideOf = (pick: (r: YearEndVolRow) => YearEndVenueCell | null): [number, number] => {
     const banded = out.map(pick).filter((c): c is YearEndVenueCell => !!c && c.listedVs !== null);
     return [banded.filter((c) => c.listedVs === "inside").length, banded.length];
@@ -666,11 +694,20 @@ export function yearEndStrikeVols(range: Ladder, smiles: Smile[], nowMs: number)
     daysToSettle: Math.round((settleMs - nowMs) / 86_400_000),
     kalshiSumCents: kalshi ? Math.round(kalshi.sum) : null,
     polySumCents: poly ? Math.round(poly.sum) : null,
+    kalshiTickCents: kalshi ? Math.round(kalshi.tick * 10) / 10 : null,
+    polyTickCents: poly ? Math.round(poly.tick * 10) / 10 : null,
     kalshiCentreUsd: kalshi && kalshi.centre !== null ? Math.round(kalshi.centre) : null,
     polyCentreUsd: poly && poly.centre !== null ? Math.round(poly.centre) : null,
     rows: out,
     skew: { kalshiPts: skewOf(below.k, above.k), polyPts: skewOf(below.p, above.p), smilePts: skewOf(below.s, above.s) },
     inside: { kalshi: insideOf((r) => r.kalshi), poly: insideOf((r) => r.poly) },
+    tails: {
+      upperFromUsd: Number.isFinite(upperFrom) ? upperFrom : 0,
+      lowerToUsd: Number.isFinite(lowerTo) ? lowerTo : 0,
+      kalshi: tailMass((r) => midCents(r.kalshi)),
+      poly: tailMass((r) => midCents(r.poly)),
+      model: tailMass((r) => r.modelCents),
+    },
   };
 }
 

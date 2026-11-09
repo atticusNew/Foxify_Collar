@@ -483,18 +483,23 @@ test("year-end boundaries in vol: range mids summed above each boundary and norm
   assert.ok(t!.polySumCents !== null && t!.polySumCents >= 115 && t!.polySumCents <= 125, `Poly's whole-cent book sums rich (${t!.polySumCents})`);
   const banded = t!.rows.filter((r) => r.kalshi?.volPct !== null && r.kalshi?.volPct !== undefined);
   assert.ok(banded.length >= 4, `several boundaries carry a vol (${banded.length})`);
+  assert.ok(banded.filter((r) => r.kalshi!.listedVs !== null).length >= 3, "and most of them a band");
   for (const r of banded) {
     const k = r.kalshi!;
     assert.ok(Math.abs((k.volPct as number) - r.smilePct) < 1.5, `Kalshi quoted at the smile reads back the smile at $${r.strikeUsd} (${k.volPct} vs ${r.smilePct})`);
-    assert.equal(k.listedVs, "inside", `and the 0.2¢ band holds it at $${r.strikeUsd} (${k.volLoPct} – ${k.volHiPct} vs ${r.smilePct})`);
+    if (k.listedVs !== null) assert.equal(k.listedVs, "inside", `and the 0.2¢ band holds it at $${r.strikeUsd} (${k.volLoPct} – ${k.volHiPct} vs ${r.smilePct})`);
   }
   // Polymarket US's whole-cent book: the band is wide (a cent per bucket summed), so the listed vol lands inside on most boundaries,
   // and in the upper wing the 0/1¢ tail buckets are flagged as tick floor with the mid vol biased up
-  const polyBanded = t!.rows.filter((r) => r.poly?.listedVs);
-  assert.ok(polyBanded.length >= 4 && t!.inside.poly[0] >= 0.75 * t!.inside.poly[1], `Poly, normalised, holds the smile inside its band on most boundaries (${t!.inside.poly.join("/")})`);
+  // in the upper wing every 0/1¢ tail bucket would add half a cent; read as zero, the Poly wing vol lands on the smile and the row says how much was removed
   const wing = t!.rows.find((r) => r.strikeUsd === 90000);
-  assert.ok(wing && wing.poly && wing.poly.tickShare >= 0.2 && (wing.poly.volPct as number) > wing.smilePct + 3, `the tick floor is flagged and the wing mid vol is biased up (${wing?.poly?.tickShare}, ${wing?.poly?.volPct} vs ${wing?.smilePct})`);
+  assert.ok(wing && wing.poly && wing.poly.tickShare >= 0.2, `the 0¢-bid share is reported in the wing (${wing?.poly?.tickShare})`);
+  assert.ok(wing && wing.poly && Math.abs((wing.poly.volPct as number) - wing.smilePct) < 3, `and with it read as zero the wing mid vol is on the smile (${wing?.poly?.volPct} vs ${wing?.smilePct})`);
+  assert.ok(t!.polyTickCents !== null && t!.polyTickCents >= 4 && t!.polySumCents !== null && t!.polySumCents - t!.polyTickCents < 118, `the removed tick is a visible part of Poly's overround (${t!.polyTickCents}¢ of ${t!.polySumCents}¢)`);
   assert.ok(t!.rows.some((r) => r.strikeUsd > F && r.kalshi?.volPct !== null), "the branch bound keeps upside boundaries invertible");
+  // raw tail mass, same contracts, no normalisation: Kalshi carries the smile's tails; Poly's whole-cent book carries more in both
+  assert.ok(t!.tails.kalshi && t!.tails.poly && t!.tails.upperFromUsd > F && t!.tails.lowerToUsd < F, "tail lines sit either side of the forward");
+  assert.ok(t!.tails.poly![0] > t!.tails.kalshi![0] && t!.tails.poly![1] >= t!.tails.kalshi![1], `whole cents put more mass in the tails (${t!.tails.poly} vs ${t!.tails.kalshi})`);
   assert.ok(t!.skew.smilePts !== null && t!.skew.smilePts > 3, `the listed skew is read (${t!.skew.smilePts})`);
   assert.ok(t!.skew.kalshiPts !== null && Math.abs(t!.skew.kalshiPts - (t!.skew.smilePts as number)) < 3, `and the venue priced on it shows the same skew (${t!.skew.kalshiPts})`);
   assert.ok(t!.rows.every((r) => r.strikeUsd !== 75000 || r.kalshi?.volPct === null), "the boundary at the forward is blank");
