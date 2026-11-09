@@ -272,7 +272,7 @@ test("crosses and gaps: fees are the venue's Θ·p·(1−p); a cross needs the o
       { key: "range:70000-74999.99", kind: "range", lower: 70000, upper: 74999.99, settlesAt: SETTLE },
       { key: "range:75000-79999.99", kind: "range", lower: 75000, upper: 79999.99, settlesAt: SETTLE },
     ],
-    quotes: [q("polymarket_us", "range:70000-74999.99", 14, 15, 0.095, 1, 1), q("polymarket_us", "range:70000-74999.99", 14, 15, 0.095, 50, 50), q("polymarket_us", "range:75000-79999.99", 21, 22, 0.095)],
+    quotes: [q("polymarket_us", "range:70000-74999.99", 14, 15, 0.095, 1, 1), q("polymarket_us", "range:70000-74999.99", 14, 15, 0.095, 50, 50), q("polymarket_us", "range:75000-79999.99", 21, 22, 0.095, 1000, 0)],
     model: {},
   };
   const merged = mergeLadders(spine, [poly, { ...poly, id: "other", settlesAt: "2026-12-01T05:00:00Z" }]);
@@ -627,7 +627,7 @@ test("report page: the three sources, the gaps, the latency table and the replay
       { key: "range:70000-74999.99", kind: "range", lower: 70000, upper: 74999.99, settlesAt: settle },
       { key: "range:75000-79999.99", kind: "range", lower: 75000, upper: 79999.99, settlesAt: settle },
     ],
-    quotes: [q("kalshi", "range:70000-74999.99", 16.9, 17, 0, 998, 66), q("polymarket_us", "range:70000-74999.99", 14, 15, 0.095, 62255, 13.8), q("kalshi", "range:75000-79999.99", 19.7, 19.8, 0), q("polymarket_us", "range:75000-79999.99", 21, 22, 0.095)],
+    quotes: [q("kalshi", "range:70000-74999.99", 16.9, 17, 0, 998, 66), q("polymarket_us", "range:70000-74999.99", 14, 15, 0.095, 62255, 13.8), q("kalshi", "range:75000-79999.99", 19.7, 19.8, 0), q("polymarket_us", "range:75000-79999.99", 21, 22, 0.095, 1000, 0)],
     model: { "range:70000-74999.99": { p: 0.203, expiry: "25DEC26", iv: 0.55 }, "range:75000-79999.99": { p: 0.184, expiry: "25DEC26", iv: 0.5 } },
   };
   const snapshot: Snapshot = { at: "2026-11-09T20:02:00Z", spotUsd: 74222.14, spotSource: "brti", ladders: [ladder], options: [], health: { kalshi: { ok: true, ms: 300 }, polymarket_us: { ok: false, ms: 8000, detail: "HTTP 503" } } };
@@ -664,6 +664,9 @@ test("report page: the three sources, the gaps, the latency table and the replay
     "+0.69¢",
     "13.8 ct",
     "Executable crosses:",
+    // 21¢ bid − 1.58¢ fee − 18.4¢ model − 0.5¢ allowance = 0.52¢ on 1,000 contracts
+    "Resting bids over the smile",
+    "Kalshi: none. Polymarket US: $5 over 1 bucket",
     "Sum of mids",
     "Gaps over time",
     "Cost of latency",

@@ -125,11 +125,33 @@ Kalshi 0.8¢, sell Poly 2¢, +1.01¢ net on 5,166 contracts, about $52). Near-th
 printed so the reader can tell the two apart. The note under the table ("Executable
 crosses: N buckets … total at resting depth $X") totals it.
 
+Read that note as edge × depth, not edge alone. A +1.9¢ cross on 0.4 contracts is one cent
+of money; a +0.7¢ cross on 8,000 contracts is $57. The first evening's 14–17 crosses totalled
+$167–$203. That is the venue-to-venue arb, and it is capped by the thinner book (Kalshi's
+sub-cent bids and offers in the wings).
+
+The second note, **"Resting bids over the smile, hedged on listed options instead"**, is the
+larger version of the same fact and the one a market maker would act on. Instead of buying
+the cheap venue, sell the rich venue's resting bids and hedge the tail on Deribit, where the
+far strikes are cheap but not free. It sums (bid − taker fee − option-implied value − ½¢
+allowance for the model's wing error) × the venue's own bid depth, per venue, and names the
+biggest bucket. First evening: Kalshi $47 over 5 buckets; Polymarket US $1,238 over 12
+buckets, $486 of it one bucket ("$150,000 or above", 1¢ bid on 123k contracts against an
+option value near zero). Before the option hedge's cost, minimum sizes and the pin risk of a
+short tail, so read it as an upper bound on what the resting books are worth to a seller,
+and read the two notes together: the venue-to-venue version is a few hundred dollars because
+the hedge is Kalshi's thin wing; the option-hedged version is low thousands because the
+hedge is Deribit's depth. Both are small. That is the finding, not a disappointment: the two
+retail books are within fees of each other and within a cent or two of the option market
+everywhere except the far upside, where Poly's 1¢ tick and its tail bidders leave a few
+hundred dollars a night on the table.
+
 Below the table, **Sum of mids**: add up all 28 mids. A perfectly fair book sums to 100¢
-(exactly one bucket pays). Nov 8: Kalshi 100¢, Polymarket US 117¢, option model 100¢. Poly's
-17¢ overround is mostly the mechanical effect of 1¢-wide spreads on 28 buckets (28 × 0.5¢ ≈
-14¢), plus a few cents of genuine skew. This is a one-glance quality read on each venue's
-market-making.
+(exactly one bucket pays). Nov 8: Kalshi 100¢, Polymarket US 115–122¢, option model 100¢. Only
+about 3¢ of Poly's excess is the whole-cent tick (0¢-bid buckets read as zero); the rest is
+real 1¢ bids in size on tail buckets the option market prices near zero. This is a one-glance
+quality read on each venue's market-making, and the "resting bids over the smile" note prices
+that excess in dollars.
 
 ### The chart above the table
 
