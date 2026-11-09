@@ -24,6 +24,15 @@
 #                                   OKX reachable). Disk keeps the snapshots.
 #                                   docs/btc-curve-report.md
 #
+#   atticus-sports-venues           Read-only sports venues report: the same
+#                                   game's winner market on Kalshi, Polymarket
+#                                   US and Novig side by side after fees, the
+#                                   consensus and who sits off it, the cheapest
+#                                   other side for every position, the crosses
+#                                   that lock, gaps over time. Region oregon
+#                                   (all three venues are US). Disk keeps the
+#                                   snapshots. docs/sports-venues-report.md
+#
 #   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com,
 #                                   for operator machines whose ISP blocks it
 #                                   (observed: silent connect timeouts). Local
@@ -76,6 +85,35 @@ services:
       # Optional. When set, the page and JSON are only served with ?k=<token>
       # (an unlisted link for a reader). Set in the dashboard, not here.
       # - key: BTC_CURVE_TOKEN
+      #   sync: false
+
+  - type: web
+    name: atticus-sports-venues
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/sportsVenuesReportService.ts
+    healthCheckPath: /healthz
+    # One snapshot a minute is ~40 KB on disk with a full slate; 21 days is ~1.2 GB.
+    disk:
+      name: sports-venues-data
+      mountPath: /var/data
+      sizeGB: 2
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SPORTS_VENUES_DATA_DIR
+        value: /var/data/sports-venues
+      - key: SPORTS_VENUES_INTERVAL_SEC
+        value: "60"
+      - key: SPORTS_VENUES_RETAIN_DAYS
+        value: "21"
+      # Optional. When set, the page and JSON are only served with ?k=<token>
+      # (an unlisted link for a reader). Set in the dashboard, not here.
+      # - key: SPORTS_VENUES_TOKEN
       #   sync: false
 
   - type: web
