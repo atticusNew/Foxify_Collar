@@ -22,7 +22,7 @@
  *       BTC_CURVE_TOKEN         (optional; when set the page and JSON need ?k=<token>)
  *       BTC_CURVE_SHOW_TAKE     (1 shows the writer's take in §6; default off)
  *       BTC_CURVE_RETAIN_DAYS   (default 21; older day files are deleted)
- *       BTC_CURVE_COLLAR        (0 disables the §6 OKX quotes; default on)
+ *       BTC_CURVE_COLLAR        (1 enables the §6 OKX collar quotes; default off)
  *       POLY_US_EXTRA_EVENT_SLUGS  comma-separated Polymarket US event slugs to add
  *       POLY_US_REST_BASE / KALSHI_REST_BASE / DERIBIT_REST_BASE / OKX_REST_BASE (relays)
  */
@@ -47,7 +47,10 @@ const DATA_DIR = process.env.BTC_CURVE_DATA_DIR || "/tmp/btc-curve";
 const INTERVAL_SEC = Math.max(20, Number(process.env.BTC_CURVE_INTERVAL_SEC || 60));
 const TOKEN = process.env.BTC_CURVE_TOKEN || "";
 const SHOW_TAKE = process.env.BTC_CURVE_SHOW_TAKE === "1";
-const COLLAR_ON = process.env.BTC_CURVE_COLLAR !== "0";
+// Off unless asked: on a liquid binary a floor and cap replicate as a partial sale at the venue's bid, so the
+// daily ladder refuses most strikes and the one or two it quotes do not beat the book. The page for a venue
+// reader does not carry it; the collar earns its place where partial sale is not available.
+const COLLAR_ON = process.env.BTC_CURVE_COLLAR === "1";
 const EXTRA_SLUGS = (process.env.POLY_US_EXTRA_EVENT_SLUGS || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 const store = new SnapshotStore(DATA_DIR, { retainDays: Number(process.env.BTC_CURVE_RETAIN_DAYS || 21) });
@@ -129,10 +132,12 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
   const polyLadders = poly ?? [];
   const used = new Set<string>();
   const ladders: Ladder[] = [];
-  for (const k of [...(kalshi?.yearEnd ?? []), ...(kalshi?.hourly ? [kalshi.hourly] : []), ...(kalshi?.daily ? [kalshi.daily] : [])]) {
+  for (const k of [...(kalshi?.yearEnd ?? []), ...(kalshi?.hourly ? [kalshi.hourly] : []), ...(kalshi?.daily ? [kalshi.daily] : []), ...(kalshi?.fifteen ? [kalshi.fifteen] : [])]) {
     const fam = family(k);
+    // a 15-minute window only takes a mate settling at the same minute; the hour-wide tolerance is for the dated ladders
+    const toleranceMs = k.id.startsWith("btc-15m:") ? 60_000 : 60 * 60_000;
     const mates = polyLadders.filter(
-      (p) => !used.has(p.id) && family(p) === fam && Math.abs(Date.parse(p.settlesAt) - Date.parse(k.settlesAt)) <= 60 * 60_000,
+      (p) => !used.has(p.id) && family(p) === fam && Math.abs(Date.parse(p.settlesAt) - Date.parse(k.settlesAt)) <= toleranceMs,
     );
     for (const m of mates) used.add(m.id);
     ladders.push(mates.length ? mergeLadders(k, mates) : k);

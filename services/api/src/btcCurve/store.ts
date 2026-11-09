@@ -71,12 +71,17 @@ export interface HistoryPoint {
   spotUsd: number;
   /** ladderId → bucketKey → [kalshiBid, kalshiAsk, polyBid, polyAsk, modelP·100] (−1 when absent) */
   ladders: Record<string, Record<string, [number, number, number, number, number]>>;
+  /** ladderId → settlement instant, ms (absent on points written before it was kept) */
+  settles?: Record<string, number>;
   hourlyVol?: HourlyVolPoint;
 }
 
 export function toHistoryPoint(s: Snapshot): HistoryPoint {
   const ladders: HistoryPoint["ladders"] = {};
+  const settles: Record<string, number> = {};
   for (const l of s.ladders) {
+    const settleMs = Date.parse(l.settlesAt);
+    if (Number.isFinite(settleMs)) settles[l.id] = settleMs;
     const row: Record<string, [number, number, number, number, number]> = {};
     for (const b of l.buckets) {
       const k = l.quotes.find((q) => q.venue === "kalshi" && q.bucketKey === b.key);
@@ -86,7 +91,7 @@ export function toHistoryPoint(s: Snapshot): HistoryPoint {
     }
     ladders[l.id] = row;
   }
-  return { at: s.at, atMs: Date.parse(s.at), spotUsd: s.spotUsd, ladders, ...(s.hourlyVol ? { hourlyVol: s.hourlyVol } : {}) };
+  return { at: s.at, atMs: Date.parse(s.at), spotUsd: s.spotUsd, ladders, settles, ...(s.hourlyVol ? { hourlyVol: s.hourlyVol } : {}) };
 }
 
 export class SnapshotStore {

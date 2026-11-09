@@ -10,16 +10,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { aboveKey, belowKey, keyLevel } from "../src/btcCurve/keys";
-import { bucketFromKalshi, dailyLadderFrom, dollarsToCentsExact, hourlyLadderFrom, sortBuckets, topDepthFromOrderbook } from "../src/btcCurve/kalshiLadders";
+import { bucketFromKalshi, dailyLadderFrom, dollarsToCentsExact, fifteenLadderFrom, hourlyLadderFrom, sortBuckets, topDepthFromOrderbook } from "../src/btcCurve/kalshiLadders";
 import { bucketFromPolyUs, laddersFromEvents, moneyCents } from "../src/btcCurve/polyUsLadders";
 import { expiryTagToMs, parseSummary, selectRows } from "../src/btcCurve/deribitChain";
 import { black76Call, buildSmiles, digitalDelta, forwardFor, ivAt, modelBucket, normCdf, probAbove, probTouch, type Smile } from "../src/btcCurve/model";
-import { bucketRows, digitalImpliedVol, findCross, gapSeries, hourlyVolPoint, ladderImpliedVol, ladderStrikeVols, latencyTable, mergeLadders, realizedVolPct, takerFeeCents, volPremiumByHorizon, yearEndStrikeVols } from "../src/btcCurve/analytics";
+import { bucketRows, digitalImpliedVol, fifteenMinuteHistory, fifteenMinuteView, findCross, gapSeries, hourlyVolPoint, ladderImpliedVol, ladderStrikeVols, latencyTable, mergeLadders, realizedVolPct, takerFeeCents, volPremiumByHorizon, yearEndStrikeVols } from "../src/btcCurve/analytics";
 import { SnapshotStore, toHistoryPoint } from "../src/btcCurve/store";
 import { ReplayEngine, bracketCalls } from "../src/btcCurve/replay";
 import { buildReport, termBasis } from "../src/btcCurve/report";
 import { renderReportHtml } from "../src/btcCurve/reportHtml";
-import type { Ladder, OptionRow, Snapshot, VenueQuote } from "../src/btcCurve/types";
+import type { IndexCandle, Ladder, OptionRow, Snapshot, VenueQuote } from "../src/btcCurve/types";
 
 const SETTLE = "2027-01-01T05:00:00Z";
 
@@ -675,7 +675,12 @@ test("report page: the three sources, the gaps, the latency table and the replay
     "Lock in on the",
     "40¢",
     "70¢",
-    "refused · mark 8c is outside",
+    "1 of 2 strikes refused",
+    "mark 8c is outside",
+    "Reference</i>what the venues",
+    'class="kpis now"',
+    "buckets, with sparklines</summary>",
+    "15-minute up/down",
     "polymarket_us HTTP 503",
     "preprod environment",
     'http-equiv="refresh" content="60"',
@@ -684,6 +689,8 @@ test("report page: the three sources, the gaps, the latency table and the replay
     assert.ok(html.includes(needle), `page shows ${needle}`);
   }
   assert.ok(html.includes("Upside given up"), "the holder's give-up side is a column");
+  assert.ok(!html.includes("Hedge expiry"), "writer plumbing is off the holder-side table");
+  assert.ok(!html.includes("261110"), "the hedge expiry tag is not shown");
   assert.ok(html.includes("30¢"));
   assert.ok(html.includes("take 7¢ · legs 12¢"), "the collar row carries writer economics only because the fixture set them (the service leaves them undefined unless BTC_CURVE_SHOW_TAKE=1)");
   assert.ok(!/takeBps|partner|host share/i.test(html), "no writer economics beyond what the fixture carried");
@@ -707,4 +714,74 @@ test("store: option rows travel to disk as tuples and come back whole", async ()
   assert.deepEqual(back.options[0], row);
   assert.deepEqual(back.ladders[0], ladder);
   assert.deepEqual(fromDisk(JSON.stringify(snap)).ladders[0], ladder, "older full-object lines still load");
+});
+
+test("15-minute up/down: the current window is picked, priced at two vols, and its history banded by minutes to close", () => {
+  const now = Date.UTC(2026, 11, 9, 14, 36, 0);
+  const raw = (event_ticker: string, close_time: string, floor_strike: number) => ({
+    ticker: `${event_ticker}-45`,
+    event_ticker,
+    status: "open",
+    close_time,
+    strike_type: "greater_or_equal",
+    floor_strike,
+    yes_bid_dollars: "0.4800",
+    yes_ask_dollars: "0.4900",
+  });
+  const current = raw("KXBTC15M-26NOV090945", "2026-12-09T14:45:00Z", 74559.15);
+  const next = raw("KXBTC15M-26NOV091000", "2026-12-09T15:00:00Z", 74559.15);
+  const closing = raw("KXBTC15M-26NOV090930", "2026-12-09T14:36:20Z", 74559.15);
+  const l = fifteenLadderFrom([next, current, closing], 0.07, now);
+  assert.equal(l?.id, "btc-15m:KXBTC15M-26NOV090945", "the soonest window with more than 30 seconds left");
+  assert.equal(l?.buckets.length, 1);
+  assert.equal(l?.buckets[0].kind, "above");
+  assert.equal(l?.buckets[0].level, 74559.15);
+  assert.equal(fifteenLadderFrom([next, current], 0.07, now)?.id, "btc-15m:KXBTC15M-26NOV090945", "the next window, 24 minutes out, is not the current one");
+  assert.equal(fifteenLadderFrom([next], 0.07, Date.UTC(2026, 11, 9, 14, 46, 0))?.id, "btc-15m:KXBTC15M-26NOV091000", "once the current window closes the next one is current");
+  assert.equal(fifteenLadderFrom([closing], 0.07, now), null, "inside the last 30 seconds nothing is picked");
+
+  // spot $107 under the strike with 9 minutes left: a 42% listed vol gives about a 21% digital, a 31% realised vol about 13%
+  const closeMs = Date.parse(current.close_time);
+  const flat42: Smile = { expiry: "10DEC26", expiryMs: closeMs + 17 * 3_600_000, forward: 74452, points: [70000, 74000, 75000, 80000].map((strike) => ({ strike, iv: 0.42 })) };
+  const spot = 74452;
+  const candles: IndexCandle[] = [];
+  // one-minute closes alternating ±x/2, so each one-minute return is ±x and the realised vol over the hour lands at 31%
+  const step = 0.31 / Math.sqrt(365.25 * 24 * 60) / 2;
+  for (let i = 0; i <= 60; i += 1) {
+    const close = spot * Math.exp((i % 2 ? 1 : -1) * step);
+    candles.push({ ts: Math.floor(now / 1000) - 3600 + i * 60, open: close, high: close, low: close, close });
+  }
+  const view = fifteenMinuteView(l!, [flat42], spot, candles, now, []);
+  assert.ok(view);
+  assert.equal(view.minutesToClose, 9);
+  assert.equal(view.targetUsd, 74559.15);
+  assert.ok(view.distanceBps < -13 && view.distanceBps > -16, `spot is ${view.distanceBps} bps from the strike`);
+  assert.equal(view.listedVolPct, 42);
+  assert.ok(view.realisedVolPct !== null && Math.abs(view.realisedVolPct - 31) < 2, `realised ${view.realisedVolPct}`);
+  assert.ok(view.pListedPct !== null && view.pListedPct > 18 && view.pListedPct < 24, `P(up) at listed vol ${view.pListedPct}`);
+  assert.ok(view.pRealisedPct !== null && view.pRealisedPct > 10 && view.pRealisedPct < 16, `P(up) at realised vol ${view.pRealisedPct}`);
+  assert.ok(view.kalshiMinusListedCents !== null && view.kalshiMinusListedCents > 24, "a 48/49 book is well over either read");
+  assert.equal(view.latency.length, 4);
+  assert.ok(view.latency[3].atmCentsP50 !== null && view.latency[3].atmCentsP50 > 0, "latency priced on the contract's own strike");
+  assert.equal(view.history.length, 0);
+
+  // history: two windows' readings, mids 5¢ over the model at 12 minutes and 1¢ over at 3 minutes
+  const hp = (id: string, minutes: number, mid: number, modelP: number) => ({
+    at: new Date(closeMs - minutes * 60_000).toISOString(),
+    atMs: closeMs - minutes * 60_000,
+    spotUsd: spot,
+    ladders: { [id]: { "above:74559.15": [mid - 0.5, mid + 0.5, -1, -1, modelP] as [number, number, number, number, number] } },
+    settles: { [id]: closeMs },
+  });
+  const hist = fifteenMinuteHistory([hp("btc-15m:a", 12, 55, 50), hp("btc-15m:a", 3, 61, 60), hp("btc-15m:b", 11, 45, 40), hp("btc-15m:b", 2.5, 31, 30)]);
+  assert.equal(hist.windows, 2);
+  assert.deepEqual(
+    hist.bands.map((b) => [b.label, b.n, b.windows, b.meanGapCents]),
+    [
+      ["10–15 min", 2, 2, 5],
+      ["2–5 min", 2, 2, 1],
+    ],
+  );
+  const legacy = fifteenMinuteHistory([{ ...hp("btc-15m:a", 12, 55, 50), settles: undefined }]);
+  assert.equal(legacy.windows, 0, "points written before the settlement instant was kept are skipped");
 });

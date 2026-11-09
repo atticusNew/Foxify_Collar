@@ -214,6 +214,7 @@ export function latencyTable(
   settlesAtMs: number | null,
   nowMs: number,
   horizons = [1, 5, 15, 60],
+  strikeUsd?: number,
 ): LatencyRow[] {
   const byTs = new Map<number, number>();
   for (const c of candles) byTs.set(c.ts, c.close);
@@ -224,7 +225,7 @@ export function latencyTable(
     spot = byTs.get(ts[ts.length - 1]) ?? 0;
     const smile = nearestSmile(smiles, settlesAtMs);
     const T = Math.max(1 / (365.25 * 24 * 60), (settlesAtMs - nowMs) / (365.25 * 86_400_000));
-    if (smile && spot > 0) delta = digitalDelta({ ...smile, forward: spot }, spot, T);
+    if (smile && spot > 0) delta = digitalDelta({ ...smile, forward: spot }, strikeUsd ?? spot, T);
   }
   return horizons.map((h) => {
     const moves: number[] = [];
@@ -808,4 +809,119 @@ export function volPremiumByHorizon(history: HistoryPoint[]): VolPremiumRow[] {
     });
   }
   return out;
+}
+
+
+export interface FifteenMinuteBand {
+  label: string;
+  n: number;
+  windows: number;
+  /** Kalshi mid minus option-implied, cents, mean and mean absolute */
+  meanGapCents: number;
+  meanAbsGapCents: number;
+}
+
+export interface FifteenMinuteView {
+  ladderId: string;
+  settlesAt: string;
+  opensAt: string;
+  minutesToClose: number;
+  /** the 60-second index average before the window opened: the strike */
+  targetUsd: number;
+  spotUsd: number;
+  /** spot over target, basis points */
+  distanceBps: number;
+  kalshi: { bidCents: number; askCents: number; bidQty: number; askQty: number } | null;
+  /** P(up) at the listed vol for the strike, and at the index's realised vol over the last hour, % */
+  listedVolPct: number | null;
+  realisedVolPct: number | null;
+  pListedPct: number | null;
+  pRealisedPct: number | null;
+  /** Kalshi mid minus P(up) at listed vol, cents */
+  kalshiMinusListedCents: number | null;
+  kalshiMinusRealisedCents: number | null;
+  /** cost of being late on this contract at its current moneyness */
+  latency: LatencyRow[];
+  /** the same gap over the window's past 15-minute contracts, by minutes to close */
+  history: FifteenMinuteBand[];
+  historyWindows: number;
+}
+
+const FIFTEEN_BANDS: Array<[number, number, string]> = [
+  [10, 16, "10–15 min"],
+  [5, 10, "5–10 min"],
+  [2, 5, "2–5 min"],
+  [0, 2, "under 2 min"],
+];
+
+/** Kalshi mid minus the option-implied P(up) on every past 15-minute contract in the window, by minutes to close. */
+export function fifteenMinuteHistory(history: HistoryPoint[]): { bands: FifteenMinuteBand[]; windows: number } {
+  const readings: Array<{ id: string; minutes: number; gap: number }> = [];
+  for (const h of history) {
+    if (!h.settles) continue;
+    for (const [id, row] of Object.entries(h.ladders)) {
+      if (!id.startsWith("btc-15m:")) continue;
+      const settleMs = h.settles[id];
+      if (!settleMs) continue;
+      const cell = Object.values(row)[0];
+      if (!cell) continue;
+      const [kb, ka, , , mp] = cell;
+      if (kb <= 0 || ka <= 0 || ka >= 100 || mp < 0) continue;
+      readings.push({ id, minutes: (settleMs - h.atMs) / 60_000, gap: (kb + ka) / 2 - mp });
+    }
+  }
+  const bands: FifteenMinuteBand[] = [];
+  for (const [lo, hi, label] of FIFTEEN_BANDS) {
+    const band = readings.filter((r) => r.minutes >= lo && r.minutes < hi);
+    if (!band.length) continue;
+    const mean = band.reduce((a, r) => a + r.gap, 0) / band.length;
+    const meanAbs = band.reduce((a, r) => a + Math.abs(r.gap), 0) / band.length;
+    bands.push({ label, n: band.length, windows: new Set(band.map((r) => r.id)).size, meanGapCents: Math.round(mean * 100) / 100, meanAbsGapCents: Math.round(meanAbs * 100) / 100 });
+  }
+  return { bands, windows: new Set(readings.map((r) => r.id)).size };
+}
+
+/**
+ * The live 15-minute up/down contract against the option-implied P(up): at the listed vol for the
+ * strike and at the index's own realised vol over the last hour (the better referee for a quarter
+ * hour; a one-day listed vol averages the quiet and the busy hours). Latency priced on this
+ * contract at its current distance from the strike, not at the money.
+ */
+export function fifteenMinuteView(ladder: Ladder, smiles: Smile[], spot: number, candles: IndexCandle[], nowMs: number, history: HistoryPoint[]): FifteenMinuteView | null {
+  const b = ladder.buckets[0];
+  if (!b || b.kind !== "above" || b.level === undefined || !(spot > 0)) return null;
+  const settleMs = Date.parse(ladder.settlesAt);
+  if (!Number.isFinite(settleMs)) return null;
+  const T = Math.max(1 / (365.25 * 24 * 60), (settleMs - nowMs) / (365.25 * 86_400_000));
+  const K = b.level;
+  const smile = nearestSmile(smiles, settleMs);
+  const listedVol = smile ? ivAt(smile, K) : null;
+  const realised = realizedVolPct(candles, 60);
+  const pUp = (vol: number | null) => (vol === null || !(vol > 0) ? null : normCdf((Math.log(spot / K) - 0.5 * vol * vol * T) / (vol * Math.sqrt(T))));
+  const pListed = pUp(listedVol);
+  const pRealised = pUp(realised ? realised.pct / 100 : null);
+  const q = ladder.quotes.find((x) => x.venue === "kalshi" && x.bucketKey === b.key) ?? null;
+  const twoSided = q && q.bidCents > 0 && q.askCents > 0 && q.askCents < 100;
+  const mid = twoSided ? (q.bidCents + q.askCents) / 2 : null;
+  const r2 = (x: number | null) => (x === null ? null : Math.round(x * 100) / 100);
+  const hist = fifteenMinuteHistory(history);
+  return {
+    ladderId: ladder.id,
+    settlesAt: ladder.settlesAt,
+    opensAt: new Date(settleMs - 15 * 60_000).toISOString(),
+    minutesToClose: Math.round(((settleMs - nowMs) / 60_000) * 10) / 10,
+    targetUsd: K,
+    spotUsd: spot,
+    distanceBps: Math.round((spot / K - 1) * 10_000 * 10) / 10,
+    kalshi: q ? { bidCents: q.bidCents, askCents: q.askCents, bidQty: q.bidQty, askQty: q.askQty } : null,
+    listedVolPct: listedVol === null ? null : Math.round(listedVol * 1000) / 10,
+    realisedVolPct: realised ? realised.pct : null,
+    pListedPct: pListed === null ? null : Math.round(pListed * 1000) / 10,
+    pRealisedPct: pRealised === null ? null : Math.round(pRealised * 1000) / 10,
+    kalshiMinusListedCents: mid !== null && pListed !== null ? r2(mid - pListed * 100) : null,
+    kalshiMinusRealisedCents: mid !== null && pRealised !== null ? r2(mid - pRealised * 100) : null,
+    latency: latencyTable(candles, smiles, settleMs, nowMs, [1, 5, 15, 60], K),
+    history: hist.bands,
+    historyWindows: hist.windows,
+  };
 }

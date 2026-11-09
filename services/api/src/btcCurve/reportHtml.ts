@@ -3,7 +3,7 @@
  * Readable on a phone, printable, refreshes itself on the collector's cadence.
  */
 
-import type { LatencyRow, BucketRow, GapSeries, LadderVolTable, StrikeVolRow, YearEndVenueCell, YearEndVolTable } from "./analytics";
+import type { LatencyRow, BucketRow, FifteenMinuteView, GapSeries, LadderVolTable, StrikeVolRow, YearEndVenueCell, YearEndVolTable } from "./analytics";
 import type { LadderView, ReportData } from "./report";
 import { takerFeeCents } from "./analytics";
 import type { VenueQuote } from "./types";
@@ -14,7 +14,7 @@ const esc = (s: unknown): string =>
 const c = (v: number | null | undefined, digits = 1): string =>
   v === null || v === undefined || !Number.isFinite(v) ? "–" : `${v.toFixed(digits === 1 && Math.abs(v) < 1 && v !== 0 ? 2 : digits)}¢`;
 const usd = (v: number | null | undefined, digits = 2): string =>
-  v === null || v === undefined || !Number.isFinite(v) ? "–" : `${v < 0 ? "−" : ""}$${Math.abs(v).toFixed(digits)}`;
+  v === null || v === undefined || !Number.isFinite(v) ? "–" : `${v < 0 ? "−" : ""}$${Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 const signed = (v: number | null | undefined, digits = 1): string =>
   v === null || v === undefined || !Number.isFinite(v) ? "–" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(digits)}¢`;
 const num = (v: number, digits = 0): string => v.toLocaleString("en-US", { maximumFractionDigits: digits });
@@ -107,7 +107,19 @@ function gapsTable(gaps: GapSeries[], showPoly: boolean): string {
   const rows = gaps.filter((g) => (showPoly ? g.venue.length : g.kalshiModel.length));
   if (!rows.length) return '<p class="dim">Fills as snapshots accumulate, one per minute.</p>';
   const range = Math.max(2, ...rows.map((g) => g.stats.venueMax ?? 0));
-  return `<div class="tbl"><table><tr><th>Bucket</th><th>${showPoly ? "Kalshi − Poly, window" : "Kalshi − model, window"}</th><th>Mean |gap|</th><th>Max |gap|</th><th>Last</th><th>n</th></tr>${rows
+  const stats = rows.map((g) => {
+    const s = showPoly ? g.venue : g.kalshiModel;
+    const abs = s.map(([, x]) => Math.abs(x));
+    const mean = abs.reduce((a, b) => a + b, 0) / abs.length;
+    const max = Math.max(...abs);
+    return { label: g.label, mean, max, flicker: max - mean };
+  });
+  const overall = stats.reduce((a, x) => a + x.mean, 0) / stats.length;
+  const widest = stats.reduce((a, x) => (x.mean > a.mean ? x : a), stats[0]);
+  const flicker = stats.reduce((a, x) => (x.flicker > a.flicker ? x : a), stats[0]);
+  const persistent = stats.filter((x) => x.mean >= 1).length;
+  const summary = `<div class="strip"><span>Mean |gap|, all buckets <b>${c(overall)}</b> <small>${rows.length} buckets · ${rows[0] ? (showPoly ? rows[0].venue : rows[0].kalshiModel).length : 0} snapshots</small></span><span>Widest on average <b>${esc(widest.label)}</b> <small>${c(widest.mean)} mean · ${c(widest.max)} max</small></span><span>Buckets at or over 1¢ apart on average <b>${persistent} of ${rows.length}</b> <small>persistent: quoting difference</small></span><span>Most flicker <b>${esc(flicker.label)}</b> <small>${c(flicker.max)} max vs ${c(flicker.mean)} mean · latency</small></span></div>`;
+  return `${summary}<details><summary>All ${rows.length} buckets, with sparklines</summary><div class="tbl"><table><tr><th>Bucket</th><th>${showPoly ? "Kalshi − Poly, window" : "Kalshi − model, window"}</th><th>Mean |gap|</th><th>Max |gap|</th><th>Last</th><th>n</th></tr>${rows
     .map((g) => {
       const s = showPoly ? g.venue : g.kalshiModel;
       const abs = s.map(([, x]) => Math.abs(x));
@@ -116,12 +128,12 @@ function gapsTable(gaps: GapSeries[], showPoly: boolean): string {
       const last = s.length ? s[s.length - 1][1] : null;
       return `<tr><td class="lbl">${esc(g.label)}</td><td>${spark(s, range)}</td><td>${c(mean)}</td><td>${c(max)}</td>${gapCell(last)}<td class="dim">${s.length}</td></tr>`;
     })
-    .join("")}</table></div>`;
+    .join("")}</table></div></details>`;
 }
 
-function latencyTableHtml(rows: LatencyRow[], tenor: string): string {
+function latencyTableHtml(rows: LatencyRow[], tenor: string, head = `$1 ATM digital, ${tenor}`): string {
   if (!rows.length || !rows[0].n) return '<p class="dim">Index history unavailable this cycle.</p>';
-  return `<div class="tbl"><table><tr><th>Late by</th><th>Index move, median</th><th>Index move, p90</th><th>Max in window</th><th>$1 ATM digital, ${esc(tenor)}<br><small>median / p90</small></th></tr>${rows
+  return `<div class="tbl"><table><tr><th>Late by</th><th>Index move, median</th><th>Index move, p90</th><th>Max in window</th><th>${esc(head)}<br><small>median / p90</small></th></tr>${rows
     .map(
       (r) =>
         `<tr><td class="lbl">${r.horizonSec}s</td><td>${r.p50Bps.toFixed(2)} bps</td><td>${r.p90Bps.toFixed(2)} bps</td><td>${r.maxBps.toFixed(2)} bps</td><td><b>${c(r.atmCentsP50, 2)}</b> / ${c(r.atmCentsP90, 2)}</td></tr>`,
@@ -160,15 +172,24 @@ function collarHtml(d: ReportData): string {
   if (!col) return '<p class="dim">Not quoted this cycle.</p>';
   if (col.error) return `<p class="dim">${esc(col.error)}</p>`;
   if (!col.rows.length) return '<p class="dim">No strike with a mark inside the quotable band this cycle.</p>';
-  return `<p class="dim">${esc(col.ladderId.replace(/^btc-/, "").replace(/:.*$/, "").replace(/^\w/, (ch) => ch.toUpperCase()))} close ${et(col.settlesAt)} · hedge legs: listed BTC option books · per $1 contract, 100 contracts</p><div class="tbl"><table><tr><th>Strike</th><th>Mark</th><th>Floor</th><th>Cap</th><th>Credit to holder</th><th>Upside given up<br><small>100¢ − cap</small></th><th>Hedge expiry</th><th></th></tr>${col.rows
-    .map((r) =>
-      r.ok
-        ? `<tr><td class="lbl">${esc(r.label)}</td><td>${r.markCents}¢</td><td><b>${r.floorCents}¢</b></td><td><b>${r.capCents}¢</b></td><td><b>${c(r.creditCents, 0)}</b></td><td>${c(r.upsideGivenUpCents, 0)}</td><td>${esc(r.hedgeExpiry)}<br><small>${esc(
-            r.alignment === "expiry_aligned" ? "aligned" : "unwound at close",
-          )}</small></td><td class="dim">${r.takeCents !== undefined ? `take ${r.takeCents}¢ · legs ${c(r.hedgeCostCents, 0)}` : ""}</td></tr>`
-        : `<tr class="ref"><td class="lbl">${esc(r.label)}</td><td>${r.markCents}¢</td><td colspan="6" class="dim">refused · ${esc(r.refusal)}</td></tr>`,
-    )
-    .join("")}</table></div>`;
+  const quoted = col.rows.filter((r) => r.ok);
+  const refused = col.rows.filter((r) => !r.ok);
+  const refusedLine = refused.length
+    ? `<p class="dim">${refused.length} of ${col.rows.length} strikes refused (${esc(refused[0].label)} to ${esc(refused[refused.length - 1].label)}, marks ${refused[refused.length - 1].markCents}¢ to ${refused[0].markCents}¢): ${esc(
+        refused[0].refusal ?? "no floor/cap pair leaves a positive credit",
+      )}.</p>`
+    : "";
+  const table = quoted.length
+    ? `<div class="tbl"><table><tr><th>Strike</th><th>Mark</th><th>Floor</th><th>Cap</th><th>Credit to holder</th><th>Upside given up<br><small>100¢ − cap</small></th><th></th></tr>${quoted
+        .map(
+          (r) =>
+            `<tr><td class="lbl">${esc(r.label)}</td><td>${r.markCents}¢</td><td><b>${r.floorCents}¢</b></td><td><b>${r.capCents}¢</b></td><td><b>${c(r.creditCents, 0)}</b></td><td>${c(r.upsideGivenUpCents, 0)}</td><td class="dim">${
+              r.takeCents !== undefined ? `take ${r.takeCents}¢ · legs ${c(r.hedgeCostCents, 0)}` : ""
+            }</td></tr>`,
+        )
+        .join("")}</table></div>`
+    : "";
+  return `<p class="dim">${esc(col.ladderId.replace(/^btc-/, "").replace(/:.*$/, "").replace(/^\w/, (ch) => ch.toUpperCase()))} close ${et(col.settlesAt)} · hedge legs: listed BTC option books · per $1 contract, 100 contracts</p>${table}${refusedLine}`;
 }
 
 function hourlyHtml(d: ReportData): string {
@@ -234,8 +255,15 @@ function strikeVolsHtml(d: ReportData): string {
  * value, at the venue's own bid depth. The options market is the reference here, not a hedge venue; the
  * crosses note above is the part of this the other venue lets a cross-venue trader collect today.
  */
-function bidsOverSmileNote(v: LadderView): string {
-  const per = (pick: (r: BucketRow) => VenueQuote | null, theta: (q: VenueQuote) => number) => {
+interface BidsOverSmile {
+  usdTotal: number;
+  contracts: number;
+  buckets: number;
+  best: { label: string; usd: number; bid: number; model: number; qty: number } | null;
+}
+
+export function bidsOverSmile(v: LadderView): { kalshi: BidsOverSmile; poly: BidsOverSmile } {
+  const per = (pick: (r: BucketRow) => VenueQuote | null, theta: (q: VenueQuote) => number): BidsOverSmile => {
     let usdTotal = 0;
     let contracts = 0;
     let buckets = 0;
@@ -254,10 +282,13 @@ function bidsOverSmileNote(v: LadderView): string {
     }
     return { usdTotal, contracts, buckets, best };
   };
-  const k = per((r) => r.kalshi, (q) => q.feeTheta);
-  const p = per((r) => r.poly, (q) => q.feeTheta);
+  return { kalshi: per((r) => r.kalshi, (q) => q.feeTheta), poly: per((r) => r.poly, (q) => q.feeTheta) };
+}
+
+function bidsOverSmileNote(v: LadderView): string {
+  const { kalshi: k, poly: p } = bidsOverSmile(v);
   if (!k.buckets && !p.buckets) return "";
-  const line = (name: string, x: ReturnType<typeof per>) =>
+  const line = (name: string, x: BidsOverSmile) =>
     x.buckets
       ? `${name}: ${usd(x.usdTotal, 0)} over ${x.buckets} bucket${x.buckets > 1 ? "s" : ""}, ${num(x.contracts, 0)} contracts bid${
           x.best ? `; largest ${esc(x.best.label)}, bid ${c(x.best.bid, 1)} vs smile ${c(x.best.model, 2)} on ${num(x.best.qty, 0)} contracts, ${usd(x.best.usd, 0)}` : ""
@@ -292,8 +323,48 @@ function yearEndVolsHtml(t: YearEndVolTable | null): string {
     const v = t.tails[k as "kalshi" | "poly" | "model"];
     return v ? `${v[0].toFixed(1)}¢ · ${v[1].toFixed(1)}¢` : "–";
   }).join(" | ")}</b> <small>Kalshi | Polymarket US | Deribit, raw mids, cents of $1</small></span><span>Skew, below − above listed forward <b>${pts(t.skew.kalshiPts)} · ${pts(t.skew.polyPts)} · ${pts(t.skew.smilePts)} pts</b> <small>Kalshi · Polymarket US · Deribit, mid vols</small></span></div>`;
-  return `<h3>Bucket boundaries in vol: Kalshi vs Polymarket US vs Deribit</h3>
+  return `<h3>Bucket boundaries in vol: Kalshi vs Polymarket US vs Deribit <span class="tag eng">Engine</span></h3>
 <p>Range mids summed above each $5,000 line into P(above), each venue divided by its own sum; a bucket bid at 0¢ counts as zero. Inverted to vol on the venue's own 50% point: the vol columns compare shape, the strip compares level. Band: the same sum over bids and over asks; near the centre on $5,000 buckets a digital has little vega, so the band is wide there. Deribit vol at the line beside. Inside: shape agrees. Venue over or under: it does not, and the band is narrow enough to say so. Above any lognormal: more weight past the line than any single vol allows. Wings under 5% or over 95% and the line at the centre are blank. Tail mass in the strip is raw mids, no normalisation, same contracts on all three sources. A venue whose mids sum well past 100¢ is not a coherent distribution; normalising spreads the excess over every line, so read its vol columns as where its book is heavy, with the band as the limit of what it can say.</p>${strip}<div class="tbl"><table><tr><th rowspan="2">Boundary</th><th colspan="3">Kalshi</th><th colspan="3">Polymarket US</th><th rowspan="2">Deribit vol<br><small>at boundary</small></th></tr><tr><th>P(above)<br><small>normalised</small></th><th>Vol<br><small>mid · bid to ask band</small></th><th>Listed vs band</th><th>P(above)<br><small>normalised</small></th><th>Vol<br><small>mid · bid to ask band</small></th><th>Listed vs band</th></tr>${rows}</table></div>`;
+}
+
+function fifteenHtml(f: FifteenMinuteView | null): string {
+  if (!f) return '<h3>15-minute up/down <span class="tag eng">Engine</span></h3><p class="dim">No 15-minute window open this cycle (Kalshi KXBTC15M).</p>';
+  const pct = (x: number | null, dp = 0) => (x === null ? "–" : `${x.toFixed(dp)}%`);
+  const q = f.kalshi;
+  const quote = q && q.bidCents > 0 && q.askCents < 100 ? `<b>${q.bidCents.toFixed(0)}</b> / <b>${q.askCents.toFixed(0)}</b> <small>${q.bidQty || q.askQty ? `${num(q.bidQty)} × ${num(q.askQty)}` : "depth not read"}</small>` : '<span class="dim">no two-sided book</span>';
+  const strip = `<div class="strip"><span>Window <b>${et(f.opensAt).replace(/^.*?, /, "")} → ${et(f.settlesAt).replace(/^.*?, /, "")}</b> <small>${f.minutesToClose.toFixed(1)} min left · Kalshi ${esc(f.ladderId.replace(/^btc-15m:/, ""))}</small></span><span>Strike <b>$${num(f.targetUsd, 2)}</b> <small>60-second index average before the open</small></span><span>Index now <b>$${num(f.spotUsd, 2)}</b> <small>${f.distanceBps > 0 ? "+" : ""}${f.distanceBps.toFixed(1)} bps from the strike</small></span><span>Kalshi "up" ${quote}</span><span>P(up), option-implied <b>${pct(f.pListedPct, 1)}</b> <small>listed vol ${pct(f.listedVolPct)} at the strike</small></span><span>P(up), realised vol <b>${pct(f.pRealisedPct, 1)}</b> <small>index realised ${pct(f.realisedVolPct)}, last hour</small></span><span>Kalshi − implied <b>${signed(f.kalshiMinusListedCents)} · ${signed(f.kalshiMinusRealisedCents)}</b> <small>vs listed · vs realised</small></span></div>`;
+  const hist = f.history.length
+    ? `<div class="tbl"><table><tr><th>Minutes to close</th><th>Kalshi mid − P(up) at listed vol<br><small>mean, cents</small></th><th>Mean |gap|</th><th>Readings<br><small>windows</small></th></tr>${f.history
+        .map((b) => `<tr><td class="lbl">${esc(b.label)}</td><td>${signed(b.meanGapCents, 2)}</td><td>${c(b.meanAbsGapCents, 2)}</td><td class="dim">${b.n}<small>${b.windows}</small></td></tr>`)
+        .join("")}</table></div><p class="dim">${f.historyWindows} windows in the history. A gap that shrinks toward the close is the book converging on the index; one that persists is a premium the makers keep to the last minute.</p>`
+    : '<p class="dim">Gap by minutes to close fills as windows pass.</p>';
+  return `<h3>15-minute up/down <span class="tag eng">Engine</span></h3>
+<p>Kalshi's quarter-hour contract: "up" pays $1 when the 60-second index average before the close is at or above the same average before the open. One strike, set at the open. Priced here as a digital on the index at two vols: the listed vol for the strike, and the index's own realised vol over the last hour, the better referee for a quarter hour since a one-day listed vol averages the quiet hours with the busy ones. The latency rows below price the index moves on this contract at its current distance from the strike, not at the money.</p>${strip}${latencyTableHtml(f.latency, "15-min", "$1 digital, this contract at its distance from the strike")}${hist}`;
+}
+
+/** The page in six numbers, filled from the data: what a reader who trades the hour wants before the tables. */
+function nowBox(d: ReportData): string {
+  const range = d.yearEnd.find((v) => v.id === "btc-yearend-2026-range");
+  const hv = d.hourlyVol;
+  const pct = (x: number | null | undefined) => (x === null || x === undefined ? "–" : `${x.toFixed(0)}%`);
+  const pts = (x: number | null | undefined) => (x === null || x === undefined ? "–" : `${x > 0 ? "+" : ""}${x.toFixed(1)}`);
+  const prem = d.volPremium.length ? d.volPremium.reduce((a, r) => a + r.meanPremiumPts * r.n, 0) / d.volPremium.reduce((a, r) => a + r.n, 0) : null;
+  const premRange = d.volPremium.length ? `${pts(Math.min(...d.volPremium.map((r) => r.minPremiumPts)))} to ${pts(Math.max(...d.volPremium.map((r) => r.maxPremiumPts)))}` : "–";
+  const daily = d.strikeVols.daily.find((t) => t.venue === "kalshi") ?? null;
+  const crosses = d.yearEnd.flatMap((v) => v.rows.filter((r) => r.cross));
+  const crossUsd = crosses.reduce((a, r) => a + (r.cross!.edgeCents * r.cross!.qty) / 100, 0);
+  const bids = range ? bidsOverSmile(range) : null;
+  const t = d.yearEndVols?.tails ?? null;
+  const tail = (k: "kalshi" | "poly" | "model") => (t && t[k] ? `${t[k]![0].toFixed(0)}¢` : "–");
+  const r = d.replay;
+  return `<div class="kpis now">
+<div><small>Hourly ladder vol vs listed, now</small><b>${pct(hv?.ladderPct)} vs ${pct(hv?.smilePct)}</b><small>Deribit ATM · index realised ${pct(hv?.realizedPct)} · ${hv ? `${hv.minutesToClose} min to close` : "no hourly"}</small></div>
+<div><small>Hourly premium over the window</small><b>${pts(prem)} pts</b><small>ladder vol minus listed, mean · range ${premRange}</small></div>
+<div><small>Daily ladder skew, venue vs listed</small><b>${daily?.skew ? `${pts(daily.skew.venuePts)} vs ${pts(daily.skew.smilePts)}` : "–"}</b><small>below minus above the centre, vol points · ${daily ? `${daily.inside} of ${daily.withBand} strikes inside` : "no daily"}</small></div>
+<div><small>Year-end tail, at or above $${t ? num(t.upperFromUsd) : "–"}</small><b>${tail("kalshi")} · ${tail("poly")} · ${tail("model")}</b><small>Kalshi · Polymarket US · Deribit, raw mids</small></div>
+<div><small>Dollars on the year-end ladder</small><b>${usd(crossUsd, 0)} · ${bids ? usd(bids.kalshi.usdTotal, 0) : "–"} · ${bids ? usd(bids.poly.usdTotal, 0) : "–"}</b><small>crosses at depth · bids over option value, Kalshi · Poly</small></div>
+<div><small>Hourly digital, writer's P&amp;L per $1</small><b>${usd(r.meanNaked, 2)} · ${usd(r.meanStatic, 2)} · ${usd(r.meanDynamic, 2)}</b><small>naked · option spread · delta hedge · ${r.n} settled</small></div>
+</div>`;
 }
 
 export function renderReportHtml(d: ReportData, opts: { refreshSec?: number } = {}): string {
@@ -320,15 +391,22 @@ td{padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap;vertic
 svg.dist{width:100%;height:auto;display:block;margin-top:6px}svg.dist rect.k{fill:var(--k)}svg.dist rect.p{fill:var(--p)}svg.dist rect.m{fill:var(--m);opacity:.75}svg.dist .ax{font-size:9px;fill:var(--dim)}svg.dist .grid{stroke:var(--line);stroke-width:1}
 .legend{display:flex;gap:16px;font-size:12px;color:var(--dim);margin:4px 0 0}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.legend .k{background:var(--k)}.legend .p{background:var(--p)}.legend .m{background:var(--m)}
 svg.spark{width:160px;height:28px;display:block}svg.spark polyline{fill:none;stroke:var(--k);stroke-width:1.5}svg.spark .zero{stroke:var(--line)}
-.note{border-left:3px solid var(--line);padding:4px 12px;color:var(--dim);font-size:13px;margin:10px 0}.limits{padding-left:18px;font-size:13px;color:var(--dim);margin:6px 0}.limits li{margin:5px 0}.limits b{color:var(--ink)}.ok{color:var(--ok)}.bad{color:var(--hot)}footer{margin-top:40px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
+.note{border-left:3px solid var(--line);padding:4px 12px;color:var(--dim);font-size:13px;margin:10px 0}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;padding:1px 7px;border-radius:999px;vertical-align:middle;margin-left:8px}.tag.ref{background:#f3f4f6;color:var(--dim)}.tag.eng{background:#e8f0fb;color:var(--k)}
+.key{display:flex;flex-wrap:wrap;gap:8px 28px;font-size:13px;color:var(--dim);margin:10px 0 0}.key span{display:flex;gap:8px;align-items:baseline}.key .tag{margin:0}
+.kpis.now{margin:14px 0 0}.kpis.now div{background:#fafafa}.kpis.now b{font-size:17px}
+details{margin:8px 0}summary{cursor:pointer;color:var(--k);font-size:13px}.limits{padding-left:18px;font-size:13px;color:var(--dim);margin:6px 0}.limits li{margin:5px 0}.limits b{color:var(--ink)}.ok{color:var(--ok)}.bad{color:var(--hot)}footer{margin-top:40px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
 </style></head><body><main>
 <h1>Bitcoin on the event venues</h1>
 <p class="lead">Kalshi and Polymarket US Bitcoin contracts against the listed option market: curve, venue gaps, cost of latency, static vs dynamic hedge. Live from public market data. Read-only.</p>
 <div class="strip"><span>BRTI <b>$${num(d.spotUsd, 2)}</b> <small>settlement index, both venues${d.spotSource !== "brti" ? " (Deribit index this cycle)" : ""}</small></span>
 <span>As of <b>${et(d.at)}</b> <small>refresh ${d.intervalSec}s</small></span>
 <span>Window <b>${d.historyPoints}</b> snapshots <small>${d.collectingSince ? `since ${et(d.collectingSince)}` : "first cycle"}</small></span></div>
+<div class="key"><span><i class="tag ref">Reference</i>what the venues and the options market show on their own: bid, ask, depth, Kalshi − Poly, gaps over time, index moves</span><span><i class="tag eng">Engine</i>what pricing every contract against the listed options market adds: the option-implied column, every table in vol, the two dollar notes, the 15-minute and hourly reads, the hedge replay</span></div>
+${nowBox(d)}
+<p class="dim">If you trade the hour, start at §2 and §4; §1 is the one tenor both venues list as the same contract.</p>
 
-<h2>1 · Year-end 2026 curve: Kalshi vs Polymarket US vs options</h2>
+<h2>1 · Year-end 2026 curve: Kalshi vs Polymarket US vs options <span class="tag ref">Reference</span><span class="tag eng">Engine</span></h2>
 <p>Same $5,000 buckets, same index (CF Benchmarks BRTI), same instant (Dec 31, midnight ET). Settlement statistic differs: Kalshi, simple average of the last 60 one-second prints; Polymarket US, 20% trimmed mean of the same 60. Option-implied column: Deribit smile, interpolated, −∂C/∂K. Gaps in cents per $1 contract.</p>
 ${
   d.basis
@@ -344,33 +422,38 @@ ${
 }
 ${range ? bidsOverSmileNote(range) : ""}
 ${yearEndVolsHtml(d.yearEndVols)}
-<h3>One-touch ladders: high and low of the year</h3>
+<h3>One-touch ladders: high and low of the year <span class="tag ref">Reference</span></h3>
 <p class="dim">Touch fair value is a model (reflection principle, smile vol at the barrier), not a market read. Gap to model indicative only.</p>
 ${high ? ladderTable(high, { showPoly: high.venues.includes("polymarket_us") }) : ""}
 ${low ? ladderTable(low, { showPoly: low.venues.includes("polymarket_us") }) : ""}
 ${d.polyOnly.length ? `<h3>Polymarket US only</h3>${d.polyOnly.map((v) => `<p class="dim">${esc(v.title)} · settles ${et(v.settlesAt)}</p>${ladderTable(v, { showPoly: true })}`).join("")}` : ""}
 
-<h2>2 · Hourly ladder vs options</h2>
+<h2>2 · Hourly ladder vs options <span class="tag eng">Engine</span></h2>
 ${hourlyHtml(d)}
 <div class="note">${esc(d.notes.polyUsShortDated)}</div>
 
-<h2>3 · Gaps over time</h2>
+<h2>3 · Gaps over time <span class="tag ref">Reference</span></h2>
 <p>Kalshi mid − Polymarket US mid per bucket, each snapshot in the window. Persistent gap: quoting difference. Flickering gap: latency.</p>
 ${range ? gapsTable(range.gaps, range.venues.includes("polymarket_us")) : ""}
 
-<h2>4 · Cost of latency</h2>
-<p>Settlement index moves over 1, 5, 15 and 60 seconds across the last hour of one-second prints, and the value of that move on a $1 at-the-money digital, hourly tenor vs year-end tenor.</p>
+<h2>4 · Cost of latency, and the 15-minute contract <span class="tag ref">Reference</span><span class="tag eng">Engine</span></h2>
+<p>Settlement index moves over 1, 5, 15 and 60 seconds across the last hour of one-second prints (reference), and the value of that move on a $1 at-the-money digital, hourly tenor vs year-end tenor (engine).</p>
 <h3>Hourly contract</h3>${latencyTableHtml(d.latency, "hourly")}
 <h3>Year-end contract</h3>${latencyTableHtml(d.latencyYearEnd, "year-end")}
+${fifteenHtml(d.fifteen)}
 
-<h2>5 · Static vs dynamic hedge, per hourly contract</h2>
+<h2>5 · Static vs dynamic hedge, per hourly contract <span class="tag eng">Engine</span></h2>
 <p>Each hourly ladder seen with 20 min to 2 h left: one $1 at-the-money digital sold at Kalshi mid, carried to settlement from the same snapshots. Static: listed call spread bracketing the strike, bought at offer, sold at bid on the first snapshot after close. Dynamic: option-implied digital delta in spot, rebalanced every snapshot through the close, 2 bps on traded notional. Settlement: Kalshi's simple 60-second BRTI average. Naked: premium kept minus payout. Figures per $1 contract; negative is a loss to the writer. Per-contract hedging is the worst case; a book nets delta across strikes and hours.</p>
 ${replayHtml(d)}
 
-<h2>6 · Lock in on the ${collarTenor(d)} ladder</h2>
-<p>Holder-side terms per strike on Kalshi's ${collarTenor(d) === "daily" ? "5 PM ET daily contract (KXBTCD)" : "current hourly ladder"}: floor, cap, credit at settlement. Priced leg for leg off live listed option books, exchange fees and the writer's margin included. Give-up shown. A strike is refused when no floor/cap pair leaves a positive credit after the legs, fees and margin; away from the money that is the usual outcome.</p>
+${
+  d.collar
+    ? `<h2>6 · Lock in on the ${collarTenor(d)} ladder <span class="tag eng">Engine</span></h2>
+<p>Holder-side terms per strike on Kalshi's ${collarTenor(d) === "daily" ? "5 PM ET daily contract (KXBTCD)" : "current hourly ladder"}: floor, cap, credit at settlement. Priced leg for leg off live listed option books, exchange fees and the writer's margin included. Give-up shown. A strike is refused when no floor/cap pair leaves a positive credit after the legs, fees and margin; away from the money that is the usual outcome. On a binary with a deep two-sided book a floor and cap replicate as a partial sale at the bid, so the credit is read against that.</p>
 ${collarHtml(d)}
-
+`
+    : ""
+}
 <h2>Notes and limits</h2>
 <ul class="limits">
 <li><b>Prices.</b> Kalshi quotes in sub-penny dollars, kept as quoted (0.20¢, not 0¢). Polymarket US ticks in whole cents. Mid = (bid + ask)/2, formed only with a bid and an offer under 100¢. Depth = resting size at best level only.</li>
@@ -383,7 +466,7 @@ ${collarHtml(d)}
 </ul>
 
 <footer>
-<p><b>Sources.</b> Kalshi public market API (KXBTCY, KXBTCMAXY, KXBTCMINY, KXBTCD) · Polymarket US public Retail API (gateway.polymarket.us; BTC series events, books, BRTI candles) · Deribit public book summaries (BTC options) · OKX public option books for the hedge legs in §6. Both event venues settle on CF Benchmarks' Bitcoin Real-Time Index; Kalshi's year-end and hourly ladders take the simple 60-second average, Polymarket US's the 20% trimmed mean over the same 60 seconds; both venues' one-touch ladders use the trimmed mean.</p>
+<p><b>Sources.</b> Kalshi public market API (KXBTCY, KXBTCMAXY, KXBTCMINY, KXBTCD, KXBTC15M) · Polymarket US public Retail API (gateway.polymarket.us; BTC series events, books, BRTI candles) · Deribit public book summaries (BTC options)${d.collar ? " · OKX public option books for the hedge legs in §6" : ""}. Both event venues settle on CF Benchmarks' Bitcoin Real-Time Index; Kalshi's year-end and hourly ladders take the simple 60-second average, Polymarket US's the 20% trimmed mean over the same 60 seconds; both venues' one-touch ladders use the trimmed mean.</p>
 <p><b>Health this cycle.</b> ${healthLine}</p>
 <p>Read-only. No credentials loaded. Cannot place orders, move funds or see an account.</p>
 </footer></main></body></html>`;

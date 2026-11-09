@@ -31,6 +31,31 @@ on the same inputs as everything else.
 | **As of 6:55 PM ET · refresh 60s** | The timestamp of the snapshot you are looking at. | The page is a live read, not a report from last week. |
 | **Window 237 snapshots · since …** | How many one-minute observations the time-series sections (§2 table, §3, §5) have to work with. The window survives a redeploy (it is on disk). | On day one this is small. The gaps and hedge sections become meaningful after a day. |
 
+### The key and the six tiles
+
+Under the strip, a one-line key with two tags that then appear on every section heading:
+
+- **Reference**: what the venues and the options market show on their own. Bid, ask, depth,
+  Kalshi − Poly, the gaps over time, the index moves. A venue trader has all of this already,
+  in his own systems, faster. It is on the page because everything else reads off it.
+- **Engine**: what pricing every contract against the listed options market adds. The
+  option-implied column, every table in vol, the two dollar notes, the 15-minute and hourly
+  reads, the hedge replay. This is the part he does not have.
+
+Then six tiles, filled from the data each minute, that tell the story before the tables:
+
+| Tile | What it is | Nov 9, 9:45 AM ET |
+| --- | --- | --- |
+| Hourly ladder vol vs listed, now | The one-vol fit to Kalshi's current hourly ladder against Deribit's one-day ATM, with the index's realised vol over the last hour beside | 64% vs 42%, realised 40%, 15 min to close |
+| Hourly premium over the window | Ladder vol minus listed vol, mean over every reading in the window, and the range | −0.6 pts, range −12 to +29 |
+| Daily ladder skew, venue vs listed | Vol below the centre minus vol above it, Kalshi's 5 PM ladder vs Deribit at the same strikes | +2.8 vs +3.7 |
+| Year-end tail, at or above $90,000 | Raw mids summed over the buckets from $90k up, three sources | 17¢ · 26¢ · 8¢ |
+| Dollars on the year-end ladder | The two §1 notes as numbers: crosses at depth, then bids over option value on Kalshi and on Poly | $244 · $41 · $1,484 |
+| Hourly digital, writer's P&L per $1 | §5's three means: naked, option spread, delta hedge | $0.15 · −$0.17 · −$0.17, 9 settled |
+
+The line under the tiles says where to start: §2 and §4 if you trade the hour; §1 is the one
+tenor both venues list as the same contract.
+
 Where the index comes from: Polymarket US republishes BRTI one-second candles on its public
 price-history endpoint, and that is what the page reads. On Nov 8 it sat $20 from Deribit's
 own BTC index at the same second, which is normal (different constituent exchanges).
@@ -436,8 +461,13 @@ hedges on listed vol, so that difference is the ground it stands on."
 
 ## 4. Section 3: gaps over time
 
-Per year-end bucket, a sparkline of (Kalshi mid − Poly mid) at every snapshot in the window,
-with mean |gap|, max |gap|, and the latest value. The point of the sparkline shape:
+A four-number strip, then the 28-row table folded behind "All 28 buckets, with sparklines".
+The strip: mean |gap| across all buckets (1.1¢ on Nov 9 morning, 28 buckets, 486 snapshots);
+the bucket widest on average ($70–75k, 2.9¢ mean, 8.8¢ max); how many buckets sit 1¢ or more
+apart on average (14 of 28, the persistent ones); and the bucket with the most flicker (max
+far above mean, the latency one). The table under it is the evidence, per bucket: a sparkline
+of (Kalshi mid − Poly mid) at every snapshot in the window, with mean |gap|, max |gap|, and
+the latest value. The point of the sparkline shape:
 
 - **A flat line away from zero** = a persistent quoting difference. One venue's makers
   simply price the bucket differently. That is a real, slow-moving opportunity or a real
@@ -473,6 +503,42 @@ How to read it: on the hourly ladder, being a minute late costs more than most o
 cross-venue gaps are worth, so hourly-ladder arbitrage is an execution-speed business. On the
 year-end ladder, latency is irrelevant and the gaps are about pricing. The page states that
 this measures the **index**, not any venue's matching engine or API path.
+
+### "15-minute up/down" (under the latency tables)
+
+Kalshi's shortest Bitcoin contract (series KXBTC15M): one market per quarter hour, "up" pays
+$1 when the 60-second BRTI average before the close is at or above the same average before
+the open. One strike, set at the open, printed in the market's subtitle as the target price.
+Kalshi lists only the current window, so for the last half minute of each quarter hour the
+block says "no 15-minute window open this cycle" and refills at the next open.
+
+The strip: the window (open → close, minutes left), the strike, the index now and its
+distance from the strike in basis points, Kalshi's "up" bid/ask with depth, then two
+option-implied probabilities of "up" and Kalshi's gap to each:
+
+- **P(up), option-implied**: a digital on the index at the listed vol for the strike (the
+  engine's standard referee).
+- **P(up), realised vol**: the same digital at the index's own realised vol over the last
+  hour. For a quarter hour this is the better referee: a one-day listed vol averages the quiet
+  hours with the busy ones, and at 9 minutes to go the difference between 42% and 31% vol is
+  the difference between a 21% and a 13% contract when spot sits $107 under the strike.
+
+Then the latency table again, but priced on **this** contract at its current distance from
+the strike rather than at the money. With a few minutes left and spot near the strike the
+digital delta is enormous, and a 5-second move is worth several cents; with spot far from the
+strike the contract is nearly decided and the same move is worth nothing.
+
+Then a small table of Kalshi mid minus P(up) at listed vol over every past window in the
+history, by minutes to close (10–15, 5–10, 2–5, under 2). A gap that shrinks toward the close
+is the book converging on the index; one that persists is a premium the makers keep to the
+last minute. This fills over the day; the first evening's page has a few windows.
+
+Why this block is on the page: the 15-minute contract is where a speed trader lives, and it
+has almost no vol content. Its fair value is the index path since the open plus a few minutes
+of realised vol, and the edge is latency. The engine's contribution here is modest and the
+page says so: a fair value from two vols, and the cost of being late on this exact contract.
+The sentence to have ready: "on the quarter hour the options market is a weak referee and
+realised vol is a better one; both are shown, and the latency rows are the ones that matter."
 
 ---
 
@@ -582,7 +648,27 @@ are named, bounded and symmetric.
 
 ## 7. Section 6: "Lock in on the daily ladder"
 
-Our product, quoted on Kalshi's 5 PM ET daily strikes, from the **holder's** side.
+**Off on the deployed page for this reader** (`BTC_CURVE_COLLAR=1` turns it on; the default
+is off since Nov 9). The reason, in one paragraph, because he may ask where the product is:
+
+A binary pays 0 or 100. A floor of 30 and a cap of 65 pay 30 or 65. That is exactly what a
+holder gets by selling 65% of the position at the venue's bid and keeping the rest: at the
+Nov 9 quote (mark 60¢, bid 59¢) the partial sale gives 38.4¢ cash plus the same 35¢ of upside,
+the collar gives a 30¢ floor plus a 1¢ credit plus the same upside. On a $5,000-deep ladder
+quoted 1¢ wide the collar cannot beat the book, because the writer pays option spreads, fees,
+the overnight haircut and margin to replicate something the book sells directly. The pricer
+is honest about this (13 of 14 strikes refused, the one quote at 1¢), but on this instrument
+the section shows the product at its weakest and invites exactly that comparison from a prop
+trader. Lock in earns its keep where partial sale is not available: thin or one-sided books,
+in-play sports, size the book cannot absorb, holders who will not leg out. None of those
+apply to a BTC daily ladder. The sentence to have ready: "a collar on a deep binary is a
+partial sale with extra steps; the product is for the books where you cannot sell at the mid,
+and that is the sports page."
+
+When it is on, the section reads as follows. Our product, quoted on Kalshi's 5 PM ET daily
+strikes, from the **holder's** side. Refused strikes are folded into one line under the table
+("13 of 14 strikes refused (… to …, marks 10¢ to 90¢): live option books cannot fund …"), and
+the hedge-expiry column is gone from the holder-side table.
 
 ### Why most rows refuse, and the tenor
 
@@ -626,8 +712,6 @@ used.
 - **Cap**: the most they will end up with even if the contract pays $1.
 - **Credit to holder**: cents paid to them at settlement for accepting the cap.
 - **Upside given up**: 100¢ − cap. The give-up, stated as a number, not hidden.
-- **Hedge expiry**: the listed option expiry the floor and cap are built from, and whether
-  it is aligned with the close (rarely) or "unwound at close" (usually).
 
 Behind each row, the pricer buys and sells the two listed puts that bracket the strike on
 OKX's public option books, leg for leg at the sizes shown, for 100 contracts. If the books
