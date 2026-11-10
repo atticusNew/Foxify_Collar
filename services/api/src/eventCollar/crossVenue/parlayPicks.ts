@@ -161,10 +161,19 @@ export function resolvePicks(queries: readonly PickQuery[], markets: readonly Pi
 
 /**
  * The checks a parlay lock must pass, on the service's own read of the picks at the tap: the
- * ticket is at its last pick, that pick is the market being locked and has not started, and the
- * size is at most what the ticket pays (one contract per payout dollar).
+ * ticket is at its last pick, that pick is the market being locked, and the size is at most what
+ * the ticket pays (one contract per payout dollar). With in play on (lockWindow.ts) the last
+ * pick's game may be under way: the ticket is still one position on that game, and whether the
+ * books fund a lock on it now is the quote's question. With it off the pick must not have started.
  */
-export function verifyParlayLock(view: PicksView, ticker: string, contracts: number, stakeCents: number, payoutCents: number): { ok: true } | { ok: false; code: string; message: string } {
+export function verifyParlayLock(
+  view: PicksView,
+  ticker: string,
+  contracts: number,
+  stakeCents: number,
+  payoutCents: number,
+  opts: { inPlay?: boolean } = {},
+): { ok: true } | { ok: false; code: string; message: string } {
   if (view.state === "busted") return { ok: false, code: "parlay_busted", message: "A pick on this parlay missed; there is nothing left to protect." };
   if (view.state === "won") return { ok: false, code: "parlay_settled", message: "Every pick on this parlay has hit; it is settled, not open." };
   if (view.state === "unknown") {
@@ -173,7 +182,7 @@ export function verifyParlayLock(view: PicksView, ticker: string, contracts: num
   }
   if (view.state === "open") return { ok: false, code: "parlay_not_last_pick", message: `Protection opens at the last pick; ${view.open} picks are still open.` };
   if (!view.lastPick || view.lastPick.ticker !== ticker) return { ok: false, code: "parlay_not_last_pick", message: "The market being locked is not this parlay's last open pick." };
-  if (view.lastPick.live) return { ok: false, code: "parlay_in_play", message: "The last pick's game has started." };
+  if (view.lastPick.live && !opts.inPlay) return { ok: false, code: "parlay_in_play", message: "The last pick's game has started." };
   if (!(payoutCents > stakeCents && stakeCents > 0)) return { ok: false, code: "parlay_size", message: "The parlay's stake and payout do not read as a ticket." };
   if (Math.round(contracts * 100) > payoutCents) return { ok: false, code: "parlay_size", message: "The size is more than the parlay pays." };
   return { ok: true };

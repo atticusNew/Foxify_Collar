@@ -73,9 +73,9 @@
  *      KALSHI_REST_BASE / PM_GAMMA_REST_BASE / PM_CLOB_REST_BASE (relay overrides)
  *      EVENT_X_VIDEO_URL / EVENT_X_VIDEO_POSTER_URL (the live recording on the demo page;
  *      default the bundled file at /media/lockin-live.mp4; "off" hides the block)
- *      EVENT_X_IN_PLAY (1: a game that has started stays on the board and quotes in play from the
- *      books as they stand, for EVENT_X_IN_PLAY_HOURS after tip-off, default 4; off by default.
- *      The board's rule only: the record's lock path keeps the pre-game window.)
+ *      EVENT_X_IN_PLAY (on by default; 0 turns it off. A game that has started stays on the board
+ *      and can be quoted and locked in from the books as they stand, for EVENT_X_IN_PLAY_HOURS
+ *      after the start, default 4. One rule for the board and the lock path: crossVenue/lockWindow.ts.)
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -113,6 +113,7 @@ import { novigRouteOf, readReferenceBooks, referenceSourcesFromEnv, type Referen
 import { MAPPED_NO_BOOK, NOT_MAPPED, aggregatorBookSourceFromEnv, type AggregatorBookSource, type AggregatorBookStatus, type BookOrigins, type ProphetXStrikes } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { farOutGuardFromEnv, farOutVerdict, type FarOutGuardRule } from "../src/eventCollar/crossVenue/farOutGuard";
+import { PROTECT_WINDOW_MINUTES, inPlayFromEnv, inPlayMaxMsFromEnv, lockWindow as lockWindowOf, protectWindow, type LockWindow, type ProtectWindowWhy } from "../src/eventCollar/crossVenue/lockWindow";
 import { inPlayConfig } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
 import { markGapGuardFromEnv, markGapVerdict, type MarkGapGuardRule } from "../src/eventCollar/crossVenue/markGapGuard";
 import { readReferencePrints, referencePrintSourcesFromEnv, type ReferencePrint } from "../src/eventCollar/crossVenue/venuePrints";
@@ -659,44 +660,22 @@ export interface CrossShowcasePayload {
 const pairCache = new Map<string, MatchedPair | null>();
 
 /**
- * The window a game can be locked in: from seven days out until 45 minutes before kickoff. One
- * rule for the board, the quote, and the list the extension marks games from; the extension never
- * works it out from the venue's page.
+ * The window a game can be locked in (crossVenue/lockWindow.ts): pre-game from seven days out, and
+ * with in play on (the default; EVENT_X_IN_PLAY=0 turns it off) through the last 45 minutes and
+ * the game itself, for EVENT_X_IN_PLAY_HOURS (default 4) after the start. One rule for the board,
+ * the quote, the lock, and the list the extension marks games from; the extension never works it
+ * out from the venue's page.
  */
-export const PROTECT_WINDOW_MINUTES = { min: 45, max: 7 * 24 * 60 } as const;
-export type ProtectWindowWhy = "in_progress" | "too_close" | "far_out";
-export function protectWindow(startIso: string, now: Date): { open: boolean; why?: ProtectWindowWhy; untilIso: string } {
-  const startMs = new Date(startIso).getTime();
-  const untilIso = new Date(startMs - PROTECT_WINDOW_MINUTES.min * 60_000).toISOString();
-  const minutes = (startMs - now.getTime()) / 60_000;
-  if (minutes <= 0) return { open: false, why: "in_progress", untilIso };
-  if (minutes < PROTECT_WINDOW_MINUTES.min) return { open: false, why: "too_close", untilIso };
-  if (minutes > PROTECT_WINDOW_MINUTES.max) return { open: false, why: "far_out", untilIso };
-  return { open: true, untilIso };
+export { PROTECT_WINDOW_MINUTES, protectWindow, inPlayFromEnv, type LockWindow, type ProtectWindowWhy };
+export const IN_PLAY = inPlayFromEnv();
+export const IN_PLAY_MAX_MS = inPlayMaxMsFromEnv();
+export function lockWindow(startIso: string, now: Date, inPlay = IN_PLAY): LockWindow {
+  return lockWindowOf(startIso, now, inPlay, IN_PLAY_MAX_MS);
 }
 
-function showcaseWindowOk(pair: MatchedPair, now: Date): boolean {
-  return protectWindow(pair.gameStartTime, now).open;
-}
-
-/**
- * IN PLAY on the demo board (EVENT_X_IN_PLAY=1; off by default). A game that has started stays on
- * the board and quotes from the books as they stand during the game, for up to EVENT_X_IN_PLAY_HOURS
- * (default 4) after tip-off; the market's own status still has to be active and its odds in range,
- * so a decided game drops off on its own. This is the board's rule only: the lock path the record
- * uses (quoteOne, the shadow's locks on real positions) keeps the pre-game window regardless.
- */
-export const IN_PLAY = process.env.EVENT_X_IN_PLAY === "1" || process.env.EVENT_X_IN_PLAY === "true";
-export const IN_PLAY_MAX_MS = Number(process.env.EVENT_X_IN_PLAY_HOURS || 4) * 3_600_000;
 export function boardWindowOk(startIso: string, now: Date, inPlay = IN_PLAY): { open: boolean; live: boolean } {
-  const w = protectWindow(startIso, now);
-  if (w.open) return { open: true, live: false };
-  if (!inPlay) return { open: false, live: false };
-  // continuous once in play is on: the last 45 minutes before tip-off stay on the board (not yet
-  // live), then the game is quoted live until the bound
-  if (w.why === "too_close") return { open: true, live: false };
-  if (w.why === "in_progress" && now.getTime() - new Date(startIso).getTime() <= IN_PLAY_MAX_MS) return { open: true, live: true };
-  return { open: false, live: false };
+  const w = lockWindow(startIso, now, inPlay);
+  return { open: w.open, live: w.live };
 }
 
 /**
@@ -731,7 +710,7 @@ export function gameDateWithinHorizon(
  */
 async function liveFirst<T extends { m: KalshiMarket }>(ranked: T[], template: LeagueTemplate, now: Date): Promise<T[]> {
   const starts = await Promise.all(ranked.map((c) => kickoffFor(c.m, template).catch(() => null)));
-  const live = starts.map((iso) => (iso ? boardWindowOk(iso, now).live : false));
+  const live = starts.map((iso) => (iso ? boardWindowOk(iso, now, true).live : false));
   return ranked.map((c, i) => ({ c, i })).sort((a, b) => Number(live[b.i]) - Number(live[a.i]) || a.i - b.i).map((x) => x.c);
 }
 
@@ -805,6 +784,8 @@ export interface CandidateResult {
   bookOrigins?: BookOrigins;
   /** the aggregator's own account of what it could not supply for this pair; empty when it supplied everything */
   aggregatorNotes?: string[];
+  /** the game had started when this was quoted (quoteOne, in play on): the record and the holder's answer say so */
+  inPlay?: true;
 }
 
 async function showcasePositionFor(ticker: string, markCents: number) {
@@ -841,9 +822,9 @@ async function quoteSportsCandidate(
    */
   routingInputs?: { holderVenue: SettlementVenue; executable: Record<HedgeRoute, boolean> },
   /**
-   * The game is on and the board quotes it in play (EVENT_X_IN_PLAY): the pricers' lead-time gate
-   * is set aside, the same config the shadow's in-game read uses; everything else prices as the
-   * record does. Only the board scan sets this.
+   * Past the pre-game cutoff with in play on (the last 45 minutes, or the game under way): the
+   * pricers' lead-time gate is set aside, the same config the shadow's in-game read uses;
+   * everything else prices as before the game. Set by the board scan and by quoteOne (the lock path).
    */
   inPlay = false,
 ): Promise<CandidateResult> {
@@ -1290,6 +1271,13 @@ interface LeagueCursor {
  */
 export interface ScanOptions {
   skipTickers?: ReadonlySet<string>;
+  /**
+   * Whether the scan carries games past the pre-game cutoff, in place of EVENT_X_IN_PLAY. The demo
+   * board follows the env (on by default). The shadow's scan passes false unless told otherwise:
+   * its positions are paper, filled at the walked book, and a book walked during a game is the one
+   * place that simulation would flatter the record.
+   */
+  inPlay?: boolean;
 }
 
 /** Index of the first ranked candidate from `from` that is not held; `ranked.length` when none is. */
@@ -1302,6 +1290,7 @@ export function nextUnheld(ranked: ReadonlyArray<{ m: { ticker: string } }>, fro
 async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
   const now = new Date();
   const skip = opts.skipTickers ?? new Set<string>();
+  const inPlay = opts.inPlay ?? IN_PLAY;
 
   // The scanner: walk the whitelisted leagues and their ranked games, quote
   // EVERY verified pairing on both routes (up to the board cap), then admit
@@ -1341,7 +1330,7 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
       continue;
     }
     let ranked = rankCandidates(markets, template, now);
-    if (IN_PLAY && ranked.length > 0) ranked = await liveFirst(ranked, template, now);
+    if (inPlay && ranked.length > 0) ranked = await liveFirst(ranked, template, now);
     if (ranked.length > 0) cursors.push({ template, ranked, next: 0, attempts: 0, rows: 0 });
   }
   const quota = leagueRowQuota(cursors.length, MAX_BOARD_ROWS);
@@ -1364,14 +1353,14 @@ async function buildScan(opts: ScanOptions = {}): Promise<ScanState> {
     } catch {
       return !countFailure();
     }
-    const window = pair ? boardWindowOk(pair.gameStartTime, now) : null;
+    const window = pair ? lockWindow(pair.gameStartTime, now, inPlay) : null;
     if (!pair || !window?.open) return true;
     // one side per game in play: both sides lead the ranking (which side the book funds moves with
     // the game), and the first that quotes takes the row
     if (window.live && scanned.some((s) => s.res.market.eventTicker === cand.m.eventTicker)) return true;
     let result: CandidateResult;
     try {
-      result = applyQuoteRules(await quoteSportsCandidate(pair, cand.mark, now, undefined, undefined, undefined, window.live), now);
+      result = applyQuoteRules(await quoteSportsCandidate(pair, cand.mark, now, undefined, undefined, undefined, window.pastCutoff), now);
     } catch {
       return !countFailure();
     }
@@ -1488,8 +1477,10 @@ export interface GameMarketRow {
   startIso: string | null;
   /** can a position on this market be locked in right now (paired, odds in range, inside the window) */
   protectable: boolean;
-  /** when the window closes: 45 minutes before kickoff; null when the kickoff is not known */
+  /** when the window closes: the in-play bound after kickoff (45 minutes before it with in play off); null when the kickoff is not known */
   protectableUntilIso: string | null;
+  /** the game has started (by its kickoff); with in play on it may still be protectable */
+  inPlay?: true;
   /** why not, when not */
   notProtectable?: ProtectWindowWhy | "unpaired" | "mark_out_of_range";
 }
@@ -1518,7 +1509,7 @@ async function kickoffFor(m: KalshiMarket, template: LeagueTemplate): Promise<st
  * Open, active game markets in the horizon for the whitelisted leagues (or one league), each
  * saying whether it can be locked in right now. Public data plus the pairing; no quoting.
  */
-export async function listGameMarkets(league?: string, now: Date = new Date()): Promise<GameMarketRow[]> {
+export async function listGameMarkets(league?: string, now: Date = new Date(), inPlay: boolean = IN_PLAY): Promise<GameMarketRow[]> {
   const out: GameMarketRow[] = [];
   for (const template of LEAGUE_TEMPLATES) {
     if (league && template.league !== league.toLowerCase()) continue;
@@ -1528,7 +1519,7 @@ export async function listGameMarkets(league?: string, now: Date = new Date()): 
       const startIso = starts[i];
       const markCents = midCents(m);
       const markOk = markCents >= 1 && markCents <= 99 && m.yesBidCents > 0 && m.yesAskCents < 100;
-      const window = startIso ? protectWindow(startIso, now) : null;
+      const window = startIso ? lockWindow(startIso, now, inPlay) : null;
       const notProtectable = !startIso ? "unpaired" : !markOk ? "mark_out_of_range" : window && !window.open ? window.why : undefined;
       out.push({
         ticker: m.ticker,
@@ -1541,6 +1532,7 @@ export async function listGameMarkets(league?: string, now: Date = new Date()): 
         startIso,
         protectable: !notProtectable,
         protectableUntilIso: window ? window.untilIso : null,
+        ...(startIso && Date.parse(startIso) <= now.getTime() ? { inPlay: true as const } : {}),
         ...(notProtectable ? { notProtectable } : {}),
       });
     });
@@ -1567,6 +1559,8 @@ export interface OneQuoteInputs {
    * Never set on the lock path, which keeps the window as it is.
    */
   inGame?: boolean;
+  /** whether a game under way may be quoted, in place of EVENT_X_IN_PLAY (on unless set to 0); a test's lever */
+  inPlay?: boolean;
 }
 
 export type OneQuoteResult = { ok: true; result: CandidateResult } | { ok: false; code: string; detail: string };
@@ -1603,10 +1597,14 @@ export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> 
     pairCache.set(ticker, pair);
   }
   if (!pair) return { ok: false, code: "no_matched_market", detail: "Protection isn't offered on this event yet." };
+  const window = lockWindow(pair.gameStartTime, now, inputs.inPlay ?? IN_PLAY);
   if (inputs.inGame) {
     if (protectWindow(pair.gameStartTime, now).why !== "in_progress") return { ok: false, code: "not_started", detail: "The game has not started; the in-game read waits for it." };
-  } else if (!showcaseWindowOk(pair, now)) {
-    return { ok: false, code: "market_too_close_to_start", detail: "This one starts too soon to protect." };
+  } else if (!window.open) {
+    if (window.why === "in_progress") {
+      return { ok: false, code: "market_too_close_to_start", detail: (inputs.inPlay ?? IN_PLAY) ? "This game is past the window it can be locked in." : "This game has started; it can be locked in before the start only." };
+    }
+    return { ok: false, code: "market_too_close_to_start", detail: window.why === "far_out" ? "This one is too far out to protect yet." : "This one starts too soon to protect." };
   }
   const position: ReturnType<typeof buildShowcasePosition> = {
     contracts: inputs.contracts,
@@ -1614,14 +1612,24 @@ export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> 
     entrySource: "entered_now",
     entryTime: null,
   };
+  // past the pre-game cutoff (the last 45 minutes, or under way) the pricers' lead-time gate is set
+  // aside; everything else prices as before the game, from the books as they stand
   const result = applyQuoteRules(
-    await quoteSportsCandidate(pair, markCents, now, position, inputs.route, {
-      holderVenue: inputs.holderVenue ?? "kalshi",
-      executable: inputs.executable ?? { kalshi_self: true, polymarket: true, prophetx: true, novig: true },
-    }),
+    await quoteSportsCandidate(
+      pair,
+      markCents,
+      now,
+      position,
+      inputs.route,
+      {
+        holderVenue: inputs.holderVenue ?? "kalshi",
+        executable: inputs.executable ?? { kalshi_self: true, polymarket: true, prophetx: true, novig: true },
+      },
+      !inputs.inGame && window.pastCutoff,
+    ),
     now,
   );
-  return { ok: true, result };
+  return { ok: true, result: !inputs.inGame && window.live ? { ...result, inPlay: true } : result };
 }
 
 /**

@@ -215,7 +215,7 @@ test("shadow worker lock routes: 404 without a key, 403 with the wrong one; mark
     assert.equal(m.markets[0].live, true, "the allowlisted ticker is flagged");
     assert.equal(m.markets[1].live, false);
     assert.equal(m.markets[0].protectable, true, "the list says which games the extension may mark");
-    assert.deepEqual((m as unknown as { ext: Record<string, unknown> }).ext, { minVersion: null, marksOff: [], cutoffMinutes: 45 }, "the extension's switches ride with the list");
+    assert.deepEqual((m as unknown as { ext: Record<string, unknown> }).ext, { minVersion: null, marksOff: [], cutoffMinutes: 45, inPlay: true }, "the extension's switches ride with the list; in play is on unless the service says off");
 
     // extension telemetry: anonymous counts in, operator summary out; anything outside the vocabulary is refused
     const tele = (v: unknown) => fetch(`${base}/api/shadow/ext-telemetry`, { method: "POST", headers: { ...key, "content-type": "application/json" }, body: JSON.stringify(v) });

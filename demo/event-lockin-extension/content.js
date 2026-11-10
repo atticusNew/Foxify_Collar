@@ -380,7 +380,7 @@
     // progress: the listed one the service says has started, else the earliest listed (a club
     // plays one game at a time; the service lists tonight's game through the night beside next week's)
     if (UNDER_WAY_RE.test(text)) {
-      const started = list.filter((t) => (S.byTicker[t] || {}).notProtectable === "in_progress");
+      const started = list.filter((t) => (S.byTicker[t] || {}).notProtectable === "in_progress" || (S.byTicker[t] || {}).inPlay === true);
       if (started.length === 1) return started[0];
       // the service reads the holder's account: of the club's games, the one they hold a position on
       const mine = list.filter((t) => svcHeld(t));
@@ -1696,6 +1696,14 @@
     });
   };
 
+  /**
+   * In play is the service's switch (markets ext.inPlay): on, a game can be locked in while it is
+   * being played, and the words say so; off (or a service built before the switch), protection is
+   * locked before the start, as it always was.
+   */
+  const inPlayOn = () => Boolean(S.ext && S.ext.inPlay === true);
+  const LOCK_WHEN = () => (inPlayOn() ? "Protection can be locked in before the game or while it is being played." : "Protection is locked before the game starts.");
+
   /** Plain words for a refusal, and what to do about it. */
   const refusalWords = (code, message) => {
     switch (code) {
@@ -1720,7 +1728,7 @@
           ? { why: "This order has not filled yet.", next: "It is a resting order until the book fills it. Protection prices on the contracts you hold; check back once it fills." }
           : { why: "This " + V.play + " has not been matched yet.", next: "It is an order until another account takes the other side. Protection prices on the matched stake; check back once it fills." };
       case "settled":
-        return { why: "This " + V.play + " settled without protection.", next: "Protection is locked before the game starts. A locked " + V.play + " shows what it paid here once it settles." };
+        return { why: "This " + V.play + " settled without protection.", next: LOCK_WHEN() + " A locked " + V.play + " shows what it paid here once it settles." };
       case "too_early":
       case "far_out_no_book":
         return { why: "It is too early to protect this pick.", next: "Protection opens closer to the start of this one." };
@@ -1729,7 +1737,9 @@
         return { why: "The price on this pick has not settled yet.", next: "Check back closer to the start; protection prices once the market agrees on the odds." };
       case "market_too_close_to_start":
       case "market_not_active":
-        return { why: "This game starts too soon to protect.", next: "Protection is available until shortly before the start." };
+        return inPlayOn()
+          ? { why: "This game cannot be locked in right now.", next: "Its market is closed or its window has passed." }
+          : { why: "This game starts too soon to protect.", next: "Protection is available until shortly before the start." };
       case "already_on_record":
         return { why: "This market is already locked.", next: "One lock per market." };
       case "on_record_elsewhere":
@@ -1757,7 +1767,7 @@
       case "parlay_pick_unknown":
         return { why: "A pick on this ticket could not be placed on a listed game.", next: "Tap Show Legs on the card and check back; the picks are read again every minute." };
       case "parlay_in_play":
-        return { why: "Your last pick has started.", next: "Protection is locked before the game starts." };
+        return { why: "Your last pick has started.", next: LOCK_WHEN() };
       case "parlay_size":
         return { why: "The ticket's amount and payout do not read as a size.", next: "" };
       // a member venue: the holder's own account at the service, and their own sale into its book
@@ -1796,7 +1806,7 @@
   const refusalWordsFor = (B, code, message) => {
     const m = B && B.ticker ? S.byTicker[B.ticker] : null;
     if ((code === "market_too_close_to_start" || code === "market_not_active") && m && m.notProtectable === "in_progress") {
-      return { why: "This game is in play.", next: "Protection is locked before the game starts." };
+      return { why: "This game is in play.", next: inPlayOn() ? "It is past the window it can be locked in." : LOCK_WHEN() };
     }
     return refusalWords(code, message);
   };
@@ -2380,7 +2390,8 @@
     if (P.from === "codes") return { tag: "Lock in", cls: "ael-line-wait", line: "Tap Show Legs to price protection on your last pick, <b>" + esc(who) + "</b>.", head: "Your last pick is up: " + who + ".", next: "Tap Show Legs on the card so the pick's game is certain; protection prices here." };
     const leg = P.legs.find((l) => l.code === last.code);
     if (leg && leg.kind !== "winner") return { tag: "Unavailable", cls: "ael-line-off", line: "Protection covers " + market + " picks.", head: "Protection covers " + market + " picks.", next: "Your last pick, " + who + ", is another market." };
-    if (last.live) return { tag: "Unavailable", cls: "ael-line-off", line: "Your last pick, <b>" + esc(who) + "</b>, has started.", head: "Your last pick has started.", next: "Protection is locked before the game starts." };
+    // in play on: a last pick under way is priced like any other; the service's quote decides
+    if (last.live && !inPlayOn()) return { tag: "Unavailable", cls: "ael-line-off", line: "Your last pick, <b>" + esc(who) + "</b>, has started.", head: "Your last pick has started.", next: LOCK_WHEN() };
     if (!S.byTicker[last.ticker]) return { tag: "Unavailable", cls: "ael-line-off", line: "No hedge book for your last pick yet.", head: "No hedge book for your last pick yet.", next: "Protection reaches more games as venues are added." };
     return { tag: "Lock in", cls: "ael-line-wait", line: "Checking protection&hellip;", head: "Pricing protection on your last pick.", next: "" };
   };
@@ -3310,7 +3321,9 @@
   const startWord = (stem) => START_WORD[String((S.markets.find((m) => stemOf(m.ticker) === stem) || {}).league || "").toLowerCase()] || "the start";
   const TIP_WORDS = (stem) => {
     const u = gameUntil(stem);
-    return "Protection on this game can be locked in from " + V.page + " after your pick " + (VENUE_ID === "kalshi" ? "fills" : "is matched") + (u ? ", " + untilWords(u) + " (" + (S.ext.cutoffMinutes || 45) + " minutes before " + startWord(stem) + ")." : ".");
+    const after = "Protection on this game can be locked in from " + V.page + " after your pick " + (VENUE_ID === "kalshi" ? "fills" : "is matched");
+    if (inPlayOn()) return after + ", before " + startWord(stem) + " or while the game is being played" + (u ? " (" + untilWords(u) + ")." : ".");
+    return after + (u ? ", " + untilWords(u) + " (" + (S.ext.cutoffMinutes || 45) + " minutes before " + startWord(stem) + ")." : ".");
   };
   /**
    * The games (ticker stems) a text names both clubs of. A nickname shared by two listed games

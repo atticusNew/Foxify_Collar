@@ -188,8 +188,9 @@ services:
         value: "25"
       # In play: a game that has started stays on the board and is quoted from the books as
       # they stand, for EVENT_X_IN_PLAY_HOURS after tip-off (default 4). The row says Live in
-      # place of the tip-off and re-prices while its panel is open. The board's rule only: the
-      # shadow record's lock path (the other service, same module) keeps the pre-game window.
+      # place of the tip-off and re-prices while its panel is open. On unless this says 0
+      # (false, no, off). The shadow record's lock path (the other service, same module) reads
+      # the same switch from its own environment and is on by default there too.
       - key: EVENT_X_IN_PLAY
         value: "1"
       # Which hedge venues are offered tonight (kalshi, prophetx, novig, polymarket; comma
@@ -370,6 +371,18 @@ services:
       #   Operator: GET /api/shadow/lock/pending is the trail (attempts by ending, open lines, strays);
       #   POST /api/shadow/lock/pending/clear?id=...&note=... marks one checked. /healthz?token= carries
       #   lock.hedgeFirst: `unresolved` and `strays` must both read empty.
+      # IN PLAY (lockWindow.ts): a game can be locked in from seven days out, through the last 45
+      #   minutes and while it is being played. On by default.
+      #   EVENT_X_IN_PLAY=0                     optional; turns it off (0, false, no, off): the lock path
+      #                                         closes 45 minutes before the start, as it did before.
+      #   EVENT_X_IN_PLAY_HOURS=4               optional; how long after the start a game stays open.
+      #   EVENT_SHADOW_SCAN_IN_PLAY=1           optional, off by default: lets the automatic paper scan
+      #                                         open records on games under way. Left off so the public
+      #                                         record is not flattered by paper fills at a moving book.
+      #   During a game the book moves between the read and the order. With real orders on, HEDGE
+      #   FIRST is what makes that safe: a moved book fills nothing and locks nothing. In a dry run
+      #   an in-play lock is a paper record at the book as read. A hedged lock cannot be left early
+      #   once the game has started (the leave window still closes before the start); it settles.
       # Pre-flight (operator): GET /api/shadow/hedges/preflight?ticker=KX... reads balance and the rails
       #   (via aggregator: the pod's identity, its Kalshi cash and whether the key may trade).
       # The pod (operator): GET /api/shadow/hedges/pod reads the aggregator's side — pod, cash, positions,

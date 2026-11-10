@@ -913,6 +913,15 @@ the service listed tonight's game beside next week's: a card that says its game 
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
 
+**In play follows the service (0.7.45).** The markets answer carries `ext.inPlay` (on unless the
+service sets `EVENT_X_IN_PLAY=0`). On: a game under way is marked and priced like any other until
+the service's bound after the start, a parlay's last pick may be under way, and the lines read
+"before the game or while it is being played" instead of "locked before the game starts". A row
+that says its game is under way names the game the service marks `inPlay`. Off, or a service built
+before the switch: every line and mark is as in 0.7.44. A lock that would send a real order buys
+the other side first; when the price moved before it filled the card says nothing was locked and
+to try again (`hedge_not_filled`), which is the service's word, shown as it comes.
+
 **STX, through the member's own account (0.7.44).** A fourth venue and the first member venue.
 The primary surface is not this extension but the service's own hosted page, `GET /app`, built
 for a phone in STX's skin with the demo's Lock in line (connect in the same tab, a cookie

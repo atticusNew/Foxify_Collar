@@ -244,6 +244,25 @@ export function signedFeeAppliesPreGame(fee: RawVenueMarket["fee"]): boolean {
   return charged !== "WHEN_LIVE" && charged !== "LIVE_ONLY" && charged !== "NEVER";
 }
 
+/**
+ * Does this fee apply to an order placed once the event is live? Every rule but NEVER: game
+ * markets charge only once live (WHEN_LIVE), which is exactly when an in-play hedge is bought.
+ */
+export function signedFeeAppliesLive(fee: RawVenueMarket["fee"]): boolean {
+  return fee?.charged?.toUpperCase() !== "NEVER";
+}
+
+/**
+ * Is the event live for the fee rule? The venue's own status word when it says so, or our clock
+ * past the scheduled start. Either is enough: a book priced with a fee the venue then does not
+ * charge fills cheaper than quoted; the other way round the order misses its limit.
+ */
+export function signedEventLive(statusWords: Array<string | undefined>, gameStartIso: string | undefined, now: Date): boolean {
+  if (statusWords.some((s) => /IN_?GAME|LIVE/i.test(s ?? ""))) return true;
+  const start = gameStartIso ? Date.parse(gameStartIso) : NaN;
+  return Number.isFinite(start) && now.getTime() >= start;
+}
+
 /** The market's fee coefficient as the catalog gives it; the venue's published figure when it does not. */
 export function signedFeeCoefficient(fee: RawVenueMarket["fee"]): number {
   const c = fee?.coefficient === undefined || fee.coefficient === null ? NaN : Number(fee.coefficient);
@@ -255,12 +274,13 @@ export const signedFeeMilli = (coefficient: number, priceMilli: number): number 
 
 /**
  * The asks for the opposing outcome from the venue's bids on ours, in exact milli units. With the
- * fee applying, each level's price carries c x P x (1 - P) rounded up against the credit.
+ * fee applying, each level's price carries c x P x (1 - P) rounded up against the credit. `live`
+ * says the event is in play, when a fee charged only once live applies.
  */
-export function signedAsksForOpposing(book: RawVenueBook, ourOutcomeId: string, fee: RawVenueMarket["fee"]): PmBookLevel[] {
+export function signedAsksForOpposing(book: RawVenueBook, ourOutcomeId: string, fee: RawVenueMarket["fee"], live = false): PmBookLevel[] {
   const bids = book.orders[ourOutcomeId] ?? [];
   const coefficient = signedFeeCoefficient(fee);
-  const charged = signedFeeAppliesPreGame(fee);
+  const charged = live ? signedFeeAppliesLive(fee) : signedFeeAppliesPreGame(fee);
   const levels: PmBookLevel[] = [];
   for (const o of bids) {
     const bidMilli = decimalToMilli(o.price, false);
@@ -277,10 +297,10 @@ export function signedAsksForOpposing(book: RawVenueBook, ourOutcomeId: string, 
  * leaves (novigOrders.ts leaves by buying our outcome at 1 - the bid, so the proceeds are the bid
  * less the fee on it when the fee applies). Best first, the fee taken off each level rounded up.
  */
-export function signedBidsForOpposing(book: RawVenueBook, opposingOutcomeId: string, fee: RawVenueMarket["fee"]): PmBookLevel[] {
+export function signedBidsForOpposing(book: RawVenueBook, opposingOutcomeId: string, fee: RawVenueMarket["fee"], live = false): PmBookLevel[] {
   const bids = book.orders[opposingOutcomeId] ?? [];
   const coefficient = signedFeeCoefficient(fee);
-  const charged = signedFeeAppliesPreGame(fee);
+  const charged = live ? signedFeeAppliesLive(fee) : signedFeeAppliesPreGame(fee);
   const levels: PmBookLevel[] = [];
   for (const o of bids) {
     const b = decimalToMilli(o.price, false);
@@ -311,12 +331,14 @@ export function novigRouteOf(references: ReferenceBook[] | undefined): { noBook:
 /**
  * One market's book on the signed-dialect venue by its ids, shaped for the hedge route: the
  * opposing outcome's asks and bids with the fee folded as the market's rule says. What an early
- * close on the Novig route reads (the ids are on the record), no catalog search needed.
+ * close on the Novig route reads (the ids are on the record), no catalog search needed. `at`
+ * (the game's start and the moment of the read) lets a leave during the game carry the live fee.
  */
-export async function signedHedgeBook(client: VenueClient, marketId: string, ourOutcomeId: string, opposingOutcomeId: string): Promise<PmBook> {
+export async function signedHedgeBook(client: VenueClient, marketId: string, ourOutcomeId: string, opposingOutcomeId: string, at?: { gameStartIso?: string; now: Date }): Promise<PmBook> {
   const [m, book] = await Promise.all([client.getMarket(marketId), client.getBook(marketId)]);
-  const shaped = asksBook(signedAsksForOpposing(book, ourOutcomeId, m.fee), `signed_v3:${marketId}`);
-  return { ...shaped, bids: signedBidsForOpposing(book, opposingOutcomeId, m.fee) };
+  const live = signedEventLive([m.status], at?.gameStartIso, at?.now ?? new Date());
+  const shaped = asksBook(signedAsksForOpposing(book, ourOutcomeId, m.fee, live), `signed_v3:${marketId}`);
+  return { ...shaped, bids: signedBidsForOpposing(book, opposingOutcomeId, m.fee, live) };
 }
 
 /** The signed-dialect venue's host for the Novig route's own reads: the reference host, else the holder-positions host. Null when neither is set. */
@@ -366,7 +388,7 @@ export function signedSource(client: VenueClient, opts: SignedSourceOptions = {}
   const fallback = opts.unfilteredFallback ?? true;
   return {
     id: "signed_v3",
-    async read(pair) {
+    async read(pair, now = new Date()) {
       const clubs = pairClubs(pair);
       if (!clubs) return { id: "signed_v3", book: null, reason: "league_not_covered" };
       const isOurGame = (m: RawVenueMarket): boolean => {
@@ -384,19 +406,22 @@ export function signedSource(client: VenueClient, opts: SignedSourceOptions = {}
       const ourOutcome = hit.outcomes.find((o) => clubNamed(clubs.template, clubs.ours, o.name))!;
       const oppOutcome = hit.outcomes.find((o) => clubNamed(clubs.template, clubs.opposing, o.name))!;
       const book = await client.getBook(hit.marketId);
+      // in play the market's live fee is in the price: the same rule the order client reads at the send (novigOrders.feeNow)
+      const live = signedEventLive([hit.status], pair.gameStartTime, now);
+      const folded = live ? signedFeeAppliesLive(hit.fee) : signedFeeAppliesPreGame(hit.fee);
       const listing: ReferenceListing = {
         marketId: hit.marketId,
         ...(hit.eventId ? { key: hit.eventId } : {}),
         outcomes: {
           ours: { outcomeId: ourOutcome.outcomeId, name: ourOutcome.name },
           opposing: { outcomeId: oppOutcome.outcomeId, name: oppOutcome.name },
-          fee: { coefficient: signedFeeCoefficient(hit.fee), folded: signedFeeAppliesPreGame(hit.fee) },
+          fee: { coefficient: signedFeeCoefficient(hit.fee), folded },
           ...(hit.status ? { marketStatus: hit.status } : {}),
         },
       };
       // asks for the hedge, and the bids a hedge there could leave against (earlyClose.ts)
-      const shaped = asksBook(signedAsksForOpposing(book, ourOutcome.outcomeId, hit.fee), `signed_v3:${hit.marketId}`);
-      return { id: "signed_v3", book: { ...shaped, bids: signedBidsForOpposing(book, oppOutcome.outcomeId, hit.fee) }, listing };
+      const shaped = asksBook(signedAsksForOpposing(book, ourOutcome.outcomeId, hit.fee, live), `signed_v3:${hit.marketId}`);
+      return { id: "signed_v3", book: { ...shaped, bids: signedBidsForOpposing(book, oppOutcome.outcomeId, hit.fee, live) }, listing };
     },
     async catalog(league) {
       return signedCatalogProbe(client, league, codes);

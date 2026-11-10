@@ -26,15 +26,16 @@ test("protect window: seven days out to 45 minutes before kickoff; in progress, 
   assert.equal(protectWindow(start, at(7 * 24 * 60 + 1)).why, "far_out");
 });
 
-test("board window: in play opens a started game on the demo board only when EVENT_X_IN_PLAY says so, and for a bounded time", async () => {
+test("board window: in play is on unless EVENT_X_IN_PLAY says off; a started game is open for a bounded time", async () => {
   const { IN_PLAY, IN_PLAY_MAX_MS, boardWindowOk } = await import("../scripts/eventProtectXDemoService");
-  assert.equal(IN_PLAY, false, "off unless the service is told: the shadow worker shares this module");
+  assert.equal(IN_PLAY, true, "on by default: the board and the lock path share this switch");
   assert.equal(IN_PLAY_MAX_MS, 4 * 3_600_000);
   const kick = Date.UTC(2026, 9, 25, 20, 20);
   const at = (minutesBefore: number) => new Date(kick - minutesBefore * 60_000);
   const start = new Date(kick).toISOString();
   assert.deepEqual(boardWindowOk(start, at(3 * 60)), { open: true, live: false }, "pre-game is the same window, never live");
-  assert.deepEqual(boardWindowOk(start, at(-30)), { open: false, live: false }, "flag off: a started game is off the board");
+  assert.deepEqual(boardWindowOk(start, at(-30)), { open: true, live: true }, "the default: a started game is open and live");
+  assert.deepEqual(boardWindowOk(start, at(-30), false), { open: false, live: false }, "flag off: a started game is off the board");
   assert.deepEqual(boardWindowOk(start, at(-30), true), { open: true, live: true }, "flag on: a started game is on the board and marked live");
   assert.deepEqual(boardWindowOk(start, at(44), false), { open: false, live: false }, "flag off: the 45 minutes before tip-off are closed, as the record's window says");
   assert.deepEqual(boardWindowOk(start, at(44), true), { open: true, live: false }, "flag on: the board is continuous through tip-off, and not yet live before it");
