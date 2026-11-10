@@ -224,6 +224,15 @@ can be followed. The Poly copy is rarely fresh for more than two cycles in a row
 there end at about ten seconds whether or not the lock was still standing. The count and the
 durations on that tenor are lower bounds.
 
+On the hourly and the daily the 30-second bound admits every copy Poly's cache serves, so the
+stale rule rarely ends a run there. In the last minutes before a close the at-the-money contract
+moves by cents between cycles. A lock seen then on a Poly copy 20 to 29 seconds old may be
+latency and not a standing quote. In the first live run (10 November 2026, the hour closing at
+5 PM ET, thirteen to fifteen minutes before the close) four hourly episodes were recorded in two
+minutes, 10 to 20 seconds each, 23 cents in total, while K minus P at the money swung between
+minus 8 and plus 10 cents from one cycle to the next. Read the hourly count with that in mind,
+or lower `1h` in `BTC_PAIRS_STALE_SECONDS`.
+
 ## The Launch button and the endpoints
 
 Launch fetches the tenor's picked pair from `/pairs/api/pair?id=<Kalshi ticker>` and then, in
