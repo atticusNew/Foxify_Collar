@@ -75,12 +75,32 @@ export interface MemberSaleRecord {
    * combo market at settlement, not from a Kalshi reference. Absent on a single-market sale.
    */
   combo?: MemberComboSale;
+  /** where the money figures came from (MemberFiguresFrom); absent on lines written before it was kept */
+  figuresFrom?: MemberFiguresFrom;
+  /** the venue's fills the figures were summed from, as the venue wrote them; absent on older lines and when the figures came from the order */
+  venueFills?: MemberVenueFill[];
+}
+
+/**
+ * "fills": the cash, the average and the size are the venue's own fills, summed exactly. "order":
+ * the fills read came back empty though the order said it filled, so the order's size stands in,
+ * counted at the price the order cannot have done worse than (memberSale.orderPriceBoundMicro).
+ */
+export type MemberFiguresFrom = "fills" | "order";
+
+/** One fill as the venue wrote it: dollars per contract, contracts, its fee on the fill when it gave one. Strings, digit for digit. */
+export interface MemberVenueFill {
+  price: string;
+  filled: string;
+  tradeFee?: string;
 }
 
 export interface MemberComboSale {
-  /** the venue's quote the sale accepted, and the price per contract it quoted, cents */
+  /** the venue's quote the sale accepted, and the price per contract it quoted, cents (a quote finer than a cent, down) */
   rfqId: string | null;
   quotedPriceCents: number;
+  /** the quote's price as the venue wrote it, dollars per contract; absent on lines written before it was kept */
+  quotedPrice?: string;
   /** when the venue said the quote would lapse, when it said */
   expiresAtIso: string | null;
   legs: number;
@@ -235,6 +255,10 @@ export interface MemberBuyBackRecord {
   orderId: string | null;
   clientOrderId: string;
   status: string;
+  /** where the money figures came from; absent on lines written before it was kept */
+  figuresFrom?: MemberFiguresFrom;
+  /** the venue's fills the cost was summed from, as the venue wrote them; absent on older lines */
+  venueFills?: MemberVenueFill[];
 }
 
 /**

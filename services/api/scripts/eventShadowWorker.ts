@@ -106,8 +106,9 @@ import {
   PARLAY_LAST_PICK_TIER,
   PROTECTION_TIERS,
   capTotalCents,
+  centsOf,
+  contractHundredths,
   floorTotalCents,
-  roundContracts,
   type CrossQuoteResult,
   type CrossSearchConfig,
   type HedgeLeg,
@@ -188,11 +189,12 @@ import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venu
 import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
 import { venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
-import { ComboLegMemory, MemberApiError, MemberSessions, clientOrderIdFor, comboTickerOf, isComboTicker, leagueOfCompetition, marketResultWord, matchMemberMarket, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, winnerClubOf, type MemberBalance, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
-import { SALE_SHARE, acceptRfq, askLevels, bidLevels, buyBackRecordOf, executeLimitOrder, memberTailTerms, priceString, quoteBuyBack, quoteSaleTiers, requestRfqBid, saleEvCostBps, saleRecordOf, type ExecuteOptions, type OrderOutcome, type RfqBid, type SaleTierQuote } from "../src/eventCollar/crossVenue/memberSale";
+import { ComboLegMemory, MemberApiError, MemberSessions, clientOrderIdFor, comboTickerOf, isComboTicker, leagueOfCompetition, marketResultWord, matchMemberMarket, maxPriceMicroOf, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, winnerClubOf, type MemberBalance, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
+import { acceptRfq, askLevels, bidLevels, buyBackRecordOf, centsPerDollarOf, executeLimitOrder, memberTailTerms, ownContracts, priceString, quoteBuyBack, quoteSaleTiers, quotedPriceOf, requestRfqBid, saleEvCostBps, saleRecordOf, tierSaleContracts, venueContractsOf, type ExecuteOptions, type OrderOutcome, type RfqBid, type SaleTierQuote } from "../src/eventCollar/crossVenue/memberSale";
+import { MICRO_PER_CENT, MILLI_PER_CONTRACT, decimalUnits, divInt, mulDiv } from "../src/eventCollar/crossVenue/exactDecimal";
 import type { MemberSaleComparison, MemberSaleRecord } from "../src/eventCollar/crossVenue/shadowLedger";
 import type { RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
-import { outcomeBids, outcomeCompetitionCode, outcomeMaxPrice } from "../src/eventCollar/crossVenue/venueBooks";
+import { outcomeCompetitionCode } from "../src/eventCollar/crossVenue/venueBooks";
 
 const PORT = Number(process.env.EVENT_SHADOW_PORT || process.env.PORT || 8793);
 const LEDGER_PATH = process.env.EVENT_SHADOW_LEDGER_PATH || "/tmp/event-demo/shadow-ledger.jsonl";
@@ -888,8 +890,8 @@ const noteComboRfqPath = (state: "unknown" | "available" | "unavailable", why: s
   if (state === "unknown" && comboRfqPath.state === "available") return;
   comboRfqPath = { state, checkedAtMs: Date.now(), why: why ? why.slice(0, 160) : null };
 };
-/** a stand-in quote in preview: this far under the ticket's last price */
-const COMBO_PREVIEW_HAIRCUT = 0.9;
+/** a stand-in quote in preview: this share of the ticket's last price, whole percent */
+const COMBO_PREVIEW_PERCENT = 90;
 const LIVE_EVENT_WORDS = /in_progress|in_play|in-play|live|started|underway/;
 const OVER_WORDS = /closed|resulted|settled|cancel|void|completed|final/;
 /** the game is on at the venue's own word, or on the clock when the venue gives none */
@@ -996,7 +998,7 @@ async function memberCompetitionMarkets(member: string, competition: string): Pr
   memberCatalogCache.set(key, { at: Date.now(), markets });
   const winners = markets.filter((m) => winnerClubOf(m));
   const withBids = winners.filter((m) => (m.bids ?? []).length > 0);
-  const bestBids = withBids.map((m) => outcomeBids(m)[0]?.priceMilli ?? 0);
+  const bestBids = withBids.map((m) => bidLevels(m)[0]?.priceMicro ?? 0);
   const one = withBids[0] ?? winners[0] ?? null;
   memberCatalogSample.set(key, {
     readAt: new Date().toISOString(),
@@ -1043,11 +1045,12 @@ async function memberGames(member: string, held: Set<string>): Promise<{ games: 
       const hit = byTicker.get(r.ticker);
       if (!hit) return null;
       const m = hit.market;
-      const maxPrice = outcomeMaxPrice(m);
-      const bids = outcomeBids(m);
-      const bestBidCents = bids[0] ? Math.round(bids[0].priceMilli / 10) : null;
-      const last = Number(m.last_traded_price ?? m.price);
-      const lastCents = Number.isFinite(last) && last > 0 ? Math.round((last / maxPrice) * 100) : null;
+      const maxPriceMicro = maxPriceMicroOf(m);
+      const bids = bidLevels(m);
+      // per $1 of payout; a fraction of a cent is dropped, so the bid shown is never above the bid there. The last trade is a mark: to the nearest.
+      const bestBidCents = bids[0] ? centsPerDollarOf(bids[0].priceMicro, maxPriceMicro, "down") : null;
+      const lastMicro = decimalUnits(m.last_traded_price ?? m.price, 6, "nearest");
+      const lastCents = lastMicro !== null && lastMicro > 0 ? centsPerDollarOf(lastMicro, maxPriceMicro, "nearest") : null;
       const eventId = m.event_id ?? m.grouping_id?.split(":")[0] ?? null;
       const club = winnerClubOf(m);
       return {
@@ -1070,7 +1073,7 @@ async function memberGames(member: string, held: Set<string>): Promise<{ games: 
           bestBidCents,
           lastCents,
           // a Max floor lock sells 80% into the bid: what each contract keeps on a loss
-          floorFromCents: bestBidCents === null ? null : Math.floor(bestBidCents * 0.8),
+          floorFromCents: bestBidCents === null ? null : divInt(bestBidCents * 80, 100, "down"),
         },
       };
     })
@@ -1105,7 +1108,8 @@ interface MemberPriced {
   member: string;
   pos: MemberHolderPosition;
   market: RawOutcomeMarket;
-  maxPrice: number;
+  /** what one venue contract pays, micro-dollars (1_000_000 = $1) */
+  maxPriceMicro: number;
   /** the holder's size in our $1 contracts, and in the venue's own contracts */
   contracts: number;
   venueContracts: number;
@@ -1147,7 +1151,7 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
     if (other) return { ok: false, status: 409, body: { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; lock it in from that card.`, heldTicker: other.ticker } };
     return { ok: false, status: 409, body: { ok: false, error: "not_held", code: "not_held", message: `Your ${VENUE_NAMES[MEMBER_VENUE]} account holds nothing on this market.` } };
   }
-  if (contracts > pos.contracts + 1e-9) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this market; the lock can cover up to that.`, held: pos.contracts } };
+  if (contractHundredths(contracts) > contractHundredths(pos.contracts)) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this market; the lock can cover up to that.`, held: pos.contracts } };
   let market = pos.market;
   if (!market) {
     try {
@@ -1172,10 +1176,10 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
   }
   // the venue pauses a market for a moment at a score or a review: nothing matches until it resumes
   if (market.trading === false || /suspend/.test(statusWords)) return { ok: false, status: 200, body: { ok: false, code: "market_suspended", message: `${VN} has paused this market for the moment; try again in a few seconds.` } };
-  const maxPrice = outcomeMaxPrice(market);
-  const venueContracts = Math.floor(contracts / maxPrice + 1e-9);
+  const maxPriceMicro = maxPriceMicroOf(market);
+  const venueContracts = venueContractsOf(contracts, maxPriceMicro);
   const bids = bidLevels(market);
-  const tiers = quoteSaleTiers({ positionContracts: venueContracts, maxPrice, bids });
+  const tiers = quoteSaleTiers({ positionContracts: venueContracts, maxPriceMicro, bids });
   if (!tiers.wide && !tiers.balanced && !tiers.tight) return { ok: false, status: 200, body: { ok: false, code: "no_bids", message: `${VENUE_NAMES[MEMBER_VENUE]} shows no bids on this market right now; nothing to sell into.` } };
   return {
     ok: true,
@@ -1183,15 +1187,15 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
       member,
       pos,
       market,
-      maxPrice,
+      maxPriceMicro,
       contracts,
       venueContracts,
       entryCents: entryCents ?? pos.entryCents,
       // the game's name as the venue gives it (Away at Home); our market's title otherwise
       game: { league: row.league, sideName: row.sideName, eventTitle: pos.event || row.title, eventTimeIso, markCents: row.markCents },
       tiers,
-      bestBidCents: bids[0] ? Math.round((bids[0].price / maxPrice) * 100) : null,
-      bidDepth: Math.floor(bids.reduce((s, l) => s + l.quantity, 0)),
+      bestBidCents: bids[0] ? centsPerDollarOf(bids[0].priceMicro, maxPriceMicro, "down") : null,
+      bidDepth: divInt(bids.reduce((s, l) => s + l.quantityMilli, 0), MILLI_PER_CONTRACT, "down"),
       live,
       inPlayDelaySec: live ? inPlayDelaySecOf(market) : 0,
     },
@@ -1246,7 +1250,7 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
   if (!comboRfqLive() && !probing) return { ok: false, status: 409, body: { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VN}; the lock sells part of one position.` } };
   const pos = comboPositionOf(positions, ticker);
   if (!pos) return { ok: false, status: 409, body: { ok: false, error: "not_held", code: "not_held", message: `Your ${VN} account holds no such combo.` } };
-  if (contracts > pos.contracts + 1e-9) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this ticket; the lock can cover up to that.`, held: pos.contracts } };
+  if (contractHundredths(contracts) > contractHundredths(pos.contracts)) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this ticket; the lock can cover up to that.`, held: pos.contracts } };
   const legs = pos.legs ?? [];
   if (legs.some((l) => l.state === "lost")) return { ok: false, status: 200, body: { ok: false, code: "combo_missed", message: "A leg missed; this ticket has settled its way." } };
   if (legs.length > 0 && legs.every((l) => l.state === "won" || l.state === "void")) return { ok: false, status: 200, body: { ok: false, code: "combo_settling", message: `Every leg hit; ${VN} is settling this ticket.` } };
@@ -1266,23 +1270,25 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
   const live = legs.some((l) => l.state === "live") || LIVE_EVENT_WORDS.test(statusWords);
   if (live && !memberInPlay) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: "A leg is in play; the lock is pre-game only." } };
   if (market.trading === false || /suspend/.test(statusWords)) return { ok: false, status: 200, body: { ok: false, code: "market_suspended", message: `${VN} has paused this ticket for the moment; try again in a few seconds.` } };
-  const maxPrice = outcomeMaxPrice(market);
-  const venueContracts = Math.floor(contracts / maxPrice + 1e-9);
-  const askFor = Math.max(1, Math.floor(venueContracts * SALE_SHARE.tight));
-  // the ticket's own last price, as the venue shows it (the market's field, else its last trade), per $1
-  const lastTrade = (market.recent_trades ?? []).map((t) => Number(t?.price)).filter((x) => Number.isFinite(x) && x > 0).at(-1);
-  const lastPx = Number(market.last_traded_price ?? market.price ?? lastTrade);
-  const lastCents = Number.isFinite(lastPx) && lastPx > 0 && lastPx < maxPrice ? Math.round((lastPx / maxPrice) * 100) : null;
+  const maxPriceMicro = maxPriceMicroOf(market);
+  const venueContracts = venueContractsOf(contracts, maxPriceMicro);
+  const askFor = Math.max(1, tierSaleContracts(venueContracts, "tight"));
+  // the ticket's own last price, as the venue shows it (the market's field, else its last trade), per $1; a mark, to the nearest cent
+  const lastTrade = (market.recent_trades ?? []).map((t) => decimalUnits(t?.price, 6, "nearest")).filter((x): x is number => x !== null && x > 0).at(-1);
+  const lastWritten = market.last_traded_price ?? market.price;
+  const lastMicro = lastWritten !== null && lastWritten !== undefined ? decimalUnits(lastWritten, 6, "nearest") : (lastTrade ?? null);
+  const lastCents = lastMicro !== null && lastMicro > 0 && lastMicro < maxPriceMicro ? centsPerDollarOf(lastMicro, maxPriceMicro, "nearest") : null;
   const preview = memberComboRfq === "preview";
   let bid: RfqBid;
   if (preview) {
     // a stand-in bid a tenth under the ticket's last price (its entry when the venue shows none); nothing is asked of the venue
-    const standIn = Math.max(1, Math.floor((lastCents ?? pos.entryCents) * COMBO_PREVIEW_HAIRCUT));
-    const price = (standIn / 100) * maxPrice;
-    bid = { rfq: { id: "preview", status: "quoted", market_id: pos.marketId, action: "sell", quantity: String(askFor), price: price.toFixed(2), client_rfq_id: null }, level: { price, quantity: askFor }, reason: null, expiresAtIso: null };
+    const standIn = Math.max(1, divInt((lastCents ?? pos.entryCents) * COMBO_PREVIEW_PERCENT, 100, "down"));
+    // cents per $1 of payout, as the venue's own price: that share of max_price
+    const priceMicro = mulDiv(standIn, maxPriceMicro, 100, "down");
+    bid = { rfq: { id: "preview", status: "quoted", market_id: pos.marketId, action: "sell", quantity: String(askFor), price: priceString(divInt(priceMicro, MICRO_PER_CENT, "down")), client_rfq_id: null }, level: { priceMicro, quantityMilli: askFor * MILLI_PER_CONTRACT }, reason: null, expiresAtIso: null };
   } else {
     try {
-      bid = await requestRfqBid(client, { market_id: pos.marketId, action: "sell", quantity: String(askFor), client_rfq_id: clientOrderIdFor("rfq", ticker) }, maxPrice, memberOrderOpts);
+      bid = await requestRfqBid(client, { market_id: pos.marketId, action: "sell", quantity: String(askFor), client_rfq_id: clientOrderIdFor("rfq", ticker) }, maxPriceMicro, memberOrderOpts);
     } catch (err) {
       // the venue has not shipped the quote path: its 404 is "not yet", not an outage
       if (err instanceof MemberApiError && err.status === 404) {
@@ -1299,9 +1305,10 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
     const why = bid.reason === "declined" ? `${VN}'s makers passed on this ticket right now.` : bid.reason === "expired" ? `${VN}'s quote lapsed before it could be read; try again.` : `${VN} did not price this ticket in time; try again.`;
     return { ok: false, status: 200, body: { ok: false, code: "no_bids", rfq: bid.reason, message: why } };
   }
-  const tiers = quoteSaleTiers({ positionContracts: venueContracts, maxPrice, bids: [bid.level] });
+  const tiers = quoteSaleTiers({ positionContracts: venueContracts, maxPriceMicro, bids: [bid.level] });
   if (!tiers.wide && !tiers.balanced && !tiers.tight) return { ok: false, status: 200, body: { ok: false, code: "no_bids", message: `${VN}'s quote cannot fund a shape at this size.` } };
-  const bidCents = Math.round((bid.level.price / maxPrice) * 100);
+  // a quote finer than a cent is shown a cent down, never up
+  const bidCents = centsPerDollarOf(bid.level.priceMicro, maxPriceMicro, "down");
   // the mark is the ticket's own last price when the venue shows one, the quote otherwise
   const markCents = lastCents ?? bidCents;
   return {
@@ -1310,14 +1317,14 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
       member,
       pos,
       market,
-      maxPrice,
+      maxPriceMicro,
       contracts,
       venueContracts,
       entryCents: entryCents ?? pos.entryCents,
       game: { league: pos.league ?? "combo", sideName: pos.side || `${legs.length}-leg combo`, eventTitle: pos.event || (market.symbol ?? "").trim() || "Combo", eventTimeIso: lastLegIso, markCents },
       tiers,
       bestBidCents: bidCents,
-      bidDepth: Math.floor(bid.level.quantity),
+      bidDepth: divInt(bid.level.quantityMilli, MILLI_PER_CONTRACT, "down"),
       live,
       inPlayDelaySec: 0,
       combo: { bid, legs: legs.length, preview },
@@ -1325,21 +1332,23 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
   };
 }
 
-/** per-contract figure for the tables from a whole-position total: the totals on the sale are what settlement pays */
-const perContract = (totalCents: number, contracts: number): number => (contracts > 0 ? Math.round(totalCents / contracts) : 0);
+/** per-contract figure for the tables from a whole-position total, to the nearest cent: the totals on the sale are the money and are what settlement pays */
+const perContract = (totalCents: number, contracts: number): number => (contractHundredths(contracts) > 0 ? mulDiv(totalCents, 100, contractHundredths(contracts), "nearest") : 0);
 
 /** One tier of a member sale as the client paints it: the tier's own totals ride beside the per-contract figures the shared slip reads. */
-function saleTierView(t: SaleTierQuote, contracts: number, maxPrice: number, markCents: number) {
+function saleTierView(t: SaleTierQuote, contracts: number, maxPriceMicro: number, markCents: number) {
   return {
     floorCents: perContract(t.floorTotalCents, contracts),
     capCents: perContract(t.capTotalCents, contracts),
     creditCents: 0,
-    evCostBps: saleEvCostBps(t, contracts / maxPrice, maxPrice, markCents),
+    evCostBps: saleEvCostBps(t, contractHundredths(contracts), maxPriceMicro, markCents),
     floorTotalCents: t.floorTotalCents,
     capTotalCents: t.capTotalCents,
     cashNowCents: t.cashNowCents,
-    soldContracts: roundContracts(t.soldContracts * maxPrice),
-    keptContracts: roundContracts(t.keptContracts * maxPrice),
+    // our $1 contracts: the sold size up and the riding size down, as the record keeps them (saleRecordOf)
+    soldContracts: ownContracts(t.soldContracts * MILLI_PER_CONTRACT, maxPriceMicro, "up"),
+    keptContracts: ownContracts(t.keptContracts * MILLI_PER_CONTRACT, maxPriceMicro, "down"),
+    wantContracts: ownContracts(t.wantContracts * MILLI_PER_CONTRACT, maxPriceMicro, "up"),
     limitPriceCents: t.limitPriceCents,
     avgPriceCents: t.avgPriceCents,
     depthLimited: t.depthLimited,
@@ -1512,10 +1521,10 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     sendJson(res, 200, { ok: false, at: atIso, ticker, code: "not_filled", live: P.live, message: why, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
     return;
   }
-  const sale = saleRecordOf(outcome, { marketId: P.pos.marketId, positionContracts: P.venueContracts, maxPrice: P.maxPrice, limitPriceCents: t.limitPriceCents, clientOrderId, requested: t.soldContracts });
+  const sale = saleRecordOf(outcome, { marketId: P.pos.marketId, positionContracts: P.venueContracts, maxPriceMicro: P.maxPriceMicro, limitPriceCents: t.limitPriceCents, clientOrderId, requested: t.soldContracts });
   const { compared, result } = await cmp;
   const at = new Date().toISOString();
-  const combo = P.combo ? { rfqId: P.combo.bid.rfq.id ?? null, quotedPriceCents: t.limitPriceCents, expiresAtIso: P.combo.bid.expiresAtIso, legs: P.combo.legs } : undefined;
+  const combo = P.combo ? { rfqId: P.combo.bid.rfq.id ?? null, quotedPriceCents: t.limitPriceCents, quotedPrice: quotedPriceOf(P.combo.bid.rfq), expiresAtIso: P.combo.bid.expiresAtIso, legs: P.combo.legs } : undefined;
   const record: Parameters<typeof appendShadowRecord>[1] = {
     type: "open",
     at,
@@ -1530,7 +1539,7 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     floorCents: perContract(sale.floorTotalCents, P.contracts),
     capCents: perContract(sale.capTotalCents, P.contracts),
     creditCents: 0,
-    evCostBps: saleEvCostBps({ soldContracts: outcome.filled, cashNowCents: sale.cashNowCents }, P.venueContracts, P.maxPrice, P.game.markCents),
+    evCostBps: saleEvCostBps({ soldContracts: outcome.filled, cashNowCents: sale.cashNowCents }, mulDiv(P.venueContracts, P.maxPriceMicro, MICRO_PER_CENT, "down"), P.maxPriceMicro, P.game.markCents),
     route: "member_sale",
     feesCents: sale.feeCents ?? 0,
     takeCents: 0,
@@ -1584,7 +1593,7 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
 }
 
 /** The buy-back priced from the member's venue's offers: the contracts sold at the lock, bought again at the walked price. */
-async function memberBuyBackPriced(holder: string | null, lock: ShadowPosition): Promise<{ ok: true; member: string; market: RawOutcomeMarket; maxPrice: number; bb: NonNullable<ReturnType<typeof quoteBuyBack>>; midCents: number | null; sale: MemberSaleRecord } | { ok: false; status: number; body: Record<string, unknown> }> {
+async function memberBuyBackPriced(holder: string | null, lock: ShadowPosition): Promise<{ ok: true; member: string; market: RawOutcomeMarket; maxPriceMicro: number; bb: NonNullable<ReturnType<typeof quoteBuyBack>>; midCents: number | null; sale: MemberSaleRecord } | { ok: false; status: number; body: Record<string, unknown> }> {
   const sale = lock.memberSale;
   if (!sale) return { ok: false, status: 409, body: { ok: false, error: "no_sale", code: "no_sale", message: "This lock carries no sale to buy back." } };
   const member = memberKeyOf(holder);
@@ -1597,14 +1606,15 @@ async function memberBuyBackPriced(holder: string | null, lock: ShadowPosition):
     return { ok: false, ...memberRefusal(err) };
   }
   if (!market) return { ok: false, status: 502, body: { ok: false, error: "venue_refused", code: "venue_refused", message: `${VENUE_NAMES[MEMBER_VENUE]} did not describe the market.` } };
-  const maxPrice = outcomeMaxPrice(market);
-  const want = Math.floor(sale.soldContracts / maxPrice + 1e-9);
+  const maxPriceMicro = maxPriceMicroOf(market);
+  const want = venueContractsOf(sale.soldContracts, maxPriceMicro);
   const asks = askLevels(market);
-  const bb = quoteBuyBack(asks, want, maxPrice);
+  const bb = quoteBuyBack(asks, want, maxPriceMicro);
   if (!bb) return { ok: false, status: 200, body: { ok: false, code: "no_offers", message: `${VENUE_NAMES[MEMBER_VENUE]} shows no offers on this market right now; the contracts you sold cannot be bought back.` } };
   const bids = bidLevels(market);
-  const midCents = bids[0] && asks[0] ? Math.round(((bids[0].price + asks[0].price) / 2 / maxPrice) * 100) : null;
-  return { ok: true, member, market, maxPrice, bb, midCents, sale };
+  // the middle of the book per $1 of payout, to the nearest cent: a yardstick for what crossing cost, not money
+  const midCents = bids[0] && asks[0] ? mulDiv(bids[0].priceMicro + asks[0].priceMicro, 100, 2 * maxPriceMicro, "nearest") : null;
+  return { ok: true, member, market, maxPriceMicro, bb, midCents, sale };
 }
 
 /**
@@ -1612,14 +1622,16 @@ async function memberBuyBackPriced(holder: string | null, lock: ShadowPosition):
  * buy-back, the sale it undoes, what the round trip leaves in their balance with the position back
  * at its size, against staying to the floor and the cap. The same shape both times.
  */
-function memberUnwindViewOf(lock: ShadowPosition, sale: MemberSaleRecord, bb: { wantContracts: number; contracts: number; limitPriceCents: number; avgPriceCents: number; costCents: number; depthLimited?: boolean }, maxPrice: number, midCents: number | null) {
-  const bought = roundContracts(bb.contracts * maxPrice);
+function memberUnwindViewOf(lock: ShadowPosition, sale: MemberSaleRecord, bb: { wantContracts: number; contracts: number; limitPriceCents: number; avgPriceCents: number; costCents: number; depthLimited?: boolean }, maxPriceMicro: number, midCents: number | null) {
+  // bb counts the venue's contracts; the view speaks in our $1 contracts, as the buy-back record does (buyBackRecordOf)
+  const own = (venueContracts: number): number => ownContracts(decimalUnits(venueContracts, 3, "down") ?? 0, maxPriceMicro, "down");
+  const bought = own(bb.contracts);
   return {
     route: "member_sale" as const,
     venue: MEMBER_VENUE,
     venueName: VENUE_NAMES[MEMBER_VENUE],
     contracts: lock.contracts,
-    buyBack: { wantContracts: roundContracts(bb.wantContracts * maxPrice), contracts: bought, limitPriceCents: bb.limitPriceCents, avgPriceCents: bb.avgPriceCents, costCents: bb.costCents, depthLimited: bb.depthLimited ?? false },
+    buyBack: { wantContracts: own(bb.wantContracts), contracts: bought, limitPriceCents: bb.limitPriceCents, avgPriceCents: bb.avgPriceCents, costCents: bb.costCents, depthLimited: bb.depthLimited ?? false },
     cashNowCents: sale.cashNowCents,
     soldContracts: sale.soldContracts,
     /** the sale less the buy-back: what the round trip leaves in the member's balance */
@@ -1628,7 +1640,7 @@ function memberUnwindViewOf(lock: ShadowPosition, sale: MemberSaleRecord, bb: { 
     closeNetCents: sale.cashNowCents - bb.costCents,
     creditCents: 0,
     yesMidCents: midCents,
-    protectedAtMidCents: midCents !== null ? sale.cashNowCents - Math.round(bought * midCents) : null,
+    protectedAtMidCents: midCents !== null ? sale.cashNowCents - centsOf(midCents, bought) : null,
     stayFloorCents: sale.floorTotalCents,
     stayCapCents: sale.capTotalCents,
   };
@@ -1678,10 +1690,10 @@ async function memberUnwind(res: ServerResponse, holder: string | null, lock: Sh
     sendJson(res, 200, { ok: false, at: atIso, ticker: lock.ticker, code: "not_filled", message: `${VENUE_NAMES[MEMBER_VENUE]}'s offers moved before the order reached them; nothing was bought back and the lock stands.`, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
     return;
   }
-  const back = buyBackRecordOf(outcome, { maxPrice: bp.maxPrice, limitPriceCents: bp.bb.limitPriceCents, clientOrderId, requested: bp.bb.contracts });
+  const back = buyBackRecordOf(outcome, { maxPriceMicro: bp.maxPriceMicro, limitPriceCents: bp.bb.limitPriceCents, clientOrderId, requested: bp.bb.contracts });
   const at = new Date().toISOString();
   const protectedAtCloseCents = bp.sale.cashNowCents - back.costCents;
-  const protectedAtMidCents = bp.midCents !== null ? bp.sale.cashNowCents - Math.round(back.boughtContracts * bp.midCents) : null;
+  const protectedAtMidCents = bp.midCents !== null ? bp.sale.cashNowCents - centsOf(bp.midCents, back.boughtContracts) : null;
   const ok = appendOrAlert(
     {
       type: "close",
@@ -1714,7 +1726,7 @@ async function memberUnwind(res: ServerResponse, holder: string | null, lock: Sh
     ...(holder ? { holder } : {}),
     status: closed.status,
     route: "member_sale",
-    unwind: memberUnwindViewOf(lock, bp.sale, { wantContracts: bp.bb.wantContracts, contracts: outcome.filled, limitPriceCents: bp.bb.limitPriceCents, avgPriceCents: back.avgPriceCents, costCents: back.costCents, depthLimited: back.boughtContracts < back.requestedContracts }, bp.maxPrice, bp.midCents),
+    unwind: memberUnwindViewOf(lock, bp.sale, { wantContracts: bp.bb.wantContracts, contracts: outcome.filled, limitPriceCents: bp.bb.limitPriceCents, avgPriceCents: back.avgPriceCents, costCents: back.costCents, depthLimited: back.boughtContracts < back.requestedContracts }, bp.maxPriceMicro, bp.midCents),
     memberBuyBack: back,
     partial: back.boughtContracts < back.requestedContracts,
     hedge: { sent: false, note: "no hedge on a member's own sale; the contracts were bought back in your own account" },
@@ -2565,9 +2577,10 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
           const { market: m, marketId: _id, ...p } = row;
           const ticker = comboLockable(row) ? comboTickerOf(row.marketId) : p.ticker;
           const bids = m ? bidLevels(m) : [];
-          const last = m ? Number(m.last_traded_price ?? m.price) : NaN;
-          const bidCents = bids[0] ? Math.round((bids[0].price / row.maxPrice) * 100) : null;
-          const lastCents = Number.isFinite(last) && last > 0 && last < row.maxPrice ? Math.round((last / row.maxPrice) * 100) : null;
+          const lastMicro = m ? decimalUnits(m.last_traded_price ?? m.price, 6, "nearest") : null;
+          // per $1 of payout: the bid a cent down when it is finer than a cent (the page prices the ticket at it); the last trade is a mark, to the nearest
+          const bidCents = bids[0] ? centsPerDollarOf(bids[0].priceMicro, row.maxPriceMicro, "down") : null;
+          const lastCents = lastMicro !== null && lastMicro > 0 && lastMicro < row.maxPriceMicro ? centsPerDollarOf(lastMicro, row.maxPriceMicro, "nearest") : null;
           return { ...p, ticker, ...(ticker !== p.ticker ? { combo: true } : {}), bidCents, lastCents, venue: MEMBER_VENUE, lock: lockOf(ticker) };
         }),
       ],
@@ -2608,7 +2621,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         Object.entries(P.tiers)
           .filter(([, t]) => t)
           .map(([k, t]) => {
-            const v = saleTierView(t as SaleTierQuote, P.contracts, P.maxPrice, P.game.markCents);
+            const v = saleTierView(t as SaleTierQuote, P.contracts, P.maxPriceMicro, P.game.markCents);
             return [k, { ...v, tails: memberRulesView(P.game.league, v.keptContracts, Boolean(P.combo)).tails }];
           }),
       );
@@ -2834,7 +2847,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         sendJson(res, bp.status, { at: atIso, ticker, ...bp.body });
         return;
       }
-      sendJson(res, 200, { ok: true, at: atIso, ticker, ...(holder ? { holder } : {}), lastIso, unwind: memberUnwindViewOf(lock, bp.sale, bp.bb, bp.maxPrice, bp.midCents) });
+      sendJson(res, 200, { ok: true, at: atIso, ticker, ...(holder ? { holder } : {}), lastIso, unwind: memberUnwindViewOf(lock, bp.sale, bp.bb, bp.maxPriceMicro, bp.midCents) });
       return;
     }
     const q = quoteEarlyClose(closeTermsOf(lock), await closeBooksFn(lock));
@@ -4280,10 +4293,13 @@ function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactual
   return p.source === "lock" ? { ...pub, cashDue: cashDue(p) } : pub;
 }
 function publicMemberSale(s: MemberSaleRecord): MemberSaleRecord {
-  return { ...s, marketId: "", orderId: null, clientOrderId: "" };
+  // the fill-by-fill detail of a member's account stays with the member and the operator; the summed figures are public
+  const { venueFills: _fills, ...rest } = s;
+  return { ...rest, marketId: "", orderId: null, clientOrderId: "" };
 }
 function publicMemberBuyBack(b: NonNullable<ShadowPosition["closeMemberBuyBack"]>): NonNullable<ShadowPosition["closeMemberBuyBack"]> {
-  return { ...b, orderId: null, clientOrderId: "" };
+  const { venueFills: _fills, ...rest } = b;
+  return { ...rest, orderId: null, clientOrderId: "" };
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
