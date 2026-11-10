@@ -8,6 +8,11 @@
  * it. In play that is the normal case, not the rare one. So when the order would really be sent,
  * the sequence is turned around:
  *
+ *   0. ROOM      the exposure caps (exposureCaps.ts) are read from the ledgers at this moment: what
+ *                is open on the game, resting on the hedge venue and open for the holder. A lock
+ *                that would pass any cap is refused here with one `cap_refused` line on the trail;
+ *                no pending line, no order. The check and the pending line below run with nothing
+ *                awaited between them, so the next lock to arrive reads this one as already open.
  *   1. PENDING   one line on the pending trail (this module), before any order leaves: the ref,
  *                the terms quoted, the order as it will be sent. A process that dies after this
  *                line and before the next leaves a line with no resolution, which the service
@@ -156,7 +161,14 @@ export type PendingRecord =
       ticker: string;
       holder?: string;
       terms: PendingTerms;
-      order: { venue: HedgeVenue; instrument: string; action: "buy" | "sell"; unitsMilli: number; limitMilli: number; maxCostCents: number };
+      order: PendingOrder;
+      /**
+       * What the exposure gate set aside for this attempt (exposureCaps.ts): while the line has no
+       * resolution it counts against the caps at these amounts, so a second lock arriving while this
+       * one's order is out is measured against both. Absent on lines before 2026-11-10 (derived from
+       * the terms and the order then).
+       */
+      reserve?: PendingReserve;
     }
   | {
       type: "resolved";
@@ -175,7 +187,45 @@ export type PendingRecord =
       id: string;
       at: string;
       note: string;
+    }
+  | {
+      /**
+       * An exposure cap had no room (exposureCaps.ts): a real-money lock, or the operator's resend of
+       * a hedge, refused before any order was built. One line, complete in itself: nothing left, so
+       * nothing to resolve or clear. `caps` names every cap the attempt would have passed and by how much.
+       */
+      type: "cap_refused";
+      id: string;
+      at: string;
+      ref: string;
+      ticker: string;
+      holder?: string;
+      source: "lock" | "resend";
+      terms: PendingTerms;
+      order: PendingOrder;
+      caps: CapRefusalLine[];
+      detail: string;
     };
+
+export type PendingOrder = { venue: HedgeVenue; instrument: string; action: "buy" | "sell"; unitsMilli: number; limitMilli: number; maxCostCents: number };
+
+/** The amounts an attempt holds against the exposure caps while it is in flight: the game it is on, and cents per game, per venue, per holder. */
+export interface PendingReserve {
+  game: string;
+  gameCents: number;
+  venueCents: number;
+  holderCents: number;
+}
+
+/** One cap an attempt would have passed: which, for which game, venue or holder, and the sums in cents. */
+export interface CapRefusalLine {
+  cap: "game" | "venue" | "holder";
+  key: string;
+  openCents: number;
+  addCents: number;
+  capCents: number;
+  overByCents: number;
+}
 
 export const pendingId = (ref: string, atIso: string): string => `${ref}#${atIso}`;
 
@@ -204,7 +254,7 @@ export function loadPending(path: string): PendingRecord[] {
     if (!line.trim()) continue;
     try {
       const r = JSON.parse(line) as PendingRecord;
-      if (r && (r.type === "pending" || r.type === "resolved" || r.type === "cleared") && typeof r.id === "string") out.push(r);
+      if (r && (r.type === "pending" || r.type === "resolved" || r.type === "cleared" || r.type === "cap_refused") && typeof r.id === "string") out.push(r);
     } catch {
       // a torn line is skipped, never repaired
     }
@@ -228,7 +278,7 @@ export function summarizePending(records: PendingRecord[]): PendingSummary {
   for (const r of records) {
     if (r.type === "pending") pendings.set(r.id, r);
     else if (r.type === "resolved") resolved.set(r.id, r);
-    else cleared.add(r.id);
+    else if (r.type === "cleared") cleared.add(r.id);
   }
   const counts: Record<PendingResolution, number> = { locked: 0, refused: 0, stray: 0, unconfirmed: 0, ledger_failed: 0 };
   const unresolved: PendingSummary["unresolved"] = [];
@@ -249,4 +299,10 @@ export function summarizePending(records: PendingRecord[]): PendingSummary {
 export function clearable(records: PendingRecord[], id: string): boolean {
   const s = summarizePending(records);
   return s.unresolved.some((p) => p.id === id) || s.strays.some((x) => x.pending.id === id);
+}
+
+/** The cap refusals on the trail: how many, and the latest. */
+export function capRefusals(records: PendingRecord[]): { count: number; last: Extract<PendingRecord, { type: "cap_refused" }> | null } {
+  const lines = records.filter((r): r is Extract<PendingRecord, { type: "cap_refused" }> => r.type === "cap_refused");
+  return { count: lines.length, last: lines.at(-1) ?? null };
 }
