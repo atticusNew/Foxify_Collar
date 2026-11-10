@@ -41,10 +41,21 @@
  *      · EVENT_LASTLEG_LEAGUES · EVENT_LASTLEG_CATALOG_PAGES · EVENT_LASTLEG_VOID_AFTER_MS
  * Alerts (optional, see crossVenue/shadowAlerts.ts): EVENT_SHADOW_ALERT_BOT_TOKEN +
  *      EVENT_SHADOW_ALERT_CHAT_ID (Telegram) and/or EVENT_SHADOW_ALERT_WEBHOOK_URL
+ * Ledger fingerprints (crossVenue/ledgerFingerprint.ts): EVENT_SHADOW_FINGERPRINTS (default on; 0 = off)
+ *      · EVENT_SHADOW_FINGERPRINT_CHECK_MS (how often each ledger is hashed again from its first byte
+ *      and compared with what was published, default one day; also done at start-up)
  *
  * Durability: the ledger lives on one Render disk. GET /api/shadow/export streams
  * the raw JSONL so it can be mirrored off-box on a schedule
  * (`curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" https://<service>/api/shadow/export > backup-$(date +%F).jsonl`).
+ *
+ * Fingerprints: GET /api/shadow/fingerprints (public) lists one SHA-256 per closed UTC day of the
+ * ledger, chained, so a saved fingerprint shows later whether the history behind it was changed;
+ * the record page prints the latest. They are recorded once, append-only, in
+ * `<ledger>.fingerprints.jsonl` beside the ledger. A ledger that stops hashing to a published day
+ * is said on the page, on /healthz and through the alerts, and is never repaired. A copy is
+ * checked with scripts/eventLedgerFingerprint.ts. The lock ledgers are fingerprinted the same way
+ * and listed for the operator only (?ledger=lock, &holder=; the /holders page).
  *
  * GET /healthz is public liveness only (ok, service, positions, last scan/settle).
  * Ledger and receipt paths, hedge strategy and venues, error text and failure
@@ -175,7 +186,9 @@ import { readVenueFills, venueFillReadersFromEnv, type ReadOptions, type VenueFi
 import { renderScoreboardHtml } from "./eventScoreboardHtml";
 import { memberAppHtml, memberPrivacyHtml } from "./memberAppHtml";
 import { ATTICUS_BIRD_PNG, ATTICUS_WORDMARK_PNG, ICON_180_PNG, ICON_192_PNG, ICON_512_PNG, STX_LOGO_PNG } from "./memberAppAssets";
-import { archiveLedgerFile, archiveLedgerLines } from "../src/eventCollar/crossVenue/ledgerArchive";
+import { archiveLedgerFile, archiveLedgerLines, archiveLinesPathFor, archivePathFor } from "../src/eventCollar/crossVenue/ledgerArchive";
+import { fingerprintReport, mismatchWords, type LedgerFingerprintStatus } from "../src/eventCollar/crossVenue/ledgerFingerprint";
+import { LedgerFingerprintKeeper } from "../src/eventCollar/crossVenue/ledgerFingerprintKeeper";
 import { cryptoOpenAllowed, openMixRuleFromEnv } from "../src/eventCollar/crossVenue/openMix";
 import {
   earlyCloseRuleFromEnv,
@@ -616,6 +629,100 @@ function allLocks(): Array<{ p: ShadowPosition; path: string; holder: string | n
     const holder = holderOfLedgerPath(path);
     return loadShadowPositions(path).map((p) => ({ p, path, holder }));
   });
+}
+
+/**
+ * LEDGER FINGERPRINTS (crossVenue/ledgerFingerprint.ts, ledgerFingerprintKeeper.ts): one SHA-256
+ * per closed UTC day of a ledger, chained, recorded once in `<ledger>.fingerprints.jsonl` beside
+ * it. The record's are public (/api/shadow/fingerprints, the record page); the lock ledgers' are
+ * the operator's, since a ledger is named by its holder. Read-only towards every ledger. Each
+ * ledger is hashed from its first byte at start-up and every EVENT_SHADOW_FINGERPRINT_CHECK_MS
+ * (one day) and compared with what was published; in between only appended bytes are read, on
+ * a one-minute timer and whenever a page or route asks. EVENT_SHADOW_FINGERPRINTS=0 turns the
+ * whole thing off: nothing is read or written, the page has no section, the route is a 404.
+ */
+const FINGERPRINTS_ON = !/^(0|false|no|off)$/i.test((process.env.EVENT_SHADOW_FINGERPRINTS ?? "").trim());
+const FINGERPRINT_CHECK_MS = (() => {
+  const n = Number(process.env.EVENT_SHADOW_FINGERPRINT_CHECK_MS);
+  return Number.isFinite(n) && n >= 60_000 ? n : 86_400_000;
+})();
+const FINGERPRINT_SYNC_MS = 60_000;
+const fingerprintKeepers = new Map<string, LedgerFingerprintKeeper>();
+/** a ledger as an alert names it; alerts go to the operator, so a holder's alias may be said */
+function ledgerWords(path: string): string {
+  if (path === LEDGER_PATH) return "the record's ledger";
+  const holder = holderOfLedgerPath(path);
+  return holder ? `the lock ledger of ${holder}` : "the shared lock ledger";
+}
+function fingerprintKeeperFor(path: string): LedgerFingerprintKeeper {
+  let keeper = fingerprintKeepers.get(path);
+  if (!keeper) {
+    const holder = holderOfLedgerPath(path);
+    const list = path === LEDGER_PATH ? `${RECORD_URL}/api/shadow/fingerprints` : `a copy of ${RECORD_URL}/api/shadow/fingerprints?ledger=lock${holder ? `&holder=${holder}` : ""} saved with the operator token`;
+    keeper = new LedgerFingerprintKeeper(path, {
+      onMismatch: (m) =>
+        void alerter({
+          kind: "ledger_fingerprint_mismatch",
+          message:
+            `${ledgerWords(path)} no longer hashes to the fingerprint published for ${m.day} (published ${m.published.sha256.slice(0, 12)}, ${m.found ? `the file now gives ${m.found.sha256.slice(0, 12)} for ${m.found.day}` : "the file no longer reaches that day"}). ` +
+            `The history up to that day was changed after it was published, or the file is damaged. Nothing was repaired and no new day is published until it matches again. ` +
+            `To find a copy that still matches: npx tsx services/api/scripts/eventLedgerFingerprint.ts <backup.jsonl> --expect ${list}`,
+        }),
+      onRestored: (was) =>
+        void alerter({ kind: "ledger_fingerprint_restored", message: `${ledgerWords(path)} hashes to every published fingerprint again. The mismatch at ${was.day}, first seen ${was.at}, stays on the record.` }),
+    });
+    fingerprintKeepers.set(path, keeper);
+  }
+  return keeper;
+}
+/** The record ledger's fingerprints, brought up to the file as it is now; null when switched off. */
+function recordFingerprints(full = false): LedgerFingerprintStatus | null {
+  return FINGERPRINTS_ON ? fingerprintKeeperFor(LEDGER_PATH).sync({ full }) : null;
+}
+/** Every lock ledger's fingerprints, the shared ledger under holder null. Operator views only. */
+function lockFingerprints(full = false): Array<{ holder: string | null; path: string; status: LedgerFingerprintStatus }> {
+  if (!FINGERPRINTS_ON) return [];
+  return lockLedgerPaths().map((path) => ({ holder: holderOfLedgerPath(path), path, status: fingerprintKeeperFor(path).sync({ full }) }));
+}
+/** Every ledger, on the timers: `full` hashes each from its first byte and compares. A fault here never reaches the caller. */
+function fingerprintTick(full: boolean): void {
+  try {
+    recordFingerprints(full);
+    lockFingerprints(full);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[event-shadow] ledger fingerprints: ${String(err instanceof Error ? err.message : err)}`);
+  }
+}
+/**
+ * Say a ledger is about to be archived, or have lines moved out of it, before it happens: the
+ * chain published so far ends on the record and the file that follows starts a new one. A fault
+ * here must not stop the operator's reset; the next check then reports the ledger as changed,
+ * which without this line on the record is what it is.
+ */
+function fingerprintRestart(path: string, reason: string, atIso: string, archivedTo: string): void {
+  if (!FINGERPRINTS_ON) return;
+  try {
+    fingerprintKeeperFor(path).restart(reason, atIso, archivedTo);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[event-shadow] ledger fingerprints: restart of ${path} not recorded: ${String(err instanceof Error ? err.message : err)}`);
+  }
+}
+/** A ledger's fingerprints as the operator's status page carries them: the state and the latest, not the list. */
+function fingerprintSummary(path: string, s: LedgerFingerprintStatus) {
+  return {
+    ledger: path,
+    file: fingerprintKeeperFor(path).recordPath,
+    state: s.state,
+    ...(s.mismatch ? { mismatch: s.mismatch } : {}),
+    ...(s.error ? { error: s.error } : {}),
+    chain: s.chain,
+    publishedDays: s.days.length,
+    latest: s.days[s.days.length - 1] ?? null,
+    open: s.open,
+    fullCheckAt: s.fullCheckAt,
+  };
 }
 
 /**
@@ -3590,6 +3697,7 @@ function handleLockReset(req: IncomingMessage, res: ServerResponse, url: URL): v
     return;
   }
   const atIso = new Date().toISOString();
+  fingerprintRestart(lockPath, `lock reset: the lines of ${ticker} were moved to an archive beside the ledger`, atIso, archiveLinesPathFor(lockPath, ticker, atIso));
   const archived = archiveLedgerLines(lockPath, (rec) => rec.ticker === ticker, ticker, atIso);
   const ref = hedgeRefFor(ticker, holder);
   const liveFills = loadHedgeReceipts(RECEIPTS_PATH)
@@ -4414,22 +4522,37 @@ function reconHealth(): Record<string, unknown> {
  * strategy and venues, error text and failure counters are operator information (healthBody).
  */
 function publicHealthBody(): Record<string, unknown> {
+  const mismatch = recordFingerprints()?.mismatch ?? null;
   return {
     ok: true,
     service: "event-protect-shadow",
     positions: allPositions().length,
     lastScanAt,
     lastSettleAt,
+    // present only while the record's ledger does not hash to a fingerprint that was published for it
+    ...(mismatch ? { ledgerFingerprint: { ok: false, day: mismatch.day, message: mismatchWords(mismatch.day) } } : {}),
   };
 }
 
 function healthBody(): Record<string, unknown> {
   const stats = ledgerStats(LEDGER_PATH);
+  const recordFp = recordFingerprints();
+  const lockFps = lockFingerprints();
   return {
     ok: true,
     service: "event-protect-shadow",
     positions: allPositions().length,
     ledger: { path: LEDGER_PATH, ...stats },
+    // the daily fingerprints of every ledger: `mismatches` must read zero
+    ledgerFingerprints: recordFp
+      ? {
+          on: true,
+          checkEveryMs: FINGERPRINT_CHECK_MS,
+          mismatches: [recordFp, ...lockFps.map((l) => l.status)].filter((s) => s.mismatch).length,
+          record: fingerprintSummary(LEDGER_PATH, recordFp),
+          locks: lockFps.map((l) => ({ holder: l.holder ?? "(shared)", ...fingerprintSummary(l.path, l.status) })),
+        }
+      : { on: false, off: "EVENT_SHADOW_FINGERPRINTS=0" },
     lastScanAt,
     lastSettleAt,
     lastScanError,
@@ -4758,11 +4881,45 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         return;
       }
       const atIso = new Date().toISOString();
+      if (existsSync(LEDGER_PATH)) fingerprintRestart(LEDGER_PATH, "the ledger was archived whole and a new one started", atIso, archivePathFor(LEDGER_PATH, atIso));
       const archived = [archiveLedgerFile(LEDGER_PATH, atIso), archiveLedgerFile(RECEIPTS_PATH, atIso), archiveLedgerFile(LASTLEG_PATH, atIso)]
         .filter((a) => a.archivedTo)
         .map((a) => ({ from: a.path, to: a.archivedTo }));
       if (scan) void scanTick();
       sendJson(res, 200, { ok: true, at: atIso, archived, message: "shadow ledger and hedge receipts archived; a fresh book opens with the next scan" });
+      return;
+    }
+    if (url.pathname === "/api/shadow/fingerprints") {
+      // THE DAILY FINGERPRINTS. Public for the record's ledger: every closed day as it was first
+      // published, the open day's running one, the chains a reset ended. ?ledger=lock (&holder=)
+      // is a lock ledger's list and ?recheck=1 hashes the file again from its first byte now;
+      // both need the operator token.
+      if (!FINGERPRINTS_ON) {
+        sendJson(res, 404, { ok: false, error: "not found" });
+        return;
+      }
+      const which = url.searchParams.get("ledger");
+      if (which !== null && which !== "record" && which !== "lock") {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "ledger is record (the default) or lock" });
+        return;
+      }
+      const lockFile = which === "lock";
+      if (lockFile && !operator) {
+        sendJson(res, 403, { ok: false, error: adminAuth.enabled ? "bad admin token" : "operator views disabled: set EVENT_X_ADMIN_TOKEN" });
+        return;
+      }
+      const fpHolder = lockFile ? (holderParam(url) ?? null) : null;
+      if (fpHolder && !HOLDER_ALIAS_RE.test(fpHolder)) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "holder must be an alias: 2-24 of a-z 0-9 _ -" });
+        return;
+      }
+      const path = lockFile ? lockLedgerPathFor(fpHolder) : LEDGER_PATH;
+      if (lockFile && !lockLedgerPaths().includes(path)) {
+        sendJson(res, 404, { ok: false, error: "no_ledger", message: `no lock ledger for ${fpHolder}` });
+        return;
+      }
+      const status = fingerprintKeeperFor(path).sync({ full: operator && url.searchParams.get("recheck") === "1" });
+      sendJson(res, 200, { ...fingerprintReport(status, { atIso: new Date().toISOString(), operator }), ledger: lockFile ? `lock${fpHolder ? `:${fpHolder}` : ""}` : "record" });
       return;
     }
     if (url.pathname === "/api/shadow/export") {
@@ -5196,7 +5353,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/holders") {
       // HOLDERS, NAMED: the page a pay run reads. Operator only; aliases never appear in public.
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderHoldersHtml({ ...holdersSummary(), token: url.searchParams.get("token") }));
+      res.end(renderHoldersHtml({ ...holdersSummary(), token: url.searchParams.get("token"), ...(FINGERPRINTS_ON ? { fingerprints: lockFingerprints() } : {}) }));
       return;
     }
     if (url.pathname === "/api/shadow/holders") {
@@ -5391,6 +5548,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           },
           ...(tickets ? { parlays: { lockVsSell: lockVersusSell(tickets), lastLeg: summarizeLastLeg(tickets), stakeCents: lastLegCfg.stakeCents, rules: summarizeLegRules(tickets) } } : {}),
           real: publicRealSummary(realizedBook()),
+          fingerprints: recordFingerprints(),
         }),
       );
       return;
@@ -5416,6 +5574,12 @@ async function main(): Promise<void> {
   referenceCatalogFn = demo.referenceCatalog;
   heldSource = demo.aggregatorSource();
   alertUnresolvedPending();
+  if (FINGERPRINTS_ON) {
+    // before the first request is answered: every ledger hashed from its first byte and compared with what was published
+    fingerprintTick(true);
+    setInterval(() => fingerprintTick(true), FINGERPRINT_CHECK_MS);
+    setInterval(() => fingerprintTick(false), FINGERPRINT_SYNC_MS);
+  }
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
@@ -5429,6 +5593,7 @@ async function main(): Promise<void> {
         (LOCK_ROUTES_ON
           ? ` · lock routes on (${HOLDER_KEYS.holders.length} holder(s)${LOCK_KEY ? " + shared key" : ""}; ${hedgeChoice.live?.anyTicker ? "any ticker armed" : `${hedgeChoice.live?.allowlist.length ?? 0} ticker(s) reserved for the tap`})`
           : " · lock routes off (no EVENT_SHADOW_LOCK_KEY / EVENT_SHADOW_HOLDER_KEYS)") +
+        (FINGERPRINTS_ON ? ` · ledger fingerprints on (full check every ${Math.round(FINGERPRINT_CHECK_MS / 3_600_000)}h)` : " · ledger fingerprints off (EVENT_SHADOW_FINGERPRINTS=0)") +
         (venueSlates.length
           ? ` · slates ${venueSlates.map((s) => `/slate/${s.slug} (${s.name})`).join(", ")}${(SLATE_KEY ?? "").trim() ? "" : " [no share key: operator token only]"}`
           : ""),
