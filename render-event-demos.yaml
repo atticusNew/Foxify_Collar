@@ -409,6 +409,38 @@ services:
       #   EVENT_SHADOW_DISK_MOUNT=/var/data     optional; where the persistent disk is mounted, for
       #                                         the check's ledger question. Default /var/data, the
       #                                         mountPath of this service's disk.
+      # REAL FILLS (realizedBook.ts, realizedRecon.ts): the real orders above are kept as their own
+      #   book, replayed from hedge-receipts.jsonl, lock-pending.jsonl and the lock ledgers. A line
+      #   counts as a real fill only when the executor marked it filled at a venue (fill.simulated
+      #   false); an order that errored after it left is listed as not counted, never guessed.
+      #   Operator: GET /api/shadow/realized is the book (per lock, per UTC day, per venue) and the
+      #   kept daily checks; add ?day=YYYY-MM-DD to check that UTC day against the venues now (read
+      #   only, not kept). POST /api/shadow/realized/check?day=YYYY-MM-DD checks a day that has ended
+      #   and keeps it. GET /api/shadow/realized.csv (?month=YYYY-MM) is the monthly accounting export.
+      #   THE DAILY CHECK: half an hour past midnight UTC the day that ended is compared, our ledger's
+      #   real fills against each venue's own, once; one line is appended to realized-recon.jsonl
+      #   beside the lock ledger. Each venue reads agrees, differs, or could not be checked with the
+      #   reason. A venue that differs is paged (kind venue_fills_differ). /healthz?token= carries
+      #   realized.dailyCheck: `lastRun` and `lastDiffers`. The venues are read with the keys already
+      #   set, signed GETs only; nothing is placed or moved:
+      #     Kalshi     KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM: the account's own list of the day's
+      #                fills, which also covers the orders the aggregator's pod sent into our
+      #                subaccount. The key must be able to read the portfolio and must not be locked
+      #                to another subaccount. With only the aggregator's TRADE key set, each order
+      #                our ledger names is read back from the aggregator instead.
+      #     ProphetX   AGGREGATOR_TRADE_KEY_ID / AGGREGATOR_TRADE_PRIVATE_KEY_HEX: the fills of each
+      #                order our ledger names (that surface has no list of the day).
+      #     Novig      NOVIG_TRADE_KEY_ID / NOVIG_TRADE_PRIVATE_KEY_PEM: the key's own list of the day.
+      #     No key for a venue: "could not be checked: no key for <venue>". Never "agrees".
+      #   EVENT_REALIZED_RECON_DAILY=0          optional; turns the timer off (the routes stay)
+      #   EVENT_REALIZED_RECON_AFTER_MINUTES=30 optional; how long past midnight UTC the timer waits
+      #   EVENT_REALIZED_RECON_PATH=...         optional; moves realized-recon.jsonl
+      #   EVENT_RECON_KALSHI_SUBACCOUNTS=0,1    optional; the Kalshi subaccounts to list. Unset: every
+      #                                         subaccount the key sees, so a trade made by hand in
+      #                                         the same account shows as at the venue and not on
+      #                                         our ledger. Name ours to leave the others out.
+      #   The record page shows a Real fills card once there is a real fill: counts and cash, no
+      #   venue named, our result only when every figure in it is on the record.
       # IN PLAY (lockWindow.ts): a game can be locked in from seven days out, through the last 45
       #   minutes and while it is being played. On by default.
       #   EVENT_X_IN_PLAY=0                     optional; turns it off (0, false, no, off): the lock path
