@@ -9,7 +9,7 @@
 
 import { midCents, takerFeeCents } from "./analytics";
 import { normCdf } from "./model";
-import type { BookReadFailureKind } from "./bookRead";
+import type { BookReadFailureKind, BookStamp } from "./bookRead";
 import type { Ladder, Venue, VenueQuote } from "./types";
 
 /** fifteen: the 15-minute up/down window (one strike, the price to beat); hourly: the next close; daily: 5 PM ET */
@@ -17,6 +17,49 @@ export type Horizon = "fifteen" | "hourly" | "daily";
 export type Place = "below" | "atm" | "above";
 
 const MINUTES_PER_YEAR = 365 * 24 * 60;
+
+/**
+ * How old one leg's book is, as of the moment its pair was priced. Three clocks, kept apart:
+ * ours (when the venue answered), the venue's cache (how long it had already held the answer,
+ * the HTTP Age header) and the venue's own stamp on the book. Seconds, one decimal.
+ */
+export interface LegRead {
+  /** when the venue answered our request for this book, our clock (ISO) */
+  fetchedAt: string;
+  /** seconds from that answer to the pricing */
+  fetchAgeSec: number;
+  /** seconds the venue's cache said it had held the answer when it gave it; null when it did not say */
+  cacheAgeSec: number | null;
+  /**
+   * The venue's own stamp on the book (ISO); null when the venue gives none. Polymarket US:
+   * `marketData.transactTime`, the book's last change, so a quiet book carries an old stamp on
+   * a new copy. Kalshi: none on the orderbook.
+   */
+  venueAt: string | null;
+  /** seconds from the venue's stamp to the pricing; null without a stamp */
+  venueAgeSec: number | null;
+  /** how old the copy that was priced is: fetchAgeSec plus cacheAgeSec */
+  ageSec: number;
+  /** the venue's state for the market, where it says (Polymarket US: MARKET_STATE_OPEN) */
+  state: string | null;
+}
+
+const tenth = (ms: number): number => Math.round(Math.max(0, ms) / 100) / 10;
+
+/** A read's stamps as ages at the pricing moment. Exported for tests. */
+export function legReadOf(stamp: BookStamp | undefined, pricedAtMs: number): LegRead | null {
+  if (!stamp) return null;
+  const fetchAgeSec = tenth(pricedAtMs - stamp.fetchedAtMs);
+  return {
+    fetchedAt: new Date(stamp.fetchedAtMs).toISOString(),
+    fetchAgeSec,
+    cacheAgeSec: stamp.cacheAgeSec,
+    venueAt: stamp.venueAtMs !== null ? new Date(stamp.venueAtMs).toISOString() : null,
+    venueAgeSec: stamp.venueAtMs !== null ? tenth(pricedAtMs - stamp.venueAtMs) : null,
+    ageSec: Math.round((fetchAgeSec + (stamp.cacheAgeSec ?? 0)) * 10) / 10,
+    state: stamp.state,
+  };
+}
 
 export interface PairLeg {
   venue: Venue;
@@ -29,6 +72,8 @@ export interface PairLeg {
   feeTheta: number;
   /** the venue's page for this contract */
   url: string;
+  /** when this book was read and how old it was when the pair was priced; null when the quote did not come from a book read */
+  read: LegRead | null;
 }
 
 /**
@@ -227,7 +272,10 @@ export interface HorizonSet {
 }
 
 export interface PairsReport {
+  /** when the cycle began (ISO) */
   at: string;
+  /** when the books had been read and the pairs were priced (ISO); every read age is as of this moment */
+  pricedAt: string;
   spotUsd: number;
   spotSource: string;
   intervalSec: number;
@@ -298,9 +346,9 @@ export function selectStrikes(levels: number[], spotUsd: number): { below: numbe
   return { below: levels[i - 1], atm: levels[i], above: levels[i + 1] };
 }
 
-function legOf(q: VenueQuote | null, url: string): PairLeg | null {
+function legOf(q: VenueQuote | null, url: string, pricedAtMs: number): PairLeg | null {
   if (!q) return null;
-  return { venue: q.venue, id: q.id, bidCents: q.bidCents, askCents: q.askCents, bidQty: q.bidQty, askQty: q.askQty, feeTheta: q.feeTheta, url };
+  return { venue: q.venue, id: q.id, bidCents: q.bidCents, askCents: q.askCents, bidQty: q.bidQty, askQty: q.askQty, feeTheta: q.feeTheta, url, read: legReadOf(q.read, pricedAtMs) };
 }
 
 const quoted = (q: VenueQuote | null): boolean => Boolean(q && q.bidCents > 0 && q.askCents > 0 && q.askCents < 100);
@@ -503,6 +551,8 @@ export function bandOf(lowerPair: StrikePair, upperPair: StrikePair, spotUsd: nu
 export interface SetOptions {
   /** trailing realized vol, percent per year, for the sigma to the close and the model column */
   volPct?: number | null;
+  /** when the books had been read, ms; read ages are measured to it. Defaults to the cycle's own time. */
+  pricedAtMs?: number;
 }
 
 /**
@@ -567,8 +617,9 @@ function buildSet(
     const k = kListed?.failure ? null : kListed;
     const p = pListed?.failure ? null : pListed;
     const errors = [kListed, pListed].map((q) => (q ? bookFailureOf(q, nowMs) : null)).filter((e): e is BookFailure => e !== null);
-    const kLeg = legOf(k, k ? urls.kalshi({ ticker: k.id, eventTicker: kalshiEventTicker(k.id) }) : "");
-    const pLeg = legOf(p, p ? urls.poly({ slug: p.id, eventSlug: polyEvent ?? "" }) : "");
+    const pricedAtMs = opts.pricedAtMs ?? nowMs;
+    const kLeg = legOf(k, k ? urls.kalshi({ ticker: k.id, eventTicker: kalshiEventTicker(k.id) }) : "", pricedAtMs);
+    const pLeg = legOf(p, p ? urls.poly({ slug: p.id, eventSlug: polyEvent ?? "" }) : "", pricedAtMs);
     const twoSided = quoted(k) && quoted(p);
     const km = midCents(k);
     const pm = midCents(p);

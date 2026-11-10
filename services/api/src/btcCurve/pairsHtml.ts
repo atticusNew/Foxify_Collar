@@ -7,7 +7,7 @@
  * assets. No em dashes in copy.
  */
 
-import type { Band, BookFailure, HorizonSet, PairsReport, PairLeg, Regime, StrikePair } from "./pairs";
+import type { Band, BookFailure, HorizonSet, LegRead, PairsReport, PairLeg, Regime, StrikePair } from "./pairs";
 import { pairId } from "./pairs";
 
 const esc = (s: unknown): string =>
@@ -52,13 +52,27 @@ function noBookCell(e: BookFailure): string {
   return `<td class="dim nobook">${esc(e.reason)}${e.listing ? `<small>listing price ${bid} / ${ask}, no size</small>` : ""}</td>`;
 }
 
+const secs = (v: number): string => `${Math.round(v)}s`;
+
+/**
+ * One book's age in a line: when we read it, how long the venue's cache had held that copy, and
+ * the venue's own stamp, each named for what it is. A venue that stamps nothing is said to.
+ */
+export function readLine(r: LegRead | null): string {
+  if (!r) return "";
+  const cache = r.cacheAgeSec !== null ? ` · ${secs(r.cacheAgeSec)} in the venue's cache` : "";
+  const stamp = r.venueAgeSec !== null ? `venue stamp ${secs(r.venueAgeSec)} old` : "venue stamp not given";
+  return `read ${secs(r.fetchAgeSec)} ago${cache} · ${stamp}`;
+}
+
 function legCell(l: PairLeg | null, failed?: BookFailure): string {
   if (failed) return noBookCell(failed);
   if (!l) return '<td class="dim">not listed</td>';
   const bid = l.bidCents > 0 ? px(l.bidCents) : "–";
   const ask = l.askCents > 0 && l.askCents < 100 ? px(l.askCents) : "–";
   const depth = l.bidQty || l.askQty ? `${num(l.bidQty)} × ${num(l.askQty)}` : "depth not read";
-  return `<td><a href="${esc(l.url)}" target="_blank" rel="noopener"><b>${bid}</b> / <b>${ask}</b></a><small>${depth}</small></td>`;
+  const age = readLine(l.read);
+  return `<td><a href="${esc(l.url)}" target="_blank" rel="noopener"><b>${bid}</b> / <b>${ask}</b></a><small>${depth}</small>${age ? `<small class="age">${esc(age)}</small>` : ""}</td>`;
 }
 
 function spark(series: Array<[number, number]> | undefined): string {
@@ -215,7 +229,7 @@ details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;c
 <div id="body">${renderPairsBody(d)}</div>
 <details><summary>Engine endpoint and the API</summary>
 <div class="engine"><label for="engine">Engine</label><input id="engine" type="url" placeholder="https://your-engine.example/btc-pair" value="${esc(opts.launchUrl ?? "")}"><label class="mode"><input type="radio" name="mode" value="send"${mode === "send" ? " checked" : ""}> send (POST JSON)</label><label class="mode"><input type="radio" name="mode" value="open"${mode === "open" ? " checked" : ""}> open (your page, pair in the URL)</label><button type="button" id="engine-save">Save</button><button type="button" id="engine-test">Test</button><span id="engine-status"></span></div>
-<p>One Launch per tenor. It sends the tenor's picked pair: the cleanest scored strike by default, or the row whose <code>use</code> you pressed. <b>send</b> does <code>POST</code> with JSON <code>{ type: "atticus.btc_pair", version: 1, at, spotUsd, index: "BRTI", pair, set, bands, regime }</code>: <code>pair</code> carries <code>horizon</code> (fifteen, hourly, daily), <code>place</code>, <code>strike</code>, <code>settlesAt</code>, both legs (<code>kalshi.id</code> is the Kalshi ticker, <code>poly.id</code> the Polymarket US market slug; bid, ask, sizes, fee coefficient, url), <code>gapCents</code>, <code>spreadCents</code>, <code>depth</code>, <code>lock</code>, <code>persistence</code>, <code>score</code>, <code>modelCents</code>, <code>errors</code> (books that did not answer; that venue's leg is then <code>null</code>); <code>set</code> the tenor (<code>secondsToClose</code>, <code>stepUsd</code>, <code>sigmaUsd</code>, <code>pick</code>); <code>bands</code> the ranges between the tenor's strikes with the two legs each (<code>side</code> yes or no, <code>venue</code>, <code>id</code>, <code>priceCents</code>, <code>qty</code>, <code>feeCents</code>), what the venues imply, the model, the cost and the edge; <code>regime</code> the index's last 15 and 60 minutes. Test sends <code>{ type: "atticus.btc_pair.ping" }</code>. The endpoint must allow cross-origin POST from this page. <b>open</b> opens your URL in a new tab with <code>atticus=btc_pair&amp;id=&lt;Kalshi ticker&gt;&amp;horizon=&amp;strike=&amp;settlesAt=&amp;kalshi=&amp;poly=&amp;src=&lt;this page's /api/pair URL for it&gt;</code> (add the token to <code>src</code> if this page has one); your page pulls the JSON from <code>src</code>.</p>
+<p>One Launch per tenor. It sends the tenor's picked pair: the cleanest scored strike by default, or the row whose <code>use</code> you pressed. <b>send</b> does <code>POST</code> with JSON <code>{ type: "atticus.btc_pair", version: 1, at, spotUsd, index: "BRTI", pair, set, bands, regime }</code>: <code>pair</code> carries <code>horizon</code> (fifteen, hourly, daily), <code>place</code>, <code>strike</code>, <code>settlesAt</code>, both legs (<code>kalshi.id</code> is the Kalshi ticker, <code>poly.id</code> the Polymarket US market slug; bid, ask, sizes, fee coefficient, url, and <code>read</code>: when the book was fetched, the venue's stamp, and the ages in seconds when the pair was priced), <code>gapCents</code>, <code>spreadCents</code>, <code>depth</code>, <code>lock</code>, <code>persistence</code>, <code>score</code>, <code>modelCents</code>, <code>errors</code> (books that did not answer; that venue's leg is then <code>null</code>); <code>set</code> the tenor (<code>secondsToClose</code>, <code>stepUsd</code>, <code>sigmaUsd</code>, <code>pick</code>); <code>bands</code> the ranges between the tenor's strikes with the two legs each (<code>side</code> yes or no, <code>venue</code>, <code>id</code>, <code>priceCents</code>, <code>qty</code>, <code>feeCents</code>), what the venues imply, the model, the cost and the edge; <code>regime</code> the index's last 15 and 60 minutes. Test sends <code>{ type: "atticus.btc_pair.ping" }</code>. The endpoint must allow cross-origin POST from this page. <b>open</b> opens your URL in a new tab with <code>atticus=btc_pair&amp;id=&lt;Kalshi ticker&gt;&amp;horizon=&amp;strike=&amp;settlesAt=&amp;kalshi=&amp;poly=&amp;src=&lt;this page's /api/pair URL for it&gt;</code> (add the token to <code>src</code> if this page has one); your page pulls the JSON from <code>src</code>.</p>
 <p><code>GET ${esc(base)}/api/pairs</code> everything · <code>GET ${esc(base)}/api/bundle</code> ranked pairs as launch payloads · <code>GET ${esc(base)}/api/pair?horizon=fifteen|hourly|daily&amp;place=below|atm|above|pick</code> or <code>?id=&lt;Kalshi ticker | Polymarket US slug&gt;</code> one pair · <code>GET ${esc(base)}/api/stream</code> server-sent events, one <code>pairs</code> event per cycle${opts.token ? " (add <code>k=</code> the token to each)" : ""}.</p>
 <ul class="limits">
 <li>Both venues settle on the BRTI 60-second average into the close and list the same grid ($100 hourly, $250 daily), so a row is one contract with two books. The 15-minute window is one contract per venue, Up when BRTI closes at or above the price to beat (the BRTI average before the window opened; both venues print the same number). Polymarket US skips the 5 PM ET hour (its daily owns it) and lists no daily on Fridays.</li>
@@ -226,6 +240,7 @@ details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;c
 <li>Regime: the last 15 minutes' realized vol against the last hour's. Under 0.7 contained, over 1.4 expanding. A contained market favours owning the band; an expanding one favours the wings.</li>
 <li>Clean: 40% tightness (both spreads summed, 10¢ scores nothing), 30% depth (thinnest best level, 200 contracts full), 30% agreement of mids (5¢ apart scores nothing). Scored only when both venues are two-sided. It ranks tradability; K − P, Both sides and the bands carry the edge.</li>
 <li>A book that does not answer is that row's problem only. Its venue's cells say why in plain words (Polymarket US answers "not found" for a new contract's book for a few minutes after it opens), the row shows the other venue's book, and it has no gap, no lock, no score and no Launch. A price marked "listing price, no size" comes from the venue's listing, not its book, and is never priced. The address that was asked is in the JSON under <code>errors</code>, not here.</li>
+<li>Under each book: when it was read (our clock), how long the venue's cache had already held that copy where the venue says, and the venue's own stamp on the book where it gives one. All three are as of the reading shown, not as of now. Kalshi's orderbook carries no stamp, so it says "not given". Polymarket US stamps the book's last change, so a quiet book shows an old stamp on a new copy.</li>
 <li>Venues are read within one cycle, not at one instant. Kalshi links open the series page unless the deploy sets the event URL pattern.</li>
 </ul>
 <footer>Kalshi public market API (KXBTCD, KXBTC15M) · Polymarket US public Retail API (gateway.polymarket.us) · BRTI prints from the same gateway. No credentials loaded.</footer>

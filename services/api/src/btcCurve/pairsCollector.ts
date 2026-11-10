@@ -295,10 +295,13 @@ export class PairsCollector {
       for (const [id, f] of this.failing) if (f.seenInCycle !== this.cycles) this.failing.delete(id);
     }
 
+    // the books are in: every read age on the page and in the JSON is measured to this moment
+    const pricedAtMs = Math.max(nowMs, this.clock());
+    const setOpts = { volPct, pricedAtMs };
     const build = (h: Horizon, l: Ladder | null, polyId: string | null): HorizonSet | null =>
-      l && spotUsd > 0 ? horizonSet(h, l, polyId, spotUsd, nowMs, this.history, this.urls, { volPct }) : null;
+      l && spotUsd > 0 ? horizonSet(h, l, polyId, spotUsd, nowMs, this.history, this.urls, setOpts) : null;
     const sets = [
-      fifteen && spotUsd > 0 ? fifteenSet(fifteen, pFifteen?.id ?? null, spotUsd, nowMs, this.history, this.urls, { volPct }) : null,
+      fifteen && spotUsd > 0 ? fifteenSet(fifteen, pFifteen?.id ?? null, spotUsd, nowMs, this.history, this.urls, setOpts) : null,
       build("hourly", hourly, pHourly?.id ?? null),
       build("daily", daily, pDaily?.id ?? null),
     ];
@@ -309,6 +312,7 @@ export class PairsCollector {
     this.cycles += 1;
     const report: PairsReport = {
       at: now.toISOString(),
+      pricedAt: new Date(pricedAtMs).toISOString(),
       spotUsd,
       spotSource,
       intervalSec: this.intervalSec,

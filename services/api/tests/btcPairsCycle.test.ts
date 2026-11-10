@@ -32,6 +32,8 @@ interface Fake {
   /** override one URL's answer; cleared with undefined */
   set(url: string, a: Answer | undefined): void;
   now: number;
+  /** our clock moves this far every time it is read, so the reads within a cycle have different times */
+  tickMs: number;
 }
 
 /**
@@ -42,7 +44,7 @@ interface Fake {
 function fake(): Fake {
   const overrides = new Map<string, Answer>();
   const calls: string[] = [];
-  const state = { now: T0 };
+  const state = { now: T0, tickMs: 0 };
   const money = (cents: number) => ({ value: (cents / 100).toFixed(4), currency: "USD" });
   const kMarket = (ticker: string, event: string, strikeType: string, floor: number, close: string, open: string, bid: number, ask: number) => ({
     ticker,
@@ -165,12 +167,18 @@ function fake(): Fake {
     set now(v: number) {
       state.now = v;
     },
+    get tickMs() {
+      return state.tickMs;
+    },
+    set tickMs(v: number) {
+      state.tickMs = v;
+    },
   };
 }
 
 function collectorOn(f: Fake, opts: PairsCollectorOptions = {}): { c: PairsCollector; logs: string[] } {
   const logs: string[] = [];
-  const c = new PairsCollector({ dataDir: mkdtempSync(join(tmpdir(), "btc-pairs-cycle-")), fetchImpl: f.fetchImpl, clock: () => f.now, log: (line) => logs.push(line), ...opts });
+  const c = new PairsCollector({ dataDir: mkdtempSync(join(tmpdir(), "btc-pairs-cycle-")), fetchImpl: f.fetchImpl, clock: () => (f.now += f.tickMs), log: (line) => logs.push(line), ...opts });
   return { c, logs };
 }
 
@@ -304,4 +312,45 @@ test("other failures are said as what happened: a 404 long after the open, a 500
   }
   assert.equal((html.match(/class="use"/g) ?? []).length, 0, "no use button on a row whose book did not answer");
   assert.ok(!html.includes("https://gateway.polymarket.us/v1/markets") && !html.includes("/orderbook"));
+});
+
+test("every book carries its read age: our fetch time, the venue's cache age and its own stamp, measured to the moment the pairs were priced; Kalshi's stamp is not given", async () => {
+  const f = fake();
+  const { c } = collectorOn(f);
+  f.tickMs = 150;
+  const d = await c.collectOnce();
+  assert.equal(d.at, new Date(T0 + 150).toISOString(), "the cycle's start");
+  assert.ok(Date.parse(d.pricedAt) > Date.parse(d.at), "priced after the books were read");
+  const pricedMs = Date.parse(d.pricedAt);
+
+  for (const p of [...(d.fifteen?.pairs ?? []), ...(d.hourly?.pairs ?? [])]) {
+    const k = p.kalshi?.read;
+    const y = p.poly?.read;
+    assert.ok(k && y, `${p.horizon} ${p.strike} carries both reads`);
+    // Kalshi: our fetch time only
+    assert.equal(k.venueAt, null);
+    assert.equal(k.venueAgeSec, null);
+    assert.equal(k.cacheAgeSec, null);
+    assert.equal(k.fetchAgeSec, Math.round((pricedMs - Date.parse(k.fetchedAt)) / 100) / 10);
+    assert.equal(k.ageSec, k.fetchAgeSec);
+    assert.ok(k.fetchAgeSec >= 0 && k.fetchAgeSec < 5);
+    // Polymarket US: the copy had been in the venue's cache 4 seconds, and the book's stamp is older than the copy
+    assert.equal(y.cacheAgeSec, 4);
+    assert.equal(y.ageSec, Math.round((y.fetchAgeSec + 4) * 10) / 10);
+    assert.ok(y.venueAt && y.venueAgeSec !== null && y.venueAgeSec > y.fetchAgeSec);
+    assert.equal(y.venueAgeSec, Math.round((pricedMs - Date.parse(y.venueAt)) / 100) / 10);
+    assert.equal(y.state, "MARKET_STATE_OPEN");
+  }
+  const reads = [...(d.fifteen?.pairs ?? []), ...(d.hourly?.pairs ?? [])].flatMap((p) => [p.kalshi?.read?.fetchedAt, p.poly?.read?.fetchedAt]);
+  assert.ok(new Set(reads).size > 1, "each book has its own fetch time");
+
+  const html = page(c);
+  assert.match(html, /<small class="age">read \d+s ago · venue stamp not given<\/small>/, "Kalshi's cell");
+  assert.match(html, /<small class="age">read \d+s ago · 4s in the venue&#39;s cache · venue stamp \d+s old<\/small>/, "Polymarket US's cell");
+  assert.equal((html.match(/<small class="age">/g) ?? []).length, 8, "two books on each of the four rows");
+
+  // the same fields ride the launch payload and the stream frame
+  const payload = launchPayload(d, d.hourly?.pairs[1] as NonNullable<typeof d.hourly>["pairs"][number]);
+  assert.equal(payload.pair.poly?.read?.cacheAgeSec, 4);
+  assert.ok(JSON.stringify(d).includes('"pricedAt"'));
 });

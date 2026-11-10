@@ -7,8 +7,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BOOK_NOT_SERVED_YET_MS, bandOf, bookFailureOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, horizonSet, kalshiEventTicker, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
-import { pickLabel, renderPairsBody, renderPairsHtml } from "../src/btcCurve/pairsHtml";
+import { BOOK_NOT_SERVED_YET_MS, bandOf, bookFailureOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, horizonSet, kalshiEventTicker, legReadOf, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
+import { pickLabel, readLine, renderPairsBody, renderPairsHtml } from "../src/btcCurve/pairsHtml";
 import type { Ladder, VenueQuote } from "../src/btcCurve/types";
 
 const SETTLE = "2026-11-09T22:00:00Z";
@@ -370,6 +370,39 @@ test("a failed book in plain words: a 404 in the first minutes after the open is
   const only = fifteenSet({ ...fifteenLadder(), quotes: fifteenLadder().quotes.map((x) => (x.venue === "polymarket_us" ? { ...x, failure: failed().failure } : x)) }, null, 73214, opened + 60_000, new Map(), urls);
   assert.equal(only?.pick, null);
   assert.equal(only?.pairs[0].errors[0].reason, "Poly book did not answer (HTTP 404)");
+});
+
+test("read age: three clocks kept apart (our fetch, the venue's cache, the venue's stamp), measured to the pricing; the copy's age is fetch plus cache; the line says each for what it is", () => {
+  const priced = Date.parse("2026-11-10T21:19:45.000Z");
+  const poly = legReadOf({ fetchedAtMs: priced - 1_240, cacheAgeSec: 18, venueAtMs: Date.parse("2026-11-10T21:19:13.960Z"), state: "MARKET_STATE_OPEN" }, priced);
+  assert.deepEqual(poly, {
+    fetchedAt: "2026-11-10T21:19:43.760Z",
+    fetchAgeSec: 1.2,
+    cacheAgeSec: 18,
+    venueAt: "2026-11-10T21:19:13.960Z",
+    venueAgeSec: 31,
+    ageSec: 19.2,
+    state: "MARKET_STATE_OPEN",
+  });
+  assert.equal(readLine(poly), "read 1s ago · 18s in the venue's cache · venue stamp 31s old");
+
+  const kalshi = legReadOf({ fetchedAtMs: priced - 2_960, cacheAgeSec: null, venueAtMs: null, state: null }, priced);
+  assert.ok(kalshi);
+  assert.deepEqual([kalshi.fetchAgeSec, kalshi.cacheAgeSec, kalshi.venueAt, kalshi.venueAgeSec, kalshi.ageSec], [3, null, null, null, 3]);
+  assert.equal(readLine(kalshi), "read 3s ago · venue stamp not given", "no stamp is said, not invented");
+
+  // a venue clock a little ahead of ours is an age of zero, not a negative one
+  assert.equal(legReadOf({ fetchedAtMs: priced, cacheAgeSec: 0, venueAtMs: priced + 400, state: null }, priced)?.venueAgeSec, 0);
+  assert.equal(legReadOf(undefined, priced), null);
+  assert.equal(readLine(null), "");
+
+  // a quote that never came from a book read (a fixture, a listing) carries no read
+  const s = horizonSet("hourly", ladder(), null, 74812, NOW, new Map(), urls);
+  assert.equal(s?.pairs[1].kalshi?.read, null);
+  const stamped = ladder({ 74750: { k: { ...q("kalshi", 74750, 54, 55), read: { fetchedAtMs: NOW - 500, cacheAgeSec: null, venueAtMs: null, state: null } } } });
+  const t = horizonSet("hourly", stamped, null, 74812, NOW, new Map(), urls, { pricedAtMs: NOW + 700 });
+  assert.equal(t?.pairs[1].kalshi?.read?.fetchAgeSec, 1.2, "measured to the pricing moment, not the cycle's start");
+  assert.equal(horizonSet("hourly", stamped, null, 74812, NOW, new Map(), urls)?.pairs[1].kalshi?.read?.fetchAgeSec, 0.5, "which defaults to the cycle's own time");
 });
 
 test("helpers: the Kalshi event ticker and the Polymarket US event slug come out of the ids", () => {
