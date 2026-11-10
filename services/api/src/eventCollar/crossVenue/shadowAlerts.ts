@@ -43,6 +43,8 @@ export type ShadowAlertKind =
   | "settle_failing"
   | "position_voided"
   | "ledger_write_failed"
+  /** the ledgers could not be read to measure what is open against the exposure caps: the real-money lock was refused, nothing sent */
+  | "ledger_read_failed"
   /** a real hedge order left (or may have left) fill on a venue with no lock written behind it (hedgeFirst.ts) */
   | "hedge_stray"
   /** a lock attempt's pending line has no resolution: the process stopped between the order and the record */

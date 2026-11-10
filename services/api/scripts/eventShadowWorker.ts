@@ -82,6 +82,7 @@ import {
   positionsCsv,
   summarizeShadow,
   type CashLeg,
+  type HedgeFillOnRecord,
   type ShadowPosition,
   type ShadowSummary,
 } from "../src/eventCollar/crossVenue/shadowLedger";
@@ -139,7 +140,26 @@ import {
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { inPlayFromEnv } from "../src/eventCollar/crossVenue/lockWindow";
-import { appendPending, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
+import { appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
+import {
+  capRefusalDetails,
+  capRefusalWords,
+  checkExposure,
+  exposureCapsFromEnv,
+  exposureView,
+  fillsBehind,
+  gameCentsOf,
+  gameKeyOf,
+  hedgeReserveCents,
+  holderCentsOf,
+  holderKeyOf,
+  lockedAttempts,
+  openExposure,
+  proposedExposure,
+  type ExposureAdd,
+  type ExposureCaps,
+  type OpenExposure,
+} from "../src/eventCollar/crossVenue/exposureCaps";
 import { sentUnitsMilliOn, tickerArmed } from "../src/eventCollar/crossVenue/liveHedge";
 import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, type KalshiAccountSnapshot, type KalshiApiKeyInfo } from "../src/eventCollar/crossVenue/kalshiAccount";
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
@@ -1871,8 +1891,9 @@ function hedgeIntentFor(ticker: string, hedge: HedgeLeg, books: HedgeBooks): Hed
   return intentFromHedge(hedge, best, armKey);
 }
 
-async function fillHedge(ref: string, hedge: HedgeLeg, books: HedgeBooks, opts: { paper?: boolean } = {}): Promise<HedgeReceipt | null> {
+async function fillHedge(ref: string, hedge: HedgeLeg, books: HedgeBooks, opts: { paper?: boolean; hold?: ExposureAdd } = {}): Promise<HedgeReceipt | null> {
   const ticker = ref.split("@")[0];
+  if (opts.hold) exposureHolds.add(opts.hold);
   try {
     const intent = hedgeIntentFor(ticker, hedge, books);
     const paper = Boolean(opts.paper) && hedgeChoice.strategy !== "book";
@@ -1882,6 +1903,52 @@ async function fillHedge(ref: string, hedge: HedgeLeg, books: HedgeBooks, opts: 
   } catch (err) {
     lastScanError = `hedge for ${ticker}: ${String(err instanceof Error ? err.message : err)}`;
     return null;
+  } finally {
+    // released in the same stretch that put the receipt on the trail: the fill is counted from the trail from here, never twice
+    if (opts.hold) exposureHolds.delete(opts.hold);
+  }
+}
+
+/**
+ * THE EXPOSURE CAPS (exposureCaps.ts): what may be open at once on one game, on one hedge venue
+ * and for one holder, in cents. Read once at start like the other live rails.
+ */
+let exposureCaps = exposureCapsFromEnv(process.env);
+
+/** Amounts held for an order in flight that writes no pending line: the operator's resend of a hedge. */
+const exposureHolds = new Set<ExposureAdd>();
+
+/**
+ * What is open right now, read from the ledgers at this moment: every lock ledger, the hedge
+ * receipt trail, the pending trail, and the holds. Nothing is awaited: the caller that checks
+ * a cap and then writes its own pending line (or takes a hold) does both before any other
+ * request can run.
+ */
+function exposureNow(): OpenExposure {
+  return openExposure({
+    locks: allLocks(),
+    receipts: loadHedgeReceipts(RECEIPTS_PATH),
+    pending: loadPending(PENDING_PATH),
+    holds: [...exposureHolds],
+  });
+}
+
+/** The caps, and what is open against each, for the operator's status page. A ledger that cannot be read is said here; the page stays up. */
+function exposureHealth(): Record<string, unknown> {
+  try {
+    const refused = capRefusals(loadPending(PENDING_PATH));
+    return {
+      ...exposureView(exposureNow(), exposureCaps, {
+        venues: hedgeChoice.live?.venues ?? [],
+        holders: HOLDER_KEYS.holders.map((h) => h.holder),
+      }),
+      refusals: {
+        count: refused.count,
+        last: refused.last ? { at: refused.last.at, ref: refused.last.ref, source: refused.last.source, detail: refused.last.detail } : null,
+      },
+    };
+  } catch (err) {
+    return { error: `the ledgers could not be read: ${String(err instanceof Error ? err.message : err)}; a real-money lock is refused while this stands` };
   }
 }
 
@@ -1918,14 +1985,17 @@ function alertUnresolvedPending(): void {
 
 type HedgeFirstResult =
   | { ok: true; receipt: HedgeReceipt }
-  | { ok: false; status: number; code: string; message: string };
+  | { ok: false; status: number; code: string; message: string; detail?: string };
 
 /**
  * A REAL-MONEY LOCK: THE HEDGE IS BOUGHT, THEN THE LOCK IS WRITTEN (hedgeFirst.ts has the
  * sequence and each party's P&L per ending). Called only when lockMode says the order will truly
- * leave. `writeLock` appends the open record and says whether it landed; it runs only behind a
- * real fill of the whole hedge. Every other ending writes no lock and answers a refusal the
- * holder can act on; an ending that leaves, or may leave, hedge on a venue pages the operator.
+ * leave. First the exposure caps: read from the ledgers here, and the pending line that follows
+ * carries what this attempt holds against them, with nothing awaited in between. `writeLock`
+ * appends the open record, with the fill that bought its hedge, and says whether it landed; it
+ * runs only behind a real fill of the whole hedge. Every other ending writes no lock and answers
+ * a refusal the holder can act on; an ending that leaves, or may leave, hedge on a venue pages
+ * the operator.
  */
 async function hedgeThenLock(args: {
   ref: string;
@@ -1933,11 +2003,37 @@ async function hedgeThenLock(args: {
   holder: string | null;
   intent: HedgeIntent;
   terms: { contracts: number; tier: string; floorCents: number; capCents: number; creditCents: number };
-  writeLock: () => boolean;
+  /** the league on the record, for the game the lock is on */
+  league: string;
+  /** the venue fees quoted on the hedge, on top of the order's own limit */
+  feesCents: number;
+  writeLock: (fill: HedgeFillOnRecord) => boolean;
 }): Promise<HedgeFirstResult> {
   const { ref, ticker, holder, terms } = args;
   const intent: HedgeIntent = { ...args.intent, allOrNone: true };
-  const pending = pendingRecordFor(ref, ticker, holder, new Date().toISOString(), terms, intent);
+  const asked = pendingRecordFor(ref, ticker, holder, new Date().toISOString(), terms, intent);
+  const add = proposedExposure({
+    ticker,
+    league: args.league,
+    holder,
+    ...terms,
+    venue: intent.venue,
+    hedgeReserveCents: hedgeReserveCents({ unitsMilli: intent.unitsMilli, maxCostCents: intent.maxCostCents, limitMilli: intent.book.worstPriceMilli }, args.feesCents),
+  });
+  let over: ReturnType<typeof checkExposure>;
+  try {
+    over = checkExposure(exposureNow(), add, exposureCaps);
+  } catch (err) {
+    // what is open could not be read, so room cannot be shown: no order
+    void alerter({ kind: "ledger_read_failed", message: `could not read the ledgers to check the exposure caps for ${ref}: ${String(err instanceof Error ? err.message : err)}. Nothing was sent.` });
+    return { ok: false, status: 500, code: "exposure_unreadable", message: "The record could not be read; nothing was locked." };
+  }
+  if (over.length > 0) {
+    const detail = capRefusalDetails(over);
+    appendPendingOrAlert({ type: "cap_refused", id: asked.id, at: asked.at, ref, ticker, ...(holder ? { holder } : {}), source: "lock", terms, order: asked.order, caps: over, detail });
+    return { ok: false, status: 200, ...capRefusalWords(over), detail };
+  }
+  const pending: typeof asked = { ...asked, reserve: { game: add.game, gameCents: add.gameCents, venueCents: add.venueCents, holderCents: add.holderCents } };
   // no trail, no order: an order that leaves with no line before it is the one thing a restart could not find
   if (!appendPendingOrAlert(pending)) {
     return { ok: false, status: 500, code: "ledger_write_failed", message: "The record could not be written; nothing was locked." };
@@ -1971,7 +2067,7 @@ async function hedgeThenLock(args: {
   const where = `${intent.venue} ${intent.instrument}`;
   if (verdict.kind === "filled") {
     const fill = { unitsMilli: verdict.unitsMilli, costCents: verdict.costCents, orderId: verdict.orderId };
-    if (!args.writeLock()) {
+    if (!args.writeLock({ venue: intent.venue, ...fill, receiptId: (receipt as HedgeReceipt).id })) {
       resolve("ledger_failed", "the hedge filled and the lock record could not be written", fill);
       void alerter({ kind: "hedge_stray", message: `${ref}: the hedge filled (${verdict.unitsMilli / 1000} on ${where}, ${verdict.costCents}c, order ${verdict.orderId ?? "?"}) and the lock record could not be written. No lock stands. Sell the hedge, then clear ${pending.id}.` });
       return { ok: false, status: 500, code: "ledger_write_failed", message: "The record could not be written; nothing was locked." };
@@ -2768,7 +2864,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       const evBps = chosen.tier === result.quote.tier ? result.evBps : chosen.evCostBps;
       const base = openRecordFor(result, chosen, evBps, atIso, "lock");
       const record = parlay && parlayView ? { ...base, parlay: parlayRecordOf(parlayView, parlay.stakeCents, parlay.payoutCents) } : base;
-      const writeLock = (): boolean => appendOrAlert(holder ? { ...record, holder } : record, ownLedger);
+      const writeLock = (hedgeFill?: HedgeFillOnRecord): boolean => appendOrAlert({ ...record, ...(holder ? { holder } : {}), ...(hedgeFill ? { hedgeFill } : {}) }, ownLedger);
       const ref = hedgeRefFor(ticker, holder);
       // would this hedge truly be sent? then it is bought before the lock is written (hedgeFirst.ts);
       // on paper the record is written and the fill simulated at the walk, as the shadow always has
@@ -2786,10 +2882,13 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
           holder,
           intent,
           terms: { contracts: chosen.contracts, tier: chosen.tier, floorCents: chosen.floorCents, capCents: chosen.capCents, creditCents: chosen.creditCents },
+          league: result.league,
+          feesCents: chosen.feesCents,
           writeLock,
         });
         if (!done.ok) {
-          sendJson(res, done.status, { ok: false, at: atIso, ticker, code: done.code, ...(done.status === 500 ? { error: done.code } : {}), message: done.message });
+          // the operator also reads which cap and the sums behind it, venue named; a holder reads the plain reason only
+          sendJson(res, done.status, { ok: false, at: atIso, ticker, code: done.code, ...(done.status === 500 ? { error: done.code } : {}), message: done.message, ...(operator && done.detail ? { detail: done.detail } : {}) });
           return;
         }
         receipt = done.receipt;
@@ -3489,7 +3588,40 @@ async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url:
       return;
     }
     const chosen = lock.tier && result.quote.tiers[lock.tier] ? { ...result.quote, ...result.quote.tiers[lock.tier], tier: lock.tier } : result.quote;
-    const receipt = await fillHedge(ref, chosen.hedge, result.books);
+    // a send that would truly leave passes the exposure caps first, as a lock does. A lock whose
+    // hedge was simulated becomes a real-money lock here and is measured whole; one that already
+    // has a real fill behind it adds the cost of this buy only (its floor and its holder's sum
+    // are counted already).
+    let hold: ExposureAdd | undefined;
+    let intent: HedgeIntent | null = null;
+    try {
+      intent = hedgeIntentFor(ticker, chosen.hedge, result.books);
+    } catch {
+      // fillHedge meets the same fault and records it
+    }
+    if (intent && lockMode(hedgeChoice.live, intent).real) {
+      const order = pendingRecordFor(ref, ticker, holder, atIso, { contracts: lock.contracts, tier: lock.tier ?? chosen.tier, floorCents: lock.floorCents, capCents: lock.capCents, creditCents: lock.creditCents }, intent);
+      const reserve = hedgeReserveCents({ unitsMilli: intent.unitsMilli, maxCostCents: intent.maxCostCents, limitMilli: intent.book.worstPriceMilli }, chosen.feesCents);
+      const pendingTrail = loadPending(PENDING_PATH);
+      const alreadyReal = fillsBehind(lock, holder, prior, lockedAttempts(pendingTrail)).length > 0;
+      hold = {
+        game: gameKeyOf(ticker, lock.league),
+        venue: intent.venue,
+        holder: holderKeyOf(holder),
+        gameCents: alreadyReal ? reserve : gameCentsOf(lock, reserve),
+        venueCents: reserve,
+        holderCents: alreadyReal ? 0 : holderCentsOf(lock),
+      };
+      const over = checkExposure(exposureNow(), hold, exposureCaps);
+      if (over.length > 0) {
+        const detail = capRefusalDetails(over);
+        appendPendingOrAlert({ type: "cap_refused", id: order.id, at: atIso, ref, ticker, ...(holder ? { holder } : {}), source: "resend", terms: order.terms, order: order.order, caps: over, detail });
+        sendJson(res, 409, { ok: false, at: atIso, ticker, error: "exposure_cap", code: "exposure_cap", message: `nothing was sent: ${detail}`, caps: over });
+        return;
+      }
+    }
+    // nothing is awaited between the check above and the hold fillHedge takes as it starts
+    const receipt = await fillHedge(ref, chosen.hedge, result.books, { hold });
     sendJson(res, receipt ? 200 : 502, {
       ok: Boolean(receipt),
       at: atIso,
@@ -4175,6 +4307,8 @@ function healthBody(): Record<string, unknown> {
       }),
     },
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
+    // real money open right now against its caps (exposureCaps.ts): per game (the largest few), per hedge venue, per holder; open, cap, room left, in cents
+    exposure: exposureHealth(),
     lock: {
       enabled: LOCK_ROUTES_ON,
       sharedKey: Boolean(LOCK_KEY),
@@ -4284,9 +4418,9 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
  * each book was read from stay with the operator (the raw ledger, the full CSV, /venues); a
  * reader can recompute every public row without them.
  */
-function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "inGame" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeOffsetStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId" | "bookOrigins" | "holder"> & { cashDue?: ReturnType<typeof cashDue> } {
-  // where the books came from (the partner's feed or the venue), the pre-lock, book-open and in-game reads and whose lock it is are the operator's: /venues, /api/shadow/holders, the raw ledger
-  const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, inGame: _inGame, hedgeTokenId: _tok, hedgeStrikeId: _strike, hedgeOffsetStrikeId: _offset, hedgeMarketId: _nvMarket, hedgeOutcomeId: _nvOutcome, hedgeOffsetOutcomeId: _nvOffset, bookOrigins: _origins, holder: _holder, ...rest } = p;
+function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "inGame" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeOffsetStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId" | "bookOrigins" | "holder" | "hedgeFill"> & { cashDue?: ReturnType<typeof cashDue> } {
+  // where the books came from (the partner's feed or the venue), the pre-lock, book-open and in-game reads, whose lock it is and the real order behind its hedge are the operator's: /venues, /api/shadow/holders, the raw ledger
+  const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, inGame: _inGame, hedgeTokenId: _tok, hedgeStrikeId: _strike, hedgeOffsetStrikeId: _offset, hedgeMarketId: _nvMarket, hedgeOutcomeId: _nvOutcome, hedgeOffsetOutcomeId: _nvOffset, bookOrigins: _origins, holder: _holder, hedgeFill: _fill, ...rest } = p;
   // a member's own sale: the venue's order ids and market id stay with the operator; the sale's figures are public
   const pub = rest.memberSale ? { ...rest, memberSale: publicMemberSale(rest.memberSale), ...(rest.closeMemberBuyBack ? { closeMemberBuyBack: publicMemberBuyBack(rest.closeMemberBuyBack) } : {}) } : rest;
   // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
@@ -5051,6 +5185,8 @@ export function wireLockEngine(fns: {
   memberInPlay?: boolean;
   /** whether a hedged lock may be taken while the game is on, in place of EVENT_X_IN_PLAY (on unless set to 0); the fake engine's own window is the test's */
   inPlay?: boolean;
+  /** the exposure caps, in place of the env's */
+  exposureCaps?: ExposureCaps;
   /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ: "auto" (the env's default) finds out from the venue, true forces it on, false off; "preview" quotes from a stand-in and refuses the tap. Setting it forgets what auto had learned. */
   memberComboRfq?: boolean | "preview" | "auto";
   /** the long/short-dialect venue's client behind the operator's key check, in place of the env's; null is "not read" */
@@ -5068,6 +5204,7 @@ export function wireLockEngine(fns: {
   if (fns.memberOrder) memberOrderOpts = fns.memberOrder;
   if (fns.memberInPlay !== undefined) memberInPlay = fns.memberInPlay;
   if (fns.inPlay !== undefined) lockInPlay = fns.inPlay;
+  if (fns.exposureCaps) exposureCaps = fns.exposureCaps;
   if (fns.memberComboRfq !== undefined) {
     memberComboRfq = fns.memberComboRfq === "preview" ? "preview" : fns.memberComboRfq === "auto" ? "auto" : fns.memberComboRfq ? "on" : "off";
     comboRfqPath = { state: "unknown", checkedAtMs: 0, why: null };
