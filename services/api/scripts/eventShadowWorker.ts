@@ -1921,7 +1921,7 @@ async function fillHedge(ref: string, hedge: HedgeLeg, books: HedgeBooks, opts: 
  */
 let exposureCaps = exposureCapsFromEnv(process.env);
 
-/** Amounts held for an order in flight that writes no pending line: the operator's resend of a hedge. */
+/** Amounts held for an order in flight that writes no pending line: the operator's resend of a hedge, and a request-for-quote hedge. */
 const exposureHolds = new Set<ExposureAdd>();
 
 /**

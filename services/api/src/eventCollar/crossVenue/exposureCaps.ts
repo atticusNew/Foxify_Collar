@@ -5,11 +5,13 @@
  * The live rails (liveHedge.ts) bound one order and one day. Nothing bounded what stays open: a
  * week of small locks on one game, or every hedge resting on one new exchange. This module reads
  * the replayed ledgers and says what is open right now, and a real-money lock that would take any
- * of three sums over its cap is refused before an order is built (hedgeFirst.ts, step 0).
+ * of three sums over its cap is refused before an order is built (hedgeFirst.ts, step 0). The
+ * request-for-quote strategy writes its lock first and can then accept a real quote; it passes
+ * the same check before that record is written, and so does the operator's resend of a hedge.
  *
  * WHAT COUNTS. A lock counts when it is on a lock ledger, its status is open, and a real order
  * bought its hedge. Any one of three records says so: the open line carries `hedgeFill` (written
- * by the hedge-first path); the hedge receipt trail holds a live buy fill under the lock's ref at
+ * by the hedge-first path); the hedge receipt trail holds a real buy fill under the lock's ref at
  * or after the lock's time (locks from before `hedgeFill` existed, and a simulated lock the
  * operator later hedged for real with the resend route); the pending trail holds an attempt under
  * the lock's ref, at or after the lock's time, that ended "locked" with its fill (the same older
@@ -249,9 +251,9 @@ export function lockedAttempts(pending: readonly PendingRecord[]): LockedAttempt
 }
 
 /**
- * The real buys behind a lock: the fill written with it, every live buy on the receipt trail
- * under its ref since it was written, and every attempt the pending trail says ended in this
- * lock. Each receipt once.
+ * The real buys behind a lock: the fill written with it, every buy on the receipt trail under
+ * its ref since it was written that was not simulated, and every attempt the pending trail says
+ * ended in this lock. Each receipt once.
  */
 export function fillsBehind(p: ShadowPosition, holder: string | null, receiptsForRef: readonly HedgeReceipt[], attemptsForRef: readonly LockedAttempt[] = []): HedgeFillOnRecord[] {
   const out = new Map<string, HedgeFillOnRecord>();
