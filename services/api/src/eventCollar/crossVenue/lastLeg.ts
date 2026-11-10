@@ -462,13 +462,13 @@ export function quoteLastLeg(input: LastLegQuoteInputs): LastLegQuote {
 export function lastLegCollars(input: LastLegQuoteInputs): { ok: true; search: CollarSearchResult } | CrossRefusal {
   const cfg = input.config;
   if (input.contracts < 1) {
-    return { ok: false, code: "credit_nonpositive", detail: "the compressed position is under one contract; nothing to protect" };
+    return { ok: false, code: "credit_nonpositive", detail: "the compressed position is under one contract; nothing to lock in" };
   }
   if (input.minutesToStart < cfg.minMinutesToStart) {
     return {
       ok: false,
       code: "market_too_close_to_start",
-      detail: `the last game starts in ${Math.max(0, Math.round(input.minutesToStart))}m; pre-game protection needs at least ${cfg.minMinutesToStart}m`,
+      detail: `the last game starts in ${Math.max(0, Math.round(input.minutesToStart))}m; a pre-game lock needs at least ${cfg.minMinutesToStart}m`,
     };
   }
   if (input.markCents < cfg.markLowerBoundCents || input.markCents > cfg.markUpperBoundCents) {
@@ -1195,7 +1195,7 @@ export async function runLastLegTick(io: LastLegIo, cfg: LastLegConfig, search: 
         }
         const contracts = compressedContracts(t.sharesMilli, t.decidedProductMilli);
         if (contracts < 1) {
-          io.append(routedMomentRecord({ ...base, contracts, entryCents: 0, ticker }, { ok: false, code: "credit_nonpositive", detail: "the compressed position is under one contract; nothing to protect" }));
+          io.append(routedMomentRecord({ ...base, contracts, entryCents: 0, ticker }, { ok: false, code: "credit_nonpositive", detail: "the compressed position is under one contract; nothing to lock in" }));
           continue;
         }
         const entryCents = Math.min(99, Math.max(1, Math.ceil(t.stakeCents / contracts)));

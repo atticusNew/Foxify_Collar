@@ -47,7 +47,7 @@ export function weekLabel(monday: string): string {
   const m2 = MONTHS[Number(sunday.slice(5, 7)) - 1];
   const d1 = Number(monday.slice(8, 10));
   const d2 = Number(sunday.slice(8, 10));
-  return m1 === m2 ? `Week of ${m1} ${d1} – ${d2}` : `Week of ${m1} ${d1} – ${m2} ${d2}`;
+  return m1 === m2 ? `Week of ${m1} ${d1} to ${d2}` : `Week of ${m1} ${d1} to ${m2} ${d2}`;
 }
 
 export interface VenueShare {
@@ -191,7 +191,7 @@ export interface VenueScoreboard {
 }
 
 export const SCOREBOARD_METHODOLOGY =
-  "One row per week (Monday to Sunday, New York). A position is a protected single on a game market, or a parlay ticket priced at its last pick, each hedged leg for leg: the engine asks every venue it works with for the other side and takes the cheapest all in, venue fees and each venue's settlement rules included. Other side: which venue won, weighted by contracts. Edge: how much more the winning book paid the holder than the runner-up, where more than one venue priced; it is after each venue's fees. Fees: what the winning venue's schedule charged on the other side, cents per contract of the position, worked from the price the other side was bought at (the schedules are listed under feeRules). Availability: how often a venue priced at all when asked. Refusals: markets priced and declined because no venue could fund a worthwhile floor, or the market is not one we protect. Taps are real holders' locks; the rest are the record's simulated positions at live prices. Nothing of the writer's book is in this table.";
+  "One row per week (Monday to Sunday, New York). A position is a locked single on a game market, or a parlay ticket priced at its last pick, each hedged leg for leg: the engine asks every venue it works with for the other side and takes the cheapest all in, venue fees and each venue's settlement rules included. Other side: which venue won, weighted by contracts. Edge: how much more the winning book paid the holder than the runner-up, where more than one venue priced; it is after each venue's fees. Fees: what the winning venue's schedule charged on the other side, cents per contract of the position, worked from the price the other side was bought at (the schedules are listed under feeRules). Availability: how often a venue priced at all when asked. Refusals: markets priced and declined because no venue could fund a worthwhile floor, or the market is not one we lock in. Taps are real holders' locks; the rest are the record's simulated positions at live prices. Nothing of the writer's book is in this table.";
 
 interface Tally {
   n: number;

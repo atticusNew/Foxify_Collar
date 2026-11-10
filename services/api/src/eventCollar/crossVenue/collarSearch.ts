@@ -188,7 +188,7 @@ function nearest(values: number[], target: number, preferLower: boolean): number
 }
 
 export const TIER_RULES: Record<ProtectionTier, string> = {
-  tight: "most protection: the highest floor the venues fund, and the largest credit at it",
+  tight: "safest: the highest floor the venues fund, and the largest credit at it",
   balanced: "the middle: a floor halfway between tight and wide, and a cap halfway between the least and the most the venues fund at that floor",
   wide: "most upside: the lowest floor offered, with the highest cap the venues fund at it",
 };
@@ -277,7 +277,7 @@ export function refuseUnfunded(
     return {
       ok: false,
       code: "credit_nonpositive",
-      detail: `the venues funded a small credit, but not one that covers the minimum fee (${cfg.minTakeBpsOfStake} bps of stake); refusing rather than charging more than the protection is worth`,
+      detail: `the venues funded a small credit, but not one that covers the minimum fee (${cfg.minTakeBpsOfStake} bps of stake); refusing rather than charging more than the lock is worth`,
       bestShortfallCents: 1,
     };
   }

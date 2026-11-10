@@ -250,7 +250,7 @@ test("routing venues: EVENT_HEDGE_VENUES names the routes offered tonight; unset
 test("routing terms: the tails in the holder's venue's words", () => {
   const px = tailTerms("prophetx", tableRules("prophetx", "nfl"));
   assert.equal(px.length, 4);
-  assert.match(px[0].text, /^If the game ends in a tie, ProphetX voids the position and returns your stake; the protection is void with it/);
+  assert.match(px[0].text, /^If the game ends in a tie, ProphetX voids the position and returns your stake; the lock is void with it/);
   assert.match(px[1].text, /not played within 7 days/);
   assert.match(px[3].text, /settles again on the corrected result/);
   const k = tailTerms("kalshi", tableRules("kalshi", "nfl"));

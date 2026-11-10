@@ -29,16 +29,16 @@ import type { RuleEvidenceSummary } from "./ruleEvidence";
 /** Why the lock was not offered, in the bettor's words (outcomes, never mechanics: no "hedge" on the phone). Keys are CrossRefusalCode. */
 export const PARLAY_REFUSAL_WORDS: Readonly<Record<string, string>> = {
   credit_nonpositive: "the market could not fund a credit on the last pick",
-  protection_too_rich: "protection would have cost more than our ceiling",
+  protection_too_rich: "the lock would have cost more than our ceiling",
   credit_too_small: "the credit fell under our minimum",
   pm_book_empty: "no one is offering the other side of the last pick right now",
   pm_book_too_thin: "not enough on offer for the size",
   kalshi_book_empty: "no one is offering the other side right now",
   kalshi_book_too_thin: "not enough on offer for the size",
   market_too_close_to_start: "too close to the start",
-  far_out_no_book: "too early: protection opens closer to the start",
+  far_out_no_book: "too early: the lock opens closer to the start",
   mark_disagreement: "price unsettled: the odds on this one have not settled yet",
-  mark_out_of_range: "odds outside the range we protect",
+  mark_out_of_range: "odds outside the range we lock in",
   no_matched_market: "no verified pairing for the last pick",
   resolution_mismatch: "settlement rules did not match",
 };
@@ -48,7 +48,7 @@ export const refusalWords = (code: string): string => PARLAY_REFUSAL_WORDS[code]
 /** The same refusals at row length: one short clause after "No lock right now:"; the full words sit a tap away. */
 export const PARLAY_REFUSAL_SHORT: Readonly<Record<string, string>> = {
   credit_nonpositive: "market could not fund a credit",
-  protection_too_rich: "protection too costly",
+  protection_too_rich: "lock too costly",
   credit_too_small: "credit under our minimum",
   pm_book_empty: "other side not on offer",
   pm_book_too_thin: "not enough on offer",

@@ -140,7 +140,7 @@ export function quoteLadderWrap(inputs: LadderPricerInputs): CrossQuoteResult {
     return {
       ok: false,
       code: "market_too_close_to_start",
-      detail: `this market locks in ${Math.max(0, Math.round(minutesToStart))}m; protection needs at least ${cfg.minMinutesToStart}m`,
+      detail: `this market locks in ${Math.max(0, Math.round(minutesToStart))}m; the lock needs at least ${cfg.minMinutesToStart}m`,
     };
   }
   if (markCents < cfg.markLowerBoundCents || markCents > cfg.markUpperBoundCents) {
@@ -213,7 +213,7 @@ export function quoteLadderWrap(inputs: LadderPricerInputs): CrossQuoteResult {
     tier: sel.tier,
     tiers: sel.tiers,
     candidatesConsidered: search.candidates.length,
-    parityNote: "the hedge is the protected market's own No side; settlement is identical by construction",
+    parityNote: "the hedge is the locked market's own No side; settlement is identical by construction",
     quotedAt: inputs.now.toISOString(),
   };
 }

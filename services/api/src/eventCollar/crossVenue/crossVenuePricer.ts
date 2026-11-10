@@ -120,7 +120,7 @@ export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
     return {
       ok: false,
       code: "market_too_close_to_start",
-      detail: `the game starts in ${Math.max(0, Math.round(minutesToStart))}m; pre-game protection needs at least ${cfg.minMinutesToStart}m`,
+      detail: `the game starts in ${Math.max(0, Math.round(minutesToStart))}m; a pre-game lock needs at least ${cfg.minMinutesToStart}m`,
     };
   }
   if (markCents < cfg.markLowerBoundCents || markCents > cfg.markUpperBoundCents) {

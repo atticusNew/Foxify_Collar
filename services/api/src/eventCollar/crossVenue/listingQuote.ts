@@ -450,12 +450,12 @@ function ticketName(r: ListingQuoteRow): string {
 const REFUSAL_WORDS: Record<ListingRefusalCode, string> = {
   legs_remaining: "two legs still running; we hedge one market, not a product of two, so no number rather than a guess",
   market_closed: "the venue has stopped taking orders on this future",
-  mark_out_of_range: "the market prices this leg outside the 10c to 92c band we quote; under it the ticket is a lottery ticket and a floor would be nearly its whole value, over it there is little left to protect",
+  mark_out_of_range: "the market prices this leg outside the 10c to 92c band we quote; under it the ticket is a lottery ticket and a floor would be nearly its whole value, over it there is little left to lock in",
   pm_book_empty: "no one is offering the other side on the venue right now",
   pm_book_too_thin: "the venue's book is too shallow to hedge a ticket this size leg for leg",
   credit_nonpositive: "the hedge costs more than the cap slice funds; no credit to pay",
   credit_too_small: "a credit was funded but it is under our minimum",
-  protection_too_rich: "the cheapest protection costs more than our ceiling in expected value",
+  protection_too_rich: "the cheapest lock costs more than our ceiling in expected value",
   market_too_close_to_start: "too close to resolution",
   no_matched_market: "we found no venue market for this leg",
   resolution_mismatch: "the venue's market resolves on different terms than the ticket",
@@ -497,7 +497,7 @@ export function listingsMarkdown(rows: readonly ListingQuoteRow[], atIso: string
   const anyBid = rows.some((r) => r.bidCents !== null);
   lines.push(`**${quoted.length} of ${rows.length} quoted.** ${beat} of the ${quoted.length} locks pay more in their worst case than the seller is asking. ${noBid} of ${rows.length} listings show no bid.`);
   lines.push("");
-  lines.push(`| Ticket | Last leg | Ask |${anyBid ? " High bid |" : ""} Fair now | Lock: worst / if it hits | Paid now |`);
+  lines.push(`| Ticket | Last leg | Ask |${anyBid ? " High bid |" : ""} Fair now | Lock: worst / if it hits | Credited at lock in |`);
   lines.push(`|---|---|---|${anyBid ? "---|" : ""}---|---|---|`);
   for (const r of rows) {
     const leg = r.remaining.map((x) => `${x.label}, ${x.market}`).join("; ");
@@ -513,9 +513,9 @@ export function listingsMarkdown(rows: readonly ListingQuoteRow[], atIso: string
     }
   }
   lines.push("");
-  lines.push(`Each ticket is a parlay whose hit legs are done and whose last leg is a future still running. That makes it one position on one market, which is the shape we protect. The lock is a firm floor and cap on that leg, hedged leg for leg on ${venues}, with a credit paid the moment the seller taps.`);
+  lines.push(`Each ticket is a parlay whose hit legs are done and whose last leg is a future still running. That makes it one position on one market, which is the shape we lock in. The lock is a firm floor and cap on that leg, hedged leg for leg on ${venues}, with a credit at lock in.`);
   lines.push("");
-  lines.push("Pays: the ticket's full payout if the last leg hits, as listed, with the month it resolves. Fair now: payout times the venue's live price on that leg. Lock, worst: the floor on every dollar of payout plus the credit; the seller has at least this whatever happens. Lock, if it hits: the cap plus the credit. Paid now: the credit at the tap.");
+  lines.push("Pays: the ticket's full payout if the last leg hits, as listed, with the month it resolves. Fair now: payout times the venue's live price on that leg. Lock, worst: the floor on every dollar of payout plus the credit; the seller has at least this whatever happens. Lock, if it hits: the cap plus the credit. Credited at lock in: the credit.");
   lines.push("");
   if (quoted.length) {
     lines.push("## Each quoted ticket");
@@ -524,7 +524,7 @@ export function listingsMarkdown(rows: readonly ListingQuoteRow[], atIso: string
       const q = r.quote as ListingLockTerms;
       const leg = r.remaining[0];
       const askWord = r.askVsFairBps === null ? "" : r.askVsFairBps >= 0 ? `${(r.askVsFairBps / 100).toFixed(0)}% above fair` : `${(-r.askVsFairBps / 100).toFixed(0)}% below fair`;
-      lines.push(`**${ticketName(r)}, pays ${fmtUsd(r.payoutCents)} if ${leg.label} wins (${leg.market}).** Ask ${fmtUsd(r.askCents)}, ${askWord}; ${r.bidCents === null ? "no bid" : `high bid ${fmtUsd(r.bidCents)}`}. The market prices the leg at ${((r.markMilli as number) / 10).toFixed(1)}c, so the ticket is worth ${fmtUsd(r.fairCents as number)} tonight. Lock: floor ${q.floorCents}c, cap ${q.capCents}c on ${r.contracts.toLocaleString("en-US")} contracts, ${fmtUsd(q.creditCents)} paid now. The seller ends with ${fmtUsd(q.lockWorstCents)} if the leg misses and ${fmtUsd(q.lockBestCents)} if it hits${r.lockBeatsAsk ? `; the worst case is ${fmtUsd(q.lockWorstCents - r.askCents)} more than the ask` : ""}. Hedge: ${(q.hedgeSharesMilli / 1000).toLocaleString("en-US", { maximumFractionDigits: 0 })} shares of ${leg.label} NO at ${(q.hedgeAvgPriceMilli / 10).toFixed(1)}c average, ${fmtUsd(q.hedgeCostCents)} outlay carried ${q.monthsCarried} month${q.monthsCarried === 1 ? "" : "s"} (${fmtUsd(q.carryCents)}). Our take ${fmtUsd(q.takeCents)}, already netted out of the credit.${r.unprotectedCents ? ` The odd ${fmtUsd(r.unprotectedCents)} of payout rides unprotected.` : ""}`);
+      lines.push(`**${ticketName(r)}, pays ${fmtUsd(r.payoutCents)} if ${leg.label} wins (${leg.market}).** Ask ${fmtUsd(r.askCents)}, ${askWord}; ${r.bidCents === null ? "no bid" : `high bid ${fmtUsd(r.bidCents)}`}. The market prices the leg at ${((r.markMilli as number) / 10).toFixed(1)}c, so the ticket is worth ${fmtUsd(r.fairCents as number)} tonight. Lock: floor ${q.floorCents}c, cap ${q.capCents}c on ${r.contracts.toLocaleString("en-US")} contracts, ${fmtUsd(q.creditCents)} credited at lock in. The seller ends with ${fmtUsd(q.lockWorstCents)} if the leg misses and ${fmtUsd(q.lockBestCents)} if it hits${r.lockBeatsAsk ? `; the worst case is ${fmtUsd(q.lockWorstCents - r.askCents)} more than the ask` : ""}. Hedge: ${(q.hedgeSharesMilli / 1000).toLocaleString("en-US", { maximumFractionDigits: 0 })} shares of ${leg.label} NO at ${(q.hedgeAvgPriceMilli / 10).toFixed(1)}c average, ${fmtUsd(q.hedgeCostCents)} outlay carried ${q.monthsCarried} month${q.monthsCarried === 1 ? "" : "s"} (${fmtUsd(q.carryCents)}). Our take ${fmtUsd(q.takeCents)}, already netted out of the credit.${r.unprotectedCents ? ` The odd ${fmtUsd(r.unprotectedCents)} of payout rides without the lock.` : ""}`);
       lines.push("");
     }
   }
@@ -541,14 +541,14 @@ export function listingsMarkdown(rows: readonly ListingQuoteRow[], atIso: string
   }
   lines.push("## What this is");
   lines.push("");
-  lines.push("- The lock is a collar on the remaining leg: the seller sells the payout above the cap and buys a floor under it, in one tap, and is paid the difference now. We hedge every contract on the venue's book at the same moment, so we carry no outcome risk; we earn the stated take plus the stated carry, whoever wins.");
+  lines.push("- The lock is a collar on the remaining leg: the seller sells the payout above the cap and buys a floor under it, in one tap, and is credited the difference at lock in. We hedge every contract on the venue's book at the same moment, so we carry no outcome risk; we earn the stated take plus the stated carry, whoever wins.");
   lines.push("- Fair is the venue's price, not ours. Where the ask sits above fair, no buyer will come; where it sits below, the seller is giving value away. The lock's worst case is a number with a counterparty behind it.");
   lines.push("- A future resolves months out and the hedge sits until then, so the credit carries a time charge, shown on every row. The live book for games settling within days has none.");
   lines.push("- Every number here comes from a public page read by a person and a public order book read at the time stamped above. Prices move; the morning of a conversation we rerun the page.");
   lines.push("");
-  lines.push(`When the legs resolve we mark every row against the official result: what the lock paid, what the ask would have paid, what the ticket did naked. The follow-up writes itself.${opts.contact ? ` ${opts.contact}` : ""}`);
+  lines.push(`When the legs resolve we mark every row against the official result: what the lock paid, what the ask would have paid, what the ticket did without the lock. The follow-up writes itself.${opts.contact ? ` ${opts.contact}` : ""}`);
   lines.push("");
   const out = lines.join("\n");
-  if (out.includes("\u2014")) throw new Error("listing page: em dash in copy");
+  if (/\u2014/.test(out)) throw new Error("listing page: em dash in copy");
   return out;
 }

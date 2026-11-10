@@ -19,7 +19,7 @@ test("refusals: reason codes fold to a few public phrases, never a venue", () =>
   assert.equal(refusalReason("credit_too_small"), "credit too small to offer");
   assert.equal(refusalReason("credit_nonpositive"), "credit too small to offer");
   for (const c of ["pm_book_empty", "kalshi_book_too_thin", "prophetx_book_empty", "novig_book_too_thin", "far_out_no_book", "route_gated", "route_not_offered"]) assert.equal(refusalReason(c), "no book could fund it", c);
-  for (const c of ["no_matched_market", "market_too_close_to_start", "mark_out_of_range", "mark_disagreement", "resolution_mismatch", "market_not_active"]) assert.equal(refusalReason(c), "not a market we protect", c);
+  for (const c of ["no_matched_market", "market_too_close_to_start", "mark_out_of_range", "mark_disagreement", "resolution_mismatch", "market_not_active"]) assert.equal(refusalReason(c), "not a market we lock in", c);
   assert.equal(refusalReason("something_new"), "other");
 });
 
@@ -51,7 +51,7 @@ test("refusals: one entry per market, re-stamped on every scan; a market later q
   assert.deepEqual(sum.byReason, [
     { reason: "credit too small to offer", count: 1 },
     { reason: "no book could fund it", count: 1 },
-    { reason: "not a market we protect", count: 1 },
+    { reason: "not a market we lock in", count: 1 },
   ]);
   assert.deepEqual(sum.byKind, { sports: { refused: 2, offered: 2 }, crypto: { refused: 1, offered: 1 } });
   assert.equal(sum.since, "2026-11-01T00:00:00.000Z");
