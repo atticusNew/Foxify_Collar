@@ -20,6 +20,7 @@ import { capTotalCents, centsDownOf, centsOf, centsUpOf, floorTotalCents, PROTEC
 import type { RuleCheck, RuleEvidence } from "./ruleEvidence";
 import type { HedgeRouting, SettlementVenue } from "./hedgeRouting";
 import type { ParlayRecord } from "./parlayPicks";
+import { summarizeSaleAlternatives, type ShadowSaleSummary } from "./shadowSaleAlternatives";
 import {
   FEE_RULE_LABELS,
   SIZE_LADDER_MULTS,
@@ -925,6 +926,13 @@ export interface ShadowCounterfactualSummary {
    * a saving. Operator report only.
    */
   routes: ShadowRouteComparison;
+  /**
+   * OWN SALE AND BETTER BID, MEASURED. Each line that carries the measurement priced as the
+   * holder's own sale into their venue's bids and as our better bid with the other side bought on
+   * another venue, beside the collar the record wrote (shadowSaleAlternatives.ts). The public
+   * page prints the counts and the sums; the per-book split names routes and stays with the operator.
+   */
+  sale: ShadowSaleSummary;
 }
 
 export interface ShadowRouteComparison {
@@ -1218,6 +1226,7 @@ export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCou
     feeRules: Object.fromEntries(FEE_RULE_LABELS.map((l) => [l, finishRule(feeRules[l])])) as Record<FeeRuleLabel, RuleBook>,
     capacity: capacity.map((row) => finishRule(row)),
     routes: { ...routes, live: finishRule(routes.live), kalshiOnly: finishRule(routes.kalshiOnly), crossOnly: finishRule(routes.crossOnly) },
+    sale: summarizeSaleAlternatives(positions),
   };
 }
 
