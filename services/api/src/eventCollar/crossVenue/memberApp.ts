@@ -31,10 +31,10 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { outcomeMaxPrice, outcomePriceMilli, parseOutcomeCompetitionCodes, type OutcomeCompetitionCodes } from "./venueBooks";
+import { parseOutcomeCompetitionCodes, type OutcomeCompetitionCodes } from "./venueBooks";
 import type { RawOutcomeMarket } from "./venueMarkets";
 import { clubMatches, positionId, templateForLeague, type HolderPosition, type ProtectableMarket } from "./venuePositions";
-import { roundContracts } from "./types";
+import { MICRO_PER_DOLLAR, decimalUnits, divBig, divInt, mulDiv } from "./exactDecimal";
 import type { LeagueTemplate } from "./resolutionWhitelist";
 
 export const MEMBER_APP_USER_AGENT = "atticus-event-shadow/0.1 (member app)";
@@ -549,10 +549,8 @@ export class MemberClient {
   async balance(): Promise<MemberBalance> {
     const r = await this.call<{ balance?: RawMemberBalance } | RawMemberBalance>("GET", "/api/v1/account/balance");
     const b = ((r as { balance?: RawMemberBalance }).balance ?? (r as RawMemberBalance)) || {};
-    const cents = (v: string | number | null | undefined): number | null => {
-      const n = Number(v);
-      return v === null || v === undefined || v === "" || !Number.isFinite(n) ? null : Math.round(n * 100);
-    };
+    // whole cents, a fraction of a cent dropped: the page never shows a balance above what the venue holds
+    const cents = (v: string | number | null | undefined): number | null => decimalUnits(v, 2, "down");
     return { accountCents: cents(b.account_balance), availableCents: cents(b.available_balance), atIso: new Date().toISOString() };
   }
 
@@ -886,8 +884,10 @@ export interface MemberHolderPosition extends HolderPosition {
   marketId: string;
   /** the venue's market as read with the positions: its book is what the sale is priced from */
   market: RawOutcomeMarket | null;
-  /** the venue's max_price for the market, dollars (usually 1) */
+  /** the venue's max_price for the market, dollars (usually 1); for reading, the arithmetic uses maxPriceMicro */
   maxPrice: number;
+  /** the same in micro-dollars (1_000_000 = $1), read from the venue's string */
+  maxPriceMicro: number;
   /** a combination's legs, when the position is one (shown, not protected) */
   legs?: MemberParlayLeg[];
   /** a combination's payout per dollar staked, as the venue shows it */
@@ -955,13 +955,20 @@ export class ComboLegMemory {
   }
 }
 
-/** The venue's price on a market now, as cents of a $1 contract: the last trade when there is one, else the venue's mark. */
+/** What one contract of the market pays (the venue's max_price), micro-dollars (1_000_000 = $1); $1 when the field is missing or unreadable (the venue's usual value). */
+export function maxPriceMicroOf(m: Pick<RawOutcomeMarket, "max_price"> | null | undefined): number {
+  const micro = decimalUnits(m?.max_price, 6, "down");
+  return micro !== null && micro > 0 ? micro : MICRO_PER_DOLLAR;
+}
+
+/** The venue's price on a market now, as cents of a $1 contract (to the nearest: a mark, not money): the last trade when there is one, else the venue's mark. */
 const legPriceCents = (m: RawOutcomeMarket | null): number | null => {
   if (!m) return null;
-  const maxPrice = outcomeMaxPrice(m);
-  const raw = Number(m.last_traded_price ?? m.price);
-  if (!Number.isFinite(raw) || raw < 0 || !(maxPrice > 0)) return null;
-  return Math.round((raw / maxPrice) * 100);
+  const written = m.last_traded_price ?? m.price;
+  // a price the venue left null or empty on a market reads as zero: a settled leg with no price left went to nothing
+  const micro = written === null || (typeof written === "string" && written.trim() === "") ? 0 : decimalUnits(written, 6, "nearest");
+  if (micro === null || micro < 0) return null;
+  return mulDiv(micro, 100, maxPriceMicroOf(m), "nearest");
 };
 
 /** the shapes a combination's legs arrive in: a nested market, or a reference to one plus a few words */
@@ -1118,7 +1125,8 @@ export async function comboLegs(client: MemberClient, m: RawOutcomeMarket & { le
  * when asked, read only when a combination needs its legs placed; `memory` keeps the placements.
  */
 export async function memberHolderPositions(client: MemberClient, protectable: ProtectableMarket[], codes: OutcomeCompetitionCodes, listings?: () => Promise<RawOutcomeMarket[]>, memory?: ComboLegMemory): Promise<MemberHolderPosition[]> {
-  const raw = (await client.positions()).filter((p) => Number(p.position) > 0);
+  const heldMilli = (p: RawMemberPosition): number => decimalUnits(p.position, 3, "down") ?? 0;
+  const raw = (await client.positions()).filter((p) => heldMilli(p) > 0);
   const ids = [...new Set(raw.map((p) => p.market_id))];
   let markets = new Map<string, RawOutcomeMarket>();
   let lookupFailed = false;
@@ -1130,16 +1138,19 @@ export async function memberHolderPositions(client: MemberClient, protectable: P
   const out: MemberHolderPosition[] = [];
   for (const p of raw) {
     const m = markets.get(p.market_id) ?? null;
-    const maxPrice = m ? outcomeMaxPrice(m) : 1;
-    const qty = Number(p.position);
-    // our contract pays $1; the venue's pays max_price, so a $2 contract is two of ours
-    const contracts = roundContracts(qty * maxPrice);
-    if (!(contracts >= 1)) continue;
-    const premium = Math.abs(Number(p.average_open_premium));
-    const entryMilli = Number.isFinite(premium) && premium > 0 ? outcomePriceMilli(premium, maxPrice, false) : -1;
-    const entryCents = entryMilli > 0 ? Math.min(99, Math.max(1, Math.round(entryMilli / 10))) : 50;
-    const costCents = Number.isFinite(premium) && premium > 0 ? Math.round(premium * qty * 100) : Math.round(contracts * entryCents);
-    const base = { id: positionId(p.market_id, "long"), marketId: p.market_id, market: m, maxPrice, contracts, entryCents, payoutCents: Math.round(contracts * 100), costCents };
+    const maxPriceMicro = maxPriceMicroOf(m);
+    const qtyMilli = heldMilli(p);
+    // our contract pays $1; the venue's pays max_price, so a $2 contract is two of ours. Hundredths of ours, a finer fraction dropped.
+    const hundredths = mulDiv(qtyMilli, maxPriceMicro, 10 * MICRO_PER_DOLLAR, "down");
+    if (hundredths < 100) continue;
+    const contracts = hundredths / 100;
+    const premiumMicro = Math.abs(decimalUnits(p.average_open_premium, 6, "nearest") ?? 0);
+    // the entry per $1 of payout: thousandths down, then to the nearest cent (what was paid is history, not a promise of cash)
+    const entryMilli = premiumMicro > 0 ? mulDiv(premiumMicro, 1000, maxPriceMicro, "down") : -1;
+    const entryCents = entryMilli > 0 ? Math.min(99, Math.max(1, divInt(entryMilli + 5, 10, "down"))) : 50;
+    // micro-dollars x milli-contracts: billionths of a dollar, to the nearest cent
+    const costCents = premiumMicro > 0 ? divBig(BigInt(premiumMicro) * BigInt(qtyMilli), 10_000_000n, "nearest") : divInt(entryCents * hundredths, 100, "nearest");
+    const base = { id: positionId(p.market_id, "long"), marketId: p.market_id, market: m, maxPrice: maxPriceMicro / MICRO_PER_DOLLAR, maxPriceMicro, contracts, entryCents, payoutCents: hundredths, costCents };
     if (!m) {
       out.push({ ...base, ticker: null, reason: lookupFailed ? "market_lookup_failed" : "market_unknown", league: null, side: "", event: "", startsIso: null, marketType: "" });
       continue;
