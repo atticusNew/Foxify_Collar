@@ -14,7 +14,7 @@ test("cross-venue app html: honesty label, gating line, and structure", () => {
   assert.ok(html.includes('id="toggle"'), "the toggle is the feature");
   assert.ok(html.includes("/api/showcase"), "polls the live endpoint");
   assert.ok(html.includes("width=device-width"), "mobile viewport");
-  assert.ok(html.includes("Protect this position"));
+  assert.ok(html.includes("Lock in this position"));
   assert.ok(html.includes('id="loading"'), "loading state while venues are paired");
   assert.ok(html.includes("scanning games and crypto"));
   assert.ok(!html.includes("across Kalshi and Polymarket"), "retail first: the other venue is not on the page");
@@ -24,8 +24,8 @@ test("cross-venue app html: the drawer is the holder's terms; the hedge, the pai
   const html = renderEventXAppHtml();
   assert.ok(html.includes("see the terms"), "the drawer is named for what it shows");
   assert.ok(html.includes("See the track record"), "footer links the live track record");
-  assert.ok(html.includes("without protection"), "naked outcome row in the drawer");
-  assert.ok(html.includes("with protection</span>"), "protected outcome row mirrors the naked row");
+  assert.ok(html.includes("without the lock"), "naked outcome row in the drawer");
+  assert.ok(html.includes("with the lock</span>"), "protected outcome row mirrors the naked row");
   assert.ok(html.includes(">settles</span>"), "settlement row: official final score / index print");
   assert.ok(html.includes("verifiably settle on the identical official result"), "settlement honesty lives in the disclosure");
   assert.ok(html.includes("the position is simulated, no funds can move"), "simulation disclosed in the disclosure");
@@ -54,12 +54,12 @@ test("cross-venue app html: the drawer is the holder's terms; the hedge, the pai
 
 test("cross-venue app html: the scanner board ranks protection by its true cost", () => {
   const html = renderEventXAppHtml();
-  assert.ok(html.includes("Best protection right now"), "board card present");
+  assert.ok(html.includes("Best lock right now"), "board card present");
   assert.ok(html.includes("best value first"), "the ranking rule in three words");
   assert.ok(html.includes("tap any game"), "rows are invitations, not decoration");
   assert.ok(!html.includes("cheapest safe route wins"), "route competition is an operator concern, not a retail sentence");
   assert.ok(html.includes('id="boardrows"'), "board rows container");
-  assert.ok(html.includes("cost of protection"), "EV honesty line in the drawer");
+  assert.ok(html.includes("cost of the lock"), "EV honesty line in the drawer");
   assert.ok(html.includes("% of expected value"), "EV framing in plain words");
   assert.ok(html.includes("pays "), "negative EV cost (venue-gap edge) has its own wording");
 });
@@ -78,7 +78,7 @@ test("cross-venue app html: grades and tappable rows; no route anywhere on the p
   assert.ok(html.includes("' cash</div>'"), "and the cash, nothing else");
   assert.ok(!html.includes("tierCount"), "tier counts are not shown on the board");
   assert.ok(html.includes("sideName"), "full team names from the venue pairing");
-  assert.ok(html.includes("guaranteed "), "protected banner states the locked range");
+  assert.ok(html.includes("you end with at least "), "protected banner states the locked range");
   assert.ok(html.includes('href="/receipts"'), "receipts page linked from the footer");
   assert.ok(html.includes("far=dt.getTime()-Date.now()>86400000") && html.includes("month:'short',day:'numeric'"), "a game more than a day out shows its date, not just a weekday");
 });
@@ -171,10 +171,10 @@ test("receipts html: honest aggregates from a real ledger file", () => {
 test("cross-venue app html: kalshi-native vocabulary, total dollars, one-tap", () => {
   const html = renderEventXAppHtml();
   assert.ok(html.includes("you keep at least"), "the floor is the first hero number");
-  assert.ok(html.includes("cash now"), "the credit is the second, same size");
+  assert.ok(html.includes("credit at lock in"), "the credit is the second, same size");
   assert.ok(html.includes("up to <b id=\"maxout\">"), "the cap is small print under them");
   assert.ok(html.includes(">chance<"), "percent framing");
-  assert.ok(html.includes("the cash is yours either way"), "credit framing is all-in and terse");
+  assert.ok(html.includes("the credit is yours either way"), "credit framing is all-in and terse");
   assert.ok(html.includes("starts in"), "countdown to game start");
   assert.ok(html.includes(">one tap<"), "toggle promise in two words");
   assert.ok(html.includes("terms locked at your tap"));
@@ -196,7 +196,7 @@ test("cross-venue app html: tiers are offered side by side with stated rules; th
   const html = renderEventXAppHtml();
   assert.ok(html.includes('id="tiers"'), "tier chips container in the offer");
   assert.ok(html.includes("data-tier="), "chips carry the tier name the server understands");
-  assert.ok(html.includes("Three ways to protect."), "the tiers are explained by outcome, not by rule");
+  assert.ok(html.includes("Three ways to lock in."), "the tiers are explained by outcome, not by rule");
   assert.ok(html.includes("tight:'Safest',balanced:'Balanced',wide:'Most upside'"), "outcome names on the tiles");
   assert.ok(!html.includes("TIER_RULES"), "no rule sentence under the tiles; the rules live on /receipts");
   assert.ok(html.includes('<div class="tc">at least</div>'), "one number per tile: the floor");

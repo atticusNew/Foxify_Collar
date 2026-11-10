@@ -226,7 +226,7 @@ function renderCardLanding(c: CardContact, video: LiveVideo | null, trackRecordU
   <img class="cl-logo" src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
   <div class="cl-eyebrow">Earn &amp; Protect</div>
   <h1>The <b>Lock in</b> button.</h1>
-  <p class="cl-lede">One tap gives any open position a floor and cash now. Priced across venues, hedged leg for leg on the cheaper book; refused when no book can fund it. Every quote, hedge, refusal and result on a public record.</p>
+  <p class="cl-lede">One tap gives any open position a floor and a credit at lock in. Priced across venues, hedged leg for leg on the cheaper book; refused when no book can fund it. Every quote, hedge, refusal and result on a public record.</p>
   ${videoBlock}
   <div class="cl-btns"><a class="cl-btn cl-primary" href="/contact.vcf" download>Save contact</a><a class="cl-btn" href="/${brandQ}">Try the demo: tap Lock in on a position</a></div>
   <div class="cl-links"><a href="${escapeHtml(c.linkedin)}">LinkedIn</a><a href="mailto:${escapeHtml(c.email)}">Email</a><a href="https://wa.me/${escapeHtml(c.phoneE164.replace(/^\+/, ""))}">WhatsApp</a><a href="${trackRecordUrl}">${recordLabel}</a></div>
@@ -591,10 +591,10 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMac
 ${cardBlock}<aside class="pitch">
   <img src="${ATTICUS_WORDMARK_GOLD_DATA_URI}" alt="Atticus" />
   <h1>One tap. Any prediction market.</h1>
-  <p>One line under every open position. Your traders lock a floor and get paid today, on your page, in their own account on your book. Priced against every venue we read; filled where they hold it.</p>
+  <p>One line under every open position. Your traders lock in a floor and are credited at lock in, on your page, in their own account on your book. Priced against every venue we read; filled where they hold it.</p>
   <ul>
     <li><b>Filled on your book,</b> in the trader's own account: order flow from your own members that did not exist before.</li>
-    <li><b>Every venue priced, every time,</b> so you and your traders see what the same protection was worth elsewhere.</li>
+    <li><b>Every venue priced, every time,</b> so you and your traders see what the same lock was worth elsewhere.</li>
     <li><b>The trader stays on your page.</b></li>
     <li><b>No fee to the trader, no counterparty, no capital of yours.</b></li>
   </ul>
@@ -758,18 +758,18 @@ ${cardBlock}<aside class="pitch">
   }
   function toggleA(act,label,open){return '<a href="#" class="ael-tg" data-act="'+act+'" aria-expanded="'+(open?'true':'false')+'">'+label+'<span class="ael-tgc">'+CHEVRON+'</span></a>'}
   /* what the trader is selling, as the last Details row: the slip already shows the trade, this says it in words for whoever asks; one tap away, and a place the record can point to */
-  var HOW='You sell part of the upside today for the floor and the cash now. The other side is bought the second you tap and settles on the same official result.';
+  var HOW='You sell part of the upside for the floor and a credit at lock in. The other side is bought the second you tap and settles on the same official result.';
   function drow(label,value,cls){return '<span class="ael-dl'+(cls?' '+cls:'')+'">'+label+'</span><span class="ael-dv'+(cls?' '+cls:'')+'">'+value+'</span>'}
   function ledgerRow(label,value,was,cls){return '<div class="ael-lr'+(cls?' '+cls:'')+'"><span class="ael-l">'+label+'</span><b>'+value+'</b>'+(was===null?'':'<s>'+was+'</s>')+'</div>'}
   /* the slip: win, lose, cash now; the "of/instead of" column only while the position is unprotected */
   function ledger(r,rs,credit,was,locked){
     var name=esc(shortOf(r)),win=r.kind==='crypto'?'Settles yes':name+' win',lose=r.kind==='crypto'?'Settles no':name+' lose';
-    return '<div class="ael-ledger">'+ledgerRow(win,usd(rs.capTotal),locked?null:'of '+usd(was))+ledgerRow(lose,usd(rs.floorTotal),locked?null:'instead of $0','ael-hero')+ledgerRow('Cash now','+'+usd(credit),locked?null:'','ael-last')+'</div>';
+    return '<div class="ael-ledger">'+ledgerRow(win,usd(rs.capTotal),locked?null:'of '+usd(was))+ledgerRow(lose,usd(rs.floorTotal),locked?null:'instead of $0','ael-hero')+ledgerRow('Credit at lock in','+'+usd(credit),locked?null:'','ael-last')+'</div>';
   }
   function shapeSegs(st,n,keys){
     var h='<div class="ael-shape" role="group" aria-label="Shape of the deal">';
     for(var i=0;i<keys.length;i++){var k=keys[i],tt=st.offered[k],tr=reshape(n,tt.floorCents,tt.capCents,tt.creditCents);
-      h+='<button type="button" class="ael-shape-b" data-act="shape" data-tier="'+k+'" aria-pressed="'+(k===st.tier)+'" aria-label="'+esc(TIER_WORDS[k]+': win '+usd(tr.capTotal)+', lose '+usd(tr.floorTotal)+', '+usd(tt.creditCents)+' now')+'">'+TIER_WORDS[k]+'</button>'}
+      h+='<button type="button" class="ael-shape-b" data-act="shape" data-tier="'+k+'" aria-pressed="'+(k===st.tier)+'" aria-label="'+esc(TIER_WORDS[k]+': win '+usd(tr.capTotal)+', lose '+usd(tr.floorTotal)+', '+usd(tt.creditCents)+' credited at lock in')+'">'+TIER_WORDS[k]+'</button>'}
     return h+'</div>';
   }
   /* where the other side goes, in one sentence: the venue, the race, what the winner saved the trader; each venue's figure in the tooltip */
@@ -802,12 +802,12 @@ ${cardBlock}<aside class="pitch">
   function venueWord(v){if(!v||!v.hedgeVenue)return null;if(NAME_VENUES||(S.vv&&v.hedgeVenue===S.vv.hostVenue))return v.hedgeVenue;return null}
   function removedLine(st){
     var m=st.removed;if(!m)return '';
-    return '<div class="ael-fine">Earlier protection removed '+esc(m.at)+' &middot; '+(m.net<0?'you paid '+usd(-m.net):m.net>0?usd(m.net)+' paid to you':'nothing owed either way')+'.</div>';
+    return '<div class="ael-fine">Earlier lock removed '+esc(m.at)+' &middot; '+(m.net<0?'you paid '+usd(-m.net):m.net>0?usd(m.net)+' paid to you':'nothing owed either way')+'.</div>';
   }
   /* the offer: the slip at the chosen shape, the pill, Details */
   function offerHtml(r,st){
     var n=sizeOf(r).contracts,t=st.offered[st.tier];
-    if(!t)return '<div class="ael-wait">'+esc(st.err||'Protection isn\\'t available on this position right now.')+'</div>'+powered();
+    if(!t)return '<div class="ael-wait">'+esc(st.err||'Lock in isn\\'t available on this position right now.')+'</div>'+powered();
     var rs=reshape(n,t.floorCents,t.capCents,t.creditCents),keys=TIER_ORDER.filter(function(k){return !!st.offered[k]});
     var busy=!!st.stage;
     return ledger(r,rs,t.creditCents,Math.round(100*n),false)+
@@ -824,20 +824,20 @@ ${cardBlock}<aside class="pitch">
     rows.push('<span>Other side</span><b><b>'+esc(venue)+'</b> &middot; '+L.contracts+' contracts of the other side at '+price.toFixed(1)+'c'+cmp+' <span class="ael-dim">&middot; priced at the book; demo, nothing bought</span></b>');
     rows.push('<span>Cost</span><b>'+usd(v&&v.hedgeCostCents!=null?Math.round(v.hedgeCostCents*k):Math.round(L.contracts*price))+' <span class="ael-dim">all in</span></b>');
     rows.push('<span>Until</span><b>'+(isLive(r)?'the final whistle':esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso)))+' <span class="ael-dim">&middot; settles on the official result</span></b>');
-    rows.push('<span>Paid to you</span><b>+'+usd(L.creditCents)+' <span class="ael-dim">&middot; paid '+esc(L.at)+'</span></b>');
+    rows.push('<span>Credit</span><b>+'+usd(L.creditCents)+' <span class="ael-dim">&middot; credited at lock in, '+esc(L.at)+'</span></b>');
     return '<div class="ael-rcpt">'+rows.join('')+'</div>';
   }
   /* the leave block: the live figures, the two ways out, the reason behind Why */
   function leaveHtml(r,st){
     var L=st.lock,lv=st.leave;
-    var head='<div class="ael-leave"><div class="ael-leave-h">Leave early<span>remove the protection, keep your pick</span></div>';
+    var head='<div class="ael-leave"><div class="ael-leave-h">Leave early<span>remove the lock, keep your pick</span></div>';
     if(!lv.q&&!lv.err)return head+'<div class="ael-wait">Pricing your exit&hellip;</div></div>';
     if(!lv.q)return head+'<div class="ael-wait">'+esc(lv.err)+'</div><div class="ael-leave-acts"><button type="button" class="ael-go ael-quiet" data-act="stay">Back</button></div></div>';
     var net=lv.q.net,credit=L.creditCents,allIn=credit+net;
     var hero=net<0?'You pay <b class="ael-pay">'+usd(-net)+'</b>':net>0?'You get <b>'+usd(net)+'</b>':'Nothing owed either way';
-    var netWords=allIn<0?'<b>\\u2212'+usd(-allIn)+'</b> after the '+usd(credit)+' paid to you at the lock':allIn>0?'<b>+'+usd(allIn)+'</b> ahead, with the '+usd(credit)+' paid to you at the lock':'even, with the '+usd(credit)+' paid to you at the lock';
+    var netWords=allIn<0?'<b>\\u2212'+usd(-allIn)+'</b> after the '+usd(credit)+' credited to you at lock in':allIn>0?'<b>+'+usd(allIn)+'</b> ahead, with the '+usd(credit)+' credited to you at lock in':'even, with the '+usd(credit)+' credited to you at lock in';
     var why=(net<0?'Your pick moved up since the lock, so the upside you sold is worth more than the floor you hold; leaving settles that difference.':net>0?'Your pick moved down since the lock, so the floor you hold is worth more than the upside you sold; leaving pays you that difference.':'Your pick is where it was at the lock; the floor and the upside cancel.')+
-      '</p><p>Your pick stays open on '+esc(BRAND)+', unprotected. The '+usd(credit)+' paid at the lock is yours either way.';
+      '</p><p>Your pick stays open on '+esc(BRAND)+', without the lock. The '+usd(credit)+' credited at lock in is yours either way.';
     return head+
       '<div class="ael-lr"><span class="ael-l">To leave now</span><b>'+hero+'</b></div>'+
       '<div class="ael-lr"><span class="ael-l">Net</span><b style="font-weight:400;font-size:13px">'+netWords+'</b></div>'+
@@ -857,7 +857,7 @@ ${cardBlock}<aside class="pitch">
   }
   function lineHtml(r,st){
     var n=sizeOf(r).contracts;
-    if(st.lock)return lineGo('Protected','<b>'+usd(st.lock.floorTotal)+'</b> or '+usd(st.lock.capTotal)+(venueWord(vvOf(r.kalshiTicker))?' &middot; on '+esc(venueWord(vvOf(r.kalshiTicker)))+'.':'.'),'ael-line-on'+(st.flash?' ael-line-flash':''),st.open);
+    if(st.lock)return lineGo('Locked in','<b>'+usd(st.lock.floorTotal)+'</b> or '+usd(st.lock.capTotal)+(venueWord(vvOf(r.kalshiTicker))?' &middot; on '+esc(venueWord(vvOf(r.kalshiTicker)))+'.':'.'),'ael-line-on'+(st.flash?' ael-line-flash':''),st.open);
     if(st.q&&!st.offered[st.tier])return lineGo('Unavailable',esc(st.err||'The market can\\'t fund a worthwhile credit right now.'),'ael-line-off',st.open);
     var t=st.offered[st.tier];
     var floor=t?reshape(n,t.floorCents,t.capCents,t.creditCents).floorTotal:(function(){var k=n/(r.contracts||n||1);return Math.round(r.floorCents*n)+Math.round(r.creditCents*k)})();
@@ -920,7 +920,7 @@ ${cardBlock}<aside class="pitch">
     if(!won)why='no venue could fund the other side right now';
     else if(v.edgeCents!=null&&v.edgeCents<0)why='<b>'+esc(won)+'</b>: cheapest all-in, venue fees included, once the tails of the game are priced, though another venue quoted '+usd(Math.round(-v.edgeCents*k))+' more'+(hostV&&won===hostV?'. The hedge stays with you.':hostV?'. You take a share of the spread.':'.');
     else if(hostV&&won===hostV)why='<b>'+esc(won)+'</b>, your book: it paid the trader the most'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' over the next venue':'')+'. The hedge stays with you.';
-    else if(hostV&&hostRow&&hostRow.creditCents!=null)why='<b>'+esc(won)+'</b>: it paid the trader '+usd(Math.round(Math.max(0,v.edgeCents||0)*k))+' more than your book did for the same protection, so the other side went there. You take a share of the spread instead.';
+    else if(hostV&&hostRow&&hostRow.creditCents!=null)why='<b>'+esc(won)+'</b>: it paid the trader '+usd(Math.round(Math.max(0,v.edgeCents||0)*k))+' more than your book did for the same lock, so the other side went there. You take a share of the spread instead.';
     else if(hostV)why='<b>'+esc(won)+'</b>: your book '+esc(hostRow?hostRow.why||'did not price it':'did not price it')+' on this game, so the other side went to the best venue that did. You take a share of the spread.';
     else why='<b>'+esc(won)+'</b>: the best price of the venues that quoted it'+(v.edgeCents>0?', '+usd(Math.round(v.edgeCents*k))+' more for the trader':'')+'.';
     var state=st.lock?'<div class="vstate on">Locked by the trader &middot; '+esc(st.lock.at)+'</div>':'<div class="vstate">Offered &middot; +'+usd(Math.round(v.creditCents*k))+' to the trader</div>';
@@ -982,7 +982,7 @@ ${cardBlock}<aside class="pitch">
       if(!q){st.q={ok:false};st.err=(p&&p.error)||'Live pricing is unavailable right now.';paintRow(t);return}
       st.q=q;
       if(q.ok){st.offered=offeredTiers(q,sizeOf(r).contracts);st.tier=st.tier&&st.offered[st.tier]?st.tier:defaultTier(st.offered,q);st.err=st.tier?null:'The market can\\'t fund a worthwhile credit on this one right now.'}
-      else st.err=q.detail||'Protection isn\\'t available on this position right now.';
+      else st.err=q.detail||'Lock in isn\\'t available on this position right now.';
       paintRow(t);
       requote(t);
     }).catch(function(){st.busy=false;st.q={ok:false};st.err='Live pricing is unavailable right now.';paintRow(t);requote(t)});
@@ -1074,19 +1074,19 @@ ${cardBlock}<aside class="pitch">
       /* nothing to price yet: one heading, the why behind Details (the extension's panel, in the host's colours) */
       var det=!!S.details[t.id],P=S.parlays||{};
       head='<b>'+t.picksOpen+' picks open</b>';
-      foot='<div class="popen"><b>Protection opens at your last pick.</b><a href="#" class="ael-tg" data-details="'+esc(t.id)+'" aria-expanded="'+(det?'true':'false')+'">Details<span class="ael-tgc">'+CHEVRON+'</span></a></div>'+
-        (det?'<div class="pdet"><p>With '+t.picksOpen+' picks open the ticket pays only if every one hits, so there is nothing yet to protect. Once all but one have hit, the last pick is a single and can be locked in before it starts, for what the ticket pays.</p>'+
+      foot='<div class="popen"><b>The lock opens at your last pick.</b><a href="#" class="ael-tg" data-details="'+esc(t.id)+'" aria-expanded="'+(det?'true':'false')+'">Details<span class="ael-tgc">'+CHEVRON+'</span></a></div>'+
+        (det?'<div class="pdet"><p>With '+t.picksOpen+' picks open the ticket pays only if every one hits, so there is nothing yet to lock in. Once all but one have hit, the last pick is a single and can be locked in before it starts, for what the ticket pays.</p>'+
         '<p>The picks are read again every '+(P.pricedEveryMinutes||10)+' minutes; the lock is priced at the last pick.</p></div>':'');
     }else if(L&&locked){
       head='<b>worth '+usd(L.worthCents)+'</b> <i>&middot; '+L.hoursBefore+'h out</i>';
-      foot='<div class="terms">ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b> &middot; <b>'+usd(L.creditCents)+'</b> paid now</div>'+
+      foot='<div class="terms">ends <b>'+usd(L.floorTotalCents)+'</b> or <b>'+usd(L.capTotalCents)+'</b> &middot; <b>'+usd(L.creditCents)+'</b> credited at lock in</div>'+
         '<div class="lock">locked at your tap'+otherSideWords(L)+' &middot; terms priced '+esc(fmtAt(L.quotedAt))+' from the live book</div>'+
         '<div class="f"><span class="shield">&#x2713; Locked</span><button class="undo" data-unlock="'+esc(t.id)+'">reset &middot; demo only</button></div>';
     }else if(L){
       head='<b>worth '+usd(L.worthCents)+'</b> <i>&middot; '+L.hoursBefore+'h out</i>';
       /* the venue the other side goes to, as the Positions tab says it for a single: data from the lock, never a name written here */
       foot=(L.venue?'<div class="terms">Other side &middot; <b>'+esc(L.venue)+'</b> <span class="ael-dim">&middot; best price across the venues asked, venue fees included</span></div>':'')+
-        '<div class="f"><button class="pbtn full" data-parlay="'+esc(t.id)+'">'+lockIcon()+'Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button></div>';
+        '<div class="f"><button class="pbtn full" data-parlay="'+esc(t.id)+'">'+lockIcon()+'Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' credit</button></div>';
     }else{
       head='<b>Last pick</b>';
       foot='<div class="f">'+(t.lockRefused
@@ -1104,7 +1104,7 @@ ${cardBlock}<aside class="pitch">
       head='<b>'+(net>=0?'+':'-')+usd0(Math.abs(net))+'</b> <i>&middot; '+(hit?'hit':R.hit==='partial'?'partial':'missed the last pick')+'</i>';
       line=R.lockPaidCents!=null?'ticket paid '+usd0(R.ticketPaidCents)+' &middot; locked '+usd0(R.lockPaidCents):'ticket paid '+usd0(R.ticketPaidCents)+' &middot; no lock priced';
       more='<div class="terms">'+(R.lockPaidCents!=null
-        ?'ticket alone paid <b>'+usd(R.ticketPaidCents)+'</b> &middot; locked it would have paid <b>'+usd(R.lockPaidCents)+'</b>'+(L?' <i style="font-style:normal;color:var(--faint)">(incl. '+usd(L.creditCents)+' at the tap)</i>':'')
+        ?'ticket alone paid <b>'+usd(R.ticketPaidCents)+'</b> &middot; locked it would have paid <b>'+usd(R.lockPaidCents)+'</b>'+(L?' <i style="font-style:normal;color:var(--faint)">(incl. '+usd(L.creditCents)+' credited at lock in)</i>':'')
         :'ticket paid <b>'+usd(R.ticketPaidCents)+'</b> &middot; no lock was priced before the last game')+'</div>';
     }else if(t.state==='busted'){
       var miss=missedPick(t);
@@ -1145,18 +1145,18 @@ ${cardBlock}<aside class="pitch">
     var html='',k,r,p,t,L,st;
     for(k in S.R){if(!Object.prototype.hasOwnProperty.call(S.R,k))continue;st=S.R[k];r=S.byTicker[k]||{};p=st.lock;
       var name=(p&&p.sideName)||r.sideName||k,lg=String((p&&p.league)||r.league||'').toUpperCase(),when=(p&&p.eventTimeIso)||r.eventTimeIso;
-      if(st.removed)html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; protection removed '+esc(st.removed.at)+'</div></div><div class="pl"><b>'+(st.removed.net<0?'you paid '+usd(-st.removed.net):st.removed.net>0?usd(st.removed.net)+' paid to you':'nothing owed')+'</b><i>the pick stays open</i></div></div></div>';
-      else if(p)html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; locked in'+(when?' &middot; '+esc(fmtEt(when)):'')+'</div></div><div class="pl"><b>'+usd(p.floorTotal)+' or '+usd(p.capTotal)+'</b><i>'+usd(p.creditCents)+' paid now</i></div></div></div>';
+      if(st.removed)html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; lock removed '+esc(st.removed.at)+'</div></div><div class="pl"><b>'+(st.removed.net<0?'you paid '+usd(-st.removed.net):st.removed.net>0?usd(st.removed.net)+' paid to you':'nothing owed')+'</b><i>the pick stays open</i></div></div></div>';
+      else if(p)html+='<div class="pos act"><div class="h"><div><div class="name">'+esc(name)+'</div><div class="meta">'+esc(lg)+' &middot; locked in'+(when?' &middot; '+esc(fmtEt(when)):'')+'</div></div><div class="pl"><b>'+usd(p.floorTotal)+' or '+usd(p.capTotal)+'</b><i>'+usd(p.creditCents)+' credited at lock in</i></div></div></div>';
     }
     for(k in S.lockedBy){if(!Object.prototype.hasOwnProperty.call(S.lockedBy,k))continue;t=S.lockedBy[k];L=t.lock;
-      html+='<div class="pos act"><div class="h"><div><div class="name">'+t.size+'-pick parlay</div><div class="meta">'+t.leagues+' &middot; locked in</div></div><div class="pl"><b>'+usd(L.floorTotalCents)+' or '+usd(L.capTotalCents)+'</b><i>'+usd(L.creditCents)+' paid now</i></div></div></div>';
+      html+='<div class="pos act"><div class="h"><div><div class="name">'+t.size+'-pick parlay</div><div class="meta">'+t.leagues+' &middot; locked in</div></div><div class="pl"><b>'+usd(L.floorTotalCents)+' or '+usd(L.capTotalCents)+'</b><i>'+usd(L.creditCents)+' credited at lock in</i></div></div></div>';
     }
     return html;
   }
   function activityRowHtml(a){
     var closed=a.state==='closed',won=a.outcome==='won';
     var meta=esc(String(a.league||'').toUpperCase())+' &middot; '+esc(fmtDay(a.atIso))+' &middot; '+(closed?'closed early':won?'won':'lost');
-    var line=usd(a.creditCents)+' paid at open &middot; '+(closed?'closed before the result':won?'the win, to the cap':'the floor, paid');
+    var line=usd(a.creditCents)+' credited at lock in &middot; '+(closed?'closed before the result':won?'the win, to the cap':'the floor, paid');
     return '<div class="pos act"><div class="h"><div><div class="name">'+esc(a.name)+'</div><div class="meta">'+meta+'</div></div>'+
       '<div class="pl"><b>'+usd(a.endedCents)+'</b><i>vs '+usd0(a.withoutCents)+' without</i></div></div><div class="terms">'+line+'</div></div>';
   }
@@ -1186,7 +1186,7 @@ ${cardBlock}<aside class="pitch">
   function openActivityInfoSheet(){
     openPlainSheet('activity-info','<h2 id="sh-h">About this activity</h2>'+
       '<div class="how on"><p>Anything you lock in or leave here shows at the top for this session. It is simulated: nothing is bought.</p>'+
-      '<p>Below that is our public record: positions we have been protecting on paper at live prices, settled at the venue\\'s official result or closed early. Each row says what it ended at with the lock and what the same position would have ended at without one. The amount paid at open is inside the first number.</p></div>');
+      '<p>Below that is our public record: positions we have been locking in on paper at live prices, settled at the venue\\'s official result or closed early. Each row says what it ended at with the lock and what the same position would have ended at without one. The credit, credited at lock in, is inside the first number.</p></div>');
   }
   function closeSheet(){S.openParlay=null;el('scrim').className='scrim';el('sheet').className='sheet';if(pendingDelta){var d=pendingDelta;pendingDelta=0;pulse(d)}}
   function openPlainSheet(key,body){
@@ -1220,11 +1220,11 @@ ${cardBlock}<aside class="pitch">
     track('parlay_tap',parlayId(id));
     el('sh-body').innerHTML='<h2 id="sh-h">Lock in your parlay</h2><div class="who">'+esc(last.outcome)+' is the last pick &middot; worth '+usd(L.worthCents)+' at fair</div>'+
       '<div class="tiles"><div class="tile k"><div class="l">if it misses</div><div class="v">'+usd(L.floorTotalCents)+'</div><div class="was">was $0</div></div>'+
-      '<div class="tile"><div class="l">paid now</div><div class="v">+'+usd(L.creditCents)+'</div><div class="was">yours today</div></div>'+
+      '<div class="tile"><div class="l">credited</div><div class="v">+'+usd(L.creditCents)+'</div><div class="was">at lock in</div></div>'+
       '<div class="tile"><div class="l">if it hits</div><div class="v">'+usd(L.capTotalCents)+'</div><div class="was">was '+usd(t.paysCents)+'</div></div></div>'+
-      '<button class="go" id="sh-go">Lock in '+usd(L.floorTotalCents)+' &middot; +'+usd(L.creditCents)+' now</button>'+
+      '<button class="go" id="sh-go">Lock in '+usd(L.floorTotalCents)+' &middot; +'+usd(L.creditCents)+' credit</button>'+
       '<div class="fine">priced '+esc(fmtAt(L.quotedAt))+' from the live book'+otherSideWords(L)+', '+L.hoursBefore+'h before the game &middot; <a href="#" id="sh-how">how it works</a></div>'+
-      '<div class="how" id="how"><p>Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket: it guarantees '+usd(L.floorTotalCents)+' if '+esc(last.outcome)+' misses, pays '+usd(L.creditCents)+' now, and leaves the upside to '+usd(L.capTotalCents)+' if it hits.</p>'+
+      '<div class="how" id="how"><p>Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket: you end with '+usd(L.floorTotalCents)+' if '+esc(last.outcome)+' misses, '+usd(L.creditCents)+' is credited at lock in, and the upside is left to '+usd(L.capTotalCents)+' if it hits.</p>'+
       '<p>It is priced only when one pick is left. With two picks open there is no market for the pair of games, so no lock is offered yet.</p>'+
       '<p>At the last pick the ticket is one position on one game, so it is priced like a single: every venue we work with is asked for the other side and the best price wins'+(L.venue?' (this one: '+esc(L.venue)+')':'')+'.</p>'+
       '<p>The ticket is ours, built from public game markets at the prices when it was built. The terms are the ones the live market on the last pick funded at that second; nothing is bought.</p></div>';
@@ -1351,7 +1351,7 @@ export interface PartnerConsoleInput {
 }
 
 const usd = (c: number): string => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const pct = (bps: number | null, digits = 2): string => (bps === null ? "–" : `${(bps / 100).toFixed(digits)}%`);
+const pct = (bps: number | null, digits = 2): string => (bps === null ? "n/a" : `${(bps / 100).toFixed(digits)}%`);
 
 /** Public words for a hedge route, for the partner: on their book or off it. */
 const PARTNER_ROUTE_WORDS: Record<string, string> = {
@@ -1361,7 +1361,7 @@ const PARTNER_ROUTE_WORDS: Record<string, string> = {
 
 const PARTNER_REFUSAL_WORDS: Record<string, string> = {
   credit_nonpositive: "the market could not fund a credit",
-  protection_too_rich: "protection would have cost more than our ceiling",
+  protection_too_rich: "the lock would have cost more than our ceiling",
   credit_too_small: "the credit fell under our minimum",
   pm_book_empty: "no depth to hedge",
   pm_book_too_thin: "not enough depth for the size",
@@ -1371,7 +1371,7 @@ const PARTNER_REFUSAL_WORDS: Record<string, string> = {
   far_out_no_book: "too early: no venue has a real book yet",
   route_gated: "priced, but no venue can take the hedge tonight",
   mark_disagreement: "price unsettled: the odds have not settled yet",
-  mark_out_of_range: "odds outside the range we protect",
+  mark_out_of_range: "odds outside the range we lock in",
   no_matched_market: "no verified pairing",
   resolution_mismatch: "settlement rules did not match",
 };
@@ -1386,10 +1386,10 @@ export function renderPartnerHtml(input: PartnerConsoleInput): string {
   const l = input.ledger;
   const f = input.funnel;
   const total = l.priced + l.refused;
-  const fill = total > 0 ? `${Math.round((l.priced / total) * 100)}%` : "–";
+  const fill = total > 0 ? `${Math.round((l.priced / total) * 100)}%` : "n/a";
   const partnerShareCents = Math.round((l.takeKeptCents * input.sharePct) / 100);
   const ownBook = l.routeSplit.kalshi_self ?? 0;
-  const ownPct = l.priced > 0 ? `${Math.round((ownBook / l.priced) * 100)}%` : "–";
+  const ownPct = l.priced > 0 ? `${Math.round((ownBook / l.priced) * 100)}%` : "n/a";
   const routeRows = Object.entries(l.routeSplit)
     .sort((a, b) => b[1] - a[1])
     .map(([r, n]) => `<div class="row"><span>${escapeHtml(PARTNER_ROUTE_WORDS[r] ?? r)}</span><b>${n}</b></div>`)
@@ -1446,9 +1446,9 @@ a{color:var(--dim)}
     <h1>The layer on your users' positions</h1>
     <div class="sub">Every quote the layer wrote for positions on your board, what it paid your users, what it cost them in expected value, and your share. Quotes are live; positions are simulated until the integration is on.</div>
     <div class="bignums">
-      <div class="bignum"><div class="n">${usd(l.stakeQuotedCents)}</div><div class="l">volume protected</div></div>
+      <div class="bignum"><div class="n">${usd(l.stakeQuotedCents)}</div><div class="l">volume locked in</div></div>
       <div class="bignum"><div class="n green">${usd(l.creditsSourcedCents)}</div><div class="l">credits paid to your users</div></div>
-      <div class="bignum"><div class="n">${escapeHtml(pct(l.avgEvCostBps))}</div><div class="l">average cost of protection</div></div>
+      <div class="bignum"><div class="n">${escapeHtml(pct(l.avgEvCostBps))}</div><div class="l">average cost of the lock</div></div>
       <div class="bignum"><div class="n green">${usd(partnerShareCents)}</div><div class="l">your share (${input.sharePct}% of take)</div></div>
     </div>
     <div class="period">${escapeHtml(period)}</div>
@@ -1458,20 +1458,20 @@ a{color:var(--dim)}
     <div class="row"><span>priced</span><b>${l.priced} <i>of ${total} · ${fill} fill</i></b></div>
     <div class="row"><span>priced on your own book</span><b>${ownBook} <i>${ownPct}</i></b></div>
     ${routeRows}
-    <div class="row"><span>ceiling on cost of protection</span><b>${escapeHtml(pct(input.maxEvCostBps))} <i>of expected value</i></b></div>
-    <div class="rule">Above the ceiling the layer refuses rather than quotes rich insurance; refusals are counted, not hidden.</div>
+    <div class="row"><span>ceiling on the cost of the lock</span><b>${escapeHtml(pct(input.maxEvCostBps))} <i>of expected value</i></b></div>
+    <div class="rule">Above the ceiling the layer refuses rather than quotes a lock that costs too much; refusals are counted, not hidden.</div>
   </div>
   <div class="card">
     <h2>Refused, and why</h2>
-    ${refusalRows || '<div class="row"><span>nothing refused yet</span><b>–</b></div>'}
+    ${refusalRows || '<div class="row"><span>nothing refused yet</span><b>0</b></div>'}
   </div>
   <div class="card">
     <h2>Your users</h2>
     <div class="row"><span>Lock in taps (all pages)</span><b>${f.protects.total} <i>${f.protects.last7d} in 7 days</i></b></div>
     <div class="row"><span>credits on those taps</span><b>${usd(f.protects.creditCentsTotal)}</b></div>
-    <div class="row"><span>contracts protected on those taps</span><b>${f.protects.contractsTotal}</b></div>
+    <div class="row"><span>contracts locked in on those taps</span><b>${f.protects.contractsTotal}</b></div>
     <div class="row"><span>embedded shell loads, 7 days</span><b>${embedLoads}</b></div>
-    ${tierRows ? `<div class="rule" style="margin-top:10px">Protection tier chosen</div>${tierRows}` : ""}
+    ${tierRows ? `<div class="rule" style="margin-top:10px">Lock in tier chosen</div>${tierRows}` : ""}
   </div>
   <div class="card">
     <h2>Integration</h2>
@@ -1500,7 +1500,7 @@ export interface PartnerCtaInput {
  */
 export function renderPartnerCtaHtml(input: PartnerCtaInput): string {
   const email = escapeHtml(input.contactEmail);
-  const subject = encodeURIComponent(`Protection inside ${input.brand === DEFAULT_EMBED_BRAND ? "our app" : input.brand}`);
+  const subject = encodeURIComponent(`Lock in inside ${input.brand === DEFAULT_EMBED_BRAND ? "our app" : input.brand}`);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1538,8 +1538,8 @@ h1{font-size:28px;line-height:1.15;letter-spacing:-.02em;font-weight:700}
   <div class="card">
     <h2>What it shows</h2>
     <ul>
-      <li><b>Volume protected</b> and credits paid to your users, by day</li>
-      <li><b>What protection cost</b> your users in expected value, against our ceiling</li>
+      <li><b>Volume locked in</b> and credits paid to your users, by day</li>
+      <li><b>What the lock cost</b> your users in expected value, against our ceiling</li>
       <li><b>Where it was priced</b>: on your own book, or cross-venue on the same game</li>
       <li><b>What we refused</b>, and why, one line per reason</li>
       <li><b>Your share</b> of the take, to the cent</li>

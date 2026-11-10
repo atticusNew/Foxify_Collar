@@ -104,7 +104,7 @@ li small{display:block;color:var(--dim);font-size:12px}
 .foot{color:#666;font-size:12px;margin-top:22px}
 </style></head><body><div class="wrap">
 <h1>The Lock on a listing</h1>
-<p class="sub">Your listing card, your buttons. One more button, rendered by you from one JSON quote. After the tap, one sheet, ours: two endings and the cash paid now. Numbers from the sheet priced ${esc(at)} UTC.</p>
+<p class="sub">Your listing card, your buttons. One more button, rendered by you from one JSON quote. After the tap, one sheet, ours: two endings and the credit at lock in. Numbers from the sheet priced ${esc(at)} UTC.</p>
 <div class="row">
 <div class="phone"><div class="screen">
   <div class="top"><div class="brand"><i>${brand.slice(0, 1)}</i>${brand}</div><div class="tab">Your listing</div></div>
@@ -121,7 +121,7 @@ li small{display:block;color:var(--dim);font-size:12px}
     <div class="btns">
       <div class="btn">Make bid</div>
       <div class="btn">Bet value</div>
-      <div class="btn lock" style="position:relative"><span>Lock in ${fmtUsd(q.lockWorstCents)}</span><small>guaranteed &middot; ${fmtUsd(q.creditCents)} paid to you now</small><span class="ours">ours</span></div>
+      <div class="btn lock" style="position:relative"><span>Lock in ${fmtUsd(q.lockWorstCents)}</span><small>the least you end with &middot; ${fmtUsd(q.creditCents)} credited at lock in</small><span class="ours">ours</span></div>
     </div>
   </div>
   <div class="note">Demo. Simulated at live prices; nothing is bought.</div>
@@ -143,9 +143,9 @@ li small{display:block;color:var(--dim);font-size:12px}
       <div><small>If ${esc(leg.label)} win</small><b>${fmtUsd(q.lockBestCents)}</b><small>was ${fmtUsdShort(row.payoutCents)}</small></div>
       <div><small>If they don't</small><b>${fmtUsd(q.lockWorstCents)}</b><small>was $0</small></div>
     </div>
-    <div class="now"><span>Paid to you now</span><b>${fmtUsd(q.creditCents)}</b></div>
-    <p class="vs">Your ask is ${fmtUsd(row.askCents)} with ${row.bidCents === null ? "no bids" : `a high bid of ${fmtUsd(row.bidCents)}`}. The lock's worst case is ${q.lockWorstCents >= row.askCents ? `${fmtUsd(q.lockWorstCents - row.askCents)} more than your ask` : `${fmtUsd(row.askCents - q.lockWorstCents)} under your ask, and it is certain`}.</p>
-    <div class="cta">Lock in ${fmtUsd(q.lockWorstCents)} &middot; take ${fmtUsd(q.creditCents)} now</div>
+    <div class="now"><span>Credited at lock in</span><b>${fmtUsd(q.creditCents)}</b></div>
+    <p class="vs">Your ask is ${fmtUsd(row.askCents)} with ${row.bidCents === null ? "no bids" : `a high bid of ${fmtUsd(row.bidCents)}`}. The lock's worst case is ${q.lockWorstCents >= row.askCents ? `${fmtUsd(q.lockWorstCents - row.askCents)} more than your ask` : `${fmtUsd(row.askCents - q.lockWorstCents)} under your ask, and it is locked at your tap`}.</p>
+    <div class="cta">Lock in ${fmtUsd(q.lockWorstCents)} &middot; ${fmtUsd(q.creditCents)} credit</div>
     <p class="fine">Terms lock at your tap. The credit you see is the credit you get. Settles with your ticket.</p>
   </div>
 </div></div>
@@ -158,6 +158,6 @@ li small{display:block;color:var(--dim);font-size:12px}
   <p class="foot">Mockup for ${brand}. Listing as read on your public page; prices as of ${esc(at)} UTC. The live demo with the same button on exchange positions: atticus-event-demo-cross-venue.onrender.com/?brand=${encodeURIComponent(opts.brand)}</p>
 </div>
 </div></div></body></html>`;
-  if (out.includes("\u2014")) throw new Error("listing mock: em dash in copy");
+  if (/\u2014/.test(out)) throw new Error("listing mock: em dash in copy");
   return out;
 }

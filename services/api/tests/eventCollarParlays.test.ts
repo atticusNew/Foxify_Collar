@@ -314,18 +314,18 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(html.includes("fetch('/api/parlays',{cache:'no-store'})"));
   // two or more picks open: the extension's heading and the why behind Details, not a dead button
   assert.ok(!html.includes("Lock in opens at your last pick"), "no disabled button before the last pick");
-  assert.ok(html.includes('<div class="popen"><b>Protection opens at your last pick.</b><a href="#" class="ael-tg" data-details="\'+esc(t.id)+\'"'), "two or more picks open: one heading, a Details toggle");
-  assert.ok(html.includes("With '+t.picksOpen+' picks open the ticket pays only if every one hits, so there is nothing yet to protect.") && html.includes("The picks are read again every '+(P.pricedEveryMinutes||10)+' minutes; the lock is priced at the last pick."), "the why, behind Details");
+  assert.ok(html.includes('<div class="popen"><b>The lock opens at your last pick.</b><a href="#" class="ael-tg" data-details="\'+esc(t.id)+\'"'), "two or more picks open: one heading, a Details toggle");
+  assert.ok(html.includes("With '+t.picksOpen+' picks open the ticket pays only if every one hits, so there is nothing yet to lock in.") && html.includes("The picks are read again every '+(P.pricedEveryMinutes||10)+' minutes; the lock is priced at the last pick."), "the why, behind Details");
   assert.ok(html.includes("S.details[dt]=!S.details[dt]") && html.includes("expanded:{},details:{}"), "Details toggles per ticket");
   assert.ok(html.includes("var PICK_MARK={hit:'&#x2713;',miss:'&#x2717;',open:'',partial:'&frac12;'}") && html.includes(".pick i{font-style:normal;width:15px;height:15px;border-radius:4px"), "a box per pick: empty open, a check hit, a cross missed");
-  assert.ok(html.includes("Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' paid now</button>"), "one pick open with a priced lock");
+  assert.ok(html.includes("Lock in '+usd(L.floorTotalCents)+' &middot; '+usd(L.creditCents)+' credit</button>"), "one pick open with a priced lock");
   assert.ok(html.includes("No lock right now: '+esc(t.lockRefusedShort||t.lockRefused)+'</button>"), "one pick open, refused: one clause on the row");
   assert.ok(html.includes("function openWhySheet(id)") && html.includes("<h2 id=\"sh-h\">No lock right now</h2>") && html.includes("esc(t.lockRefused.charAt(0).toUpperCase()+t.lockRefused.slice(1))"), "the full reason a tap away");
   assert.ok(html.includes("pricing the lock at the next pass"), "one pick open, not yet attempted");
   assert.ok(html.includes("locked it would have paid") && html.includes("no lock was priced before the last game"), "settled, lock against ticket");
   assert.ok(html.includes("no lock exists before the last pick"), "busted");
   assert.ok(html.includes("Lock in your parlay") && html.includes(">if it misses<") && html.includes(">if it hits<"), "the sheet: two endings and the credit");
-  assert.ok(html.includes('<div class="tile k"><div class="l">if it misses</div>') && html.includes('<div class="tile"><div class="l">paid now</div>'), "the floor is the figure in colour, as on the extension; the credit is plain");
+  assert.ok(html.includes('<div class="tile k"><div class="l">if it misses</div>') && html.includes('<div class="tile"><div class="l">credited</div>'), "the floor is the figure in colour, as on the extension; the credit is plain");
   assert.ok(html.includes("Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket"), "the cash-out comparison");
   assert.ok(html.includes("With two picks open there is no market for the pair of games, so no lock is offered yet."));
   // honesty: one line on the tab, the long version behind the info button, and the confusing sentence gone

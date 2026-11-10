@@ -232,7 +232,7 @@ test("the mockup: drawn from the row whose lock beats the ask; the phone shows t
   const phone = html.slice(html.indexOf('<div class="row">'), html.indexOf('<div class="caption">'));
   const caption = html.slice(html.indexOf('<div class="caption">'));
   assert.ok(phone.includes(`Lock in ${fmtUsd(q.lockWorstCents)}`), "the button names the guaranteed amount");
-  assert.ok(phone.includes(`${fmtUsd(q.creditCents)} paid to you now`), "and the credit");
+  assert.ok(phone.includes(`${fmtUsd(q.creditCents)} credited at lock in`), "and the credit");
   assert.ok(phone.includes(`<b>${fmtUsd(q.lockBestCents)}</b><small>was $3,570</small>`), "the hit ending against the naked payout");
   assert.ok(phone.includes(`<b>${fmtUsd(q.lockWorstCents)}</b><small>was $0</small>`), "the miss ending against zero");
   assert.ok(phone.includes(`The lock's worst case is ${fmtUsd(q.lockWorstCents - 21000)} more than your ask.`));
