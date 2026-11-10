@@ -39,7 +39,9 @@
  * all one they saved themselves from the public route on an earlier day. Two ways to run it:
  *
  *   with this script: Node 18 or later, this file and src/eventCollar/crossVenue/ledgerFingerprint.ts
- *   kept in the same folders relative to each other, then the commands above.
+ *   kept in the same folders relative to each other, then the commands above. The two files import
+ *   nothing but Node itself; outside this repository `npx tsx` fetches the TypeScript runner the
+ *   first time it is used.
  *
  *   with no code of ours, for any day on the list (day, lines, bytes, ledgerSha256, previous, sha256):
  *     head -c <bytes> ledger.jsonl | sha256sum      prints ledgerSha256
