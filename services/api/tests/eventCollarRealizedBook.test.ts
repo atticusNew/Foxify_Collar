@@ -631,6 +631,7 @@ test("the public card: counts and cash, labelled real and apart from the simulat
     const html = page(none);
     assert.ok(!html.includes("Real fills"));
     assert.ok(html.includes("Live prices; nothing is bought.</div>"));
+    assert.ok(html.includes("<b>Simulated:</b> the positions; no venue credentials, no wallets."));
   }
 
   const html = page(base);
@@ -652,7 +653,9 @@ test("the public card: counts and cash, labelled real and apart from the simulat
     assert.ok(c.includes(piece), piece);
   assert.ok(!c.includes("ended and not yet valued"), "a row with nothing in it is not shown");
   assert.ok(html.includes("Live prices; nothing in the run is bought. The real fills are counted apart, in the next card."));
-  assert.ok(html.includes("<b>Real fills:</b> counted apart, in their own card."));
+  // with real orders on the record the footer no longer says the service holds no venue credentials
+  assert.ok(html.includes("<b>Simulated:</b> the positions. <b>Real fills:</b> counted apart, in their own card."));
+  assert.ok(!html.includes("no venue credentials"));
 
   // a loss is shown as one, without the green
   assert.ok(card(page({ ...base, realizedCents: -20 })).includes('<div class="n ">-$0.20</div><div class="l">our result, ended locks</div>'));

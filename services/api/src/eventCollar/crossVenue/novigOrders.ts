@@ -374,7 +374,7 @@ export class NovigOrderClient {
   }
 
   /**
-   * Every fill of the key's own wallet in a time window (epoch ms, both ends excluded by the
+   * Every fill in the key's own account in a time window (epoch ms, both ends excluded by the
    * venue), every page: GET /v3/portfolio/fills?startsAfter=&startsBefore=&limit=&after=. A
    * read, never an order. Stops with an error rather than a short list if the pages do not end.
    */

@@ -295,7 +295,9 @@ test("an old record replays: a real fill from before the fee and the pending tra
   assert.ok(!/[\u2014\u2013]/.test(card));
   assert.ok(!/wallet|guarantee|protect/i.test(card));
   assert.ok(html.includes("Live prices; nothing in the run is bought. The real fills are counted apart, in the next card."));
-  assert.ok(html.includes("<b>Real fills:</b> counted apart, in their own card."));
+  // with real orders on the record the footer no longer says the service holds no venue credentials
+  assert.match(html, /<b>Simulated:<\/b> the positions( and the parlay tickets)?\. <b>Real fills:<\/b> counted apart, in their own card\./);
+  assert.ok(!html.includes("no venue credentials"));
   assert.ok(html.indexOf("<h1>Track record</h1>") < html.indexOf("<h2>Real fills</h2>"), "beside the run's own headline, under it");
 });
 
