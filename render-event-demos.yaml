@@ -34,15 +34,19 @@
 #                                   snapshots. docs/sports-venues-report.md
 #
 #   (no service) /pairs on          BTC pairs UI for a trader: the same
-#   atticus-btc-curve               above/below contract on Kalshi and
-#                                   Polymarket US at the money and one strike
-#                                   each way, next close and 5 PM ET daily,
-#                                   scored for how cleanly both quote it, a
-#                                   Launch button that posts the pair to his
-#                                   engine, JSON and a stream under
-#                                   /pairs/api/*. 10-second cycle inside the
-#                                   curve process, so no second service is
-#                                   paid for. docs/btc-pairs.md
+#   atticus-btc-curve               contract on Kalshi and Polymarket US, the
+#                                   15-minute up/down window, next close and
+#                                   5 PM ET daily at the money and one strike
+#                                   each way, scored for how cleanly both
+#                                   quote it, the bands between strikes priced
+#                                   against the venues and a realized-vol
+#                                   model, the index's regime, one Launch
+#                                   button per tenor that sends the picked pair
+#                                   to his engine (POST) or opens his page with
+#                                   it, JSON and a stream under /pairs/api/*.
+#                                   10-second cycle inside the curve process,
+#                                   so no second service is paid for.
+#                                   docs/btc-pairs.md
 #
 #   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com,
 #                                   for operator machines whose ISP blocks it
@@ -101,10 +105,14 @@ services:
       # Its gap history lives under the curve disk at /var/data/btc-curve/pairs.
       # - key: BTC_PAIRS_INTERVAL_SEC
       #   value: "10"
-      # Optional. The trader's engine endpoint the Launch button posts to by default; he can
+      # Optional. The trader's engine endpoint the Launch button sends to by default; he can
       # also set it on the page itself (kept in his browser). Set in the dashboard.
       # - key: BTC_PAIRS_LAUNCH_URL
       #   sync: false
+      # Optional. "send" (default) POSTs the pair as JSON to that URL; "open" opens the URL in
+      # a new tab with the pair in the query string, for an engine that is a screen he drives.
+      # - key: BTC_PAIRS_LAUNCH_MODE
+      #   value: send
       # Optional. Kalshi event page pattern once confirmed in a browser; {event} is the event
       # ticker in lower case (kxbtcd-26nov0917). Default is the KXBTCD series page.
       # - key: BTC_PAIRS_KALSHI_URL
