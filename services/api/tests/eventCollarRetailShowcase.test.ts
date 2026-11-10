@@ -94,6 +94,7 @@ const CROSS_PAYLOAD: OperatorCrossPayload = {
       sideName: "St. Louis Cardinals",
       eventTitle: "Cubs vs Cardinals",
       eventTimeIso: "2026-09-20T23:10:00.000Z",
+      live: true,
       markCents: 62,
       contracts: 100,
       entryCents: 58,
@@ -114,6 +115,7 @@ const CROSS_PAYLOAD: OperatorCrossPayload = {
       sideName: "Bitcoin above $115,000",
       eventTitle: "BTC above $115,000 at 5pm",
       eventTimeIso: "2026-09-20T21:00:00.000Z",
+      live: false,
       markCents: 48,
       contracts: 150,
       entryCents: 45,
@@ -240,11 +242,13 @@ test("retail showcase: the cross-venue payload is an allow-list — pair, positi
     "kalshiTicker",
     "kind",
     "league",
+    "live",
     "markCents",
     "sideName",
     "tier",
     "tierCount",
   ].sort());
+  assert.deepEqual(r.board.map((row) => row.live), [true, false], "in play is a yes or no on every row, as the board set it");
   assert.deepEqual(forbiddenKeysIn(r), [], "no forbidden key anywhere in the retail payload");
   const text = JSON.stringify(r);
   assert.doesNotMatch(text, /polymarket|kalshi_self|pmEventSlug|585|4230|tokenId|REST_BASE|candidates/i);
