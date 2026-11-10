@@ -168,7 +168,7 @@ import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, typ
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderHoldersHtml, renderPilotCheckHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
-import { buildRealizedBook, publicRealSummary, type RealizedBook } from "../src/eventCollar/crossVenue/realizedBook";
+import { buildRealizedBook, publicRealSummary, realizedMonthlyCsv, type RealizedBook } from "../src/eventCollar/crossVenue/realizedBook";
 import { VERDICT_WORDS, isUtcDay, reconcileDay, type DayRecon } from "../src/eventCollar/crossVenue/realizedRecon";
 import { appendReconRun, dailyCheckDue, differsAlertText, latestRunPerDay, loadReconRuns, reconRunOf, reconRunView, type ReconRunRecord } from "../src/eventCollar/crossVenue/realizedReconLog";
 import { readVenueFills, venueFillReadersFromEnv, type ReadOptions, type VenueFillReaders, type VenueFillReadersView } from "../src/eventCollar/crossVenue/venueFillReaders";
@@ -444,6 +444,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/venues/catalog",
   "/api/shadow/ext-telemetry/summary",
   "/api/shadow/realized",
+  "/api/shadow/realized.csv",
   "/api/shadow/realized/check",
 ]);
 
@@ -4969,6 +4970,21 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         .finally(() => {
           reconRunning = false;
         });
+      return;
+    }
+    if (url.pathname === "/api/shadow/realized.csv") {
+      // THE ACCOUNTING EXPORT: one row per venue per UTC month of real fills; ?month=YYYY-MM for one month.
+      const month = (url.searchParams.get("month") ?? "").trim();
+      if (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "month is a UTC month, as YYYY-MM" });
+        return;
+      }
+      res.writeHead(200, {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="event-realized-${month || "all-months"}.csv"`,
+        "cache-control": "no-store",
+      });
+      res.end(realizedMonthlyCsv(realizedBook(), month || undefined));
       return;
     }
     if (url.pathname === "/api/shadow/lastleg.csv") {

@@ -1,7 +1,7 @@
 /**
  * The realized book in the service: the operator's routes (token-gated), the day's check with and
  * without a venue key, the once-a-day run and the line it keeps, the health body, the alert when
- * a venue differs and the real fills card on the public page. The ledgers are
+ * a venue differs, the real fills card on the public page and the monthly export. The ledgers are
  * written line by line the way the service writes them; the venue is a scripted list of fills
  * behind the reader. Nothing touches a venue.
  */
@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { BookHedgeExecutor, appendHedgeReceipt, intentFromHedge, type HedgeIntent, type HedgeReceipt } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import type { KalshiFill, KalshiFillsQuery } from "../src/eventCollar/crossVenue/kalshiOrders";
 import { LiveHedgeExecutor, type LiveHedgeRails, type LiveOrderHook } from "../src/eventCollar/crossVenue/liveHedge";
+import { REALIZED_MONTHLY_CSV_COLUMNS } from "../src/eventCollar/crossVenue/realizedBook";
 import { reconcileDay } from "../src/eventCollar/crossVenue/realizedRecon";
 import { appendReconRun, dailyCheckDue, differsAlertText, latestRunPerDay, loadReconRuns, reconRunOf } from "../src/eventCollar/crossVenue/realizedReconLog";
 import { appendShadowRecord, type ShadowOpenRecord } from "../src/eventCollar/crossVenue/shadowLedger";
@@ -176,7 +177,7 @@ test("with no real fill: the routes need the operator's token, the book is empty
   // a paper hedge, as the scan writes it
   appendHedgeReceipt(PATHS.receipts, await new BookHedgeExecutor(null, { now: () => new Date(`${D0}T12:00:00.000Z`), sleep: async () => undefined }).execute(kalshiBuy(), T));
 
-  for (const path of ["/api/shadow/realized", "/api/shadow/realized/check"]) {
+  for (const path of ["/api/shadow/realized", "/api/shadow/realized.csv", "/api/shadow/realized/check"]) {
     const res = await fetch(`${base}${path}`);
     assert.equal(res.status, 403, `${path} without the token`);
     assert.equal((await fetch(`${base}${path}`, { headers: { "x-admin-token": "wrong" } })).status, 403);
@@ -410,6 +411,34 @@ test("with the venue's key: a day that agrees; the operator's kept check; a day 
   // every kept line is whole: nothing was rewritten, and each parses
   const lines = readFileSync(PATHS.recon, "utf8").split("\n").filter((l) => l.trim());
   assert.deepEqual(lines.map((l) => (JSON.parse(l) as Json).day), [D0, D1, D1, D2, D3]);
+});
+
+test("the accounting export: the operator's CSV, one row per venue per UTC month, whole cents; one month on request", async () => {
+  await ready;
+  const all = await text("/api/shadow/realized.csv", OP);
+  assert.equal(all.status, 200);
+  assert.equal(all.type, "text/csv; charset=utf-8");
+  assert.equal(all.disposition, 'attachment; filename="event-realized-all-months.csv"');
+  const rows = all.body.trim().split("\n").map((l) => l.split(","));
+  assert.deepEqual(rows[0], [...REALIZED_MONTHLY_CSV_COLUMNS]);
+  const col = (name: string): number => rows[0].indexOf(name);
+  assert.equal(rows[1][col("month")], "2025-10");
+  assert.deepEqual(
+    ["venue", "real_fills", "contracts_bought", "cash_paid_cents", "fees_cents", "payouts_cents", "realized_cents"].map((n) => rows[1][col(n)]),
+    ["kalshi", "1", "12.000", "300", "0", "1200", "16"],
+  );
+  // the three orders of this week, in the month or months they fell in: 36 contracts and 915 cents in all
+  const recent = rows.slice(2);
+  assert.equal(recent.reduce((a, r) => a + Number(r[col("real_fills")]), 0), 3);
+  assert.equal(recent.reduce((a, r) => a + Number(r[col("cash_paid_cents")]), 0), 915);
+  assert.equal(recent.reduce((a, r) => a + Number(r[col("fees_cents")]), 0), 15);
+  for (const r of rows.slice(1)) for (const n of ["cash_paid_cents", "fees_cents", "payouts_cents", "realized_cents"]) assert.match(r[col(n)], /^-?\d+$/, `${n} is whole cents`);
+
+  const one = await text("/api/shadow/realized.csv?month=2025-10", OP);
+  assert.equal(one.disposition, 'attachment; filename="event-realized-2025-10.csv"');
+  assert.equal(one.body.trim().split("\n").length, 2);
+  assert.equal((await text("/api/shadow/realized.csv?month=2025-11", OP)).body.trim(), REALIZED_MONTHLY_CSV_COLUMNS.join(","));
+  assert.equal((await text("/api/shadow/realized.csv?month=2025-13", OP)).status, 400);
 });
 
 test("the kept file and the timer's rule: append only, a torn line skipped, the last line stands for its day; a day is due once, after the wait, never twice", () => {
