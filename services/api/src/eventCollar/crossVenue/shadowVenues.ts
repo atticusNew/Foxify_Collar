@@ -35,6 +35,8 @@ export const VENUE_COLUMNS: ReadonlyArray<{ id: VenueColumnId; name: string; via
   { id: "signed_v3", name: "Novig", via: "direct", kind: "reference" },
   // the one-market-per-outcome dialect (venueMarkets.ts): read on its demo exchange until its US production host opens
   { id: "outcome_v1", name: "STX", via: "direct", kind: "reference" },
+  // the long/short dialect (polymarketUs.ts): the US exchange, not the international book the polymarket route hedges on
+  { id: "long_short_v1", name: "Polymarket US", via: "direct", kind: "reference" },
   { id: "aggregated_other", name: "another venue", via: "feed", kind: "reference" },
 ];
 

@@ -183,6 +183,7 @@ import { ExtTelemetryStore, parseExtTelemetry } from "../src/eventCollar/crossVe
 import { VenueClient, excludedWalletsFromEnv, holderPositions, signerFromPem, venueConfigFromEnv, type HolderPosition, type ProtectableMarket } from "../src/eventCollar/crossVenue/venuePositions";
 import { PlaysClient, holderPlays, playsConfigFromEnv } from "../src/eventCollar/crossVenue/venuePlays";
 import { novigRouteOf, referenceSourcesFromEnv, signedHedgeBook, signedHostFromEnv, type ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
+import { polyUsForProcess, polyUsPreflight, type PolyUsBookStream, type PolyUsClient, type PolyUsEnvConfig } from "../src/eventCollar/crossVenue/polymarketUs";
 import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venuePrints";
 import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
 import { venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
@@ -367,6 +368,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/report",
   "/api/shadow/hedges",
   "/api/shadow/hedges/preflight",
+  "/api/shadow/polymarket-us/preflight",
   "/api/shadow/hedges/resend",
   "/api/shadow/hedges/pod",
   "/api/shadow/kalshi/account",
@@ -631,6 +633,12 @@ const referenceBooks = (() => {
   const r = referenceSourcesFromEnv(process.env);
   return { configured: r.sources.map((s) => s.id), notes: r.notes };
 })();
+/**
+ * The long/short-dialect US exchange (polymarketUs.ts), for the operator's check after the key is
+ * added: is it set, did the venue accept it, what cash is there. The books themselves are read by
+ * the scanner module as one more reference; nothing here sends an order.
+ */
+let polyUs: Pick<PolyUsEnvConfig, "client" | "stream" | "note"> = polyUsForProcess();
 /** REFERENCE_PRINTS_HOST in the env: yesterday's tape from an exchange with no live book, read on every sports open; the operator's view only */
 const referencePrints = (() => {
   const r = referencePrintSourcesFromEnv(process.env);
@@ -4511,6 +4519,39 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       });
       return;
     }
+    if (url.pathname === "/api/shadow/polymarket-us/preflight") {
+      // After the key is added in the dashboard: is it set and well formed, did the venue accept
+      // it on an account read, what cash is there. Reads only; this service sends no order there.
+      const note = polyUs.note;
+      void polyUsPreflight(polyUs.client, polyUs.stream)
+        .then((check) => {
+          const feed =
+            check.books === "stream"
+              ? "Books come off the live stream."
+              : check.stream?.state === "refused"
+                ? "The live stream refused the key, so books are the venue's public copy, up to 30 seconds old."
+                : check.stream
+                  ? "The live stream is not up yet (it opens on the first game priced), so books are the venue's public copy, up to 30 seconds old, until it is."
+                  : "Books are the venue's public copy, up to 30 seconds old.";
+          sendJson(res, 200, {
+            ok: true,
+            at: new Date().toISOString(),
+            ...check,
+            ...(note ? { note } : {}),
+            say: !check.reading
+              ? "Not read. Add POLYMARKET_US_KEY_ID and POLYMARKET_US_SECRET_KEY to this service's environment, then redeploy."
+              : !check.keySet
+                ? `${feed} Add POLYMARKET_US_KEY_ID and POLYMARKET_US_SECRET_KEY for the live stream and the account.`
+                : check.keyAccepted
+                  ? `The key is accepted and the account is read. ${feed} No order is sent to this venue from here.`
+                  : check.keyAccepted === false
+                    ? "The venue refused the key. Check that the key id and the secret are the pair shown together in its developer portal."
+                    : `The key is set but the account could not be read just now. ${feed}`,
+          });
+        })
+        .catch(() => sendJson(res, 500, { ok: false, error: "preflight_failed" }));
+      return;
+    }
     if (url.pathname === "/api/shadow/hedges/preflight") {
       // Before a live order: do the credentials sign, does the venue answer, what cash is there,
       // and what would the rails do with a sample ticker (?ticker=). Reads only; nothing is placed.
@@ -4932,7 +4973,12 @@ export function wireLockEngine(fns: {
   inPlay?: boolean;
   /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ (off unless set); "preview" quotes from a stand-in and refuses the tap */
   memberComboRfq?: boolean | "preview";
+  /** the long/short-dialect venue's client behind the operator's key check, in place of the env's; null is "not read" */
+  polyUs?: PolyUsClient | null;
+  /** that venue's live stream behind the same check, with `polyUs` */
+  polyUsStream?: PolyUsBookStream | null;
 }): void {
+  if (fns.polyUs !== undefined) polyUs = { client: fns.polyUs, stream: fns.polyUsStream ?? null, note: null };
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
   if (fns.memberSessions !== undefined) {

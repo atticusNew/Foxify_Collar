@@ -51,9 +51,14 @@
  * the host alone is a note. REFERENCE_BOOK_OUTCOME_COMPETITIONS ("nba=NBA,ncaaf=NCAAF") names its
  * competition code where it differs from our league code in upper case; REFERENCE_BOOK_OUTCOME_MAX_PAGES
  * (default 10 pages of 200) bounds one competition read, since the venue lists 60+ markets a game.
+ *   - long_short_v1: one market per game with a long side and a short side (polymarketUs.ts). The
+ *     book is the long side's; the short side's asks are 1 minus the long bids.
+ *     POLYMARKET_US_KEY_ID + POLYMARKET_US_SECRET_KEY turn the read on with the venue's live
+ *     stream (and let the account be read); REFERENCE_BOOK_POLY_US=public reads its public REST
+ *     copy with no key (up to 30 seconds old, under one read a second); =0 turns it off.
  *
  * Nothing here names a venue in anything the record publishes: the ids are the dialects, the
- * public words are "reference book A", "reference book B" and "reference book D".
+ * public words are "reference book A", "reference book B", "reference book D" and "reference book E".
  */
 
 import type { NovigHedgeOn } from "./crossVenuePricer";
@@ -61,11 +66,12 @@ import type { LeagueTemplate } from "./resolutionWhitelist";
 import type { MatchedPair, PmBook, PmBookLevel } from "./types";
 import { decimalToMilli } from "./polymarketPublic";
 import { PlaysApiError, PlaysClient, payoutMultiple, type RawMarket, type RawSelection, type RawSportEvent } from "./venuePlays";
+import { PolyUsApiError, polyUsForProcess, polyUsFromEnv, polyUsSource } from "./polymarketUs";
 import { MarketsApiError, MarketsClient, marketsSignerFromPem, outcomeMaxPagesFromEnv, type RawOutcomeMarket, type RawMarketLevel, type RawMarketParticipant } from "./venueMarkets";
 import { VenueApiError, VenueClient, clubMatches, signerFromPem, templateForLeague, type RawVenueBook, type RawVenueMarket } from "./venuePositions";
 
 /** Stable ledger keys. The dialect, not the venue. */
-export const REFERENCE_BOOK_IDS = ["signed_v3", "partner_mm", "aggregated_mm", "aggregated_other", "outcome_v1"] as const;
+export const REFERENCE_BOOK_IDS = ["signed_v3", "partner_mm", "aggregated_mm", "aggregated_other", "outcome_v1", "long_short_v1"] as const;
 export type ReferenceBookId = (typeof REFERENCE_BOOK_IDS)[number];
 
 /** What the public page and the operator report call each reference. Never the venue. */
@@ -78,6 +84,8 @@ export const REFERENCE_BOOK_WORDS: Record<ReferenceBookId, string> = {
   aggregated_other: "reference book C (via the aggregator)",
   // the one-market-per-outcome dialect (venueMarkets.ts), read directly
   outcome_v1: "reference book D",
+  // the one-market-per-game dialect with a long and a short side (polymarketUs.ts), read directly
+  long_short_v1: "reference book E",
 };
 
 /**
@@ -881,6 +889,12 @@ export function referenceSourcesFromEnv(env: NodeJS.ProcessEnv = process.env, op
       notes.push("reference book D: set the host with a key id and private key, or with an app client id and secret; off");
     }
   }
+  // the long/short dialect (polymarketUs.ts): with a key the book is the venue's live stream, without
+  // one its public REST copy. The process's own env shares one client and one stream with the
+  // operator's key check; any other env (a test's) builds its own.
+  const longShort = env === process.env && !opts.fetchImpl ? polyUsForProcess() : polyUsFromEnv(env, { fetchImpl });
+  if (longShort.client) sources.push(polyUsSource(longShort.client, longShort.stream));
+  if (longShort.note) notes.push(longShort.note);
   return { sources, notes };
 }
 
@@ -907,7 +921,7 @@ export async function readReferenceBooks(sources: ReferenceBookSource[], pair: M
     if (r.status === "fulfilled") return r.value;
     const err = r.reason;
     // the venue answered with a code (rate limit, bad key): keep the code; anything else is unreachable
-    if ((err instanceof VenueApiError || err instanceof PlaysApiError || err instanceof MarketsApiError) && err.status > 0) {
+    if ((err instanceof VenueApiError || err instanceof PlaysApiError || err instanceof MarketsApiError || err instanceof PolyUsApiError) && err.status > 0) {
       return { id: sources[i].id, book: null, reason: `venue_${err.code.toLowerCase().replace(/[^a-z0-9]+/g, "_")}` };
     }
     return { id: sources[i].id, book: null, reason: `unreachable: ${String(err instanceof Error ? err.message : err).slice(0, 80)}` };
