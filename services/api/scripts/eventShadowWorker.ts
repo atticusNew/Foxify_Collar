@@ -140,7 +140,7 @@ import {
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { inPlayFromEnv } from "../src/eventCollar/crossVenue/lockWindow";
-import { appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
+import { appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type CapRefusalLine, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
 import {
   capRefusalDetails,
   capRefusalWords,
@@ -1952,6 +1952,41 @@ function exposureHealth(): Record<string, unknown> {
   }
 }
 
+/**
+ * Would an order for this intent truly leave? Through the live executor when lockMode says so
+ * (hedgeFirst.ts). Through the request-for-quote strategy when it holds a key that can accept a
+ * quote on the venue: that strategy has no rails of its own, and a quote it accepts is real money.
+ */
+function couldSendReal(intent: HedgeIntent): boolean {
+  return lockMode(hedgeChoice.live, intent).real || (hedgeChoice.strategy === "rfq" && hedgeChoice.rfqVenues.includes(intent.venue));
+}
+
+type CapVerdict = { ok: true } | { ok: false; status: number; code: string; message: string; detail?: string; caps?: CapRefusalLine[] };
+
+/**
+ * THE EXPOSURE GATE. What is open is read from the ledgers here and `add` is measured on top of
+ * it. Over any cap: one cap_refused line on the pending trail, and the words for the caller.
+ * Under every cap the caller goes on to write its pending line or take its hold with nothing
+ * awaited in between, which is what makes the next caller see it. A ledger that cannot be read
+ * is a refusal: room that cannot be shown is not room.
+ */
+function exposureGate(add: ExposureAdd, asked: Extract<PendingRecord, { type: "pending" }>, source: "lock" | "resend"): CapVerdict {
+  let over: CapRefusalLine[];
+  try {
+    over = checkExposure(exposureNow(), add, exposureCaps);
+  } catch (err) {
+    void alerter({ kind: "ledger_read_failed", message: `could not read the ledgers to check the exposure caps for ${asked.ref}: ${String(err instanceof Error ? err.message : err)}. Nothing was sent.` });
+    return { ok: false, status: 500, code: "exposure_unreadable", message: "The record could not be read; nothing was locked." };
+  }
+  if (over.length === 0) return { ok: true };
+  const detail = capRefusalDetails(over);
+  appendPendingOrAlert({ type: "cap_refused", id: asked.id, at: asked.at, ref: asked.ref, ticker: asked.ticker, ...(asked.holder ? { holder: asked.holder } : {}), source, terms: asked.terms, order: asked.order, caps: over, detail });
+  return { ok: false, status: 200, ...capRefusalWords(over), detail, caps: over };
+}
+
+/** The most an order for this intent can cost, quoted fees on top: what a new hedge is counted at until it fills. */
+const reserveFor = (intent: HedgeIntent, feesCents: number): number => hedgeReserveCents({ unitsMilli: intent.unitsMilli, maxCostCents: intent.maxCostCents, limitMilli: intent.book.worstPriceMilli }, feesCents);
+
 /** A line on the pending trail; a trail that cannot be written pages like a ledger that cannot. */
 function appendPendingOrAlert(record: PendingRecord): boolean {
   try {
@@ -2012,27 +2047,9 @@ async function hedgeThenLock(args: {
   const { ref, ticker, holder, terms } = args;
   const intent: HedgeIntent = { ...args.intent, allOrNone: true };
   const asked = pendingRecordFor(ref, ticker, holder, new Date().toISOString(), terms, intent);
-  const add = proposedExposure({
-    ticker,
-    league: args.league,
-    holder,
-    ...terms,
-    venue: intent.venue,
-    hedgeReserveCents: hedgeReserveCents({ unitsMilli: intent.unitsMilli, maxCostCents: intent.maxCostCents, limitMilli: intent.book.worstPriceMilli }, args.feesCents),
-  });
-  let over: ReturnType<typeof checkExposure>;
-  try {
-    over = checkExposure(exposureNow(), add, exposureCaps);
-  } catch (err) {
-    // what is open could not be read, so room cannot be shown: no order
-    void alerter({ kind: "ledger_read_failed", message: `could not read the ledgers to check the exposure caps for ${ref}: ${String(err instanceof Error ? err.message : err)}. Nothing was sent.` });
-    return { ok: false, status: 500, code: "exposure_unreadable", message: "The record could not be read; nothing was locked." };
-  }
-  if (over.length > 0) {
-    const detail = capRefusalDetails(over);
-    appendPendingOrAlert({ type: "cap_refused", id: asked.id, at: asked.at, ref, ticker, ...(holder ? { holder } : {}), source: "lock", terms, order: asked.order, caps: over, detail });
-    return { ok: false, status: 200, ...capRefusalWords(over), detail };
-  }
+  const add = proposedExposure({ ticker, league: args.league, holder, ...terms, venue: intent.venue, hedgeReserveCents: reserveFor(intent, args.feesCents) });
+  const room = exposureGate(add, asked, "lock");
+  if (!room.ok) return { ok: false, status: room.status, code: room.code, message: room.message, ...(room.detail ? { detail: room.detail } : {}) };
   const pending: typeof asked = { ...asked, reserve: { game: add.game, gameCents: add.gameCents, venueCents: add.venueCents, holderCents: add.holderCents } };
   // no trail, no order: an order that leaves with no line before it is the one thing a restart could not find
   if (!appendPendingOrAlert(pending)) {
@@ -2893,11 +2910,24 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         }
         receipt = done.receipt;
       } else {
+        // the request-for-quote strategy writes the record and then may accept a real quote: the
+        // same caps, before the record. It writes no pending line, so what it holds is held in
+        // memory until its receipt is on the trail. Every other lock here is simulated and is not measured.
+        let hold: ExposureAdd | undefined;
+        if (intent && couldSendReal(intent)) {
+          const terms = { contracts: chosen.contracts, tier: chosen.tier, floorCents: chosen.floorCents, capCents: chosen.capCents, creditCents: chosen.creditCents };
+          hold = proposedExposure({ ticker, league: result.league, holder, ...terms, venue: intent.venue, hedgeReserveCents: reserveFor(intent, chosen.feesCents) });
+          const room = exposureGate(hold, pendingRecordFor(ref, ticker, holder, new Date().toISOString(), terms, intent), "lock");
+          if (!room.ok) {
+            sendJson(res, room.status, { ok: false, at: atIso, ticker, code: room.code, ...(room.status === 500 ? { error: room.code } : {}), message: room.message, ...(operator && room.detail ? { detail: room.detail } : {}) });
+            return;
+          }
+        }
         if (!writeLock()) {
           sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: "The record could not be written; nothing was locked." });
           return;
         }
-        receipt = await fillHedge(ref, chosen.hedge, result.books);
+        receipt = await fillHedge(ref, chosen.hedge, result.books, { hold });
       }
       sendJson(res, 200, {
         ok: true,
@@ -3599,11 +3629,10 @@ async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url:
     } catch {
       // fillHedge meets the same fault and records it
     }
-    if (intent && lockMode(hedgeChoice.live, intent).real) {
-      const order = pendingRecordFor(ref, ticker, holder, atIso, { contracts: lock.contracts, tier: lock.tier ?? chosen.tier, floorCents: lock.floorCents, capCents: lock.capCents, creditCents: lock.creditCents }, intent);
-      const reserve = hedgeReserveCents({ unitsMilli: intent.unitsMilli, maxCostCents: intent.maxCostCents, limitMilli: intent.book.worstPriceMilli }, chosen.feesCents);
-      const pendingTrail = loadPending(PENDING_PATH);
-      const alreadyReal = fillsBehind(lock, holder, prior, lockedAttempts(pendingTrail)).length > 0;
+    if (intent && couldSendReal(intent)) {
+      const asked = pendingRecordFor(ref, ticker, holder, atIso, { contracts: lock.contracts, tier: lock.tier ?? chosen.tier, floorCents: lock.floorCents, capCents: lock.capCents, creditCents: lock.creditCents }, intent);
+      const reserve = reserveFor(intent, chosen.feesCents);
+      const alreadyReal = fillsBehind(lock, holder, prior, lockedAttempts(loadPending(PENDING_PATH))).length > 0;
       hold = {
         game: gameKeyOf(ticker, lock.league),
         venue: intent.venue,
@@ -3612,11 +3641,9 @@ async function handleHedgeResend(req: IncomingMessage, res: ServerResponse, url:
         venueCents: reserve,
         holderCents: alreadyReal ? 0 : holderCentsOf(lock),
       };
-      const over = checkExposure(exposureNow(), hold, exposureCaps);
-      if (over.length > 0) {
-        const detail = capRefusalDetails(over);
-        appendPendingOrAlert({ type: "cap_refused", id: order.id, at: atIso, ref, ticker, ...(holder ? { holder } : {}), source: "resend", terms: order.terms, order: order.order, caps: over, detail });
-        sendJson(res, 409, { ok: false, at: atIso, ticker, error: "exposure_cap", code: "exposure_cap", message: `nothing was sent: ${detail}`, caps: over });
+      const room = exposureGate(hold, asked, "resend");
+      if (!room.ok) {
+        sendJson(res, room.status === 200 ? 409 : room.status, { ok: false, at: atIso, ticker, error: room.code, code: room.code, message: room.detail ? `nothing was sent: ${room.detail}` : room.message, ...(room.caps ? { caps: room.caps } : {}) });
         return;
       }
     }
