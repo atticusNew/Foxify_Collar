@@ -220,6 +220,12 @@ services:
       # With no REFERENCE_BOOK_SIGNED_HOST the route falls back to VENUE_API_HOST when that is set.
       - key: REFERENCE_BOOK_SIGNED_HOST
         sync: false
+      # POLYMARKET US BOOK (the US exchange; a price reference beside each quote, never the route,
+      # no order is sent). Optional here: atticus-event-shadow is where the record is kept. To
+      # have this board read it too, set the same pair in this service's dashboard, never in git:
+      #   POLYMARKET_US_KEY_ID / POLYMARKET_US_SECRET_KEY   live books off the venue's stream
+      #   REFERENCE_BOOK_POLY_US=public                     or: no key, the public copy (up to 30 s old)
+      # Details under POLYMARKET US on atticus-event-shadow below.
       # Embed demo (/): host names honoured on ?brand=, comma-separated; anything
       # else renders as EVENT_X_EMBED_BRAND. These names carry a colourway and a
       # light/dark shell (scripts/eventProtectEmbedHtml.ts BRAND_PRESETS); any
@@ -551,6 +557,28 @@ services:
       #   REFERENCE_BOOK_OUTCOME_MAX_PAGES=10                     optional; pages of 200 per competition
       #     read. The venue lists 60+ markets a game, so a full NFL week passes 1,000; the catalog
       #     probe's note says when the cap stopped a list short.
+      # POLYMARKET US (dialect id long_short_v1, public word "reference book E"; operator column
+      # "Polymarket US"). The US exchange, not the international one the `polymarket` hedge route
+      # sends to. One market a game with a long side and a short side; its taker fee is folded
+      # into every price. Set both in the dashboard (Environment → Add Environment Variable),
+      # never in git, never in a chat:
+      #   POLYMARKET_US_KEY_ID=<key id>            from the venue's developer portal
+      #   POLYMARKET_US_SECRET_KEY=<secret key>    shown once beside the key id; base64
+      #   With the pair set, each game's book comes off the venue's LIVE stream (one signed
+      #   connection; the book as it stands, at no cost against the rate limit) and the account's
+      #   cash can be read. Without it (REFERENCE_BOOK_POLY_US=public) the book is the venue's
+      #   public REST copy: up to 30 seconds old (its age is on every read), and the venue allows
+      #   one address about ten reads in ten seconds, so on a full slate each game's book is
+      #   refreshed every minute or two. Good enough to compare prices before a game on a short
+      #   list; not for one under way.
+      #   REFERENCE_BOOK_POLY_US=0                 optional; turns the venue off whatever else is set
+      #   POLYMARKET_US_STREAM=0                   optional; keeps the key for the account, books over REST only
+      #   Check after adding (operator): GET /api/shadow/polymarket-us/preflight?token=... says in
+      #   words whether the key was accepted, the cash, and whether the books are live.
+      #   NOTHING HERE SENDS AN ORDER to this venue. It is a price reference: read on every sports
+      #   quote, recorded, never the route. Hedging there is a later change (its settlement rule
+      #   table per league, its order signer, one verified fill). The key can trade, so: a
+      #   dedicated key for this service, and never on atticus-btc-curve or atticus-sports-venues.
       # Status: the operator state's hedge.referenceBooks lists which are configured, never the keys.
       # AGGREGATOR FEED (optional; the cross-venue data partner's signed API and orderbook stream).
       # With the key set, every sports quote reads its books from the feed FIRST: the opposing
