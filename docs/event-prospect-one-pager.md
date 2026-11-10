@@ -24,7 +24,7 @@ Floor, cash now, cap. One lock from our record: 18 contracts that would pay $18 
 - **Flow.** By default the holder sells on your venue, in their own account. Every lock is a sell order on your book.
 - **Fees.** Your trading fees on those orders.
 - **No balance-sheet use.** We hold nothing and fund nothing. Neither do you.
-- **A record you can check.** Since 12 September 2026, 1,811 simulated positions put 162,297 contracts and $76,655 onto public books. Cost to holders: 2.95% of expected value quoted, 3.6% realized.
+- **A record you can check.** 1,811 simulated positions since 12 September 2026. Their hedges put 162,297 contracts and $76,655 onto public books. Cost to holders: 2.95% of expected value quoted, 3.6% realized against letting the same positions ride. These figures are for the hedged shape, not own sale.
 
 ## What we ask for
 
@@ -39,7 +39,7 @@ Two other shapes need a signed agreement. Nothing here is an offer to trade.
 
 Not for pasting. Record figures were read from the public route `https://atticus-event-shadow.onrender.com/api/shadow` on 10 November 2026 at 22:55 UTC.
 
-- 1,811 positions; 162,297 contracts; $76,655: `summary.flow.allTime` (`positions` 1811, `contracts` 162297, `hedgeNotionalCents` 7665544, `since` 2026-09-12). All simulated.
+- 1,811 positions; 162,297 contracts; $76,655: `summary.flow.allTime` (`positions` 1811, `contracts` 162297, `hedgeNotionalCents` 7665544, `since` 2026-09-12). This is the hedge side of each position, simulated; the record page says "Simulated here, like the positions" (`services/api/scripts/eventShadowHtml.ts`). Own sale on the same record: 19 locks opened, 13 settled, all in a venue's demo environment (`summary.segments.byRoute.member_sale` and the positions with route `member_sale`).
 - 2.95% quoted: `summary.quotedAvgEvBps` 295, basis points of the unhedged position's expected value (`evCostBps` in `services/api/src/eventCollar/crossVenue/collarSearch.ts`). The record page rounds it to 3.0%.
 - 3.6% realized: `summary.deltaTotalCents` (-442828) over `summary.nakedTotalCents` (12134035), which is 3.65% of what the same positions paid with no lock; the record page prints 3.6% (`services/api/scripts/eventShadowHtml.ts`). The same cost is 2.05% of stake (`realizedDeltaBpsOfStake` -205).
 - The 18-contract lock: public record, ticker `KXNFLGAME-26NOV08NYGPHI-NYG`, opened 2026-11-06T22:08:54Z, route `member_sale`: `soldContracts` 7, `avgPriceCents` 61, `cashNowCents` 427, `feeCents` 17, `capTotalCents` 1527. Taken in a venue's demo environment, no real money (`docs/AGENT_HANDOFF.md` section 3).
