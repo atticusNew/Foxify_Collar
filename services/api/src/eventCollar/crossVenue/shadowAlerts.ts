@@ -52,7 +52,19 @@ export type ShadowAlertKind =
   /** a market settled under rule text whose hash differs from the one pinned at open */
   | "rule_changed"
   /** the daily check found our ledger and a venue's own fills apart for a day (realizedRecon.ts) */
-  | "venue_fills_differ";
+  | "venue_fills_differ"
+  /** a ledger no longer hashes to a daily fingerprint that was published for it (ledgerFingerprintKeeper.ts) */
+  | "ledger_fingerprint_mismatch"
+  /** the same ledger hashes to every published fingerprint again */
+  | "ledger_fingerprint_restored";
+
+/**
+ * Kinds sent every time they are raised. A stray hedge is one order on one venue and a day that
+ * differs is one day's check, not conditions that persist. A fingerprint mismatch is raised by its
+ * keeper once when found and once per full check after, per ledger; deduplicating by kind here
+ * would let one ledger's alarm hide another's.
+ */
+const NEVER_DEDUPED: ReadonlySet<ShadowAlertKind> = new Set<ShadowAlertKind>(["hedge_stray", "venue_fills_differ", "ledger_fingerprint_mismatch", "ledger_fingerprint_restored"]);
 
 export interface ShadowAlert {
   kind: ShadowAlertKind;
@@ -126,8 +138,7 @@ export function buildShadowAlerter(
   return async (alert) => {
     const t = now();
     const prev = lastSentMs.get(alert.kind);
-    // a stray hedge is one order on one venue, and a day that differs is one day's check: neither is a condition that persists, and every one is sent
-    if (alert.kind !== "hedge_stray" && alert.kind !== "venue_fills_differ" && prev != null && t - prev < cfg.dedupeMs) return;
+    if (!NEVER_DEDUPED.has(alert.kind) && prev != null && t - prev < cfg.dedupeMs) return;
     lastSentMs.set(alert.kind, t);
     if (alert.kind === "scan_recovered") lastSentMs.delete("scan_failing");
     if (alert.kind === "scan_failing") lastSentMs.delete("scan_recovered");
