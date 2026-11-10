@@ -7,7 +7,8 @@
  *     the exact figures with the fraction of a cent dropped, and floor + riding x $1 = cap to the
  *     cent;
  *   - the record written from the venue's fills is the venue's numbers, summed exactly, with the
- *     classic float traps in the fills.
+ *     classic float traps in the fills;
+ *   - the page's own arithmetic agrees with the server's.
  */
 
 import assert from "node:assert/strict";
@@ -39,6 +40,7 @@ import {
 } from "../src/eventCollar/crossVenue/memberSale";
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
 import type { RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
+import { memberAppHtml } from "../scripts/memberAppHtml";
 
 // ---------------------------------------------------------------------------
 // the reference: exact fractions in BigInt, nothing shared with the implementation
@@ -494,4 +496,43 @@ test("combo quote: a price finer than a cent is read as it stands and sent back 
     const none = await requestRfqBid({ requestRfq: async () => q, rfq: async () => q } as unknown as MemberClient, { market_id: "m", action: "sell", quantity: "7", client_rfq_id: "x" }, ONE, fast);
     assert.deepEqual([none.level, none.reason], [null, "unpriced"], String(price));
   }
+});
+
+// ---------------------------------------------------------------------------
+// the page
+// ---------------------------------------------------------------------------
+
+test("member page: its own arithmetic is whole numbers and agrees with the server: the size a shape asks for, what a ticket is worth at the bid, what the riding contracts pay", () => {
+  const html = memberAppHtml({ venueName: "STX", configured: true, recordUrl: "https://record.test/" });
+  const line = (name: string): string => {
+    const m = new RegExp(`^  const ${name} = .*$`, "m").exec(html);
+    assert.ok(m, `the page defines ${name}`);
+    return m[0];
+  };
+  const page = new Function(`${line("TIER_ORDER")}\n${line("hundredths")}\n${line("wantOf")}\n${line("worthOf")}\nreturn { TIER_ORDER, hundredths, wantOf, worthOf };`)() as {
+    TIER_ORDER: string[];
+    hundredths: (contracts: number) => number;
+    wantOf: (st: { tier: string }, contracts: number, t?: { wantContracts?: number }) => number;
+    worthOf: (p: { contracts: number; bidCents?: number | null; lastCents?: number | null; costCents?: number | null }) => { worth: number; px: number; bid: boolean; since: number } | null;
+  };
+  assert.deepEqual(page.TIER_ORDER, ["wide", "balanced", "tight"]);
+  // the server's figure is the one shown; the page's own rule, when a quote carries none, is the server's rule
+  assert.equal(page.wantOf({ tier: "wide" }, 7, { wantContracts: 2 }), 2);
+  assert.equal(Math.round((7 * 2) / 5), 3, "rounding the share to the nearest would say 3 where the tier sells 2");
+  for (let N = 1; N <= 5000; N++) for (const tier of PROTECTION_TIERS) if (page.wantOf({ tier }, N, {}) !== tierSaleContracts(N, tier)) assert.fail(`${N} ${tier}: the page says ${page.wantOf({ tier }, N, {})}`);
+  // worth at the bid: whole cents, the fraction of a cent dropped
+  assert.deepEqual(page.worthOf({ contracts: 50, bidCents: 54, costCents: 2100 }), { worth: 2700, px: 54, bid: true, since: 600 });
+  assert.deepEqual(page.worthOf({ contracts: 1.01, bidCents: 50, costCents: 40 }), { worth: 50, px: 50, bid: true, since: 10 });
+  assert.deepEqual(page.worthOf({ contracts: 12.35, bidCents: 54, costCents: 700 }), { worth: 666, px: 54, bid: true, since: -34 });
+  assert.deepEqual(page.worthOf({ contracts: 9, bidCents: null, lastCents: 11, costCents: 99 }), { worth: 99, px: 11, bid: false, since: 0 });
+  assert.equal(page.worthOf({ contracts: 9, bidCents: null, lastCents: null, costCents: 99 }), null);
+  for (let h = 1; h <= 20_000; h += 7) for (const px of [1, 11, 33, 50, 54, 99]) {
+    const w = page.worthOf({ contracts: h / 100, bidCents: px, costCents: 0 });
+    if (!w || BigInt(w.worth) !== (BigInt(h) * BigInt(px)) / 100n) assert.fail(`${h / 100} at ${px}`);
+  }
+  assert.deepEqual([page.hundredths(15.95), page.hundredths(0.29), page.hundredths(1.15), page.hundredths(50)], [1595, 29, 115, 5000]);
+  // what the riding contracts pay is read off the sale's own totals, and the whole position's payout off whole hundredths
+  assert.ok(html.includes('" contracts</b> · pay " + usd(ms.capTotalCents - ms.floorTotalCents) + " on a win, $0 on a loss, as they always did</div>"'));
+  assert.ok(html.includes("'</b><s>of ' + usd(hundredths(n)) + '</s></div>'"));
+  assert.ok(!/usd\([^()]*\* 100\)/.test(html), "no dollar figure on the page is a decimal times 100");
 });
