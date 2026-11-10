@@ -69,6 +69,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   CASH_LEGS,
   appendShadowRecord,
@@ -139,7 +141,9 @@ import {
   type HedgeReceipt,
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
-import { inPlayFromEnv } from "../src/eventCollar/crossVenue/lockWindow";
+import { inPlayFromEnv, inPlayMaxMsFromEnv } from "../src/eventCollar/crossVenue/lockWindow";
+import { liveRailsFromEnv } from "../src/eventCollar/crossVenue/liveHedge";
+import { holderKeyCounts, listDir, pilotCheck, readDiskFacts, type PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
 import { appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type CapRefusalLine, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
 import {
   capRefusalDetails,
@@ -164,7 +168,7 @@ import { sentUnitsMilliOn, tickerArmed } from "../src/eventCollar/crossVenue/liv
 import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, type KalshiAccountSnapshot, type KalshiApiKeyInfo } from "../src/eventCollar/crossVenue/kalshiAccount";
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
-import { FEE_RULE_TEXT, renderHoldersHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
+import { FEE_RULE_TEXT, renderHoldersHtml, renderPilotCheckHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
 import { renderScoreboardHtml } from "./eventScoreboardHtml";
 import { memberAppHtml, memberPrivacyHtml } from "./memberAppHtml";
 import { ATTICUS_BIRD_PNG, ATTICUS_WORDMARK_PNG, ICON_180_PNG, ICON_192_PNG, ICON_512_PNG, STX_LOGO_PNG } from "./memberAppAssets";
@@ -407,6 +411,8 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/holders",
   "/api/shadow/member/raw",
   "/holders",
+  "/pilot-check",
+  "/api/shadow/pilot-check",
   "/api/shadow/export",
   "/api/shadow/reset",
   "/api/shadow/lastleg",
@@ -1986,6 +1992,46 @@ function exposureGate(add: ExposureAdd, asked: Extract<PendingRecord, { type: "p
 
 /** The most an order for this intent can cost, quoted fees on top: what a new hedge is counted at until it fills. */
 const reserveFor = (intent: HedgeIntent, feesCents: number): number => hedgeReserveCents({ unitsMilli: intent.unitsMilli, maxCostCents: intent.maxCostCents, limitMilli: intent.book.worstPriceMilli }, feesCents);
+
+/** The repository as deployed: this file is services/api/scripts/, and the service starts from the root. */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+/** Where the persistent disk is mounted (render-event-demos.yaml: /var/data); the pilot check's only setting. */
+const DISK_MOUNT = (process.env.EVENT_SHADOW_DISK_MOUNT ?? "").trim() || "/var/data";
+
+/**
+ * THE PILOT SWITCH CHECK (pilotCheck.ts): the settings as this process read them at start and
+ * what is on disk, handed to the pure check. Reads only; no key, token or address goes in.
+ */
+function pilotReport(): PilotReport {
+  const rails = liveRailsFromEnv(process.env);
+  return pilotCheck({
+    strategy: hedgeChoice.strategy,
+    rfqVenues: hedgeChoice.rfqVenues,
+    live: hedgeChoice.live,
+    orderRails: hedgeChoice.live ? { maxContractsPerOrder: hedgeChoice.live.maxContractsPerOrder, maxContractsPerDay: hedgeChoice.live.maxContractsPerDay } : { maxContractsPerOrder: rails.maxUnitsPerOrderMilli / 1000, maxContractsPerDay: rails.maxUnitsPerDayMilli / 1000 },
+    exposureCaps,
+    holderKeys: holderKeyCounts(process.env, adminAuth.token),
+    operatorOpen: adminAuth.enabled && adminAuth.token === null,
+    sharedOpenLocks: existsSync(LOCK_LEDGER_PATH) ? loadShadowPositions(LOCK_LEDGER_PATH).filter((p) => p.status === "open").length : 0,
+    inPlay: { lock: lockInPlay, hours: inPlayMaxMsFromEnv(process.env) / 3_600_000, cutoffMinutes: protectCutoffMinutes, scan: SCAN_IN_PLAY, memberSale: memberInPlay },
+    disk: readDiskFacts(
+      DISK_MOUNT,
+      [
+        { what: "the simulated record", path: LEDGER_PATH },
+        { what: "the lock ledgers", path: LOCK_LEDGER_PATH },
+        { what: "the hedge receipts", path: RECEIPTS_PATH },
+        { what: "the pending trail", path: PENDING_PATH },
+        { what: "the parlay ledger", path: LASTLEG_PATH },
+      ],
+      [...new Set([tmpdir(), "/tmp", "/var/tmp"])],
+    ),
+    alerts: { telegram: Boolean(alertCfg.telegramBotToken && alertCfg.telegramChatId), webhook: Boolean(alertCfg.webhookUrl) },
+    // no route, ledger line or setting records a holder accepting the user terms; when one does, count it here
+    termsOnRecord: null,
+    docs: listDir(join(REPO_ROOT, "docs")),
+    workflows: listDir(join(REPO_ROOT, ".github", "workflows")),
+  });
+}
 
 /** A line on the pending trail; a trail that cannot be written pages like a ledger that cannot. */
 function appendPendingOrAlert(record: PendingRecord): boolean {
@@ -4947,6 +4993,18 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/holders") {
       sendJson(res, 200, holdersSummary());
+      return;
+    }
+    if (url.pathname === "/api/shadow/pilot-check" || url.pathname === "/pilot-check") {
+      // THE PILOT SWITCH CHECK: what must be true before an outside holder, each answered yes, no
+      // or cannot be checked from here. Operator only. A read: it changes nothing and gates nothing.
+      const report = pilotReport();
+      if (url.pathname === "/api/shadow/pilot-check") {
+        sendJson(res, 200, { ok: true, at: new Date().toISOString(), ...report });
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderPilotCheckHtml({ report, at: new Date().toISOString(), token: url.searchParams.get("token") }));
       return;
     }
     if (url.pathname === "/api/shadow/member/raw") {
