@@ -10,6 +10,11 @@
  *         person reads. The brand "Earn & Protect" stays, as do code identifiers (route paths,
  *         JSON fields, CSS classes, env names), which the guard tells apart by their shape
  * Rule 4  "address", never "wallet"
+ * Rule 7  when the money reaches the bettor is said one way: a collar's credit is "credited at
+ *         lock in" and its floor or cap is paid "at settlement"; a member's own sale "lands in
+ *         your balance when the sale fills". The retired ways of saying it ("cash now", "paid
+ *         now", "paid at the tap", "paid at open", "up front", "paid today", "at the lock",
+ *         "balance now") are refused. The older BTC demo is outside this rule.
  *
  * COVERED BY RENDERING (the HTML a browser receives, from the services' own handlers and the
  * exported render functions): its text, the attributes a person sees or hears (title,
@@ -39,12 +44,14 @@ const API_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_DIR = join(API_DIR, "..", "..");
 const EXT_DIR = join(REPO_DIR, "demo", "event-lockin-extension");
 
-type Rule = 1 | 2 | 3 | 4;
+type Rule = 1 | 2 | 3 | 4 | 7;
+const RULES: readonly Rule[] = [1, 2, 3, 4, 7];
 const RULE_NAMES: Record<Rule, string> = {
   1: "rule 1, no em or en dash",
   2: "rule 2, no guarantee or risk-free promise",
   3: 'rule 3, "Lock in", never "protect"',
   4: 'rule 4, "address", never "wallet"',
+  7: 'rule 7, cash timing said one way ("credited at lock in", "when the sale fills")',
 };
 
 interface Hit {
@@ -63,6 +70,11 @@ const PROMISE =
   /\bguarant(?:ee|eed|ees|eeing|y|or|ors)\b|\brisk[\s-]?free\b|\briskless\b|\b(?:no|zero)[\s-]risk\b|\bcan(?:not|'t|\u2019t| not) lose\b|\bnever loses?\b|\bsure thing\b|\bfree money\b/gi;
 const PROTECT = /\b(?:un)?protect(?:s|ed|ing|ion|ions|or|ors|ive|able)?\b/gi;
 const WALLET = /\bwallets?\b/gi;
+/** the retired ways of saying when the bettor's cash arrives: a cash word, then one of the old moments close after it */
+const CASH_WHEN =
+  /\b(?:paid|pays|cash|credit(?:ed|s)?)\b[^.;:\u00b7<>]{0,24}?(?:(?<!\bright )\bnow\b|\btoday\b(?!['\u2019]s)|\bat the tap\b|\bat open\b|\bup ?front\b|\bat the lock\b)|\bbalance now\b|\byours today\b|\btake\s+\$?[\d,.]+\s+now\b/gi;
+/** the older BTC demo is held to rules 1 to 4 only */
+const CASH_RULE_EXEMPT = /eventProtectDemoService\.ts|eventProtectAppHtml\.ts|^btc demo /;
 /** the product brand, which keeps its name; blanked before rule 3 is read */
 const BRAND = /Earn\s*(?:&|&amp;|and)\s*Protect\b/g;
 
@@ -116,6 +128,7 @@ function checkText(file: string, text: string, opts: CheckOptions, hits: Hit[]):
   for (const m of text.matchAll(DASH)) push(1, m.index, m[0].length);
   for (const m of text.matchAll(DASH_SPELLED)) push(1, m.index, m[0].length);
   for (const m of text.matchAll(PROMISE)) push(2, m.index, m[0].length);
+  if (!CASH_RULE_EXEMPT.test(file)) for (const m of text.matchAll(CASH_WHEN)) push(7, m.index, m[0].length);
   const lone = opts.literal && /^[a-z][a-z0-9]*$/.test(text.trim());
   if (lone) return;
   const unbranded = text.replace(BRAND, (b) => " ".repeat(b.length));
@@ -234,7 +247,7 @@ function checkMarkdown(file: string, md: string, hits: Hit[]): void {
 
 function report(hits: readonly Hit[]): string {
   if (hits.length === 0) return "";
-  const counts = ([1, 2, 3, 4] as Rule[]).map((r) => `rule ${r}: ${hits.filter((h) => h.rule === r).length}`).join(", ");
+  const counts = RULES.map((r) => `rule ${r}: ${hits.filter((h) => h.rule === r).length}`).join(", ");
   const lines = hits.map((h) => `  ${h.file}\n      ${RULE_NAMES[h.rule]}: ${JSON.stringify(h.text).replace(/\u2014/g, "\\u2014").replace(/\u2013/g, "\\u2013")}`);
   return `${hits.length} wording hits (${counts})\n${lines.join("\n")}\n`;
 }
@@ -458,6 +471,12 @@ test("copy rules: the guard sees each rule in each place it can hide, and leaves
   assert.deepEqual(page("<p>Paste your address.</p>"), []);
   assert.deepEqual(source('const field = "wallet"; const q = "proxyWallet"; const u = "/api/wallets/0x1"; const e = "EVENT_SHADOW_EXCLUDED_WALLETS";'), []);
   assert.deepEqual(source('const msg = "no wallet connected";'), [4]);
+
+  // rule 7: the retired ways of saying when the cash arrives, and the two that stand
+  assert.deepEqual(page("<p>Cash now +$1.66</p><p>$1.66 paid now</p><p>a credit paid at the tap</p><p>paid $3 up front</p><p>$2 paid at open</p><p>the $2 paid to you at the lock</p><p>In your STX balance now</p><p>you get paid today</p><p>yours today</p><p>Lock in $40 · take $3 now</p>"), [7, 7, 7, 7, 7, 7, 7, 7, 7, 7]);
+  assert.deepEqual(page("<p>$1.66 credited at lock in. The floor is paid at settlement.</p><p>The cash from the sale lands in your STX balance when the sale fills; each contract you keep pays $1 if it wins.</p>"), []);
+  assert.deepEqual(page("<p>No credit can be funded right now. The upside you sold is worth more now. Sold at today's price. Take fills now at the best price.</p>"), []);
+  assert.deepEqual(rulesOf((h) => checkHtml("btc demo GET /", "<p>Cash now +$1.66</p>", { literal: false }, h, 0)), []);
 
   // markdown: code spans and blocks are identifiers, prose is copy
   const md = (text: string): Rule[] => rulesOf((h) => checkMarkdown("README.md", text, h));

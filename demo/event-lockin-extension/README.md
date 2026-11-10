@@ -929,7 +929,7 @@ does is "Lock in" and what they hold is "the lock": the pill of an open lock rea
 with $25.06", and the refusals, the leave sheet, the Options page, the store description and
 `PRIVACY.md` say lock in where they said `protect`. When the money moves is said one way. On a
 hedged lock the cash row reads "Credit at lock in" before the tap and "Credited at lock in" after
-it (were "Cash now · today" and "Paid to you"), a shape reads "+$0.21 credit", and the receipt's
+it (were `Cash now · today` and `Paid to you`), a shape reads "+$0.21 credit", and the receipt's
 credit leg is **Credit**, "credited at lock in; settles with the position". On STX the row reads
 "In your STX balance when the sale fills", and How says the cash from the sale lands in the
 member's STX balance when the sale fills and each contract kept pays $1 if it wins. The service's
