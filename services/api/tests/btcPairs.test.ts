@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BOOK_NOT_SERVED_YET_MS, STALE_AFTER_SEC, bandOf, bookFailureOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, freshnessOf, horizonSet, kalshiEventTicker, legReadOf, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, staleBoundsFrom, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
+import { BOOK_NOT_SERVED_YET_MS, EPISODE_KEEP, EPISODE_LABEL, EPISODE_MIN_CYCLES, STALE_AFTER_SEC, bandOf, closeEpisodes, emptyEpisodeBook, episodeSummary, lockEpisodesReport, lockSightings, pruneEpisodes, stepEpisodes, type EpisodeBook, type LockEpisode, type LockSighting, bookFailureOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, freshnessOf, horizonSet, kalshiEventTicker, legReadOf, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, staleBoundsFrom, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
 import { pickLabel, readLine, renderPairsBody, renderPairsHtml } from "../src/btcCurve/pairsHtml";
 import type { Ladder, VenueQuote } from "../src/btcCurve/types";
 
@@ -499,6 +499,249 @@ test("a gap on a stale read is tagged, not counted: both books still show, the g
   assert.equal(horizonSet("hourly", ladder(), null, 74812, NOW, new Map(), urls)?.pairs[1].freshness, null);
 });
 
+/** The 15-minute window as the collector prices it: both books read `fetchAgeSec` ago, Polymarket US's copy `polyCache` seconds in its cache. */
+function fifteenAt(nowMs: number, polyCache: number, quotes: [number, number, number, number] = [51, 52, 73, 74]) {
+  const l = fifteenLadder(...quotes);
+  const read = (x: VenueQuote): VenueQuote => ({ ...x, read: { fetchedAtMs: nowMs - 1000, cacheAgeSec: x.venue === "kalshi" ? null : polyCache, venueAtMs: null, state: null } });
+  return fifteenSet({ ...l, quotes: l.quotes.map(read) }, null, 73214, nowMs, new Map(), urls, { pricedAtMs: nowMs });
+}
+
+const sighting = (over: Partial<LockSighting> = {}): LockSighting => ({
+  horizon: "fifteen",
+  settlesAt: "2026-11-09T21:30:00Z",
+  key: "above:73158.07",
+  strike: 73158.07,
+  kalshiId: "KXBTC15M-26NOV091630-15",
+  polyId: "cpc-btc-updown-15m-2026-11-09-2115z",
+  yesOn: "kalshi",
+  noOn: "polymarket_us",
+  lockCents: 2.4,
+  qty: 300,
+  ...over,
+});
+
+/** Run cycles ten seconds apart from `startMs`; each entry is that cycle's sightings. Returns the book and everything that finished. */
+function runCycles(cycles: LockSighting[][], startMs = NOW, book: EpisodeBook = emptyEpisodeBook(), opts: { maxGapMs?: number; keep?: number } = {}) {
+  const finished: LockEpisode[] = [];
+  let at = startMs;
+  for (const [i, sightings] of cycles.entries()) {
+    at = startMs + i * 10_000;
+    const step = stepEpisodes(book, sightings, at, opts);
+    book = step.book;
+    finished.push(...step.finished);
+  }
+  return { book, finished, at };
+}
+
+test("lock sightings: a lock after fees above zero on fresh reads counts, at the size the lock is quoted at; a stale read, an unjudged read, a missing book or no lock do not", () => {
+  const fresh = fifteenAt(NOW, 4);
+  assert.ok(fresh);
+  const row = fresh.pairs[0];
+  assert.equal(row.freshness, "fresh");
+  assert.ok(row.lock && row.lock.edgeCents > 0);
+  assert.deepEqual(lockSightings([fresh, null]), [
+    { horizon: "fifteen", settlesAt: "2026-11-09T21:30:00Z", key: row.key, strike: 73158.07, kalshiId: "KXBTC15M-26NOV091630-15", polyId: "cpc-btc-updown-15m-2026-11-09-2115z", yesOn: "kalshi", noOn: "polymarket_us", lockCents: row.lock.edgeCents, qty: 1600 },
+  ]);
+  assert.equal(row.lock.qty, 1600, "the thinner of Kalshi's 1,600 offered and Polymarket US's 1,800 bid: the size the page already quotes the lock at");
+
+  assert.deepEqual(lockSightings([fifteenAt(NOW, 22)]), [], "the same lock on a 23-second copy is not counted");
+  const unjudged = fifteenSet(fifteenLadder(), null, 73214, NOW, new Map(), urls);
+  assert.ok(unjudged?.pairs[0].lock && unjudged.pairs[0].lock.edgeCents > 0 && unjudged.pairs[0].freshness === null);
+  assert.deepEqual(lockSightings([unjudged]), [], "a lock whose reads carry no age cannot be called fresh");
+  const noLock = fifteenAt(NOW, 4, [51, 52, 51, 53]);
+  assert.ok(noLock?.pairs[0].lock && noLock.pairs[0].lock.edgeCents <= 0);
+  assert.deepEqual(lockSightings([noLock]), [], "both sides cost more than 100 after fees");
+  const l = fifteenLadder();
+  const failed = fifteenSet({ ...l, quotes: l.quotes.map((x) => (x.venue === "kalshi" ? readAt(x, 1) : { ...x, failure: { kind: "http" as const, status: 500, url: "https://x/book", detail: "HTTP 500", cacheAgeSec: null } })) }, null, 73214, NOW, new Map(), urls);
+  assert.deepEqual(lockSightings([failed]), [], "no book, no lock");
+});
+
+test("lock episodes: a run opens on the first cycle, is an episode from the second, carries its smallest lock and size, and ends at the last cycle that showed it", () => {
+  assert.equal(EPISODE_MIN_CYCLES, 2);
+  const empty = emptyEpisodeBook();
+
+  // opening: one cycle is a run, not yet an episode
+  const one = stepEpisodes(empty, [sighting()], NOW);
+  assert.deepEqual(empty, { open: [], finished: [] }, "the book passed in is not changed");
+  assert.deepEqual(one.finished, []);
+  assert.equal(one.book.open.length, 1);
+  assert.equal(one.book.open[0].cycles, 1);
+  assert.equal(episodeSummary(one.book, "fifteen", NOW).episodes, 0);
+
+  // extending: the second cycle makes it an episode, still open
+  const two = stepEpisodes(one.book, [sighting({ lockCents: 1.9, qty: 320 })], NOW + 10_000);
+  assert.equal(one.book.open[0].cycles, 1, "not changed in place");
+  assert.deepEqual(two.finished, []);
+  const open = episodeSummary(two.book, "fifteen", NOW + 10_000);
+  assert.equal(open.episodes, 1);
+  assert.equal(open.open, 1);
+  assert.equal(open.medianDurationSec, 10);
+  assert.equal(open.longestDurationSec, 10);
+  assert.equal(open.totalValueCents, 570, "1.9 cents on 300 contracts");
+  assert.deepEqual(open.recent[0], {
+    horizon: "fifteen",
+    settlesAt: "2026-11-09T21:30:00Z",
+    key: "above:73158.07",
+    strike: 73158.07,
+    kalshiId: "KXBTC15M-26NOV091630-15",
+    polyId: "cpc-btc-updown-15m-2026-11-09-2115z",
+    yesOn: "kalshi",
+    noOn: "polymarket_us",
+    startedAt: new Date(NOW).toISOString(),
+    endedAt: new Date(NOW + 10_000).toISOString(),
+    durationSec: 10,
+    cycles: 2,
+    minLockCents: 1.9,
+    minQty: 300,
+    valueCents: 570,
+    open: true,
+  });
+
+  // a third cycle with a bigger lock on less size: the minimum of each is kept, not the pair that happened together
+  const three = stepEpisodes(two.book, [sighting({ lockCents: 3.1, qty: 120 })], NOW + 20_000);
+  assert.equal(three.book.open[0].minLockCents, 1.9);
+  assert.equal(three.book.open[0].minQty, 120);
+
+  // closing: the cycle without the lock ends it at the last cycle that had it
+  const four = stepEpisodes(three.book, [], NOW + 30_000);
+  assert.equal(four.book.open.length, 0);
+  assert.equal(four.finished.length, 1);
+  const e = four.finished[0];
+  assert.equal(e.startedAt, new Date(NOW).toISOString());
+  assert.equal(e.endedAt, new Date(NOW + 20_000).toISOString());
+  assert.equal(e.durationSec, 20);
+  assert.equal(e.cycles, 3);
+  assert.equal(e.valueCents, 228, "1.9 cents times 120 contracts, in cents");
+  assert.equal(e.open, undefined);
+  assert.deepEqual(four.book.finished, [e]);
+  const day = episodeSummary(four.book, "fifteen", NOW + 30_000);
+  assert.deepEqual([day.episodes, day.open, day.medianDurationSec, day.longestDurationSec, day.totalValueCents], [1, 0, 20, 20, 228]);
+  assert.equal(episodeSummary(four.book, "hourly", NOW + 30_000).episodes, 0, "each tenor counts its own");
+
+  // a lock with no size on the book is still an episode, worth nothing
+  const noSize = runCycles([[sighting({ qty: 0 })], [sighting({ qty: 0 })], []]);
+  assert.equal(noSize.finished[0].valueCents, 0);
+
+  // stopping the collector ends what is open
+  const stopped = closeEpisodes(three.book, NOW + 25_000);
+  assert.equal(stopped.finished.length, 1);
+  assert.equal(stopped.finished[0].endedAt, new Date(NOW + 20_000).toISOString());
+  assert.deepEqual(closeEpisodes(one.book, NOW + 5_000).finished, [], "a run of one cycle is dropped");
+});
+
+test("lock episodes: a one-cycle blip is not an episode; a stale cycle breaks a run; a change of direction or of contract starts a new one; missed cycles do not extend", () => {
+  // one cycle on, one off, one on, one off: nothing
+  const blips = runCycles([[sighting()], [], [sighting()], []]);
+  assert.deepEqual(blips.finished, []);
+  assert.deepEqual(blips.book, { open: [], finished: [] });
+
+  // the real path: the same crossed books on five cycles, the third on a copy too old to judge. Two episodes, not one of 40 seconds.
+  let book = emptyEpisodeBook();
+  const finished: LockEpisode[] = [];
+  for (const [i, polyCache] of [3, 13, 23, 3, 13].entries()) {
+    const at = NOW + i * 10_000;
+    const step = stepEpisodes(book, lockSightings([fifteenAt(at, polyCache)]), at);
+    book = step.book;
+    finished.push(...step.finished);
+  }
+  assert.equal(finished.length, 1, "the stale cycle closed the first run");
+  assert.equal(finished[0].endedAt, new Date(NOW + 10_000).toISOString());
+  assert.equal(finished[0].durationSec, 10);
+  assert.equal(book.open.length, 1);
+  assert.equal(book.open[0].startedAtMs, NOW + 30_000, "and the lock after it is a new run");
+  assert.equal(episodeSummary(book, "fifteen", NOW + 40_000).episodes, 2);
+
+  // direction: Yes on Kalshi for three cycles, then Yes on Polymarket US for two. Two runs.
+  const flipped = sighting({ yesOn: "polymarket_us", noOn: "kalshi" });
+  const dir = runCycles([[sighting()], [sighting()], [sighting()], [flipped], [flipped], []]);
+  assert.deepEqual(dir.finished.map((e) => [e.yesOn, e.cycles, e.durationSec, e.startedAt]), [
+    ["kalshi", 3, 20, new Date(NOW).toISOString()],
+    ["polymarket_us", 2, 10, new Date(NOW + 30_000).toISOString()],
+  ]);
+  // a flip after one cycle: the first direction never became an episode
+  assert.deepEqual(runCycles([[sighting()], [flipped], [flipped], []]).finished.map((e) => e.yesOn), ["polymarket_us"]);
+
+  // the next 15-minute window is another contract: its lock does not extend the last window's run
+  const next = sighting({ settlesAt: "2026-11-09T21:45:00Z", kalshiId: "KXBTC15M-26NOV091645-45", polyId: "cpc-btc-updown-15m-2026-11-09-2130z" });
+  const rolled = runCycles([[sighting()], [sighting()], [next], [next], []]);
+  assert.deepEqual(rolled.finished.map((e) => [e.kalshiId, e.cycles]), [["KXBTC15M-26NOV091630-15", 2], ["KXBTC15M-26NOV091645-45", 2]]);
+
+  // two pairs locked at once are two runs, each with its own figures
+  const hourly = sighting({ horizon: "hourly", key: "above:74750", strike: 74750, kalshiId: "KXBTCD-26NOV0917-T74749.99", polyId: "btc-above-74750", lockCents: 0.6, qty: 40 });
+  const both = runCycles([[sighting(), hourly], [sighting(), hourly], [hourly], []]);
+  assert.deepEqual(both.finished.map((e) => [e.horizon, e.cycles, e.valueCents]), [["fifteen", 2, 720], ["hourly", 3, 24]]);
+
+  // the collector missed cycles (the gap is over the limit): the run is not known to be consecutive, so it ends and another begins
+  const a = stepEpisodes(emptyEpisodeBook(), [sighting()], NOW, { maxGapMs: 30_000 });
+  const b = stepEpisodes(a.book, [sighting()], NOW + 10_000, { maxGapMs: 30_000 });
+  const late = stepEpisodes(b.book, [sighting()], NOW + 50_000, { maxGapMs: 30_000 });
+  assert.equal(late.finished.length, 1);
+  assert.equal(late.finished[0].durationSec, 10);
+  assert.deepEqual([late.book.open.length, late.book.open[0].startedAtMs, late.book.open[0].cycles], [1, NOW + 50_000, 1]);
+  const onTime = stepEpisodes(b.book, [sighting()], NOW + 40_000, { maxGapMs: 30_000 });
+  assert.deepEqual([onTime.finished.length, onTime.book.open[0].cycles], [0, 3], "at the limit it still extends");
+});
+
+test("lock episodes: the day is the UTC day of the last cycle that showed the lock; today's are all kept, earlier days keep the last 50 a tenor; median, longest and total are over the day", () => {
+  const day1 = Date.parse("2026-11-09T23:59:20Z");
+  // one episode wholly before midnight (23:59:20 to 23:59:30), one across it (23:59:50 to 00:00:10)
+  const r = runCycles([[sighting()], [sighting()], [], [sighting({ lockCents: 1, qty: 50 })], [sighting({ lockCents: 1, qty: 50 })], [sighting({ lockCents: 1, qty: 50 })], []], day1);
+  assert.deepEqual(r.finished.map((e) => [e.startedAt, e.endedAt]), [
+    ["2026-11-09T23:59:20.000Z", "2026-11-09T23:59:30.000Z"],
+    ["2026-11-09T23:59:50.000Z", "2026-11-10T00:00:10.000Z"],
+  ]);
+  const before = episodeSummary({ open: [], finished: [r.finished[0]] }, "fifteen", Date.parse("2026-11-09T23:59:45Z"));
+  assert.equal(before.episodes, 1);
+  const after = episodeSummary(r.book, "fifteen", r.at);
+  assert.equal(after.episodes, 1, "only the one that ended after midnight is today's");
+  assert.equal(after.recent[0].endedAt, "2026-11-10T00:00:10.000Z");
+  assert.equal(after.totalValueCents, 50);
+  assert.equal(r.book.finished.length, 2, "yesterday's is still kept");
+  const report = lockEpisodesReport(r.book, r.at);
+  assert.equal(report.day, "2026-11-10");
+  assert.equal(report.label, EPISODE_LABEL);
+  assert.equal(report.label, "measured at the size on the book, after fees, no orders placed; a floor on what was there, not what a trader would have captured");
+  assert.equal(report.minCycles, 2);
+  assert.deepEqual([report.fifteen.episodes, report.hourly.episodes, report.daily.episodes], [1, 0, 0]);
+  // a run open across midnight is today's while it runs
+  const spanning = runCycles([[sighting()], [sighting()], [sighting()]], Date.parse("2026-11-09T23:59:50Z"));
+  assert.deepEqual([episodeSummary(spanning.book, "fifteen", spanning.at).episodes, episodeSummary(spanning.book, "fifteen", spanning.at).open], [1, 1]);
+
+  // the day's figures: durations 10, 20, 40 and 70 seconds
+  const mk = (startMs: number, sec: number, valueCents: number, horizon: LockEpisode["horizon"] = "fifteen"): LockEpisode => {
+    const { lockCents: _l, qty: _q, ...pair } = sighting({ horizon });
+    return { ...pair, startedAt: new Date(startMs).toISOString(), endedAt: new Date(startMs + sec * 1000).toISOString(), durationSec: sec, cycles: sec / 10 + 1, minLockCents: 1, minQty: valueCents, valueCents };
+  };
+  const t = Date.parse("2026-11-10T12:00:00Z");
+  const four: EpisodeBook = { open: [], finished: [mk(t, 10, 100.25), mk(t + 100_000, 40, 3), mk(t + 200_000, 20, 50.5), mk(t + 300_000, 70, 1000)] };
+  const sum = episodeSummary(four, "fifteen", t + 400_000, 3);
+  assert.deepEqual([sum.episodes, sum.medianDurationSec, sum.longestDurationSec, sum.totalValueCents], [4, 30, 70, 1153.75]);
+  assert.deepEqual(sum.recent.map((e) => e.durationSec), [70, 20, 40], "the latest three, newest first");
+  assert.equal(episodeSummary({ open: [], finished: four.finished.slice(0, 3) }, "fifteen", t + 400_000).medianDurationSec, 20);
+  const none = episodeSummary(emptyEpisodeBook(), "daily", t);
+  assert.deepEqual(none, { episodes: 0, open: 0, medianDurationSec: null, longestDurationSec: null, totalValueCents: 0, recent: [] });
+
+  // keeping: 60 from yesterday and 70 from today on one tenor, 3 from yesterday on another
+  assert.equal(EPISODE_KEEP, 50);
+  const yesterday = Date.parse("2026-11-09T10:00:00Z");
+  const many = [
+    ...Array.from({ length: 60 }, (_, i) => mk(yesterday + i * 60_000, 10, 1)),
+    ...Array.from({ length: 3 }, (_, i) => mk(yesterday + i * 60_000, 10, 1, "hourly")),
+    ...Array.from({ length: 70 }, (_, i) => mk(t + i * 60_000, 10, 1)),
+  ];
+  const kept = pruneEpisodes([...many].reverse(), t + 80 * 60_000);
+  assert.equal(kept.filter((e) => e.horizon === "fifteen" && e.endedAt.startsWith("2026-11-10")).length, 70, "all of today's, so the day's median and total are whole");
+  const old = kept.filter((e) => e.horizon === "fifteen" && e.endedAt.startsWith("2026-11-09"));
+  assert.equal(old.length, 50);
+  assert.equal(old[0].startedAt, new Date(yesterday + 10 * 60_000).toISOString(), "the oldest ten went");
+  assert.equal(kept.filter((e) => e.horizon === "hourly").length, 3, "the bound is per tenor");
+  assert.deepEqual(kept.map((e) => Date.parse(e.endedAt)), kept.map((e) => Date.parse(e.endedAt)).sort((x, y) => x - y), "oldest first");
+  assert.equal(pruneEpisodes(many, t, 5).filter((e) => e.endedAt.startsWith("2026-11-09") && e.horizon === "fifteen").length, 5);
+  // the step prunes as it goes
+  const stepped = stepEpisodes({ open: [], finished: many }, [], t + 80 * 60_000, { keep: 2 });
+  assert.equal(stepped.book.finished.length, 70 + 2 + 2);
+});
+
 test("helpers: the Kalshi event ticker and the Polymarket US event slug come out of the ids", () => {
   assert.equal(kalshiEventTicker("KXBTCD-26NOV0917-T74499.99"), "KXBTCD-26NOV0917");
   assert.equal(kalshiEventTicker("KXBTCD"), "KXBTCD");
@@ -529,6 +772,7 @@ test("page: the bundle, both tables, the lock arithmetic, the links, the refresh
     staleAfterSec: STALE_AFTER_SEC,
     health: { kalshi: { ok: true, ms: 40 }, polymarket_us: { ok: false, ms: 20000, detail: "no answer within 20s" } },
     errors: [],
+    lockEpisodes: lockEpisodesReport(emptyEpisodeBook(), NOW),
   };
   const html = renderPairsHtml(d, { token: "abc", base: "/pairs", launchUrl: "https://engine.example/btc", launchMode: "open" });
   for (const needle of [

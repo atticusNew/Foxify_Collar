@@ -294,4 +294,13 @@ if (process.env.NODE_ENV !== "test") {
   }).listen(PORT, () => console.log(`[btc-curve] listening on :${PORT}${pairs ? ` · pairs at ${PAIRS_BASE}` : ""}`));
   void loop();
   pairs?.start();
+  // a clean stop ends the pairs page's lock runs still open and writes them; without this they are lost with the process
+  if (pairs) {
+    for (const sig of ["SIGTERM", "SIGINT"] as const) {
+      process.once(sig, () => {
+        pairs.stop();
+        process.exit(0);
+      });
+    }
+  }
 }

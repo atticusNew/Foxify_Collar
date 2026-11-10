@@ -60,3 +60,11 @@ createServer((req, res) => {
     if (!res.headersSent) sendJson(res, 500, { ok: false });
   }
 }).listen(PORT, () => console.log(`[btc-pairs] listening on :${PORT}`));
+
+// a clean stop ends the lock runs still open and writes them; without this they are lost with the process
+for (const sig of ["SIGTERM", "SIGINT"] as const) {
+  process.once(sig, () => {
+    collector.stop();
+    process.exit(0);
+  });
+}

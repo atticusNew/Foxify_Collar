@@ -20,7 +20,7 @@ import { BookReadError } from "./bookRead";
 import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_WINDOW_MS, dailyLadderFrom, fetchFeeTheta, fetchOpenMarkets, fifteenLadderFrom, hourlyLadderFrom, kalshiOrderbookUrl, readTopOnce } from "./kalshiLadders";
 import { fetchBrtiCandles, fetchSeriesIdsBySlug, polyBookUrl, readBookOnce, readPolyUsLaddersForSeries } from "./polyUsLadders";
 import { mergeLadders } from "./analytics";
-import { STALE_AFTER_SEC, bundleOf, fifteenSet, gapHistoryKey, horizonSet, pairId, recordGaps, regimeOf, reportErrors, selectStrikes, staleBoundsFrom, strikeLevels, type Band, type GapHistory, type Horizon, type HorizonSet, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
+import { EPISODE_KEEP, EPISODE_LABEL, EPISODE_MIN_CYCLES, STALE_AFTER_SEC, bundleOf, closeEpisodes, emptyEpisodeBook, episodeOf, fifteenSet, gapHistoryKey, horizonSet, lockEpisodesReport, lockSightings, pairId, pruneEpisodes, recordGaps, regimeOf, reportErrors, selectStrikes, staleBoundsFrom, stepEpisodes, strikeLevels, type Band, type EpisodeBook, type GapHistory, type Horizon, type HorizonSet, type LockEpisode, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
 import { renderPairsBody, renderPairsHtml } from "./pairsHtml";
 import type { Ladder, VenueQuote } from "./types";
 
@@ -103,6 +103,8 @@ export class PairsCollector {
   private readonly fetchImpl: typeof fetch;
   private readonly log: (line: string) => void;
   private readonly history: GapHistory = new Map();
+  /** lock runs still going and the episodes kept; replaced whole every cycle */
+  private episodes: EpisodeBook = emptyEpisodeBook();
   private readonly listeners = new Set<ServerResponse>();
   latest: PairsReport | null = null;
   private bodyHtml = "";
@@ -137,16 +139,21 @@ export class PairsCollector {
     };
   }
 
-  /** Reload the gap history within the window and start the cycle. */
+  /** Reload the gap history within the window and the lock episodes kept, and start the cycle. */
   start(): void {
     const loaded = this.loadGaps();
-    this.log(`[btc-pairs] data dir ${this.dataDir} · ${loaded} cycles of gap history reloaded · interval ${this.intervalSec}s`);
+    const episodes = this.loadEpisodes();
+    this.log(`[btc-pairs] data dir ${this.dataDir} · ${loaded} cycles of gap history reloaded · ${episodes} lock episodes reloaded · interval ${this.intervalSec}s`);
     void this.loop();
   }
 
+  /** Stop the cycle. Lock runs still going end here and are written, so a clean stop loses none; a kill loses the ones open at that moment. */
   stop(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    const closed = closeEpisodes(this.episodes, this.clock());
+    this.episodes = closed.book;
+    this.persistEpisodes(closed.finished);
   }
 
   private async loop(): Promise<void> {
@@ -311,6 +318,10 @@ export class PairsCollector {
     ];
     recordGaps(this.history, sets, nowMs, this.windowMs);
     this.persistGaps(nowMs, sets);
+    // three intervals without a cycle and a run is no longer known to be consecutive
+    const stepped = stepEpisodes(this.episodes, lockSightings(sets), pricedAtMs, { maxGapMs: 3 * this.intervalSec * 1000 });
+    this.episodes = stepped.book;
+    this.persistEpisodes(stepped.finished);
 
     if (!this.collectingSince) this.collectingSince = now.toISOString();
     this.cycles += 1;
@@ -330,6 +341,7 @@ export class PairsCollector {
       staleAfterSec: this.staleAfterSec,
       health,
       errors: reportErrors(sets),
+      lockEpisodes: lockEpisodesReport(this.episodes, pricedAtMs),
     };
     this.latest = report;
     this.bodyHtml = renderPairsBody(report);
@@ -385,6 +397,46 @@ export class PairsCollector {
     }
   }
 
+  /** Finished episodes go to the day file of the day they ended, one a line, the way the gap history is kept. */
+  private persistEpisodes(finished: LockEpisode[]): void {
+    if (!finished.length) return;
+    try {
+      mkdirSync(this.dataDir, { recursive: true });
+      for (const e of finished) appendFileSync(join(this.dataDir, `episodes-${e.endedAt.slice(0, 10)}.jsonl`), `${JSON.stringify(e)}\n`);
+    } catch (err) {
+      this.lastError = `persist episodes: ${(err as Error).message.slice(0, 80)}`;
+    }
+  }
+
+  /** Reload the episodes kept (today's, and the last EPISODE_KEEP per tenor of the three days before); older day files are deleted. */
+  loadEpisodes(nowMs = this.clock()): number {
+    if (!existsSync(this.dataDir)) return 0;
+    const loaded: LockEpisode[] = [];
+    for (const f of readdirSync(this.dataDir).filter((f: string) => f.startsWith("episodes-") && f.endsWith(".jsonl")).sort()) {
+      const path = join(this.dataDir, f);
+      const dayMs = Date.parse(f.slice(9, 19));
+      if (Number.isFinite(dayMs) && nowMs - dayMs > 3 * 86_400_000) {
+        try {
+          unlinkSync(path);
+        } catch {
+          // an old day that would not delete is left; nothing reads it
+        }
+        continue;
+      }
+      for (const line of readFileSync(path, "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const e = JSON.parse(line) as LockEpisode;
+          if (typeof e.endedAt === "string" && Number.isFinite(Date.parse(e.endedAt)) && typeof e.horizon === "string") loaded.push(e);
+        } catch {
+          // a torn line at the end of a file is skipped
+        }
+      }
+    }
+    this.episodes = { open: this.episodes.open, finished: pruneEpisodes([...loaded, ...this.episodes.finished], nowMs) };
+    return this.episodes.finished.length;
+  }
+
   loadGaps(nowMs = Date.now()): number {
     if (!existsSync(this.dataDir)) return 0;
     let n = 0;
@@ -432,6 +484,7 @@ export class PairsCollector {
       regime: this.latest?.regime?.label ?? null,
       tenors: this.latest ? { fifteen: Boolean(this.latest.fifteen), hourly: Boolean(this.latest.hourly), daily: Boolean(this.latest.daily) } : undefined,
       booksNotAnswering: this.latest?.errors?.length ?? 0,
+      lockEpisodesToday: this.latest?.lockEpisodes ? { fifteen: this.latest.lockEpisodes.fifteen.episodes, hourly: this.latest.lockEpisodes.hourly.episodes, daily: this.latest.lockEpisodes.daily.episodes } : undefined,
       lastError: this.lastError || undefined,
     };
   }
@@ -458,7 +511,7 @@ export class PairsCollector {
 
   /**
    * Serve one request whose path is already relative to the mount (`/`, `/fragment`,
-   * `/api/pairs`, `/api/bundle`, `/api/pair`, `/api/stream`). Returns false when the path is
+   * `/api/pairs`, `/api/bundle`, `/api/pair`, `/api/episodes`, `/api/stream`). Returns false when the path is
    * not one of ours so the host can 404 it. `base` is the mount path the page links under.
    */
   handle(req: IncomingMessage, res: ServerResponse, path: string, url: URL, opts: { base: string; token?: string }): boolean {
@@ -473,6 +526,17 @@ export class PairsCollector {
     }
     if (path === "/api/bundle") {
       d ? json(200, { at: d.at, spotUsd: d.spotUsd, index: "BRTI", bundle: d.bundle.map((p) => launchPayload(d, p)) }) : json(503, { ok: false, error: "warming up" });
+      return true;
+    }
+    if (path === "/api/episodes") {
+      // everything kept, not only today's latest few: for whoever wants to do his own arithmetic
+      json(200, {
+        label: EPISODE_LABEL,
+        minCycles: EPISODE_MIN_CYCLES,
+        keptPerTenorBeforeToday: EPISODE_KEEP,
+        open: this.episodes.open.filter((r) => r.cycles >= EPISODE_MIN_CYCLES).map((r) => episodeOf(r, true)),
+        episodes: [...this.episodes.finished].reverse(),
+      });
       return true;
     }
     if (path === "/api/pair") {

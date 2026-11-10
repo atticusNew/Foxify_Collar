@@ -340,6 +340,82 @@ export interface PairsReport {
   health: Record<string, { ok: boolean; ms: number; detail?: string }>;
   /** every book that did not answer this cycle, with the tenor and strike it belongs to; for the operator */
   errors: Array<BookFailure & { horizon: Horizon; strike: number }>;
+  /** runs of consecutive cycles in which one pair showed a lock after fees on fresh reads, today (UTC), per tenor */
+  lockEpisodes: LockEpisodesReport;
+}
+
+/** One cycle's sighting of a lock after fees on a fresh read: which pair, which way round, how much, at what size. */
+export interface LockSighting {
+  horizon: Horizon;
+  settlesAt: string;
+  key: string;
+  strike: number;
+  kalshiId: string;
+  polyId: string;
+  yesOn: Venue;
+  noOn: Venue;
+  /** lock after both fees, cents per contract */
+  lockCents: number;
+  /** the thinner of the two top-of-book levels taken, contracts: the size the lock is quoted at */
+  qty: number;
+}
+
+/** A run still going: the same pair, the same way round, locked on every cycle since it began. */
+export interface LockRun extends Omit<LockSighting, "lockCents" | "qty"> {
+  id: string;
+  startedAtMs: number;
+  lastAtMs: number;
+  cycles: number;
+  minLockCents: number;
+  minQty: number;
+}
+
+export interface LockEpisode extends Omit<LockSighting, "lockCents" | "qty"> {
+  /** the first cycle that showed the lock (ISO) */
+  startedAt: string;
+  /** the last cycle that showed it (ISO) */
+  endedAt: string;
+  /** end minus start: the span over which the lock was seen, not how long it existed */
+  durationSec: number;
+  cycles: number;
+  /** the smallest lock seen in the run, cents per contract */
+  minLockCents: number;
+  /** the smallest size seen in the run, contracts */
+  minQty: number;
+  /** minLockCents times minQty, cents: a floor on what was on the book for the whole run */
+  valueCents: number;
+  /** true while the run is still going; the figures are as of the last cycle */
+  open?: true;
+}
+
+/** What the collector carries between cycles: the runs still going and the episodes kept. */
+export interface EpisodeBook {
+  open: LockRun[];
+  /** oldest first */
+  finished: LockEpisode[];
+}
+
+export interface EpisodeSummary {
+  /** episodes today (UTC, by the cycle that last showed the lock), counting those still open */
+  episodes: number;
+  open: number;
+  medianDurationSec: number | null;
+  longestDurationSec: number | null;
+  /** the episodes' valueCents summed, cents */
+  totalValueCents: number;
+  /** the latest few, newest first, open ones included */
+  recent: LockEpisode[];
+}
+
+export interface LockEpisodesReport {
+  label: string;
+  /** the UTC day the counts are for, YYYY-MM-DD */
+  day: string;
+  /** a lock seen on fewer consecutive cycles than this is not an episode */
+  minCycles: number;
+  fifteen: EpisodeSummary;
+  hourly: EpisodeSummary;
+  daily: EpisodeSummary;
 }
 
 /** The failed books of a cycle, flat, with where each belongs. */
@@ -786,4 +862,152 @@ export function recordGaps(history: GapHistory, sets: Array<HorizonSet | null>, 
     if (!s) continue;
     for (const p of s.pairs) p.persistence = persistenceOf(history.get(gapHistoryKey(p.settlesAt, p.key)), p.gapCents);
   }
+}
+
+/* ---- lock episodes ---- */
+
+/** A lock seen on one cycle only may be a single odd read; two in a row is the least that says it stood. */
+export const EPISODE_MIN_CYCLES = 2;
+/** Finished episodes kept per tenor from before today; today's are all kept so the day's figures are whole. */
+export const EPISODE_KEEP = 50;
+export const EPISODE_LABEL = "measured at the size on the book, after fees, no orders placed; a floor on what was there, not what a trader would have captured";
+
+const round2 = (x: number) => Math.round(x * 100) / 100;
+const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+export function emptyEpisodeBook(): EpisodeBook {
+  return { open: [], finished: [] };
+}
+
+/** The same contract on both venues, bought the same way round. A lock that flips direction is a different trade and a new run. */
+function lockRunId(s: Omit<LockSighting, "lockCents" | "qty">): string {
+  return [s.horizon, s.settlesAt, s.key, s.kalshiId, s.polyId, s.yesOn].join("|");
+}
+
+/**
+ * This cycle's locks that count toward an episode: both books read fresh (a row whose read
+ * cannot be judged is not counted either) and a lock after fees above zero. The size is the
+ * one the lock is already quoted at, the thinner of the two top-of-book levels.
+ */
+export function lockSightings(sets: Array<HorizonSet | null>): LockSighting[] {
+  const out: LockSighting[] = [];
+  for (const s of sets) {
+    if (!s) continue;
+    for (const p of s.pairs) {
+      if (p.freshness !== "fresh" || p.errors.length || !p.kalshi || !p.poly || !p.lock || !(p.lock.edgeCents > 0)) continue;
+      out.push({ horizon: p.horizon, settlesAt: p.settlesAt, key: p.key, strike: p.strike, kalshiId: p.kalshi.id, polyId: p.poly.id, yesOn: p.lock.yesOn, noOn: p.lock.noOn, lockCents: p.lock.edgeCents, qty: p.lock.qty });
+    }
+  }
+  return out;
+}
+
+/** A run as an episode. Dollars are the smallest lock times the smallest size: both were there on every cycle of the run. */
+export function episodeOf(run: LockRun, open = false): LockEpisode {
+  return {
+    horizon: run.horizon,
+    settlesAt: run.settlesAt,
+    key: run.key,
+    strike: run.strike,
+    kalshiId: run.kalshiId,
+    polyId: run.polyId,
+    yesOn: run.yesOn,
+    noOn: run.noOn,
+    startedAt: new Date(run.startedAtMs).toISOString(),
+    endedAt: new Date(run.lastAtMs).toISOString(),
+    durationSec: Math.round((run.lastAtMs - run.startedAtMs) / 100) / 10,
+    cycles: run.cycles,
+    minLockCents: run.minLockCents,
+    minQty: run.minQty,
+    valueCents: round2(run.minLockCents * run.minQty),
+    ...(open ? { open: true as const } : {}),
+  };
+}
+
+/** Today's episodes (by the cycle that last showed the lock) and, from earlier days, the last `keep` per tenor. Oldest first. */
+export function pruneEpisodes(episodes: LockEpisode[], nowMs: number, keep = EPISODE_KEEP): LockEpisode[] {
+  const today = utcDay(nowMs);
+  const sorted = [...episodes].sort((a, b) => Date.parse(a.endedAt) - Date.parse(b.endedAt));
+  const older: Record<string, number> = {};
+  const kept: LockEpisode[] = [];
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const e = sorted[i];
+    if (e.endedAt.slice(0, 10) === today) kept.push(e);
+    else if ((older[e.horizon] = (older[e.horizon] ?? 0) + 1) <= keep) kept.push(e);
+  }
+  return kept.reverse();
+}
+
+/**
+ * One cycle. A run whose pair is sighted again is extended (its smallest lock and size carried);
+ * a run whose pair is not sighted this cycle (no lock, a stale read, a book that did not answer,
+ * the contract gone) ends at the last cycle that showed it, and is an episode only if it had
+ * EPISODE_MIN_CYCLES or more. A sighting with no run opens one. A cycle arriving more than
+ * `maxGapMs` after the run's last one does not extend it: cycles were missed, so the run is not
+ * known to be consecutive. Returns the new book and the episodes that finished on this cycle;
+ * the book passed in is not changed.
+ */
+export function stepEpisodes(prev: EpisodeBook, sightings: LockSighting[], atMs: number, opts: { maxGapMs?: number; keep?: number } = {}): { book: EpisodeBook; finished: LockEpisode[] } {
+  const maxGapMs = opts.maxGapMs ?? Number.POSITIVE_INFINITY;
+  const seen = new Map(sightings.map((s) => [lockRunId(s), s]));
+  const open: LockRun[] = [];
+  const finished: LockEpisode[] = [];
+  for (const run of prev.open) {
+    const s = seen.get(run.id);
+    if (s && atMs - run.lastAtMs <= maxGapMs) {
+      seen.delete(run.id);
+      open.push({ ...run, lastAtMs: atMs, cycles: run.cycles + 1, minLockCents: Math.min(run.minLockCents, s.lockCents), minQty: Math.min(run.minQty, s.qty) });
+    } else if (run.cycles >= EPISODE_MIN_CYCLES) {
+      finished.push(episodeOf(run));
+    }
+  }
+  for (const [id, s] of seen) {
+    const { lockCents, qty, ...pair } = s;
+    open.push({ ...pair, id, startedAtMs: atMs, lastAtMs: atMs, cycles: 1, minLockCents: lockCents, minQty: qty });
+  }
+  return { book: { open, finished: pruneEpisodes([...prev.finished, ...finished], atMs, opts.keep) }, finished };
+}
+
+/** End every run (the collector stopping): those long enough become episodes. */
+export function closeEpisodes(prev: EpisodeBook, nowMs: number, keep = EPISODE_KEEP): { book: EpisodeBook; finished: LockEpisode[] } {
+  const finished = prev.open.filter((r) => r.cycles >= EPISODE_MIN_CYCLES).map((r) => episodeOf(r));
+  return { book: { open: [], finished: pruneEpisodes([...prev.finished, ...finished], nowMs, keep) }, finished };
+}
+
+function median(xs: number[]): number | null {
+  if (!xs.length) return null;
+  const a = [...xs].sort((x, y) => x - y);
+  const mid = a.length >> 1;
+  return a.length % 2 ? a[mid] : Math.round(((a[mid - 1] + a[mid]) / 2) * 10) / 10;
+}
+
+/**
+ * One tenor's day: the episodes whose last sighting was today (UTC), with the runs still going
+ * that already have EPISODE_MIN_CYCLES. An episode that spans midnight belongs to the day it
+ * ended.
+ */
+export function episodeSummary(book: EpisodeBook, horizon: Horizon, nowMs: number, recent = 5): EpisodeSummary {
+  const today = utcDay(nowMs);
+  const done = book.finished.filter((e) => e.horizon === horizon && e.endedAt.slice(0, 10) === today);
+  const running = book.open.filter((r) => r.horizon === horizon && r.cycles >= EPISODE_MIN_CYCLES && utcDay(r.lastAtMs) === today).map((r) => episodeOf(r, true));
+  const all = [...done, ...running];
+  const durations = all.map((e) => e.durationSec);
+  return {
+    episodes: all.length,
+    open: running.length,
+    medianDurationSec: median(durations),
+    longestDurationSec: durations.length ? Math.max(...durations) : null,
+    totalValueCents: round2(all.reduce((a, e) => a + e.valueCents, 0)),
+    recent: all.slice(-recent).reverse(),
+  };
+}
+
+export function lockEpisodesReport(book: EpisodeBook, nowMs: number): LockEpisodesReport {
+  return {
+    label: EPISODE_LABEL,
+    day: utcDay(nowMs),
+    minCycles: EPISODE_MIN_CYCLES,
+    fifteen: episodeSummary(book, "fifteen", nowMs),
+    hourly: episodeSummary(book, "hourly", nowMs),
+    daily: episodeSummary(book, "daily", nowMs),
+  };
 }

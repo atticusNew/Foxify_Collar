@@ -7,7 +7,7 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PairsCollector, isUpDown, launchPayload, merged, pairsCollectorFromEnv, polyLadderIn } from "../src/btcCurve/pairsCollector";
-import { STALE_AFTER_SEC, bundleOf, fifteenSet, horizonSet, recordGaps, regimeOf, type GapHistory, type PairsReport, type VenueUrls } from "../src/btcCurve/pairs";
+import { STALE_AFTER_SEC, bundleOf, emptyEpisodeBook, lockEpisodesReport, fifteenSet, horizonSet, recordGaps, regimeOf, type GapHistory, type PairsReport, type VenueUrls } from "../src/btcCurve/pairs";
 import { bucketFromPolyUs, laddersFromEvents } from "../src/btcCurve/polyUsLadders";
 import { fifteenLadderFrom } from "../src/btcCurve/kalshiLadders";
 import type { Ladder, VenueQuote } from "../src/btcCurve/types";
@@ -80,6 +80,7 @@ function report(): PairsReport {
     staleAfterSec: STALE_AFTER_SEC,
     health: { kalshi: { ok: true, ms: 40 } },
     errors: [],
+    lockEpisodes: lockEpisodesReport(emptyEpisodeBook(), NOW),
   };
 }
 

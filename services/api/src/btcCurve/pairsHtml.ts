@@ -7,7 +7,7 @@
  * assets. No em dashes in copy.
  */
 
-import type { Band, BookFailure, HorizonSet, LegRead, PairsReport, PairLeg, Regime, StrikePair } from "./pairs";
+import type { Band, BookFailure, EpisodeSummary, HorizonSet, LegRead, LockEpisodesReport, PairsReport, PairLeg, Regime, StrikePair } from "./pairs";
 import { pairId } from "./pairs";
 
 const esc = (s: unknown): string =>
@@ -176,6 +176,24 @@ function noPickReason(s: HorizonSet): string {
   return "nothing two-sided";
 }
 
+const span = (sec: number): string => (sec < 120 ? `${num(sec, 1)}s` : `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`);
+
+/**
+ * The tenor's lock episodes today, one line, always with the label that says what the dollars
+ * are: cents times contracts seen on the book, nothing traded. Shown with no window open too:
+ * the day's count does not go away between windows.
+ */
+function episodesLine(e: EpisodeSummary | undefined, all: LockEpisodesReport | undefined): string {
+  if (!e || !all) return "";
+  const label = `<small>${esc(all.label)}. An episode is one pair showing a lock on ${all.minCycles} or more cycles in a row, both reads fresh.</small>`;
+  if (!e.episodes) return `<p class="epi">Lock episodes today (UTC): <b>none</b>${label}</p>`;
+  const last = e.recent[0];
+  const latest = last
+    ? ` · latest ${last.open ? "began" : "ended"} ${etTime(last.open ? last.startedAt : last.endedAt)} at ${usd(last.strike, last.strike % 1 ? 2 : 0)}: ${span(last.durationSec)}, at least ${c(last.minLockCents, 2)} on ${num(last.minQty, 0)} contracts`
+    : "";
+  return `<p class="epi">Lock episodes today (UTC): <b>${e.episodes}</b>${e.open ? ` (${e.open} still open)` : ""} · median ${span(e.medianDurationSec ?? 0)} · longest ${span(e.longestDurationSec ?? 0)} · total <b>${usd(e.totalValueCents / 100, 2)}</b>${latest}${label}</p>`;
+}
+
 function regimeChip(r: Regime | null): string {
   if (!r) return '<span>Regime <b>–</b><small>reading the index</small></span>';
   const cls = r.label === "expanding" ? "hot" : r.label === "contained" ? "ok" : "";
@@ -194,12 +212,13 @@ export function renderPairsBody(d: PairsReport): string {
     .map(([k, h]) => `<span class="${h.ok ? "ok" : "bad"}">${esc(k)} ${h.ok ? `${h.ms}ms` : esc(h.detail ?? "down")}</span>`)
     .join(" · ");
   const block = (s: HorizonSet | null, horizon: "fifteen" | "hourly" | "daily", title: string, none: string) => {
-    if (!s) return `<section data-horizon="${horizon}"><h2>${title}</h2><p class="dim">${none}</p></section>`;
+    const episodes = episodesLine(d.lockEpisodes?.[horizon], d.lockEpisodes);
+    if (!s) return `<section data-horizon="${horizon}"><h2>${title}</h2><p class="dim">${none}</p>${episodes}</section>`;
     const grid = s.stepUsd ? ` · ${usd(s.stepUsd)} grid` : "";
     const sigma = s.sigmaUsd ? ` · 1σ to close ${usd(s.sigmaUsd)}` : "";
     const bound = ` · a read older than ${s.staleAfterSec}s is stale`;
     const pick = s.pairs.find((p) => pairId(p) === s.pick) ?? null;
-    return `<section data-horizon="${horizon}" data-pick="${esc(s.pick ?? "")}"><div class="h"><h2>${horizonLabel(s.horizon, s.settlesAt)} <span class="meta">closes ${et(s.settlesAt)} · ${left(s.secondsToClose)} left${grid}${sigma}${bound}</span></h2><div class="launch"><button type="button" class="go" data-horizon="${horizon}"${s.pick ? "" : " disabled"}>Launch</button><span class="picklabel">${pick ? esc(pickLabel(pick)) : esc(noPickReason(s))}</span><small class="status" data-status="${horizon}"></small></div></div>${table(s, d.spotUsd, bestId)}</section>`;
+    return `<section data-horizon="${horizon}" data-pick="${esc(s.pick ?? "")}"><div class="h"><h2>${horizonLabel(s.horizon, s.settlesAt)} <span class="meta">closes ${et(s.settlesAt)} · ${left(s.secondsToClose)} left${grid}${sigma}${bound}</span></h2><div class="launch"><button type="button" class="go" data-horizon="${horizon}"${s.pick ? "" : " disabled"}>Launch</button><span class="picklabel">${pick ? esc(pickLabel(pick)) : esc(noPickReason(s))}</span><small class="status" data-status="${horizon}"></small></div></div>${table(s, d.spotUsd, bestId)}${episodes}</section>`;
   };
   return `<div class="strip"><span>BRTI <b>${usd(d.spotUsd, 0)}</b><small>${esc(d.spotSource)} · ${etTime(d.at)}</small></span>${
     cleanest
@@ -231,6 +250,7 @@ td{padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap;vertic
 tr.band td{padding:4px 8px 4px 18px;font-size:12px;color:var(--ink);background:#fff;white-space:normal;border-bottom:1px dashed var(--line)}tr.band .lbl{font-weight:600}
 .big{font-size:17px}.hot{color:var(--hot);font-weight:600}.warm{color:var(--warm)}.ok{color:var(--ok)}.bad{color:var(--hot)}
 td.nobook{white-space:normal;max-width:230px;font-size:12px}
+.epi{font-size:12px;margin:6px 0 0;font-variant-numeric:tabular-nums}.epi small{margin-top:1px}
 td.stale,td.stale b{color:var(--dim);font-weight:400}.tag{display:inline-block;margin-left:6px;padding:0 5px;border:1px solid var(--warm);border-radius:4px;color:var(--warm);font-size:10px;font-weight:600;line-height:15px;vertical-align:middle;white-space:nowrap}
 td.act{text-align:right}.go{background:var(--k);color:#fff;border:0;border-radius:7px;padding:7px 16px;font:600 13px inherit;cursor:pointer}.go:hover{filter:brightness(1.08)}.go:disabled{opacity:.5;cursor:default}.use{background:#fff;color:var(--k);border:1px solid var(--line);border-radius:7px;padding:5px 9px;font:500 12px inherit;cursor:pointer}tr.picked .use{background:var(--k);color:#fff;border-color:var(--k)}
 svg.spark{width:90px;height:18px;display:inline-block;vertical-align:middle;margin-right:6px}svg.spark polyline{fill:none;stroke:var(--k);stroke-width:1.2}svg.spark .zero{stroke:var(--line)}
@@ -244,7 +264,7 @@ details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;c
 <details><summary>Engine endpoint and the API</summary>
 <div class="engine"><label for="engine">Engine</label><input id="engine" type="url" placeholder="https://your-engine.example/btc-pair" value="${esc(opts.launchUrl ?? "")}"><label class="mode"><input type="radio" name="mode" value="send"${mode === "send" ? " checked" : ""}> send (POST JSON)</label><label class="mode"><input type="radio" name="mode" value="open"${mode === "open" ? " checked" : ""}> open (your page, pair in the URL)</label><button type="button" id="engine-save">Save</button><button type="button" id="engine-test">Test</button><span id="engine-status"></span></div>
 <p>One Launch per tenor. It sends the tenor's picked pair: the cleanest scored strike by default, or the row whose <code>use</code> you pressed. <b>send</b> does <code>POST</code> with JSON <code>{ type: "atticus.btc_pair", version: 1, at, spotUsd, index: "BRTI", pair, set, bands, regime }</code>: <code>pair</code> carries <code>horizon</code> (fifteen, hourly, daily), <code>place</code>, <code>strike</code>, <code>settlesAt</code>, both legs (<code>kalshi.id</code> is the Kalshi ticker, <code>poly.id</code> the Polymarket US market slug; bid, ask, sizes, fee coefficient, url, and <code>read</code>: when the book was fetched, the venue's stamp, and the ages in seconds when the pair was priced), <code>gapCents</code>, <code>spreadCents</code>, <code>depth</code>, <code>lock</code>, <code>persistence</code>, <code>score</code>, <code>modelCents</code>, <code>errors</code> (books that did not answer; that venue's leg is then <code>null</code>), <code>freshness</code> (fresh, stale or null) with <code>staleAfterSec</code>; <code>set</code> the tenor (<code>secondsToClose</code>, <code>stepUsd</code>, <code>sigmaUsd</code>, <code>pick</code>); <code>bands</code> the ranges between the tenor's strikes with the two legs each (<code>side</code> yes or no, <code>venue</code>, <code>id</code>, <code>priceCents</code>, <code>qty</code>, <code>feeCents</code>), what the venues imply, the model, the cost and the edge; <code>regime</code> the index's last 15 and 60 minutes. Test sends <code>{ type: "atticus.btc_pair.ping" }</code>. The endpoint must allow cross-origin POST from this page. <b>open</b> opens your URL in a new tab with <code>atticus=btc_pair&amp;id=&lt;Kalshi ticker&gt;&amp;horizon=&amp;strike=&amp;settlesAt=&amp;kalshi=&amp;poly=&amp;src=&lt;this page's /api/pair URL for it&gt;</code> (add the token to <code>src</code> if this page has one); your page pulls the JSON from <code>src</code>.</p>
-<p><code>GET ${esc(base)}/api/pairs</code> everything · <code>GET ${esc(base)}/api/bundle</code> ranked pairs as launch payloads · <code>GET ${esc(base)}/api/pair?horizon=fifteen|hourly|daily&amp;place=below|atm|above|pick</code> or <code>?id=&lt;Kalshi ticker | Polymarket US slug&gt;</code> one pair · <code>GET ${esc(base)}/api/stream</code> server-sent events, one <code>pairs</code> event per cycle${opts.token ? " (add <code>k=</code> the token to each)" : ""}.</p>
+<p><code>GET ${esc(base)}/api/pairs</code> everything · <code>GET ${esc(base)}/api/bundle</code> ranked pairs as launch payloads · <code>GET ${esc(base)}/api/pair?horizon=fifteen|hourly|daily&amp;place=below|atm|above|pick</code> or <code>?id=&lt;Kalshi ticker | Polymarket US slug&gt;</code> one pair · <code>GET ${esc(base)}/api/episodes</code> the lock episodes kept · <code>GET ${esc(base)}/api/stream</code> server-sent events, one <code>pairs</code> event per cycle${opts.token ? " (add <code>k=</code> the token to each)" : ""}.</p>
 <ul class="limits">
 <li>Both venues settle on the BRTI 60-second average into the close and list the same grid ($100 hourly, $250 daily), so a row is one contract with two books. The 15-minute window is one contract per venue, Up when BRTI closes at or above the price to beat (the BRTI average before the window opened; both venues print the same number). Polymarket US skips the 5 PM ET hour (its daily owns it) and lists no daily on Fridays.</li>
 <li>At the money is the listed strike nearest BRTI this cycle; one each way is the ladder's own next strike. K − P is Kalshi's mid minus Polymarket US's; the sparkline and "same sign" cover the window.</li>
@@ -256,6 +276,7 @@ details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;c
 <li>A book that does not answer is that row's problem only. Its venue's cells say why in plain words (Polymarket US answers "not found" for a new contract's book for a few minutes after it opens), the row shows the other venue's book, and it has no gap, no lock, no score and no Launch. A price marked "listing price, no size" comes from the venue's listing, not its book, and is never priced. The address that was asked is in the JSON under <code>errors</code>, not here.</li>
 <li>Under each book: when it was read (our clock), how long the venue's cache had already held that copy where the venue says, and the venue's own stamp on the book where it gives one. All three are as of the reading shown, not as of now. Kalshi's orderbook carries no stamp, so it says "not given". Polymarket US stamps the book's last change, so a quiet book shows an old stamp on a new copy.</li>
 <li>Stale read: when either book's copy (our read plus the time the venue's cache had held it) is older than the tenor's bound, 15 seconds on the 15-minute window and 30 on the hourly and daily, the row still shows both books but K − P and Both sides are tagged and greyed, the gap is left out of the window, and the row is not what Launch sends by default (its <code>use</code> button still works). The bounds are a judgment from two short samples, not a tested threshold: Polymarket US's public book came from a cache that holds a copy up to 30 seconds, while Kalshi's book moved several times in that span. Score and edge stay separate: a stale read says nothing about the score.</li>
+<li>Lock episode: the same pair (the same contract on both venues, bought the same way round) showing a lock after fees above zero on two or more cycles in a row, every one of them on fresh reads. It runs from the first cycle that showed it to the last; a cycle with no lock, a stale read or a missing book ends it, and a lock that flips direction starts a new one. Its dollars are the smallest lock seen times the smallest size seen (the thinner of the two top-of-book levels), so they are a floor on what was on the book, measured, with no order placed; they are not what a trader would have captured. The page reads every ${d.intervalSec} seconds, so an episode's length is known to that grain, and on the 15-minute window the 15-second bound against a 30-second cache means few runs can be followed past two cycles: what is counted there is a lower bound on how often and how long.</li>
 <li>Venues are read within one cycle, not at one instant. Kalshi links open the series page unless the deploy sets the event URL pattern.</li>
 </ul>
 <footer>Kalshi public market API (KXBTCD, KXBTC15M) · Polymarket US public Retail API (gateway.polymarket.us) · BRTI prints from the same gateway. No credentials loaded.</footer>

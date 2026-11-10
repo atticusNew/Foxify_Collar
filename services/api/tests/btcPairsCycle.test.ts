@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { PairsCollector, launchPayload, pairsCollectorFromEnv, type PairsCollectorOptions } from "../src/btcCurve/pairsCollector";
+import type { LockEpisode } from "../src/btcCurve/pairs";
 
 const KALSHI = "https://api.elections.kalshi.com/trade-api/v2";
 const POLY = "https://gateway.polymarket.us";
@@ -194,6 +195,13 @@ function polyBook(f: Fake, slug: string, bid: number, ask: number, cacheAgeSec: 
 }
 
 const kalshiBook = (yesBid: number): Answer => ({ body: { orderbook_fp: { yes_dollars: [[(yesBid / 100).toFixed(4), "100.00"]], no_dollars: [[((100 - yesBid - 1) / 100).toFixed(4), "100.00"]] } } });
+
+function getJson<T = Record<string, unknown>>(c: PairsCollector, path: string): T {
+  let body = "";
+  const res = { writeHead: () => res, end: (s?: string) => void (body += s ?? ""), write: () => true };
+  assert.equal(c.handle({} as never, res as never, path, new URL(`http://x/pairs${path}`), { base: "/pairs" }), true, `${path} is served`);
+  return JSON.parse(body) as T;
+}
 
 function page(c: PairsCollector): string {
   let body = "";
@@ -445,4 +453,92 @@ test("the stale bounds come from BTC_PAIRS_STALE_SECONDS", () => {
   assert.deepEqual(pairsCollectorFromEnv({ BTC_PAIRS_DATA_DIR: dataDir }).staleAfterSec, { fifteen: 15, hourly: 30, daily: 30 });
   assert.deepEqual(pairsCollectorFromEnv({ BTC_PAIRS_DATA_DIR: dataDir, BTC_PAIRS_STALE_SECONDS: "15m=20,1h=45,1d=60" }).staleAfterSec, { fifteen: 20, hourly: 45, daily: 60 });
   assert.deepEqual(pairsCollectorFromEnv({ BTC_PAIRS_DATA_DIR: dataDir, BTC_PAIRS_STALE_SECONDS: "1h=40" }).staleAfterSec, { fifteen: 15, hourly: 40, daily: 30 });
+});
+
+test("lock episodes over whole cycles: counted from the second fresh cycle, ended by a stale one, written to the day file, reloaded by the next process, on the page with its label and in the JSON", async () => {
+  const f = fake();
+  const { c, dir } = collectorOn(f);
+  const fifteenSection = () => page(c).slice(page(c).indexOf('<section data-horizon="fifteen"'), page(c).indexOf('<section data-horizon="hourly"'));
+  const LABEL = "measured at the size on the book, after fees, no orders placed; a floor on what was there, not what a trader would have captured";
+  // Kalshi 58 bid on 100; Polymarket US offers at 51 on 100, then 60, then 80 contracts
+  f.set(kBookUrl(FIFTEEN_K), kalshiBook(58));
+  const poly = (qty: number, cacheAgeSec: number): Answer => {
+    const a = polyBook(f, FIFTEEN_P, 49, 51, cacheAgeSec);
+    (a.body as { marketData: { offers: Array<{ qty: string }> } }).marketData.offers[0].qty = `${qty}.0000`;
+    return a;
+  };
+
+  // cycle 1: a lock on a fresh read. A run, not yet an episode.
+  f.set(pBookUrl(FIFTEEN_P), poly(100, 3));
+  const d1 = await c.collectOnce();
+  const lock = d1.fifteen?.pairs[0].lock;
+  assert.ok(lock && lock.edgeCents > 0 && lock.yesOn === "polymarket_us" && lock.qty === 100);
+  assert.equal(d1.lockEpisodes.label, LABEL);
+  assert.equal(d1.lockEpisodes.day, "2026-11-10");
+  assert.deepEqual([d1.lockEpisodes.fifteen.episodes, d1.lockEpisodes.hourly.episodes, d1.lockEpisodes.daily.episodes], [0, 0, 0]);
+  assert.match(fifteenSection(), new RegExp(`<p class="epi">Lock episodes today \\(UTC\\): <b>none</b><small>${LABEL}\\.`));
+  assert.match(page(c).slice(page(c).indexOf('<section data-horizon="daily"')), /No daily contract[^<]*<\/p><p class="epi">Lock episodes today \(UTC\): <b>none<\/b>/, "the line stands with no window open");
+
+  // cycle 2, ten seconds on, less size: an episode, still open
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(60, 13));
+  const d2 = await c.collectOnce();
+  const e2 = d2.lockEpisodes.fifteen;
+  assert.deepEqual([e2.episodes, e2.open, e2.medianDurationSec, e2.longestDurationSec], [1, 1, 10, 10]);
+  assert.equal(e2.recent[0].minQty, 60);
+  assert.equal(e2.recent[0].minLockCents, lock.edgeCents);
+  assert.equal(e2.totalValueCents, Math.round(lock.edgeCents * 60 * 100) / 100);
+  assert.equal(e2.recent[0].kalshiId, FIFTEEN_K);
+  assert.equal(e2.recent[0].polyId, FIFTEEN_P);
+  assert.equal(e2.recent[0].startedAt, d1.pricedAt);
+  assert.equal(e2.recent[0].endedAt, d2.pricedAt);
+  assert.match(fifteenSection(), /<p class="epi">Lock episodes today \(UTC\): <b>1<\/b> \(1 still open\) · median 10s · longest 10s · total <b>\$[\d.]+<\/b> · latest began [\d:]+ [AP]M ET at \$73,701\.52: 10s, at least [\d.]+¢ on 60 contracts<small>measured at the size on the book/);
+  assert.equal(readdirSync(dir).filter((n) => n.startsWith("episodes-")).length, 0, "nothing is written until it ends");
+
+  // cycle 3: the same lock on a copy 22 seconds old. Not counted, and it ends the run at cycle 2.
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(60, 22));
+  const d3 = await c.collectOnce();
+  assert.equal(d3.fifteen?.pairs[0].freshness, "stale");
+  const e3 = d3.lockEpisodes.fifteen;
+  assert.deepEqual([e3.episodes, e3.open], [1, 0]);
+  assert.equal(e3.recent[0].endedAt, d2.pricedAt);
+  assert.equal(e3.recent[0].open, undefined);
+  const written = readFileSync(join(dir, "episodes-2026-11-10.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as LockEpisode);
+  assert.deepEqual(written, [e3.recent[0]]);
+  assert.match(fifteenSection(), /<b>1<\/b> · median 10s · longest 10s · total <b>\$[\d.]+<\/b> · latest ended /);
+
+  // cycles 4 and 5: fresh again, a second episode, open; a clean stop ends and writes it
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(80, 2));
+  await c.collectOnce();
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(80, 12));
+  const d5 = await c.collectOnce();
+  assert.deepEqual([d5.lockEpisodes.fifteen.episodes, d5.lockEpisodes.fifteen.open], [2, 1]);
+  const api = getJson<{ label: string; minCycles: number; keptPerTenorBeforeToday: number; open: LockEpisode[]; episodes: LockEpisode[] }>(c, "/api/episodes");
+  assert.equal(api.label, LABEL);
+  assert.deepEqual([api.minCycles, api.keptPerTenorBeforeToday, api.open.length, api.episodes.length], [2, 50, 1, 1]);
+  assert.equal(api.open[0].open, true);
+  assert.ok(JSON.stringify(d5).includes('"lockEpisodes"'), "the stream frame is the report, so it carries them");
+  assert.deepEqual((c.health() as { lockEpisodesToday: unknown }).lockEpisodesToday, { fifteen: 2, hourly: 0, daily: 0 });
+  c.stop();
+  assert.equal(readFileSync(join(dir, "episodes-2026-11-10.jsonl"), "utf8").trim().split("\n").length, 2);
+
+  // the next process on the same data dir starts with both
+  const again = new PairsCollector({ dataDir: dir, fetchImpl: f.fetchImpl, clock: () => f.now, log: () => {} });
+  assert.equal(again.loadEpisodes(), 2);
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(80, 22));
+  const d6 = await again.collectOnce();
+  assert.deepEqual([d6.lockEpisodes.fifteen.episodes, d6.lockEpisodes.fifteen.open, d6.lockEpisodes.fifteen.longestDurationSec], [2, 0, 10]);
+  assert.equal(getJson<{ episodes: LockEpisode[] }>(again, "/api/episodes").episodes.length, 2);
+
+  // a day file older than three days is deleted on load, a torn line is skipped
+  const { writeFileSync, existsSync } = await import("node:fs");
+  writeFileSync(join(dir, "episodes-2026-11-05.jsonl"), `${JSON.stringify(written[0])}\n`);
+  writeFileSync(join(dir, "episodes-2026-11-09.jsonl"), `${JSON.stringify({ ...written[0], endedAt: "2026-11-09T12:00:10.000Z", startedAt: "2026-11-09T12:00:00.000Z" })}\n{"horizon":"fift`);
+  const third = new PairsCollector({ dataDir: dir, fetchImpl: f.fetchImpl, clock: () => f.now, log: () => {} });
+  assert.equal(third.loadEpisodes(), 3);
+  assert.equal(existsSync(join(dir, "episodes-2026-11-05.jsonl")), false);
 });
