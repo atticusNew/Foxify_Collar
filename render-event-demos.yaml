@@ -399,6 +399,16 @@ services:
       #   The defaults are sized for $5 to $20 positions: about $5 to $25 on the game per lock.
       #   Operator: /healthz?token= carries `exposure`: per game (the largest five), per venue and
       #   per holder, open now, the cap and the room left, and the refusals so far.
+      #   The caps also stand in front of EVENT_HEDGE_STRATEGY=rfq when it holds a venue key: that
+      #   strategy can accept a real quote and has no other rail (no kill switch, no order caps).
+      # PILOT CHECK (pilotCheck.ts), operator: GET /pilot-check?token= (a page) and
+      #   GET /api/shadow/pilot-check?token= (JSON). What must be true before a person outside the
+      #   company holds a real-money lock, each answered yes, no, or "cannot be checked from here"
+      #   with what to confirm by hand, and one line: ready for an outside holder, yes or no. It
+      #   reads settings and files; it changes nothing and gates nothing.
+      #   EVENT_SHADOW_DISK_MOUNT=/var/data     optional; where the persistent disk is mounted, for
+      #                                         the check's ledger question. Default /var/data, the
+      #                                         mountPath of this service's disk.
       # IN PLAY (lockWindow.ts): a game can be locked in from seven days out, through the last 45
       #   minutes and while it is being played. On by default.
       #   EVENT_X_IN_PLAY=0                     optional; turns it off (0, false, no, off): the lock path
