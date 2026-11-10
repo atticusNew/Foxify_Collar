@@ -1,6 +1,6 @@
 name: Event services health check
 
-# WHAT IT IS. Every 15 minutes this asks each event service for /healthz and
+# WHAT IT IS. Every hour this asks each event service for /healthz and
 # fails, naming the ones that did not answer 200. The job summary lists every
 # service's status code and response time. Nothing is sent but a public GET: no
 # secret is used and none is needed.
@@ -28,9 +28,12 @@ name: Event services health check
 # person has Actions failure notifications on. It does not email every watcher
 # of the repository. A manual run notifies the person who started it.
 #
-# COST. A private repository is billed for Actions minutes and every run counts
-# as at least one: every 15 minutes is about 2,900 minutes a month. Widen the
-# cron if that is more than the plan includes.
+# COST, AND WHY HOURLY. A private repository is billed for Actions minutes and
+# every run counts as at least one. Hourly is about 730 minutes a month. Every
+# 15 minutes would be about 2,900, which is more than GitHub's free plan
+# includes (2,000) and would stop the tests on this branch from running once it
+# was spent. To check more often, put more minutes in the cron below (for
+# example "7,22,37,52 * * * *") after confirming the plan has room.
 #
 # CAVEAT: THE SCHEDULE NEEDS THE DEFAULT BRANCH. GitHub runs `schedule`
 # triggers only from the repository's default branch. The default branch is
@@ -41,8 +44,8 @@ name: Event services health check
 
 on:
   schedule:
-    # Minutes 7, 22, 37 and 52: off the quarter hours, when GitHub's queue is longest.
-    - cron: "7,22,37,52 * * * *"
+    # Minute 7 of every hour: off the top of the hour, when GitHub's queue is longest.
+    - cron: "7 * * * *"
   workflow_dispatch:
 
 permissions:
