@@ -65,12 +65,12 @@ export type Freshness = "fresh" | "stale";
 
 /**
  * Seconds beyond which a book copy is too old for its gap to be read as a quoting difference.
- * A judgment from what was measured on 10 November 2026, not a venue constant: Polymarket US
- * serves its public book through a cache that holds each copy up to 30 seconds, and in a
- * 90-second sample of the live 15-minute window Kalshi's top of book changed five times while
- * that copy changed twice, trailing by 3 to 4 cents in between. Fifteen seconds on the
- * 15-minute window keeps the younger half of those copies; thirty on the hourly and daily,
- * which move less per second, keeps a whole cache life. `BTC_PAIRS_STALE_SECONDS` overrides.
+ * A judgment from two short samples of the live books, not a venue constant and not a tested
+ * threshold: Polymarket US serves its public book through a cache that holds each copy up to
+ * 30 seconds (copies were seen at every age from 0 to 29), while Kalshi's order book is served
+ * live and moved several times within one such copy's life. Fifteen seconds on the 15-minute
+ * window keeps the younger half of those copies; thirty on the hourly and daily, which move
+ * less per second, keeps a whole cache life. `BTC_PAIRS_STALE_SECONDS` overrides.
  */
 export const STALE_AFTER_SEC: Readonly<Record<Horizon, number>> = { fifteen: 15, hourly: 30, daily: 30 };
 
