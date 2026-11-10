@@ -247,6 +247,18 @@ export interface HedgeFill {
    * holder's receipt as the path the other side took; the operator's trail keeps the name.
    */
   via?: HedgeVia;
+  /**
+   * The venue's fee on a real order as the venue reported it, cents: inside `costCents` on a buy,
+   * already taken out of it on a sale. Absent on simulated fills, on accepted quotes (the accept
+   * answer carries no fee) and on every line written before the realized book read it.
+   */
+  feesCents?: number;
+  /**
+   * The part of `costCents` that did not leave at the fill: a fee the venue charges on the gain
+   * at settlement and only when the position wins (ProphetX). The realized book takes it off the
+   * cash paid and charges it only on a win. Absent where the venue has no such fee.
+   */
+  settlementProvisionCents?: number;
 }
 
 export type HedgeVia = "direct" | "aggregator";

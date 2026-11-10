@@ -181,13 +181,59 @@ export function sumProphetXFills(fills: ProphetXFill[]): { sharesMilli: number; 
   };
 }
 
+/** The settlement fee a buy's shares owe if they win: fee x (shares - stake), cents rounded up. Nothing is charged when they lose. */
+export function gainFeeCents(sum: { sharesMilli: number; stakeCents: number }, feeBps: number): number {
+  const gainCents = Math.max(0, Math.floor(sum.sharesMilli / 10) - sum.stakeCents);
+  return Math.ceil((gainCents * feeBps) / 10_000);
+}
+
 /**
  * The all-in cost of a buy as the pricer counts it: the stake, the match fee, and the settlement
  * fee on the gain the shares would make (fee x (shares - stake)), cents rounded up.
  */
 export function buyCostCents(sum: { sharesMilli: number; stakeCents: number; feesCents: number }, feeBps: number): number {
-  const gainCents = Math.max(0, Math.floor(sum.sharesMilli / 10) - sum.stakeCents);
-  return sum.stakeCents + sum.feesCents + Math.ceil((gainCents * feeBps) / 10_000);
+  return sum.stakeCents + sum.feesCents + gainFeeCents(sum, feeBps);
+}
+
+/** One order's fills in the trail's units: what `place` hands the executor and what a later read of the same fills must give again. */
+export interface ProphetXFillMoney {
+  unitsMilli: number;
+  avgPriceMilli: number;
+  /** a buy: all in, the settlement fee provided for; the offset: the net proceeds the pair pays at the game */
+  costCents: number;
+  feesCents: number;
+  /** a buy only: the part of `costCents` charged at settlement and only on a win */
+  settlementProvisionCents?: number;
+}
+
+/**
+ * The money of one order from its summed fills. A buy costs the stake, the match fee and the
+ * settlement fee provided for. The offset (`sell`) pairs each share of the holder's strike with
+ * one hedge share: its proceeds are the dollar less the price paid, less the fee on that gain,
+ * realised at the game, on at most the hedge's own size.
+ */
+export function prophetxFillMoney(sum: ReturnType<typeof sumProphetXFills>, intentUnitsMilli: number, sell: boolean, feeBps: number): ProphetXFillMoney {
+  if (!sell) {
+    const costCents = buyCostCents(sum, feeBps);
+    return {
+      unitsMilli: sum.sharesMilli,
+      avgPriceMilli: sum.sharesMilli > 0 ? Math.ceil((costCents * 10_000) / sum.sharesMilli) : 0,
+      costCents,
+      feesCents: sum.feesCents,
+      settlementProvisionCents: gainFeeCents(sum, feeBps),
+    };
+  }
+  const unitsMilli = Math.min(sum.sharesMilli, intentUnitsMilli);
+  const perShareMicro = Math.max(0, 1_000_000 - sum.avgPriceMicro);
+  const grossCents = Math.floor((unitsMilli * perShareMicro) / 10_000_000);
+  const settlementFeeCents = Math.ceil((grossCents * feeBps) / 10_000);
+  const netCents = Math.max(0, grossCents - sum.feesCents - settlementFeeCents);
+  return {
+    unitsMilli,
+    avgPriceMilli: unitsMilli > 0 ? Math.floor((netCents * 10_000) / unitsMilli) : 0,
+    costCents: netCents,
+    feesCents: sum.feesCents + settlementFeeCents,
+  };
 }
 
 export interface ProphetXOrderPlan {
@@ -323,41 +369,21 @@ export class ProphetXOrderClient {
     if (sum.sharesMilli <= 0) {
       throw new Error(`prophetx orders: order ${orderId} ${status || "unknown"} with nothing filled at or under ${(plan.limitMicro / 1_000_000).toFixed(6)} (fill or kill)${plan.ladderSource === "fallback" ? "; ladder served from the partner's last known set" : ""}`);
     }
-    const avgPriceMilli = Math.ceil(sum.avgPriceMicro / 1000);
     const notes: string[] = [];
     if (plan.ladderSource === "fallback") notes.push("ladder served from the partner's last known set");
+    const money = prophetxFillMoney(sum, intent.unitsMilli, sell, this.feeBps);
     if (!sell) {
-      const costCents = buyCostCents(sum, this.feeBps);
       if (sum.sharesMilli > intent.unitsMilli) notes.push(`${((sum.sharesMilli - intent.unitsMilli) / 1000).toFixed(3)} shares over the size, bought by the same stake at a better price`);
       notes.push(`stake $${(sum.stakeCents / 100).toFixed(2)} at ${(sum.avgPriceMicro / 1_000_000).toFixed(6)}; ${this.feeBps / 100}% of the gain provided for at settlement`);
-      return {
-        orderId,
-        venueOrderId: order?.venueOrderId ?? created.venueOrderId ?? undefined,
-        unitsMilli: sum.sharesMilli,
-        avgPriceMilli: Math.ceil((costCents * 10_000) / sum.sharesMilli),
-        costCents,
-        feesCents: sum.feesCents,
-        status: status === "FILLED" ? "executed" : status.toLowerCase() || "unknown",
-        via: "aggregator",
-        note: notes.join("; "),
-      };
+    } else {
+      // the offset: every share of the holder's strike bought settles against one hedge share
+      notes.push(`offset bought: ${(sum.sharesMilli / 1000).toFixed(3)} shares of strike ${plan.body.strikeId as string} at ${(sum.avgPriceMicro / 1_000_000).toFixed(6)}, stake $${(sum.stakeCents / 100).toFixed(2)}; the pair settles at the game and the proceeds land then, not today`);
+      if (sum.sharesMilli > intent.unitsMilli) notes.push(`${((sum.sharesMilli - intent.unitsMilli) / 1000).toFixed(3)} shares over the hedge, a windfall if the holder's side wins`);
     }
-    // the offset: every share of the holder's strike bought settles against one hedge share; its
-    // proceeds are the dollar less the price paid, less the fee on that gain, realised at the game
-    const unitsMilli = Math.min(sum.sharesMilli, intent.unitsMilli);
-    const perShareMicro = Math.max(0, 1_000_000 - sum.avgPriceMicro);
-    const grossCents = Math.floor((unitsMilli * perShareMicro) / 10_000_000);
-    const settlementFeeCents = Math.ceil((grossCents * this.feeBps) / 10_000);
-    const netCents = Math.max(0, grossCents - sum.feesCents - settlementFeeCents);
-    notes.push(`offset bought: ${(sum.sharesMilli / 1000).toFixed(3)} shares of strike ${plan.body.strikeId as string} at ${(sum.avgPriceMicro / 1_000_000).toFixed(6)}, stake $${(sum.stakeCents / 100).toFixed(2)}; the pair settles at the game and the proceeds land then, not today`);
-    if (sum.sharesMilli > intent.unitsMilli) notes.push(`${((sum.sharesMilli - intent.unitsMilli) / 1000).toFixed(3)} shares over the hedge, a windfall if the holder's side wins`);
     return {
       orderId,
       venueOrderId: order?.venueOrderId ?? created.venueOrderId ?? undefined,
-      unitsMilli,
-      avgPriceMilli: unitsMilli > 0 ? Math.floor((netCents * 10_000) / unitsMilli) : 0,
-      costCents: netCents,
-      feesCents: sum.feesCents + settlementFeeCents,
+      ...money,
       status: status === "FILLED" ? "executed" : status.toLowerCase() || "unknown",
       via: "aggregator",
       note: notes.join("; "),

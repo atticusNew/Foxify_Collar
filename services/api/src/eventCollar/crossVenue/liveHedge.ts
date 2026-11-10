@@ -62,6 +62,8 @@ export interface LiveOrderResult {
   /** all-in cents paid, fees included; on a sale the net proceeds, fees taken out */
   costCents: number;
   feesCents: number;
+  /** inside `costCents` on a buy, not paid at the fill: a fee the venue takes from the gain at settlement, only on a win (ProphetX) */
+  settlementProvisionCents?: number;
   /** the venue's final word on the order (executed, canceled, ...) */
   status: string;
   /** how the order reached the venue; absent means our own key on the venue */
@@ -132,6 +134,8 @@ export type LiveRail = "kill_switch" | "venue" | "ticker" | "per_order" | "per_d
 export type RailRefusal = { rail: LiveRail; detail: string };
 
 const units = (milli: number): string => `${milli / 1000}`;
+
+const wholeCents = (v: number | undefined): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
 
 /** The pre-trade checks, pure. `sentTodayMilli` is what the trail says already went out this UTC day. */
 export function checkRails(
@@ -272,6 +276,8 @@ export class LiveHedgeExecutor implements HedgeExecutor {
         simulated: false,
         ids: { orderId: r.orderId, ...(r.venueOrderId ? { venueOrderId: r.venueOrderId } : {}) },
         via,
+        ...(wholeCents(r.feesCents) ? { feesCents: r.feesCents } : {}),
+        ...(wholeCents(r.settlementProvisionCents) ? { settlementProvisionCents: r.settlementProvisionCents } : {}),
       };
       return { ...base, attempts, fill, outcome: "filled_live", fallbackReason: null };
     } catch (err) {
