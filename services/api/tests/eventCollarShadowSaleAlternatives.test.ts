@@ -1,23 +1,26 @@
 /**
  * Own sale and better bid on every record line (shadowSaleAlternatives.ts): the two alternatives
  * priced from the books the line was quoted on, what is written beside the collar, old ledger
- * lines replaying untouched, and the record summed.
+ * lines replaying untouched, the record summed, and the worker writing the measurement on a scan
+ * line without one more venue call.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFileSync, mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { quoteBetterBid } from "../src/eventCollar/crossVenue/betterBid";
 import { walkKalshiBids } from "../src/eventCollar/crossVenue/earlyClose";
-import { rulesFor, tableRules, tailProbabilities } from "../src/eventCollar/crossVenue/hedgeRouting";
+import { DEFAULT_TAIL_PROBABILITIES, chooseRoute, rulesFor, tableRules, tailProbabilities } from "../src/eventCollar/crossVenue/hedgeRouting";
 import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { counterfactualsFor, type CounterfactualInputs, type ShadowCounterfactuals } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
 import { appendShadowRecord, loadShadowPositions, settlePayouts, summarizeShadow, type ShadowOpenRecord } from "../src/eventCollar/crossVenue/shadowLedger";
 import { saleAlternativesFor, summarizeSaleAlternatives, type ShadowBetterBidOn, type ShadowSaleAlternatives } from "../src/eventCollar/crossVenue/shadowSaleAlternatives";
 import { DEFAULT_CROSS_CONFIG, capTotalCents, centsUpOf, floorTotalCents, type MatchedPair, type PmBook } from "../src/eventCollar/crossVenue/types";
 import type { ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
+import type { CandidateResult, GameMarketRow, OneQuoteInputs, OneQuoteResult, ScanState } from "../scripts/eventProtectXDemoService";
 
 const LOCK = "2026-09-20T17:00:00.000Z";
 const NOW = new Date("2026-09-20T11:00:00.000Z");
@@ -427,4 +430,102 @@ test("sale alternatives summary: counts, medians and totals in cents and in bps 
   assert.deepEqual([three.ownSale.vsCollarMedianCents, three.betterBid.improvementMedianCents], [50, 40]);
   const none = summarizeSaleAlternatives(positions.filter((p) => p.ticker === "L7"));
   assert.deepEqual([none.lines, none.ownSale.vsCollarMedianCents, none.betterBid.improvementMedianCents, none.betterBid.improvementTotalBpsOfStake], [0, null, null, null]);
+});
+
+// ---------------------------------------------------------------------------
+// the worker: a scan line carries the measurement, from the books the scan handed over
+// ---------------------------------------------------------------------------
+
+test("shadow worker: a board line is written with its own sale and better bid from the scan's books; the public JSON names no venue", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shadow-sale-worker-"));
+  const ledger = join(dir, "ledger.jsonl");
+  process.env.NODE_ENV = "test";
+  process.env.EVENT_SHADOW_LEDGER_PATH = ledger;
+  process.env.EVENT_SHADOW_LOCK_LEDGER_PATH = join(dir, "lock-ledger.jsonl");
+  process.env.EVENT_LASTLEG_LEDGER_PATH = join(dir, "lastleg.jsonl");
+  process.env.EVENT_HEDGE_RECEIPTS_PATH = join(dir, "hedge-receipts.jsonl");
+  process.env.EVENT_X_ADMIN_TOKEN = "op-secret";
+  process.env.EVENT_SHADOW_LOCK_KEY = "lock-key-0123456789";
+  delete process.env.EVENT_HEDGE_STRATEGY;
+  delete process.env.KALSHI_API_KEY_ID;
+  delete process.env.KALSHI_PRIVATE_KEY_PEM;
+  const worker = await import("../scripts/eventShadowWorker");
+
+  const start = new Date(Date.now() + 3 * 3_600_000).toISOString();
+  const p = { ...pair(), gameStartTime: start };
+  // the pair's own copy of the market says 99c; the scan's market snapshot says 63c, and that is the one a bid rests under
+  p.kalshi = { ...p.kalshi, closeTime: start, yesAskCents: 99 };
+  const candidate = (contracts: number): CandidateResult => {
+    const quote = quoteLadderWrap({ pair: { kalshi: { ticker: TICKER }, gameStartTime: start }, markCents: 60, entryCents: 55, contracts, now: new Date(), noAsks: NO_ASKS, config: DEFAULT_CROSS_CONFIG });
+    assert.ok(quote.ok, JSON.stringify(quote));
+    const routing = chooseRoute({
+      holderVenue: "kalshi",
+      league: "mlb",
+      holderRules: tableRules("kalshi", "mlb"),
+      markCents: 60,
+      contracts,
+      probabilities: DEFAULT_TAIL_PROBABILITIES.mlb,
+      routes: [{ route: "kalshi_self", ok: true, evCostBps: quote.evCostBps, creditCents: quote.creditCents, hedge: { unitsMilli: quote.hedge.venue === "kalshi" ? quote.hedge.contractsMilli : 0, avgPriceCents: 41, floorCents: quote.floorCents, capCents: quote.capCents }, gates: { gameMatch: true, venueOpen: true, executable: true }, rules: tableRules("kalshi", "mlb") }],
+    });
+    return {
+      kind: "sports",
+      league: "mlb",
+      market: { ...p.kalshi, yesAskCents: 63 },
+      pair: p,
+      sideName: "New York Yankees",
+      eventTitle: "Yankees at Red Sox",
+      eventTimeIso: start,
+      parityNote: "",
+      fingerprint: p.fingerprint,
+      markCents: 60,
+      position: { contracts, entryCents: 55, entrySource: "entered_now", entryTime: null },
+      quote,
+      route: "kalshi_self",
+      evBps: quote.evCostBps,
+      routesChecked: [],
+      books: { noAsks: NO_ASKS, pmNoBook: otherBook(350), references: [{ id: "long_short_v1", book: otherBook(330) }] },
+      routing,
+    };
+  };
+  let scans = 0;
+  let quotes = 0;
+  const markets: GameMarketRow[] = [{ ticker: TICKER, league: "mlb", sideName: "New York Yankees", title: "Winner?", dateIso: "2026-09-20", closeTimeIso: start, markCents: 60, startIso: start, protectable: true, protectableUntilIso: start }];
+  worker.wireLockEngine({
+    listGameMarkets: async () => markets,
+    quoteOne: async (i: OneQuoteInputs): Promise<OneQuoteResult> => {
+      quotes += 1;
+      return { ok: true, result: candidate(i.contracts) };
+    },
+    scan: async (): Promise<ScanState> => {
+      scans += 1;
+      const res = candidate(150);
+      return { atIso: new Date().toISOString(), rows: [{ res, evBps: res.quote.ok ? res.quote.evCostBps : 0 }], fallback: null, fetchFailures: 0 };
+    },
+  });
+  await new Promise<void>((r) => worker.server.listen(0, "127.0.0.1", () => r()));
+  const base = `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`;
+  try {
+    await worker.scanTick();
+    // one scan, nothing else asked of the engine: the measurement used the books that scan handed over
+    assert.deepEqual([scans, quotes], [1, 0]);
+    const line = JSON.parse(readFileSync(ledger, "utf8").trim().split("\n")[0]) as ShadowOpenRecord;
+    const sale = line.counterfactuals?.sale;
+    assert.ok(sale, "the open line carries the measurement");
+    assert.deepEqual([sale.holderVenue, sale.holderAskCents], ["kalshi", 63]);
+    assert.equal(sale.soldMilli, centsUpOf(line.floorCents + 100 - line.capCents, 150) * 10);
+    assert.ok(sale.ownSale.ok && sale.betterBid.ok);
+    assert.deepEqual([sale.betterBid.book, sale.betterBid.venuesPriced, sale.books.map((b) => b.book)], ["long_short_v1", 2, ["polymarket", "long_short_v1"]]);
+    // the ledger keeps the book's key for the operator; the old fields of the line are where they were
+    assert.ok(line.counterfactuals?.routes?.kalshi_self.ok && line.routing?.holderVenue === "kalshi");
+
+    // the public JSON says the comparison exists and keeps the books with the operator, as before
+    const api = (await (await fetch(`${base}/api/shadow`)).json()) as { summary: { counterfactuals: Record<string, unknown> }; open: Array<Record<string, unknown>> };
+    assert.deepEqual(Object.keys(api.summary.counterfactuals).sort(), ["positionsWithCounterfactuals", "recordedSince"]);
+    assert.ok(!JSON.stringify(api).includes("long_short_v1") && !("counterfactuals" in api.open[0]));
+    // the operator's report carries the whole summary, books named
+    const report = (await (await fetch(`${base}/api/shadow/report?token=op-secret`)).json()) as { counterfactuals: { sale: { lines: number; betterBid: { existed: number; byBook: Record<string, { best: number }> } } } };
+    assert.deepEqual([report.counterfactuals.sale.lines, report.counterfactuals.sale.betterBid.existed, report.counterfactuals.sale.betterBid.byBook.long_short_v1.best], [1, 1, 1]);
+  } finally {
+    await new Promise<void>((r) => worker.server.close(() => r()));
+  }
 });
