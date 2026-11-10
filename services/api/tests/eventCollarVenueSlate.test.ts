@@ -30,7 +30,7 @@ import {
   slateSlugOf,
 } from "../src/eventCollar/crossVenue/venueSlate";
 import { loadShadowPositions, summarizeShadow, type ShadowOpenRecord, type ShadowRecord } from "../src/eventCollar/crossVenue/shadowLedger";
-import { renderSlateHtml } from "../scripts/eventShadowHtml";
+import { renderSlateHtml, slateHedgeWords } from "../scripts/eventShadowHtml";
 import { DEFAULT_CROSS_CONFIG, type PmBook } from "../src/eventCollar/crossVenue/types";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -258,10 +258,13 @@ test("renderSlateHtml: the venue's name, its leagues, the hedge venues, the iden
     lastLeg: summarizeLastLeg(tickets),
     lastLegStakeCents: 2_000,
     hedgeVenues: ["Kalshi", "Polymarket"],
+    nameHedgeVenues: true,
     demoUrl: "https://demo.example/?brand=Wire%20Markets",
     csvHref: "/slate/wiremarkets.csv?k=abc",
     recordUrl: "https://record.example",
   });
+  assert.ok(html.includes("What one Lock in button would have done") && html.includes("tap Lock in on any row"), "the bettor's verb is Lock in");
+  assert.ok(!/\bProtect\b/.test(html.replace(/Earn &amp; Protect/g, "")), "Protect appears only in the wordmark");
   assert.ok(html.includes("<title>Protection on the Wire Markets slate"));
   assert.ok(html.includes('<meta name="robots" content="noindex, nofollow" />'));
   assert.ok(html.includes("prepared for Wire Markets"));
@@ -292,12 +295,23 @@ test("renderSlateHtml: the venue's name, its leagues, the hedge venues, the iden
     lockVsSell: lockVersusSell([]),
     lastLeg: summarizeLastLeg([]),
     lastLegStakeCents: 2_000,
-    hedgeVenues: ["Kalshi", "Polymarket"],
+    hedgeVenues: ["Kalshi", "Polymarket", "Novig"],
+    nameHedgeVenues: false,
     demoUrl: "https://demo.example/?brand=Wire%20Markets",
     csvHref: "/slate/wiremarkets.csv?k=abc",
     recordUrl: "https://record.example",
   });
+  assert.ok(empty.includes("Hedged leg for leg on the best of 3 venues."), "a prospect's link says how many venues compete");
+  assert.ok(!/Kalshi|Polymarket|Novig|ProphetX/.test(empty), "and never which");
   assert.ok(empty.includes("on the leagues you list games"));
   assert.ok(empty.includes("no positions on these leagues yet"));
   assert.ok(empty.includes("The parlay shadow has just started"));
+});
+
+test("slateHedgeWords: names only when the page may carry them; otherwise the count", () => {
+  assert.equal(slateHedgeWords(["Kalshi", "ProphetX", "Novig"], true), "on Kalshi, ProphetX and Novig");
+  assert.equal(slateHedgeWords(["Kalshi", "ProphetX", "Novig"], false), "on the best of 3 venues");
+  assert.equal(slateHedgeWords(["Kalshi"], true), "on Kalshi");
+  assert.equal(slateHedgeWords(["Kalshi"], false), "on a regulated venue's own book");
+  assert.equal(slateHedgeWords([], true), "on a regulated venue's own book", "nothing to name reads the same as one venue unnamed");
 });

@@ -1132,8 +1132,13 @@ export interface SlatePageInput {
   lockVsSell: LockVsSellSummary;
   lastLeg: LastLegSummary;
   lastLegStakeCents: number;
-  /** where the hedges are bought today, by name, in the order they are tried */
+  /** where the hedges are bought today, by name, the ones this slate's record used first */
   hedgeVenues: string[];
+  /**
+   * Whether the page names them. A prospect's link says how many venues compete and no more
+   * (EVENT_X_NAME_HEDGE_VENUES off, the default); the names are the operator's.
+   */
+  nameHedgeVenues: boolean;
   /** the interactive demo in the venue's brand */
   demoUrl: string;
   /** the slate's CSV, keyed */
@@ -1145,8 +1150,15 @@ export interface SlatePageInput {
 const joinWords = (xs: readonly string[]): string =>
   xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
 
+/** Where the hedges go, in the slate's sentence: the names when the page may carry them, the count otherwise. */
+export function slateHedgeWords(venues: readonly string[], named: boolean): string {
+  if (named && venues.length > 0) return `on ${joinWords(venues)}`;
+  if (venues.length <= 1) return "on a regulated venue's own book";
+  return `on the best of ${venues.length} venues`;
+}
+
 /**
- * VENUE SLATE PAGE: "what one Protect button would have done on your games". The public record's
+ * VENUE SLATE PAGE: "what one Lock in button would have done on your games". The public record's
  * numbers, cut to the venue's leagues, with the venue's name on it and the parlay moment as a lock
  * versus sell table. Reached only by a share key, so the name appears only where the operator sent
  * it. Same visual language as the record; server-rendered, no client JS.
@@ -1157,7 +1169,7 @@ export function renderSlateHtml(input: SlatePageInput): string {
   const name = escapeHtml(v.name);
   const leagues = input.leaguesOnRecord.map((l) => l.toUpperCase());
   const leagueWords = leagues.length ? joinWords(leagues) : "the leagues you list";
-  const hedgeWords = joinWords(input.hedgeVenues);
+  const hedgeWords = slateHedgeWords(input.hedgeVenues, input.nameHedgeVenues);
   const id = s.identity;
   const w = s.writer;
   const stakeSettled = s.protectedTotalCents + s.nakedTotalCents > 0 ? s.nakedTotalCents : 0;
@@ -1237,7 +1249,7 @@ export function renderSlateHtml(input: SlatePageInput): string {
 <div class="wrap">
   <div class="card">
     <h1>Protection on the ${name} slate</h1>
-    <div class="sub">What one Protect button would have done on ${escapeHtml(leagueWords)} games: every quotable game protected at its live quoted terms, then marked against the official result. Hedged leg for leg on ${escapeHtml(hedgeWords)}. Live prices; nothing was bought.</div>
+    <div class="sub">What one Lock in button would have done on ${escapeHtml(leagueWords)} games: every quotable game locked in at its live quoted terms, then marked against the official result. Hedged leg for leg ${escapeHtml(hedgeWords)}. Live prices; nothing was bought.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.settledCount}</div><div class="l">games settled</div></div>
       <div class="bignum"><div class="n">${s.floorSaves}</div><div class="l">floor saves</div></div>
@@ -1279,7 +1291,7 @@ ${parlayCard}  <div class="card">
   </div>
   <div class="card">
     <h2>See it in your app</h2>
-    <div class="read">The same engine, inside a positions list in your colours: tap Protect on any row, see the floor, the cap and the credit priced live, accept, and watch the row reshape. One JSON quote in, one receipt out; your brand, your ledger, your official result.</div>
+    <div class="read">The same engine, inside a positions list in your colours: tap Lock in on any row, see the floor, the cap and the credit priced live, accept, and watch the row reshape. One JSON quote in, one receipt out; your brand, your ledger, your official result.</div>
     <a class="back" href="${escapeHtml(input.demoUrl)}">Open the ${name} demo</a> <a class="back" href="${escapeHtml(input.recordUrl)}">Full public record</a> <a class="back" href="${escapeHtml(input.csvHref)}">Your slate (CSV)</a>
   </div>
   <footer>

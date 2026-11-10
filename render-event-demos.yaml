@@ -320,6 +320,9 @@ services:
       # semicolon, slug=Name:leagues; an empty league list is every sports league. Reached
       # only by the share key or the operator token, never linked from the public record, so a
       # prospect's name appears only on a link we chose to send. Nothing is read from the venue.
+      # A share link says how many hedge venues compete ("the best of 3 venues") and never which;
+      # the operator token reads the names. EVENT_X_NAME_HEDGE_VENUES=1 on this service (the same
+      # switch the demo page has, off by default) names them on share links too.
       - key: EVENT_SHADOW_SLATES
         value: "wiremarkets=Wire Markets:nfl,nba,mlb,nhl,epl,ucl,mls;wagerwire=WagerWire:nfl,nba,mlb,nhl;sporttrade=Sporttrade:nfl,nba,mlb,nhl;novig=Novig:nfl,nba,mlb,nhl;draftkings=DraftKings:nfl,nba,mlb,nhl;underdog=Underdog:nfl,nba,mlb,nhl;prophetx=ProphetX:nfl,nba,mlb,nhl,epl,ucl,mls;prizepicks=PrizePicks:nfl,nba,mlb,nhl"
       - key: EVENT_SHADOW_SLATE_KEY

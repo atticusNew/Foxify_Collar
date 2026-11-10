@@ -305,6 +305,12 @@ const SLATE_KEY = process.env.EVENT_SHADOW_SLATE_KEY;
 /** the interactive demo, which renders in a venue's brand with ?brand= */
 const DEMO_URL = (process.env.EVENT_SHADOW_DEMO_URL || "https://atticus-event-demo-cross-venue.onrender.com").replace(/\/+$/, "");
 const RECORD_URL = (process.env.EVENT_SHADOW_PUBLIC_URL || "https://atticus-event-shadow.onrender.com").replace(/\/+$/, "");
+/**
+ * Whether a prospect's slate page names the hedge venues (EVENT_X_NAME_HEDGE_VENUES=1, the same
+ * switch the demo page reads). Off by default: the page says how many venues compete, and only
+ * the operator's token reads which.
+ */
+const SLATE_NAMES_HEDGE_VENUES = process.env.EVENT_X_NAME_HEDGE_VENUES === "1";
 /** the books the hedges are bought on, by public name, keyed by the record's route codes */
 const HEDGE_VENUE_NAMES: Record<string, string> = { kalshi_self: "Kalshi", polymarket: "Polymarket", prophetx: "ProphetX", novig: "Novig" };
 /**
@@ -4588,9 +4594,11 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const summary = summarizeShadow(onSlate);
       const { settled, open } = splitPositions(onSlate);
       const tickets = loadLastLegTickets(LASTLEG_PATH);
-      // the books wired today, the ones the record has used first; the per-row route is in the CSV
+      // the venues this slate's record used, then the ones offered tonight (EVENT_HEDGE_VENUES); a
+      // venue that is neither is not on the page. A share link carries how many, never which
+      // (SLATE_NAMES_HEDGE_VENUES); the operator's own token reads the names.
       const used = Object.keys(summary.routeSplit).map((r) => HEDGE_VENUE_NAMES[r]).filter(Boolean);
-      const hedgeVenues = [...new Set([...used, ...Object.values(HEDGE_VENUE_NAMES)])];
+      const hedgeVenues = [...new Set([...used, ...HEDGE_VENUES.routes.map((r) => HEDGE_VENUE_NAMES[r]).filter(Boolean)])];
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" });
       res.end(
         renderSlateHtml({
@@ -4604,6 +4612,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           lastLeg: summarizeLastLeg(tickets),
           lastLegStakeCents: lastLegCfg.stakeCents,
           hedgeVenues,
+          nameHedgeVenues: SLATE_NAMES_HEDGE_VENUES || (operator && !keyed),
           demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(slate.name)}`,
           csvHref: `/slate/${slate.slug}.csv${keyQuery}`,
           recordUrl: RECORD_URL,
