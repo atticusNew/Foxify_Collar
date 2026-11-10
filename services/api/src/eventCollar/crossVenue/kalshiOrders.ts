@@ -374,8 +374,41 @@ export class KalshiOrderClient {
     throw new Error("kalshi orders: balance response had no balance");
   }
 
+  /**
+   * One page of the account's own fills (GET /portfolio/fills). A read, never an order. The
+   * venue moves fills older than its historical cutoff to another endpoint, which this does not
+   * read. The cursor is null on the last page.
+   */
+  async fillsPage(q: KalshiFillsQuery = {}): Promise<{ fills: KalshiFill[]; cursor: string | null }> {
+    const params = new URLSearchParams();
+    if (q.orderId) params.set("order_id", q.orderId);
+    if (q.minTs !== undefined) params.set("min_ts", String(Math.floor(q.minTs)));
+    if (q.maxTs !== undefined) params.set("max_ts", String(Math.floor(q.maxTs)));
+    if (q.subaccount !== undefined) params.set("subaccount", String(q.subaccount));
+    params.set("limit", String(Math.min(1000, Math.max(1, q.limit ?? 1000))));
+    if (q.cursor) params.set("cursor", q.cursor);
+    const data = (await this.call("GET", `/portfolio/fills?${params.toString()}`)) as { fills?: unknown; cursor?: unknown } | null;
+    const fills = (Array.isArray(data?.fills) ? data.fills : []).filter((f): f is KalshiFill => {
+      const x = f as Partial<KalshiFill> | null;
+      return Boolean(x && typeof x.order_id === "string" && x.order_id && typeof x.count_fp === "string");
+    });
+    return { fills, cursor: typeof data?.cursor === "string" && data.cursor ? data.cursor : null };
+  }
+
+  /** One order as the venue holds it (the legacy read): the only place its client order id is read back. Null when the venue has no such order. */
+  async orderRead(orderId: string): Promise<KalshiRawOrder | null> {
+    try {
+      const read = (await this.call("GET", `/portfolio/orders/${encodeURIComponent(orderId)}`)) as { order?: KalshiRawOrder } | null;
+      return read?.order ?? null;
+    } catch (err) {
+      if (err instanceof Error && /\bHTTP 404\b/.test(err.message)) return null;
+      throw err;
+    }
+  }
+
   private async call(method: string, endpoint: string, body?: unknown): Promise<unknown> {
     const url = `${this.base}${endpoint}`;
+    // the signature covers the path alone; a query string is not part of it
     const path = new URL(url).pathname;
     const ts = this.now();
     const headers: Record<string, string> = {
@@ -391,7 +424,8 @@ export class KalshiOrderClient {
     const res = await this.fetchImpl(url, init);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`kalshi orders: HTTP ${res.status} ${method} ${endpoint}${text ? ` ${text.slice(0, 200)}` : ""}`);
+      // the error names the endpoint without its query
+      throw new Error(`kalshi orders: HTTP ${res.status} ${method} ${endpoint.split("?")[0]}${text ? ` ${text.slice(0, 200)}` : ""}`);
     }
     if (res.status === 204) return null;
     const text = await res.text();

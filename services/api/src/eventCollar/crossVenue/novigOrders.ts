@@ -373,6 +373,26 @@ export class NovigOrderClient {
     return flattenFills(b).filter((f) => f.orderId === orderId);
   }
 
+  /**
+   * Every fill of the key's own wallet in a time window (epoch ms, both ends excluded by the
+   * venue), every page: GET /v3/portfolio/fills?startsAfter=&startsBefore=&limit=&after=. A
+   * read, never an order. Stops with an error rather than a short list if the pages do not end.
+   */
+  async fillsBetween(afterMs: number, beforeMs: number, maxPages = 20): Promise<NovigFill[]> {
+    const out: NovigFill[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < maxPages; page += 1) {
+      const q = new URLSearchParams({ startsAfter: String(Math.floor(afterMs)), startsBefore: String(Math.floor(beforeMs)), limit: "5000" });
+      if (cursor) q.set("after", cursor);
+      const b = await this.call<unknown>("GET", "/v3/portfolio/fills", q.toString());
+      out.push(...flattenFills(b));
+      const next = (b as { next?: unknown } | null)?.next;
+      if (typeof next !== "string" || !next) return out;
+      cursor = next;
+    }
+    throw new Error(`novig orders: the fills list did not end within ${maxPages} pages`);
+  }
+
   /** Cancel; the venue answers with the order as it stood at the request. A finished order answers 404 or 409: read it instead. */
   async cancel(orderId: string): Promise<NovigOrder> {
     try {
