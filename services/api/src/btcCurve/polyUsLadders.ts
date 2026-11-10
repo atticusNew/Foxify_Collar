@@ -15,6 +15,7 @@
  */
 
 import { fetchJsonWithRetry } from "../eventCollar/kalshiPublic";
+import { fetchJsonOnce, type BookStamp, type ReadOnceOptions } from "./bookRead";
 import { aboveKey, belowKey } from "./keys";
 import type { Bucket, IndexCandle, Ladder, VenueQuote } from "./types";
 
@@ -51,6 +52,10 @@ interface RawMarket {
   active?: boolean;
   closed?: boolean;
   endDate?: string;
+  /** when the listing was created; on the 15-minute family that is hours before the window */
+  startDate?: string;
+  /** when trading opens: the window start on the up/down families */
+  gameStartTime?: string;
   feeCoefficient?: number;
   bestBidQuote?: Money | null;
   bestAskQuote?: Money | null;
@@ -129,7 +134,18 @@ export interface PolyReadOptions {
   upDown?: boolean;
 }
 
+/**
+ * When the contract opened: the latest of the window start, the trading start and the listing's
+ * creation. The 15-minute markets are created hours ahead and open with their window; the
+ * strike ladders have no window start and open when they are listed. Exported for tests.
+ */
+export function polyOpenedAt(m: RawMarket): string | undefined {
+  const ms = [m.assetPriceTerms?.windowStart, m.gameStartTime, m.startDate].map((v) => (v ? Date.parse(v) : NaN)).filter((v) => Number.isFinite(v));
+  return ms.length ? new Date(Math.max(...ms)).toISOString() : undefined;
+}
+
 function quoteFromPolyUs(m: RawMarket, bucketKey: string): VenueQuote {
+  const openedAt = polyOpenedAt(m);
   return {
     venue: "polymarket_us",
     bucketKey,
@@ -141,6 +157,7 @@ function quoteFromPolyUs(m: RawMarket, bucketKey: string): VenueQuote {
     volume: 0,
     openInterest: 0,
     feeTheta: typeof m.feeCoefficient === "number" ? m.feeCoefficient : 0,
+    ...(openedAt ? { openedAt } : {}),
   };
 }
 
@@ -191,21 +208,36 @@ async function fetchEventsBySlug(slugs: string[], fetchImpl: typeof fetch): Prom
   return data.events ?? [];
 }
 
-/** Best-level depth and the full book for one market. */
-export async function fetchBook(
-  slug: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<{ bidCents: number; askCents: number; bidQty: number; askQty: number; volume: number; openInterest: number }> {
-  const data = (await fetchJsonWithRetry(`${polyUsBase()}/v1/markets/${encodeURIComponent(slug)}/book`, fetchImpl)) as {
-    marketData?: {
-      bids?: Array<{ px: Money; qty: string }>;
-      offers?: Array<{ px: Money; qty: string }>;
-      stats?: { sharesTraded?: string; openInterest?: string };
-    };
+interface RawBook {
+  marketData?: {
+    bids?: Array<{ px: Money; qty: string }>;
+    offers?: Array<{ px: Money; qty: string }>;
+    stats?: { sharesTraded?: string; openInterest?: string };
+    /** MARKET_STATE_OPEN while the market trades */
+    state?: string;
+    /** the venue's stamp on the book, nanosecond ISO; it marks the last change, so a quiet book carries an old one */
+    transactTime?: string;
   };
-  const md = data.marketData;
+}
+
+export interface PolyBook {
+  bidCents: number;
+  askCents: number;
+  bidQty: number;
+  askQty: number;
+  volume: number;
+  openInterest: number;
+  /** `marketData.transactTime`, ms; null when absent or unreadable */
+  venueAtMs: number | null;
+  state: string | null;
+}
+
+/** The best level each side, the venue's stamp and the market state out of one book answer. Exported for tests. */
+export function bookFromPolyUs(data: unknown): PolyBook {
+  const md = (data as RawBook | null | undefined)?.marketData;
   const bids = (md?.bids ?? []).map((l) => ({ px: moneyCents(l.px), qty: Number(l.qty) })).sort((a, b) => b.px - a.px);
   const offers = (md?.offers ?? []).map((l) => ({ px: moneyCents(l.px), qty: Number(l.qty) })).sort((a, b) => a.px - b.px);
+  const venueAtMs = md?.transactTime ? Date.parse(md.transactTime) : NaN;
   return {
     bidCents: bids[0]?.px ?? 0,
     askCents: offers[0]?.px ?? 0,
@@ -213,7 +245,32 @@ export async function fetchBook(
     askQty: offers[0]?.qty ?? 0,
     volume: Number(md?.stats?.sharesTraded ?? 0),
     openInterest: Number(md?.stats?.openInterest ?? 0),
+    venueAtMs: Number.isFinite(venueAtMs) ? venueAtMs : null,
+    state: typeof md?.state === "string" ? md.state : null,
   };
+}
+
+export function polyBookUrl(slug: string): string {
+  return `${polyUsBase()}/v1/markets/${encodeURIComponent(slug)}/book`;
+}
+
+/** Best-level depth and the full book for one market. */
+export async function fetchBook(
+  slug: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ bidCents: number; askCents: number; bidQty: number; askQty: number; volume: number; openInterest: number }> {
+  const { bidCents, askCents, bidQty, askQty, volume, openInterest } = bookFromPolyUs(await fetchJsonWithRetry(polyBookUrl(slug), fetchImpl));
+  return { bidCents, askCents, bidQty, askQty, volume, openInterest };
+}
+
+/**
+ * One market's book, read once, with its times: when we got it, how long the venue's cache had
+ * held it, and the venue's own stamp. Throws `BookReadError` (a 404 for minutes after a contract
+ * opens is the usual case) so the caller can say so on that row alone.
+ */
+export async function readBookOnce(slug: string, fetchImpl: typeof fetch = fetch, opts: ReadOnceOptions = {}): Promise<PolyBook & BookStamp> {
+  const { data, fetchedAtMs, cacheAgeSec } = await fetchJsonOnce(polyBookUrl(slug), fetchImpl, opts);
+  return { ...bookFromPolyUs(data), fetchedAtMs, cacheAgeSec };
 }
 
 /** Group markets into ladders by (event, kind family, settlement instant). Exported for tests. */

@@ -10,6 +10,7 @@
  */
 
 import { fetchJsonWithRetry, kalshiBase } from "../eventCollar/kalshiPublic";
+import { fetchJsonOnce, type BookStamp, type ReadOnceOptions } from "./bookRead";
 import { aboveKey, belowKey, keyLevel } from "./keys";
 import type { Bucket, Ladder, VenueQuote } from "./types";
 
@@ -29,6 +30,8 @@ export interface RawMarket {
   ticker: string;
   event_ticker: string;
   status: string;
+  /** when the market opened for trading */
+  open_time?: string;
   close_time: string;
   expiration_time?: string;
   strike_type?: string;
@@ -133,6 +136,7 @@ function quoteFromKalshi(m: RawMarket, bucketKey: string, feeTheta: number): Ven
     volume: Number(m.volume_fp ?? 0),
     openInterest: Number(m.open_interest_fp ?? 0),
     feeTheta,
+    ...(m.open_time ? { openedAt: m.open_time } : {}),
   };
 }
 
@@ -160,6 +164,53 @@ export async function fetchTopDepth(
     typeof topDepthFromOrderbook
   >[0];
   return topDepthFromOrderbook(data);
+}
+
+type RawOrderbook = Parameters<typeof topDepthFromOrderbook>[0];
+
+export interface KalshiTop {
+  bidCents: number;
+  askCents: number;
+  bidQty: number;
+  askQty: number;
+}
+
+/**
+ * The top of book, price and size, out of one orderbook answer. The best Yes bid is the highest
+ * resting Yes bid; the best Yes offer is 100 minus the highest resting No bid. An empty side
+ * reads as Kalshi's own listing reads it: no bid is 0, no offer is 100. Exported for tests.
+ */
+export function topOfBookFromOrderbook(data: RawOrderbook): KalshiTop {
+  const fp = data.orderbook_fp;
+  const yes = fp ? (fp.yes_dollars ?? []).map(([px, qty]) => [dollarsToCentsExact(px), Number(qty)]) : (data.orderbook?.yes ?? []).map(([px, qty]) => [Number(px), Number(qty)]);
+  const no = fp ? (fp.no_dollars ?? []).map(([px, qty]) => [dollarsToCentsExact(px), Number(qty)]) : (data.orderbook?.no ?? []).map(([px, qty]) => [Number(px), Number(qty)]);
+  const best = (levels: number[][]) => levels.reduce<number[] | null>((a, l) => (!a || l[0] > a[0] ? l : a), null);
+  const bestYes = best(yes);
+  const bestNo = best(no);
+  return {
+    bidCents: bestYes ? bestYes[0] : 0,
+    askCents: bestNo ? Math.round((100 - bestNo[0]) * 100) / 100 : 100,
+    bidQty: bestYes ? bestYes[1] : 0,
+    askQty: bestNo ? bestNo[1] : 0,
+  };
+}
+
+export function kalshiOrderbookUrl(ticker: string): string {
+  return `${kalshiBase()}/markets/${encodeURIComponent(ticker)}/orderbook`;
+}
+
+/**
+ * One market's top of book from its orderbook, read once, with its times. The orderbook is the
+ * live answer: the market list the ladders are built from is served through a CDN with
+ * `cache-control: public, max-age=15`, so its yes_bid / yes_ask can be 15 seconds behind
+ * (seen 10 November 2026: the list held 98.5 / 98.6 for 14 seconds while the orderbook walked
+ * from 99.4 to 98.9). The orderbook answer carries no timestamp of its own, and the market's
+ * `updated_time` marks its last metadata change, not its last quote, so `venueAtMs` is null.
+ * Throws `BookReadError`.
+ */
+export async function readTopOnce(ticker: string, fetchImpl: typeof fetch = fetch, opts: ReadOnceOptions = {}): Promise<KalshiTop & BookStamp> {
+  const { data, fetchedAtMs, cacheAgeSec } = await fetchJsonOnce(kalshiOrderbookUrl(ticker), fetchImpl, opts);
+  return { ...topOfBookFromOrderbook(data as RawOrderbook), fetchedAtMs, cacheAgeSec, venueAtMs: null, state: null };
 }
 
 export interface KalshiLadderSet {
