@@ -8,10 +8,14 @@
  */
 
 import { midCents, takerFeeCents } from "./analytics";
+import { normCdf } from "./model";
 import type { Ladder, Venue, VenueQuote } from "./types";
 
-export type Horizon = "hourly" | "daily";
+/** fifteen: the 15-minute up/down window (one strike, the price to beat); hourly: the next close; daily: 5 PM ET */
+export type Horizon = "fifteen" | "hourly" | "daily";
 export type Place = "below" | "atm" | "above";
+
+const MINUTES_PER_YEAR = 365 * 24 * 60;
 
 export interface PairLeg {
   venue: Venue;
@@ -75,16 +79,83 @@ export interface StrikePair {
   score: number | null;
   /** why the score is what it is, or why there is none */
   reading: string;
+  /** realized-vol model: probability BRTI settles at or above the strike, cents of $1; null without a sigma */
+  modelCents: number | null;
+}
+
+/** One leg of a band: Yes at the lower strike or No at the upper, on the venue that sells it cheapest. */
+export interface BandLeg {
+  venue: Venue;
+  id: string;
+  side: "yes" | "no";
+  strike: number;
+  /** the price taken: the Yes ask, or 100 minus the Yes bid for the No */
+  priceCents: number;
+  qty: number;
+  feeCents: number;
+}
+
+/**
+ * The range between two neighbouring strikes, built the way a trader builds it on an
+ * above/below ladder: Yes just below plus No just above. One leg pays for sure; both pay
+ * inside. So the band costs (Yes ask at the lower) minus (Yes bid at the upper) plus fees, per
+ * $1 paid when BRTI settles inside, and the venues' own mids say what they think that is worth.
+ */
+export interface Band {
+  lower: number;
+  upper: number;
+  widthUsd: number;
+  /** what each venue's mids imply for settling inside, cents of $1 */
+  impliedKalshiCents: number | null;
+  impliedPolyCents: number | null;
+  /** the mean of what both venues imply, or the one that shows */
+  impliedCents: number | null;
+  /** realized-vol model probability of settling inside, cents; null without a sigma */
+  modelCents: number | null;
+  /** the cheapest way to own the band across the two venues, after both fees */
+  cost: { legs: [BandLeg, BandLeg]; costCents: number; feesCents: number; qty: number } | null;
+  /** implied minus cost: the premium paid over the venues' own mids (negative) or a cross (positive) */
+  edgeCents: number | null;
+  /** the band's width in one-sigma moves to the close; null without a sigma */
+  sigmas: number | null;
+}
+
+interface RealizedWindow {
+  minutes: number;
+  /** high minus low over the window, USD */
+  rangeUsd: number;
+  /** last minus first, USD */
+  netUsd: number;
+  /** realized vol from one-minute returns, percent per year; null with too few samples */
+  volPct: number | null;
+  /** one-minute samples used */
+  n: number;
+}
+
+/** Trailing realized movement of the settlement index: is the market contained or expanding right now. */
+export interface Regime {
+  m15: RealizedWindow | null;
+  m60: RealizedWindow | null;
+  /** the 15-minute realized vol against the hour's: under 0.7 contained, over 1.4 expanding */
+  label: "contained" | "steady" | "expanding" | null;
+  reading: string;
 }
 
 export interface HorizonSet {
   horizon: Horizon;
   settlesAt: string;
   minutesToClose: number;
-  /** strike spacing on this ladder, USD */
+  secondsToClose: number;
+  /** strike spacing on this ladder, USD; 0 on the one-strike 15-minute window */
   stepUsd: number;
-  /** the three strikes: below, at the money, above */
+  /** the three strikes: below, at the money, above (the 15-minute window has the one strike, the price to beat) */
   pairs: StrikePair[];
+  /** the ranges between the strikes, Yes just below plus No just above */
+  bands: Band[];
+  /** one standard deviation of BRTI to the close at the trailing realized vol, USD; null without a vol */
+  sigmaUsd: number | null;
+  /** the id the tenor's Launch button sends by default: the cleanest scored pair, else the money */
+  pick: string | null;
   /** a wider look, mids only: the strikes around the money on both venues */
   context: Array<{ strike: number; kalshiMid: number | null; polyMid: number | null; gapCents: number | null }>;
   venues: { kalshi: boolean; poly: boolean };
@@ -99,11 +170,18 @@ export interface PairsReport {
   intervalSec: number;
   historyPoints: number;
   collectingSince: string | null;
+  fifteen: HorizonSet | null;
   hourly: HorizonSet | null;
   daily: HorizonSet | null;
+  regime: Regime | null;
   /** every pair with a score, best first */
   bundle: StrikePair[];
   health: Record<string, { ok: boolean; ms: number; detail?: string }>;
+}
+
+/** The id a pair is launched and looked up by: the Kalshi ticker, else the Polymarket US slug, else tenor:strike. */
+export function pairId(p: Pick<StrikePair, "kalshi" | "poly" | "horizon" | "strike">): string {
+  return p.kalshi?.id ?? p.poly?.id ?? `${p.horizon}:${p.strike}`;
 }
 
 /** One cycle's gap readings kept for persistence: `${settlesAt}|${key}` to [atMs, Kalshi mid minus Poly mid]. */
@@ -240,6 +318,122 @@ export function polyEventSlug(ladderId: string): string | null {
   return parts[0] === "poly" && parts[1] ? parts[1] : null;
 }
 
+/* ---- realized movement of the index ---- */
+
+function realizedWindow(series: Array<[number, number]>, nowMs: number, minutes: number): RealizedWindow | null {
+  const from = nowMs - minutes * 60_000;
+  const pts = series.filter(([t, v]) => t >= from && t <= nowMs && v > 0);
+  if (pts.length < 2) return null;
+  let hi = -Infinity;
+  let lo = Infinity;
+  for (const [, v] of pts) {
+    if (v > hi) hi = v;
+    if (v < lo) lo = v;
+  }
+  // one sample per minute, the last print at or before each minute mark
+  const samples: number[] = [];
+  let i = 0;
+  for (let t = pts[0][0]; t <= nowMs; t += 60_000) {
+    while (i + 1 < pts.length && pts[i + 1][0] <= t) i += 1;
+    samples.push(pts[i][1]);
+  }
+  const rets: number[] = [];
+  for (let j = 1; j < samples.length; j += 1) rets.push(Math.log(samples[j] / samples[j - 1]));
+  let volPct: number | null = null;
+  if (rets.length >= Math.min(5, minutes - 1)) {
+    const mean = rets.reduce((a, r) => a + r, 0) / rets.length;
+    const varc = rets.reduce((a, r) => a + (r - mean) ** 2, 0) / rets.length;
+    volPct = Math.round(Math.sqrt(varc) * Math.sqrt(MINUTES_PER_YEAR) * 1000) / 10;
+  }
+  return { minutes, rangeUsd: Math.round(hi - lo), netUsd: Math.round(pts[pts.length - 1][1] - pts[0][1]), volPct, n: rets.length };
+}
+
+/**
+ * Contained or expanding: the last 15 minutes of BRTI against the last hour. The series is
+ * [ms, usd] prints at about one a second. Exported for tests.
+ */
+export function regimeOf(series: Array<[number, number]>, nowMs: number): Regime {
+  const m15 = realizedWindow(series, nowMs, 15);
+  const m60 = realizedWindow(series, nowMs, 60);
+  let label: Regime["label"] = null;
+  if (m15?.volPct !== null && m15?.volPct !== undefined && m60?.volPct) {
+    const ratio = m15.volPct / m60.volPct;
+    label = ratio >= 1.4 ? "expanding" : ratio <= 0.7 ? "contained" : "steady";
+  }
+  const usd = (v: number) => `$${Math.abs(v).toLocaleString("en-US")}`;
+  const parts: string[] = [];
+  if (m15) parts.push(`last 15 min: range ${usd(m15.rangeUsd)}, net ${m15.netUsd >= 0 ? "+" : "−"}${usd(m15.netUsd)}${m15.volPct !== null ? `, realized ${m15.volPct.toFixed(0)}%` : ""}`);
+  if (m60) parts.push(`last hour: range ${usd(m60.rangeUsd)}${m60.volPct !== null ? `, realized ${m60.volPct.toFixed(0)}%` : ""}`);
+  if (!parts.length) parts.push("not enough index prints yet");
+  const reading = label ? `${label}: ${parts.join(" · ")}` : parts.join(" · ");
+  return { m15, m60, label, reading };
+}
+
+/** One standard deviation of the index over the minutes to the close at the given annualized vol, USD. Exported for tests. */
+export function sigmaToClose(spotUsd: number, volPct: number | null | undefined, minutes: number): number | null {
+  if (!(spotUsd > 0) || volPct === null || volPct === undefined || !(volPct > 0) || !(minutes > 0)) return null;
+  return Math.round(spotUsd * (volPct / 100) * Math.sqrt(minutes / MINUTES_PER_YEAR));
+}
+
+/** Model probability the index settles at or above `level`, cents; a normal move of one sigma around spot. */
+function modelAbove(spotUsd: number, level: number, sigmaUsd: number | null): number | null {
+  if (sigmaUsd === null || !(sigmaUsd > 0)) return null;
+  return Math.round(normCdf((spotUsd - level) / sigmaUsd) * 1000) / 10;
+}
+
+/**
+ * The band between two neighbouring pairs: implied by each venue's mids, priced the cheapest
+ * way across both venues (Yes at the lower strike on either, No at the upper on either), and
+ * measured in sigmas. Exported for tests.
+ */
+export function bandOf(lowerPair: StrikePair, upperPair: StrikePair, spotUsd: number, sigmaUsd: number | null): Band {
+  const mid = (l: PairLeg | null) => (l && l.bidCents > 0 && l.askCents > 0 && l.askCents < 100 ? (l.bidCents + l.askCents) / 2 : null);
+  const implied = (a: number | null, b: number | null) => (a !== null && b !== null ? Math.round((a - b) * 100) / 100 : null);
+  const impliedKalshi = implied(mid(lowerPair.kalshi), mid(upperPair.kalshi));
+  const impliedPoly = implied(mid(lowerPair.poly), mid(upperPair.poly));
+  const shown = [impliedKalshi, impliedPoly].filter((v): v is number => v !== null);
+  const impliedCents = shown.length ? Math.round((shown.reduce((a, v) => a + v, 0) / shown.length) * 100) / 100 : null;
+
+  const yesLegs = [lowerPair.kalshi, lowerPair.poly]
+    .filter((l): l is PairLeg => Boolean(l && l.askCents > 0 && l.askCents < 100))
+    .map((l): BandLeg => ({ venue: l.venue, id: l.id, side: "yes", strike: lowerPair.strike, priceCents: l.askCents, qty: l.askQty, feeCents: takerFeeCents(l.feeTheta, l.askCents) }));
+  const noLegs = [upperPair.kalshi, upperPair.poly]
+    .filter((l): l is PairLeg => Boolean(l && l.bidCents > 0))
+    .map((l): BandLeg => {
+      const price = Math.round((100 - l.bidCents) * 100) / 100;
+      return { venue: l.venue, id: l.id, side: "no", strike: upperPair.strike, priceCents: price, qty: l.bidQty, feeCents: takerFeeCents(l.feeTheta, price) };
+    });
+  let cost: Band["cost"] = null;
+  for (const y of yesLegs) {
+    for (const n of noLegs) {
+      const fees = y.feeCents + n.feeCents;
+      const c = y.priceCents + n.priceCents + fees - 100;
+      if (!cost || c < cost.costCents) {
+        cost = { legs: [y, n], costCents: Math.round(c * 100) / 100, feesCents: Math.round(fees * 100) / 100, qty: y.qty > 0 && n.qty > 0 ? Math.min(y.qty, n.qty) : 0 };
+      }
+    }
+  }
+  const lowerModel = modelAbove(spotUsd, lowerPair.strike, sigmaUsd);
+  const upperModel = modelAbove(spotUsd, upperPair.strike, sigmaUsd);
+  return {
+    lower: lowerPair.strike,
+    upper: upperPair.strike,
+    widthUsd: upperPair.strike - lowerPair.strike,
+    impliedKalshiCents: impliedKalshi,
+    impliedPolyCents: impliedPoly,
+    impliedCents,
+    modelCents: lowerModel !== null && upperModel !== null ? Math.round((lowerModel - upperModel) * 10) / 10 : null,
+    cost,
+    edgeCents: impliedCents !== null && cost ? Math.round((impliedCents - cost.costCents) * 100) / 100 : null,
+    sigmas: sigmaUsd ? Math.round(((upperPair.strike - lowerPair.strike) / sigmaUsd) * 100) / 100 : null,
+  };
+}
+
+export interface SetOptions {
+  /** trailing realized vol, percent per year, for the sigma to the close and the model column */
+  volPct?: number | null;
+}
+
 /**
  * One horizon: the merged ladder (Kalshi spine with the Polymarket US quotes on the same keys,
  * or either alone), spot, and the gap history. Exported for tests.
@@ -252,11 +446,41 @@ export function horizonSet(
   nowMs: number,
   history: GapHistory,
   urls: VenueUrls,
+  opts: SetOptions = {},
 ): HorizonSet | null {
   const levels = strikeLevels(ladder);
   const picked = selectStrikes(levels, spotUsd);
   if (!picked) return null;
-  const step = gridStep(levels);
+  return buildSet(horizon, ladder, polyLadderId, spotUsd, nowMs, history, urls, [["below", picked.below], ["atm", picked.atm], ["above", picked.above]], gridStep(levels), opts);
+}
+
+/**
+ * The 15-minute window: one contract per venue, the strike is the price to beat (the BRTI
+ * average before the window opened), so the set has one pair and no bands. Exported for tests.
+ */
+export function fifteenSet(ladder: Ladder, polyLadderId: string | null, spotUsd: number, nowMs: number, history: GapHistory, urls: VenueUrls, opts: SetOptions = {}): HorizonSet | null {
+  const levels = strikeLevels(ladder);
+  if (!levels.length || !(spotUsd > 0)) return null;
+  // the ladder should hold one strike; with more (two windows merged), the one nearest spot stands
+  const level = levels.reduce((a, b) => (Math.abs(b - spotUsd) < Math.abs(a - spotUsd) ? b : a));
+  return buildSet("fifteen", ladder, polyLadderId, spotUsd, nowMs, history, urls, [["atm", level]], 0, opts);
+}
+
+function buildSet(
+  horizon: Horizon,
+  ladder: Ladder,
+  polyLadderId: string | null,
+  spotUsd: number,
+  nowMs: number,
+  history: GapHistory,
+  urls: VenueUrls,
+  strikes: Array<[Place, number]>,
+  step: number,
+  opts: SetOptions,
+): HorizonSet {
+  const levels = strikeLevels(ladder);
+  const secondsToClose = Math.max(0, Math.round((Date.parse(ladder.settlesAt) - nowMs) / 1000));
+  const sigmaUsd = sigmaToClose(spotUsd, opts.volPct, secondsToClose / 60);
   const kalshiQuotes = ladder.quotes.filter((q) => q.venue === "kalshi");
   const polyQuotes = ladder.quotes.filter((q) => q.venue === "polymarket_us");
   const kalshiEvent = kalshiQuotes[0] ? kalshiEventTicker(kalshiQuotes[0].id) : null;
@@ -292,24 +516,36 @@ export function horizonSet(
       lock: lockOf(k, p),
       persistence: persistenceOf(history.get(gapHistoryKey(ladder.settlesAt, key)), gap),
       score: twoSided ? cleanScore(spread, depth, gap) : null,
+      modelCents: modelAbove(spotUsd, strike, sigmaUsd),
     };
     return { ...base, reading: readingOf(base) };
   };
 
-  const pairs = [pairAt("below", picked.below), pairAt("atm", picked.atm), pairAt("above", picked.above)];
-  const i = levels.indexOf(picked.atm);
-  const context = levels.slice(Math.max(0, i - 4), i + 5).map((strike) => {
-    const key = keyOf(strike);
-    const km = midCents(byKey("kalshi", key));
-    const pm = midCents(byKey("polymarket_us", key));
-    return { strike, kalshiMid: km, polyMid: pm, gapCents: km !== null && pm !== null ? Math.round((km - pm) * 100) / 100 : null };
-  });
+  const pairs = strikes.map(([place, strike]) => pairAt(place, strike));
+  const bands: Band[] = [];
+  for (let j = 1; j < pairs.length; j += 1) bands.push(bandOf(pairs[j - 1], pairs[j], spotUsd, sigmaUsd));
+  const money = pairs.find((p) => p.place === "atm") ?? pairs[0];
+  const i = levels.indexOf(money.strike);
+  const context =
+    pairs.length > 1
+      ? levels.slice(Math.max(0, i - 4), i + 5).map((strike) => {
+          const key = keyOf(strike);
+          const km = midCents(byKey("kalshi", key));
+          const pm = midCents(byKey("polymarket_us", key));
+          return { strike, kalshiMid: km, polyMid: pm, gapCents: km !== null && pm !== null ? Math.round((km - pm) * 100) / 100 : null };
+        })
+      : [];
+  const scored = pairs.filter((p) => p.score !== null).sort((a, b) => (b.score as number) - (a.score as number) || (b.lock?.edgeCents ?? -99) - (a.lock?.edgeCents ?? -99));
   return {
     horizon,
     settlesAt: ladder.settlesAt,
-    minutesToClose: Math.round((Date.parse(ladder.settlesAt) - nowMs) / 60_000),
+    minutesToClose: Math.round(secondsToClose / 60),
+    secondsToClose,
     stepUsd: step,
     pairs,
+    bands,
+    sigmaUsd,
+    pick: scored[0] ? pairId(scored[0]) : money.kalshi || money.poly ? pairId(money) : null,
     context,
     venues: { kalshi: kalshiQuotes.length > 0, poly: polyQuotes.length > 0 },
     kalshiEvent,

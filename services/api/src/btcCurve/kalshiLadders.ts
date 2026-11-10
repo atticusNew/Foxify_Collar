@@ -19,6 +19,9 @@ export const KALSHI_YEAR_END = {
   touchDown: "KXBTCMINY",
 } as const;
 export const KALSHI_HOURLY = "KXBTCD";
+/** Fifteen-minute up/down: one market per window, strike = the 60-second BRTI average before the window opened. */
+export const KALSHI_15M = "KXBTC15M";
+export const FIFTEEN_WINDOW_MS = 16 * 60_000;
 /** An "hourly" ladder is one closing within this long; the series also lists tomorrow's 5 PM ET contract. */
 export const HOURLY_WINDOW_MS = 90 * 60_000;
 
@@ -212,6 +215,23 @@ export async function readKalshiLadders(
   }
 
   return { yearEnd, hourly, daily };
+}
+
+/**
+ * The current 15-minute window: the KXBTC15M market closing soonest, more than 30 seconds out
+ * and within 16 minutes. One strike per window (the index average before the open), so the
+ * ladder has one bucket. Exported for tests.
+ */
+export function fifteenLadderFrom(raw: RawMarket[], theta: number, nowMs: number): Ladder | null {
+  const open = raw
+    .map((m) => ({ m, closeMs: Date.parse(m.close_time) }))
+    .filter((e) => Number.isFinite(e.closeMs) && e.closeMs - nowMs > 30_000 && e.closeMs - nowMs <= FIFTEEN_WINDOW_MS)
+    .sort((a, b) => a.closeMs - b.closeMs);
+  if (!open.length) return null;
+  const { m } = open[0];
+  const b = bucketFromKalshi(m, m.close_time, "above");
+  if (!b) return null;
+  return { id: `btc-15m:${m.event_ticker}`, title: `Kalshi 15-minute up/down ${m.event_ticker}`, settlesAt: m.close_time, buckets: [b], quotes: [quoteFromKalshi(m, b.key, theta)], model: {} };
 }
 
 /** Best-level sizes onto each quote, a few books at a time so the public rate limit is not tripped. */

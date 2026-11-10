@@ -1,13 +1,14 @@
 /**
  * BTC pairs: strike selection off spot, the cheapest way to own both sides after both fees,
- * the clean score, gap persistence, the bundle order, and the page.
+ * the clean score, gap persistence, the bands between strikes, the regime gauge, the 15-minute
+ * window, the bundle order, and the page.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { bundleOf, cleanScore, gapHistoryKey, horizonSet, kalshiEventTicker, lockOf, persistenceOf, polyEventSlug, recordGaps, selectStrikes, gridStep, strikeLevels, type GapHistory, type PairsReport, type VenueUrls } from "../src/btcCurve/pairs";
-import { renderPairsBody, renderPairsHtml } from "../src/btcCurve/pairsHtml";
+import { bandOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, horizonSet, kalshiEventTicker, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
+import { pickLabel, renderPairsBody, renderPairsHtml } from "../src/btcCurve/pairsHtml";
 import type { Ladder, VenueQuote } from "../src/btcCurve/types";
 
 const SETTLE = "2026-11-09T22:00:00Z";
@@ -187,6 +188,135 @@ test("persistence: the window's readings, how often the gap kept this sign, its 
   assert.equal(bundle[bundle.length - 1].horizon, "daily", "the wide, thin pair is last");
 });
 
+/** The 15-minute window: one strike (the price to beat) on both venues, at the same close. */
+function fifteenLadder(kBid = 51, kAsk = 52, pBid = 73, pAsk = 74): Ladder {
+  const level = 73158.07;
+  const settlesAt = "2026-11-09T21:30:00Z";
+  const k: VenueQuote = { venue: "kalshi", bucketKey: `above:${level}`, id: "KXBTC15M-26NOV091630-15", bidCents: kBid, askCents: kAsk, bidQty: 2000, askQty: 1600, volume: 0, openInterest: 0, feeTheta: 0.07 };
+  const p: VenueQuote = { venue: "polymarket_us", bucketKey: `above:${level}`, id: "cpc-btc-updown-15m-2026-11-09-2115z", bidCents: pBid, askCents: pAsk, bidQty: 1800, askQty: 9, volume: 0, openInterest: 0, feeTheta: 0.095 };
+  return { id: "btc-15m:KXBTC15M-26NOV091630", title: "t", settlesAt, buckets: [{ key: `above:${level}`, kind: "above", level, settlesAt }], quotes: [k, p], model: {} };
+}
+
+/** An hour of index prints, one a second: a quiet 45 minutes then a wide 15. */
+function prints(quietUsd: number, loudUsd: number, start = NOW - 60 * 60_000): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i <= 3600; i += 1) {
+    const t = start + i * 1000;
+    const amp = i < 2700 ? quietUsd : loudUsd;
+    out.push([t, 74800 + amp * Math.sin(i / 37) + (i % 2 ? 0.5 : -0.5)]);
+  }
+  return out;
+}
+
+test("sigma and regime: one sigma to the close from the trailing vol; the last 15 minutes against the hour say contained, steady or expanding", () => {
+  assert.equal(sigmaToClose(75000, 50, 60), 401, "about $400 an hour at 50% on $75k");
+  assert.equal(sigmaToClose(75000, 50, 15), 200);
+  assert.equal(sigmaToClose(75000, null, 60), null);
+  assert.equal(sigmaToClose(75000, 50, 0), null);
+
+  const expanding = regimeOf(prints(20, 400), NOW);
+  assert.ok(expanding.m15 && expanding.m60);
+  assert.equal(expanding.m15.minutes, 15);
+  assert.ok(expanding.m15.rangeUsd > 600 && expanding.m15.rangeUsd < 900, `15-minute range ${expanding.m15.rangeUsd}`);
+  assert.ok((expanding.m15.volPct as number) > 1.4 * (expanding.m60.volPct as number), `${expanding.m15.volPct} vs ${expanding.m60.volPct}`);
+  assert.equal(expanding.label, "expanding");
+  assert.match(expanding.reading, /^expanding: last 15 min: range \$\d+, net [+−]\$\d+, realized \d+% · last hour: range \$\d+, realized \d+%$/);
+
+  const quiet = regimeOf(prints(400, 400).map(([t, v], i) => [t, i >= 2700 ? 74800 + 3 * Math.sin(i / 37) : v]), NOW);
+  assert.equal(quiet.label, "contained");
+
+  const steady = regimeOf(prints(120, 120), NOW);
+  assert.equal(steady.label, "steady");
+
+  const few = regimeOf(prints(50, 50).slice(3590), NOW);
+  assert.equal(few.m15?.volPct, null, "ten seconds of prints give no vol");
+  assert.equal(few.label, null);
+  assert.equal(regimeOf([], NOW).reading, "not enough index prints yet");
+});
+
+test("band: Yes just below plus No just above; the venues' mids imply it, the cheapest legs price it, the model and the sigmas size it", () => {
+  const s = horizonSet("hourly", ladder(), null, 74812, NOW, new Map(), urls, { volPct: 50 });
+  assert.ok(s);
+  // 40 minutes at 50% on $74,812: sigma about $326
+  assert.equal(s.sigmaUsd, 326);
+  assert.equal(s.bands.length, 2);
+  const b = s.bands[0];
+  assert.equal(b.lower, 74500);
+  assert.equal(b.upper, 74750);
+  assert.equal(b.widthUsd, 250);
+  // lower: K 66/67 (mid 66.5), P 65/67 (mid 66); upper: K 54/55 (54.5), P 53/55 (54): both venues imply 12
+  assert.equal(b.impliedKalshiCents, 12);
+  assert.equal(b.impliedPolyCents, 12);
+  assert.equal(b.impliedCents, 12);
+  // cheapest: Yes on Kalshi at 67 (fee 1.548) + No on Kalshi at 46 (fee 1.739) = 116.287, less the $1 one leg always pays
+  assert.ok(b.cost);
+  assert.deepEqual(b.cost.legs.map((l) => [l.venue, l.side, l.strike, l.priceCents]), [["kalshi", "yes", 74500, 67], ["kalshi", "no", 74750, 46]]);
+  assert.ok(Math.abs(b.cost.costCents - 16.29) < 0.02, `cost ${b.cost.costCents}`);
+  assert.ok(Math.abs(b.cost.feesCents - 3.29) < 0.02);
+  assert.equal(b.cost.qty, 100);
+  assert.ok(Math.abs((b.edgeCents as number) + 4.29) < 0.02, "the band costs 4.29¢ over what the venues' own mids say");
+  assert.equal(b.sigmas, 0.77);
+  // model: P(>= 74500) − P(>= 74750) under a $327 normal around 74,812
+  assert.ok(b.modelCents !== null && b.modelCents > 25 && b.modelCents < 32, `model ${b.modelCents}`);
+  assert.ok((s.pairs[1].modelCents as number) > 55 && (s.pairs[1].modelCents as number) < 60, "the money is a little above spot");
+
+  // a cross: Poly offers Yes at the lower strike below Kalshi's bid at the upper
+  const x = bandOf(
+    { ...s.pairs[0], poly: { ...(s.pairs[0].poly as NonNullable<typeof s.pairs[0]["poly"]>), askCents: 50 } },
+    { ...s.pairs[1], kalshi: { ...(s.pairs[1].kalshi as NonNullable<typeof s.pairs[1]["kalshi"]>), bidCents: 60 } },
+    74812,
+    null,
+  );
+  assert.ok(x.cost && x.cost.legs[0].venue === "polymarket_us" && x.cost.legs[1].venue === "kalshi");
+  assert.ok(x.cost.costCents < 0 && (x.edgeCents as number) > 0, `a band bought below zero is a cross: ${x.cost.costCents}`);
+  assert.equal(x.sigmas, null);
+  assert.equal(x.modelCents, null);
+
+  // no bid at the upper strike anywhere: the band cannot be bought, the mids may still imply it
+  const none = bandOf(s.pairs[0], { ...s.pairs[1], kalshi: null, poly: null }, 74812, 326);
+  assert.equal(none.cost, null);
+  assert.equal(none.impliedCents, null);
+  assert.equal(none.edgeCents, null);
+
+  // without a vol there is no sigma, no model column, and the set still prices the bands
+  const noVol = horizonSet("hourly", ladder(), null, 74812, NOW, new Map(), urls);
+  assert.ok(noVol);
+  assert.equal(noVol.sigmaUsd, null);
+  assert.equal(noVol.pairs[1].modelCents, null);
+  assert.equal(noVol.bands[0].cost?.costCents, b.cost.costCents);
+  assert.equal(noVol.pick, pairId(noVol.pairs[0]), "three equal scores: the pick is the one with the smallest carry");
+});
+
+test("fifteen: one strike, the price to beat, on both venues; a wide gap locks; no bands; the pick is the one row", () => {
+  const s = fifteenSet(fifteenLadder(), "poly:btc-updown-15m-2026-11-09-2115z:range:2026-11-09", 73214, Date.parse("2026-11-09T21:27:40Z"), new Map(), urls, { volPct: 48 });
+  assert.ok(s);
+  assert.equal(s.horizon, "fifteen");
+  assert.equal(s.stepUsd, 0);
+  assert.equal(s.secondsToClose, 140);
+  assert.equal(s.minutesToClose, 2);
+  assert.deepEqual(s.bands, []);
+  assert.deepEqual(s.context, []);
+  assert.equal(s.pairs.length, 1);
+  const p = s.pairs[0];
+  assert.equal(p.place, "atm");
+  assert.equal(p.strike, 73158.07);
+  assert.equal(pairId(p), "KXBTC15M-26NOV091630-15");
+  assert.equal(s.pick, pairId(p));
+  assert.equal(p.gapCents, -22, "Kalshi 51/52 against Poly 73/74");
+  assert.ok(p.lock && p.lock.yesOn === "kalshi" && p.lock.noOn === "polymarket_us" && p.lock.edgeCents > 17, `Yes K 52 + No P 27 + fees locks ${p.lock?.edgeCents}`);
+  assert.ok(p.score !== null && p.score < 60, "mids 22¢ apart score low on agreement");
+  // 140 seconds at 48% on $73,214: sigma about $74; spot $56 above the price to beat
+  assert.equal(s.sigmaUsd, 74);
+  assert.ok((p.modelCents as number) > 70 && (p.modelCents as number) < 80, `model ${p.modelCents}`);
+  assert.equal(pickLabel(p), "$73,158.07 price to beat");
+
+  assert.equal(fifteenSet({ ...fifteenLadder(), buckets: [], quotes: [] }, null, 73214, NOW, new Map(), urls), null);
+  // Polymarket US alone still makes the set
+  const alone = fifteenSet({ ...fifteenLadder(), quotes: fifteenLadder().quotes.filter((q) => q.venue === "polymarket_us") }, null, 73214, NOW, new Map(), urls);
+  assert.ok(alone && alone.pairs[0].kalshi === null && alone.pairs[0].poly);
+  assert.equal(alone.pick, alone.pairs[0].poly?.id, "nothing scored: the money's own id");
+});
+
 test("helpers: the Kalshi event ticker and the Polymarket US event slug come out of the ids", () => {
   assert.equal(kalshiEventTicker("KXBTCD-26NOV0917-T74499.99"), "KXBTCD-26NOV0917");
   assert.equal(kalshiEventTicker("KXBTCD"), "KXBTCD");
@@ -196,9 +326,11 @@ test("helpers: the Kalshi event ticker and the Polymarket US event slug come out
 
 test("page: the bundle, both tables, the lock arithmetic, the links, the refresh script; no em dash; the 5 PM contract is named as such", () => {
   const history: GapHistory = new Map();
-  const hourly = horizonSet("hourly", ladder(), "poly:btc-above-day-2026-11-09:range:2026-11-09", 74812, NOW, history, urls);
-  const daily = horizonSet("daily", { ...ladder(), settlesAt: "2026-11-10T22:00:00Z" }, "poly:btc-above-day-2026-11-10:range:2026-11-10", 74812, NOW, history, urls);
+  const hourly = horizonSet("hourly", ladder(), "poly:btc-above-day-2026-11-09:range:2026-11-09", 74812, NOW, history, urls, { volPct: 50 });
+  const daily = horizonSet("daily", { ...ladder(), settlesAt: "2026-11-10T22:00:00Z" }, "poly:btc-above-day-2026-11-10:range:2026-11-10", 74812, NOW, history, urls, { volPct: 50 });
   for (let i = 0; i < 3; i += 1) recordGaps(history, [hourly, daily], NOW + i * 10_000, 60 * 60_000);
+  const fifteen = fifteenSet(fifteenLadder(), "poly:btc-updown-15m-2026-11-09-2115z:range:2026-11-09", 74812, NOW, history, urls, { volPct: 48 });
+  const regime = regimeOf(prints(20, 400), NOW);
   const d: PairsReport = {
     at: new Date(NOW).toISOString(),
     spotUsd: 74812,
@@ -206,30 +338,43 @@ test("page: the bundle, both tables, the lock arithmetic, the links, the refresh
     intervalSec: 10,
     historyPoints: 3,
     collectingSince: new Date(NOW - 60_000).toISOString(),
+    fifteen,
     hourly,
     daily,
-    bundle: bundleOf([hourly, daily]),
+    regime,
+    bundle: bundleOf([fifteen, hourly, daily]),
     health: { kalshi: { ok: true, ms: 40 }, polymarket_us: { ok: false, ms: 20000, detail: "no answer within 20s" } },
   };
-  const html = renderPairsHtml(d, { token: "abc", base: "/pairs", launchUrl: "https://engine.example/btc" });
+  const html = renderPairsHtml(d, { token: "abc", base: "/pairs", launchUrl: "https://engine.example/btc", launchMode: "open" });
   for (const needle of [
     "BTC pairs <small>Kalshi and Polymarket US",
     "$74,812",
     `Cleanest now <b>$${d.bundle[0].strike.toLocaleString("en-US")}</b>`,
+    "Regime <b class=\"hot\">expanding</b>",
+    "Next 15 minutes, up or down",
+    "$73,158.07</b><small>BRTI +$1,654 above",
     "Next close, the 5 PM ET contract",
     "Daily, 5 PM ET",
     "$74,750</b><small>at the money",
     "cleanest</span>",
-    'data-id="KXBTCD-26NOV0917-T74749.99"',
-    'data-open="https://kalshi.com/markets/kxbtcd/x/kxbtcd-26nov0917|https://polymarket.us/event/btc-above-day-2026-11-09"',
-    ">Launch</button>",
+    `<section data-horizon="hourly" data-pick="${hourly?.pick}">`,
+    '<tr class="atm" data-id="KXBTCD-26NOV0917-T74749.99" data-label="$74,750 at the money">',
+    `<button type="button" class="go" data-horizon="hourly">Launch</button><span class="picklabel">${pickLabel(hourly?.pairs[0] as StrikePair)}</span><small class="status" data-status="hourly"></small>`,
+    '<button type="button" class="use" data-id="KXBTCD-26NOV0917-T74999.99" data-horizon="hourly"',
+    '<section data-horizon="fifteen" data-pick="KXBTC15M-26NOV091630-15">',
+    '<span class="picklabel">$73,158.07 price to beat</span>',
+    "Band $74,500 to $74,750</span>",
+    "venues imply <b>12.0¢</b> <span class=\"dim\">(K 12.0 / P 12.0)</span> · model <b>",
+    "own it for <b>16.3¢</b>: Yes K 67 + No K 46 + fees 3.3¢ · 100 · costs 4.3¢ over the mids",
     "Yes P 55 + No K 46 + fees 4.09¢ · 100",
     "100% same sign · 3",
     "polymarket_us no answer within 20s",
     'value="https://engine.example/btc"',
+    '<input type="radio" name="mode" value="open" checked>',
     'var BASE="/pairs",Q="?k=abc&"',
     "fetch(BASE+'/fragment'+Q+'t='",
     "fetch(BASE+'/api/pair'+Q+'id='",
+    "atticus:'btc_pair'",
     "<code>GET /pairs/api/bundle</code>",
     "<code>GET /pairs/api/stream</code>",
     "nothing here places an order.",
@@ -239,10 +384,17 @@ test("page: the bundle, both tables, the lock arithmetic, the links, the refresh
   assert.ok(!html.includes("—"), "no em dash in the page");
   assert.ok(!/Hourly, next close<\/h2>/.test(html), "the 5 PM close is not called hourly");
   assert.ok(renderPairsBody(d).startsWith('<div class="strip">'), "the fragment is the body only");
-  assert.equal((html.match(/>Launch<\/button>/g) ?? []).length, 6, "one Launch per pair");
+  assert.equal((html.match(/>Launch<\/button>/g) ?? []).length, 3, "one Launch per tenor");
+  assert.equal((html.match(/class="use"/g) ?? []).length, 6, "a use button on each strike row of the ladders, none on the one-row window");
+  assert.equal((html.match(/<tr class="band">/g) ?? []).length, 4, "two bands per ladder");
+  assert.ok(!html.includes("data-open="), "no per-row venue buttons");
 
-  const bare = renderPairsHtml({ ...d, hourly: null, daily: null, bundle: [] });
+  const bare = renderPairsHtml({ ...d, fifteen: null, hourly: null, daily: null, regime: null, bundle: [] });
   assert.ok(bare.includes("no strike two-sided on both"));
+  assert.ok(bare.includes("Regime <b>–</b>"));
+  assert.ok(bare.includes("No 15-minute window open on either venue"));
   assert.ok(bare.includes("No contract closes within 90 minutes on either venue."));
   assert.ok(bare.includes('var BASE="",Q="?"'), "no base and no token: root-relative fetches");
+  assert.ok(bare.includes('<input type="radio" name="mode" value="send" checked>'), "send is the default mode");
+  assert.equal((bare.match(/>Launch<\/button>/g) ?? []).length, 0);
 });
