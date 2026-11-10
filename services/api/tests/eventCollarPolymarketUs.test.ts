@@ -538,6 +538,18 @@ test("the live stream: one signed connection, every game read subscribed on it, 
   assert.equal(failing.status().state, "waiting");
   assert.match(failing.status().lastError ?? "", /could not connect: getaddrinfo ENOTFOUND/);
 
+  // a socket that throws on a frame is dropped, not thrown into the read
+  const broken = fakeSocket();
+  broken.send = () => {
+    throw new Error("WebSocket is not open: readyState 2 (CLOSING)");
+  };
+  const brittle = new PolyUsBookStream(signer, { now: () => clock, socketFactory: () => broken });
+  brittle.want("x");
+  await tick();
+  broken.emit("open");
+  assert.equal(brittle.status().state, "waiting");
+  assert.match(brittle.status().lastError ?? "", /could not subscribe: WebSocket is not open/);
+
   // more than a hundred games: subscribed a hundred at a time
   const many = fakeSocket();
   const wide = new PolyUsBookStream(signer, { now: () => clock, socketFactory: () => many });

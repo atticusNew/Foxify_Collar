@@ -599,7 +599,13 @@ export class PolyUsBookStream {
     for (let i = 0; i < slugs.length; i += STREAM_BATCH) {
       const batch = slugs.slice(i, i + STREAM_BATCH);
       this.requestSeq += 1;
-      this.socket?.send(JSON.stringify({ subscribe: { requestId: `books-${this.connects}-${this.requestSeq}`, subscriptionType: "SUBSCRIPTION_TYPE_MARKET_DATA", marketSlugs: batch } }));
+      try {
+        this.socket?.send(JSON.stringify({ subscribe: { requestId: `books-${this.connects}-${this.requestSeq}`, subscriptionType: "SUBSCRIPTION_TYPE_MARKET_DATA", marketSlugs: batch } }));
+      } catch (err) {
+        // a socket that will not take a frame is a dead one: the read goes on over REST
+        this.drop(`could not subscribe: ${String(err instanceof Error ? err.message : err)}`);
+        return;
+      }
       for (const s of batch) this.subscribed.add(s);
     }
   }
