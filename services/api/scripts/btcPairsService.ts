@@ -12,7 +12,9 @@
  *       BTC_PAIRS_DATA_DIR        (default /tmp/btc-pairs; gap history survives a restart)
  *       BTC_PAIRS_TOKEN           (optional; when set the page and JSON need ?k=<token>)
  *       BTC_PAIRS_WINDOW_MIN      (default 120; gap history kept this long)
- *       BTC_PAIRS_LAUNCH_URL      (optional; the engine endpoint the Launch button posts to by default)
+ *       BTC_PAIRS_LAUNCH_URL      (optional; the engine endpoint the Launch button sends to by default)
+ *       BTC_PAIRS_LAUNCH_MODE     (send | open; default send. open hands the pair to the engine URL
+ *                                 as query parameters in a new tab instead of a POST)
  *       BTC_PAIRS_KALSHI_URL      (link template; {event} and {ticker} replaced, lower case;
  *                                 default https://kalshi.com/markets/kxbtcd, the series page)
  *       BTC_PAIRS_POLY_URL        (default https://polymarket.us/event/{event})

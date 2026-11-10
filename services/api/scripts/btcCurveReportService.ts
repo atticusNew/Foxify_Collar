@@ -25,13 +25,15 @@
  *       BTC_CURVE_COLLAR        (0 disables the §6 OKX quotes; default on)
  *       BTC_CURVE_PAIRS         (0 disables the BTC pairs page mounted at /pairs; default on)
  *       BTC_PAIRS_*             (the pairs collector: INTERVAL_SEC 10, DATA_DIR under the curve
- *                               data dir, LAUNCH_URL, KALSHI_URL; see scripts/btcPairsService.ts)
+ *                               data dir, LAUNCH_URL, LAUNCH_MODE send|open, KALSHI_URL; see
+ *                               scripts/btcPairsService.ts)
  *       POLY_US_EXTRA_EVENT_SLUGS  comma-separated Polymarket US event slugs to add
  *       POLY_US_REST_BASE / KALSHI_REST_BASE / DERIBIT_REST_BASE / OKX_REST_BASE (relays)
  *
- * /pairs is the BTC pairs UI (Kalshi and Polymarket US, at the money and one strike each way,
- * Launch button) served from this process so it costs no second web service; its JSON lives
- * under /pairs/api/* and shares this service's token.
+ * /pairs is the BTC pairs UI (Kalshi and Polymarket US: the 15-minute window, at the money and
+ * one strike each way on the next close and the daily, bands, regime, one Launch button per
+ * tenor) served from this process so it costs no second web service; its JSON lives under
+ * /pairs/api/* and shares this service's token.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";

@@ -30,10 +30,14 @@ interface Money {
 }
 
 interface RawTerms {
-  marketType?: string; // ASSET_PRICE_MARKET_TYPE_RANGE | _ONE_TOUCH | _STRIKE | _UPDOWN
+  marketType?: string; // ASSET_PRICE_MARKET_TYPE_RANGE | _ONE_TOUCH | _STRIKE | _ABOVE_BELOW | _UP_DOWN
   asset?: { assetClass?: string; symbol?: string };
   indexSymbol?: string;
+  horizon?: string; // "15m", "1h", "1d" on the up/down families
+  windowStart?: string | null;
   windowEnd?: string | null;
+  /** up/down: the BRTI average before the window opened; "Up" settles Yes at or above it */
+  priceToBeat?: Money | null;
   strike?: Money | null;
   rangeLower?: Money | null;
   rangeUpper?: Money | null;
@@ -75,7 +79,7 @@ function moneyNum(m: Money | null | undefined): number | undefined {
 }
 
 /** Bucket for one Polymarket US market, or null when it is not a BTC price contract. Exported for tests. */
-export function bucketFromPolyUs(m: RawMarket): Bucket | null {
+export function bucketFromPolyUs(m: RawMarket, opts: PolyReadOptions = {}): Bucket | null {
   const t = m.assetPriceTerms;
   if (!t || t.asset?.symbol?.toLowerCase() !== "btc") return null;
   const settlesAt = t.windowEnd || m.endDate || "";
@@ -108,7 +112,21 @@ export function bucketFromPolyUs(m: RawMarket): Bucket | null {
     if (level === undefined) return null;
     return { key: aboveKey(level, true), kind: "above", level, settlesAt };
   }
+  // up/down (5m, 15m, 1h, 1d): "Up" is Yes when the index closes at or above the price to beat,
+  // the same shape Kalshi's KXBTC15M quotes with floor_strike greater_or_equal, so the keys meet.
+  // Opt-in: the curve report keeps these off its strike ladders (an hourly up/down would land
+  // an off-grid strike on the hourly ladder); the pairs collector asks for them.
+  if (type.endsWith("_UP_DOWN") && opts.upDown) {
+    const level = moneyNum(t.priceToBeat) ?? moneyNum(t.strike);
+    if (level === undefined) return null;
+    return { key: aboveKey(level, true), kind: "above", level, settlesAt };
+  }
   return null;
+}
+
+export interface PolyReadOptions {
+  /** read the up/down families (price to beat as the strike) as one-strike above ladders */
+  upDown?: boolean;
 }
 
 function quoteFromPolyUs(m: RawMarket, bucketKey: string): VenueQuote {
@@ -153,9 +171,9 @@ export async function fetchSeriesIdsBySlug(slugs: string[], fetchImpl: typeof fe
 }
 
 /** Active events of the given series, as `readPolyUsLadders` would see them. */
-export async function readPolyUsLaddersForSeries(seriesIds: string[], fetchImpl: typeof fetch = fetch): Promise<Ladder[]> {
+export async function readPolyUsLaddersForSeries(seriesIds: string[], fetchImpl: typeof fetch = fetch, opts: PolyReadOptions = {}): Promise<Ladder[]> {
   const lists = await Promise.all(seriesIds.map((id) => fetchEventsForSeries(id, fetchImpl).catch(() => [] as RawEvent[])));
-  return laddersFromEvents(lists.flat());
+  return laddersFromEvents(lists.flat(), opts);
 }
 
 async function fetchEventsForSeries(seriesId: string, fetchImpl: typeof fetch): Promise<RawEvent[]> {
@@ -199,12 +217,12 @@ export async function fetchBook(
 }
 
 /** Group markets into ladders by (event, kind family, settlement instant). Exported for tests. */
-export function laddersFromEvents(events: RawEvent[]): Ladder[] {
+export function laddersFromEvents(events: RawEvent[], opts: PolyReadOptions = {}): Ladder[] {
   const out = new Map<string, Ladder>();
   for (const e of events) {
     for (const m of e.markets ?? []) {
       if (m.active === false || m.closed === true) continue;
-      const b = bucketFromPolyUs(m);
+      const b = bucketFromPolyUs(m, opts);
       if (!b) continue;
       const family = b.kind === "range" || b.kind === "above" || b.kind === "below" ? "range" : b.kind;
       const id = `poly:${e.slug}:${family}:${b.settlesAt.slice(0, 10)}`;
