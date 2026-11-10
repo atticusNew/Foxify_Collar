@@ -636,10 +636,11 @@ function allLocks(): Array<{ p: ShadowPosition; path: string; holder: string | n
  * per closed UTC day of a ledger, chained, recorded once in `<ledger>.fingerprints.jsonl` beside
  * it. The record's are public (/api/shadow/fingerprints, the record page); the lock ledgers' are
  * the operator's, since a ledger is named by its holder. Read-only towards every ledger. Each
- * ledger is hashed from its first byte at start-up and every EVENT_SHADOW_FINGERPRINT_CHECK_MS
- * (one day) and compared with what was published; in between only appended bytes are read, on
- * a one-minute timer and whenever a page or route asks. EVENT_SHADOW_FINGERPRINTS=0 turns the
- * whole thing off: nothing is read or written, the page has no section, the route is a 404.
+ * ledger is hashed from its first byte at start-up, every EVENT_SHADOW_FINGERPRINT_CHECK_MS
+ * (one day) and when a day of it closes, and compared with what was published; in between only
+ * appended bytes are read, on a one-minute timer and whenever a page or route asks.
+ * EVENT_SHADOW_FINGERPRINTS=0 turns the whole thing off: nothing is read or written, the page
+ * has no section, the route is a 404.
  */
 const FINGERPRINTS_ON = !/^(0|false|no|off)$/i.test((process.env.EVENT_SHADOW_FINGERPRINTS ?? "").trim());
 const FINGERPRINT_CHECK_MS = (() => {

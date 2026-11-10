@@ -104,8 +104,8 @@ test("fingerprint keeper: a closed day is recorded once, when it is first seen c
   assert.equal(readFileSync(recordPath, "utf8"), before);
 });
 
-test("fingerprint keeper: between full checks only the appended bytes are read", () => {
-  const { path } = setup([...DAY1, ...DAY2, ...DAY3]);
+test("fingerprint keeper: between full checks only the appended bytes are read, until a day closes", () => {
+  const { path, recordPath } = setup([...DAY1, ...DAY2, ...DAY3]);
   const keeper = new LedgerFingerprintKeeper(path, { now: clock() });
   const first = keeper.sync();
   assert.equal(first.days.length, 2);
@@ -113,7 +113,7 @@ test("fingerprint keeper: between full checks only the appended bytes are read",
   assert.ok(fullAt, "the first sync hashes from the first byte");
 
   // one character of a closed day changed in place, the length kept: the bytes already read are
-  // not read again, so the cheap path cannot see it, however many appends follow
+  // not read again, so the cheap path cannot see it while lines are added to the open day
   const original = readFileSync(path);
   const edited = Buffer.from(original);
   const at = edited.indexOf('"n":1');
@@ -123,18 +123,52 @@ test("fingerprint keeper: between full checks only the appended bytes are read",
   let s = keeper.sync();
   assert.equal(s.state, "ok");
   assert.equal(s.fullCheckAt, fullAt, "no full pass was made");
-  appendFileSync(path, DAY4.join(""));
+  appendFileSync(path, rec("2026-09-14T11:00:00.000Z", 50));
   s = keeper.sync();
   assert.equal(s.state, "ok");
-  assert.equal(s.days.length, 3, "the appended bytes were read: the next day closed");
+  assert.equal(s.open?.lines, 6, "the appended bytes were read");
   assert.equal(s.fullCheckAt, fullAt);
-  assert.equal(s.open?.lines, 6);
 
-  // the full pass is what finds it
-  s = keeper.sync({ full: true });
+  // a line of a later day closes the open one: nothing is published for it before the whole
+  // file has been hashed, and that pass finds the edit
+  const published = readFileSync(recordPath, "utf8");
+  appendFileSync(path, DAY4.join(""));
+  s = keeper.sync();
+  assert.notEqual(s.fullCheckAt, fullAt, "a day is published only from a pass over the whole file");
   assert.equal(s.state, "mismatch");
   assert.equal(s.mismatch?.day, "2026-09-12");
-  assert.notEqual(s.fullCheckAt, fullAt);
+  assert.equal(s.days.length, 2, "the day that closed is not published on top of it");
+  assert.ok(readFileSync(recordPath, "utf8").startsWith(published));
+
+  // with the mismatch standing the cheap path stays cheap: appends are read, no pass is repeated
+  const foundAt = s.fullCheckAt;
+  appendFileSync(path, DAY5.join(""));
+  s = keeper.sync();
+  assert.equal(s.fullCheckAt, foundAt);
+  assert.equal(s.open?.day, "2026-09-16");
+});
+
+test("fingerprint keeper: what is published for a day is what the whole file hashes to when it closes", () => {
+  // the open day is changed somewhere other than its end (a line made longer), which no append
+  // does; the bytes read since the last full pass no longer add up to the file
+  const { path } = setup([...DAY1, ...DAY2, ...DAY3]);
+  const keeper = new LedgerFingerprintKeeper(path, { now: clock() });
+  assert.equal(keeper.sync().days.length, 2);
+  const text = readFileSync(path, "utf8");
+  const longer = text.replace(DAY3[0], DAY3[0].replace('"n":5', '"n":5,"note":"made longer in place"'));
+  assert.ok(longer.length > text.length);
+  writeFileSync(path, longer + DAY4.join(""));
+  const s = keeper.sync();
+  assert.equal(s.state, "ok", "no published day was touched");
+  assert.equal(s.days.length, 3);
+  const scratch = fingerprintLedger(readFileSync(path));
+  assert.deepEqual(
+    s.days.map(({ publishedAt: _p, ...d }) => d),
+    scratch.days,
+    "the day just published is the file's, from its first byte",
+  );
+  assert.deepEqual(s.open, scratch.open);
+  assert.equal(keeper.sync({ full: true }).state, "ok", "and the next full check agrees with it");
 });
 
 test("fingerprint keeper: a ledger that no longer hashes to a published day is reported, recorded once, and never repaired", () => {

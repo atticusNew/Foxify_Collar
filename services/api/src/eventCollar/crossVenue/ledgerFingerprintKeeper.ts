@@ -9,8 +9,11 @@
  * WHAT IS READ WHEN. The first sync, and every sync asked to be full, hashes the file from its
  * first byte. Every other sync reads only the bytes appended since the last one. A file that is
  * shorter than what was already read, or is a different file under the same name (another inode),
- * is hashed again from its first byte. An edit in place that keeps the length is not seen by the
- * cheap path; the full pass at start-up and once a day is what finds it.
+ * is hashed again from its first byte. So is a file whose appended bytes close a day: a day is
+ * published only from a pass over the whole file, once per day and ledger, so that what is
+ * published is what the file hashes to at that moment whatever was done to it since the last full
+ * pass. An edit in place that keeps the length is not seen by the cheap path; the full pass at
+ * start-up, once a day, and at each day's close is what finds it.
  *
  * A MISMATCH IS NEVER REPAIRED. When the ledger stops hashing to a published day, a `mismatch`
  * line is appended, the callback is told (the service alerts), and nothing else is written: the
@@ -176,6 +179,15 @@ export class LedgerFingerprintKeeper {
       this.offset = pos;
       this.fileId = id;
       this.started = true;
+      // A day is published only from a pass over the whole file. The appended bytes say a day has
+      // closed; what is published for it must be what the file hashes to from its first byte now,
+      // not what the bytes read since the last full pass add up to (they differ if the file was
+      // changed anywhere but its end in between). Not while a mismatch stands: nothing is
+      // published then, and every sync would become a full pass and an alarm.
+      if (!fromStart && !this.current().standing && fingerprinter.days().length > this.current().days.length) {
+        this.read(true);
+        return;
+      }
       this.reconcile(fromStart);
     } finally {
       if (fd !== null) closeSync(fd);
