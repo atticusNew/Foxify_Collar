@@ -852,18 +852,42 @@ const MEMBER_COMPARE_WAIT_MS = positiveMs(process.env.MEMBER_APP_COMPARE_WAIT_MS
  */
 let memberInPlay = !/^(0|false|no|off)$/i.test(process.env.MEMBER_APP_IN_PLAY ?? "");
 /**
- * Combos, off unless MEMBER_APP_COMBO_RFQ=1: a member's combination (parlay) ticket is protected
- * the same way a single is, part of it sold, with the bid coming from the venue's request for
- * quote instead of a book (a combo market has none). The venue has not shipped the quote path,
- * and its shape in the client is assumed (memberApp.ts, RawMemberRfq): off, a combo row reads as
- * it always has, riding to settlement. No leave early on a combo: there is nothing to buy it back from.
- * MEMBER_APP_COMBO_RFQ=preview shows the flow before the venue quotes: the combo rows quote from a
+ * Combos: a member's combination (parlay) ticket is protected the same way a single is, part of
+ * it sold, at ANY leg and not only the last, with the bid coming from the venue's request for
+ * quote instead of a book (a combo market has none). No leave early on a combo: there is nothing
+ * to buy it back from.
+ *
+ * This is the default wherever the venue quotes (MEMBER_APP_COMBO_RFQ unset, or =auto): the
+ * service finds out for itself. When a member holds a live combo it asks the venue's quote path
+ * for a bid on it, in the background, the same request the page would make. A well-formed answer
+ * (priced, pending, passed) turns the combo rows on for everyone; a 404 (the venue has not shipped
+ * the path) leaves them as they always were, riding to settlement, and it asks again half an hour
+ * later; anything else (an outage, a shape this client does not read) leaves them off and asks
+ * again in five minutes. So nothing has to be switched on the day the venue ships it, and nothing
+ * half-working is shown before. The path's shape in the client is still ASSUMED (memberApp.ts,
+ * RawMemberRfq): the quote proves itself before a row turns on, the accept is proven only by the
+ * first tap, where the record is written from the venue's fills and never from the quote.
+ *
+ * =1 forces it on without asking (a combo row then says "Not yet" while the venue has no path);
+ * =0 forces it off. =preview shows the flow before the venue quotes: the combo rows quote from a
  * stand-in bid (a tenth under the ticket's own last price), said to be a preview on the page, and
  * the tap is refused in words (combo_preview); nothing is asked of the venue and nothing is sold.
  */
-type ComboRfqMode = "off" | "on" | "preview";
-const comboRfqModeOf = (v: string | undefined): ComboRfqMode => (/^preview$/i.test(v ?? "") ? "preview" : /^(1|true|yes|on)$/i.test(v ?? "") ? "on" : "off");
+type ComboRfqMode = "off" | "on" | "preview" | "auto";
+export const comboRfqModeOf = (v: string | undefined): ComboRfqMode =>
+  /^preview$/i.test((v ?? "").trim()) ? "preview" : /^(1|true|yes|on)$/i.test((v ?? "").trim()) ? "on" : /^(0|false|no|off)$/i.test((v ?? "").trim()) ? "off" : "auto";
 let memberComboRfq: ComboRfqMode = comboRfqModeOf(process.env.MEMBER_APP_COMBO_RFQ);
+/** auto: what the venue's quote path has answered so far, and when it was last asked */
+let comboRfqPath: { state: "unknown" | "available" | "unavailable"; checkedAtMs: number; why: string | null } = { state: "unknown", checkedAtMs: 0, why: null };
+let comboRfqProbing = false;
+const COMBO_RFQ_RECHECK_MS = { unavailable: 30 * 60_000, unknown: 5 * 60_000 };
+/** whether a combo row is quoted through the venue right now: forced on, the preview, or auto with the path proven */
+const comboRfqLive = (): boolean => memberComboRfq === "on" || memberComboRfq === "preview" || (memberComboRfq === "auto" && comboRfqPath.state === "available");
+const noteComboRfqPath = (state: "unknown" | "available" | "unavailable", why: string | null = null): void => {
+  // a passing error does not take back a path that has answered; only its own 404 does
+  if (state === "unknown" && comboRfqPath.state === "available") return;
+  comboRfqPath = { state, checkedAtMs: Date.now(), why: why ? why.slice(0, 160) : null };
+};
 /** a stand-in quote in preview: this far under the ticket's last price */
 const COMBO_PREVIEW_HAIRCUT = 0.9;
 const LIVE_EVENT_WORDS = /in_progress|in_play|in-play|live|started|underway/;
@@ -1174,13 +1198,39 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
   };
 }
 
-/** A member's combination ticket is a quotable row only with MEMBER_APP_COMBO_RFQ on and the ticket still live: no leg missed, not every leg in. */
-const comboLockable = (p: MemberHolderPosition): boolean => {
-  if (memberComboRfq === "off" || p.reason !== "parlay") return false;
+/** A combination ticket still live: no leg missed, not every leg in. */
+const comboTicketLive = (p: MemberHolderPosition): boolean => {
+  if (p.reason !== "parlay") return false;
   const legs = p.legs ?? [];
   if (legs.some((l) => l.state === "lost")) return false;
   return !(legs.length > 0 && legs.every((l) => l.state === "won" || l.state === "void"));
 };
+
+/** A member's combination ticket is a quotable row only while the venue's quote path is in use (comboRfqLive) and the ticket is still live. */
+const comboLockable = (p: MemberHolderPosition): boolean => comboRfqLive() && comboTicketLive(p);
+
+/**
+ * Auto: find out whether the venue quotes combos, from a member's own live ticket. One request at
+ * a time, in the background of a positions read, no more often than the recheck windows; the
+ * answer is noted inside memberComboPriced, where the venue is asked. A ticket that could not be
+ * asked about (paused, over) leaves the question open for the next window.
+ */
+function probeComboRfq(member: string, rows: MemberHolderPosition[]): void {
+  if (memberComboRfq !== "auto" || comboRfqProbing || comboRfqPath.state === "available" || !memberSessions) return;
+  if (Date.now() - comboRfqPath.checkedAtMs < COMBO_RFQ_RECHECK_MS[comboRfqPath.state]) return;
+  const row = rows.find(comboTicketLive);
+  if (!row) return;
+  comboRfqProbing = true;
+  const before = comboRfqPath;
+  void memberComboPriced(member, comboTickerOf(row.marketId), row.contracts, undefined, rows, true)
+    .then((r) => {
+      if (comboRfqPath === before) noteComboRfqPath("unknown", r.ok ? null : String((r.body as { code?: unknown }).code ?? "not asked"));
+    })
+    .catch((err) => noteComboRfqPath("unknown", String(err instanceof Error ? err.message : err)))
+    .finally(() => {
+      comboRfqProbing = false;
+    });
+}
 
 /** The member's combination ticket the synthetic ticker names, among their positions. */
 const comboPositionOf = (positions: MemberHolderPosition[], ticker: string): MemberHolderPosition | undefined => positions.find((p) => p.reason === "parlay" && comboTickerOf(p.marketId) === ticker);
@@ -1191,9 +1241,9 @@ const comboPositionOf = (positions: MemberHolderPosition[], ticker: string): Mem
  * so the three shapes walk it like a book. Nothing is accepted here; the lock asks again at the
  * tap and accepts that quote.
  */
-async function memberComboPriced(member: string, ticker: string, contracts: number, entryCents: number | undefined, positions: MemberHolderPosition[]): Promise<MemberPricedResult> {
+async function memberComboPriced(member: string, ticker: string, contracts: number, entryCents: number | undefined, positions: MemberHolderPosition[], probing = false): Promise<MemberPricedResult> {
   const VN = VENUE_NAMES[MEMBER_VENUE];
-  if (memberComboRfq === "off") return { ok: false, status: 409, body: { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VN}; the lock sells part of one position.` } };
+  if (!comboRfqLive() && !probing) return { ok: false, status: 409, body: { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VN}; the lock sells part of one position.` } };
   const pos = comboPositionOf(positions, ticker);
   if (!pos) return { ok: false, status: 409, body: { ok: false, error: "not_held", code: "not_held", message: `Your ${VN} account holds no such combo.` } };
   if (contracts > pos.contracts + 1e-9) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this ticket; the lock can cover up to that.`, held: pos.contracts } };
@@ -1235,9 +1285,15 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
       bid = await requestRfqBid(client, { market_id: pos.marketId, action: "sell", quantity: String(askFor), client_rfq_id: clientOrderIdFor("rfq", ticker) }, maxPrice, memberOrderOpts);
     } catch (err) {
       // the venue has not shipped the quote path: its 404 is "not yet", not an outage
-      if (err instanceof MemberApiError && err.status === 404) return { ok: false, status: 200, body: { ok: false, code: "combo_quotes_unavailable", message: `${VN} isn't quoting combo tickets yet.` } };
+      if (err instanceof MemberApiError && err.status === 404) {
+        noteComboRfqPath("unavailable", "the venue's quote path answered 404");
+        return { ok: false, status: 200, body: { ok: false, code: "combo_quotes_unavailable", message: `${VN} isn't quoting combo tickets yet.` } };
+      }
+      noteComboRfqPath("unknown", err instanceof MemberApiError ? `${err.status} ${err.code}` : String(err instanceof Error ? err.message : err));
       return { ok: false, ...memberRefusal(err) };
     }
+    // the venue answered the request in the shape this client reads (priced, pending or passed): the path is there
+    noteComboRfqPath("available");
   }
   if (!bid.level) {
     const why = bid.reason === "declined" ? `${VN}'s makers passed on this ticket right now.` : bid.reason === "expired" ? `${VN}'s quote lapsed before it could be read; try again.` : `${VN} did not price this ticket in time; try again.`;
@@ -2515,8 +2571,10 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
           return { ...p, ticker, ...(ticker !== p.ticker ? { combo: true } : {}), bidCents, lastCents, venue: MEMBER_VENUE, lock: lockOf(ticker) };
         }),
       ],
-      ...(memberComboRfq !== "off" ? { comboRfq: memberComboRfq === "preview" ? "preview" : true } : {}),
+      ...(comboRfqLive() ? { comboRfq: memberComboRfq === "preview" ? "preview" : true } : {}),
     });
+    // auto: a member's live combo is how the service learns whether the venue quotes them; the answer shows on a later read
+    probeComboRfq(member, memberRows);
     return;
   }
   if (url.pathname === "/api/shadow/quote") {
@@ -4135,6 +4193,12 @@ function healthBody(): Record<string, unknown> {
               tokensPath: memberSessions.cfg.storePath,
               orderWaitMs: memberOrderOpts.waitMs ?? 3000,
               inPlay: memberInPlay,
+              // combos at any leg through the venue's quote: the mode, and in auto what its quote path has answered
+              comboRfq: {
+                mode: memberComboRfq,
+                live: comboRfqLive(),
+                ...(memberComboRfq === "auto" ? { path: comboRfqPath.state, checkedAt: comboRfqPath.checkedAtMs ? new Date(comboRfqPath.checkedAtMs).toISOString() : null, ...(comboRfqPath.why ? { why: comboRfqPath.why } : {}) } : {}),
+              },
               compareWaitMs: MEMBER_COMPARE_WAIT_MS,
               members: memberSessions.summary(),
               ...(MEMBER_APP_HOSTNAME ? { hostname: MEMBER_APP_HOSTNAME } : {}),
@@ -4971,8 +5035,8 @@ export function wireLockEngine(fns: {
   memberInPlay?: boolean;
   /** whether a hedged lock may be taken while the game is on, in place of EVENT_X_IN_PLAY (on unless set to 0); the fake engine's own window is the test's */
   inPlay?: boolean;
-  /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ (off unless set); "preview" quotes from a stand-in and refuses the tap */
-  memberComboRfq?: boolean | "preview";
+  /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ: "auto" (the env's default) finds out from the venue, true forces it on, false off; "preview" quotes from a stand-in and refuses the tap. Setting it forgets what auto had learned. */
+  memberComboRfq?: boolean | "preview" | "auto";
   /** the long/short-dialect venue's client behind the operator's key check, in place of the env's; null is "not read" */
   polyUs?: PolyUsClient | null;
   /** that venue's live stream behind the same check, with `polyUs` */
@@ -4989,7 +5053,8 @@ export function wireLockEngine(fns: {
   if (fns.memberInPlay !== undefined) memberInPlay = fns.memberInPlay;
   if (fns.inPlay !== undefined) lockInPlay = fns.inPlay;
   if (fns.memberComboRfq !== undefined) {
-    memberComboRfq = fns.memberComboRfq === "preview" ? "preview" : fns.memberComboRfq ? "on" : "off";
+    memberComboRfq = fns.memberComboRfq === "preview" ? "preview" : fns.memberComboRfq === "auto" ? "auto" : fns.memberComboRfq ? "on" : "off";
+    comboRfqPath = { state: "unknown", checkedAtMs: 0, why: null };
     memberPositionsCache.clear();
   }
   if (fns.settledMarkets) {

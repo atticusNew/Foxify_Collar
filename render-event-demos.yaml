@@ -484,14 +484,27 @@ services:
       #                                         game is on and the pre-game cutoff does not apply; the
       #                                         order rests the market's in_play_delay_sec longer so it
       #                                         outlives the venue's hold. 0 makes the page pre-game only.
-      #   MEMBER_APP_COMBO_RFQ=1                 optional; off by default. On: a member's combo (parlay)
-      #                                         ticket is quoted and partly sold through the venue's
-      #                                         request-for-quote (any leg, not only the last); no leave
-      #                                         early on a combo; the record settles on the venue's own
-      #                                         word for the combo market. The venue has not shipped the
-      #                                         quote path and its shape in memberApp.ts is assumed: leave
-      #                                         off until the docs land and the three open questions in
-      #                                         demo/event-lockin-extension/README.md (Combos) are answered.
+      #   MEMBER_APP_COMBO_RFQ=auto              optional; auto is the default (unset is auto). A member's
+      #                                         combo (parlay) ticket is quoted and partly sold through
+      #                                         the venue's request-for-quote at ANY leg, not only the
+      #                                         last, wherever the venue quotes. Auto finds out for
+      #                                         itself: when a member holds a live combo the service asks
+      #                                         the venue's quote path for a bid on it, in the background.
+      #                                         A well-formed answer turns the combo rows on for everyone;
+      #                                         a 404 (the venue has not shipped the path, as today)
+      #                                         leaves them riding to settlement and is asked again half
+      #                                         an hour later. Nothing to switch on the day it ships.
+      #                                         No leave early on a combo; the record settles on the
+      #                                         venue's own word for the combo market. The path's shape
+      #                                         in memberApp.ts is still ASSUMED: if the venue ships it
+      #                                         with other field names the rows stay off until the client
+      #                                         is fitted, and the accept is proven only by the first
+      #                                         tap. Before real money: one combo on the venue's paper
+      #                                         exchange, and the three open questions in
+      #                                         demo/event-lockin-extension/README.md (Combos) answered.
+      #                                         Status: /healthz?token= lock.member.comboRfq (mode, live,
+      #                                         path, checkedAt, why).
+      #                                         =1 forces it on without asking; =0 forces it off.
       #                                         =preview: the combo rows quote from a stand-in bid, said
       #                                         to be a preview on the page, nothing asked of the venue,
       #                                         the tap refused in words (combo_preview); for seeing the

@@ -639,6 +639,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     memberSessions: sessions,
     memberOrder: { waitMs: 60, pollMs: 5 },
     memberInPlay: false, // pre-game only for the first checks; the in-play block turns it on (the service's own default)
+    memberComboRfq: false, // combos off for the first checks; the combo block proves the service's own default (auto) and the other modes
   });
   await new Promise<void>((r) => worker.server.listen(0, "127.0.0.1", () => r()));
   const base = `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`;
@@ -1109,18 +1110,82 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.deepEqual([liveBuy.action, liveBuy.market_id, liveBuy.price, liveBuy.quantity], ["buy", "m-mil", "0.68", "12"], "the buy-back is a limit at the offer, in the member's own account");
     worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: false });
 
-    // ---- a combination ticket, protected through the venue's quote (MEMBER_APP_COMBO_RFQ) ----
-    // Off (the default): a combo row reads as it always has, no ticker, riding to settlement; its synthetic ticker is refused.
+    // ---- a combination ticket, protected at any leg through the venue's quote (MEMBER_APP_COMBO_RFQ) ----
     const COMBO = comboTickerOf("m-combo");
     assert.equal(COMBO, "STXCOMBO-M-COMBO");
-    const wireCombo = (on: boolean) => worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: true, memberComboRfq: on });
+    const wireCombo = (on: boolean | "auto") => worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: true, memberComboRfq: on });
+    const comboHealth = async () => (await get<Any>("/healthz", { "x-admin-token": "op-secret" })).body.lock.member.comboRfq as { mode: string; live: boolean; path?: string; checkedAt?: string | null; why?: string };
+    const untilCombo = async (ok: (h: Awaited<ReturnType<typeof comboHealth>>) => boolean) => {
+      let h = await comboHealth();
+      for (let i = 0; i < 200 && !ok(h); i += 1) {
+        await new Promise((r) => setTimeout(r, 10));
+        h = await comboHealth();
+      }
+      assert.ok(ok(h), `timed out: ${JSON.stringify(h)}`);
+      return h;
+    };
+    const comboRow = (body: Any) => body.positions.find((p: Any) => p.event === "BOS / MIA / DET combo");
+
+    // The default is auto: unset (or anything that is not on, off or preview), the service finds out from the venue.
+    assert.deepEqual([undefined, "", "auto", "AUTO", "1", "on", "0", "off", "false", "preview", "nonsense"].map((v) => worker.comboRfqModeOf(v)), ["auto", "auto", "auto", "auto", "on", "on", "off", "off", "off", "preview", "auto"]);
+    assert.ok(/let memberComboRfq: ComboRfqMode = comboRfqModeOf\(process\.env\.MEMBER_APP_COMBO_RFQ\)/.test(readFileSync(new URL("../scripts/eventShadowWorker.ts", import.meta.url), "utf8")), "the mode is the env's, auto when unset");
+    // Auto, and the venue has not shipped its quote path (404): the first read of a member's live combo asks once, in the
+    // background; the rows read as they always have, nobody is shown a row that would only say "not yet", and it is not asked again inside the half hour
+    venue.rfqMode = "off";
+    wireCombo("auto");
+    assert.deepEqual(await comboHealth(), { mode: "auto", live: false, path: "unknown", checkedAt: null });
     pos = await get<Any>("/api/shadow/positions?fresh=1");
-    const comboOff = pos.body.positions.find((p: Any) => p.event === "BOS / MIA / DET combo");
+    assert.deepEqual([comboRow(pos.body).ticker, comboRow(pos.body).reason, comboRow(pos.body).combo, pos.body.comboRfq], [null, "parlay", undefined, undefined], "not known yet: shown, not offered");
+    let ch = await untilCombo((h) => h.path === "unavailable");
+    assert.deepEqual([ch.live, ch.why, typeof ch.checkedAt], [false, "the venue's quote path answered 404", "string"]);
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    assert.deepEqual([comboRow(pos.body).ticker, pos.body.comboRfq], [null, undefined], "the venue does not quote combos: the ticket rides to settlement, as before");
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
+    assert.deepEqual([q.status, q.body.code], [409, "parlay_unsupported"]);
+    venue.rfqMode = "quote";
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await comboHealth()).path, "unavailable", "the venue is not asked again inside the half hour");
+    assert.equal(venue.rfqs.length, 0, "and nothing reached its makers");
+    // Auto, and the venue quotes: the same one background request finds out, and from the next read every live combo is
+    // offered at any leg. Nothing was switched on.
+    wireCombo("auto");
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    assert.deepEqual([comboRow(pos.body).ticker, pos.body.comboRfq], [null, undefined], "the read that asks does not wait for the answer");
+    ch = await untilCombo((h) => h.path === "available");
+    assert.deepEqual([ch.mode, ch.live, ch.why], ["auto", true, undefined]);
+    assert.equal(venue.rfqs.length, 1, "one request found out");
+    assert.deepEqual([(venue.rfqs[0] as Any).action, (venue.rfqs[0] as Any).quantity], ["sell", "4"], "the request the page itself would make: a bid on the largest shape's size");
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    assert.deepEqual([comboRow(pos.body).ticker, comboRow(pos.body).combo, pos.body.comboRfq], [COMBO, true, true], "offered, with no switch touched");
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
+    assert.deepEqual([q.status, q.body.ok, q.body.combo, q.body.rfq.priceCents], [200, true, true, Math.round(Number(venue.rfqPrice) * 100)]);
+    await new Promise((r) => setTimeout(r, 30));
+    const askedSoFar = venue.rfqs.length;
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(venue.rfqs.length, askedSoFar, "once the path has answered, a positions read asks nothing");
+    // the venue's own 404 on a later quote takes the rows back at once
+    venue.rfqMode = "off";
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
+    assert.deepEqual([q.body.ok, q.body.code], [false, "combo_quotes_unavailable"]);
+    ch = await comboHealth();
+    assert.deepEqual([ch.path, ch.live], ["unavailable", false]);
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    assert.deepEqual([comboRow(pos.body).ticker, pos.body.comboRfq], [null, undefined], "the path went away: back to riding to settlement");
+    venue.rfqMode = "quote";
+    venue.rfqs.length = 0;
+
+    // Off (MEMBER_APP_COMBO_RFQ=0): a combo row reads as it always has, no ticker, riding to settlement; its synthetic ticker is refused; the venue is never asked.
+    wireCombo(false);
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    const comboOff = comboRow(pos.body);
     assert.deepEqual([comboOff.ticker, comboOff.reason, comboOff.combo, pos.body.comboRfq], [null, "parlay", undefined, undefined], "off: the combo is shown, not protected");
     q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
     assert.deepEqual([q.status, q.body.code], [409, "parlay_unsupported"]);
-    assert.ok(/let memberComboRfq: ComboRfqMode = comboRfqModeOf\(process\.env\.MEMBER_APP_COMBO_RFQ\)/.test(readFileSync(new URL("../scripts/eventShadowWorker.ts", import.meta.url), "utf8")), "off unless MEMBER_APP_COMBO_RFQ is set");
-    // on: the combo row carries its synthetic ticker and the combo mark; the legs still read as a combo's
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual([(await comboHealth()).mode, venue.rfqs.length], ["off", 0]);
+    // on (MEMBER_APP_COMBO_RFQ=1): the combo row carries its synthetic ticker and the combo mark; the legs still read as a combo's
     wireCombo(true);
     pos = await get<Any>("/api/shadow/positions?fresh=1");
     const comboOn = pos.body.positions.find((p: Any) => p.event === "BOS / MIA / DET combo");
