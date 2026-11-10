@@ -342,7 +342,7 @@ test("early close: the ledger replays a priced close as a closed position; an un
   });
   assert.ok(html.includes("<h2>Closed early at live prices</h2>"), "the card");
   assert.ok(html.includes('Tampa Bay Rays <span class="tag">left early</span>'), "the row");
-  assert.ok(html.includes("$81.41 <i>vs $85.96 unprotected</i>"), "what they left with against selling unprotected");
+  assert.ok(html.includes("$81.41 <i>vs $85.96 without the lock</i>"), "what they left with against selling unprotected");
   assert.ok(html.includes("1 position left before the lock.") && html.includes("Crossing both books cost $7.61 against the mid (5.07% of stake)."), "the read line");
   assert.ok(html.includes("1 other scheduled exit found no depth on a leg and ran to settlement instead."), "unpriced attempts are counted, not hidden");
   assert.ok(html.includes("1 left before the game at live prices; see the early closes below."), "the sports card points at it");

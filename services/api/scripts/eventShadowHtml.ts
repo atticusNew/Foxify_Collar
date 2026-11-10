@@ -95,7 +95,7 @@ const intStr = (n: number): string => n.toLocaleString("en-US", { maximumFractio
 /** A snapshot's age as the operator reads it: "48s", "4m", "2h"; only shown past the routes' 90s bound. */
 const ageWord = (sec: number): string => (sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m` : `${Math.floor(sec / 3600)}h`);
 const SHOW_AGE_FROM_SEC = 90;
-const bpsPct = (bps: number | null, digits = 2): string => (bps === null ? "–" : `${(bps / 100).toFixed(digits)}%`);
+const bpsPct = (bps: number | null, digits = 2): string => (bps === null ? "n/a" : `${(bps / 100).toFixed(digits)}%`);
 /**
  * A slice with fewer events than this shows its counts and nothing else: four NFL games do not
  * make a percentage, and a page that prints one anyway is calling noise a finding.
@@ -261,8 +261,8 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       // or "capped" reads as the whole story.
       return (
         `<div class="row settled"><span>${escapeHtml(p.sideName)} ${tag}</span>` +
-        `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} naked</i>` +
-        `<i class="paid">incl. ${usd(p.creditCents)} paid at open${rule.inline}</i>` +
+        `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} without the lock</i>` +
+        `<i class="paid">incl. ${usd(p.creditCents)} credited at lock in${rule.inline}</i>` +
         // on its own line: beside the credit it pushes the row past the card on a phone
         `${rule.changedLine}</b></div>${rule.detail}`
       );
@@ -281,22 +281,22 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     s.settledCount === 0
       ? "no events settled yet"
       : s.deltaTotalCents >= 0
-        ? `protection is AHEAD of naked by ${usd(s.deltaTotalCents)} across settled events`
-        : `protection cost ${usd(-s.deltaTotalCents)} across settled events; the floor is what it buys`;
+        ? `the lock is AHEAD of holding without it by ${usd(s.deltaTotalCents)} across settled events`
+        : `the lock cost ${usd(-s.deltaTotalCents)} across settled events; the floor is what it buys`;
   const quotedLine =
     s.quotedAvgEvBps === null
       ? "not yet recorded"
       : s.quotedAvgEvBps < 0
-        ? `${Math.abs(s.quotedAvgEvBps / 100).toFixed(1)}% better than naked, on average`
+        ? `${Math.abs(s.quotedAvgEvBps / 100).toFixed(1)}% better than holding without the lock, on average`
         : `${(s.quotedAvgEvBps / 100).toFixed(1)}% of expected value, on average`;
   // The bridge between "floor saves" and "protection cost": one sentence that holds both, with
   // the realized cost next to the quoted one so the reader can see the quote was honest.
   const bridgeLine = (() => {
     if (s.settledCount === 0) return "";
     const savePct = Math.round((100 * s.floorSaves) / s.settledCount);
-    const saved = `Protection paid the floor on ${s.floorSaves} of ${s.settledCount} settled events (${savePct}%).`;
-    if (s.deltaTotalCents >= 0) return `${saved} Across everyone it came out ${usd(s.deltaTotalCents)} ahead of holding unprotected.`;
-    const realizedPct = s.nakedTotalCents > 0 ? `${((100 * -s.deltaTotalCents) / s.nakedTotalCents).toFixed(1)}% of what the same positions paid unprotected` : usd(-s.deltaTotalCents);
+    const saved = `The lock paid the floor on ${s.floorSaves} of ${s.settledCount} settled events (${savePct}%).`;
+    if (s.deltaTotalCents >= 0) return `${saved} Across everyone it came out ${usd(s.deltaTotalCents)} ahead of holding without the lock.`;
+    const realizedPct = s.nakedTotalCents > 0 ? `${((100 * -s.deltaTotalCents) / s.nakedTotalCents).toFixed(1)}% of what the same positions paid without the lock` : usd(-s.deltaTotalCents);
     const quoted = s.quotedAvgEvBps !== null && s.quotedAvgEvBps >= 0 ? `; ${(s.quotedAvgEvBps / 100).toFixed(1)}% was quoted up front` : "";
     // Realized is one sample and quoted is the expectation; when strikes on one coin dominate the
     // settled book they settle together, so a rally caps many at once and the two numbers part.
@@ -352,7 +352,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     const dCell = sp.settled >= MIN_SLICE_EVENTS && sp.holderDeltaBpsOfStake !== null ? bpsPct(sp.holderDeltaBpsOfStake) : "too few";
     const pnlLine =
       sp.settled > 0
-        ? `On the ${sp.settled} settled, our P&L is ${signedUsd(sp.writerPnlCents)} against ${usd(sp.takeCents)} of take booked; users were paid ${usd(sp.creditsCents)} in credits at the tap.`
+        ? `On the ${sp.settled} settled, our P&L is ${signedUsd(sp.writerPnlCents)} against ${usd(sp.takeCents)} of take booked; users were credited ${usd(sp.creditsCents)} at lock in.`
         : "Nothing has settled yet.";
     const sportsClosed = s.closed?.byKind?.sports?.closed ?? 0;
     const closedLine = sportsClosed > 0 ? ` ${sportsClosed} left before the game at live prices; see the early closes below.` : "";
@@ -363,7 +363,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       <div class="bignum"><div class="n green">${sp.settled}</div><div class="l">games settled</div></div>
       <div class="bignum"><div class="n">${sp.opened - sp.settled}</div><div class="l">open now</div></div>
       <div class="bignum"><div class="n">${escapeHtml(evCell)}</div><div class="l">quoted cost, of expected value</div></div>
-      <div class="bignum"><div class="n">${escapeHtml(dCell)}</div><div class="l">realized, protected minus naked</div></div>
+      <div class="bignum"><div class="n">${escapeHtml(dCell)}</div><div class="l">realized, with the lock minus without</div></div>
     </div>
     <div class="read" style="margin-top:10px">${escapeHtml(pnlLine + closedLine)}</div>
   </div>
@@ -380,7 +380,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
         const mid = typeof p.closeYesMidCents === "number" ? `at ${p.closeYesMidCents}¢ mid` : "no live mid";
         return (
           `<div class="row settled"><span>${escapeHtml(p.sideName)} <span class="tag">left early</span></span>` +
-          `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} unprotected</i>` +
+          `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} without the lock</i>` +
           `<i class="paid">${escapeHtml(mid)}, ${escapeHtml(shortEt(p.closedAt ?? ""))}</i></b></div>`
         );
       })
@@ -389,8 +389,8 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     const readLine =
       c.count === 0
         ? `${c.unpriced} scheduled exit${c.unpriced === 1 ? "" : "s"} found no depth on a leg and ran to settlement instead; nothing has closed early yet.`
-        : `${c.count} position${c.count === 1 ? "" : "s"} left before the lock. Each exit was a new trade at the live books that second: the user's contracts sold into the bids, our other side sold into its bids, and the protection settled at what both fetched. ` +
-          `They walked away with ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} had they never protected (${signedUsd(c.deltaCents)}). ` +
+        : `${c.count} position${c.count === 1 ? "" : "s"} left before the lock. Each exit was a new trade at the live books that second: the user's contracts sold into the bids, our other side sold into its bids, and the locked terms settled at what both fetched. ` +
+          `They walked away with ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} had they never locked in (${signedUsd(c.deltaCents)}). ` +
           (c.withMid > 0 ? `Crossing both books cost ${signedUsd(c.unwindFrictionCents)} against the mid${frictionPct}. ` : "") +
           `Our result on the way out is the take booked, ${usd(c.takeBookedCents)}: the user pays live prices on both legs, so we carry no price risk on the exit either.` +
           (c.unpriced > 0 ? ` ${c.unpriced} other scheduled exit${c.unpriced === 1 ? "" : "s"} found no depth on a leg and ran to settlement instead.` : "");
@@ -398,8 +398,8 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     <h2>Closed early at live prices</h2>
     <div class="bignums">
       <div class="bignum"><div class="n green">${c.count}</div><div class="l">left before the lock</div></div>
-      <div class="bignum"><div class="n ${c.deltaCents >= 0 ? "green" : ""}">${signedUsd(c.deltaCents)}</div><div class="l">protected minus unprotected, at the close</div></div>
-      <div class="bignum"><div class="n">${c.withMid > 0 ? signedUsd(-c.unwindFrictionCents) : "–"}</div><div class="l">crossing the books, against the mid</div></div>
+      <div class="bignum"><div class="n ${c.deltaCents >= 0 ? "green" : ""}">${signedUsd(c.deltaCents)}</div><div class="l">with the lock minus without, at the close</div></div>
+      <div class="bignum"><div class="n">${c.withMid > 0 ? signedUsd(-c.unwindFrictionCents) : "n/a"}</div><div class="l">crossing the books, against the mid</div></div>
       <div class="bignum"><div class="n">${c.unpriced}</div><div class="l">exits with a leg unpriced</div></div>
     </div>
     <div class="read" style="margin-top:10px">${escapeHtml(readLine)}</div>
@@ -419,12 +419,12 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     const recentLine =
       r.positions === 0
         ? `No positions opened in the last ${f.windowDays} days.`
-        : `In the last ${f.windowDays} days protection put ${intStr(r.contracts)} contracts on public books across ${r.positions} position${r.positions === 1 ? "" : "s"}: ${usd(r.hedgeNotionalCents)} of flow against ${usd(r.stakeCents)} of stake protected.`;
+        : `In the last ${f.windowDays} days locks put ${intStr(r.contracts)} contracts on public books across ${r.positions} position${r.positions === 1 ? "" : "s"}: ${usd(r.hedgeNotionalCents)} of flow against ${usd(r.stakeCents)} of stake locked in.`;
     const allLine = ` Since ${sinceDay} UTC: ${intStr(a.contracts)} contracts across ${a.positions} positions, ${usd(a.hedgeNotionalCents)} of flow.`;
     const simLine = " Simulated here, like the positions; live, this is order flow onto the books that price the event, placed the second the user taps.";
     return `  <div class="card">
     <h2>Flow onto public books</h2>
-    <div class="sub" style="margin-bottom:8px">Every protection buys its other side on a public book, leg for leg. One total; the record does not cut it by venue.</div>
+    <div class="sub" style="margin-bottom:8px">Every lock buys its other side on a public book, leg for leg. One total; the record does not cut it by venue.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${intStr(r.contracts)}</div><div class="l">contracts, last ${f.windowDays} days</div></div>
       <div class="bignum"><div class="n">${usd(r.hedgeNotionalCents)}</div><div class="l">paid for them, fees in</div></div>
@@ -440,7 +440,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     .sort((a, b) => (b[1].quotedAvgEvBps ?? 0) - (a[1].quotedAvgEvBps ?? 0));
   const segmentLine =
     richest.length >= 2
-      ? `Protection is cheapest on ${richest[richest.length - 1][0].toUpperCase()} (${bpsPct(richest[richest.length - 1][1].quotedAvgEvBps)} of expected value quoted) and richest on ${richest[0][0].toUpperCase()} (${bpsPct(richest[0][1].quotedAvgEvBps)}); the record-wide average is weighted by how many of each the scanner found, not by what a user would choose.`
+      ? `The lock is cheapest on ${richest[richest.length - 1][0].toUpperCase()} (${bpsPct(richest[richest.length - 1][1].quotedAvgEvBps)} of expected value quoted) and richest on ${richest[0][0].toUpperCase()} (${bpsPct(richest[0][1].quotedAvgEvBps)}); the record-wide average is weighted by how many of each the scanner found, not by what a user would choose.`
       : "";
   const windowLine = s.firstOpenedAt
     ? `Recording since ${escapeHtml(s.firstOpenedAt.slice(0, 16).replace("T", " "))} UTC. Append-only; positions are never edited, only opened, closed early at live prices, and settled.`
@@ -461,14 +461,14 @@ export function renderShadowHtml(input: ShadowPageInput): string {
   // sceptic should be able to stop reading.
   const keptCard = (() => {
     const rf = input.refusals;
-    const refusedCell = rf && rf.priced > 0 && rf.refusedPct !== null ? `${rf.refusedPct.toFixed(rf.refusedPct >= 10 ? 0 : 1)}%` : "–";
-    const savesCell = s.settledCount > 0 ? `${Math.round((100 * s.floorSaves) / s.settledCount)}%` : "–";
+    const refusedCell = rf && rf.priced > 0 && rf.refusedPct !== null ? `${rf.refusedPct.toFixed(rf.refusedPct >= 10 ? 0 : 1)}%` : "n/a";
+    const savesCell = s.settledCount > 0 ? `${Math.round((100 * s.floorSaves) / s.settledCount)}%` : "n/a";
     const lines: string[] = [];
     if (s.settledCount === 0) lines.push("Nothing has settled yet. This block fills as events settle against their official results.");
     else {
       lines.push(
-        `Across ${intStr(s.settledCount)} settled events the same positions returned ${usd(s.protectedTotalCents)} with protection and ${usd(s.nakedTotalCents)} without, marked at the official result. ` +
-          (s.deltaTotalCents >= 0 ? `Protection came out ${usd(s.deltaTotalCents)} ahead.` : `Protection cost ${usd(-s.deltaTotalCents)}, ${s.nakedTotalCents > 0 ? `${((100 * -s.deltaTotalCents) / s.nakedTotalCents).toFixed(1)}% of the unprotected outcome` : "in total"}${s.quotedAvgEvBps !== null && s.quotedAvgEvBps >= 0 ? `; ${(s.quotedAvgEvBps / 100).toFixed(1)}% was quoted up front` : ""}. Quoted is the expectation at the market's odds; realized is what this sample did.`),
+        `Across ${intStr(s.settledCount)} settled events the same positions returned ${usd(s.protectedTotalCents)} with the lock and ${usd(s.nakedTotalCents)} without, marked at the official result. ` +
+          (s.deltaTotalCents >= 0 ? `The lock came out ${usd(s.deltaTotalCents)} ahead.` : `The lock cost ${usd(-s.deltaTotalCents)}, ${s.nakedTotalCents > 0 ? `${((100 * -s.deltaTotalCents) / s.nakedTotalCents).toFixed(1)}% of the outcome without the lock` : "in total"}${s.quotedAvgEvBps !== null && s.quotedAvgEvBps >= 0 ? `; ${(s.quotedAvgEvBps / 100).toFixed(1)}% was quoted up front` : ""}. Quoted is the expectation at the market's odds; realized is what this sample did.`),
       );
       lines.push(`On ${intStr(s.floorSaves)} of those ${intStr(s.settledCount)} (${savesCell}) the pick lost and the floor paid. Those are the traders who would otherwise have walked away with nothing.`);
       if (id.settled > 0)
@@ -487,13 +487,13 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       );
     }
     const c = s.closed;
-    if (c && c.count > 0) lines.push(`${intStr(c.count)} traders left before the game at live prices and walked away with ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} unprotected; we carried no price risk on the exit.`);
+    if (c && c.count > 0) lines.push(`${intStr(c.count)} traders left before the game at live prices and walked away with ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} without the lock; we carried no price risk on the exit.`);
     return `  <div class="card">
-    <h2>What protected traders actually kept</h2>
-    <div class="sub" style="margin-bottom:8px">The figure the industry does not publish: what the same positions returned with and without protection, marked at the official result, and how often we said no.</div>
+    <h2>What traders who locked in actually kept</h2>
+    <div class="sub" style="margin-bottom:8px">The figure the industry does not publish: what the same positions returned with and without the lock, marked at the official result, and how often we said no.</div>
     <div class="bignums">
-      <div class="bignum"><div class="n">${usd(s.protectedTotalCents)}</div><div class="l">with protection, settled</div></div>
-      <div class="bignum"><div class="n">${usd(s.nakedTotalCents)}</div><div class="l">without protection, settled</div></div>
+      <div class="bignum"><div class="n">${usd(s.protectedTotalCents)}</div><div class="l">with the lock, settled</div></div>
+      <div class="bignum"><div class="n">${usd(s.nakedTotalCents)}</div><div class="l">without the lock, settled</div></div>
       <div class="bignum"><div class="n green">${savesCell}</div><div class="l">the pick lost, the floor paid</div></div>
       <div class="bignum"><div class="n">${refusedCell}</div><div class="l">of events priced were refused</div></div>
     </div>
@@ -508,7 +508,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
 <title>Track record · Earn &amp; Protect · events</title>
-<meta name="description" content="A continuous simulated run of the protection engine, marked against official results as events settle." />
+<meta name="description" content="A continuous simulated run of the Lock in engine, marked against official results as events settle." />
 <style>${SHADOW_CSS}</style>
 </head>
 <body>
@@ -518,7 +518,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
 <div class="wrap">
   <div class="card">
     <h1>Track record</h1>
-    <div class="sub">A continuous simulated run. Every quotable event is protected at its live quoted terms, then marked against the official result when it settles. Live prices; nothing is bought.</div>
+    <div class="sub">A continuous simulated run. Every quotable event is locked in at its live quoted terms, then marked against the official result when it settles. Live prices; nothing is bought.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.settledCount}</div><div class="l">events settled</div></div>
       <div class="bignum"><div class="n">${s.floorSaves}</div><div class="l">floor saves</div></div>
@@ -544,19 +544,19 @@ ${flowCard}${sportsCard}  <div class="card">
     ${ruleLine ? `<div class="read" style="margin-top:8px">${escapeHtml(ruleLine)}</div>` : ""}
   </div>
   <div class="card">
-    <h2>With and without protection</h2>
+    <h2>With and without the lock</h2>
     ${bridgeLine ? `<div class="read" style="margin:0 0 8px">${escapeHtml(bridgeLine)}</div>` : ""}
-    <div class="row"><span>with protection, settled total</span><b>${usd(s.protectedTotalCents)}</b></div>
-    <div class="row"><span>without protection, settled total</span><b>${usd(s.nakedTotalCents)}</b></div>
+    <div class="row"><span>with the lock, settled total</span><b>${usd(s.protectedTotalCents)}</b></div>
+    <div class="row"><span>without the lock, settled total</span><b>${usd(s.nakedTotalCents)}</b></div>
     <div class="row"><span>realized</span><b>${escapeHtml(realizedLine)}</b></div>
-    <div class="row"><span>quoted cost of protection</span><b>${escapeHtml(quotedLine)}</b></div>
+    <div class="row"><span>quoted cost of the lock</span><b>${escapeHtml(quotedLine)}</b></div>
     ${routeRows}
     ${s.voidCount > 0 ? `<div class="row"><span>voided (no official result)</span><b>${s.voidCount}</b></div>` : ""}
     ${input.hedges ? hedgeLine(input.hedges) : ""}
   </div>
 ${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class="card">
-    <h2>Where protection is cheap and where it is rich</h2>
-    <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of protection at the market's own odds; user Δ is realized, protected minus naked, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} events show counts only.</div>
+    <h2>Where the lock is cheap and where it is rich</h2>
+    <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of the lock at the market's own odds; user Δ is realized, with the lock minus without, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} events show counts only.</div>
     <div class="tablewrap"><table>
       <tr><th>slice</th><th>opened</th><th>settled</th><th>EV cost</th><th>user Δ</th><th>credits</th><th>our P&amp;L</th></tr>
       ${kindSeg}${routeSeg}${leagueSeg}
@@ -570,7 +570,7 @@ ${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class
     <a class="back" href="${demoUrl()}">back to the demo</a>
   </div>
   <footer>
-    ${rulesOnPage ? `<b>How we check rules:</b> ${RULE_CHECK_NOTE}<br><br>` : ""}<b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions${input.parlays ? " and the parlay tickets" : ""}; no venue credentials, no wallets. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>${input.parlays ? ' <a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>' : ""}
+    ${rulesOnPage ? `<b>How we check rules:</b> ${RULE_CHECK_NOTE}<br><br>` : ""}<b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions${input.parlays ? " and the parlay tickets" : ""}; no venue credentials, no addresses. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>${input.parlays ? ' <a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>' : ""}
   </footer>
 </div>
 </body>
@@ -600,8 +600,8 @@ export interface ShadowReportInput {
   netting?: NettingReport;
 }
 
-const pct1 = (x: number | null): string => (x === null ? "–" : `${x.toFixed(1)}%`);
-const n1 = (x: number | null, unit = ""): string => (x === null ? "–" : `${x.toFixed(1)}${unit}`);
+const pct1 = (x: number | null): string => (x === null ? "n/a" : `${x.toFixed(1)}%`);
+const n1 = (x: number | null, unit = ""): string => (x === null ? "n/a" : `${x.toFixed(1)}${unit}`);
 
 /**
  * LAST LEG — the parlay question, answered with numbers rather than instinct. Tickets are built
@@ -631,12 +631,12 @@ export function lastLegCard(input: NonNullable<ShadowReportInput["lastLeg"]>, to
   const termsLine =
     s.quoted === 0
       ? ""
-      : `On the quoted tickets the bettor kept ${pct1(s.avgFloorPctOfMark)} of the ticket's value on a miss (the floor), gave up everything above ${pct1(s.avgCapPctOfMark)} on a hit (the cap), and was paid ${usd(Math.round(s.avgCreditCents ?? 0))} up front on average (${n1(s.avgCreditBpsOfValue === null ? null : s.avgCreditBpsOfValue / 100, "%")} of the ticket's value), ${n1(s.avgMinutesToStartAtQuote === null ? null : s.avgMinutesToStartAtQuote / 60, "h")} before the last game. Quoted EV cost ${bpsPct(s.avgEvCostBps)} of the position.`;
+      : `On the quoted tickets the bettor kept ${pct1(s.avgFloorPctOfMark)} of the ticket's value on a miss (the floor), gave up everything above ${pct1(s.avgCapPctOfMark)} on a hit (the cap), and was credited ${usd(Math.round(s.avgCreditCents ?? 0))} at lock in on average (${n1(s.avgCreditBpsOfValue === null ? null : s.avgCreditBpsOfValue / 100, "%")} of the ticket's value), ${n1(s.avgMinutesToStartAtQuote === null ? null : s.avgMinutesToStartAtQuote / 60, "h")} before the last game. Quoted EV cost ${bpsPct(s.avgEvCostBps)} of the position.`;
   const st = s.settled;
   const settledLine =
     st.withProtection === 0
-      ? "No protected ticket has settled yet."
-      : `${st.withProtection} protected tickets settled: ${st.floorSaves} missed the last leg and the floor paid, ${st.capGiveups} hit it and gave up the cap${st.scalar ? `, ${st.scalar} settled partially` : ""}. Protected ${usd(st.protectedCents)} against ${usd(st.nakedCents)} naked (${signedUsd(st.deltaCents)}). Our side netted ${signedUsd(st.writerCents)} against ${usd(st.takeBookedCents)} of take booked: ${st.identityHolds ? "the identity holds" : "GAP, investigate"}.`;
+      ? "No locked ticket has settled yet."
+      : `${st.withProtection} locked tickets settled: ${st.floorSaves} missed the last leg and the floor paid, ${st.capGiveups} hit it and gave up the cap${st.scalar ? `, ${st.scalar} settled partially` : ""}. With the lock ${usd(st.protectedCents)} against ${usd(st.nakedCents)} without (${signedUsd(st.deltaCents)}). Our side netted ${signedUsd(st.writerCents)} against ${usd(st.takeBookedCents)} of take booked: ${st.identityHolds ? "the identity holds" : "GAP, investigate"}.`;
   const refusals = Object.entries(s.refusalCodes)
     .sort((a, b) => b[1] - a[1])
     .map(([code, n]) => `<div class="row"><span>${escapeHtml(code)}</span><b>${n}</b></div>`)
@@ -644,7 +644,7 @@ export function lastLegCard(input: NonNullable<ShadowReportInput["lastLeg"]>, to
   const sizeRows = s.bySize
     .map(
       (r) =>
-        `<tr><td>${r.size} legs</td><td>${r.built}</td><td>${r.busted}</td><td>${r.reachedLastLeg}</td><td class="hi">${r.quoted}</td><td>${r.refusedOnly}</td><td>${r.settled}</td><td>${r.quoted ? `${usd(r.protectedCents)} / ${usd(r.nakedCents)}` : "–"}</td></tr>`,
+        `<tr><td>${r.size} legs</td><td>${r.built}</td><td>${r.busted}</td><td>${r.reachedLastLeg}</td><td class="hi">${r.quoted}</td><td>${r.refusedOnly}</td><td>${r.settled}</td><td>${r.quoted ? `${usd(r.protectedCents)} / ${usd(r.nakedCents)}` : "n/a"}</td></tr>`,
     )
     .join("");
   const period = s.firstTicketAt ? `since ${utcDay(s.firstTicketAt)} UTC` : "not started";
@@ -662,7 +662,7 @@ export function lastLegCard(input: NonNullable<ShadowReportInput["lastLeg"]>, to
     ${termsLine ? `<div class="read">${escapeHtml(termsLine)}</div>` : ""}
     <div class="read">${escapeHtml(settledLine)}</div>
     <div class="tablewrap" style="margin-top:8px"><table>
-      <tr><th>ticket</th><th>built</th><th>busted</th><th>reached</th><th>quoted</th><th>refused</th><th>settled</th><th>protected / naked</th></tr>
+      <tr><th>ticket</th><th>built</th><th>busted</th><th>reached</th><th>quoted</th><th>refused</th><th>settled</th><th>with the lock / without</th></tr>
       ${sizeRows || `<tr><td colspan="8">no tickets yet</td></tr>`}
     </table></div>
     ${refusals ? `<div class="rule">Refusals by reason across ${s.attempts} attempts:</div>${refusals}` : ""}
@@ -674,8 +674,8 @@ export function lastLegCard(input: NonNullable<ShadowReportInput["lastLeg"]>, to
 /** One rule's line in a comparison table. `hi` marks the columns a reader compares first. */
 function ruleTr(label: string, note: string, r: RuleBook, opts: { base?: boolean } = {}): string {
   const noteHtml = note ? ` <span class="tag">${escapeHtml(note)}</span>` : "";
-  const holderBps = r.stakeSettledCents > 0 ? bpsPct((r.holderDeltaCents / r.stakeSettledCents) * 10_000) : "–";
-  const writerBps = r.stakeSettledCents > 0 ? bpsPct((r.writerPnlCents / r.stakeSettledCents) * 10_000) : "–";
+  const holderBps = r.stakeSettledCents > 0 ? bpsPct((r.holderDeltaCents / r.stakeSettledCents) * 10_000) : "n/a";
+  const writerBps = r.stakeSettledCents > 0 ? bpsPct((r.writerPnlCents / r.stakeSettledCents) * 10_000) : "n/a";
   return (
     `<tr${opts.base ? ' class="base"' : ""}>` +
     `<td>${escapeHtml(label)}${noteHtml}</td>` +
@@ -702,7 +702,7 @@ const RULE_HEAD =
 function ourBookCard(s: ShadowSummary): string {
   const w = s.writer;
   const id = s.identity;
-  const pnlBpsLine = w.settledPnlBpsOfStake === null ? "–" : `${(w.settledPnlBpsOfStake / 100).toFixed(2)}% of settled stake`;
+  const pnlBpsLine = w.settledPnlBpsOfStake === null ? "n/a" : `${(w.settledPnlBpsOfStake / 100).toFixed(2)}% of settled stake`;
   const evenLine =
     w.settledWhenHolderWon > 0 && w.settledWhenHolderLost > 0
       ? `${signedUsd(w.pnlWhenHolderWonCents)} on ${w.settledWhenHolderWon} user wins · ${signedUsd(w.pnlWhenHolderLostCents)} on ${w.settledWhenHolderLost} user losses`
@@ -721,7 +721,7 @@ function ourBookCard(s: ShadowSummary): string {
     .join("");
   return `<div class="card">
     <h2>Our book, line by line</h2>
-    <div class="sub" style="margin-bottom:8px">The other side of every settled event: what selling the protection and carrying the hedge netted. Leg for leg, the answer should not depend on who won; the gap on the track record is what is left after these lines. This card covers every settled position on the record (${w.settledWhenHolderWon + w.settledWhenHolderLost}); the rule tables below cover the ${s.counterfactuals.baseline.settled} settled since the alternatives were recorded.</div>
+    <div class="sub" style="margin-bottom:8px">The other side of every settled event: what selling the lock and carrying the hedge netted. Leg for leg, the answer should not depend on who won; the gap on the track record is what is left after these lines. This card covers every settled position on the record (${w.settledWhenHolderWon + w.settledWhenHolderLost}); the rule tables below cover the ${s.counterfactuals.baseline.settled} settled since the alternatives were recorded.</div>
     <div class="row"><span>realized, all ${w.settledWhenHolderWon + w.settledWhenHolderLost} settled events</span><b>${signedUsd(w.settledPnlCents)} <i>${escapeHtml(pnlBpsLine)}</i></b></div>
     <div class="row"><span>split by outcome</span><b>${escapeHtml(evenLine)}</b></div>
     <div class="row"><span>published take booked on those events</span><b>${usd(w.takeBookedCents)}</b></div>
@@ -744,7 +744,7 @@ function ourBookCard(s: ShadowSummary): string {
  */
 function nettingCard(r: NettingReport, tq: string): string {
   const s = r.summary;
-  const cpd = (x: number | null): string => (x === null ? "–" : `${x.toFixed(1)}¢`);
+  const cpd = (x: number | null): string => (x === null ? "n/a" : `${x.toFixed(1)}¢`);
   const lead =
     s.pairs === 0
       ? "No game has both sides on the record yet; the first pair forms when a scan opens the other side of a game already held."
@@ -786,7 +786,7 @@ function nettingCard(r: NettingReport, tq: string): string {
     .join("");
   return `<div class="card">
     <h2>Netting, measured</h2>
-    <div class="sub" style="margin-bottom:8px">A user protected on one side of a game and a user protected on the other are each other's hedge: the two hedge legs together pay a dollar whoever wins. The record buys both anyway, leg for leg; this card measures what it would have saved to hold the matched dollar as cash and buy only the residual. Nothing was netted.</div>
+    <div class="sub" style="margin-bottom:8px">A user locked in on one side of a game and a user locked in on the other are each other's hedge: the two hedge legs together pay a dollar whoever wins. The record buys both anyway, leg for leg; this card measures what it would have saved to hold the matched dollar as cash and buy only the residual. Nothing was netted.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.pairs}</div><div class="l">games with both sides</div></div>
       <div class="bignum"><div class="n">${signedUsd(s.savingCents)}</div><div class="l">saving, all pairs</div></div>
@@ -857,7 +857,7 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
 
   const capRows = cf.capacity
     .map((row) => {
-      const fillRate = row.quoted + row.refused > 0 ? `${Math.round((row.quoted / (row.quoted + row.refused)) * 100)}%` : "–";
+      const fillRate = row.quoted + row.refused > 0 ? `${Math.round((row.quoted / (row.quoted + row.refused)) * 100)}%` : "n/a";
       return (
         `<tr${row.mult === 1 ? ' class="base"' : ""}>` +
         `<td>${row.mult}× size</td>` +
@@ -936,7 +936,7 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
           : `On the ${r.bothQuoted} positions the market's own No side also funded, kalshi-only was no richer than the route written (${bpsPct(r.kalshiOnlyExtraEvBps)}), credits ${signedUsd(r.kalshiOnlyCreditDeltaCents)} against the live book.`;
     const refused =
       r.kalshiOnlyRefusedWhereLiveQuoted > 0
-        ? ` ${r.kalshiOnlyRefusedWhereLiveQuoted} position${r.kalshiOnlyRefusedWhereLiveQuoted === 1 ? "" : "s"} the live route protected would have been refused kalshi-only: that is coverage lost, not cost, and it is excluded from the pairwise numbers.`
+        ? ` ${r.kalshiOnlyRefusedWhereLiveQuoted} position${r.kalshiOnlyRefusedWhereLiveQuoted === 1 ? "" : "s"} the live route locked in would have been refused kalshi-only: that is coverage lost, not cost, and it is excluded from the pairwise numbers.`
         : "";
     return `  <div class="card">
     <h2>Routing, measured</h2>
@@ -990,8 +990,8 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
 
 ${routeCard}
   <div class="card">
-    <h2>Protection tiers</h2>
-    <div class="sub" style="margin-bottom:6px">Three collars from one book. User Δ is protected minus naked across settled events; our P&amp;L is the other side after the hedge. Percentages are of settled stake.</div>
+    <h2>Lock in tiers</h2>
+    <div class="sub" style="margin-bottom:6px">Three collars from one book. User Δ is with the lock minus without across settled events; our P&amp;L is the other side after the hedge. Percentages are of settled stake.</div>
     <div class="tablewrap"><table>${RULE_HEAD}${tierRows}</table></div>
     <div class="rule">A tier that resolves to the same collar as another is recorded once and not counted as a refusal, so tier rows can total fewer quotes than the live book.</div>
     ${tierRules}
@@ -1018,7 +1018,7 @@ ${routeCard}
 
   <div class="card">
     <h2>How to read it</h2>
-    <div class="read"><b>User Δ</b> is what protection did for the user against holding naked: negative is the usual cost of protection, positive means the floor paid more than the cap gave up. <b>Our P&amp;L</b> is what selling that protection and carrying the hedge netted; leg for leg it should not depend on who won. <b>EV cost</b> is the quoted expected cost of the collar as a share of stake, before anything settles. A rule that lifts our P&amp;L without moving user Δ much is a better rule; one that only shifts money from one column to the other is a fee.</div>
+    <div class="read"><b>User Δ</b> is what the lock did for the user against holding without it: negative is the usual cost of the lock, positive means the floor paid more than the cap gave up. <b>Our P&amp;L</b> is what selling that lock and carrying the hedge netted; leg for leg it should not depend on who won. <b>EV cost</b> is the quoted expected cost of the collar as a share of stake, before anything settles. A rule that lifts our P&amp;L without moving user Δ much is a better rule; one that only shifts money from one column to the other is a fee.</div>
     <a class="back" href="/">Back to the track record</a> <a class="back" href="/api/shadow/report${tq}">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full${tq ? `&token=${encodeURIComponent(input.token as string)}` : ""}">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/hedges${tq}">Hedge receipts (JSON)</a> <a class="back" href="/api/shadow/export${tq}">Full ledger (JSONL)</a> <a class="back" href="/venues${tq}">By venue, named (operator)</a>
   </div>
   <footer>
@@ -1068,13 +1068,13 @@ export function parlayMomentCard(input: ParlayCardInput): string {
       const reached = ll.reachedLastLeg > 0 ? `${ll.reachedLastLeg} reached the last leg and the books did not fund a credit yet.` : "None has reached the last leg yet; the first moments come when every earlier leg has hit and only the last game is left.";
       return `${ll.tickets} tickets built, ${ll.busted} busted on an earlier leg. ${reached}`;
     }
-    const avgCredit = lv.quoted > 0 ? usd(Math.round(lv.creditsCents / lv.quoted)) : "–";
-    const avgSell = lv.quoted > 0 ? usd(Math.round(lv.sellCents / lv.quoted)) : "–";
+    const avgCredit = lv.quoted > 0 ? usd(Math.round(lv.creditsCents / lv.quoted)) : "n/a";
+    const avgSell = lv.quoted > 0 ? usd(Math.round(lv.sellCents / lv.quoted)) : "n/a";
     const settledPart =
       lv.settled > 0
         ? ` On the ${lv.settled} settled, locking paid ${usd(lv.settledLockCents)} against ${usd(lv.settledSellCents)} for selling and ${usd(lv.settledHoldCents)} for holding; the lock beat the sell on ${lv.lockBeatSell}, and holding beat both on ${lv.holdBeatBoth}.`
         : "";
-    return `${lv.quoted} tickets reached the last leg with a priced lock, on average ${avgCredit} paid at the tap on a ticket worth ${avgSell} at fair.${settledPart}`;
+    return `${lv.quoted} tickets reached the last leg with a priced lock, on average ${avgCredit} credited at lock in on a ticket worth ${avgSell} at fair.${settledPart}`;
   })();
   // Refusals in the bettor's words: the moment came and the lock was not offered, counted not hidden.
   const refusalCounts = new Map<string, number>();
@@ -1093,18 +1093,18 @@ export function parlayMomentCard(input: ParlayCardInput): string {
       : `On ${st.withProtection} settled locked tickets our P&L is ${signedUsd(st.writerCents)} against ${usd(st.takeBookedCents)} of take booked: ${st.identityHolds ? "the identity holds, we carried no outcome risk on the last pick." : "a gap outside rounding; the operator report has the tickets."}`;
   return `  <div class="card">
     <h2>Lock, sell or hold: the parlay moment</h2>
-    <div class="sub" style="margin-bottom:8px">A bettor whose parlay has every leg in but the last has three choices. Sell is a cash-out at fair (the ticket's value before any spread). Lock is the collar on the last leg: a floor, a cap, and a credit paid at the tap, hedged on whichever venue the router chose for the last leg's game, as a single is. Hold is the naked ticket. Tickets here are simulated from the public slate (2 to 5 favourites, $${(input.stakeCents / 100).toFixed(0)} stake); prices, results and quotes are real.</div>
+    <div class="sub" style="margin-bottom:8px">A bettor whose parlay has every leg in but the last has three choices. Sell is a cash-out at fair (the ticket's value before any spread). Lock is the collar on the last leg: a floor, a cap, and a credit at lock in, hedged on whichever venue the router chose for the last leg's game, as a single is. Hold is the ticket with no lock. Tickets here are simulated from the public slate (2 to 5 favourites, $${(input.stakeCents / 100).toFixed(0)} stake); prices, results and quotes are real.</div>
     <div class="bignums">
       <div class="bignum"><div class="n">${ll.tickets}</div><div class="l">tickets built</div></div>
       <div class="bignum"><div class="n">${ll.reachedLastLeg}</div><div class="l">reached the last leg</div></div>
       <div class="bignum"><div class="n green">${lv.quoted}</div><div class="l">priced a lock</div></div>
-      <div class="bignum"><div class="n green">${usd(lv.creditsCents)}</div><div class="l">paid at the tap</div></div>
+      <div class="bignum"><div class="n green">${usd(lv.creditsCents)}</div><div class="l">credited at lock in</div></div>
     </div>
     <div class="read" style="margin-top:10px">${escapeHtml(lvLine)}</div>
     ${
       lvRows
         ? `<div class="tablewrap" style="margin-top:8px"><table>
-      <tr><th>ticket · last leg</th><th>when</th><th>sell at fair</th><th>lock ends</th><th>paid now</th><th>lock paid</th><th>sell paid</th><th>hold paid</th></tr>
+      <tr><th>ticket · last leg</th><th>when</th><th>sell at fair</th><th>lock ends</th><th>credited at lock in</th><th>lock paid</th><th>sell paid</th><th>hold paid</th></tr>
       ${lvRows}
     </table></div>`
         : ""
@@ -1190,12 +1190,12 @@ export function renderSlateHtml(input: SlatePageInput): string {
     s.settledCount === 0
       ? "nothing settled yet"
       : s.deltaTotalCents >= 0
-        ? `protected users came out ${usd(s.deltaTotalCents)} ahead of holding`
-        : `protection cost users ${usd(-s.deltaTotalCents)} across settled games (${stakeSettled > 0 ? ((100 * -s.deltaTotalCents) / stakeSettled).toFixed(2) : "–"}% of what the same positions paid unprotected); the floor is what it bought`;
+        ? `users who locked in came out ${usd(s.deltaTotalCents)} ahead of holding`
+        : `the lock cost users ${usd(-s.deltaTotalCents)} across settled games${stakeSettled > 0 ? ` (${((100 * -s.deltaTotalCents) / stakeSettled).toFixed(2)}% of what the same positions paid without the lock)` : ""}; the floor is what it bought`;
   const saveLine =
     s.settledCount === 0
       ? "The first games on these leagues settle this week."
-      : `Protection paid the floor on ${s.floorSaves} of ${s.settledCount} settled games (${Math.round((100 * s.floorSaves) / s.settledCount)}%). Those are the users who would otherwise have walked away with nothing.`;
+      : `The lock paid the floor on ${s.floorSaves} of ${s.settledCount} settled games (${Math.round((100 * s.floorSaves) / s.settledCount)}%). Those are the users who would otherwise have walked away with nothing.`;
   const identityLine =
     id.settled === 0
       ? "Nothing has settled on these leagues yet, so there is nothing to reconcile."
@@ -1218,7 +1218,7 @@ export function renderSlateHtml(input: SlatePageInput): string {
       const tag = saved ? '<span class="tag save">floor paid</span>' : '<span class="tag">won, capped</span>';
       return (
         `<div class="row settled"><span>${escapeHtml(p.sideName)} <span class="tag">${escapeHtml(p.league.toUpperCase())}</span> ${tag}</span>` +
-        `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} naked</i><i class="paid">incl. ${usd(p.creditCents)} paid at the tap</i></b></div>`
+        `<b>${usd(p.protectedCents ?? 0)} <i>vs ${usd(p.nakedCents ?? 0)} without the lock</i><i class="paid">incl. ${usd(p.creditCents)} credited at lock in</i></b></div>`
       );
     })
     .join("");
@@ -1239,7 +1239,7 @@ export function renderSlateHtml(input: SlatePageInput): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="robots" content="noindex, nofollow" />
 <link rel="icon" href="data:," />
-<title>Protection on the ${name} slate · Earn &amp; Protect</title>
+<title>Lock in on the ${name} slate · Earn &amp; Protect</title>
 <style>${SHADOW_CSS}</style>
 </head>
 <body>
@@ -1248,12 +1248,12 @@ export function renderSlateHtml(input: SlatePageInput): string {
 </div></div>
 <div class="wrap">
   <div class="card">
-    <h1>Protection on the ${name} slate</h1>
+    <h1>Lock in on the ${name} slate</h1>
     <div class="sub">What one Lock in button would have done on ${escapeHtml(leagueWords)} games: every quotable game locked in at its live quoted terms, then marked against the official result. Hedged leg for leg ${escapeHtml(hedgeWords)}. Live prices; nothing was bought.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.settledCount}</div><div class="l">games settled</div></div>
       <div class="bignum"><div class="n">${s.floorSaves}</div><div class="l">floor saves</div></div>
-      <div class="bignum"><div class="n green">${usd(creditsSettled)}</div><div class="l">paid to users at the tap</div></div>
+      <div class="bignum"><div class="n green">${usd(creditsSettled)}</div><div class="l">credited to users at lock in</div></div>
       <div class="bignum"><div class="n ${id.holds ? "green" : ""}">${signedUsd(w.settledPnlCents)}</div><div class="l">our P&amp;L = take booked</div></div>
     </div>
     <div class="period">${escapeHtml(periodLine)} · ${s.openCount} open now</div>
@@ -1261,15 +1261,15 @@ export function renderSlateHtml(input: SlatePageInput): string {
   </div>
   <div class="card">
     <h2>What it costs, what it saves</h2>
-    <div class="row"><span>quoted cost of protection</span><b>${escapeHtml(quotedLine)}</b></div>
+    <div class="row"><span>quoted cost of the lock</span><b>${escapeHtml(quotedLine)}</b></div>
     <div class="row"><span>realized</span><b>${escapeHtml(realizedLine)}</b></div>
-    <div class="row"><span>with protection, settled total</span><b>${usd(s.protectedTotalCents)}</b></div>
-    <div class="row"><span>without protection, settled total</span><b>${usd(s.nakedTotalCents)}</b></div>
+    <div class="row"><span>with the lock, settled total</span><b>${usd(s.protectedTotalCents)}</b></div>
+    <div class="row"><span>without the lock, settled total</span><b>${usd(s.nakedTotalCents)}</b></div>
     <div class="tablewrap" style="margin-top:8px"><table>
       <tr><th>league</th><th>opened</th><th>settled</th><th>EV cost</th><th>user Δ</th><th>credits</th><th>our P&amp;L</th></tr>
       ${leagueRows || '<tr><td colspan="7">no games on these leagues yet</td></tr>'}
     </table></div>
-    <div class="rule">EV cost is the quoted cost of protection at the market's own odds; user Δ is realized, protected minus naked, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} games show counts only.</div>
+    <div class="rule">EV cost is the quoted cost of the lock at the market's own odds; user Δ is realized, with the lock minus without, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} games show counts only.</div>
   </div>
   <div class="card">
     <h2>We carry no outcome risk on your games</h2>
@@ -1403,7 +1403,7 @@ pre{background:var(--card2);border-radius:8px;padding:10px 12px;font-size:11.5px
 <div class="wrap">
   <div class="card">
     <h1>Who locked what, and what is owed</h1>
-    <div class="sub">Every lock on the record grouped by the key that took it. The credit is owed to the holder at the tap; on a loss the floor is owed to them; on a win above the cap the slice above it is owed back. Payments recorded with the cash route move each leg to paid and the holder's receipt follows. Aliases appear here and nowhere public.</div>
+    <div class="sub">Every lock on the record grouped by the key that took it. The credit is credited at lock in and owed to the holder from then; at settlement the floor is owed to them on a loss, and on a win above the cap the slice above it is owed back. Payments recorded with the cash route move each leg to paid and the holder's receipt follows. Aliases appear here and nowhere public.</div>
     <div class="bignums">
       <div class="bignum"><div class="n">${input.totals.locks}</div><div class="l">locks on the record</div></div>
       <div class="bignum"><div class="n${input.totals.toHolderCents > 0 ? "" : " green"}">${usd(input.totals.toHolderCents)}</div><div class="l">owed to holders</div></div>
@@ -1448,7 +1448,7 @@ const venueNameOf = (b: VenueBreakdown, id: string): string => b.totals.find((t)
  * best ask and depth, dated ("· 4m old") when the venue's snapshot was older than a route may price from.
  */
 function venueReadHtml(c: VenueCell, written: boolean): string {
-  if (!c.read) return "–";
+  if (!c.read) return "n/a";
   const age = c.ageSec !== null && c.ageSec > SHOW_AGE_FROM_SEC ? ` · ${ageWord(c.ageSec)} old` : "";
   const ask = c.bestAskCents !== null ? `<i>${c.bestAskCents}¢${c.depthShares !== null && c.depthShares > 0 ? ` × ${intStr(c.depthShares)}` : ""}${age}</i>` : "";
   const ids = venueListingHtml(c);
@@ -1482,7 +1482,7 @@ function venueCellHtml(c: VenueCell, prelock: VenuePrelock | undefined, bookOpen
   if (!prelock && !bookOpen && !inGame) return `<td class="${written ? "hi" : ""}${!c.read || c.creditCents === null ? " ref" : ""}">${open}</td>`;
   const later = (read: VenuePrelock, label: string): string => {
     const pc = read.cells.find((x) => x.id === c.id);
-    const body = read.unread !== null ? `<span class="ref">${escapeHtml(refusalWordForPage(read.unread))}</span>` : pc ? venueReadHtml(pc, written) : "–";
+    const body = read.unread !== null ? `<span class="ref">${escapeHtml(refusalWordForPage(read.unread))}</span>` : pc ? venueReadHtml(pc, written) : "n/a";
     return `<div class="rd pl"><b>${label}</b>${body}</div>`;
   };
   // in time order: the open-time read, the moment a held book opened, the fixed pre-lock read, then the in-game read
@@ -1507,7 +1507,7 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
   const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
   const ps = input.pricingSource.aggregator;
   const feedLine = ps.configured
-    ? `The feed is on (${escapeHtml(ps.host)}, key …${escapeHtml(ps.keyIdTail)}, public key <code>${escapeHtml(ps.publicKeyHex)}</code>): ${ps.reads} reads since boot, ${ps.readsWithBooks} with books, ${ps.mappingMismatches} mapping mismatch${ps.mappingMismatches === 1 ? "" : "es"}${ps.lastError ? `; last error: ${escapeHtml(ps.lastError)}${/401|UNAUTHORIZED/i.test(ps.lastError) ? " — the partner rejects this key's signatures: compare the public key above with the one registered on their side, and the key id with the one issued" : ""}` : ""}${ps.lastReadAt ? `; last read ${escapeHtml(shortEt(ps.lastReadAt))}` : ""}.`
+    ? `The feed is on (${escapeHtml(ps.host)}, key …${escapeHtml(ps.keyIdTail)}, public key <code>${escapeHtml(ps.publicKeyHex)}</code>): ${ps.reads} reads since boot, ${ps.readsWithBooks} with books, ${ps.mappingMismatches} mapping mismatch${ps.mappingMismatches === 1 ? "" : "es"}${ps.lastError ? `; last error: ${escapeHtml(ps.lastError)}${/401|UNAUTHORIZED/i.test(ps.lastError) ? " (the partner rejects this key's signatures: compare the public key above with the one registered on their side, and the key id with the one issued)" : ""}` : ""}${ps.lastReadAt ? `; last read ${escapeHtml(shortEt(ps.lastReadAt))}` : ""}.`
     : "The feed is off: every book is read from its venue directly.";
   const originLine = `Of the ${b.positions} games in the window, ${b.origins.feed} priced from the feed, ${b.origins.direct} from the venues directly${b.origins.unknown > 0 ? `, ${b.origins.unknown} opened before the field existed (direct)` : ""}.`;
 
@@ -1530,7 +1530,7 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
   const totalsRows = b.totals
     .map(
       (t) =>
-        `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.read}</td><td>${t.listed}</td><td>${t.quoted}</td><td>${t.kind === "route" ? t.written : "–"}</td><td class="hi">${t.best}</td><td>${t.avgDeltaCents === null ? "–" : `${t.avgDeltaCents > 0 ? "+" : ""}${usd(t.avgDeltaCents)}<i>over ${t.bothQuoted}</i>`}</td></tr>`,
+        `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.read}</td><td>${t.listed}</td><td>${t.quoted}</td><td>${t.kind === "route" ? t.written : "n/a"}</td><td class="hi">${t.best}</td><td>${t.avgDeltaCents === null ? "n/a" : `${t.avgDeltaCents > 0 ? "+" : ""}${usd(t.avgDeltaCents)}<i>over ${t.bothQuoted}</i>`}</td></tr>`,
     )
     .join("");
 
@@ -1541,7 +1541,7 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
           .filter((t) => t.prelock.read > 0)
           .map(
             (t) =>
-              `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.prelock.read}</td><td>${t.prelock.listed}</td><td>${t.prelock.quoted}</td><td class="hi">${t.prelock.best}</td><td>${t.prelock.avgDeltaCents === null ? "–" : `${t.prelock.avgDeltaCents > 0 ? "+" : ""}${usd(t.prelock.avgDeltaCents)}<i>over ${t.prelock.bothQuoted}</i>`}</td></tr>`,
+              `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.prelock.read}</td><td>${t.prelock.listed}</td><td>${t.prelock.quoted}</td><td class="hi">${t.prelock.best}</td><td>${t.prelock.avgDeltaCents === null ? "n/a" : `${t.prelock.avgDeltaCents > 0 ? "+" : ""}${usd(t.prelock.avgDeltaCents)}<i>over ${t.prelock.bothQuoted}</i>`}</td></tr>`,
           )
           .join("")
       : "";
@@ -1566,7 +1566,7 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
           .filter((t) => t.bookOpen.read > 0)
           .map(
             (t) =>
-              `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.bookOpen.read}</td><td>${t.bookOpen.listed}</td><td>${t.bookOpen.quoted}</td><td class="hi">${t.bookOpen.best}</td><td>${t.bookOpen.avgDeltaCents === null ? "–" : `${t.bookOpen.avgDeltaCents > 0 ? "+" : ""}${usd(t.bookOpen.avgDeltaCents)}<i>over ${t.bookOpen.bothQuoted}</i>`}</td></tr>`,
+              `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.bookOpen.read}</td><td>${t.bookOpen.listed}</td><td>${t.bookOpen.quoted}</td><td class="hi">${t.bookOpen.best}</td><td>${t.bookOpen.avgDeltaCents === null ? "n/a" : `${t.bookOpen.avgDeltaCents > 0 ? "+" : ""}${usd(t.bookOpen.avgDeltaCents)}<i>over ${t.bookOpen.bothQuoted}</i>`}</td></tr>`,
           )
           .join("")
       : "";
@@ -1595,7 +1595,7 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
           .filter((t) => t.inGame.read > 0)
           .map(
             (t) =>
-              `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.inGame.read}</td><td>${t.inGame.listed}</td><td>${t.inGame.quoted}</td><td class="hi">${t.inGame.best}</td><td>${t.inGame.avgDeltaCents === null ? "–" : `${t.inGame.avgDeltaCents > 0 ? "+" : ""}${usd(t.inGame.avgDeltaCents)}<i>over ${t.inGame.bothQuoted}</i>`}</td></tr>`,
+              `<tr><td class="g"><b>${escapeHtml(t.name)}</b><i>${t.via === "feed" ? "via the aggregator's feed" : "read directly"} · ${t.kind === "route" ? "hedge route" : "reference, never filled"}</i></td><td>${t.inGame.read}</td><td>${t.inGame.listed}</td><td>${t.inGame.quoted}</td><td class="hi">${t.inGame.best}</td><td>${t.inGame.avgDeltaCents === null ? "n/a" : `${t.inGame.avgDeltaCents > 0 ? "+" : ""}${usd(t.inGame.avgDeltaCents)}<i>over ${t.inGame.bothQuoted}</i>`}</td></tr>`,
           )
           .join("")
       : "";
@@ -1603,7 +1603,7 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
     const ig = b.inGame;
     if (ig.read === 0 && ig.unread === 0) return "No game has reached its in-game read yet; the first one priced in play begins this table.";
     const parts = [
-      `${ig.read + ig.unread} game${ig.read + ig.unread === 1 ? "" : "s"} priced again in play${ig.avgMinutesIn === null ? "" : `, on average ${ig.avgMinutesIn} minutes after the start`}${ig.avgSpreadCents === null ? "" : `; the protected market's own spread averaged ${ig.avgSpreadCents}¢ then`}${ig.unread > 0 ? `; ${ig.unread} could not be priced (the market had closed on the result or the odds had left the range)` : ""}.`,
+      `${ig.read + ig.unread} game${ig.read + ig.unread === 1 ? "" : "s"} priced again in play${ig.avgMinutesIn === null ? "" : `, on average ${ig.avgMinutesIn} minutes after the start`}${ig.avgSpreadCents === null ? "" : `; the locked market's own spread averaged ${ig.avgSpreadCents}¢ then`}${ig.unread > 0 ? `; ${ig.unread} could not be priced (the market had closed on the result or the odds had left the range)` : ""}.`,
     ];
     const funded = b.totals.filter((t) => t.inGame.read > 0);
     for (const t of funded) {
@@ -1622,7 +1622,7 @@ export function renderVenuesHtml(input: VenuesPageInput): string {
     const parts = [`The record wrote ${b.totals.find((t) => t.id === "kalshi_self")?.written ?? 0} games on Kalshi's own No side and ${b.totals.find((t) => t.id === "polymarket")?.written ?? 0} cross-venue on Polymarket.`];
     for (const t of quotedRefs) {
       parts.push(
-        `${t.name}${t.via === "feed" ? " (feed)" : ""} listed ${t.listed} of the ${t.read} games it was read for and would have funded ${t.quoted}; it was the cheapest protection on ${t.best}${
+        `${t.name}${t.via === "feed" ? " (feed)" : ""} listed ${t.listed} of the ${t.read} games it was read for and would have funded ${t.quoted}; it was the cheapest lock on ${t.best}${
           t.avgDeltaCents === null ? "" : `, and on the ${t.bothQuoted} games both quoted it would have paid ${t.avgDeltaCents >= 0 ? "" : "-"}${usd(Math.abs(t.avgDeltaCents))} ${t.avgDeltaCents >= 0 ? "more" : "less"} credit per position than the route written`
         }.`,
       );
@@ -1679,7 +1679,7 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
     <h2>By venue</h2>
     <div class="tablewrap"><table><tr><th>venue</th><th>read</th><th>listed</th><th>funded</th><th>written</th><th>cheapest</th><th>credit vs written</th></tr>${totalsRows}</table></div>
     <div class="read">${escapeHtml(richestLine)}</div>
-    <div class="rule">Read: the venue was looked at for the game. Listed: it had a book on the opposing outcome. Funded: that book filled the default tier at the live size. Written: the record hedged there. Cheapest: its book made protection cheapest in EV terms of every book that funded, which is how the record picks its route; a richer credit with a lower floor can lose on that measure. Credit vs written: on games both quoted, this venue's credit minus the credit written, averaged.</div>
+    <div class="rule">Read: the venue was looked at for the game. Listed: it had a book on the opposing outcome. Funded: that book filled the default tier at the live size. Written: the record hedged there. Cheapest: its book made the lock cheapest in EV terms of every book that funded, which is how the record picks its route; a richer credit with a lower floor can lose on that measure. Credit vs written: on games both quoted, this venue's credit minus the credit written, averaged.</div>
   </div>
 
   <div class="card">
@@ -1700,7 +1700,7 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
     <h2>By venue, in play</h2>
     ${inGameRows ? `<div class="tablewrap"><table><tr><th>venue</th><th>read</th><th>listed</th><th>funded</th><th>cheapest</th><th>credit vs written</th></tr>${inGameRows}</table></div>` : ""}
     <div class="read">${escapeHtml(inGameLine)}</div>
-    <div class="rule">The same columns a fixed number of minutes after the start, while the game is in play: which venues still carry a book on the opposing outcome, what the default tier would pay from those books at the position's size, and the protected market's own bid and ask at that minute (on each game's row). This is the measurement in-play protection would need before anyone is offered it; the lock itself still closes 45 minutes before the start. Nothing on this table was filled, and the public record does not carry it.</div>
+    <div class="rule">The same columns a fixed number of minutes after the start, while the game is in play: which venues still carry a book on the opposing outcome, what the default tier would pay from those books at the position's size, and the locked market's own bid and ask at that minute (on each game's row). This is the measurement an in-play lock would need before anyone is offered it; the lock itself still closes 45 minutes before the start. Nothing on this table was filled, and the public record does not carry it.</div>
   </div>
 
   <div class="card">

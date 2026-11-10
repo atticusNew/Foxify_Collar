@@ -855,7 +855,7 @@ test("lastLegCard: says what is real and what is simulated, and reads the number
   assert.ok(html.includes("1 of 1 decided tickets reached the last leg with every other leg hit (100.0%)"));
   assert.ok(html.includes("the venues funded a credit on 1 of 1 tickets quoted"));
   assert.ok(html.includes("8.0h before the last game"));
-  assert.ok(html.includes("1 protected tickets settled: 1 missed the last leg and the floor paid, 0 hit it"));
+  assert.ok(html.includes("1 locked tickets settled: 1 missed the last leg and the floor paid, 0 hit it"));
   assert.ok(html.includes("the identity holds"));
   assert.ok(html.includes('href="/api/shadow/lastleg.csv?token=t"'));
   assert.ok(!html.includes("wallet"));

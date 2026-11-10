@@ -15,8 +15,8 @@ import { escapeHtml, SHADOW_CSS } from "./eventShadowHtml";
 
 const usd0 = (cents: number): string => `$${Math.round(cents / 100).toLocaleString("en-US")}`;
 const num = (x: number): string => x.toLocaleString("en-US", { maximumFractionDigits: 2 });
-const pct = (x: number | null): string => (x === null ? "—" : `${x}%`);
-const cents = (x: number | null): string => (x === null ? "—" : `${x.toFixed(2)}¢`);
+const pct = (x: number | null): string => (x === null ? "n/a" : `${x}%`);
+const cents = (x: number | null): string => (x === null ? "n/a" : `${x.toFixed(2)}¢`);
 const plural = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 
 function weekSummary(w: ScoreboardWeek): string {
@@ -43,10 +43,10 @@ function venueRows(sb: VenueScoreboard, w: ScoreboardWeek): string {
       const f = w.fees.byVenue.find((x) => x.venue === venue);
       const a = w.availability.byVenue.find((x) => x.venue === venue);
       if (!s && !p && !e && !f && !a) return "";
-      const share = (x: { n: number; sharePct: number } | undefined): string => (x ? `<td class="hi">${x.sharePct}%<i>${plural(x.n, "win")}</i></td>` : `<td>—</td>`);
-      const edge = e ? `<td class="hi">${cents(e.avgEdgeCentsPerContract)}<i>${e.avgEdgeAllInBps === null ? "" : `${e.avgEdgeAllInBps} bps all in · `}n ${e.n}</i></td>` : `<td>—</td>`;
-      const fee = f ? `<td>${cents(f.avgFeeCentsPerContract)}<i>n ${f.n}</i></td>` : `<td>—</td>`;
-      const avail = a ? `<td>${pct(a.pricedPct)}<i>${a.priced} of ${a.asked} asked</i></td>` : `<td>—</td>`;
+      const share = (x: { n: number; sharePct: number } | undefined): string => (x ? `<td class="hi">${x.sharePct}%<i>${plural(x.n, "win")}</i></td>` : `<td>n/a</td>`);
+      const edge = e ? `<td class="hi">${cents(e.avgEdgeCentsPerContract)}<i>${e.avgEdgeAllInBps === null ? "" : `${e.avgEdgeAllInBps} bps all in · `}n ${e.n}</i></td>` : `<td>n/a</td>`;
+      const fee = f ? `<td>${cents(f.avgFeeCentsPerContract)}<i>n ${f.n}</i></td>` : `<td>n/a</td>`;
+      const avail = a ? `<td>${pct(a.pricedPct)}<i>${a.priced} of ${a.asked} asked</i></td>` : `<td>n/a</td>`;
       return `<tr><td class="v">${escapeHtml(venue)}</td>${share(s)}${share(p)}${edge}${fee}${avail}</tr>`;
     })
     .join("");
@@ -122,12 +122,12 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em;tex
 <div class="wrap">
   <div class="card">
     <h1>Where the other side went, by week</h1>
-    <div class="sub">Every protected position asks every venue the engine works with for the other side and goes to the cheapest all in, venue fees included. This is the record of which venue won, by how much, what its fee came to, and how often each venue priced at all — Monday to Sunday, New York, the last ${input.weeks} week${input.weeks === 1 ? "" : "s"}. Computed from the record on each request; five minutes behind at most.</div>
+    <div class="sub">Every locked position asks every venue the engine works with for the other side and goes to the cheapest all in, venue fees included. This is the record of which venue won, by how much, what its fee came to, and how often each venue priced at all. Weeks run Monday to Sunday, New York; this is the last ${input.weeks} week${input.weeks === 1 ? "" : "s"}. Computed from the record on each request; five minutes behind at most.</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${totals.n.toLocaleString("en-US")}</div><div class="l">positions, ${input.weeks} week${input.weeks === 1 ? "" : "s"}</div></div>
-      <div class="bignum"><div class="n">${num(totals.contracts)}</div><div class="l">contracts protected</div></div>
+      <div class="bignum"><div class="n">${num(totals.contracts)}</div><div class="l">contracts locked in</div></div>
       <div class="bignum"><div class="n">${usd0(totals.notionalCents)}</div><div class="l">of the other side bought</div></div>
-      <div class="bignum"><div class="n">${totals.priced > 0 ? `${Math.round((100 * totals.refused) / totals.priced)}%` : "—"}</div><div class="l">of markets priced were refused</div></div>
+      <div class="bignum"><div class="n">${totals.priced > 0 ? `${Math.round((100 * totals.refused) / totals.priced)}%` : "n/a"}</div><div class="l">of markets priced were refused</div></div>
     </div>
     <div class="links">
       <a class="back" href="/api/shadow/scoreboard${q}">JSON</a>

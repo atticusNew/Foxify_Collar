@@ -77,7 +77,7 @@ const get = async <T>(path: string): Promise<T> => {
 };
 
 const usd = (cents: number): string => `$${(cents / 100).toFixed(2)}`;
-const et = (iso: string | null): string => (iso ? new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", minute: "2-digit" }) : "—");
+const et = (iso: string | null): string => (iso ? new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", minute: "2-digit" }) : "n/a");
 
 /** The shape heading the quote, in the holder's dollars: what the pick pays, the cap, the floor, the cash now. */
 export function shapeLine(contracts: number, q: NonNullable<QuoteAnswer["quote"]>): { tier: string; pays: number; win: number; lose: number; cash: number } {
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   const list = await get<{ ok: boolean; markets: MarketRow[] }>("/api/shadow/markets" + (LEAGUE ? `?league=${encodeURIComponent(LEAGUE)}` : ""));
   const startOf = (m: MarketRow): string | null => m.startIso ?? m.eventTimeIso ?? null;
   const open = list.markets.filter((m) => m.protectable && (!LEAGUE || m.league === LEAGUE)).sort((a, b) => String(startOf(a)).localeCompare(String(startOf(b))) || a.ticker.localeCompare(b.ticker));
-  console.log(`${open.length} protectable market(s) on ${URL_BASE}, quoted as a ${VENUE} holder at $${STAKE.toFixed(2)}${HEDGE ? `, other side on ${HEDGE} only` : ""}\n`);
+  console.log(`${open.length} market(s) that can be locked in on ${URL_BASE}, quoted as a ${VENUE} holder at $${STAKE.toFixed(2)}${HEDGE ? `, other side on ${HEDGE} only` : ""}\n`);
   const rows: string[] = [];
   for (const m of open) {
     const quoteAt = (contracts: number) => get<QuoteAnswer>(`/api/shadow/quote?ticker=${encodeURIComponent(m.ticker)}&contracts=${contracts}&venue=${encodeURIComponent(VENUE)}`);
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
     }
     const s = shapeLine(contracts, a.quote);
     const routes = (a.routing?.routes ?? []).map((r) => `${r.hedgeVenueName ?? r.hedgeVenue ?? r.route ?? "?"} ${r.ok ? [typeof r.creditCents === "number" ? usd(r.creditCents) : null, typeof r.allInBps === "number" ? `${r.allInBps} bps all in` : null].filter(Boolean).join(" · ") || "priced" : r.gate ?? r.refusal ?? "refused"}${r.ok && r.gate ? ` (${r.gate})` : ""}`).join(" · ");
-    rows.push(`${head}\n    pays ${usd(s.pays)} · ${s.tier}: win ${usd(s.win)}, lose ${usd(s.lose)}, ${usd(s.cash)} now · other side on ${hedge ?? "no route"}\n    routes: ${routes}${a.routing?.reason ? `\n    why: ${a.routing.reason}` : ""}`);
+    rows.push(`${head}\n    pays ${usd(s.pays)} · ${s.tier}: win ${usd(s.win)}, lose ${usd(s.lose)}, ${usd(s.cash)} credited at lock in · other side on ${hedge ?? "no route"}\n    routes: ${routes}${a.routing?.reason ? `\n    why: ${a.routing.reason}` : ""}`);
   }
   console.log(rows.length ? rows.join("\n\n") : "no game matched");
 }

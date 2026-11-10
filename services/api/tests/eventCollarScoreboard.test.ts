@@ -161,7 +161,7 @@ test("renderScoreboardHtml: the same table as a page — a card per week with a 
   assert.ok(html.includes("Nothing on the record this week."), "an empty week says so instead of an empty table");
   assert.ok(html.includes("3 positions (2 singles, 1 parlay) · 216 contracts · $25 of the other side bought · 1 real tap."));
   assert.ok(html.includes('<td class="v">Novig</td><td class="hi">66.7%<i>1 win</i></td><td class="hi">100%<i>1 win</i></td><td class="hi">0.60¢<i>80 bps all in · n 1</i></td><td>0.00¢<i>n 2</i></td><td>100%<i>1 of 1 asked</i></td>'));
-  assert.ok(html.includes('<td class="v">Kalshi</td><td class="hi">33.3%<i>1 win</i></td><td>—</td><td>—</td><td>0.91¢<i>n 1</i></td><td>100%<i>1 of 1 asked</i></td>'));
+  assert.ok(html.includes('<td class="v">Kalshi</td><td class="hi">33.3%<i>1 win</i></td><td>n/a</td><td>n/a</td><td>0.91¢<i>n 1</i></td><td>100%<i>1 of 1 asked</i></td>'));
   assert.ok(html.includes("By league: <b>NFL</b> 2 positions (Novig 100%) · <b>NBA</b> 1 position (Kalshi 100%)."));
   assert.ok(html.includes('href="/api/shadow/scoreboard?weeks=2"') && html.includes('href="/api/shadow/scoreboard.csv?weeks=2" download'));
   for (const r of sb.feeRules) assert.ok(html.includes(r.rule.replace(/&/g, "&amp;")), r.venue);

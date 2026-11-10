@@ -383,7 +383,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.match(slatePage.headers.get("content-type") ?? "", /text\/html/);
     assert.equal(slatePage.headers.get("x-robots-tag"), "noindex, nofollow");
     const slateHtml = await slatePage.text();
-    assert.ok(slateHtml.includes("Protection on the Wire Markets slate"));
+    assert.ok(slateHtml.includes("Lock in on the Wire Markets slate"));
     assert.ok(slateHtml.includes("Hedged leg for leg on the best of 4 venues."), "a share link says how many venues compete tonight");
     assert.ok(!/Kalshi|Polymarket|ProphetX|Novig/.test(slateHtml), "and names none of them");
     assert.ok(slateHtml.includes("What one Lock in button would have done"), "the bettor's verb");
@@ -402,7 +402,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     const linkedHtml = await (await fetch(`${base}/slate/wiremarkets?k=${wmLink}`)).text();
     assert.ok(linkedHtml.includes(`href="/slate/wiremarkets.csv?k=${wmLink}"`), "the CSV link carries the key the visitor arrived with");
     const otherSlate = await (await fetch(`${base}/slate/sporttrade?k=share-key-1`)).text();
-    assert.ok(otherSlate.includes("Protection on the Sporttrade slate") && otherSlate.includes("no positions on these leagues yet"), "an MLB-only slate has none of this record");
+    assert.ok(otherSlate.includes("Lock in on the Sporttrade slate") && otherSlate.includes("no positions on these leagues yet"), "an MLB-only slate has none of this record");
     const slateCsv = await fetch(`${base}/slate/wiremarkets.csv?k=share-key-1`);
     assert.equal(slateCsv.status, 200);
     assert.match(slateCsv.headers.get("content-disposition") ?? "", /wiremarkets-slate-\d{4}-\d{2}-\d{2}\.csv/);

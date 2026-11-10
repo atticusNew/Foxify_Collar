@@ -72,7 +72,7 @@ test("shadow worker /api/shadow/lock: on Novig, the other side of an open lock h
     assert.equal(r.status, 409);
     let body = (await r.json()) as { ok: boolean; error?: string; code?: string; message?: string; lockTicker?: string };
     assert.deepEqual([body.ok, body.error, body.code, body.lockTicker], [false, "own_hedge", "own_hedge", "KXNFLGAME-26OCT25HOUIND-HOU"]);
-    assert.equal(body.message, "This position is the protection's own hedge for your Houston on ProphetX.");
+    assert.equal(body.message, "This position is the lock's own hedge for your Houston on ProphetX.");
     // the same card read on another venue is a position of theirs there: the guard is Novig's only
     r = await lock("KXNFLGAME-26OCT25HOUIND-IND", "kalshi");
     assert.equal(r.status, 200);

@@ -297,7 +297,7 @@ test("public record: the parlay card reads lock, sell or hold with refusals coun
   assert.ok(page.includes("<b>Simulated:</b> the positions and the parlay tickets;"));
   assert.ok(page.includes('<a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>'));
   const idx = page.indexOf("the parlay moment");
-  assert.ok(idx > page.indexOf("With and without protection") && idx < page.indexOf("Where protection is cheap"), "sits between the settled comparison and the slices");
+  assert.ok(idx > page.indexOf("With and without the lock") && idx < page.indexOf("Where the lock is cheap"), "sits between the settled comparison and the slices");
 
   const off = renderShadowHtml({ atIso: "2026-10-11T00:00:00.000Z", summary: summarizeShadow([]), open: [], settled: [], closed: [] });
   assert.ok(!off.includes("parlay"), "no card and no link when the last-leg shadow is off");
