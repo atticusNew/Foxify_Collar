@@ -176,7 +176,7 @@
   /** What a shape or a lock puts in the holder's hands at the tap: the credit on a hedged lock; on a member's sale, what the fills paid into their own balance. */
   const cashOf = (t) => (t && t.cashNowCents != null ? t.cashNowCents : t && t.memberSale && t.memberSale.cashNowCents != null ? t.memberSale.cashNowCents : (t && t.creditCents) || 0);
   /** The cash row's label: a hedged lock pays the holder; a member's sale lands in their own venue balance. */
-  const cashLabel = (sale, now) => (sale ? "In your " + esc(V.name) + " balance" + (now ? " now" : "") : now ? "Cash now" : "Paid to you");
+  const cashLabel = (sale, now) => (sale ? "In your " + esc(V.name) + " balance" + (now ? ' <span class="ael-dim">when the sale fills</span>' : "") : now ? "Credit at lock in" : "Credited at lock in");
   const fmtAt = (iso) => {
     try {
       const d = new Date(iso);
@@ -1702,50 +1702,50 @@
    * locked before the start, as it always was.
    */
   const inPlayOn = () => Boolean(S.ext && S.ext.inPlay === true);
-  const LOCK_WHEN = () => (inPlayOn() ? "Protection can be locked in before the game or while it is being played." : "Protection is locked before the game starts.");
+  const LOCK_WHEN = () => (inPlayOn() ? "A pick can be locked in before the game or while it is being played." : "A pick is locked in before the game starts.");
 
   /** Plain words for a refusal, and what to do about it. */
   const refusalWords = (code, message) => {
     switch (code) {
       case "own_hedge":
-        return { why: message || "This position is the protection's own hedge.", next: "" };
+        return { why: message || "This position is the lock's own hedge.", next: "" };
       case "credit_too_small":
       case "credit_nonpositive":
-        return { why: "The credit at this size is under our minimum.", next: "Protection on this pick starts at a larger position. Check back closer to the start; the price moves." };
+        return { why: "The credit at this size is under our minimum.", next: "Lock in on this pick starts at a larger position. Check back closer to the start; the price moves." };
       case "too_expensive":
       case "protection_too_rich":
-        return { why: "Protecting this pick costs more than we will pay at the current price.", next: "Check back later; the book moves toward the start." };
+        return { why: "Locking in this pick costs more than we will pay at the current price.", next: "Check back later; the book moves toward the start." };
       case "not_offered":
       case "no_matched_market":
       case "league_not_covered":
       case "no_protectable_market":
-        return { why: "No hedge book for this game yet.", next: "Protection reaches more games as venues are added." };
+        return { why: "No hedge book for this game yet.", next: "Lock in reaches more games as venues are added." };
       case "market_not_covered":
       case "spread":
-        return { why: "Protection covers the Moneyline market.", next: "A Moneyline pick on this game can be locked in." };
+        return { why: "Lock in covers the Moneyline market.", next: "A Moneyline pick on this game can be locked in." };
       case "unmatched":
         return VENUE_ID === "kalshi"
-          ? { why: "This order has not filled yet.", next: "It is a resting order until the book fills it. Protection prices on the contracts you hold; check back once it fills." }
-          : { why: "This " + V.play + " has not been matched yet.", next: "It is an order until another account takes the other side. Protection prices on the matched stake; check back once it fills." };
+          ? { why: "This order has not filled yet.", next: "It is a resting order until the book fills it. The lock is priced on the contracts you hold; check back once it fills." }
+          : { why: "This " + V.play + " has not been matched yet.", next: "It is an order until another account takes the other side. The lock is priced on the matched stake; check back once it fills." };
       case "settled":
-        return { why: "This " + V.play + " settled without protection.", next: LOCK_WHEN() + " A locked " + V.play + " shows what it paid here once it settles." };
+        return { why: "This " + V.play + " settled without a lock.", next: LOCK_WHEN() + " A locked " + V.play + " shows what it paid here once it settles." };
       case "too_early":
       case "far_out_no_book":
-        return { why: "It is too early to protect this pick.", next: "Protection opens closer to the start of this one." };
+        return { why: "It is too early to lock in this pick.", next: "Lock in opens closer to the start of this one." };
       case "price_unsettled":
       case "mark_disagreement":
-        return { why: "The price on this pick has not settled yet.", next: "Check back closer to the start; protection prices once the market agrees on the odds." };
+        return { why: "The price on this pick has not settled yet.", next: "Check back closer to the start; the lock is priced once the market agrees on the odds." };
       case "market_too_close_to_start":
       case "market_not_active":
         return inPlayOn()
           ? { why: "This game cannot be locked in right now.", next: "Its market is closed or its window has passed." }
-          : { why: "This game starts too soon to protect.", next: "Protection is available until shortly before the start." };
+          : { why: "This game starts too soon to lock in.", next: "Lock in is available until shortly before the start." };
       case "already_on_record":
         return { why: "This market is already locked.", next: "One lock per market." };
       case "on_record_elsewhere":
-        return { why: message || "This game is already protected.", next: "One lock per game. The protection sits with the pick held there." };
+        return { why: message || "This game is already locked in.", next: "One lock per game. The lock sits with the pick held there." };
       case "wrong_side":
-        return { why: message || "Your pick on this game is the other club.", next: "Nothing was locked. Protect the pick from its own card." };
+        return { why: message || "Your pick on this game is the other club.", next: "Nothing was locked. Lock in the pick from its own card." };
       case "key":
         return { why: "The lock key is missing or wrong.", next: "Open the extension's settings." };
       case "off":
@@ -1753,13 +1753,13 @@
       case "down":
         return { why: "The service is unreachable.", next: "Try again in a moment." };
       case "no_size":
-        return { why: "The size of this position could not be read.", next: "Enter it below to price protection." };
+        return { why: "The size of this position could not be read.", next: "Enter it below to price the lock." };
       case "picks_off":
         return { why: "This service build does not read parlays yet.", next: "" };
       case "parlay":
-        return { why: "Protection on parlays is coming; this one rides as it is.", next: "" };
+        return { why: "Lock in on parlays is coming; this one rides as it is.", next: "" };
       case "parlay_not_last_pick":
-        return { why: "Protection opens at your last pick.", next: "With two or more picks open there is nothing yet to protect; the ticket pays only if every pick hits." };
+        return { why: "The lock opens at your last pick.", next: "With two or more picks open there is nothing yet to lock in; the ticket pays only if every pick hits." };
       case "parlay_busted":
         return { why: "A pick on this ticket missed.", next: "" };
       case "parlay_settled":
@@ -1774,7 +1774,7 @@
       case "member_app_off":
         return { why: "This service is not set up for " + V.name + " accounts.", next: "" };
       case "member_not_connected":
-        return { why: "Connect your " + V.name + " account first.", next: "Protection prices from the positions in your account. Connect in the " + V.name + " block; nothing is stored in this extension." };
+        return { why: "Connect your " + V.name + " account first.", next: "The lock is priced from the positions in your account. Connect in the " + V.name + " block; nothing is stored in this extension." };
       case "member_scope":
         return { why: "Your " + V.name + " connection does not allow orders.", next: "Disconnect and connect again, approving portfolio and orders." };
       case "member_terms":
@@ -1782,20 +1782,20 @@
       case "member_ip":
         return { why: V.name + " did not allow the request from the service.", next: "The service's address must be on your app's allow-list at " + V.name + "." };
       case "not_held":
-        return { why: "You do not hold this market on " + V.name + ".", next: "Protection covers the positions in your connected account." };
+        return { why: "You do not hold this market on " + V.name + ".", next: "Lock in covers the positions in your connected account." };
       case "size":
         return { why: message || "That is more than you hold on " + V.name + ".", next: "" };
       case "no_bids":
-        return { why: V.name + " shows no bids on this market right now.", next: "Protection is your own sale into the book; check back when it has bids." };
+        return { why: V.name + " shows no bids on this market right now.", next: "The lock is your own sale into the book; check back when it has bids." };
       case "not_filled":
         return { why: message || V.name + "'s bid moved before the order reached it; nothing was sold.", next: "Nothing changed. Try again." };
       case "parlay_unsupported":
-        return { why: "Parlays are not protected on " + V.name + ".", next: "" };
+        return { why: "Parlays cannot be locked in on " + V.name + ".", next: "" };
       case "venue_refused":
       case "venue_unreachable":
         return { why: message || V.name + " did not answer.", next: "Try again in a moment." };
       default:
-        return { why: message || "Protection isn't available on this position right now.", next: "" };
+        return { why: message || "Lock in isn't available on this position right now.", next: "" };
     }
   };
   /**
@@ -1816,7 +1816,7 @@
    * paid): what is still owed to the holder, what the holder still owes back, or paid in full.
    * Null when the service's record predates cash legs; the line then says only what settled.
    */
-  const LEG_WORDS = { credit: "Paid to you", floor: "Floor", handback: "Above the cap", close: "Protection removed" };
+  const LEG_WORDS = { credit: "Credit", floor: "Floor", handback: "Above the cap", close: "Lock removed" };
   /**
    * Why the protection settles the way it does, in the holder's terms: the pick moved up, so the
    * upside they sold is worth more now; moved down, so the floor they hold is worth more now.
@@ -1829,7 +1829,7 @@
     const back = legs.filter((l) => l.to === "writer").reduce((s, l) => s + (l.outstandingCents || 0), 0);
     if (toYou > 0) return { label: esc(usd(toYou)) + " owed to you", sub: "on its way", open: true };
     // what is owed back: the slice above the cap on a win, or the protection's settlement on a leave
-    if (back > 0) return { label: "you owe " + esc(usd(back)), sub: legs.some((l) => l.leg === "close" && l.to === "writer" && l.outstandingCents > 0) ? "the protection's settlement" : "the slice above the cap", open: true };
+    if (back > 0) return { label: "you owe " + esc(usd(back)), sub: legs.some((l) => l.leg === "close" && l.to === "writer" && l.outstandingCents > 0) ? "the lock's settlement" : "the slice above the cap", open: true };
     return { label: "paid in full", sub: "", open: false };
   };
   /** What a leave moved between the two parties beyond the credit: the record's own totals, or the tap's answer. */
@@ -1841,7 +1841,7 @@
     if (l.outstandingCents === 0 && l.paidCents > 0) return amount + ' <span class="ael-dim">&middot; paid ' + (l.paidAt ? esc(fmtAt(l.paidAt)) : "") + "</span>";
     if (l.paidCents > 0) return amount + ' <span class="ael-dim">&middot; ' + esc(usd(l.paidCents)) + " paid, " + esc(usd(l.outstandingCents)) + " owed " + who + "</span>";
     // the credit is the holder's from the tap; it clears with the position, so "owed" would read as late
-    if (l.leg === "credit" && l.to === "holder") return amount + ' <span class="ael-dim">&middot; credited at the lock; settles with the position</span>';
+    if (l.leg === "credit" && l.to === "holder") return amount + ' <span class="ael-dim">&middot; credited at lock in; settles with the position</span>';
     return amount + ' <span class="ael-dim">&middot; owed ' + who + "</span>";
   };
 
@@ -1873,7 +1873,7 @@
     if (ours) {
       line = lineGo("Hedge", "The other side of your " + esc(shortOf(ours.ticker) || ours.sideName || "pick") + " on " + esc(venueNameOf(ours.holderVenue)) + ".", "ael-line-off ael-line-hedge");
     } else if (away) {
-      line = lineGo("Unavailable", "Protected on " + esc(venueNameOf(away.holderVenue)) + " already.", "ael-line-off");
+      line = lineGo("Unavailable", "Locked in on " + esc(venueNameOf(away.holderVenue)) + " already.", "ael-line-off");
     } else if (rec) {
       const rs = recOutcomes(B, rec);
       if (rec.status === "settled" && rec.result) {
@@ -1882,8 +1882,8 @@
         const got = usd(rec.protectedCents != null ? rec.protectedCents : rec.result === "yes" ? rs.capTotal : rs.floorTotal);
         const cash = cashState(rec);
         line = cash
-          ? lineGo("Settled", cash.open ? "Protected outcome <b>" + esc(got) + "</b> &middot; " + cash.label + (cash.sub ? " &middot; " + cash.sub : "") : "Paid <b>" + esc(got) + "</b> &middot; every leg paid.", "ael-line-on")
-          : lineGo("Settled", "Protected outcome <b>" + esc(got) + "</b>.", "ael-line-on");
+          ? lineGo("Settled", cash.open ? "You end with <b>" + esc(got) + "</b> &middot; " + cash.label + (cash.sub ? " &middot; " + cash.sub : "") : "Paid <b>" + esc(got) + "</b> &middot; every leg paid.", "ael-line-on")
+          : lineGo("Settled", "You end with <b>" + esc(got) + "</b>.", "ael-line-on");
       } else if (rec.status === "void") line = lineGo("Voided", "No official result; nothing owed.", "ael-line-on");
       else if (rec.status === "closed") {
         // protection removed: what the protection alone settled for, and whether that cash has moved;
@@ -1896,12 +1896,12 @@
         const words = bb
           ? "Bought back " + bb.boughtContracts + " at " + bb.avgPriceCents + "&cent; &middot; " + (net < 0 ? "the round trip cost <b>" + esc(usd(-net)) + "</b>" : net > 0 ? "<b>" + esc(usd(net)) + "</b> kept from the round trip" : "the round trip came out even")
           : net < 0 ? "You paid <b>" + esc(usd(-net)) + "</b>" : net > 0 ? "<b>" + esc(usd(net)) + "</b> paid to you" : "Nothing owed either way";
-        line = lineGo("Protection removed", words + moved + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
+        line = lineGo("Lock removed", words + moved + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
       } else {
         // the venue the other side went to, on the line itself, so the pick is visible without opening
         // the panel; a member's own sale has no other side, and the line names their venue
         const hv = isSale(rec) ? V.name : hedgeVenueOf(rec.routing);
-        line = lineGo("Protected", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>" + (hv ? " &middot; on " + esc(hv) : ", whichever way it goes") + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
+        line = lineGo("Locked in", "<b>" + esc(usd(rs.floorTotal)) + "</b> or <b>" + esc(usd(rs.capTotal)) + "</b>" + (hv ? " &middot; on " + esc(hv) : ", whichever way it goes") + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
       }
     } else if (B.kind === "parlay") {
       line = parlayLine(B);
@@ -1909,13 +1909,13 @@
       if (B.host) B.host.style.display = line ? "" : "none";
       if (!line) return;
     } else if (B.kind === "other") {
-      line = lineGo("Unavailable", "Protection covers " + (VENUE_ID === "novig" ? "Winner" : "Moneyline") + " picks.", "ael-line-off");
+      line = lineGo("Unavailable", "Lock in covers " + (VENUE_ID === "novig" ? "Winner" : "Moneyline") + " picks.", "ael-line-off");
     } else if (B.match === "unmatched") {
-      line = lineGo("Unavailable", VENUE_ID === "kalshi" ? "Protection waits until the order fills." : "Protection waits until the " + esc(V.play) + " is matched.", "ael-line-off");
+      line = lineGo("Unavailable", VENUE_ID === "kalshi" ? "Lock in waits until the order fills." : "Lock in waits until the " + esc(V.play) + " is matched.", "ael-line-off");
     } else if (!B.size) {
       line = lineGo("Lock in", "Size not read from the page.", "");
     } else if (!st.quote) {
-      line = lineGo("Lock in", "Checking protection&hellip;", "ael-line-wait");
+      line = lineGo("Lock in", "Checking the lock&hellip;", "ael-line-wait");
     } else if (!st.quote.ok) {
       line = lineGo("Unavailable", esc(refusalWordsFor(B, st.quote.code, st.quote.message).why), "ael-line-off");
     } else {
@@ -1979,7 +1979,7 @@
     if (bind) bind();
   };
 
-  const DISCLOSE = '<div class="ael-disclose">Protection by Atticus, a third party; not a product of this venue.</div>';
+  const DISCLOSE = '<div class="ael-disclose">Lock in by Atticus, a third party; not a product of this venue.</div>';
   const operator = () => S.settings.showHedge === "yes";
   /**
    * Diagnostics, operator setting only: why a row was dropped or skipped, and the scan's state
@@ -2029,7 +2029,7 @@
     '<div class="ael-ledger' + (was ? "" : " ael-two") + '">' +
     ledgerRow(esc(nick) + " win", esc(usd(rs.capTotal)), was ? "was " + esc(was) : null) +
     ledgerRow(esc(nick) + " lose", esc(usd(rs.floorTotal)), was ? "was $0" : null, "ael-hero") +
-    ledgerRow(cashLabel(sale, Boolean(was)), "+" + esc(usd(creditCents)), was ? "today" : null, "ael-last") +
+    ledgerRow(cashLabel(sale, Boolean(was)), "+" + esc(usd(creditCents)), was ? "" : null, "ael-last") +
     "</div>";
 
   /**
@@ -2042,7 +2042,7 @@
     '<div class="ael-ledger' + (was ? "" : " ael-two") + '">' +
     ledgerRow(esc(nick) + " win", esc(usd(rs.capTotal)), was ? "of " + esc(was) : null) +
     ledgerRow(esc(nick) + " lose", esc(usd(rs.floorTotal)), was ? "instead of $0" : null, "ael-hero") +
-    ledgerRow(cashLabel(sale, true), "+" + esc(usd(creditCents)), was ? "" : null, "ael-last") +
+    ledgerRow(cashLabel(sale, Boolean(was)), "+" + esc(usd(creditCents)), was ? "" : null, "ael-last") +
     "</div>";
 
   /**
@@ -2057,7 +2057,7 @@
       .map((k) => {
         const tt = offered[k];
         const tr = outcomesOf(B, n, tt);
-        return '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (k === tier) + '" aria-label="' + esc(TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(cashOf(tt)) + " now") + '">' + esc(TIER_WORDS[k]) + "</button>";
+        return '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (k === tier) + '" aria-label="' + esc(TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(cashOf(tt)) + (tt && tt.cashNowCents != null ? " in your " + V.name + " balance when the sale fills" : " credited at lock in")) + '">' + esc(TIER_WORDS[k]) + "</button>";
       })
       .join("") +
     "</div>";
@@ -2132,7 +2132,7 @@
       drow(
         "How",
         sale
-          ? "You sell part of your position into " + esc(V.name) + "'s own book today, in your own account, and keep the rest riding. No one is on the other side and nothing is hedged: the cash from the sale is yours now, and the contracts you keep settle on the official result as they always would."
+          ? "You sell part of your position into " + esc(V.name) + "'s own book today, in your own account, and keep the rest riding. No one is on the other side and nothing is hedged: the cash from the sale lands in your " + esc(V.name) + " balance when the sale fills, and each contract you keep pays $1 if it wins, as it always would."
           : "You sell part of the position today and keep the rest. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + "; it settles on the same official result, nothing to manage.",
       ),
     );
@@ -2165,7 +2165,7 @@
     if (!c.ok) return '<span class="ael-dim">no hedged price came back' + (c.reason === "timed_out" ? " in time" : c.reason === "off" ? "; the comparison is off" : "") + " &middot; nothing was sent</span>";
     const who = c.chosenName ? "<b>" + esc(c.chosenName) + "</b>" : "a hedged lock";
     const count = c.priced > 1 ? " (best of " + c.priced + " venues)" : "";
-    return who + count + " would have paid " + esc(usd(c.creditCents || 0)) + " now, then " + esc(usd(c.floorTotalCents || 0)) + " or " + esc(usd(c.capTotalCents || 0)) + ' <span class="ael-dim">&middot; priced, nothing sent</span>';
+    return who + count + " would have credited " + esc(usd(c.creditCents || 0)) + " at lock in, then " + esc(usd(c.floorTotalCents || 0)) + " or " + esc(usd(c.capTotalCents || 0)) + ' at settlement <span class="ael-dim">&middot; priced, nothing sent</span>';
   };
   /** The tails and the rule cells a quote or a lock carries: on the routing for a hedged lock, at the top for a member's sale. */
   const rulesOf = (p) => {
@@ -2182,7 +2182,7 @@
    */
   const CASE_WORDS = { tie: "ends in a tie", postponed: "is postponed", abandoned: "is called off, no official result", corrected: "has its result corrected later" };
   const VENUE_DOES = { half: "pays each side $0.50", void: "voids the pick and returns the stake", fair: "settles at the fair price when the news broke", hold: "keeps the market open until it is played", stands: "settles on the result as first announced", resettle: "settles again on the corrected result" };
-  const PROTECTION_DOES = { half: "the protection settles on that $0.50", void: "the protection is void too; you keep the credit", fair: "the protection settles on that price", hold: "the protection waits with it", stands: "so does the protection", resettle: "so does the protection" };
+  const PROTECTION_DOES = { half: "the lock settles on that $0.50", void: "the lock is void too; you keep the credit", fair: "the lock settles on that price", hold: "the lock waits with it", stands: "so does the lock", resettle: "so does the lock" };
   const hoursWords = (h) => (h % 24 === 0 && h > 48 ? h / 24 + " days" : h + " hours");
   const rulesGrid = (rt) => {
     const cells = rt.rules || {};
@@ -2226,9 +2226,9 @@
     const rec = removed ? null : held;
     if (rec) return paintDetails(B, panel, rec);
     const ours = B.kind === "winner" ? ourHedgeOn(B.ticker) : null;
-    if (ours) return paintRefusal(B, panel, "own_hedge", "This is the protection on your " + (shortOf(ours.ticker) || ours.sideName || "pick") + ", bought here by Atticus when you locked in on " + venueNameOf(ours.holderVenue) + (ours.at ? " (" + fmtAt(ours.at) + ")" : "") + ". It settles with that lock; there is nothing to do on it here.");
+    if (ours) return paintRefusal(B, panel, "own_hedge", "This is the other side of the lock on your " + (shortOf(ours.ticker) || ours.sideName || "pick") + ", bought here by Atticus when you locked in on " + venueNameOf(ours.holderVenue) + (ours.at ? " (" + fmtAt(ours.at) + ")" : "") + ". It settles with that lock; there is nothing to do on it here.");
     const away = B.kind === "winner" && B.match !== "settled" ? lockAway(B.ticker) : null;
-    if (away) return paintRefusal(B, panel, "on_record_elsewhere", "Already protected on " + venueNameOf(away.holderVenue) + ".");
+    if (away) return paintRefusal(B, panel, "on_record_elsewhere", "Already locked in on " + venueNameOf(away.holderVenue) + ".");
     if (B.kind === "parlay") return paintParlayPanel(B, panel);
     if (B.kind === "other") return paintRefusal(B, panel, "spread", "");
     if (B.match === "unmatched") return paintRefusal(B, panel, "unmatched", "");
@@ -2253,13 +2253,13 @@
       for (const k of keys) {
         const tt = offered[k];
         const tr = outcomesOf(B, n, tt);
-        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>Floor " + esc(usd(tr.floorTotal)) + " &middot;</i> <i>Upside " + esc(usd(tr.capTotal)) + " &middot;</i> <i>+" + esc(usd(cashOf(tt))) + " now</i></span></button>";
+        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>Floor " + esc(usd(tr.floorTotal)) + " &middot;</i> <i>Upside " + esc(usd(tr.capTotal)) + " &middot;</i> <i>+" + esc(usd(cashOf(tt))) + (isSale(p) ? " when the sale fills" : " credit") + "</i></span></button>";
       }
     }
     const fine = ["Priced live"];
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
     // the protection removed earlier on this game, one grey line: what it settled for, and whether that moved
-    const removedLine = removed ? '<div class="ael-fine">Earlier protection removed' + (removed.closedAt ? " " + esc(fmtAt(removed.closedAt)) : "") + " &middot; " + (closeNetOf(removed) < 0 ? "you paid " + esc(usd(-closeNetOf(removed))) : closeNetOf(removed) > 0 ? esc(usd(closeNetOf(removed))) + " paid to you" : "nothing owed either way") + (cashState(removed) && !cashState(removed).open ? " &middot; settled" : "") + ".</div>" : "";
+    const removedLine = removed ? '<div class="ael-fine">Earlier lock removed' + (removed.closedAt ? " " + esc(fmtAt(removed.closedAt)) : "") + " &middot; " + (closeNetOf(removed) < 0 ? "you paid " + esc(usd(-closeNetOf(removed))) : closeNetOf(removed) > 0 ? esc(usd(closeNetOf(removed))) + " paid to you" : "nothing owed either way") + (cashState(removed) && !cashState(removed).open ? " &middot; settled" : "") + ".</div>" : "";
     if (simple()) {
       const html = simpleOfferHtml(B, st, p, q, offered, keys, n, removedLine);
       setPanel(B, panel, html, () => {
@@ -2299,7 +2299,7 @@
       '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in</button>" +
       removedLine +
       '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
-      '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. That is why you are paid now.</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>" + (sale ? "It is your own sale into " + esc(V.name) + "'s book, in your own account; nothing is hedged and no one is on the other side. The contracts you keep settle on the official result as they always would." : "It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".") + "</p></div>" +
+      '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. ' + (sale ? "The cash from the sale lands in your " + esc(V.name) + " balance when the sale fills." : "That is why you are credited at lock in.") + '</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>" + (sale ? "It is your own sale into " + esc(V.name) + "'s book, in your own account; nothing is hedged and no one is on the other side. The contracts you keep settle on the official result as they always would." : "It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".") + "</p></div>" +
       DISCLOSE;
     setPanel(B, panel, html, () => {
       for (const c of panel.querySelectorAll("[data-tier]"))
@@ -2357,7 +2357,7 @@
     const P = B.parlay || {};
     const v = P.view;
     const market = VENUE_ID === "novig" ? "Winner" : "Moneyline";
-    if (B.match === "unmatched") return { tag: "Unavailable", cls: "ael-line-off", line: "Protection waits until the " + esc(V.play) + " is matched.", head: "This ticket has not been matched yet.", next: "Protection prices on the matched stake; check back once it fills." };
+    if (B.match === "unmatched") return { tag: "Unavailable", cls: "ael-line-off", line: "Lock in waits until the " + esc(V.play) + " is matched.", head: "This ticket has not been matched yet.", next: "The lock is priced on the matched stake; check back once it fills." };
     if (!v) {
       if (P.error) {
         const w = refusalWords(P.error, "");
@@ -2380,20 +2380,20 @@
         cls: "ael-line-off",
         // short enough for a venue's card: the club and its day; the clock is in the panel's Picks row
         line: "Opens at your last pick" + (at ? " &middot; <b>" + esc(pickWord(at)) + "</b>" + (at.startsIso ? " " + esc(fmtAt(at.startsIso).split(" ")[0]) : "") : "") + ".",
-        head: "Protection opens at your last pick.",
-        next: "With " + v.open + " picks open the ticket pays only if every one hits, so there is nothing yet to protect. Once all but one have hit, the last pick is a single and can be locked in before it starts, for what the ticket pays.",
+        head: "The lock opens at your last pick.",
+        next: "With " + v.open + " picks open the ticket pays only if every one hits, so there is nothing yet to lock in. Once all but one have hit, the last pick is a single and can be locked in before it starts, for what the ticket pays.",
       };
     }
     const last = v.lastPick || {};
     const who = pickWord(last);
     if (!B.size) return { tag: "Unavailable", cls: "ael-line-off", line: "The ticket's amount and payout could not be read.", head: "The ticket's amount and payout could not be read.", next: "" };
-    if (P.from === "codes") return { tag: "Lock in", cls: "ael-line-wait", line: "Tap Show Legs to price protection on your last pick, <b>" + esc(who) + "</b>.", head: "Your last pick is up: " + who + ".", next: "Tap Show Legs on the card so the pick's game is certain; protection prices here." };
+    if (P.from === "codes") return { tag: "Lock in", cls: "ael-line-wait", line: "Tap Show Legs to price the lock on your last pick, <b>" + esc(who) + "</b>.", head: "Your last pick is up: " + who + ".", next: "Tap Show Legs on the card so the pick's game is certain; the lock is priced here." };
     const leg = P.legs.find((l) => l.code === last.code);
-    if (leg && leg.kind !== "winner") return { tag: "Unavailable", cls: "ael-line-off", line: "Protection covers " + market + " picks.", head: "Protection covers " + market + " picks.", next: "Your last pick, " + who + ", is another market." };
+    if (leg && leg.kind !== "winner") return { tag: "Unavailable", cls: "ael-line-off", line: "Lock in covers " + market + " picks.", head: "Lock in covers " + market + " picks.", next: "Your last pick, " + who + ", is another market." };
     // in play on: a last pick under way is priced like any other; the service's quote decides
     if (last.live && !inPlayOn()) return { tag: "Unavailable", cls: "ael-line-off", line: "Your last pick, <b>" + esc(who) + "</b>, has started.", head: "Your last pick has started.", next: LOCK_WHEN() };
-    if (!S.byTicker[last.ticker]) return { tag: "Unavailable", cls: "ael-line-off", line: "No hedge book for your last pick yet.", head: "No hedge book for your last pick yet.", next: "Protection reaches more games as venues are added." };
-    return { tag: "Lock in", cls: "ael-line-wait", line: "Checking protection&hellip;", head: "Pricing protection on your last pick.", next: "" };
+    if (!S.byTicker[last.ticker]) return { tag: "Unavailable", cls: "ael-line-off", line: "No hedge book for your last pick yet.", head: "No hedge book for your last pick yet.", next: "Lock in reaches more games as venues are added." };
+    return { tag: "Lock in", cls: "ael-line-wait", line: "Checking the lock&hellip;", head: "Pricing the lock on your last pick.", next: "" };
   };
   const parlayLine = (B) => {
     const s = parlayState(B);
@@ -2430,7 +2430,7 @@
       code === "no_size"
         ? '<div class="ael-size-form"><input type="number" min="1" max="10000" step="0.01" placeholder="pays $" aria-label="Payout in dollars" /><button type="button" class="ael-go ael-quiet">Price it</button></div>'
         : "";
-    const fine = code === "spread" || code === "no_size" || code === "unmatched" || code === "own_hedge" ? "" : '<div class="ael-fine">Protection is offered when the market pays for it.</div>';
+    const fine = code === "spread" || code === "no_size" || code === "unmatched" || code === "own_hedge" ? "" : '<div class="ael-fine">Lock in is offered when the market pays for it.</div>';
     const html = '<div class="ael-ph"><b>' + esc(w.why) + "</b>" + (w.next ? "<span>" + esc(w.next) + "</span>" : "") + "</div>" + sizeForm + fine + DISCLOSE;
     setPanel(B, panel, html, () => {
       if (sizeForm) {
@@ -2887,13 +2887,13 @@
       body =
         '<div class="ael-ledger ael-two">' +
         ledgerRow(esc(nick) + (rec.result === "yes" ? " won" : " lost") + " &middot; you end with", esc(usd(got)), null, "ael-hero") +
-        ledgerRow("Unprotected, it would have paid", esc(usd(naked)), null, cash ? "" : "ael-last") +
+        ledgerRow("Without the lock, it would have paid", esc(usd(naked)), null, cash ? "" : "ael-last") +
         (cash ? ledgerRow("Cash", cash.label, null, "ael-last") : "") +
         "</div>";
       if (rec.settledAt) meta.push("Settled " + esc(fmtAt(rec.settledAt)));
       if (cash && cash.open) meta.push(rec.result === "yes" ? "the slice above the cap goes back to the writer; the receipt shows each leg" : "the floor comes to you; the receipt shows each leg");
     } else if (rec.status === "void") {
-      body = '<div class="ael-ph"><b>Protection voided</b><span>No official result for this game; nothing owed either way.</span></div>';
+      body = '<div class="ael-ph"><b>Lock voided</b><span>No official result for this game; nothing owed either way.</span></div>';
     } else if (rec.status === "closed" && sale) {
       // a member's sale left early: they bought the contracts back in their own account. The round
       // trip's net (the sale less the buy-back) is already in their balance; the position is whole again
@@ -2904,8 +2904,8 @@
       const whole = back != null && sold != null && back >= sold;
       body =
         '<div class="ael-ledger ael-two">' +
-        ledgerRow("Protection removed &middot; <span class=\"ael-dim\">" + (bb ? "bought back " + bb.boughtContracts + " at " + bb.avgPriceCents + "&cent;" : "bought back") + "</span>", signed(net), null, "ael-hero") +
-        ledgerRow("Your position", (whole ? "whole again" : back != null && sold != null ? back + " of " + sold + " bought back; the rest stays sold" : "back") + " on " + esc(V.name) + ", unprotected", null, "ael-last") +
+        ledgerRow("Lock removed &middot; <span class=\"ael-dim\">" + (bb ? "bought back " + bb.boughtContracts + " at " + bb.avgPriceCents + "&cent;" : "bought back") + "</span>", signed(net), null, "ael-hero") +
+        ledgerRow("Your position", (whole ? "whole again" : back != null && sold != null ? back + " of " + sold + " bought back; the rest stays sold" : "back") + " on " + esc(V.name) + ", without the lock", null, "ael-last") +
         "</div>";
       if (rec.closedAt) meta.push("Removed " + esc(fmtAt(rec.closedAt)));
       meta.push(net < 0 ? "the round trip cost " + esc(usd(-net)) + ": the price rose after you sold" : net > 0 ? esc(usd(net)) + " kept from the round trip: the price fell after you sold" : "the round trip came out even");
@@ -2918,8 +2918,8 @@
       const cash = cashState(rec);
       body =
         '<div class="ael-ledger ael-two">' +
-        ledgerRow("Protection removed &middot; settled <span class=\"ael-dim\">" + closeWhy(net) + "</span>", signed(net), null, "ael-hero") +
-        ledgerRow("Your pick", "open on " + esc(V.name) + ", unprotected", null, cash ? "" : "ael-last") +
+        ledgerRow("Lock removed &middot; settled <span class=\"ael-dim\">" + closeWhy(net) + "</span>", signed(net), null, "ael-hero") +
+        ledgerRow("Your pick", "open on " + esc(V.name) + ", without the lock", null, cash ? "" : "ael-last") +
         (cash ? ledgerRow("Cash", cash.label, null, "ael-last") : "") +
         "</div>";
       if (rec.closedAt) meta.push("Removed " + esc(fmtAt(rec.closedAt)));
@@ -2938,7 +2938,7 @@
       // simple layout: the Details toggle shares the row with the pill, and the pill's meaning waits
       // for the leave sheet (its header says it); the receipt waits behind Details
       const detailsA = simple() ? '<span class="ael-links">' + toggleA("ael-rcpt-a", "Details", st.rcpt) + "</span>" : "";
-      const leaveAct = !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button>' + (simple() ? "" : "<span>remove the protection, keep your pick</span>") + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
+      const leaveAct = !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button>' + (simple() ? "" : "<span>remove the lock, keep your pick</span>") + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
       body = (simple() ? simpleLedger(nick, rs, cashOf(rec), null, sale) : ledger(nick, rs, cashOf(rec), null, sale)) + (st.leave ? leaveHtml(B, rec, rs) + leaveAct : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
       if (rec.justNow && rec.ms) meta.push((sale ? "sold " : rec.hedge && !rec.hedge.simulated ? "the other side bought " : "") + (rec.ms < 100 ? "at once" : "in " + (rec.ms / 1000).toFixed(1) + "s"));
@@ -3104,7 +3104,7 @@
     if (!r || !r.ok || !j) return { why: "Live pricing is unavailable right now.", next: "Try again in a moment." };
     switch (j.error || j.code) {
       case "too_late":
-        return { why: "Too late to leave; the start is close.", next: "The protection runs to the official result now." + (j.lastIso ? " Leaving closed " + fmtAt(j.lastIso) + "." : "") };
+        return { why: "Too late to leave; the start is close.", next: "The lock runs to the official result now." + (j.lastIso ? " Leaving closed " + fmtAt(j.lastIso) + "." : "") };
       case "not_open":
         return { why: j.status === "closed" ? "This position was already left." : "This position has settled.", next: "" };
       case "book_empty":
@@ -3116,7 +3116,7 @@
       case "no_offers":
         return { why: V.name + " shows no offers on this market right now.", next: "The contracts you sold cannot be bought back until it does; check back in a few minutes." };
       case "not_filled":
-        return { why: j.message || V.name + "'s offers moved before the order reached them.", next: "Nothing was bought back; the protection stands. Try again." };
+        return { why: j.message || V.name + "'s offers moved before the order reached them.", next: "Nothing was bought back; the lock stands. Try again." };
       case "member_not_connected":
       case "member_scope":
       case "member_terms":
@@ -3151,16 +3151,16 @@
     // the protection alone settles; the pick is the holder's and stays where it is. One plain line
     // (you pay, you get), the net against the credit they were paid at the lock, the rest behind Why
     const hero = net < 0 ? 'You pay <b class="ael-pay">' + esc(usd(-net)) + "</b>" : net > 0 ? "You get <b>" + esc(usd(net)) + "</b>" : "Nothing owed either way";
-    const netWords = allIn < 0 ? "<b>" + signed(allIn) + "</b> after the " + esc(usd(credit)) + " paid to you at the lock" : allIn > 0 ? "<b>" + signed(allIn) + "</b> ahead, with the " + esc(usd(credit)) + " paid to you at the lock" : "even, with the " + esc(usd(credit)) + " paid to you at the lock";
+    const netWords = allIn < 0 ? "<b>" + signed(allIn) + "</b> after the " + esc(usd(credit)) + " credited to you at lock in" : allIn > 0 ? "<b>" + signed(allIn) + "</b> ahead, with the " + esc(usd(credit)) + " credited to you at lock in" : "even, with the " + esc(usd(credit)) + " credited to you at lock in";
     const why = [];
     why.push(net < 0 ? "Your pick moved up since the lock, so the upside you sold is worth more than the floor you hold; leaving settles that difference." : net > 0 ? "Your pick moved down since the lock, so the floor you hold is worth more than the upside you sold; leaving pays you that difference." : "Your pick is where it was at the lock; the floor and the upside cancel.");
-    why.push("Your pick stays open on " + esc(V.name) + ", unprotected. The " + esc(usd(credit)) + " paid at the lock is yours either way.");
+    why.push("Your pick stays open on " + esc(V.name) + ", without the lock. The " + esc(usd(credit)) + " credited at lock in is yours either way.");
     const fine = [q.rehearsal ? "Rehearsal &middot; estimated from the live mark, not the books; nothing is sold" : "Priced live"];
     if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
     if (operator() && q.unwindFrictionCents != null) fine.push("crossing the books costs " + esc(usd(q.unwindFrictionCents)) + " against the mid");
     return (
       '<div class="ael-leave">' +
-      '<div class="ael-leave-h"><b>Leave early</b><span>remove the protection, keep your pick</span></div>' +
+      '<div class="ael-leave-h"><b>Leave early</b><span>remove the lock, keep your pick</span></div>' +
       '<div class="ael-ledger ael-two">' +
       ledgerRow("To leave now", hero, null, "ael-hero") +
       ledgerRow("Net", netWords, null, "") +
@@ -3186,8 +3186,8 @@
     const hero = "<b>" + bb.contracts + " at " + bb.limitPriceCents + "&cent;</b> &middot; costs <b" + (net < 0 ? ' class="ael-pay"' : "") + ">" + esc(usd(bb.costCents)) + "</b>";
     const netWords = net < 0 ? "<b>" + signed(net) + "</b> on the round trip: you sold at " + (rec.memberSale ? rec.memberSale.avgPriceCents : "") + "&cent;, the offers are higher now" : net > 0 ? "<b>" + signed(net) + "</b> kept from the round trip: you sold at " + (rec.memberSale ? rec.memberSale.avgPriceCents : "") + "&cent;, the offers are lower now" : "even: the offers are where you sold";
     const why = [];
-    why.push("You sold " + q.soldContracts + " contracts into " + esc(V.name) + "'s bids at the lock, for " + esc(usd(q.cashNowCents)) + ". Leaving buys them back from its offers now, in your own account; the difference is the cost of having been protected.");
-    why.push(short ? "The offers hold " + bb.contracts + " of the " + bb.wantContracts + " right now; the rest would stay sold, and the protection stays on those." : "Your position is whole again after the buy-back, unprotected, and settles on the official result as it always would.");
+    why.push("You sold " + q.soldContracts + " contracts into " + esc(V.name) + "'s bids at the lock, for " + esc(usd(q.cashNowCents)) + ". Leaving buys them back from its offers now, in your own account; the difference is the cost of having been locked in.");
+    why.push(short ? "The offers hold " + bb.contracts + " of the " + bb.wantContracts + " right now; the rest would stay sold, and the lock stays on those." : "Your position is whole again after the buy-back, without the lock, and settles on the official result as it always would.");
     const fine = ["Priced live from " + esc(V.name) + "'s offers"];
     if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
     if (bb.avgPriceCents && bb.avgPriceCents !== bb.limitPriceCents) fine.push("about " + bb.avgPriceCents + "&cent; average, " + bb.limitPriceCents + "&cent; at most");
@@ -3321,7 +3321,7 @@
   const startWord = (stem) => START_WORD[String((S.markets.find((m) => stemOf(m.ticker) === stem) || {}).league || "").toLowerCase()] || "the start";
   const TIP_WORDS = (stem) => {
     const u = gameUntil(stem);
-    const after = "Protection on this game can be locked in from " + V.page + " after your pick " + (VENUE_ID === "kalshi" ? "fills" : "is matched");
+    const after = "This game can be locked in from " + V.page + " after your pick " + (VENUE_ID === "kalshi" ? "fills" : "is matched");
     if (inPlayOn()) return after + ", before " + startWord(stem) + " or while the game is being played" + (u ? " (" + untilWords(u) + ")." : ".");
     return after + (u ? ", " + untilWords(u) + " (" + (S.ext.cutoffMinutes || 45) + " minutes before " + startWord(stem) + ")." : ".");
   };
@@ -3868,7 +3868,7 @@
     c = document.createElement("div");
     c.id = "ael-card";
     c.className = "ael-ui ael-card " + SKIN;
-    c.innerHTML = '<div class="ael-card-h"><span>' + (MEMBER ? "Your " + esc(V.name) + " " + esc(V.plays) : "Your " + esc(V.plays)) + ' &middot; protection</span><button type="button" class="ael-x" aria-label="Hide">&times;</button></div><div class="ael-card-b"></div>';
+    c.innerHTML = '<div class="ael-card-h"><span>' + (MEMBER ? "Your " + esc(V.name) + " " + esc(V.plays) : "Your " + esc(V.plays)) + ' &middot; Lock in</span><button type="button" class="ael-x" aria-label="Hide">&times;</button></div><div class="ael-card-b"></div>';
     c.querySelector(".ael-x").onclick = () => {
       c.style.display = "none";
       S.cardHidden = true;
@@ -3900,7 +3900,7 @@
       const waiting = S.connect.busy;
       return (
         '<div class="ael-connect">' +
-        '<div class="ael-ph"><b>' + (waiting ? "Waiting for " + esc(V.name) + "\u2026" : "Protect your " + esc(V.name) + " positions") + "</b><span>" + (waiting ? "Sign in on the " + esc(V.name) + " tab that opened and approve the connection. This page updates on its own once it is done." : "Connect your " + esc(V.name) + " account once. You sign in on " + esc(V.name) + "'s own page and approve reading your portfolio and placing orders in your account; this extension never sees your login or your keys, and the lock is your own sale into " + esc(V.name) + "'s book.") + "</span></div>" +
+        '<div class="ael-ph"><b>' + (waiting ? "Waiting for " + esc(V.name) + "\u2026" : "Lock in your " + esc(V.name) + " positions") + "</b><span>" + (waiting ? "Sign in on the " + esc(V.name) + " tab that opened and approve the connection. This page updates on its own once it is done." : "Connect your " + esc(V.name) + " account once. You sign in on " + esc(V.name) + "'s own page and approve reading your portfolio and placing orders in your account; this extension never sees your login or your keys, and the lock is your own sale into " + esc(V.name) + "'s book.") + "</span></div>" +
         (why ? '<div class="ael-fine">' + why + "</div>" : "") +
         (waiting && S.connect.url ? '<div class="ael-fine">No tab opened? <a href="' + esc(S.connect.url) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(V.name) + "'s sign-in page</a>.</div>" : "") +
         (S.connect.err ? '<div class="ael-fine ael-err">' + esc(S.connect.err) + "</div>" : "") +
@@ -3980,7 +3980,7 @@
         empty.className = "ael-ui ael-card-empty ael-fine";
         body.appendChild(empty);
       }
-      empty.textContent = S.svc.error ? V.name + " could not be read: " + S.svc.error : S.svc.at ? "No positions on games the service can protect right now. A Winner pick on a listed game shows here once it is in your account." : "Reading your positions\u2026";
+      empty.textContent = S.svc.error ? V.name + " could not be read: " + S.svc.error : S.svc.at ? "No positions on games the service can lock in right now. A Winner pick on a listed game shows here once it is in your account." : "Reading your positions\u2026";
     } else if (empty) empty.remove();
     const live = new Set();
     for (const p of S.svc.positions) {
