@@ -274,6 +274,17 @@ services:
         value: production
       - key: EVENT_SHADOW_LEDGER_PATH
         value: /var/data/event-shadow-ledger.jsonl
+      # LEDGER FINGERPRINTS. On with nothing set here. One SHA-256 per closed UTC day of the ledger,
+      # chained, is recorded once in /var/data/event-shadow-ledger.fingerprints.jsonl (same disk,
+      # a few hundred bytes a day; each lock ledger gets its own file the same way), printed on the
+      # record page and listed at /api/shadow/fingerprints. The ledger is hashed again from its
+      # first byte at start-up and once a day and compared with what was published; a mismatch is
+      # said on the page, on /healthz and by alert, and is never repaired. A fingerprint only binds
+      # once someone outside this disk holds it, so save the list off this box with the nightly
+      # backup. To check a backup: services/api/scripts/eventLedgerFingerprint.ts (its header).
+      # Two knobs, both optional and not set here:
+      #   EVENT_SHADOW_FINGERPRINTS=0              turns it off (no section, no route, no file)
+      #   EVENT_SHADOW_FINGERPRINT_CHECK_MS=<ms>   how often the full check runs (default 86400000)
       # The shadow scans with the demo's scanner, so the same EV-cost ceiling applies:
       # rows above it are recorded as protection_too_rich refusals, not opened.
       - key: EVENT_X_MAX_EV_COST_BPS
