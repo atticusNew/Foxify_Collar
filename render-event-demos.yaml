@@ -69,6 +69,33 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/eventProtectDemoService.ts
     healthCheckPath: /healthz
+    # BUILD FILTERS. Every merge to the branch redeploys every service in this file
+    # unless every file the merge changed is on that service's ignoredPaths. Only
+    # ignoredPaths are used, never `paths`, so a new file nobody has thought about
+    # always deploys: a needless restart costs less than a service that silently
+    # stays stale. Ignored for every service: the docs, any Markdown file, the
+    # tests, the GitHub workflows and the browser extensions under demo/ (no service
+    # reads, serves or packs any of them). After those, each service ignores only
+    # the source trees and scripts its start script does not import.
+    # services/api/tests/eventDeployFilters.test.ts computes what each start script
+    # imports and fails if an ignored path covers any of it, so check there before
+    # adding a line. Render always acts on a change to this file itself.
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/src/eventCollar/crossVenue/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/scripts/eventShadow*.ts
+        - services/api/scripts/eventProtectX*.ts
+        - services/api/scripts/eventProtectEmbedHtml.ts
+        - services/api/scripts/memberApp*.ts
     envVars:
       - key: NODE_ENV
         value: production
@@ -83,6 +110,18 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/btcCurveReportService.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/sportsVenues/**
+        - services/api/src/eventCollar/crossVenue/**
+        - services/api/scripts/event*.ts
+        - services/api/scripts/memberApp*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
     # One snapshot a minute is ~55 KB on disk; 21 days of retention is ~1.7 GB.
     disk:
       name: btc-curve-data
@@ -128,6 +167,16 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/sportsVenuesReportService.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/scripts/event*.ts
+        - services/api/scripts/memberApp*.ts
+        - services/api/scripts/btc*.ts
     # One snapshot a minute is ~40 KB on disk with a full slate; 21 days is ~1.2 GB.
     disk:
       name: sports-venues-data
@@ -157,6 +206,19 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/eventProtectXDemoService.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/scripts/eventShadow*.ts
+        - services/api/scripts/memberApp*.ts
     # Funnel counters and the quote-receipts ledger live on a small disk so a
     # deploy does not zero them (without it both restart from /tmp, empty).
     disk:
@@ -258,6 +320,17 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/eventShadowWorker.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
     disk:
       name: event-shadow-ledger
       mountPath: /var/data
@@ -561,6 +634,19 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/eventEgressProxy.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/scripts/eventProtect*.ts
+        - services/api/scripts/eventShadow*.ts
+        - services/api/scripts/memberApp*.ts
     envVars:
       - key: NODE_ENV
         value: production
