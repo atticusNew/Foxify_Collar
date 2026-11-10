@@ -25,6 +25,13 @@ export function archivePathFor(path: string, atIso: string): string {
   return join(dirname(path), `${stem}.${archiveStamp(atIso)}.archived${ext}`);
 }
 
+/** Where `archiveLedgerLines` puts the lines it moves, for the same path, label and moment. */
+export function archiveLinesPathFor(path: string, label: string, atIso: string): string {
+  const ext = extname(path);
+  const safeLabel = label.replace(/[^A-Za-z0-9_-]+/g, "_");
+  return join(dirname(path), `${basename(path, ext)}.${archiveStamp(atIso)}.${safeLabel}.archived${ext}`);
+}
+
 export function archiveLedgerFile(path: string, atIso: string = new Date().toISOString()): ArchiveResult {
   if (!existsSync(path)) return { path, archivedTo: null };
   const to = archivePathFor(path, atIso);
@@ -61,10 +68,7 @@ export function archiveLedgerLines(path: string, pick: (record: Record<string, u
     (rec && pick(rec) ? moved : kept).push(line);
   }
   if (moved.length === 0) return { path, archivedTo: null, moved: 0, kept: kept.length };
-  const ext = extname(path);
-  const stem = basename(path, ext);
-  const safeLabel = label.replace(/[^A-Za-z0-9_-]+/g, "_");
-  const to = join(dirname(path), `${stem}.${archiveStamp(atIso)}.${safeLabel}.archived${ext}`);
+  const to = archiveLinesPathFor(path, label, atIso);
   writeFileSync(to, moved.join("\n") + "\n", { flag: "wx" });
   // write the remainder beside, then rename over: the ledger is never half-written
   const tmp = `${path}.${archiveStamp(atIso)}.tmp`;
