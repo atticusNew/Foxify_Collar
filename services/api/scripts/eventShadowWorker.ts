@@ -594,8 +594,16 @@ let venueClientNote: string | null = null;
   } else if (bearer) {
     const c = new PlaysClient(bearer);
     venueClient = { kind: "bearer", holderPositions: (p) => holderPlays(c, p) };
+  } else {
+    // neither pair complete: name the variables (never the values) so an operator can see which one the
+    // dashboard dropped; a partially set signed pair is the usual way this reader is silently off
+    const want = ["VENUE_API_HOST", "VENUE_API_KEY_ID", "VENUE_API_PRIVATE_KEY_PEM"] as const;
+    const set = want.filter((k) => Boolean(process.env[k]?.trim()));
+    const missing = want.filter((k) => !process.env[k]?.trim());
+    venueClientNote = set.length ? `venue positions: off; set ${set.join(", ")}; missing ${missing.join(", ")}` : "venue positions: off; no VENUE_API_* or VENUE_API_ACCESS_KEY pair in the env";
   }
 }
+const STARTED_AT = new Date().toISOString();
 /** REFERENCE_BOOK_* in the env: the scanner module reads these books on every sports open; this is only the operator's view of what is on */
 const referenceBooks = (() => {
   const r = referenceSourcesFromEnv(process.env);
@@ -3868,6 +3876,7 @@ function healthBody(): Record<string, unknown> {
   return {
     ok: true,
     service: "event-protect-shadow",
+    startedAt: STARTED_AT,
     positions: allPositions().length,
     ledger: { path: LEDGER_PATH, ...stats },
     lastScanAt,
