@@ -194,7 +194,7 @@ test("the page: every listing on one table, quoted rows beside the ask, refusals
       NOW,
     ),
   ];
-  const md = listingsMarkdown(rows, "2026-10-09T03:00:00.000Z", { marketplace: "WagerWire", hedgeVenues: ["Polymarket"], contact: "Michael Ting, michael@example.com." });
+  const md = listingsMarkdown(rows, "2026-10-09T03:00:00.000Z", { marketplace: "WagerWire", hedgeVenues: ["Polymarket"], contact: "Michael William, michael@example.com." });
   assert.ok(md.startsWith("# 3 of your listings, priced"));
   assert.ok(md.includes("Prepared for WagerWire."));
   assert.ok(md.includes("**1 of 3 quoted.**"));
@@ -211,7 +211,7 @@ test("the page: every listing on one table, quoted rows beside the ask, refusals
   assert.ok(md.includes(`Hedge: ${(q.hedgeSharesMilli / 1000).toLocaleString("en-US", { maximumFractionDigits: 0 })} shares of Kansas City Chiefs NO`), "the hedge is stated on each quoted ticket");
   assert.ok(md.includes("carried 5 months"), "carry is stated");
   assert.ok(md.includes("we earn the stated take plus the stated carry, whoever wins"), "the identity in words");
-  assert.ok(md.includes("Michael Ting, michael@example.com."));
+  assert.ok(md.includes("Michael William, michael@example.com."));
   assert.ok(!md.includes("\u2014"), "no em dash");
   assert.ok(!/wallet/i.test(md));
 });

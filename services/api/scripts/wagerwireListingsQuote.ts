@@ -89,7 +89,7 @@ async function main(): Promise<void> {
   const jsonPath = join(outDir, `listings-quoted-${day}.json`);
   writeFileSync(jsonPath, `${JSON.stringify({ at: nowIso, marketplace, carryBpsPerMonth: cfg.carryBpsPerMonth, minimumCredit: cfg.minimum, rows }, null, 2)}\n`, "utf8");
   const mdPath = join(outDir, "atticus_wagerwire_listings.md");
-  writeFileSync(mdPath, listingsMarkdown(rows, nowIso, { marketplace, hedgeVenues: ["Polymarket"], contact: "Michael Ting, michael@atticustrade.com." }), "utf8");
+  writeFileSync(mdPath, listingsMarkdown(rows, nowIso, { marketplace, hedgeVenues: ["Polymarket"], contact: "Michael William, michael@atticustrade.com." }), "utf8");
 
   for (const r of rows) {
     const leg = r.remaining.map((x) => x.label).join(" + ");

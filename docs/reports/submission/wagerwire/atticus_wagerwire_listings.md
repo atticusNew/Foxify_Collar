@@ -48,4 +48,4 @@ Pays: the ticket's full payout if the last leg hits, as listed, with the month i
 - A future resolves months out and the hedge sits until then, so the credit carries a time charge, shown on every row. The live book for games settling within days has none.
 - Every number here comes from a public page read by a person and a public order book read at the time stamped above. Prices move; the morning of a conversation we rerun the page.
 
-When the legs resolve we mark every row against the official result: what the lock paid, what the ask would have paid, what the ticket did naked. The follow-up writes itself. Michael Ting, michael@atticustrade.com.
+When the legs resolve we mark every row against the official result: what the lock paid, what the ask would have paid, what the ticket did naked. The follow-up writes itself. Michael William, michael@atticustrade.com.
