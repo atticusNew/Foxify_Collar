@@ -11,6 +11,11 @@
  *   DELETE /portfolio/events/orders/{order_id}                               -> cancel (V2)
  *   GET    /portfolio/orders/{order_id}                                      -> {order}   (legacy read; still served)
  *   GET    /portfolio/balance                                                -> {balance (cents), ...}
+ *   GET    /portfolio/fills?order_id=&min_ts=&max_ts=&subaccount=&limit=&cursor=
+ *                                      -> {fills[{fill_id, order_id, ticker, outcome_side, book_side, count_fp,
+ *                                                 yes_price_dollars, no_price_dollars, fee_cost, created_time, ts,
+ *                                                 subaccount_number}], cursor}   (the daily check reads this; min_ts and
+ *                                                 max_ts are unix seconds; no subaccount means every one the key sees)
  * Auth: the same KALSHI-ACCESS-* headers as the RFQ client (kalshiRfq.ts).
  * The legacy POST /portfolio/orders answers 410 deprecated_v1_order_endpoint since October 2026.
  *
@@ -169,6 +174,96 @@ export function fillOfV2Sell(resp: KalshiV2OrderResponse, floorPriceCents: numbe
   const feeMicro = dollarsToMicro(resp.average_fee_paid, true);
   const feesCents = feeMicro >= 0 ? Math.ceil((unitsMilli * feeMicro) / 10_000_000) : kalshiTakerFeeCents(unitsMilli, Math.ceil(noMicro / 10_000));
   return { unitsMilli, costCents: Math.max(0, gross - feesCents), feesCents };
+}
+
+/**
+ * One fill as GET /portfolio/fills lists it (Kalshi Trade API, GetFillsResponse.Fill). Direction
+ * is `outcome_side`: buying No and selling Yes both read "no"; buying Yes and selling No both
+ * read "yes". `book_side` says the same in book words (ask = "no", bid = "yes"). The older `side`
+ * and `action` are deprecated and read only when the newer two are absent.
+ */
+export interface KalshiFill {
+  fill_id: string;
+  order_id: string;
+  ticker?: string;
+  market_ticker?: string;
+  outcome_side?: string;
+  book_side?: string;
+  side?: string;
+  action?: string;
+  /** contracts, fixed point "N.NN" */
+  count_fp: string;
+  yes_price_dollars?: string;
+  no_price_dollars?: string;
+  is_taker?: boolean;
+  /** dollars */
+  fee_cost?: string;
+  created_time?: string;
+  /** unix seconds (legacy) */
+  ts?: number;
+  /** 0 for the primary account, 1 to 63 for a subaccount */
+  subaccount_number?: number | null;
+  exchange_index?: number;
+}
+
+/** Which way a listed fill moved our No: "no" took No on (the hedge bought), "yes" took it off (the hedge sold); null when the fill does not say. */
+export function kalshiFillSide(f: Pick<KalshiFill, "outcome_side" | "book_side" | "side" | "action">): "no" | "yes" | null {
+  const o = (f.outcome_side ?? "").toLowerCase();
+  if (o === "no" || o === "yes") return o;
+  const b = (f.book_side ?? "").toLowerCase();
+  if (b === "ask") return "no";
+  if (b === "bid") return "yes";
+  const side = (f.side ?? "").toLowerCase();
+  const action = (f.action ?? "").toLowerCase();
+  if ((side === "no" || side === "yes") && (action === "buy" || action === "sell")) return (side === "no") === (action === "buy") ? "no" : "yes";
+  return null;
+}
+
+/**
+ * What one order's listed fills add up to, in the same units and with the same roundings as the
+ * order's own answer (fillOfV2Order, fillOfV2Sell): on a buy the No notional rounds up and the
+ * fee is added; on a sale (`sell`) the No proceeds round down and the fee is taken out. The fee
+ * is the venue's own `fee_cost` on each fill, summed and rounded up; nothing is computed here.
+ * A fill with no No price is read as 1 less its Yes price. Each fill is priced on its own, so
+ * this can sit a cent either side of a figure built from the order's rounded average.
+ */
+export function fillOfKalshiFills(fills: Array<Pick<KalshiFill, "count_fp" | "yes_price_dollars" | "no_price_dollars" | "fee_cost">>, sell = false): OrderFill & { feeKnown: boolean } {
+  let unitsMilli = 0;
+  let notionalMicroMilli = 0;
+  let feeMicro = 0;
+  let feeKnown = fills.length > 0;
+  for (const f of fills) {
+    const units = fpToMilli(f.count_fp);
+    if (units <= 0) continue;
+    let noMicro = dollarsToMicro(f.no_price_dollars, !sell);
+    if (noMicro < 0) {
+      const yesMicro = dollarsToMicro(f.yes_price_dollars, sell);
+      noMicro = yesMicro >= 0 && yesMicro <= 1_000_000 ? 1_000_000 - yesMicro : -1;
+    }
+    // a fill with no price at all cannot be costed: it is counted at the worst end for us
+    if (noMicro < 0) noMicro = sell ? 0 : 1_000_000;
+    unitsMilli += units;
+    notionalMicroMilli += units * noMicro;
+    const fee = dollarsToMicro(f.fee_cost, true);
+    if (fee < 0) feeKnown = false;
+    else feeMicro += fee;
+  }
+  if (unitsMilli <= 0) return { unitsMilli: 0, costCents: 0, feesCents: 0, feeKnown: false };
+  const feesCents = Math.ceil(feeMicro / 10_000);
+  if (sell) return { unitsMilli, costCents: Math.max(0, Math.floor(notionalMicroMilli / 10_000_000) - feesCents), feesCents, feeKnown };
+  return { unitsMilli, costCents: Math.ceil(notionalMicroMilli / 10_000_000) + feesCents, feesCents, feeKnown };
+}
+
+export interface KalshiFillsQuery {
+  orderId?: string;
+  /** unix seconds, as the venue takes them */
+  minTs?: number;
+  maxTs?: number;
+  /** 0 for the primary account, 1 to 63 for a subaccount; absent reads every subaccount the key can see */
+  subaccount?: number;
+  cursor?: string;
+  /** 1 to 1000 */
+  limit?: number;
 }
 
 export interface KalshiOrderClientOptions {

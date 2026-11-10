@@ -85,6 +85,8 @@ export interface RealFill {
   via: HedgeVia;
   action: "buy" | "sell";
   instrument: string;
+  /** what the order was placed on at the venue: the instrument, or on a ProphetX or Novig sale the holder's own side bought to offset it */
+  orderInstrument: string;
   /** units the order asked for, and the worst price it would take, milli */
   wantedUnitsMilli: number;
   limitMilli: number;
@@ -422,6 +424,7 @@ export function buildRealizedBook(input: RealizedBookInput): RealizedBook {
       via: f.via ?? "direct",
       action,
       instrument: f.instrument,
+      orderInstrument: action === "sell" && r.intent.offsetInstrument ? r.intent.offsetInstrument : f.instrument,
       wantedUnitsMilli: r.intent.unitsMilli,
       limitMilli: whole(r.intent.book?.worstPriceMilli) ? r.intent.book.worstPriceMilli : 0,
       unitsMilli: f.unitsMilli,
