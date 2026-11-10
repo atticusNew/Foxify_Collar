@@ -69,7 +69,7 @@ ${CSS}
 <nav class="tabs" id="tabs" aria-label="Sections" hidden></nav>
 <main id="main" class="main"><div class="ael-wait">Loading…</div></main>
 <footer class="foot">
-  <div class="foot-l"><span class="fd">Protection by <img class="amark" src="/app/atticus.png" alt="Atticus">, a third party; not a product of ${esc(o.venueName)}.</span><span class="fm"><img class="amark" src="/app/atticus.png" alt="Atticus"><span>Third-party protection; not a product of ${esc(o.venueName)}.</span></span></div>
+  <div class="foot-l"><span class="fd">Lock in by <img class="amark" src="/app/atticus.png" alt="Atticus">, a third party; not a product of ${esc(o.venueName)}.</span><span class="fm"><img class="amark" src="/app/atticus.png" alt="Atticus"><span>Third-party Lock in; not a product of ${esc(o.venueName)}.</span></span></div>
   <div class="foot-r"><a href="/app/privacy">Privacy</a><span class="dot">·</span><button type="button" class="lnk" id="about-tg">How it works</button><span id="disconnect-foot" hidden><span class="dot">·</span><button type="button" class="lnk" id="disconnect-foot-btn">Disconnect<span class="fd"> ${esc(o.venueName)}</span></button></span></div>
 </footer>
 <!-- how it works: the one place the page explains itself; opened from the foot and the empty portfolio -->
@@ -79,8 +79,8 @@ ${CSS}
     <h2 id="how-h">How Lock in works</h2>
     <ol class="steps">
       <li><div><b>Buy a side on ${esc(o.venueName)}</b><small>A game winner, any size. It shows here with its Lock in line.</small></div></li>
-      <li><div><b>Tap Lock in</b><small>Part of the position sells into ${esc(o.venueName)}'s bids, in your own account. The cash lands in your ${esc(o.venueName)} balance now.</small></div></li>
-      <li><div><b>Keep the floor, win or lose</b><small>Lose, and the cash is yours. Win, and the rest still pays. Leave early buys it back any time before it settles.</small></div></li>
+      <li><div><b>Tap Lock in</b><small>Part of the position sells into ${esc(o.venueName)}'s bids, in your own account. The cash from the sale lands in your ${esc(o.venueName)} balance when the sale fills.</small></div></li>
+      <li><div><b>Keep the floor, win or lose</b><small>Lose, and the cash from the sale is yours. Win, and each contract you keep pays $1 as well. Leave early buys it back any time before it settles.</small></div></li>
     </ol>
     <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Every order is placed under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke it there at any time. This page never holds your money, your login or your keys.</p>
     <p>Every lock fills on ${esc(o.venueName)}, where you hold the position, and is written to a public record in neutral words, with no account ids.</p>
@@ -683,7 +683,7 @@ const JS = String.raw`
   const LAYERS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5 14 5.5 8 8.5 2 5.5z"/><path d="m2 8.5 6 3 6-3"/><path d="m2 11.5 6 3 6-3"/></svg>';
   const WARN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5 1.8 13.5h12.4z"/><path d="M8 6.5v3.2M8 11.6v.2"/></svg>';
   const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="#1a1200" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
-  const DISCLOSE = '<div class="ael-disclose">Protection by Atticus, a third party; not a product of ' + VN + '.</div>';
+  const DISCLOSE = '<div class="ael-disclose">Lock in by Atticus, a third party; not a product of ' + VN + '.</div>';
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const usd = (c) => (c < 0 ? "-" : "") + "$" + (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const signed = (c) => (c >= 0 ? "+" : "-") + "$" + (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -735,14 +735,14 @@ const JS = String.raw`
       case "member_terms": return [VN + " terms", words(p, VN + " needs you to accept its terms first.")];
       case "member_ip": return ["Not sent", VN + " refused the order from our server's address; our allow-list on " + VN + " isn't set yet. Nothing was sold. We're on it."];
       case "not_held": return ["Unavailable", "This position is not in your " + VN + " account any more."];
-      case "size": case "too_small": return ["Unavailable", words(p, "The position is too small to protect.")];
+      case "size": case "too_small": return ["Unavailable", words(p, "The position is too small to lock in.")];
       case "no_bids": case "no_offers": return ["No bids", "No one is bidding for this side on " + VN + " right now."];
       case "market_too_close_to_start": return ["Too close", "This game starts too soon; locks close " + (S.cutoff || 45) + " minutes before the start."];
-      case "market_not_active": return S.inPlay ? ["Final", words(p, "This game is over.")] : ["In play", "The game has started; protection is pre-game only."];
+      case "market_not_active": return S.inPlay ? ["Final", words(p, "This game is over.")] : ["In play", "The game has started; the lock is pre-game only."];
       case "market_suspended": return ["Paused", words(p, VN + " has paused this market for the moment; try again in a few seconds.")];
-      case "not_offered": return ["Not listed", "This game isn't listed for protection."];
+      case "not_offered": return ["Not listed", "This game isn't listed for Lock in."];
       case "not_filled": return ["Not sold", VN + " filled none of it; nothing changed. Try again."];
-      case "already_on_record": return ["Protected", "This market is already locked."];
+      case "already_on_record": return ["Locked in", "This market is already locked."];
       case "lock_in_flight": return ["One moment", "This position is being locked right now."];
       case "venue_unreachable": return ["Unavailable", VN + " could not be reached."];
       case "combo_quotes_unavailable": return ["Not yet", VN + " isn't quoting combo tickets yet."];
@@ -752,18 +752,18 @@ const JS = String.raw`
       case "combo_no_buyback": return ["Stays to settlement", "A combo lock has nothing to buy back from."];
       case "combo_preview": return ["Preview", "A preview: " + VN + "'s cash-out quote isn't live yet, so nothing was sold."];
       case "venue_refused": return ["Unavailable", words(p, VN + " refused the order.")];
-      default: return ["Unavailable", words(p, "Protection isn't available on this position right now.")];
+      default: return ["Unavailable", words(p, "Lock in isn't available on this position right now.")];
     }
   };
   const reasonWords = (p) => {
     switch (p.reason) {
       case "parlay": return ["Parlay", "Rides to settlement on " + VN + ".", "parlay"];
       case "league_not_covered": return ["Not covered", "This league isn't covered yet.", ""];
-      case "market_not_covered": return ["Not covered", "Only game-winner positions can be protected.", ""];
-      case "no_protectable_market": return ["Not listed", "This game isn't listed for protection.", ""];
+      case "market_not_covered": return ["Not covered", "Only game-winner positions can be locked in.", ""];
+      case "no_protectable_market": return ["Not listed", "This game isn't listed for Lock in.", ""];
       case "market_unknown": return ["Unavailable", VN + " didn't describe this market.", ""];
       case "market_lookup_failed": return ["Unavailable", VN + " didn't describe this market just now.", ""];
-      default: return ["Unavailable", "Protection isn't available on this position.", ""];
+      default: return ["Unavailable", "Lock in isn't available on this position.", ""];
     }
   };
 
@@ -813,15 +813,15 @@ const JS = String.raw`
   const connectHtml = (why) => {
     const m = S.member || {};
     const reason = m.reason === "grant_revoked" ? "Your " + VN + " connection was revoked. Connect again when you are ready." : m.reason === "account_pending" ? "Your " + VN + " account is still pending on their side; connect again once it is open." : m.reason === "refresh_failed" ? "Your " + VN + " connection lapsed. Connect again to continue." : "";
-    return '<div class="connect"><h2>Protect your ' + esc(VN) + ' positions</h2>' +
-      '<p>A lock sells part of a position you hold into ' + esc(VN) + "'s bids, in your own account: the cash lands in your " + esc(VN) + " balance now, the rest rides to the game. No one else is on the other side, nothing is hedged for you, no fee.</p>" +
+    return '<div class="connect"><h2>Lock in your ' + esc(VN) + ' positions</h2>' +
+      '<p>A lock sells part of a position you hold into ' + esc(VN) + "'s bids, in your own account: the cash from the sale lands in your " + esc(VN) + " balance when the sale fills, the rest rides to the game. No one else is on the other side, nothing is hedged for you, no fee.</p>" +
       (why ? '<div class="denied">' + WARN + "<div><b>" + esc(VN) + " didn't connect</b>" + esc(why) + " Nothing is connected; your account is untouched.</div></div>" : "") +
       (reason ? '<div class="ael-fine" style="margin-bottom:12px">' + esc(reason) + "</div>" : "") +
       '<ol class="steps">' +
         "<li><div><b>Sign in on " + esc(VN) + "</b><small>" + esc(VN) + "'s own page, in this tab. This page never sees your login.</small></div></li>" +
         "<li><div><b>Allow once</b><small>One approve screen lists five permissions. Tap Allow.</small>" +
           '<div class="perm"><span>read profile</span><span>read balance</span><span>read portfolio</span><span>read orders</span><span>place orders</span></div></div></li>' +
-        "<li><div><b>Back here, with your positions</b><small>Each one the service can protect carries its Lock in line.</small></div></li>" +
+        "<li><div><b>Back here, with your positions</b><small>Each one the service can lock in carries its Lock in line.</small></div></li>" +
       "</ol>" +
       '<div class="whyw"><b>Why place orders?</b> A lock is a sell order for part of your position, placed in your account at the price you see. Nothing else is ever placed, and you can revoke this on ' + esc(VN) + " at any time.</div>" +
       '<button type="button" class="ael-go" id="connect">' + SHIELD + "Connect " + esc(VN) + " account</button>" + DISCLOSE + "</div>";
@@ -865,7 +865,7 @@ const JS = String.raw`
     return '<div class="ael-ledger">' +
       '<div class="ael-lr"><span class="ael-l">' + (combo ? "All legs hit" : esc(nick) + " win") + '</span><b>' + usd(o.cap) + '</b><s>of ' + usd(n * 100) + '</s></div>' +
       '<div class="ael-lr ael-hero"><span class="ael-l">' + (combo ? "A leg misses" : esc(nick) + " lose") + '</span><b>' + usd(o.floor) + '</b><s>instead of $0</s></div>' +
-      '<div class="ael-lr ael-last"><span class="ael-l">In your ' + esc(VN) + ' balance' + (sale ? '' : ' now') + '</span><b>' + signed(o.cash) + '</b><s></s></div>' +
+      '<div class="ael-lr ael-last"><span class="ael-l">In your ' + esc(VN) + ' balance' + (sale ? '' : ' <span class="ael-dim">when the sale fills</span>') + '</span><b>' + signed(o.cash) + '</b><s></s></div>' +
       "</div>";
   };
   const shapeHtml = (st) => {
@@ -896,12 +896,12 @@ const JS = String.raw`
     let rows = positionRows(p);
     if (!locked) {
       rows += '<div class="ael-dl">Sale</div><div class="ael-dv">Sell <b>' + t.soldContracts + " of " + p.contracts + "</b> at about " + cents(t.avgPriceCents) + (p.combo ? " to " + esc(VN) + "'s makers · " : " into " + esc(VN) + "'s bids · ") + t.keptContracts + " keep riding</div>";
-      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts " + (p.combo ? "to " + esc(VN) + "'s makers now, at the price they quoted for this ticket; " : "into " + esc(VN) + "'s bids now, at the best prices there; ") + usd(o.cash) + " lands in your " + esc(VN) + " balance. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and the riding contracts pay $1 each on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p>" + (q.live ? (p.combo ? "<p>A leg is on, so the price moves; the tap asks " + esc(VN) + "'s makers again and sells at what they quote then, never more than they offer." : "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so.") + (Number(q.inPlayDelaySec) > 0 ? " " + esc(VN) + " holds in-play orders " + Number(q.inPlayDelaySec) + "s before they can match." : "") + "</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
+      rows += '<div class="ael-dl"><button type="button" class="ael-tg" data-tg="how" aria-expanded="' + st.how + '">How' + TGC + "</button></div><div class=\"ael-dv\">" + (st.how ? '<div class="ael-how"><p>You sell ' + t.soldContracts + " of your " + p.contracts + " contracts " + (p.combo ? "to " + esc(VN) + "'s makers now, at the price they quoted for this ticket; " : "into " + esc(VN) + "'s bids now, at the best prices there; ") + usd(o.cash) + " lands in your " + esc(VN) + " balance when the sale fills. The other " + t.keptContracts + " ride to the game as they always did.</p><p>Lose, and you keep the " + usd(o.cash) + ". Win, and each contract you keep pays $1 on top: " + usd(o.cap) + " all in. No one else is on the other side, nothing is hedged for you, and there is no fee.</p>" + (q.live ? (p.combo ? "<p>A leg is on, so the price moves; the tap asks " + esc(VN) + "'s makers again and sells at what they quote then, never more than they offer." : "<p>The game is on, so the price moves. You never get less than the price shown; if the bid moves away first, fewer or none sell and the row says so.") + (Number(q.inPlayDelaySec) > 0 ? " " + esc(VN) + " holds in-play orders " + Number(q.inPlayDelaySec) + "s before they can match." : "") + "</p>" : "") + "</div>" : '<span class="ael-dim">a partial sale of your own position</span>') + "</div>";
     } else {
       const ms = src.memberSale;
       if (ms) rows += '<div class="ael-dl">Sold</div><div class="ael-dv">' + saleWords(ms) + "</div>";
       if (ms) rows += '<div class="ael-dl">In your ' + esc(VN) + ' balance</div><div class="ael-dv"><b>' + usd(ms.cashNowCents) + '</b> <span class="ael-dim">· ' + esc(ms.status || "filled") + "</span></div>";
-      if (ms) rows += '<div class="ael-dl">Still riding</div><div class="ael-dv"><b>' + ms.keptContracts + " contracts</b> · pay " + usd(ms.keptContracts * 100) + " on a win, $0 on a loss, as they always did</div>";
+      if (ms) rows += '<div class="ael-dl">Still riding</div><div class="ael-dv"><b>' + ms.keptContracts + " contracts</b> · each pays $1 if it wins (" + usd(ms.keptContracts * 100) + " in all), $0 if it loses, as they always did</div>";
       if (src.memberBuyBack) rows += '<div class="ael-dl">Bought back</div><div class="ael-dv"><b>' + src.memberBuyBack.boughtContracts + " at " + cents(src.memberBuyBack.avgPriceCents) + "</b> · cost " + usd(src.memberBuyBack.costCents) + (src.memberBuyBack.orderId ? ' <span class="ael-dim">· ' + VN + " order <code>" + esc(String(src.memberBuyBack.orderId).slice(0, 8)) + "…</code></span>" : "") + "</div>";
       if (src.venueSettlement) rows += '<div class="ael-dl">' + esc(VN) + ' settled</div><div class="ael-dv"><b>' + esc(src.venueSettlement.result || "") + "</b>" + (src.venueSettlement.payoutCents != null ? " · " + usd(src.venueSettlement.payoutCents) + " on the riding contracts" : "") + "</div>";
     }
@@ -920,14 +920,14 @@ const JS = String.raw`
   const leaveHtml = (p, st) => {
     const q = st.leaveQ;
     if (!q) return '<div class="ael-leave"><div class="ael-wait">Pricing the buy-back from ' + esc(VN) + "'s offers…</div></div>";
-    if (!(q.ok && q.unwind && q.unwind.buyBack)) { const w = refusalWords(q); return '<div class="ael-leave"><div class="ael-ph"><b>' + esc(w[0] === "Unavailable" ? "Can't leave right now" : w[0]) + "</b><span>" + esc(w[1]) + '</span></div><div class="ael-leave-acts"><button type="button" class="ael-go ael-quiet" data-act="stay">Keep the protection</button></div></div>'; }
+    if (!(q.ok && q.unwind && q.unwind.buyBack)) { const w = refusalWords(q); return '<div class="ael-leave"><div class="ael-ph"><b>' + esc(w[0] === "Unavailable" ? "Can't leave right now" : w[0]) + "</b><span>" + esc(w[1]) + '</span></div><div class="ael-leave-acts"><button type="button" class="ael-go ael-quiet" data-act="stay">Keep the lock</button></div></div>'; }
     const u = q.unwind, bb = u.buyBack;
     const net = u.closeNetCents;
     return '<div class="ael-leave"><div class="ael-leave-h"><b>Buy back ' + bb.contracts + " at " + cents(bb.avgPriceCents) + "</b><span>costs " + usd(bb.costCents) + (bb.contracts < bb.wantContracts ? " · only " + bb.contracts + " of " + bb.wantContracts + " offered" : "") + "</span></div>" +
       // no note column in this narrower box: a fixed-width note ("in your balance") ran past the box's edge on a phone
       '<div class="ael-ledger"><div class="ael-lr"><span class="ael-l">Sold for</span><b>' + usd(u.cashNowCents) + '</b></div><div class="ael-lr ael-hero"><span class="ael-l">Net to your ' + esc(VN) + ' balance</span><b>' + signed(net) + '</b></div><div class="ael-lr ael-last"><span class="ael-l">Staying</span><b>' + usd(u.stayFloorCents) + " or " + usd(u.stayCapCents) + "</b></div></div>" +
-      '<div class="ael-leave-acts"><button type="button" class="ael-go" data-act="leave">' + (st.busy === "leave" ? esc(st.busyWords || "Buying back…") : "Buy back " + bb.contracts + " at " + cents(bb.avgPriceCents)) + '</button><button type="button" class="ael-go ael-quiet" data-act="stay">Stay protected</button></div>' +
-      '<div class="ael-fine">Whole again, unprotected · the net above is the round trip' + (q.lastIso ? " · until " + esc(fmtAt(q.lastIso)) : isLive(p) ? " · live price, never more than shown" : "") + "</div></div>";
+      '<div class="ael-leave-acts"><button type="button" class="ael-go" data-act="leave">' + (st.busy === "leave" ? esc(st.busyWords || "Buying back…") : "Buy back " + bb.contracts + " at " + cents(bb.avgPriceCents)) + '</button><button type="button" class="ael-go ael-quiet" data-act="stay">Stay locked in</button></div>' +
+      '<div class="ael-fine">Whole again, without the lock · the net above is the round trip' + (q.lastIso ? " · until " + esc(fmtAt(q.lastIso)) : isLive(p) ? " · live price, never more than shown" : "") + "</div></div>";
   };
 
   // ---- one position's line and panel ----
@@ -945,7 +945,7 @@ const JS = String.raw`
   const timing = (p) => {
     if (!p.startsIso || S.inPlay) return null;
     const m = minsTo(p.startsIso);
-    if (m <= 0) return ["In play", "The game has started; protection is pre-game only.", "live"];
+    if (m <= 0) return ["In play", "The game has started; the lock is pre-game only.", "live"];
     if (m < (S.cutoff || 45)) return ["Too close", "Starts in " + m + " min; locks close " + (S.cutoff || 45) + " minutes before the start.", "close"];
     return null;
   };
@@ -956,7 +956,7 @@ const JS = String.raw`
     return '<div class="legs-h">' + legs.length + " legs</div><div class=\"legs\">" + legs.map((l) => {
       const done = l.state === "won" || l.state === "lost" || l.state === "void";
       const sub = (l.event ? esc(opponentWords(l.side, l.event)) : "") + (done ? (l.event ? " · " : "") + "Final" : l.startsIso ? (l.event ? " · " : "") + esc(fmtAt(l.startsIso)) : "");
-      const right = l.state === "pending" ? (l.priceCents != null ? '<span class="lp">' + cents(l.priceCents) + "</span>" : '<span class="lp dim">—</span>')
+      const right = l.state === "pending" ? (l.priceCents != null ? '<span class="lp">' + cents(l.priceCents) + "</span>" : '<span class="lp dim">n/a</span>')
         : '<span class="ls ' + esc(l.state) + '">' + word[l.state] + (l.state === "live" && l.priceCents != null ? ' <span class="lp">' + cents(l.priceCents) + "</span>" : "") + "</span>";
       return '<div class="leg"><span class="ld ' + esc(l.state) + '"></span><span class="ln">' + esc(l.side) + (sub ? "<small>" + sub + "</small>" : "") + "</span>" + right + "</div>";
     }).join("") + "</div>";
@@ -982,7 +982,7 @@ const JS = String.raw`
         else if (hit) fact = "<b>" + hit + " of " + n + " hit</b>" + (nextIso ? " · next " + esc(fmtAt(nextIso)) : "");
         else fact = "<b>" + n + " legs</b>" + (nextIso ? " · first tips " + esc(fmtAt(nextIso)) : "");
         // one line under the legs; the why lives behind Details, like every other row
-        const why = st.details ? '<div class="ael-details"><div class="ael-drows">' + positionRows(p) + '<div class="ael-dl">Why</div><div class="ael-dv">' + esc(VN) + "'s combo market has no bids to sell into, so a combo cannot be partly sold the way a single pick can.</div>" + '<div class="ael-dl">Last pick</div><div class="ael-dv">Protecting the last open pick on its own is a separate step; it is not on this page yet.</div></div></div>' : "";
+        const why = st.details ? '<div class="ael-details"><div class="ael-drows">' + positionRows(p) + '<div class="ael-dl">Why</div><div class="ael-dv">' + esc(VN) + "'s combo market has no bids to sell into, so a combo cannot be partly sold the way a single pick can.</div>" + '<div class="ael-dl">Last pick</div><div class="ael-dv">Locking in the last open pick on its own is a separate step; it is not on this page yet.</div></div></div>' : "";
         return '<div class="ael-box">' + lineHtml("off", esc(w[0]), fact, st.open, "parlay") + (st.open && n ? '<div class="ael-panel ael-on">' + legsHtml(p) + '<div class="ael-offer-acts ael-tight"><span class="ael-fine">Rides to settlement on ' + esc(VN) + '.</span><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" + why + DISCLOSE + "</div>" : "") + "</div>";
       }
       return '<div class="ael-box">' + lineHtml("off", esc(w[0]), esc(w[1]), false, w[2]) + "</div>";
@@ -993,7 +993,7 @@ const JS = String.raw`
       panel = st.open ? '<div class="ael-panel ael-on">' + detailsHtml(p, st, true) + DISCLOSE + "</div>" : "";
     } else if (lock) {
       const ms = lock.memberSale || {};
-      line = lineHtml("on", "Protected", "<b>" + usd(lock.floorTotalCents) + "</b> or <b>" + usd(lock.capTotalCents) + "</b>" + '<span class="ael-dim"> · locked</span>', st.open);
+      line = lineHtml("on", "Locked in", "<b>" + usd(lock.floorTotalCents) + "</b> or <b>" + usd(lock.capTotalCents) + "</b>", st.open);
       if (st.open) {
         const meta = ["Locked " + esc(fmtAt(lock.at))];
         if (st.justNow && st.ms) meta.push("sold " + (st.ms < 100 ? "at once" : "in " + (st.ms / 1000).toFixed(1) + "s"));
@@ -1010,7 +1010,7 @@ const JS = String.raw`
     } else if (st.closedNow && !(st.quote && st.quote.ok)) {
       // the row closes on the leave; this line holds the receipt until the fresh offer takes its place
       const c = st.closedNow;
-      line = lineHtml("off", "Unprotected", "Bought back " + c.contracts + " at " + cents(c.avgPriceCents) + " · net <b>" + signed(c.netCents) + "</b>", false);
+      line = lineHtml("off", "Not locked", "Bought back " + c.contracts + " at " + cents(c.avgPriceCents) + " · net <b>" + signed(c.netCents) + "</b>", false);
     } else if (timing(p) && !(st.quote && st.quote.ok)) {
       const w = timing(p);
       line = lineHtml("off", w[0], esc(w[1]), false, w[2]);
@@ -1184,7 +1184,7 @@ const JS = String.raw`
     const b = a.balance || {};
     const pulse = Date.now() - S.pulse < 2000 ? " pulse" : "";
     const delta = S.delta && Date.now() - S.delta.at < 6000 ? '<span class="delta' + (S.delta.cents < 0 ? " neg" : "") + '">' + signed(S.delta.cents) + "</span>" : "";
-    return '<div class="bal">' + who + '<span class="fig' + pulse + '">' + esc(VN) + ' balance <b id="bal-fig">' + (b.accountCents != null ? usd(b.accountCents) : "—") + "</b>" + delta + "</span>" + (b.availableCents != null && b.availableCents !== b.accountCents ? '<span class="av">available ' + usd(b.availableCents) + "</span>" : "") + '<span class="r" id="bal-at"></span></div>';
+    return '<div class="bal">' + who + '<span class="fig' + pulse + '">' + esc(VN) + ' balance <b id="bal-fig">' + (b.accountCents != null ? usd(b.accountCents) : "n/a") + "</b>" + delta + "</span>" + (b.availableCents != null && b.availableCents !== b.accountCents ? '<span class="av">available ' + usd(b.availableCents) + "</span>" : "") + '<span class="r" id="bal-at"></span></div>';
   };
   const stampBalance = () => { const a = document.getElementById("bal-at"); if (a) a.textContent = S.acctAt ? "updated " + ago(S.acctAt) : ""; };
   const paintBalance = () => { const el = document.getElementById("bal"); if (el && setHtml(el, balanceHtml())) { const rc = document.getElementById("reconnect"); if (rc) rc.onclick = () => void connect(); } stampBalance(); };
@@ -1205,7 +1205,7 @@ const JS = String.raw`
   const TSTEPS = '<ol class="tsteps"><li><span><b>Buy a side</b> on ' + esc(VN) + "</span></li><li><span><b>Tap Lock in</b> here</span></li><li><span><b>Keep the floor</b>, win or lose</span></li></ol>";
   const skeleton = (n) => { let h = ""; for (let i = 0; i < n; i++) h += '<div class="skrow"><div class="sk a"></div><div class="sk b"></div><div class="sk c"></div></div>'; return h; };
   const portfolioScaffold = () => {
-    main.innerHTML = "<h1>Portfolio</h1>" + '<div id="bal"></div><div id="notes"></div><div id="grp-live" class="rows"></div><h2 class="grp" id="grp-rest-h" hidden>Not protectable</h2><div id="grp-rest" class="rows"></div><div id="empty"></div><div class="status" id="pos-at"></div>';
+    main.innerHTML = "<h1>Portfolio</h1>" + '<div id="bal"></div><div id="notes"></div><div id="grp-live" class="rows"></div><h2 class="grp" id="grp-rest-h" hidden>Cannot be locked in</h2><div id="grp-rest" class="rows"></div><div id="empty"></div><div class="status" id="pos-at"></div>';
     paintBalance();
   };
   const syncPortfolio = () => {
@@ -1266,7 +1266,7 @@ const JS = String.raw`
     const shownDays = S.gAll || days.length <= 2 ? days : days.slice(0, 2);
     const hidden = games.filter((g) => !shownDays.includes(g.day)).length;
     const dayItems = shownDays.map((d) => ({ day: d, games: games.filter((g) => g.day === d) }));
-    if (!games.length) { setHtml(glist, '<div class="empty">' + (all.length ? "Nothing here under this filter." : "Nothing protectable on " + esc(VN) + " right now. Games appear here once both " + esc(VN) + " and this service list them.") + "</div>"); setHtml(document.getElementById("gmore"), ""); return; }
+    if (!games.length) { setHtml(glist, '<div class="empty">' + (all.length ? "Nothing here under this filter." : "Nothing to lock in on " + esc(VN) + " right now. Games appear here once both " + esc(VN) + " and this service list them.") + "</div>"); setHtml(document.getElementById("gmore"), ""); return; }
     if (glist.firstChild && glist.firstChild.className !== "day") glist.innerHTML = "";
     syncList(glist, dayItems, (d) => d.day, "day", (el, d) => {
       if (!el.firstChild) el.innerHTML = '<div class="day-h"></div><div class="dgames"></div>';
@@ -1296,7 +1296,7 @@ const JS = String.raw`
     if (r.status === "settled") { const won = r.result === "yes" || r.result === "win"; return ["Settled", nick + (won ? " won · " : " lost · ") + "<b>" + usd(won ? (r.capTotalCents || r.protectedCents || 0) : (r.floorTotalCents || r.protectedCents || 0)) + "</b> all in", won ? "on" : "off"]; }
     if (r.status === "closed") { const bb = r.memberBuyBack; return ["Left early", "net <b>" + signed(r.closeNetCents || 0) + "</b>" + (bb ? " · bought back " + bb.boughtContracts + " at " + cents(bb.avgPriceCents) : ""), "off"]; }
     if (r.status === "void") return ["Void", "the game was called off; the sale stands, the riding contracts were settled by " + VN, "off"];
-    return ["Protected", "<b>" + usd(r.floorTotalCents || 0) + "</b> or <b>" + usd(r.capTotalCents || 0) + "</b>", "on"];
+    return ["Locked in", "<b>" + usd(r.floorTotalCents || 0) + "</b> or <b>" + usd(r.capTotalCents || 0) + "</b>", "on"];
   };
   const histKey = (r) => "h:" + r.ticker + ":" + r.at;
   const historyScaffold = () => { main.innerHTML = "<h1>History</h1>" + '<div id="htally"></div><div id="hlist" class="rows"></div><div id="hempty"></div>'; };

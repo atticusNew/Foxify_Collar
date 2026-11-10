@@ -920,7 +920,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     const setCookie = page.headers.get("set-cookie") ?? "";
     assert.match(setCookie, /^ael_member=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=\d+; HttpOnly; SameSite=Lax(; Secure)?$/, "HttpOnly, Lax; Secure only behind https");
     const html = await page.text();
-    assert.ok(html.includes("Lock in · STX positions") && html.includes('<div class="ael-disclose">Protection by Atticus') && html.includes(".ael-disclose { font-size: 11px; color: var(--ael-dim); text-align: center;") && html.includes('"venueName":"STX"'), "the page's words");
+    assert.ok(html.includes("Lock in · STX positions") && html.includes('<div class="ael-disclose">Lock in by Atticus') && html.includes(".ael-disclose { font-size: 11px; color: var(--ael-dim); text-align: center;") && html.includes('"venueName":"STX"'), "the page's words");
     assert.ok(!html.includes("lock-key-") && !html.includes("stxapp_") && !html.includes("op-secret"), "no key of any kind on the page");
     // the row's figures (contracts, sold, average, a parlay's multiplier) and the lock window are the first Details rows, not chips at
     // the top of the open panel pushing the offer down; the header is club, game, pays; a combo's legs sit under the button
@@ -937,7 +937,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.ok(html.includes("const isLive = (p) => { if (!S.inPlay || !p.ticker) return false;") && html.includes('case "market_suspended": return ["Paused"') && html.includes("Live price · never less than shown"), "the page knows the in-play words");
     // the word budget: one line under a parlay's legs with the why under Details; Games is a heading, one line and a ? for bid and floor; the group header is two words
     assert.ok(html.includes("Rides to settlement on ' + esc(VN) + '.</span>") && html.includes('<div class="ael-dl">Why</div>') && !html.includes("Last-leg protection through this service is a separate step"), "a parlay's panel is one line, the why behind Details");
-    assert.ok(html.includes("It lands here with its Lock in line.</p>") && html.includes('id="g-help" aria-expanded="false" aria-label="What bid and floor mean">\' + INFO + "</button>') && html.includes('id="g-help-p" hidden><b>Bid</b> is') && html.includes(">Not protectable</h2>"), "Games is one line with an i");
+    assert.ok(html.includes("It lands here with its Lock in line.</p>") && html.includes('id="g-help" aria-expanded="false" aria-label="What bid and floor mean">\' + INFO + "</button>') && html.includes('id="g-help-p" hidden><b>Bid</b> is') && html.includes(">Cannot be locked in</h2>"), "Games is one line with an i");
     assert.ok(html.includes('[["held", "Portfolio"]]') && html.includes("data-tab=\"portfolio\">' + TICK + \"Held</a>\"") && html.includes(".side .buy, .side .have { order: 3; flex: none; margin-left: auto; }") && html.includes(".gbar { flex-wrap: nowrap; overflow-x: auto;"), "short pills; the tile's action on the first row, the filter bar one row");
     assert.ok(html.includes("Leave early buys it back any time before it settles.") && html.includes('isLive(p) ? " · live price, never more than shown"'), "leaving stands during the game");
     assert.ok(html.includes('let pickedTier = "wide";') && html.includes("tier: pickedTier,") && !html.includes("ael_tier"), "every row opens on Max upside; nothing remembered across visits");
