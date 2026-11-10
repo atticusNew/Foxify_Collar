@@ -1,0 +1,177 @@
+name: Event services health check
+
+# WHAT IT IS. Every 15 minutes this asks each event service for /healthz and
+# fails, naming the ones that did not answer 200. The job summary lists every
+# service's status code and response time. Nothing is sent but a public GET: no
+# secret is used and none is needed.
+#
+# WHICH SERVICES. The names come from render-event-demos.yaml as it stands on
+# the event branch (cursor/tier2-cross-venue-2bfa), read at run time, so a
+# service added to the blueprint is watched without touching this file. Each is
+# checked at https://<service-name>.onrender.com/healthz. Names on SKIP_SERVICES
+# below are left out.
+#
+#   variable EVENT_HEALTH_URLS   optional. Health URLs to check instead, space
+#                                or newline separated. A bare host such as
+#                                https://example.onrender.com means its
+#                                /healthz. When set, the blueprint and the skip
+#                                list are not used.
+#
+# A 503 IS RETRIED, NOT FAILED AT ONCE. The two demos answer 503 on /healthz
+# for up to 60 seconds after a start, until their first scan lands (the warm
+# gate in eventProtectXDemoService.ts and eventProtectDemoService.ts). A
+# service that does not answer 200 is asked twice more, 45 seconds apart, which
+# outlasts that window; only then is it reported.
+#
+# WHO HEARS ABOUT A FAILURE. GitHub emails the failed run to whoever last
+# changed this workflow's schedule (its rule for scheduled workflows), if that
+# person has Actions failure notifications on. It does not email every watcher
+# of the repository. A manual run notifies the person who started it.
+#
+# COST. A private repository is billed for Actions minutes and every run counts
+# as at least one: every 15 minutes is about 2,900 minutes a month. Widen the
+# cron if that is more than the plan includes.
+#
+# CAVEAT: THE SCHEDULE NEEDS THE DEFAULT BRANCH. GitHub runs `schedule`
+# triggers only from the repository's default branch. The default branch is
+# currently cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425, not the event
+# branch. Until the default branch is changed to cursor/tier2-cross-venue-2bfa,
+# or this file is also merged to the default branch, only the manual run
+# (Actions > Event services health check > Run workflow) works.
+
+on:
+  schedule:
+    # Minutes 7, 22, 37 and 52: off the quarter hours, when GitHub's queue is longest.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: event-uptime
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  healthz:
+    name: Ask every service for /healthz
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      EVENT_HEALTH_URLS: ${{ vars.EVENT_HEALTH_URLS }}
+      # Left out of the default list. Take a name off to watch it again.
+      #   atticus-event-demo-btc         suspended by the founder; a suspended Render
+      #   atticus-pm-clob-egress-proxy   service answers 503 on every path.
+      #   atticus-sports-venues          no service answers at this host as of
+      #                                  10 November 2026 (Render says no-server):
+      #                                  it is in the blueprint but not deployed
+      #                                  under this name. Once it is, take it off;
+      #                                  if its host differs, use EVENT_HEALTH_URLS.
+      SKIP_SERVICES: atticus-event-demo-btc atticus-pm-clob-egress-proxy atticus-sports-venues
+      # Three asks in all, with this pause between them (see the 503 note above).
+      RETRY_PAUSE_SECONDS: "45"
+
+    steps:
+      - name: Read the blueprint from the event branch
+        if: vars.EVENT_HEALTH_URLS == ''
+        uses: actions/checkout@v5
+        with:
+          ref: cursor/tier2-cross-venue-2bfa
+          sparse-checkout: render-event-demos.yaml
+          sparse-checkout-cone-mode: false
+
+      - name: Check /healthz
+        run: |
+          set -euo pipefail
+          # No filename expansion: a URL with a ? in it must stay as written.
+          set -f
+
+          urls=()
+          if [ -n "${EVENT_HEALTH_URLS//[[:space:]]/}" ]; then
+            for entry in $EVENT_HEALTH_URLS; do
+              case "$entry" in
+                http://* | https://*) ;;
+                *)
+                  echo "::error::EVENT_HEALTH_URLS holds something that is not a URL: ${entry}"
+                  exit 1
+                  ;;
+              esac
+              if [[ "$entry" =~ ^https?://[^/]+/?$ ]]; then
+                entry="${entry%/}/healthz"
+              fi
+              urls+=("$entry")
+            done
+          else
+            # A service's name sits at four spaces in the blueprint; a disk's name sits deeper.
+            names="$(sed -n -E 's/^    name:[[:space:]]*([^[:space:]#]+).*$/\1/p' render-event-demos.yaml)"
+            for name in $names; do
+              if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+                echo "::error::render-event-demos.yaml has a service name this check cannot turn into a host: ${name}"
+                exit 1
+              fi
+              case " ${SKIP_SERVICES} " in
+                *" ${name} "*) continue ;;
+              esac
+              urls+=("https://${name}.onrender.com/healthz")
+            done
+          fi
+          if [ "${#urls[@]}" -eq 0 ]; then
+            echo "::error::Nothing to check: render-event-demos.yaml gave no service name outside SKIP_SERVICES, and EVENT_HEALTH_URLS is empty."
+            exit 1
+          fi
+
+          declare -A code seconds asks
+          pending=("${urls[@]}")
+          for attempt in 1 2 3; do
+            failed=()
+            for url in "${pending[@]}"; do
+              # curl prints 000 for the status when there was no answer at all.
+              result="$(curl --silent --output /dev/null --connect-timeout 10 --max-time 20 \
+                --write-out '%{http_code} %{time_total}' "$url" || true)"
+              code[$url]="${result%% *}"
+              seconds[$url]="${result##* }"
+              asks[$url]="$attempt"
+              echo "ask ${attempt}: ${code[$url]} in ${seconds[$url]}s  ${url}"
+              if [ "${code[$url]}" != "200" ]; then
+                failed+=("$url")
+              fi
+            done
+            if [ "${#failed[@]}" -eq 0 ]; then
+              pending=()
+              break
+            fi
+            pending=("${failed[@]}")
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$RETRY_PAUSE_SECONDS"
+            fi
+          done
+
+          {
+            echo "### Event services health, $(date -u '+%F %H:%M') UTC"
+            echo
+            echo "| Health URL | Status | Seconds | Asks |"
+            echo "| --- | ---: | ---: | ---: |"
+            for url in "${urls[@]}"; do
+              status="${code[$url]}"
+              if [ "$status" = "000" ]; then
+                status="no answer"
+              fi
+              echo "| ${url} | ${status} | ${seconds[$url]} | ${asks[$url]} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${#pending[@]}" -gt 0 ]; then
+            for url in "${pending[@]}"; do
+              if [ "${code[$url]}" = "000" ]; then
+                echo "::error title=No 200 from /healthz::${url} did not answer in ${asks[$url]} asks."
+              else
+                echo "::error title=No 200 from /healthz::${url} answered ${code[$url]} after ${asks[$url]} asks."
+              fi
+            done
+            exit 1
+          fi
+          echo "All ${#urls[@]} answered 200."
