@@ -104,7 +104,7 @@ test("Polymarket US listing: a contract opened at its window start (15-minute) o
 });
 
 test("Kalshi orderbook: the top of book is the highest Yes bid and 100 minus the highest No bid, with their sizes; an empty side reads as the listing does; no venue stamp", async () => {
-  const body = { orderbook_fp: { yes_dollars: [["0.5700", "40.00"], ["0.5900", "11633.17"], ["0.5800", "324.86"]], no_dollars: [["0.3800", "900.00"], ["0.4000", "4114.29"]] } };
+  const body: Parameters<typeof topOfBookFromOrderbook>[0] = { orderbook_fp: { yes_dollars: [["0.5700", "40.00"], ["0.5900", "11633.17"], ["0.5800", "324.86"]], no_dollars: [["0.3800", "900.00"], ["0.4000", "4114.29"]] } };
   assert.deepEqual(topOfBookFromOrderbook(body), { bidCents: 59, askCents: 60, bidQty: 11633.17, askQty: 4114.29 });
   assert.deepEqual(topOfBookFromOrderbook({ orderbook_fp: { yes_dollars: [["0.9990", "644283.03"]], no_dollars: [] } }), { bidCents: 99.9, askCents: 100, bidQty: 644283.03, askQty: 0 }, "no offers: the ask is 100, as the market list prints 1.0000");
   assert.deepEqual(topOfBookFromOrderbook({ orderbook_fp: { yes_dollars: null, no_dollars: [["0.0140", "378.77"]] } }), { bidCents: 0, askCents: 98.6, bidQty: 0, askQty: 378.77 });

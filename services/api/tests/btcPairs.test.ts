@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BOOK_NOT_SERVED_YET_MS, bandOf, bookFailureOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, horizonSet, kalshiEventTicker, legReadOf, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
+import { BOOK_NOT_SERVED_YET_MS, STALE_AFTER_SEC, bandOf, bookFailureOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, freshnessOf, horizonSet, kalshiEventTicker, legReadOf, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, staleBoundsFrom, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
 import { pickLabel, readLine, renderPairsBody, renderPairsHtml } from "../src/btcCurve/pairsHtml";
 import type { Ladder, VenueQuote } from "../src/btcCurve/types";
 
@@ -405,6 +405,100 @@ test("read age: three clocks kept apart (our fetch, the venue's cache, the venue
   assert.equal(horizonSet("hourly", stamped, null, 74812, NOW, new Map(), urls)?.pairs[1].kalshi?.read?.fetchAgeSec, 0.5, "which defaults to the cycle's own time");
 });
 
+/** A quote as the collector leaves it after reading its book: fetched `fetchAgeSec` before NOW, from a copy the venue's cache had held `cacheAgeSec`. */
+function readAt(quote: VenueQuote, fetchAgeSec: number, cacheAgeSec: number | null = null, stampAgeSec: number | null = null): VenueQuote {
+  return { ...quote, read: { fetchedAtMs: NOW - fetchAgeSec * 1000, cacheAgeSec, venueAtMs: stampAgeSec === null ? null : NOW - stampAgeSec * 1000, state: null } };
+}
+
+/** The $250 ladder with every book read a second ago; `polyCache` is how long Polymarket US's cache had held each strike's copy. */
+function readLadder(polyCache: Partial<Record<number, number>> = {}, cross: number | null = null): Ladder {
+  const l = ladder();
+  return {
+    ...l,
+    quotes: l.quotes.map((x) => {
+      const strike = Number(x.bucketKey.split(":")[1]);
+      if (x.venue === "kalshi") return readAt(strike === cross ? { ...x, bidCents: x.bidCents + 8, askCents: x.askCents + 8 } : x, 1);
+      return readAt(x, 1, polyCache[strike] ?? 4, (polyCache[strike] ?? 4) + 1);
+    }),
+  };
+}
+
+test("stale bounds: 15 seconds on the 15-minute window, 30 on the hourly and daily, overridable per tenor; a read is stale when either copy is older than the bound", () => {
+  assert.deepEqual(STALE_AFTER_SEC, { fifteen: 15, hourly: 30, daily: 30 });
+  assert.deepEqual(staleBoundsFrom(undefined), { fifteen: 15, hourly: 30, daily: 30 });
+  assert.deepEqual(staleBoundsFrom(""), { fifteen: 15, hourly: 30, daily: 30 });
+  assert.deepEqual(staleBoundsFrom("15m=20,1h=45,1d=60"), { fifteen: 20, hourly: 45, daily: 60 });
+  assert.deepEqual(staleBoundsFrom(" 1D = 90 , fifteen=12.5 "), { fifteen: 12.5, hourly: 30, daily: 90 }, "any subset, either spelling, spaces forgiven");
+  assert.deepEqual(staleBoundsFrom("15m=0,1h=-5,1d=soon,2h=10,nonsense,15m="), { fifteen: 15, hourly: 30, daily: 30 }, "what does not read as a tenor and a positive number is ignored");
+  assert.deepEqual(STALE_AFTER_SEC, { fifteen: 15, hourly: 30, daily: 30 }, "the defaults are not written through");
+
+  assert.equal(freshnessOf(1, 14.9, 15), "fresh");
+  assert.equal(freshnessOf(1, 15, 15), "fresh", "at the bound is not over it");
+  assert.equal(freshnessOf(1, 15.1, 15), "stale");
+  assert.equal(freshnessOf(16, 2, 15), "stale", "either side");
+  assert.equal(freshnessOf(1, 29, 30), "fresh");
+  assert.equal(freshnessOf(null, 2, 15), null, "one venue absent: nothing to judge");
+  assert.equal(freshnessOf(2, undefined, 15), null);
+});
+
+test("a gap on a stale read is tagged, not counted: both books still show, the gap stays out of the window, the row is not the default pick and sorts after every row that can be judged", () => {
+  // Polymarket US's copy of the at-the-money strike had been in its cache 31 seconds; Kalshi there sits 8 cents higher, which reads as a lock
+  const history: GapHistory = new Map();
+  const l = readLadder({ 74750: 31 }, 74750);
+  const s = horizonSet("hourly", l, "poly:btc-above-day-2026-11-09:range:2026-11-09", 74812, NOW, history, urls, { volPct: 50 });
+  assert.ok(s);
+  assert.equal(s.staleAfterSec, 30);
+  const [below, atm, above] = s.pairs;
+  assert.equal(atm.poly?.read?.ageSec, 32, "one second since we read it plus 31 in the venue's cache");
+  assert.equal(atm.freshness, "stale");
+  assert.equal(atm.staleAfterSec, 30);
+  assert.equal(below.freshness, "fresh");
+  assert.equal(above.freshness, "fresh");
+  // the row is whole: both books, the gap, the lock and the score are all there to read
+  assert.ok(atm.kalshi && atm.poly && atm.twoSided);
+  assert.equal(atm.gapCents, 8.5);
+  assert.ok(atm.lock && atm.lock.edgeCents > 0, `the stale gap reads as a lock of ${atm.lock?.edgeCents}`);
+  assert.ok(atm.score !== null);
+  assert.match(atm.reading, /mids 8\.5¢ apart · stale read: Poly copy 32s old \(limit 30s\)$/);
+  assert.ok(!atm.reading.includes("cross:"), "a lock on a stale read is not announced as a cross");
+  // not the pick, though its lock is the only one in the tenor
+  assert.ok(s.pick && s.pick !== pairId(atm));
+  const bundle = bundleOf([s]);
+  assert.equal(bundle.length, 3);
+  assert.equal(bundle[2], atm, "after every pair whose read can be judged, whatever its score");
+
+  // persistence: three cycles record three readings for the fresh rows and none for the stale one
+  for (let i = 0; i < 3; i += 1) recordGaps(history, [s], NOW + i * 10_000, 60 * 60_000);
+  assert.equal(history.get(gapHistoryKey(SETTLE, "above:74500"))?.length, 3);
+  assert.equal(history.get(gapHistoryKey(SETTLE, "above:74750")), undefined);
+  assert.equal(atm.persistence, null);
+
+  // the same books a cycle later on a younger copy: fresh, announced, pickable
+  const fresh = horizonSet("hourly", readLadder({ 74750: 12 }, 74750), null, 74812, NOW, new Map(), urls);
+  assert.equal(fresh?.pairs[1].freshness, "fresh");
+  assert.match(fresh?.pairs[1].reading ?? "", /cross: both sides for/);
+
+  // the bound is the tenor's: the same 20-second copy is fresh on the hourly and stale on the 15-minute window
+  assert.equal(horizonSet("hourly", readLadder({ 74750: 20 }), null, 74812, NOW, new Map(), urls)?.pairs[1].freshness, "fresh");
+  const f15 = fifteenLadder();
+  const stale15 = fifteenSet({ ...f15, quotes: f15.quotes.map((x) => readAt(x, 1, x.venue === "kalshi" ? null : 20, 21)) }, null, 73214, NOW, new Map(), urls);
+  assert.equal(stale15?.staleAfterSec, 15);
+  assert.equal(stale15?.pairs[0].freshness, "stale");
+  assert.equal(stale15?.pick, null, "the one row is stale: nothing is sent by default");
+  assert.equal(fifteenSet({ ...f15, quotes: f15.quotes.map((x) => readAt(x, 1, x.venue === "kalshi" ? null : 20, 21)) }, null, 73214, NOW, new Map(), urls, { staleAfterSec: 25 })?.pairs[0].freshness, "fresh", "an overridden bound");
+
+  // a quiet book: the venue's stamp is 80 seconds old on a copy 4 seconds old. The copy is what was priced, so the read is fresh.
+  const quiet = ladder();
+  const quietSet = horizonSet("hourly", { ...quiet, quotes: quiet.quotes.map((x) => (x.venue === "kalshi" ? readAt(x, 1) : readAt(x, 1, 4, 80))) }, null, 74812, NOW, new Map(), urls);
+  assert.equal(quietSet?.pairs[1].poly?.read?.venueAgeSec, 80);
+  assert.equal(quietSet?.pairs[1].freshness, "fresh");
+  // Kalshi's read alone can make a row stale (a slow cycle)
+  const slow = ladder();
+  assert.equal(horizonSet("hourly", { ...slow, quotes: slow.quotes.map((x) => (x.venue === "kalshi" ? readAt(x, 31) : readAt(x, 1, 4, 5))) }, null, 74812, NOW, new Map(), urls)?.pairs[1].reading.endsWith("stale read: Kalshi copy 31s old (limit 30s)"), true);
+  // quotes that carry no read (fixtures, a venue standing alone) are not judged and lose nothing
+  assert.equal(horizonSet("hourly", ladder(), null, 74812, NOW, new Map(), urls)?.pairs[1].freshness, null);
+});
+
 test("helpers: the Kalshi event ticker and the Polymarket US event slug come out of the ids", () => {
   assert.equal(kalshiEventTicker("KXBTCD-26NOV0917-T74499.99"), "KXBTCD-26NOV0917");
   assert.equal(kalshiEventTicker("KXBTCD"), "KXBTCD");
@@ -421,6 +515,7 @@ test("page: the bundle, both tables, the lock arithmetic, the links, the refresh
   const regime = regimeOf(prints(20, 400), NOW);
   const d: PairsReport = {
     at: new Date(NOW).toISOString(),
+    pricedAt: new Date(NOW).toISOString(),
     spotUsd: 74812,
     spotSource: "BRTI",
     intervalSec: 10,
@@ -431,7 +526,9 @@ test("page: the bundle, both tables, the lock arithmetic, the links, the refresh
     daily,
     regime,
     bundle: bundleOf([fifteen, hourly, daily]),
+    staleAfterSec: STALE_AFTER_SEC,
     health: { kalshi: { ok: true, ms: 40 }, polymarket_us: { ok: false, ms: 20000, detail: "no answer within 20s" } },
+    errors: [],
   };
   const html = renderPairsHtml(d, { token: "abc", base: "/pairs", launchUrl: "https://engine.example/btc", launchMode: "open" });
   for (const needle of [

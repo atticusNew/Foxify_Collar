@@ -61,6 +61,43 @@ export function legReadOf(stamp: BookStamp | undefined, pricedAtMs: number): Leg
   };
 }
 
+export type Freshness = "fresh" | "stale";
+
+/**
+ * Seconds beyond which a book copy is too old for its gap to be read as a quoting difference.
+ * A judgment from what was measured on 10 November 2026, not a venue constant: Polymarket US
+ * serves its public book through a cache that holds each copy up to 30 seconds, and in a
+ * 90-second sample of the live 15-minute window Kalshi's top of book changed five times while
+ * that copy changed twice, trailing by 3 to 4 cents in between. Fifteen seconds on the
+ * 15-minute window keeps the younger half of those copies; thirty on the hourly and daily,
+ * which move less per second, keeps a whole cache life. `BTC_PAIRS_STALE_SECONDS` overrides.
+ */
+export const STALE_AFTER_SEC: Readonly<Record<Horizon, number>> = { fifteen: 15, hourly: 30, daily: 30 };
+
+const STALE_KEYS: Record<string, Horizon> = { "15m": "fifteen", fifteen: "fifteen", "1h": "hourly", hourly: "hourly", "1d": "daily", daily: "daily" };
+
+/** `15m=15,1h=30,1d=30` (any subset, any order) over the defaults; entries that do not read as a tenor and a positive number are ignored. Exported for tests. */
+export function staleBoundsFrom(spec: string | undefined | null, base: Readonly<Record<Horizon, number>> = STALE_AFTER_SEC): Record<Horizon, number> {
+  const out = { ...base };
+  for (const part of (spec ?? "").split(",")) {
+    const [k, v] = part.split("=").map((x) => x.trim().toLowerCase());
+    const horizon = STALE_KEYS[k];
+    const n = Number(v);
+    if (horizon && v !== "" && Number.isFinite(n) && n > 0) out[horizon] = n;
+  }
+  return out;
+}
+
+/**
+ * Fresh or stale from the two copies' ages against the tenor's bound: stale when either is
+ * older than the bound. Null when either age is unknown (a venue absent, or a quote that did
+ * not come from a book read): there is nothing to judge. Exported for tests.
+ */
+export function freshnessOf(kalshiAgeSec: number | null | undefined, polyAgeSec: number | null | undefined, staleAfterSec: number): Freshness | null {
+  if (kalshiAgeSec === null || kalshiAgeSec === undefined || polyAgeSec === null || polyAgeSec === undefined) return null;
+  return kalshiAgeSec > staleAfterSec || polyAgeSec > staleAfterSec ? "stale" : "fresh";
+}
+
 export interface PairLeg {
   venue: Venue;
   /** the venue's own id (Kalshi ticker / Polymarket US market slug) */
@@ -189,6 +226,15 @@ export interface StrikePair {
    * so the row has no gap, no lock and no score, and it is never the tenor's pick.
    */
   errors: BookFailure[];
+  /**
+   * Whether the two books were read recently enough for the gap and the lock to mean anything:
+   * stale when either copy's age (`read.ageSec`) is over `staleAfterSec`. A stale row still shows
+   * both books; its gap is not added to the persistence window, it is not the tenor's default
+   * pick, and it breaks a lock episode. Null when a venue is absent or carries no read time.
+   */
+  freshness: Freshness | null;
+  /** the bound this row was judged against, seconds */
+  staleAfterSec: number;
 }
 
 /** One leg of a band: Yes at the lower strike or No at the upper, on the venue that sells it cheapest. */
@@ -262,8 +308,10 @@ export interface HorizonSet {
   bands: Band[];
   /** one standard deviation of BRTI to the close at the trailing realized vol, USD; null without a vol */
   sigmaUsd: number | null;
-  /** the id the tenor's Launch button sends by default: the cleanest scored pair, else the money */
+  /** the id the tenor's Launch button sends by default: the cleanest scored pair on a read that is not stale, else the money on the same terms, else none */
   pick: string | null;
+  /** seconds beyond which a book copy is stale on this tenor */
+  staleAfterSec: number;
   /** a wider look, mids only: the strikes around the money on both venues */
   context: Array<{ strike: number; kalshiMid: number | null; polyMid: number | null; gapCents: number | null }>;
   venues: { kalshi: boolean; poly: boolean };
@@ -285,8 +333,10 @@ export interface PairsReport {
   hourly: HorizonSet | null;
   daily: HorizonSet | null;
   regime: Regime | null;
-  /** every pair with a score, best first */
+  /** every pair with a score, best first; pairs on a stale read come after every pair that is not */
   bundle: StrikePair[];
+  /** seconds beyond which a book copy is stale, per tenor */
+  staleAfterSec: Record<Horizon, number>;
   health: Record<string, { ok: boolean; ms: number; detail?: string }>;
   /** every book that did not answer this cycle, with the tenor and strike it belongs to; for the operator */
   errors: Array<BookFailure & { horizon: Horizon; strike: number }>;
@@ -421,8 +471,17 @@ function readingOf(p: Omit<StrikePair, "reading">): string {
   if (p.spreadCents !== null) parts.push(p.spreadCents <= 2 ? "tight on both" : p.spreadCents <= 5 ? "spreads add to " + p.spreadCents.toFixed(0) + "¢" : "wide: spreads add to " + p.spreadCents.toFixed(0) + "¢");
   if (p.depth !== null) parts.push(p.depth >= 200 ? "deep" : p.depth >= 50 ? `${Math.round(p.depth)} contracts at the thinnest level` : `thin: ${Math.round(p.depth)} at the thinnest level`);
   if (p.gapCents !== null) parts.push(Math.abs(p.gapCents) < 1 ? "mids agree" : `mids ${Math.abs(p.gapCents).toFixed(1)}¢ apart`);
-  if (p.lock && p.lock.edgeCents > 0) parts.push(`cross: both sides for ${p.lock.costCents.toFixed(2)}¢`);
+  if (p.freshness === "stale") parts.push(staleReading(p));
+  else if (p.lock && p.lock.edgeCents > 0) parts.push(`cross: both sides for ${p.lock.costCents.toFixed(2)}¢`);
   return parts.join(" · ");
+}
+
+/** Which copy is too old, and by how much against the bound. */
+function staleReading(p: Pick<StrikePair, "kalshi" | "poly" | "staleAfterSec">): string {
+  const old = [p.kalshi, p.poly]
+    .filter((l): l is PairLeg => Boolean(l?.read && l.read.ageSec > p.staleAfterSec))
+    .map((l) => `${venueShort(l.venue)} copy ${Math.round((l.read as LegRead).ageSec)}s old`);
+  return `stale read: ${old.join(", ")} (limit ${p.staleAfterSec}s)`;
 }
 
 /** Kalshi's event ticker from a market ticker: `KXBTCD-26NOV0917-T74499.99` to `KXBTCD-26NOV0917`. */
@@ -553,6 +612,8 @@ export interface SetOptions {
   volPct?: number | null;
   /** when the books had been read, ms; read ages are measured to it. Defaults to the cycle's own time. */
   pricedAtMs?: number;
+  /** seconds beyond which a book copy is stale on this tenor; defaults to STALE_AFTER_SEC */
+  staleAfterSec?: number;
 }
 
 /**
@@ -602,6 +663,7 @@ function buildSet(
   const levels = strikeLevels(ladder);
   const secondsToClose = Math.max(0, Math.round((Date.parse(ladder.settlesAt) - nowMs) / 1000));
   const sigmaUsd = sigmaToClose(spotUsd, opts.volPct, secondsToClose / 60);
+  const staleAfterSec = opts.staleAfterSec ?? STALE_AFTER_SEC[horizon];
   const kalshiQuotes = ladder.quotes.filter((q) => q.venue === "kalshi");
   const polyQuotes = ladder.quotes.filter((q) => q.venue === "polymarket_us");
   const kalshiEvent = kalshiQuotes[0] ? kalshiEventTicker(kalshiQuotes[0].id) : null;
@@ -644,6 +706,8 @@ function buildSet(
       score: twoSided ? cleanScore(spread, depth, gap) : null,
       modelCents: modelAbove(spotUsd, strike, sigmaUsd),
       errors,
+      freshness: freshnessOf(kLeg?.read?.ageSec, pLeg?.read?.ageSec, staleAfterSec),
+      staleAfterSec,
     };
     return { ...base, reading: readingOf(base) };
   };
@@ -662,7 +726,9 @@ function buildSet(
           return { strike, kalshiMid: km, polyMid: pm, gapCents: km !== null && pm !== null ? Math.round((km - pm) * 100) / 100 : null };
         })
       : [];
-  const scored = pairs.filter((p) => p.score !== null).sort((a, b) => (b.score as number) - (a.score as number) || (b.lock?.edgeCents ?? -99) - (a.lock?.edgeCents ?? -99));
+  // a row on a stale read or with a book missing is never what Launch sends by default; a row chosen by hand is the trader's call
+  const launchable = (p: StrikePair) => p.freshness !== "stale" && !p.errors.length;
+  const scored = pairs.filter((p) => p.score !== null && launchable(p)).sort((a, b) => (b.score as number) - (a.score as number) || (b.lock?.edgeCents ?? -99) - (a.lock?.edgeCents ?? -99));
   return {
     horizon,
     settlesAt: ladder.settlesAt,
@@ -672,7 +738,8 @@ function buildSet(
     pairs,
     bands,
     sigmaUsd,
-    pick: scored[0] ? pairId(scored[0]) : (money.kalshi || money.poly) && !money.errors.length ? pairId(money) : null,
+    pick: scored[0] ? pairId(scored[0]) : (money.kalshi || money.poly) && launchable(money) ? pairId(money) : null,
+    staleAfterSec,
     context,
     venues: { kalshi: kalshiQuotes.length > 0, poly: polyQuotes.length > 0 },
     kalshiEvent,
@@ -680,23 +747,30 @@ function buildSet(
   };
 }
 
-/** The bundle: every scored pair, best first; ties go to the larger locked edge, then the nearer close. */
+/**
+ * The bundle: every scored pair, best first; ties go to the larger locked edge, then the nearer
+ * close. Pairs on a stale read keep their place in the list but after every pair that is not
+ * stale, so the first entry is the cleanest pair whose read can be judged.
+ */
 export function bundleOf(sets: Array<HorizonSet | null>): StrikePair[] {
+  const stale = (p: StrikePair) => (p.freshness === "stale" ? 1 : 0);
   return sets
     .flatMap((s) => s?.pairs ?? [])
     .filter((p) => p.score !== null)
-    .sort((a, b) => (b.score as number) - (a.score as number) || (b.lock?.edgeCents ?? -99) - (a.lock?.edgeCents ?? -99) || Date.parse(a.settlesAt) - Date.parse(b.settlesAt));
+    .sort((a, b) => stale(a) - stale(b) || (b.score as number) - (a.score as number) || (b.lock?.edgeCents ?? -99) - (a.lock?.edgeCents ?? -99) || Date.parse(a.settlesAt) - Date.parse(b.settlesAt));
 }
 
 /**
  * Append this cycle's gaps to the history, drop readings older than the window, and refresh each
- * pair's persistence so the reading includes this cycle.
+ * pair's persistence so the reading includes this cycle. A gap on a stale read is not appended:
+ * persistence is what separates a quoting difference from latency, so a reading that is itself
+ * latency must not count toward it.
  */
 export function recordGaps(history: GapHistory, sets: Array<HorizonSet | null>, atMs: number, keepMs: number): void {
   for (const s of sets) {
     if (!s) continue;
     for (const p of s.pairs) {
-      if (p.gapCents === null) continue;
+      if (p.gapCents === null || p.freshness === "stale") continue;
       const k = gapHistoryKey(p.settlesAt, p.key);
       const arr = history.get(k) ?? [];
       arr.push([atMs, p.gapCents]);

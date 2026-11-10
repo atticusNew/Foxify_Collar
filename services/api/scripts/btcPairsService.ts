@@ -12,6 +12,8 @@
  *       BTC_PAIRS_DATA_DIR        (default /tmp/btc-pairs; gap history survives a restart)
  *       BTC_PAIRS_TOKEN           (optional; when set the page and JSON need ?k=<token>)
  *       BTC_PAIRS_WINDOW_MIN      (default 120; gap history kept this long)
+ *       BTC_PAIRS_STALE_SECONDS   (default 15m=15,1h=30,1d=30; a book copy older than this many
+ *                                 seconds makes its row a stale read on that tenor)
  *       BTC_PAIRS_LAUNCH_URL      (optional; the engine endpoint the Launch button sends to by default)
  *       BTC_PAIRS_LAUNCH_MODE     (send | open; default send. open hands the pair to the engine URL
  *                                 as query parameters in a new tab instead of a POST)

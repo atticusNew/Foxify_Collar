@@ -7,7 +7,8 @@ import test from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PairsCollector, launchPayload, type PairsCollectorOptions } from "../src/btcCurve/pairsCollector";
+import { readFileSync, readdirSync } from "node:fs";
+import { PairsCollector, launchPayload, pairsCollectorFromEnv, type PairsCollectorOptions } from "../src/btcCurve/pairsCollector";
 
 const KALSHI = "https://api.elections.kalshi.com/trade-api/v2";
 const POLY = "https://gateway.polymarket.us";
@@ -176,11 +177,23 @@ function fake(): Fake {
   };
 }
 
-function collectorOn(f: Fake, opts: PairsCollectorOptions = {}): { c: PairsCollector; logs: string[] } {
+function collectorOn(f: Fake, opts: PairsCollectorOptions = {}): { c: PairsCollector; logs: string[]; dir: string } {
   const logs: string[] = [];
-  const c = new PairsCollector({ dataDir: mkdtempSync(join(tmpdir(), "btc-pairs-cycle-")), fetchImpl: f.fetchImpl, clock: () => (f.now += f.tickMs), log: (line) => logs.push(line), ...opts });
-  return { c, logs };
+  const dir = mkdtempSync(join(tmpdir(), "btc-pairs-cycle-"));
+  const c = new PairsCollector({ dataDir: dir, fetchImpl: f.fetchImpl, clock: () => (f.now += f.tickMs), log: (line) => logs.push(line), ...opts });
+  return { c, logs, dir };
 }
+
+/** One Polymarket US book as its cache serves it: the copy held `cacheAgeSec`, last changed `stampAgeSec` before now. */
+function polyBook(f: Fake, slug: string, bid: number, ask: number, cacheAgeSec: number, stampAgeSec = cacheAgeSec + 1): Answer {
+  const money = (cents: number) => ({ value: (cents / 100).toFixed(4), currency: "USD" });
+  return {
+    body: { marketData: { marketSlug: slug, bids: [{ px: money(bid), qty: "100.0000" }], offers: [{ px: money(ask), qty: "100.0000" }], state: "MARKET_STATE_OPEN", transactTime: new Date(f.now - stampAgeSec * 1000).toISOString() } },
+    headers: { age: String(cacheAgeSec), "cache-control": "public, max-age=30" },
+  };
+}
+
+const kalshiBook = (yesBid: number): Answer => ({ body: { orderbook_fp: { yes_dollars: [[(yesBid / 100).toFixed(4), "100.00"]], no_dollars: [[((100 - yesBid - 1) / 100).toFixed(4), "100.00"]] } } });
 
 function page(c: PairsCollector): string {
   let body = "";
@@ -353,4 +366,83 @@ test("every book carries its read age: our fetch time, the venue's cache age and
   const payload = launchPayload(d, d.hourly?.pairs[1] as NonNullable<typeof d.hourly>["pairs"][number]);
   assert.equal(payload.pair.poly?.read?.cacheAgeSec, 4);
   assert.ok(JSON.stringify(d).includes('"pricedAt"'));
+});
+
+test("a stale read over whole cycles: the 15-minute row on a 22-second copy shows both books and its lock greyed and tagged, is not what Launch sends, and adds nothing to the window until the copy is young again", async () => {
+  const f = fake();
+  const { c, dir } = collectorOn(f);
+  const gapLines = () => readdirSync(dir).filter((n) => n.startsWith("gaps-")).flatMap((n) => readFileSync(join(dir, n), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { rows: Array<[string, string, number]> }));
+  // Kalshi has moved to 58/59; Polymarket US's cache still serves 49/51 from 22 seconds ago. On the page that reads as a lock.
+  f.set(kBookUrl(FIFTEEN_K), kalshiBook(58));
+  f.set(pBookUrl(FIFTEEN_P), polyBook(f, FIFTEEN_P, 49, 51, 22));
+  const d = await c.collectOnce();
+  assert.deepEqual(d.staleAfterSec, { fifteen: 15, hourly: 30, daily: 30 });
+  const row = d.fifteen?.pairs[0];
+  assert.ok(row && row.kalshi && row.poly, "both books are still shown");
+  assert.equal(row.poly.read?.ageSec, 22);
+  assert.equal(row.freshness, "stale");
+  assert.equal(row.gapCents, 8.5);
+  assert.ok(row.lock && row.lock.edgeCents > 0);
+  assert.ok(row.score !== null, "the score is still the score");
+  assert.equal(row.persistence, null, "nothing accrued");
+  assert.equal(d.fifteen?.pick, null);
+  assert.ok(d.hourly?.pairs.every((p) => p.freshness === "fresh"), "the hourly rows are on 4-second copies");
+  assert.ok(d.bundle[0].freshness === "fresh" && d.bundle[d.bundle.length - 1] === row);
+  assert.ok(gapLines().every((l) => l.rows.every((r) => r[1] !== row.key)), "the day file does not take the stale gap");
+
+  const html = page(c);
+  const section = html.slice(html.indexOf('<section data-horizon="fifteen"'), html.indexOf('<section data-horizon="hourly"'));
+  assert.match(section, /data-pick=""/);
+  assert.match(section, /a read older than 15s is stale/);
+  assert.match(section, /<button type="button" class="go" data-horizon="fifteen" disabled>Launch<\/button><span class="picklabel">read too old to judge<\/span>/);
+  assert.match(section, /<td class="stale">\+8\.5¢<span class="tag">stale read<\/span>/, "the gap: greyed and tagged, not coloured as an edge");
+  assert.match(section, /<td class="stale"><b>locks [\d.]+¢<\/b><span class="tag">stale read<\/span>/, "the lock: no green");
+  assert.ok(!section.includes('class="ok">locks'));
+  assert.match(section, /stale read: Poly copy 22s old \(limit 15s\)/);
+  assert.match(section, /22s in the venue&#39;s cache/);
+  assert.match(section, /data-label="[^"]* price to beat · stale read"/);
+  assert.match(section, /<button type="button" class="use" data-id="[^"]+" data-horizon="fifteen"/, "sending it anyway is the trader's call, by hand");
+  assert.ok(!section.includes("cleanest"));
+  const hourly = html.slice(html.indexOf('<section data-horizon="hourly"'));
+  assert.ok(!hourly.includes("stale read</span>"), "no tag on a fresh tenor");
+  assert.match(hourly, /a read older than 30s is stale/);
+
+  // the engine reading the stream or one pair sees the same judgment
+  assert.equal(launchPayload(d, row).pair.freshness, "stale");
+  assert.equal(launchPayload(d, row).pair.staleAfterSec, 15);
+
+  // ten seconds on, the cache has a new copy of the same books: the lock is now on a fresh read
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), polyBook(f, FIFTEEN_P, 49, 51, 3));
+  const d2 = await c.collectOnce();
+  const row2 = d2.fifteen?.pairs[0];
+  assert.equal(row2?.freshness, "fresh");
+  assert.equal(d2.fifteen?.pick, FIFTEEN_K);
+  assert.equal(row2?.persistence, null, "the window starts with this reading; one reading is not yet a history");
+  const section2 = page(c).slice(page(c).indexOf('<section data-horizon="fifteen"'), page(c).indexOf('<section data-horizon="hourly"'));
+  assert.match(section2, /<b class="ok">locks/);
+  assert.ok(!section2.includes("stale read</span>"));
+  assert.ok(!section2.includes('class="use"'), "the one row is the pick again: no use button");
+  assert.ok(gapLines().some((l) => l.rows.some((r) => r[1] === row.key)));
+
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), polyBook(f, FIFTEEN_P, 49, 51, 13));
+  assert.equal((await c.collectOnce()).fifteen?.pairs[0].persistence?.n, 2, "two fresh readings");
+
+  // every scored pair stale: nothing is called cleanest
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), polyBook(f, FIFTEEN_P, 49, 51, 31));
+  for (const s of STRIKES) f.set(pBookUrl(pSlug(s)), polyBook(f, pSlug(s), fair(s) - 1, fair(s) + 1, 31));
+  const d3 = await c.collectOnce();
+  assert.ok(d3.bundle.length > 0 && d3.bundle.every((p) => p.freshness === "stale"));
+  assert.equal(d3.hourly?.pick, null);
+  assert.match(page(c), /Cleanest now <b>–<\/b><small>every two-sided pair is on a stale read<\/small>/);
+  assert.equal(d3.fifteen?.pairs[0].persistence?.n, 2, "still the two fresh readings: the stale one was not added");
+});
+
+test("the stale bounds come from BTC_PAIRS_STALE_SECONDS", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "btc-pairs-env-"));
+  assert.deepEqual(pairsCollectorFromEnv({ BTC_PAIRS_DATA_DIR: dataDir }).staleAfterSec, { fifteen: 15, hourly: 30, daily: 30 });
+  assert.deepEqual(pairsCollectorFromEnv({ BTC_PAIRS_DATA_DIR: dataDir, BTC_PAIRS_STALE_SECONDS: "15m=20,1h=45,1d=60" }).staleAfterSec, { fifteen: 20, hourly: 45, daily: 60 });
+  assert.deepEqual(pairsCollectorFromEnv({ BTC_PAIRS_DATA_DIR: dataDir, BTC_PAIRS_STALE_SECONDS: "1h=40" }).staleAfterSec, { fifteen: 15, hourly: 40, daily: 30 });
 });

@@ -20,7 +20,7 @@ import { BookReadError } from "./bookRead";
 import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_WINDOW_MS, dailyLadderFrom, fetchFeeTheta, fetchOpenMarkets, fifteenLadderFrom, hourlyLadderFrom, kalshiOrderbookUrl, readTopOnce } from "./kalshiLadders";
 import { fetchBrtiCandles, fetchSeriesIdsBySlug, polyBookUrl, readBookOnce, readPolyUsLaddersForSeries } from "./polyUsLadders";
 import { mergeLadders } from "./analytics";
-import { bundleOf, fifteenSet, gapHistoryKey, horizonSet, pairId, recordGaps, regimeOf, reportErrors, selectStrikes, strikeLevels, type Band, type GapHistory, type Horizon, type HorizonSet, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
+import { STALE_AFTER_SEC, bundleOf, fifteenSet, gapHistoryKey, horizonSet, pairId, recordGaps, regimeOf, reportErrors, selectStrikes, staleBoundsFrom, strikeLevels, type Band, type GapHistory, type Horizon, type HorizonSet, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
 import { renderPairsBody, renderPairsHtml } from "./pairsHtml";
 import type { Ladder, VenueQuote } from "./types";
 
@@ -38,6 +38,8 @@ export interface PairsCollectorOptions {
   sourceDeadlineMs?: number;
   /** how long one book may take to answer before its row says it timed out */
   bookTimeoutMs?: number;
+  /** seconds beyond which a book copy is stale, per tenor; defaults to STALE_AFTER_SEC */
+  staleAfterSec?: Partial<Record<Horizon, number>>;
   /** test seam */
   fetchImpl?: typeof fetch;
   /** test seam: our clock, ms */
@@ -94,6 +96,7 @@ export class PairsCollector {
   private readonly windowMs: number;
   private readonly deadlineMs: number;
   private readonly bookTimeoutMs: number;
+  readonly staleAfterSec: Record<Horizon, number>;
   private readonly clock: () => number;
   /** books not answering as of the last cycle, by market id, so the log says it once and once more when it recovers */
   private readonly failing = new Map<string, { what: string; cycles: number; seenInCycle: number }>();
@@ -120,6 +123,7 @@ export class PairsCollector {
     this.windowMs = opts.windowMs ?? 120 * 60_000;
     this.deadlineMs = Math.max(5_000, opts.sourceDeadlineMs ?? 20_000);
     this.bookTimeoutMs = Math.min(this.deadlineMs, Math.max(1, opts.bookTimeoutMs ?? 8_000));
+    this.staleAfterSec = { ...STALE_AFTER_SEC, ...(opts.staleAfterSec ?? {}) };
     this.clock = opts.clock ?? Date.now;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.log = opts.log ?? ((line) => console.log(line));
@@ -297,11 +301,11 @@ export class PairsCollector {
 
     // the books are in: every read age on the page and in the JSON is measured to this moment
     const pricedAtMs = Math.max(nowMs, this.clock());
-    const setOpts = { volPct, pricedAtMs };
+    const setOpts = (h: Horizon) => ({ volPct, pricedAtMs, staleAfterSec: this.staleAfterSec[h] });
     const build = (h: Horizon, l: Ladder | null, polyId: string | null): HorizonSet | null =>
-      l && spotUsd > 0 ? horizonSet(h, l, polyId, spotUsd, nowMs, this.history, this.urls, setOpts) : null;
+      l && spotUsd > 0 ? horizonSet(h, l, polyId, spotUsd, nowMs, this.history, this.urls, setOpts(h)) : null;
     const sets = [
-      fifteen && spotUsd > 0 ? fifteenSet(fifteen, pFifteen?.id ?? null, spotUsd, nowMs, this.history, this.urls, setOpts) : null,
+      fifteen && spotUsd > 0 ? fifteenSet(fifteen, pFifteen?.id ?? null, spotUsd, nowMs, this.history, this.urls, setOpts("fifteen")) : null,
       build("hourly", hourly, pHourly?.id ?? null),
       build("daily", daily, pDaily?.id ?? null),
     ];
@@ -323,6 +327,7 @@ export class PairsCollector {
       daily: sets[2],
       regime,
       bundle: bundleOf(sets),
+      staleAfterSec: this.staleAfterSec,
       health,
       errors: reportErrors(sets),
     };
@@ -369,7 +374,8 @@ export class PairsCollector {
   }
 
   private persistGaps(atMs: number, sets: Array<HorizonSet | null>): void {
-    const rows = sets.flatMap((s) => (s ? s.pairs.filter((p) => p.gapCents !== null).map((p) => [p.settlesAt, p.key, p.gapCents]) : []));
+    // what recordGaps kept, so a restart reloads the same window: gaps on stale reads are not persistence
+    const rows = sets.flatMap((s) => (s ? s.pairs.filter((p) => p.gapCents !== null && p.freshness !== "stale").map((p) => [p.settlesAt, p.key, p.gapCents]) : []));
     if (!rows.length) return;
     try {
       mkdirSync(this.dataDir, { recursive: true });
@@ -516,6 +522,7 @@ export function pairsCollectorFromEnv(env: NodeJS.ProcessEnv = process.env, defa
     launchMode: env.BTC_PAIRS_LAUNCH_MODE === "open" ? "open" : "send",
     sourceDeadlineMs: Number(env.BTC_PAIRS_SOURCE_DEADLINE_MS || 20_000),
     bookTimeoutMs: Number(env.EVENT_FETCH_TIMEOUT_MS || 8_000),
+    staleAfterSec: staleBoundsFrom(env.BTC_PAIRS_STALE_SECONDS),
   });
 }
 
