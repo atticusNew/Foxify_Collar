@@ -50,7 +50,9 @@ export type ShadowAlertKind =
   /** a lock attempt's pending line has no resolution: the process stopped between the order and the record */
   | "lock_pending_unresolved"
   /** a market settled under rule text whose hash differs from the one pinned at open */
-  | "rule_changed";
+  | "rule_changed"
+  /** the daily check found our ledger and a venue's own fills apart for a day (realizedRecon.ts) */
+  | "venue_fills_differ";
 
 export interface ShadowAlert {
   kind: ShadowAlertKind;
@@ -124,8 +126,8 @@ export function buildShadowAlerter(
   return async (alert) => {
     const t = now();
     const prev = lastSentMs.get(alert.kind);
-    // a stray hedge is one order on one venue, not a condition that persists: every one is sent
-    if (alert.kind !== "hedge_stray" && prev != null && t - prev < cfg.dedupeMs) return;
+    // a stray hedge is one order on one venue, and a day that differs is one day's check: neither is a condition that persists, and every one is sent
+    if (alert.kind !== "hedge_stray" && alert.kind !== "venue_fills_differ" && prev != null && t - prev < cfg.dedupeMs) return;
     lastSentMs.set(alert.kind, t);
     if (alert.kind === "scan_recovered") lastSentMs.delete("scan_failing");
     if (alert.kind === "scan_failing") lastSentMs.delete("scan_recovered");

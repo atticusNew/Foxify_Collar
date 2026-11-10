@@ -145,6 +145,10 @@ test("shadow alerts: alerter dedupes per kind, posts to both sinks, swallows sin
   await alerter({ kind: "hedge_stray", message: "5 of 13 filled, no lock" });
   await alerter({ kind: "hedge_stray", message: "order not confirmed, no lock" });
   assert.equal(calls.length, 14);
+  // a day whose fills differ is one day's check: two days checked in the same hour are two pages
+  await alerter({ kind: "venue_fills_differ", message: "our ledger and the venue's own fills differ for 2026-11-03 (UTC)" });
+  await alerter({ kind: "venue_fills_differ", message: "our ledger and the venue's own fills differ for 2026-11-04 (UTC)" });
+  assert.equal(calls.length, 18);
 });
 
 const OPEN: ShadowOpenRecord = {
