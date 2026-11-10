@@ -82,6 +82,11 @@ export interface CrossPricerInputs {
   hedgeOn?: HedgeOn;
 }
 
+/** The configured venue fee on a hedge's notional: the flat buffer plus the bps, rounded up against the credit. */
+export function hedgeNotionalFeeCents(costCents: number, cfg: Pick<CrossSearchConfig, "hedgeFeeBps" | "hedgeFeeFlatCents">): number {
+  return cfg.hedgeFeeFlatCents + Math.ceil((costCents * cfg.hedgeFeeBps) / 10_000);
+}
+
 /**
  * Walk ask levels (best-first) for sharesMilli; exact micro-dollar cost.
  * Null when the visible book cannot fill the size.
@@ -196,8 +201,7 @@ export function quoteCrossWrap(inputs: CrossPricerInputs): CrossQuoteResult {
       const walk = walkPmAsks(noBook.asks, sharesMilli);
       if (!walk) return { ok: false };
       const hedgeCostCents = Math.ceil(walk.costMicroUsd / 10_000);
-      const feesCents =
-        cfg.hedgeFeeFlatCents + Math.ceil((hedgeCostCents * cfg.hedgeFeeBps) / 10_000);
+      const feesCents = hedgeNotionalFeeCents(hedgeCostCents, cfg);
       return { ok: true, costCents: hedgeCostCents, feesCents, hedge: legFor(walk, sharesMilli, hedgeCostCents) };
     },
   });
