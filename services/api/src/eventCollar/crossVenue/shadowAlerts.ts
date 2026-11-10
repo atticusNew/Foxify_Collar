@@ -43,6 +43,10 @@ export type ShadowAlertKind =
   | "settle_failing"
   | "position_voided"
   | "ledger_write_failed"
+  /** a real hedge order left (or may have left) fill on a venue with no lock written behind it (hedgeFirst.ts) */
+  | "hedge_stray"
+  /** a lock attempt's pending line has no resolution: the process stopped between the order and the record */
+  | "lock_pending_unresolved"
   /** a market settled under rule text whose hash differs from the one pinned at open */
   | "rule_changed";
 
@@ -118,7 +122,8 @@ export function buildShadowAlerter(
   return async (alert) => {
     const t = now();
     const prev = lastSentMs.get(alert.kind);
-    if (prev != null && t - prev < cfg.dedupeMs) return;
+    // a stray hedge is one order on one venue, not a condition that persists: every one is sent
+    if (alert.kind !== "hedge_stray" && prev != null && t - prev < cfg.dedupeMs) return;
     lastSentMs.set(alert.kind, t);
     if (alert.kind === "scan_recovered") lastSentMs.delete("scan_failing");
     if (alert.kind === "scan_failing") lastSentMs.delete("scan_recovered");

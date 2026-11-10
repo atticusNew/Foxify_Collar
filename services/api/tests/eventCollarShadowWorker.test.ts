@@ -141,6 +141,10 @@ test("shadow alerts: alerter dedupes per kind, posts to both sinks, swallows sin
   t = 5000;
   await alerter({ kind: "position_voided", message: "y" });
   assert.equal(calls.length, 10);
+  // a stray hedge is one order on one venue: two in the same second are two pages
+  await alerter({ kind: "hedge_stray", message: "5 of 13 filled, no lock" });
+  await alerter({ kind: "hedge_stray", message: "order not confirmed, no lock" });
+  assert.equal(calls.length, 14);
 });
 
 const OPEN: ShadowOpenRecord = {

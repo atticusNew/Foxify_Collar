@@ -133,9 +133,11 @@ import {
   sellIntentForProphetX,
   summarizeHedgeReceipts,
   type HedgeExecutor,
+  type HedgeIntent,
   type HedgeReceipt,
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
+import { appendPending, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
 import { sentUnitsMilliOn, tickerArmed } from "../src/eventCollar/crossVenue/liveHedge";
 import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, type KalshiAccountSnapshot, type KalshiApiKeyInfo } from "../src/eventCollar/crossVenue/kalshiAccount";
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
@@ -335,6 +337,11 @@ function refusalSummary(positions: ReadonlyArray<{ ticker: string; kind: string 
  * ticker. Same record shape, same settlement; never early-closed (that experiment is the scan's).
  */
 const LOCK_LEDGER_PATH = process.env.EVENT_SHADOW_LOCK_LEDGER_PATH || join(dirname(LEDGER_PATH), "lock-ledger.jsonl");
+/**
+ * The pending trail (hedgeFirst.ts): one line before a real hedge order leaves, one when the
+ * attempt ends. Beside the lock ledger, so it rides the same disk and the same backup.
+ */
+const PENDING_PATH = process.env.EVENT_SHADOW_LOCK_PENDING_PATH || join(dirname(LOCK_LEDGER_PATH), "lock-pending.jsonl");
 const hedgeChoice = hedgeExecutorFromEnv(process.env, null, { receiptsPath: RECEIPTS_PATH });
 /**
  * Kalshi account administration (kalshiAccount.ts), with the same key the direct hedge signs
@@ -369,6 +376,8 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/kalshi/keys",
   "/api/shadow/kalshi/keys/delete",
   "/api/shadow/lock/reset",
+  "/api/shadow/lock/pending",
+  "/api/shadow/lock/pending/clear",
   "/api/shadow/cash",
   "/api/shadow/holders",
   "/api/shadow/member/raw",
@@ -1752,22 +1761,29 @@ const SCAN_PAPER_REASON = "scan: the board's positions are paper; no order place
  * walked book and sends nothing: the live rails exist for a holder's tap, and
  * `EVENT_HEDGE_LIVE_TICKERS=*` must not turn every board row into an order.
  */
-async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; references?: ReferenceBook[] }, opts: { paper?: boolean } = {}): Promise<HedgeReceipt | null> {
+type HedgeBooks = { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; references?: ReferenceBook[] };
+
+/** The order a quoted hedge leg becomes: the walk's prices from the books it was quoted on, armed by the game's Kalshi ticker. */
+function hedgeIntentFor(ticker: string, hedge: HedgeLeg, books: HedgeBooks): HedgeIntent {
+  const best =
+    hedge.venue === "kalshi"
+      ? books.noAsks?.[0]
+        ? books.noAsks[0].priceCents * 10
+        : hedge.avgPriceCents * 10
+      : hedge.venue === "prophetx"
+        ? (books.pxNoBook ? foldProphetXFee(books.pxNoBook, PROPHETX_FEE_BPS).asks[0]?.priceMilli : undefined) ?? hedge.avgPriceMilli
+        : hedge.venue === "novig"
+          ? novigRouteOf(books.references)?.noBook.asks[0]?.priceMilli ?? hedge.avgPriceMilli
+          : books.pmNoBook?.asks[0]?.priceMilli ?? hedge.avgPriceMilli;
+  // a leg on another venue is armed by the game's Kalshi ticker (the live allowlist's key)
+  const armKey = hedge.venue === "kalshi" ? undefined : ticker;
+  return intentFromHedge(hedge, best, armKey);
+}
+
+async function fillHedge(ref: string, hedge: HedgeLeg, books: HedgeBooks, opts: { paper?: boolean } = {}): Promise<HedgeReceipt | null> {
   const ticker = ref.split("@")[0];
   try {
-    const best =
-      hedge.venue === "kalshi"
-        ? books.noAsks?.[0]
-          ? books.noAsks[0].priceCents * 10
-          : hedge.avgPriceCents * 10
-        : hedge.venue === "prophetx"
-          ? (books.pxNoBook ? foldProphetXFee(books.pxNoBook, PROPHETX_FEE_BPS).asks[0]?.priceMilli : undefined) ?? hedge.avgPriceMilli
-          : hedge.venue === "novig"
-            ? novigRouteOf(books.references)?.noBook.asks[0]?.priceMilli ?? hedge.avgPriceMilli
-            : books.pmNoBook?.asks[0]?.priceMilli ?? hedge.avgPriceMilli;
-    // a leg on another venue is armed by the game's Kalshi ticker (the live allowlist's key)
-    const armKey = hedge.venue === "kalshi" ? undefined : ticker;
-    const intent = intentFromHedge(hedge, best, armKey);
+    const intent = hedgeIntentFor(ticker, hedge, books);
     const paper = Boolean(opts.paper) && hedgeChoice.strategy !== "book";
     const receipt = paper ? { ...(await PAPER_EXECUTOR.execute(intent, ref)), fallbackReason: SCAN_PAPER_REASON } : await hedgeChoice.executor.execute(intent, ref);
     appendHedgeReceipt(RECEIPTS_PATH, receipt);
@@ -1776,6 +1792,114 @@ async function fillHedge(ref: string, hedge: HedgeLeg, books: { pmNoBook?: PmBoo
     lastScanError = `hedge for ${ticker}: ${String(err instanceof Error ? err.message : err)}`;
     return null;
   }
+}
+
+/** A line on the pending trail; a trail that cannot be written pages like a ledger that cannot. */
+function appendPendingOrAlert(record: PendingRecord): boolean {
+  try {
+    appendPending(PENDING_PATH, record);
+    return true;
+  } catch (err) {
+    void alerter({ kind: "ledger_write_failed", message: `could not append ${record.type} ${record.id} to ${PENDING_PATH}: ${String(err instanceof Error ? err.message : err)}` });
+    return false;
+  }
+}
+
+/** The pending trail for the status page: how attempts ended, and what still wants the operator's eyes. */
+function pendingHealth(): { path: string; counts: Record<string, number>; unresolved: string[]; strays: string[] } {
+  const s = summarizePending(loadPending(PENDING_PATH));
+  return { path: PENDING_PATH, counts: s.counts, unresolved: s.unresolved.map((p) => p.id), strays: s.strays.map((x) => x.pending.id) };
+}
+
+/**
+ * On boot: a pending line with no resolution means the process stopped between an order and its
+ * record. Nothing is repaired here; the operator is told which order to look for on the venue.
+ */
+function alertUnresolvedPending(): void {
+  const s = summarizePending(loadPending(PENDING_PATH));
+  if (s.unresolved.length === 0 && s.strays.length === 0) return;
+  const lines = [
+    ...s.unresolved.map((p) => `${p.id}: ${p.order.unitsMilli / 1000} on ${p.order.venue} ${p.order.instrument}, never resolved`),
+    ...s.strays.map((x) => `${x.pending.id}: ${x.resolved.outcome}, ${x.resolved.detail}`),
+  ];
+  void alerter({ kind: "lock_pending_unresolved", message: `${lines.length} lock attempt(s) may have left hedge on a venue with no lock behind it: ${lines.join(" | ")}. See /api/shadow/lock/pending; clear each once checked.` });
+}
+
+type HedgeFirstResult =
+  | { ok: true; receipt: HedgeReceipt }
+  | { ok: false; status: number; code: string; message: string };
+
+/**
+ * A REAL-MONEY LOCK: THE HEDGE IS BOUGHT, THEN THE LOCK IS WRITTEN (hedgeFirst.ts has the
+ * sequence and each party's P&L per ending). Called only when lockMode says the order will truly
+ * leave. `writeLock` appends the open record and says whether it landed; it runs only behind a
+ * real fill of the whole hedge. Every other ending writes no lock and answers a refusal the
+ * holder can act on; an ending that leaves, or may leave, hedge on a venue pages the operator.
+ */
+async function hedgeThenLock(args: {
+  ref: string;
+  ticker: string;
+  holder: string | null;
+  intent: HedgeIntent;
+  terms: { contracts: number; tier: string; floorCents: number; capCents: number; creditCents: number };
+  writeLock: () => boolean;
+}): Promise<HedgeFirstResult> {
+  const { ref, ticker, holder, terms } = args;
+  const intent: HedgeIntent = { ...args.intent, allOrNone: true };
+  const pending = pendingRecordFor(ref, ticker, holder, new Date().toISOString(), terms, intent);
+  // no trail, no order: an order that leaves with no line before it is the one thing a restart could not find
+  if (!appendPendingOrAlert(pending)) {
+    return { ok: false, status: 500, code: "ledger_write_failed", message: "The record could not be written; nothing was locked." };
+  }
+  let receipt: HedgeReceipt | null = null;
+  let threw: string | null = null;
+  try {
+    receipt = await hedgeChoice.executor.execute(intent, ref);
+  } catch (err) {
+    threw = String(err instanceof Error ? err.message : err);
+  }
+  if (receipt) {
+    try {
+      appendHedgeReceipt(RECEIPTS_PATH, receipt);
+    } catch (err) {
+      void alerter({ kind: "ledger_write_failed", message: `could not append the hedge receipt for ${ref} to ${RECEIPTS_PATH}: ${String(err instanceof Error ? err.message : err)}` });
+    }
+  }
+  const verdict = judgeHedge(intent, receipt);
+  const resolve = (outcome: Extract<PendingRecord, { type: "resolved" }>["outcome"], detail: string, fill?: { unitsMilli: number; costCents: number; orderId: string | null }): void => {
+    appendPendingOrAlert({
+      type: "resolved",
+      id: pending.id,
+      at: new Date().toISOString(),
+      outcome,
+      detail,
+      ...(fill && receipt ? { fill: { ...fill, receiptId: receipt.id } } : {}),
+      ...(receipt ? { receiptId: receipt.id } : {}),
+    });
+  };
+  const where = `${intent.venue} ${intent.instrument}`;
+  if (verdict.kind === "filled") {
+    const fill = { unitsMilli: verdict.unitsMilli, costCents: verdict.costCents, orderId: verdict.orderId };
+    if (!args.writeLock()) {
+      resolve("ledger_failed", "the hedge filled and the lock record could not be written", fill);
+      void alerter({ kind: "hedge_stray", message: `${ref}: the hedge filled (${verdict.unitsMilli / 1000} on ${where}, ${verdict.costCents}c, order ${verdict.orderId ?? "?"}) and the lock record could not be written. No lock stands. Sell the hedge, then clear ${pending.id}.` });
+      return { ok: false, status: 500, code: "ledger_write_failed", message: "The record could not be written; nothing was locked." };
+    }
+    resolve("locked", `the whole hedge filled: ${verdict.unitsMilli / 1000} for ${verdict.costCents}c`, fill);
+    return { ok: true, receipt: receipt as HedgeReceipt };
+  }
+  const words = refusalWords(verdict);
+  if (verdict.kind === "partial") {
+    resolve("stray", `${verdict.unitsMilli / 1000} of ${verdict.wantedMilli / 1000} filled; no lock written`, { unitsMilli: verdict.unitsMilli, costCents: verdict.costCents, orderId: verdict.orderId });
+    void alerter({ kind: "hedge_stray", message: `${ref}: ${verdict.unitsMilli / 1000} of ${verdict.wantedMilli / 1000} filled on ${where} for ${verdict.costCents}c (order ${verdict.orderId ?? "?"}). No lock was written. Sell the part that filled, then clear ${pending.id}.` });
+  } else if (verdict.kind === "unconfirmed") {
+    const detail = threw ?? verdict.detail;
+    resolve("unconfirmed", detail);
+    void alerter({ kind: "hedge_stray", message: `${ref}: the order for ${intent.unitsMilli / 1000} on ${where} went out and was not confirmed (${detail}). No lock was written. Look for client order ${receipt ? `atticus-${receipt.id}` : "(no receipt)"} on the venue; sell anything it bought, then clear ${pending.id}.` });
+  } else {
+    resolve("refused", verdict.detail);
+  }
+  return { ok: false, status: 200, code: words.code, message: words.message };
 }
 
 /**
@@ -2549,11 +2673,38 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       const evBps = chosen.tier === result.quote.tier ? result.evBps : chosen.evCostBps;
       const base = openRecordFor(result, chosen, evBps, atIso, "lock");
       const record = parlay && parlayView ? { ...base, parlay: parlayRecordOf(parlayView, parlay.stakeCents, parlay.payoutCents) } : base;
-      if (!appendOrAlert(holder ? { ...record, holder } : record, ownLedger)) {
-        sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: "The record could not be written; nothing was locked." });
-        return;
+      const writeLock = (): boolean => appendOrAlert(holder ? { ...record, holder } : record, ownLedger);
+      const ref = hedgeRefFor(ticker, holder);
+      // would this hedge truly be sent? then it is bought before the lock is written (hedgeFirst.ts);
+      // on paper the record is written and the fill simulated at the walk, as the shadow always has
+      let intent: HedgeIntent | null = null;
+      try {
+        intent = hedgeIntentFor(ticker, chosen.hedge, result.books);
+      } catch (err) {
+        lastScanError = `hedge for ${ticker}: ${String(err instanceof Error ? err.message : err)}`;
       }
-      const receipt = await fillHedge(hedgeRefFor(ticker, holder), chosen.hedge, result.books);
+      let receipt: HedgeReceipt | null;
+      if (intent && lockMode(hedgeChoice.live, intent).real) {
+        const done = await hedgeThenLock({
+          ref,
+          ticker,
+          holder,
+          intent,
+          terms: { contracts: chosen.contracts, tier: chosen.tier, floorCents: chosen.floorCents, capCents: chosen.capCents, creditCents: chosen.creditCents },
+          writeLock,
+        });
+        if (!done.ok) {
+          sendJson(res, done.status, { ok: false, at: atIso, ticker, code: done.code, ...(done.status === 500 ? { error: done.code } : {}), message: done.message });
+          return;
+        }
+        receipt = done.receipt;
+      } else {
+        if (!writeLock()) {
+          sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: "The record could not be written; nothing was locked." });
+          return;
+        }
+        receipt = await fillHedge(ref, chosen.hedge, result.books);
+      }
       sendJson(res, 200, {
         ok: true,
         at: atIso,
@@ -3934,6 +4085,8 @@ function healthBody(): Record<string, unknown> {
       anyTicker: hedgeChoice.live?.anyTicker ?? false,
       positions: allLocks().length,
       ledger: { path: LOCK_LEDGER_PATH, ...ledgerStats(LOCK_LEDGER_PATH) },
+      // real-money locks buy the hedge first (hedgeFirst.ts): attempts by ending, and the two counts that must read zero
+      hedgeFirst: pendingHealth(),
       // who may lock (aliases only, never keys), each with their ledger and how many locks stand on it
       holders: HOLDER_KEYS.holders.map((h) => {
         const path = lockLedgerPathFor(h.holder);
@@ -4450,6 +4603,38 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       handleLockReset(req, res, url);
       return;
     }
+    if (url.pathname === "/api/shadow/lock/pending") {
+      // The pending trail (hedgeFirst.ts): every real-money lock attempt and how it ended; what is
+      // still open; what was bought, or may have been, with no lock behind it.
+      const records = loadPending(PENDING_PATH);
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") || 50)));
+      sendJson(res, 200, { ok: true, at: new Date().toISOString(), path: PENDING_PATH, ...summarizePending(records), recent: records.slice(-limit).reverse() });
+      return;
+    }
+    if (url.pathname === "/api/shadow/lock/pending/clear") {
+      // The operator's word that an open or stray line was looked at on the venue and dealt with.
+      // Appends one line; removes nothing. POST ?id=<the line's id>&note=<what was done>.
+      if (req.method !== "POST") {
+        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/lock/pending/clear?id=...&note=... with the operator token" });
+        return;
+      }
+      const id = (url.searchParams.get("id") ?? "").trim();
+      const note = (url.searchParams.get("note") ?? "").trim().slice(0, 300);
+      if (!id || !note) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "id names the line; note says what was done on the venue" });
+        return;
+      }
+      if (!clearable(loadPending(PENDING_PATH), id)) {
+        sendJson(res, 404, { ok: false, error: "not_found", message: "no open or stray line has that id" });
+        return;
+      }
+      if (!appendPendingOrAlert({ type: "cleared", id, at: new Date().toISOString(), note })) {
+        sendJson(res, 500, { ok: false, error: "ledger_write_failed" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, id, ...summarizePending(loadPending(PENDING_PATH)) });
+      return;
+    }
     if (url.pathname === "/api/shadow/cash") {
       void handleCash(req, res).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
       return;
@@ -4662,6 +4847,7 @@ async function main(): Promise<void> {
   pricingSourceStatusFn = demo.pricingSourceStatus;
   referenceCatalogFn = demo.referenceCatalog;
   heldSource = demo.aggregatorSource();
+  alertUnresolvedPending();
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
