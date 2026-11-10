@@ -36,7 +36,8 @@ import {
   type RealizedBook,
   type RealizedBookInput,
 } from "../src/eventCollar/crossVenue/realizedBook";
-import { appendShadowRecord, loadShadowPositions, type ShadowOpenRecord } from "../src/eventCollar/crossVenue/shadowLedger";
+import { appendShadowRecord, loadShadowPositions, summarizeShadow, type ShadowOpenRecord } from "../src/eventCollar/crossVenue/shadowLedger";
+import { renderShadowHtml } from "../scripts/eventShadowHtml";
 
 const T = "KXNBAGAME-26NOV03BOSLAL-BOS";
 const T2 = "KXNBAGAME-26NOV03BOSLAL-LAL";
@@ -270,6 +271,7 @@ test("a real lock settled either way: our result is the take plus what the fill 
       open: 0,
       unresolved: 0,
       paidForFillsCents: 300,
+      receivedFromSalesCents: 0,
       paidToHoldersCents: result === "no" ? 884 : 84,
       collectedFromHoldersCents: result === "no" ? 0 : 400,
       realizedCents: 16,
@@ -315,6 +317,8 @@ test("left early: realized only behind a real sale of the whole hedge; without o
   assert.equal(lock.realizedCents, 16);
   assert.deepEqual([book.totals.closed, book.totals.settled, book.totals.soldUnitsMilli, book.totals.saleProceedsCents], [1, 0, 12_000, 520]);
   assert.deepEqual(book.byDay.map((d) => [d.period, d.fills, d.soldUnitsMilli, d.saleProceedsCents, d.realizedCents]), [["2026-11-03", 2, 12_000, 520, 16]]);
+  const pub = publicRealSummary(book);
+  assert.deepEqual([pub?.leftEarly, pub?.settled, pub?.paidForFillsCents, pub?.receivedFromSalesCents], [1, 0, 300, 520]);
 
   // the same close with the sale never sent (the operator sells by hand): the record cannot value what the venue holds
   const unsold = ledgers();
@@ -611,4 +615,57 @@ test("the monthly export: one row per venue per month, whole cents, contracts to
   const sum = (k: "cashPaidCents" | "realizedCents" | "paidToHolderCents" | "collectedFromHolderCents"): number => book.byMonth.reduce((s, r) => s + r[k], 0);
   assert.deepEqual([sum("cashPaidCents"), sum("realizedCents"), sum("paidToHolderCents"), sum("collectedFromHolderCents")], [book.totals.cashPaidCents, book.totals.realizedCents, book.totals.paidToHolderCents, book.totals.collectedFromHolderCents]);
   assertWholeMoney(book);
+});
+
+test("the public card: counts and cash, labelled real and apart from the simulated run; no venue named; our result only when it is complete", () => {
+  const page = (real: Parameters<typeof renderShadowHtml>[0]["real"]): string => renderShadowHtml({ atIso: "2026-11-06T12:00:00.000Z", summary: summarizeShadow([]), open: [], settled: [], real });
+  const card = (html: string): string => {
+    const at = html.indexOf("<h2>Real fills</h2>");
+    assert.ok(at > 0, "the card is on the page");
+    return html.slice(at, html.indexOf('<div class="card">', at));
+  };
+  const base = { realLocks: 4, realFills: 6, settled: 2, leftEarly: 1, open: 1, unresolved: 0, paidForFillsCents: 1_224, receivedFromSalesCents: 520, paidToHoldersCents: 2_052, collectedFromHoldersCents: 400, realizedCents: 48, realizedWithheld: null };
+
+  // no real fill: the page is as it was, to the word
+  for (const none of [undefined, null]) {
+    const html = page(none);
+    assert.ok(!html.includes("Real fills"));
+    assert.ok(html.includes("Live prices; nothing is bought.</div>"));
+  }
+
+  const html = page(base);
+  const c = card(html);
+  assert.ok(c.includes("These are real fills in our own accounts: orders that were placed and filled with real money when a holder chose to lock in. The rest of this page is a simulated run."));
+  for (const piece of [
+    '<div class="n">4</div><div class="l">real locks</div>',
+    '<div class="n">2</div><div class="l">settled</div>',
+    '<div class="n">$12.24</div><div class="l">paid for the fills, fees in</div>',
+    '<div class="n green">$0.48</div><div class="l">our result, ended locks</div>',
+    "<span>real orders filled</span><b>6</b>",
+    "<span>real locks open now</span><b>1</b>",
+    "<span>left early, hedge sold</span><b>1</b>",
+    "<span>received from real sales</span><b>$5.20</b>",
+    "<span>paid to holders, on the record</span><b>$20.52</b>",
+    "<span>collected from holders, on the record</span><b>$4.00</b>",
+    "Our result covers the 3 real locks that have ended: what the hedge paid or sold for, less what the fills cost, less what the terms paid the holder.",
+  ])
+    assert.ok(c.includes(piece), piece);
+  assert.ok(!c.includes("ended and not yet valued"), "a row with nothing in it is not shown");
+  assert.ok(html.includes("Live prices; nothing in the run is bought. The real fills are counted apart, in the next card."));
+  assert.ok(html.includes("<b>Real fills:</b> counted apart, in their own card."));
+
+  // a loss is shown as one, without the green
+  assert.ok(card(page({ ...base, realizedCents: -20 })).includes('<div class="n ">-$0.20</div><div class="l">our result, ended locks</div>'));
+  // a result that is not complete on the record is not shown, and the card says why
+  const held = card(page({ ...base, unresolved: 1, realizedCents: null, realizedWithheld: "a figure in it is not yet the venue's own number" }));
+  assert.ok(held.includes('<div class="n">not yet</div><div class="l">our result</div>'));
+  assert.ok(held.includes("Our result on the real locks is not shown yet: a figure in it is not yet the venue's own number."));
+  assert.ok(held.includes("<span>ended and not yet valued</span><b>1</b>"));
+  assert.ok(!held.includes("$0.48"));
+
+  for (const text of [c, held]) {
+    assert.ok(!/kalshi|prophetx|novig|polymarket|parlayx|aggregator/i.test(text), "no venue is named");
+    assert.ok(!/[\u2014\u2013]/.test(text), "no dash");
+    assert.ok(!/wallet|guarantee|protect/i.test(text));
+  }
 });

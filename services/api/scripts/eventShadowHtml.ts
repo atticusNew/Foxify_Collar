@@ -25,6 +25,7 @@ import type { RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusal
 import type { NettingReport } from "../src/eventCollar/crossVenue/shadowNetting";
 import type { VenueSlate } from "../src/eventCollar/crossVenue/venueSlate";
 import type { HedgeReceiptSummary, HedgeStrategy } from "../src/eventCollar/crossVenue/hedgeExecutor";
+import type { PublicRealSummary } from "../src/eventCollar/crossVenue/realizedBook";
 import { PROTECTION_TIERS, type ProtectionTier } from "../src/eventCollar/crossVenue/types";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { REFERENCE_BOOK_WORDS } from "../src/eventCollar/crossVenue/venueBooks";
@@ -76,6 +77,48 @@ export interface ShadowPageInput {
   parlays?: ParlayCardInput;
   /** how often the engine priced an event and declined, and why (shadowRefusals.ts); absent on instances before refusals were kept */
   refusals?: RefusalSummary;
+  /** our own real fills (realizedBook.publicRealSummary); absent or null while there is none, and the page then says nothing about them */
+  real?: PublicRealSummary | null;
+}
+
+/**
+ * The real fills, beside the simulated run and labelled apart from it. Counts and cash only: no
+ * venue is named here, and our result is shown only when every figure in it is on the record.
+ */
+function realFillsCard(r: PublicRealSummary): string {
+  const plural = (n: number, one: string, many: string): string => `${intStr(n)} ${n === 1 ? one : many}`;
+  const result =
+    r.realizedCents === null
+      ? `<div class="bignum"><div class="n">not yet</div><div class="l">our result</div></div>`
+      : `<div class="bignum"><div class="n ${r.realizedCents >= 0 ? "green" : ""}">${signedUsd(r.realizedCents)}</div><div class="l">our result, ended locks</div></div>`;
+  const rows = [
+    `<div class="row"><span>real orders filled</span><b>${intStr(r.realFills)}</b></div>`,
+    `<div class="row"><span>real locks open now</span><b>${intStr(r.open)}</b></div>`,
+    r.leftEarly > 0 ? `<div class="row"><span>left early, hedge sold</span><b>${intStr(r.leftEarly)}</b></div>` : "",
+    r.unresolved > 0 ? `<div class="row"><span>ended and not yet valued</span><b>${intStr(r.unresolved)}</b></div>` : "",
+    r.receivedFromSalesCents > 0 ? `<div class="row"><span>received from real sales</span><b>${usd(r.receivedFromSalesCents)}</b></div>` : "",
+    `<div class="row"><span>paid to holders, on the record</span><b>${usd(r.paidToHoldersCents)}</b></div>`,
+    `<div class="row"><span>collected from holders, on the record</span><b>${usd(r.collectedFromHoldersCents)}</b></div>`,
+  ]
+    .filter(Boolean)
+    .join("\n    ");
+  const resultLine =
+    r.realizedCents === null
+      ? `Our result on the real locks is not shown yet: ${r.realizedWithheld ?? "it is not complete on the record"}.`
+      : `Our result covers the ${plural(r.settled + r.leftEarly, "real lock that has ended", "real locks that have ended")}: what the hedge paid or sold for, less what the fills cost, less what the terms paid the holder.`;
+  return `  <div class="card">
+    <h2>Real fills</h2>
+    <div class="sub" style="margin-bottom:8px">These are real fills in our own accounts: orders that were placed and filled with real money when a holder chose to lock in. The rest of this page is a simulated run.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n">${intStr(r.realLocks)}</div><div class="l">real locks</div></div>
+      <div class="bignum"><div class="n">${intStr(r.settled)}</div><div class="l">settled</div></div>
+      <div class="bignum"><div class="n">${usd(r.paidForFillsCents)}</div><div class="l">paid for the fills, fees in</div></div>
+      ${result}
+    </div>
+    ${rows}
+    <div class="read" style="margin-top:10px">${escapeHtml(resultLine)}</div>
+  </div>
+`;
 }
 
 /** One public line on hedge fills: how they are filled and how many. The receipts themselves are the operator's. */
@@ -519,7 +562,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
 <div class="wrap">
   <div class="card">
     <h1>Track record</h1>
-    <div class="sub">A continuous simulated run. Every quotable event is locked in at its live quoted terms, then marked against the official result when it settles. Live prices; nothing is bought.</div>
+    <div class="sub">A continuous simulated run. Every quotable event is locked in at its live quoted terms, then marked against the official result when it settles. ${input.real ? "Live prices; nothing in the run is bought. The real fills are counted apart, in the next card." : "Live prices; nothing is bought."}</div>
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.settledCount}</div><div class="l">events settled</div></div>
       <div class="bignum"><div class="n">${s.floorSaves}</div><div class="l">floor saves</div></div>
@@ -528,7 +571,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     </div>
     <div class="period">${escapeHtml(periodLine)}</div>
   </div>
-${keptCard}  <div class="card">
+${input.real ? realFillsCard(input.real) : ""}${keptCard}  <div class="card">
     <h2>We carry no outcome risk</h2>
     <div class="sub" style="margin-bottom:8px">Leg for leg, what we earn on a settled event must equal the published take: the hedge pays the floor, the cap slice pays the hedge, and nothing depends on who won.</div>
     <div class="bignums">
@@ -571,7 +614,7 @@ ${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class
     <a class="back" href="${demoUrl()}">back to the demo</a>
   </div>
   <footer>
-    ${rulesOnPage ? `<b>How we check rules:</b> ${RULE_CHECK_NOTE}<br><br>` : ""}<b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions${input.parlays ? " and the parlay tickets" : ""}; no venue credentials, no addresses. ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>${input.parlays ? ' <a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>' : ""}
+    ${rulesOnPage ? `<b>How we check rules:</b> ${RULE_CHECK_NOTE}<br><br>` : ""}<b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions${input.parlays ? " and the parlay tickets" : ""}; no venue credentials, no addresses.${input.real ? " <b>Real fills:</b> counted apart, in their own card." : ""} ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>${input.parlays ? ' <a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>' : ""}
   </footer>
 </div>
 </body>

@@ -767,6 +767,8 @@ export interface PublicRealSummary {
   unresolved: number;
   /** cash paid for real fills, fees in */
   paidForFillsCents: number;
+  /** cash received on real sales, fees out */
+  receivedFromSalesCents: number;
   /** payments to and from holders that the cash lines record */
   paidToHoldersCents: number;
   collectedFromHoldersCents: number;
@@ -801,6 +803,7 @@ export function publicRealSummary(book: RealizedBook): PublicRealSummary | null 
     open: t.open,
     unresolved: t.unresolved,
     paidForFillsCents: t.cashPaidCents,
+    receivedFromSalesCents: t.saleProceedsCents,
     paidToHoldersCents: t.paidToHolderCents,
     collectedFromHoldersCents: t.collectedFromHolderCents,
     realizedCents: withheld ? null : t.realizedCents,
