@@ -224,6 +224,14 @@ can be followed. The Poly copy is rarely fresh for more than two cycles in a row
 there end at about ten seconds whether or not the lock was still standing. The count and the
 durations on that tenor are lower bounds.
 
+Cycles inside one cache life read the same Poly copy. So a two-cycle episode is two Kalshi reads
+against one Poly snapshot. It shows that Kalshi's side held for ten seconds against a Poly quote
+that was true at one moment; it does not show that Poly's quote held. The one 15-minute episode
+in the first live run was exactly this: Kalshi 38 / 39 on both cycles, the same Poly copy
+(48 / 49) read at 1 and at 11 seconds old, a lock of 4.96 cents on 188 contracts, then the copy
+passed 15 seconds and the run ended. Only the venue's live feed can say how long such a lock
+really stood.
+
 On the hourly and the daily the 30-second bound admits every copy Poly's cache serves, so the
 stale rule rarely ends a run there. In the last minutes before a close the at-the-money contract
 moves by cents between cycles. A lock seen then on a Poly copy 20 to 29 seconds old may be

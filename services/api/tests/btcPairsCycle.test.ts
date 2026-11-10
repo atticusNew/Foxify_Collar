@@ -280,7 +280,7 @@ test("a book that answers 404 just after its window opened is that row's problem
   assert.ok(html.includes("fifteen books 1 of 2 did not answer"));
   assert.ok(!html.includes("gateway.polymarket.us/v1/markets"), "no raw URL on the page");
   assert.ok(!html.includes("HTTP 404 for"), "nor the reader's raw error");
-  assert.ok(!html.includes("—"));
+  assert.ok(!html.includes("\u2014"), "no em dash on the page");
 
   assert.deepEqual(logs, [`[btc-pairs] book not answering: polymarket_us ${FIFTEEN_P} HTTP 404 (held in the venue's cache 225s) ${pBookUrl(FIFTEEN_P)}`]);
   // the pair is still found by the failed market's id, and its payload says why
