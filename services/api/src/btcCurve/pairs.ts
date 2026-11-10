@@ -9,6 +9,7 @@
 
 import { midCents, takerFeeCents } from "./analytics";
 import { normCdf } from "./model";
+import type { BookReadFailureKind } from "./bookRead";
 import type { Ladder, Venue, VenueQuote } from "./types";
 
 /** fifteen: the 15-minute up/down window (one strike, the price to beat); hourly: the next close; daily: 5 PM ET */
@@ -28,6 +29,63 @@ export interface PairLeg {
   feeTheta: number;
   /** the venue's page for this contract */
   url: string;
+}
+
+/**
+ * How long after a contract opens a 404 on its book reads as "listed, not served yet" rather
+ * than as a fault. Polymarket US answered 404 for the new 15-minute market for 97 seconds
+ * after the 21:15 UTC open on 10 November 2026 while its event listing already showed it; the
+ * refusal came from the venue's cache, which had held it 225 seconds and let it go at 300. Ten
+ * minutes covers that with room; it is a judgment, not a venue rule.
+ */
+export const BOOK_NOT_SERVED_YET_MS = 10 * 60_000;
+
+/** One venue's book that did not answer this cycle. Nothing on its row is priced. */
+export interface BookFailure {
+  venue: Venue;
+  /** the venue's id for the market (Kalshi ticker / Polymarket US market slug) */
+  id: string;
+  /** not_served_yet: a 404 within the first minutes after the contract opened */
+  kind: "not_served_yet" | BookReadFailureKind;
+  status: number | null;
+  /** plain words, as the page prints them; no URL */
+  reason: string;
+  /** for the operator: the URL that was asked */
+  url: string;
+  /** for the operator: what came back */
+  detail: string;
+  /** seconds the venue's cache had held the refusal (HTTP Age), when it said */
+  cacheAgeSec: number | null;
+  /** the listing's own top of book while the book is missing: prices only, no size, never priced */
+  listing: { bidCents: number; askCents: number } | null;
+}
+
+/** The short name a venue goes by in a sentence on the page (the header has already said Polymarket US in full). */
+const venueShort = (v: Venue): string => (v === "kalshi" ? "Kalshi" : "Poly");
+
+/**
+ * A failed book read in plain words. A 404 soon after the contract opened is the venue listing
+ * the market before it serves the book; anything else is said as what happened. Exported for tests.
+ */
+export function bookFailureOf(q: VenueQuote, nowMs: number): BookFailure | null {
+  const f = q.failure;
+  if (!f) return null;
+  const name = venueShort(q.venue);
+  const openedMs = q.openedAt ? Date.parse(q.openedAt) : NaN;
+  const justOpened = f.kind === "http" && f.status === 404 && Number.isFinite(openedMs) && nowMs >= openedMs && nowMs - openedMs <= BOOK_NOT_SERVED_YET_MS;
+  const what = f.kind === "http" ? `HTTP ${f.status ?? "error"}` : f.kind === "timeout" ? "timed out" : "no connection";
+  const listed = q.bidCents > 0 || (q.askCents > 0 && q.askCents < 100);
+  return {
+    venue: q.venue,
+    id: q.id,
+    kind: justOpened ? "not_served_yet" : f.kind,
+    status: f.status,
+    reason: justOpened ? `${name} has listed this contract but is not serving its book yet (usual for a few minutes after it opens)` : `${name} book did not answer (${what})`,
+    url: f.url,
+    detail: f.detail,
+    cacheAgeSec: f.cacheAgeSec,
+    listing: listed ? { bidCents: q.bidCents, askCents: q.askCents } : null,
+  };
 }
 
 /** The cheaper of the two ways to own both sides of the contract: Yes on one venue, No on the other. */
@@ -81,6 +139,11 @@ export interface StrikePair {
   reading: string;
   /** realized-vol model: probability BRTI settles at or above the strike, cents of $1; null without a sigma */
   modelCents: number | null;
+  /**
+   * Books that did not answer this cycle (one per venue at most). That venue's leg is then null,
+   * so the row has no gap, no lock and no score, and it is never the tenor's pick.
+   */
+  errors: BookFailure[];
 }
 
 /** One leg of a band: Yes at the lower strike or No at the upper, on the venue that sells it cheapest. */
@@ -177,6 +240,13 @@ export interface PairsReport {
   /** every pair with a score, best first */
   bundle: StrikePair[];
   health: Record<string, { ok: boolean; ms: number; detail?: string }>;
+  /** every book that did not answer this cycle, with the tenor and strike it belongs to; for the operator */
+  errors: Array<BookFailure & { horizon: Horizon; strike: number }>;
+}
+
+/** The failed books of a cycle, flat, with where each belongs. */
+export function reportErrors(sets: Array<HorizonSet | null>): PairsReport["errors"] {
+  return sets.flatMap((s) => (s ? s.pairs.flatMap((p) => p.errors.map((e) => ({ ...e, horizon: p.horizon, strike: p.strike }))) : []));
 }
 
 /** The id a pair is launched and looked up by: the Kalshi ticker, else the Polymarket US slug, else tenor:strike. */
@@ -286,6 +356,7 @@ export function persistenceOf(series: Array<[number, number]> | undefined, curre
 }
 
 function readingOf(p: Omit<StrikePair, "reading">): string {
+  if (p.errors.length) return p.errors.map((e) => e.reason).join("; ");
   if (!p.kalshi && !p.poly) return "neither venue lists this strike";
   if (!p.kalshi) return "Kalshi does not list this strike";
   if (!p.poly) return "Polymarket US does not list this strike";
@@ -490,8 +561,12 @@ function buildSet(
 
   const pairAt = (place: Place, strike: number): StrikePair => {
     const key = keyOf(strike);
-    const k = byKey("kalshi", key);
-    const p = byKey("polymarket_us", key);
+    const kListed = byKey("kalshi", key);
+    const pListed = byKey("polymarket_us", key);
+    // a book that did not answer leaves only the listing's price, which is never priced: the leg reads as absent
+    const k = kListed?.failure ? null : kListed;
+    const p = pListed?.failure ? null : pListed;
+    const errors = [kListed, pListed].map((q) => (q ? bookFailureOf(q, nowMs) : null)).filter((e): e is BookFailure => e !== null);
     const kLeg = legOf(k, k ? urls.kalshi({ ticker: k.id, eventTicker: kalshiEventTicker(k.id) }) : "");
     const pLeg = legOf(p, p ? urls.poly({ slug: p.id, eventSlug: polyEvent ?? "" }) : "");
     const twoSided = quoted(k) && quoted(p);
@@ -517,6 +592,7 @@ function buildSet(
       persistence: persistenceOf(history.get(gapHistoryKey(ladder.settlesAt, key)), gap),
       score: twoSided ? cleanScore(spread, depth, gap) : null,
       modelCents: modelAbove(spotUsd, strike, sigmaUsd),
+      errors,
     };
     return { ...base, reading: readingOf(base) };
   };
@@ -545,7 +621,7 @@ function buildSet(
     pairs,
     bands,
     sigmaUsd,
-    pick: scored[0] ? pairId(scored[0]) : money.kalshi || money.poly ? pairId(money) : null,
+    pick: scored[0] ? pairId(scored[0]) : (money.kalshi || money.poly) && !money.errors.length ? pairId(money) : null,
     context,
     venues: { kalshi: kalshiQuotes.length > 0, poly: polyQuotes.length > 0 },
     kalshiEvent,

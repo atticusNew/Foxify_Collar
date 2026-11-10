@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { bandOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, horizonSet, kalshiEventTicker, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
+import { BOOK_NOT_SERVED_YET_MS, bandOf, bookFailureOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, horizonSet, kalshiEventTicker, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
 import { pickLabel, renderPairsBody, renderPairsHtml } from "../src/btcCurve/pairsHtml";
 import type { Ladder, VenueQuote } from "../src/btcCurve/types";
 
@@ -315,6 +315,61 @@ test("fifteen: one strike, the price to beat, on both venues; a wide gap locks; 
   const alone = fifteenSet({ ...fifteenLadder(), quotes: fifteenLadder().quotes.filter((q) => q.venue === "polymarket_us") }, null, 73214, NOW, new Map(), urls);
   assert.ok(alone && alone.pairs[0].kalshi === null && alone.pairs[0].poly);
   assert.equal(alone.pick, alone.pairs[0].poly?.id, "nothing scored: the money's own id");
+});
+
+test("a failed book in plain words: a 404 in the first minutes after the open is the venue not serving the book yet; anything else is what happened; the listing's price is kept apart", () => {
+  const opened = Date.parse("2026-11-09T21:15:00Z");
+  const failed = (over: Partial<VenueQuote> = {}, failure: Partial<NonNullable<VenueQuote["failure"]>> = {}): VenueQuote => ({
+    ...q("polymarket_us", 74750, 47, 48, 0, 0),
+    openedAt: new Date(opened).toISOString(),
+    failure: { kind: "http", status: 404, url: "https://gateway.polymarket.us/v1/markets/x/book", detail: "HTTP 404", cacheAgeSec: 225, ...failure },
+    ...over,
+  });
+  const early = bookFailureOf(failed(), opened + 97_000);
+  assert.ok(early);
+  assert.equal(early.kind, "not_served_yet");
+  assert.equal(early.reason, "Poly has listed this contract but is not serving its book yet (usual for a few minutes after it opens)");
+  assert.deepEqual(early.listing, { bidCents: 47, askCents: 48 });
+  assert.equal(early.url, "https://gateway.polymarket.us/v1/markets/x/book");
+  assert.equal(early.cacheAgeSec, 225);
+  assert.ok(!early.reason.includes("http"), "the words carry no URL");
+
+  assert.equal(bookFailureOf(failed(), opened + BOOK_NOT_SERVED_YET_MS)?.kind, "not_served_yet", "the bound is inclusive");
+  const late = bookFailureOf(failed(), opened + BOOK_NOT_SERVED_YET_MS + 1);
+  assert.equal(late?.kind, "http");
+  assert.equal(late?.reason, "Poly book did not answer (HTTP 404)");
+  assert.equal(bookFailureOf(failed({ openedAt: undefined }), opened + 5_000)?.reason, "Poly book did not answer (HTTP 404)", "no open time on the listing: no guess");
+  assert.equal(bookFailureOf(failed(), opened - 1_000)?.kind, "http", "before the open is not the opening gap");
+  assert.equal(bookFailureOf(failed({}, { status: 500 }), opened + 5_000)?.reason, "Poly book did not answer (HTTP 500)");
+  assert.equal(bookFailureOf(failed({}, { kind: "timeout", status: null }), opened + 5_000)?.reason, "Poly book did not answer (timed out)");
+  assert.equal(bookFailureOf(failed({}, { kind: "unreachable", status: null }), opened + 5_000)?.reason, "Poly book did not answer (no connection)");
+  assert.equal(bookFailureOf(failed({ venue: "kalshi" }), opened + 5_000)?.reason, "Kalshi has listed this contract but is not serving its book yet (usual for a few minutes after it opens)");
+  assert.equal(bookFailureOf(failed({ bidCents: 0, askCents: 100 }), opened + 5_000)?.listing, null, "a listing with no price shows none");
+  assert.deepEqual(bookFailureOf(failed({ bidCents: 0, askCents: 48 }), opened + 5_000)?.listing, { bidCents: 0, askCents: 48 });
+  assert.equal(bookFailureOf(q("kalshi", 74750, 50, 51), opened), null, "a quote that was read has no failure");
+
+  // in a set: the failed venue's leg is absent, nothing on the row is priced, the row is never the pick, its neighbours are whole
+  const l = ladder({ 74750: { p: failed() } });
+  const s = horizonSet("hourly", l, "poly:btc-above-day-2026-11-09:range:2026-11-09", 74812, opened + 60_000, new Map(), urls, { volPct: 50 });
+  assert.ok(s);
+  const atm = s.pairs[1];
+  assert.equal(atm.poly, null);
+  assert.ok(atm.kalshi);
+  assert.deepEqual([atm.gapCents, atm.spreadCents, atm.depth, atm.lock, atm.score, atm.persistence], [null, null, null, null, null, null]);
+  assert.equal(atm.errors.length, 1);
+  assert.equal(atm.reading, atm.errors[0].reason);
+  assert.equal(pairId(atm), atm.kalshi.id);
+  assert.ok(s.pick && s.pick !== pairId(atm));
+  assert.deepEqual(s.pairs[0].errors, []);
+  assert.ok(s.pairs[0].lock && s.pairs[2].lock);
+  // the bands price off the books that answered: no Poly leg at the failed strike, and the venues' implied leaves Poly out there
+  assert.equal(s.bands[0].impliedPolyCents, null);
+  assert.ok(s.bands[0].cost && s.bands[0].cost.legs[1].venue === "kalshi");
+  assert.ok(s.bands[1].cost && s.bands[1].cost.legs[0].venue === "kalshi");
+  // the one row of a tenor failing leaves it with nothing to launch
+  const only = fifteenSet({ ...fifteenLadder(), quotes: fifteenLadder().quotes.map((x) => (x.venue === "polymarket_us" ? { ...x, failure: failed().failure } : x)) }, null, 73214, opened + 60_000, new Map(), urls);
+  assert.equal(only?.pick, null);
+  assert.equal(only?.pairs[0].errors[0].reason, "Poly book did not answer (HTTP 404)");
 });
 
 test("helpers: the Kalshi event ticker and the Polymarket US event slug come out of the ids", () => {

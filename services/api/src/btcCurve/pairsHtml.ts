@@ -7,7 +7,7 @@
  * assets. No em dashes in copy.
  */
 
-import type { Band, HorizonSet, PairsReport, PairLeg, Regime, StrikePair } from "./pairs";
+import type { Band, BookFailure, HorizonSet, PairsReport, PairLeg, Regime, StrikePair } from "./pairs";
 import { pairId } from "./pairs";
 
 const esc = (s: unknown): string =>
@@ -45,7 +45,15 @@ export function pickLabel(p: StrikePair): string {
   return p.horizon === "fifteen" ? `${usd(p.strike, p.strike % 1 ? 2 : 0)} price to beat` : `${usd(p.strike)} ${PLACE[p.place]}`;
 }
 
-function legCell(l: PairLeg | null): string {
+/** A venue whose book did not answer: why, in plain words, and the listing's price marked as such. No URL: that stays in the JSON. */
+function noBookCell(e: BookFailure): string {
+  const bid = e.listing && e.listing.bidCents > 0 ? px(e.listing.bidCents) : "–";
+  const ask = e.listing && e.listing.askCents > 0 && e.listing.askCents < 100 ? px(e.listing.askCents) : "–";
+  return `<td class="dim nobook">${esc(e.reason)}${e.listing ? `<small>listing price ${bid} / ${ask}, no size</small>` : ""}</td>`;
+}
+
+function legCell(l: PairLeg | null, failed?: BookFailure): string {
+  if (failed) return noBookCell(failed);
   if (!l) return '<td class="dim">not listed</td>';
   const bid = l.bidCents > 0 ? px(l.bidCents) : "–";
   const ask = l.askCents > 0 && l.askCents < 100 ? px(l.askCents) : "–";
@@ -79,6 +87,8 @@ function bothCell(p: StrikePair): string {
 }
 
 function scoreCell(p: StrikePair): string {
+  // a failed book says why in its own venue's cell; the reading would only repeat it
+  if (p.errors.length) return '<td class="dim">–<small>not scored without both books</small></td>';
   if (p.score === null) return `<td class="dim">–<small>${esc(p.reading)}</small></td>`;
   const cls = p.score >= 70 ? "ok" : p.score >= 40 ? "warm" : "hot";
   return `<td><b class="${cls} big">${p.score}</b><small>${esc(p.reading)}</small></td>`;
@@ -95,6 +105,7 @@ function modelCell(p: StrikePair): string {
 }
 
 function useCell(p: StrikePair): string {
+  if (p.errors.length) return '<td class="act"></td>';
   const id = pairId(p);
   return `<td class="act"><button type="button" class="use" data-id="${esc(id)}" data-horizon="${p.horizon}" title="make this the pair the Launch button sends">use</button></td>`;
 }
@@ -128,12 +139,19 @@ function table(s: HorizonSet, spotUsd: number, bestId: string | null): string {
     const best = bestId !== null && id === bestId;
     const sig = s.sigmaUsd && !fifteen ? ` · ${(Math.abs(rel) / s.sigmaUsd).toFixed(1)}σ` : "";
     if (i > 0 && s.bands[i - 1]) rows.push(bandRow(s.bands[i - 1], cols));
+    const failedOn = (venue: "kalshi" | "polymarket_us") => p.errors.find((e) => e.venue === venue);
     rows.push(
-      `<tr class="${p.place === "atm" && !fifteen ? "atm" : ""}${best ? " best" : ""}" data-id="${esc(id)}" data-label="${esc(pickLabel(p))}"><td class="lbl"><b>${usd(p.strike, fifteen && p.strike % 1 ? 2 : 0)}</b><small>${fifteen ? relTxt : `${PLACE[p.place]} · ${relTxt}${sig}`}${best ? ' · <span class="ok">cleanest</span>' : ""}</small></td>${legCell(p.kalshi)}${legCell(p.poly)}${gapCell(p)}${bothCell(p)}${scoreCell(p)}${modelCell(p)}${fifteen ? "" : useCell(p)}</tr>`,
+      `<tr class="${p.place === "atm" && !fifteen ? "atm" : ""}${best ? " best" : ""}" data-id="${esc(id)}" data-label="${esc(pickLabel(p))}"${p.errors.length ? " data-nolaunch" : ""}><td class="lbl"><b>${usd(p.strike, fifteen && p.strike % 1 ? 2 : 0)}</b><small>${fifteen ? relTxt : `${PLACE[p.place]} · ${relTxt}${sig}`}${best ? ' · <span class="ok">cleanest</span>' : ""}</small></td>${legCell(p.kalshi, failedOn("kalshi"))}${legCell(p.poly, failedOn("polymarket_us"))}${gapCell(p)}${bothCell(p)}${scoreCell(p)}${modelCell(p)}${fifteen ? "" : useCell(p)}</tr>`,
     );
   });
   const missing = !s.venues.kalshi ? '<p class="warn">Kalshi lists no contract at this close; Polymarket US stands alone.</p>' : !s.venues.poly ? '<p class="warn">Polymarket US lists no contract at this close; Kalshi stands alone.</p>' : "";
   return `${missing}<div class="tbl"><table>${head}${rows.join("")}</table></div>`;
+}
+
+/** Why a tenor has nothing for Launch to send. */
+function noPickReason(s: HorizonSet): string {
+  if (s.pairs.some((p) => p.errors.length)) return "a book is not answering";
+  return "nothing two-sided";
 }
 
 function regimeChip(r: Regime | null): string {
@@ -156,7 +174,7 @@ export function renderPairsBody(d: PairsReport): string {
     const grid = s.stepUsd ? ` · ${usd(s.stepUsd)} grid` : "";
     const sigma = s.sigmaUsd ? ` · 1σ to close ${usd(s.sigmaUsd)}` : "";
     const pick = s.pairs.find((p) => pairId(p) === s.pick) ?? null;
-    return `<section data-horizon="${horizon}" data-pick="${esc(s.pick ?? "")}"><div class="h"><h2>${horizonLabel(s.horizon, s.settlesAt)} <span class="meta">closes ${et(s.settlesAt)} · ${left(s.secondsToClose)} left${grid}${sigma}</span></h2><div class="launch"><button type="button" class="go" data-horizon="${horizon}"${s.pick ? "" : " disabled"}>Launch</button><span class="picklabel">${pick ? esc(pickLabel(pick)) : "nothing two-sided"}</span><small class="status" data-status="${horizon}"></small></div></div>${table(s, d.spotUsd, bestId)}</section>`;
+    return `<section data-horizon="${horizon}" data-pick="${esc(s.pick ?? "")}"><div class="h"><h2>${horizonLabel(s.horizon, s.settlesAt)} <span class="meta">closes ${et(s.settlesAt)} · ${left(s.secondsToClose)} left${grid}${sigma}</span></h2><div class="launch"><button type="button" class="go" data-horizon="${horizon}"${s.pick ? "" : " disabled"}>Launch</button><span class="picklabel">${pick ? esc(pickLabel(pick)) : esc(noPickReason(s))}</span><small class="status" data-status="${horizon}"></small></div></div>${table(s, d.spotUsd, bestId)}</section>`;
   };
   return `<div class="strip"><span>BRTI <b>${usd(d.spotUsd, 0)}</b><small>${esc(d.spotSource)} · ${etTime(d.at)}</small></span>${
     d.bundle[0] ? `<span>Cleanest now <b>${usd(d.bundle[0].strike, d.bundle[0].horizon === "fifteen" && d.bundle[0].strike % 1 ? 2 : 0)}</b><small>${horizonLabel(d.bundle[0].horizon, d.bundle[0].settlesAt)} · ${d.bundle[0].horizon === "fifteen" ? "price to beat" : PLACE[d.bundle[0].place]} · score ${d.bundle[0].score}</small></span>` : "<span>Cleanest now <b>–</b><small>no strike two-sided on both</small></span>"
@@ -185,6 +203,7 @@ main{max-width:1240px;margin:0 auto;padding:14px 16px 40px}header{display:flex;j
 td{padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:top}td.lbl b{font-size:15px}td small{white-space:normal;max-width:210px}td a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--dim)}tr.atm td{background:#fafafa}tr.best td{background:var(--best)}tr.picked td{background:var(--pick)}tr.picked td.lbl b{color:var(--k)}
 tr.band td{padding:4px 8px 4px 18px;font-size:12px;color:var(--ink);background:#fff;white-space:normal;border-bottom:1px dashed var(--line)}tr.band .lbl{font-weight:600}
 .big{font-size:17px}.hot{color:var(--hot);font-weight:600}.warm{color:var(--warm)}.ok{color:var(--ok)}.bad{color:var(--hot)}
+td.nobook{white-space:normal;max-width:230px;font-size:12px}
 td.act{text-align:right}.go{background:var(--k);color:#fff;border:0;border-radius:7px;padding:7px 16px;font:600 13px inherit;cursor:pointer}.go:hover{filter:brightness(1.08)}.go:disabled{opacity:.5;cursor:default}.use{background:#fff;color:var(--k);border:1px solid var(--line);border-radius:7px;padding:5px 9px;font:500 12px inherit;cursor:pointer}tr.picked .use{background:var(--k);color:#fff;border-color:var(--k)}
 svg.spark{width:90px;height:18px;display:inline-block;vertical-align:middle;margin-right:6px}svg.spark polyline{fill:none;stroke:var(--k);stroke-width:1.2}svg.spark .zero{stroke:var(--line)}
 details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;color:var(--k)}details p{margin:6px 0}details code{background:#f3f4f6;padding:1px 5px;border-radius:4px;color:var(--ink)}
@@ -196,7 +215,7 @@ details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;c
 <div id="body">${renderPairsBody(d)}</div>
 <details><summary>Engine endpoint and the API</summary>
 <div class="engine"><label for="engine">Engine</label><input id="engine" type="url" placeholder="https://your-engine.example/btc-pair" value="${esc(opts.launchUrl ?? "")}"><label class="mode"><input type="radio" name="mode" value="send"${mode === "send" ? " checked" : ""}> send (POST JSON)</label><label class="mode"><input type="radio" name="mode" value="open"${mode === "open" ? " checked" : ""}> open (your page, pair in the URL)</label><button type="button" id="engine-save">Save</button><button type="button" id="engine-test">Test</button><span id="engine-status"></span></div>
-<p>One Launch per tenor. It sends the tenor's picked pair: the cleanest scored strike by default, or the row whose <code>use</code> you pressed. <b>send</b> does <code>POST</code> with JSON <code>{ type: "atticus.btc_pair", version: 1, at, spotUsd, index: "BRTI", pair, set, bands, regime }</code>: <code>pair</code> carries <code>horizon</code> (fifteen, hourly, daily), <code>place</code>, <code>strike</code>, <code>settlesAt</code>, both legs (<code>kalshi.id</code> is the Kalshi ticker, <code>poly.id</code> the Polymarket US market slug; bid, ask, sizes, fee coefficient, url), <code>gapCents</code>, <code>spreadCents</code>, <code>depth</code>, <code>lock</code>, <code>persistence</code>, <code>score</code>, <code>modelCents</code>; <code>set</code> the tenor (<code>secondsToClose</code>, <code>stepUsd</code>, <code>sigmaUsd</code>, <code>pick</code>); <code>bands</code> the ranges between the tenor's strikes with the two legs each (<code>side</code> yes or no, <code>venue</code>, <code>id</code>, <code>priceCents</code>, <code>qty</code>, <code>feeCents</code>), what the venues imply, the model, the cost and the edge; <code>regime</code> the index's last 15 and 60 minutes. Test sends <code>{ type: "atticus.btc_pair.ping" }</code>. The endpoint must allow cross-origin POST from this page. <b>open</b> opens your URL in a new tab with <code>atticus=btc_pair&amp;id=&lt;Kalshi ticker&gt;&amp;horizon=&amp;strike=&amp;settlesAt=&amp;kalshi=&amp;poly=&amp;src=&lt;this page's /api/pair URL for it&gt;</code> (add the token to <code>src</code> if this page has one); your page pulls the JSON from <code>src</code>.</p>
+<p>One Launch per tenor. It sends the tenor's picked pair: the cleanest scored strike by default, or the row whose <code>use</code> you pressed. <b>send</b> does <code>POST</code> with JSON <code>{ type: "atticus.btc_pair", version: 1, at, spotUsd, index: "BRTI", pair, set, bands, regime }</code>: <code>pair</code> carries <code>horizon</code> (fifteen, hourly, daily), <code>place</code>, <code>strike</code>, <code>settlesAt</code>, both legs (<code>kalshi.id</code> is the Kalshi ticker, <code>poly.id</code> the Polymarket US market slug; bid, ask, sizes, fee coefficient, url), <code>gapCents</code>, <code>spreadCents</code>, <code>depth</code>, <code>lock</code>, <code>persistence</code>, <code>score</code>, <code>modelCents</code>, <code>errors</code> (books that did not answer; that venue's leg is then <code>null</code>); <code>set</code> the tenor (<code>secondsToClose</code>, <code>stepUsd</code>, <code>sigmaUsd</code>, <code>pick</code>); <code>bands</code> the ranges between the tenor's strikes with the two legs each (<code>side</code> yes or no, <code>venue</code>, <code>id</code>, <code>priceCents</code>, <code>qty</code>, <code>feeCents</code>), what the venues imply, the model, the cost and the edge; <code>regime</code> the index's last 15 and 60 minutes. Test sends <code>{ type: "atticus.btc_pair.ping" }</code>. The endpoint must allow cross-origin POST from this page. <b>open</b> opens your URL in a new tab with <code>atticus=btc_pair&amp;id=&lt;Kalshi ticker&gt;&amp;horizon=&amp;strike=&amp;settlesAt=&amp;kalshi=&amp;poly=&amp;src=&lt;this page's /api/pair URL for it&gt;</code> (add the token to <code>src</code> if this page has one); your page pulls the JSON from <code>src</code>.</p>
 <p><code>GET ${esc(base)}/api/pairs</code> everything · <code>GET ${esc(base)}/api/bundle</code> ranked pairs as launch payloads · <code>GET ${esc(base)}/api/pair?horizon=fifteen|hourly|daily&amp;place=below|atm|above|pick</code> or <code>?id=&lt;Kalshi ticker | Polymarket US slug&gt;</code> one pair · <code>GET ${esc(base)}/api/stream</code> server-sent events, one <code>pairs</code> event per cycle${opts.token ? " (add <code>k=</code> the token to each)" : ""}.</p>
 <ul class="limits">
 <li>Both venues settle on the BRTI 60-second average into the close and list the same grid ($100 hourly, $250 daily), so a row is one contract with two books. The 15-minute window is one contract per venue, Up when BRTI closes at or above the price to beat (the BRTI average before the window opened; both venues print the same number). Polymarket US skips the 5 PM ET hour (its daily owns it) and lists no daily on Fridays.</li>
@@ -206,6 +225,7 @@ details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;c
 <li>Model: the probability BRTI settles at or above the strike under that same realized-vol normal. It is a yardstick from the index's own recent movement, not an options smile; where it sits far from the venues' mids is where a view pays or where the venues know something the last hour does not.</li>
 <li>Regime: the last 15 minutes' realized vol against the last hour's. Under 0.7 contained, over 1.4 expanding. A contained market favours owning the band; an expanding one favours the wings.</li>
 <li>Clean: 40% tightness (both spreads summed, 10¢ scores nothing), 30% depth (thinnest best level, 200 contracts full), 30% agreement of mids (5¢ apart scores nothing). Scored only when both venues are two-sided. It ranks tradability; K − P, Both sides and the bands carry the edge.</li>
+<li>A book that does not answer is that row's problem only. Its venue's cells say why in plain words (Polymarket US answers "not found" for a new contract's book for a few minutes after it opens), the row shows the other venue's book, and it has no gap, no lock, no score and no Launch. A price marked "listing price, no size" comes from the venue's listing, not its book, and is never priced. The address that was asked is in the JSON under <code>errors</code>, not here.</li>
 <li>Venues are read within one cycle, not at one instant. Kalshi links open the series page unless the deploy sets the event URL pattern.</li>
 </ul>
 <footer>Kalshi public market API (KXBTCD, KXBTC15M) · Polymarket US public Retail API (gateway.polymarket.us) · BRTI prints from the same gateway. No credentials loaded.</footer>
@@ -224,6 +244,7 @@ details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;c
   function q(s){return '"'+String(s).replace(/"/g,'')+'"'}
   function applyPicks(){body.querySelectorAll('section[data-horizon]').forEach(function(sec){
     var h=sec.getAttribute('data-horizon'),id=picks[h],row=id?sec.querySelector('tr[data-id='+q(id)+']'):null;
+    if(row&&row.hasAttribute('data-nolaunch'))row=null;
     if(!row){id=sec.getAttribute('data-pick')||'';row=id?sec.querySelector('tr[data-id='+q(id)+']'):null;delete picks[h]}
     sec.querySelectorAll('tr.picked').forEach(function(t){t.classList.remove('picked')});
     var lab=sec.querySelector('.picklabel'),go=sec.querySelector('button.go');
@@ -248,7 +269,7 @@ details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;c
     if(b.classList.contains('use')){picks[h]=b.getAttribute('data-id');applyPicks();return}
     var sec=body.querySelector('section[data-horizon='+q(h)+']'),row=sec?sec.querySelector('tr.picked'):null,id=row?row.getAttribute('data-id'):(sec?sec.getAttribute('data-pick'):'');
     var st=body.querySelector('[data-status='+q(h)+']'),u=engine();
-    if(!id){if(st)st.textContent='nothing two-sided to send';return}
+    if(!id){if(st)st.textContent='nothing to send';return}
     if(!u){if(st)st.textContent='set the engine URL below';document.querySelector('details').open=true;input.focus();return}
     b.disabled=true;if(st)st.textContent='fetching pair…';
     fetch(BASE+'/api/pair'+Q+'id='+encodeURIComponent(id),{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('pair '+r.status);return r.json()})

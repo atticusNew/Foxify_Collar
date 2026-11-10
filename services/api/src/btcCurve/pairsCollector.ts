@@ -16,10 +16,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_WINDOW_MS, dailyLadderFrom, fetchFeeTheta, fetchOpenMarkets, fetchTopDepth, fifteenLadderFrom, hourlyLadderFrom } from "./kalshiLadders";
-import { fetchBook, fetchBrtiCandles, fetchSeriesIdsBySlug, readPolyUsLaddersForSeries } from "./polyUsLadders";
+import { BookReadError } from "./bookRead";
+import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_WINDOW_MS, dailyLadderFrom, fetchFeeTheta, fetchOpenMarkets, fifteenLadderFrom, hourlyLadderFrom, kalshiOrderbookUrl, readTopOnce } from "./kalshiLadders";
+import { fetchBrtiCandles, fetchSeriesIdsBySlug, polyBookUrl, readBookOnce, readPolyUsLaddersForSeries } from "./polyUsLadders";
 import { mergeLadders } from "./analytics";
-import { bundleOf, fifteenSet, gapHistoryKey, horizonSet, pairId, recordGaps, regimeOf, selectStrikes, strikeLevels, type Band, type GapHistory, type Horizon, type HorizonSet, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
+import { bundleOf, fifteenSet, gapHistoryKey, horizonSet, pairId, recordGaps, regimeOf, reportErrors, selectStrikes, strikeLevels, type Band, type GapHistory, type Horizon, type HorizonSet, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
 import { renderPairsBody, renderPairsHtml } from "./pairsHtml";
 import type { Ladder, VenueQuote } from "./types";
 
@@ -35,8 +36,12 @@ export interface PairsCollectorOptions {
   /** send: Launch POSTs the payload to the engine URL; open: Launch opens the engine URL with the pair in the query (the page can override it locally) */
   launchMode?: LaunchMode;
   sourceDeadlineMs?: number;
+  /** how long one book may take to answer before its row says it timed out */
+  bookTimeoutMs?: number;
   /** test seam */
   fetchImpl?: typeof fetch;
+  /** test seam: our clock, ms */
+  clock?: () => number;
   log?: (line: string) => void;
 }
 
@@ -88,6 +93,10 @@ export class PairsCollector {
   private readonly dataDir: string;
   private readonly windowMs: number;
   private readonly deadlineMs: number;
+  private readonly bookTimeoutMs: number;
+  private readonly clock: () => number;
+  /** books not answering as of the last cycle, by market id, so the log says it once and once more when it recovers */
+  private readonly failing = new Map<string, { what: string; cycles: number; seenInCycle: number }>();
   private readonly fetchImpl: typeof fetch;
   private readonly log: (line: string) => void;
   private readonly history: GapHistory = new Map();
@@ -110,6 +119,8 @@ export class PairsCollector {
     this.dataDir = opts.dataDir ?? "/tmp/btc-pairs";
     this.windowMs = opts.windowMs ?? 120 * 60_000;
     this.deadlineMs = Math.max(5_000, opts.sourceDeadlineMs ?? 20_000);
+    this.bookTimeoutMs = Math.min(this.deadlineMs, Math.max(1, opts.bookTimeoutMs ?? 8_000));
+    this.clock = opts.clock ?? Date.now;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.log = opts.log ?? ((line) => console.log(line));
     this.launchUrl = opts.launchUrl ?? "";
@@ -174,8 +185,12 @@ export class PairsCollector {
     }
   }
 
-  /** Books for the three selected strikes on each venue (every strike on the one-strike window); the rest of the ladder keeps its top of book. */
-  private async readDepth(ladder: Ladder, spotUsd: number, health: PairsReport["health"], tag: string): Promise<void> {
+  /**
+   * Books for the three selected strikes on each venue (every strike on the one-strike window);
+   * the rest of the ladder keeps its listing's top of book. Each book is its own read: one that
+   * does not answer marks its own quote and leaves the others, and the tenor, standing.
+   */
+  private async readBooks(ladder: Ladder, spotUsd: number, health: PairsReport["health"], tag: string): Promise<void> {
     let quotes: VenueQuote[];
     if (tag === "fifteen") quotes = ladder.quotes;
     else {
@@ -184,26 +199,53 @@ export class PairsCollector {
       const keys = new Set([picked.below, picked.atm, picked.above].map((s) => ladder.buckets.find((b) => b.kind === "above" && b.level === s)?.key));
       quotes = ladder.quotes.filter((q) => keys.has(q.bucketKey));
     }
-    await this.timed(`${tag} books`, health, () =>
-      Promise.all(
-        quotes.map(async (q: VenueQuote) => {
-          if (q.venue === "kalshi") {
-            const d = await fetchTopDepth(q.id, this.fetchImpl);
-            q.bidQty = d.bidQty;
-            q.askQty = d.askQty;
-          } else {
-            const b = await fetchBook(q.id, this.fetchImpl);
-            q.bidQty = b.bidQty;
-            q.askQty = b.askQty;
-            if (b.bidCents) q.bidCents = b.bidCents;
-            if (b.askCents) q.askCents = b.askCents;
-          }
-        }),
-      ),
+    const t0 = Date.now();
+    const opts = { timeoutMs: this.bookTimeoutMs, clock: this.clock };
+    await Promise.all(
+      quotes.map(async (q: VenueQuote) => {
+        try {
+          // the book is the whole answer, price and size: an empty side in it is an empty side, whatever the listing still shows
+          const b = q.venue === "kalshi" ? await readTopOnce(q.id, this.fetchImpl, opts) : await readBookOnce(q.id, this.fetchImpl, opts);
+          q.bidCents = b.bidCents;
+          q.askCents = b.askCents;
+          q.bidQty = b.bidQty;
+          q.askQty = b.askQty;
+          q.read = { fetchedAtMs: b.fetchedAtMs, cacheAgeSec: b.cacheAgeSec, venueAtMs: b.venueAtMs, state: b.state };
+          this.noteBook(q, null);
+        } catch (err) {
+          const e = err instanceof BookReadError ? err : new BookReadError("unreachable", q.venue === "kalshi" ? kalshiOrderbookUrl(q.id) : polyBookUrl(q.id), { detail: (err as Error).message?.slice(0, 120) });
+          q.bidQty = 0;
+          q.askQty = 0;
+          q.failure = { kind: e.kind, status: e.status, url: e.url, detail: e.message, cacheAgeSec: e.cacheAgeSec };
+          this.noteBook(q, e);
+        }
+      }),
     );
+    const failed = quotes.filter((q) => q.failure).length;
+    health[`${tag} books`] = failed ? { ok: false, ms: Date.now() - t0, detail: `${failed} of ${quotes.length} did not answer` } : { ok: true, ms: Date.now() - t0 };
   }
 
-  async collectOnce(now = new Date()): Promise<PairsReport> {
+  /** The log line for a book that stops answering, and the one for when it answers again; the URL lives here and in the JSON, not on the page. */
+  private noteBook(q: VenueQuote, err: BookReadError | null): void {
+    const was = this.failing.get(q.id);
+    if (!err) {
+      if (was) {
+        this.failing.delete(q.id);
+        this.log(`[btc-pairs] book answering again: ${q.venue} ${q.id} after ${was.cycles} cycle${was.cycles === 1 ? "" : "s"} (${was.what})`);
+      }
+      return;
+    }
+    const what = err.message;
+    if (was && was.what === what) {
+      was.cycles += 1;
+      was.seenInCycle = this.cycles;
+      return;
+    }
+    this.failing.set(q.id, { what, cycles: (was?.cycles ?? 0) + 1, seenInCycle: this.cycles });
+    this.log(`[btc-pairs] book not answering: ${q.venue} ${q.id} ${what}${err.cacheAgeSec !== null ? ` (held in the venue's cache ${err.cacheAgeSec}s)` : ""} ${err.url}`);
+  }
+
+  async collectOnce(now = new Date(this.clock())): Promise<PairsReport> {
     const health: PairsReport["health"] = {};
     const nowMs = now.getTime();
 
@@ -245,10 +287,12 @@ export class PairsCollector {
 
     if (spotUsd > 0) {
       await Promise.all([
-        fifteen ? this.readDepth(fifteen, spotUsd, health, "fifteen") : null,
-        hourly ? this.readDepth(hourly, spotUsd, health, "hourly") : null,
-        daily ? this.readDepth(daily, spotUsd, health, "daily") : null,
+        fifteen ? this.readBooks(fifteen, spotUsd, health, "fifteen") : null,
+        hourly ? this.readBooks(hourly, spotUsd, health, "hourly") : null,
+        daily ? this.readBooks(daily, spotUsd, health, "daily") : null,
       ]);
+      // a market that rolled off while its book was failing is no longer read, so it is forgotten here
+      for (const [id, f] of this.failing) if (f.seenInCycle !== this.cycles) this.failing.delete(id);
     }
 
     const build = (h: Horizon, l: Ladder | null, polyId: string | null): HorizonSet | null =>
@@ -276,6 +320,7 @@ export class PairsCollector {
       regime,
       bundle: bundleOf(sets),
       health,
+      errors: reportErrors(sets),
     };
     this.latest = report;
     this.bodyHtml = renderPairsBody(report);
@@ -376,6 +421,7 @@ export class PairsCollector {
       spotPrints: this.spots.length,
       regime: this.latest?.regime?.label ?? null,
       tenors: this.latest ? { fifteen: Boolean(this.latest.fifteen), hourly: Boolean(this.latest.hourly), daily: Boolean(this.latest.daily) } : undefined,
+      booksNotAnswering: this.latest?.errors?.length ?? 0,
       lastError: this.lastError || undefined,
     };
   }
@@ -390,7 +436,8 @@ export class PairsCollector {
     if (!d) return null;
     const id = params.get("id");
     const all = [...(d.fifteen?.pairs ?? []), ...(d.hourly?.pairs ?? []), ...(d.daily?.pairs ?? [])];
-    if (id) return all.find((p) => pairId(p) === id || p.kalshi?.id === id || p.poly?.id === id) ?? null;
+    // a pair whose book did not answer is still found by that market's id, so the caller reads why instead of "no such pair"
+    if (id) return all.find((p) => pairId(p) === id || p.kalshi?.id === id || p.poly?.id === id || p.errors.some((e) => e.id === id)) ?? null;
     const horizon = params.get("horizon") as Horizon | null;
     const place = (params.get("place") ?? "atm") as Place | "pick";
     const set = horizon === "daily" ? d.daily : horizon === "fifteen" ? d.fifteen : d.hourly;
@@ -464,6 +511,7 @@ export function pairsCollectorFromEnv(env: NodeJS.ProcessEnv = process.env, defa
     launchUrl: env.BTC_PAIRS_LAUNCH_URL,
     launchMode: env.BTC_PAIRS_LAUNCH_MODE === "open" ? "open" : "send",
     sourceDeadlineMs: Number(env.BTC_PAIRS_SOURCE_DEADLINE_MS || 20_000),
+    bookTimeoutMs: Number(env.EVENT_FETCH_TIMEOUT_MS || 8_000),
   });
 }
 
