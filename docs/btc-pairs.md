@@ -39,9 +39,16 @@ Both venues publish the order books the trader sees when logged in from unauthen
 market-data endpoints (Kalshi `/trade-api/v2/markets` and `/orderbook`, Polymarket US
 `gateway.polymarket.us/v1/events` and `/markets/{slug}/book`). A key does not change the prices;
 it adds rate-limit headroom and access to the account (balance, orders, fills). The page makes
-about sixteen calls per ten-second cycle, inside the public limits, and the hosted copy never
+about twenty calls per ten-second cycle, inside the public limits, and the hosted copy never
 needs to know what the trader holds. His keys stay with his engine, which is the only thing that
 places orders.
+
+What the public read is good for, and what it is not. Polymarket US serves its public book
+through a cache that holds each copy up to 30 seconds, so the Poly side of a row can be half a
+minute behind Kalshi's. That is fine for a page a person reads: the page prints how old each read
+is and says when its own read is too old to judge. It is not enough for an engine trading the
+15-minute gap. That engine needs the venue's live authenticated feed, with its own keys, on its
+own machine. This page holds no keys and does not use that feed.
 
 ## The page
 
@@ -62,11 +69,160 @@ Each tenor's header carries one **Launch** button, the pick's label, and the las
 The pick is the cleanest scored pair in that tenor and follows it as the books move, until you
 press **use** on a row; your pick holds while that row is listed (when spot walks the three-strike
 window past it, the tenor falls back to the cleanest). The body re-fetches itself every cycle and
-keeps the picks and the statuses.
+keeps the picks and the statuses. A row on a stale read or with a book missing is never the
+default pick; when no row qualifies, Launch is off and the label says why ("read too old to
+judge", "a book is not answering").
+
+Under each venue's quote is a line saying how old that read is. Under each tenor's table is a
+line counting the day's lock episodes. Both are described below.
 
 Under the fold "Engine endpoint and the API": the engine URL (kept in the browser, prefilled from
 `BTC_PAIRS_LAUNCH_URL`), the mode (**send** or **open**, prefilled from `BTC_PAIRS_LAUNCH_MODE`,
 kept in the browser), Save, a Test button, the payload schema, the pull endpoints, and the limits.
+
+## How old each read is
+
+Each book on the page is one HTTP read. Three clocks describe it, and the page keeps them apart:
+
+- **Our fetch time.** When the venue answered our request, on our clock. Measured.
+- **The venue's cache age.** The HTTP `Age` header: how many seconds the venue's cache had
+  already held that answer when it gave it to us. Reported by the venue. Kalshi's order book
+  sends none (it is served live). Polymarket US's book sends one on every answer.
+- **The venue's own stamp.** Polymarket US puts `marketData.transactTime` in the book. Kalshi's
+  order book carries no time at all, so the page says "venue stamp not given". Kalshi's market
+  record has an `updated_time`, but that is when the listing changed, not when the quote did, so
+  it is not used.
+
+Under Kalshi's quote the page prints, for example, `read 3s ago · venue stamp not given`. Under
+Poly's: `read 1s ago · 18s in the venue's cache · venue stamp 31s old`. Ages are counted to the
+moment the pairs were priced (`pricedAt` in the JSON), which is after the last book came back.
+
+The age the page judges by is the copy's age: our fetch age plus the venue's cache age. It is
+not the venue's stamp, and here is why. On 10 November 2026 the Poly stamp was checked against
+the copy it came in. On a busy book the stamp was within about a second of the copy. On a quiet
+book the stamp was 41 to 91 seconds old on a copy under 30 seconds old. So the stamp marks the
+book's last change, not the time of the copy. Judging by it would call every quiet book stale.
+The stamp is still printed and still in the JSON, because an old stamp on a young copy is itself
+information: nothing has traded or moved there.
+
+Two reader changes came with this. Kalshi's price and size now both come from its live order
+book. Before, the price came from the market list, which is cached for 15 seconds and was seen up
+to 14 seconds behind the order book. And each book is asked once per cycle, with no retry: a
+retry held the whole cycle for several seconds, and the next cycle asks again anyway.
+
+## Stale reads
+
+A gap between two books is only a quoting difference if both were read at about the same time.
+When one copy is old, part of the gap is just the market having moved since. The page does not
+call that edge.
+
+The rule: a row is a **stale read** when either book's copy is older than the tenor's bound.
+
+| Tenor | Bound | Env key |
+| --- | --- | --- |
+| 15-minute window | 15 seconds | `15m` |
+| Hourly, next close | 30 seconds | `1h` |
+| Daily, 5 PM ET | 30 seconds | `1d` |
+
+Override with `BTC_PAIRS_STALE_SECONDS`, for example `15m=15,1h=30,1d=30` (any subset).
+
+These bounds are a judgment, not a tested threshold. They come from two short samples of the
+live books, not from a study. What the samples showed: Poly's public book is cached up to 30
+seconds (copies were seen at every age from 0 to 29), and Kalshi's order book moved several
+times within one such copy's life on the 15-minute window. Fifteen seconds keeps the younger half
+of Poly's copies on the tenor that moves fastest. Thirty seconds keeps a whole cache life on the
+tenors that move less per second. More data may move them.
+
+When a row is stale:
+
+- Both books are still shown, with their read ages.
+- K minus P and Both sides are greyed and tagged **stale read**. A lock is not shown in green.
+- The reading says which copy is old, for example `stale read: Poly copy 22s old (limit 15s)`.
+- The row is not eligible to be the cleanest pick, so Launch does not send it by default. Its
+  **use** button still works: sending it is the trader's call, and the payload says
+  `"freshness": "stale"`.
+- The gap is not added to the window, so it does not accrue persistence, and it is not written
+  to the day file.
+- It does not count toward a lock episode, and it ends one that was running.
+
+The clean score is not changed by staleness. Score says how tradable the two books are. Edge
+is K minus P and Both sides. They stay separate.
+
+A consequence on the 15-minute window: with a 15-second bound, a 30-second cache and a 10-second
+cycle, the Poly copy is fresh on about half the cycles. The row will be tagged stale roughly
+every other cycle or two. That is the public read's limit, shown instead of hidden.
+
+## A book that does not answer
+
+A book that fails is its own row's problem. The other rows of the tenor, and the other tenors,
+are priced as usual. Before this, one failed book failed the whole tenor.
+
+The row says what happened in plain words, with no URL:
+
+- `Poly has listed this contract but is not serving its book yet (usual for a few minutes after
+  it opens)`: the book answered 404 within ten minutes of the contract opening. This happens at
+  every 15-minute roll. The 404 is itself a cached answer, held up to five minutes. On the two
+  rolls watched on 10 November 2026 the new book first answered 97 seconds and about four
+  minutes after the window opened.
+- `Poly book did not answer (HTTP 500)`, `Kalshi book did not answer (timed out)`,
+  `(no connection)`: anything else.
+
+On that row there is no gap, no lock, no score and no Launch (no **use** button, and it is never
+the pick). The venue's listing still carries a top-of-book price while its book is missing; the
+row may show it, labelled `listing price 47 / 48, no size`. It is never fed to the gap, the lock,
+the bands or Launch. A band that needs the missing leg takes it from the other venue or is not
+priced.
+
+The URL that was asked is kept for the operator: in the JSON under `errors` (on the pair and
+flat at the top of the report) and in the service log, once when the book stops answering and
+once when it answers again.
+
+"No window is open" is unchanged: when neither venue lists a 15-minute window, the section says
+so.
+
+## Lock episodes
+
+A single cycle showing a lock says little: it may be one odd read. What matters is whether a lock
+stands. So the collector follows runs.
+
+**Definition.** A lock episode is a run of consecutive cycles in which the same pair (the same
+contract on both venues, bought the same way round) shows a lock after fees above zero, on fresh
+reads. It counts once it has lasted two or more consecutive cycles. A cycle with no lock, a stale
+read or a missing book ends it. A lock that flips direction (Yes on the other venue) is a
+different trade and starts a new run. So does the next 15-minute window. If the collector goes
+more than three intervals without a cycle, the run ends: it is no longer known to be consecutive.
+
+**What is recorded.** Start (the first cycle that showed the lock), end (the last cycle that
+showed it), duration in seconds (end minus start), the number of cycles, the minimum lock in
+cents per contract over the run, the minimum size over the run, and the value: minimum lock times
+minimum size. The size is the one the lock is already quoted at, the thinner of the two
+top-of-book levels taken. The JSON carries the value in cents (`valueCents`), like every other
+price here; the page prints it in dollars.
+
+**What the page shows**, per tenor, for the current UTC day: the number of episodes, the median
+and the longest duration, the total dollars, and the latest one. Always with this label:
+
+> measured at the size on the book, after fees, no orders placed; a floor on what was there, not
+> what a trader would have captured
+
+Read it literally. The minimum lock and the minimum size were both on the book on every cycle of
+the run, so their product was there to take the whole time. It is not a fill, not a profit and
+not a forecast. A trader would have paid for latency, queue position and the second leg moving.
+
+An episode belongs to the UTC day of its last cycle. A run still going is counted as open, with
+its figures so far.
+
+**Where they are kept.** All of today's episodes and the last 50 per tenor from earlier days are
+held in memory. Each finished episode is appended to `episodes-YYYY-MM-DD.jsonl` in the data dir,
+next to the gap history, and reloaded on a restart; files older than three days are deleted. A
+clean stop (SIGTERM) ends the open runs and writes them. A hard kill loses the runs open at that
+moment.
+
+**Limits.** The cycle is ten seconds, so a duration is known to that grain: a 10-second episode
+is a lock seen on two reads ten seconds apart. On the 15-minute window the stale rule caps what
+can be followed. The Poly copy is rarely fresh for more than two cycles in a row, so most runs
+there end at about ten seconds whether or not the lock was still standing. The count and the
+durations on that tenor are lower bounds.
 
 ## The Launch button and the endpoints
 
@@ -86,8 +242,10 @@ Launch fetches the tenor's picked pair from `/pairs/api/pair?id=<Kalshi ticker>`
     "strike": 105500,
     "key": "above:105500",
     "settlesAt": "2026-11-09T22:00:00.000Z",
-    "kalshi": { "venue": "kalshi", "id": "KXBTCD-26NOV0917-T105499.99", "bidCents": 48, "askCents": 49, "bidQty": 2400, "askQty": 1800, "feeTheta": 0.07, "url": "https://kalshi.com/markets/kxbtcd" },
-    "poly":   { "venue": "polymarket_us", "id": "btc-above-105500-nov-9-5pm", "bidCents": 47, "askCents": 51, "bidQty": 250, "askQty": 250, "feeTheta": 0.095, "url": "https://polymarket.us/event/..." },
+    "kalshi": { "venue": "kalshi", "id": "KXBTCD-26NOV0917-T105499.99", "bidCents": 48, "askCents": 49, "bidQty": 2400, "askQty": 1800, "feeTheta": 0.07, "url": "https://kalshi.com/markets/kxbtcd",
+                "read": { "fetchedAt": "2026-11-09T21:17:03.412Z", "fetchAgeSec": 0.3, "cacheAgeSec": null, "venueAt": null, "venueAgeSec": null, "ageSec": 0.3, "state": null } },
+    "poly":   { "venue": "polymarket_us", "id": "btc-above-105500-nov-9-5pm", "bidCents": 47, "askCents": 51, "bidQty": 250, "askQty": 250, "feeTheta": 0.095, "url": "https://polymarket.us/event/...",
+                "read": { "fetchedAt": "2026-11-09T21:17:03.530Z", "fetchAgeSec": 0.2, "cacheAgeSec": 18, "venueAt": "2026-11-09T21:16:32.511Z", "venueAgeSec": 31.2, "ageSec": 18.2, "state": "MARKET_STATE_OPEN" } },
     "twoSided": true,
     "gapCents": -0.5,
     "spreadCents": 5,
@@ -96,7 +254,10 @@ Launch fetches the tenor's picked pair from `/pairs/api/pair?id=<Kalshi ticker>`
     "persistence": { "n": 38, "sameSign": 0.71, "meanGapCents": -0.4, "series": [[1762723000000, -0.5], ...] },
     "score": 62,
     "reading": "Kalshi tighter and deeper; Polymarket US a cent cheaper on Yes",
-    "modelCents": 48.2
+    "modelCents": 48.2,
+    "errors": [],
+    "freshness": "fresh",
+    "staleAfterSec": 30
   },
   "set": { "horizon": "hourly", "settlesAt": "2026-11-09T22:00:00.000Z", "secondsToClose": 2577, "stepUsd": 100, "sigmaUsd": 368, "pick": "KXBTCD-26NOV0917-T105499.99" },
   "bands": [
@@ -132,6 +293,30 @@ only added, never changed in meaning, while `version` stays 1. On the 15-minute 
 is empty and `set.stepUsd` is 0. The Test button posts `{ "type": "atticus.btc_pair.ping", "at" }`.
 The engine must answer cross-origin `POST` from the page (CORS), or pull instead.
 
+Fields added with the read ages, the stale rule, the failed-book row and the lock episodes. All
+are additions; nothing was renamed or removed.
+
+| Where | Field | Meaning |
+| --- | --- | --- |
+| each leg (`pair.kalshi`, `pair.poly`) | `read.fetchedAt`, `read.fetchAgeSec` | when the venue answered us (our clock), and seconds from then to the pricing. Measured. |
+| | `read.cacheAgeSec` | seconds the venue's cache had held the answer (HTTP `Age`); `null` when the venue sent none. Reported by the venue. |
+| | `read.venueAt`, `read.venueAgeSec` | the venue's own stamp and its age; `null` when the venue gives none (Kalshi). On Poly this is the book's last change. |
+| | `read.ageSec` | the copy's age: `fetchAgeSec` plus `cacheAgeSec`. This is what the stale rule judges. |
+| | `read.state` | the venue's market state where it says (Poly: `MARKET_STATE_OPEN`) |
+| each pair | `freshness` | `"fresh"`, `"stale"`, or `null` when a venue is absent |
+| | `staleAfterSec` | the bound this row was judged against |
+| | `errors[]` | books that did not answer on this row: `venue`, `id`, `kind` (`not_served_yet`, `http`, `timeout`, `unreachable`), `status`, `reason` (the page's words), `url`, `detail`, `cacheAgeSec`, `listing` (`bidCents`, `askCents`, or `null`). That venue's leg is then `null`. |
+| each tenor (`fifteen`, `hourly`, `daily`) | `staleAfterSec` | the tenor's bound |
+| the report (`/api/pairs`, the stream) | `pricedAt` | when the books had been read and the pairs priced; every age is as of this moment |
+| | `staleAfterSec` | the three bounds in force |
+| | `errors[]` | every failed book this cycle, flat, each with its `horizon` and `strike` |
+| | `lockEpisodes` | `label`, `day` (UTC), `minCycles`, and per tenor `episodes`, `open`, `medianDurationSec`, `longestDurationSec`, `totalValueCents`, `recent[]` (the latest five, newest first) |
+| an episode (`recent[]`, `/api/episodes`) | | `horizon`, `settlesAt`, `key`, `strike`, `kalshiId`, `polyId`, `yesOn`, `noOn`, `startedAt`, `endedAt`, `durationSec`, `cycles`, `minLockCents`, `minQty`, `valueCents`, and `open: true` while it runs |
+
+The stream frame is the whole report, so it carries all of the above every cycle. `pair` in the
+launch payload is the same pair object, so it carries `read`, `freshness`, `staleAfterSec` and
+`errors` too. `bundle` lists pairs on a stale read after every pair that is not.
+
 In **open** mode Launch opens the engine URL in a new tab with the pair in the query string, for
 an engine that is a screen the trader drives by hand rather than a service:
 
@@ -153,12 +338,15 @@ curve service (with `?k=<token>` when the service has one):
 | `GET /pairs/api/bundle` | `{ at, spotUsd, index, bundle: LaunchPayload[] }`, cleanest first |
 | `GET /pairs/api/pair?horizon=fifteen\|hourly\|daily&place=below\|atm\|above\|pick` | one pair as a launch payload; `pick` is the tenor's default Launch target |
 | `GET /pairs/api/pair?id=<Kalshi ticker \| Polymarket US slug>` | the same, by id |
+| `GET /pairs/api/episodes` | `{ label, minCycles, keptPerTenorBeforeToday, open: Episode[], episodes: Episode[] }`: every lock episode kept, newest first |
 | `GET /pairs/api/stream` | server-sent events; one `pairs` event per cycle carrying the whole report |
 | `GET /pairs/fragment` | the page body (what the page polls) |
 
 503 with `{ "error": "warming up" }` until the first cycle lands; 404 for a pair that is not
-listed this cycle. `/healthz` on the curve service carries a `pairs` block (cycles, listeners,
-index prints held, the regime label, which tenors are listed, last error).
+listed this cycle. A pair whose book did not answer is still found by that market's id, so the
+caller reads why. `/healthz` on the curve service carries a `pairs` block (cycles, listeners,
+index prints held, the regime label, which tenors are listed, books not answering, lock episodes
+today per tenor, last error).
 
 ## What each cycle does
 
@@ -175,17 +363,24 @@ index prints held, the regime label, which tenors are listed, last error).
    quotes merge on the same bucket keys; otherwise the one that lists it stands alone and the page
    says so.
 5. At the money is the listed strike nearest spot; one strike each way is the ladder's own next
-   strike. Books are read for those strikes on each venue (eight calls).
+   strike. The book is read for each of those strikes on each venue (fourteen calls: seven rows,
+   two venues), once each, with no retry. Each read keeps its fetch time, the venue's cache age
+   and the venue's stamp, or the reason it failed. Kalshi's price and size both come from this
+   read, not from the cached market list.
 6. The regime: realized vol from one-minute index samples over the last 15 and 60 minutes, their
    ranges and net moves; one sigma to each close at the hour's vol.
-7. Per pair: both legs, Kalshi mid minus Polymarket US mid, both spreads summed, the thinnest of
-   the four best levels, the cheaper way to own both sides after fees, the gap's persistence over
-   the window, a clean score, the model probability. Per band: implied, model, cheapest legs,
-   edge, sigmas. Per tenor: the pick.
-8. Gaps are appended to a day file (`gaps-YYYY-MM-DD.jsonl`) and reloaded within the window on a
-   restart; files older than three days are deleted. The report is pushed to every stream listener.
+7. Per pair: both legs with their read ages, fresh or stale against the tenor's bound, Kalshi mid
+   minus Polymarket US mid, both spreads summed, the thinnest of the four best levels, the
+   cheaper way to own both sides after fees, the gap's persistence over the window, a clean
+   score, the model probability. Per band: implied, model, cheapest legs, edge, sigmas. Per
+   tenor: the pick, from the rows that are not stale and have both books.
+8. Gaps on reads that are not stale are appended to a day file (`gaps-YYYY-MM-DD.jsonl`) and
+   reloaded within the window on a restart; files older than three days are deleted.
+9. Lock runs are stepped: extended, opened or ended. Episodes that ended are appended to
+   `episodes-YYYY-MM-DD.jsonl`. The report is pushed to every stream listener.
 
-A cycle takes well under a second; the interval is the cadence, not a pause.
+A cycle usually takes well under a second; the interval is the cadence, not a pause. One book
+that hangs can hold a cycle for up to its timeout (8 seconds, `EVENT_FETCH_TIMEOUT_MS`).
 
 ## The arithmetic
 
@@ -234,7 +429,8 @@ On `atticus-btc-curve` (the mount) or the standalone script:
 | --- | --- | --- |
 | `BTC_CURVE_PAIRS` | on | `0` turns the mount off (curve service only) |
 | `BTC_PAIRS_INTERVAL_SEC` | 10 | floor 5 |
-| `BTC_PAIRS_DATA_DIR` | `<BTC_CURVE_DATA_DIR>/pairs` (mount), `/tmp/btc-pairs` (standalone) | gap history |
+| `BTC_PAIRS_DATA_DIR` | `<BTC_CURVE_DATA_DIR>/pairs` (mount), `/tmp/btc-pairs` (standalone) | gap history and lock episodes |
+| `BTC_PAIRS_STALE_SECONDS` | `15m=15,1h=30,1d=30` | seconds beyond which a book copy makes its row a stale read, per tenor; any subset |
 | `BTC_PAIRS_LAUNCH_URL` | unset | the engine endpoint prefilled on the page |
 | `BTC_PAIRS_LAUNCH_MODE` | `send` | `send` POSTs the payload; `open` opens the engine URL with the pair in the query; the page can switch locally |
 | `BTC_PAIRS_WINDOW_MIN` | 120 | gap history kept |
@@ -247,8 +443,16 @@ routes at the root on `:8880`.
 
 ## Limits
 
-- Two venues read within one cycle, not at one instant; on the hourly a cent of gap can be a few
-  seconds of latency. The persistence column is there for that.
+- Two venues read within one cycle, not at one instant, and Polymarket US's public book comes
+  from a cache up to 30 seconds old. The page prints each read's age and tags the row when it is
+  over the bound. Inside the bound a cent of gap can still be a few seconds of latency; the
+  persistence column is there for that.
+- The cache age is what the venue's cache reports about itself (HTTP `Age`). If a venue stopped
+  sending it, the copy's age would fall back to our fetch age alone and the row would read
+  fresher than it is. Kalshi's order book sends none today and is served live.
+- The stale bounds are a judgment from two short samples, not a tested threshold.
+- Lock episodes are measured on the book at ten-second grain with no order placed. They are a
+  floor on what was there, not what a trader would have captured.
 - Best level only. A cross or a cost is shown at that size; the next level is wider.
 - Kalshi links default to the series page because the event page pattern could not be confirmed
   from the build host; set `BTC_PAIRS_KALSHI_URL` once checked in a browser.
