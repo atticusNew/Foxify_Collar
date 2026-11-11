@@ -648,7 +648,7 @@ test("the public card: counts and cash, labelled real and apart from the simulat
     "<span>received from real sales</span><b>$5.20</b>",
     "<span>paid to holders, on the record</span><b>$20.52</b>",
     "<span>collected from holders, on the record</span><b>$4.00</b>",
-    "Our result covers the 3 real locks that have ended: what the hedge paid or sold for, less what the fills cost, less what the terms paid the holder.",
+    "Our result covers the 3 real locks that have ended: what the hedge paid or sold for and what the terms collected from the holder, less what the fills cost and what the terms paid the holder.",
   ])
     assert.ok(c.includes(piece), piece);
   assert.ok(!c.includes("ended and not yet valued"), "a row with nothing in it is not shown");

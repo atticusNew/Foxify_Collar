@@ -105,7 +105,7 @@ function realFillsCard(r: PublicRealSummary): string {
   const resultLine =
     r.realizedCents === null
       ? `Our result on the real locks is not shown yet: ${r.realizedWithheld ?? "it is not complete on the record"}.`
-      : `Our result covers the ${plural(r.settled + r.leftEarly, "real lock that has ended", "real locks that have ended")}: what the hedge paid or sold for, less what the fills cost, less what the terms paid the holder.`;
+      : `Our result covers the ${plural(r.settled + r.leftEarly, "real lock that has ended", "real locks that have ended")}: what the hedge paid or sold for and what the terms collected from the holder, less what the fills cost and what the terms paid the holder.`;
   return `  <div class="card">
     <h2>Real fills</h2>
     <div class="sub" style="margin-bottom:8px">These are real fills in our own accounts: orders that were placed and filled with real money when a holder chose to lock in. The rest of this page is a simulated run.</div>
