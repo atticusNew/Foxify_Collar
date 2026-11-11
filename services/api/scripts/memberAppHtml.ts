@@ -859,11 +859,14 @@ const JS = String.raw`
   };
   const tierOf = (st) => { const q = st.quote && st.quote.quote; if (!q) return null; return (q.tiers && q.tiers[st.tier]) || q; };
   const outcomes = (t) => ({ floor: t.floorTotalCents, cap: t.capTotalCents, cash: t.cashNowCents != null ? t.cashNowCents : t.creditCents || 0 });
-  const wantOf = (st, contracts) => Math.round(contracts * (TIER_ORDER.indexOf(st.tier) + 2) / 5);
+  // whole cents and whole hundredths of a contract only: nothing here multiplies a decimal by a decimal
+  const hundredths = (contracts) => Math.round(contracts * 100);
+  // the size the shape asks for is the server's own figure (the share rounded down, at least one); the same rule here when a quote carries none
+  const wantOf = (st, contracts, t) => { if (t && t.wantContracts != null) return t.wantContracts; const h = hundredths(contracts) * (TIER_ORDER.indexOf(st.tier) + 2) * 20; return Math.max(1, (h - h % 10000) / 10000); };
   // a combo's two ends are the ticket's, not a club's: every leg in, or one out
   const slipRows = (nick, o, n, sale, combo) => {
     return '<div class="ael-ledger">' +
-      '<div class="ael-lr"><span class="ael-l">' + (combo ? "All legs hit" : esc(nick) + " win") + '</span><b>' + usd(o.cap) + '</b><s>of ' + usd(n * 100) + '</s></div>' +
+      '<div class="ael-lr"><span class="ael-l">' + (combo ? "All legs hit" : esc(nick) + " win") + '</span><b>' + usd(o.cap) + '</b><s>of ' + usd(hundredths(n)) + '</s></div>' +
       '<div class="ael-lr ael-hero"><span class="ael-l">' + (combo ? "A leg misses" : esc(nick) + " lose") + '</span><b>' + usd(o.floor) + '</b><s>instead of $0</s></div>' +
       '<div class="ael-lr ael-last"><span class="ael-l">In your ' + esc(VN) + ' balance' + (sale ? '' : ' <span class="ael-dim">when the sale fills</span>') + '</span><b>' + signed(o.cash) + '</b><s></s></div>' +
       "</div>";
@@ -901,7 +904,7 @@ const JS = String.raw`
       const ms = src.memberSale;
       if (ms) rows += '<div class="ael-dl">Sold</div><div class="ael-dv">' + saleWords(ms) + "</div>";
       if (ms) rows += '<div class="ael-dl">In your ' + esc(VN) + ' balance</div><div class="ael-dv"><b>' + usd(ms.cashNowCents) + '</b> <span class="ael-dim">· ' + esc(ms.status || "filled") + "</span></div>";
-      if (ms) rows += '<div class="ael-dl">Still riding</div><div class="ael-dv"><b>' + ms.keptContracts + " contracts</b> · each pays $1 if it wins (" + usd(ms.keptContracts * 100) + " in all), $0 if it loses, as they always did</div>";
+      if (ms) rows += '<div class="ael-dl">Still riding</div><div class="ael-dv"><b>' + ms.keptContracts + " contracts</b> · each pays $1 if it wins (" + usd(ms.capTotalCents - ms.floorTotalCents) + " in all), $0 if it loses, as they always did</div>";
       if (src.memberBuyBack) rows += '<div class="ael-dl">Bought back</div><div class="ael-dv"><b>' + src.memberBuyBack.boughtContracts + " at " + cents(src.memberBuyBack.avgPriceCents) + "</b> · cost " + usd(src.memberBuyBack.costCents) + (src.memberBuyBack.orderId ? ' <span class="ael-dim">· ' + VN + " order <code>" + esc(String(src.memberBuyBack.orderId).slice(0, 8)) + "…</code></span>" : "") + "</div>";
       if (src.venueSettlement) rows += '<div class="ael-dl">' + esc(VN) + ' settled</div><div class="ael-dv"><b>' + esc(src.venueSettlement.result || "") + "</b>" + (src.venueSettlement.payoutCents != null ? " · " + usd(src.venueSettlement.payoutCents) + " on the riding contracts" : "") + "</div>";
     }
@@ -939,7 +942,7 @@ const JS = String.raw`
   const comboLegs = (p) => (p.legs && p.legs.length ? p.legs : null);
   const nextStartOf = (p) => { const legs = comboLegs(p); if (!legs) return p.startsIso; const open = legs.filter((l) => (l.state === "pending" || l.state === "live") && l.startsIso).map((l) => l.startsIso).sort(); return open[0] || p.startsIso; };
   // what the ticket is worth now against what it cost: the venue's top bid on every contract (the last trade on a combo, which has no bids)
-  const worthOf = (p) => { const px = p.bidCents != null ? p.bidCents : p.lastCents; if (px == null || !p.contracts || p.costCents == null) return null; const worth = Math.round(p.contracts * px); return { worth, px, bid: p.bidCents != null, since: worth - p.costCents }; };
+  const worthOf = (p) => { const px = p.bidCents != null ? p.bidCents : p.lastCents; if (px == null || !p.contracts || p.costCents == null) return null; const h = hundredths(p.contracts) * px; const worth = (h - h % 100) / 100; return { worth, px, bid: p.bidCents != null, since: worth - p.costCents }; };
   const sinceWords = (c) => (c > 0 ? "up " : "down ") + usd(Math.abs(c));
   const isLive = (p) => { if (!S.inPlay || !p.ticker) return false; const legs = comboLegs(p); if (legs) return legs.some((l) => l.state === "live"); return !!(p.startsIso && Date.parse(p.startsIso) <= Date.now()); };
   const timing = (p) => {
@@ -1022,7 +1025,7 @@ const JS = String.raw`
     } else {
       const t = tierOf(st), o = outcomes(t);
       const takers = p.combo ? "makers" : "bids";
-      const limited = t.depthLimited ? ' <span class="ael-dim">· ' + VN + "'s " + takers + " take " + t.soldContracts + " of " + wantOf(st, p.contracts) + "</span>" : "";
+      const limited = t.depthLimited ? ' <span class="ael-dim">· ' + VN + "'s " + takers + " take " + t.soldContracts + " of " + wantOf(st, p.contracts, t) + "</span>" : "";
       const live = !!st.quote.live, delay = live ? Number(st.quote.inPlayDelaySec) || 0 : 0;
       const preview = !!(p.combo && st.quote.rfq && st.quote.rfq.preview);
       line = lineHtml("offer", "Lock in", "Still get <b>" + usd(o.floor) + "</b> if " + (p.combo ? "a leg misses." : esc(nick) + " lose.") + limited, st.open);
@@ -1032,7 +1035,7 @@ const JS = String.raw`
           shapeHtml(st) +
           (p.combo ? '<div class="ael-fine' + (preview ? " ael-warn" : "") + '" style="margin-top:8px">' + (preview ? "Preview · a stand-in bid, not " + esc(VN) + "'s quote" : "Bid from " + esc(VN) + "'s makers · the rest rides to settlement") + "</div>" : "") +
           (live ? '<div class="ael-fine ael-live" style="margin-top:8px">' + (p.combo ? "Live price" : "Live price · never less than shown") + "</div>" : "") +
-          (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">' + esc(VN) + "'s " + takers + " take " + t.soldContracts + " of " + wantOf(st, p.contracts) + " · the rest rides</div>" : "") +
+          (t.depthLimited ? '<div class="ael-fine ael-warn" style="margin-top:8px">' + esc(VN) + "'s " + takers + " take " + t.soldContracts + " of " + wantOf(st, p.contracts, t) + " · the rest rides</div>" : "") +
           '<div class="ael-offer-acts"><button type="button" class="ael-go ael-pillgo' + (busy ? " ael-busy" : "") + '" data-act="lock"' + (busy ? " disabled" : "") + ">" + (busy ? esc(st.busyWords || "Selling into the bid…") : SHIELD + "Lock in") + '</button><span class="ael-links"><button type="button" class="ael-tg" data-tg="details" aria-expanded="' + st.details + '">Details' + TGC + "</button></span></div>" +
           (st.err ? '<div class="ael-fine ael-err">' + esc(st.err) + "</div>" : "") +
           (p.combo ? legsHtml(p) : "") +

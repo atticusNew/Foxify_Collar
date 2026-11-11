@@ -40,7 +40,7 @@ import {
   type RawMemberPosition,
   type RawMemberRfq,
 } from "../src/eventCollar/crossVenue/memberApp";
-import { memberTailTerms, quoteBuyBack, quoteSaleTiers, saleEvCostBps, walkLevels } from "../src/eventCollar/crossVenue/memberSale";
+import { memberTailTerms, quoteBuyBack, quoteSaleTiers, saleEvCostBps, venueLevelOf, walkLevels, type VenueLevel } from "../src/eventCollar/crossVenue/memberSale";
 import { appendShadowRecord, cashDue, loadShadowPositions, settlePayouts, writerPayouts } from "../src/eventCollar/crossVenue/shadowLedger";
 import { DEFAULT_CROSS_CONFIG, type CrossQuoteResult } from "../src/eventCollar/crossVenue/types";
 import type { RawOutcomeMarket } from "../src/eventCollar/crossVenue/venueMarkets";
@@ -373,11 +373,15 @@ test("member token store: sealed per member under the key, bound to the member, 
 });
 
 test("member sale arithmetic: the tiers sell 40/60/80% of the position into the bids, cash floored, the cap adds $1 on every riding contract; a thin book is depth-limited; the buy-back rounds up and stays under max_price; the tails say the sold contracts stay sold", () => {
-  const bids = [
-    { price: 0.54, quantity: 25 },
-    { price: 0.53, quantity: 40 },
-  ];
-  const t = quoteSaleTiers({ positionContracts: 50, maxPrice: 1, bids });
+  // levels as the venue writes them (dollar strings), read into micro-dollars and milli-contracts; max_price in micro-dollars
+  const ONE = 1_000_000;
+  const level = (price: string, quantity: string, side: "bid" | "offer" = "bid", maxPriceMicro = ONE): VenueLevel => {
+    const l = venueLevelOf(price, quantity, maxPriceMicro, side);
+    assert.ok(l, `${price} x ${quantity}`);
+    return l;
+  };
+  const bids = [level("0.54", "25"), level("0.53", "40")];
+  const t = quoteSaleTiers({ positionContracts: 50, maxPriceMicro: ONE, bids });
   assert.deepEqual(
     [t.wide, t.balanced, t.tight].map((q) => q && [q.soldContracts, q.keptContracts, q.limitPriceCents, q.avgPriceCents, q.cashNowCents, q.floorTotalCents, q.capTotalCents, q.depthLimited]),
     [
@@ -387,24 +391,18 @@ test("member sale arithmetic: the tiers sell 40/60/80% of the position into the 
     ],
   );
   // a book of 25 funds the wide tier whole and the others as far as it goes
-  const thin = quoteSaleTiers({ positionContracts: 50, maxPrice: 1, bids: bids.slice(0, 1) });
+  const thin = quoteSaleTiers({ positionContracts: 50, maxPriceMicro: ONE, bids: bids.slice(0, 1) });
   assert.deepEqual([thin.balanced?.soldContracts, thin.balanced?.depthLimited, thin.tight?.soldContracts], [25, true, 25]);
-  assert.deepEqual(quoteSaleTiers({ positionContracts: 50, maxPrice: 1, bids: [] }), { wide: null, balanced: null, tight: null });
+  assert.deepEqual(quoteSaleTiers({ positionContracts: 50, maxPriceMicro: ONE, bids: [] }), { wide: null, balanced: null, tight: null });
   // a $2 contract: the venue's own units in, so 10 venue contracts at $1.08 are $10.80 of cash
-  const two = quoteSaleTiers({ positionContracts: 25, maxPrice: 2, bids: [{ price: 1.08, quantity: 100 }] });
+  const two = quoteSaleTiers({ positionContracts: 25, maxPriceMicro: 2 * ONE, bids: [level("1.08", "100", "bid", 2 * ONE)] });
   assert.deepEqual([two.wide?.soldContracts, two.wide?.cashNowCents, two.wide?.capTotalCents], [10, 1080, 1080 + 15 * 200]);
   assert.equal(walkLevels([], 5), null);
-  const bb = quoteBuyBack(
-    [
-      { price: 0.56, quantity: 10 },
-      { price: 0.571, quantity: 100 },
-    ],
-    30,
-    1,
-  );
+  const bb = quoteBuyBack([level("0.56", "10", "offer"), level("0.571", "100", "offer")], 30, ONE);
   assert.deepEqual(bb && [bb.wantContracts, bb.contracts, bb.limitPriceCents, bb.avgPriceCents, bb.costCents, bb.depthLimited], [30, 30, 58, 57, 1702, false]);
-  assert.equal(quoteBuyBack([{ price: 0.995, quantity: 100 }], 5, 1)?.limitPriceCents, 99, "the limit never reaches max_price");
-  assert.equal(saleEvCostBps({ soldContracts: 30, cashNowCents: 1615 }, 50, 1, 55), Math.round(((30 * 55 - 1615) * 10_000) / (50 * 55)));
+  assert.equal(quoteBuyBack([level("0.995", "100", "offer")], 5, ONE)?.limitPriceCents, 99, "the limit never reaches max_price");
+  // the position is given as what it pays on a win: 50 contracts at $1 are 5000 cents
+  assert.equal(saleEvCostBps({ soldContracts: 30, cashNowCents: 1615 }, 50 * 100, ONE, 55), Math.round(((30 * 55 - 1615) * 10_000) / (50 * 55)));
   const tails = memberTailTerms("STX", rulesFor("stx", "nba"), 20);
   assert.deepEqual(
     tails.map((x) => x.branch),
@@ -1307,6 +1305,83 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     wireCombo(false);
     pos = await get<Any>("/api/shadow/positions?fresh=1");
     assert.deepEqual([pos.body.positions.find((p: Any) => p.event === "BOS / MIA / DET combo").ticker, pos.body.comboRfq], [null, undefined]);
+    worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: false, memberComboRfq: false });
+
+    // FINER THAN A CENT. The venue's grid has four decimals. A book priced between cents is read digit by digit:
+    // the cash shown and written is the exact total with the fraction of a cent dropped, a buy-back's cost the
+    // exact total with it rounded up, the limit is the cent that still reaches the level, and the record carries
+    // the venue's own fills as it wrote them.
+    const FINE = "KXNBAGAME-26OCT14TORCLE-CLE";
+    venue.fillMode = "full";
+    venue.markets["m-cle"] = market("m-cle", "Cleveland Cavaliers", "Toronto Raptors", START, [["0.5350", "25"], ["0.5275", "40"]], [["0.5425", "100"]]);
+    venue.positions.push({ market_id: "m-cle", position: "50.00", average_open_premium: "-0.4725" });
+    markets.push(row(FINE, "Cleveland Cavaliers", START));
+    pos = await get<Any>("/api/shadow/positions?fresh=1");
+    const fineRow = pos.body.positions.find((p: Any) => p.ticker === FINE);
+    // 50 x $0.4725 = $23.625 paid: the half cent goes up; the 53.5 cent bid is shown as 53
+    assert.deepEqual([fineRow.contracts, fineRow.entryCents, fineRow.costCents, fineRow.payoutCents, fineRow.bidCents, fineRow.maxPrice, fineRow.maxPriceMicro], [50, 47, 2363, 5000, 53, 1, 1_000_000]);
+    q = await get<Any>(`/api/shadow/quote?ticker=${FINE}&contracts=50&venue=stx`);
+    assert.equal(q.status, 200, JSON.stringify(q.body));
+    const F = q.body.quote.tiers;
+    assert.deepEqual(
+      [F.wide, F.balanced, F.tight].map((x: Any) => [x.soldContracts, x.keptContracts, x.wantContracts, x.limitPriceCents, x.avgPriceCents, x.cashNowCents, x.floorTotalCents, x.capTotalCents]),
+      [
+        // 20 x 0.5350 = $10.70
+        [20, 30, 20, 53, 53, 1070, 1070, 4070],
+        // 25 x 0.5350 + 5 x 0.5275 = $16.0125
+        [30, 20, 30, 52, 53, 1601, 1601, 3601],
+        // 25 x 0.5350 + 15 x 0.5275 = $21.2875
+        [40, 10, 40, 52, 53, 2128, 2128, 3128],
+      ],
+    );
+    assert.deepEqual([q.body.member.bestBidCents, q.body.member.bidDepth], [53, 65]);
+    const fineLock = await post<Any>("/api/shadow/lock", { ticker: FINE, contracts: 50, tier: "balanced", venue: "stx" });
+    assert.equal(fineLock.status, 200, JSON.stringify(fineLock.body));
+    const fs = fineLock.body.memberSale;
+    assert.deepEqual([fs.soldContracts, fs.keptContracts, fs.requestedContracts, fs.limitPriceCents, fs.avgPriceCents, fs.cashNowCents, fs.floorTotalCents, fs.capTotalCents, fs.status, fs.figuresFrom], [30, 20, 30, 52, 53, 1601, 1601, 3601, "filled", "fills"]);
+    assert.deepEqual(fs.venueFills, [{ price: "0.5350", filled: "25", tradeFee: "0.00" }, { price: "0.5275", filled: "5", tradeFee: "0.00" }], "the fills as the venue wrote them");
+    assert.equal(fs.floorTotalCents + fs.keptContracts * 100, fs.capTotalCents);
+    const fineSent = venue.orders.at(-1) as Any;
+    assert.deepEqual([fineSent.action, fineSent.market_id, fineSent.price, fineSent.quantity], ["sell", "m-cle", "0.52", "30"], "the limit is the whole cent under the walked level, so the order still reaches it");
+    const fineRec = loadShadowPositions(ledger).find((p) => p.ticker === FINE)!;
+    assert.deepEqual([fineRec.memberSale?.cashNowCents, fineRec.memberSale?.capTotalCents, fineRec.memberSale?.figuresFrom, fineRec.memberSale?.venueFills?.length, fineRec.floorCents, fineRec.capCents], [1601, 3601, "fills", 2, 32, 72]);
+    const finePub = (await get<Any>("/api/shadow", {})).body.open.find((p: Any) => p.ticker === FINE);
+    assert.deepEqual([finePub.memberSale.cashNowCents, finePub.memberSale.figuresFrom, finePub.memberSale.venueFills], [1601, "fills", undefined], "the public record carries the summed figures, not the member's fills one by one");
+    // leaving: 30 x 0.5425 = $16.275 to buy back, the half cent against the member; the limit a whole cent above the offer
+    const fuq = await get<Any>(`/api/shadow/unwind/quote?ticker=${FINE}`);
+    assert.equal(fuq.status, 200, JSON.stringify(fuq.body));
+    assert.deepEqual([fuq.body.unwind.buyBack.wantContracts, fuq.body.unwind.buyBack.contracts, fuq.body.unwind.buyBack.limitPriceCents, fuq.body.unwind.buyBack.avgPriceCents, fuq.body.unwind.buyBack.costCents, fuq.body.unwind.protectedAtCloseCents, fuq.body.unwind.yesMidCents], [30, 30, 55, 55, 1628, 1601 - 1628, 54]);
+    const fun = await post<Any>("/api/shadow/unwind", { ticker: FINE });
+    assert.equal(fun.status, 200, JSON.stringify(fun.body));
+    assert.deepEqual([fun.body.memberBuyBack.boughtContracts, fun.body.memberBuyBack.requestedContracts, fun.body.memberBuyBack.limitPriceCents, fun.body.memberBuyBack.avgPriceCents, fun.body.memberBuyBack.costCents, fun.body.memberBuyBack.figuresFrom, fun.body.unwind.protectedAtCloseCents], [30, 30, 55, 55, 1628, "fills", -27]);
+    assert.deepEqual(fun.body.memberBuyBack.venueFills, [{ price: "0.5425", filled: "30", tradeFee: "0.00" }]);
+    const fineBuy = venue.orders.at(-1) as Any;
+    assert.deepEqual([fineBuy.action, fineBuy.price, fineBuy.quantity], ["buy", "0.55", "30"]);
+
+    // A quote finer than a cent on a combination: 0.1055 a contract. The shapes are the quote on each size with the
+    // fraction of a cent dropped, and the accept sends the venue's own price back digit for digit (the fake venue,
+    // like any venue, refuses an accept whose price is not the quote's).
+    worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: true, memberComboRfq: true });
+    venue.rfqMode = "quote";
+    venue.rfqPrice = "0.1055";
+    q = await get<Any>(`/api/shadow/quote?ticker=${COMBO2}&contracts=9&venue=stx`);
+    assert.equal(q.status, 200, JSON.stringify(q.body));
+    assert.deepEqual([q.body.ok, q.body.rfq.priceCents, q.body.rfq.quantity, q.body.markCents], [true, 10, 7, 11], "the quote is shown a cent down, never up");
+    assert.deepEqual(
+      ["wide", "balanced", "tight"].map((k) => [q.body.quote.tiers[k].soldContracts, q.body.quote.tiers[k].cashNowCents, q.body.quote.tiers[k].capTotalCents]),
+      [
+        // 3 x 0.1055 = $0.3165; 5 x 0.1055 = $0.5275; 7 x 0.1055 = $0.7385
+        [3, 31, 631],
+        [5, 52, 452],
+        [7, 73, 273],
+      ],
+    );
+    const fineCombo = await post<Any>("/api/shadow/lock", { ticker: COMBO2, contracts: 9, tier: "wide", venue: "stx" });
+    assert.equal(fineCombo.status, 200, JSON.stringify(fineCombo.body));
+    const fc = fineCombo.body.memberSale;
+    assert.deepEqual([fineCombo.body.ok, fc.soldContracts, fc.keptContracts, fc.limitPriceCents, fc.avgPriceCents, fc.cashNowCents, fc.capTotalCents, fc.combo.quotedPriceCents, fc.combo.quotedPrice, fc.figuresFrom], [true, 3, 6, 10, 10, 31, 631, 10, "0.1055", "fills"]);
+    assert.deepEqual(fc.venueFills, [{ price: "0.1055", filled: "3", tradeFee: "0.00" }]);
+    assert.equal(venue.positions.find((p) => p.market_id === "m-combo-wire")!.position, "6.00", "the accept matched the quote and filled");
     worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), memberInPlay: false, memberComboRfq: false });
   } finally {
     worker.server.close();
