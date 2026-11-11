@@ -35,6 +35,7 @@ import type { AggregatorBookStatus } from "../src/eventCollar/crossVenue/aggrega
 import { mismatchWords, type LedgerFingerprintStatus } from "../src/eventCollar/crossVenue/ledgerFingerprint";
 import { REFERENCE_PRINT_WORDS } from "../src/eventCollar/crossVenue/venuePrints";
 import type { PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
+import type { CapitalModel, CapitalShape } from "../src/eventCollar/crossVenue/capitalModel";
 
 /** Public URL of the interactive demo, for the cross-link. */
 function demoUrl(): string {
@@ -1931,6 +1932,95 @@ tr.yes td.a b{color:var(--green-deep)} tr.no td.a b{color:#8a2a2a} tr.hand td.a 
   <div class="card">
     <div class="tablewrap"><table><tr><th>#</th><th>condition</th><th>answer</th></tr>${rows}</table></div>
     <a class="back" href="/api/shadow/pilot-check${tq}">Raw JSON</a> <a class="back" href="/holders${tq}">Holders</a> <a class="back" href="/healthz${tq}">Status</a>
+  </div>
+</div>
+</body>
+</html>`;
+}
+
+/**
+ * THE CAPITAL MODEL (capitalModel.ts), for the operator: what each settlement shape ties up of
+ * our own money, read off the record's own lines and times. Operator only: it names hedge routes.
+ */
+export function renderCapitalHtml(input: { model: CapitalModel; token: string | null }): string {
+  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
+  const m = input.model;
+  const n = (x: number): string => x.toLocaleString("en-US");
+  const lagWords = (h: number): string => (h === 0 ? "paid back at the result" : `paid back ${h} hours after the result`);
+  const held = (mins: number | null): string => (mins === null ? "n/a" : mins >= 120 ? `${Math.round(mins / 60)} hours` : `${mins} minutes`);
+  const shapeRows = (name: string, s: CapitalShape): string =>
+    s.byLag
+      .map(
+        (l, i) =>
+          `<tr><td class="c">${i === 0 ? `<b>${escapeHtml(name)}</b>` : ""}<i>${escapeHtml(lagWords(l.lagHours))}</i></td>${l.atMultiple.map((x) => `<td>${usd(x.peakCents)}</td>`).join("")}<td>${usd(l.averageCents)}</td><td>${usd(l.nowCents)}</td><td class="when">${l.peakAt ? escapeHtml(shortEt(l.peakAt)) : "n/a"}</td></tr>`,
+      )
+      .join("");
+  const zero = `<tr><td class="c"><b>Own sale</b><i>the holder sells in their own account</i></td>${m.collar.byLag[0].atMultiple.map(() => `<td>${usd(0)}</td>`).join("")}<td>${usd(0)}</td><td>${usd(0)}</td><td class="when">n/a</td></tr>`;
+  const heads = m.collar.byLag[0].atMultiple.map((x) => `<th>${x.multiple === 1 ? "most out at once, record volume" : `at ${x.multiple} times`}</th>`).join("");
+  const bb = m.betterBid;
+  const measured =
+    bb.linesMeasured === 0
+      ? `<div class="read">Better bid, measured: no line carries the measurement yet. It is written on every new line once the own sale and better bid measurement is deployed, and this table gains a row from the first line that finds one.</div>`
+      : bb.measured.lines === 0
+        ? `<div class="read">Better bid, measured: ${n(bb.linesMeasured)} lines carry the measurement and none of them found a better bid.</div>`
+        : `<div class="read">Better bid, measured: a better bid was found on ${n(bb.measured.lines)} of the ${n(bb.linesMeasured)} lines that carry the measurement. Those lines would have paid ${usd(bb.measured.outlayCents)} at the two venues in all, for a take of ${usd(bb.measured.takeCents)}.</div>`;
+  const routes = m.collar.byRoute.map((r) => `<tr><td class="c"><b>${escapeHtml(r.route)}</b></td><td>${n(r.lines)}</td><td>${usd(r.peakCents)}</td></tr>`).join("");
+  const since = m.record.since ? `since ${escapeHtml(shortEt(m.record.since))} (${n(m.record.days)} days)` : "no lines yet";
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<link rel="icon" href="data:," />
+<title>Capital · operator · Earn &amp; Protect</title>
+<style>${SHADOW_CSS}
+.wrap,.topbar .in{max-width:1000px}
+@media(min-width:700px){.wrap,.topbar .in{max-width:1000px}}
+td.c{white-space:normal;text-align:left;vertical-align:top}
+td.c b{display:block;font-size:13.5px}
+td.c i{display:block;color:var(--dim);font-style:normal;font-size:12px;font-weight:500;line-height:1.45}
+td.when{color:var(--dim)}
+ul.notes{margin:8px 0 0 18px;color:var(--ink);font-size:13px;line-height:1.55}
+ul.notes li{margin-top:5px}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="wordmark">Earn &amp; Protect <span>· capital · operator only</span></div>
+</div></div>
+<div class="wrap">
+  <div class="card">
+    <h1>Our own money, by settlement shape</h1>
+    <div class="sub">How much each shape would have had out at once on the record's own lines: when each opened, when it ended, and what it would have paid. Simulated, like the record. Nothing was bought.</div>
+    <div class="rule">${n(m.record.counted)} lines counted, ${since}. Left out: ${n(m.record.voided)} voided, ${n(m.record.memberSales)} member sales (those are own sales already). Read ${escapeHtml(shortEt(m.at))}.</div>
+  </div>
+  <div class="card">
+    <div class="tablewrap"><table><tr><th>shape</th>${heads}<th>average out</th><th>out now</th><th>the most was out</th></tr>
+${zero}
+${shapeRows("Better bid, ceiling", bb.ceiling)}
+${bb.measured.lines > 0 ? shapeRows("Better bid, measured", bb.measured) : ""}
+${shapeRows("Collar, our book", m.collar)}
+    </table></div>
+    ${measured}
+  </div>
+  <div class="card">
+    <h1>How to read it</h1>
+    <ul class="notes">
+      <li><b>Own sale</b> uses none of our money. The holder sells part of the position to their own venue's bids. We pay nothing and are owed nothing.</li>
+      <li><b>Better bid, ceiling</b> counts every one of the ${n(bb.ceiling.lines)} lines at $1 for each contract sold. A better bid cannot cost more: it is only made when the $1 the pair pays covers what the pair cost. Not every line has a better bid, so the true figure is lower. The pair is held until the game settles; a finished line had its money out for ${held(bb.ceiling.medianMinutesHeld)} at the median.</li>
+      <li><b>Collar, our book</b> is today's shape with us as the writer: the hedge bought at lock in, venue fees included, plus the credit owed to the holder from lock in. ${n(m.collar.lines)} lines paid out ${usd(m.collar.outlayCents)} in all, for a take of ${usd(m.collar.takeCents)} over ${n(m.record.days)} days. On a win the cap slice is then owed to us by the holder, which this does not count as money out.</li>
+      <li><b>Paid back after the result.</b> Venues pay some time after the result and the record does not measure how long. The second line of each shape assumes ${m.collar.byLag.length > 1 ? m.collar.byLag[1].lagHours : 24} hours. That is an assumption.</li>
+      <li><b>At 10 and 100 times</b> every line is that many times larger and the timing is the same. It is the money needed if the order books hold that size at those prices, which this does not measure.</li>
+      <li><b>One pool.</b> The figures treat all venues as one pot. Cash has to sit on each venue before the trade, so funding each venue for its own busiest moment takes more: ${usd(m.collar.sumOfRoutePeaksCents)} for the collar against ${usd(m.collar.byLag[0].peakCents)} pooled. A better bid needs cash on two venues for each line; that split is not modelled.</li>
+      ${bb.ceiling.endEstimated > 0 ? `<li><b>Lines the holder left early</b> (${n(bb.ceiling.endEstimated)}) have no settlement time on the record. Under a better bid the pair would still be held, so each is counted until its game's start plus ${held(m.medianStartToSettleMinutes)}, the median from start to settlement on the lines that settled.</li>` : ""}
+    </ul>
+  </div>
+  <div class="card">
+    <h1>Collar, by hedge route</h1>
+    <div class="sub">The most out at once on each route, paid back at the result.</div>
+    <div class="tablewrap"><table><tr><th>route</th><th>lines</th><th>most out at once</th></tr>${routes}</table></div>
+    <a class="back" href="/api/shadow/capital${tq}">Raw JSON</a> <a class="back" href="/pilot-check${tq}">Pilot check</a> <a class="back" href="/holders${tq}">Holders</a>
   </div>
 </div>
 </body>

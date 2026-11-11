@@ -153,6 +153,7 @@ import {
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { inPlayFromEnv, inPlayMaxMsFromEnv } from "../src/eventCollar/crossVenue/lockWindow";
 import { liveRailsFromEnv } from "../src/eventCollar/crossVenue/liveHedge";
+import { capitalModel } from "../src/eventCollar/crossVenue/capitalModel";
 import { holderKeyCounts, pilotCheck, readDiskFacts, type PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
 import { appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type CapRefusalLine, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
 import {
@@ -178,7 +179,7 @@ import { sentUnitsMilliOn, tickerArmed } from "../src/eventCollar/crossVenue/liv
 import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, type KalshiAccountSnapshot, type KalshiApiKeyInfo } from "../src/eventCollar/crossVenue/kalshiAccount";
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
-import { FEE_RULE_TEXT, renderHoldersHtml, renderPilotCheckHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
+import { FEE_RULE_TEXT, renderCapitalHtml, renderHoldersHtml, renderPilotCheckHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
 import { buildRealizedBook, publicRealSummary, realizedMonthlyCsv, type RealizedBook } from "../src/eventCollar/crossVenue/realizedBook";
 import { VERDICT_WORDS, isUtcDay, reconcileDay, type DayRecon } from "../src/eventCollar/crossVenue/realizedRecon";
 import { appendReconRun, dailyCheckDue, differsAlertText, latestRunPerDay, loadReconRuns, reconRunOf, reconRunView, type ReconRunRecord } from "../src/eventCollar/crossVenue/realizedReconLog";
@@ -446,6 +447,8 @@ const OPERATOR_PATHS = new Set([
   "/holders",
   "/pilot-check",
   "/api/shadow/pilot-check",
+  "/capital",
+  "/api/shadow/capital",
   "/api/shadow/export",
   "/api/shadow/reset",
   "/api/shadow/lastleg",
@@ -5374,6 +5377,18 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       }
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(renderPilotCheckHtml({ report, at: new Date().toISOString(), token: url.searchParams.get("token") }));
+      return;
+    }
+    if (url.pathname === "/api/shadow/capital" || url.pathname === "/capital") {
+      // THE CAPITAL MODEL (capitalModel.ts): what each settlement shape ties up of our own money,
+      // read off the simulated record's lines and times. Operator only: it names hedge routes.
+      const model = capitalModel(loadShadowPositions(LEDGER_PATH));
+      if (url.pathname === "/api/shadow/capital") {
+        sendJson(res, 200, { ok: true, simulated: true, ...model });
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderCapitalHtml({ model, token: url.searchParams.get("token") }));
       return;
     }
     if (url.pathname === "/api/shadow/member/raw") {
