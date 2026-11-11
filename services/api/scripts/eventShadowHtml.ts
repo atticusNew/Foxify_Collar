@@ -497,6 +497,57 @@ export function renderShadowHtml(input: ShadowPageInput): string {
   </div>
 `;
   })();
+  // OWN SALE AND BETTER BID, MEASURED. Each line that carries the measurement was also priced as
+  // the user's own sale into their venue's bids and as our better bid with the other side bought
+  // elsewhere, from the same books (shadowSaleAlternatives.ts). Counts and sums only: which venue
+  // the other side was priced on is the operator's. Absent until a line carries the measurement.
+  const saleCard = (() => {
+    const m = s.counterfactuals?.sale;
+    if (!m || m.lines === 0) return "";
+    const o = m.ownSale;
+    const b = m.betterBid;
+    const pct = (bps: number | null): string => (bps === null ? "n/a" : `${(bps / 100).toFixed(2)}%`);
+    const plural = (n: number, word: string): string => `${intStr(n)} ${word}${n === 1 ? "" : "s"}`;
+    const moreOrLess = (cents: number): string => (cents >= 0 ? `${usd(cents)} more` : `${usd(-cents)} less`);
+    const lines: string[] = [];
+    lines.push(
+      `Each of the ${plural(m.lines, "record line")} opened since ${m.recordedSince ? utcDay(m.recordedSince) : "the first"} UTC was also priced two other ways, from the same books at the same moment. ` +
+        "Own sale: the user sells part of the position into their own venue's bids with their own sell button, after that venue's fee, level by level. " +
+        "Better bid: we bid for those contracts above their venue's bid and buy the other side on another venue, so one of our two contracts pays $1 whichever side wins.",
+    );
+    if (b.compared === 0) lines.push("No line had another venue's book for the other side to price a better bid from.");
+    else if (b.existed === 0)
+      lines.push(`A better bid existed on none of the ${plural(b.compared, "line")} where another venue's book was read (the best of up to ${plural(b.mostVenues, "venue")} on a line): after both venues' fees, our take and the charge for the two venues settling differently, the prices left no room to pay more than the venue's own bid.`);
+    else
+      lines.push(
+        `A better bid existed on ${intStr(b.existed)} of the ${plural(b.compared, "line")} where another venue's book was read (the best of up to ${plural(b.mostVenues, "venue")} on a line). ` +
+          `It beat the user's own sell button by a median of ${usd(b.improvementMedianCents ?? 0)} (${pct(b.improvementMedianBpsOfStake)} of stake) and by ${usd(b.improvementTotalCents)} in total (${pct(b.improvementTotalBpsOfStake)} of the stake on those lines), ` +
+          "after every venue fee, our take and a charge for the two venues settling a tie or a called-off game differently. Stake is $1 a contract on the whole position." +
+          (b.existed < MIN_SLICE_EVENTS ? ` ${plural(b.existed, "line")} is a small sample: read it as a count, not as a rate.` : ""),
+      );
+    if (o.priced > 0)
+      lines.push(
+        `Against the lock this record wrote on the same line, the own sale paid the user a median of ${moreOrLess(o.vsCollarMedianCents ?? 0)} than the lock's floor (${pct(o.vsCollarMedianBpsOfStake)} of stake) and ${moreOrLess(o.vsCollarTotalCents)} in total across ${plural(o.priced, "line")} (${pct(o.vsCollarTotalBpsOfStake)} of stake): ` +
+          `more on ${intStr(o.ahead)}, less on ${intStr(o.behind)}${o.level > 0 ? `, the same on ${intStr(o.level)}` : ""}. ` +
+          "The amount sold is the amount the lock hedges, so the user's two results differ by the same sum either way and the floor is the like-for-like comparison." +
+          (o.unpriced > 0 ? ` On ${plural(o.unpriced, "other line")} the own sale could not be priced from the books read, and nothing was measured.` : ""),
+      );
+    else lines.push(`On none of the ${plural(m.lines, "line")} could the user's own sale be priced from the books read, so nothing was measured.`);
+    if (o.settled.lines > 0)
+      lines.push(`On the ${plural(o.settled.lines, "line")} of those that ${o.settled.lines === 1 ? "has" : "have"} settled, the own sale would have returned ${usd(o.settled.ownSaleCents)}, against ${usd(o.settled.collarCents)} under the lock and ${usd(o.settled.untouchedCents)} left untouched, at the official result.`);
+    return `  <div class="card">
+    <h2>Own sale and better bid, measured</h2>
+    <div class="sub" style="margin-bottom:8px">Measured on the book at the moment of each quote. Simulated: nothing was bought, nothing was sold and no bid was placed.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n green">${intStr(b.existed)}</div><div class="l">of ${intStr(b.compared)} lines had a better bid</div></div>
+      <div class="bignum"><div class="n">${b.existed > 0 ? usd(b.improvementMedianCents ?? 0) : "none yet"}</div><div class="l">median gain over the sell button</div></div>
+      <div class="bignum"><div class="n">${usd(b.improvementTotalCents)}</div><div class="l">total gain over the sell button</div></div>
+      <div class="bignum"><div class="n">${o.priced > 0 ? signedUsd(o.vsCollarMedianCents ?? 0) : "none yet"}</div><div class="l">own sale against the lock's floor, median</div></div>
+    </div>
+    ${lines.map((l) => `<div class="read" style="margin-top:10px">${escapeHtml(l)}</div>`).join("\n    ")}
+  </div>
+`;
+  })();
   // FLOW ONTO PUBLIC BOOKS: one total. Every protection buys its other side on a public book at
   // open, so the record is also a count of the contracts protection sent to those books. The page
   // says how many and what they cost, and does not cut the number by venue.
@@ -644,7 +695,7 @@ ${flowCard}${sportsCard}  <div class="card">
     ${s.voidCount > 0 ? `<div class="row"><span>voided (no official result)</span><b>${s.voidCount}</b></div>` : ""}
     ${input.hedges ? hedgeLine(input.hedges) : ""}
   </div>
-${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class="card">
+${saleCard}${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class="card">
     <h2>Where the lock is cheap and where it is rich</h2>
     <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of the lock at the market's own odds; user Δ is realized, with the lock minus without, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} events show counts only.</div>
     <div class="tablewrap"><table>

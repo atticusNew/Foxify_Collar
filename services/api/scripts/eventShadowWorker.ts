@@ -2564,6 +2564,9 @@ function openRecordFor(
         config: res.inPlay ? inPlayConfig(searchConfig()) : searchConfig(),
         books: res.books,
         prophetxFeeBps: PROPHETX_FEE_BPS,
+        // the own sale and the better bid: the market's offer as this scan holds it, and the holder's venue as the routing judged it
+        holderAskCents: res.market.yesAskCents,
+        ...(res.routing ? { settlement: { holderVenue: res.routing.holderVenue, holderRules: res.routing.holderRules, probabilities: res.routing.probabilities } } : {}),
       },
       q,
     );
