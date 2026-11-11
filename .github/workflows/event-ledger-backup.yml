@@ -1,18 +1,29 @@
 name: Event shadow ledger backup
 
-# WHAT IT IS. An off-box copy of the event shadow's ledgers. The only copy of the
-# public track record and of the lock ledgers is one Render disk on
-# atticus-event-shadow. Every night this reads them through the service's own
-# operator export (GET /api/shadow/export, the raw append-only JSONL byte for
-# byte) and keeps them as a workflow artifact for 90 days.
+# WHAT IT IS. An off-box copy of every file the event shadow keeps. The only
+# copy of the public track record, the lock ledgers and the trails beside them
+# is one Render disk on atticus-event-shadow. Every night this reads them
+# through the service's own operator export, byte for byte, and keeps them as a
+# workflow artifact for 90 days.
 #
-# WHAT IT COPIES. The main ledger (the record), the shared lock ledger
-# (?ledger=lock) and each holder's lock ledger (?ledger=lock&holder=<alias>; the
-# aliases come from the operator route /api/shadow/holders).
+# WHAT IT COPIES. Every file on the service's own list
+# (GET /api/shadow/export/files; each one is GET /api/shadow/export?file=<name>):
+# the record's ledger, the shared lock ledger and every holder's, the pending
+# trail of real-money lock attempts, the hedge receipts, the parlay ledger, the
+# daily check against the venues' fills, the terms acceptances, the scan refusal
+# counts, the daily fingerprints of each ledger, and everything a reset archived.
+# The list is worked out from the disk, so a file added beside a ledger later is
+# copied without this workflow changing. The list itself is kept as
+# manifest.json: it says where on the disk each file goes back.
 #
-# WHAT IT DOES NOT COPY. The export route does not reach the hedge receipts
-# trail, the last-leg ledger, archived ledgers or the members' sealed tokens, so
-# those still live only on the disk.
+# WHAT IT DOES NOT COPY. The members' sealed venue connections: they are
+# credentials, they stay on the disk only, and a member whose connection is lost
+# connects again. The run's summary names anything else on the disk that was
+# not copied.
+#
+# AN OLDER SERVICE. A service deployed before the list existed answers 404 for
+# it. The run then copies what that service can export (the record's ledger and
+# the lock ledgers), says so in a warning, and still succeeds.
 #
 # WHAT IT NEEDS.
 #   secret   EVENT_X_ADMIN_TOKEN  the same value as EVENT_X_ADMIN_TOKEN on
@@ -27,7 +38,8 @@ name: Event shadow ledger backup
 #
 # RESTORING is a manual operator step. Download the artifact from the run,
 # check each file with `sha256sum -c <file>.sha256`, and put it back on the
-# service's disk by hand. Nothing here writes to the service.
+# service's disk by hand, at the path manifest.json gives for it (the copy
+# keeps each file's own name). Nothing here writes to the service.
 #
 # CAVEAT: THE NIGHTLY RUN NEEDS THE DEFAULT BRANCH. GitHub runs `schedule`
 # triggers only from the repository's default branch. The default branch is
@@ -56,7 +68,7 @@ defaults:
 
 jobs:
   backup:
-    name: Copy the ledgers off the disk
+    name: Copy every kept file off the disk
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -64,7 +76,7 @@ jobs:
 
     steps:
       # No shell tracing anywhere in this job: `set -x` would print the token.
-      - name: Fetch the ledgers
+      - name: Fetch the files
         id: fetch
         env:
           EVENT_X_ADMIN_TOKEN: ${{ secrets.EVENT_X_ADMIN_TOKEN }}
@@ -77,8 +89,10 @@ jobs:
           fi
 
           base="${EVENT_SHADOW_URL%/}"
+          # https, or this machine itself (a rehearsal against a service run locally): never the clear over a network.
           case "$base" in
             https://*) ;;
+            http://127.0.0.1:*|http://localhost:*) ;;
             *)
               echo "::error::EVENT_SHADOW_URL must start with https:// so the token is never sent in the clear."
               exit 1
@@ -112,29 +126,77 @@ jobs:
 
           mkdir -p backup
 
-          fetch "/api/shadow/export" "backup/event-shadow-ledger.jsonl"
-          if [ ! -s backup/event-shadow-ledger.jsonl ]; then
-            echo "::error::The main ledger came back empty. The service answers an empty body when the ledger file is not on its disk; check the disk and EVENT_SHADOW_LEDGER_PATH before trusting any backup."
+          # The service's own list of what it keeps. 404 means a service deployed before the list existed.
+          list_status="$(curl --silent --show-error --retry 4 --retry-delay 20 --connect-timeout 20 --max-time 120 \
+            --header @"$header_file" --output "$RUNNER_TEMP/files.json" --write-out '%{http_code}' \
+            "${base}/api/shadow/export/files")" || list_status="none"
+
+          if [ "$list_status" = "200" ]; then
+            if ! jq -e '.ok == true and (.files | type == "array")' "$RUNNER_TEMP/files.json" > /dev/null; then
+              echo "::error::/api/shadow/export/files did not answer with a list of files."
+              exit 1
+            fi
+            cp "$RUNNER_TEMP/files.json" backup/manifest.json
+            count="$(jq '.files | length' backup/manifest.json)"
+            if [ "$count" -eq 0 ]; then
+              echo "::error::The service listed no files. Check the disk and EVENT_SHADOW_LEDGER_PATH before trusting any backup."
+              exit 1
+            fi
+            i=0
+            while [ "$i" -lt "$count" ]; do
+              name="$(jq -r ".files[$i].name" backup/manifest.json)"
+              listed="$(jq -r ".files[$i].bytes" backup/manifest.json)"
+              i=$((i + 1))
+              # The name becomes part of a URL and a file name here: only a plain name is used.
+              if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._~-]{0,150}$ ]] || [ "$name" = "manifest.json" ]; then
+                echo "::error::The service listed a file whose name is not a plain file name; refusing to build a URL from it."
+                exit 1
+              fi
+              fetch "/api/shadow/export?file=${name}" "backup/${name}"
+              copied="$(stat -c %s "backup/${name}")"
+              # A file only grows between the list and the copy, except one a reset moved lines out of.
+              if [ "$listed" -gt 0 ] && [ "$copied" -eq 0 ]; then
+                echo "::error::${name} was listed at ${listed} bytes and came back empty."
+                exit 1
+              fi
+            done
+            echo "mode=every file the service keeps" >> "$GITHUB_OUTPUT"
+          elif [ "$list_status" = "404" ]; then
+            echo "::warning title=Only the ledgers were copied::This service does not list its files yet (deploy the latest commit to atticus-event-shadow). The record's ledger and the lock ledgers were copied; the hedge receipts, the pending trail, the parlay ledger, the terms acceptances, the fingerprints and the archives were not."
+            fetch "/api/shadow/export" "backup/event-shadow-ledger.jsonl"
+            # A lock ledger may be empty: no lock has been taken with that key yet.
+            fetch "/api/shadow/export?ledger=lock" "backup/event-shadow-lock-ledger.jsonl"
+            fetch "/api/shadow/holders" "$RUNNER_TEMP/holders.json"
+            holders="$(jq -r '.holders[].holder | select(. != "(shared)")' "$RUNNER_TEMP/holders.json")"
+            for holder in $holders; do
+              if ! [[ "$holder" =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]]; then
+                echo "::error::/api/shadow/holders listed a holder that is not an alias; refusing to build a URL from it."
+                exit 1
+              fi
+              fetch "/api/shadow/export?ledger=lock&holder=${holder}" "backup/event-shadow-lock-ledger-${holder}.jsonl"
+            done
+            echo "mode=the ledgers only (older service)" >> "$GITHUB_OUTPUT"
+          elif [ "$list_status" = "403" ]; then
+            echo "::error::/api/shadow/export/files answered 403. The EVENT_X_ADMIN_TOKEN secret does not match the service's, or the service has no admin token set."
+            exit 1
+          else
+            echo "::error::/api/shadow/export/files failed: HTTP ${list_status}."
             exit 1
           fi
 
-          # A lock ledger may be empty: no lock has been taken with that key yet.
-          fetch "/api/shadow/export?ledger=lock" "backup/event-shadow-lock-ledger.jsonl"
-
-          fetch "/api/shadow/holders" "$RUNNER_TEMP/holders.json"
-          holders="$(jq -r '.holders[].holder | select(. != "(shared)")' "$RUNNER_TEMP/holders.json")"
-          for holder in $holders; do
-            if ! [[ "$holder" =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]]; then
-              echo "::error::/api/shadow/holders listed a holder that is not an alias; refusing to build a URL from it."
-              exit 1
-            fi
-            fetch "/api/shadow/export?ledger=lock&holder=${holder}" "backup/event-shadow-lock-ledger-${holder}.jsonl"
-          done
+          # The record's ledger, under whichever name it was copied: an empty one is a missing file on the disk.
+          record="$(if [ -f backup/manifest.json ]; then jq -r '[.files[] | select(.key == "record" and .base == true)][0].name // empty' backup/manifest.json; else echo event-shadow-ledger.jsonl; fi)"
+          if [ -z "$record" ] || [ ! -s "backup/${record}" ]; then
+            echo "::error::The record's ledger is missing or came back empty. Check the disk and EVENT_SHADOW_LEDGER_PATH before trusting any backup."
+            exit 1
+          fi
 
           echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
 
       - name: Check the copy and write the summary
         id: check
+        env:
+          BACKUP_MODE: ${{ steps.fetch.outputs.mode }}
         run: |
           set -euo pipefail
           cd backup
@@ -144,26 +206,56 @@ jobs:
             echo
             echo "Source: ${EVENT_SHADOW_URL%/}"
             echo
-            echo "| File | Bytes | Records | Unreadable lines | sha256 |"
-            echo "| --- | ---: | ---: | ---: | --- |"
+            echo "Copied: ${BACKUP_MODE}."
+            echo
+            echo "| File | What it is | Bytes | Records | Unreadable | sha256 |"
+            echo "| --- | --- | ---: | ---: | ---: | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           bad_total=0
-          for file in *.jsonl; do
+          for file in *; do
+            case "$file" in manifest.json|*.sha256) continue ;; esac
             bytes="$(stat -c %s "$file")"
-            # A record is one non-blank line; every record must be a JSON object.
-            records="$(grep -c '[^[:space:]]' "$file" || true)"
-            bad="$(jq -R -n '[inputs | select(test("\\S")) | (try (fromjson | if type == "object" then 0 else 1 end) catch 1)] | add // 0' "$file")"
+            role="$(if [ -f manifest.json ]; then jq -r --arg n "$file" '[.files[] | select(.name == $n)][0].role // ""' manifest.json; fi)"
+            case "$file" in
+              *.jsonl)
+                # A record is one non-blank line; every record must be a JSON object.
+                records="$(grep -c '[^[:space:]]' "$file" || true)"
+                bad="$(jq -R -n '[inputs | select(test("\\S")) | (try (fromjson | if type == "object" then 0 else 1 end) catch 1)] | add // 0' "$file")"
+                ;;
+              *.json)
+                # One JSON document; an empty file is not one.
+                records="1"
+                if jq -e . "$file" > /dev/null 2>&1; then bad=0; else bad=1; fi
+                ;;
+              *)
+                records="n/a"
+                bad=0
+                ;;
+            esac
             sha256sum "$file" > "$file.sha256"
             sum="$(cut -d ' ' -f 1 "$file.sha256")"
-            echo "| ${file} | ${bytes} | ${records} | ${bad} | \`${sum}\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| ${file} | ${role} | ${bytes} | ${records} | ${bad} | \`${sum}\` |" >> "$GITHUB_STEP_SUMMARY"
             echo "${file}: ${bytes} bytes, ${records} records, ${bad} unreadable, sha256 ${sum}"
             bad_total=$((bad_total + bad))
           done
 
+          if [ -f manifest.json ]; then
+            sha256sum manifest.json > manifest.json.sha256
+            {
+              echo
+              echo "Not on the disk yet (nothing of that kind has been written):"
+              jq -r 'if (.missing | length) == 0 then "- none" else .missing[] | "- \(.role)" end' manifest.json
+              echo
+              echo "On the disk and not copied:"
+              jq -r 'if ((.notCopied | length) + (.others | length)) == 0 then "- none" else ((.notCopied[] | "- \(.name): \(.why)"), (.others[] | "- \(.name): not one of the files the service writes")) end' manifest.json
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           {
             echo
             echo "Check a downloaded file with \`sha256sum -c <file>.sha256\`."
+            if [ -f manifest.json ]; then echo "manifest.json says where on the disk each file goes back."; fi
           } >> "$GITHUB_STEP_SUMMARY"
           echo "bad=${bad_total}" >> "$GITHUB_OUTPUT"
 

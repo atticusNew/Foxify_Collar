@@ -249,19 +249,31 @@ curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/api/shadow/hedges/preflight
 
 ### Take a backup by hand [today]
 
+The service lists every file it keeps, and exports each one byte for byte by its name. This copies all of them into a folder named for today:
+
 ```
-curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/api/shadow/export" > event-shadow-ledger-$(date +%F).jsonl
-curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/api/shadow/export?ledger=lock" > event-shadow-lock-ledger-$(date +%F).jsonl
-curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/api/shadow/export?ledger=lock&holder=<alias>" > event-shadow-lock-ledger-<alias>-$(date +%F).jsonl
+mkdir -p backup-$(date +%F) && cd backup-$(date +%F)
+curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/api/shadow/export/files" > manifest.json
+for f in $(jq -r '.files[].name' manifest.json); do
+  curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/api/shadow/export?file=$f" > "$f"
+done
+ls -l
+cd ..
 ```
 
-Run the third line once for each named holder. The files are the ledgers byte for byte. Check that the first file is not empty: the service answers an empty body when the ledger is missing from its disk.
+`manifest.json` is the list. For each file it gives the name, what it is, its size and its path on the disk. Check that `event-shadow-ledger.jsonl` is not empty: the service answers an empty body when a file is missing from its disk.
 
-**What the export does not reach.** The hedge receipts, the parlay ledger, archived ledgers, the members' sealed connections and, after #399, the pending trail. Those live only on the disk. You can read the most recent 200 hedge receipts with `GET /api/shadow/hedges?limit=200`, but that is a view, not a copy of the file.
+**What is copied.** The record's ledger, the shared lock ledger and every holder's (including a holder whose key was removed), the pending trail of real-money lock attempts, the hedge receipts, the parlay ledger, the daily check against the venues' fills, the terms acceptances, the scan refusal counts, the daily fingerprints of each ledger, and every file a reset archived. The list is worked out from the disk, so a file a later change adds beside a ledger is copied without anyone adding it to a list.
+
+**What is not copied.** The members' sealed venue connections (`member-tokens.json`). They are credentials, so they stay on the disk only. If that file is lost, each member connects again. `manifest.json` names it under `notCopied`, and names under `others` any file on the disk that is not one of the service's.
+
+The two older commands still work for a single ledger: `"$S/api/shadow/export"` is the record's ledger and `"$S/api/shadow/export?ledger=lock&holder=<alias>"` is one holder's.
 
 ### The nightly backup [after #404]
 
-The workflow "Event shadow ledger backup" runs the three exports above at 10:23 UTC each day and keeps the files for 90 days as a private artifact named `event-shadow-ledger-<date>`, with a `.sha256` file beside each.
+The workflow "Event shadow ledger backup" copies the same list at 10:23 UTC each day and keeps the files for 90 days as a private artifact named `event-shadow-ledger-<date>`, with a `.sha256` file beside each and `manifest.json` among them. The run's summary page lists every file copied, what it is, and what was on the disk and not copied.
+
+If the service has not been redeployed since this change, it has no list. The run then copies only the record's ledger and the lock ledgers, and says so in a yellow warning on the run's page. Redeploy `atticus-event-shadow` and the next run copies everything.
 
 Before it can work:
 
@@ -282,7 +294,15 @@ sha256sum -c event-shadow-ledger.jsonl.sha256
 ```
 
 3. Stop new writes: steps A, B and C of section 3.
-4. Put each file back on the disk under the name the service reads. The backup's names differ from the disk's:
+4. Put each file back on the disk. Each file in the copy has the name it has on the disk, and `manifest.json` gives its full path. This prints the list:
+
+```
+jq -r '.files[] | "\(.name)  ->  \(.path)"' manifest.json
+```
+
+Put back every file on that list, not only the ledgers. A ledger's `.fingerprints.jsonl` file is the record of what was published for that ledger each day, so it goes back with it.
+
+A copy made before this change (or by the yellow-warning run described above) has only three kinds of file, under different names:
 
 | Backup file | Name on the disk |
 | --- | --- |
@@ -430,6 +450,6 @@ All paths are in this repo. "PR branch" means `cursor/event-stx-combo-rfq-defaul
 - Payment: `cashDue` and `CASH_LEGS` in `services/api/src/eventCollar/crossVenue/shadowLedger.ts`; `handleCash` and `holdersSummary` in `eventShadowWorker.ts`.
 - $16.12, $25.36, seven locks, $13.85: `https://atticus-event-shadow.onrender.com/api/shadow`, read 10 November 2026 at 22:55 UTC. Sum of `cashDue[].outstandingCents` over positions with `source` "lock" and a hedge route: 1,612 cents to the holder, 2,536 cents to the writer; every `paidCents` is 0.
 - The handoff's "paid to the holder on 10-18" and the October token note: `docs/AGENT_HANDOFF.md` sections 3 and 8.
-- Export route: `/api/shadow/export` in `eventShadowWorker.ts`. Disk names of the lock ledgers: `lockLedgerPathFor`, same file. Nightly backup, its secret, what it does not copy and the default-branch caveat: `.github/workflows/event-ledger-backup.yml` (PR branch, #404). Hourly check: `.github/workflows/event-uptime.yml` (same branch).
+- Export routes: `/api/shadow/export` and `/api/shadow/export/files` in `eventShadowWorker.ts`; the list of kept files: `src/eventCollar/crossVenue/keptFiles.ts`. Disk names of the lock ledgers: `lockLedgerPathFor`, in the worker. Nightly backup, its secret, what it does not copy and the default-branch caveat: `.github/workflows/event-ledger-backup.yml` (PR branch, #404). Hourly check: `.github/workflows/event-uptime.yml` (same branch).
 - Polymarket US key, where it goes and what it does: `render-event-demos.yaml` (PR branch, #401); the check route and its `say` line in `eventShadowWorker.ts` (PR branch); "Not verified against the venue" from the commit message of #401.
 - Build filters and tests on pull requests: `render-event-demos.yaml` and `.github/workflows/event-tests.yml` (PR branch, #403).

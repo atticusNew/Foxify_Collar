@@ -45,8 +45,11 @@
  *      · EVENT_SHADOW_FINGERPRINT_CHECK_MS (how often each ledger is hashed again from its first byte
  *      and compared with what was published, default one day; also done at start-up)
  *
- * Durability: the ledger lives on one Render disk. GET /api/shadow/export streams
- * the raw JSONL so it can be mirrored off-box on a schedule
+ * Durability: everything lives on one Render disk. GET /api/shadow/export/files lists every
+ * file the service keeps (keptFiles.ts) and GET /api/shadow/export?file=<name> is one of them
+ * byte for byte, so the whole disk's record can be mirrored off-box on a schedule
+ * (.github/workflows/event-ledger-backup.yml does it nightly). GET /api/shadow/export alone is
+ * still the record's ledger
  * (`curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" https://<service>/api/shadow/export > backup-$(date +%F).jsonl`).
  *
  * Fingerprints: GET /api/shadow/fingerprints (public) lists one SHA-256 per closed UTC day of the
@@ -137,6 +140,7 @@ import { VENUE_NAMES, hedgeVenueOf, hedgeVenuesFromEnv, rulesFor, type HedgeRout
 import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { parseAdminAuthFromEnv, tokenBucketLimiter } from "../src/eventCollar/crossVenue/eventFunnel";
+import { keptFileByName, keptFiles, type KeptBase, type KeptFilesList } from "../src/eventCollar/crossVenue/keptFiles";
 import { handleOperatorSignIn, isPagePath, OPERATOR_SIGN_IN_PATH, OPERATOR_SIGN_OUT_PATH, operatorCheck, operatorSessionConfigFromEnv, signInLocation, wantsHtml, type SignInDeps } from "../src/eventCollar/crossVenue/operatorSession";
 import {
   BookHedgeExecutor,
@@ -460,6 +464,7 @@ const OPERATOR_PATHS = new Set([
   "/capital",
   "/api/shadow/capital",
   "/api/shadow/export",
+  "/api/shadow/export/files",
   "/api/shadow/reset",
   "/api/shadow/lastleg",
   "/api/shadow/lastleg.csv",
@@ -4964,6 +4969,47 @@ function publicMemberBuyBack(b: NonNullable<ShadowPosition["closeMemberBuyBack"]
   return { ...rest, orderId: null, clientOrderId: "" };
 }
 
+/**
+ * EVERY FILE THIS SERVICE KEEPS (keptFiles.ts): the files it is set to write, and everything
+ * beside them that is one of theirs (a holder's ledger, a ledger's daily fingerprints, what a
+ * reset archived). GET /api/shadow/export/files lists them; GET /api/shadow/export?file=<name>
+ * is one of them byte for byte. The nightly backup copies the whole list. The members' sealed
+ * connections are listed and never exported.
+ */
+function keptFilesList(): KeptFilesList {
+  const bases: KeptBase[] = [
+    { key: "record", role: "the record's ledger", path: LEDGER_PATH },
+    { key: "lock", role: "lock ledger", path: LOCK_LEDGER_PATH },
+    { key: "pending", role: "real-money lock attempts (the pending trail)", path: PENDING_PATH },
+    { key: "receipts", role: "hedge receipts", path: RECEIPTS_PATH },
+    { key: "parlay", role: "parlay ledger", path: LASTLEG_PATH },
+    { key: "recon", role: "daily check against the venues' fills", path: RECON_PATH },
+    { key: "terms", role: "terms acceptances", path: TERMS_PATH },
+    { key: "refusals", role: "scan refusal counts", path: REFUSALS_PATH },
+  ];
+  // listed whether or not the member page is switched on now: a store left on the disk from when it was is still never exported
+  const memberStore = memberSessions?.cfg.storePath ?? join(dirname(LOCK_LEDGER_PATH), "member-tokens.json");
+  bases.push({ key: "combo-legs", role: "where members' combination picks were placed", path: join(dirname(memberStore), "member-combo-legs.json") });
+  bases.push({ key: "member-connections", role: "members' sealed venue connections", path: memberStore, notCopied: "credentials: kept on the disk only; a member whose connection is lost connects again" });
+  return keptFiles(bases);
+}
+
+/** One file, byte for byte, as it stood when the request arrived: lines appended while it is sent are not part of this copy. */
+function streamFileAsItStands(res: ServerResponse, path: string, downloadName: string, contentType: string): void {
+  const size = existsSync(path) ? statSync(path).size : 0;
+  res.writeHead(200, {
+    "content-type": contentType,
+    "content-length": size,
+    ...(size > 0 ? { "content-disposition": `attachment; filename="${downloadName}"` } : {}),
+    "cache-control": "no-store",
+  });
+  if (size === 0) {
+    res.end();
+    return;
+  }
+  createReadStream(path, { start: 0, end: size - 1 }).pipe(res);
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -5182,9 +5228,42 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
       sendJson(res, 200, { ...fingerprintReport(status, { atIso: new Date().toISOString(), operator }), ledger: lockFile ? `lock${fpHolder ? `:${fpHolder}` : ""}` : "record" });
       return;
     }
+    if (url.pathname === "/api/shadow/export/files") {
+      // Every file the service keeps, by name, with where it is on the disk: what a backup copies
+      // and what a restore puts back. Also what is listed and not copied, and why.
+      const list = keptFilesList();
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(
+        JSON.stringify(
+          {
+            ok: true,
+            at: new Date().toISOString(),
+            note: "Each name under files is exported byte for byte at /api/shadow/export?file=<name>. A restore puts the file back at its path.",
+            ...list,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+    if (url.pathname === "/api/shadow/export" && url.searchParams.has("file")) {
+      // One of the kept files by its name on the list. The name is looked up; it is never a path.
+      const list = keptFilesList();
+      const asked = url.searchParams.get("file");
+      const file = keptFileByName(list, asked);
+      if (!file) {
+        const held = list.notCopied.find((f) => f.name === asked);
+        sendJson(res, held ? 403 : 404, held ? { ok: false, error: "not_exported", message: `${held.name} is listed and never exported: ${held.why}.` } : { ok: false, error: "not_found", message: "No kept file by that name. GET /api/shadow/export/files lists them." });
+        return;
+      }
+      streamFileAsItStands(res, file.path, file.name, file.format === "json" ? "application/json; charset=utf-8" : file.format === "jsonl" ? "application/x-ndjson; charset=utf-8" : "application/octet-stream");
+      return;
+    }
     if (url.pathname === "/api/shadow/export") {
       // The raw append-only ledger, byte for byte: the artifact to mirror off-box. ?ledger=lock for the
-      // shared lock ledger, &holder=<alias> for one holder's.
+      // shared lock ledger, &holder=<alias> for one holder's. Every other kept file: ?file=<name>,
+      // from the list at /api/shadow/export/files.
       const lockFile = url.searchParams.get("ledger") === "lock";
       const exportHolder = lockFile ? (holderParam(url) ?? null) : null;
       if (exportHolder && !HOLDER_ALIAS_RE.test(exportHolder)) {
@@ -5192,20 +5271,7 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
         return;
       }
       const path = lockFile ? lockLedgerPathFor(exportHolder) : LEDGER_PATH;
-      const stats = ledgerStats(path);
-      if (!stats.exists) {
-        res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "content-length": 0, "cache-control": "no-store" });
-        res.end();
-        return;
-      }
-      const size = statSync(path).size;
-      res.writeHead(200, {
-        "content-type": "application/x-ndjson; charset=utf-8",
-        "content-length": size,
-        "content-disposition": `attachment; filename="event-shadow-${lockFile ? `lock-${exportHolder ? `${exportHolder}-` : ""}` : ""}ledger-${new Date().toISOString().slice(0, 10)}.jsonl"`,
-        "cache-control": "no-store",
-      });
-      createReadStream(path).pipe(res);
+      streamFileAsItStands(res, path, `event-shadow-${lockFile ? `lock-${exportHolder ? `${exportHolder}-` : ""}` : ""}ledger-${new Date().toISOString().slice(0, 10)}.jsonl`, "application/x-ndjson; charset=utf-8");
       return;
     }
     if (url.pathname === "/api/shadow/positions.csv") {
