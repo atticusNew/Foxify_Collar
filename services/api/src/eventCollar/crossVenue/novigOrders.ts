@@ -65,6 +65,8 @@ export interface NovigOrder {
 export interface NovigFill {
   fillId: string;
   orderId: string;
+  /** the order's `clientId`, when it had one (the venue's list of fills carries it) */
+  clientId?: string;
   marketId: string;
   outcomeId: string;
   qty: number;
@@ -190,6 +192,35 @@ export function sumNovigFills(fills: NovigFill[]): { contracts: number; costMicr
   return { contracts, costMicro, feeMicro };
 }
 
+/** One order's fills in the trail's units: what `place` hands the executor and what a later read of the same fills must give again. */
+export interface NovigFillMoney {
+  unitsMilli: number;
+  avgPriceMilli: number;
+  /** a buy: what the contracts cost, the fee in; the offset: the net proceeds the pair pays at the game */
+  costCents: number;
+  feesCents: number;
+}
+
+/**
+ * The money of one order from its summed fills. A buy costs what the venue charged, fee in, cents
+ * rounded up. The offset (`sell`) pairs each contract of the holder's outcome with one hedge
+ * contract: the pair pays 1 cent at the game, so the proceeds are that less what was paid, on at
+ * most the hedge's own size, cents rounded down.
+ */
+export function novigFillMoney(sum: ReturnType<typeof sumNovigFills>, intentUnitsMilli: number, sell: boolean): NovigFillMoney {
+  const filledMilli = sum.contracts * 10;
+  const paidMicro = sum.costMicro + sum.feeMicro;
+  const feesCents = Math.ceil(sum.feeMicro / 10_000);
+  if (!sell) {
+    const costCents = Math.ceil(paidMicro / 10_000);
+    return { unitsMilli: filledMilli, avgPriceMilli: filledMilli > 0 ? Math.ceil((costCents * 10_000) / filledMilli) : 0, costCents, feesCents };
+  }
+  const unitsMilli = Math.min(filledMilli, intentUnitsMilli);
+  const paidForUnitsMicro = filledMilli > 0 ? Math.ceil((paidMicro * unitsMilli) / filledMilli) : 0;
+  const netCents = Math.max(0, Math.floor(unitsMilli / 10 - paidForUnitsMicro / 10_000));
+  return { unitsMilli, avgPriceMilli: unitsMilli > 0 ? Math.floor((netCents * 10_000) / unitsMilli) : 0, costCents: netCents, feesCents };
+}
+
 // ---------------------------------------------------------------------------
 // client
 // ---------------------------------------------------------------------------
@@ -307,36 +338,19 @@ export class NovigOrderClient {
       throw new Error(`novig orders: order ${orderId} ${status || "unread"} with nothing filled at or under ${plan.body.price} (fill or kill)${fee.source === "default" ? "; fee rule unread, taken as charged" : ""}`);
     }
     const filledMilli = sum.contracts * 10;
-    const paidMicro = sum.costMicro + sum.feeMicro;
-    const feesCents = Math.ceil(sum.feeMicro / 10_000);
+    const money = novigFillMoney(sum, intent.unitsMilli, sell);
     const notes: string[] = [];
     if (fee.source === "default") notes.push("fee rule unread; the limit assumed the fee charged");
     if (!sell) {
-      const costCents = Math.ceil(paidMicro / 10_000);
       notes.push(`${sum.contracts} contracts at ${(sum.costMicro / sum.contracts / 10_000).toFixed(3)}${sum.feeMicro > 0 ? `, fee $${(sum.feeMicro / 1_000_000).toFixed(4)}` : fee.charged ? "" : ", no fee pre-game"}`);
-      return {
-        orderId,
-        unitsMilli: filledMilli,
-        avgPriceMilli: Math.ceil((costCents * 10_000) / filledMilli),
-        costCents,
-        feesCents,
-        status: status === "FILLED" ? "executed" : status.toLowerCase() || "unknown",
-        note: notes.join("; "),
-      };
+    } else {
+      // the offset: every contract of the holder's outcome bought settles against one hedge contract
+      notes.push(`offset bought: ${sum.contracts} contracts of outcome ${plan.body.outcomeId} at ${(sum.costMicro / sum.contracts / 10_000).toFixed(3)}; the pair settles at the game and the proceeds land then, not today`);
+      if (filledMilli > intent.unitsMilli) notes.push(`${(filledMilli - intent.unitsMilli) / 1000} units over the hedge, a windfall if the holder's side wins`);
     }
-    // the offset: every contract of the holder's outcome bought settles against one hedge
-    // contract; the pair pays 1 cent at the game, so the proceeds are that less what was paid
-    const unitsMilli = Math.min(filledMilli, intent.unitsMilli);
-    const paidForUnitsMicro = Math.ceil((paidMicro * unitsMilli) / filledMilli);
-    const netCents = Math.max(0, Math.floor(unitsMilli / 10 - paidForUnitsMicro / 10_000));
-    notes.push(`offset bought: ${sum.contracts} contracts of outcome ${plan.body.outcomeId} at ${(sum.costMicro / sum.contracts / 10_000).toFixed(3)}; the pair settles at the game and the proceeds land then, not today`);
-    if (filledMilli > intent.unitsMilli) notes.push(`${(filledMilli - intent.unitsMilli) / 1000} units over the hedge, a windfall if the holder's side wins`);
     return {
       orderId,
-      unitsMilli,
-      avgPriceMilli: unitsMilli > 0 ? Math.floor((netCents * 10_000) / unitsMilli) : 0,
-      costCents: netCents,
-      feesCents,
+      ...money,
       status: status === "FILLED" ? "executed" : status.toLowerCase() || "unknown",
       note: notes.join("; "),
     };
@@ -357,6 +371,26 @@ export class NovigOrderClient {
   async fills(orderId: string): Promise<NovigFill[]> {
     const b = await this.call<unknown>("GET", "/v3/portfolio/fills", `order=${encodeURIComponent(orderId)}`);
     return flattenFills(b).filter((f) => f.orderId === orderId);
+  }
+
+  /**
+   * Every fill in the key's own account in a time window (epoch ms, both ends excluded by the
+   * venue), every page: GET /v3/portfolio/fills?startsAfter=&startsBefore=&limit=&after=. A
+   * read, never an order. Stops with an error rather than a short list if the pages do not end.
+   */
+  async fillsBetween(afterMs: number, beforeMs: number, maxPages = 20): Promise<NovigFill[]> {
+    const out: NovigFill[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < maxPages; page += 1) {
+      const q = new URLSearchParams({ startsAfter: String(Math.floor(afterMs)), startsBefore: String(Math.floor(beforeMs)), limit: "5000" });
+      if (cursor) q.set("after", cursor);
+      const b = await this.call<unknown>("GET", "/v3/portfolio/fills", q.toString());
+      out.push(...flattenFills(b));
+      const next = (b as { next?: unknown } | null)?.next;
+      if (typeof next !== "string" || !next) return out;
+      cursor = next;
+    }
+    throw new Error(`novig orders: the fills list did not end within ${maxPages} pages`);
   }
 
   /** Cancel; the venue answers with the order as it stood at the request. A finished order answers 404 or 409: read it instead. */

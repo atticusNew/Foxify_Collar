@@ -168,6 +168,10 @@ import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, typ
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderHoldersHtml, renderPilotCheckHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
+import { buildRealizedBook, publicRealSummary, realizedMonthlyCsv, type RealizedBook } from "../src/eventCollar/crossVenue/realizedBook";
+import { VERDICT_WORDS, isUtcDay, reconcileDay, type DayRecon } from "../src/eventCollar/crossVenue/realizedRecon";
+import { appendReconRun, dailyCheckDue, differsAlertText, latestRunPerDay, loadReconRuns, reconRunOf, reconRunView, type ReconRunRecord } from "../src/eventCollar/crossVenue/realizedReconLog";
+import { readVenueFills, venueFillReadersFromEnv, type ReadOptions, type VenueFillReaders, type VenueFillReadersView } from "../src/eventCollar/crossVenue/venueFillReaders";
 import { renderScoreboardHtml } from "./eventScoreboardHtml";
 import { memberAppHtml, memberPrivacyHtml } from "./memberAppHtml";
 import { ATTICUS_BIRD_PNG, ATTICUS_WORDMARK_PNG, ICON_180_PNG, ICON_192_PNG, ICON_512_PNG, STX_LOGO_PNG } from "./memberAppAssets";
@@ -371,6 +375,23 @@ const LOCK_LEDGER_PATH = process.env.EVENT_SHADOW_LOCK_LEDGER_PATH || join(dirna
 const PENDING_PATH = process.env.EVENT_SHADOW_LOCK_PENDING_PATH || join(dirname(LOCK_LEDGER_PATH), "lock-pending.jsonl");
 const hedgeChoice = hedgeExecutorFromEnv(process.env, null, { receiptsPath: RECEIPTS_PATH });
 /**
+ * THE DAILY CHECK (realizedRecon.ts): once a day the UTC day that ended last is compared, our
+ * ledger's real fills against each venue's own, and the result is appended here, beside the lock
+ * ledger. The venues are read with the keys already in the env (venueFillReaders.ts): signed
+ * GETs only. A venue with no key is "could not be checked: no key for <venue>". The timer waits
+ * EVENT_REALIZED_RECON_AFTER_MINUTES past midnight UTC so the venues' lists hold the day's last
+ * fills; EVENT_REALIZED_RECON_DAILY=0 turns the timer off and leaves the operator's route.
+ */
+const RECON_PATH = process.env.EVENT_REALIZED_RECON_PATH || join(dirname(LOCK_LEDGER_PATH), "realized-recon.jsonl");
+const RECON_DAILY = process.env.EVENT_REALIZED_RECON_DAILY !== "0";
+const RECON_AFTER_MIN = (() => {
+  const n = Number(process.env.EVENT_REALIZED_RECON_AFTER_MINUTES ?? 30);
+  return Number.isFinite(n) && n >= 0 ? Math.min(Math.floor(n), 23 * 60) : 30;
+})();
+const RECON_TICK_MS = 5 * 60_000;
+let fillReaders: { readers: VenueFillReaders; view: VenueFillReadersView } = venueFillReadersFromEnv(process.env);
+let fillReadOpts: ReadOptions = {};
+/**
  * Kalshi account administration (kalshiAccount.ts), with the same key the direct hedge signs
  * with, in any strategy: the tier (API rate tier, not an account type), the subaccounts and their
  * cash per shard, and the transfers that put cash where a pod's subaccount will spend it. Reads
@@ -422,6 +443,9 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/venues.csv",
   "/api/shadow/venues/catalog",
   "/api/shadow/ext-telemetry/summary",
+  "/api/shadow/realized",
+  "/api/shadow/realized.csv",
+  "/api/shadow/realized/check",
 ]);
 
 const alertCfg = parseShadowAlertsFromEnv(process.env);
@@ -4307,6 +4331,84 @@ async function healthTick(): Promise<void> {
   }
 }
 
+/** Our own real fills, replayed from the hedge trail, the pending trail and every lock ledger (realizedBook.ts). */
+function realizedBook(): RealizedBook {
+  return buildRealizedBook({
+    receipts: loadHedgeReceipts(RECEIPTS_PATH),
+    pending: loadPending(PENDING_PATH),
+    locks: allLocks().map(({ p, holder }) => ({ p, holder })),
+  });
+}
+
+/** One UTC day checked against the venues, now: every venue is asked once, and one that cannot be read says so. */
+async function checkDay(day: string): Promise<DayRecon> {
+  const book = realizedBook();
+  const reads = await readVenueFills(day, book.fills, book.notCounted, fillReaders.readers, fillReadOpts);
+  return reconcileDay({ day, fills: book.fills, notCounted: book.notCounted, reads });
+}
+
+let reconRunning = false;
+/** days the timer has tried in this process: a day is tried once, whatever came of it */
+const reconTried = new Set<string>();
+let lastReconTickAt: string | null = null;
+let lastReconError: string | null = null;
+
+/** Check a day and keep the result: one line appended, and the alert when a venue differs. */
+async function keepDayCheck(day: string, trigger: ReconRunRecord["trigger"]): Promise<ReconRunRecord> {
+  const record = reconRunOf(await checkDay(day), new Date().toISOString(), trigger, fillReaders.view);
+  try {
+    appendReconRun(RECON_PATH, record);
+    lastReconError = null;
+  } catch (err) {
+    lastReconError = `the check for ${day} ran and could not be kept: ${String(err instanceof Error ? err.message : err)}`;
+    void alerter({ kind: "ledger_write_failed", message: `could not append the daily check for ${day} to ${RECON_PATH}: ${String(err instanceof Error ? err.message : err)}` });
+  }
+  const differs = differsAlertText(record);
+  if (differs) void alerter({ kind: "venue_fills_differ", message: differs });
+  return record;
+}
+
+/**
+ * The timer's run: the UTC day that ended last, once. A day with a kept line is not run again, a
+ * day this process already tried is not tried again, and nothing here retries a venue.
+ */
+async function reconTick(now = new Date()): Promise<ReconRunRecord | null> {
+  if (!RECON_DAILY || reconRunning) return null;
+  lastReconTickAt = now.toISOString();
+  let day: string | null = null;
+  try {
+    day = dailyCheckDue(now, RECON_AFTER_MIN * 60_000, new Set(loadReconRuns(RECON_PATH).map((r) => r.day)), reconTried);
+    if (!day) return null;
+    reconTried.add(day);
+    reconRunning = true;
+    return await keepDayCheck(day, "daily");
+  } catch (err) {
+    lastReconError = `the check${day ? ` for ${day}` : ""} did not run: ${String(err instanceof Error ? err.message : err)}`;
+    return null;
+  } finally {
+    reconRunning = false;
+  }
+}
+
+/** The daily check for the operator's health body: on or off, which key reads what, the last kept day and the last one that differed. */
+function reconHealth(): Record<string, unknown> {
+  const runs = latestRunPerDay(loadReconRuns(RECON_PATH));
+  const differing = runs.find((r) => r.verdict === "differs");
+  return {
+    daily: RECON_DAILY,
+    afterMinutesUtc: RECON_AFTER_MIN,
+    path: RECON_PATH,
+    ...ledgerStats(RECON_PATH),
+    readers: fillReaders.view,
+    running: reconRunning,
+    lastTickAt: lastReconTickAt,
+    lastError: lastReconError,
+    lastRun: runs[0] ? reconRunView(runs[0]) : null,
+    // the newest day whose kept check differs, until a later check of that day says otherwise
+    lastDiffers: differing ? reconRunView(differing) : null,
+  };
+}
+
 /**
  * The public liveness body: is it up, is it scanning, how many positions. Paths on disk, hedge
  * strategy and venues, error text and failure counters are operator information (healthBody).
@@ -4381,6 +4483,29 @@ function healthBody(): Record<string, unknown> {
     alertsConfigured: Boolean((alertCfg.telegramBotToken && alertCfg.telegramChatId) || alertCfg.webhookUrl),
     // real money open right now against its caps (exposureCaps.ts): per game (the largest few), per hedge venue, per holder; open, cap, room left, in cents
     exposure: exposureHealth(),
+    // our own real fills (realizedBook.ts) and the daily check of them against the venues' own (realizedRecon.ts)
+    realized: (() => {
+      try {
+        const book = realizedBook();
+        const t = book.totals;
+        return {
+          realFills: t.realFills,
+          realLocks: t.realLocks,
+          open: t.open,
+          settled: t.settled,
+          closed: t.closed,
+          unresolved: t.unresolved,
+          unattachedFills: t.unattachedFills,
+          notCounted: book.notCounted.length,
+          cashPaidCents: t.cashPaidCents,
+          realizedCents: t.realizedCents,
+          dailyCheck: reconHealth(),
+        };
+      } catch (err) {
+        // the service is up whether or not the book can be replayed
+        return { error: String(err instanceof Error ? err.message : err) };
+      }
+    })(),
     lock: {
       enabled: LOCK_ROUTES_ON,
       sharedKey: Boolean(LOCK_KEY),
@@ -4776,6 +4901,90 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
           ...retailParlays(tickets, summarizeLastLeg(tickets), lockVersusSell(tickets)),
         }),
       );
+      return;
+    }
+    if (url.pathname === "/api/shadow/realized") {
+      // THE REALIZED BOOK: our own real fills replayed from the ledgers, and the kept daily checks.
+      // ?day=YYYY-MM-DD (UTC) also checks that day against the venues now: read only, not kept.
+      const day = (url.searchParams.get("day") ?? "").trim();
+      const today = new Date().toISOString().slice(0, 10);
+      if (day && (!isUtcDay(day) || day > today)) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "day is a UTC day that has begun, as YYYY-MM-DD" });
+        return;
+      }
+      const book = realizedBook();
+      const runs = latestRunPerDay(loadReconRuns(RECON_PATH));
+      const body = {
+        ok: true,
+        at: new Date().toISOString(),
+        rule: book.rule,
+        book,
+        public: publicRealSummary(book),
+        dailyCheck: reconHealth(),
+        // the kept checks, the line that stands for each day, newest first
+        days: runs.slice(0, 62).map(reconRunView),
+      };
+      if (!day) {
+        sendJson(res, 200, body);
+        return;
+      }
+      void checkDay(day)
+        .then((recon) =>
+          sendJson(res, 200, {
+            ...body,
+            check: {
+              ...recon,
+              verdict: VERDICT_WORDS[recon.verdict],
+              venues: recon.venues.map((v) => ({ ...v, verdict: VERDICT_WORDS[v.verdict] })),
+              kept: false,
+              // a day still running is checked as far as it has gone
+              dayEnded: day < today,
+              readers: fillReaders.view,
+              keptRun: runs.find((r) => r.day === day) ?? null,
+            },
+          }),
+        )
+        .catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+      return;
+    }
+    if (url.pathname === "/api/shadow/realized/check") {
+      // The operator's own check of a day that has ended, kept like the timer's: one line appended,
+      // the alert when a venue differs. For a day the timer missed, or one a venue could not be read on.
+      if (req.method !== "POST") {
+        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/realized/check?day=YYYY-MM-DD with the operator token" });
+        return;
+      }
+      const day = (url.searchParams.get("day") ?? "").trim();
+      if (!isUtcDay(day) || day >= new Date().toISOString().slice(0, 10)) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "day is a UTC day that has ended, as YYYY-MM-DD" });
+        return;
+      }
+      if (reconRunning) {
+        sendJson(res, 409, { ok: false, error: "check_running", message: "a check is running; ask again when it has ended" });
+        return;
+      }
+      reconRunning = true;
+      void keepDayCheck(day, "operator")
+        .then((record) => sendJson(res, 200, { ok: true, kept: lastReconError === null, path: RECON_PATH, run: { ...record, verdict: VERDICT_WORDS[record.verdict], venues: record.venues.map((v) => ({ ...v, verdict: VERDICT_WORDS[v.verdict] })) } }))
+        .catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }))
+        .finally(() => {
+          reconRunning = false;
+        });
+      return;
+    }
+    if (url.pathname === "/api/shadow/realized.csv") {
+      // THE ACCOUNTING EXPORT: one row per venue per UTC month of real fills; ?month=YYYY-MM for one month.
+      const month = (url.searchParams.get("month") ?? "").trim();
+      if (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+        sendJson(res, 400, { ok: false, error: "bad_request", message: "month is a UTC month, as YYYY-MM" });
+        return;
+      }
+      res.writeHead(200, {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="event-realized-${month || "all-months"}.csv"`,
+        "cache-control": "no-store",
+      });
+      res.end(realizedMonthlyCsv(realizedBook(), month || undefined));
       return;
     }
     if (url.pathname === "/api/shadow/lastleg.csv") {
@@ -5181,6 +5390,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
             summary: summarizeHedgeReceipts(loadHedgeReceipts(RECEIPTS_PATH)),
           },
           ...(tickets ? { parlays: { lockVsSell: lockVersusSell(tickets), lastLeg: summarizeLastLeg(tickets), stakeCents: lastLegCfg.stakeCents, rules: summarizeLegRules(tickets) } } : {}),
+          real: publicRealSummary(realizedBook()),
         }),
       );
       return;
@@ -5244,6 +5454,10 @@ async function main(): Promise<void> {
       void lastLegTick();
       setInterval(() => void lastLegTick(), lastLegCfg.tickMs);
     }
+    if (RECON_DAILY) {
+      void reconTick();
+      setInterval(() => void reconTick(), RECON_TICK_MS);
+    }
   });
 }
 
@@ -5277,7 +5491,13 @@ export function wireLockEngine(fns: {
   polyUs?: PolyUsClient | null;
   /** that venue's live stream behind the same check, with `polyUs` */
   polyUsStream?: PolyUsBookStream | null;
+  /** the venue readers behind the daily check (fake venues behind them), in place of the env's, with the words for which key reads what */
+  fillReaders?: { readers: VenueFillReaders; view?: VenueFillReadersView; opts?: ReadOptions };
 }): void {
+  if (fns.fillReaders) {
+    fillReaders = { readers: fns.fillReaders.readers, view: fns.fillReaders.view ?? fillReaders.view };
+    fillReadOpts = fns.fillReaders.opts ?? {};
+  }
   if (fns.polyUs !== undefined) polyUs = { client: fns.polyUs, stream: fns.polyUsStream ?? null, note: null };
   quoteOneFn = fns.quoteOne;
   listGameMarketsFn = fns.listGameMarkets;
@@ -5316,4 +5536,4 @@ export function wireHeldBooks(source: AggregatorBookSource | null): void {
   heldSource = source;
 }
 
-export { server, scanTick, settleTick, closeTick, lastLegTick, rereadTick, inGameTick, holdTick };
+export { server, scanTick, settleTick, closeTick, lastLegTick, rereadTick, inGameTick, holdTick, reconTick };
