@@ -305,7 +305,11 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # Gates GET /api/admin/funnel (read with ?token=... or x-admin-token).
+      # Gates the operator views: /admin/funnel, /api/admin/*, the partner console and the
+      # operator's fields on /api/showcase and /api/receipts. A script sends it in the
+      # x-admin-token header. A browser signs in at /operator (the token goes in the body of a
+      # form, never in an address) and holds a cookie for EVENT_X_ADMIN_SESSION_HOURS (12).
+      # On a page a visitor also reads, the operator's view is asked for with ?as=operator.
       - key: EVENT_X_ADMIN_TOKEN
         generateValue: true
       - key: EVENT_X_FUNNEL_PATH
@@ -502,8 +506,23 @@ services:
       - key: EVENT_SHADOW_DEMO_URL
         value: https://atticus-event-demo-cross-venue.onrender.com
       # Gates the operator views: /report, /api/shadow/report, /api/shadow/hedges,
-      # /api/shadow/lastleg, /api/shadow/export and the full positions CSV (?token=... or x-admin-token).
+      # /api/shadow/lastleg, /api/shadow/export and the full positions CSV.
       # Fail-closed: without it those routes answer 403 and the public record stays up.
+      # THE OPERATOR'S SIGN-IN (operatorSession.ts): the token stays out of addresses.
+      #   A script sends it in the x-admin-token header (or Authorization: Bearer).
+      #   A browser signs in at /operator: the token goes in the body of a form, and the browser
+      #   then holds a cookie (HttpOnly, 12 hours; EVENT_X_ADMIN_SESSION_HOURS, 1 to 720) that no
+      #   script can read. Replacing this token ends every sign-in. No page carries the token on
+      #   a link. On a route the public also reads (/healthz, /scoreboard, a slate), the
+      #   operator's view is asked for with ?as=operator, so a signed-in operator who opens a
+      #   public page sees the public page.
+      #   The cookie writes only from this service's own pages: a link in a message, or an
+      #   address typed into the address bar, cannot change anything with it. The signed-in page
+      #   at /operator has a box that opens an address from the page, for the writing GETs.
+      #   An old link with ?token= still opens: a page signs the browser in and is sent on
+      #   without it; a JSON route reads it as before. Add EVENT_X_ADMIN_QUERY_TOKEN=off (not
+      #   set here) to stop a token in an address being read at all, once nothing you use
+      #   sends one.
       - key: EVENT_X_ADMIN_TOKEN
         generateValue: true
       # Polymarket Builders Program attribution. This is the PUBLIC bytes32 Builder Code
@@ -543,7 +562,7 @@ services:
       #   (EVENT_SHADOW_LOCK_PENDING_PATH to move it). In a dry run nothing changes: the record is
       #   written and the fill is simulated at the book, as before.
       #   Operator: GET /api/shadow/lock/pending is the trail (attempts by ending, open lines, strays);
-      #   POST /api/shadow/lock/pending/clear?id=...&note=... marks one checked. /healthz?token= carries
+      #   POST /api/shadow/lock/pending/clear?id=...&note=... marks one checked. the operator's /healthz carries
       #   lock.hedgeFirst: `unresolved` and `strays` must both read empty.
       # REAL-ONLY HOLDERS (realOnlyHolders.ts): the holders whose lock must have a real hedge behind
       #   it, or not exist. For a holder named here, a tap where the order would not truly leave
@@ -554,7 +573,7 @@ services:
       #   EVENT_SHADOW_REAL_ONLY_HOLDERS=*         every caller: each holder, the shared key, the operator
       #   Default: unset, nobody. An entry that is not an alias and not * is read as * (the safe
       #   side) with a note in /healthz. Adding a person outside the company is two settings and no
-      #   code: their key in EVENT_SHADOW_HOLDER_KEYS, their alias here. /healthz?token= carries
+      #   code: their key in EVENT_SHADOW_HOLDER_KEYS, their alias here. the operator's /healthz carries
       #   lock.realOnly: who is named, the holders with a key who are not, and the refusals so far.
       # USER TERMS (termsAcceptance.ts): the version of the user terms in force, and each holder's
       #   acceptance of it on the record. Both settings, or neither:
@@ -566,7 +585,7 @@ services:
       #   The shared key and the operator acting for nobody are not asked. One set without the
       #   other, or one that cannot be read, refuses every named holder until corrected (a note in
       #   /healthz says which). Acceptances are lines in terms-acceptances.jsonl beside the lock
-      #   ledger (EVENT_SHADOW_TERMS_PATH to move it). /healthz?token= carries lock.terms: the
+      #   ledger (EVENT_SHADOW_TERMS_PATH to move it). the operator's /healthz carries lock.terms: the
       #   version, who has not accepted, the refusals so far.
       # EXPOSURE CAPS (exposureCaps.ts): how much real money may be open at once. Read from the
       #   ledgers at each real-money lock, before the hedge order is built; a lock that would pass
@@ -588,12 +607,12 @@ services:
       #                                         plus unpaid credit) and what they can owe us (the
       #                                         slice above the cap, handed back if their side wins).
       #   The defaults are sized for $5 to $20 positions: about $5 to $25 on the game per lock.
-      #   Operator: /healthz?token= carries `exposure`: per game (the largest five), per venue and
+      #   Operator: /healthz carries `exposure`: per game (the largest five), per venue and
       #   per holder, open now, the cap and the room left, and the refusals so far.
       #   The caps also stand in front of EVENT_HEDGE_STRATEGY=rfq when it holds a venue key: that
       #   strategy can accept a real quote; its only other rail is the kill switch (no order caps).
-      # PILOT CHECK (pilotCheck.ts), operator: GET /pilot-check?token= (a page) and
-      #   GET /api/shadow/pilot-check?token= (JSON). What must be true before a person outside the
+      # PILOT CHECK (pilotCheck.ts), operator: GET /pilot-check (a page) and
+      #   GET /api/shadow/pilot-check (JSON). What must be true before a person outside the
       #   company holds a real-money lock, each answered yes, no, or "cannot be checked from here"
       #   with what to confirm by hand, and one line: ready for an outside holder, yes or no. It
       #   reads settings and files; it changes nothing and gates nothing.
@@ -611,7 +630,7 @@ services:
       #   THE DAILY CHECK: half an hour past midnight UTC the day that ended is compared, our ledger's
       #   real fills against each venue's own, once; one line is appended to realized-recon.jsonl
       #   beside the lock ledger. Each venue reads agrees, differs, or could not be checked with the
-      #   reason. A venue that differs is paged (kind venue_fills_differ). /healthz?token= carries
+      #   reason. A venue that differs is paged (kind venue_fills_differ). the operator's /healthz carries
       #   realized.dailyCheck: `lastRun` and `lastDiffers`. The venues are read with the keys already
       #   set, signed GETs only; nothing is placed or moved:
       #     Kalshi     KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM: the account's own list of the day's
@@ -651,7 +670,7 @@ services:
       # KALSHI ACCOUNT (operator; needs KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM, in any strategy):
       #   GET /api/shadow/kalshi/account                  API tier and grants, cash per shard, subaccounts per shard, the API keys, what to do next
       #   GET /api/shadow/kalshi/keys                     the API keys: id, name, which subaccount each is locked to, which one is ours
-      #   Writes are a POST with a JSON body, or — from a browser tab with ?token= — a GET with confirm=yes and the fields in the query:
+      #   Writes are a POST with a JSON body, or, from a browser signed in at /operator and opened from the box on that page, a GET with confirm=yes and the fields in the query:
       #     /api/shadow/kalshi/account/upgrade?confirm=yes                      the permanent Advanced grant (Kalshi wants one API-created order among the last 100)
       #     /api/shadow/kalshi/subaccounts?confirm=yes&shard=0                  the next numbered subaccount on that shard (again with shard=3 for basketball)
       #     /api/shadow/kalshi/subaccounts/transfer?confirm=yes&from=0&to=1&cents=5000&shard=0     cash between subaccounts, one shard
@@ -757,7 +776,7 @@ services:
       #                                         tap. Before real money: one combo on the venue's paper
       #                                         exchange, and the three open questions in
       #                                         demo/event-lockin-extension/README.md (Combos) answered.
-      #                                         Status: /healthz?token= lock.member.comboRfq (mode, live,
+      #                                         Status: the operator's /healthz, lock.member.comboRfq (mode, live,
       #                                         path, checkedAt, why).
       #                                         =1 forces it on without asking; =0 forces it off.
       #                                         =preview: the combo rows quote from a stand-in bid, said
@@ -841,7 +860,7 @@ services:
       #   list; not for one under way.
       #   REFERENCE_BOOK_POLY_US=0                 optional; turns the venue off whatever else is set
       #   POLYMARKET_US_STREAM=0                   optional; keeps the key for the account, books over REST only
-      #   Check after adding (operator): GET /api/shadow/polymarket-us/preflight?token=... says in
+      #   Check after adding (operator): GET /api/shadow/polymarket-us/preflight says in
       #   words whether the key was accepted, the cash, and whether the books are live.
       #   NOTHING HERE SENDS AN ORDER to this venue. It is a price reference: read on every sports
       #   quote, recorded, never the route. Hedging there is a later change (its settlement rule

@@ -136,7 +136,8 @@ import { checkRule, kalshiRuleText, kalshiRuleUrl, pinRule, pinVenueRules, ruleS
 import { VENUE_NAMES, hedgeVenueOf, hedgeVenuesFromEnv, rulesFor, type HedgeRouting, type SettlementVenue } from "../src/eventCollar/crossVenue/hedgeRouting";
 import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
-import { adminAuthorized, parseAdminAuthFromEnv } from "../src/eventCollar/crossVenue/eventFunnel";
+import { parseAdminAuthFromEnv, tokenBucketLimiter } from "../src/eventCollar/crossVenue/eventFunnel";
+import { handleOperatorSignIn, isPagePath, OPERATOR_SIGN_IN_PATH, OPERATOR_SIGN_OUT_PATH, operatorCheck, operatorSessionConfigFromEnv, signInLocation, wantsHtml, type SignInDeps } from "../src/eventCollar/crossVenue/operatorSession";
 import {
   BookHedgeExecutor,
   appendHedgeReceipt,
@@ -424,6 +425,11 @@ const kalshiAccount = kalshiAccountCreds ? new KalshiAccountClient(kalshiAccount
  * that is ever public by default.
  */
 const adminAuth = parseAdminAuthFromEnv(process.env);
+/** The operator's sign-in (operatorSession.ts): how long it lasts, and whether a token in an address is still read. */
+const OP_SESSION = operatorSessionConfigFromEnv(process.env);
+/** Sign-in attempts per caller: eight, refilling over a minute. */
+const signInAttempts = tokenBucketLimiter(8, 60_000);
+const signInAttemptsAll = tokenBucketLimiter(120, 60_000);
 /** crypto strikes roll over hourly; without a ceiling they crowd the games out of the record */
 const openMix = openMixRuleFromEnv(process.env);
 let cryptoSkippedLastScan = 0;
@@ -4714,6 +4720,8 @@ function healthBody(): Record<string, unknown> {
     ok: true,
     service: "event-protect-shadow",
     positions: allPositions().length,
+    // the operator's sign-in (operatorSession.ts): /operator sets a cookie for this long; whether a token in an address is still read
+    operatorSignIn: { page: OPERATOR_SIGN_IN_PATH, hours: OP_SESSION.ttlMs / 3_600_000, tokenInAddress: OP_SESSION.queryToken ? "read, and a page opened that way is sent on without it" : "not read", ...(OP_SESSION.notes.length > 0 ? { notes: OP_SESSION.notes } : {}) },
     ledger: { path: LEDGER_PATH, ...stats },
     // the daily fingerprints of every ledger: `mismatches` must read zero
     ledgerFingerprints: recordFp
@@ -4964,9 +4972,46 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/** The paths that are the operator's alone: the session cookie counts there without being asked for. */
+const isOperatorOnlyPath = (pathname: string): boolean => OPERATOR_PATHS.has(pathname) || pathname.startsWith("/api/shadow/kalshi/");
+const SIGN_IN_DEPS: SignInDeps = {
+  auth: adminAuth,
+  cfg: OP_SESSION,
+  service: "Earn & Protect event record",
+  links: [
+    { href: "/pilot-check", label: "Pilot check" },
+    { href: "/holders", label: "Holders" },
+    { href: "/capital", label: "Capital" },
+    { href: "/venues", label: "Venues" },
+    { href: "/report", label: "Rule comparison" },
+    { href: "/scoreboard?as=operator", label: "Scoreboard, venues named" },
+    { href: "/healthz?as=operator", label: "Status" },
+  ],
+  // per caller, and across all callers: the caller's address is read from a header a caller can write
+  allowAttempt: (who, nowMs) => signInAttempts.allow(who, nowMs) && signInAttemptsAll.allow("all", nowMs),
+  operatorOnlyPath: isOperatorOnlyPath,
+};
+
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
-  const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
+  // THE OPERATOR'S SIGN-IN (operatorSession.ts): the sign-in page, the sign-out, and an old link
+  // with the token in its address, which signs the browser in and goes on without it. The member
+  // page's own host has no operator views; it is left to its redirect below.
+  const signInRoute = url.pathname === OPERATOR_SIGN_IN_PATH || url.pathname === OPERATOR_SIGN_OUT_PATH || (req.method === "GET" && url.searchParams.has("token"));
+  if (signInRoute && !isMemberAppHost(req)) {
+    void handleOperatorSignIn(req, res, url, SIGN_IN_DEPS)
+      .then((answered) => {
+        if (!answered) route(req, res, url);
+      })
+      .catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+    return;
+  }
+  route(req, res, url);
+});
+
+function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
+  const opCheck = operatorCheck({ auth: adminAuth, cfg: OP_SESSION, headers: req.headers, method: req.method ?? "GET", url, operatorOnlyPath: isOperatorOnlyPath(url.pathname), nowMs: Date.now() });
+  const operator = opCheck.operator;
   try {
     if (isMemberAppHost(req)) {
       // the page's own host: the root is the page; the page's files, the member callback and the
@@ -4979,10 +5024,18 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         return;
       }
     }
-    if ((OPERATOR_PATHS.has(url.pathname) || url.pathname.startsWith("/api/shadow/kalshi/")) && !operator) {
+    if (isOperatorOnlyPath(url.pathname) && !operator) {
+      // a browser asking for an operator page is sent to the sign-in and back; a script gets the 403 it always got
+      if (adminAuth.enabled && req.method === "GET" && wantsHtml(req.headers) && isPagePath(url.pathname) && !(OP_SESSION.queryToken && url.searchParams.has("token"))) {
+        res.writeHead(303, { location: signInLocation(url), "cache-control": "no-store" });
+        res.end();
+        return;
+      }
       sendJson(res, 403, {
         ok: false,
         error: adminAuth.enabled ? "bad admin token" : "operator views disabled: set EVENT_X_ADMIN_TOKEN",
+        // a session that was sent and did not count says why, so a refused write is not mistaken for a signed-out browser
+        ...(opCheck.cookieIgnored === "cross_site" ? { message: "The sign-in on this browser does not cover a request sent from another site. Open the page on this service and send it from there, or send the token in the x-admin-token header." } : {}),
       });
       return;
     }
@@ -4990,6 +5043,10 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       // always 200 (the host's health check reads it); a token that was sent and is not the operator's
       // is said, so a mistyped token is not mistaken for the operator's view having nothing in it
       const sentToken = Boolean(url.searchParams.get("token") || req.headers["x-admin-token"] || req.headers.authorization);
+      if (sentToken && !operator && adminAuth.enabled && !OP_SESSION.queryToken && url.searchParams.get("token") && !req.headers["x-admin-token"] && !req.headers.authorization) {
+        sendJson(res, 200, { ...publicHealthBody(), operator: false, note: "A token in the address is not read on this service (EVENT_X_ADMIN_QUERY_TOKEN is off). Sign in at /operator, or send it in the x-admin-token header. This is the public view." });
+        return;
+      }
       sendJson(res, 200, operator ? healthBody() : { ...publicHealthBody(), ...(sentToken ? { operator: false, note: adminAuth.enabled ? "The token sent was not accepted. This is the public view." : "Operator views are off on this service (no operator token is set). This is the public view." } : {}) });
       return;
     }
@@ -5080,7 +5137,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       // themselves with a UTC stamp (still exportable, still append-only, now closed) and the next
       // scan opens a new book under the rules in force. Operator only; POST, or GET with confirm=reset.
       if (!(req.method === "POST" || (req.method === "GET" && url.searchParams.get("confirm") === "reset"))) {
-        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/reset?token=… or GET …&confirm=reset" });
+        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/reset with the operator token in the x-admin-token header, or GET with confirm=reset" });
         return;
       }
       const atIso = new Date().toISOString();
@@ -5232,7 +5289,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const headers: Record<string, string> = operator && !SLATE_NAMES_HEDGE_VENUES ? { "cache-control": "private, no-store" } : { "cache-control": "public, max-age=300", "access-control-allow-origin": "*" };
       if (url.pathname === "/scoreboard") {
         res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" });
-        res.end(renderScoreboardHtml({ scoreboard: sb, weeks }));
+        res.end(renderScoreboardHtml({ scoreboard: sb, weeks, operatorView: operator && !SLATE_NAMES_HEDGE_VENUES }));
         return;
       }
       if (url.pathname.endsWith(".csv")) {
@@ -5560,7 +5617,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/holders") {
       // HOLDERS, NAMED: the page a pay run reads. Operator only; aliases never appear in public.
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderHoldersHtml({ ...holdersSummary(), token: url.searchParams.get("token"), ...(FINGERPRINTS_ON ? { fingerprints: lockFingerprints() } : {}) }));
+      res.end(renderHoldersHtml({ ...holdersSummary(), ...(FINGERPRINTS_ON ? { fingerprints: lockFingerprints() } : {}) }));
       return;
     }
     if (url.pathname === "/api/shadow/holders") {
@@ -5576,7 +5633,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         return;
       }
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderPilotCheckHtml({ report, at: new Date().toISOString(), token: url.searchParams.get("token") }));
+      res.end(renderPilotCheckHtml({ report, at: new Date().toISOString() }));
       return;
     }
     if (url.pathname === "/api/shadow/capital" || url.pathname === "/capital") {
@@ -5588,7 +5645,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         return;
       }
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderCapitalHtml({ model, token: url.searchParams.get("token") }));
+      res.end(renderCapitalHtml({ model }));
       return;
     }
     if (url.pathname === "/api/shadow/member/raw") {
@@ -5679,7 +5736,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         return;
       }
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(renderVenuesHtml({ breakdown, pricingSource, heldBooks, token: url.searchParams.get("token"), windowDays }));
+      res.end(renderVenuesHtml({ breakdown, pricingSource, heldBooks, windowDays }));
       return;
     }
     if (url.pathname === "/report") {
@@ -5689,7 +5746,6 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         renderShadowReportHtml({
           atIso,
           summary: summarizeShadow(positions),
-          token: url.searchParams.get("token"),
           lastLeg: { summary: summarizeLastLeg(loadLastLegTickets(LASTLEG_PATH)), enabled: lastLegCfg.enabled, stakeCents: lastLegCfg.stakeCents },
           netting: measureNetting(positions),
         }),
@@ -5708,7 +5764,8 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       }
       const { atIso, positions } = pageData();
       const onSlate = slatePositions(slate, positions);
-      const keyQuery = keyed ? `?k=${encodeURIComponent(url.searchParams.get("k") as string)}` : `?token=${encodeURIComponent(url.searchParams.get("token") ?? "")}`;
+      // the operator's own view carries no key on its links: the sign-in is asked for instead
+      const keyQuery = keyed ? `?k=${encodeURIComponent(url.searchParams.get("k") as string)}` : "?as=operator";
       if (slateMatch[2]) {
         res.writeHead(200, {
           "content-type": "text/csv; charset=utf-8",
@@ -5776,7 +5833,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   } catch (err) {
     sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) });
   }
-});
+}
 
 async function main(): Promise<void> {
   // Import the scanner WITHOUT starting the demo's server. This must be set

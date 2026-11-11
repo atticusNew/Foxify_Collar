@@ -323,8 +323,9 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.ok(!reportHtml.includes("NaN"));
     assert.ok(reportHtml.includes("Netting, measured") && reportHtml.includes("No game has both sides on the record yet"), "the netting card, empty");
 
-    assert.ok(reportHtml.includes('href="/api/shadow/export?token=op-secret"'), "operator links carry the token");
-    assert.ok(reportHtml.includes('href="/api/shadow/positions.csv?scope=full&token=op-secret"'));
+    assert.ok(reportHtml.includes('href="/api/shadow/export"'), "operator links carry no token: the sign-in opens them");
+    assert.ok(reportHtml.includes('href="/api/shadow/positions.csv?scope=full&amp;as=operator"'));
+    assert.ok(!reportHtml.includes("op-secret"));
 
     // the hedge trail: book by default, receipts next to the ledger, surfaced on healthz, JSON and the page
     const h = health as { hedge: { strategy: string; rfqVenues: string[]; notes: string[]; receipts: { path: string; exists: boolean } } };
@@ -528,7 +529,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.equal(netting.pairs[0].identity.ifFirstWinsCents, netting.pairs[0].identity.ifSecondWinsCents, "our result on the pair does not depend on who won");
     const reportWithPair = await (await fetch(`${base}/report?token=op-secret`)).text();
     assert.ok(reportWithPair.includes("1 games have both sides on the record") && reportWithPair.includes("Kansas City Chiefs 40.6¢"));
-    assert.ok(reportWithPair.includes('href="/api/shadow/netting?token=op-secret"'));
+    assert.ok(reportWithPair.includes('href="/api/shadow/netting"') && !reportWithPair.includes("op-secret"));
 
     // the record: no netting anywhere public, and no counterfactuals or venue token ids on the public positions
     const publicPage = await (await fetch(`${base}/`)).text();

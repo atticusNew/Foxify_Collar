@@ -460,7 +460,7 @@ games listed, past locks):
   path for a bid on it, in the background of a positions read, the same request the page would
   make. A well-formed answer turns the combo rows on for everyone from the next read; a 404, which
   is what STX answers today, leaves them riding to settlement and is asked again half an hour
-  later; anything else is asked again in five minutes. `/healthz?token=` says where it stands under
+  later; anything else is asked again in five minutes. The operator's `/healthz` says where it stands under
   `lock.member.comboRfq`. `=1` forces it on without asking, `=0` forces it off, and
   `MEMBER_APP_COMBO_RFQ=preview` shows the flow before STX quotes, see the end of this paragraph). A
   combo (parlay) ticket has no resting book, so it cannot be partly sold into bids the way a single
@@ -774,7 +774,7 @@ Once per page view, the extension posts `POST /api/shadow/ext-telemetry` (lock k
 of page (`board`, `game`, `plays`, `other`), extension version, and whole-number counts (markets
 listed, open to lock in, games found, pills drawn, slip seen, slip marked, rows read, offers shown,
 rows unread). Fixed vocabularies only; anything else is refused with 400, and no page text or
-amount is accepted. `GET /api/shadow/ext-telemetry/summary?token=...` (operator) shows totals
+amount is accepted. `GET /api/shadow/ext-telemetry/summary` (operator) shows totals
 per venue and the last rows, so what drew on a live venue is seen without a screenshot. Off in
 Options for anyone who prefers.
 
@@ -1169,7 +1169,7 @@ Operator actions (token in `x-admin-token`), for the recording day:
 | `POST /api/shadow/hedges/resend?ticker=KX...` | Hedges an open lock again when its hedge never reached the venue (simulated fill on the trail). Routed as a tap is now: the one live venue, or the live venues competed on price. `&route=kalshi|prophetx|novig` names the venue instead (a venue with no live client on this ticker is refused). Refuses once a live fill exists unless `&force=1`. |
 | `POST /api/shadow/lock/reset?ticker=KX...` | Takes one lock off the record (its lines move to an archive beside the ledger) so the market can be locked again; the row goes back to the offer on the next poll. Names any live fill the venue still holds for the old lock, which is yours to sell or keep. |
 | `GET /api/shadow/hedges` | The hedge trail: every receipt, order ids, fills, reasons. Each live fill says `via`: `direct` (our own venue key) or `aggregator` (the execution pod). |
-| `GET /holders?token=...` | One page per holder key: their locks, what is owed each way, and the `POST /api/shadow/cash` line to record a payment. The JSON is `GET /api/shadow/holders`. |
+| `GET /holders` (operator: sign in at `/operator`) | One page per holder key: their locks, what is owed each way, and the `POST /api/shadow/cash` line to record a payment. The JSON is `GET /api/shadow/holders`. |
 
 ## Test steps (five minutes, no money)
 

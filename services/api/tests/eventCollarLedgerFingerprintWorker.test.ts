@@ -193,7 +193,8 @@ test("shadow worker: daily ledger fingerprints on the record page, the public li
     ]);
     const holdersPage = await (await fetch(`${base}/holders?token=op-secret`)).text();
     assert.ok(holdersPage.includes("<h2>Lock ledger fingerprints</h2>"));
-    assert.ok(holdersPage.includes(ann.days[0].sha256) && holdersPage.includes('href="/api/shadow/fingerprints?token=op-secret&ledger=lock&holder=ann"'));
+    assert.ok(holdersPage.includes(ann.days[0].sha256) && holdersPage.includes('href="/api/shadow/fingerprints?as=operator&amp;ledger=lock&holder=ann"'));
+    assert.ok(!holdersPage.includes("op-secret"), "the page carries no token on a link");
     // nothing of a lock ledger on the public page, the public list or the public health body
     const publicText = (await page()) + JSON.stringify(await list()) + (await (await fetch(`${base}/healthz`)).text());
     assert.ok(!publicText.includes(ann.days[0].sha256) && !publicText.includes("lock-ledger") && !/\bann\b/.test(publicText));

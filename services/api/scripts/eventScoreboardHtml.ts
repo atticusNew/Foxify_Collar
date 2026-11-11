@@ -71,11 +71,14 @@ export interface ScoreboardPageInput {
   scoreboard: VenueScoreboard;
   /** the weeks the page was asked for, so the JSON and CSV links ask for the same */
   weeks: number;
+  /** the operator's own view (venues named for them alone): its links ask for the same view */
+  operatorView?: boolean;
 }
 
 export function renderScoreboardHtml(input: ScoreboardPageInput): string {
   const sb = input.scoreboard;
-  const q = input.weeks !== 8 ? `?weeks=${input.weeks}` : "";
+  const asks = [...(input.weeks !== 8 ? [`weeks=${input.weeks}`] : []), ...(input.operatorView ? ["as=operator"] : [])];
+  const q = asks.length > 0 ? `?${asks.join("&amp;")}` : "";
   const latest = sb.weeks.find((w) => w.n > 0) ?? sb.weeks[0];
   const totals = sb.weeks.reduce(
     (t, w) => ({ n: t.n + w.n, taps: t.taps + w.taps, contracts: t.contracts + w.contracts, notionalCents: t.notionalCents + w.notionalCents, refused: t.refused + w.refusals.refused, priced: t.priced + w.refusals.priced }),
@@ -134,7 +137,7 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em;tex
     <div class="links">
       <a class="back" href="/api/shadow/scoreboard${q}">JSON</a>
       <a class="back" href="/api/shadow/scoreboard.csv${q}" download>Download CSV</a>
-      <a class="back" href="/scoreboard?weeks=${input.weeks >= 26 ? 8 : 26}">${input.weeks >= 26 ? "Last 8 weeks" : "Last 26 weeks"}</a>
+      <a class="back" href="/scoreboard?weeks=${input.weeks >= 26 ? 8 : 26}${input.operatorView ? "&amp;as=operator" : ""}">${input.weeks >= 26 ? "Last 8 weeks" : "Last 26 weeks"}</a>
     </div>
     ${latest && latest.n > 0 ? `<div class="rule">Latest week with positions: ${escapeHtml(latest.label)}. ${escapeHtml(weekSummary(latest))}</div>` : ""}
   </div>

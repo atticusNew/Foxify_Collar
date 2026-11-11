@@ -14,6 +14,8 @@
  * operator reads both funnels the same way.
  */
 
+import { createHash, timingSafeEqual } from "node:crypto";
+
 export const EVENT_PAGES = ["app", "receipts", "embed"] as const;
 export type EventPage = (typeof EVENT_PAGES)[number];
 
@@ -297,7 +299,11 @@ export const adminAuthorized = (
   if (auth.token == null) return true;
   const bearer = String(headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   const headerToken = String(headers["x-admin-token"] ?? "").trim();
-  return bearer === auth.token || headerToken === auth.token || (queryToken ?? "") === auth.token;
+  const token = auth.token;
+  // compared in time that does not depend on where the two differ (the event services read the
+  // operator through operatorSession.operatorCheck, which also knows the sign-in cookie)
+  const same = (sent: string): boolean => sent !== "" && timingSafeEqual(createHash("sha256").update(sent, "utf8").digest(), createHash("sha256").update(token, "utf8").digest());
+  return same(bearer) || same(headerToken) || same(queryToken ?? "");
 };
 
 /**

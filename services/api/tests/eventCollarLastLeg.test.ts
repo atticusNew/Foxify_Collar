@@ -832,11 +832,11 @@ test("lastLegConfigFromEnv: defaults, overrides, junk ignored, bands kept sane",
 });
 
 test("lastLegCard: says what is real and what is simulated, and reads the numbers in plain words", () => {
-  const empty = lastLegCard({ summary: summarizeLastLeg([]), enabled: true, stakeCents: 2_000 }, "");
+  const empty = lastLegCard({ summary: summarizeLastLeg([]), enabled: true, stakeCents: 2_000 });
   assert.ok(empty.includes("the tickets are simulated"));
   assert.ok(empty.includes("No ticket has been decided yet"));
   assert.ok(empty.includes("no tickets yet"));
-  const off = lastLegCard({ summary: summarizeLastLeg([]), enabled: false, stakeCents: 2_000 }, "");
+  const off = lastLegCard({ summary: summarizeLastLeg([]), enabled: false, stakeCents: 2_000 });
   assert.ok(off.includes("EVENT_LASTLEG_ENABLED=0"));
 
   const a = ticketRec("ll_a", [["A", 700, 0, SAT_13], ["D", 600, 0, SUN_20]]);
@@ -851,12 +851,13 @@ test("lastLegCard: says what is real and what is simulated, and reads the number
       { type: "leg", at: iso(SUN_20 + 4 * 3_600_000), ticketId: "ll_a", conditionId: "D", valueMilli: 0 },
     ]),
   );
-  const html = lastLegCard({ summary: summarizeLastLeg(tickets), enabled: true, stakeCents: 2_000 }, "?token=t");
+  const html = lastLegCard({ summary: summarizeLastLeg(tickets), enabled: true, stakeCents: 2_000 });
   assert.ok(html.includes("1 of 1 decided tickets reached the last leg with every other leg hit (100.0%)"));
   assert.ok(html.includes("the venues funded a credit on 1 of 1 tickets quoted"));
   assert.ok(html.includes("8.0h before the last game"));
   assert.ok(html.includes("1 locked tickets settled: 1 missed the last leg and the floor paid, 0 hit it"));
   assert.ok(html.includes("the identity holds"));
-  assert.ok(html.includes('href="/api/shadow/lastleg.csv?token=t"'));
+  assert.ok(html.includes('href="/api/shadow/lastleg.csv"'), "the link carries no token: the operator's sign-in opens it");
+  assert.ok(!html.includes("token="));
   assert.ok(!html.includes("wallet"));
 });

@@ -30,8 +30,9 @@
  * shape (src/eventCollar/retailShowcase.ts): event, position, floor/cap/credit
  * per tier, a retail refusal sentence, the track record. The hedge leg, the
  * pairing, the routes examined, our take and raw refusal detail answer only to
- * the operator token (?token= or x-admin-token, EVENT_X_ADMIN_TOKEN), so dev
- * tools show a visitor exactly what the card shows.
+ * the operator (EVENT_X_ADMIN_TOKEN: the x-admin-token header for a script, the
+ * sign-in at /operator for a browser, with ?as=operator on these shared routes;
+ * operatorSession.ts), so dev tools show a visitor exactly what the card shows.
  *
  * EMBED DEMO IS THE FRONT DOOR: GET / (also /embed) is the layer inside a
  * host's app: their positions list in their colours (brand: EVENT_X_EMBED_BRAND
@@ -82,8 +83,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { handleOperatorSignIn, isPagePath, OPERATOR_SIGN_IN_PATH, OPERATOR_SIGN_OUT_PATH, operatorCheck, operatorSessionConfigFromEnv, signInLocation, wantsHtml, type OperatorCheck, type SignInDeps } from "../src/eventCollar/crossVenue/operatorSession";
 import {
-  adminAuthorized,
   coerceEventFunnel,
   emptyEventFunnel,
   eventFunnelSummary,
@@ -440,6 +441,32 @@ const CRYPTO_PM_NOT_OFFERED =
 // read; fail-closed when no token is configured.
 const FUNNEL_PATH = process.env.EVENT_X_FUNNEL_PATH || "/tmp/event-demo/funnel.json";
 const adminAuth = parseAdminAuthFromEnv(process.env);
+/**
+ * THE OPERATOR'S SIGN-IN (operatorSession.ts). The token is sent in a header by a script and at
+ * /operator by a browser, which then holds a cookie; a page opened with the token in its address
+ * is sent on without it. The cookie counts on the operator's own paths (/api/admin/*,
+ * /admin/funnel) and, on the paths a visitor also reads (/partner, /api/showcase, /api/receipts,
+ * the early-close quote), only when the address asks with as=operator, so a signed-in operator
+ * showing the demo sees what the visitor sees.
+ */
+const OP_SESSION = operatorSessionConfigFromEnv(process.env);
+const signInAttempts = tokenBucketLimiter(8, 60_000);
+const signInAttemptsAll = tokenBucketLimiter(120, 60_000);
+const isOperatorOnlyPath = (pathname: string): boolean => pathname.startsWith("/api/admin/") || pathname === "/admin/funnel";
+const operatorOf = (req: IncomingMessage, url: URL): OperatorCheck =>
+  operatorCheck({ auth: adminAuth, cfg: OP_SESSION, headers: req.headers, method: req.method ?? "GET", url, operatorOnlyPath: isOperatorOnlyPath(url.pathname), nowMs: Date.now() });
+const SIGN_IN_DEPS: SignInDeps = {
+  auth: adminAuth,
+  cfg: OP_SESSION,
+  service: "Earn & Protect event demo",
+  links: [
+    { href: "/admin/funnel", label: "Funnel" },
+    { href: "/partner?as=operator", label: "Partner console" },
+  ],
+  // per caller, and across all callers: the caller's address is read from a header a caller can write
+  allowAttempt: (who, nowMs) => signInAttempts.allow(who, nowMs) && signInAttemptsAll.allow("all", nowMs),
+  operatorOnlyPath: isOperatorOnlyPath,
+};
 const metricsLimiter = tokenBucketLimiter(Number(process.env.EVENT_X_RATE_METRICS_PER_MIN || 30), 60_000);
 /** early-close quotes hit the venues' books live on every call; one bucket per visitor keeps that honest */
 const closeQuoteLimiter = tokenBucketLimiter(Number(process.env.EVENT_X_RATE_CLOSE_PER_MIN || 20), 60_000);
@@ -2072,7 +2099,7 @@ async function handleCloseQuote(req: IncomingMessage, res: ServerResponse, url: 
     books,
   );
   const at = new Date().toISOString();
-  const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
+  const operator = operatorOf(req, url).operator;
   if (!q.ok) {
     sendJson(res, 200, {
       ok: false,
@@ -2109,6 +2136,10 @@ async function handleCloseQuote(req: IncomingMessage, res: ServerResponse, url: 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
   try {
+    // the operator's sign-in page, the sign-out, and an old link with the token in its address
+    if (url.pathname === OPERATOR_SIGN_IN_PATH || url.pathname === OPERATOR_SIGN_OUT_PATH || (req.method === "GET" && url.searchParams.has("token"))) {
+      if (await handleOperatorSignIn(req, res, url, SIGN_IN_DEPS)) return;
+    }
     if (url.pathname === "/healthz") {
       const h = healthReady();
       // brandRecordLinks says where a branded shell's record link goes: "slate" when
@@ -2140,7 +2171,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // Retail first: the holder's JSON carries exactly what the card shows (event, position,
       // floor/cap/credit per tier, a retail refusal sentence). The hedge leg, our take, the
       // pairing, the routes examined and raw refusal detail answer only to the operator token.
-      const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
+      const operator = operatorOf(req, url).operator;
       // the operator also sees where the books came from (the aggregator's feed or the venues), never the key
       sendJson(res, 200, operator ? { ...full, pricingSource: pricingSourceStatus() } : retailCrossPayload(full));
       return;
@@ -2203,7 +2234,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       );
       return;
     }
-    if (url.pathname === "/partner" && req.method === "GET" && !adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"))) {
+    if (url.pathname === "/partner" && req.method === "GET" && !operatorOf(req, url).operator) {
       // A visitor (a partner following the pitch's link) gets the case for the console and a CTA; the console itself names our take.
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       const ctaBrand = resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND);
@@ -2217,11 +2248,22 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
     if (url.pathname.startsWith("/api/admin/") || url.pathname === "/admin/funnel" || url.pathname === "/partner") {
-      if (!adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"))) {
+      const opCheck = operatorOf(req, url);
+      if (!opCheck.operator) {
+        // a browser asking for an operator page is sent to the sign-in and back; a script gets the 403 it always got
+        if (adminAuth.enabled && req.method === "GET" && wantsHtml(req.headers) && isPagePath(url.pathname) && !(OP_SESSION.queryToken && url.searchParams.has("token"))) {
+          res.writeHead(303, { location: signInLocation(url), "cache-control": "no-store" });
+          res.end();
+          return;
+        }
         sendJson(res, 403, {
           ok: false,
           error: "admin_required",
-          message: adminAuth.enabled ? "bad admin token" : "admin surfaces disabled: set EVENT_X_ADMIN_TOKEN",
+          message: !adminAuth.enabled
+            ? "admin surfaces disabled: set EVENT_X_ADMIN_TOKEN"
+            : opCheck.cookieIgnored === "cross_site"
+              ? "The sign-in on this browser does not cover a request sent from another site. Send it from this service's own page, or send the token in the x-admin-token header."
+              : "bad admin token",
         });
         return;
       }
@@ -2246,7 +2288,6 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           renderFunnelHtml(eventFunnelSummary(funnelState, Date.now()), {
             atIso: nowIso,
             funnelPath: FUNNEL_PATH,
-            token: url.searchParams.get("token"),
           }),
         );
         return;
@@ -2291,7 +2332,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         return;
       }
       if (url.pathname === "/api/admin/reset") {
-        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/admin/reset?token=… or GET …&confirm=reset" });
+        sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/admin/reset with the operator token in the x-admin-token header, or GET with confirm=reset" });
         return;
       }
       if (url.pathname === "/api/admin/funnel/reset" && req.method === "POST") {
@@ -2307,7 +2348,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (url.pathname === "/api/receipts") {
       const summary = summarizeCrossLedger(LEDGER_PATH);
-      const operator = adminAuthorized(adminAuth, req.headers, url.searchParams.get("token"));
+      const operator = operatorOf(req, url).operator;
       // Retail: the track record without our take or the route split (operator information).
       const { takeKeptCents, routeSplit, ...retail } = summary;
       sendJson(res, 200, {

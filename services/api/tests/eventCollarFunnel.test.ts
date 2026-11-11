@@ -289,8 +289,8 @@ test("demo service: page loads count, beacons record, admin funnel is gated and 
     const page = await pageRes.text();
     assert.ok(page.includes("Who looked, who tapped, who locked in"));
     assert.ok(page.includes("KXNFLGAME-26SEP20INDKC-KC"), "recent Protect taps are listed");
-    assert.ok(page.includes('href="/api/admin/funnel?token=t0ken"'), "links the raw JSON with the same token");
-    assert.ok(page.includes("'/api/admin/funnel/reset'+location.search"), "reset reuses the URL token, not an inlined one");
+    assert.ok(page.includes('href="/api/admin/funnel"') && !page.includes("t0ken"), "links the raw JSON with no token: the sign-in opens it");
+    assert.ok(page.includes("'/api/admin/funnel/reset'+location.search"), "reset is the page's own POST, with no token inlined");
     const rawJson = await (await fetch(`${base}/api/admin/funnel?token=t0ken`)).text();
     assert.ok(rawJson.includes("\n  \"funnel\": {"), "JSON is pretty-printed for a browser tab");
 

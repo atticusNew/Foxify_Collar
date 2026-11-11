@@ -742,8 +742,6 @@ export const FEE_RULE_TEXT: Record<string, { name: string; rule: string }> = {
 export interface ShadowReportInput {
   atIso: string;
   summary: ShadowSummary;
-  /** the operator token the page was opened with, carried on its own links */
-  token?: string | null;
   /** the last-leg shadow (lastLeg.ts); absent on reports rendered before it existed */
   lastLeg?: { summary: LastLegSummary; enabled: boolean; stakeCents: number };
   /** netting measured on the same ledger (shadowNetting.ts); operator only, never on the record */
@@ -759,7 +757,7 @@ const n1 = (x: number | null, unit = ""): string => (x === null ? "n/a" : `${x.t
  * leg, and quoted at the moment every leg but the last has hit. Everything about the prices and
  * results is real; the tickets are the only simulation, and the card says so.
  */
-export function lastLegCard(input: NonNullable<ShadowReportInput["lastLeg"]>, token: string): string {
+export function lastLegCard(input: NonNullable<ShadowReportInput["lastLeg"]>): string {
   const s = input.summary;
   if (!input.enabled) {
     return `<div class="card"><h2>Last leg</h2><div class="sub">The last-leg shadow is off on this instance (EVENT_LASTLEG_ENABLED=0).</div></div>`;
@@ -817,7 +815,7 @@ export function lastLegCard(input: NonNullable<ShadowReportInput["lastLeg"]>, to
     </table></div>
     ${refusals ? `<div class="rule">Refusals by reason across ${s.attempts} attempts:</div>${refusals}` : ""}
     <div class="rule">Busted means a leg other than the last lost, so no moment existed. Refused means the moment came and the last leg's book did not fund a positive credit at any floor/cap, or the mark sat outside the quotable band. Ticket value at the moment is contracts × the last leg's mark: what a cash-out at fair would pay.</div>
-    <a class="back" href="/api/shadow/lastleg${token}">Tickets (JSON)</a> <a class="back" href="/api/shadow/lastleg.csv${token}">Tickets (CSV)</a>
+    <a class="back" href="/api/shadow/lastleg">Tickets (JSON)</a> <a class="back" href="/api/shadow/lastleg.csv">Tickets (CSV)</a>
   </div>`;
 }
 
@@ -892,7 +890,7 @@ function ourBookCard(s: ShadowSummary): string {
  * hedges paid above holding the matched dollar as cash. Operator card; the record itself still
  * hedges leg for leg and says nothing about netting. Numbers from shadowNetting.ts.
  */
-function nettingCard(r: NettingReport, tq: string): string {
+function nettingCard(r: NettingReport): string {
   const s = r.summary;
   const cpd = (x: number | null): string => (x === null ? "n/a" : `${x.toFixed(1)}¢`);
   const lead =
@@ -956,7 +954,7 @@ function nettingCard(r: NettingReport, tq: string): string {
         : ""
     }
     <div class="rule">Unit cost is the hedge leg's cost, venue fees included, per $1 of payout, from the credit identity on the record. Two-sided is the two added: 100¢ would be a free dollar; what is above it is the spread and fees netting removes. Netted holds the matched units as cash at 100¢ and buys the residual at that side's own average, which is a ceiling on its cost, so the saving is a floor. Identity: our result on the pair, written out for each winner, equals the two takes plus the saving in both states.</div>
-    <a class="back" href="/api/shadow/netting${tq}">Pairs (JSON)</a>
+    <a class="back" href="/api/shadow/netting">Pairs (JSON)</a>
   </div>`;
 }
 
@@ -967,7 +965,6 @@ function nettingCard(r: NettingReport, tq: string): string {
  */
 export function renderShadowReportHtml(input: ShadowReportInput): string {
   const s = input.summary;
-  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
   const cf = s.counterfactuals;
   const period = cf.recordedSince
     ? `${utcDay(cf.recordedSince)} to ${utcDay(input.atIso)} UTC`
@@ -1134,9 +1131,9 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
 
   ${ourBookCard(s)}
 
-  ${input.netting ? nettingCard(input.netting, tq) : ""}
+  ${input.netting ? nettingCard(input.netting) : ""}
 
-  ${input.lastLeg ? lastLegCard(input.lastLeg, tq) : ""}
+  ${input.lastLeg ? lastLegCard(input.lastLeg) : ""}
 
 ${routeCard}
   <div class="card">
@@ -1169,7 +1166,7 @@ ${routeCard}
   <div class="card">
     <h2>How to read it</h2>
     <div class="read"><b>User Δ</b> is what the lock did for the user against holding without it: negative is the usual cost of the lock, positive means the floor paid more than the cap gave up. <b>Our P&amp;L</b> is what selling that lock and carrying the hedge netted; leg for leg it should not depend on who won. <b>EV cost</b> is the quoted expected cost of the collar as a share of stake, before anything settles. A rule that lifts our P&amp;L without moving user Δ much is a better rule; one that only shifts money from one column to the other is a fee.</div>
-    <a class="back" href="/">Back to the track record</a> <a class="back" href="/api/shadow/report${tq}">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full${tq ? `&token=${encodeURIComponent(input.token as string)}` : ""}">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/hedges${tq}">Hedge receipts (JSON)</a> <a class="back" href="/api/shadow/export${tq}">Full ledger (JSONL)</a> <a class="back" href="/venues${tq}">By venue, named (operator)</a>
+    <a class="back" href="/">Back to the track record</a> <a class="back" href="/api/shadow/report">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full&amp;as=operator">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/hedges">Hedge receipts (JSON)</a> <a class="back" href="/api/shadow/export">Full ledger (JSONL)</a> <a class="back" href="/venues">By venue, named (operator)</a>
   </div>
   <footer>
     Counterfactuals are computed at open from the venue books retained on the position and settled against the same official result as the live book. Nothing in the alternatives was traded. Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer.
@@ -1484,19 +1481,18 @@ export interface HoldersPageInput {
     }>;
   }>;
   totals: { locks: number; toHolderCents: number; toWriterCents: number };
-  token: string | null;
   /** each lock ledger's daily fingerprints (ledgerFingerprint.ts), the shared ledger under holder null; absent where they are switched off */
   fingerprints?: Array<{ holder: string | null; status: LedgerFingerprintStatus }>;
 }
 
 /** The lock ledgers' fingerprints, one row each: operator only, since a ledger is named by its holder. */
-function lockFingerprintsCard(list: NonNullable<HoldersPageInput["fingerprints"]>, tq: string): string {
+function lockFingerprintsCard(list: NonNullable<HoldersPageInput["fingerprints"]>): string {
   if (list.length === 0) return "";
   const rows = list
     .map(({ holder, status: f }) => {
       const latest = f.days[f.days.length - 1];
       const state = f.mismatch ? `<b style="color:#8a2a2a">no longer matches ${escapeHtml(f.mismatch.day)}</b>` : f.state === "unread" ? "could not be read" : "matches";
-      const href = `/api/shadow/fingerprints${tq ? `${tq}&` : "?"}ledger=lock${holder ? `&holder=${encodeURIComponent(holder)}` : ""}`;
+      const href = `/api/shadow/fingerprints?as=operator&amp;ledger=lock${holder ? `&holder=${encodeURIComponent(holder)}` : ""}`;
       return `<tr><td><a class="back" href="${href}">${escapeHtml(holder ?? "shared key")}</a></td><td>${state}</td><td>${latest ? escapeHtml(latest.day) : "none closed yet"}</td><td>${latest ? intStr(latest.lines) : ""}</td><td>${latest ? intStr(latest.bytes) : ""}</td><td class="tk">${latest ? escapeHtml(latest.sha256) : ""}</td><td>${f.chain > 1 ? f.chain - 1 : ""}</td></tr>`;
     })
     .join("");
@@ -1518,7 +1514,6 @@ function cashLegHtml(l: CashLegDue): string {
 }
 
 export function renderHoldersHtml(input: HoldersPageInput): string {
-  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
   const net = input.totals.toHolderCents - input.totals.toWriterCents;
   const sections = input.holders
     .map((h) => {
@@ -1583,12 +1578,12 @@ pre{background:var(--card2);border-radius:8px;padding:10px 12px;font-size:11.5px
     </div>
   </div>
 ${sections}
-${input.fingerprints ? lockFingerprintsCard(input.fingerprints, tq) : ""}  <div class="card">
+${input.fingerprints ? lockFingerprintsCard(input.fingerprints) : ""}  <div class="card">
     <h2>Recording a payment</h2>
     <div class="read">Each payment is one line on the holder's ledger. Name the holder when the same game is locked by more than one.</div>
     <pre>curl -X POST "$SERVICE/api/shadow/cash" -H "x-admin-token: $TOKEN" -H "content-type: application/json" \\
   -d '{"ticker":"KX...","holder":"ann","leg":"credit","cents":150,"method":"venmo","ref":"..."}'</pre>
-    <a class="back" href="/api/shadow/holders${tq}">Raw JSON</a> <a class="back" href="/venues${tq}">Venues</a> <a class="back" href="/healthz${tq}">Status</a>
+    <a class="back" href="/api/shadow/holders">Raw JSON</a> <a class="back" href="/venues">Venues</a> <a class="back" href="/healthz?as=operator">Status</a>
   </div>
   <footer>
     Operator view. Rendered ${escapeHtml(input.at.slice(0, 16).replace("T", " "))} UTC.
@@ -1607,7 +1602,6 @@ export interface VenuesPageInput {
   pricingSource: { aggregator: AggregatorBookStatus | { configured: false }; notes: string[] };
   /** the held-books stream, when the worker holds one; null when the hold is off or the feed is */
   heldBooks?: HeldBooksStatus | null;
-  token: string | null;
   windowDays: number;
 }
 
@@ -1675,7 +1669,6 @@ function refusalWordForPage(code: string): string {
 
 export function renderVenuesHtml(input: VenuesPageInput): string {
   const b = input.breakdown;
-  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
   const ps = input.pricingSource.aggregator;
   const feedLine = ps.configured
     ? `The feed is on (${escapeHtml(ps.host)}, key …${escapeHtml(ps.keyIdTail)}, public key <code>${escapeHtml(ps.publicKeyHex)}</code>): ${ps.reads} reads since boot, ${ps.readsWithBooks} with books, ${ps.mappingMismatches} mapping mismatch${ps.mappingMismatches === 1 ? "" : "es"}${ps.lastError ? `; last error: ${escapeHtml(ps.lastError)}${/401|UNAUTHORIZED/i.test(ps.lastError) ? " (the partner rejects this key's signatures: compare the public key above with the one registered on their side, and the key id with the one issued)" : ""}` : ""}${ps.lastReadAt ? `; last read ${escapeHtml(shortEt(ps.lastReadAt))}` : ""}.`
@@ -1879,7 +1872,7 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
     <div class="sub" style="margin-bottom:6px">Open games first, next to lock first; then settled, most recent first. Each venue cell is the credit the default tier would have paid from that book, the difference against the credit written, and for reference books the best ask on the opposing outcome and its visible depth in shares. A game that has had its pre-lock read shows that read under the open-time one, marked by the hours it was taken before the lock; a game whose held book was caught opening shows that read too, marked "opened" on the venue that opened; a game priced again in play shows that read last, marked by the minutes after the start.</div>
     <div class="tablewrap"><table>${head}${rows}</table></div>
     ${b.rows.length === 0 ? `<div class="read">Nothing in the window yet.</div>` : ""}
-    <a class="back" href="/report${tq}">Rule comparison</a> <a class="back" href="/api/shadow/venues${tq}">Raw JSON</a> <a class="back" href="/api/shadow/venues.csv${tq}${input.windowDays !== 7 ? `${tq ? "&" : "?"}days=${input.windowDays}` : ""}">Every read with listing ids (CSV)</a> <a class="back" href="/api/shadow/venues/catalog${tq}${tq ? "&" : "?"}league=nba">What reference books A and D list for a league (JSON)</a> <a class="back" href="/healthz${tq}">Status</a>
+    <a class="back" href="/report">Rule comparison</a> <a class="back" href="/api/shadow/venues">Raw JSON</a> <a class="back" href="/api/shadow/venues.csv${input.windowDays !== 7 ? `?days=${input.windowDays}` : ""}">Every read with listing ids (CSV)</a> <a class="back" href="/api/shadow/venues/catalog?league=nba">What reference books A and D list for a league (JSON)</a> <a class="back" href="/healthz?as=operator">Status</a>
   </div>
   <footer>
     Operator view. Venue names appear here and nowhere public. Nothing on this page was traded except the route written. Rendered ${escapeHtml(b.atIso.slice(0, 16).replace("T", " "))} UTC.
@@ -1894,8 +1887,7 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
  * what was read, and what to confirm by hand. Operator only. Every word is the report's own; the
  * page adds none, so the JSON and the page cannot disagree.
  */
-export function renderPilotCheckHtml(input: { report: PilotReport; at: string; token: string | null }): string {
-  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
+export function renderPilotCheckHtml(input: { report: PilotReport; at: string }): string {
   const r = input.report;
   const cls = (a: string): string => (a === "yes" ? "yes" : a === "no" ? "no" : "hand");
   const rows = r.items
@@ -1939,7 +1931,7 @@ tr.yes td.a b{color:var(--green-deep)} tr.no td.a b{color:#8a2a2a} tr.hand td.a 
   </div>
   <div class="card">
     <div class="tablewrap"><table><tr><th>#</th><th>condition</th><th>answer</th></tr>${rows}</table></div>
-    <a class="back" href="/api/shadow/pilot-check${tq}">Raw JSON</a> <a class="back" href="/holders${tq}">Holders</a> <a class="back" href="/healthz${tq}">Status</a>
+    <a class="back" href="/api/shadow/pilot-check">Raw JSON</a> <a class="back" href="/holders">Holders</a> <a class="back" href="/healthz?as=operator">Status</a>
   </div>
 </div>
 </body>
@@ -1950,8 +1942,7 @@ tr.yes td.a b{color:var(--green-deep)} tr.no td.a b{color:#8a2a2a} tr.hand td.a 
  * THE CAPITAL MODEL (capitalModel.ts), for the operator: what each settlement shape ties up of
  * our own money, read off the record's own lines and times. Operator only: it names hedge routes.
  */
-export function renderCapitalHtml(input: { model: CapitalModel; token: string | null }): string {
-  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
+export function renderCapitalHtml(input: { model: CapitalModel }): string {
   const m = input.model;
   const n = (x: number): string => x.toLocaleString("en-US");
   const lagWords = (h: number): string => (h === 0 ? "paid back at the result" : `paid back ${h} hours after the result`);
@@ -2028,7 +2019,7 @@ ${shapeRows("Collar, our book", m.collar)}
     <h1>Collar, by hedge route</h1>
     <div class="sub">The most out at once on each route, paid back at the result.</div>
     <div class="tablewrap"><table><tr><th>route</th><th>lines</th><th>most out at once</th></tr>${routes}</table></div>
-    <a class="back" href="/api/shadow/capital${tq}">Raw JSON</a> <a class="back" href="/pilot-check${tq}">Pilot check</a> <a class="back" href="/holders${tq}">Holders</a>
+    <a class="back" href="/api/shadow/capital">Raw JSON</a> <a class="back" href="/pilot-check">Pilot check</a> <a class="back" href="/holders">Holders</a>
   </div>
 </div>
 </body>

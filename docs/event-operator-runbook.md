@@ -42,6 +42,14 @@ Do not skip this test. `/healthz` answers everyone: with a wrong token it gives 
 
 Every command below assumes these lines. `jq` only makes the answer readable; leave it off if you do not have it.
 
+**In a browser.** Open `$S/operator`, paste the token into the form and press Sign in. The token is sent in the form, not in the address, so it is not left in your history, and no operator page carries it on a link. The browser stays signed in for 12 hours (`EVENT_X_ADMIN_SESSION_HOURS` changes that), or until you press Sign out, or until the token is replaced. The demo service has the same page with its own token.
+
+Three things to know about the browser sign-in:
+
+- Being signed in does not change a public page. `/healthz`, `/scoreboard` and a slate show the public view until you add `?as=operator` to the address. The operator pages link to them that way.
+- An address that changes something (one with `confirm=`, such as the Kalshi account routes) is refused when it is typed into the address bar or followed from a message, even when you are signed in. Open it from the box on `/operator` ("Open an operator address on this service"), or use the command with the header. This is what stops a link someone sends you from acting as you.
+- A saved link that still has `?token=` in it works: a page signs the browser in and takes the token out of the address. To stop a token in an address being read at all, add `EVENT_X_ADMIN_QUERY_TOKEN=off` on the service once nothing you use sends one. The commands in this document all use the header and are not affected.
+
 ## 3. Pause
 
 The one switch is the kill switch in step A. It stops every hedge order in every hedge mode (live orders, and the request-for-quote mode, where no request is sent and no quote can be accepted). Hedge orders are the only way money leaves our accounts. It is not a full stop: steps B to D cover the rest, from lightest to heaviest. No route changes any of them. Each is a setting in the Render dashboard, and saving it restarts the service.
@@ -196,7 +204,7 @@ No route sells a stray for you. Selling is by hand, on the venue.
 curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/api/shadow/holders" | jq '.holders[] | {holder, outstanding}'
 ```
 
-The same view as a page is at `/holders`. A browser cannot send the header, so the page takes the token in the address (`/holders?token=...`). That leaves the token in your browser history. Prefer the command.
+The same view as a page is at `/holders`. In a browser, sign in first at `/operator` (section 2): the token goes into the form on that page, never into the address, and no link on the page carries it.
 
 2. Move the money outside the system: [founder to fill: how a holder is paid and how a handback is collected].
 
@@ -220,8 +228,8 @@ Add `"holder":"<alias>"` if more than one person locked that market. The route r
 
 | Secret | Service | What else must change |
 | --- | --- | --- |
-| `EVENT_X_ADMIN_TOKEN` | `atticus-event-shadow` | Your terminal (section 2). After #404, the GitHub secret of the same name (section 8). Any saved link that carries `?token=`. |
-| `EVENT_X_ADMIN_TOKEN` | `atticus-event-demo-cross-venue` | A separate value. Any saved operator link to the demo. |
+| `EVENT_X_ADMIN_TOKEN` | `atticus-event-shadow` | Your terminal (section 2). After #404, the GitHub secret of the same name (section 8). Every browser signed in at `/operator` is signed out by the change and signs in again with the new value. Any saved link that still carries `?token=`. |
+| `EVENT_X_ADMIN_TOKEN` | `atticus-event-demo-cross-venue` | A separate value. The same sign-in at `/operator` on that service; a change signs every browser out. |
 | `EVENT_SHADOW_LOCK_KEY` | `atticus-event-shadow` | The key saved in your browser extension's options. At least 12 characters. |
 | `EVENT_SHADOW_HOLDER_KEYS` | `atticus-event-shadow` | Send the holder their new key privately (section 9). |
 | `EVENT_SHADOW_SLATE_KEY` | both services, same value | Every slate link already sent stops working. |
