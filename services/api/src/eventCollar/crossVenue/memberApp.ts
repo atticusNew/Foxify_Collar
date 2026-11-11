@@ -449,7 +449,13 @@ export const LIVE_ORDER_STATUSES = new Set(["created", "requested", "accepted", 
  * contract, the quantity the makers will take (at most what was asked: partials), when it lapses,
  * and a status (quoted / pending / expired / declined). POST /api/v1/rfqs/{id}/accept
  * {quantity, price} fills it, and the fill posts as a regular order (orders.write), so the fills
- * read and the positions read see it like any sale. Only the field names here would change.
+ * read and the positions read see it like any sale.
+ * Confirmed by STX (Nov 6 2026): the fill shows in /orders and /fills and /positions drops by the
+ * contracts filled; a request lives 5 minutes and each maker's quote carries its own expiry
+ * (expires_in_ms, shown as expires_at) with no push on expiry, so expires_at is the authority.
+ * Still assumed: the field names, partial sizes, and that one request answers with ONE quote;
+ * STX's answer reads as several makers' quotes per request, so the real shape likely carries a
+ * list and the client should take the best live bid and accept it by its id.
  */
 export interface RawMemberRfq {
   id: string;

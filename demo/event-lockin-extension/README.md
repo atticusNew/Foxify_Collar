@@ -497,11 +497,18 @@ games listed, past locks):
   has not answered), a combo row reads as before, "Rides to settlement on STX.", and a synthetic
   ticker is refused (`parlay_unsupported`). The quote path proves itself before auto turns a row
   on; the accept is proven only by the first tap, so run one combo on STX's paper exchange the day
-  the path ships. Three things to settle with STX before real money rides on it: the quote path's
-  real field names and whether partial sizes are quoted (the client takes the quantity the venue
-  returns), how long a quote stands (the tap re-asks, so a few seconds is enough), and that the
-  accepted fill posts as a regular order so the ticket's size drops in the portfolio read (the
-  record and the page both lean on that). **Preview** (`MEMBER_APP_COMBO_RFQ=preview`) is for
+  the path ships. Three things were open with STX before real money rides on it; two are answered
+  (STX, Nov 6 2026). Answered: the accepted fill shows in `/orders` and `/fills` like any order
+  and `/positions` drops by the contracts filled (the record and the page lean on exactly that).
+  Answered: a request lives 5 minutes and each maker's quote carries its own expiry
+  (`expires_in_ms`, shown as `expires_at`); expiry sends no push, so the client must act on
+  `expires_at`, which is what `requestRfqBid` already does (it polls, never waits on a push, and a
+  quote past its `expires_at` reads as expired; the tap re-asks). One structural note from that
+  answer: a request can carry several makers' quotes, each with its own price, size and expiry,
+  where the assumed shape reads one; when the docs land the client should take the best live bid
+  among them and accept that quote by its id, that quote's `expires_at` governing. Still open: the
+  quote path's real field names and whether partial sizes are quoted (the client takes the
+  quantity the venue returns). **Preview** (`MEMBER_APP_COMBO_RFQ=preview`) is for
   seeing the page before STX ships the quote path: every live combo row quotes from a stand-in bid a
   tenth under the ticket's own last price (its entry when STX shows none), the open panel says
   "Preview · a stand-in bid, not STX's quote" in amber, nothing is asked of STX, and the tap is
