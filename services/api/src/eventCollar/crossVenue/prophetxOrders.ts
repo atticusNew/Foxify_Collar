@@ -49,7 +49,7 @@ import { AggregatorApiError } from "./aggregatorMarkets";
 import { AggregatorPodRest, aggregatorClientOrderId, type AggregatorOrderClientOptions, type AggregatorTradeConfig } from "./aggregatorOrders";
 import { actionOf, type HedgeIntent } from "./hedgeExecutor";
 import { dollarsToMicro } from "./kalshiOrders";
-import type { LiveOrderHook, LiveOrderResult } from "./liveHedge";
+import { orderNotReadError, type LiveOrderHook, type LiveOrderResult } from "./liveHedge";
 import type { PmBook, PmBookLevel } from "./types";
 
 /** The venue's published rate on net gains, bps. */
@@ -364,9 +364,14 @@ export class ProphetXOrderClient {
       status = (order?.status ?? status).toUpperCase() || "CANCELLED";
     }
 
-    const fills = await this.fills(orderId).catch(() => [] as ProphetXFill[]);
-    const sum = sumProphetXFills(fills);
+    const fills = await this.fills(orderId).catch(() => null);
+    const sum = sumProphetXFills(fills ?? []);
+    // a miss is said only of an order read in a final state with nothing matched on it (liveHedge.orderNotReadError)
     if (sum.sharesMilli <= 0) {
+      if (!order) throw orderNotReadError("prophetx", orderId, status, "every read of it failed");
+      if (!PROPHETX_FINAL.has(status)) throw orderNotReadError("prophetx", orderId, status, "it did not reach a final state and the cancel was not confirmed");
+      const matched = status === "FILLED" || (order.filledQuantity ?? 0) > 0;
+      if (matched) throw orderNotReadError("prophetx", orderId, status, fills ? "the order shows a match and no fill was listed" : "the order shows a match and its fills could not be read");
       throw new Error(`prophetx orders: order ${orderId} ${status || "unknown"} with nothing filled at or under ${(plan.limitMicro / 1_000_000).toFixed(6)} (fill or kill)${plan.ladderSource === "fallback" ? "; ladder served from the partner's last known set" : ""}`);
     }
     const notes: string[] = [];

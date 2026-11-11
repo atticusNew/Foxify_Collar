@@ -226,21 +226,51 @@ test("prophetx place: a kill that filled nothing is an error naming the order an
   });
   await assert.rejects(client(killed).place(buyIntent(), "atticus-k1"), /order px-4 CANCELLED with nothing filled at or under 0\.400000 \(fill or kill\)/);
 
+  // rests, the cancel answers "already final", and the order read after it says so: a miss, read to its end
+  let cancelTried = false;
   const resting = fakePartner({
     ...TIME,
     ...LADDER_ROUTE,
     "POST /v1/prophetx/orders": () => ({ status: 201, body: { orderId: "px-5", status: "OPEN" } }),
-    "GET /v1/prophetx/orders/px-5": () => ({ status: 200, body: { orderId: "px-5", status: "OPEN", filledQuantity: 0 } }),
-    "DELETE /v1/prophetx/orders/px-5": () => ({ status: 409, body: { error: { code: "CONFLICT", message: "already final" } } }),
+    "GET /v1/prophetx/orders/px-5": () => ({ status: 200, body: { orderId: "px-5", status: cancelTried ? "CANCELLED" : "OPEN", filledQuantity: 0 } }),
+    "DELETE /v1/prophetx/orders/px-5": () => {
+      cancelTried = true;
+      return { status: 409, body: { error: { code: "CONFLICT", message: "already final" } } };
+    },
     "GET /v1/prophetx/orders/px-5/fills": () => ({ status: 200, body: { fills: [] } }),
   });
-  await assert.rejects(client(resting).place(buyIntent(), "atticus-k2"), /px-5 OPEN with nothing filled/);
+  await assert.rejects(client(resting).place(buyIntent(), "atticus-k2"), /px-5 CANCELLED with nothing filled/);
   assert.ok(resting.seen.some((s) => s.method === "DELETE" && s.path === "/v1/prophetx/orders/px-5"), "the resting order was cancelled");
 
   const noId = fakePartner({ ...TIME, ...LADDER_ROUTE, "POST /v1/prophetx/orders": () => ({ status: 201, body: { status: "SUBMITTED" } }) });
   await assert.rejects(client(noId).place(buyIntent(), "atticus-k3"), /submit returned no order id/);
   const empty = fakePartner({ ...TIME, "GET /v1/prophetx/ladder": () => ({ status: 200, body: { prices: [], source: "venue" } }) });
   await assert.rejects(client(empty).place(buyIntent(), "atticus-k4"), /ladder came back empty/);
+});
+
+test("prophetx place: an order that was taken and not read to its end is never called a miss", async () => {
+  const miss = /with nothing (filled|sold)/;
+  const submit = (id: string, status: string) => ({ "POST /v1/prophetx/orders": () => ({ status: 201, body: { orderId: id, status } }) });
+  const down = () => ({ status: 502, body: { error: { code: "BAD_GATEWAY", message: "upstream" } } });
+  const cases: Array<[string, Record<string, () => { status: number; body: unknown }>, RegExp]> = [
+    // every read of the order fails
+    ["px-6", { ...submit("px-6", "PENDING"), "GET /v1/prophetx/orders/px-6": down, "GET /v1/prophetx/orders/px-6/fills": () => ({ status: 200, body: { fills: [] } }) }, /px-6 was sent and its end was not read \(every read of it failed; last seen PENDING\); it may have filled/],
+    // still open after a cancel that failed
+    ["px-7", { ...submit("px-7", "OPEN"), "GET /v1/prophetx/orders/px-7": () => ({ status: 200, body: { orderId: "px-7", status: "OPEN", filledQuantity: 0 } }), "DELETE /v1/prophetx/orders/px-7": down, "GET /v1/prophetx/orders/px-7/fills": () => ({ status: 200, body: { fills: [] } }) }, /px-7 was sent and its end was not read \(it did not reach a final state and the cancel was not confirmed; last seen OPEN\)/],
+    // filled, and the fills cannot be read
+    ["px-8", { ...submit("px-8", "SUBMITTED"), "GET /v1/prophetx/orders/px-8": () => ({ status: 200, body: { orderId: "px-8", status: "FILLED", filledQuantity: 8 } }), "GET /v1/prophetx/orders/px-8/fills": down }, /px-8 was sent and its end was not read \(the order shows a match and its fills could not be read; last seen FILLED\)/],
+    // cancelled with a matched stake on it and no fill listed
+    ["px-9", { ...submit("px-9", "SUBMITTED"), "GET /v1/prophetx/orders/px-9": () => ({ status: 200, body: { orderId: "px-9", status: "CANCELLED", filledQuantity: 3 } }), "GET /v1/prophetx/orders/px-9/fills": () => ({ status: 200, body: { fills: [] } }) }, /px-9 was sent and its end was not read \(the order shows a match and no fill was listed; last seen CANCELLED\)/],
+  ];
+  for (const [id, routes, words] of cases) {
+    const err = await client(fakePartner({ ...TIME, ...LADDER_ROUTE, ...routes })).place(buyIntent(), `atticus-${id}`).then(() => null, (e: Error) => e);
+    assert.ok(err, `${id} is an error`);
+    assert.match(err.message, words);
+    assert.doesNotMatch(err.message, miss, `${id} is not worded as a miss`);
+  }
+  // cancelled with nothing matched and the fills unreadable: the order's own count is the venue's word, a miss
+  const killed = fakePartner({ ...TIME, ...LADDER_ROUTE, ...submit("px-10", "SUBMITTED"), "GET /v1/prophetx/orders/px-10": () => ({ status: 200, body: { orderId: "px-10", status: "CANCELLED", filledQuantity: 0 } }), "GET /v1/prophetx/orders/px-10/fills": down });
+  await assert.rejects(client(killed).place(buyIntent(), "atticus-px-10"), /px-10 CANCELLED with nothing filled/);
 });
 
 test("prophetx reads: the pod's ProphetX cash floored to cents, positions by strike, the order and its fills", async () => {

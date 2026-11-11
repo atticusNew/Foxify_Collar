@@ -38,7 +38,7 @@ import { kalshiBase } from "../kalshiPublic";
 import { actionOf, type HedgeIntent } from "./hedgeExecutor";
 import { kalshiTakerFeeCents } from "./kalshiLadder";
 import { contractsFp, fpToMilli, kalshiAuthHeaders, type KalshiRfqCredentials } from "./kalshiRfq";
-import type { LiveOrderHook, LiveOrderResult } from "./liveHedge";
+import { orderNotReadError, type LiveOrderHook, type LiveOrderResult } from "./liveHedge";
 import { decimalToMilli } from "./polymarketPublic";
 
 /** The legacy order read (GET /portfolio/orders/{id}): integer cents or the newer dollar strings. */
@@ -343,13 +343,13 @@ export class KalshiOrderClient {
     if (fpToMilli(created.remaining_count) > 0) {
       await this.call("DELETE", `/portfolio/events/orders/${encodeURIComponent(orderId)}`).catch(() => null);
       const read = (await this.call("GET", `/portfolio/orders/${encodeURIComponent(orderId)}`).catch(() => null)) as { order?: KalshiRawOrder } | null;
-      if (read?.order) {
-        const legacy = fillOfOrder(read.order, capCents, sell);
-        if (legacy.unitsMilli > 0) fill = legacy;
-        status = FINAL_STATUSES.has((read.order.status ?? "").toLowerCase()) ? (read.order.status ?? "canceled").toLowerCase() : "canceled";
-      } else {
-        status = "canceled";
-      }
+      // the venue rested part of the order: what filled is known only from the order read back in a final state
+      const last = (read?.order?.status ?? "").toLowerCase();
+      if (!read?.order) throw orderNotReadError("kalshi", orderId, "resting", "part of it rested and it could not be read back after the cancel");
+      if (!FINAL_STATUSES.has(last)) throw orderNotReadError("kalshi", orderId, last || "resting", "part of it rested and the cancel was not confirmed");
+      const legacy = fillOfOrder(read.order, capCents, sell);
+      if (legacy.unitsMilli > 0) fill = legacy;
+      status = last;
     }
 
     if (fill.unitsMilli <= 0) {

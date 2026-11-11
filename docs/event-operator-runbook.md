@@ -167,7 +167,7 @@ On a real-money lock the hedge is bought first, whole or not at all, at a limit 
 | Filled | Writes the lock. | Nothing. |
 | Not filled | Writes nothing. Tells the holder. They may tap again. | Nothing. |
 | Part filled | Writes no lock. Records the part bought as a stray hedge. Alerts you every time. | Sell the stray on the venue by hand, then clear the line. |
-| Unconfirmed (the order went out and the answer was an error) | Writes no lock. Alerts you. | Look for the order on the venue by its id. If it filled, sell it. Then clear the line. |
+| Unconfirmed (the order went out and its end was never read: the answer was an error, the order could not be read back, it never reached a final state, or its fills could not be read) | Writes no lock. Counts the order against the caps at the most it could have cost. Alerts you. | Look for the order on the venue by its id. If it filled, sell it. Then clear the line. |
 | Filled, but the lock could not be written to the disk | No lock exists. Records the hedge as a stray. Alerts you. Tells the holder nothing was locked. | Check the disk. Sell the hedge on the venue by hand, then clear the line. |
 
 If the service restarts between sending an order and recording the answer, it alerts you on start with the order to look for.
@@ -187,6 +187,17 @@ curl -s -X POST -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/api/shadow/lock/pen
 ```
 
 No route sells a stray for you. Selling is by hand, on the venue.
+
+**Leaving early, when the lock holds a real hedge.** The hedge is sold back on the venue and the lock is closed on the record. Two endings need you, and both alert you every time:
+
+| Ending | What the system does | What you do |
+| --- | --- | --- |
+| The sale went out and its end was never read | Closes nothing. The lock stands. Tells the holder it is being checked. Sends no second sale for that lock until you clear the line. | Look for the sale on the venue by its id. If it sold, buy the same size back so the lock is hedged again. Then clear the line. The holder can then leave again. |
+| The lock was closed and part or all of its hedge is still on the venue (the sale filled in part, sold nothing, or could not be sent) | Closes the lock on the record. Keeps counting what is left against the caps, at what it cost. | Sell what is left on the venue by hand. Then clear the line. |
+
+Both show under `strays` on `/healthz` and under `sales` on `/api/shadow/lock/pending`. Clear them the same way as any other line.
+
+**The day's contract limit** (`EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY`) counts an order from the moment it leaves, so two orders sent in the same second are both counted.
 
 **During a game [after #400].** The lock window opens seven days before the start and closes four hours after it. A hedged lock cannot be left early once the game has started. To go back to closing 45 minutes before the start, set `EVENT_X_IN_PLAY=0` on `atticus-event-shadow`. In-play real orders have been tested against a scripted venue only, so treat the first one as a test: smallest size, one game on the allowlist, and check the trail straight after.
 
@@ -363,7 +374,7 @@ curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/healthz" | jq '.lock | {hol
 
 `holderNotes` should be `null`. If it lists a note, that pair was dropped and says why.
 
-4. If the holder is anyone but you, make them real-only. On the same service, add their alias to `EVENT_SHADOW_REAL_ONLY_HOLDERS` (aliases separated by commas, or `*` for every caller including the shared key and you):
+4. If the holder is anyone but you, make them real-only. On the same service, add their alias to `EVENT_SHADOW_REAL_ONLY_HOLDERS` (aliases separated by commas; the word `shared` for the shared key and for you acting for nobody; or `*` for every caller including the shared key and you):
 
 ```
 EVENT_SHADOW_REAL_ONLY_HOLDERS=ann,bob

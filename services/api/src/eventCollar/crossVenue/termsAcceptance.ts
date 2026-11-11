@@ -30,7 +30,9 @@
  * holder who has not accepted a newer version can always see and close what they hold.
  *
  * A new version means a new acceptance: lines for an older version stay on the file and stop
- * counting. Nothing is ever edited or removed.
+ * counting. So does a new address under the same label: an acceptance counts for the version
+ * AND the address it was made against, so a different document cannot inherit a label's
+ * acceptances. Nothing is ever edited or removed.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -105,9 +107,9 @@ export function loadTermsAcceptances(path: string): TermsAcceptance[] {
   return out;
 }
 
-/** This holder's first acceptance of this version, or null. Older versions do not count. */
-export function acceptanceOf(records: readonly TermsAcceptance[], holder: string, version: string): TermsAcceptance | null {
-  return records.find((r) => r.holder === holder && r.version === version) ?? null;
+/** This holder's first acceptance of this version at this address, or null. Older versions, and the same label read at another address, do not count. */
+export function acceptanceOf(records: readonly TermsAcceptance[], holder: string, terms: { version: string; url: string }): TermsAcceptance | null {
+  return records.find((r) => r.holder === holder && r.version === terms.version && r.url === terms.url) ?? null;
 }
 
 export type TermsStanding =
@@ -121,7 +123,7 @@ export type TermsStanding =
 export function termsStanding(inForce: TermsInForce, records: readonly TermsAcceptance[], holder: string | null): TermsStanding {
   if (!inForce.required || holder === null) return { asked: false };
   if (!inForce.terms) return { asked: true, accepted: false, terms: null };
-  const a = acceptanceOf(records, holder, inForce.terms.version);
+  const a = acceptanceOf(records, holder, inForce.terms);
   return a ? { asked: true, accepted: true, version: a.version, url: a.url, at: a.at, by: a.by } : { asked: true, accepted: false, terms: inForce.terms };
 }
 
@@ -148,6 +150,7 @@ export function parseAcceptRequest(body: unknown, inForce: TermsInForce, by: "ho
 export function termsOnRecordFor(inForce: TermsInForce, records: readonly TermsAcceptance[], holders: readonly string[]): { version: string | null; holders: number; missing: string[]; notes: string[] } | null {
   if (!inForce.required) return null;
   const version = inForce.terms?.version ?? null;
-  const missing = holders.filter((h) => version === null || !acceptanceOf(records, h, version));
+  const terms = inForce.terms;
+  const missing = holders.filter((h) => terms === null || !acceptanceOf(records, h, terms));
   return { version, holders: holders.length - missing.length, missing, notes: inForce.notes };
 }

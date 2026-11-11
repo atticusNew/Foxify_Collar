@@ -42,7 +42,7 @@
 import { createHash } from "node:crypto";
 import { actionOf, type HedgeIntent } from "./hedgeExecutor";
 import { dollarsToMicro } from "./kalshiOrders";
-import type { LiveOrderHook, LiveOrderResult } from "./liveHedge";
+import { orderNotReadError, type LiveOrderHook, type LiveOrderResult } from "./liveHedge";
 import { decimal5ToCents } from "./novigAccount";
 import { signedFeeCoefficient, signedFeeMilli } from "./venueBooks";
 import { VenueApiError, VenueClient, signedHeaders, type RawVenueMarket, type VenueSigner } from "./venuePositions";
@@ -332,9 +332,17 @@ export class NovigOrderClient {
       status = (order?.status ?? status).toUpperCase() || "CANCELED";
     }
 
-    const fills = await this.fills(orderId).catch(() => [] as NovigFill[]);
-    const sum = sumNovigFills(fills);
+    const fills = await this.fills(orderId).catch(() => null);
+    const sum = sumNovigFills(fills ?? []);
+    // a miss is said only of an order read in a final state with nothing matched on it (liveHedge.orderNotReadError)
     if (sum.contracts <= 0) {
+      if (!order) throw orderNotReadError("novig", orderId, status, "every read of it failed");
+      if (!NOVIG_FINAL.has(status)) throw orderNotReadError("novig", orderId, status, "it did not reach a final state and the cancel was not confirmed");
+      const counted = Number.isFinite(order.qty) && Number.isFinite(order.remaining);
+      if (status === "FILLED" || (counted && order.remaining < order.qty)) {
+        throw orderNotReadError("novig", orderId, status, fills ? "the order shows a match and no fill was listed" : "the order shows a match and its fills could not be read");
+      }
+      if (!fills && status !== "REJECTED" && !counted) throw orderNotReadError("novig", orderId, status, "its fills could not be read");
       throw new Error(`novig orders: order ${orderId} ${status || "unread"} with nothing filled at or under ${plan.body.price} (fill or kill)${fee.source === "default" ? "; fee rule unread, taken as charged" : ""}`);
     }
     const filledMilli = sum.contracts * 10;

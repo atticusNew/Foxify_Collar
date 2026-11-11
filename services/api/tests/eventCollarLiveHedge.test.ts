@@ -439,6 +439,29 @@ test("kalshi orders client: nothing filled throws (so the executor falls back); 
   const c1 = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: empty.fetchImpl });
   await assert.rejects(c1.placeNo(intent, "x"), /order ord-0 canceled with nothing filled at or under 42c/);
 
+  // part of the order rested and the read back after the cancel fails, or shows it still resting: not a miss
+  const restedUnread = fixtureFetch([
+    () => ({ status: 201, body: { order_id: "ord-1", fill_count: "0.00", remaining_count: "20.00", ts_ms: 1 } }),
+    () => ({ status: 200, body: {} }),
+    () => ({ status: 503, body: { error: { code: "unavailable" } } }),
+  ]);
+  const unread = await new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: restedUnread.fetchImpl }).placeNo(intent, "x").then(() => null, (e: Error) => e);
+  assert.match(unread?.message ?? "", /order ord-1 was sent and its end was not read \(part of it rested and it could not be read back after the cancel; last seen resting\); it may have filled/);
+  assert.doesNotMatch(unread?.message ?? "", /with nothing (filled|sold)/);
+  const stillResting = fixtureFetch([
+    () => ({ status: 201, body: { order_id: "ord-2", fill_count: "0.00", remaining_count: "20.00", ts_ms: 1 } }),
+    () => ({ status: 503, body: { error: { code: "unavailable" } } }),
+    () => ({ status: 200, body: { order: { order_id: "ord-2", status: "resting", taker_fill_count: 0, taker_fill_cost: 0, taker_fees: 0, remaining_count: 20 } } }),
+  ]);
+  await assert.rejects(new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: stillResting.fetchImpl }).placeNo(intent, "x"), /order ord-2 was sent and its end was not read \(part of it rested and the cancel was not confirmed; last seen resting\)/);
+  // rested, cancelled, read back final with nothing on it: a miss, read to its end
+  const restedCancelled = fixtureFetch([
+    () => ({ status: 201, body: { order_id: "ord-3", fill_count: "0.00", remaining_count: "20.00", ts_ms: 1 } }),
+    () => ({ status: 200, body: {} }),
+    () => ({ status: 200, body: { order: { order_id: "ord-3", status: "canceled", taker_fill_count: 0, taker_fill_cost: 0, taker_fees: 0, remaining_count: 0 } } }),
+  ]);
+  await assert.rejects(new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: restedCancelled.fetchImpl }).placeNo(intent, "x"), /order ord-3 canceled with nothing filled at or under 42c/);
+
   const legacyGone = fixtureFetch([() => ({ status: 410, body: { error: { code: "deprecated_v1_order_endpoint", message: "Please switch to the V2 endpoints" } } })]);
   const c410 = new KalshiOrderClient(creds, { base: "https://api.test/trade-api/v2", fetchImpl: legacyGone.fetchImpl });
   await assert.rejects(c410.placeNo(intent, "x"), /kalshi orders: HTTP 410 POST \/portfolio\/events\/orders .*deprecated_v1_order_endpoint/);

@@ -214,6 +214,24 @@ test("aggregator orders: nothing filled is an error naming the order and the cap
   });
   await assert.rejects(new AggregatorOrderClient(cfg, { fetchImpl: empty.fetch, sleep: noSleep }).placeNo(intent(), "r5"), /order px-5 CANCELLED with nothing filled at or under 42c/);
 
+  // taken and not read to its end: never worded as a miss (liveHedge.orderNotReadError)
+  const down = () => ({ status: 502, body: { error: { code: "BAD_GATEWAY", message: "upstream" } } });
+  const pendingOrder = (id: string, status: string) => ({ orderId: id, status, count: "20.00", filledCount: null, averageYesPrice: null, averageNoPrice: null, feesCents: null, feesUsd: null, venueOrderId: null });
+  const unread: Array<[string, Record<string, () => { status: number; body: unknown }>, RegExp]> = [
+    ["px-7", { "POST /v1/kalshi/orders": () => ({ status: 201, body: { orderId: "px-7", status: "PENDING", filledCount: null, remainingCount: null, averagePrice: null } }), "GET /v1/kalshi/orders/px-7": down }, /order px-7 was sent and its end was not read \(every read of it failed; last seen PENDING\); it may have filled/],
+    ["px-8", { "POST /v1/kalshi/orders": () => ({ status: 201, body: { orderId: "px-8", status: "PENDING", filledCount: null, remainingCount: null, averagePrice: null } }), "GET /v1/kalshi/orders/px-8": () => ({ status: 200, body: pendingOrder("px-8", "PENDING") }), "DELETE /v1/kalshi/orders/px-8": down }, /order px-8 was sent and its end was not read \(it did not reach a final state and the cancel was not confirmed; last seen PENDING\)/],
+    ["px-9", { "POST /v1/kalshi/orders": () => ({ status: 201, body: { orderId: "px-9", status: "SUBMITTED", filledCount: null, remainingCount: null, averagePrice: null } }), "GET /v1/kalshi/orders/px-9": () => ({ status: 200, body: pendingOrder("px-9", "FILLED") }) }, /order px-9 was sent and its end was not read \(it reads as filled with no fill on it; last seen FILLED\)/],
+  ];
+  for (const [id, routes, words] of unread) {
+    const err = await new AggregatorOrderClient(cfg, { fetchImpl: fakePartner({ ...TIME, ...routes }).fetch, sleep: noSleep }).placeNo(intent(), id).then(() => null, (e: Error) => e);
+    assert.ok(err, `${id} is an error`);
+    assert.match(err.message, words);
+    assert.doesNotMatch(err.message, /with nothing (filled|sold)/, `${id} is not worded as a miss`);
+  }
+  // the submit itself answered CANCELLED with nothing filled and the reads then failed: the venue's word was read once, a miss
+  const cancelledAtSubmit = fakePartner({ ...TIME, "POST /v1/kalshi/orders": () => ({ status: 201, body: { orderId: "px-10", status: "CANCELLED", filledCount: "0.00", remainingCount: "0.00", averagePrice: null } }), "GET /v1/kalshi/orders/px-10": down });
+  await assert.rejects(new AggregatorOrderClient(cfg, { fetchImpl: cancelledAtSubmit.fetch, sleep: noSleep }).placeNo(intent(), "r10"), /order px-10 CANCELLED with nothing filled/);
+
   const refused = fakePartner({
     ...TIME,
     "POST /v1/kalshi/orders": () => ({ status: 400, body: { error: { code: "INSUFFICIENT_BALANCE", message: "the order needs $8.40; the pod has $2.00 available in this market's group" } } }),

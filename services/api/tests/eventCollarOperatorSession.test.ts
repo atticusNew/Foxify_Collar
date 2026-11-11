@@ -427,7 +427,13 @@ test("record service: signing out clears the cookie; a sign-out link is not a si
   const viaGet = await get(`${base}/operator/sign-out`, { ...BROWSER, cookie });
   assert.equal(viaGet.status, 303);
   assert.equal(viaGet.headers.get("set-cookie"), null, "a GET clears nothing");
-  const out = await fetch(`${base}/operator/sign-out`, { method: "POST", redirect: "manual", headers: { cookie } });
+  // another site's form posting here signs nobody out
+  const elsewhere: Array<Record<string, string>> = [{ cookie }, { cookie, origin: "https://elsewhere.example" }, { cookie, "sec-fetch-site": "cross-site", origin: base }];
+  for (const headers of elsewhere) {
+    const crossSite = await fetch(`${base}/operator/sign-out`, { method: "POST", redirect: "manual", headers });
+    assert.deepEqual([crossSite.status, crossSite.headers.get("set-cookie")], [303, null], JSON.stringify(headers));
+  }
+  const out = await fetch(`${base}/operator/sign-out`, { method: "POST", redirect: "manual", headers: { cookie, origin: base } });
   assert.equal(out.status, 303);
   assert.equal(out.headers.get("location"), "/operator");
   assert.match(out.headers.get("set-cookie") ?? "", /^atticus_op=; Path=\/; Max-Age=0; HttpOnly; SameSite=Lax$/);

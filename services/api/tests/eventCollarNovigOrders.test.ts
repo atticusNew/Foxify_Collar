@@ -259,6 +259,25 @@ test("novig place: a kill that filled nothing is an error naming the order and t
   await assert.rejects(client(resting).place(buyIntent(), "r"), /ord-5 CANCELED with nothing filled/);
   assert.ok(resting.seen.some((s) => s.method === "DELETE" && s.path === "/v3/orders/ord-5"), "a resting fill-or-kill is cancelled, never left");
 
+  // taken and not read to its end: never worded as a miss (liveHedge.orderNotReadError)
+  const down = () => ({ status: 503, body: { code: "UNAVAILABLE", message: "try later" } });
+  const order = (id: string, status: string, remaining: number) => ({ orderId: id, marketId: MARKET, outcomeId: OPP, price: "0.400", qty: 2000, remaining, status, tif: "FOK", createdTs: 1 });
+  const notRead: Array<[string, Record<string, () => { status: number; body: unknown }>, RegExp]> = [
+    ["ord-6", { "GET /v3/orders/ord-6": () => ({ status: 200, body: order("ord-6", "FILLED", 0) }), "GET /v3/portfolio/fills": down }, /order ord-6 was sent and its end was not read \(the order shows a match and its fills could not be read; last seen FILLED\); it may have filled/],
+    ["ord-7", { "GET /v3/orders/ord-7": down, "GET /v3/portfolio/fills": () => ({ status: 200, body: { items: [] } }) }, /order ord-7 was sent and its end was not read \(every read of it failed; last seen nothing\)/],
+    ["ord-8", { "GET /v3/orders/ord-8": () => ({ status: 200, body: order("ord-8", "OPEN", 2000) }), "DELETE /v3/orders/ord-8": down, "GET /v3/portfolio/fills": () => ({ status: 200, body: { items: [] } }) }, /order ord-8 was sent and its end was not read \(it did not reach a final state and the cancel was not confirmed; last seen OPEN\)/],
+    ["ord-9", { "GET /v3/orders/ord-9": () => ({ status: 200, body: order("ord-9", "CANCELED", 1500) }), "GET /v3/portfolio/fills": () => ({ status: 200, body: { items: [] } }) }, /order ord-9 was sent and its end was not read \(the order shows a match and no fill was listed; last seen CANCELED\)/],
+  ];
+  for (const [id, routes, words] of notRead) {
+    const err = await client(fakeVenue({ ...CATALOG, "POST /v3/orders": () => ({ status: 201, body: { orderId: id } }), ...routes })).place(buyIntent(), "r").then(() => null, (e: Error) => e);
+    assert.ok(err, `${id} is an error`);
+    assert.match(err.message, words);
+    assert.doesNotMatch(err.message, /with nothing (filled|sold)/, `${id} is not worded as a miss`);
+  }
+  // cancelled with the whole size remaining and the fills unreadable: the order's own count is the venue's word, a miss
+  const killedUnlisted = fakeVenue({ ...CATALOG, "POST /v3/orders": () => ({ status: 201, body: { orderId: "ord-10" } }), "GET /v3/orders/ord-10": () => ({ status: 200, body: order("ord-10", "CANCELED", 2000) }), "GET /v3/portfolio/fills": down });
+  await assert.rejects(client(killedUnlisted).place(buyIntent(), "r"), /ord-10 CANCELED with nothing filled/);
+
   const refused = fakeVenue({ ...CATALOG, "POST /v3/orders": () => ({ status: 451, body: { code: "GEOLOCATION_REQUIRED", message: "No device geolocation in the last 3 days." } }) });
   await assert.rejects(client(refused).place(buyIntent(), "r"), /the venue refused the order \(451 GEOLOCATION_REQUIRED: No device geolocation in the last 3 days.\)/);
 
