@@ -7,7 +7,7 @@
  * 15-minute window, the next close and the 5 PM ET daily that share a close on both venues,
  * select at the money and one strike each way off BRTI, read the books at those strikes, score
  * each pair, price the bands between the strikes, read the index's trailing movement, keep the
- * gap history, write the cycle with its books to the day file,
+ * gap history, write the cycle with its books to the day file (which /api/replay reads back),
  * push the result to anyone listening on the stream.
  *
  * Nothing here trades: public market-data endpoints only, no credentials loaded. The Launch
@@ -17,13 +17,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename } from "node:path";
 import { BookReadError } from "./bookRead";
-import { DayKeeper, forEachLineSync, listDayFiles, maintainLines, parseBudgetMb, parseRetention, readablePath, type Budget, type DayKeeperOptions, type MaintainReport, type Retention } from "./dayFiles";
+import { DayKeeper, forEachLineSync, listDayFiles, maintainLines, parseBudgetMb, parseRetention, readablePath, utcDay, type Budget, type DayKeeperOptions, type MaintainReport, type Retention } from "./dayFiles";
 import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_WINDOW_MS, dailyLadderFrom, fetchFeeTheta, fetchOpenMarkets, fifteenLadderFrom, hourlyLadderFrom, kalshiOrderbookUrl, readTopOnce } from "./kalshiLadders";
 import { fetchBrtiCandles, fetchSeriesIdsBySlug, polyBookUrl, readBookOnce, readPolyUsLaddersForSeries } from "./polyUsLadders";
 import { mergeLadders } from "./analytics";
 import { EPISODE_KEEP, EPISODE_LABEL, EPISODE_MIN_CYCLES, STALE_AFTER_SEC, bundleOf, closeEpisodes, emptyEpisodeBook, episodeOf, fifteenSet, gapHistoryKey, horizonSet, lockEpisodesReport, lockSightings, pairId, pruneEpisodes, recordGaps, regimeOf, reportErrors, selectStrikes, staleBoundsFrom, stepEpisodes, strikeLevels, type Band, type EpisodeBook, type GapHistory, type Horizon, type HorizonSet, type LockEpisode, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
 import { storedCycleOf } from "./pairsCycles";
 import { renderPairsBody, renderPairsHtml } from "./pairsHtml";
+import { ReplayRefused, firstDayOf, replayDays, replayRequestFrom } from "./pairsReplayLoader";
 import type { Ladder, VenueQuote } from "./types";
 
 export interface PairsCollectorOptions {
@@ -63,6 +64,16 @@ const SPOT_KEEP_MS = 65 * 60_000;
 const RELOAD_DAYS_MS = 3 * 86_400_000;
 const GAPS = "gaps";
 const EPISODES = "episodes";
+
+/**
+ * What one /api/replay request may ask of the running collector. The read gives the loop back
+ * every few hundred lines, but it is still this process's time: a week at the 5-second floor is
+ * about 121,000 cycles, so that is the most one request reads. Past a cap the request is
+ * refused in words; the command-line replay has no such caps.
+ */
+export const REPLAY_CAPS = { maxDays: 7, maxLags: 4, maxLagSec: 3600, maxLines: 125_000, maxMs: 30_000, tradesListed: 20 } as const;
+const REPLAY_PARAMS = new Set(["edge", "size", "trade", "lag", "age", "horizons", "tolerance", "days", "k"]);
+export const REPLAY_LABEL = "paper only: what the stored public books showed, after fees, no orders placed; see assumptions in each result";
 
 export type LaunchMode = "send" | "open";
 
@@ -133,6 +144,8 @@ export class PairsCollector {
   private fifteenTheta: { at: number; value: number } | null = null;
   private polySeriesIds: { at: number; value: string[] } | null = null;
   private timer: NodeJS.Timeout | null = null;
+  /** one replay at a time: a second request is told to wait, not queued */
+  private replayRunning = false;
 
   constructor(opts: PairsCollectorOptions = {}) {
     this.intervalSec = Math.max(5, opts.intervalSec ?? 10);
@@ -413,7 +426,7 @@ export class PairsCollector {
 
   /**
    * Every cycle writes its line, pairs or not: the gaps the persistence window reloads and the
-   * books as they were priced (pairsCycles.ts). A write that fails (a full disk) is the
+   * books a replay prices from (pairsCycles.ts). A write that fails (a full disk) is the
    * keeper's to remember and /healthz's to say; the cycle goes on and the page keeps serving
    * what is in memory.
    */
@@ -521,8 +534,41 @@ export class PairsCollector {
   }
 
   /**
+   * The replay over the stored cycles for a small request (`edge`, `size`, `trade`, `lag`,
+   * `age`, `horizons`, `tolerance`, `days`): the last `days` UTC days, one result per lag.
+   * Read-only. Anything over REPLAY_CAPS, a parameter that cannot be read, a parameter this
+   * route does not know, or a second request while one runs is refused in plain words.
+   */
+  async replay(params: URLSearchParams): Promise<{ status: number; body: Record<string, unknown> }> {
+    const caps = REPLAY_CAPS;
+    const refuse = (status: number, error: string) => ({ status, body: { ok: false, refused: true, error, caps } });
+    const unknown = [...params.keys()].filter((k) => !REPLAY_PARAMS.has(k));
+    if (unknown.length) return refuse(400, `This replay does not know "${unknown[0]}". It takes edge, size, trade, lag, age, horizons, tolerance and days.`);
+    let req;
+    try {
+      req = replayRequestFrom((name) => params.get(name), caps);
+    } catch (err) {
+      if (err instanceof ReplayRefused) return refuse(400, err.message);
+      throw err;
+    }
+    if (this.replayRunning) return refuse(429, "A replay is already running on this service. Ask again in a few seconds.");
+    this.replayRunning = true;
+    try {
+      const nowMs = this.clock();
+      const days = req.days ?? 1;
+      const run = await replayDays({ dir: this.dataDir, fromDay: firstDayOf(days, nowMs), toDay: utcDay(nowMs), rules: req.rules, keepTrades: caps.tradesListed, maxLines: caps.maxLines, maxMs: caps.maxMs });
+      return { status: 200, body: { ok: true, label: REPLAY_LABEL, days, caps, ...run } };
+    } catch (err) {
+      if (err instanceof ReplayRefused) return refuse(400, err.message);
+      return { status: 500, body: { ok: false, error: `The replay stopped: ${(err as Error).message.slice(0, 160)}` } };
+    } finally {
+      this.replayRunning = false;
+    }
+  }
+
+  /**
    * Serve one request whose path is already relative to the mount (`/`, `/fragment`,
-   * `/api/pairs`, `/api/bundle`, `/api/pair`, `/api/episodes`, `/api/stream`). Returns false when the path is
+   * `/api/pairs`, `/api/bundle`, `/api/pair`, `/api/episodes`, `/api/replay`, `/api/stream`). Returns false when the path is
    * not one of ours so the host can 404 it. `base` is the mount path the page links under.
    */
   handle(req: IncomingMessage, res: ServerResponse, path: string, url: URL, opts: { base: string; token?: string }): boolean {
@@ -548,6 +594,13 @@ export class PairsCollector {
         open: this.episodes.open.filter((r) => r.cycles >= EPISODE_MIN_CYCLES).map((r) => episodeOf(r, true)),
         episodes: [...this.episodes.finished].reverse(),
       });
+      return true;
+    }
+    if (path === "/api/replay") {
+      this.replay(url.searchParams).then(
+        (r) => json(r.status, r.body),
+        (err) => json(500, { ok: false, error: `The replay stopped: ${String((err as Error)?.message ?? err).slice(0, 160)}` }),
+      );
       return true;
     }
     if (path === "/api/pair") {

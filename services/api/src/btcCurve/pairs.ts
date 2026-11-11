@@ -479,28 +479,37 @@ function legOf(q: VenueQuote | null, url: string, pricedAtMs: number): PairLeg |
 
 const quoted = (q: VenueQuote | null): boolean => Boolean(q && q.bidCents > 0 && q.askCents > 0 && q.askCents < 100);
 
-/** The cheaper way to own both sides across the two venues, after both taker fees. Exported for tests. */
-export function lockOf(k: VenueQuote | null, p: VenueQuote | null): Lock | null {
-  if (!k || !p) return null;
-  const dir = (yes: VenueQuote, no: VenueQuote): Lock | null => {
-    if (!(yes.askCents > 0 && yes.askCents < 100) || !(no.bidCents > 0)) return null;
-    const noAt = Math.round((100 - no.bidCents) * 100) / 100;
-    const fees = takerFeeCents(yes.feeTheta, yes.askCents) + takerFeeCents(no.feeTheta, noAt);
-    const cost = yes.askCents + noAt + fees;
-    const qty = yes.askQty > 0 && no.bidQty > 0 ? Math.min(yes.askQty, no.bidQty) : 0;
-    return {
-      yesOn: yes.venue,
-      noOn: no.venue,
-      yesAtCents: yes.askCents,
-      noAtCents: noAt,
-      feesCents: Math.round(fees * 100) / 100,
-      costCents: Math.round(cost * 100) / 100,
-      edgeCents: Math.round((100 - cost) * 100) / 100,
-      qty,
-    };
+/** What the lock arithmetic reads from one venue's top of book. A live quote and a leg stored in the cycle file both carry it. */
+export type LockQuote = Pick<VenueQuote, "venue" | "bidCents" | "askCents" | "bidQty" | "askQty" | "feeTheta">;
+
+/**
+ * One way round: Yes at `yes`'s ask, No at 100 minus `no`'s Yes bid, both taker fees for one
+ * contract. Null when either price is not there. The replay prices a trade the way round it
+ * was signalled, so this is exported beside `lockOf`, which picks the cheaper of the two.
+ */
+export function lockOneWay(yes: LockQuote, no: LockQuote): Lock | null {
+  if (!(yes.askCents > 0 && yes.askCents < 100) || !(no.bidCents > 0)) return null;
+  const noAt = Math.round((100 - no.bidCents) * 100) / 100;
+  const fees = takerFeeCents(yes.feeTheta, yes.askCents) + takerFeeCents(no.feeTheta, noAt);
+  const cost = yes.askCents + noAt + fees;
+  const qty = yes.askQty > 0 && no.bidQty > 0 ? Math.min(yes.askQty, no.bidQty) : 0;
+  return {
+    yesOn: yes.venue,
+    noOn: no.venue,
+    yesAtCents: yes.askCents,
+    noAtCents: noAt,
+    feesCents: Math.round(fees * 100) / 100,
+    costCents: Math.round(cost * 100) / 100,
+    edgeCents: Math.round((100 - cost) * 100) / 100,
+    qty,
   };
-  const a = dir(k, p);
-  const b = dir(p, k);
+}
+
+/** The cheaper way to own both sides across the two venues, after both taker fees. Exported for tests. */
+export function lockOf(k: LockQuote | null, p: LockQuote | null): Lock | null {
+  if (!k || !p) return null;
+  const a = lockOneWay(k, p);
+  const b = lockOneWay(p, k);
   if (!a) return b;
   if (!b) return a;
   return a.costCents <= b.costCents ? a : b;
@@ -880,7 +889,7 @@ export function emptyEpisodeBook(): EpisodeBook {
 }
 
 /** The same contract on both venues, bought the same way round. A lock that flips direction is a different trade and a new run. */
-function lockRunId(s: Omit<LockSighting, "lockCents" | "qty">): string {
+export function lockRunId(s: Omit<LockSighting, "lockCents" | "qty">): string {
   return [s.horizon, s.settlesAt, s.key, s.kalshiId, s.polyId, s.yesOn].join("|");
 }
 

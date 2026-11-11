@@ -11,6 +11,8 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { PairsCollector, launchPayload, pairsCollectorFromEnv, type PairsCollectorOptions } from "../src/btcCurve/pairsCollector";
 import type { LockEpisode, PairsReport } from "../src/btcCurve/pairs";
 import { parseCycleLine, type StoredCycle } from "../src/btcCurve/pairsCycles";
+import { DEFAULT_RULE } from "../src/btcCurve/pairsReplay";
+import { replayDays } from "../src/btcCurve/pairsReplayLoader";
 
 const KALSHI = "https://api.elections.kalshi.com/trade-api/v2";
 const POLY = "https://gateway.polymarket.us";
@@ -663,4 +665,35 @@ test("every cycle writes its line with both books, fees and read ages, and the r
   const d6 = await next.c.collectOnce();
   const series = d6.fifteen?.pairs[0].persistence?.series ?? [];
   assert.deepEqual(series[0], [T0 - 60_000, 7.5], "the old line's gap is in the window");
+});
+
+test("the replay runs on the lines the collector wrote: captured, unknown on the stale cycle, gone when the offer moved", async () => {
+  const f = fake();
+  const { c, dir } = collectorOn(f);
+  const [d1] = await lockStaleGoneFailed(f, c);
+  const lock = d1.fifteen?.pairs[0].lock;
+  assert.ok(lock);
+  // 15-minute tenor, ten contracts. By hand, Yes on Polymarket US at 51 and No on Kalshi at 42:
+  //   Polymarket fee 0.095 x .51 x .49 = 2.375 a contract (2.37405 rounded up), 23.75 for ten -> 24
+  //   Kalshi fee     0.07 x .42 x .58 = 1.706 a contract, 17.06 for ten -> 18
+  //   net 10 x (100 - 51 - 42) - 24 - 18 = 70 - 42 = 28 cents, 2.8 a pair
+  // at 54: Polymarket fee 2.360 x 10 = 23.6 -> 24; net 10 x 4 - 24 - 18 = -2 cents
+  const run = await replayDays({ dir, rules: [0, 10, 20, 30].map((lagSec) => ({ ...DEFAULT_RULE, lagSec, horizons: ["fifteen" as const] })), keepTrades: 5 });
+  const [lag0, lag10, lag20, lag30] = run.results;
+  assert.equal(lag0.cyclesRead, 5);
+  assert.equal(lag0.cyclesOldFormat, 0);
+  // one episode: cycle 2 holds, cycle 3 is stale (which ends it), cycles 4 and 5 are no lock
+  assert.equal(lag0.total.signals, 1);
+  assert.deepEqual([lag0.trades[0].signalAt, lag0.trades[0].yesOn, lag0.trades[0].kalshiId, lag0.trades[0].polyId], [d1.pricedAt, "polymarket_us", FIFTEEN_K, FIFTEEN_P]);
+  assert.equal(lag0.total.capturedMc, 28_000);
+  assert.equal(lag0.trades[0].signalEdgeMc, 2_800);
+  assert.ok(lag0.trades[0].signalEdgeMc <= Math.round(lock.edgeCents * 1000), "never above the page's lock for one contract");
+  // lag 10: cycle 2, the same prices on 60 contracts
+  assert.deepEqual([lag10.total.captured, lag10.total.capturedMc], [1, 28_000]);
+  // lag 20: cycle 3 is a stale read: unknown, not gone
+  assert.deepEqual(lag20.total.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 1, oldRead: 0 });
+  assert.deepEqual([lag20.total.captured, lag20.total.gone.total, lag20.total.capturedMc], [0, 0, 0]);
+  // lag 30: cycle 4, offered at 54: gone, -2 cents if sent anyway
+  assert.deepEqual(lag30.total.gone, { total: 1, edge: 1, size: 0 });
+  assert.deepEqual([lag30.total.capturedMc, lag30.total.sentAnywayMc], [0, -2_000]);
 });
