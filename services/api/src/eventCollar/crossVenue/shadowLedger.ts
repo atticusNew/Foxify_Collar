@@ -240,6 +240,23 @@ export interface ShadowOpenRecord {
    * divided down for the tables. creditCents is 0: nothing was paid by anyone but the venue's bid.
    */
   memberSale?: MemberSaleRecord;
+  /**
+   * With source "lock", on a real-money lock only: the real order that bought the whole hedge
+   * before this line was written (hedgeFirst.ts). Its presence is what makes the lock count
+   * against the exposure caps (exposureCaps.ts) without the receipt trail. Absent on a simulated
+   * lock and on real-money locks written before 2026-11-10 (the receipt trail carries those).
+   * Operator views only; the public record strips it.
+   */
+  hedgeFill?: HedgeFillOnRecord;
+}
+
+/** A real hedge fill as the lock ledger carries it: where, how much, what it cost all in, and the ids that tie it to the venue and the receipt trail. */
+export interface HedgeFillOnRecord {
+  venue: "kalshi" | "polymarket" | "prophetx" | "novig";
+  unitsMilli: number;
+  costCents: number;
+  orderId: string | null;
+  receiptId: string;
 }
 
 /** A member's buy-back at an early leave (route "member_sale"): the sold contracts bought again from the venue's offers. */

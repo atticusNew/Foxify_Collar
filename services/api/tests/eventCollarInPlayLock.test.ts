@@ -210,6 +210,10 @@ test("lock route, a game under way: the list marks it in play, the book that mov
   process.env.EVENT_HEDGE_LIVE_SEND = "yes";
   delete process.env.EVENT_HEDGE_KILL_SWITCH;
   delete process.env.EVENT_X_IN_PLAY;
+  // the parlay below pays $66.18: more than the default exposure caps (sized for $5 to $20 locks) let stand open, so this deploy raises them
+  process.env.EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_GAME = "20000";
+  process.env.EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_VENUE = "20000";
+  process.env.EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_HOLDER = "20000";
   process.env.KALSHI_API_KEY_ID = "test-key-id";
   process.env.KALSHI_PRIVATE_KEY_PEM = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
   const worker = await import("../scripts/eventShadowWorker");

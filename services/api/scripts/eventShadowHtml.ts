@@ -32,6 +32,7 @@ import type { HeldBooksStatus } from "../src/eventCollar/crossVenue/aggregatorHe
 import type { VenueBookOpen, VenueBreakdown, VenueCell, VenueInGame, VenuePrelock } from "../src/eventCollar/crossVenue/shadowVenues";
 import type { AggregatorBookStatus } from "../src/eventCollar/crossVenue/aggregatorBooks";
 import { REFERENCE_PRINT_WORDS } from "../src/eventCollar/crossVenue/venuePrints";
+import type { PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
 
 /** Public URL of the interactive demo, for the cross-link. */
 function demoUrl(): string {
@@ -1713,6 +1714,63 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em}
   <footer>
     Operator view. Venue names appear here and nowhere public. Nothing on this page was traded except the route written. Rendered ${escapeHtml(b.atIso.slice(0, 16).replace("T", " "))} UTC.
   </footer>
+</div>
+</body>
+</html>`;
+}
+
+/**
+ * The pilot switch check as a page (pilotCheck.ts): one row per condition, the answer in words,
+ * what was read, and what to confirm by hand. Operator only. Every word is the report's own; the
+ * page adds none, so the JSON and the page cannot disagree.
+ */
+export function renderPilotCheckHtml(input: { report: PilotReport; at: string; token: string | null }): string {
+  const tq = input.token ? `?token=${encodeURIComponent(input.token)}` : "";
+  const r = input.report;
+  const cls = (a: string): string => (a === "yes" ? "yes" : a === "no" ? "no" : "hand");
+  const rows = r.items
+    .map(
+      (i) =>
+        `<tr class="${cls(i.answer)}"><td class="n">${i.n}</td><td class="c"><b>${escapeHtml(i.condition)}</b><i>${escapeHtml(i.detail)}</i>${i.confirm ? `<i class="confirm">To confirm by hand: ${escapeHtml(i.confirm)}</i>` : ""}</td><td class="a"><b>${escapeHtml(i.answer)}</b></td></tr>`,
+    )
+    .join("");
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<link rel="icon" href="data:," />
+<title>Pilot check · operator · Earn &amp; Protect</title>
+<style>${SHADOW_CSS}
+.wrap,.topbar .in{max-width:1000px}
+@media(min-width:700px){.wrap,.topbar .in{max-width:1000px}}
+td{white-space:normal;vertical-align:top;text-align:left}
+td.n{color:var(--faint);width:28px}
+td.c b{display:block;font-size:13.5px}
+td.c i{display:block;color:var(--dim);font-style:normal;font-size:12px;font-weight:500;margin-top:4px;line-height:1.45}
+td.c i.confirm{color:var(--ink)}
+td.a{width:170px} td.a b{font-size:13px}
+tr.yes td.a b{color:var(--green-deep)} tr.no td.a b{color:#8a2a2a} tr.hand td.a b{color:var(--warn)}
+.overall{font-size:15px;font-weight:700;margin-top:10px}
+.overall.no{color:#8a2a2a} .overall.yes{color:var(--green-deep)}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="wordmark">Earn &amp; Protect <span>· pilot check · operator only</span></div>
+</div></div>
+<div class="wrap">
+  <div class="card">
+    <h1>Before an outside holder</h1>
+    <div class="sub">${escapeHtml(r.note)}</div>
+    <div class="overall ${r.ready}">${escapeHtml(r.overall)}</div>
+    <div class="rule">Read ${escapeHtml(shortEt(input.at))}. Settings are read when the service starts, so this is the service as it is running now.</div>
+  </div>
+  <div class="card">
+    <div class="tablewrap"><table><tr><th>#</th><th>condition</th><th>answer</th></tr>${rows}</table></div>
+    <a class="back" href="/api/shadow/pilot-check${tq}">Raw JSON</a> <a class="back" href="/holders${tq}">Holders</a> <a class="back" href="/healthz${tq}">Status</a>
+  </div>
 </div>
 </body>
 </html>`;

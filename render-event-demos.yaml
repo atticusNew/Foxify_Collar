@@ -529,6 +529,38 @@ services:
       #   Operator: GET /api/shadow/lock/pending is the trail (attempts by ending, open lines, strays);
       #   POST /api/shadow/lock/pending/clear?id=...&note=... marks one checked. /healthz?token= carries
       #   lock.hedgeFirst: `unresolved` and `strays` must both read empty.
+      # EXPOSURE CAPS (exposureCaps.ts): how much real money may be open at once. Read from the
+      #   ledgers at each real-money lock, before the hedge order is built; a lock that would pass
+      #   any of the three is refused with the cap and the amount, on one line in lock-pending.jsonl
+      #   (type cap_refused). Simulated locks are not measured and not refused. Values are whole
+      #   cents. Unset is the default below, never "no cap". The word `none` is the only way to
+      #   say no cap, and /healthz then reads "no cap". Anything else that is not a whole number
+      #   is the default, with a note in /healthz.
+      #   EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_GAME=5000      default $50. Per game, both sides and
+      #                                         every holder together: floors owed if the side loses,
+      #                                         plus credits, plus what the hedges cost.
+      #   EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_VENUE=10000    default $100. Per hedge venue: what the
+      #                                         unsettled hedges bought there cost (cash resting there).
+      #   EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_VENUE_KALSHI   optional, one venue's own cap in place of
+      #   ..._PER_VENUE_NOVIG / _PROPHETX / _POLYMARKET      the one above (a new exchange capped lower).
+      #                                         Default: unset, the venue takes the cap above.
+      #   EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_HOLDER=5000    default $50. Per holder key: for each
+      #                                         open lock the larger of what we can owe them (floor
+      #                                         plus unpaid credit) and what they can owe us (the
+      #                                         slice above the cap, handed back if their side wins).
+      #   The defaults are sized for $5 to $20 positions: about $5 to $25 on the game per lock.
+      #   Operator: /healthz?token= carries `exposure`: per game (the largest five), per venue and
+      #   per holder, open now, the cap and the room left, and the refusals so far.
+      #   The caps also stand in front of EVENT_HEDGE_STRATEGY=rfq when it holds a venue key: that
+      #   strategy can accept a real quote and has no other rail (no kill switch, no order caps).
+      # PILOT CHECK (pilotCheck.ts), operator: GET /pilot-check?token= (a page) and
+      #   GET /api/shadow/pilot-check?token= (JSON). What must be true before a person outside the
+      #   company holds a real-money lock, each answered yes, no, or "cannot be checked from here"
+      #   with what to confirm by hand, and one line: ready for an outside holder, yes or no. It
+      #   reads settings and files; it changes nothing and gates nothing.
+      #   EVENT_SHADOW_DISK_MOUNT=/var/data     optional; where the persistent disk is mounted, for
+      #                                         the check's ledger question. Default /var/data, the
+      #                                         mountPath of this service's disk.
       # IN PLAY (lockWindow.ts): a game can be locked in from seven days out, through the last 45
       #   minutes and while it is being played. On by default.
       #   EVENT_X_IN_PLAY=0                     optional; turns it off (0, false, no, off): the lock path
