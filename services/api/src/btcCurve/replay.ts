@@ -16,7 +16,7 @@
  * arithmetic over observed prices, and the report says so.
  */
 
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { buildSmiles, digitalDelta, nearestSmile } from "./model";
 import type { Ladder, OptionRow } from "./types";
 
@@ -142,8 +142,11 @@ export class ReplayEngine {
     this.state.open = this.state.open.filter((e) => e.settlesAtMs - Date.parse(e.openedAt) <= MAX_HORIZON_MS);
   }
 
+  /** Written beside the state and renamed over it, so a write cut short (a full disk) leaves the last whole state in place rather than an empty file. */
   private persist(): void {
-    writeFileSync(this.statePath, JSON.stringify(this.state));
+    const tmp = `${this.statePath}.tmp`;
+    writeFileSync(tmp, JSON.stringify(this.state));
+    renameSync(tmp, this.statePath);
   }
 
   getOpen(): ReplayEvent[] {

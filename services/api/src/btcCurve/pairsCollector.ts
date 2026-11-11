@@ -7,21 +7,24 @@
  * 15-minute window, the next close and the 5 PM ET daily that share a close on both venues,
  * select at the money and one strike each way off BRTI, read the books at those strikes, score
  * each pair, price the bands between the strikes, read the index's trailing movement, keep the
- * gap history, push the result to anyone listening on the stream.
+ * gap history, write the cycle with its books to the day file (which /api/replay reads back),
+ * push the result to anyone listening on the stream.
  *
  * Nothing here trades: public market-data endpoints only, no credentials loaded. The Launch
  * button posts the pair to the trader's own engine; the orders are his.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { basename } from "node:path";
 import { BookReadError } from "./bookRead";
+import { DayKeeper, forEachLineSync, listDayFiles, maintainLines, parseBudgetMb, parseRetention, readablePath, utcDay, type Budget, type DayKeeperOptions, type MaintainReport, type Retention } from "./dayFiles";
 import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_WINDOW_MS, dailyLadderFrom, fetchFeeTheta, fetchOpenMarkets, fifteenLadderFrom, hourlyLadderFrom, kalshiOrderbookUrl, readTopOnce } from "./kalshiLadders";
 import { fetchBrtiCandles, fetchSeriesIdsBySlug, polyBookUrl, readBookOnce, readPolyUsLaddersForSeries } from "./polyUsLadders";
 import { mergeLadders } from "./analytics";
 import { EPISODE_KEEP, EPISODE_LABEL, EPISODE_MIN_CYCLES, STALE_AFTER_SEC, bundleOf, closeEpisodes, emptyEpisodeBook, episodeOf, fifteenSet, gapHistoryKey, horizonSet, lockEpisodesReport, lockSightings, pairId, pruneEpisodes, recordGaps, regimeOf, reportErrors, selectStrikes, staleBoundsFrom, stepEpisodes, strikeLevels, type Band, type EpisodeBook, type GapHistory, type Horizon, type HorizonSet, type LockEpisode, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
+import { storedCycleOf } from "./pairsCycles";
 import { renderPairsBody, renderPairsHtml } from "./pairsHtml";
+import { ReplayRefused, firstDayOf, replayDays, replayRequestFrom } from "./pairsReplayLoader";
 import type { Ladder, VenueQuote } from "./types";
 
 export interface PairsCollectorOptions {
@@ -40,6 +43,12 @@ export interface PairsCollectorOptions {
   bookTimeoutMs?: number;
   /** seconds beyond which a book copy is stale, per tenor; defaults to STALE_AFTER_SEC */
   staleAfterSec?: Partial<Record<Horizon, number>>;
+  /** which day files are kept; the default keeps every day */
+  retention?: Retention;
+  /** the size the data dir is expected to stay under, for the warning on /healthz; deletes nothing */
+  budget?: Budget;
+  /** test seams, passed to the keeper of the day files */
+  keeper?: Pick<DayKeeperOptions, "appendImpl" | "graceMs" | "compress">;
   /** test seam */
   fetchImpl?: typeof fetch;
   /** test seam: our clock, ms */
@@ -51,6 +60,20 @@ const POLY_SERIES = ["btc-strike-hourly", "btc-strike-daily", "btc-updown-15m"];
 const CACHE_MS = 10 * 60_000;
 /** index prints kept for the regime gauge: the hour plus a margin */
 const SPOT_KEEP_MS = 65 * 60_000;
+/** day files read back on a restart: the episodes of the last three days, and the gaps of the window inside them */
+const RELOAD_DAYS_MS = 3 * 86_400_000;
+const GAPS = "gaps";
+const EPISODES = "episodes";
+
+/**
+ * What one /api/replay request may ask of the running collector. The read gives the loop back
+ * every few hundred lines, but it is still this process's time: a week at the 5-second floor is
+ * about 121,000 cycles, so that is the most one request reads. Past a cap the request is
+ * refused in words; the command-line replay has no such caps.
+ */
+export const REPLAY_CAPS = { maxDays: 7, maxLags: 4, maxLagSec: 3600, maxLines: 125_000, maxMs: 30_000, tradesListed: 20 } as const;
+const REPLAY_PARAMS = new Set(["edge", "size", "trade", "lag", "age", "horizons", "tolerance", "days", "k"]);
+export const REPLAY_LABEL = "paper only: what the stored public books showed, after fees, no orders placed; see assumptions in each result";
 
 export type LaunchMode = "send" | "open";
 
@@ -93,6 +116,9 @@ export class PairsCollector {
   readonly launchUrl: string;
   readonly launchMode: LaunchMode;
   private readonly dataDir: string;
+  private readonly keeper: DayKeeper;
+  /** cycles between maintenance passes over the day files: about an hour */
+  private readonly maintainEvery: number;
   private readonly windowMs: number;
   private readonly deadlineMs: number;
   private readonly bookTimeoutMs: number;
@@ -118,10 +144,14 @@ export class PairsCollector {
   private fifteenTheta: { at: number; value: number } | null = null;
   private polySeriesIds: { at: number; value: string[] } | null = null;
   private timer: NodeJS.Timeout | null = null;
+  /** one replay at a time: a second request is told to wait, not queued */
+  private replayRunning = false;
 
   constructor(opts: PairsCollectorOptions = {}) {
     this.intervalSec = Math.max(5, opts.intervalSec ?? 10);
     this.dataDir = opts.dataDir ?? "/tmp/btc-pairs";
+    this.keeper = new DayKeeper({ dir: this.dataDir, families: [GAPS, EPISODES], retention: opts.retention, budget: opts.budget, ...(opts.keeper ?? {}) });
+    this.maintainEvery = Math.max(1, Math.round(3600 / this.intervalSec));
     this.windowMs = opts.windowMs ?? 120 * 60_000;
     this.deadlineMs = Math.max(5_000, opts.sourceDeadlineMs ?? 20_000);
     this.bookTimeoutMs = Math.min(this.deadlineMs, Math.max(1, opts.bookTimeoutMs ?? 8_000));
@@ -143,8 +173,20 @@ export class PairsCollector {
   start(): void {
     const loaded = this.loadGaps();
     const episodes = this.loadEpisodes();
-    this.log(`[btc-pairs] data dir ${this.dataDir} · ${loaded} cycles of gap history reloaded · ${episodes} lock episodes reloaded · interval ${this.intervalSec}s`);
+    this.log(`[btc-pairs] data dir ${this.dataDir} · ${loaded} cycles of gap history reloaded · ${episodes} lock episodes reloaded · interval ${this.intervalSec}s · ${this.keeper.startupLine()}`);
+    void this.maintain();
     void this.loop();
+  }
+
+  /**
+   * The pass over the day files, about once an hour and once on start, never awaited by a cycle:
+   * the retention sweep (nothing unless a window is set) and at most one closed day gzipped.
+   */
+  maintain(nowMs = this.clock()): Promise<MaintainReport> {
+    return this.keeper.maintain(nowMs).then((r) => {
+      for (const line of maintainLines(r, this.keeper.retention)) this.log(`[btc-pairs] ${line}`);
+      return r;
+    });
   }
 
   /** Stop the cycle. Lock runs still going end here and are written, so a clean stop loses none; a kill loses the ones open at that moment. */
@@ -317,7 +359,7 @@ export class PairsCollector {
       build("daily", daily, pDaily?.id ?? null),
     ];
     recordGaps(this.history, sets, nowMs, this.windowMs);
-    this.persistGaps(nowMs, sets);
+    this.persistCycle(nowMs, pricedAtMs, spotUsd, sets);
     // three intervals without a cycle and a run is no longer known to be consecutive
     const stepped = stepEpisodes(this.episodes, lockSightings(sets), pricedAtMs, { maxGapMs: 3 * this.intervalSec * 1000 });
     this.episodes = stepped.book;
@@ -325,6 +367,7 @@ export class PairsCollector {
 
     if (!this.collectingSince) this.collectingSince = now.toISOString();
     this.cycles += 1;
+    if (this.cycles % this.maintainEvery === 0) void this.maintain();
     const report: PairsReport = {
       at: now.toISOString(),
       pricedAt: new Date(pricedAtMs).toISOString(),
@@ -379,95 +422,75 @@ export class PairsCollector {
     return this.listeners.size;
   }
 
-  /* ---- gap history on disk: one line per cycle, reloaded within the window on boot ---- */
+  /* ---- the cycle file: one line per cycle, the gaps reloaded within the window on boot ---- */
 
-  private dayFile(ms: number): string {
-    return join(this.dataDir, `gaps-${new Date(ms).toISOString().slice(0, 10)}.jsonl`);
-  }
-
-  private persistGaps(atMs: number, sets: Array<HorizonSet | null>): void {
-    // what recordGaps kept, so a restart reloads the same window: gaps on stale reads are not persistence
-    const rows = sets.flatMap((s) => (s ? s.pairs.filter((p) => p.gapCents !== null && p.freshness !== "stale").map((p) => [p.settlesAt, p.key, p.gapCents]) : []));
-    if (!rows.length) return;
-    try {
-      mkdirSync(this.dataDir, { recursive: true });
-      appendFileSync(this.dayFile(atMs), `${JSON.stringify({ at: atMs, rows })}\n`);
-    } catch (err) {
-      this.lastError = `persist: ${(err as Error).message.slice(0, 80)}`;
-    }
+  /**
+   * Every cycle writes its line, pairs or not: the gaps the persistence window reloads and the
+   * books a replay prices from (pairsCycles.ts). A write that fails (a full disk) is the
+   * keeper's to remember and /healthz's to say; the cycle goes on and the page keeps serving
+   * what is in memory.
+   */
+  private persistCycle(atMs: number, pricedAtMs: number, spotUsd: number, sets: Array<HorizonSet | null>): void {
+    this.keeper.append(GAPS, atMs, JSON.stringify(storedCycleOf(sets, { atMs, pricedAtMs, intervalSec: this.intervalSec, spotUsd })), this.clock());
   }
 
   /** Finished episodes go to the day file of the day they ended, one a line, the way the gap history is kept. */
   private persistEpisodes(finished: LockEpisode[]): void {
-    if (!finished.length) return;
-    try {
-      mkdirSync(this.dataDir, { recursive: true });
-      for (const e of finished) appendFileSync(join(this.dataDir, `episodes-${e.endedAt.slice(0, 10)}.jsonl`), `${JSON.stringify(e)}\n`);
-    } catch (err) {
-      this.lastError = `persist episodes: ${(err as Error).message.slice(0, 80)}`;
+    for (const e of finished) this.keeper.append(EPISODES, Date.parse(e.endedAt), JSON.stringify(e), this.clock());
+  }
+
+  /** Each line of the family's day files, plain or gzip, for the days `wanted` picks. A day that cannot be read is said on /healthz and skipped. */
+  private eachKeptLine(family: string, wanted: (dayMs: number) => boolean, fn: (line: string) => void): void {
+    for (const f of listDayFiles(this.dataDir, [family])) {
+      if (!wanted(f.dayMs)) continue;
+      const path = readablePath(f);
+      try {
+        forEachLineSync(path, fn);
+        this.keeper.note(`load:${path}`, null);
+      } catch (err) {
+        this.keeper.note(`load:${path}`, `${basename(path)} could not be read on start-up (${(err as Error).message.slice(0, 120)}); it is left on disk`);
+      }
     }
   }
 
-  /** Reload the episodes kept (today's, and the last EPISODE_KEEP per tenor of the three days before); older day files are deleted. */
+  /**
+   * Reload the episodes kept in memory: today's, and the last EPISODE_KEEP per tenor of the three
+   * days before. Older day files stay on disk; they are only not loaded.
+   */
   loadEpisodes(nowMs = this.clock()): number {
-    if (!existsSync(this.dataDir)) return 0;
     const loaded: LockEpisode[] = [];
-    for (const f of readdirSync(this.dataDir).filter((f: string) => f.startsWith("episodes-") && f.endsWith(".jsonl")).sort()) {
-      const path = join(this.dataDir, f);
-      const dayMs = Date.parse(f.slice(9, 19));
-      if (Number.isFinite(dayMs) && nowMs - dayMs > 3 * 86_400_000) {
-        try {
-          unlinkSync(path);
-        } catch {
-          // an old day that would not delete is left; nothing reads it
-        }
-        continue;
+    this.eachKeptLine(EPISODES, (dayMs) => nowMs - dayMs <= RELOAD_DAYS_MS, (line) => {
+      try {
+        const e = JSON.parse(line) as LockEpisode;
+        if (typeof e.endedAt === "string" && Number.isFinite(Date.parse(e.endedAt)) && typeof e.horizon === "string") loaded.push(e);
+      } catch {
+        // a torn line at the end of a file is skipped
       }
-      for (const line of readFileSync(path, "utf8").split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const e = JSON.parse(line) as LockEpisode;
-          if (typeof e.endedAt === "string" && Number.isFinite(Date.parse(e.endedAt)) && typeof e.horizon === "string") loaded.push(e);
-        } catch {
-          // a torn line at the end of a file is skipped
-        }
-      }
-    }
+    });
     this.episodes = { open: this.episodes.open, finished: pruneEpisodes([...loaded, ...this.episodes.finished], nowMs) };
     return this.episodes.finished.length;
   }
 
   loadGaps(nowMs = Date.now()): number {
-    if (!existsSync(this.dataDir)) return 0;
     let n = 0;
-    for (const f of readdirSync(this.dataDir).filter((f: string) => f.startsWith("gaps-") && f.endsWith(".jsonl")).sort()) {
-      const path = join(this.dataDir, f);
-      const dayMs = Date.parse(f.slice(5, 15));
-      if (Number.isFinite(dayMs) && nowMs - dayMs > 3 * 86_400_000) {
-        try {
-          unlinkSync(path);
-        } catch {
-          // an old day that would not delete is left; nothing reads it
+    // a day that ended before the window began holds nothing the window keeps, so it is not opened
+    this.eachKeptLine(GAPS, (dayMs) => nowMs - dayMs <= RELOAD_DAYS_MS && dayMs + 86_400_000 > nowMs - this.windowMs, (line) => {
+      try {
+        const rec = JSON.parse(line) as { at: number; rows: Array<[string, string, number]> };
+        if (nowMs - rec.at > this.windowMs) return;
+        // a cycle with no gap to keep is a line too, and is not a cycle of gap history
+        if (!rec.rows.length) return;
+        for (const [settlesAt, key, gap] of rec.rows) {
+          const k = gapHistoryKey(settlesAt, key);
+          const arr = this.history.get(k) ?? [];
+          arr.push([rec.at, gap]);
+          this.history.set(k, arr);
         }
-        continue;
+        n += 1;
+      } catch {
+        // a torn line at the end of a file is skipped
       }
-      for (const line of readFileSync(path, "utf8").split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const rec = JSON.parse(line) as { at: number; rows: Array<[string, string, number]> };
-          if (nowMs - rec.at > this.windowMs) continue;
-          for (const [settlesAt, key, gap] of rec.rows) {
-            const k = gapHistoryKey(settlesAt, key);
-            const arr = this.history.get(k) ?? [];
-            arr.push([rec.at, gap]);
-            this.history.set(k, arr);
-          }
-          n += 1;
-        } catch {
-          // a torn line at the end of a file is skipped
-        }
-      }
-    }
+    });
     return n;
   }
 
@@ -486,6 +509,7 @@ export class PairsCollector {
       booksNotAnswering: this.latest?.errors?.length ?? 0,
       lockEpisodesToday: this.latest?.lockEpisodes ? { fifteen: this.latest.lockEpisodes.fifteen.episodes, hourly: this.latest.lockEpisodes.hourly.episodes, daily: this.latest.lockEpisodes.daily.episodes } : undefined,
       lastError: this.lastError || undefined,
+      data: this.keeper.health(this.clock()),
     };
   }
 
@@ -510,8 +534,41 @@ export class PairsCollector {
   }
 
   /**
+   * The replay over the stored cycles for a small request (`edge`, `size`, `trade`, `lag`,
+   * `age`, `horizons`, `tolerance`, `days`): the last `days` UTC days, one result per lag.
+   * Read-only. Anything over REPLAY_CAPS, a parameter that cannot be read, a parameter this
+   * route does not know, or a second request while one runs is refused in plain words.
+   */
+  async replay(params: URLSearchParams): Promise<{ status: number; body: Record<string, unknown> }> {
+    const caps = REPLAY_CAPS;
+    const refuse = (status: number, error: string) => ({ status, body: { ok: false, refused: true, error, caps } });
+    const unknown = [...params.keys()].filter((k) => !REPLAY_PARAMS.has(k));
+    if (unknown.length) return refuse(400, `This replay does not know "${unknown[0]}". It takes edge, size, trade, lag, age, horizons, tolerance and days.`);
+    let req;
+    try {
+      req = replayRequestFrom((name) => params.get(name), caps);
+    } catch (err) {
+      if (err instanceof ReplayRefused) return refuse(400, err.message);
+      throw err;
+    }
+    if (this.replayRunning) return refuse(429, "A replay is already running on this service. Ask again in a few seconds.");
+    this.replayRunning = true;
+    try {
+      const nowMs = this.clock();
+      const days = req.days ?? 1;
+      const run = await replayDays({ dir: this.dataDir, fromDay: firstDayOf(days, nowMs), toDay: utcDay(nowMs), rules: req.rules, keepTrades: caps.tradesListed, maxLines: caps.maxLines, maxMs: caps.maxMs });
+      return { status: 200, body: { ok: true, label: REPLAY_LABEL, days, caps, ...run } };
+    } catch (err) {
+      if (err instanceof ReplayRefused) return refuse(400, err.message);
+      return { status: 500, body: { ok: false, error: `The replay stopped: ${(err as Error).message.slice(0, 160)}` } };
+    } finally {
+      this.replayRunning = false;
+    }
+  }
+
+  /**
    * Serve one request whose path is already relative to the mount (`/`, `/fragment`,
-   * `/api/pairs`, `/api/bundle`, `/api/pair`, `/api/episodes`, `/api/stream`). Returns false when the path is
+   * `/api/pairs`, `/api/bundle`, `/api/pair`, `/api/episodes`, `/api/replay`, `/api/stream`). Returns false when the path is
    * not one of ours so the host can 404 it. `base` is the mount path the page links under.
    */
   handle(req: IncomingMessage, res: ServerResponse, path: string, url: URL, opts: { base: string; token?: string }): boolean {
@@ -537,6 +594,13 @@ export class PairsCollector {
         open: this.episodes.open.filter((r) => r.cycles >= EPISODE_MIN_CYCLES).map((r) => episodeOf(r, true)),
         episodes: [...this.episodes.finished].reverse(),
       });
+      return true;
+    }
+    if (path === "/api/replay") {
+      this.replay(url.searchParams).then(
+        (r) => json(r.status, r.body),
+        (err) => json(500, { ok: false, error: `The replay stopped: ${String((err as Error)?.message ?? err).slice(0, 160)}` }),
+      );
       return true;
     }
     if (path === "/api/pair") {
@@ -574,9 +638,16 @@ export class PairsCollector {
   }
 }
 
-/** The collector as BTC_PAIRS_* configures it; shared by the standalone script and the curve service's mount. */
-export function pairsCollectorFromEnv(env: NodeJS.ProcessEnv = process.env, defaults: { dataDir?: string } = {}): PairsCollector {
+/**
+ * The collector as BTC_PAIRS_* configures it; shared by the standalone script and the curve
+ * service's mount. `defaults` is what the host service passes for a setting BTC_PAIRS_* leaves
+ * unset: the data dir under its own, and its own retention setting so one window covers the disk.
+ */
+export function pairsCollectorFromEnv(env: NodeJS.ProcessEnv = process.env, defaults: { dataDir?: string; retainDays?: string; retainSetting?: string } = {}): PairsCollector {
+  const own = (env.BTC_PAIRS_RETAIN_DAYS ?? "").trim() !== "";
   return new PairsCollector({
+    retention: own || defaults.retainDays === undefined ? parseRetention(env.BTC_PAIRS_RETAIN_DAYS, "BTC_PAIRS_RETAIN_DAYS") : parseRetention(defaults.retainDays, defaults.retainSetting ?? "the host service's retention setting"),
+    budget: parseBudgetMb(env.BTC_PAIRS_DISK_BUDGET_MB, "BTC_PAIRS_DISK_BUDGET_MB"),
     intervalSec: Number(env.BTC_PAIRS_INTERVAL_SEC || 10),
     dataDir: env.BTC_PAIRS_DATA_DIR || defaults.dataDir || "/tmp/btc-pairs",
     windowMs: Math.max(10, Number(env.BTC_PAIRS_WINDOW_MIN || 120)) * 60_000,

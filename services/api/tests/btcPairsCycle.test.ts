@@ -7,9 +7,12 @@ import test from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { PairsCollector, launchPayload, pairsCollectorFromEnv, type PairsCollectorOptions } from "../src/btcCurve/pairsCollector";
-import type { LockEpisode } from "../src/btcCurve/pairs";
+import type { LockEpisode, PairsReport } from "../src/btcCurve/pairs";
+import { parseCycleLine, type StoredCycle } from "../src/btcCurve/pairsCycles";
+import { DEFAULT_RULE } from "../src/btcCurve/pairsReplay";
+import { replayDays } from "../src/btcCurve/pairsReplayLoader";
 
 const KALSHI = "https://api.elections.kalshi.com/trade-api/v2";
 const POLY = "https://gateway.polymarket.us";
@@ -534,11 +537,163 @@ test("lock episodes over whole cycles: counted from the second fresh cycle, ende
   assert.deepEqual([d6.lockEpisodes.fifteen.episodes, d6.lockEpisodes.fifteen.open, d6.lockEpisodes.fifteen.longestDurationSec], [2, 0, 10]);
   assert.equal(getJson<{ episodes: LockEpisode[] }>(again, "/api/episodes").episodes.length, 2);
 
-  // a day file older than three days is deleted on load, a torn line is skipped
+  // a day file older than three days is not reloaded and is not deleted either, a torn line is skipped
   const { writeFileSync, existsSync } = await import("node:fs");
   writeFileSync(join(dir, "episodes-2026-11-05.jsonl"), `${JSON.stringify(written[0])}\n`);
   writeFileSync(join(dir, "episodes-2026-11-09.jsonl"), `${JSON.stringify({ ...written[0], endedAt: "2026-11-09T12:00:10.000Z", startedAt: "2026-11-09T12:00:00.000Z" })}\n{"horizon":"fift`);
   const third = new PairsCollector({ dataDir: dir, fetchImpl: f.fetchImpl, clock: () => f.now, log: () => {} });
   assert.equal(third.loadEpisodes(), 3);
-  assert.equal(existsSync(join(dir, "episodes-2026-11-05.jsonl")), false);
+  assert.equal(existsSync(join(dir, "episodes-2026-11-05.jsonl")), true, "every day is kept on disk");
+});
+
+test("a cycle whose writes fail (a full disk) still prices and serves the page; /healthz says it is not recording and why, and says so until a write lands again", async () => {
+  const f = fake();
+  let full = true;
+  const { appendFileSync } = await import("node:fs");
+  const { c, dir } = collectorOn(f, {
+    keeper: {
+      appendImpl: (path, data) => {
+        if (full) throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC", syscall: "write" });
+        appendFileSync(path, data);
+      },
+    },
+  });
+  const d1 = await c.collectOnce();
+  assert.ok(d1.hourly && d1.fifteen, "the cycle priced both tenors");
+  assert.match(page(c), /<section data-horizon="hourly"/, "the page is served");
+  assert.equal(getJson<{ at: string }>(c, "/api/pairs").at, d1.at);
+  assert.deepEqual(readdirSync(dir), [], "nothing reached the disk");
+  const h1 = c.health() as { data: { recording: boolean; notRecording?: string; writesLost?: { count: number } }; lastError?: string };
+  assert.equal(h1.data.recording, false);
+  assert.match(h1.data.notRecording ?? "", /^Not recording: the last write to gaps-2026-11-10\.jsonl failed at \S+ because the disk is full \(ENOSPC\); 1 in a row since \S+ is not on disk\. The pages keep serving from memory\.$/);
+
+  f.now += 10_000;
+  await c.collectOnce();
+  const h2 = c.health() as typeof h1;
+  assert.match(h2.data.notRecording ?? "", /2 in a row since \S+ are not on disk/);
+
+  // room again: the next cycle is written and the count of what was lost stays on /healthz
+  full = false;
+  f.now += 10_000;
+  await c.collectOnce();
+  const h3 = c.health() as typeof h1;
+  assert.deepEqual([h3.data.recording, h3.data.notRecording, h3.data.writesLost?.count], [true, undefined, 2]);
+  assert.equal(readFileSync(join(dir, "gaps-2026-11-10.jsonl"), "utf8").trim().split("\n").length, 1);
+});
+
+/**
+ * Five cycles on the 15-minute pair, ten seconds apart, Kalshi bid 58 on 100 throughout:
+ *   1  Polymarket US offers 51 on 100, a fresh copy: Yes there at 51, No on Kalshi at 100 - 58 = 42
+ *   2  the same on 60 contracts
+ *   3  the same on a copy 22 seconds old (stale on the 15-minute tenor)
+ *   4  a fresh copy offered at 54
+ *   5  the Kalshi book answers 500
+ */
+async function lockStaleGoneFailed(f: Fake, c: PairsCollector): Promise<PairsReport[]> {
+  const poly = (ask: number, qty: number, cacheAgeSec: number): Answer => {
+    const a = polyBook(f, FIFTEEN_P, 49, ask, cacheAgeSec);
+    (a.body as { marketData: { offers: Array<{ qty: string }> } }).marketData.offers[0].qty = `${qty}.0000`;
+    return a;
+  };
+  const out: PairsReport[] = [];
+  f.set(kBookUrl(FIFTEEN_K), kalshiBook(58));
+  f.set(pBookUrl(FIFTEEN_P), poly(51, 100, 3));
+  out.push(await c.collectOnce());
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(51, 60, 13));
+  out.push(await c.collectOnce());
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(51, 60, 22));
+  out.push(await c.collectOnce());
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(54, 60, 3));
+  out.push(await c.collectOnce());
+  f.now += 10_000;
+  f.set(kBookUrl(FIFTEEN_K), { status: 500, body: {} });
+  out.push(await c.collectOnce());
+  return out;
+}
+
+test("every cycle writes its line with both books, fees and read ages, and the restart reload reads old and new lines alike", async () => {
+  const f = fake();
+  const { c, dir } = collectorOn(f);
+  const file = join(dir, "gaps-2026-11-10.jsonl");
+  const lines = () => readFileSync(file, "utf8").trim().split("\n");
+  const cycleOf = (i: number): StoredCycle => {
+    const parsed = parseCycleLine(lines()[i]);
+    assert.equal(parsed.kind, "cycle");
+    return (parsed as { cycle: StoredCycle }).cycle;
+  };
+  const [d1, , d3] = await lockStaleGoneFailed(f, c);
+  assert.equal(lines().length, 5, "one line a cycle");
+
+  const p1 = d1.fifteen?.pairs[0];
+  assert.ok(p1?.kalshi && p1.poly && p1.lock);
+  const stored = cycleOf(0);
+  assert.deepEqual([stored.at, stored.v, stored.pricedAt, stored.intervalSec, stored.spotUsd], [Date.parse(d1.at), 2, Date.parse(d1.pricedAt), 10, d1.spotUsd]);
+  // every pair the cycle priced is on the line, in the report's order
+  const priced = [...(d1.fifteen?.pairs ?? []), ...(d1.hourly?.pairs ?? []), ...(d1.daily?.pairs ?? [])];
+  assert.deepEqual(stored.pairs.map((p) => [p.horizon, p.place, p.strike, p.key, p.settlesAt, p.staleAfterSec]), priced.map((p) => [p.horizon, p.place, p.strike, p.key, p.settlesAt, p.staleAfterSec]));
+  assert.ok(stored.pairs.length >= 4, "the 15-minute pair and three strikes");
+  const s1 = stored.pairs[0];
+  assert.deepEqual(s1.kalshi, { id: FIFTEEN_K, bidCents: 58, askCents: 59, bidQty: 100, askQty: 100, feeTheta: 0.07, ageSec: p1.kalshi.read?.ageSec, fetchAgeSec: p1.kalshi.read?.fetchAgeSec, cacheAgeSec: null, venueAgeSec: null });
+  assert.deepEqual(s1.poly, { id: FIFTEEN_P, bidCents: 49, askCents: 51, bidQty: 100, askQty: 100, feeTheta: 0.095, ageSec: 3, fetchAgeSec: 0, cacheAgeSec: 3, venueAgeSec: 4 });
+  assert.equal(s1.errors, undefined);
+  // `at` and `rows` are what they were before: the reload of the persistence window reads them
+  assert.deepEqual(stored.rows, priced.filter((p) => p.gapCents !== null && p.freshness !== "stale").map((p) => [p.settlesAt, p.key, p.gapCents]));
+  assert.ok(stored.rows.length > 0);
+
+  // the stale cycle's gap is not in rows (as before) and its books are on the line
+  assert.equal(d3.fifteen?.pairs[0].freshness, "stale");
+  const third = cycleOf(2);
+  assert.equal(third.rows.some(([, key]) => key === third.pairs[0].key), false);
+  assert.equal(third.pairs[0].poly?.ageSec, 22);
+  // a book that did not answer: the line is still written, with that leg null and the failure named
+  const fifth = cycleOf(4).pairs[0];
+  assert.equal(fifth.kalshi, null);
+  assert.deepEqual(fifth.errors, [{ venue: "kalshi", kind: "http" }]);
+  assert.ok(fifth.poly);
+
+  // a restart reads the window back from a line of the first form and from the new lines
+  const oldLine = JSON.stringify({ at: T0 - 60_000, rows: [[s1.settlesAt, s1.key, 7.5]] });
+  writeFileSync(file, `${oldLine}\n${readFileSync(file, "utf8")}`);
+  const next = collectorOn(f, { dataDir: dir });
+  const withRows = lines().filter((l) => (JSON.parse(l) as { rows: unknown[] }).rows.length > 0).length;
+  assert.equal(next.c.loadGaps(f.now), withRows);
+  assert.ok(withRows >= 5);
+  f.set(kBookUrl(FIFTEEN_K), kalshiBook(58));
+  const d6 = await next.c.collectOnce();
+  const series = d6.fifteen?.pairs[0].persistence?.series ?? [];
+  assert.deepEqual(series[0], [T0 - 60_000, 7.5], "the old line's gap is in the window");
+});
+
+test("the replay runs on the lines the collector wrote: captured, unknown on the stale cycle, gone when the offer moved", async () => {
+  const f = fake();
+  const { c, dir } = collectorOn(f);
+  const [d1] = await lockStaleGoneFailed(f, c);
+  const lock = d1.fifteen?.pairs[0].lock;
+  assert.ok(lock);
+  // 15-minute tenor, ten contracts. By hand, Yes on Polymarket US at 51 and No on Kalshi at 42:
+  //   Polymarket fee 0.095 x .51 x .49 = 2.375 a contract (2.37405 rounded up), 23.75 for ten -> 24
+  //   Kalshi fee     0.07 x .42 x .58 = 1.706 a contract, 17.06 for ten -> 18
+  //   net 10 x (100 - 51 - 42) - 24 - 18 = 70 - 42 = 28 cents, 2.8 a pair
+  // at 54: Polymarket fee 2.360 x 10 = 23.6 -> 24; net 10 x 4 - 24 - 18 = -2 cents
+  const run = await replayDays({ dir, rules: [0, 10, 20, 30].map((lagSec) => ({ ...DEFAULT_RULE, lagSec, horizons: ["fifteen" as const] })), keepTrades: 5 });
+  const [lag0, lag10, lag20, lag30] = run.results;
+  assert.equal(lag0.cyclesRead, 5);
+  assert.equal(lag0.cyclesOldFormat, 0);
+  // one episode: cycle 2 holds, cycle 3 is stale (which ends it), cycles 4 and 5 are no lock
+  assert.equal(lag0.total.signals, 1);
+  assert.deepEqual([lag0.trades[0].signalAt, lag0.trades[0].yesOn, lag0.trades[0].kalshiId, lag0.trades[0].polyId], [d1.pricedAt, "polymarket_us", FIFTEEN_K, FIFTEEN_P]);
+  assert.equal(lag0.total.capturedMc, 28_000);
+  assert.equal(lag0.trades[0].signalEdgeMc, 2_800);
+  assert.ok(lag0.trades[0].signalEdgeMc <= Math.round(lock.edgeCents * 1000), "never above the page's lock for one contract");
+  // lag 10: cycle 2, the same prices on 60 contracts
+  assert.deepEqual([lag10.total.captured, lag10.total.capturedMc], [1, 28_000]);
+  // lag 20: cycle 3 is a stale read: unknown, not gone
+  assert.deepEqual(lag20.total.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 1, oldRead: 0 });
+  assert.deepEqual([lag20.total.captured, lag20.total.gone.total, lag20.total.capturedMc], [0, 0, 0]);
+  // lag 30: cycle 4, offered at 54: gone, -2 cents if sent anyway
+  assert.deepEqual(lag30.total.gone, { total: 1, edge: 1, size: 0 });
+  assert.deepEqual([lag30.total.capturedMc, lag30.total.sentAnywayMc], [0, -2_000]);
 });

@@ -214,9 +214,10 @@ its figures so far.
 
 **Where they are kept.** All of today's episodes and the last 50 per tenor from earlier days are
 held in memory. Each finished episode is appended to `episodes-YYYY-MM-DD.jsonl` in the data dir,
-next to the gap history, and reloaded on a restart; files older than three days are deleted. A
-clean stop (SIGTERM) ends the open runs and writes them. A hard kill loses the runs open at that
-moment.
+next to the gap history, and reloaded on a restart (the last three days). The files themselves
+are kept: nothing is deleted unless a retention window is set, and a day that has closed is
+gzipped. A clean stop (SIGTERM) ends the open runs and writes them. A hard kill loses the runs
+open at that moment.
 
 **Limits.** The cycle is ten seconds, so a duration is known to that grain: a 10-second episode
 is a lock seen on two reads ten seconds apart. On the 15-minute window the stale rule caps what
@@ -356,6 +357,7 @@ curve service (with `?k=<token>` when the service has one):
 | `GET /pairs/api/pair?horizon=fifteen\|hourly\|daily&place=below\|atm\|above\|pick` | one pair as a launch payload; `pick` is the tenor's default Launch target |
 | `GET /pairs/api/pair?id=<Kalshi ticker \| Polymarket US slug>` | the same, by id |
 | `GET /pairs/api/episodes` | `{ label, minCycles, keptPerTenorBeforeToday, open: Episode[], episodes: Episode[] }`: every lock episode kept, newest first |
+| `GET /pairs/api/replay?edge=1&size=10&lag=0,10,30&days=1` | the replay over the stored cycles, one result per lag (see "The replay"); at most 7 days and 4 lags a request |
 | `GET /pairs/api/stream` | server-sent events; one `pairs` event per cycle carrying the whole report |
 | `GET /pairs/fragment` | the page body (what the page polls) |
 
@@ -363,7 +365,101 @@ curve service (with `?k=<token>` when the service has one):
 listed this cycle. A pair whose book did not answer is still found by that market's id, so the
 caller reads why. `/healthz` on the curve service carries a `pairs` block (cycles, listeners,
 index prints held, the regime label, which tenors are listed, books not answering, lock episodes
-today per tenor, last error).
+today per tenor, last error, and `data`: what the pairs files take on disk, the retention in
+force, and whether the last write landed).
+
+## The stored cycle
+
+One line per cycle in `gaps-YYYY-MM-DD.jsonl` (the UTC day of the cycle's start), append-only.
+
+Until 11 November 2026 a line was `{ "at": <ms>, "rows": [[settlesAt, key, gapCents], ...] }`:
+the cycle's start and, for each pair whose read was not stale, the gap between the two mids.
+Nothing else: no prices, no sizes, no fees, no read ages. A cycle with no such pair wrote no
+line.
+
+A line now keeps `at` and `rows` exactly as they were and adds:
+
+| Field | Holds |
+| --- | --- |
+| `v` | `2` |
+| `pricedAt` | ms; when the books were in and the pairs priced. Every read age is measured to it |
+| `intervalSec` | the collector's cadence |
+| `spotUsd` | the BRTI print the strikes were chosen around |
+| `pairs` | every pair the cycle priced: `horizon`, `place`, `strike`, `key`, `settlesAt`, `staleAfterSec`, and `kalshi` and `poly`, each `{ id, bidCents, askCents, bidQty, askQty, feeTheta, ageSec, fetchAgeSec, cacheAgeSec, venueAgeSec }` or `null`; `errors` (`[{ venue, kind }]`) when a book did not answer |
+
+A line is written every cycle, pairs or not, so a missing line is a missed cycle. Old lines
+are never rewritten and nothing is filled in for them: the restart reload reads both forms,
+and the replay counts old lines and says it cannot use them. A line is about 3.9 KB (measured,
+seven pairs), 34 MB a day raw and about 2 MB gzipped.
+
+## The replay
+
+The question it answers from the stored cycles: what would this rule have captured, after
+fees, if I were N seconds slow? Paper only. The exact semantics are in the header of
+`services/api/src/btcCurve/pairsReplay.ts`, and the tests in
+`services/api/tests/btcPairsReplay.test.ts` work each case by hand.
+
+**The rule.** `edge`: the least lock that is a signal, cents per $1 pair after both venues'
+fees at the size traded (default 1). `size`: the least size at the top of both books (default
+10). `trade`: the size traded (default: the same). `lag`: seconds from signal to fill, a list
+(default 10). `age`: a read older than this is not acted on (default 30). `horizons`: `15m`,
+`1h`, `1d` (default all). `tolerance`: how late past one interval the fill cycle may be
+(default 5).
+
+**The trade.** Yes at one venue's ask and No at 100 minus the other venue's Yes bid, top of
+book, the same arithmetic as the page's "Both sides" (`lockOneWay` in `pairs.ts`), with the
+repo's `takerFeeCents` per contract times the size and each leg's fee for the order rounded up
+to the next whole cent. Money is integer milli-cents; every rounding goes against the trader.
+
+**Signal.** The first stored cycle at which the rule holds for a pair one way round, on that
+cycle's reads alone: both books read, fresh for the tenor and no older than `age`, the size
+there, the edge at the size traded at least `edge`.
+
+**Fill.** The first stored cycle at or after signal time plus lag (`pricedAt` is the cycle's
+time). Lag 0 is the signal cycle itself: an upper bound nobody achieves. Then, the way round
+it was signalled:
+
+| At the fill cycle | Outcome |
+| --- | --- |
+| no stored cycle within one interval plus the tolerance (a gap, or the data ends) | `unknown` |
+| the pair or a leg is missing, the row is stale, or a read is older than `age` | `unknown` |
+| the top of book holds less than the size traded, or a side is empty | `gone` (size); no "sent anyway" figure, the depth below the top is not stored |
+| edge at the size traded is zero or more | `captured`, at the fill cycle's edge |
+| edge below zero | `gone` (edge), nothing captured; "sent anyway" carries the negative edge |
+
+`unknown` is never counted as captured, as gone, or as zero.
+
+**One trade per episode.** A pair one way round is the lock run identity the episodes use
+(tenor, close, strike, both venue ids, which venue the Yes is on). After a signal there is no
+new one on it until a stored cycle at which the rule does not hold. A stretch with no stored
+cycle does not re-arm it. Unlike the page's episodes, one cycle is enough for a signal.
+
+**What comes back**, per lag, for all tenors and per tenor: signals, captured, gone (edge,
+size), unknown (no cycle, stale read, old read, missing read), captured total, median and
+worst captured edge, sent anyway, the share of known outcomes that survived the lag, the
+seconds from signal to fill; days covered, cycles replayed, old-form cycles, lines skipped; a
+row per day; the rule; and `assumptions`: both legs are assumed to fill together at the fill
+cycle's prices, the 10-second cadence resolves a lag only to the next stored cycle, the
+Polymarket US public book is an edge-cached copy up to about 30 seconds old (so a gap may be a
+stale quote, which is why the read age is a rule input), no queue position, no partial fills,
+nothing below the top of book.
+
+**Command line**, no caps, plain or gzipped days:
+
+```
+npx tsx services/api/scripts/btcPairsReplay.ts --dir /var/data/btc-curve/pairs \
+  --from 2026-11-11 --to 2026-11-17 --edge 1 --size 10 --lag 0,10,30,60
+```
+
+`--json` prints the same as JSON, `--trades 20` lists the first trades per lag, `--days 7`
+takes the last seven UTC days. A request it cannot read is refused with exit code 2.
+
+**Route.** `GET /pairs/api/replay` takes the same names as query parameters plus `days`
+(default 1: today, UTC). One request reads at most 7 days, 4 lags, lags up to 3600 seconds and
+125,000 stored cycles, takes at most 30 seconds, and runs one at a time; over a cap, or with a
+parameter it cannot read or does not know, it answers 400 with `{ ok: false, refused: true,
+error }` in plain words (429 while another replay runs). It is read-only, gives the event loop
+back every 250 lines, and sits behind the same token as the rest of `/pairs`.
 
 ## What each cycle does
 
@@ -391,8 +487,11 @@ today per tenor, last error).
    cheaper way to own both sides after fees, the gap's persistence over the window, a clean
    score, the model probability. Per band: implied, model, cheapest legs, edge, sigmas. Per
    tenor: the pick, from the rows that are not stale and have both books.
-8. Gaps on reads that are not stale are appended to a day file (`gaps-YYYY-MM-DD.jsonl`) and
-   reloaded within the window on a restart; files older than three days are deleted.
+8. The cycle is appended as one line to a day file (`gaps-YYYY-MM-DD.jsonl`): the gaps on reads
+   that are not stale, which a restart reloads within the window, and every pair's two books
+   as they were priced, which the replay reads (see "The stored cycle"). Every day's file is
+   kept unless a retention window is set (`BTC_PAIRS_RETAIN_DAYS`, else the curve's
+   `BTC_CURVE_RETAIN_DAYS`); a closed day is gzipped to `.jsonl.gz` and read back from that.
 9. Lock runs are stepped: extended, opened or ended. Episodes that ended are appended to
    `episodes-YYYY-MM-DD.jsonl`. The report is pushed to every stream listener.
 
@@ -447,6 +546,8 @@ On `atticus-btc-curve` (the mount) or the standalone script:
 | `BTC_CURVE_PAIRS` | on | `0` turns the mount off (curve service only) |
 | `BTC_PAIRS_INTERVAL_SEC` | 10 | floor 5 |
 | `BTC_PAIRS_DATA_DIR` | `<BTC_CURVE_DATA_DIR>/pairs` (mount), `/tmp/btc-pairs` (standalone) | gap history and lock episodes |
+| `BTC_PAIRS_RETAIN_DAYS` | unset: every day is kept (on the mount, unset follows `BTC_CURVE_RETAIN_DAYS`) | a whole number of days keeps that window and deletes older day files; `0`, `all`, `none` keep everything; a value that cannot be read keeps everything and says so on `/healthz` |
+| `BTC_PAIRS_DISK_BUDGET_MB` | unset | standalone script: `/healthz` warns past 80% of it; deletes nothing. The mount is covered by `BTC_CURVE_DISK_BUDGET_MB` |
 | `BTC_PAIRS_STALE_SECONDS` | `15m=15,1h=30,1d=30` | seconds beyond which a book copy makes its row a stale read, per tenor; any subset |
 | `BTC_PAIRS_LAUNCH_URL` | unset | the engine endpoint prefilled on the page |
 | `BTC_PAIRS_LAUNCH_MODE` | `send` | `send` POSTs the payload; `open` opens the engine URL with the pair in the query; the page can switch locally |

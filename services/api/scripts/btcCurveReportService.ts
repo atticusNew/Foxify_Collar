@@ -21,12 +21,17 @@
  *       BTC_CURVE_INTERVAL_SEC  (default 60)
  *       BTC_CURVE_TOKEN         (optional; when set the page and JSON need ?k=<token>)
  *       BTC_CURVE_SHOW_TAKE     (1 shows the writer's take in §6; default off)
- *       BTC_CURVE_RETAIN_DAYS   (default 21; older day files are deleted)
+ *       BTC_CURVE_RETAIN_DAYS   (default: unset, every day is kept. A whole number of days keeps
+ *                               that window and deletes older day files; 0, all or none keep
+ *                               everything; anything unreadable keeps everything and says so on
+ *                               /healthz. Covers the pairs files too unless BTC_PAIRS_RETAIN_DAYS
+ *                               is set. A day that has closed is gzipped either way.)
+ *       BTC_CURVE_DISK_BUDGET_MB (optional; /healthz warns past 80% of it. It deletes nothing.)
  *       BTC_CURVE_COLLAR        (0 disables the §6 OKX quotes; default on)
  *       BTC_CURVE_PAIRS         (0 disables the BTC pairs page mounted at /pairs; default on)
  *       BTC_PAIRS_*             (the pairs collector: INTERVAL_SEC 10, DATA_DIR under the curve
- *                               data dir, LAUNCH_URL, LAUNCH_MODE send|open, KALSHI_URL; see
- *                               scripts/btcPairsService.ts)
+ *                               data dir, RETAIN_DAYS, LAUNCH_URL, LAUNCH_MODE send|open,
+ *                               KALSHI_URL; see scripts/btcPairsService.ts)
  *       POLY_US_EXTRA_EVENT_SLUGS  comma-separated Polymarket US event slugs to add
  *       POLY_US_REST_BASE / KALSHI_REST_BASE / DERIBIT_REST_BASE / OKX_REST_BASE (relays)
  *
@@ -45,6 +50,7 @@ import { fetchChain, fetchDeribitIndex, selectRows } from "../src/btcCurve/derib
 import { buildSmiles, modelBucket } from "../src/btcCurve/model";
 import { hourlyVolPoint, mergeLadders } from "../src/btcCurve/analytics";
 import { SnapshotStore } from "../src/btcCurve/store";
+import { maintainLines, parseBudgetMb, parseRetention } from "../src/btcCurve/dayFiles";
 import { ReplayEngine } from "../src/btcCurve/replay";
 import { quoteCollarLadder, type CollarLadder } from "../src/btcCurve/collarLadder";
 import { buildReport } from "../src/btcCurve/report";
@@ -60,9 +66,14 @@ const SHOW_TAKE = process.env.BTC_CURVE_SHOW_TAKE === "1";
 const COLLAR_ON = process.env.BTC_CURVE_COLLAR !== "0";
 const EXTRA_SLUGS = (process.env.POLY_US_EXTRA_EVENT_SLUGS || "").split(",").map((s) => s.trim()).filter(Boolean);
 const PAIRS_BASE = "/pairs";
-const pairs: PairsCollector | null = process.env.BTC_CURVE_PAIRS !== "0" ? pairsCollectorFromEnv(process.env, { dataDir: join(DATA_DIR, "pairs") }) : null;
+const RETENTION = parseRetention(process.env.BTC_CURVE_RETAIN_DAYS, "BTC_CURVE_RETAIN_DAYS");
+// the pairs files sit on the same disk, so the curve's window covers them unless BTC_PAIRS_RETAIN_DAYS says otherwise
+const pairs: PairsCollector | null =
+  process.env.BTC_CURVE_PAIRS !== "0"
+    ? pairsCollectorFromEnv(process.env, { dataDir: join(DATA_DIR, "pairs"), retainDays: process.env.BTC_CURVE_RETAIN_DAYS ?? "", retainSetting: "BTC_CURVE_RETAIN_DAYS" })
+    : null;
 
-const store = new SnapshotStore(DATA_DIR, { retainDays: Number(process.env.BTC_CURVE_RETAIN_DAYS || 21) });
+const store = new SnapshotStore(DATA_DIR, { retention: RETENTION, budget: parseBudgetMb(process.env.BTC_CURVE_DISK_BUDGET_MB, "BTC_CURVE_DISK_BUDGET_MB") });
 const replay = new ReplayEngine(join(DATA_DIR, "replay-state.json"), join(DATA_DIR, "replays.jsonl"));
 
 let candles: IndexCandle[] = [];
@@ -167,12 +178,13 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
   if (hourly && spotUsd > 0) snapshot.hourlyVol = hourlyVolPoint(hourly, smiles, spotUsd, candles, nowMs);
   store.append(snapshot);
 
-  // Hedge replay: open on the hourly ladder, step everything, settle what is due.
-  if (spotUsd > 0) replay.observe(hourly, spotUsd, options, nowMs);
+  // Hedge replay: open on the hourly ladder, step everything, settle what is due. The engine
+  // writes its state every step; a full disk must not stop the cycle, so that write is guarded.
+  if (spotUsd > 0) store.guardWrite("replay-state.json", () => replay.observe(hourly, spotUsd, options, nowMs));
   for (const ev of replay.dueForSettlement(nowMs)) {
     try {
       const v = await settlementValue(ev.settlesAtMs);
-      if (v !== null) replay.settle(ev.id, v, v, options, nowMs);
+      if (v !== null) store.guardWrite("replays.jsonl", () => void replay.settle(ev.id, v, v, options, nowMs));
     } catch (err) {
       lastError = `settle ${ev.id}: ${(err as Error).message.slice(0, 80)}`;
     }
@@ -185,12 +197,20 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
   }
 
   if (!collectingSince) {
-    collectingSince = now.toISOString();
-    writeFileSync(SINCE_PATH, collectingSince);
+    const since = now.toISOString();
+    collectingSince = since;
+    store.guardWrite("collecting-since.txt", () => writeFileSync(SINCE_PATH, since));
   }
   cycles += 1;
-  if (cycles % 60 === 0) store.sweep(nowMs);
+  if (cycles % 60 === 0) maintain(nowMs);
   return snapshot;
+}
+
+/** The hourly pass over the day files, never awaited by a cycle: the retention sweep and at most one closed day gzipped. */
+function maintain(nowMs = Date.now()): void {
+  void store.maintain(nowMs).then((r) => {
+    for (const line of maintainLines(r, RETENTION)) console.log(`[btc-curve] ${line}`);
+  });
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -232,6 +252,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       replays: replay.summary().n,
       inFlight: replay.getOpen().length,
       lastError: lastError || undefined,
+      data: store.dataHealth(),
       pairs: pairs ? pairs.health() : undefined,
     });
   }
@@ -285,7 +306,8 @@ async function loop(): Promise<void> {
 if (process.env.NODE_ENV !== "test") {
   const loaded = store.load();
   if (existsSync(SINCE_PATH)) collectingSince = readFileSync(SINCE_PATH, "utf8").trim() || null;
-  console.log(`[btc-curve] data dir ${DATA_DIR} · ${loaded} snapshots reloaded · interval ${INTERVAL_SEC}s`);
+  console.log(`[btc-curve] data dir ${DATA_DIR} · ${loaded} snapshots reloaded · interval ${INTERVAL_SEC}s · ${store.startupLine()}`);
+  maintain();
   createServer((req, res) => {
     handle(req, res).catch((err) => {
       console.error(`[btc-curve] request failed: ${(err as Error).message}`);

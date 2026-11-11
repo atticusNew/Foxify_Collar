@@ -10,6 +10,12 @@
  * Env:  BTC_PAIRS_PORT            (default 8880; PORT honoured)
  *       BTC_PAIRS_INTERVAL_SEC    (default 10, floor 5)
  *       BTC_PAIRS_DATA_DIR        (default /tmp/btc-pairs; gap history survives a restart)
+ *       BTC_PAIRS_RETAIN_DAYS     (default: unset, every day file is kept. A whole number of days
+ *                                 keeps that window and deletes older days; 0, all or none keep
+ *                                 everything; anything unreadable keeps everything and says so
+ *                                 on /healthz. Mounted on the curve service, an unset value
+ *                                 follows BTC_CURVE_RETAIN_DAYS. Closed days are gzipped.)
+ *       BTC_PAIRS_DISK_BUDGET_MB  (optional; /healthz warns past 80% of it. It deletes nothing.)
  *       BTC_PAIRS_TOKEN           (optional; when set the page and JSON need ?k=<token>)
  *       BTC_PAIRS_WINDOW_MIN      (default 120; gap history kept this long)
  *       BTC_PAIRS_STALE_SECONDS   (default 15m=15,1h=30,1d=30; a book copy older than this many
