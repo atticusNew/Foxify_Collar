@@ -678,6 +678,9 @@ test("report page: the three sources, the gaps, the latency table and the replay
   assert.equal(data.yearEnd[0].sumPoly, 36);
   assert.equal(data.yearEnd[0].sumModel, 39);
   const html = renderReportHtml(data, { refreshSec: 60 });
+  assert.ok(!html.includes("<nav"), "no line of links unless the host passes one");
+  const links = [{ label: "BTC curve", href: "/?k=a%20b" }, { label: "BTC pairs", href: "/pairs?k=a%20b" }, { label: "Sports", href: "/sports?k=a%20b" }];
+  assert.ok(renderReportHtml(data, { refreshSec: 60, links }).includes('<b>BTC curve</b> · <a href="/pairs?k=a%20b">BTC pairs</a> · <a href="/sports?k=a%20b">Sports</a>'), "the other pages, under the key");
   for (const needle of [
     "Bitcoin on the event venues",
     "$74,222.14",

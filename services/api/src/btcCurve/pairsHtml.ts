@@ -9,6 +9,7 @@
 
 import type { Band, BookFailure, EpisodeSummary, HorizonSet, LegRead, LockEpisodesReport, PairsReport, PairLeg, Regime, StrikePair } from "./pairs";
 import { pairId } from "./pairs";
+import { pageLinksHtml, type PageLink } from "./pageLinks";
 
 const esc = (s: unknown): string =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
@@ -230,7 +231,7 @@ ${block(d.hourly, "hourly", "Hourly, next close", "No contract closes within 90 
 ${block(d.daily, "daily", "Daily, 5 PM ET", "No daily contract within 36 hours (none is listed on Fridays; the weekly takes that close).")}`;
 }
 
-export function renderPairsHtml(d: PairsReport, opts: { token?: string; base?: string; launchUrl?: string; launchMode?: "send" | "open" } = {}): string {
+export function renderPairsHtml(d: PairsReport, opts: { token?: string; base?: string; launchUrl?: string; launchMode?: "send" | "open"; links?: PageLink[] } = {}): string {
   const base = (opts.base ?? "").replace(/\/$/, "");
   const q = opts.token ? `?k=${encodeURIComponent(opts.token)}&` : "?";
   const mode = opts.launchMode === "open" ? "open" : "send";
@@ -259,7 +260,7 @@ details{margin:14px 0 0;font-size:12px;color:var(--dim)}summary{cursor:pointer;c
 .limits{padding-left:18px;margin:6px 0}.limits li{margin:4px 0}footer{margin-top:18px;color:var(--dim);font-size:11px}
 @media (max-width:760px){td.lbl,th:first-child{position:sticky;left:0;background:#fff;z-index:1}td.act,th.act{position:sticky;right:0;background:#fff;z-index:1;box-shadow:-6px 0 8px -6px rgba(0,0,0,.15)}tr.atm td.lbl,tr.atm td.act{background:#fafafa}tr.best td.lbl,tr.best td.act{background:var(--best)}tr.picked td.lbl,tr.picked td.act{background:var(--pick)}td small{white-space:nowrap;max-width:none}td.lbl small{white-space:normal;max-width:70px}tr.band td{position:static;white-space:normal}.h{align-items:flex-start}}
 </style></head><body><main>
-<header><h1>BTC pairs <small>Kalshi and Polymarket US · same strike, same close, same index · read-only</small></h1><span class="dim" style="font-size:12px">Launch hands the picked pair to your engine; nothing here places an order.</span></header>
+${pageLinksHtml(opts.links, "BTC pairs")}<header><h1>BTC pairs <small>Kalshi and Polymarket US · same strike, same close, same index · read-only</small></h1><span class="dim" style="font-size:12px">Launch hands the picked pair to your engine; nothing here places an order.</span></header>
 <div id="body">${renderPairsBody(d)}</div>
 <details><summary>Engine endpoint and the API</summary>
 <div class="engine"><label for="engine">Engine</label><input id="engine" type="url" placeholder="https://your-engine.example/btc-pair" value="${esc(opts.launchUrl ?? "")}"><label class="mode"><input type="radio" name="mode" value="send"${mode === "send" ? " checked" : ""}> send (POST JSON)</label><label class="mode"><input type="radio" name="mode" value="open"${mode === "open" ? " checked" : ""}> open (your page, pair in the URL)</label><button type="button" id="engine-save">Save</button><button type="button" id="engine-test">Test</button><span id="engine-status"></span></div>

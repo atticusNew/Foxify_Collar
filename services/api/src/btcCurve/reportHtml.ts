@@ -7,6 +7,7 @@ import type { LatencyRow, BucketRow, GapSeries, LadderVolTable, StrikeVolRow, Ye
 import type { LadderView, ReportData } from "./report";
 import { takerFeeCents } from "./analytics";
 import type { VenueQuote } from "./types";
+import { pageLinksHtml, type PageLink } from "./pageLinks";
 
 const esc = (s: unknown): string =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
@@ -302,7 +303,7 @@ function yearEndVolsHtml(t: YearEndVolTable | null): string {
 <p>Range mids summed above each $5,000 line into P(above), each venue divided by its own sum; a bucket bid at 0¢ counts as zero. Inverted to vol on the venue's own 50% point: the vol columns compare shape, the strip compares level. Band: the same sum over bids and over asks; near the centre on $5,000 buckets a digital has little vega, so the band is wide there. Deribit vol at the line beside. Inside: shape agrees. Venue over or under: it does not, and the band is narrow enough to say so. Above any lognormal: more weight past the line than any single vol allows. Wings under 5% or over 95% and the line at the centre are blank. Tail mass in the strip is raw mids, no normalisation, same contracts on all three sources. A venue whose mids sum well past 100¢ is not a coherent distribution; normalising spreads the excess over every line, so read its vol columns as where its book is heavy, with the band as the limit of what it can say.</p>${strip}<div class="tbl"><table><tr><th rowspan="2">Boundary</th><th colspan="3">Kalshi</th><th colspan="3">Polymarket US</th><th rowspan="2">Deribit vol<br><small>at boundary</small></th></tr><tr><th>P(above)<br><small>normalised</small></th><th>Vol<br><small>mid · bid to ask band</small></th><th>Listed vs band</th><th>P(above)<br><small>normalised</small></th><th>Vol<br><small>mid · bid to ask band</small></th><th>Listed vs band</th></tr>${rows}</table></div>`;
 }
 
-export function renderReportHtml(d: ReportData, opts: { refreshSec?: number } = {}): string {
+export function renderReportHtml(d: ReportData, opts: { refreshSec?: number; links?: PageLink[] } = {}): string {
   const range = d.yearEnd.find((v) => v.id === "btc-yearend-2026-range");
   const high = d.yearEnd.find((v) => v.id === "btc-yearend-2026-high");
   const low = d.yearEnd.find((v) => v.id === "btc-yearend-2026-low");
@@ -328,7 +329,7 @@ svg.dist{width:100%;height:auto;display:block;margin-top:6px}svg.dist rect.k{fil
 svg.spark{width:160px;height:28px;display:block}svg.spark polyline{fill:none;stroke:var(--k);stroke-width:1.5}svg.spark .zero{stroke:var(--line)}
 .note{border-left:3px solid var(--line);padding:4px 12px;color:var(--dim);font-size:13px;margin:10px 0}.limits{padding-left:18px;font-size:13px;color:var(--dim);margin:6px 0}.limits li{margin:5px 0}.limits b{color:var(--ink)}.ok{color:var(--ok)}.bad{color:var(--hot)}footer{margin-top:40px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
 </style></head><body><main>
-<h1>Bitcoin on the event venues</h1>
+${pageLinksHtml(opts.links, "BTC curve")}<h1>Bitcoin on the event venues</h1>
 <p class="lead">Kalshi and Polymarket US Bitcoin contracts against the listed option market: curve, venue gaps, cost of latency, static vs dynamic hedge. Live from public market data. Read-only.</p>
 <div class="strip"><span>BRTI <b>$${num(d.spotUsd, 2)}</b> <small>settlement index, both venues${d.spotSource !== "brti" ? " (Deribit index this cycle)" : ""}</small></span>
 <span>As of <b>${et(d.at)}</b> <small>refresh ${d.intervalSec}s</small></span>
