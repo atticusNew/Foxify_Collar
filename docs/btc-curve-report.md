@@ -159,7 +159,13 @@ about 0.3 seconds.
 `budget` (`mb`, `usedPct`) and, past 80%, `warning` in plain words. The budget never deletes
 anything: raise the disk or set a window. If a write fails (a full disk) the cycle goes on, the
 page keeps serving from memory, and `data.recording` is `false` with `data.notRecording` saying
-what failed and why; `data.writesLost` keeps the count after writing resumes.
+what failed and why; `data.writesLost` keeps the count after writing resumes. A write that failed
+part way leaves a fragment at the end of the day file; the next line is started on a line of its
+own, so the fragment is one unreadable line and the line after it is whole. The since marker
+(`collecting-since.txt`) is written again each cycle until it lands. A full disk also stops the
+gzip of a closed day, because the compressed copy needs room before the original can go:
+`data.compression.lastError` says so every pass, and it resumes on the first pass with room.
+Nothing frees that room by itself; raise the disk or set a window.
 
 Endpoints: `/` (page, auto-refresh), `/api/report` (the page's data), `/api/latest` (full
 snapshot), `/api/replays`, `/healthz`. With `BTC_CURVE_TOKEN` set, everything but `/healthz`

@@ -79,6 +79,8 @@ const replay = new ReplayEngine(join(DATA_DIR, "replay-state.json"), join(DATA_D
 let candles: IndexCandle[] = [];
 let collar: CollarLadder | null = null;
 let collectingSince: string | null = null;
+/** false until the since marker is on disk: a write that failed is tried again each cycle, so /healthz does not say "not recording" for good */
+let sinceOnDisk = false;
 let cycles = 0;
 let lastError = "";
 
@@ -196,11 +198,9 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
     collar = await timed("okx", health, () => quoteCollarLadder(collarLadder, spotUsd, now, { showTake: SHOW_TAKE }));
   }
 
-  if (!collectingSince) {
-    const since = now.toISOString();
-    collectingSince = since;
-    store.guardWrite("collecting-since.txt", () => writeFileSync(SINCE_PATH, since));
-  }
+  const since = collectingSince ?? now.toISOString();
+  collectingSince = since;
+  if (!sinceOnDisk) sinceOnDisk = store.guardWrite("collecting-since.txt", () => writeFileSync(SINCE_PATH, since));
   cycles += 1;
   if (cycles % 60 === 0) maintain(nowMs);
   return snapshot;
@@ -317,6 +317,7 @@ async function loop(): Promise<void> {
 
 if (process.env.NODE_ENV !== "test") {
   if (existsSync(SINCE_PATH)) collectingSince = readFileSync(SINCE_PATH, "utf8").trim() || null;
+  sinceOnDisk = collectingSince !== null;
   // the service answers first, so the host's health check passes while the history reloads
   createServer((req, res) => {
     handle(req, res).catch((err) => {
