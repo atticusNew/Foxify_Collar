@@ -8,12 +8,13 @@
  * s wins": on Kalshi that is the team's own market's Yes; on Polymarket US the long side is the
  * away team and the home team is 1 minus it; on Novig a bid on one outcome is the ask on the other;
  * on ProphetX every order backs a team at American odds, so the best odds on a team are its ask
- * and its bid is 1 minus the other team's ask.
+ * and its bid is 1 minus the other team's ask; on Crypto.com each team has its own contract with
+ * its own book, as on Kalshi.
  */
 
-export const VENUES = ["kalshi", "polymarket_us", "novig", "prophetx"] as const;
+export const VENUES = ["kalshi", "polymarket_us", "novig", "prophetx", "cryptocom"] as const;
 export type Venue = (typeof VENUES)[number];
-export const VENUE_NAME: Record<Venue, string> = { kalshi: "Kalshi", polymarket_us: "Polymarket US", novig: "Novig", prophetx: "ProphetX" };
+export const VENUE_NAME: Record<Venue, string> = { kalshi: "Kalshi", polymarket_us: "Polymarket US", novig: "Novig", prophetx: "ProphetX", cryptocom: "Crypto.com" };
 /** One value per venue: the only place the list of venues is spelled out for a record. */
 export const byVenue = <T>(make: (v: Venue) => T): Record<Venue, T> => Object.fromEntries(VENUES.map((v) => [v, make(v)])) as Record<Venue, T>;
 
@@ -31,7 +32,7 @@ export interface SideQuote {
 
 export interface VenueListing {
   venue: Venue;
-  /** the venue's own id for the market (a Kalshi ticker pair, a Polymarket US slug, a Novig market id, a ProphetX event and market) */
+  /** the venue's own id for the market (a Kalshi ticker pair, a Polymarket US slug, a Novig market id, a ProphetX event and market, a Crypto.com event symbol) */
   id: string;
   away: SideQuote;
   home: SideQuote;
@@ -45,6 +46,11 @@ export interface VenueListing {
    * that charges per contract.
    */
   feeGain?: number;
+  /**
+   * A fixed fee per contract on every trade, cents (Crypto.com's exchange: 2¢ to open and 2¢ to
+   * close before expiry, nothing at settlement). Absent on a venue whose fee moves with the price.
+   */
+  feeFlatCents?: number;
   /** venue's own words for the two sides, as listed */
   awayName: string;
   homeName: string;

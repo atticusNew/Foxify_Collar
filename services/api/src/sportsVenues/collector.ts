@@ -13,6 +13,7 @@ import { maintainLines, parseBudgetMb, parseRetention, type Budget, type Retenti
 import type { PageLink } from "../btcCurve/pageLinks";
 import { assembleGames, readKalshiGames, readNovigListings, readPolyUsListings, type KalshiGame } from "./readers";
 import { readProphetXListings } from "./prophetx";
+import { cryptocomFeeFromEnv, newCryptocomCache, readCryptocomListings, type CryptocomFee } from "./cryptocom";
 import { buildReport, type ReportData } from "./report";
 import { renderReportHtml } from "./reportHtml";
 import { SnapshotStore } from "./store";
@@ -28,6 +29,8 @@ export interface SportsCollectorOptions {
   retention?: Retention;
   budget?: Budget;
   log?: (line: string) => void;
+  /** Crypto.com's exchange fee as it is counted; the flat fee of its schedule when not given */
+  cryptocomFee?: CryptocomFee;
   /** test seam: the venue reads of one cycle */
   readGames?: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
 }
@@ -43,6 +46,8 @@ export class SportsCollector {
   private readonly sincePath: string;
   private readonly log: (line: string) => void;
   private readonly readGames: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
+  private readonly cryptocomFee: CryptocomFee;
+  private readonly cryptocomCache = newCryptocomCache();
   private collectingSince: string | null = null;
   private sinceOnDisk = false;
   private cycles = 0;
@@ -60,6 +65,7 @@ export class SportsCollector {
     this.deadlineMs = Math.max(10_000, opts.sourceDeadlineMs || 45_000);
     this.retention = opts.retention ?? parseRetention(undefined, "retainDays");
     this.log = opts.log ?? ((line) => console.log(line));
+    this.cryptocomFee = opts.cryptocomFee ?? cryptocomFeeFromEnv({});
     this.readGames = opts.readGames ?? ((now, health) => this.readVenues(now, health));
     this.store = new SnapshotStore(opts.dataDir, { keepHours: this.windowHours, retention: this.retention, budget: opts.budget });
     this.sincePath = join(opts.dataDir, "collecting-since.txt");
@@ -98,13 +104,15 @@ export class SportsCollector {
     const kalshi: KalshiGame[] = (await this.timed("kalshi", health, () => readKalshiGames({ nowMs, horizonMs: this.horizonMs }))) ?? [];
     const games = kalshi.map((k) => k.game);
     const prophetxNotes: string[] = [];
-    const [poly, novig, prophetx] = await Promise.all([
+    const cryptocomNotes: string[] = [];
+    const [poly, novig, prophetx, cryptocom] = await Promise.all([
       this.timed("polymarket_us", health, () => readPolyUsListings(games)),
       this.timed("novig", health, () => readNovigListings(games, { nowMs })),
       this.timed("prophetx", health, () => readProphetXListings(games, { notes: prophetxNotes }), prophetxNotes),
+      this.timed("cryptocom", health, () => readCryptocomListings(games, { nowMs, notes: cryptocomNotes, cache: this.cryptocomCache, fee: this.cryptocomFee }), cryptocomNotes),
     ]);
     const none = new Map<string, VenueListing>();
-    return assembleGames(kalshi, poly ?? none, novig ?? none, prophetx ?? none);
+    return assembleGames(kalshi, poly ?? none, novig ?? none, prophetx ?? none, cryptocom ?? none);
   }
 
   async collectOnce(now = new Date()): Promise<Snapshot> {
@@ -262,6 +270,7 @@ export function sportsCollectorFromEnv(
         ? parseRetention(env.SPORTS_VENUES_RETAIN_DAYS, "SPORTS_VENUES_RETAIN_DAYS")
         : parseRetention(defaults.retainDays, defaults.retainSetting ?? "the host service's retention setting"),
     budget: parseBudgetMb(env.SPORTS_VENUES_DISK_BUDGET_MB, "SPORTS_VENUES_DISK_BUDGET_MB"),
+    cryptocomFee: cryptocomFeeFromEnv(env),
   });
 }
 

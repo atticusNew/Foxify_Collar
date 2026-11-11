@@ -29,7 +29,15 @@ const COUNT_WORD = ["none", "one", "two", "three", "four", "five", "six"];
 const ALL_VENUES = `all ${COUNT_WORD[VENUES.length] ?? VENUES.length}`;
 /** The fee as it applies now, in the venue's own terms: per contract, on winnings, or none. */
 const feeWords = (q: AllIn): string =>
-  q.feeGain ? `fee ${(q.feeGain * 100).toFixed(q.feeGain * 100 % 1 ? 1 : 0)}% of winnings` : q.feeTheta ? `fee ${(q.feeTheta * 100).toFixed(1)}%` : "no fee";
+  q.feeFlatCents
+    ? `fee ${q.feeFlatCents}¢ a contract`
+    : q.feeGain
+      ? `fee ${(q.feeGain * 100).toFixed(q.feeGain * 100 % 1 ? 1 : 0)}% of winnings`
+      : q.feeTheta
+        ? `fee ${(q.feeTheta * 100).toFixed(1)}%`
+        : "no fee";
+/** "A, B, C and D" over the venues on the page. */
+const VENUE_LIST = `${VENUES.slice(0, -1).map((v) => VENUE_NAME[v]).join(", ")} and ${VENUE_NAME[VENUES[VENUES.length - 1]]}`;
 
 function quoteCell(q: AllIn | null): string {
   if (!q) return '<td class="dim">not listed</td>';
@@ -200,7 +208,7 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--k);font-size:13px}
 .note{border-left:3px solid var(--line);padding:4px 12px;color:var(--dim);font-size:13px;margin:10px 0}.limits{padding-left:18px;font-size:13px;color:var(--dim);margin:6px 0}.limits li{margin:5px 0}.limits b{color:var(--ink)}footer{margin-top:40px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
 </style></head><body><main>
 ${pageLinksHtml(opts.links, "Sports")}<h1>Sports on the event venues</h1>
-<p class="lead">The same game's winner market on Kalshi, Polymarket US, Novig and ProphetX, side by side, after each venue's taker fee. Where the other side of a position is cheapest, what the venues disagree on, and what can be locked across them. Live from public market data. Read-only.</p>
+<p class="lead">The same game's winner market on ${esc(VENUE_LIST)}, side by side, after each venue's taker fee. Where the other side of a position is cheapest, what the venues disagree on, and what can be locked across them. Live from public market data. Read-only.</p>
 <div class="strip"><span>As of <b>${et(d.at)}</b> <small>refresh ${d.intervalSec}s</small></span><span>Games on the board <b>${d.slate.games}</b> <small>NFL, NBA, NHL · next three days · ${d.slate.live} live</small></span><span>Window <b>${d.historyPoints}</b> snapshots <small>${d.windowHours ? `the last ${d.windowHours} hours · ` : ""}${d.collectingSince ? `${d.windowHours ? "collecting " : ""}since ${et(d.collectingSince)}` : "first cycle"}</small></span></div>
 <div class="key"><span><i class="tag ref">Reference</i>what the venues show on their own: bid, ask, depth, each venue's fee, gaps over time</span><span><i class="tag eng">Engine</i>what reading every venue's book for the same game at once adds: all-in prices, the consensus and who sits off it, the cheapest other side for every position with the saving, the crosses in dollars</span></div>
 ${tiles(d)}
@@ -215,7 +223,7 @@ ${boardHtml(d.games)}
 ${crossesHtml(d.slate, d.window)}
 
 <h2>3 · The hedger's view of the venues <span class="tag eng">Engine</span></h2>
-<p>Which venue's book is cheapest to take the other side of a position, all in, on the same games at the same moment. Each game contributes two sides. "Saving" is Kalshi's own other side minus the cheapest venue's, so Kalshi reads as the reference. Novig charges no fee before tip-off and 6% of p(1−p) once live, so its standing moves at the start. ProphetX takes 2% of a market's net winnings at settlement on NFL and NBA games, counted here in full as if the contract wins, and 3.5% of p(1−p) at the trade on NHL games.</p>
+<p>Which venue's book is cheapest to take the other side of a position, all in, on the same games at the same moment. Each game contributes two sides. "Saving" is Kalshi's own other side minus the cheapest venue's, so Kalshi reads as the reference. Novig charges no fee before tip-off and 6% of p(1−p) once live, so its standing moves at the start. ProphetX takes 2% of a market's net winnings at settlement on NFL and NBA games, counted here in full as if the contract wins, and 3.5% of p(1−p) at the trade on NHL games. Crypto.com's exchange charges a fixed 2¢ a contract on every trade before expiry, whatever the price, so it costs most where a contract is cheap.</p>
 ${hedgerHtml(d.slate, d.window)}
 
 <h2>4 · Gaps over time <span class="tag ref">Reference</span></h2>
@@ -224,17 +232,17 @@ ${gapsHtml(d.gaps)}
 
 <h2>Notes and limits</h2>
 <ul class="limits">
-<li><b>Games.</b> Kalshi's open game markets for NFL, NBA and NHL whose ET game date is today or within three days; a game is on the board when Kalshi lists both teams. Polymarket US is looked up by its event slug (league, away, home, date; team spellings per its own team list), Novig by both clubs' codes and the ET date of its start, ProphetX by both clubs' names and the ET date of its start. A game another venue lists that Kalshi does not is not on the board.</li>
-<li><b>Sides.</b> Kalshi: the team's own market, Yes. Polymarket US: one market per game, the long side the away team, the home side 1 minus it, sizes carried across. Novig: one market, two outcomes, every order a bid; a bid on one is the ask on the other. Novig contracts pay 1¢ and sizes are shown in $1 shares. ProphetX: one market, every order backs a club at American odds; the best odds on a club, as a price, are its ask, and its bid is 1 minus the other club's ask. Its sizes are dollars a taker can still put on at those odds, shown here as the $1 contracts those dollars buy; a level holding under $1, the venue's smallest order, is passed over.</li>
-<li><b>Fees.</b> Taker only, c·p·(1−p) per $1: Kalshi 0.07 (series multiplier 1), Polymarket US the market's coefficient (0.095 at Tier 1), Novig 0.06 charged only once the game is live (0 before), ProphetX 0.035 on NHL games. On NFL and NBA games ProphetX charges nothing at the trade and takes 2% of the market's net winnings at settlement: a buy at p is shown at p plus 2% of (1−p), the most that fee can be, so a cross or a saving shown here holds whichever team wins. ProphetX's model and rate are read from its own fee estimator for each game every cycle. Kalshi rounds an order's fee up to the cent; ignored here. Maker rebates ignored.</li>
+<li><b>Games.</b> Kalshi's open game markets for NFL, NBA and NHL whose ET game date is today or within three days; a game is on the board when Kalshi lists both teams. Polymarket US is looked up by its event slug (league, away, home, date; team spellings per its own team list), Novig by both clubs' codes and the ET date of its start, ProphetX and Crypto.com by both clubs' names and the ET date of their start. A game another venue lists that Kalshi does not is not on the board.</li>
+<li><b>Sides.</b> Kalshi: the team's own market, Yes. Polymarket US: one market per game, the long side the away team, the home side 1 minus it, sizes carried across. Novig: one market, two outcomes, every order a bid; a bid on one is the ask on the other. Novig contracts pay 1¢ and sizes are shown in $1 shares. ProphetX: one market, every order backs a club at American odds; the best odds on a club, as a price, are its ask, and its bid is 1 minus the other club's ask. Its sizes are dollars a taker can still put on at those odds, shown here as the $1 contracts those dollars buy; a level holding under $1, the venue's smallest order, is passed over. Crypto.com: each club has its own $1 contract with its own book, as on Kalshi; the two full-game winner contracts of the game's event are read, not its period or prop contracts.</li>
+<li><b>Fees.</b> Taker only, c·p·(1−p) per $1: Kalshi 0.07 (series multiplier 1), Polymarket US the market's coefficient (0.095 at Tier 1), Novig 0.06 charged only once the game is live (0 before), ProphetX 0.035 on NHL games. On NFL and NBA games ProphetX charges nothing at the trade and takes 2% of the market's net winnings at settlement: a buy at p is shown at p plus 2% of (1−p), the most that fee can be, so a cross or a saving shown here holds whichever team wins. ProphetX's model and rate are read from its own fee estimator for each game every cycle. Crypto.com's exchange (the book behind OG and behind brokers that introduce customers to it) charges a broker's customer a fixed 2¢ per contract to open and 2¢ to close before expiry, nothing at settlement; its schedule also allows a price-weighted 0.07·p·(1−p) depending on the broker's connection, never more than the 2¢, and the page says in each cell which is counted. A broker's own commission on top is not public and is not counted. Kalshi rounds an order's fee up to the cent; ignored here. Maker rebates ignored.</li>
 <li><b>Consensus.</b> Not a model and not a sharp line: the mean of the venues' own de-vigged mids. With two venues it is their midpoint and the gaps are symmetric. A venue off it is off its peers, which is a different claim from off fair value.</li>
-<li><b>Settlement.</b> Every venue here settles game winners on the official league result; NHL winners include overtime and the shootout on each (ProphetX lists its regulation-only market separately; it is not read). Postponement, tie and abandonment handling differ by venue; a cross or a hedge across venues carries that tail, which is small and real.</li>
+<li><b>Settlement.</b> Every venue here settles game winners on the official league result; NHL winners include overtime and the shootout on each (ProphetX lists its regulation-only market separately; it is not read). Postponement, tie and abandonment handling differ by venue; a cross or a hedge across venues carries that tail, which is small and real. Crypto.com's is the widest: a game not completed within 48 hours of its scheduled start settles at the prior week's average price.</li>
 <li><b>Timing.</b> The venues are read within one cycle, not at one instant; in play, a cent of gap can be a few seconds of latency. The window sections average that out; a single live row does not.</li>
 <li><b>Depth.</b> Best level only. A cross or a saving is shown at that size; the next level is wider.</li>
 </ul>
 
 <footer>
-<p><b>Sources.</b> Kalshi public market API (KXNFLGAME, KXNBAGAME, KXNHLGAME; markets, orderbooks, series fee) · Polymarket US public Retail API (gateway.polymarket.us; events by slug, books) · Novig public catalog (MONEY markets per league with best bids) · ProphetX public web endpoints (prophetx.co; events per league, winner market levels, fee estimator, commission rates). No credentials loaded; nothing here can place an order.</p>
+<p><b>Sources.</b> Kalshi public market API (KXNFLGAME, KXNBAGAME, KXNHLGAME; markets, orderbooks, series fee) · Polymarket US public Retail API (gateway.polymarket.us; events by slug, books) · Novig public catalog (MONEY markets per league with best bids) · ProphetX public web endpoints (prophetx.co; events per league, winner market levels, fee estimator, commission rates) · Crypto.com public market-data API of its US exchange (api.crypto.com/fcm/v1/public; events per league, a game's contracts, books). No credentials loaded; nothing here can place an order.</p>
 <p><b>Health this cycle.</b> ${healthLine}</p>
 </footer></main></body></html>`;
 }
