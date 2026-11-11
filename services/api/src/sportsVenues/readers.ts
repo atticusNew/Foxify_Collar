@@ -20,6 +20,7 @@ import { fetchFeeTheta, topDepthFromOrderbook, type RawMarket as KalshiRawMarket
 import { moneyCents, polyUsBase } from "../btcCurve/polyUsLadders";
 import { LEAGUE_TEMPLATES, type LeagueTemplate } from "../eventCollar/crossVenue/resolutionWhitelist";
 import { parseGameTicker } from "../eventCollar/crossVenue/eventMatcher";
+import { POLY_US_CODES, polyUsAliases, polyUsEventSlugs, polyUsWinnerMarket, type PolyUsEvent, type PolyUsMarket } from "../eventCollar/crossVenue/polymarketUs";
 import { codesFor } from "../eventCollar/crossVenue/venueBooks";
 import { signedFeeAppliesPreGame, signedFeeCoefficient } from "../eventCollar/crossVenue/venueBooks";
 import { VenueClient, type RawVenueMarket } from "../eventCollar/crossVenue/venuePositions";
@@ -166,52 +167,12 @@ export async function readKalshiGames(opts: { fetchImpl?: typeof fetch; nowMs?: 
 // Polymarket US
 // ---------------------------------------------------------------------------
 
-interface PolyUsSide {
-  description?: string;
-  long?: boolean;
-  team?: { abbreviation?: string; ordering?: string; name?: string };
-}
-export interface PolyUsMarket {
-  slug: string;
-  sportsMarketType?: string;
-  feeCoefficient?: number;
-  gameStartTime?: string;
-  marketSides?: PolyUsSide[];
-}
-interface PolyUsEvent {
-  slug: string;
-  startTime?: string;
-  markets?: PolyUsMarket[];
-}
-
-/** The winner market of an event and which long-side abbreviation it carries. Exported for tests. */
-export function polyUsWinnerMarket(ev: PolyUsEvent): PolyUsMarket | null {
-  return (ev.markets ?? []).find((m) => /_full_game_winner$/.test(m.sportsMarketType ?? "")) ?? null;
-}
-
-/**
- * Polymarket US spells a few clubs differently from the templates' slug aliases (read off its own
- * team objects on Nov 9, 2026): Kalshi code → its abbreviation. Clubs not listed use the template.
- */
-export const POLY_US_CODES: Record<string, Record<string, string>> = {
-  nba: { GSW: "gs", GS: "gs", NOP: "no", NO: "no", NYK: "ny", NY: "ny", PHX: "pho", PHO: "pho", SAS: "sa", SA: "sa" },
-  nhl: { LA: "la", LAK: "la", NSH: "nas", SJ: "sj", SJS: "sj", UTAH: "uta", UTA: "uta", VGK: "veg", VEG: "veg", WSH: "was", WAS: "was", MTL: "mon", MON: "mon", CGY: "cgy", CAL: "cgy" },
-  nfl: {},
-};
-
-/** Every abbreviation Polymarket US might use for a Kalshi code: the venue's own spelling first, then the template's aliases, then the code. */
-export function polyUsAliases(league: string, code: string, template: LeagueTemplate): string[] {
-  const own = POLY_US_CODES[league]?.[code];
-  const aliases = (template.teamCodeAliases[code] ?? []).map((a) => a.toLowerCase());
-  return [...new Set([...(own ? [own] : []), ...aliases, code.toLowerCase()])];
-}
+// the venue's catalog shapes and club spellings live with the event lane's reader of the same venue (public reads only here)
+export { POLY_US_CODES, polyUsAliases, polyUsWinnerMarket, type PolyUsMarket };
 
 /** Slug candidates for a game on Polymarket US: {league}-{away}-{home}-{date}, the venue's own spelling first. */
 export function polyUsSlugs(game: Game, template: LeagueTemplate): string[] {
-  const aways = polyUsAliases(game.league, game.awayCode, template);
-  const homes = polyUsAliases(game.league, game.homeCode, template);
-  const date = game.key.split(":")[3];
-  return aways.flatMap((a) => homes.map((h) => `${template.league}-${a}-${h}-${date}`));
+  return polyUsEventSlugs(game.league, game.awayCode, game.homeCode, game.key.split(":")[3], template);
 }
 
 /**
