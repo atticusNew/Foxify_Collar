@@ -14,6 +14,8 @@
  * [0, 1] (the model side only; venue sides stay in cents).
  */
 
+import type { BookReadFailureKind, BookStamp } from "./bookRead";
+
 export type Venue = "kalshi" | "polymarket_us";
 
 /** The question a bucket answers at settlement. */
@@ -58,6 +60,22 @@ export interface VenueQuote {
   openInterest: number;
   /** taker fee coefficient Θ in `fee = Θ · C · p · (1 − p)`; 0 when the venue charges none here */
   feeTheta: number;
+  /** when the venue opened this contract for trading (ISO), where its listing says */
+  openedAt?: string;
+  /** set when the contract's own order book was read: the prices and sizes above are that book's */
+  read?: BookStamp;
+  /** set when the order book did not answer: the prices above are the listing's, without size, and must not be priced */
+  failure?: BookFailureRaw;
+}
+
+/** A book read that failed, as the reader reports it. The URL stays with the operator. */
+export interface BookFailureRaw {
+  kind: BookReadFailureKind;
+  status: number | null;
+  url: string;
+  detail: string;
+  /** seconds the venue's cache had held the refusal (HTTP Age), when it said */
+  cacheAgeSec: number | null;
 }
 
 /** One ladder: a family of buckets that settle together, across venues. */

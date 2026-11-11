@@ -7,7 +7,7 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PairsCollector, isUpDown, launchPayload, merged, pairsCollectorFromEnv, polyLadderIn } from "../src/btcCurve/pairsCollector";
-import { bundleOf, fifteenSet, horizonSet, recordGaps, regimeOf, type GapHistory, type PairsReport, type VenueUrls } from "../src/btcCurve/pairs";
+import { STALE_AFTER_SEC, bundleOf, emptyEpisodeBook, lockEpisodesReport, fifteenSet, horizonSet, recordGaps, regimeOf, type GapHistory, type PairsReport, type VenueUrls } from "../src/btcCurve/pairs";
 import { bucketFromPolyUs, laddersFromEvents } from "../src/btcCurve/polyUsLadders";
 import { fifteenLadderFrom } from "../src/btcCurve/kalshiLadders";
 import type { Ladder, VenueQuote } from "../src/btcCurve/types";
@@ -66,6 +66,7 @@ function report(): PairsReport {
   recordGaps(history, [fifteen, hourly, daily], NOW, 60 * 60_000);
   return {
     at: new Date(NOW).toISOString(),
+    pricedAt: new Date(NOW).toISOString(),
     spotUsd: 74812,
     spotSource: "BRTI",
     intervalSec: 10,
@@ -76,7 +77,10 @@ function report(): PairsReport {
     daily,
     regime,
     bundle: bundleOf([fifteen, hourly, daily]),
+    staleAfterSec: STALE_AFTER_SEC,
     health: { kalshi: { ok: true, ms: 40 } },
+    errors: [],
+    lockEpisodes: lockEpisodesReport(emptyEpisodeBook(), NOW),
   };
 }
 

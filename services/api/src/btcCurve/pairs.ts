@@ -9,6 +9,7 @@
 
 import { midCents, takerFeeCents } from "./analytics";
 import { normCdf } from "./model";
+import type { BookReadFailureKind, BookStamp } from "./bookRead";
 import type { Ladder, Venue, VenueQuote } from "./types";
 
 /** fifteen: the 15-minute up/down window (one strike, the price to beat); hourly: the next close; daily: 5 PM ET */
@@ -16,6 +17,86 @@ export type Horizon = "fifteen" | "hourly" | "daily";
 export type Place = "below" | "atm" | "above";
 
 const MINUTES_PER_YEAR = 365 * 24 * 60;
+
+/**
+ * How old one leg's book is, as of the moment its pair was priced. Three clocks, kept apart:
+ * ours (when the venue answered), the venue's cache (how long it had already held the answer,
+ * the HTTP Age header) and the venue's own stamp on the book. Seconds, one decimal.
+ */
+export interface LegRead {
+  /** when the venue answered our request for this book, our clock (ISO) */
+  fetchedAt: string;
+  /** seconds from that answer to the pricing */
+  fetchAgeSec: number;
+  /** seconds the venue's cache said it had held the answer when it gave it; null when it did not say */
+  cacheAgeSec: number | null;
+  /**
+   * The venue's own stamp on the book (ISO); null when the venue gives none. Polymarket US:
+   * `marketData.transactTime`, the book's last change, so a quiet book carries an old stamp on
+   * a new copy. Kalshi: none on the orderbook.
+   */
+  venueAt: string | null;
+  /** seconds from the venue's stamp to the pricing; null without a stamp */
+  venueAgeSec: number | null;
+  /** how old the copy that was priced is: fetchAgeSec plus cacheAgeSec */
+  ageSec: number;
+  /** the venue's state for the market, where it says (Polymarket US: MARKET_STATE_OPEN) */
+  state: string | null;
+}
+
+const tenth = (ms: number): number => Math.round(Math.max(0, ms) / 100) / 10;
+
+/** A read's stamps as ages at the pricing moment. Exported for tests. */
+export function legReadOf(stamp: BookStamp | undefined, pricedAtMs: number): LegRead | null {
+  if (!stamp) return null;
+  const fetchAgeSec = tenth(pricedAtMs - stamp.fetchedAtMs);
+  return {
+    fetchedAt: new Date(stamp.fetchedAtMs).toISOString(),
+    fetchAgeSec,
+    cacheAgeSec: stamp.cacheAgeSec,
+    venueAt: stamp.venueAtMs !== null ? new Date(stamp.venueAtMs).toISOString() : null,
+    venueAgeSec: stamp.venueAtMs !== null ? tenth(pricedAtMs - stamp.venueAtMs) : null,
+    ageSec: Math.round((fetchAgeSec + (stamp.cacheAgeSec ?? 0)) * 10) / 10,
+    state: stamp.state,
+  };
+}
+
+export type Freshness = "fresh" | "stale";
+
+/**
+ * Seconds beyond which a book copy is too old for its gap to be read as a quoting difference.
+ * A judgment from two short samples of the live books, not a venue constant and not a tested
+ * threshold: Polymarket US serves its public book through a cache that holds each copy up to
+ * 30 seconds (copies were seen at every age from 0 to 29), while Kalshi's order book is served
+ * live and moved several times within one such copy's life. Fifteen seconds on the 15-minute
+ * window keeps the younger half of those copies; thirty on the hourly and daily, which move
+ * less per second, keeps a whole cache life. `BTC_PAIRS_STALE_SECONDS` overrides.
+ */
+export const STALE_AFTER_SEC: Readonly<Record<Horizon, number>> = { fifteen: 15, hourly: 30, daily: 30 };
+
+const STALE_KEYS: Record<string, Horizon> = { "15m": "fifteen", fifteen: "fifteen", "1h": "hourly", hourly: "hourly", "1d": "daily", daily: "daily" };
+
+/** `15m=15,1h=30,1d=30` (any subset, any order) over the defaults; entries that do not read as a tenor and a positive number are ignored. Exported for tests. */
+export function staleBoundsFrom(spec: string | undefined | null, base: Readonly<Record<Horizon, number>> = STALE_AFTER_SEC): Record<Horizon, number> {
+  const out = { ...base };
+  for (const part of (spec ?? "").split(",")) {
+    const [k, v] = part.split("=").map((x) => x.trim().toLowerCase());
+    const horizon = STALE_KEYS[k];
+    const n = Number(v);
+    if (horizon && v !== "" && Number.isFinite(n) && n > 0) out[horizon] = n;
+  }
+  return out;
+}
+
+/**
+ * Fresh or stale from the two copies' ages against the tenor's bound: stale when either is
+ * older than the bound. Null when either age is unknown (a venue absent, or a quote that did
+ * not come from a book read): there is nothing to judge. Exported for tests.
+ */
+export function freshnessOf(kalshiAgeSec: number | null | undefined, polyAgeSec: number | null | undefined, staleAfterSec: number): Freshness | null {
+  if (kalshiAgeSec === null || kalshiAgeSec === undefined || polyAgeSec === null || polyAgeSec === undefined) return null;
+  return kalshiAgeSec > staleAfterSec || polyAgeSec > staleAfterSec ? "stale" : "fresh";
+}
 
 export interface PairLeg {
   venue: Venue;
@@ -28,6 +109,65 @@ export interface PairLeg {
   feeTheta: number;
   /** the venue's page for this contract */
   url: string;
+  /** when this book was read and how old it was when the pair was priced; null when the quote did not come from a book read */
+  read: LegRead | null;
+}
+
+/**
+ * How long after a contract opens a 404 on its book reads as "listed, not served yet" rather
+ * than as a fault. Polymarket US answered 404 for the new 15-minute market for 97 seconds
+ * after the 21:15 UTC open on 10 November 2026 while its event listing already showed it; the
+ * refusal came from the venue's cache, which had held it 225 seconds and let it go at 300. Ten
+ * minutes covers that with room; it is a judgment, not a venue rule.
+ */
+export const BOOK_NOT_SERVED_YET_MS = 10 * 60_000;
+
+/** One venue's book that did not answer this cycle. Nothing on its row is priced. */
+export interface BookFailure {
+  venue: Venue;
+  /** the venue's id for the market (Kalshi ticker / Polymarket US market slug) */
+  id: string;
+  /** not_served_yet: a 404 within the first minutes after the contract opened */
+  kind: "not_served_yet" | BookReadFailureKind;
+  status: number | null;
+  /** plain words, as the page prints them; no URL */
+  reason: string;
+  /** for the operator: the URL that was asked */
+  url: string;
+  /** for the operator: what came back */
+  detail: string;
+  /** seconds the venue's cache had held the refusal (HTTP Age), when it said */
+  cacheAgeSec: number | null;
+  /** the listing's own top of book while the book is missing: prices only, no size, never priced */
+  listing: { bidCents: number; askCents: number } | null;
+}
+
+/** The short name a venue goes by in a sentence on the page (the header has already said Polymarket US in full). */
+const venueShort = (v: Venue): string => (v === "kalshi" ? "Kalshi" : "Poly");
+
+/**
+ * A failed book read in plain words. A 404 soon after the contract opened is the venue listing
+ * the market before it serves the book; anything else is said as what happened. Exported for tests.
+ */
+export function bookFailureOf(q: VenueQuote, nowMs: number): BookFailure | null {
+  const f = q.failure;
+  if (!f) return null;
+  const name = venueShort(q.venue);
+  const openedMs = q.openedAt ? Date.parse(q.openedAt) : NaN;
+  const justOpened = f.kind === "http" && f.status === 404 && Number.isFinite(openedMs) && nowMs >= openedMs && nowMs - openedMs <= BOOK_NOT_SERVED_YET_MS;
+  const what = f.kind === "http" ? `HTTP ${f.status ?? "error"}` : f.kind === "timeout" ? "timed out" : "no connection";
+  const listed = q.bidCents > 0 || (q.askCents > 0 && q.askCents < 100);
+  return {
+    venue: q.venue,
+    id: q.id,
+    kind: justOpened ? "not_served_yet" : f.kind,
+    status: f.status,
+    reason: justOpened ? `${name} has listed this contract but is not serving its book yet (usual for a few minutes after it opens)` : `${name} book did not answer (${what})`,
+    url: f.url,
+    detail: f.detail,
+    cacheAgeSec: f.cacheAgeSec,
+    listing: listed ? { bidCents: q.bidCents, askCents: q.askCents } : null,
+  };
 }
 
 /** The cheaper of the two ways to own both sides of the contract: Yes on one venue, No on the other. */
@@ -81,6 +221,20 @@ export interface StrikePair {
   reading: string;
   /** realized-vol model: probability BRTI settles at or above the strike, cents of $1; null without a sigma */
   modelCents: number | null;
+  /**
+   * Books that did not answer this cycle (one per venue at most). That venue's leg is then null,
+   * so the row has no gap, no lock and no score, and it is never the tenor's pick.
+   */
+  errors: BookFailure[];
+  /**
+   * Whether the two books were read recently enough for the gap and the lock to mean anything:
+   * stale when either copy's age (`read.ageSec`) is over `staleAfterSec`. A stale row still shows
+   * both books; its gap is not added to the persistence window, it is not the tenor's default
+   * pick, and it breaks a lock episode. Null when a venue is absent or carries no read time.
+   */
+  freshness: Freshness | null;
+  /** the bound this row was judged against, seconds */
+  staleAfterSec: number;
 }
 
 /** One leg of a band: Yes at the lower strike or No at the upper, on the venue that sells it cheapest. */
@@ -154,8 +308,10 @@ export interface HorizonSet {
   bands: Band[];
   /** one standard deviation of BRTI to the close at the trailing realized vol, USD; null without a vol */
   sigmaUsd: number | null;
-  /** the id the tenor's Launch button sends by default: the cleanest scored pair, else the money */
+  /** the id the tenor's Launch button sends by default: the cleanest scored pair on a read that is not stale, else the money on the same terms, else none */
   pick: string | null;
+  /** seconds beyond which a book copy is stale on this tenor */
+  staleAfterSec: number;
   /** a wider look, mids only: the strikes around the money on both venues */
   context: Array<{ strike: number; kalshiMid: number | null; polyMid: number | null; gapCents: number | null }>;
   venues: { kalshi: boolean; poly: boolean };
@@ -164,7 +320,10 @@ export interface HorizonSet {
 }
 
 export interface PairsReport {
+  /** when the cycle began (ISO) */
   at: string;
+  /** when the books had been read and the pairs were priced (ISO); every read age is as of this moment */
+  pricedAt: string;
   spotUsd: number;
   spotSource: string;
   intervalSec: number;
@@ -174,9 +333,94 @@ export interface PairsReport {
   hourly: HorizonSet | null;
   daily: HorizonSet | null;
   regime: Regime | null;
-  /** every pair with a score, best first */
+  /** every pair with a score, best first; pairs on a stale read come after every pair that is not */
   bundle: StrikePair[];
+  /** seconds beyond which a book copy is stale, per tenor */
+  staleAfterSec: Record<Horizon, number>;
   health: Record<string, { ok: boolean; ms: number; detail?: string }>;
+  /** every book that did not answer this cycle, with the tenor and strike it belongs to; for the operator */
+  errors: Array<BookFailure & { horizon: Horizon; strike: number }>;
+  /** runs of consecutive cycles in which one pair showed a lock after fees on fresh reads, today (UTC), per tenor */
+  lockEpisodes: LockEpisodesReport;
+}
+
+/** One cycle's sighting of a lock after fees on a fresh read: which pair, which way round, how much, at what size. */
+export interface LockSighting {
+  horizon: Horizon;
+  settlesAt: string;
+  key: string;
+  strike: number;
+  kalshiId: string;
+  polyId: string;
+  yesOn: Venue;
+  noOn: Venue;
+  /** lock after both fees, cents per contract */
+  lockCents: number;
+  /** the thinner of the two top-of-book levels taken, contracts: the size the lock is quoted at */
+  qty: number;
+}
+
+/** A run still going: the same pair, the same way round, locked on every cycle since it began. */
+export interface LockRun extends Omit<LockSighting, "lockCents" | "qty"> {
+  id: string;
+  startedAtMs: number;
+  lastAtMs: number;
+  cycles: number;
+  minLockCents: number;
+  minQty: number;
+}
+
+export interface LockEpisode extends Omit<LockSighting, "lockCents" | "qty"> {
+  /** the first cycle that showed the lock (ISO) */
+  startedAt: string;
+  /** the last cycle that showed it (ISO) */
+  endedAt: string;
+  /** end minus start: the span over which the lock was seen, not how long it existed */
+  durationSec: number;
+  cycles: number;
+  /** the smallest lock seen in the run, cents per contract */
+  minLockCents: number;
+  /** the smallest size seen in the run, contracts */
+  minQty: number;
+  /** minLockCents times minQty, cents: a floor on what was on the book for the whole run */
+  valueCents: number;
+  /** true while the run is still going; the figures are as of the last cycle */
+  open?: true;
+}
+
+/** What the collector carries between cycles: the runs still going and the episodes kept. */
+export interface EpisodeBook {
+  open: LockRun[];
+  /** oldest first */
+  finished: LockEpisode[];
+}
+
+export interface EpisodeSummary {
+  /** episodes today (UTC, by the cycle that last showed the lock), counting those still open */
+  episodes: number;
+  open: number;
+  medianDurationSec: number | null;
+  longestDurationSec: number | null;
+  /** the episodes' valueCents summed, cents */
+  totalValueCents: number;
+  /** the latest few, newest first, open ones included */
+  recent: LockEpisode[];
+}
+
+export interface LockEpisodesReport {
+  label: string;
+  /** the UTC day the counts are for, YYYY-MM-DD */
+  day: string;
+  /** a lock seen on fewer consecutive cycles than this is not an episode */
+  minCycles: number;
+  fifteen: EpisodeSummary;
+  hourly: EpisodeSummary;
+  daily: EpisodeSummary;
+}
+
+/** The failed books of a cycle, flat, with where each belongs. */
+export function reportErrors(sets: Array<HorizonSet | null>): PairsReport["errors"] {
+  return sets.flatMap((s) => (s ? s.pairs.flatMap((p) => p.errors.map((e) => ({ ...e, horizon: p.horizon, strike: p.strike }))) : []));
 }
 
 /** The id a pair is launched and looked up by: the Kalshi ticker, else the Polymarket US slug, else tenor:strike. */
@@ -228,9 +472,9 @@ export function selectStrikes(levels: number[], spotUsd: number): { below: numbe
   return { below: levels[i - 1], atm: levels[i], above: levels[i + 1] };
 }
 
-function legOf(q: VenueQuote | null, url: string): PairLeg | null {
+function legOf(q: VenueQuote | null, url: string, pricedAtMs: number): PairLeg | null {
   if (!q) return null;
-  return { venue: q.venue, id: q.id, bidCents: q.bidCents, askCents: q.askCents, bidQty: q.bidQty, askQty: q.askQty, feeTheta: q.feeTheta, url };
+  return { venue: q.venue, id: q.id, bidCents: q.bidCents, askCents: q.askCents, bidQty: q.bidQty, askQty: q.askQty, feeTheta: q.feeTheta, url, read: legReadOf(q.read, pricedAtMs) };
 }
 
 const quoted = (q: VenueQuote | null): boolean => Boolean(q && q.bidCents > 0 && q.askCents > 0 && q.askCents < 100);
@@ -286,6 +530,7 @@ export function persistenceOf(series: Array<[number, number]> | undefined, curre
 }
 
 function readingOf(p: Omit<StrikePair, "reading">): string {
+  if (p.errors.length) return p.errors.map((e) => e.reason).join("; ");
   if (!p.kalshi && !p.poly) return "neither venue lists this strike";
   if (!p.kalshi) return "Kalshi does not list this strike";
   if (!p.poly) return "Polymarket US does not list this strike";
@@ -302,8 +547,17 @@ function readingOf(p: Omit<StrikePair, "reading">): string {
   if (p.spreadCents !== null) parts.push(p.spreadCents <= 2 ? "tight on both" : p.spreadCents <= 5 ? "spreads add to " + p.spreadCents.toFixed(0) + "¢" : "wide: spreads add to " + p.spreadCents.toFixed(0) + "¢");
   if (p.depth !== null) parts.push(p.depth >= 200 ? "deep" : p.depth >= 50 ? `${Math.round(p.depth)} contracts at the thinnest level` : `thin: ${Math.round(p.depth)} at the thinnest level`);
   if (p.gapCents !== null) parts.push(Math.abs(p.gapCents) < 1 ? "mids agree" : `mids ${Math.abs(p.gapCents).toFixed(1)}¢ apart`);
-  if (p.lock && p.lock.edgeCents > 0) parts.push(`cross: both sides for ${p.lock.costCents.toFixed(2)}¢`);
+  if (p.freshness === "stale") parts.push(staleReading(p));
+  else if (p.lock && p.lock.edgeCents > 0) parts.push(`cross: both sides for ${p.lock.costCents.toFixed(2)}¢`);
   return parts.join(" · ");
+}
+
+/** Which copy is too old, and by how much against the bound. */
+function staleReading(p: Pick<StrikePair, "kalshi" | "poly" | "staleAfterSec">): string {
+  const old = [p.kalshi, p.poly]
+    .filter((l): l is PairLeg => Boolean(l?.read && l.read.ageSec > p.staleAfterSec))
+    .map((l) => `${venueShort(l.venue)} copy ${Math.round((l.read as LegRead).ageSec)}s old`);
+  return `stale read: ${old.join(", ")} (limit ${p.staleAfterSec}s)`;
 }
 
 /** Kalshi's event ticker from a market ticker: `KXBTCD-26NOV0917-T74499.99` to `KXBTCD-26NOV0917`. */
@@ -432,6 +686,10 @@ export function bandOf(lowerPair: StrikePair, upperPair: StrikePair, spotUsd: nu
 export interface SetOptions {
   /** trailing realized vol, percent per year, for the sigma to the close and the model column */
   volPct?: number | null;
+  /** when the books had been read, ms; read ages are measured to it. Defaults to the cycle's own time. */
+  pricedAtMs?: number;
+  /** seconds beyond which a book copy is stale on this tenor; defaults to STALE_AFTER_SEC */
+  staleAfterSec?: number;
 }
 
 /**
@@ -481,6 +739,7 @@ function buildSet(
   const levels = strikeLevels(ladder);
   const secondsToClose = Math.max(0, Math.round((Date.parse(ladder.settlesAt) - nowMs) / 1000));
   const sigmaUsd = sigmaToClose(spotUsd, opts.volPct, secondsToClose / 60);
+  const staleAfterSec = opts.staleAfterSec ?? STALE_AFTER_SEC[horizon];
   const kalshiQuotes = ladder.quotes.filter((q) => q.venue === "kalshi");
   const polyQuotes = ladder.quotes.filter((q) => q.venue === "polymarket_us");
   const kalshiEvent = kalshiQuotes[0] ? kalshiEventTicker(kalshiQuotes[0].id) : null;
@@ -490,10 +749,15 @@ function buildSet(
 
   const pairAt = (place: Place, strike: number): StrikePair => {
     const key = keyOf(strike);
-    const k = byKey("kalshi", key);
-    const p = byKey("polymarket_us", key);
-    const kLeg = legOf(k, k ? urls.kalshi({ ticker: k.id, eventTicker: kalshiEventTicker(k.id) }) : "");
-    const pLeg = legOf(p, p ? urls.poly({ slug: p.id, eventSlug: polyEvent ?? "" }) : "");
+    const kListed = byKey("kalshi", key);
+    const pListed = byKey("polymarket_us", key);
+    // a book that did not answer leaves only the listing's price, which is never priced: the leg reads as absent
+    const k = kListed?.failure ? null : kListed;
+    const p = pListed?.failure ? null : pListed;
+    const errors = [kListed, pListed].map((q) => (q ? bookFailureOf(q, nowMs) : null)).filter((e): e is BookFailure => e !== null);
+    const pricedAtMs = opts.pricedAtMs ?? nowMs;
+    const kLeg = legOf(k, k ? urls.kalshi({ ticker: k.id, eventTicker: kalshiEventTicker(k.id) }) : "", pricedAtMs);
+    const pLeg = legOf(p, p ? urls.poly({ slug: p.id, eventSlug: polyEvent ?? "" }) : "", pricedAtMs);
     const twoSided = quoted(k) && quoted(p);
     const km = midCents(k);
     const pm = midCents(p);
@@ -517,6 +781,9 @@ function buildSet(
       persistence: persistenceOf(history.get(gapHistoryKey(ladder.settlesAt, key)), gap),
       score: twoSided ? cleanScore(spread, depth, gap) : null,
       modelCents: modelAbove(spotUsd, strike, sigmaUsd),
+      errors,
+      freshness: freshnessOf(kLeg?.read?.ageSec, pLeg?.read?.ageSec, staleAfterSec),
+      staleAfterSec,
     };
     return { ...base, reading: readingOf(base) };
   };
@@ -535,7 +802,9 @@ function buildSet(
           return { strike, kalshiMid: km, polyMid: pm, gapCents: km !== null && pm !== null ? Math.round((km - pm) * 100) / 100 : null };
         })
       : [];
-  const scored = pairs.filter((p) => p.score !== null).sort((a, b) => (b.score as number) - (a.score as number) || (b.lock?.edgeCents ?? -99) - (a.lock?.edgeCents ?? -99));
+  // a row on a stale read or with a book missing is never what Launch sends by default; a row chosen by hand is the trader's call
+  const launchable = (p: StrikePair) => p.freshness !== "stale" && !p.errors.length;
+  const scored = pairs.filter((p) => p.score !== null && launchable(p)).sort((a, b) => (b.score as number) - (a.score as number) || (b.lock?.edgeCents ?? -99) - (a.lock?.edgeCents ?? -99));
   return {
     horizon,
     settlesAt: ladder.settlesAt,
@@ -545,7 +814,8 @@ function buildSet(
     pairs,
     bands,
     sigmaUsd,
-    pick: scored[0] ? pairId(scored[0]) : money.kalshi || money.poly ? pairId(money) : null,
+    pick: scored[0] ? pairId(scored[0]) : (money.kalshi || money.poly) && launchable(money) ? pairId(money) : null,
+    staleAfterSec,
     context,
     venues: { kalshi: kalshiQuotes.length > 0, poly: polyQuotes.length > 0 },
     kalshiEvent,
@@ -553,23 +823,30 @@ function buildSet(
   };
 }
 
-/** The bundle: every scored pair, best first; ties go to the larger locked edge, then the nearer close. */
+/**
+ * The bundle: every scored pair, best first; ties go to the larger locked edge, then the nearer
+ * close. Pairs on a stale read keep their place in the list but after every pair that is not
+ * stale, so the first entry is the cleanest pair whose read can be judged.
+ */
 export function bundleOf(sets: Array<HorizonSet | null>): StrikePair[] {
+  const stale = (p: StrikePair) => (p.freshness === "stale" ? 1 : 0);
   return sets
     .flatMap((s) => s?.pairs ?? [])
     .filter((p) => p.score !== null)
-    .sort((a, b) => (b.score as number) - (a.score as number) || (b.lock?.edgeCents ?? -99) - (a.lock?.edgeCents ?? -99) || Date.parse(a.settlesAt) - Date.parse(b.settlesAt));
+    .sort((a, b) => stale(a) - stale(b) || (b.score as number) - (a.score as number) || (b.lock?.edgeCents ?? -99) - (a.lock?.edgeCents ?? -99) || Date.parse(a.settlesAt) - Date.parse(b.settlesAt));
 }
 
 /**
  * Append this cycle's gaps to the history, drop readings older than the window, and refresh each
- * pair's persistence so the reading includes this cycle.
+ * pair's persistence so the reading includes this cycle. A gap on a stale read is not appended:
+ * persistence is what separates a quoting difference from latency, so a reading that is itself
+ * latency must not count toward it.
  */
 export function recordGaps(history: GapHistory, sets: Array<HorizonSet | null>, atMs: number, keepMs: number): void {
   for (const s of sets) {
     if (!s) continue;
     for (const p of s.pairs) {
-      if (p.gapCents === null) continue;
+      if (p.gapCents === null || p.freshness === "stale") continue;
       const k = gapHistoryKey(p.settlesAt, p.key);
       const arr = history.get(k) ?? [];
       arr.push([atMs, p.gapCents]);
@@ -585,4 +862,152 @@ export function recordGaps(history: GapHistory, sets: Array<HorizonSet | null>, 
     if (!s) continue;
     for (const p of s.pairs) p.persistence = persistenceOf(history.get(gapHistoryKey(p.settlesAt, p.key)), p.gapCents);
   }
+}
+
+/* ---- lock episodes ---- */
+
+/** A lock seen on one cycle only may be a single odd read; two in a row is the least that says it stood. */
+export const EPISODE_MIN_CYCLES = 2;
+/** Finished episodes kept per tenor from before today; today's are all kept so the day's figures are whole. */
+export const EPISODE_KEEP = 50;
+export const EPISODE_LABEL = "measured at the size on the book, after fees, no orders placed; a floor on what was there, not what a trader would have captured";
+
+const round2 = (x: number) => Math.round(x * 100) / 100;
+const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+export function emptyEpisodeBook(): EpisodeBook {
+  return { open: [], finished: [] };
+}
+
+/** The same contract on both venues, bought the same way round. A lock that flips direction is a different trade and a new run. */
+function lockRunId(s: Omit<LockSighting, "lockCents" | "qty">): string {
+  return [s.horizon, s.settlesAt, s.key, s.kalshiId, s.polyId, s.yesOn].join("|");
+}
+
+/**
+ * This cycle's locks that count toward an episode: both books read fresh (a row whose read
+ * cannot be judged is not counted either) and a lock after fees above zero. The size is the
+ * one the lock is already quoted at, the thinner of the two top-of-book levels.
+ */
+export function lockSightings(sets: Array<HorizonSet | null>): LockSighting[] {
+  const out: LockSighting[] = [];
+  for (const s of sets) {
+    if (!s) continue;
+    for (const p of s.pairs) {
+      if (p.freshness !== "fresh" || p.errors.length || !p.kalshi || !p.poly || !p.lock || !(p.lock.edgeCents > 0)) continue;
+      out.push({ horizon: p.horizon, settlesAt: p.settlesAt, key: p.key, strike: p.strike, kalshiId: p.kalshi.id, polyId: p.poly.id, yesOn: p.lock.yesOn, noOn: p.lock.noOn, lockCents: p.lock.edgeCents, qty: p.lock.qty });
+    }
+  }
+  return out;
+}
+
+/** A run as an episode. Dollars are the smallest lock times the smallest size: both were there on every cycle of the run. */
+export function episodeOf(run: LockRun, open = false): LockEpisode {
+  return {
+    horizon: run.horizon,
+    settlesAt: run.settlesAt,
+    key: run.key,
+    strike: run.strike,
+    kalshiId: run.kalshiId,
+    polyId: run.polyId,
+    yesOn: run.yesOn,
+    noOn: run.noOn,
+    startedAt: new Date(run.startedAtMs).toISOString(),
+    endedAt: new Date(run.lastAtMs).toISOString(),
+    durationSec: Math.round((run.lastAtMs - run.startedAtMs) / 100) / 10,
+    cycles: run.cycles,
+    minLockCents: run.minLockCents,
+    minQty: run.minQty,
+    valueCents: round2(run.minLockCents * run.minQty),
+    ...(open ? { open: true as const } : {}),
+  };
+}
+
+/** Today's episodes (by the cycle that last showed the lock) and, from earlier days, the last `keep` per tenor. Oldest first. */
+export function pruneEpisodes(episodes: LockEpisode[], nowMs: number, keep = EPISODE_KEEP): LockEpisode[] {
+  const today = utcDay(nowMs);
+  const sorted = [...episodes].sort((a, b) => Date.parse(a.endedAt) - Date.parse(b.endedAt));
+  const older: Record<string, number> = {};
+  const kept: LockEpisode[] = [];
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const e = sorted[i];
+    if (e.endedAt.slice(0, 10) === today) kept.push(e);
+    else if ((older[e.horizon] = (older[e.horizon] ?? 0) + 1) <= keep) kept.push(e);
+  }
+  return kept.reverse();
+}
+
+/**
+ * One cycle. A run whose pair is sighted again is extended (its smallest lock and size carried);
+ * a run whose pair is not sighted this cycle (no lock, a stale read, a book that did not answer,
+ * the contract gone) ends at the last cycle that showed it, and is an episode only if it had
+ * EPISODE_MIN_CYCLES or more. A sighting with no run opens one. A cycle arriving more than
+ * `maxGapMs` after the run's last one does not extend it: cycles were missed, so the run is not
+ * known to be consecutive. Returns the new book and the episodes that finished on this cycle;
+ * the book passed in is not changed.
+ */
+export function stepEpisodes(prev: EpisodeBook, sightings: LockSighting[], atMs: number, opts: { maxGapMs?: number; keep?: number } = {}): { book: EpisodeBook; finished: LockEpisode[] } {
+  const maxGapMs = opts.maxGapMs ?? Number.POSITIVE_INFINITY;
+  const seen = new Map(sightings.map((s) => [lockRunId(s), s]));
+  const open: LockRun[] = [];
+  const finished: LockEpisode[] = [];
+  for (const run of prev.open) {
+    const s = seen.get(run.id);
+    if (s && atMs - run.lastAtMs <= maxGapMs) {
+      seen.delete(run.id);
+      open.push({ ...run, lastAtMs: atMs, cycles: run.cycles + 1, minLockCents: Math.min(run.minLockCents, s.lockCents), minQty: Math.min(run.minQty, s.qty) });
+    } else if (run.cycles >= EPISODE_MIN_CYCLES) {
+      finished.push(episodeOf(run));
+    }
+  }
+  for (const [id, s] of seen) {
+    const { lockCents, qty, ...pair } = s;
+    open.push({ ...pair, id, startedAtMs: atMs, lastAtMs: atMs, cycles: 1, minLockCents: lockCents, minQty: qty });
+  }
+  return { book: { open, finished: pruneEpisodes([...prev.finished, ...finished], atMs, opts.keep) }, finished };
+}
+
+/** End every run (the collector stopping): those long enough become episodes. */
+export function closeEpisodes(prev: EpisodeBook, nowMs: number, keep = EPISODE_KEEP): { book: EpisodeBook; finished: LockEpisode[] } {
+  const finished = prev.open.filter((r) => r.cycles >= EPISODE_MIN_CYCLES).map((r) => episodeOf(r));
+  return { book: { open: [], finished: pruneEpisodes([...prev.finished, ...finished], nowMs, keep) }, finished };
+}
+
+function median(xs: number[]): number | null {
+  if (!xs.length) return null;
+  const a = [...xs].sort((x, y) => x - y);
+  const mid = a.length >> 1;
+  return a.length % 2 ? a[mid] : Math.round(((a[mid - 1] + a[mid]) / 2) * 10) / 10;
+}
+
+/**
+ * One tenor's day: the episodes whose last sighting was today (UTC), with the runs still going
+ * that already have EPISODE_MIN_CYCLES. An episode that spans midnight belongs to the day it
+ * ended.
+ */
+export function episodeSummary(book: EpisodeBook, horizon: Horizon, nowMs: number, recent = 5): EpisodeSummary {
+  const today = utcDay(nowMs);
+  const done = book.finished.filter((e) => e.horizon === horizon && e.endedAt.slice(0, 10) === today);
+  const running = book.open.filter((r) => r.horizon === horizon && r.cycles >= EPISODE_MIN_CYCLES && utcDay(r.lastAtMs) === today).map((r) => episodeOf(r, true));
+  const all = [...done, ...running];
+  const durations = all.map((e) => e.durationSec);
+  return {
+    episodes: all.length,
+    open: running.length,
+    medianDurationSec: median(durations),
+    longestDurationSec: durations.length ? Math.max(...durations) : null,
+    totalValueCents: round2(all.reduce((a, e) => a + e.valueCents, 0)),
+    recent: all.slice(-recent).reverse(),
+  };
+}
+
+export function lockEpisodesReport(book: EpisodeBook, nowMs: number): LockEpisodesReport {
+  return {
+    label: EPISODE_LABEL,
+    day: utcDay(nowMs),
+    minCycles: EPISODE_MIN_CYCLES,
+    fifteen: episodeSummary(book, "fifteen", nowMs),
+    hourly: episodeSummary(book, "hourly", nowMs),
+    daily: episodeSummary(book, "daily", nowMs),
+  };
 }
