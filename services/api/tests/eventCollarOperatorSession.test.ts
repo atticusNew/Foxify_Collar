@@ -341,7 +341,7 @@ test("record service: the cookie does not write from another site; from this ser
     assert.equal(res.status, 403, String(site));
     const body = (await res.json()) as { error: string; message?: string };
     assert.equal(body.error, "bad admin token");
-    assert.ok(body.message?.startsWith("The sign-in on this browser does not cover a request sent from another site."), "said, so it is not mistaken for a signed-out browser");
+    assert.ok(body.message?.startsWith("The sign-in on this browser does not cover an address that changes something when that address is typed, opened from a link elsewhere, or sent from another site. Open it from the box on /operator"), "said, so it is not mistaken for a signed-out browser");
   }
   // from the service's own page the request reaches the route (which has nothing by that id to clear)
   assert.notEqual((await clear({ cookie, "sec-fetch-site": "same-origin" })).status, 403);
@@ -434,7 +434,7 @@ test("demo service: the funnel and the partner console open on the sign-in; a si
   const reset = (headers: Record<string, string>) => fetch(`${demoBase}/api/admin/funnel/reset`, { method: "POST", headers });
   const cross = await reset({ cookie, "sec-fetch-site": "cross-site" });
   assert.equal(cross.status, 403);
-  assert.ok(((await cross.json()) as { message: string }).message.startsWith("The sign-in on this browser does not cover a request sent from another site."));
+  assert.ok(((await cross.json()) as { message: string }).message.startsWith("The sign-in on this browser does not cover an address that changes something when that address is typed, opened from a link elsewhere, or sent from another site. Open it from the box on /operator"));
   assert.equal((await reset({ cookie })).status, 403, "the browser said nothing about where it came from");
   assert.equal((await reset({ cookie, "sec-fetch-site": "same-origin" })).status, 200);
   assert.equal((await reset({ "x-admin-token": TOKEN })).status, 200);

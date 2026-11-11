@@ -2262,7 +2262,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           message: !adminAuth.enabled
             ? "admin surfaces disabled: set EVENT_X_ADMIN_TOKEN"
             : opCheck.cookieIgnored === "cross_site"
-              ? "The sign-in on this browser does not cover a request sent from another site. Send it from this service's own page, or send the token in the x-admin-token header."
+              ? "The sign-in on this browser does not cover an address that changes something when that address is typed, opened from a link elsewhere, or sent from another site. Open it from the box on /operator on this service, or send the token in the x-admin-token header."
               : "bad admin token",
         });
         return;
