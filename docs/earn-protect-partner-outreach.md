@@ -1,3 +1,7 @@
+Draft for the founder's review. Not sent. 10 November 2026.
+
+*That line covers the changes of 10 November 2026 only. They are listed at the foot under "Changes of 10 November 2026". Everything else is the earlier playbook, unchanged.*
+
 # Earn & Protect — Partner Outreach Playbook
 
 *Companion to the launch plan. The launch plan owns direct-to-trader channels; this doc owns partner outreach: lenders, wallets/portfolio trackers, and newer exchanges. Everything here is ready to copy-paste. Fill the `{metric}` placeholders from the public dashboard before every send — real numbers are the whole pitch.*
@@ -356,7 +360,7 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 
 > Happy to be specific on both.
 >
-> 1. OKX Ventures: we're raising a pre-seed of up to $250k on a post-money SAFE ($4M cap, 20% discount), first close happening now, and we'd welcome OKX Ventures at whatever size fits your mandate. Deployment scales with the check: the first tranche capitalizes our hedge collateral account here at OKX — $25k of collateral supports a ~$125k protected book at standard margin, $400k+ under portfolio margin, scaling linearly from there — and the remainder funds operations as the book grows. The strategic logic: every credit we originate is hedged leg-for-leg on OKX listed options, so your capital sits on your own venue converting directly into recurring options volume.
+> 1. OKX Ventures: we're raising a pre-seed of $250k to $400k on a post-money SAFE at a $5M cap, first close happening now [founder to confirm: whether a first close is under way], and we'd welcome OKX Ventures at whatever size fits your mandate. Deployment scales with the check: the first tranche capitalizes our hedge collateral account here at OKX ($25k of collateral supports a ~$125k protected book at standard margin, $400k+ under portfolio margin, scaling linearly from there) and the remainder funds operations as the book grows. The strategic logic: every credit we originate is hedged leg-for-leg on OKX listed options, so your capital sits on your own venue converting directly into recurring options volume.
 >
 > 2. Two specific things on the desk side:
 >
@@ -366,7 +370,9 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 >
 > Answer either and we'll commit a start date.
 
-**Number lock (use these in every OKX and investor thread):** pre-seed up to $250k (founder to confirm the ceiling — never name a bare $25k check to a fund), post-money SAFE $4M cap / 20% discount, $25k = collateral minimum that unlocks the pilot (~$125k book at standard margin, $400k+ under PM, linear from there), ~0.08 measured netting factor, max exposure ~$2.3k. Use-of-funds ladder for angels: "first $25k is venue collateral — a deposit, not spend — everything above is runway."
+**Number lock (use these in every OKX and investor thread):** pre-seed $250k to $400k on a post-money SAFE at a $5M cap (the ask as of 6 October 2026; the founder also says "$200k to $400k": [founder to confirm: the range to use, and any discount]); never name a bare $25k check to a fund. Use of funds, three buckets: counsel [founder to fill: amount], better-bid margin [founder to fill: amount], runway [founder to fill: amount]. Perp pilot figures, unchanged: $25k = collateral minimum that unlocks the pilot (~$125k book at standard margin, $400k+ under PM, linear from there), ~0.08 measured netting factor, max exposure ~$2.3k.
+
+**Event-lane number lock (added 10 November 2026; use these wherever the event product is pitched):** measured take 0.28% of settled stake on the public record; say "about 0.3% of stake", never 1%. The record is simulated. The rule in code: 10% of the gross credit, or 0.25% of stake if that is larger, and nothing when the take would be under 5 cents (stake is counted at $1 per contract). Under own sale we take nothing; revenue there is a referral or builder fee from the venue: [founder to fill: fee]. Do not quote 1%, 10%, 20% or 25% as the event product's take on stake. The 10% and 20% founding rates elsewhere in this playbook are the perp product's and stand.
 
 ## 6.5e Investor intro emails v2 (post-Kraken, assertive — Aug 28)
 
@@ -382,18 +388,18 @@ Katana (Polygon Labs + GSR's verticalized DeFi L2) is a different shape of partn
 >
 > - In production on Hyperliquid: a hard floor plus a daily credit behind one toggle, priced live from listed options — earnandprotect.xyz
 > - Machine-audited: 38 days, 97 settled positions, $4.85M notional, client all-in +4.9 bps, 82% of days positive, zero peak net exposure — every hedge reconciles to an exchange fill
-> - In technical evaluation with Fireblocks; execution production-proven on OKX (real fills); the pilot hedge book activates at first close — that's what this raise funds
+> - In technical evaluation with Fireblocks; execution production-proven on OKX (real fills); the pilot hedge book activates at first close
 > - A fee business by construction: published fee on credits sourced, never trading P&L
 >
-> Raising up to $250k on a post-money SAFE ($4M cap, 20% discount); first close underway. Proceeds are hedge collateral, not burn — at most ~$2.3k ever exposed, by structure.
+> Raising $250k to $400k on a post-money SAFE at a $5M cap; first close underway [founder to confirm: whether a first close is under way]. Use of funds: counsel [founder to fill: amount], better-bid margin [founder to fill: amount], runway [founder to fill: amount]. On the perp pilot at most ~$2.3k is ever exposed, by structure.
 >
 > Worth 20 minutes this week? The product does most of the talking.
 
-**DM version (Twitter/Telegram):** "We built one-tap options protection 18 months before Kraken declared simple options the future. In production on Hyperliquid — hard floor + daily credit, one toggle, live pricing — machine-audited, zero peak net exposure, in technical evaluation with Fireblocks. First close on a $4M cap SAFE activates the hedge book. Demo: earnandprotect.xyz. Worth 20 min?"
+**DM version (Twitter/Telegram):** "We built one-tap options protection 18 months before Kraken declared simple options the future. In production on Hyperliquid (hard floor + daily credit, one toggle, live pricing), machine-audited, zero peak net exposure, in technical evaluation with Fireblocks. First close on a $5M cap SAFE activates the hedge book. Demo: earnandprotect.xyz. Worth 20 min?"
 
-**Web-form version:** "Atticus built one-tap options protection for retail traders 18 months before Kraken's simplified-options launch declared the category's arrival. In production on Hyperliquid: hard floor + daily credit behind one toggle, priced live from listed options, hedged leg-for-leg by design (execution production-proven on OKX). Machine-audited track record (38 days, 97 settled, $4.85M notional, zero peak net exposure); in technical evaluation with Fireblocks. Raising up to $250k, post-money SAFE, $4M cap, first close underway — proceeds are venue collateral, not burn. Demo: earnandprotect.xyz. Contact: {email}."
+**Web-form version:** "Atticus built one-tap options protection for retail traders 18 months before Kraken's simplified-options launch declared the category's arrival. In production on Hyperliquid: hard floor + daily credit behind one toggle, priced live from listed options, hedged leg-for-leg by design (execution production-proven on OKX). Machine-audited track record (38 days, 97 settled, $4.85M notional, zero peak net exposure); in technical evaluation with Fireblocks. Raising $250k to $400k, post-money SAFE, $5M cap, first close underway [founder to confirm: whether a first close is under way]. Use of funds: counsel, better-bid margin, runway [founder to fill: amounts]. Demo: earnandprotect.xyz. Contact: {email}."
 
-**Cosmo Jiang / Pantera (send first; HL-led):** "Cosmo — you've made the public case for Hyperliquid better than anyone, so I'll skip the preamble: we built one-tap protection plus daily yield for HL positions — in production now with live pricing, execution proven on OKX, 38 audited days at zero peak net exposure. Kraken just called simplified options the future; we're the end state of that thesis, running on the chain you called first. In technical evaluation with Fireblocks. First close on a $4M cap SAFE underway — 20 minutes?"
+**Cosmo Jiang / Pantera (send first; HL-led):** "Cosmo, you've made the public case for Hyperliquid better than anyone, so I'll skip the preamble: we built one-tap protection plus daily yield for HL positions, in production now with live pricing, execution proven on OKX, 38 audited days at zero peak net exposure. Kraken just called simplified options the future; we're the end state of that thesis, running on the chain you called first. In technical evaluation with Fireblocks. First close on a $5M cap SAFE underway [founder to confirm: whether a first close is under way]. 20 minutes?"
 
 **Angel list triage (Aug 29):** WORK: Trevor McFedries (X/Farcaster DM; entertainment-crossover opener — his arc), Taavet Hinrikus (Wise/Plural; opener: "Wise made institutional FX invisible to the consumer — we're doing the same to options"), David Tisch (BoxGroup, NYC stage-perfect; check Signal intro path first), Avichal Garg PERSONALLY (data-first opener below works verbatim). LOTTERY (one send, correct channel, no follow-ups): Garry Tan = the YC application, not email; Chris Dixon = a16z CSX application, not personal; Patrick Collison = one 3-sentence email ("Our deck says 'Payments got Stripe. Exchange risk gets Atticus.' Figured the comparison owes you the first look…"); Naval = AngelList syndicate visibility, never a DM.
 
@@ -425,3 +431,23 @@ The named list (traders, KOLs, communities, trackers, builder apps — with hand
 | | | | | | | | | |
 
 **Weekly review questions (Friday, 5 minutes):** Which audience replied? Which email got quoted back at me (that's the line that works — promote it to the subject)? What's Monday's batch? What got parked?
+
+---
+
+## Changes of 10 November 2026
+
+Only stale terms were changed. Nothing else in this playbook was rewritten, and statements about the perp product were left as they were.
+
+1. Raise terms, six places (the 27 August reply to OKX; the number lock; the investor email, DM, web-form and Pantera drafts in 6.5e). Old: "up to $250k", "post-money SAFE ($4M cap, 20% discount)". New: "$250k to $400k on a post-money SAFE at a $5M cap". The handoff of 10 November 2026 lists the $4M cap with discount as dead.
+2. "First close happening now" and "first close underway" now carry a marker for the founder to confirm, in four places. The handoff does not say a first close is under way.
+3. Use of funds. Old: "first $25k is venue collateral, everything above is runway" and "proceeds are hedge collateral, not burn". New: three buckets (counsel, better-bid margin, runway), amounts blank. The phrase "that's what this raise funds" was removed from the investor email for the same reason.
+4. Added: the event-lane number lock (measured take, the rule in code, own sale).
+5. Not changed, and why: the 10% and 20% founding rates are the perp product's. The perp scorecard figures and the OKX collateral figures are the perp product's. The sentence in the 27 August reply about capitalizing a collateral account at OKX is the perp pilot's, so it stands, although it no longer matches the three buckets: [founder to decide].
+
+## Sources (for the changes of 10 November 2026)
+
+- $250k to $400k, post-money SAFE, $5M cap, "as of 6 October", "$200k to $400k", and the dead deck numbers: `docs/AGENT_HANDOFF.md` section 4, "Capital".
+- The three buckets (counsel, better-bid margin, runway): the founder's brief of 10 November 2026. Amounts are blank because no document in the repo states them.
+- Measured take 0.28% of settled stake: public record `https://atticus-event-shadow.onrender.com/api/shadow`, read 10 November 2026 at 22:55 UTC: `summary.writer.takeBookedCents` 60737 over settled stake of 21607161 cents (the sum of `summary.segments.byKind.*.stakeSettledCents`), which is 0.281%; `summary.writer.settledPnlBpsOfStake` 28. Simulated positions.
+- The take rule: `computeTake` in `services/api/src/eventCollar/crossVenue/collarSearch.ts`; `takeBps` 1000, `minTakeBpsOfStake` 25, `deMinimisTakeCents` 5 in `DEFAULT_CROSS_CONFIG`, `services/api/src/eventCollar/crossVenue/types.ts`. These are the defaults. `EVENT_X_TAKE_BPS` and `EVENT_X_MIN_TAKE_BPS` can change them and are not set in `render-event-demos.yaml`.
+- Own sale takes nothing: `docs/AGENT_HANDOFF.md` section 9, "STX member sale: nothing today".
