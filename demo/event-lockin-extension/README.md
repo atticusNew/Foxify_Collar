@@ -930,6 +930,13 @@ the service listed tonight's game beside next week's: a card that says its game 
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
 
+**The user terms (0.7.48).** When the service has a version of the user terms in force and this
+holder has not accepted it, the panel reads "Read and accept the terms to lock in." with a link
+to the document (https only) and one button, **I accept the terms**. The tap is sent with the
+holder's own key and the version shown; the service records it with the date and prices the
+rows again. A service with no terms in force, and the shared key, show none of this. Reading the
+record and leaving a lock early never wait on it.
+
 **One scale for every shape, and paid said only once paid (0.7.47).** Each shape now says how much
 of the position it comes to, on its button and as a **Share** row in Details. A member's own
 sale on STX "sells 40% of your position" (60 for Balanced, 80 for Max floor, less where the bids

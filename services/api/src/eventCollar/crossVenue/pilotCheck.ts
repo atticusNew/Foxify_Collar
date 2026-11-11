@@ -109,10 +109,12 @@ export interface PilotFacts {
   disk: DiskFacts;
   alerts: { telegram: boolean; webhook: boolean };
   /**
-   * How many holders in force have an acceptance of the user terms on the record; null while
-   * nothing in the code records one, which is a no and is said as "not built".
+   * The user terms in force and the holders with a key who have accepted that version
+   * (termsAcceptance.ts): how many have, and the aliases that have not. `version` is null when
+   * the terms settings could not be read (the notes say which). The whole fact is null while no
+   * terms are in force, which is a no: nothing asks a holder to accept.
    */
-  termsOnRecord: { holders: number } | null;
+  termsOnRecord: { version: string | null; holders: number; missing: string[]; notes: string[] } | null;
   /** file names in docs/, or null when the caller does not read them (the service does not: a documents-only merge does not restart it) */
   docs: string[] | null;
   /** workflow file names in .github/workflows, or null when the caller does not read them */
@@ -425,12 +427,14 @@ export function pilotCheck(f: PilotFacts): PilotReport {
   add(
     "terms",
     "Each outside holder's acceptance of the user terms is on the record.",
-    f.termsOnRecord && termsShort <= 0 ? "yes" : "no",
+    f.termsOnRecord && f.termsOnRecord.version !== null && termsShort <= 0 ? "yes" : "no",
     !f.termsOnRecord
-      ? `No, not built: nothing in the code records a holder accepting terms, so no acceptance is on any record. ${plural(k.accepted, "holder key")} in force.`
-      : termsShort <= 0
-        ? `An acceptance is on the record for each of the ${plural(k.accepted, "holder")} with a key in force.`
-        : `${plural(termsShort, "holder")} with a key in force ${termsShort === 1 ? "has" : "have"} no acceptance on the record (${f.termsOnRecord.holders} of ${k.accepted} do).`,
+      ? `No terms are in force on this service: EVENT_SHADOW_TERMS_VERSION and EVENT_SHADOW_TERMS_URL are not set, so nothing asks a holder to accept and no acceptance counts. ${plural(k.accepted, "holder key")} in force.`
+      : f.termsOnRecord.version === null
+        ? `The terms settings could not be read, so no holder can accept and every named holder is refused: ${f.termsOnRecord.notes.join("; ") || "see the status page"}.`
+        : termsShort <= 0
+          ? `Version ${f.termsOnRecord.version} is in force and an acceptance of it is on the record for each of the ${plural(k.accepted, "holder")} with a key in force. A holder with none is refused at the quote and at the tap, so one added later cannot lock before accepting.`
+          : `Version ${f.termsOnRecord.version} is in force and ${plural(termsShort, "holder")} with a key in force ${termsShort === 1 ? "has" : "have"} no acceptance of it on the record (${f.termsOnRecord.holders} of ${k.accepted} do): ${f.termsOnRecord.missing.join(", ")}. Each is refused at the quote and at the tap until they accept.`,
   );
 
   // 11

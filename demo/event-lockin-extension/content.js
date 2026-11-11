@@ -1680,7 +1680,7 @@
       st.quoteAt = Date.now();
       st.quoteKey = key;
       if (!r.ok || !r.json) st.quote = { ok: false, code: r.status === 403 ? "key" : r.status === 404 ? "off" : "down", message: r.status === 403 ? "The lock key is missing or wrong. Open the extension's settings." : r.status === 404 ? "The service has no lock routes configured." : "Live pricing is unavailable right now." };
-      else if (!r.json.ok) st.quote = { ok: false, code: r.json.code || "unavailable", message: r.json.message || "" };
+      else if (!r.json.ok) st.quote = { ok: false, code: r.json.code || "unavailable", message: r.json.message || "", ...(r.json.terms ? { terms: r.json.terms } : {}) };
       else if (r.json.onRecord && !S.record.has(B.ticker)) st.quote = { ok: false, code: "already_on_record", message: "This market is already locked." };
       else {
         const q = r.json.quote;
@@ -1709,6 +1709,9 @@
     switch (code) {
       case "own_hedge":
         return { why: message || "This position is the lock's own hedge.", next: "" };
+      case "terms_not_accepted":
+        // the service's own sentence: "Read and accept the terms to lock in.", or that they are being updated
+        return { why: message || "Read and accept the terms to lock in.", next: "" };
       case "credit_too_small":
       case "credit_nonpositive":
         return { why: "The credit at this size is under our minimum.", next: "Lock in on this pick starts at a larger position. Check back closer to the start; the price moves." };
@@ -2452,9 +2455,46 @@
       code === "no_size"
         ? '<div class="ael-size-form"><input type="number" min="1" max="10000" step="0.01" placeholder="pays $" aria-label="Payout in dollars" /><button type="button" class="ael-go ael-quiet">Price it</button></div>'
         : "";
-    const fine = code === "spread" || code === "no_size" || code === "unmatched" || code === "own_hedge" ? "" : '<div class="ael-fine">Lock in is offered when the market pays for it.</div>';
-    const html = '<div class="ael-ph"><b>' + esc(w.why) + "</b>" + (w.next ? "<span>" + esc(w.next) + "</span>" : "") + "</div>" + sizeForm + fine + DISCLOSE;
+    // THE USER TERMS: the service refused the quote because this holder has not accepted the version
+    // in force. The link opens the document; the button records the acceptance (the holder's own
+    // key, the version shown) and the row is priced again. Nothing is accepted without the tap.
+    const st0 = stateOf(B);
+    const terms = code === "terms_not_accepted" && st0.quote && st0.quote.terms && /^https:\/\//.test(st0.quote.terms.url || "") ? st0.quote.terms : null;
+    const termsForm = terms
+      ? '<div class="ael-size-form"><a class="ael-tou-a" href="' + esc(terms.url) + '" target="_blank" rel="noopener">Read the terms</a><button type="button" class="ael-go ael-quiet ael-terms-go"' + (st0.termsBusy ? " disabled" : "") + ">" + (st0.termsBusy ? "Recording&hellip;" : "I accept the terms") + '</button></div><div class="ael-fine">Version ' + esc(terms.version) + ". Your acceptance is recorded with the date." + (st0.termsErr ? " " + esc(st0.termsErr) : "") + "</div>"
+      : "";
+    const fine = terms || code === "terms_not_accepted" || code === "spread" || code === "no_size" || code === "unmatched" || code === "own_hedge" ? "" : '<div class="ael-fine">Lock in is offered when the market pays for it.</div>';
+    const html = '<div class="ael-ph"><b>' + esc(w.why) + "</b>" + (w.next ? "<span>" + esc(w.next) + "</span>" : "") + "</div>" + sizeForm + termsForm + fine + DISCLOSE;
     setPanel(B, panel, html, () => {
+      const go = terms ? panel.querySelector(".ael-terms-go") : null;
+      if (go)
+        go.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (st0.termsBusy) return;
+          st0.termsBusy = true;
+          st0.termsErr = "";
+          paintRow(B);
+          api("/api/shadow/terms/accept", "POST", { version: terms.version }).then((r) => {
+            st0.termsBusy = false;
+            if (r.ok && r.json && r.json.ok) {
+              // accepted for this holder: every row refused for this alone is priced again
+              for (const other of new Set([B, ...S.rows.values(), ...(S.cardRows ? S.cardRows.values() : [])])) {
+                const so = stateOf(other);
+                if (so.quote && !so.quote.ok && so.quote.code === "terms_not_accepted") {
+                  so.quote = null;
+                  so.quoteAt = 0;
+                  so.quoteKey = null;
+                  quoteRow(other);
+                  paintRow(other);
+                }
+              }
+            } else {
+              st0.termsErr = (r.json && r.json.message) || "That did not go through. Try again.";
+              paintRow(B);
+            }
+          });
+        };
       if (sizeForm) {
         const inp = panel.querySelector("input");
         panel.querySelector(".ael-quiet").onclick = () => {

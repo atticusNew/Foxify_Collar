@@ -1039,6 +1039,31 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     // positions: the member's own venue rows, every one marked with the venue; no holder-key account of ours is read
     const cp = await get<Any>("/api/shadow/positions", ck);
     assert.ok(cp.body.ok && cp.body.positions.length >= 3 && cp.body.positions.every((p: Any) => p.venue === "stx"), JSON.stringify(cp.body));
+    // THE USER TERMS on the hosted page: with a version in force the page's member is asked before a quote
+    // or a lock, reads where they stand, and accepts with their own tap (the cookie and the page's header)
+    const wireTerms = (terms: { required: boolean; terms: { version: string; url: string } | null; notes: string[] }) =>
+      worker.wireLockEngine({ listGameMarkets: async () => markets, quoteOne: async (inputs: OneQuoteInputs): Promise<OneQuoteResult> => ({ ok: true, result: candidate(inputs.ticker, inputs.contracts, inputs.entryCents ?? 60) }), terms });
+    const TERMS = { version: "2026-11-20", url: "https://atticustrade.example/terms" };
+    wireTerms({ required: true, terms: TERMS, notes: [] });
+    const tq = await get<Any>(`/api/shadow/quote?ticker=${TICKER}&contracts=50&venue=stx`, ck);
+    assert.deepEqual([tq.status, tq.body.ok, tq.body.code, tq.body.message, tq.body.terms], [200, false, "terms_not_accepted", "Read and accept the terms to lock in.", TERMS]);
+    const ordersBeforeTerms = venue.orders.length;
+    const tl = await fetch(`${base}/api/shadow/lock`, { method: "POST", headers: pageHeaders, body: JSON.stringify({ ticker: TICKER, contracts: 50, venue: "stx" }) });
+    assert.deepEqual([tl.status, ((await tl.json()) as Any).code], [200, "terms_not_accepted"]);
+    assert.equal(venue.orders.length, ordersBeforeTerms, "no order reached the venue");
+    assert.equal(existsSync(join(dir, `lock-ledger-${alias}.jsonl`)), false, "and nothing was written");
+    const ts = await get<Any>("/api/shadow/terms", ck);
+    assert.deepEqual([ts.body.holder, ts.body.asked, ts.body.accepted, ts.body.version, ts.body.url], [alias, true, false, TERMS.version, TERMS.url]);
+    // the cookie alone cannot accept: the page's own header has to be on the POST, as on every POST from the page
+    const bare = await fetch(`${base}/api/shadow/terms/accept`, { method: "POST", headers: { ...ck, "content-type": "application/json" }, body: JSON.stringify({ version: TERMS.version }) });
+    assert.equal(bare.status, 403);
+    const ta = await fetch(`${base}/api/shadow/terms/accept`, { method: "POST", headers: pageHeaders, body: JSON.stringify({ version: TERMS.version }) });
+    const tab = (await ta.json()) as Any;
+    assert.deepEqual([ta.status, tab.ok, tab.holder, tab.by, tab.already], [200, true, alias, "holder", false]);
+    assert.equal((await get<Any>(`/api/shadow/quote?ticker=${TICKER}&contracts=50&venue=stx`, ck)).body.ok, true, "accepted: the quote is the quote again");
+    // the key holder on the shared key was never asked
+    assert.equal((await get<Any>("/api/shadow/terms")).body.asked, false);
+    wireTerms({ required: false, terms: null, notes: [] });
     // a lock from the page: the member's own sale, written to the alias's own ledger; the shared ledger is untouched
     const sharedBefore = loadShadowPositions(ledger).length;
     const cl = await fetch(`${base}/api/shadow/lock`, { method: "POST", headers: pageHeaders, body: JSON.stringify({ ticker: TICKER, contracts: 50, venue: "stx" }) });
