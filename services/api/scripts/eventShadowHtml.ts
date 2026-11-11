@@ -32,6 +32,7 @@ import { REFERENCE_BOOK_WORDS } from "../src/eventCollar/crossVenue/venueBooks";
 import type { HeldBooksStatus } from "../src/eventCollar/crossVenue/aggregatorHeldBooks";
 import type { VenueBookOpen, VenueBreakdown, VenueCell, VenueInGame, VenuePrelock } from "../src/eventCollar/crossVenue/shadowVenues";
 import type { AggregatorBookStatus } from "../src/eventCollar/crossVenue/aggregatorBooks";
+import { mismatchWords, type LedgerFingerprintStatus } from "../src/eventCollar/crossVenue/ledgerFingerprint";
 import { REFERENCE_PRINT_WORDS } from "../src/eventCollar/crossVenue/venuePrints";
 import type { PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
 
@@ -79,6 +80,8 @@ export interface ShadowPageInput {
   refusals?: RefusalSummary;
   /** our own real fills (realizedBook.publicRealSummary); absent or null while there is none, and the page then says nothing about them */
   real?: PublicRealSummary | null;
+  /** the ledger's daily fingerprints (ledgerFingerprint.ts); absent or null where they are switched off */
+  fingerprints?: LedgerFingerprintStatus | null;
 }
 
 /**
@@ -117,6 +120,47 @@ function realFillsCard(r: PublicRealSummary): string {
     </div>
     ${rows}
     <div class="read" style="margin-top:10px">${escapeHtml(resultLine)}</div>
+  </div>
+`;
+}
+
+/**
+ * The ledger's fingerprint, small: the last closed day as it was published, what it covers, one
+ * sentence on what it is and how to check it, one on what it does and does not show. A mismatch
+ * is said first and in plain words. After a reset the card says the record was restarted and that
+ * the earlier fingerprints are still on the list.
+ */
+export function fingerprintCard(fp: LedgerFingerprintStatus): string {
+  const latest = fp.days[fp.days.length - 1];
+  const lastRestart = fp.earlier[fp.earlier.length - 1]?.ended ?? null;
+  const earlierDays = fp.earlier.reduce((n, c) => n + c.days.length, 0);
+  const firstPublished = [...fp.earlier.flatMap((c) => c.days), ...fp.days].reduce<string | null>((min, d) => (min === null || d.publishedAt < min ? d.publishedAt : min), null);
+  const alarm = fp.mismatch ? `<div class="read fpbad">${escapeHtml(mismatchWords(fp.mismatch.day))}</div>` : "";
+  const restarted = lastRestart
+    ? `The record was restarted on ${escapeHtml(utcDay(lastRestart.at))}: the earlier ledger was archived whole, not deleted, and the ${earlierDays} daily fingerprint${earlierDays === 1 ? "" : "s"} published for it ${earlierDays === 1 ? "stays" : "stay"} on the list.` +
+      (lastRestart.intact ? "" : " That ledger did not match its published fingerprints when it was archived.")
+    : "";
+  const list = '<a class="back" href="/api/shadow/fingerprints">Every day\'s fingerprint (JSON)</a>';
+  if (!latest) {
+    const none =
+      fp.state === "unread" && !fp.open
+        ? "The ledger's fingerprint could not be read just now."
+        : `No day of ${lastRestart ? "the new ledger" : "the ledger"} has closed yet. Its first fingerprint is published when the first line of a later day is written.`;
+    return `  <div class="card">
+    <h2>Ledger fingerprint</h2>
+    ${alarm}<div class="read">${restarted ? `${restarted} ` : ""}${escapeHtml(none)}</div>
+    ${list}
+  </div>
+`;
+  }
+  return `  <div class="card">
+    <h2>Ledger fingerprint</h2>
+    ${alarm}<div class="row"><span>last closed day</span><b>${escapeHtml(latest.day)} UTC</b></div>
+    <div class="row"><span>covers, from the first line</span><b>${intStr(latest.lines)} lines · ${intStr(latest.bytes)} bytes</b></div>
+    <div class="fp">sha256 ${escapeHtml(latest.sha256)}</div>
+    <div class="read">This is a SHA-256 over every byte of the ledger up to the last line of that day, chained to the day before, so changing or removing any earlier line changes it and every later one; to check it, save it today and compare it later, or recompute it from a copy of the ledger.</div>
+    <div class="read">It shows that the history has not been changed since each fingerprint was first published (this one on ${escapeHtml(utcDay(latest.publishedAt))}, the first on ${escapeHtml(utcDay(firstPublished ?? latest.publishedAt))}, so anything older is fixed only as of that day); it does not show that a line was true when it was written; and the full check needs the raw ledger, which carries private details, so it can be run by us and by anyone we give a copy to.</div>
+    ${restarted ? `<div class="read">${restarted}</div>` : ""}${list}
   </div>
 `;
 }
@@ -203,6 +247,8 @@ a.tag.rule{text-decoration:none;border-bottom:1px dotted var(--faint)}
 .back{display:inline-block;margin-top:2px;color:var(--green-deep);font-weight:600;font-size:13px;text-decoration:underline}
 .read{color:var(--ink);font-size:13.5px;line-height:1.5;margin-top:6px}
 .read b{font-weight:650}
+.read.fpbad{color:#8a2a2a;font-weight:650;margin:0 0 8px}
+.fp{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.5;word-break:break-all;color:var(--ink);background:var(--card2);border-radius:8px;padding:8px 10px;margin-top:6px}
 table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums;margin-top:6px}
 th{text-align:right;color:var(--dim);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;padding:5px 4px;border-bottom:1px solid var(--line);white-space:nowrap}
 th:first-child,td:first-child{text-align:left}
@@ -613,7 +659,7 @@ ${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class
     ${openRows || '<div class="row"><span>no open positions</span><b>next scan fills the board</b></div>'}
     <a class="back" href="${demoUrl()}">back to the demo</a>
   </div>
-  <footer>
+${input.fingerprints ? fingerprintCard(input.fingerprints) : ""}  <footer>
     ${rulesOnPage ? `<b>How we check rules:</b> ${RULE_CHECK_NOTE}<br><br>` : ""}<b>Real:</b> live prices, quoted terms, official results. <b>Simulated:</b> the positions${input.parlays ? " and the parlay tickets" : ""}${input.real ? ". <b>Real fills:</b> counted apart, in their own card." : "; no venue credentials, no addresses."} ${escapeHtml(windowLine)} Rendered ${escapeHtml(input.atIso.slice(0, 16).replace("T", " "))} UTC. Demonstration, not an offer. <a class="back" href="/api/shadow">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv">Positions (CSV)</a>${input.parlays ? ' <a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>' : ""}
   </footer>
 </div>
@@ -1379,6 +1425,27 @@ export interface HoldersPageInput {
   }>;
   totals: { locks: number; toHolderCents: number; toWriterCents: number };
   token: string | null;
+  /** each lock ledger's daily fingerprints (ledgerFingerprint.ts), the shared ledger under holder null; absent where they are switched off */
+  fingerprints?: Array<{ holder: string | null; status: LedgerFingerprintStatus }>;
+}
+
+/** The lock ledgers' fingerprints, one row each: operator only, since a ledger is named by its holder. */
+function lockFingerprintsCard(list: NonNullable<HoldersPageInput["fingerprints"]>, tq: string): string {
+  if (list.length === 0) return "";
+  const rows = list
+    .map(({ holder, status: f }) => {
+      const latest = f.days[f.days.length - 1];
+      const state = f.mismatch ? `<b style="color:#8a2a2a">no longer matches ${escapeHtml(f.mismatch.day)}</b>` : f.state === "unread" ? "could not be read" : "matches";
+      const href = `/api/shadow/fingerprints${tq ? `${tq}&` : "?"}ledger=lock${holder ? `&holder=${encodeURIComponent(holder)}` : ""}`;
+      return `<tr><td><a class="back" href="${href}">${escapeHtml(holder ?? "shared key")}</a></td><td>${state}</td><td>${latest ? escapeHtml(latest.day) : "none closed yet"}</td><td>${latest ? intStr(latest.lines) : ""}</td><td>${latest ? intStr(latest.bytes) : ""}</td><td class="tk">${latest ? escapeHtml(latest.sha256) : ""}</td><td>${f.chain > 1 ? f.chain - 1 : ""}</td></tr>`;
+    })
+    .join("");
+  return `  <div class="card">
+    <h2>Lock ledger fingerprints</h2>
+    <div class="read">Each lock ledger is fingerprinted like the record's: one SHA-256 per closed UTC day over every byte up to that day's last line, chained to the day before. Listed here and nowhere public. A lock reset moves lines out of a ledger, so it ends that ledger's chain and starts a new one; the earlier fingerprints stay on its list.</div>
+    <div class="tablewrap"><table><tr><th>ledger</th><th>state</th><th>last closed day</th><th>lines</th><th>bytes</th><th>sha256</th><th>resets</th></tr>${rows}</table></div>
+  </div>
+`;
 }
 
 const CASH_LEG_WORDS: Record<string, string> = { credit: "credit", floor: "floor", handback: "above the cap", close: "left early" };
@@ -1428,7 +1495,7 @@ export function renderHoldersHtml(input: HoldersPageInput): string {
 @media(min-width:700px){.wrap,.topbar .in{max-width:1100px}}
 td.g{text-align:left;white-space:normal;min-width:200px}
 td i{display:block;color:var(--faint);font-style:normal;font-size:11px;font-weight:500}
-td i.tk{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
+td i.tk,td.tk{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
 td.legs{text-align:left;min-width:220px}
 .leg{display:grid;grid-template-columns:72px auto;column-gap:8px;font-size:12px;padding:2px 0}
 .leg span{color:var(--faint)} .leg i{grid-column:2;color:var(--dim)} .leg i b{color:var(--ink)} .leg i.paid{color:var(--green-deep)}
@@ -1456,7 +1523,7 @@ pre{background:var(--card2);border-radius:8px;padding:10px 12px;font-size:11.5px
     </div>
   </div>
 ${sections}
-  <div class="card">
+${input.fingerprints ? lockFingerprintsCard(input.fingerprints, tq) : ""}  <div class="card">
     <h2>Recording a payment</h2>
     <div class="read">Each payment is one line on the holder's ledger. Name the holder when the same game is locked by more than one.</div>
     <pre>curl -X POST "$SERVICE/api/shadow/cash" -H "x-admin-token: $TOKEN" -H "content-type: application/json" \\
