@@ -378,6 +378,8 @@ test("copy rules, served: every page of the shadow record service, the demo serv
     ["shadow GET /report (operator, eventShadowHtml.ts)", `${bases.shadow}/report?${t}`],
     ["shadow GET /venues (operator, eventShadowHtml.ts)", `${bases.shadow}/venues?${t}`],
     ["shadow GET /holders (operator, eventShadowHtml.ts)", `${bases.shadow}/holders?${t}`],
+    ["shadow GET /pilot-check (operator, eventShadowHtml.ts)", `${bases.shadow}/pilot-check?${t}`],
+    ["shadow GET /capital (operator, eventShadowHtml.ts)", `${bases.shadow}/capital?${t}`],
     ["shadow GET /scoreboard (eventScoreboardHtml.ts)", `${bases.shadow}/scoreboard?${t}`],
     ["shadow GET /slate/wiremarkets (eventShadowHtml.ts)", `${bases.shadow}/slate/wiremarkets?k=${slateLinkKey("share-key-1", "wiremarkets")}`],
     ["shadow GET /app (member page, memberAppHtml.ts)", `${bases.shadow}/app`],
