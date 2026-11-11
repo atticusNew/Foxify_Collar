@@ -192,11 +192,14 @@ today, all loops polling, every page and JSON route opened in 15 rounds): 305 MB
 about 250 MB at rest, nothing killed. A second run that also gzipped a closed curve day and a
 closed sports day right after the reload peaked at 321 MB, 45 MB of it file cache. The sports
 page holds 24 hours of history here (`SPORTS_VENUES_WINDOW_HOURS`); with 72 the first run
-peaked at 394 MB.
+peaked at 394 MB. Those runs were before ProphetX was added to the sports page; it adds one
+history cell per game it lists per snapshot (18 of 43 games on 11 November), a few MB over 24
+hours by size, not measured in the 512 MB group.
 
-Disk with all three: the sports snapshots add about 57 MB a day raw and 9 MB gzipped at 43 games
-(63 and 10 at 48), on top of about 345 MB raw and 47 MB gzipped for the curve and pairs. The
-3 GB disk holds the current day raw plus about 45 closed days, against about 55 without sports.
+Disk with all three: the sports snapshots add about 65 MB a day raw and 10 MB gzipped at 43 games
+with ProphetX on 18 of them (a snapshot measured at 45 KB, 14% more than without ProphetX), on
+top of about 345 MB raw and 47 MB gzipped for the curve and pairs. The 3 GB disk holds the
+current day raw plus about 45 closed days, against about 55 without sports.
 
 ## What it does not do
 
