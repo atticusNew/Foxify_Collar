@@ -1,6 +1,7 @@
 /** Server-rendered page. No framework, no external assets. Same conventions as the BTC curve page. */
 
 import type { AllIn, GameRead, GapSeries, SlateRead, WindowTally } from "./analytics";
+import { HOLDER_DEPTHS, type HolderReport, type HolderRow } from "./holder";
 import type { ReportData } from "./report";
 import { VENUE_NAME, VENUES, type Side, type Venue } from "./types";
 import { pageLinksHtml, type PageLink } from "../btcCurve/pageLinks";
@@ -158,6 +159,34 @@ function gapsHtml(all: GapSeries[]): string {
   return `<div class="strip">${strip}</div><details><summary>All ${gaps.length} game and venue pairs, with sparklines</summary>${table}</details>`;
 }
 
+const pct = (x: number | null | undefined): string => (x === null || x === undefined || !Number.isFinite(x) ? "–" : `${Math.round(x * 100)}%`);
+
+function holderTable(rows: HolderRow[]): string {
+  const shown = rows.filter((r) => r.readings || r.noBid);
+  if (!shown.length) return '<p class="dim">No readings yet.</p>';
+  const body = shown
+    .map((r) => {
+      const most = r.cheapestMost ? ` · most often cheapest ${short(r.cheapestMost.venue)} ${pct(r.cheapestMost.share)}` : "";
+      return `<tr><td class="lbl">${esc(V(r.venue))}</td><td>${num(r.readings)}<small>${r.noBid ? `${num(r.noBid)} more with no bid` : "a bid every time"}</small></td><td><b>${c(r.saleCostCents, 2)}</b></td><td>${c(r.meanSpreadCents, 2)}</td><td>${pct(r.depthShare[1])}<small>${num(HOLDER_DEPTHS[0])} or more ${pct(r.depthShare[0])} · ${num(HOLDER_DEPTHS[2])} or more ${pct(r.depthShare[2])}</small></td><td><b>${pct(r.elsewhereShare)}</b><small>${r.meanSavingCents !== null ? `mean saving ${c(r.meanSavingCents, 2)}` : "no saving"}${most}</small></td><td><b>${pct(r.roomShare)}</b><small>${r.meanRoomCents !== null ? `mean room ${c(r.meanRoomCents, 2)}` : "never"}</small></td></tr>`;
+    })
+    .join("");
+  return `<div class="tbl"><table><tr><th>Holder's venue</th><th>Readings<br><small>sides with a bid</small></th><th>Sale on its own book<br><small>consensus − all-in bid, mean</small></th><th>Spread<br><small>ask − bid, mean</small></th><th>Bid holds ${num(HOLDER_DEPTHS[1])} or more<br><small>contracts at the best bid</small></th><th>Other side cheaper elsewhere<br><small>share of readings with a choice</small></th><th>Room for a better bid<br><small>after every fee, share of readings</small></th></tr>${body}</table></div>`;
+}
+
+function holderHtml(h: HolderReport | undefined): string {
+  if (!h || !h.snapshots) return '<p class="dim">Fills as snapshots accumulate, one per cycle.</p>';
+  const leagues = Object.keys(h.byLeague);
+  const byLeague = leagues.length
+    ? `<details><summary>By league</summary>${leagues
+        .map((l) => `<h3>${esc(LEAGUE[l] ?? l)} · before the start</h3>${holderTable(h.byLeague[l].pre)}<h3>${esc(LEAGUE[l] ?? l)} · in play</h3>${holderTable(h.byLeague[l].live)}`)
+        .join("")}</details>`
+    : "";
+  return `<p class="dim">${num(h.snapshots)} snapshots${h.sinceMs ? ` since ${et(new Date(h.sinceMs).toISOString())}` : ""}. This count is kept on disk and does not roll off with the window.</p>
+<h3>Before the start</h3>${holderTable(h.all.pre)}
+<h3>In play</h3>${holderTable(h.all.live)}
+${byLeague}`;
+}
+
 function tiles(d: ReportData): string {
   const s = d.slate;
   const w = d.window;
@@ -212,7 +241,7 @@ ${pageLinksHtml(opts.links, "Sports")}<h1>Sports on the event venues</h1>
 <div class="strip"><span>As of <b>${et(d.at)}</b> <small>refresh ${d.intervalSec}s</small></span><span>Games on the board <b>${d.slate.games}</b> <small>NFL, NBA, NHL · next three days · ${d.slate.live} live</small></span><span>Window <b>${d.historyPoints}</b> snapshots <small>${d.windowHours ? `the last ${d.windowHours} hours · ` : ""}${d.collectingSince ? `${d.windowHours ? "collecting " : ""}since ${et(d.collectingSince)}` : "first cycle"}</small></span></div>
 <div class="key"><span><i class="tag ref">Reference</i>what the venues show on their own: bid, ask, depth, each venue's fee, gaps over time</span><span><i class="tag eng">Engine</i>what reading every venue's book for the same game at once adds: all-in prices, the consensus and who sits off it, the cheapest other side for every position with the saving, the crosses in dollars</span></div>
 ${tiles(d)}
-<p class="dim">If you hedge one venue's position on another, start at the last column of §1 and at §3. §2 is the part of the disagreement that locks.</p>
+<p class="dim">If you hedge one venue's position on another, start at the last column of §1 and at §3. §2 is the part of the disagreement that locks. §5 asks the same from the side of a holder on each venue, over every snapshot kept.</p>
 
 <h2>1 · The board <span class="tag ref">Reference</span><span class="tag eng">Engine</span></h2>
 <p>One game, two rows: each team's "wins" contract on each venue, bid / ask with depth at the best level and the venue's taker fee as it applies now. Consensus: each venue's two mids scaled to sum to 100, averaged over the venues quoting both sides. The gap columns: each venue's scaled mid minus that mean. Last column, for a holder of this side: the other side's all-in ask (ask plus fee) on every venue, the cheapest named, and what it saves against Kalshi's own.</p>
@@ -229,6 +258,10 @@ ${hedgerHtml(d.slate, d.window)}
 <h2>4 · Gaps over time <span class="tag ref">Reference</span></h2>
 <p>Kalshi's mid minus each other venue's mid on the away side, per game, every snapshot in the window; the home side is the mirror. Persistent gap: quoting difference. Flickering gap: latency.</p>
 ${gapsHtml(d.gaps)}
+
+<h2>5 · A holder on each venue <span class="tag eng">Engine</span></h2>
+<p>Someone holds one side of a game on a venue and wants out. One row per venue as the holder's venue. Sale on its own book: the consensus minus that venue's bid after its fee, so half its spread, its fee and any lean. Other side cheaper elsewhere: how often another venue's all-in ask on the other side beats that venue's own, and by how much. Room for a better bid: how often someone could take the holder's contract at that venue's bid, pay that venue's fee on it, buy the other side on the cheapest venue and still have something left, which is the most a better bid could add. A reading is one side of one game in one snapshot while the game is open (consensus between 5¢ and 95¢).</p>
+${holderHtml(d.holder)}
 
 <h2>Notes and limits</h2>
 <ul class="limits">

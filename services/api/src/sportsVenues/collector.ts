@@ -14,6 +14,7 @@ import type { PageLink } from "../btcCurve/pageLinks";
 import { assembleGames, readKalshiGames, readNovigListings, readPolyUsListings, type KalshiGame } from "./readers";
 import { readProphetXListings } from "./prophetx";
 import { cryptocomFeeFromEnv, newCryptocomCache, readCryptocomListings, type CryptocomFee } from "./cryptocom";
+import { HolderRecord } from "./holder";
 import { buildReport, type ReportData } from "./report";
 import { renderReportHtml } from "./reportHtml";
 import { SnapshotStore } from "./store";
@@ -44,6 +45,7 @@ export class SportsCollector {
   private readonly retention: Retention;
   private readonly store: SnapshotStore;
   private readonly sincePath: string;
+  private readonly holder: HolderRecord;
   private readonly log: (line: string) => void;
   private readonly readGames: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
   private readonly cryptocomFee: CryptocomFee;
@@ -69,6 +71,7 @@ export class SportsCollector {
     this.readGames = opts.readGames ?? ((now, health) => this.readVenues(now, health));
     this.store = new SnapshotStore(opts.dataDir, { keepHours: this.windowHours, retention: this.retention, budget: opts.budget });
     this.sincePath = join(opts.dataDir, "collecting-since.txt");
+    this.holder = new HolderRecord(join(opts.dataDir, "holder-count.json"), (what, write) => this.store.guardWrite(what, write));
     try {
       if (existsSync(this.sincePath)) this.collectingSince = readFileSync(this.sincePath, "utf8").trim() || null;
     } catch {
@@ -119,6 +122,7 @@ export class SportsCollector {
     const health: Snapshot["health"] = {};
     const snapshot: Snapshot = { at: now.toISOString(), games: await this.readGames(now, health), health };
     this.store.append(snapshot);
+    this.holder.add(this.store.getHistory().slice(-1));
     const since = this.collectingSince ?? snapshot.at;
     this.collectingSince = since;
     // tried again every cycle until it lands: a marker that failed once would otherwise never be written
@@ -140,6 +144,8 @@ export class SportsCollector {
     const t0 = Date.now();
     try {
       const points = await this.store.load(nowMs);
+      // snapshots in the window the holder count has not seen (taken before it existed, or while its file could not be written)
+      this.holder.add(this.store.getHistory());
       this.reloaded = { points, ms: Date.now() - t0 };
       this.log(`[sports-venues] data dir ${this.dataDir} · ${points} snapshots reloaded in ${Math.round(this.reloaded.ms / 1000)}s · window ${this.windowHours}h · interval ${this.intervalSec}s · ${this.store.startupLine()}`);
       return points;
@@ -194,6 +200,7 @@ export class SportsCollector {
       // games each venue is on, in the latest snapshot: a venue that answers with nothing shows as 0 here
       listed: latest ? Object.fromEntries(VENUES.map((v) => [v, latest.games.filter((g) => g.listings.some((l) => l.venue === v)).length])) : undefined,
       lastError: this.lastError || undefined,
+      holderCount: this.holder.summary(),
       data: this.store.dataHealth(),
     };
   }
@@ -208,7 +215,7 @@ export class SportsCollector {
     if (!latest) return null;
     const history = this.store.getHistory();
     if (!this.report || this.report.at !== latest.at || this.report.points !== history.length) {
-      const data = buildReport({ snapshot: latest, history, intervalSec: this.intervalSec, collectingSince: this.collectingSince, windowHours: this.windowHours });
+      const data = buildReport({ snapshot: latest, history, intervalSec: this.intervalSec, collectingSince: this.collectingSince, windowHours: this.windowHours, holder: this.holder.report() });
       this.report = { at: latest.at, points: history.length, data };
     }
     return this.report.data;
