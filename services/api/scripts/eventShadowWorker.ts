@@ -5081,7 +5081,7 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
         ok: false,
         error: adminAuth.enabled ? "bad admin token" : "operator views disabled: set EVENT_X_ADMIN_TOKEN",
         // a session that was sent and did not count says why, so a refused write is not mistaken for a signed-out browser
-        ...(opCheck.cookieIgnored === "cross_site" ? { message: "The sign-in on this browser does not cover a request sent from another site. Open the page on this service and send it from there, or send the token in the x-admin-token header." } : {}),
+        ...(opCheck.cookieIgnored === "cross_site" ? { message: "The sign-in on this browser does not cover an address that changes something when that address is typed, opened from a link elsewhere, or sent from another site. Open it from the box on /operator on this service, or send the token in the x-admin-token header." } : {}),
       });
       return;
     }
