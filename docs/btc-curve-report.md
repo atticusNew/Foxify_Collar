@@ -181,8 +181,10 @@ affected. It reloads after the curve's own reload, never beside it.
 Memory with all three, measured 11 November 2026 in a 512 MB, half CPU group (full curve window
 of 3,518 points, 24 hours of sports snapshots for 43 games reloaded from three gzipped days plus
 today, all loops polling, every page and JSON route opened in 15 rounds): 305 MB at the peak,
-about 250 MB at rest, nothing killed. The sports page holds 24 hours of history here
-(`SPORTS_VENUES_WINDOW_HOURS`); with 72 the same run peaked at 394 MB.
+about 250 MB at rest, nothing killed. A second run that also gzipped a closed curve day and a
+closed sports day right after the reload peaked at 321 MB, 45 MB of it file cache. The sports
+page holds 24 hours of history here (`SPORTS_VENUES_WINDOW_HOURS`); with 72 the first run
+peaked at 394 MB.
 
 Disk with all three: the sports snapshots add about 57 MB a day raw and 9 MB gzipped at 43 games
 (63 and 10 at 48), on top of about 345 MB raw and 47 MB gzipped for the curve and pairs. The
