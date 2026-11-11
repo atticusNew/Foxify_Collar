@@ -6,6 +6,20 @@ name: Event shadow ledger backup
 # through the service's own operator export, byte for byte, and keeps them as a
 # workflow artifact for 90 days.
 #
+# WHO CAN READ THE COPY. An artifact can be downloaded by everyone who can read
+# the repository. On a private repository that is the people given access. On a
+# PUBLIC repository it is anyone signed in to GitHub, and the run's log and
+# summary can be read by anyone at all. The ledgers carry holder aliases,
+# positions and real fills. So the first step asks GitHub whether this
+# repository is private, and:
+#   private, no passphrase   the copy is uploaded as it is (as before).
+#   passphrase set           the copy is encrypted (gpg, AES-256) before it is
+#                            uploaded, on a private or a public repository.
+#   public, no passphrase    the run stops before anything is fetched.
+#   GitHub does not say      treated as public.
+# On a public repository the run's log and summary carry no file name, size or
+# checksum: those are in SUMMARY.md inside the encrypted copy.
+#
 # WHAT IT COPIES. Every file on the service's own list
 # (GET /api/shadow/export/files; each one is GET /api/shadow/export?file=<name>):
 # the record's ledger, the shared lock ledger and every holder's, the pending
@@ -31,22 +45,21 @@ name: Event shadow ledger backup
 #                                 the x-admin-token header, never in a URL.
 #   variable EVENT_SHADOW_URL     optional. The service's base URL; defaults to
 #                                 https://atticus-event-shadow.onrender.com.
+#   secret   EVENT_BACKUP_PASSPHRASE  optional on a private repository, required
+#                                 on a public one. 24 characters or more. GitHub
+#                                 never shows a secret again, so keep it somewhere
+#                                 else as well: without it an encrypted copy
+#                                 cannot be opened by anyone.
 #
-# WHO CAN READ THE COPY. This repository is private, so its artifacts are
-# private: anyone with read access to the repository, nobody else. The ledgers
-# carry holder aliases and positions, so keep it that way.
+# RESTORING is a manual operator step. Download the artifact from the run. An
+# encrypted copy is one file; HOW-TO-OPEN.txt beside it gives the one command
+# that opens it. Check each file with `sha256sum -c <file>.sha256`, and put it
+# back on the service's disk by hand, at the path manifest.json gives for it
+# (the copy keeps each file's own name). Nothing here writes to the service.
 #
-# RESTORING is a manual operator step. Download the artifact from the run,
-# check each file with `sha256sum -c <file>.sha256`, and put it back on the
-# service's disk by hand, at the path manifest.json gives for it (the copy
-# keeps each file's own name). Nothing here writes to the service.
-#
-# CAVEAT: THE NIGHTLY RUN NEEDS THE DEFAULT BRANCH. GitHub runs `schedule`
-# triggers only from the repository's default branch. The default branch is
-# currently cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425, not the event
-# branch. Until the default branch is changed to cursor/tier2-cross-venue-2bfa,
-# or this file is also merged to the default branch, only the manual run
-# (Actions > Event shadow ledger backup > Run workflow) works.
+# THE NIGHTLY RUN NEEDS THE DEFAULT BRANCH. GitHub runs `schedule` triggers only
+# from the repository's default branch, so this file has to be on it. The manual
+# run (Actions > Event shadow ledger backup > Run workflow) works from any branch.
 
 on:
   schedule:
@@ -76,10 +89,49 @@ jobs:
 
     steps:
       # No shell tracing anywhere in this job: `set -x` would print the token.
+      - name: Decide who could read the copy
+        id: reader
+        env:
+          REPO_READ_TOKEN: ${{ github.token }}
+          EVENT_BACKUP_PASSPHRASE: ${{ secrets.EVENT_BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          # Ask GitHub; never assume. Only a clear "private: true" counts as private.
+          umask 077
+          auth_file="$RUNNER_TEMP/github-header"
+          trap 'rm -f "$auth_file"' EXIT
+          printf 'authorization: Bearer %s\n' "${REPO_READ_TOKEN:-}" > "$auth_file"
+          answer="$(curl --silent --retry 3 --retry-delay 5 --connect-timeout 20 --max-time 60 \
+            --header @"$auth_file" --header 'accept: application/vnd.github+json' \
+            "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY:-}" \
+            | jq -r 'if type == "object" and (.private | type) == "boolean" then (.private | tostring) else "unknown" end' 2>/dev/null)" || answer="unknown"
+          case "${answer:-unknown}" in
+            true) public=0; said="This repository is private." ;;
+            false) public=1; said="This repository is public." ;;
+            *) public=1; said="GitHub did not say whether this repository is private, so it is treated as public." ;;
+          esac
+
+          passphrase="${EVENT_BACKUP_PASSPHRASE:-}"
+          if [ -n "$passphrase" ] && [ "${#passphrase}" -lt 24 ]; then
+            echo "::error title=Nothing was copied::The repository secret EVENT_BACKUP_PASSPHRASE is shorter than 24 characters. Anyone who can download the copy can try passphrases against it for as long as they like, so a short one does not protect it. Set a longer one. Nothing was fetched from the service."
+            exit 1
+          fi
+          if [ "$public" = "1" ] && [ -z "$passphrase" ]; then
+            echo "::error title=Nothing was copied::${said} An artifact on a public repository can be downloaded by anyone signed in to GitHub, and the ledgers carry holder aliases, positions and real fills. Either make the repository private (Settings > General > Danger Zone > Change repository visibility), or add the repository secret EVENT_BACKUP_PASSPHRASE (24 characters or more; keep a copy of it elsewhere) so the copy is encrypted before it is uploaded. Nothing was fetched from the service."
+            exit 1
+          fi
+
+          if [ -n "$passphrase" ]; then encrypt=1; else encrypt=0; fi
+          echo "public=${public}" >> "$GITHUB_OUTPUT"
+          echo "encrypt=${encrypt}" >> "$GITHUB_OUTPUT"
+          if [ "$encrypt" = "1" ]; then echo "${said} The copy will be encrypted before it is uploaded."; else echo "${said} The copy will be uploaded as it is."; fi
+
       - name: Fetch the files
         id: fetch
         env:
           EVENT_X_ADMIN_TOKEN: ${{ secrets.EVENT_X_ADMIN_TOKEN }}
+          BACKUP_PUBLIC: ${{ steps.reader.outputs.public }}
         run: |
           set -euo pipefail
 
@@ -156,7 +208,9 @@ jobs:
               copied="$(stat -c %s "backup/${name}")"
               # A file only grows between the list and the copy, except one a reset moved lines out of.
               if [ "$listed" -gt 0 ] && [ "$copied" -eq 0 ]; then
-                echo "::error::${name} was listed at ${listed} bytes and came back empty."
+                # a holder's ledger is named for the holder: on a public repository the log names no file
+                if [ "${BACKUP_PUBLIC:-1}" = "0" ]; then shown="$name"; else shown="File ${i} of ${count}"; fi
+                echo "::error::${shown} was listed at ${listed} bytes and came back empty."
                 exit 1
               fi
             done
@@ -197,10 +251,14 @@ jobs:
         id: check
         env:
           BACKUP_MODE: ${{ steps.fetch.outputs.mode }}
+          BACKUP_PUBLIC: ${{ steps.reader.outputs.public }}
         run: |
           set -euo pipefail
           cd backup
 
+          # The full summary is written to a file that travels inside the copy. It is shown on the
+          # run's page only when the repository is private: on a public one that page is public.
+          full="$RUNNER_TEMP/backup-summary.md"
           {
             echo "### Event shadow ledger backup, $(date -u '+%F %H:%M') UTC"
             echo
@@ -210,9 +268,11 @@ jobs:
             echo
             echo "| File | What it is | Bytes | Records | Unreadable | sha256 |"
             echo "| --- | --- | ---: | ---: | ---: | --- |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > "$full"
 
           bad_total=0
+          files_total=0
+          bytes_total=0
           for file in *; do
             case "$file" in manifest.json|*.sha256) continue ;; esac
             bytes="$(stat -c %s "$file")"
@@ -235,9 +295,11 @@ jobs:
             esac
             sha256sum "$file" > "$file.sha256"
             sum="$(cut -d ' ' -f 1 "$file.sha256")"
-            echo "| ${file} | ${role} | ${bytes} | ${records} | ${bad} | \`${sum}\` |" >> "$GITHUB_STEP_SUMMARY"
-            echo "${file}: ${bytes} bytes, ${records} records, ${bad} unreadable, sha256 ${sum}"
+            echo "| ${file} | ${role} | ${bytes} | ${records} | ${bad} | \`${sum}\` |" >> "$full"
+            if [ "${BACKUP_PUBLIC:-1}" = "0" ]; then echo "${file}: ${bytes} bytes, ${records} records, ${bad} unreadable, sha256 ${sum}"; fi
             bad_total=$((bad_total + bad))
+            files_total=$((files_total + 1))
+            bytes_total=$((bytes_total + bytes))
           done
 
           if [ -f manifest.json ]; then
@@ -249,21 +311,106 @@ jobs:
               echo
               echo "On the disk and not copied:"
               jq -r 'if ((.notCopied | length) + (.others | length)) == 0 then "- none" else ((.notCopied[] | "- \(.name): \(.why)"), (.others[] | "- \(.name): not one of the files the service writes")) end' manifest.json
-            } >> "$GITHUB_STEP_SUMMARY"
+            } >> "$full"
           fi
 
           {
             echo
             echo "Check a downloaded file with \`sha256sum -c <file>.sha256\`."
             if [ -f manifest.json ]; then echo "manifest.json says where on the disk each file goes back."; fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >> "$full"
+          cp "$full" SUMMARY.md
+
+          if [ "${BACKUP_PUBLIC:-1}" = "0" ]; then
+            cat "$full" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Event shadow ledger backup, $(date -u '+%F %H:%M') UTC"
+              echo
+              echo "Copied: ${BACKUP_MODE}."
+              echo
+              echo "Files: ${files_total}. Bytes: ${bytes_total}. Lines that did not parse: ${bad_total}."
+              echo
+              echo "This repository is not private, so this page names no file and shows no checksum. They are in SUMMARY.md inside the encrypted copy."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "${files_total} files, ${bytes_total} bytes, ${bad_total} unreadable lines."
+          fi
           echo "bad=${bad_total}" >> "$GITHUB_OUTPUT"
+
+      - name: Seal the copy
+        env:
+          EVENT_BACKUP_PASSPHRASE: ${{ secrets.EVENT_BACKUP_PASSPHRASE }}
+          BACKUP_PUBLIC: ${{ steps.reader.outputs.public }}
+          BACKUP_ENCRYPT: ${{ steps.reader.outputs.encrypt }}
+          BACKUP_DATE: ${{ steps.fetch.outputs.date }}
+        run: |
+          set -euo pipefail
+
+          if [ "${BACKUP_ENCRYPT:-}" != "1" ]; then
+            # the first step already refused this; checked again here, where the upload is decided
+            if [ "${BACKUP_PUBLIC:-1}" != "0" ]; then
+              echo "::error title=Nothing was uploaded::The copy is not encrypted and this repository is not known to be private."
+              exit 1
+            fi
+            mv backup upload
+            exit 0
+          fi
+
+          if ! [[ "${BACKUP_DATE:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::error::The fetch step gave no date for the copy."
+            exit 1
+          fi
+
+          umask 077
+          pass_file="$RUNNER_TEMP/backup-passphrase"
+          plain="$RUNNER_TEMP/copy.tar"
+          again="$RUNNER_TEMP/copy.read-back.tar"
+          home="$RUNNER_TEMP/gnupg"
+          trap 'gpgconf --homedir "$home" --kill gpg-agent > /dev/null 2>&1 || true; rm -rf "$pass_file" "$plain" "$again" "$home"' EXIT
+          printf '%s' "$EVENT_BACKUP_PASSPHRASE" > "$pass_file"
+          mkdir -p "$home" upload
+          chmod 700 "$home"
+
+          sealed="event-shadow-backup-${BACKUP_DATE}.tar.gpg"
+          tar -C backup -cf "$plain" .
+          # the passphrase is read from a file, so it is on no command line
+          gpg --batch --yes --quiet --no-tty --homedir "$home" --pinentry-mode loopback --no-symkey-cache \
+            --passphrase-file "$pass_file" --symmetric --cipher-algo AES256 \
+            --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
+            --output "upload/${sealed}" "$plain"
+          # Read it back with the same passphrase before the plain copy goes: a copy nobody can open is no copy.
+          gpg --batch --yes --quiet --no-tty --homedir "$home" --pinentry-mode loopback --no-symkey-cache \
+            --passphrase-file "$pass_file" --decrypt --output "$again" "upload/${sealed}"
+          if ! cmp -s "$plain" "$again"; then
+            echo "::error::The encrypted copy did not read back the same. Nothing was uploaded."
+            exit 1
+          fi
+          rm -rf backup
+
+          (cd upload && sha256sum "$sealed" > "$sealed.sha256")
+          {
+            echo "This is an encrypted copy of every file the event record service keeps."
+            echo
+            echo "To open it you need the passphrase that was the repository secret"
+            echo "EVENT_BACKUP_PASSPHRASE on the night it was made. GitHub never shows a"
+            echo "secret again; without the passphrase nobody can open this file."
+            echo
+            echo "1. Check the download (on a Mac use: shasum -a 256 -c):"
+            echo "     sha256sum -c ${sealed}.sha256"
+            echo "2. Open it (gpg asks for the passphrase):"
+            echo "     gpg --decrypt ${sealed} | tar -x"
+            echo
+            echo "Inside: each file under the name it has on the disk, a .sha256 beside each,"
+            echo "manifest.json (where on the disk each file goes back) and SUMMARY.md."
+          } > upload/HOW-TO-OPEN.txt
+          echo "Encrypted: $(stat -c %s "upload/${sealed}") bytes. Read back and compared before the plain copy was removed."
+          echo "Encrypted before upload (gpg, AES-256); read back and compared. HOW-TO-OPEN.txt is beside it." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the copy
         uses: actions/upload-artifact@v4
         with:
           name: event-shadow-ledger-${{ steps.fetch.outputs.date }}
-          path: backup/
+          path: upload/
           retention-days: 90
           if-no-files-found: error
 
