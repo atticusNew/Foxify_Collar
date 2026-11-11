@@ -631,7 +631,7 @@ test("the public card: counts and cash, labelled real and apart from the simulat
     const html = page(none);
     assert.ok(!html.includes("Real fills"));
     assert.ok(html.includes("Live prices; nothing is bought.</div>"));
-    assert.ok(html.includes("<b>Simulated:</b> the positions; no venue credentials, no wallets."));
+    assert.ok(html.includes("<b>Simulated:</b> the positions; no venue credentials, no addresses."));
   }
 
   const html = page(base);
