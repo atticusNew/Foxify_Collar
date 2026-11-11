@@ -222,7 +222,8 @@ export class KalshiOrderClient {
       side: actionOf(intent) === "sell" ? "bid" : "ask",
       count: contractsFp(intent.unitsMilli),
       price: ((100 - capCents) / 100).toFixed(4),
-      time_in_force: "immediate_or_cancel",
+      // a lock's hedge is the whole size or nothing (CreateOrderV2Request.time_in_force takes fill_or_kill); everything else may fill in part
+      time_in_force: intent.allOrNone ? "fill_or_kill" : "immediate_or_cancel",
       self_trade_prevention_type: "taker_at_cross",
     };
   }

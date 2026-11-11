@@ -77,6 +77,13 @@ export interface HedgeIntent {
   };
   /** an RFQ fill is accepted only when its all-in cost is at or under this; defaults to the book cost */
   maxCostCents: number;
+  /**
+   * The whole size or nothing. Set on a real-money lock's hedge (hedgeFirst.ts): a lock is written
+   * only behind a whole hedge, so a part fill is a position nobody asked for. A venue client that
+   * can say so sends fill-or-kill (Kalshi direct); ProphetX and Novig orders are fill-or-kill
+   * already; the aggregator's pod sends immediate-or-cancel and a part fill there is judged a stray.
+   */
+  allOrNone?: boolean;
 }
 
 /**
