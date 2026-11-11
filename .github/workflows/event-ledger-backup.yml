@@ -1,0 +1,184 @@
+name: Event shadow ledger backup
+
+# WHAT IT IS. An off-box copy of the event shadow's ledgers. The only copy of the
+# public track record and of the lock ledgers is one Render disk on
+# atticus-event-shadow. Every night this reads them through the service's own
+# operator export (GET /api/shadow/export, the raw append-only JSONL byte for
+# byte) and keeps them as a workflow artifact for 90 days.
+#
+# WHAT IT COPIES. The main ledger (the record), the shared lock ledger
+# (?ledger=lock) and each holder's lock ledger (?ledger=lock&holder=<alias>; the
+# aliases come from the operator route /api/shadow/holders).
+#
+# WHAT IT DOES NOT COPY. The export route does not reach the hedge receipts
+# trail, the last-leg ledger, archived ledgers or the members' sealed tokens, so
+# those still live only on the disk.
+#
+# WHAT IT NEEDS.
+#   secret   EVENT_X_ADMIN_TOKEN  the same value as EVENT_X_ADMIN_TOKEN on
+#                                 atticus-event-shadow in Render. It is sent as
+#                                 the x-admin-token header, never in a URL.
+#   variable EVENT_SHADOW_URL     optional. The service's base URL; defaults to
+#                                 https://atticus-event-shadow.onrender.com.
+#
+# WHO CAN READ THE COPY. This repository is private, so its artifacts are
+# private: anyone with read access to the repository, nobody else. The ledgers
+# carry holder aliases and positions, so keep it that way.
+#
+# RESTORING is a manual operator step. Download the artifact from the run,
+# check each file with `sha256sum -c <file>.sha256`, and put it back on the
+# service's disk by hand. Nothing here writes to the service.
+#
+# CAVEAT: THE NIGHTLY RUN NEEDS THE DEFAULT BRANCH. GitHub runs `schedule`
+# triggers only from the repository's default branch. The default branch is
+# currently cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425, not the event
+# branch. Until the default branch is changed to cursor/tier2-cross-venue-2bfa,
+# or this file is also merged to the default branch, only the manual run
+# (Actions > Event shadow ledger backup > Run workflow) works.
+
+on:
+  schedule:
+    # 10:23 UTC, every day: the small hours across the US, after the late games
+    # have ended, and off the top of the hour when GitHub's queue is longest.
+    - cron: "23 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: event-ledger-backup
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  backup:
+    name: Copy the ledgers off the disk
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EVENT_SHADOW_URL: ${{ vars.EVENT_SHADOW_URL || 'https://atticus-event-shadow.onrender.com' }}
+
+    steps:
+      # No shell tracing anywhere in this job: `set -x` would print the token.
+      - name: Fetch the ledgers
+        id: fetch
+        env:
+          EVENT_X_ADMIN_TOKEN: ${{ secrets.EVENT_X_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${EVENT_X_ADMIN_TOKEN:-}" ]; then
+            echo "::error title=Missing secret::The repository secret EVENT_X_ADMIN_TOKEN is not set. Add it under Settings > Secrets and variables > Actions, with the same value as EVENT_X_ADMIN_TOKEN on atticus-event-shadow in Render."
+            exit 1
+          fi
+
+          base="${EVENT_SHADOW_URL%/}"
+          case "$base" in
+            https://*) ;;
+            *)
+              echo "::error::EVENT_SHADOW_URL must start with https:// so the token is never sent in the clear."
+              exit 1
+              ;;
+          esac
+
+          # curl reads the header from a file, so the token is in no URL and on no command line.
+          umask 077
+          header_file="$RUNNER_TEMP/admin-header"
+          trap 'rm -f "$header_file"' EXIT
+          printf 'x-admin-token: %s\n' "$EVENT_X_ADMIN_TOKEN" > "$header_file"
+
+          # fetch <path and query> <output file>
+          # Redirects are not followed: curl would carry the header to wherever one pointed.
+          # --retry covers a timeout and a 502, 503 or 504 while the service restarts; a 403 is final.
+          fetch() {
+            local status rc=0
+            status="$(curl --fail --silent --show-error \
+              --retry 4 --retry-delay 20 --connect-timeout 20 --max-time 300 \
+              --header @"$header_file" --output "$2" --write-out '%{http_code}' \
+              "${base}$1")" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              if [ "$status" = "403" ]; then
+                echo "::error::${1%%\?*} answered 403. The EVENT_X_ADMIN_TOKEN secret does not match the service's, or the service has no admin token set."
+              else
+                echo "::error::${1%%\?*} failed: curl exit ${rc}, HTTP ${status:-none}."
+              fi
+              return 1
+            fi
+          }
+
+          mkdir -p backup
+
+          fetch "/api/shadow/export" "backup/event-shadow-ledger.jsonl"
+          if [ ! -s backup/event-shadow-ledger.jsonl ]; then
+            echo "::error::The main ledger came back empty. The service answers an empty body when the ledger file is not on its disk; check the disk and EVENT_SHADOW_LEDGER_PATH before trusting any backup."
+            exit 1
+          fi
+
+          # A lock ledger may be empty: no lock has been taken with that key yet.
+          fetch "/api/shadow/export?ledger=lock" "backup/event-shadow-lock-ledger.jsonl"
+
+          fetch "/api/shadow/holders" "$RUNNER_TEMP/holders.json"
+          holders="$(jq -r '.holders[].holder | select(. != "(shared)")' "$RUNNER_TEMP/holders.json")"
+          for holder in $holders; do
+            if ! [[ "$holder" =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]]; then
+              echo "::error::/api/shadow/holders listed a holder that is not an alias; refusing to build a URL from it."
+              exit 1
+            fi
+            fetch "/api/shadow/export?ledger=lock&holder=${holder}" "backup/event-shadow-lock-ledger-${holder}.jsonl"
+          done
+
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Check the copy and write the summary
+        id: check
+        run: |
+          set -euo pipefail
+          cd backup
+
+          {
+            echo "### Event shadow ledger backup, $(date -u '+%F %H:%M') UTC"
+            echo
+            echo "Source: ${EVENT_SHADOW_URL%/}"
+            echo
+            echo "| File | Bytes | Records | Unreadable lines | sha256 |"
+            echo "| --- | ---: | ---: | ---: | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          bad_total=0
+          for file in *.jsonl; do
+            bytes="$(stat -c %s "$file")"
+            # A record is one non-blank line; every record must be a JSON object.
+            records="$(grep -c '[^[:space:]]' "$file" || true)"
+            bad="$(jq -R -n '[inputs | select(test("\\S")) | (try (fromjson | if type == "object" then 0 else 1 end) catch 1)] | add // 0' "$file")"
+            sha256sum "$file" > "$file.sha256"
+            sum="$(cut -d ' ' -f 1 "$file.sha256")"
+            echo "| ${file} | ${bytes} | ${records} | ${bad} | \`${sum}\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "${file}: ${bytes} bytes, ${records} records, ${bad} unreadable, sha256 ${sum}"
+            bad_total=$((bad_total + bad))
+          done
+
+          {
+            echo
+            echo "Check a downloaded file with \`sha256sum -c <file>.sha256\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "bad=${bad_total}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the copy
+        uses: actions/upload-artifact@v4
+        with:
+          name: event-shadow-ledger-${{ steps.fetch.outputs.date }}
+          path: backup/
+          retention-days: 90
+          if-no-files-found: error
+
+      # The copy above is kept either way: it is the disk's bytes, and a line that
+      # does not parse is something the operator needs to see, not lose.
+      - name: Fail if a line did not parse
+        if: steps.check.outputs.bad != '0'
+        run: |
+          echo "::error::${{ steps.check.outputs.bad }} line(s) in the copy are not JSON objects. The artifact was still uploaded; compare it with the ledger on the disk."
+          exit 1
