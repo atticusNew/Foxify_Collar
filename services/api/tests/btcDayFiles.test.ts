@@ -98,6 +98,25 @@ test("default: 400 days of snapshots, one a day with the hourly pass run every d
   assert.deepEqual([h.retention, h.dayFiles, h.oldestDay, h.newestDay], ["all", { plain: 1, gz: 399 }, "2026-01-01", "2027-02-04"]);
 });
 
+test("a window of N days keeps the current day and the N whole days before it: no line younger than N days is deleted, at any hour", () => {
+  const firstDay = Date.parse("2026-11-01T00:00:00Z");
+  for (const [days, nowIso] of [[3, "2026-11-11T00:00:01Z"], [3, "2026-11-11T02:00:00Z"], [3, "2026-11-11T23:59:59Z"], [1, "2026-11-11T00:30:00Z"], [7, "2026-11-11T12:00:00Z"]] as Array<[number, string]>) {
+    const dir = tmp("whole-days");
+    const now = Date.parse(nowIso);
+    // one line at the first and one at the last second of every day, 1 to 11 November
+    for (let d = 0; d <= 10; d += 1) writeFileSync(join(dir, `snapshots-${dayOf(firstDay + d * DAY)}.jsonl`), `${JSON.stringify(snap(new Date(firstDay + d * DAY).toISOString()))}\n${JSON.stringify(snap(new Date(firstDay + (d + 1) * DAY - 1000).toISOString()))}\n`);
+    const keeper = new DayKeeper({ dir, families: ["snapshots"], retention: parseRetention(days) });
+    const removed = keeper.sweep(now);
+    const kept = listDayFiles(dir, ["snapshots"]).map((f) => f.day);
+    assert.equal(kept.length, days + 1, `${days} days at ${nowIso}: today and ${days} whole days before it`);
+    assert.equal(kept[0], dayOf(Date.parse("2026-11-11T00:00:00Z") - days * DAY));
+    // the youngest line that went was the last second of the newest day removed: it is older than the window
+    const newestRemoved = removed.map((n) => n.slice(10, 20)).sort().pop() as string;
+    assert.ok(now - (Date.parse(`${newestRemoved}T00:00:00Z`) + DAY - 1000) > days * DAY, `the youngest line deleted at ${nowIso} was older than ${days} days`);
+    assert.deepEqual(keeper.sweep(now), []);
+  }
+});
+
 test("a window still deletes exactly the days outside it, both forms, and nothing else in the dir", () => {
   const dir = tmp("window");
   const now = Date.parse("2026-11-30T06:00:00Z");
@@ -109,12 +128,12 @@ test("a window still deletes exactly the days outside it, both forms, and nothin
   }
   for (const other of ["collecting-since.txt", "replays.jsonl", "replay-state.json", "notes-2026-11-01.jsonl", "snapshots-2026-11-01.jsonl.bak"]) writeFileSync(join(dir, other), "x");
   const store = new SnapshotStore(dir, { retainDays: 21 });
-  // a day is outside the window when its first instant is more than 21 days before now (06:00 on the 30th): 1 to 9 November
+  // a day is outside the window when its last instant is more than 21 days before now (06:00 on the 30th): 1 to 8 November
   const removed = store.sweep(now);
   const expected = [];
-  for (let d = 1; d <= 9; d += 1) expected.push(`snapshots-2026-11-0${d}.jsonl${d % 2 ? ".gz" : ""}`);
+  for (let d = 1; d <= 8; d += 1) expected.push(`snapshots-2026-11-0${d}.jsonl${d % 2 ? ".gz" : ""}`);
   assert.deepEqual(removed.sort(), expected.sort());
-  assert.deepEqual(listDayFiles(dir, ["snapshots"]).map((f) => f.day), Array.from({ length: 21 }, (_, i) => `2026-11-${String(i + 10).padStart(2, "0")}`));
+  assert.deepEqual(listDayFiles(dir, ["snapshots"]).map((f) => f.day), Array.from({ length: 22 }, (_, i) => `2026-11-${String(i + 9).padStart(2, "0")}`));
   for (const other of ["collecting-since.txt", "replays.jsonl", "replay-state.json", "notes-2026-11-01.jsonl", "snapshots-2026-11-01.jsonl.bak"]) assert.ok(existsSync(join(dir, other)), `${other} is not a day file of this store and stays`);
   assert.deepEqual(store.sweep(now), [], "a second sweep finds nothing more");
   assert.equal(store.dataHealth(now).retention, "21 days");

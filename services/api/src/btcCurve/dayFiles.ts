@@ -3,7 +3,8 @@
  * append-only, for the curve snapshots, the pairs cycles and episodes, and the sports snapshots.
  * This is what the three stores share:
  *
- *   retention   every day is kept unless a window is set. A setting that cannot be read deletes
+ *   retention   every day is kept unless a window is set. A window of N days keeps the current
+ *               day and the N whole days before it. A setting that cannot be read deletes
  *               nothing and says so; it is never guessed at.
  *   gzip        a day that has closed is compressed to `<name>.jsonl.gz`, written to a temp name,
  *               read back and compared (bytes, line count, sha256 of the uncompressed bytes) and

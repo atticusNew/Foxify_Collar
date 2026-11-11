@@ -130,7 +130,9 @@ reload every time, and with no limit the history alone took 368 MB of a 259 MB h
 After: reload in 54 s, 210 MB at rest, 259 MB at the peak with the page opened five times.
 
 **Every day is kept.** Nothing is deleted unless `BTC_CURVE_RETAIN_DAYS` is set to a whole number
-of days; then day files older than that go, hourly. Unset, empty, `0`, `all` and `none` keep
+of days; then day files older than that go, hourly. A window of N days keeps the current day and
+the N whole days before it, so no line younger than N days is deleted (before 11 November 2026
+it kept N minus 1 whole days). Unset, empty, `0`, `all` and `none` keep
 everything. A value that cannot be read (`abc`, `-3`, `2.5`) also keeps everything, and `/healthz`
 and the start-up log line say so. The pairs files under `pairs/` follow the same setting unless
 `BTC_PAIRS_RETAIN_DAYS` is set.
