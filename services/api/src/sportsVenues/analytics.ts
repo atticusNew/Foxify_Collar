@@ -5,13 +5,25 @@
  * All-in: a taker pays ask + c·p·(1−p) and receives bid − c·p·(1−p), c the venue's coefficient
  * as it applies now (Novig's is 0 before tip-off). Order-level rounding (Kalshi rounds a fee up
  * to the cent per order) is ignored, as on the BTC page.
+ *
+ * A venue that instead takes a share g of a market's net winnings at settlement (ProphetX
+ * outside its maker/taker leagues) charges nothing at the trade. Its fee is counted in full as
+ * if the contract wins: g·(1−p) on a buy at p, which is the most it can be, so a cross or a
+ * saving shown here holds whichever side wins. On the bid it is g·b, the most an offset bought
+ * at 1−b can give up.
  */
 
 import type { Game, Side, SideQuote, Venue, VenueListing } from "./types";
-import { SIDES, VENUES } from "./types";
+import { SIDES, VENUES, byVenue as perVenue } from "./types";
 import type { HistoryPoint } from "./store";
 
 export const takerFeeCents = (theta: number, cents: number): number => (theta * (cents / 100) * (1 - cents / 100) * 100);
+/** The winnings fee of a buy at `cents`, counted as if it wins: g of the gain, cents. */
+export const gainFeeCents = (gain: number | undefined, cents: number): number => (gain ? gain * (100 - cents) : 0);
+/** Everything a taker pays over the ask to buy at `cents`, cents. */
+export const buyFeeCents = (fee: { theta: number; gain?: number }, cents: number): number => takerFeeCents(fee.theta, cents) + gainFeeCents(fee.gain, cents);
+/** Everything a taker gives up under the bid when leaving at `cents`, cents. */
+export const sellFeeCents = (fee: { theta: number; gain?: number }, cents: number): number => takerFeeCents(fee.theta, cents) + (fee.gain ? fee.gain * cents : 0);
 const r2 = (x: number): number => Math.round(x * 100) / 100;
 const other = (s: Side): Side => (s === "away" ? "home" : "away");
 
@@ -26,21 +38,25 @@ export interface AllIn {
   allInBid: number | null;
   mid: number | null;
   feeTheta: number;
+  /** the share of net winnings taken at settlement, when the venue charges that way */
+  feeGain?: number;
 }
 
 export function allIn(l: VenueListing, side: Side): AllIn {
   const q: SideQuote = l[side];
   const two = q.bidCents > 0 && q.askCents > 0 && q.askCents < 100;
+  const fee = { theta: l.feeTheta, gain: l.feeGain };
   return {
     venue: l.venue,
     bidCents: q.bidCents,
     askCents: q.askCents,
     bidQty: q.bidQty,
     askQty: q.askQty,
-    allInAsk: q.askCents > 0 && q.askCents < 100 ? r2(q.askCents + takerFeeCents(l.feeTheta, q.askCents)) : null,
-    allInBid: q.bidCents > 0 ? r2(q.bidCents - takerFeeCents(l.feeTheta, q.bidCents)) : null,
+    allInAsk: q.askCents > 0 && q.askCents < 100 ? r2(q.askCents + buyFeeCents(fee, q.askCents)) : null,
+    allInBid: q.bidCents > 0 ? r2(q.bidCents - sellFeeCents(fee, q.bidCents)) : null,
     mid: two ? r2((q.bidCents + q.askCents) / 2) : null,
     feeTheta: l.feeTheta,
+    ...(l.feeGain ? { feeGain: l.feeGain } : {}),
   };
 }
 
@@ -100,7 +116,7 @@ export interface GameRead {
   crosses: Cross[];
 }
 
-const emptyByVenue = <T>(v: T): Record<Venue, T> => ({ kalshi: v, polymarket_us: v, novig: v });
+const emptyByVenue = <T>(v: T): Record<Venue, T> => perVenue(() => v);
 
 /** A venue's de-vigged probability of a side from its own two mids, cents. */
 export function devigCents(away: AllIn | null, home: AllIn | null, side: Side): number | null {
@@ -238,6 +254,8 @@ export interface SlateRead {
   live: number;
   withTwo: number;
   withThree: number;
+  /** games every venue on the page quotes two-sided */
+  withAll: number;
   /** sides (two per game) with at least two venues quoting the other side: where routing has a choice */
   sidesWithChoice: number;
   /** of those, sides where a venue other than Kalshi is the cheapest hedge */
@@ -286,6 +304,7 @@ export function readSlate(reads: GameRead[]): SlateRead {
     live: reads.filter((g) => g.live).length,
     withTwo: reads.filter((g) => g.twoSided.length >= 2).length,
     withThree: reads.filter((g) => g.twoSided.length >= 3).length,
+    withAll: reads.filter((g) => g.twoSided.length === VENUES.length).length,
     sidesWithChoice,
     sidesRoutedAway: routedAway,
     meanSavingRoutedCents: mean(routedSav),
@@ -430,7 +449,7 @@ export function windowTally(history: HistoryPoint[]): WindowTally {
         const c = row[v];
         if (!c) return null;
         const a = side === "away" ? c[1] : c[3];
-        return a > 0 && a < 100 ? a + takerFeeCents(c[4], a) : null;
+        return a > 0 && a < 100 ? a + buyFeeCents({ theta: c[4], gain: c[9] }, a) : null;
       };
       const qty = (v: Venue, side: Side): number => {
         const c = row[v];

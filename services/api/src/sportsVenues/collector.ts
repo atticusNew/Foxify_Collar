@@ -12,10 +12,11 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { maintainLines, parseBudgetMb, parseRetention, type Budget, type Retention } from "../btcCurve/dayFiles";
 import type { PageLink } from "../btcCurve/pageLinks";
 import { assembleGames, readKalshiGames, readNovigListings, readPolyUsListings, type KalshiGame } from "./readers";
+import { readProphetXListings } from "./prophetx";
 import { buildReport, type ReportData } from "./report";
 import { renderReportHtml } from "./reportHtml";
 import { SnapshotStore } from "./store";
-import type { Game, Snapshot, VenueListing } from "./types";
+import { VENUES, type Game, type Snapshot, type VenueListing } from "./types";
 
 export interface SportsCollectorOptions {
   dataDir: string;
@@ -70,8 +71,11 @@ export class SportsCollector {
     this.sinceOnDisk = this.collectingSince !== null;
   }
 
-  /** One source per cycle gets a ceiling; past it the source is recorded as down and the cycle goes on. */
-  private async timed<T>(name: string, health: Snapshot["health"], fn: () => Promise<T>): Promise<T | null> {
+  /**
+   * One source per cycle gets a ceiling; past it the source is recorded as down and the cycle
+   * goes on. `notes` is what a source that answered still left off the board, in words.
+   */
+  private async timed<T>(name: string, health: Snapshot["health"], fn: () => Promise<T>, notes: string[] = []): Promise<T | null> {
     const t0 = Date.now();
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<never>((_, reject) => {
@@ -79,7 +83,7 @@ export class SportsCollector {
     });
     try {
       const v = await Promise.race([fn(), deadline]);
-      health[name] = { ok: true, ms: Date.now() - t0 };
+      health[name] = { ok: true, ms: Date.now() - t0, ...(notes.length ? { detail: [...new Set(notes)].join("; ").slice(0, 240) } : {}) };
       return v;
     } catch (err) {
       health[name] = { ok: false, ms: Date.now() - t0, detail: (err as Error).message.slice(0, 120) };
@@ -93,11 +97,14 @@ export class SportsCollector {
     const nowMs = now.getTime();
     const kalshi: KalshiGame[] = (await this.timed("kalshi", health, () => readKalshiGames({ nowMs, horizonMs: this.horizonMs }))) ?? [];
     const games = kalshi.map((k) => k.game);
-    const [poly, novig] = await Promise.all([
+    const prophetxNotes: string[] = [];
+    const [poly, novig, prophetx] = await Promise.all([
       this.timed("polymarket_us", health, () => readPolyUsListings(games)),
       this.timed("novig", health, () => readNovigListings(games, { nowMs })),
+      this.timed("prophetx", health, () => readProphetXListings(games, { notes: prophetxNotes }), prophetxNotes),
     ]);
-    return assembleGames(kalshi, poly ?? new Map<string, VenueListing>(), novig ?? new Map<string, VenueListing>());
+    const none = new Map<string, VenueListing>();
+    return assembleGames(kalshi, poly ?? none, novig ?? none, prophetx ?? none);
   }
 
   async collectOnce(now = new Date()): Promise<Snapshot> {
@@ -174,6 +181,10 @@ export class SportsCollector {
       intervalSec: this.intervalSec,
       reload: this.reloaded ?? "in progress",
       venuesNotAnswering: latest ? Object.entries(latest.health).filter(([, h]) => !h.ok).map(([name, h]) => `${name}: ${h.detail ?? "down"}`) : [],
+      // a venue that answered and still left games off the board, in its reader's words
+      venueNotes: latest ? Object.entries(latest.health).filter(([, h]) => h.ok && h.detail).map(([name, h]) => `${name}: ${h.detail}`) : [],
+      // games each venue is on, in the latest snapshot: a venue that answers with nothing shows as 0 here
+      listed: latest ? Object.fromEntries(VENUES.map((v) => [v, latest.games.filter((g) => g.listings.some((l) => l.venue === v)).length])) : undefined,
       lastError: this.lastError || undefined,
       data: this.store.dataHealth(),
     };

@@ -10,8 +10,9 @@
 #                                   a Kalshi sports position. Quotes only.
 #   atticus-btc-curve               BTC curve report, with the BTC pairs UI at
 #                                   /pairs and the sports venues report (one
-#                                   game on Kalshi, Polymarket US and Novig
-#                                   side by side) at /sports, in one process.
+#                                   game on Kalshi, Polymarket US, Novig and
+#                                   ProphetX side by side) at /sports, in one
+#                                   process.
 #   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com.
 #                                   Holds no credentials.
 #
@@ -103,7 +104,7 @@
 #
 #   (no service) /sports on         Read-only sports venues report: the same
 #   atticus-btc-curve               game's winner market on Kalshi, Polymarket
-#                                   US and Novig side by side after fees, the
+#                                   US, Novig and ProphetX side by side after fees, the
 #                                   consensus and who sits off it, the cheapest
 #                                   other side for every position, the crosses
 #                                   that lock, gaps over time. 60-second cycle
@@ -219,11 +220,12 @@ services:
     # Growth, measured on 11 November 2026 by running this service locally:
     #   curve snapshot   215 KB raw, 31 KB gzipped, one a minute  = 310 MB a day raw, 45 MB gzipped
     #   pairs cycle      3.9 KB raw, one every 10 seconds         =  34 MB a day raw,  2 MB gzipped
-    #   sports snapshot   44 KB raw,  7 KB gzipped, one a minute  =  63 MB a day raw, 10 MB gzipped
+    #   sports snapshot   50 KB raw,  8 KB gzipped, one a minute  =  72 MB a day raw, 11 MB gzipped
     # (a pairs cycle stores both books of every pair it priced, so a trade can be priced on a
-    # later cycle; the sports figure is for 48 games listed and grows with the slate). Together
-    # about 410 MB a day raw, 57 MB gzipped. Without the gzip step this 3 GB disk would be full
-    # in under 8 days; with it, it holds the current day raw plus about 45 closed days (about
+    # later cycle; the sports figure is for 48 games listed, with the 14% the ProphetX listings
+    # were measured to add, and grows with the slate). Together about 420 MB a day raw, 58 MB
+    # gzipped. Without the gzip step this 3 GB disk would be full
+    # in under 8 days; with it, it holds the current day raw plus about 44 closed days (about
     # 55 with BTC_CURVE_SPORTS=off). A year is about 21 GB: raise sizeGB to 25 before the sixth
     # week is out (Render disks only grow).
     #

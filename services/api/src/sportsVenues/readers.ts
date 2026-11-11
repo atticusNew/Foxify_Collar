@@ -1,7 +1,8 @@
 /**
- * The three public reads, one per venue, each returning listings keyed by game. Kalshi is the
- * spine (its game tickers carry the league, the two team codes and the ET game date); the other
- * two are looked up for each Kalshi game by team codes and date, never by nickname.
+ * The public reads, one per venue, each returning listings keyed by game. Kalshi is the spine
+ * (its game tickers carry the league, the two team codes and the ET game date); the others are
+ * looked up for each Kalshi game by team codes and date, never by nickname. ProphetX's read is
+ * in prophetx.ts.
  *
  * Kalshi:        KXNFLGAME / KXNBAGAME / KXNHLGAME, one market per team ("LAL wins"), Yes pays $1 on
  *                that team. Depth from the public orderbook. Fee 0.07·p·(1−p), taker, series multiplier.
@@ -345,15 +346,14 @@ export async function readNovigListings(games: Game[], opts: { fetchImpl?: typeo
 // the board
 // ---------------------------------------------------------------------------
 
-/** Fold the other venues' listings onto the Kalshi games; take the start time from a venue that publishes one. */
-export function assembleGames(kalshi: KalshiGame[], polyUs: Map<string, VenueListing>, novig: Map<string, VenueListing>): Game[] {
+/**
+ * Fold the other venues' listings onto the Kalshi games; take the start time from the first
+ * venue, in the order given, that publishes one.
+ */
+export function assembleGames(kalshi: KalshiGame[], ...others: Array<Map<string, VenueListing>>): Game[] {
   return kalshi.map(({ game }) => {
-    const listings = [...game.listings];
-    const p = polyUs.get(game.key);
-    const n = novig.get(game.key);
-    if (p) listings.push(p);
-    if (n) listings.push(n);
-    const start = [p, n].find((l) => l?.startsAt && Number.isFinite(Date.parse(l.startsAt)))?.startsAt;
-    return { ...game, listings, ...(start ? { startsAt: new Date(Date.parse(start)).toISOString(), startSource: "venue" as const } : {}) };
+    const found = others.map((m) => m.get(game.key)).filter((l): l is VenueListing => Boolean(l));
+    const start = found.find((l) => l.startsAt && Number.isFinite(Date.parse(l.startsAt)))?.startsAt;
+    return { ...game, listings: [...game.listings, ...found], ...(start ? { startsAt: new Date(Date.parse(start)).toISOString(), startSource: "venue" as const } : {}) };
   });
 }
