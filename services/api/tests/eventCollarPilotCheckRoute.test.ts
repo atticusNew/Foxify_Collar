@@ -84,7 +84,7 @@ test("pilot check route: a service with nothing switched on is not ready, and ea
   assert.equal(item(r, "hedge_first").answer, "no");
   assert.match(item(r, "hedge_first").detail, /the hedge strategy is "book", not live: every lock is a simulated record and nothing is bought/);
   assert.equal(item(r, "kill_switch").answer, "yes");
-  assert.match(item(r, "kill_switch").detail, /Its state now: not in force, because the hedge strategy is "book"/);
+  assert.match(item(r, "kill_switch").detail, /Its state now: off\. Nothing leaves under these settings in any case: the hedge strategy is "book"\./);
   assert.equal(item(r, "caps").answer, "yes");
   assert.match(item(r, "caps").detail, /per order 25 hedge contracts; per day 100 hedge contracts; per game \$50\.00; per venue \$100\.00; per holder \$50\.00\./);
   assert.equal(item(r, "holder_keys").answer, CANNOT);

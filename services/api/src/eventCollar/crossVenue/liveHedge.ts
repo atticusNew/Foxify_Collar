@@ -7,7 +7,8 @@
  * and so that every decision, sent or not, is in the receipt trail.
  *
  * Rails, checked in this order on every hedge:
- *   kill switch   EVENT_HEDGE_KILL_SWITCH=1          nothing is sent, ever
+ *   kill switch   EVENT_HEDGE_KILL_SWITCH=1          nothing is sent, ever (the same setting stands
+ *                 in front of the request-for-quote strategy: hedgeExecutorFromEnv.ts)
  *   venue         a live client exists for the venue   (only Kalshi today; our own key on the
  *                 venue, or the aggregator's pod with EVENT_HEDGE_LIVE_VIA=aggregator — same
  *                 rails either way, the fill records which path it took)
@@ -112,6 +113,9 @@ function positiveInt(v: string | undefined, fallback: number): number {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
+/** EVENT_HEDGE_KILL_SWITCH: 1, true, yes or on (any case) is on; anything else, and unset, is off. One reading for every strategy. */
+export const killSwitchFromEnv = (env: NodeJS.ProcessEnv = process.env): boolean => truthy(env.EVENT_HEDGE_KILL_SWITCH);
+
 export function liveRailsFromEnv(env: NodeJS.ProcessEnv = process.env): LiveHedgeRails {
   const listed = (env.EVENT_HEDGE_LIVE_TICKERS ?? "")
     .split(",")
@@ -120,7 +124,7 @@ export function liveRailsFromEnv(env: NodeJS.ProcessEnv = process.env): LiveHedg
   const anyTicker = listed.includes("*");
   const allowlist = [...new Set(listed.filter((t) => t !== "*"))];
   return {
-    killSwitch: truthy(env.EVENT_HEDGE_KILL_SWITCH),
+    killSwitch: killSwitchFromEnv(env),
     // the one setting that lets money move is spelled out, not a bare flag
     dryRun: (env.EVENT_HEDGE_LIVE_SEND ?? "").trim().toLowerCase() !== "yes",
     allowlist,

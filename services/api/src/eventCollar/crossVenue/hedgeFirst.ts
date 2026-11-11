@@ -41,7 +41,8 @@
  * WHEN IT APPLIES (lockMode). Only when the order would truly leave: live strategy, the send
  * flag on, the kill switch off, a live client for the hedge venue, the game armed. Everything
  * else is the shadow's paper path, unchanged: the record is written and the fill is simulated at
- * the walk, which is what the public record has always been.
+ * the walk, which is what the public record has always been. For a holder named real-only
+ * (realOnlyHolders.ts) the paper path does not exist: the tap is refused and nothing is written.
  *
  * THE IDENTITY, per party, for each ending (N contracts, floor F, cap C, credit K, take T, hedge
  * of H units bought for X all in; the quote set K = (100 - C) x N - Xq - T at the walked cost Xq):
@@ -205,6 +206,23 @@ export type PendingRecord =
       order: PendingOrder;
       caps: CapRefusalLine[];
       detail: string;
+    }
+  | {
+      /**
+       * A real-only holder (realOnlyHolders.ts) asked for a lock, or to leave one, where the order
+       * would not truly be sent. Refused before anything was built or written. One line, complete in
+       * itself: nothing left, so nothing to resolve or clear, and nothing held against a cap.
+       */
+      type: "not_real_refused";
+      id: string;
+      at: string;
+      ref: string;
+      ticker: string;
+      holder?: string;
+      source: "lock" | "leave";
+      /** lockMode's reason, or "no_intent" when the order could not be built, or "not_sold" when a sale went out and sold nothing */
+      why: string;
+      detail: string;
     };
 
 export type PendingOrder = { venue: HedgeVenue; instrument: string; action: "buy" | "sell"; unitsMilli: number; limitMilli: number; maxCostCents: number };
@@ -254,7 +272,7 @@ export function loadPending(path: string): PendingRecord[] {
     if (!line.trim()) continue;
     try {
       const r = JSON.parse(line) as PendingRecord;
-      if (r && (r.type === "pending" || r.type === "resolved" || r.type === "cleared" || r.type === "cap_refused") && typeof r.id === "string") out.push(r);
+      if (r && (r.type === "pending" || r.type === "resolved" || r.type === "cleared" || r.type === "cap_refused" || r.type === "not_real_refused") && typeof r.id === "string") out.push(r);
     } catch {
       // a torn line is skipped, never repaired
     }
@@ -299,6 +317,12 @@ export function summarizePending(records: PendingRecord[]): PendingSummary {
 export function clearable(records: PendingRecord[], id: string): boolean {
   const s = summarizePending(records);
   return s.unresolved.some((p) => p.id === id) || s.strays.some((x) => x.pending.id === id);
+}
+
+/** The real-only refusals on the trail: how many, and the latest. */
+export function notRealRefusals(records: PendingRecord[]): { count: number; last: Extract<PendingRecord, { type: "not_real_refused" }> | null } {
+  const lines = records.filter((r): r is Extract<PendingRecord, { type: "not_real_refused" }> => r.type === "not_real_refused");
+  return { count: lines.length, last: lines.at(-1) ?? null };
 }
 
 /** The cap refusals on the trail: how many, and the latest. */

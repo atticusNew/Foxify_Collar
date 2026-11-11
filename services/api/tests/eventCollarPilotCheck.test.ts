@@ -22,6 +22,8 @@ function facts(over: Partial<PilotFacts> = {}): PilotFacts {
   return {
     strategy: "live",
     rfqVenues: [],
+    killSwitch: false,
+    realOnly: { everyone: false, notRealOnly: ["ann", "bob"], notes: [] },
     live: { killSwitch: false, dryRun: false, allowlist: [], anyTicker: true, venues: ["kalshi", "polymarket", "prophetx", "novig"], maxContractsPerOrder: 25, maxContractsPerDay: 100 },
     orderRails: { maxContractsPerOrder: 25, maxContractsPerDay: 100 },
     exposureCaps: CAPS,
@@ -128,7 +130,7 @@ test("pilot check, hedge first: yes only when every lock is a real-money lock; a
   const part = pilotCheck(facts(live({ venues: ["kalshi", "novig"] })));
   assert.equal(item(part, "hedge_first").answer, CANNOT);
   assert.match(item(part, "hedge_first").detail, /a key to send with on Kalshi, Novig\..* But there is no key to send with on Polymarket, ProphetX\./);
-  assert.match(item(part, "hedge_first").confirm ?? "", /written with nothing bought behind it/);
+  assert.match(item(part, "hedge_first").confirm ?? "", /refused for them instead of written with nothing bought behind it\. Holders with a key and not named there now: ann, bob\./);
   assert.equal(item(part, "in_play").answer, CANNOT);
   assert.equal(part.ready, "yes", "nothing is a no; it is on the list to confirm");
   assert.match(part.overall, /Left to confirm by hand: 1 hedge_first, 5 in_play, 8 backup, 9 keys_rotated\.$/);
@@ -138,30 +140,71 @@ test("pilot check, request for quote: a real quote can be accepted with the lock
   const r = pilotCheck(facts({ strategy: "rfq", live: null, rfqVenues: ["kalshi"] }));
   assert.equal(item(r, "hedge_first").answer, "no");
   assert.match(item(r, "hedge_first").detail, /request for quote, with a key that can accept a quote on Kalshi: the lock is written first/);
-  assert.equal(item(r, "kill_switch").answer, "no");
-  assert.match(item(r, "kill_switch").detail, /does not stop a request-for-quote order/);
+  // the switch stands in front of request for quote as well: off here, and it would stop this strategy
+  assert.equal(item(r, "kill_switch").answer, "yes");
+  assert.match(item(r, "kill_switch").detail, /in front of every hedge order this service can send: the live strategy's buys and sales, the operator's resend, and the request-for-quote strategy/);
+  assert.match(item(r, "kill_switch").detail, /Its state now: off\./);
   assert.equal(item(r, "caps").answer, "no");
   assert.match(item(r, "caps").detail, /per-order and per-day caps belong to the live strategy and do not apply .* the per-game, per-venue and per-holder caps do apply/);
   // with no key that can accept, nothing can leave: simulated like the book strategy, and the switch is not the problem
   const paper = pilotCheck(facts({ strategy: "rfq", live: null, rfqVenues: [] }));
   assert.match(item(paper, "hedge_first").detail, /the hedge strategy is "rfq", not live: every lock is a simulated record/);
   assert.equal(item(paper, "kill_switch").answer, "yes");
-  assert.match(item(paper, "kill_switch").detail, /not in force, because the hedge strategy is "rfq"/);
   assert.equal(item(paper, "caps").answer, "yes");
+  // the switch on under request for quote: no venue can accept (hedgeExecutorFromEnv builds no client), and the state is said
+  const stopped = pilotCheck(facts({ strategy: "rfq", live: null, rfqVenues: [], killSwitch: true }));
+  assert.equal(item(stopped, "kill_switch").answer, "yes");
+  assert.match(item(stopped, "kill_switch").detail, /Its state now: ON\. No hedge order and no quote request leaves/);
+  assert.equal(item(stopped, "hedge_first").answer, "no");
+});
+
+test("pilot check, real-only holders: with every holder named, a lock that would be written with nothing bought is refused instead, and the two cases that turned on it are a yes", () => {
+  const named = { realOnly: { everyone: false, notRealOnly: [], notes: [] } };
+  const everyone = { realOnly: { everyone: true, notRealOnly: [], notes: [] } };
+  for (const ro of [named, everyone]) {
+    // a venue with no key: was "cannot be checked", because the books decide; now the tap there is refused
+    const part = pilotCheck(facts({ ...live({ venues: ["kalshi", "novig"] }), ...ro }));
+    assert.equal(item(part, "hedge_first").answer, "yes");
+    assert.match(item(part, "hedge_first").detail, /There is no key to send with on Polymarket, ProphetX\. Every holder with a key is real-only \(EVENT_SHADOW_REAL_ONLY_HOLDERS\), so a tap whose other side prices best on one of those venues is refused in plain words and nothing is written\./);
+    assert.equal(item(part, "in_play").answer, "yes");
+    // only named games armed: was a no; now a tap on any other game is refused
+    const armed = pilotCheck(facts({ ...live({ anyTicker: false, allowlist: ["KXNBAGAME-26OCT14LALBOS-BOS"] }), ...ro }));
+    assert.equal(item(armed, "hedge_first").answer, "yes");
+    assert.match(item(armed, "hedge_first").detail, /Only 1 named game is armed \(EVENT_HEDGE_LIVE_TICKERS\)\. Every holder with a key is real-only .* a tap on any other game is refused/);
+    // settings under which nothing real can be bought at all stay a no: nobody outside could lock anything
+    for (const over of [{ strategy: "book", live: null }, live({ killSwitch: true }), live({ dryRun: true }), live({ venues: [] })] as Array<Partial<PilotFacts>>) {
+      const r = pilotCheck(facts({ ...over, ...ro }));
+      assert.equal(item(r, "hedge_first").answer, "no", JSON.stringify(over));
+      assert.match(item(r, "hedge_first").detail, /a real-only holder's tap is refused, so nobody outside can lock anything/);
+    }
+  }
+  // one holder left out: the two cases are what they were, and the line names who is not real-only
+  const one = { realOnly: { everyone: false, notRealOnly: ["bob"], notes: [] } };
+  const part = pilotCheck(facts({ ...live({ venues: ["kalshi", "novig"] }), ...one }));
+  assert.equal(item(part, "hedge_first").answer, CANNOT);
+  assert.match(item(part, "hedge_first").confirm ?? "", /Name each outside holder in EVENT_SHADOW_REAL_ONLY_HOLDERS, so a lock whose other side prices best on Polymarket, ProphetX is refused for them instead of written with nothing bought behind it\. Holders with a key and not named there now: bob\./);
+  const armed = pilotCheck(facts({ ...live({ anyTicker: false, allowlist: [] }), ...one }));
+  assert.equal(item(armed, "hedge_first").answer, "no");
+  assert.match(item(armed, "hedge_first").detail, /or name each outside holder in EVENT_SHADOW_REAL_ONLY_HOLDERS so their tap there is refused instead/);
+  // no holder has a key at all: "every holder" is nobody, and that is not a yes
+  const nobody = pilotCheck(facts({ ...live({ venues: ["kalshi"] }), holderKeys: { ...facts().holderKeys, listed: 0, accepted: 0 }, realOnly: { everyone: false, notRealOnly: [], notes: [] } }));
+  assert.equal(item(nobody, "hedge_first").answer, CANNOT);
 });
 
 test("pilot check, kill switch: exercised on a made-up order that goes nowhere, and its state said", () => {
   const t = killSwitchSelfTest();
   assert.equal(t.ok, true);
-  assert.equal(t.steps.length, 3);
+  assert.equal(t.steps.length, 4);
+  assert.match(t.steps[3].step, /request-for-quote strategy builds nothing that can ask for a quote or accept one/);
   assert.ok(t.steps.every((s) => s.ok));
   const off = item(pilotCheck(facts()), "kill_switch");
   assert.equal(off.answer, "yes");
   assert.match(off.detail, /Its state now: off\./);
   assert.match(off.detail, /read once when the service starts/);
-  const on = item(pilotCheck(facts(live({ killSwitch: true }))), "kill_switch");
+  const on = item(pilotCheck(facts({ ...live({ killSwitch: true }), killSwitch: true })), "kill_switch");
   assert.equal(on.answer, "yes", "on is the switch working, not a fault");
-  assert.match(on.detail, /Its state now: ON\. No order leaves/);
+  assert.match(on.detail, /Its state now: ON\. No hedge order and no quote request leaves/);
+  assert.match(on.detail, /It does not reach a member's own sale in their own venue account/);
 });
 
 test("pilot check, caps: every one a number is a yes and the numbers are shown; any set to no cap is a no naming it", () => {
@@ -290,6 +333,10 @@ test("pilot check, wording: plain words in every answer under every setting; no 
     live({ dryRun: true }),
     live({ venues: ["kalshi"] }),
     live({ anyTicker: false, allowlist: ["A", "B"] }),
+    { ...live({ anyTicker: false, allowlist: ["A", "B"] }), realOnly: { everyone: true, notRealOnly: [], notes: [] } },
+    { ...live({ venues: ["kalshi"] }), realOnly: { everyone: false, notRealOnly: [], notes: [] } },
+    { ...live({ killSwitch: true }), killSwitch: true, realOnly: { everyone: true, notRealOnly: [], notes: [] } },
+    { strategy: "rfq", live: null, rfqVenues: [], killSwitch: true },
     { exposureCaps: { gameCents: null, venueCents: null, venueOverrides: { kalshi: 100 }, holderCents: null, notes: ["x could not be read"] } },
     { holderKeys: { listed: 5, accepted: 0, dropped: { badAlias: 1, shortKey: 1, equalsSharedKey: 1, aliasTwice: 1, keyTwice: 1 }, equalOperatorToken: 2, sharedKeySet: true }, operatorOpen: true },
     { holderKeys: { ...facts().holderKeys, sharedKeySet: true } },

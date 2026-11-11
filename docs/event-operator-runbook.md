@@ -44,7 +44,7 @@ Every command below assumes these lines. `jq` only makes the answer readable; le
 
 ## 3. Pause
 
-The one switch is the kill switch in step A. It stops every hedge order, which is the only way money leaves our accounts. It is not a full stop: steps B to D cover the rest, from lightest to heaviest. No route changes any of them. Each is a setting in the Render dashboard, and saving it restarts the service.
+The one switch is the kill switch in step A. It stops every hedge order in every hedge mode (live orders, and the request-for-quote mode, where no request is sent and no quote can be accepted). Hedge orders are the only way money leaves our accounts. It is not a full stop: steps B to D cover the rest, from lightest to heaviest. No route changes any of them. Each is a setting in the Render dashboard, and saving it restarts the service.
 
 **Step A. Stop every hedge order. [today]** On `atticus-event-shadow`, Environment, set:
 
@@ -58,11 +58,11 @@ Save and let the service redeploy. Then check:
 curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/healthz" | jq '{operatorView: has("ledger"), strategy: .hedge.strategy, live: .hedge.live}'
 ```
 
-`operatorView` must be `true`. If it is `false`, the token was not accepted and the rest tells you nothing. `live` must show `"killSwitch": true`. If `operatorView` is `true` and `live` is `null`, the service is not in live mode (`strategy` is not `live`), and no hedge order can leave anyway.
+`operatorView` must be `true`. If it is `false`, the token was not accepted and the rest tells you nothing (the answer then also carries `"operator": false` and a note saying the token was not accepted). `.hedge.killSwitch` must read `true`, in any mode. In live mode `live` also shows `"killSwitch": true`. If `live` is `null`, the service is not in live mode (`strategy` is not `live`).
 
 What the kill switch does not stop:
 
-- A holder's tap still writes a lock on the record, with a simulated hedge. That is a floor written with nothing bought behind it. Harmless while you are the only holder. Not harmless once anyone else holds a key. Use step B as well.
+- A tap by a holder who is not real-only (section 9) still writes a lock on the record, with a simulated hedge. That is a floor written with nothing bought behind it. Harmless while you are the only holder. A real-only holder's tap is refused instead and nothing is written. Use step B as well if anyone holds a key and is not real-only.
 - A member's own sale on the hosted page. Use step C.
 - The Kalshi account routes under `/api/shadow/kalshi/` (subaccounts, transfers, keys). They act only when you call them.
 
@@ -164,7 +164,7 @@ On a real-money lock the hedge is bought first, whole or not at all, at a limit 
 
 If the service restarts between sending an order and recording the answer, it alerts you on start with the order to look for.
 
-"Real-money" here means the order would truly leave: live mode, send on, kill switch off, a key for the hedge venue, and the game on the allowlist. In every other case the old paper path runs: the lock is written and the hedge is simulated.
+"Real-money" here means the order would truly leave: live mode, send on, kill switch off, a key for the hedge venue, and the game on the allowlist. In every other case the old paper path runs: the lock is written and the hedge is simulated. A real-only holder (section 9) has no paper path: in every other case their tap is refused and nothing is written.
 
 See the trail:
 
@@ -312,11 +312,25 @@ curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/healthz" | jq '.lock | {hol
 
 `holderNotes` should be `null`. If it lists a note, that pair was dropped and says why.
 
-4. Send the holder their key by a private channel. They enter it in the extension's options. The alias shows only on your views, never on the public record. Each holder gets their own ledger file, `lock-ledger-<alias>.jsonl`.
+4. If the holder is anyone but you, make them real-only. On the same service, add their alias to `EVENT_SHADOW_REAL_ONLY_HOLDERS` (aliases separated by commas, or `*` for every caller including the shared key and you):
+
+```
+EVENT_SHADOW_REAL_ONLY_HOLDERS=ann,bob
+```
+
+A real-only holder's lock exists only with a real hedge bought behind it. Where the hedge would not truly be bought (the service is not in live mode, the kill switch is on, sending is off, there is no key for the hedge venue, or the game is not on the allowlist) their quote says "Lock in is not open on this position right now" and their tap writes nothing. Leaving early from a lock that holds a real hedge needs a real sale of that hedge; if the sale cannot be sent or sells nothing, the lock stands and they are told so. Everyone not named keeps the paper path, which is what you want for your own demonstrations. Check:
+
+```
+curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/healthz" | jq '.lock.realOnly'
+```
+
+`holders` lists who is real-only. `notRealOnly` lists the holders with a key who are not: it should list only you. `notes` appears when an entry could not be read; an unreadable entry makes everyone real-only until it is corrected. `refusals` counts the taps refused for this reason.
+
+5. Send the holder their key by a private channel. They enter it in the extension's options. The alias shows only on your views, never on the public record. Each holder gets their own ledger file, `lock-ledger-<alias>.jsonl`.
 
 To remove a holder, delete their pair and redeploy. Their ledger stays on the disk.
 
-**Before adding anyone who is not you.** Read section 3, step A: with the rails off, their tap writes a floor with nothing bought behind it. Payment is by hand (section 6). And the founder has decided the collar runs only on a signed venue agreement, so this needs counsel's answers first (`docs/event-counsel-questions.md`, questions 3 and 4).
+**Before adding anyone who is not you.** Do step 4. Without it, with the rails off, their tap writes a floor with nothing bought behind it (section 3, step A). Payment is by hand (section 6). And the founder has decided the collar runs only on a signed venue agreement, so this needs counsel's answers first (`docs/event-counsel-questions.md`, questions 3 and 4).
 
 ## 10. The Polymarket US key [after #401]
 
