@@ -844,6 +844,10 @@ test("page: the bundle, both tables, the lock arithmetic, the links, the refresh
   assert.equal((html.match(/<tr class="band">/g) ?? []).length, 4, "two bands per ladder");
   assert.ok(!html.includes("data-open="), "no per-row venue buttons");
 
+  assert.ok(!html.includes("<nav"), "no line of links unless the host passes one");
+  const links = [{ label: "BTC curve", href: "/?k=abc" }, { label: "BTC pairs", href: "/pairs?k=abc" }, { label: "Sports", href: "/sports?k=abc" }];
+  assert.ok(renderPairsHtml(d, { token: "abc", base: "/pairs", links }).includes('<a href="/?k=abc">BTC curve</a> · <b>BTC pairs</b> · <a href="/sports?k=abc">Sports</a>'), "the other pages, under the key");
+
   const bare = renderPairsHtml({ ...d, fifteen: null, hourly: null, daily: null, regime: null, bundle: [] });
   assert.ok(bare.includes("no strike two-sided on both"));
   assert.ok(bare.includes("Regime <b>–</b>"));

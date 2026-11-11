@@ -76,12 +76,7 @@ jobs:
       # Left out of the default list. Take a name off to watch it again.
       #   atticus-event-demo-btc         suspended by the founder; a suspended Render
       #   atticus-pm-clob-egress-proxy   service answers 503 on every path.
-      #   atticus-sports-venues          no service answers at this host as of
-      #                                  10 November 2026 (Render says no-server):
-      #                                  it is in the blueprint but not deployed
-      #                                  under this name. Once it is, take it off;
-      #                                  if its host differs, use EVENT_HEALTH_URLS.
-      SKIP_SERVICES: atticus-event-demo-btc atticus-pm-clob-egress-proxy atticus-sports-venues
+      SKIP_SERVICES: atticus-event-demo-btc atticus-pm-clob-egress-proxy
       # Three asks in all, with this pause between them (see the 503 note above).
       RETRY_PAUSE_SECONDS: "45"
 

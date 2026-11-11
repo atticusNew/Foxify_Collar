@@ -26,6 +26,7 @@ import { storedCycleOf } from "./pairsCycles";
 import { renderPairsBody, renderPairsHtml } from "./pairsHtml";
 import { ReplayRefused, firstDayOf, replayDays, replayRequestFrom } from "./pairsReplayLoader";
 import type { Ladder, VenueQuote } from "./types";
+import type { PageLink } from "./pageLinks";
 
 export interface PairsCollectorOptions {
   intervalSec?: number;
@@ -585,7 +586,7 @@ export class PairsCollector {
    * `/api/pairs`, `/api/bundle`, `/api/pair`, `/api/episodes`, `/api/replay`, `/api/stream`). Returns false when the path is
    * not one of ours so the host can 404 it. `base` is the mount path the page links under.
    */
-  handle(req: IncomingMessage, res: ServerResponse, path: string, url: URL, opts: { base: string; token?: string }): boolean {
+  handle(req: IncomingMessage, res: ServerResponse, path: string, url: URL, opts: { base: string; token?: string; links?: PageLink[] }): boolean {
     const json = (status: number, body: unknown) => {
       res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*" });
       res.end(JSON.stringify(body));
@@ -645,7 +646,7 @@ export class PairsCollector {
         res.end(`<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="5"><title>warming up</title><p style="font:16px system-ui;padding:40px">First reading in progress. This page refreshes itself.</p>`);
         return true;
       }
-      res.end(renderPairsHtml(d, { token: opts.token, base: opts.base, launchUrl: this.launchUrl, launchMode: this.launchMode }));
+      res.end(renderPairsHtml(d, { token: opts.token, base: opts.base, launchUrl: this.launchUrl, launchMode: this.launchMode, links: opts.links }));
       return true;
     }
     return false;

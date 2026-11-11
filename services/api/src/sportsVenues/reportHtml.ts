@@ -3,6 +3,7 @@
 import type { AllIn, GameRead, GapSeries, SlateRead, WindowTally } from "./analytics";
 import type { ReportData } from "./report";
 import { VENUE_NAME, VENUES, type Side, type Venue } from "./types";
+import { pageLinksHtml, type PageLink } from "../btcCurve/pageLinks";
 
 const esc = (s: unknown): string =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
@@ -139,7 +140,7 @@ function gapsHtml(all: GapSeries[]): string {
   const range = Math.max(2, ...gaps.map((g) => g.max));
   const table = `<div class="tbl"><table><tr><th>Game <small>away side</small></th><th>Kalshi − venue</th><th>Window</th><th>Mean |gap|</th><th>Max |gap|</th><th>Last</th><th>n</th></tr>${[...gaps]
     .sort((a, b) => b.meanAbs - a.meanAbs)
-    .map((g) => `<tr><td class="lbl">${esc(g.label)} <small>${esc(g.code)} wins</small></td><td>${short(g.venue)}</td><td>${spark(g.series, range)}</td><td>${c(g.meanAbs, 2)}</td><td>${c(g.max, 2)}</td>${gapCell(g.last)}<td class="dim">${g.series.length}</td></tr>`)
+    .map((g) => `<tr><td class="lbl">${esc(g.label)} <small>${esc(g.code)} wins</small></td><td>${short(g.venue)}</td><td>${spark(g.series, range)}</td><td>${c(g.meanAbs, 2)}</td><td>${c(g.max, 2)}</td>${gapCell(g.last)}<td class="dim">${g.points}</td></tr>`)
     .join("")}</table></div>`;
   return `<div class="strip">${strip}</div><details><summary>All ${gaps.length} game and venue pairs, with sparklines</summary>${table}</details>`;
 }
@@ -169,7 +170,7 @@ function tiles(d: ReportData): string {
 </div>`;
 }
 
-export function renderReportHtml(d: ReportData, opts: { refreshSec?: number } = {}): string {
+export function renderReportHtml(d: ReportData, opts: { refreshSec?: number; links?: PageLink[] } = {}): string {
   const healthLine = Object.entries(d.health)
     .map(([k, h]) => `<span class="${h.ok ? "ok" : "bad"}">${esc(k)} ${h.ok ? `${h.ms}ms` : esc(h.detail ?? "down")}</span>`)
     .join(" · ");
@@ -193,9 +194,9 @@ svg.spark{width:160px;height:28px;display:block}svg.spark polyline{fill:none;str
 details{margin:8px 0}summary{cursor:pointer;color:var(--k);font-size:13px}
 .note{border-left:3px solid var(--line);padding:4px 12px;color:var(--dim);font-size:13px;margin:10px 0}.limits{padding-left:18px;font-size:13px;color:var(--dim);margin:6px 0}.limits li{margin:5px 0}.limits b{color:var(--ink)}footer{margin-top:40px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
 </style></head><body><main>
-<h1>Sports on the event venues</h1>
+${pageLinksHtml(opts.links, "Sports")}<h1>Sports on the event venues</h1>
 <p class="lead">The same game's winner market on Kalshi, Polymarket US and Novig, side by side, after each venue's taker fee. Where the other side of a position is cheapest, what the venues disagree on, and what can be locked across them. Live from public market data. Read-only.</p>
-<div class="strip"><span>As of <b>${et(d.at)}</b> <small>refresh ${d.intervalSec}s</small></span><span>Games on the board <b>${d.slate.games}</b> <small>NFL, NBA, NHL · next three days · ${d.slate.live} live</small></span><span>Window <b>${d.historyPoints}</b> snapshots <small>${d.collectingSince ? `since ${et(d.collectingSince)}` : "first cycle"}</small></span></div>
+<div class="strip"><span>As of <b>${et(d.at)}</b> <small>refresh ${d.intervalSec}s</small></span><span>Games on the board <b>${d.slate.games}</b> <small>NFL, NBA, NHL · next three days · ${d.slate.live} live</small></span><span>Window <b>${d.historyPoints}</b> snapshots <small>${d.windowHours ? `the last ${d.windowHours} hours · ` : ""}${d.collectingSince ? `${d.windowHours ? "collecting " : ""}since ${et(d.collectingSince)}` : "first cycle"}</small></span></div>
 <div class="key"><span><i class="tag ref">Reference</i>what the venues show on their own: bid, ask, depth, each venue's fee, gaps over time</span><span><i class="tag eng">Engine</i>what reading every venue's book for the same game at once adds: all-in prices, the consensus and who sits off it, the cheapest other side for every position with the saving, the crosses in dollars</span></div>
 ${tiles(d)}
 <p class="dim">If you hedge one venue's position on another, start at the last column of §1 and at §3. §2 is the part of the disagreement that locks.</p>

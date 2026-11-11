@@ -315,21 +315,35 @@ export interface GapSeries {
   side: Side;
   code: string;
   venue: Venue;
-  /** [atMs, Kalshi mid − venue mid] */
+  /** [atMs, Kalshi mid − venue mid]; at most GAP_SERIES_MAX_POINTS of them, evenly spread, the newest always kept */
   series: Array<[number, number]>;
+  /** how many snapshots the figures beside the series were taken over */
+  points: number;
   meanAbs: number;
   max: number;
   last: number;
 }
 
-/** Kalshi mid minus each other venue's mid, per game and side, over the window. */
+/**
+ * What a sparkline 160 pixels wide can show. The page and the JSON carry this many points per
+ * series, not one per snapshot: three days of a full slate would otherwise be megabytes per view.
+ */
+export const GAP_SERIES_MAX_POINTS = 240;
+
+/**
+ * Kalshi mid minus each other venue's mid, per game and side, over the window. The mean, the
+ * maximum and the last value are over every snapshot; only the plotted series is thinned.
+ */
 export function gapSeries(history: HistoryPoint[], reads: GameRead[]): GapSeries[] {
   const out: GapSeries[] = [];
   for (const g of reads) {
     for (const side of SIDES) {
       for (const v of VENUES) {
         if (v === "kalshi") continue;
-        const series: Array<[number, number]> = [];
+        const at: number[] = [];
+        const gap: number[] = [];
+        let sumAbs = 0;
+        let max = 0;
         for (const h of history) {
           const row = h.games[g.key];
           if (!row) continue;
@@ -339,10 +353,20 @@ export function gapSeries(history: HistoryPoint[], reads: GameRead[]): GapSeries
           const km = midOf(k, side);
           const om = midOf(o, side);
           if (km === null || om === null) continue;
-          series.push([h.atMs, r2(km - om)]);
+          const x = r2(km - om);
+          at.push(h.atMs);
+          gap.push(x);
+          sumAbs += Math.abs(x);
+          max = Math.max(max, Math.abs(x));
         }
-        if (series.length < 2) continue;
-        const abs = series.map(([, x]) => Math.abs(x));
+        const n = at.length;
+        if (n < 2) continue;
+        const series: Array<[number, number]> = [];
+        const shown = Math.min(n, GAP_SERIES_MAX_POINTS);
+        for (let i = 0; i < shown; i += 1) {
+          const j = shown === n ? i : Math.round((i * (n - 1)) / (shown - 1));
+          series.push([at[j], gap[j]]);
+        }
         out.push({
           key: g.key,
           label: g.label,
@@ -350,9 +374,10 @@ export function gapSeries(history: HistoryPoint[], reads: GameRead[]): GapSeries
           code: g.sides[side].code,
           venue: v,
           series,
-          meanAbs: r2(abs.reduce((a, b) => a + b, 0) / abs.length),
-          max: r2(Math.max(...abs)),
-          last: series[series.length - 1][1],
+          points: n,
+          meanAbs: r2(sumAbs / n),
+          max: r2(max),
+          last: gap[n - 1],
         });
       }
     }

@@ -8,6 +8,8 @@ export interface ReportData {
   at: string;
   collectingSince: string | null;
   historyPoints: number;
+  /** how far back the history reaches, in hours; absent when the caller did not say */
+  windowHours?: number;
   intervalSec: number;
   games: GameRead[];
   slate: SlateRead;
@@ -16,7 +18,7 @@ export interface ReportData {
   health: Snapshot["health"];
 }
 
-export function buildReport(input: { snapshot: Snapshot; history: HistoryPoint[]; intervalSec: number; collectingSince: string | null }): ReportData {
+export function buildReport(input: { snapshot: Snapshot; history: HistoryPoint[]; intervalSec: number; collectingSince: string | null; windowHours?: number }): ReportData {
   const nowMs = Date.parse(input.snapshot.at);
   const games = input.snapshot.games.map((g) => readGame(g, nowMs)).sort((a, b) => {
     // live first, then by start
@@ -27,6 +29,7 @@ export function buildReport(input: { snapshot: Snapshot; history: HistoryPoint[]
     at: input.snapshot.at,
     collectingSince: input.collectingSince,
     historyPoints: input.history.length,
+    windowHours: input.windowHours,
     intervalSec: input.intervalSec,
     games,
     slate: readSlate(games),

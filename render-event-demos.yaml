@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────
-# render-event-demos.yaml: the Earn & Protect EVENT lane, six services
+# render-event-demos.yaml: the Earn & Protect EVENT lane, five services
 #
-# FIVE ARE READ-ONLY. They read market data and serve pages. None of them
+# FOUR ARE READ-ONLY. They read market data and serve pages. None of them
 # places an order.
 #
 #   atticus-event-demo-btc          Tier 1 demo: a Kalshi BTC price event hedged
@@ -9,9 +9,9 @@
 #   atticus-event-demo-cross-venue  Tier 2 demo: the public board and embed for
 #                                   a Kalshi sports position. Quotes only.
 #   atticus-btc-curve               BTC curve report, with the BTC pairs UI at
-#                                   /pairs in the same process.
-#   atticus-sports-venues           Sports venues report: one game on Kalshi,
-#                                   Polymarket US and Novig side by side.
+#                                   /pairs and the sports venues report (one
+#                                   game on Kalshi, Polymarket US and Novig
+#                                   side by side) at /sports, in one process.
 #   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com.
 #                                   Holds no credentials.
 #
@@ -47,7 +47,7 @@
 #
 # SECRETS live only in the Render dashboard, never in git. This file carries
 # public values, `generateValue` (Render makes the value) and `sync: false`
-# (set by hand in the dashboard). None of the six signs for an on-chain
+# (set by hand in the dashboard). None of the five signs for an on-chain
 # address: the venues are reached with API keys only.
 #
 # DEPLOYS. Every service follows the tip of cursor/tier2-cross-venue-2bfa
@@ -58,7 +58,7 @@
 # written above the first one, and a test guards them.
 #
 # ISOLATION. Nothing here touches the live production Earn & Protect deploy:
-# the six start scripts load only services/api/scripts and, under
+# the five start scripts load only services/api/scripts and, under
 # services/api/src, eventCollar, btcCurve and sportsVenues.
 #
 # THE SERVICES IN MORE DETAIL
@@ -101,14 +101,17 @@
 #                                   OKX reachable). Disk keeps the snapshots.
 #                                   docs/btc-curve-report.md
 #
-#   atticus-sports-venues           Read-only sports venues report: the same
-#                                   game's winner market on Kalshi, Polymarket
+#   (no service) /sports on         Read-only sports venues report: the same
+#   atticus-btc-curve               game's winner market on Kalshi, Polymarket
 #                                   US and Novig side by side after fees, the
 #                                   consensus and who sits off it, the cheapest
 #                                   other side for every position, the crosses
-#                                   that lock, gaps over time. Region oregon
-#                                   (all three venues are US). Disk keeps the
-#                                   snapshots. docs/sports-venues-report.md
+#                                   that lock, gaps over time. 60-second cycle
+#                                   inside the curve process, behind the same
+#                                   key, so no second service is paid for; its
+#                                   snapshots sit on the curve disk. It was
+#                                   never deployed as a service of its own.
+#                                   docs/sports-venues-report.md
 #
 #   (no service) /pairs on          BTC pairs UI for a trader: the same
 #   atticus-btc-curve               contract on Kalshi and Polymarket US, the
@@ -194,14 +197,17 @@ services:
         - services/api/tests/**
         - .github/**
         - demo/**
-        - services/api/src/sportsVenues/**
-        - services/api/src/eventCollar/crossVenue/**
         - services/api/scripts/event*.ts
         - services/api/scripts/memberApp*.ts
         - services/api/scripts/sportsVenuesReportService.ts
+    # src/sportsVenues and src/eventCollar/crossVenue are not ignored here: the sports page at
+    # /sports is in this process and its readers import the cross-venue team tables and venue
+    # clients, so a change to either redeploys this service.
+    #
     # What is kept: every day, forever. One file per UTC day for the curve snapshots
     # (snapshots-YYYY-MM-DD.jsonl) and, under pairs/, one for the 10-second pairs cycles
-    # (gaps-...) and one for the lock episodes (episodes-...). Nothing is deleted unless
+    # (gaps-...) and one for the lock episodes (episodes-...), and, under sports/, one for the
+    # sports venues snapshots (snapshots-...). Nothing is deleted unless
     # BTC_CURVE_RETAIN_DAYS is set to a whole number of days. Unset, empty, 0, all and none
     # keep everything; a value that cannot be read keeps everything too and /healthz says so.
     #
@@ -213,11 +219,18 @@ services:
     # Growth, measured on 11 November 2026 by running this service locally:
     #   curve snapshot   215 KB raw, 31 KB gzipped, one a minute  = 310 MB a day raw, 45 MB gzipped
     #   pairs cycle      3.9 KB raw, one every 10 seconds         =  34 MB a day raw,  2 MB gzipped
+    #   sports snapshot   44 KB raw,  7 KB gzipped, one a minute  =  63 MB a day raw, 10 MB gzipped
     # (a pairs cycle stores both books of every pair it priced, so a trade can be priced on a
-    # later cycle). Together about 345 MB a day raw, 47 MB gzipped. Without the gzip step this
-    # 3 GB disk would be full in under 9 days; with it, it holds the current day raw plus
-    # about 55 closed days. A year is about 17 GB: raise sizeGB to 20 before the second month
-    # is out (Render disks only grow).
+    # later cycle; the sports figure is for 48 games listed and grows with the slate). Together
+    # about 410 MB a day raw, 57 MB gzipped. Without the gzip step this 3 GB disk would be full
+    # in under 8 days; with it, it holds the current day raw plus about 45 closed days (about
+    # 55 with BTC_CURVE_SPORTS=off). A year is about 21 GB: raise sizeGB to 25 before the sixth
+    # week is out (Render disks only grow).
+    #
+    # Memory, measured on 11 November 2026 in a 512 MB, half CPU group with the full curve
+    # window and a full sports window reloaded from disk, every page opened: see
+    # docs/btc-curve-report.md. The sports page holds 24 hours of snapshots in memory here
+    # (SPORTS_VENUES_WINDOW_HOURS), not the 72 it holds alone; the disk keeps every snapshot.
     #
     # The budget: BTC_CURVE_DISK_BUDGET_MB is the size /healthz measures the data against.
     # Past 80% it says so in plain words under data.warning and so does the start-up log line.
@@ -267,68 +280,19 @@ services:
       # ticker in lower case (kxbtcd-26nov0917). Default is the KXBTCD series page.
       # - key: BTC_PAIRS_KALSHI_URL
       #   value: https://kalshi.com/markets/kxbtcd/bitcoin-price-abovebelow/{event}
-
-  - type: web
-    name: atticus-sports-venues
-    runtime: node
-    plan: starter
-    region: oregon
-    branch: cursor/tier2-cross-venue-2bfa
-    autoDeploy: true
-    buildCommand: npm ci
-    startCommand: npm --workspace services/api exec tsx scripts/sportsVenuesReportService.ts
-    healthCheckPath: /healthz
-    buildFilter:
-      ignoredPaths:
-        - docs/**
-        - "**/*.md"
-        - services/api/tests/**
-        - .github/**
-        - demo/**
-        - services/api/scripts/event*.ts
-        - services/api/scripts/memberApp*.ts
-        - services/api/scripts/btc*.ts
-    # What is kept: every day, forever, one file per UTC day (snapshots-YYYY-MM-DD.jsonl).
-    # Nothing is deleted unless SPORTS_VENUES_RETAIN_DAYS is set to a whole number of days.
-    # Unset, empty, 0, all and none keep everything; a value that cannot be read keeps
-    # everything too and /healthz says so.
-    #
-    # The gzip step: one hour after a UTC day ends, its file is compressed to .jsonl.gz and
-    # checked against the original before the original is removed. The boot reload reads both.
-    #
-    # Growth, measured on 11 November 2026 by running this service for a few minutes with 48
-    # games listed: one snapshot is 44 KB raw and 7 KB gzipped, one a minute, so 63 MB a day
-    # raw and 10 MB a day gzipped. This 2 GB disk holds the current day raw plus about 190
-    # closed days at that slate. A year is about 4 GB: raise sizeGB to 5 before then. A
-    # bigger slate grows faster; /healthz data.bytes is the number to watch.
-    #
-    # The budget: SPORTS_VENUES_DISK_BUDGET_MB is the size /healthz measures the data against.
-    # Past 80% it says so under data.warning. The budget never deletes anything.
-    #
-    # IMPORTANT for the operator: if SPORTS_VENUES_RETAIN_DAYS is set to 21 in the Render
-    # dashboard for this service (it was in this file until now), delete it there. A value in
-    # the dashboard overrides the code default. Check /healthz: data.retention must read "all".
-    disk:
-      name: sports-venues-data
-      mountPath: /var/data
-      sizeGB: 2
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: SPORTS_VENUES_DATA_DIR
-        value: /var/data/sports-venues
-      - key: SPORTS_VENUES_INTERVAL_SEC
-        value: "60"
-      - key: SPORTS_VENUES_DISK_BUDGET_MB
-        value: "2000"
-      # Optional. A whole number of days keeps that window and deletes older day files.
-      # Leave it out to keep every day.
-      # - key: SPORTS_VENUES_RETAIN_DAYS
-      #   value: "365"
-      # Optional. When set, the page and JSON are only served with ?k=<token>
-      # (an unlisted link for a reader). Set in the dashboard, not here.
-      # - key: SPORTS_VENUES_TOKEN
-      #   sync: false
+      # The sports venues report at /sports runs inside this process, behind the same key
+      # (BTC_CURVE_SPORTS=off turns it off). Its snapshots live under the curve disk at
+      # /var/data/btc-curve/sports and follow BTC_CURVE_RETAIN_DAYS unless
+      # SPORTS_VENUES_RETAIN_DAYS is set (same values, same rule). A sports fault is a line
+      # under sports on /healthz; the BTC pages do not depend on it.
+      # - key: BTC_CURVE_SPORTS
+      #   value: "off"
+      # - key: SPORTS_VENUES_INTERVAL_SEC
+      #   value: "60"
+      # Hours of sports snapshots held in memory for the page's window sections. 24 here; do
+      # not raise it without measuring: 72 leaves under 100 MB of this plan's 512 MB.
+      # - key: SPORTS_VENUES_WINDOW_HOURS
+      #   value: "24"
 
   - type: web
     name: atticus-event-demo-cross-venue
@@ -922,7 +886,7 @@ services:
       #   NOTHING HERE SENDS AN ORDER to this venue. It is a price reference: read on every sports
       #   quote, recorded, never the route. Hedging there is a later change (its settlement rule
       #   table per league, its order signer, one verified fill). The key can trade, so: a
-      #   dedicated key for this service, and never on atticus-btc-curve or atticus-sports-venues.
+      #   dedicated key for this service, and never on atticus-btc-curve.
       # Status: the operator state's hedge.referenceBooks lists which are configured, never the keys.
       # AGGREGATOR FEED (optional; the cross-venue data partner's signed API and orderbook stream).
       # With the key set, every sports quote reads its books from the feed FIRST: the opposing
