@@ -12,8 +12,8 @@
  * What is arithmetic over observed prices: the crosses, the latency table, the replays.
  * Nothing here trades — no credentials are loaded, only public market-data endpoints.
  *
- * ISOLATION: imports only from src/btcCurve/** and the read-only readers / pricer under
- * src/eventCollar/**. Nothing here touches production services, stores or deploys.
+ * ISOLATION: imports only from src/btcCurve/**, src/sportsVenues/** and the read-only readers /
+ * pricer under src/eventCollar/**. Nothing here touches production services, stores or deploys.
  *
  * Run:  npx tsx services/api/scripts/btcCurveReportService.ts
  * Env:  BTC_CURVE_PORT          (default 8860; PORT honoured)
@@ -32,6 +32,11 @@
  *       BTC_PAIRS_*             (the pairs collector: INTERVAL_SEC 10, DATA_DIR under the curve
  *                               data dir, RETAIN_DAYS, LAUNCH_URL, LAUNCH_MODE send|open,
  *                               KALSHI_URL; see scripts/btcPairsService.ts)
+ *       BTC_CURVE_SPORTS        (off or 0 disables the sports venues page mounted at /sports;
+ *                               default on)
+ *       SPORTS_VENUES_*         (the sports collector: INTERVAL_SEC 60, WINDOW_HOURS 24 here,
+ *                               DATA_DIR under the curve data dir, RETAIN_DAYS, HORIZON_DAYS;
+ *                               see scripts/sportsVenuesReportService.ts)
  *       POLY_US_EXTRA_EVENT_SLUGS  comma-separated Polymarket US event slugs to add
  *       POLY_US_REST_BASE / KALSHI_REST_BASE / DERIBIT_REST_BASE / OKX_REST_BASE (relays)
  *
@@ -39,6 +44,12 @@
  * one strike each way on the next close and the daily, bands, regime, one Launch button per
  * tenor) served from this process so it costs no second web service; its JSON lives under
  * /pairs/api/* and shares this service's token.
+ *
+ * /sports is the sports venues page (the same game on Kalshi, Polymarket US and Novig) served
+ * from this process for the same reason, with its JSON under /sports/api/* and the same token.
+ * It sits behind a boundary (mountSports): a sports fault is a line on /healthz and never this
+ * service's own pages. It holds 24 hours of snapshots in memory, not the 72 it holds on its
+ * own, because this process has 512 MB for everything; the day files keep every snapshot.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -56,6 +67,8 @@ import { quoteCollarLadder, type CollarLadder } from "../src/btcCurve/collarLadd
 import { buildReport } from "../src/btcCurve/report";
 import { renderReportHtml } from "../src/btcCurve/reportHtml";
 import { pairsCollectorFromEnv, type PairsCollector } from "../src/btcCurve/pairsCollector";
+import { pageLinks } from "../src/btcCurve/pageLinks";
+import { mountSports, sportsCollectorFromEnv, type SportsMount } from "../src/sportsVenues/collector";
 import type { IndexCandle, Ladder, OptionRow, Snapshot } from "../src/btcCurve/types";
 
 const PORT = Number(process.env.BTC_CURVE_PORT || process.env.PORT || 8860);
@@ -72,6 +85,14 @@ const pairs: PairsCollector | null =
   process.env.BTC_CURVE_PAIRS !== "0"
     ? pairsCollectorFromEnv(process.env, { dataDir: join(DATA_DIR, "pairs"), retainDays: process.env.BTC_CURVE_RETAIN_DAYS ?? "", retainSetting: "BTC_CURVE_RETAIN_DAYS" })
     : null;
+const SPORTS_BASE = "/sports";
+const SPORTS_WINDOW_HOURS = 24;
+export const sports: SportsMount | null = ["off", "0", "false", "no"].includes((process.env.BTC_CURVE_SPORTS ?? "").trim().toLowerCase())
+  ? null
+  : mountSports(() =>
+      sportsCollectorFromEnv(process.env, { dataDir: join(DATA_DIR, "sports"), retainDays: process.env.BTC_CURVE_RETAIN_DAYS ?? "", retainSetting: "BTC_CURVE_RETAIN_DAYS", windowHours: SPORTS_WINDOW_HOURS }),
+    );
+const LINKS = pageLinks(TOKEN || undefined, [...(pairs ? [{ label: "BTC pairs", base: PAIRS_BASE }] : []), ...(sports ? [{ label: "Sports", base: SPORTS_BASE }] : [])]);
 
 const store = new SnapshotStore(DATA_DIR, { retention: RETENTION, budget: parseBudgetMb(process.env.BTC_CURVE_DISK_BUDGET_MB, "BTC_CURVE_DISK_BUDGET_MB") });
 const replay = new ReplayEngine(join(DATA_DIR, "replay-state.json"), join(DATA_DIR, "replays.jsonl"));
@@ -246,7 +267,7 @@ function buildReportData() {
   });
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url || "/", "http://localhost");
   if (url.pathname === "/healthz") {
     const latest = store.getLatest();
@@ -266,6 +287,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       lastError: lastError || undefined,
       data: store.dataHealth(),
       pairs: pairs ? pairs.health() : undefined,
+      sports: sports ? sports.health() : "off (BTC_CURVE_SPORTS)",
     });
   }
   if (!authorized(url)) {
@@ -275,7 +297,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
   if (pairs && (url.pathname === PAIRS_BASE || url.pathname.startsWith(`${PAIRS_BASE}/`))) {
     const sub = url.pathname.slice(PAIRS_BASE.length).replace(/\/$/, "") || "/";
-    if (pairs.handle(req, res, sub, url, { base: PAIRS_BASE, token: TOKEN || undefined })) return;
+    if (pairs.handle(req, res, sub, url, { base: PAIRS_BASE, token: TOKEN || undefined, links: LINKS })) return;
+  }
+  if (sports && (url.pathname === SPORTS_BASE || url.pathname.startsWith(`${SPORTS_BASE}/`))) {
+    const sub = url.pathname.slice(SPORTS_BASE.length).replace(/\/$/, "") || "/";
+    if (sports.handle(req, res, sub, url, { links: LINKS })) return;
   }
   if (url.pathname === "/api/report") {
     const data = buildReportData();
@@ -297,7 +323,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       );
       return;
     }
-    res.end(renderReportHtml(data, { refreshSec: INTERVAL_SEC }));
+    res.end(renderReportHtml(data, { refreshSec: INTERVAL_SEC, links: LINKS }));
     return;
   }
   res.writeHead(404, { "content-type": "text/plain" });
@@ -323,7 +349,7 @@ if (process.env.NODE_ENV !== "test") {
       console.error(`[btc-curve] request failed: ${(err as Error).message}`);
       if (!res.headersSent) sendJson(res, 500, { ok: false });
     });
-  }).listen(PORT, () => console.log(`[btc-curve] listening on :${PORT}${pairs ? ` · pairs at ${PAIRS_BASE}` : ""}`));
+  }).listen(PORT, () => console.log(`[btc-curve] listening on :${PORT}${pairs ? ` · pairs at ${PAIRS_BASE}` : ""}${sports ? ` · sports at ${SPORTS_BASE}` : ""}`));
   // the cycles start whether the reload ends well or not: recording new data never waits on old data
   const t0 = Date.now();
   void store
@@ -342,6 +368,8 @@ if (process.env.NODE_ENV !== "test") {
       maintain();
       void loop();
       pairs?.start();
+      // after the curve's own reload, never beside it: the two reloads are the two peaks of memory
+      sports?.start();
     });
   // a clean stop ends the pairs page's lock runs still open and writes them; without this they are lost with the process
   if (pairs) {
