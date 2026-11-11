@@ -60,7 +60,7 @@ test("the lock at a size is priced in whole milli-cents with each leg's fee roun
   assert.equal(priceLock(k, { ...p, bidCents: 0 }, 10), null);
 
   // the page's lock for one contract carries the fees unrounded (1.681 + 2.375 = 4.056 -> 5.94 a pair); the replay's 5.9 is below it
-  const page = lockOf({ ...k, bucketKey: "", id: "", volume: 0, openInterest: 0 }, { ...p, bucketKey: "", id: "", volume: 0, openInterest: 0 });
+  const page = lockOf(k, p);
   assert.equal(page?.edgeCents, 5.94);
   assert.ok((priceLock(k, p, 10) as { edgeMc: number }).edgeMc <= Math.round((page?.edgeCents as number) * 1000));
 });
