@@ -21,13 +21,16 @@
  *
  * THE FEE SCHEDULES, AS THIS REPO'S CODE HAS THEM (nothing here is from memory)
  *   Kalshi         Taker: kalshiTakerFeeCents (kalshiLadder.ts), 7% x contracts x p x (1 - p),
- *                  rounded up to the cent on each fill. Maker: the repo has NO maker schedule.
- *                  kalshiOrders.ts reads `maker_fees` off a filled order, so the venue can charge
- *                  one. Our resting bid is therefore priced at the TAKER formula, which is never
- *                  under what the venue can take; if the venue charges less, the difference is
- *                  ours and settleBetterBid shows it when it is given the fee actually paid.
- *                  `restingBid: "free"` prices it at nothing, for an operator who has the venue's
- *                  maker schedule in hand. That is the founder's call, not this file's.
+ *                  rounded up to the cent on each fill. Maker: kalshiMakerFeeCents, M x 1.75% x
+ *                  contracts x p x (1 - p), rounded up to the cent, M the market's multiplier
+ *                  (1 unless the market says otherwise), charged only when the resting order
+ *                  executes and never for a cancel. This is the schedule the founder supplied
+ *                  (decision 1 below) and it is what our resting bid is priced at. The venue's
+ *                  monthly rebate of round-up excess is not counted, and a market that charges
+ *                  makers nothing costs us less than priced: either way the difference is ours
+ *                  and settleBetterBid shows it when it is given the fee actually paid.
+ *                  `restingBid: "taker_formula"` prices the bid at the full taker rate and
+ *                  `restingBid: "free"` at nothing, for a comparison; neither is the default.
  *   Polymarket US  Taker: polyUsFeeMilli (polymarketUs.ts), coefficient x p x (1 - p) per share,
  *                  rounded up per share; the coefficient is the market's own, 0.095 at the first
  *                  tier (polyUsCoefficient). Maker: nothing; that file says the fee is on the taker.
@@ -46,6 +49,21 @@
  *                  it cannot be priced here: refused. A member's own sale there is memberSale.ts.
  *   folded         A reference book whose reader already put the taker fee inside every price
  *                  (venueBooks.ts, polymarketUs.ts). W only; the fee cannot be shown apart.
+ *
+ * THE FOUR DECISIONS (the founder's, 11 November 2026; each was an assumption before)
+ *   1. Our resting bid on Kalshi is priced at Kalshi's maker schedule, above.
+ *   2. The leftover (`residualCents`, below) stays with us, on its own line, never inside the
+ *      take. It cannot be split with the venue from inside the trade: a venue is paid by its own
+ *      fee schedule and by nothing else, and there is no order that hands it a share. Sharing it
+ *      takes a signed agreement with that venue and a payment outside the trade; until one
+ *      exists, `residualKeptBy` reads "us". Where a higher bid could reach the holder it already
+ *      has: the residual is only what V's price grid or V's own offer kept from them.
+ *   3. ProphetX takes its fee only if its contract wins. The bid is priced as if the fee is
+ *      always paid (the worst case), so we are never left short; where the holder's side wins
+ *      and the fee is not taken, the difference is ours and `ifSideWinsCents` shows it.
+ *   4. A venue whose tie and called-off rules have not been read is compared at the worst
+ *      reading of each (shadowSaleAlternatives.unreadRules: every cell unconfirmed, which the
+ *      router prices at its worst plausible outcome).
  *
  * THE IDENTITY (cents; one contract pays 100)
  *   V's bids, best first: (p1, s1), (p2, s2), ...     W's offers for the other side: (a1, t1), ...
@@ -83,7 +101,7 @@
  *     venue_offer   V's own offer. The bid already sits one step under it; a higher bid would
  *                   buy from V's sellers and not from the holder. This happens when the two
  *                   venues disagree by more than V's own spread, and the residual can be large.
- *   It is reported on its own line, never folded into the take.
+ *   It is reported on its own line, never folded into the take, and it stays with us (decision 2).
  *
  * WHAT EACH PARTY GETS
  *   Holder        H(b*) in cash now, which is O plus the improvement. If their side wins, $1 for
@@ -91,7 +109,8 @@
  *                 and we owe them nothing, at settlement or in any tail: the cash is theirs.
  *   Us            L on either result. One exception, said plainly: on ProphetX the fee is taken
  *                 only if the W contract wins, so we are left with L if the holder's side loses
- *                 and L plus that fee if it wins. The bid is priced as if the fee is always paid.
+ *                 and L plus that fee if it wins. The bid is priced as if the fee is always paid
+ *                 (decision 3).
  *   Venue V       its taker fee from the holder (on every fill of the sale) and its fee from us
  *                 on our resting bid. V's other bidders at b or better fill as they would have.
  *   Venue W       its taker fee from us (ProphetX: at settlement, if its contract wins).
@@ -142,7 +161,7 @@
 import { computeTake, type TakeBreakdown } from "./collarSearch";
 import { hedgeNotionalFeeCents } from "./crossVenuePricer";
 import { tailCharge, type RuleCells, type TailCharge, type TailProbabilities } from "./hedgeRouting";
-import { kalshiTakerFeeCents } from "./kalshiLadder";
+import { kalshiMakerFeeCents, kalshiTakerFeeCents } from "./kalshiLadder";
 import { polyUsFeeMilli } from "./polymarketUs";
 import { buyCostCents } from "./prophetxOrders";
 import type { CrossSearchConfig, PmBookLevel } from "./types";
@@ -152,7 +171,13 @@ const MICRO_PER_CENT = 10_000;
 
 /** A venue's fee rule, as the code that already prices that venue has it. */
 export type VenueFee =
-  | { kind: "kalshi"; restingBid?: "taker_formula" | "free" }
+  | {
+      kind: "kalshi";
+      /** how our resting bid is charged: the venue's maker schedule (the default), the full taker rate, or nothing */
+      restingBid?: "maker_schedule" | "taker_formula" | "free";
+      /** M in the maker formula; 1 unless the market says otherwise */
+      makerMultiplier?: number;
+    }
   | { kind: "polymarket_us"; coefficient: number }
   | { kind: "novig"; coefficient: number; charged: boolean }
   | { kind: "prophetx"; feeBps: number }
@@ -222,14 +247,17 @@ function takerFeeCents(fee: VenueFee, w: Pick<Walk, "fills" | "microUsd">): numb
   }
 }
 
-export type RestingBidFeeBasis = "taker_formula" | "free_by_setting" | "taker_only_schedule" | "config_rate";
+export type RestingBidFeeBasis = "maker_schedule" | "taker_formula" | "free_by_setting" | "taker_only_schedule" | "config_rate";
 
 /** Our fee on V when our resting bid is hit. Null where V cannot be the holder's venue in this shape. */
 function restingBidFee(fee: VenueFee, sizeMilli: number, bidMilli: number): { cents: number; basis: RestingBidFeeBasis } | null {
   switch (fee.kind) {
     case "kalshi":
       if (bidMilli % 10 !== 0) return null;
-      return fee.restingBid === "free" ? { cents: 0, basis: "free_by_setting" } : { cents: kalshiTakerFeeCents(sizeMilli, bidMilli / 10), basis: "taker_formula" };
+      if (fee.restingBid === "free") return { cents: 0, basis: "free_by_setting" };
+      if (fee.restingBid === "taker_formula") return { cents: kalshiTakerFeeCents(sizeMilli, bidMilli / 10), basis: "taker_formula" };
+      if (fee.makerMultiplier !== undefined && !(Number.isFinite(fee.makerMultiplier) && fee.makerMultiplier > 0)) return null;
+      return { cents: kalshiMakerFeeCents(sizeMilli, bidMilli / 10, fee.makerMultiplier ?? 1), basis: "maker_schedule" };
     case "polymarket_us":
       return { cents: 0, basis: "taker_only_schedule" };
     case "polymarket":
@@ -641,6 +669,8 @@ export interface BetterBidQuote {
     residualCents: number;
     /** why the bid is no higher: the next step up would leave us short of our take, or it would reach V's own offer */
     bidLimitedBy: "our_take" | "venue_offer";
+    /** who holds the residual: us, until a signed agreement with the venue says otherwise (decision 2) */
+    residualKeptBy: "us";
   };
   holderVenue: { feeFromHolderCents: number; feeFromUsCents: number };
   otherVenue: { feeFromUsCents: number; feeTiming: OtherFeeTiming; avgPriceMilli: number; worstPriceMilli: number };
@@ -767,6 +797,7 @@ export function quoteBetterBid(i: BetterBidInputs): BetterBidQuote | BetterBidRe
       tailChargeCents: at.tailChargeCents,
       residualCents: at.residualCents,
       bidLimitedBy,
+      residualKeptBy: "us",
     },
     holderVenue: { feeFromHolderCents: at.holderFeeCents, feeFromUsCents: at.ourFeeOnHolderVenueCents },
     otherVenue: { feeFromUsCents: at.otherFeeCents, feeTiming: at.otherFeeTiming, avgPriceMilli: at.otherAvgPriceMilli, worstPriceMilli: at.otherWorstPriceMilli },
@@ -797,7 +828,8 @@ export interface BetterBidSettlement {
 /**
  * The quote settled on one result, each party's money from the legs themselves rather than from
  * the quote's own totals. `paid` replaces a priced fee with the one a venue actually took, which
- * is where a maker fee lower than the priced one shows up as ours.
+ * is where a fee lower than the priced one (a market that charges makers nothing, the monthly
+ * round-up rebate) shows up as ours.
  */
 export function settleBetterBid(
   q: BetterBidQuote,

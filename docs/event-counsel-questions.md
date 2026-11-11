@@ -34,6 +34,7 @@ Each question below gives the facts, why it matters, and what we would change de
 2. To count as competitive, does the venue need a request-for-quote path, or a minimum time our bid must rest on the open book where anyone can take it?
 3. Does trading this way make us a dealer or market maker that must register, or that needs the venue's market-maker agreement?
 4. Can we take a fee from the venue on a trade where we are also the buyer?
+5. Sometimes the venue's price steps or its own offer stop our bid short, and some cents are left over that we cannot pass to the holder through the price. Today they stay with us and are shown on their own line. If we wanted to share them with the venue, what agreement does that take, and does paying a venue outside its fee schedule raise any issue?
 
 **Why it matters.** This is the first shape where we earn from the trade itself and put our own money at risk between two venues.
 

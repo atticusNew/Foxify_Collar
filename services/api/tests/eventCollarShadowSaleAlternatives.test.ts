@@ -124,7 +124,7 @@ test("sale alternatives: the better bid is tried on every other book the scan ho
     { id: "long_short_v1", book: otherBook(330) },
     { id: "outcome_v1", book: otherBook(300) },
     { id: "partner_mm", book: null, reason: "not_listed" },
-    { id: "aggregated_mm", book: otherBook(360) },
+    { id: "aggregated_mm", book: otherBook(380) },
   ];
   const i = inputs({ books: { noAsks: NO_ASKS, pmNoBook: otherBook(350), pxNoBook: otherBook(340), references } });
   const s = saleAlternativesFor(i, live);
@@ -145,27 +145,29 @@ test("sale alternatives: the better bid is tried on every other book the scan ho
   const at62 = s.books.filter((b): b is Extract<ShadowBetterBidOn, { ok: true }> => b.ok && b.bidMilli === 620);
   assert.deepEqual(at62.map((b) => b.book), ["polymarket", "prophetx", "signed_v3", "long_short_v1"]);
   for (const b of at62) assert.deepEqual([b.cashCents, b.improvementCents, b.boughtMilli], [7694, 7694 - 7306, 127_500]);
-  // the dearest other side (36c) can only pay 61c
+  // the dearest other side (38c) can only pay 61c: at 62c, $127.50 - $79.05 - 53c - $48.45 is a loss; at 61c, $127.50 - $77.78 - 54c - $48.45 leaves 73c
   const dear = s.books.find((b) => b.book === "aggregated_mm");
   assert.ok(dear?.ok && dear.bidMilli === 610 && dear.improvementCents < 388);
+  assert.equal(dear.lockedCents, 12_750 - 7778 - 54 - 4845);
 
   // among books that pay the holder the same, the cheapest other side is kept: 33c
   assert.ok(s.betterBid.ok);
   assert.equal(s.betterBid.book, "long_short_v1");
-  // us: $127.50 back, less $79.05 and the resting bid priced at the taker formula ($2.11), less 127.5 x 33c = $42.075 rounded up
-  assert.equal(s.betterBid.lockedCents, 12_750 - 7905 - 211 - 4208);
+  // us: $127.50 back, less $79.05 and the venue's maker fee on our resting bid, ceil(0.0175 x 127.5 x 0.62 x 0.38 = 52.6c) = 53c, less 127.5 x 33c = $42.075 rounded up
+  assert.equal(s.betterBid.lockedCents, 12_750 - 7905 - 53 - 4208);
+  assert.equal(s.restingBidFee, "maker_schedule", "the line says what the bid was priced at");
   assert.equal(s.betterBid.ifSideWinsCents, s.betterBid.lockedCents);
   assert.equal(s.betterBid.lockedCents, s.betterBid.takeCents + s.betterBid.tailChargeCents + s.betterBid.residualCents);
   // the venue's 63c offer stopped the bid, not our take
   assert.equal(s.betterBid.bidLimitedBy, "venue_offer");
-  // one leg: 127.5 bought at 62c ($79.05 + $2.11) sold back into the 59c bid ($75.22 - $2.16)
-  assert.equal(s.betterBid.oneLegLossCents, 7905 + 211 - (7522 - 216));
+  // one leg: 127.5 bought at 62c ($79.05 + the maker's 53c) sold back into the 59c bid ($75.22 - the taker's $2.16)
+  assert.equal(s.betterBid.oneLegLossCents, 7905 + 53 - (7522 - 216));
 
   // ProphetX's own book, raw: the fee is taken only if its contract wins, and the line says what we are left with each way
   const px = s.books.find((b) => b.book === "prophetx");
   assert.ok(px?.ok);
   // 127.5 x 34c = $43.35 staked; 2% of the $84.15 it would gain = $1.69, rounded up
-  assert.deepEqual([px.lockedCents, px.ifSideWinsCents], [12_750 - 7905 - 211 - 4335 - 169, 12_750 - 7905 - 211 - 4335]);
+  assert.deepEqual([px.lockedCents, px.ifSideWinsCents], [12_750 - 7905 - 53 - 4335 - 169, 12_750 - 7905 - 53 - 4335]);
 
   // the same figures straight from the quote: the line stores what betterBid.ts priced, nothing else
   const direct = quoteBetterBid({
@@ -184,8 +186,8 @@ test("sale alternatives: the better bid is tried on every other book the scan ho
   const unread = s.books.find((b) => b.book === "long_short_v1");
   assert.ok(unread?.ok && pm.ok && unread.tailChargeCents > pm.tailChargeCents);
 
-  // the sensitivity: with our resting bid priced at no fee the same line leaves us the $2.11 more (the 63c offer still caps the bid)
-  assert.deepEqual(s.ifRestingBidFree, { ok: true, book: "long_short_v1", improvementCents: 388, lockedCents: s.betterBid.lockedCents + 211 });
+  // the sensitivity: on a market that charges our resting bid nothing the same line leaves us the 53c more (the 63c offer still caps the bid)
+  assert.deepEqual(s.ifRestingBidFree, { ok: true, book: "long_short_v1", improvementCents: 388, lockedCents: s.betterBid.lockedCents + 53 });
 
   // the holder's venue's offer comes from the scan's market snapshot; without it the pair's own copy is used
   const fromPair = saleAlternativesFor({ ...i, holderAskCents: undefined }, live);
@@ -251,9 +253,11 @@ test("sale alternatives: the tails are priced with the routing's own rules and p
   const [tieProne] = saleAlternativesFor(inputs({ books, settlement: { holderVenue: "kalshi", holderRules: rulesFor("kalshi", "nfl"), probabilities: { tie: 0.2, postponed: 0, abandoned: 0, corrected: 0 } } }), live).books;
   assert.ok(table.ok && tieProne.ok);
   // on a tie the user's venue pays 50c on the contract we bought and the other venue hands back the 33c paid:
-  // 17c short of $1, one time in five, on 127.5 contracts = $4.335, rounded up. A dearer tail leaves less to bid with: 60c, not 62c
+  // 17c short of $1, one time in five, on 127.5 contracts = $4.335, rounded up. A dearer tail leaves less to bid with: 61c, not 62c.
+  // At 62c: $127.50 - $79.05 - 53c - $42.08 - the $1.71 fee if the other side wins = $4.13, under the $4.34 charge.
+  // At 61c: $127.50 - $77.78 - 54c - $42.08 - $1.71 = $5.39, which covers the charge and the take.
   assert.deepEqual([table.bidMilli, table.tailChargeCents, table.improvementCents], [620, 19, 388]);
-  assert.deepEqual([tieProne.bidMilli, tieProne.tailChargeCents, tieProne.improvementCents], [600, 434, 129]);
+  assert.deepEqual([tieProne.bidMilli, tieProne.tailChargeCents, tieProne.improvementCents, tieProne.lockedCents], [610, 434, 258, 539]);
   for (const b of [table, tieProne]) assert.equal(b.lockedCents, b.takeCents + b.tailChargeCents + b.residualCents);
 });
 
@@ -374,7 +378,7 @@ function summedLedger(): string {
   appendShadowRecord(path, line("L1", { ...SALE_BASE, ownSale: ownOk(5200), betterBid: { ...pmBid, venuesPriced: 2 }, books: [pmBid, { book: "signed_v3", ok: false, refused: "take_eats_it" }], ifRestingBidFree: { ok: true, book: "polymarket", improvementCents: 45, lockedCents: 60 } }));
   appendShadowRecord(path, { type: "settle", at: "2026-09-22T00:00:00.000Z", ticker: "L1", result: "no" });
   // 2: the sale falls $1.00 short; a better bid on a venue that charges only when its contract wins; settles YES
-  appendShadowRecord(path, line("L2", { ...SALE_BASE, ownSale: ownOk(5000), betterBid: { ...pxBid, venuesPriced: 3 }, books: [{ book: "polymarket", ok: false, refused: "no_improvement" }, pxBid, { book: "long_short_v1", ok: false, refused: "tail_charge_eats_it" }], ifRestingBidFree: { ok: true, book: "prophetx", improvementCents: 70, lockedCents: 80 } }));
+  appendShadowRecord(path, line("L2", { ...SALE_BASE, ownSale: ownOk(5000), betterBid: { ...pxBid, venuesPriced: 3 }, books: [{ book: "polymarket", ok: false, refused: "no_improvement" }, pxBid, { book: "long_short_v1", ok: false, refused: "tail_charge_eats_it" }], restingBidFee: "maker_schedule", ifRestingBidFree: { ok: true, book: "prophetx", improvementCents: 70, lockedCents: 80 } }));
   appendShadowRecord(path, { type: "settle", at: "2026-09-22T00:00:00.000Z", ticker: "L2", result: "yes" });
   // 3: the sale matches the floor; another venue read, no better bid
   appendShadowRecord(path, line("L3", { ...SALE_BASE, ownSale: ownOk(5100), betterBid: { ok: false, refused: "no_venue_improves", venuesPriced: 1 }, books: [{ book: "polymarket", ok: false, refused: "no_improvement" }], ifRestingBidFree: { ok: false, refused: "no_venue_improves" } }));
@@ -423,6 +427,8 @@ test("sale alternatives summary: counts, medians and totals in cents and in bps 
   });
   assert.deepEqual(b.oneLeg, { priced: 1, unbounded: 1, totalCents: 200, worstCents: 200 });
   assert.deepEqual(b.ifRestingBidFree, { existed: 2, improvementTotalCents: 115 });
+  // what our resting bid was priced at: line 2 says the maker schedule; line 1 carries no word, so it is from before the schedule
+  assert.deepEqual(b.restingBidFee, { makerSchedule: 1, takerFormula: 1 });
   // settled: line 1 lost (40c either way); line 2 won, so the other venue's contract lost and its fee was never taken (75c, not 60c)
   assert.deepEqual(b.settled, { lines: 2, usCents: 40 + 75 });
 
@@ -461,6 +467,15 @@ test("public record page: one section says how often a better bid existed, by ho
   assert.ok(card.includes("by a median of $0.40 (0.40% of stake) and by $0.80 in total (0.40% of the stake on those lines)"));
   assert.ok(card.includes("after every venue fee, our take and a charge for the two venues settling a tie or a called-off game differently"));
   assert.ok(card.includes("2 lines is a small sample: read it as a count, not as a rate."));
+  // what our own bid is charged, which lines were priced before the schedule was in hand, and where the leftover goes
+  assert.ok(
+    card.includes(
+      "Our own bid is priced at the venue's fee for an order that rests on its book, which is a quarter of its fee for an order that takes from the book, and is charged only if the bid is filled. " +
+        "1 of these lines was written before 11 November 2026 and priced our bid at the full fee, so it understates the gain. " +
+        "Where the venue's price steps or its own offer stopped our bid short of passing everything on, what was left over stays with us: $0.55 across these lines, shown here apart from our take of $0.30.",
+    ),
+    card,
+  );
   // the own sale against the lock the record wrote
   assert.ok(card.includes("the own sale paid the user a median of $0.25 more than the lock's floor (0.25% of stake) and $0.50 more in total across 4 lines (0.12% of stake): more on 2, less on 1, the same on 1."));
   assert.ok(card.includes("On 1 other line the own sale could not be priced from the books read, and nothing was measured."));

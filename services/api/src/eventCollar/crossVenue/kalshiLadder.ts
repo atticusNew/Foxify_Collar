@@ -80,6 +80,27 @@ export function kalshiTakerFeeCents(qtyMilli: number, priceCents: number): numbe
 }
 
 /**
+ * Kalshi maker fee on one fill of a resting order, exact:
+ * M * 0.0175 * C * p * (1 - p) dollars, rounded up to the cent. M is the
+ * market's multiplier, 1 on a standard market. Charged only when the resting
+ * order executes; a cancelled order pays nothing. The venue rebates round-up
+ * excess over $10 in a month; that rebate is not counted here, so this is
+ * never under what the venue takes.
+ *
+ * With qty in milli contracts, p in cents and M in thousandths, the cents
+ * value is 175 * Mmilli * qtyMilli * p * (100 - p) / 10^12. BigInt: the
+ * product passes 2^53 at sizes a ledger can hold.
+ */
+export function kalshiMakerFeeCents(qtyMilli: number, priceCents: number, multiplier = 1): number {
+  if (qtyMilli <= 0 || priceCents <= 0 || priceCents >= 100) return 0;
+  if (!Number.isFinite(multiplier) || multiplier <= 0) throw new Error("kalshi maker fee: the multiplier has to be a positive number");
+  const multiplierMilli = Math.ceil(multiplier * 1000);
+  const num = 175n * BigInt(multiplierMilli) * BigInt(Math.ceil(qtyMilli)) * BigInt(Math.round(priceCents)) * BigInt(100 - Math.round(priceCents));
+  const den = 1_000_000_000_000n;
+  return Number((num + den - 1n) / den);
+}
+
+/**
  * Walk No asks (best-first) for contractsMilli; exact milli-cent cost plus the
  * exact taker fee on each fill. Null when the visible depth cannot fill.
  */
