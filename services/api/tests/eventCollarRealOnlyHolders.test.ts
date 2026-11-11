@@ -278,7 +278,7 @@ test("where it would not, the quote says so and the tap is refused: no record, n
   assert.deepEqual([line.ref, line.ticker, line.holder, line.source, line.why], [`${GSW}@bob`, GSW, "bob", "lock", "not_armed"]);
   assert.equal(line.detail, "bob is real-only and the hedge would not truly be bought: this game is not armed (EVENT_HEDGE_LIVE_TICKERS)");
   // it is not an order's ending and holds nothing against a cap
-  assert.deepEqual(summarizePending(trail()), { unresolved: [], strays: [], counts: { locked: 0, refused: 0, stray: 0, unconfirmed: 0, ledger_failed: 0 } });
+  assert.deepEqual(summarizePending(trail()), { unresolved: [], strays: [], sales: [], counts: { locked: 0, refused: 0, stray: 0, unconfirmed: 0, ledger_failed: 0 } });
 
   // alice is not named: the simulated lock, exactly as before
   const paper = await tap("alice", GSW);

@@ -11,6 +11,7 @@
  * EVENT_SHADOW_REAL_ONLY_HOLDERS names the holders for whom the second ending is a refusal:
  *
  *   ann,bob     those holder aliases (the names in EVENT_SHADOW_HOLDER_KEYS)
+ *   shared      the shared key (EVENT_SHADOW_LOCK_KEY), and the operator acting for nobody
  *   *           every caller: each holder, the shared key, and the operator acting by hand
  *   unset       nobody; every lock behaves as it did before this setting existed
  *
@@ -41,13 +42,19 @@ export interface RealOnlyHolders {
   all: boolean;
   /** the aliases named, lower case, in the order given, each once */
   holders: string[];
+  /** `shared` was named: the shared key, and the operator acting for nobody, are real-only too */
+  shared?: boolean;
   notes: string[];
 }
+
+/** The word that names the shared key in the setting: it has no alias of its own. */
+export const SHARED_KEY_WORD = "shared";
 
 export function realOnlyHoldersFromEnv(env: NodeJS.ProcessEnv = process.env, knownHolders: readonly string[] = []): RealOnlyHolders {
   const holders: string[] = [];
   const notes: string[] = [];
   let all = false;
+  let shared = false;
   for (const raw of (env[REAL_ONLY_ENV] ?? "").split(/[,\s]+/)) {
     const entry = raw.trim().toLowerCase();
     if (!entry) continue;
@@ -60,16 +67,21 @@ export function realOnlyHoldersFromEnv(env: NodeJS.ProcessEnv = process.env, kno
       notes.push(`${REAL_ONLY_ENV}: "${entry.slice(0, 24)}" is neither a holder alias (2-24 of a-z 0-9 _ -) nor *; read as *, so every caller is real-only until it is corrected`);
       continue;
     }
+    if (entry === SHARED_KEY_WORD) {
+      shared = true;
+      // a holder who was also given the alias "shared" is covered as any alias is; otherwise the word names the shared key alone
+      if (!knownHolders.includes(entry)) continue;
+    }
     if (holders.includes(entry)) continue;
     holders.push(entry);
     if (!knownHolders.includes(entry)) notes.push(`${REAL_ONLY_ENV}: ${entry} has no key in EVENT_SHADOW_HOLDER_KEYS; kept, and it applies when the operator acts for ${entry}`);
   }
-  return { all, holders, notes };
+  return { all, holders, ...(shared ? { shared } : {}), notes };
 }
 
 /** Is this caller real-only? `holder` is the alias the lock is made for; null is the shared key, or the operator acting for nobody. */
 export function isRealOnly(cfg: RealOnlyHolders, holder: string | null): boolean {
-  return cfg.all || (holder !== null && cfg.holders.includes(holder));
+  return cfg.all || (holder === null ? cfg.shared === true : cfg.holders.includes(holder));
 }
 
 /** The holders with a key who are not real-only: for each, a tap can still write a lock with nothing bought. */

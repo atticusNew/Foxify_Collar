@@ -223,7 +223,44 @@ export type PendingRecord =
       /** lockMode's reason, or "no_intent" when the order could not be built, or "not_sold" when a sale went out and sold nothing */
       why: string;
       detail: string;
-    };
+    }
+  | SaleLeftRecord;
+
+/**
+ * A LEAVE THAT LEFT, OR MAY HAVE LEFT, THE VENUE OUT OF STEP WITH THE RECORD. One line, written
+ * after the fact, cleared like a stray (a "cleared" line with its id) once the operator has looked.
+ *
+ *   unconfirmed  the sale of a lock's real hedge went out and its end was not read. Nothing was
+ *                closed: the lock stands, open, and is counted as before. No second sale is sent
+ *                for it until the line is cleared, because the first may have sold.
+ *   left_over    the lock was closed on the record and this much of its real hedge is still on
+ *                the venue: the sale filled in part, sold nothing, or could not be sent. It is
+ *                counted against the game's and the venue's cap at what it cost until cleared.
+ */
+export interface SaleLeftRecord {
+  type: "sale_left";
+  id: string;
+  at: string;
+  ref: string;
+  ticker: string;
+  holder?: string;
+  /** the game the hedge is on, as the exposure caps key it */
+  game: string;
+  venue: HedgeVenue;
+  instrument: string;
+  outcome: "unconfirmed" | "left_over";
+  /** the hedge the sale was for (unconfirmed), or what is still on the venue (left_over) */
+  unitsMilli: number;
+  /** what those units cost when they were bought */
+  costCents: number;
+  detail: string;
+  receiptId?: string;
+}
+
+/** What a holder is told when the sale of the other side went out and its end was not read. No venue, no order detail. */
+export const LEAVE_UNCONFIRMED = { code: "leave_unconfirmed", message: "The sale of the other side could not be confirmed. Nothing was closed; your lock stands. It is being checked, so please do not try again yet." } as const;
+/** What a holder is told while an earlier unconfirmed sale on this lock has not been cleared. */
+export const LEAVE_BEING_CHECKED = { code: "leave_being_checked", message: "An earlier request to leave this position is still being checked. Nothing was closed; your lock stands as it is." } as const;
 
 export type PendingOrder = { venue: HedgeVenue; instrument: string; action: "buy" | "sell"; unitsMilli: number; limitMilli: number; maxCostCents: number };
 
@@ -272,7 +309,7 @@ export function loadPending(path: string): PendingRecord[] {
     if (!line.trim()) continue;
     try {
       const r = JSON.parse(line) as PendingRecord;
-      if (r && (r.type === "pending" || r.type === "resolved" || r.type === "cleared" || r.type === "cap_refused" || r.type === "not_real_refused") && typeof r.id === "string") out.push(r);
+      if (r && (r.type === "pending" || r.type === "resolved" || r.type === "cleared" || r.type === "cap_refused" || r.type === "not_real_refused" || r.type === "sale_left") && typeof r.id === "string") out.push(r);
     } catch {
       // a torn line is skipped, never repaired
     }
@@ -285,6 +322,8 @@ export interface PendingSummary {
   unresolved: Array<Extract<PendingRecord, { type: "pending" }>>;
   /** hedge bought (or possibly bought) with no lock behind it: the operator's to find and sell */
   strays: Array<{ pending: Extract<PendingRecord, { type: "pending" }>; resolved: Extract<PendingRecord, { type: "resolved" }> }>;
+  /** leaves that left, or may have left, hedge on a venue out of step with the record, not yet cleared */
+  sales: SaleLeftRecord[];
   counts: Record<PendingResolution, number>;
 }
 
@@ -293,10 +332,12 @@ export function summarizePending(records: PendingRecord[]): PendingSummary {
   const pendings = new Map<string, Extract<PendingRecord, { type: "pending" }>>();
   const resolved = new Map<string, Extract<PendingRecord, { type: "resolved" }>>();
   const cleared = new Set<string>();
+  const saleLines = new Map<string, SaleLeftRecord>();
   for (const r of records) {
     if (r.type === "pending") pendings.set(r.id, r);
     else if (r.type === "resolved") resolved.set(r.id, r);
     else if (r.type === "cleared") cleared.add(r.id);
+    else if (r.type === "sale_left") saleLines.set(r.id, r);
   }
   const counts: Record<PendingResolution, number> = { locked: 0, refused: 0, stray: 0, unconfirmed: 0, ledger_failed: 0 };
   const unresolved: PendingSummary["unresolved"] = [];
@@ -310,13 +351,13 @@ export function summarizePending(records: PendingRecord[]): PendingSummary {
     counts[r.outcome] += 1;
     if ((r.outcome === "stray" || r.outcome === "unconfirmed" || r.outcome === "ledger_failed") && !cleared.has(id)) strays.push({ pending: p, resolved: r });
   }
-  return { unresolved, strays, counts };
+  return { unresolved, strays, sales: [...saleLines.values()].filter((s) => !cleared.has(s.id)), counts };
 }
 
 /** Whether `id` names a line the operator may clear: unresolved, or ended with hedge possibly left on a venue. */
 export function clearable(records: PendingRecord[], id: string): boolean {
   const s = summarizePending(records);
-  return s.unresolved.some((p) => p.id === id) || s.strays.some((x) => x.pending.id === id);
+  return s.unresolved.some((p) => p.id === id) || s.strays.some((x) => x.pending.id === id) || s.sales.some((x) => x.id === id);
 }
 
 /** The real-only refusals on the trail: how many, and the latest. */

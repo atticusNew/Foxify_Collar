@@ -162,7 +162,7 @@ import { inPlayFromEnv, inPlayMaxMsFromEnv } from "../src/eventCollar/crossVenue
 import { liveRailsFromEnv } from "../src/eventCollar/crossVenue/liveHedge";
 import { capitalModel } from "../src/eventCollar/crossVenue/capitalModel";
 import { holderKeyCounts, pilotCheck, readDiskFacts, type PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
-import { appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, notRealRefusals, pendingId, pendingRecordFor, refusalWords, summarizePending, type CapRefusalLine, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
+import { LEAVE_BEING_CHECKED, LEAVE_UNCONFIRMED, appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, notRealRefusals, pendingId, pendingRecordFor, refusalWords, summarizePending, type CapRefusalLine, type PendingRecord, type SaleLeftRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
 import { LEAVE_NOT_OPEN, LEAVE_NOT_SOLD, LOCK_NOT_OPEN, isRealOnly, notRealOnly, notRealReason, realOnlyHoldersFromEnv, type NotRealWhy, type RealOnlyHolders } from "../src/eventCollar/crossVenue/realOnlyHolders";
 import {
   capRefusalDetails,
@@ -2239,7 +2239,7 @@ function appendPendingOrAlert(record: PendingRecord): boolean {
 /** The pending trail for the status page: how attempts ended, and what still wants the operator's eyes. */
 function pendingHealth(): { path: string; counts: Record<string, number>; unresolved: string[]; strays: string[] } {
   const s = summarizePending(loadPending(PENDING_PATH));
-  return { path: PENDING_PATH, counts: s.counts, unresolved: s.unresolved.map((p) => p.id), strays: s.strays.map((x) => x.pending.id) };
+  return { path: PENDING_PATH, counts: s.counts, unresolved: s.unresolved.map((p) => p.id), strays: [...s.strays.map((x) => x.pending.id), ...s.sales.map((x) => x.id)] };
 }
 
 /**
@@ -2248,12 +2248,13 @@ function pendingHealth(): { path: string; counts: Record<string, number>; unreso
  */
 function alertUnresolvedPending(): void {
   const s = summarizePending(loadPending(PENDING_PATH));
-  if (s.unresolved.length === 0 && s.strays.length === 0) return;
+  if (s.unresolved.length === 0 && s.strays.length === 0 && s.sales.length === 0) return;
   const lines = [
     ...s.unresolved.map((p) => `${p.id}: ${p.order.unitsMilli / 1000} on ${p.order.venue} ${p.order.instrument}, never resolved`),
     ...s.strays.map((x) => `${x.pending.id}: ${x.resolved.outcome}, ${x.resolved.detail}`),
+    ...s.sales.map((x) => `${x.id}: a leave, ${x.outcome === "unconfirmed" ? "sale not confirmed" : "hedge left on the venue"}, ${x.detail}`),
   ];
-  void alerter({ kind: "lock_pending_unresolved", message: `${lines.length} lock attempt(s) may have left hedge on a venue with no lock behind it: ${lines.join(" | ")}. See /api/shadow/lock/pending; clear each once checked.` });
+  void alerter({ kind: "lock_pending_unresolved", message: `${lines.length} lock attempt(s) or leave(s) may have left hedge on a venue out of step with the record: ${lines.join(" | ")}. See /api/shadow/lock/pending; clear each once checked.` });
 }
 
 type HedgeFirstResult =
@@ -2388,12 +2389,55 @@ function saleNotRealWhy(ticker: string, lock: ShadowPosition, q: EarlyCloseQuote
   return notRealWhy(intent);
 }
 
+/** The real buys behind a lock, summed: where they are, how many units, what they cost. Zero units when its hedge was never really bought. */
+function realHedgeOf(lock: ShadowPosition, holder: string | null): { venue: HedgeVenue | null; unitsMilli: number; costCents: number } {
+  const ref = hedgeRefFor(lock.ticker, holder);
+  const fills = fillsBehind(lock, holder, loadHedgeReceipts(RECEIPTS_PATH).filter((r) => r.ref === ref), lockedAttempts(loadPending(PENDING_PATH)).filter((a) => a.ref === ref));
+  return { venue: fills[0]?.venue ?? null, unitsMilli: fills.reduce((s, f) => s + f.unitsMilli, 0), costCents: fills.reduce((s, f) => s + f.costCents, 0) };
+}
+
+/** One sale_left line on the pending trail (hedgeFirst.SaleLeftRecord): a leave whose sale was not confirmed, or that closed with hedge still on the venue. */
+function noteSaleLeft(args: {
+  ref: string;
+  ticker: string;
+  holder: string | null;
+  lock: ShadowPosition;
+  bought: { venue: HedgeVenue | null };
+  outcome: SaleLeftRecord["outcome"];
+  unitsMilli: number;
+  costCents: number;
+  detail: string;
+  receipt: HedgeReceipt | null;
+}): SaleLeftRecord {
+  const at = new Date().toISOString();
+  const line: SaleLeftRecord = {
+    type: "sale_left",
+    id: `${pendingId(args.ref, at)}#leave`,
+    at,
+    ref: args.ref,
+    ticker: args.ticker,
+    ...(args.holder ? { holder: args.holder } : {}),
+    game: gameKeyOf(args.ticker, args.lock.league),
+    venue: args.receipt?.intent.venue ?? args.bought.venue ?? "kalshi",
+    instrument: args.receipt?.intent.instrument ?? args.ticker,
+    outcome: args.outcome,
+    unitsMilli: args.unitsMilli,
+    costCents: args.costCents,
+    detail: args.detail.slice(0, 600),
+    ...(args.receipt ? { receiptId: args.receipt.id } : {}),
+  };
+  appendPendingOrAlert(line);
+  return line;
+}
+
 async function sellHedge(
   ticker: string,
   ref: string,
   lock: ShadowPosition,
   q: EarlyCloseQuote,
-): Promise<{ q: EarlyCloseQuote; sent: boolean; receipt: HedgeReceipt | null; note: string }> {
+  /** the sale is of a real hedge and would truly leave: an ending that was not read is then `unconfirmed`, and the caller closes nothing */
+  real = false,
+): Promise<{ q: EarlyCloseQuote; sent: boolean; receipt: HedgeReceipt | null; note: string; unconfirmed?: string }> {
   if (!q.hedgeSale || !lock.hedgeUnitsMilli) {
     return { q, sent: false, receipt: null, note: "the hedge is on Polymarket; its sale is recorded at the book's price and the operator sells it by hand" };
   }
@@ -2403,15 +2447,34 @@ async function sellHedge(
   if (q.hedgeSale.venue === "novig" && !lock.hedgeOffsetOutcomeId) {
     return { q, sent: false, receipt: null, note: "the hedge is on Novig and the holder's own outcome is not on the record; the offset is recorded at the book's price and the operator buys it by hand" };
   }
-  let receipt: HedgeReceipt;
+  let intent: HedgeIntent;
   try {
-    receipt = await hedgeChoice.executor.execute(hedgeSaleIntent(ticker, lock, q.hedgeSale), ref);
-    appendHedgeReceipt(RECEIPTS_PATH, receipt);
+    intent = hedgeSaleIntent(ticker, lock, q.hedgeSale);
   } catch (err) {
     lastScanError = `hedge sale for ${ticker}: ${String(err instanceof Error ? err.message : err)}`;
     return { q, sent: false, receipt: null, note: `the sale could not be attempted (${String(err instanceof Error ? err.message : err)}); recorded at the book's price, the operator sells by hand` };
   }
+  let receipt: HedgeReceipt;
+  try {
+    receipt = await hedgeChoice.executor.execute(intent, ref);
+  } catch (err) {
+    const words = String(err instanceof Error ? err.message : err);
+    lastScanError = `hedge sale for ${ticker}: ${words}`;
+    // an executor that threw where the order would truly leave may have thrown after it left
+    if (real) return { q, sent: false, receipt: null, note: `the sale went out and was not confirmed (${words})`, unconfirmed: words };
+    return { q, sent: false, receipt: null, note: `the sale could not be attempted (${words}); recorded at the book's price, the operator sells by hand` };
+  }
+  try {
+    appendHedgeReceipt(RECEIPTS_PATH, receipt);
+  } catch (err) {
+    void alerter({ kind: "ledger_write_failed", message: `could not append the hedge sale receipt for ${ref} to ${RECEIPTS_PATH}: ${String(err instanceof Error ? err.message : err)}` });
+  }
   const fill = receipt.fill;
+  // the order left and the venue's answer was not its final state: it may have sold (hedgeFirst.judgeHedge)
+  const verdict = judgeHedge(intent, receipt);
+  if (verdict.kind === "unconfirmed") {
+    return { q, sent: false, receipt, note: `the sale went out and was not confirmed (${verdict.detail})`, unconfirmed: verdict.detail };
+  }
   if (!fill || fill.simulated) {
     return { q, sent: false, receipt, note: `the hedge sale is recorded at the book's price and not sent (${receipt.fallbackReason ?? "simulated"}); the operator sells it by hand` };
   }
@@ -3152,49 +3215,45 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 409, { ok: false, error: "lock_in_flight", message: "This position is being locked right now." });
       return;
     }
-    if (!lockable(loadShadowPositions(ownLedger), ticker)) {
-      sendJson(res, 409, { ok: false, error: "already_on_record", message: "This market is already locked; one lock per market." });
-      return;
-    }
-    if (venue === MEMBER_VENUE) {
-      if (parlay) {
-        sendJson(res, 409, { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VENUE_NAMES[MEMBER_VENUE]}; the lock sells part of one position.` });
-        return;
-      }
-      lockInFlight.add(flight);
-      try {
-        await memberLock(res, holder, ticker, contracts, entryCents, tier, ownLedger, atIso);
-      } finally {
-        lockInFlight.delete(flight);
-      }
-      return;
-    }
-    // a parlay is locked at its last pick only, on the service's own read of the picks: every other
-    // pick hit, this market is the one left and has not started, the size is at most what it pays
-    let parlayView: PicksView | null = null;
-    if (parlay) {
-      parlayView = await picksViewFor(parlay.picks);
-      const check = verifyParlayLock(parlayView, ticker, contracts, parlay.stakeCents, parlay.payoutCents, { inPlay: lockInPlay });
-      if (!check.ok) {
-        sendJson(res, 409, { ok: false, error: check.code, code: check.code, message: check.message, picks: parlayView.picks });
-        return;
-      }
-    }
-    // the venue's own word on the holder's side: when their account is readable and it holds the
-    // other club of this game and not this one, the card was misread; no lock, no wrong-way hedge
-    const other = await heldOtherSideOf(ticker);
-    if (other) {
-      sendJson(res, 409, { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; lock it in from that card.`, heldTicker: other.ticker });
-      return;
-    }
-    // the card is the protection's own hedge for a lock held on another venue: not theirs to protect
-    const ours = ownHedgeOn(ticker, venue ?? "kalshi", ownLedger);
-    if (ours) {
-      sendJson(res, 409, { ok: false, error: "own_hedge", code: "own_hedge", message: `This position is the lock's own hedge for your ${ours.sideName} on ${VENUE_NAMES[ours.holderVenue ?? "kalshi"]}.`, lockTicker: ours.ticker });
-      return;
-    }
+    // set before anything is awaited: a second tap on the same position meets this, whatever the first is still reading
     lockInFlight.add(flight);
     try {
+      if (!lockable(loadShadowPositions(ownLedger), ticker)) {
+        sendJson(res, 409, { ok: false, error: "already_on_record", message: "This market is already locked; one lock per market." });
+        return;
+      }
+      if (venue === MEMBER_VENUE) {
+        if (parlay) {
+          sendJson(res, 409, { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VENUE_NAMES[MEMBER_VENUE]}; the lock sells part of one position.` });
+          return;
+        }
+        await memberLock(res, holder, ticker, contracts, entryCents, tier, ownLedger, atIso);
+        return;
+      }
+      // a parlay is locked at its last pick only, on the service's own read of the picks: every other
+      // pick hit, this market is the one left and has not started, the size is at most what it pays
+      let parlayView: PicksView | null = null;
+      if (parlay) {
+        parlayView = await picksViewFor(parlay.picks);
+        const check = verifyParlayLock(parlayView, ticker, contracts, parlay.stakeCents, parlay.payoutCents, { inPlay: lockInPlay });
+        if (!check.ok) {
+          sendJson(res, 409, { ok: false, error: check.code, code: check.code, message: check.message, picks: parlayView.picks });
+          return;
+        }
+      }
+      // the venue's own word on the holder's side: when their account is readable and it holds the
+      // other club of this game and not this one, the card was misread; no lock, no wrong-way hedge
+      const other = await heldOtherSideOf(ticker);
+      if (other) {
+        sendJson(res, 409, { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; lock it in from that card.`, heldTicker: other.ticker });
+        return;
+      }
+      // the card is the protection's own hedge for a lock held on another venue: not theirs to protect
+      const ours = ownHedgeOn(ticker, venue ?? "kalshi", ownLedger);
+      if (ours) {
+        sendJson(res, 409, { ok: false, error: "own_hedge", code: "own_hedge", message: `This position is the lock's own hedge for your ${ours.sideName} on ${VENUE_NAMES[ours.holderVenue ?? "kalshi"]}.`, lockTicker: ours.ticker });
+        return;
+      }
       const q = await quoteOneFn({ ticker, contracts, entryCents, route: lockRouteFor(ticker), holderVenue: venue ?? "kalshi", executable: executableFor(ticker) });
       if (!q.ok) {
         sendJson(res, 200, { ok: false, at: atIso, ticker, code: q.code, message: q.detail });
@@ -3363,6 +3422,14 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         await memberUnwind(res, holder, lock, ownLedger, atIso);
         return;
       }
+      // an earlier sale of this lock's hedge went out and its end was never read: it may have sold,
+      // so no second sale is sent until the operator has looked at the venue and cleared the line
+      const leaveRef = hedgeRefFor(ticker, holder);
+      const checking = summarizePending(loadPending(PENDING_PATH)).sales.find((s) => s.ref === leaveRef && s.outcome === "unconfirmed" && s.at >= lock.at);
+      if (checking) {
+        sendJson(res, 200, { ok: false, at: atIso, ticker, ...LEAVE_BEING_CHECKED, ...(operator ? { detail: `${checking.id}: ${checking.detail}` } : {}) });
+        return;
+      }
       const q = quoteEarlyClose(closeTermsOf(lock), await closeBooksFn(lock));
       const at = new Date().toISOString();
       if (!q.ok) {
@@ -3381,7 +3448,18 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         sendJson(res, 200, { ok: false, at, ticker, ...LEAVE_NOT_OPEN, ...(operator ? { detail } : {}) });
         return;
       }
-      const sale = await sellHedge(ticker, hedgeRefFor(ticker, holder), lock, q);
+      // the real buys behind this lock (exposureCaps.fillsBehind): what is on a venue for it, and what it cost
+      const bought = realHedgeOf(lock, holder);
+      const sale = await sellHedge(ticker, leaveRef, lock, q, bought.unitsMilli > 0 && saleNotRealWhy(ticker, lock, q) === null);
+      if (sale.unconfirmed) {
+        const line = noteSaleLeft({ ref: leaveRef, ticker, holder, lock, bought, outcome: "unconfirmed", unitsMilli: bought.unitsMilli, costCents: bought.costCents, detail: sale.unconfirmed, receipt: sale.receipt });
+        void alerter({
+          kind: "hedge_stray",
+          message: `${leaveRef}: the sale of the hedge behind this lock (${bought.unitsMilli / 1000} on ${line.venue} ${line.instrument}) went out and was not confirmed (${sale.unconfirmed}). Nothing was closed; the lock stands and no second sale will be sent. Look for client order ${sale.receipt ? `atticus-${sale.receipt.id}` : "(no receipt)"} on the venue: if it sold, buy the same size back so the lock is hedged again; then clear ${line.id} and the holder may leave again.`,
+        });
+        sendJson(res, 200, { ok: false, at, ticker, ...LEAVE_UNCONFIRMED, ...(operator ? { detail: sale.unconfirmed } : {}) });
+        return;
+      }
       if (realHedge && !sale.sent) {
         const detail = refuseNotReal({ ref: hedgeRefFor(ticker, holder), ticker, holder, source: "leave", why: "not_sold", note: sale.note });
         sendJson(res, 200, { ok: false, at, ticker, ...LEAVE_NOT_SOLD, ...(operator ? { detail } : {}) });
@@ -3390,6 +3468,18 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       if (!appendOrAlert({ type: "close", at, ticker, priced: true, source: "unwind", hedgeSent: sale.sent, ...closeLinesOf(sale.q) }, ownLedger)) {
         sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: `The record could not be written; nothing was closed on the record${sale.sent ? ", though the hedge sale went to the venue" : ""}.` });
         return;
+      }
+      // closed on the record with real hedge still on the venue (the sale filled in part, sold
+      // nothing, or was not sent): the operator is told, and it stays counted until they clear it
+      const soldMilli = sale.sent ? (sale.receipt?.fill?.unitsMilli ?? 0) : 0;
+      const leftMilli = Math.max(0, Math.min(bought.unitsMilli, lock.hedgeUnitsMilli ?? bought.unitsMilli) - soldMilli);
+      if (leftMilli > 0) {
+        const leftCents = Math.ceil((bought.costCents * leftMilli) / bought.unitsMilli);
+        const line = noteSaleLeft({ ref: leaveRef, ticker, holder, lock, bought, outcome: "left_over", unitsMilli: leftMilli, costCents: leftCents, detail: `closed on the record with ${leftMilli / 1000} of ${bought.unitsMilli / 1000} still on the venue: ${sale.note}`, receipt: sale.receipt });
+        void alerter({
+          kind: "hedge_stray",
+          message: `${leaveRef}: the lock was closed on the record and ${leftMilli / 1000} of its hedge (${line.venue} ${line.instrument}, ${leftCents}c at cost) is still on the venue: ${sale.note}. Sell it by hand, then clear ${line.id}; it counts against the caps until then.`,
+        });
       }
       const closed = loadShadowPositions(ownLedger).find((p) => p.ticker === ticker)!;
       sendJson(res, 200, {
@@ -4838,7 +4928,7 @@ function healthBody(): Record<string, unknown> {
           everyone: REAL_ONLY.all,
           holders: REAL_ONLY.holders,
           notRealOnly: notRealOnly(REAL_ONLY, HOLDER_KEYS.holders.map((h) => h.holder)),
-          sharedKeyRealOnly: REAL_ONLY.all,
+          sharedKeyRealOnly: isRealOnly(REAL_ONLY, null),
           ...(REAL_ONLY.notes.length ? { notes: REAL_ONLY.notes } : {}),
           refusals: { count: refused.count, last: refused.last ? { at: refused.last.at, ref: refused.last.ref, source: refused.last.source, detail: refused.last.detail } : null },
         };

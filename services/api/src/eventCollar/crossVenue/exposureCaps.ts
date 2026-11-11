@@ -390,6 +390,13 @@ export function openExposure(inputs: ExposureInputs): OpenExposure {
     addGame(r.game, cents, false);
     addVenue(p.order.venue, cents);
   }
+  // a lock closed on the record with part of its hedge still on the venue: that hedge is ours until the operator clears the line
+  for (const s of trail.sales) {
+    if (s.outcome !== "left_over" || s.costCents <= 0) continue;
+    out.pendingLeftOver += 1;
+    addGame(s.game, s.costCents, false);
+    addVenue(s.venue, s.costCents);
+  }
   for (const h of inputs.holds ?? []) {
     addGame(h.game, h.gameCents, false);
     addVenue(h.venue, h.venueCents);
