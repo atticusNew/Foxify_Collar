@@ -2,11 +2,15 @@
  * Snapshot store: one JSONL file per UTC day on disk (append-only) and a compact in-memory
  * history for the time-series views. Every day is kept unless a retention window is set; a day
  * that has closed is gzipped in place (see dayFiles.ts), and the boot reload reads either form.
+ *
+ * The service runs in 512 MB. A day file is a few hundred megabytes, so the reload reads it as
+ * a stream, a line at a time, and the history keeps numbers in typed arrays and lets go of a
+ * ladder once it has settled. The files on disk are the record and keep everything.
  */
 
 import { mkdirSync } from "node:fs";
 import { basename } from "node:path";
-import { DayKeeper, forEachLineSync, listDayFiles, parseRetention, readablePath, type Budget, type DataHealth, type DayKeeperOptions, type MaintainReport, type Retention } from "./dayFiles";
+import { DayKeeper, listDayFiles, parseRetention, readLines, readablePath, type Budget, type DataHealth, type DayKeeperOptions, type MaintainReport, type Retention } from "./dayFiles";
 import { expiryTagToMs } from "./deribitChain";
 import type { Ladder, ModelPoint, OptionRow, Snapshot, VenueQuote, HourlyVolPoint } from "./types";
 
@@ -66,30 +70,63 @@ export function fromDisk(line: string): Snapshot {
   return { ...raw, ladders: raw.ladders.map(expandLadder), options };
 }
 
+/** The five numbers the history keeps for one bucket, in this order; −1 when absent. */
+export const ROW_WIDTH = 5;
+
+/**
+ * One ladder at one moment. `keys[i]` names a bucket and its numbers sit at `v[5·i]` onward:
+ * kalshiBid, kalshiAsk, polyBid, polyAsk, modelP·100. One block of numbers per ladder costs a
+ * third of what an object per bucket did, and the same list of keys is shared between the
+ * points that hold the same buckets.
+ */
+export interface LadderRows {
+  keys: readonly string[];
+  v: Float64Array;
+}
+
 /** What the time-series views need from one snapshot: mids per venue per bucket, spot, model. */
 export interface HistoryPoint {
   at: string;
   atMs: number;
   spotUsd: number;
-  /** ladderId → bucketKey → [kalshiBid, kalshiAsk, polyBid, polyAsk, modelP·100] (−1 when absent) */
-  ladders: Record<string, Record<string, [number, number, number, number, number]>>;
+  /** ladderId → that ladder's buckets and their numbers */
+  ladders: Record<string, LadderRows>;
   hourlyVol?: HourlyVolPoint;
 }
 
-export function toHistoryPoint(s: Snapshot): HistoryPoint {
+export interface HistoryPointOptions {
+  /** leave a ladder out (the store leaves out one that settled over an hour before) */
+  skip?: (l: Ladder) => boolean;
+  /** hand back a list of keys already held for this ladder when it is the same list */
+  share?: (ladderId: string, keys: string[]) => readonly string[];
+}
+
+export function toHistoryPoint(s: Snapshot, opts: HistoryPointOptions = {}): HistoryPoint {
   const ladders: HistoryPoint["ladders"] = {};
   for (const l of s.ladders) {
-    const row: Record<string, [number, number, number, number, number]> = {};
-    for (const b of l.buckets) {
-      const k = l.quotes.find((q) => q.venue === "kalshi" && q.bucketKey === b.key);
-      const p = l.quotes.find((q) => q.venue === "polymarket_us" && q.bucketKey === b.key);
-      const m = l.model[b.key];
-      row[b.key] = [k ? k.bidCents : -1, k ? k.askCents : -1, p ? p.bidCents : -1, p ? p.askCents : -1, m ? m.p * 100 : -1];
+    if (opts.skip?.(l)) continue;
+    // the first quote a venue gives for a bucket is the one kept, as before
+    const kalshi = new Map<string, VenueQuote>();
+    const poly = new Map<string, VenueQuote>();
+    for (const q of l.quotes) {
+      const by = q.venue === "kalshi" ? kalshi : q.venue === "polymarket_us" ? poly : null;
+      if (by && !by.has(q.bucketKey)) by.set(q.bucketKey, q);
     }
-    ladders[l.id] = row;
+    const keys = [...new Set(l.buckets.map((b) => b.key))];
+    const v = new Float64Array(keys.length * ROW_WIDTH);
+    keys.forEach((key, i) => {
+      const k = kalshi.get(key);
+      const p = poly.get(key);
+      const m = l.model[key];
+      v.set([k ? k.bidCents : -1, k ? k.askCents : -1, p ? p.bidCents : -1, p ? p.askCents : -1, m ? m.p * 100 : -1], i * ROW_WIDTH);
+    });
+    ladders[l.id] = { keys: opts.share ? opts.share(l.id, keys) : keys, v };
   }
   return { at: s.at, atMs: Date.parse(s.at), spotUsd: s.spotUsd, ladders, ...(s.hourlyVol ? { hourlyVol: s.hourlyVol } : {}) };
 }
+
+/** A ladder's rows stay in memory this long after it settles; after that no view can ask for them. */
+export const SETTLED_GRACE_MS = 3_600_000;
 
 const FAMILY = "snapshots";
 
@@ -110,6 +147,10 @@ export class SnapshotStore {
   private readonly keeper: DayKeeper;
   private history: HistoryPoint[] = [];
   private latest: Snapshot | null = null;
+  /** ladder id → the list of bucket keys its points share */
+  private readonly keysOf = new Map<string, readonly string[]>();
+  /** ladder id → when it settles, for the ladders that still have rows in memory */
+  private readonly settles = new Map<string, number>();
 
   constructor(dir: string, opts: SnapshotStoreOptions = {}) {
     this.dir = dir;
@@ -118,33 +159,75 @@ export class SnapshotStore {
     mkdirSync(dir, { recursive: true });
   }
 
-  /** Reload the in-memory history from the day files, plain or gzip, that still fall inside the window. */
-  load(nowMs = Date.now()): number {
-    const kept: { last: Snapshot | null } = { last: null };
+  /** The compact point for a snapshot, without the ladders that settled over an hour before `nowMs`. */
+  private pointOf(s: Snapshot, nowMs: number): HistoryPoint {
+    return toHistoryPoint(s, {
+      skip: (l) => {
+        const settlesMs = Date.parse(l.settlesAt);
+        if (!Number.isFinite(settlesMs)) return false;
+        if (nowMs - settlesMs > SETTLED_GRACE_MS) return true;
+        this.settles.set(l.id, settlesMs);
+        return false;
+      },
+      share: (id, keys) => {
+        const held = this.keysOf.get(id);
+        if (held && held.length === keys.length && held.every((k, i) => k === keys[i])) return held;
+        this.keysOf.set(id, keys);
+        return keys;
+      },
+    });
+  }
+
+  /** Let go of the rows of every ladder that settled over an hour before `nowMs`. The day files still hold them. */
+  private dropSettled(nowMs: number): void {
+    const gone: string[] = [];
+    for (const [id, settlesMs] of this.settles) if (nowMs - settlesMs > SETTLED_GRACE_MS) gone.push(id);
+    if (!gone.length) return;
+    for (const h of this.history) for (const id of gone) if (id in h.ladders) delete h.ladders[id];
+    for (const id of gone) {
+      this.settles.delete(id);
+      this.keysOf.delete(id);
+    }
+  }
+
+  /**
+   * Reload the in-memory history from the day files, plain or gzip, that still fall inside the
+   * window. Each file is read as a stream, a line at a time, so a day never sits in memory
+   * whole and the service answers while it reloads. A snapshot taken meanwhile is kept, once.
+   */
+  async load(nowMs = Date.now()): Promise<number> {
+    let last: Snapshot | null = null;
     const points: HistoryPoint[] = [];
     for (const f of listDayFiles(this.dir, [FAMILY])) {
       if (nowMs - f.dayMs > this.keepMs + 86_400_000) continue;
       const path = readablePath(f);
+      // a day counts whole or not at all: one that breaks half way through adds nothing
+      const day: HistoryPoint[] = [];
+      let dayLast: Snapshot | null = null;
       try {
-        forEachLineSync(path, (line) => {
+        for await (const line of readLines(path)) {
           try {
             const s = fromDisk(line);
             const atMs = Date.parse(s.at);
-            if (!Number.isFinite(atMs) || nowMs - atMs > this.keepMs) return;
-            points.push(toHistoryPoint(s));
-            kept.last = s;
+            if (!Number.isFinite(atMs) || nowMs - atMs > this.keepMs) continue;
+            day.push(this.pointOf(s, nowMs));
+            dayLast = s;
           } catch {
             // a torn last line after a crash is not worth failing the boot over
           }
-        });
+        }
+        for (const p of day) points.push(p);
+        if (dayLast) last = dayLast;
         this.keeper.note(`load:${path}`, null);
       } catch (err) {
         // a day that cannot be read is left on disk and said on /healthz; the boot goes on with the others
         this.keeper.note(`load:${path}`, `${basename(path)} could not be read on start-up (${(err as Error).message.slice(0, 120)}); it is left on disk and is not in the window`);
       }
     }
-    this.history = points;
-    if (kept.last && !this.latest) this.latest = kept.last;
+    const read = new Set(points.map((p) => p.atMs));
+    const meanwhile = this.history.filter((p) => !read.has(p.atMs) && nowMs - p.atMs <= this.keepMs);
+    this.history = meanwhile.length ? [...points, ...meanwhile].sort((a, b) => a.atMs - b.atMs) : points;
+    if (last && !this.latest) this.latest = last;
     return points.length;
   }
 
@@ -156,9 +239,10 @@ export class SnapshotStore {
     const atMs = Date.parse(s.at);
     const written = this.keeper.append(FAMILY, atMs, toDisk(s));
     this.latest = s;
-    this.history.push(toHistoryPoint(s));
+    this.history.push(this.pointOf(s, atMs));
     const cutoff = atMs - this.keepMs;
     while (this.history.length && this.history[0].atMs < cutoff) this.history.shift();
+    this.dropSettled(atMs);
     return written;
   }
 

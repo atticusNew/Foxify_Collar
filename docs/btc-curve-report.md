@@ -41,7 +41,10 @@ Service: `services/api/scripts/btcCurveReportService.ts` · modules: `services/a
    `ASSET_PRICE_MARKET_TYPE_ABOVE_BELOW` label; both fixed. Polymarket-US-only ladders (the
    range twins, the weekly) show their two-sided strikes under §1.
 3. **Gaps over time.** Per bucket, Kalshi mid − Poly mid across the history window (sparkline,
-   mean |gap|, max, last). Persistent gaps are quoting differences; flicker is latency.
+   mean |gap|, max, last). Persistent gaps are quoting differences; flicker is latency. The four
+   numbers count every point in the window. The drawing is 160 px wide, so past 240 points it
+   keeps each run of points as its lowest and its highest (`seriesEvery` in the data says how
+   long a run is); a one-minute spike is still drawn.
 4. **What being late costs.** |Δ BRTI| over 1/5/15/60 s from one-second prints over the last
    hour (median, p90, worst), priced on a $1 at-the-money digital of the hourly and the year-end
    tenor via the option-implied digital delta.
@@ -109,6 +112,22 @@ settlement is used.
 One JSONL file per UTC day in `BTC_CURVE_DATA_DIR` (`snapshots-YYYY-MM-DD.jsonl`, options and
 quotes as tuples), `replay-state.json` for in-flight hedge replays, `replays.jsonl` for settled
 ones, `collecting-since.txt`. The in-memory history window is 72 hours of compact mids.
+
+**Memory.** The service runs in 512 MB and a day of snapshots is over 200 MB raw, so three rules
+hold, each with a test in `tests/btcBootMemory.test.ts`:
+
+- A day file is only ever read as a stream, a line at a time. On start the service answers
+  `/healthz` at once, reloads the window (about a minute on the starter plan), then starts its
+  cycles. `/healthz` says `reload: "in progress"` until then, and `memoryMb` at any time.
+- The history holds one block of numbers per ladder, not an object per bucket, and lets go of a
+  ladder's rows one hour after the ladder settles. No view can ask for a settled ladder. The
+  day files keep everything.
+- The gap series the page and `/api/report` build are bounded (rule 3 above).
+
+Measured 11 November 2026 on three gzipped days plus today of real snapshots (about 216 KB a
+line, 3,651 points), inside a 512 MB, half-CPU limit: before, the process was killed during the
+reload every time, and with no limit the history alone took 368 MB of a 259 MB heap allowance.
+After: reload in 54 s, 210 MB at rest, 259 MB at the peak with the page opened five times.
 
 **Every day is kept.** Nothing is deleted unless `BTC_CURVE_RETAIN_DAYS` is set to a whole number
 of days; then day files older than that go, hourly. Unset, empty, `0`, `all` and `none` keep

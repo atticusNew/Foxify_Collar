@@ -112,17 +112,15 @@ function spark(series: Array<[number, number]>, range: number): string {
 }
 
 function gapsTable(gaps: GapSeries[], showPoly: boolean): string {
-  const rows = gaps.filter((g) => (showPoly ? g.venue.length : g.kalshiModel.length));
+  const rows = gaps.filter((g) => (showPoly ? g.window.venue.n : g.window.kalshiModel.n));
   if (!rows.length) return '<p class="dim">Fills as snapshots accumulate, one per minute.</p>';
   const range = Math.max(2, ...rows.map((g) => g.stats.venueMax ?? 0));
   return `<div class="tbl"><table><tr><th>Bucket</th><th>${showPoly ? "Kalshi − Poly, window" : "Kalshi − model, window"}</th><th>Mean |gap|</th><th>Max |gap|</th><th>Last</th><th>n</th></tr>${rows
     .map((g) => {
+      // the drawing may hold fewer points than the window; the numbers beside it count every one
       const s = showPoly ? g.venue : g.kalshiModel;
-      const abs = s.map(([, x]) => Math.abs(x));
-      const mean = abs.length ? abs.reduce((a, b) => a + b, 0) / abs.length : null;
-      const max = abs.length ? Math.max(...abs) : null;
-      const last = s.length ? s[s.length - 1][1] : null;
-      return `<tr><td class="lbl">${esc(g.label)}</td><td>${spark(s, range)}</td><td>${c(mean)}</td><td>${c(max)}</td>${gapCell(last)}<td class="dim">${s.length}</td></tr>`;
+      const w = showPoly ? g.window.venue : g.window.kalshiModel;
+      return `<tr><td class="lbl">${esc(g.label)}</td><td>${spark(s, range)}</td><td>${c(w.meanAbs)}</td><td>${c(w.maxAbs)}</td>${gapCell(w.last)}<td class="dim">${w.n}</td></tr>`;
     })
     .join("")}</table></div>`;
 }

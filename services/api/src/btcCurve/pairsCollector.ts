@@ -17,7 +17,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename } from "node:path";
 import { BookReadError } from "./bookRead";
-import { DayKeeper, forEachLineSync, listDayFiles, maintainLines, parseBudgetMb, parseRetention, readablePath, utcDay, type Budget, type DayKeeperOptions, type MaintainReport, type Retention } from "./dayFiles";
+import { DayKeeper, listDayFiles, maintainLines, parseBudgetMb, parseRetention, readLines, readablePath, utcDay, type Budget, type DayKeeperOptions, type MaintainReport, type Retention } from "./dayFiles";
 import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_WINDOW_MS, dailyLadderFrom, fetchFeeTheta, fetchOpenMarkets, fifteenLadderFrom, hourlyLadderFrom, kalshiOrderbookUrl, readTopOnce } from "./kalshiLadders";
 import { fetchBrtiCandles, fetchSeriesIdsBySlug, polyBookUrl, readBookOnce, readPolyUsLaddersForSeries } from "./polyUsLadders";
 import { mergeLadders } from "./analytics";
@@ -144,6 +144,7 @@ export class PairsCollector {
   private fifteenTheta: { at: number; value: number } | null = null;
   private polySeriesIds: { at: number; value: string[] } | null = null;
   private timer: NodeJS.Timeout | null = null;
+  private stopped = false;
   /** one replay at a time: a second request is told to wait, not queued */
   private replayRunning = false;
 
@@ -169,13 +170,24 @@ export class PairsCollector {
     };
   }
 
-  /** Reload the gap history within the window and the lock episodes kept, and start the cycle. */
+  /**
+   * Reload the gap history within the window and the lock episodes kept, then start the cycle.
+   * The reload reads the files as streams; the cycle starts when it is done, or when it fails.
+   */
   start(): void {
-    const loaded = this.loadGaps();
-    const episodes = this.loadEpisodes();
+    void this.reload()
+      .catch((err) => this.log(`[btc-pairs] the reload on start-up failed (${(err as Error).message.slice(0, 160)}); the cycle starts without it`))
+      .then(() => {
+        if (this.stopped) return;
+        void this.maintain();
+        void this.loop();
+      });
+  }
+
+  private async reload(): Promise<void> {
+    const loaded = await this.loadGaps(this.clock());
+    const episodes = await this.loadEpisodes();
     this.log(`[btc-pairs] data dir ${this.dataDir} · ${loaded} cycles of gap history reloaded · ${episodes} lock episodes reloaded · interval ${this.intervalSec}s · ${this.keeper.startupLine()}`);
-    void this.maintain();
-    void this.loop();
   }
 
   /**
@@ -191,6 +203,7 @@ export class PairsCollector {
 
   /** Stop the cycle. Lock runs still going end here and are written, so a clean stop loses none; a kill loses the ones open at that moment. */
   stop(): void {
+    this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     const closed = closeEpisodes(this.episodes, this.clock());
@@ -207,6 +220,7 @@ export class PairsCollector {
       this.lastError = (err as Error).message.slice(0, 200);
       this.log(`[btc-pairs] cycle failed: ${this.lastError}`);
     }
+    if (this.stopped) return;
     // the interval is the cadence, not a pause: a slow cycle starts the next one sooner
     this.timer = setTimeout(() => void this.loop(), Math.max(1000, this.intervalSec * 1000 - (Date.now() - t0)));
   }
@@ -440,12 +454,12 @@ export class PairsCollector {
   }
 
   /** Each line of the family's day files, plain or gzip, for the days `wanted` picks. A day that cannot be read is said on /healthz and skipped. */
-  private eachKeptLine(family: string, wanted: (dayMs: number) => boolean, fn: (line: string) => void): void {
+  private async eachKeptLine(family: string, wanted: (dayMs: number) => boolean, fn: (line: string) => void): Promise<void> {
     for (const f of listDayFiles(this.dataDir, [family])) {
       if (!wanted(f.dayMs)) continue;
       const path = readablePath(f);
       try {
-        forEachLineSync(path, fn);
+        for await (const line of readLines(path)) fn(line);
         this.keeper.note(`load:${path}`, null);
       } catch (err) {
         this.keeper.note(`load:${path}`, `${basename(path)} could not be read on start-up (${(err as Error).message.slice(0, 120)}); it is left on disk`);
@@ -457,9 +471,9 @@ export class PairsCollector {
    * Reload the episodes kept in memory: today's, and the last EPISODE_KEEP per tenor of the three
    * days before. Older day files stay on disk; they are only not loaded.
    */
-  loadEpisodes(nowMs = this.clock()): number {
+  async loadEpisodes(nowMs = this.clock()): Promise<number> {
     const loaded: LockEpisode[] = [];
-    this.eachKeptLine(EPISODES, (dayMs) => nowMs - dayMs <= RELOAD_DAYS_MS, (line) => {
+    await this.eachKeptLine(EPISODES, (dayMs) => nowMs - dayMs <= RELOAD_DAYS_MS, (line) => {
       try {
         const e = JSON.parse(line) as LockEpisode;
         if (typeof e.endedAt === "string" && Number.isFinite(Date.parse(e.endedAt)) && typeof e.horizon === "string") loaded.push(e);
@@ -471,10 +485,10 @@ export class PairsCollector {
     return this.episodes.finished.length;
   }
 
-  loadGaps(nowMs = Date.now()): number {
+  async loadGaps(nowMs = Date.now()): Promise<number> {
     let n = 0;
     // a day that ended before the window began holds nothing the window keeps, so it is not opened
-    this.eachKeptLine(GAPS, (dayMs) => nowMs - dayMs <= RELOAD_DAYS_MS && dayMs + 86_400_000 > nowMs - this.windowMs, (line) => {
+    await this.eachKeptLine(GAPS, (dayMs) => nowMs - dayMs <= RELOAD_DAYS_MS && dayMs + 86_400_000 > nowMs - this.windowMs, (line) => {
       try {
         const rec = JSON.parse(line) as { at: number; rows: Array<[string, string, number]> };
         if (nowMs - rec.at > this.windowMs) return;

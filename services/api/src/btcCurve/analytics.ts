@@ -5,7 +5,7 @@
  */
 
 import { digitalDelta, ivAt, nearestSmile, normCdf, type Smile } from "./model";
-import type { HistoryPoint } from "./store";
+import { ROW_WIDTH, type HistoryPoint } from "./store";
 import type { HourlyVolPoint, IndexCandle, Ladder, VenueQuote } from "./types";
 
 /** Taker fee in cents for one $1 contract at price p cents: Θ · p · (1 − p), rounded up to the cent. */
@@ -135,6 +135,14 @@ export function bucketRows(l: Ladder): BucketRow[] {
   });
 }
 
+/** What a gap did over the whole window, counted from every point, whatever the series below keeps. */
+export interface GapWindow {
+  n: number;
+  meanAbs: number | null;
+  maxAbs: number | null;
+  last: number | null;
+}
+
 export interface GapSeries {
   key: string;
   label: string;
@@ -145,40 +153,122 @@ export interface GapSeries {
   /** [atMs, polyMid − model] */
   polyModel: Array<[number, number]>;
   stats: { venueMeanAbs: number | null; venueMax: number | null; venueLast: number | null; n: number };
+  /** the same three, over every point in the window, not rounded */
+  window: { venue: GapWindow; kalshiModel: GapWindow; polyModel: GapWindow };
+  /** 1 when the series hold every point; N when each run of N points is kept as its low and its high */
+  seriesEvery: number;
+}
+
+/**
+ * The most runs a series is cut into. A window of three days is over 3,600 points a bucket, and
+ * a page that built every one of them for every bucket took more memory than the service has.
+ * The drawing is 160 px wide, so past this a run of points is kept as its lowest and its
+ * highest: a spike still shows. The numbers beside the drawing count every point.
+ */
+export const GAP_SERIES_RUNS = 240;
+
+/** One series being built: every point counted, and the points kept for the drawing. */
+class GapLine {
+  readonly kept: Array<[number, number]> = [];
+  n = 0;
+  private sumAbs = 0;
+  private maxAbs = 0;
+  private first: [number, number] | null = null;
+  private last: [number, number] | null = null;
+  private run = -1;
+  private lo: [number, number] | null = null;
+  private hi: [number, number] | null = null;
+
+  constructor(private readonly every: number) {}
+
+  /** `index` is the point's place in the history, which is what a run is counted in. */
+  push(index: number, atMs: number, gap: number): void {
+    const point: [number, number] = [atMs, gap];
+    const abs = Math.abs(gap);
+    this.n += 1;
+    this.sumAbs += abs;
+    if (abs > this.maxAbs) this.maxAbs = abs;
+    if (!this.first) this.first = point;
+    this.last = point;
+    if (this.every === 1) {
+      this.kept.push(point);
+      return;
+    }
+    const run = Math.floor(index / this.every);
+    if (run !== this.run) {
+      this.closeRun();
+      this.run = run;
+      this.lo = point;
+      this.hi = point;
+      return;
+    }
+    if (this.lo && gap < this.lo[1]) this.lo = point;
+    if (this.hi && gap > this.hi[1]) this.hi = point;
+  }
+
+  private closeRun(): void {
+    if (!this.lo || !this.hi) return;
+    if (this.lo === this.hi) this.kept.push(this.lo);
+    else if (this.lo[0] <= this.hi[0]) this.kept.push(this.lo, this.hi);
+    else this.kept.push(this.hi, this.lo);
+    this.lo = null;
+    this.hi = null;
+  }
+
+  /** The series as drawn: it starts on the first point and ends on the last, so the ends of the drawing are the ends of the window. */
+  series(): Array<[number, number]> {
+    this.closeRun();
+    if (this.every > 1 && this.first && this.last) {
+      if (this.kept[0] !== this.first) this.kept.unshift(this.first);
+      if (this.kept[this.kept.length - 1] !== this.last) this.kept.push(this.last);
+    }
+    return this.kept;
+  }
+
+  window(): GapWindow {
+    return { n: this.n, meanAbs: this.n ? this.sumAbs / this.n : null, maxAbs: this.n ? this.maxAbs : null, last: this.last ? this.last[1] : null };
+  }
 }
 
 /** Per-bucket gap time series for one ladder id across the history window. */
-export function gapSeries(history: HistoryPoint[], ladderId: string): GapSeries[] {
-  const keys = new Set<string>();
-  for (const h of history) for (const k of Object.keys(h.ladders[ladderId] ?? {})) keys.add(k);
-  const out: GapSeries[] = [];
-  for (const key of keys) {
-    const venue: Array<[number, number]> = [];
-    const kalshiModel: Array<[number, number]> = [];
-    const polyModel: Array<[number, number]> = [];
-    for (const h of history) {
-      const row = h.ladders[ladderId]?.[key];
-      if (!row) continue;
-      const [kb, ka, pb, pa, m] = row;
+export function gapSeries(history: HistoryPoint[], ladderId: string, maxRuns = GAP_SERIES_RUNS): GapSeries[] {
+  const every = Math.max(1, Math.ceil(history.length / Math.max(1, maxRuns)));
+  type Three = { venue: GapLine; kalshiModel: GapLine; polyModel: GapLine };
+  // one pass over the history; a bucket takes its place the first time it is seen
+  const byKey = new Map<string, Three>();
+  for (let index = 0; index < history.length; index += 1) {
+    const h = history[index];
+    const rows = h.ladders[ladderId];
+    if (!rows) continue;
+    for (let i = 0; i < rows.keys.length; i += 1) {
+      let s = byKey.get(rows.keys[i]);
+      if (!s) byKey.set(rows.keys[i], (s = { venue: new GapLine(every), kalshiModel: new GapLine(every), polyModel: new GapLine(every) }));
+      const at = i * ROW_WIDTH;
+      const kb = rows.v[at];
+      const ka = rows.v[at + 1];
+      const pb = rows.v[at + 2];
+      const pa = rows.v[at + 3];
+      const m = rows.v[at + 4];
       const km = kb >= 0 && ka > 0 && ka <= 99 ? (kb + ka) / 2 : null;
       const pm = pb >= 0 && pa > 0 && pa <= 99 ? (pb + pa) / 2 : null;
-      if (km !== null && pm !== null) venue.push([h.atMs, km - pm]);
-      if (km !== null && m >= 0) kalshiModel.push([h.atMs, km - m]);
-      if (pm !== null && m >= 0) polyModel.push([h.atMs, pm - m]);
+      if (km !== null && pm !== null) s.venue.push(index, h.atMs, km - pm);
+      if (km !== null && m >= 0) s.kalshiModel.push(index, h.atMs, km - m);
+      if (pm !== null && m >= 0) s.polyModel.push(index, h.atMs, pm - m);
     }
-    const abs = venue.map(([, g]) => Math.abs(g));
+  }
+  const out: GapSeries[] = [];
+  const r2 = (x: number | null) => (x === null ? null : Math.round(x * 100) / 100);
+  for (const [key, lines] of byKey) {
+    const w = { venue: lines.venue.window(), kalshiModel: lines.kalshiModel.window(), polyModel: lines.polyModel.window() };
     out.push({
       key,
       label: bucketLabel(key),
-      venue,
-      kalshiModel,
-      polyModel,
-      stats: {
-        venueMeanAbs: abs.length ? Math.round((abs.reduce((a, b) => a + b, 0) / abs.length) * 100) / 100 : null,
-        venueMax: abs.length ? Math.round(Math.max(...abs) * 100) / 100 : null,
-        venueLast: venue.length ? Math.round(venue[venue.length - 1][1] * 100) / 100 : null,
-        n: venue.length,
-      },
+      venue: lines.venue.series(),
+      kalshiModel: lines.kalshiModel.series(),
+      polyModel: lines.polyModel.series(),
+      stats: { venueMeanAbs: r2(w.venue.meanAbs), venueMax: r2(w.venue.maxAbs), venueLast: r2(w.venue.last), n: w.venue.n },
+      window: w,
+      seriesEvery: every,
     });
   }
   const level = (k: string) => Number(k.split(":")[1]?.split("-")[0]) || 0;

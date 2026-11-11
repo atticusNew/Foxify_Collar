@@ -242,7 +242,7 @@ test("slate: venue tallies count games listed, tightest, other side quoted and c
   assert.equal(s.crosses.length, 0);
 });
 
-test("store and window: snapshots round-trip, the history cell carries both books and the fee, gaps over time and the tally read it back", () => {
+test("store and window: snapshots round-trip, the history cell carries both books and the fee, gaps over time and the tally read it back", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sv-"));
   const store = new SnapshotStore(dir, { keepHours: 1 });
   const snap = (at: string, kalshiHomeAsk: number, novigHomeAsk: number): Snapshot => ({
@@ -255,7 +255,7 @@ test("store and window: snapshots round-trip, the history cell carries both book
   store.append(snap("2026-11-09T15:02:00Z", 59, 60));
   assert.equal(readdirSync(dir).filter((f) => f.endsWith(".jsonl")).length, 1);
   const again = new SnapshotStore(dir, { keepHours: 1 });
-  assert.equal(again.load(Date.parse("2026-11-09T15:10:00Z")), 3);
+  assert.equal(await again.load(Date.parse("2026-11-09T15:10:00Z")), 3);
   assert.equal(again.getLatest()?.at, "2026-11-09T15:02:00Z");
 
   const h = toHistoryPoint(snap("2026-11-09T15:00:00Z", 61, 60));
