@@ -667,7 +667,7 @@ test("every cycle writes its line with both books, fees and read ages, and the r
   assert.deepEqual(series[0], [T0 - 60_000, 7.5], "the old line's gap is in the window");
 });
 
-test("the replay runs on the lines the collector wrote: captured, unknown on the stale cycle, gone when the offer moved", async () => {
+test("the replay runs on the lines the collector wrote: captured at lag 0, unknown on the same Polymarket US copy and on the stale cycle, gone when the offer moved", async () => {
   const f = fake();
   const { c, dir } = collectorOn(f);
   const [d1] = await lockStaleGoneFailed(f, c);
@@ -682,16 +682,19 @@ test("the replay runs on the lines the collector wrote: captured, unknown on the
   const [lag0, lag10, lag20, lag30] = run.results;
   assert.equal(lag0.cyclesRead, 5);
   assert.equal(lag0.cyclesOldFormat, 0);
-  // one episode: cycle 2 holds, cycle 3 is stale (which ends it), cycles 4 and 5 are no lock
+  // one episode: cycle 2 holds, cycle 3 is stale (which does not end it), cycle 4 reads a new copy with no lock
   assert.equal(lag0.total.signals, 1);
   assert.deepEqual([lag0.trades[0].signalAt, lag0.trades[0].yesOn, lag0.trades[0].kalshiId, lag0.trades[0].polyId], [d1.pricedAt, "polymarket_us", FIFTEEN_K, FIFTEEN_P]);
   assert.equal(lag0.total.capturedMc, 28_000);
   assert.equal(lag0.trades[0].signalEdgeMc, 2_800);
   assert.ok(lag0.trades[0].signalEdgeMc <= Math.round(lock.edgeCents * 1000), "never above the page's lock for one contract");
-  // lag 10: cycle 2, the same prices on 60 contracts
-  assert.deepEqual([lag10.total.captured, lag10.total.capturedMc], [1, 28_000]);
+  // lag 10: cycle 2 prices the Polymarket US copy the signal was read from (3 seconds old then, 13 now), and cycle 3,
+  // the last inside the wait (10 + 10 + 5), is the same copy again and stale: nothing read after the signal, so unknown
+  assert.deepEqual(lag10.total.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 0, oldRead: 0, sameRead: 1 });
+  assert.deepEqual([lag10.total.captured, lag10.total.gone.total, lag10.total.capturedMc], [0, 0, 0]);
+  assert.deepEqual([lag10.trades[0].outcome, lag10.trades[0].why], ["unknown", "sameRead"]);
   // lag 20: cycle 3 is a stale read: unknown, not gone
-  assert.deepEqual(lag20.total.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 1, oldRead: 0 });
+  assert.deepEqual(lag20.total.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 1, oldRead: 0, sameRead: 0 });
   assert.deepEqual([lag20.total.captured, lag20.total.gone.total, lag20.total.capturedMc], [0, 0, 0]);
   // lag 30: cycle 4, offered at 54: gone, -2 cents if sent anyway
   assert.deepEqual(lag30.total.gone, { total: 1, edge: 1, size: 0 });

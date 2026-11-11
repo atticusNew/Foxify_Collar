@@ -31,6 +31,15 @@
  * the outcome is `unknown`. At the fill cycle, the same way round as the signal:
  *   - the pair or a leg is not there, its read age is not stored, the row is stale, or a read
  *     is older than `maxReadAgeSec`: `unknown`;
+ *   - a book's copy was not taken after the signal (`sameRead`): the cycle is not the fill. The
+ *     Polymarket US copy is cached up to 30 seconds, so a cycle 10 seconds later often prices
+ *     the very copy the signal was read from, only older, and says nothing about what a trader
+ *     arriving then would have found. A copy's time is the cycle's time minus its stored age;
+ *     where the venue's cache gave its age (whole seconds) one more second is taken off,
+ *     against the trader. The trade waits for a later cycle inside the same allowed wait whose
+ *     reads can be used and were both taken after the signal, and is judged there; if none
+ *     comes it is `unknown`. This applies to both venues, and not to a lag-0 fill, which is the
+ *     signal cycle by definition;
  *   - the price is not there or the top of book holds less than `sizeContracts`: `gone`
  *     (size). What a market order would have paid deeper in the book is not stored, so this
  *     trade has no "sent anyway" figure and is counted as not priced;
@@ -42,12 +51,15 @@
  *
  * ONE TRADE PER EPISODE. A pair one way round is the repo's lock run identity (`lockRunId` in
  * pairs.ts: tenor, close, strike key, both venue ids, which venue the Yes is on). After a
- * signal there is no new signal on it until a stored cycle at which its conditions do not
- * hold: the edge or the size went, a read was stale or missing, or the pair was not in the
- * cycle. A stretch with no stored cycle does not re-arm it: nothing was seen to be false. The
- * page's lock episodes use the same identity but need two cycles in a row and end on a gap of
- * three intervals; here one cycle is a signal, because the question is what a rule acting on
- * each cycle would have done.
+ * signal there is no new signal on it until a stored cycle shows the lock gone: reads that can
+ * be acted on with the edge or the size no longer there, the pair not in the cycle (the market
+ * closed), or a venue no longer listing it. A cycle whose reads cannot be acted on (stale, too
+ * old, a book that did not answer) does not re-arm it, and neither does a stretch with no
+ * stored cycle: nothing was seen to be false. Otherwise one standing lock read through a cache
+ * that crosses the stale bound every 30 seconds would be a new trade each time. The page's
+ * lock episodes use the same identity but need two cycles in a row and end on a gap of three
+ * intervals; here one cycle is a signal, because the question is what a rule acting on each
+ * cycle would have done.
  *
  * WHAT IS NOT MODELLED is in `ASSUMPTIONS`, printed with every result.
  */
@@ -83,8 +95,8 @@ export const ASSUMPTIONS: readonly string[] = [
   "No queue position and no partial fills. Size is the top of book as stored, the thinner of the two levels taken; depth below the top is not stored, so a trade larger than the top level is not priced.",
   "Fees are each venue's taker fee for the whole order, each leg rounded up to the next whole cent. Kalshi publishes that rounding; for Polymarket US it is the rounding that goes against the trader.",
   "A fill whose edge is below zero counts as gone and captures nothing (a limit at break even). Sent anyway is the same trades sent at market, so it includes the negative fills; fills where the size was not on the book are left out of it and counted as not priced.",
-  "Unknown is never counted as captured, as gone, or as zero: no stored cycle in time, or a fill read that was stale, too old or missing.",
-  "One trade per episode: after a signal on a pair one way round, no new signal on it until a stored cycle at which its conditions do not hold.",
+  "Unknown is never counted as captured, as gone, or as zero: no stored cycle in time, or a fill read that was stale, too old, missing, or not taken after the signal (the same cached copy the signal was read from, only older).",
+  "One trade per episode: after a signal on a pair one way round, no new signal on it until a stored cycle with reads that can be acted on shows the lock gone, or the pair is no longer listed. A stale or failed read does not start a new episode.",
 ];
 
 export const UNITS = "Fields ending in Mc are integer milli-cents: 1000 is 1 cent, 100000 is $1. Edges are per $1 pair; totals are for the size traded.";
@@ -173,6 +185,14 @@ function readState(p: StoredPair, rule: ReplayRule): ReadState {
   return "ok";
 }
 
+/** The HTTP Age a venue's cache states is in whole seconds, so a copy may be up to this much older than its stored age. */
+const CACHE_AGE_GRAIN_SEC = 1;
+
+/** The latest moment the copy a leg was priced from can have left the venue, ms. The leg's age must be stored. */
+function copyTakenMs(cycleMs: number, leg: StoredLeg): number {
+  return cycleMs - Math.round(((leg.ageSec as number) + (leg.cacheAgeSec === null ? 0 : CACHE_AGE_GRAIN_SEC)) * 1000);
+}
+
 function priced(p: StoredPair, yesOn: Venue, size: number): PricedLock | null {
   if (!p.kalshi || !p.poly) return null;
   const k = quoteOf("kalshi", p.kalshi);
@@ -186,7 +206,7 @@ const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 /* ---- outcomes ---- */
 
 export type Outcome = "captured" | "gone" | "unknown";
-export type OutcomeWhy = "edge" | "size" | "noCycle" | "noRead" | "staleRead" | "oldRead" | null;
+export type OutcomeWhy = "edge" | "size" | "noCycle" | "noRead" | "staleRead" | "oldRead" | "sameRead" | null;
 
 export interface ReplayTrade {
   horizon: Horizon;
@@ -202,7 +222,7 @@ export interface ReplayTrade {
   outcome: Outcome;
   /** why it is gone or unknown; null when captured */
   why: OutcomeWhy;
-  /** the fill cycle; null when no stored cycle came in time */
+  /** the fill cycle (for `sameRead`, the last cycle looked at); null when no stored cycle came in time */
   fillAt: string | null;
   /** the edge per pair at the fill cycle, when both books could be priced there; negative when the lock had gone */
   fillEdgeMc: number | null;
@@ -214,7 +234,8 @@ export interface ReplaySummary {
   signals: number;
   captured: number;
   gone: { total: number; edge: number; size: number };
-  unknown: { total: number; noCycle: number; noRead: number; staleRead: number; oldRead: number };
+  /** `sameRead`: no cycle in the allowed wait read both books after the signal */
+  unknown: { total: number; noCycle: number; noRead: number; staleRead: number; oldRead: number; sameRead: number };
   /** what the captured trades locked, for the size traded */
   capturedMc: number;
   /** median edge per pair of the captured trades (the lower middle of an even count); null with none */
@@ -265,7 +286,7 @@ export interface ReplayResult {
   firstCycleAt: string | null;
   lastCycleAt: string | null;
   days: ReplayDay[];
-  /** signals whose fill cycle had not come when the data ended; they are in `unknown.noCycle` */
+  /** signals with no fill cycle looked at when the data ended; they are in `unknown.noCycle` */
   signalsOpenAtEnd: number;
   /** the first trades in signal order, up to the number asked for */
   trades: ReplayTrade[];
@@ -284,6 +305,7 @@ interface Tally {
   noRead: number;
   staleRead: number;
   oldRead: number;
+  sameRead: number;
   capturedMc: number;
   sentAnywayMc: number;
   sentAnywayNotPriced: number;
@@ -292,7 +314,7 @@ interface Tally {
   delaysMs: number[];
 }
 
-const emptyTally = (): Tally => ({ signals: 0, captured: 0, goneEdge: 0, goneSize: 0, noCycle: 0, noRead: 0, staleRead: 0, oldRead: 0, capturedMc: 0, sentAnywayMc: 0, sentAnywayNotPriced: 0, shownAtSignalMc: 0, edgesMc: [], delaysMs: [] });
+const emptyTally = (): Tally => ({ signals: 0, captured: 0, goneEdge: 0, goneSize: 0, noCycle: 0, noRead: 0, staleRead: 0, oldRead: 0, sameRead: 0, capturedMc: 0, sentAnywayMc: 0, sentAnywayNotPriced: 0, shownAtSignalMc: 0, edgesMc: [], delaysMs: [] });
 
 /** The lower middle of an even count: of two middle edges the smaller is reported. */
 function lowerMedian(xs: number[]): number | null {
@@ -303,14 +325,14 @@ function lowerMedian(xs: number[]): number | null {
 
 function summaryOf(t: Tally): ReplaySummary {
   const gone = t.goneEdge + t.goneSize;
-  const unknown = t.noCycle + t.noRead + t.staleRead + t.oldRead;
+  const unknown = t.noCycle + t.noRead + t.staleRead + t.oldRead + t.sameRead;
   const known = t.captured + gone;
   const medianDelay = lowerMedian(t.delaysMs);
   return {
     signals: t.signals,
     captured: t.captured,
     gone: { total: gone, edge: t.goneEdge, size: t.goneSize },
-    unknown: { total: unknown, noCycle: t.noCycle, noRead: t.noRead, staleRead: t.staleRead, oldRead: t.oldRead },
+    unknown: { total: unknown, noCycle: t.noCycle, noRead: t.noRead, staleRead: t.staleRead, oldRead: t.oldRead, sameRead: t.sameRead },
     capturedMc: t.capturedMc,
     medianCapturedEdgeMc: lowerMedian(t.edgesMc),
     worstCapturedEdgeMc: t.edgesMc.length ? Math.min(...t.edgesMc) : null,
@@ -330,6 +352,15 @@ interface Pending {
   /** past this the next stored cycle is too late to be the fill */
   lastMs: number;
   day: string;
+  /** the last cycle looked at that was not the fill because a book's copy was not taken after the signal; null when none was */
+  sameReadMs: number | null;
+}
+
+/** An episode that has signalled: which pair, and the venue ids it was signalled on. */
+interface HeldRun {
+  pairKey: string;
+  kalshiId: string;
+  polyId: string;
 }
 
 interface DayCount {
@@ -375,8 +406,8 @@ export function createReplay(rule: ReplayRule, opts: { keepTrades?: number } = {
   const total = emptyTally();
   const byHorizon = new Map<Horizon, Tally>(rule.horizons.map((h) => [h, emptyTally()]));
   const days = new Map<string, DayCount>();
-  /** runs whose signal has fired and whose conditions have held on every stored cycle since */
-  let held = new Set<string>();
+  /** runs whose signal has fired and that no stored cycle has since shown to be gone */
+  let held = new Map<string, HeldRun>();
   let pending: Pending[] = [];
   const trades: ReplayTrade[] = [];
   let tradeCount = 0;
@@ -417,7 +448,7 @@ export function createReplay(rule: ReplayRule, opts: { keepTrades?: number } = {
           tally.sentAnywayNotPriced += 1;
         }
       } else {
-        tally[why as "noCycle" | "noRead" | "staleRead" | "oldRead"] += 1;
+        tally[why as "noCycle" | "noRead" | "staleRead" | "oldRead" | "sameRead"] += 1;
       }
     }
     if (outcome === "captured" && fill) {
@@ -430,17 +461,39 @@ export function createReplay(rule: ReplayRule, opts: { keepTrades?: number } = {
     } else day.unknown += 1;
   };
 
-  /** The trade at its fill cycle, judged on that cycle's reads alone, the way round it was signalled. */
-  const fillAt = (p: Pending, cycleMs: number, pairs: Map<string, StoredPair>): void => {
+  /**
+   * The trade at a cycle that may be its fill, judged on that cycle's reads alone, the way round
+   * it was signalled. False when the cycle is not the fill and the trade waits for a later one.
+   */
+  const fillAt = (p: Pending, cycleMs: number, pairs: Map<string, StoredPair>): boolean => {
     const t = p.trade;
     const pair = pairs.get(pairKey(t));
-    if (!pair || pair.kalshi?.id !== t.kalshiId || pair.poly?.id !== t.polyId) return settle(p, "unknown", "noRead", cycleMs, null);
-    const read = readState(pair, rule);
-    if (read !== "ok") return settle(p, "unknown", read, cycleMs, null);
+    const there = pair && pair.kalshi?.id === t.kalshiId && pair.poly?.id === t.polyId;
+    const read = there ? readState(pair, rule) : "noRead";
+    if (read !== "ok" || !pair || !pair.kalshi || !pair.poly) {
+      // once a cycle was passed over for its old copy, only a cycle that can be judged settles the trade
+      if (p.sameReadMs === null) settle(p, "unknown", read === "ok" ? "noRead" : read, cycleMs, null);
+      return p.sameReadMs === null;
+    }
+    if (cycleMs > p.signalMs && Math.min(copyTakenMs(cycleMs, pair.kalshi), copyTakenMs(cycleMs, pair.poly)) <= p.signalMs) {
+      p.sameReadMs = cycleMs;
+      t.why = "sameRead";
+      t.fillAt = new Date(cycleMs).toISOString();
+      return false;
+    }
     const lock = priced(pair, t.yesOn, size);
-    if (!lock || lock.qty < size) return settle(p, "gone", "size", cycleMs, null);
-    if (lock.netMc >= 0) return settle(p, "captured", null, cycleMs, lock);
-    return settle(p, "gone", "edge", cycleMs, lock);
+    if (!lock || lock.qty < size) settle(p, "gone", "size", cycleMs, null);
+    else if (lock.netMc >= 0) settle(p, "captured", null, cycleMs, lock);
+    else settle(p, "gone", "edge", cycleMs, lock);
+    return true;
+  };
+
+  /** Whether a cycle's row leaves a held run standing: still listed under the same ids, with reads that cannot be acted on. */
+  const notJudged = (p: StoredPair, run: HeldRun): boolean => {
+    if (readState(p, rule) === "ok") return false;
+    const failed = new Set((p.errors ?? []).map((e) => e.venue));
+    const same = (leg: StoredLeg | null, id: string, venue: Venue) => (leg ? leg.id === id : failed.has(venue));
+    return same(p.kalshi, run.kalshiId, "kalshi") && same(p.poly, run.polyId, "polymarket_us");
   };
 
   const cycle = (c: StoredCycle): void => {
@@ -455,7 +508,7 @@ export function createReplay(rule: ReplayRule, opts: { keepTrades?: number } = {
     day.cyclesRead += 1;
 
     const pairs = new Map<string, StoredPair>();
-    const holds = new Set<string>();
+    const holds = new Map<string, HeldRun>();
     for (const p of c.pairs) {
       if (!wanted.has(p.horizon)) continue;
       pairs.set(pairKey(p), p);
@@ -464,7 +517,7 @@ export function createReplay(rule: ReplayRule, opts: { keepTrades?: number } = {
         const lock = priced(p, yesOn, size);
         if (!lock || lock.qty < needQty || lock.netMc < minNetMc) continue;
         const id = lockRunId({ horizon: p.horizon, settlesAt: p.settlesAt, key: p.key, strike: p.strike, kalshiId: p.kalshi.id, polyId: p.poly.id, yesOn, noOn: lock.noOn });
-        holds.add(id);
+        holds.set(id, { pairKey: pairKey(p), kalshiId: p.kalshi.id, polyId: p.poly.id });
         if (held.has(id)) continue;
         const trade: ReplayTrade = {
           horizon: p.horizon,
@@ -489,17 +542,22 @@ export function createReplay(rule: ReplayRule, opts: { keepTrades?: number } = {
           tally.shownAtSignalMc += lock.netMc;
         }
         day.signals += 1;
-        pending.push({ trade, signalMs: t, dueMs: t + lagMs, lastMs: t + lagMs + Math.round(c.intervalSec * 1000) + toleranceMs, day: utcDay(c.at) });
+        pending.push({ trade, signalMs: t, dueMs: t + lagMs, lastMs: t + lagMs + Math.round(c.intervalSec * 1000) + toleranceMs, day: utcDay(c.at), sameReadMs: null });
       }
     }
-    // a run stays held only while its conditions hold: a cycle that does not show them re-arms it
+    // a held run is re-armed only by a cycle that shows it gone: one that cannot be judged leaves it standing
+    for (const [id, run] of held) {
+      if (holds.has(id)) continue;
+      const row = pairs.get(run.pairKey);
+      if (row && notJudged(row, run)) holds.set(id, run);
+    }
     held = holds;
 
     const waiting: Pending[] = [];
     for (const p of pending) {
       if (t < p.dueMs) waiting.push(p);
-      else if (t > p.lastMs) settle(p, "unknown", "noCycle", null, null);
-      else fillAt(p, t, pairs);
+      else if (t > p.lastMs) settle(p, "unknown", p.sameReadMs === null ? "noCycle" : "sameRead", p.sameReadMs, null);
+      else if (!fillAt(p, t, pairs)) waiting.push(p);
     }
     pending = waiting;
   };
@@ -512,13 +570,16 @@ export function createReplay(rule: ReplayRule, opts: { keepTrades?: number } = {
     },
     result() {
       // the data ends before these signals' fill cycles: they are unknown, without changing the replay's own state
-      const open = pending;
+      const open = pending.filter((p) => p.sameReadMs === null);
       const totalNow = cloneTally(total);
       const horizonNow = new Map([...byHorizon].map(([h, t]) => [h, cloneTally(t)] as const));
       const dayNow = new Map([...days].map(([k, d]) => [k, { ...d }] as const));
       for (const p of pending) {
-        totalNow.noCycle += 1;
-        (horizonNow.get(p.trade.horizon) as Tally).noCycle += 1;
+        const why = p.sameReadMs === null ? "noCycle" : "sameRead";
+        for (const tally of [totalNow, horizonNow.get(p.trade.horizon) as Tally]) {
+          tally[why] += 1;
+          if (p.sameReadMs !== null) tally.delaysMs.push(p.sameReadMs - p.signalMs);
+        }
         (dayNow.get(p.day) as DayCount).unknown += 1;
       }
       const dayRows: ReplayDay[] = [...dayNow.entries()]

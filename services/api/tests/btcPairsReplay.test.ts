@@ -166,7 +166,7 @@ test("a data gap: with no stored cycle within one interval plus the tolerance af
   assert.equal(gap.total.signals, 1);
   assert.equal(gap.total.captured, 0);
   assert.equal(gap.total.gone.total, 0);
-  assert.deepEqual(gap.total.unknown, { total: 1, noCycle: 1, noRead: 0, staleRead: 0, oldRead: 0 });
+  assert.deepEqual(gap.total.unknown, { total: 1, noCycle: 1, noRead: 0, staleRead: 0, oldRead: 0, sameRead: 0 });
   assert.equal(gap.total.capturedMc, 0);
   assert.equal(gap.total.sentAnywayMc, 0);
   // no known outcome, so no share: unknown is not a zero in it
@@ -191,7 +191,7 @@ test("a data gap: with no stored cycle within one interval plus the tolerance af
   // the data ends before the fill cycle: unknown, and said
   const ends = replayPairs([cycleAt(0, [book(52)]), cycleAt(10, [book(40)])], rule({ lagSec: 10 }));
   assert.equal(ends.total.signals, 1);
-  assert.deepEqual(ends.total.unknown, { total: 1, noCycle: 1, noRead: 0, staleRead: 0, oldRead: 0 });
+  assert.deepEqual(ends.total.unknown, { total: 1, noCycle: 1, noRead: 0, staleRead: 0, oldRead: 0, sameRead: 0 });
   assert.equal(ends.signalsOpenAtEnd, 1);
   assert.equal(ends.total.captured, 0);
   assert.equal(ends.days[0].unknown, 1);
@@ -226,7 +226,7 @@ test("a fill read that is stale, too old or missing is unknown: it is not gone a
   const fillWith = (p: StoredPair[], over: Partial<ReplayRule> = {}) => replayPairs([cycleAt(10, [book(40)]), cycleAt(20, p)], rule({ lagSec: 10, ...over })).total;
   // Polymarket US copy 31 seconds old against the row's 30-second bound: stale, though the stored prices are still a lock
   const stale = fillWith([pairOf(kalshi(38, 40), poly(50, 52, { ageSec: 31, cacheAgeSec: 30 }))]);
-  assert.deepEqual(stale.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 1, oldRead: 0 });
+  assert.deepEqual(stale.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 1, oldRead: 0, sameRead: 0 });
   assert.equal(stale.captured, 0);
   assert.equal(stale.gone.total, 0);
   assert.equal(stale.capturedMc, 0);
@@ -234,11 +234,12 @@ test("a fill read that is stale, too old or missing is unknown: it is not gone a
   assert.equal(stale.survivedShare, null);
   // the Kalshi copy stale instead
   assert.equal(fillWith([pairOf(kalshi(38, 40, { ageSec: 30.1 }), poly(50, 52))]).unknown.staleRead, 1);
-  // exactly at the bound is not stale
-  assert.equal(fillWith([pairOf(kalshi(38, 40), poly(50, 52, { ageSec: 30 }))]).captured, 1);
+  // exactly at the bound is not stale (a copy that old at the fill was not taken after the signal, which is its own reason)
+  assert.deepEqual(fillWith([pairOf(kalshi(38, 40), poly(50, 52, { ageSec: 30 }))]).unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 0, oldRead: 0, sameRead: 1 });
+  assert.equal(fillWith([pairOf(kalshi(38, 40), poly(50, 52, { ageSec: 30 }))], { lagSec: 0 }).captured, 1);
   // fresh for the tenor (30) but older than the rule allows (20): unknown, even with prices that would read as gone
   const old = fillWith([pairOf(kalshi(47, 49), poly(50, 52, { ageSec: 25 }))], { maxReadAgeSec: 20 });
-  assert.deepEqual(old.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 0, oldRead: 1 });
+  assert.deepEqual(old.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 0, oldRead: 1, sameRead: 0 });
   assert.equal(old.gone.total, 0);
   assert.equal(old.sentAnywayMc, 0);
   // a book that did not answer, a pair no longer in the cycle, a read with no age stored, another market under the same key
@@ -278,11 +279,14 @@ test("one trade per episode: no new signal while the conditions hold, a new one 
   // under a 1 cent rule the same cycles are one episode
   assert.equal(replayPairs([cycleAt(0, [book(40)]), cycleAt(10, [book(44)]), cycleAt(20, [book(40)])], rule({ lagSec: 0 })).total.signals, 1);
 
-  // a stale cycle, a missing book and a cycle without the pair each end the episode
-  for (const broken of [pairOf(kalshi(38, 40), poly(50, 52, { ageSec: 31 })), pairOf(kalshi(38, 40), null)]) {
-    assert.equal(replayPairs([cycleAt(0, [book(40)]), cycleAt(10, [broken]), cycleAt(20, [book(40)])], rule({ lagSec: 0 })).total.signals, 2);
+  // a venue that no longer lists the contract and a cycle without the pair each end the episode
+  for (const gone of [[pairOf(kalshi(38, 40), null)], []]) {
+    assert.equal(replayPairs([cycleAt(0, [book(40)]), cycleAt(10, gone), cycleAt(20, [book(40)])], rule({ lagSec: 0 })).total.signals, 2);
   }
-  assert.equal(replayPairs([cycleAt(0, [book(40)]), cycleAt(10, []), cycleAt(20, [book(40)])], rule({ lagSec: 0 })).total.signals, 2);
+  // so does another market under the same key, stale or not; when it shows a lock that is a trade of its own
+  const otherMarket = (age: number) => [pairOf(kalshi(38, 40), { ...poly(50, 52, { ageSec: age }), id: "another-market" })];
+  assert.equal(replayPairs([cycleAt(0, [book(40)]), cycleAt(10, otherMarket(31)), cycleAt(20, [book(40)])], rule({ lagSec: 0 })).total.signals, 2);
+  assert.equal(replayPairs([cycleAt(0, [book(40)]), cycleAt(10, otherMarket(2)), cycleAt(20, [book(40)])], rule({ lagSec: 0 })).total.signals, 3);
 
   // a stretch with no stored cycle does not re-arm: nothing was seen to be false
   assert.equal(replayPairs([cycleAt(0, [book(40)]), cycleAt(600, [book(40)])], rule({ lagSec: 0 })).total.signals, 1);
@@ -295,6 +299,84 @@ test("one trade per episode: no new signal while the conditions hold, a new one 
   // another contract is another episode
   const other = book(40, 50, { key: "above:74100", strike: 74100, kalshi: { ...kalshi(38, 40), id: "K2" }, poly: { ...poly(50, 52), id: "P2" } });
   assert.equal(replayPairs([cycleAt(0, [book(40), other]), cycleAt(10, [book(40), other])], rule({ lagSec: 0 })).total.signals, 2);
+});
+
+test("a cycle that cannot be judged does not end an episode: a stale read, a read too old, a book that did not answer, a read with no age", () => {
+  const through = (unjudged: StoredPair, over: Partial<ReplayRule> = {}) => replayPairs([cycleAt(0, [book(40)]), cycleAt(10, [unjudged]), cycleAt(20, [book(40)])], rule({ lagSec: 0, ...over })).total.signals;
+  assert.equal(through(pairOf(kalshi(38, 40), poly(50, 52, { ageSec: 31 }))), 1);
+  assert.equal(through(pairOf(kalshi(38, 40, { ageSec: 31 }), poly(50, 52))), 1);
+  assert.equal(through(pairOf(kalshi(38, 40), poly(50, 52, { ageSec: 25 })), { maxReadAgeSec: 20 }), 1);
+  assert.equal(through(pairOf(kalshi(38, 40), null, { errors: [{ venue: "polymarket_us", kind: "timeout" }] })), 1);
+  assert.equal(through(pairOf(null, poly(50, 52), { errors: [{ venue: "kalshi", kind: "http" }] })), 1);
+  assert.equal(through(pairOf(kalshi(38, 40), poly(50, 52, { ageSec: null }))), 1);
+  // the prices on a stale row say nothing either way: a stale row priced as no lock does not end the episode
+  assert.equal(through(pairOf(kalshi(50, 52), poly(50, 52, { ageSec: 31 }))), 1);
+  // a read that can be judged and shows no lock, after the stale cycle, does end it
+  const ended = replayPairs([cycleAt(0, [book(40)]), cycleAt(10, [pairOf(kalshi(38, 40), poly(50, 52, { ageSec: 31 }))]), cycleAt(20, [book(52)]), cycleAt(30, [book(40)])], rule({ lagSec: 0 }));
+  assert.deepEqual(ended.trades.map((t) => t.signalAt), [iso(0), iso(30)]);
+
+  // one lock standing unchanged for ten minutes on the 15-minute tenor (bound 15 s), read through a cache that is
+  // refreshed every 30 seconds: copy ages 1, 11, 21, 1, 11, 21... One episode, one trade of 59 cents, not twenty.
+  const fifteen = (age: number) => pairOf(kalshi(38, 40, { ageSec: 0.3, fetchAgeSec: 0.3, cacheAgeSec: null }), poly(50, 52, { ageSec: age, fetchAgeSec: 0.4, cacheAgeSec: age - 0.4 }), { horizon: "fifteen", staleAfterSec: 15 });
+  const standing = Array.from({ length: 60 }, (_, i) => cycleAt(i * 10, [fifteen(((i * 10) % 30) + 1)]));
+  const at0 = replayPairs(standing, rule({ lagSec: 0 }));
+  assert.deepEqual([at0.total.signals, at0.total.captured, at0.total.capturedMc], [1, 1, 59_000]);
+  // the control: the same lock on a read that never crosses the bound is one episode too, captured at lag 10 on a copy taken after the signal
+  const steady = Array.from({ length: 60 }, (_, i) => cycleAt(i * 10, [fifteen(5)]));
+  const control = replayPairs(steady, rule({ lagSec: 10 }));
+  assert.deepEqual([control.total.signals, control.total.captured, control.total.capturedMc, control.total.unknown.total], [1, 1, 59_000, 0]);
+});
+
+test("a fill needs both books read after the signal: the signal's own cached copy, only older, is not a fill", () => {
+  // one Polymarket US copy: 2 seconds old at the signal (t = 0), 12 at the next cycle. Kalshi is read live each cycle.
+  const live = (ask: number) => kalshi(ask - 2, ask, { ageSec: 0.3, fetchAgeSec: 0.3, cacheAgeSec: null });
+  const copy = (age: number, bid = 50) => poly(bid, bid + 2, { ageSec: age, fetchAgeSec: 0.4, cacheAgeSec: age - 0.4 });
+  const signal = cycleAt(0, [pairOf(live(40), copy(2))]);
+  const same = replayPairs([signal, cycleAt(10, [pairOf(live(40), copy(12))])], rule({ lagSec: 10 }), { keepTrades: 5 });
+  assert.equal(same.total.signals, 1);
+  assert.equal(same.total.captured, 0);
+  assert.equal(same.total.gone.total, 0);
+  assert.deepEqual(same.total.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 0, oldRead: 0, sameRead: 1 });
+  assert.equal(same.total.capturedMc, 0);
+  assert.equal(same.total.sentAnywayMc, 0);
+  assert.equal(same.total.survivedShare, null);
+  assert.deepEqual([same.trades[0].outcome, same.trades[0].why, same.trades[0].fillAt, same.trades[0].fillEdgeMc, same.trades[0].capturedMc], ["unknown", "sameRead", iso(10), null, 0]);
+  // it is not a signal still waiting for its cycle: a cycle came, and said nothing new
+  assert.equal(same.signalsOpenAtEnd, 0);
+  assert.equal(same.days[0].unknown, 1);
+  // the same copy is not read as gone either, whatever Kalshi did in the meantime
+  const moved = replayPairs([signal, cycleAt(10, [pairOf(live(52), copy(12))])], rule({ lagSec: 10 }));
+  assert.deepEqual([moved.total.gone.total, moved.total.unknown.sameRead], [0, 1]);
+
+  // a later cycle inside the wait (lag 10 + interval 10 + tolerance 5 = 25) that read a new copy is the fill, at its prices:
+  // Kalshi 44 over Polymarket US 50 is 18 cents for ten
+  const later = replayPairs([signal, cycleAt(10, [pairOf(live(40), copy(12))]), cycleAt(20, [pairOf(live(44), copy(4))])], rule({ lagSec: 10 }), { keepTrades: 5 });
+  assert.deepEqual([later.total.captured, later.total.capturedMc, later.total.unknown.total], [1, 18_000, 0]);
+  assert.deepEqual([later.trades[0].outcome, later.trades[0].why, later.trades[0].fillAt, later.trades[0].fillEdgeMc], ["captured", null, iso(20), 1_800]);
+  assert.deepEqual(later.total.fillDelaySec, { median: 20, max: 20 });
+  // and may show the lock gone
+  const laterGone = replayPairs([signal, cycleAt(10, [pairOf(live(40), copy(12))]), cycleAt(20, [pairOf(live(47), copy(4))])], rule({ lagSec: 10 }));
+  assert.deepEqual(laterGone.total.gone, { total: 1, edge: 1, size: 0 });
+  // a new copy that comes after the wait is too late: unknown, for the same reason
+  const tooLate = replayPairs([signal, cycleAt(10, [pairOf(live(40), copy(12))]), cycleAt(20, [pairOf(live(40), copy(22))]), cycleAt(30, [pairOf(live(40), copy(2))])], rule({ lagSec: 10 }), { keepTrades: 5 });
+  assert.deepEqual(tooLate.total.unknown, { total: 1, noCycle: 0, noRead: 0, staleRead: 0, oldRead: 0, sameRead: 1 });
+  assert.equal(tooLate.trades[0].fillAt, iso(20));
+  assert.equal(tooLate.total.captured, 0);
+
+  // the Kalshi leg is held to the same test: a Kalshi copy 12 seconds old at the fill was not read after the signal
+  const oldKalshi = replayPairs([signal, cycleAt(10, [pairOf(kalshi(38, 40, { ageSec: 12, fetchAgeSec: 0.3, cacheAgeSec: 11.7 }), copy(3))])], rule({ lagSec: 10 }));
+  assert.deepEqual([oldKalshi.total.captured, oldKalshi.total.unknown.sameRead], [0, 1]);
+
+  // the venue's cache states its age in whole seconds, so a second is taken off against the trader: a copy stored as
+  // 9.5 seconds old at a fill 10 seconds after the signal may be the signal's; one stored as 8.9 is not
+  const edge = (age: number) => replayPairs([signal, cycleAt(10, [pairOf(live(40), copy(age))])], rule({ lagSec: 10 })).total;
+  assert.equal(edge(9.5).unknown.sameRead, 1);
+  assert.equal(edge(8.9).captured, 1);
+  // a read with no cache age stated is taken at its stored age
+  assert.equal(replayPairs([signal, cycleAt(10, [pairOf(live(40), poly(50, 52, { ageSec: 9.5, fetchAgeSec: 9.5, cacheAgeSec: null }))])], rule({ lagSec: 10 })).total.captured, 1);
+
+  // lag 0 fills at the signal cycle itself, by definition on the signal's own reads
+  assert.equal(replayPairs([signal], rule({ lagSec: 0 })).total.captured, 1);
 });
 
 test("the fill is judged the way round it was signalled: a lock the other way at the fill cycle does not rescue the trade", () => {
@@ -374,7 +456,7 @@ test("old lines are counted and reported, not replayed and not guessed at", () =
   // an old line cannot be a fill cycle: the signal at t = 10 with lag 10 finds only an old line at t = 20, and the next new one is too late
   const mixed = replayPairs([old(0), { kind: "cycle", cycle: cycleAt(10, [book(40)]) }, old(20), { kind: "cycle", cycle: cycleAt(40, [book(40)]) }], rule({ lagSec: 10 }));
   assert.equal(mixed.total.signals, 1);
-  assert.deepEqual(mixed.total.unknown, { total: 1, noCycle: 1, noRead: 0, staleRead: 0, oldRead: 0 });
+  assert.deepEqual(mixed.total.unknown, { total: 1, noCycle: 1, noRead: 0, staleRead: 0, oldRead: 0, sameRead: 0 });
   assert.equal(mixed.cyclesRead, 2);
   assert.equal(mixed.cyclesOldFormat, 2);
   assert.match(mixed.days[0].note ?? "", /2 cycles in the old form \(gaps, no books\) are not replayed\./);
@@ -432,7 +514,7 @@ test("totals per tenor and per day: integer sums, the lower middle as the median
   assert.equal(r.total.captured, 3);
   assert.deepEqual(r.total.gone, { total: 1, edge: 1, size: 0 });
   // the 15-minute pair is not in the fill cycle: unknown
-  assert.deepEqual(r.total.unknown, { total: 1, noCycle: 0, noRead: 1, staleRead: 0, oldRead: 0 });
+  assert.deepEqual(r.total.unknown, { total: 1, noCycle: 0, noRead: 1, staleRead: 0, oldRead: 0, sameRead: 0 });
   // 59 + 18 + 79 = 156 cents
   assert.equal(r.total.capturedMc, 156_000);
   // sent anyway adds the -12: 144 cents

@@ -423,19 +423,32 @@ it was signalled:
 | --- | --- |
 | no stored cycle within one interval plus the tolerance (a gap, or the data ends) | `unknown` |
 | the pair or a leg is missing, the row is stale, or a read is older than `age` | `unknown` |
+| a book's copy was not taken after the signal (`sameRead`) | not the fill; a later cycle inside the same wait is, else `unknown` |
 | the top of book holds less than the size traded, or a side is empty | `gone` (size); no "sent anyway" figure, the depth below the top is not stored |
 | edge at the size traded is zero or more | `captured`, at the fill cycle's edge |
 | edge below zero | `gone` (edge), nothing captured; "sent anyway" carries the negative edge |
 
 `unknown` is never counted as captured, as gone, or as zero.
 
+**A fill needs a read taken after the signal.** A fill cycle counts only if both books' copies
+left the venue after the signal cycle: the cycle's time minus the copy's stored age, less one
+more second where the venue's cache gave the age (it is in whole seconds), must be later than
+the signal. Poly's copy is cached up to 30 seconds, so the cycle 10 seconds after a signal often
+prices the very copy the signal was read from; that is not a fill. The trade then waits for a
+later cycle inside the same wait (lag plus one interval plus `tolerance`) and is `unknown`
+(`sameRead`) if none read both books after the signal. With the default wait of 25 seconds that
+is common; `tolerance=25` gives every signal a cycle on a new Poly copy. Lag 0 is exempt: it is
+the signal cycle by definition.
+
 **One trade per episode.** A pair one way round is the lock run identity the episodes use
 (tenor, close, strike, both venue ids, which venue the Yes is on). After a signal there is no
-new one on it until a stored cycle at which the rule does not hold. A stretch with no stored
-cycle does not re-arm it. Unlike the page's episodes, one cycle is enough for a signal.
+new one on it until a stored cycle with reads that can be acted on shows the lock gone, the
+pair is not in the cycle, or a venue no longer lists it. A stale read, a read older than `age`,
+a book that did not answer and a stretch with no stored cycle do not re-arm it: nothing was
+seen to be false. Unlike the page's episodes, one cycle is enough for a signal.
 
 **What comes back**, per lag, for all tenors and per tenor: signals, captured, gone (edge,
-size), unknown (no cycle, stale read, old read, missing read), captured total, median and
+size), unknown (no cycle, stale read, old read, missing read, same read), captured total, median and
 worst captured edge, sent anyway, the share of known outcomes that survived the lag, the
 seconds from signal to fill; days covered, cycles replayed, old-form cycles, lines skipped; a
 row per day; the rule; and `assumptions`: both legs are assumed to fill together at the fill

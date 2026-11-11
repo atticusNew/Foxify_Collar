@@ -267,7 +267,7 @@ export function replayText(run: ReplayRun, opts: { dir?: string; trades?: boolea
     out.push("");
     out.push(`Lag ${r.rule.lagSec} s. ${r.lagLabel}`);
     const u = r.total.unknown;
-    if (u.total) out.push(`Unknown ${u.total}: no stored cycle in time ${u.noCycle}${r.signalsOpenAtEnd ? ` (${r.signalsOpenAtEnd} of them because the data ends first)` : ""}, fill read stale ${u.staleRead}, fill read too old ${u.oldRead}, fill read missing ${u.noRead}.`);
+    if (u.total) out.push(`Unknown ${u.total}: no stored cycle in time ${u.noCycle}${r.signalsOpenAtEnd ? ` (${r.signalsOpenAtEnd} of them because the data ends first)` : ""}, fill read stale ${u.staleRead}, fill read too old ${u.oldRead}, fill read missing ${u.noRead}, fill read not taken after the signal ${u.sameRead}.`);
     if (r.total.fillDelaySec) out.push(`Signal to fill cycle: median ${r.total.fillDelaySec.median} s, longest ${r.total.fillDelaySec.max} s. Shown at the signal cycles: ${centsText(r.total.shownAtSignalMc)} c.`);
     out.push(...table(["tenor", ...SUMMARY_HEAD], r.rule.horizons.map((h) => [TENOR_NAME[h], ...summaryCells(r.byHorizon[h] as ReplaySummary)])));
     out.push("");
