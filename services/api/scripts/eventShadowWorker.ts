@@ -188,7 +188,7 @@ import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, typ
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderCapitalHtml, renderHoldersHtml, renderPilotCheckHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
-import { buildRealizedBook, publicRealSummary, realizedMonthlyCsv, type RealizedBook } from "../src/eventCollar/crossVenue/realizedBook";
+import { buildRealizedBook, lockKeyOf, publicRealSummary, realizedMonthlyCsv, type RealizedBook } from "../src/eventCollar/crossVenue/realizedBook";
 import { VERDICT_WORDS, isUtcDay, reconcileDay, type DayRecon } from "../src/eventCollar/crossVenue/realizedRecon";
 import { appendReconRun, dailyCheckDue, differsAlertText, latestRunPerDay, loadReconRuns, reconRunOf, reconRunView, type ReconRunRecord } from "../src/eventCollar/crossVenue/realizedReconLog";
 import { readVenueFills, venueFillReadersFromEnv, type ReadOptions, type VenueFillReaders, type VenueFillReadersView } from "../src/eventCollar/crossVenue/venueFillReaders";
@@ -457,6 +457,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/lock/pending",
   "/api/shadow/lock/pending/clear",
   "/api/shadow/cash",
+  "/api/shadow/cash/in-full",
   "/api/shadow/holders",
   "/api/shadow/member/raw",
   "/holders",
@@ -3786,6 +3787,64 @@ async function handleCash(req: IncomingMessage, res: ServerResponse): Promise<vo
   sendJson(res, 200, { ok: true, at: new Date().toISOString(), ticker, ...(holder ? { holder } : {}), recorded: { at, leg, cents, ...strOpt("method") }, cash: cashDue(updated) });
 }
 
+const IN_FULL_METHOD = "settled in full, operator's statement";
+const IN_FULL_NOTE = "recorded in one pass: the operator states that every payment on this lock was made in full";
+
+/**
+ * What POST /api/shadow/cash/in-full would write: one payment per leg still outstanding on each
+ * real lock that has ended (settled, or left early with the hedge sold). A lock that is not the
+ * current one on its market is left for the single route, since a line lands on the current lock.
+ */
+function inFullPlan(): { lines: Array<{ path: string; holder: string | null; ticker: string; leg: CashLeg; to: "holder" | "writer"; cents: number }>; left: Array<{ ticker: string; holder: string | null; why: string }> } {
+  const ended = new Set(realizedBook().locks.filter((l) => l.state === "settled" || l.state === "closed").map((l) => l.key));
+  const lines: ReturnType<typeof inFullPlan>["lines"] = [];
+  const left: ReturnType<typeof inFullPlan>["left"] = [];
+  const current = new Set<string>();
+  for (const { p, path, holder } of allLocks()) {
+    const isCurrent = !current.has(`${path}|${p.ticker}`);
+    current.add(`${path}|${p.ticker}`);
+    if (!ended.has(lockKeyOf(p.ticker, holder, p.generation ?? 1))) continue;
+    const owed = cashDue(p).filter((d) => d.outstandingCents > 0);
+    if (owed.length === 0) continue;
+    if (!isCurrent) {
+      left.push({ ticker: p.ticker, holder, why: "an earlier lock on a market that was locked again; record it with POST /api/shadow/cash" });
+      continue;
+    }
+    for (const d of owed) lines.push({ path, holder, ticker: p.ticker, leg: d.leg, to: d.to, cents: d.outstandingCents });
+  }
+  return { lines, left };
+}
+
+/**
+ * POST /api/shadow/cash/in-full (operator): record every outstanding payment on the real locks
+ * that have ended as made in full, each at the amount the lock's terms owe. For locks the
+ * operator settled outside any payment rail. One line per leg, as the single route writes them;
+ * pressing it again writes nothing, since nothing is outstanding.
+ */
+function handleCashInFull(req: IncomingMessage, res: ServerResponse): void {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/cash/in-full as the operator; GET /api/shadow/holders shows what it would write under inFull" });
+    return;
+  }
+  const at = new Date().toISOString();
+  const plan = inFullPlan();
+  const written: Array<{ ticker: string; holder: string | null; leg: CashLeg; to: "holder" | "writer"; cents: number }> = [];
+  for (const l of plan.lines) {
+    if (!appendOrAlert({ type: "cash" as const, at, ticker: l.ticker, leg: l.leg, cents: l.cents, method: IN_FULL_METHOD, note: IN_FULL_NOTE }, l.path)) {
+      sendJson(res, 500, { ok: false, error: "ledger_write_failed", written });
+      return;
+    }
+    written.push({ ticker: l.ticker, holder: l.holder, leg: l.leg, to: l.to, cents: l.cents });
+  }
+  if (wantsHtml(req.headers)) {
+    res.writeHead(303, { location: "/holders", "cache-control": "no-store" });
+    res.end();
+    return;
+  }
+  const sum = (to: "holder" | "writer") => written.filter((w) => w.to === to).reduce((s, w) => s + w.cents, 0);
+  sendJson(res, 200, { ok: true, at, lines: written.length, toHoldersCents: sum("holder"), fromHoldersCents: sum("writer"), written, left: plan.left });
+}
+
 /**
  * GET /api/shadow/holders (operator): every holder with locks on the record (the shared ledger is
  * "(shared)"), each lock's cash legs, and the totals outstanding each way: what the writer still
@@ -3843,10 +3902,18 @@ function holdersSummary() {
         positions: rows,
       };
     });
+  const plan = inFullPlan();
   return {
     ok: true,
     at: new Date().toISOString(),
     holders,
+    // what POST /api/shadow/cash/in-full would write now
+    inFull: {
+      lines: plan.lines.length,
+      toHoldersCents: plan.lines.filter((l) => l.to === "holder").reduce((t, l) => t + l.cents, 0),
+      fromHoldersCents: plan.lines.filter((l) => l.to === "writer").reduce((t, l) => t + l.cents, 0),
+      left: plan.left.length,
+    },
     totals: holders.reduce(
       (t, h) => ({ locks: t.locks + h.locks, toHolderCents: t.toHolderCents + h.outstanding.toHolderCents, toWriterCents: t.toWriterCents + h.outstanding.toWriterCents }),
       { locks: 0, toHolderCents: 0, toWriterCents: 0 },
@@ -5690,6 +5757,10 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
         return;
       }
       sendJson(res, 200, { ok: true, id, ...summarizePending(loadPending(PENDING_PATH)) });
+      return;
+    }
+    if (url.pathname === "/api/shadow/cash/in-full") {
+      handleCashInFull(req, res);
       return;
     }
     if (url.pathname === "/api/shadow/cash") {

@@ -1455,6 +1455,8 @@ ${parlayCard}  <div class="card">
 
 export interface HoldersPageInput {
   at: string;
+  /** what the in-full button would record: payments outstanding on real locks that have ended */
+  inFull?: { lines: number; toHoldersCents: number; fromHoldersCents: number; left: number };
   holders: Array<{
     holder: string;
     configured: boolean;
@@ -1578,7 +1580,16 @@ pre{background:var(--card2);border-radius:8px;padding:10px 12px;font-size:11.5px
     </div>
   </div>
 ${sections}
-${input.fingerprints ? lockFingerprintsCard(input.fingerprints) : ""}  <div class="card">
+${input.fingerprints ? lockFingerprintsCard(input.fingerprints) : ""}${
+    input.inFull && input.inFull.lines > 0
+      ? `  <div class="card">
+    <h2>Real locks settled in full</h2>
+    <div class="read">${input.inFull.lines} payment${input.inFull.lines === 1 ? " is" : "s are"} outstanding on real locks that have ended: ${usd(input.inFull.toHoldersCents)} to holders and ${usd(input.inFull.fromHoldersCents)} back from holders. If every one of them was made in full, press the button. It writes one line per payment, each at the amount the lock's terms owe, and the record page then shows them as paid and shows our result on the real locks. It cannot be undone: the ledger is append only.${input.inFull.left > 0 ? ` ${input.inFull.left} earlier lock${input.inFull.left === 1 ? "" : "s"} on a market that was locked again ${input.inFull.left === 1 ? "is" : "are"} left for the single route below.` : ""}</div>
+    <form method="post" action="/api/shadow/cash/in-full" style="margin-top:10px"><button type="submit">Record all ${input.inFull.lines} as paid in full</button></form>
+  </div>
+`
+      : ""
+  }  <div class="card">
     <h2>Recording a payment</h2>
     <div class="read">Each payment is one line on the holder's ledger. Name the holder when the same game is locked by more than one.</div>
     <pre>curl -X POST "$SERVICE/api/shadow/cash" -H "x-admin-token: $TOKEN" -H "content-type: application/json" \\

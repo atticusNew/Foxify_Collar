@@ -468,3 +468,73 @@ test("the kept file and the timer's rule: append only, a torn line skipped, the 
   // the year's edge
   assert.equal(dailyCheckDue(new Date("2027-01-01T01:00:00.000Z"), HALF_HOUR, none, none), "2026-12-31");
 });
+
+test("real locks settled outside any payment rail: one operator press records every outstanding payment at the amount the terms owe, the page then shows our result, and a second press writes nothing", async () => {
+  await ready;
+  const T_WON = "KXNBAGAME-25OCT22DENLAL-DEN";
+  const BEA = join(dir, "lock-ledger-bea.jsonl");
+  appendFileSync(
+    BEA,
+    `${JSON.stringify({ type: "open", at: "2025-10-22T23:00:00.000Z", ticker: T_WON, kind: "sports", league: "nba", sideName: "Denver Nuggets", eventTitle: "Denver wins", eventTimeIso: "2025-10-23T00:30:00.000Z", contracts: 20, markCents: 60, floorCents: 40, capCents: 80, creditCents: 84, evCostBps: 250, route: "kalshi_self", feesCents: 6, takeCents: 10, source: "lock" })}\n` +
+      `${JSON.stringify({ type: "settle", at: "2025-10-23T04:00:00.000Z", ticker: T_WON, result: "yes" })}\n`,
+  );
+  appendFileSync(
+    PATHS.receipts,
+    `${JSON.stringify({
+      id: "fedcba9876543210",
+      at: "2025-10-22T23:00:01.000Z",
+      ref: `${T_WON}@bea`,
+      intent: { venue: "kalshi", instrument: T_WON, outcome: "No", unitsMilli: 12_000, book: { bestPriceMilli: 250, avgPriceMilli: 250, worstPriceMilli: 260, costCents: 306 }, maxCostCents: 306 },
+      attempts: [{ strategy: "live", step: "order", ok: true, at: "2025-10-22T23:00:01.400Z", detail: "order ord-won executed: 12 of 12 filled at 250 milli, 300c all in", orderId: "ord-won", unitsMilli: 12_000, costCents: 300 }],
+      fill: { strategy: "live", venue: "kalshi", instrument: T_WON, unitsMilli: 12_000, avgPriceMilli: 250, costCents: 300, vsBookCents: 6, simulated: false, ids: { orderId: "ord-won" } },
+      outcome: "filled_live",
+      fallbackReason: null,
+      bookWalkPenaltyCents: 6,
+    })}\n`,
+  );
+  // a lock whose hedge was simulated owes its credit too, and is not the button's business
+  const SIM = join(dir, "lock-ledger-cy.jsonl");
+  appendFileSync(SIM, `${JSON.stringify({ type: "open", at: "2025-10-22T23:00:00.000Z", ticker: T_WON, kind: "sports", league: "nba", sideName: "Denver Nuggets", eventTitle: "Denver wins", eventTimeIso: "2025-10-23T00:30:00.000Z", contracts: 20, markCents: 60, floorCents: 40, capCents: 80, creditCents: 84, evCostBps: 250, route: "kalshi_self", feesCents: 6, takeCents: 10, source: "lock" })}\n`);
+
+  const before = (await get("/api/shadow/realized")).body.public;
+  assert.equal(before.realizedCents, null);
+  const due = (await get("/api/shadow/holders")).body.inFull;
+  assert.equal(due.lines >= 2, true);
+  const page = (await text("/holders", OP)).body;
+  assert.ok(page.includes("<h2>Real locks settled in full</h2>"));
+  assert.ok(page.includes(`<form method="post" action="/api/shadow/cash/in-full"`));
+
+  // the operator's alone, and a write: a read is refused, and so is anyone without the token
+  assert.equal((await get("/api/shadow/cash/in-full")).status, 405);
+  assert.equal((await post("/api/shadow/cash/in-full", {})).status, 403);
+
+  const done = (await post("/api/shadow/cash/in-full")).body;
+  assert.equal(done.ok, true);
+  assert.equal(done.lines, due.lines);
+  const bea = done.written.filter((w: Json) => w.holder === "bea");
+  // won above an 80c cap on 20 contracts: the credit to her, and the 20c slice above the cap back from her
+  assert.deepEqual(bea, [
+    { ticker: T_WON, holder: "bea", leg: "credit", to: "holder", cents: 84 },
+    { ticker: T_WON, holder: "bea", leg: "handback", to: "writer", cents: 400 },
+  ]);
+  assert.ok(!done.written.some((w: Json) => w.holder === "cy"), "a lock with no real fill is left alone");
+  const lines = readFileSync(BEA, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Json).filter((l) => l.type === "cash");
+  assert.deepEqual(lines.map((l) => [l.leg, l.cents, l.method]), [["credit", 84, "settled in full, operator's statement"], ["handback", 400, "settled in full, operator's statement"]]);
+
+  const after = (await get("/api/shadow/realized")).body.public;
+  assert.equal(after.realizedWithheld, null);
+  assert.equal(after.paidToHoldersCents, before.paidToHoldersCents + done.toHoldersCents);
+  assert.equal(after.collectedFromHoldersCents, before.collectedFromHoldersCents + done.fromHoldersCents);
+  assert.equal(typeof after.realizedCents, "number");
+  const card = realCard((await text("/")).body);
+  assert.ok(card?.includes('<div class="l">our result, ended locks</div>'));
+
+  const again = (await post("/api/shadow/cash/in-full")).body;
+  assert.deepEqual([again.ok, again.lines], [true, 0]);
+  assert.equal((await get("/api/shadow/holders")).body.inFull.lines, 0);
+  assert.ok(!(await text("/holders", OP)).body.includes("Real locks settled in full"));
+
+  // from the page's own button a browser is sent back to the page
+  const res = await fetch(`${base}/api/shadow/cash/in-full`, { method: "POST", headers: { ...OP, accept: "text/html" }, redirect: "manual" });
+  assert.deepEqual([res.status, res.headers.get("location")], [303, "/holders"]);
+});
