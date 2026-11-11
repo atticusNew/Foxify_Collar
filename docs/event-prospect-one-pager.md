@@ -1,5 +1,7 @@
 Draft for the founder's review. Not sent. 10 November 2026.
 
+Do not send as written (11 November 2026). Prospect Markets is a broker that introduces customers to Crypto.com's exchange. It has no book and no trading fees of its own, so "your venue", "your book" and "your trading fees" below are wrong. To be rewritten before the 17 November meeting with the week's figures from `/sports`, section 5.
+
 # Earn & Protect for Prospect Markets: Lock in during a live game
 
 To: [addressee]
