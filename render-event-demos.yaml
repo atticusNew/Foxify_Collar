@@ -209,11 +209,14 @@ services:
     # sha256) before the original is removed; a failed pass leaves the original and tries
     # again. Everything that reads day files reads both forms.
     #
-    # Growth, measured on 11 November 2026 by running this service for 20 minutes:
-    #   curve snapshot   213 KB raw, 31 KB gzipped, one a minute  = 307 MB a day raw, 45 MB gzipped
-    #   pairs cycle      0.26 KB raw, one every 10 seconds        = 2.3 MB a day raw, 0.1 MB gzipped
-    # So this 3 GB disk holds the current day raw plus about 60 closed days. A year is about
-    # 17 GB: raise sizeGB to 20 before the second month is out (Render disks only grow).
+    # Growth, measured on 11 November 2026 by running this service locally:
+    #   curve snapshot   215 KB raw, 31 KB gzipped, one a minute  = 310 MB a day raw, 45 MB gzipped
+    #   pairs cycle      3.9 KB raw, one every 10 seconds         =  34 MB a day raw,  2 MB gzipped
+    # (a pairs cycle stores both books of every pair it priced, so a trade can be priced on a
+    # later cycle). Together about 345 MB a day raw, 47 MB gzipped. Without the gzip step this
+    # 3 GB disk would be full in under 9 days; with it, it holds the current day raw plus
+    # about 55 closed days. A year is about 17 GB: raise sizeGB to 20 before the second month
+    # is out (Render disks only grow).
     #
     # The budget: BTC_CURVE_DISK_BUDGET_MB is the size /healthz measures the data against.
     # Past 80% it says so in plain words under data.warning and so does the start-up log line.
@@ -293,8 +296,8 @@ services:
     # checked against the original before the original is removed. The boot reload reads both.
     #
     # Growth, measured on 11 November 2026 by running this service for a few minutes with 48
-    # games listed: one snapshot is 44 KB raw and 7.4 KB gzipped, one a minute, so 63 MB a day
-    # raw and 11 MB a day gzipped. This 2 GB disk holds the current day raw plus about 180
+    # games listed: one snapshot is 44 KB raw and 7 KB gzipped, one a minute, so 63 MB a day
+    # raw and 10 MB a day gzipped. This 2 GB disk holds the current day raw plus about 190
     # closed days at that slate. A year is about 4 GB: raise sizeGB to 5 before then. A
     # bigger slate grows faster; /healthz data.bytes is the number to watch.
     #

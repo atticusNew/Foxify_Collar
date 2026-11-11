@@ -7,9 +7,10 @@ import test from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { PairsCollector, launchPayload, pairsCollectorFromEnv, type PairsCollectorOptions } from "../src/btcCurve/pairsCollector";
-import type { LockEpisode } from "../src/btcCurve/pairs";
+import type { LockEpisode, PairsReport } from "../src/btcCurve/pairs";
+import { parseCycleLine, type StoredCycle } from "../src/btcCurve/pairsCycles";
 
 const KALSHI = "https://api.elections.kalshi.com/trade-api/v2";
 const POLY = "https://gateway.polymarket.us";
@@ -576,4 +577,90 @@ test("a cycle whose writes fail (a full disk) still prices and serves the page; 
   const h3 = c.health() as typeof h1;
   assert.deepEqual([h3.data.recording, h3.data.notRecording, h3.data.writesLost?.count], [true, undefined, 2]);
   assert.equal(readFileSync(join(dir, "gaps-2026-11-10.jsonl"), "utf8").trim().split("\n").length, 1);
+});
+
+/**
+ * Five cycles on the 15-minute pair, ten seconds apart, Kalshi bid 58 on 100 throughout:
+ *   1  Polymarket US offers 51 on 100, a fresh copy: Yes there at 51, No on Kalshi at 100 - 58 = 42
+ *   2  the same on 60 contracts
+ *   3  the same on a copy 22 seconds old (stale on the 15-minute tenor)
+ *   4  a fresh copy offered at 54
+ *   5  the Kalshi book answers 500
+ */
+async function lockStaleGoneFailed(f: Fake, c: PairsCollector): Promise<PairsReport[]> {
+  const poly = (ask: number, qty: number, cacheAgeSec: number): Answer => {
+    const a = polyBook(f, FIFTEEN_P, 49, ask, cacheAgeSec);
+    (a.body as { marketData: { offers: Array<{ qty: string }> } }).marketData.offers[0].qty = `${qty}.0000`;
+    return a;
+  };
+  const out: PairsReport[] = [];
+  f.set(kBookUrl(FIFTEEN_K), kalshiBook(58));
+  f.set(pBookUrl(FIFTEEN_P), poly(51, 100, 3));
+  out.push(await c.collectOnce());
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(51, 60, 13));
+  out.push(await c.collectOnce());
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(51, 60, 22));
+  out.push(await c.collectOnce());
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(54, 60, 3));
+  out.push(await c.collectOnce());
+  f.now += 10_000;
+  f.set(kBookUrl(FIFTEEN_K), { status: 500, body: {} });
+  out.push(await c.collectOnce());
+  return out;
+}
+
+test("every cycle writes its line with both books, fees and read ages, and the restart reload reads old and new lines alike", async () => {
+  const f = fake();
+  const { c, dir } = collectorOn(f);
+  const file = join(dir, "gaps-2026-11-10.jsonl");
+  const lines = () => readFileSync(file, "utf8").trim().split("\n");
+  const cycleOf = (i: number): StoredCycle => {
+    const parsed = parseCycleLine(lines()[i]);
+    assert.equal(parsed.kind, "cycle");
+    return (parsed as { cycle: StoredCycle }).cycle;
+  };
+  const [d1, , d3] = await lockStaleGoneFailed(f, c);
+  assert.equal(lines().length, 5, "one line a cycle");
+
+  const p1 = d1.fifteen?.pairs[0];
+  assert.ok(p1?.kalshi && p1.poly && p1.lock);
+  const stored = cycleOf(0);
+  assert.deepEqual([stored.at, stored.v, stored.pricedAt, stored.intervalSec, stored.spotUsd], [Date.parse(d1.at), 2, Date.parse(d1.pricedAt), 10, d1.spotUsd]);
+  // every pair the cycle priced is on the line, in the report's order
+  const priced = [...(d1.fifteen?.pairs ?? []), ...(d1.hourly?.pairs ?? []), ...(d1.daily?.pairs ?? [])];
+  assert.deepEqual(stored.pairs.map((p) => [p.horizon, p.place, p.strike, p.key, p.settlesAt, p.staleAfterSec]), priced.map((p) => [p.horizon, p.place, p.strike, p.key, p.settlesAt, p.staleAfterSec]));
+  assert.ok(stored.pairs.length >= 4, "the 15-minute pair and three strikes");
+  const s1 = stored.pairs[0];
+  assert.deepEqual(s1.kalshi, { id: FIFTEEN_K, bidCents: 58, askCents: 59, bidQty: 100, askQty: 100, feeTheta: 0.07, ageSec: p1.kalshi.read?.ageSec, fetchAgeSec: p1.kalshi.read?.fetchAgeSec, cacheAgeSec: null, venueAgeSec: null });
+  assert.deepEqual(s1.poly, { id: FIFTEEN_P, bidCents: 49, askCents: 51, bidQty: 100, askQty: 100, feeTheta: 0.095, ageSec: 3, fetchAgeSec: 0, cacheAgeSec: 3, venueAgeSec: 4 });
+  assert.equal(s1.errors, undefined);
+  // `at` and `rows` are what they were before: the reload of the persistence window reads them
+  assert.deepEqual(stored.rows, priced.filter((p) => p.gapCents !== null && p.freshness !== "stale").map((p) => [p.settlesAt, p.key, p.gapCents]));
+  assert.ok(stored.rows.length > 0);
+
+  // the stale cycle's gap is not in rows (as before) and its books are on the line
+  assert.equal(d3.fifteen?.pairs[0].freshness, "stale");
+  const third = cycleOf(2);
+  assert.equal(third.rows.some(([, key]) => key === third.pairs[0].key), false);
+  assert.equal(third.pairs[0].poly?.ageSec, 22);
+  // a book that did not answer: the line is still written, with that leg null and the failure named
+  const fifth = cycleOf(4).pairs[0];
+  assert.equal(fifth.kalshi, null);
+  assert.deepEqual(fifth.errors, [{ venue: "kalshi", kind: "http" }]);
+  assert.ok(fifth.poly);
+
+  // a restart reads the window back from a line of the first form and from the new lines
+  const oldLine = JSON.stringify({ at: T0 - 60_000, rows: [[s1.settlesAt, s1.key, 7.5]] });
+  writeFileSync(file, `${oldLine}\n${readFileSync(file, "utf8")}`);
+  const next = collectorOn(f, { dataDir: dir });
+  const withRows = lines().filter((l) => (JSON.parse(l) as { rows: unknown[] }).rows.length > 0).length;
+  assert.equal(next.c.loadGaps(f.now), withRows);
+  assert.ok(withRows >= 5);
+  f.set(kBookUrl(FIFTEEN_K), kalshiBook(58));
+  const d6 = await next.c.collectOnce();
+  const series = d6.fifteen?.pairs[0].persistence?.series ?? [];
+  assert.deepEqual(series[0], [T0 - 60_000, 7.5], "the old line's gap is in the window");
 });

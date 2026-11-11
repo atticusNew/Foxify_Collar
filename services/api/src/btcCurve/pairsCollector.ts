@@ -7,7 +7,8 @@
  * 15-minute window, the next close and the 5 PM ET daily that share a close on both venues,
  * select at the money and one strike each way off BRTI, read the books at those strikes, score
  * each pair, price the bands between the strikes, read the index's trailing movement, keep the
- * gap history, push the result to anyone listening on the stream.
+ * gap history, write the cycle with its books to the day file,
+ * push the result to anyone listening on the stream.
  *
  * Nothing here trades: public market-data endpoints only, no credentials loaded. The Launch
  * button posts the pair to the trader's own engine; the orders are his.
@@ -21,6 +22,7 @@ import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_W
 import { fetchBrtiCandles, fetchSeriesIdsBySlug, polyBookUrl, readBookOnce, readPolyUsLaddersForSeries } from "./polyUsLadders";
 import { mergeLadders } from "./analytics";
 import { EPISODE_KEEP, EPISODE_LABEL, EPISODE_MIN_CYCLES, STALE_AFTER_SEC, bundleOf, closeEpisodes, emptyEpisodeBook, episodeOf, fifteenSet, gapHistoryKey, horizonSet, lockEpisodesReport, lockSightings, pairId, pruneEpisodes, recordGaps, regimeOf, reportErrors, selectStrikes, staleBoundsFrom, stepEpisodes, strikeLevels, type Band, type EpisodeBook, type GapHistory, type Horizon, type HorizonSet, type LockEpisode, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
+import { storedCycleOf } from "./pairsCycles";
 import { renderPairsBody, renderPairsHtml } from "./pairsHtml";
 import type { Ladder, VenueQuote } from "./types";
 
@@ -344,7 +346,7 @@ export class PairsCollector {
       build("daily", daily, pDaily?.id ?? null),
     ];
     recordGaps(this.history, sets, nowMs, this.windowMs);
-    this.persistGaps(nowMs, sets);
+    this.persistCycle(nowMs, pricedAtMs, spotUsd, sets);
     // three intervals without a cycle and a run is no longer known to be consecutive
     const stepped = stepEpisodes(this.episodes, lockSightings(sets), pricedAtMs, { maxGapMs: 3 * this.intervalSec * 1000 });
     this.episodes = stepped.book;
@@ -407,17 +409,16 @@ export class PairsCollector {
     return this.listeners.size;
   }
 
-  /* ---- gap history on disk: one line per cycle, reloaded within the window on boot ---- */
+  /* ---- the cycle file: one line per cycle, the gaps reloaded within the window on boot ---- */
 
   /**
-   * A write that fails (a full disk) is the keeper's to remember and /healthz's to say; the
-   * cycle goes on and the page keeps serving what is in memory.
+   * Every cycle writes its line, pairs or not: the gaps the persistence window reloads and the
+   * books as they were priced (pairsCycles.ts). A write that fails (a full disk) is the
+   * keeper's to remember and /healthz's to say; the cycle goes on and the page keeps serving
+   * what is in memory.
    */
-  private persistGaps(atMs: number, sets: Array<HorizonSet | null>): void {
-    // what recordGaps kept, so a restart reloads the same window: gaps on stale reads are not persistence
-    const rows = sets.flatMap((s) => (s ? s.pairs.filter((p) => p.gapCents !== null && p.freshness !== "stale").map((p) => [p.settlesAt, p.key, p.gapCents]) : []));
-    if (!rows.length) return;
-    this.keeper.append(GAPS, atMs, JSON.stringify({ at: atMs, rows }), this.clock());
+  private persistCycle(atMs: number, pricedAtMs: number, spotUsd: number, sets: Array<HorizonSet | null>): void {
+    this.keeper.append(GAPS, atMs, JSON.stringify(storedCycleOf(sets, { atMs, pricedAtMs, intervalSec: this.intervalSec, spotUsd })), this.clock());
   }
 
   /** Finished episodes go to the day file of the day they ended, one a line, the way the gap history is kept. */
@@ -464,6 +465,8 @@ export class PairsCollector {
       try {
         const rec = JSON.parse(line) as { at: number; rows: Array<[string, string, number]> };
         if (nowMs - rec.at > this.windowMs) return;
+        // a cycle with no gap to keep is a line too, and is not a cycle of gap history
+        if (!rec.rows.length) return;
         for (const [settlesAt, key, gap] of rec.rows) {
           const k = gapHistoryKey(settlesAt, key);
           const arr = this.history.get(k) ?? [];

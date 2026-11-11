@@ -367,6 +367,30 @@ index prints held, the regime label, which tenors are listed, books not answerin
 today per tenor, last error, and `data`: what the pairs files take on disk, the retention in
 force, and whether the last write landed).
 
+## The stored cycle
+
+One line per cycle in `gaps-YYYY-MM-DD.jsonl` (the UTC day of the cycle's start), append-only.
+
+Until 11 November 2026 a line was `{ "at": <ms>, "rows": [[settlesAt, key, gapCents], ...] }`:
+the cycle's start and, for each pair whose read was not stale, the gap between the two mids.
+Nothing else: no prices, no sizes, no fees, no read ages. A cycle with no such pair wrote no
+line.
+
+A line now keeps `at` and `rows` exactly as they were and adds:
+
+| Field | Holds |
+| --- | --- |
+| `v` | `2` |
+| `pricedAt` | ms; when the books were in and the pairs priced. Every read age is measured to it |
+| `intervalSec` | the collector's cadence |
+| `spotUsd` | the BRTI print the strikes were chosen around |
+| `pairs` | every pair the cycle priced: `horizon`, `place`, `strike`, `key`, `settlesAt`, `staleAfterSec`, and `kalshi` and `poly`, each `{ id, bidCents, askCents, bidQty, askQty, feeTheta, ageSec, fetchAgeSec, cacheAgeSec, venueAgeSec }` or `null`; `errors` (`[{ venue, kind }]`) when a book did not answer |
+
+A line is written every cycle, pairs or not, so a missing line is a missed cycle. Old lines
+are never rewritten and nothing is filled in for them: the restart reload reads both forms,
+and a reader of the books is told a line is old and what it cannot say. A line is about 3.9 KB (measured,
+seven pairs), 34 MB a day raw and about 2 MB gzipped.
+
 ## What each cycle does
 
 1. Kalshi KXBTCD and KXBTC15M open markets (two paged calls), the series fee multipliers (cached
@@ -393,10 +417,11 @@ force, and whether the last write landed).
    cheaper way to own both sides after fees, the gap's persistence over the window, a clean
    score, the model probability. Per band: implied, model, cheapest legs, edge, sigmas. Per
    tenor: the pick, from the rows that are not stale and have both books.
-8. Gaps on reads that are not stale are appended to a day file (`gaps-YYYY-MM-DD.jsonl`) and
-   reloaded within the window on a restart. Every day's file is kept unless a retention window
-   is set (`BTC_PAIRS_RETAIN_DAYS`, else the curve's `BTC_CURVE_RETAIN_DAYS`); a closed day is
-   gzipped to `.jsonl.gz` and read back from that.
+8. The cycle is appended as one line to a day file (`gaps-YYYY-MM-DD.jsonl`): the gaps on reads
+   that are not stale, which a restart reloads within the window, and every pair's two books
+   as they were priced (see "The stored cycle"). Every day's file is
+   kept unless a retention window is set (`BTC_PAIRS_RETAIN_DAYS`, else the curve's
+   `BTC_CURVE_RETAIN_DAYS`); a closed day is gzipped to `.jsonl.gz` and read back from that.
 9. Lock runs are stepped: extended, opened or ended. Episodes that ended are appended to
    `episodes-YYYY-MM-DD.jsonl`. The report is pushed to every stream listener.
 

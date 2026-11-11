@@ -123,11 +123,14 @@ before it is renamed and the original removed. A pass that fails leaves the orig
 again an hour later. The boot reload reads both forms; when both exist for a day it reads the
 `.jsonl`. The current UTC day is never compressed.
 
-**Size, measured 11 November 2026** (20 minutes of the real service): one snapshot is about
-213 KB raw and 31 KB gzipped. At one a minute that is about 307 MB a day raw and 45 MB a day
-gzipped. A 3 GB disk holds the current day raw plus about 60 closed days; a year is about 17 GB.
-A day-sized file (306 MB) took 5.7 seconds to compress and verify, with the event loop never
-held more than 7 ms.
+**Size, measured 11 November 2026** on the real service: one snapshot is about 215 KB raw and
+31 KB gzipped; at one a minute that is about 310 MB a day raw and 45 MB a day gzipped. One pairs
+cycle is about 3.9 KB raw; at one every 10 seconds that is about 34 MB a day raw and 2 MB
+gzipped. Together: about 345 MB a day raw, 47 MB gzipped. A 3 GB disk would be full in under 9
+days without the gzip step; with it, it holds the current day raw plus about 55 closed days. A
+year is about 17 GB. A day-sized snapshot file (312 MB) took about 6 seconds to compress and
+verify, with the event loop never held more than 7 ms; a day-sized pairs file (34 MB) took
+about 0.3 seconds.
 
 **The disk guard.** `/healthz` carries a `data` block: `bytes` under the data dir, `dayFiles`
 (`plain`, `gz`), `oldestDay`, `newestDay`, `retention` (`all` or `N days`), `recording`, and
