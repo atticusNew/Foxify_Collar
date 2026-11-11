@@ -141,6 +141,7 @@ import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/cross
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { parseAdminAuthFromEnv, tokenBucketLimiter } from "../src/eventCollar/crossVenue/eventFunnel";
 import { keptFileByName, keptFiles, type KeptBase, type KeptFilesList } from "../src/eventCollar/crossVenue/keptFiles";
+import { refuseBadAddress, requestUrl } from "../src/eventCollar/requestUrl";
 import { handleOperatorSignIn, isPagePath, OPERATOR_SIGN_IN_PATH, OPERATOR_SIGN_OUT_PATH, operatorCheck, operatorSessionConfigFromEnv, signInLocation, wantsHtml, type SignInDeps } from "../src/eventCollar/crossVenue/operatorSession";
 import {
   BookHedgeExecutor,
@@ -5039,7 +5040,19 @@ const SIGN_IN_DEPS: SignInDeps = {
 };
 
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-  const url = new URL(req.url || "/", `http://localhost:${PORT}`);
+  // an address that is not a path is refused here; read loosely it threw, and that ended the process
+  const url = requestUrl(req.url, PORT);
+  if (!url) return refuseBadAddress(res);
+  try {
+    answer(req, res, url);
+  } catch (err) {
+    // nothing a request can send ends the process: what a route does not catch is a 500
+    if (!res.headersSent) sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) });
+    else res.end();
+  }
+});
+
+function answer(req: IncomingMessage, res: ServerResponse, url: URL): void {
   // THE OPERATOR'S SIGN-IN (operatorSession.ts): the sign-in page, the sign-out, and an old link
   // with the token in its address, which signs the browser in and goes on without it. The member
   // page's own host has no operator views; it is left to its redirect below.
@@ -5049,11 +5062,14 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       .then((answered) => {
         if (!answered) route(req, res, url);
       })
-      .catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
+      .catch((err: unknown) => {
+        if (!res.headersSent) sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) });
+        else res.end();
+      });
     return;
   }
   route(req, res, url);
-});
+}
 
 function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
   const opCheck = operatorCheck({ auth: adminAuth, cfg: OP_SESSION, headers: req.headers, method: req.method ?? "GET", url, operatorOnlyPath: isOperatorOnlyPath(url.pathname), nowMs: Date.now() });

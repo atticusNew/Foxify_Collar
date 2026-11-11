@@ -214,6 +214,44 @@ test("where a sign-in goes next is on this service, and an address is handed on 
   assert.ok(!form.includes("\u2014") && !form.includes("\u2013"));
 });
 
+test("where a sign-in goes next: a page to look at, never an address that changes something, an API route, a file, or another site", () => {
+  for (const ok of ["/report", "/holders", "/capital", "/venues", "/slate/acme?as=operator", "/scoreboard?as=operator", "/partners/console"]) assert.equal(safeNext(ok), ok);
+  assert.equal(safeNext(`/report?token=${TOKEN}&x=1`), "/report?x=1", "the token never rides along");
+  const writing = ["/api/shadow/reset?confirm=reset", "/api/admin/reset?confirm=reset", "/report?confirm=yes", "/holders?x=1&confirm", "/anything?CONFIRM=1&confirm=1"];
+  const notPages = ["/api/shadow/export/files", "/api/shadow", "/healthz?as=operator", "/api/shadow/positions.csv", "/ledger.jsonl", "/x.json"];
+  const elsewhere = ["/.//evil.example/x", "/..//evil.example", "/a/..//evil.example/", "//evil.example/x", "/\\evil.example", "https://evil.example/", "/%2e//evil.example"];
+  for (const bad of [...writing, ...notPages, ...elsewhere, "report", "", null, undefined, "/a\r\nset-cookie: x=1", `/${"a".repeat(700)}`]) {
+    const out = safeNext(bad);
+    assert.ok(out === "/operator" || (!out.startsWith("//") && !/confirm/i.test(out) && !out.startsWith("/api/")), `${String(bad)} -> ${out}`);
+    if (writing.includes(bad as string) || notPages.includes(bad as string) || (bad as string) === "/.//evil.example/x" || (bad as string) === "/..//evil.example" || (bad as string) === "/a/..//evil.example/") assert.equal(out, "/operator", String(bad));
+  }
+});
+
+for (const service of ["record", "demo"] as const) {
+  test(`${service} service: a sign-in link whose next is a writing address, an API route or another site lands on the sign-in page, signed in, and runs nothing`, async () => {
+    const at = service === "record" ? base : demoBase;
+    let caller = 0;
+    const go = (next: string) => signIn(at, TOKEN, { "x-forwarded-for": `198.51.100.${(caller += 1)}` }, next);
+    const reset = service === "record" ? "/api/shadow/reset?confirm=reset" : "/api/admin/reset?confirm=reset";
+    for (const next of [reset, "/api/shadow/export/files", "/.//evil.example/x", "//evil.example/x"]) {
+      const res = await go(next);
+      assert.equal(res.status, 303, next);
+      assert.equal(res.headers.get("location"), "/operator", `${next} is not where the browser is sent`);
+      assert.match(res.headers.get("set-cookie") ?? "", new RegExp(`^${OPERATOR_COOKIE}=`), "the operator is signed in all the same");
+    }
+    // the link itself: the page it opens carries the sign-in path in its form, not the address in the link
+    const page = await (await fetch(`${at}/operator?next=${encodeURIComponent(reset)}`)).text();
+    assert.doesNotMatch(page, /confirm/, "the writing address is not on the page");
+    assert.match(page, /name="next" value="\/operator"/);
+    // a wrong token goes back to the form without it either
+    const wrong = await signIn(at, "not-it", { "x-forwarded-for": "198.51.100.200" }, reset);
+    assert.equal(wrong.headers.get("location"), "/operator?problem=bad_token");
+    // a page to look at still works
+    const fine = await go(service === "record" ? "/holders" : "/funnel");
+    assert.equal(fine.headers.get("location"), service === "record" ? "/holders" : "/funnel");
+  });
+}
+
 test("record service: an operator page in a browser goes to the sign-in and back; a script gets the 403 it always got", async () => {
   const browser = await get(`${base}/report`, BROWSER);
   assert.equal(browser.status, 303);

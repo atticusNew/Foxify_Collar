@@ -83,6 +83,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { refuseBadAddress, requestUrl } from "../src/eventCollar/requestUrl";
 import { handleOperatorSignIn, isPagePath, OPERATOR_SIGN_IN_PATH, OPERATOR_SIGN_OUT_PATH, operatorCheck, operatorSessionConfigFromEnv, signInLocation, wantsHtml, type OperatorCheck, type SignInDeps } from "../src/eventCollar/crossVenue/operatorSession";
 import {
   coerceEventFunnel,
@@ -2134,7 +2135,9 @@ async function handleCloseQuote(req: IncomingMessage, res: ServerResponse, url: 
 }
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-  const url = new URL(req.url || "/", `http://localhost:${PORT}`);
+  // an address that is not a path is refused here; read loosely it threw, and that ended the process
+  const url = requestUrl(req.url, PORT);
+  if (!url) return refuseBadAddress(res);
   try {
     // the operator's sign-in page, the sign-out, and an old link with the token in its address
     if (url.pathname === OPERATOR_SIGN_IN_PATH || url.pathname === OPERATOR_SIGN_OUT_PATH || (req.method === "GET" && url.searchParams.has("token"))) {

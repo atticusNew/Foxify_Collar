@@ -35,6 +35,7 @@ import {
   getOptionBook,
   nearestExpiryAtOrAfter,
 } from "../src/eventCollar/okxOptionsPublic";
+import { refuseBadAddress, requestUrl } from "../src/eventCollar/requestUrl";
 import { quoteWrap } from "../src/eventCollar/eventCollarPricer";
 import {
   buildShowcasePosition,
@@ -309,7 +310,9 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-  const url = new URL(req.url || "/", `http://localhost:${PORT}`);
+  // an address that is not a path is refused here; read loosely it threw, and that ended the process
+  const url = requestUrl(req.url, PORT);
+  if (!url) return refuseBadAddress(res);
   try {
     if (url.pathname === "/healthz") {
       const h = healthReady();

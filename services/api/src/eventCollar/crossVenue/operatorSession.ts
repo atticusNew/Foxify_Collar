@@ -172,13 +172,23 @@ export function wantsHtml(headers: IncomingHttpHeaders): boolean {
   return /\btext\/html\b/i.test(String(headers.accept ?? ""));
 }
 
-/** A path on this service and nowhere else: `next` after sign-in is never another site. */
+/**
+ * Where the browser goes after signing in: a page on this service to look at, and nothing else.
+ *
+ * `next` arrives in a link anyone can write, and the browser follows it the moment the operator
+ * signs in, as the operator, from this service's own page. So it is never another site (a path
+ * that comes out starting with two slashes is one), never an address that changes something
+ * (those carry `confirm`), and never an API route or a file. Anything else lands on the
+ * sign-in page, signed in, where the operator picks where to go.
+ */
 export function safeNext(next: string | null | undefined): string {
   const n = (next ?? "").trim();
   if (!n.startsWith("/") || n.startsWith("//") || n.includes("\\") || /[\r\n]/.test(n) || n.length > 600) return OPERATOR_SIGN_IN_PATH;
   try {
     const u = new URL(n, "https://self.invalid");
     if (u.host !== "self.invalid") return OPERATOR_SIGN_IN_PATH;
+    if (u.pathname.startsWith("//")) return OPERATOR_SIGN_IN_PATH;
+    if (canChangeState("GET", u) || !isPagePath(u.pathname)) return OPERATOR_SIGN_IN_PATH;
     u.searchParams.delete("token");
     return `${u.pathname}${u.search}`;
   } catch {
