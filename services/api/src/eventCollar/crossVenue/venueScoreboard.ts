@@ -184,6 +184,8 @@ export interface VenueScoreboard {
   live: true;
   /** what the table is, and is not, in one paragraph */
   methodology: string;
+  /** false when the venues are lettered (Venue A, B, ...) rather than named: the public view (letterScoreboardVenues) */
+  venuesNamed: boolean;
   venues: string[];
   /** each venue's fee schedule on the other side, as the engine folds it into that venue's book before routes are compared */
   feeRules: FeeRule[];
@@ -463,10 +465,51 @@ export function venueScoreboard(inp: ScoreboardInputs): VenueScoreboard {
     at: now.toISOString(),
     live: true,
     methodology: SCOREBOARD_METHODOLOGY,
+    venuesNamed: true,
     // the venues that take the other side; a holder-only venue (a member's own sale) has no column
     venues: HEDGE_SIDE_VENUES.map((v) => VENUE_NAMES[v]),
     feeRules: HEDGE_SIDE_VENUES.map((v) => ({ venue: VENUE_NAMES[v], ...VENUE_FEE_RULES[v] })),
     weeks,
+  };
+}
+
+/**
+ * THE PUBLIC VIEW: THE SAME TABLE WITH THE VENUES LETTERED.
+ *
+ * A public page does not name the venues the other side is bought on. The scoreboard is the
+ * hedger's comparison of those venues, so its public view keeps every figure and swaps each
+ * name for a letter (Venue A, B, C, D: the same letters the demo's venue view uses, fixed per
+ * venue so a letter means the same venue every week). The fee schedules are left out, since a
+ * schedule's formula says whose it is; the fee column stays. The operator, and a service set to
+ * name the venues (EVENT_X_NAME_HEDGE_VENUES=1), gets the table as venueScoreboard built it.
+ *
+ * Anything this function does not know as a venue is lettered too, as "Venue ?": a name is never
+ * passed through because it was not on the list.
+ */
+export const SCOREBOARD_METHODOLOGY_LETTERED = SCOREBOARD_METHODOLOGY.replace(
+  "(the schedules are listed under feeRules)",
+  "(the schedules are left out of this view, as the venues' names are: each venue has a letter, the same one every week)",
+);
+
+export function letterScoreboardVenues(sb: VenueScoreboard): VenueScoreboard {
+  const letterByName = new Map<string, string>(HEDGE_SIDE_VENUES.map((v, i) => [VENUE_NAMES[v], `Venue ${String.fromCharCode(65 + i)}`]));
+  const letter = (name: string): string => letterByName.get(name) ?? "Venue ?";
+  const re = <T extends { venue: string }>(rows: readonly T[]): T[] => rows.map((r) => ({ ...r, venue: letter(r.venue) }));
+  return {
+    ...sb,
+    methodology: SCOREBOARD_METHODOLOGY_LETTERED,
+    venuesNamed: false,
+    venues: sb.venues.map(letter),
+    feeRules: [],
+    weeks: sb.weeks.map((w) => ({
+      ...w,
+      singles: { ...w.singles, otherSide: re(w.singles.otherSide) },
+      parlays: { ...w.parlays, otherSide: re(w.parlays.otherSide) },
+      edge: { ...w.edge, byVenue: re(w.edge.byVenue) },
+      fees: { ...w.fees, byVenue: re(w.fees.byVenue) },
+      availability: { ...w.availability, byVenue: re(w.availability.byVenue) },
+      byLeague: w.byLeague.map((l) => ({ ...l, otherSide: re(l.otherSide), availability: re(l.availability) })),
+    })),
   };
 }
 

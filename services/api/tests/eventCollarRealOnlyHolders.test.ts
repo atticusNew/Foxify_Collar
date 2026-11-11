@@ -236,6 +236,13 @@ test("the kill switch stands in front of the request-for-quote strategy: with a 
 test("where the order would truly leave, a real-only holder's lock is the hedge-first lock it always was", async () => {
   const q = await quote("bob", BOS);
   assert.equal(q.body.ok, true, JSON.stringify(q.body));
+  // every tier of a hedged lock says the sale it is like, on the scale a member's own sale is shown on: floor + 100 - cap
+  const priced = q.body.quote as { sharePercent: number; tiers: Record<string, { floorCents: number; capCents: number; sharePercent: number }> };
+  assert.deepEqual(
+    ["wide", "balanced", "tight"].map((k) => [priced.tiers[k].floorCents, priced.tiers[k].capCents, priced.tiers[k].sharePercent]),
+    [[15, 85, 30], [30, 68, 62], [48, 63, 85]],
+  );
+  assert.equal(priced.sharePercent, 30, "and the quote's own head, which is the default tier");
   const a = await tap("bob", BOS);
   assert.equal(a.body.ok, true, JSON.stringify(a.body));
   assert.equal(a.body.hedge?.simulated, false);

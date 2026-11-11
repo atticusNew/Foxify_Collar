@@ -358,7 +358,8 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
       html+='<button type="button" class="tier'+(name===S.tier?' on':'')+'" data-tier="'+name+'"'+(locked?' disabled':'')+' aria-pressed="'+(name===S.tier?'true':'false')+'">'+
         '<div class="tn">'+TIER_WORDS[name]+'</div>'+
         '<div class="tf">'+usd(o.no)+'</div>'+
-        '<div class="tc">at least</div></button>';
+        '<div class="tc">at least</div>'+
+        (typeof t.sharePercent==='number'?'<div class="tc">like selling '+t.sharePercent+'%</div>':'')+'</button>';
     }
     $('tiers').innerHTML=n>1?html:'';
     $('tiers').style.display=n>1?'flex':'none';

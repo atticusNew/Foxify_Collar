@@ -65,7 +65,7 @@
  * carries quoted terms, official results, both sides' money and the two books the hedges were
  * bought on; /api/shadow/scoreboard (and .csv, and the /scoreboard page) is the venue scoreboard
  * drawn from it by week (venueScoreboard.ts: which venue took the other side, by how much, what
- * its fee schedule charged, how often each priced, the refusals), venue-named, for industry readers. Everything that is a study rather than a receipt (rule counterfactuals, hedge
+ * its fee schedule charged, how often each priced, the refusals), with the venues lettered for the public and named for the operator. Everything that is a study rather than a receipt (rule counterfactuals, hedge
  * receipts, the last-leg tickets, netting measured on the book) is an operator view. A new
  * measurement joins the operator views first; it reaches the record only by decision.
  *
@@ -230,8 +230,9 @@ import { novigRouteOf, referenceSourcesFromEnv, signedHedgeBook, signedHostFromE
 import { polyUsForProcess, polyUsPreflight, type PolyUsBookStream, type PolyUsClient, type PolyUsEnvConfig } from "../src/eventCollar/crossVenue/polymarketUs";
 import { referencePrintSourcesFromEnv } from "../src/eventCollar/crossVenue/venuePrints";
 import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type RefusalSummary } from "../src/eventCollar/crossVenue/shadowRefusals";
-import { venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
+import { letterScoreboardVenues, venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
+import { saleSharePercent } from "../src/eventCollar/shareScale";
 import { ComboLegMemory, MemberApiError, MemberSessions, clientOrderIdFor, comboTickerOf, isComboTicker, leagueOfCompetition, marketResultWord, matchMemberMarket, maxPriceMicroOf, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, winnerClubOf, type MemberBalance, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
 import { acceptRfq, askLevels, bidLevels, buyBackRecordOf, centsPerDollarOf, executeLimitOrder, memberTailTerms, ownContracts, priceString, quoteBuyBack, quoteSaleTiers, quotedPriceOf, requestRfqBid, saleEvCostBps, saleRecordOf, tierSaleContracts, venueContractsOf, type ExecuteOptions, type OrderOutcome, type RfqBid, type SaleTierQuote } from "../src/eventCollar/crossVenue/memberSale";
 import { MICRO_PER_CENT, MILLI_PER_CONTRACT, decimalUnits, divInt, mulDiv } from "../src/eventCollar/crossVenue/exactDecimal";
@@ -1523,6 +1524,8 @@ function saleTierView(t: SaleTierQuote, contracts: number, maxPriceMicro: number
     limitPriceCents: t.limitPriceCents,
     avgPriceCents: t.avgPriceCents,
     depthLimited: t.depthLimited,
+    // the share of the position this shape sells, on the one scale every shape is shown on (shareScale.ts)
+    ...(saleSharePercent(t.soldContracts, t.soldContracts + t.keptContracts) === null ? {} : { sharePercent: saleSharePercent(t.soldContracts, t.soldContracts + t.keptContracts) as number }),
   };
 }
 
@@ -5138,15 +5141,19 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === "/api/shadow/scoreboard" || url.pathname === "/api/shadow/scoreboard.csv" || url.pathname === "/scoreboard") {
       // PUBLIC, INDUSTRY SHAPE: the venue scoreboard by week (venueScoreboard.ts), computed from
-      // the record on each request so it moves as the record does. Venue-named on purpose: this is
-      // the hedger's comparison of the venues, for industry readers, not a holder's screen. Nothing
-      // of the writer's book is in it. ?weeks=N (1..26, default 8). CORS open: the record is public.
+      // the record on each request so it moves as the record does. The public view letters the
+      // venues (Venue A, B, ...) and leaves the fee schedules out, as every public page keeps the
+      // venues' names to itself; the operator, and a service set to name them
+      // (EVENT_X_NAME_HEDGE_VENUES=1), gets the names. Page, JSON and CSV alike. Nothing of the
+      // writer's book is in it. ?weeks=N (1..26, default 8). CORS open: the record is public.
       // /scoreboard is the same table as a page, with the JSON and CSV links at the top.
       const weeksRaw = Number(url.searchParams.get("weeks") ?? "8");
       const weeks = Number.isFinite(weeksRaw) ? Math.min(26, Math.max(1, Math.floor(weeksRaw))) : 8;
       const positions = allPositions();
-      const sb = venueScoreboard({ positions, refusals: loadRefusals(REFUSALS_PATH), tickets: loadLastLegTickets(LASTLEG_PATH), weeks });
-      const headers = { "cache-control": "public, max-age=300", "access-control-allow-origin": "*" };
+      const namedSb = venueScoreboard({ positions, refusals: loadRefusals(REFUSALS_PATH), tickets: loadLastLegTickets(LASTLEG_PATH), weeks });
+      const sb = SLATE_NAMES_HEDGE_VENUES || operator ? namedSb : letterScoreboardVenues(namedSb);
+      // the operator's named view is theirs alone: never cached where the public one would be served from
+      const headers: Record<string, string> = operator && !SLATE_NAMES_HEDGE_VENUES ? { "cache-control": "private, no-store" } : { "cache-control": "public, max-age=300", "access-control-allow-origin": "*" };
       if (url.pathname === "/scoreboard") {
         res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" });
         res.end(renderScoreboardHtml({ scoreboard: sb, weeks }));

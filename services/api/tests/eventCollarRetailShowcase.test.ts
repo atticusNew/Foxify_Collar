@@ -142,11 +142,13 @@ test("retail showcase: the cross-venue quote keeps the payoff and the tiers, dro
     floorCents: 40,
     capCents: 88,
     creditCents: 420,
+    // the sale each tier is like, percent of the position: floor + 100 - cap
+    sharePercent: 52,
     tier: "balanced",
     tiers: {
-      tight: { floorCents: 50, capCents: 80, creditCents: 300 },
-      balanced: { floorCents: 40, capCents: 88, creditCents: 420 },
-      wide: { floorCents: 30, capCents: 95, creditCents: 510 },
+      tight: { floorCents: 50, capCents: 80, creditCents: 300, sharePercent: 70 },
+      balanced: { floorCents: 40, capCents: 88, creditCents: 420, sharePercent: 52 },
+      wide: { floorCents: 30, capCents: 95, creditCents: 510, sharePercent: 35 },
     },
     quotedAt: "2026-09-20T18:00:00.000Z",
   });

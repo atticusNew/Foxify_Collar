@@ -770,6 +770,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
         [40, 10, 53, 2145, 2145, 3145, 0],
       ],
     );
+    assert.deepEqual(["wide", "balanced", "tight"].map((k) => q.body.quote.tiers[k].sharePercent), [40, 60, 80], "each shape says the share of the position it sells: 20, 30 and 40 of 50");
     assert.equal(q.body.quote.tier, "wide", "the engine's default heads the quote");
     assert.deepEqual([q.body.quote.floorCents, q.body.quote.capCents, q.body.quote.creditCents], [Math.round(1080 / 50), Math.round(4080 / 50), 0]);
     assert.deepEqual([q.body.member.connected, q.body.member.held, q.body.member.bestBidCents, q.body.member.bidDepth], [true, 50, 54, 65]);
@@ -937,7 +938,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.ok(html.includes("Rides to settlement on ' + esc(VN) + '.</span>") && html.includes('<div class="ael-dl">Why</div>') && !html.includes("Last-leg protection through this service is a separate step"), "a parlay's panel is one line, the why behind Details");
     assert.ok(html.includes("It lands here with its Lock in line.</p>") && html.includes('id="g-help" aria-expanded="false" aria-label="What bid and floor mean">\' + INFO + "</button>') && html.includes('id="g-help-p" hidden><b>Bid</b> is') && html.includes(">Cannot be locked in</h2>"), "Games is one line with an i");
     assert.ok(html.includes('[["held", "Portfolio"]]') && html.includes("data-tab=\"portfolio\">' + TICK + \"Held</a>\"") && html.includes(".side .buy, .side .have { order: 3; flex: none; margin-left: auto; }") && html.includes(".gbar { flex-wrap: nowrap; overflow-x: auto;"), "short pills; the tile's action on the first row, the filter bar one row");
-    assert.ok(html.includes("Leave early buys it back any time before it settles.") && html.includes('isLive(p) ? " · live price, never more than shown"'), "leaving stands during the game");
+    assert.ok(html.includes("On a single game, Leave early buys it back before it settles. A combo lock stays to settlement.") && !html.includes("any time before it settles") && html.includes('isLive(p) ? " · live price, never more than shown"'), "leaving stands during the game");
     assert.ok(html.includes('let pickedTier = "wide";') && html.includes("tier: pickedTier,") && !html.includes("ael_tier"), "every row opens on Max upside; nothing remembered across visits");
     assert.ok(html.includes("the rest rides</div>") && html.includes('"Bought back " + c.contracts + " at " + cents(c.avgPriceCents) + " · net <b>" + signed(c.netCents) + "</b>", false)'), "the helper lines are one line each; the left row is its line, folded");
     assert.ok(html.includes('<span class="ael-l">Net to your \' + esc(VN) + \' balance</span>') && !html.includes("<s>in your balance</s>") && html.includes("st.leave = false; st.open = false; st.details = false; st.rules = false; st.how = false;"), "the leave box has no note column; the row forgets its panel on the leave");
@@ -1212,6 +1213,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     venue.rfqTake = 3;
     q = await get<Any>(`/api/shadow/quote?ticker=${COMBO}&contracts=5&venue=stx`);
     assert.deepEqual([q.body.quote.tiers.tight.soldContracts, q.body.quote.tiers.tight.depthLimited, q.body.quote.tiers.wide.soldContracts, q.body.quote.tiers.wide.depthLimited, q.body.rfq.quantity], [3, true, 2, false, 3]);
+    assert.deepEqual([q.body.quote.tiers.tight.sharePercent, q.body.quote.tiers.wide.sharePercent], [60, 40], "the share is what sells, not what the shape asked for: 3 of 5 where the makers took 3");
     venue.rfqTake = null;
     // priced on the read after the request: the same answer, one poll later
     venue.rfqMode = "pending";

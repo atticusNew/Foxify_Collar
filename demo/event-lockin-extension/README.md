@@ -930,6 +930,16 @@ the service listed tonight's game beside next week's: a card that says its game 
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
 
+**One scale for every shape, and paid said only once paid (0.7.47).** Each shape now says how much
+of the position it comes to, on its button and as a **Share** row in Details. A member's own
+sale on STX "sells 40% of your position" (60 for Balanced, 80 for Max floor, less where the bids
+run out). A hedged lock sells nothing of the holder's, so it reads "like selling 30% of your
+position": the sale that would leave the same gap between winning and losing. The number comes
+from the service with the quote; a service that sends none shows no share. No price changed. A
+lock removed early now says who owes what in the words the cash row uses: "You owe $2.50" while
+it is outstanding and "You paid $2.50" once it is paid, "$2.50 owed to you, on its way" and then
+"$2.50 paid to you". Before, the line said paid in both cases.
+
 **One set of words (0.7.46).** Text only; nothing the extension does is changed. What the holder
 does is "Lock in" and what they hold is "the lock": the pill of an open lock reads **Locked in**
 (was `Protected`), a lock left early reads **Lock removed**, a settled lock's line reads "You end
