@@ -45,7 +45,7 @@ import { actionOf, type HedgeIntent } from "./hedgeExecutor";
 import { kalshiTakerFeeCents } from "./kalshiLadder";
 import { contractsFp, fpToMilli } from "./kalshiRfq";
 import { dollarsToMicro } from "./kalshiOrders";
-import type { LiveOrderHook, LiveOrderResult } from "./liveHedge";
+import { orderNotReadError, type LiveOrderHook, type LiveOrderResult } from "./liveHedge";
 
 export interface AggregatorTradeConfig {
   host: string;
@@ -314,7 +314,10 @@ export class AggregatorOrderClient {
     }
 
     const fill = order ? fillOfAggregatorOrder(order, capCents, sell) : fillOfSubmit(created, capCents, sell);
+    // a miss is said only of an order read in a final state that shows no fill (liveHedge.orderNotReadError)
     if (fill.unitsMilli <= 0) {
+      if (!AGGREGATOR_FINAL.has(status)) throw orderNotReadError("aggregator", orderId, status, order ? "it did not reach a final state and the cancel was not confirmed" : "every read of it failed");
+      if (status === "FILLED") throw orderNotReadError("aggregator", orderId, status, "it reads as filled with no fill on it");
       throw new Error(`aggregator orders: order ${orderId} ${status || "unknown"} with nothing ${sell ? "sold at or over" : "filled at or under"} ${capCents}c`);
     }
     return {

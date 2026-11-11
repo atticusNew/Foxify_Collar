@@ -180,7 +180,8 @@ before(async () => {
   process.env.KALSHI_API_KEY_ID = "test-key-id";
   process.env.KALSHI_PRIVATE_KEY_PEM = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
   worker = await import("../scripts/eventShadowWorker");
-  worker.wireLockEngine({ ...engine, hedgeExecutor: new LiveHedgeExecutor({ kalshi: hook }, { ...DEFAULT_LIVE_RAILS, dryRun: false, allowlist: ARMED }, () => 0) });
+  // the executor counts what it has sent itself today (liveHedge.ts); this file is about the exposure caps, so the day's rail is set out of the way
+  worker.wireLockEngine({ ...engine, hedgeExecutor: new LiveHedgeExecutor({ kalshi: hook }, { ...DEFAULT_LIVE_RAILS, dryRun: false, allowlist: ARMED, maxUnitsPerDayMilli: 100_000_000 }, () => 0) });
   await new Promise<void>((r) => worker.server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`;
 });

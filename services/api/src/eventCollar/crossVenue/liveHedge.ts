@@ -78,6 +78,19 @@ export interface LiveOrderResult {
 /** Place the order for an intent. Throws when nothing filled or the venue refused. */
 export type LiveOrderHook = (intent: HedgeIntent, clientOrderId: string) => Promise<LiveOrderResult>;
 
+/**
+ * AN ORDER THAT LEFT AND WHOSE END WAS NOT READ. A venue client says "with nothing filled" (or
+ * "sold") only when it read the order in a final state and that state showed no fill: those words
+ * are what hedgeFirst.judgeHedge takes for a clean miss, after which the holder is told to try
+ * again. Every other ending of an order that was accepted (its reads failed, it never reached a
+ * final state, its cancel or its fills could not be read) is this error instead, which judgeHedge
+ * reads as unconfirmed: the operator is paged, the attempt is counted against the caps, and no
+ * second order is invited.
+ */
+export function orderNotReadError(venue: string, orderId: string, lastSeen: string, why: string): Error {
+  return new Error(`${venue} orders: order ${orderId} was sent and its end was not read (${why}; last seen ${lastSeen || "nothing"}); it may have filled`);
+}
+
 export interface LiveHedgeRails {
   killSwitch: boolean;
   dryRun: boolean;
@@ -213,6 +226,22 @@ export class LiveHedgeExecutor implements HedgeExecutor {
     this.book = new BookHedgeExecutor(null, clock);
   }
 
+  /**
+   * THE DAY'S COUNT WHILE ORDERS ARE OUT. The trail carries an order only once its receipt is
+   * written, which is after the venue answered; two orders checked a moment apart would both read
+   * the count without the other. So this executor keeps, per UTC day, what the trail read when it
+   * first looked (orders from before this process) and every unit it has sent since, counted at
+   * the moment the order passes the rails and before anything is awaited. The count used is the
+   * larger of that and the trail, so an order written by anything else still counts.
+   */
+  private day: { dayUtc: string; trailAtFirstReadMilli: number; sentHereMilli: number } | null = null;
+
+  private sentOn(dayUtc: string): number {
+    const trail = this.sentToday(dayUtc);
+    if (this.day?.dayUtc !== dayUtc) this.day = { dayUtc, trailAtFirstReadMilli: trail, sentHereMilli: 0 };
+    return Math.max(trail, this.day.trailAtFirstReadMilli + this.day.sentHereMilli);
+  }
+
   async execute(intent: HedgeIntent, ref: string): Promise<HedgeReceipt> {
     const at = this.clock.now().toISOString();
     const attempts: HedgeAttempt[] = [];
@@ -223,7 +252,7 @@ export class LiveHedgeExecutor implements HedgeExecutor {
     };
 
     const client = this.clients[intent.venue];
-    const sentTodayMilli = this.sentToday(at.slice(0, 10));
+    const sentTodayMilli = this.sentOn(at.slice(0, 10));
     const refusal = checkRails(intent, this.rails, sentTodayMilli, Boolean(client));
     if (refusal || !client) {
       const r = refusal ?? { rail: "venue" as const, detail: `no live client for ${intent.venue}` };
@@ -252,6 +281,8 @@ export class LiveHedgeExecutor implements HedgeExecutor {
     }
 
     const clientOrderId = `atticus-${base.id}`;
+    // counted now, whatever the venue answers: an order that left is an order (sentUnitsMilliOn)
+    if (this.day) this.day.sentHereMilli += intent.unitsMilli;
     try {
       const r = await client(intent, clientOrderId);
       const partial = r.unitsMilli < intent.unitsMilli;
