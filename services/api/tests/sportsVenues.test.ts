@@ -1,5 +1,5 @@
 /**
- * SPORTS VENUES REPORT: the three venues' game-winner books fold onto the same game and the same
+ * SPORTS VENUES REPORT: the venues' game-winner books fold onto the same game and the same
  * two sides, all-in prices carry each venue's fee as it applies now, the consensus and the gaps
  * are arithmetic over the venues' own mids, the cheapest other side and the crosses are net of
  * fees, the window tallies count what they say, and the page shows it without a model.
@@ -161,7 +161,7 @@ test("cheapest other side: all-in asks on every venue, the cheapest named, the s
   const k = listing("kalshi", q(39, 40, 500, 9000), q(60, 61, 9500, 143000), 0.07);
   const p = listing("polymarket_us", q(40, 41), q(59, 60, 59204, 64717), 0.095);
   const n = listing("novig", q(40, 40.5), q(59.5, 60, 1110, 13831), 0);
-  const byVenue = { kalshi: { away: allIn(k, "away"), home: allIn(k, "home") }, polymarket_us: { away: allIn(p, "away"), home: allIn(p, "home") }, novig: { away: allIn(n, "away"), home: allIn(n, "home") } };
+  const byVenue = { kalshi: { away: allIn(k, "away"), home: allIn(k, "home") }, polymarket_us: { away: allIn(p, "away"), home: allIn(p, "home") }, novig: { away: allIn(n, "away"), home: allIn(n, "home") }, prophetx: null };
   // holder of the away side (NYR) hedges by buying the home side
   const h = hedgeOf(byVenue, "away");
   assert.equal(h.costs.kalshi, 62.67);
@@ -175,14 +175,14 @@ test("cheapest other side: all-in asks on every venue, the cheapest named, the s
   assert.equal(k2.cheapest, "kalshi");
   assert.equal(k2.savingCents, 0);
   // no venue quotes the other side
-  const none = hedgeOf({ kalshi: null, polymarket_us: null, novig: null }, "away");
+  const none = hedgeOf({ kalshi: null, polymarket_us: null, novig: null, prophetx: null }, "away");
   assert.equal(none.cheapest, null);
 });
 
 test("crosses: away on one venue plus home on another under 100¢ after both fees, sized at the smaller best level, in dollars", () => {
   const k = listing("kalshi", q(39, 40, 100, 2000), q(58, 59, 100, 500), 0.07);
   const n = listing("novig", q(40, 40.5, 100, 800), q(59.5, 60, 100, 100), 0);
-  const byVenue = { kalshi: { away: allIn(k, "away"), home: allIn(k, "home") }, polymarket_us: null, novig: { away: allIn(n, "away"), home: allIn(n, "home") } };
+  const byVenue = { kalshi: { away: allIn(k, "away"), home: allIn(k, "home") }, polymarket_us: null, novig: { away: allIn(n, "away"), home: allIn(n, "home") }, prophetx: null };
   const xs = crossesOf(byVenue);
   // buy away on Novig at 40.5 (no fee) + home on Kalshi at 59 + 1.69 = 101.19: no; buy away on Kalshi 40 + 1.68 + home on Novig 60 = 101.68: no
   assert.equal(xs.length, 0);

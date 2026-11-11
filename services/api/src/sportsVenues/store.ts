@@ -10,8 +10,8 @@ import { basename } from "node:path";
 import { DayKeeper, listDayFiles, parseRetention, readLines, readablePath, type Budget, type DataHealth, type DayKeeperOptions, type MaintainReport, type Retention } from "../btcCurve/dayFiles";
 import type { Snapshot, Venue } from "./types";
 
-/** [awayBid, awayAsk, homeBid, homeAsk, feeTheta, awayBidQty, awayAskQty, homeBidQty, homeAskQty] */
-export type HistoryCell = [number, number, number, number, number, number, number, number, number];
+/** [awayBid, awayAsk, homeBid, homeAsk, feeTheta, awayBidQty, awayAskQty, homeBidQty, homeAskQty, feeGain (only when the venue charges on winnings)] */
+export type HistoryCell = [number, number, number, number, number, number, number, number, number, number?];
 
 export interface HistoryPoint {
   at: string;
@@ -28,7 +28,7 @@ export function toHistoryPoint(s: Snapshot): HistoryPoint {
   for (const g of s.games) {
     const row: Partial<Record<Venue, HistoryCell>> = {};
     for (const l of g.listings) {
-      row[l.venue] = [l.away.bidCents, l.away.askCents, l.home.bidCents, l.home.askCents, l.feeTheta, l.away.bidQty, l.away.askQty, l.home.bidQty, l.home.askQty];
+      row[l.venue] = [l.away.bidCents, l.away.askCents, l.home.bidCents, l.home.askCents, l.feeTheta, l.away.bidQty, l.away.askQty, l.home.bidQty, l.home.askQty, ...(l.feeGain ? [l.feeGain] : [])] as HistoryCell;
     }
     games[g.key] = row;
     const ms = Date.parse(g.startsAt);

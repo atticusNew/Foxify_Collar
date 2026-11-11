@@ -24,13 +24,18 @@ const et = (iso: string): string => {
 const etTime = (iso: string): string => et(iso).replace(/^.*?, /, "");
 const LEAGUE = { nfl: "NFL", nba: "NBA", nhl: "NHL" } as Record<string, string>;
 const V = (v: Venue): string => VENUE_NAME[v];
-const short = (v: Venue): string => (v === "kalshi" ? "Kalshi" : v === "polymarket_us" ? "Poly US" : "Novig");
+const short = (v: Venue): string => (v === "polymarket_us" ? "Poly US" : VENUE_NAME[v]);
+const COUNT_WORD = ["none", "one", "two", "three", "four", "five", "six"];
+const ALL_VENUES = `all ${COUNT_WORD[VENUES.length] ?? VENUES.length}`;
+/** The fee as it applies now, in the venue's own terms: per contract, on winnings, or none. */
+const feeWords = (q: AllIn): string =>
+  q.feeGain ? `fee ${(q.feeGain * 100).toFixed(q.feeGain * 100 % 1 ? 1 : 0)}% of winnings` : q.feeTheta ? `fee ${(q.feeTheta * 100).toFixed(1)}%` : "no fee";
 
 function quoteCell(q: AllIn | null): string {
   if (!q) return '<td class="dim">not listed</td>';
   if (q.bidCents <= 0 && (q.askCents <= 0 || q.askCents >= 100)) return '<td class="dim">no book</td>';
   const p = (x: number) => (Number.isInteger(x) ? x.toFixed(0) : x.toFixed(2).replace(/0$/, ""));
-  const depth = q.bidQty || q.askQty ? `<small>${num(q.bidQty)} × ${num(q.askQty)}${q.feeTheta ? ` · fee ${(q.feeTheta * 100).toFixed(1)}%` : " · no fee"}</small>` : `<small>${q.feeTheta ? `fee ${(q.feeTheta * 100).toFixed(1)}%` : "no fee"}</small>`;
+  const depth = q.bidQty || q.askQty ? `<small>${num(q.bidQty)} × ${num(q.askQty)} · ${feeWords(q)}</small>` : `<small>${feeWords(q)}</small>`;
   return `<td><b>${q.bidCents > 0 ? p(q.bidCents) : "–"}</b> / <b>${q.askCents > 0 && q.askCents < 100 ? p(q.askCents) : "–"}</b>${depth}</td>`;
 }
 
@@ -50,7 +55,7 @@ function hedgeCell(g: GameRead, side: Side): string {
 
 function boardHtml(games: GameRead[]): string {
   if (!games.length) return '<p class="dim">No game on the board within the horizon.</p>';
-  const head = `<tr><th>Game · side</th><th>Kalshi<br><small>bid / ask · depth</small></th><th>Polymarket US<br><small>bid / ask · depth</small></th><th>Novig<br><small>bid / ask · depth</small></th><th>Consensus<br><small>de-vigged, mean</small></th><th>Kalshi<br><small>− consensus</small></th><th>Poly US<br><small>− consensus</small></th><th>Novig<br><small>− consensus</small></th><th>Other side, cheapest<br><small>for a holder of this side</small></th></tr>`;
+  const head = `<tr><th>Game · side</th>${VENUES.map((v) => `<th>${esc(V(v))}<br><small>bid / ask · depth</small></th>`).join("")}<th>Consensus<br><small>de-vigged, mean</small></th>${VENUES.map((v) => `<th>${esc(short(v))}<br><small>− consensus</small></th>`).join("")}<th>Other side, cheapest<br><small>for a holder of this side</small></th></tr>`;
   const rows = games
     .map((g) => {
       const over = VENUES.filter((v) => g.overround[v] !== null)
@@ -59,10 +64,10 @@ function boardHtml(games: GameRead[]): string {
       const when = g.live ? '<b class="live">Live</b>' : g.startSource === "venue" ? etTime(g.startsAt) : `${et(g.startsAt).split(",")[0]}, time not listed`;
       const cross = g.crosses[0];
       const crossNote = cross ? ` · <span class="cross">cross: buy ${g.sides.away.code} on ${short(cross.awayOn)} ${c(cross.awayAllInAsk, 2)} + ${g.sides.home.code} on ${short(cross.homeOn)} ${c(cross.homeAllInAsk, 2)} = <b>${signed(cross.edgeCents, 2)}</b> on ${num(cross.qty)}</span>` : "";
-      const header = `<tr class="game"><td colspan="9"><b>${esc(LEAGUE[g.league] ?? g.league)}</b> · ${esc(g.sides.away.name)} at ${esc(g.sides.home.name)} · ${when}<small>Both sides at all-in asks, minus 100: ${over || "–"}${g.tightest ? ` · tightest ${short(g.tightest)}` : ""}${crossNote}</small></td></tr>`;
+      const header = `<tr class="game"><td colspan="${VENUES.length * 2 + 3}"><b>${esc(LEAGUE[g.league] ?? g.league)}</b> · ${esc(g.sides.away.name)} at ${esc(g.sides.home.name)} · ${when}<small>Both sides at all-in asks, minus 100: ${over || "–"}${g.tightest ? ` · tightest ${short(g.tightest)}` : ""}${crossNote}</small></td></tr>`;
       const sideRow = (side: Side) => {
         const s = g.sides[side];
-        return `<tr><td class="lbl">${esc(s.code)} <small>${side}</small></td>${quoteCell(s.quotes.kalshi)}${quoteCell(s.quotes.polymarket_us)}${quoteCell(s.quotes.novig)}<td>${c(s.consensusCents, 1)}</td>${gapCell(s.vsConsensus.kalshi)}${gapCell(s.vsConsensus.polymarket_us)}${gapCell(s.vsConsensus.novig)}${hedgeCell(g, side)}</tr>`;
+        return `<tr><td class="lbl">${esc(s.code)} <small>${side}</small></td>${VENUES.map((v) => quoteCell(s.quotes[v])).join("")}<td>${c(s.consensusCents, 1)}</td>${VENUES.map((v) => gapCell(s.vsConsensus[v])).join("")}${hedgeCell(g, side)}</tr>`;
       };
       return `${header}${sideRow("away")}${sideRow("home")}`;
     })
@@ -161,7 +166,7 @@ function tiles(d: ReportData): string {
   };
   const offs = s.venues.filter((t) => t.meanAbsVsConsensus !== null).sort((a, b) => (b.meanAbsVsConsensus as number) - (a.meanAbsVsConsensus as number));
   return `<div class="kpis now">
-<div><small>Games with a choice of venue</small><b>${s.withTwo} of ${s.games}</b><small>${s.withThree} on all three · ${s.live} live now</small></div>
+<div><small>Games with a choice of venue</small><b>${s.withTwo} of ${s.games}</b><small>${s.withAll} on ${ALL_VENUES} · ${s.live} live now</small></div>
 <div><small>Tightest book, both sides all in</small><b>${tightList || "–"}</b><small>games tightest of games listed · mean over 100¢: ${over}</small></div>
 <div><small>Cheapest other side, now</small><b>${s.sidesRoutedAway} of ${s.sidesWithChoice} sides off Kalshi</b><small>mean saving ${c(s.meanSavingRoutedCents, 2)} per $1${cheapestNow && cheapestNow.hedgeCheapest ? ` · ${short(cheapestNow.venue)} cheapest on ${cheapestNow.hedgeCheapest}` : ""}</small></div>
 <div><small>Cheapest other side, over the window</small><b>${winShare(w.cheapest, w.readings)}</b><small>${num(w.readings)} readings · mean saving when not Kalshi ${c(w.meanSavingRoutedCents, 2)}${w.liveReadings ? ` · in play ${winShare(w.liveCheapest, w.liveReadings)}` : ""}</small></div>
@@ -172,15 +177,15 @@ function tiles(d: ReportData): string {
 
 export function renderReportHtml(d: ReportData, opts: { refreshSec?: number; links?: PageLink[] } = {}): string {
   const healthLine = Object.entries(d.health)
-    .map(([k, h]) => `<span class="${h.ok ? "ok" : "bad"}">${esc(k)} ${h.ok ? `${h.ms}ms` : esc(h.detail ?? "down")}</span>`)
+    .map(([k, h]) => `<span class="${h.ok ? "ok" : "bad"}">${esc(k)} ${h.ok ? `${h.ms}ms${h.detail ? ` (${esc(h.detail)})` : ""}` : esc(h.detail ?? "down")}</span>`)
     .join(" · ");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">${opts.refreshSec ? `<meta http-equiv="refresh" content="${opts.refreshSec}">` : ""}
-<title>Sports on the event venues: Kalshi, Polymarket US, Novig</title>
+<title>Sports on the event venues: ${VENUES.map((v) => esc(V(v))).join(", ")}</title>
 <style>
 :root{--ink:#111;--dim:#6b7280;--line:#e5e7eb;--k:#0a66c2;--hot:#b91c1c;--warm:#b45309;--ok:#047857}
 *{box-sizing:border-box}body{margin:0;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;color:var(--ink);background:#fff}
-main{max-width:1180px;margin:0 auto;padding:20px 16px 60px}h1{font-size:24px;margin:0 0 4px;letter-spacing:-.01em}h2{font-size:18px;margin:34px 0 8px}h3{font-size:15px;margin:18px 0 6px}
+main{max-width:1400px;margin:0 auto;padding:20px 16px 60px}h1{font-size:24px;margin:0 0 4px;letter-spacing:-.01em}h2{font-size:18px;margin:34px 0 8px}h3{font-size:15px;margin:18px 0 6px}
 p{margin:6px 0}.dim{color:var(--dim)}small{color:var(--dim);font-size:12px;display:block}.lead{font-size:16px}
 .strip{display:flex;flex-wrap:wrap;gap:10px 22px;margin:12px 0 4px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fafafa}.strip b{font-variant-numeric:tabular-nums}
 .tbl{overflow-x:auto;margin:8px 0}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:14px}th{font-weight:600;text-align:left;color:var(--dim);font-size:12px;border-bottom:1px solid var(--line);padding:6px 8px;vertical-align:bottom;white-space:nowrap}
@@ -195,22 +200,22 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--k);font-size:13px}
 .note{border-left:3px solid var(--line);padding:4px 12px;color:var(--dim);font-size:13px;margin:10px 0}.limits{padding-left:18px;font-size:13px;color:var(--dim);margin:6px 0}.limits li{margin:5px 0}.limits b{color:var(--ink)}footer{margin-top:40px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
 </style></head><body><main>
 ${pageLinksHtml(opts.links, "Sports")}<h1>Sports on the event venues</h1>
-<p class="lead">The same game's winner market on Kalshi, Polymarket US and Novig, side by side, after each venue's taker fee. Where the other side of a position is cheapest, what the venues disagree on, and what can be locked across them. Live from public market data. Read-only.</p>
+<p class="lead">The same game's winner market on Kalshi, Polymarket US, Novig and ProphetX, side by side, after each venue's taker fee. Where the other side of a position is cheapest, what the venues disagree on, and what can be locked across them. Live from public market data. Read-only.</p>
 <div class="strip"><span>As of <b>${et(d.at)}</b> <small>refresh ${d.intervalSec}s</small></span><span>Games on the board <b>${d.slate.games}</b> <small>NFL, NBA, NHL · next three days · ${d.slate.live} live</small></span><span>Window <b>${d.historyPoints}</b> snapshots <small>${d.windowHours ? `the last ${d.windowHours} hours · ` : ""}${d.collectingSince ? `${d.windowHours ? "collecting " : ""}since ${et(d.collectingSince)}` : "first cycle"}</small></span></div>
 <div class="key"><span><i class="tag ref">Reference</i>what the venues show on their own: bid, ask, depth, each venue's fee, gaps over time</span><span><i class="tag eng">Engine</i>what reading every venue's book for the same game at once adds: all-in prices, the consensus and who sits off it, the cheapest other side for every position with the saving, the crosses in dollars</span></div>
 ${tiles(d)}
 <p class="dim">If you hedge one venue's position on another, start at the last column of §1 and at §3. §2 is the part of the disagreement that locks.</p>
 
 <h2>1 · The board <span class="tag ref">Reference</span><span class="tag eng">Engine</span></h2>
-<p>One game, two rows: each team's "wins" contract on each venue, bid / ask with depth at the best level and the venue's taker fee as it applies now. Consensus: each venue's two mids scaled to sum to 100, averaged over the venues quoting both sides. The three gap columns: each venue's scaled mid minus that mean. Last column, for a holder of this side: the other side's all-in ask (ask plus fee) on every venue, the cheapest named, and what it saves against Kalshi's own.</p>
+<p>One game, two rows: each team's "wins" contract on each venue, bid / ask with depth at the best level and the venue's taker fee as it applies now. Consensus: each venue's two mids scaled to sum to 100, averaged over the venues quoting both sides. The gap columns: each venue's scaled mid minus that mean. Last column, for a holder of this side: the other side's all-in ask (ask plus fee) on every venue, the cheapest named, and what it saves against Kalshi's own.</p>
 ${boardHtml(d.games)}
 
 <h2>2 · Executable crosses, in dollars <span class="tag eng">Engine</span></h2>
-<p>Buy the away side on one venue and the home side on another, both at all-in asks, when the two add to less than 100¢: the difference is locked whichever team wins, settlement being the same official result on all three. Depth is the smaller of the two best levels.</p>
+<p>Buy the away side on one venue and the home side on another, both at all-in asks, when the two add to less than 100¢: the difference is locked whichever team wins, settlement being the same official result on every venue here. Depth is the smaller of the two best levels.</p>
 ${crossesHtml(d.slate, d.window)}
 
 <h2>3 · The hedger's view of the venues <span class="tag eng">Engine</span></h2>
-<p>Which venue's book is cheapest to take the other side of a position, all in, on the same games at the same moment. Each game contributes two sides. "Saving" is Kalshi's own other side minus the cheapest venue's, so Kalshi reads as the reference. Novig charges no fee before tip-off and 6% of p(1−p) once live, so its standing moves at the start.</p>
+<p>Which venue's book is cheapest to take the other side of a position, all in, on the same games at the same moment. Each game contributes two sides. "Saving" is Kalshi's own other side minus the cheapest venue's, so Kalshi reads as the reference. Novig charges no fee before tip-off and 6% of p(1−p) once live, so its standing moves at the start. ProphetX takes 2% of a market's net winnings at settlement on NFL and NBA games, counted here in full as if the contract wins, and 3.5% of p(1−p) at the trade on NHL games.</p>
 ${hedgerHtml(d.slate, d.window)}
 
 <h2>4 · Gaps over time <span class="tag ref">Reference</span></h2>
@@ -219,17 +224,17 @@ ${gapsHtml(d.gaps)}
 
 <h2>Notes and limits</h2>
 <ul class="limits">
-<li><b>Games.</b> Kalshi's open game markets for NFL, NBA and NHL whose ET game date is today or within three days; a game is on the board when Kalshi lists both teams. Polymarket US is looked up by its event slug (league, away, home, date; team spellings per its own team list), Novig by both clubs' codes and the ET date of its start. A game another venue lists that Kalshi does not is not on the board.</li>
-<li><b>Sides.</b> Kalshi: the team's own market, Yes. Polymarket US: one market per game, the long side the away team, the home side 1 minus it, sizes carried across. Novig: one market, two outcomes, every order a bid; a bid on one is the ask on the other. Novig contracts pay 1¢ and sizes are shown in $1 shares.</li>
-<li><b>Fees.</b> Taker only, c·p·(1−p) per $1: Kalshi 0.07 (series multiplier 1), Polymarket US the market's coefficient (0.095 at Tier 1), Novig 0.06 charged only once the game is live (0 before). Kalshi rounds an order's fee up to the cent; ignored here. Maker rebates ignored.</li>
+<li><b>Games.</b> Kalshi's open game markets for NFL, NBA and NHL whose ET game date is today or within three days; a game is on the board when Kalshi lists both teams. Polymarket US is looked up by its event slug (league, away, home, date; team spellings per its own team list), Novig by both clubs' codes and the ET date of its start, ProphetX by both clubs' names and the ET date of its start. A game another venue lists that Kalshi does not is not on the board.</li>
+<li><b>Sides.</b> Kalshi: the team's own market, Yes. Polymarket US: one market per game, the long side the away team, the home side 1 minus it, sizes carried across. Novig: one market, two outcomes, every order a bid; a bid on one is the ask on the other. Novig contracts pay 1¢ and sizes are shown in $1 shares. ProphetX: one market, every order backs a club at American odds; the best odds on a club, as a price, are its ask, and its bid is 1 minus the other club's ask. Its sizes are dollars a taker can still put on at those odds, shown here as the $1 contracts those dollars buy; a level holding under $1, the venue's smallest order, is passed over.</li>
+<li><b>Fees.</b> Taker only, c·p·(1−p) per $1: Kalshi 0.07 (series multiplier 1), Polymarket US the market's coefficient (0.095 at Tier 1), Novig 0.06 charged only once the game is live (0 before), ProphetX 0.035 on NHL games. On NFL and NBA games ProphetX charges nothing at the trade and takes 2% of the market's net winnings at settlement: a buy at p is shown at p plus 2% of (1−p), the most that fee can be, so a cross or a saving shown here holds whichever team wins. ProphetX's model and rate are read from its own fee estimator for each game every cycle. Kalshi rounds an order's fee up to the cent; ignored here. Maker rebates ignored.</li>
 <li><b>Consensus.</b> Not a model and not a sharp line: the mean of the venues' own de-vigged mids. With two venues it is their midpoint and the gaps are symmetric. A venue off it is off its peers, which is a different claim from off fair value.</li>
-<li><b>Settlement.</b> All three settle game winners on the official league result; NHL winners include overtime and the shootout on all three. Postponement, tie and abandonment handling differ by venue; a cross or a hedge across venues carries that tail, which is small and real.</li>
-<li><b>Timing.</b> The three venues are read within one cycle, not at one instant; in play, a cent of gap can be a few seconds of latency. The window sections average that out; a single live row does not.</li>
+<li><b>Settlement.</b> Every venue here settles game winners on the official league result; NHL winners include overtime and the shootout on each (ProphetX lists its regulation-only market separately; it is not read). Postponement, tie and abandonment handling differ by venue; a cross or a hedge across venues carries that tail, which is small and real.</li>
+<li><b>Timing.</b> The venues are read within one cycle, not at one instant; in play, a cent of gap can be a few seconds of latency. The window sections average that out; a single live row does not.</li>
 <li><b>Depth.</b> Best level only. A cross or a saving is shown at that size; the next level is wider.</li>
 </ul>
 
 <footer>
-<p><b>Sources.</b> Kalshi public market API (KXNFLGAME, KXNBAGAME, KXNHLGAME; markets, orderbooks, series fee) · Polymarket US public Retail API (gateway.polymarket.us; events by slug, books) · Novig public catalog (MONEY markets per league with best bids). No credentials loaded; nothing here can place an order.</p>
+<p><b>Sources.</b> Kalshi public market API (KXNFLGAME, KXNBAGAME, KXNHLGAME; markets, orderbooks, series fee) · Polymarket US public Retail API (gateway.polymarket.us; events by slug, books) · Novig public catalog (MONEY markets per league with best bids) · ProphetX public web endpoints (prophetx.co; events per league, winner market levels, fee estimator, commission rates). No credentials loaded; nothing here can place an order.</p>
 <p><b>Health this cycle.</b> ${healthLine}</p>
 </footer></main></body></html>`;
 }

@@ -6,12 +6,16 @@
  * Units: prices in cents of $1 with two decimals kept (Novig quotes half cents), depth in $1
  * shares at the best level. Every venue's own instrument is normalised to "side s pays $1 when
  * s wins": on Kalshi that is the team's own market's Yes; on Polymarket US the long side is the
- * away team and the home team is 1 minus it; on Novig a bid on one outcome is the ask on the other.
+ * away team and the home team is 1 minus it; on Novig a bid on one outcome is the ask on the other;
+ * on ProphetX every order backs a team at American odds, so the best odds on a team are its ask
+ * and its bid is 1 minus the other team's ask.
  */
 
-export const VENUES = ["kalshi", "polymarket_us", "novig"] as const;
+export const VENUES = ["kalshi", "polymarket_us", "novig", "prophetx"] as const;
 export type Venue = (typeof VENUES)[number];
-export const VENUE_NAME: Record<Venue, string> = { kalshi: "Kalshi", polymarket_us: "Polymarket US", novig: "Novig" };
+export const VENUE_NAME: Record<Venue, string> = { kalshi: "Kalshi", polymarket_us: "Polymarket US", novig: "Novig", prophetx: "ProphetX" };
+/** One value per venue: the only place the list of venues is spelled out for a record. */
+export const byVenue = <T>(make: (v: Venue) => T): Record<Venue, T> => Object.fromEntries(VENUES.map((v) => [v, make(v)])) as Record<Venue, T>;
 
 export type Side = "away" | "home";
 export const SIDES: readonly Side[] = ["away", "home"];
@@ -27,7 +31,7 @@ export interface SideQuote {
 
 export interface VenueListing {
   venue: Venue;
-  /** the venue's own id for the market (a Kalshi ticker pair, a Polymarket US slug, a Novig market id) */
+  /** the venue's own id for the market (a Kalshi ticker pair, a Polymarket US slug, a Novig market id, a ProphetX event and market) */
   id: string;
   away: SideQuote;
   home: SideQuote;
@@ -35,6 +39,12 @@ export interface VenueListing {
   feeTheta: number;
   /** the coefficient the venue charges once the game is live, when it differs from feeTheta */
   feeThetaLive?: number;
+  /**
+   * The share of a market's net winnings the venue takes at settlement, as a fraction (ProphetX
+   * outside its maker/taker leagues: 0.02). Nothing is charged at the trade. Absent on a venue
+   * that charges per contract.
+   */
+  feeGain?: number;
   /** venue's own words for the two sides, as listed */
   awayName: string;
   homeName: string;
