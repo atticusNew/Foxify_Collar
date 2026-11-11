@@ -10,7 +10,7 @@ model. Every number is a venue's price, its published fee, or a difference of th
 Where it lives: `/sports` on the `atticus-btc-curve` Render service (same process, same key, no
 second service; see "On the BTC curve service" below). Modules: `services/api/src/sportsVenues/**`
 (`collector.ts` is the cycle and the routes) · tests: `services/api/tests/sportsVenues.test.ts`,
-`sportsProphetX.test.ts`, `sportsCryptocom.test.ts`, `sportsMount.test.ts` · `services/api/scripts/sportsVenuesReportService.ts` serves the same thing
+`sportsProphetX.test.ts`, `sportsCryptocom.test.ts`, `sportsHolder.test.ts`, `sportsMount.test.ts` · `services/api/scripts/sportsVenuesReportService.ts` serves the same thing
 on its own port for a local run. Reader's guide: `docs/sports-venues-study-guide.md`.
 
 ## What the page shows
@@ -49,6 +49,14 @@ quoted the other side. A coverage line states when a venue lists fewer games tha
 game, every snapshot in the window (the home side is the mirror). Strip: mean |gap| per venue
 pair, widest game, how many games sit 1¢ or more apart on average (persistent, so a quoting
 difference rather than latency). The full table with sparklines is folded.
+
+**§5 A holder on each venue** (Engine). Someone holds one side of a game on a venue and wants
+out. One row per venue as the holder's venue, before the start and in play, with a by-league
+fold: readings (sides with a bid, and how many more had none), the cost of selling on that
+venue's own book against the consensus, its spread, how often its bid holds 100, 1,000 and 10,000
+contracts, how often another venue's other side is cheaper and by how much, and how often a bid
+better than its own book would still lock after every fee. Unlike §2 to §4 this is counted over
+every snapshot since the count began, not only the window (`holder.ts`).
 
 **Notes and limits** and the footer (sources, health per venue this cycle).
 
@@ -164,6 +172,19 @@ recomputed from the stored books with the fee that applied at the time, so Novig
 and live 0.06 are both honoured historically, and so are ProphetX's fee on winnings and
 Crypto.com's fixed fee (stored with the reading).
 
+The holder's view (§5), per reading (one side s of one game in one snapshot, counted while the
+consensus on s is between 5¢ and 95¢), for venue H as the holder's venue, with the fees stored
+with the snapshot:
+sale cost = consensus(s) − (H's bid on s − H's fee to sell at it);
+saving = H's own all-in ask on ¬s − the cheapest all-in ask on ¬s on any venue, counted when
+another venue is cheaper (a tie is not a saving);
+room = 100 − that cheapest all-in ask − H's bid on s − H's fee to buy at that bid: what is left
+if someone takes the holder's contract at H's bid, pays H's fee on it and buys the other side on
+the cheapest venue. Above zero a bid better than H's own book locks after every fee, and the
+room is the most it can add, to be split between the holder and whoever makes the bid. Before
+the start and in play are split by the venue-published start; a game with only a date counts as
+before the start.
+
 ## Storage and ops
 
 One JSONL file per UTC day under `SPORTS_VENUES_DATA_DIR`, one line per snapshot (every listing's
@@ -172,6 +193,14 @@ two sides, sizes, fee, start; health per venue). The in-memory history keeps
 points (`[awayBid, awayAsk, homeBid, homeAsk, feeTheta, awayBidQty, awayAskQty, homeBidQty, homeAskQty]`
 per game and venue, then the share of winnings and the fixed fee where a venue charges them, plus starts). A source that does not answer within
 `SPORTS_VENUES_SOURCE_DEADLINE_MS` (45 s) is marked down for the cycle and the cycle goes on.
+
+The holder's count (§5) is a running total, not a window: `holder-count.json` beside the day
+files, a few KB, rewritten (to a temporary name, then renamed) after every snapshot. It holds,
+per venue, league and phase, the sums the section's means are made of, and the time of the last
+snapshot counted, so a snapshot is never counted twice. On a boot it is read back and any
+snapshot in the reloaded window newer than its last is added, which also fills it from snapshots
+taken before it existed. It is derived data: the day files are the record. If the file is lost
+or unreadable it starts again from the window and `/healthz` says so.
 
 Every day is kept. Nothing is deleted unless `SPORTS_VENUES_RETAIN_DAYS` is set to a whole number
 of days; unset, empty, `0`, `all` and `none` keep everything, and a value that cannot be read
@@ -206,7 +235,8 @@ which are the curve service's. The files go under `<BTC_CURVE_DATA_DIR>/sports` 
 `BTC_CURVE_RETAIN_DAYS` unless `SPORTS_VENUES_RETAIN_DAYS` is set. `/healthz` on the curve
 service carries a `sports` block: `warm`, `at`, `games`, `cycles`, `historyPoints`,
 `windowHours`, `reload`, `venuesNotAnswering`, `venueNotes` (a venue that answered but left
-games off, and why), `listed` (games each venue is on in the latest snapshot), `lastError`, `data` (the same block as above for
+games off, and why), `listed` (games each venue is on in the latest snapshot), `lastError`,
+`holderCount` (snapshots counted in §5, since when, the last one, and a note if its file could not be used), `data` (the same block as above for
 the sports files) and, if the sports part ever fails outside a cycle, `mountError` in words. A
 sports fault never reaches the BTC routes: the page answers 500 on that request and the fault
 is on `/healthz`.
