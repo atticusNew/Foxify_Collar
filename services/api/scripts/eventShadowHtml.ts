@@ -386,7 +386,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     if (s.settledCount === 0) return "";
     const savePct = Math.round((100 * s.floorSaves) / s.settledCount);
     const saved = `The lock paid the floor on ${s.floorSaves} of ${s.settledCount} settled events (${savePct}%).`;
-    if (s.deltaTotalCents >= 0) return `${saved} Across everyone it came out ${usd(s.deltaTotalCents)} ahead of holding without the lock.`;
+    if (s.deltaTotalCents >= 0) return `${saved} Across all of them it came out ${usd(s.deltaTotalCents)} ahead of holding without the lock.`;
     const realizedPct = s.nakedTotalCents > 0 ? `${((100 * -s.deltaTotalCents) / s.nakedTotalCents).toFixed(1)}% of what the same positions paid without the lock` : usd(-s.deltaTotalCents);
     const quoted = s.quotedAvgEvBps !== null && s.quotedAvgEvBps >= 0 ? `; ${(s.quotedAvgEvBps / 100).toFixed(1)}% was quoted up front` : "";
     // Realized is one sample and quoted is the expectation; when strikes on one coin dominate the
@@ -396,7 +396,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       cryptoSettled * 2 > s.settledCount
         ? " Strikes on the same coin settle together, so a rally caps many at once and a drop pays many floors at once; the gap between the two closes as the book widens."
         : "";
-    return `${saved} Across everyone it cost ${usd(-s.deltaTotalCents)}, ${realizedPct}${quoted}. Quoted is the expectation at the market's odds; realized is what this sample did.${cluster}`;
+    return `${saved} Across all of them it cost ${usd(-s.deltaTotalCents)}, ${realizedPct}${quoted}. Quoted is the expectation at the market's odds; realized is what this sample did.${cluster}`;
   })();
   const routeRows = Object.entries(s.routeSplit)
     .sort((a, b) => b[1] - a[1])
@@ -443,7 +443,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     const dCell = sp.settled >= MIN_SLICE_EVENTS && sp.holderDeltaBpsOfStake !== null ? bpsPct(sp.holderDeltaBpsOfStake) : "too few";
     const pnlLine =
       sp.settled > 0
-        ? `On the ${sp.settled} settled, our P&L is ${signedUsd(sp.writerPnlCents)} against ${usd(sp.takeCents)} of take booked; users were credited ${usd(sp.creditsCents)} at lock in.`
+        ? `On the ${sp.settled} settled, our P&L is ${signedUsd(sp.writerPnlCents)} against ${usd(sp.takeCents)} of take booked; the positions were credited ${usd(sp.creditsCents)} at lock in.`
         : "Nothing has settled yet.";
     const sportsClosed = s.closed?.byKind?.sports?.closed ?? 0;
     const closedLine = sportsClosed > 0 ? ` ${sportsClosed} left before the game at live prices; see the early closes below.` : "";
@@ -480,10 +480,10 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     const readLine =
       c.count === 0
         ? `${c.unpriced} scheduled exit${c.unpriced === 1 ? "" : "s"} found no depth on a leg and ran to settlement instead; nothing has closed early yet.`
-        : `${c.count} position${c.count === 1 ? "" : "s"} left before the lock. Each exit was a new trade at the live books that second: the user's contracts sold into the bids, our other side sold into its bids, and the locked terms settled at what both fetched. ` +
-          `They walked away with ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} had they never locked in (${signedUsd(c.deltaCents)}). ` +
+        : `${c.count} position${c.count === 1 ? "" : "s"} left before the lock. Each exit was a new trade at the live books that second: the position's contracts sold into the bids, our other side sold into its bids, and the locked terms settled at what both fetched. ` +
+          `They came out at ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} had they never been locked in (${signedUsd(c.deltaCents)}). ` +
           (c.withMid > 0 ? `Crossing both books cost ${signedUsd(c.unwindFrictionCents)} against the mid${frictionPct}. ` : "") +
-          `Our result on the way out is the take booked, ${usd(c.takeBookedCents)}: the user pays live prices on both legs, so we carry no price risk on the exit either.` +
+          `Our result on the way out is the take booked, ${usd(c.takeBookedCents)}: the position pays live prices on both legs, so we carry no price risk on the exit either.` +
           (c.unpriced > 0 ? ` ${c.unpriced} other scheduled exit${c.unpriced === 1 ? "" : "s"} found no depth on a leg and ran to settlement instead.` : "");
     return `  <div class="card">
     <h2>Closed early at live prices</h2>
@@ -529,7 +529,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     if (b.existed > 0) {
       const fee = b.restingBidFee ?? { makerSchedule: 0, takerFormula: b.existed };
       lines.push(
-        "Our own bid is priced at the venue's fee for an order that rests on its book, which is a quarter of its fee for an order that takes from the book, and is charged only if the bid is filled." +
+        "Our own bid is priced at the venue's fee for an order that rests on its book, which is lower than its fee for an order that takes from the book, and is charged only if the bid is filled." +
           (fee.takerFormula > 0 ? ` ${intStr(fee.takerFormula)} of these lines ${fee.takerFormula === 1 ? "was" : "were"} written before 11 November 2026 and priced our bid at the full fee, so ${fee.takerFormula === 1 ? "it understates" : "they understate"} the gain.` : "") +
           ` Where the venue's price steps or its own offer stopped our bid short of passing everything on, what was left over stays with us: ${usd(b.residualCents)} across these lines, shown here apart from our take of ${usd(b.takeCents)}.`,
       );
@@ -620,7 +620,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
         `Across ${intStr(s.settledCount)} settled events the same positions returned ${usd(s.protectedTotalCents)} with the lock and ${usd(s.nakedTotalCents)} without, marked at the official result. ` +
           (s.deltaTotalCents >= 0 ? `The lock came out ${usd(s.deltaTotalCents)} ahead.` : `The lock cost ${usd(-s.deltaTotalCents)}, ${s.nakedTotalCents > 0 ? `${((100 * -s.deltaTotalCents) / s.nakedTotalCents).toFixed(1)}% of the outcome without the lock` : "in total"}${s.quotedAvgEvBps !== null && s.quotedAvgEvBps >= 0 ? `; ${(s.quotedAvgEvBps / 100).toFixed(1)}% was quoted up front` : ""}. Quoted is the expectation at the market's odds; realized is what this sample did.`),
       );
-      lines.push(`On ${intStr(s.floorSaves)} of those ${intStr(s.settledCount)} (${savesCell}) the pick lost and the floor paid. Those are the traders who would otherwise have walked away with nothing.`);
+      lines.push(`On ${intStr(s.floorSaves)} of those ${intStr(s.settledCount)} (${savesCell}) the pick lost and the floor paid. Those are the positions that would otherwise have ended at nothing.`);
       if (id.settled > 0)
         lines.push(
           id.holds
@@ -637,9 +637,9 @@ export function renderShadowHtml(input: ShadowPageInput): string {
       );
     }
     const c = s.closed;
-    if (c && c.count > 0) lines.push(`${intStr(c.count)} traders left before the game at live prices and walked away with ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} without the lock; we carried no price risk on the exit.`);
+    if (c && c.count > 0) lines.push(`${intStr(c.count)} positions were left before the game at live prices and came out at ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} without the lock; we carried no price risk on the exit.`);
     return `  <div class="card">
-    <h2>What traders who locked in actually kept</h2>
+    <h2>What a locked position actually kept</h2>
     <div class="sub" style="margin-bottom:8px">The figure the industry does not publish: what the same positions returned with and without the lock, marked at the official result, and how often we said no.</div>
     <div class="bignums">
       <div class="bignum"><div class="n">${usd(s.protectedTotalCents)}</div><div class="l">with the lock, settled</div></div>
@@ -877,7 +877,7 @@ function ourBookCard(s: ShadowSummary): string {
     <div class="row"><span>floors paid (user lost)</span><b>${signedUsd(-w.floorsPaidCents)}</b></div>
     <div class="row"><span>hedge payouts received</span><b>${usd(w.hedgePayoutsCents)}</b></div>
     <div class="row"><span>hedge cost paid</span><b>${signedUsd(-w.hedgeCostCents)}</b></div>
-    <div class="row"><span>credits paid to users</span><b>${signedUsd(-w.creditsPaidCents)}</b></div>
+    <div class="row"><span>credits paid at lock in</span><b>${signedUsd(-w.creditsPaidCents)}</b></div>
     <div class="row"><span>hedge payouts minus hedge cost</span><b>${signedUsd(id.hedgeNetCents)} <i>${id.hedgeNetCents >= 0 ? "the hedge funded itself" : "the hedge fell short"}</i></b></div>
     <div class="row"><span>cap slices kept minus floors and credits paid</span><b>${signedUsd(id.holderLegsNetCents)}</b></div>
     <div class="row"><span>take locked on open positions</span><b>${usd(w.takeLockedOpenCents)} <i>realizes as they settle</i></b></div>
@@ -1337,12 +1337,12 @@ export function renderSlateHtml(input: SlatePageInput): string {
     s.settledCount === 0
       ? "nothing settled yet"
       : s.deltaTotalCents >= 0
-        ? `users who locked in came out ${usd(s.deltaTotalCents)} ahead of holding`
-        : `the lock cost users ${usd(-s.deltaTotalCents)} across settled games${stakeSettled > 0 ? ` (${((100 * -s.deltaTotalCents) / stakeSettled).toFixed(2)}% of what the same positions paid without the lock)` : ""}; the floor is what it bought`;
+        ? `locked positions came out ${usd(s.deltaTotalCents)} ahead of holding`
+        : `the lock cost ${usd(-s.deltaTotalCents)} across settled games${stakeSettled > 0 ? ` (${((100 * -s.deltaTotalCents) / stakeSettled).toFixed(2)}% of what the same positions paid without the lock)` : ""}; the floor is what it bought`;
   const saveLine =
     s.settledCount === 0
       ? "The first games on these leagues settle this week."
-      : `The lock paid the floor on ${s.floorSaves} of ${s.settledCount} settled games (${Math.round((100 * s.floorSaves) / s.settledCount)}%). Those are the users who would otherwise have walked away with nothing.`;
+      : `The lock paid the floor on ${s.floorSaves} of ${s.settledCount} settled games (${Math.round((100 * s.floorSaves) / s.settledCount)}%). Those are the positions that would otherwise have ended at nothing.`;
   const identityLine =
     id.settled === 0
       ? "Nothing has settled on these leagues yet, so there is nothing to reconcile."
@@ -1400,7 +1400,7 @@ export function renderSlateHtml(input: SlatePageInput): string {
     <div class="bignums">
       <div class="bignum"><div class="n green">${s.settledCount}</div><div class="l">games settled</div></div>
       <div class="bignum"><div class="n">${s.floorSaves}</div><div class="l">floor saves</div></div>
-      <div class="bignum"><div class="n green">${usd(creditsSettled)}</div><div class="l">credited to users at lock in</div></div>
+      <div class="bignum"><div class="n green">${usd(creditsSettled)}</div><div class="l">credited at lock in</div></div>
       <div class="bignum"><div class="n ${id.holds ? "green" : ""}">${signedUsd(w.settledPnlCents)}</div><div class="l">our P&amp;L = take booked</div></div>
     </div>
     <div class="period">${escapeHtml(periodLine)} · ${s.openCount} open now</div>

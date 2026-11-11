@@ -18,7 +18,7 @@ import {
   type LastLegRecord,
   type LastLegTicketRecord,
 } from "../src/eventCollar/crossVenue/lastLeg";
-import { PARLAY_REFUSAL_SHORT, PARLAY_REFUSAL_WORDS, refusalShort, refusalWords, retailParlayTicket, retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
+import { PARLAY_REFUSAL_SHORT, PARLAY_REFUSAL_WORDS, refusalShort, refusalWords, retailParlayTicket, retailParlays, withoutLockVenues } from "../src/eventCollar/crossVenue/parlayRetail";
 import { pickWords, shortClub } from "../src/eventCollar/crossVenue/pickWords";
 import { legWords } from "../src/eventCollar/crossVenue/lastLeg";
 import { EVENT_ACTIONS, isEventAction, isValidTicker } from "../src/eventCollar/crossVenue/eventFunnel";
@@ -164,6 +164,10 @@ test("retailParlayTicket: picks with their marks, the three row states, the lock
     venue: null,
   });
   assert.equal(by.ll_hit.lock?.venue, "Novig", "a lock the router priced says where the other side goes, by public name");
+  // what the record's public route sends: the same ticket and the same money, without the venue
+  const [masked] = withoutLockVenues([by.ll_hit]);
+  assert.deepEqual(masked, { ...by.ll_hit, lock: { ...by.ll_hit.lock, venue: null } });
+  assert.ok(!JSON.stringify(withoutLockVenues(Object.values(by))).includes("Novig"));
   assert.equal(qHit.route, "novig");
   assert.equal(qHit.hedgeTokenId, undefined, "no Polymarket token on a route to another venue");
   assert.ok(atLast.lock!.floorTotalCents > 0 && atLast.lock!.capTotalCents > atLast.lock!.floorTotalCents);

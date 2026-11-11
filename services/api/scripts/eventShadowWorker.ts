@@ -65,8 +65,9 @@
  * counters come back on the same route with the operator token.
  *
  * WHAT IS PUBLIC: the record (/, /api/shadow, /api/shadow/positions.csv, /api/shadow/parlays)
- * carries quoted terms, official results, both sides' money and the two books the hedges were
- * bought on; /api/shadow/scoreboard (and .csv, and the /scoreboard page) is the venue scoreboard
+ * carries quoted terms, official results and the holder's money on every row, with our side
+ * as totals; where the other side was bought and our own side of each row are the operator's
+ * (publicRecord.ts, the public CSV's columns); /api/shadow/scoreboard (and .csv, and the /scoreboard page) is the venue scoreboard
  * drawn from it by week (venueScoreboard.ts: which venue took the other side, by how much, what
  * its fee schedule charged, how often each priced, the refusals), with the venues lettered for the public and named for the operator. Everything that is a study rather than a receipt (rule counterfactuals, hedge
  * receipts, the last-leg tickets, netting measured on the book) is an operator view. A new
@@ -188,6 +189,7 @@ import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, typ
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderCapitalHtml, renderHoldersHtml, renderPilotCheckHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
+import { publicPosition } from "../src/eventCollar/crossVenue/publicRecord";
 import { buildRealizedBook, lockKeyOf, publicRealSummary, realizedMonthlyCsv, type RealizedBook } from "../src/eventCollar/crossVenue/realizedBook";
 import { VERDICT_WORDS, isUtcDay, reconcileDay, type DayRecon } from "../src/eventCollar/crossVenue/realizedRecon";
 import { appendReconRun, dailyCheckDue, differsAlertText, latestRunPerDay, loadReconRuns, reconRunOf, reconRunView, type ReconRunRecord } from "../src/eventCollar/crossVenue/realizedReconLog";
@@ -223,7 +225,7 @@ import {
   type LastLegTickReport,
   type RoutedQuote,
 } from "../src/eventCollar/crossVenue/lastLeg";
-import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
+import { retailParlays, withoutLockVenues } from "../src/eventCollar/crossVenue/parlayRetail";
 import { measureNetting } from "../src/eventCollar/crossVenue/shadowNetting";
 import { venueBreakdown, venueBreakdownCsv } from "../src/eventCollar/crossVenue/shadowVenues";
 import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slateLinkKey, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
@@ -4852,7 +4854,7 @@ function healthBody(): Record<string, unknown> {
           name: s.name,
           leagues: s.leagues,
           shareUrl: link ? `${RECORD_URL}/slate/${s.slug}?k=${link}` : null,
-          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(s.name)}`,
+          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(s.name)}${link ? `&k=${link}` : ""}`,
         };
       }),
     },
@@ -5011,30 +5013,6 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
       positionsWithCounterfactuals: counterfactuals.positionsWithCounterfactuals,
     },
   };
-}
-
-/**
- * A position as the public JSON carries it: what was quoted, what settled, both sides' money.
- * The counterfactual rule books, the pre-lock re-read, the hedge leg's venue token and where
- * each book was read from stay with the operator (the raw ledger, the full CSV, /venues); a
- * reader can recompute every public row without them.
- */
-function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "inGame" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeOffsetStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId" | "bookOrigins" | "holder" | "hedgeFill"> & { cashDue?: ReturnType<typeof cashDue> } {
-  // where the books came from (the partner's feed or the venue), the pre-lock, book-open and in-game reads, whose lock it is and the real order behind its hedge are the operator's: /venues, /api/shadow/holders, the raw ledger
-  const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, inGame: _inGame, hedgeTokenId: _tok, hedgeStrikeId: _strike, hedgeOffsetStrikeId: _offset, hedgeMarketId: _nvMarket, hedgeOutcomeId: _nvOutcome, hedgeOffsetOutcomeId: _nvOffset, bookOrigins: _origins, holder: _holder, hedgeFill: _fill, ...rest } = p;
-  // a member's own sale: the venue's order ids and market id stay with the operator; the sale's figures are public
-  const pub = rest.memberSale ? { ...rest, memberSale: publicMemberSale(rest.memberSale), ...(rest.closeMemberBuyBack ? { closeMemberBuyBack: publicMemberBuyBack(rest.closeMemberBuyBack) } : {}) } : rest;
-  // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
-  return p.source === "lock" ? { ...pub, cashDue: cashDue(p) } : pub;
-}
-function publicMemberSale(s: MemberSaleRecord): MemberSaleRecord {
-  // the fill-by-fill detail of a member's account stays with the member and the operator; the summed figures are public
-  const { venueFills: _fills, ...rest } = s;
-  return { ...rest, marketId: "", orderId: null, clientOrderId: "" };
-}
-function publicMemberBuyBack(b: NonNullable<ShadowPosition["closeMemberBuyBack"]>): NonNullable<ShadowPosition["closeMemberBuyBack"]> {
-  const { venueFills: _fills, ...rest } = b;
-  return { ...rest, orderId: null, clientOrderId: "" };
 }
 
 /**
@@ -5456,11 +5434,14 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
       // hedge legs, take or token ids: those stay on /api/shadow/lastleg behind the operator token.
       // The demo's Parlays tab reads this. CORS is open because the body is public already.
       const tickets = loadLastLegTickets(LASTLEG_PATH);
+      // where a lock's other side goes is named to the operator, and to everyone only with venue naming on
+      const named = SLATE_NAMES_HEDGE_VENUES || operator;
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",
-        "cache-control": "public, max-age=60",
+        "cache-control": operator ? "no-store" : "public, max-age=60",
         "access-control-allow-origin": "*",
       });
+      const parlays = retailParlays(tickets, summarizeLastLeg(tickets), lockVersusSell(tickets));
       res.end(
         JSON.stringify({
           ok: true,
@@ -5468,7 +5449,8 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
           enabled: lastLegCfg.enabled,
           stakeCents: lastLegCfg.stakeCents,
           pricedEveryMinutes: Math.round(lastLegCfg.tickMs / 60_000),
-          ...retailParlays(tickets, summarizeLastLeg(tickets), lockVersusSell(tickets)),
+          ...parlays,
+          tickets: named ? parlays.tickets : withoutLockVenues(parlays.tickets),
         }),
       );
       return;
@@ -5950,7 +5932,8 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
           lastLegStakeCents: lastLegCfg.stakeCents,
           hedgeVenues,
           nameHedgeVenues: SLATE_NAMES_HEDGE_VENUES || (operator && !keyed),
-          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(slate.name)}`,
+          // the slate's own link key rides along, so a host that is itself a venue sees its own book named in the demo's Venue view
+          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(slate.name)}${slateLinkKey(SLATE_KEY, slate.slug) ? `&k=${slateLinkKey(SLATE_KEY, slate.slug)}` : ""}`,
           csvHref: `/slate/${slate.slug}.csv${keyQuery}`,
           recordUrl: RECORD_URL,
         }),

@@ -470,7 +470,7 @@ test("public record page: one section says how often a better bid existed, by ho
   // what our own bid is charged, which lines were priced before the schedule was in hand, and where the leftover goes
   assert.ok(
     card.includes(
-      "Our own bid is priced at the venue's fee for an order that rests on its book, which is a quarter of its fee for an order that takes from the book, and is charged only if the bid is filled. " +
+      "Our own bid is priced at the venue's fee for an order that rests on its book, which is lower than its fee for an order that takes from the book, and is charged only if the bid is filled. " +
         "1 of these lines was written before 11 November 2026 and priced our bid at the full fee, so it understates the gain. " +
         "Where the venue's price steps or its own offer stopped our bid short of passing everything on, what was left over stays with us: $0.55 across these lines, shown here apart from our take of $0.30.",
     ),

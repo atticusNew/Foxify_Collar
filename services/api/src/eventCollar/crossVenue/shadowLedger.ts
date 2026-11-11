@@ -1432,13 +1432,8 @@ export function summarizeClosed(positions: ShadowPosition[]): ShadowClosedSummar
   return out;
 }
 
-/** Column order of the positions CSV; stable so downstream sheets do not break. */
-/**
- * The public spreadsheet: what was quoted, what settled, both sides' money.
- * Enough for a reviewer to recompute every row; nothing about the rules
- * under evaluation.
- */
-export const POSITIONS_CSV_PUBLIC_COLUMNS = [
+/** Column order of the positions CSV; stable so downstream sheets do not break. The operator's export starts with these. */
+const POSITIONS_CSV_BASE_COLUMNS = [
   "ticker",
   "league",
   "kind",
@@ -1473,9 +1468,18 @@ export const POSITIONS_CSV_PUBLIC_COLUMNS = [
   "close_friction_c",
 ] as const;
 
-/** Every column: the public set, then the recorded fee rule and every counterfactual (operator export). */
+/**
+ * What the public CSV leaves to the operator's: where the other side was bought, and our own
+ * side of each row (the take, the fees, the hedge and our result). The totals are on the page.
+ */
+const POSITIONS_CSV_OPERATOR_ONLY: ReadonlySet<string> = new Set(["take_c", "fees_c", "hedge_units_milli", "hedge_cost_c", "hedge_payout_c", "writer_pnl_c"]);
+
+/** The public columns: the base set without the operator's, and `shape` (own sale or hedged lock) where the operator's has `route`. */
+export const POSITIONS_CSV_PUBLIC_COLUMNS: readonly string[] = POSITIONS_CSV_BASE_COLUMNS.filter((c) => !POSITIONS_CSV_OPERATOR_ONLY.has(c)).map((c) => (c === "route" ? "shape" : c));
+
+/** Every column: the base set, then the recorded fee rule and every counterfactual (operator export). */
 export const POSITIONS_CSV_COLUMNS = [
-  ...POSITIONS_CSV_PUBLIC_COLUMNS,
+  ...POSITIONS_CSV_BASE_COLUMNS,
   "take_rule",
   "take_share_c",
   "take_min_c",
@@ -1499,9 +1503,10 @@ function csvCell(v: string | number | null | undefined): string {
 }
 
 /**
- * One row per position, every status, all money in integer cents. This is
- * the spreadsheet form of the ledger: what a reviewer opens to recompute the
- * writer's P&L row by row.
+ * One row per position, every status, all money in integer cents. The full scope is the
+ * spreadsheet form of the ledger: what the operator opens to recompute the writer's P&L row by
+ * row. The public scope carries the holder's side of every row and no venue the other side was
+ * bought on.
  */
 export type PositionsCsvScope = "public" | "full";
 
@@ -1512,7 +1517,7 @@ export function positionsCsv(positions: ShadowPosition[], scope: PositionsCsvSco
     .map((p) => {
       const settled = p.status === "settled" || p.status === "closed";
       const closed = p.status === "closed";
-      return [
+      const cells: Array<string | number | null | undefined> = [
         p.ticker,
         p.league,
         p.kind,
@@ -1545,10 +1550,16 @@ export function positionsCsv(positions: ShadowPosition[], scope: PositionsCsvSco
         closed ? (p.closeYesFillCents ?? "") : "",
         closed ? (p.closeFeesCents ?? 0) : "",
         closed ? (p.closeUnwindFrictionCents ?? "") : "",
-        ...(scope === "full" ? counterfactualCells(p) : []),
-      ]
-        .map(csvCell)
-        .join(",");
+      ];
+      const out =
+        scope === "full"
+          ? [...cells, ...counterfactualCells(p)]
+          : cells.flatMap((v, i) => {
+              const col = POSITIONS_CSV_BASE_COLUMNS[i];
+              if (POSITIONS_CSV_OPERATOR_ONLY.has(col)) return [];
+              return [col === "route" ? (p.route === "member_sale" ? "own sale" : "hedged lock") : v];
+            });
+      return out.map(csvCell).join(",");
     });
   return [columns.join(","), ...rows].join("\n") + "\n";
 }
