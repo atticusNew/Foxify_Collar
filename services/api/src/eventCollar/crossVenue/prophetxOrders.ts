@@ -33,11 +33,18 @@
  *      its proceeds are the $1 less what the offset cost, realised at settlement, not today. The
  *      early-close record carries that and the holder's receipt says so.
  *
- * Fees: the venue charges nothing at match (`feeUsd` 0) and 2% of net gains per market at
- * settlement (prophetx.co/t-c/trading-fees, CFTC self-certification of 2026-08-14). The pricer
- * folds that into every level before the walk (foldProphetXFee) and the fill is costed the same
- * way, so the all-in figures on both sides of the trail agree. EVENT_PROPHETX_FEE_BPS overrides
- * the rate when the venue's schedule moves.
+ * Fees, by league (prophetx.co/t-c/trading-fees, and the venue's own fee estimator, both read
+ * 11 November 2026):
+ *   NHL games    maker/taker. A taker pays 3.5% x p x (1 - p) per share AT THE TRADE and nothing
+ *                at settlement. EVENT_PROPHETX_TAKER_BPS overrides the rate and
+ *                EVENT_PROPHETX_TAKER_LEAGUES the leagues ("none" for no league).
+ *   every other  nothing at the trade and 2% of net gains per market at settlement.
+ *                EVENT_PROPHETX_FEE_BPS overrides the rate.
+ * The game's Kalshi ticker says the league (prophetxFeeForTicker). The pricer folds the game's
+ * fee into every level before the walk (foldProphetXFee) and the fill is costed the same way, so
+ * the all-in figures on both sides of the trail agree. On a maker/taker game the fill is costed
+ * at the larger of the fee its fills report and the schedule's, so a fill whose fee the partner
+ * does not relay is never costed as free.
  *
  * Execution: FillOrKill. The routing gate already required depth for the whole size; the order
  * either fills in full at or under the walk or nothing happens, which is what a hedge wants.
@@ -50,39 +57,134 @@ import { AggregatorPodRest, aggregatorClientOrderId, type AggregatorOrderClientO
 import { actionOf, type HedgeIntent } from "./hedgeExecutor";
 import { dollarsToMicro } from "./kalshiOrders";
 import { orderNotReadError, type LiveOrderHook, type LiveOrderResult } from "./liveHedge";
+import { templateForSeries } from "./resolutionWhitelist";
 import type { PmBook, PmBookLevel } from "./types";
 
 /** The venue's published rate on net gains, bps. */
 export const DEFAULT_PROPHETX_FEE_BPS = 200;
-
-export function prophetxFeeBpsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = (env.EVENT_PROPHETX_FEE_BPS ?? "").trim();
-  if (!raw) return DEFAULT_PROPHETX_FEE_BPS;
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= 0 && n <= 2000 ? n : DEFAULT_PROPHETX_FEE_BPS;
-}
+/** The venue's published taker rate on a maker/taker game, bps of p x (1 - p) per share. */
+export const DEFAULT_PROPHETX_TAKER_BPS = 350;
+/** The leagues the venue's schedule puts on maker/taker fees. */
+export const DEFAULT_PROPHETX_TAKER_LEAGUES: readonly string[] = ["nhl"];
 
 /**
- * A ProphetX book with the settlement fee folded into every level, in the pricer's milli units.
- * An ask at p costs p now and, if it wins, gives up fee x (1 - p) of the dollar: the level is
- * priced at p + that, rounded up. A bid at b (what an offset fetches, 1 - the other strike's ask)
- * gives up fee x b of its winnings: priced at b - that, rounded down. Sizes carry.
+ * What ProphetX charges a taker on one game. `gainBps` of the market's net gains at settlement
+ * (only if the position wins), and `tradeBps` x p x (1 - p) per share at the trade. The venue's
+ * schedule sets one or the other, never both; the arithmetic carries both.
  */
-export function foldProphetXFee(book: PmBook, feeBps: number): PmBook {
-  const ask = (l: PmBookLevel): PmBookLevel => ({ priceMilli: Math.min(999, l.priceMilli + Math.ceil((feeBps * (1000 - l.priceMilli)) / 10_000)), sizeMilli: l.sizeMilli });
-  const bid = (l: PmBookLevel): PmBookLevel => ({ priceMilli: Math.max(1, l.priceMilli - Math.ceil((feeBps * l.priceMilli) / 10_000)), sizeMilli: l.sizeMilli });
+export interface ProphetXFee {
+  gainBps: number;
+  tradeBps: number;
+}
+/** A fee, or a bare number: bps of net gains and nothing at the trade. */
+export type ProphetXFeeSpec = number | ProphetXFee;
+
+const feeOf = (fee: ProphetXFeeSpec): ProphetXFee => (typeof fee === "number" ? { gainBps: fee, tradeBps: 0 } : fee);
+
+const bpsFromEnv = (raw: string | undefined, fallback: number): number => {
+  const text = (raw ?? "").trim();
+  if (!text) return fallback;
+  const n = Number(text);
+  return Number.isInteger(n) && n >= 0 && n <= 2000 ? n : fallback;
+};
+
+export function prophetxFeeBpsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  return bpsFromEnv(env.EVENT_PROPHETX_FEE_BPS, DEFAULT_PROPHETX_FEE_BPS);
+}
+
+export function prophetxTakerBpsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  return bpsFromEnv(env.EVENT_PROPHETX_TAKER_BPS, DEFAULT_PROPHETX_TAKER_BPS);
+}
+
+/** The leagues on maker/taker fees: EVENT_PROPHETX_TAKER_LEAGUES (comma list, "none" for no league), else the schedule's. */
+export function prophetxTakerLeaguesFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = (env.EVENT_PROPHETX_TAKER_LEAGUES ?? "").trim().toLowerCase();
+  if (!raw) return [...DEFAULT_PROPHETX_TAKER_LEAGUES];
+  return raw === "none" ? [] : raw.split(",").map((l) => l.trim()).filter((l) => l !== "");
+}
+
+/** The fee on a game of this league. A league not known is charged as every league but the maker/taker ones is: on net gains. */
+export function prophetxFeeForLeague(league: string | null | undefined, env: NodeJS.ProcessEnv = process.env): ProphetXFee {
+  return league && prophetxTakerLeaguesFromEnv(env).includes(league.toLowerCase())
+    ? { gainBps: 0, tradeBps: prophetxTakerBpsFromEnv(env) }
+    : { gainBps: prophetxFeeBpsFromEnv(env), tradeBps: 0 };
+}
+
+/** The fee on the game a Kalshi ticker names (its series says the league). */
+export function prophetxFeeForTicker(ticker: string | null | undefined, env: NodeJS.ProcessEnv = process.env): ProphetXFee {
+  return prophetxFeeForLeague(templateForSeries((ticker ?? "").split("-")[0])?.league, env);
+}
+
+/** The fee in words, for a note or a health line. */
+export function prophetxFeeWords(fee: ProphetXFeeSpec): string {
+  const f = feeOf(fee);
+  const parts = [
+    ...(f.tradeBps > 0 ? [`${f.tradeBps / 100}% x p x (1 - p) per share at the trade`] : []),
+    ...(f.gainBps > 0 ? [`${f.gainBps / 100}% of net gains at settlement`] : []),
+  ];
+  return parts.length ? parts.join(" and ") : "no fee";
+}
+
+/** The fee on one share at price p (milli), in units of 1e-7 dollars: the gain fee if it wins plus the trade fee. Exact in integers. */
+const buyFeeE7 = (f: ProphetXFee, priceMilli: number): number => f.gainBps * (1000 - priceMilli) * 1000 + f.tradeBps * priceMilli * (1000 - priceMilli);
+/** The fee on an offset that fetches b (milli): the gain fee on b, plus the trade fee on the buy of the other strike at 1 - b. */
+const sellFeeE7 = (f: ProphetXFee, bidMilli: number): number => f.gainBps * bidMilli * 1000 + f.tradeBps * bidMilli * (1000 - bidMilli);
+
+/**
+ * A ProphetX book with the game's fee folded into every level, in the pricer's milli units.
+ * An ask at p costs p now, the trade fee now, and, if it wins, gives up the gain fee x (1 - p) of
+ * the dollar: the level is priced at p + both, rounded up. A bid at b (what an offset fetches,
+ * 1 - the other strike's ask) gives up the gain fee x b of its winnings and the trade fee on the
+ * offset buy: priced at b - both, rounded down. Sizes carry.
+ */
+export function foldProphetXFee(book: PmBook, fee: ProphetXFeeSpec): PmBook {
+  const f = feeOf(fee);
+  const ask = (l: PmBookLevel): PmBookLevel => ({ priceMilli: Math.min(999, l.priceMilli + Math.ceil(buyFeeE7(f, l.priceMilli) / 10_000_000)), sizeMilli: l.sizeMilli });
+  const bid = (l: PmBookLevel): PmBookLevel => ({ priceMilli: Math.max(1, l.priceMilli - Math.ceil(sellFeeE7(f, l.priceMilli) / 10_000_000)), sizeMilli: l.sizeMilli });
   return { ...book, asks: book.asks.map(ask), bids: book.bids.map(bid) };
 }
 
-/** The venue's raw price behind a fee-folded ask, micro dollars, floored: e = p + f(1 - p) so p = (e - f) / (1 - f). */
-export function rawAskMicroOf(effectiveMilli: number, feeBps: number): number {
+/** A raw ask (micro) with the fee on, micro: p + gain x (1 - p) + trade x p x (1 - p). Rises with p. */
+const allInAskMicro = (f: ProphetXFee, pMicro: number): number => pMicro + (f.gainBps * (1_000_000 - pMicro)) / 10_000 + (f.tradeBps * pMicro * (1_000_000 - pMicro)) / 10_000_000_000;
+/** A raw bid (micro) with the fee off, micro: b - gain x b - trade x b x (1 - b). Rises with b. */
+const netBidMicro = (f: ProphetXFee, bMicro: number): number => bMicro - (f.gainBps * bMicro) / 10_000 - (f.tradeBps * bMicro * (1_000_000 - bMicro)) / 10_000_000_000;
+
+/**
+ * The venue's raw price behind a fee-folded ask, micro dollars, floored: the highest raw price
+ * whose all-in price is at or under it. With a gain fee alone, e = p + f(1 - p) so
+ * p = (e - f) / (1 - f); with a trade fee the same answer is found by halving.
+ */
+export function rawAskMicroOf(effectiveMilli: number, fee: ProphetXFeeSpec): number {
+  const f = feeOf(fee);
   const eMicro = effectiveMilli * 1000;
-  return Math.max(0, Math.floor(((eMicro - feeBps * 100) * 10_000) / (10_000 - feeBps)));
+  if (f.tradeBps === 0) return Math.max(0, Math.floor(((eMicro - f.gainBps * 100) * 10_000) / (10_000 - f.gainBps)));
+  let lo = 0;
+  let hi = 1_000_000;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (allInAskMicro(f, mid) <= eMicro) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
 }
 
-/** The venue's raw bid behind a fee-folded bid, micro dollars, rounded up (so the offset's limit, 1 - it, rounds down): e = b(1 - f). */
-export function rawBidMicroOf(effectiveMilli: number, feeBps: number): number {
-  return Math.min(1_000_000, Math.ceil((effectiveMilli * 1000 * 10_000) / (10_000 - feeBps)));
+/**
+ * The venue's raw bid behind a fee-folded bid, micro dollars, rounded up (so the offset's limit,
+ * 1 - it, rounds down): the lowest raw bid that nets at least it. With a gain fee alone,
+ * e = b(1 - f).
+ */
+export function rawBidMicroOf(effectiveMilli: number, fee: ProphetXFeeSpec): number {
+  const f = feeOf(fee);
+  const eMicro = effectiveMilli * 1000;
+  if (f.tradeBps === 0) return Math.min(1_000_000, Math.ceil((eMicro * 10_000) / (10_000 - f.gainBps)));
+  let lo = 0;
+  let hi = 1_000_000;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (netBidMicro(f, mid) >= eMicro) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
 }
 
 /** The ladder as micro dollars, ascending, strictly inside (0, 1). */
@@ -182,17 +284,34 @@ export function sumProphetXFills(fills: ProphetXFill[]): { sharesMilli: number; 
 }
 
 /** The settlement fee a buy's shares owe if they win: fee x (shares - stake), cents rounded up. Nothing is charged when they lose. */
-export function gainFeeCents(sum: { sharesMilli: number; stakeCents: number }, feeBps: number): number {
+export function gainFeeCents(sum: { sharesMilli: number; stakeCents: number }, fee: ProphetXFeeSpec): number {
   const gainCents = Math.max(0, Math.floor(sum.sharesMilli / 10) - sum.stakeCents);
-  return Math.ceil((gainCents * feeBps) / 10_000);
+  return Math.ceil((gainCents * feeOf(fee).gainBps) / 10_000);
 }
 
 /**
- * The all-in cost of a buy as the pricer counts it: the stake, the match fee, and the settlement
- * fee on the gain the shares would make (fee x (shares - stake)), cents rounded up.
+ * The schedule's fee at the trade on a buy: trade x stake x (1 - average price), cents rounded
+ * up. Fills at several prices owe a little less than this (p x (1 - p) bends down), so it is
+ * never under the venue's own sum. 0 on a game with no trade fee.
  */
-export function buyCostCents(sum: { sharesMilli: number; stakeCents: number; feesCents: number }, feeBps: number): number {
-  return sum.stakeCents + sum.feesCents + gainFeeCents(sum, feeBps);
+export function tradeFeeCents(sum: { sharesMilli: number; stakeCents: number }, fee: ProphetXFeeSpec): number {
+  const f = feeOf(fee);
+  if (f.tradeBps === 0 || sum.sharesMilli <= 0) return 0;
+  const gainMilli = Math.max(0, sum.sharesMilli - sum.stakeCents * 10);
+  return Math.ceil((f.tradeBps * sum.stakeCents * (gainMilli / sum.sharesMilli)) / 10_000 - 1e-9);
+}
+
+/** The fee charged at the trade: what the fills report, or the schedule's when that is more (a fee the partner does not relay). */
+export function matchFeeCents(sum: { sharesMilli: number; stakeCents: number; feesCents: number }, fee: ProphetXFeeSpec): number {
+  return Math.max(sum.feesCents, tradeFeeCents(sum, fee));
+}
+
+/**
+ * The all-in cost of a buy as the pricer counts it: the stake, the fee at the trade, and the
+ * settlement fee on the gain the shares would make (fee x (shares - stake)), cents rounded up.
+ */
+export function buyCostCents(sum: { sharesMilli: number; stakeCents: number; feesCents: number }, fee: ProphetXFeeSpec): number {
+  return sum.stakeCents + matchFeeCents(sum, fee) + gainFeeCents(sum, fee);
 }
 
 /** One order's fills in the trail's units: what `place` hands the executor and what a later read of the same fills must give again. */
@@ -207,32 +326,33 @@ export interface ProphetXFillMoney {
 }
 
 /**
- * The money of one order from its summed fills. A buy costs the stake, the match fee and the
- * settlement fee provided for. The offset (`sell`) pairs each share of the holder's strike with
- * one hedge share: its proceeds are the dollar less the price paid, less the fee on that gain,
- * realised at the game, on at most the hedge's own size.
+ * The money of one order from its summed fills. A buy costs the stake, the fee at the trade and
+ * the settlement fee provided for. The offset (`sell`) pairs each share of the holder's strike
+ * with one hedge share: its proceeds are the dollar less the price paid, less the fee at the
+ * trade and the fee on that gain, realised at the game, on at most the hedge's own size.
  */
-export function prophetxFillMoney(sum: ReturnType<typeof sumProphetXFills>, intentUnitsMilli: number, sell: boolean, feeBps: number): ProphetXFillMoney {
+export function prophetxFillMoney(sum: ReturnType<typeof sumProphetXFills>, intentUnitsMilli: number, sell: boolean, fee: ProphetXFeeSpec): ProphetXFillMoney {
+  const atTradeCents = matchFeeCents(sum, fee);
   if (!sell) {
-    const costCents = buyCostCents(sum, feeBps);
+    const costCents = buyCostCents(sum, fee);
     return {
       unitsMilli: sum.sharesMilli,
       avgPriceMilli: sum.sharesMilli > 0 ? Math.ceil((costCents * 10_000) / sum.sharesMilli) : 0,
       costCents,
-      feesCents: sum.feesCents,
-      settlementProvisionCents: gainFeeCents(sum, feeBps),
+      feesCents: atTradeCents,
+      settlementProvisionCents: gainFeeCents(sum, fee),
     };
   }
   const unitsMilli = Math.min(sum.sharesMilli, intentUnitsMilli);
   const perShareMicro = Math.max(0, 1_000_000 - sum.avgPriceMicro);
   const grossCents = Math.floor((unitsMilli * perShareMicro) / 10_000_000);
-  const settlementFeeCents = Math.ceil((grossCents * feeBps) / 10_000);
-  const netCents = Math.max(0, grossCents - sum.feesCents - settlementFeeCents);
+  const settlementFeeCents = Math.ceil((grossCents * feeOf(fee).gainBps) / 10_000);
+  const netCents = Math.max(0, grossCents - atTradeCents - settlementFeeCents);
   return {
     unitsMilli,
     avgPriceMilli: unitsMilli > 0 ? Math.floor((netCents * 10_000) / unitsMilli) : 0,
     costCents: netCents,
-    feesCents: sum.feesCents + settlementFeeCents,
+    feesCents: atTradeCents + settlementFeeCents,
   };
 }
 
@@ -247,7 +367,10 @@ export interface ProphetXOrderPlan {
 }
 
 export interface ProphetXOrderClientOptions extends AggregatorOrderClientOptions {
+  /** the rate on net gains, bps; the environment's when absent */
   feeBps?: number;
+  /** the game's fee from its Kalshi ticker (the intent's armKey); by league from the environment when absent */
+  feeFor?: (ticker: string | undefined) => ProphetXFee;
   /** how long one ladder read serves, ms */
   ladderTtlMs?: number;
 }
@@ -257,6 +380,8 @@ export class ProphetXOrderClient {
   readonly via = "aggregator" as const;
   readonly rest: AggregatorPodRest;
   readonly feeBps: number;
+  /** The fee on the game an order is for: by its league, with `feeBps` on net gains where the league is charged that way. */
+  readonly feeFor: (ticker: string | undefined) => ProphetXFee;
   private readonly settleWaitMs: number;
   private readonly settleReads: number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -270,6 +395,12 @@ export class ProphetXOrderClient {
   ) {
     this.rest = opts.rest ?? new AggregatorPodRest(cfg, opts);
     this.feeBps = opts.feeBps ?? prophetxFeeBpsFromEnv();
+    this.feeFor =
+      opts.feeFor ??
+      ((ticker) => {
+        const fee = prophetxFeeForTicker(ticker);
+        return fee.tradeBps > 0 ? fee : { gainBps: this.feeBps, tradeBps: 0 };
+      });
     this.settleWaitMs = opts.settleWaitMs ?? 300;
     this.settleReads = opts.settleReads ?? 8;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -308,7 +439,7 @@ export class ProphetXOrderClient {
    * (fee removed, snapped down), or the offset buy of the holder's strike at 1 - the walked worst
    * bid (fee removed, snapped down). Stake is shares x limit, cents rounded up. Pure given the ladder.
    */
-  static plan(intent: HedgeIntent, ladder: number[], feeBps: number, ladderSource: ProphetXLadder["source"] = "venue"): ProphetXOrderPlan {
+  static plan(intent: HedgeIntent, ladder: number[], fee: ProphetXFeeSpec, ladderSource: ProphetXLadder["source"] = "venue"): ProphetXOrderPlan {
     if (intent.venue !== "prophetx") throw new Error(`prophetx orders: intent is for ${intent.venue}`);
     const sell = actionOf(intent) === "sell";
     let strikeId: string;
@@ -316,10 +447,10 @@ export class ProphetXOrderClient {
     if (sell) {
       if (!intent.offsetInstrument) throw new Error("prophetx orders: an unwind needs the holder's side's strike (offsetInstrument); none on the record");
       strikeId = intent.offsetInstrument;
-      ceilingMicro = 1_000_000 - rawBidMicroOf(intent.book.worstPriceMilli, feeBps);
+      ceilingMicro = 1_000_000 - rawBidMicroOf(intent.book.worstPriceMilli, fee);
     } else {
       strikeId = intent.instrument;
-      ceilingMicro = rawAskMicroOf(intent.book.worstPriceMilli, feeBps);
+      ceilingMicro = rawAskMicroOf(intent.book.worstPriceMilli, fee);
     }
     const limitMicro = snapDown(ladder, ceilingMicro);
     if (limitMicro === null) throw new Error(`prophetx orders: no ladder price at or under ${(ceilingMicro / 1_000_000).toFixed(6)}`);
@@ -343,7 +474,9 @@ export class ProphetXOrderClient {
   async place(intent: HedgeIntent, clientOrderId: string): Promise<LiveOrderResult> {
     const sell = actionOf(intent) === "sell";
     const { ladder, micro: ladderMicros } = await this.ladder();
-    const plan = ProphetXOrderClient.plan(intent, ladderMicros, this.feeBps, ladder.source);
+    // the game's Kalshi ticker rides on the intent as its arm key; it says the league and so the fee
+    const fee = this.feeFor(intent.armKey);
+    const plan = ProphetXOrderClient.plan(intent, ladderMicros, fee, ladder.source);
     const idem = aggregatorClientOrderId(clientOrderId);
     const created = await this.rest.request<Partial<ProphetXOrder>>("POST", "/v1/prophetx/orders", { body: plan.body, idempotencyKey: idem });
     if (!created?.orderId) throw new Error("prophetx orders: submit returned no order id");
@@ -376,10 +509,17 @@ export class ProphetXOrderClient {
     }
     const notes: string[] = [];
     if (plan.ladderSource === "fallback") notes.push("ladder served from the partner's last known set");
-    const money = prophetxFillMoney(sum, intent.unitsMilli, sell, this.feeBps);
+    const money = prophetxFillMoney(sum, intent.unitsMilli, sell, fee);
+    if (fee.tradeBps > 0 && tradeFeeCents(sum, fee) > sum.feesCents) {
+      notes.push(`the fills report a fee of $${(sum.feesCents / 100).toFixed(2)}; the schedule's $${(tradeFeeCents(sum, fee) / 100).toFixed(2)} (${prophetxFeeWords(fee)}) is counted`);
+    }
     if (!sell) {
       if (sum.sharesMilli > intent.unitsMilli) notes.push(`${((sum.sharesMilli - intent.unitsMilli) / 1000).toFixed(3)} shares over the size, bought by the same stake at a better price`);
-      notes.push(`stake $${(sum.stakeCents / 100).toFixed(2)} at ${(sum.avgPriceMicro / 1_000_000).toFixed(6)}; ${this.feeBps / 100}% of the gain provided for at settlement`);
+      notes.push(
+        fee.tradeBps > 0
+          ? `stake $${(sum.stakeCents / 100).toFixed(2)} at ${(sum.avgPriceMicro / 1_000_000).toFixed(6)}; fee $${(money.feesCents / 100).toFixed(2)} at the trade, nothing at settlement`
+          : `stake $${(sum.stakeCents / 100).toFixed(2)} at ${(sum.avgPriceMicro / 1_000_000).toFixed(6)}; ${fee.gainBps / 100}% of the gain provided for at settlement`,
+      );
     } else {
       // the offset: every share of the holder's strike bought settles against one hedge share
       notes.push(`offset bought: ${(sum.sharesMilli / 1000).toFixed(3)} shares of strike ${plan.body.strikeId as string} at ${(sum.avgPriceMicro / 1_000_000).toFixed(6)}, stake $${(sum.stakeCents / 100).toFixed(2)}; the pair settles at the game and the proceeds land then, not today`);

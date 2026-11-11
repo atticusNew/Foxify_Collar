@@ -138,7 +138,7 @@ import { getMarketResult, getSettledMarkets, kalshiBase, type KalshiSettledMarke
 import { PICK_SERIES, parlayRecordOf, parsePickQueries, resolvePicks, verifyParlayLock, type PickMarket, type PickQuery, type PicksView } from "../src/eventCollar/crossVenue/parlayPicks";
 import { checkRule, kalshiRuleText, kalshiRuleUrl, pinRule, pinVenueRules, ruleStateLabel, venueRulesText, type RuleEvidence } from "../src/eventCollar/crossVenue/ruleEvidence";
 import { VENUE_NAMES, hedgeVenueOf, hedgeVenuesFromEnv, rulesFor, type HedgeRouting, type SettlementVenue } from "../src/eventCollar/crossVenue/hedgeRouting";
-import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
+import { foldProphetXFee, prophetxFeeBpsFromEnv, prophetxFeeForTicker, prophetxTakerBpsFromEnv, prophetxTakerLeaguesFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { TIER_RULES } from "../src/eventCollar/crossVenue/collarSearch";
 import { parseAdminAuthFromEnv, tokenBucketLimiter } from "../src/eventCollar/crossVenue/eventFunnel";
 import { keptFileByName, keptFiles, type KeptBase, type KeptFilesList } from "../src/eventCollar/crossVenue/keptFiles";
@@ -377,7 +377,7 @@ const HEDGE_VENUE_NAMES: Record<string, string> = { kalshi_self: "Kalshi", polym
  * same reading the engine quotes with; here for the status page and the routing's words.
  */
 const HEDGE_VENUES = hedgeVenuesFromEnv(process.env);
-/** ProphetX's fee on net gains at settlement, folded into its book before any walk (prophetxOrders.ts) */
+/** ProphetX's fee on net gains at settlement, for the status page; each game's own fee (by league) is folded into its book before any walk (prophetxOrders.prophetxFeeForTicker) */
 const PROPHETX_FEE_BPS = prophetxFeeBpsFromEnv(process.env);
 
 /** one line per hedge: which strategy filled it, at what, and why the other did not */
@@ -543,7 +543,7 @@ let closeBooksFn: (p: Pick<ShadowPosition, "ticker" | "route" | "hedgeTokenId" |
     }
   } else if (p.route === "prophetx" && p.hedgeStrikeId && heldSource) {
     const r = await heldSource.bookFor({ venue: "PROPHETX", strikeId: p.hedgeStrikeId }, new Date());
-    if (r.book) books.pxNoBook = foldProphetXFee(r.book, PROPHETX_FEE_BPS);
+    if (r.book) books.pxNoBook = foldProphetXFee(r.book, prophetxFeeForTicker(p.ticker));
   } else if (p.route === "novig" && p.hedgeMarketId && p.hedgeOutcomeId && p.hedgeOffsetOutcomeId && novigBookClient) {
     try {
       // a leave during the game carries the venue's live fee (charged once the event is live)
@@ -2061,7 +2061,7 @@ function hedgeIntentFor(ticker: string, hedge: HedgeLeg, books: HedgeBooks): Hed
         ? books.noAsks[0].priceCents * 10
         : hedge.avgPriceCents * 10
       : hedge.venue === "prophetx"
-        ? (books.pxNoBook ? foldProphetXFee(books.pxNoBook, PROPHETX_FEE_BPS).asks[0]?.priceMilli : undefined) ?? hedge.avgPriceMilli
+        ? (books.pxNoBook ? foldProphetXFee(books.pxNoBook, prophetxFeeForTicker(ticker)).asks[0]?.priceMilli : undefined) ?? hedge.avgPriceMilli
         : hedge.venue === "novig"
           ? novigRouteOf(books.references)?.noBook.asks[0]?.priceMilli ?? hedge.avgPriceMilli
           : books.pmNoBook?.asks[0]?.priceMilli ?? hedge.avgPriceMilli;
@@ -2712,7 +2712,6 @@ function openRecordFor(
         // a lock taken in play is compared under the config it was quoted with (the lead-time gate set aside)
         config: res.inPlay ? inPlayConfig(searchConfig()) : searchConfig(),
         books: res.books,
-        prophetxFeeBps: PROPHETX_FEE_BPS,
         // the own sale and the better bid: the market's offer as this scan holds it, and the holder's venue as the routing judged it
         holderAskCents: res.market.yesAskCents,
         ...(res.routing ? { settlement: { holderVenue: res.routing.holderVenue, holderRules: res.routing.holderRules, probabilities: res.routing.probabilities } } : {}),
@@ -4428,7 +4427,6 @@ async function rereadTick(): Promise<void> {
           now: new Date(at),
           config: searchConfig(),
           books: res.books,
-          prophetxFeeBps: PROPHETX_FEE_BPS,
         });
         const ok = appendOrAlert(
           {
@@ -4509,7 +4507,6 @@ async function inGameTick(): Promise<void> {
           now: new Date(at),
           config: inPlayConfig(searchConfig()),
           books: res.books,
-          prophetxFeeBps: PROPHETX_FEE_BPS,
         });
         const ok = appendOrAlert(
           {
@@ -4613,7 +4610,6 @@ async function drainOpens(): Promise<void> {
             now: new Date(at),
             config: searchConfig(),
             books: res.books,
-            prophetxFeeBps: PROPHETX_FEE_BPS,
           });
           const ok = appendOrAlert(
             {
@@ -5055,6 +5051,9 @@ function healthBody(): Record<string, unknown> {
       offeredVenuesSource: HEDGE_VENUES.source,
       ...(HEDGE_VENUES.unknown.length ? { offeredVenuesUnknown: HEDGE_VENUES.unknown } : {}),
       prophetxFeeBps: PROPHETX_FEE_BPS,
+      // the leagues ProphetX charges per share at the trade instead, and that rate
+      prophetxTakerLeagues: prophetxTakerLeaguesFromEnv(process.env),
+      prophetxTakerBps: prophetxTakerBpsFromEnv(process.env),
       rfqVenues: hedgeChoice.rfqVenues,
       polymarketBuilderCode: hedgeChoice.polymarketBuilderCode,
       live: hedgeChoice.live,

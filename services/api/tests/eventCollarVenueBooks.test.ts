@@ -308,6 +308,8 @@ test("reference books: partner dialect prices a selection per effective $1 of pa
   assert.equal(lvl.priceMilli, 754);
   assert.equal(lvl.sizeMilli, Math.floor(100 * k * eff * 1000)); // 132,666
   assert.ok(lvl.priceMilli > 750, "the fee makes the share dearer than the raw odds say");
+  // the same selection on an NHL game: 3.5% x 0.75 x 0.25 = 0.66c at the trade, nothing at settlement, the size whole
+  assert.deepEqual(partnerAskLevel({ price: -300, value: 100 }, { gainBps: 0, tradeBps: 350 }), { priceMilli: 757, sizeMilli: 133_333 });
   // +150: k = 2.5, p = 0.4, eff = 0.988
   const dog = partnerAskLevel({ price: 150, value: 40 });
   assert.ok(dog);

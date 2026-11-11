@@ -32,7 +32,7 @@
 
 import { quoteBetterBid, quoteOwnSale, type BetterBidInputs, type BetterBidQuote, type VenueFee } from "./betterBid";
 import { polymarketTailCells, rulesFor, tableRules, tailProbabilities, TAIL_BRANCHES, type RuleCells, type SettlementVenue, type TailProbabilities } from "./hedgeRouting";
-import { DEFAULT_PROPHETX_FEE_BPS } from "./prophetxOrders";
+import { prophetxFeeForTicker } from "./prophetxOrders";
 import type { CounterfactualInputs } from "./shadowCounterfactuals";
 import type { ShadowPosition } from "./shadowLedger";
 import { centsOf, centsUpOf, contractHundredths, floorTotalCents, type CrossQuoteResult, type PmBookLevel } from "./types";
@@ -156,8 +156,9 @@ function otherBooksOf(inputs: CounterfactualInputs, league: string): OtherBook[]
   }
   const px = inputs.books.pxNoBook;
   if (px) {
-    // raw venue prices: the fee on net gains is costed on the buy, as the hedge route costs it
-    out.push({ key: "prophetx", asks: px.asks, fee: { kind: "prophetx", feeBps: inputs.prophetxFeeBps ?? DEFAULT_PROPHETX_FEE_BPS }, rules: rulesFor("prophetx", league), minOrderMilli: Math.round(px.minOrderSizeShares * 1000) });
+    // raw venue prices: the game's fee is costed on the buy, as the hedge route costs it
+    const pxFee = inputs.prophetxFee ?? prophetxFeeForTicker(inputs.ticker);
+    out.push({ key: "prophetx", asks: px.asks, fee: { kind: "prophetx", feeBps: pxFee.gainBps, tradeBps: pxFee.tradeBps }, rules: rulesFor("prophetx", league), minOrderMilli: Math.round(px.minOrderSizeShares * 1000) });
   }
   for (const ref of inputs.books.references ?? []) {
     if (!ref.book) continue;

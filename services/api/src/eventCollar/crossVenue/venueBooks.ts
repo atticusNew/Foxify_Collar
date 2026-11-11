@@ -63,6 +63,7 @@
 
 import type { NovigHedgeOn } from "./crossVenuePricer";
 import type { LeagueTemplate } from "./resolutionWhitelist";
+import { prophetxFeeForLeague, type ProphetXFee } from "./prophetxOrders";
 import type { MatchedPair, PmBook, PmBookLevel } from "./types";
 import { decimalToMilli } from "./polymarketPublic";
 import { PlaysApiError, PlaysClient, payoutMultiple, type RawMarket, type RawSelection, type RawSportEvent } from "./venuePlays";
@@ -501,15 +502,17 @@ export async function signedCatalogProbe(client: VenueClient, league: string, co
 // partner_mm
 // ---------------------------------------------------------------------------
 
-/** 2% of net winnings at settlement, as the venue publishes it */
+/** 2% of net winnings at settlement, as the venue publishes it for every league but the maker/taker ones (the default of partnerAskLevel) */
 export const PARTNER_WINNINGS_FEE = 0.02;
 
 /**
  * One selection as an ask level per effective $1 of payout: price 1/k with the settlement fee
- * folded in, size the stakeable dollars times k, shrunk by the same fee factor. Null when the odds
- * or the size cannot be read.
+ * folded in, size the stakeable dollars times k, shrunk by the same fee factor. On a game the
+ * venue charges per share at the trade instead (`fee.tradeBps`, NHL: prophetxOrders.ts) the
+ * price is 1/k plus that fee and the size is not shrunk. Null when the odds or the size cannot
+ * be read.
  */
-export function partnerAskLevel(sel: Pick<RawSelection, "price" | "value" | "quantity">): PmBookLevel | null {
+export function partnerAskLevel(sel: Pick<RawSelection, "price" | "value" | "quantity">, fee: ProphetXFee = { gainBps: 200, tradeBps: 0 }): PmBookLevel | null {
   const k = typeof sel.price === "number" ? payoutMultiple(sel.price) : null;
   if (!k || k <= 1) return null;
   const value =
@@ -520,8 +523,9 @@ export function partnerAskLevel(sel: Pick<RawSelection, "price" | "value" | "qua
         : 0;
   if (value <= 0) return null;
   const p = 1 / k;
-  const eff = 1 - PARTNER_WINNINGS_FEE * (1 - p);
-  const priceMilli = Math.ceil((1000 * p) / eff);
+  const eff = 1 - (fee.gainBps / 10_000) * (1 - p);
+  const atTrade = (fee.tradeBps / 10_000) * p * (1 - p);
+  const priceMilli = Math.ceil((1000 * (p + atTrade)) / eff);
   const sizeMilli = Math.floor(value * k * eff * 1000);
   if (priceMilli <= 0 || priceMilli >= 1000 || sizeMilli <= 0) return null;
   return { priceMilli, sizeMilli };
@@ -545,7 +549,7 @@ export function partnerAsksForOpposing(market: RawMarket, template: LeagueTempla
     const byId = opposingCompetitorId !== null && sel.competitor_id !== undefined && sel.competitor_id !== null && String(sel.competitor_id) === opposingCompetitorId;
     const byName = [sel.name, sel.display_name].some((n) => typeof n === "string" && clubNamed(template, opposing, n));
     if (!byId && !byName) continue;
-    const level = partnerAskLevel(sel);
+    const level = partnerAskLevel(sel, prophetxFeeForLeague(template.league));
     if (level) levels.push(level);
   }
   return levels;

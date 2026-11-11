@@ -88,7 +88,7 @@ export interface VenueEdge {
 export const VENUE_FEE_RULES: Record<SettlementVenue, { rule: string; asOf: string }> = {
   kalshi: { rule: "0.07 × P × (1 − P) per contract, charged at match to the side crossing the book; at most 1.75¢ at P = 50¢", asOf: "2026-11-02" },
   polymarket: { rule: "the engine's configured rate on the hedge's cost, as recorded on each hedge (zero as configured today)", asOf: "2026-11-02" },
-  prophetx: { rule: "2% of net gains at settlement, nothing at match; folded as 2 × (1 − P) cents per contract", asOf: "2026-11-02" },
+  prophetx: { rule: "2% of net gains at settlement, nothing at match; folded as 2 × (1 − P) cents per contract. NHL games: 0.035 × P × (1 − P) per contract at match, nothing at settlement", asOf: "2026-11-11" },
   novig: { rule: "none pre-game, either side; 0.06 × P × (1 − P) on the side crossing the book while the game is live (our hedges are pre-game)", asOf: "2026-11-02" },
   // a holder venue only: no hedge is ever bought there, so no fee row is ever folded for it
   stx: { rule: "a per-account fee schedule on the member's own fills; no hedge is bought on this venue", asOf: "2026-11-03" },

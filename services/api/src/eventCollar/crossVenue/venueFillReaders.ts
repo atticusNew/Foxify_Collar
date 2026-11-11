@@ -31,7 +31,7 @@ import { errText, type HedgeVenue } from "./hedgeExecutor";
 import { KalshiOrderClient, type KalshiFill, type KalshiFillsQuery, type KalshiRawOrder } from "./kalshiOrders";
 import { kalshiRfqCredentialsFromEnv } from "./kalshiRfq";
 import { NovigOrderClient, novigClientId, novigTradeConfigFromEnv, type NovigFill } from "./novigOrders";
-import { ProphetXOrderClient, type ProphetXFill } from "./prophetxOrders";
+import { ProphetXOrderClient, type ProphetXFee, type ProphetXFill } from "./prophetxOrders";
 import type { NotCountedLine, RealFill } from "./realizedBook";
 import {
   aggregatorKalshiOrderFill,
@@ -55,6 +55,8 @@ export interface AggregatorOrderSource {
 export interface ProphetXFillsSource {
   fills(orderId: string): Promise<ProphetXFill[]>;
   readonly feeBps: number;
+  /** the fee on the game a line's Kalshi ticker names */
+  feeFor(ticker: string | undefined): ProphetXFee;
   rest: { syncClock(): Promise<void> };
 }
 export interface NovigFillsSource {
@@ -251,7 +253,7 @@ async function readProphetX(today: RealFill[], readers: VenueFillReaders): Promi
     }
     try {
       const fills = await readers.prophetx.fills(f.orderId);
-      orders.push(prophetxOrderFill(f.orderId, fills, { sell: f.action === "sell", wantedUnitsMilli: f.wantedUnitsMilli, feeBps: readers.prophetx.feeBps, venueOrderId: f.venueOrderId, instrument: f.orderInstrument }));
+      orders.push(prophetxOrderFill(f.orderId, fills, { sell: f.action === "sell", wantedUnitsMilli: f.wantedUnitsMilli, fee: readers.prophetx.feeFor(f.ticker), venueOrderId: f.venueOrderId, instrument: f.orderInstrument }));
     } catch (err) {
       if (!notFound(err)) unread.push({ receiptId: f.receiptId, reason: why(err) });
     }
@@ -261,7 +263,7 @@ async function readProphetX(today: RealFill[], readers: VenueFillReaders): Promi
     status: "read",
     reason: null,
     scope: "ledger_orders_only",
-    how: `the aggregator's fills of each order our ledger names: ${orders.length} of ${today.length} read, the settlement fee provided for at ${readers.prophetx.feeBps / 100}%`,
+    how: `the aggregator's fills of each order our ledger names: ${orders.length} of ${today.length} read, each costed at its game's fee (${readers.prophetx.feeBps / 100}% of net gains at settlement; on a maker/taker league the fee at the trade)`,
     orders,
     unread,
   };

@@ -51,7 +51,7 @@ import {
 import { AggregatorOrderClient, aggregatorTradeConfigFromEnv } from "./aggregatorOrders";
 import { KalshiOrderClient } from "./kalshiOrders";
 import { NovigOrderClient, novigTradeConfigFromEnv } from "./novigOrders";
-import { ProphetXOrderClient } from "./prophetxOrders";
+import { ProphetXOrderClient, prophetxFeeWords, prophetxTakerBpsFromEnv, prophetxTakerLeaguesFromEnv } from "./prophetxOrders";
 import { signerFromPem } from "./venuePositions";
 import { KalshiRfqClient, kalshiRfqCredentialsFromEnv } from "./kalshiRfq";
 import { LiveHedgeExecutor, killSwitchFromEnv, liveRailsFromEnv, sentUnitsMilliOn, type LiveHedgeRails, type LiveOrderHook } from "./liveHedge";
@@ -169,7 +169,9 @@ export function hedgeExecutorFromEnv(
         try {
           prophetxOrders = new ProphetXOrderClient(tCfg, aggregatorOrders ? { rest: aggregatorOrders.rest } : {});
           hooks.prophetx = prophetxOrders.hook();
-          notes.push(`prophetx: live orders go through the aggregator's pod with the TRADE key, fill or kill on the venue's ladder; ${prophetxOrders.feeBps / 100}% of net gains provided for at settlement (EVENT_PROPHETX_FEE_BPS)`);
+          notes.push(`prophetx: live orders go through the aggregator's pod with the TRADE key, fill or kill on the venue's ladder; ${prophetxOrders.feeBps / 100}% of net gains provided for at settlement (EVENT_PROPHETX_FEE_BPS)${
+            prophetxTakerLeaguesFromEnv().length ? `, except ${prophetxTakerLeaguesFromEnv().join(", ").toUpperCase()}: ${prophetxFeeWords({ gainBps: 0, tradeBps: prophetxTakerBpsFromEnv() })} (EVENT_PROPHETX_TAKER_BPS)` : ""
+          }`);
         } catch (err) {
           notes.push(`prophetx: client could not be built (${err instanceof Error ? err.message : String(err)}); no live orders there`);
         }

@@ -18,7 +18,7 @@ import { computeTake, evCostBps } from "./collarSearch";
 import { quoteCrossWrap } from "./crossVenuePricer";
 import { quoteLadderWrap, type NoAskLevel } from "./kalshiLadder";
 import type { RuleCells, SettlementVenue, TailProbabilities } from "./hedgeRouting";
-import { DEFAULT_PROPHETX_FEE_BPS, foldProphetXFee } from "./prophetxOrders";
+import { foldProphetXFee, prophetxFeeForTicker, type ProphetXFee } from "./prophetxOrders";
 import type { ProphetXStrikes } from "./aggregatorBooks";
 import { saleAlternativesFor, type ShadowSaleAlternatives } from "./shadowSaleAlternatives";
 import type {
@@ -165,8 +165,8 @@ export interface CounterfactualInputs {
   config: CrossSearchConfig;
   /** `pxNoBook` is the ProphetX hedge strike's book at raw venue prices; the fee is folded here before the walk; the Novig route prices from the signed-dialect reference in `references` */
   books: { pmNoBook?: PmBook; noAsks?: NoAskLevel[]; pxNoBook?: PmBook; prophetx?: ProphetXStrikes; references?: ReferenceBook[]; prints?: ReferencePrint[] };
-  /** ProphetX's fee on net gains, bps; the venue's published rate when absent */
-  prophetxFeeBps?: number;
+  /** ProphetX's fee on this game; absent, the fee for the ticker's league (prophetxOrders.prophetxFeeForTicker) */
+  prophetxFee?: ProphetXFee;
   /**
    * The holder's market's best offer for the holder's side as the scan holds it, cents: a bid of
    * ours has to rest under it. Absent: the verified pair's own snapshot of the market is used.
@@ -213,7 +213,7 @@ export function requote(inputs: CounterfactualInputs, config: CrossSearchConfig,
     return quoteCrossWrap({
       ...base,
       pair: inputs.pair,
-      noBook: foldProphetXFee(inputs.books.pxNoBook, inputs.prophetxFeeBps ?? DEFAULT_PROPHETX_FEE_BPS),
+      noBook: foldProphetXFee(inputs.books.pxNoBook, inputs.prophetxFee ?? prophetxFeeForTicker(inputs.ticker)),
       hedgeOn: { venue: "prophetx", strikeId: px.hedgeStrikeId, ...(px.offsetStrikeId ? { offsetStrikeId: px.offsetStrikeId } : {}), outcome: inputs.pair.pm.outcomes[inputs.pair.pmNoOutcomeIndex] },
     });
   }

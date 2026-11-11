@@ -227,8 +227,8 @@ $2.40, hedged on ProphetX"), else "other side on
 Polymarket" when the hedge venue is not the page's own. The venues in the race are Kalshi and
 ProphetX, both reached through the aggregator's execution pod, and Novig, reached directly with
 the service's own trading key (`EVENT_HEDGE_VENUES=kalshi,prophetx,novig`,
-`EVENT_HEDGE_LIVE_VIA=aggregator`); ProphetX's 2% of net gains at settlement is folded into its
-book before the walk, and Novig's fee (6% × P × (1 − P) per contract, charged on a game market
+`EVENT_HEDGE_LIVE_VIA=aggregator`); ProphetX's fee (2% of net gains at settlement; on NHL games
+3.5% × P × (1 − P) per contract at the trade instead) is folded into its book before the walk, and Novig's fee (6% × P × (1 − P) per contract, charged on a game market
 only once it is live) is folded in the same way, so every credit on the line is all in.
 
 ### The Novig route
@@ -810,7 +810,8 @@ The lock routes are off until a key is set.
 | `AGGREGATOR_TRADE_KEY_ID`, `AGGREGATOR_TRADE_PRIVATE_KEY_HEX` | from the aggregator | Service only. The DATA key reads books and never sends an order. |
 | `EVENT_HEDGE_VENUES` | `kalshi,prophetx,novig` | The hedge venues every quote competes. Unset offers all four (Kalshi, ProphetX, Novig, Polymarket). Polymarket stays out until the aggregator lists Poly US. Shown on `/healthz` with the operator token. |
 | `EVENT_HEDGE_SAME_ACCOUNT_VENUES` | leave unset for tonight | Venues where the service's hedge sits in the holder's own account (Novig's subaccount is one), named `novig`. Set, a hedge is not routed to the same venue the holder stands on there: Novig nets the two sides in one account and pays the pair out early (Oct 30). Unset by default because for the live parlay test the Novig subaccount is the one funded hedge venue, and Novig cannot net a parlay against a single. |
-| `EVENT_PROPHETX_FEE_BPS` | leave unset (`200`) | ProphetX's 2% of net gains at settlement, folded into its book before every walk and provided for on every fill. |
+| `EVENT_PROPHETX_FEE_BPS` | leave unset (`200`) | ProphetX's 2% of net gains at settlement, folded into its book before every walk and provided for on every fill. Applies to every league not listed in `EVENT_PROPHETX_TAKER_LEAGUES`. |
+| `EVENT_PROPHETX_TAKER_LEAGUES`, `EVENT_PROPHETX_TAKER_BPS` | leave unset (`nhl`, `350`) | The leagues ProphetX charges per contract at the trade instead of on net gains, and that rate: 3.5% × P × (1 − P), nothing at settlement (the venue's fee schedule, read 11 Nov 2026). A fill there is costed at the larger of the fee its fills report and the schedule's. `none` puts every league back on the net-gains fee. |
 | `NOVIG_TRADE_KEY_ID`, `NOVIG_TRADE_PRIVATE_KEY_PEM` | from `venueReadKey.ts subaccount-open` | Service only. The trading key of the service's own Novig subaccount; its cash funds the Novig hedges, fill or kill, direct (no pod). Unset with `novig` offered: the route prices on paper and the receipt says so. The host is `VENUE_API_HOST` (production `https://api.novig.com`; the Paper environment `https://api.paper.novig.com` runs the whole route on play money with no location check). |
 | `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. With `via=aggregator` they serve the account routes and send nothing. |
 | `EVENT_HEDGE_LIVE_TICKERS` | the one ticker you will tap; `*` while rehearsing on many games | Allowlist, keyed by the game's Kalshi ticker whichever venue the hedge lands on. Empty allows nothing. `*` arms every market the service lists, so any tap by any holder key sends a real order, still under the caps below. The hourly scan's board positions are paper whatever is armed (their receipts say `scan: the board's positions are paper`); only a holder's tap, leave or an operator resend can send. Listed tickers are skipped by the hourly scan. With one live venue the route is pinned to it; with more (Kalshi and ProphetX through the pod, Novig on our own key) nothing is pinned and the routing competes them on price. |
