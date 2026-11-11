@@ -109,7 +109,8 @@ test("capital page: the same figures in words, own sale at nothing, and no key i
   assert.match(html, /Simulated, like the record\. Nothing was bought\./);
   assert.match(html, /That is an assumption\./);
   assert.match(html, /\$22\.45 for the collar against \$19\.50 pooled/);
-  // the links carry the operator's own token and nothing else of his
+  // the page carries no key and no token: its links are opened by the operator's sign-in
   assert.ok(!html.includes(LOCK_KEY));
-  assert.equal(html.split(TOKEN).length - 1, 3);
+  assert.ok(!html.includes(TOKEN));
+  assert.ok(html.includes('href="/api/shadow/capital"') && html.includes('href="/pilot-check"') && html.includes('href="/holders"'));
 });

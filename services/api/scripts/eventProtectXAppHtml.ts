@@ -6,7 +6,7 @@
  * shows the event, the position, the floor, the cap, the credit and the tiers,
  * and reads only the retail /api/showcase shape (src/eventCollar/retailShowcase.ts).
  * The hedge leg, the pairing, the routes and our take live on the operator's
- * surfaces (/api/showcase?token=..., the track record), never on this page.
+ * surfaces (/api/showcase read as the operator, the track record), never on this page.
  *
  * Everything financial is quoted live by the server from public books; the
  * position and lifecycle are simulated and labeled.
@@ -588,7 +588,7 @@ const TIER_LABELS: Record<string, string> = {
 /** Operator-only funnel page: the admin JSON, laid out so a human can read it in ten seconds. */
 export function renderFunnelHtml(
   s: EventFunnelSummary,
-  meta: { atIso: string; funnelPath: string; token: string | null },
+  meta: { atIso: string; funnelPath: string },
 ): string {
   const pct = (num: number, den: number): string => (den > 0 ? `${((100 * num) / den).toFixed(0)}%` : "n/a");
   const utc = (ms: number): string => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
@@ -596,7 +596,6 @@ export function renderFunnelHtml(
     const d = new Date(`${day}T00:00:00Z`);
     return `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getUTCDay()]} ${day.slice(5)}`;
   };
-  const tokenQs = meta.token ? `?token=${encodeURIComponent(meta.token)}` : "";
 
   const kv = (rows: Array<[string, string | number]>): string =>
     rows.map(([k, v]) => `<div class="row"><span>${escapeHtml(k)}</span><b>${escapeHtml(String(v))}</b></div>`).join("");
@@ -777,13 +776,13 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
     <h2>Operator</h2>
     <div class="sub">Counters live at <span class="mono">${escapeHtml(meta.funnelPath)}</span> on this instance and are flushed once a minute. Without a persistent disk a redeploy starts a fresh window.</div>
     <div class="actions">
-      <a href="/api/admin/funnel${escapeHtml(tokenQs)}">raw JSON</a>
+      <a href="/api/admin/funnel">raw JSON</a>
       <a href="/board">live board</a>
       <a href="/receipts">receipts</a>
       <button type="button" class="danger" id="reset">reset counters</button>
     </div>
   </div>
-  <footer>Operator view. Not linked from the public pages; the token in this URL is the only key.</footer>
+  <footer>Operator view. Not linked from the public pages. Opened by the operator's sign-in at <a href="/operator">/operator</a>; no link on this page carries the token.</footer>
 </div>
 <script>
 document.getElementById('reset').addEventListener('click',function(){

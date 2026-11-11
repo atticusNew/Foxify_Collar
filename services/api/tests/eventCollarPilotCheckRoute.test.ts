@@ -148,8 +148,8 @@ test("pilot check page: the same words as the JSON, in a plain table, saying it 
   assert.equal((html.match(/<tr class="(yes|no|hand)">/g) ?? []).length, 11);
   assert.ok(!/[\u2013\u2014]/.test(html), "no dash on the page");
   for (const secret of SECRETS) assert.ok(!html.includes(secret), "no key or token on the page");
-  // opened with the token in the address, as the other operator pages are, its links carry it on
+  // opened with the token in the address by a script, its links still carry no token: the sign-in opens them
   const linked = await (await fetch(`${base}/pilot-check?token=${TOKEN}`)).text();
-  assert.ok(linked.includes(`/api/shadow/pilot-check?token=${TOKEN}`));
-  for (const key of [SHARED_KEY, ANN_KEY, BO_KEY]) assert.ok(!linked.includes(key));
+  assert.ok(linked.includes('href="/api/shadow/pilot-check"') && linked.includes('href="/healthz?as=operator"'));
+  for (const key of [SHARED_KEY, ANN_KEY, BO_KEY, TOKEN]) assert.ok(!linked.includes(key));
 });

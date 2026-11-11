@@ -7,7 +7,7 @@
  * cost), gross credit and our take, the fee rule, venue fees, the cross-venue pairing (slug, the
  * other venue's price, bid/ask), which route funded the quote and which routes were examined,
  * candidate counts, raw refusal detail and environment-variable names — is operator information.
- * It stays behind the admin token (`/api/showcase?token=...`).
+ * It stays behind the operator token (`/api/showcase` read as the operator).
  *
  * This is an allow-list serializer, not a deny-list: a new internal field on the engine's quote
  * never reaches a retail response unless it is added here on purpose. The mirror of
