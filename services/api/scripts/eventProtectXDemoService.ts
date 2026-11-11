@@ -79,6 +79,7 @@
  *      after the start, default 4. One rule for the board and the lock path: crossVenue/lockWindow.ts.)
  */
 
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -133,6 +134,7 @@ import {
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
 import { DEFAULT_EMBED_BRAND, DEFAULT_LIVE_VIDEO, brandRecordUrl, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand, type LiveVideo } from "./eventProtectEmbedHtml";
 import { serveMedia } from "../src/eventCollar/crossVenue/mediaFiles";
+import { slateLinkKey, slateSlugOf } from "../src/eventCollar/crossVenue/venueSlate";
 import { renderVCard, vcardFilename, type CardContact } from "../src/eventCollar/crossVenue/cardContact";
 import { applyMinimumCredit, describeMinimumCredit, minimumCreditRuleFromEnv } from "../src/eventCollar/crossVenue/minimumCredit";
 import { archiveLedgerFile } from "../src/eventCollar/crossVenue/ledgerArchive";
@@ -1920,6 +1922,19 @@ export function hostRouteOf(brand: string): HedgeRoute | null {
   const key = brand.toLowerCase().replace(/\s+/g, "");
   return key === "kalshi" ? "kalshi_self" : key === "polymarket" ? "polymarket" : key === "prophetx" ? "prophetx" : key === "novig" ? "novig" : null;
 }
+/**
+ * Whether a host that is itself a venue the layer buys the other side on is named in its own
+ * Venue view. Naming it says we work with that venue, so it is named only on a link that carries
+ * the host's own key (the same key as its slate link, HMAC of EVENT_SHADOW_SLATE_KEY), to the
+ * operator, or with venue naming on. Otherwise every venue is a letter, the host's included.
+ */
+export function hostVenueNamed(brand: string, presentedKey: string | null, operator: boolean, slateKey: string | undefined = SLATE_KEY, nameVenues: boolean = NAME_HEDGE_VENUES): boolean {
+  if (nameVenues || operator) return true;
+  const link = slateLinkKey(slateKey, slateSlugOf(brand));
+  if (!link || !presentedKey || presentedKey.length !== link.length) return false;
+  return timingSafeEqual(Buffer.from(presentedKey), Buffer.from(link));
+}
+
 /** One route's refusal in two or three words, for a venue that priced nothing. */
 export function venueViewRefusalWord(detail: string | undefined): string {
   const d = (detail ?? "").toLowerCase();
@@ -2190,7 +2205,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     if (url.pathname === "/api/venue-view") {
       // the host's side of the same positions, for the embed's Venue view; retail-safe, no token
       const brand = resolveBrand(url.searchParams.get("brand"), BRAND_ALLOWLIST, EMBED_BRAND);
-      sendJson(res, 200, venueViewPayload(await getCachedScan(), brand, PARTNER_SHARE_PCT));
+      const named = hostVenueNamed(brand, url.searchParams.get("k"), operatorOf(req, url).operator);
+      sendJson(res, 200, venueViewPayload(await getCachedScan(), named ? brand : "", PARTNER_SHARE_PCT));
       return;
     }
     if (url.pathname === "/api/parlays") {
@@ -2228,6 +2244,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           recordIsSlate: record.slate,
           liveVideo: LIVE_VIDEO,
           nameVenues: NAME_HEDGE_VENUES,
+          hostKey: !NAME_HEDGE_VENUES && hostVenueNamed(brand, url.searchParams.get("k"), false) ? url.searchParams.get("k") : null,
           card: url.searchParams.get("from") === "card" ? CARD_CONTACT : null,
           // no ?skin= and the brand preset decides (DraftKings ships dark, Kalshi light)
           skin: url.searchParams.get("skin") === "dark" ? "dark" : url.searchParams.get("skin") === "light" ? "light" : null,

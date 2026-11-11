@@ -88,6 +88,8 @@ export interface EmbedOptions {
    * drop "on <venue>", and the Venue view shows the lettered names the server sends.
    */
   nameVenues?: boolean;
+  /** the host's own link key, already checked by the service: carried on the Venue view's read so the host's own book is named there */
+  hostKey?: string | null;
   /**
    * The business card's landing (`?from=card`). A phone that scanned the card gets the sentence,
    * the clip, "Save contact" (a vCard) and the links instead of landing cold inside the demo;
@@ -644,7 +646,7 @@ ${cardBlock}<aside class="pitch">
   var MIN_CREDIT_CENTS=${Math.round(minCredit.cents)},MIN_CREDIT_BPS=${Number(minCredit.bpsOfStake)};
   var SPORTS_ONLY=${sportsOnly ? "true" : "false"};
   var BRAND=${JSON.stringify(opts.brand)};
-  var VV_URL='/api/venue-view'+${JSON.stringify(brandQ)};
+  var VV_URL='/api/venue-view'+${JSON.stringify(brandQ + (opts.hostKey && /^[0-9a-f]{8,64}$/.test(opts.hostKey) ? `${brandQ ? "&" : "?"}k=${opts.hostKey}` : ""))};
   var SHIELD='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>';
   var SHIELD_FILL='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5l8 3v6.1c0 5.1-3.5 8.3-8 9.9-4.5-1.6-8-4.8-8-9.9V5.5l8-3zm-1.1 12.6l5-5-1.4-1.4-3.6 3.6-1.7-1.7-1.4 1.4 3.1 3.1z"/></svg>';
   var CHEVRON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';

@@ -303,7 +303,7 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   assert.ok((html.match(/too few/g) ?? []).length >= 6, "EV cost and user Δ cells read 'too few' on every small slice");
   assert.ok(!html.includes("The lock is cheapest on"), "no cheapest/richest verdict from slices under the line");
   // The bridge sentence holds the save count and the cost in one breath; the fixture came out ahead.
-  assert.ok(html.includes("The lock paid the floor on 1 of 2 settled events (50%). Across everyone it came out $24.66 ahead of holding without the lock."), "bridge line, ahead case");
+  assert.ok(html.includes("The lock paid the floor on 1 of 2 settled events (50%). Across all of them it came out $24.66 ahead of holding without the lock."), "bridge line, ahead case");
   // Every settled row says how much of the protected total was the credit paid at open.
   assert.ok(html.includes("$79.12 <i>vs $0.00 without the lock</i><i class=\"paid\">incl. $1.12 credited at lock in</i>"), "floor-save row carries the credit");
   assert.ok(html.includes("$95.54 <i>vs $150.00 without the lock</i><i class=\"paid\">incl. $1.04 credited at lock in</i>"), "capped row carries the credit");
@@ -392,7 +392,7 @@ test("shadow: the page bridges floor saves and protection cost, and prints perce
 
   // 9 saves x 7912 + 12 wins x 9562 protected = 185,952; naked 12 x 15,000 = 180,000: ahead by $59.52
   assert.equal(s.deltaTotalCents, 9 * 7912 + 12 * 9562 - 12 * 15_000);
-  assert.ok(html.includes("The lock paid the floor on 9 of 21 settled events (43%). Across everyone it came out $59.52 ahead of holding without the lock."));
+  assert.ok(html.includes("The lock paid the floor on 9 of 21 settled events (43%). Across all of them it came out $59.52 ahead of holding without the lock."));
   // MLB is past the line on both counts, NFL on neither; the route slice (22 opened, 21 settled) is past on both.
   assert.ok(/<td>MLB<\/td><td>20<\/td><td>20<\/td><td class="hi">2\.97%<\/td><td>-?\d+\.\d\d%<\/td>/.test(html), "MLB shows EV cost and user Δ");
   assert.ok(/<td>NFL<\/td><td>2<\/td><td>1<\/td><td><i[^>]*>too few<\/i><\/td><td><i[^>]*>too few<\/i><\/td>/.test(html), "NFL shows counts only");
@@ -410,7 +410,7 @@ test("shadow: the page bridges floor saves and protection cost, and prints perce
   const html2 = renderShadowHtml({ atIso: "2026-09-15T00:00:00.000Z", summary: summarizeShadow(p2), open: [], settled: p2 });
   // 4 x (15,000 - 9,562) = 21,752 cost on 60,000 naked = 36.3%; quoted 2.97%
   assert.ok(
-    html2.includes("The lock paid the floor on 0 of 4 settled events (0%). Across everyone it cost $217.52, 36.3% of what the same positions paid without the lock; 3.0% was quoted up front. Quoted is the expectation at the market's odds; realized is what this sample did."),
+    html2.includes("The lock paid the floor on 0 of 4 settled events (0%). Across all of them it cost $217.52, 36.3% of what the same positions paid without the lock; 3.0% was quoted up front. Quoted is the expectation at the market's odds; realized is what this sample did."),
     "bridge line, cost case, realized next to quoted with no claim that they match",
   );
   assert.ok(!html2.includes("Strikes on the same coin"), "the cluster note needs a crypto-majority settled book");
@@ -581,4 +581,59 @@ test("shadow: a fractional position (7.69 contracts, a $7.69 payout) settles to 
   assert.equal(wy.fundingCents, 284);
   assert.ok(Number.isInteger(wy.writerCents) && Number.isInteger(wn.writerCents));
   assert.ok(wn.writerCents >= wy.writerCents, `NO state never worse than YES after the round-up: ${wn.writerCents} vs ${wy.writerCents}`);
+});
+
+test("the public position is a list of named fields: a member's own sale keeps its figures and loses which venue a hedged lock would have used; a new ledger field is not public until listed", async () => {
+  const { publicPosition } = await import("../src/eventCollar/crossVenue/publicRecord");
+  const path = join(mkdtempSync(join(tmpdir(), "public-position-")), "ledger.jsonl");
+  appendShadowRecord(path, OPEN_FIXTURE);
+  const base = loadShadowPositions(path)[0];
+  const withExtras = {
+    ...base,
+    route: "novig",
+    routing: { chosen: "novig", reason: "Novig: +120 bps all in" },
+    takeRule: "minimum",
+    takeShareCents: 21,
+    takeMinimumCents: 38,
+    closeUnpriced: { at: "2026-09-13T00:00:00.000Z", reason: "hedge leg: no bids on ProphetX" },
+    somethingAddedLater: "prophetx",
+  } as unknown as ShadowPosition;
+  const pub = publicPosition(withExtras) as unknown as Record<string, unknown>;
+  for (const k of ["route", "routing", "takeCents", "takeRule", "takeShareCents", "takeMinimumCents", "feesCents", "hedgeCostCents", "hedgeUnitsMilli", "writerCents", "hedgePayoutCents", "somethingAddedLater"]) assert.ok(!(k in pub), k);
+  assert.deepEqual(pub.closeUnpriced, { at: "2026-09-13T00:00:00.000Z" });
+  assert.ok(!/novig|prophetx|polymarket/i.test(JSON.stringify(pub)));
+  assert.deepEqual([pub.ticker, pub.contracts, pub.floorCents, pub.capCents, pub.creditCents, pub.status], [base.ticker, base.contracts, base.floorCents, base.capCents, base.creditCents, base.status]);
+
+  const sale = {
+    ...base,
+    route: "member_sale",
+    source: "lock",
+    memberSale: {
+      marketId: "m-1",
+      maxPriceCents: 100,
+      soldContracts: 48,
+      keptContracts: 72,
+      limitPriceCents: 48,
+      avgPriceCents: 48,
+      cashNowCents: 2304,
+      floorTotalCents: 2304,
+      capTotalCents: 9504,
+      orderId: "o-1",
+      clientOrderId: "c-1",
+      status: "filled",
+      requestedContracts: 48,
+      compared: { at: "2026-11-09T05:26:48.042Z", ok: true, creditCents: 144, floorTotalCents: 2184, capTotalCents: 10584, chosen: "novig", routes: [{ route: "kalshi_self", ok: true, creditCents: 66, allInBps: 170 }, { route: "prophetx", ok: false, creditCents: null, allInBps: null }, { route: "novig", ok: true, creditCents: 144, allInBps: 66 }], sent: false },
+    },
+  } as unknown as ShadowPosition;
+  const pubSale = publicPosition(sale) as unknown as { route: string; memberSale: Record<string, unknown>; cashDue: unknown[] };
+  assert.equal(pubSale.route, "member_sale");
+  assert.deepEqual(pubSale.memberSale.compared, { at: "2026-11-09T05:26:48.042Z", ok: true, creditCents: 144, floorTotalCents: 2184, capTotalCents: 10584, sent: false, priced: 2 });
+  assert.deepEqual([pubSale.memberSale.cashNowCents, pubSale.memberSale.marketId, pubSale.memberSale.orderId, pubSale.memberSale.clientOrderId], [2304, "", null, ""]);
+  assert.deepEqual(pubSale.cashDue, []);
+  assert.ok(!/novig|prophetx|kalshi_self/i.test(JSON.stringify(pubSale)));
+});
+
+test("share of a position sold: a part sold never reads 0%, a part kept never reads 100%", async () => {
+  const { saleSharePercent } = await import("../src/eventCollar/shareScale");
+  assert.deepEqual([saleSharePercent(1, 250), saleSharePercent(199, 200), saleSharePercent(0, 200), saleSharePercent(200, 200), saleSharePercent(80, 200), saleSharePercent(1, 0)], [1, 99, 0, 100, 40, null]);
 });

@@ -65,8 +65,9 @@
  * counters come back on the same route with the operator token.
  *
  * WHAT IS PUBLIC: the record (/, /api/shadow, /api/shadow/positions.csv, /api/shadow/parlays)
- * carries quoted terms, official results, both sides' money and the two books the hedges were
- * bought on; /api/shadow/scoreboard (and .csv, and the /scoreboard page) is the venue scoreboard
+ * carries quoted terms, official results and the holder's money on every row, with our side
+ * as totals; where the other side was bought and our own side of each row are the operator's
+ * (publicRecord.ts, the public CSV's columns); /api/shadow/scoreboard (and .csv, and the /scoreboard page) is the venue scoreboard
  * drawn from it by week (venueScoreboard.ts: which venue took the other side, by how much, what
  * its fee schedule charged, how often each priced, the refusals), with the venues lettered for the public and named for the operator. Everything that is a study rather than a receipt (rule counterfactuals, hedge
  * receipts, the last-leg tickets, netting measured on the book) is an operator view. A new
@@ -188,7 +189,8 @@ import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, typ
 import { kalshiRfqCredentialsFromEnv } from "../src/eventCollar/crossVenue/kalshiRfq";
 import { AggregatorApiError } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { FEE_RULE_TEXT, renderCapitalHtml, renderHoldersHtml, renderPilotCheckHtml, renderShadowHtml, renderShadowReportHtml, renderSlateHtml, renderVenuesHtml } from "./eventShadowHtml";
-import { buildRealizedBook, publicRealSummary, realizedMonthlyCsv, type RealizedBook } from "../src/eventCollar/crossVenue/realizedBook";
+import { publicPosition } from "../src/eventCollar/crossVenue/publicRecord";
+import { buildRealizedBook, lockKeyOf, publicRealSummary, realizedMonthlyCsv, type RealizedBook } from "../src/eventCollar/crossVenue/realizedBook";
 import { VERDICT_WORDS, isUtcDay, reconcileDay, type DayRecon } from "../src/eventCollar/crossVenue/realizedRecon";
 import { appendReconRun, dailyCheckDue, differsAlertText, latestRunPerDay, loadReconRuns, reconRunOf, reconRunView, type ReconRunRecord } from "../src/eventCollar/crossVenue/realizedReconLog";
 import { readVenueFills, venueFillReadersFromEnv, type ReadOptions, type VenueFillReaders, type VenueFillReadersView } from "../src/eventCollar/crossVenue/venueFillReaders";
@@ -223,7 +225,7 @@ import {
   type LastLegTickReport,
   type RoutedQuote,
 } from "../src/eventCollar/crossVenue/lastLeg";
-import { retailParlays } from "../src/eventCollar/crossVenue/parlayRetail";
+import { retailParlays, withoutLockVenues } from "../src/eventCollar/crossVenue/parlayRetail";
 import { measureNetting } from "../src/eventCollar/crossVenue/shadowNetting";
 import { venueBreakdown, venueBreakdownCsv } from "../src/eventCollar/crossVenue/shadowVenues";
 import { findVenueSlate, parseVenueSlates, slateAccessOk, slateLeaguesOnRecord, slateLinkKey, slatePositions } from "../src/eventCollar/crossVenue/venueSlate";
@@ -457,6 +459,7 @@ const OPERATOR_PATHS = new Set([
   "/api/shadow/lock/pending",
   "/api/shadow/lock/pending/clear",
   "/api/shadow/cash",
+  "/api/shadow/cash/in-full",
   "/api/shadow/holders",
   "/api/shadow/member/raw",
   "/holders",
@@ -3786,6 +3789,64 @@ async function handleCash(req: IncomingMessage, res: ServerResponse): Promise<vo
   sendJson(res, 200, { ok: true, at: new Date().toISOString(), ticker, ...(holder ? { holder } : {}), recorded: { at, leg, cents, ...strOpt("method") }, cash: cashDue(updated) });
 }
 
+const IN_FULL_METHOD = "settled in full, operator's statement";
+const IN_FULL_NOTE = "recorded in one pass: the operator states that every payment on this lock was made in full";
+
+/**
+ * What POST /api/shadow/cash/in-full would write: one payment per leg still outstanding on each
+ * real lock that has ended (settled, or left early with the hedge sold). A lock that is not the
+ * current one on its market is left for the single route, since a line lands on the current lock.
+ */
+function inFullPlan(): { lines: Array<{ path: string; holder: string | null; ticker: string; leg: CashLeg; to: "holder" | "writer"; cents: number }>; left: Array<{ ticker: string; holder: string | null; why: string }> } {
+  const ended = new Set(realizedBook().locks.filter((l) => l.state === "settled" || l.state === "closed").map((l) => l.key));
+  const lines: ReturnType<typeof inFullPlan>["lines"] = [];
+  const left: ReturnType<typeof inFullPlan>["left"] = [];
+  const current = new Set<string>();
+  for (const { p, path, holder } of allLocks()) {
+    const isCurrent = !current.has(`${path}|${p.ticker}`);
+    current.add(`${path}|${p.ticker}`);
+    if (!ended.has(lockKeyOf(p.ticker, holder, p.generation ?? 1))) continue;
+    const owed = cashDue(p).filter((d) => d.outstandingCents > 0);
+    if (owed.length === 0) continue;
+    if (!isCurrent) {
+      left.push({ ticker: p.ticker, holder, why: "an earlier lock on a market that was locked again; record it with POST /api/shadow/cash" });
+      continue;
+    }
+    for (const d of owed) lines.push({ path, holder, ticker: p.ticker, leg: d.leg, to: d.to, cents: d.outstandingCents });
+  }
+  return { lines, left };
+}
+
+/**
+ * POST /api/shadow/cash/in-full (operator): record every outstanding payment on the real locks
+ * that have ended as made in full, each at the amount the lock's terms owe. For locks the
+ * operator settled outside any payment rail. One line per leg, as the single route writes them;
+ * pressing it again writes nothing, since nothing is outstanding.
+ */
+function handleCashInFull(req: IncomingMessage, res: ServerResponse): void {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST /api/shadow/cash/in-full as the operator; GET /api/shadow/holders shows what it would write under inFull" });
+    return;
+  }
+  const at = new Date().toISOString();
+  const plan = inFullPlan();
+  const written: Array<{ ticker: string; holder: string | null; leg: CashLeg; to: "holder" | "writer"; cents: number }> = [];
+  for (const l of plan.lines) {
+    if (!appendOrAlert({ type: "cash" as const, at, ticker: l.ticker, leg: l.leg, cents: l.cents, method: IN_FULL_METHOD, note: IN_FULL_NOTE }, l.path)) {
+      sendJson(res, 500, { ok: false, error: "ledger_write_failed", written });
+      return;
+    }
+    written.push({ ticker: l.ticker, holder: l.holder, leg: l.leg, to: l.to, cents: l.cents });
+  }
+  if (wantsHtml(req.headers)) {
+    res.writeHead(303, { location: "/holders", "cache-control": "no-store" });
+    res.end();
+    return;
+  }
+  const sum = (to: "holder" | "writer") => written.filter((w) => w.to === to).reduce((s, w) => s + w.cents, 0);
+  sendJson(res, 200, { ok: true, at, lines: written.length, toHoldersCents: sum("holder"), fromHoldersCents: sum("writer"), written, left: plan.left });
+}
+
 /**
  * GET /api/shadow/holders (operator): every holder with locks on the record (the shared ledger is
  * "(shared)"), each lock's cash legs, and the totals outstanding each way: what the writer still
@@ -3843,10 +3904,18 @@ function holdersSummary() {
         positions: rows,
       };
     });
+  const plan = inFullPlan();
   return {
     ok: true,
     at: new Date().toISOString(),
     holders,
+    // what POST /api/shadow/cash/in-full would write now
+    inFull: {
+      lines: plan.lines.length,
+      toHoldersCents: plan.lines.filter((l) => l.to === "holder").reduce((t, l) => t + l.cents, 0),
+      fromHoldersCents: plan.lines.filter((l) => l.to === "writer").reduce((t, l) => t + l.cents, 0),
+      left: plan.left.length,
+    },
     totals: holders.reduce(
       (t, h) => ({ locks: t.locks + h.locks, toHolderCents: t.toHolderCents + h.outstanding.toHolderCents, toWriterCents: t.toWriterCents + h.outstanding.toWriterCents }),
       { locks: 0, toHolderCents: 0, toWriterCents: 0 },
@@ -4785,7 +4854,7 @@ function healthBody(): Record<string, unknown> {
           name: s.name,
           leagues: s.leagues,
           shareUrl: link ? `${RECORD_URL}/slate/${s.slug}?k=${link}` : null,
-          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(s.name)}`,
+          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(s.name)}${link ? `&k=${link}` : ""}`,
         };
       }),
     },
@@ -4944,30 +5013,6 @@ function publicSummary(s: ShadowSummary): Omit<ShadowSummary, "counterfactuals">
       positionsWithCounterfactuals: counterfactuals.positionsWithCounterfactuals,
     },
   };
-}
-
-/**
- * A position as the public JSON carries it: what was quoted, what settled, both sides' money.
- * The counterfactual rule books, the pre-lock re-read, the hedge leg's venue token and where
- * each book was read from stay with the operator (the raw ledger, the full CSV, /venues); a
- * reader can recompute every public row without them.
- */
-function publicPosition(p: ShadowPosition): Omit<ShadowPosition, "counterfactuals" | "prelock" | "bookOpen" | "inGame" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeOffsetStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId" | "bookOrigins" | "holder" | "hedgeFill"> & { cashDue?: ReturnType<typeof cashDue> } {
-  // where the books came from (the partner's feed or the venue), the pre-lock, book-open and in-game reads, whose lock it is and the real order behind its hedge are the operator's: /venues, /api/shadow/holders, the raw ledger
-  const { counterfactuals: _cf, prelock: _prelock, bookOpen: _bookOpen, inGame: _inGame, hedgeTokenId: _tok, hedgeStrikeId: _strike, hedgeOffsetStrikeId: _offset, hedgeMarketId: _nvMarket, hedgeOutcomeId: _nvOutcome, hedgeOffsetOutcomeId: _nvOffset, bookOrigins: _origins, holder: _holder, hedgeFill: _fill, ...rest } = p;
-  // a member's own sale: the venue's order ids and market id stay with the operator; the sale's figures are public
-  const pub = rest.memberSale ? { ...rest, memberSale: publicMemberSale(rest.memberSale), ...(rest.closeMemberBuyBack ? { closeMemberBuyBack: publicMemberBuyBack(rest.closeMemberBuyBack) } : {}) } : rest;
-  // a holder's lock carries what it owes and what was paid; the scan's positions pay nobody
-  return p.source === "lock" ? { ...pub, cashDue: cashDue(p) } : pub;
-}
-function publicMemberSale(s: MemberSaleRecord): MemberSaleRecord {
-  // the fill-by-fill detail of a member's account stays with the member and the operator; the summed figures are public
-  const { venueFills: _fills, ...rest } = s;
-  return { ...rest, marketId: "", orderId: null, clientOrderId: "" };
-}
-function publicMemberBuyBack(b: NonNullable<ShadowPosition["closeMemberBuyBack"]>): NonNullable<ShadowPosition["closeMemberBuyBack"]> {
-  const { venueFills: _fills, ...rest } = b;
-  return { ...rest, orderId: null, clientOrderId: "" };
 }
 
 /**
@@ -5389,11 +5434,14 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
       // hedge legs, take or token ids: those stay on /api/shadow/lastleg behind the operator token.
       // The demo's Parlays tab reads this. CORS is open because the body is public already.
       const tickets = loadLastLegTickets(LASTLEG_PATH);
+      // where a lock's other side goes is named to the operator, and to everyone only with venue naming on
+      const named = SLATE_NAMES_HEDGE_VENUES || operator;
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",
-        "cache-control": "public, max-age=60",
+        "cache-control": operator ? "no-store" : "public, max-age=60",
         "access-control-allow-origin": "*",
       });
+      const parlays = retailParlays(tickets, summarizeLastLeg(tickets), lockVersusSell(tickets));
       res.end(
         JSON.stringify({
           ok: true,
@@ -5401,7 +5449,8 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
           enabled: lastLegCfg.enabled,
           stakeCents: lastLegCfg.stakeCents,
           pricedEveryMinutes: Math.round(lastLegCfg.tickMs / 60_000),
-          ...retailParlays(tickets, summarizeLastLeg(tickets), lockVersusSell(tickets)),
+          ...parlays,
+          tickets: named ? parlays.tickets : withoutLockVenues(parlays.tickets),
         }),
       );
       return;
@@ -5692,6 +5741,10 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
       sendJson(res, 200, { ok: true, id, ...summarizePending(loadPending(PENDING_PATH)) });
       return;
     }
+    if (url.pathname === "/api/shadow/cash/in-full") {
+      handleCashInFull(req, res);
+      return;
+    }
     if (url.pathname === "/api/shadow/cash") {
       void handleCash(req, res).catch((err: unknown) => sendJson(res, 500, { ok: false, error: String(err instanceof Error ? err.message : err) }));
       return;
@@ -5879,7 +5932,8 @@ function route(req: IncomingMessage, res: ServerResponse, url: URL): void {
           lastLegStakeCents: lastLegCfg.stakeCents,
           hedgeVenues,
           nameHedgeVenues: SLATE_NAMES_HEDGE_VENUES || (operator && !keyed),
-          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(slate.name)}`,
+          // the slate's own link key rides along, so a host that is itself a venue sees its own book named in the demo's Venue view
+          demoUrl: `${DEMO_URL}/?brand=${encodeURIComponent(slate.name)}${slateLinkKey(SLATE_KEY, slate.slug) ? `&k=${slateLinkKey(SLATE_KEY, slate.slug)}` : ""}`,
           csvHref: `/slate/${slate.slug}.csv${keyQuery}`,
           recordUrl: RECORD_URL,
         }),

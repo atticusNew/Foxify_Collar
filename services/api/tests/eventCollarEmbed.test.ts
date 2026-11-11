@@ -480,8 +480,24 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     assert.deepEqual(forbiddenKeysIn(retail), []);
 
     // /api/venue-view: the host's side, no token, brand-gated like the shell
-    const vv = await fetch(`${base}/api/venue-view?brand=prophetx`);
-    assert.equal(vv.status, 200);
+    // a host that is itself a venue is named only on a link carrying its own key, or to the operator: a guessed ?brand= learns nothing
+    const vvGuess = await fetch(`${base}/api/venue-view?brand=prophetx`);
+    assert.equal(vvGuess.status, 200);
+    assert.deepEqual(await vvGuess.json(), { ok: true, at: "2026-09-20T18:00:00.000Z", retail: true, sharePct: 40, hostVenue: null, venuesNamed: false, rows: [] });
+    assert.equal(((await (await fetch(`${base}/api/venue-view?brand=prophetx&k=${"0".repeat(24)}`)).json()) as { hostVenue: string | null }).hostVenue, null, "a wrong key names nothing");
+    // the host's own key is its slate link key: the right one names the host, on the read and on the shell that makes the read
+    const { hostVenueNamed } = await import("../scripts/eventProtectXDemoService");
+    const { slateLinkKey } = await import("../src/eventCollar/crossVenue/venueSlate");
+    const hostKey = slateLinkKey("share-secret", "prophetx");
+    assert.deepEqual(
+      [hostVenueNamed("ProphetX", hostKey, false, "share-secret", false), hostVenueNamed("ProphetX", slateLinkKey("share-secret", "novig"), false, "share-secret", false), hostVenueNamed("ProphetX", hostKey, false, undefined, false), hostVenueNamed("ProphetX", null, false, "share-secret", false), hostVenueNamed("ProphetX", null, true, "share-secret", false), hostVenueNamed("ProphetX", null, false, "share-secret", true)],
+      [true, false, false, false, true, true],
+      "its own key; another host's key; no share key set; no key; the operator; venue naming on",
+    );
+    const keyedShell = renderEventEmbedHtml({ brand: "ProphetX", nameVenues: false, hostKey });
+    assert.ok(keyedShell.includes(`var VV_URL='/api/venue-view'+"?brand=ProphetX&k=${hostKey}";`));
+    assert.ok(renderEventEmbedHtml({ brand: "ProphetX", nameVenues: false, hostKey: `"><script>` }).includes(`var VV_URL='/api/venue-view'+"?brand=ProphetX";`), "anything that is not a key is dropped");
+    const vv = await fetch(`${base}/api/venue-view?brand=prophetx&as=operator`, { headers: { "x-admin-token": "t0ken" } });
     assert.deepEqual(await vv.json(), { ok: true, at: "2026-09-20T18:00:00.000Z", retail: true, sharePct: 40, hostVenue: "ProphetX", venuesNamed: false, rows: [] }, "an allowlisted venue brand is the host venue; the share is EVENT_X_PARTNER_SHARE_PCT; venues lettered unless EVENT_X_NAME_HEDGE_VENUES=1");
     const vvOff = (await (await fetch(`${base}/api/venue-view?brand=Kalshi`)).json()) as { hostVenue: string | null };
     assert.equal(vvOff.hostVenue, null, "a brand off the allowlist falls back to the default host, which is no venue");

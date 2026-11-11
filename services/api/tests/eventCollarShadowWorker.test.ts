@@ -284,6 +284,14 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.ok(csvLines[0].endsWith(",ev_cost_bps,tier,closed_at_utc,close_mid_c,close_fill_c,close_fees_c,close_friction_c"));
     assert.ok(!csvLines[0].includes("wide_floor_c") && !csvLines[0].includes("x20_refused"));
     assert.ok(csvLines[1].startsWith(`${OPEN.ticker},`));
+    // the holder's side only: no route, and none of our side of the row
+    assert.ok(!/(^|,)(route|take_c|fees_c|hedge_cost_c|hedge_payout_c|writer_pnl_c)(,|$)/.test(csvLines[0]) && csvLines[0].includes(",shape,"));
+    assert.ok(!csvLines[1].includes("polymarket"));
+    const publicRows = (await (await fetch(`${base}/api/shadow`)).json()) as { settled: Array<Record<string, unknown>> };
+    assert.equal(publicRows.settled.length, 1);
+    for (const k of ["route", "routing", "takeCents", "takeRule", "takeShareCents", "takeMinimumCents", "feesCents", "hedgeCostCents", "hedgeUnitsMilli", "hedgePayoutCents", "writerCents"]) assert.ok(!(k in publicRows.settled[0]), `${k} is the operator's`);
+    assert.deepEqual([publicRows.settled[0].ticker, publicRows.settled[0].floorCents, publicRows.settled[0].protectedCents !== undefined], [OPEN.ticker, OPEN.floorCents, true]);
+    assert.ok(!JSON.stringify(publicRows.settled).includes("polymarket"));
     const publicAsksFull = await fetch(`${base}/api/shadow/positions.csv?scope=full`);
     assert.ok(!(await publicAsksFull.text()).includes("wide_floor_c"), "scope=full without the token is the public CSV");
     const fullCsv = await fetch(`${base}/api/shadow/positions.csv?scope=full&token=op-secret`);
@@ -422,7 +430,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     // the operator body carries the link to send per slate: the slate on its own derived key, the demo in the brand
     assert.equal(healthSlates.configured[0].shareUrl, `https://atticus-event-shadow.onrender.com/slate/wiremarkets?k=${wmLink}`);
     assert.equal(healthSlates.configured[1].shareUrl, `https://atticus-event-shadow.onrender.com/slate/sporttrade?k=${slateLinkKey("share-key-1", "sporttrade")}`);
-    assert.equal(healthSlates.configured[0].demoUrl, "https://atticus-event-demo-cross-venue.onrender.com/?brand=Wire%20Markets");
+    assert.equal(healthSlates.configured[0].demoUrl, `https://atticus-event-demo-cross-venue.onrender.com/?brand=Wire%20Markets&k=${healthSlates.configured[0].shareUrl?.split("?k=")[1]}`, "the slate's own link key rides to the demo");
     assert.equal("slates" in publicHealth, false, "the public health body does not list prospects");
 
     // PARLAYS, PUBLIC: the last-leg tickets in retail shape for the demo's Parlays tab, and the
@@ -542,7 +550,8 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.ok(chargers);
     assert.ok(!("counterfactuals" in chargers) && !("hedgeTokenId" in chargers) && !("bookOrigins" in chargers), "where the books were read from is the operator's");
     assert.ok(!publicText.includes("aggregator"));
-    assert.equal(chargers.hedgeUnitsMilli, 133_500, "the hedge leg itself stays public: the identity is checkable from it");
+    assert.ok(!("hedgeUnitsMilli" in chargers) && !("hedgeCostCents" in chargers) && !("route" in chargers), "the hedge leg and where it was bought are the operator's; the page carries the totals");
+    assert.equal(chargers.floorCents !== undefined && chargers.capCents !== undefined && chargers.creditCents !== undefined, true, "the terms the holder was quoted are public");
     assert.ok(!(await (await fetch(`${base}/api/shadow/positions.csv`)).text()).includes("0xpm-token"));
     const fullExport = await (await fetch(`${base}/api/shadow/export`, op)).text();
     assert.ok(fullExport.includes("0xpm-token"), "the operator's raw ledger has everything");

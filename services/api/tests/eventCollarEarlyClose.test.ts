@@ -324,7 +324,12 @@ test("early close: the ledger replays a priced close as a closed position; an un
   assert.equal(col("status"), "closed");
   assert.equal(col("holder_protected_c"), "8141");
   assert.equal(col("holder_naked_c"), "8596");
-  assert.equal(col("writer_pnl_c"), "12");
+  // the public sheet is the holder's side: where the other side was bought and our own side of the row are the operator's
+  for (const name of ["route", "take_c", "fees_c", "hedge_units_milli", "hedge_cost_c", "hedge_payout_c", "writer_pnl_c"]) assert.equal(header.indexOf(name), -1, name);
+  assert.equal(col("shape"), "hedged lock");
+  assert.ok(!/polymarket|kalshi_self|prophetx|novig/.test(csv), "no route on any public row");
+  const fullCsv = positionsCsv(positions, "full").split("\n");
+  assert.equal(fullCsv.find((l) => l.startsWith(OPEN.ticker))?.split(",")[fullCsv[0].split(",").indexOf("writer_pnl_c")], "12");
   assert.equal(col("closed_at_utc"), "2026-09-13T01:00:00.000Z");
   assert.equal(col("close_mid_c"), "60");
   assert.equal(col("close_fill_c"), "59");

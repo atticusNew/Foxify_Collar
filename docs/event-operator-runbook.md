@@ -220,6 +220,8 @@ Add `"holder":"<alias>"` if more than one person locked that market. The route r
 
 4. Run step 1 again. `outstanding` should read zero both ways.
 
+**All at once, for real locks settled outside any payment rail.** When every payment on the real locks that have ended was made in full (the founder's own pilot locks, for example), open `/holders` signed in as the operator and press "Record all as paid in full" in the card "Real locks settled in full". It writes one line per outstanding payment, each at the amount the lock's terms owe, with the method "settled in full, operator's statement". Only real locks that have settled, or were left early with the hedge sold, are touched. Pressing it again writes nothing. The same action without a browser is `POST $S/api/shadow/cash/in-full` with the operator token. The record page then shows the payments and our result on the real locks.
+
 **What the record says today.** Seven hedged locks are on the public record. None has a payment recorded. They show $16.12 owed to the holder and $25.36 owed by the holder to us. That includes the first real lock of 15 October 2026 (ticker `KXNFLGAME-26OCT18TENIND-IND`): $13.85 owed and no payment line. If that money did move, record it with step 3 so the record matches: [founder to confirm: was it paid, when, how].
 
 ## 7. Rotate a token or a venue key

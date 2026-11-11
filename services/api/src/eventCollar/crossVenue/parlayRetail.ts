@@ -16,8 +16,8 @@
  *
  * Retail words only: no hedge legs, no take, no token ids. Ticket picks are `picks` (the
  * public word, and `legs` is a hedge word on the retail tripwire). The one venue word is the
- * lock's `venue`: where the other side goes, by public name, as the Positions tab says it for a
- * single ("Other side · Novig"). Money is integer cents.
+ * lock's `venue`: where the other side goes, by public name. The record's public route sends it
+ * only with venue naming on or to the operator (withoutLockVenues). Money is integer cents.
  */
 
 import { hedgeVenueOf, VENUE_NAMES } from "./hedgeRouting";
@@ -250,6 +250,11 @@ const IN_PLAY_RANK: Record<ParlayState, number> = { last_pick: 0, open: 1, settl
  * refused one), then open tickets by their next game, then the decided ones most recent
  * first, capped so the tab stays a positions list and not an archive.
  */
+/** The tickets without where each lock's other side goes: what the public route sends unless venue naming is on. */
+export function withoutLockVenues(tickets: readonly ParlayTicket[]): ParlayTicket[] {
+  return tickets.map((t) => (t.lock ? { ...t, lock: { ...t.lock, venue: null } } : t));
+}
+
 export function retailParlays(tickets: readonly LastLegTicket[], lastLeg: LastLegSummary, lockVsSell: LockVsSellSummary, decidedLimit = 12): ParlayPayload {
   const rows = tickets.map(retailParlayTicket);
   const rules = summarizeLegRules(tickets);

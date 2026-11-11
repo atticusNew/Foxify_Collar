@@ -1,7 +1,7 @@
 /**
  * Refusals on the record: the scan's declined candidates are kept one per market, folded to public
  * reasons, excluded once the ledger holds the market, and read at the top of the track record page
- * beside what protected traders kept.
+ * beside what locked positions kept.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -64,7 +64,7 @@ test("refusals: one entry per market, re-stamped on every scan; a market later q
 test("track record: the kept block leads the page, in public words, with the refusal share", () => {
   const refusals = summarizeRefusals(recordScanRefusals({}, [r("A", "protection_too_rich"), r("B", "credit_too_small"), r("C", "pm_book_empty")], "2026-11-01T00:00:00.000Z"), [{ ticker: "Z", kind: "sports" }]);
   const html = renderShadowHtml({ atIso: "2026-11-01T00:00:00.000Z", summary: summarizeShadow([]), open: [], settled: [], closed: [], refusals });
-  const kept = html.indexOf("<h2>What traders who locked in actually kept</h2>");
+  const kept = html.indexOf("<h2>What a locked position actually kept</h2>");
   assert.ok(kept > 0 && kept < html.indexOf("<h2>We carry no outcome risk</h2>"), "the kept block sits above the identity card");
   assert.ok(html.includes("Nothing has settled yet. This block fills as events settle against their official results."), "empty book, said plainly");
   assert.ok(html.includes("Of 4 events the engine priced, 3 (75%) were refused rather than offered: too rich to offer 1, credit too small to offer 1, no book could fund it 1. A refusal is written down like an offer, so the record is the whole board."), "the refusal line counts and names the reasons");
@@ -72,6 +72,6 @@ test("track record: the kept block leads the page, in public words, with the ref
   assert.ok(!/writer|holder/i.test(html.replace(/writerPnl|holderDelta/g, "")), "public words only");
   assert.ok(!html.includes("Polymarket") && !html.includes("Kalshi"), "no venue named in the reasons");
   const none = renderShadowHtml({ atIso: "2026-11-01T00:00:00.000Z", summary: summarizeShadow([]), open: [], settled: [], closed: [] });
-  assert.ok(none.includes("<h2>What traders who locked in actually kept</h2>") && none.includes('<div class="n">n/a</div><div class="l">of events priced were refused</div>'), "without a refusal summary the cell reads a dash, the block still leads");
+  assert.ok(none.includes("<h2>What a locked position actually kept</h2>") && none.includes('<div class="n">n/a</div><div class="l">of events priced were refused</div>'), "without a refusal summary the cell reads a dash, the block still leads");
   assert.ok(!none.includes("events the engine priced"), "and no refusal sentence is invented");
 });
