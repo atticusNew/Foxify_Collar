@@ -103,9 +103,9 @@ export interface PilotFacts {
    * nothing in the code records one, which is a no and is said as "not built".
    */
   termsOnRecord: { holders: number } | null;
-  /** file names in docs/, or null when the folder is not on this machine */
+  /** file names in docs/, or null when the caller does not read them (the service does not: a documents-only merge does not restart it) */
   docs: string[] | null;
-  /** workflow file names in .github/workflows, or null when the folder is not on this machine */
+  /** workflow file names in .github/workflows, or null when the caller does not read them */
   workflows: string[] | null;
 }
 
@@ -381,7 +381,7 @@ export function pilotCheck(f: PilotFacts): PilotReport {
     "backup",
     "A copy of the ledgers exists off this machine.",
     CANNOT,
-    `The copy is made by a GitHub workflow, not by this service, and this service cannot see its runs. ${f.workflows === null ? "The workflow folder is not on this machine." : backups.length ? `Workflow files with backup in the name in this build: ${backups.join(", ")}.` : "No workflow file with backup in its name is in this build."}`,
+    `The copy is made by a GitHub workflow, not by this service, and this service cannot see its runs. ${f.workflows === null ? "This service does not look at the repository's workflow files." : backups.length ? `Workflow files with backup in the name in this build: ${backups.join(", ")}.` : "No workflow file with backup in its name is in this build."}`,
     "Open the repository's Actions tab and confirm the ledger backup workflow's last run is green and recent, and that the copy it made can be opened.",
   );
 
@@ -415,11 +415,11 @@ export function pilotCheck(f: PilotFacts): PilotReport {
     "A payout runbook exists: who pays a holder what is owed, how, by when, and how it is recorded.",
     f.docs === null ? CANNOT : payout.length ? "yes" : "no",
     f.docs === null
-      ? "The docs folder is not on this machine."
+      ? "This service does not look at the repository's documents, so it cannot say whether a payout runbook is among them."
       : payout.length
         ? `Found in docs/: ${payout.join(", ")}.`
         : `No file in docs/ has both payout and runbook in its name. Runbooks there: ${runbooks.length ? runbooks.join(", ") : "none"}. The /holders page says what is owed and the cash route records a payment; neither says who pays, how or by when.`,
-    "Confirm a payout runbook exists and where it is kept.",
+    "Confirm a payout runbook exists and where it is kept: who pays a holder what is owed, how, by when, and how it is recorded.",
   );
 
   const no = items.filter((i) => i.answer === "no").map((i) => `${i.n} ${i.id}`);

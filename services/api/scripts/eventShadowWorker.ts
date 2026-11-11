@@ -70,7 +70,6 @@ import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import {
   CASH_LEGS,
   appendShadowRecord,
@@ -143,7 +142,7 @@ import {
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { inPlayFromEnv, inPlayMaxMsFromEnv } from "../src/eventCollar/crossVenue/lockWindow";
 import { liveRailsFromEnv } from "../src/eventCollar/crossVenue/liveHedge";
-import { holderKeyCounts, listDir, pilotCheck, readDiskFacts, type PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
+import { holderKeyCounts, pilotCheck, readDiskFacts, type PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
 import { appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type CapRefusalLine, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
 import {
   capRefusalDetails,
@@ -1993,8 +1992,6 @@ function exposureGate(add: ExposureAdd, asked: Extract<PendingRecord, { type: "p
 /** The most an order for this intent can cost, quoted fees on top: what a new hedge is counted at until it fills. */
 const reserveFor = (intent: HedgeIntent, feesCents: number): number => hedgeReserveCents({ unitsMilli: intent.unitsMilli, maxCostCents: intent.maxCostCents, limitMilli: intent.book.worstPriceMilli }, feesCents);
 
-/** The repository as deployed: this file is services/api/scripts/, and the service starts from the root. */
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 /** Where the persistent disk is mounted (render-event-demos.yaml: /var/data); the pilot check's only setting. */
 const DISK_MOUNT = (process.env.EVENT_SHADOW_DISK_MOUNT ?? "").trim() || "/var/data";
 
@@ -2028,8 +2025,10 @@ function pilotReport(): PilotReport {
     alerts: { telegram: Boolean(alertCfg.telegramBotToken && alertCfg.telegramChatId), webhook: Boolean(alertCfg.webhookUrl) },
     // no route, ledger line or setting records a holder accepting the user terms; when one does, count it here
     termsOnRecord: null,
-    docs: listDir(join(REPO_ROOT, "docs")),
-    workflows: listDir(join(REPO_ROOT, ".github", "workflows")),
+    // not read from the deployed checkout: a merge that only changes documents or workflows does not restart this
+    // service (its build filter), so a listing taken here could be older than the repository
+    docs: null,
+    workflows: null,
   });
 }
 

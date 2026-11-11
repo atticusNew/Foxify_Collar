@@ -10,8 +10,7 @@ import test, { after, before } from "node:test";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import type { ExposureCaps } from "../src/eventCollar/crossVenue/exposureCaps";
 import { CANNOT, PILOT_NOTE, type PilotItem, type PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
 import { appendShadowRecord } from "../src/eventCollar/crossVenue/shadowLedger";
@@ -101,12 +100,11 @@ test("pilot check route: a service with nothing switched on is not ready, and ea
   assert.equal(item(r, "keys_rotated").answer, CANNOT);
   assert.equal(item(r, "terms").answer, "no");
   assert.match(item(r, "terms").detail, /^No, not built: /);
-  // the runbook is looked for in the repository's own docs folder, by name
-  const docs = readdirSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "docs"));
-  const named = docs.filter((n) => /payout/i.test(n) && /runbook/i.test(n));
-  assert.equal(item(r, "payout_runbook").answer, named.length ? "yes" : "no");
-  if (named.length) assert.ok(item(r, "payout_runbook").detail.includes(named[0]));
-  else assert.match(item(r, "payout_runbook").detail, /No file in docs\/ has both payout and runbook in its name\. Runbooks there: .*INCIDENT_RUNBOOK\.md/);
+  // the service does not read the repository's documents: a documents-only merge does not restart it, so a listing could be stale
+  assert.equal(item(r, "payout_runbook").answer, CANNOT);
+  assert.match(item(r, "payout_runbook").detail, /does not look at the repository's documents/);
+  assert.match(item(r, "payout_runbook").confirm ?? "", /who pays a holder what is owed/);
+  assert.match(item(r, "backup").detail, /does not look at the repository's workflow files/);
 
   assert.ok(r.overall.startsWith(`ready for an outside holder: no. ${r.no.length} conditions answered no: 1 hedge_first, 5 in_play, 6 ledger_disk, 7 alerts, 10 terms`));
   assert.deepEqual(r.confirmByHand.map((l) => l.split(":")[0]), r.items.filter((i) => i.answer === CANNOT).map((i) => `${i.n} ${i.id}`));
