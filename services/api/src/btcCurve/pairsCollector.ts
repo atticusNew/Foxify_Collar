@@ -14,9 +14,9 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { basename } from "node:path";
 import { BookReadError } from "./bookRead";
+import { DayKeeper, forEachLineSync, listDayFiles, maintainLines, parseBudgetMb, parseRetention, readablePath, type Budget, type DayKeeperOptions, type MaintainReport, type Retention } from "./dayFiles";
 import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_WINDOW_MS, dailyLadderFrom, fetchFeeTheta, fetchOpenMarkets, fifteenLadderFrom, hourlyLadderFrom, kalshiOrderbookUrl, readTopOnce } from "./kalshiLadders";
 import { fetchBrtiCandles, fetchSeriesIdsBySlug, polyBookUrl, readBookOnce, readPolyUsLaddersForSeries } from "./polyUsLadders";
 import { mergeLadders } from "./analytics";
@@ -40,6 +40,12 @@ export interface PairsCollectorOptions {
   bookTimeoutMs?: number;
   /** seconds beyond which a book copy is stale, per tenor; defaults to STALE_AFTER_SEC */
   staleAfterSec?: Partial<Record<Horizon, number>>;
+  /** which day files are kept; the default keeps every day */
+  retention?: Retention;
+  /** the size the data dir is expected to stay under, for the warning on /healthz; deletes nothing */
+  budget?: Budget;
+  /** test seams, passed to the keeper of the day files */
+  keeper?: Pick<DayKeeperOptions, "appendImpl" | "graceMs" | "compress">;
   /** test seam */
   fetchImpl?: typeof fetch;
   /** test seam: our clock, ms */
@@ -51,6 +57,10 @@ const POLY_SERIES = ["btc-strike-hourly", "btc-strike-daily", "btc-updown-15m"];
 const CACHE_MS = 10 * 60_000;
 /** index prints kept for the regime gauge: the hour plus a margin */
 const SPOT_KEEP_MS = 65 * 60_000;
+/** day files read back on a restart: the episodes of the last three days, and the gaps of the window inside them */
+const RELOAD_DAYS_MS = 3 * 86_400_000;
+const GAPS = "gaps";
+const EPISODES = "episodes";
 
 export type LaunchMode = "send" | "open";
 
@@ -93,6 +103,9 @@ export class PairsCollector {
   readonly launchUrl: string;
   readonly launchMode: LaunchMode;
   private readonly dataDir: string;
+  private readonly keeper: DayKeeper;
+  /** cycles between maintenance passes over the day files: about an hour */
+  private readonly maintainEvery: number;
   private readonly windowMs: number;
   private readonly deadlineMs: number;
   private readonly bookTimeoutMs: number;
@@ -122,6 +135,8 @@ export class PairsCollector {
   constructor(opts: PairsCollectorOptions = {}) {
     this.intervalSec = Math.max(5, opts.intervalSec ?? 10);
     this.dataDir = opts.dataDir ?? "/tmp/btc-pairs";
+    this.keeper = new DayKeeper({ dir: this.dataDir, families: [GAPS, EPISODES], retention: opts.retention, budget: opts.budget, ...(opts.keeper ?? {}) });
+    this.maintainEvery = Math.max(1, Math.round(3600 / this.intervalSec));
     this.windowMs = opts.windowMs ?? 120 * 60_000;
     this.deadlineMs = Math.max(5_000, opts.sourceDeadlineMs ?? 20_000);
     this.bookTimeoutMs = Math.min(this.deadlineMs, Math.max(1, opts.bookTimeoutMs ?? 8_000));
@@ -143,8 +158,20 @@ export class PairsCollector {
   start(): void {
     const loaded = this.loadGaps();
     const episodes = this.loadEpisodes();
-    this.log(`[btc-pairs] data dir ${this.dataDir} · ${loaded} cycles of gap history reloaded · ${episodes} lock episodes reloaded · interval ${this.intervalSec}s`);
+    this.log(`[btc-pairs] data dir ${this.dataDir} · ${loaded} cycles of gap history reloaded · ${episodes} lock episodes reloaded · interval ${this.intervalSec}s · ${this.keeper.startupLine()}`);
+    void this.maintain();
     void this.loop();
+  }
+
+  /**
+   * The pass over the day files, about once an hour and once on start, never awaited by a cycle:
+   * the retention sweep (nothing unless a window is set) and at most one closed day gzipped.
+   */
+  maintain(nowMs = this.clock()): Promise<MaintainReport> {
+    return this.keeper.maintain(nowMs).then((r) => {
+      for (const line of maintainLines(r, this.keeper.retention)) this.log(`[btc-pairs] ${line}`);
+      return r;
+    });
   }
 
   /** Stop the cycle. Lock runs still going end here and are written, so a clean stop loses none; a kill loses the ones open at that moment. */
@@ -325,6 +352,7 @@ export class PairsCollector {
 
     if (!this.collectingSince) this.collectingSince = now.toISOString();
     this.cycles += 1;
+    if (this.cycles % this.maintainEvery === 0) void this.maintain();
     const report: PairsReport = {
       at: now.toISOString(),
       pricedAt: new Date(pricedAtMs).toISOString(),
@@ -381,93 +409,72 @@ export class PairsCollector {
 
   /* ---- gap history on disk: one line per cycle, reloaded within the window on boot ---- */
 
-  private dayFile(ms: number): string {
-    return join(this.dataDir, `gaps-${new Date(ms).toISOString().slice(0, 10)}.jsonl`);
-  }
-
+  /**
+   * A write that fails (a full disk) is the keeper's to remember and /healthz's to say; the
+   * cycle goes on and the page keeps serving what is in memory.
+   */
   private persistGaps(atMs: number, sets: Array<HorizonSet | null>): void {
     // what recordGaps kept, so a restart reloads the same window: gaps on stale reads are not persistence
     const rows = sets.flatMap((s) => (s ? s.pairs.filter((p) => p.gapCents !== null && p.freshness !== "stale").map((p) => [p.settlesAt, p.key, p.gapCents]) : []));
     if (!rows.length) return;
-    try {
-      mkdirSync(this.dataDir, { recursive: true });
-      appendFileSync(this.dayFile(atMs), `${JSON.stringify({ at: atMs, rows })}\n`);
-    } catch (err) {
-      this.lastError = `persist: ${(err as Error).message.slice(0, 80)}`;
-    }
+    this.keeper.append(GAPS, atMs, JSON.stringify({ at: atMs, rows }), this.clock());
   }
 
   /** Finished episodes go to the day file of the day they ended, one a line, the way the gap history is kept. */
   private persistEpisodes(finished: LockEpisode[]): void {
-    if (!finished.length) return;
-    try {
-      mkdirSync(this.dataDir, { recursive: true });
-      for (const e of finished) appendFileSync(join(this.dataDir, `episodes-${e.endedAt.slice(0, 10)}.jsonl`), `${JSON.stringify(e)}\n`);
-    } catch (err) {
-      this.lastError = `persist episodes: ${(err as Error).message.slice(0, 80)}`;
+    for (const e of finished) this.keeper.append(EPISODES, Date.parse(e.endedAt), JSON.stringify(e), this.clock());
+  }
+
+  /** Each line of the family's day files, plain or gzip, for the days `wanted` picks. A day that cannot be read is said on /healthz and skipped. */
+  private eachKeptLine(family: string, wanted: (dayMs: number) => boolean, fn: (line: string) => void): void {
+    for (const f of listDayFiles(this.dataDir, [family])) {
+      if (!wanted(f.dayMs)) continue;
+      const path = readablePath(f);
+      try {
+        forEachLineSync(path, fn);
+        this.keeper.note(`load:${path}`, null);
+      } catch (err) {
+        this.keeper.note(`load:${path}`, `${basename(path)} could not be read on start-up (${(err as Error).message.slice(0, 120)}); it is left on disk`);
+      }
     }
   }
 
-  /** Reload the episodes kept (today's, and the last EPISODE_KEEP per tenor of the three days before); older day files are deleted. */
+  /**
+   * Reload the episodes kept in memory: today's, and the last EPISODE_KEEP per tenor of the three
+   * days before. Older day files stay on disk; they are only not loaded.
+   */
   loadEpisodes(nowMs = this.clock()): number {
-    if (!existsSync(this.dataDir)) return 0;
     const loaded: LockEpisode[] = [];
-    for (const f of readdirSync(this.dataDir).filter((f: string) => f.startsWith("episodes-") && f.endsWith(".jsonl")).sort()) {
-      const path = join(this.dataDir, f);
-      const dayMs = Date.parse(f.slice(9, 19));
-      if (Number.isFinite(dayMs) && nowMs - dayMs > 3 * 86_400_000) {
-        try {
-          unlinkSync(path);
-        } catch {
-          // an old day that would not delete is left; nothing reads it
-        }
-        continue;
+    this.eachKeptLine(EPISODES, (dayMs) => nowMs - dayMs <= RELOAD_DAYS_MS, (line) => {
+      try {
+        const e = JSON.parse(line) as LockEpisode;
+        if (typeof e.endedAt === "string" && Number.isFinite(Date.parse(e.endedAt)) && typeof e.horizon === "string") loaded.push(e);
+      } catch {
+        // a torn line at the end of a file is skipped
       }
-      for (const line of readFileSync(path, "utf8").split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const e = JSON.parse(line) as LockEpisode;
-          if (typeof e.endedAt === "string" && Number.isFinite(Date.parse(e.endedAt)) && typeof e.horizon === "string") loaded.push(e);
-        } catch {
-          // a torn line at the end of a file is skipped
-        }
-      }
-    }
+    });
     this.episodes = { open: this.episodes.open, finished: pruneEpisodes([...loaded, ...this.episodes.finished], nowMs) };
     return this.episodes.finished.length;
   }
 
   loadGaps(nowMs = Date.now()): number {
-    if (!existsSync(this.dataDir)) return 0;
     let n = 0;
-    for (const f of readdirSync(this.dataDir).filter((f: string) => f.startsWith("gaps-") && f.endsWith(".jsonl")).sort()) {
-      const path = join(this.dataDir, f);
-      const dayMs = Date.parse(f.slice(5, 15));
-      if (Number.isFinite(dayMs) && nowMs - dayMs > 3 * 86_400_000) {
-        try {
-          unlinkSync(path);
-        } catch {
-          // an old day that would not delete is left; nothing reads it
+    // a day that ended before the window began holds nothing the window keeps, so it is not opened
+    this.eachKeptLine(GAPS, (dayMs) => nowMs - dayMs <= RELOAD_DAYS_MS && dayMs + 86_400_000 > nowMs - this.windowMs, (line) => {
+      try {
+        const rec = JSON.parse(line) as { at: number; rows: Array<[string, string, number]> };
+        if (nowMs - rec.at > this.windowMs) return;
+        for (const [settlesAt, key, gap] of rec.rows) {
+          const k = gapHistoryKey(settlesAt, key);
+          const arr = this.history.get(k) ?? [];
+          arr.push([rec.at, gap]);
+          this.history.set(k, arr);
         }
-        continue;
+        n += 1;
+      } catch {
+        // a torn line at the end of a file is skipped
       }
-      for (const line of readFileSync(path, "utf8").split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const rec = JSON.parse(line) as { at: number; rows: Array<[string, string, number]> };
-          if (nowMs - rec.at > this.windowMs) continue;
-          for (const [settlesAt, key, gap] of rec.rows) {
-            const k = gapHistoryKey(settlesAt, key);
-            const arr = this.history.get(k) ?? [];
-            arr.push([rec.at, gap]);
-            this.history.set(k, arr);
-          }
-          n += 1;
-        } catch {
-          // a torn line at the end of a file is skipped
-        }
-      }
-    }
+    });
     return n;
   }
 
@@ -486,6 +493,7 @@ export class PairsCollector {
       booksNotAnswering: this.latest?.errors?.length ?? 0,
       lockEpisodesToday: this.latest?.lockEpisodes ? { fifteen: this.latest.lockEpisodes.fifteen.episodes, hourly: this.latest.lockEpisodes.hourly.episodes, daily: this.latest.lockEpisodes.daily.episodes } : undefined,
       lastError: this.lastError || undefined,
+      data: this.keeper.health(this.clock()),
     };
   }
 
@@ -574,9 +582,16 @@ export class PairsCollector {
   }
 }
 
-/** The collector as BTC_PAIRS_* configures it; shared by the standalone script and the curve service's mount. */
-export function pairsCollectorFromEnv(env: NodeJS.ProcessEnv = process.env, defaults: { dataDir?: string } = {}): PairsCollector {
+/**
+ * The collector as BTC_PAIRS_* configures it; shared by the standalone script and the curve
+ * service's mount. `defaults` is what the host service passes for a setting BTC_PAIRS_* leaves
+ * unset: the data dir under its own, and its own retention setting so one window covers the disk.
+ */
+export function pairsCollectorFromEnv(env: NodeJS.ProcessEnv = process.env, defaults: { dataDir?: string; retainDays?: string; retainSetting?: string } = {}): PairsCollector {
+  const own = (env.BTC_PAIRS_RETAIN_DAYS ?? "").trim() !== "";
   return new PairsCollector({
+    retention: own || defaults.retainDays === undefined ? parseRetention(env.BTC_PAIRS_RETAIN_DAYS, "BTC_PAIRS_RETAIN_DAYS") : parseRetention(defaults.retainDays, defaults.retainSetting ?? "the host service's retention setting"),
+    budget: parseBudgetMb(env.BTC_PAIRS_DISK_BUDGET_MB, "BTC_PAIRS_DISK_BUDGET_MB"),
     intervalSec: Number(env.BTC_PAIRS_INTERVAL_SEC || 10),
     dataDir: env.BTC_PAIRS_DATA_DIR || defaults.dataDir || "/tmp/btc-pairs",
     windowMs: Math.max(10, Number(env.BTC_PAIRS_WINDOW_MIN || 120)) * 60_000,

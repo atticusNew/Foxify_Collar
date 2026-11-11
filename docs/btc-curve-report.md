@@ -106,10 +106,36 @@ settlement is used.
 
 ## Storage and ops
 
-One JSONL file per UTC day in `BTC_CURVE_DATA_DIR` (options and quotes as tuples, ~55 KB per
-snapshot at the 60-second cadence), `replay-state.json` for in-flight hedge replays,
-`replays.jsonl` for settled ones, `collecting-since.txt`. Files older than `BTC_CURVE_RETAIN_DAYS`
-are deleted hourly. The in-memory history window is 72 hours of compact mids.
+One JSONL file per UTC day in `BTC_CURVE_DATA_DIR` (`snapshots-YYYY-MM-DD.jsonl`, options and
+quotes as tuples), `replay-state.json` for in-flight hedge replays, `replays.jsonl` for settled
+ones, `collecting-since.txt`. The in-memory history window is 72 hours of compact mids.
+
+**Every day is kept.** Nothing is deleted unless `BTC_CURVE_RETAIN_DAYS` is set to a whole number
+of days; then day files older than that go, hourly. Unset, empty, `0`, `all` and `none` keep
+everything. A value that cannot be read (`abc`, `-3`, `2.5`) also keeps everything, and `/healthz`
+and the start-up log line say so. The pairs files under `pairs/` follow the same setting unless
+`BTC_PAIRS_RETAIN_DAYS` is set.
+
+**Closed days are gzipped.** One hour after a UTC day ends its file is compressed to
+`snapshots-YYYY-MM-DD.jsonl.gz`, one file per hourly pass, off the collecting cycle. The copy is
+written to a temp name, read back and compared with the original (bytes, line count, sha256)
+before it is renamed and the original removed. A pass that fails leaves the original and tries
+again an hour later. The boot reload reads both forms; when both exist for a day it reads the
+`.jsonl`. The current UTC day is never compressed.
+
+**Size, measured 11 November 2026** (20 minutes of the real service): one snapshot is about
+213 KB raw and 31 KB gzipped. At one a minute that is about 307 MB a day raw and 45 MB a day
+gzipped. A 3 GB disk holds the current day raw plus about 60 closed days; a year is about 17 GB.
+A day-sized file (306 MB) took 5.7 seconds to compress and verify, with the event loop never
+held more than 7 ms.
+
+**The disk guard.** `/healthz` carries a `data` block: `bytes` under the data dir, `dayFiles`
+(`plain`, `gz`), `oldestDay`, `newestDay`, `retention` (`all` or `N days`), `recording`, and
+`compression` (days still waiting, the last one done). With `BTC_CURVE_DISK_BUDGET_MB` set it adds
+`budget` (`mb`, `usedPct`) and, past 80%, `warning` in plain words. The budget never deletes
+anything: raise the disk or set a window. If a write fails (a full disk) the cycle goes on, the
+page keeps serving from memory, and `data.recording` is `false` with `data.notRecording` saying
+what failed and why; `data.writesLost` keeps the count after writing resumes.
 
 Endpoints: `/` (page, auto-refresh), `/api/report` (the page's data), `/api/latest` (full
 snapshot), `/api/replays`, `/healthz`. With `BTC_CURVE_TOKEN` set, everything but `/healthz`

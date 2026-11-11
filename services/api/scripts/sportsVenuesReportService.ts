@@ -18,7 +18,11 @@
  *       SPORTS_VENUES_DATA_DIR      (default /tmp/sports-venues; a Render disk in production)
  *       SPORTS_VENUES_INTERVAL_SEC  (default 60)
  *       SPORTS_VENUES_TOKEN         (optional; when set the page and JSON need ?k=<token>)
- *       SPORTS_VENUES_RETAIN_DAYS   (default 21; older day files are deleted)
+ *       SPORTS_VENUES_RETAIN_DAYS   (default: unset, every day is kept. A whole number of days
+ *                                   keeps that window and deletes older day files; 0, all or none
+ *                                   keep everything; anything unreadable keeps everything and
+ *                                   says so on /healthz. A day that has closed is gzipped.)
+ *       SPORTS_VENUES_DISK_BUDGET_MB (optional; /healthz warns past 80% of it. It deletes nothing.)
  *       SPORTS_VENUES_HORIZON_DAYS  (default 3; games starting within this many days)
  *       NOVIG_PUBLIC_HOST           (default https://api.novig.com)
  *       POLY_US_REST_BASE / KALSHI_REST_BASE (relays)
@@ -29,6 +33,7 @@ import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { assembleGames, readKalshiGames, readNovigListings, readPolyUsListings, type KalshiGame } from "../src/sportsVenues/readers";
 import { SnapshotStore } from "../src/sportsVenues/store";
+import { maintainLines, parseBudgetMb, parseRetention } from "../src/btcCurve/dayFiles";
 import { buildReport } from "../src/sportsVenues/report";
 import { renderReportHtml } from "../src/sportsVenues/reportHtml";
 import type { Snapshot, VenueListing } from "../src/sportsVenues/types";
@@ -40,7 +45,8 @@ const TOKEN = process.env.SPORTS_VENUES_TOKEN || "";
 const HORIZON_MS = Math.max(1, Number(process.env.SPORTS_VENUES_HORIZON_DAYS || 3)) * 86_400_000;
 const SOURCE_DEADLINE_MS = Math.max(10_000, Number(process.env.SPORTS_VENUES_SOURCE_DEADLINE_MS || 45_000));
 
-const store = new SnapshotStore(DATA_DIR, { retainDays: Number(process.env.SPORTS_VENUES_RETAIN_DAYS || 21) });
+const RETENTION = parseRetention(process.env.SPORTS_VENUES_RETAIN_DAYS, "SPORTS_VENUES_RETAIN_DAYS");
+const store = new SnapshotStore(DATA_DIR, { retention: RETENTION, budget: parseBudgetMb(process.env.SPORTS_VENUES_DISK_BUDGET_MB, "SPORTS_VENUES_DISK_BUDGET_MB") });
 const SINCE_PATH = join(DATA_DIR, "collecting-since.txt");
 
 let collectingSince: string | null = null;
@@ -82,12 +88,20 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
   };
   store.append(snapshot);
   if (!collectingSince) {
-    collectingSince = now.toISOString();
-    writeFileSync(SINCE_PATH, collectingSince);
+    const since = now.toISOString();
+    collectingSince = since;
+    store.guardWrite("collecting-since.txt", () => writeFileSync(SINCE_PATH, since));
   }
   cycles += 1;
-  if (cycles % 60 === 0) store.sweep(nowMs);
+  if (cycles % 60 === 0) maintain(nowMs);
   return snapshot;
+}
+
+/** The hourly pass over the day files, never awaited by a cycle: the retention sweep and at most one closed day gzipped. */
+function maintain(nowMs = Date.now()): void {
+  void store.maintain(nowMs).then((r) => {
+    for (const line of maintainLines(r, RETENTION)) console.log(`[sports-venues] ${line}`);
+  });
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -118,6 +132,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       cycles,
       historyPoints: store.getHistory().length,
       lastError: lastError || undefined,
+      data: store.dataHealth(),
     });
   }
   if (!authorized(url)) {
@@ -163,7 +178,8 @@ async function loop(): Promise<void> {
 if (process.env.NODE_ENV !== "test") {
   const loaded = store.load();
   if (existsSync(SINCE_PATH)) collectingSince = readFileSync(SINCE_PATH, "utf8").trim() || null;
-  console.log(`[sports-venues] data dir ${DATA_DIR} · ${loaded} snapshots reloaded · interval ${INTERVAL_SEC}s`);
+  console.log(`[sports-venues] data dir ${DATA_DIR} · ${loaded} snapshots reloaded · interval ${INTERVAL_SEC}s · ${store.startupLine()}`);
+  maintain();
   createServer((req, res) => {
     handle(req, res).catch((err) => {
       console.error(`[sports-venues] request failed: ${(err as Error).message}`);

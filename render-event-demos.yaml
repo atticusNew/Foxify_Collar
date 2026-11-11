@@ -198,7 +198,31 @@ services:
         - services/api/scripts/event*.ts
         - services/api/scripts/memberApp*.ts
         - services/api/scripts/sportsVenuesReportService.ts
-    # One snapshot a minute is ~55 KB on disk; 21 days of retention is ~1.7 GB.
+    # What is kept: every day, forever. One file per UTC day for the curve snapshots
+    # (snapshots-YYYY-MM-DD.jsonl) and, under pairs/, one for the 10-second pairs cycles
+    # (gaps-...) and one for the lock episodes (episodes-...). Nothing is deleted unless
+    # BTC_CURVE_RETAIN_DAYS is set to a whole number of days. Unset, empty, 0, all and none
+    # keep everything; a value that cannot be read keeps everything too and /healthz says so.
+    #
+    # The gzip step: one hour after a UTC day ends, its file is compressed to .jsonl.gz, one
+    # file per hourly pass. The copy is checked against the original (bytes, line count,
+    # sha256) before the original is removed; a failed pass leaves the original and tries
+    # again. Everything that reads day files reads both forms.
+    #
+    # Growth, measured on 11 November 2026 by running this service for 20 minutes:
+    #   curve snapshot   213 KB raw, 31 KB gzipped, one a minute  = 307 MB a day raw, 45 MB gzipped
+    #   pairs cycle      0.26 KB raw, one every 10 seconds        = 2.3 MB a day raw, 0.1 MB gzipped
+    # So this 3 GB disk holds the current day raw plus about 60 closed days. A year is about
+    # 17 GB: raise sizeGB to 20 before the second month is out (Render disks only grow).
+    #
+    # The budget: BTC_CURVE_DISK_BUDGET_MB is the size /healthz measures the data against.
+    # Past 80% it says so in plain words under data.warning and so does the start-up log line.
+    # The budget never deletes anything. Keep it equal to the disk size when the disk is raised.
+    #
+    # IMPORTANT for the operator: if BTC_CURVE_RETAIN_DAYS is set to 21 in the Render dashboard
+    # for this service (it was in this file until now), delete it there. A value in the
+    # dashboard overrides the code default, and with it the service still deletes after 21 days.
+    # Check /healthz afterwards: data.retention must read "all".
     disk:
       name: btc-curve-data
       mountPath: /var/data
@@ -210,14 +234,21 @@ services:
         value: /var/data/btc-curve
       - key: BTC_CURVE_INTERVAL_SEC
         value: "60"
-      - key: BTC_CURVE_RETAIN_DAYS
-        value: "21"
+      - key: BTC_CURVE_DISK_BUDGET_MB
+        value: "3000"
+      # Optional. A whole number of days keeps that window and deletes older day files.
+      # Leave it out to keep every day.
+      # - key: BTC_CURVE_RETAIN_DAYS
+      #   value: "365"
       # Optional. When set, the page and JSON are only served with ?k=<token>
       # (an unlisted link for a reader). Set in the dashboard, not here.
       # - key: BTC_CURVE_TOKEN
       #   sync: false
       # The BTC pairs UI at /pairs runs inside this process (BTC_CURVE_PAIRS=0 turns it off).
-      # Its gap history lives under the curve disk at /var/data/btc-curve/pairs.
+      # Its gap history lives under the curve disk at /var/data/btc-curve/pairs and follows
+      # BTC_CURVE_RETAIN_DAYS unless BTC_PAIRS_RETAIN_DAYS is set (same values, same rule).
+      # - key: BTC_PAIRS_RETAIN_DAYS
+      #   value: "365"
       # - key: BTC_PAIRS_INTERVAL_SEC
       #   value: "10"
       # Optional. The trader's engine endpoint the Launch button sends to by default; he can
@@ -253,7 +284,26 @@ services:
         - services/api/scripts/event*.ts
         - services/api/scripts/memberApp*.ts
         - services/api/scripts/btc*.ts
-    # One snapshot a minute is ~40 KB on disk with a full slate; 21 days is ~1.2 GB.
+    # What is kept: every day, forever, one file per UTC day (snapshots-YYYY-MM-DD.jsonl).
+    # Nothing is deleted unless SPORTS_VENUES_RETAIN_DAYS is set to a whole number of days.
+    # Unset, empty, 0, all and none keep everything; a value that cannot be read keeps
+    # everything too and /healthz says so.
+    #
+    # The gzip step: one hour after a UTC day ends, its file is compressed to .jsonl.gz and
+    # checked against the original before the original is removed. The boot reload reads both.
+    #
+    # Growth, measured on 11 November 2026 by running this service for a few minutes with 48
+    # games listed: one snapshot is 44 KB raw and 7.4 KB gzipped, one a minute, so 63 MB a day
+    # raw and 11 MB a day gzipped. This 2 GB disk holds the current day raw plus about 180
+    # closed days at that slate. A year is about 4 GB: raise sizeGB to 5 before then. A
+    # bigger slate grows faster; /healthz data.bytes is the number to watch.
+    #
+    # The budget: SPORTS_VENUES_DISK_BUDGET_MB is the size /healthz measures the data against.
+    # Past 80% it says so under data.warning. The budget never deletes anything.
+    #
+    # IMPORTANT for the operator: if SPORTS_VENUES_RETAIN_DAYS is set to 21 in the Render
+    # dashboard for this service (it was in this file until now), delete it there. A value in
+    # the dashboard overrides the code default. Check /healthz: data.retention must read "all".
     disk:
       name: sports-venues-data
       mountPath: /var/data
@@ -265,8 +315,12 @@ services:
         value: /var/data/sports-venues
       - key: SPORTS_VENUES_INTERVAL_SEC
         value: "60"
-      - key: SPORTS_VENUES_RETAIN_DAYS
-        value: "21"
+      - key: SPORTS_VENUES_DISK_BUDGET_MB
+        value: "2000"
+      # Optional. A whole number of days keeps that window and deletes older day files.
+      # Leave it out to keep every day.
+      # - key: SPORTS_VENUES_RETAIN_DAYS
+      #   value: "365"
       # Optional. When set, the page and JSON are only served with ?k=<token>
       # (an unlisted link for a reader). Set in the dashboard, not here.
       # - key: SPORTS_VENUES_TOKEN

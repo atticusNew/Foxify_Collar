@@ -214,9 +214,10 @@ its figures so far.
 
 **Where they are kept.** All of today's episodes and the last 50 per tenor from earlier days are
 held in memory. Each finished episode is appended to `episodes-YYYY-MM-DD.jsonl` in the data dir,
-next to the gap history, and reloaded on a restart; files older than three days are deleted. A
-clean stop (SIGTERM) ends the open runs and writes them. A hard kill loses the runs open at that
-moment.
+next to the gap history, and reloaded on a restart (the last three days). The files themselves
+are kept: nothing is deleted unless a retention window is set, and a day that has closed is
+gzipped. A clean stop (SIGTERM) ends the open runs and writes them. A hard kill loses the runs
+open at that moment.
 
 **Limits.** The cycle is ten seconds, so a duration is known to that grain: a 10-second episode
 is a lock seen on two reads ten seconds apart. On the 15-minute window the stale rule caps what
@@ -363,7 +364,8 @@ curve service (with `?k=<token>` when the service has one):
 listed this cycle. A pair whose book did not answer is still found by that market's id, so the
 caller reads why. `/healthz` on the curve service carries a `pairs` block (cycles, listeners,
 index prints held, the regime label, which tenors are listed, books not answering, lock episodes
-today per tenor, last error).
+today per tenor, last error, and `data`: what the pairs files take on disk, the retention in
+force, and whether the last write landed).
 
 ## What each cycle does
 
@@ -392,7 +394,9 @@ today per tenor, last error).
    score, the model probability. Per band: implied, model, cheapest legs, edge, sigmas. Per
    tenor: the pick, from the rows that are not stale and have both books.
 8. Gaps on reads that are not stale are appended to a day file (`gaps-YYYY-MM-DD.jsonl`) and
-   reloaded within the window on a restart; files older than three days are deleted.
+   reloaded within the window on a restart. Every day's file is kept unless a retention window
+   is set (`BTC_PAIRS_RETAIN_DAYS`, else the curve's `BTC_CURVE_RETAIN_DAYS`); a closed day is
+   gzipped to `.jsonl.gz` and read back from that.
 9. Lock runs are stepped: extended, opened or ended. Episodes that ended are appended to
    `episodes-YYYY-MM-DD.jsonl`. The report is pushed to every stream listener.
 
@@ -447,6 +451,8 @@ On `atticus-btc-curve` (the mount) or the standalone script:
 | `BTC_CURVE_PAIRS` | on | `0` turns the mount off (curve service only) |
 | `BTC_PAIRS_INTERVAL_SEC` | 10 | floor 5 |
 | `BTC_PAIRS_DATA_DIR` | `<BTC_CURVE_DATA_DIR>/pairs` (mount), `/tmp/btc-pairs` (standalone) | gap history and lock episodes |
+| `BTC_PAIRS_RETAIN_DAYS` | unset: every day is kept (on the mount, unset follows `BTC_CURVE_RETAIN_DAYS`) | a whole number of days keeps that window and deletes older day files; `0`, `all`, `none` keep everything; a value that cannot be read keeps everything and says so on `/healthz` |
+| `BTC_PAIRS_DISK_BUDGET_MB` | unset | standalone script: `/healthz` warns past 80% of it; deletes nothing. The mount is covered by `BTC_CURVE_DISK_BUDGET_MB` |
 | `BTC_PAIRS_STALE_SECONDS` | `15m=15,1h=30,1d=30` | seconds beyond which a book copy makes its row a stale read, per tenor; any subset |
 | `BTC_PAIRS_LAUNCH_URL` | unset | the engine endpoint prefilled on the page |
 | `BTC_PAIRS_LAUNCH_MODE` | `send` | `send` POSTs the payload; `open` opens the engine URL with the pair in the query; the page can switch locally |

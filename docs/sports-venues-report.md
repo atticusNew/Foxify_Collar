@@ -98,16 +98,25 @@ and live 0.06 are both honoured historically.
 One JSONL file per UTC day under `SPORTS_VENUES_DATA_DIR`, one line per snapshot (every listing's
 two sides, sizes, fee, start; health per venue). The in-memory history keeps 72 hours as compact
 points (`[awayBid, awayAsk, homeBid, homeAsk, feeTheta, awayBidQty, awayAskQty, homeBidQty, homeAskQty]`
-per game and venue, plus starts). Day files older than `SPORTS_VENUES_RETAIN_DAYS` are deleted
-hourly. A source that does not answer within `SPORTS_VENUES_SOURCE_DEADLINE_MS` (45 s) is marked
-down for the cycle and the cycle goes on.
+per game and venue, plus starts). A source that does not answer within
+`SPORTS_VENUES_SOURCE_DEADLINE_MS` (45 s) is marked down for the cycle and the cycle goes on.
+
+Every day is kept. Nothing is deleted unless `SPORTS_VENUES_RETAIN_DAYS` is set to a whole number
+of days; unset, empty, `0`, `all` and `none` keep everything, and a value that cannot be read
+keeps everything and says so on `/healthz`. One hour after a UTC day ends its file is gzipped to
+`snapshots-YYYY-MM-DD.jsonl.gz` (verified against the original before the original is removed);
+the boot reload reads both forms. `/healthz` carries a `data` block (bytes, day files, oldest and
+newest day, retention, whether the last write landed) and, with `SPORTS_VENUES_DISK_BUDGET_MB`
+set, how full the budget is and a warning past 80%. The budget deletes nothing. The same code
+keeps the BTC curve's files; `docs/btc-curve-report.md` has the detail.
 
 Endpoints: `/` (page, auto-refresh at the interval), `/api/report` (the page's data), `/api/latest`
 (the raw snapshot), `/healthz` (no token). With `SPORTS_VENUES_TOKEN` set, the page and JSON need
 `?k=<token>`.
 
 Env: `SPORTS_VENUES_PORT` (8870), `SPORTS_VENUES_DATA_DIR`, `SPORTS_VENUES_INTERVAL_SEC` (60),
-`SPORTS_VENUES_TOKEN`, `SPORTS_VENUES_RETAIN_DAYS` (21), `SPORTS_VENUES_HORIZON_DAYS` (3),
+`SPORTS_VENUES_TOKEN`, `SPORTS_VENUES_RETAIN_DAYS` (unset: keep every day),
+`SPORTS_VENUES_DISK_BUDGET_MB` (unset: no budget), `SPORTS_VENUES_HORIZON_DAYS` (3),
 `NOVIG_PUBLIC_HOST`, `POLY_US_REST_BASE`, `KALSHI_REST_BASE`.
 
 Run locally: `npx tsx services/api/scripts/sportsVenuesReportService.ts` then open

@@ -534,11 +534,46 @@ test("lock episodes over whole cycles: counted from the second fresh cycle, ende
   assert.deepEqual([d6.lockEpisodes.fifteen.episodes, d6.lockEpisodes.fifteen.open, d6.lockEpisodes.fifteen.longestDurationSec], [2, 0, 10]);
   assert.equal(getJson<{ episodes: LockEpisode[] }>(again, "/api/episodes").episodes.length, 2);
 
-  // a day file older than three days is deleted on load, a torn line is skipped
+  // a day file older than three days is not reloaded and is not deleted either, a torn line is skipped
   const { writeFileSync, existsSync } = await import("node:fs");
   writeFileSync(join(dir, "episodes-2026-11-05.jsonl"), `${JSON.stringify(written[0])}\n`);
   writeFileSync(join(dir, "episodes-2026-11-09.jsonl"), `${JSON.stringify({ ...written[0], endedAt: "2026-11-09T12:00:10.000Z", startedAt: "2026-11-09T12:00:00.000Z" })}\n{"horizon":"fift`);
   const third = new PairsCollector({ dataDir: dir, fetchImpl: f.fetchImpl, clock: () => f.now, log: () => {} });
   assert.equal(third.loadEpisodes(), 3);
-  assert.equal(existsSync(join(dir, "episodes-2026-11-05.jsonl")), false);
+  assert.equal(existsSync(join(dir, "episodes-2026-11-05.jsonl")), true, "every day is kept on disk");
+});
+
+test("a cycle whose writes fail (a full disk) still prices and serves the page; /healthz says it is not recording and why, and says so until a write lands again", async () => {
+  const f = fake();
+  let full = true;
+  const { appendFileSync } = await import("node:fs");
+  const { c, dir } = collectorOn(f, {
+    keeper: {
+      appendImpl: (path, data) => {
+        if (full) throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC", syscall: "write" });
+        appendFileSync(path, data);
+      },
+    },
+  });
+  const d1 = await c.collectOnce();
+  assert.ok(d1.hourly && d1.fifteen, "the cycle priced both tenors");
+  assert.match(page(c), /<section data-horizon="hourly"/, "the page is served");
+  assert.equal(getJson<{ at: string }>(c, "/api/pairs").at, d1.at);
+  assert.deepEqual(readdirSync(dir), [], "nothing reached the disk");
+  const h1 = c.health() as { data: { recording: boolean; notRecording?: string; writesLost?: { count: number } }; lastError?: string };
+  assert.equal(h1.data.recording, false);
+  assert.match(h1.data.notRecording ?? "", /^Not recording: the last write to gaps-2026-11-10\.jsonl failed at \S+ because the disk is full \(ENOSPC\); 1 in a row since \S+ is not on disk\. The pages keep serving from memory\.$/);
+
+  f.now += 10_000;
+  await c.collectOnce();
+  const h2 = c.health() as typeof h1;
+  assert.match(h2.data.notRecording ?? "", /2 in a row since \S+ are not on disk/);
+
+  // room again: the next cycle is written and the count of what was lost stays on /healthz
+  full = false;
+  f.now += 10_000;
+  await c.collectOnce();
+  const h3 = c.health() as typeof h1;
+  assert.deepEqual([h3.data.recording, h3.data.notRecording, h3.data.writesLost?.count], [true, undefined, 2]);
+  assert.equal(readFileSync(join(dir, "gaps-2026-11-10.jsonl"), "utf8").trim().split("\n").length, 1);
 });
