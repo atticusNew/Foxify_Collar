@@ -345,7 +345,7 @@ const CARD_CONTACT: CardContact | null =
         phoneE164: "+17186643497",
         linkedin: "https://www.linkedin.com/in/michael-william-5888ba263/",
         site: "https://event.earnandprotect.xyz/",
-        note: "Earn & Protect. The Lock in button: a floor and cash now on any open position, hedged leg for leg.",
+        note: "Earn & Protect. The Lock in button: a floor and a credit at lock in on any open position, hedged leg for leg.",
       };
 
 /**
@@ -431,7 +431,7 @@ const CRYPTO_ASSET_NAMES: Record<string, string> = {
   KXETHD: "Ethereum",
 };
 const CRYPTO_PARITY_NOTE =
-  "the hedge is the protected market's own No side; settlement is identical by construction";
+  "the hedge is the locked market's own No side; settlement is identical by construction";
 const CRYPTO_PM_NOT_OFFERED =
   "not offered for crypto: the venues settle on different index feeds, so a cross-venue hedge would not be the same trade";
 
@@ -1581,12 +1581,12 @@ export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> 
     return { ok: false, code: "bad_entry", detail: "entry must be whole cents from 1 to 99" };
   }
   const template = LEAGUE_TEMPLATES.find((t) => ticker.startsWith(`${t.kalshiSeries}-`));
-  if (!template) return { ok: false, code: "not_offered", detail: "Protection isn't offered on this market." };
+  if (!template) return { ok: false, code: "not_offered", detail: "Lock in isn't offered on this market." };
   const market = (await getOpenMarkets(template.kalshiSeries)).find((m) => m.ticker === ticker);
-  if (!market || market.status !== "active") return { ok: false, code: "market_not_active", detail: "This market isn't open for protection right now." };
+  if (!market || market.status !== "active") return { ok: false, code: "market_not_active", detail: "This market isn't open to lock in right now." };
   const markCents = midCents(market);
   if (!(markCents >= 1 && markCents <= 99 && market.yesBidCents > 0 && market.yesAskCents < 100)) {
-    return { ok: false, code: "mark_out_of_range", detail: "The odds are outside the range we protect." };
+    return { ok: false, code: "mark_out_of_range", detail: "The odds are outside the range we lock in." };
   }
   let pair: MatchedPair | null;
   if (pairCache.has(ticker)) {
@@ -1596,7 +1596,7 @@ export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> 
     pair = await matchKalshiMarket(market, template);
     pairCache.set(ticker, pair);
   }
-  if (!pair) return { ok: false, code: "no_matched_market", detail: "Protection isn't offered on this event yet." };
+  if (!pair) return { ok: false, code: "no_matched_market", detail: "Lock in isn't offered on this event yet." };
   const window = lockWindow(pair.gameStartTime, now, inputs.inPlay ?? IN_PLAY);
   if (inputs.inGame) {
     if (protectWindow(pair.gameStartTime, now).why !== "in_progress") return { ok: false, code: "not_started", detail: "The game has not started; the in-game read waits for it." };
@@ -1604,7 +1604,7 @@ export async function quoteOne(inputs: OneQuoteInputs): Promise<OneQuoteResult> 
     if (window.why === "in_progress") {
       return { ok: false, code: "market_too_close_to_start", detail: (inputs.inPlay ?? IN_PLAY) ? "This game is past the window it can be locked in." : "This game has started; it can be locked in before the start only." };
     }
-    return { ok: false, code: "market_too_close_to_start", detail: window.why === "far_out" ? "This one is too far out to protect yet." : "This one starts too soon to protect." };
+    return { ok: false, code: "market_too_close_to_start", detail: window.why === "far_out" ? "This one is too far out to lock in yet." : "This one starts too soon to lock in." };
   }
   const position: ReturnType<typeof buildShowcasePosition> = {
     contracts: inputs.contracts,
@@ -2221,7 +2221,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 403, {
           ok: false,
           error: "admin_required",
-          message: adminAuth.enabled ? "bad admin token" : "admin surfaces disabled — set EVENT_X_ADMIN_TOKEN",
+          message: adminAuth.enabled ? "bad admin token" : "admin surfaces disabled: set EVENT_X_ADMIN_TOKEN",
         });
         return;
       }
@@ -2299,7 +2299,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         funnelState = emptyEventFunnel();
         funnelDirty = true;
         flushFunnel();
-        sendJson(res, 200, { ok: true, message: "funnel counters cleared (page loads + actions + sessions + protects)" });
+        sendJson(res, 200, { ok: true, message: "funnel counters cleared (page loads + actions + sessions + Lock in taps)" });
         return;
       }
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -2342,7 +2342,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 if (process.env.NODE_ENV !== "test" && process.env.EVENT_X_EMBED !== "1") {
   server.listen(PORT, () => {
     // eslint-disable-next-line no-console
-    console.log(`[event-protect-x] listening on :${PORT} (protection router: games + crypto)`);
+    console.log(`[event-protect-x] listening on :${PORT} (Lock in router: games + crypto)`);
     // prewarm so the first visitor is not the one paying for venue round-trips;
     // a failed prewarm must never crash the process (retried on first request)
     getCachedScan().catch(() => {});

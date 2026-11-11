@@ -33,7 +33,7 @@ export function renderEventAppHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
 <title>Earn &amp; Protect · events</title>
-<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit, priced live. Demonstration with live pricing." />
+<meta name="description" content="One tap turns an all-or-nothing event position into a floor, a cap, and a cash credit, priced live. Demonstration with live pricing." />
 <meta property="og:title" content="Earn &amp; Protect · events" />
 <meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, paid in cash. Demonstration, live pricing." />
 <meta property="og:type" content="website" />
@@ -134,25 +134,25 @@ footer b{color:var(--dim);font-weight:600}
     <div class="eyebrow"><span class="dot"></span><span id="eyeline">live from Kalshi</span><span class="simlabel">simulation · live pricing</span></div>
     <div class="loading" id="loading">
       <div class="spinner"></div>
-      <div>quoting live protection from Kalshi and the options market…</div>
+      <div>pricing the lock live from Kalshi and the options market…</div>
       <div class="note">live books, executable depth, rounded against us</div>
     </div>
     <div id="main" style="display:none">
     <h1 id="title">&nbsp;</h1>
     <div class="chancerow">
-      <span class="chance" id="chance">–</span>
+      <span class="chance" id="chance">…</span>
       <span class="chancelbl">chance</span>
-      <span class="countd" id="countd">–</span>
+      <span class="countd" id="countd">…</span>
     </div>
     <div class="settleline">settled by Bitcoin's official reference price</div>
 
     <div class="pos">
       <div>
-        <div class="side"><span class="yes">Yes</span><span id="poscount">–</span></div>
+        <div class="side"><span class="yes">Yes</span><span id="poscount">…</span></div>
         <div class="sub" id="possub">&nbsp;</div>
       </div>
       <div class="val">
-        <div class="v" id="posval">–</div>
+        <div class="v" id="posval">…</div>
         <div class="pnl" id="pospnl">&nbsp;</div>
       </div>
     </div>
@@ -160,16 +160,16 @@ footer b{color:var(--dim);font-weight:600}
     <div class="protect">
       <div class="hero" id="offer" style="display:none">
         <div class="lbl">your minimum payout</div>
-        <div class="min" id="minout">–</div>
-        <div class="sweet">up to <b id="maxout">–</b> if Yes · includes a <b id="creditout">–</b> credit paid Yes or No</div>
+        <div class="min" id="minout">…</div>
+        <div class="sweet">up to <b id="maxout">…</b> if Yes · includes a <b id="creditout">…</b> credit paid Yes or No</div>
       </div>
 
       <div class="togglerow">
-        <div><div class="t">Protect this position</div><div class="d" id="toggledesc">one tap · protected instantly</div></div>
+        <div><div class="t">Lock in this position</div><div class="d" id="toggledesc">one tap · locked in instantly</div></div>
         <label class="switch"><input type="checkbox" id="toggle" disabled /><span class="slider"></span></label>
       </div>
 
-      <div class="protectedline" id="protectedline"><span>Protected · <b id="paysline">payout at close</b></span><button type="button" class="undo" id="undo">undo</button></div>
+      <div class="protectedline" id="protectedline"><span>Locked in · <b id="paysline">payout at close</b></span><button type="button" class="undo" id="undo">undo</button></div>
 
       <div class="refusal" id="refusal"></div>
 
@@ -188,8 +188,8 @@ footer b{color:var(--dim);font-weight:600}
     <details>
       <summary>How this works</summary>
       <ul>
-        <li><b>Real market, real prices.</b> The event and its prices are live from Kalshi's public data. The protection terms are quoted live from listed option markets at executable depth.</li>
-        <li><b>The trade you are making.</b> You give up the top slice of your win to guarantee you never leave empty-handed. The options market pays more for that slice than your floor costs; the difference is your credit.</li>
+        <li><b>Real market, real prices.</b> The event and its prices are live from Kalshi's public data. The lock's terms are quoted live from listed option markets at executable depth.</li>
+        <li><b>The trade you are making.</b> You give up the top slice of your win, and in return there is a floor: the least you end with if it settles No. The options market pays more for that slice than your floor costs; the difference is your credit.</li>
         <li><b>How it settles.</b> The market is settled by the BRTI, the Bitcoin reference index published by CF Benchmarks: an average across major exchanges, read over the final 60 seconds. Yes or No, you get your payout plus the credit.</li>
         <li><b>The credit you see is the credit you get.</b> Our fee comes out of the cash we source before the number is shown; nothing is embedded in your terms. When the market cannot fund a credit, we refuse and say so.</li>
         <li><b>Read only.</b> This demonstration holds no keys, places no orders, and cannot move funds.</li>
@@ -263,9 +263,9 @@ footer b{color:var(--dim);font-weight:600}
       '<div class="row"><span>market</span><b>Kalshi '+mk.ticker+'</b></div>'+
       '<div class="row"><span>settled by</span><b>60s average of the BRTI (CF Benchmarks) vs '+Number(mk.strike).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0})+'</b></div>'+
       '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2 · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
-      '<div class="row"><span>without protection</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
-      '<div class="row"><span>with protection</span><b>'+usd(o.yes)+' if Yes · '+usd(o.no)+' if No</b></div>'+
-      '<div class="row"><span>cost of protection</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+' at current odds</b></div>'+
+      '<div class="row"><span>without the lock</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
+      '<div class="row"><span>with the lock</span><b>'+usd(o.yes)+' if Yes · '+usd(o.no)+' if No</b></div>'+
+      '<div class="row"><span>cost of the lock</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+' at current odds</b></div>'+
       '<div class="row"><span>position</span><b>simulated · terms quoted live</b></div>';
     $('hedge').style.display='block';
   }
@@ -306,7 +306,7 @@ footer b{color:var(--dim);font-weight:600}
         t.disabled=false;
         $('refusal').classList.remove('show');
         paintOffer(q); // the live offer is visible BEFORE the flip
-        $('toggledesc').textContent='one tap · protected instantly';
+        $('toggledesc').textContent='one tap · locked in instantly';
       } else if(q){
         t.disabled=true; t.checked=false;
         hideOffer();
@@ -324,7 +324,7 @@ footer b{color:var(--dim);font-weight:600}
     $('toggle').checked=false;
     $('protectedline').classList.remove('show');
     $('ticket').classList.remove('show');
-    $('toggledesc').textContent='one tap · protected instantly';
+    $('toggledesc').textContent='one tap · locked in instantly';
     render();
   }
 
@@ -354,8 +354,8 @@ footer b{color:var(--dim);font-weight:600}
     tk.innerHTML='<h3>Settled '+(yes?'Yes':'No')+' (simulated)</h3>'+
       '<div class="row"><span class="k">'+(yes?'cap':'floor')+' × '+t.contracts+'</span><span>'+usd((yes?t.capCents:t.floorCents)*t.contracts)+'</span></div>'+
       '<div class="row"><span class="k">credit</span><span>'+usd(t.creditCents)+'</span></div>'+
-      '<div class="row total"><span class="k">payout with protection</span><span>'+usd(yes?o.yes:o.no)+'</span></div>'+
-      '<div class="row"><span class="k">without protection</span><span>'+usd(yes?o.nakedYes:o.nakedNo)+'</span></div>';
+      '<div class="row total"><span class="k">payout with the lock</span><span>'+usd(yes?o.yes:o.no)+'</span></div>'+
+      '<div class="row"><span class="k">without the lock</span><span>'+usd(yes?o.nakedYes:o.nakedNo)+'</span></div>';
     tk.classList.add('show');
   }
 

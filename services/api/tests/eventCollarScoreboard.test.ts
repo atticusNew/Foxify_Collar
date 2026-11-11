@@ -46,8 +46,8 @@ test("weeks are Monday to Sunday in New York; a Sunday night in UTC's Monday sta
   assert.equal(weekMondayOf(Date.parse("2026-10-27T20:00:00Z")), "2026-10-26");
   assert.equal(weekMondayOf(Date.parse("2026-11-02T03:30:00Z")), "2026-10-26", "Sunday 10:30pm ET is still the week of Oct 26");
   assert.equal(weekMondayOf(Date.parse("2026-11-02T06:00:00Z")), "2026-11-02", "Monday 1am ET is the new week");
-  assert.equal(weekLabel("2026-10-19"), "Week of Oct 19 – 25");
-  assert.equal(weekLabel("2026-10-26"), "Week of Oct 26 – Nov 1");
+  assert.equal(weekLabel("2026-10-19"), "Week of Oct 19 to 25");
+  assert.equal(weekLabel("2026-10-26"), "Week of Oct 26 to Nov 1");
 });
 
 test("venueScoreboard: other side by venue weighted by contracts, the winner's edge over the runner-up, availability when asked, refusals by week, taps apart, parlays by the router's venue", () => {
@@ -78,7 +78,7 @@ test("venueScoreboard: other side by venue weighted by contracts, the winner's e
   assert.equal(thisWeek.n, 0, "nothing yet this week");
   assert.equal(thisWeek.refusals.refusedPct, null);
 
-  assert.equal(last.label, "Week of Oct 26 – Nov 1");
+  assert.equal(last.label, "Week of Oct 26 to Nov 1");
   assert.equal(last.n, 4, "two singles and two priced parlay tickets");
   assert.equal(last.taps, 0);
   assert.equal(last.contracts, 236);
@@ -108,7 +108,7 @@ test("venueScoreboard: other side by venue weighted by contracts, the winner's e
   assert.deepEqual(last.byLeague[0].otherSide, [{ venue: "Novig", n: 2, contracts: 166, sharePct: 100 }]);
   assert.deepEqual(last.byLeague[1].availability, [{ venue: "Kalshi", asked: 1, priced: 1, pricedPct: 100 }, { venue: "Novig", asked: 1, priced: 0, pricedPct: 0 }]);
 
-  assert.equal(before.label, "Week of Oct 19 – 25");
+  assert.equal(before.label, "Week of Oct 19 to 25");
   assert.equal(before.n, 1);
   assert.equal(before.taps, 1, "a real holder's lock is counted apart");
   assert.equal(before.notionalCents, 7000);
@@ -117,7 +117,7 @@ test("venueScoreboard: other side by venue weighted by contracts, the winner's e
   assert.deepEqual(before.fees, { n: 1, byVenue: [{ venue: "Polymarket", n: 1, avgFeeCentsPerContract: 0.05 }] }, "Polymarket's fee is the record's: 10c over 200 contracts");
   assert.deepEqual(sb.feeRules.map((r) => r.venue), ["Kalshi", "Polymarket", "ProphetX", "Novig"]);
   assert.ok(sb.feeRules.every((r) => r.rule.length > 20 && /^\d{4}-\d{2}-\d{2}$/.test(r.asOf)));
-  assert.deepEqual(before.refusals.byReason, [{ reason: "not a market we protect", count: 1 }]);
+  assert.deepEqual(before.refusals.byReason, [{ reason: "not a market we lock in", count: 1 }]);
 
   // nothing of the writer's book, and no holder, anywhere in the table
   const keys = new Set<string>();
@@ -156,12 +156,12 @@ test("renderScoreboardHtml: the same table as a page — a card per week with a 
   const sb = venueScoreboard({ positions, refusals: {}, tickets: [ticket({ ok: true, at: "2026-10-30T20:00:00.000Z", contracts: 66, route: "novig", hedgeCostCents: 2500 })], now: NOW, weeks: 2 });
   const html = renderScoreboardHtml({ scoreboard: sb, weeks: 2 });
   assert.ok(html.startsWith("<!doctype html>"));
-  assert.ok(html.includes("Week of Oct 26 – Nov 1"));
-  assert.ok(html.includes("Week of Nov 2 – 8"));
+  assert.ok(html.includes("Week of Oct 26 to Nov 1"));
+  assert.ok(html.includes("Week of Nov 2 to 8"));
   assert.ok(html.includes("Nothing on the record this week."), "an empty week says so instead of an empty table");
   assert.ok(html.includes("3 positions (2 singles, 1 parlay) · 216 contracts · $25 of the other side bought · 1 real tap."));
   assert.ok(html.includes('<td class="v">Novig</td><td class="hi">66.7%<i>1 win</i></td><td class="hi">100%<i>1 win</i></td><td class="hi">0.60¢<i>80 bps all in · n 1</i></td><td>0.00¢<i>n 2</i></td><td>100%<i>1 of 1 asked</i></td>'));
-  assert.ok(html.includes('<td class="v">Kalshi</td><td class="hi">33.3%<i>1 win</i></td><td>—</td><td>—</td><td>0.91¢<i>n 1</i></td><td>100%<i>1 of 1 asked</i></td>'));
+  assert.ok(html.includes('<td class="v">Kalshi</td><td class="hi">33.3%<i>1 win</i></td><td>n/a</td><td>n/a</td><td>0.91¢<i>n 1</i></td><td>100%<i>1 of 1 asked</i></td>'));
   assert.ok(html.includes("By league: <b>NFL</b> 2 positions (Novig 100%) · <b>NBA</b> 1 position (Kalshi 100%)."));
   assert.ok(html.includes('href="/api/shadow/scoreboard?weeks=2"') && html.includes('href="/api/shadow/scoreboard.csv?weeks=2" download'));
   for (const r of sb.feeRules) assert.ok(html.includes(r.rule.replace(/&/g, "&amp;")), r.venue);
@@ -179,9 +179,9 @@ test("venueScoreboardCsv: an all row per week with totals and refusals, a row pe
   const csv = venueScoreboardCsv(sb);
   const lines = csv.trim().split("\n");
   assert.equal(lines[0], "week_from,week_to,week,venue,positions,taps,contracts,other_side_notional_cents,singles_won,singles_contracts,singles_share_pct,parlays_won,parlays_contracts,parlays_share_pct,edge_n,avg_edge_cents_per_contract,avg_edge_all_in_bps,fee_n,avg_fee_cents_per_contract,asked,priced,priced_pct,refused,markets_priced,refused_pct");
-  assert.equal(lines[1], "2026-11-02,2026-11-08,Week of Nov 2 – 8,all,0,0,0,0,0,0,100,0,0,100,0,,,0,,0,,,0,0,");
-  assert.equal(lines[2], "2026-10-26,2026-11-01,Week of Oct 26 – Nov 1,all,1,0,100,0,1,100,100,0,0,100,1,,,1,,1,,,0,1,0");
-  assert.equal(lines[3], "2026-10-26,2026-11-01,Week of Oct 26 – Nov 1,Kalshi,,,,,0,0,0,0,0,0,0,,,0,,1,1,100,,,");
-  assert.equal(lines[4], "2026-10-26,2026-11-01,Week of Oct 26 – Nov 1,Novig,,,,,1,100,100,0,0,0,1,0.6,80,1,0,1,1,100,,,");
+  assert.equal(lines[1], "2026-11-02,2026-11-08,Week of Nov 2 to 8,all,0,0,0,0,0,0,100,0,0,100,0,,,0,,0,,,0,0,");
+  assert.equal(lines[2], "2026-10-26,2026-11-01,Week of Oct 26 to Nov 1,all,1,0,100,0,1,100,100,0,0,100,1,,,1,,1,,,0,1,0");
+  assert.equal(lines[3], "2026-10-26,2026-11-01,Week of Oct 26 to Nov 1,Kalshi,,,,,0,0,0,0,0,0,0,,,0,,1,1,100,,,");
+  assert.equal(lines[4], "2026-10-26,2026-11-01,Week of Oct 26 to Nov 1,Novig,,,,,1,100,100,0,0,0,1,0.6,80,1,0,1,1,100,,,");
   assert.equal(lines.length, 5, "venues never asked and never winning have no row");
 });

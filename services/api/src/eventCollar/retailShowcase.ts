@@ -53,29 +53,29 @@ export type RetailQuoteResult = RetailQuote | RetailRefusal;
  */
 export const RETAIL_REFUSAL_COPY: Readonly<Record<string, { code: string; detail: string }>> = {
   credit_nonpositive: { code: "no_credit", detail: "The market can't fund a credit on this position right now." },
-  protection_too_rich: { code: "too_expensive", detail: "Protection is too expensive on this one right now." },
+  protection_too_rich: { code: "too_expensive", detail: "Lock in is too expensive on this one right now." },
   credit_too_small: { code: "credit_too_small", detail: "The market can't fund a worthwhile credit on this one right now." },
-  far_out_no_book: { code: "too_early", detail: "Protection opens closer to the start of this one." },
+  far_out_no_book: { code: "too_early", detail: "Lock in opens closer to the start of this one." },
   mark_disagreement: { code: "price_unsettled", detail: "The price on this one has not settled yet. Check back closer to the start." },
-  route_gated: { code: "no_route", detail: "Protection was priced, but no venue can take the hedge for it tonight." },
-  market_too_close_to_start: { code: "too_close", detail: "This one starts too soon to protect." },
-  mark_out_of_range: { code: "odds_out_of_range", detail: "The odds are outside the range we protect." },
-  pm_book_empty: { code: "no_depth", detail: "Not enough depth to protect this size right now." },
-  pm_book_too_thin: { code: "no_depth", detail: "Not enough depth to protect this size right now." },
-  kalshi_book_empty: { code: "no_depth", detail: "Not enough depth to protect this size right now." },
-  kalshi_book_too_thin: { code: "no_depth", detail: "Not enough depth to protect this size right now." },
-  no_matched_market: { code: "not_offered", detail: "Protection isn't offered on this event yet." },
-  resolution_mismatch: { code: "not_offered", detail: "Protection isn't offered on this event yet." },
+  route_gated: { code: "no_route", detail: "The lock was priced, but no venue can take the hedge for it tonight." },
+  market_too_close_to_start: { code: "too_close", detail: "This one starts too soon to lock in." },
+  mark_out_of_range: { code: "odds_out_of_range", detail: "The odds are outside the range we lock in." },
+  pm_book_empty: { code: "no_depth", detail: "Not enough depth to lock in this size right now." },
+  pm_book_too_thin: { code: "no_depth", detail: "Not enough depth to lock in this size right now." },
+  kalshi_book_empty: { code: "no_depth", detail: "Not enough depth to lock in this size right now." },
+  kalshi_book_too_thin: { code: "no_depth", detail: "Not enough depth to lock in this size right now." },
+  no_matched_market: { code: "not_offered", detail: "Lock in isn't offered on this event yet." },
+  resolution_mismatch: { code: "not_offered", detail: "Lock in isn't offered on this event yet." },
   // BTC (OKX-hedged) demo codes
-  market_not_active: { code: "not_offered", detail: "This market isn't open for protection right now." },
-  market_too_close_to_resolution: { code: "too_close", detail: "This one settles too soon to protect." },
-  no_bracketing_strikes: { code: "not_offered", detail: "Protection isn't offered on this market yet." },
-  no_matching_expiry: { code: "not_offered", detail: "Protection isn't offered on this market yet." },
-  okx_book_empty: { code: "no_depth", detail: "Not enough depth to protect this size right now." },
-  okx_book_too_thin: { code: "no_depth", detail: "Not enough depth to protect this size right now." },
+  market_not_active: { code: "not_offered", detail: "This market isn't open to lock in right now." },
+  market_too_close_to_resolution: { code: "too_close", detail: "This one settles too soon to lock in." },
+  no_bracketing_strikes: { code: "not_offered", detail: "Lock in isn't offered on this market yet." },
+  no_matching_expiry: { code: "not_offered", detail: "Lock in isn't offered on this market yet." },
+  okx_book_empty: { code: "no_depth", detail: "Not enough depth to lock in this size right now." },
+  okx_book_too_thin: { code: "no_depth", detail: "Not enough depth to lock in this size right now." },
 };
 
-const GENERIC_REFUSAL = { code: "unavailable", detail: "Protection isn't available on this position right now." };
+const GENERIC_REFUSAL = { code: "unavailable", detail: "Lock in isn't available on this position right now." };
 
 export const retailRefusal = (code: string | undefined): RetailRefusal => {
   const c = (code && RETAIL_REFUSAL_COPY[code]) || GENERIC_REFUSAL;

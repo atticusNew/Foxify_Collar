@@ -192,11 +192,11 @@ test("retail showcase: every engine refusal code maps to a retail sentence with 
   assert.equal(retailRefusal(undefined).code, "unavailable");
 
   const refused = retailCrossQuote({ ok: false, code: "pm_book_too_thin", detail: "41 of 100 shares at ≤ 45c on token 222", bestShortfallCents: 12 });
-  assert.deepEqual(refused, { ok: false, code: "no_depth", detail: "Not enough depth to protect this size right now." });
+  assert.deepEqual(refused, { ok: false, code: "no_depth", detail: "Not enough depth to lock in this size right now." });
   assert.deepEqual(retailCrossQuote({ ok: false, code: "protection_too_rich", detail: "the cheapest route costs 4.72% of expected value; the ceiling is 3.00%" }), {
     ok: false,
     code: "too_expensive",
-    detail: "Protection is too expensive on this one right now.",
+    detail: "Lock in is too expensive on this one right now.",
   });
 });
 
@@ -315,7 +315,7 @@ test("retail showcase: the BTC demo quote becomes one balanced tier with no legs
   assert.deepEqual(retailWrapQuote({ ok: false, code: "okx_book_too_thin", detail: "2 of 3 verticals at ≤ 0.0021 BTC" }), {
     ok: false,
     code: "no_depth",
-    detail: "Not enough depth to protect this size right now.",
+    detail: "Not enough depth to lock in this size right now.",
   });
 
   const payload: OperatorBtcPayload = {

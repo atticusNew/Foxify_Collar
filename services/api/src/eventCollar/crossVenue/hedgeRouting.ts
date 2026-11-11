@@ -647,7 +647,7 @@ export interface ChooseRouteInputs {
   pinned?: HedgeRoute;
 }
 
-const bps = (n: number | null): string => (n === null ? "—" : `${n > 0 ? "+" : ""}${n} bps`);
+const bps = (n: number | null): string => (n === null ? "n/a" : `${n > 0 ? "+" : ""}${n} bps`);
 
 /**
  * Steps 2 to 4 for every route, then the choice: the cheapest all-in cost among the routes that
@@ -771,17 +771,17 @@ export function tailTerms(venue: SettlementVenue, rules: RuleCells): TailTerm[] 
   const settles = (t: TailTreatment, what: string): string => {
     switch (t) {
       case "half":
-        return `${what}, ${V} pays each side $0.50 and the protection settles on that $0.50 like any other payout: the floor tops it up, the cap takes the slice above.`;
+        return `${what}, ${V} pays each side $0.50 and the lock settles on that $0.50 like any other payout: the floor tops it up, the cap takes the slice above.`;
       case "void":
-        return `${what}, ${V} voids the position and returns your stake; the protection is void with it and you keep the credit.`;
+        return `${what}, ${V} voids the position and returns your stake; the lock is void with it and you keep the credit.`;
       case "fair":
-        return `${what}, ${V} settles at the fair price when the news broke and the protection settles on that price: the floor tops it up, the cap takes the slice above.`;
+        return `${what}, ${V} settles at the fair price when the news broke and the lock settles on that price: the floor tops it up, the cap takes the slice above.`;
       case "hold":
-        return `${what}, ${V} keeps the market open until the game is played and the protection waits with it.`;
+        return `${what}, ${V} keeps the market open until the game is played and the lock waits with it.`;
       case "stands":
-        return `${what}, ${V} settles on the result as first announced; so does the protection.`;
+        return `${what}, ${V} settles on the result as first announced; so does the lock.`;
       case "resettle":
-        return `${what}, ${V} settles again on the corrected result; so does the protection.`;
+        return `${what}, ${V} settles again on the corrected result; so does the lock.`;
     }
   };
   const p = rules.postponed;

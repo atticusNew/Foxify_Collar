@@ -174,13 +174,13 @@ export function verifyParlayLock(
   payoutCents: number,
   opts: { inPlay?: boolean } = {},
 ): { ok: true } | { ok: false; code: string; message: string } {
-  if (view.state === "busted") return { ok: false, code: "parlay_busted", message: "A pick on this parlay missed; there is nothing left to protect." };
+  if (view.state === "busted") return { ok: false, code: "parlay_busted", message: "A pick on this parlay missed; there is nothing left to lock in." };
   if (view.state === "won") return { ok: false, code: "parlay_settled", message: "Every pick on this parlay has hit; it is settled, not open." };
   if (view.state === "unknown") {
     const why = view.picks.find((p) => p.state === "unknown")?.why ?? "a pick could not be placed on a game";
     return { ok: false, code: "parlay_pick_unknown", message: `A pick on this parlay could not be read: ${why}.` };
   }
-  if (view.state === "open") return { ok: false, code: "parlay_not_last_pick", message: `Protection opens at the last pick; ${view.open} picks are still open.` };
+  if (view.state === "open") return { ok: false, code: "parlay_not_last_pick", message: `The lock opens at the last pick; ${view.open} picks are still open.` };
   if (!view.lastPick || view.lastPick.ticker !== ticker) return { ok: false, code: "parlay_not_last_pick", message: "The market being locked is not this parlay's last open pick." };
   if (view.lastPick.live && !opts.inPlay) return { ok: false, code: "parlay_in_play", message: "The last pick's game has started." };
   if (!(payoutCents > stakeCents && stakeCents > 0)) return { ok: false, code: "parlay_size", message: "The parlay's stake and payout do not read as a ticket." };

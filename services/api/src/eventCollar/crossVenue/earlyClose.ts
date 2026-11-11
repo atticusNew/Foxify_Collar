@@ -240,7 +240,7 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
   // the size in hundredths of a contract: 15.95 contracts is 1,595 hundredths, 15,950 milli
   const nH = contractHundredths(n);
   if (books.kalshi.yesBids.length === 0) {
-    return { ok: false, leg: "position", code: "book_empty", detail: "no resting yes bids on the protected market" };
+    return { ok: false, leg: "position", code: "book_empty", detail: "no resting yes bids on the locked market" };
   }
   const pos = walkKalshiBids(books.kalshi.yesBids, nH * 10);
   if (!pos) {

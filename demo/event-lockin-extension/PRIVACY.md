@@ -7,7 +7,7 @@ what it keeps, and what it never touches.
 ## What it reads
 
 - The text of the venue's page, on the venue's own site only (the game list, a game's page, the
-  order slip, and your positions page), to find the games the service can protect and the picks
+  order slip, and your positions page), to find the games the service can lock in and the picks
   you hold: team names, the market (Winner / Moneyline), the odds, the stake and the matched
   amount printed on the row.
 - Nothing is read on any other site. The extension runs only on the venue hosts named in its
@@ -17,7 +17,7 @@ what it keeps, and what it never touches.
 
 Everything goes to the Atticus event service you configure in Options (one URL), and nowhere else.
 
-- When a page loads: a request for the list of games the service can protect this week.
+- When a page loads: a request for the list of games the service can lock in this week.
 - When an offer is drawn under a position: the market (a ticker), your contract count, and the
   price you paid, so the service can quote that position.
 - When you tap Lock in: the same figures, to open the lock.

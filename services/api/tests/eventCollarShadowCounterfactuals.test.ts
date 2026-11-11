@@ -329,7 +329,7 @@ test("counterfactualsFor: both hedge routes are recorded from the same books; cr
   assert.ok(html.includes("<h2>Routing, measured</h2>"));
   assert.ok(html.includes("kalshi only") && html.includes("second book only"));
   assert.ok(html.includes("3 sports positions since 2026-09-20 UTC"));
-  assert.ok(html.includes("1 position the live route protected would have been refused kalshi-only"));
+  assert.ok(html.includes("1 position the live route locked in would have been refused kalshi-only"));
   const empty = renderShadowReportHtml({ atIso: "2026-09-21T00:00:00.000Z", summary: summarizeShadow([]) });
   assert.ok(empty.includes("No sports position has carried both routes yet"));
 });

@@ -29,7 +29,7 @@ export function renderEventXAppHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
 <title>Earn &amp; Protect · events</title>
-<meta name="description" content="One tap turns an all-or-nothing event position into a guaranteed floor, a cap, and a cash credit. Games and crypto on one board, best value first. Demonstration with live pricing." />
+<meta name="description" content="One tap turns an all-or-nothing event position into a floor, a cap, and a cash credit. Games and crypto on one board, best value first. Demonstration with live pricing." />
 <meta property="og:title" content="Earn &amp; Protect · events" />
 <meta property="og:description" content="The derivatives layer for event markets: a one-tap floor on a Kalshi position, games and crypto, paid in cash. Demonstration, live pricing." />
 <meta property="og:type" content="website" />
@@ -175,19 +175,19 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     <h1 id="title">&nbsp;</h1>
     <div class="matchline" id="matchline">&nbsp;</div>
     <div class="chancerow">
-      <span class="chance" id="chance">–</span>
+      <span class="chance" id="chance">&nbsp;</span>
       <span class="chancelbl">chance</span>
-      <span class="countd" id="countd">–</span>
+      <span class="countd" id="countd">&nbsp;</span>
     </div>
     <div class="whyline" id="whyline">&nbsp;</div>
 
     <div class="pos">
       <div>
-        <div class="side"><span class="yes">Yes</span><span id="poscount">–</span></div>
+        <div class="side"><span class="yes">Yes</span><span id="poscount">&nbsp;</span></div>
         <div class="sub" id="possub">&nbsp;</div>
       </div>
       <div class="val">
-        <div class="v" id="posval">–</div>
+        <div class="v" id="posval">&nbsp;</div>
         <div class="pnl" id="pospnl">&nbsp;</div>
       </div>
     </div>
@@ -195,19 +195,19 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     <div class="protect">
       <div class="hero" id="offer" style="display:none">
         <div class="two">
-          <div class="big"><div class="lbl">you keep at least</div><div class="min" id="minout">–</div></div>
-          <div class="big cash"><div class="lbl">cash now</div><div class="min" id="creditout">–</div></div>
+          <div class="big"><div class="lbl">you keep at least</div><div class="min" id="minout">&nbsp;</div></div>
+          <div class="big cash"><div class="lbl">credit at lock in</div><div class="min" id="creditout">&nbsp;</div></div>
         </div>
-        <div class="sweet">up to <b id="maxout">–</b> if you win · the cash is yours either way</div>
+        <div class="sweet">up to <b id="maxout">&nbsp;</b> if you win · the credit is yours either way</div>
         <div class="tiers" id="tiers"></div>
       </div>
 
       <div class="togglerow">
-        <div><div class="t">Protect this position</div><div class="d" id="toggledesc">one tap</div></div>
+        <div><div class="t">Lock in this position</div><div class="d" id="toggledesc">one tap</div></div>
         <label class="switch"><input type="checkbox" id="toggle" disabled /><span class="slider"></span></label>
       </div>
 
-      <div class="protectedline" id="protectedline"><span>Protected · <b id="paysline">payout when the game settles</b><i class="lockline">locked at your tap · an early exit is a new trade at live prices</i></span><button type="button" class="undo" id="undo">undo · demo only</button></div>
+      <div class="protectedline" id="protectedline"><span>Locked in · <b id="paysline">payout at settlement</b><i class="lockline">locked at your tap · an early exit is a new trade at live prices</i></span><button type="button" class="undo" id="undo">undo · demo only</button></div>
 
       <div class="refusal" id="refusal"></div>
 
@@ -223,7 +223,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
   </div>
 
   <div class="card board" id="boardcard" style="display:none">
-    <div class="bt">Best protection right now</div>
+    <div class="bt">Best lock right now</div>
     <div class="bs">best value first · tap any game</div>
     <div id="boardrows"></div>
   </div>
@@ -232,9 +232,9 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     <details>
       <summary>How this works</summary>
       <ul>
-        <li><b>The trade.</b> You give up the top slice of your win so you never leave empty-handed. The market prices that risk live; when it prices it cheaper than the slice you sold, the difference is paid to you as cash.</li>
-        <li><b>Backed by the same game.</b> Protection is backed by buying the side that pays exactly when yours loses, only on listings that verifiably settle on the identical official result. Your floor does not depend on anyone's opinion of the game.</li>
-        <li><b>Three ways to protect.</b> Safest keeps the most no matter what; Most upside keeps the most if you win; Balanced sits between. You pick; nothing is pre-chosen for you but a starting point.</li>
+        <li><b>The trade.</b> You give up the top slice of your win, and in return there is a floor: the least you end with if your side loses. The market prices that risk live; when it prices it cheaper than the slice you sold, the difference is paid to you as cash.</li>
+        <li><b>Backed by the same game.</b> The lock is backed by buying the side that pays exactly when yours loses, only on listings that verifiably settle on the identical official result. Your floor does not depend on anyone's opinion of the game.</li>
+        <li><b>Three ways to lock in.</b> Safest keeps the most if your side loses; Most upside keeps the most if you win; Balanced sits between. You pick; nothing is pre-chosen for you but a starting point.</li>
         <li><b>The credit you see is the credit you get.</b> Our fee comes out of the cash we source before the number is shown; there is nothing to add back. When the market cannot fund a credit, we refuse and say so. This is a demonstration: prices are live, the position is simulated, no funds can move, and undo simply resets it; in the real product, terms lock at your tap. <a href="/receipts">See the receipts</a>.</li>
       </ul>
     </details>
@@ -376,10 +376,10 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     var entryTag=pos.entrySource==='real_print'?' (real print)':'';
     $('legs').innerHTML=
       '<div class="row"><span>per contract</span><b>in at '+pos.entryCents+'\\u00A2'+entryTag+' · now '+q.markCents+'\\u00A2 · floor '+q.floorCents+'\\u00A2 · cap '+q.capCents+'\\u00A2</b></div>'+
-      '<div class="row"><span>without protection</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
-      '<div class="row"><span>with protection</span><b>'+usd(o.yes)+' if Yes · '+usd(o.no)+' if No</b></div>'+
-      '<div class="row"><span>cost of protection</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+'</b></div>'+
-      '<div class="row"><span>settles</span><b>'+(S.kind==='crypto'?'on the official index print':'on the official final score')+' · payout when it settles</b></div>';
+      '<div class="row"><span>without the lock</span><b>'+usd(o.nakedYes)+' if Yes · '+usd(o.nakedNo)+' if No</b></div>'+
+      '<div class="row"><span>with the lock</span><b>'+usd(o.yes)+' if Yes · '+usd(o.no)+' if No</b></div>'+
+      '<div class="row"><span>cost of the lock</span><b>'+evLine(evCostBps(q.markCents,q.floorCents,q.capCents,q.creditCents,q.contracts))+'</b></div>'+
+      '<div class="row"><span>settles</span><b>'+(S.kind==='crypto'?'on the official index print':'on the official final score')+' · payout at settlement</b></div>';
     $('hedge').style.display='block';
   }
 
@@ -428,8 +428,8 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         t.disabled=true; t.checked=false;
         hideOffer();
         $('refusal').innerHTML=S.kind==='crypto'
-          ?'<b>At the close.</b> Protection locks before this market settles; the position now rides to the official index print.'
-          :'<b>In play.</b> Protection locks before the game starts; the position now rides to the final score.';
+          ?'<b>At the close.</b> Lock in closes before this market settles; the position now rides to the official index print.'
+          :'<b>In play.</b> Lock in closes before the game starts; the position now rides to the final score.';
         $('refusal').classList.add('show');
       } else if(q&&q.ok){
         t.disabled=false;
@@ -495,7 +495,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     S.phase='protected'; S.terms=locked;
     paintOffer(q);
     var ot=outcomeTotals(locked);
-    $('paysline').textContent='guaranteed '+usd(ot.no)+' to '+usd(ot.yes);
+    $('paysline').textContent='you end with at least '+usd(ot.no)+', up to '+usd(ot.yes);
     $('protectedline').classList.add('show');
     $('toggledesc').textContent='terms locked at your tap';
   });
@@ -544,15 +544,15 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
 
 const REFUSAL_LABELS: Record<string, string> = {
   credit_nonpositive: "the venues could not fund a positive credit",
-  protection_too_rich: "the cheapest route was still rich insurance (above the EV-cost ceiling)",
+  protection_too_rich: "the cheapest route still cost too much (above the EV-cost ceiling)",
   credit_too_small: "the best credit fell under the minimum (25¢ and 0.25% of stake)",
   market_too_close_to_start: "the game was too close to starting",
   far_out_no_book: "days from the start and no venue has a real book yet (priced again inside the window)",
   route_gated: "a hedge was priced but no route passed the gates (the venue closes before the lock, or the executor cannot send there)",
   mark_disagreement: "the market's own mark was a stub or far from the hedge venue's price (priced again next scan)",
   mark_out_of_range: "the odds were outside the quotable band",
-  pm_book_empty: "no executable depth on the Polymarket book",
-  pm_book_too_thin: "the Polymarket book was too thin for the size",
+  pm_book_empty: "no executable depth on the other venue's book",
+  pm_book_too_thin: "the other venue's book was too thin for the size",
   kalshi_book_empty: "no executable depth on the market's No side",
   kalshi_book_too_thin: "the market's No side was too thin for the size",
   no_matched_market: "no verified same-game listing on the other venue",
@@ -571,7 +571,7 @@ const ROUTE_LABELS: Record<string, string> = {
 
 const ACTION_LABELS: Record<string, string> = {
   row_tap: "board taps",
-  protect_on: "Protect taps",
+  protect_on: "Lock in taps",
   protect_undo: "undos",
   board_expand: "board expands",
   tier_pick: "tier picks",
@@ -589,7 +589,7 @@ export function renderFunnelHtml(
   s: EventFunnelSummary,
   meta: { atIso: string; funnelPath: string; token: string | null },
 ): string {
-  const pct = (num: number, den: number): string => (den > 0 ? `${((100 * num) / den).toFixed(0)}%` : "–");
+  const pct = (num: number, den: number): string => (den > 0 ? `${((100 * num) / den).toFixed(0)}%` : "n/a");
   const utc = (ms: number): string => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
   const dayLabel = (day: string): string => {
     const d = new Date(`${day}T00:00:00Z`);
@@ -633,13 +633,13 @@ export function renderFunnelHtml(
   const recent = s.recentProtects.map(
     (p) => `<tr>
       <td>${escapeHtml(utc(p.atMs))}</td>
-      <td class="mono">${escapeHtml(p.ticker || "–")}</td>
-      <td>${escapeHtml(p.league === "unknown" ? "–" : p.league.toUpperCase())}</td>
-      <td>${escapeHtml(p.route ? (ROUTE_LABELS[p.route] ?? p.route) : "–")}</td>
-      <td>${escapeHtml(p.tier ?? "–")}</td>
-      <td class="hi">${p.creditCents === null ? "–" : usdFromCents(p.creditCents)}</td>
-      <td>${p.floorCents === null || p.capCents === null ? "–" : `${p.floorCents}¢ → ${p.capCents}¢`}</td>
-      <td>${p.contracts ?? "–"}</td>
+      <td class="mono">${escapeHtml(p.ticker || "n/a")}</td>
+      <td>${escapeHtml(p.league === "unknown" ? "n/a" : p.league.toUpperCase())}</td>
+      <td>${escapeHtml(p.route ? (ROUTE_LABELS[p.route] ?? p.route) : "n/a")}</td>
+      <td>${escapeHtml(p.tier ?? "n/a")}</td>
+      <td class="hi">${p.creditCents === null ? "n/a" : usdFromCents(p.creditCents)}</td>
+      <td>${p.floorCents === null || p.capCents === null ? "n/a" : `${p.floorCents}¢ → ${p.capCents}¢`}</td>
+      <td>${p.contracts ?? "n/a"}</td>
     </tr>`,
   );
 
@@ -701,13 +701,13 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
 </div></div>
 <div class="wrap">
   <div class="card">
-    <h1>Who looked, who tapped, who protected</h1>
+    <h1>Who looked, who tapped, who locked in</h1>
     <div class="sub">Anonymous per-tab sessions. Every dollar figure below came from the server's own live quote at the moment of the tap, not from the browser. Updated ${escapeHtml(meta.atIso.slice(0, 16).replace("T", " "))} UTC.</div>
     <div class="bignums">
       <div class="bignum"><div class="n">${s.sessions.active7d}</div><div class="l">sessions, 7 days</div></div>
-      <div class="bignum"><div class="n green">${s.protects.last7d}</div><div class="l">Protect taps, 7 days</div></div>
-      <div class="bignum"><div class="n green">${escapeHtml(pct(s.sessions.protected, s.sessions.distinct))}</div><div class="l">sessions that protected</div></div>
-      <div class="bignum"><div class="n">${usdFromCents(s.protects.creditCentsTotal)}</div><div class="l">credits on protected taps</div></div>
+      <div class="bignum"><div class="n green">${s.protects.last7d}</div><div class="l">Lock in taps, 7 days</div></div>
+      <div class="bignum"><div class="n green">${escapeHtml(pct(s.sessions.protected, s.sessions.distinct))}</div><div class="l">sessions that locked in</div></div>
+      <div class="bignum"><div class="n">${usdFromCents(s.protects.creditCentsTotal)}</div><div class="l">credits on Lock in taps</div></div>
     </div>
   </div>
 
@@ -718,17 +718,17 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
         ["distinct, all time", s.sessions.distinct],
         ["active in the last 24h", s.sessions.active24h],
         ["active in the last 7 days", s.sessions.active7d],
-        ["protected at least once", s.sessions.protected],
-        ["tapped a game but never protected", s.sessions.tappedNeverProtected],
+        ["locked in at least once", s.sessions.protected],
+        ["tapped a game but never locked in", s.sessions.tappedNeverProtected],
       ])}
     </div>
     <div class="card">
-      <h2>Protect taps</h2>
+      <h2>Lock in taps</h2>
       ${kv([
         ["all time", s.protects.total],
         ["last 24h", s.protects.last24h],
         ["last 7 days", s.protects.last7d],
-        ["contracts protected", s.protects.contractsTotal.toLocaleString("en-US")],
+        ["contracts locked in", s.protects.contractsTotal.toLocaleString("en-US")],
         ["credits paid", usdFromCents(s.protects.creditCentsTotal)],
       ])}
     </div>
@@ -737,15 +737,15 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
   <div class="grid two" style="margin-top:12px">
     <div class="card">
       <h2>By league</h2>
-      ${countRows(s.protects.byLeague, { unknown: "unattributed" }, true) || '<div class="empty">no Protect taps yet</div>'}
+      ${countRows(s.protects.byLeague, { unknown: "unattributed" }, true) || '<div class="empty">no Lock in taps yet</div>'}
     </div>
     <div class="card">
       <h2>By hedge route</h2>
-      ${countRows(s.protects.byRoute, ROUTE_LABELS) || '<div class="empty">no Protect taps yet</div>'}
+      ${countRows(s.protects.byRoute, ROUTE_LABELS) || '<div class="empty">no Lock in taps yet</div>'}
     </div>
     <div class="card">
-      <h2>By protection tier</h2>
-      ${countRows(s.protects.byTier ?? {}, TIER_LABELS) || '<div class="empty">no Protect taps yet</div>'}
+      <h2>By Lock in tier</h2>
+      ${countRows(s.protects.byTier ?? {}, TIER_LABELS) || '<div class="empty">no Lock in taps yet</div>'}
     </div>
   </div>
 
@@ -761,7 +761,7 @@ footer{color:var(--faint);font-size:11.5px;line-height:1.55;padding:14px 4px 0}
   </div>
 
   <div class="card">
-    <h2>Most recent Protect taps</h2>
+    <h2>Most recent Lock in taps</h2>
     ${
       recent.length
         ? `<div class="tablewrap"><table>
@@ -808,7 +808,7 @@ export function renderReceiptsHtml(s: CrossLedgerSummary): string {
     s.avgEvCostBps === null
       ? "not yet recorded"
       : s.avgEvCostBps < 0
-        ? `${Math.abs(s.avgEvCostBps / 100).toFixed(1)}% BETTER than the naked position, on average`
+        ? `${Math.abs(s.avgEvCostBps / 100).toFixed(1)}% BETTER than the position without the lock, on average`
         : `${(s.avgEvCostBps / 100).toFixed(1)}% of expected value, on average`;
   const refusalRows = Object.entries(s.refusalsByCode)
     .sort((a, b) => b[1] - a[1])
@@ -828,7 +828,7 @@ export function renderReceiptsHtml(s: CrossLedgerSummary): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
 <title>Receipts · Earn &amp; Protect · events</title>
-<meta name="description" content="Every protection quote and every honest refusal this demo has made, aggregated from its append-only ledger." />
+<meta name="description" content="Every Lock in quote and every honest refusal this demo has made, aggregated from its append-only ledger." />
 <style>
 :root{
   --bg:#f6f7f7; --card:#ffffff; --card2:#f2f4f4; --line:#e4e7e7;
@@ -880,13 +880,13 @@ footer b{color:var(--dim);font-weight:600}
     </div>
   </div>
   <div class="card">
-    <h2>What the protection really cost</h2>
-    <div class="row"><span>true cost of priced protection</span><b>${escapeHtml(avgLine)}</b></div>
+    <h2>What the lock really cost</h2>
+    <div class="row"><span>true cost of priced locks</span><b>${escapeHtml(avgLine)}</b></div>
   </div>
   ${refusalRows ? `<div class="card"><h2>Why quotes were refused</h2>${refusalRows}</div>` : ""}
   <div class="card rules">
     <h2>How the terms are built</h2>
-    <div class="sub">Every protection is priced at executable depth, only on listings that verifiably settle on the identical official result, and backed by buying the side that pays exactly when yours loses. What you see is what the market funds right now.</div>
+    <div class="sub">Every lock is priced at executable depth, only on listings that verifiably settle on the identical official result, and backed by buying the side that pays exactly when yours loses. What you see is what the market funds right now.</div>
     <div class="row"><span>Safest</span><b>the highest floor the venues fund, with the largest credit at it</b></div>
     <div class="row"><span>Balanced</span><b>a floor halfway between Safest and Most upside, with a cap halfway between the least and the most the venues fund there</b></div>
     <div class="row"><span>Most upside</span><b>the lowest floor offered, with the highest cap the venues fund at it</b></div>
@@ -900,7 +900,7 @@ footer b{color:var(--dim);font-weight:600}
     <a class="back" href="/board">back to the live board</a>
   </div>
   <footer>
-    <b>Demonstration, not an offer.</b> Aggregates cover simulated protection quotes priced from live public market data. Nothing here is investment advice. <a href="${shadowUrl()}">See the track record</a>.
+    <b>Demonstration, not an offer.</b> Aggregates cover simulated Lock in quotes priced from live public market data. Nothing here is investment advice. <a href="${shadowUrl()}">See the track record</a>.
   </footer>
 </div>
 </body>

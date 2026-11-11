@@ -287,7 +287,7 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   assert.ok(html.includes("our P&amp;L, settled") && !/writer|holder/i.test(html.replace(/writerPnl|holderDelta/g, "")), "public words: our P&L and user, never writer and holder");
   assert.ok(html.includes("<th>user Δ</th>") && html.includes("<th>our P&amp;L</th>"));
   assert.ok(html.includes("a gap of $0.00. The hedge layer carried no outcome risk."), "and reads the gap in one sentence");
-  assert.ok(html.includes("Where protection is cheap and where it is rich"), "EV cost by route and league");
+  assert.ok(html.includes("Where the lock is cheap and where it is rich"), "EV cost by route and league");
   assert.ok(html.includes("<td>MLB</td>") && html.includes("<td>NFL</td>"), "league rows");
   assert.ok(html.includes("<td>sports, all leagues</td>"), "the sports aggregate row leads the slice table");
   assert.ok(html.includes("<h2>Sports first</h2>") && html.includes("games settled") && html.includes("MLB and NFL here"), "the sports card reads the game book on its own");
@@ -301,12 +301,12 @@ test("shadow: replay carries writer P&L; summary splits it by outcome and league
   assert.ok(html.includes(`Slices under ${MIN_SLICE_EVENTS} events show counts only.`));
   assert.ok(!html.includes("<td class=\"hi\">2.97%</td>"), "3 opened is too few for an EV cost percentage");
   assert.ok((html.match(/too few/g) ?? []).length >= 6, "EV cost and user Δ cells read 'too few' on every small slice");
-  assert.ok(!html.includes("Protection is cheapest on"), "no cheapest/richest verdict from slices under the line");
+  assert.ok(!html.includes("The lock is cheapest on"), "no cheapest/richest verdict from slices under the line");
   // The bridge sentence holds the save count and the cost in one breath; the fixture came out ahead.
-  assert.ok(html.includes("Protection paid the floor on 1 of 2 settled events (50%). Across everyone it came out $24.66 ahead of holding unprotected."), "bridge line, ahead case");
+  assert.ok(html.includes("The lock paid the floor on 1 of 2 settled events (50%). Across everyone it came out $24.66 ahead of holding without the lock."), "bridge line, ahead case");
   // Every settled row says how much of the protected total was the credit paid at open.
-  assert.ok(html.includes("$79.12 <i>vs $0.00 naked</i><i class=\"paid\">incl. $1.12 paid at open</i>"), "floor-save row carries the credit");
-  assert.ok(html.includes("$95.54 <i>vs $150.00 naked</i><i class=\"paid\">incl. $1.04 paid at open</i>"), "capped row carries the credit");
+  assert.ok(html.includes("$79.12 <i>vs $0.00 without the lock</i><i class=\"paid\">incl. $1.12 credited at lock in</i>"), "floor-save row carries the credit");
+  assert.ok(html.includes("$95.54 <i>vs $150.00 without the lock</i><i class=\"paid\">incl. $1.04 credited at lock in</i>"), "capped row carries the credit");
 });
 
 test("shadow: flow onto public books is one total over positions opened in the window, whatever they became", () => {
@@ -366,7 +366,7 @@ test("shadow: flow onto public books is one total over positions opened in the w
   assert.ok(html.includes('<div class="n green">668</div><div class="l">contracts, last 30 days</div>'));
   assert.ok(html.includes(`<div class="n">${"$" + ((5426 + 5426 + 5426 + 10_852) / 100).toFixed(2)}</div><div class="l">paid for them, fees in</div>`));
   assert.ok(html.includes('<div class="n">802</div><div class="l">contracts since 2026-08-06</div>'));
-  assert.ok(html.includes("In the last 30 days protection put 668 contracts on public books across 4 positions: $271.30 of flow against $750.00 of stake protected. Since 2026-08-06 UTC: 802 contracts across 5 positions, $325.56 of flow."));
+  assert.ok(html.includes("In the last 30 days locks put 668 contracts on public books across 4 positions: $271.30 of flow against $750.00 of stake locked in. Since 2026-08-06 UTC: 802 contracts across 5 positions, $325.56 of flow."));
   assert.ok(html.includes("Simulated here, like the positions"), "the card says the flow is simulated, like the rest of the record");
   assert.ok(!html.includes("Polymarket") && !html.includes("(Kalshi)"), "no venue named on the flow card either");
   const empty = renderShadowHtml({ atIso: now.toISOString(), summary: summarizeShadow([], now), open: [], settled: [] });
@@ -392,11 +392,11 @@ test("shadow: the page bridges floor saves and protection cost, and prints perce
 
   // 9 saves x 7912 + 12 wins x 9562 protected = 185,952; naked 12 x 15,000 = 180,000: ahead by $59.52
   assert.equal(s.deltaTotalCents, 9 * 7912 + 12 * 9562 - 12 * 15_000);
-  assert.ok(html.includes("Protection paid the floor on 9 of 21 settled events (43%). Across everyone it came out $59.52 ahead of holding unprotected."));
+  assert.ok(html.includes("The lock paid the floor on 9 of 21 settled events (43%). Across everyone it came out $59.52 ahead of holding without the lock."));
   // MLB is past the line on both counts, NFL on neither; the route slice (22 opened, 21 settled) is past on both.
   assert.ok(/<td>MLB<\/td><td>20<\/td><td>20<\/td><td class="hi">2\.97%<\/td><td>-?\d+\.\d\d%<\/td>/.test(html), "MLB shows EV cost and user Δ");
   assert.ok(/<td>NFL<\/td><td>2<\/td><td>1<\/td><td><i[^>]*>too few<\/i><\/td><td><i[^>]*>too few<\/i><\/td>/.test(html), "NFL shows counts only");
-  assert.ok(!html.includes("Protection is cheapest on"), "one qualifying league is not a comparison");
+  assert.ok(!html.includes("The lock is cheapest on"), "one qualifying league is not a comparison");
 
   // The cost case: make every win the only outcome so protection trails naked, and check the sentence names both numbers.
   const dir2 = mkdtempSync(join(tmpdir(), "shadow-bridge-cost-"));
@@ -410,7 +410,7 @@ test("shadow: the page bridges floor saves and protection cost, and prints perce
   const html2 = renderShadowHtml({ atIso: "2026-09-15T00:00:00.000Z", summary: summarizeShadow(p2), open: [], settled: p2 });
   // 4 x (15,000 - 9,562) = 21,752 cost on 60,000 naked = 36.3%; quoted 2.97%
   assert.ok(
-    html2.includes("Protection paid the floor on 0 of 4 settled events (0%). Across everyone it cost $217.52, 36.3% of what the same positions paid unprotected; 3.0% was quoted up front. Quoted is the expectation at the market's odds; realized is what this sample did."),
+    html2.includes("The lock paid the floor on 0 of 4 settled events (0%). Across everyone it cost $217.52, 36.3% of what the same positions paid without the lock; 3.0% was quoted up front. Quoted is the expectation at the market's odds; realized is what this sample did."),
     "bridge line, cost case, realized next to quoted with no claim that they match",
   );
   assert.ok(!html2.includes("Strikes on the same coin"), "the cluster note needs a crypto-majority settled book");
@@ -550,7 +550,7 @@ test("shadow: page renders the honest record", () => {
   assert.ok(html.includes("floor saves"), "the save count is a hero number");
   assert.ok(html.includes("floor paid"), "settled row tags the save");
   assert.ok(html.includes("$79.12"), "protected payout shown");
-  assert.ok(html.includes("vs $0.00 naked"), "naked comparison shown");
+  assert.ok(html.includes("vs $0.00 without the lock"), "naked comparison shown");
   assert.ok(html.includes("<b>Real:</b>") && html.includes("<b>Simulated:</b>"), "honesty footer");
   assert.ok(html.includes("nothing is bought"), "simulation disclosed");
   assert.ok(html.includes("Demonstration, not an offer."), "not an offer");

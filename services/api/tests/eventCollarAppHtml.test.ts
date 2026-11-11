@@ -10,7 +10,7 @@ test("event app html: honesty label, gating line, and structure", () => {
   assert.ok(html.includes('id="toggle"'), "the toggle is the feature");
   assert.ok(html.includes("/api/showcase"), "polls the live endpoint");
   assert.ok(html.includes("width=device-width"), "mobile viewport");
-  assert.ok(html.includes("Protect this position"));
+  assert.ok(html.includes("Lock in this position"));
   assert.ok(html.includes('id="loading"'), "loading state while venues are quoted");
   assert.ok(html.includes('id="refreshed"'), "quote freshness microtext");
 });
@@ -20,7 +20,7 @@ test("event app html: outcomes-first, percent framing, one-tap grammar", () => {
   assert.ok(html.includes("your minimum payout"), "minimum payout is the hero");
   assert.ok(html.includes(">chance<"), "percent framing for the market");
   assert.ok(html.includes("credit paid Yes or No"), "credit framing is all-in");
-  assert.ok(html.includes("one tap · protected instantly"), "one-tap grammar");
+  assert.ok(html.includes("one tap · locked in instantly"), "one-tap grammar");
   assert.ok(html.includes('id="undo"'), "undo window after the tap");
   assert.ok(html.includes("see the terms"), "machinery behind one disclosure");
   assert.ok(!html.includes("see the hedge"), "retail first: the drawer is about the holder's terms, not our hedge");
@@ -34,8 +34,8 @@ test("event app html: total dollars on the main screen, cents in the drawer", ()
   assert.ok(html.includes("BRTI (CF Benchmarks)"), "settlement mechanics in the drawer");
   // per-contract cents are demoted to the hedge drawer
   assert.ok(html.includes("per contract"));
-  assert.ok(html.includes("without protection"), "capped upside disclosed honestly");
-  assert.ok(html.includes("cost of protection"), "EV honesty line in the drawer");
+  assert.ok(html.includes("without the lock"), "capped upside disclosed honestly");
+  assert.ok(html.includes("cost of the lock"), "EV honesty line in the drawer");
   assert.ok(html.includes("% of expected value"), "EV framing in plain words");
   // the probability rail and its jargon are gone from the main screen
   assert.ok(!html.includes("railbox") && !html.includes("markdot"), "no probability rail");
@@ -78,6 +78,6 @@ test("event app html: retail first — no hedge legs, venue, fees or take on the
     assert.ok(!html.includes(leak), `"${leak}" stays on the operator side`);
   }
   assert.ok(html.includes("The credit you see is the credit you get."), "the fee is explained as already netted, once");
-  assert.ok(html.includes("with protection"), "protected outcome row mirrors the naked row");
+  assert.ok(html.includes("with the lock"), "protected outcome row mirrors the naked row");
   assert.ok(html.includes("'<b>Not right now.</b> '+q.detail"), "refusals render the server's retail sentence");
 });

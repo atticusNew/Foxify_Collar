@@ -100,13 +100,13 @@ test("embed: three live tabs and no Markets; Positions grouped by league with cr
   assert.ok(html.includes("if(tab==='Activity'){track('activity_tab');if(!S.activity)loadActivity()}"), "the funnel knows the tab was opened");
   assert.ok(isEventAction("activity_tab"));
   assert.ok(html.includes('<div class="grp"><span>This session</span></div>'), "the visitor's own taps sit on top");
-  assert.ok(html.includes("locked in'+(when?' &middot; '+esc(fmtEt(when)):'')") && html.includes("protection removed '+esc(st.removed.at)"), "locks and early leaves made here are listed");
+  assert.ok(html.includes("locked in'+(when?' &middot; '+esc(fmtEt(when)):'')") && html.includes("lock removed '+esc(st.removed.at)"), "locks and early leaves made here are listed");
   assert.ok(html.includes("sideName:r.sideName,league:r.league,eventTimeIso:r.eventTimeIso};") && html.includes("var name=(p&&p.sideName)||r.sideName||k"), "the lock keeps the row's words, so it is still listed after the board re-scans and drops the row");
   assert.ok(html.includes("S.lockedBy[t.id]={size:t.size,lock:L,leagues:leaguesOf(t)};") && html.includes("'+t.size+'-pick parlay</div><div class=\"meta\">'+t.leagues+' &middot; locked in</div>"), "parlay locks too, from their own snapshot");
   assert.ok(html.includes("<span>Finished &middot; '+(!SPORTS_ONLY&&total>rows.length?'last '+rows.length+' of '+total:rows.length)+'</span>"), "the record's full count is said when the feed is a cut of it");
   assert.ok(html.includes("(closed?'closed early':won?'won':'lost')"), "the row's state in one word");
   assert.ok(html.includes("<b>'+usd(a.endedCents)+'</b><i>vs '+usd0(a.withoutCents)+' without</i>"), "what it ended at with the lock, against without");
-  assert.ok(html.includes("usd(a.creditCents)+' paid at open &middot; '+(closed?'closed before the result':won?'the win, to the cap':'the floor, paid')"), "the credit is said as inside the number, and which ending it was");
+  assert.ok(html.includes("usd(a.creditCents)+' credited at lock in &middot; '+(closed?'closed before the result':won?'the win, to the cap':'the floor, paid')"), "the credit is said as inside the number, and which ending it was");
   assert.ok(html.includes("if(SPORTS_ONLY)rows=rows.filter(function(r){return r.kind!=='crypto'});"), "a sportsbook shell hides crypto finishes as it hides crypto positions");
   assert.ok(html.includes("Finished positions from our public record; nothing is bought."), "the honesty line stays on the tab");
   assert.ok(html.includes("Activity is unavailable right now.") && html.includes("Nothing has finished yet."), "honest empty and error states");

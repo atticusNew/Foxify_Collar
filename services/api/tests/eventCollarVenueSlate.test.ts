@@ -265,7 +265,7 @@ test("renderSlateHtml: the venue's name, its leagues, the hedge venues, the iden
   });
   assert.ok(html.includes("What one Lock in button would have done") && html.includes("tap Lock in on any row"), "the bettor's verb is Lock in");
   assert.ok(!/\bProtect\b/.test(html.replace(/Earn &amp; Protect/g, "")), "Protect appears only in the wordmark");
-  assert.ok(html.includes("<title>Protection on the Wire Markets slate"));
+  assert.ok(html.includes("<title>Lock in on the Wire Markets slate"));
   assert.ok(html.includes('<meta name="robots" content="noindex, nofollow" />'));
   assert.ok(html.includes("prepared for Wire Markets"));
   assert.ok(html.includes("on NFL and NBA games"), "the leagues on the record, settled first");
@@ -273,7 +273,7 @@ test("renderSlateHtml: the venue's name, its leagues, the hedge venues, the iden
   assert.ok(!html.includes("Bitcoin") && !html.includes("crypto"), "crypto never appears");
   assert.ok(html.includes("Hedged leg for leg on Kalshi and Polymarket."));
   assert.ok(html.includes('<div class="n green">1</div><div class="l">games settled</div>'));
-  assert.ok(html.includes("Protection paid the floor on 1 of 1 settled games (100%)."));
+  assert.ok(html.includes("The lock paid the floor on 1 of 1 settled games (100%)."));
   assert.ok(html.includes("We carried no outcome risk on your games."));
   assert.ok(html.includes("Your ledger pays the user; the hedge pays your ledger."));
   assert.ok(html.includes('<td class="hi">NFL</td><td>1</td><td>1</td>'), "the league table has the slate's leagues");

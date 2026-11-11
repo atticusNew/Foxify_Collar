@@ -51,15 +51,15 @@ export interface ScanRefusalLike {
  * the protection would cost too much, the credit would be pennies, no book could fund the other
  * side, the market was not one we protect (unmatched, too close to start, mark outside the range).
  */
-export type RefusalReason = "too rich to offer" | "credit too small to offer" | "no book could fund it" | "not a market we protect" | "other";
+export type RefusalReason = "too rich to offer" | "credit too small to offer" | "no book could fund it" | "not a market we lock in" | "other";
 
-export const REFUSAL_REASON_ORDER: readonly RefusalReason[] = ["too rich to offer", "credit too small to offer", "no book could fund it", "not a market we protect", "other"];
+export const REFUSAL_REASON_ORDER: readonly RefusalReason[] = ["too rich to offer", "credit too small to offer", "no book could fund it", "not a market we lock in", "other"];
 
 export function refusalReason(code: string): RefusalReason {
   if (code === "protection_too_rich") return "too rich to offer";
   if (code === "credit_too_small" || code === "credit_nonpositive") return "credit too small to offer";
   if (/_book_empty$|_book_too_thin$|^far_out_no_book$|^route_gated$|^route_not_offered$|^not_offered$/.test(code)) return "no book could fund it";
-  if (/^no_matched_market$|^resolution_mismatch$|^market_too_close_to_start$|^mark_out_of_range$|^mark_disagreement$|^market_not_active$/.test(code)) return "not a market we protect";
+  if (/^no_matched_market$|^resolution_mismatch$|^market_too_close_to_start$|^mark_out_of_range$|^mark_disagreement$|^market_not_active$/.test(code)) return "not a market we lock in";
   return "other";
 }
 

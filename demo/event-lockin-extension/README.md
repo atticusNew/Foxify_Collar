@@ -26,13 +26,13 @@ Before the trade, two quiet things and no more (each can be turned off in Option
   minutes before kickoff, for a paired game with odds in range and no lock on it yet. A game under
   way, or about to start, gets no pill. The page is read only to find each game's card (the block
   naming both clubs), so there is one pill per game, never one per team. Hover or tap the pill
-  and our own card opens at once, in the skin ("Protection on this game can be locked in from
+  and our own card opens at once, in the skin ("This game can be locked in from
   Portfolio after your pick fills, until 7:35pm ET (45 minutes before kickoff)."; tip-off on a
   basketball game, first pitch on a baseball game); not a browser
   tooltip, so no delay and no question-mark cursor. The pill swallows its own click so the
   venue's row does not open; a venue that redraws its list gets the same pill back in the same
   place, with an open card moving to it;
-- the **same pill in the order slip**, as one line, once a Winner pick on a protectable game sits
+- the **same pill in the order slip**, as one line, once a Winner pick on a game that can be locked in sits
   in it: "Lock in available after this is matched · until 7:35pm ET · from Portfolio". No
   figures: the stake typed into a page we do not control is not read; the price is quoted on
   the plays page once the play fills, at the size that filled. Spread and Total picks get no
@@ -48,19 +48,19 @@ of open plays. Once a matched play exists, under its row:
    rows below move down; nothing floats over the slip): the same box grows, no card inside a
    card, never wider than 680px. The panel is a slip, three rows with dividers in the venue's
    type size: "Texans win $25.06 · was $46.00", "Texans lose $14.71 · was $0" (the floor, the one
-   coloured figure), "Paid to you now +$1.66 · today". Above them, only when the book funds more
+   coloured figure), "Credit at lock in +$1.66". Above them, only when the book funds more
    than one shape, the price shapes offered right now (**Max upside** / **Balanced** / **Max
-   floor**, each with its floor, its upside and the cash now: "Floor $0.71 · Upside $9.30 · +$0.21
-   now"; a heavy favourite usually gets one or two). Max upside is first and pre-selected: it is
+   floor**, each with its floor, its upside and the credit: "Floor $0.71 · Upside $9.30 · +$0.21
+   credit"; a heavy favourite usually gets one or two). Max upside is first and pre-selected: it is
    the shape the service heads the quote with (0.7.30, see "Which shape comes first" below).
    Under them the button, the badge grown to
    the row's width, reading just "Lock in"; then one fine-print line, "Priced live · until kickoff
    Sun 1:00pm ET · how it works", and the disclosure. Nothing in the panel is under 12px. Tapping
    the line again closes it;
-3. after the tap, the line fills solid for a beat and settles as a **Protected** pill with "$14.71
+3. after the tap, the line fills solid for a beat and settles as a **Locked in** pill with "$14.71
    or $25.06 · on ProphetX." (the hedge venue on the line itself; "whichever way it goes" when the
    record carries no routing). Its panel is the same slip with the locked numbers and no
-   button ("Texans win $25.06", "Texans lose $14.71", "Paid to you +$1.66"), then one grey line of
+   button ("Texans win $25.06", "Texans lose $14.71", "Credited at lock in +$1.66"), then one grey line of
    facts ("Locked Sun 11:02am ET · the other side bought in 4.9s") ending in a **receipt** link.
    Tapping it opens four labelled lines in place: the other side ("19.17 contracts No on Kalshi at
    27.4c each with fees"; on any other book, "the other side on Novig"), the cost, the venue's
@@ -72,11 +72,11 @@ of open plays. Once a matched play exists, under its row:
    venue the other side went to ("ProphetX", "Kalshi"); the reason ("cheaper all in…", "the venue
    the hedge can be sent to tonight…") follows only with the operator setting on. When two venues
    priced the other side, **Compared** shows the competition as chips, one per venue with what
-   its book would have paid for the same protection, the winner filled in the venue's accent with
+   its book would have paid for the same lock, the winner filled in the venue's accent with
    the shield, and the edge in dollars ("$0.60 more for you") (0.7.20). **Rules** is a toggle in
    the label column (the same chevron toggle as Details) with the four cases beside it while
    folded ("tie · postponement · called off · corrected result"); open, it is a grid, one case a
-   row, "If the game… ends in a tie → Novig pays each side $0.50 · the protection settles on that
+   row, "If the game… ends in a tie → Novig pays each side $0.50 · the lock settles on that
    $0.50", read from the routing's rule cells (the treatment per branch); the venue's own
    sentence is the row's tooltip (0.7.32). **Terms** follows: the rule text the record pinned at
    the lock and when, linked to the venue's own page, the sha256 in the tooltip. On Kalshi the pin
@@ -94,37 +94,37 @@ of open plays. Once a matched play exists, under its row:
    with its cost all in (the books plus the tails) and what it would have paid. The
    public record link
    appears only with the operator setting on. A settled lock reads "Settled" on the
-   pill, "Protected outcome $25.06." on the line, and in the panel "Texans won · you end with
-   $25.06" over "Unprotected, it would have paid $46.00";
-3b. a protected play's open panel ends in a quiet **Leave early** button under the slip, with
-   "remove the protection, keep your pick" beside it. Tapping it opens a block under the slip,
-   priced live from both books (`GET /api/shadow/unwind/quote`), two rows (0.7.25): "Protection
+   pill, "You end with $25.06." on the line, and in the panel "Texans won · you end with
+   $25.06" over "Without the lock, it would have paid $46.00";
+3b. a locked play's open panel ends in a quiet **Leave early** button under the slip, with
+   "remove the lock, keep your pick" beside it. Tapping it opens a block under the slip,
+   priced live from both books (`GET /api/shadow/unwind/quote`), two rows (0.7.25): "Lock
    settles" with one signed figure and the why in grey ("−$0.57 due back · your pick moved up, so
    the upside you sold is worth more now"; "+$0.41 to you · your pick moved down, so the floor you
    hold is worth more now"), and "Staying $6.95 or $11.90"; a **Leave early** button beside a quiet
    **Stay**; the fine print says it is priced live and until when (the early-close margin, 15
-   minutes before the start), that the pick stays open on the venue unprotected, and that the
-   credit paid at the lock is theirs with this settlement separate. The tap prices again
+   minutes before the start), that the pick stays open on the venue without the lock, and that the
+   credit, credited at lock in, is theirs with this settlement separate. The tap prices again
    (`POST /api/shadow/unwind`), the service writes the close with source `unwind`, and the line
-   settles as **Protection removed** with "−$0.57 due back." (or "+$0.41 to you · on its way."). Its
-   panel: "Protection removed · settled −$0.57", "Your pick open on Novig, unprotected", "Cash $0.57
-   due back", the facts ("Removed Wed 8:03pm ET"), the receipt with a **Protection removed** cash
+   settles as **Lock removed** with "−$0.57 due back." (or "+$0.41 to you · on its way."). Its
+   panel: "Lock removed · settled −$0.57", "Your pick open on Novig, without the lock", "Cash $0.57
+   due back", the facts ("Removed Wed 8:03pm ET"), the receipt with a **Lock removed** cash
    leg. What crossing the books cost against the mid appears only with the operator setting on.
-   Nothing is reversed: leaving is a new trade at live prices, the protection alone settling at
+   Nothing is reversed: leaving is a new trade at live prices, the lock alone settling at
    today's price instead of the official result. When the pick is up that settlement is usually a
    charge, because the upside sold at the lock is worth more now; the sheet says so before the tap.
    The pick itself is never touched; the extension never trades. Once the service frees a market
    left early (`onRecord` false on the market), the row goes back to the **Lock in** offer at the
-   live quote, with one grey line under the button, "Earlier protection removed Thu 7:58pm ET ·
+   live quote, with one grey line under the button, "Earlier lock removed Thu 7:58pm ET ·
    −$0.57 due back." (0.7.26); the removed lock stays on the record and the new lock is its next
-   generation. A service that still holds the market keeps the row on Protection removed.
+   generation. A service that still holds the market keeps the row on Lock removed.
    **Which club is the pick** (0.7.27): when the service reads the holder's account on the venue
    (`/api/shadow/positions` answers `configured: true`), the venue's own word on what they hold
    decides the side of a card before anything printed on it; a card that prints both clubs and
    no pick line (Novig's Active card, "CLE … ATL") is read by the position, never by which club's
    letters appear more often. A row the venue says is the other club draws no offer, and the
    service refuses such a lock with `wrong_side` ("Your pick on this game is Cleveland Cavaliers;
-   protect it from that card."). Without the read key the card's text alone decides, as before.
+   lock it in from that card."). Without the read key the card's text alone decides, as before.
    The size follows the same rule (0.7.28, 0.7.29): a position the venue confirms is sized from
    it (contracts, entry, cost, payout) and keeps that size through every redraw of the page and
    through a read of the account that misses it (the service itself carries a position's market
@@ -146,14 +146,14 @@ of open plays. Once a matched play exists, under its row:
    positions over $20 are not affected by it). On a 10-contract pick at 50¢ against a 52¢ other
    side, Max upside moves from floor 20¢ / cap 70¢ to floor 5¢ / cap 90¢: lose $0.71 instead of
    $0, win $9.30 instead of $10.10. The three shapes are named for what they give (Max upside,
-   Balanced, Max floor) and listed with the floor, the upside and the cash now.
+   Balanced, Max floor) and listed with the floor, the upside and the credit.
 
    **The simple layout** (0.7.31, the default; Options → Layout → Full brings the panel above
    back for an operator demo). The open panel is three rows and one pill, nothing else in view:
    "Packers win $6.88 · of $7.69", "Packers lose $1.88 · instead of $0" (the floor, the one
-   coloured figure), "Cash now +$0.42"; then a **Lock in** pill the width of its word, and at the
+   coloured figure), "Credit at lock in +$0.42"; then a **Lock in** pill the width of its word, and at the
    right one toggle, **Details** (0.7.32: the label holds still and a chevron turns; the same
-   toggle shape serves Details and Rules everywhere, in the offer, under the protected slip and
+   toggle shape serves Details and Rules everywhere, in the offer, under the locked slip and
    inside the receipt). Details opens, under the pill, as five rows in one grammar (0.7.36: a dim
    label on the left, the value on the right, one type size, two tones): **Shape**, a segmented
    control (Max upside / Balanced / Max floor, only when the book funds more than one shape; a
@@ -162,14 +162,14 @@ of open plays. Once a matched play exists, under its row:
    fees included · $0.11 more for you", this page's venue named with its two-word reason when it
    priced nothing; each venue's figure in the tooltip); **Until**, the clock ("tip-off Tue 8:00pm ET · priced live");
    **Rules**, the toggle with the four cases beside it while folded, the grid when open (one case
-   a row, what the venue does and what the protection does); **How**, two sentences with no
-   figures (the figures are the three rows above). A protected play's panel
+   a row, what the venue does and what the lock does); **How**, two sentences with no
+   figures (the figures are the three rows above). A locked play's panel
    is the same three rows without the "of" column, the quiet **Leave early** button (its meaning
    is the leave sheet's header, not a sentence on the row), the **Details** toggle at the right,
    and the facts line in view under them ("Locked Fri 7:12pm ET · the other side bought in
    1.3s"). Details opens the receipt in place as the same grammar, five rows: **Other side**
    (the venue, the contracts and price, the competition in a dim tail, the order id and the
-   rail), **Cost**, **Rules**, **Terms**, **Paid to you** (the cash legs; the record id is the
+   rail), **Cost**, **Rules**, **Terms**, **Credit** (the cash legs; the record id is the
    operator's). While the book is read, the panel is one line of words ("Pricing from the live
    book…", "Pricing your exit…" in the leave sheet), not bars.
    Nothing is removed: every figure of the full layout is one tap away.
@@ -182,23 +182,23 @@ of open plays. Once a matched play exists, under its row:
    the hedge share for share and settles when the game does; the facts say "the other side offset
    on ProphetX, settles at the game" and the receipt row reads **Offset on** (contracts of the
    pair bought, proceeds at the game, order). The holder's own numbers are the same either way:
-   the protection settles between us at today's price; the timing of the writer's hedge cash is
+   the lock settles between us at today's price; the timing of the writer's hedge cash is
    the writer's. Where the rails hold it (dry run, kill switch, not armed) or the hedge sits on
    Polymarket, the sale is recorded at the book's price (`hedgeSent: false`), the facts say "the
    other side's sale is on the record", and the operator sells by hand.
    Too close to the start, or once settled or already left, the block says so and offers Back;
-4. a play protection does not cover gets a muted **Unavailable** pill with the reason after it:
-   "Protection covers Moneyline picks." on a spread or total, "Protection waits until the play is
+4. a play the lock does not cover gets a muted **Unavailable** pill with the reason after it:
+   "Lock in covers Moneyline picks." on a spread or total, "Lock in waits until the play is
    matched." on a play that is still an open order, or the live refusal from pricing. Tapping it
    says what to do. A muted pill (Unavailable, or Lock in while the price is still being checked)
    carries no shield; the word sits centred (0.7.19; before it a dim outline shield read as an
    empty slot on a dark venue and pushed the word off-centre). The filled shield marks the live
-   states only: Lock in with a price, Protected, Settled, Protection removed.
+   states only: Lock in with a price, Locked in, Settled, Lock removed.
 
 That placement is the only staged pixel. Everything behind the tap is the Atticus event service:
 the play is matched to its market, priced from live books at the holder's size, the terms lock,
 the record is written, and the hedge is bought on whichever of tonight's venues paid more for
-the same protection.
+the same lock.
 
 Styled in each venue's own theme, with no brand of ours up top; our name is one line at the foot
 of the panel. Every quote and lock names the page's venue (`venue=prophetx|kalshi|novig`), and the
@@ -250,8 +250,8 @@ not today. The counterfactual re-reads, the early-close quote and the venue colu
 carry Novig like the other routes, and the aggregator is never named.
 
 > Disclosure line, shown on every panel and to be read in any published recording (the marker
-> and the slip line are a notice that protection exists; nothing is offered until the play fills):
-> *"Third-party protection by Atticus, rendered here for this demo; not a product of this venue.
+> and the slip line are a notice that the lock exists; nothing is offered until the play fills):
+> *"Third-party Lock in by Atticus, rendered here for this demo; not a product of this venue.
 > Pricing, record and hedge are live."*
 
 What this extension holds: the service URL and a lock key. What it never holds: a venue login,
@@ -280,9 +280,9 @@ A Kalshi position is **Yes** or **No** on one club, N contracts at an average pr
 Those are our units already: N contracts at 59¢ cost $5.90 and pay $10.00. The reader takes the
 contract count and the cents price off the row ("10 contracts · Avg 59¢"), or the cents price and
 the cost. Kalshi sells fractional contracts ("15.95 shares"); the fraction is kept and the whole
-position is covered, so a $15.95 payout is protected as $15.95, never 15 contracts and an odd 95
+position is covered, so a $15.95 payout is locked in as $15.95, never 15 contracts and an odd 95
 cents left out. A **No** on a club is read as a **Yes on the other club of the same game**, which is the
-market the service protects: "No · DAL Cowboys, 15 contracts at 32¢" becomes 15 contracts of
+market the service locks in: "No · DAL Cowboys, 15 contracts at 32¢" becomes 15 contracts of
 Philadelphia at 32¢, and the panel says "your No on the Cowboys" so the holder knows which row
 it means. Spread markets ("...: Spread") get the muted line. The Portfolio page's tabs are read:
 **Positions** are filled, **Orders** are resting ("waits until the order fills"), **History** is
@@ -372,17 +372,17 @@ games listed, past locks):
   multiplier) and the lock window are the first two rows under Details, **Position** and
   **Window**, not chips at the top of the open panel pushing the offer down; the one window
   worth a line under the button is a hard deadline ("Lock in until 6:45 PM ET") when in play is
-  off. The protectable ones carry the Lock in line ("Lose, and still get $16.18"; when STX's
+  off. The ones that can be locked in carry the Lock in line ("Lose, and still get $16.18"; when STX's
   book is thin it adds "· STX's book takes 20 of 30") and the tap opens the panel (the two
-  outcomes, the cash row **In your STX balance now**, the Shape control, the Lock in pill,
+  outcomes, the cash row **In your STX balance when the sale fills**, the Shape control, the Lock in pill,
   Details; a combo's legs sit under the pill). What the other venues would have paid for the same
-  protection is priced at the sale and kept in the record (**Compared**, below), not shown on the
+  lock is priced at the sale and kept in the record (**Compared**, below), not shown on the
   page: the member's position is on STX and the sale fills there, so the page has no reason to
   point anywhere else. The rest sit under
-  **Not protectable** with a toned pill and plain
+  **Cannot be locked in** with a toned pill and plain
   words: **Too close** (inside the cutoff), **In play** (a red dot), **Parlay** (violet; "3-leg
   Combo", the picks under the name, and the tap opens the legs: each pick, its game and tip-off,
-  and where it stands, Pending · Live · Hit · Missed · Void; "protection on the last open leg is
+  and where it stands, Pending · Live · Hit · Missed · Void; "Lock in on the last open leg is
   coming"; a **9.47× payout** chip), a market or a league the service does not cover. STX's own
   combination market carries no leg list: the picks are words (`question: "Broncos, Hawks,
   Texans, Falcons"`, the description naming each with "Won", the specifier counting them) and its
@@ -396,7 +396,7 @@ games listed, past locks):
   promise: "4 legs · first tips Sun 1:00 PM ET", "1 live · 0 of 4 hit", "2 of 4 hit · next
   Sun 4:05 PM ET", "Missed · Hawks", "All 4 hit · settles on STX"; under the legs the panel says
   one thing, "Rides to settlement on STX.", and its Details hold the why (STX's combo market has
-  no bids to sell into, so a combo cannot be partly sold the way a single pick can; protecting the
+  no bids to sell into, so a combo cannot be partly sold the way a single pick can; locking in the
   last open pick on its own is a separate step, not on this page yet). STX
   writes a long's average premium negative (cash out), so the entry is read as its size. Locked
   positions come first, then the offers; both groups read live first, then whatever starts next
@@ -406,7 +406,7 @@ games listed, past locks):
   beside it for a few seconds, and on a phone the balance strip is sticky under the tabs (handle
   and figure on one line), so the credit lands in view without leaving the row just locked. The
   footer is the disclosure line and Privacy · How it works; on a phone it is three short centred
-  lines that each fit from 320px up (the Atticus mark; "Third-party protection; not a product of
+  lines that each fit from 320px up (the Atticus mark; "Third-party Lock in; not a product of
   STX."; Privacy · How it works · Disconnect, the last because the header hides it at that
   width). On touch the three links keep a 44px target but their words sit on one centred
   baseline, in one colour; the public record is no longer linked from a member's page.
@@ -414,7 +414,7 @@ games listed, past locks):
   The word budget, which the page keeps: a closed row is the tag, one figure and at most six
   words; a helper line inside an open panel is one line at 375px (about 45 characters: "Live
   price · never less than shown", "STX's bids take 6 of 10 · the rest rides", "Whole again,
-  unprotected · the net above is the round trip"); anything longer lives under Details or in How
+  without the lock · the net above is the round trip"); anything longer lives under Details or in How
   it works. **Games** is a heading, one line ("Buy a side on STX. It lands here with its Lock in
   line.") and a small **i** beside the heading (dim; amber once open) for what the two chips mean
   (Bid is STX's best bid right now; Floor is what a Max floor lock keeps per contract on a loss).
@@ -431,7 +431,7 @@ games listed, past locks):
   against every venue, filled where you hold it; the public record), then Privacy and the public
   record. The same three steps are the empty portfolio's words; the first look at a portfolio
   with positions is the balance and the rows, nothing else. The controls carry one edge hairline
-  (`--ael-edge`, white at 13%): Leave early and Stay protected are outlined, under the filled
+  (`--ael-edge`, white at 13%): Leave early and Stay locked in are outlined, under the filled
   Lock in and above the plain Details link; the league pills, the balance strip, the Back pill,
   Show more and the phone's selected tab segment carry the same line. On a phone the Shape
   control is a full-width grid of equal cells with the label on its own line, so the three
@@ -465,7 +465,7 @@ games listed, past locks):
   `MEMBER_APP_COMBO_RFQ=preview` shows the flow before STX quotes, see the end of this paragraph). A
   combo (parlay) ticket has no resting book, so it cannot be partly sold into bids the way a single
   can. STX is building a "cash out" request-for-quote for combo holders; when it ships, the same
-  OAuth path and `orders.write` scope carry it (confirmed by STX), and this flag protects any
+  OAuth path and `orders.write` scope carry it (confirmed by STX), and this flag locks in any
   combo the member holds, any leg, not only the last: part of the ticket is sold to STX's makers at
   the price they quote, the rest rides to settlement. Built now against an **assumed** API shape
   (`memberApp.ts`, `RawMemberRfq`: `POST /api/v1/rfqs {market_id, action:"sell", quantity,
@@ -510,7 +510,7 @@ games listed, past locks):
   leg is in play the live line is "Live price" alone (the tap re-asks the makers; "never less than
   shown" is a single's limit-order promise and is not made here). `/api/shadow/positions` says
   `comboRfq: "preview"`, the quote carries `rfq.preview: true`.
-- **Games** lists the games this service can protect that STX lists right now, by day (**Today**,
+- **Games** lists the games this service can lock in that STX lists right now, by day (**Today**,
   **Tomorrow**, then the weekday; two days at a time, "Show 3 more games on later days" for the
   rest), with filters when there is more than one league and an **In your portfolio** filter when
   any are held. Each game: the league badge, the title, tip-off, the last moment to lock; each
@@ -543,7 +543,7 @@ balance, from the home screen. It can carry its own host: set `MEMBER_APP_HOSTNA
 Domains; a CNAME at the registrar to the service's onrender host; Render issues the certificate).
 On that host `/` is the page and `/app/*` and `/api/*` answer as always; any other path is sent to
 the record URL, so the public record and the embed are never served under a venue's name. STX's
-app registration does not change: the callback stays the record URL's. Its foot: "Protection by Atticus, a third party; not a product of
+app registration does not change: the callback stays the record URL's. Its foot: "Lock in by Atticus, a third party; not a product of
 STX", the public record, **How it works** (a sheet: the three steps, the sale in plain words, the
 consent given on STX's own page and revocable there, what the page never holds), **Privacy** (`/app/privacy`, or
 `/privacy` on the page's own host: what the page reads, writes, stores and never holds, in the
@@ -564,7 +564,7 @@ header is the only credential in the extension, as on every venue. On the venue'
 page the pre-trade pills stay away from the position rows; the card is the only thing we draw
 there.
 
-Connected, the card lists the holder's long positions on games the service can protect (one row
+Connected, the card lists the holder's long positions on games the service can lock in (one row
 per Winner market, sized from the account: 50 contracts at an average 42¢; a $2 contract counts
 as two), each with the same Lock in line as a Kalshi row. A short, a Spread or Total market, or a
 game the service does not list gets no row or a muted one with the reason.
@@ -575,8 +575,8 @@ On STX nothing is hedged and no one is on the other side: the three shapes sell 
 the position (Max upside, Balanced, Max floor) into STX's own bids at the walked price, and the
 floor is simply the cash the sale pays (the side lost: the holder keeps the cash and the riding
 contracts pay $0), the cap that cash plus $1 on every riding contract (the side won). So the cash
-row reads **In your STX balance now +$10.80** rather than Cash now; the panel, the Shape control
-and the Protected line are otherwise the same. The tap sends one limit sell for the shape's share
+row reads **In your STX balance when the sale fills +$10.80** rather than Credit at lock in; the panel, the Shape control
+and the Locked in line are otherwise the same. The tap sends one limit sell for the shape's share
 at the walked price, waits briefly, cancels the rest and writes the record from the fills, never
 from the quote: a partial fill is a smaller sale with more riding, said once on the facts line
 ("28 of the 30 asked sold; the rest rides"), and no fill writes nothing ("STX's bid moved before
@@ -592,12 +592,12 @@ contracts stay sold whatever the venue does with the riding ones.
 **Leave early is a buy-back.** The block reads "Buy back 30 at 56¢ · costs $16.80", then three
 rows with no note column (Sold for, Net to your STX balance, Staying; the fixed-width note the slip's
 ledger carries ran past this narrower box's edge on a phone), and the button says the order it
-sends. On the tap the row folds to its line ("Unprotected · Bought back 30 at 56¢ · net −$0.65")
+sends. On the tap the row folds to its line ("Not locked · Bought back 30 at 56¢ · net −$0.65")
 and forgets what was open in its panel, so the fresh offer that takes the line's place a few seconds
 later opens clean. The service buys
 the sold contracts back from STX's offers in the holder's own account and writes the close from
-the fills; the position is whole again, unprotected. A book too thin for the whole buy-back says
-so, and the rest stays sold (and protected). While in play is on, the leave stands during the game
+the fills; the position is whole again, without the lock. A book too thin for the whole buy-back says
+so, and the rest stays sold (and locked in). While in play is on, the leave stands during the game
 too: the 15-minute margin before the start is the hedged routes' last moment (the schedule's early
 close prices the hedge's book), not a member sale's, whose buy-back is their own order on their own
 venue for as long as STX trades the market. The quote carries `lastIso: null` on a live row and the
@@ -605,7 +605,7 @@ block's last line says "live price, never more than shown" (the buy-back is a li
 waits out STX's in-play hold like the sale did). With in play off the margin applies to the sale too.
 
 Pre-game only, as everywhere: the service refuses a lock inside 45 minutes of the start. Parlays
-are not protected on STX. The public record carries the lock with STX's own route word and no
+cannot be locked in on STX. The public record carries the lock with STX's own route word and no
 venue ids; the operator's holders page says "own sale" in the route column. In Details, the
 Shape control moves Sale, Compared and the Rules grid together: each tier carries its own
 comparison and its own tails, so the row the member reads is the shape they picked.
@@ -690,7 +690,7 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
   `node pack.mjs` writes the production build to `dist/` with the local matches and permissions
   stripped and the previews left out (see Production build).
 - `content.js` picks the venue from the host name (`VENUES`), decides it is on the plays page (URL
-  or heading) and which tab is open, finds play rows by text (a team the service can protect, by
+  or heading) and which tab is open, finds play rows by text (a team the service can lock in, by
   nickname or by code, plus the row's money), reads the size from the table's columns, the row's
   labels, or Kalshi's contracts and cents, flips a Kalshi No to the other club's market, inserts
   our block as a sibling after the row (a full-width table row when the row is one) with the
@@ -701,7 +701,7 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
   be told apart the pill goes beside the first club named; a block's words are read with a space
   between its text nodes, since a React Native Web page such as Novig's puts a view, not a space,
   between a club's code, its name and its record), puts one pill on each card the
-  service says is protectable (`markGames`, keyed by game so a redraw keeps it; the hover card is
+  service says can be locked in (`markGames`, keyed by game so a redraw keeps it; the hover card is
   `showTip`; a pill the page gives no room to, inside a line that cuts its text, moves out of
   that line or to its own line at the card's foot), and the one line in the slip (`findSlip`: the block with the venue's place-order
   button, the pick named most in it; no stake is read). A club listed twice in the window (this
@@ -736,7 +736,7 @@ venue in a `<meta name="ael-venue">` tag, since it is served from localhost).
 
 The extension draws; the service decides. Two things ride with `GET /api/shadow/markets`:
 
-- each market's `startIso`, `protectable`, `protectableUntilIso` and, when not protectable, why
+- each market's `startIso`, `protectable`, `protectableUntilIso` and, when it cannot be locked in, why
   (`in_progress`, `too_close`, `far_out`, `unpaired`, `mark_out_of_range`, `on_record`). The
   window is one rule for the board, the quote and the pill: `PROTECT_WINDOW_MINUTES` in
   `eventProtectXDemoService.ts`, 45 minutes to 7 days before kickoff. (The public demo board at
@@ -765,7 +765,7 @@ two steps and may land in either order.
 
 Once per page view, the extension posts `POST /api/shadow/ext-telemetry` (lock key): venue, kind
 of page (`board`, `game`, `plays`, `other`), extension version, and whole-number counts (markets
-listed, protectable, games found, pills drawn, slip seen, slip marked, rows read, offers shown,
+listed, open to lock in, games found, pills drawn, slip seen, slip marked, rows read, offers shown,
 rows unread). Fixed vocabularies only; anything else is refused with 400, and no page text or
 amount is accepted. `GET /api/shadow/ext-telemetry/summary?token=...` (operator) shows totals
 per venue and the last rows, so what drew on a live venue is seen without a screenshot. Off in
@@ -785,7 +785,9 @@ service or the site) in the listing's privacy field. Before uploading: bump `ver
 reading still matches the venues, and keep `EVENT_SHADOW_EXT_MARKS_OFF` at hand for a venue that
 changes its page under us.
 
-Words: "protection" and "lock in", never "insurance" or "guarantee"; the cutoff is stated where
+Words: "Lock in" is what the holder does and "the lock" is what they hold; never `protect`,
+`insurance` or `guarantee` for either; a credit is "credited at lock in", and a member's own sale
+"lands in your balance when the sale fills"; the cutoff is stated where
 the pill is ("until 7:35pm ET"), since that is the first question. The pre-trade line carries no
 price on purpose: the quote at placement is the one that binds.
 
@@ -800,7 +802,7 @@ The lock routes are off until a key is set.
 | `EVENT_HEDGE_LIVE_VIA` | `aggregator` for tonight | Orders go through the aggregator's execution pod with the TRADE key, which reaches both Kalshi and ProphetX. Unset (`direct`): Kalshi on our own key, and ProphetX prices on paper only. Novig is direct in either mode, on `NOVIG_TRADE_KEY_ID`. |
 | `AGGREGATOR_TRADE_KEY_ID`, `AGGREGATOR_TRADE_PRIVATE_KEY_HEX` | from the aggregator | Service only. The DATA key reads books and never sends an order. |
 | `EVENT_HEDGE_VENUES` | `kalshi,prophetx,novig` | The hedge venues every quote competes. Unset offers all four (Kalshi, ProphetX, Novig, Polymarket). Polymarket stays out until the aggregator lists Poly US. Shown on `/healthz` with the operator token. |
-| `EVENT_HEDGE_SAME_ACCOUNT_VENUES` | leave unset for tonight | Venues where the service's hedge sits in the holder's own account (Novig's subaccount is one), named `novig`. Set, a hedge is not routed to the same venue the holder stands on there: Novig nets the two sides in one account and pays the guarantee out early (Oct 30). Unset by default because for the live parlay test the Novig subaccount is the one funded hedge venue, and Novig cannot net a parlay against a single. |
+| `EVENT_HEDGE_SAME_ACCOUNT_VENUES` | leave unset for tonight | Venues where the service's hedge sits in the holder's own account (Novig's subaccount is one), named `novig`. Set, a hedge is not routed to the same venue the holder stands on there: Novig nets the two sides in one account and pays the pair out early (Oct 30). Unset by default because for the live parlay test the Novig subaccount is the one funded hedge venue, and Novig cannot net a parlay against a single. |
 | `EVENT_PROPHETX_FEE_BPS` | leave unset (`200`) | ProphetX's 2% of net gains at settlement, folded into its book before every walk and provided for on every fill. |
 | `NOVIG_TRADE_KEY_ID`, `NOVIG_TRADE_PRIVATE_KEY_PEM` | from `venueReadKey.ts subaccount-open` | Service only. The trading key of the service's own Novig subaccount; its cash funds the Novig hedges, fill or kill, direct (no pod). Unset with `novig` offered: the route prices on paper and the receipt says so. The host is `VENUE_API_HOST` (production `https://api.novig.com`; the Paper environment `https://api.paper.novig.com` runs the whole route on play money with no location check). |
 | `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM` | from Kalshi | Service only. With `via=aggregator` they serve the account routes and send nothing. |
@@ -861,7 +863,7 @@ The service also still speaks the signed read-key API of the previous venue
 (`VENUE_API_KEY_ID` + `VENUE_API_PRIVATE_KEY_PEM`, minted with `venueReadKey.ts mint`). Whichever
 pair of variables is set picks the API; set one, not both.
 
-**Parlays (0.7.37).** A parlay is protected at its last pick only. With two or more picks open
+**Parlays (0.7.37).** A parlay is locked in at its last pick only. With two or more picks open
 there is no one market to buy the other side of, and the ticket pays only if every pick hits; once
 all but one have hit, the ticket is a single on the last pick, paying To Pay if it hits and
 nothing if it misses, and it is locked in like any single for what the ticket pays (one contract
@@ -875,7 +877,7 @@ at your last pick · Ravens Thu.** (muted; the panel lists the picks and says wh
 more open; nothing at all once a pick has missed or every pick has hit (the ticket is the venue's
 to show); **Unavailable · Tap Show Legs so your picks can be read.** when a bare code fits two
 games (SEA is the Seahawks and the Mariners). At the last pick the card must have its legs shown,
-so the pick's market is certain (**Lock in · Tap Show Legs to price protection on your last pick,
+so the pick's market is certain (**Lock in · Tap Show Legs to price the lock on your last pick,
 Ravens.** until then), the pick must be a Winner, and the game must not have started; then the
 card gets a single's offer on that market, **Lock in · Lose, and still get $20.59.**, with a
 **Picks** row in Details (Seahawks · hit, Ravens · Thu 8:15pm ET). The lock carries a `parlay`
@@ -883,7 +885,7 @@ block (the picks as read, the stake and payout); the service places the picks ag
 refuses a lock that is not at the last pick (`parlay_not_last_pick`), on a busted or settled
 ticket (`parlay_busted`, `parlay_settled`), on a pick it cannot place (`parlay_pick_unknown`),
 after kickoff (`parlay_in_play`) or for more than the ticket pays (`parlay_size`), so a card read
-wrong cannot write a record; the record and the Protected panel carry the picks. A ticket's picks
+wrong cannot write a record; the record and the Locked in panel carry the picks. A ticket's picks
 are read again every minute, so a pick that hits turns the card's line on its own. Novig cards
 first; the reader is generic (an "N Leg Parlay" head, "CODE Winner" legs over a game bar).
 
@@ -904,7 +906,7 @@ Eagles card had a second cause on the service: the horizon pre-filter compared t
 with the UTC clock, so from 7pm ET an evening game counted as yesterday's and left
 `/api/shadow/markets`; without the market listed, PHI fit two games and the card was skipped. The
 filter now compares ET calendar dates, so a game is listed through its own night and the next day
-(and the Thursday night Ravens stays listed through its 7:00–7:30pm ET lock window). A started
+(and the Thursday night Ravens stays listed through its 7:00 to 7:30pm ET lock window). A started
 game is listed as `notProtectable: "in_progress"`, and its card reads **Unavailable · This game is
 in play.** rather than "starts too soon".
 
@@ -921,6 +923,18 @@ the service listed tonight's game beside next week's: a card that says its game 
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
 
+**One set of words (0.7.46).** Text only; nothing the extension does is changed. What the holder
+does is "Lock in" and what they hold is "the lock": the pill of an open lock reads **Locked in**
+(was `Protected`), a lock left early reads **Lock removed**, a settled lock's line reads "You end
+with $25.06", and the refusals, the leave sheet, the Options page, the store description and
+`PRIVACY.md` say lock in where they said `protect`. When the money moves is said one way. On a
+hedged lock the cash row reads "Credit at lock in" before the tap and "Credited at lock in" after
+it (were `Cash now · today` and `Paid to you`), a shape reads "+$0.21 credit", and the receipt's
+credit leg is **Credit**, "credited at lock in; settles with the position". On STX the row reads
+"In your STX balance when the sale fills", and How says the cash from the sale lands in the
+member's STX balance when the sale fills and each contract kept pays $1 if it wins. The service's
+own refusals, shown as they come, carry the same words.
+
 **In play follows the service (0.7.45).** The markets answer carries `ext.inPlay` (on unless the
 service sets `EVENT_X_IN_PLAY=0`). On: a game under way is marked and priced like any other until
 the service's bound after the start, a parlay's last pick may be under way, and the lines read
@@ -934,14 +948,14 @@ to try again (`hedge_not_filled`), which is the service's word, shown as it come
 The primary surface is not this extension but the service's own hosted page, `GET /app`, built
 for a phone in STX's skin with the demo's Lock in line (connect in the same tab, a cookie
 session, a member-only lane; STX's mark and our bird in the bar, the member's handle and STX
-balance, Portfolio / Games / History tabs, every position listed with the unprotectable ones
+balance, Portfolio / Games / History tabs, every position listed with the ones that cannot be locked in
 muted with their reason, parlays among them; a web manifest; see **STX** above). In the extension, the host `stxapp.io` picks an amber
 skin; no row on the page is read: the card is the surface on every page, with **Connect STX
 account** before the connection (the venue's own consent screen in a new tab, a plain link under
 it when the tab is blocked; the service holds the tokens, this extension never sees them) and
-the account's long positions on protectable games after it, the header saying "10 riding, 40
+the account's long positions on games that can be locked in after it, the header saying "10 riding, 40
 sold" once a lock is open. The lock is the holder's own partial sale into STX's
-bids, nothing hedged: the cash row reads "In your STX balance now", the Protected line "… · on
+bids, nothing hedged: the cash row reads "In your STX balance when the sale fills", the Locked in line "… · on
 STX", Details carries the sale as filled (sold, price, STX order, still riding) and the
 background comparison on the hedge routes ("priced, nothing sent"), Leave early is "Buy back N at
 X¢". Positions from the service now carry their venue, and a page lists only its own venue's.
@@ -969,7 +983,7 @@ league word decides.
 **A parlay's lock heads with the highest floor (0.7.41).** At the last pick the quote is asked
 for with `parlay=1`, and the service heads it at **Max floor** instead of Max upside: the holder
 has won every other pick, the number they weigh the lock against is the venue's cash-out, and
-their stake is small against what the ticket pays, so the shape with the biggest guaranteed figure
+their stake is small against what the ticket pays, so the shape with the highest floor
 is the one that reads right ("Lock in $40" beside a $43 cash-out, with the win still above it).
 Singles keep Max upside. The Shape row under Details still lists all three, and a chosen shape is
 the one locked; the service applies the same default when a parlay lock arrives without one.
@@ -987,8 +1001,8 @@ all fit more than one game says so on the operator console ("row skipped: no sid
 **The hedge's own card on Novig (0.7.35).** The service's Novig hedges are bought in a subaccount
 of the holder's own Novig account, so the holder's Portfolio shows them as cards beside their
 own picks: the other side of a 76ers lock held on ProphetX appears as a Knicks card on Novig. That
-card is not theirs to protect (a lock on it would hedge the hedge, and Novig nets the two sides
-in one account and pays the guarantee out early, which is what happened on Oct 30), so on Novig
+card is not theirs to lock in (a lock on it would hedge the hedge, and Novig nets the two sides
+in one account and pays the pair out early, which is what happened on Oct 30), so on Novig
 the extension marks it **Hedge** ("The other side of your 76ers on ProphetX"), muted and with no
 button; a tap says what it is and that it settles with that lock. The extension knows it from the
 public record alone: an open lock held on another venue whose chosen route is Novig, on the
@@ -1006,17 +1020,17 @@ the slip instead of the figures following a thumb) and How reduced to two senten
 figures. The receipt follows: Hedged on, Compared and Order fold into the Other side row (the
 venue in bold, the race as a dim tail with each venue's figure in the tooltip, the order id and
 rail at the end; the lock's timestamp is the facts line's, so it is not repeated), the cash leg
-reads **Paid to you** rather than "Credit · owed to you", and a credit not yet marked paid reads
-"credited at the lock; settles with the position". The loading skeletons are gone: "Pricing from
+reads **Paid to you** rather than "Credit · owed to you" (**Credit** since 0.7.46), and a credit not yet marked paid reads
+"credited at lock in; settles with the position". The loading skeletons are gone: "Pricing from
 the live book…" and "Pricing your exit…" are the one line while the book answers.
 
 **Leave early (0.7.35).** One plain line, `To leave now · You pay $0.30` or `You get $0.30`, then
-`Net · −$0.12 after the $0.18 paid to you at the lock`, then `Staying · $1.88 or $18.93`, the two
+`Net · −$0.12 after the $0.18 credited to you at lock in`, then `Staying · $1.88 or $18.93`, the two
 buttons, and a **Why** toggle that opens the reason (the pick moved up, so the upside sold is
 worth more than the floor held, or the reverse) and the standing note that the pick stays open on
-the venue unprotected and the credit is theirs either way. "Due back" is gone everywhere: a
+the venue without the lock and the credit is theirs either way. "Due back" is gone everywhere: a
 leave's settlement reads "you paid $0.30" / "$0.30 paid to you" on the line, in the receipt's
-earlier-protection note and in the cash state ("you owe $0.30" for a slice above the cap).
+earlier-lock note and in the cash state ("you owe $0.30" for a slice above the cap).
 
 **When a Novig line comes and goes (0.7.34).** On the live Portfolio the button has appeared and
 then gone within a few seconds and not come back; DevTools showed no `.ael-host` in the page at
@@ -1037,18 +1051,18 @@ service's positions, the rows). If a line still goes, that console is what to se
 ### Novig: reading needs no subaccount, ordering does
 
 Novig's keys come in two scopes. The **management** key (one per trader, made on the Profile
-page) reads every wallet, opens and funds subaccounts and mints other keys; it never places an
+page) reads every balance in the account (Novig's API calls each one a `wallet`), opens and funds subaccounts and mints other keys; it never places an
 order. A **trading** key addresses exactly one **subaccount** and is the only key that can send
-`POST /v3/orders`. Reading the holder's plays for the protection (what the service does tonight)
-works with the management key or a read key minted from it: the cash wallet's positions come
+`POST /v3/orders`. Reading the holder's plays for the lock (what the service does tonight)
+works with the management key or a read key minted from it: the cash balance's positions come
 back under the management key's id and `venuePositions.ts` already reads them. A subaccount is
 needed only when the service itself orders on Novig. The management key answers positions for
-**every** wallet in the account, the service's hedge subaccount among them, and a hedge bought
+**every** balance in the account, the service's hedge subaccount among them, and a hedge bought
 there is the other side of the holder's own game: left in, the holder read would carry both
 sides (a Texans position and a Jaguars one on the same game) and the extension would misread
-the holder's card. So the holder read leaves out the wallet whose key equals or contains
+the holder's card. So the holder read leaves out the balance whose key equals or contains
 `NOVIG_TRADE_KEY_ID` (the trading key id is the subaccount's address), and any label named in
-`VENUE_API_EXCLUDE_WALLETS` (comma-separated); `venueReadKey.ts check` prints the wallets it
+`VENUE_API_EXCLUDE_WALLETS` (comma-separated); `venueReadKey.ts check` prints the balances it
 read and the one it left out. Set `NOVIG_TRADE_KEY_ID` on the worker and this is automatic.
 Before the route is used in anger, the venue's
 conditions for an order are worth knowing: the account must be KYC'd, the request may come from a
@@ -1112,10 +1126,10 @@ GET /healthz                                                lock.enabled true, h
    lock key. Leave "show hedge line" off for a customer-facing recording; turn it on for the
    operator cut.
    **Rehearsal** (same page): with it On, the Lock in button walks the whole flow on the live
-   quote, but calls nothing: nothing is locked, written or bought. The line reads Protected with
+   quote, but calls nothing: nothing is locked, written or bought. The line reads Locked in with
    "rehearsal" on it and the panel offers Reset. **Leave early** is there too (0.7.31): its sheet
    is estimated from the live mark rather than priced from the books (the fine print says so), and
-   the tap ends on "Protection removed · rehearsal" with Reset; nothing is sent. Use it to see the
+   the tap ends on "Lock removed · rehearsal" with Reset; nothing is sent. Use it to see the
    screens before real money, then turn it Off and reload the venue tab before the recording.
 3. On the venue, open the plays page: ProphetX **My Trades** (Cash mode, **Filled** tab), Kalshi
    **Portfolio** (**Positions** tab), Novig **Portfolio** (**Open** tab, cash not points). Each
@@ -1136,23 +1150,23 @@ Operator actions (token in `x-admin-token`), for the recording day:
 ## Test steps (five minutes, no money)
 
 1. Open the preview My Trades with the extension loaded. Every row has a line under it: Lock in
-   with the floor ("Lose, and still get $x."), Unavailable with a reason, or Protected.
+   with the floor ("Lose, and still get $x."), Unavailable with a reason, or Locked in.
 2. Tap a Lock in line. The panel opens under that row; the rows below move down: three rows
-   (win, lose, cash now) and the Lock in pill. Tap **Details** and tap **Max floor** on the
+   (win, lose, credit at lock in) and the Lock in pill. Tap **Details** and tap **Max floor** on the
    Shape control: the three rows and the line reprice; tap **Max upside**: they return. The
    control is only offered when the book funds more than one shape; a heavy favourite often has
    one. Under it: Other side (the venue and the race), Until (the clock), **Rules**, which opens
    to the grid of the four cases, and How in two sentences.
 3. Tap **Lock in**. The pill reports the stages in words (Pricing from the live book, Writing
    the record, Buying the other side) under a slow sheen, with whole seconds only past three; the
-   line flashes solid and settles as the Protected pill with "$x or $y · on Kalshi.";
+   line flashes solid and settles as the Locked in pill with "$x or $y · on Kalshi.";
    the panel is the three rows with the locked numbers, the Leave early button and a Details link.
    Tap **Details**: the facts line with how long it took, then Other side (venue, contracts,
-   price, the race, the order), Cost, Rules, Terms, Paid to you. Open `/` on the service: the position is there with `source: lock`.
-   With Rehearsal on in the options, the same tap ends on a Protected line marked "rehearsal"
+   price, the race, the order), Cost, Rules, Terms, Credit. Open `/` on the service: the position is there with `source: lock`.
+   With Rehearsal on in the options, the same tap ends on a Locked in line marked "rehearsal"
    with a Reset link, and nothing reaches the service.
 4. Reload the page. The chip is still there (it comes from the record, not from the browser).
-5. Tap the Spread row's line: "Protection covers the Moneyline market." Close it.
+5. Tap the Spread row's line: "Lock in covers the Moneyline market." Close it.
 6. Open the **Resting** tab. The Chiefs order's line says "waits until the play is matched"; tap
    it: "This play has not been matched yet." Close it.
 7. Back on **Filled**, the Bills row shows the filled $10 of a $20 order: the panel says "pays
@@ -1192,7 +1206,7 @@ are widest and clearest there.
 1. **Venue, before and after the play.** The game list with the shields; pick the Winner price;
    the slip's line with the floor at that stake; place the play. Then My Trades, Filled tab,
    with the new play. Tap its Lock in line; the panel opens with the terms; tap **Lock in**.
-   The line settles as Protected.
+   The line settles as Locked in.
 2. **Record.** `/` on the service a moment later: the position appears with `source: lock`, the
    three numbers match the panel. Operator cut: `/api/shadow/hedges` shows the live attempt, order
    id, fill, cost.
@@ -1200,14 +1214,14 @@ are widest and clearest there.
    Settled tab, the chip's details panel: what the holder ends with, what the play alone would
    have paid, and where the money stands ("$8.00 owed to you", then "paid in full" once the
    operator records the payment with `POST /api/shadow/cash`). A settled play that was never
-   locked here gets no line at all (0.7.17; before it, "Not protected"), and a play the venue
+   locked here gets no line at all (0.7.17; before it, a line said it was not locked), and a play the venue
    shows as sold or cashed out reads as settled whatever tab it sits in.
 
 Rules the service enforces, so plan the game around them:
 
 - The lock must be at least 45 minutes before start and inside 7 days.
 - One open lock per game per holder, whichever venue the pick sits on: the record is keyed by the
-  Kalshi market. A settled or voided lock still holds the market. A lock whose protection was
+  Kalshi market. A settled or voided lock still holds the market. A lock that was
   removed (Leave early) frees it: the game is offered again, and the next lock is the next
   generation on the record (`generation: 2` on the receipt and the positions list); the removed
   lock stays on the record, closed, with its own settlement and cash legs, and the public record
@@ -1215,15 +1229,15 @@ Rules the service enforces, so plan the game around them:
   `POST /api/shadow/lock/reset?ticker=` still takes every generation off the record at once. A
   lock belongs to the venue it was made from (`holderVenue` on the record; a lock
   written without one, before 0.7.13, is Kalshi's, the service's default) and draws only on that
-  venue's page: an open lock reads "Protected on ProphetX already" on another venue's card of the
-  same game, and a lock closed or settled elsewhere says nothing there. Protecting the same game
+  venue's page: an open lock reads "Locked in on ProphetX already" on another venue's card of the
+  same game, and a lock closed or settled elsewhere says nothing there. Locking in the same game
   on two venues at once would need the record keyed by venue as well; not built.
 - The play must be matched. Place it as a Market Order so it fills at once; a limit order that
   rests is refused until it matches.
 - The size you hold at the venue should be the size you lock. Play and hedge settle on the same
   official result.
-- Protection is priced from the book. A pick the book will not pay for shows "Protection
-  unavailable" with the reason; that can change toward kickoff.
+- The lock is priced from the book. A pick the book will not pay for shows "Unavailable"
+  with the reason; that can change toward kickoff.
 
 ## Local run
 

@@ -1144,7 +1144,7 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
   const pos = positions.find((p) => p.ticker === ticker);
   if (!pos) {
     const other = positions.find((p) => p.ticker && p.ticker.startsWith(stem));
-    if (other) return { ok: false, status: 409, body: { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; protect it from that card.`, heldTicker: other.ticker } };
+    if (other) return { ok: false, status: 409, body: { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; lock it in from that card.`, heldTicker: other.ticker } };
     return { ok: false, status: 409, body: { ok: false, error: "not_held", code: "not_held", message: `Your ${VENUE_NAMES[MEMBER_VENUE]} account holds nothing on this market.` } };
   }
   if (contracts > pos.contracts + 1e-9) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this market; the lock can cover up to that.`, held: pos.contracts } };
@@ -1159,7 +1159,7 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
   }
   const row = (await listGameMarketsFn!()).find((m) => m.ticker === ticker);
   const eventTimeIso = row?.startIso ?? pos.startsIso ?? null;
-  if (!row || !eventTimeIso || !row.league) return { ok: false, status: 200, body: { ok: false, code: "not_offered", message: "Protection isn't offered on this market." } };
+  if (!row || !eventTimeIso || !row.league) return { ok: false, status: 200, body: { ok: false, code: "not_offered", message: "Lock in isn't offered on this market." } };
   const startMs = Date.parse(eventTimeIso);
   const now = Date.now();
   const VN = VENUE_NAMES[MEMBER_VENUE];
@@ -1168,7 +1168,7 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
   const live = memberInPlay && marketLive(market, startMs, now);
   if (!memberInPlay) {
     if (startMs <= now) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: "This game has started; the lock is pre-game only." } };
-    if (startMs - now < protectCutoffMinutes * 60_000) return { ok: false, status: 200, body: { ok: false, code: "market_too_close_to_start", message: `This one starts too soon to protect (locks close ${protectCutoffMinutes} minutes before the start).`, untilIso: new Date(startMs - protectCutoffMinutes * 60_000).toISOString() } };
+    if (startMs - now < protectCutoffMinutes * 60_000) return { ok: false, status: 200, body: { ok: false, code: "market_too_close_to_start", message: `This one starts too soon to lock in (locks close ${protectCutoffMinutes} minutes before the start).`, untilIso: new Date(startMs - protectCutoffMinutes * 60_000).toISOString() } };
   }
   // the venue pauses a market for a moment at a score or a review: nothing matches until it resumes
   if (market.trading === false || /suspend/.test(statusWords)) return { ok: false, status: 200, body: { ok: false, code: "market_suspended", message: `${VN} has paused this market for the moment; try again in a few seconds.` } };
@@ -1262,7 +1262,7 @@ async function memberComboPriced(member: string, ticker: string, contracts: numb
   if (OVER_WORDS.test(statusWords) || market.settled_at) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: `This ticket is over; ${VN} is settling it.` } };
   // the record settles after the last leg; the page's first-leg start stays on the position
   const lastLegIso = legs.map((l) => l.startsIso).filter((x): x is string => Boolean(x)).sort().at(-1) ?? (market.event_start ? new Date(market.event_start).toISOString() : null) ?? pos.startsIso;
-  if (!lastLegIso || !Number.isFinite(Date.parse(lastLegIso))) return { ok: false, status: 200, body: { ok: false, code: "not_offered", message: "Protection isn't offered on this ticket: no leg has a start time." } };
+  if (!lastLegIso || !Number.isFinite(Date.parse(lastLegIso))) return { ok: false, status: 200, body: { ok: false, code: "not_offered", message: "Lock in isn't offered on this ticket: no leg has a start time." } };
   const live = legs.some((l) => l.state === "live") || LIVE_EVENT_WORDS.test(statusWords);
   if (live && !memberInPlay) return { ok: false, status: 200, body: { ok: false, code: "market_not_active", message: "A leg is in play; the lock is pre-game only." } };
   if (market.trading === false || /suspend/.test(statusWords)) return { ok: false, status: 200, body: { ok: false, code: "market_suspended", message: `${VN} has paused this ticket for the moment; try again in a few seconds.` } };
@@ -1442,7 +1442,7 @@ function memberCallbackHtml(ok: boolean, message: string): string {
   const mark = ok
     ? `<svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="#f9ae1c"/><path d="m15 25 6 6 12-14" stroke="#1a1200" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
     : `<svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="#1d1d1d" stroke="#3a3a3a" stroke-width="2"/><path d="M17 17l14 14M31 17 17 31" stroke="#d1d1d1" stroke-width="3" stroke-linecap="round"/></svg>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#010101"><title>${ok ? "Connected" : "Not connected"}</title><style>body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#010101;color:#f4f4f4}main{max-width:26rem;margin:16px;padding:28px 26px 22px;text-align:center;background:#1d1d1d;border:1px solid #2e2e2e;border-radius:14px}svg{width:48px;height:48px;margin:0 auto 14px;display:block}h1{font-size:19px;margin:0 0 8px;color:#fff}p{margin:0 0 16px;color:#b9b9b9}a.go{display:inline-flex;align-items:center;justify-content:center;height:44px;padding:0 22px;border-radius:999px;background:#f9ae1c;color:#1a1200;font-weight:600;text-decoration:none}.fine{font-size:12.5px;color:#818181;margin:14px 0 0}</style></head><body><main>${mark}<h1>${ok ? `${esc(venue)} connected` : "Not connected"}</h1><p>${esc(message)}</p>${ok ? "" : `<a class="go" href="${MEMBER_APP_PATH}">Try again</a>`}<div class="fine">Protection by Atticus, a third party; not a product of ${esc(venue)}.</div></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#010101"><title>${ok ? "Connected" : "Not connected"}</title><style>body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#010101;color:#f4f4f4}main{max-width:26rem;margin:16px;padding:28px 26px 22px;text-align:center;background:#1d1d1d;border:1px solid #2e2e2e;border-radius:14px}svg{width:48px;height:48px;margin:0 auto 14px;display:block}h1{font-size:19px;margin:0 0 8px;color:#fff}p{margin:0 0 16px;color:#b9b9b9}a.go{display:inline-flex;align-items:center;justify-content:center;height:44px;padding:0 22px;border-radius:999px;background:#f9ae1c;color:#1a1200;font-weight:600;text-decoration:none}.fine{font-size:12.5px;color:#818181;margin:14px 0 0}</style></head><body><main>${mark}<h1>${ok ? `${esc(venue)} connected` : "Not connected"}</h1><p>${esc(message)}</p>${ok ? "" : `<a class="go" href="${MEMBER_APP_PATH}">Try again</a>`}<div class="fine">Lock in by Atticus, a third party; not a product of ${esc(venue)}.</div></main></body></html>`;
 }
 
 function sendHtml(res: ServerResponse, status: number, html: string): void {
@@ -1675,7 +1675,7 @@ async function memberUnwind(res: ServerResponse, holder: string | null, lock: Sh
   }
   memberPositionsCache.delete(bp.member);
   if (outcome.filled <= 0) {
-    sendJson(res, 200, { ok: false, at: atIso, ticker: lock.ticker, code: "not_filled", message: `${VENUE_NAMES[MEMBER_VENUE]}'s offers moved before the order reached them; nothing was bought back and the protection stands.`, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
+    sendJson(res, 200, { ok: false, at: atIso, ticker: lock.ticker, code: "not_filled", message: `${VENUE_NAMES[MEMBER_VENUE]}'s offers moved before the order reached them; nothing was bought back and the lock stands.`, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
     return;
   }
   const back = buyBackRecordOf(outcome, { maxPrice: bp.maxPrice, limitPriceCents: bp.bb.limitPriceCents, clientOrderId, requested: bp.bb.contracts });
@@ -2212,7 +2212,7 @@ function unwindRefusal(lock: ShadowPosition | undefined, ticker: string, nowMs: 
   if (!Number.isFinite(lastMs) || nowMs > lastMs) {
     return {
       status: 409,
-      body: { ok: false, error: "too_late", message: `Leaving early closes ${Math.round(earlyCloseRule.marginMs / 60_000)} minutes before the start; the protection runs to settlement now.`, lastIso: Number.isFinite(lastMs) ? new Date(lastMs).toISOString() : null },
+      body: { ok: false, error: "too_late", message: `Leaving early closes ${Math.round(earlyCloseRule.marginMs / 60_000)} minutes before the start; the lock runs to settlement now.`, lastIso: Number.isFinite(lastMs) ? new Date(lastMs).toISOString() : null },
     };
   }
   return null;
@@ -2389,7 +2389,7 @@ function headedAt(res: CandidateResult, tier: ProtectionTier): CandidateResult {
 async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: URL, holder: string | null, operator = false, memberOnly = false): Promise<void> {
   // a cookie member (the hosted page) acts in the member venue's lane alone: never a venue account
   // of ours, never a quote or a lock that the protection would hedge with our capital
-  const memberOnlyRefusal = () => sendJson(res, 403, { ok: false, error: "member_only", code: "member_only", message: `This session can only protect positions in your own ${VENUE_NAMES[MEMBER_VENUE]} account.` });
+  const memberOnlyRefusal = () => sendJson(res, 403, { ok: false, error: "member_only", code: "member_only", message: `This session can only lock in positions in your own ${VENUE_NAMES[MEMBER_VENUE]} account.` });
   if (!quoteOneFn || !listGameMarketsFn) {
     sendJson(res, 503, { ok: false, error: "engine_not_ready", message: "the scanner is still loading" });
     return;
@@ -2727,13 +2727,13 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     // other club of this game and not this one, the card was misread; no lock, no wrong-way hedge
     const other = await heldOtherSideOf(ticker);
     if (other) {
-      sendJson(res, 409, { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; protect it from that card.`, heldTicker: other.ticker });
+      sendJson(res, 409, { ok: false, error: "wrong_side", code: "wrong_side", message: `Your pick on this game is ${other.side || "the other side"}; lock it in from that card.`, heldTicker: other.ticker });
       return;
     }
     // the card is the protection's own hedge for a lock held on another venue: not theirs to protect
     const ours = ownHedgeOn(ticker, venue ?? "kalshi", ownLedger);
     if (ours) {
-      sendJson(res, 409, { ok: false, error: "own_hedge", code: "own_hedge", message: `This position is the protection's own hedge for your ${ours.sideName} on ${VENUE_NAMES[ours.holderVenue ?? "kalshi"]}.`, lockTicker: ours.ticker });
+      sendJson(res, 409, { ok: false, error: "own_hedge", code: "own_hedge", message: `This position is the lock's own hedge for your ${ours.sideName} on ${VENUE_NAMES[ours.holderVenue ?? "kalshi"]}.`, lockTicker: ours.ticker });
       return;
     }
     lockInFlight.add(flight);
@@ -2746,7 +2746,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       const result = q.result;
       if (!result.quote.ok || result.evBps === null) {
         const retail = retailCrossQuote(result.quote);
-        sendJson(res, 200, { ok: false, at: atIso, ticker, code: retail && !retail.ok ? retail.code : "unavailable", message: retail && !retail.ok ? retail.detail : "Protection isn't available on this position right now." });
+        sendJson(res, 200, { ok: false, at: atIso, ticker, code: retail && !retail.ok ? retail.code : "unavailable", message: retail && !retail.ok ? retail.detail : "Lock in isn't available on this position right now." });
         return;
       }
       // the tier the holder chose, when the venues funded it; else a parlay's highest floor; else the quote's default
@@ -4312,7 +4312,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if ((OPERATOR_PATHS.has(url.pathname) || url.pathname.startsWith("/api/shadow/kalshi/")) && !operator) {
       sendJson(res, 403, {
         ok: false,
-        error: adminAuth.enabled ? "bad admin token" : "operator views disabled — set EVENT_X_ADMIN_TOKEN",
+        error: adminAuth.enabled ? "bad admin token" : "operator views disabled: set EVENT_X_ADMIN_TOKEN",
       });
       return;
     }

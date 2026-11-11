@@ -91,7 +91,7 @@ export function quoteWrap(inputs: PricerInputs): WrapQuoteResult {
     return {
       ok: false,
       code: "market_too_close_to_resolution",
-      detail: `resolution in ${Math.max(0, Math.round(minutesToResolution))}m; protection needs at least ${cfg.minMinutesToResolution}m`,
+      detail: `resolution in ${Math.max(0, Math.round(minutesToResolution))}m; the lock needs at least ${cfg.minMinutesToResolution}m`,
     };
   }
   if (markCents < cfg.markLowerBoundCents || markCents > cfg.markUpperBoundCents) {

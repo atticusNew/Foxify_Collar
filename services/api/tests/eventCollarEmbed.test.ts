@@ -154,7 +154,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   // the line: the extension's pill and sentence under every row; the panel opens under it, no sheet for positions
   assert.ok(html.includes("function lineGo(label,fact,cls,open){") && html.includes('class="ael-line \'+(cls||\'\')+(open?\' ael-open\':\'\')+\'" data-act="toggle"><span class="ael-tag">'), "one Lock in line per row, a button that opens the panel");
   assert.ok(html.includes("return lineGo('Lock in','Lose, and still get <b>'+usd(floor)+'</b>.','',st.open);"), "the line says the one thing that matters");
-  assert.ok(html.includes("if(st.lock)return lineGo('Protected','<b>'+usd(st.lock.floorTotal)+'</b> or '+usd(st.lock.capTotal)"), "locked: Protected, the two endings");
+  assert.ok(html.includes("if(st.lock)return lineGo('Locked in','<b>'+usd(st.lock.floorTotal)+'</b> or '+usd(st.lock.capTotal)"), "locked: Protected, the two endings");
   assert.ok(html.includes("return lineGo('Unavailable',esc(st.err||'The market can\\'t fund a worthwhile credit right now.'),'ael-line-off',st.open);"), "refused: Unavailable, the reason");
   assert.ok(html.includes("if(!st.q)return '<div class=\"ael-wait\">Pricing from the live book&hellip;</div>';"), "a loading line, not skeleton bars");
   assert.ok(!html.includes("Lock in this position") && !html.includes("confirmProtect") && !html.includes("data-protect="), "the positions sheet is gone");
@@ -163,7 +163,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(!html.includes("protection by") && !html.includes(".sheet .eyebrow"), "no eyebrow over the host's sheet");
   assert.ok(!html.includes("brightness(0)") && !html.includes("data:image/jpeg"), "never recoloured; the black tile is gone");
   // the slip: win, lose, cash now, with the "of/instead of" column until the lock
-  assert.ok(html.includes("ledgerRow(win,usd(rs.capTotal),locked?null:'of '+usd(was))+ledgerRow(lose,usd(rs.floorTotal),locked?null:'instead of $0','ael-hero')+ledgerRow('Cash now','+'+usd(credit),locked?null:'','ael-last')"), "three rows: the win, the lose as the hero, the cash now");
+  assert.ok(html.includes("ledgerRow(win,usd(rs.capTotal),locked?null:'of '+usd(was))+ledgerRow(lose,usd(rs.floorTotal),locked?null:'instead of $0','ael-hero')+ledgerRow('Credit at lock in','+'+usd(credit),locked?null:'','ael-last')"), "three rows: the win, the lose as the hero, the cash now");
   assert.ok(html.includes("win=r.kind==='crypto'?'Settles yes':name+' win',lose=r.kind==='crypto'?'Settles no':name+' lose'"), "named for the pick");
   assert.ok(html.includes("function reshape(n,F,C,K){return {kept:n*(C-F)/100, cashCents:Math.round(F*n)+K"), "the reshape identity stays in code");
   assert.ok(html.includes('<button type="button" class="ael-go" data-act="go"><span class="ael-ic">\'+SHIELD_FILL+\'</span>Lock in</button>'), "the pill says the verb; the figures are the slip");
@@ -176,7 +176,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(html.includes("else{parts.push('best of '+priced.length+' venues, venue fees included');if(v.edgeCents>0)parts.push(usd(Math.round(v.edgeCents*k))+' more for you')}") && html.includes("parts.push('of '+priced.length+' venues, cheapest all-in, venue fees included')"), "the winner and what it saved the trader, fees said to be in the comparison; never 'best of' when the scan chose on all-in cost");
   assert.ok(html.includes("'</b>: cheapest all-in, venue fees included, once the tails of the game are priced, though another venue quoted '"), "the venue view's why-line says the same: all in, fees included");
   assert.ok(html.includes("drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class=\"ael-dim\">&middot; priced live</span>')"), "Until");
-  assert.ok(html.includes("var HOW='You sell part of the upside today for the floor and the cash now. The other side is bought the second you tap and settles on the same official result.';"), "the How names what is sold, in one breath");
+  assert.ok(html.includes("var HOW='You sell part of the upside for the floor and a credit at lock in. The other side is bought the second you tap and settles on the same official result.';"), "the How names what is sold, in one breath");
   assert.ok(html.includes("<span class=\"ael-dim\">&middot; priced live</span>'));\n    rows.push(drow('How',HOW));"), "and is the last Details row, after Until, in the same grammar");
   // in play (EVENT_X_IN_PLAY on the service): the row says Live where the tip-off was, Details say the price moves, the leave sheet says while the game is on, and the open panel re-prices itself
   assert.ok(html.includes("function isLive(r){return !!(r&&r.live&&r.kind!=='crypto')}") && html.includes("when=isLive(r)?LIVE_TAG:esc("), "a live row carries the service's flag and shows Live in place of the time");
@@ -192,15 +192,15 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(!html.includes("close early") && !html.includes("Close early"), "'Leave early' everywhere, never 'close early'");
   assert.ok(html.includes("Locked '+esc(L.at)+' &middot; the other side bought in '+L.secs+'s'"), "the facts line: when, and how fast the other side was bought");
   assert.ok(html.includes("rows.push('<span>Other side</span><b><b>'+esc(venue)+'</b> &middot; '+L.contracts+' contracts of the other side at '+price.toFixed(1)+'c'+cmp+' <span class=\"ael-dim\">&middot; priced at the book; demo, nothing bought</span></b>');"), "the receipt's Other side names the venue and says the demo bought nothing");
-  for (const row of ["<span>Cost</span>", "<span>Until</span>", "<span>Paid to you</span>"]) assert.ok(html.includes(row), `receipt row ${row}`);
+  for (const row of ["<span>Cost</span>", "<span>Until</span>", "<span>Credit</span>"]) assert.ok(html.includes(row), `receipt row ${row}`);
   // leave early: live figures, two ways out, Why behind a toggle; the pick stays
   assert.ok(html.includes("fetch('/api/close-quote?'+qs") && html.includes("st.leave.q={net:Math.round((c.leaveWithCents-c.withoutProtectionCents-base.creditCents)*k),at:Date.now()};"), "the exit is priced live and scaled to the row");
-  assert.ok(html.includes('<div class="ael-leave-h">Leave early<span>remove the protection, keep your pick</span></div>'), "what leaving is");
+  assert.ok(html.includes('<div class="ael-leave-h">Leave early<span>remove the lock, keep your pick</span></div>'), "what leaving is");
   assert.ok(html.includes("<div class=\"ael-wait\">Pricing your exit&hellip;</div>"), "a loading line while the exit is priced");
   assert.ok(html.includes("var hero=net<0?'You pay <b class=\"ael-pay\">'+usd(-net)+'</b>':net>0?'You get <b>'+usd(net)+'</b>':'Nothing owed either way';"), "to leave now: pay, get, or nothing");
   assert.ok(html.includes('<button type="button" class="ael-go" data-act="leavego">Leave early</button><button type="button" class="ael-go ael-quiet" data-act="stay">Stay</button>'), "two ways out");
-  assert.ok(html.includes("Your pick stays open on '+esc(BRAND)+', unprotected. The '+usd(credit)+' paid at the lock is yours either way."), "the pick stays; the credit is kept");
-  assert.ok(html.includes("Earlier protection removed '+esc(m.at)"), "a row that left early says so when it is priced again");
+  assert.ok(html.includes("Your pick stays open on '+esc(BRAND)+', without the lock. The '+usd(credit)+' credited at lock in is yours either way."), "the pick stays; the credit is kept");
+  assert.ok(html.includes("Earlier lock removed '+esc(m.at)"), "a row that left early says so when it is priced again");
   // the host's footer: the disclaimer, the links, the credit; reset lives there now
   assert.ok(html.includes('<div class="host-note"><span>Demo. Simulated positions at live prices; nothing is bought.</span><span class="links"><a href="https://atticus-event-shadow.onrender.com">Track record</a><a href="#" data-reset="1">reset demo</a></span><span class="pow">Powered by <img src="data:image/png;base64'), "the phone note: disclaimer, record and reset on one line, the credit under with the wordmark");
   assert.ok(html.includes(".host-note span,.host-note a,.host-note .pow,.host-note .links{display:block}") && html.includes(".host-note a{color:var(--dim);white-space:nowrap"), "deliberate lines; a link never strands mid-sentence");
@@ -213,8 +213,8 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(!html.includes('<a href="/board">Board</a>') && !html.includes('<a href="/receipts">Receipts</a></div>'), "board and receipts are off the phone");
   // the pitch: the venue's value, not the integrator's
   assert.ok(html.includes('<aside class="pitch">') && html.includes("<h1>One tap. Any prediction market.</h1>"), "desktop: the pitch beside the mock");
-  assert.ok(html.includes("One line under every open position. Your traders lock a floor and get paid today, on your page, in their own account on your book. Priced against every venue we read; filled where they hold it."), "the lede: venue first, every venue priced");
-  for (const li of ["<li><b>Filled on your book,</b> in the trader's own account", "<li><b>Every venue priced, every time,</b> so you and your traders see what the same protection was worth elsewhere.</li>", "<li><b>The trader stays on your page.</b></li>", "<li><b>No fee to the trader, no counterparty, no capital of yours.</b></li>"]) assert.ok(html.includes(li), li);
+  assert.ok(html.includes("One line under every open position. Your traders lock in a floor and are credited at lock in, on your page, in their own account on your book. Priced against every venue we read; filled where they hold it."), "the lede: venue first, every venue priced");
+  for (const li of ["<li><b>Filled on your book,</b> in the trader's own account", "<li><b>Every venue priced, every time,</b> so you and your traders see what the same lock was worth elsewhere.</li>", "<li><b>The trader stays on your page.</b></li>", "<li><b>No fee to the trader, no counterparty, no capital of yours.</b></li>"]) assert.ok(html.includes(li), li);
   assert.ok(html.includes('<div class="routed">When your book cannot fund a lock, the record says so. With your say-so the other side can be bought elsewhere, through ParlayX where partnered.</div>'), "routing elsewhere is the fallback, with the venue's say-so; the partner named once");
   assert.ok(!html.includes("share the spread with you") && !html.includes("buy it where it is cheapest"), "the pitch no longer leads with moving flow off the venue");
   assert.ok(html.includes("Tap <b>Lock in</b> on any row, or switch to <b>Venue view</b> &rarr;"), "the try line uses the same verb and points at the toggle");
@@ -234,7 +234,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(html.includes("fetch(VV_URL,{cache:'no-store'})") && !html.includes("token"), "read from /api/venue-view, no token anywhere in the page");
   assert.ok(html.includes('<div class="vnote"><b>What the trader does not see.</b> Every venue asked for the other side, what each would have paid, and where this lock filled. Your book first; elsewhere only when your book cannot fund it and you have said so.</div>'), "the view says what it is");
   for (const row of ["<span>Quotes</span>", "<span>Other side</span>", "<span>Hedge cost</span>", "<span>Spread</span>"]) assert.ok(html.includes(row), `venue row ${row}`);
-  assert.ok(html.includes("your book: it paid the trader the most") && html.includes("more than your book did for the same protection, so the other side went there. You take a share of the spread instead.") && html.includes("so the other side went to the best venue that did."), "the winner and why, in the host's words, for each case");
+  assert.ok(html.includes("your book: it paid the trader the most") && html.includes("more than your book did for the same lock, so the other side went there. You take a share of the spread instead.") && html.includes("so the other side went to the best venue that did."), "the winner and why, in the host's words, for each case");
   assert.ok(html.includes("<b>your share '+usd(share)+'</b> <span class=\"ael-dim\">('+S.vv.sharePct+'%)</span>"), "the host's share of the spread, with the rule");
   assert.ok(html.includes('.vq i.host:after{content:"yours"'), "the host's own quote is marked");
   assert.ok(html.includes("if(view==='venue'){track('venue_view');if(!S.vv&&!S.vvBusy)loadVenueView()}") && html.includes("if(/[?&]view=venue\\b/i.test(location.search))setView('venue');"), "the funnel knows; ?view=venue deep-links");
@@ -323,16 +323,16 @@ test("embed: the partner console reads the ledger and funnel in the host's words
 
   const html = renderPartnerHtml({ atIso: "2026-09-20T12:00:00.000Z", brand: "ProphetX", ledger, funnel, sharePct: 40, maxEvCostBps: 300 });
   assert.ok(html.includes("partner console · ProphetX"));
-  assert.ok(html.includes("$300.00</div><div class=\"l\">volume protected"), "volume protected is the stake behind priced quotes");
+  assert.ok(html.includes("$300.00</div><div class=\"l\">volume locked in"), "volume protected is the stake behind priced quotes");
   assert.ok(html.includes("$7.00</div><div class=\"l\">credits paid to your users"));
-  assert.ok(html.includes("0.20%</div><div class=\"l\">average cost of protection"), "mean EV cost of priced quotes");
+  assert.ok(html.includes("0.20%</div><div class=\"l\">average cost of the lock"), "mean EV cost of priced quotes");
   assert.ok(html.includes("$0.40</div><div class=\"l\">your share (40% of take)"), "40% of $1.00 take kept");
   assert.ok(html.includes("<span>priced</span><b>2 <i>of 4 · 50% fill</i></b>"));
   assert.ok(html.includes("<span>priced on your own book</span><b>1 <i>50%</i></b>"));
   assert.ok(html.includes("priced cross-venue on the same game") && !html.includes("Polymarket"), "routes in the host's words, no venue names");
-  assert.ok(html.includes("protection would have cost more than our ceiling</span><b>1</b>"), "the ceiling refusal is named for what it is");
+  assert.ok(html.includes("the lock would have cost more than our ceiling</span><b>1</b>"), "the ceiling refusal is named for what it is");
   assert.ok(html.includes("not enough depth on the market's No side</span><b>1</b>"));
-  assert.ok(html.includes("<span>ceiling on cost of protection</span><b>3.00% <i>of expected value</i></b>"));
+  assert.ok(html.includes("<span>ceiling on the cost of the lock</span><b>3.00% <i>of expected value</i></b>"));
   assert.ok(html.includes("<span>embedded shell loads, 7 days</span><b>2</b>"), "embed loads counted apart from the board");
   assert.ok(html.includes("<span>Lock in taps (all pages)</span>"), "the console counts taps by the bettor's verb");
   assert.ok(html.includes("we price and hedge <i>your venue executes and settles</i>"), "who does what, stated");
@@ -430,8 +430,8 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     const root = await (await fetch(`${base}/`)).text();
     assert.ok(root.includes("<title>Your Exchange · Positions</title>") && root.includes('id="sheet"'), "/ serves the embed shell with the default brand");
     const board = await (await fetch(`${base}/board`)).text();
-    assert.ok(board.includes('id="toggle"') && board.includes("Best protection right now"), "/board serves the board");
-    assert.ok(!root.includes("Best protection right now"), "the shell is not the board");
+    assert.ok(board.includes('id="toggle"') && board.includes("Best lock right now"), "/board serves the board");
+    assert.ok(!root.includes("Best lock right now"), "the shell is not the board");
     assert.ok(!root.includes('class="cardland"') && !root.includes('class="stage from-card"'), "a plain visit has no card landing in the page");
 
     // the business card's QR: the landing rides on the same page, and Save contact is a vCard
@@ -473,7 +473,7 @@ test("embed: / is the embed shell (also /embed), /board is the board; brand-gate
     const consoleHtml = await console_.text();
     assert.ok(consoleHtml.includes("partner console · ProphetX"));
     assert.ok(consoleHtml.includes("your share (40% of take)"), "EVENT_X_PARTNER_SHARE_PCT read");
-    assert.ok(consoleHtml.includes("ceiling on cost of protection</span><b>3.00%"), "default ceiling shown");
+    assert.ok(consoleHtml.includes("ceiling on the cost of the lock</span><b>3.00%"), "default ceiling shown");
 
     const retail = (await (await fetch(`${base}/api/showcase`)).json()) as { board: unknown[] };
     assert.deepEqual(retail.board, []);

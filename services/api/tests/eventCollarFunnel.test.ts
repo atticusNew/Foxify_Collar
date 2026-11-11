@@ -287,7 +287,7 @@ test("demo service: page loads count, beacons record, admin funnel is gated and 
     assert.equal(pageRes.status, 200);
     assert.match(pageRes.headers.get("content-type") ?? "", /text\/html/);
     const page = await pageRes.text();
-    assert.ok(page.includes("Who looked, who tapped, who protected"));
+    assert.ok(page.includes("Who looked, who tapped, who locked in"));
     assert.ok(page.includes("KXNFLGAME-26SEP20INDKC-KC"), "recent Protect taps are listed");
     assert.ok(page.includes('href="/api/admin/funnel?token=t0ken"'), "links the raw JSON with the same token");
     assert.ok(page.includes("'/api/admin/funnel/reset'+location.search"), "reset reuses the URL token, not an inlined one");

@@ -200,7 +200,7 @@ test("the page: every listing on one table, quoted rows beside the ask, refusals
   assert.ok(md.includes("**1 of 3 quoted.**"));
   assert.ok(md.includes("3 of 3 listings show no bid"));
   const q = rows[0].quote as ListingLockTerms;
-  assert.ok(md.includes("| Ticket | Last leg | Ask | Fair now | Lock: worst / if it hits | Paid now |"), "no bid column when no listing shows a bid");
+  assert.ok(md.includes("| Ticket | Last leg | Ask | Fair now | Lock: worst / if it hits | Credited at lock in |"), "no bid column when no listing shows a bid");
   assert.ok(md.includes(`| DraftKings 2-leg parlay, pays $3,570, Feb 2027 | Kansas City Chiefs, 26/27 Super Bowl Winner | $210.00 | ${fmtUsd(rows[0].fairCents as number)} | ${fmtUsd(q.lockWorstCents)}${rows[0].lockBeatsAsk ? " (beats the ask)" : ""} / ${fmtUsd(q.lockBestCents)} | ${fmtUsd(q.creditCents)} |`), "the quoted row");
   assert.ok(md.includes("| FanDuel single, pays $52,500, Feb 2027 | Shohei Ohtani, 2026 MLB Cy Young Winner | $7,875.00 | $157.50 | not quoted | none |"), "a refused row still shows fair");
   const withBid = listingsMarkdown([quoteListing(listing({ highestBidCents: 15000 }), state(98, 902), NOW)], "2026-10-09T03:00:00.000Z", { marketplace: "WagerWire" });
@@ -232,7 +232,7 @@ test("the mockup: drawn from the row whose lock beats the ask; the phone shows t
   const phone = html.slice(html.indexOf('<div class="row">'), html.indexOf('<div class="caption">'));
   const caption = html.slice(html.indexOf('<div class="caption">'));
   assert.ok(phone.includes(`Lock in ${fmtUsd(q.lockWorstCents)}`), "the button names the guaranteed amount");
-  assert.ok(phone.includes(`${fmtUsd(q.creditCents)} paid to you now`), "and the credit");
+  assert.ok(phone.includes(`${fmtUsd(q.creditCents)} credited at lock in`), "and the credit");
   assert.ok(phone.includes(`<b>${fmtUsd(q.lockBestCents)}</b><small>was $3,570</small>`), "the hit ending against the naked payout");
   assert.ok(phone.includes(`<b>${fmtUsd(q.lockWorstCents)}</b><small>was $0</small>`), "the miss ending against zero");
   assert.ok(phone.includes(`The lock's worst case is ${fmtUsd(q.lockWorstCents - 21000)} more than your ask.`));
