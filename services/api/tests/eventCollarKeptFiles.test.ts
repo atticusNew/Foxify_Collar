@@ -5,16 +5,20 @@
  *   - the list (keptFiles.ts): the files the service writes and everything beside them that is
  *     theirs, with the sealed member connections listed and never exported;
  *   - the routes: the list, and each file on it byte for byte by its name, never by a path;
- *   - the nightly workflow itself: its two shell steps are taken out of
+ *   - the nightly workflow itself: its shell steps are taken out of
  *     .github/workflows/event-ledger-backup.yml as written and run against the service, and
- *     the copy is compared with the disk file by file.
+ *     the copy is compared with the disk file by file;
+ *   - who could read that copy: an artifact on a public repository can be downloaded by anyone
+ *     signed in to GitHub, so the workflow asks GitHub, and on anything but a clear "private"
+ *     it stops before fetching unless a passphrase is set, in which case only an encrypted
+ *     file is uploaded and the public log and summary name no file.
  */
 
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 import { execFile, spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -70,6 +74,8 @@ const COPIED = Object.keys(ON_DISK)
 
 let worker: typeof import("../scripts/eventShadowWorker");
 let base = "";
+/** every request the service has been sent, so a run that must not reach it can be shown not to have */
+let serviceHits = 0;
 const op = { headers: { "x-admin-token": TOKEN } };
 
 before(async () => {
@@ -77,6 +83,9 @@ before(async () => {
   worker.wireLockEngine({
     listGameMarkets: async (): Promise<GameMarketRow[]> => [],
     quoteOne: async (): Promise<OneQuoteResult> => ({ ok: false, status: 404, body: { ok: false } }) as unknown as OneQuoteResult,
+  });
+  worker.server.on("request", () => {
+    serviceHits += 1;
   });
   await new Promise<void>((r) => worker.server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`;
@@ -228,13 +237,43 @@ function stepScript(stepName: string): string {
 interface RunResult {
   code: number;
   out: string;
-  backup: string;
+  /** the folder the workflow uploads */
+  upload: string;
   output: string;
   summary: string;
+  /** the requests the service saw from this run */
+  serviceHits: number;
 }
 
-/** Run the workflow's fetch step, then its check step, the way the runner does: bash, in a fresh folder. */
-async function rehearse(url: string, token: string): Promise<RunResult> {
+/** What GitHub says about the repository: private, public, or nothing usable. */
+type Visibility = "private" | "public" | "no-answer";
+const PASSPHRASE = "a-long-passphrase-for-the-backup-0123";
+
+let githubSays: Visibility = "private";
+let githubAsked: string[] = [];
+let github: Server;
+let githubBase = "";
+before(async () => {
+  github = createServer((req, res) => {
+    githubAsked.push(`${req.method} ${req.url} ${req.headers.authorization ?? ""}`);
+    if (githubSays === "no-answer") {
+      // an answer with nothing about the repository in it (GitHub's shape for a token that may not read it)
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ message: "Not Found" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ full_name: "acme/record", private: githubSays === "private", visibility: githubSays }));
+  });
+  await new Promise<void>((r) => github.listen(0, "127.0.0.1", () => r()));
+  githubBase = `http://127.0.0.1:${(github.address() as AddressInfo).port}`;
+});
+after(async () => {
+  await new Promise<void>((r) => github.close(() => r()));
+});
+
+/** Run the workflow's four shell steps the way the runner does: bash, in a fresh folder, each step's outputs handed to the next. */
+async function rehearse(url: string, token: string, opts: { visibility?: Visibility; passphrase?: string } = {}): Promise<RunResult> {
   const work = mkdtempSync(join(tmpdir(), "backup-run-"));
   const temp = join(work, "runner-temp");
   mkdirSync(temp);
@@ -242,7 +281,17 @@ async function rehearse(url: string, token: string): Promise<RunResult> {
   const summaryFile = join(work, "summary.md");
   writeFileSync(outputFile, "");
   writeFileSync(summaryFile, "");
-  const env = { PATH: process.env.PATH ?? "", HOME: work, RUNNER_TEMP: temp, GITHUB_OUTPUT: outputFile, GITHUB_STEP_SUMMARY: summaryFile, EVENT_SHADOW_URL: url, EVENT_X_ADMIN_TOKEN: token };
+  githubSays = opts.visibility ?? "private";
+  const env = {
+    PATH: process.env.PATH ?? "",
+    HOME: work,
+    RUNNER_TEMP: temp,
+    GITHUB_OUTPUT: outputFile,
+    GITHUB_STEP_SUMMARY: summaryFile,
+    GITHUB_API_URL: githubBase,
+    GITHUB_REPOSITORY: "acme/record",
+    EVENT_SHADOW_URL: url,
+  };
   const run = (script: string, extra: Record<string, string> = {}): Promise<{ code: number; out: string }> =>
     new Promise((resolve) => {
       // --noprofile --norc -e -o pipefail is how the runner starts `shell: bash`
@@ -250,35 +299,44 @@ async function rehearse(url: string, token: string): Promise<RunResult> {
         resolve({ code: err ? (typeof (err as { code?: unknown }).code === "number" ? ((err as { code: number }).code as number) : 1) : 0, out: `${stdout}${stderr}` });
       });
     });
-  const fetched = await run(stepScript("Fetch the files"));
-  let out = fetched.out;
-  let code = fetched.code;
-  if (code === 0) {
-    const mode = /^mode=(.*)$/m.exec(readFileSync(outputFile, "utf8"))?.[1] ?? "";
-    const checked = await run(stepScript("Check the copy and write the summary"), { BACKUP_MODE: mode });
-    out += checked.out;
-    code = checked.code;
+  const outputOf = (name: string): string => new RegExp(`^${name}=(.*)$`, "m").exec(readFileSync(outputFile, "utf8"))?.[1] ?? "";
+  const hitsBefore = serviceHits;
+  const steps: Array<[string, () => Record<string, string>]> = [
+    ["Decide who could read the copy", () => ({ REPO_READ_TOKEN: "runner-token", EVENT_BACKUP_PASSPHRASE: opts.passphrase ?? "" })],
+    ["Fetch the files", () => ({ EVENT_X_ADMIN_TOKEN: token, BACKUP_PUBLIC: outputOf("public") })],
+    ["Check the copy and write the summary", () => ({ BACKUP_MODE: outputOf("mode"), BACKUP_PUBLIC: outputOf("public") })],
+    ["Seal the copy", () => ({ EVENT_BACKUP_PASSPHRASE: opts.passphrase ?? "", BACKUP_PUBLIC: outputOf("public"), BACKUP_ENCRYPT: outputOf("encrypt"), BACKUP_DATE: outputOf("date") })],
+  ];
+  let out = "";
+  let code = 0;
+  for (const [name, extra] of steps) {
+    const r = await run(stepScript(name), extra());
+    out += r.out;
+    code = r.code;
+    if (code !== 0) break;
   }
-  return { code, out, backup: join(work, "backup"), output: readFileSync(outputFile, "utf8"), summary: readFileSync(summaryFile, "utf8") };
+  return { code, out, upload: join(work, "upload"), output: readFileSync(outputFile, "utf8"), summary: readFileSync(summaryFile, "utf8"), serviceHits: serviceHits - hitsBefore };
 }
 
-const canRehearse = process.platform === "linux" && ["bash", "curl", "jq", "sha256sum"].every((tool) => spawnSync("bash", ["-c", `command -v ${tool}`]).status === 0);
+const canRehearse = process.platform === "linux" && ["bash", "curl", "jq", "sha256sum", "gpg", "tar", "cmp"].every((tool) => spawnSync("bash", ["-c", `command -v ${tool}`]).status === 0);
 const rehearsal = canRehearse ? test : test.skip;
 
 rehearsal("the nightly workflow, run as written against the service: every kept file is in the copy byte for byte, with the list and a checksum beside each", async () => {
   const run = await rehearse(base, TOKEN);
   assert.equal(run.code, 0, run.out);
-  const copied = readdirSync(run.backup).sort();
-  assert.deepEqual(copied, [...COPIED, ...COPIED.map((n) => `${n}.sha256`), "manifest.json", "manifest.json.sha256"].sort());
+  assert.deepEqual(githubAsked.slice(-1), ["GET /repos/acme/record Bearer runner-token"], "the workflow asked GitHub about this repository");
+  const copied = readdirSync(run.upload).sort();
+  assert.deepEqual(copied, [...COPIED, ...COPIED.map((n) => `${n}.sha256`), "SUMMARY.md", "manifest.json", "manifest.json.sha256"].sort());
+  assert.equal(readFileSync(join(run.upload, "SUMMARY.md"), "utf8"), run.summary, "the summary on the run's page travels with the copy");
   for (const name of COPIED) {
-    assert.equal(readFileSync(join(run.backup, name), "utf8"), ON_DISK[name], `${name} byte for byte`);
-    assert.equal(spawnSync("sha256sum", ["-c", `${name}.sha256`], { cwd: run.backup }).status, 0, `${name} checks against its checksum`);
+    assert.equal(readFileSync(join(run.upload, name), "utf8"), ON_DISK[name], `${name} byte for byte`);
+    assert.equal(spawnSync("sha256sum", ["-c", `${name}.sha256`], { cwd: run.upload }).status, 0, `${name} checks against its checksum`);
   }
   // the list in the copy says where each file goes back
-  const manifest = JSON.parse(readFileSync(join(run.backup, "manifest.json"), "utf8")) as KeptFilesList;
+  const manifest = JSON.parse(readFileSync(join(run.upload, "manifest.json"), "utf8")) as KeptFilesList;
   assert.deepEqual(manifest.files.map((f) => f.path).sort(), COPIED.map((n) => join(disk, n)).sort());
   // nothing of the sealed connections, and the token nowhere
-  const everything = copied.map((n) => readFileSync(join(run.backup, n), "utf8")).join("\n") + run.out + run.summary + run.output;
+  const everything = copied.map((n) => readFileSync(join(run.upload, n), "utf8")).join("\n") + run.out + run.summary + run.output;
   assert.ok(!everything.includes("not-a-real-token"));
   assert.ok(!everything.includes(TOKEN), "the token is in no file, no log line and no summary");
   assert.match(run.output, /^mode=every file the service keeps$/m);
@@ -316,7 +374,7 @@ rehearsal("the nightly workflow: a wrong token stops it; a line that does not pa
     const run = await rehearse(base, TOKEN);
     assert.equal(run.code, 0, run.out);
     assert.match(run.output, /^bad=3$/m, "two lines of the trail and the one document: counted, and the last step of the workflow fails on it");
-    assert.equal(readFileSync(join(run.backup, "hedge-receipts.jsonl"), "utf8"), readFileSync(receipts, "utf8"), "the copy is the disk's bytes either way");
+    assert.equal(readFileSync(join(run.upload, "hedge-receipts.jsonl"), "utf8"), readFileSync(receipts, "utf8"), "the copy is the disk's bytes either way");
     assert.ok(/\| hedge-receipts\.jsonl \| hedge receipts \| \d+ \| 3 \| 2 \| /.test(run.summary), run.summary);
     assert.ok(/\| scan-refusals\.json \| scan refusal counts \| \d+ \| 1 \| 1 \| /.test(run.summary), run.summary);
   } finally {
@@ -354,14 +412,137 @@ rehearsal("the nightly workflow against a service deployed before the list exist
     const run = await rehearse(`http://127.0.0.1:${(old.address() as AddressInfo).port}`, TOKEN);
     assert.equal(run.code, 0, run.out);
     assert.deepEqual(
-      readdirSync(run.backup).filter((n) => !n.endsWith(".sha256")).sort(),
-      ["event-shadow-ledger.jsonl", "event-shadow-lock-ledger-ann.jsonl", "event-shadow-lock-ledger.jsonl"],
+      readdirSync(run.upload).filter((n) => !n.endsWith(".sha256")).sort(),
+      ["SUMMARY.md", "event-shadow-ledger.jsonl", "event-shadow-lock-ledger-ann.jsonl", "event-shadow-lock-ledger.jsonl"],
     );
-    assert.equal(readFileSync(join(run.backup, "event-shadow-ledger.jsonl"), "utf8"), ON_DISK["event-shadow-ledger.jsonl"]);
+    assert.equal(readFileSync(join(run.upload, "event-shadow-ledger.jsonl"), "utf8"), ON_DISK["event-shadow-ledger.jsonl"]);
     assert.ok(run.out.includes("::warning title=Only the ledgers were copied::This service does not list its files yet"), run.out);
     assert.match(run.output, /^mode=the ledgers only \(older service\)$/m);
     assert.ok(run.summary.includes("Copied: the ledgers only (older service)."));
   } finally {
     await new Promise<void>((r) => old.close(() => r()));
   }
+});
+
+rehearsal("who could read the copy: on a public repository, or one GitHub says nothing about, the workflow stops before it fetches anything", async () => {
+  for (const [visibility, said] of [
+    ["public", "This repository is public."],
+    ["no-answer", "GitHub did not say whether this repository is private, so it is treated as public."],
+  ] as const) {
+    const run = await rehearse(base, TOKEN, { visibility });
+    assert.equal(run.code, 1, visibility);
+    assert.ok(run.out.includes(`::error title=Nothing was copied::${said} An artifact on a public repository can be downloaded by anyone signed in to GitHub`), run.out);
+    assert.ok(run.out.includes("make the repository private") && run.out.includes("EVENT_BACKUP_PASSPHRASE"), "both ways out are named");
+    assert.equal(run.serviceHits, 0, "the service was never asked for a file");
+    assert.equal(existsSync(run.upload), false, "nothing to upload");
+    assert.equal(run.summary, "");
+  }
+  // GitHub unreachable altogether is the same as no answer
+  const savedBase = githubBase;
+  githubBase = "http://127.0.0.1:9";
+  try {
+    const run = await rehearse(base, TOKEN, { visibility: "private" });
+    assert.equal(run.code, 1);
+    assert.ok(run.out.includes("GitHub did not say whether this repository is private"), run.out);
+    assert.equal(run.serviceHits, 0);
+  } finally {
+    githubBase = savedBase;
+  }
+  // a passphrase too short to protect anything is refused on any repository, before anything is fetched
+  for (const visibility of ["private", "public"] as const) {
+    const run = await rehearse(base, TOKEN, { visibility, passphrase: "short-passphrase" });
+    assert.equal(run.code, 1);
+    assert.ok(run.out.includes("EVENT_BACKUP_PASSPHRASE is shorter than 24 characters"), run.out);
+    assert.ok(!run.out.includes("short-passphrase"));
+    assert.equal(run.serviceHits, 0);
+  }
+});
+
+rehearsal("a public repository with a passphrase: one encrypted file is uploaded, it opens to every kept file byte for byte, and the public log and summary name no file", async () => {
+  const run = await rehearse(base, TOKEN, { visibility: "public", passphrase: PASSPHRASE });
+  assert.equal(run.code, 0, run.out);
+  const date = /^date=(\d{4}-\d{2}-\d{2})$/m.exec(run.output)?.[1] as string;
+  const sealed = `event-shadow-backup-${date}.tar.gpg`;
+  assert.deepEqual(readdirSync(run.upload).sort(), ["HOW-TO-OPEN.txt", sealed, `${sealed}.sha256`].sort(), "nothing in the clear is left to upload");
+  assert.equal(spawnSync("sha256sum", ["-c", `${sealed}.sha256`], { cwd: run.upload }).status, 0);
+  const how = readFileSync(join(run.upload, "HOW-TO-OPEN.txt"), "utf8");
+  assert.ok(how.includes(`gpg --decrypt ${sealed} | tar -x`));
+
+  // what an outsider can read: the log, the summary, the outputs and the uploaded bytes
+  const sealedBytes = readFileSync(join(run.upload, sealed));
+  const outside = run.out + run.summary + run.output + how + sealedBytes.toString("latin1");
+  for (const name of [...COPIED, "member-tokens.json", "notes-from-someone.txt"]) assert.ok(!outside.includes(name), `${name} is named nowhere an outsider can read`);
+  for (const secret of [PASSPHRASE, TOKEN, "not-a-real-token", '"holder":"ann"', "terms_accepted"]) assert.ok(!outside.includes(secret), secret);
+  assert.ok(!/[0-9a-f]{64}/.test(run.out + run.summary), "no checksum of a ledger on the public page");
+  assert.ok(run.summary.includes(`Files: ${COPIED.length}. Bytes: `) && run.summary.includes("Lines that did not parse: 0."));
+  assert.ok(run.summary.includes("This repository is not private, so this page names no file and shows no checksum."));
+  assert.ok(run.summary.includes("Encrypted before upload (gpg, AES-256); read back and compared."));
+  assert.ok(!/[\u2013\u2014]/.test(run.summary + how));
+
+  // the wrong passphrase opens nothing; the right one gives back every file
+  const open = (passphrase: string, into: string): number => {
+    mkdirSync(into, { recursive: true });
+    const home = mkdtempSync(join(tmpdir(), "gnupg-"));
+    const passFile = join(home, "pass");
+    writeFileSync(passFile, passphrase, { mode: 0o600 });
+    const script = `gpg --batch --quiet --no-tty --homedir "${home}" --pinentry-mode loopback --no-symkey-cache --passphrase-file "${passFile}" --decrypt "${join(run.upload, sealed)}" | tar -x -C "${into}"`;
+    const r = spawnSync("bash", ["-o", "pipefail", "-c", script], { encoding: "utf8" });
+    spawnSync("gpgconf", ["--homedir", home, "--kill", "gpg-agent"]);
+    return r.status ?? 1;
+  };
+  assert.notEqual(open("not-the-passphrase-0123456789", join(run.upload, "..", "wrong")), 0);
+  const opened = join(run.upload, "..", "opened");
+  assert.equal(open(PASSPHRASE, opened), 0);
+  assert.deepEqual(readdirSync(opened).sort(), [...COPIED, ...COPIED.map((n) => `${n}.sha256`), "SUMMARY.md", "manifest.json", "manifest.json.sha256"].sort());
+  for (const name of COPIED) {
+    assert.equal(readFileSync(join(opened, name), "utf8"), ON_DISK[name], `${name} byte for byte`);
+    assert.equal(spawnSync("sha256sum", ["-c", `${name}.sha256`], { cwd: opened }).status, 0);
+  }
+  assert.ok(readFileSync(join(opened, "SUMMARY.md"), "utf8").includes("| lock-ledger-ann.jsonl | lock ledger: holder ann | "), "the names and checksums are inside the encrypted copy");
+});
+
+rehearsal("a private repository with a passphrase is encrypted too, and its own page still shows the full summary", async () => {
+  const run = await rehearse(base, TOKEN, { visibility: "private", passphrase: PASSPHRASE });
+  assert.equal(run.code, 0, run.out);
+  assert.equal(readdirSync(run.upload).filter((n) => n.endsWith(".tar.gpg")).length, 1);
+  assert.equal(readdirSync(run.upload).length, 3);
+  assert.ok(run.summary.includes("| lock-pending.jsonl | real-money lock attempts (the pending trail) | "));
+  assert.ok(run.summary.includes("Encrypted before upload (gpg, AES-256); read back and compared."));
+});
+
+rehearsal("the seal step refuses by itself: a copy that is not encrypted is not handed to the upload unless the repository is known to be private", async () => {
+  const run = (extra: Record<string, string>): { status: number; out: string; left: string[] } => {
+    const work = mkdtempSync(join(tmpdir(), "seal-"));
+    mkdirSync(join(work, "backup"));
+    mkdirSync(join(work, "runner-temp"));
+    writeFileSync(join(work, "backup", "lock-ledger-ann.jsonl"), "{}\n");
+    const summary = join(work, "summary.md");
+    writeFileSync(summary, "");
+    const r = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", stepScript("Seal the copy")], {
+      cwd: work,
+      env: { PATH: process.env.PATH ?? "", HOME: work, RUNNER_TEMP: join(work, "runner-temp"), GITHUB_STEP_SUMMARY: summary, BACKUP_DATE: "2026-11-11", ...extra },
+      encoding: "utf8",
+    });
+    return { status: r.status ?? 1, out: `${r.stdout}${r.stderr}`, left: existsSync(join(work, "upload")) ? readdirSync(join(work, "upload")) : [] };
+  };
+  // nothing said about the repository, public, and a value that is neither: all refused
+  const refused: Array<Record<string, string>> = [{}, { BACKUP_PUBLIC: "1" }, { BACKUP_PUBLIC: "" }, { BACKUP_PUBLIC: "1", BACKUP_ENCRYPT: "0" }, { BACKUP_PUBLIC: "no" }];
+  for (const extra of refused) {
+    const r = run(extra);
+    assert.equal(r.status, 1, JSON.stringify(extra));
+    assert.ok(r.out.includes("::error title=Nothing was uploaded::The copy is not encrypted and this repository is not known to be private."), r.out);
+    assert.deepEqual(r.left, []);
+  }
+  assert.deepEqual(run({ BACKUP_PUBLIC: "0" }).left, ["lock-ledger-ann.jsonl"], "private: the copy is uploaded as it is");
+  // asked to encrypt with no date from the fetch step: refused rather than named wrongly
+  assert.equal(run({ BACKUP_PUBLIC: "1", BACKUP_ENCRYPT: "1", EVENT_BACKUP_PASSPHRASE: PASSPHRASE, BACKUP_DATE: "" }).status, 1);
+});
+
+test("the upload step sends the sealed folder, and the workflow asks GitHub before the service", () => {
+  const text = readFileSync(WORKFLOW, "utf8");
+  assert.ok(/uses: actions\/upload-artifact@v4\n\s+with:\n\s+name: [^\n]+\n\s+path: upload\/\n/.test(text), "the folder the seal step leaves is what is uploaded");
+  assert.ok(!/path: backup\//.test(text));
+  const names = [...text.matchAll(/^\s+- name: (.+)$/gm)].map((m) => m[1]);
+  assert.deepEqual(names, ["Decide who could read the copy", "Fetch the files", "Check the copy and write the summary", "Seal the copy", "Upload the copy", "Fail if a line did not parse"]);
+  assert.ok(!text.includes("This repository is private, so its artifacts are"), "the file no longer assumes it");
 });

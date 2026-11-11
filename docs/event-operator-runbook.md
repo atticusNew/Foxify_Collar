@@ -271,22 +271,43 @@ The two older commands still work for a single ledger: `"$S/api/shadow/export"` 
 
 ### The nightly backup [after #404]
 
-The workflow "Event shadow ledger backup" copies the same list at 10:23 UTC each day and keeps the files for 90 days as a private artifact named `event-shadow-ledger-<date>`, with a `.sha256` file beside each and `manifest.json` among them. The run's summary page lists every file copied, what it is, and what was on the disk and not copied.
+The workflow "Event shadow ledger backup" copies the same list at 10:23 UTC each day and keeps the files for 90 days as an artifact named `event-shadow-ledger-<date>`, with a `.sha256` file beside each and `manifest.json` and `SUMMARY.md` among them. The run's summary page lists every file copied, what it is, and what was on the disk and not copied.
+
+**Who can read the copy.** An artifact can be downloaded by everyone who can read the repository. On a private repository that is the people you gave access. On a public repository it is anyone signed in to GitHub, and the run's log and summary page can be read by anyone at all. The ledgers carry holder aliases, positions and real fills. So the run first asks GitHub whether the repository is private:
+
+| Repository | `EVENT_BACKUP_PASSPHRASE` | What the run does |
+| --- | --- | --- |
+| private | not set | uploads the copy as it is |
+| private or public | set | encrypts the copy (gpg, AES-256), reads it back, uploads only the encrypted file and `HOW-TO-OPEN.txt` |
+| public | not set | stops before fetching anything and says why |
+| GitHub does not say | either | treated as public |
+
+On a public repository the run's page and log name no file and show no checksum; those are in `SUMMARY.md` inside the encrypted copy.
+
+`EVENT_BACKUP_PASSPHRASE` is a repository secret of 24 characters or more. GitHub never shows a secret again, so keep the passphrase in a second place (a password manager). Without it nobody can open an encrypted copy, you included. If you change it, copies made before the change still open only with the old one.
+
+An artifact uploaded while the repository was private becomes downloadable by anyone signed in the moment the repository is made public. Delete it from its run's page (the bin icon beside the artifact) before changing the visibility, or straight after.
 
 If the service has not been redeployed since this change, it has no list. The run then copies only the record's ledger and the lock ledgers, and says so in a yellow warning on the run's page. Redeploy `atticus-event-shadow` and the next run copies everything.
 
 Before it can work:
 
 1. In GitHub, under Settings, Secrets and variables, Actions, add the repository secret `EVENT_X_ADMIN_TOKEN` with the same value as on `atticus-event-shadow`.
-2. GitHub starts scheduled runs only from the repo's default branch. The default branch today is not the event branch. Until that changes, or the workflow file is also merged to the default branch, nothing runs at night. The manual run does work: Actions, "Event shadow ledger backup", Run workflow.
+2. If the repository is public, also add `EVENT_BACKUP_PASSPHRASE` there (see the table above), or make the repository private.
+3. GitHub starts scheduled runs only from the repo's default branch, so the event branch has to be the default branch. The manual run works from any branch: Actions, "Event shadow ledger backup", Run workflow.
 
-The same caveat applies to the hourly health check.
+The same default-branch rule applies to the hourly health check.
 
 ### Restore [today for the hand copy; after #404 for the artifact]
 
 Restoring is by hand. No route writes a ledger back, and no restore has been rehearsed in this repo. Rehearse it once before you need it.
 
-1. Get the files. From a hand backup, use your own copies. From the nightly backup, download the artifact from the run's page in GitHub Actions.
+1. Get the files. From a hand backup, use your own copies. From the nightly backup, download the artifact from the run's page in GitHub Actions. An encrypted copy is one file ending `.tar.gpg`; `HOW-TO-OPEN.txt` beside it gives the command, which asks for the passphrase and needs `gpg` installed:
+
+```
+gpg --decrypt event-shadow-backup-<date>.tar.gpg | tar -x
+```
+
 2. Check each file from the artifact. On a Mac, use `shasum -a 256 -c` in place of `sha256sum -c`.
 
 ```
