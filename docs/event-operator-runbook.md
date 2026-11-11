@@ -326,11 +326,40 @@ curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/healthz" | jq '.lock.realOn
 
 `holders` lists who is real-only. `notRealOnly` lists the holders with a key who are not: it should list only you. `notes` appears when an entry could not be read; an unreadable entry makes everyone real-only until it is corrected. `refusals` counts the taps refused for this reason.
 
-5. Send the holder their key by a private channel. They enter it in the extension's options. The alias shows only on your views, never on the public record. Each holder gets their own ledger file, `lock-ledger-<alias>.jsonl`.
+5. Put the user terms in force. This is two settings on the same service, set once, not per holder:
+
+```
+EVENT_SHADOW_TERMS_VERSION=2026-11-20
+EVENT_SHADOW_TERMS_URL=https://[founder to fill: where the terms are published]
+```
+
+`EVENT_SHADOW_TERMS_VERSION` is the label printed on the document (letters, digits, dot, dash, underscore). `EVENT_SHADOW_TERMS_URL` is where that version can be read, and has to start with `https://`. The terms themselves are a document counsel writes; the service does not hold the text.
+
+With both set, every named holder (a holder with their own key, a member on the hosted page, or you acting for a holder by name) is asked to accept before a quote or a lock. Until they do, their quote reads "Read and accept the terms to lock in." with the link, and their tap writes nothing. They accept with one tap, in the extension or at the top of the hosted page. The shared key and you acting for nobody are not asked. Reading their record and leaving a lock early are never blocked.
+
+Each acceptance is one line in `terms-acceptances.jsonl` on the disk: who, which version, when. Check:
+
+```
+curl -s -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" "$S/healthz" | jq '.lock.terms'
+```
+
+`accepted` counts the holders with a key who have accepted the version in force. `notAccepted` lists the ones who have not. `notes` appears when a setting could not be read; then nobody can accept and every named holder is refused until it is corrected.
+
+If a holder accepted another way (a signed copy), record it yourself. `how` is required and is the sentence that says what you received:
+
+```
+curl -s -X POST -H "x-admin-token: $EVENT_X_ADMIN_TOKEN" -H "content-type: application/json" \
+  -d '{"version":"2026-11-20","how":"signed copy received by email on 21 November 2026"}' \
+  "$S/api/shadow/terms/accept?holder=ann"
+```
+
+When the terms change, change both settings to the new version. Every named holder is asked again. The older lines stay on the file.
+
+6. Send the holder their key by a private channel. They enter it in the extension's options. The alias shows only on your views, never on the public record. Each holder gets their own ledger file, `lock-ledger-<alias>.jsonl`.
 
 To remove a holder, delete their pair and redeploy. Their ledger stays on the disk.
 
-**Before adding anyone who is not you.** Do step 4. Without it, with the rails off, their tap writes a floor with nothing bought behind it (section 3, step A). Payment is by hand (section 6). And the founder has decided the collar runs only on a signed venue agreement, so this needs counsel's answers first (`docs/event-counsel-questions.md`, questions 3 and 4).
+**Before adding anyone who is not you.** Do steps 4 and 5. Without step 5 nothing asks them to accept terms. Without step 4, with the rails off, their tap writes a floor with nothing bought behind it (section 3, step A). Payment is by hand (section 6). And the founder has decided the collar runs only on a signed venue agreement, so this needs counsel's answers first (`docs/event-counsel-questions.md`, questions 3 and 4).
 
 ## 10. The Polymarket US key [after #401]
 

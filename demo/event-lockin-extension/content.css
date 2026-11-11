@@ -568,6 +568,7 @@ tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: nor
 .ael-rcpt .ael-rg > b { font-weight: 500; color: var(--ael-soft); }
 .ael-rcpt a.ael-terms-a { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
 .ael-rcpt a.ael-terms-a:hover { color: var(--ael-fg-strong); }
+.ael-size-form a.ael-tou-a { color: var(--ael-fg-strong); font-size: 13px; text-decoration: underline; text-underline-offset: 2px; }
 /* motion is a courtesy, never a requirement */
 @media (prefers-reduced-motion: reduce) {
   .ael-panel.ael-enter, .ael-line.ael-flash, .ael-line.ael-flash .ael-fact, .ael-line.ael-flash .ael-fact b, .ael-line.ael-flash .ael-chev, .ael-chev, .ael-tgc { animation: none; transition: none; }

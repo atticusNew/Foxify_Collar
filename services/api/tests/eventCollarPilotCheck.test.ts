@@ -33,7 +33,7 @@ function facts(over: Partial<PilotFacts> = {}): PilotFacts {
     inPlay: { lock: true, hours: 4, cutoffMinutes: 45, scan: false, memberSale: true },
     disk: { mount: "/var/data", paths: LEDGERS, tempDirs: ["/tmp"], mountDev: 2049, rootDev: 2048, mountFsType: "ext4" },
     alerts: { telegram: true, webhook: false },
-    termsOnRecord: { holders: 2 },
+    termsOnRecord: { version: "2026-11-20", holders: 2, missing: [], notes: [] },
     docs: ["AGENT_HANDOFF.md", "EVENT_PAYOUT_RUNBOOK.md", "INCIDENT_RUNBOOK.md"],
     workflows: ["ci.yml", "event-ledger-backup.yml"],
     ...over,
@@ -97,12 +97,22 @@ test("pilot check: one no is enough for a no overall, and the line names which",
   assert.equal(r.ready, "no");
   assert.deepEqual(r.no, ["10 terms", "11 payout_runbook"]);
   assert.equal(r.overall, "ready for an outside holder: no. 2 conditions answered no: 10 terms, 11 payout_runbook. 2 more to confirm by hand: 8 backup, 9 keys_rotated.");
-  assert.match(item(r, "terms").detail, /^No, not built: nothing in the code records a holder accepting terms/);
+  assert.match(item(r, "terms").detail, /^No terms are in force on this service: EVENT_SHADOW_TERMS_VERSION and EVENT_SHADOW_TERMS_URL are not set, so nothing asks a holder to accept and no acceptance counts\. 2 holder keys in force\.$/);
+  // every holder with a key has accepted the version in force
+  const all = item(pilotCheck(facts()), "terms");
+  assert.equal(all.answer, "yes");
+  assert.match(all.detail, /^Version 2026-11-20 is in force and an acceptance of it is on the record for each of the 2 holders with a key in force\./);
   assert.match(item(r, "payout_runbook").detail, /Runbooks there: INCIDENT_RUNBOOK\.md, SHADOW_BOT_RUNBOOK\.md/);
   // some holders on the record, not all
-  const some = item(pilotCheck(facts({ termsOnRecord: { holders: 1 } })), "terms");
+  const some = item(pilotCheck(facts({ termsOnRecord: { version: "2026-11-20", holders: 1, missing: ["bo"], notes: [] } })), "terms");
   assert.equal(some.answer, "no");
-  assert.match(some.detail, /1 holder with a key in force has no acceptance on the record \(1 of 2 do\)/);
+  assert.match(some.detail, /Version 2026-11-20 is in force and 1 holder with a key in force has no acceptance of it on the record \(1 of 2 do\): bo\. Each is refused at the quote and at the tap until they accept\./);
+  // settings that could not be read: a no, even when the count would pass, and the note says which setting
+  const unread = item(pilotCheck(facts({ termsOnRecord: { version: null, holders: 0, missing: ["ann", "bo"], notes: ["EVENT_SHADOW_TERMS_URL has to be an https address with no login in it; no holder can accept until it is corrected"] } })), "terms");
+  assert.equal(unread.answer, "no");
+  assert.match(unread.detail, /^The terms settings could not be read, so no holder can accept and every named holder is refused: EVENT_SHADOW_TERMS_URL has to be an https address/);
+  const unreadNoHolders = item(pilotCheck(facts({ holderKeys: { ...facts().holderKeys, accepted: 0 }, termsOnRecord: { version: null, holders: 0, missing: [], notes: ["x"] } })), "terms");
+  assert.equal(unreadNoHolders.answer, "no", "with no holder to be short, unreadable terms are still a no");
   // the docs folder not on the machine is not a no and not a yes
   const nodocs = item(pilotCheck(facts({ docs: null })), "payout_runbook");
   assert.equal(nodocs.answer, CANNOT);
@@ -346,7 +356,8 @@ test("pilot check, wording: plain words in every answer under every setting; no 
     { disk: { ...facts().disk, paths: [{ what: "the lock ledgers", path: "/tmp/x.jsonl" }] } },
     { alerts: { telegram: false, webhook: false } },
     { termsOnRecord: null, docs: null, workflows: null },
-    { termsOnRecord: { holders: 0 }, docs: [], workflows: [] },
+    { termsOnRecord: { version: "v1", holders: 0, missing: ["ann", "bo"], notes: [] }, docs: [], workflows: [] },
+    { termsOnRecord: { version: null, holders: 0, missing: ["ann", "bo"], notes: ["x could not be read"] } },
   ];
   for (const v of variants) {
     const r = pilotCheck(facts(v));

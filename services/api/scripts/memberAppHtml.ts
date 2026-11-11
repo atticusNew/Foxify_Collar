@@ -750,6 +750,7 @@ const JS = String.raw`
       case "combo_settling": return ["All hit", "Every leg hit; " + VN + " is settling it."];
       case "quote_lapsed": return ["Quote lapsed", VN + "'s quote lapsed before the tap reached it; nothing was sold."];
       case "combo_no_buyback": return ["Stays to settlement", "A combo lock has nothing to buy back from."];
+      case "terms_not_accepted": return ["Terms", p && p.terms ? "Read and accept the terms at the top of this page to lock in." : words(p, "Lock in is not open right now: the terms are being updated.")];
       case "combo_preview": return ["Preview", "A preview: " + VN + "'s cash-out quote isn't live yet, so nothing was sold."];
       case "venue_refused": return ["Unavailable", words(p, VN + " refused the order.")];
       default: return ["Unavailable", words(p, "Lock in isn't available on this position right now.")];
@@ -767,7 +768,7 @@ const JS = String.raw`
     }
   };
 
-  const S = { tab: "portfolio", screen: "", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, inPlay: false, games: null, gamesErr: null, gLeague: "all", gAll: false, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0, delta: null, connecting: false, hsTip: false };
+  const S = { tab: "portfolio", screen: "", member: null, account: null, acctAt: 0, positions: [], posAt: 0, posErr: null, cutoff: 45, inPlay: false, games: null, gamesErr: null, gLeague: "all", gAll: false, history: null, st: new Map(), flash: null, flashOk: null, flashOkUntil: 0, flashErr: null, pulse: 0, delta: null, connecting: false, hsTip: false, terms: null, termsBusy: false, termsErr: null };
   const main = document.getElementById("main");
   const acct = document.getElementById("acct");
   const tabs = document.getElementById("tabs");
@@ -1226,8 +1227,9 @@ const JS = String.raw`
     let notes = "";
     if (S.flashOk && Date.now() < S.flashOkUntil) notes += '<div class="note ok">' + esc(S.flashOk) + "</div>";
     if (S.posErr) notes += '<div class="note err">' + esc(S.posErr) + "</div>";
+    notes += termsHtml();
     if (S.hsTip) notes += hsTipHtml();
-    if (setHtml(document.getElementById("notes"), notes)) { const x = document.querySelector("#hs-tip .x"); if (x) x.onclick = () => { S.hsTip = false; try { localStorage.setItem(HS_KEY, "1"); } catch (e) {} syncPortfolio(); }; }
+    if (setHtml(document.getElementById("notes"), notes)) { const ta = document.getElementById("terms-go"); if (ta) ta.onclick = () => void acceptTerms(); const x = document.querySelector("#hs-tip .x"); if (x) x.onclick = () => { S.hsTip = false; try { localStorage.setItem(HS_KEY, "1"); } catch (e) {} syncPortfolio(); }; }
     syncList(document.getElementById("grp-live"), live.concat(offer), posKey, "pos", patchPos);
     document.getElementById("grp-rest-h").hidden = !rest.length;
     syncList(document.getElementById("grp-rest"), rest, posKey, "pos", patchPos);
@@ -1412,6 +1414,30 @@ const JS = String.raw`
     else if (r.ok && r.status === 404) S.member = { configured: false, connected: false, reason: "member_app_off" };
     else S.member = { configured: true, connected: false, reason: "unreachable" };
   };
+  // THE USER TERMS: the service says whether a version is in force and whether this member has
+  // accepted it. Until they have, the page asks once at the top; the acceptance is the member's
+  // own tap, recorded by the service with the version shown here and the time.
+  const termsDue = () => !!(S.terms && S.terms.asked && !S.terms.accepted && S.terms.version && S.terms.url);
+  const termsHtml = () => termsDue()
+    ? '<div class="note" id="terms-note"><p><b>Before you lock in:</b> read the <a href="' + esc(S.terms.url) + '" target="_blank" rel="noopener">terms</a> <span class="ael-dim">(version ' + esc(S.terms.version) + ")</span>. Your acceptance is recorded with the date." + (S.termsErr ? ' <span class="ael-fine ael-err">' + esc(S.termsErr) + "</span>" : "") + '</p><button type="button" class="ael-go" id="terms-go"' + (S.termsBusy ? " disabled" : "") + ">" + (S.termsBusy ? "Recording…" : "I accept the terms") + "</button></div>"
+    : "";
+  const loadTerms = async () => {
+    const r = await api("/api/shadow/terms");
+    if (r.ok && r.json && r.json.ok) { S.terms = r.json; if (S.screen === "portfolio") syncPortfolio(); }
+  };
+  const acceptTerms = async () => {
+    if (!termsDue() || S.termsBusy) return;
+    S.termsBusy = true; S.termsErr = null; syncPortfolio();
+    const r = await api("/api/shadow/terms/accept", "POST", { version: S.terms.version });
+    S.termsBusy = false;
+    if (r.ok && r.json && r.json.ok) {
+      S.terms = Object.assign({}, S.terms, { accepted: true, acceptedAt: r.json.acceptedAt });
+      // every row was refused for this alone: price them again
+      S.positions.forEach((p) => { const st = stateOf(posKey(p)); st.quote = null; st.quoteAt = 0; });
+      syncPortfolio();
+      S.positions.forEach((p) => { if (p.ticker && !(p.lock && p.lock.status !== "closed") && !timing(p)) void quoteFor(p, true); });
+    } else { S.termsErr = (r.json && r.json.message) || "That did not go through. Try again."; await loadTerms(); syncPortfolio(); }
+  };
   const loadAccount = async (fresh) => {
     if (!(S.member && S.member.connected)) return;
     const r = await api("/api/shadow/member/account" + (fresh ? "?fresh=1" : ""));
@@ -1484,7 +1510,7 @@ const JS = String.raw`
     await loadMember();
     if (S.connecting && !(S.member && S.member.connected)) S.connecting = false;
     render();
-    await Promise.all([loadAccount(false), loadPositions(false)]);
+    await Promise.all([loadAccount(false), loadPositions(false), loadTerms()]);
     void loadHistory();
     void loadGames();
     setInterval(() => void loadPositions(false), POLL_POS_MS);

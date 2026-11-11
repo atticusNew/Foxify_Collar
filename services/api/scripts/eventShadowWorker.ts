@@ -233,6 +233,7 @@ import { loadRefusals, recordScanRefusals, saveRefusals, summarizeRefusals, type
 import { letterScoreboardVenues, venueScoreboard, venueScoreboardCsv } from "../src/eventCollar/crossVenue/venueScoreboard";
 import { retailCrossQuote } from "../src/eventCollar/retailShowcase";
 import { saleSharePercent } from "../src/eventCollar/shareScale";
+import { appendTermsAcceptance, loadTermsAcceptances, parseAcceptRequest, TERMS_NOT_ACCEPTED, termsInForceFromEnv, termsOnRecordFor, termsRefusalMessage, termsStanding, type TermsInForce } from "../src/eventCollar/crossVenue/termsAcceptance";
 import { ComboLegMemory, MemberApiError, MemberSessions, clientOrderIdFor, comboTickerOf, isComboTicker, leagueOfCompetition, marketResultWord, matchMemberMarket, maxPriceMicroOf, memberAppConfigFromEnv, memberHolderPositions, memberKeyOf, winnerClubOf, type MemberBalance, type MemberHolderPosition } from "../src/eventCollar/crossVenue/memberApp";
 import { acceptRfq, askLevels, bidLevels, buyBackRecordOf, centsPerDollarOf, executeLimitOrder, memberTailTerms, ownContracts, priceString, quoteBuyBack, quoteSaleTiers, quotedPriceOf, requestRfqBid, saleEvCostBps, saleRecordOf, tierSaleContracts, venueContractsOf, type ExecuteOptions, type OrderOutcome, type RfqBid, type SaleTierQuote } from "../src/eventCollar/crossVenue/memberSale";
 import { MICRO_PER_CENT, MILLI_PER_CONTRACT, decimalUnits, divInt, mulDiv } from "../src/eventCollar/crossVenue/exactDecimal";
@@ -570,8 +571,17 @@ let REAL_ONLY: RealOnlyHolders = realOnlyHoldersFromEnv(
   process.env,
   HOLDER_KEYS.holders.map((h) => h.holder),
 );
+/**
+ * THE USER TERMS (termsAcceptance.ts): EVENT_SHADOW_TERMS_VERSION and EVENT_SHADOW_TERMS_URL put a
+ * version in force. A named holder with no acceptance of it on the record is refused at the quote
+ * and at the tap; the shared key and the operator acting for nobody are not asked. Acceptances
+ * are lines in their own append-only file beside the lock ledgers. Read once at start.
+ */
+let TERMS: TermsInForce = termsInForceFromEnv(process.env);
+const TERMS_PATH = process.env.EVENT_SHADOW_TERMS_PATH || join(dirname(LOCK_LEDGER_PATH), "terms-acceptances.jsonl");
+let termsRefusals = 0;
 const LOCK_ROUTES_ON = Boolean(LOCK_KEY) || HOLDER_KEYS.holders.length > 0;
-const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/picks", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry", "/api/shadow/member", "/api/shadow/member/connect", "/api/shadow/member/disconnect", "/api/shadow/member/account", "/api/shadow/member/games", "/api/shadow/member/history"]);
+const LOCK_PATHS = new Set(["/api/shadow/terms", "/api/shadow/terms/accept", "/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/picks", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry", "/api/shadow/member", "/api/shadow/member/connect", "/api/shadow/member/disconnect", "/api/shadow/member/account", "/api/shadow/member/games", "/api/shadow/member/history"]);
 /**
  * THE EXTENSION'S SWITCHES, served with the markets list so the service, not the build, decides:
  * EVENT_SHADOW_EXT_MIN_VERSION   the version below which the extension shows "update" and draws nothing
@@ -2189,12 +2199,13 @@ function pilotReport(): PilotReport {
         { what: "the hedge receipts", path: RECEIPTS_PATH },
         { what: "the pending trail", path: PENDING_PATH },
         { what: "the parlay ledger", path: LASTLEG_PATH },
+        { what: "the terms acceptances", path: TERMS_PATH },
       ],
       [...new Set([tmpdir(), "/tmp", "/var/tmp"])],
     ),
     alerts: { telegram: Boolean(alertCfg.telegramBotToken && alertCfg.telegramChatId), webhook: Boolean(alertCfg.webhookUrl) },
-    // no route, ledger line or setting records a holder accepting the user terms; when one does, count it here
-    termsOnRecord: null,
+    // the version in force and which holders with a key have accepted it (termsAcceptance.ts); null while no terms are in force
+    termsOnRecord: termsOnRecordFor(TERMS, TERMS.required ? loadTermsAcceptances(TERMS_PATH) : [], HOLDER_KEYS.holders.map((h) => h.holder)),
     // not read from the deployed checkout: a merge that only changes documents or workflows does not restart this
     // service (its build filter), so a listing taken here could be older than the repository
     docs: null,
@@ -2763,6 +2774,58 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
   // this caller's own locks: what they see as Protected, what they may not lock twice
   const ownLedger = lockLedgerPathFor(holder);
   const realOnly = isRealOnly(REAL_ONLY, holder);
+  // THE USER TERMS: where this caller stands on the version in force. The shared key and the
+  // operator acting for nobody are not asked; a named holder is, on the quote and on the tap.
+  const standing = termsStanding(TERMS, TERMS.required && holder !== null ? loadTermsAcceptances(TERMS_PATH) : [], holder);
+  if (url.pathname === "/api/shadow/terms") {
+    sendJson(res, 200, {
+      ok: true,
+      at: atIso,
+      ...(holder ? { holder } : {}),
+      required: TERMS.required,
+      asked: standing.asked,
+      ...(TERMS.terms ? { version: TERMS.terms.version, url: TERMS.terms.url } : {}),
+      ...(standing.asked ? { accepted: standing.accepted, ...(standing.accepted ? { acceptedAt: standing.at, by: standing.by } : {}) } : {}),
+    });
+    return;
+  }
+  if (url.pathname === "/api/shadow/terms/accept") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST a JSON body {version}" });
+      return;
+    }
+    if (holder === null) {
+      sendJson(res, 400, { ok: false, error: "no_holder", message: "An acceptance is recorded for a named holder: use the holder's own key, or the operator's token with holder= and how." });
+      return;
+    }
+    // the holder's own tap, or the operator recording an acceptance received another way (which has to say how)
+    const by = operator ? "operator" : "holder";
+    const asked = parseAcceptRequest(await readJsonBody(req), TERMS, by);
+    if (!asked.ok || !TERMS.terms) {
+      sendJson(res, TERMS.required && TERMS.terms ? 400 : 409, { ok: false, error: "bad_request", message: asked.ok ? "the terms on this service cannot be accepted right now" : asked.error });
+      return;
+    }
+    if (standing.asked && standing.accepted) {
+      sendJson(res, 200, { ok: true, at: atIso, holder, already: true, version: standing.version, url: standing.url, acceptedAt: standing.at, by: standing.by });
+      return;
+    }
+    const ua = String(req.headers["user-agent"] ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+    try {
+      appendTermsAcceptance(TERMS_PATH, { type: "terms_accepted", at: atIso, holder, version: TERMS.terms.version, url: TERMS.terms.url, by, ...(asked.how ? { how: asked.how } : {}), ...(by === "holder" && ua ? { userAgent: ua } : {}) });
+    } catch (err) {
+      void alerter({ kind: "ledger_write_failed", message: `could not append the terms acceptance for ${holder} to ${TERMS_PATH}: ${String(err instanceof Error ? err.message : err)}` });
+      sendJson(res, 500, { ok: false, error: "record_unwritable", message: "The acceptance could not be written; nothing changed. Try again." });
+      return;
+    }
+    sendJson(res, 200, { ok: true, at: atIso, holder, already: false, version: TERMS.terms.version, url: TERMS.terms.url, acceptedAt: atIso, by });
+    return;
+  }
+  if ((url.pathname === "/api/shadow/quote" || url.pathname === "/api/shadow/lock") && standing.asked && !standing.accepted) {
+    // refused before anything is priced, written or sent; reading the record and leaving early are never behind this
+    termsRefusals += 1;
+    sendJson(res, 200, { ok: false, at: atIso, ...TERMS_NOT_ACCEPTED, message: termsRefusalMessage(standing.terms), ...(standing.terms ? { terms: standing.terms } : {}) });
+    return;
+  }
   if (url.pathname === "/api/shadow/markets") {
     // held: a lock this holder has on the market that is open, settled or void; one whose protection was removed frees the market
     const held = new Set(loadShadowPositions(ownLedger).filter((p) => p.status !== "closed").map((p) => p.ticker));
@@ -4766,6 +4829,19 @@ function healthBody(): Record<string, unknown> {
           refusals: { count: refused.count, last: refused.last ? { at: refused.last.at, ref: refused.last.ref, source: refused.last.source, detail: refused.last.detail } : null },
         };
       })(),
+      // the user terms (termsAcceptance.ts): the version in force, how many acceptances of it are on the file, and
+      // the holders with a key who have none (each is refused at the quote and the tap until they accept)
+      terms: (() => {
+        const on = termsOnRecordFor(TERMS, TERMS.required ? loadTermsAcceptances(TERMS_PATH) : [], HOLDER_KEYS.holders.map((h) => h.holder));
+        return {
+          required: TERMS.required,
+          ...(TERMS.terms ? { version: TERMS.terms.version, url: TERMS.terms.url } : {}),
+          ...(TERMS.notes.length ? { notes: TERMS.notes } : {}),
+          ...(on ? { accepted: on.holders, notAccepted: on.missing } : {}),
+          file: { path: TERMS_PATH, ...ledgerStats(TERMS_PATH) },
+          refusals: termsRefusals,
+        };
+      })(),
       // the holder's venue account, read-only: configured or not, never the key
       holderPositions: { configured: Boolean(venueClient), ...(venueClient ? { api: venueClient.kind } : {}), ...(venueClientNote ? { note: venueClientNote } : {}), lastReadAt: positionsCache ? new Date(positionsCache.at).toISOString() : null },
       // the member app (memberApp.ts): on or off and why, where the store is, who is connected by alias and venue id; never a token, a code or the secret
@@ -5795,6 +5871,8 @@ export function wireLockEngine(fns: {
   exposureCaps?: ExposureCaps;
   /** who is real-only, in place of EVENT_SHADOW_REAL_ONLY_HOLDERS */
   realOnly?: RealOnlyHolders;
+  /** the user terms in force, in place of EVENT_SHADOW_TERMS_VERSION and EVENT_SHADOW_TERMS_URL */
+  terms?: TermsInForce;
   /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ: "auto" (the env's default) finds out from the venue, true forces it on, false off; "preview" quotes from a stand-in and refuses the tap. Setting it forgets what auto had learned. */
   memberComboRfq?: boolean | "preview" | "auto";
   /** the long/short-dialect venue's client behind the operator's key check, in place of the env's; null is "not read" */
@@ -5820,6 +5898,7 @@ export function wireLockEngine(fns: {
   if (fns.inPlay !== undefined) lockInPlay = fns.inPlay;
   if (fns.exposureCaps) exposureCaps = fns.exposureCaps;
   if (fns.realOnly) REAL_ONLY = fns.realOnly;
+  if (fns.terms) TERMS = fns.terms;
   if (fns.memberComboRfq !== undefined) {
     memberComboRfq = fns.memberComboRfq === "preview" ? "preview" : fns.memberComboRfq === "auto" ? "auto" : fns.memberComboRfq ? "on" : "off";
     comboRfqPath = { state: "unknown", checkedAtMs: 0, why: null };

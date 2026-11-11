@@ -99,7 +99,7 @@ test("pilot check route: a service with nothing switched on is not ready, and ea
   assert.equal(item(r, "backup").answer, CANNOT);
   assert.equal(item(r, "keys_rotated").answer, CANNOT);
   assert.equal(item(r, "terms").answer, "no");
-  assert.match(item(r, "terms").detail, /^No, not built: /);
+  assert.match(item(r, "terms").detail, /^No terms are in force on this service: /);
   // the service does not read the repository's documents: a documents-only merge does not restart it, so a listing could be stale
   assert.equal(item(r, "payout_runbook").answer, CANNOT);
   assert.match(item(r, "payout_runbook").detail, /does not look at the repository's documents/);
