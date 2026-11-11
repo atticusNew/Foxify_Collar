@@ -351,15 +351,15 @@ test("page and health: a ProphetX column on the board, its fee in its own words,
   const snapshot: Snapshot = { at: "2026-11-14T00:00:00Z", games, health: { kalshi: { ok: true, ms: 200 }, prophetx: { ok: true, ms: 150, detail: "1 game left off: the venue's fee for them was not understood" } } };
   const html = renderReportHtml(buildReport({ snapshot, history: [toHistoryPoint(snapshot)], intervalSec: 60, collectingSince: snapshot.at }), { refreshSec: 60 });
   for (const needle of [
-    "<title>Sports on the event venues: Kalshi, Polymarket US, Novig, ProphetX</title>",
+    "<title>Sports on the event venues: Kalshi, Polymarket US, Novig, ProphetX, Crypto.com</title>",
     "<th>ProphetX<br><small>bid / ask · depth</small></th>",
     "<th>ProphetX<br><small>− consensus</small></th>",
-    'colspan="11"',
+    'colspan="13"',
     "<b>40.98</b> / <b>42.02</b>",
     "fee 2% of winnings",
     "ProphetX</b> 59.84¢ all in",
     "saves 2.83¢",
-    "0 on all four",
+    "0 on all five",
     "ProphetX public web endpoints",
     "prophetx 150ms (1 game left off: the venue&#39;s fee for them was not understood)",
   ]) {
@@ -377,7 +377,7 @@ test("page and health: a ProphetX column on the board, its fee in its own words,
   } });
   await collector.collectOnce(new Date(snapshot.at));
   const h = collector.health() as { listed: Record<string, number>; venueNotes: string[]; venuesNotAnswering: string[] };
-  assert.deepEqual(h.listed, { kalshi: 1, polymarket_us: 0, novig: 0, prophetx: 1 });
+  assert.deepEqual(h.listed, { kalshi: 1, polymarket_us: 0, novig: 0, prophetx: 1, cryptocom: 0 });
   assert.deepEqual(h.venueNotes, ["prophetx: 1 game left off: the venue's fee for them was not understood"]);
   assert.deepEqual(h.venuesNotAnswering, []);
   collector.stop();

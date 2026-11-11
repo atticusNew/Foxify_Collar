@@ -1,7 +1,7 @@
 # Sports venues report
 
-A read-only page: the same game's winner market on the four US event venues a
-CFTC-only trader can use (Kalshi, Polymarket US, Novig, ProphetX) side by side, after each
+A read-only page: the same game's winner market on the five US event venues a
+CFTC-only trader can use (Kalshi, Polymarket US, Novig, ProphetX, Crypto.com) side by side, after each
 venue's taker fee, for every NFL, NBA and NHL game within three days. It shows where the other side of a
 position is cheapest and by how much, what the venues disagree on, what can be locked across
 them in dollars, and how the gaps behave over time, pre-game and in play. Nothing on it is a
@@ -10,7 +10,7 @@ model. Every number is a venue's price, its published fee, or a difference of th
 Where it lives: `/sports` on the `atticus-btc-curve` Render service (same process, same key, no
 second service; see "On the BTC curve service" below). Modules: `services/api/src/sportsVenues/**`
 (`collector.ts` is the cycle and the routes) · tests: `services/api/tests/sportsVenues.test.ts`,
-`sportsProphetX.test.ts`, `sportsMount.test.ts` · `services/api/scripts/sportsVenuesReportService.ts` serves the same thing
+`sportsProphetX.test.ts`, `sportsCryptocom.test.ts`, `sportsHolder.test.ts`, `sportsMount.test.ts` · `services/api/scripts/sportsVenuesReportService.ts` serves the same thing
 on its own port for a local run. Reader's guide: `docs/sports-venues-study-guide.md`.
 
 ## What the page shows
@@ -25,7 +25,7 @@ the venue furthest off the consensus.
 
 **§1 The board** (Reference + Engine). One game, two rows. Per venue: bid / ask on that team's
 "wins" contract, depth at the best level in $1 shares, and the fee as it applies now (Novig: "no
-fee" before tip-off; ProphetX: "fee 2% of winnings" on NFL and NBA, "fee 3.5%" on NHL). Consensus: each venue's two mids scaled to sum to 100, averaged over the
+fee" before tip-off; ProphetX: "fee 2% of winnings" on NFL and NBA, "fee 3.5%" on NHL; Crypto.com: "fee 2¢ a contract"). Consensus: each venue's two mids scaled to sum to 100, averaged over the
 venues two-sided on the game. One gap column per venue: its scaled mid minus that mean. Last
 column, for a holder of this side: the other side's all-in ask (ask plus fee) on every venue, the
 cheapest named, the saving against Kalshi's own other side, and the depth at that level. The game
@@ -49,6 +49,14 @@ quoted the other side. A coverage line states when a venue lists fewer games tha
 game, every snapshot in the window (the home side is the mirror). Strip: mean |gap| per venue
 pair, widest game, how many games sit 1¢ or more apart on average (persistent, so a quoting
 difference rather than latency). The full table with sparklines is folded.
+
+**§5 A holder on each venue** (Engine). Someone holds one side of a game on a venue and wants
+out. One row per venue as the holder's venue, before the start and in play, with a by-league
+fold: readings (sides with a bid, and how many more had none), the cost of selling on that
+venue's own book against the consensus, its spread, how often its bid holds 100, 1,000 and 10,000
+contracts, how often another venue's other side is cheaper and by how much, and how often a bid
+better than its own book would still lock after every fee. Unlike §2 to §4 this is counted over
+every snapshot since the count began, not only the window (`holder.ts`).
 
 **Notes and limits** and the footer (sources, health per venue this cycle).
 
@@ -99,10 +107,38 @@ answer is not one of those two shapes is left off and `/healthz` says how many; 
 game the venue is shown as not answering. ProphetX lists the nearest games (18 of the 43 on the
 board on 11 November 2026), so its coverage is a subset of the board, like Novig's.
 
-All four are public, unauthenticated reads. No key is loaded; nothing here can place an order.
+Crypto.com (`cryptocom.ts`; host `https://api.crypto.com/fcm/v1/public`, `CRYPTOCOM_PUBLIC_HOST`
+overrides): the public market-data API of its US exchange (North American Derivatives Exchange,
+trading as Crypto.com | Derivatives North America and OG). It is the book behind OG and behind
+any broker that introduces customers to that exchange, so it is also the book such a holder
+sells into. `GET /get-events?series_symbol={NBA,NFL,NHL}{year}&limit=1000` lists a league's events;
+the year before, this year and the next are asked (a series that does not exist answers 400 and is
+asked again after 15 minutes), games only (`PREDICT_EVENT_TYPE` "Game"), kept for 5 minutes. An
+event is matched to the Kalshi game by both clubs' full names (`AWAY_PARTICIPANT`,
+`HOME_PARTICIPANT`, in either order; all 94 club names equal the templates' on 11 November 2026)
+and the ET date of `EVENT_DATE`, and exactly one must match.
+`GET /get-instruments?event_symbol=...&limit=1000` lists every contract on the game (20 to 900,
+props included), paged by cursor; the winner pair is the two with `PREDICT_CONTRACT_TYPE`
+"Moneyline" and `PREDICT_PERIOD_TYPE` "Full-Game", one per club by `PARTICIPANT`, of one
+`PREDICT_MARKET_ID`. That read is made once per game and the two symbols kept for the life of the
+process; a game whose pair is not up yet is asked again after 15 minutes. Each cycle then costs
+`GET /get-book?instrument_name=...&depth=1` twice per game: each club has its own $1 contract and
+its own book, as on Kalshi, prices to the cent, sizes in contracts to two decimals. The first
+cycle after a boot took 9 s for 43 games and the later ones under 2 s. Fee, from the exchange's
+fee schedule (effective 1 August 2026): the customer of a broker pays $0.02 per contract to open
+and $0.02 to close before expiry, nothing at settlement; "based on the technology" of the broker
+the fee can instead be `0.07 · p · (1 − p)`, which is never more than 2¢. Which one a given
+broker's customers pay is not public: the page counts the flat 2¢ and
+`SPORTS_VENUES_CRYPTOCOM_FEE=weighted` switches it. A broker's own commission is not counted.
+Settlement is the official result with overtime and the shootout counted; a game not completed
+within 48 hours of its scheduled start settles at the prior week's average price, which no other
+venue here does. Crypto.com listed all 43 games on the board on 11 November 2026, with a book
+1¢ wide and tens of thousands of contracts at the best level on the day's games.
+
+All five are public, unauthenticated reads. No key is loaded; nothing here can place an order.
 ProphetX's are its website's own endpoints, not a documented public API: the venue can change or
 close them without notice, and the page then shows ProphetX as not answering and carries on with
-the other three. The documented route is the aggregator DATA key the event service holds; it is
+the others. The documented route is the aggregator DATA key the event service holds; it is
 not loaded on this service.
 
 ## Arithmetic
@@ -117,6 +153,10 @@ charges g on a market's net winnings, so buying into a new position pays it only
 closing an existing one pays it on the net of both trades; the page prices every trade as a new
 one.
 
+A fixed fee per contract (Crypto.com, f = 2¢): all-in ask = ask + f, all-in bid = bid − f,
+whatever the price. It is charged on a sale before expiry and not at settlement, so a holder who
+waits for the result pays it once and one who sells pays it twice.
+
 Consensus for a side = mean over venues two-sided on the game of `mid_side / (mid_away + mid_home) · 100`.
 With two venues it is their midpoint and the two gaps are symmetric; with more it is a mean. It is
 the venues' own agreement, not a sharp line.
@@ -129,8 +169,21 @@ sum; size = min of the two best-level sizes; dollars = edge × size / 100.
 Cheapest other side for a holder of side s = min over venues of the all-in ask of ¬s; saving =
 Kalshi's all-in ask of ¬s minus that (0 when Kalshi is cheapest). Readings over the window are
 recomputed from the stored books with the fee that applied at the time, so Novig's pre-game 0
-and live 0.06 are both honoured historically, and so is ProphetX's fee on winnings (stored with
-the reading).
+and live 0.06 are both honoured historically, and so are ProphetX's fee on winnings and
+Crypto.com's fixed fee (stored with the reading).
+
+The holder's view (§5), per reading (one side s of one game in one snapshot, counted while the
+consensus on s is between 5¢ and 95¢), for venue H as the holder's venue, with the fees stored
+with the snapshot:
+sale cost = consensus(s) − (H's bid on s − H's fee to sell at it);
+saving = H's own all-in ask on ¬s − the cheapest all-in ask on ¬s on any venue, counted when
+another venue is cheaper (a tie is not a saving);
+room = 100 − that cheapest all-in ask − H's bid on s − H's fee to buy at that bid: what is left
+if someone takes the holder's contract at H's bid, pays H's fee on it and buys the other side on
+the cheapest venue. Above zero a bid better than H's own book locks after every fee, and the
+room is the most it can add, to be split between the holder and whoever makes the bid. Before
+the start and in play are split by the venue-published start; a game with only a date counts as
+before the start.
 
 ## Storage and ops
 
@@ -138,8 +191,16 @@ One JSONL file per UTC day under `SPORTS_VENUES_DATA_DIR`, one line per snapshot
 two sides, sizes, fee, start; health per venue). The in-memory history keeps
 `SPORTS_VENUES_WINDOW_HOURS` (72 on its own, 24 on the BTC curve service) as compact
 points (`[awayBid, awayAsk, homeBid, homeAsk, feeTheta, awayBidQty, awayAskQty, homeBidQty, homeAskQty]`
-per game and venue, plus starts). A source that does not answer within
+per game and venue, then the share of winnings and the fixed fee where a venue charges them, plus starts). A source that does not answer within
 `SPORTS_VENUES_SOURCE_DEADLINE_MS` (45 s) is marked down for the cycle and the cycle goes on.
+
+The holder's count (§5) is a running total, not a window: `holder-count.json` beside the day
+files, a few KB, rewritten (to a temporary name, then renamed) after every snapshot. It holds,
+per venue, league and phase, the sums the section's means are made of, and the time of the last
+snapshot counted, so a snapshot is never counted twice. On a boot it is read back and any
+snapshot in the reloaded window newer than its last is added, which also fills it from snapshots
+taken before it existed. It is derived data: the day files are the record. If the file is lost
+or unreadable it starts again from the window and `/healthz` says so.
 
 Every day is kept. Nothing is deleted unless `SPORTS_VENUES_RETAIN_DAYS` is set to a whole number
 of days; unset, empty, `0`, `all` and `none` keep everything, and a value that cannot be read
@@ -157,7 +218,8 @@ Endpoints: `/` (page, auto-refresh at the interval), `/api/report` (the page's d
 Env: `SPORTS_VENUES_PORT` (8870), `SPORTS_VENUES_DATA_DIR`, `SPORTS_VENUES_INTERVAL_SEC` (60),
 `SPORTS_VENUES_TOKEN`, `SPORTS_VENUES_RETAIN_DAYS` (unset: keep every day),
 `SPORTS_VENUES_DISK_BUDGET_MB` (unset: no budget), `SPORTS_VENUES_HORIZON_DAYS` (3),
-`SPORTS_VENUES_WINDOW_HOURS` (72), `NOVIG_PUBLIC_HOST`, `POLY_US_REST_BASE`, `KALSHI_REST_BASE`.
+`SPORTS_VENUES_WINDOW_HOURS` (72), `SPORTS_VENUES_CRYPTOCOM_FEE` (`flat`, or `weighted`),
+`NOVIG_PUBLIC_HOST`, `PROPHETX_PUBLIC_HOST`, `CRYPTOCOM_PUBLIC_HOST`, `POLY_US_REST_BASE`, `KALSHI_REST_BASE`.
 
 The gaps table plots at most 240 points per game and venue, evenly spread over the window; the
 mean, the maximum, the last value and `n` are over every snapshot. The report is built once per
@@ -173,7 +235,8 @@ which are the curve service's. The files go under `<BTC_CURVE_DATA_DIR>/sports` 
 `BTC_CURVE_RETAIN_DAYS` unless `SPORTS_VENUES_RETAIN_DAYS` is set. `/healthz` on the curve
 service carries a `sports` block: `warm`, `at`, `games`, `cycles`, `historyPoints`,
 `windowHours`, `reload`, `venuesNotAnswering`, `venueNotes` (a venue that answered but left
-games off, and why), `listed` (games each venue is on in the latest snapshot), `lastError`, `data` (the same block as above for
+games off, and why), `listed` (games each venue is on in the latest snapshot), `lastError`,
+`holderCount` (snapshots counted in §5, since when, the last one, and a note if its file could not be used), `data` (the same block as above for
 the sports files) and, if the sports part ever fails outside a cycle, `mountError` in words. A
 sports fault never reaches the BTC routes: the page answers 500 on that request and the fault
 is on `/healthz`.

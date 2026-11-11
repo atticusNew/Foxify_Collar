@@ -8,10 +8,20 @@
 import { mkdirSync } from "node:fs";
 import { basename } from "node:path";
 import { DayKeeper, listDayFiles, parseRetention, readLines, readablePath, type Budget, type DataHealth, type DayKeeperOptions, type MaintainReport, type Retention } from "../btcCurve/dayFiles";
-import type { Snapshot, Venue } from "./types";
+import type { Snapshot, Venue, VenueListing } from "./types";
 
-/** [awayBid, awayAsk, homeBid, homeAsk, feeTheta, awayBidQty, awayAskQty, homeBidQty, homeAskQty, feeGain (only when the venue charges on winnings)] */
-export type HistoryCell = [number, number, number, number, number, number, number, number, number, number?];
+/**
+ * [awayBid, awayAsk, homeBid, homeAsk, feeTheta, awayBidQty, awayAskQty, homeBidQty, homeAskQty,
+ *  feeGain (only when the venue charges on winnings, or 0 to hold the place),
+ *  feeFlatCents (only when the venue charges a fixed fee per contract)]
+ */
+export type HistoryCell = [number, number, number, number, number, number, number, number, number, number?, number?];
+
+/** A listing as its compact cell: the trailing fee slots are written only when the venue uses them. */
+export function toHistoryCell(l: VenueListing): HistoryCell {
+  const tail = l.feeFlatCents ? [l.feeGain ?? 0, l.feeFlatCents] : l.feeGain ? [l.feeGain] : [];
+  return [l.away.bidCents, l.away.askCents, l.home.bidCents, l.home.askCents, l.feeTheta, l.away.bidQty, l.away.askQty, l.home.bidQty, l.home.askQty, ...tail] as HistoryCell;
+}
 
 export interface HistoryPoint {
   at: string;
@@ -27,9 +37,7 @@ export function toHistoryPoint(s: Snapshot): HistoryPoint {
   const starts: HistoryPoint["starts"] = {};
   for (const g of s.games) {
     const row: Partial<Record<Venue, HistoryCell>> = {};
-    for (const l of g.listings) {
-      row[l.venue] = [l.away.bidCents, l.away.askCents, l.home.bidCents, l.home.askCents, l.feeTheta, l.away.bidQty, l.away.askQty, l.home.bidQty, l.home.askQty, ...(l.feeGain ? [l.feeGain] : [])] as HistoryCell;
-    }
+    for (const l of g.listings) row[l.venue] = toHistoryCell(l);
     games[g.key] = row;
     const ms = Date.parse(g.startsAt);
     if (g.startSource === "venue" && Number.isFinite(ms)) starts[g.key] = ms;

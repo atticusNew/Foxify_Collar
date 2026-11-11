@@ -10,9 +10,9 @@
 #                                   a Kalshi sports position. Quotes only.
 #   atticus-btc-curve               BTC curve report, with the BTC pairs UI at
 #                                   /pairs and the sports venues report (one
-#                                   game on Kalshi, Polymarket US, Novig and
-#                                   ProphetX side by side) at /sports, in one
-#                                   process.
+#                                   game on Kalshi, Polymarket US, Novig,
+#                                   ProphetX and Crypto.com side by side) at
+#                                   /sports, in one process.
 #   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com.
 #                                   Holds no credentials.
 #
@@ -104,7 +104,7 @@
 #
 #   (no service) /sports on         Read-only sports venues report: the same
 #   atticus-btc-curve               game's winner market on Kalshi, Polymarket
-#                                   US, Novig and ProphetX side by side after fees, the
+#                                   US, Novig, ProphetX and Crypto.com side by side after fees, the
 #                                   consensus and who sits off it, the cheapest
 #                                   other side for every position, the crosses
 #                                   that lock, gaps over time. 60-second cycle
@@ -220,14 +220,14 @@ services:
     # Growth, measured on 11 November 2026 by running this service locally:
     #   curve snapshot   215 KB raw, 31 KB gzipped, one a minute  = 310 MB a day raw, 45 MB gzipped
     #   pairs cycle      3.9 KB raw, one every 10 seconds         =  34 MB a day raw,  2 MB gzipped
-    #   sports snapshot   50 KB raw,  8 KB gzipped, one a minute  =  72 MB a day raw, 11 MB gzipped
+    #   sports snapshot   65 KB raw, 10 KB gzipped, one a minute  =  94 MB a day raw, 15 MB gzipped
     # (a pairs cycle stores both books of every pair it priced, so a trade can be priced on a
     # later cycle; the sports figure is for 48 games listed, with the 14% the ProphetX listings
-    # were measured to add, and grows with the slate). Together about 420 MB a day raw, 58 MB
-    # gzipped. Without the gzip step this 3 GB disk would be full
-    # in under 8 days; with it, it holds the current day raw plus about 44 closed days (about
-    # 55 with BTC_CURVE_SPORTS=off). A year is about 21 GB: raise sizeGB to 25 before the sixth
-    # week is out (Render disks only grow).
+    # and the 30% the Crypto.com listings were measured to add, and grows with the slate).
+    # Together about 440 MB a day raw, 62 MB gzipped. Without the gzip step this 3 GB disk would
+    # be full in under 7 days; with it, it holds the current day raw plus about 41 closed days
+    # (about 55 with BTC_CURVE_SPORTS=off). A year is about 23 GB: raise sizeGB to 25 before the
+    # sixth week is out (Render disks only grow).
     #
     # Memory, measured on 11 November 2026 in a 512 MB, half CPU group with the full curve
     # window and a full sports window reloaded from disk, every page opened: see
@@ -295,6 +295,11 @@ services:
       # not raise it without measuring: 72 leaves under 100 MB of this plan's 512 MB.
       # - key: SPORTS_VENUES_WINDOW_HOURS
       #   value: "24"
+      # Crypto.com's exchange fee as the sports page counts it: flat (2 cents a contract to open
+      # and 2 to close, the schedule's standard for a broker's customer) or weighted (0.07 x p x
+      # (1 - p), which the schedule allows depending on the broker's connection). Flat when unset.
+      # - key: SPORTS_VENUES_CRYPTOCOM_FEE
+      #   value: "flat"
 
   - type: web
     name: atticus-event-demo-cross-venue

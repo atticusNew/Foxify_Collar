@@ -11,19 +11,29 @@
  * if the contract wins: g·(1−p) on a buy at p, which is the most it can be, so a cross or a
  * saving shown here holds whichever side wins. On the bid it is g·b, the most an offset bought
  * at 1−b can give up.
+ *
+ * A venue with a fixed fee per contract (Crypto.com's exchange) charges that many cents on the
+ * buy and again on a sale before expiry, whatever the price.
  */
 
 import type { Game, Side, SideQuote, Venue, VenueListing } from "./types";
 import { SIDES, VENUES, byVenue as perVenue } from "./types";
 import type { HistoryPoint } from "./store";
 
+/** A venue's taker fee: c·p·(1−p), a share of net winnings, a fixed number of cents per contract, or a sum of them. */
+export interface FeeTerms {
+  theta: number;
+  gain?: number;
+  flat?: number;
+}
+
 export const takerFeeCents = (theta: number, cents: number): number => (theta * (cents / 100) * (1 - cents / 100) * 100);
 /** The winnings fee of a buy at `cents`, counted as if it wins: g of the gain, cents. */
 export const gainFeeCents = (gain: number | undefined, cents: number): number => (gain ? gain * (100 - cents) : 0);
 /** Everything a taker pays over the ask to buy at `cents`, cents. */
-export const buyFeeCents = (fee: { theta: number; gain?: number }, cents: number): number => takerFeeCents(fee.theta, cents) + gainFeeCents(fee.gain, cents);
+export const buyFeeCents = (fee: FeeTerms, cents: number): number => takerFeeCents(fee.theta, cents) + gainFeeCents(fee.gain, cents) + (fee.flat ?? 0);
 /** Everything a taker gives up under the bid when leaving at `cents`, cents. */
-export const sellFeeCents = (fee: { theta: number; gain?: number }, cents: number): number => takerFeeCents(fee.theta, cents) + (fee.gain ? fee.gain * cents : 0);
+export const sellFeeCents = (fee: FeeTerms, cents: number): number => takerFeeCents(fee.theta, cents) + (fee.gain ? fee.gain * cents : 0) + (fee.flat ?? 0);
 const r2 = (x: number): number => Math.round(x * 100) / 100;
 const other = (s: Side): Side => (s === "away" ? "home" : "away");
 
@@ -40,12 +50,14 @@ export interface AllIn {
   feeTheta: number;
   /** the share of net winnings taken at settlement, when the venue charges that way */
   feeGain?: number;
+  /** the fixed fee per contract, cents, when the venue charges that way */
+  feeFlatCents?: number;
 }
 
 export function allIn(l: VenueListing, side: Side): AllIn {
   const q: SideQuote = l[side];
   const two = q.bidCents > 0 && q.askCents > 0 && q.askCents < 100;
-  const fee = { theta: l.feeTheta, gain: l.feeGain };
+  const fee: FeeTerms = { theta: l.feeTheta, gain: l.feeGain, flat: l.feeFlatCents };
   return {
     venue: l.venue,
     bidCents: q.bidCents,
@@ -57,6 +69,7 @@ export function allIn(l: VenueListing, side: Side): AllIn {
     mid: two ? r2((q.bidCents + q.askCents) / 2) : null,
     feeTheta: l.feeTheta,
     ...(l.feeGain ? { feeGain: l.feeGain } : {}),
+    ...(l.feeFlatCents ? { feeFlatCents: l.feeFlatCents } : {}),
   };
 }
 
@@ -449,7 +462,7 @@ export function windowTally(history: HistoryPoint[]): WindowTally {
         const c = row[v];
         if (!c) return null;
         const a = side === "away" ? c[1] : c[3];
-        return a > 0 && a < 100 ? a + buyFeeCents({ theta: c[4], gain: c[9] }, a) : null;
+        return a > 0 && a < 100 ? a + buyFeeCents({ theta: c[4], gain: c[9], flat: c[10] }, a) : null;
       };
       const qty = (v: Venue, side: Side): number => {
         const c = row[v];

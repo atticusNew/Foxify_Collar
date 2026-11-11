@@ -13,6 +13,8 @@ import { maintainLines, parseBudgetMb, parseRetention, type Budget, type Retenti
 import type { PageLink } from "../btcCurve/pageLinks";
 import { assembleGames, readKalshiGames, readNovigListings, readPolyUsListings, type KalshiGame } from "./readers";
 import { readProphetXListings } from "./prophetx";
+import { cryptocomFeeFromEnv, newCryptocomCache, readCryptocomListings, type CryptocomFee } from "./cryptocom";
+import { HolderRecord } from "./holder";
 import { buildReport, type ReportData } from "./report";
 import { renderReportHtml } from "./reportHtml";
 import { SnapshotStore } from "./store";
@@ -28,6 +30,8 @@ export interface SportsCollectorOptions {
   retention?: Retention;
   budget?: Budget;
   log?: (line: string) => void;
+  /** Crypto.com's exchange fee as it is counted; the flat fee of its schedule when not given */
+  cryptocomFee?: CryptocomFee;
   /** test seam: the venue reads of one cycle */
   readGames?: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
 }
@@ -41,8 +45,11 @@ export class SportsCollector {
   private readonly retention: Retention;
   private readonly store: SnapshotStore;
   private readonly sincePath: string;
+  private readonly holder: HolderRecord;
   private readonly log: (line: string) => void;
   private readonly readGames: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
+  private readonly cryptocomFee: CryptocomFee;
+  private readonly cryptocomCache = newCryptocomCache();
   private collectingSince: string | null = null;
   private sinceOnDisk = false;
   private cycles = 0;
@@ -60,9 +67,11 @@ export class SportsCollector {
     this.deadlineMs = Math.max(10_000, opts.sourceDeadlineMs || 45_000);
     this.retention = opts.retention ?? parseRetention(undefined, "retainDays");
     this.log = opts.log ?? ((line) => console.log(line));
+    this.cryptocomFee = opts.cryptocomFee ?? cryptocomFeeFromEnv({});
     this.readGames = opts.readGames ?? ((now, health) => this.readVenues(now, health));
     this.store = new SnapshotStore(opts.dataDir, { keepHours: this.windowHours, retention: this.retention, budget: opts.budget });
     this.sincePath = join(opts.dataDir, "collecting-since.txt");
+    this.holder = new HolderRecord(join(opts.dataDir, "holder-count.json"), (what, write) => this.store.guardWrite(what, write));
     try {
       if (existsSync(this.sincePath)) this.collectingSince = readFileSync(this.sincePath, "utf8").trim() || null;
     } catch {
@@ -98,19 +107,22 @@ export class SportsCollector {
     const kalshi: KalshiGame[] = (await this.timed("kalshi", health, () => readKalshiGames({ nowMs, horizonMs: this.horizonMs }))) ?? [];
     const games = kalshi.map((k) => k.game);
     const prophetxNotes: string[] = [];
-    const [poly, novig, prophetx] = await Promise.all([
+    const cryptocomNotes: string[] = [];
+    const [poly, novig, prophetx, cryptocom] = await Promise.all([
       this.timed("polymarket_us", health, () => readPolyUsListings(games)),
       this.timed("novig", health, () => readNovigListings(games, { nowMs })),
       this.timed("prophetx", health, () => readProphetXListings(games, { notes: prophetxNotes }), prophetxNotes),
+      this.timed("cryptocom", health, () => readCryptocomListings(games, { nowMs, notes: cryptocomNotes, cache: this.cryptocomCache, fee: this.cryptocomFee }), cryptocomNotes),
     ]);
     const none = new Map<string, VenueListing>();
-    return assembleGames(kalshi, poly ?? none, novig ?? none, prophetx ?? none);
+    return assembleGames(kalshi, poly ?? none, novig ?? none, prophetx ?? none, cryptocom ?? none);
   }
 
   async collectOnce(now = new Date()): Promise<Snapshot> {
     const health: Snapshot["health"] = {};
     const snapshot: Snapshot = { at: now.toISOString(), games: await this.readGames(now, health), health };
     this.store.append(snapshot);
+    this.holder.add(this.store.getHistory().slice(-1));
     const since = this.collectingSince ?? snapshot.at;
     this.collectingSince = since;
     // tried again every cycle until it lands: a marker that failed once would otherwise never be written
@@ -132,6 +144,8 @@ export class SportsCollector {
     const t0 = Date.now();
     try {
       const points = await this.store.load(nowMs);
+      // snapshots in the window the holder count has not seen (taken before it existed, or while its file could not be written)
+      this.holder.add(this.store.getHistory());
       this.reloaded = { points, ms: Date.now() - t0 };
       this.log(`[sports-venues] data dir ${this.dataDir} · ${points} snapshots reloaded in ${Math.round(this.reloaded.ms / 1000)}s · window ${this.windowHours}h · interval ${this.intervalSec}s · ${this.store.startupLine()}`);
       return points;
@@ -186,6 +200,7 @@ export class SportsCollector {
       // games each venue is on, in the latest snapshot: a venue that answers with nothing shows as 0 here
       listed: latest ? Object.fromEntries(VENUES.map((v) => [v, latest.games.filter((g) => g.listings.some((l) => l.venue === v)).length])) : undefined,
       lastError: this.lastError || undefined,
+      holderCount: this.holder.summary(),
       data: this.store.dataHealth(),
     };
   }
@@ -200,7 +215,7 @@ export class SportsCollector {
     if (!latest) return null;
     const history = this.store.getHistory();
     if (!this.report || this.report.at !== latest.at || this.report.points !== history.length) {
-      const data = buildReport({ snapshot: latest, history, intervalSec: this.intervalSec, collectingSince: this.collectingSince, windowHours: this.windowHours });
+      const data = buildReport({ snapshot: latest, history, intervalSec: this.intervalSec, collectingSince: this.collectingSince, windowHours: this.windowHours, holder: this.holder.report() });
       this.report = { at: latest.at, points: history.length, data };
     }
     return this.report.data;
@@ -262,6 +277,7 @@ export function sportsCollectorFromEnv(
         ? parseRetention(env.SPORTS_VENUES_RETAIN_DAYS, "SPORTS_VENUES_RETAIN_DAYS")
         : parseRetention(defaults.retainDays, defaults.retainSetting ?? "the host service's retention setting"),
     budget: parseBudgetMb(env.SPORTS_VENUES_DISK_BUDGET_MB, "SPORTS_VENUES_DISK_BUDGET_MB"),
+    cryptocomFee: cryptocomFeeFromEnv(env),
   });
 }
 
