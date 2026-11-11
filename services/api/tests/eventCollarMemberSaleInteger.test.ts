@@ -532,7 +532,7 @@ test("member page: its own arithmetic is whole numbers and agrees with the serve
   }
   assert.deepEqual([page.hundredths(15.95), page.hundredths(0.29), page.hundredths(1.15), page.hundredths(50)], [1595, 29, 115, 5000]);
   // what the riding contracts pay is read off the sale's own totals, and the whole position's payout off whole hundredths
-  assert.ok(html.includes('" contracts</b> · pay " + usd(ms.capTotalCents - ms.floorTotalCents) + " on a win, $0 on a loss, as they always did</div>"'));
+  assert.ok(html.includes('" contracts</b> · each pays $1 if it wins (" + usd(ms.capTotalCents - ms.floorTotalCents) + " in all), $0 if it loses, as they always did</div>"'));
   assert.ok(html.includes("'</b><s>of ' + usd(hundredths(n)) + '</s></div>'"));
   assert.ok(!/usd\([^()]*\* 100\)/.test(html), "no dollar figure on the page is a decimal times 100");
 });
