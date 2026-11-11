@@ -143,7 +143,8 @@ When a row is stale:
   `"freshness": "stale"`.
 - The gap is not added to the window, so it does not accrue persistence, and it is not written
   to the day file.
-- It does not count toward a lock episode, and it ends one that was running.
+- It does not count toward a lock episode, and it does not end one that was running: a stale
+  read shows nothing either way.
 
 The clean score is not changed by staleness. Score says how tradable the two books are. Edge
 is K minus P and Both sides. They stay separate.
@@ -185,15 +186,19 @@ so.
 A single cycle showing a lock says little: it may be one odd read. What matters is whether a lock
 stands. So the collector follows runs.
 
-**Definition.** A lock episode is a run of consecutive cycles in which the same pair (the same
-contract on both venues, bought the same way round) shows a lock after fees above zero, on fresh
-reads. It counts once it has lasted two or more consecutive cycles. A cycle with no lock, a stale
-read or a missing book ends it. A lock that flips direction (Yes on the other venue) is a
-different trade and starts a new run. So does the next 15-minute window. If the collector goes
-more than three intervals without a cycle, the run ends: it is no longer known to be consecutive.
+**Definition.** A lock episode is a run of cycles in which the same pair (the same contract on
+both venues, bought the same way round) shows a lock after fees above zero, on fresh reads. It
+counts once two or more cycles have shown it. It ends only when a fresh read shows the lock gone,
+or the contract is no longer listed (the market closed). A cycle that cannot be judged (a stale
+read, a book that did not answer) is not counted and does not end it. Before this rule a stale
+cycle ended the run, so one lock standing for ten minutes on the 15-minute window, read through
+Poly's 30-second cache, was counted as twenty episodes. A lock that flips direction (Yes on the
+other venue) is a different trade and starts a new run. So does the next 15-minute window. If
+the collector goes more than three intervals without a cycle, the run ends: it is no longer
+known to have stood.
 
 **What is recorded.** Start (the first cycle that showed the lock), end (the last cycle that
-showed it), duration in seconds (end minus start), the number of cycles, the minimum lock in
+showed it), duration in seconds (end minus start), the number of cycles that showed it, the minimum lock in
 cents per contract over the run, the minimum size over the run, and the value: minimum lock times
 minimum size. The size is the one the lock is already quoted at, the thinner of the two
 top-of-book levels taken. The JSON carries the value in cents (`valueCents`), like every other
@@ -220,18 +225,18 @@ gzipped. A clean stop (SIGTERM) ends the open runs and writes them. A hard kill 
 open at that moment.
 
 **Limits.** The cycle is ten seconds, so a duration is known to that grain: a 10-second episode
-is a lock seen on two reads ten seconds apart. On the 15-minute window the stale rule caps what
-can be followed. The Poly copy is rarely fresh for more than two cycles in a row, so most runs
-there end at about ten seconds whether or not the lock was still standing. The count and the
-durations on that tenor are lower bounds.
+is a lock seen on two reads ten seconds apart. On the 15-minute window about every third cycle
+is on a Poly copy too old to judge. Such a cycle is carried over, so a lock that went and came
+back inside it is counted as one episode, and the minimum lock and size are over the cycles
+that could be judged.
 
 Cycles inside one cache life read the same Poly copy. So a two-cycle episode is two Kalshi reads
 against one Poly snapshot. It shows that Kalshi's side held for ten seconds against a Poly quote
 that was true at one moment; it does not show that Poly's quote held. The one 15-minute episode
 in the first live run was exactly this: Kalshi 38 / 39 on both cycles, the same Poly copy
 (48 / 49) read at 1 and at 11 seconds old, a lock of 4.96 cents on 188 contracts, then the copy
-passed 15 seconds and the run ended. Only the venue's live feed can say how long such a lock
-really stood.
+passed 15 seconds (under the rule of that day, that ended the run). Only the venue's live feed
+can say how long such a lock really stood.
 
 On the hourly and the daily the 30-second bound admits every copy Poly's cache serves, so the
 stale rule rarely ends a run there. In the last minutes before a close the at-the-money contract

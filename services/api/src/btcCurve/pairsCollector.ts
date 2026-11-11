@@ -21,7 +21,7 @@ import { DayKeeper, listDayFiles, maintainLines, parseBudgetMb, parseRetention, 
 import { KALSHI_15M, KALSHI_HOURLY, DAILY_WINDOW_MS, FIFTEEN_WINDOW_MS, HOURLY_WINDOW_MS, dailyLadderFrom, fetchFeeTheta, fetchOpenMarkets, fifteenLadderFrom, hourlyLadderFrom, kalshiOrderbookUrl, readTopOnce } from "./kalshiLadders";
 import { fetchBrtiCandles, fetchSeriesIdsBySlug, polyBookUrl, readBookOnce, readPolyUsLaddersForSeries } from "./polyUsLadders";
 import { mergeLadders } from "./analytics";
-import { EPISODE_KEEP, EPISODE_LABEL, EPISODE_MIN_CYCLES, STALE_AFTER_SEC, bundleOf, closeEpisodes, emptyEpisodeBook, episodeOf, fifteenSet, gapHistoryKey, horizonSet, lockEpisodesReport, lockSightings, pairId, pruneEpisodes, recordGaps, regimeOf, reportErrors, selectStrikes, staleBoundsFrom, stepEpisodes, strikeLevels, type Band, type EpisodeBook, type GapHistory, type Horizon, type HorizonSet, type LockEpisode, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
+import { EPISODE_KEEP, EPISODE_LABEL, EPISODE_MIN_CYCLES, STALE_AFTER_SEC, bundleOf, closeEpisodes, emptyEpisodeBook, episodeOf, fifteenSet, gapHistoryKey, horizonSet, lockEpisodesReport, lockSightings, pairId, pruneEpisodes, recordGaps, regimeOf, reportErrors, selectStrikes, staleBoundsFrom, stepEpisodes, strikeLevels, unjudgedPairs, type Band, type EpisodeBook, type GapHistory, type Horizon, type HorizonSet, type LockEpisode, type PairsReport, type Place, type Regime, type StrikePair, type VenueUrls } from "./pairs";
 import { storedCycleOf } from "./pairsCycles";
 import { renderPairsBody, renderPairsHtml } from "./pairsHtml";
 import { ReplayRefused, firstDayOf, replayDays, replayRequestFrom } from "./pairsReplayLoader";
@@ -375,7 +375,7 @@ export class PairsCollector {
     recordGaps(this.history, sets, nowMs, this.windowMs);
     this.persistCycle(nowMs, pricedAtMs, spotUsd, sets);
     // three intervals without a cycle and a run is no longer known to be consecutive
-    const stepped = stepEpisodes(this.episodes, lockSightings(sets), pricedAtMs, { maxGapMs: 3 * this.intervalSec * 1000 });
+    const stepped = stepEpisodes(this.episodes, lockSightings(sets), pricedAtMs, { maxGapMs: 3 * this.intervalSec * 1000, unjudged: unjudgedPairs(sets) });
     this.episodes = stepped.book;
     this.persistEpisodes(stepped.finished);
 

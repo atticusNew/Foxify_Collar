@@ -458,15 +458,15 @@ test("the stale bounds come from BTC_PAIRS_STALE_SECONDS", () => {
   assert.deepEqual(pairsCollectorFromEnv({ BTC_PAIRS_DATA_DIR: dataDir, BTC_PAIRS_STALE_SECONDS: "1h=40" }).staleAfterSec, { fifteen: 15, hourly: 40, daily: 30 });
 });
 
-test("lock episodes over whole cycles: counted from the second fresh cycle, ended by a stale one, written to the day file, reloaded by the next process, on the page with its label and in the JSON", async () => {
+test("lock episodes over whole cycles: counted from the second fresh cycle, carried through a stale one, ended by a fresh read with no lock, written to the day file, reloaded by the next process, on the page with its label and in the JSON", async () => {
   const f = fake();
   const { c, dir } = collectorOn(f);
   const fifteenSection = () => page(c).slice(page(c).indexOf('<section data-horizon="fifteen"'), page(c).indexOf('<section data-horizon="hourly"'));
   const LABEL = "measured at the size on the book, after fees, no orders placed; a floor on what was there, not what a trader would have captured";
   // Kalshi 58 bid on 100; Polymarket US offers at 51 on 100, then 60, then 80 contracts
   f.set(kBookUrl(FIFTEEN_K), kalshiBook(58));
-  const poly = (qty: number, cacheAgeSec: number): Answer => {
-    const a = polyBook(f, FIFTEEN_P, 49, 51, cacheAgeSec);
+  const poly = (qty: number, cacheAgeSec: number, ask = 51): Answer => {
+    const a = polyBook(f, FIFTEEN_P, 49, ask, cacheAgeSec);
     (a.body as { marketData: { offers: Array<{ qty: string }> } }).marketData.offers[0].qty = `${qty}.0000`;
     return a;
   };
@@ -498,20 +498,37 @@ test("lock episodes over whole cycles: counted from the second fresh cycle, ende
   assert.match(fifteenSection(), /<p class="epi">Lock episodes today \(UTC\): <b>1<\/b> \(1 still open\) · median 10s · longest 10s · total <b>\$[\d.]+<\/b> · latest began [\d:]+ [AP]M ET at \$73,701\.52: 10s, at least [\d.]+¢ on 60 contracts<small>measured at the size on the book/);
   assert.equal(readdirSync(dir).filter((n) => n.startsWith("episodes-")).length, 0, "nothing is written until it ends");
 
-  // cycle 3: the same lock on a copy 22 seconds old. Not counted, and it ends the run at cycle 2.
+  // cycle 3: the same lock on a copy 22 seconds old. Not counted, and it does not end the run: nothing showed the lock gone.
   f.now += 10_000;
   f.set(pBookUrl(FIFTEEN_P), poly(60, 22));
   const d3 = await c.collectOnce();
   assert.equal(d3.fifteen?.pairs[0].freshness, "stale");
   const e3 = d3.lockEpisodes.fifteen;
-  assert.deepEqual([e3.episodes, e3.open], [1, 0]);
-  assert.equal(e3.recent[0].endedAt, d2.pricedAt);
-  assert.equal(e3.recent[0].open, undefined);
-  const written = readFileSync(join(dir, "episodes-2026-11-10.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as LockEpisode);
-  assert.deepEqual(written, [e3.recent[0]]);
-  assert.match(fifteenSection(), /<b>1<\/b> · median 10s · longest 10s · total <b>\$[\d.]+<\/b> · latest ended /);
+  assert.deepEqual([e3.episodes, e3.open], [1, 1]);
+  assert.deepEqual([e3.recent[0].endedAt, e3.recent[0].cycles, e3.recent[0].durationSec], [d2.pricedAt, 2, 10], "its figures stand at the last cycle that showed it");
+  assert.equal(readdirSync(dir).filter((n) => n.startsWith("episodes-")).length, 0);
 
-  // cycles 4 and 5: fresh again, a second episode, open; a clean stop ends and writes it
+  // cycle 4: a new copy, the lock still there. The same episode goes on: one standing lock is one episode, not one per cache life.
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(60, 2));
+  const d4 = await c.collectOnce();
+  const e4 = d4.lockEpisodes.fifteen;
+  assert.deepEqual([e4.episodes, e4.open, e4.recent[0].startedAt, e4.recent[0].endedAt, e4.recent[0].cycles, e4.recent[0].durationSec], [1, 1, d1.pricedAt, d4.pricedAt, 3, 30]);
+
+  // cycle 5: a fresh copy offered at 54, no lock after fees. That ends it, at cycle 4.
+  f.now += 10_000;
+  f.set(pBookUrl(FIFTEEN_P), poly(60, 3, 54));
+  const d5gone = await c.collectOnce();
+  assert.equal(d5gone.fifteen?.pairs[0].freshness, "fresh");
+  const e5 = d5gone.lockEpisodes.fifteen;
+  assert.deepEqual([e5.episodes, e5.open], [1, 0]);
+  assert.equal(e5.recent[0].endedAt, d4.pricedAt);
+  assert.equal(e5.recent[0].open, undefined);
+  const written = readFileSync(join(dir, "episodes-2026-11-10.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as LockEpisode);
+  assert.deepEqual(written, [e5.recent[0]]);
+  assert.match(fifteenSection(), /<b>1<\/b> · median 30s · longest 30s · total <b>\$[\d.]+<\/b> · latest ended /);
+
+  // two more cycles with the lock back: a second episode, open; a clean stop ends and writes it
   f.now += 10_000;
   f.set(pBookUrl(FIFTEEN_P), poly(80, 2));
   await c.collectOnce();
@@ -534,7 +551,7 @@ test("lock episodes over whole cycles: counted from the second fresh cycle, ende
   f.now += 10_000;
   f.set(pBookUrl(FIFTEEN_P), poly(80, 22));
   const d6 = await again.collectOnce();
-  assert.deepEqual([d6.lockEpisodes.fifteen.episodes, d6.lockEpisodes.fifteen.open, d6.lockEpisodes.fifteen.longestDurationSec], [2, 0, 10]);
+  assert.deepEqual([d6.lockEpisodes.fifteen.episodes, d6.lockEpisodes.fifteen.open, d6.lockEpisodes.fifteen.longestDurationSec], [2, 0, 30]);
   assert.equal(getJson<{ episodes: LockEpisode[] }>(again, "/api/episodes").episodes.length, 2);
 
   // a day file older than three days is not reloaded and is not deleted either, a torn line is skipped

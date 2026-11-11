@@ -230,7 +230,7 @@ export interface StrikePair {
    * Whether the two books were read recently enough for the gap and the lock to mean anything:
    * stale when either copy's age (`read.ageSec`) is over `staleAfterSec`. A stale row still shows
    * both books; its gap is not added to the persistence window, it is not the tenor's default
-   * pick, and it breaks a lock episode. Null when a venue is absent or carries no read time.
+   * pick, and it adds nothing to a lock episode. Null when a venue is absent or carries no read time.
    */
   freshness: Freshness | null;
   /** the bound this row was judged against, seconds */
@@ -360,11 +360,25 @@ export interface LockSighting {
   qty: number;
 }
 
-/** A run still going: the same pair, the same way round, locked on every cycle since it began. */
+/** A cycle's row whose reads say nothing about a lock either way: a stale read, a read with no age, a book that did not answer. */
+export interface UnjudgedPair {
+  horizon: Horizon;
+  settlesAt: string;
+  key: string;
+  /** null when that venue's book did not answer */
+  kalshiId: string | null;
+  polyId: string | null;
+}
+
+/** A run still going: the same pair, the same way round, with no cycle since it began that showed the lock gone. */
 export interface LockRun extends Omit<LockSighting, "lockCents" | "qty"> {
   id: string;
   startedAtMs: number;
+  /** the last cycle that showed the lock */
   lastAtMs: number;
+  /** the last cycle that had the pair at all, lock shown or reads unjudged: what a gap in the cycles is measured from */
+  seenAtMs: number;
+  /** cycles that showed the lock */
   cycles: number;
   minLockCents: number;
   minQty: number;
@@ -910,6 +924,26 @@ export function lockSightings(sets: Array<HorizonSet | null>): LockSighting[] {
   return out;
 }
 
+/**
+ * This cycle's rows that cannot be judged: still listed (under an id, or the venue's book did
+ * not answer) but stale, without a read age, or missing a book. Such a row does not show a lock
+ * and does not show it gone, so it neither extends a run nor ends one.
+ */
+export function unjudgedPairs(sets: Array<HorizonSet | null>): UnjudgedPair[] {
+  const out: UnjudgedPair[] = [];
+  for (const s of sets) {
+    if (!s) continue;
+    for (const p of s.pairs) {
+      if (p.freshness === "fresh" && !p.errors.length) continue;
+      const failed = new Set(p.errors.map((e) => e.venue));
+      const listed = (leg: PairLeg | null, venue: Venue) => Boolean(leg) || failed.has(venue);
+      if (!listed(p.kalshi, "kalshi") || !listed(p.poly, "polymarket_us")) continue;
+      out.push({ horizon: p.horizon, settlesAt: p.settlesAt, key: p.key, kalshiId: failed.has("kalshi") ? null : (p.kalshi?.id ?? null), polyId: failed.has("polymarket_us") ? null : (p.poly?.id ?? null) });
+    }
+  }
+  return out;
+}
+
 /** A run as an episode. Dollars are the smallest lock times the smallest size: both were there on every cycle of the run. */
 export function episodeOf(run: LockRun, open = false): LockEpisode {
   return {
@@ -947,31 +981,39 @@ export function pruneEpisodes(episodes: LockEpisode[], nowMs: number, keep = EPI
 }
 
 /**
- * One cycle. A run whose pair is sighted again is extended (its smallest lock and size carried);
- * a run whose pair is not sighted this cycle (no lock, a stale read, a book that did not answer,
- * the contract gone) ends at the last cycle that showed it, and is an episode only if it had
- * EPISODE_MIN_CYCLES or more. A sighting with no run opens one. A cycle arriving more than
- * `maxGapMs` after the run's last one does not extend it: cycles were missed, so the run is not
- * known to be consecutive. Returns the new book and the episodes that finished on this cycle;
- * the book passed in is not changed.
+ * One cycle. A run whose pair is sighted again is extended (its smallest lock and size carried).
+ * A run whose pair is in `unjudged` this cycle (a stale read, a book that did not answer) is
+ * carried as it is: nothing showed the lock gone, and ending it here would count one standing
+ * lock as a new episode every time a cached copy crossed the stale bound. Any other run ends
+ * (fresh reads with no lock, the contract gone from the cycle or from a venue) at the last cycle
+ * that showed it, and is an episode only if EPISODE_MIN_CYCLES or more cycles showed it. A
+ * sighting with no run opens one. A cycle arriving more than `maxGapMs` after the last cycle
+ * that had the run's pair neither extends nor carries it: cycles were missed, so the run is not
+ * known to have stood. Returns the new book and the episodes that finished on this cycle; the
+ * book passed in is not changed.
  */
-export function stepEpisodes(prev: EpisodeBook, sightings: LockSighting[], atMs: number, opts: { maxGapMs?: number; keep?: number } = {}): { book: EpisodeBook; finished: LockEpisode[] } {
+export function stepEpisodes(prev: EpisodeBook, sightings: LockSighting[], atMs: number, opts: { maxGapMs?: number; keep?: number; unjudged?: UnjudgedPair[] } = {}): { book: EpisodeBook; finished: LockEpisode[] } {
   const maxGapMs = opts.maxGapMs ?? Number.POSITIVE_INFINITY;
   const seen = new Map(sightings.map((s) => [lockRunId(s), s]));
+  const unjudged = opts.unjudged ?? [];
+  const carried = (run: LockRun) => unjudged.some((u) => u.horizon === run.horizon && u.settlesAt === run.settlesAt && u.key === run.key && (u.kalshiId === null || u.kalshiId === run.kalshiId) && (u.polyId === null || u.polyId === run.polyId));
   const open: LockRun[] = [];
   const finished: LockEpisode[] = [];
   for (const run of prev.open) {
     const s = seen.get(run.id);
-    if (s && atMs - run.lastAtMs <= maxGapMs) {
+    const inTime = atMs - run.seenAtMs <= maxGapMs;
+    if (s && inTime) {
       seen.delete(run.id);
-      open.push({ ...run, lastAtMs: atMs, cycles: run.cycles + 1, minLockCents: Math.min(run.minLockCents, s.lockCents), minQty: Math.min(run.minQty, s.qty) });
+      open.push({ ...run, lastAtMs: atMs, seenAtMs: atMs, cycles: run.cycles + 1, minLockCents: Math.min(run.minLockCents, s.lockCents), minQty: Math.min(run.minQty, s.qty) });
+    } else if (!s && inTime && carried(run)) {
+      open.push({ ...run, seenAtMs: atMs });
     } else if (run.cycles >= EPISODE_MIN_CYCLES) {
       finished.push(episodeOf(run));
     }
   }
   for (const [id, s] of seen) {
     const { lockCents, qty, ...pair } = s;
-    open.push({ ...pair, id, startedAtMs: atMs, lastAtMs: atMs, cycles: 1, minLockCents: lockCents, minQty: qty });
+    open.push({ ...pair, id, startedAtMs: atMs, lastAtMs: atMs, seenAtMs: atMs, cycles: 1, minLockCents: lockCents, minQty: qty });
   }
   return { book: { open, finished: pruneEpisodes([...prev.finished, ...finished], atMs, opts.keep) }, finished };
 }
