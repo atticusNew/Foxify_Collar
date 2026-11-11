@@ -530,7 +530,7 @@ test("lock episodes over whole cycles: counted from the second fresh cycle, ende
 
   // the next process on the same data dir starts with both
   const again = new PairsCollector({ dataDir: dir, fetchImpl: f.fetchImpl, clock: () => f.now, log: () => {} });
-  assert.equal(again.loadEpisodes(), 2);
+  assert.equal(await again.loadEpisodes(), 2);
   f.now += 10_000;
   f.set(pBookUrl(FIFTEEN_P), poly(80, 22));
   const d6 = await again.collectOnce();
@@ -542,7 +542,7 @@ test("lock episodes over whole cycles: counted from the second fresh cycle, ende
   writeFileSync(join(dir, "episodes-2026-11-05.jsonl"), `${JSON.stringify(written[0])}\n`);
   writeFileSync(join(dir, "episodes-2026-11-09.jsonl"), `${JSON.stringify({ ...written[0], endedAt: "2026-11-09T12:00:10.000Z", startedAt: "2026-11-09T12:00:00.000Z" })}\n{"horizon":"fift`);
   const third = new PairsCollector({ dataDir: dir, fetchImpl: f.fetchImpl, clock: () => f.now, log: () => {} });
-  assert.equal(third.loadEpisodes(), 3);
+  assert.equal(await third.loadEpisodes(), 3);
   assert.equal(existsSync(join(dir, "episodes-2026-11-05.jsonl")), true, "every day is kept on disk");
 });
 
@@ -659,7 +659,7 @@ test("every cycle writes its line with both books, fees and read ages, and the r
   writeFileSync(file, `${oldLine}\n${readFileSync(file, "utf8")}`);
   const next = collectorOn(f, { dataDir: dir });
   const withRows = lines().filter((l) => (JSON.parse(l) as { rows: unknown[] }).rows.length > 0).length;
-  assert.equal(next.c.loadGaps(f.now), withRows);
+  assert.equal(await next.c.loadGaps(f.now), withRows);
   assert.ok(withRows >= 5);
   f.set(kBookUrl(FIFTEEN_K), kalshiBook(58));
   const d6 = await next.c.collectOnce();

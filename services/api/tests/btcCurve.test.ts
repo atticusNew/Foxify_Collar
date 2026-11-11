@@ -320,7 +320,7 @@ test("crosses and gaps: fees are the venue's Θ·p·(1−p); a cross needs the o
     options: [],
     health: {},
   });
-  const history = [snap("2026-11-09T20:00:00Z", 16, 17, 14, 15), snap("2026-11-09T20:01:00Z", 17, 18, 14, 15), snap("2026-11-09T20:02:00Z", 16, 17, 16, 17)].map(toHistoryPoint);
+  const history = [snap("2026-11-09T20:00:00Z", 16, 17, 14, 15), snap("2026-11-09T20:01:00Z", 17, 18, 14, 15), snap("2026-11-09T20:02:00Z", 16, 17, 16, 17)].map((s) => toHistoryPoint(s));
   const g = gapSeries(history, "btc-yearend-2026-range");
   const g70 = g.find((x) => x.key === "range:70000-74999.99");
   assert.ok(g70);
@@ -624,7 +624,7 @@ test("replay: one ATM digital per hourly ladder is carried to settlement naked, 
   assert.equal(purged.getOpen()[0].settlesAtMs, settleMs);
 });
 
-test("store: snapshots append to a day file, reload into the history window, and old days are swept", () => {
+test("store: snapshots append to a day file, reload into the history window, and old days are swept", async () => {
   const dir = mkdtempSync(join(tmpdir(), "btc-store-"));
   const store = new SnapshotStore(dir, { keepHours: 1, retainDays: 2 });
   const snap = (at: string): Snapshot => ({ at, spotUsd: 74000, spotSource: "brti", ladders: [], options: [], health: {} });
@@ -636,7 +636,7 @@ test("store: snapshots append to a day file, reload into the history window, and
 
   writeFileSync(join(dir, "snapshots-2026-11-01.jsonl"), `${JSON.stringify(snap("2026-11-01T00:00:00Z"))}\n{torn`);
   const fresh = new SnapshotStore(dir, { keepHours: 1, retainDays: 2 });
-  assert.equal(fresh.load(Date.parse("2026-11-09T20:30:00Z")), 2, "only the points inside the window come back; the torn line is skipped");
+  assert.equal(await fresh.load(Date.parse("2026-11-09T20:30:00Z")), 2, "only the points inside the window come back; the torn line is skipped");
   assert.equal(fresh.getLatest()?.at, "2026-11-09T20:01:00Z");
   assert.deepEqual(fresh.sweep(Date.parse("2026-11-09T20:30:00Z")), ["snapshots-2026-11-01.jsonl"]);
 });

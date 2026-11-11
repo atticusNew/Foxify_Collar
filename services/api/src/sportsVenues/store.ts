@@ -7,7 +7,7 @@
 
 import { mkdirSync } from "node:fs";
 import { basename } from "node:path";
-import { DayKeeper, forEachLineSync, listDayFiles, parseRetention, readablePath, type Budget, type DataHealth, type DayKeeperOptions, type MaintainReport, type Retention } from "../btcCurve/dayFiles";
+import { DayKeeper, listDayFiles, parseRetention, readLines, readablePath, type Budget, type DataHealth, type DayKeeperOptions, type MaintainReport, type Retention } from "../btcCurve/dayFiles";
 import type { Snapshot, Venue } from "./types";
 
 /** [awayBid, awayAsk, homeBid, homeAsk, feeTheta, awayBidQty, awayAskQty, homeBidQty, homeAskQty] */
@@ -65,33 +65,44 @@ export class SnapshotStore {
     mkdirSync(dir, { recursive: true });
   }
 
-  /** Reload the in-memory history from the day files, plain or gzip, that still fall inside the window. */
-  load(nowMs = Date.now()): number {
-    const kept: { last: Snapshot | null } = { last: null };
+  /**
+   * Reload the in-memory history from the day files, plain or gzip, that still fall inside the
+   * window. Each file is read as a stream, a line at a time, so a day never sits in memory
+   * whole and the service answers while it reloads. A snapshot taken meanwhile is kept, once.
+   */
+  async load(nowMs = Date.now()): Promise<number> {
+    let last: Snapshot | null = null;
     const points: HistoryPoint[] = [];
     for (const f of listDayFiles(this.dir, [FAMILY])) {
       if (nowMs - f.dayMs > this.keepMs + 86_400_000) continue;
       const path = readablePath(f);
+      // a day counts whole or not at all: one that breaks half way through adds nothing
+      const day: HistoryPoint[] = [];
+      let dayLast: Snapshot | null = null;
       try {
-        forEachLineSync(path, (line) => {
+        for await (const line of readLines(path)) {
           try {
             const s = JSON.parse(line) as Snapshot;
             const atMs = Date.parse(s.at);
-            if (!Number.isFinite(atMs) || nowMs - atMs > this.keepMs) return;
-            points.push(toHistoryPoint(s));
-            kept.last = s;
+            if (!Number.isFinite(atMs) || nowMs - atMs > this.keepMs) continue;
+            day.push(toHistoryPoint(s));
+            dayLast = s;
           } catch {
             // a torn last line after a crash is not worth failing the boot over
           }
-        });
+        }
+        for (const p of day) points.push(p);
+        if (dayLast) last = dayLast;
         this.keeper.note(`load:${path}`, null);
       } catch (err) {
         // a day that cannot be read is left on disk and said on /healthz; the boot goes on with the others
         this.keeper.note(`load:${path}`, `${basename(path)} could not be read on start-up (${(err as Error).message.slice(0, 120)}); it is left on disk and is not in the window`);
       }
     }
-    this.history = points;
-    if (kept.last) this.latest = kept.last;
+    const read = new Set(points.map((p) => p.atMs));
+    const meanwhile = this.history.filter((p) => !read.has(p.atMs) && nowMs - p.atMs <= this.keepMs);
+    this.history = meanwhile.length ? [...points, ...meanwhile].sort((a, b) => a.atMs - b.atMs) : points;
+    if (last && (!this.latest || Date.parse(this.latest.at) < Date.parse(last.at))) this.latest = last;
     return points.length;
   }
 

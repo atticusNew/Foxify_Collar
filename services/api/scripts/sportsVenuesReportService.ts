@@ -98,6 +98,16 @@ export async function collectOnce(now = new Date()): Promise<Snapshot> {
 }
 
 /** The hourly pass over the day files, never awaited by a cycle: the retention sweep and at most one closed day gzipped. */
+/** What the start-up reload did; null while it runs. */
+let reloaded: { points: number; ms: number; error?: string } | null = null;
+
+/** Memory in use, in megabytes, for /healthz: the service runs in 512 MB and this is how close it is. */
+function memoryMb(): { rss: number; heapUsed: number; arrayBuffers: number } {
+  const m = process.memoryUsage();
+  const mb = (n: number) => Math.round(n / 1_048_576);
+  return { rss: mb(m.rss), heapUsed: mb(m.heapUsed), arrayBuffers: mb(m.arrayBuffers) };
+}
+
 function maintain(nowMs = Date.now()): void {
   void store.maintain(nowMs).then((r) => {
     for (const line of maintainLines(r, RETENTION)) console.log(`[sports-venues] ${line}`);
@@ -131,6 +141,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       games: latest?.games.length ?? 0,
       cycles,
       historyPoints: store.getHistory().length,
+      reload: reloaded ?? "in progress",
+      memoryMb: memoryMb(),
       lastError: lastError || undefined,
       data: store.dataHealth(),
     });
@@ -176,15 +188,30 @@ async function loop(): Promise<void> {
 }
 
 if (process.env.NODE_ENV !== "test") {
-  const loaded = store.load();
   if (existsSync(SINCE_PATH)) collectingSince = readFileSync(SINCE_PATH, "utf8").trim() || null;
-  console.log(`[sports-venues] data dir ${DATA_DIR} · ${loaded} snapshots reloaded · interval ${INTERVAL_SEC}s · ${store.startupLine()}`);
-  maintain();
+  // the service answers first, so the host's health check passes while the history reloads
   createServer((req, res) => {
     handle(req, res).catch((err) => {
       console.error(`[sports-venues] request failed: ${(err as Error).message}`);
       if (!res.headersSent) sendJson(res, 500, { ok: false });
     });
   }).listen(PORT, () => console.log(`[sports-venues] listening on :${PORT}`));
-  void loop();
+  // the cycles start whether the reload ends well or not: recording new data never waits on old data
+  const t0 = Date.now();
+  void store
+    .load()
+    .then(
+      (loaded) => {
+        reloaded = { points: loaded, ms: Date.now() - t0 };
+        console.log(`[sports-venues] data dir ${DATA_DIR} · ${loaded} snapshots reloaded in ${Math.round(reloaded.ms / 1000)}s · interval ${INTERVAL_SEC}s · ${store.startupLine()}`);
+      },
+      (err) => {
+        reloaded = { points: 0, ms: Date.now() - t0, error: (err as Error).message.slice(0, 160) };
+        console.error(`[sports-venues] the reload on start-up failed (${reloaded.error}); the cycles start without it`);
+      },
+    )
+    .then(() => {
+      maintain();
+      void loop();
+    });
 }

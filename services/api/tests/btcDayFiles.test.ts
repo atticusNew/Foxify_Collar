@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { DayKeeper, compressDayFile, dataUsage, forEachLineSync, listDayFiles, parseBudgetMb, parseRetention, readLines, readablePath } from "../src/btcCurve/dayFiles";
+import { DayKeeper, compressDayFile, dataUsage, listDayFiles, parseBudgetMb, parseRetention, readLines, readablePath } from "../src/btcCurve/dayFiles";
 import { SnapshotStore } from "../src/btcCurve/store";
 import { PairsCollector, pairsCollectorFromEnv } from "../src/btcCurve/pairsCollector";
 import type { LockEpisode } from "../src/btcCurve/pairs";
@@ -91,8 +91,7 @@ test("default: 400 days of snapshots, one a day with the hourly pass run every d
   assert.equal(files.filter((f) => f.gz && !f.plain).length, 399, "every closed day is one .jsonl.gz");
   assert.ok(files[399].plain && !files[399].gz, "the last day, still open, is the plain file");
   for (const f of files) {
-    const got: string[] = [];
-    forEachLineSync(readablePath(f), (l) => got.push((JSON.parse(l) as Snapshot).at));
+    const got = (await linesOf(readablePath(f))).map((l) => (JSON.parse(l) as Snapshot).at);
     assert.deepEqual(got, [written.get(f.day)], `${f.day} holds its one snapshot`);
   }
   const h = store.dataHealth(T0 + 400 * DAY);
@@ -135,9 +134,6 @@ test("gzip of a closed day is byte-exact: the original goes only after the copy 
   assert.equal(r.gzBytes, statSync(`${plain}.gz`).size);
   assert.ok(r.gzBytes < body.length);
   assert.deepEqual(await linesOf(`${plain}.gz`), body.toString("utf8").split("\n"), "the stream reader gives the same lines, the torn one included");
-  const sync: string[] = [];
-  forEachLineSync(`${plain}.gz`, (l) => sync.push(l));
-  assert.deepEqual(sync, body.toString("utf8").split("\n"));
 
   // an empty day file is still a day: it round-trips to an empty gzip
   const empty = join(dir, "snapshots-2026-11-08.jsonl");
@@ -217,19 +213,19 @@ test("both forms of one day: readers take the .jsonl and count the day once; the
   assert.equal(files.length, 1, "one day, not two");
   assert.equal(readablePath(files[0]), plain, "the plain file is the one read");
   const store = new SnapshotStore(dir, { keepHours: 72 });
-  assert.equal(store.load(now), 3, "three snapshots, not six");
+  assert.equal(await store.load(now), 3, "three snapshots, not six");
   assert.deepEqual(dataUsage(dir).dayFiles, { plain: 1, gz: 1 });
 
   const r = await store.maintain(now);
   assert.ok(r.compressed?.ok && r.compressed.finishedEarlier);
   assert.deepEqual(readdirSync(dir), ["snapshots-2026-11-09.jsonl.gz"]);
-  assert.equal(new SnapshotStore(dir, { keepHours: 72 }).load(now), 3, "the same three from the gzip alone");
+  assert.equal(await new SnapshotStore(dir, { keepHours: 72 }).load(now), 3, "the same three from the gzip alone");
 
   // the two disagree: which is right cannot be known, so neither is touched and it is said
   const other = Buffer.from(`${lines.slice(0, 2).join("\n")}\n`);
   writeFileSync(plain, other);
   const again = new SnapshotStore(dir, { keepHours: 72 });
-  assert.equal(again.load(now), 2, "the plain file is still the one read");
+  assert.equal(await again.load(now), 2, "the plain file is still the one read");
   const refused = await again.maintain(now);
   assert.equal(refused.compressed?.ok, false);
   assert.match(again.dataHealth(now).compression.lastError ?? "", /both exist and do not hold the same lines\. Neither is removed; readers use snapshots-2026-11-09\.jsonl\./);
@@ -286,18 +282,18 @@ test("boot reload reads gzip days: the curve history comes back from a .jsonl.gz
   const store = new SnapshotStore(dir, { keepHours: 72 });
   for (const at of ["2026-11-09T10:00:00.000Z", "2026-11-09T10:01:00.000Z", "2026-11-10T10:00:00.000Z", "2026-11-11T01:00:00.000Z"]) store.append(snap(at));
   const before = new SnapshotStore(dir, { keepHours: 72 });
-  assert.equal(before.load(now), 4);
+  assert.equal(await before.load(now), 4);
   assert.equal((await store.maintain(now)).compressed?.file, "snapshots-2026-11-09.jsonl.gz");
   assert.equal((await store.maintain(now)).compressed?.file, "snapshots-2026-11-10.jsonl.gz");
   assert.deepEqual(readdirSync(dir).sort(), ["snapshots-2026-11-09.jsonl.gz", "snapshots-2026-11-10.jsonl.gz", "snapshots-2026-11-11.jsonl"]);
   const after = new SnapshotStore(dir, { keepHours: 72 });
-  assert.equal(after.load(now), 4);
+  assert.equal(await after.load(now), 4);
   assert.deepEqual(after.getHistory(), before.getHistory());
   assert.equal(after.getLatest()?.at, "2026-11-11T01:00:00.000Z");
 
   writeFileSync(join(dir, "snapshots-2026-11-08.jsonl.gz"), "this is not gzip");
   const bad = new SnapshotStore(dir, { keepHours: 96 });
-  assert.equal(bad.load(now), 4, "the other days still load");
+  assert.equal(await bad.load(now), 4, "the other days still load");
   assert.match((bad.dataHealth(now).notes ?? []).join(" "), /snapshots-2026-11-08\.jsonl\.gz could not be read on start-up.*it is left on disk/);
   assert.ok(existsSync(join(dir, "snapshots-2026-11-08.jsonl.gz")));
 });
@@ -438,8 +434,8 @@ test("pairs day files: nothing is deleted on load any more, however old; a resta
 
   const fresh = () => new PairsCollector({ dataDir: dir, clock: () => now, log: () => {} });
   const a = fresh();
-  assert.equal(a.loadGaps(now), 3, "the three readings inside the window; the one three hours back is outside it");
-  assert.equal(a.loadEpisodes(now), 1, "yesterday's episode; the older ones are kept on disk, not in memory");
+  assert.equal(await a.loadGaps(now), 3, "the three readings inside the window; the one three hours back is outside it");
+  assert.equal(await a.loadEpisodes(now), 1, "yesterday's episode; the older ones are kept on disk, not in memory");
   assert.deepEqual(readdirSync(dir).sort(), [...before.keys()].sort(), "loading deletes nothing, not the year-old day either");
 
   // the hourly pass, as many times as there are closed days: all gzip, none gone, bytes the same
@@ -451,8 +447,8 @@ test("pairs day files: nothing is deleted on load any more, however old; a resta
     assert.ok(now_.equals(bytes), `${name} holds the bytes it held`);
   }
   const b = fresh();
-  assert.equal(b.loadGaps(now), 3, "the same window from yesterday's gzip");
-  assert.equal(b.loadEpisodes(now), 1);
+  assert.equal(await b.loadGaps(now), 3, "the same window from yesterday's gzip");
+  assert.equal(await b.loadEpisodes(now), 1);
   const health = b.health() as { data: { retention: string; dayFiles: { plain: number; gz: number }; oldestDay: string; recording: boolean } };
   assert.deepEqual([health.data.retention, health.data.dayFiles, health.data.oldestDay, health.data.recording], ["all", { plain: 1, gz: 5 }, "2025-11-01", true]);
 

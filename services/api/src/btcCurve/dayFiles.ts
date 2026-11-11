@@ -21,13 +21,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { appendFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from "node:fs";
+import { appendFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
-import { createGunzip, createGzip, gunzipSync } from "node:zlib";
+import { createGunzip, createGzip } from "node:zlib";
 
 const DAY_MS = 86_400_000;
 
@@ -134,23 +134,10 @@ export function readablePath(f: DayFile): string {
 /* ---- reading ---- */
 
 /**
- * Every non-empty line of a day file, plain or gzip, in order. The file is taken as bytes and
- * each line decoded on its own, so a day larger than the longest string Node can hold still
- * loads. Throws when the file cannot be read or is not gzip where it says it is.
+ * Every non-empty line of a day file, plain or gzip, in order, as a stream. This is the only
+ * reader: a day is hundreds of megabytes raw, and the services run in 512 MB, so nothing takes
+ * a day into memory whole. Throws when the file cannot be read or is not gzip where it says it is.
  */
-export function forEachLineSync(path: string, fn: (line: string) => void): void {
-  const raw = readFileSync(path);
-  const buf = path.endsWith(".gz") ? gunzipSync(raw) : raw;
-  let from = 0;
-  while (from < buf.length) {
-    let nl = buf.indexOf(10, from);
-    if (nl < 0) nl = buf.length;
-    if (nl > from) fn(buf.toString("utf8", from, nl));
-    from = nl + 1;
-  }
-}
-
-/** The same lines as a stream, so a month of days never has to sit in memory at once. */
 export async function* readLines(path: string): AsyncGenerator<string> {
   const source = createReadStream(path);
   const stream = path.endsWith(".gz") ? source.pipe(createGunzip()) : source;

@@ -79,16 +79,16 @@ test("sports reload: the window comes back from gzip days, a day present in both
   const store = new SnapshotStore(dir, { keepHours: 72 });
   for (const at of ["2026-11-09T15:00:00.000Z", "2026-11-09T15:01:00.000Z", "2026-11-10T15:00:00.000Z", "2026-11-11T01:00:00.000Z"]) store.append(snap(at));
   const before = new SnapshotStore(dir, { keepHours: 72 });
-  assert.equal(before.load(now), 4);
+  assert.equal(await before.load(now), 4);
 
   // the copy is written and the original not yet removed: one day, counted once
   writeFileSync(join(dir, "snapshots-2026-11-09.jsonl.gz"), gzipSync(readFileSync(join(dir, "snapshots-2026-11-09.jsonl"))));
-  assert.equal(new SnapshotStore(dir, { keepHours: 72 }).load(now), 4);
+  assert.equal(await new SnapshotStore(dir, { keepHours: 72 }).load(now), 4);
 
   for (let i = 0; i < 4; i += 1) await store.maintain(now);
   assert.deepEqual(readdirSync(dir).sort(), ["snapshots-2026-11-09.jsonl.gz", "snapshots-2026-11-10.jsonl.gz", "snapshots-2026-11-11.jsonl"]);
   const after = new SnapshotStore(dir, { keepHours: 72 });
-  assert.equal(after.load(now), 4);
+  assert.equal(await after.load(now), 4);
   assert.deepEqual(after.getHistory(), before.getHistory());
   assert.equal(after.getLatest()?.at, "2026-11-11T01:00:00.000Z");
   assert.equal((await store.maintain(Date.parse("2026-11-11T23:59:59Z"))).compressed, null);
