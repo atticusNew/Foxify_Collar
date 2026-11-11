@@ -724,7 +724,9 @@ ${cardBlock}<aside class="pitch">
     return {stakeCents:stake,contracts:n,payoutCents:Math.round(n*100),placedIso:new Date(Date.now()-(((h>>>4)%70)+2)*3600000).toISOString()};
   }
   /* a tier's terms at this row's size: the floor and the cap are per contract, the credit scales with the size */
-  function scaled(t,q,n){var k=n/(q.contracts||n||1);return {floorCents:t.floorCents,capCents:t.capCents,creditCents:Math.round(t.creditCents*k)}}
+  function scaled(t,q,n){var k=n/(q.contracts||n||1);return {floorCents:t.floorCents,capCents:t.capCents,creditCents:Math.round(t.creditCents*k),sharePercent:t.sharePercent}}
+  /* one scale for every shape: a lock sells nothing of the trader's; the service says what sale it is equal to */
+  function shareWords(t){return t&&typeof t.sharePercent==='number'?'like selling '+t.sharePercent+'% of your position':''}
   function offeredTiers(q,n){
     var out={},k,i;
     if(q.tiers){for(i=0;i<TIER_ORDER.length;i++){k=TIER_ORDER[i];if(q.tiers[k]){var s=scaled(q.tiers[k],q,n);if(worthIt(s,n))out[k]=s}}}
@@ -789,6 +791,7 @@ ${cardBlock}<aside class="pitch">
   function detailRows(r,st,n,keys){
     var rows=[],o=otherSide(vvOf(r.kalshiTicker),n);
     if(keys.length>1)rows.push(drow('Shape',shapeSegs(st,n,keys),'ael-dshape'));
+    if(shareWords(st.offered[st.tier]))rows.push(drow('Share',esc(shareWords(st.offered[st.tier]))));
     if(o)rows.push(drow('Other side','<span'+(o.tip?' title="'+esc(o.tip)+'"':'')+'>'+o.html+'</span>'));
     else if(S.vvBusy)rows.push(drow('Other side','<span class="ael-dim">asking the venues&hellip;</span>'));
     rows.push(isLive(r)?drow('Until','the final whistle <span class="ael-dim">&middot; priced from the live book; the price moves with the game</span>'):drow('Until',esc(startWord(r))+' '+esc(fmtEt(r.eventTimeIso))+' <span class="ael-dim">&middot; priced live</span>'));

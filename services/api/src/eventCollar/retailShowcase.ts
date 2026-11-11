@@ -19,6 +19,7 @@
  */
 
 import type { CrossQuoteResult, HedgeRoute, ProtectionTier, RouteCheck } from "./crossVenue/types";
+import { collarSharePercent } from "./shareScale";
 import type { WrapQuoteResult } from "./types";
 
 /** One collar the holder can lock: the three numbers that define the payoff, nothing else. */
@@ -26,6 +27,8 @@ export interface RetailTerms {
   floorCents: number;
   capCents: number;
   creditCents: number;
+  /** the share of the position this tier is equal to selling, whole percent (shareScale.ts) */
+  sharePercent?: number;
 }
 
 export interface RetailQuote extends RetailTerms {
@@ -90,21 +93,24 @@ export const retailPayloadError = (error: string | undefined): string | undefine
 };
 
 const terms = (t: RetailTerms): RetailTerms => ({ floorCents: t.floorCents, capCents: t.capCents, creditCents: t.creditCents });
+/** The terms a card shows, with the share of the position the tier is equal to selling (shareScale.ts): one scale for every shape. */
+const termsWithShare = (t: RetailTerms): RetailTerms => {
+  const sharePercent = collarSharePercent(t.floorCents, t.capCents);
+  return { ...terms(t), ...(sharePercent === null ? {} : { sharePercent }) };
+};
 
 /** Cross-venue quote → retail quote. */
 export const retailCrossQuote = (q: CrossQuoteResult | null | undefined): RetailQuoteResult | null => {
   if (!q) return null;
   if (!q.ok) return retailRefusal(q.code);
   const tiers: Partial<Record<ProtectionTier, RetailTerms>> = {};
-  for (const [name, t] of Object.entries(q.tiers)) if (t) tiers[name as ProtectionTier] = terms(t);
+  for (const [name, t] of Object.entries(q.tiers)) if (t) tiers[name as ProtectionTier] = termsWithShare(t);
   return {
     ok: true,
     contracts: q.contracts,
     markCents: q.markCents,
     entryCents: q.entryCents,
-    floorCents: q.floorCents,
-    capCents: q.capCents,
-    creditCents: q.creditCents,
+    ...termsWithShare(q),
     tier: q.tier,
     tiers,
     quotedAt: q.quotedAt,

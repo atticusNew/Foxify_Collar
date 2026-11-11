@@ -141,7 +141,7 @@ test("embed: the host shell is theirs, the line and the panel are ours (the exte
   assert.ok(html.includes("var STAKES=[1000,2500,5000,10000,2000,4000,7500,1500];") && html.includes("function sizeOf(r){"), "varied sizes, stable per ticker");
   assert.ok(html.includes("n=Math.round(stake/r.entryCents*100)/100"), "contracts are what the stake bought at the entry price");
   assert.ok(html.includes('<div class="facts"><span>Stake<b>\'+usd(z.stakeCents)+\'</b></span><span>Price<b>\'+r.entryCents+\'¢</b></span><span>Payout<b>\'+usd(z.payoutCents)+\'</b></span><span>Placed<b>\'+esc(fmtAt(z.placedIso))+\'</b></span></div>'), "the row's facts as a venue prints them");
-  assert.ok(html.includes("function scaled(t,q,n){var k=n/(q.contracts||n||1);return {floorCents:t.floorCents,capCents:t.capCents,creditCents:Math.round(t.creditCents*k)}}"), "the quote's credit scales to the row's size; the floor and the cap are per contract");
+  assert.ok(html.includes("function scaled(t,q,n){var k=n/(q.contracts||n||1);return {floorCents:t.floorCents,capCents:t.capCents,creditCents:Math.round(t.creditCents*k),sharePercent:t.sharePercent}}"), "the quote's credit scales to the row's size; the floor and the cap are per contract");
   // cash: a plausible balance in both shells, every change through addCash, the pulse beside it
   assert.ok(html.includes('<span id="bal" data-bal>Cash $412.50</span>') && html.includes('<div class="bal"><span data-bal>Cash $412.50</span></div>'), "a plausible balance on the phone and the table");
   assert.ok(html.includes("cash:41250"), "and the script starts from it");

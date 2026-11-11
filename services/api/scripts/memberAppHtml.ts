@@ -80,7 +80,7 @@ ${CSS}
     <ol class="steps">
       <li><div><b>Buy a side on ${esc(o.venueName)}</b><small>A game winner, any size. It shows here with its Lock in line.</small></div></li>
       <li><div><b>Tap Lock in</b><small>Part of the position sells into ${esc(o.venueName)}'s bids, in your own account. The cash from the sale lands in your ${esc(o.venueName)} balance when the sale fills.</small></div></li>
-      <li><div><b>Keep the floor, win or lose</b><small>Lose, and the cash from the sale is yours. Win, and each contract you keep pays $1 as well. Leave early buys it back any time before it settles.</small></div></li>
+      <li><div><b>Keep the floor, win or lose</b><small>Lose, and the cash from the sale is yours. Win, and each contract you keep pays $1 as well. On a single game, Leave early buys it back before it settles. A combo lock stays to settlement.</small></div></li>
     </ol>
     <p>No one is on the other side of a lock, nothing is hedged for you, and there is no fee. Every order is placed under the consent you gave on ${esc(o.venueName)}'s own page and shows in your ${esc(o.venueName)} orders; you can revoke it there at any time. This page never holds your money, your login or your keys.</p>
     <p>Every lock fills on ${esc(o.venueName)}, where you hold the position, and is written to a public record in neutral words, with no account ids.</p>
@@ -874,8 +874,11 @@ const JS = String.raw`
   const shapeHtml = (st) => {
     const q = st.quote.quote;
     const tiers = TIER_ORDER.filter((k) => q.tiers && q.tiers[k]);
-    if (tiers.length < 2) return "";
-    return '<div class="ael-shape-row"><span>Shape</span><div class="ael-shape" role="group" aria-label="Shape">' + tiers.map((k) => '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (st.tier === k) + '">' + TIER_WORDS[k] + "</button>").join("") + "</div></div>";
+    // one scale for every shape: the share of the position this one sells (the service works it out)
+    const sel = (q.tiers && q.tiers[st.tier]) || q;
+    const share = sel && typeof sel.sharePercent === "number" ? '<span class="ael-share">sells ' + sel.sharePercent + "% of your position</span>" : "";
+    if (tiers.length < 2) return share ? '<div class="ael-shape-row">' + share + "</div>" : "";
+    return '<div class="ael-shape-row"><span>Shape</span><div class="ael-shape" role="group" aria-label="Shape">' + tiers.map((k) => '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (st.tier === k) + '">' + TIER_WORDS[k] + "</button>").join("") + "</div>" + share + "</div>";
   };
   const rulesGrid = (p, t) => {
     const tails = (t && t.tails) || (p && p.tails) || [];

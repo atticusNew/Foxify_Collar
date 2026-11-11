@@ -1832,6 +1832,21 @@
     if (back > 0) return { label: "you owe " + esc(usd(back)), sub: legs.some((l) => l.leg === "close" && l.to === "writer" && l.outstandingCents > 0) ? "the lock's settlement" : "the slice above the cap", open: true };
     return { label: "paid in full", sub: "", open: false };
   };
+  /**
+   * What a removed lock settled for, in words that agree with the cash legs. "Paid" is said only
+   * once the leg is paid; while it is outstanding the line says who owes it, the same words the
+   * cash line uses ("you owe", "owed to you"). A record with no cash legs says only the direction.
+   */
+  const closeWords = (rec, bold, capital) => {
+    const net = closeNetOf(rec);
+    const cash = cashState(rec);
+    const amt = (c) => (bold ? "<b>" + esc(usd(c)) + "</b>" : esc(usd(c)));
+    const cap = (s) => (capital ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+    if (net === 0) return cap("nothing owed either way");
+    if (!cash) return net < 0 ? amt(-net) + " from you" : amt(net) + " to you";
+    if (cash.open) return net < 0 ? cap("you owe ") + amt(-net) : amt(net) + " owed to you &middot; on its way";
+    return net < 0 ? cap("you paid ") + amt(-net) : amt(net) + " paid to you";
+  };
   /** What a leave moved between the two parties beyond the credit: the record's own totals, or the tap's answer. */
   const closeNetOf = (rec) => (rec.closeNetCents != null ? rec.closeNetCents : (rec.protectedCents || 0) - (rec.nakedCents || 0) - (rec.creditCents || 0));
   const signed = (c) => (c < 0 ? "\u2212" : "+") + esc(usd(Math.abs(c)));
@@ -1889,14 +1904,12 @@
         // protection removed: what the protection alone settled for, and whether that cash has moved;
         // the pick itself is still the venue's live position, not ours to describe
         const net = closeNetOf(rec);
-        const cash = cashState(rec);
-        const moved = cash ? (cash.open ? (net >= 0 ? " &middot; on its way" : "") : " &middot; paid") : "";
         // a member's sale is left by buying the contracts back: the round trip's net is in their own balance already
         const bb = isSale(rec) ? rec.memberBuyBack : null;
         const words = bb
           ? "Bought back " + bb.boughtContracts + " at " + bb.avgPriceCents + "&cent; &middot; " + (net < 0 ? "the round trip cost <b>" + esc(usd(-net)) + "</b>" : net > 0 ? "<b>" + esc(usd(net)) + "</b> kept from the round trip" : "the round trip came out even")
-          : net < 0 ? "You paid <b>" + esc(usd(-net)) + "</b>" : net > 0 ? "<b>" + esc(usd(net)) + "</b> paid to you" : "Nothing owed either way";
-        line = lineGo("Lock removed", words + moved + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
+          : closeWords(rec, true, true);
+        line = lineGo("Lock removed", words + "." + (rec.rehearsal ? " &middot; rehearsal" : ""), "ael-line-on");
       } else {
         // the venue the other side went to, on the line itself, so the pick is visible without opening
         // the panel; a member's own sale has no other side, and the line names their venue
@@ -2057,7 +2070,7 @@
       .map((k) => {
         const tt = offered[k];
         const tr = outcomesOf(B, n, tt);
-        return '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (k === tier) + '" aria-label="' + esc(TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(cashOf(tt)) + (tt && tt.cashNowCents != null ? " in your " + V.name + " balance when the sale fills" : " credited at lock in")) + '">' + esc(TIER_WORDS[k]) + "</button>";
+        return '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (k === tier) + '" aria-label="' + esc(TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(cashOf(tt)) + (tt && tt.cashNowCents != null ? " in your " + V.name + " balance when the sale fills" : " credited at lock in") + (shareWords(tt, tt && tt.cashNowCents != null) ? ", " + shareWords(tt, tt && tt.cashNowCents != null) : "")) + '">' + esc(TIER_WORDS[k]) + "</button>";
       })
       .join("") +
     "</div>";
@@ -2069,6 +2082,12 @@
   const toggleA = (cls, label, open) => '<a href="#" class="ael-tg ' + cls + '" aria-expanded="' + (open ? "true" : "false") + '">' + label + '<span class="ael-tgc">' + CHEVRON + "</span></a>";
 
   /** One row of the details: a dim label, then the value; `wide` spans both columns (the rules grid). */
+  /**
+   * One scale for every shape (the service works the number out, shareScale.ts): a member's own
+   * sale "sells 40% of your position"; a hedged lock, which sells nothing of the holder's, is
+   * "like selling 15% of your position". Empty when the service sent no share.
+   */
+  const shareWords = (t, sale) => (t && typeof t.sharePercent === "number" ? (sale ? "sells " : "like selling ") + t.sharePercent + "% of your position" : "");
   const drow = (label, value, cls) => '<span class="ael-dl' + (cls ? " " + cls : "") + '">' + label + '</span><span class="ael-dv' + (cls ? " " + cls : "") + '">' + value + "</span>";
   const dwide = (html) => '<div class="ael-dwide">' + html + "</div>";
 
@@ -2106,6 +2125,9 @@
     const sale = isSale(p);
     const t = offered[st.tier] || p.quote || {};
     if (keys.length > 1) rows.push(drow("Shape", shapeSegs(B, n, offered, keys, st.tier), "ael-dshape"));
+    // one scale for every shape: the share of the position this one sells, or is like selling
+    const share = shareWords(t, sale);
+    if (share) rows.push(drow("Share", esc(share)));
     if (sale) {
       // the holder's own sale, as the venue's book prices it now: how many of their contracts sell, at what, how many ride
       rows.push(drow("Sale", saleWords(t, n, p.member) + (t.depthLimited ? ' <span class="ael-dim">&middot; the bids run out there</span>' : "")));
@@ -2253,13 +2275,13 @@
       for (const k of keys) {
         const tt = offered[k];
         const tr = outcomesOf(B, n, tt);
-        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>Floor " + esc(usd(tr.floorTotal)) + " &middot;</i> <i>Upside " + esc(usd(tr.capTotal)) + " &middot;</i> <i>+" + esc(usd(cashOf(tt))) + (isSale(p) ? " when the sale fills" : " credit") + "</i></span></button>";
+        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>Floor " + esc(usd(tr.floorTotal)) + " &middot;</i> <i>Upside " + esc(usd(tr.capTotal)) + " &middot;</i> <i>+" + esc(usd(cashOf(tt))) + (isSale(p) ? " when the sale fills" : " credit") + "</i>" + (shareWords(tt, isSale(p)) ? " <i>&middot; " + esc(shareWords(tt, isSale(p))) + "</i>" : "") + "</span></button>";
       }
     }
     const fine = ["Priced live"];
     if (p.eventTimeIso) fine.push("until " + esc(startWord(stemOf(p.ticker || B.ticker || ""))) + " " + esc(fmtAt(p.eventTimeIso)));
     // the protection removed earlier on this game, one grey line: what it settled for, and whether that moved
-    const removedLine = removed ? '<div class="ael-fine">Earlier lock removed' + (removed.closedAt ? " " + esc(fmtAt(removed.closedAt)) : "") + " &middot; " + (closeNetOf(removed) < 0 ? "you paid " + esc(usd(-closeNetOf(removed))) : closeNetOf(removed) > 0 ? esc(usd(closeNetOf(removed))) + " paid to you" : "nothing owed either way") + (cashState(removed) && !cashState(removed).open ? " &middot; settled" : "") + ".</div>" : "";
+    const removedLine = removed ? '<div class="ael-fine">Earlier lock removed' + (removed.closedAt ? " " + esc(fmtAt(removed.closedAt)) : "") + " &middot; " + closeWords(removed, false, false) + ".</div>" : "";
     if (simple()) {
       const html = simpleOfferHtml(B, st, p, q, offered, keys, n, removedLine);
       setPanel(B, panel, html, () => {

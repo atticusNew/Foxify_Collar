@@ -12,7 +12,7 @@ import type { ShadowPosition } from "../src/eventCollar/crossVenue/shadowLedger"
 import type { RefusalMap } from "../src/eventCollar/crossVenue/shadowRefusals";
 import type { HedgeRoute } from "../src/eventCollar/crossVenue/types";
 import { renderScoreboardHtml } from "../scripts/eventScoreboardHtml";
-import { SCOREBOARD_METHODOLOGY, venueFeeCentsPerUnit, venueFeeOnHedge, venueScoreboard, venueScoreboardCsv, weekLabel, weekMondayOf } from "../src/eventCollar/crossVenue/venueScoreboard";
+import { letterScoreboardVenues, SCOREBOARD_METHODOLOGY, SCOREBOARD_METHODOLOGY_LETTERED, venueFeeCentsPerUnit, venueFeeOnHedge, venueScoreboard, venueScoreboardCsv, weekLabel, weekMondayOf } from "../src/eventCollar/crossVenue/venueScoreboard";
 
 const NOW = new Date("2026-11-02T18:00:00.000Z"); // Monday Nov 2, 1pm ET
 
@@ -169,6 +169,55 @@ test("renderScoreboardHtml: the same table as a page — a card per week with a 
   assert.equal(html.includes("<Lakers>"), false, "nothing from the record is placed in the page unescaped");
   assert.equal(/writer|holder|take/i.test(html.replace(SCOREBOARD_METHODOLOGY, "")), false, "no writer-side words outside the methodology");
   assert.equal(/<script/i.test(html), false, "server-rendered, no script");
+});
+
+test("the public view: the same table with every venue lettered and the fee schedules left out, on the page, the JSON and the CSV; the figures are the named table's", () => {
+  const positions: ShadowPosition[] = [
+    position({ ticker: "BAL", at: "2026-10-27T20:00:00.000Z", route: "novig", contracts: 100, routing: routing([routed("novig", true, 300, 120), routed("kalshi", true, 240, 200), routed("polymarket", true, 250, 180), routed("prophetx", false, null, null)]) }),
+    position({ ticker: "LAL", at: "2026-10-28T20:00:00.000Z", route: "kalshi_self", league: "nba", contracts: 50, source: "lock" }),
+    position({ ticker: "SF", at: "2026-10-29T20:00:00.000Z", route: "polymarket", contracts: 200, hedgeCostCents: 7000 }),
+  ];
+  const named = venueScoreboard({ positions, refusals: {}, tickets: [ticket({ ok: true, at: "2026-10-30T20:00:00.000Z", contracts: 66, route: "prophetx", hedgeCostCents: 2500 })], now: NOW, weeks: 2 });
+  const pub = letterScoreboardVenues(named);
+  const NAMES = /kalshi|polymarket|prophetx|novig|parlayx|stx/i;
+  assert.equal(NAMES.test(JSON.stringify(named)), true, "the named table names them, so the check below is a check");
+
+  assert.deepEqual([named.venuesNamed, pub.venuesNamed], [true, false]);
+  assert.deepEqual(pub.venues, ["Venue A", "Venue B", "Venue C", "Venue D"], "a letter per venue, the same every week");
+  assert.deepEqual(named.venues.map((v, i) => [v, pub.venues[i]]), [["Kalshi", "Venue A"], ["Polymarket", "Venue B"], ["ProphetX", "Venue C"], ["Novig", "Venue D"]]);
+  assert.deepEqual(pub.feeRules, [], "a schedule's formula says whose it is");
+  assert.equal(pub.methodology, SCOREBOARD_METHODOLOGY_LETTERED);
+  assert.notEqual(SCOREBOARD_METHODOLOGY_LETTERED, SCOREBOARD_METHODOLOGY, "the sentence that points at the schedules is the one that changes");
+  assert.equal(SCOREBOARD_METHODOLOGY_LETTERED.includes("feeRules"), false);
+
+  // nothing of a name anywhere in the three public forms
+  const html = renderScoreboardHtml({ scoreboard: pub, weeks: 2 });
+  const csv = venueScoreboardCsv(pub);
+  for (const [what, text] of [["json", JSON.stringify(pub)], ["page", html], ["csv", csv]] as const) assert.equal(NAMES.test(text), false, `${what}: ${NAMES.exec(text)?.[0]}`);
+  assert.ok(html.includes("Public. The venues are lettered, not named.") && html.includes("The venues' names and their fee schedules are left out of the public view"));
+  assert.ok(html.includes('<td class="v">Venue D</td>') && html.includes('<td class="v">Venue A</td>'));
+  assert.equal(/writer|holder|take/i.test(html.replace(SCOREBOARD_METHODOLOGY_LETTERED, "")), false, "no writer-side words outside the methodology");
+  assert.ok(renderScoreboardHtml({ scoreboard: named, weeks: 2 }).includes("Venues named: this is the operator's view"));
+
+  // every figure is the named table's: put the names back and the two tables are one
+  const back = new Map(pub.venues.map((letter, i) => [letter, named.venues[i]]));
+  const unletter = (rows: Array<{ venue: string }>): unknown => rows.map((r) => ({ ...r, venue: back.get(r.venue) }));
+  pub.weeks.forEach((w, i) => {
+    const n = named.weeks[i];
+    assert.deepEqual(unletter(w.singles.otherSide), n.singles.otherSide);
+    assert.deepEqual(unletter(w.parlays.otherSide), n.parlays.otherSide);
+    assert.deepEqual(unletter(w.edge.byVenue), n.edge.byVenue);
+    assert.deepEqual(unletter(w.fees.byVenue), n.fees.byVenue);
+    assert.deepEqual(unletter(w.availability.byVenue), n.availability.byVenue);
+    assert.deepEqual(w.byLeague.map((l) => [l.league, l.n, unletter(l.otherSide), unletter(l.availability)]), n.byLeague.map((l) => [l.league, l.n, l.otherSide, l.availability]));
+    assert.deepEqual([w.n, w.taps, w.contracts, w.notionalCents, w.refusals], [n.n, n.taps, n.contracts, n.notionalCents, n.refusals]);
+  });
+  assert.ok(named.weeks.some((w) => w.singles.otherSide.length >= 3 && w.parlays.otherSide.length >= 1 && w.byLeague.length >= 2), "the fixture has rows in every cut that carries a venue");
+
+  // a name the function does not know is never passed through
+  const odd = letterScoreboardVenues({ ...named, venues: [...named.venues, "NewVenue"], weeks: named.weeks.map((w) => ({ ...w, singles: { ...w.singles, otherSide: [{ venue: "NewVenue", n: 1, contracts: 1, sharePct: 100 }] } })) });
+  assert.equal(odd.venues.at(-1), "Venue ?");
+  assert.equal(JSON.stringify(odd).includes("NewVenue"), false);
 });
 
 test("venueScoreboardCsv: an all row per week with totals and refusals, a row per venue with shares, edge and availability", () => {

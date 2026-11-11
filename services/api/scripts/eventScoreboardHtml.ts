@@ -5,9 +5,11 @@
  * before downloading: one card per New York week with a row per venue (other side won on singles
  * and parlays, the winner's edge over the runner-up, what the venue's fee schedule charged,
  * how often it priced when asked), the week's totals and refusals above it, the fee schedules
- * and the methodology under it, and the JSON and CSV links at the top. Public and venue-named,
- * as the JSON is; nothing of the writer's book, and no writer-side words outside the methodology
- * (test-enforced, as on the JSON). Server-rendered, no script.
+ * and the methodology under it, and the JSON and CSV links at the top. Public with the venues
+ * lettered (Venue A, B, ...) and the fee schedules left out; venue-named for the operator and on
+ * a service set to name them, as the JSON and CSV are (letterScoreboardVenues). Nothing of the
+ * writer's book, and no writer-side words outside the methodology (test-enforced, as on the
+ * JSON). Server-rendered, no script.
  */
 
 import type { ScoreboardWeek, VenueScoreboard } from "../src/eventCollar/crossVenue/venueScoreboard";
@@ -139,11 +141,19 @@ th small{display:block;font-size:9px;color:var(--faint);letter-spacing:.04em;tex
 
 ${weekCards}
 
-  <div class="card">
+  ${
+    sb.venuesNamed
+      ? ""
+      : `<div class="card">
+    <h2>Fee schedules on the other side</h2>
+    <div class="read">Each venue has a letter on this page, the same letter every week. The venues' names and their fee schedules are left out of the public view; the fee column above is each venue's own schedule at the price the other side was bought at, and the edge is after fees.</div>
+  </div>`
+  }
+  ${sb.venuesNamed ? `<div class="card">
     <h2>Fee schedules on the other side</h2>
     ${feeRules}
     <div class="rule">What each venue charges on the other side, as the engine folds it into that venue's book before the routes are compared. The fee column above is that schedule at the price the other side was bought at, times the units bought, per contract of the position, so it reads against the edge column. The edge is after fees.</div>
-  </div>
+  </div>` : ""}
 
   <div class="card">
     <h2>How to read this</h2>
@@ -151,7 +161,7 @@ ${weekCards}
     <div class="rule">Columns in the CSV: one <code>all</code> row per week with the totals and refusals, then one row per venue with singles and parlays won (positions, contracts, share of contracts), edge (n, cents per contract, all-in bps), fee (n, cents per contract) and availability (asked, priced, percent). The JSON has the same by week with a by-league cut.</div>
   </div>
   <footer>
-    Public. Venue names on purpose: this is the hedger's comparison of the venues for industry readers. Nothing of our own book is on this page. Rendered ${escapeHtml(sb.at.slice(0, 16).replace("T", " "))} UTC.
+    ${sb.venuesNamed ? "Venues named: this is the operator's view of the hedger's comparison of the venues." : "Public. The venues are lettered, not named."} Nothing of our own book is on this page. Rendered ${escapeHtml(sb.at.slice(0, 16).replace("T", " "))} UTC.
   </footer>
 </div>
 </body>
