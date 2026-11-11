@@ -1,9 +1,66 @@
 # ─────────────────────────────────────────────────────────────────────────
-# render-event-demos.yaml — the two Earn & Protect EVENT demos + a relay
+# render-event-demos.yaml: the Earn & Protect EVENT lane, six services
 #
-# All three services are READ-ONLY demonstrations: no venue credentials, no
-# wallets, public market-data endpoints only. Nothing here touches the live
-# production Earn & Protect deploy (isolation: src/eventCollar/** only).
+# FIVE ARE READ-ONLY. They read market data and serve pages. None of them
+# places an order.
+#
+#   atticus-event-demo-btc          Tier 1 demo: a Kalshi BTC price event hedged
+#                                   on live OKX option books. No credentials.
+#   atticus-event-demo-cross-venue  Tier 2 demo: the public board and embed for
+#                                   a Kalshi sports position. Quotes only.
+#   atticus-btc-curve               BTC curve report, with the BTC pairs UI at
+#                                   /pairs in the same process.
+#   atticus-sports-venues           Sports venues report: one game on Kalshi,
+#                                   Polymarket US and Novig side by side.
+#   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com.
+#                                   Holds no credentials.
+#
+# ONE HOLDS VENUE CREDENTIALS AND CAN SEND REAL ORDERS WHEN ARMED.
+#
+#   atticus-event-shadow            The public track record, the lock path the
+#                                   browser extension and the member page call,
+#                                   and the operator views. Its disk holds the
+#                                   only copy of the record and the lock ledgers.
+#
+#   As committed in this file it buys nothing: every hedge is filled on paper
+#   at the book. The trading keys (Kalshi, Novig, the aggregator's TRADE key)
+#   are set in the Render dashboard. A hedge order leaves only when all of
+#   these hold at once:
+#     EVENT_HEDGE_STRATEGY=live        anything else simulates every hedge
+#     a key for the venue is present   Kalshi direct, or the aggregator's pod
+#                                      with EVENT_HEDGE_LIVE_VIA=aggregator;
+#                                      Novig with its own trading key
+#     EVENT_HEDGE_LIVE_TICKERS         names the ticker; empty allows nothing,
+#                                      * allows any ticker the engine priced
+#     the per-order and per-day caps   both have room for the order
+#     EVENT_HEDGE_LIVE_SEND=yes        any other value is a dry run
+#     EVENT_HEDGE_KILL_SWITCH          is off; set to 1, nothing leaves
+#                                      whatever else is set
+#   Anything the rails hold back is simulated at the book, with the reason on
+#   the receipt. Two more things on this service act on a real account: with
+#   the member app set up (MEMBER_APP_*), a venue member who connects sells
+#   part of their own position in their own account; and the operator routes
+#   behind EVENT_X_ADMIN_TOKEN can move cash between our Kalshi subaccounts and
+#   mint or revoke Kalshi API keys. The comments in its block below say how
+#   each is switched on.
+#
+# SECRETS live only in the Render dashboard, never in git. This file carries
+# public values, `generateValue` (Render makes the value) and `sync: false`
+# (set by hand in the dashboard). None of the six signs for an on-chain
+# address: the venues are reached with API keys only.
+#
+# DEPLOYS. Every service follows the tip of cursor/tier2-cross-venue-2bfa
+# (autoDeploy), so every merge to that branch redeploys every service unless
+# all the files the merge changed are on that service's
+# buildFilter.ignoredPaths. A restart of atticus-event-shadow interrupts the
+# live lock path, so its filter matters most. The rule for the filters is
+# written above the first one, and a test guards them.
+#
+# ISOLATION. Nothing here touches the live production Earn & Protect deploy:
+# the six start scripts load only services/api/scripts and, under
+# services/api/src, eventCollar, btcCurve and sportsVenues.
+#
+# THE SERVICES IN MORE DETAIL
 #
 #   atticus-event-demo-btc          Tier 1: Kalshi BTC price event, hedged on
 #                                   live OKX option books. Region singapore:
@@ -11,9 +68,28 @@
 #                                   region as the existing OKX services).
 #
 #   atticus-event-demo-cross-venue  Tier 2: Kalshi sports market, hedged with
-#                                   the SAME game on Polymarket. Region oregon:
-#                                   Kalshi + Polymarket public APIs are proven
-#                                   reachable from US networks.
+#                                   the SAME game on the venues named in
+#                                   EVENT_HEDGE_VENUES (Kalshi, ProphetX and
+#                                   Novig as committed; unset, every route is
+#                                   offered, Polymarket included). Region
+#                                   oregon: Kalshi + Polymarket public APIs are
+#                                   proven reachable from US networks. Disk
+#                                   keeps the funnel counters and the quote
+#                                   receipts. Carries an operator token, the
+#                                   slate key and, when set in the dashboard,
+#                                   a read key for the Novig book; nothing
+#                                   that sends an order.
+#
+#   atticus-event-shadow            The shadow run: the cross-venue router
+#                                   quoted continuously, every position marked
+#                                   against official results as events settle,
+#                                   kept on an append-only ledger. Serves the
+#                                   public record, the venue slates, the
+#                                   parlay record, Lock in (the extension's
+#                                   tap and the member page at /app) and the
+#                                   operator views, the ledger export among
+#                                   them. Region oregon. Disk keeps the
+#                                   ledgers; they must survive deploys.
 #
 #   atticus-btc-curve               Read-only BTC curve report: Kalshi and
 #                                   Polymarket US strike ladders side by side
@@ -56,7 +132,7 @@
 #                                   Holds no credentials; path allowlist /book.
 #
 # Deploy: Render dashboard → New → Blueprint → select this file on branch
-# cursor/tier2-cross-venue-2bfa. autoDeploy keeps the demos on the branch tip.
+# cursor/tier2-cross-venue-2bfa.
 # ─────────────────────────────────────────────────────────────────────────
 services:
   - type: web
@@ -69,6 +145,33 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/eventProtectDemoService.ts
     healthCheckPath: /healthz
+    # BUILD FILTERS. Every merge to the branch redeploys every service in this file
+    # unless every file the merge changed is on that service's ignoredPaths. Only
+    # ignoredPaths are used, never `paths`, so a new file nobody has thought about
+    # always deploys: a needless restart costs less than a service that silently
+    # stays stale. Ignored for every service: the docs, any Markdown file, the
+    # tests, the GitHub workflows and the browser extensions under demo/ (no service
+    # reads, serves or packs any of them). After those, each service ignores only
+    # the source trees and scripts its start script does not import.
+    # services/api/tests/eventDeployFilters.test.ts computes what each start script
+    # imports and fails if an ignored path covers any of it, so check there before
+    # adding a line. Render always acts on a change to this file itself.
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/src/eventCollar/crossVenue/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/scripts/eventShadow*.ts
+        - services/api/scripts/eventProtectX*.ts
+        - services/api/scripts/eventProtectEmbedHtml.ts
+        - services/api/scripts/memberApp*.ts
     envVars:
       - key: NODE_ENV
         value: production
@@ -83,6 +186,18 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/btcCurveReportService.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/sportsVenues/**
+        - services/api/src/eventCollar/crossVenue/**
+        - services/api/scripts/event*.ts
+        - services/api/scripts/memberApp*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
     # One snapshot a minute is ~55 KB on disk; 21 days of retention is ~1.7 GB.
     disk:
       name: btc-curve-data
@@ -128,6 +243,16 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/sportsVenuesReportService.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/scripts/event*.ts
+        - services/api/scripts/memberApp*.ts
+        - services/api/scripts/btc*.ts
     # One snapshot a minute is ~40 KB on disk with a full slate; 21 days is ~1.2 GB.
     disk:
       name: sports-venues-data
@@ -157,6 +282,19 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/eventProtectXDemoService.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/scripts/eventShadow*.ts
+        - services/api/scripts/memberApp*.ts
     # Funnel counters and the quote-receipts ledger live on a small disk so a
     # deploy does not zero them (without it both restart from /tmp, empty).
     disk:
@@ -253,8 +391,11 @@ services:
 
   # Shadow run: the cross-venue router quoted continuously, every position
   # marked against official results as events settle. The persistent disk is
-  # the point — the track record must survive deploys. Read-only like the
-  # demos: public market data only, nothing is bought.
+  # the point: the track record and the lock ledgers must survive deploys.
+  # As committed here every hedge is simulated at the book and nothing is
+  # bought. This is also the one service that is given venue trading keys in
+  # the dashboard and can send real orders once armed: see LIVE HEDGE below
+  # and the header of this file.
   - type: web
     name: atticus-event-shadow
     runtime: node
@@ -265,6 +406,17 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/eventShadowWorker.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
     disk:
       name: event-shadow-ledger
       mountPath: /var/data
@@ -626,6 +778,19 @@ services:
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx scripts/eventEgressProxy.ts
     healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/scripts/eventProtect*.ts
+        - services/api/scripts/eventShadow*.ts
+        - services/api/scripts/memberApp*.ts
     envVars:
       - key: NODE_ENV
         value: production
