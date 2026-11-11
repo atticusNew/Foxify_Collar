@@ -119,7 +119,13 @@ test("verify a parlay lock: last pick only, on that market, before the start, at
   assert.equal((verifyParlayLock(resolvePicks(q, [open(BAL, "Baltimore", "", THU), open(SEA, "Seattle", "", MON)], new Date("2026-11-01T20:00:00Z")), BAL, 10, 1000, 6618) as { code: string }).code, "parlay_not_last_pick");
   assert.equal((verifyParlayLock(resolvePicks(q, [open(BAL, "Baltimore", "", THU), done(SEA, "Seattle", "", "no")], NOW), BAL, 10, 1000, 6618) as { code: string }).code, "parlay_busted");
   assert.equal((verifyParlayLock(resolvePicks(q, [open(BAL, "Baltimore", "", THU), done(SEA, "Seattle", "", "")], NOW), BAL, 10, 1000, 6618) as { code: string }).code, "parlay_pick_unknown");
-  assert.equal((verifyParlayLock(resolvePicks(q, [open(BAL, "Baltimore", "", THU), done(SEA, "Seattle", "", "yes")], new Date("2026-11-06T02:00:00Z")), BAL, 10, 1000, 6618) as { code: string }).code, "parlay_in_play");
+  const underWay = resolvePicks(q, [open(BAL, "Baltimore", "", THU), done(SEA, "Seattle", "", "yes")], new Date("2026-11-06T02:00:00Z"));
+  assert.equal((verifyParlayLock(underWay, BAL, 10, 1000, 6618) as { code: string }).code, "parlay_in_play", "in play off (or not said): the last pick must not have started");
+  assert.equal((verifyParlayLock(underWay, BAL, 10, 1000, 6618, { inPlay: false }) as { code: string }).code, "parlay_in_play");
+  // in play on: the ticket is still one position on the last game; the quote decides whether the books fund it now
+  assert.deepEqual(verifyParlayLock(underWay, BAL, 10, 1000, 6618, { inPlay: true }), { ok: true });
+  assert.equal((verifyParlayLock(underWay, BAL, 66.19, 1000, 6618, { inPlay: true }) as { code: string }).code, "parlay_size", "every other check stands in play");
+  assert.equal((verifyParlayLock(underWay, SEA, 10, 1000, 6618, { inPlay: true }) as { code: string }).code, "parlay_not_last_pick");
 });
 
 test("lock request: the parlay block is validated; picks as codes with optional opponent and day", () => {

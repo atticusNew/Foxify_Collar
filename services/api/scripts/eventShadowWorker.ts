@@ -137,6 +137,7 @@ import {
   type HedgeReceipt,
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
+import { inPlayFromEnv } from "../src/eventCollar/crossVenue/lockWindow";
 import { appendPending, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
 import { sentUnitsMilliOn, tickerArmed } from "../src/eventCollar/crossVenue/liveHedge";
 import { KALSHI_SHARDS, KalshiAccountClient, KalshiApiError, shardForTicker, type KalshiAccountSnapshot, type KalshiApiKeyInfo } from "../src/eventCollar/crossVenue/kalshiAccount";
@@ -444,7 +445,7 @@ const picksViewFor = async (queries: readonly PickQuery[], now = new Date()): Pr
  * folded in as at the lock). The hedge venue unreachable leaves the hedge leg unlocatable and the
  * pricer says so. Replaced by the tests (wireLockEngine).
  */
-let closeBooksFn: (p: Pick<ShadowPosition, "ticker" | "route" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId">) => Promise<EarlyCloseBooks> = async (p) => {
+let closeBooksFn: (p: Pick<ShadowPosition, "ticker" | "route" | "hedgeTokenId" | "hedgeStrikeId" | "hedgeMarketId" | "hedgeOutcomeId" | "hedgeOffsetOutcomeId"> & { eventTimeIso?: string }) => Promise<EarlyCloseBooks> = async (p) => {
   const books: EarlyCloseBooks = { kalshi: await getKalshiBookSides(p.ticker) };
   if (p.route === "polymarket" && p.hedgeTokenId) {
     try {
@@ -457,7 +458,8 @@ let closeBooksFn: (p: Pick<ShadowPosition, "ticker" | "route" | "hedgeTokenId" |
     if (r.book) books.pxNoBook = foldProphetXFee(r.book, PROPHETX_FEE_BPS);
   } else if (p.route === "novig" && p.hedgeMarketId && p.hedgeOutcomeId && p.hedgeOffsetOutcomeId && novigBookClient) {
     try {
-      books.nvNoBook = await signedHedgeBook(novigBookClient, p.hedgeMarketId, p.hedgeOffsetOutcomeId, p.hedgeOutcomeId);
+      // a leave during the game carries the venue's live fee (charged once the event is live)
+      books.nvNoBook = await signedHedgeBook(novigBookClient, p.hedgeMarketId, p.hedgeOffsetOutcomeId, p.hedgeOutcomeId, { gameStartIso: p.eventTimeIso, now: new Date() });
     } catch {
       // the venue unreachable: the pricer records the leg as unlocatable, honestly
     }
@@ -502,7 +504,20 @@ const EXT_MARKS_OFF = new Set(
     .filter(Boolean),
 );
 let protectCutoffMinutes = 45;
-const extConfig = () => ({ minVersion: EXT_MIN_VERSION, marksOff: [...EXT_MARKS_OFF].sort(), cutoffMinutes: protectCutoffMinutes });
+/**
+ * IN PLAY on the lock path (crossVenue/lockWindow.ts): a game can be locked in while it is being
+ * played. On unless EVENT_X_IN_PLAY is 0; the same switch the engine's window reads, so the
+ * quote, the lock, the market list and the extension's words agree. Off, `cutoffMinutes` is the
+ * whole rule again.
+ */
+let lockInPlay = inPlayFromEnv(process.env);
+/**
+ * The shadow's own scan stays pre-game unless EVENT_SHADOW_SCAN_IN_PLAY=1: its positions are
+ * paper, filled at the walked book, and a book walked during a game is where that simulation
+ * would flatter the record. In-play locks are a holder's tap, hedged first when the order is real.
+ */
+const SCAN_IN_PLAY = /^(1|true|yes|on)$/i.test((process.env.EVENT_SHADOW_SCAN_IN_PLAY ?? "").trim());
+const extConfig = () => ({ minVersion: EXT_MIN_VERSION, marksOff: [...EXT_MARKS_OFF].sort(), cutoffMinutes: protectCutoffMinutes, inPlay: lockInPlay });
 /** anonymous counts the extension posts per page (extTelemetry.ts); in memory, operator-read */
 const extTelemetry = new ExtTelemetryStore();
 /** keyed `${holder ?? ""}|${ticker}`: two holders may lock one market at once, one holder may not lock it twice */
@@ -2179,7 +2194,8 @@ function openRecordFor(
         entryCents: res.position.entryCents,
         contracts: q.contracts,
         now: new Date(scanAtIso),
-        config: searchConfig(),
+        // a lock taken in play is compared under the config it was quoted with (the lead-time gate set aside)
+        config: res.inPlay ? inPlayConfig(searchConfig()) : searchConfig(),
         books: res.books,
         prophetxFeeBps: PROPHETX_FEE_BPS,
       },
@@ -2590,7 +2606,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
           }
         : view,
     };
-    sendJson(res, 200, { ok: true, at: atIso, onRecord: held, ...(holder ? { holder } : {}), ...retailOneQuote(result, result.evBps), ...routing });
+    sendJson(res, 200, { ok: true, at: atIso, onRecord: held, ...(holder ? { holder } : {}), ...(result.inPlay ? { inPlay: true } : {}), ...retailOneQuote(result, result.evBps), ...routing });
     return;
   }
   if (url.pathname === "/api/shadow/lock") {
@@ -2635,7 +2651,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     let parlayView: PicksView | null = null;
     if (parlay) {
       parlayView = await picksViewFor(parlay.picks);
-      const check = verifyParlayLock(parlayView, ticker, contracts, parlay.stakeCents, parlay.payoutCents);
+      const check = verifyParlayLock(parlayView, ticker, contracts, parlay.stakeCents, parlay.payoutCents, { inPlay: lockInPlay });
       if (!check.ok) {
         sendJson(res, 409, { ok: false, error: check.code, code: check.code, message: check.message, picks: parlayView.picks });
         return;
@@ -2713,6 +2729,8 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         sideName: result.sideName,
         eventTitle: result.eventTitle,
         eventTimeIso: result.eventTimeIso,
+        // the game was under way at the tap
+        ...(result.inPlay ? { inPlay: true } : {}),
         contracts: chosen.contracts,
         tier: chosen.tier,
         floorCents: chosen.floorCents,
@@ -3453,7 +3471,7 @@ async function scanTick(): Promise<void> {
     for (const t of hedgeChoice.live?.allowlist ?? []) seen.add(t);
     for (const { p } of allLocks()) seen.add(p.ticker);
     // Step over what the book already holds so each scan reaches the next games in the ranking.
-    const state = await scan({ skipTickers: seen });
+    const state = await scan({ skipTickers: seen, inPlay: SCAN_IN_PLAY });
     const opened: Array<{ kind: "sports" | "crypto"; at: string }> = book.map((p) => ({ kind: p.kind, at: p.at }));
     let cryptoSkipped = 0;
     for (const { res, evBps } of state.rows) {
@@ -4844,6 +4862,7 @@ async function main(): Promise<void> {
   quoteOneFn = demo.quoteOne;
   listGameMarketsFn = demo.listGameMarkets;
   protectCutoffMinutes = demo.PROTECT_WINDOW_MINUTES.min;
+  lockInPlay = demo.IN_PLAY;
   pricingSourceStatusFn = demo.pricingSourceStatus;
   referenceCatalogFn = demo.referenceCatalog;
   heldSource = demo.aggregatorSource();
@@ -4909,6 +4928,8 @@ export function wireLockEngine(fns: {
   memberOrder?: ExecuteOptions;
   /** whether a member may lock while the game is on, in place of MEMBER_APP_IN_PLAY (on unless set to 0) */
   memberInPlay?: boolean;
+  /** whether a hedged lock may be taken while the game is on, in place of EVENT_X_IN_PLAY (on unless set to 0); the fake engine's own window is the test's */
+  inPlay?: boolean;
   /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ (off unless set); "preview" quotes from a stand-in and refuses the tap */
   memberComboRfq?: boolean | "preview";
 }): void {
@@ -4920,6 +4941,7 @@ export function wireLockEngine(fns: {
   }
   if (fns.memberOrder) memberOrderOpts = fns.memberOrder;
   if (fns.memberInPlay !== undefined) memberInPlay = fns.memberInPlay;
+  if (fns.inPlay !== undefined) lockInPlay = fns.inPlay;
   if (fns.memberComboRfq !== undefined) {
     memberComboRfq = fns.memberComboRfq === "preview" ? "preview" : fns.memberComboRfq ? "on" : "off";
     memberPositionsCache.clear();
