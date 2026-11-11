@@ -130,7 +130,9 @@ reload every time, and with no limit the history alone took 368 MB of a 259 MB h
 After: reload in 54 s, 210 MB at rest, 259 MB at the peak with the page opened five times.
 
 **Every day is kept.** Nothing is deleted unless `BTC_CURVE_RETAIN_DAYS` is set to a whole number
-of days; then day files older than that go, hourly. Unset, empty, `0`, `all` and `none` keep
+of days; then day files older than that go, hourly. A window of N days keeps the current day and
+the N whole days before it, so no line younger than N days is deleted (before 11 November 2026
+it kept N minus 1 whole days). Unset, empty, `0`, `all` and `none` keep
 everything. A value that cannot be read (`abc`, `-3`, `2.5`) also keeps everything, and `/healthz`
 and the start-up log line say so. The pairs files under `pairs/` follow the same setting unless
 `BTC_PAIRS_RETAIN_DAYS` is set.
@@ -157,7 +159,13 @@ about 0.3 seconds.
 `budget` (`mb`, `usedPct`) and, past 80%, `warning` in plain words. The budget never deletes
 anything: raise the disk or set a window. If a write fails (a full disk) the cycle goes on, the
 page keeps serving from memory, and `data.recording` is `false` with `data.notRecording` saying
-what failed and why; `data.writesLost` keeps the count after writing resumes.
+what failed and why; `data.writesLost` keeps the count after writing resumes. A write that failed
+part way leaves a fragment at the end of the day file; the next line is started on a line of its
+own, so the fragment is one unreadable line and the line after it is whole. The since marker
+(`collecting-since.txt`) is written again each cycle until it lands. A full disk also stops the
+gzip of a closed day, because the compressed copy needs room before the original can go:
+`data.compression.lastError` says so every pass, and it resumes on the first pass with room.
+Nothing frees that room by itself; raise the disk or set a window.
 
 Endpoints: `/` (page, auto-refresh), `/api/report` (the page's data), `/api/latest` (full
 snapshot), `/api/replays`, `/healthz`. With `BTC_CURVE_TOKEN` set, everything but `/healthz`

@@ -3,7 +3,8 @@
  * append-only, for the curve snapshots, the pairs cycles and episodes, and the sports snapshots.
  * This is what the three stores share:
  *
- *   retention   every day is kept unless a window is set. A setting that cannot be read deletes
+ *   retention   every day is kept unless a window is set. A window of N days keeps the current
+ *               day and the N whole days before it. A setting that cannot be read deletes
  *               nothing and says so; it is never guessed at.
  *   gzip        a day that has closed is compressed to `<name>.jsonl.gz`, written to a temp name,
  *               read back and compared (bytes, line count, sha256 of the uncompressed bytes) and
@@ -15,13 +16,15 @@
  *   the guard   bytes on disk against an optional budget, said on /healthz. The budget deletes
  *               nothing: the operator raises the disk or sets a window.
  *   writes      an append that fails (a full disk) does not throw into the cycle. The service
- *               keeps serving from memory and /healthz says it is not recording and why.
+ *               keeps serving from memory and /healthz says it is not recording and why. A
+ *               write that failed part way leaves a fragment with no newline; the next line
+ *               starts on a line of its own, so the fragment costs one line and not two.
  *
  * Nothing here reads a venue or holds a credential.
  */
 
 import { createHash } from "node:crypto";
-import { appendFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from "node:fs";
+import { appendFileSync, closeSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Transform } from "node:stream";
@@ -129,6 +132,25 @@ export function listDayFiles(dir: string, families: readonly string[]): DayFile[
  */
 export function readablePath(f: DayFile): string {
   return (f.plain ?? f.gz) as string;
+}
+
+/** Whether a file ends on a line end, so a line appended to it starts on its own line. True for a file that is empty or not there. */
+function endsWithNewline(path: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return true;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    if (size === 0) return true;
+    const last = Buffer.alloc(1);
+    readSync(fd, last, 0, 1, size - 1);
+    return last[0] === 10;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /* ---- reading ---- */
@@ -412,6 +434,8 @@ export class DayKeeper {
   /** days tried since the last full round, so one file that will not compress does not hold up the rest */
   private readonly tried = new Set<string>();
   private maintaining: Promise<MaintainReport> | null = null;
+  /** the day file this keeper last appended to in full, per family: known to end on a line end */
+  private readonly whole = new Map<string, string>();
 
   constructor(opts: DayKeeperOptions) {
     this.dir = opts.dir;
@@ -429,10 +453,16 @@ export class DayKeeper {
    */
   append(family: string, atMs: number, line: string, nowMs = Date.now()): boolean {
     const path = dayFilePath(this.dir, family, atMs);
-    return this.guarded(family, basename(path), () => {
+    const text = line.endsWith("\n") ? line : `${line}\n`;
+    const ok = this.guarded(family, basename(path), () => {
       mkdirSync(this.dir, { recursive: true });
-      this.appendImpl(path, line.endsWith("\n") ? line : `${line}\n`);
+      // a write that failed part way (a full disk, a kill) left a fragment with no line end: this line must not be glued onto it
+      const clean = this.whole.get(family) === path || endsWithNewline(path);
+      this.appendImpl(path, clean ? text : `\n${text}`);
     }, nowMs);
+    if (ok) this.whole.set(family, path);
+    else this.whole.delete(family);
+    return ok;
   }
 
   /** Run one write of any kind (a state file, a marker). A filesystem failure is remembered and false returned; any other error is the caller's. */
@@ -468,15 +498,18 @@ export class DayKeeper {
   }
 
   /**
-   * Delete the day files outside the retention window, both forms. With no window (the default,
-   * and whenever the setting could not be read) nothing is deleted. Returns the names removed.
+   * Delete the day files outside the retention window, both forms. A day is outside once its
+   * last instant is more than the window before now, so a window of N days always holds N whole
+   * days besides the current one and no line younger than N days is deleted. With no window (the
+   * default, and whenever the setting could not be read) nothing is deleted. Returns the names
+   * removed.
    */
   sweep(nowMs = Date.now()): string[] {
     const days = this.retention.days;
     if (days === null) return [];
     const removed: string[] = [];
     for (const f of listDayFiles(this.dir, this.families)) {
-      if (!(nowMs - f.dayMs > days * DAY_MS)) continue;
+      if (!(nowMs - (f.dayMs + DAY_MS) > days * DAY_MS)) continue;
       for (const path of [f.plain, f.gz]) {
         if (!path) continue;
         try {

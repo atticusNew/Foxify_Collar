@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -98,6 +98,25 @@ test("default: 400 days of snapshots, one a day with the hourly pass run every d
   assert.deepEqual([h.retention, h.dayFiles, h.oldestDay, h.newestDay], ["all", { plain: 1, gz: 399 }, "2026-01-01", "2027-02-04"]);
 });
 
+test("a window of N days keeps the current day and the N whole days before it: no line younger than N days is deleted, at any hour", () => {
+  const firstDay = Date.parse("2026-11-01T00:00:00Z");
+  for (const [days, nowIso] of [[3, "2026-11-11T00:00:01Z"], [3, "2026-11-11T02:00:00Z"], [3, "2026-11-11T23:59:59Z"], [1, "2026-11-11T00:30:00Z"], [7, "2026-11-11T12:00:00Z"]] as Array<[number, string]>) {
+    const dir = tmp("whole-days");
+    const now = Date.parse(nowIso);
+    // one line at the first and one at the last second of every day, 1 to 11 November
+    for (let d = 0; d <= 10; d += 1) writeFileSync(join(dir, `snapshots-${dayOf(firstDay + d * DAY)}.jsonl`), `${JSON.stringify(snap(new Date(firstDay + d * DAY).toISOString()))}\n${JSON.stringify(snap(new Date(firstDay + (d + 1) * DAY - 1000).toISOString()))}\n`);
+    const keeper = new DayKeeper({ dir, families: ["snapshots"], retention: parseRetention(days) });
+    const removed = keeper.sweep(now);
+    const kept = listDayFiles(dir, ["snapshots"]).map((f) => f.day);
+    assert.equal(kept.length, days + 1, `${days} days at ${nowIso}: today and ${days} whole days before it`);
+    assert.equal(kept[0], dayOf(Date.parse("2026-11-11T00:00:00Z") - days * DAY));
+    // the youngest line that went was the last second of the newest day removed: it is older than the window
+    const newestRemoved = removed.map((n) => n.slice(10, 20)).sort().pop() as string;
+    assert.ok(now - (Date.parse(`${newestRemoved}T00:00:00Z`) + DAY - 1000) > days * DAY, `the youngest line deleted at ${nowIso} was older than ${days} days`);
+    assert.deepEqual(keeper.sweep(now), []);
+  }
+});
+
 test("a window still deletes exactly the days outside it, both forms, and nothing else in the dir", () => {
   const dir = tmp("window");
   const now = Date.parse("2026-11-30T06:00:00Z");
@@ -109,12 +128,12 @@ test("a window still deletes exactly the days outside it, both forms, and nothin
   }
   for (const other of ["collecting-since.txt", "replays.jsonl", "replay-state.json", "notes-2026-11-01.jsonl", "snapshots-2026-11-01.jsonl.bak"]) writeFileSync(join(dir, other), "x");
   const store = new SnapshotStore(dir, { retainDays: 21 });
-  // a day is outside the window when its first instant is more than 21 days before now (06:00 on the 30th): 1 to 9 November
+  // a day is outside the window when its last instant is more than 21 days before now (06:00 on the 30th): 1 to 8 November
   const removed = store.sweep(now);
   const expected = [];
-  for (let d = 1; d <= 9; d += 1) expected.push(`snapshots-2026-11-0${d}.jsonl${d % 2 ? ".gz" : ""}`);
+  for (let d = 1; d <= 8; d += 1) expected.push(`snapshots-2026-11-0${d}.jsonl${d % 2 ? ".gz" : ""}`);
   assert.deepEqual(removed.sort(), expected.sort());
-  assert.deepEqual(listDayFiles(dir, ["snapshots"]).map((f) => f.day), Array.from({ length: 21 }, (_, i) => `2026-11-${String(i + 10).padStart(2, "0")}`));
+  assert.deepEqual(listDayFiles(dir, ["snapshots"]).map((f) => f.day), Array.from({ length: 22 }, (_, i) => `2026-11-${String(i + 9).padStart(2, "0")}`));
   for (const other of ["collecting-since.txt", "replays.jsonl", "replay-state.json", "notes-2026-11-01.jsonl", "snapshots-2026-11-01.jsonl.bak"]) assert.ok(existsSync(join(dir, other)), `${other} is not a day file of this store and stays`);
   assert.deepEqual(store.sweep(now), [], "a second sweep finds nothing more");
   assert.equal(store.dataHealth(now).retention, "21 days");
@@ -400,6 +419,119 @@ test("a failing append does not throw: the snapshot is still served from memory,
   const real = keeper.health();
   assert.equal(real.recording, false);
   assert.match(real.notRecording ?? "", /Not recording: the last write to snapshots-2026-11-09\.jsonl failed .* because (ENOTDIR|EEXIST)/);
+});
+
+test("a write that fails part way leaves a fragment; the next line starts on its own line, so the fragment costs one line and not two", async () => {
+  const dir = tmp("glued");
+  let full = false;
+  const keeper = new DayKeeper({
+    dir,
+    families: ["snapshots"],
+    appendImpl: (path, data) => {
+      // a full disk takes part of the line and then refuses, as a real ENOSPC write does
+      if (full) {
+        writeFileSync(path, data.slice(0, Math.floor(data.length / 2)), { flag: "a" });
+        throw diskFull();
+      }
+      writeFileSync(path, data, { flag: "a" });
+    },
+  });
+  const at = Date.parse("2026-11-09T20:00:00Z");
+  const file = join(dir, "snapshots-2026-11-09.jsonl");
+  const line = (n: number) => JSON.stringify({ n, pad: "x".repeat(40) });
+  const readable = async () => (await linesOf(file)).flatMap((l) => {
+    try {
+      return [(JSON.parse(l) as { n: number }).n];
+    } catch {
+      return [];
+    }
+  });
+  assert.equal(keeper.append("snapshots", at, line(1)), true);
+  full = true;
+  assert.equal(keeper.append("snapshots", at, line(2)), false);
+  assert.equal(readFileSync(file, "utf8").endsWith("\n"), false, "the torn fragment has no line end");
+  full = false;
+  assert.equal(keeper.append("snapshots", at, line(3)), true);
+  assert.equal(keeper.append("snapshots", at, line(4)), true);
+  assert.deepEqual(await readable(), [1, 3, 4], "every line that was written whole reads back; only the torn one is lost");
+  assert.equal((await linesOf(file)).length, 4, "the fragment is a line of its own");
+  assert.equal(readFileSync(file, "utf8").split("\n\n").length, 1, "and no blank line is added where none is needed");
+
+  // a process that starts on a file torn by a kill or a full disk does the same on its first append
+  writeFileSync(file, `${line(1)}\n{"n":2,"pa`);
+  const next = new DayKeeper({ dir, families: ["snapshots"] });
+  assert.equal(next.append("snapshots", at, line(5)), true);
+  assert.equal(next.append("snapshots", at, line(6)), true);
+  assert.deepEqual(await readable(), [1, 5, 6]);
+  // a file that ends whole, an empty one and a new one get nothing in front
+  for (const body of [`${line(1)}\n`, "", null]) {
+    const other = join(dir, "snapshots-2026-11-10.jsonl");
+    if (body === null) rmSync(other);
+    else writeFileSync(other, body);
+    assert.equal(new DayKeeper({ dir, families: ["snapshots"] }).append("snapshots", at + DAY, line(7)), true);
+    assert.equal(readFileSync(other, "utf8"), `${body ?? ""}${line(7)}\n`);
+  }
+});
+
+test("a full disk while a closed day waits: the compression fails and says so each pass, the original stays, and the first pass with room succeeds", async () => {
+  const dir = tmp("enospc");
+  const plain = join(dir, "snapshots-2026-11-09.jsonl");
+  const body = Buffer.from(`${Array.from({ length: 50 }, (_, i) => JSON.stringify({ at: i, pad: "z".repeat(100) })).join("\n")}\n`);
+  writeFileSync(plain, body);
+  let full = true;
+  const keeper = new DayKeeper({
+    dir,
+    families: ["snapshots"],
+    compress: {
+      afterWrite: () => {
+        if (full) throw diskFull();
+      },
+    },
+  });
+  const now = Date.parse("2026-11-11T03:00:00Z");
+  for (let pass = 0; pass < 3; pass += 1) {
+    const r = await keeper.maintain(now + pass * 3_600_000);
+    assert.equal(r.compressed?.ok, false);
+    assert.match(r.compressed && !r.compressed.ok ? r.compressed.reason : "", /could not be compressed: the disk is full \(ENOSPC\); the original is kept/);
+    assert.deepEqual(readdirSync(dir), ["snapshots-2026-11-09.jsonl"], "no temp file is left to take the room a later pass needs");
+    assert.ok(readFileSync(plain).equals(body));
+    const h = keeper.health(now);
+    assert.deepEqual([h.compression.pending, h.compression.lastError?.includes("the disk is full")], [1, true]);
+  }
+  // nothing here can free the room the compressed copy needs: that is the operator's (raise the disk or set a window)
+  full = false;
+  const after = await keeper.maintain(now + 4 * 3_600_000);
+  assert.equal(after.compressed?.ok, true);
+  assert.deepEqual(readdirSync(dir), ["snapshots-2026-11-09.jsonl.gz"]);
+  assert.deepEqual([keeper.health(now).compression.pending, keeper.health(now).compression.lastError], [0, undefined]);
+});
+
+test("the since marker is written again until it lands, so one failed write does not leave /healthz saying not recording for good", async () => {
+  const dir = tmp("since");
+  const marker = join(dir, "collecting-since.txt");
+  // the marker's name is taken by a directory, so the first write fails the way a full disk fails it
+  mkdirSync(marker);
+  const before = { ...process.env };
+  const realFetch = globalThis.fetch;
+  Object.assign(process.env, { NODE_ENV: "test", BTC_CURVE_DATA_DIR: dir, BTC_CURVE_PAIRS: "0", BTC_CURVE_COLLAR: "0", BTC_CURVE_SOURCE_DEADLINE_MS: "10000" });
+  // every venue answers at once with nothing in it: the cycle still runs to its end and writes its marker
+  globalThis.fetch = (async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+  try {
+    const service = (await import("../scripts/btcCurveReportService")) as { collectOnce: (now?: Date) => Promise<Snapshot> };
+    await service.collectOnce(new Date("2026-11-09T20:00:00Z"));
+    assert.equal(statSync(marker).isDirectory(), true);
+    rmdirSync(marker);
+    await service.collectOnce(new Date("2026-11-09T20:01:00Z"));
+    assert.equal(readFileSync(marker, "utf8"), "2026-11-09T20:00:00.000Z", "the second cycle wrote it, with the first cycle's time");
+    // and it is not rewritten once it is there
+    writeFileSync(marker, "kept");
+    await service.collectOnce(new Date("2026-11-09T20:02:00Z"));
+    assert.equal(readFileSync(marker, "utf8"), "kept");
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const k of Object.keys(process.env)) if (!(k in before)) delete process.env[k];
+    Object.assign(process.env, before);
+  }
 });
 
 test("pairs day files: nothing is deleted on load any more, however old; a restart reloads its window from gzip days; BTC_PAIRS_RETAIN_DAYS sets a window and follows the host service's setting when unset", async () => {

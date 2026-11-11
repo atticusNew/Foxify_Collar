@@ -215,7 +215,7 @@ test("the table: exact cents, every lag on one line, lag 0 marked as the upper b
   // lag 40: the data ends at t = 40 and the fill is due at t = 50: unknown, and no share is printed for it
   assert.deepEqual(cells("40 s"), ["40 s", "1", "0", "0", "(0/0)", "1", "0.000", "none", "none", "0.000", "no known outcome"]);
   assert.match(text, /\* lag 0 fills at the signal cycle itself: an upper bound nobody achieves\./);
-  assert.match(text, /Unknown 1: no stored cycle in time 1 \(1 of them because the data ends first\), fill read stale 0, fill read too old 0, fill read missing 0\./);
+  assert.match(text, /Unknown 1: no stored cycle in time 1 \(1 of them because the data ends first\), fill read stale 0, fill read too old 0, fill read missing 0, fill read not taken after the signal 0\./);
   assert.match(text, /2026-11-09: Old form only \(1 cycles of gaps, no books\): nothing can be replayed on this day\./);
   assert.match(text, /2026-11-10T12:00:10\.000Z\s+1h\s+74000\s+Kalshi\s+5\.900\s+captured\s+2026-11-10T12:00:20\.000Z\s+1\.800\s+18\.000/);
   assert.match(text, /What this does not model:\n- Paper only\./);

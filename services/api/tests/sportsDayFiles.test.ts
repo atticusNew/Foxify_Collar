@@ -54,9 +54,9 @@ test("sports window: SPORTS_VENUES_RETAIN_DAYS as a number deletes exactly the d
   const dir = tmp("window");
   fill(dir);
   const store = new SnapshotStore(dir, { retention: parseRetention("7", "SPORTS_VENUES_RETAIN_DAYS") });
-  // outside: a first instant more than 7 days before 23:00 on the 30th, so 1 to 23 November
-  assert.equal(store.sweep(now), 23);
-  assert.deepEqual(listDayFiles(dir, ["snapshots"]).map((f) => f.day), ["2026-11-24", "2026-11-25", "2026-11-26", "2026-11-27", "2026-11-28", "2026-11-29", "2026-11-30"]);
+  // outside: a last instant more than 7 days before 23:00 on the 30th, so 1 to 22 November
+  assert.equal(store.sweep(now), 22);
+  assert.deepEqual(listDayFiles(dir, ["snapshots"]).map((f) => f.day), ["2026-11-23", "2026-11-24", "2026-11-25", "2026-11-26", "2026-11-27", "2026-11-28", "2026-11-29", "2026-11-30"]);
   assert.equal(store.dataHealth(now).retention, "7 days");
 
   for (const raw of ["abc", "-3", "2.5"]) {

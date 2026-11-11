@@ -143,7 +143,8 @@ When a row is stale:
   `"freshness": "stale"`.
 - The gap is not added to the window, so it does not accrue persistence, and it is not written
   to the day file.
-- It does not count toward a lock episode, and it ends one that was running.
+- It does not count toward a lock episode, and it does not end one that was running: a stale
+  read shows nothing either way.
 
 The clean score is not changed by staleness. Score says how tradable the two books are. Edge
 is K minus P and Both sides. They stay separate.
@@ -185,15 +186,19 @@ so.
 A single cycle showing a lock says little: it may be one odd read. What matters is whether a lock
 stands. So the collector follows runs.
 
-**Definition.** A lock episode is a run of consecutive cycles in which the same pair (the same
-contract on both venues, bought the same way round) shows a lock after fees above zero, on fresh
-reads. It counts once it has lasted two or more consecutive cycles. A cycle with no lock, a stale
-read or a missing book ends it. A lock that flips direction (Yes on the other venue) is a
-different trade and starts a new run. So does the next 15-minute window. If the collector goes
-more than three intervals without a cycle, the run ends: it is no longer known to be consecutive.
+**Definition.** A lock episode is a run of cycles in which the same pair (the same contract on
+both venues, bought the same way round) shows a lock after fees above zero, on fresh reads. It
+counts once two or more cycles have shown it. It ends only when a fresh read shows the lock gone,
+or the contract is no longer listed (the market closed). A cycle that cannot be judged (a stale
+read, a book that did not answer) is not counted and does not end it. Before this rule a stale
+cycle ended the run, so one lock standing for ten minutes on the 15-minute window, read through
+Poly's 30-second cache, was counted as twenty episodes. A lock that flips direction (Yes on the
+other venue) is a different trade and starts a new run. So does the next 15-minute window. If
+the collector goes more than three intervals without a cycle, the run ends: it is no longer
+known to have stood.
 
 **What is recorded.** Start (the first cycle that showed the lock), end (the last cycle that
-showed it), duration in seconds (end minus start), the number of cycles, the minimum lock in
+showed it), duration in seconds (end minus start), the number of cycles that showed it, the minimum lock in
 cents per contract over the run, the minimum size over the run, and the value: minimum lock times
 minimum size. The size is the one the lock is already quoted at, the thinner of the two
 top-of-book levels taken. The JSON carries the value in cents (`valueCents`), like every other
@@ -220,18 +225,18 @@ gzipped. A clean stop (SIGTERM) ends the open runs and writes them. A hard kill 
 open at that moment.
 
 **Limits.** The cycle is ten seconds, so a duration is known to that grain: a 10-second episode
-is a lock seen on two reads ten seconds apart. On the 15-minute window the stale rule caps what
-can be followed. The Poly copy is rarely fresh for more than two cycles in a row, so most runs
-there end at about ten seconds whether or not the lock was still standing. The count and the
-durations on that tenor are lower bounds.
+is a lock seen on two reads ten seconds apart. On the 15-minute window about every third cycle
+is on a Poly copy too old to judge. Such a cycle is carried over, so a lock that went and came
+back inside it is counted as one episode, and the minimum lock and size are over the cycles
+that could be judged.
 
 Cycles inside one cache life read the same Poly copy. So a two-cycle episode is two Kalshi reads
 against one Poly snapshot. It shows that Kalshi's side held for ten seconds against a Poly quote
 that was true at one moment; it does not show that Poly's quote held. The one 15-minute episode
 in the first live run was exactly this: Kalshi 38 / 39 on both cycles, the same Poly copy
 (48 / 49) read at 1 and at 11 seconds old, a lock of 4.96 cents on 188 contracts, then the copy
-passed 15 seconds and the run ended. Only the venue's live feed can say how long such a lock
-really stood.
+passed 15 seconds (under the rule of that day, that ended the run). Only the venue's live feed
+can say how long such a lock really stood.
 
 On the hourly and the daily the 30-second bound admits every copy Poly's cache serves, so the
 stale rule rarely ends a run there. In the last minutes before a close the at-the-money contract
@@ -423,19 +428,32 @@ it was signalled:
 | --- | --- |
 | no stored cycle within one interval plus the tolerance (a gap, or the data ends) | `unknown` |
 | the pair or a leg is missing, the row is stale, or a read is older than `age` | `unknown` |
+| a book's copy was not taken after the signal (`sameRead`) | not the fill; a later cycle inside the same wait is, else `unknown` |
 | the top of book holds less than the size traded, or a side is empty | `gone` (size); no "sent anyway" figure, the depth below the top is not stored |
 | edge at the size traded is zero or more | `captured`, at the fill cycle's edge |
 | edge below zero | `gone` (edge), nothing captured; "sent anyway" carries the negative edge |
 
 `unknown` is never counted as captured, as gone, or as zero.
 
+**A fill needs a read taken after the signal.** A fill cycle counts only if both books' copies
+left the venue after the signal cycle: the cycle's time minus the copy's stored age, less one
+more second where the venue's cache gave the age (it is in whole seconds), must be later than
+the signal. Poly's copy is cached up to 30 seconds, so the cycle 10 seconds after a signal often
+prices the very copy the signal was read from; that is not a fill. The trade then waits for a
+later cycle inside the same wait (lag plus one interval plus `tolerance`) and is `unknown`
+(`sameRead`) if none read both books after the signal. With the default wait of 25 seconds that
+is common; `tolerance=25` gives every signal a cycle on a new Poly copy. Lag 0 is exempt: it is
+the signal cycle by definition.
+
 **One trade per episode.** A pair one way round is the lock run identity the episodes use
 (tenor, close, strike, both venue ids, which venue the Yes is on). After a signal there is no
-new one on it until a stored cycle at which the rule does not hold. A stretch with no stored
-cycle does not re-arm it. Unlike the page's episodes, one cycle is enough for a signal.
+new one on it until a stored cycle with reads that can be acted on shows the lock gone, the
+pair is not in the cycle, or a venue no longer lists it. A stale read, a read older than `age`,
+a book that did not answer and a stretch with no stored cycle do not re-arm it: nothing was
+seen to be false. Unlike the page's episodes, one cycle is enough for a signal.
 
 **What comes back**, per lag, for all tenors and per tenor: signals, captured, gone (edge,
-size), unknown (no cycle, stale read, old read, missing read), captured total, median and
+size), unknown (no cycle, stale read, old read, missing read, same read), captured total, median and
 worst captured edge, sent anyway, the share of known outcomes that survived the lag, the
 seconds from signal to fill; days covered, cycles replayed, old-form cycles, lines skipped; a
 row per day; the rule; and `assumptions`: both legs are assumed to fill together at the fill

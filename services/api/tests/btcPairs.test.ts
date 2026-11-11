@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BOOK_NOT_SERVED_YET_MS, EPISODE_KEEP, EPISODE_LABEL, EPISODE_MIN_CYCLES, STALE_AFTER_SEC, bandOf, closeEpisodes, emptyEpisodeBook, episodeSummary, lockEpisodesReport, lockSightings, pruneEpisodes, stepEpisodes, type EpisodeBook, type LockEpisode, type LockSighting, bookFailureOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, freshnessOf, horizonSet, kalshiEventTicker, legReadOf, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, staleBoundsFrom, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
+import { BOOK_NOT_SERVED_YET_MS, EPISODE_KEEP, EPISODE_LABEL, EPISODE_MIN_CYCLES, STALE_AFTER_SEC, bandOf, closeEpisodes, emptyEpisodeBook, episodeSummary, lockEpisodesReport, lockSightings, pruneEpisodes, stepEpisodes, unjudgedPairs, type EpisodeBook, type LockEpisode, type LockSighting, bookFailureOf, bundleOf, cleanScore, fifteenSet, gapHistoryKey, freshnessOf, horizonSet, kalshiEventTicker, legReadOf, lockOf, pairId, persistenceOf, polyEventSlug, recordGaps, regimeOf, selectStrikes, sigmaToClose, staleBoundsFrom, gridStep, strikeLevels, type GapHistory, type PairsReport, type StrikePair, type VenueUrls } from "../src/btcCurve/pairs";
 import { pickLabel, readLine, renderPairsBody, renderPairsHtml } from "../src/btcCurve/pairsHtml";
 import type { Ladder, VenueQuote } from "../src/btcCurve/types";
 
@@ -629,27 +629,53 @@ test("lock episodes: a run opens on the first cycle, is an episode from the seco
   assert.deepEqual(closeEpisodes(one.book, NOW + 5_000).finished, [], "a run of one cycle is dropped");
 });
 
-test("lock episodes: a one-cycle blip is not an episode; a stale cycle breaks a run; a change of direction or of contract starts a new one; missed cycles do not extend", () => {
+test("lock episodes: a one-cycle blip is not an episode; a stale cycle neither extends nor ends a run; a change of direction or of contract starts a new one; missed cycles do not extend", () => {
   // one cycle on, one off, one on, one off: nothing
   const blips = runCycles([[sighting()], [], [sighting()], []]);
   assert.deepEqual(blips.finished, []);
   assert.deepEqual(blips.book, { open: [], finished: [] });
 
-  // the real path: the same crossed books on five cycles, the third on a copy too old to judge. Two episodes, not one of 40 seconds.
-  let book = emptyEpisodeBook();
-  const finished: LockEpisode[] = [];
-  for (const [i, polyCache] of [3, 13, 23, 3, 13].entries()) {
-    const at = NOW + i * 10_000;
-    const step = stepEpisodes(book, lockSightings([fifteenAt(at, polyCache)]), at);
-    book = step.book;
-    finished.push(...step.finished);
-  }
-  assert.equal(finished.length, 1, "the stale cycle closed the first run");
-  assert.equal(finished[0].endedAt, new Date(NOW + 10_000).toISOString());
-  assert.equal(finished[0].durationSec, 10);
-  assert.equal(book.open.length, 1);
-  assert.equal(book.open[0].startedAtMs, NOW + 30_000, "and the lock after it is a new run");
-  assert.equal(episodeSummary(book, "fifteen", NOW + 40_000).episodes, 2);
+  // the real path: the same crossed books on whole cycles, as the collector steps them
+  const real = (cycles: Array<{ polyCache: number; quotes?: [number, number, number, number] }>, opts: { maxGapMs?: number } = {}) => {
+    let book = emptyEpisodeBook();
+    const finished: LockEpisode[] = [];
+    for (const [i, c] of cycles.entries()) {
+      const at = NOW + i * 10_000;
+      const sets = [fifteenAt(at, c.polyCache, c.quotes)];
+      const step = stepEpisodes(book, lockSightings(sets), at, { ...opts, unjudged: unjudgedPairs(sets) });
+      book = step.book;
+      finished.push(...step.finished);
+    }
+    return { book, finished };
+  };
+  // five cycles, the third on a copy too old to judge: one episode of 40 seconds still open, on the four cycles that showed the lock
+  const through = real([3, 13, 23, 3, 13].map((polyCache) => ({ polyCache })));
+  assert.deepEqual(through.finished, [], "the stale cycle did not close the run");
+  assert.deepEqual([through.book.open.length, through.book.open[0].startedAtMs, through.book.open[0].lastAtMs, through.book.open[0].cycles], [1, NOW, NOW + 40_000, 4]);
+  assert.equal(episodeSummary(through.book, "fifteen", NOW + 40_000).episodes, 1);
+  // one lock standing for ten minutes behind a cache refreshed every 30 seconds (copies 1, 11 and 21 seconds old) is one episode, not twenty
+  const standing = real(Array.from({ length: 60 }, (_, i) => ({ polyCache: (i * 10) % 30 })), { maxGapMs: 30_000 });
+  assert.deepEqual([standing.finished.length, standing.book.open.length, episodeSummary(standing.book, "fifteen", NOW + 590_000).episodes], [0, 1, 1]);
+  assert.deepEqual([standing.book.open[0].cycles, standing.book.open[0].startedAtMs, standing.book.open[0].lastAtMs], [40, NOW, NOW + 580_000]);
+  // a stale stretch longer than the gap limit is not a gap: the cycles came, they could not be judged
+  const longStale = real([3, 13, 23, 23, 23, 23, 23, 3].map((polyCache) => ({ polyCache })), { maxGapMs: 30_000 });
+  assert.deepEqual([longStale.finished.length, longStale.book.open[0].cycles, longStale.book.open[0].startedAtMs], [0, 3, NOW]);
+  // a fresh read with no lock ends it at the last cycle that showed it, stale cycles in between or not
+  const noLock: [number, number, number, number] = [51, 52, 51, 53];
+  const ended = real([{ polyCache: 3 }, { polyCache: 13 }, { polyCache: 23 }, { polyCache: 3, quotes: noLock }, { polyCache: 13 }]);
+  assert.deepEqual(ended.finished.map((e) => [e.startedAt, e.endedAt, e.cycles]), [[new Date(NOW).toISOString(), new Date(NOW + 10_000).toISOString(), 2]]);
+  assert.equal(ended.book.open[0].startedAtMs, NOW + 40_000, "and the lock after it is a new run");
+  // a stale row priced as no lock says nothing either way
+  assert.deepEqual(real([{ polyCache: 3 }, { polyCache: 13 }, { polyCache: 23, quotes: noLock }, { polyCache: 3 }]).finished, []);
+  // without the unjudged rows a run is not carried: a pair that is not in the cycle at all has gone
+  assert.equal(runCycles([[sighting()], [sighting()], [], [sighting()]]).finished.length, 1);
+  // a carried run is matched on the venue ids: a stale row for another contract under the same key does not carry it
+  const u = { horizon: "fifteen" as const, settlesAt: "2026-11-09T21:30:00Z", key: "above:73158.07", kalshiId: "KXBTC15M-26NOV091630-15", polyId: "cpc-btc-updown-15m-2026-11-09-2115z" };
+  const two = runCycles([[sighting()], [sighting()]]).book;
+  assert.equal(stepEpisodes(two, [], NOW + 20_000, { unjudged: [u] }).book.open.length, 1);
+  assert.equal(stepEpisodes(two, [], NOW + 20_000, { unjudged: [{ ...u, polyId: null }] }).book.open.length, 1, "a book that did not answer names no id");
+  assert.equal(stepEpisodes(two, [], NOW + 20_000, { unjudged: [{ ...u, polyId: "another-market" }] }).finished.length, 1);
+  assert.equal(stepEpisodes(two, [], NOW + 20_000, { unjudged: [{ ...u, settlesAt: "2026-11-09T21:45:00Z" }] }).finished.length, 1);
 
   // direction: Yes on Kalshi for three cycles, then Yes on Polymarket US for two. Two runs.
   const flipped = sighting({ yesOn: "polymarket_us", noOn: "kalshi" });
