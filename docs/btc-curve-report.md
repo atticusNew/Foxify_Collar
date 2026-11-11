@@ -194,12 +194,14 @@ closed sports day right after the reload peaked at 321 MB, 45 MB of it file cach
 page holds 24 hours of history here (`SPORTS_VENUES_WINDOW_HOURS`); with 72 the first run
 peaked at 394 MB. Those runs were before ProphetX was added to the sports page; it adds one
 history cell per game it lists per snapshot (18 of 43 games on 11 November), a few MB over 24
-hours by size, not measured in the 512 MB group.
+hours by size, not measured in the 512 MB group. Crypto.com, added after it, lists every game on
+the board: one more cell per game per snapshot, about 10 MB over 24 hours by size, and a list of
+each league's games kept between cycles (under 1 MB); also not measured in the 512 MB group.
 
-Disk with all three: the sports snapshots add about 65 MB a day raw and 10 MB gzipped at 43 games
-with ProphetX on 18 of them (a snapshot measured at 45 KB, 14% more than without ProphetX), on
-top of about 345 MB raw and 47 MB gzipped for the curve and pairs. The 3 GB disk holds the
-current day raw plus about 45 closed days, against about 55 without sports.
+Disk with all three: the sports snapshots add about 85 MB a day raw and 13 MB gzipped at 43 games
+with ProphetX on 18 of them and Crypto.com on all 43 (a snapshot measured at 59 KB, 30% more than
+before Crypto.com), on top of about 345 MB raw and 47 MB gzipped for the curve and pairs. The
+3 GB disk holds the current day raw plus about 42 closed days, against about 55 without sports.
 
 ## What it does not do
 
