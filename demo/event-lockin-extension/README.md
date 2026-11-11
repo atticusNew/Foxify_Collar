@@ -455,7 +455,13 @@ games listed, past locks):
   cutoff stands. Ask the venue two things before turning it on: that member OAuth tokens may trade
   in play, and the delay it applies.
 
-  **Combos through STX's quote** (off; `MEMBER_APP_COMBO_RFQ=1` on the service turns it on;
+  **Combos through STX's quote** (the default wherever STX quotes: `MEMBER_APP_COMBO_RFQ` unset or
+  `=auto` finds out from the venue. When a member holds a live combo the service asks STX's quote
+  path for a bid on it, in the background of a positions read, the same request the page would
+  make. A well-formed answer turns the combo rows on for everyone from the next read; a 404, which
+  is what STX answers today, leaves them riding to settlement and is asked again half an hour
+  later; anything else is asked again in five minutes. `/healthz?token=` says where it stands under
+  `lock.member.comboRfq`. `=1` forces it on without asking, `=0` forces it off, and
   `MEMBER_APP_COMBO_RFQ=preview` shows the flow before STX quotes, see the end of this paragraph). A
   combo (parlay) ticket has no resting book, so it cannot be partly sold into bids the way a single
   can. STX is building a "cash out" request-for-quote for combo holders; when it ships, the same
@@ -487,9 +493,11 @@ games listed, past locks):
   "Stays to settlement." Refusals in words: **Not yet** (`combo_quotes_unavailable`, STX's quote
   path answers 404), **Missed** (`combo_missed`), **All hit** (`combo_settling`), **Quote
   lapsed** (`quote_lapsed`, the quote expired between the tap and the accept; nothing sold), and
-  the makers passing or not pricing in time reads as no bids. Off (the default), a combo row
-  reads as before, "Rides to settlement on STX.", and a synthetic ticker is refused
-  (`parlay_unsupported`). Three things to settle with STX before turning it on: the quote path's
+  the makers passing or not pricing in time reads as no bids. Off (`=0`, and auto while STX's path
+  has not answered), a combo row reads as before, "Rides to settlement on STX.", and a synthetic
+  ticker is refused (`parlay_unsupported`). The quote path proves itself before auto turns a row
+  on; the accept is proven only by the first tap, so run one combo on STX's paper exchange the day
+  the path ships. Three things to settle with STX before real money rides on it: the quote path's
   real field names and whether partial sizes are quoted (the client takes the quantity the venue
   returns), how long a quote stands (the tap re-asks, so a few seconds is enough), and that the
   accepted fill posts as a regular order so the ticket's size drops in the portfolio read (the
