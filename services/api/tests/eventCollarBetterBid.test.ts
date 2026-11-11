@@ -23,7 +23,7 @@ import { computeTake } from "../src/eventCollar/crossVenue/collarSearch";
 import { walkPmAsks } from "../src/eventCollar/crossVenue/crossVenuePricer";
 import { walkKalshiBids } from "../src/eventCollar/crossVenue/earlyClose";
 import { rulesFor, tailCharge, tailProbabilities, type RuleCells, type TailProbabilities } from "../src/eventCollar/crossVenue/hedgeRouting";
-import { kalshiTakerFeeCents, walkNoAsks } from "../src/eventCollar/crossVenue/kalshiLadder";
+import { kalshiMakerFeeCents, kalshiTakerFeeCents, walkNoAsks } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { POLY_US_DEFAULT_COEFFICIENT, polyUsFeeMilli } from "../src/eventCollar/crossVenue/polymarketUs";
 import { DEFAULT_PROPHETX_FEE_BPS, buyCostCents } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { DEFAULT_CROSS_CONFIG, type PmBookLevel } from "../src/eventCollar/crossVenue/types";
@@ -33,6 +33,8 @@ const TAKE = DEFAULT_CROSS_CONFIG;
 const DEEP = 10_000_000;
 const KALSHI: VenueFee = { kind: "kalshi" };
 const KALSHI_FREE: VenueFee = { kind: "kalshi", restingBid: "free" };
+const KALSHI_AT_TAKER: VenueFee = { kind: "kalshi", restingBid: "taker_formula" };
+const KALSHI_M2: VenueFee = { kind: "kalshi", makerMultiplier: 2 };
 const POLY_US: VenueFee = { kind: "polymarket_us", coefficient: POLY_US_DEFAULT_COEFFICIENT };
 const NOVIG_LIVE: VenueFee = { kind: "novig", coefficient: 0.06, charged: true };
 const NOVIG_PREGAME: VenueFee = { kind: "novig", coefficient: 0.06, charged: false };
@@ -108,8 +110,15 @@ function takerFee(fee: VenueFee, sizeMilli: number, priceMilli: number): number 
   }
 }
 
+/**
+ * Kalshi's maker schedule, written out here apart from the module's own function:
+ * round up(M x 0.0175 x C x P x (1 - P)) dollars. In cents, with the size in thousandths of a
+ * contract and the price in whole cents: 175 x M x size x p x (100 - p) / 10^9.
+ */
+const kalshiMaker = (sizeMilli: number, priceMilli: number, m = 1): number => Math.ceil((175 * m * sizeMilli * (priceMilli / 10) * (100 - priceMilli / 10)) / 1_000_000_000);
+
 function makerFee(fee: VenueFee, sizeMilli: number, priceMilli: number): number {
-  if (fee.kind === "kalshi") return fee.restingBid === "free" ? 0 : kalshiTakerFeeCents(sizeMilli, priceMilli / 10);
+  if (fee.kind === "kalshi") return fee.restingBid === "free" ? 0 : fee.restingBid === "taker_formula" ? kalshiTakerFeeCents(sizeMilli, priceMilli / 10) : kalshiMaker(sizeMilli, priceMilli, fee.makerMultiplier ?? 1);
   if (fee.kind === "polymarket") return takerFee(fee, sizeMilli, priceMilli);
   return 0;
 }
@@ -146,44 +155,59 @@ test("better bid: a worked quote, every party's figure by hand", () => {
   assert.deepEqual([q.holder.soldToUsMilli, q.holder.soldToVenueBidsMilli, q.holder.keptMilli], [100_000, 0, 50_000]);
   assert.deepEqual([q.holder.floorCents, q.holder.capCents], [5933, 10_933]);
 
-  // us: $61.00 and the resting bid priced at the taker formula ($1.67) on Kalshi, $33.00 on the other venue, $100 back on either result
+  // us: $61.00 and Kalshi's maker fee on our resting bid, ceil(0.0175 x 100 x 0.61 x 0.39 = 41.6c) = 42c; $33.00 on the other venue; $100 back on either result
   assert.deepEqual(
     [q.us.holderVenueCostCents, q.us.holderVenueFeeCents, q.us.holderVenueFeeBasis, q.us.otherVenueCostCents, q.us.otherVenueFeeCents, q.us.payoutCents],
-    [6100, 167, "taker_formula", 3300, 0, 10_000],
+    [6100, 42, "maker_schedule", 3300, 0, 10_000],
   );
-  assert.deepEqual([q.us.ifSideWinsCents, q.us.ifSideLosesCents, q.us.lockedCents], [433, 433, 433]);
+  // $100.00 - $61.00 - 42c - $33.00
+  assert.deepEqual([q.us.ifSideWinsCents, q.us.ifSideLosesCents, q.us.lockedCents], [558, 558, 558]);
   // the tail charge is the router's, on a writer whose floor and cap are both 100 - 33
   assert.equal(q.us.tailChargeCents, tailCents(i, 33, 100_000));
   assert.equal(q.us.tailChargeCents, 12);
-  // the gain to share is the holder's $3.04 plus our $4.33 less the charge; our take is a tenth of it, rounded down
-  assert.deepEqual([q.us.takeCents, q.us.take.takeRule], [Math.floor((304 + 433 - 12) / 10), "share"]);
-  assert.equal(q.us.residualCents, 433 - 12 - 72);
-  // the bid stops at the venue's own offer, not at our take, and the quote says so
+  // the gain to share is the holder's $3.04 plus our $5.58 less the charge; our take is a tenth of it, rounded down
+  assert.deepEqual([q.us.takeCents, q.us.take.takeRule], [Math.floor((304 + 558 - 12) / 10), "share"]);
+  assert.equal(q.us.residualCents, 558 - 12 - 85);
+  // the bid stops at the venue's own offer, not at our take, and the quote says so; what is left over stays with us, on its own line
   assert.equal(q.us.bidLimitedBy, "venue_offer");
+  assert.equal(q.us.residualKeptBy, "us");
+  assert.equal(q.us.lockedCents, q.us.takeCents + q.us.tailChargeCents + q.us.residualCents);
 
   const win = settleBetterBid(q, "side_wins");
   const lose = settleBetterBid(q, "side_loses");
-  assert.deepEqual(win, { result: "side_wins", holderCents: 5933 + 5000, usCents: 433, holderVenueFeesCents: 167 + 167, otherVenueFeesCents: 0 });
-  assert.deepEqual(lose, { result: "side_loses", holderCents: 5933, usCents: 433, holderVenueFeesCents: 334, otherVenueFeesCents: 0 });
+  // the venue's fees: the taker's $1.67 from the holder and the maker's 42c from us
+  assert.deepEqual(win, { result: "side_wins", holderCents: 5933 + 5000, usCents: 558, holderVenueFeesCents: 167 + 42, otherVenueFeesCents: 0 });
+  assert.deepEqual(lose, { result: "side_loses", holderCents: 5933, usCents: 558, holderVenueFeesCents: 209, otherVenueFeesCents: 0 });
 
-  // the venue charges our resting bid nothing: the difference is ours and the settlement shows it
-  assert.equal(settleBetterBid(q, "side_wins", { holderVenueFeeCents: 0 }).usCents, 433 + 167);
+  // a market that charges our resting bid nothing: the difference is ours and the settlement shows it
+  assert.equal(settleBetterBid(q, "side_wins", { holderVenueFeeCents: 0 }).usCents, 558 + 42);
+
+  // the same books with the bid priced at the full taker rate, as the record priced it before the schedule was in hand:
+  // $1.67 where the schedule charges 42c, so $1.25 less is left, the take is a tenth of a smaller gain, and the holder's cash is the same
+  const before = quoted({ ...i, holderVenue: { ...i.holderVenue, fee: KALSHI_AT_TAKER } });
+  assert.deepEqual([before.us.holderVenueFeeCents, before.us.holderVenueFeeBasis, before.us.lockedCents, before.us.takeCents], [167, "taker_formula", 433, 72]);
+  assert.equal(before.holder.cashCents, q.holder.cashCents);
   assert.deepEqual(q.available, { holderVenueBidMilli: 500_000, otherVenueAskMilli: 500_000 });
 });
 
 test("better bid: with no offer in the way the bid climbs until one more step would leave us short of our take", () => {
   const i = inputs({ sellMilli: 100_000, bids: [level(580, 500_000)], bestAskMilli: null, asks: [level(330, 500_000)] });
   const q = quoted(i);
-  // at 64c: we pay $64.00 + $1.62 + $33.00 = $98.62 for $100; the holder nets $64.00 - $1.62 = $62.38
-  assert.equal(q.bidMilli, 640);
-  assert.deepEqual([q.holder.cashCents, q.holder.improvementCents, q.us.lockedCents], [6238, 609, 138]);
-  assert.deepEqual([q.us.takeCents, q.us.tailChargeCents, q.us.residualCents, q.us.bidLimitedBy], [73, 12, 53, "our_take"]);
+  // at 65c: we pay $65.00 + the maker's ceil(0.0175 x 100 x 0.65 x 0.35 = 39.8c) = 40c + $33.00 = $98.40 for $100;
+  // the holder nets $65.00 - the taker's ceil(0.07 x 100 x 0.65 x 0.35 = 159.25c) = $1.60, which is $63.40
+  assert.equal(q.bidMilli, 650);
+  assert.deepEqual([q.holder.cashCents, q.holder.improvementCents, q.us.lockedCents], [6340, 711, 160]);
+  // the gain is $7.11 + $1.60 - 12c = $8.59; a tenth, rounded down, is 85c
+  assert.deepEqual([q.us.takeCents, q.us.tailChargeCents, q.us.residualCents, q.us.bidLimitedBy], [85, 12, 63, "our_take"]);
   assert.equal(q.us.lockedCents, q.us.takeCents + q.us.tailChargeCents + q.us.residualCents);
-  // one step up, 65c, leaves $100 - $65.00 - $1.60 - $33.00 = 40c: less than the take and the charge
-  const stepUp = betterBidAt(i, 650);
+  // one step up, 66c, leaves $100 - $66.00 - 40c - $33.00 = 60c: less than the take and the charge
+  const stepUp = betterBidAt(i, 660);
   assert.ok(typeof stepUp !== "string");
-  assert.deepEqual([stepUp.lockedCents, stepUp.feasible], [40, false]);
+  assert.deepEqual([stepUp.lockedCents, stepUp.feasible], [60, false]);
   assert.ok(stepUp.residualCents < 0);
+  // the lower fee on our bid went to the holder: priced at the taker rate the bid stops a step lower and pays them $1.02 less
+  const before = quoted({ ...i, holderVenue: { ...i.holderVenue, fee: KALSHI_AT_TAKER } });
+  assert.deepEqual([before.bidMilli, before.holder.cashCents, q.holder.cashCents - before.holder.cashCents], [640, 6238, 102]);
 });
 
 test("better bid: our bid stands behind the venue's own bidders at its price or better", () => {
@@ -198,8 +222,8 @@ test("better bid: our bid stands behind the venue's own bidders at its price or 
   // holder: $3.00 + 95 x 59c = $59.05, fees 9c + ceil(0.07 x 95 x 0.59 x 0.41) = 9c + $1.61
   assert.deepEqual([q.holder.grossCents, q.holder.feeCents, q.holder.cashCents], [5905, 170, 5735]);
   assert.equal(q.holder.improvementCents, 5735 - (5525 - 174));
-  // us: 95 x 59c = $56.05 + $1.61 on the holder's venue, 95 x 33c = $31.35 on the other, $95 back
-  assert.deepEqual([q.us.holderVenueCostCents, q.us.holderVenueFeeCents, q.us.otherVenueCostCents, q.us.payoutCents, q.us.lockedCents], [5605, 161, 3135, 9500, 9500 - 5605 - 161 - 3135]);
+  // us: 95 x 59c = $56.05 + the maker's ceil(0.0175 x 95 x 0.59 x 0.41 = 40.2c) = 41c on the holder's venue, 95 x 33c = $31.35 on the other, $95 back
+  assert.deepEqual([q.us.holderVenueCostCents, q.us.holderVenueFeeCents, q.us.otherVenueCostCents, q.us.payoutCents, q.us.lockedCents], [5605, 41, 3135, 9500, 9500 - 5605 - 41 - 3135]);
   // if the other side cannot be bought, the 95 go back into the 55c bid: the 60c bid is gone
   assert.ok(q.oneLeg.ok);
   assert.deepEqual([q.oneLeg.paidCents, q.oneLeg.soldBackGrossCents, q.oneLeg.worstPriceMilli], [5605, 5225, 550]);
@@ -217,6 +241,8 @@ const SCHEDULES: Array<{ name: string; holder: VenueFee; other: VenueFee; holder
   { name: "Kalshi / Polymarket", holder: KALSHI, other: POLYMARKET, holderRules: KALSHI_RULES, otherRules: OTHER_RULES },
   { name: "Kalshi / a fee-folded book", holder: KALSHI, other: FOLDED, holderRules: KALSHI_RULES, otherRules: OTHER_RULES },
   { name: "Kalshi, resting bid free / Polymarket US", holder: KALSHI_FREE, other: POLY_US, holderRules: KALSHI_RULES, otherRules: OTHER_RULES },
+  { name: "Kalshi, resting bid at the taker rate / Polymarket US", holder: KALSHI_AT_TAKER, other: POLY_US, holderRules: KALSHI_RULES, otherRules: OTHER_RULES },
+  { name: "Kalshi, maker multiplier 2 / Polymarket", holder: KALSHI_M2, other: POLYMARKET, holderRules: KALSHI_RULES, otherRules: OTHER_RULES },
   { name: "Polymarket US / Kalshi", holder: POLY_US, other: KALSHI, holderRules: OTHER_RULES, otherRules: KALSHI_RULES },
   { name: "Polymarket US / Novig once live", holder: POLY_US, other: NOVIG_LIVE, holderRules: OTHER_RULES, otherRules: rulesFor("novig", "nfl") },
   { name: "Polymarket US / ProphetX", holder: POLY_US, other: PROPHETX, holderRules: OTHER_RULES, otherRules: rulesFor("prophetx", "nfl") },
@@ -370,14 +396,50 @@ test("better bid: deeper books are walked level by level and agree with the hous
 // ---------------------------------------------------------------------------
 
 test("better bid: maker and taker on each venue, as the code has the schedules", () => {
-  // Kalshi: the holder pays the taker fee; our resting bid is priced at the same formula unless set free
+  // Kalshi: the holder pays the taker fee; our resting bid pays the maker schedule, a quarter of the taker rate
   const onKalshi = quoted(inputs({ holderFee: KALSHI, tail: SAME_RULES }));
-  assert.equal(onKalshi.us.holderVenueFeeBasis, "taker_formula");
-  assert.equal(onKalshi.us.holderVenueFeeCents, kalshiTakerFeeCents(100_000, onKalshi.bidMilli / 10));
+  assert.equal(onKalshi.us.holderVenueFeeBasis, "maker_schedule");
+  assert.equal(onKalshi.us.holderVenueFeeCents, kalshiMaker(100_000, onKalshi.bidMilli));
   assert.equal(onKalshi.holderVenue.feeFromHolderCents, kalshiTakerFeeCents(100_000, onKalshi.bidMilli / 10));
+  assert.equal(onKalshi.holderVenue.feeFromUsCents, onKalshi.us.holderVenueFeeCents);
+  // the two comparisons: the full taker rate (what the record used before the schedule was in hand) and nothing at all
+  const atTaker = quoted(inputs({ holderFee: KALSHI_AT_TAKER, tail: SAME_RULES }));
+  assert.deepEqual([atTaker.us.holderVenueFeeCents, atTaker.us.holderVenueFeeBasis], [kalshiTakerFeeCents(100_000, atTaker.bidMilli / 10), "taker_formula"]);
   const free = quoted(inputs({ holderFee: KALSHI_FREE, tail: SAME_RULES }));
   assert.deepEqual([free.us.holderVenueFeeCents, free.us.holderVenueFeeBasis], [0, "free_by_setting"]);
-  assert.ok(free.holder.cashCents > onKalshi.holder.cashCents, "a fee we do not pay is passed on in the bid");
+  assert.ok(onKalshi.holder.cashCents > atTaker.holder.cashCents, "a fee we do not pay is passed on in the bid");
+  assert.ok(free.holder.cashCents >= onKalshi.holder.cashCents);
+  // a market with a multiplier: the same formula times M
+  const doubled = quoted(inputs({ holderFee: KALSHI_M2, bestAskMilli: 620, tail: SAME_RULES }));
+  assert.deepEqual([doubled.bidMilli, doubled.us.holderVenueFeeCents, doubled.us.holderVenueFeeBasis], [610, 84, "maker_schedule"]);
+  // a multiplier that is not a positive number is not guessed at
+  const bad = quoteBetterBid(inputs({ holderFee: { kind: "kalshi", makerMultiplier: 0 }, tail: SAME_RULES }));
+  assert.deepEqual([bad.ok, !bad.ok && bad.code], [false, "fee_unpriced"]);
+
+  // the schedule itself, by hand: round up(M x 0.0175 x C x P x (1 - P)) dollars
+  // 100 contracts at 50c: 0.0175 x 100 x 0.25 = $0.4375, so 44c. The taker's is 0.07 x 100 x 0.25 = $1.75: four times it
+  assert.deepEqual([kalshiMakerFeeCents(100_000, 50), kalshiTakerFeeCents(100_000, 50)], [44, 175]);
+  // one contract at 50c: 0.4375c, so 1c. A hundredth of a contract: still 1c, never nothing
+  assert.deepEqual([kalshiMakerFeeCents(1000, 50), kalshiMakerFeeCents(10, 50)], [1, 1]);
+  // 100 at 61c: 0.0175 x 100 x 0.61 x 0.39 = 41.6c, so 42c; 400 at 20c: 0.0175 x 400 x 0.2 x 0.8 = $1.12 exactly, no rounding
+  assert.deepEqual([kalshiMakerFeeCents(100_000, 61), kalshiMakerFeeCents(400_000, 20)], [42, 112]);
+  // the multiplier: M = 2 doubles the fee before the rounding, M = 0.5 halves it (43.75c x 2 = 87.5c, so 88c; 21.875c, so 22c)
+  assert.deepEqual([kalshiMakerFeeCents(100_000, 50, 2), kalshiMakerFeeCents(100_000, 50, 0.5)], [88, 22]);
+  // nothing at a price that cannot trade or on no size; a multiplier that is not positive is an error, not a free fee
+  assert.deepEqual([kalshiMakerFeeCents(100_000, 0), kalshiMakerFeeCents(100_000, 100), kalshiMakerFeeCents(0, 50)], [0, 0, 0]);
+  assert.throws(() => kalshiMakerFeeCents(100_000, 50, 0), /multiplier/);
+  assert.throws(() => kalshiMakerFeeCents(100_000, 50, Number.NaN), /multiplier/);
+  // never under the venue's figure and never a cent more than the round-up: every whole-cent price, several sizes
+  for (const size of [10, 1000, 7530, 100_000, 2_500_000]) {
+    for (let p = 1; p <= 99; p++) {
+      const exactCents = (1.75 * size * p * (100 - p)) / 10_000_000;
+      const fee = kalshiMakerFeeCents(size, p);
+      assert.ok(fee >= exactCents - 1e-9 && fee < exactCents + 1, `${size} at ${p}c: ${fee} against ${exactCents}`);
+      assert.ok(fee <= kalshiTakerFeeCents(size, p), `${size} at ${p}c: the maker's is never over the taker's`);
+    }
+  }
+  // a size no float product holds exactly: 50,000,000 contracts at 50c is $218,750.00
+  assert.equal(kalshiMakerFeeCents(50_000_000_000, 50), 21_875_000);
 
   // Polymarket US: the fee is the taker's; the holder pays it, our resting bid pays nothing
   const onPolyUs = quoted(inputs({ holderFee: POLY_US, tail: SAME_RULES }));
@@ -463,10 +525,13 @@ test("better bid: every refusal is typed and says why in plain words", () => {
 
   // the prices: 58c and 42c make $1 before any fee
   assert.equal(code(inputs({ asks: [level(420)] })).code, "no_improvement");
-  // 58c and 40c leave 2c a contract: a bid one step up at 59c leaves 1c, and the fee on our resting bid is more than that
-  assert.equal(code(inputs({ asks: [level(400)] })).code, "no_improvement");
-  // 58c and 39c leave room after fees (33c on 100 contracts at a 59c bid), less than the tail charge and our minimum take together
-  assert.equal(code(inputs({ asks: [level(390)] })).code, "take_eats_it");
+  // 58c and 41c leave 1c a contract: a bid one step up at 59c leaves nothing, and the 43c fee on our resting bid makes it a loss
+  assert.equal(code(inputs({ asks: [level(410)] })).code, "no_improvement");
+  // 58c and 40.5c leave room after fees (7c on 100 contracts at a 59c bid: $100 - $59.00 - 43c - $40.50), less than the tail charge and our minimum take together
+  assert.equal(code(inputs({ asks: [level(405)] })).code, "take_eats_it");
+  // 58c and 40c quote: 57c is left at a 59c bid, which covers the 7c charge and the 25c minimum take, and the holder nets $1.01 more
+  const thinQuote = quoted(inputs({ asks: [level(400)] }));
+  assert.deepEqual([thinQuote.bidMilli, thinQuote.us.lockedCents, thinQuote.us.takeCents, thinQuote.us.take.takeRule, thinQuote.holder.improvementCents], [590, 57, 25, "minimum", 101]);
 
   // room before the tail charge, none after: a venue pair that splits on ties in a league that ties often
   const tieProne: TailProbabilities = { tie: 0.2, postponed: 0, abandoned: 0, corrected: 0 };
@@ -527,7 +592,7 @@ test("better bid: every rounding goes against the figure it sits in, and none is
 
   // the take is computeTake's own: the share down, the minimum up
   const big = quoted(inputs({ sellMilli: 100_000, bids: [level(580)], bestAskMilli: 620, asks: [level(330)], tail: SAME_RULES }));
-  assert.equal(big.us.take.takeShareCents, Math.floor(((big.holder.improvementCents + big.us.lockedCents) * TAKE.takeBps) / 10_000));
+  assert.equal(big.us.take.takeShareCents, Math.floor(((big.holder.improvementCents + big.us.lockedCents - big.us.tailChargeCents) * TAKE.takeBps) / 10_000));
   assert.equal(big.us.take.takeMinimumCents, 25);
 
   // whatever the grid or the venue's offer kept from the holder is on its own line, to the cent
@@ -556,7 +621,8 @@ test("one-leg loss: the first leg sold back into the venue's bid costs the price
   // our 61c bid was hit for 100; the other side cannot be bought; Kalshi's bids under us start at 58c
   const loss = oneLegLoss({ boughtMilli: 100_000, bidMilli: 610, bids: [level(580, 500_000)], fee: KALSHI });
   assert.ok(loss.ok);
-  assert.deepEqual(loss, { ok: true, paidCents: 6100, paidFeeCents: 167, soldBackGrossCents: 5800, soldBackFeeCents: 171, priceGapCents: 300, lossCents: 300 + 167 + 171, worstPriceMilli: 580 });
+  // in at the maker's 42c, out at the taker's $1.71
+  assert.deepEqual(loss, { ok: true, paidCents: 6100, paidFeeCents: 42, soldBackGrossCents: 5800, soldBackFeeCents: 171, priceGapCents: 300, lossCents: 300 + 42 + 171, worstPriceMilli: 580 });
 
   // bids at our price or better are gone: the holder's sale took them before it reached ours
   const behind = oneLegLoss({ boughtMilli: 95_000, bidMilli: 590, bids: [level(600, 5_000), level(590, 20_000), level(550, 60_000), level(540, 500_000)], fee: KALSHI });
@@ -580,7 +646,7 @@ test("one-leg loss: the first leg sold back into the venue's bid costs the price
     for (let b = v + 1; b <= 99; b++) {
       const l = oneLegLoss({ boughtMilli: 7530, bidMilli: b * 10, bids: [level(v * 10)], fee: KALSHI });
       assert.ok(l.ok);
-      assert.equal(l.lossCents, up(7530 * b * 10) - down(7530 * v * 10) + kalshiTakerFeeCents(7530, b) + kalshiTakerFeeCents(7530, v));
+      assert.equal(l.lossCents, up(7530 * b * 10) - down(7530 * v * 10) + kalshiMaker(7530, b * 10) + kalshiTakerFeeCents(7530, v));
       assert.ok(l.lossCents >= l.priceGapCents && l.priceGapCents >= 0);
     }
   }

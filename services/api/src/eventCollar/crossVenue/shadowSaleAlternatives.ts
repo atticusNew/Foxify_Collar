@@ -112,9 +112,15 @@ export interface ShadowSaleAlternatives {
   /** every other book tried, in the order tried */
   books: ShadowBetterBidOn[];
   /**
-   * The same line with our resting bid on the holder's venue priced at no fee. The record prices
-   * that bid at the venue's taker formula because the code has no maker schedule for it; this is
-   * how much of the answer rides on that.
+   * What our resting bid on the holder's venue was priced at on this line. "maker_schedule" is
+   * the venue's maker fee (betterBid.ts, decision 1), written on every line since 11 November
+   * 2026. A line without the field was written before that and priced the bid at the venue's
+   * full taker rate, four times the maker's, so it understates the gain.
+   */
+  restingBidFee?: "maker_schedule";
+  /**
+   * The same line with our resting bid on the holder's venue priced at no fee: a market that
+   * charges makers nothing. How much of the answer rides on the venue's fee on our bid.
    */
   ifRestingBidFree?: { ok: true; book: OtherBookKey; improvementCents: number; lockedCents: number } | { ok: false; refused: string };
 }
@@ -226,7 +232,7 @@ function measure(inputs: CounterfactualInputs, live: Extract<CrossQuoteResult, {
   const soldMilli = Math.min(positionMilli, centsUpOf(live.floorCents + 100 - live.capCents, inputs.contracts) * 10);
   const askCents = inputs.holderAskCents ?? inputs.pair?.kalshi.yesAskCents;
   const holderAskCents = typeof askCents === "number" && askCents > 0 && askCents < 100 ? askCents : null;
-  const base = { holderVenue, holderAskCents, soldMilli };
+  const base = { holderVenue, holderAskCents, soldMilli, restingBidFee: "maker_schedule" as const };
   const neither = (refused: string): ShadowSaleAlternatives => ({ ...base, ownSale: { ok: false, refused }, betterBid: { ok: false, refused, venuesPriced: 0 }, books: [] });
 
   if (holderVenue === "novig" || holderVenue === "prophetx") return neither("holder_venue_cannot_sell");
@@ -337,6 +343,11 @@ export interface ShadowSaleSummary {
     oneLeg: { priced: number; unbounded: number; totalCents: number; worstCents: number };
     /** the same lines with our resting bid priced at no fee */
     ifRestingBidFree: { existed: number; improvementTotalCents: number };
+    /**
+     * Lines with a better bid by what our resting bid was priced at: the venue's maker schedule,
+     * or (lines written before 11 November 2026) its full taker rate, which understates the gain.
+     */
+    restingBidFee: { makerSchedule: number; takerFormula: number };
     /** settled lines marked at the official result: what we would have been left with */
     settled: { lines: number; usCents: number };
   };
@@ -376,6 +387,7 @@ export function summarizeSaleAlternatives(positions: readonly ShadowPosition[]):
       byBook: {},
       oneLeg: { priced: 0, unbounded: 0, totalCents: 0, worstCents: 0 },
       ifRestingBidFree: { existed: 0, improvementTotalCents: 0 },
+      restingBidFee: { makerSchedule: 0, takerFormula: 0 },
       settled: { lines: 0, usCents: 0 },
     },
   };
@@ -420,6 +432,8 @@ export function summarizeSaleAlternatives(positions: readonly ShadowPosition[]):
     }
     if (b.ok) {
       out.betterBid.existed += 1;
+      if (s.restingBidFee === "maker_schedule") out.betterBid.restingBidFee.makerSchedule += 1;
+      else out.betterBid.restingBidFee.takerFormula += 1;
       out.betterBid.byBook[b.book].best += 1;
       out.betterBid.stakeCents += stake;
       out.betterBid.improvementTotalCents += b.improvementCents;

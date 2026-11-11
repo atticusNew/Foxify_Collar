@@ -526,6 +526,14 @@ export function renderShadowHtml(input: ShadowPageInput): string {
           "after every venue fee, our take and a charge for the two venues settling a tie or a called-off game differently. Stake is $1 a contract on the whole position." +
           (b.existed < MIN_SLICE_EVENTS ? ` ${plural(b.existed, "line")} is a small sample: read it as a count, not as a rate.` : ""),
       );
+    if (b.existed > 0) {
+      const fee = b.restingBidFee ?? { makerSchedule: 0, takerFormula: b.existed };
+      lines.push(
+        "Our own bid is priced at the venue's fee for an order that rests on its book, which is a quarter of its fee for an order that takes from the book, and is charged only if the bid is filled." +
+          (fee.takerFormula > 0 ? ` ${intStr(fee.takerFormula)} of these lines ${fee.takerFormula === 1 ? "was" : "were"} written before 11 November 2026 and priced our bid at the full fee, so ${fee.takerFormula === 1 ? "it understates" : "they understate"} the gain.` : "") +
+          ` Where the venue's price steps or its own offer stopped our bid short of passing everything on, what was left over stays with us: ${usd(b.residualCents)} across these lines, shown here apart from our take of ${usd(b.takeCents)}.`,
+      );
+    }
     if (o.priced > 0)
       lines.push(
         `Against the lock this record wrote on the same line, the own sale paid the user a median of ${moreOrLess(o.vsCollarMedianCents ?? 0)} than the lock's floor (${pct(o.vsCollarMedianBpsOfStake)} of stake) and ${moreOrLess(o.vsCollarTotalCents)} in total across ${plural(o.priced, "line")} (${pct(o.vsCollarTotalBpsOfStake)} of stake): ` +
