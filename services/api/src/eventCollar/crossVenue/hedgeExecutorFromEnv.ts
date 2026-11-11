@@ -4,7 +4,11 @@
  *   EVENT_HEDGE_STRATEGY=book   (default) simulated fill at the walked book
  *   EVENT_HEDGE_STRATEGY=rfq    RFQ first, book fallback — only venues with
  *                               credentials get an RFQ client; the rest fall
- *                               straight to the book
+ *                               straight to the book. EVENT_HEDGE_KILL_SWITCH=1
+ *                               stands in front of it as it does in front of
+ *                               live: no RFQ client is built, no request is
+ *                               sent, no quote can be accepted, and every hedge
+ *                               is simulated at the book
  *   EVENT_HEDGE_RFQ_WAIT_MS / EVENT_HEDGE_RFQ_POLL_MS  maker wait and poll
  *   EVENT_HEDGE_STRATEGY=live   a real order on Kalshi behind the rails in
  *                               liveHedge.ts (kill switch, allowlist, caps,
@@ -50,7 +54,7 @@ import { NovigOrderClient, novigTradeConfigFromEnv } from "./novigOrders";
 import { ProphetXOrderClient } from "./prophetxOrders";
 import { signerFromPem } from "./venuePositions";
 import { KalshiRfqClient, kalshiRfqCredentialsFromEnv } from "./kalshiRfq";
-import { LiveHedgeExecutor, liveRailsFromEnv, sentUnitsMilliOn, type LiveHedgeRails, type LiveOrderHook } from "./liveHedge";
+import { LiveHedgeExecutor, killSwitchFromEnv, liveRailsFromEnv, sentUnitsMilliOn, type LiveHedgeRails, type LiveOrderHook } from "./liveHedge";
 import {
   PolymarketRfqClient,
   maskBuilderCode,
@@ -85,6 +89,8 @@ export interface HedgeExecutorChoice {
   polymarketBuilderCode: string | null;
   /** the live rails, in live mode only */
   live: LiveHedgeView | null;
+  /** EVENT_HEDGE_KILL_SWITCH as read at start. It is in force in every strategy: on, no hedge order or quote request leaves this process. */
+  killSwitch: boolean;
   /** the Kalshi order client when credentials exist in live mode, for the operator's pre-flight */
   kalshiOrders: KalshiOrderClient | null;
   /** the aggregator's order client when the TRADE key exists in live mode via aggregator; the pod's balance and positions for the pre-flight */
@@ -129,10 +135,11 @@ export function hedgeExecutorFromEnv(
   const strategy: HedgeStrategy = raw === "rfq" ? "rfq" : raw === "live" ? "live" : "book";
   const builder = polymarketBuilderCodeFromEnv(env);
   const polymarketBuilderCode = builder.code ? maskBuilderCode(builder.code) : null;
+  const killSwitch = killSwitchFromEnv(env);
   if (strategy === "book") {
     const notes = ["book: simulated fill at the walked terms"];
     if (builder.note) notes.push(builder.note);
-    return { executor: new BookHedgeExecutor(), strategy, rfqVenues: [], notes, polymarketBuilderCode, live: null, kalshiOrders: null, aggregatorOrders: null, prophetxOrders: null, novigOrders: null };
+    return { executor: new BookHedgeExecutor(), strategy, rfqVenues: [], notes, polymarketBuilderCode, live: null, killSwitch, kalshiOrders: null, aggregatorOrders: null, prophetxOrders: null, novigOrders: null };
   }
   if (strategy === "live") {
     const rails = liveRailsFromEnv(env);
@@ -212,11 +219,18 @@ export function hedgeExecutorFromEnv(
       notes,
       polymarketBuilderCode,
       live: liveView(rails, venues, via),
+      killSwitch,
       kalshiOrders,
       aggregatorOrders,
       prophetxOrders,
       novigOrders,
     };
+  }
+  if (killSwitch) {
+    // no client is built, so nothing in this process can ask a maker for a price or accept one
+    const notes = ["rfq: KILL SWITCH ON; no request is sent and no quote can be accepted; every hedge is simulated at the book"];
+    if (builder.note) notes.push(builder.note);
+    return { executor: new BookHedgeExecutor(), strategy, rfqVenues: [], notes, polymarketBuilderCode, live: null, killSwitch, kalshiOrders: null, aggregatorOrders: null, prophetxOrders: null, novigOrders: null };
   }
   const clients: Partial<Record<HedgeVenue, RfqClient>> = {};
   const notes: string[] = [];
@@ -254,6 +268,7 @@ export function hedgeExecutorFromEnv(
     notes,
     polymarketBuilderCode,
     live: null,
+    killSwitch,
     kalshiOrders: null,
     aggregatorOrders: null,
     prophetxOrders: null,

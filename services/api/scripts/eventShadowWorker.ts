@@ -149,13 +149,15 @@ import {
   type HedgeExecutor,
   type HedgeIntent,
   type HedgeReceipt,
+  type HedgeVenue,
 } from "../src/eventCollar/crossVenue/hedgeExecutor";
 import { hedgeExecutorFromEnv } from "../src/eventCollar/crossVenue/hedgeExecutorFromEnv";
 import { inPlayFromEnv, inPlayMaxMsFromEnv } from "../src/eventCollar/crossVenue/lockWindow";
 import { liveRailsFromEnv } from "../src/eventCollar/crossVenue/liveHedge";
 import { capitalModel } from "../src/eventCollar/crossVenue/capitalModel";
 import { holderKeyCounts, pilotCheck, readDiskFacts, type PilotReport } from "../src/eventCollar/crossVenue/pilotCheck";
-import { appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, pendingRecordFor, refusalWords, summarizePending, type CapRefusalLine, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
+import { appendPending, capRefusals, clearable, judgeHedge, loadPending, lockMode, notRealRefusals, pendingId, pendingRecordFor, refusalWords, summarizePending, type CapRefusalLine, type PendingRecord } from "../src/eventCollar/crossVenue/hedgeFirst";
+import { LEAVE_NOT_OPEN, LEAVE_NOT_SOLD, LOCK_NOT_OPEN, isRealOnly, notRealOnly, notRealReason, realOnlyHoldersFromEnv, type NotRealWhy, type RealOnlyHolders } from "../src/eventCollar/crossVenue/realOnlyHolders";
 import {
   capRefusalDetails,
   capRefusalWords,
@@ -558,6 +560,15 @@ const LOCK_KEY = lockKeyFromEnv(process.env);
  * the per-holder cash summary (/api/shadow/holders), never on the public record.
  */
 const HOLDER_KEYS = holderKeysFromEnv(process.env, LOCK_KEY);
+/**
+ * REAL-ONLY HOLDERS (realOnlyHolders.ts): EVENT_SHADOW_REAL_ONLY_HOLDERS names the holders whose
+ * lock must have a real hedge behind it. For them a tap where the order would not truly leave is
+ * refused and nothing is written; everyone else keeps the paper path. Read once at start.
+ */
+let REAL_ONLY: RealOnlyHolders = realOnlyHoldersFromEnv(
+  process.env,
+  HOLDER_KEYS.holders.map((h) => h.holder),
+);
 const LOCK_ROUTES_ON = Boolean(LOCK_KEY) || HOLDER_KEYS.holders.length > 0;
 const LOCK_PATHS = new Set(["/api/shadow/lock", "/api/shadow/quote", "/api/shadow/markets", "/api/shadow/picks", "/api/shadow/positions", "/api/shadow/receipt", "/api/shadow/unwind", "/api/shadow/unwind/quote", "/api/shadow/ext-telemetry", "/api/shadow/member", "/api/shadow/member/connect", "/api/shadow/member/disconnect", "/api/shadow/member/account", "/api/shadow/member/games", "/api/shadow/member/history"]);
 /**
@@ -2101,6 +2112,25 @@ function couldSendReal(intent: HedgeIntent): boolean {
   return lockMode(hedgeChoice.live, intent).real || (hedgeChoice.strategy === "rfq" && hedgeChoice.rfqVenues.includes(intent.venue));
 }
 
+/**
+ * A REAL-ONLY HOLDER'S REFUSAL: one line on the pending trail (who, which market, why), and the
+ * operator's sentence back. Nothing was built, sent or written before this.
+ */
+function refuseNotReal(args: { ref: string; ticker: string; holder: string | null; source: "lock" | "leave"; why: NotRealWhy | "not_sold"; venue?: HedgeVenue; note?: string }): string {
+  const at = new Date().toISOString();
+  const reason = args.why === "not_sold" ? (args.note ?? "the sale went out and sold nothing") : notRealReason(args.why, args.venue);
+  const detail = `${args.holder ?? "the caller"} is real-only and ${args.source === "lock" ? "the hedge would not truly be bought" : "the hedge could not truly be sold"}: ${reason}`;
+  appendPendingOrAlert({ type: "not_real_refused", id: pendingId(args.ref, at), at, ref: args.ref, ticker: args.ticker, ...(args.holder ? { holder: args.holder } : {}), source: args.source, why: args.why, detail });
+  return detail;
+}
+
+/** Why an order for this intent would not truly leave through the live executor; null when it would. */
+function notRealWhy(intent: HedgeIntent | null): { why: NotRealWhy; venue?: HedgeVenue } | null {
+  if (!intent) return { why: "no_intent" };
+  const mode = lockMode(hedgeChoice.live, intent);
+  return mode.real ? null : { why: mode.why, venue: intent.venue };
+}
+
 type CapVerdict = { ok: true } | { ok: false; status: number; code: string; message: string; detail?: string; caps?: CapRefusalLine[] };
 
 /**
@@ -2139,6 +2169,8 @@ function pilotReport(): PilotReport {
   return pilotCheck({
     strategy: hedgeChoice.strategy,
     rfqVenues: hedgeChoice.rfqVenues,
+    killSwitch: hedgeChoice.killSwitch,
+    realOnly: { everyone: REAL_ONLY.all, notRealOnly: notRealOnly(REAL_ONLY, HOLDER_KEYS.holders.map((h) => h.holder)), notes: REAL_ONLY.notes },
     live: hedgeChoice.live,
     orderRails: hedgeChoice.live ? { maxContractsPerOrder: hedgeChoice.live.maxContractsPerOrder, maxContractsPerDay: hedgeChoice.live.maxContractsPerDay } : { maxContractsPerOrder: rails.maxUnitsPerOrderMilli / 1000, maxContractsPerDay: rails.maxUnitsPerDayMilli / 1000 },
     exposureCaps,
@@ -2302,6 +2334,34 @@ async function hedgeThenLock(args: {
  * Without the offset strike on the record the offset is the operator's hand. A Novig hedge leaves
  * the same way: the offset buys the holder's own outcome on the venue's market (novigOrders.ts).
  */
+/** The order that sells a lock's hedge back (on ProphetX and Novig, the offset that pairs with it), from the walked sale. */
+function hedgeSaleIntent(ticker: string, lock: ShadowPosition, sale: NonNullable<EarlyCloseQuote["hedgeSale"]>): HedgeIntent {
+  const unitsMilli = lock.hedgeUnitsMilli as number;
+  return sale.venue === "prophetx"
+    ? sellIntentForProphetX({ strikeId: sale.strikeId, offsetStrikeId: lock.hedgeOffsetStrikeId as string, armKey: ticker, unitsMilli, bestPriceMilli: sale.bestPriceMilli, avgPriceMilli: sale.avgPriceMilli, worstPriceMilli: sale.worstPriceMilli, grossCents: sale.grossCents })
+    : sale.venue === "novig"
+      ? sellIntentForNovig({ marketId: sale.marketId, outcomeId: sale.outcomeId, offsetOutcomeId: sale.offsetOutcomeId, armKey: ticker, unitsMilli, bestPriceMilli: sale.bestPriceMilli, avgPriceMilli: sale.avgPriceMilli, worstPriceMilli: sale.worstPriceMilli, grossCents: sale.grossCents })
+      : sellIntentForKalshi({ ticker, unitsMilli, ...sale });
+}
+
+/**
+ * Would the sale of this lock's hedge truly be sent? Null when it would. Otherwise why not: the
+ * same reasons as a buy (lockMode), or that the order cannot be built from what is on the record
+ * (a Polymarket hedge has no sell rail; a ProphetX or Novig hedge needs the offset's id).
+ */
+function saleNotRealWhy(ticker: string, lock: ShadowPosition, q: EarlyCloseQuote): { why: NotRealWhy; venue?: HedgeVenue } | null {
+  if (!q.hedgeSale || !lock.hedgeUnitsMilli) return { why: "no_intent" };
+  if (q.hedgeSale.venue === "prophetx" && !lock.hedgeOffsetStrikeId) return { why: "no_intent", venue: "prophetx" };
+  if (q.hedgeSale.venue === "novig" && !lock.hedgeOffsetOutcomeId) return { why: "no_intent", venue: "novig" };
+  let intent: HedgeIntent | null = null;
+  try {
+    intent = hedgeSaleIntent(ticker, lock, q.hedgeSale);
+  } catch {
+    intent = null;
+  }
+  return notRealWhy(intent);
+}
+
 async function sellHedge(
   ticker: string,
   ref: string,
@@ -2319,13 +2379,7 @@ async function sellHedge(
   }
   let receipt: HedgeReceipt;
   try {
-    const intent =
-      q.hedgeSale.venue === "prophetx"
-        ? sellIntentForProphetX({ strikeId: q.hedgeSale.strikeId, offsetStrikeId: lock.hedgeOffsetStrikeId as string, armKey: ticker, unitsMilli: lock.hedgeUnitsMilli, bestPriceMilli: q.hedgeSale.bestPriceMilli, avgPriceMilli: q.hedgeSale.avgPriceMilli, worstPriceMilli: q.hedgeSale.worstPriceMilli, grossCents: q.hedgeSale.grossCents })
-        : q.hedgeSale.venue === "novig"
-          ? sellIntentForNovig({ marketId: q.hedgeSale.marketId, outcomeId: q.hedgeSale.outcomeId, offsetOutcomeId: q.hedgeSale.offsetOutcomeId, armKey: ticker, unitsMilli: lock.hedgeUnitsMilli, bestPriceMilli: q.hedgeSale.bestPriceMilli, avgPriceMilli: q.hedgeSale.avgPriceMilli, worstPriceMilli: q.hedgeSale.worstPriceMilli, grossCents: q.hedgeSale.grossCents })
-          : sellIntentForKalshi({ ticker, unitsMilli: lock.hedgeUnitsMilli, ...q.hedgeSale });
-    receipt = await hedgeChoice.executor.execute(intent, ref);
+    receipt = await hedgeChoice.executor.execute(hedgeSaleIntent(ticker, lock, q.hedgeSale), ref);
     appendHedgeReceipt(RECEIPTS_PATH, receipt);
   } catch (err) {
     lastScanError = `hedge sale for ${ticker}: ${String(err instanceof Error ? err.message : err)}`;
@@ -2705,6 +2759,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
   const atIso = new Date().toISOString();
   // this caller's own locks: what they see as Protected, what they may not lock twice
   const ownLedger = lockLedgerPathFor(holder);
+  const realOnly = isRealOnly(REAL_ONLY, holder);
   if (url.pathname === "/api/shadow/markets") {
     // held: a lock this holder has on the market that is open, settled or void; one whose protection was removed frees the market
     const held = new Set(loadShadowPositions(ownLedger).filter((p) => p.status !== "closed").map((p) => p.ticker));
@@ -2963,6 +3018,21 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
     // a parlay at its last pick (parlay=1) heads with the highest floor; the other shapes ride along
     const result = url.searchParams.get("parlay") === "1" ? headedAt(q.result, PARLAY_LAST_PICK_TIER) : q.result;
     const held = !lockable(loadShadowPositions(ownLedger), parsed.value.ticker);
+    // a real-only holder is not shown a lock that the tap would refuse: where the hedge would not
+    // truly be bought, the quote says so (nothing is written for a quote; the tap writes the line)
+    if (realOnly && result.quote.ok) {
+      let headIntent: HedgeIntent | null = null;
+      try {
+        headIntent = hedgeIntentFor(parsed.value.ticker, result.quote.hedge, result.books);
+      } catch {
+        headIntent = null;
+      }
+      const paperOnly = notRealWhy(headIntent);
+      if (paperOnly) {
+        sendJson(res, 200, { ok: false, at: atIso, ticker: parsed.value.ticker, code: LOCK_NOT_OPEN.code, message: "Lock in is not open on this position right now.", ...(operator ? { detail: notRealReason(paperOnly.why, paperOnly.venue) } : {}) });
+        return;
+      }
+    }
     // The operator also sees the routing: which hedge route funded this quote and what every route
     // said. On an armed ticker the lock is pinned to Kalshi's own No side, so the verdict there is
     // what the live hedge will do; on an unarmed one it is the engine's free choice at this size.
@@ -3074,6 +3144,14 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       } catch (err) {
         lastScanError = `hedge for ${ticker}: ${String(err instanceof Error ? err.message : err)}`;
       }
+      // a real-only holder's lock exists only behind a real hedge: where the order would not truly
+      // leave, the tap is refused here, before the record, the caps or any order
+      const paperOnly = realOnly ? notRealWhy(intent) : null;
+      if (paperOnly) {
+        const detail = refuseNotReal({ ref, ticker, holder, source: "lock", ...paperOnly });
+        sendJson(res, 200, { ok: false, at: atIso, ticker, ...LOCK_NOT_OPEN, ...(operator ? { detail } : {}) });
+        return;
+      }
       let receipt: HedgeReceipt | null;
       if (intent && lockMode(hedgeChoice.live, intent).real) {
         const done = await hedgeThenLock({
@@ -3167,6 +3245,12 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, { ok: false, at: atIso, ticker, code: q.code, leg: q.leg, message: `${q.leg === "position" ? "Your side's" : "The hedge's"} book cannot take the size right now: ${q.detail}.` });
       return;
     }
+    // a real-only holder is not shown a leave that the tap would refuse (nothing is written for a quote)
+    const unsendable = realOnly && lock.hedgeFill ? saleNotRealWhy(ticker, lock, q) : null;
+    if (unsendable) {
+      sendJson(res, 200, { ok: false, at: atIso, ticker, ...LEAVE_NOT_OPEN, ...(operator ? { detail: notRealReason(unsendable.why, unsendable.venue) } : {}) });
+      return;
+    }
     sendJson(res, 200, { ok: true, at: atIso, ticker, ...(holder ? { holder } : {}), lastIso, unwind: unwindViewOf(lock, q) });
     return;
   }
@@ -3209,7 +3293,22 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
         sendJson(res, 200, { ok: false, at, ticker, code: q.code, leg: q.leg, message: `${q.leg === "position" ? "Your side's" : "The hedge's"} book cannot take the size right now: ${q.detail}. Nothing was closed.` });
         return;
       }
+      // a real-only holder's lock that holds a real hedge is closed only behind a real sale of it:
+      // refused before the order when the sale would not truly be sent, and nothing is closed
+      // when it went out and the venue sold nothing. The lock stands as it was either way.
+      const realHedge = realOnly && Boolean(lock.hedgeFill);
+      const unsendable = realHedge ? saleNotRealWhy(ticker, lock, q) : null;
+      if (unsendable) {
+        const detail = refuseNotReal({ ref: hedgeRefFor(ticker, holder), ticker, holder, source: "leave", ...unsendable });
+        sendJson(res, 200, { ok: false, at, ticker, ...LEAVE_NOT_OPEN, ...(operator ? { detail } : {}) });
+        return;
+      }
       const sale = await sellHedge(ticker, hedgeRefFor(ticker, holder), lock, q);
+      if (realHedge && !sale.sent) {
+        const detail = refuseNotReal({ ref: hedgeRefFor(ticker, holder), ticker, holder, source: "leave", why: "not_sold", note: sale.note });
+        sendJson(res, 200, { ok: false, at, ticker, ...LEAVE_NOT_SOLD, ...(operator ? { detail } : {}) });
+        return;
+      }
       if (!appendOrAlert({ type: "close", at, ticker, priced: true, source: "unwind", hedgeSent: sale.sent, ...closeLinesOf(sale.q) }, ownLedger)) {
         sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: `The record could not be written; nothing was closed on the record${sale.sent ? ", though the hedge sale went to the venue" : ""}.` });
         return;
@@ -4651,6 +4750,19 @@ function healthBody(): Record<string, unknown> {
         return { holder: h.holder, positions: loadShadowPositions(path).length, ledger: { path, ...ledgerStats(path) } };
       }),
       ...(HOLDER_KEYS.notes.length ? { holderNotes: HOLDER_KEYS.notes } : {}),
+      // whose lock must have a real hedge behind it or be refused (realOnlyHolders.ts): everyone, or the aliases named;
+      // the holders with a key who are not named, for whom a tap can still write a lock with nothing bought; the refusals so far
+      realOnly: (() => {
+        const refused = notRealRefusals(loadPending(PENDING_PATH));
+        return {
+          everyone: REAL_ONLY.all,
+          holders: REAL_ONLY.holders,
+          notRealOnly: notRealOnly(REAL_ONLY, HOLDER_KEYS.holders.map((h) => h.holder)),
+          sharedKeyRealOnly: REAL_ONLY.all,
+          ...(REAL_ONLY.notes.length ? { notes: REAL_ONLY.notes } : {}),
+          refusals: { count: refused.count, last: refused.last ? { at: refused.last.at, ref: refused.last.ref, source: refused.last.source, detail: refused.last.detail } : null },
+        };
+      })(),
       // the holder's venue account, read-only: configured or not, never the key
       holderPositions: { configured: Boolean(venueClient), ...(venueClient ? { api: venueClient.kind } : {}), ...(venueClientNote ? { note: venueClientNote } : {}), lastReadAt: positionsCache ? new Date(positionsCache.at).toISOString() : null },
       // the member app (memberApp.ts): on or off and why, where the store is, who is connected by alias and venue id; never a token, a code or the secret
@@ -4684,6 +4796,8 @@ function healthBody(): Record<string, unknown> {
     },
     hedge: {
       strategy: hedgeChoice.strategy,
+      // EVENT_HEDGE_KILL_SWITCH as read at start: on, no hedge order and no quote request leaves, in any strategy
+      killSwitch: hedgeChoice.killSwitch,
       // the venues every quote competes tonight (EVENT_HEDGE_VENUES), and any word in it the reader did not know
       offeredVenues: HEDGE_VENUES.routes.map((r) => HEDGE_VENUE_NAMES[r] ?? r),
       offeredVenuesSource: HEDGE_VENUES.source,
@@ -4794,7 +4908,10 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       return;
     }
     if (url.pathname === "/healthz") {
-      sendJson(res, 200, operator ? healthBody() : publicHealthBody());
+      // always 200 (the host's health check reads it); a token that was sent and is not the operator's
+      // is said, so a mistyped token is not mistaken for the operator's view having nothing in it
+      const sentToken = Boolean(url.searchParams.get("token") || req.headers["x-admin-token"] || req.headers.authorization);
+      sendJson(res, 200, operator ? healthBody() : { ...publicHealthBody(), ...(sentToken ? { operator: false, note: adminAuth.enabled ? "The token sent was not accepted. This is the public view." : "Operator views are off on this service (no operator token is set). This is the public view." } : {}) });
       return;
     }
     if (url.pathname === MEMBER_CALLBACK_PATH) {
@@ -5669,6 +5786,8 @@ export function wireLockEngine(fns: {
   inPlay?: boolean;
   /** the exposure caps, in place of the env's */
   exposureCaps?: ExposureCaps;
+  /** who is real-only, in place of EVENT_SHADOW_REAL_ONLY_HOLDERS */
+  realOnly?: RealOnlyHolders;
   /** whether a member's combination ticket is quoted and sold through the venue's request for quote, in place of MEMBER_APP_COMBO_RFQ: "auto" (the env's default) finds out from the venue, true forces it on, false off; "preview" quotes from a stand-in and refuses the tap. Setting it forgets what auto had learned. */
   memberComboRfq?: boolean | "preview" | "auto";
   /** the long/short-dialect venue's client behind the operator's key check, in place of the env's; null is "not read" */
@@ -5693,6 +5812,7 @@ export function wireLockEngine(fns: {
   if (fns.memberInPlay !== undefined) memberInPlay = fns.memberInPlay;
   if (fns.inPlay !== undefined) lockInPlay = fns.inPlay;
   if (fns.exposureCaps) exposureCaps = fns.exposureCaps;
+  if (fns.realOnly) REAL_ONLY = fns.realOnly;
   if (fns.memberComboRfq !== undefined) {
     memberComboRfq = fns.memberComboRfq === "preview" ? "preview" : fns.memberComboRfq === "auto" ? "auto" : fns.memberComboRfq ? "on" : "off";
     comboRfqPath = { state: "unknown", checkedAtMs: 0, why: null };

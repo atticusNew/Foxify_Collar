@@ -34,8 +34,9 @@
 #                                      * allows any ticker the engine priced
 #     the per-order and per-day caps   both have room for the order
 #     EVENT_HEDGE_LIVE_SEND=yes        any other value is a dry run
-#     EVENT_HEDGE_KILL_SWITCH          is off; set to 1, nothing leaves
-#                                      whatever else is set
+#     EVENT_HEDGE_KILL_SWITCH          is off; set to 1, no hedge order and
+#                                      no quote request leaves, in any
+#                                      strategy, whatever else is set
 #   Anything the rails hold back is simulated at the book, with the reason on
 #   the receipt. Two more things on this service act on a real account: with
 #   the member app set up (MEMBER_APP_*), a venue member who connects sells
@@ -520,7 +521,11 @@ services:
       #   EVENT_HEDGE_LIVE_TICKERS=KX...,KX...  allowlist; empty allows nothing
       #   EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER=25 / EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY=100
       #   EVENT_HEDGE_LIVE_SEND=yes             the only value that sends; anything else is a dry run
-      #   EVENT_HEDGE_KILL_SWITCH=1             nothing leaves, whatever else is set
+      #   EVENT_HEDGE_KILL_SWITCH=1             no hedge order leaves, whatever else is set. It stands
+      #                                         in front of every strategy: under rfq no request is
+      #                                         sent and no quote can be accepted. It does not reach
+      #                                         a member's own sale (MEMBER_APP_*) or the operator's
+      #                                         Kalshi account routes; the runbook's pause steps do.
       #   EVENT_HEDGE_LIVE_VIA=aggregator       the order goes through the aggregator's execution pod
       #                                         instead of our own Kalshi key: the pod holds a numbered
       #                                         Kalshi subaccount of ours, we sign with a TRADE key bound
@@ -537,6 +542,17 @@ services:
       #   look on the venue. Every attempt is two lines in lock-pending.jsonl beside the lock ledger
       #   (EVENT_SHADOW_LOCK_PENDING_PATH to move it). In a dry run nothing changes: the record is
       #   written and the fill is simulated at the book, as before.
+      # REAL-ONLY HOLDERS (realOnlyHolders.ts): the holders whose lock must have a real hedge behind
+      #   it, or not exist. For a holder named here, a tap where the order would not truly leave
+      #   (not live, kill switch, dry run, no key for the venue, game not armed) is refused in plain
+      #   words and nothing is written; the quote there says Lock in is not open; leaving a lock that
+      #   holds a real hedge needs a real sale of it. Everyone not named keeps the paper path above.
+      #   EVENT_SHADOW_REAL_ONLY_HOLDERS=ann,bob   holder aliases from EVENT_SHADOW_HOLDER_KEYS
+      #   EVENT_SHADOW_REAL_ONLY_HOLDERS=*         every caller: each holder, the shared key, the operator
+      #   Default: unset, nobody. An entry that is not an alias and not * is read as * (the safe
+      #   side) with a note in /healthz. Adding a person outside the company is two settings and no
+      #   code: their key in EVENT_SHADOW_HOLDER_KEYS, their alias here. /healthz?token= carries
+      #   lock.realOnly: who is named, the holders with a key who are not, and the refusals so far.
       #   Operator: GET /api/shadow/lock/pending is the trail (attempts by ending, open lines, strays);
       #   POST /api/shadow/lock/pending/clear?id=...&note=... marks one checked. /healthz?token= carries
       #   lock.hedgeFirst: `unresolved` and `strays` must both read empty.
@@ -563,7 +579,7 @@ services:
       #   Operator: /healthz?token= carries `exposure`: per game (the largest five), per venue and
       #   per holder, open now, the cap and the room left, and the refusals so far.
       #   The caps also stand in front of EVENT_HEDGE_STRATEGY=rfq when it holds a venue key: that
-      #   strategy can accept a real quote and has no other rail (no kill switch, no order caps).
+      #   strategy can accept a real quote; its only other rail is the kill switch (no order caps).
       # PILOT CHECK (pilotCheck.ts), operator: GET /pilot-check?token= (a page) and
       #   GET /api/shadow/pilot-check?token= (JSON). What must be true before a person outside the
       #   company holds a real-money lock, each answered yes, no, or "cannot be checked from here"

@@ -23,7 +23,9 @@ import { EXPOSURE_VENUES, EXPOSURE_VENUE_NAMES, uncappedSettings, venueCapOf, ty
 import type { HedgeIntent, HedgeVenue } from "./hedgeExecutor";
 import { lockMode, type LiveRailsView } from "./hedgeFirst";
 import { DEFAULT_LIVE_RAILS, checkRails, liveRailsFromEnv } from "./liveHedge";
+import { hedgeExecutorFromEnv } from "./hedgeExecutorFromEnv";
 import { HOLDER_ALIAS_RE } from "./lockGate";
+import { REAL_ONLY_ENV } from "./realOnlyHolders";
 
 export type PilotAnswer = "yes" | "no" | "cannot be checked from here";
 export const CANNOT: PilotAnswer = "cannot be checked from here";
@@ -84,6 +86,14 @@ export interface PilotFacts {
   strategy: string;
   /** venues where the request-for-quote strategy holds a key that can accept a quote; empty in any other strategy */
   rfqVenues: HedgeVenue[];
+  /** EVENT_HEDGE_KILL_SWITCH as read at start; in force in every strategy */
+  killSwitch: boolean;
+  /**
+   * Who is real-only (realOnlyHolders.ts): `everyone` when the setting is `*`; else `notRealOnly`
+   * lists the holders with a key who are not named, by alias. For a real-only holder a tap where
+   * the hedge would not truly be bought is refused instead of written on paper.
+   */
+  realOnly: { everyone: boolean; notRealOnly: string[]; notes: string[] };
   /** the live rails as this process read them at start; null when the strategy is not live */
   live: (LiveRailsView & { maxContractsPerOrder: number; maxContractsPerDay: number }) | null;
   /** the order rails as the env sets them, live or not (a positive whole number always: anything else is the default) */
@@ -198,8 +208,11 @@ const rfqCanSend = (f: PilotFacts): boolean => f.strategy === "rfq" && f.rfqVenu
  * Is every lock a real-money, hedge-first lock under these settings? `no` with the reason when
  * the settings say some or all are not; `cannot` when the settings allow it and the books decide.
  */
-function hedgeFirstInEffect(f: PilotFacts): { answer: "yes" } | { answer: "no"; why: string } | { answer: "cannot"; why: string; confirm: string } {
-  const paper = "every lock is a simulated record and nothing is bought";
+function hedgeFirstInEffect(f: PilotFacts): { answer: "yes"; note?: string } | { answer: "no"; why: string } | { answer: "cannot"; why: string; confirm: string } {
+  // every holder with a key is real-only: where an order would not truly leave, their tap is refused, not written on paper
+  const allRealOnly = f.realOnly.everyone || (f.holderKeys.accepted > 0 && f.realOnly.notRealOnly.length === 0);
+  const paper = allRealOnly ? "a real-only holder's tap is refused, so nobody outside can lock anything" : "every lock is a simulated record and nothing is bought";
+  const orMark = allRealOnly ? "" : `, or name each outside holder in ${REAL_ONLY_ENV} so their tap there is refused instead`;
   if (rfqCanSend(f)) {
     return { answer: "no", why: `the hedge strategy is request for quote, with a key that can accept a quote on ${venueNames(f.rfqVenues)}: the lock is written first and the hedge is asked for after it, and a quote it accepts is real money` };
   }
@@ -207,16 +220,19 @@ function hedgeFirstInEffect(f: PilotFacts): { answer: "yes" } | { answer: "no"; 
   if (f.live.killSwitch) return { answer: "no", why: `the kill switch is on: ${paper}` };
   if (f.live.dryRun) return { answer: "no", why: `sending is off (EVENT_HEDGE_LIVE_SEND is not yes): ${paper}` };
   if (f.live.venues.length === 0) return { answer: "no", why: `no hedge venue has a key to send with: ${paper}` };
+  const realOnlyNote = (where: string): string => `Every holder with a key is real-only (${REAL_ONLY_ENV}), so a tap ${where} is refused in plain words and nothing is written.`;
   if (!f.live.anyTicker) {
     const n = f.live.allowlist.length;
-    return { answer: "no", why: `only ${plural(n, "named game")} ${n === 1 ? "is" : "are"} armed (EVENT_HEDGE_LIVE_TICKERS): a lock on any other game is a simulated record with nothing bought, and it reads to its holder like any other lock. Set EVENT_HEDGE_LIVE_TICKERS=* to arm every game` };
+    if (allRealOnly) return { answer: "yes", note: `Only ${plural(n, "named game")} ${n === 1 ? "is" : "are"} armed (EVENT_HEDGE_LIVE_TICKERS). ${realOnlyNote("on any other game")}` };
+    return { answer: "no", why: `only ${plural(n, "named game")} ${n === 1 ? "is" : "are"} armed (EVENT_HEDGE_LIVE_TICKERS): a lock on any other game is a simulated record with nothing bought, and it reads to its holder like any other lock. Set EVENT_HEDGE_LIVE_TICKERS=* to arm every game${orMark}` };
   }
   const without = EXPOSURE_VENUES.filter((v) => !f.live?.venues.includes(v));
   if (without.length) {
+    if (allRealOnly) return { answer: "yes", note: `There is no key to send with on ${venueNames(without)}. ${realOnlyNote(`whose other side prices best on ${without.length === 1 ? "that venue" : "one of those venues"}`)}` };
     return {
       answer: "cannot",
       why: `no key to send with on ${venueNames(without)}. The other side of a lock is bought where it prices best, and a lock whose other side is there is written as a simulated record with nothing bought; it reads to its holder like any other lock. Which venue a lock will use depends on the books at that moment, so it cannot be told from the settings`,
-      confirm: `Confirm you accept that a lock whose other side prices best on ${venueNames(without)} is written with nothing bought behind it, or have that case refused before an outside holder is added. The hedge trail (/api/shadow/hedges) shows each lock's hedge and whether an order was sent.`,
+      confirm: `Name each outside holder in ${REAL_ONLY_ENV}, so a lock whose other side prices best on ${venueNames(without)} is refused for them instead of written with nothing bought behind it. Holders with a key and not named there now: ${f.realOnly.notRealOnly.length ? f.realOnly.notRealOnly.join(", ") : "none listed"}. The hedge trail (/api/shadow/hedges) shows each lock's hedge and whether an order was sent.`,
     };
   }
   return { answer: "yes" };
@@ -239,10 +255,18 @@ export function killSwitchSelfTest(): { ok: boolean; steps: Array<{ step: string
   const view: LiveRailsView = { killSwitch: false, dryRun: false, allowlist: [], anyTicker: true, venues: ["kalshi"] };
   const rails = { ...DEFAULT_LIVE_RAILS, dryRun: false, anyTicker: true };
   const on = lockMode({ ...view, killSwitch: true }, probe);
+  // the request-for-quote strategy with the switch on, given keys that are made up and never used: no client may be built
+  const rfqEnv = { EVENT_HEDGE_STRATEGY: "rfq", KALSHI_API_KEY_ID: "pilot-check-probe", KALSHI_PRIVATE_KEY_PEM: "pilot-check-probe" };
+  const rfqOn = hedgeExecutorFromEnv({ ...rfqEnv, EVENT_HEDGE_KILL_SWITCH: "1" });
+  const rfqOff = hedgeExecutorFromEnv(rfqEnv);
   const steps = [
     { step: "EVENT_HEDGE_KILL_SWITCH=1 is read as on, and unset as off", ok: liveRailsFromEnv({ EVENT_HEDGE_KILL_SWITCH: "1" }).killSwitch === true && liveRailsFromEnv({}).killSwitch === false },
     { step: "with it on the lock path does not treat a lock as real money; with it off it does", ok: on.real === false && on.why === "kill_switch" && lockMode(view, probe).real === true },
     { step: "with it on the executor refuses the order before any other rail; with it off the same order passes", ok: checkRails(probe, { ...rails, killSwitch: true }, 0, true)?.rail === "kill_switch" && checkRails(probe, rails, 0, true) === null },
+    {
+      step: "with it on the request-for-quote strategy builds nothing that can ask for a quote or accept one, key or no key; with it off and a key it does",
+      ok: rfqOn.killSwitch === true && rfqOn.rfqVenues.length === 0 && rfqOn.executor.strategy === "book" && rfqOff.killSwitch === false && rfqOff.rfqVenues.includes("kalshi") && rfqOff.executor.strategy === "rfq",
+    },
   ];
   return { ok: steps.every((s) => s.ok), steps };
 }
@@ -263,22 +287,24 @@ export function pilotCheck(f: PilotFacts): PilotReport {
     "hedge_first",
     "A real-money lock buys the hedge first, and the lock is written only behind a whole fill; that is the path every lock takes.",
     hf.answer === "cannot" ? CANNOT : hf.answer,
-    hf.answer === "yes" ? `${liveLine} ${onePath}` : hf.answer === "no" ? `Not for every lock: ${hf.why}. ${onePath}` : `${liveLine} ${onePath} But there is ${hf.why}.`,
+    hf.answer === "yes" ? `${liveLine} ${onePath}${hf.note ? ` ${hf.note}` : ""}` : hf.answer === "no" ? `Not for every lock: ${hf.why}. ${onePath}` : `${liveLine} ${onePath} But there is ${hf.why}.`,
     hf.answer === "cannot" ? hf.confirm : undefined,
   );
 
   // 2
   const ks = killSwitchSelfTest();
-  const ksState = !f.live ? `Its state now: not in force, because the hedge strategy is "${f.strategy}" and only live reads it.` : f.live.killSwitch ? "Its state now: ON. No order leaves; every lock is a simulated record." : "Its state now: off.";
-  const rfqNote = `The kill switch does not stop a request-for-quote order: with EVENT_HEDGE_STRATEGY=rfq and a key on ${venueNames(f.rfqVenues)}, a quote can be accepted for real whatever the switch says. Only the live strategy reads it.`;
+  const ksState = f.killSwitch
+    ? "Its state now: ON. No hedge order and no quote request leaves; a lock is a simulated record, or a refusal for a real-only holder."
+    : f.strategy === "book"
+      ? `Its state now: off. Nothing leaves under these settings in any case: the hedge strategy is "book".`
+      : "Its state now: off.";
+  const ksScope = "It stands in front of every hedge order this service can send: the live strategy's buys and sales, the operator's resend, and the request-for-quote strategy. It does not reach a member's own sale in their own venue account (the member app), which is the member's order, nor the operator's Kalshi account routes.";
   add(
     "kill_switch",
-    "The kill switch stops every order, and its state is known.",
-    ks.ok && !rfqCanSend(f) ? "yes" : "no",
-    rfqCanSend(f)
-      ? `${rfqNote} ${ksState}`
-      : ks.ok
-      ? `Tested here on a made-up order that is sent nowhere: ${ks.steps.map((s) => s.step).join("; ")}. ${ksState} It is read once when the service starts: to use it, set EVENT_HEDGE_KILL_SWITCH=1 on the service and let it restart. An order already at the venue is not recalled.`
+    "The kill switch stops every hedge order in every strategy, and its state is known.",
+    ks.ok ? "yes" : "no",
+    ks.ok
+      ? `Tested here on a made-up order that is sent nowhere: ${ks.steps.map((s) => s.step).join("; ")}. ${ksScope} ${ksState} It is read once when the service starts: to use it, set EVENT_HEDGE_KILL_SWITCH=1 on the service and let it restart. An order already at the venue is not recalled.`
       : `The test on a made-up order failed: ${ks.steps.filter((s) => !s.ok).map((s) => s.step).join("; ")}. ${ksState}`,
   );
 
