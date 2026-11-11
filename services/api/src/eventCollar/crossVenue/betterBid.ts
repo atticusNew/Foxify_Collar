@@ -251,7 +251,7 @@ function holderVenueRefusal(fee: VenueFee): { code: VenueRefusalCode; reason: st
     case "prophetx":
       return {
         code: "holder_venue_cannot_sell",
-        reason: "This venue has no sell. A holder leaves by buying the other outcome, which pays at the game and is not cash now, so there is no sale to improve on.",
+        reason: "This venue has no sell. A holder leaves by buying the other outcome, which pays at settlement and not when it is bought, so there is no sale to improve on.",
       };
     case "stx":
       return { code: "fee_unpriced", reason: "This venue's fee is set per account and is not on the market, so a sale there cannot be priced after fees here. The member page prices that sale." };
