@@ -339,7 +339,8 @@ export async function handleOperatorSignIn(req: IncomingMessage, res: ServerResp
   };
 
   if (url.pathname === OPERATOR_SIGN_OUT_PATH) {
-    if (method !== "POST") return go(OPERATOR_SIGN_IN_PATH);
+    // only this service's own page signs a browser out: another site's form posting here clears nothing
+    if (method !== "POST" || !sameOriginRequest(req.headers)) return go(OPERATOR_SIGN_IN_PATH);
     return go(OPERATOR_SIGN_IN_PATH, { "set-cookie": operatorCookieHeader("", 0, req.headers) });
   }
 

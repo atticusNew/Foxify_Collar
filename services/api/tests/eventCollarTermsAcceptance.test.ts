@@ -178,7 +178,11 @@ test("the settings: both set is a version in force; neither is none; one missing
   assert.deepEqual(termsStanding(V1, [rec("alice", "2026-10-01")], "alice"), { asked: true, accepted: false, terms: V1.terms }, "an older version does not count");
   assert.deepEqual(termsStanding(V1, [rec("alice", "2026-11-20", "operator")], "alice"), { asked: true, accepted: true, version: "2026-11-20", url: URL_V1, at: "2026-11-21T00:00:00.000Z", by: "operator" });
   assert.deepEqual(termsStanding({ required: true, terms: null, notes: ["x"] }, [rec("alice", "2026-11-20")], "alice"), { asked: true, accepted: false, terms: null }, "unreadable settings: nothing on the file counts");
-  assert.equal(acceptanceOf([rec("alice", "2026-11-20"), { ...rec("alice", "2026-11-20"), at: "later" }], "alice", "2026-11-20")?.at, "2026-11-21T00:00:00.000Z", "the first line is the acceptance");
+  assert.equal(acceptanceOf([rec("alice", "2026-11-20"), { ...rec("alice", "2026-11-20"), at: "later" }], "alice", V1.terms!)?.at, "2026-11-21T00:00:00.000Z", "the first line is the acceptance");
+  // the same label at another address is another document: the acceptance made against the first does not carry over
+  const moved: TermsInForce = { required: true, terms: { version: "2026-11-20", url: "https://atticustrade.example/terms/2026-11-20-revised" }, notes: [] };
+  assert.deepEqual(termsStanding(moved, [rec("alice", "2026-11-20")], "alice"), { asked: true, accepted: false, terms: moved.terms });
+  assert.deepEqual(termsOnRecordFor(moved, [rec("alice", "2026-11-20")], ["alice"])?.missing, ["alice"]);
   assert.deepEqual([termsRefusalMessage(V1.terms), termsRefusalMessage(null)], [NOT_ACCEPTED, BEING_UPDATED]);
 
   // the body of an acceptance
