@@ -304,7 +304,7 @@ test("could not be checked, for each reason; a failed read is never agrees", asy
     T,
   );
   const book = bookOf([kLine, pxLine, pxLost, pmLine]);
-  const pxRow = prophetxOrderFill("px-1", pxFills, { sell: false, wantedUnitsMilli: 12_000, feeBps: 200, venueOrderId: "v-1", instrument: "strike-no" });
+  const pxRow = prophetxOrderFill("px-1", pxFills, { sell: false, wantedUnitsMilli: 12_000, fee: 200, venueOrderId: "v-1", instrument: "strike-no" });
 
   const r = check(book, [
     read("kalshi", [], { status: "no_key", reason: "no key for kalshi", scope: "ledger_orders_only" }),
@@ -411,11 +411,11 @@ test("ProphetX and Novig: the venue's fills cost to the same cents by the same f
   const pxFills: ProphetXFill[] = [{ fillId: "f1", orderId: "px-1", venueFillId: "v1", shares: "12.000000", price: "0.250000", stakeUsd: "3.00", feeUsd: "0", occurredAt: "2026-11-03T18:10:01.000Z" }];
   const pxIntent: HedgeIntent = { venue: "prophetx", instrument: "strike-no", offsetInstrument: "strike-yes", armKey: T, outcome: "Los Angeles Lakers", unitsMilli: 12_000, book: { bestPriceMilli: 265, avgPriceMilli: 266, worstPriceMilli: 270, costCents: 320 }, maxCostCents: 320 };
   const pxBook = bookOf([await live(pxIntent, "2026-11-03T18:10:00.000Z", answer({ orderId: "px-1", venueOrderId: "v-1", via: "aggregator", ...prophetxFillMoney(sumProphetXFills(pxFills), 12_000, false, 200) }))]);
-  const ctx = { sell: false, wantedUnitsMilli: 12_000, feeBps: 200, venueOrderId: "v-1", instrument: "strike-no" };
+  const ctx = { sell: false, wantedUnitsMilli: 12_000, fee: 200, venueOrderId: "v-1", instrument: "strike-no" };
   const px = check(pxBook, [read("prophetx", [prophetxOrderFill("px-1", pxFills, ctx)], { scope: "ledger_orders_only" })]).venues[0];
   assert.deepEqual([px.verdict, px.scope, px.matched[0].ledger.costCents, px.matched[0].venue.costCents, px.matched[0].roundingAllowedCents], ["agrees", "ledger_orders_only", 318, 318, 0]);
   // the settlement fee is provided for at the rate in the service env: a changed rate shows as a cost difference, to the cent
-  const rate = check(pxBook, [read("prophetx", [prophetxOrderFill("px-1", pxFills, { ...ctx, feeBps: 300 })], { scope: "ledger_orders_only" })]).venues[0];
+  const rate = check(pxBook, [read("prophetx", [prophetxOrderFill("px-1", pxFills, { ...ctx, fee: 300 })], { scope: "ledger_orders_only" })]).venues[0];
   assert.deepEqual(rate.differing[0].differences.map((d) => [d.field, d.delta]), [["cost", 9], ["price", 8]]);
 
   // Novig: the venue's own list of the day. A hedge bought, then offset; the venue's fills say "buy" both times

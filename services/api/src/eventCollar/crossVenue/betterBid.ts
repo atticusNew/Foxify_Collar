@@ -38,9 +38,11 @@
  *                  charged on a game market only once the game is live (signedFeeAppliesPreGame,
  *                  signedFeeAppliesLive; novigOrders.ts point 3). Maker: nothing in the code. The
  *                  venue has NO SELL (novigOrders.ts point 4), so it can be W and cannot be V.
- *   ProphetX       Nothing at the match; buyCostCents (prophetxOrders.ts) counts 2% of the net
- *                  gain (DEFAULT_PROPHETX_FEE_BPS), taken at settlement and so only if the
- *                  contract wins. NO SELL (prophetxOrders.ts point 3): W only.
+ *   ProphetX       By league (prophetxOrders.ts): on most games nothing at the match and
+ *                  buyCostCents counts 2% of the net gain (DEFAULT_PROPHETX_FEE_BPS), taken at
+ *                  settlement and so only if the contract wins; on a maker/taker game (NHL)
+ *                  3.5% x p x (1 - p) per share at the trade (DEFAULT_PROPHETX_TAKER_BPS) and
+ *                  nothing at settlement. NO SELL (prophetxOrders.ts point 3): W only.
  *   Polymarket     The international book behind the hedge route "polymarket":
  *                  hedgeNotionalFeeCents (crossVenuePricer.ts), the config's hedgeFeeBps and
  *                  hedgeFeeFlatCents on the notional, both 0 by default. The config has one
@@ -180,7 +182,7 @@ export type VenueFee =
     }
   | { kind: "polymarket_us"; coefficient: number }
   | { kind: "novig"; coefficient: number; charged: boolean }
-  | { kind: "prophetx"; feeBps: number }
+  | { kind: "prophetx"; /** bps of net gains at settlement */ feeBps: number; /** bps of p x (1 - p) per share at the trade; 0 when absent */ tradeBps?: number }
   | { kind: "polymarket"; feeBps: number; flatCents: number }
   | { kind: "stx" }
   | { kind: "folded" };
@@ -473,8 +475,9 @@ function otherSideBuy(asks: PmBookLevel[], fee: VenueFee, sizeMilli: number): Ot
   const costCents = Math.ceil(w.microUsd / MICRO_PER_CENT);
   const shape = { costCents, avgPriceMilli: Math.ceil(w.microUsd / sizeMilli), worstPriceMilli: w.worstPriceMilli, microUsd: w.microUsd };
   if (fee.kind === "prophetx") {
-    const allIn = buyCostCents({ sharesMilli: sizeMilli, stakeCents: costCents, feesCents: 0 }, fee.feeBps);
-    return { ...shape, feeCents: allIn - costCents, feeTiming: "at_settlement_if_it_wins" };
+    const tradeBps = fee.tradeBps ?? 0;
+    const allIn = buyCostCents({ sharesMilli: sizeMilli, stakeCents: costCents, feesCents: 0 }, { gainBps: fee.feeBps, tradeBps });
+    return { ...shape, feeCents: allIn - costCents, feeTiming: tradeBps > 0 ? "at_trade" : "at_settlement_if_it_wins" };
   }
   const feeCents = takerFeeCents(fee, w);
   if (feeCents === null) return "fee_unpriced";

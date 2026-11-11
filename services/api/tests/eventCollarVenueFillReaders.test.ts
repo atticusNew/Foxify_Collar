@@ -219,10 +219,17 @@ test("ProphetX: the fills of each order our ledger names, costed with the fee ra
   const partner = fakeVenue({ ...POD_TIME, "GET /v1/prophetx/orders/px-1/fills": () => ({ status: 200, body: { fills } }) });
   const { reads, recon } = await check(bookOf([line]), { prophetx: podClients(partner).prophetx });
   assert.deepEqual(partner.seen.map((s) => `${s.method} ${s.path}`), ["GET /v1/time", "GET /v1/prophetx/orders/px-1/fills"]);
-  assert.deepEqual([reads[0].venue, reads[0].scope, reads[0].how], ["prophetx", "ledger_orders_only", "the aggregator's fills of each order our ledger names: 1 of 1 read, the settlement fee provided for at 2%"]);
+  assert.deepEqual([reads[0].venue, reads[0].scope, reads[0].how], ["prophetx", "ledger_orders_only", "the aggregator's fills of each order our ledger names: 1 of 1 read, each costed at its game's fee (2% of net gains at settlement; on a maker/taker league the fee at the trade)"]);
   const p = recon.venues[0];
   assert.deepEqual([p.verdict, p.matched[0].ledger.costCents, p.matched[0].venue.costCents, p.matched[0].venueIds], ["agrees", 318, 318, ["px-1", "v-1"]]);
   assert.match(p.reason, /only the orders our ledger names were read, so a fill we never recorded would not show$/);
+
+  // an NHL game: the lock costed the fill at the fee at the trade ($3.00 x 3.5% x 0.75 = 7.9c -> 8c), and the read back costs it the same way from the line's ticker
+  const NHL_T = "KXNHLGAME-26NOV03TBBUF-TB";
+  const nhlHook = answer({ orderId: "px-1", venueOrderId: "v-1", via: "aggregator", ...prophetxFillMoney(sumProphetXFills(fills), 12_000, false, { gainBps: 0, tradeBps: 350 }) });
+  const nhlLine = await new LiveHedgeExecutor({ prophetx: nhlHook }, RAILS, () => 0, { now: () => new Date("2026-11-03T18:10:00.000Z"), sleep: async () => undefined }).execute({ ...intent, armKey: NHL_T }, NHL_T);
+  const n = (await check(bookOf([nhlLine]), { prophetx: podClients(fakeVenue({ ...POD_TIME, "GET /v1/prophetx/orders/px-1/fills": () => ({ status: 200, body: { fills } }) })).prophetx })).recon.venues[0];
+  assert.deepEqual([n.verdict, n.matched[0].ledger.costCents, n.matched[0].venue.costCents], ["agrees", 308, 308]);
 
   // the order is known and its fills are empty: on our ledger and not at the venue
   const empty = fakeVenue({ ...POD_TIME, "GET /v1/prophetx/orders/px-1/fills": () => ({ status: 200, body: { fills: [] } }) });

@@ -15,17 +15,25 @@ import { intentFromHedge, sellIntentForProphetX } from "../src/eventCollar/cross
 import { LiveHedgeExecutor } from "../src/eventCollar/crossVenue/liveHedge";
 import {
   DEFAULT_PROPHETX_FEE_BPS,
+  DEFAULT_PROPHETX_TAKER_BPS,
   ProphetXOrderClient,
   buyCostCents,
   foldProphetXFee,
   ladderMicro,
   prophetxFeeBpsFromEnv,
+  prophetxFeeForLeague,
+  prophetxFeeForTicker,
+  prophetxFeeWords,
+  prophetxFillMoney,
+  prophetxTakerLeaguesFromEnv,
   rawAskMicroOf,
   rawBidMicroOf,
   snapDown,
   sumProphetXFills,
+  tradeFeeCents,
 } from "../src/eventCollar/crossVenue/prophetxOrders";
-import type { PmBook, ProphetXHedgeLeg } from "../src/eventCollar/crossVenue/types";
+import { requote } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
+import { DEFAULT_CROSS_CONFIG, type MatchedPair, type PmBook, type ProphetXHedgeLeg } from "../src/eventCollar/crossVenue/types";
 
 const keypair = (() => {
   const { privateKey } = generateKeyPairSync("ed25519");
@@ -313,4 +321,131 @@ test("live executor: a ProphetX hook under the rails — the allowlist is checke
   const unarmed = await exec.execute({ ...buyIntent(), armKey: "KXNBAGAME-OTHER" }, "ref");
   assert.equal(unarmed.fill?.simulated, true);
   assert.match(unarmed.fallbackReason ?? "", /KXNBAGAME-OTHER is not on the live allowlist/);
+});
+
+/* ------------------------------------------------------------------------------------------ */
+/* The fee by league: NHL is charged per share at the trade, every other league on net gains.   */
+/* ------------------------------------------------------------------------------------------ */
+
+const NHL_TICKER = "KXNHLGAME-26NOV11TBBUF-TB";
+const NHL = { gainBps: 0, tradeBps: 350 };
+
+test("prophetx fee by league: the ticker's series says the league; NHL is 3.5% x p x (1 - p) at the trade, every other league 2% of net gains; the env moves the rate and the leagues", () => {
+  assert.equal(DEFAULT_PROPHETX_TAKER_BPS, 350);
+  assert.deepEqual(prophetxFeeForTicker(NHL_TICKER, {}), NHL);
+  assert.deepEqual(prophetxFeeForTicker("KXNBAGAME-26OCT14LALBOS-BOS", {}), { gainBps: 200, tradeBps: 0 });
+  assert.deepEqual(prophetxFeeForTicker("KXNFLGAME-26NOV15NEDET-DET", {}), { gainBps: 200, tradeBps: 0 });
+  // a ticker that names no league we know, or none at all, is charged as most games are
+  for (const t of ["KXBTCD-26NOV11-T100000", "", undefined, null]) assert.deepEqual(prophetxFeeForTicker(t, {}), { gainBps: 200, tradeBps: 0 });
+  assert.deepEqual(prophetxFeeForLeague("NHL", {}), NHL);
+  // the env: each rate on its own, the league list, and "none"
+  assert.deepEqual(prophetxFeeForTicker(NHL_TICKER, { EVENT_PROPHETX_TAKER_BPS: "300", EVENT_PROPHETX_FEE_BPS: "150" }), { gainBps: 0, tradeBps: 300 });
+  assert.deepEqual(prophetxFeeForTicker("KXNBAGAME-26OCT14LALBOS-BOS", { EVENT_PROPHETX_TAKER_BPS: "300", EVENT_PROPHETX_FEE_BPS: "150" }), { gainBps: 150, tradeBps: 0 });
+  assert.deepEqual(prophetxFeeForTicker(NHL_TICKER, { EVENT_PROPHETX_TAKER_LEAGUES: "none" }), { gainBps: 200, tradeBps: 0 });
+  assert.deepEqual(prophetxFeeForTicker("KXNBAGAME-26OCT14LALBOS-BOS", { EVENT_PROPHETX_TAKER_LEAGUES: "NHL, nba" }), NHL);
+  assert.deepEqual(prophetxTakerLeaguesFromEnv({ EVENT_PROPHETX_TAKER_LEAGUES: " " }), ["nhl"], "blank is unset");
+  assert.deepEqual(prophetxFeeForTicker(NHL_TICKER, { EVENT_PROPHETX_TAKER_BPS: "junk" }), NHL, "a rate that is not a number is the schedule's");
+  assert.equal(prophetxFeeWords(NHL), "3.5% x p x (1 - p) per share at the trade");
+  assert.equal(prophetxFeeWords(200), "2% of net gains at settlement");
+});
+
+test("prophetx fee by league: an NHL book folds the trade fee, dearer than 2% of gains on a favourite and cheaper on an underdog, and unfolds to the same rung", () => {
+  const book: PmBook = { tokenId: "s", asks: [{ priceMilli: 400, sizeMilli: 50_000 }, { priceMilli: 800, sizeMilli: 50_000 }, { priceMilli: 200, sizeMilli: 50_000 }], bids: [{ priceMilli: 400, sizeMilli: 50_000 }], minOrderSizeShares: 1, tickMilli: 1 };
+  // 40c: 3.5% x 0.4 x 0.6 = 0.84c -> 9 milli. 80c: 0.56c -> 6 milli. 20c: 0.56c -> 6 milli
+  assert.deepEqual(foldProphetXFee(book, NHL).asks.map((l) => l.priceMilli), [409, 806, 206]);
+  // the same book at 2% of gains: 1.2c, 0.4c, 1.6c
+  assert.deepEqual(foldProphetXFee(book, 200).asks.map((l) => l.priceMilli), [412, 804, 216]);
+  // a bid at 40c: the offset buys the other strike at 60c and pays 3.5% x 0.6 x 0.4 on it
+  assert.deepEqual(foldProphetXFee(book, NHL).bids.map((l) => l.priceMilli), [391]);
+  // unfolded, the raw price sits at or just over the rung it came from and never a rung higher
+  const rawAsk = rawAskMicroOf(409, NHL);
+  assert.ok(rawAsk >= 400_000 && rawAsk < 401_000, String(rawAsk));
+  assert.ok(rawAsk + (350 * rawAsk * (1_000_000 - rawAsk)) / 1e10 <= 409_000);
+  const rawBid = rawBidMicroOf(391, NHL);
+  assert.ok(rawBid <= 400_000 && rawBid > 399_000, String(rawBid));
+  const ladder = ladderMicro(LADDER);
+  assert.equal(snapDown(ladder, rawAsk), 400_000);
+  assert.equal(snapDown(ladder, 1_000_000 - rawBid), 600_000);
+  // a bare number is still bps of net gains, as every caller before this passed it
+  assert.equal(rawAskMicroOf(412, { gainBps: 200, tradeBps: 0 }), rawAskMicroOf(412, 200));
+  assert.equal(rawBidMicroOf(392, { gainBps: 200, tradeBps: 0 }), rawBidMicroOf(392, 200));
+});
+
+test("prophetx fee by league: an NHL fill is costed with the fee at the trade and nothing at settlement; a fee the fills do not report is counted from the schedule", () => {
+  const fill = (shares: string, price: string, stakeUsd: string, feeUsd: string) => ({ fillId: "f", orderId: "o", venueFillId: "v", shares, price, stakeUsd, feeUsd, occurredAt: "" });
+  // 20 shares at 40c: $8.00 staked; 3.5% x $8.00 x 0.6 = 16.8c -> 17c
+  const reported = sumProphetXFills([fill("20.000000", "0.400000", "8.00", "0.168")]);
+  assert.equal(reported.feesCents, 17);
+  assert.equal(tradeFeeCents(reported, NHL), 17);
+  assert.deepEqual(prophetxFillMoney(reported, 20_000, false, NHL), { unitsMilli: 20_000, avgPriceMilli: 409, costCents: 817, feesCents: 17, settlementProvisionCents: 0 });
+  // the same fill with no fee relayed: the schedule's 17c, never free
+  const silent = sumProphetXFills([fill("20.000000", "0.400000", "8.00", "0")]);
+  assert.deepEqual(prophetxFillMoney(silent, 20_000, false, NHL), { unitsMilli: 20_000, avgPriceMilli: 409, costCents: 817, feesCents: 17, settlementProvisionCents: 0 });
+  // a fee reported over the schedule's is the one counted
+  assert.equal(prophetxFillMoney(sumProphetXFills([fill("20.000000", "0.400000", "8.00", "0.25")]), 20_000, false, NHL).costCents, 825);
+  // the same fill on an NBA game: nothing at the trade, 2% of the $12 gain provided for
+  assert.deepEqual(prophetxFillMoney(silent, 20_000, false, 200), { unitsMilli: 20_000, avgPriceMilli: 412, costCents: 824, feesCents: 0, settlementProvisionCents: 24 });
+  assert.equal(tradeFeeCents(silent, 200), 0);
+  // the offset on an NHL game: 20 of the holder's strike at 60c nets $8.00 less 3.5% x $12.00 x 0.4 = 17c, and no fee at settlement
+  const offset = sumProphetXFills([fill("20.000000", "0.600000", "12.00", "0")]);
+  assert.deepEqual(prophetxFillMoney(offset, 20_000, true, NHL), { unitsMilli: 20_000, avgPriceMilli: 391, costCents: 783, feesCents: 17 });
+  // and on an NBA game: 2% of the $8.00
+  assert.deepEqual(prophetxFillMoney(offset, 20_000, true, 200), { unitsMilli: 20_000, avgPriceMilli: 392, costCents: 784, feesCents: 16 });
+  // fills at two prices: the schedule's figure from the average price is never under the fills' own sum
+  const two = sumProphetXFills([fill("10.000000", "0.400000", "4.00", "0"), fill("10.000000", "0.200000", "2.00", "0")]);
+  const exact = 0.035 * 4 * 0.6 + 0.035 * 2 * 0.8;
+  assert.ok(tradeFeeCents(two, NHL) >= Math.ceil(exact * 100), `${tradeFeeCents(two, NHL)} against ${exact}`);
+});
+
+test("prophetx place: an order on an NHL game is planned and costed at the NHL fee from its arm key, by the same client that prices an NBA game at 2% of gains", async () => {
+  const fills = (feeUsd: string) => ({ status: 200, body: { fills: [{ fillId: "f1", orderId: "px-n", venueFillId: "vf1", shares: "20.000000", price: "0.400000", stakeUsd: "8.00", feeUsd, occurredAt: "2026-11-12T00:00:01Z" }] } });
+  const partner = fakePartner({
+    ...TIME,
+    ...LADDER_ROUTE,
+    "POST /v1/prophetx/orders": () => ({ status: 201, body: { orderId: "px-n", status: "FILLED", venueOrderId: "pxv-n", filledQuantity: 8 } }),
+    "GET /v1/prophetx/orders/px-n": () => ({ status: 200, body: { orderId: "px-n", status: "FILLED", filledQuantity: 8, venueOrderId: "pxv-n" } }),
+    "GET /v1/prophetx/orders/px-n/fills": (_s, nth) => fills(nth === 0 ? "0.168" : "0"),
+  });
+  const c = client(partner);
+  assert.deepEqual(c.feeFor(NHL_TICKER), NHL);
+  assert.deepEqual(c.feeFor("KXNBAGAME-26OCT14LALBOS-BOS"), { gainBps: 200, tradeBps: 0 });
+  assert.deepEqual(c.feeFor(undefined), { gainBps: 200, tradeBps: 0 });
+  // the walk stood on the 40c rung, folded at the NHL fee to 409
+  const nhlIntent = intentFromHedge({ ...PX_LEG, avgPriceMilli: 409, worstPriceMilli: 409, costCents: 818 }, 409, NHL_TICKER);
+  const r = await c.place(nhlIntent, "atticus-nhl-1");
+  assert.deepEqual(JSON.parse(partner.seen.find((s) => s.method === "POST")!.body), { strikeId: "strike-no-1", price: "0.400000", quantity: 8, timeInForce: { FillOrKill: {} }, postOnly: false });
+  assert.deepEqual([r.costCents, r.feesCents, r.avgPriceMilli, r.settlementProvisionCents], [817, 17, 409, 0]);
+  assert.match(r.note ?? "", /stake \$8\.00 at 0\.400000; fee \$0\.17 at the trade, nothing at settlement/);
+  assert.doesNotMatch(r.note ?? "", /the schedule's/);
+  // the partner relays no fee on the second order: the schedule's is counted and the receipt says so
+  const r2 = await c.place(nhlIntent, "atticus-nhl-2");
+  assert.deepEqual([r2.costCents, r2.feesCents], [817, 17]);
+  assert.match(r2.note ?? "", /the fills report a fee of \$0\.00; the schedule's \$0\.17 \(3\.5% x p x \(1 - p\) per share at the trade\) is counted/);
+});
+
+test("prophetx fee by league: a re-quote on the ProphetX route folds the fee of the ticker's league, so the same book hedges an NHL game and an NBA game at different prices", () => {
+  const start = new Date(Date.now() + 3 * 3_600_000).toISOString();
+  const pair = (ticker: string): MatchedPair =>
+    ({
+      league: "nba",
+      kalshi: { ticker, eventTicker: ticker.slice(0, ticker.lastIndexOf("-")), title: "Winner?", subtitle: "Home", strike: 0, strikeType: "", status: "active", openTime: "", closeTime: start, yesBidCents: 59, yesAskCents: 61, lastPriceCents: 60, volume: 1000, openInterest: 1000, rulesPrimary: "" },
+      pm: { eventSlug: "g", eventTitle: "Away at Home", question: "Away at Home", conditionId: "0x1", outcomes: ["Home", "Away"], tokenIds: ["t-h", "t-a"], outcomePricesMilli: [600, 400], gameStartTime: start, endDate: start, sportsMarketType: "moneyline", active: true, closed: false },
+      pmYesOutcomeIndex: 0,
+      pmNoOutcomeIndex: 1,
+      gameStartTime: start,
+      parityNote: "",
+      fingerprint: `test:${ticker}`,
+    }) as unknown as MatchedPair;
+  const raw: PmBook = { tokenId: "px-away", asks: [{ priceMilli: 360, sizeMilli: 2_000_000 }], bids: [{ priceMilli: 340, sizeMilli: 2_000_000 }], minOrderSizeShares: 1, tickMilli: 1 };
+  const config = { ...DEFAULT_CROSS_CONFIG, floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30], capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25], defaultTier: "balanced" as const };
+  const quote = (ticker: string) => {
+    const q = requote({ route: "prophetx", ticker, lockTimeIso: start, pair: pair(ticker), markCents: 60, entryCents: 60, contracts: 20, now: new Date(), config, books: { pxNoBook: raw, prophetx: { hedgeStrikeId: "px-away", offsetStrikeId: "px-home", executable: true } } }, config, 20);
+    assert.ok(q && q.ok, JSON.stringify(q));
+    return q;
+  };
+  // 36c: at 2% of gains 1.28c -> 373 milli; at the NHL fee 3.5% x 0.36 x 0.64 = 0.81c -> 369 milli
+  const nba = quote("KXNBAGAME-26OCT14LALBOS-BOS");
+  const nhl = quote(NHL_TICKER);
+  assert.ok(nba.hedge.venue === "prophetx" && nhl.hedge.venue === "prophetx");
+  assert.deepEqual([nba.hedge.avgPriceMilli, nhl.hedge.avgPriceMilli], [373, 369]);
 });

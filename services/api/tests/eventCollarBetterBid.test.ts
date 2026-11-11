@@ -472,6 +472,11 @@ test("better bid: on ProphetX the fee is taken only if its contract wins, priced
   assert.equal(q.us.lockedCents, q.us.ifSideLosesCents);
   assert.equal(settleBetterBid(q, "side_wins").otherVenueFeesCents, 0);
   assert.equal(settleBetterBid(q, "side_loses").otherVenueFeesCents, 134);
+  // an NHL game: 3.5% x $33.00 x 0.67 = 77.4c -> 78c, paid at the trade whoever wins
+  const nhl = quoted(inputs({ otherFee: { kind: "prophetx", feeBps: 0, tradeBps: 350 }, tail: SAME_RULES }));
+  assert.deepEqual([nhl.us.otherVenueCostCents, nhl.us.otherVenueFeeCents, nhl.us.otherVenueFeeTiming], [3300, 78, "at_trade"]);
+  assert.equal(nhl.us.ifSideWinsCents, nhl.us.ifSideLosesCents);
+  assert.equal(settleBetterBid(nhl, "side_wins").otherVenueFeesCents, 78);
   // the bid was set against the lower figure, so the take and the charge are covered on either result
   assert.ok(q.us.ifSideLosesCents >= q.us.takeCents + q.us.tailChargeCents);
 });

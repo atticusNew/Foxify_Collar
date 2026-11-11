@@ -60,7 +60,7 @@ import { fillOfAggregatorOrder, type AggregatorKalshiOrder } from "./aggregatorO
 import type { HedgeVenue } from "./hedgeExecutor";
 import { fillOfKalshiFills, kalshiFillSide, type KalshiFill } from "./kalshiOrders";
 import { novigClientId, novigFillMoney, sumNovigFills, type NovigFill } from "./novigOrders";
-import { prophetxFillMoney, sumProphetXFills, type ProphetXFill } from "./prophetxOrders";
+import { prophetxFillMoney, sumProphetXFills, type ProphetXFeeSpec, type ProphetXFill } from "./prophetxOrders";
 import type { NotCountedLine, RealFill } from "./realizedBook";
 
 /** Cents a cost built from Kalshi's listed fills may sit from one built from the order's rounded average, by rounding alone. */
@@ -182,9 +182,9 @@ export function aggregatorKalshiOrderFill(o: AggregatorKalshiOrder, capCents: nu
 export function prophetxOrderFill(
   orderId: string,
   fills: ProphetXFill[],
-  ctx: { sell: boolean; wantedUnitsMilli: number; feeBps: number; venueOrderId?: string | null; instrument?: string | null },
+  ctx: { sell: boolean; wantedUnitsMilli: number; fee: ProphetXFeeSpec; venueOrderId?: string | null; instrument?: string | null },
 ): VenueOrderFill {
-  const money = prophetxFillMoney(sumProphetXFills(fills), ctx.wantedUnitsMilli, ctx.sell, ctx.feeBps);
+  const money = prophetxFillMoney(sumProphetXFills(fills), ctx.wantedUnitsMilli, ctx.sell, ctx.fee);
   const times = fills.map((f) => isoOf(f.occurredAt)).filter((t): t is string => t !== null).sort();
   return {
     venue: "prophetx",

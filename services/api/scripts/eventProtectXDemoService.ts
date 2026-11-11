@@ -114,7 +114,7 @@ import { evCostBps, quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVe
 import { getNoAsks, quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
 import { novigRouteOf, readReferenceBooks, referenceSourcesFromEnv, type ReferenceBook, type ReferenceCatalogProbe } from "../src/eventCollar/crossVenue/venueBooks";
 import { MAPPED_NO_BOOK, NOT_MAPPED, aggregatorBookSourceFromEnv, type AggregatorBookSource, type AggregatorBookStatus, type BookOrigins, type ProphetXStrikes } from "../src/eventCollar/crossVenue/aggregatorBooks";
-import { foldProphetXFee, prophetxFeeBpsFromEnv } from "../src/eventCollar/crossVenue/prophetxOrders";
+import { foldProphetXFee, prophetxFeeBpsFromEnv, prophetxFeeForTicker } from "../src/eventCollar/crossVenue/prophetxOrders";
 import { farOutGuardFromEnv, farOutVerdict, type FarOutGuardRule } from "../src/eventCollar/crossVenue/farOutGuard";
 import { PROTECT_WINDOW_MINUTES, inPlayFromEnv, inPlayMaxMsFromEnv, lockWindow as lockWindowOf, protectWindow, type LockWindow, type ProtectWindowWhy } from "../src/eventCollar/crossVenue/lockWindow";
 import { inPlayConfig } from "../src/eventCollar/crossVenue/shadowCounterfactuals";
@@ -183,7 +183,7 @@ export const HEDGE_VENUES = hedgeVenuesFromEnv(process.env);
 export const NAME_HEDGE_VENUES = process.env.EVENT_X_NAME_HEDGE_VENUES === "1";
 /** venues whose hedge wallet is a subaccount of the holder's own account (hedgeRouting.sameAccountVenuesFromEnv): no hedge there for a holder standing on them */
 export const SAME_ACCOUNT_VENUES = sameAccountVenuesFromEnv(process.env);
-/** ProphetX's fee on net gains at settlement, folded into its book before the walk (prophetxOrders.ts) */
+/** ProphetX's fee on net gains at settlement; the quote folds each game's own fee, by league, into its book before the walk (prophetxOrders.prophetxFeeForTicker) */
 export const PROPHETX_FEE_BPS = prophetxFeeBpsFromEnv(process.env);
 
 /** Why the Novig route has no book, from the signed-dialect reference's reason (venueBooks.ts). */
@@ -919,7 +919,7 @@ async function quoteSportsCandidate(
         ? { ok: false, code: "prophetx_book_empty", detail: prophetxAbsenceWords(pxRef?.reason, agg?.notes ?? []) }
         : quoteCrossWrap({
             ...base,
-            noBook: foldProphetXFee(pxRawBook, PROPHETX_FEE_BPS),
+            noBook: foldProphetXFee(pxRawBook, prophetxFeeForTicker(pair.kalshi.ticker)),
             hedgeOn: {
               venue: "prophetx",
               strikeId: agg.prophetx.hedgeStrikeId,
