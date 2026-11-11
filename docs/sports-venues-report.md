@@ -1,15 +1,17 @@
 # Sports venues report
 
-A standalone, read-only page: the same game's winner market on the three US event venues a
+A read-only page: the same game's winner market on the three US event venues a
 CFTC-only trader can use (Kalshi, Polymarket US, Novig) side by side, after each venue's taker
 fee, for every NFL, NBA and NHL game within three days. It shows where the other side of a
 position is cheapest and by how much, what the venues disagree on, what can be locked across
 them in dollars, and how the gaps behave over time, pre-game and in play. Nothing on it is a
 model. Every number is a venue's price, its published fee, or a difference of them.
 
-Service: `services/api/scripts/sportsVenuesReportService.ts` · modules: `services/api/src/sportsVenues/**`
-· tests: `services/api/tests/sportsVenues.test.ts` · Render: `atticus-sports-venues` in
-`render-event-demos.yaml` (region oregon, 2 GB disk). Reader's guide: `docs/sports-venues-study-guide.md`.
+Where it lives: `/sports` on the `atticus-btc-curve` Render service (same process, same key, no
+second service; see "On the BTC curve service" below). Modules: `services/api/src/sportsVenues/**`
+(`collector.ts` is the cycle and the routes) · tests: `services/api/tests/sportsVenues.test.ts`,
+`sportsMount.test.ts` · `services/api/scripts/sportsVenuesReportService.ts` serves the same thing
+on its own port for a local run. Reader's guide: `docs/sports-venues-study-guide.md`.
 
 ## What the page shows
 
@@ -96,7 +98,8 @@ and live 0.06 are both honoured historically.
 ## Storage and ops
 
 One JSONL file per UTC day under `SPORTS_VENUES_DATA_DIR`, one line per snapshot (every listing's
-two sides, sizes, fee, start; health per venue). The in-memory history keeps 72 hours as compact
+two sides, sizes, fee, start; health per venue). The in-memory history keeps
+`SPORTS_VENUES_WINDOW_HOURS` (72 on its own, 24 on the BTC curve service) as compact
 points (`[awayBid, awayAsk, homeBid, homeAsk, feeTheta, awayBidQty, awayAskQty, homeBidQty, homeAskQty]`
 per game and venue, plus starts). A source that does not answer within
 `SPORTS_VENUES_SOURCE_DEADLINE_MS` (45 s) is marked down for the cycle and the cycle goes on.
@@ -117,7 +120,32 @@ Endpoints: `/` (page, auto-refresh at the interval), `/api/report` (the page's d
 Env: `SPORTS_VENUES_PORT` (8870), `SPORTS_VENUES_DATA_DIR`, `SPORTS_VENUES_INTERVAL_SEC` (60),
 `SPORTS_VENUES_TOKEN`, `SPORTS_VENUES_RETAIN_DAYS` (unset: keep every day),
 `SPORTS_VENUES_DISK_BUDGET_MB` (unset: no budget), `SPORTS_VENUES_HORIZON_DAYS` (3),
-`NOVIG_PUBLIC_HOST`, `POLY_US_REST_BASE`, `KALSHI_REST_BASE`.
+`SPORTS_VENUES_WINDOW_HOURS` (72), `NOVIG_PUBLIC_HOST`, `POLY_US_REST_BASE`, `KALSHI_REST_BASE`.
+
+The gaps table plots at most 240 points per game and venue, evenly spread over the window; the
+mean, the maximum, the last value and `n` are over every snapshot. The report is built once per
+snapshot and served from that until the next.
+
+### On the BTC curve service
+
+Production serves this page from the BTC curve service, at `/sports`, with its JSON at
+`/sports/api/report` and `/sports/api/latest`, behind `BTC_CURVE_TOKEN` (`?k=<token>`), with a
+line of links to the BTC curve and BTC pairs pages. It is on by default; `BTC_CURVE_SPORTS=off`
+(or `0`) turns it off. The `SPORTS_VENUES_*` settings above apply, except the port and the token,
+which are the curve service's. The files go under `<BTC_CURVE_DATA_DIR>/sports` and follow
+`BTC_CURVE_RETAIN_DAYS` unless `SPORTS_VENUES_RETAIN_DAYS` is set. `/healthz` on the curve
+service carries a `sports` block: `warm`, `at`, `games`, `cycles`, `historyPoints`,
+`windowHours`, `reload`, `venuesNotAnswering`, `lastError`, `data` (the same block as above for
+the sports files) and, if the sports part ever fails outside a cycle, `mountError` in words. A
+sports fault never reaches the BTC routes: the page answers 500 on that request and the fault
+is on `/healthz`.
+
+It holds 24 hours in memory there, not 72, because the process has 512 MB for everything.
+Measured 11 November 2026 in a 512 MB, half CPU group: the full BTC window and three gzipped
+days plus today of sports snapshots (43 games) reloaded, both loops polling the venues, every
+page and JSON route opened in 15 rounds. With 24 hours: 305 MB at the peak, about 250 MB at
+rest, nothing killed. With 72 hours: 394 MB at the peak, about 320 MB at rest, and a weekend
+slate is larger, so 72 is not the default there. The disk keeps every snapshot either way.
 
 Run locally: `npx tsx services/api/scripts/sportsVenuesReportService.ts` then open
 `http://localhost:8870/`.

@@ -10,7 +10,9 @@ pair (the cleanest by default, or the row you chose) to the trader's own engine,
 opening his page. Nothing here places an order.
 
 Where it lives: `/pairs` on the `atticus-btc-curve` Render service (same process, same token, no
-second service). Module: `services/api/src/btcCurve/pairs.ts` (selection, arithmetic, score),
+second service). The same service serves the sports venues page at `/sports`
+(`BTC_CURVE_SPORTS=off` turns that off; memory with all three pages: 305 MB at the peak of the
+512 MB plan, `docs/btc-curve-report.md`); the pages link to each other with the key. Module: `services/api/src/btcCurve/pairs.ts` (selection, arithmetic, score),
 `pairsCollector.ts` (the cycle, the routes, the stream), `pairsHtml.ts` (the page).
 `services/api/scripts/btcPairsService.ts` serves the same thing on its own port for a local run.
 Public market data only, no credentials loaded.
