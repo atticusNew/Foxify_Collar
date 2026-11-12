@@ -302,8 +302,9 @@ services:
       # - key: PROSPECT_PAGE_KEY
       #   sync: false
       # The company's own Lock in pages at /lockin: every replay table, the method, and the
-      # lock card with its order (/lockin/lock). Never given to a reader. Same rules as the key
-      # above, and it may not equal that key either (both pages go off if they match).
+      # lock card with its order (/lockin/lock) and the meeting brief (/lockin/brief). Never
+      # given to a reader. Same rules as the key above, and it may not equal that key either
+      # (both pages go off if they match).
       # - key: LOCK_IN_INTERNAL_KEY
       #   sync: false
       # - key: SPORTS_VENUES_INTERVAL_SEC

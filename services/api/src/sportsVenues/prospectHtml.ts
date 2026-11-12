@@ -194,7 +194,8 @@ put('orders-g',b.orders*f/games);put('contracts-g',b.contracts*f/games);put('fee
 ['c-option','c-adoption','c-share','c-commission'].forEach(function(id){var e=document.getElementById(id);e.oninput=run;e.onchange=run})}
 })();`;
 
-const PAGE_STYLE = `body{font-size:16px;line-height:1.55;color:#16181d}
+/** The reader's page layout over the shared style; the internal brief wears it too. */
+export const PAGE_STYLE = `body{font-size:16px;line-height:1.55;color:#16181d}
 main{max-width:1040px;padding:36px 24px 72px}
 h1{font-size:30px;line-height:1.2;margin:0 0 6px}.by{color:var(--dim);font-size:14px;margin:0 0 18px}
 .lead{font-size:18px;line-height:1.5;margin:0 0 8px}.lead,.sub,section>p,section>ul,section>ol,section>.note,.why,.limits{max-width:780px}

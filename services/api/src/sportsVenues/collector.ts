@@ -19,6 +19,8 @@ import { buildReport, type ReportData } from "./report";
 import { renderReportHtml } from "./reportHtml";
 import { AUDIENCES, audienceOf, audienceState, keyMatches, type AudienceState } from "./audiences";
 import { lockChoices, lockNow, lockPast, pastMoments, type LockChoice, type LockQuote, type PastMoment } from "./lockNow";
+import { caseFrom } from "./brief";
+import { renderBriefHtml } from "./briefHtml";
 import { PAST_PREFIX, bookCountOf, renderProspectHtml, type ProspectLock } from "./prospectHtml";
 import { renderLockHtml, renderReplayHtml } from "./replayHtml";
 import { TapeRecord } from "./tape";
@@ -347,11 +349,27 @@ export class SportsCollector {
     if (state.kind === "internal") {
       // the full tables, the method and the lock card with its order: the company's own
       const link = (here: boolean, label: string, href: string) => (here ? `<b>${label}</b>` : `<a href="${href}">${label}</a>`);
-      const nav = (here: "replay" | "lock") =>
-        `<nav style="font-size:13px;margin:0 0 10px;color:#6b7280"><b>Internal</b> · ${link(here === "replay", "Lock in, replayed on real trades", `${state.base}${q}`)} · ${link(here === "lock", "Lock in now", `${state.base}/lock${q}`)}</nav>`;
+      const nav = (here: "replay" | "lock" | "brief") =>
+        `<nav style="font-size:13px;margin:0 0 10px;color:#6b7280"><b>Internal</b> · ${link(here === "replay", "Lock in, replayed on real trades", `${state.base}${q}`)} · ${link(here === "lock", "Lock in now", `${state.base}/lock${q}`)} · ${link(here === "brief", "Meeting brief", `${state.base}/brief${q}`)}</nav>`;
       if (sub === "/") send(200, "text/html", renderReplayHtml(this.tape.report(), this.tape.recording(), { feeWords: this.feeWords, nav: nav("replay") }));
       else if (sub === "/lock") send(200, "text/html", renderLockHtml({ ...this.lockView(url), refreshSec: this.intervalSec, links: [{ label: "Sports", href: `${state.base}${q}` }], nav: nav("lock") }));
       else if (sub === "/api") send(200, "application/json", JSON.stringify({ fee: this.feeTerms, report: this.tape.report(), recording: this.tape.recording() }));
+      else if (sub === "/brief")
+        send(
+          200,
+          "text/html",
+          renderBriefHtml({
+            base: state.base,
+            key: state.key,
+            nav: nav("brief"),
+            report: this.tape.report(),
+            recording: this.tape.recording(),
+            fee: this.feeTerms,
+            feeWords: this.feeWords,
+            book: bookCountOf(this.holder.report()),
+            own: caseFrom({ share: url.searchParams.get("share"), adoption: url.searchParams.get("adoption"), growth: url.searchParams.get("growth") }),
+          }),
+        );
       else send(404, "text/plain", "not found");
       return true;
     }
