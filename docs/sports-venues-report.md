@@ -15,7 +15,8 @@ on its own port for a local run. Reader's guide: `docs/sports-venues-study-guide
 
 The Lock in material (the replay on Crypto.com's real trades, and the lock on a position you
 name) is not under this page's key in production. It is served as a page made for one reader,
-at its own address under its own key: "A page for one reader" below. Run on its own port, the
+at its own address under its own key, and the full tables are under an internal key: "Pages
+with a key of their own" below. Run on its own port, the
 script still serves `/replay` and `/lock` beside the board.
 
 ## What the page shows
@@ -252,7 +253,7 @@ other's was at 50¢ or less, or whose opponent's last trade printed at 3¢ or le
 was at 50¢ or more (on a thin game only the loser's contract prints after the whistle). A game
 with no such result 30 hours after its start is closed, listed, and not counted.
 
-**The replay page** (`/replay` on its own port, `/prospect/detail` in production): the strip and six tiles; §1 the positions by league; §2 before
+**The replay page** (`/replay` on its own port, `/lockin` under the internal key in production): the strip and six tiles; §1 the positions by league; §2 before
 the start; §3 in play; §4 what it adds in orders (every lock is a sell order on the exchange's
 book that would not otherwise be placed; shown for every holder who could and scaled to 10 in
 100); §5 the same for stakes of $500 or less, by league, and game by game. "Kept less given
@@ -274,35 +275,59 @@ bid of each five minutes, from an hour before the start. With no price given the
 taken at the last buy on the tape before the start; with no moment given, at the first bid in
 play that returns the stake from 80% or less.
 
-### A page for one reader
+### Pages with a key of their own
 
-`audiences.ts` lists the pages made for one reader outside the company. Each has its own address
-and its own key, read from the environment. There is one: `/prospect`, key `PROSPECT_PAGE_KEY`.
+`audiences.ts` lists the pages that have their own address and their own key, read from the
+environment. Two entries:
 
-- The page is on only when its key is set, is 16 characters or more, and is not `BTC_CURVE_TOKEN`
-  or `SPORTS_VENUES_TOKEN`. Otherwise every address under it answers 404, and `/healthz` says
-  why under `sports.audiencePages` (by position, without a name: `/healthz` needs no key).
-- Its key opens `/prospect`, `/prospect/detail` (every table of the replay) and `/prospect/api`
-  (what the page shows, as JSON), and nothing else. The service's own key does not open them.
-  The host checks a reader's address before its own key.
-- The page links only to itself. It names no other venue. Of the holder count it is given the
-  exchange's own readings only (spread, depth at the best bid, how often a better bid had room):
-  the figures that name or measure another venue never reach it.
-- It does not refresh itself. Answers carry `Referrer-Policy: no-referrer`, since the key is in
-  the address.
+| Address | Key | For | What it serves |
+| --- | --- | --- | --- |
+| `/prospect` | `PROSPECT_PAGE_KEY` | one reader outside the company | one page: results, held back as below |
+| `/lockin` | `LOCK_IN_INTERNAL_KEY` | the company | `/lockin` every replay table and the method, `/lockin/lock` the lock card with its order, `/lockin/api` the report as JSON |
 
-What is on it (`prospectHtml.ts`), retail-size tickets ($500 or less) first: where customers are
-lost (finished at $0; of those, ahead at some point); what Lock in is and who does what; two
-real tickets off the tape, and the lock card for any game and moment; the replay's three main
-rows; a calculator (how many lock in 100, the reader's share of the exchange, their commission
-per contract: three boxes that scale counts already on the page); the exchange's book (depth,
-spread, and how rarely an outside bid beats it); what a pilot would answer; notes and limits.
+- An entry is on only when its key is set, is 16 characters or more, and is not `BTC_CURVE_TOKEN`,
+  `SPORTS_VENUES_TOKEN` or the other entry's key. Otherwise every address under it answers 404,
+  and `/healthz` says why under `sports.audiencePages` (by position, without a name: `/healthz`
+  needs no key).
+- A key opens its own entry and nothing else. The service's own key opens neither. The host
+  checks these addresses before its own key.
+- The internal key is never given to a reader.
+- Neither refreshes itself except the internal lock card. Answers carry
+  `Referrer-Policy: no-referrer`, since the key is in the address.
+
+**What the reader's page shows** (`prospectHtml.ts`), retail-size tickets ($500 or less) first:
+where customers are lost (finished at $0; of those, ahead at some point); what Lock in is for
+the customer and that nobody takes the other side; two real tickets off the tape, and the lock
+as a customer would see it for any game and moment; the replay's three main rows; a calculator
+(how many lock in 100, the reader's share of the exchange, their commission per contract: three
+boxes that scale counts already on the page); one line on the depth behind the exchange's best
+price; what a pilot would answer; notes and limits. It is one address: no tables behind it, no
+JSON, no link off it.
+
+**What the reader's page holds back, on purpose.** It shows results, not how they are produced.
+
+- It says what a lock gives the customer (cash now, the total if their side wins, the share of
+  the stake back), and that it is done on the exchange from the customer's own account with
+  nobody on the other side. It does not say what order does it, how that order is sized, or at
+  what threshold. The words "sell", "sale", "sold" and "bid" are not on it, nor the tiers'
+  percentages. Each figure is defined by what the customer ends up with ("the whole stake back
+  with a fifth of the position or more still riding"), which is enough to check it.
+- It names no other venue and says nothing of comparing or covering across venues. Of the
+  holder count it is given one figure: how often the exchange's own best price had 1,000
+  contracts or more behind it.
+- It says the source is the exchange's public trade tape. It does not name the feed, say how or
+  how often it is read, how a result is read, or that games are being recorded.
+- It does not describe what Atticus does in the flow or how it is paid.
+
+None of that is denied if asked. The page does not volunteer it. `tests/sportsProspectPage.test.ts`
+fails if those words come back. Anything added to the page should pass the same test: does the
+reader need it to believe a number, or does it only tell them how to make the number themselves?
 
 "Guide" walks six stops with a short note at each for what the number means to a broker; "Show
 all notes" opens every note at once; "Print or save as PDF" prints the page as it stands, notes
 included when they are open. The only script on the page is that and the calculator.
 
-A page for another reader is a new entry in `audiences.ts` and a key. The words of
+A page for another reader is a new "broker" entry in `audiences.ts` and a key. The words of
 `prospectHtml.ts` are written for a broker onto this exchange; a reader of another kind needs
 its own.
 
@@ -359,14 +384,14 @@ keeps the BTC curve's files; `docs/btc-curve-report.md` has the detail.
 Endpoints: `/` (page, auto-refresh at the interval), `/api/report` (the page's data), `/api/latest`
 (the raw snapshot), `/replay` and `/api/replay`, `/lock` and `/api/lock` (`game=<key>|away` or
 `|home`, `n=` contracts, `paid=` cents), `/healthz` (no token). With `SPORTS_VENUES_TOKEN` set, the page and JSON need
-`?k=<token>`. `/prospect`, `/prospect/detail` and `/prospect/api` need `?k=<PROSPECT_PAGE_KEY>`
+`?k=<token>`. `/prospect` needs `?k=<PROSPECT_PAGE_KEY>`; `/lockin`, `/lockin/lock` and `/lockin/api` need `?k=<LOCK_IN_INTERNAL_KEY>`
 (`game=past:<event>|away` or `|home` with `at=<ms>` for a finished game).
 
 Env: `SPORTS_VENUES_PORT` (8870), `SPORTS_VENUES_DATA_DIR`, `SPORTS_VENUES_INTERVAL_SEC` (60),
 `SPORTS_VENUES_TOKEN`, `SPORTS_VENUES_RETAIN_DAYS` (unset: keep every day),
 `SPORTS_VENUES_DISK_BUDGET_MB` (unset: no budget), `SPORTS_VENUES_HORIZON_DAYS` (3),
 `SPORTS_VENUES_WINDOW_HOURS` (72), `SPORTS_VENUES_CRYPTOCOM_FEE` (`flat`, or `weighted`),
-`PROSPECT_PAGE_KEY` (unset: the reader's page is off),
+`PROSPECT_PAGE_KEY` (unset: the reader's page is off), `LOCK_IN_INTERNAL_KEY` (unset: the internal pages are off),
 `NOVIG_PUBLIC_HOST`, `PROPHETX_PUBLIC_HOST`, `CRYPTOCOM_PUBLIC_HOST`, `POLY_US_REST_BASE`, `KALSHI_REST_BASE`.
 
 The gaps table plots at most 240 points per game and venue, evenly spread over the window; the
@@ -379,7 +404,8 @@ Production serves this page from the BTC curve service, at `/sports`, with its J
 `/sports/api/report` and `/sports/api/latest`, behind `BTC_CURVE_TOKEN` (`?k=<token>`), with a
 line of links to the BTC curve and BTC pairs pages. The replay and the lock are not served under
 that key and the board does not link to them: whoever holds the curve key sees the board only.
-They are at `/prospect` under `PROSPECT_PAGE_KEY`, on the same service ("A page for one reader"
+The reader's page is at `/prospect` under `PROSPECT_PAGE_KEY` and the full tables at `/lockin`
+under `LOCK_IN_INTERNAL_KEY`, on the same service ("Pages with a key of their own"
 above). It is on by default; `BTC_CURVE_SPORTS=off`
 (or `0`) turns it off. The `SPORTS_VENUES_*` settings above apply, except the port and the token,
 which are the curve service's. The files go under `<BTC_CURVE_DATA_DIR>/sports` and follow

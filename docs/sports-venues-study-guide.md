@@ -163,29 +163,48 @@ website uses; if the venue closes them the column goes empty and the page says s
 
 ## 10. The Lock in pages
 
-Not under the sports page's key. They are a page made for one reader, at `/prospect` under its
-own key (`PROSPECT_PAGE_KEY`), with every table at `/prospect/detail`. That key opens nothing
-else on the service, and the sports key does not open them. Mechanics are in
-`docs/sports-venues-report.md` under "Lock in on the trade tape" and "A page for one reader".
+Not under the sports page's key. Two addresses, each with its own key:
+
+- `/prospect` under `PROSPECT_PAGE_KEY`: the page made for Prospect. This is the link you send.
+- `/lockin` under `LOCK_IN_INTERNAL_KEY`: every table, the method, and the lock card with the
+  order behind it (`/lockin/lock`). Yours only. Never send this link.
+
+Mechanics are in `docs/sports-venues-report.md` under "Lock in on the trade tape" and "Pages
+with a key of their own".
 
 **The reader's page, top to bottom.** Retail-size tickets ($500 or less) first.
 
 1. Where customers are lost: how many tickets finished at $0, and how many of those were ahead
-   at some point (a bid on the book would have paid them more than they put in).
-2. What Lock in is: the customer's own sale of part of the position on the exchange's book.
-   Nobody takes the other side: not the broker, not Atticus.
-3. Two real tickets off the tape, one that lost and one that won, and the lock card for any
-   finished game at any moment of it (or a game on the board now).
+   at some point.
+2. What Lock in is, for the customer: cash now, the rest keeps riding, done on the exchange at
+   the market's price. Nobody takes the other side: not the broker, not Atticus.
+3. Two real tickets off the tape, one that lost and one that won, and the lock as a customer
+   would see it for any finished game at any moment of it (or a game on the board now).
 4. The replay's three main rows, how long the chance lasted, and what it costs the winners.
 5. The calculator: how many lock in 100, their share of the exchange, their commission.
-6. The exchange's book: deep and tight enough for a retail sale, and an outside bid almost
-   never beats it. The order stays on the exchange.
+6. One line: the exchange's best price nearly always has far more behind it than a retail
+   ticket needs.
 7. What a pilot would answer.
 
 "Guide" steps through six of those with a short note at each for what the number means to a
 broker. Arrow keys move it, Escape closes it. "Show all notes" opens them all, and they print.
 
-The rest of this section describes the full tables (`/prospect/detail`).
+**What the page holds back, and what to say if asked.** The page shows results and not how they
+are produced. It never says what order a lock places, how it is sized, where the thresholds
+are, how the data is collected, or what Atticus does in the flow. None of it is hidden if they
+ask; the page does not hand it over.
+
+- "Is it just the customer selling part of the position?" Yes. It is their own order on the
+  exchange. Which part, when, shown how, and what it does to whether they come back is the
+  product and the pilot.
+- "Where is the data from?" The exchange's public trade tape. Every ticket on the page can be
+  checked against it: the time, the size and the price are shown.
+- "Can we see the full tables?" Yes, on a call, from your internal page. Do not send that link.
+- Keep in your pocket, not on the page: takers' sales are already 18% of trades in play, so
+  holders do get out by hand today. Use it if they doubt the demand. It also invites "so they
+  can already do it", which is why it is not written down for them.
+
+The rest of this section describes the full tables (`/lockin`, internal).
 
 **What the replay is.** Crypto.com's exchange publishes every trade. Each taker buy is a real
 position someone opened. The page follows every one to the final whistle and shows what Lock in
