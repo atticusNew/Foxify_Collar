@@ -201,7 +201,7 @@ test("the reader's page: the story's ticket on the card, a moment picked, the ca
   assert.match(html, /name="n" type="number" min="0\.01" step="0\.01" value="100"/);
   assert.match(html, /Price then <b>66¢<\/b> <small>40 min into the game · [^<]* · the exchange's book, 500 contracts at that price<\/small>/);
   const backCard = /<div class="opt"><h3>Stake back<\/h3>.*?<\/div>\n?<p>.*?<\/div>/s.exec(html)![0];
-  assert.match(backCard, /<small>Cash now<\/small><b>\$50\.00<\/b>.*<small>Total if Washington Wizards win<\/small><b>\$71\.87<\/b>.*<small>Back on what was paid<\/small><b>100%<\/b>/s);
+  assert.match(backCard, /<small>Cash now<\/small><b>\$50\.00<\/b>.*<small>Total if they win<\/small><b>\$71\.87<\/b>.*<small>Stake returned<\/small><b>100%<\/b>/s);
   assert.match(html, /If Washington Wizards lose: <b>\$50\.00<\/b> instead of \$0\.00\. If they win: <b>\$71\.87<\/b> instead of \$100\.00\./);
   assert.match(html, /What happened: Washington Wizards lost\. Held to the end with no lock: \$0\.00\. With this lock: <b class="ok">\$50\.00<\/b>\./);
   assert.match(html, /Held to the end with no lock <b>\$0\.00<\/b>/);
@@ -209,7 +209,7 @@ test("the reader's page: the story's ticket on the card, a moment picked, the ca
   assert.match(html, /Cash figures are after the exchange's fee\./);
   // the story's own link opens the same card
   const link = /href="(\/prospect\?k=[^"]*game=past[^"]*away[^"]*)#lock"/.exec(html)![1].replace(/&amp;/g, "&");
-  assert.ok(get(link)!.body.includes("<small>Total if Washington Wizards win</small><b>$71.87</b>"));
+  assert.ok(get(link)!.body.includes("<small>Total if they win</small><b>$71.87</b>"));
   // another side, another moment: the winner's ticket, what the lock cost it, and a price with too little behind it
   const home = get(`/prospect?k=${KEY}&game=${encodeURIComponent(`past:${EVENT}|home`)}&n=80`)!.body;
   assert.match(home, /Position <b>80 contracts at 40¢<\/b> <small>no price given: the last trade before the start · paid \$33\.60 with the fee<\/small>/);
@@ -218,7 +218,7 @@ test("the reader's page: the story's ticket on the card, a moment picked, the ca
   assert.ok(!html.includes("This position is larger"));
   const later = get(`/prospect?k=${KEY}&game=${encodeURIComponent(`past:${EVENT}|away`)}&at=${S + 70 * MIN}&n=100&paid=48`)!.body;
   assert.match(later, /Price then <b>70¢<\/b>/);
-  assert.match(later, /<h3>Stake back<\/h3>.*?<small>Cash now<\/small><b>\$50\.00<\/b>.*?<small>Total if Washington Wizards win<\/small><b>\$76\.47<\/b>/s);
+  assert.match(later, /<h3>Stake back<\/h3>.*?<small>Cash now<\/small><b>\$50\.00<\/b>.*?<small>Total if they win<\/small><b>\$76\.47<\/b>/s);
   // a price the stake does not come back at: where it opens, in a line
   const dear = get(`/prospect?k=${KEY}&game=${encodeURIComponent(`past:${EVENT}|away`)}&at=${S + 20 * MIN}&n=100&paid=58`)!.body;
   assert.match(dear, /Stake back is not available at this price\. On this position it opens at \d+¢\./);
@@ -230,9 +230,16 @@ test("the reader's page: the story's ticket on the card, a moment picked, the ca
   assert.ok(!/Kalshi|Polymarket|Novig|ProphetX|\/sports|\/pairs|\/lockin|BTC|host-key|internal/i.test(html));
   // held back, on every view of the page: the order behind a lock, how it is sized, where the figures are read from
   for (const view of [html, home, later, dear]) {
-    const held = /\bsell|\bsold\b|\bsale|\bbids?\b|taker|\bAPI\b|another exchange|other exchange|live_back|pre_wide|being recorded|40%|80%/i.exec(view);
+    const held = /\bsell|\bsold\b|\bsale|\bbids?\b|taker|\bAPI\b|another exchange|other exchange|live_back|pre_wide|being recorded|once a minute|40%|80%/i.exec(view);
     assert.equal(held, null, held ? `the reader's page says "${held[0]}"` : "");
   }
+  // the reader is named, never called by its licence or addressed as a category
+  for (const view of [html, home, later, dear]) assert.equal(/\bbroker|\byou\b|\byour\b|commission/i.exec(view.replace(/<script>[\s\S]*?<\/script>/g, "").replace(/id="c-commission[^"]*"/g, "")), null);
+  assert.equal((html.match(/<aside class="why"><b>For Prospect<\/b>/g) ?? []).length, 5);
+  assert.match(html, /<h2><span class="n">5<\/span>What it adds for Prospect<\/h2>/);
+  assert.match(html, /Share of the exchange's retail tickets that are Prospect's, %/);
+  assert.match(html, /Prospect stays what it is: the platform the customer trades on\. Nobody in this picture is the house: not Prospect, not Atticus\./);
+  assert.match(html, /<title>Lock in on Crypto\.com's exchange · Prospect Markets<\/title>/);
 
   // the internal pages carry all of it, under their own key
   const full = get(`/lockin?k=${INTERNAL}`)!;

@@ -364,7 +364,7 @@ export class SportsCollector {
       200,
       "text/html",
       renderProspectHtml({
-        audience: { name: state.name, base: state.base },
+        audience: { name: state.name, short: state.short, base: state.base },
         key: state.key,
         report: this.tape.report(),
         fee: this.feeTerms,

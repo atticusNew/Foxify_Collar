@@ -23,12 +23,14 @@ export interface Audience {
   keyEnv: string;
   /** who it is for, as the page says it */
   name: string;
+  /** the name in running text */
+  short: string;
   kind: "broker" | "internal";
 }
 
 export const AUDIENCES: readonly Audience[] = [
-  { id: "prospect", base: "/prospect", keyEnv: "PROSPECT_PAGE_KEY", name: "Prospect Markets", kind: "broker" },
-  { id: "internal", base: "/lockin", keyEnv: "LOCK_IN_INTERNAL_KEY", name: "Atticus", kind: "internal" },
+  { id: "prospect", base: "/prospect", keyEnv: "PROSPECT_PAGE_KEY", name: "Prospect Markets", short: "Prospect", kind: "broker" },
+  { id: "internal", base: "/lockin", keyEnv: "LOCK_IN_INTERNAL_KEY", name: "Atticus", short: "Atticus", kind: "internal" },
 ];
 
 /** a key shorter than this can be guessed: the page stays off */

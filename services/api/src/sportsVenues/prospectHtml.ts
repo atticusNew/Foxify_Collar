@@ -1,6 +1,7 @@
 /**
- * The page made for a broker onto Crypto.com's exchange: the replay's results and the lock as a
- * customer would see it, in the order of a conversation, retail-size tickets first.
+ * The page made for one reader whose customers trade on Crypto.com's exchange: the replay's
+ * results and the lock as a customer would see it, in the order of a conversation, retail-size
+ * tickets first. The reader is named throughout (`audience.short`), never called by its licence.
  *
  * What it holds back, on purpose. It says what a lock gives the customer (cash now, what is
  * still to win, how much of the stake that is) and that it is done on the exchange from the
@@ -11,7 +12,7 @@
  * check it. The full tables and the method are the internal pages (audiences.ts), not this one.
  *
  * Every figure is read from the replay report, the lock quote or the book count it is given.
- * The only script is the guide (which note is shown) and the boxes a broker types in, which
+ * The only script is the guide (which note is shown) and the boxes the reader types in, which
  * scale counts that are already on the page.
  */
 
@@ -55,7 +56,8 @@ export function bookCountOf(report: HolderReport): BookCount {
 }
 
 export interface ProspectInput {
-  audience: { name: string; base: string };
+  /** `name` where the page is formal (the title line, the footer), `short` in running text */
+  audience: { name: string; short: string; base: string };
   key: string;
   report: ReplayReport;
   fee: FeeTerms;
@@ -104,14 +106,14 @@ function storyHtml(st: StoryRow, fee: FeeTerms, href: string): string {
   const cap = centsOf(terms.cap, "down");
   const full = centsOf(terms.fullWin, "down");
   const end = st.won
-    ? `<p><b>${esc(st.team)} won.</b> Held to the end as it was: ${dollars(full)}. With Lock in: ${dollars(cash)} in cash at that moment plus ${dollars(cap - cash)} at the end, <b>${dollars(cap)}</b>. The lock cost ${dollars(full - cap)} of the win.</p>`
-    : `<p><b>${esc(st.team)} lost.</b> Held to the end as it was: <b class="bad">$0.00</b>. With Lock in: <b class="ok">${dollars(cash)}</b>.</p>`;
+    ? `<p class="then"><b>${esc(st.team)} won.</b> Held to the end as it was: ${dollars(full)}. With Lock in: ${dollars(cash)} in cash at that moment plus ${dollars(cap - cash)} at the end, <b>${dollars(cap)}</b>. The lock cost ${dollars(full - cap)} of the win.</p>`
+    : `<p class="then"><b>${esc(st.team)} lost.</b> Held to the end as it was: <b class="bad">$0.00</b>. With Lock in: <b class="ok">${dollars(cash)}</b>.</p>`;
   return `<div class="opt"><h3>${st.won ? "A ticket that won" : "A ticket that lost"}</h3>
 <p class="dim">${esc(league(st.league))} · ${esc(st.label)}</p>
 <p>${et(st.openedMs)}: someone buys ${num(st.qty / 100, 2)} contracts of ${esc(st.team)} to win at ${num(st.price / 100, 2)}¢. That is <b>${dollars(stake)}</b> with the exchange fee.</p>
 <p>${momentWords(st.atMs, st.startMs)} the price is ${num(st.bid / 100, 2)}¢. Lock in there: <b>${dollars(cash)}</b> back in cash, the whole stake, and ${dollars(cap - cash)} still to win.</p>
 ${end}
-<p class="dim"><a href="${esc(href)}">Open this ticket on the lock card</a></p></div>`;
+<p class="more"><a href="${esc(href)}">See every choice on this ticket</a></p></div>`;
 }
 
 const READER_OPTION: Record<LockOption["id"], [string, string]> = {
@@ -144,7 +146,7 @@ export function readerLockHtml(q: LockQuote): string {
         : "";
     const short = o.covered ? "" : `<p class="dim">This position is larger than what was at that price: part of it would get less than shown.</p>`;
     return `<div class="opt"><h3>${esc(name)}</h3><p class="dim">${esc(words)}</p>
-<div class="three"><div><small>Cash now</small><b>${dollars(o.floorCents)}</b></div><div><small>Total if ${esc(q.team)} win</small><b>${dollars(o.capCents)}</b></div><div><small>Back on what was paid</small><b>${o.backPercent}%</b></div></div>
+<div class="three"><div><small>Cash now</small><b>${dollars(o.floorCents)}</b></div><div><small>Total if they win</small><b>${dollars(o.capCents)}</b></div><div><small>Stake returned</small><b>${o.backPercent}%</b></div></div>
 <p>If ${esc(q.team)} lose: <b>${dollars(o.floorCents)}</b> instead of $0.00. If they win: <b>${dollars(o.capCents)}</b> instead of ${dollars(q.fullWinCents)}.</p>${then}${short}</div>`;
   };
   const open = q.bidCents * 100 >= LOCK_MIN_BID && q.bidCents * 100 <= LOCK_MAX_BID;
@@ -192,14 +194,36 @@ put('orders-g',b.orders*f/games);put('contracts-g',b.contracts*f/games);put('fee
 ['c-option','c-adoption','c-share','c-commission'].forEach(function(id){var e=document.getElementById(id);e.oninput=run;e.onchange=run})}
 })();`;
 
-const PAGE_STYLE = `main{max-width:1120px}section{padding:2px 14px 6px;margin:0 -14px;border-radius:10px;scroll-margin-top:12px}section.on{outline:3px solid #c7d9f5;background:#fbfdff}
-h2{margin-top:30px}.hl{font-weight:600}section.on .hl{background:#fff3bf;border-radius:3px;padding:0 3px}
+const PAGE_STYLE = `body{font-size:16px;line-height:1.55;color:#16181d}
+main{max-width:1040px;padding:36px 24px 72px}
+h1{font-size:30px;line-height:1.2;margin:0 0 6px}.by{color:var(--dim);font-size:14px;margin:0 0 18px}
+.lead{font-size:18px;line-height:1.5;margin:0 0 8px}.lead,.sub,section>p,section>ul,section>ol,section>.note,.why,.limits{max-width:780px}
+section{padding:2px 16px 10px;margin:0 -16px;border-radius:10px;scroll-margin-top:12px}section.on{outline:3px solid #c7d9f5;background:#fbfdff}
+h2{font-size:22px;line-height:1.25;margin:48px 0 12px;display:flex;align-items:center;gap:12px}h2 .n{flex:none;width:28px;height:28px;border-radius:50%;background:#e8f0fb;color:var(--k);font-size:14px;display:flex;align-items:center;justify-content:center}
+h3{font-size:17px;margin:28px 0 6px}p{margin:10px 0}
+.hl{font-weight:600}section.on .hl{background:#fff3bf;border-radius:3px;padding:0 3px}
+.strip{margin:14px 0 0;padding:12px 16px;border-radius:10px;gap:10px 36px;font-size:15px}.strip.facts{display:grid;grid-template-columns:1.5fr 1fr 1.2fr}
+.kpis.now{grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:12px 0 0}.kpis.now div{background:#fff;border-radius:10px;padding:14px 16px}
+.kpis.now div>small:first-child{color:var(--ink);font-weight:600;font-size:13px;line-height:1.35;min-height:53px}.kpis.now b{font-size:28px;line-height:1.15;letter-spacing:-.01em;margin:6px 0}.kpis.now b i{font-style:normal;font-weight:500;font-size:14px;letter-spacing:0;color:var(--dim)}.kpis.now small{font-size:12.5px;line-height:1.4}
 .why{display:none;border:1px solid #c7d9f5;background:#f3f8ff;border-radius:8px;padding:10px 14px;margin:10px 0;font-size:15px}.why b{display:block;font-size:12px;letter-spacing:.03em;text-transform:uppercase;color:var(--k);margin-bottom:2px}.why p{margin:4px 0}
 section.on .why,body.notes .why{display:block}
-.tools{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;margin:12px 0}.tools button,#guidebar button{font:inherit;font-size:13px;padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer}.tools button#g-start{background:var(--k);border-color:var(--k);color:#fff}
+.opts{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:14px 0}.opt{border-radius:10px;padding:16px 18px}.opt h3{font-size:16px;margin:0 0 4px}.opt p{margin:8px 0}.opt .more{margin-bottom:0;font-size:14px}
+.three div{display:flex;flex-direction:column;justify-content:space-between;gap:4px;padding:10px 12px}.three b{font-size:21px}
+.then{background:#f6faf8;border-radius:0 6px 6px 0;padding:8px 12px}
+.tbl{margin:14px 0}.tbl table{font-size:14.5px}th{white-space:normal;padding:8px 10px}td{padding:10px}td small{font-size:12px}td.lbl,td.lbl small{white-space:normal}td.lbl{min-width:220px}
+.tbl.narrow{max-width:780px}
+.note{border-left:3px solid #c7d9f5;background:#f8fafc;border-radius:0 8px 8px 0;padding:12px 16px;margin:16px 0;color:#374151;font-size:14.5px}.note b{color:var(--ink)}
+.asks,.steps{padding-left:22px;margin:8px 0}.asks li,.steps li{margin:8px 0}
+.limits{font-size:13.5px;line-height:1.5}.limits li{margin:7px 0}
+.tools{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;margin:16px 0 0}.tools button,#guidebar button{font:inherit;font-size:13px;padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer}.tools button#g-start{background:var(--k);border-color:var(--k);color:#fff}
 #guidebar{display:none;position:fixed;left:0;right:0;bottom:0;justify-content:center;align-items:center;gap:10px;padding:10px;background:#fff;border-top:1px solid var(--line);box-shadow:0 -4px 14px rgba(0,0,0,.06);font-size:13px}body.guiding #guidebar{display:flex}body.guiding main{padding-bottom:90px}
-.calc{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:flex-end;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:8px;background:#fafafa}.calc label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)}.calc select,.calc input{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fff}.calc input{width:120px}
-@media print{.tools,#guidebar,form.ask button{display:none!important}section.on{outline:0;background:none}section.on .hl{background:none;padding:0}main{padding:0;max-width:none}h2{break-after:avoid}.opt,.kpis div,tr,.why{break-inside:avoid}a{color:inherit;text-decoration:none}}`;
+.calc{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:12px 18px;align-items:end;margin:14px 0;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:#fafafa}.calc label,form.ask label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--dim)}.calc select,.calc input{font:inherit;font-size:15px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fff}.calc select,.calc input{width:100%}
+form.ask{padding:14px 16px;border-radius:10px}form.ask select,form.ask input{font-size:15px}
+footer{font-size:13px}
+@media(max-width:900px){.kpis.now{grid-template-columns:repeat(2,minmax(0,1fr))}.kpis.now div>small:first-child{min-height:0}.strip.facts{display:flex}.calc{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){main{padding:22px 16px 60px}h1{font-size:25px}.lead{font-size:17px}.opts{grid-template-columns:minmax(0,1fr)}}
+@page{margin:14mm}
+@media print{body{font-size:12px}.lead{font-size:14px}h1{font-size:22px}h2{font-size:16px;margin-top:22px}h2 .n{width:22px;height:22px;font-size:12px}.kpis.now{grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}.kpis.now div{padding:9px 10px}.kpis.now div>small:first-child{font-size:10.5px;min-height:42px}.kpis.now small{font-size:10px}.kpis.now b{font-size:19px}.kpis.now b i{font-size:10.5px}.strip{font-size:12px}.strip.facts{display:grid}.opts{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.opt{padding:11px 12px}.three b{font-size:16px}.calc{grid-template-columns:1.2fr 1fr 1fr 1fr}.calc label,form.ask label{font-size:10.5px}.calc select,.calc input,form.ask select,form.ask input{font-size:12px}.tbl{overflow:visible}.tbl table,.note{font-size:10.5px}th,td{padding:5px 6px;white-space:normal}th{font-size:10px}td small{font-size:9.5px}td.lbl{min-width:150px}.limits{font-size:10.5px}.lead,.sub,section>p,section>ul,section>ol,section>.note,.why,.limits,.tbl.narrow{max-width:none}.tools,#guidebar,form.ask button{display:none!important}section.on{outline:0;background:none}section.on .hl{background:none;padding:0}main{padding:0;max-width:none}h2,h3{break-after:avoid}.opt,.kpis div,tr,.why,.note,.strip{break-inside:avoid}a{color:inherit;text-decoration:none}.more{display:none}}`;
 
 export function renderProspectHtml(input: ProspectInput): string {
   const { report: r, fee } = input;
@@ -215,9 +239,13 @@ export function renderProspectHtml(input: ProspectInput): string {
     .join(" · ");
   const span = t.firstStartMs !== null && t.lastStartMs !== null ? `${et(t.firstStartMs)} to ${et(t.lastStartMs)}` : "";
   const meanTicket = retail.n ? dollars(Math.round(retail.stake / retail.n / 10_000)) : "–";
+  const who = esc(input.audience.short);
+  const h2 = (n: number, title: string): string => `<h2><span class="n">${n}</span>${title}</h2>`;
   const tools = `<div class="tools"><button type="button" id="g-start">Guide</button><button type="button" id="g-all">Show all notes</button><button type="button" onclick="window.print()">Print or save as PDF</button></div>`;
-  const head = `<h1>Lock in on Crypto.com's exchange: what the trade tape shows</h1>
-<p class="lead">Prepared for ${esc(input.audience.name)} by Atticus. Every number here is worked out from the exchange's own public trade tape: real tickets, bought by real customers, each followed to the final whistle. Nothing is simulated.</p>`;
+  const head = `<h1>Lock in on Crypto.com's exchange</h1>
+<p class="by">What the exchange's public trade tape shows · Prepared for ${esc(input.audience.name)} by Atticus</p>`;
+  const lead = `<p class="lead">Across ${num(t.games)} ${t.games === 1 ? "game" : "games"}, ${pct(retail.lost, retail.n)} of retail tickets finished at $0, and ${pct(retail.lostAheadEver, retail.lost)} of those were ahead at some point in the game. Lock in is one button that lets a customer take their stake back in cash, or part of it, and keep the rest of the position riding.</p>
+<p class="sub dim">Every number here is worked out from real tickets, bought by real customers, each followed to the final whistle. Nothing is simulated.</p>`;
 
   if (!t.games) return page(input, `${head}<p class="lead">No game has finished yet. A game is counted once it is over and its result is on the tape.</p>`, false);
 
@@ -262,13 +290,13 @@ ${momentPick}<label>Contracts held<input name="n" type="number" min="0.01" step=
   const calc = `<div class="calc" id="calc" data-games="${t.games}" data-base="${esc(JSON.stringify(base))}">
 <label>The lock<select id="c-option">${BROKER_OPTIONS.map((o) => `<option value="${o.key}">${esc(o.label)}</option>`).join("")}</select></label>
 <label>Of 100 customers who could, how many lock<input id="c-adoption" type="number" min="0" max="100" step="1" value="${BROKER_DEFAULTS.adoption}"></label>
-<label>Your share of the exchange's retail tickets, %<input id="c-share" type="number" min="0" max="100" step="1" value="${BROKER_DEFAULTS.share}"></label>
-<label>Your commission per contract, cents<input id="c-commission" type="number" min="0" step="0.1" value="${BROKER_DEFAULTS.commission}"></label></div>
-<div class="tbl"><table><tr><th>Over these ${num(t.games)} games</th><th>Total</th><th>Per game, mean</th></tr>
-${calcRow("orders", "Orders from locks", "each one the customer's own, on the exchange you route to")}
+<label>Share of the exchange's retail tickets that are ${who}'s, %<input id="c-share" type="number" min="0" max="100" step="1" value="${BROKER_DEFAULTS.share}"></label>
+<label>What ${who} earns per contract, cents<input id="c-commission" type="number" min="0" step="0.1" value="${BROKER_DEFAULTS.commission}"></label></div>
+<div class="tbl narrow"><table><tr><th>Over these ${num(t.games)} games</th><th>Total</th><th>Per game, mean</th></tr>
+${calcRow("orders", "Orders from locks", "each one the customer's own, on the exchange")}
 ${calcRow("contracts", "Contracts traded in them", "volume on the exchange")}
 ${calcRow("fees", "Exchange fees on them", `at ${esc(input.feeWords)}`, true)}
-${calcRow("commission", "Your commission on them", "at the commission you put in", true)}
+${calcRow("commission", `${who}'s earnings on them`, "at the figure put in above", true)}
 ${calcRow("saved", "Customers who finish with their lock's cash instead of $0", "their team lost after they locked")}
 ${calcRow("returned", "Cash those customers keep", "instead of $0", true)}
 </table></div>`;
@@ -277,8 +305,11 @@ ${calcRow("returned", "Cash those customers keep", "instead of $0", true)}
   const share = (v: number): string => `${(v * 100).toFixed(0)}%`;
   const pre = input.book?.pre ?? null;
   const live = input.book?.live ?? null;
-  const deep = [pre ? `${share(pre.deepShare)} of the time before the start` : "", live ? `${share(live.deepShare)} of the time in play` : ""].filter(Boolean).join(" and ");
-  const bookHtml = `<p>Every lock above is at a price that was on the exchange at that moment.${deep ? ` Read once a minute while games were open, the exchange's best price had 1,000 contracts or more behind it ${deep}.` : ""} The mean retail ticket here is ${meanTicket}, a few dozen contracts. <span class="hl">A ticket that size gets the price shown.</span></p>`;
+  const deep =
+    pre && live && share(pre.deepShare) === share(live.deepShare)
+      ? `${share(pre.deepShare)} of the time, before the start and in play alike`
+      : [pre ? `${share(pre.deepShare)} of the time before the start` : "", live ? `${share(live.deepShare)} of the time in play` : ""].filter(Boolean).join(" and ");
+  const bookHtml = `<p>Every lock above is at a price that was on the exchange at that moment.${deep ? ` While games were open, the exchange's best price had 1,000 contracts or more behind it ${deep}.` : ""} The mean retail ticket here is ${meanTicket}, a few dozen contracts. <span class="hl">A ticket that size gets the price shown.</span></p>`;
 
   const kept = (x: LockTally): string => (x.n ? `${(100 - (x.soldShareSum / x.n) * 100).toFixed(0)}%` : "–");
   const rows = (
@@ -295,31 +326,32 @@ ${calcRow("returned", "Cash those customers keep", "instead of $0", true)}
     .join("");
 
   const body = `${head}
+${lead}
 ${tools}
-<div class="strip"><span>Games counted <b>${num(t.games)}</b> <small>${esc(leagues)}${span ? ` · ${span}` : ""}</small></span><span>Tickets opened <b>${num(all.n)}</b> <small>${usd(all.stake)} paid</small></span><span>Retail tickets, $${num(SMALL_USD)} or less <b>${num(retail.n)}</b> <small>${pct(retail.n, all.n)} of all · mean ${meanTicket}</small></span></div>
+<div class="strip facts"><span>Games counted <b>${num(t.games)}</b> <small>${esc(leagues)}${span ? ` · ${span}` : ""}</small></span><span>Tickets opened <b>${num(all.n)}</b> <small>${usd(all.stake)} paid</small></span><span>Retail tickets, $${num(SMALL_USD)} or less <b>${num(retail.n)}</b> <small>${pct(retail.n, all.n)} of all · mean ${meanTicket}</small></span></div>
 <div class="kpis now">
 <div><small>Retail tickets that finished at $0</small><b>${pct(retail.lost, retail.n)}</b><small>${num(retail.lost)} tickets · ${usd(retail.lostStake)} paid</small></div>
 <div><small>Of those, ahead at some point</small><b>${pct(retail.lostAheadEver, retail.lost)}</b><small>${num(retail.lostAheadEver)} tickets · worth more than was paid, at a real price</small></div>
 <div><small>Could have taken the whole stake back in play</small><b>${pct(back.n, back.eligible)}</b><small>${num(back.n)} tickets · the rest of the position riding at no cost</small></div>
-<div><small>Of those, their team then lost</small><b>${num(back.lost)} tickets</b><small>paid ${usd(back.lostStake)}, got $0 · the lock returns ${usd(back.lostCash)}</small></div>
-<div><small>For every 10 in 100 who lock in play</small><b>${num(Math.round(back.n / 10))} orders</b><small>${contracts(back.sold / 10)} contracts on the exchange</small></div>
+<div><small>Of those, their team then lost</small><b>${num(back.lost)} <i>tickets</i></b><small>paid ${usd(back.lostStake)}, got $0 · the lock returns ${usd(back.lostCash)}</small></div>
+<div><small>For every 10 in 100 who lock in play</small><b>${num(Math.round(back.n / 10))} <i>orders</i></b><small>${contracts(back.sold / 10)} contracts on the exchange</small></div>
 </div>
 
-<section data-stop id="s-problem"><h2>1 · Where customers are lost</h2>
-${why("For a broker", `<p>A customer whose ticket goes to $0 has nothing left to trade with. ${pct(retail.lostAheadEver, retail.lost)} of them were ahead at some point in the game. That moment is what Lock in is for.</p>`)}
+<section data-stop id="s-problem">${h2(1, "Where customers are lost")}
+${why(`For ${who}`, `<p>A customer whose ticket goes to $0 has nothing left to trade with. ${pct(retail.lostAheadEver, retail.lost)} of them were ahead at some point in the game. That moment is what Lock in is for.</p>`)}
 <p>Over these ${num(t.games)} games, customers opened ${num(retail.n)} tickets of $${num(SMALL_USD)} or less and paid ${usd(retail.stake)} for them. <span class="hl">${num(retail.lost)} of them, ${pct(retail.lost, retail.n)}, finished at $0</span>, having paid ${usd(retail.lostStake)}.</p>
 <p><span class="hl">${num(retail.lostAheadEver)} of those losing tickets (${pct(retail.lostAheadEver, retail.lost)}) were ahead at some point</span>: after they bought, there was a price on the exchange at which the ticket was worth more than they had put in, fees included. They had paid ${usd(retail.lostAheadStake)}. They were right for part of the game and still left with nothing.</p>
 </section>
 
-<section data-stop id="s-what"><h2>2 · What Lock in is</h2>
-${why("For a broker", "<p>You stay a broker. Nobody in this picture is the house: not you, not us. It runs on the exchange you already route to.</p>")}
+<section data-stop id="s-what">${h2(2, "What Lock in is")}
+${why(`For ${who}`, `<p>${who} stays what it is: the platform the customer trades on. Nobody in this picture is the house: not ${who}, not Atticus. It runs on the exchange ${who} already sends orders to.</p>`)}
 <p>One button on an open position. It shows the customer three numbers: the cash they can take now (the floor), what the position pays in all if their team wins (the cap), and how much of what they paid that brings back. One tap takes it. The rest of the position stays theirs and keeps riding.</p>
-<p>It is done on the exchange, from the customer's own account, at the market's price. The broker routes it and earns its commission as on any order, and the exchange earns its fee. Nobody takes the other side.</p>
+<p>It is done on the exchange, from the customer's own account, at the market's price. For ${who} it is one more order, sent to the exchange like any other. The exchange earns its fee on it. Nobody takes the other side.</p>
 <p>A sportsbook's cash-out is the house's price, and the house is on the other side of it. <span class="hl">Here the price is the market's.</span></p>
 </section>
 
-<section data-stop id="s-ticket"><h2>3 · Two real tickets</h2>
-${why("For a broker", "<p>These are two customers, off the tape. The first leaves with their stake instead of nothing. The second still wins, a little less. Both end the night with money in the account.</p>")}
+<section data-stop id="s-ticket">${h2(3, "Two real tickets")}
+${why(`For ${who}`, "<p>These are two customers of the exchange, off the tape. The first leaves with their stake instead of nothing. The second still wins, a little less. Both end the night with money in the account.</p>")}
 ${stories ? `<p>Both are trades on the exchange's tape, picked by a fixed rule and not by hand: the ticket nearest $50, bought between 25¢ and 75¢, in the latest game that has one. Lock in is taken at the first moment the whole stake could come back.</p><div class="opts">${stories}</div>` : '<p class="dim">No ticket of this size has reached stake back in the games counted so far.</p>'}
 <h3 id="lock">Any ticket, at any moment</h3>
 <p>Pick a finished game and a moment of it, or a game on the board now. The card is what Lock in would have shown the customer on that position at that price. Arithmetic on a public price; nothing here places an order.</p>
@@ -327,8 +359,8 @@ ${form}
 ${card}
 </section>
 
-<section data-stop id="s-replay"><h2>4 · The same, on every retail ticket</h2>
-${why("For a broker", `<p>${num(back.lost)} customers in these games left with $0 and would have left with their money back. Whether a customer who gets their stake back trades again sooner is the question a pilot answers. No public data can.</p>`)}
+<section data-stop id="s-replay">${h2(4, "The same, on every retail ticket")}
+${why(`For ${who}`, `<p>${num(back.lost)} customers in these games left with $0 and would have left with their money back. Whether a customer who gets their stake back trades again sooner is the question a pilot answers. No public data can.</p>`)}
 <p>Each ticket is followed from its purchase to the result, and each lock is taken the first moment a real price on the exchange makes it possible. No hindsight picks the moment.</p>
 <div class="tbl"><table><tr><th>The lock, and what it gives</th><th>Tickets that could take it</th><th>Their team then lost</th><th>The lock returns to those</th><th>Their team won</th><th>Winners give up</th></tr>${rows}</table></div>
 <p><span class="hl">${pct(back.n, back.eligible)} of retail tickets could have taken their whole stake back in play</span>, on average ${mean(back.minutesSum, back.n)} minutes after the scheduled start, with ${kept(back)} of the position still riding. <span class="hl">${num(back.lost)} of those then lost</span>: ${usd(back.lostStake)} paid, $0 back. With the lock, ${usd(back.lostCash)} back. That is ${pct(back.lost, retail.lost)} of every retail ticket that finished at $0.</p>
@@ -336,33 +368,36 @@ ${why("For a broker", `<p>${num(back.lost)} customers in these games left with $
 <div class="note"><b>What it costs the winners.</b> The ${num(back.won)} who locked and then won would have collected ${usd(back.wonGaveUp)} less than by riding. A lock moves money from the games a customer wins to the games they lose. Over many games the two come close, and the difference is the exchange's fees and the spread. What changes is how many customers end a night with nothing.</div>
 </section>
 
-<section data-stop id="s-broker"><h2>5 · What it adds for a broker</h2>
-${why("For a broker", "<p>Every lock is an order on the exchange you already route to. Put in your own two numbers: the tape cannot tell us which tickets were yours or what you charge.</p>")}
-<p>The counts are retail tickets on the whole exchange. The first box is an assumption: nobody knows how many customers lock until it is in front of them. A ticket can take one lock, so the three choices are alternatives, not a sum.</p>
+<section data-stop id="s-adds">${h2(5, `What it adds for ${who}`)}
+${why(`For ${who}`, `<p>Every lock is one more order through the platform. Set the share to what ${who} expects to carry: the tape shows the whole exchange and does not say whose customers are whose.</p>`)}
+<p>The counts are retail tickets on the whole exchange: at a share of 100% the table is all of it. The first box is an assumption, since nobody knows how many customers lock until it is in front of them. A ticket can take one lock, so the three choices are alternatives, not a sum.</p>
 ${calc}
 </section>
 
-<section id="s-book"><h2>6 · The prices are real</h2>
+<section id="s-book">${h2(6, "The prices are real")}
 ${bookHtml}
 </section>
 
-<section data-stop id="s-pilot"><h2>7 · What a pilot would answer</h2>
-${why("The ask", "<p>Step one needs no change to your app and nothing shown to a customer. It turns the exchange-wide numbers on this page into yours.</p>")}
+<section data-stop id="s-pilot">${h2(7, "What a pilot would answer")}
+${why("The ask", `<p>Step one needs no change to the platform and nothing shown to a customer. It turns the exchange-wide numbers on this page into ${who}'s own.</p>`)}
 <p>Three things this page cannot know, because they are not public:</p>
-<ul class="limits" style="font-size:15px;color:inherit">
-<li><b>How many of your customers lock.</b> The 10 in 100 here is a placeholder.</li>
+<ul class="asks">
+<li><b>How many of ${who}'s customers lock.</b> The 10 in 100 here is a placeholder.</li>
 <li><b>Whether they come back.</b> Does a customer who got their stake back trade again sooner, and more often, than one who finished at $0? That needs account history.</li>
-<li><b>Which of these tickets are yours.</b> The tape shows the whole exchange.</li></ul>
-<p><b>Step one, in the shadow.</b> These same tables on your own customers' fills, account numbers scrambled, with who came back added. <b>Step two, live.</b> The button in front of a small share of customers, measured against the rest.</p>
+<li><b>What ${who}'s own customers do.</b> The tape shows the whole exchange and does not say whose customers are whose.</li></ul>
+<p>Two steps:</p>
+<ol class="steps">
+<li><b>In the shadow.</b> These same tables on ${who}'s own customers as they trade, account numbers scrambled, with who came back added. Nothing changes on the platform.</li>
+<li><b>Live.</b> The button in front of a small share of customers, measured against the rest.</li></ol>
 </section>
 
 <h2>Notes and limits</h2>
 <ul class="limits">
-<li><b>Whose trades.</b> The whole exchange: every broker and app that sends orders to it, and its market makers. The tape does not say which trades came from which.</li>
+<li><b>Whose trades.</b> The whole exchange: every platform that sends orders to it, and its market makers. The tape does not say which trades came from which.</li>
 <li><b>What a ticket is.</b> A buy on the tape between 5¢ and 95¢, followed to the result as if held. Some buys close a short, some buyers are market makers, and some holders got out before the end; none of that is visible. One person's three buys are three tickets.</li>
 <li><b>Real prices.</b> Every lock is worked out at a price that was really there on that contract at that moment: a trade on the tape or the exchange's own book. Nothing is estimated.</li>
 <li><b>Retail.</b> A ticket that cost $${num(SMALL_USD)} or less. The larger ones are ${pct(all.n - retail.n, all.n, 1)} of tickets and ${pct(all.stake - retail.stake, all.stake)} of the money, would move the price, and are left out of every figure below the top strip.</li>
-<li><b>Fees.</b> The exchange's fee, ${esc(input.feeWords)}, is in every figure. A broker's commission is not public and is counted only where you put it in.</li>
+<li><b>Fees.</b> The exchange's fee, ${esc(input.feeWords)}, is in every figure. What ${who} earns on an order is not public and is counted only where it is put in.</li>
 <li><b>What this is not.</b> A forecast of how many customers lock, or of what a lock does to whether they come back.</li>
 </ul>`;
   return page(input, body, true);
@@ -371,7 +406,7 @@ ${why("The ask", "<p>Step one needs no change to your app and nothing shown to a
 function page(input: ProspectInput, body: string, withGuide: boolean): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
-<title>Lock in on Crypto.com's exchange</title>
+<title>Lock in on Crypto.com's exchange · ${esc(input.audience.name)}</title>
 <style>
 ${SPORTS_PAGE_STYLE}
 ${LOCK_STYLE}
