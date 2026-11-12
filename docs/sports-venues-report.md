@@ -283,7 +283,18 @@ environment. Two entries:
 | Address | Key | For | What it serves |
 | --- | --- | --- | --- |
 | `/prospect` | `PROSPECT_PAGE_KEY` | one reader outside the company | one page: results, held back as below |
-| `/lockin` | `LOCK_IN_INTERNAL_KEY` | the company | `/lockin` every replay table and the method, `/lockin/lock` the lock card with its order, `/lockin/api` the report as JSON |
+| `/lockin` | `LOCK_IN_INTERNAL_KEY` | the company | `/lockin` every replay table and the method, `/lockin/lock` the lock card with its order, `/lockin/brief` the meeting brief, `/lockin/api` the report as JSON |
+
+**The meeting brief** (`/lockin/brief`, `brief.ts` and `briefHtml.ts`) is the founder's own
+preparation page and is never sent. `brief.ts` takes the retail tallies of the replay (tickets
+of $500 or less, stake back in play) and works out three things: a rate per 1,000 tickets, each
+league's rate per game carried to its regular season (`SEASON_GAMES`: NBA 1,230, NHL 1,344, NFL
+272), and a case for one platform from three stated assumptions (its share of the exchange's
+retail tickets, how many of 100 customers who could lock do, and the exchange's volume against
+today's). `CASES` holds bear (1%, 3, 1x), base (3%, 10, 2x) and bull (10%, 25, 4x); a fourth is
+read from `?share=&adoption=&growth=`. A league with fewer than `MIN_GAMES` (8) games is shown
+and left out of every season total and case, and the page says so at its top. No price for our
+own fee is printed anywhere on it.
 
 - An entry is on only when its key is set, is 16 characters or more, and is not `BTC_CURVE_TOKEN`,
   `SPORTS_VENUES_TOKEN` or the other entry's key. Otherwise every address under it answers 404,

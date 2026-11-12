@@ -168,6 +168,10 @@ Not under the sports page's key. Two addresses, each with its own key:
 - `/prospect` under `PROSPECT_PAGE_KEY`: the page made for Prospect. This is the link you send.
 - `/lockin` under `LOCK_IN_INTERNAL_KEY`: every table, the method, and the lock card with the
   order behind it (`/lockin/lock`). Yours only. Never send this link.
+- `/lockin/brief`, same key: the meeting brief. What to say, the numbers to know, what they are
+  worth to Prospect in a bear, base and bull case, what we charge, Lock in against selling out,
+  integration, and the questions both ways. Read it before the meeting and again on Monday: its
+  figures are worked out when the page is opened, from the same replay as Prospect's page.
 
 Mechanics are in `docs/sports-venues-report.md` under "Lock in on the trade tape" and "Pages
 with a key of their own".
