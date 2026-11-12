@@ -281,12 +281,12 @@ test("public record: the parlay card reads lock, sell or hold with refusals coun
   const { tickets } = fixture();
   const parlays = { lockVsSell: lockVersusSell(tickets), lastLeg: summarizeLastLeg(tickets), stakeCents: 2_000 };
   const card = parlayMomentCard(parlays);
-  assert.ok(card.includes("Lock, sell or hold: the parlay moment"));
+  assert.ok(card.includes("Lock, cash out or hold: the parlay moment"));
   assert.ok(card.includes('<div class="n">8</div><div class="l">tickets built</div>'));
   assert.ok(card.includes('<div class="n green">3</div><div class="l">priced a lock</div>'));
   assert.ok(card.includes("3 tickets reached the last leg with a priced lock"));
   assert.ok(card.includes("On the 2 settled, locking paid"));
-  assert.ok(card.includes("the lock beat the sell on 1, and holding beat both on 1"));
+  assert.ok(card.includes("the lock beat the cash-out on 1, and holding beat both on 1"));
   assert.ok(card.includes("2 legs · Away · E game") && card.includes("8h before"));
   assert.ok(card.includes("last leg not played yet"));
   assert.ok(card.includes("Lock not offered, and why, across 5 attempts:"), "refusals are counted against every attempt, priced ones included");
@@ -297,7 +297,7 @@ test("public record: the parlay card reads lock, sell or hold with refusals coun
   assert.ok(!card.includes("\u2014"), "no em dash");
 
   const page = renderShadowHtml({ atIso: "2026-10-11T00:00:00.000Z", summary: summarizeShadow([]), open: [], settled: [], closed: [], parlays });
-  assert.ok(page.includes("Lock, sell or hold: the parlay moment"));
+  assert.ok(page.includes("Lock, cash out or hold: the parlay moment"));
   assert.ok(page.includes("<b>Simulated:</b> the positions and the parlay tickets;"));
   assert.ok(page.includes('<a class="back" href="/api/shadow/parlays">Parlays (JSON)</a>'));
   const idx = page.indexOf("the parlay moment");
@@ -330,7 +330,7 @@ test("embed: a Parlays tab beside Positions, read from /api/parlays; three row s
   assert.ok(html.includes("no lock exists before the last pick"), "busted");
   assert.ok(html.includes("Lock in your parlay") && html.includes(">if it misses<") && html.includes(">if it hits<"), "the sheet: two endings and the credit");
   assert.ok(html.includes('<div class="tile k"><div class="l">if it misses</div>') && html.includes('<div class="tile"><div class="l">credited</div>'), "the floor is the figure in colour, as on the extension; the credit is plain");
-  assert.ok(html.includes("Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket"), "the cash-out comparison");
+  assert.ok(html.includes("Cash out ends the whole ticket at the venue\\'s price. The lock keeps the ticket"), "the cash-out comparison");
   assert.ok(html.includes("With two picks open there is no market for the pair of games, so no lock is offered yet."));
   // honesty: one line on the tab, the long version behind the info button, and the confusing sentence gone
   assert.ok(html.includes('<div class="note"><span>Simulated tickets at live prices; nothing is bought.</span><button class="info" data-info="1" aria-label="About these tickets">i</button></div>'));

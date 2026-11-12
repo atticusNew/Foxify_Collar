@@ -8,10 +8,12 @@
  * held, which is the sale it is equal to: the holder's two results differ by the same sum under
  * either (crossVenue/shadowSaleAlternatives.ts, "HOW MUCH IS SOLD"). Its default tier comes to about 15.
  *
- * So every tier on every surface carries one number, `sharePercent`, and one sentence:
+ * So every tier on every surface carries one number, `sharePercent`, and one sentence, the same
+ * for both shapes. What a holder reads never names how a direct lock is done (the copy rules
+ * test, rule 8), so the sentence says what is locked and not what is sold:
  *
- *   own sale      "sells 40% of your position"
- *   hedged lock   "like selling 15% of your position"
+ *   direct lock   "locks 40% of your position"
+ *   hedged lock   "locks 15% of your position"
  *
  * It sits beside retailShowcase.ts, outside crossVenue/, because every event service that
  * serves a retail quote imports it (the deploy filters test holds each service to its paths).
@@ -37,8 +39,8 @@ export function saleSharePercent(soldContracts: number, heldContracts: number): 
   return Math.min(99, Math.max(1, clampPercent((100 * soldContracts) / heldContracts)));
 }
 
-/** The sentence beside a tier. The pages carry the same two sentences in their own script; the tests hold them to these. */
+/** The sentence beside a tier. The pages carry the same sentence in their own script; the tests hold them to these. */
 export const SHARE_WORDS = {
-  sale: (percent: number): string => `sells ${percent}% of your position`,
-  lock: (percent: number): string => `like selling ${percent}% of your position`,
+  sale: (percent: number): string => `locks ${percent}% of your position`,
+  lock: (percent: number): string => `locks ${percent}% of your position`,
 } as const;

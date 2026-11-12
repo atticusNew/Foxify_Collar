@@ -528,7 +528,7 @@ export function buyBackRecordOf(o: OrderOutcome, p: { maxPriceMicro: number; lim
  */
 export function memberTailTerms(venueName: string, rules: RuleCells, kept: number): TailTerm[] {
   const riding = `your ${kept} riding contract${kept === 1 ? "" : "s"}`;
-  const sold = "The contracts you sold stay sold.";
+  const sold = "The contracts you locked stay locked.";
   const settles = (t: RuleCells[keyof RuleCells]["treatment"], what: string): string => {
     switch (t) {
       case "half":

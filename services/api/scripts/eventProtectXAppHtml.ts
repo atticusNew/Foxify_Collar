@@ -232,7 +232,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
     <details>
       <summary>How this works</summary>
       <ul>
-        <li><b>The trade.</b> You give up the top slice of your win, and in return there is a floor: the least you end with if your side loses. The market prices that risk live; when it prices it cheaper than the slice you sold, the difference is paid to you as cash.</li>
+        <li><b>The trade.</b> You give up the top slice of your win, and in return there is a floor: the least you end with if your side loses. The market prices that risk live; when it prices it cheaper than the slice you gave up, the difference is paid to you as cash.</li>
         <li><b>Backed by the same game.</b> The lock is backed by buying the side that pays exactly when yours loses, only on listings that verifiably settle on the identical official result. Your floor does not depend on anyone's opinion of the game.</li>
         <li><b>Three ways to lock in.</b> Safest keeps the most if your side loses; Most upside keeps the most if you win; Balanced sits between. You pick; nothing is pre-chosen for you but a starting point.</li>
         <li><b>The credit you see is the credit you get.</b> Our fee comes out of the cash we source before the number is shown; there is nothing to add back. When the market cannot fund a credit, we refuse and say so. This is a demonstration: prices are live, the position is simulated, no funds can move, and undo simply resets it; in the real product, terms lock at your tap. <a href="/receipts">See the receipts</a>.</li>
@@ -359,7 +359,7 @@ footer a{color:var(--dim);font-weight:600;text-decoration:underline}
         '<div class="tn">'+TIER_WORDS[name]+'</div>'+
         '<div class="tf">'+usd(o.no)+'</div>'+
         '<div class="tc">at least</div>'+
-        (typeof t.sharePercent==='number'?'<div class="tc">like selling '+t.sharePercent+'%</div>':'')+'</button>';
+        (typeof t.sharePercent==='number'?'<div class="tc">locks '+t.sharePercent+'%</div>':'')+'</button>';
     }
     $('tiers').innerHTML=n>1?html:'';
     $('tiers').style.display=n>1?'flex':'none';

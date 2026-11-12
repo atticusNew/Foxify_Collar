@@ -728,7 +728,7 @@ ${cardBlock}<aside class="pitch">
   /* a tier's terms at this row's size: the floor and the cap are per contract, the credit scales with the size */
   function scaled(t,q,n){var k=n/(q.contracts||n||1);return {floorCents:t.floorCents,capCents:t.capCents,creditCents:Math.round(t.creditCents*k),sharePercent:t.sharePercent}}
   /* one scale for every shape: a lock sells nothing of the trader's; the service says what sale it is equal to */
-  function shareWords(t){return t&&typeof t.sharePercent==='number'?'like selling '+t.sharePercent+'% of your position':''}
+  function shareWords(t){return t&&typeof t.sharePercent==='number'?'locks '+t.sharePercent+'% of your position':''}
   function offeredTiers(q,n){
     var out={},k,i;
     if(q.tiers){for(i=0;i<TIER_ORDER.length;i++){k=TIER_ORDER[i];if(q.tiers[k]){var s=scaled(q.tiers[k],q,n);if(worthIt(s,n))out[k]=s}}}
@@ -762,7 +762,7 @@ ${cardBlock}<aside class="pitch">
   }
   function toggleA(act,label,open){return '<a href="#" class="ael-tg" data-act="'+act+'" aria-expanded="'+(open?'true':'false')+'">'+label+'<span class="ael-tgc">'+CHEVRON+'</span></a>'}
   /* what the trader is selling, as the last Details row: the slip already shows the trade, this says it in words for whoever asks; one tap away, and a place the record can point to */
-  var HOW='You sell part of the upside for the floor and a credit at lock in. The other side is bought the second you tap and settles on the same official result.';
+  var HOW='You give up part of the upside for the floor and a credit at lock in. The other side is bought the second you tap and settles on the same official result.';
   function drow(label,value,cls){return '<span class="ael-dl'+(cls?' '+cls:'')+'">'+label+'</span><span class="ael-dv'+(cls?' '+cls:'')+'">'+value+'</span>'}
   function ledgerRow(label,value,was,cls){return '<div class="ael-lr'+(cls?' '+cls:'')+'"><span class="ael-l">'+label+'</span><b>'+value+'</b>'+(was===null?'':'<s>'+was+'</s>')+'</div>'}
   /* the slip: win, lose, cash now; the "of/instead of" column only while the position is unprotected */
@@ -841,7 +841,7 @@ ${cardBlock}<aside class="pitch">
     var net=lv.q.net,credit=L.creditCents,allIn=credit+net;
     var hero=net<0?'You pay <b class="ael-pay">'+usd(-net)+'</b>':net>0?'You get <b>'+usd(net)+'</b>':'Nothing owed either way';
     var netWords=allIn<0?'<b>\\u2212'+usd(-allIn)+'</b> after the '+usd(credit)+' credited to you at lock in':allIn>0?'<b>+'+usd(allIn)+'</b> ahead, with the '+usd(credit)+' credited to you at lock in':'even, with the '+usd(credit)+' credited to you at lock in';
-    var why=(net<0?'Your pick moved up since the lock, so the upside you sold is worth more than the floor you hold; leaving settles that difference.':net>0?'Your pick moved down since the lock, so the floor you hold is worth more than the upside you sold; leaving pays you that difference.':'Your pick is where it was at the lock; the floor and the upside cancel.')+
+    var why=(net<0?'Your pick moved up since the lock, so the upside you gave up is worth more than the floor you hold; leaving settles that difference.':net>0?'Your pick moved down since the lock, so the floor you hold is worth more than the upside you gave up; leaving pays you that difference.':'Your pick is where it was at the lock; the floor and the upside cancel.')+
       '</p><p>Your pick stays open on '+esc(BRAND)+', without the lock. The '+usd(credit)+' credited at lock in is yours either way.';
     return head+
       '<div class="ael-lr"><span class="ael-l">To leave now</span><b>'+hero+'</b></div>'+
@@ -1229,7 +1229,7 @@ ${cardBlock}<aside class="pitch">
       '<div class="tile"><div class="l">if it hits</div><div class="v">'+usd(L.capTotalCents)+'</div><div class="was">was '+usd(t.paysCents)+'</div></div></div>'+
       '<button class="go" id="sh-go">Lock in '+usd(L.floorTotalCents)+' &middot; +'+usd(L.creditCents)+' credit</button>'+
       '<div class="fine">priced '+esc(fmtAt(L.quotedAt))+' from the live book'+otherSideWords(L)+', '+L.hoursBefore+'h before the game &middot; <a href="#" id="sh-how">how it works</a></div>'+
-      '<div class="how" id="how"><p>Cash out sells the whole ticket at the venue\\'s price. The lock keeps the ticket: you end with '+usd(L.floorTotalCents)+' if '+esc(last.outcome)+' misses, '+usd(L.creditCents)+' is credited at lock in, and the upside is left to '+usd(L.capTotalCents)+' if it hits.</p>'+
+      '<div class="how" id="how"><p>Cash out ends the whole ticket at the venue\\'s price. The lock keeps the ticket: you end with '+usd(L.floorTotalCents)+' if '+esc(last.outcome)+' misses, '+usd(L.creditCents)+' is credited at lock in, and the upside is left to '+usd(L.capTotalCents)+' if it hits.</p>'+
       '<p>It is priced only when one pick is left. With two picks open there is no market for the pair of games, so no lock is offered yet.</p>'+
       '<p>At the last pick the ticket is one position on one game, so it is priced like a single: every venue we work with is asked for the other side and the best price wins'+(L.venue?' (this one: '+esc(L.venue)+')':'')+'.</p>'+
       '<p>The ticket is ours, built from public game markets at the prices when it was built. The terms are the ones the live market on the last pick funded at that second; nothing is bought.</p></div>';

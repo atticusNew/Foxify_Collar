@@ -105,8 +105,8 @@ test("every surface says the share with the service's two sentences, and takes t
     assert.equal(extWords({ sharePercent: percent }, false), SHARE_WORDS.lock(percent));
     assert.equal(embedWords({ sharePercent: percent }), SHARE_WORDS.lock(percent));
   }
-  assert.equal(SHARE_WORDS.sale(40), "sells 40% of your position");
-  assert.equal(SHARE_WORDS.lock(15), "like selling 15% of your position");
+  assert.equal(SHARE_WORDS.sale(40), "locks 40% of your position");
+  assert.equal(SHARE_WORDS.lock(15), "locks 15% of your position");
   // a quote from a service that sends no share says nothing, rather than a number made up on the page
   assert.deepEqual([extWords({}, true), extWords(null, false), extWords({ sharePercent: "40" }, true), embedWords({}), embedWords(null)], ["", "", "", "", ""]);
 
@@ -121,10 +121,10 @@ test("every surface says the share with the service's two sentences, and takes t
   // the member page and the demo board carry the sentence around the quote's own number
   const member = await import("../scripts/memberAppHtml");
   const memberHtml = member.memberAppHtml({ venueName: "STX", configured: true, recordUrl: "https://shadow.example" });
-  assert.ok(memberHtml.includes(`'<span class="ael-share">sells ' + sel.sharePercent + "% of your position</span>"`));
+  assert.ok(memberHtml.includes(`'<span class="ael-share">locks ' + sel.sharePercent + "% of your position</span>"`));
   const { renderEventXAppHtml } = await import("../scripts/eventProtectXAppHtml");
   const board = renderEventXAppHtml();
-  assert.ok(board.includes(`(typeof t.sharePercent==='number'?'<div class="tc">like selling '+t.sharePercent+'%</div>':'')`));
+  assert.ok(board.includes(`(typeof t.sharePercent==='number'?'<div class="tc">locks '+t.sharePercent+'%</div>':'')`));
 
   // no surface works the share out for itself: each only reads the quote's number, and the embed passes it through its scaling
   for (const [what, text] of [["extension", content], ["embed", embed], ["member page", memberHtml], ["board", board]] as const) {

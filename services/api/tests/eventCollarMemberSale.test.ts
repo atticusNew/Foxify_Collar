@@ -408,7 +408,7 @@ test("member sale arithmetic: the tiers sell 40/60/80% of the position into the 
     tails.map((x) => x.branch),
     ["tie", "postponed", "abandoned", "corrected"],
   );
-  for (const x of tails) assert.ok(x.text.includes("your 20 riding contracts") && x.text.endsWith("The contracts you sold stay sold."), x.text);
+  for (const x of tails) assert.ok(x.text.includes("your 20 riding contracts") && x.text.endsWith("The contracts you locked stay locked."), x.text);
 });
 
 test("member positions: longs on full-game winner markets map to our market by league, club and date; shorts and other markets are left out; a $2 contract is two of ours; the entry is the average open premium", async () => {
@@ -849,7 +849,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     venue.fillMode = "none";
     const none = await post<Any>("/api/shadow/lock", { ticker: TICKER3, contracts: 10, venue: "stx" });
     assert.deepEqual([none.status, none.body.ok, none.body.code, none.body.order.status], [200, false, "not_filled", "cancelled"]);
-    assert.match(none.body.message, /nothing was sold/);
+    assert.match(none.body.message, /nothing was locked/);
     recs = loadShadowPositions(ledger);
     assert.deepEqual(recs.map((r) => r.ticker).sort(), [TICKER, TICKER2].sort());
     venue.fillMode = "full";
@@ -1325,7 +1325,7 @@ test("shadow worker member routes: connect through the venue's OAuth, read the m
     assert.equal(venue.rfqs.length, rfqsBefore, "nothing asked of the venue");
     const pv = await post<Any>("/api/shadow/lock", { ticker: COMBO2, contracts: 9, tier: "wide", venue: "stx" });
     assert.deepEqual([pv.status, pv.body.ok, pv.body.code, pv.body.combo], [200, false, "combo_preview", true], JSON.stringify(pv.body));
-    assert.match(pv.body.message, /^A preview: STX's cash-out quote isn't live yet, so nothing was sold\./);
+    assert.match(pv.body.message, /^A preview: STX's cash-out quote isn't live yet, so nothing was locked\./);
     assert.deepEqual([venue.positions.find((p) => p.market_id === "m-combo-wire")!.position, venue.orders.length, loadShadowPositions(ledger).some((p) => p.ticker === COMBO2)], ["9.00", ordersBefore, false], "nothing sold, nothing written");
     venue.rfqMode = "quote";
     // off again: the locked combo still reads as locked on the page (the record stands), the unlocked ones as they always have

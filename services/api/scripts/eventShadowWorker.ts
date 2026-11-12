@@ -1377,7 +1377,7 @@ async function memberPriced(member: string, ticker: string, contracts: number, e
   const venueContracts = venueContractsOf(contracts, maxPriceMicro);
   const bids = bidLevels(market);
   const tiers = quoteSaleTiers({ positionContracts: venueContracts, maxPriceMicro, bids });
-  if (!tiers.wide && !tiers.balanced && !tiers.tight) return { ok: false, status: 200, body: { ok: false, code: "no_bids", message: `${VENUE_NAMES[MEMBER_VENUE]} shows no bids on this market right now; nothing to sell into.` } };
+  if (!tiers.wide && !tiers.balanced && !tiers.tight) return { ok: false, status: 200, body: { ok: false, code: "no_bids", message: `${VENUE_NAMES[MEMBER_VENUE]} shows no bids on this market right now; there is nothing to lock at.` } };
   return {
     ok: true,
     priced: {
@@ -1444,7 +1444,7 @@ const comboPositionOf = (positions: MemberHolderPosition[], ticker: string): Mem
  */
 async function memberComboPriced(member: string, ticker: string, contracts: number, entryCents: number | undefined, positions: MemberHolderPosition[], probing = false): Promise<MemberPricedResult> {
   const VN = VENUE_NAMES[MEMBER_VENUE];
-  if (!comboRfqLive() && !probing) return { ok: false, status: 409, body: { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VN}; the lock sells part of one position.` } };
+  if (!comboRfqLive() && !probing) return { ok: false, status: 409, body: { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VN}; a lock is on one position.` } };
   const pos = comboPositionOf(positions, ticker);
   if (!pos) return { ok: false, status: 409, body: { ok: false, error: "not_held", code: "not_held", message: `Your ${VN} account holds no such combo.` } };
   if (contractHundredths(contracts) > contractHundredths(pos.contracts)) return { ok: false, status: 409, body: { ok: false, error: "size", code: "size", message: `You hold ${pos.contracts} on this ticket; the lock can cover up to that.`, held: pos.contracts } };
@@ -1635,7 +1635,7 @@ const comboRuleText = (m: RawOutcomeMarket): string => [m.description, m.questio
 
 function memberRulesView(league: string, kept: number, combo = false) {
   // a combination settles under the venue's own combo rules (a voided leg drops out and the ticket re-prices), not a league's tails; the page shows the one sentence under Details
-  if (combo) return { tails: [], rules: {}, comboNote: `${VENUE_NAMES[MEMBER_VENUE]} settles the ${kept} riding contract${kept === 1 ? "" : "s"} by its own combo rules: a voided leg drops out and the ticket re-prices. The contracts you sold stay sold.` };
+  if (combo) return { tails: [], rules: {}, comboNote: `${VENUE_NAMES[MEMBER_VENUE]} settles the ${kept} riding contract${kept === 1 ? "" : "s"} by its own combo rules: a voided leg drops out and the ticket re-prices. The contracts you locked stay locked.` };
   const cells = rulesFor(MEMBER_VENUE, league);
   return {
     tails: memberTailTerms(VENUE_NAMES[MEMBER_VENUE], cells, kept),
@@ -1674,7 +1674,7 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
   }
   const P = priced.priced;
   if (P.combo?.preview) {
-    sendJson(res, 200, { ok: false, at: atIso, ticker, code: "combo_preview", combo: true, message: `A preview: ${VENUE_NAMES[MEMBER_VENUE]}'s cash-out quote isn't live yet, so nothing was sold. The figures shown are a stand-in bid.` });
+    sendJson(res, 200, { ok: false, at: atIso, ticker, code: "combo_preview", combo: true, message: `A preview: ${VENUE_NAMES[MEMBER_VENUE]}'s cash-out quote isn't live yet, so nothing was locked. The figures shown are a stand-in bid.` });
     return;
   }
   const want = tier ?? (P.tiers[searchConfig().defaultTier] ? searchConfig().defaultTier : (PROTECTION_TIERS.find((t) => P.tiers[t]) as ProtectionTier));
@@ -1701,7 +1701,7 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     void cmp.catch(() => undefined);
     memberPositionsCache.delete(member);
     if (P.combo && err instanceof MemberApiError && (err.status === 409 || err.status === 410 || /expir|lapse/i.test(err.message))) {
-      sendJson(res, 200, { ok: false, at: atIso, ticker, code: "quote_lapsed", message: `${VENUE_NAMES[MEMBER_VENUE]}'s quote lapsed before the tap reached it; nothing was sold. Price again.` });
+      sendJson(res, 200, { ok: false, at: atIso, ticker, code: "quote_lapsed", message: `${VENUE_NAMES[MEMBER_VENUE]}'s quote lapsed before the tap reached it; nothing was locked. Price again.` });
       return;
     }
     const r = memberRefusal(err);
@@ -1713,10 +1713,10 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
   if (outcome.filled <= 0) {
     void cmp.catch(() => undefined);
     const why = P.combo
-      ? `${VENUE_NAMES[MEMBER_VENUE]} accepted the quote but nothing filled; nothing was sold.`
+      ? `${VENUE_NAMES[MEMBER_VENUE]} accepted the quote but nothing filled; nothing was locked.`
       : P.live && P.inPlayDelaySec > 0
-        ? `${VENUE_NAMES[MEMBER_VENUE]} held the order for its ${P.inPlayDelaySec}s in-play delay and the bid moved away before it could match; nothing was sold.`
-        : `${VENUE_NAMES[MEMBER_VENUE]}'s bid moved before the order reached it; nothing was sold.`;
+        ? `${VENUE_NAMES[MEMBER_VENUE]} held the order for its ${P.inPlayDelaySec}s in-play delay and the bid moved away before it could match; nothing was locked.`
+        : `${VENUE_NAMES[MEMBER_VENUE]}'s bid moved before the order reached it; nothing was locked.`;
     sendJson(res, 200, { ok: false, at: atIso, ticker, code: "not_filled", live: P.live, message: why, order: { id: outcome.orderId, status: outcome.status, note: outcome.note } });
     return;
   }
@@ -1758,7 +1758,7 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
     ...(holder ? { holder } : {}),
   };
   if (!appendOrAlert(record, ownLedger)) {
-    sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: `The record could not be written; your sale on ${VENUE_NAMES[MEMBER_VENUE]} stands (order ${sale.orderId ?? "unknown"}).`, memberSale: memberSaleViewOf(sale) });
+    sendJson(res, 500, { ok: false, error: "ledger_write_failed", message: `The record could not be written; your order on ${VENUE_NAMES[MEMBER_VENUE]} stands (order ${sale.orderId ?? "unknown"}).`, memberSale: memberSaleViewOf(sale) });
     return;
   }
   sendJson(res, 200, {
@@ -1794,7 +1794,7 @@ async function memberLock(res: ServerResponse, holder: string | null, ticker: st
 /** The buy-back priced from the member's venue's offers: the contracts sold at the lock, bought again at the walked price. */
 async function memberBuyBackPriced(holder: string | null, lock: ShadowPosition): Promise<{ ok: true; member: string; market: RawOutcomeMarket; maxPriceMicro: number; bb: NonNullable<ReturnType<typeof quoteBuyBack>>; midCents: number | null; sale: MemberSaleRecord } | { ok: false; status: number; body: Record<string, unknown> }> {
   const sale = lock.memberSale;
-  if (!sale) return { ok: false, status: 409, body: { ok: false, error: "no_sale", code: "no_sale", message: "This lock carries no sale to buy back." } };
+  if (!sale) return { ok: false, status: 409, body: { ok: false, error: "no_sale", code: "no_sale", message: "This lock has nothing to buy back." } };
   const member = memberKeyOf(holder);
   if (!memberSessions) return { ok: false, status: 404, body: { ok: false, error: "member_app_off", code: "member_app_off", message: "The member app is not configured on this service." } };
   if (!memberSessions.state(member).connected) return { ok: false, status: 409, body: { ok: false, error: "member_not_connected", code: "member_not_connected", message: `Connect your ${VENUE_NAMES[MEMBER_VENUE]} account first.` } };
@@ -1809,7 +1809,7 @@ async function memberBuyBackPriced(holder: string | null, lock: ShadowPosition):
   const want = venueContractsOf(sale.soldContracts, maxPriceMicro);
   const asks = askLevels(market);
   const bb = quoteBuyBack(asks, want, maxPriceMicro);
-  if (!bb) return { ok: false, status: 200, body: { ok: false, code: "no_offers", message: `${VENUE_NAMES[MEMBER_VENUE]} shows no offers on this market right now; the contracts you sold cannot be bought back.` } };
+  if (!bb) return { ok: false, status: 200, body: { ok: false, code: "no_offers", message: `${VENUE_NAMES[MEMBER_VENUE]} shows no offers on this market right now; the contracts you locked cannot be bought back.` } };
   const bids = bidLevels(market);
   // the middle of the book per $1 of payout, to the nearest cent: a yardstick for what crossing cost, not money
   const midCents = bids[0] && asks[0] ? mulDiv(bids[0].priceMicro + asks[0].priceMicro, 100, 2 * maxPriceMicro, "nearest") : null;
@@ -1928,7 +1928,7 @@ async function memberUnwind(res: ServerResponse, holder: string | null, lock: Sh
     unwind: memberUnwindViewOf(lock, bp.sale, { wantContracts: bp.bb.wantContracts, contracts: outcome.filled, limitPriceCents: bp.bb.limitPriceCents, avgPriceCents: back.avgPriceCents, costCents: back.costCents, depthLimited: back.boughtContracts < back.requestedContracts }, bp.maxPriceMicro, bp.midCents),
     memberBuyBack: back,
     partial: back.boughtContracts < back.requestedContracts,
-    hedge: { sent: false, note: "no hedge on a member's own sale; the contracts were bought back in your own account" },
+    hedge: { sent: false, note: "no hedge on a direct lock; the contracts were bought back in your own account" },
     cash: [],
   });
 }
@@ -2541,7 +2541,7 @@ function hedgeViewOf(receipt: HedgeReceipt) {
 /** The locked terms an early close prices against, read off the position as written. */
 function closeTermsOf(p: ShadowPosition): EarlyCloseTerms {
   // a member's own sale has no hedge leg to price; its leave is a buy-back on the member's venue (the unwind routes branch before this)
-  if (p.route === "member_sale") throw new Error(`${p.ticker}: a member sale is not priced by the early-close pricer`);
+  if (p.route === "member_sale") throw new Error(`${p.ticker}: a direct lock is not priced by the early-close pricer`);
   return {
     contracts: p.contracts,
     floorCents: p.floorCents,
@@ -3226,7 +3226,7 @@ async function handleLockRoutes(req: IncomingMessage, res: ServerResponse, url: 
       }
       if (venue === MEMBER_VENUE) {
         if (parlay) {
-          sendJson(res, 409, { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VENUE_NAMES[MEMBER_VENUE]}; the lock sells part of one position.` });
+          sendJson(res, 409, { ok: false, error: "parlay_unsupported", code: "parlay_unsupported", message: `A parlay is not locked on ${VENUE_NAMES[MEMBER_VENUE]}; a lock is on one position.` });
           return;
         }
         await memberLock(res, holder, ticker, contracts, entryCents, tier, ownLedger, atIso);

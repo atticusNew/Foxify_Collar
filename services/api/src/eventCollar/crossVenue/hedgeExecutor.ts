@@ -480,7 +480,7 @@ export class RfqHedgeExecutor implements HedgeExecutor {
       bookWalkPenaltyCents: bookWalkPenaltyCents(intent),
     };
     // the RFQ surface asks makers for the side we buy; a sale goes straight to the book
-    const rfq = actionOf(intent) === "sell" ? { fill: null, reason: "a sale is not put out for quotes; sold into the book" } : await this.tryRfq(intent, attempts);
+    const rfq = actionOf(intent) === "sell" ? { fill: null, reason: "a close is not put out for quotes; it goes into the book" } : await this.tryRfq(intent, attempts);
     if (rfq.fill) {
       return { ...base, attempts, fill: rfq.fill, outcome: "filled_rfq", fallbackReason: null };
     }

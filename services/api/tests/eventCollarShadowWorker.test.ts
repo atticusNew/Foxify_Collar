@@ -473,7 +473,7 @@ test("shadow worker: public record vs operator views; /api/shadow/export streams
     assert.deepEqual(forbiddenKeysIn(parlayBody), [], "no hedge legs, token ids or take in the public body");
     assert.ok(!JSON.stringify(parlayBody).includes("D-t1"), "the hedge token never leaves the operator view");
     const recordWithParlays = await (await fetch(`${base}/`)).text();
-    assert.ok(recordWithParlays.includes("Lock, sell or hold: the parlay moment"), "the record carries the parlay card");
+    assert.ok(recordWithParlays.includes("Lock, cash out or hold: the parlay moment"), "the record carries the parlay card");
     assert.ok(recordWithParlays.includes('<div class="n">1</div><div class="l">tickets built</div>'));
     assert.ok(recordWithParlays.includes('href="/api/shadow/parlays"'));
     assert.ok(!recordWithParlays.includes('href="/api/shadow/lastleg"'), "the raw tickets stay an operator link");

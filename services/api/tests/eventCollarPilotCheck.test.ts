@@ -152,7 +152,7 @@ test("pilot check, request for quote: a real quote can be accepted with the lock
   assert.match(item(r, "hedge_first").detail, /request for quote, with a key that can accept a quote on Kalshi: the lock is written first/);
   // the switch stands in front of request for quote as well: off here, and it would stop this strategy
   assert.equal(item(r, "kill_switch").answer, "yes");
-  assert.match(item(r, "kill_switch").detail, /in front of every hedge order this service can send: the live strategy's buys and sales, the operator's resend, and the request-for-quote strategy/);
+  assert.match(item(r, "kill_switch").detail, /in front of every hedge order this service can send: the live strategy's buys and closes, the operator's resend, and the request-for-quote strategy/);
   assert.match(item(r, "kill_switch").detail, /Its state now: off\./);
   assert.equal(item(r, "caps").answer, "no");
   assert.match(item(r, "caps").detail, /per-order and per-day caps belong to the live strategy and do not apply .* the per-game, per-venue and per-holder caps do apply/);
@@ -214,7 +214,7 @@ test("pilot check, kill switch: exercised on a made-up order that goes nowhere, 
   const on = item(pilotCheck(facts({ ...live({ killSwitch: true }), killSwitch: true })), "kill_switch");
   assert.equal(on.answer, "yes", "on is the switch working, not a fault");
   assert.match(on.detail, /Its state now: ON\. No hedge order and no quote request leaves/);
-  assert.match(on.detail, /It does not reach a member's own sale in their own venue account/);
+  assert.match(on.detail, /It does not reach a member's own order in their own venue account/);
 });
 
 test("pilot check, caps: every one a number is a yes and the numbers are shown; any set to no cap is a no naming it", () => {
@@ -281,7 +281,7 @@ test("pilot check, in play: its state and its gates, and the scan's and the memb
   assert.equal(on.answer, "yes");
   assert.match(on.detail, /^On \(EVENT_X_IN_PLAY\): a game can be locked in until 4 hours after its start\. Its gates: the hedge is bought first, all or none/);
   assert.match(on.detail, /The simulated scan stays before the start\./);
-  assert.match(on.detail, /A member selling their own position during a game is on \(MEMBER_APP_IN_PLAY\)/);
+  assert.match(on.detail, /A member's direct lock during a game is on \(MEMBER_APP_IN_PLAY\)/);
   const off = item(pilotCheck(facts({ inPlay: { lock: false, hours: 4, cutoffMinutes: 45, scan: true, memberSale: false } })), "in_play");
   assert.equal(off.answer, "yes");
   assert.match(off.detail, /^Off \(EVENT_X_IN_PLAY=0\): a lock closes 45 minutes before the start\. The simulated scan also opens records on games under way/);

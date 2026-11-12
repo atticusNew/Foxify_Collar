@@ -1557,7 +1557,7 @@ export function positionsCsv(positions: ShadowPosition[], scope: PositionsCsvSco
           : cells.flatMap((v, i) => {
               const col = POSITIONS_CSV_BASE_COLUMNS[i];
               if (POSITIONS_CSV_OPERATOR_ONLY.has(col)) return [];
-              return [col === "route" ? (p.route === "member_sale" ? "own sale" : "hedged lock") : v];
+              return [col === "route" ? (p.route === "member_sale" ? "direct lock" : "hedged lock") : v];
             });
       return out.map(csvCell).join(",");
     });

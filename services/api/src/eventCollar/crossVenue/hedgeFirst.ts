@@ -258,7 +258,7 @@ export interface SaleLeftRecord {
 }
 
 /** What a holder is told when the sale of the other side went out and its end was not read. No venue, no order detail. */
-export const LEAVE_UNCONFIRMED = { code: "leave_unconfirmed", message: "The sale of the other side could not be confirmed. Nothing was closed; your lock stands. It is being checked, so please do not try again yet." } as const;
+export const LEAVE_UNCONFIRMED = { code: "leave_unconfirmed", message: "The close of the other side could not be confirmed. Nothing was closed; your lock stands. It is being checked, so please do not try again yet." } as const;
 /** What a holder is told while an earlier unconfirmed sale on this lock has not been cleared. */
 export const LEAVE_BEING_CHECKED = { code: "leave_being_checked", message: "An earlier request to leave this position is still being checked. Nothing was closed; your lock stands as it is." } as const;
 

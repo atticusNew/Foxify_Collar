@@ -98,9 +98,9 @@ function realFillsCard(r: PublicRealSummary): string {
   const rows = [
     `<div class="row"><span>real orders filled</span><b>${intStr(r.realFills)}</b></div>`,
     `<div class="row"><span>real locks open now</span><b>${intStr(r.open)}</b></div>`,
-    r.leftEarly > 0 ? `<div class="row"><span>left early, hedge sold</span><b>${intStr(r.leftEarly)}</b></div>` : "",
+    r.leftEarly > 0 ? `<div class="row"><span>left early, hedge closed</span><b>${intStr(r.leftEarly)}</b></div>` : "",
     r.unresolved > 0 ? `<div class="row"><span>ended and not yet valued</span><b>${intStr(r.unresolved)}</b></div>` : "",
-    r.receivedFromSalesCents > 0 ? `<div class="row"><span>received from real sales</span><b>${usd(r.receivedFromSalesCents)}</b></div>` : "",
+    r.receivedFromSalesCents > 0 ? `<div class="row"><span>received from closed hedges</span><b>${usd(r.receivedFromSalesCents)}</b></div>` : "",
     `<div class="row"><span>paid to holders, on the record</span><b>${usd(r.paidToHoldersCents)}</b></div>`,
     `<div class="row"><span>collected from holders, on the record</span><b>${usd(r.collectedFromHoldersCents)}</b></div>`,
   ]
@@ -109,7 +109,7 @@ function realFillsCard(r: PublicRealSummary): string {
   const resultLine =
     r.realizedCents === null
       ? `Our result on the real locks is not shown yet: ${r.realizedWithheld ?? "it is not complete on the record"}.`
-      : `Our result covers the ${plural(r.settled + r.leftEarly, "real lock that has ended", "real locks that have ended")}: what the hedge paid or sold for and what the terms collected from the holder, less what the fills cost and what the terms paid the holder.`;
+      : `Our result covers the ${plural(r.settled + r.leftEarly, "real lock that has ended", "real locks that have ended")}: what the hedge paid or closed for and what the terms collected from the holder, less what the fills cost and what the terms paid the holder.`;
   return `  <div class="card">
     <h2>Real fills</h2>
     <div class="sub" style="margin-bottom:8px">These are real fills in our own accounts: orders that were placed and filled with real money when a holder chose to lock in. The rest of this page is a simulated run.</div>
@@ -198,10 +198,10 @@ const ROUTE_WORDS: Record<string, string> = {
   prophetx: "hedged cross-venue on the same game",
   novig: "hedged cross-venue on the same game",
   // a member's own sale: part of the position sold into the bid in their own account, nothing hedged
-  member_sale: "the holder's own partial sale, nothing hedged",
+  member_sale: "a direct lock in the holder's own account, nothing hedged",
 };
 /** the operator's short name for where a lock's other side went (the holders page) */
-const ROUTE_SHORT: Record<string, string> = { kalshi_self: "Kalshi", polymarket: "Polymarket", prophetx: "ProphetX", novig: "Novig", member_sale: "own sale" };
+const ROUTE_SHORT: Record<string, string> = { kalshi_self: "Kalshi", polymarket: "Polymarket", prophetx: "ProphetX", novig: "Novig", member_sale: "direct lock" };
 
 export const SHADOW_CSS = `
 :root{
@@ -480,7 +480,7 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     const readLine =
       c.count === 0
         ? `${c.unpriced} scheduled exit${c.unpriced === 1 ? "" : "s"} found no depth on a leg and ran to settlement instead; nothing has closed early yet.`
-        : `${c.count} position${c.count === 1 ? "" : "s"} left before the lock. Each exit was a new trade at the live books that second: the position's contracts sold into the bids, our other side sold into its bids, and the locked terms settled at what both fetched. ` +
+        : `${c.count} position${c.count === 1 ? "" : "s"} left before the lock. Each exit was a new trade at the live books that second: the position's contracts closed at the bids, our other side closed at its bids, and the locked terms settled at what both fetched. ` +
           `They came out at ${usd(c.protectedAtCloseCents)} against ${usd(c.nakedAtCloseCents)} had they never been locked in (${signedUsd(c.deltaCents)}). ` +
           (c.withMid > 0 ? `Crossing both books cost ${signedUsd(c.unwindFrictionCents)} against the mid${frictionPct}. ` : "") +
           `Our result on the way out is the take booked, ${usd(c.takeBookedCents)}: the position pays live prices on both legs, so we carry no price risk on the exit either.` +
@@ -495,65 +495,6 @@ export function renderShadowHtml(input: ShadowPageInput): string {
     </div>
     <div class="read" style="margin-top:10px">${escapeHtml(readLine)}</div>
     ${rows ? `<div style="margin-top:8px">${rows}</div>` : ""}
-  </div>
-`;
-  })();
-  // OWN SALE AND BETTER BID, MEASURED. Each line that carries the measurement was also priced as
-  // the user's own sale into their venue's bids and as our better bid with the other side bought
-  // elsewhere, from the same books (shadowSaleAlternatives.ts). Counts and sums only: which venue
-  // the other side was priced on is the operator's. Absent until a line carries the measurement.
-  const saleCard = (() => {
-    const m = s.counterfactuals?.sale;
-    if (!m || m.lines === 0) return "";
-    const o = m.ownSale;
-    const b = m.betterBid;
-    const pct = (bps: number | null): string => (bps === null ? "n/a" : `${(bps / 100).toFixed(2)}%`);
-    const plural = (n: number, word: string): string => `${intStr(n)} ${word}${n === 1 ? "" : "s"}`;
-    const moreOrLess = (cents: number): string => (cents >= 0 ? `${usd(cents)} more` : `${usd(-cents)} less`);
-    const lines: string[] = [];
-    lines.push(
-      `Each of the ${plural(m.lines, "record line")} opened since ${m.recordedSince ? utcDay(m.recordedSince) : "the first"} UTC was also priced two other ways, from the same books at the same moment. ` +
-        "Own sale: the user sells part of the position into their own venue's bids with their own sell button, after that venue's fee, level by level. " +
-        "Better bid: we bid for those contracts above their venue's bid and buy the other side on another venue, so one of our two contracts pays $1 whichever side wins.",
-    );
-    if (b.compared === 0) lines.push("No line had another venue's book for the other side to price a better bid from.");
-    else if (b.existed === 0)
-      lines.push(`A better bid existed on none of the ${plural(b.compared, "line")} where another venue's book was read (the best of up to ${plural(b.mostVenues, "venue")} on a line): after both venues' fees, our take and the charge for the two venues settling differently, the prices left no room to pay more than the venue's own bid.`);
-    else
-      lines.push(
-        `A better bid existed on ${intStr(b.existed)} of the ${plural(b.compared, "line")} where another venue's book was read (the best of up to ${plural(b.mostVenues, "venue")} on a line). ` +
-          `It beat the user's own sell button by a median of ${usd(b.improvementMedianCents ?? 0)} (${pct(b.improvementMedianBpsOfStake)} of stake) and by ${usd(b.improvementTotalCents)} in total (${pct(b.improvementTotalBpsOfStake)} of the stake on those lines), ` +
-          "after every venue fee, our take and a charge for the two venues settling a tie or a called-off game differently. Stake is $1 a contract on the whole position." +
-          (b.existed < MIN_SLICE_EVENTS ? ` ${plural(b.existed, "line")} is a small sample: read it as a count, not as a rate.` : ""),
-      );
-    if (b.existed > 0) {
-      const fee = b.restingBidFee ?? { makerSchedule: 0, takerFormula: b.existed };
-      lines.push(
-        "Our own bid is priced at the venue's fee for an order that rests on its book, which is lower than its fee for an order that takes from the book, and is charged only if the bid is filled." +
-          (fee.takerFormula > 0 ? ` ${intStr(fee.takerFormula)} of these lines ${fee.takerFormula === 1 ? "was" : "were"} written before 11 November 2026 and priced our bid at the full fee, so ${fee.takerFormula === 1 ? "it understates" : "they understate"} the gain.` : "") +
-          ` Where the venue's price steps or its own offer stopped our bid short of passing everything on, what was left over stays with us: ${usd(b.residualCents)} across these lines, shown here apart from our take of ${usd(b.takeCents)}.`,
-      );
-    }
-    if (o.priced > 0)
-      lines.push(
-        `Against the lock this record wrote on the same line, the own sale paid the user a median of ${moreOrLess(o.vsCollarMedianCents ?? 0)} than the lock's floor (${pct(o.vsCollarMedianBpsOfStake)} of stake) and ${moreOrLess(o.vsCollarTotalCents)} in total across ${plural(o.priced, "line")} (${pct(o.vsCollarTotalBpsOfStake)} of stake): ` +
-          `more on ${intStr(o.ahead)}, less on ${intStr(o.behind)}${o.level > 0 ? `, the same on ${intStr(o.level)}` : ""}. ` +
-          "The amount sold is the amount the lock hedges, so the user's two results differ by the same sum either way and the floor is the like-for-like comparison." +
-          (o.unpriced > 0 ? ` On ${plural(o.unpriced, "other line")} the own sale could not be priced from the books read, and nothing was measured.` : ""),
-      );
-    else lines.push(`On none of the ${plural(m.lines, "line")} could the user's own sale be priced from the books read, so nothing was measured.`);
-    if (o.settled.lines > 0)
-      lines.push(`On the ${plural(o.settled.lines, "line")} of those that ${o.settled.lines === 1 ? "has" : "have"} settled, the own sale would have returned ${usd(o.settled.ownSaleCents)}, against ${usd(o.settled.collarCents)} under the lock and ${usd(o.settled.untouchedCents)} left untouched, at the official result.`);
-    return `  <div class="card">
-    <h2>Own sale and better bid, measured</h2>
-    <div class="sub" style="margin-bottom:8px">Measured on the book at the moment of each quote. Simulated: nothing was bought, nothing was sold and no bid was placed.</div>
-    <div class="bignums">
-      <div class="bignum"><div class="n green">${intStr(b.existed)}</div><div class="l">of ${intStr(b.compared)} lines had a better bid</div></div>
-      <div class="bignum"><div class="n">${b.existed > 0 ? usd(b.improvementMedianCents ?? 0) : "none yet"}</div><div class="l">median gain over the sell button</div></div>
-      <div class="bignum"><div class="n">${usd(b.improvementTotalCents)}</div><div class="l">total gain over the sell button</div></div>
-      <div class="bignum"><div class="n">${o.priced > 0 ? signedUsd(o.vsCollarMedianCents ?? 0) : "none yet"}</div><div class="l">own sale against the lock's floor, median</div></div>
-    </div>
-    ${lines.map((l) => `<div class="read" style="margin-top:10px">${escapeHtml(l)}</div>`).join("\n    ")}
   </div>
 `;
   })();
@@ -704,7 +645,7 @@ ${flowCard}${sportsCard}  <div class="card">
     ${s.voidCount > 0 ? `<div class="row"><span>voided (no official result)</span><b>${s.voidCount}</b></div>` : ""}
     ${input.hedges ? hedgeLine(input.hedges) : ""}
   </div>
-${saleCard}${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class="card">
+${closedCard}${input.parlays ? parlayMomentCard(input.parlays) : ""}  <div class="card">
     <h2>Where the lock is cheap and where it is rich</h2>
     <div class="sub" style="margin-bottom:6px">The same book cut by how it was hedged and by league. EV cost is the quoted cost of the lock at the market's own odds; user Δ is realized, with the lock minus without, as a share of settled stake. Slices under ${MIN_SLICE_EVENTS} events show counts only.</div>
     <div class="tablewrap"><table>
@@ -869,7 +810,7 @@ function ourBookCard(s: ShadowSummary): string {
     .join("");
   return `<div class="card">
     <h2>Our book, line by line</h2>
-    <div class="sub" style="margin-bottom:8px">The other side of every settled event: what selling the lock and carrying the hedge netted. Leg for leg, the answer should not depend on who won; the gap on the track record is what is left after these lines. This card covers every settled position on the record (${w.settledWhenHolderWon + w.settledWhenHolderLost}); the rule tables below cover the ${s.counterfactuals.baseline.settled} settled since the alternatives were recorded.</div>
+    <div class="sub" style="margin-bottom:8px">The other side of every settled event: what writing the lock and carrying the hedge netted. Leg for leg, the answer should not depend on who won; the gap on the track record is what is left after these lines. This card covers every settled position on the record (${w.settledWhenHolderWon + w.settledWhenHolderLost}); the rule tables below cover the ${s.counterfactuals.baseline.settled} settled since the alternatives were recorded.</div>
     <div class="row"><span>realized, all ${w.settledWhenHolderWon + w.settledWhenHolderLost} settled events</span><b>${signedUsd(w.settledPnlCents)} <i>${escapeHtml(pnlBpsLine)}</i></b></div>
     <div class="row"><span>split by outcome</span><b>${escapeHtml(evenLine)}</b></div>
     <div class="row"><span>published take booked on those events</span><b>${usd(w.takeBookedCents)}</b></div>
@@ -963,6 +904,68 @@ function nettingCard(r: NettingReport): string {
  * positions, same books, same results as the live book. Read across a row for
  * one rule; read down a column to compare rules. Nothing here was traded.
  */
+/**
+ * DIRECT LOCK AND BETTER BID, MEASURED: operator only. Each line that carries the measurement
+ * was also priced as a direct lock at the user's own venue and as our better bid with the other
+ * side bought elsewhere, from the same books (shadowSaleAlternatives.ts). The public record does
+ * not carry it. Absent until a line carries the measurement.
+ */
+export function measuredAlternativesCard(s: ShadowSummary): string {
+    const m = s.counterfactuals?.sale;
+    if (!m || m.lines === 0) return "";
+    const o = m.ownSale;
+    const b = m.betterBid;
+    const pct = (bps: number | null): string => (bps === null ? "n/a" : `${(bps / 100).toFixed(2)}%`);
+    const plural = (n: number, word: string): string => `${intStr(n)} ${word}${n === 1 ? "" : "s"}`;
+    const moreOrLess = (cents: number): string => (cents >= 0 ? `${usd(cents)} more` : `${usd(-cents)} less`);
+    const lines: string[] = [];
+    lines.push(
+      `Each of the ${plural(m.lines, "record line")} opened since ${m.recordedSince ? utcDay(m.recordedSince) : "the first"} UTC was also priced two other ways, from the same books at the same moment. ` +
+        "Direct lock: the user takes cash out of part of the position at their own venue's price, after that venue's fee, level by level. " +
+        "Better bid: we bid for those contracts above their venue's bid and buy the other side on another venue, so one of our two contracts pays $1 whichever side wins.",
+    );
+    if (b.compared === 0) lines.push("No line had another venue's book for the other side to price a better bid from.");
+    else if (b.existed === 0)
+      lines.push(`A better bid existed on none of the ${plural(b.compared, "line")} where another venue's book was read (the best of up to ${plural(b.mostVenues, "venue")} on a line): after both venues' fees, our take and the charge for the two venues settling differently, the prices left no room to pay more than the venue's own bid.`);
+    else
+      lines.push(
+        `A better bid existed on ${intStr(b.existed)} of the ${plural(b.compared, "line")} where another venue's book was read (the best of up to ${plural(b.mostVenues, "venue")} on a line). ` +
+          `It beat the user's own venue by a median of ${usd(b.improvementMedianCents ?? 0)} (${pct(b.improvementMedianBpsOfStake)} of stake) and by ${usd(b.improvementTotalCents)} in total (${pct(b.improvementTotalBpsOfStake)} of the stake on those lines), ` +
+          "after every venue fee, our take and a charge for the two venues settling a tie or a called-off game differently. Stake is $1 a contract on the whole position." +
+          (b.existed < MIN_SLICE_EVENTS ? ` ${plural(b.existed, "line")} is a small sample: read it as a count, not as a rate.` : ""),
+      );
+    if (b.existed > 0) {
+      const fee = b.restingBidFee ?? { makerSchedule: 0, takerFormula: b.existed };
+      lines.push(
+        "Our own bid is priced at the venue's fee for an order that rests on its book, which is lower than its fee for an order that takes from the book, and is charged only if the bid is filled." +
+          (fee.takerFormula > 0 ? ` ${intStr(fee.takerFormula)} of these lines ${fee.takerFormula === 1 ? "was" : "were"} written before 11 November 2026 and priced our bid at the full fee, so ${fee.takerFormula === 1 ? "it understates" : "they understate"} the gain.` : "") +
+          ` Where the venue's price steps or its own offer stopped our bid short of passing everything on, what was left over stays with us: ${usd(b.residualCents)} across these lines, shown here apart from our take of ${usd(b.takeCents)}.`,
+      );
+    }
+    if (o.priced > 0)
+      lines.push(
+        `Against the lock this record wrote on the same line, the direct lock paid the user a median of ${moreOrLess(o.vsCollarMedianCents ?? 0)} than the lock's floor (${pct(o.vsCollarMedianBpsOfStake)} of stake) and ${moreOrLess(o.vsCollarTotalCents)} in total across ${plural(o.priced, "line")} (${pct(o.vsCollarTotalBpsOfStake)} of stake): ` +
+          `more on ${intStr(o.ahead)}, less on ${intStr(o.behind)}${o.level > 0 ? `, the same on ${intStr(o.level)}` : ""}. ` +
+          "The amount locked directly is the amount the lock hedges, so the user's two results differ by the same sum either way and the floor is the like-for-like comparison." +
+          (o.unpriced > 0 ? ` On ${plural(o.unpriced, "other line")} the direct lock could not be priced from the books read, and nothing was measured.` : ""),
+      );
+    else lines.push(`On none of the ${plural(m.lines, "line")} could a direct lock be priced from the books read, so nothing was measured.`);
+    if (o.settled.lines > 0)
+      lines.push(`On the ${plural(o.settled.lines, "line")} of those that ${o.settled.lines === 1 ? "has" : "have"} settled, the direct lock would have returned ${usd(o.settled.ownSaleCents)}, against ${usd(o.settled.collarCents)} under the lock and ${usd(o.settled.untouchedCents)} left untouched, at the official result.`);
+    return `  <div class="card">
+    <h2>Direct lock and better bid, measured</h2>
+    <div class="sub" style="margin-bottom:8px">Measured on the book at the moment of each quote. Simulated: nothing was bought, nothing was closed and no bid was placed.</div>
+    <div class="bignums">
+      <div class="bignum"><div class="n green">${intStr(b.existed)}</div><div class="l">of ${intStr(b.compared)} lines had a better bid</div></div>
+      <div class="bignum"><div class="n">${b.existed > 0 ? usd(b.improvementMedianCents ?? 0) : "none yet"}</div><div class="l">median gain over the user's own venue</div></div>
+      <div class="bignum"><div class="n">${usd(b.improvementTotalCents)}</div><div class="l">total gain over the user's own venue</div></div>
+      <div class="bignum"><div class="n">${o.priced > 0 ? signedUsd(o.vsCollarMedianCents ?? 0) : "none yet"}</div><div class="l">direct lock against the lock's floor, median</div></div>
+    </div>
+    ${lines.map((l) => `<div class="read" style="margin-top:10px">${escapeHtml(l)}</div>`).join("\n    ")}
+  </div>
+`;
+  }
+
 export function renderShadowReportHtml(input: ShadowReportInput): string {
   const s = input.summary;
   const cf = s.counterfactuals;
@@ -1131,6 +1134,8 @@ export function renderShadowReportHtml(input: ShadowReportInput): string {
 
   ${ourBookCard(s)}
 
+${measuredAlternativesCard(s)}
+
   ${input.netting ? nettingCard(input.netting) : ""}
 
   ${input.lastLeg ? lastLegCard(input.lastLeg) : ""}
@@ -1165,7 +1170,7 @@ ${routeCard}
 
   <div class="card">
     <h2>How to read it</h2>
-    <div class="read"><b>User Δ</b> is what the lock did for the user against holding without it: negative is the usual cost of the lock, positive means the floor paid more than the cap gave up. <b>Our P&amp;L</b> is what selling that lock and carrying the hedge netted; leg for leg it should not depend on who won. <b>EV cost</b> is the quoted expected cost of the collar as a share of stake, before anything settles. A rule that lifts our P&amp;L without moving user Δ much is a better rule; one that only shifts money from one column to the other is a fee.</div>
+    <div class="read"><b>User Δ</b> is what the lock did for the user against holding without it: negative is the usual cost of the lock, positive means the floor paid more than the cap gave up. <b>Our P&amp;L</b> is what writing that lock and carrying the hedge netted; leg for leg it should not depend on who won. <b>EV cost</b> is the quoted expected cost of the collar as a share of stake, before anything settles. A rule that lifts our P&amp;L without moving user Δ much is a better rule; one that only shifts money from one column to the other is a fee.</div>
     <a class="back" href="/">Back to the track record</a> <a class="back" href="/api/shadow/report">Raw JSON</a> <a class="back" href="/api/shadow/positions.csv?scope=full&amp;as=operator">Positions with every alternative (CSV)</a> <a class="back" href="/api/shadow/hedges">Hedge receipts (JSON)</a> <a class="back" href="/api/shadow/export">Full ledger (JSONL)</a> <a class="back" href="/venues">By venue, named (operator)</a>
   </div>
   <footer>
@@ -1219,7 +1224,7 @@ export function parlayMomentCard(input: ParlayCardInput): string {
     const avgSell = lv.quoted > 0 ? usd(Math.round(lv.sellCents / lv.quoted)) : "n/a";
     const settledPart =
       lv.settled > 0
-        ? ` On the ${lv.settled} settled, locking paid ${usd(lv.settledLockCents)} against ${usd(lv.settledSellCents)} for selling and ${usd(lv.settledHoldCents)} for holding; the lock beat the sell on ${lv.lockBeatSell}, and holding beat both on ${lv.holdBeatBoth}.`
+        ? ` On the ${lv.settled} settled, locking paid ${usd(lv.settledLockCents)} against ${usd(lv.settledSellCents)} for cashing out and ${usd(lv.settledHoldCents)} for holding; the lock beat the cash-out on ${lv.lockBeatSell}, and holding beat both on ${lv.holdBeatBoth}.`
         : "";
     return `${lv.quoted} tickets reached the last leg with a priced lock, on average ${avgCredit} credited at lock in on a ticket worth ${avgSell} at fair.${settledPart}`;
   })();
@@ -1239,8 +1244,8 @@ export function parlayMomentCard(input: ParlayCardInput): string {
       ? "No locked ticket has settled yet; the identity is checked on every settlement."
       : `On ${st.withProtection} settled locked tickets our P&L is ${signedUsd(st.writerCents)} against ${usd(st.takeBookedCents)} of take booked: ${st.identityHolds ? "the identity holds, we carried no outcome risk on the last pick." : "a gap outside rounding; the operator report has the tickets."}`;
   return `  <div class="card">
-    <h2>Lock, sell or hold: the parlay moment</h2>
-    <div class="sub" style="margin-bottom:8px">A bettor whose parlay has every leg in but the last has three choices. Sell is a cash-out at fair (the ticket's value before any spread). Lock is the collar on the last leg: a floor, a cap, and a credit at lock in, hedged on whichever venue the router chose for the last leg's game, as a single is. Hold is the ticket with no lock. Tickets here are simulated from the public slate (2 to 5 favourites, $${(input.stakeCents / 100).toFixed(0)} stake); prices, results and quotes are real.</div>
+    <h2>Lock, cash out or hold: the parlay moment</h2>
+    <div class="sub" style="margin-bottom:8px">A bettor whose parlay has every leg in but the last has three choices. Cash out is the whole ticket at fair (its value before any spread). Lock is the collar on the last leg: a floor, a cap, and a credit at lock in, hedged on whichever venue the router chose for the last leg's game, as a single is. Hold is the ticket with no lock. Tickets here are simulated from the public slate (2 to 5 favourites, $${(input.stakeCents / 100).toFixed(0)} stake); prices, results and quotes are real.</div>
     <div class="bignums">
       <div class="bignum"><div class="n">${ll.tickets}</div><div class="l">tickets built</div></div>
       <div class="bignum"><div class="n">${ll.reachedLastLeg}</div><div class="l">reached the last leg</div></div>
@@ -1251,7 +1256,7 @@ export function parlayMomentCard(input: ParlayCardInput): string {
     ${
       lvRows
         ? `<div class="tablewrap" style="margin-top:8px"><table>
-      <tr><th>ticket · last leg</th><th>when</th><th>sell at fair</th><th>lock ends</th><th>credited at lock in</th><th>lock paid</th><th>sell paid</th><th>hold paid</th></tr>
+      <tr><th>ticket · last leg</th><th>when</th><th>cash out at fair</th><th>lock ends</th><th>credited at lock in</th><th>lock paid</th><th>cash out paid</th><th>hold paid</th></tr>
       ${lvRows}
     </table></div>`
         : ""
@@ -1965,12 +1970,12 @@ export function renderCapitalHtml(input: { model: CapitalModel }): string {
           `<tr><td class="c">${i === 0 ? `<b>${escapeHtml(name)}</b>` : ""}<i>${escapeHtml(lagWords(l.lagHours))}</i></td>${l.atMultiple.map((x) => `<td>${usd(x.peakCents)}</td>`).join("")}<td>${usd(l.averageCents)}</td><td>${usd(l.nowCents)}</td><td class="when">${l.peakAt ? escapeHtml(shortEt(l.peakAt)) : "n/a"}</td></tr>`,
       )
       .join("");
-  const zero = `<tr><td class="c"><b>Own sale</b><i>the holder sells in their own account</i></td>${m.collar.byLag[0].atMultiple.map(() => `<td>${usd(0)}</td>`).join("")}<td>${usd(0)}</td><td>${usd(0)}</td><td class="when">n/a</td></tr>`;
+  const zero = `<tr><td class="c"><b>Direct lock</b><i>in the holder's own account, nothing hedged</i></td>${m.collar.byLag[0].atMultiple.map(() => `<td>${usd(0)}</td>`).join("")}<td>${usd(0)}</td><td>${usd(0)}</td><td class="when">n/a</td></tr>`;
   const heads = m.collar.byLag[0].atMultiple.map((x) => `<th>${x.multiple === 1 ? "most out at once, record volume" : `at ${x.multiple} times`}</th>`).join("");
   const bb = m.betterBid;
   const measured =
     bb.linesMeasured === 0
-      ? `<div class="read">Better bid, measured: no line carries the measurement yet. It is written on every new line once the own sale and better bid measurement is deployed, and this table gains a row from the first line that finds one.</div>`
+      ? `<div class="read">Better bid, measured: no line carries the measurement yet. It is written on every new line once the direct lock and better bid measurement is deployed, and this table gains a row from the first line that finds one.</div>`
       : bb.measured.lines === 0
         ? `<div class="read">Better bid, measured: ${n(bb.linesMeasured)} lines carry the measurement and none of them found a better bid.</div>`
         : `<div class="read">Better bid, measured: a better bid was found on ${n(bb.measured.lines)} of the ${n(bb.linesMeasured)} lines that carry the measurement. Those lines would have paid ${usd(bb.measured.outlayCents)} at the two venues in all, for a take of ${usd(bb.measured.takeCents)}.</div>`;
@@ -2003,7 +2008,7 @@ ul.notes li{margin-top:5px}
   <div class="card">
     <h1>Our own money, by settlement shape</h1>
     <div class="sub">How much each shape would have had out at once on the record's own lines: when each opened, when it ended, and what it would have paid. Simulated, like the record. Nothing was bought.</div>
-    <div class="rule">${n(m.record.counted)} lines counted, ${since}. Left out: ${n(m.record.voided)} voided, ${n(m.record.memberSales)} member sales (those are own sales already). Read ${escapeHtml(shortEt(m.at))}.</div>
+    <div class="rule">${n(m.record.counted)} lines counted, ${since}. Left out: ${n(m.record.voided)} voided, ${n(m.record.memberSales)} member locks (those are direct locks already). Read ${escapeHtml(shortEt(m.at))}.</div>
   </div>
   <div class="card">
     <div class="tablewrap"><table><tr><th>shape</th>${heads}<th>average out</th><th>out now</th><th>the most was out</th></tr>
@@ -2017,8 +2022,8 @@ ${shapeRows("Collar, our book", m.collar)}
   <div class="card">
     <h1>How to read it</h1>
     <ul class="notes">
-      <li><b>Own sale</b> uses none of our money. The holder sells part of the position to their own venue's bids. We pay nothing and are owed nothing.</li>
-      <li><b>Better bid, ceiling</b> counts every one of the ${n(bb.ceiling.lines)} lines at $1 for each contract sold. A better bid cannot cost more: it is only made when the $1 the pair pays covers what the pair cost. Not every line has a better bid, so the true figure is lower. The pair is held until the game settles; a finished line had its money out for ${held(bb.ceiling.medianMinutesHeld)} at the median.</li>
+      <li><b>Direct lock</b> uses none of our money. The holder takes cash out of the position at their own venue's price. We pay nothing and are owed nothing.</li>
+      <li><b>Better bid, ceiling</b> counts every one of the ${n(bb.ceiling.lines)} lines at $1 for each contract we would bid for. A better bid cannot cost more: it is only made when the $1 the pair pays covers what the pair cost. Not every line has a better bid, so the true figure is lower. The pair is held until the game settles; a finished line had its money out for ${held(bb.ceiling.medianMinutesHeld)} at the median.</li>
       <li><b>Collar, our book</b> is today's shape with us as the writer: the hedge bought at lock in, venue fees included, plus the credit owed to the holder from lock in. ${n(m.collar.lines)} lines paid out ${usd(m.collar.outlayCents)} in all, for a take of ${usd(m.collar.takeCents)} over ${n(m.record.days)} days. On a win the cap slice is then owed to us by the holder, which this does not count as money out.</li>
       <li><b>Paid back after the result.</b> Venues pay some time after the result and the record does not measure how long. The second line of each shape assumes ${m.collar.byLag.length > 1 ? m.collar.byLag[1].lagHours : 24} hours. That is an assumption.</li>
       <li><b>At 10 and 100 times</b> every line is that many times larger and the timing is the same. It is the money needed if the order books hold that size at those prices, which this does not measure.</li>

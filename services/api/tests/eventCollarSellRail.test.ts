@@ -195,7 +195,7 @@ test("executors on a sale: the book executor keeps the sign of cents versus the 
   const r = await rfq.execute(SALE, "ref");
   assert.equal(seenRfq.length, 0, "a sale is not put out for quotes");
   assert.equal(r.outcome, "filled_book");
-  assert.equal(r.fallbackReason, "a sale is not put out for quotes; sold into the book");
+  assert.equal(r.fallbackReason, "a close is not put out for quotes; it goes into the book");
   assert.equal(r.fill?.simulated, true);
   assert.equal(r.fill?.costCents, 752, "simulated at the walk's gross");
 
