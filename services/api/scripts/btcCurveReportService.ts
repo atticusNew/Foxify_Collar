@@ -41,6 +41,9 @@
  *                               Unset, shorter than 16 characters, or equal to BTC_CURVE_TOKEN:
  *                               that page is off. It opens nothing else here, and
  *                               BTC_CURVE_TOKEN does not open it.)
+ *       LOCK_IN_INTERNAL_KEY    (optional; the key of the company's own Lock in pages at /lockin:
+ *                               every replay table and the lock card. Same rules; it may not
+ *                               equal PROSPECT_PAGE_KEY either.)
  *       POLY_US_EXTRA_EVENT_SLUGS  comma-separated Polymarket US event slugs to add
  *       POLY_US_REST_BASE / KALSHI_REST_BASE / DERIBIT_REST_BASE / OKX_REST_BASE (relays)
  *
@@ -55,9 +58,9 @@
  * service's own pages. It holds 24 hours of snapshots in memory, not the 72 it holds on its
  * own, because this process has 512 MB for everything; the day files keep every snapshot.
  * Under this service's token /sports is the board only. Lock in replayed on Crypto.com's trade
- * tape is a page made for one reader, at /prospect under that reader's own key
- * (src/sportsVenues/audiences.ts); the request is offered to it before this service's token is
- * checked, and a wrong key there is a 404.
+ * tape is a page made for one reader, at /prospect under that reader's own key, and the full
+ * tables at /lockin under an internal key (src/sportsVenues/audiences.ts); the request is
+ * offered to those before this service's token is checked, and a wrong key there is a 404.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";

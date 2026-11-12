@@ -18,7 +18,7 @@ import { HolderRecord } from "./holder";
 import { buildReport, type ReportData } from "./report";
 import { renderReportHtml } from "./reportHtml";
 import { AUDIENCES, audienceOf, audienceState, keyMatches, type AudienceState } from "./audiences";
-import { lockChoices, lockNow, lockPast, pastMoments, type LockQuote, type PastMoment } from "./lockNow";
+import { lockChoices, lockNow, lockPast, pastMoments, type LockChoice, type LockQuote, type PastMoment } from "./lockNow";
 import { PAST_PREFIX, bookCountOf, renderProspectHtml, type ProspectLock } from "./prospectHtml";
 import { renderLockHtml, renderReplayHtml } from "./replayHtml";
 import { TapeRecord } from "./tape";
@@ -85,7 +85,9 @@ export class SportsCollector {
     this.store = new SnapshotStore(opts.dataDir, { keepHours: this.windowHours, retention: this.retention, budget: opts.budget });
     this.sincePath = join(opts.dataDir, "collecting-since.txt");
     this.holder = new HolderRecord(join(opts.dataDir, "holder-count.json"), (what, write) => this.store.guardWrite(what, write));
-    this.audiences = AUDIENCES.map((a) => audienceState(a, opts.audienceKeys?.[a.id], opts.hostKeys ?? []));
+    // a key two entries share opens neither: a reader's key must never open the internal pages
+    const keys = AUDIENCES.map((a) => (opts.audienceKeys?.[a.id] ?? "").trim());
+    this.audiences = AUDIENCES.map((a, i) => audienceState(a, keys[i], [...(opts.hostKeys ?? []), ...keys.filter((k, j) => j !== i && k)]));
     this.tape = new TapeRecord({
       dir: join(opts.dataDir, "tape"),
       fee: { theta: this.cryptocomFee.theta, flat: this.cryptocomFee.flatCents },
@@ -296,15 +298,9 @@ export class SportsCollector {
       return true;
     }
     if (path === "/lock" || path === "/api/lock") {
-      const latest = this.store.getLatest();
-      const nowMs = Date.now();
-      const choices = latest ? lockChoices(latest.games, nowMs) : [];
-      const selected = url.searchParams.get("game") || choices[0]?.value || "";
-      const contracts = url.searchParams.get("n") || "20";
-      const paid = url.searchParams.get("paid") || "";
-      const quote = latest && selected ? lockNow(latest.games, { game: selected, contracts, paid }, this.feeTerms, nowMs) : null;
-      if (path === "/api/lock") json(200, { at: latest?.at ?? null, fee: this.feeTerms, quote, choices });
-      else html(renderLockHtml({ choices, quote, selected, contracts, paid, at: latest?.at ?? null, refreshSec: this.intervalSec, links: opts.links }));
+      const view = this.lockView(url);
+      if (path === "/api/lock") json(200, { at: view.at, fee: this.feeTerms, quote: view.quote, choices: view.choices });
+      else html(renderLockHtml({ ...view, refreshSec: this.intervalSec, links: opts.links }));
       return true;
     }
     if (path === "/api/report") {
@@ -331,8 +327,8 @@ export class SportsCollector {
   }
 
   /**
-   * A page made for one reader (audiences.ts), under that reader's own key. True when the
-   * address is one of theirs, whatever the key: a wrong key is a 404 here and never reaches the
+   * A page with a key of its own (audiences.ts): the one made for a reader, or the internal
+   * pages. True when the address is one of those, whatever the key: a wrong key is a 404 here and never reaches the
    * host's own pages. Checked before the host's key, which does not open these.
    */
   audience(_req: IncomingMessage, res: ServerResponse, url: URL): boolean {
@@ -348,30 +344,48 @@ export class SportsCollector {
       return true;
     }
     const q = `?k=${encodeURIComponent(state.key)}`;
-    if (sub === "/detail") {
-      const nav = `<nav style="font-size:13px;margin:0 0 10px;color:#6b7280"><a href="${state.base}${q}">Back to the summary</a> · <b>Every table</b></nav>`;
-      send(200, "text/html", renderReplayHtml(this.tape.report(), this.tape.recording(), { feeWords: this.feeWords, nav }));
+    if (state.kind === "internal") {
+      // the full tables, the method and the lock card with its order: the company's own
+      const link = (here: boolean, label: string, href: string) => (here ? `<b>${label}</b>` : `<a href="${href}">${label}</a>`);
+      const nav = (here: "replay" | "lock") =>
+        `<nav style="font-size:13px;margin:0 0 10px;color:#6b7280"><b>Internal</b> · ${link(here === "replay", "Lock in, replayed on real trades", `${state.base}${q}`)} · ${link(here === "lock", "Lock in now", `${state.base}/lock${q}`)}</nav>`;
+      if (sub === "/") send(200, "text/html", renderReplayHtml(this.tape.report(), this.tape.recording(), { feeWords: this.feeWords, nav: nav("replay") }));
+      else if (sub === "/lock") send(200, "text/html", renderLockHtml({ ...this.lockView(url), refreshSec: this.intervalSec, links: [{ label: "Sports", href: `${state.base}${q}` }], nav: nav("lock") }));
+      else if (sub === "/api") send(200, "application/json", JSON.stringify({ fee: this.feeTerms, report: this.tape.report(), recording: this.tape.recording() }));
+      else send(404, "text/plain", "not found");
       return true;
     }
-    if (sub === "/" || sub === "/api") {
-      const input = {
-        audience: { name: state.name, base: state.base },
+    // a reader's page is one address: no tables behind it, no JSON
+    if (sub !== "/") {
+      send(404, "text/plain", "not found");
+      return true;
+    }
+    send(
+      200,
+      "text/html",
+      renderProspectHtml({
+        audience: { name: state.name, short: state.short, base: state.base },
         key: state.key,
         report: this.tape.report(),
-        recording: this.tape.recording().length,
         fee: this.feeTerms,
         feeWords: this.feeWords,
         book: bookCountOf(this.holder.report()),
         lock: this.audienceLock(url),
-      };
-      if (sub === "/api") {
-        const { key: _key, ...shown } = input;
-        send(200, "application/json", JSON.stringify(shown));
-      } else send(200, "text/html", renderProspectHtml(input));
-      return true;
-    }
-    send(404, "text/plain", "not found");
+      }),
+    );
     return true;
+  }
+
+  /** The lock on a side of the board now, as the address asks for it; with nothing asked, the first side listed. */
+  private lockView(url: URL): { choices: LockChoice[]; quote: LockQuote | null; selected: string; contracts: string; paid: string; at: string | null } {
+    const latest = this.store.getLatest();
+    const nowMs = Date.now();
+    const choices = latest ? lockChoices(latest.games, nowMs) : [];
+    const selected = url.searchParams.get("game") || choices[0]?.value || "";
+    const contracts = url.searchParams.get("n") || "20";
+    const paid = url.searchParams.get("paid") || "";
+    const quote = latest && selected ? lockNow(latest.games, { game: selected, contracts, paid }, this.feeTerms, nowMs) : null;
+    return { choices, quote, selected, contracts, paid, at: latest?.at ?? null };
   }
 
   /**
@@ -409,7 +423,7 @@ export class SportsCollector {
         moments = pastMoments(game, side, this.feeTerms);
       }
     } else if (latest && selected) quote = lockNow(latest.games, { game: selected, contracts, paid }, this.feeTerms, nowMs);
-    return { live, moments, quote, selected, contracts, paid, bookAt: latest?.at ?? null };
+    return { live, moments, quote, selected, contracts, paid };
   }
 }
 

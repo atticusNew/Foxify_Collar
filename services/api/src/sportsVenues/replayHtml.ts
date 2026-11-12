@@ -264,7 +264,7 @@ export function lockQuoteHtml(q: LockQuote): string {
   return `${head}${q.note ? `<p class="lead">${esc(q.note)}</p>` : ""}<div class="opts">${q.options.map((o) => optionCard(q, o)).join("")}</div>${back}`;
 }
 
-export function renderLockHtml(input: { choices: LockChoice[]; quote: LockQuote | null; selected: string; contracts: string; paid: string; at: string | null; refreshSec?: number; links?: PageLink[] }): string {
+export function renderLockHtml(input: { choices: LockChoice[]; quote: LockQuote | null; selected: string; contracts: string; paid: string; at: string | null; refreshSec?: number; links?: PageLink[]; nav?: string }): string {
   const paths = sportsPaths(input.links);
   const q = input.quote;
   const options = input.choices.map((c) => `<option value="${esc(c.value)}"${c.value === input.selected ? " selected" : ""}>${c.inPlay ? "In play · " : ""}${esc(c.label)} · bid ${c.bidCents}¢</option>`).join("");
@@ -284,7 +284,7 @@ export function renderLockHtml(input: { choices: LockChoice[]; quote: LockQuote 
 ${SPORTS_PAGE_STYLE}
 ${LOCK_STYLE}
 </style></head><body><main>
-${pageLinksHtml(input.links, "Sports")}${sportsNavHtml(input.links, "lock")}<h1>Lock in now</h1>
+${input.nav ?? `${pageLinksHtml(input.links, "Sports")}${sportsNavHtml(input.links, "lock")}`}<h1>Lock in now</h1>
 <p class="lead">A position on Crypto.com's exchange, and what Lock in would show on it this minute: the holder's own sale of part of it at the bid on the book. Floor, cash now and cap, after the exchange fee. Arithmetic on a public bid; nothing here places an order.</p>
 ${form}
 ${body}

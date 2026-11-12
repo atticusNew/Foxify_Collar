@@ -27,6 +27,7 @@ const S = Date.parse("2026-11-12T00:00:00Z");
 const MIN = 60_000;
 const EVENT = "NBA-00001-261111-M";
 const KEY = "reader-key-0123456789";
+const INTERNAL = "internal-key-0123456789";
 const SYMBOLS: Record<Side, string> = { away: `NX.F.OPT.${EVENT}.O.1.1.20270731`, home: `NX.F.OPT.${EVENT}.O.1.2.20270731` };
 let nextId = 0;
 const trade = (side: "a" | "h", atMs: number, qty: string, price: string, buy: 0 | 1) => JSON.stringify(["t", side, atMs, qty, price, buy, String(1_794_000_000_000_000_000n + BigInt((nextId += 1)))]);
@@ -115,7 +116,7 @@ test("a lock at a moment of a finished game: the bid that was there then, the re
 
 test("a reader's key: the page is on only with a key of its own, long enough and not one that opens something else", () => {
   const a = AUDIENCES[0];
-  assert.deepEqual([a.base, a.keyEnv], ["/prospect", "PROSPECT_PAGE_KEY"]);
+  assert.deepEqual(AUDIENCES.map((x) => [x.base, x.keyEnv, x.kind]), [["/prospect", "PROSPECT_PAGE_KEY", "broker"], ["/lockin", "LOCK_IN_INTERNAL_KEY", "internal"]]);
   assert.equal(audienceState(a, undefined, []).off, "its key is not set");
   assert.equal(audienceState(a, "  ", []).off, "its key is not set");
   assert.equal(audienceState(a, "x".repeat(AUDIENCE_KEY_MIN - 1), []).off, "its key is shorter than 16 characters");
@@ -129,20 +130,26 @@ test("a reader's key: the page is on only with a key of its own, long enough and
   assert.equal(audienceOf([on], "/prospects"), null);
   // from the environment: the BTC key and the sports key are the ones it may not share
   const dir = mkdtempSync(join(tmpdir(), "sv-reader-"));
-  const state = (env: Record<string, string>) => (sportsCollectorFromEnv({ SPORTS_VENUES_DATA_DIR: dir, ...env }).health().audiencePages as string[])[0];
+  const states = (env: Record<string, string>) => sportsCollectorFromEnv({ SPORTS_VENUES_DATA_DIR: dir, ...env }).health().audiencePages as string[];
+  const state = (env: Record<string, string>) => states(env)[0];
   assert.equal(state({}), "off: its key is not set");
   assert.equal(state({ PROSPECT_PAGE_KEY: KEY }), "on");
+  // the internal pages are off until they have a key, and a key the reader's page shares opens neither
+  assert.deepEqual(states({ PROSPECT_PAGE_KEY: KEY }), ["on", "off: its key is not set"]);
+  assert.deepEqual(states({ PROSPECT_PAGE_KEY: KEY, LOCK_IN_INTERNAL_KEY: INTERNAL }), ["on", "on"]);
+  assert.deepEqual(states({ PROSPECT_PAGE_KEY: KEY, LOCK_IN_INTERNAL_KEY: KEY }), ["off: its key is the same as another key of this service", "off: its key is the same as another key of this service"]);
+  assert.equal(states({ LOCK_IN_INTERNAL_KEY: INTERNAL, BTC_CURVE_TOKEN: INTERNAL })[1], "off: its key is the same as another key of this service");
   assert.equal(state({ PROSPECT_PAGE_KEY: KEY, BTC_CURVE_TOKEN: KEY }), "off: its key is the same as another key of this service");
   assert.equal(state({ PROSPECT_PAGE_KEY: KEY, SPORTS_VENUES_TOKEN: KEY }), "off: its key is the same as another key of this service");
   assert.equal(state({ PROSPECT_PAGE_KEY: "short" }), "off: its key is shorter than 16 characters");
 });
 
-test("the book count shown to a reader: the exchange's own rows, with nothing that names or measures another venue", () => {
+test("the book count shown to a reader: one figure of the exchange's own rows, and nothing that names or measures another venue", () => {
   assert.deepEqual(bookCountOf(holderReport(emptyState())), { sinceMs: null, pre: null, live: null });
   const row = { venue: "cryptocom" as const, readings: 10, noBid: 0, saleCostCents: 1, meanSpreadCents: 1.1, depthShare: [1, 0.9, 0.5], choice: 10, elsewhereShare: 0.9, meanSavingCents: 1.3, cheapestMost: { venue: "kalshi" as const, share: 0.8 }, roomShare: 0.001, meanRoomCents: 0.3 };
   const other = { ...row, venue: "kalshi" as const, readings: 99 };
   const shown = bookCountOf({ sinceMs: 5, lastAtMs: 9, snapshots: 2, all: { pre: [other, row], live: [other] }, byLeague: {} });
-  assert.deepEqual(shown, { sinceMs: 5, pre: { readings: 10, meanSpreadCents: 1.1, depthShare: [1, 0.9, 0.5], roomShare: 0.001 }, live: null });
+  assert.deepEqual(shown, { sinceMs: 5, pre: { readings: 10, deepShare: 0.9 }, live: null });
 });
 
 interface Out {
@@ -151,12 +158,12 @@ interface Out {
   headers: Record<string, string>;
 }
 
-test("the reader's page: the story's ticket on the card, a moment picked, the calculator's sum the same in the browser, and nothing that leads off the page", async () => {
+test("the reader's page: the story's ticket on the card, a moment picked, the calculator's sum the same in the browser, nothing that leads off the page, and nothing of how a lock is made", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sv-reader-"));
   const seedDir = join(dir, "seed");
   mkdirSync(seedDir);
   writeFileSync(join(seedDir, `${EVENT}.tape.jsonl`), `${GAME_LINES.join("\n")}\n`);
-  const collector = new SportsCollector({ dataDir: join(dir, "data"), log: () => {}, readGames: async () => [], tape: { seedDir }, audienceKeys: { prospect: KEY }, hostKeys: ["host-key"] });
+  const collector = new SportsCollector({ dataDir: join(dir, "data"), log: () => {}, readGames: async () => [], tape: { seedDir }, audienceKeys: { prospect: KEY, internal: INTERNAL }, hostKeys: ["host-key"] });
   await collector.load();
   const get = (path: string): Out | null => {
     const out: Out = { status: 0, body: "", headers: {} };
@@ -166,7 +173,7 @@ test("the reader's page: the story's ticket on the card, a moment picked, the ca
   // not an address of a reader's page: left to the host
   assert.equal(get("/sports?k=host-key"), null);
   assert.equal(get("/"), null);
-  for (const path of ["/prospect", "/prospect?k=host-key", `/prospect?k=${KEY}x`, `/prospect/more?k=${KEY}`]) assert.deepEqual([get(path)?.status, get(path)?.body], [404, "not found"], path);
+  for (const path of ["/prospect", "/prospect?k=host-key", `/prospect?k=${KEY}x`, `/prospect?k=${INTERNAL}`, `/prospect/more?k=${KEY}`, `/prospect/detail?k=${KEY}`, `/prospect/api?k=${KEY}`, `/lockin?k=${KEY}`, `/lockin/lock?k=${KEY}`, `/lockin/api?k=${KEY}`, "/lockin"]) assert.deepEqual([get(path)?.status, get(path)?.body], [404, "not found"], path);
   // the host's own routes never serve it
   const none = { writeHead: () => none, end: () => {} } as unknown as ServerResponse;
   assert.equal(collector.handle({} as IncomingMessage, none, "/prospect", new URL(`/prospect?k=${KEY}`, "http://localhost")), false);
@@ -183,59 +190,86 @@ test("the reader's page: the story's ticket on the card, a moment picked, the ca
   assert.match(html, /Games counted <b>1<\/b>/);
   assert.match(html, /<span class="hl">1 of them, 50%, finished at \$0<\/span>/);
   assert.match(html, /<span class="hl">1 of those losing tickets \(100%\) were ahead at some point<\/span>/);
-  // the two tickets told, in the words of the tape
+  // the two tickets told by what their holders had: what it cost, what came back, how it ended
   assert.match(html, /someone buys 100 contracts of Washington Wizards to win at 48¢\. That is <b>\$50\.00<\/b> with the exchange fee\./);
-  assert.match(html, /40 min into the game the bid is 66¢\. Selling 78\.13 contracts there returns <b>\$50\.00<\/b>: the whole stake\. The other 21\.87 contracts keep riding and now cost nothing\./);
+  assert.match(html, /40 min into the game the price is 66¢\. Lock in there: <b>\$50\.00<\/b> back in cash, the whole stake, and \$21\.87 still to win\./);
   assert.match(html, /<b>Washington Wizards lost\.<\/b> Held to the end as it was: <b class="bad">\$0\.00<\/b>\. With Lock in: <b class="ok">\$50\.00<\/b>\./);
-  assert.match(html, /<b>Indiana Pacers won\.<\/b> Held to the end as it was: \$80\.00\. With Lock in: \$33\.60 in cash at that moment plus \$22\.06 on the contracts kept, <b>\$55\.66<\/b>\. The lock cost \$24\.34 of the win\./);
+  assert.match(html, /<b>Indiana Pacers won\.<\/b> Held to the end as it was: \$80\.00\. With Lock in: \$33\.60 in cash at that moment plus \$22\.06 at the end, <b>\$55\.66<\/b>\. The lock cost \$24\.34 of the win\./);
   // with nothing asked for, the card is the ticket that lost, at its moment, and says how it ended
   assert.match(html, /<option value="past:NBA-00001-261111-M\|away" selected>/);
-  assert.match(html, new RegExp(`<option value="${S + 40 * MIN}" selected>40 min into the game · bid 66¢</option>`));
+  assert.match(html, new RegExp(`<option value="${S + 40 * MIN}" selected>40 min into the game · 66¢</option>`));
   assert.match(html, /name="n" type="number" min="0\.01" step="0\.01" value="100"/);
-  assert.match(html, /Bid then <b>66¢<\/b> <small>40 min into the game · [^<]* · the book, 500 at the bid<\/small>/);
-  assert.match(html, /Sell 78\.13 of 100 contracts \(78%\) at 66¢\. Keep 21\.87 riding\./);
+  assert.match(html, /Price then <b>66¢<\/b> <small>40 min into the game · [^<]* · the exchange's book, 500 contracts at that price<\/small>/);
+  const backCard = /<div class="opt"><h3>Stake back<\/h3>.*?<\/div>\n?<p>.*?<\/div>/s.exec(html)![0];
+  assert.match(backCard, /<small>Cash now<\/small><b>\$50\.00<\/b>.*<small>Total if they win<\/small><b>\$71\.87<\/b>.*<small>Stake returned<\/small><b>100%<\/b>/s);
+  assert.match(html, /If Washington Wizards lose: <b>\$50\.00<\/b> instead of \$0\.00\. If they win: <b>\$71\.87<\/b> instead of \$100\.00\./);
   assert.match(html, /What happened: Washington Wizards lost\. Held to the end with no lock: \$0\.00\. With this lock: <b class="ok">\$50\.00<\/b>\./);
   assert.match(html, /Held to the end with no lock <b>\$0\.00<\/b>/);
+  assert.deepEqual([...html.matchAll(/<div class="opt"><h3>([^<]+)<\/h3><p class="dim">/g)].map((m) => m[1]), ["Stake back", "Max upside", "Balanced", "Max floor"]);
+  assert.match(html, /Cash figures are after the exchange's fee\./);
   // the story's own link opens the same card
   const link = /href="(\/prospect\?k=[^"]*game=past[^"]*away[^"]*)#lock"/.exec(html)![1].replace(/&amp;/g, "&");
-  assert.ok(get(link)!.body.includes("Sell 78.13 of 100 contracts (78%) at 66¢."));
-  // another side, another moment: the winner's ticket, and what the lock cost it
+  assert.ok(get(link)!.body.includes("<small>Total if they win</small><b>$71.87</b>"));
+  // another side, another moment: the winner's ticket, what the lock cost it, and a price with too little behind it
   const home = get(`/prospect?k=${KEY}&game=${encodeURIComponent(`past:${EVENT}|home`)}&n=80`)!.body;
-  assert.match(home, /Position <b>80 contracts at 40¢<\/b> <small>no price given: the last buy on the tape before the start · paid \$33\.60 with the fee<\/small>/);
+  assert.match(home, /Position <b>80 contracts at 40¢<\/b> <small>no price given: the last trade before the start · paid \$33\.60 with the fee<\/small>/);
   assert.match(home, /What happened: Indiana Pacers won\. Held to the end with no lock: \$80\.00\. With this lock: <b>\$55\.66<\/b>, \$24\.34 less\./);
-  assert.match(home, /The bid held 30 contracts: the rest of this sale would fill lower than shown\./);
+  assert.match(home, /This position is larger than what was at that price: part of it would get less than shown\./);
+  assert.ok(!html.includes("This position is larger"));
   const later = get(`/prospect?k=${KEY}&game=${encodeURIComponent(`past:${EVENT}|away`)}&at=${S + 70 * MIN}&n=100&paid=48`)!.body;
-  assert.match(later, /Sell 73\.53 of 100 contracts \(74%\) at 70¢/);
+  assert.match(later, /Price then <b>70¢<\/b>/);
+  assert.match(later, /<h3>Stake back<\/h3>.*?<small>Cash now<\/small><b>\$50\.00<\/b>.*?<small>Total if they win<\/small><b>\$76\.47<\/b>/s);
+  // a price the stake does not come back at: where it opens, in a line
+  const dear = get(`/prospect?k=${KEY}&game=${encodeURIComponent(`past:${EVENT}|away`)}&at=${S + 20 * MIN}&n=100&paid=58`)!.body;
+  assert.match(dear, /Stake back is not available at this price\. On this position it opens at \d+¢\./);
   // a game that is not one of the closed ones is not read from the disk
   assert.match(get(`/prospect?k=${KEY}&game=${encodeURIComponent("past:../../etc/passwd|away")}`)!.body, /Pick a game and a side\./);
-  // every link stays on the page, its key in each, and no other page of the service is named
+  // every link is to the page itself, its key in each, and no other page of the service is named
   const hrefs = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
-  assert.ok(hrefs.every((h) => h.startsWith(`/prospect?k=${KEY}&amp;game=past`) || h === `/prospect/detail?k=${KEY}`), hrefs.join(" "));
-  assert.ok(!/Kalshi|Polymarket|Novig|ProphetX|\/sports|\/pairs|BTC|host-key/.test(html));
-  assert.equal(get(`/prospect/detail?k=${KEY}`)!.status, 200);
-  assert.ok(!/\/sports|\/replay\?|\/lock\?|host-key/.test(get(`/prospect/detail?k=${KEY}`)!.body));
-  const shown = JSON.parse(get(`/prospect/api?k=${KEY}`)!.body);
-  assert.equal(shown.key, undefined);
-  assert.equal(shown.lock.quote.options[0].sold, 78.13);
+  assert.ok(hrefs.length === 2 && hrefs.every((h) => h.startsWith(`/prospect?k=${KEY}&amp;game=past`)), hrefs.join(" "));
+  assert.ok(!/Kalshi|Polymarket|Novig|ProphetX|\/sports|\/pairs|\/lockin|BTC|host-key|internal/i.test(html));
+  // held back, on every view of the page: the order behind a lock, how it is sized, where the figures are read from
+  for (const view of [html, home, later, dear]) {
+    const held = /\bsell|\bsold\b|\bsale|\bbids?\b|taker|\bAPI\b|another exchange|other exchange|live_back|pre_wide|being recorded|once a minute|40%|80%/i.exec(view);
+    assert.equal(held, null, held ? `the reader's page says "${held[0]}"` : "");
+  }
+  // the reader is named, never called by its licence or addressed as a category
+  for (const view of [html, home, later, dear]) assert.equal(/\bbroker|\byou\b|\byour\b|commission/i.exec(view.replace(/<script>[\s\S]*?<\/script>/g, "").replace(/id="c-commission[^"]*"/g, "")), null);
+  assert.equal((html.match(/<aside class="why"><b>For Prospect<\/b>/g) ?? []).length, 5);
+  assert.match(html, /<h2><span class="n">5<\/span>What it adds for Prospect<\/h2>/);
+  assert.match(html, /Share of the exchange's retail tickets that are Prospect's, %/);
+  assert.match(html, /Prospect stays what it is: the platform the customer trades on\. Nobody in this picture is the house: not Prospect, not Atticus\./);
+  assert.match(html, /<title>Lock in on Crypto\.com's exchange · Prospect Markets<\/title>/);
+
+  // the internal pages carry all of it, under their own key
+  const full = get(`/lockin?k=${INTERNAL}`)!;
+  assert.equal(full.status, 200);
+  assert.match(full.body, /<h1>Lock in, replayed on real trades<\/h1>/);
+  assert.match(full.body, /sells just enough to return the stake/);
+  assert.ok(full.body.includes(`<a href="/lockin/lock?k=${INTERNAL}">Lock in now</a>`) && !/\/sports|\/prospect|host-key/.test(full.body) && !full.body.includes(KEY));
+  assert.equal(get(`/lockin/lock?k=${INTERNAL}`)!.status, 200);
+  assert.equal(JSON.parse(get(`/lockin/api?k=${INTERNAL}`)!.body).report.all.games, 1);
+  assert.equal(get(`/lockin/more?k=${INTERNAL}`)!.status, 404);
 
   // the calculator: the table as rendered is brokerRows at the defaults, and the script's sum is brokerRows at any other
   const report = sumReplays([replayGame(parseCapsule(GAME_LINES)!, FEE)]);
   const base = JSON.parse(/data-base="([^"]+)"/.exec(html)![1].replace(/&quot;/g, '"')) as Record<string, BrokerBase>;
-  assert.deepEqual(base.live_back80, brokerBase(lockTallyOf(report.all, "live_back80", "all", "small")));
-  assert.deepEqual(base.live_back80, { orders: 2, contracts: 136, fees: 3, saved: 1, returned: 50 });
-  assert.deepEqual(Object.keys(base), BROKER_OPTIONS.map((o) => o.id));
+  assert.deepEqual(base.stake_back, brokerBase(lockTallyOf(report.all, "live_back80", "all", "small")));
+  assert.deepEqual(base.stake_back, { orders: 2, contracts: 136, fees: 3, saved: 1, returned: 50 });
+  assert.deepEqual(Object.keys(base), BROKER_OPTIONS.map((o) => o.key));
+  assert.deepEqual([...html.matchAll(/<option value="([a-z_]+)">/g)].map((m) => m[1]), Object.keys(base));
   assert.equal(openTallyOf(report.all, "all", "small").n, 2);
   const big: BrokerBase = { orders: 13_789, contracts: 580_000, fees: 11_600, saved: 3141, returned: 81_970 };
   assert.deepEqual(brokerRows(big, 10, 100, 0), { orders: 1379, contracts: 58_000, fees: 1160, saved: 314, returned: 8197, commission: 0 });
   assert.deepEqual(brokerRows(big, 25, 40, 1.5), { orders: 1379, contracts: 58_000, fees: 1160, saved: 314, returned: 8197, commission: 870 });
   const cell = (id: string) => new RegExp(`id="c-${id}">([^<]*)<`).exec(html)![1];
-  const first = brokerRows(base.live_back80, BROKER_DEFAULTS.adoption, BROKER_DEFAULTS.share, BROKER_DEFAULTS.commission);
+  const first = brokerRows(base.stake_back, BROKER_DEFAULTS.adoption, BROKER_DEFAULTS.share, BROKER_DEFAULTS.commission);
   assert.deepEqual([cell("orders"), cell("contracts"), cell("fees"), cell("commission"), cell("saved"), cell("returned")], [String(first.orders), String(first.contracts), `$${first.fees}`, "$0", String(first.saved), `$${first.returned}`]);
 
   // the script, run against the page's own elements: the guide steps through the stops, and the sum follows the boxes
   const el = (id: string) => {
     const classes = new Set<string>();
-    return { id, value: "", textContent: "", form: { at: { value: "x" }, paid: { value: "x" }, submit() {} }, onclick: null as null | (() => void), oninput: null as null | (() => void), onchange: null as null | (() => void), scrolled: 0, classList: { toggle: (c: string, on?: boolean) => ((on ?? !classes.has(c)) ? classes.add(c) : classes.delete(c), classes.has(c)), has: (c: string) => classes.has(c) }, scrollIntoView() { this.scrolled += 1; }, getAttribute: (name: string) => (name === "data-base" ? JSON.stringify({ live_back80: big, live_half: big, pre_wide: { ...big, orders: 100 } }) : name === "data-games" ? "31" : null) };
+    return { id, value: "", textContent: "", form: { at: { value: "x" }, paid: { value: "x" }, submit() {} }, onclick: null as null | (() => void), oninput: null as null | (() => void), onchange: null as null | (() => void), scrolled: 0, classList: { toggle: (c: string, on?: boolean) => ((on ?? !classes.has(c)) ? classes.add(c) : classes.delete(c), classes.has(c)), has: (c: string) => classes.has(c) }, scrollIntoView() { this.scrolled += 1; }, getAttribute: (name: string) => (name === "data-base" ? JSON.stringify({ stake_back: big, half_back: big, before_start: { ...big, orders: 100 } }) : name === "data-games" ? "31" : null) };
   };
   const ids = new Map<string, ReturnType<typeof el>>();
   const byId = (id: string) => ids.get(id) ?? (ids.set(id, el(id)), ids.get(id)!);
@@ -244,7 +278,7 @@ test("the reader's page: the story's ticket on the card, a moment picked, the ca
   assert.equal((html.match(/<aside class="why">/g) ?? []).length, 6);
   const keys: Array<(e: { key: string; target: { tagName: string }; preventDefault(): void }) => void> = [];
   const body = el("body");
-  Object.assign(byId("c-option"), { value: "live_back80" });
+  Object.assign(byId("c-option"), { value: "stake_back" });
   Object.assign(byId("c-adoption"), { value: "25" });
   Object.assign(byId("c-share"), { value: "40" });
   Object.assign(byId("c-commission"), { value: "1.5" });
@@ -277,7 +311,7 @@ test("the reader's page: the story's ticket on the card, a moment picked, the ca
     [want.orders.toLocaleString("en-US"), want.contracts.toLocaleString("en-US"), usd(want.fees), usd(want.commission), want.saved.toLocaleString("en-US"), usd(want.returned)],
   );
   assert.equal(byId("c-orders-g").textContent, String(Math.round((big.orders * 0.1) / 31)));
-  Object.assign(byId("c-option"), { value: "pre_wide" });
+  Object.assign(byId("c-option"), { value: "before_start" });
   byId("c-option").onchange!();
   assert.equal(byId("c-orders").textContent, "10");
   // picking another game clears the moment and the price, which belong to the game before
