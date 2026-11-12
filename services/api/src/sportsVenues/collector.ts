@@ -17,6 +17,9 @@ import { cryptocomFeeFromEnv, newCryptocomCache, readCryptocomListings, type Cry
 import { HolderRecord } from "./holder";
 import { buildReport, type ReportData } from "./report";
 import { renderReportHtml } from "./reportHtml";
+import { lockChoices, lockNow } from "./lockNow";
+import { renderLockHtml, renderReplayHtml } from "./replayHtml";
+import { TapeRecord } from "./tape";
 import { SnapshotStore } from "./store";
 import { VENUES, type Game, type Snapshot, type VenueListing } from "./types";
 
@@ -34,6 +37,8 @@ export interface SportsCollectorOptions {
   cryptocomFee?: CryptocomFee;
   /** test seam: the venue reads of one cycle */
   readGames?: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
+  /** test seams of the trade tape: its fetch, and where the games shipped with the code are read from (null for none) */
+  tape?: { fetchImpl?: typeof fetch; seedDir?: string | null; host?: string };
 }
 
 export class SportsCollector {
@@ -46,6 +51,7 @@ export class SportsCollector {
   private readonly store: SnapshotStore;
   private readonly sincePath: string;
   private readonly holder: HolderRecord;
+  private readonly tape: TapeRecord;
   private readonly log: (line: string) => void;
   private readonly readGames: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
   private readonly cryptocomFee: CryptocomFee;
@@ -72,6 +78,13 @@ export class SportsCollector {
     this.store = new SnapshotStore(opts.dataDir, { keepHours: this.windowHours, retention: this.retention, budget: opts.budget });
     this.sincePath = join(opts.dataDir, "collecting-since.txt");
     this.holder = new HolderRecord(join(opts.dataDir, "holder-count.json"), (what, write) => this.store.guardWrite(what, write));
+    this.tape = new TapeRecord({
+      dir: join(opts.dataDir, "tape"),
+      fee: { theta: this.cryptocomFee.theta, flat: this.cryptocomFee.flatCents },
+      guard: (what, write) => this.store.guardWrite(what, write),
+      log: this.log,
+      ...(opts.tape ?? {}),
+    });
     try {
       if (existsSync(this.sincePath)) this.collectingSince = readFileSync(this.sincePath, "utf8").trim() || null;
     } catch {
@@ -123,6 +136,7 @@ export class SportsCollector {
     const snapshot: Snapshot = { at: now.toISOString(), games: await this.readGames(now, health), health };
     this.store.append(snapshot);
     this.holder.add(this.store.getHistory().slice(-1));
+    this.tape.track(snapshot.games, this.cryptocomCache.pairs, now.getTime());
     const since = this.collectingSince ?? snapshot.at;
     this.collectingSince = since;
     // tried again every cycle until it lands: a marker that failed once would otherwise never be written
@@ -146,12 +160,15 @@ export class SportsCollector {
       const points = await this.store.load(nowMs);
       // snapshots in the window the holder count has not seen (taken before it existed, or while its file could not be written)
       this.holder.add(this.store.getHistory());
+      await this.tape.boot(nowMs);
       this.reloaded = { points, ms: Date.now() - t0 };
       this.log(`[sports-venues] data dir ${this.dataDir} · ${points} snapshots reloaded in ${Math.round(this.reloaded.ms / 1000)}s · window ${this.windowHours}h · interval ${this.intervalSec}s · ${this.store.startupLine()}`);
       return points;
     } catch (err) {
       this.reloaded = { points: 0, ms: Date.now() - t0, error: (err as Error).message.slice(0, 160) };
       this.log(`[sports-venues] the reload on start-up failed (${this.reloaded.error}); the cycles start without it`);
+      // the tape does not depend on the window: its own files are read whether the snapshots were or not
+      await this.tape.boot(nowMs);
       return 0;
     }
   }
@@ -175,12 +192,27 @@ export class SportsCollector {
     try {
       await this.collectOnce();
       this.lastError = "";
+      // the exchange's trades for the games on the board: off the cycle, so a slow tape never delays a snapshot
+      void this.tapePass();
     } catch (err) {
       this.lastError = (err as Error).message.slice(0, 200);
       this.log(`[sports-venues] cycle failed: ${this.lastError}`);
     }
     if (this.stopped) return;
     this.timer = setTimeout(() => void this.loop(), this.intervalSec * 1000);
+  }
+
+  /** One pass of the trade tape over the games being recorded: read what is new, close what is over. It never throws. */
+  tapePass(nowMs = Date.now()): Promise<void> {
+    return this.tape.pass(nowMs, this.store.getHistory());
+  }
+
+  private get feeTerms(): { theta: number; flat: number } {
+    return { theta: this.cryptocomFee.theta, flat: this.cryptocomFee.flatCents };
+  }
+
+  private get feeWords(): string {
+    return this.cryptocomFee.flatCents > 0 ? `${this.cryptocomFee.flatCents}¢ a contract` : `${this.cryptocomFee.theta}·p·(1−p) a contract`;
   }
 
   health(): Record<string, unknown> {
@@ -201,6 +233,7 @@ export class SportsCollector {
       listed: latest ? Object.fromEntries(VENUES.map((v) => [v, latest.games.filter((g) => g.listings.some((l) => l.venue === v)).length])) : undefined,
       lastError: this.lastError || undefined,
       holderCount: this.holder.summary(),
+      tape: this.tape.health(),
       data: this.store.dataHealth(),
     };
   }
@@ -223,14 +256,41 @@ export class SportsCollector {
 
   /**
    * Serve one request whose path is already relative to the mount (`/`, `/api/report`,
-   * `/api/latest`). Returns false when the path is not one of ours so the host can 404 it. The
+   * `/api/latest`, `/replay`, `/api/replay`, `/lock`, `/api/lock`). Returns false when the path is not one of ours so the host can 404 it. The
    * host has already checked its access key.
    */
-  handle(_req: IncomingMessage, res: ServerResponse, path: string, _url: URL, opts: { links?: PageLink[] } = {}): boolean {
+  handle(_req: IncomingMessage, res: ServerResponse, path: string, url: URL, given: { links?: PageLink[] } = {}): boolean {
+    // on its own there is no host to say where the pages sit: they are at the root, under the key this request came with
+    const key = url.searchParams.get("k");
+    const opts = { links: given.links ?? (key ? [{ label: "Sports", href: `/?k=${encodeURIComponent(key)}` }] : undefined) };
     const json = (status: number, body: unknown) => {
       res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify(body));
     };
+    const html = (body: string) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(body);
+    };
+    if (path === "/api/replay") {
+      json(200, { fee: this.feeTerms, report: this.tape.report(), recording: this.tape.recording() });
+      return true;
+    }
+    if (path === "/replay") {
+      html(renderReplayHtml(this.tape.report(), this.tape.recording(), { refreshSec: this.intervalSec * 5, links: opts.links, feeWords: this.feeWords }));
+      return true;
+    }
+    if (path === "/lock" || path === "/api/lock") {
+      const latest = this.store.getLatest();
+      const nowMs = Date.now();
+      const choices = latest ? lockChoices(latest.games, nowMs) : [];
+      const selected = url.searchParams.get("game") || choices[0]?.value || "";
+      const contracts = url.searchParams.get("n") || "20";
+      const paid = url.searchParams.get("paid") || "";
+      const quote = latest && selected ? lockNow(latest.games, { game: selected, contracts, paid }, this.feeTerms, nowMs) : null;
+      if (path === "/api/lock") json(200, { at: latest?.at ?? null, fee: this.feeTerms, quote, choices });
+      else html(renderLockHtml({ choices, quote, selected, contracts, paid, at: latest?.at ?? null, refreshSec: this.intervalSec, links: opts.links }));
+      return true;
+    }
     if (path === "/api/report") {
       const data = this.reportData();
       data ? json(200, data) : json(503, { ok: false, error: "warming up" });

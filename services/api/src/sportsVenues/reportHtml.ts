@@ -212,15 +212,28 @@ function tiles(d: ReportData): string {
 </div>`;
 }
 
-export function renderReportHtml(d: ReportData, opts: { refreshSec?: number; links?: PageLink[] } = {}): string {
-  const healthLine = Object.entries(d.health)
-    .map(([k, h]) => `<span class="${h.ok ? "ok" : "bad"}">${esc(k)} ${h.ok ? `${h.ms}ms${h.detail ? ` (${esc(h.detail)})` : ""}` : esc(h.detail ?? "down")}</span>`)
-    .join(" · ");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow">${opts.refreshSec ? `<meta http-equiv="refresh" content="${opts.refreshSec}">` : ""}
-<title>Sports on the event venues: ${VENUES.map((v) => esc(V(v))).join(", ")}</title>
-<style>
-:root{--ink:#111;--dim:#6b7280;--line:#e5e7eb;--k:#0a66c2;--hot:#b91c1c;--warm:#b45309;--ok:#047857}
+/** The sports pages a host serves under its "Sports" link, each address carrying the host's key. With no host links the pages sit at the root. */
+export function sportsPaths(links: PageLink[] | undefined): { board: string; replay: string; lock: string; token: string } {
+  const href = links?.find((l) => l.label === "Sports")?.href ?? "/";
+  const [path, query = ""] = href.split("?");
+  const base = path.replace(/\/+$/, "");
+  const q = query ? `?${query}` : "";
+  return { board: `${base || "/"}${q}`, replay: `${base}/replay${q}`, lock: `${base}/lock${q}`, token: new URLSearchParams(query).get("k") ?? "" };
+}
+
+/** The line of links between the sports pages; `here` is shown, not linked. */
+export function sportsNavHtml(links: PageLink[] | undefined, here: "board" | "replay" | "lock"): string {
+  const p = sportsPaths(links);
+  const items: Array<["board" | "replay" | "lock", string, string]> = [
+    ["board", "The venues side by side", p.board],
+    ["replay", "Lock in, replayed on real trades", p.replay],
+    ["lock", "Lock in now", p.lock],
+  ];
+  return `<nav style="font-size:13px;margin:0 0 10px;color:#6b7280">${items.map(([id, label, href]) => (id === here ? `<b>${esc(label)}</b>` : `<a href="${esc(href)}">${esc(label)}</a>`)).join(" · ")}</nav>`;
+}
+
+/** The one stylesheet of the sports pages. */
+export const SPORTS_PAGE_STYLE = `:root{--ink:#111;--dim:#6b7280;--line:#e5e7eb;--k:#0a66c2;--hot:#b91c1c;--warm:#b45309;--ok:#047857}
 *{box-sizing:border-box}body{margin:0;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;color:var(--ink);background:#fff}
 main{max-width:1400px;margin:0 auto;padding:20px 16px 60px}h1{font-size:24px;margin:0 0 4px;letter-spacing:-.01em}h2{font-size:18px;margin:34px 0 8px}h3{font-size:15px;margin:18px 0 6px}
 p{margin:6px 0}.dim{color:var(--dim)}small{color:var(--dim);font-size:12px;display:block}.lead{font-size:16px}
@@ -235,8 +248,18 @@ tr.game td{background:#fafafa;padding-top:10px;white-space:normal}tr.game small{
 svg.spark{width:160px;height:28px;display:block}svg.spark polyline{fill:none;stroke:var(--k);stroke-width:1.5}svg.spark .zero{stroke:var(--line)}
 details{margin:8px 0}summary{cursor:pointer;color:var(--k);font-size:13px}
 .note{border-left:3px solid var(--line);padding:4px 12px;color:var(--dim);font-size:13px;margin:10px 0}.limits{padding-left:18px;font-size:13px;color:var(--dim);margin:6px 0}.limits li{margin:5px 0}.limits b{color:var(--ink)}footer{margin-top:40px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
-</style></head><body><main>
-${pageLinksHtml(opts.links, "Sports")}<h1>Sports on the event venues</h1>
+`;
+
+export function renderReportHtml(d: ReportData, opts: { refreshSec?: number; links?: PageLink[] } = {}): string {
+  const healthLine = Object.entries(d.health)
+    .map(([k, h]) => `<span class="${h.ok ? "ok" : "bad"}">${esc(k)} ${h.ok ? `${h.ms}ms${h.detail ? ` (${esc(h.detail)})` : ""}` : esc(h.detail ?? "down")}</span>`)
+    .join(" · ");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">${opts.refreshSec ? `<meta http-equiv="refresh" content="${opts.refreshSec}">` : ""}
+<title>Sports on the event venues: ${VENUES.map((v) => esc(V(v))).join(", ")}</title>
+<style>
+${SPORTS_PAGE_STYLE}</style></head><body><main>
+${pageLinksHtml(opts.links, "Sports")}${sportsNavHtml(opts.links, "board")}<h1>Sports on the event venues</h1>
 <p class="lead">The same game's winner market on ${esc(VENUE_LIST)}, side by side, after each venue's taker fee. Where the other side of a position is cheapest, what the venues disagree on, and what can be locked across them. Live from public market data. Read-only.</p>
 <div class="strip"><span>As of <b>${et(d.at)}</b> <small>refresh ${d.intervalSec}s</small></span><span>Games on the board <b>${d.slate.games}</b> <small>NFL, NBA, NHL · next three days · ${d.slate.live} live</small></span><span>Window <b>${d.historyPoints}</b> snapshots <small>${d.windowHours ? `the last ${d.windowHours} hours · ` : ""}${d.collectingSince ? `${d.windowHours ? "collecting " : ""}since ${et(d.collectingSince)}` : "first cycle"}</small></span></div>
 <div class="key"><span><i class="tag ref">Reference</i>what the venues show on their own: bid, ask, depth, each venue's fee, gaps over time</span><span><i class="tag eng">Engine</i>what reading every venue's book for the same game at once adds: all-in prices, the consensus and who sits off it, the cheapest other side for every position with the saving, the crosses in dollars</span></div>

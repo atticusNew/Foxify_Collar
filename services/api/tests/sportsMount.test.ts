@@ -91,6 +91,20 @@ test("on the BTC service: /sports and its JSON answer with the BTC key and are r
     assert.equal(JSON.parse(report.text).historyPoints, 2);
     assert.equal(JSON.parse((await get("/sports/api/latest?k=k%201")).text).at, at[1]);
     assert.equal((await get("/sports/api/nothing?k=k%201")).status, 404);
+    // the two lock pages: under the same key, each linking to the others with it
+    for (const path of ["/sports/replay", "/sports/lock", "/sports/api/replay", "/sports/api/lock?k=wrong"]) assert.equal((await get(path)).status, 404, `${path} without the key`);
+    const replay = await get("/sports/replay?k=k%201");
+    assert.equal(replay.status, 200);
+    assert.ok(replay.text.includes("<h1>Lock in, replayed on real trades</h1>"));
+    assert.ok(replay.text.includes('<a href="/?k=k%201">BTC curve</a>') && replay.text.includes('<a href="/sports?k=k%201">The venues side by side</a>') && replay.text.includes('<a href="/sports/lock?k=k%201">Lock in now</a>'));
+    // the games shipped with the code were copied under the BTC data dir and replayed on the load above
+    const replayed = JSON.parse((await get("/sports/api/replay?k=k%201")).text);
+    assert.ok(replayed.report.all.games >= 31);
+    assert.ok(existsSync(join(dir, "sports", "tape", "replay.json")));
+    const lock = await get("/sports/lock?k=k%201");
+    assert.equal(lock.status, 200);
+    assert.ok(lock.text.includes('action="/sports/lock"') && lock.text.includes('name="k" value="k 1"'));
+    assert.ok(page.text.includes('<a href="/sports/replay?k=k%201">Lock in, replayed on real trades</a>'));
 
     const warm = JSON.parse((await get("/healthz")).text);
     assert.equal(warm.sports.warm, true);
@@ -254,7 +268,17 @@ test("the standalone script still serves the page, its JSON and /healthz, under 
     const page = await get("/?k=s1");
     assert.equal(page.status, 200);
     assert.ok(page.text.includes("<h1>Sports on the event venues</h1>"));
-    assert.ok(!page.text.includes("<nav"), "on its own there are no other pages to link to");
+    // on its own there is no host's line of links, only the sports pages, under its own key
+    assert.equal(page.text.split("<nav").length - 1, 1);
+    assert.ok(page.text.includes('<a href="/replay?k=s1">') && page.text.includes('<a href="/lock?k=s1">'));
+    assert.ok(!page.text.includes("BTC curve"));
+    assert.equal((await get("/replay")).status, 404);
+    const replay = await get("/replay?k=s1");
+    assert.equal(replay.status, 200);
+    assert.ok(replay.text.includes('<a href="/?k=s1">The venues side by side</a>'));
+    const lock = await get("/lock?k=s1");
+    assert.equal(lock.status, 200);
+    assert.ok(lock.text.includes('action="/lock"') && lock.text.includes('name="k" value="s1"'));
     assert.equal(JSON.parse((await get("/api/report?k=s1")).text).at, at);
     assert.equal(JSON.parse((await get("/api/latest?k=s1")).text).games.length, 1);
     assert.equal((await get("/sports?k=s1")).status, 404);
