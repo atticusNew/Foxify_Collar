@@ -48,7 +48,7 @@ import type { FeeTerms } from "./analytics";
 import { BadArgument, cryptocomHost, getResult } from "./cryptocom";
 import { priceOfDollars } from "./lockMath";
 import type { HistoryPoint } from "./store";
-import { REPLAY_VERSION, newerId, parseCapsule, replayGame, sideCode, sumReplays, winnerFromLastPrices, type BookLine, type GameMeta, type GameReplay, type HeadLine, type ReplayReport, type ResultLine, type TradeLine } from "./tapeReplay";
+import { REPLAY_VERSION, newerId, parseCapsule, replayGame, sideCode, sumReplays, winnerFromLastPrices, type BookLine, type Capsule, type GameMeta, type GameReplay, type HeadLine, type ReplayReport, type ResultLine, type TradeLine } from "./tapeReplay";
 import { SIDES, type Game, type Side } from "./types";
 
 export const TAPE_PAGE = 150;
@@ -135,6 +135,7 @@ export class TapeRecord {
   private lastPassAt: string | null = null;
   private lastError = "";
   private note = "";
+  private readonly read = new Map<string, Capsule>();
 
   constructor(opts: TapeOptions) {
     this.dir = opts.dir;
@@ -380,6 +381,25 @@ export class TapeRecord {
   report(): ReplayReport {
     if (!this.cached || this.cached.revision !== this.revision) this.cached = { revision: this.revision, report: sumReplays(this.replays.values()) };
     return this.cached.report;
+  }
+
+  /**
+   * A closed game's file read back, for a moment of it. Only a game this record has closed is
+   * read, so the name asked for never reaches the disk as given. The last few read are kept.
+   */
+  capsule(event: string): Capsule | null {
+    if (!this.replays.has(event) || !safe(event)) return null;
+    const held = this.read.get(event);
+    if (held) return held;
+    try {
+      const game = parseCapsule(this.lines(event));
+      if (!game) return null;
+      if (this.read.size >= 3) this.read.delete(this.read.keys().next().value as string);
+      this.read.set(event, game);
+      return game;
+    } catch {
+      return null;
+    }
   }
 
   /** The games being recorded now, soonest first: for the page. */
