@@ -112,6 +112,10 @@
 #                                   key, so no second service is paid for; its
 #                                   snapshots sit on the curve disk. It was
 #                                   never deployed as a service of its own.
+#                                   Also /sports/replay (Lock in replayed on
+#                                   Crypto.com's real trades, kept per game on
+#                                   the same disk) and /sports/lock (Lock in on
+#                                   a position you name, from the bid now).
 #                                   docs/sports-venues-report.md
 #
 #   (no service) /pairs on          BTC pairs UI for a trader: the same

@@ -10,8 +10,12 @@ model. Every number is a venue's price, its published fee, or a difference of th
 Where it lives: `/sports` on the `atticus-btc-curve` Render service (same process, same key, no
 second service; see "On the BTC curve service" below). Modules: `services/api/src/sportsVenues/**`
 (`collector.ts` is the cycle and the routes) · tests: `services/api/tests/sportsVenues.test.ts`,
-`sportsProphetX.test.ts`, `sportsCryptocom.test.ts`, `sportsHolder.test.ts`, `sportsMount.test.ts` · `services/api/scripts/sportsVenuesReportService.ts` serves the same thing
+`sportsProphetX.test.ts`, `sportsCryptocom.test.ts`, `sportsHolder.test.ts`, `sportsMount.test.ts`, `sportsTapeReplay.test.ts` · `services/api/scripts/sportsVenuesReportService.ts` serves the same thing
 on its own port for a local run. Reader's guide: `docs/sports-venues-study-guide.md`.
+
+Two more pages sit beside it, linked from its top line: `/sports/replay` (Lock in replayed on
+Crypto.com's real trades) and `/sports/lock` (Lock in on a position you name, from the bid now).
+Both are under "Lock in on the trade tape" below.
 
 ## What the page shows
 
@@ -185,6 +189,88 @@ room is the most it can add, to be split between the holder and whoever makes th
 the start and in play are split by the venue-published start; a game with only a date counts as
 before the start.
 
+## Lock in on the trade tape
+
+Crypto.com's exchange publishes every trade on a contract: the time, the size, the price, and
+whether the taker bought or sold. A taker's buy on a club's winner contract is a real position
+someone opened, through whichever broker or app sends orders to that exchange. The service keeps
+that tape for every game on the board and, once a game is over, follows each position to the
+result and works out what a lock (the holder's own sale of part of it) would have been at bids
+that were really there. No position is simulated. Code: `tape.ts` (the record), `tapeReplay.ts`
+(the replay, a pure function of one game's file), `lockMath.ts` (the arithmetic, whole
+micro-dollars), `lockNow.ts`, `replayHtml.ts`.
+
+**What counts as a position.** Every taker buy at 5¢ to 95¢, taken as held to the result. The
+tape has no account on it: one person's three buys are three positions, a buy that closed a
+short counts, and a holder who sold by hand is still followed to the end. It is the whole
+exchange, not one broker's customers.
+
+**A bid that was really there.** A lock is priced only at the best bid of the book as the
+collector read it that minute (with its size), or at a taker's sale on the tape (someone sold
+that many at that price then). Never from a buy, and only between 5¢ and 95¢.
+
+**Before the start.** A position opened before the scheduled start, locked at the last bid of
+the hour before it, in the product's three sizes: Max upside sells 40%, Balanced 60%, Max floor
+80% (`SALE_SHARE_PERCENT` in `eventCollar/crossVenue/memberSale.ts`). The sale's cash after the
+fee is the floor; the cap adds $1 on each contract kept.
+
+**In play.** Every position, from the scheduled start or from when it was opened, whichever is
+later. Each option is taken at the first bid that makes it possible, which is a rule and not
+hindsight:
+
+| Option | Rule |
+| --- | --- |
+| Max upside, half back | sell 40% the first time that returns 50% of the stake or more |
+| Stake back, 20% or more rides | sell the fewest contracts whose cash covers the whole stake, the first time that is 80% of the position or less |
+| Stake back, 40% or more rides | the same, at 60% or less |
+| Stake back, 60% or more rides | the same, at 40% or less |
+
+The first two happen at the same bid (a quarter above what was paid, after both fees): two
+choices at one moment.
+
+**The result** is read from the tape once a game is over (four and a half hours after its start
+and half an hour with no trade): the side whose last trade printed at 97¢ or more while the
+other's was at 50¢ or less, or whose opponent's last trade printed at 3¢ or less while its own
+was at 50¢ or more (on a thin game only the loser's contract prints after the whistle). A game
+with no such result 30 hours after its start is closed, listed, and not counted.
+
+**The page** (`/sports/replay`): the strip and six tiles; §1 the positions by league; §2 before
+the start; §3 in play; §4 what it adds in orders (every lock is a sell order on the exchange's
+book that would not otherwise be placed; shown for every holder who could and scaled to 10 in
+100); §5 the same for stakes of $500 or less, by league, and game by game. "Kept less given
+up" is what losers kept minus what winners gave up: over enough games it tends to the fees and
+the spread, and over a few nights it swings with which sides won.
+
+**Lock in now** (`/sports/lock`): pick a game and side, a number of contracts and the price
+paid (blank: the ask now). It shows the floor, the cash now and the cap for each option at the
+bid on Crypto.com's book this minute: the three sizes before the start, with stake back first
+once the game is in play and the bid is high enough, and otherwise the bid at which stake back
+opens. Quotes only.
+
+**The record.** `<data dir>/tape/<event>.tape.jsonl`, one file per game, append-only: a header
+(the game, its start, the two contracts), one line per trade as the venue gave it, then, when
+the game is closed, the book's best bid from every snapshot in the window and the result. A
+closed file is never written again. `tape/replay.json` is derived (each closed game's replay)
+and is worked out again when missing, unreadable, or made under another fee. About 200 KB a
+game. Games close to their start or in play are read every cycle; the others every 20 minutes.
+
+**Games shipped with the code.** `src/sportsVenues/tapeSeed/` holds the games captured before
+the service kept the tape (9 to 11 November 2026: 16 NBA, 14 NHL, 1 NFL; trades only, so their
+locks are priced at takers' sales). On start-up any of them not already on the disk is copied
+there. Their results were checked against the same games' settled markets on Kalshi.
+
+**Wire facts** (read 12 November 2026). `GET /get-trades?instrument_name=&count=150&start_ts=1[&end_ts=]`,
+newest first, 150 at most. `start_ts` must be sent: without it the venue looks back 24 hours
+from `end_ts` (or from now) and answers a short page although older trades exist. The trade id
+is the match time in nanoseconds. Both contracts of a finished game were still readable 40
+hours after its start; for games four days old one of the two was gone, so a tape is collected
+while the game is listed and cannot be rebuilt later.
+
+**Limits.** Not a count of how many holders would lock, nor of what a lock does to whether they
+come back: the first needs the product in front of them, the second a broker's account data. A
+large ticket would walk the book; the page's fold leaves tickets over $500 out. A broker's own
+commission is not public and is not counted.
+
 ## Storage and ops
 
 One JSONL file per UTC day under `SPORTS_VENUES_DATA_DIR`, one line per snapshot (every listing's
@@ -212,7 +298,8 @@ set, how full the budget is and a warning past 80%. The budget deletes nothing. 
 keeps the BTC curve's files; `docs/btc-curve-report.md` has the detail.
 
 Endpoints: `/` (page, auto-refresh at the interval), `/api/report` (the page's data), `/api/latest`
-(the raw snapshot), `/healthz` (no token). With `SPORTS_VENUES_TOKEN` set, the page and JSON need
+(the raw snapshot), `/replay` and `/api/replay`, `/lock` and `/api/lock` (`game=<key>|away` or
+`|home`, `n=` contracts, `paid=` cents), `/healthz` (no token). With `SPORTS_VENUES_TOKEN` set, the page and JSON need
 `?k=<token>`.
 
 Env: `SPORTS_VENUES_PORT` (8870), `SPORTS_VENUES_DATA_DIR`, `SPORTS_VENUES_INTERVAL_SEC` (60),
@@ -228,7 +315,8 @@ snapshot and served from that until the next.
 ### On the BTC curve service
 
 Production serves this page from the BTC curve service, at `/sports`, with its JSON at
-`/sports/api/report` and `/sports/api/latest`, behind `BTC_CURVE_TOKEN` (`?k=<token>`), with a
+`/sports/api/report` and `/sports/api/latest`, and the two lock pages at `/sports/replay` and
+`/sports/lock`, behind `BTC_CURVE_TOKEN` (`?k=<token>`), with a
 line of links to the BTC curve and BTC pairs pages. It is on by default; `BTC_CURVE_SPORTS=off`
 (or `0`) turns it off. The `SPORTS_VENUES_*` settings above apply, except the port and the token,
 which are the curve service's. The files go under `<BTC_CURVE_DATA_DIR>/sports` and follow
@@ -236,7 +324,7 @@ which are the curve service's. The files go under `<BTC_CURVE_DATA_DIR>/sports` 
 service carries a `sports` block: `warm`, `at`, `games`, `cycles`, `historyPoints`,
 `windowHours`, `reload`, `venuesNotAnswering`, `venueNotes` (a venue that answered but left
 games off, and why), `listed` (games each venue is on in the latest snapshot), `lastError`,
-`holderCount` (snapshots counted in §5, since when, the last one, and a note if its file could not be used), `data` (the same block as above for
+`holderCount` (snapshots counted in §5, since when, the last one, and a note if its file could not be used), `tape` (games being recorded and their trades, games closed, how many with a result, how many were copied in from the code, the last pass, and any fault in words), `data` (the same block as above for
 the sports files) and, if the sports part ever fails outside a cycle, `mountError` in words. A
 sports fault never reaches the BTC routes: the page answers 500 on that request and the fault
 is on `/healthz`.

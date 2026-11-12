@@ -160,3 +160,53 @@ carries that small tail.
 No account data, no partner mapping, no offshore venue, no venue that needs a key to read. No
 spreads or totals in this version. ProphetX is read from the same unsigned endpoints its own
 website uses; if the venue closes them the column goes empty and the page says so.
+
+## 10. The two lock pages
+
+`/sports/replay` and `/sports/lock`, linked from the top of the sports page. Mechanics are in
+`docs/sports-venues-report.md` under "Lock in on the trade tape".
+
+**What the replay is.** Crypto.com's exchange publishes every trade. Each taker buy is a real
+position someone opened. The page follows every one to the final whistle and shows what Lock in
+would have done, at bids that were really on the book. Nothing is simulated, and nothing uses
+hindsight: in play each option is taken the first time it is possible.
+
+**How to read it, top to bottom.**
+
+- The strip: games counted, positions opened and what was paid for them, and how many finished
+  at $0. That last figure is the problem the product addresses, in the exchange's own numbers.
+- Section 2, before the start: there is almost never a gain to lock before a game. A lock then
+  does one thing: it turns "all or nothing" into a floor and a cap. Max upside keeps 60% riding
+  with about a third of the stake as a floor; Max floor keeps 20% riding with about 70%.
+- Section 3, in play: this is where a lock has something to lock. The row to point at is
+  "Stake back": how many positions reached a moment where selling part returned everything
+  paid, with the rest riding free, and how many of those then lost.
+- Section 4: every lock is a sell order on the exchange's own book that would not otherwise be
+  placed. Shown for 10 in 100 holders, because nobody should plan on all of them.
+
+**The first 31 games** (9 to 11 November 2026: 16 NBA, 14 NHL, 1 NFL; priced at takers' sales
+only, since the book was not yet being kept beside the tape):
+
+- 32,255 positions, $1.75M paid; 43% of positions and 65% of contracts were opened in play.
+- 17,461 positions (54%) finished at $0, having paid $707,166.
+- In play, 44% of positions reached a bid where selling 80% or less returned the whole stake.
+  23% of those (3,200 positions, $121,026 paid) then lost and got $0; the lock returns it all.
+- Before the start, Max upside left a floor of 36% of the stake; 7,031 positions that lost
+  would have kept $75,572.
+- Takers' sales are already 18% of trades in play: holders sell by hand today.
+- If 10 in 100 of those who could lock in play did: 1,410 extra sell orders, about 103,000
+  contracts, $2,055 in exchange fees, over 31 games.
+
+**What not to claim from it.**
+
+- Not that a lock makes holders money. It moves money from the games they win to the games
+  they lose. On these 31 games the winners who locked gave up more ($168,867) than the losers
+  kept ($121,033). That swings with which sides won and is expected to come out near the fees
+  over enough games. The product is the floor, not an edge.
+- Not that these are one broker's customers. It is the whole exchange, market makers included.
+- Not how many would lock, or that locking brings a holder back. The first needs the product
+  in front of them; the second needs a broker's account data. That is the ask.
+
+**Lock in now.** Pick a game and a side, type a position, and it shows the floor, the cash now
+and the cap for each option at the bid on Crypto.com's book this minute. Before the start it
+shows the three sizes; in play, once the bid is high enough, stake back comes first.
