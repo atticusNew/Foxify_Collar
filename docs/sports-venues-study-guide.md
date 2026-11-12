@@ -177,23 +177,32 @@ with a key of their own".
 1. Where customers are lost: how many tickets finished at $0, and how many of those were ahead
    at some point.
 2. What Lock in is, for the customer: cash now, the rest keeps riding, done on the exchange at
-   the market's price. Nobody takes the other side: not the broker, not Atticus.
+   the market's price. Nobody takes the other side: not Prospect, not Atticus.
 3. Two real tickets off the tape, one that lost and one that won, and the lock as a customer
    would see it for any finished game at any moment of it (or a game on the board now).
 4. The replay's three main rows, how long the chance lasted, and what it costs the winners.
-5. The calculator: how many lock in 100, their share of the exchange, their commission.
+5. The calculator: how many lock in 100, Prospect's share of the exchange, what Prospect earns
+   per contract.
 6. One line: the exchange's best price nearly always has far more behind it than a retail
    ticket needs.
 7. What a pilot would answer.
 
-"Guide" steps through six of those with a short note at each for what the number means to a
-broker. Arrow keys move it, Escape closes it. "Show all notes" opens them all, and they print.
+"Guide" steps through six of those with a short note at each for what the number means to
+Prospect. Arrow keys move it, Escape closes it. "Show all notes" opens them all, and they print.
 
 **What the page holds back, and what to say if asked.** The page shows results and not how they
 are produced. It never says what order a lock places, how it is sized, where the thresholds
 are, how the data is collected, or what Atticus does in the flow. None of it is hidden if they
 ask; the page does not hand it over.
 
+- The page says "Prospect" and never "broker". Prospect is the broker: its US arm is a
+  registered introducing broker that sends its customers' orders to Crypto.com's exchange.
+  There is no third party. But it calls itself a platform, so the page does too.
+- Prospect opened to the public on 12 November 2026 (invitation-only since September). The
+  games on the page so far were played before that: they are the exchange's customers, not
+  Prospect's. The page does not claim otherwise, and that is why step one of the pilot reads
+  "on Prospect's own customers as they trade".
+- The page does not say how Prospect is paid on an order. That is not public. Ask him.
 - "Is it just the customer selling part of the position?" Yes. It is their own order on the
   exchange. Which part, when, shown how, and what it does to whether they come back is the
   product and the pilot.

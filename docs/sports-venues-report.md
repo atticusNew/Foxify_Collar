@@ -299,7 +299,7 @@ environment. Two entries:
 where customers are lost (finished at $0; of those, ahead at some point); what Lock in is for
 the customer and that nobody takes the other side; two real tickets off the tape, and the lock
 as a customer would see it for any game and moment; the replay's three main rows; a calculator
-(how many lock in 100, the reader's share of the exchange, their commission per contract: three
+(how many lock in 100, the reader's share of the exchange, what the reader earns per contract: three
 boxes that scale counts already on the page); one line on the depth behind the exchange's best
 price; what a pilot would answer; notes and limits. It is one address: no tables behind it, no
 JSON, no link off it.
@@ -318,18 +318,29 @@ JSON, no link off it.
 - It says the source is the exchange's public trade tape. It does not name the feed, say how or
   how often it is read, how a result is read, or that games are being recorded.
 - It does not describe what Atticus does in the flow or how it is paid.
+- It names the reader ("Prospect", from the entry's `short`; "Prospect Markets" on the title
+  line and the footer) and never calls it a broker or addresses it as "you". "Broker" is the
+  licence of one of its subsidiaries, not what it calls itself, and the word reads as a third
+  party. It does not say how the reader is paid on an order, which is not public: a lock is
+  "one more order", and what it earns per contract is a box the reader fills in.
 
 None of that is denied if asked. The page does not volunteer it. `tests/sportsProspectPage.test.ts`
 fails if those words come back. Anything added to the page should pass the same test: does the
 reader need it to believe a number, or does it only tell them how to make the number themselves?
 
-"Guide" walks six stops with a short note at each for what the number means to a broker; "Show
+"Guide" walks six stops with a short note at each for what the number means to the reader; "Show
 all notes" opens every note at once; "Print or save as PDF" prints the page as it stands, notes
 included when they are open. The only script on the page is that and the calculator.
 
-A page for another reader is a new "broker" entry in `audiences.ts` and a key. The words of
-`prospectHtml.ts` are written for a broker onto this exchange; a reader of another kind needs
-its own.
+A page for another reader is a new "broker" entry in `audiences.ts` (its `name`, its `short`)
+and a key. The words of `prospectHtml.ts` are written for a company whose customers trade on
+Crypto.com's exchange through it. A reader that is itself the exchange (its own book, its own
+fee) needs its own page and figures from its own trades.
+
+**Layout.** The page carries its own style over the shared one: text held to a readable line,
+the five headline figures large, numbered sections, the lock's four choices two by two, and a
+print style that fits a letter page (five pages). Check a change at desktop width, at phone
+width and in print.
 
 **The record.** `<data dir>/tape/<event>.tape.jsonl`, one file per game, append-only: a header
 (the game, its start, the two contracts), one line per trade as the venue gave it, then, when
