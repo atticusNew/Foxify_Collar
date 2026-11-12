@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { build } from "esbuild";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MEDIA_FILES } from "../src/eventCollar/crossVenue/mediaFiles";
@@ -190,6 +190,10 @@ async function importClosure(entry: string): Promise<Closure> {
  */
 const READ_AT_RUNTIME: Readonly<Record<string, readonly string[]>> = {
   "services/api/scripts/eventProtectXDemoService.ts": Object.keys(MEDIA_FILES).map((name) => `services/api/scripts/assets/${name}`),
+  // the games captured before the service ran, copied onto the disk on start-up
+  "services/api/src/sportsVenues/tape.ts": readdirSync(join(REPO_ROOT, "services/api/src/sportsVenues/tapeSeed"))
+    .filter((name) => name.endsWith(".tape.jsonl"))
+    .map((name) => `services/api/src/sportsVenues/tapeSeed/${name}`),
 };
 
 /** How a script finds files beside itself. A file using any of these must be in READ_AT_RUNTIME. */
