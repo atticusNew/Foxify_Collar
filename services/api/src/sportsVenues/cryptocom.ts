@@ -194,10 +194,11 @@ export interface CryptocomCache {
 }
 export const newCryptocomCache = (): CryptocomCache => ({ events: new Map(), askedAt: new Map(), pairs: new Map() });
 
-class BadArgument extends Error {}
+/** The venue saying an argument names nothing (HTTP 400): a series, an event or a contract it does not know. */
+export class BadArgument extends Error {}
 
 /** One GET. A 400 is the venue saying the argument names nothing: not retried. Anything else is tried once more. */
-async function getResult(url: string, fetchImpl: typeof fetch): Promise<{ data: unknown[]; next: string }> {
+export async function getResult(url: string, fetchImpl: typeof fetch): Promise<{ data: unknown[]; next: string }> {
   let last: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
