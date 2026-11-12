@@ -250,7 +250,8 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--k);font-size:13px}
 .note{border-left:3px solid var(--line);padding:4px 12px;color:var(--dim);font-size:13px;margin:10px 0}.limits{padding-left:18px;font-size:13px;color:var(--dim);margin:6px 0}.limits li{margin:5px 0}.limits b{color:var(--ink)}footer{margin-top:40px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
 `;
 
-export function renderReportHtml(d: ReportData, opts: { refreshSec?: number; links?: PageLink[] } = {}): string {
+/** `lockPages: false` leaves out the line of links to the replay and the lock: a host that does not serve them under its key. */
+export function renderReportHtml(d: ReportData, opts: { refreshSec?: number; links?: PageLink[]; lockPages?: boolean } = {}): string {
   const healthLine = Object.entries(d.health)
     .map(([k, h]) => `<span class="${h.ok ? "ok" : "bad"}">${esc(k)} ${h.ok ? `${h.ms}ms${h.detail ? ` (${esc(h.detail)})` : ""}` : esc(h.detail ?? "down")}</span>`)
     .join(" · ");
@@ -259,7 +260,7 @@ export function renderReportHtml(d: ReportData, opts: { refreshSec?: number; lin
 <title>Sports on the event venues: ${VENUES.map((v) => esc(V(v))).join(", ")}</title>
 <style>
 ${SPORTS_PAGE_STYLE}</style></head><body><main>
-${pageLinksHtml(opts.links, "Sports")}${sportsNavHtml(opts.links, "board")}<h1>Sports on the event venues</h1>
+${pageLinksHtml(opts.links, "Sports")}${opts.lockPages === false ? "" : sportsNavHtml(opts.links, "board")}<h1>Sports on the event venues</h1>
 <p class="lead">The same game's winner market on ${esc(VENUE_LIST)}, side by side, after each venue's taker fee. Where the other side of a position is cheapest, what the venues disagree on, and what can be locked across them. Live from public market data. Read-only.</p>
 <div class="strip"><span>As of <b>${et(d.at)}</b> <small>refresh ${d.intervalSec}s</small></span><span>Games on the board <b>${d.slate.games}</b> <small>NFL, NBA, NHL · next three days · ${d.slate.live} live</small></span><span>Window <b>${d.historyPoints}</b> snapshots <small>${d.windowHours ? `the last ${d.windowHours} hours · ` : ""}${d.collectingSince ? `${d.windowHours ? "collecting " : ""}since ${et(d.collectingSince)}` : "first cycle"}</small></span></div>
 <div class="key"><span><i class="tag ref">Reference</i>what the venues show on their own: bid, ask, depth, each venue's fee, gaps over time</span><span><i class="tag eng">Engine</i>what reading every venue's book for the same game at once adds: all-in prices, the consensus and who sits off it, the cheapest other side for every position with the saving, the crosses in dollars</span></div>

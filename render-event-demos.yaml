@@ -112,10 +112,11 @@
 #                                   key, so no second service is paid for; its
 #                                   snapshots sit on the curve disk. It was
 #                                   never deployed as a service of its own.
-#                                   Also /sports/replay (Lock in replayed on
-#                                   Crypto.com's real trades, kept per game on
-#                                   the same disk) and /sports/lock (Lock in on
-#                                   a position you name, from the bid now).
+#                                   The trade tape of Crypto.com's exchange is
+#                                   kept per game on the same disk. Lock in
+#                                   replayed on it is NOT under this key: it is
+#                                   a page for one reader at /prospect, under
+#                                   PROSPECT_PAGE_KEY (below).
 #                                   docs/sports-venues-report.md
 #
 #   (no service) /pairs on          BTC pairs UI for a trader: the same
@@ -293,6 +294,13 @@ services:
       # under sports on /healthz; the BTC pages do not depend on it.
       # - key: BTC_CURVE_SPORTS
       #   value: "off"
+      # The page made for one reader at /prospect (Lock in replayed on Crypto.com's real trades,
+      # with every table at /prospect/detail). Its own key, which opens nothing else on this
+      # service; BTC_CURVE_TOKEN does not open it. Unset, shorter than 16 characters, or equal
+      # to BTC_CURVE_TOKEN: the page is off and /healthz says why under sports.audiencePages.
+      # Set in the dashboard (Render's Generate makes a value), not here.
+      # - key: PROSPECT_PAGE_KEY
+      #   sync: false
       # - key: SPORTS_VENUES_INTERVAL_SEC
       #   value: "60"
       # Hours of sports snapshots held in memory for the page's window sections. 24 here; do

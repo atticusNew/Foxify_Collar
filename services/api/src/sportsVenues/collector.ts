@@ -17,7 +17,9 @@ import { cryptocomFeeFromEnv, newCryptocomCache, readCryptocomListings, type Cry
 import { HolderRecord } from "./holder";
 import { buildReport, type ReportData } from "./report";
 import { renderReportHtml } from "./reportHtml";
-import { lockChoices, lockNow } from "./lockNow";
+import { AUDIENCES, audienceOf, audienceState, keyMatches, type AudienceState } from "./audiences";
+import { lockChoices, lockNow, lockPast, pastMoments, type LockQuote, type PastMoment } from "./lockNow";
+import { PAST_PREFIX, bookCountOf, renderProspectHtml, type ProspectLock } from "./prospectHtml";
 import { renderLockHtml, renderReplayHtml } from "./replayHtml";
 import { TapeRecord } from "./tape";
 import { SnapshotStore } from "./store";
@@ -39,6 +41,10 @@ export interface SportsCollectorOptions {
   readGames?: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
   /** test seams of the trade tape: its fetch, and where the games shipped with the code are read from (null for none) */
   tape?: { fetchImpl?: typeof fetch; seedDir?: string | null; host?: string };
+  /** the key of each page made for one reader, by its id (audiences.ts); a page with no key is off */
+  audienceKeys?: Record<string, string | undefined>;
+  /** the keys that open the host's own pages: a reader's page may not share one */
+  hostKeys?: string[];
 }
 
 export class SportsCollector {
@@ -52,6 +58,7 @@ export class SportsCollector {
   private readonly sincePath: string;
   private readonly holder: HolderRecord;
   private readonly tape: TapeRecord;
+  private readonly audiences: AudienceState[];
   private readonly log: (line: string) => void;
   private readonly readGames: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
   private readonly cryptocomFee: CryptocomFee;
@@ -78,6 +85,7 @@ export class SportsCollector {
     this.store = new SnapshotStore(opts.dataDir, { keepHours: this.windowHours, retention: this.retention, budget: opts.budget });
     this.sincePath = join(opts.dataDir, "collecting-since.txt");
     this.holder = new HolderRecord(join(opts.dataDir, "holder-count.json"), (what, write) => this.store.guardWrite(what, write));
+    this.audiences = AUDIENCES.map((a) => audienceState(a, opts.audienceKeys?.[a.id], opts.hostKeys ?? []));
     this.tape = new TapeRecord({
       dir: join(opts.dataDir, "tape"),
       fee: { theta: this.cryptocomFee.theta, flat: this.cryptocomFee.flatCents },
@@ -234,6 +242,8 @@ export class SportsCollector {
       lastError: this.lastError || undefined,
       holderCount: this.holder.summary(),
       tape: this.tape.health(),
+      // in order, without a name: /healthz needs no key
+      audiencePages: this.audiences.map((a) => (a.key ? "on" : `off: ${a.off}`)),
       data: this.store.dataHealth(),
     };
   }
@@ -258,8 +268,14 @@ export class SportsCollector {
    * Serve one request whose path is already relative to the mount (`/`, `/api/report`,
    * `/api/latest`, `/replay`, `/api/replay`, `/lock`, `/api/lock`). Returns false when the path is not one of ours so the host can 404 it. The
    * host has already checked its access key.
+   *
+   * `lockPages: false` leaves the replay and the lock out: a host whose key is held by someone
+   * the Lock in pages are not for serves the board alone, and those pages are reached under a
+   * reader's own key (audience()).
    */
-  handle(_req: IncomingMessage, res: ServerResponse, path: string, url: URL, given: { links?: PageLink[] } = {}): boolean {
+  handle(_req: IncomingMessage, res: ServerResponse, path: string, url: URL, given: { links?: PageLink[]; lockPages?: boolean } = {}): boolean {
+    const lockPages = given.lockPages !== false;
+    if (!lockPages && ["/replay", "/api/replay", "/lock", "/api/lock"].includes(path)) return false;
     // on its own there is no host to say where the pages sit: they are at the root, under the key this request came with
     const key = url.searchParams.get("k");
     const opts = { links: given.links ?? (key ? [{ label: "Sports", href: `/?k=${encodeURIComponent(key)}` }] : undefined) };
@@ -306,12 +322,94 @@ export class SportsCollector {
       res.writeHead(data ? 200 : 503, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(
         data
-          ? renderReportHtml(data, { refreshSec: this.intervalSec, links: opts.links })
+          ? renderReportHtml(data, { refreshSec: this.intervalSec, links: opts.links, lockPages })
           : `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="10"><title>warming up</title><p style="font:16px system-ui;padding:40px">First snapshot in progress. This page refreshes itself.</p>`,
       );
       return true;
     }
     return false;
+  }
+
+  /**
+   * A page made for one reader (audiences.ts), under that reader's own key. True when the
+   * address is one of theirs, whatever the key: a wrong key is a 404 here and never reaches the
+   * host's own pages. Checked before the host's key, which does not open these.
+   */
+  audience(_req: IncomingMessage, res: ServerResponse, url: URL): boolean {
+    const found = audienceOf(this.audiences, url.pathname);
+    if (!found) return false;
+    const { state, sub } = found;
+    const send = (status: number, type: string, body: string) => {
+      res.writeHead(status, { "content-type": `${type}; charset=utf-8`, "cache-control": "no-store", "referrer-policy": "no-referrer", "x-robots-tag": "noindex, nofollow" });
+      res.end(body);
+    };
+    if (!state.key || !keyMatches(url.searchParams.get("k"), state.key)) {
+      send(404, "text/plain", "not found");
+      return true;
+    }
+    const q = `?k=${encodeURIComponent(state.key)}`;
+    if (sub === "/detail") {
+      const nav = `<nav style="font-size:13px;margin:0 0 10px;color:#6b7280"><a href="${state.base}${q}">Back to the summary</a> · <b>Every table</b></nav>`;
+      send(200, "text/html", renderReplayHtml(this.tape.report(), this.tape.recording(), { feeWords: this.feeWords, nav }));
+      return true;
+    }
+    if (sub === "/" || sub === "/api") {
+      const input = {
+        audience: { name: state.name, base: state.base },
+        key: state.key,
+        report: this.tape.report(),
+        recording: this.tape.recording().length,
+        fee: this.feeTerms,
+        feeWords: this.feeWords,
+        book: bookCountOf(this.holder.report()),
+        lock: this.audienceLock(url),
+      };
+      if (sub === "/api") {
+        const { key: _key, ...shown } = input;
+        send(200, "application/json", JSON.stringify(shown));
+      } else send(200, "text/html", renderProspectHtml(input));
+      return true;
+    }
+    send(404, "text/plain", "not found");
+    return true;
+  }
+
+  /**
+   * The position the reader's page shows a lock on: a side on the board now, or a side of a
+   * finished game at a moment of it. With nothing asked for, the latest real ticket the page
+   * tells the story of, so the card under the story is that ticket.
+   */
+  private audienceLock(url: URL): ProspectLock {
+    const latest = this.store.getLatest();
+    const nowMs = Date.now();
+    const live = latest ? lockChoices(latest.games, nowMs) : [];
+    const ask = (name: string) => url.searchParams.get(name) || "";
+    let selected = ask("game");
+    let contracts = ask("n");
+    let paid = ask("paid");
+    let at = ask("at");
+    if (!selected) {
+      const stories = this.tape.report().stories;
+      const story = stories.find((s) => !s.won) ?? stories[0];
+      if (story) {
+        selected = `${PAST_PREFIX}${story.event}|${story.side}`;
+        contracts ||= String(story.qty / 100);
+        paid ||= String(story.price / 100);
+        at ||= String(story.atMs);
+      } else selected = live[0]?.value ?? "";
+    }
+    contracts ||= "50";
+    let quote: LockQuote | null = null;
+    let moments: PastMoment[] = [];
+    if (selected.startsWith(PAST_PREFIX)) {
+      const [event, side] = selected.slice(PAST_PREFIX.length).split("|");
+      const game = this.tape.capsule(event);
+      if (game && (side === "away" || side === "home")) {
+        quote = lockPast(game, { side, atMs: at ? Number(at) : undefined, contracts, paid }, this.feeTerms);
+        moments = pastMoments(game, side, this.feeTerms);
+      }
+    } else if (latest && selected) quote = lockNow(latest.games, { game: selected, contracts, paid }, this.feeTerms, nowMs);
+    return { live, moments, quote, selected, contracts, paid, bookAt: latest?.at ?? null };
   }
 }
 
@@ -338,6 +436,8 @@ export function sportsCollectorFromEnv(
         : parseRetention(defaults.retainDays, defaults.retainSetting ?? "the host service's retention setting"),
     budget: parseBudgetMb(env.SPORTS_VENUES_DISK_BUDGET_MB, "SPORTS_VENUES_DISK_BUDGET_MB"),
     cryptocomFee: cryptocomFeeFromEnv(env),
+    audienceKeys: Object.fromEntries(AUDIENCES.map((a) => [a.id, env[a.keyEnv]])),
+    hostKeys: [env.BTC_CURVE_TOKEN, env.SPORTS_VENUES_TOKEN].flatMap((k) => (k ? [k] : [])),
   });
 }
 
@@ -350,7 +450,9 @@ export interface SportsMount {
   start(): void;
   stop(): void;
   health(): Record<string, unknown>;
-  handle(req: IncomingMessage, res: ServerResponse, path: string, url: URL, opts?: { links?: PageLink[] }): boolean;
+  handle(req: IncomingMessage, res: ServerResponse, path: string, url: URL, opts?: { links?: PageLink[]; lockPages?: boolean }): boolean;
+  /** a page made for one reader, under that reader's own key; true when the address is one of theirs */
+  audience(req: IncomingMessage, res: ServerResponse, url: URL): boolean;
 }
 
 /**
@@ -392,6 +494,16 @@ export function mountSports(make: () => SportsCollector, log: (line: string) => 
       } catch (err) {
         fault("the sports health could not be read", err);
         return { warm: false, mountError };
+      }
+    },
+    audience(req, res, url) {
+      try {
+        return collector ? collector.audience(req, res, url) : false;
+      } catch (err) {
+        fault(`a reader's page failed (${url.pathname})`, err);
+        if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+        if (!res.writableEnded) res.end("This page failed on this request.");
+        return true;
       }
     },
     handle(req, res, path, url, opts) {

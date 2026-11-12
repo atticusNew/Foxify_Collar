@@ -1,4 +1,8 @@
-/** The two Lock in pages of the sports service: the replay over real trades, and the lock on a position now. Server-rendered, no script. */
+/**
+ * The two Lock in pages of the sports service: the replay over real trades, and the lock on a
+ * position, now or at a moment of a finished game. Server-rendered, no script. The page made for
+ * one audience (prospectHtml.ts) is built from the same pieces.
+ */
 
 import { pageLinksHtml, type PageLink } from "../btcCurve/pageLinks";
 import { MICRO_PER_DOLLAR, TIER_SHARE } from "./lockMath";
@@ -6,17 +10,17 @@ import type { LockChoice, LockQuote } from "./lockNow";
 import { SPORTS_PAGE_STYLE, sportsNavHtml, sportsPaths } from "./reportHtml";
 import { BACK_SHARE, HALF_BACK_PERCENT, LIVE_OPTIONS, OPENED, PRE_OPTIONS, SMALL_STAKE_MICRO, lockTallyOf, openTallyOf, type Bucket, type LockTally, type OptionId, type ReplayCounts, type ReplayGameRow, type ReplayReport, type ReplayTotals } from "./tapeReplay";
 
-const esc = (s: unknown): string =>
+export const esc = (s: unknown): string =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
-const num = (v: number, digits = 0): string => v.toLocaleString("en-US", { maximumFractionDigits: digits });
-const usd = (micro: number): string => `${micro < 0 ? "−" : ""}$${Math.round(Math.abs(micro) / MICRO_PER_DOLLAR).toLocaleString("en-US")}`;
-const dollars = (cents: number): string => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const contracts = (qty: number): string => num(Math.round(qty / 100));
-const pct = (part: number, whole: number, digits = 0): string => (whole > 0 ? `${((part / whole) * 100).toFixed(digits)}%` : "–");
-const et = (ms: number): string => `${new Date(ms).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET`;
+export const num = (v: number, digits = 0): string => v.toLocaleString("en-US", { maximumFractionDigits: digits });
+export const usd = (micro: number): string => `${micro < 0 ? "−" : ""}$${Math.round(Math.abs(micro) / MICRO_PER_DOLLAR).toLocaleString("en-US")}`;
+export const dollars = (cents: number): string => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export const contracts = (qty: number): string => num(Math.round(qty / 100));
+export const pct = (part: number, whole: number, digits = 0): string => (whole > 0 ? `${((part / whole) * 100).toFixed(digits)}%` : "–");
+export const et = (ms: number): string => `${new Date(ms).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET`;
 const LEAGUE = { nfl: "NFL", nba: "NBA", nhl: "NHL" } as Record<string, string>;
-const league = (l: string): string => LEAGUE[l] ?? l.toUpperCase();
-const SMALL_USD = Math.round(SMALL_STAKE_MICRO / MICRO_PER_DOLLAR);
+export const league = (l: string): string => LEAGUE[l] ?? l.toUpperCase();
+export const SMALL_USD = Math.round(SMALL_STAKE_MICRO / MICRO_PER_DOLLAR);
 
 export const OPTION_NAME: Record<OptionId, string> = {
   pre_wide: "Max upside",
@@ -37,9 +41,9 @@ export const OPTION_RULE: Record<OptionId, string> = {
   live_back40: `the same, the first time it is ${BACK_SHARE.live_back40}% or less`,
 };
 
-const mean = (sum: number, n: number, scale = 1, digits = 0): string => (n > 0 ? ((sum / n) * scale).toFixed(digits) : "–");
+export const mean = (sum: number, n: number, scale = 1, digits = 0): string => (n > 0 ? ((sum / n) * scale).toFixed(digits) : "–");
 
-function preTable(c: ReplayCounts, bucket: Bucket | "all"): string {
+export function preTable(c: ReplayCounts, bucket: Bucket | "all"): string {
   const rows = PRE_OPTIONS.map((id) => {
     const t = lockTallyOf(c, id, "pre", bucket);
     const net = t.lostCash - t.wonGaveUp;
@@ -48,7 +52,7 @@ function preTable(c: ReplayCounts, bucket: Bucket | "all"): string {
   return `<div class="tbl"><table><tr><th>Option</th><th>Positions locked</th><th>Floor</th><th>Their side lost</th><th>Kept by those</th><th>Their side won</th><th>Given up by those</th><th>Kept less given up</th><th>Exchange fees on the sales</th></tr>${rows}</table></div>`;
 }
 
-function liveTable(c: ReplayCounts, bucket: Bucket | "all"): string {
+export function liveTable(c: ReplayCounts, bucket: Bucket | "all"): string {
   const rows = LIVE_OPTIONS.map((id) => {
     const t = lockTallyOf(c, id, "all", bucket);
     const split = OPENED.map((o) => {
@@ -61,7 +65,7 @@ function liveTable(c: ReplayCounts, bucket: Bucket | "all"): string {
   return `<div class="tbl"><table><tr><th>Option</th><th>Positions that reached it</th><th>Sold, mean</th><th>When</th><th>Their side then lost</th><th>Kept by those</th><th>Their side won</th><th>Given up by those</th><th>Kept less given up</th><th>Exchange fees on the sales</th></tr>${rows}</table></div>`;
 }
 
-function addsTable(t: ReplayTotals): string {
+export function addsTable(t: ReplayTotals): string {
   const traded = OPENED.reduce((a, o) => a + t.tape[o].buyQty + t.tape[o].sellQty, 0);
   const row = (id: OptionId) => {
     const x = lockTallyOf(t, id);
@@ -71,7 +75,7 @@ function addsTable(t: ReplayTotals): string {
   return `<div class="tbl"><table><tr><th>Option</th><th>Every holder who could<br><small>locks, contracts sold</small></th><th>For every 10 in 100 who lock</th><th>Exchange fees on those<br><small>at the fee counted</small></th><th>Share of the contracts traded<br><small>on the same games</small></th><th>Per game</th></tr>${[...PRE_OPTIONS, ...LIVE_OPTIONS].map(row).join("")}</table></div>`;
 }
 
-function positionsTable(r: ReplayReport): string {
+export function positionsTable(r: ReplayReport): string {
   const row = (label: string, t: ReplayTotals) => {
     const pre = openTallyOf(t, "pre");
     const live = openTallyOf(t, "live");
@@ -84,7 +88,7 @@ function positionsTable(r: ReplayReport): string {
     .join("")}${Object.keys(r.byLeague).length > 1 ? row("All", r.all) : ""}</table></div>`;
 }
 
-function gamesTable(rows: ReplayGameRow[], counted: boolean): string {
+export function gamesTable(rows: ReplayGameRow[], counted: boolean): string {
   if (!rows.length) return "";
   return `<div class="tbl"><table><tr><th>Game</th><th>Start</th><th>Result</th><th>Trades</th><th>Positions</th><th>Bids a lock could be priced at</th></tr>${rows
     .map(
@@ -103,7 +107,8 @@ export interface RecordingRow {
   inPlay: boolean;
 }
 
-export function renderReplayHtml(r: ReplayReport, recording: RecordingRow[], opts: { refreshSec?: number; links?: PageLink[]; feeWords?: string } = {}): string {
+/** `nav`, when given, is the line of links shown in place of the service's own: a page made for one audience links only to itself. */
+export function renderReplayHtml(r: ReplayReport, recording: RecordingRow[], opts: { refreshSec?: number; links?: PageLink[]; feeWords?: string; nav?: string } = {}): string {
   const t = r.all;
   const all = openTallyOf(t);
   const pre = openTallyOf(t, "pre");
@@ -165,7 +170,7 @@ ${Object.entries(r.byLeague)
 <title>Lock in, replayed on real trades</title>
 <style>
 ${SPORTS_PAGE_STYLE}</style></head><body><main>
-${pageLinksHtml(opts.links, "Sports")}${sportsNavHtml(opts.links, "replay")}<h1>Lock in, replayed on real trades</h1>
+${opts.nav ?? `${pageLinksHtml(opts.links, "Sports")}${sportsNavHtml(opts.links, "replay")}`}<h1>Lock in, replayed on real trades</h1>
 <p class="lead">Crypto.com's exchange publishes every trade on its game contracts: the time, the size, the price, and whether the taker bought or sold. Each buy is a real position someone opened, through whichever broker or app they use. This page follows every one of them to the final whistle and works out what Lock in would have shown and done, at bids that were really on the book. No position here is simulated. Read-only.</p>
 ${body}
 ${recordingHtml}${noResult}
@@ -194,14 +199,69 @@ function optionCard(q: LockQuote, o: LockQuote["options"][number]): string {
   // stake back that sells more than the 80% the replay counts it at: said on the card, with the bid at which it is counted
   const thin =
     o.id === "back" && q.stakeBackOpensAtCents !== undefined
-      ? `<p class="dim">Only ${num(o.kept, 2)} of ${num(q.contracts, 2)} contracts are left riding. The replay page counts stake back once it sells 80% or less: ${q.stakeBackOpensAtCents === null ? "no bid up to 95¢ does that on this position" : `on this position, from a bid of ${q.stakeBackOpensAtCents}¢`}.</p>`
+      ? `<p class="dim">Only ${num(o.kept, 2)} of ${num(q.contracts, 2)} contracts are left riding. The replay counts stake back once it sells 80% or less: ${q.stakeBackOpensAtCents === null ? "no bid up to 95¢ does that on this position" : `on this position, from a bid of ${q.stakeBackOpensAtCents}¢`}.</p>`
       : "";
-  const depth = o.covered ? `The bid holds ${num(q.bidQty)} contracts: enough for this sale.` : `The bid holds ${num(q.bidQty)} contracts: the rest of this sale would fill lower than shown.`;
+  const depth = q.past && !q.past.fromBook
+    ? `The bid is a taker's sale on the tape at that moment: ${num(q.bidQty, 2)} contracts were sold at this price.`
+    : o.covered
+      ? `The bid ${q.past ? "held" : "holds"} ${num(q.bidQty)} contracts: enough for this sale.`
+      : `The bid ${q.past ? "held" : "holds"} ${num(q.bidQty)} contracts: the rest of this sale would fill lower than shown.`;
+  // a finished game: what the lock was worth, beside what riding was worth
+  const then =
+    q.past && q.past.won !== null
+      ? q.past.won
+        ? `<p class="then">What happened: ${esc(q.team)} won. Held to the end with no lock: ${dollars(q.fullWinCents)}. With this lock: <b>${dollars(o.capCents)}</b>, ${dollars(q.fullWinCents - o.capCents)} less.</p>`
+        : `<p class="then">What happened: ${esc(q.team)} lost. Held to the end with no lock: $0.00. With this lock: <b class="ok">${dollars(o.floorCents)}</b>.</p>`
+      : "";
   return `<div class="opt"><h3>${esc(o.name)}</h3>
 <p class="dim">Sell ${num(o.sold, 2)} of ${num(q.contracts, 2)} contracts (${o.soldPercent}%) at ${q.bidCents}¢. Keep ${num(o.kept, 2)} riding.</p>
 <div class="three"><div><small>Floor · cash now</small><b>${dollars(o.floorCents)}</b></div><div><small>Cap · if ${esc(q.team)} win</small><b>${dollars(o.capCents)}</b></div><div><small>Back on what you paid</small><b>${o.backPercent}%</b></div></div>
-<p>If ${esc(q.team)} lose you keep <b>${dollars(o.floorCents)}</b> instead of $0.00. If they win you get <b>${dollars(o.capCents)}</b> instead of ${dollars(q.fullWinCents)}.</p>
+<p>If ${esc(q.team)} lose you keep <b>${dollars(o.floorCents)}</b> instead of $0.00. If they win you get <b>${dollars(o.capCents)}</b> instead of ${dollars(q.fullWinCents)}.</p>${then}
 <p class="dim">${dollars(o.feeCents)} exchange fee on the sale, already taken out. ${depth}</p>${thin}</div>`;
+}
+
+const span = (ms: number): string => {
+  const m = Math.round(Math.abs(ms) / 60_000);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
+};
+/** A moment of a game against its scheduled start, in words. */
+export const momentWords = (atMs: number, startMs: number): string => (atMs >= startMs ? `${span(atMs - startMs)} into the game` : `${span(startMs - atMs)} before the start`);
+
+/** The form and the cards' own styles, for a page that shows a lock. */
+export const LOCK_STYLE = `form.ask{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:flex-end;margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:8px;background:#fafafa}form.ask label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)}form.ask select,form.ask input{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fff;max-width:520px}form.ask input{width:150px}form.ask button{font:inherit;padding:7px 14px;border:0;border-radius:6px;background:var(--k);color:#fff;cursor:pointer}
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:12px 0}.opt{border:1px solid var(--line);border-radius:8px;padding:12px 14px}.opt h3{margin:0 0 4px}
+.three{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}.three div{background:#fafafa;border-radius:6px;padding:8px 10px}.three b{display:block;font-size:19px;font-variant-numeric:tabular-nums}
+.then{border-left:3px solid var(--ok);padding:2px 10px;margin:8px 0}`;
+
+/** A position and the lock on it: the strip that says what it is, a card per option, and where stake back opens when it is not there. */
+export function lockQuoteHtml(q: LockQuote): string {
+  const p = q.past;
+  const when = p
+    ? `finished${p.winnerName ? `: ${esc(p.winnerName)} won` : ", no result read"}`
+    : q.inPlay
+      ? "in play"
+      : q.startsAt
+        ? `starts ${et(Date.parse(q.startsAt))}`
+        : "start not listed";
+  const book = p
+    ? `<span>Bid then <b>${q.bidCents}¢</b> <small>${momentWords(p.atMs, p.startMs)} · ${et(p.atMs)} · ${p.fromBook ? `the book, ${num(q.bidQty)} at the bid` : `a taker's sale of ${num(q.bidQty, 2)} contracts`}</small></span>`
+    : `<span>Book now <b>${q.bidCents}¢ / ${q.askCents > 0 && q.askCents < 100 ? `${q.askCents}¢` : "–"}</b> <small>${num(q.bidQty)} at the bid</small></span>`;
+  const riding = p && p.won !== null ? `<span>Held to the end with no lock <b>${p.won ? dollars(q.fullWinCents) : "$0.00"}</b></span>` : `<span>Riding with no lock <b>${dollars(q.fullWinCents)} or $0.00</b></span>`;
+  const head = `<div class="strip"><span>${esc(league(q.league))} · ${esc(q.label)} <b>${esc(q.team)} to win</b> <small>${when}</small></span>${book}<span>Position <b>${num(q.contracts, 2)} contracts at ${q.paidCents}¢</b> <small>${q.paidAssumed ? `no price given: ${p ? "the last buy on the tape before the start" : "the ask now"} · ` : ""}paid ${dollars(q.stakeCents)} with the fee</small></span>${riding}</div>`;
+  // stake back not shown at this bid: where it appears, and where the replay counts it
+  const from = q.stakeBackFromCents;
+  const at80 = q.stakeBackOpensAtCents;
+  const back =
+    from === undefined
+      ? ""
+      : from === null
+        ? '<p class="dim">Stake back is not available on this position: no bid up to 95¢ returns what was paid with anything left riding.</p>'
+        : `<p class="dim">Stake back is not available at this bid: returning what was paid would take the whole position or more. ${
+            at80 === from
+              ? `It appears at ${from}¢: from there, selling 80% or less returns everything paid and the rest rides at no cost.`
+              : `It appears at ${from}¢, where it sells nearly all of the position. ${at80 == null ? "No bid up to 95¢ returns what was paid by selling 80% or less, which is where the replay counts it." : `From ${at80}¢ it sells 80% or less and the rest rides at no cost, which is where the replay counts it.`}`
+          }</p>`;
+  return `${head}${q.note ? `<p class="lead">${esc(q.note)}</p>` : ""}<div class="opts">${q.options.map((o) => optionCard(q, o)).join("")}</div>${back}`;
 }
 
 export function renderLockHtml(input: { choices: LockChoice[]; quote: LockQuote | null; selected: string; contracts: string; paid: string; at: string | null; refreshSec?: number; links?: PageLink[] }): string {
@@ -216,36 +276,18 @@ export function renderLockHtml(input: { choices: LockChoice[]; quote: LockQuote 
   let body: string;
   if (!input.choices.length) body = '<p class="dim">Crypto.com shows no bid on any game on the board right now.</p>';
   else if (!q) body = '<p class="dim">Pick a position.</p>';
-  else {
-    const head = `<div class="strip"><span>${esc(league(q.league))} · ${esc(q.label)} <b>${esc(q.team)} to win</b> <small>${q.inPlay ? "in play" : q.startsAt ? `starts ${et(Date.parse(q.startsAt))}` : "start not listed"}</small></span><span>Book now <b>${q.bidCents}¢ / ${q.askCents > 0 && q.askCents < 100 ? `${q.askCents}¢` : "–"}</b> <small>${num(q.bidQty)} at the bid</small></span><span>Position <b>${num(q.contracts, 2)} contracts at ${q.paidCents}¢</b> <small>${q.paidAssumed ? "no price given: the ask now · " : ""}paid ${dollars(q.stakeCents)} with the fee</small></span><span>Riding with no lock <b>${dollars(q.fullWinCents)} or $0.00</b></span></div>`;
-    // stake back not shown at this bid: where it appears, and where the replay counts it
-    const from = q.stakeBackFromCents;
-    const at80 = q.stakeBackOpensAtCents;
-    const back =
-      from === undefined
-        ? ""
-        : from === null
-          ? '<p class="dim">Stake back is not available on this position: no bid up to 95¢ returns what was paid with anything left riding.</p>'
-          : `<p class="dim">Stake back is not available at this bid: returning what was paid would take the whole position or more. ${
-              at80 === from
-                ? `It appears at ${from}¢: from there, selling 80% or less returns everything paid and the rest rides at no cost.`
-                : `It appears at ${from}¢, where it sells nearly all of the position. ${at80 == null ? "No bid up to 95¢ returns what was paid by selling 80% or less, which is where the replay page counts it." : `From ${at80}¢ it sells 80% or less and the rest rides at no cost, which is where the replay page counts it.`}`
-            }</p>`;
-    body = `${head}${q.note ? `<p class="lead">${esc(q.note)}</p>` : ""}<div class="opts">${q.options.map((o) => optionCard(q, o)).join("")}</div>${back}`;
-  }
+  else body = lockQuoteHtml(q);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">${input.refreshSec ? `<meta http-equiv="refresh" content="${input.refreshSec}">` : ""}
 <title>Lock in now, from the live bid</title>
 <style>
 ${SPORTS_PAGE_STYLE}
-form.ask{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:flex-end;margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:8px;background:#fafafa}form.ask label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)}form.ask select,form.ask input{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fff;max-width:520px}form.ask input{width:150px}form.ask button{font:inherit;font-weight:600;padding:7px 16px;border:0;border-radius:6px;background:var(--k);color:#fff;cursor:pointer}
-.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:12px 0}.opt{border:1px solid var(--line);border-radius:8px;padding:12px 14px}.opt h3{margin:0 0 4px}
-.three{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}.three div{background:#fafafa;border-radius:6px;padding:8px 10px}.three b{display:block;font-size:19px;font-variant-numeric:tabular-nums}
+${LOCK_STYLE}
 </style></head><body><main>
 ${pageLinksHtml(input.links, "Sports")}${sportsNavHtml(input.links, "lock")}<h1>Lock in now</h1>
 <p class="lead">A position on Crypto.com's exchange, and what Lock in would show on it this minute: the holder's own sale of part of it at the bid on the book. Floor, cash now and cap, after the exchange fee. Arithmetic on a public bid; nothing here places an order.</p>
 ${form}
 ${body}
-<footer><p>${input.at ? `Book as of ${et(Date.parse(input.at))}. ` : ""}Before the start the three sizes the product offers are shown. In play, stake back comes first when the bid is high enough for it. It is shown whenever it leaves something riding; the replay page counts it only once it sells 80% or less. A sale larger than the bid's size would fill part of it lower than shown.</p></footer>
+<footer><p>${input.at ? `Book as of ${et(Date.parse(input.at))}. ` : ""}Before the start the three sizes the product offers are shown. In play, stake back comes first when the bid is high enough for it. It is shown whenever it leaves something riding; the replay counts it only once it sells 80% or less. A sale larger than the bid's size would fill part of it lower than shown.</p></footer>
 </main></body></html>`;
 }

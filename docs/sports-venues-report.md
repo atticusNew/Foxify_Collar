@@ -10,12 +10,13 @@ model. Every number is a venue's price, its published fee, or a difference of th
 Where it lives: `/sports` on the `atticus-btc-curve` Render service (same process, same key, no
 second service; see "On the BTC curve service" below). Modules: `services/api/src/sportsVenues/**`
 (`collector.ts` is the cycle and the routes) · tests: `services/api/tests/sportsVenues.test.ts`,
-`sportsProphetX.test.ts`, `sportsCryptocom.test.ts`, `sportsHolder.test.ts`, `sportsMount.test.ts`, `sportsTapeReplay.test.ts` · `services/api/scripts/sportsVenuesReportService.ts` serves the same thing
+`sportsProphetX.test.ts`, `sportsCryptocom.test.ts`, `sportsHolder.test.ts`, `sportsMount.test.ts`, `sportsTapeReplay.test.ts`, `sportsProspectPage.test.ts` · `services/api/scripts/sportsVenuesReportService.ts` serves the same thing
 on its own port for a local run. Reader's guide: `docs/sports-venues-study-guide.md`.
 
-Two more pages sit beside it, linked from its top line: `/sports/replay` (Lock in replayed on
-Crypto.com's real trades) and `/sports/lock` (Lock in on a position you name, from the bid now).
-Both are under "Lock in on the trade tape" below.
+The Lock in material (the replay on Crypto.com's real trades, and the lock on a position you
+name) is not under this page's key in production. It is served as a page made for one reader,
+at its own address under its own key: "A page for one reader" below. Run on its own port, the
+script still serves `/replay` and `/lock` beside the board.
 
 ## What the page shows
 
@@ -198,7 +199,8 @@ that tape for every game on the board and, once a game is over, follows each pos
 result and works out what a lock (the holder's own sale of part of it) would have been at bids
 that were really there. No position is simulated. Code: `tape.ts` (the record), `tapeReplay.ts`
 (the replay, a pure function of one game's file), `lockMath.ts` (the arithmetic, whole
-micro-dollars), `lockNow.ts`, `replayHtml.ts`.
+micro-dollars), `lockNow.ts`, `replayHtml.ts`, and for the reader's page `audiences.ts` and
+`prospectHtml.ts`.
 
 **What counts as a position.** Every taker buy at 5¢ to 95¢, taken as held to the result. The
 tape has no account on it: one person's three buys are three positions, a buy that closed a
@@ -228,26 +230,81 @@ hindsight:
 The first two happen at the same bid (a quarter above what was paid, after both fees): two
 choices at one moment.
 
+"The stake" a sale returns is what the holder was charged: the price and the fee to open, up to
+a whole cent (`stakeCharged`). The sale's cash is paid down to a whole cent, so the cents back
+are never fewer than the cents paid, even on a ticket of a fraction of a contract.
+
+**Ahead at some point.** A position counts as ahead if any bid after it was opened would have
+sold all of it for more than it cost with both fees. The replay counts those, and those whose
+side then lost with what they had paid.
+
+**How long the chance lasted.** For each in-play lock, the minutes from the bid it was taken at
+to the next bid seen below what the option needs, or to the last bid between 5¢ and 95¢ when
+none was. Summed per option, with the count that lasted ten minutes or more.
+
+**Tickets told.** Per game, one real position that took stake back and lost and one that took
+it and won: cost $20 to $100, bought at 25¢ to 75¢, the one nearest $50. The report lists them
+latest game first.
+
 **The result** is read from the tape once a game is over (four and a half hours after its start
 and half an hour with no trade): the side whose last trade printed at 97¢ or more while the
 other's was at 50¢ or less, or whose opponent's last trade printed at 3¢ or less while its own
 was at 50¢ or more (on a thin game only the loser's contract prints after the whistle). A game
 with no such result 30 hours after its start is closed, listed, and not counted.
 
-**The page** (`/sports/replay`): the strip and six tiles; §1 the positions by league; §2 before
+**The replay page** (`/replay` on its own port, `/prospect/detail` in production): the strip and six tiles; §1 the positions by league; §2 before
 the start; §3 in play; §4 what it adds in orders (every lock is a sell order on the exchange's
 book that would not otherwise be placed; shown for every holder who could and scaled to 10 in
 100); §5 the same for stakes of $500 or less, by league, and game by game. "Kept less given
 up" is what losers kept minus what winners gave up: over enough games it tends to the fees and
 the spread, and over a few nights it swings with which sides won.
 
-**Lock in now** (`/sports/lock`): pick a game and side, a number of contracts and the price
+**Lock in now** (`/lock` on its own port; the same card is on the reader's page): pick a game and side, a number of contracts and the price
 paid (blank: the ask now). It shows the floor, the cash now and the cap for each option at the
 bid on Crypto.com's book this minute: the three sizes before the start, with stake back first
 once the game is in play and the bid is high enough. Stake back is shown whenever it leaves
 something riding. The replay counts it only once it sells 80% or less, so a card that sells
 more says so and gives the bid at which the replay would count it; when stake back cannot be
 shown, the page gives the bid at which it appears and the bid at which it is counted. Quotes only.
+
+**A lock at a moment of a finished game** (`lockPast`, `pastMoments`): the same card on a closed
+game's own file, at a bid that was there then (a book reading, or a taker's sale with the size
+of that sale), with how the side finished beside each option. The moments offered are the last
+bid of each five minutes, from an hour before the start. With no price given the position is
+taken at the last buy on the tape before the start; with no moment given, at the first bid in
+play that returns the stake from 80% or less.
+
+### A page for one reader
+
+`audiences.ts` lists the pages made for one reader outside the company. Each has its own address
+and its own key, read from the environment. There is one: `/prospect`, key `PROSPECT_PAGE_KEY`.
+
+- The page is on only when its key is set, is 16 characters or more, and is not `BTC_CURVE_TOKEN`
+  or `SPORTS_VENUES_TOKEN`. Otherwise every address under it answers 404, and `/healthz` says
+  why under `sports.audiencePages` (by position, without a name: `/healthz` needs no key).
+- Its key opens `/prospect`, `/prospect/detail` (every table of the replay) and `/prospect/api`
+  (what the page shows, as JSON), and nothing else. The service's own key does not open them.
+  The host checks a reader's address before its own key.
+- The page links only to itself. It names no other venue. Of the holder count it is given the
+  exchange's own readings only (spread, depth at the best bid, how often a better bid had room):
+  the figures that name or measure another venue never reach it.
+- It does not refresh itself. Answers carry `Referrer-Policy: no-referrer`, since the key is in
+  the address.
+
+What is on it (`prospectHtml.ts`), retail-size tickets ($500 or less) first: where customers are
+lost (finished at $0; of those, ahead at some point); what Lock in is and who does what; two
+real tickets off the tape, and the lock card for any game and moment; the replay's three main
+rows; a calculator (how many lock in 100, the reader's share of the exchange, their commission
+per contract: three boxes that scale counts already on the page); the exchange's book (depth,
+spread, and how rarely an outside bid beats it); what a pilot would answer; notes and limits.
+
+"Guide" walks six stops with a short note at each for what the number means to a broker; "Show
+all notes" opens every note at once; "Print or save as PDF" prints the page as it stands, notes
+included when they are open. The only script on the page is that and the calculator.
+
+A page for another reader is a new entry in `audiences.ts` and a key. The words of
+`prospectHtml.ts` are written for a broker onto this exchange; a reader of another kind needs
+its own.
 
 **The record.** `<data dir>/tape/<event>.tape.jsonl`, one file per game, append-only: a header
 (the game, its start, the two contracts), one line per trade as the venue gave it, then, when
@@ -302,12 +359,14 @@ keeps the BTC curve's files; `docs/btc-curve-report.md` has the detail.
 Endpoints: `/` (page, auto-refresh at the interval), `/api/report` (the page's data), `/api/latest`
 (the raw snapshot), `/replay` and `/api/replay`, `/lock` and `/api/lock` (`game=<key>|away` or
 `|home`, `n=` contracts, `paid=` cents), `/healthz` (no token). With `SPORTS_VENUES_TOKEN` set, the page and JSON need
-`?k=<token>`.
+`?k=<token>`. `/prospect`, `/prospect/detail` and `/prospect/api` need `?k=<PROSPECT_PAGE_KEY>`
+(`game=past:<event>|away` or `|home` with `at=<ms>` for a finished game).
 
 Env: `SPORTS_VENUES_PORT` (8870), `SPORTS_VENUES_DATA_DIR`, `SPORTS_VENUES_INTERVAL_SEC` (60),
 `SPORTS_VENUES_TOKEN`, `SPORTS_VENUES_RETAIN_DAYS` (unset: keep every day),
 `SPORTS_VENUES_DISK_BUDGET_MB` (unset: no budget), `SPORTS_VENUES_HORIZON_DAYS` (3),
 `SPORTS_VENUES_WINDOW_HOURS` (72), `SPORTS_VENUES_CRYPTOCOM_FEE` (`flat`, or `weighted`),
+`PROSPECT_PAGE_KEY` (unset: the reader's page is off),
 `NOVIG_PUBLIC_HOST`, `PROPHETX_PUBLIC_HOST`, `CRYPTOCOM_PUBLIC_HOST`, `POLY_US_REST_BASE`, `KALSHI_REST_BASE`.
 
 The gaps table plots at most 240 points per game and venue, evenly spread over the window; the
@@ -317,9 +376,11 @@ snapshot and served from that until the next.
 ### On the BTC curve service
 
 Production serves this page from the BTC curve service, at `/sports`, with its JSON at
-`/sports/api/report` and `/sports/api/latest`, and the two lock pages at `/sports/replay` and
-`/sports/lock`, behind `BTC_CURVE_TOKEN` (`?k=<token>`), with a
-line of links to the BTC curve and BTC pairs pages. It is on by default; `BTC_CURVE_SPORTS=off`
+`/sports/api/report` and `/sports/api/latest`, behind `BTC_CURVE_TOKEN` (`?k=<token>`), with a
+line of links to the BTC curve and BTC pairs pages. The replay and the lock are not served under
+that key and the board does not link to them: whoever holds the curve key sees the board only.
+They are at `/prospect` under `PROSPECT_PAGE_KEY`, on the same service ("A page for one reader"
+above). It is on by default; `BTC_CURVE_SPORTS=off`
 (or `0`) turns it off. The `SPORTS_VENUES_*` settings above apply, except the port and the token,
 which are the curve service's. The files go under `<BTC_CURVE_DATA_DIR>/sports` and follow
 `BTC_CURVE_RETAIN_DAYS` unless `SPORTS_VENUES_RETAIN_DAYS` is set. `/healthz` on the curve

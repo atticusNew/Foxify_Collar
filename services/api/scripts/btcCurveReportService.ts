@@ -37,6 +37,10 @@
  *       SPORTS_VENUES_*         (the sports collector: INTERVAL_SEC 60, WINDOW_HOURS 24 here,
  *                               DATA_DIR under the curve data dir, RETAIN_DAYS, HORIZON_DAYS;
  *                               see scripts/sportsVenuesReportService.ts)
+ *       PROSPECT_PAGE_KEY       (optional; the key of the page made for one reader at /prospect.
+ *                               Unset, shorter than 16 characters, or equal to BTC_CURVE_TOKEN:
+ *                               that page is off. It opens nothing else here, and
+ *                               BTC_CURVE_TOKEN does not open it.)
  *       POLY_US_EXTRA_EVENT_SLUGS  comma-separated Polymarket US event slugs to add
  *       POLY_US_REST_BASE / KALSHI_REST_BASE / DERIBIT_REST_BASE / OKX_REST_BASE (relays)
  *
@@ -50,6 +54,10 @@
  * It sits behind a boundary (mountSports): a sports fault is a line on /healthz and never this
  * service's own pages. It holds 24 hours of snapshots in memory, not the 72 it holds on its
  * own, because this process has 512 MB for everything; the day files keep every snapshot.
+ * Under this service's token /sports is the board only. Lock in replayed on Crypto.com's trade
+ * tape is a page made for one reader, at /prospect under that reader's own key
+ * (src/sportsVenues/audiences.ts); the request is offered to it before this service's token is
+ * checked, and a wrong key there is a 404.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -290,6 +298,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       sports: sports ? sports.health() : "off (BTC_CURVE_SPORTS)",
     });
   }
+  // a page made for one reader has its own key, checked there; this service's key does not open it
+  if (sports?.audience(req, res, url)) return;
   if (!authorized(url)) {
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("not found");
@@ -301,7 +311,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (sports && (url.pathname === SPORTS_BASE || url.pathname.startsWith(`${SPORTS_BASE}/`))) {
     const sub = url.pathname.slice(SPORTS_BASE.length).replace(/\/$/, "") || "/";
-    if (sports.handle(req, res, sub, url, { links: LINKS })) return;
+    // the board only: whoever holds this service's key is not shown the Lock in pages
+    if (sports.handle(req, res, sub, url, { links: LINKS, lockPages: false })) return;
   }
   if (url.pathname === "/api/report") {
     const data = buildReportData();

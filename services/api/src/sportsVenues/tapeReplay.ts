@@ -42,7 +42,7 @@ import { type Tier, buyFee, lockTerms, netBid, priceOf, priceOfDollars, quantity
 import { SIDES, type Side } from "./types";
 
 /** Raised whenever the arithmetic below changes: a stored summary of another version is worked out again from the game's file. */
-export const REPLAY_VERSION = 1;
+export const REPLAY_VERSION = 2;
 
 export const LOCK_MIN_BID = 500;
 export const LOCK_MAX_BID = 9500;
@@ -208,6 +208,13 @@ export interface OpenTally {
   /** opened before the start with a bid to read in the hour before it, and of those the ones a sale of everything would have left in profit */
   atStart: number;
   aheadAtStart: number;
+  /**
+   * Positions that, at some bid after they were opened, could have sold everything for more than
+   * they cost with both fees; of those, the ones whose side then lost, and what those had paid.
+   */
+  aheadEver: number;
+  lostAheadEver: number;
+  lostAheadStake: number;
 }
 export interface LockTally {
   /** positions the option was open to */
@@ -234,11 +241,18 @@ export interface LockTally {
   backShareSum: number;
   soldShareSum: number;
   minutesSum: number;
+  /**
+   * In play: how long the option stayed possible after it first was, minutes, summed: to the next
+   * bid seen below what it needs, or to the last bid between 5 and 95 cents. And the lockers for
+   * whom that was ten minutes or more.
+   */
+  heldMinutesSum: number;
+  held10: number;
 }
 
 const emptyPhaseTape = (): PhaseTape => ({ buys: 0, buyQty: 0, sells: 0, sellQty: 0 });
-export const emptyOpen = (): OpenTally => ({ n: 0, qty: 0, stake: 0, lost: 0, lostStake: 0, won: 0, atStart: 0, aheadAtStart: 0 });
-export const emptyLock = (): LockTally => ({ eligible: 0, n: 0, qty: 0, stake: 0, sold: 0, cash: 0, fee: 0, lost: 0, lostStake: 0, lostCash: 0, won: 0, wonGaveUp: 0, atBook: 0, covered: 0, backShareSum: 0, soldShareSum: 0, minutesSum: 0 });
+export const emptyOpen = (): OpenTally => ({ n: 0, qty: 0, stake: 0, lost: 0, lostStake: 0, won: 0, atStart: 0, aheadAtStart: 0, aheadEver: 0, lostAheadEver: 0, lostAheadStake: 0 });
+export const emptyLock = (): LockTally => ({ eligible: 0, n: 0, qty: 0, stake: 0, sold: 0, cash: 0, fee: 0, lost: 0, lostStake: 0, lostCash: 0, won: 0, wonGaveUp: 0, atBook: 0, covered: 0, backShareSum: 0, soldShareSum: 0, minutesSum: 0, heldMinutesSum: 0, held10: 0 });
 
 const perOpened = <T>(make: () => T): Record<Opened, T> => ({ pre: make(), live: make() });
 const perBucket = <T>(make: () => T): Record<Bucket, T> => ({ small: make(), large: make() });
@@ -270,7 +284,34 @@ export interface GameReplay extends ReplayCounts {
   /** bids the locks could be priced at: the collector's book readings, and takers' sales on the tape */
   bookPoints: number;
   salePoints: number;
+  /** one real position that took stake back and then lost, and one that then won; absent when the game has none of that size */
+  stories?: Story[];
 }
+
+/**
+ * A real position off the tape, told on the page: bought `qty` at `price` at `openedMs`, and at
+ * `atMs` the bid `bid` first returned the whole stake by selling 80% or less.
+ */
+export interface Story {
+  side: Side;
+  team: string;
+  qty: number;
+  price: number;
+  openedMs: number;
+  atMs: number;
+  bid: number;
+  /** contracts at that bid: the book's size, or the size of the taker's sale */
+  bidQty: number;
+  fromBook: boolean;
+  won: boolean;
+}
+/** a story is a ticket of an ordinary size: what it cost, with the fee, is between these */
+export const STORY_MIN_STAKE = 20 * MICRO_PER_DOLLAR;
+export const STORY_MAX_STAKE = 100 * MICRO_PER_DOLLAR;
+export const STORY_NEAR_STAKE = 50 * MICRO_PER_DOLLAR;
+/** and it was bought at an ordinary price: neither a long shot nor a near certainty */
+export const STORY_MIN_PRICE = 2500;
+export const STORY_MAX_PRICE = 7500;
 
 function addNumbers(into: object, from: object): void {
   const a = into as Record<string, number>;
@@ -317,7 +358,7 @@ class FirstAtLeast {
   }
 }
 
-interface Points {
+export interface Points {
   t: number[];
   bid: number[];
   qty: number[];
@@ -327,7 +368,7 @@ interface Points {
 }
 
 /** The bids of one side a lock could be priced at, oldest first: book readings and takers' sales, 5 to 95 cents. */
-function lockPoints(book: BookPoint[], trades: TapeTrade[], fee: FeeTerms): { points: Points; book: number; sale: number } {
+export function lockPoints(book: BookPoint[], trades: TapeTrade[], fee: FeeTerms): { points: Points; book: number; sale: number } {
   const rows: Array<[number, number, number, boolean]> = [];
   let nBook = 0;
   let nSale = 0;
@@ -354,7 +395,7 @@ function lockPoints(book: BookPoint[], trades: TapeTrade[], fee: FeeTerms): { po
 }
 
 /** The first index of `ts` (ascending) strictly after `t`. */
-function firstAfter(ts: number[], t: number): number {
+export function firstAfter(ts: number[], t: number): number {
   let lo = 0;
   let hi = ts.length;
   while (lo < hi) {
@@ -365,9 +406,9 @@ function firstAfter(ts: number[], t: number): number {
   return lo;
 }
 
-function record(tally: LockTally, pos: { qty: number; price: number }, sold: number, points: Points, i: number, minutes: number, won: boolean, fee: FeeTerms): void {
+function record(tally: LockTally, pos: { qty: number; price: number }, sold: number, points: Points, i: number, minutes: number, won: boolean, fee: FeeTerms): boolean {
   const terms = lockTerms(pos, sold, points.bid[i], fee);
-  if (!terms) return;
+  if (!terms) return false;
   tally.n += 1;
   tally.qty += pos.qty;
   tally.stake += terms.stake;
@@ -389,6 +430,7 @@ function record(tally: LockTally, pos: { qty: number; price: number }, sold: num
   tally.backShareSum += terms.cash / terms.stake;
   tally.soldShareSum += terms.sold / pos.qty;
   tally.minutesSum += minutes;
+  return true;
 }
 
 /**
@@ -400,6 +442,7 @@ export function replayGame(game: Capsule, fee: FeeTerms): GameReplay {
   const winner = game.winner === "away" || game.winner === "home" ? game.winner : null;
   let bookPoints = 0;
   let salePoints = 0;
+  const told: { lost?: Story & { stake: number }; won?: Story & { stake: number } } = {};
   for (const side of SIDES) {
     const trades = game.trades[side];
     for (const tr of trades) {
@@ -421,6 +464,9 @@ export function replayGame(game: Capsule, fee: FeeTerms): GameReplay {
     // the last bid of the hour before the start
     const preIdx = liveFrom > 0 && points.t[liveFrom - 1] >= game.startMs - PRE_LOCK_WINDOW_MS ? liveFrom - 1 : -1;
     const nets = new FirstAtLeast(points.net);
+    // the same search turned over: the first bid after the fee below a level
+    const below = new FirstAtLeast(points.net.map((x) => -x));
+    const lastT = points.t.length ? points.t[points.t.length - 1] : 0;
     for (const tr of trades) {
       if (!tr.buy) continue;
       if (tr.price < LOCK_MIN_BID || tr.price > LOCK_MAX_BID) {
@@ -440,6 +486,14 @@ export function replayGame(game: Capsule, fee: FeeTerms): GameReplay {
         open.lost += 1;
         open.lostStake += stake;
       }
+      const after = firstAfter(points.t, tr.t);
+      if (nets.find(after, pos.price + buyFee(fee, pos.price) + 1) >= 0) {
+        open.aheadEver += 1;
+        if (!won) {
+          open.lostAheadEver += 1;
+          open.lostAheadStake += stake;
+        }
+      }
 
       if (opened === "pre") {
         const readable = preIdx >= 0 && points.t[preIdx] > tr.t;
@@ -454,7 +508,7 @@ export function replayGame(game: Capsule, fee: FeeTerms): GameReplay {
         }
       }
 
-      const from = Math.max(liveFrom, firstAfter(points.t, tr.t));
+      const from = Math.max(liveFrom, after);
       for (const id of LIVE_OPTIONS) {
         const tally = counts.locks[id][opened][bucket];
         tally.eligible += 1;
@@ -464,7 +518,19 @@ export function replayGame(game: Capsule, fee: FeeTerms): GameReplay {
         if (j < 0) continue;
         const sold = id === "live_half" ? tierSold(pos.qty, "wide") : stakeBackSold(pos, points.net[j], fee);
         if (sold === null) continue;
-        record(tally, pos, sold, points, j, (points.t[j] - game.startMs) / 60_000, won, fee);
+        if (!record(tally, pos, sold, points, j, (points.t[j] - game.startMs) / 60_000, won, fee)) continue;
+        const end = below.find(j + 1, 1 - least);
+        const held = ((end >= 0 ? points.t[end] : lastT) - points.t[j]) / 60_000;
+        tally.heldMinutesSum += held;
+        if (held >= 10) tally.held10 += 1;
+        if (id === "live_back80" && stake >= STORY_MIN_STAKE && stake <= STORY_MAX_STAKE && pos.price >= STORY_MIN_PRICE && pos.price <= STORY_MAX_PRICE) {
+          const key = won ? "won" : "lost";
+          const have = told[key];
+          const nearer = (a: number, b: number) => Math.abs(a - STORY_NEAR_STAKE) < Math.abs(b - STORY_NEAR_STAKE);
+          if (!have || nearer(stake, have.stake) || (stake === have.stake && tr.t < have.openedMs)) {
+            told[key] = { side, team: side === "away" ? game.awayName : game.homeName, qty: pos.qty, price: pos.price, openedMs: tr.t, atMs: points.t[j], bid: points.bid[j], bidQty: points.qty[j], fromBook: points.book[j], won, stake };
+          }
+        }
       }
     }
   }
@@ -480,6 +546,11 @@ export function replayGame(game: Capsule, fee: FeeTerms): GameReplay {
     bookPoints,
     salePoints,
     ...counts,
+    stories: [told.lost, told.won].flatMap((x) => {
+      if (!x) return [];
+      const { stake: _stake, ...story } = x;
+      return [story];
+    }),
   };
 }
 
@@ -507,10 +578,19 @@ export interface ReplayGameRow {
   bookPoints: number;
   salePoints: number;
 }
+/** A story with its game, as the page tells it. */
+export interface StoryRow extends Story {
+  event: string;
+  league: string;
+  label: string;
+  startMs: number;
+}
 export interface ReplayReport {
   v: number;
   all: ReplayTotals;
   byLeague: Record<string, ReplayTotals>;
+  /** real positions to tell, the latest game first, within a game the one that lost first */
+  stories: StoryRow[];
   games: ReplayGameRow[];
   /** games that ended with no result the tape could give: listed, not counted */
   noResult: ReplayGameRow[];
@@ -535,12 +615,14 @@ export function sumReplays(replays: Iterable<GameReplay>): ReplayReport {
   const byLeague: Record<string, ReplayTotals> = {};
   const games: ReplayGameRow[] = [];
   const noResult: ReplayGameRow[] = [];
+  const stories: StoryRow[] = [];
   for (const g of replays) {
     if (!g.winner) {
       noResult.push(rowOf(g));
       continue;
     }
     games.push(rowOf(g));
+    for (const st of g.stories ?? []) stories.push({ ...st, event: g.event, league: g.league, label: g.label, startMs: g.startMs });
     for (const t of [all, (byLeague[g.league] ??= emptyTotals())]) {
       t.games += 1;
       if (g.bookPoints > 0) t.gamesWithBook += 1;
@@ -551,7 +633,8 @@ export function sumReplays(replays: Iterable<GameReplay>): ReplayReport {
     }
   }
   const byStart = (a: ReplayGameRow, b: ReplayGameRow) => b.startMs - a.startMs || a.event.localeCompare(b.event);
-  return { v: REPLAY_VERSION, all, byLeague: Object.fromEntries(Object.entries(byLeague).sort(([a], [b]) => a.localeCompare(b))), games: games.sort(byStart), noResult: noResult.sort(byStart) };
+  stories.sort((a, b) => b.startMs - a.startMs || a.event.localeCompare(b.event) || Number(a.won) - Number(b.won));
+  return { v: REPLAY_VERSION, all, byLeague: Object.fromEntries(Object.entries(byLeague).sort(([a], [b]) => a.localeCompare(b))), stories, games: games.sort(byStart), noResult: noResult.sort(byStart) };
 }
 
 /** One option's tally over the positions asked for: opened before the start, in play or either; small stakes, large or either. */

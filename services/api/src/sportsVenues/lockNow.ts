@@ -5,11 +5,14 @@
  * The holder says the game, the side, how many contracts and what was paid for each. Every
  * option is their own sale of part of the position at that bid (lockMath.ts): the product's three
  * tiers, and stake back when the bid is high enough for it.
+ *
+ * The same for a moment of a finished game (lockPast): the bid is one that was really there then,
+ * a book reading or a taker's sale off the game's tape, and the result is known.
  */
 
 import type { FeeTerms } from "./analytics";
-import { TIERS, TIER_NAME, TIER_SHARE, centsOf, lockTerms, netBid, priceOf, quantityOf, stakeBackNet, stakeBackSold, stakeOf, tierSold, type LockTerms, type Position, type Tier } from "./lockMath";
-import { LOCK_MAX_BID, LOCK_MIN_BID } from "./tapeReplay";
+import { TIERS, TIER_NAME, TIER_SHARE, centsOf, lockTerms, netBid, priceOf, quantityOf, stakeBackNet, stakeBackSold, stakeCharged, stakeOf, tierSold, type LockTerms, type Position, type Tier } from "./lockMath";
+import { BACK_SHARE, LOCK_MAX_BID, LOCK_MIN_BID, firstAfter, lockPoints, type Capsule } from "./tapeReplay";
 import type { Game, Side } from "./types";
 
 export interface LockChoice {
@@ -66,6 +69,17 @@ export interface LockQuote {
   stakeBackFromCents?: number | null;
   /** in words, when no option can be shown */
   note?: string;
+  /** a moment of a finished game, not the book now */
+  past?: {
+    event: string;
+    atMs: number;
+    startMs: number;
+    /** the bid is a book reading; false when it is a taker's sale on the tape, and bidQty is then that sale's size */
+    fromBook: boolean;
+    /** how the side finished; null when the game has no result */
+    won: boolean | null;
+    winnerName: string | null;
+  };
 }
 
 export interface LockAsk {
@@ -147,29 +161,122 @@ export function lockNow(games: Game[], ask: LockAsk, fee: FeeTerms, nowMs: numbe
     fullWinCents: qty,
     options: [],
   };
+  return priced(base, pos, fee);
+}
+
+/** The options on a position at the bid `base` carries. */
+function priced(base: LockQuote, pos: Position, fee: FeeTerms): LockQuote {
   if (!(pos.price > 0)) return { ...base, note: "No price to work from: say what was paid per contract." };
-  if (!(q.bidCents > 0)) return { ...base, note: "The book shows no bid on this side right now, so there is nothing to sell into." };
-  if (!openBid(q.bidCents)) return { ...base, note: `The bid is ${q.bidCents}¢. Outside 5¢ to 95¢ the result is all but known and no lock is shown.` };
-  const bid = priceOf(q.bidCents);
+  if (!(base.bidCents > 0)) return { ...base, note: "The book shows no bid on this side right now, so there is nothing to sell into." };
+  if (!openBid(base.bidCents)) return { ...base, note: `The bid is ${base.bidCents}¢. Outside 5¢ to 95¢ the result is all but known and no lock is shown.` };
+  const bid = priceOf(base.bidCents);
   const tiers: LockOption[] = [];
   for (const tier of TIERS) {
     const terms = lockTerms(pos, tierSold(pos.qty, tier), bid, fee);
-    if (terms) tiers.push(option(tier, `${TIER_NAME[tier]}: sells ${TIER_SHARE[tier]}%`, pos, terms, q.bidQty));
+    if (terms) tiers.push(option(tier, `${TIER_NAME[tier]}: sells ${TIER_SHARE[tier]}%`, pos, terms, base.bidQty));
   }
   const backSold = stakeBackSold(pos, netBid(fee, bid), fee);
   const backTerms = backSold !== null && backSold < pos.qty ? lockTerms(pos, backSold, bid, fee) : null;
-  const back = backTerms ? option("back", "Stake back: sells just enough to return what you paid", pos, backTerms, q.bidQty) : null;
+  const back = backTerms ? option("back", "Stake back: sells just enough to return what you paid", pos, backTerms, base.bidQty) : null;
   /** the lowest whole-cent bid, from the bid now up to 95¢, that leaves `least` or more after the fee */
   const firstBid = (least: number | null): number | null => {
     if (least === null) return null;
-    for (let cents = Math.ceil(q.bidCents); cents * 100 <= LOCK_MAX_BID; cents += 1) if (netBid(fee, priceOf(cents)) >= least) return cents;
+    for (let cents = Math.ceil(base.bidCents); cents * 100 <= LOCK_MAX_BID; cents += 1) if (netBid(fee, priceOf(cents)) >= least) return cents;
     return null;
   };
   const counted = backTerms !== null && backTerms.sold <= Math.floor((pos.qty * TIER_SHARE.tight) / 100);
   const opensAt = counted ? undefined : firstBid(stakeBackNet(pos, fee, TIER_SHARE.tight));
   // shown from the first bid at which one hundredth of a contract is left riding
-  const from = back ? undefined : firstBid(pos.qty > 1 ? Math.ceil(stakeOf(pos, fee) / (pos.qty - 1)) : null);
+  const from = back ? undefined : firstBid(pos.qty > 1 ? Math.ceil(stakeCharged(pos, fee) / (pos.qty - 1)) : null);
   // in play the stake coming back is the first thing a holder who is ahead asks; before the start it is rarely there
-  const options = back ? (inPlay ? [back, ...tiers] : [...tiers, back]) : tiers;
+  const options = back ? (base.inPlay ? [back, ...tiers] : [...tiers, back]) : tiers;
   return { ...base, options, ...(opensAt === undefined ? {} : { stakeBackOpensAtCents: opensAt }), ...(from === undefined ? {} : { stakeBackFromCents: from }), ...(options.length ? {} : { note: "The exchange fee is more than this bid leaves: nothing to lock." }) };
+}
+
+// ---------------------------------------------------------------------------
+// a moment of a finished game
+// ---------------------------------------------------------------------------
+
+export interface PastMoment {
+  atMs: number;
+  bidCents: number;
+  fromBook: boolean;
+  inPlay: boolean;
+}
+
+/** how far before the scheduled start a past moment can be picked, and how far apart the moments offered are */
+export const PAST_BEFORE_START_MS = 60 * 60_000;
+export const PAST_STEP_MS = 5 * 60_000;
+
+/**
+ * The moments of one side of a finished game a lock can be shown at: the last bid that was
+ * really there in each five minutes, from an hour before the start, 5¢ to 95¢ only.
+ */
+export function pastMoments(game: Capsule, side: Side, fee: FeeTerms): PastMoment[] {
+  const { points } = lockPoints(game.book[side], game.trades[side], fee);
+  const out: PastMoment[] = [];
+  let lastStep: number | null = null;
+  for (let i = 0; i < points.t.length; i += 1) {
+    const t = points.t[i];
+    if (t < game.startMs - PAST_BEFORE_START_MS) continue;
+    const step = Math.floor((t - game.startMs) / PAST_STEP_MS);
+    const m = { atMs: t, bidCents: points.bid[i] / 100, fromBook: points.book[i], inPlay: t >= game.startMs };
+    if (step === lastStep) out[out.length - 1] = m;
+    else out.push(m);
+    lastStep = step;
+  }
+  return out;
+}
+
+export interface PastAsk {
+  side?: string;
+  /** the moment, ms: the last bid at or before it is used. Absent: the first bid in play at which stake back is counted, else the first in play */
+  atMs?: number;
+  contracts?: string | number;
+  paid?: string | number;
+}
+
+/** The lock on a position at a moment of a finished game, with how the side finished. Null when the side is not one. */
+export function lockPast(game: Capsule, ask: PastAsk, fee: FeeTerms): LockQuote | null {
+  const side: Side | null = ask.side === "away" ? "away" : ask.side === "home" ? "home" : null;
+  if (!side) return null;
+  const { points } = lockPoints(game.book[side], game.trades[side], fee);
+  const qty = quantityOf(ask.contracts ?? 0) || 2000;
+  const paidGiven = Number(ask.paid);
+  const paidAssumed = !(Number.isFinite(paidGiven) && paidGiven > 0 && paidGiven < 100);
+  // no price given: what the last taker paid before the start, or the first after it
+  const buys = game.trades[side].filter((t) => t.buy);
+  const before = buys.filter((t) => t.t < game.startMs);
+  const assumed = (before[before.length - 1] ?? buys[0])?.price ?? 0;
+  const paidCents = paidAssumed ? assumed / 100 : Math.round(paidGiven * 100) / 100;
+  const pos: Position = { qty, price: priceOf(paidCents) };
+  const liveFrom = firstAfter(points.t, game.startMs - 1);
+  // the moment asked for is the last bid at or before it; with none, the first in play that returns the stake from 80% or less, else the first in play
+  let i = Number.isFinite(ask.atMs) ? firstAfter(points.t, ask.atMs as number) - 1 : -1;
+  const least = i < 0 && pos.price > 0 ? stakeBackNet(pos, fee, BACK_SHARE.live_back80) : null;
+  if (least !== null) i = points.net.findIndex((net, j) => j >= liveFrom && net >= least);
+  if (i < 0) i = liveFrom < points.t.length ? liveFrom : points.t.length - 1;
+  const winner = game.winner === "away" || game.winner === "home" ? game.winner : null;
+  const atMs = i >= 0 ? points.t[i] : game.startMs;
+  const base: LockQuote = {
+    key: `past:${game.event}`,
+    label: `${game.awayName} at ${game.homeName}`,
+    league: game.league,
+    side,
+    team: side === "away" ? game.awayName : game.homeName,
+    inPlay: atMs >= game.startMs,
+    startsAt: new Date(game.startMs).toISOString(),
+    contracts: qty / 100,
+    paidCents,
+    paidAssumed,
+    bidCents: i >= 0 ? points.bid[i] / 100 : 0,
+    bidQty: i >= 0 ? points.qty[i] / 100 : 0,
+    askCents: 0,
+    stakeCents: centsOf(stakeOf(pos, fee), "up"),
+    fullWinCents: qty,
+    options: [],
+    past: { event: game.event, atMs, startMs: game.startMs, fromBook: i >= 0 && points.book[i], won: winner ? winner === side : null, winnerName: winner ? (winner === "away" ? game.awayName : game.homeName) : null },
+  };
+  if (i < 0) return { ...base, note: "No bid between 5¢ and 95¢ was seen on this side of the game." };
+  return priced(base, pos, fee);
 }

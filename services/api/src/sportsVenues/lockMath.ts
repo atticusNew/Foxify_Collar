@@ -61,6 +61,16 @@ export interface Position {
 
 /** Everything the position cost: the price and the fee to open it, micro-dollars. */
 export const stakeOf = (pos: Position, fee: FeeTerms): number => pos.qty * (pos.price + buyFee(fee, pos.price));
+/**
+ * What the position cost as its holder was charged it: whole cents, up. Micro-dollars. A sale
+ * "returns the stake" when its cash covers this, so the cents the holder gets (down) are never
+ * less than the cents they paid (up).
+ */
+export const stakeCharged = (pos: Position, fee: FeeTerms): number => {
+  const stake = stakeOf(pos, fee);
+  const over = stake % MICRO_PER_CENT;
+  return over ? stake + MICRO_PER_CENT - over : stake;
+};
 /** What the position pays if its side wins, micro-dollars. */
 export const fullWinOf = (pos: Position): number => pos.qty * PAYOUT;
 
@@ -72,7 +82,7 @@ export function tierSold(qty: number, tier: Tier): number {
 /** The fewest hundredths of a contract whose sale at `net` each covers the stake; null when the whole position does not. */
 export function stakeBackSold(pos: Position, net: number, fee: FeeTerms): number | null {
   if (!(net > 0) || pos.qty < 1) return null;
-  const k = Math.ceil(stakeOf(pos, fee) / net);
+  const k = Math.ceil(stakeCharged(pos, fee) / net);
   return k <= pos.qty ? k : null;
 }
 
@@ -82,13 +92,13 @@ export function stakeBackSold(pos: Position, net: number, fee: FeeTerms): number
  */
 export function stakeBackNet(pos: Position, fee: FeeTerms, maxSharePercent: number): number | null {
   const most = Math.floor((pos.qty * maxSharePercent) / 100);
-  return most >= 1 ? Math.ceil(stakeOf(pos, fee) / most) : null;
+  return most >= 1 ? Math.ceil(stakeCharged(pos, fee) / most) : null;
 }
 
 /** The lowest bid after the fee at which the tier's sale returns `backPercent` of the stake or more. */
 export function tierBackNet(pos: Position, fee: FeeTerms, tier: Tier, backPercent: number): number | null {
   const k = tierSold(pos.qty, tier);
-  return k >= 1 ? Math.ceil((stakeOf(pos, fee) * backPercent) / (100 * k)) : null;
+  return k >= 1 ? Math.ceil((stakeCharged(pos, fee) * backPercent) / (100 * k)) : null;
 }
 
 export interface LockTerms {

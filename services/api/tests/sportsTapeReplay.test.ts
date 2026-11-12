@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { SportsCollector } from "../src/sportsVenues/collector";
-import { lockTerms, stakeBackNet, stakeBackSold, stakeOf, tierBackNet, tierSold, centsOf } from "../src/sportsVenues/lockMath";
+import { lockTerms, stakeBackNet, stakeBackSold, stakeCharged, stakeOf, tierBackNet, tierSold, centsOf } from "../src/sportsVenues/lockMath";
 import { lockChoices, lockNow } from "../src/sportsVenues/lockNow";
 import type { HistoryCell, HistoryPoint } from "../src/sportsVenues/store";
 import { TAPE_SEED_DIR, TapeRecord, tradeMs } from "../src/sportsVenues/tape";
@@ -68,6 +68,12 @@ test("the arithmetic of a lock: the sale's cash after the fee is the floor, the 
   // stake back at 61¢: 14.24 contracts is the fewest whose cash covers $8.40 (14.23 leaves $8.3957)
   assert.equal(stakeBackSold(pos, 5900, FEE), 1424);
   assert.equal(lockTerms(pos, 1424, 6100, FEE)!.cash, 8_401_600);
+  // a stake that is not a whole number of cents is covered as it was charged, up: 94.34 at 51¢ cost $50.0002, charged $50.01,
+  // and 72.47 contracts at 69¢ ($50.0043, paid out as $50.00) would leave the holder a cent short
+  const odd = { qty: 9434, price: 5100 };
+  assert.deepEqual([stakeOf(odd, FEE), stakeCharged(odd, FEE), stakeCharged(pos, FEE)], [50_000_200, 50_010_000, 8_400_000]);
+  assert.equal(stakeBackSold(odd, 6900, FEE), 7248);
+  assert.ok(centsOf(lockTerms(odd, 7248, 7100, FEE)!.cash, "down") >= centsOf(stakeOf(odd, FEE), "up"));
   // a bid that cannot return the stake even selling everything
   assert.equal(stakeBackSold(pos, 4100, FEE), null);
   // the lowest bid after the fee at which 80% or less returns the stake, and at which 40% returns half of it: the same price
@@ -94,8 +100,9 @@ test("the replay of one game: each buy is a position, locked only at a bid that 
   assert.deepEqual(r.tape, { pre: { buys: 2, buyQty: 2500, sells: 1, sellQty: 500 }, live: { buys: 3, buyQty: 1500, sells: 2, sellQty: 700 } });
   // the 97¢ and 99¢ buys are on the tape and are not positions
   assert.equal(r.outside, 2);
-  assert.deepEqual(r.open.pre.small, { n: 2, qty: 2500, stake: 11_500_000, lost: 1, lostStake: 8_400_000, won: 1, atStart: 2, aheadAtStart: 0 });
-  assert.deepEqual(r.open.live.small, { n: 1, qty: 1000, stake: 5_200_000, lost: 1, lostStake: 5_200_000, won: 0, atStart: 0, aheadAtStart: 0 });
+  // ahead at some point: the away position bought at 40¢ (42¢ with the fee) saw 52¢ after the fee, the one bought at 50¢ saw 54¢; the home one never saw more than 56¢ against 62¢
+  assert.deepEqual(r.open.pre.small, { n: 2, qty: 2500, stake: 11_500_000, lost: 1, lostStake: 8_400_000, won: 1, atStart: 2, aheadAtStart: 0, aheadEver: 1, lostAheadEver: 1, lostAheadStake: 8_400_000 });
+  assert.deepEqual(r.open.live.small, { n: 1, qty: 1000, stake: 5_200_000, lost: 1, lostStake: 5_200_000, won: 0, atStart: 0, aheadAtStart: 0, aheadEver: 1, lostAheadEver: 1, lostAheadStake: 5_200_000 });
   assert.equal(r.open.pre.large.n + r.open.live.large.n, 0);
 
   // before the start: the away position at the 41¢ sale half an hour before, the home one at the 58¢ book bid
@@ -125,6 +132,12 @@ test("the replay of one game: each buy is a position, locked only at a bid that 
   assert.equal(r.locks.live_back60.live.small.n, 0);
   // the home position had no bid in play to lock at
   assert.equal(lockTallyOf(r, "live_back80").won, 0);
+  // how long the chance lasted: no lower bid followed any of them, so each runs to the last bid in range, the 75¢ an hour and a half in
+  assert.deepEqual([half.heldMinutesSum, half.held10, back80.heldMinutesSum, back80.held10], [60, 1, 60, 1]);
+  assert.deepEqual([back60.heldMinutesSum, back60.held10], [0, 0]);
+  assert.deepEqual([halfLive.heldMinutesSum, r.locks.live_back80.live.small.heldMinutesSum, r.locks.live_back80.live.small.held10], [30, 30, 1]);
+  // no ticket here cost $20 to $100, so there is none to tell
+  assert.deepEqual(r.stories, []);
 
   // a game with no result counts its tape and nothing after it
   const open = replayGame(parseCapsule(GAME_LINES.slice(0, -1).concat(result(null)))!, FEE);
@@ -476,14 +489,14 @@ test("the collector: the games shipped are replayed on start-up, and the replay 
   assert.match(lock.body, /name="k" value="key1"/);
   assert.match(lock.body, /action="\/sports\/lock"/);
   assert.ok(!lock.body.includes("—"));
-  assert.ok(!lock.body.includes("The replay page counts stake back once"));
+  assert.ok(!lock.body.includes("The replay counts stake back once"));
   // 20 at 52¢ cost $10.80: the 61¢ bid returns it from 18.31 contracts, more than the 80% the replay counts, and the card says so
   const thin = get(`/lock?game=${encodeURIComponent("nba:AAA:BBB:2026-11-12|away")}&n=20&paid=52`).body;
   assert.match(thin, /Sell 18\.31 of 20 contracts \(92%\) at 61¢/);
-  assert.match(thin, /Only 1\.69 of 20 contracts are left riding\. The replay page counts stake back once it sells 80% or less: on this position, from a bid of 70¢\./);
+  assert.match(thin, /Only 1\.69 of 20 contracts are left riding\. The replay counts stake back once it sells 80% or less: on this position, from a bid of 70¢\./);
   assert.ok(!thin.includes("Stake back is not available"));
   // no price given: paid the 62¢ ask, so the 61¢ bid cannot return it; where it appears and where the replay counts it
-  assert.match(get("/lock").body, /Stake back is not available at this bid: returning what was paid would take the whole position or more\. It appears at 67¢, where it sells nearly all of the position\. From 82¢ it sells 80% or less and the rest rides at no cost, which is where the replay page counts it\./);
+  assert.match(get("/lock").body, /Stake back is not available at this bid: returning what was paid would take the whole position or more\. It appears at 67¢, where it sells nearly all of the position\. From 82¢ it sells 80% or less and the rest rides at no cost, which is where the replay counts it\./);
   // with nothing asked for the first position on the list is shown
   assert.match(get("/lock").body, /Position <b>20 contracts at 62¢<\/b>/);
   assert.equal(JSON.parse(get("/api/lock?n=5").body).quote.contracts, 5);
