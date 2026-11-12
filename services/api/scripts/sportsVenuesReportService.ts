@@ -30,6 +30,9 @@
  *       SPORTS_VENUES_HORIZON_DAYS  (default 3; games starting within this many days)
  *       SPORTS_VENUES_WINDOW_HOURS  (default 72; hours of snapshots the window sections read.
  *                                   Memory, not disk: the day files keep every snapshot.)
+ *       PROSPECT_PAGE_KEY           (optional; the key of the page made for one reader at
+ *                                   /prospect. Unset, shorter than 16 characters, or equal to
+ *                                   SPORTS_VENUES_TOKEN: that page is off.)
  *       NOVIG_PUBLIC_HOST           (default https://api.novig.com)
  *       POLY_US_REST_BASE / KALSHI_REST_BASE (relays)
  */
@@ -66,6 +69,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       memoryMb: memoryMb(),
     });
   }
+  if (sports.audience(req, res, url)) return;
   if ((!TOKEN || url.searchParams.get("k") === TOKEN) && sports.handle(req, res, url.pathname, url)) return;
   res.writeHead(404, { "content-type": "text/plain" });
   res.end("not found");
