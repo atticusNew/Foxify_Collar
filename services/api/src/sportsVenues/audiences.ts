@@ -1,11 +1,16 @@
 /**
- * Pages made for one reader outside the company. Each has its own address on the service and its
- * own key, so the key of one page opens nothing else: not the service's own pages, not another
- * reader's page. The service's own key does not open them either.
+ * Pages with a key of their own. Each has its own address on the service and its own key, so
+ * the key of one opens nothing else: not the service's own pages, not another entry's. The
+ * service's own key does not open them either, and two entries may not share a key.
  *
- * A new reader is a new entry here and a key in the environment. The page itself
- * (prospectHtml.ts) is written for a broker onto Crypto.com's exchange; a reader of another kind
- * needs its own words.
+ * Two kinds. "broker": the page made for one reader outside the company (prospectHtml.ts),
+ * which shows results and holds back how they are produced. "internal": the full replay
+ * tables, the method and the lock card with its order, for the company's own use; its key is
+ * never given to a reader.
+ *
+ * A new reader is a new "broker" entry here and a key in the environment. The words of
+ * prospectHtml.ts are written for a broker onto Crypto.com's exchange; a reader of another kind
+ * needs its own.
  */
 
 import { timingSafeEqual } from "node:crypto";
@@ -18,9 +23,13 @@ export interface Audience {
   keyEnv: string;
   /** who it is for, as the page says it */
   name: string;
+  kind: "broker" | "internal";
 }
 
-export const AUDIENCES: readonly Audience[] = [{ id: "prospect", base: "/prospect", keyEnv: "PROSPECT_PAGE_KEY", name: "Prospect Markets" }];
+export const AUDIENCES: readonly Audience[] = [
+  { id: "prospect", base: "/prospect", keyEnv: "PROSPECT_PAGE_KEY", name: "Prospect Markets", kind: "broker" },
+  { id: "internal", base: "/lockin", keyEnv: "LOCK_IN_INTERNAL_KEY", name: "Atticus", kind: "internal" },
+];
 
 /** a key shorter than this can be guessed: the page stays off */
 export const AUDIENCE_KEY_MIN = 16;

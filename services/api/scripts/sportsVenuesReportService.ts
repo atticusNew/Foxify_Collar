@@ -33,6 +33,7 @@
  *       PROSPECT_PAGE_KEY           (optional; the key of the page made for one reader at
  *                                   /prospect. Unset, shorter than 16 characters, or equal to
  *                                   SPORTS_VENUES_TOKEN: that page is off.)
+ *       LOCK_IN_INTERNAL_KEY        (optional; the company's own Lock in pages at /lockin)
  *       NOVIG_PUBLIC_HOST           (default https://api.novig.com)
  *       POLY_US_REST_BASE / KALSHI_REST_BASE (relays)
  */

@@ -57,7 +57,7 @@ test("on the BTC service: /sports and its JSON answer with the BTC key and are r
   const now = Date.now();
   const at = [new Date(now - 120_000).toISOString(), new Date(now - 60_000).toISOString()];
   for (const [i, a] of at.entries()) writeFileSync(join(dir, "sports", `snapshots-${a.slice(0, 10)}.jsonl`), `${JSON.stringify(snapshot(a, 40 + i))}\n`, { flag: "a" });
-  Object.assign(process.env, { NODE_ENV: "test", BTC_CURVE_DATA_DIR: dir, BTC_CURVE_TOKEN: "k 1", BTC_CURVE_COLLAR: "0", PROSPECT_PAGE_KEY: "reader-key-0123456789" });
+  Object.assign(process.env, { NODE_ENV: "test", BTC_CURVE_DATA_DIR: dir, BTC_CURVE_TOKEN: "k 1", BTC_CURVE_COLLAR: "0", PROSPECT_PAGE_KEY: "reader-key-0123456789", LOCK_IN_INTERNAL_KEY: "internal-key-0123456789" });
   delete process.env.BTC_CURVE_SPORTS;
   const service = (await import("../scripts/btcCurveReportService")) as { handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>; sports: SportsMount | null };
   const sports = service.sports;
@@ -99,36 +99,40 @@ test("on the BTC service: /sports and its JSON answer with the BTC key and are r
     assert.ok(!page.text.includes("/sports/replay") && !page.text.includes("/sports/lock") && !page.text.includes("Lock in"));
     assert.ok(!page.text.includes("/prospect") && !(await get("/?k=k%201")).text.includes("/prospect"));
 
-    // a reader's page: its own address, its own key, and that key opens nothing else
+    // a reader's page: one address, its own key, and that key opens nothing else: no tables behind it, no JSON, not the internal pages
     const READER = "reader-key-0123456789";
-    for (const path of ["/prospect", "/prospect?k=k%201", "/prospect?k=", "/prospect?k=reader-key-012345678", "/prospect/detail?k=k%201", "/prospect/api", "/prospect/nothing?k=" + READER]) {
+    const INTERNAL = "internal-key-0123456789";
+    for (const path of ["/prospect", "/prospect?k=k%201", "/prospect?k=", "/prospect?k=reader-key-012345678", `/prospect?k=${INTERNAL}`, `/prospect/detail?k=${READER}`, `/prospect/api?k=${READER}`, `/prospect/lock?k=${READER}`]) {
       const r = await get(path);
       assert.equal(r.status, 404, path);
       assert.equal(r.text, "not found");
     }
-    for (const path of ["/", "/sports", "/sports/api/report", "/pairs", "/api/latest", "/sports/replay"]) assert.equal((await get(`${path}?k=${READER}`)).status, 404, `${path} under the reader's key`);
+    for (const path of ["/", "/sports", "/sports/api/report", "/pairs", "/api/latest", "/sports/replay", "/lockin", "/lockin/lock", "/lockin/api"]) assert.equal((await get(`${path}?k=${READER}`)).status, 404, `${path} under the reader's key`);
     const reader = await get(`/prospect?k=${READER}`);
     assert.equal(reader.status, 200);
     assert.match(reader.type, /text\/html/);
     assert.ok(reader.text.includes("Prepared for Prospect Markets by Atticus"));
-    // every link on it stays on it, and nothing of the board is said
+    // every link on it is to itself, and nothing of the board or of how the figures are made is said
     const hrefs = [...reader.text.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
-    assert.ok(hrefs.length >= 2 && hrefs.every((h) => h.startsWith(`/prospect?k=${READER}&amp;game=past%3A`) || h === `/prospect/detail?k=${READER}`), hrefs.join(" "));
-    assert.ok(!/Kalshi|Polymarket|Novig|ProphetX|BTC|k%201|k 1/.test(reader.text));
+    assert.ok(hrefs.length >= 1 && hrefs.every((h) => h.startsWith(`/prospect?k=${READER}&amp;game=past%3A`)), hrefs.join(" "));
+    assert.ok(!/Kalshi|Polymarket|Novig|ProphetX|BTC|k%201|k 1|lockin|internal/i.test(reader.text));
     assert.ok(!reader.text.includes("—"));
-    const detail = await get(`/prospect/detail?k=${READER}`);
-    assert.equal(detail.status, 200);
-    assert.ok(detail.text.includes("<h1>Lock in, replayed on real trades</h1>") && detail.text.includes(`<a href="/prospect?k=${READER}">Back to the summary</a>`));
-    assert.ok(!detail.text.includes("/sports") && !detail.text.includes("BTC curve") && !detail.text.includes("k%201"));
+
+    // the internal pages: the full tables and the lock card, under their own key and no other
+    for (const path of ["/lockin", "/lockin?k=k%201", "/lockin/lock?k=k%201", "/lockin/api", `/lockin/nothing?k=${INTERNAL}`]) assert.equal((await get(path)).status, 404, path);
+    for (const path of ["/", "/sports", "/pairs", "/prospect"]) assert.equal((await get(`${path}?k=${INTERNAL}`)).status, 404, `${path} under the internal key`);
+    const full = await get(`/lockin?k=${INTERNAL}`);
+    assert.equal(full.status, 200);
+    assert.ok(full.text.includes("<h1>Lock in, replayed on real trades</h1>") && full.text.includes(`<a href="/lockin/lock?k=${INTERNAL}">Lock in now</a>`));
+    assert.ok(!full.text.includes("/sports") && !full.text.includes("BTC curve") && !full.text.includes("k%201") && !full.text.includes(READER));
+    const lockPage = await get(`/lockin/lock?k=${INTERNAL}`);
+    assert.equal(lockPage.status, 200);
+    assert.ok(lockPage.text.includes('action="/lockin/lock"') && lockPage.text.includes(`name="k" value="${INTERNAL}"`) && lockPage.text.includes(`<a href="/lockin?k=${INTERNAL}">Lock in, replayed on real trades</a>`));
     // the games shipped with the code were copied under the BTC data dir and replayed on the load above
-    const shown = JSON.parse((await get(`/prospect/api?k=${READER}`)).text);
+    const shown = JSON.parse((await get(`/lockin/api?k=${INTERNAL}`)).text);
     assert.ok(shown.report.all.games >= 31);
-    assert.equal(shown.key, undefined);
     assert.ok(existsSync(join(dir, "sports", "tape", "replay.json")));
-    // of the book count, the exchange's own readings only: nothing that names or measures another venue
-    assert.deepEqual(Object.keys(shown.book).sort(), ["live", "pre", "sinceMs"]);
-    assert.ok(!/kalshi|novig|polymarket|cheapest|saving|elsewhere/i.test(JSON.stringify(shown.book)));
-    assert.deepEqual(JSON.parse((await get("/healthz")).text).sports.audiencePages, ["on"]);
+    assert.deepEqual(JSON.parse((await get("/healthz")).text).sports.audiencePages, ["on", "on"]);
 
     const warm = JSON.parse((await get("/healthz")).text);
     assert.equal(warm.sports.warm, true);
