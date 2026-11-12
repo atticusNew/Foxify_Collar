@@ -244,8 +244,10 @@ the spread, and over a few nights it swings with which sides won.
 **Lock in now** (`/sports/lock`): pick a game and side, a number of contracts and the price
 paid (blank: the ask now). It shows the floor, the cash now and the cap for each option at the
 bid on Crypto.com's book this minute: the three sizes before the start, with stake back first
-once the game is in play and the bid is high enough, and otherwise the bid at which stake back
-opens. Quotes only.
+once the game is in play and the bid is high enough. Stake back is shown whenever it leaves
+something riding. The replay counts it only once it sells 80% or less, so a card that sells
+more says so and gives the bid at which the replay would count it; when stake back cannot be
+shown, the page gives the bid at which it appears and the bid at which it is counted. Quotes only.
 
 **The record.** `<data dir>/tape/<event>.tape.jsonl`, one file per game, append-only: a header
 (the game, its start, the two contracts), one line per trade as the venue gave it, then, when

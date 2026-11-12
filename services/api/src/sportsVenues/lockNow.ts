@@ -56,8 +56,14 @@ export interface LockQuote {
   stakeCents: number;
   fullWinCents: number;
   options: LockOption[];
-  /** stake back is not open yet: the bid at which selling 80% or less returns the stake, cents; null when no bid up to 95¢ does */
+  /**
+   * Stake back is shown whenever it leaves something riding. The replay counts it only once it
+   * sells 80% or less. Present when that is not so at this bid (stake back not shown, or shown
+   * selling more): the bid at which it is, cents; null when no bid up to 95¢ does it.
+   */
   stakeBackOpensAtCents?: number | null;
+  /** present when stake back is not shown: the lowest bid at which it is, selling nearly all; null when no bid up to 95¢ */
+  stakeBackFromCents?: number | null;
   /** in words, when no option can be shown */
   note?: string;
 }
@@ -153,20 +159,17 @@ export function lockNow(games: Game[], ask: LockAsk, fee: FeeTerms, nowMs: numbe
   const backSold = stakeBackSold(pos, netBid(fee, bid), fee);
   const backTerms = backSold !== null && backSold < pos.qty ? lockTerms(pos, backSold, bid, fee) : null;
   const back = backTerms ? option("back", "Stake back: sells just enough to return what you paid", pos, backTerms, q.bidQty) : null;
-  let opensAt: number | null | undefined;
-  if (!back) {
-    const least = stakeBackNet(pos, fee, TIER_SHARE.tight);
-    opensAt = null;
-    if (least !== null) {
-      for (let cents = Math.ceil(q.bidCents); cents * 100 <= LOCK_MAX_BID; cents += 1) {
-        if (netBid(fee, priceOf(cents)) >= least) {
-          opensAt = cents;
-          break;
-        }
-      }
-    }
-  }
+  /** the lowest whole-cent bid, from the bid now up to 95¢, that leaves `least` or more after the fee */
+  const firstBid = (least: number | null): number | null => {
+    if (least === null) return null;
+    for (let cents = Math.ceil(q.bidCents); cents * 100 <= LOCK_MAX_BID; cents += 1) if (netBid(fee, priceOf(cents)) >= least) return cents;
+    return null;
+  };
+  const counted = backTerms !== null && backTerms.sold <= Math.floor((pos.qty * TIER_SHARE.tight) / 100);
+  const opensAt = counted ? undefined : firstBid(stakeBackNet(pos, fee, TIER_SHARE.tight));
+  // shown from the first bid at which one hundredth of a contract is left riding
+  const from = back ? undefined : firstBid(pos.qty > 1 ? Math.ceil(stakeOf(pos, fee) / (pos.qty - 1)) : null);
   // in play the stake coming back is the first thing a holder who is ahead asks; before the start it is rarely there
   const options = back ? (inPlay ? [back, ...tiers] : [...tiers, back]) : tiers;
-  return { ...base, options, ...(back ? {} : { stakeBackOpensAtCents: opensAt }), ...(options.length ? {} : { note: "The exchange fee is more than this bid leaves: nothing to lock." }) };
+  return { ...base, options, ...(opensAt === undefined ? {} : { stakeBackOpensAtCents: opensAt }), ...(from === undefined ? {} : { stakeBackFromCents: from }), ...(options.length ? {} : { note: "The exchange fee is more than this bid leaves: nothing to lock." }) };
 }

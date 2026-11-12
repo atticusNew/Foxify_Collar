@@ -399,6 +399,8 @@ test("lock in now: the three sizes before the start, stake back first in play, a
   assert.deepEqual({ sold: pre.options[0].sold, floor: pre.options[0].floorCents, fee: pre.options[0].feeCents, cap: pre.options[0].capCents, back: pre.options[0].backPercent, covered: pre.options[0].covered }, { sold: 8, floor: 304, fee: 16, cap: 1504, back: 35, covered: true });
   // stake back needs 80% or less to return $8.60: 53.75¢ after the fee, so a 56¢ bid
   assert.equal(pre.stakeBackOpensAtCents, 56);
+  // and it is shown from the first bid that leaves anything riding: $8.60 from 19.99 contracts is 43.03¢ after the fee, a 46¢ bid
+  assert.equal(pre.stakeBackFromCents, 46);
 
   const live = lockNow([gameOf(cdc([61, 62], [37, 38]))], { game: `${KEY}|away`, contracts: "20", paid: "40" }, FEE, S + 30 * MIN)!;
   assert.equal(live.inPlay, true);
@@ -407,11 +409,24 @@ test("lock in now: the three sizes before the start, stake back first in play, a
   assert.deepEqual({ sold: live.options[0].sold, kept: live.options[0].kept, floor: live.options[0].floorCents, cap: live.options[0].capCents, fee: live.options[0].feeCents, back: live.options[0].backPercent }, { sold: 14.24, kept: 5.76, floor: 840, cap: 1416, fee: 29, back: 100 });
   assert.deepEqual({ floor: live.options[1].floorCents, cap: live.options[1].capCents, back: live.options[1].backPercent }, { floor: 472, cap: 1672, back: 56 });
   assert.equal(live.stakeBackOpensAtCents, undefined);
+  assert.equal(live.stakeBackFromCents, undefined);
+  // shown, but selling more than the 80% the replay counts: 50 at 60¢ cost $31.00, a 72¢ bid returns it from 44.29 contracts (89%);
+  // 80% or less needs 77.5¢ after the fee, an 80¢ bid
+  const thin = lockNow([gameOf(cdc([72, 73], [27, 28]))], { game: `${KEY}|away`, contracts: "50", paid: "60" }, FEE, S + 30 * MIN)!;
+  assert.deepEqual({ id: thin.options[0].id, sold: thin.options[0].sold, kept: thin.options[0].kept, floor: thin.options[0].floorCents }, { id: "back", sold: 44.29, kept: 5.71, floor: 3100 });
+  assert.deepEqual({ counted: thin.stakeBackOpensAtCents, from: thin.stakeBackFromCents }, { counted: 80, from: undefined });
+  // one cent on either side of it: an 80¢ bid returns the stake from 39.75 of the 50, a 79¢ bid needs 40.26
+  assert.equal(lockNow([gameOf(cdc([80, 81], [19, 20]))], { game: `${KEY}|away`, contracts: "50", paid: "60" }, FEE, S)!.stakeBackOpensAtCents, undefined);
+  assert.equal(lockNow([gameOf(cdc([79, 80], [20, 21]))], { game: `${KEY}|away`, contracts: "50", paid: "60" }, FEE, S)!.stakeBackOpensAtCents, 80);
   // a sale larger than the bid's size is said
   assert.equal(lockNow([gameOf({ ...cdc([61, 62], [37, 38]), away: q(61, 62, 10) })], { game: `${KEY}|away`, contracts: "20", paid: "40" }, FEE, S)!.options[0].covered, false);
 
   // a favourite at 90¢: no bid up to 95¢ returns the stake by selling 80% or less
-  assert.equal(lockNow([gameOf(cdc([8, 9], [90, 91]))], { game: `${KEY}|home`, contracts: "10", paid: "90" }, FEE, S)!.stakeBackOpensAtCents, null);
+  // (at 95¢ it appears, selling all but a hundredth of a contract)
+  const favourite = lockNow([gameOf(cdc([8, 9], [90, 91]))], { game: `${KEY}|home`, contracts: "10", paid: "90" }, FEE, S)!;
+  assert.deepEqual({ counted: favourite.stakeBackOpensAtCents, from: favourite.stakeBackFromCents }, { counted: null, from: 95 });
+  // a hundredth of a contract has nothing to leave riding
+  assert.deepEqual({ counted: lockNow([gameOf(cdc([40, 41], [58, 59]))], { game: `${KEY}|away`, contracts: "0.01", paid: "20" }, FEE, S)!.stakeBackOpensAtCents, from: lockNow([gameOf(cdc([40, 41], [58, 59]))], { game: `${KEY}|away`, contracts: "0.01", paid: "20" }, FEE, S)!.stakeBackFromCents }, { counted: null, from: null });
   assert.match(lockNow([gameOf(cdc([0, 2], [97, 98]))], { game: `${KEY}|away` }, FEE, S)!.note!, /no bid on this side/);
   assert.match(lockNow([gameOf(cdc([1, 2], [97, 98]))], { game: `${KEY}|home` }, FEE, S)!.note!, /Outside 5¢ to 95¢/);
   assert.equal(lockNow([gameOf(cdc([40, 41], [58, 59]))], { game: "nba:NO:GAME:2026-11-11|away" }, FEE, S), null);
@@ -461,6 +476,14 @@ test("the collector: the games shipped are replayed on start-up, and the replay 
   assert.match(lock.body, /name="k" value="key1"/);
   assert.match(lock.body, /action="\/sports\/lock"/);
   assert.ok(!lock.body.includes("—"));
+  assert.ok(!lock.body.includes("The replay page counts stake back once"));
+  // 20 at 52¢ cost $10.80: the 61¢ bid returns it from 18.31 contracts, more than the 80% the replay counts, and the card says so
+  const thin = get(`/lock?game=${encodeURIComponent("nba:AAA:BBB:2026-11-12|away")}&n=20&paid=52`).body;
+  assert.match(thin, /Sell 18\.31 of 20 contracts \(92%\) at 61¢/);
+  assert.match(thin, /Only 1\.69 of 20 contracts are left riding\. The replay page counts stake back once it sells 80% or less: on this position, from a bid of 70¢\./);
+  assert.ok(!thin.includes("Stake back is not available"));
+  // no price given: paid the 62¢ ask, so the 61¢ bid cannot return it; where it appears and where the replay counts it
+  assert.match(get("/lock").body, /Stake back is not available at this bid: returning what was paid would take the whole position or more\. It appears at 67¢, where it sells nearly all of the position\. From 82¢ it sells 80% or less and the rest rides at no cost, which is where the replay page counts it\./);
   // with nothing asked for the first position on the list is shown
   assert.match(get("/lock").body, /Position <b>20 contracts at 62¢<\/b>/);
   assert.equal(JSON.parse(get("/api/lock?n=5").body).quote.contracts, 5);

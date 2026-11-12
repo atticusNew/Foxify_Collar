@@ -191,12 +191,17 @@ ${recordingHtml}${noResult}
 // ---------------------------------------------------------------------------
 
 function optionCard(q: LockQuote, o: LockQuote["options"][number]): string {
+  // stake back that sells more than the 80% the replay counts it at: said on the card, with the bid at which it is counted
+  const thin =
+    o.id === "back" && q.stakeBackOpensAtCents !== undefined
+      ? `<p class="dim">Only ${num(o.kept, 2)} of ${num(q.contracts, 2)} contracts are left riding. The replay page counts stake back once it sells 80% or less: ${q.stakeBackOpensAtCents === null ? "no bid up to 95¢ does that on this position" : `on this position, from a bid of ${q.stakeBackOpensAtCents}¢`}.</p>`
+      : "";
   const depth = o.covered ? `The bid holds ${num(q.bidQty)} contracts: enough for this sale.` : `The bid holds ${num(q.bidQty)} contracts: the rest of this sale would fill lower than shown.`;
   return `<div class="opt"><h3>${esc(o.name)}</h3>
 <p class="dim">Sell ${num(o.sold, 2)} of ${num(q.contracts, 2)} contracts (${o.soldPercent}%) at ${q.bidCents}¢. Keep ${num(o.kept, 2)} riding.</p>
 <div class="three"><div><small>Floor · cash now</small><b>${dollars(o.floorCents)}</b></div><div><small>Cap · if ${esc(q.team)} win</small><b>${dollars(o.capCents)}</b></div><div><small>Back on what you paid</small><b>${o.backPercent}%</b></div></div>
 <p>If ${esc(q.team)} lose you keep <b>${dollars(o.floorCents)}</b> instead of $0.00. If they win you get <b>${dollars(o.capCents)}</b> instead of ${dollars(q.fullWinCents)}.</p>
-<p class="dim">${dollars(o.feeCents)} exchange fee on the sale, already taken out. ${depth}</p></div>`;
+<p class="dim">${dollars(o.feeCents)} exchange fee on the sale, already taken out. ${depth}</p>${thin}</div>`;
 }
 
 export function renderLockHtml(input: { choices: LockChoice[]; quote: LockQuote | null; selected: string; contracts: string; paid: string; at: string | null; refreshSec?: number; links?: PageLink[] }): string {
@@ -213,12 +218,19 @@ export function renderLockHtml(input: { choices: LockChoice[]; quote: LockQuote 
   else if (!q) body = '<p class="dim">Pick a position.</p>';
   else {
     const head = `<div class="strip"><span>${esc(league(q.league))} · ${esc(q.label)} <b>${esc(q.team)} to win</b> <small>${q.inPlay ? "in play" : q.startsAt ? `starts ${et(Date.parse(q.startsAt))}` : "start not listed"}</small></span><span>Book now <b>${q.bidCents}¢ / ${q.askCents > 0 && q.askCents < 100 ? `${q.askCents}¢` : "–"}</b> <small>${num(q.bidQty)} at the bid</small></span><span>Position <b>${num(q.contracts, 2)} contracts at ${q.paidCents}¢</b> <small>${q.paidAssumed ? "no price given: the ask now · " : ""}paid ${dollars(q.stakeCents)} with the fee</small></span><span>Riding with no lock <b>${dollars(q.fullWinCents)} or $0.00</b></span></div>`;
+    // stake back not shown at this bid: where it appears, and where the replay counts it
+    const from = q.stakeBackFromCents;
+    const at80 = q.stakeBackOpensAtCents;
     const back =
-      q.stakeBackOpensAtCents === undefined
+      from === undefined
         ? ""
-        : q.stakeBackOpensAtCents === null
-          ? '<p class="dim">Stake back is not open on this position: no bid up to 95¢ returns what was paid by selling 80% or less.</p>'
-          : `<p class="dim">Stake back is not open yet. It opens when the bid reaches ${q.stakeBackOpensAtCents}¢: from there, selling 80% or less returns everything paid and the rest rides at no cost.</p>`;
+        : from === null
+          ? '<p class="dim">Stake back is not available on this position: no bid up to 95¢ returns what was paid with anything left riding.</p>'
+          : `<p class="dim">Stake back is not available at this bid: returning what was paid would take the whole position or more. ${
+              at80 === from
+                ? `It appears at ${from}¢: from there, selling 80% or less returns everything paid and the rest rides at no cost.`
+                : `It appears at ${from}¢, where it sells nearly all of the position. ${at80 == null ? "No bid up to 95¢ returns what was paid by selling 80% or less, which is where the replay page counts it." : `From ${at80}¢ it sells 80% or less and the rest rides at no cost, which is where the replay page counts it.`}`
+            }</p>`;
     body = `${head}${q.note ? `<p class="lead">${esc(q.note)}</p>` : ""}<div class="opts">${q.options.map((o) => optionCard(q, o)).join("")}</div>${back}`;
   }
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -234,6 +246,6 @@ ${pageLinksHtml(input.links, "Sports")}${sportsNavHtml(input.links, "lock")}<h1>
 <p class="lead">A position on Crypto.com's exchange, and what Lock in would show on it this minute: the holder's own sale of part of it at the bid on the book. Floor, cash now and cap, after the exchange fee. Arithmetic on a public bid; nothing here places an order.</p>
 ${form}
 ${body}
-<footer><p>${input.at ? `Book as of ${et(Date.parse(input.at))}. ` : ""}Before the start the three sizes the product offers are shown. In play, stake back comes first when the bid is high enough for it. A sale larger than the bid's size would fill part of it lower than shown.</p></footer>
+<footer><p>${input.at ? `Book as of ${et(Date.parse(input.at))}. ` : ""}Before the start the three sizes the product offers are shown. In play, stake back comes first when the bid is high enough for it. It is shown whenever it leaves something riding; the replay page counts it only once it sells 80% or less. A sale larger than the bid's size would fill part of it lower than shown.</p></footer>
 </main></body></html>`;
 }
