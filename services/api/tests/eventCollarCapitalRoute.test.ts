@@ -99,13 +99,13 @@ test("capital route: the figures are read off the record's ledger, and reading t
 test("capital page: the same figures in words, own sale at nothing, and no key in the body", async () => {
   const html = await (await fetch(`${base}/capital?token=${TOKEN}`)).text();
   assert.match(html, /<title>Capital · operator · Earn &amp; Protect<\/title>/);
-  assert.match(html, /<b>Own sale<\/b><i>the holder sells in their own account<\/i><\/td><td>\$0\.00<\/td><td>\$0\.00<\/td><td>\$0\.00<\/td>/);
+  assert.match(html, /<b>Direct lock<\/b><i>in the holder's own account, nothing hedged<\/i><\/td><td>\$0\.00<\/td><td>\$0\.00<\/td><td>\$0\.00<\/td>/);
   // collar: $19.50 at record volume, $195.00 at 10 times, $1,950.00 at 100 times, $2.95 out now
   assert.match(html, /<b>Collar, our book<\/b><i>paid back at the result<\/i><\/td><td>\$19\.50<\/td><td>\$195\.00<\/td><td>\$1,950\.00<\/td><td>\$[\d.,]+<\/td><td>\$2\.95<\/td>/);
   assert.match(html, /<b>Better bid, ceiling<\/b><i>paid back at the result<\/i><\/td><td>\$60\.00<\/td><td>\$600\.00<\/td><td>\$6,000\.00<\/td>/);
   assert.match(html, /<i>paid back 24 hours after the result<\/i>/);
   assert.match(html, /Better bid, measured: no line carries the measurement yet\./);
-  assert.match(html, /2 lines counted, since .* \(3 days\)\. Left out: 0 voided, 0 member sales/);
+  assert.match(html, /2 lines counted, since .* \(3 days\)\. Left out: 0 voided, 0 member locks/);
   assert.match(html, /Simulated, like the record\. Nothing was bought\./);
   assert.match(html, /That is an assumption\./);
   assert.match(html, /\$22\.45 for the collar against \$19\.50 pooled/);

@@ -931,6 +931,15 @@ the service listed tonight's game beside next week's: a card that says its game 
 ("Live Q2 4:43") now names the club's game in progress, the listed one the service says has
 started, else the earliest.
 
+**Outcome words only (0.7.49).** Text only; nothing the extension does is changed. Nothing a
+holder sees names how a direct lock on a member venue is done. The panel, the receipt, the
+leave sheet and the refusals say what the holder ends with: the cash "lands in your STX balance
+when the lock fills", a row reads "Locked 40 of 100 at 62¢ · 60 still riding", a tier "locks
+40% of your position" (the same words for a hedged lock), and a refusal says "nothing was
+locked". A hedged lock is said to "give up part of the upside". The copy rules test holds every
+string the extension ships to this (rule 8). This README is for developers and keeps the plain
+description of the mechanics.
+
 **The user terms (0.7.48).** When the service has a version of the user terms in force and this
 holder has not accepted it, the panel reads "Read and accept the terms to lock in." with a link
 to the document (https only) and one button, **I accept the terms**. The tap is sent with the

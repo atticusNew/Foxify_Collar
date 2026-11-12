@@ -277,7 +277,7 @@ test("renderSlateHtml: the venue's name, its leagues, the hedge venues, the iden
   assert.ok(html.includes("We carried no outcome risk on your games."));
   assert.ok(html.includes("Your ledger pays the user; the hedge pays your ledger."));
   assert.ok(html.includes('<td class="hi">NFL</td><td>1</td><td>1</td>'), "the league table has the slate's leagues");
-  assert.ok(html.includes("Lock, sell or hold: the parlay moment"));
+  assert.ok(html.includes("Lock, cash out or hold: the parlay moment"));
   assert.ok(html.includes("1 tickets reached the last leg with a priced lock"));
   assert.ok(html.includes("2 legs · Away · D game") && html.includes("8h before"));
   assert.ok(html.includes("last leg not played yet"));

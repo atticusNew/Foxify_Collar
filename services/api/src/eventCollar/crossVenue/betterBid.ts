@@ -281,12 +281,12 @@ function holderVenueRefusal(fee: VenueFee): { code: VenueRefusalCode; reason: st
     case "prophetx":
       return {
         code: "holder_venue_cannot_sell",
-        reason: "This venue has no sell. A holder leaves by buying the other outcome, which pays at settlement and not when it is bought, so there is no sale to improve on.",
+        reason: "This venue has no way out for cash. A holder leaves by buying the other outcome, which pays at settlement and not when it is bought, so there is no price to improve on.",
       };
     case "stx":
-      return { code: "fee_unpriced", reason: "This venue's fee is set per account and is not on the market, so a sale there cannot be priced after fees here. The member page prices that sale." };
+      return { code: "fee_unpriced", reason: "This venue's fee is set per account and is not on the market, so a direct lock there cannot be priced after fees here. The member page prices it." };
     case "folded":
-      return { code: "fee_unpriced", reason: "This book has the fee inside its prices already. A sale and a resting bid need the venue's own prices and its fee apart." };
+      return { code: "fee_unpriced", reason: "This book has the fee inside its prices already. A direct lock and a resting bid need the venue's own prices and its fee apart." };
     default:
       return null;
   }
@@ -350,20 +350,20 @@ export function quoteOwnSale(i: OwnSaleInputs): OwnSaleQuote | OwnSaleRefusal {
   const bookDepthMilli = depthOf(bids);
   const refuse = (code: OwnSaleRefusalCode, reason: string): OwnSaleRefusal => ({ ok: false, code, reason, bookDepthMilli });
   if (!wholeHundredths(i.sellMilli) || !wholeHundredths(i.positionMilli) || i.sellMilli > i.positionMilli) {
-    return refuse("size_invalid", "The size sold has to be a positive number of contracts, to the hundredth, and no more than the position.");
+    return refuse("size_invalid", "The size has to be a positive number of contracts, to the hundredth, and no more than the position.");
   }
   const venue = holderVenueRefusal(i.fee);
   if (venue) return refuse(venue.code, venue.reason);
   if (bids.length === 0) return refuse("book_empty", "The venue shows no bid for this side.");
   const w = walk(bids, i.sellMilli);
   if (w.filledMilli < i.sellMilli) {
-    return refuse("book_too_thin", `The venue's bids hold ${contractsWords(bookDepthMilli)}; the sale is ${contractsWords(i.sellMilli)}.`);
+    return refuse("book_too_thin", `The venue's bids hold ${contractsWords(bookDepthMilli)}; the size asked is ${contractsWords(i.sellMilli)}.`);
   }
   const feeCents = takerFeeCents(i.fee, w);
   if (feeCents === null) return refuse("fee_unpriced", "A bid on this book sits off the whole cent, and the venue's fee function in this code takes whole cents.");
   const grossCents = Math.floor(w.microUsd / MICRO_PER_CENT);
   const cashCents = grossCents - feeCents;
-  if (cashCents <= 0) return refuse("nothing_after_fees", "The venue's fee takes all the sale would fetch at this size.");
+  if (cashCents <= 0) return refuse("nothing_after_fees", "The venue's fee takes all the cash at this size.");
   const keptMilli = i.positionMilli - i.sellMilli;
   return {
     ok: true,
@@ -721,7 +721,7 @@ export function quoteBetterBid(i: BetterBidInputs): BetterBidQuote | BetterBidRe
 
   if (!own.ok) {
     if (own.code === "size_invalid" || own.code === "holder_venue_cannot_sell" || own.code === "fee_unpriced") return refuse(own.code, own.reason);
-    return refuse("own_sale_unpriced", `The holder's own sale cannot be priced, so there is nothing to compare a bid with. ${own.reason}`);
+    return refuse("own_sale_unpriced", `The direct lock cannot be priced, so there is nothing to compare a bid with. ${own.reason}`);
   }
   const tick = i.holderVenue.tickMilli;
   if (!Number.isInteger(tick) || tick <= 0 || (i.holderVenue.fee.kind === "kalshi" && tick % 10 !== 0)) {
@@ -737,7 +737,7 @@ export function quoteBetterBid(i: BetterBidInputs): BetterBidQuote | BetterBidRe
   const ceiling = i.holderVenue.bestAskMilli !== null && i.holderVenue.bestAskMilli > 0 ? Math.min(i.holderVenue.bestAskMilli, 1000) : 1000;
   const to = Math.ceil(ceiling / tick) * tick - tick;
   if (to < from) {
-    return refuse("spread_closed", "There is no price between the last bid the holder's sale reaches and the venue's offer for a bid to rest at.");
+    return refuse("spread_closed", "There is no price between the last bid the direct lock reaches and the venue's offer for a bid to rest at.");
   }
 
   const ctx = ctxFor(i, own.cashCents);
@@ -747,9 +747,9 @@ export function quoteBetterBid(i: BetterBidInputs): BetterBidQuote | BetterBidRe
       if (full.skips.other_side_too_thin > 0) {
         return refuse("other_side_too_thin", `The other venue's offers hold ${contractsWords(available.otherVenueAskMilli)} of the other side, fewer than a bid here would need to buy.`);
       }
-      if (full.skips.below_minimum_size > 0) return refuse("below_minimum_size", "The part of the sale that would reach our bid is under a venue's smallest order.");
+      if (full.skips.below_minimum_size > 0) return refuse("below_minimum_size", "The part that would reach our bid is under a venue's smallest order.");
       if (full.skips.fee_unpriced > 0) return refuse("fee_unpriced", "A price on one of the two books sits where this code's fee function for that venue cannot price it.");
-      return refuse("no_improvement", "The venue's own bidders already take the whole sale at every price a bid could rest at.");
+      return refuse("no_improvement", "The venue's own bidders already take the whole size at every price a bid could rest at.");
     }
     if (!scan(i, ctx, from, to, { tail: false, take: false }).best) {
       return refuse("no_improvement", "Buying the other side at the other venue's offers, after both venues' fees, leaves no room to pay more than the venue's own bid does.");
@@ -912,7 +912,7 @@ export function oneLegLoss(i: OneLegInputs): OneLegLoss | OneLegRefusal {
   if (venue) return refuse(venue.code, venue.reason);
   const paidFee = restingBidFee(i.fee, i.boughtMilli, i.bidMilli);
   if (!paidFee) return refuse("fee_unpriced", "The price paid sits where this code's fee function for the venue cannot price it.");
-  if (under.length === 0) return refuse("unwind_book_empty", "The venue shows no bid under our price to sell the first leg back into.");
+  if (under.length === 0) return refuse("unwind_book_empty", "The venue shows no bid under our price to close the first leg into.");
   const w = walk(under, i.boughtMilli);
   if (w.filledMilli < i.boughtMilli) {
     return refuse("unwind_book_too_thin", `The venue's bids under our price hold ${contractsWords(depthUnderBidMilli)}; the first leg is ${contractsWords(i.boughtMilli)}.`);
@@ -1013,11 +1013,11 @@ export function quoteUnwind(i: {
     const venue = sellRefusal(leg.fee);
     if (venue) {
       return venue.code === "holder_venue_cannot_sell"
-        ? { ok: false, code: "venue_cannot_sell", reason: `${name} has no sell. The two contracts already pay $1 between them at the game, so there is nothing to do early.` }
+        ? { ok: false, code: "venue_cannot_sell", reason: `${name} has no way out for cash. The two contracts already pay $1 between them at the game, so there is nothing to do early.` }
         : { ok: false, code: venue.code, reason: venue.reason };
     }
     const bids = bidsOf(leg.bids);
-    if (bids.length === 0) return { ok: false, code: "book_empty", reason: `${name} shows no bid to sell into.` };
+    if (bids.length === 0) return { ok: false, code: "book_empty", reason: `${name} shows no bid to close into.` };
     const w = walk(bids, i.milli);
     if (w.filledMilli < i.milli) return { ok: false, code: "book_too_thin", reason: `${name}'s bids hold ${contractsWords(depthOf(bids))}; the leg is ${contractsWords(i.milli)}.` };
     const feeCents = takerFeeCents(leg.fee, w);

@@ -11,10 +11,23 @@
  *         JSON fields, CSS classes, env names), which the guard tells apart by their shape
  * Rule 4  "address", never "wallet"
  * Rule 7  when the money reaches the bettor is said one way: a collar's credit is "credited at
- *         lock in" and its floor or cap is paid "at settlement"; a member's own sale "lands in
- *         your balance when the sale fills". The retired ways of saying it ("cash now", "paid
+ *         lock in" and its floor or cap is paid "at settlement"; a direct lock's cash "lands in
+ *         your balance when the lock fills". The retired ways of saying it ("cash now", "paid
  *         now", "paid at the tap", "paid at open", "up front", "paid today", "at the lock",
  *         "balance now") are refused. The older BTC demo is outside this rule.
+ * Rule 8  outcome words only: nothing a person reads says how a direct lock is done. No "sell",
+ *         "sold", "sale" or "seller", in any form. A direct lock "takes cash out of the
+ *         position", its contracts are "locked", the cash lands "when the lock fills", a hedged
+ *         lock "gives up part of the upside", and leaving a whole ticket is "cash out". Our own
+ *         hedge is "closed". Three places are read differently, each for a stated reason:
+ *           the service's and the engine's own source (eventShadowWorker.ts, src/eventCollar)
+ *             and the operator's pages: a sale word is refused only in a sentence that speaks
+ *             of the holder (you, your, member, holder, user, bettor, position, own). What is
+ *             left there is the operator's alerts and the order rails, where the thing sold is
+ *             our own hedge and the venue's order is named as the venue names it;
+ *           the WagerWire listing files: "seller" is that venue's word for who lists a ticket;
+ *           the extension's README: developer notes, not shipped, which keep the plain
+ *             description of the mechanics.
  *
  * COVERED BY RENDERING (the HTML a browser receives, from the services' own handlers and the
  * exported render functions): its text, the attributes a person sees or hears (title,
@@ -44,14 +57,15 @@ const API_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_DIR = join(API_DIR, "..", "..");
 const EXT_DIR = join(REPO_DIR, "demo", "event-lockin-extension");
 
-type Rule = 1 | 2 | 3 | 4 | 7;
-const RULES: readonly Rule[] = [1, 2, 3, 4, 7];
+type Rule = 1 | 2 | 3 | 4 | 7 | 8;
+const RULES: readonly Rule[] = [1, 2, 3, 4, 7, 8];
 const RULE_NAMES: Record<Rule, string> = {
   1: "rule 1, no em or en dash",
   2: "rule 2, no guarantee or risk-free promise",
   3: 'rule 3, "Lock in", never "protect"',
   4: 'rule 4, "address", never "wallet"',
-  7: 'rule 7, cash timing said one way ("credited at lock in", "when the sale fills")',
+  7: 'rule 7, cash timing said one way ("credited at lock in", "when the lock fills")',
+  8: "rule 8, outcome words only: no sell, sold or sale",
 };
 
 interface Hit {
@@ -70,6 +84,26 @@ const PROMISE =
   /\bguarant(?:ee|eed|ees|eeing|y|or|ors)\b|\brisk[\s-]?free\b|\briskless\b|\b(?:no|zero)[\s-]risk\b|\bcan(?:not|'t|\u2019t| not) lose\b|\bnever loses?\b|\bsure thing\b|\bfree money\b/gi;
 const PROTECT = /\b(?:un)?protect(?:s|ed|ing|ion|ions|or|ors|ive|able)?\b/gi;
 const WALLET = /\bwallets?\b/gi;
+/** a sale in any form: sell, sells, selling, seller, sold, unsold, resell, sale, sales */
+const SALE = /\b(?:re|un)?(?:sell(?:s|ing|er|ers)?|sold|sales?)\b/gi;
+/** who a sentence is about, where only the holder's own sale is refused */
+const HOLDER = /\b(?:you|yours?|members?|holders?|users?|bettors?|traders?|positions?|own)\b/i;
+type SaleMode = "strict" | "holder" | "off";
+/** How rule 8 reads a file or a page (the reasons are in the header). What is served to anyone but the operator is strict. */
+function saleMode(file: string): SaleMode {
+  if (/^(?:shadow GET|demo GET|render |btc demo |page$)/.test(file)) return /\(operator/.test(file) ? "holder" : "strict";
+  if (/wagerwireListing|\/listingQuote\.ts/.test(file) || /README\.md/.test(file)) return "off";
+  if (/eventShadowWorker\.ts|src\/eventCollar\//.test(file)) return "holder";
+  return "strict";
+}
+/** the sentence a match sits in: back to the last full stop, semicolon, question or exclamation mark, and on to the next */
+function sentenceAround(text: string, at: number, len: number): string {
+  let from = at;
+  let to = at + len;
+  while (from > 0 && !/[.;!?]/.test(text[from - 1])) from--;
+  while (to < text.length && !/[.;!?]/.test(text[to])) to++;
+  return text.slice(from, to);
+}
 /** the retired ways of saying when the bettor's cash arrives: a cash word, then one of the old moments close after it */
 const CASH_WHEN =
   /\b(?:paid|pays|cash|credit(?:ed|s)?)\b[^.;:\u00b7<>]{0,24}?(?:(?<!\bright )\bnow\b|\btoday\b(?!['\u2019]s)|\bat the tap\b|\bat open\b|\bup ?front\b|\bat the lock\b)|\bbalance now\b|\byours today\b|\btake\s+\$?[\d,.]+\s+now\b/gi;
@@ -115,6 +149,11 @@ function insideIdentifier(text: string, at: number, len: number): boolean {
 interface CheckOptions {
   /** the text is one string literal of a program: a lone lower-case word is a key or a state, not copy */
   literal: boolean;
+  /**
+   * the literal is exactly one lower-case word, nothing beside it. Rule 8 lets only that through:
+   * "sold" alone is a state, but "sold " or "</b> sold" is a piece of a sentence put together in code
+   */
+  bare?: boolean;
   /** where a match at this offset is, when the text spans lines (markdown); the file label otherwise */
   locate?: (at: number) => string;
 }
@@ -130,6 +169,13 @@ function checkText(file: string, text: string, opts: CheckOptions, hits: Hit[]):
   for (const m of text.matchAll(PROMISE)) push(2, m.index, m[0].length);
   if (!CASH_RULE_EXEMPT.test(file)) for (const m of text.matchAll(CASH_WHEN)) push(7, m.index, m[0].length);
   const lone = opts.literal && /^[a-z][a-z0-9]*$/.test(text.trim());
+  const sale = lone && opts.bare !== false ? "off" : saleMode(file);
+  if (sale !== "off")
+    for (const m of text.matchAll(SALE)) {
+      if (insideIdentifier(text, m.index, m[0].length)) continue;
+      if (sale === "holder" && !HOLDER.test(sentenceAround(text, m.index, m[0].length))) continue;
+      push(8, m.index, m[0].length);
+    }
   if (lone) return;
   const unbranded = text.replace(BRAND, (b) => " ".repeat(b.length));
   for (const m of unbranded.matchAll(PROTECT)) if (!insideIdentifier(unbranded, m.index, m[0].length)) push(3, m.index, m[0].length);
@@ -225,7 +271,7 @@ function checkUnit(file: string, text: string, hits: Hit[], depth = 0): void {
     checkCss(file, text, hits);
     return;
   }
-  checkHtml(file, text, { literal: true }, hits, depth);
+  checkHtml(file, text, { literal: true, bare: /^[a-z][a-z0-9]*$/.test(text) }, hits, depth);
 }
 
 function checkSource(file: string, code: string, kind: ts.ScriptKind, hits: Hit[]): void {
@@ -476,8 +522,28 @@ test("copy rules: the guard sees each rule in each place it can hide, and leaves
 
   // rule 7: the retired ways of saying when the cash arrives, and the two that stand
   assert.deepEqual(page("<p>Cash now +$1.66</p><p>$1.66 paid now</p><p>a credit paid at the tap</p><p>paid $3 up front</p><p>$2 paid at open</p><p>the $2 paid to you at the lock</p><p>In your STX balance now</p><p>you get paid today</p><p>yours today</p><p>Lock in $40 · take $3 now</p>"), [7, 7, 7, 7, 7, 7, 7, 7, 7, 7]);
-  assert.deepEqual(page("<p>$1.66 credited at lock in. The floor is paid at settlement.</p><p>The cash from the sale lands in your STX balance when the sale fills; each contract you keep pays $1 if it wins.</p>"), []);
-  assert.deepEqual(page("<p>No credit can be funded right now. The upside you sold is worth more now. Sold at today's price. Take fills now at the best price.</p>"), []);
+  assert.deepEqual(page("<p>$1.66 credited at lock in. The floor is paid at settlement.</p><p>The cash lands in your STX balance when the lock fills; each contract you keep pays $1 if it wins.</p>"), []);
+  assert.deepEqual(page("<p>No credit can be funded right now. The upside you gave up is worth more now. Locked at today's price. Take fills now at the best price.</p>"), []);
+
+  // rule 8: no sale in any form on what a holder or a visitor reads
+  assert.deepEqual(page("<p>A lock sells part of your position.</p><p>Sold 40 of 100.</p><p>Your own sale into the book.</p><p>Selling into the bid.</p><p>40 unsold. The seller keeps 60.</p>"), [8, 8, 8, 8, 8, 8]);
+  assert.deepEqual(page('<button aria-label="Sell 40%">Lock in</button><script>var verb = done ? "Sold" : "Sell";</script>'), [8, 8, 8]);
+  assert.deepEqual(page("<p>A lock takes cash out of a position you hold. Locked 40 of 100 at 62 cents, 60 still riding. Cash out ends the whole ticket. The hedge was closed.</p>"), []);
+  assert.deepEqual(page('<span class="chip sold" data-sale="1">40 locked</span><p>The field memberSale.soldContracts and the route /api/shadow/member/sale.</p>'), []);
+  assert.deepEqual(rulesOf((h) => checkSource("services/api/scripts/memberAppHtml.ts", 'const a = "nothing was sold"; const b = p.lock.memberSale.soldContracts; const c = "sold";', ts.ScriptKind.TS, h)), [8]);
+  // a sentence put together in code: the word with a space or a tag beside it is copy, the word alone is a state
+  assert.deepEqual(rulesOf((h) => checkSource("demo/event-lockin-extension/content.js", 'const a = n + " sold"; const b = "<b>" + n + "</b> sold"; const c = "sold " + when;', ts.ScriptKind.JS, h)), [8, 8, 8]);
+  assert.deepEqual(rulesOf((h) => checkSource("demo/event-lockin-extension/content.js", 'const state = "sold"; if (o.side === "sell") el.dataset.state = state;', ts.ScriptKind.JS, h)), []);
+  // the service's own source and the operator's pages: only a sentence about the holder
+  const worker = (code: string): Rule[] => rulesOf((h) => checkSource("services/api/scripts/eventShadowWorker.ts", code, ts.ScriptKind.TS, h));
+  assert.deepEqual(worker('const alert = "Sell the hedge by hand, then clear the flag."; const note = "sold on Kalshi, order 12";'), []);
+  assert.deepEqual(worker('const msg = "The contracts you sold stay sold."; const why = "no hedge on a member sale"; const two = "The hedge is closed. Your sale stands.";'), [8, 8, 8, 8]);
+  assert.deepEqual(rulesOf((h) => checkHtml("shadow GET /capital (operator, eventShadowHtml.ts)", "<p>The hedge is sold by hand.</p><p>The holder sells in their own account.</p>", { literal: false }, h, 0)), [8]);
+  assert.deepEqual(rulesOf((h) => checkHtml("shadow GET / (public record, eventShadowHtml.ts)", "<p>The hedge is sold by hand.</p>", { literal: false }, h, 0)), [8]);
+  // the venue's own word for a lister, and the developer notes
+  assert.deepEqual(rulesOf((h) => checkSource("services/api/scripts/wagerwireListingMockHtml.ts", 'const a = "Nothing for the seller to manage afterwards.";', ts.ScriptKind.TS, h)), []);
+  assert.deepEqual(rulesOf((h) => checkMarkdown("demo/event-lockin-extension/README.md", "The lock is the holder's own partial sale.", h)), []);
+  assert.deepEqual(rulesOf((h) => checkMarkdown("demo/event-lockin-extension/PRIVACY.md", "One sell order for part of a position.", h)), [8]);
   assert.deepEqual(rulesOf((h) => checkHtml("btc demo GET /", "<p>Cash now +$1.66</p>", { literal: false }, h, 0)), []);
 
   // markdown: code spans and blocks are identifiers, prose is copy

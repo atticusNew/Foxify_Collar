@@ -564,7 +564,7 @@ export function buildRealizedBook(input: RealizedBookInput): RealizedBook {
     let endedAt: string | null = null;
     if (buys.length === 0) {
       state = "unresolved";
-      unresolvedReason = "a real sale is on the trail with no real buy behind it";
+      unresolvedReason = "a real close is on the trail with no real buy behind it";
     } else if (p.status === "settled" && p.result) {
       state = "settled";
       endedAt = p.settledAt ?? null;
@@ -576,7 +576,7 @@ export function buildRealizedBook(input: RealizedBookInput): RealizedBook {
         if (p.result === "yes") inexact("the cash paid includes a provision for a settlement fee the venue charges only on a win; the line does not say how much, so the result is understated by it");
         else notes.push("the line does not split out the settlement fee provided for: the payout and the cash paid are both shown before it, and the result is right");
       }
-      if (sells.length > 0) notes.push("a real sale is on the trail and the lock ran to settlement; the result counts the sale's proceeds and the payout on what was still held");
+      if (sells.length > 0) notes.push("a real close is on the trail and the lock ran to settlement; the result counts the close's proceeds and the payout on what was still held");
       if (first.venue !== "kalshi") notes.push("the hedge settles on its own venue's result, which is not read; the payout is taken from the official result on the lock");
       realizedCents = payoutCents + saleProceedsCents - cashPaidCents - toHolderDueCents + fromHolderDueCents;
     } else if (p.status === "closed") {
@@ -587,20 +587,20 @@ export function buildRealizedBook(input: RealizedBookInput): RealizedBook {
         const provisions = buys.reduce((s, f) => s + (f.settlementProvisionCents ?? 0), 0);
         realizedCents = saleProceedsCents - cashPaidCents - provisions - toHolderDueCents + fromHolderDueCents;
         if (first.venue === "prophetx") inexact("the pair settles at the game: the settlement fee is provided for on both sides and charged on one, so the result is understated by the other");
-        if (first.venue === "prophetx" || first.venue === "novig") notes.push("the sale is an offsetting buy; its proceeds land when the pair settles at the game, not at the close");
+        if (first.venue === "prophetx" || first.venue === "novig") notes.push("the close is an offsetting buy; its proceeds land when the pair settles at the game, not when it is made");
       } else {
         state = "unresolved";
         unresolvedReason =
           sells.length === 0
-            ? "the holder left early and no real sale of the hedge is on the trail; the venue still holds it"
-            : `the holder left early and ${(boughtUnitsMilli - soldUnitsMilli) / 1000} of ${boughtUnitsMilli / 1000} units were not sold for real; the venue still holds them`;
+            ? "the holder left early and no real close of the hedge is on the trail; the venue still holds it"
+            : `the holder left early and ${(boughtUnitsMilli - soldUnitsMilli) / 1000} of ${boughtUnitsMilli / 1000} units were not closed for real; the venue still holds them`;
       }
     } else if (p.status === "void") {
       state = "unresolved";
       unresolvedReason = "the lock was voided with no official result; what the hedge paid at the venue is not on the record";
     } else if (sells.length > 0) {
       state = "unresolved";
-      unresolvedReason = "a real sale is on the trail and the lock is still open on its ledger";
+      unresolvedReason = "a real close is on the trail and the lock is still open on its ledger";
     }
     const coverage: RealLock["coverage"] = boughtUnitsMilli === hedgeUnitsMilli ? "exact" : boughtUnitsMilli < hedgeUnitsMilli ? "under" : "over";
     if (coverage === "under" && buys.length > 0) notes.push(`${boughtUnitsMilli / 1000} of the ${hedgeUnitsMilli / 1000} units quoted were bought for real`);

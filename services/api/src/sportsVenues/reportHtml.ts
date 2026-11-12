@@ -170,7 +170,7 @@ function holderTable(rows: HolderRow[]): string {
       return `<tr><td class="lbl">${esc(V(r.venue))}</td><td>${num(r.readings)}<small>${r.noBid ? `${num(r.noBid)} more with no bid` : "a bid every time"}</small></td><td><b>${c(r.saleCostCents, 2)}</b></td><td>${c(r.meanSpreadCents, 2)}</td><td>${pct(r.depthShare[1])}<small>${num(HOLDER_DEPTHS[0])} or more ${pct(r.depthShare[0])} · ${num(HOLDER_DEPTHS[2])} or more ${pct(r.depthShare[2])}</small></td><td><b>${pct(r.elsewhereShare)}</b><small>${r.meanSavingCents !== null ? `mean saving ${c(r.meanSavingCents, 2)}` : "no saving"}${most}</small></td><td><b>${pct(r.roomShare)}</b><small>${r.meanRoomCents !== null ? `mean room ${c(r.meanRoomCents, 2)}` : "never"}</small></td></tr>`;
     })
     .join("");
-  return `<div class="tbl"><table><tr><th>Holder's venue</th><th>Readings<br><small>sides with a bid</small></th><th>Sale on its own book<br><small>consensus − all-in bid, mean</small></th><th>Spread<br><small>ask − bid, mean</small></th><th>Bid holds ${num(HOLDER_DEPTHS[1])} or more<br><small>contracts at the best bid</small></th><th>Other side cheaper elsewhere<br><small>share of readings with a choice</small></th><th>Room for a better bid<br><small>after every fee, share of readings</small></th></tr>${body}</table></div>`;
+  return `<div class="tbl"><table><tr><th>Holder's venue</th><th>Readings<br><small>sides with a bid</small></th><th>Exit on its own book<br><small>consensus − all-in bid, mean</small></th><th>Spread<br><small>ask − bid, mean</small></th><th>Bid holds ${num(HOLDER_DEPTHS[1])} or more<br><small>contracts at the best bid</small></th><th>Other side cheaper elsewhere<br><small>share of readings with a choice</small></th><th>Room for a better bid<br><small>after every fee, share of readings</small></th></tr>${body}</table></div>`;
 }
 
 function holderHtml(h: HolderReport | undefined): string {
@@ -284,7 +284,7 @@ ${hedgerHtml(d.slate, d.window)}
 ${gapsHtml(d.gaps)}
 
 <h2>5 · A holder on each venue <span class="tag eng">Engine</span></h2>
-<p>Someone holds one side of a game on a venue and wants out. One row per venue as the holder's venue. Sale on its own book: the consensus minus that venue's bid after its fee, so half its spread, its fee and any lean. Other side cheaper elsewhere: how often another venue's all-in ask on the other side beats that venue's own, and by how much. Room for a better bid: how often someone could take the holder's contract at that venue's bid, pay that venue's fee on it, buy the other side on the cheapest venue and still have something left, which is the most a better bid could add. A reading is one side of one game in one snapshot while the game is open (consensus between 5¢ and 95¢).</p>
+<p>Someone holds one side of a game on a venue and wants out. One row per venue as the holder's venue. Exit on its own book: the consensus minus that venue's bid after its fee, so half its spread, its fee and any lean. Other side cheaper elsewhere: how often another venue's all-in ask on the other side beats that venue's own, and by how much. Room for a better bid: how often someone could take the holder's contract at that venue's bid, pay that venue's fee on it, buy the other side on the cheapest venue and still have something left, which is the most a better bid could add. A reading is one side of one game in one snapshot while the game is open (consensus between 5¢ and 95¢).</p>
 ${holderHtml(d.holder)}
 
 <h2>Notes and limits</h2>

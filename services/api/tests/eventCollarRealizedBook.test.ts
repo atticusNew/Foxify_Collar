@@ -328,7 +328,7 @@ test("left early: realized only behind a real sale of the whole hedge; without o
   await unsold.paper(sale, T, "2026-11-03T20:00:01.000Z");
   const u = unsold.book();
   assert.deepEqual([u.locks[0].state, u.locks[0].realizedCents, u.locks[0].costAtRiskCents], ["unresolved", null, 300]);
-  assert.match(u.locks[0].unresolvedReason ?? "", /no real sale of the hedge is on the trail/);
+  assert.match(u.locks[0].unresolvedReason ?? "", /no real close of the hedge is on the trail/);
   assert.deepEqual([u.totals.unresolved, u.totals.unresolvedCostCents, u.totals.realizedCents], [1, 300, 0]);
   assert.equal(publicRealSummary(u)?.realizedWithheld, "no real lock has settled yet");
 
@@ -340,7 +340,7 @@ test("left early: realized only behind a real sale of the whole hedge; without o
   await part.live(sale, T, "2026-11-03T20:00:01.000Z", filled({ orderId: "ord-2", unitsMilli: 5_000, avgPriceMilli: 430, costCents: 215, feesCents: 3 }));
   const p = part.book();
   assert.equal(p.locks[0].state, "unresolved");
-  assert.match(p.locks[0].unresolvedReason ?? "", /7 of 12 units were not sold for real/);
+  assert.match(p.locks[0].unresolvedReason ?? "", /7 of 12 units were not closed for real/);
 
   // a void: no official result, so the hedge's payout is unknown
   const voided = ledgers();
@@ -644,11 +644,11 @@ test("the public card: counts and cash, labelled real and apart from the simulat
     '<div class="n green">$0.48</div><div class="l">our result, ended locks</div>',
     "<span>real orders filled</span><b>6</b>",
     "<span>real locks open now</span><b>1</b>",
-    "<span>left early, hedge sold</span><b>1</b>",
-    "<span>received from real sales</span><b>$5.20</b>",
+    "<span>left early, hedge closed</span><b>1</b>",
+    "<span>received from closed hedges</span><b>$5.20</b>",
     "<span>paid to holders, on the record</span><b>$20.52</b>",
     "<span>collected from holders, on the record</span><b>$4.00</b>",
-    "Our result covers the 3 real locks that have ended: what the hedge paid or sold for and what the terms collected from the holder, less what the fills cost and what the terms paid the holder.",
+    "Our result covers the 3 real locks that have ended: what the hedge paid or closed for and what the terms collected from the holder, less what the fills cost and what the terms paid the holder.",
   ])
     assert.ok(c.includes(piece), piece);
   assert.ok(!c.includes("ended and not yet valued"), "a row with nothing in it is not shown");

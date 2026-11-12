@@ -513,7 +513,7 @@ test("better bid: every refusal is typed and says why in plain words", () => {
   assert.deepEqual([empty.code, empty.ownSale, empty.available.holderVenueBidMilli], ["own_sale_unpriced", null, 0]);
   const thin = code(inputs({ bids: [level(580, 40_000)] }));
   assert.equal(thin.code, "own_sale_unpriced");
-  assert.match(thin.reason, /hold 40 contracts; the sale is 100 contracts/);
+  assert.match(thin.reason, /hold 40 contracts; the size asked is 100 contracts/);
 
   // the venue's offer is one step over its bid: nowhere for a bid to rest
   const closed = code(inputs({ bids: [level(580)], bestAskMilli: 590 }));

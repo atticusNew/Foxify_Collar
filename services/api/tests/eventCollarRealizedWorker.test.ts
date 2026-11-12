@@ -289,7 +289,7 @@ test("an old record replays: a real fill from before the fee and the pending tra
   assert.ok(card.includes("<span>paid to holders, on the record</span><b>$8.84</b>"));
   assert.ok(card.includes("<span>collected from holders, on the record</span><b>$0.00</b>"));
   assert.ok(card.includes("<span>real orders filled</span><b>1</b>"));
-  assert.ok(card.includes("Our result covers the 1 real lock that has ended: what the hedge paid or sold for and what the terms collected from the holder, less what the fills cost and what the terms paid the holder."));
+  assert.ok(card.includes("Our result covers the 1 real lock that has ended: what the hedge paid or closed for and what the terms collected from the holder, less what the fills cost and what the terms paid the holder."));
   // the card's own words: no venue, no dash, none of the words we do not use
   assert.ok(!/kalshi|prophetx|novig|polymarket|parlayx|aggregator/i.test(card));
   assert.ok(!/[\u2014\u2013]/.test(card));

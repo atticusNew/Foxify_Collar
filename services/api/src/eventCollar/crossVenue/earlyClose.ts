@@ -252,7 +252,7 @@ export function quoteEarlyClose(terms: EarlyCloseTerms, books: EarlyCloseBooks):
   let hedgeSale: EarlyCloseQuote["hedgeSale"];
   if (terms.route === "kalshi_self") {
     if (books.kalshi.noBids.length === 0) {
-      return { ok: false, leg: "hedge", code: "book_empty", detail: "no resting No bids to sell the hedge into" };
+      return { ok: false, leg: "hedge", code: "book_empty", detail: "no resting No bids to close the hedge into" };
     }
     const h = walkKalshiBids(books.kalshi.noBids, terms.hedgeUnitsMilli);
     if (!h) {

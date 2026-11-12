@@ -300,7 +300,7 @@ export function pilotCheck(f: PilotFacts): PilotReport {
     : f.strategy === "book"
       ? `Its state now: off. Nothing leaves under these settings in any case: the hedge strategy is "book".`
       : "Its state now: off.";
-  const ksScope = "It stands in front of every hedge order this service can send: the live strategy's buys and sales, the operator's resend, and the request-for-quote strategy. It does not reach a member's own sale in their own venue account (the member app), which is the member's order, nor the operator's Kalshi account routes.";
+  const ksScope = "It stands in front of every hedge order this service can send: the live strategy's buys and closes, the operator's resend, and the request-for-quote strategy. It does not reach a member's own order in their own venue account (the member app), which is the member's order, nor the operator's Kalshi account routes.";
   add(
     "kill_switch",
     "The kill switch stops every hedge order in every strategy, and its state is known.",
@@ -350,7 +350,7 @@ export function pilotCheck(f: PilotFacts): PilotReport {
 
   // 5
   const inPlayState = f.inPlay.lock ? `On (EVENT_X_IN_PLAY): a game can be locked in until ${plural(f.inPlay.hours, "hour")} after its start.` : `Off (EVENT_X_IN_PLAY=0): a lock closes ${f.inPlay.cutoffMinutes} minutes before the start.`;
-  const others = ` The simulated scan ${f.inPlay.scan ? "also opens records on games under way (EVENT_SHADOW_SCAN_IN_PLAY)" : "stays before the start"}. A member selling their own position during a game is ${f.inPlay.memberSale ? "on" : "off"} (MEMBER_APP_IN_PLAY); that sale is the member's own order and nothing is hedged for it.`;
+  const others = ` The simulated scan ${f.inPlay.scan ? "also opens records on games under way (EVENT_SHADOW_SCAN_IN_PLAY)" : "stays before the start"}. A member's direct lock during a game is ${f.inPlay.memberSale ? "on" : "off"} (MEMBER_APP_IN_PLAY); it is the member's own order and nothing is hedged for it.`;
   const inPlayGates = "Its gates: the hedge is bought first, all or none, so a book that moved between the read and the order fills nothing and locks nothing; the exposure caps apply as they do before the start; the game must be inside the hours above.";
   add(
     "in_play",

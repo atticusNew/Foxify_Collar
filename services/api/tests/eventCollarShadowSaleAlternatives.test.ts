@@ -20,7 +20,7 @@ import { appendShadowRecord, loadShadowPositions, settlePayouts, summarizeShadow
 import { saleAlternativesFor, summarizeSaleAlternatives, type ShadowBetterBidOn, type ShadowSaleAlternatives } from "../src/eventCollar/crossVenue/shadowSaleAlternatives";
 import { DEFAULT_CROSS_CONFIG, capTotalCents, centsUpOf, floorTotalCents, type MatchedPair, type PmBook } from "../src/eventCollar/crossVenue/types";
 import type { ReferenceBook } from "../src/eventCollar/crossVenue/venueBooks";
-import { renderShadowHtml } from "../scripts/eventShadowHtml";
+import { measuredAlternativesCard, renderShadowHtml, renderShadowReportHtml } from "../scripts/eventShadowHtml";
 import type { CandidateResult, GameMarketRow, OneQuoteInputs, OneQuoteResult, ScanState } from "../scripts/eventProtectXDemoService";
 
 const LOCK = "2026-09-20T17:00:00.000Z";
@@ -440,30 +440,35 @@ test("sale alternatives summary: counts, medians and totals in cents and in bps 
 });
 
 // ---------------------------------------------------------------------------
-// the public page
+// the operator's report (the public page does not carry the section)
 // ---------------------------------------------------------------------------
 
 const PLAIN_WORDS = /\u2014|\u2013|guarantee|wallet|protect/i;
 const VENUE_NAMES = /kalshi|polymarket|prophetx|novig|stx|\bpoly\b/i;
 const cardOf = (html: string): string => {
-  const start = html.indexOf("<h2>Own sale and better bid, measured</h2>");
+  const start = html.indexOf("<h2>Direct lock and better bid, measured</h2>");
   assert.ok(start >= 0, "the section is on the page");
   const end = html.indexOf('<div class="card">', start);
   return html.slice(start, end < 0 ? undefined : end);
 };
 
-test("public record page: one section says how often a better bid existed, by how much, and how the own sale compares with the lock, without naming a venue", () => {
+test("operator report: one section says how often a better bid existed, by how much, and how the direct lock compares with the hedged lock, without naming a venue; the public page does not carry it", () => {
   const positions = loadShadowPositions(summedLedger());
-  const html = renderShadowHtml({ atIso: "2026-09-25T00:00:00.000Z", summary: summarizeShadow(positions), open: positions.filter((p) => p.status === "open"), settled: positions.filter((p) => p.status === "settled"), closed: [] });
+  const summary = summarizeShadow(positions);
+  const html = renderShadowReportHtml({ atIso: "2026-09-25T00:00:00.000Z", summary });
   const card = cardOf(html);
-  assert.equal(html.split("Own sale and better bid, measured").length, 2, "one section");
+  assert.equal(html.split("Direct lock and better bid, measured").length, 2, "one section");
+  assert.ok(card.length > 400 && measuredAlternativesCard(summary).includes(card.slice(0, 400)), "the report prints the card as rendered");
+  // the public record says nothing of it: not the section, not a better bid, not a sale in any form
+  const publicPage = renderShadowHtml({ atIso: "2026-09-25T00:00:00.000Z", summary, open: positions.filter((p) => p.status === "open"), settled: positions.filter((p) => p.status === "settled"), closed: [] });
+  assert.ok(!/better bid|direct lock|own sale|\bsell|\bsold\b|\bsale/i.test(publicPage.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/g, "")), "the public page is silent on it");
 
   // labelled for what it is
-  assert.ok(card.includes("Measured on the book at the moment of each quote. Simulated: nothing was bought, nothing was sold and no bid was placed."));
+  assert.ok(card.includes("Measured on the book at the moment of each quote. Simulated: nothing was bought, nothing was closed and no bid was placed."));
   assert.ok(card.includes("Each of the 5 record lines opened since 2026-09-21 UTC was also priced two other ways, from the same books at the same moment."));
   // on how many lines a better bid existed, and the best of how many venues
   assert.ok(card.includes("A better bid existed on 2 of the 3 lines where another venue&#39;s book was read (the best of up to 3 venues on a line).") || card.includes("A better bid existed on 2 of the 3 lines where another venue's book was read (the best of up to 3 venues on a line)."));
-  // by how much it beat the sell button: median and total, cents and percent of stake
+  // by how much it beat the user's own venue: median and total, cents and percent of stake
   assert.ok(card.includes("by a median of $0.40 (0.40% of stake) and by $0.80 in total (0.40% of the stake on those lines)"));
   assert.ok(card.includes("after every venue fee, our take and a charge for the two venues settling a tie or a called-off game differently"));
   assert.ok(card.includes("2 lines is a small sample: read it as a count, not as a rate."));
@@ -476,15 +481,15 @@ test("public record page: one section says how often a better bid existed, by ho
     ),
     card,
   );
-  // the own sale against the lock the record wrote
-  assert.ok(card.includes("the own sale paid the user a median of $0.25 more than the lock's floor (0.25% of stake) and $0.50 more in total across 4 lines (0.12% of stake): more on 2, less on 1, the same on 1."));
-  assert.ok(card.includes("On 1 other line the own sale could not be priced from the books read, and nothing was measured."));
-  assert.ok(card.includes("On the 3 lines of those that have settled, the own sale would have returned $183.50, against $183.00 under the lock and $200.00 left untouched, at the official result."));
+  // the direct lock against the lock the record wrote
+  assert.ok(card.includes("the direct lock paid the user a median of $0.25 more than the lock's floor (0.25% of stake) and $0.50 more in total across 4 lines (0.12% of stake): more on 2, less on 1, the same on 1."));
+  assert.ok(card.includes("On 1 other line the direct lock could not be priced from the books read, and nothing was measured."));
+  assert.ok(card.includes("On the 3 lines of those that have settled, the direct lock would have returned $183.50, against $183.00 under the lock and $200.00 left untouched, at the official result."));
   // the four figures at the top
   assert.match(card, /<div class="n green">2<\/div><div class="l">of 3 lines had a better bid<\/div>/);
-  assert.match(card, /<div class="n">\$0\.40<\/div><div class="l">median gain over the sell button<\/div>/);
-  assert.match(card, /<div class="n">\$0\.80<\/div><div class="l">total gain over the sell button<\/div>/);
-  assert.match(card, /<div class="n">\$0\.25<\/div><div class="l">own sale against the lock's floor, median<\/div>/);
+  assert.match(card, /<div class="n">\$0\.40<\/div><div class="l">median gain over the user's own venue<\/div>/);
+  assert.match(card, /<div class="n">\$0\.80<\/div><div class="l">total gain over the user's own venue<\/div>/);
+  assert.match(card, /<div class="n">\$0\.25<\/div><div class="l">direct lock against the lock's floor, median<\/div>/);
 
   // public words: no hedge venue named, the user not the holder, no dashes, nothing promised
   assert.ok(!VENUE_NAMES.test(card), card.match(VENUE_NAMES)?.[0]);
@@ -493,25 +498,25 @@ test("public record page: one section says how often a better bid existed, by ho
 
   // the sale behind the lock on the typical line reads as less, not as a negative more
   const behind = loadShadowPositions(summedLedger()).filter((p) => ["L2", "L3"].includes(p.ticker));
-  const behindCard = cardOf(renderShadowHtml({ atIso: "2026-09-25T00:00:00.000Z", summary: summarizeShadow(behind), open: [], settled: [], closed: [] }));
+  const behindCard = cardOf(measuredAlternativesCard(summarizeShadow(behind)));
   assert.ok(behindCard.includes("a median of $0.50 less than the lock's floor (-0.50% of stake) and $1.00 less in total across 2 lines (-0.50% of stake): more on 0, less on 1, the same on 1."));
   assert.ok(behindCard.includes("A better bid existed on 1 of the 2 lines"));
 
   // a record whose lines were all written before the measurement has no such section
-  const beforeIt = renderShadowHtml({ atIso: "2026-09-25T00:00:00.000Z", summary: summarizeShadow(positions.filter((p) => p.ticker === "L7")), open: [], settled: [], closed: [] });
-  assert.ok(!beforeIt.includes("Own sale and better bid"));
+  const beforeIt = renderShadowReportHtml({ atIso: "2026-09-25T00:00:00.000Z", summary: summarizeShadow(positions.filter((p) => p.ticker === "L7")) });
+  assert.ok(!beforeIt.includes("better bid, measured") && measuredAlternativesCard(summarizeShadow(positions.filter((p) => p.ticker === "L7"))) === "");
 
   // lines measured, another venue read, no better bid anywhere: said in words
-  const noBid = cardOf(renderShadowHtml({ atIso: "2026-09-25T00:00:00.000Z", summary: summarizeShadow(behind.filter((p) => p.ticker === "L3")), open: [], settled: [], closed: [] }));
+  const noBid = cardOf(measuredAlternativesCard(summarizeShadow(behind.filter((p) => p.ticker === "L3"))));
   assert.ok(noBid.includes("A better bid existed on none of the 1 line where another venue's book was read (the best of up to 1 venue on a line)"));
-  assert.match(noBid, /<div class="n">none yet<\/div><div class="l">median gain over the sell button<\/div>/);
+  assert.match(noBid, /<div class="n">none yet<\/div><div class="l">median gain over the user's own venue<\/div>/);
   // no other venue read at all
-  const alone = cardOf(renderShadowHtml({ atIso: "2026-09-25T00:00:00.000Z", summary: summarizeShadow(loadShadowPositions(summedLedger()).filter((p) => p.ticker === "L5")), open: [], settled: [], closed: [] }));
+  const alone = cardOf(measuredAlternativesCard(summarizeShadow(loadShadowPositions(summedLedger()).filter((p) => p.ticker === "L5"))));
   assert.ok(alone.includes("No line had another venue's book for the other side to price a better bid from."));
-  // no own sale priced on any line
-  const unpriced = cardOf(renderShadowHtml({ atIso: "2026-09-25T00:00:00.000Z", summary: summarizeShadow(loadShadowPositions(summedLedger()).filter((p) => p.ticker === "L4")), open: [], settled: [], closed: [] }));
-  assert.ok(unpriced.includes("On none of the 1 line could the user's own sale be priced from the books read, so nothing was measured."));
-  assert.match(unpriced, /<div class="n">none yet<\/div><div class="l">own sale against the lock's floor, median<\/div>/);
+  // no direct lock priced on any line
+  const unpriced = cardOf(measuredAlternativesCard(summarizeShadow(loadShadowPositions(summedLedger()).filter((p) => p.ticker === "L4"))));
+  assert.ok(unpriced.includes("On none of the 1 line could a direct lock be priced from the books read, so nothing was measured."));
+  assert.match(unpriced, /<div class="n">none yet<\/div><div class="l">direct lock against the lock's floor, median<\/div>/);
   assert.ok(!VENUE_NAMES.test(unpriced) && !PLAIN_WORDS.test(unpriced));
   assert.ok(!VENUE_NAMES.test(noBid + alone) && !PLAIN_WORDS.test(noBid + alone));
 });
@@ -520,7 +525,7 @@ test("public record page: one section says how often a better bid existed, by ho
 // the worker: a scan line carries the measurement, from the books the scan handed over
 // ---------------------------------------------------------------------------
 
-test("shadow worker: a board line is written with its own sale and better bid from the scan's books; the public page prints the section and the public JSON names no venue", async () => {
+test("shadow worker: a board line is written with its own sale and better bid from the scan's books; the operator's report prints the section, the public page does not, and the public JSON names no venue", async () => {
   const dir = mkdtempSync(join(tmpdir(), "shadow-sale-worker-"));
   const ledger = join(dir, "ledger.jsonl");
   process.env.NODE_ENV = "test";
@@ -602,9 +607,10 @@ test("shadow worker: a board line is written with its own sale and better bid fr
     // the ledger keeps the book's key for the operator; the old fields of the line are where they were
     assert.ok(line.counterfactuals?.routes?.kalshi_self.ok && line.routing?.holderVenue === "kalshi");
 
-    // the public page prints the section, in public words
-    const page = await (await fetch(`${base}/`)).text();
+    // the operator's report prints the section; the public page does not
+    const page = await (await fetch(`${base}/report?token=op-secret`)).text();
     const card = cardOf(page);
+    assert.ok(!/better bid|direct lock|own sale/i.test(await (await fetch(`${base}/`)).text()));
     assert.ok(card.includes("A better bid existed on 1 of the 1 line where another venue's book was read (the best of up to 2 venues on a line)."));
     assert.ok(card.includes(`by a median of $${(sale.betterBid.improvementCents / 100).toFixed(2)}`));
     assert.ok(!VENUE_NAMES.test(card) && !PLAIN_WORDS.test(card));

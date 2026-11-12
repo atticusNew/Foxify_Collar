@@ -114,4 +114,4 @@ export const LOCK_NOT_OPEN = { code: "lock_not_open", message: "Lock in is not o
 /** What a real-only holder is told when the hedge behind their lock could not truly be sold. */
 export const LEAVE_NOT_OPEN = { code: "leave_not_open", message: "Leaving early is not open on this position right now. Your lock stands as it is." } as const;
 /** What a real-only holder is told when the sale went out and sold nothing. */
-export const LEAVE_NOT_SOLD = { code: "leave_not_sold", message: "The price moved before the other side sold. Nothing was closed; your lock stands. Try again." } as const;
+export const LEAVE_NOT_SOLD = { code: "leave_not_sold", message: "The price moved before the other side closed. Nothing was closed; your lock stands. Try again." } as const;

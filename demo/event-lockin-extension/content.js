@@ -176,7 +176,7 @@
   /** What a shape or a lock puts in the holder's hands at the tap: the credit on a hedged lock; on a member's sale, what the fills paid into their own balance. */
   const cashOf = (t) => (t && t.cashNowCents != null ? t.cashNowCents : t && t.memberSale && t.memberSale.cashNowCents != null ? t.memberSale.cashNowCents : (t && t.creditCents) || 0);
   /** The cash row's label: a hedged lock pays the holder; a member's sale lands in their own venue balance. */
-  const cashLabel = (sale, now) => (sale ? "In your " + esc(V.name) + " balance" + (now ? ' <span class="ael-dim">when the sale fills</span>' : "") : now ? "Credit at lock in" : "Credited at lock in");
+  const cashLabel = (sale, now) => (sale ? "In your " + esc(V.name) + " balance" + (now ? ' <span class="ael-dim">when the lock fills</span>' : "") : now ? "Credit at lock in" : "Credited at lock in");
   const fmtAt = (iso) => {
     try {
       const d = new Date(iso);
@@ -1789,9 +1789,9 @@
       case "size":
         return { why: message || "That is more than you hold on " + V.name + ".", next: "" };
       case "no_bids":
-        return { why: V.name + " shows no bids on this market right now.", next: "The lock is your own sale into the book; check back when it has bids." };
+        return { why: V.name + " shows no bids on this market right now.", next: "The lock is your own order on the book; check back when it has bids." };
       case "not_filled":
-        return { why: message || V.name + "'s bid moved before the order reached it; nothing was sold.", next: "Nothing changed. Try again." };
+        return { why: message || V.name + "'s bid moved before the order reached it; nothing was locked.", next: "Nothing changed. Try again." };
       case "parlay_unsupported":
         return { why: "Parlays cannot be locked in on " + V.name + ".", next: "" };
       case "venue_refused":
@@ -1824,7 +1824,7 @@
    * Why the protection settles the way it does, in the holder's terms: the pick moved up, so the
    * upside they sold is worth more now; moved down, so the floor they hold is worth more now.
    */
-  const closeWhy = (net) => (net < 0 ? "your pick moved up, so the upside you sold is worth more now" : net > 0 ? "your pick moved down, so the floor you hold is worth more now" : "even at today's price");
+  const closeWhy = (net) => (net < 0 ? "your pick moved up, so the upside you gave up is worth more now" : net > 0 ? "your pick moved down, so the floor you hold is worth more now" : "even at today's price");
   const cashState = (rec) => {
     const legs = Array.isArray(rec.cashDue) ? rec.cashDue : null;
     if (!legs || !legs.length) return null;
@@ -2073,7 +2073,7 @@
       .map((k) => {
         const tt = offered[k];
         const tr = outcomesOf(B, n, tt);
-        return '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (k === tier) + '" aria-label="' + esc(TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(cashOf(tt)) + (tt && tt.cashNowCents != null ? " in your " + V.name + " balance when the sale fills" : " credited at lock in") + (shareWords(tt, tt && tt.cashNowCents != null) ? ", " + shareWords(tt, tt && tt.cashNowCents != null) : "")) + '">' + esc(TIER_WORDS[k]) + "</button>";
+        return '<button type="button" class="ael-shape-b" data-tier="' + k + '" aria-pressed="' + (k === tier) + '" aria-label="' + esc(TIER_WORDS[k] + ": win " + usd(tr.capTotal) + ", lose " + usd(tr.floorTotal) + ", " + usd(cashOf(tt)) + (tt && tt.cashNowCents != null ? " in your " + V.name + " balance when the lock fills" : " credited at lock in") + (shareWords(tt, tt && tt.cashNowCents != null) ? ", " + shareWords(tt, tt && tt.cashNowCents != null) : "")) + '">' + esc(TIER_WORDS[k]) + "</button>";
       })
       .join("") +
     "</div>";
@@ -2090,7 +2090,7 @@
    * sale "sells 40% of your position"; a hedged lock, which sells nothing of the holder's, is
    * "like selling 15% of your position". Empty when the service sent no share.
    */
-  const shareWords = (t, sale) => (t && typeof t.sharePercent === "number" ? (sale ? "sells " : "like selling ") + t.sharePercent + "% of your position" : "");
+  const shareWords = (t, sale) => (t && typeof t.sharePercent === "number" ? "locks " + t.sharePercent + "% of your position" : "");
   const drow = (label, value, cls) => '<span class="ael-dl' + (cls ? " " + cls : "") + '">' + label + '</span><span class="ael-dv' + (cls ? " " + cls : "") + '">' + value + "</span>";
   const dwide = (html) => '<div class="ael-dwide">' + html + "</div>";
 
@@ -2133,7 +2133,7 @@
     if (share) rows.push(drow("Share", esc(share)));
     if (sale) {
       // the holder's own sale, as the venue's book prices it now: how many of their contracts sell, at what, how many ride
-      rows.push(drow("Sale", saleWords(t, n, p.member) + (t.depthLimited ? ' <span class="ael-dim">&middot; the bids run out there</span>' : "")));
+      rows.push(drow("Lock", saleWords(t, n, p.member) + (t.depthLimited ? ' <span class="ael-dim">&middot; the bids run out there</span>' : "")));
       // the comparison follows the shape picked, when the hedge routes priced that shape
       const cmpBase = p.compared;
       const cmp = comparedWords(cmpBase && cmpBase.ok && cmpBase.tiers && cmpBase.tiers[st.tier] ? Object.assign({}, cmpBase, cmpBase.tiers[st.tier]) : cmpBase);
@@ -2157,8 +2157,8 @@
       drow(
         "How",
         sale
-          ? "You sell part of your position into " + esc(V.name) + "'s own book today, in your own account, and keep the rest riding. No one is on the other side and nothing is hedged: the cash from the sale lands in your " + esc(V.name) + " balance when the sale fills, and each contract you keep pays $1 if it wins, as it always would."
-          : "You sell part of the position today and keep the rest. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + "; it settles on the same official result, nothing to manage.",
+          ? "Part of your position turns into cash on " + esc(V.name) + "'s own book today, in your own account, and the rest keeps riding. No one is on the other side and nothing is hedged: the cash lands in your " + esc(V.name) + " balance when the lock fills, and each contract you keep pays $1 if it wins, as it always would."
+          : "You give up part of the upside today and keep the position. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it" : "") + "; it settles on the same official result, nothing to manage.",
       ),
     );
     return '<div class="ael-drows">' + rows.join("") + "</div>";
@@ -2175,7 +2175,7 @@
     if (sold == null) return "";
     const price = t.avgPriceCents != null && t.orderId !== undefined ? t.avgPriceCents : t.limitPriceCents;
     const order = t.orderId ? ' <span class="ael-dim">&middot; ' + esc(V.name) + " order <code>" + esc(String(t.orderId).slice(0, 8)) + "&hellip;</code></span>" : "";
-    const verb = t.orderId !== undefined ? "Sold" : "Sell";
+    const verb = t.orderId !== undefined ? "Locked" : "Lock";
     const kept = t.keptContracts != null ? t.keptContracts : Math.max(0, held - sold);
     return "<b>" + verb + " " + sold + " of " + held + "</b> at " + price + "&cent;" + order + (kept > 0 ? ' <span class="ael-dim">&middot; ' + kept + " still riding</span>" : "");
   };
@@ -2278,7 +2278,7 @@
       for (const k of keys) {
         const tt = offered[k];
         const tr = outcomesOf(B, n, tt);
-        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>Floor " + esc(usd(tr.floorTotal)) + " &middot;</i> <i>Upside " + esc(usd(tr.capTotal)) + " &middot;</i> <i>+" + esc(usd(cashOf(tt))) + (isSale(p) ? " when the sale fills" : " credit") + "</i>" + (shareWords(tt, isSale(p)) ? " <i>&middot; " + esc(shareWords(tt, isSale(p))) + "</i>" : "") + "</span></button>";
+        seg += '<button type="button" class="ael-seg" data-tier="' + k + '" aria-pressed="' + (k === st.tier) + '"><b>' + TIER_WORDS[k] + "</b><span><i>Floor " + esc(usd(tr.floorTotal)) + " &middot;</i> <i>Upside " + esc(usd(tr.capTotal)) + " &middot;</i> <i>+" + esc(usd(cashOf(tt))) + (isSale(p) ? " when the lock fills" : " credit") + "</i>" + (shareWords(tt, isSale(p)) ? " <i>&middot; " + esc(shareWords(tt, isSale(p))) + "</i>" : "") + "</span></button>";
       }
     }
     const fine = ["Priced live"];
@@ -2324,7 +2324,7 @@
       '<button type="button" class="ael-go" id="ael-go-' + esc(B.ticker) + '"><span class="ael-ic">' + SHIELD_FILL + "</span>Lock in</button>" +
       removedLine +
       '<div class="ael-fine">' + fine.join(" &middot; ") + "</div>" +
-      '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>You sell part of this position at today\'s price and keep the rest. ' + (sale ? "The cash from the sale lands in your " + esc(V.name) + " balance when the sale fills." : "That is why you are credited at lock in.") + '</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>" + (sale ? "It is your own sale into " + esc(V.name) + "'s book, in your own account; nothing is hedged and no one is on the other side. The contracts you keep settle on the official result as they always would." : "It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".") + "</p></div>" +
+      '<div class="ael-how' + (st.how ? " ael-on" : "") + '"><p>' + (sale ? "Part of this position turns into cash at today's price and the rest keeps riding. The cash lands in your " + esc(V.name) + " balance when the lock fills." : "You give up part of the upside at today's price and keep the position. That is why you are credited at lock in.") + '</p><p>If ' + esc(shortOf(B.ticker)) + " lose you end with " + esc(usd(rs.floorTotal)) + " instead of $0. If they win, " + esc(usd(rs.capTotal)) + " instead of " + esc(was) + ".</p><p>" + (sale ? "It is your own order on " + esc(V.name) + "'s book, in your own account; nothing is hedged and no one is on the other side. The contracts you keep settle on the official result as they always would." : "It settles on the same official result as your position; nothing to manage. The other side is bought the second you tap" + (shopped ? ", at the best price across the venues that quoted it, not only here" : "") + ".") + "</p></div>" +
       DISCLOSE;
     setPanel(B, panel, html, () => {
       for (const c of panel.querySelectorAll("[data-tier]"))
@@ -2528,7 +2528,7 @@
     go.disabled = true;
     const t0 = Date.now();
     // the stages in words, a slow sheen, and whole seconds only once it has taken a few: calm to watch
-    const STAGES = isSale(st.quote && st.quote.p) ? ["Pricing from " + V.name + "'s book…", "Selling into the bid…", "Writing the record…"] : ["Pricing from the live book…", "Writing the record…", "Buying the other side…"];
+    const STAGES = isSale(st.quote && st.quote.p) ? ["Pricing from " + V.name + "'s book…", "Locking at the price shown…", "Writing the record…"] : ["Pricing from the live book…", "Writing the record…", "Buying the other side…"];
     const label = () => {
       const s = (Date.now() - t0) / 1000;
       return STAGES[Math.min(STAGES.length - 1, Math.floor(s / 1.5))] + (s >= 3 ? " " + Math.floor(s) + "s" : "");
@@ -2809,10 +2809,10 @@
       return row("Offset on", esc(venue) + (units ? " &middot; " + esc(units) + " contracts of the pair bought" : "") + (sale && sale.costCents != null ? " &middot; " + esc(usd(sale.costCents)) + " at the game" : "") + ' <span class="ael-dim">&middot; the pair settles when the game does</span>' + order);
     }
     if (sent) {
-      return row("Sold back", (units ? esc(units) + " contracts on " : "on ") + esc(venue) + (sale && sale.avgPriceMilli != null ? " at " + esc((sale.avgPriceMilli / 10).toFixed(1)) + "c each after fees" : "") + (sale && sale.costCents != null ? " &middot; " + esc(usd(sale.costCents)) : "") + order);
+      return row("Closed out", (units ? esc(units) + " contracts on " : "on ") + esc(venue) + (sale && sale.avgPriceMilli != null ? " at " + esc((sale.avgPriceMilli / 10).toFixed(1)) + "c each after fees" : "") + (sale && sale.costCents != null ? " &middot; " + esc(usd(sale.costCents)) : "") + order);
     }
     if (isOffset(sale) || /prophetx/i.test(venue)) return row("Offset on", '<span class="ael-dim">' + esc(venue) + "; recorded at the book's price, the pair bought by hand</span>");
-    return row("Sold back", '<span class="ael-dim">recorded at the book\'s price on ' + esc(venue) + "; settled by hand</span>");
+    return row("Closed out", '<span class="ael-dim">recorded at the book\'s price on ' + esc(venue) + "; settled by hand</span>");
   };
   /** How the order reached the venue, as the receipt says it: through the aggregator's pod, or on our own key. The partner is never named. */
   const viaWords = (h) => (h && h.via === "aggregator" ? ' <span class="ael-dim">&middot; through the aggregator</span>' : h && h.via === "direct" ? ' <span class="ael-dim">&middot; direct</span>' : "");
@@ -2873,10 +2873,10 @@
     const m = st.rcptMember || {};
     const sale = m.memberSale || rec.memberSale || null;
     const lines = [];
-    if (!sale) lines.push(row("Sale", '<span class="ael-dim">' + (st.rcptBusy ? "reading&hellip;" : esc(st.rcptErr || "not available right now")) + "</span>"));
+    if (!sale) lines.push(row("Lock", '<span class="ael-dim">' + (st.rcptBusy ? "reading&hellip;" : esc(st.rcptErr || "not available right now")) + "</span>"));
     else {
       const partial = sale.requestedContracts != null && sale.soldContracts < sale.requestedContracts;
-      lines.push(row("Sold", saleWords(sale, rec.contracts, null) + (partial ? ' <span class="ael-dim">&middot; ' + sale.requestedContracts + " asked; the rest of the order was cancelled</span>" : "")));
+      lines.push(row("Locked", saleWords(sale, rec.contracts, null) + (partial ? ' <span class="ael-dim">&middot; ' + sale.requestedContracts + " asked; the rest of the order was cancelled</span>" : "")));
       lines.push(row(cashLabel(true, false), esc(usd(sale.cashNowCents)) + (sale.feeCents ? ' <span class="ael-dim">&middot; ' + esc(V.name) + " fee " + esc(usd(sale.feeCents)) + "</span>" : "") + (sale.status ? ' <span class="ael-dim">&middot; ' + esc(String(sale.status).replace(/_/g, " ")) + "</span>" : "")));
       if (sale.keptContracts > 0) lines.push(row("Still riding", sale.keptContracts + " contracts" + ' <span class="ael-dim">&middot; pay ' + esc(usd(sale.keptContracts * 100)) + " on a win, $0 on a loss, as they always did</span>"));
     }
@@ -2884,7 +2884,7 @@
     if (cmp) lines.push(row("Compared", cmp));
     if (rec.status === "closed") {
       const bb = m.memberBuyBack || rec.memberBuyBack || null;
-      if (bb) lines.push(row("Bought back", "<b>" + bb.boughtContracts + "</b> at " + bb.avgPriceCents + "&cent; &middot; " + esc(usd(bb.costCents)) + (bb.orderId ? ' <span class="ael-dim">&middot; ' + esc(V.name) + " order <code>" + esc(String(bb.orderId).slice(0, 8)) + "&hellip;</code></span>" : "") + (bb.requestedContracts != null && bb.boughtContracts < bb.requestedContracts ? ' <span class="ael-dim">&middot; ' + bb.requestedContracts + " asked; the rest stays sold</span>" : "")));
+      if (bb) lines.push(row("Bought back", "<b>" + bb.boughtContracts + "</b> at " + bb.avgPriceCents + "&cent; &middot; " + esc(usd(bb.costCents)) + (bb.orderId ? ' <span class="ael-dim">&middot; ' + esc(V.name) + " order <code>" + esc(String(bb.orderId).slice(0, 8)) + "&hellip;</code></span>" : "") + (bb.requestedContracts != null && bb.boughtContracts < bb.requestedContracts ? ' <span class="ael-dim">&middot; ' + bb.requestedContracts + " asked; the rest stays locked</span>" : "")));
     }
     if (m.settlement && m.settlement.type) lines.push(row(esc(V.name) + " settled", esc(String(m.settlement.type).replace(/_/g, " ")) + (m.settlement.closingPrice != null ? " at " + esc(String(m.settlement.closingPrice)) : "") + (m.settlement.realizedPnl != null ? ' <span class="ael-dim">&middot; realized ' + esc(String(m.settlement.realizedPnl)) + "</span>" : "")));
     const rt = rulesOf({ tails: m.tails || rec.tails, rules: m.rules || rec.rules });
@@ -2967,10 +2967,10 @@
       body =
         '<div class="ael-ledger ael-two">' +
         ledgerRow("Lock removed &middot; <span class=\"ael-dim\">" + (bb ? "bought back " + bb.boughtContracts + " at " + bb.avgPriceCents + "&cent;" : "bought back") + "</span>", signed(net), null, "ael-hero") +
-        ledgerRow("Your position", (whole ? "whole again" : back != null && sold != null ? back + " of " + sold + " bought back; the rest stays sold" : "back") + " on " + esc(V.name) + ", without the lock", null, "ael-last") +
+        ledgerRow("Your position", (whole ? "whole again" : back != null && sold != null ? back + " of " + sold + " bought back; the rest stays locked" : "back") + " on " + esc(V.name) + ", without the lock", null, "ael-last") +
         "</div>";
       if (rec.closedAt) meta.push("Removed " + esc(fmtAt(rec.closedAt)));
-      meta.push(net < 0 ? "the round trip cost " + esc(usd(-net)) + ": the price rose after you sold" : net > 0 ? esc(usd(net)) + " kept from the round trip: the price fell after you sold" : "the round trip came out even");
+      meta.push(net < 0 ? "the round trip cost " + esc(usd(-net)) + ": the price rose after the lock" : net > 0 ? esc(usd(net)) + " kept from the round trip: the price fell after the lock" : "the round trip came out even");
       if (operator() && rec.closeUnwindFrictionCents != null) meta.push("crossing the book cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
       if (rec.justLeft && rec.ms) meta.push("in " + (rec.ms / 1000).toFixed(1) + "s");
     } else if (rec.status === "closed") {
@@ -2988,7 +2988,7 @@
       if (operator() && rec.closeUnwindFrictionCents != null) meta.push("crossing the books cost " + esc(usd(rec.closeUnwindFrictionCents)) + " against the mid");
       if (rec.closeHedge) {
         const sale = rec.closeHedge.sale || null;
-        meta.push(!rec.closeHedge.sent ? "the other side's sale is on the record" : isOffset(sale) ? "the other side offset on " + esc(sale.venue) + ", settles at the game" : "the other side sold on " + esc((sale && sale.venue) || "Kalshi"));
+        meta.push(!rec.closeHedge.sent ? "the other side's close is on the record" : isOffset(sale) ? "the other side offset on " + esc(sale.venue) + ", settles at the game" : "the other side closed on " + esc((sale && sale.venue) || "Kalshi"));
       }
       if (rec.justLeft && rec.ms) meta.push("in " + (rec.ms / 1000).toFixed(1) + "s");
       if (cash && cash.open) meta.push(net < 0 ? "the settlement goes back to the writer; the receipt shows each leg" : "the settlement comes to you; the receipt shows each leg");
@@ -3003,9 +3003,9 @@
       const leaveAct = !st.leave ? '<div class="ael-acts' + (simple() ? " ael-offer-acts" : "") + '"><button type="button" class="ael-go ael-quiet ael-leave-a">Leave early</button>' + (simple() ? "" : "<span>remove the lock, keep your pick</span>") + detailsA + "</div>" : detailsA ? '<div class="ael-acts ael-offer-acts">' + detailsA + "</div>" : "";
       body = (simple() ? simpleLedger(nick, rs, cashOf(rec), null, sale) : ledger(nick, rs, cashOf(rec), null, sale)) + (st.leave ? leaveHtml(B, rec, rs) + leaveAct : leaveAct);
       if (rec.at) meta.push("Locked " + esc(fmtAt(rec.at)));
-      if (rec.justNow && rec.ms) meta.push((sale ? "sold " : rec.hedge && !rec.hedge.simulated ? "the other side bought " : "") + (rec.ms < 100 ? "at once" : "in " + (rec.ms / 1000).toFixed(1) + "s"));
+      if (rec.justNow && rec.ms) meta.push((sale ? "locked " : rec.hedge && !rec.hedge.simulated ? "the other side bought " : "") + (rec.ms < 100 ? "at once" : "in " + (rec.ms / 1000).toFixed(1) + "s"));
       // a member's sale that filled short of the shape asked: said once here; the figures above are the fill's
-      if (sale && rec.memberSale && rec.memberSale.requestedContracts != null && rec.memberSale.soldContracts < rec.memberSale.requestedContracts) meta.push(rec.memberSale.soldContracts + " of the " + rec.memberSale.requestedContracts + " asked sold; the rest rides");
+      if (sale && rec.memberSale && rec.memberSale.requestedContracts != null && rec.memberSale.soldContracts < rec.memberSale.requestedContracts) meta.push(rec.memberSale.soldContracts + " of the " + rec.memberSale.requestedContracts + " asked filled; the rest rides");
       // a parlay's last pick: the earlier picks that hit stand behind this single
       const picks = rec.parlay && Array.isArray(rec.parlay.picks) ? rec.parlay.picks : B.parlay && B.parlay.view ? B.parlay.view.picks : null;
       if (picks && picks.length) meta.push("the last pick of your " + picks.length + "-leg parlay &middot; " + picks.filter((p) => p.state === "won").map((p) => esc(pickWord(p))).join(", ") + " hit");
@@ -3176,7 +3176,7 @@
         return { why: "This position is being written right now.", next: "A moment." };
       // a member's sale is left by buying the contracts back from the venue's offers
       case "no_offers":
-        return { why: V.name + " shows no offers on this market right now.", next: "The contracts you sold cannot be bought back until it does; check back in a few minutes." };
+        return { why: V.name + " shows no offers on this market right now.", next: "The contracts you locked cannot be bought back until it does; check back in a few minutes." };
       case "not_filled":
         return { why: j.message || V.name + "'s offers moved before the order reached them.", next: "Nothing was bought back; the lock stands. Try again." };
       case "member_not_connected":
@@ -3215,9 +3215,9 @@
     const hero = net < 0 ? 'You pay <b class="ael-pay">' + esc(usd(-net)) + "</b>" : net > 0 ? "You get <b>" + esc(usd(net)) + "</b>" : "Nothing owed either way";
     const netWords = allIn < 0 ? "<b>" + signed(allIn) + "</b> after the " + esc(usd(credit)) + " credited to you at lock in" : allIn > 0 ? "<b>" + signed(allIn) + "</b> ahead, with the " + esc(usd(credit)) + " credited to you at lock in" : "even, with the " + esc(usd(credit)) + " credited to you at lock in";
     const why = [];
-    why.push(net < 0 ? "Your pick moved up since the lock, so the upside you sold is worth more than the floor you hold; leaving settles that difference." : net > 0 ? "Your pick moved down since the lock, so the floor you hold is worth more than the upside you sold; leaving pays you that difference." : "Your pick is where it was at the lock; the floor and the upside cancel.");
+    why.push(net < 0 ? "Your pick moved up since the lock, so the upside you gave up is worth more than the floor you hold; leaving settles that difference." : net > 0 ? "Your pick moved down since the lock, so the floor you hold is worth more than the upside you gave up; leaving pays you that difference." : "Your pick is where it was at the lock; the floor and the upside cancel.");
     why.push("Your pick stays open on " + esc(V.name) + ", without the lock. The " + esc(usd(credit)) + " credited at lock in is yours either way.");
-    const fine = [q.rehearsal ? "Rehearsal &middot; estimated from the live mark, not the books; nothing is sold" : "Priced live"];
+    const fine = [q.rehearsal ? "Rehearsal &middot; estimated from the live mark, not the books; nothing is sent" : "Priced live"];
     if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
     if (operator() && q.unwindFrictionCents != null) fine.push("crossing the books costs " + esc(usd(q.unwindFrictionCents)) + " against the mid");
     return (
@@ -3246,16 +3246,16 @@
     const net = q.closeNetCents;
     const short = bb.contracts < bb.wantContracts;
     const hero = "<b>" + bb.contracts + " at " + bb.limitPriceCents + "&cent;</b> &middot; costs <b" + (net < 0 ? ' class="ael-pay"' : "") + ">" + esc(usd(bb.costCents)) + "</b>";
-    const netWords = net < 0 ? "<b>" + signed(net) + "</b> on the round trip: you sold at " + (rec.memberSale ? rec.memberSale.avgPriceCents : "") + "&cent;, the offers are higher now" : net > 0 ? "<b>" + signed(net) + "</b> kept from the round trip: you sold at " + (rec.memberSale ? rec.memberSale.avgPriceCents : "") + "&cent;, the offers are lower now" : "even: the offers are where you sold";
+    const netWords = net < 0 ? "<b>" + signed(net) + "</b> on the round trip: you locked at " + (rec.memberSale ? rec.memberSale.avgPriceCents : "") + "&cent;, the offers are higher now" : net > 0 ? "<b>" + signed(net) + "</b> kept from the round trip: you locked at " + (rec.memberSale ? rec.memberSale.avgPriceCents : "") + "&cent;, the offers are lower now" : "even: the offers are where you locked";
     const why = [];
-    why.push("You sold " + q.soldContracts + " contracts into " + esc(V.name) + "'s bids at the lock, for " + esc(usd(q.cashNowCents)) + ". Leaving buys them back from its offers now, in your own account; the difference is the cost of having been locked in.");
-    why.push(short ? "The offers hold " + bb.contracts + " of the " + bb.wantContracts + " right now; the rest would stay sold, and the lock stays on those." : "Your position is whole again after the buy-back, without the lock, and settles on the official result as it always would.");
+    why.push("The lock took " + q.soldContracts + " contracts on " + esc(V.name) + "'s book, for " + esc(usd(q.cashNowCents)) + ". Leaving buys them back from its offers now, in your own account; the difference is the cost of having been locked in.");
+    why.push(short ? "The offers hold " + bb.contracts + " of the " + bb.wantContracts + " right now; the rest would stay locked, and the lock stays on those." : "Your position is whole again after the buy-back, without the lock, and settles on the official result as it always would.");
     const fine = ["Priced live from " + esc(V.name) + "'s offers"];
     if (L.lastIso) fine.push("until " + esc(fmtAt(L.lastIso)));
     if (bb.avgPriceCents && bb.avgPriceCents !== bb.limitPriceCents) fine.push("about " + bb.avgPriceCents + "&cent; average, " + bb.limitPriceCents + "&cent; at most");
     return (
       '<div class="ael-leave">' +
-      '<div class="ael-leave-h"><b>Leave early</b><span>buy back what you sold, keep the whole position</span></div>' +
+      '<div class="ael-leave-h"><b>Leave early</b><span>buy back what you locked, keep the whole position</span></div>' +
       '<div class="ael-ledger ael-two">' +
       ledgerRow("Buy back", hero, null, "ael-hero") +
       ledgerRow("Net", netWords, null, "") +
@@ -3962,7 +3962,7 @@
       const waiting = S.connect.busy;
       return (
         '<div class="ael-connect">' +
-        '<div class="ael-ph"><b>' + (waiting ? "Waiting for " + esc(V.name) + "\u2026" : "Lock in your " + esc(V.name) + " positions") + "</b><span>" + (waiting ? "Sign in on the " + esc(V.name) + " tab that opened and approve the connection. This page updates on its own once it is done." : "Connect your " + esc(V.name) + " account once. You sign in on " + esc(V.name) + "'s own page and approve reading your portfolio and placing orders in your account; this extension never sees your login or your keys, and the lock is your own sale into " + esc(V.name) + "'s book.") + "</span></div>" +
+        '<div class="ael-ph"><b>' + (waiting ? "Waiting for " + esc(V.name) + "\u2026" : "Lock in your " + esc(V.name) + " positions") + "</b><span>" + (waiting ? "Sign in on the " + esc(V.name) + " tab that opened and approve the connection. This page updates on its own once it is done." : "Connect your " + esc(V.name) + " account once. You sign in on " + esc(V.name) + "'s own page and approve reading your portfolio and placing orders in your account; this extension never sees your login or your keys, and the lock is your own order on " + esc(V.name) + "'s book.") + "</span></div>" +
         (why ? '<div class="ael-fine">' + why + "</div>" : "") +
         (waiting && S.connect.url ? '<div class="ael-fine">No tab opened? <a href="' + esc(S.connect.url) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(V.name) + "'s sign-in page</a>.</div>" : "") +
         (S.connect.err ? '<div class="ael-fine ael-err">' + esc(S.connect.err) + "</div>" : "") +
@@ -4050,7 +4050,7 @@
       let B = S.cardRows.get(p.id);
       // a member's own sale leaves fewer contracts in the account: the line says what rides and what sold
       const sold = p.lock && p.lock.status === "open" && p.lock.memberSale && p.lock.memberSale.soldContracts > 0 ? p.lock.memberSale.soldContracts : 0;
-      const posHtml = "<b>" + esc(p.side || "position") + "</b><span>" + esc(p.event || "") + (p.startsIso ? " &middot; " + esc(fmtAt(p.startsIso)) : "") + " &middot; " + (sold ? p.contracts + " riding, " + sold + " sold" : "pays " + esc(usd(p.payoutCents))) + "</span>";
+      const posHtml = "<b>" + esc(p.side || "position") + "</b><span>" + esc(p.event || "") + (p.startsIso ? " &middot; " + esc(fmtAt(p.startsIso)) : "") + " &middot; " + (sold ? p.contracts + " riding, " + sold + " locked" : "pays " + esc(usd(p.payoutCents))) + "</span>";
       if (!B) {
         const item = document.createElement("div");
         item.className = "ael-ui ael-card-row";
