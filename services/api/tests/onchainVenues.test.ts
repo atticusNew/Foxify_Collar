@@ -10,13 +10,15 @@ import test from "node:test";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AggregatorApiError, streamKey, type LimitlessMarket, type Market, type MarketStream, type SportEvent, type StreamResult } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { buildBoard } from "../src/onchainVenues/board";
+import { DEMO_MAX_POSITIONS, DEMO_SIZES, buildDemo, cheapestAcross, closeAtHome, quoteOf, type DemoPayload } from "../src/onchainVenues/demo";
+import { renderOnchainDemoHtml } from "../src/onchainVenues/demoHtml";
 import { restingUsd, shareBook, sxOutcomeBook, walk } from "../src/onchainVenues/books";
 import { allInAskCents, allInBidCents } from "../src/onchainVenues/fees";
 import { OnchainFeed, eventShape, isLimitlessSports, joinWinner, pairOutcomes, limitlessGame, parseLimitlessTitle, sameTeam, teamsOf, winnerMarket, type FeedSource } from "../src/onchainVenues/feed";
 import { groupToMarkets, readLimitlessPublicGames } from "../src/onchainVenues/limitlessPublic";
 import { renderOnchainHtml } from "../src/onchainVenues/html";
 import { OnchainVenuesService, PAGE_KEY_MIN, keyMatches } from "../src/onchainVenues/service";
-import type { Snapshot } from "../src/onchainVenues/types";
+import type { GameRow, Snapshot, Venue } from "../src/onchainVenues/types";
 
 const near = (a: number | null | undefined, b: number, eps = 1e-9): void => assert.ok(typeof a === "number" && Math.abs(a - b) < eps, `${a} is not ${b}`);
 
@@ -828,4 +830,186 @@ test("onchain page: the rendered page carries the board, the cover table and the
 
   const waiting = renderOnchainHtml({ board: null, coverage: [], unmatchedLimitless: [], feed: { ...s.feed, discoveredAt: null, limitless: { state: "not_read", markets: 0, sports: 0, matched: 0 } }, hasFeed: true, intervalSec: 60, horizonHours: 48 });
   assert.match(waiting, /The first read is under way/);
+});
+
+// ── the demo ──────────────────────────────────────────────────────────────────
+
+const lv = (price: number, size: number): { price: number; size: number } => ({ price, size });
+const q = (venue: Venue, bids: { price: number; size: number }[], asks: { price: number; size: number }[]): GameRow["outcomes"][number]["quotes"][number] => ({ venue, id: `${venue}-x`, executable: true, matchedBy: "feed", book: { bids, asks, ageMs: 1000 } });
+const gameOf = (eventId: string, outcomes: GameRow["outcomes"], startsAt = at(3)): GameRow => ({ eventId, name: outcomes.map((o) => o.name).join(" @ "), competitionId: "c", competition: "League", sport: "Sport", startsAt, status: "SCHEDULED", marketTitle: "Moneyline", outcomes });
+const snapOf = (games: GameRow[]): Snapshot => ({ ...EMPTY_SNAPSHOT, games });
+const EMPTY_SNAPSHOT: Snapshot = {
+  at: at(0),
+  games: [],
+  coverage: [],
+  unmatchedLimitless: [],
+  feed: { capabilities: [], discoveredAt: at(0), discoveryMs: 1, notes: [], competitions: 1, eventsInHorizon: 1, eventsRead: 1, eventsPending: 0, eventsOverCap: 0, limitless: { state: "not_read", markets: 0, sports: 0, matched: 0 }, books: { asked: 0, read: 0, empty: 0, errors: {}, ms: 1 } },
+};
+
+/** Hawks held on Polymarket; the Owls are on offer on Polymarket and, cheaper, on SX Bet. */
+const HAWKS_OWLS = gameOf("g1", [
+  { name: "Hawks", side: "AWAY", quotes: [q("polymarket", [lv(0.5, 400), lv(0.49, 400), lv(0.4, 1000)], [lv(0.52, 500)])] },
+  { name: "Owls", side: "HOME", quotes: [q("polymarket", [lv(0.48, 1000)], [lv(0.5, 1000)]), q("sx_bet", [lv(0.45, 100)], [lv(0.47, 300), lv(0.49, 300)])] },
+]);
+
+test("onchain demo: closing at home walks the home bids, the lock buys the other side wherever it is cheapest, for the whole position, in whole cents", () => {
+  // 500 Hawks. Closing: 400 at 50 (48.75 after Polymarket's fee) and 100 at 49 (47.7505) = 24,275.05, rounded down.
+  // The Owls: 300 on SX Bet at 47 (47.53 with its fee), 200 at 49 (49.51) = 24,161. Polymarket's 51.25 is not needed.
+  const five = quoteOf(HAWKS_OWLS, 0, "polymarket", 500);
+  assert.deepEqual(five, { shares: 500, payoutCents: 50_000, closeShares: 500, closeCents: 24_275, coverCents: 24_161, lockedCents: 25_839, moreCents: 1_564, state: "lock" });
+  // 1,000: the third bid level is touched (200 at 40, 38.8 after the fee), and 400 of the Owls come from Polymarket at 51.25
+  const thousand = quoteOf(HAWKS_OWLS, 0, "polymarket", 1000);
+  assert.equal(thousand.closeCents, Math.floor(400 * 48.75 + 400 * 47.7505 + 200 * 38.8));
+  assert.equal(thousand.coverCents, 300 * 47.53 + 300 * 49.51 + 400 * 51.25);
+  assert.equal(thousand.lockedCents, 100_000 - 49_612);
+  assert.equal(thousand.state, "lock");
+  // 5,000: neither book holds that much, and nothing is made up for the part that is missing
+  const big = quoteOf(HAWKS_OWLS, 0, "polymarket", 5000);
+  assert.deepEqual([big.closeShares, big.closeCents, big.coverCents, big.lockedCents, big.moreCents, big.state], [1800, null, null, null, null, "no_lock"]);
+
+  assert.deepEqual(closeAtHome(null, "polymarket", 100), { filled: 0, cents: 0 });
+  assert.equal(cheapestAcross(HAWKS_OWLS.outcomes[1], 1601), null, "1,600 Owls are on offer, not 1,601");
+});
+
+test("onchain demo: the line is not offered when closing pays more, and is when the home book cannot take the position", () => {
+  // one venue only: its own other side costs more than its own bid pays
+  const alone = gameOf("g2", [
+    { name: "A", side: "AWAY", quotes: [q("polymarket", [lv(0.5, 1000)], [lv(0.52, 1000)])] },
+    { name: "B", side: "HOME", quotes: [q("polymarket", [lv(0.48, 1000)], [lv(0.52, 1000)])] },
+  ]);
+  const same = quoteOf(alone, 0, "polymarket", 100);
+  assert.equal(same.state, "close_pays_more");
+  assert.equal(same.closeCents, 4_875);
+  assert.equal(same.lockedCents, 10_000 - Math.ceil(100 * (52 + 0.05 * 0.52 * 0.48 * 100)));
+  assert.ok((same.moreCents ?? 0) < 0);
+
+  // the home bid takes 50 of 100 shares; the other side is all on offer
+  const thin = gameOf("g3", [
+    { name: "A", side: "AWAY", quotes: [q("limitless", [lv(0.5, 50)], [lv(0.6, 50)])] },
+    { name: "B", side: "HOME", quotes: [q("polymarket", [lv(0.44, 1000)], [lv(0.46, 1000)])] },
+  ]);
+  const only = quoteOf(thin, 0, "limitless", 100);
+  assert.deepEqual([only.state, only.closeShares, only.closeCents, only.moreCents], ["lock_only", 50, null, null]);
+  assert.equal(only.lockedCents, 10_000 - Math.ceil(100 * (46 + 0.05 * 0.46 * 0.54 * 100)));
+
+  // a crossed book is no price: not a close and not a cover
+  const crossedGame = gameOf("g4", [
+    { name: "A", side: "AWAY", quotes: [q("polymarket", [lv(0.6, 1000)], [lv(0.55, 1000)])] },
+    { name: "B", side: "HOME", quotes: [q("polymarket", [lv(0.6, 1000)], [lv(0.3, 1000)])] },
+  ]);
+  const x = quoteOf(crossedGame, 0, "polymarket", 100);
+  assert.deepEqual([x.state, x.closeCents, x.lockedCents], ["no_lock", null, null]);
+  // an other side that costs the whole payout or more locks nothing
+  const dear = gameOf("g5", [
+    { name: "A", side: "HOME", quotes: [q("polymarket", [lv(0.02, 1000)], [lv(0.04, 1000)])] },
+    { name: "Draw", side: "DRAW", quotes: [q("polymarket", [lv(0.4, 1000)], [lv(0.5, 1000)])] },
+    { name: "B", side: "AWAY", quotes: [q("polymarket", [lv(0.5, 1000)], [lv(0.6, 1000)])] },
+  ]);
+  const none = quoteOf(dear, 0, "polymarket", 100);
+  assert.deepEqual([none.state, none.closeCents, none.coverCents, none.lockedCents, none.moreCents], ["no_lock", 100 * 2 - Math.ceil(100 * 0.05 * 0.02 * 0.98 * 100), null, null, null]);
+});
+
+test("onchain demo: one position a game on two venues or more, the same pick every time, and amounts only", async () => {
+  const s = await snapshotOf();
+  const demo = buildDemo(s);
+  assert.deepEqual(demo.sizes, [...DEMO_SIZES]);
+  assert.deepEqual(demo.homes.map((h) => [h.venue, h.name]), [["polymarket", "Polymarket"], ["sx_bet", "SX Bet"], ["limitless", "Limitless"]]);
+  // Royals @ Tigers is on all three; Belgium vs Italy on Polymarket and Limitless
+  const [pmHome, sxHome, limHome] = demo.homes;
+  assert.equal(pmHome.positions.length, 2);
+  assert.equal(sxHome.positions.length, 1);
+  assert.equal(limHome.positions.length, 2);
+  assert.deepEqual(pmHome.positions.map((p) => p.venues), [3, 2]);
+  for (const h of demo.homes) {
+    for (const p of h.positions) {
+      assert.equal(p.quotes.length, DEMO_SIZES.length);
+      assert.ok((DEMO_SIZES as readonly number[]).includes(p.shares));
+      assert.ok(p.priceCents > 0 && p.priceCents < 100);
+      for (const quote of p.quotes) {
+        assert.ok(Number.isInteger(quote.payoutCents) && quote.payoutCents === quote.shares * 100);
+        for (const cents of [quote.closeCents, quote.coverCents, quote.lockedCents, quote.moreCents]) assert.ok(cents === null || Number.isInteger(cents), "whole cents");
+        if (quote.state === "lock") assert.ok(quote.moreCents! >= 1);
+        if (quote.lockedCents !== null) assert.equal(quote.lockedCents, quote.payoutCents - quote.coverCents!);
+      }
+    }
+    const on = h.positions.map((p) => ["lock", "lock_only"].includes(p.quotes.find((x) => x.shares === p.shares)!.state));
+    assert.equal(h.offered, on.filter(Boolean).length);
+    assert.equal(h.total, h.positions.length);
+    assert.ok(on.every((x, i) => i === 0 || on[i - 1] || !x), "the positions with the line on offer come first");
+  }
+  assert.deepEqual(buildDemo(s), demo, "the same books give the same positions");
+
+  // more games than the list shows: the counts are of all of them, and within each group the soonest game is first
+  const many = snapOf(Array.from({ length: DEMO_MAX_POSITIONS + 5 }, (_, i) => ({ ...HAWKS_OWLS, eventId: `m${i}`, startsAt: at(1 + (i * 7) % 40) })));
+  const crowd = buildDemo(many).homes[0];
+  assert.equal(crowd.positions.length, DEMO_MAX_POSITIONS);
+  assert.equal(crowd.total, DEMO_MAX_POSITIONS + 5);
+  assert.ok(crowd.offered <= crowd.total && crowd.offered > 0);
+  const shownOn = crowd.positions.filter((p) => ["lock", "lock_only"].includes(p.quotes.find((x) => x.shares === p.shares)!.state));
+  assert.equal(shownOn.length, Math.min(crowd.offered, DEMO_MAX_POSITIONS));
+  assert.ok(shownOn.every((p, i) => i === 0 || shownOn[i - 1].startsAt <= p.startsAt), "soonest first");
+
+  // a game on one venue is not a position; the draw of a three-way game reads as the two teams
+  const single = snapOf([gameOf("solo", [{ name: "A", side: "AWAY", quotes: [q("polymarket", [lv(0.5, 100)], [lv(0.52, 100)])] }, { name: "B", side: "HOME", quotes: [q("polymarket", [lv(0.46, 100)], [lv(0.5, 100)])] }])]);
+  assert.ok(buildDemo(single).homes.every((h) => h.positions.length === 0));
+  assert.ok(buildDemo(null).homes.every((h) => h.positions.length === 0));
+  assert.equal(buildDemo(null).at, null);
+  const hawks = buildDemo(snapOf([HAWKS_OWLS])).homes[0].positions[0];
+  assert.ok((hawks.pick === "Hawks" && hawks.matchup === "vs Owls") || (hawks.pick === "Owls" && hawks.matchup === "vs Hawks"));
+  // SX Bet has no Hawks book in that game, so it can only hold the Owls
+  assert.equal(buildDemo(snapOf([HAWKS_OWLS])).homes[1].positions[0].pick, "Owls");
+
+  // what goes out: no book, no level, no cover venue, and nothing about a venue that is not one of the three
+  const body = JSON.stringify(demo);
+  for (const word of ["bids", "asks", "legs", "book", "KALSHI", "kalshi", "matchedBy", "executable", "marketSlug"]) assert.ok(!body.includes(word), `the demo's figures do not carry "${word}"`);
+  assert.deepEqual(Object.keys(pmHome.positions[0]).sort(), ["competition", "id", "matchup", "pick", "priceCents", "quotes", "shares", "sport", "startsAt", "venues"]);
+  assert.deepEqual(Object.keys(pmHome.positions[0].quotes[0]).sort(), ["closeCents", "closeShares", "coverCents", "lockedCents", "moreCents", "payoutCents", "shares", "state"]);
+});
+
+test("onchain demo: the page and its figures are open without the key, read only, and can be turned off", async () => {
+  const service = new OnchainVenuesService({ feed: feedOf(standIn().source), key: KEY, log: () => {} });
+  const before = JSON.parse(ask(service, "/demo/api/positions").body) as DemoPayload;
+  assert.equal(before.at, null, "before the first read the figures are empty, not an error");
+  await service.cycle(NOW);
+
+  const page = ask(service, "/demo");
+  assert.equal(page.status, 200);
+  assert.match(page.type, /text\/html/);
+  assert.equal(ask(service, "/demo/").status, 200);
+  const figures = ask(service, "/demo/api/positions");
+  assert.match(figures.type, /application\/json/);
+  const demo = JSON.parse(figures.body) as DemoPayload;
+  assert.equal(demo.homes[0].positions.length, 2);
+  assert.ok(!figures.body.includes(KEY) && !page.body.includes(KEY));
+  // the demo opens nothing else
+  assert.equal(ask(service, "/demo/api/board").handled, false);
+  assert.equal(ask(service, "/api/board").handled, false);
+  assert.equal(ask(service, "/").handled, false);
+  // read only
+  const res = { writeHead: () => {}, end: () => {} } as unknown as ServerResponse;
+  assert.equal(service.handle({ method: "POST" } as IncomingMessage, res, new URL("http://x/demo/api/positions")), false);
+  assert.match(JSON.stringify(service.health()), /"demo":"on"/);
+
+  const off = new OnchainVenuesService({ feed: feedOf(standIn().source), key: KEY, demo: false, log: () => {} });
+  await off.cycle(NOW);
+  assert.equal(ask(off, "/demo").handled, false);
+  assert.equal(ask(off, "/demo/api/positions").handled, false);
+  assert.match(JSON.stringify(off.health()), /"demo":"off"/);
+  assert.equal(ask(off, `/?k=${KEY}`).status, 200, "the keyed page is as it was");
+});
+
+test("onchain demo: the page has both views and the three hosts, says what it is, and holds to the house wording", () => {
+  const html = renderOnchainDemoHtml();
+  for (const text of ['data-view="mobile"', 'data-view="desktop"', "Mobile", "Desktop", "Polymarket", "SX Bet", "Limitless", "Lock in", "Positions are simulated", "Nothing is bought", "Atticus's own fee is not", "Not affiliated with or endorsed by any venue", "/api/positions"]) {
+    assert.ok(html.includes(text), `the demo says "${text}"`);
+  }
+  assert.match(html, /<meta name="robots" content="noindex">/);
+  const words = html.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<[^>]+>/g, " ");
+  assert.ok(!/[\u2013\u2014]/.test(words), "no en or em dash");
+  for (const banned of [/\bwallets?\b/i, /\bsell(s|ing|er|ers)?\b/i, /\bsold\b/i, /\bsales?\b/i, /\bguarantee/i, /\bprotect/i, /\bhedg/i, /\barbitrage/i, /\brisk[- ]free/i, /parlayx/i, /aggregat/i]) {
+    assert.ok(!banned.test(words), `the demo does not say ${banned}`);
+  }
+  assert.ok(!html.includes("undefined") && !html.includes("NaN"));
+  // no outside script, style, font or image: the page asks this service and nothing else
+  assert.ok(!/(src|href)="https?:/.test(html));
 });
