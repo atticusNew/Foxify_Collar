@@ -12,7 +12,8 @@ import { AggregatorApiError, streamKey, type LimitlessMarket, type Market, type 
 import { buildBoard } from "../src/onchainVenues/board";
 import { restingUsd, shareBook, sxOutcomeBook, walk } from "../src/onchainVenues/books";
 import { allInAskCents, allInBidCents } from "../src/onchainVenues/fees";
-import { OnchainFeed, isLimitlessSports, limitlessGame, parseLimitlessTitle, sameTeam, teamsOf, winnerMarket, type FeedSource } from "../src/onchainVenues/feed";
+import { OnchainFeed, eventShape, isLimitlessSports, limitlessGame, parseLimitlessTitle, sameTeam, teamsOf, winnerMarket, type FeedSource } from "../src/onchainVenues/feed";
+import { groupToMarkets, readLimitlessPublicGames } from "../src/onchainVenues/limitlessPublic";
 import { renderOnchainHtml } from "../src/onchainVenues/html";
 import { OnchainVenuesService, PAGE_KEY_MIN, keyMatches } from "../src/onchainVenues/service";
 import type { Snapshot } from "../src/onchainVenues/types";
@@ -247,7 +248,10 @@ test("onchain feed: the games inside the window, each one's winner market, the t
   assert.equal(bel.outcomes[1].quotes[1].book, null, "the draw has no Limitless book in this stand-in");
   assert.match(bel.outcomes[1].quotes[1].error ?? "", /MARKET_NOT_YET_OPEN/);
   assert.deepEqual(s.unmatchedLimitless, ["UEFA NL, Belgium vs Italy: Italy"], "same teams, a week later: left off and listed");
-  assert.deepEqual(s.feed.limitless, { state: "listed", markets: 6, sports: 5, matched: 5 });
+  assert.deepEqual(s.feed.limitless, { state: "listed", source: "partner", markets: 6, sports: 5, matched: 5 });
+  assert.deepEqual(s.feed.books.byVenue?.polymarket, { asked: 5, read: 5, empty: 0, errors: {} });
+  assert.deepEqual(s.feed.books.byVenue?.sx_bet, { asked: 1, read: 1, empty: 0, errors: {} });
+  assert.deepEqual(s.feed.books.byVenue?.limitless, { asked: 5, read: 4, empty: 1, errors: { MARKET_NOT_YET_OPEN: 1 } });
 
   assert.equal(s.feed.books.asked, asked.length);
   assert.equal(s.feed.books.read, 10);
@@ -262,18 +266,21 @@ test("onchain feed: the games inside the window, each one's winner market, the t
   assert.deepEqual([unl.on.polymarket, unl.on.sx_bet, unl.on.limitless, unl.onTwo, unl.onThree], [1, 0, 1, 1, 0]);
 });
 
-test("onchain feed: a second pass reuses what it knows, and a competition with nothing in the window is left alone for an hour", async () => {
+test("onchain feed: a second pass reuses what it knows; a competition with nothing in the window is left alone for an hour, a game's markets for two", async () => {
   const { source, calls } = standIn();
   const feed = feedOf(source);
   await feed.discover(NOW);
   calls.length = 0;
   await feed.discover(NOW + 10 * 60_000);
-  assert.deepEqual(calls.filter((c) => c.startsWith("markets")), [], "an event's markets are kept for half an hour");
+  assert.deepEqual(calls.filter((c) => c.startsWith("markets")), [], "an event's markets are kept");
   assert.ok(!calls.includes("events:quiet"));
   assert.ok(calls.includes("events:mlb"));
   calls.length = 0;
   await feed.discover(NOW + 71 * 60_000);
   assert.ok(calls.includes("events:quiet"));
+  assert.deepEqual(calls.filter((c) => c.startsWith("markets")), []);
+  calls.length = 0;
+  await feed.discover(NOW + 121 * 60_000);
   assert.deepEqual(calls.filter((c) => c.startsWith("markets")).sort(), ["markets:e1", "markets:e2"]);
 });
 
@@ -310,10 +317,142 @@ test("onchain feed: a pass reads a bounded part of the catalog and the next one 
   assert.deepEqual([s.feed.eventsRead, s.feed.eventsPending], [3, 0]);
   assert.deepEqual(s.games.map((g) => g.name), ["Royals @ Tigers", "Belgium vs Italy"]);
 
-  // an hour on: the two games these venues list are asked again, the bare one is not
+  assert.equal(feed.pending, 0);
+
+  // two hours on: the two games these venues list are asked again, the bare one is not
   calls.length = 0;
-  await feed.discover(NOW + 71 * 60_000);
+  await feed.discover(NOW + 131 * 60_000);
   assert.deepEqual(calls.filter((c) => c.startsWith("markets")), ["markets:e1", "markets:e2"]);
+});
+
+test("onchain service: while games are still to read the catalog passes run back to back, then on the clock", async () => {
+  const { source, calls } = standIn();
+  const service = new OnchainVenuesService({ feed: feedOf(source, reader(), { maxReadsPerPass: 1 }), key: KEY, discoverEveryMs: 10 * 60_000, log: () => {} });
+  const passes = (): number => calls.filter((c) => c === "events:mlb").length;
+  const settle = (): Promise<void> => new Promise((res) => setTimeout(res, 20));
+  await service.cycle(NOW);
+  assert.equal(passes(), 1);
+  assert.equal((service.health().catalog as { gamesStillToRead: number }).gamesStillToRead, 1);
+  // a minute later, well inside the ten: one game is still to read, so the next pass starts now
+  await service.cycle(NOW + 60_000);
+  await settle();
+  assert.equal(passes(), 2);
+  await service.cycle(NOW + 120_000);
+  assert.equal((service.health().catalog as { gamesStillToRead: number }).gamesStillToRead, 0);
+  assert.equal(service.health().games, 2);
+  // nothing left to read: no pass until the ten minutes are up
+  await service.cycle(NOW + 180_000);
+  await settle();
+  assert.equal(passes(), 2);
+  await service.cycle(NOW + 11 * 60_000 + 60_000);
+  await settle();
+  assert.equal(passes(), 3);
+});
+
+test("onchain feed: the catalog in counts, for checking the reading against the real feed: venue names, fields, types, and games whose venues sit in different winner markets", async () => {
+  // the feed gives this game two winner markets, one carrying each venue: one market cannot show both
+  const split: Market[] = [
+    { id: "a", title: "Moneyline", type: "MONEYLINE", period: null, outcomes: [{ name: "Royals", side: "AWAY", listings: [pm("R")] }, { name: "Tigers", side: "HOME", listings: [pm("T")] }] },
+    { id: "b", title: "Game winner", type: "MONEYLINE", period: null, outcomes: [{ name: "Royals", side: "AWAY", listings: [sx("0xAB", "OUTCOME_ONE")] }, { name: "Tigers", side: "HOME", listings: [sx("0xAB", "OUTCOME_TWO")] }] },
+    { id: "c", title: "Run line", type: "SPREAD", line: "-1.5", outcomes: [{ name: "Royals", listings: [pm("RS"), kalshi("KX")] }, { name: "Tigers", listings: [pm("TS")] }] },
+    { id: "d", title: "First inning", type: "MONEYLINE", period: { unit: "INNING", from: 1, to: 1 }, outcomes: [{ name: "Royals", listings: [sx("0xCD", "OUTCOME_ONE")] }, { name: "Tigers", listings: [] }] },
+  ];
+  const shape = eventShape(split);
+  assert.equal(shape.split, true);
+  assert.deepEqual(shape.listings, { POLYMARKET: 4, SX_BET: 3, KALSHI: 1 });
+  assert.deepEqual(shape.keys.SX_BET, ["executable", "marketHash", "outcome", "venue"]);
+  assert.deepEqual(shape.byType.SX_BET, { "MONEYLINE/2": 1, "MONEYLINE+INNING/2": 1 });
+  assert.deepEqual(shape.others, [], "both venues are on a winner market: nothing sits off it");
+  assert.deepEqual(shape.candidates.map((c) => [c.title, c.venues]), [["Moneyline", ["POLYMARKET"]], ["Game winner", ["SX_BET"]]]);
+  assert.equal(eventShape(MARKETS.e1).split, false, "one market carries both: nothing is split");
+
+  const feed = feedOf(standIn({ listEventMarkets: async (id) => (id === "e1" ? split : MARKETS[id] ?? []) }).source);
+  await feed.discover(NOW);
+  const d = (await feed.snapshot(NOW)).feed.diagnostics!;
+  assert.equal(d.games, 2);
+  assert.deepEqual(d.gamesByVenue, { POLYMARKET: 2, SX_BET: 1, KALSHI: 1 });
+  assert.equal(d.gamesNamingTwo, 1);
+  assert.deepEqual(d.winner, { none: 0, one: 1, several: 1, split: 1 });
+  assert.equal(d.examples[0].game, "Royals @ Tigers");
+  assert.deepEqual(d.examples[0].markets.map((m) => m.sides), [["AWAY", "HOME"], ["AWAY", "HOME"]]);
+  assert.deepEqual(d.sampleTitles.SX_BET, { "MONEYLINE/2": ["Game winner"], "MONEYLINE+INNING/2": ["First inning"] });
+  assert.equal(d.gamesWithVenueOffWinner, 0);
+
+  // a venue named only on a market this does not read as the winner market: the market is shown, with the part of the game the feed gives it
+  const off: Market[] = [split[0], { id: "g", title: "Winner", type: "MONEYLINE", period: { unit: "GAME", from: 1, to: 1 }, outcomes: [{ name: "Royals", side: "AWAY", listings: [sx("0xEF", "OUTCOME_ONE")] }, { name: "Tigers", side: "HOME", listings: [sx("0xEF", "OUTCOME_TWO")] }] }, split[2]];
+  const offShape = eventShape(off);
+  assert.equal(offShape.split, false);
+  assert.deepEqual(offShape.others.map((m) => [m.title, m.period, m.venues]), [["Winner", "GAME 1-1", ["SX_BET"]]]);
+  const offFeed = feedOf(standIn({ listEventMarkets: async (id) => (id === "e1" ? off : MARKETS[id] ?? []) }).source);
+  await offFeed.discover(NOW);
+  const od = (await offFeed.snapshot(NOW)).feed.diagnostics!;
+  assert.equal(od.gamesWithVenueOffWinner, 1);
+  assert.deepEqual(od.examples[0].others.map((m) => m.period), ["GAME 1-1"]);
+  // and it is on the open health check, which carries no key and no price
+  const service = new OnchainVenuesService({ feed, key: KEY, log: () => {} });
+  await service.cycle(NOW);
+  assert.equal((service.health().diagnostics as { winner: { split: number } }).winner.split, 1);
+});
+
+test("onchain Limitless: the venue's own public list, when the partner refuses its copy; a group becomes one market a pick, closing a day after the start", async () => {
+  // the shape its public list had on 13 November 2026
+  const group = {
+    title: "UEFA NL, Belgium vs Italy",
+    categories: ["Football Matches"],
+    markets: [
+      { title: "Belgium", slug: "belgium-1794301201905", tokens: { yes: "LB", no: "LBn" }, expirationTimestamp: NOW + 32 * 3_600_000, expired: false, metadata: { startMatchTimestampInUTC: (NOW + 8 * 3_600_000) / 1000 } },
+      // one with no start named: placed by its close, a day after the start
+      { title: "Italy", slug: "italy-1794301201906", tokens: { yes: "LI", no: "LIn" }, expirationTimestamp: NOW + 32 * 3_600_000, expired: false },
+      // one that closes two months on: placed by the start it names
+      { title: "Draw", slug: "draw-1794301201907", tokens: { yes: "LD", no: "LDn" }, expirationTimestamp: NOW + 1464 * 3_600_000, expired: false, metadata: { startMatchTimestampInUTC: (NOW + 8 * 3_600_000) / 1000 } },
+      { title: "Old", slug: "old", tokens: { yes: "x", no: "y" }, expirationTimestamp: NOW, expired: true },
+      { title: "No tokens", slug: "nt" },
+    ],
+  };
+  const markets = groupToMarkets(group);
+  assert.deepEqual(markets.map((m) => [m.marketSlug, m.title]), [["belgium-1794301201905", "UEFA NL, Belgium vs Italy: Belgium"], ["italy-1794301201906", "UEFA NL, Belgium vs Italy: Italy"], ["draw-1794301201907", "UEFA NL, Belgium vs Italy: Draw"]]);
+  assert.deepEqual(markets[0].outcomes, [{ name: "Yes", tokenId: "LB" }, { name: "No", tokenId: "LBn" }]);
+  assert.equal(markets[0].expiresAt, at(32));
+  assert.deepEqual(markets.map((m) => m.startsAt), [at(8), undefined, at(8)]);
+  assert.ok(isLimitlessSports(markets[0]));
+  assert.deepEqual(groupToMarkets({ title: "x" }), []);
+
+  // paged 25 at a time until the count it names is reached
+  const asked: string[] = [];
+  const fetchImpl = (async (url: string) => {
+    asked.push(String(url));
+    const page = Number(new URL(String(url)).searchParams.get("page"));
+    return new Response(JSON.stringify({ data: page <= 2 ? Array.from({ length: page === 1 ? 25 : 3 }, () => group) : [], totalMarketsCount: 28 }), { status: 200 });
+  }) as unknown as typeof fetch;
+  assert.equal((await readLimitlessPublicGames({ fetchImpl, pauseMs: 0 })).length, 28 * 3);
+  assert.deepEqual(asked.map((u) => new URL(u).search), ["?tradeType=group&automationType=sports&page=1&limit=25", "?tradeType=group&automationType=sports&page=2&limit=25"]);
+  await assert.rejects(readLimitlessPublicGames({ fetchImpl: (async () => new Response("no", { status: 503 })) as unknown as typeof fetch, pauseMs: 0 }), /Limitless public list 503/);
+
+  // in the feed: the partner refuses, the venue's list is read, and a close 24 hours after the start is the same game (Belgium vs Italy starts 8 hours out)
+  const { source } = standIn({ listLimitlessMarkets: async () => Promise.reject(new AggregatorApiError(403, "FORBIDDEN", "not permitted")), listLimitlessPublic: async () => markets });
+  const feed = feedOf(source);
+  await feed.discover(NOW);
+  const s = await feed.snapshot(NOW);
+  assert.deepEqual(s.feed.limitless, { state: "listed", source: "venue", markets: 3, sports: 3, matched: 3 });
+  assert.match(s.feed.notes.join(" "), /not allowed to read the partner's Limitless list \(403\); its game markets were read from Limitless's own public list instead/);
+  assert.deepEqual(s.games[1].outcomes.map((o) => o.quotes.find((q) => q.venue === "limitless")?.matchedBy), ["names", "names", "names"]);
+  assert.match(renderOnchainHtml({ board: buildBoard(s), coverage: s.coverage, unmatchedLimitless: s.unmatchedLimitless, feed: s.feed, hasFeed: true, intervalSec: 60, horizonHours: 48 }), /read from Limitless's own public list of game markets, because the partner's list is refused to this key/);
+});
+
+test("onchain Limitless: a market that could be either of two games is tied to neither", async () => {
+  // the same two teams on consecutive days, and one market that closes inside both games' windows
+  const { source } = standIn({
+    listEvents: async (id) => (id === "mlb" ? [EVENTS.mlb[0], { id: "e1b", name: "Royals @ Tigers", competitionId: "mlb", startTime: at(30), status: "SCHEDULED" }] : EVENTS[id] ?? []),
+    listEventMarkets: async (id) => MARKETS[id === "e1b" ? "e1" : id] ?? [],
+    listLimitlessMarkets: async () => ({ markets: [{ marketSlug: "kc-det", title: "MLB, Royals vs Tigers", categories: ["Sports"], expiresAt: at(30), outcomes: [{ name: "Royals", tokenId: "LR" }, { name: "Tigers", tokenId: "LT" }] }], nextPageToken: null }),
+  });
+  const feed = feedOf(source);
+  await feed.discover(NOW);
+  const s = await feed.snapshot(NOW);
+  assert.equal(s.games.filter((g) => g.name === "Royals @ Tigers").length, 2);
+  assert.ok(s.games.every((g) => g.outcomes.every((o) => o.quotes.every((q) => q.venue !== "limitless"))));
+  assert.deepEqual(s.unmatchedLimitless, ["MLB, Royals vs Tigers"]);
+  assert.equal(s.feed.limitless.matched, 0);
 });
 
 test("onchain feed: a key that may not read the Limitless list is said in words and the other two venues are still read", async () => {
@@ -322,7 +461,7 @@ test("onchain feed: a key that may not read the Limitless list is said in words 
   await feed.discover(NOW);
   const s = await feed.snapshot(NOW);
   assert.equal(s.feed.limitless.state, "refused");
-  assert.match(s.feed.notes.join(" "), /not allowed to read the Limitless list \(403\)/);
+  assert.match(s.feed.notes.join(" "), /not allowed to read the partner's Limitless list \(403\), and Limitless's own public list was not read either \(no other list to read\)/);
   assert.equal(s.games.length, 2);
   assert.ok(s.games.every((g) => g.outcomes.every((o) => o.quotes.every((q) => q.venue !== "limitless"))));
   assert.ok(s.games[0].outcomes[0].quotes[0].book);

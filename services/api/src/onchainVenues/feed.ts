@@ -8,16 +8,18 @@
  *
  * Which venues list a game is only known once its markets are read, one request a game, and an
  * event lists a thousand markets and more. So a pass reads a bounded number of games, soonest
- * first, and remembers the answer: half an hour for a game one of these venues lists, six hours
- * for a game none does. The catalog fills in over the first few passes and the page says how
- * many games are still to read. The board is the games at least one of the three lists, soonest
- * first, up to a cap.
+ * first, and remembers the answer: two hours for a game one of these venues lists, six hours
+ * for a game none does. While games are still to read the passes run back to back, so the
+ * catalog fills in over the first few and the page says how many games are left. The board is
+ * the games at least one of the three lists, soonest first, up to a cap.
  *
  * LIMITLESS is not in that mapping (the partner's own page says so: "Not mapped. Find its
  * markets with List Markets"). When a listing for it does appear on an outcome it is used as it
- * is. Until then its sports markets are read from its own list and tied to a game here, by the
- * two team names and the start time, and the page marks every such row. A title this cannot
- * read is left off and counted, never guessed.
+ * is. Until then its sports markets are read from a list and tied to a game here, by the two
+ * team names and the start time, and the page marks every such row. The list is the partner's;
+ * when the partner refuses it to this key (it did, on 13 November 2026), it is the venue's own
+ * public list of game markets instead, and the page says which. A title this cannot read, and a
+ * market that could be either of two games, is left off and counted, never guessed.
  *
  * BOOKS (every cycle): one snapshot per market over the partner's stream, at most 200 markets a
  * connection (their cap), a few connections side by side. A snapshot is the book as the venue
@@ -41,7 +43,7 @@ import {
   type Whoami,
 } from "../eventCollar/crossVenue/aggregatorMarkets";
 import { shareBook, sxOutcomeBook, type SxOutcome } from "./books";
-import { VENUES, byVenue, type Coverage, type FeedHealth, type GameRow, type OutcomeBook, type Snapshot, type Venue, type VenueQuote } from "./types";
+import { VENUES, byVenue, type Coverage, type FeedDiagnostics, type FeedHealth, type GameRow, type OutcomeBook, type Snapshot, type Venue, type VenueBooks, type VenueQuote, type WinnerShape } from "./types";
 
 export interface FeedSource {
   whoami(): Promise<Whoami>;
@@ -51,6 +53,8 @@ export interface FeedSource {
   listEvents(competitionId: string): Promise<SportEvent[]>;
   listEventMarkets(eventId: string): Promise<Market[]>;
   listLimitlessMarkets(pageToken?: string): Promise<{ markets: LimitlessMarket[]; nextPageToken: string | null }>;
+  /** the venue's own public list of game markets, in the same shape; asked only when the partner's list is refused or fails */
+  listLimitlessPublic?(): Promise<LimitlessGameMarket[]>;
 }
 export type BookReader = (markets: MarketStream[]) => Promise<StreamResult[]>;
 
@@ -87,11 +91,78 @@ const winnerByTitle = (m: Market): boolean =>
 const venueOf = (l: Listing): Venue | null => (l.venue === "POLYMARKET" ? "polymarket" : l.venue === "SX_BET" ? "sx_bet" : l.venue === "LIMITLESS" ? "limitless" : null);
 const venuesListed = (m: Market): Set<Venue> => new Set(m.outcomes.flatMap((o) => o.listings.map(venueOf)).filter((v): v is Venue => v !== null));
 
-/** The full-game winner market of an event: two outcomes, or three with a draw. The one on the most of these venues when several qualify. */
+/** Every market of an event that reads as its full-game winner market: two outcomes, or three with a draw. */
+export const winnerCandidates = (markets: Market[]): Market[] => markets.filter((m) => !m.period && m.outcomes.length >= 2 && m.outcomes.length <= 3 && (m.type ? m.type === "MONEYLINE" : winnerByTitle(m)));
+
+/** The full-game winner market of an event. The one on the most of these venues when several qualify. */
 export function winnerMarket(markets: Market[]): Market | null {
-  const full = markets.filter((m) => !m.period && m.outcomes.length >= 2 && m.outcomes.length <= 3 && (m.type ? m.type === "MONEYLINE" : winnerByTitle(m)));
+  const full = winnerCandidates(markets);
   if (!full.length) return null;
   return [...full].sort((a, b) => venuesListed(b).size - venuesListed(a).size || Number(b.main === true) - Number(a.main === true))[0];
+}
+
+// ---------------------------------------------------------------------------
+// what an event's markets looked like, in counts
+// ---------------------------------------------------------------------------
+
+export interface EventShape {
+  listings: Record<string, number>;
+  keys: Record<string, string[]>;
+  byType: Record<string, Record<string, number>>;
+  titles: Record<string, Record<string, string[]>>;
+  candidates: WinnerShape[];
+  /** markets not read as the winner market (no line, three outcomes at most) that carry one of the three venues the chosen one lacks */
+  others: WinnerShape[];
+  /** the three venues' listings sit in different winner markets */
+  split: boolean;
+}
+
+const shapeOf = (m: Market): WinnerShape => ({
+  title: m.title.slice(0, 80),
+  type: m.type ?? null,
+  key: typeof (m as { marketKey?: unknown }).marketKey === "string" ? ((m as { marketKey?: string }).marketKey as string) : null,
+  period: m.period ? `${m.period.unit} ${m.period.from}-${m.period.to}` : null,
+  outcomes: m.outcomes.length,
+  sides: m.outcomes.slice(0, 3).map((o) => o.side ?? o.name.slice(0, 24)),
+  venues: [...new Set(m.outcomes.flatMap((o) => o.listings.map((l) => String(l.venue))))].sort(),
+});
+
+const bump = (o: Record<string, number>, k: string, by = 1): void => {
+  o[k] = (o[k] ?? 0) + by;
+};
+
+/** Counts over one event's markets, kept instead of the markets themselves: which venues the feed names, under which types, with which fields. */
+export function eventShape(markets: Market[]): EventShape {
+  const shape: EventShape = { listings: {}, keys: {}, byType: {}, titles: {}, candidates: [], others: [], split: false };
+  for (const m of markets) {
+    // the type, the part of the game when it is not the whole of it, and how many outcomes
+    const type = `${m.type ?? "none"}${m.period ? `+${m.period.unit}` : ""}/${m.outcomes.length > 3 ? "4+" : m.outcomes.length}`;
+    const seen = new Set<string>();
+    for (const o of m.outcomes) {
+      for (const l of o.listings) {
+        const v = String(l.venue);
+        bump(shape.listings, v);
+        shape.keys[v] ??= Object.keys(l).sort();
+        seen.add(v);
+      }
+    }
+    for (const v of seen) {
+      bump((shape.byType[v] ??= {}), type);
+      const titles = ((shape.titles[v] ??= {})[type] ??= []);
+      if (titles.length < 2) titles.push(m.title.slice(0, 80));
+    }
+  }
+  const candidates = winnerCandidates(markets);
+  shape.candidates = candidates.slice(0, 6).map(shapeOf);
+  const chosen = winnerMarket(markets);
+  const have = chosen ? venuesListed(chosen) : new Set<Venue>();
+  const across = new Set(candidates.flatMap((m) => [...venuesListed(m)]));
+  shape.split = chosen !== null && across.size > have.size;
+  shape.others = markets
+    .filter((m) => !candidates.includes(m) && !m.line && m.outcomes.length <= 3 && [...venuesListed(m)].some((v) => !have.has(v) && !across.has(v)))
+    .slice(0, 3)
+    .map(shapeOf);
+  return shape;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,8 +228,25 @@ export function limitlessGame(title: string): [string, string] | null {
 const SPORTS_CATEGORY = /sport|football|soccer|basketball|hockey|baseball|tennis|cricket|rugby|mma|boxing|golf|\bnfl\b|\bnba\b|\bnhl\b|\bmlb\b/i;
 export const isLimitlessSports = (m: LimitlessMarket): boolean => m.categories.some((c) => SPORTS_CATEGORY.test(c));
 
-/** how far a Limitless market's close may sit from the game's start and still be the same game */
-const SAME_GAME_MS = 12 * 3_600_000;
+/**
+ * Which game a Limitless market is on, beyond the two team names.
+ *
+ * Its own public list names the match's start, and that is used when it is there: the same game
+ * starts within three hours of the feed's start for it.
+ *
+ * The partner's list names only the close. Limitless's football markets close a day after
+ * kick-off (read from its public list on 13 November 2026: 138 of 141 closed exactly 24 hours
+ * after the start they name, the other three two months after), so the window on the close runs
+ * from half a day before the start to a day and a half after it.
+ *
+ * Either way, a market that fits two games on the board is tied to neither.
+ */
+const START_APART_MS = 3 * 3_600_000;
+const CLOSE_BEFORE_MS = 12 * 3_600_000;
+const CLOSE_AFTER_MS = 36 * 3_600_000;
+
+/** A Limitless market with the match's start, when the list it came from names one. */
+export type LimitlessGameMarket = LimitlessMarket & { startsAt?: string };
 
 // ---------------------------------------------------------------------------
 // what discovery keeps
@@ -240,7 +328,7 @@ export class OnchainFeed {
   private readonly quietTtlMs: number;
   private readonly maxReadsPerPass: number;
   private readonly bareTtlMs: number;
-  private readonly marketsCache = new Map<string, { at: number; winner: Market | null; listed: boolean }>();
+  private readonly marketsCache = new Map<string, { at: number; winner: Market | null; listed: boolean; name: string; competition: string; shape: EventShape }>();
   private readonly quietCompetitions = new Map<string, number>();
   private found: FoundGame[] = [];
   private coverage: Coverage[] = [];
@@ -254,7 +342,7 @@ export class OnchainFeed {
     this.horizonMs = opts.horizonMs ?? 48 * 3_600_000;
     this.maxEvents = Math.max(1, opts.maxEvents ?? 120);
     this.paceMs = opts.paceMs ?? 350;
-    this.marketsTtlMs = opts.marketsTtlMs ?? 30 * 60_000;
+    this.marketsTtlMs = opts.marketsTtlMs ?? 2 * 3_600_000;
     this.maxReadsPerPass = Math.max(1, opts.maxReadsPerPass ?? 150);
     this.bareTtlMs = opts.bareTtlMs ?? 6 * 3_600_000;
     this.quietTtlMs = opts.quietCompetitionTtlMs ?? 60 * 60_000;
@@ -269,6 +357,11 @@ export class OnchainFeed {
 
   get busy(): boolean {
     return this.discovering;
+  }
+
+  /** games inside the window whose markets the last pass had no room to read */
+  get pending(): number {
+    return this.health.eventsPending;
   }
 
   /** One pass over the catalog. It never throws: what could not be read is kept in words for the page. */
@@ -328,8 +421,9 @@ export class OnchainFeed {
           reads += 1;
           await this.sleep(this.paceMs);
           try {
-            const winner = winnerMarket(await this.source.listEventMarkets(event.id));
-            entry = { at: nowMs, winner, listed: winner !== null && venuesListed(winner).size > 0 };
+            const markets = await this.source.listEventMarkets(event.id);
+            const winner = winnerMarket(markets);
+            entry = { at: nowMs, winner, listed: winner !== null && venuesListed(winner).size > 0, name: event.name, competition: competition.name, shape: eventShape(markets) };
             this.marketsCache.set(event.id, entry);
           } catch (err) {
             failedEvents += 1;
@@ -361,6 +455,7 @@ export class OnchainFeed {
       if (failedEvents) notes.push(`the markets of ${failedEvents} games did not answer`);
       const keep = new Set(inHorizon.map((c) => c.event.id));
       for (const id of [...this.marketsCache.keys()]) if (!keep.has(id)) this.marketsCache.delete(id);
+      health.diagnostics = this.diagnostics();
 
       const unmatched = await this.addLimitless(found, health, notes);
 
@@ -396,6 +491,7 @@ export class OnchainFeed {
   private async addLimitless(found: FoundGame[], health: FeedHealth, notes: string[]): Promise<string[]> {
     const mapped = found.some((g) => g.outcomes.some((o) => o.listings.some((l) => l.venue === "limitless")));
     const all: LimitlessMarket[] = [];
+    let source: "partner" | "venue" = "partner";
     try {
       let pageToken: string | undefined;
       for (let page = 0; page < 40; page += 1) {
@@ -407,20 +503,39 @@ export class OnchainFeed {
       }
     } catch (err) {
       const refused = err instanceof AggregatorApiError && err.status === 403;
-      health.limitless = { state: refused ? "refused" : "failed", markets: all.length, sports: 0, matched: 0, detail: words160(err) };
-      notes.push(refused ? "the key is not allowed to read the Limitless list (403): ask the partner to allow List Markets for it" : `the Limitless list did not answer: ${words160(err)}`);
-      return [];
+      const why = refused ? "the key is not allowed to read the partner's Limitless list (403)" : `the partner's Limitless list did not answer: ${words160(err)}`;
+      all.length = 0;
+      try {
+        if (!this.source.listLimitlessPublic) throw new Error("no other list to read");
+        await this.sleep(this.paceMs);
+        all.push(...(await this.source.listLimitlessPublic()));
+        source = "venue";
+        notes.push(`${why}; its game markets were read from Limitless's own public list instead`);
+      } catch (inner) {
+        health.limitless = { state: refused ? "refused" : "failed", markets: 0, sports: 0, matched: 0, detail: words160(err) };
+        notes.push(`${why}, and Limitless's own public list was not read either (${words160(inner)}): ask the partner to allow List Markets for the key`);
+        return [];
+      }
     }
     const sportsMarkets = all.filter(isLimitlessSports);
     const unmatched: string[] = [];
     let matched = 0;
-    const gameOf = (teams: [string, string], closes: number): FoundGame | undefined =>
-      found.find((g) => {
+    const gameOf = (teams: [string, string], m: LimitlessGameMarket): FoundGame | undefined => {
+      const starts = Date.parse(m.startsAt ?? "");
+      const closes = Date.parse(m.expiresAt ?? "");
+      const fits = found.filter((g) => {
         const mine = teamsOf(g.event.name);
-        if (!mine) return false;
+        const gameStart = Date.parse(g.event.startTime ?? "");
+        if (!mine || !Number.isFinite(gameStart)) return false;
         const sameTwo = (sameTeam(mine[0], teams[0]) && sameTeam(mine[1], teams[1])) || (sameTeam(mine[0], teams[1]) && sameTeam(mine[1], teams[0]));
-        return sameTwo && Number.isFinite(closes) && Math.abs(closes - Date.parse(g.event.startTime ?? "")) <= SAME_GAME_MS;
+        if (!sameTwo) return false;
+        if (Number.isFinite(starts)) return Math.abs(starts - gameStart) <= START_APART_MS;
+        const after = closes - gameStart;
+        return Number.isFinite(closes) && after >= -CLOSE_BEFORE_MS && after <= CLOSE_AFTER_MS;
       });
+      // two games it could be (the same two teams on consecutive days): neither
+      return fits.length === 1 ? fits[0] : undefined;
+    };
     const tie = (outcome: FoundOutcome, m: LimitlessMarket, tokenId: string): void => {
       // the partner's own listing wins when it has one
       if (outcome.listings.some((l) => l.venue === "limitless")) return;
@@ -428,11 +543,10 @@ export class OnchainFeed {
       matched += 1;
     };
     for (const m of sportsMarkets) {
-      const closes = Date.parse(m.expiresAt ?? "");
       const yes = m.outcomes.find((o) => /^yes$/i.test(o.name));
       const title = parseLimitlessTitle(m.title);
       if (title && yes) {
-        const game = gameOf(title.teams, closes);
+        const game = gameOf(title.teams, m);
         const outcome = game?.outcomes.find((o) => (/^draw$/i.test(title.pick) ? o.side === "DRAW" || /^(draw|tie)$/i.test(o.name) : sameTeam(o.name, title.pick)));
         if (outcome) {
           tie(outcome, m, yes.tokenId);
@@ -441,7 +555,7 @@ export class OnchainFeed {
       }
       // a single market on the game, its two outcomes named for the two teams
       const sides = limitlessGame(m.title);
-      const game = sides && m.outcomes.length === 2 ? gameOf(sides, closes) : undefined;
+      const game = sides && m.outcomes.length === 2 ? gameOf(sides, m) : undefined;
       const pairs = game ? m.outcomes.map((lo) => ({ lo, outcome: game.outcomes.find((o) => sameTeam(o.name, lo.name)) })) : [];
       if (game && game.outcomes.length === 2 && pairs.length === 2 && pairs[0].outcome && pairs[1].outcome && pairs[0].outcome !== pairs[1].outcome) {
         for (const p of pairs) tie(p.outcome as FoundOutcome, m, p.lo.tokenId);
@@ -449,8 +563,46 @@ export class OnchainFeed {
       }
       unmatched.push(m.title);
     }
-    health.limitless = { state: "listed", markets: all.length, sports: sportsMarkets.length, matched, ...(mapped ? { detail: "the partner's mapping carries Limitless listings; those are used first" } : {}) };
+    health.limitless = { state: "listed", source, markets: all.length, sports: sportsMarkets.length, matched, ...(mapped ? { detail: "the partner's mapping carries Limitless listings; those are used first" } : {}) };
     return unmatched.sort();
+  }
+
+  /** The catalog as it was read, in counts, over every game remembered. */
+  private diagnostics(): FeedDiagnostics {
+    const d: FeedDiagnostics = { games: 0, gamesByVenue: {}, gamesNamingTwo: 0, listingsByVenue: {}, listingKeys: {}, marketsByVenueAndType: {}, sampleTitles: {}, winner: { none: 0, one: 0, several: 0, split: 0 }, gamesWithVenueOffWinner: 0, examples: [] };
+    const examples: { rank: number; game: string; competition: string; markets: WinnerShape[]; others: WinnerShape[] }[] = [];
+    for (const e of this.marketsCache.values()) {
+      d.games += 1;
+      for (const [v, n] of Object.entries(e.shape.listings)) {
+        bump(d.listingsByVenue, v, n);
+        bump(d.gamesByVenue, v);
+      }
+      for (const [v, keys] of Object.entries(e.shape.keys)) d.listingKeys[v] ??= keys;
+      for (const [v, types] of Object.entries(e.shape.byType)) for (const [t, n] of Object.entries(types)) bump((d.marketsByVenueAndType[v] ??= {}), t, n);
+      for (const [v, types] of Object.entries(e.shape.titles)) {
+        for (const [t, titles] of Object.entries(types)) {
+          const kept = ((d.sampleTitles[v] ??= {})[t] ??= []);
+          for (const title of titles) if (kept.length < 2 && !kept.includes(title)) kept.push(title);
+        }
+      }
+      const n = e.shape.candidates.length;
+      if (n === 0) d.winner.none += 1;
+      else if (n === 1) d.winner.one += 1;
+      else d.winner.several += 1;
+      if (e.shape.split) d.winner.split += 1;
+      if (e.shape.others.length) d.gamesWithVenueOffWinner += 1;
+      // most telling first: split games, then a venue off the winner market, then several candidates, then games where more than one of the three is named at all
+      const named = VENUES.filter((v) => (e.shape.listings[v === "polymarket" ? "POLYMARKET" : v === "sx_bet" ? "SX_BET" : "LIMITLESS"] ?? 0) > 0).length;
+      if (named > 1) d.gamesNamingTwo += 1;
+      const rank = (e.shape.split ? 8 : 0) + (e.shape.others.length ? 4 : 0) + (n > 1 ? 2 : 0) + (named > 1 ? 1 : 0);
+      if (rank > 0) examples.push({ rank, game: e.name, competition: e.competition, markets: e.shape.candidates, others: e.shape.others });
+    }
+    // the two kinds of trouble each get room: up to three split games, then the rest by rank
+    const ranked = examples.sort((a, b) => b.rank - a.rank);
+    const splitOnes = ranked.filter((x) => x.rank >= 8).slice(0, 3);
+    const rest = ranked.filter((x) => !splitOnes.includes(x) && x.rank < 8).slice(0, 6 - splitOnes.length);
+    d.examples = [...splitOnes, ...rest].map(({ rank: _rank, ...rest2 }) => rest2);
+    return d;
   }
 
   /** One snapshot of every book of every game found. It never throws. */
@@ -477,6 +629,8 @@ export class OnchainFeed {
     }
     let read = 0;
     let empty = 0;
+    const perVenue = byVenue<VenueBooks>(() => ({ asked: 0, read: 0, empty: 0, errors: {} }));
+    const venueOfStream = (m: MarketStream): Venue | null => (m.venue === "POLYMARKET" ? "polymarket" : m.venue === "SX_BET" ? "sx_bet" : m.venue === "LIMITLESS" ? "limitless" : null);
     const quote = (l: FoundListing): VenueQuote => {
       const r = results.get(streamKey(l.stream));
       const base = { venue: l.venue, id: l.id, executable: l.executable, matchedBy: l.matchedBy };
@@ -485,12 +639,20 @@ export class OnchainFeed {
       return { ...base, book };
     };
     for (const r of results.values()) {
+      const v = venueOfStream(r.market);
+      const mine = v ? perVenue[v] : null;
+      if (mine) mine.asked += 1;
       if (r.book) {
         read += 1;
-        if (!r.book.bids.length && !r.book.asks.length) empty += 1;
+        if (mine) mine.read += 1;
+        if (!r.book.bids.length && !r.book.asks.length) {
+          empty += 1;
+          if (mine) mine.empty += 1;
+        }
       } else {
         const code = r.error?.code ?? "UNKNOWN";
-        errors[code] = (errors[code] ?? 0) + 1;
+        bump(errors, code);
+        if (mine) bump(mine.errors, code);
       }
     }
     const games: GameRow[] = this.found.map((g) => ({
@@ -504,7 +666,7 @@ export class OnchainFeed {
       marketTitle: g.marketTitle,
       outcomes: g.outcomes.map((o) => ({ name: o.name, side: o.side, quotes: o.listings.map(quote) })),
     }));
-    this.health = { ...this.health, books: { asked: asked.length, read, empty, errors, ms: Date.now() - t0 } };
+    this.health = { ...this.health, books: { asked: asked.length, read, empty, errors, ms: Date.now() - t0, byVenue: perVenue } };
     return { at: new Date(nowMs).toISOString(), games, coverage: this.coverage, unmatchedLimitless: this.unmatched, feed: this.health };
   }
 }
