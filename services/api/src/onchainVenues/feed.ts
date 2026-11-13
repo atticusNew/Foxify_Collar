@@ -11,7 +11,8 @@
  * first, and remembers the answer: two hours for a game one of these venues lists, six hours
  * for a game none does. While games are still to read the passes run back to back, so the
  * catalog fills in over the first few and the page says how many games are left. The board is
- * the games at least one of the three lists, soonest first, up to a cap.
+ * the games at least one of the three lists, up to a cap: games on two or more of them first,
+ * then the rest, soonest first.
  *
  * LIMITLESS is not in that mapping (the partner's own page says so: "Not mapped. Find its
  * markets with List Markets"). When a listing for it does appear on an outcome it is used as it
@@ -34,6 +35,7 @@ import {
   streamKey,
   type Competition,
   type LimitlessMarket,
+  type Outcome,
   type Listing,
   type Market,
   type MarketStream,
@@ -63,7 +65,7 @@ export interface FeedOptions {
   readBooks: BookReader;
   /** games that start within this are on the board; live games always are */
   horizonMs?: number;
-  /** the most games on the board, soonest first; only games at least one of the three venues lists count */
+  /** the most games on the board: games on two or more of the venues first, then the rest, soonest first; only games at least one of the three lists count */
   maxEvents?: number;
   /** the most games whose markets one pass asks for */
   maxReadsPerPass?: number;
@@ -101,6 +103,74 @@ export function winnerMarket(markets: Market[]): Market | null {
   return [...full].sort((a, b) => venuesListed(b).size - venuesListed(a).size || Number(b.main === true) - Number(a.main === true))[0];
 }
 
+const isDraw = (o: Outcome): boolean => o.side === "DRAW" || /^(draw|tie|x)$/i.test(o.name.trim());
+
+/**
+ * For each outcome of `b`, the one outcome of `a` it is: the draw to the draw, a team to the
+ * team of the same name. Null unless every outcome of `b` finds exactly one of `a` and no two
+ * find the same one.
+ */
+export function pairOutcomes(a: Outcome[], b: Outcome[]): number[] | null {
+  if (a.length !== b.length) return null;
+  const taken = new Set<number>();
+  const out: number[] = [];
+  for (const o of b) {
+    const hits = a.map((x, i) => i).filter((i) => (isDraw(o) ? isDraw(a[i]) : !isDraw(a[i]) && sameTeam(a[i].name, o.name)));
+    if (hits.length !== 1 || taken.has(hits[0])) return null;
+    taken.add(hits[0]);
+    out.push(hits[0]);
+  }
+  return out;
+}
+
+export interface JoinedWinner {
+  winner: Market | null;
+  /** venues whose listings were brought in from another winner market of the same game */
+  joined: Venue[];
+  /** venues that sit in another winner market and could not be brought in */
+  apart: Venue[];
+}
+
+/**
+ * The feed can carry one game's winner market more than once: read on 13 November 2026, an NHL
+ * game had Polymarket in its main moneyline market and SX Bet in a second one of its own
+ * ("Winner including overtime"), under the same game. This brings such a venue into the chosen
+ * market, and only when it is plainly the same bet: both markets typed MONEYLINE by the feed,
+ * for the whole game, with the same number of outcomes, and every outcome of one finding exactly
+ * one of the other by team name (pairOutcomes). Otherwise the venue is left apart and counted.
+ * A listing brought in this way is marked, and the page tags its row "by names".
+ */
+export function joinWinner(markets: Market[]): JoinedWinner {
+  const chosen = winnerMarket(markets);
+  if (!chosen) return { winner: null, joined: [], apart: [] };
+  const have = venuesListed(chosen);
+  const outcomes = chosen.outcomes.map((o) => ({ ...o, listings: [...o.listings] }));
+  const joined: Venue[] = [];
+  const apart = new Set<Venue>();
+  for (const other of winnerCandidates(markets)) {
+    if (other === chosen) continue;
+    const wanted = [...venuesListed(other)].filter((v) => !have.has(v));
+    if (!wanted.length) continue;
+    const pairs = chosen.type === "MONEYLINE" && other.type === "MONEYLINE" && !chosen.line && !other.line ? pairOutcomes(chosen.outcomes, other.outcomes) : null;
+    if (!pairs) {
+      for (const v of wanted) apart.add(v);
+      continue;
+    }
+    other.outcomes.forEach((o, i) => {
+      for (const l of o.listings) {
+        const v = venueOf(l);
+        if (v && wanted.includes(v)) outcomes[pairs[i]].listings.push({ ...l, joinedByNames: true });
+      }
+    });
+    for (const v of wanted) {
+      have.add(v);
+      joined.push(v);
+      apart.delete(v);
+    }
+  }
+  return { winner: joined.length ? { ...chosen, outcomes } : chosen, joined, apart: [...apart].filter((v) => !have.has(v)) };
+}
+
 // ---------------------------------------------------------------------------
 // what an event's markets looked like, in counts
 // ---------------------------------------------------------------------------
@@ -115,7 +185,14 @@ export interface EventShape {
   others: WinnerShape[];
   /** the three venues' listings sit in different winner markets */
   split: boolean;
+  /** of the split ones: a venue was brought into the chosen market, outcome by outcome */
+  joined: boolean;
+  /** of the split ones: a venue could not be brought in and is left apart */
+  apart: boolean;
 }
+
+/** The feed's names of this page's three venues. Nothing is kept or shown about any other venue the feed carries. */
+const OURS = new Set(["POLYMARKET", "SX_BET", "LIMITLESS"]);
 
 const shapeOf = (m: Market): WinnerShape => ({
   title: m.title.slice(0, 80),
@@ -123,8 +200,9 @@ const shapeOf = (m: Market): WinnerShape => ({
   key: typeof (m as { marketKey?: unknown }).marketKey === "string" ? ((m as { marketKey?: string }).marketKey as string) : null,
   period: m.period ? `${m.period.unit} ${m.period.from}-${m.period.to}` : null,
   outcomes: m.outcomes.length,
-  sides: m.outcomes.slice(0, 3).map((o) => o.side ?? o.name.slice(0, 24)),
-  venues: [...new Set(m.outcomes.flatMap((o) => o.listings.map((l) => String(l.venue))))].sort(),
+  sides: m.outcomes.slice(0, 3).map((o) => o.side ?? null),
+  names: m.outcomes.slice(0, 3).map((o) => o.name.slice(0, 32)),
+  venues: [...new Set(m.outcomes.flatMap((o) => o.listings.map((l) => String(l.venue))))].filter((v) => OURS.has(v)).sort(),
 });
 
 const bump = (o: Record<string, number>, k: string, by = 1): void => {
@@ -133,7 +211,7 @@ const bump = (o: Record<string, number>, k: string, by = 1): void => {
 
 /** Counts over one event's markets, kept instead of the markets themselves: which venues the feed names, under which types, with which fields. */
 export function eventShape(markets: Market[]): EventShape {
-  const shape: EventShape = { listings: {}, keys: {}, byType: {}, titles: {}, candidates: [], others: [], split: false };
+  const shape: EventShape = { listings: {}, keys: {}, byType: {}, titles: {}, candidates: [], others: [], split: false, joined: false, apart: false };
   for (const m of markets) {
     // the type, the part of the game when it is not the whole of it, and how many outcomes
     const type = `${m.type ?? "none"}${m.period ? `+${m.period.unit}` : ""}/${m.outcomes.length > 3 ? "4+" : m.outcomes.length}`;
@@ -141,6 +219,7 @@ export function eventShape(markets: Market[]): EventShape {
     for (const o of m.outcomes) {
       for (const l of o.listings) {
         const v = String(l.venue);
+        if (!OURS.has(v)) continue;
         bump(shape.listings, v);
         shape.keys[v] ??= Object.keys(l).sort();
         seen.add(v);
@@ -153,8 +232,12 @@ export function eventShape(markets: Market[]): EventShape {
     }
   }
   const candidates = winnerCandidates(markets);
-  shape.candidates = candidates.slice(0, 6).map(shapeOf);
   const chosen = winnerMarket(markets);
+  // the chosen one first, then the others that carry one of the three
+  shape.candidates = [...(chosen ? [chosen] : []), ...candidates.filter((m) => m !== chosen && venuesListed(m).size > 0)].slice(0, 4).map(shapeOf);
+  const join = joinWinner(markets);
+  shape.joined = join.joined.length > 0;
+  shape.apart = join.apart.length > 0;
   const have = chosen ? venuesListed(chosen) : new Set<Venue>();
   const across = new Set(candidates.flatMap((m) => [...venuesListed(m)]));
   shape.split = chosen !== null && across.size > have.size;
@@ -274,10 +357,22 @@ interface FoundGame {
   outcomes: FoundOutcome[];
 }
 
+/** The two sides of a game by its outcomes, the draw aside; null when that is not two. */
+const sidesOf = (g: FoundGame): [string, string] | null => {
+  const teams = g.outcomes.filter((o) => o.side !== "DRAW" && !/^(draw|tie|x)$/i.test(o.name.trim()));
+  return teams.length === 2 ? [teams[0].name, teams[1].name] : null;
+};
+
 const tail = (s: string, n = 8): string => (s.length > n ? `…${s.slice(-n)}` : s);
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
 function foundListing(l: Listing): FoundListing | null {
+  const found = listingAsFound(l);
+  // brought in from another winner market of the same game (joinWinner): the row says so
+  return found && (l as { joinedByNames?: unknown }).joinedByNames === true ? { ...found, matchedBy: "names" } : found;
+}
+
+function listingAsFound(l: Listing): FoundListing | null {
   const executable = typeof l.executable === "boolean" ? l.executable : null;
   if (l.venue === "POLYMARKET") {
     const tokenId = str((l as { tokenId?: unknown }).tokenId);
@@ -309,6 +404,7 @@ const emptyHealth = (): FeedHealth => ({
   eventsRead: 0,
   eventsPending: 0,
   eventsOverCap: 0,
+  comparableOverCap: 0,
   limitless: { state: "not_read", markets: 0, sports: 0, matched: 0 },
   books: { asked: 0, read: 0, empty: 0, errors: {}, ms: null },
 });
@@ -422,7 +518,7 @@ export class OnchainFeed {
           await this.sleep(this.paceMs);
           try {
             const markets = await this.source.listEventMarkets(event.id);
-            const winner = winnerMarket(markets);
+            const winner = joinWinner(markets).winner;
             entry = { at: nowMs, winner, listed: winner !== null && venuesListed(winner).size > 0, name: event.name, competition: competition.name, shape: eventShape(markets) };
             this.marketsCache.set(event.id, entry);
           } catch (err) {
@@ -468,10 +564,16 @@ export class OnchainFeed {
         if (on.length >= 3) cov.onThree += 1;
       }
 
-      // the board: the games at least one of the three lists, soonest first, up to the cap
+      // the board: the games at least one of the three lists, up to the cap. Games on two or more
+      // of the venues take their places first, since those are the ones that compare; the rest
+      // fill what is left. Soonest first within each, and the board itself stays soonest first.
       const listed = found.filter((g) => g.outcomes.some((o) => o.listings.length > 0));
-      health.eventsOverCap = Math.max(0, listed.length - this.maxEvents);
-      this.found = listed.slice(0, this.maxEvents);
+      const onTwo = (g: FoundGame): boolean => new Set(g.outcomes.flatMap((o) => o.listings.map((l) => l.venue))).size >= 2;
+      const comparable = listed.filter(onTwo);
+      const kept = new Set([...comparable, ...listed.filter((g) => !onTwo(g))].slice(0, this.maxEvents));
+      health.eventsOverCap = listed.length - kept.size;
+      health.comparableOverCap = comparable.filter((g) => !kept.has(g)).length;
+      this.found = listed.filter((g) => kept.has(g));
       this.coverage = [...coverage.values()].sort((a, b) => b.onTwo - a.onTwo || b.events - a.events || a.competition.localeCompare(b.competition));
       this.unmatched = unmatched;
     } catch (err) {
@@ -490,7 +592,7 @@ export class OnchainFeed {
   /** Limitless's own list, its sports markets tied to the games found. Returns the titles it could not tie. */
   private async addLimitless(found: FoundGame[], health: FeedHealth, notes: string[]): Promise<string[]> {
     const mapped = found.some((g) => g.outcomes.some((o) => o.listings.some((l) => l.venue === "limitless")));
-    const all: LimitlessMarket[] = [];
+    const all: LimitlessGameMarket[] = [];
     let source: "partner" | "venue" = "partner";
     try {
       let pageToken: string | undefined;
@@ -519,15 +621,16 @@ export class OnchainFeed {
     }
     const sportsMarkets = all.filter(isLimitlessSports);
     const unmatched: string[] = [];
+    const near: NonNullable<FeedHealth["limitless"]["unmatchedSample"]> = [];
     let matched = 0;
     const gameOf = (teams: [string, string], m: LimitlessGameMarket): FoundGame | undefined => {
       const starts = Date.parse(m.startsAt ?? "");
       const closes = Date.parse(m.expiresAt ?? "");
       const fits = found.filter((g) => {
-        const mine = teamsOf(g.event.name);
         const gameStart = Date.parse(g.event.startTime ?? "");
-        if (!mine || !Number.isFinite(gameStart)) return false;
-        const sameTwo = (sameTeam(mine[0], teams[0]) && sameTeam(mine[1], teams[1])) || (sameTeam(mine[0], teams[1]) && sameTeam(mine[1], teams[0]));
+        if (!Number.isFinite(gameStart)) return false;
+        // the game's two sides by its name, or, when the name is short codes ("WSH @ NJD"), by its two outcomes
+        const sameTwo = [teamsOf(g.event.name), sidesOf(g)].some((mine) => mine !== null && ((sameTeam(mine[0], teams[0]) && sameTeam(mine[1], teams[1])) || (sameTeam(mine[0], teams[1]) && sameTeam(mine[1], teams[0]))));
         if (!sameTwo) return false;
         if (Number.isFinite(starts)) return Math.abs(starts - gameStart) <= START_APART_MS;
         const after = closes - gameStart;
@@ -562,15 +665,22 @@ export class OnchainFeed {
         continue;
       }
       unmatched.push(m.title);
+      // for checking the pairing: a few markets left over, each with the games here that start when it does
+      const starts = Date.parse(m.startsAt ?? "");
+      const named = (title ? title.teams : sides)?.join(" vs ");
+      if (named && Number.isFinite(starts) && near.length < 5 && !near.some((n) => n.game === named)) {
+        const sameStart = found.filter((g) => Math.abs(Date.parse(g.event.startTime ?? "") - starts) <= START_APART_MS);
+        near.push({ game: named, startsAt: m.startsAt as string, gamesStartingThen: sameStart.length, sample: sameStart.slice(0, 4).map((g) => `${g.event.name} [${g.outcomes.map((o) => o.name).join(" / ")}]`.slice(0, 90)) });
+      }
     }
-    health.limitless = { state: "listed", source, markets: all.length, sports: sportsMarkets.length, matched, ...(mapped ? { detail: "the partner's mapping carries Limitless listings; those are used first" } : {}) };
+    health.limitless = { state: "listed", source, markets: all.length, sports: sportsMarkets.length, matched, ...(mapped ? { detail: "the partner's mapping carries Limitless listings; those are used first" } : {}), ...(near.length ? { unmatchedSample: near } : {}) };
     return unmatched.sort();
   }
 
   /** The catalog as it was read, in counts, over every game remembered. */
   private diagnostics(): FeedDiagnostics {
-    const d: FeedDiagnostics = { games: 0, gamesByVenue: {}, gamesNamingTwo: 0, listingsByVenue: {}, listingKeys: {}, marketsByVenueAndType: {}, sampleTitles: {}, winner: { none: 0, one: 0, several: 0, split: 0 }, gamesWithVenueOffWinner: 0, examples: [] };
-    const examples: { rank: number; game: string; competition: string; markets: WinnerShape[]; others: WinnerShape[] }[] = [];
+    const d: FeedDiagnostics = { games: 0, gamesByVenue: {}, gamesNamingTwo: 0, listingsByVenue: {}, listingKeys: {}, marketsByVenueAndType: {}, sampleTitles: {}, winner: { none: 0, one: 0, several: 0, split: 0, joined: 0, apart: 0 }, gamesWithVenueOffWinner: 0, examples: [] };
+    const examples: FeedDiagnostics["examples"] = [];
     for (const e of this.marketsCache.values()) {
       d.games += 1;
       for (const [v, n] of Object.entries(e.shape.listings)) {
@@ -590,18 +700,17 @@ export class OnchainFeed {
       else if (n === 1) d.winner.one += 1;
       else d.winner.several += 1;
       if (e.shape.split) d.winner.split += 1;
+      if (e.shape.joined) d.winner.joined += 1;
+      if (e.shape.apart) d.winner.apart += 1;
       if (e.shape.others.length) d.gamesWithVenueOffWinner += 1;
-      // most telling first: split games, then a venue off the winner market, then several candidates, then games where more than one of the three is named at all
       const named = VENUES.filter((v) => (e.shape.listings[v === "polymarket" ? "POLYMARKET" : v === "sx_bet" ? "SX_BET" : "LIMITLESS"] ?? 0) > 0).length;
       if (named > 1) d.gamesNamingTwo += 1;
-      const rank = (e.shape.split ? 8 : 0) + (e.shape.others.length ? 4 : 0) + (n > 1 ? 2 : 0) + (named > 1 ? 1 : 0);
-      if (rank > 0) examples.push({ rank, game: e.name, competition: e.competition, markets: e.shape.candidates, others: e.shape.others });
+      const kind = e.shape.apart ? "apart" : e.shape.others.length ? "off" : e.shape.joined ? "joined" : null;
+      if (kind) examples.push({ kind, game: e.name, competition: e.competition, markets: e.shape.candidates, others: e.shape.others });
     }
-    // the two kinds of trouble each get room: up to three split games, then the rest by rank
-    const ranked = examples.sort((a, b) => b.rank - a.rank);
-    const splitOnes = ranked.filter((x) => x.rank >= 8).slice(0, 3);
-    const rest = ranked.filter((x) => !splitOnes.includes(x) && x.rank < 8).slice(0, 6 - splitOnes.length);
-    d.examples = [...splitOnes, ...rest].map(({ rank: _rank, ...rest2 }) => rest2);
+    // each kind gets room: games left apart, games with a venue off the winner market, games joined
+    const of = (kind: string, n: number): typeof examples => examples.filter((x) => x.kind === kind).slice(0, n);
+    d.examples = [...of("apart", 3), ...of("off", 2), ...of("joined", 2)];
     return d;
   }
 
