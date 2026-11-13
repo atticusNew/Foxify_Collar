@@ -98,6 +98,8 @@ export interface FeedHealth {
   eventsPending: number;
   /** games one of the three lists that were left off the board because its cap was reached */
   eventsOverCap: number;
+  /** of those, games on two or more of the venues: they take their places first, so this is above zero only when they alone exceed the cap */
+  comparableOverCap: number;
   /** `source`: whose list was read, the partner's or, when the partner refuses it to this key, the venue's own public one */
   limitless: {
     state: "listed" | "refused" | "failed" | "not_read";

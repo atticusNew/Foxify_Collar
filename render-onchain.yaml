@@ -81,5 +81,7 @@ services:
         value: "10"
       - key: ONCHAIN_VENUES_HORIZON_HOURS
         value: "48"
+      # The most games on the board. Games on two or more of the venues take their
+      # places first (those are the ones that compare), then the rest, soonest first.
       - key: ONCHAIN_VENUES_MAX_GAMES
         value: "120"

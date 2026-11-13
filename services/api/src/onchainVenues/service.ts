@@ -125,7 +125,7 @@ export class OnchainVenuesService {
       lastError: this.lastError,
       games: this.last?.board.games.length ?? 0,
       comparable: this.last?.board.comparable ?? 0,
-      catalog: f ? { readAt: f.discoveredAt, seconds: f.discoveryMs === null ? null : Math.round(f.discoveryMs / 1000), competitions: f.competitions, gamesInWindow: f.eventsInHorizon, gamesRead: f.eventsRead, gamesStillToRead: f.eventsPending, leftOffTheBoard: f.eventsOverCap, notes: f.notes } : null,
+      catalog: f ? { readAt: f.discoveredAt, seconds: f.discoveryMs === null ? null : Math.round(f.discoveryMs / 1000), competitions: f.competitions, gamesInWindow: f.eventsInHorizon, gamesRead: f.eventsRead, gamesStillToRead: f.eventsPending, leftOffTheBoard: f.eventsOverCap, comparableLeftOff: f.comparableOverCap, notes: f.notes } : null,
       limitless: f?.limitless ?? null,
       books: f?.books ?? null,
       // the catalog in counts, to check this page's reading of it against the real feed
@@ -134,7 +134,7 @@ export class OnchainVenuesService {
   }
 
   private pageData(): PageData {
-    const empty = { capabilities: [], discoveredAt: null, discoveryMs: null, notes: [], competitions: 0, eventsInHorizon: 0, eventsRead: 0, eventsPending: 0, eventsOverCap: 0, limitless: { state: "not_read" as const, markets: 0, sports: 0, matched: 0 }, books: { asked: 0, read: 0, empty: 0, errors: {}, ms: null } };
+    const empty = { capabilities: [], discoveredAt: null, discoveryMs: null, notes: [], competitions: 0, eventsInHorizon: 0, eventsRead: 0, eventsPending: 0, eventsOverCap: 0, comparableOverCap: 0, limitless: { state: "not_read" as const, markets: 0, sports: 0, matched: 0 }, books: { asked: 0, read: 0, empty: 0, errors: {}, ms: null } };
     return {
       board: this.last?.board ?? null,
       coverage: this.last?.snapshot.coverage ?? [],

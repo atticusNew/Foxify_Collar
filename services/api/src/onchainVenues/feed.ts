@@ -11,7 +11,8 @@
  * first, and remembers the answer: two hours for a game one of these venues lists, six hours
  * for a game none does. While games are still to read the passes run back to back, so the
  * catalog fills in over the first few and the page says how many games are left. The board is
- * the games at least one of the three lists, soonest first, up to a cap.
+ * the games at least one of the three lists, up to a cap: games on two or more of them first,
+ * then the rest, soonest first.
  *
  * LIMITLESS is not in that mapping (the partner's own page says so: "Not mapped. Find its
  * markets with List Markets"). When a listing for it does appear on an outcome it is used as it
@@ -64,7 +65,7 @@ export interface FeedOptions {
   readBooks: BookReader;
   /** games that start within this are on the board; live games always are */
   horizonMs?: number;
-  /** the most games on the board, soonest first; only games at least one of the three venues lists count */
+  /** the most games on the board: games on two or more of the venues first, then the rest, soonest first; only games at least one of the three lists count */
   maxEvents?: number;
   /** the most games whose markets one pass asks for */
   maxReadsPerPass?: number;
@@ -403,6 +404,7 @@ const emptyHealth = (): FeedHealth => ({
   eventsRead: 0,
   eventsPending: 0,
   eventsOverCap: 0,
+  comparableOverCap: 0,
   limitless: { state: "not_read", markets: 0, sports: 0, matched: 0 },
   books: { asked: 0, read: 0, empty: 0, errors: {}, ms: null },
 });
@@ -562,10 +564,16 @@ export class OnchainFeed {
         if (on.length >= 3) cov.onThree += 1;
       }
 
-      // the board: the games at least one of the three lists, soonest first, up to the cap
+      // the board: the games at least one of the three lists, up to the cap. Games on two or more
+      // of the venues take their places first, since those are the ones that compare; the rest
+      // fill what is left. Soonest first within each, and the board itself stays soonest first.
       const listed = found.filter((g) => g.outcomes.some((o) => o.listings.length > 0));
-      health.eventsOverCap = Math.max(0, listed.length - this.maxEvents);
-      this.found = listed.slice(0, this.maxEvents);
+      const onTwo = (g: FoundGame): boolean => new Set(g.outcomes.flatMap((o) => o.listings.map((l) => l.venue))).size >= 2;
+      const comparable = listed.filter(onTwo);
+      const kept = new Set([...comparable, ...listed.filter((g) => !onTwo(g))].slice(0, this.maxEvents));
+      health.eventsOverCap = listed.length - kept.size;
+      health.comparableOverCap = comparable.filter((g) => !kept.has(g)).length;
+      this.found = listed.filter((g) => kept.has(g));
       this.coverage = [...coverage.values()].sort((a, b) => b.onTwo - a.onTwo || b.events - a.events || a.competition.localeCompare(b.competition));
       this.unmatched = unmatched;
     } catch (err) {

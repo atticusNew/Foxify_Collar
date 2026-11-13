@@ -284,6 +284,35 @@ test("onchain feed: a second pass reuses what it knows; a competition with nothi
   assert.deepEqual(calls.filter((c) => c.startsWith("markets")).sort(), ["markets:e1", "markets:e2"]);
 });
 
+test("onchain feed: on a capped board the games on two or more venues take their places first, then the rest, soonest first", async () => {
+  // two games on one venue only that start sooner than the two on several
+  const lone = (id: string, hours: number, a: string, b: string): [SportEvent, Market[]] => [
+    { id, name: `${a} @ ${b}`, competitionId: "mlb", startTime: at(hours), status: "SCHEDULED" },
+    [{ id: `${id}m`, title: "Moneyline", type: "MONEYLINE", period: null, outcomes: [{ name: a, listings: [pm(`${id}a`)] }, { name: b, listings: [pm(`${id}b`)] }] }],
+  ];
+  const [l1, l1m] = lone("l1", 1, "Cubs", "Mets");
+  const [l2, l2m] = lone("l2", 2, "Reds", "Braves");
+  const source = (): FeedSource => standIn({ listEvents: async (id) => (id === "mlb" ? [l1, l2, ...EVENTS.mlb] : EVENTS[id] ?? []), listEventMarkets: async (id) => (id === "l1" ? l1m : id === "l2" ? l2m : MARKETS[id] ?? []) }).source;
+  const board = async (maxEvents: number): Promise<Snapshot> => {
+    const feed = feedOf(source(), reader(), { maxEvents });
+    await feed.discover(NOW);
+    return feed.snapshot(NOW);
+  };
+  const all = await board(10);
+  assert.deepEqual(all.games.map((g) => g.name), ["Cubs @ Mets", "Reds @ Braves", "Royals @ Tigers", "Belgium vs Italy"], "uncapped: soonest first");
+  assert.deepEqual([all.feed.eventsOverCap, all.feed.comparableOverCap], [0, 0]);
+  const three = await board(3);
+  assert.deepEqual(three.games.map((g) => g.name), ["Cubs @ Mets", "Royals @ Tigers", "Belgium vs Italy"], "both games on several venues, then the soonest of the rest; shown soonest first");
+  assert.deepEqual([three.feed.eventsOverCap, three.feed.comparableOverCap], [1, 0]);
+  assert.match(renderOnchainHtml({ board: buildBoard(three), coverage: three.coverage, unmatchedLimitless: three.unmatchedLimitless, feed: three.feed, hasFeed: true, intervalSec: 60, horizonHours: 48 }), /1 games on these venues are left off because the board is capped: games on two or more of the venues take their places first, then the rest, soonest first\. Every game on two or more venues is on the board/);
+  const one = await board(1);
+  assert.deepEqual(one.games.map((g) => g.name), ["Royals @ Tigers"]);
+  assert.deepEqual([one.feed.eventsOverCap, one.feed.comparableOverCap], [3, 1], "and it says when a game on two venues is itself left off");
+  const service = new OnchainVenuesService({ feed: feedOf(source(), reader(), { maxEvents: 1 }), key: KEY, log: () => {} });
+  await service.cycle(NOW);
+  assert.deepEqual([(service.health().catalog as { leftOffTheBoard: number }).leftOffTheBoard, (service.health().catalog as { comparableLeftOff: number }).comparableLeftOff], [3, 1]);
+});
+
 test("onchain feed: the cap keeps the soonest games and says how many were left off; books go out in chunks no larger than the stream allows", async () => {
   const seen: MarketStream[][] = [];
   const feed = feedOf(standIn().source, reader(seen), { maxEvents: 1, maxPerConnection: 2 });
