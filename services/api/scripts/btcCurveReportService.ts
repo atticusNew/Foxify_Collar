@@ -19,7 +19,11 @@
  * Env:  BTC_CURVE_PORT          (default 8860; PORT honoured)
  *       BTC_CURVE_DATA_DIR      (default /tmp/btc-curve; a Render disk in production)
  *       BTC_CURVE_INTERVAL_SEC  (default 60)
- *       BTC_CURVE_TOKEN         (optional; when set the page and JSON need ?k=<token>)
+ *       BTC_CURVE_TOKEN         (optional; when set the page and JSON need ?k=<token>. Without
+ *                               it, or with one that no longer matches, the report, /pairs and
+ *                               /sports answer a short "access link expired, contact us" page
+ *                               (src/btcCurve/accessPage.ts) and their JSON the same in JSON,
+ *                               both 401; every other path is the plain 404 it was)
  *       BTC_CURVE_SHOW_TAKE     (1 shows the writer's take in §6; default off)
  *       BTC_CURVE_RETAIN_DAYS   (default: unset, every day is kept. A whole number of days keeps
  *                               that window and deletes older day files; 0, all or none keep
@@ -79,6 +83,7 @@ import { buildReport } from "../src/btcCurve/report";
 import { renderReportHtml } from "../src/btcCurve/reportHtml";
 import { pairsCollectorFromEnv, type PairsCollector } from "../src/btcCurve/pairsCollector";
 import { pageLinks } from "../src/btcCurve/pageLinks";
+import { accessAnswer } from "../src/btcCurve/accessPage";
 import { mountSports, sportsCollectorFromEnv, type SportsMount } from "../src/sportsVenues/collector";
 import type { IndexCandle, Ladder, OptionRow, Snapshot } from "../src/btcCurve/types";
 
@@ -304,6 +309,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
   // a page made for one reader has its own key, checked there; this service's key does not open it
   if (sports?.audience(req, res, url)) return;
   if (!authorized(url)) {
+    // the key was changed: on this service's own pages the holder of an old link is told so and who to write to, and is shown nothing else
+    const answer = accessAnswer(url.pathname, url.searchParams.has("k"), ["/", "/api", PAIRS_BASE, SPORTS_BASE]);
+    if (answer) {
+      res.writeHead(answer.status, { "content-type": `${answer.type}; charset=utf-8`, "cache-control": "no-store", "referrer-policy": "no-referrer", "x-robots-tag": "noindex, nofollow" });
+      res.end(answer.body);
+      return;
+    }
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("not found");
     return;
