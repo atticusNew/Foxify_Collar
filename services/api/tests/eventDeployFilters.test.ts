@@ -1,5 +1,5 @@
 /**
- * Deploy filters: render-event-demos.yaml lists, per service, the paths a merge may change
+ * Deploy filters: render-event-demos.yaml and render-onchain.yaml list, per service, the paths a merge may change
  * without Render redeploying that service. A path ignored by mistake leaves a service running
  * old code with no error anywhere, so this test works out what each service's start script
  * really loads and fails if an ignored path covers any of it.
@@ -20,7 +20,8 @@ import { MEDIA_FILES } from "../src/eventCollar/crossVenue/mediaFiles";
 
 const API_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = resolve(API_DIR, "../..");
-const BLUEPRINT = "render-event-demos.yaml";
+/** The event lane's services, and the on-chain lane's one, which is kept in a blueprint of its own. */
+const BLUEPRINTS = ["render-event-demos.yaml", "render-onchain.yaml"];
 /** startCommand runs in the services/api workspace, so its script path is relative to this. */
 const WORKSPACE = "services/api";
 
@@ -202,7 +203,8 @@ const LOCATES_ITSELF = /import\.meta\.(url|dirname|filename)|\b__dirname\b|\b__f
 /** Read by `npm ci` or by tsx on every start, for every service. */
 const ALWAYS_LOADED = ["package.json", "package-lock.json", "tsconfig.base.json", "services/api/package.json", "services/api/tsconfig.json"];
 
-const SERVICES = parseBlueprint(readFileSync(join(REPO_ROOT, BLUEPRINT), "utf8"));
+type Service = BlueprintService & { blueprint: string };
+const SERVICES: Service[] = BLUEPRINTS.flatMap((blueprint) => parseBlueprint(readFileSync(join(REPO_ROOT, blueprint), "utf8")).map((svc) => ({ ...svc, blueprint })));
 const closures = new Map<string, Promise<Closure>>();
 const closureOf = (svc: BlueprintService): Promise<Closure> => {
   let c = closures.get(svc.entry);
@@ -291,10 +293,11 @@ test("eventDeployFilters parser: reads name, start script and ignored paths; ref
 // ── the blueprint itself ──────────────────────────────────────────────────────
 
 test("eventDeployFilters blueprint: every service is read, each start script exists, each ignored path points into a folder that exists", () => {
-  const text = readFileSync(join(REPO_ROOT, BLUEPRINT), "utf8");
-  const declared = text.split("\n").filter((l) => /^ {2}- type:/.test(l)).length;
-  assert.ok(declared > 0, "the blueprint declares services");
-  assert.equal(SERVICES.length, declared, "the parser saw every service the file declares");
+  for (const blueprint of BLUEPRINTS) {
+    const declared = readFileSync(join(REPO_ROOT, blueprint), "utf8").split("\n").filter((l) => /^ {2}- type:/.test(l)).length;
+    assert.ok(declared > 0, `${blueprint} declares services`);
+    assert.equal(SERVICES.filter((s) => s.blueprint === blueprint).length, declared, `the parser saw every service ${blueprint} declares`);
+  }
   assert.equal(new Set(SERVICES.map((s) => s.name)).size, SERVICES.length, "service names are unique");
   for (const svc of SERVICES) {
     assert.ok(existsSync(join(REPO_ROOT, svc.entry)), `${svc.name}: start script ${svc.entry} exists`);
@@ -320,7 +323,7 @@ test("eventDeployFilters common: every service ignores the docs and the tests", 
 
 test("eventDeployFilters entry: a service never ignores its own start script, the blueprint or what the install and tsx read", () => {
   for (const svc of SERVICES) {
-    for (const path of [svc.entry, BLUEPRINT, ...ALWAYS_LOADED]) {
+    for (const path of [svc.entry, svc.blueprint, ...ALWAYS_LOADED]) {
       assert.ok(existsSync(join(REPO_ROOT, path)), `${path} exists`);
       assert.equal(ignoredBy(svc.ignoredPaths, path), null, `${svc.name}: ${path} must trigger a deploy`);
     }

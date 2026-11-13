@@ -162,7 +162,9 @@ services:
     # stays stale. Ignored for every service: the docs, any Markdown file, the
     # tests, the GitHub workflows and the browser extensions under demo/ (no service
     # reads, serves or packs any of them). After those, each service ignores only
-    # the source trees and scripts its start script does not import.
+    # the source trees and scripts its start script does not import. The on-chain
+    # venues page (render-onchain.yaml) is a separate lane with its own service: its
+    # source, its script and its blueprint are ignored by every service here.
     # services/api/tests/eventDeployFilters.test.ts computes what each start script
     # imports and fails if an ignored path covers any of it, so check there before
     # adding a line. Render always acts on a change to this file itself.
@@ -182,6 +184,9 @@ services:
         - services/api/scripts/eventProtectX*.ts
         - services/api/scripts/eventProtectEmbedHtml.ts
         - services/api/scripts/memberApp*.ts
+        - services/api/src/onchainVenues/**
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
     envVars:
       - key: NODE_ENV
         value: production
@@ -206,6 +211,9 @@ services:
         - services/api/scripts/event*.ts
         - services/api/scripts/memberApp*.ts
         - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/src/onchainVenues/**
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
     # src/sportsVenues and src/eventCollar/crossVenue are not ignored here: the sports page at
     # /sports is in this process and its readers import the cross-venue team tables and venue
     # clients, so a change to either redeploys this service.
@@ -342,6 +350,9 @@ services:
         - services/api/scripts/sportsVenuesReportService.ts
         - services/api/scripts/eventShadow*.ts
         - services/api/scripts/memberApp*.ts
+        - services/api/src/onchainVenues/**
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
     # Funnel counters and the quote-receipts ledger live on a small disk so a
     # deploy does not zero them (without it both restart from /tmp, empty).
     disk:
@@ -468,6 +479,9 @@ services:
         - services/api/src/sportsVenues/**
         - services/api/scripts/btc*.ts
         - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/src/onchainVenues/**
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
     disk:
       name: event-shadow-ledger
       mountPath: /var/data
@@ -959,6 +973,8 @@ services:
         - services/api/scripts/eventProtect*.ts
         - services/api/scripts/eventShadow*.ts
         - services/api/scripts/memberApp*.ts
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
     envVars:
       - key: NODE_ENV
         value: production

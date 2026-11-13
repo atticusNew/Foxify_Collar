@@ -427,6 +427,7 @@ export function streamListingKey(stream: MarketStream): string {
   if (stream.venue === "PROPHETX") return stream.strikeId;
   if (stream.venue === "KALSHI") return stream.ticker;
   if (stream.venue === "POLYMARKET") return stream.tokenId;
+  if (stream.venue === "SX_BET") return stream.marketHash;
   return `${stream.marketId}/${stream.outcomeId}`;
 }
 

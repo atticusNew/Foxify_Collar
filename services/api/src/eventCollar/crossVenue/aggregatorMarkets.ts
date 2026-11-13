@@ -13,7 +13,10 @@
  * cross-venue quote can read every venue's book for the same outcome from one place.
  *
  * The key is a DATA key: discovery, the lookup and the stream. It cannot call anything under
- * /v1/{venue}/, so it reads no orders, no balances and no positions, ours or anyone's. The private
+ * /v1/{venue}/, so it reads no orders, no balances and no positions, ours or anyone's. (One
+ * method here does ask a venue path: listLimitlessMarkets, a read of that venue's open markets
+ * for the on-chain venues page. A key the partner keeps off venue paths gets a 403 there, and
+ * the page says so.) The private
  * key is a 32-byte Ed25519 seed (64 hex chars); AGGREGATOR_KEY_ID + AGGREGATOR_PRIVATE_KEY_HEX in
  * the service env, never in git, never in the client. Unset, `aggregatorConfigFromEnv` is null and
  * nothing here runs. Nothing here names the partner or a venue in anything the record publishes.
@@ -207,16 +210,35 @@ export type Listing =
   | { venue: "POLYMARKET"; tokenId: string; executable: boolean }
   | { venue: "KALSHI"; ticker: string; side: "YES" | "NO"; bookSide: "BID" | "ASK"; executable: boolean }
   | { venue: "PROPHETX"; strikeId: string; executable: boolean }
+  | { venue: "SX_BET"; marketHash: string; outcome: "OUTCOME_ONE" | "OUTCOME_TWO"; executable: boolean }
   | { venue: string; executable?: boolean; [k: string]: unknown };
 export interface Outcome {
   name: string;
+  /** HOME, AWAY, DRAW, OVER, UNDER, YES or NO, when the feed says which */
+  side?: string;
   listings: Listing[];
 }
 export interface Market {
   id: string;
   title: string;
   line?: string;
+  /** MONEYLINE, SPREAD, TOTAL and so on; absent or null when the feed has not classified the market */
+  type?: string | null;
+  /** the part of the game the market covers; null or absent for the full game */
+  period?: { unit: string; from: number; to: number } | null;
+  /** the main line of its type rather than an alternate */
+  main?: boolean;
   outcomes: Outcome[];
+}
+/** One open market on the venue the feed does not align with the others: found by its own list, not by an event. */
+export interface LimitlessMarket {
+  marketSlug: string;
+  title: string;
+  categories: string[];
+  /** when the venue stops taking orders on it, ISO; absent when it publishes none */
+  expiresAt?: string;
+  minSize?: string;
+  outcomes: { name: string; tokenId: string; price?: number }[];
 }
 
 /** Exactly one venue identifier; a strike also needs its event. */
@@ -322,6 +344,16 @@ export class AggregatorClient {
     const b = await this.request<{ markets?: Market[] }>("GET", "/v1/markets", query);
     return Array.isArray(b?.markets) ? b.markets.filter(isMarket) : [];
   }
+
+  /**
+   * One page of the open Limitless markets, with the slug and the two outcome token ids the
+   * stream needs. A venue path: a key that reads discovery only is refused here with a 403.
+   */
+  async listLimitlessMarkets(pageToken?: string): Promise<{ markets: LimitlessMarket[]; nextPageToken: string | null }> {
+    const b = await this.request<{ markets?: LimitlessMarket[]; nextPageToken?: string | null }>("GET", "/v1/limitless/markets", pageToken ? `pageToken=${encodeURIComponent(pageToken)}` : "");
+    const markets = Array.isArray(b?.markets) ? b.markets.filter((m) => m && typeof m.marketSlug === "string" && typeof m.title === "string" && Array.isArray(m.outcomes)) : [];
+    return { markets: markets.map((m) => ({ ...m, categories: Array.isArray(m.categories) ? m.categories : [] })), nextPageToken: typeof b?.nextPageToken === "string" && b.nextPageToken ? b.nextPageToken : null };
+  }
 }
 
 const isMarket = (m: unknown): m is Market => {
@@ -364,7 +396,9 @@ export type MarketStream =
   | { venue: "KALSHI"; ticker: string }
   | { venue: "POLYMARKET"; tokenId: string }
   | { venue: "PROPHETX"; strikeId: string }
-  | { venue: "LIMITLESS"; kind: "CLOB"; marketId: string; outcomeId: string };
+  | { venue: "LIMITLESS"; kind: "CLOB"; marketId: string; outcomeId: string }
+  /** one book for both outcomes; the hash in lower case, which is the only spelling the stream takes */
+  | { venue: "SX_BET"; marketHash: string };
 
 /** The stream entry for a listing, when the stream carries that venue. */
 export function streamFor(listing: Listing): MarketStream | null {
@@ -376,7 +410,15 @@ export function streamFor(listing: Listing): MarketStream | null {
 
 /** A stable key for one stream entry, to pair acks and frames with what was asked. */
 export const streamKey = (m: MarketStream): string =>
-  m.venue === "KALSHI" ? `KALSHI:${m.ticker}` : m.venue === "POLYMARKET" ? `POLYMARKET:${m.tokenId}` : m.venue === "PROPHETX" ? `PROPHETX:${m.strikeId}` : `LIMITLESS:${m.marketId}:${m.outcomeId}`;
+  m.venue === "KALSHI"
+    ? `KALSHI:${m.ticker}`
+    : m.venue === "POLYMARKET"
+      ? `POLYMARKET:${m.tokenId}`
+      : m.venue === "PROPHETX"
+        ? `PROPHETX:${m.strikeId}`
+        : m.venue === "SX_BET"
+          ? `SX_BET:${m.marketHash}`
+          : `LIMITLESS:${m.marketId}:${m.outcomeId}`;
 
 export interface Level {
   price: number;
