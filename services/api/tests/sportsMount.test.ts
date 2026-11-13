@@ -73,11 +73,16 @@ test("on the BTC service: /sports and its JSON answer with the BTC key and are r
     assert.equal((await get("/sports?k=k%201")).status, 503);
 
     assert.equal(await sports.collector.load(now), 2);
-    for (const path of ["/sports", "/sports/", "/sports/api/report", "/sports/api/latest", "/sports?k=wrong", "/sports/api/report?k="]) {
+    // without the key, or with one that no longer matches: refused with the short "access link" page (its JSON twin on a JSON path) and nothing of the board
+    const refused = async (path: string, why: string): Promise<void> => {
       const r = await get(path);
-      assert.equal(r.status, 404, `${path} without the key`);
-      assert.equal(r.text, "not found");
-    }
+      assert.equal(r.status, 401, `${path} ${why}`);
+      assert.match(r.text, /access link/i, `${path} ${why}`);
+      assert.ok(r.text.includes("michael@atticustrade.com"));
+      assert.ok(!/Sports on the event venues|historyPoints|Kalshi|Polymarket|Lock in|k%201|k 1/.test(r.text), `${path} ${why}: nothing of what is behind the key`);
+      assert.match(r.type, path.includes("/api") ? /application\/json/ : /text\/html/);
+    };
+    for (const path of ["/sports", "/sports/", "/sports/api/report", "/sports/api/latest", "/sports?k=wrong", "/sports/api/report?k="]) await refused(path, "without the key");
     const page = await get("/sports?k=k%201");
     assert.equal(page.status, 200);
     assert.match(page.type, /text\/html/);
@@ -94,7 +99,7 @@ test("on the BTC service: /sports and its JSON answer with the BTC key and are r
     // the Lock in pages are not this key's: not served under it, not linked from the board
     for (const path of ["/sports/replay", "/sports/lock", "/sports/api/replay", "/sports/api/lock"]) {
       assert.equal((await get(`${path}?k=k%201`)).status, 404, `${path} under the BTC key`);
-      assert.equal((await get(path)).status, 404, `${path} without a key`);
+      await refused(path, "without a key");
     }
     assert.ok(!page.text.includes("/sports/replay") && !page.text.includes("/sports/lock") && !page.text.includes("Lock in"));
     assert.ok(!page.text.includes("/prospect") && !(await get("/?k=k%201")).text.includes("/prospect"));
@@ -107,7 +112,8 @@ test("on the BTC service: /sports and its JSON answer with the BTC key and are r
       assert.equal(r.status, 404, path);
       assert.equal(r.text, "not found");
     }
-    for (const path of ["/", "/sports", "/sports/api/report", "/pairs", "/api/latest", "/sports/replay", "/lockin", "/lockin/lock", "/lockin/api"]) assert.equal((await get(`${path}?k=${READER}`)).status, 404, `${path} under the reader's key`);
+    for (const path of ["/", "/sports", "/sports/api/report", "/pairs", "/api/latest", "/sports/replay"]) await refused(`${path}?k=${READER}`, "under the reader's key");
+    for (const path of ["/lockin", "/lockin/lock", "/lockin/api"]) assert.equal((await get(`${path}?k=${READER}`)).status, 404, `${path} under the reader's key`);
     const reader = await get(`/prospect?k=${READER}`);
     assert.equal(reader.status, 200);
     assert.match(reader.type, /text\/html/);
@@ -120,7 +126,8 @@ test("on the BTC service: /sports and its JSON answer with the BTC key and are r
 
     // the internal pages: the full tables and the lock card, under their own key and no other
     for (const path of ["/lockin", "/lockin?k=k%201", "/lockin/lock?k=k%201", "/lockin/api", `/lockin/nothing?k=${INTERNAL}`]) assert.equal((await get(path)).status, 404, path);
-    for (const path of ["/", "/sports", "/pairs", "/prospect"]) assert.equal((await get(`${path}?k=${INTERNAL}`)).status, 404, `${path} under the internal key`);
+    for (const path of ["/", "/sports", "/pairs"]) await refused(`${path}?k=${INTERNAL}`, "under the internal key");
+    assert.equal((await get(`/prospect?k=${INTERNAL}`)).status, 404, "/prospect under the internal key");
     const full = await get(`/lockin?k=${INTERNAL}`);
     assert.equal(full.status, 200);
     assert.ok(full.text.includes("<h1>Lock in, replayed on real trades</h1>") && full.text.includes(`<a href="/lockin/lock?k=${INTERNAL}">Lock in now</a>`));
@@ -168,7 +175,7 @@ test("on the BTC service: /sports and its JSON answer with the BTC key and are r
     assert.match(h.sports.mountError, /the sports health could not be read: sports health broke/);
     assert.deepEqual(await get("/api/latest?k=k%201"), btcBefore);
     assert.equal((await get("/api/replays?k=k%201")).status, 200);
-    assert.equal((await get("/api/replays")).status, 404);
+    assert.equal((await get("/api/replays")).status, 401, "still refused without the key");
     Object.assign(collector, real);
     assert.equal((await get("/sports?k=k%201")).status, 200, "and the sports page is back when the fault is gone");
     assert.match(JSON.parse((await get("/healthz")).text).sports.mountError, /sports health broke/, "the last fault stays on /healthz");

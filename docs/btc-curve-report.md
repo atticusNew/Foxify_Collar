@@ -169,7 +169,10 @@ Nothing frees that room by itself; raise the disk or set a window.
 
 Endpoints: `/` (page, auto-refresh), `/api/report` (the page's data), `/api/latest` (full
 snapshot), `/api/replays`, `/healthz`. With `BTC_CURVE_TOKEN` set, everything but `/healthz`
-needs `?k=<token>`.
+needs `?k=<token>`. Without it, or with a token that was changed since, the report, `/pairs` and
+`/sports` answer a short Atticus page ("Access link expired", with the contact address) and their
+JSON paths the same sentence in JSON, both with status 401 and nothing of the data
+(`src/btcCurve/accessPage.ts`). Every other path stays a plain 404.
 
 Local run:
 
