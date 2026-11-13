@@ -6,14 +6,15 @@
  * shows the last read and keeps no history.
  *
  * The demo (/demo and /demo/api/positions) is the one thing open without the key. It carries
- * amounts only: no book, no level, and no venue named but the one a position is held on.
+ * a position's row and three amounts (its value now, what the lock pays, the difference): no
+ * book, no level, no cost, and no venue named but the one a position is held on.
  */
 
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AggregatorClient, aggregatorConfigFromEnv, readSnapshots, signerFromSecret } from "../eventCollar/crossVenue/aggregatorMarkets";
 import { buildBoard, type Board } from "./board";
-import { buildDemo } from "./demo";
+import { buildDemo, type DemoMemo } from "./demo";
 import { renderOnchainDemoHtml } from "./demoHtml";
 import { OnchainFeed } from "./feed";
 import { renderOnchainHtml, type PageData } from "./html";
@@ -66,6 +67,8 @@ export class OnchainVenuesService {
   private last: { snapshot: Snapshot; board: Board } | null = null;
   /** the demo's figures as JSON, made once for each read */
   private demoJson: { at: string | null; body: string } | null = null;
+  /** the size and entry price each simulated position was first given, so they hold from one read to the next */
+  private readonly demoHeld: DemoMemo = new Map();
   private lastDiscoverStart = 0;
   private cycles = 0;
   private lastError: string | null = null;
@@ -138,6 +141,8 @@ export class OnchainVenuesService {
       lastError: this.lastError,
       games: this.last?.board.games.length ?? 0,
       comparable: this.last?.board.comparable ?? 0,
+      // games on the board with no cover worked out, because one of each outcome is not a sure payout (fullSet.ts)
+      notAFullSet: this.last?.board.games.filter((g) => g.noCover !== null).length ?? 0,
       catalog: f ? { readAt: f.discoveredAt, seconds: f.discoveryMs === null ? null : Math.round(f.discoveryMs / 1000), competitions: f.competitions, gamesInWindow: f.eventsInHorizon, gamesRead: f.eventsRead, gamesStillToRead: f.eventsPending, boardLimit: f.boardCap ?? null, leftOffTheBoard: f.eventsOverCap, comparableLeftOff: f.comparableOverCap, notes: f.notes } : null,
       limitless: f ? withoutSample(f.limitless) : null,
       books: f?.books ?? null,
@@ -149,7 +154,8 @@ export class OnchainVenuesService {
   /** What the catalog looked like, with names: the feed's market titles, example games, Limitless markets left over. Behind the key. */
   diagnostics(): Record<string, unknown> {
     const f = this.last?.snapshot.feed;
-    return { at: this.last?.snapshot.at ?? null, catalog: f?.diagnostics ?? null, limitless: f?.limitless ?? null, unmatchedLimitless: this.last?.snapshot.unmatchedLimitless ?? [], notes: f?.notes ?? [] };
+    const notAFullSet = (this.last?.board.games ?? []).filter((g) => g.noCover !== null).map((g) => `${g.name} (${g.competition}): ${g.noCover}`);
+    return { at: this.last?.snapshot.at ?? null, notAFullSet, catalog: f?.diagnostics ?? null, limitless: f?.limitless ?? null, unmatchedLimitless: this.last?.snapshot.unmatchedLimitless ?? [], notes: f?.notes ?? [] };
   }
 
   private pageData(): PageData {
@@ -175,7 +181,7 @@ export class OnchainVenuesService {
       return true;
     }
     const at = this.last?.snapshot.at ?? null;
-    if (!this.demoJson || this.demoJson.at !== at) this.demoJson = { at, body: JSON.stringify(buildDemo(this.last?.snapshot ?? null)) };
+    if (!this.demoJson || this.demoJson.at !== at) this.demoJson = { at, body: JSON.stringify(buildDemo(this.last?.snapshot ?? null, this.demoHeld)) };
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "public, max-age=10", "x-robots-tag": "noindex", "x-content-type-options": "nosniff" });
     res.end(this.demoJson.body);
     return true;

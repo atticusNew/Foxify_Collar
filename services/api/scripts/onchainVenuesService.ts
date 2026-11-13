@@ -7,11 +7,11 @@
  * what a holder gets for leaving on their own venue, and what a cover on the best of the three
  * would lock instead.
  *
- * It also serves the on-chain demo at /demo, open without a key: a venue's positions list with
- * one Lock in line under each row, in a phone and a desktop view, for each of the three venues
- * as the host. The demo carries amounts only (what closing now pays, where the lock ends): no
- * book, no level, and no venue named but the one the position is held on. The event site passes
- * /onchain through to it.
+ * It also serves the on-chain demo at /demo, open without a key: a venue's own positions page
+ * with one Lock in button on each row, in a phone and a desktop view, for each of the three
+ * venues as the host, in that venue's colours. The demo carries the row and three amounts (what
+ * it is worth now, what the lock pays, the difference): no book, no level, and no venue named
+ * but the one the position is held on. The event site passes /onchain through to it.
  *
  * Nothing here trades. It takes the partner's DATA key only (discovery and the stream). The
  * trading key must never be set on this service.
