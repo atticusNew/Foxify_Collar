@@ -16,8 +16,11 @@
  *
  * Run:  npx tsx services/api/scripts/onchainVenuesService.ts
  * Env:  AGGREGATOR_KEY_ID, AGGREGATOR_PRIVATE_KEY_HEX   the partner's data key (unset: nothing is read)
- *       ONCHAIN_VENUES_KEY            the page's key, 16 characters or more; the page is at /?k=<key>
- *                                     (unset or shorter: the page is off and every path but /healthz is 404)
+ *       ONCHAIN_VENUES_KEY            the page's key, 16 characters or more; the page is at /?k=<key>,
+ *                                     the board as JSON at /api/board?k=<key>, and how the feed was
+ *                                     read, with names, at /api/diagnostics?k=<key>
+ *                                     (unset or shorter: the page is off and every path but /healthz is 404;
+ *                                     /healthz is open and carries counts only)
  *       ONCHAIN_VENUES_PORT           (default 8880; PORT honoured)
  *       ONCHAIN_VENUES_INTERVAL_SEC   (default 60) seconds between book reads
  *       ONCHAIN_VENUES_DISCOVER_MIN   (default 10) minutes between catalog reads

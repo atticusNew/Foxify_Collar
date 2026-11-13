@@ -108,8 +108,16 @@ export interface FeedHealth {
     matched: number;
     detail?: string;
     source?: "partner" | "venue";
-    /** a few markets that were not tied to a game, each with the games here that start when it does: for checking the pairing */
-    unmatchedSample?: { game: string; startsAt: string; gamesStartingThen: number; sample: string[] }[];
+    /** sports markets whose game starts inside this page's window, by the start the list names; absent when the list names none */
+    startsInWindow?: number;
+    /** of those, tied to an outcome of a game here */
+    matchedInWindow?: number;
+    /**
+     * A few markets left over whose game starts inside the window, soonest first, each with what
+     * the catalog has at that time: games read (name and outcomes), games listed whether read or
+     * not whose name shares a word with it, and the competitions playing then. For checking the pairing.
+     */
+    unmatchedSample?: { game: string; startsAt: string; gamesStartingThen: number; sample: string[]; listedStartingThen: number; listedAlike: string[]; competitionsThen: string[] }[];
   };
   books: { asked: number; read: number; empty: number; errors: Record<string, number>; ms: number | null; byVenue?: Record<Venue, VenueBooks> };
   /** what the catalog looked like, in counts: for checking this page's reading of it against the real feed */
