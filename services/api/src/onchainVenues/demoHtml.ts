@@ -13,8 +13,8 @@
  * What a reader sees is a position, what it is worth now, and what Lock in pays. How that is
  * arrived at is not on the page.
  *
- * Links: ?view=mobile or ?view=desktop opens on that shell; ?venue=polymarket, sx_bet or
- * limitless opens on that host.
+ * It opens on the phone. Links: ?view=desktop opens on the desktop table (on a wide screen);
+ * ?venue=polymarket, sx_bet or limitless opens on that host.
  */
 
 import { VENUES, VENUE_SHORT, type Venue } from "./types";
@@ -291,7 +291,7 @@ button{font:inherit}
   }
   var qs=location.search;
   var wide=window.matchMedia&&window.matchMedia('(min-width:900px)').matches;
-  S.view=!wide?'mobile':/[?&]view=mobile\\b/i.test(qs)?'mobile':'desktop';
+  S.view=wide&&/[?&]view=desktop\\b/i.test(qs)?'desktop':'mobile';
   S.home=HOSTS[0].venue;
   var m=/[?&]venue=([a-z_]+)/i.exec(qs);
   if(m)for(var i=0;i<HOSTS.length;i++)if(HOSTS[i].venue===m[1].toLowerCase()){S.home=HOSTS[i].venue;S.asked=true}

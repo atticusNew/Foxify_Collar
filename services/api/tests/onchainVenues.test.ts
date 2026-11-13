@@ -1121,6 +1121,9 @@ test("onchain demo: each venue in its own colours and words, names only, and not
   for (const text of ['data-view="mobile"', 'data-view="desktop"', "Mobile", "Desktop", "Polymarket", "SX Bet", "Limitless", "Lock in", "Portfolio", "My bets", "Positions are simulated", "nothing is bought", "Atticus's fee is not included", "Not affiliated with or endorsed by any venue", "Paid when the game settles", "more than closing now", "Not available right now", "/api/positions"]) {
     assert.ok(html.includes(text), `the demo says "${text}"`);
   }
+  // it opens on the phone; the desktop table is one tap away, or a link that asks for it
+  assert.ok(html.includes("S.view=wide&&/[?&]view=desktop\\b/i.test(qs)?'desktop':'mobile';"));
+  assert.match(html, /id="shell" data-view="mobile"/);
   // each host's own page colour and button colour, read from its site on 13 November 2026
   for (const colour of ['[data-host="polymarket"]{--bg:#fff', "--accent:#2e5cff", '[data-host="sx_bet"]{--bg:#12161f', "--accent:#2196f3", '[data-host="limitless"]{--bg:#fff', "--accent:#c3ff00"]) assert.ok(html.includes(colour), colour);
   // a venue is a name in text: no image of any kind, and nothing fetched from anywhere but this service
