@@ -12,6 +12,7 @@ import { AggregatorClient, aggregatorConfigFromEnv, readSnapshots, signerFromSec
 import { buildBoard, type Board } from "./board";
 import { OnchainFeed } from "./feed";
 import { renderOnchainHtml, type PageData } from "./html";
+import { readLimitlessPublicGames } from "./limitlessPublic";
 import type { Snapshot } from "./types";
 
 /** a key shorter than this can be guessed: the page stays off */
@@ -64,7 +65,8 @@ export class OnchainVenuesService {
   /** One turn: start a catalog read when one is due, then read the books of what is known. */
   async cycle(nowMs = Date.now()): Promise<void> {
     if (!this.feed) return;
-    if (!this.feed.busy && nowMs - this.lastDiscoverStart >= this.discoverEveryMs) {
+    // while games are still to read the passes run back to back; after that, on the clock
+    if (!this.feed.busy && (nowMs - this.lastDiscoverStart >= this.discoverEveryMs || this.feed.pending > 0)) {
       this.lastDiscoverStart = nowMs;
       const first = this.feed.discoveredAt === null;
       const run = this.feed.discover(nowMs).catch((err) => this.log(`[onchain-venues] discovery failed: ${(err as Error).message}`));
@@ -115,6 +117,8 @@ export class OnchainVenuesService {
       catalog: f ? { readAt: f.discoveredAt, seconds: f.discoveryMs === null ? null : Math.round(f.discoveryMs / 1000), competitions: f.competitions, gamesInWindow: f.eventsInHorizon, gamesRead: f.eventsRead, gamesStillToRead: f.eventsPending, leftOffTheBoard: f.eventsOverCap, notes: f.notes } : null,
       limitless: f?.limitless ?? null,
       books: f?.books ?? null,
+      // the catalog in counts, to check this page's reading of it against the real feed
+      diagnostics: f?.diagnostics ?? null,
     };
   }
 
@@ -173,6 +177,7 @@ export function onchainServiceFromEnv(env: NodeJS.ProcessEnv = process.env): Onc
         listEvents: (id) => client.listEvents(id),
         listEventMarkets: (id) => client.listEventMarkets(id),
         listLimitlessMarkets: (pageToken) => client.listLimitlessMarkets(pageToken),
+        listLimitlessPublic: () => readLimitlessPublicGames(env.LIMITLESS_PUBLIC_HOST ? { host: env.LIMITLESS_PUBLIC_HOST } : {}),
       },
       readBooks: (markets) => readSnapshots(signer, markets, { streamUrl: cfg.streamUrl, timeoutMs: 12_000 }),
       horizonMs: horizonHours * 3_600_000,

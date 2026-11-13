@@ -98,8 +98,63 @@ export interface FeedHealth {
   eventsPending: number;
   /** games one of the three lists that were left off the board because its cap was reached */
   eventsOverCap: number;
-  limitless: { state: "listed" | "refused" | "failed" | "not_read"; markets: number; sports: number; matched: number; detail?: string };
-  books: { asked: number; read: number; empty: number; errors: Record<string, number>; ms: number | null };
+  /** `source`: whose list was read, the partner's or, when the partner refuses it to this key, the venue's own public one */
+  limitless: { state: "listed" | "refused" | "failed" | "not_read"; markets: number; sports: number; matched: number; detail?: string; source?: "partner" | "venue" };
+  books: { asked: number; read: number; empty: number; errors: Record<string, number>; ms: number | null; byVenue?: Record<Venue, VenueBooks> };
+  /** what the catalog looked like, in counts: for checking this page's reading of it against the real feed */
+  diagnostics?: FeedDiagnostics;
+}
+
+export interface VenueBooks {
+  asked: number;
+  read: number;
+  empty: number;
+  errors: Record<string, number>;
+}
+
+/** One market of a game that could be its winner market, as the feed gave it. */
+export interface WinnerShape {
+  title: string;
+  type: string | null;
+  key: string | null;
+  /** the part of the game it is on, by the feed ("QUARTER 1-1"); null for the whole game */
+  period: string | null;
+  outcomes: number;
+  sides: string[];
+  /** the feed's own venue names on its listings */
+  venues: string[];
+}
+
+export interface FeedDiagnostics {
+  /** games whose markets were read */
+  games: number;
+  /** games on which each venue is named on any market at all */
+  gamesByVenue: Record<string, number>;
+  /** games on which two or more of this page's three venues are named, on any market */
+  gamesNamingTwo: number;
+  /** outcome listings by the feed's own venue name, over every market of those games */
+  listingsByVenue: Record<string, number>;
+  /** the field names of one listing of each venue */
+  listingKeys: Record<string, string[]>;
+  /** markets by venue, then by the feed's type ("none" when it gives no type; "+part" for part of a game) */
+  marketsByVenueAndType: Record<string, Record<string, number>>;
+  /** up to two titles for each venue and type */
+  sampleTitles: Record<string, Record<string, string[]>>;
+  winner: {
+    /** games with no market that reads as a full-game winner market */
+    none: number;
+    one: number;
+    several: number;
+    /** games where the three venues' listings sit in different winner markets, so one market does not carry them all */
+    split: number;
+  };
+  /** games where one of the three venues is named only on markets this page does not read as the winner market */
+  gamesWithVenueOffWinner: number;
+  /**
+   * A few games, the most telling first: every market that could be the winner market, and up
+   * to three others (no line, three outcomes at most) carrying a venue the chosen one lacks.
+   */
+  examples: { game: string; competition: string; markets: WinnerShape[]; others: WinnerShape[] }[];
 }
 
 export interface Snapshot {

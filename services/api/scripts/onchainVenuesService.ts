@@ -27,6 +27,9 @@
  *       ONCHAIN_VENUES_PACE_MS        (default 400) the wait between two catalog requests; the
  *                                     partner's request budget is shared with the other services
  *       AGGREGATOR_API_HOST / AGGREGATOR_STREAM_URL   (the partner's defaults)
+ *       LIMITLESS_PUBLIC_HOST         (default https://api.limitless.exchange) Limitless's own public
+ *                                     list of game markets, read only when the partner refuses its
+ *                                     copy of that list to the key
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";

@@ -79,7 +79,7 @@ export const VENUE_FACTS: Fact[] = [
     held: "$1 shares, a Yes and a No token for each market. A football game is a group of markets: one for each team and one for the draw.",
     out: "Place the shares against the bids on its book, at any time.",
     fee: "Takers pay 5% × (1 − p) of the dollars traded, which is shares × 0.05 × p × (1 − p), on its current markets. Markets made before that change keep an older schedule (0.40% to 3.00% on a buy, 0.42% to 1.50% on an exit), which this page does not apply.",
-    partner: "Not in the partner's mapping, by the partner's own page. Found from the venue's list and tied to a game here by team names. Books on the stream. Orders are supported.",
+    partner: "Not in the partner's mapping, by the partner's own page. Found from a list of its markets and tied to a game here by team names. Books on the stream. Orders are supported.",
     source: "docs.limitless.exchange/user-guide/fees",
   },
 ];
@@ -189,7 +189,7 @@ function feedHtml(f: FeedHealth, hasFeed: boolean): string {
   if (!hasFeed) return `<p class="note w">The feed key is not set on this service (AGGREGATOR_KEY_ID and AGGREGATOR_PRIVATE_KEY_HEX), so nothing is read.</p>`;
   const lim =
     f.limitless.state === "listed"
-      ? `${f.limitless.markets} open markets listed, ${f.limitless.sports} of them sports, ${f.limitless.matched} tied to an outcome of a game here${f.limitless.detail ? ` (${esc(f.limitless.detail)})` : ""}`
+      ? `${f.limitless.source === "venue" ? "read from Limitless's own public list of game markets, because the partner's list is refused to this key: " : ""}${f.limitless.markets} open markets listed, ${f.limitless.sports} of them sports, ${f.limitless.matched} tied to an outcome of a game here${f.limitless.detail ? ` (${esc(f.limitless.detail)})` : ""}`
       : f.limitless.state === "refused"
         ? `<span class="bad">the key is not allowed to read its list</span>`
         : f.limitless.state === "failed"
