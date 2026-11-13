@@ -28,6 +28,7 @@ import {
   signerFromSecret,
   sortedQuery,
   streamFor,
+  streamKey,
   type Market,
   type MarketStream,
   type WsLike,
@@ -182,8 +183,14 @@ function startFakeRest(state: FakeState): Promise<{ server: Server; host: string
     const why = auth();
     state.calls.push({ path: u.pathname, query, ok: !why, why: why ?? undefined });
     if (why) return send(401, { error: { code: "UNAUTHORIZED", message: why } });
-    if (u.pathname.startsWith("/v1/kalshi/") || u.pathname.startsWith("/v1/prophetx/") || u.pathname.startsWith("/v1/polymarket/")) {
+    if (u.pathname.startsWith("/v1/kalshi/") || u.pathname.startsWith("/v1/prophetx/") || u.pathname.startsWith("/v1/polymarket/") || u.pathname.startsWith("/v1/limitless/")) {
       if (state.capability === "data") return send(403, { error: { code: "FORBIDDEN", message: "data key" } });
+    }
+    if (u.pathname === "/v1/limitless/markets") {
+      const child = (pick: string, tokenId: string) => ({ marketSlug: `bel-ita-${pick.toLowerCase()}`, title: `UEFA NL, Belgium vs Italy: ${pick}`, categories: ["Sports"], expiresAt: "2026-11-14T19:45:00Z", minSize: "1", outcomes: [{ name: "Yes", tokenId, price: 0.45 }, { name: "No", tokenId: `${tokenId}n`, price: 0.55 }] });
+      return u.searchParams.get("pageToken") === "next page"
+        ? send(200, { markets: [child("Italy", "tok3"), { title: "no slug" }], nextPageToken: null })
+        : send(200, { markets: [child("Belgium", "tok1"), { ...child("Draw", "tok2"), categories: undefined }], nextPageToken: "next page" });
     }
     if (u.pathname === "/v1/whoami") return send(200, { keyId: KEY_ID, credentialId: "cred_1", podId: "pod_abc123", scope: "trader", capabilities: [state.capability] });
     if (u.pathname === "/v1/time") return send(200, { time: Math.floor(Date.now() / 1000) + state.serverOffsetSec });
@@ -250,11 +257,25 @@ test("aggregator client: whoami, time (offset applied), discovery, the lookup al
     assert.deepEqual(await client.lookupMarket({ ticker: "KX-NOPE" }), []);
     await assert.rejects(client.lookupMarket({ strikeId: "abc", eventId: "" } as never), (e: unknown) => e instanceof AggregatorApiError && e.status === 400 && e.code === "INVALID_REQUEST");
 
-    // the client never calls venue paths; show the server would refuse a data key anyway
+    // no order, balance or position path is ever called; show the server would refuse a data key anyway
     await assert.rejects(
       (client as unknown as { request: (m: string, p: string) => Promise<unknown> }).request("GET", "/v1/kalshi/positions"),
       (e: unknown) => e instanceof AggregatorApiError && e.status === 403 && e.code === "FORBIDDEN",
     );
+
+    // the one venue path the client does ask, a read of Limitless's open markets: refused for a key kept off venue paths
+    await assert.rejects(client.listLimitlessMarkets(), (e: unknown) => e instanceof AggregatorApiError && e.status === 403 && e.code === "FORBIDDEN");
+    state.capability = "trade";
+    const first = await client.listLimitlessMarkets();
+    assert.deepEqual(first.markets.map((m) => m.marketSlug), ["bel-ita-belgium", "bel-ita-draw"]);
+    assert.deepEqual(first.markets[1].categories, [], "a market with no categories still reads");
+    assert.equal(first.markets[0].outcomes[0].tokenId, "tok1");
+    assert.equal(first.nextPageToken, "next page");
+    const second = await client.listLimitlessMarkets(first.nextPageToken!);
+    assert.deepEqual(second.markets.map((m) => m.marketSlug), ["bel-ita-italy"], "an entry without a slug is dropped");
+    assert.equal(second.nextPageToken, null);
+    assert.ok(state.calls.some((c) => c.path === "/v1/limitless/markets" && c.query === "pageToken=next%20page" && c.ok), "the page token is signed as part of the query");
+    state.capability = "data";
 
     assert.ok(state.calls.every((c) => c.ok), `every request verified: ${JSON.stringify(state.calls.filter((c) => !c.ok))}`);
     assert.equal(state.calls.filter((c) => c.path === "/v1/sports/events").length, 2, "one 429 then one success");
@@ -482,6 +503,10 @@ test("aggregator stream entries: a listing becomes the stream entry its venue ne
     { venue: "POLYMARKET", tokenId: "18880079750227829983884034851154743863020946982779905261595472835484541675290" },
   ]);
   assert.equal(streamFor({ venue: "SOMEWHERE", executable: true }), null);
+  // SX Bet's book is offers at odds, not shares, so the event lane takes no stream entry for it; the on-chain page builds its own
+  assert.equal(streamFor({ venue: "SX_BET", marketHash: "0xAB", outcome: "OUTCOME_ONE", executable: true }), null);
+  assert.equal(streamKey({ venue: "SX_BET", marketHash: "0xab" }), "SX_BET:0xab");
+  assert.equal(streamKey({ venue: "LIMITLESS", kind: "CLOB", marketId: "slug", outcomeId: "tok" }), "LIMITLESS:slug:tok");
 });
 
 test("aggregator env: null unless both halves of the key are set; the hosts default to the partner's", () => {
