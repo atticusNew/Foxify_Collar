@@ -74,6 +74,10 @@ services:
       # The page's key. Render makes it. 16 characters or more, or the page is off.
       - key: ONCHAIN_VENUES_KEY
         generateValue: true
+      # The open demo at /demo (a positions list with the Lock in line; amounts only,
+      # no book and no venue named but the host). "off" takes it away.
+      - key: ONCHAIN_DEMO
+        value: "on"
       # Seconds between book reads, minutes between catalog reads, and how far ahead
       # a game may start. The catalog is read slowly on purpose (ONCHAIN_VENUES_PACE_MS,
       # 400 by default): the partner's request budget is shared with the event services.

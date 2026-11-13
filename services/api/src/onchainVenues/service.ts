@@ -4,12 +4,17 @@
  * Discovery runs beside the book cycle, never inside it, so a slow catalog read does not hold
  * the prices back. The page is behind a key of its own. Nothing is written to disk: the page
  * shows the last read and keeps no history.
+ *
+ * The demo (/demo and /demo/api/positions) is the one thing open without the key. It carries
+ * amounts only: no book, no level, and no venue named but the one a position is held on.
  */
 
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AggregatorClient, aggregatorConfigFromEnv, readSnapshots, signerFromSecret } from "../eventCollar/crossVenue/aggregatorMarkets";
 import { buildBoard, type Board } from "./board";
+import { buildDemo } from "./demo";
+import { renderOnchainDemoHtml } from "./demoHtml";
 import { OnchainFeed } from "./feed";
 import { renderOnchainHtml, type PageData } from "./html";
 import { readLimitlessPublicGames } from "./limitlessPublic";
@@ -44,6 +49,8 @@ export interface ServiceOptions {
   intervalSec?: number;
   discoverEveryMs?: number;
   horizonHours?: number;
+  /** false turns the open demo off; it is on unless said otherwise */
+  demo?: boolean;
   log?: (line: string) => void;
 }
 
@@ -54,8 +61,11 @@ export class OnchainVenuesService {
   readonly intervalSec: number;
   private readonly discoverEveryMs: number;
   private readonly horizonHours: number;
+  private readonly demoOn: boolean;
   private readonly log: (line: string) => void;
   private last: { snapshot: Snapshot; board: Board } | null = null;
+  /** the demo's figures as JSON, made once for each read */
+  private demoJson: { at: string | null; body: string } | null = null;
   private lastDiscoverStart = 0;
   private cycles = 0;
   private lastError: string | null = null;
@@ -70,6 +80,7 @@ export class OnchainVenuesService {
     this.intervalSec = Math.max(15, opts.intervalSec ?? 60);
     this.discoverEveryMs = Math.max(60_000, opts.discoverEveryMs ?? 10 * 60_000);
     this.horizonHours = opts.horizonHours ?? 48;
+    this.demoOn = opts.demo ?? true;
     this.log = opts.log ?? ((line) => console.log(line));
   }
 
@@ -120,6 +131,7 @@ export class OnchainVenuesService {
     const d = f?.diagnostics;
     return {
       page: this.keyOff ? `off: ${this.keyOff}` : "on",
+      demo: this.demoOn ? "on" : "off",
       feedKey: this.feed ? "set" : "not set",
       cycles: this.cycles,
       lastReadAt: this.last?.snapshot.at ?? null,
@@ -153,10 +165,27 @@ export class OnchainVenuesService {
     };
   }
 
-  /** True when the request was answered. Without the key nothing is: the caller's 404 says the same for a wrong key and a wrong path. */
-  handle(_req: IncomingMessage, res: ServerResponse, url: URL): boolean {
-    if (this.keyOff || !keyMatches(url.searchParams.get("k"), this.key)) return false;
+  /** The open demo: the page, and the figures it reads. Amounts only. */
+  private handleDemo(req: IncomingMessage, res: ServerResponse, path: string): boolean {
+    if (!this.demoOn || (path !== "/demo" && path !== "/demo/api/positions")) return false;
+    if (req.method && req.method !== "GET" && req.method !== "HEAD") return false;
+    if (path === "/demo") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60", "x-robots-tag": "noindex", "x-content-type-options": "nosniff" });
+      res.end(renderOnchainDemoHtml());
+      return true;
+    }
+    const at = this.last?.snapshot.at ?? null;
+    if (!this.demoJson || this.demoJson.at !== at) this.demoJson = { at, body: JSON.stringify(buildDemo(this.last?.snapshot ?? null)) };
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "public, max-age=10", "x-robots-tag": "noindex", "x-content-type-options": "nosniff" });
+    res.end(this.demoJson.body);
+    return true;
+  }
+
+  /** True when the request was answered. Without the key nothing but the demo is: the caller's 404 says the same for a wrong key and a wrong path. */
+  handle(req: IncomingMessage, res: ServerResponse, url: URL): boolean {
     const path = url.pathname.replace(/\/$/, "") || "/";
+    if (this.handleDemo(req, res, path)) return true;
+    if (this.keyOff || !keyMatches(url.searchParams.get("k"), this.key)) return false;
     if (path === "/") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-robots-tag": "noindex, nofollow" });
       res.end(renderOnchainHtml(this.pageData(), { refreshSec: this.intervalSec }));
@@ -220,5 +249,6 @@ export function onchainServiceFromEnv(env: NodeJS.ProcessEnv = process.env): Onc
     intervalSec: positive(env.ONCHAIN_VENUES_INTERVAL_SEC, 60),
     discoverEveryMs: positive(env.ONCHAIN_VENUES_DISCOVER_MIN, 10) * 60_000,
     horizonHours,
+    demo: !/^(off|0|false|no)$/i.test((env.ONCHAIN_DEMO ?? "").trim()),
   });
 }

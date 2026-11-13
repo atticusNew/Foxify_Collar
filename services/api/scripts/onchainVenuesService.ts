@@ -7,6 +7,12 @@
  * what a holder gets for leaving on their own venue, and what a cover on the best of the three
  * would lock instead.
  *
+ * It also serves the on-chain demo at /demo, open without a key: a venue's positions list with
+ * one Lock in line under each row, in a phone and a desktop view, for each of the three venues
+ * as the host. The demo carries amounts only (what closing now pays, where the lock ends): no
+ * book, no level, and no venue named but the one the position is held on. The event site passes
+ * /onchain through to it.
+ *
  * Nothing here trades. It takes the partner's DATA key only (discovery and the stream). The
  * trading key must never be set on this service.
  *
@@ -21,6 +27,7 @@
  *                                     read, with names, at /api/diagnostics?k=<key>
  *                                     (unset or shorter: the page is off and every path but /healthz is 404;
  *                                     /healthz is open and carries counts only)
+ *       ONCHAIN_DEMO                  (default on) "off" takes /demo and /demo/api/positions away
  *       ONCHAIN_VENUES_PORT           (default 8880; PORT honoured)
  *       ONCHAIN_VENUES_INTERVAL_SEC   (default 60) seconds between book reads
  *       ONCHAIN_VENUES_DISCOVER_MIN   (default 10) minutes between catalog reads
