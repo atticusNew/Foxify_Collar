@@ -133,6 +133,7 @@ import {
 } from "../src/eventCollar/crossVenue/types";
 import { renderEventXAppHtml, renderFunnelHtml, renderReceiptsHtml } from "./eventProtectXAppHtml";
 import { DEFAULT_EMBED_BRAND, DEFAULT_LIVE_VIDEO, brandRecordUrl, renderEventEmbedHtml, renderPartnerCtaHtml, renderPartnerHtml, resolveBrand, type LiveVideo } from "./eventProtectEmbedHtml";
+import { createOnchainProxy, onchainDemoOrigin } from "./eventProtectXOnchainProxy";
 import { serveMedia } from "../src/eventCollar/crossVenue/mediaFiles";
 import { slateLinkKey, slateSlugOf } from "../src/eventCollar/crossVenue/venueSlate";
 import { renderVCard, vcardFilename, type CardContact } from "../src/eventCollar/crossVenue/cardContact";
@@ -163,6 +164,12 @@ const PORT = Number(process.env.EVENT_X_PORT || process.env.PORT || 8792);
 const SHOWCASE_CONTRACTS = Number(process.env.EVENT_X_CONTRACTS || 150);
 const LEDGER_PATH = process.env.EVENT_X_LEDGER_PATH || "/tmp/event-demo/cross-quotes.jsonl";
 const MAX_MATCH_ATTEMPTS = 10;
+/**
+ * /onchain: the on-chain demo, passed through from the on-chain venues service, which makes it
+ * (eventProtectXOnchainProxy.ts). ONCHAIN_DEMO_ORIGIN is that service's address; "off" takes
+ * the path away. Two fixed paths, GET only, and nothing of the request is sent on.
+ */
+const ONCHAIN_DEMO = createOnchainProxy({ origin: onchainDemoOrigin(process.env.ONCHAIN_DEMO_ORIGIN) });
 /** how often each tail happens per league (hedgeRouting.ts), estimates; EVENT_ROUTING_TAIL_PROBS overrides */
 const TAIL_PROBABILITIES = tailProbabilitiesFromEnv(process.env);
 /**
@@ -2166,6 +2173,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       sendJson(res, h.ready ? 200 : 503, { ok: h.ready, warm: h.warm, service: "event-protect-cross-venue-demo", inPlay: IN_PLAY, brandRecordLinks: SLATE_KEY?.trim() ? "slate" : "full record" });
       return;
     }
+    if (await ONCHAIN_DEMO.handle(req, res, url.pathname)) return;
     if (serveMedia(req, res, url.pathname, MEDIA_DIR)) return;
     if (url.pathname === "/contact.vcf" && CARD_CONTACT) {
       if (req.method !== "GET" && req.method !== "HEAD") {
