@@ -477,10 +477,26 @@ test("onchain feed: the catalog in counts, for checking the reading against the 
   const od = (await offFeed.snapshot(NOW)).feed.diagnostics!;
   assert.equal(od.gamesWithVenueOffWinner, 1);
   assert.deepEqual(od.examples.map((e) => [e.kind, e.others.map((m) => m.period)]), [["off", ["GAME 1-1"]]]);
-  // and it is on the health check
+  // the open health check carries the counts and names nothing; the names are behind the key
   const service = new OnchainVenuesService({ feed, key: KEY, log: () => {} });
   await service.cycle(NOW);
   assert.equal((service.health().diagnostics as { winner: { apart: number } }).winner.apart, 1);
+  assert.deepEqual(Object.keys(service.health().diagnostics as object).sort(), ["games", "gamesByVenue", "gamesNamingTwo", "gamesWithVenueOffWinner", "winner"]);
+  assert.ok(!/Royals|Tigers|Belgium|Game winner|Moneyline/.test(JSON.stringify(service.health())), "no game, team or market title");
+  const answer = (path: string): { status: number; body: string } => {
+    const got = { status: 404, body: "" };
+    const res = { writeHead: (st: number) => { got.status = st; }, end: (b: string) => { got.body = b; } } as unknown as import("node:http").ServerResponse;
+    service.handle({} as import("node:http").IncomingMessage, res, new URL(`http://x${path}`));
+    return got;
+  };
+  assert.equal(answer("/api/diagnostics").status, 404, "without the key it is not there");
+  assert.equal(answer("/api/diagnostics?k=wrong-key-of-twenty-chars").status, 404);
+  const keyed = answer(`/api/diagnostics?k=${KEY}`);
+  assert.equal(keyed.status, 200);
+  const named = JSON.parse(keyed.body) as { catalog: { examples: { kind: string; game: string }[]; sampleTitles: Record<string, unknown> }; limitless: { state: string } };
+  assert.deepEqual(named.catalog.examples.map((e) => [e.kind, e.game]), [["apart", "Royals @ Tigers"]]);
+  assert.ok(named.catalog.sampleTitles.SX_BET);
+  assert.equal(named.limitless.state, "listed");
 });
 
 test("onchain Limitless: the venue's own public list, when the partner refuses its copy; a group becomes one market a pick, closing a day after the start", async () => {
@@ -522,7 +538,7 @@ test("onchain Limitless: the venue's own public list, when the partner refuses i
   const feed = feedOf(source);
   await feed.discover(NOW);
   const s = await feed.snapshot(NOW);
-  assert.deepEqual(s.feed.limitless, { state: "listed", source: "venue", markets: 3, sports: 3, matched: 3 });
+  assert.deepEqual(s.feed.limitless, { state: "listed", source: "venue", markets: 3, sports: 3, matched: 3, startsInWindow: 2, matchedInWindow: 2 }, "two of the three name a start, and both are tied");
   assert.match(s.feed.notes.join(" "), /not allowed to read the partner's Limitless list \(403\); its game markets were read from Limitless's own public list instead/);
   assert.deepEqual(s.games[1].outcomes.map((o) => o.quotes.find((q) => q.venue === "limitless")?.matchedBy), ["names", "names", "names"]);
   assert.match(renderOnchainHtml({ board: buildBoard(s), coverage: s.coverage, unmatchedLimitless: s.unmatchedLimitless, feed: s.feed, hasFeed: true, intervalSec: 60, horizonHours: 48 }), /read from Limitless's own public list of game markets, because the partner's list is refused to this key/);
@@ -544,7 +560,13 @@ test("onchain Limitless: a game the feed names by short codes is found by its tw
   const s = await feed.snapshot(NOW);
   assert.equal(s.feed.limitless.matched, 1);
   assert.equal(s.games.find((g) => g.name === "BEL v ITA")?.outcomes[0].quotes.find((q) => q.venue === "limitless")?.matchedBy, "names");
-  assert.deepEqual(s.feed.limitless.unmatchedSample, [{ game: "Latvia vs Armenia", startsAt: at(7), gamesStartingThen: 2, sample: ["Royals @ Tigers [Royals / Tigers]", "BEL v ITA [Belgium / Draw / Italy]"] }]);
+  assert.deepEqual([s.feed.limitless.startsInWindow, s.feed.limitless.matchedInWindow], [3, 1]);
+  const service = new OnchainVenuesService({ feed, key: KEY, log: () => {} });
+  await service.cycle(NOW);
+  assert.deepEqual(service.health().limitless, { state: "listed", source: "venue", markets: 3, sports: 3, matched: 1, startsInWindow: 3, matchedInWindow: 1 }, "the open check: counts, and no market left over is named");
+  assert.deepEqual(s.feed.limitless.unmatchedSample, [
+    { game: "Latvia vs Armenia", startsAt: at(7), gamesStartingThen: 2, sample: ["Royals @ Tigers [Royals / Tigers]", "BEL v ITA [Belgium / Draw / Italy]"], listedStartingThen: 2, listedAlike: [], competitionsThen: ["MLB", "UEFA Nations League"] },
+  ]);
 });
 
 test("onchain Limitless: a market that could be either of two games is tied to neither", async () => {

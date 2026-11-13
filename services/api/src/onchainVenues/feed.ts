@@ -553,7 +553,7 @@ export class OnchainFeed {
       for (const id of [...this.marketsCache.keys()]) if (!keep.has(id)) this.marketsCache.delete(id);
       health.diagnostics = this.diagnostics();
 
-      const unmatched = await this.addLimitless(found, health, notes);
+      const unmatched = await this.addLimitless(found, health, notes, inHorizon, nowMs);
 
       for (const g of found) {
         const cov = coverage.get(g.competitionId);
@@ -590,7 +590,7 @@ export class OnchainFeed {
   }
 
   /** Limitless's own list, its sports markets tied to the games found. Returns the titles it could not tie. */
-  private async addLimitless(found: FoundGame[], health: FeedHealth, notes: string[]): Promise<string[]> {
+  private async addLimitless(found: FoundGame[], health: FeedHealth, notes: string[], inHorizon: { event: SportEvent; competition: Competition }[] = [], nowMs = Date.now()): Promise<string[]> {
     const mapped = found.some((g) => g.outcomes.some((o) => o.listings.some((l) => l.venue === "limitless")));
     const all: LimitlessGameMarket[] = [];
     let source: "partner" | "venue" = "partner";
@@ -619,7 +619,12 @@ export class OnchainFeed {
         return [];
       }
     }
-    const sportsMarkets = all.filter(isLimitlessSports);
+    // soonest first where the list names a start, so what is left over is shown from the nearest game on
+    const startOf = (m: LimitlessGameMarket): number => Date.parse(m.startsAt ?? "");
+    const sportsMarkets = all.filter(isLimitlessSports).sort((a, b) => (Number.isFinite(startOf(a)) ? startOf(a) : Infinity) - (Number.isFinite(startOf(b)) ? startOf(b) : Infinity));
+    const insideWindow = (m: LimitlessGameMarket): boolean => Number.isFinite(startOf(m)) && startOf(m) <= nowMs + this.horizonMs && startOf(m) >= nowMs - 4 * 3_600_000;
+    const startsInWindow = sportsMarkets.filter(insideWindow).length;
+    let matchedInWindow = 0;
     const unmatched: string[] = [];
     const near: NonNullable<FeedHealth["limitless"]["unmatchedSample"]> = [];
     let matched = 0;
@@ -653,6 +658,7 @@ export class OnchainFeed {
         const outcome = game?.outcomes.find((o) => (/^draw$/i.test(title.pick) ? o.side === "DRAW" || /^(draw|tie)$/i.test(o.name) : sameTeam(o.name, title.pick)));
         if (outcome) {
           tie(outcome, m, yes.tokenId);
+          if (insideWindow(m)) matchedInWindow += 1;
           continue;
         }
       }
@@ -662,18 +668,43 @@ export class OnchainFeed {
       const pairs = game ? m.outcomes.map((lo) => ({ lo, outcome: game.outcomes.find((o) => sameTeam(o.name, lo.name)) })) : [];
       if (game && game.outcomes.length === 2 && pairs.length === 2 && pairs[0].outcome && pairs[1].outcome && pairs[0].outcome !== pairs[1].outcome) {
         for (const p of pairs) tie(p.outcome as FoundOutcome, m, p.lo.tokenId);
+        if (insideWindow(m)) matchedInWindow += 1;
         continue;
       }
       unmatched.push(m.title);
-      // for checking the pairing: a few markets left over, each with the games here that start when it does
-      const starts = Date.parse(m.startsAt ?? "");
-      const named = (title ? title.teams : sides)?.join(" vs ");
-      if (named && Number.isFinite(starts) && near.length < 5 && !near.some((n) => n.game === named)) {
-        const sameStart = found.filter((g) => Math.abs(Date.parse(g.event.startTime ?? "") - starts) <= START_APART_MS);
-        near.push({ game: named, startsAt: m.startsAt as string, gamesStartingThen: sameStart.length, sample: sameStart.slice(0, 4).map((g) => `${g.event.name} [${g.outcomes.map((o) => o.name).join(" / ")}]`.slice(0, 90)) });
+      // for checking the pairing: a few markets left over whose game starts inside the window, each
+      // with what the catalog has at that time: the games read, and every game listed whether read or not
+      const starts = startOf(m);
+      const teams = title ? title.teams : sides;
+      const named = teams?.join(" vs ");
+      if (teams && named && insideWindow(m) && near.length < 6 && !near.some((n) => n.game === named)) {
+        const then = (iso: string | undefined): boolean => Math.abs(Date.parse(iso ?? "") - starts) <= START_APART_MS;
+        const sameStart = found.filter((g) => then(g.event.startTime));
+        const listed = inHorizon.filter((c) => then(c.event.startTime));
+        const mine = new Set(teams.flatMap(words));
+        const alike = (name: string): boolean => words(name).some((w) => w.length >= 4 && mine.has(w));
+        near.push({
+          game: named,
+          startsAt: m.startsAt as string,
+          gamesStartingThen: sameStart.length,
+          sample: [...sameStart.filter((g) => alike(g.event.name) || g.outcomes.some((o) => alike(o.name))), ...sameStart].slice(0, 4).map((g) => `${g.event.name} [${g.outcomes.map((o) => o.name).join(" / ")}]`.slice(0, 90)),
+          listedStartingThen: listed.length,
+          listedAlike: listed.filter((c) => alike(c.event.name)).slice(0, 4).map((c) => `${c.event.name} (${c.competition.name})`.slice(0, 90)),
+          competitionsThen: [...new Set(listed.map((c) => c.competition.name))].sort().slice(0, 30),
+        });
       }
     }
-    health.limitless = { state: "listed", source, markets: all.length, sports: sportsMarkets.length, matched, ...(mapped ? { detail: "the partner's mapping carries Limitless listings; those are used first" } : {}), ...(near.length ? { unmatchedSample: near } : {}) };
+    health.limitless = {
+      state: "listed",
+      source,
+      markets: all.length,
+      sports: sportsMarkets.length,
+      matched,
+      // counted only when the list names starts at all (the venue's own list does, the partner's does not)
+      ...(sportsMarkets.some((m) => Number.isFinite(startOf(m))) ? { startsInWindow, matchedInWindow } : {}),
+      ...(mapped ? { detail: "the partner's mapping carries Limitless listings; those are used first" } : {}),
+      ...(near.length ? { unmatchedSample: near } : {}),
+    };
     return unmatched.sort();
   }
 

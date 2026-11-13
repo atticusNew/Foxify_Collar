@@ -13,7 +13,7 @@ import { buildBoard, type Board } from "./board";
 import { OnchainFeed } from "./feed";
 import { renderOnchainHtml, type PageData } from "./html";
 import { readLimitlessPublicGames } from "./limitlessPublic";
-import type { Snapshot } from "./types";
+import type { FeedHealth, Snapshot } from "./types";
 
 /** a key shorter than this can be guessed: the page stays off */
 export const PAGE_KEY_MIN = 16;
@@ -117,6 +117,7 @@ export class OnchainVenuesService {
   /** For /healthz, which is open: counts and states, nothing a reader could use to open the page. */
   health(): Record<string, unknown> {
     const f = this.last?.snapshot.feed;
+    const d = f?.diagnostics;
     return {
       page: this.keyOff ? `off: ${this.keyOff}` : "on",
       feedKey: this.feed ? "set" : "not set",
@@ -126,11 +127,17 @@ export class OnchainVenuesService {
       games: this.last?.board.games.length ?? 0,
       comparable: this.last?.board.comparable ?? 0,
       catalog: f ? { readAt: f.discoveredAt, seconds: f.discoveryMs === null ? null : Math.round(f.discoveryMs / 1000), competitions: f.competitions, gamesInWindow: f.eventsInHorizon, gamesRead: f.eventsRead, gamesStillToRead: f.eventsPending, leftOffTheBoard: f.eventsOverCap, comparableLeftOff: f.comparableOverCap, notes: f.notes } : null,
-      limitless: f?.limitless ?? null,
+      limitless: f ? withoutSample(f.limitless) : null,
       books: f?.books ?? null,
-      // the catalog in counts, to check this page's reading of it against the real feed
-      diagnostics: f?.diagnostics ?? null,
+      // counts only: no game, market or team is named on the open check (the names are on /api/diagnostics, behind the key)
+      diagnostics: d ? { games: d.games, gamesByVenue: d.gamesByVenue, gamesNamingTwo: d.gamesNamingTwo, winner: d.winner, gamesWithVenueOffWinner: d.gamesWithVenueOffWinner } : null,
     };
+  }
+
+  /** What the catalog looked like, with names: the feed's market titles, example games, Limitless markets left over. Behind the key. */
+  diagnostics(): Record<string, unknown> {
+    const f = this.last?.snapshot.feed;
+    return { at: this.last?.snapshot.at ?? null, catalog: f?.diagnostics ?? null, limitless: f?.limitless ?? null, unmatchedLimitless: this.last?.snapshot.unmatchedLimitless ?? [], notes: f?.notes ?? [] };
   }
 
   private pageData(): PageData {
@@ -155,6 +162,11 @@ export class OnchainVenuesService {
       res.end(renderOnchainHtml(this.pageData(), { refreshSec: this.intervalSec }));
       return true;
     }
+    if (path === "/api/diagnostics") {
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" });
+      res.end(JSON.stringify(this.diagnostics()));
+      return true;
+    }
     if (path === "/api/board") {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" });
       res.end(JSON.stringify({ board: this.last?.board ?? null, coverage: this.last?.snapshot.coverage ?? [], unmatchedLimitless: this.last?.snapshot.unmatchedLimitless ?? [], feed: this.last?.snapshot.feed ?? null }));
@@ -163,6 +175,11 @@ export class OnchainVenuesService {
     return false;
   }
 }
+
+const withoutSample = (l: FeedHealth["limitless"]): Omit<FeedHealth["limitless"], "unmatchedSample"> => {
+  const { unmatchedSample: _names, ...counts } = l;
+  return counts;
+};
 
 const positive = (v: string | undefined, fallback: number): number => {
   const n = Number(v);

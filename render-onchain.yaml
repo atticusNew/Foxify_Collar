@@ -28,7 +28,9 @@
 # the service's Environment tab. The page is then at
 #   https://<the service's address>/?k=<ONCHAIN_VENUES_KEY>
 # and /healthz (open, no key) says whether the feed key is set, when the last
-# read was and how many games and books it found.
+# read was and how many games and books it found: counts only, no game, team
+# or market is named there. The names, for checking how the feed was read, are
+# at /api/diagnostics?k=<ONCHAIN_VENUES_KEY>.
 # ─────────────────────────────────────────────────────────────────────────
 
 services:
