@@ -222,7 +222,7 @@ export function renderOnchainHtml(d: PageData, opts: { refreshSec?: number } = {
   const both = b ? b.games.filter((g) => g.venues.length >= 2) : [];
   const single = b ? b.games.filter((g) => g.venues.length === 1) : [];
   const waiting = !b ? `<p class="note w">${d.hasFeed ? "The first read is under way. The catalog is read slowly on purpose, so the first board can take a few minutes." : "Nothing to show: the feed key is not set."}</p>` : "";
-  const names = d.feed.limitless.matched > 0;
+  const names = d.feed.limitless.matched > 0 || (b?.games.some((g) => g.outcomes.some((o) => VENUES.some((v) => o.cells[v]?.matchedBy === "names"))) ?? false);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">${opts.refreshSec ? `<meta http-equiv="refresh" content="${opts.refreshSec}">` : ""}
 <title>On-chain venues: ${VENUES.map((v) => esc(V(v))).join(", ")}</title>
@@ -253,7 +253,7 @@ ${b ? bestHtml(b) : ""}
 
 <h2>4 · The board</h2>
 <p>One game, one row for each outcome. Bid / ask in cents for $1 paid when the outcome wins, the shares at each, and the same two prices with the venue's fee in. SX Bet's offers at odds are turned into that shape. Fees: ${VENUES.map((v) => `${esc(S(v))} ${esc(FEE_WORDS[v])}`).join("; ")}.</p>
-${names ? `<p class="note w">Rows tagged <i class="tag w">by names</i> were tied to the game here, by the two team names and the start time, because the partner's mapping does not carry that venue. Check the pairing before relying on such a row.</p>` : ""}
+${names ? `<p class="note w">Rows tagged <i class="tag w">by names</i> were tied here by team names, not by the partner's mapping: a Limitless market tied to its game by the two team names and the start time, or a venue's listing brought in from a winner market of its own under the same game, each outcome to the team of the same name. Check the pairing before relying on such a row.</p>` : ""}
 ${b ? boardHtml(both) || `<p class="dim">No game is on two of the three venues right now.</p>` : ""}
 ${single.length ? `<details><summary>${single.length} game${single.length === 1 ? "" : "s"} on one venue only</summary>${boardHtml(single)}</details>` : ""}
 

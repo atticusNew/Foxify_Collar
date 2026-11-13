@@ -99,7 +99,16 @@ export interface FeedHealth {
   /** games one of the three lists that were left off the board because its cap was reached */
   eventsOverCap: number;
   /** `source`: whose list was read, the partner's or, when the partner refuses it to this key, the venue's own public one */
-  limitless: { state: "listed" | "refused" | "failed" | "not_read"; markets: number; sports: number; matched: number; detail?: string; source?: "partner" | "venue" };
+  limitless: {
+    state: "listed" | "refused" | "failed" | "not_read";
+    markets: number;
+    sports: number;
+    matched: number;
+    detail?: string;
+    source?: "partner" | "venue";
+    /** a few markets that were not tied to a game, each with the games here that start when it does: for checking the pairing */
+    unmatchedSample?: { game: string; startsAt: string; gamesStartingThen: number; sample: string[] }[];
+  };
   books: { asked: number; read: number; empty: number; errors: Record<string, number>; ms: number | null; byVenue?: Record<Venue, VenueBooks> };
   /** what the catalog looked like, in counts: for checking this page's reading of it against the real feed */
   diagnostics?: FeedDiagnostics;
@@ -120,15 +129,18 @@ export interface WinnerShape {
   /** the part of the game it is on, by the feed ("QUARTER 1-1"); null for the whole game */
   period: string | null;
   outcomes: number;
-  sides: string[];
-  /** the feed's own venue names on its listings */
+  /** the feed's side of each outcome (HOME, AWAY, DRAW) where it gives one */
+  sides: (string | null)[];
+  /** each outcome's name as the feed gives it */
+  names: string[];
+  /** which of this page's three venues it carries, by the feed's own names */
   venues: string[];
 }
 
 export interface FeedDiagnostics {
   /** games whose markets were read */
   games: number;
-  /** games on which each venue is named on any market at all */
+  /** games on which each of this page's three venues is named on any market at all; no other venue of the feed is counted or shown */
   gamesByVenue: Record<string, number>;
   /** games on which two or more of this page's three venues are named, on any market */
   gamesNamingTwo: number;
@@ -136,7 +148,7 @@ export interface FeedDiagnostics {
   listingsByVenue: Record<string, number>;
   /** the field names of one listing of each venue */
   listingKeys: Record<string, string[]>;
-  /** markets by venue, then by the feed's type ("none" when it gives no type; "+part" for part of a game) */
+  /** markets by venue, then by the feed's type ("none" when it gives none), the part of the game when it is not the whole, and the number of outcomes */
   marketsByVenueAndType: Record<string, Record<string, number>>;
   /** up to two titles for each venue and type */
   sampleTitles: Record<string, Record<string, string[]>>;
@@ -147,14 +159,19 @@ export interface FeedDiagnostics {
     several: number;
     /** games where the three venues' listings sit in different winner markets, so one market does not carry them all */
     split: number;
+    /** of the split ones: a venue was brought into the chosen market, outcome by outcome, by team name */
+    joined: number;
+    /** of the split ones: a venue could not be brought in (not plainly the same bet, or the names did not pair) */
+    apart: number;
   };
   /** games where one of the three venues is named only on markets this page does not read as the winner market */
   gamesWithVenueOffWinner: number;
   /**
-   * A few games, the most telling first: every market that could be the winner market, and up
-   * to three others (no line, three outcomes at most) carrying a venue the chosen one lacks.
+   * A few games of each kind (a venue left apart, a venue off the winner market, a venue joined):
+   * the chosen winner market first, then the others carrying one of the three, and up to three
+   * markets not read as a winner market that carry a venue the chosen one lacks.
    */
-  examples: { game: string; competition: string; markets: WinnerShape[]; others: WinnerShape[] }[];
+  examples: { kind: "apart" | "off" | "joined"; game: string; competition: string; markets: WinnerShape[]; others: WinnerShape[] }[];
 }
 
 export interface Snapshot {
