@@ -25,8 +25,9 @@
  *       ONCHAIN_VENUES_INTERVAL_SEC   (default 60) seconds between book reads
  *       ONCHAIN_VENUES_DISCOVER_MIN   (default 10) minutes between catalog reads
  *       ONCHAIN_VENUES_HORIZON_HOURS  (default 48) games starting within this are on the board
- *       ONCHAIN_VENUES_MAX_GAMES      (default 120) the most games on the board: games on two or more
- *                                     of the venues first, then the rest, soonest first
+ *       ONCHAIN_VENUES_MAX_GAMES      (default 240) the most games on the board: games on two or more
+ *                                     of the venues first, then games on one, the venues in turn,
+ *                                     soonest first
  *       ONCHAIN_VENUES_READS_PER_PASS (default 150) the most games whose markets one catalog read asks for
  *       ONCHAIN_VENUES_PACE_MS        (default 400) the wait between two catalog requests; the
  *                                     partner's request budget is shared with the other services

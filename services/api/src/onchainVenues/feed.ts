@@ -12,7 +12,7 @@
  * for a game none does. While games are still to read the passes run back to back, so the
  * catalog fills in over the first few and the page says how many games are left. The board is
  * the games at least one of the three lists, up to a cap: games on two or more of them first,
- * then the rest, soonest first.
+ * then games on one, the three venues in turn, soonest first.
  *
  * LIMITLESS is not in that mapping (the partner's own page says so: "Not mapped. Find its
  * markets with List Markets"). When a listing for it does appear on an outcome it is used as it
@@ -65,7 +65,7 @@ export interface FeedOptions {
   readBooks: BookReader;
   /** games that start within this are on the board; live games always are */
   horizonMs?: number;
-  /** the most games on the board: games on two or more of the venues first, then the rest, soonest first; only games at least one of the three lists count */
+  /** the most games on the board: games on two or more of the venues first, then games on one, the venues in turn, soonest first; only games at least one of the three lists count */
   maxEvents?: number;
   /** the most games whose markets one pass asks for */
   maxReadsPerPass?: number;
@@ -436,7 +436,7 @@ export class OnchainFeed {
     this.source = opts.source;
     this.readBooks = opts.readBooks;
     this.horizonMs = opts.horizonMs ?? 48 * 3_600_000;
-    this.maxEvents = Math.max(1, opts.maxEvents ?? 120);
+    this.maxEvents = Math.max(1, opts.maxEvents ?? 240);
     this.paceMs = opts.paceMs ?? 350;
     this.marketsTtlMs = opts.marketsTtlMs ?? 2 * 3_600_000;
     this.maxReadsPerPass = Math.max(1, opts.maxReadsPerPass ?? 150);
@@ -565,12 +565,19 @@ export class OnchainFeed {
       }
 
       // the board: the games at least one of the three lists, up to the cap. Games on two or more
-      // of the venues take their places first, since those are the ones that compare; the rest
-      // fill what is left. Soonest first within each, and the board itself stays soonest first.
+      // of the venues take their places first, since those are the ones that compare. What is left
+      // goes to games on one venue, the three venues in turn, so a venue whose games start later
+      // than the others' is still on a capped board. Soonest first within each, and the board
+      // itself stays soonest first.
       const listed = found.filter((g) => g.outcomes.some((o) => o.listings.length > 0));
-      const onTwo = (g: FoundGame): boolean => new Set(g.outcomes.flatMap((o) => o.listings.map((l) => l.venue))).size >= 2;
+      const venuesOf = (g: FoundGame): Venue[] => [...new Set(g.outcomes.flatMap((o) => o.listings.map((l) => l.venue)))];
+      const onTwo = (g: FoundGame): boolean => venuesOf(g).length >= 2;
       const comparable = listed.filter(onTwo);
-      const kept = new Set([...comparable, ...listed.filter((g) => !onTwo(g))].slice(0, this.maxEvents));
+      const queues = VENUES.map((v) => listed.filter((g) => !onTwo(g) && venuesOf(g)[0] === v));
+      const inTurn: FoundGame[] = [];
+      for (let i = 0; queues.some((q) => i < q.length); i += 1) for (const q of queues) if (i < q.length) inTurn.push(q[i]);
+      const kept = new Set([...comparable, ...inTurn].slice(0, this.maxEvents));
+      health.boardCap = this.maxEvents;
       health.eventsOverCap = listed.length - kept.size;
       health.comparableOverCap = comparable.filter((g) => !kept.has(g)).length;
       this.found = listed.filter((g) => kept.has(g));

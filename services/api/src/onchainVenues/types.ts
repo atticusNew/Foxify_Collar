@@ -96,6 +96,8 @@ export interface FeedHealth {
   eventsRead: number;
   /** of those, games still to read: a pass reads a bounded number */
   eventsPending: number;
+  /** the most games the board holds, as this service is set */
+  boardCap?: number;
   /** games one of the three lists that were left off the board because its cap was reached */
   eventsOverCap: number;
   /** of those, games on two or more of the venues: they take their places first, so this is above zero only when they alone exceed the cap */
