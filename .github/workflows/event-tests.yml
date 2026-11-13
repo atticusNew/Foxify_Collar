@@ -2,8 +2,9 @@ name: Event lane tests
 
 # The event branch deploys six Render services from its tip on every merge
 # (render-event-demos.yaml), and ci.yml only runs for main. This workflow is the
-# gate for the event branch: the event, BTC curve and sports venue tests run on
-# every pull request into it and on every push to it.
+# gate for the event branch: the event, BTC curve and sports venue tests, and the
+# tests of the on-chain venues page (render-onchain.yaml, deployed from the same
+# branch), run on every pull request into it and on every push to it.
 #
 # Tests only. Lint and tsc are left out on purpose: `npx tsc --noEmit -p services/api`
 # reports about 185 errors in legacy code that this lane does not touch, so it
@@ -49,4 +50,4 @@ jobs:
 
       - name: Run the lane's tests
         working-directory: services/api
-        run: npx tsx --test tests/event*.test.ts tests/btc*.test.ts tests/sports*.test.ts
+        run: npx tsx --test tests/event*.test.ts tests/btc*.test.ts tests/sports*.test.ts tests/onchain*.test.ts

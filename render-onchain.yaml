@@ -1,0 +1,85 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-onchain.yaml: the ON-CHAIN lane, one service
+#
+#   atticus-onchain-venues   One read-only page: the same game's winner market
+#                            on Polymarket International, SX Bet and Limitless,
+#                            side by side with each venue's fee in, what a
+#                            holder gets for leaving on their own venue, and
+#                            what a cover on the best of the three would lock.
+#
+# KEPT APART from the regulated event lane (render-event-demos.yaml): its own
+# service, its own key, its own blueprint. The only source it shares with that
+# lane is the aggregation partner's client
+# (services/api/src/eventCollar/crossVenue/aggregatorMarkets.ts).
+#
+# READ ONLY. It reads the partner's catalog and book stream. It cannot place an
+# order: it loads no order code, and it takes the partner's DATA key, which the
+# partner does not let call order paths. Never set the TRADE key
+# (AGGREGATOR_TRADE_*) on this service.
+#
+# NO DISK. The page shows the last read and keeps no history.
+#
+# SECRETS live only in the Render dashboard, never in git.
+#
+# TO CREATE IT: Render dashboard, New, Blueprint, this repository, branch
+# cursor/tier2-cross-venue-2bfa, blueprint file render-onchain.yaml. Render asks
+# for the two AGGREGATOR values; they are the same two that atticus-event-shadow
+# holds under those names. Render makes ONCHAIN_VENUES_KEY itself: read it on
+# the service's Environment tab. The page is then at
+#   https://<the service's address>/?k=<ONCHAIN_VENUES_KEY>
+# and /healthz (open, no key) says whether the feed key is set, when the last
+# read was and how many games and books it found.
+# ─────────────────────────────────────────────────────────────────────────
+
+services:
+  - type: web
+    name: atticus-onchain-venues
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/onchainVenuesService.ts
+    healthCheckPath: /healthz
+    # Same rule as render-event-demos.yaml: only ignoredPaths, so a new file always
+    # deploys. Ignored: what no service reads, and the source and scripts of the
+    # other lanes that this start script does not import.
+    # services/api/tests/eventDeployFilters.test.ts checks this list against what
+    # the start script really imports.
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/event*.ts
+        - services/api/scripts/memberApp*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - render-event-demos.yaml
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The partner's DATA key: discovery and the book stream. Set by hand.
+      - key: AGGREGATOR_KEY_ID
+        sync: false
+      - key: AGGREGATOR_PRIVATE_KEY_HEX
+        sync: false
+      # The page's key. Render makes it. 16 characters or more, or the page is off.
+      - key: ONCHAIN_VENUES_KEY
+        generateValue: true
+      # Seconds between book reads, minutes between catalog reads, and how far ahead
+      # a game may start. The catalog is read slowly on purpose (ONCHAIN_VENUES_PACE_MS,
+      # 400 by default): the partner's request budget is shared with the event services.
+      - key: ONCHAIN_VENUES_INTERVAL_SEC
+        value: "60"
+      - key: ONCHAIN_VENUES_DISCOVER_MIN
+        value: "10"
+      - key: ONCHAIN_VENUES_HORIZON_HOURS
+        value: "48"
+      - key: ONCHAIN_VENUES_MAX_GAMES
+        value: "120"
