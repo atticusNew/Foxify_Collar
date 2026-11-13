@@ -65,6 +65,12 @@ export interface GameRow {
   startsAt: string;
   status: string;
   marketTitle: string;
+  /**
+   * True when the market read has no draw and one of the venues lists a draw for this game
+   * apart from it: the outcomes here are then not every way the game can end, and holding one
+   * of each is not a sure payout. Prices are still shown; no cover is worked out.
+   */
+  drawApart?: boolean;
   outcomes: OutcomeRow[];
 }
 

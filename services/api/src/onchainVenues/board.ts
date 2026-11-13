@@ -23,6 +23,7 @@
 
 import { restingUsd, walk } from "./books";
 import { allInAskCents, allInBidCents } from "./fees";
+import { notAFullSet } from "./fullSet";
 import { VENUES, byVenue, type GameRow, type OutcomeBook, type Snapshot, type Venue, type VenueQuote } from "./types";
 
 const r1 = (x: number): number => Math.round(x * 10) / 10;
@@ -78,6 +79,8 @@ export interface BoardOutcome {
 }
 export interface BoardGame extends Omit<GameRow, "outcomes"> {
   venues: Venue[];
+  /** why no cover is worked out for this game (fullSet.ts); null when one of each outcome reads as a whole set */
+  noCover: string | null;
   outcomes: BoardOutcome[];
 }
 
@@ -157,10 +160,10 @@ const median = (xs: number[]): number | null => {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 
-function locksOf(outcomes: { name: string; cells: Record<Venue, Cell | null> }[], i: number): Lock[] {
+function locksOf(outcomes: { name: string; cells: Record<Venue, Cell | null> }[], i: number, fullSet: boolean): Lock[] {
   const own = outcomes[i];
   const legs: CoverLeg[] = [];
-  let whole = true;
+  let whole = fullSet;
   for (const [j, other] of outcomes.entries()) {
     if (j === i) continue;
     let best: CoverLeg | null = null;
@@ -201,10 +204,12 @@ export function buildBoard(s: Snapshot): Board {
       return { name: o.name, side: o.side, cells, midGap: mids.length >= 2 ? r2(Math.max(...mids) - Math.min(...mids)) : null };
     });
     const { outcomes: _raw, ...meta } = g;
+    const noCover = notAFullSet(g);
     return {
       ...meta,
       venues: VENUES.filter((v) => rows.some((r) => r.cells[v])),
-      outcomes: rows.map((r, i) => ({ ...r, locks: locksOf(rows, i) })),
+      noCover,
+      outcomes: rows.map((r, i) => ({ ...r, locks: locksOf(rows, i, noCover === null) })),
     };
   });
 

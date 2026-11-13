@@ -123,6 +123,18 @@ export function pairOutcomes(a: Outcome[], b: Outcome[]): number[] | null {
   return out;
 }
 
+/**
+ * True when the winner market read has no draw and another full-game market of the same event,
+ * on one of these venues, has one. Read on 13 November 2026: SX Bet lists a football game both
+ * as a two-way market (type 52, "Slovenia / Switzerland") and as three markets of its own with
+ * a tie among them, and the two-way one came through as the game's winner market. Its two
+ * outcomes are not every way that game can end.
+ */
+export function drawListedApart(markets: Market[], winner: Market | null): boolean {
+  if (!winner || winner.outcomes.some(isDraw)) return false;
+  return markets.some((m) => m !== winner && !m.period && !m.line && venuesListed(m).size > 0 && (m.outcomes.some(isDraw) || /\b(1x2|draw)\b/i.test(m.title)));
+}
+
 export interface JoinedWinner {
   winner: Market | null;
   /** venues whose listings were brought in from another winner market of the same game */
@@ -354,6 +366,8 @@ interface FoundGame {
   competition: string;
   sport: string;
   marketTitle: string;
+  /** a venue lists a draw for this game apart from the market read (GameRow.drawApart) */
+  drawApart: boolean;
   outcomes: FoundOutcome[];
 }
 
@@ -424,7 +438,7 @@ export class OnchainFeed {
   private readonly quietTtlMs: number;
   private readonly maxReadsPerPass: number;
   private readonly bareTtlMs: number;
-  private readonly marketsCache = new Map<string, { at: number; winner: Market | null; listed: boolean; name: string; competition: string; shape: EventShape }>();
+  private readonly marketsCache = new Map<string, { at: number; winner: Market | null; listed: boolean; drawApart: boolean; name: string; competition: string; shape: EventShape }>();
   private readonly quietCompetitions = new Map<string, number>();
   private found: FoundGame[] = [];
   private coverage: Coverage[] = [];
@@ -519,7 +533,7 @@ export class OnchainFeed {
           try {
             const markets = await this.source.listEventMarkets(event.id);
             const winner = joinWinner(markets).winner;
-            entry = { at: nowMs, winner, listed: winner !== null && venuesListed(winner).size > 0, name: event.name, competition: competition.name, shape: eventShape(markets) };
+            entry = { at: nowMs, winner, listed: winner !== null && venuesListed(winner).size > 0, drawApart: drawListedApart(markets, winner), name: event.name, competition: competition.name, shape: eventShape(markets) };
             this.marketsCache.set(event.id, entry);
           } catch (err) {
             failedEvents += 1;
@@ -545,6 +559,7 @@ export class OnchainFeed {
           competition: competition.name,
           sport,
           marketTitle: winner.title,
+          drawApart: entry.drawApart,
           outcomes: winner.outcomes.map((o) => ({ name: o.name, side: o.side ?? null, listings: o.listings.map(foundListing).filter((l): l is FoundListing => l !== null) })),
         });
       }
@@ -657,11 +672,28 @@ export class OnchainFeed {
       outcome.listings.push({ venue: "limitless", id: `${m.marketSlug} ${tail(tokenId)}`, executable: null, matchedBy: "names", stream: { venue: "LIMITLESS", kind: "CLOB", marketId: m.marketSlug, outcomeId: tokenId } });
       matched += 1;
     };
+    // Limitless lists a game with a draw as three markets, one a pick. When the game here has
+    // no draw, its two team markets are not this game's two outcomes (each is "this team wins
+    // and it is not a draw"), so none of the three is tied, and the game is marked.
+    const threeWay = new Set<FoundGame>();
+    for (const m of sportsMarkets) {
+      const title = parseLimitlessTitle(m.title);
+      if (!title || !/^draw$/i.test(title.pick)) continue;
+      const game = gameOf(title.teams, m);
+      if (game && !game.outcomes.some((o) => o.side === "DRAW" || /^(draw|tie|x)$/i.test(o.name.trim()))) {
+        threeWay.add(game);
+        game.drawApart = true;
+      }
+    }
     for (const m of sportsMarkets) {
       const yes = m.outcomes.find((o) => /^yes$/i.test(o.name));
       const title = parseLimitlessTitle(m.title);
       if (title && yes) {
         const game = gameOf(title.teams, m);
+        if (game && threeWay.has(game)) {
+          unmatched.push(m.title);
+          continue;
+        }
         const outcome = game?.outcomes.find((o) => (/^draw$/i.test(title.pick) ? o.side === "DRAW" || /^(draw|tie)$/i.test(o.name) : sameTeam(o.name, title.pick)));
         if (outcome) {
           tie(outcome, m, yes.tokenId);
@@ -811,6 +843,7 @@ export class OnchainFeed {
       startsAt: g.event.startTime ?? "",
       status: g.event.status ?? "",
       marketTitle: g.marketTitle,
+      ...(g.drawApart ? { drawApart: true } : {}),
       outcomes: g.outcomes.map((o) => ({ name: o.name, side: o.side, quotes: o.listings.map(quote) })),
     }));
     this.health = { ...this.health, books: { asked: asked.length, read, empty, errors, ms: Date.now() - t0, byVenue: perVenue } };

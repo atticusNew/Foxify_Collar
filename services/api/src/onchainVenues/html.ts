@@ -156,7 +156,7 @@ function coverCell(o: BoardOutcome): string {
 
 function gameRows(g: BoardGame): string {
   const live = g.status === "LIVE";
-  const head = `<tr class="game"><td colspan="6"><b>${esc(g.name)}</b>${live ? ' <span class="live">live</span>' : ""}<small>${esc([g.sport, g.competition].filter(Boolean).join(" · "))} · ${et(g.startsAt)} · ${esc(g.marketTitle)}</small></td></tr>`;
+  const head = `<tr class="game"><td colspan="6"><b>${esc(g.name)}</b>${live ? ' <span class="live">live</span>' : ""}<small>${esc([g.sport, g.competition].filter(Boolean).join(" · "))} · ${et(g.startsAt)} · ${esc(g.marketTitle)}${g.noCover ? ` · <i class="tag w">no cover: ${esc(g.noCover)}</i>` : ""}</small></td></tr>`;
   const rows = g.outcomes
     .map((o) => `<tr><td>${esc(o.name)}${o.side ? `<small>${esc(o.side.toLowerCase())}</small>` : ""}</td>${VENUES.map((v) => cellHtml(o.cells[v])).join("")}<td class="n">${c(o.midGap)}</td>${coverCell(o)}</tr>`)
     .join("");
