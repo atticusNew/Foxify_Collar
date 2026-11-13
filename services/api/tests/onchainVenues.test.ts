@@ -623,6 +623,19 @@ test("onchain page: nothing is served without the key, and the open health check
   assert.ok(keyMatches(KEY, KEY));
   assert.ok(!keyMatches(null, KEY));
   assert.ok(!keyMatches("", ""), "an empty key opens nothing");
+  // a generated key with a plus sign, pasted into the link as it stands: the plus arrives as a space
+  const PLUS = "jPUTYbm+ndtAQht2gTg/x+y=";
+  const viaLink = (k: string): string | null => new URL(`http://x/?k=${k}`).searchParams.get("k");
+  assert.equal(viaLink(PLUS), "jPUTYbm ndtAQht2gTg/x y=");
+  assert.ok(keyMatches(viaLink(PLUS), PLUS), "pasted as it stands");
+  assert.ok(keyMatches(viaLink(encodeURIComponent(PLUS)), PLUS), "and written out in full");
+  assert.ok(!keyMatches(viaLink("jPUTYbm+ndtAQht2gTg/x+z="), PLUS));
+  assert.ok(!keyMatches(viaLink("jPUTYbmndtAQht2gTg/xy="), PLUS), "the plus signs cannot be dropped");
+  const plusService = new OnchainVenuesService({ feed: null, key: PLUS, log: () => {} });
+  const answered = { status: 0 };
+  const res = { writeHead: (s: number) => { answered.status = s; }, end: () => {} } as unknown as import("node:http").ServerResponse;
+  assert.ok(plusService.handle({} as import("node:http").IncomingMessage, res, new URL(`http://x/?k=${PLUS}`)));
+  assert.equal(answered.status, 200);
 });
 
 test("onchain page: a key that is unset or short turns the page off; no feed key reads nothing and says so", async () => {

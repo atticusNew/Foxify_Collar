@@ -18,11 +18,22 @@ import type { Snapshot } from "./types";
 /** a key shorter than this can be guessed: the page stays off */
 export const PAGE_KEY_MIN = 16;
 
-export function keyMatches(given: string | null, key: string): boolean {
-  if (given === null || !key) return false;
+const same = (given: string, key: string): boolean => {
   const a = Buffer.from(given);
   const b = Buffer.from(key);
   return a.length === b.length && timingSafeEqual(a, b);
+};
+
+/**
+ * A generated key can hold a plus sign, and a plus sign in a link's query is read as a space.
+ * So a key pasted into a link as it stands arrives with its plus signs turned to spaces: that
+ * is taken as the same key. Nothing else is: a key holds no spaces of its own.
+ */
+export function keyMatches(given: string | null, key: string): boolean {
+  if (given === null || !key) return false;
+  const asGiven = same(given, key);
+  const plusRestored = same(given.replace(/ /g, "+"), key);
+  return asGiven || plusRestored;
 }
 
 export interface ServiceOptions {
