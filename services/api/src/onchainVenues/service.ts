@@ -126,7 +126,7 @@ export class OnchainVenuesService {
       lastError: this.lastError,
       games: this.last?.board.games.length ?? 0,
       comparable: this.last?.board.comparable ?? 0,
-      catalog: f ? { readAt: f.discoveredAt, seconds: f.discoveryMs === null ? null : Math.round(f.discoveryMs / 1000), competitions: f.competitions, gamesInWindow: f.eventsInHorizon, gamesRead: f.eventsRead, gamesStillToRead: f.eventsPending, leftOffTheBoard: f.eventsOverCap, comparableLeftOff: f.comparableOverCap, notes: f.notes } : null,
+      catalog: f ? { readAt: f.discoveredAt, seconds: f.discoveryMs === null ? null : Math.round(f.discoveryMs / 1000), competitions: f.competitions, gamesInWindow: f.eventsInHorizon, gamesRead: f.eventsRead, gamesStillToRead: f.eventsPending, boardLimit: f.boardCap ?? null, leftOffTheBoard: f.eventsOverCap, comparableLeftOff: f.comparableOverCap, notes: f.notes } : null,
       limitless: f ? withoutSample(f.limitless) : null,
       books: f?.books ?? null,
       // counts only: no game, market or team is named on the open check (the names are on /api/diagnostics, behind the key)
@@ -209,7 +209,7 @@ export function onchainServiceFromEnv(env: NodeJS.ProcessEnv = process.env): Onc
       },
       readBooks: (markets) => readSnapshots(signer, markets, { streamUrl: cfg.streamUrl, timeoutMs: 12_000 }),
       horizonMs: horizonHours * 3_600_000,
-      maxEvents: positive(env.ONCHAIN_VENUES_MAX_GAMES, 120),
+      maxEvents: positive(env.ONCHAIN_VENUES_MAX_GAMES, 240),
       maxReadsPerPass: positive(env.ONCHAIN_VENUES_READS_PER_PASS, 150),
       paceMs: positive(env.ONCHAIN_VENUES_PACE_MS, 400),
     });

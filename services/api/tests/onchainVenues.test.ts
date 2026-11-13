@@ -284,7 +284,7 @@ test("onchain feed: a second pass reuses what it knows; a competition with nothi
   assert.deepEqual(calls.filter((c) => c.startsWith("markets")).sort(), ["markets:e1", "markets:e2"]);
 });
 
-test("onchain feed: on a capped board the games on two or more venues take their places first, then the rest, soonest first", async () => {
+test("onchain feed: on a capped board the games on two or more venues take their places first, then games on one venue, the venues in turn, soonest first", async () => {
   // two games on one venue only that start sooner than the two on several
   const lone = (id: string, hours: number, a: string, b: string): [SportEvent, Market[]] => [
     { id, name: `${a} @ ${b}`, competitionId: "mlb", startTime: at(hours), status: "SCHEDULED" },
@@ -304,13 +304,43 @@ test("onchain feed: on a capped board the games on two or more venues take their
   const three = await board(3);
   assert.deepEqual(three.games.map((g) => g.name), ["Cubs @ Mets", "Royals @ Tigers", "Belgium vs Italy"], "both games on several venues, then the soonest of the rest; shown soonest first");
   assert.deepEqual([three.feed.eventsOverCap, three.feed.comparableOverCap], [1, 0]);
-  assert.match(renderOnchainHtml({ board: buildBoard(three), coverage: three.coverage, unmatchedLimitless: three.unmatchedLimitless, feed: three.feed, hasFeed: true, intervalSec: 60, horizonHours: 48 }), /1 games on these venues are left off because the board is capped: games on two or more of the venues take their places first, then the rest, soonest first\. Every game on two or more venues is on the board/);
+  assert.match(renderOnchainHtml({ board: buildBoard(three), coverage: three.coverage, unmatchedLimitless: three.unmatchedLimitless, feed: three.feed, hasFeed: true, intervalSec: 60, horizonHours: 48 }), /1 games on these venues are left off because the board holds 3 games: games on two or more of the venues take their places first, then games on one, the three venues in turn, soonest first\. Every game on two or more venues is on the board/);
   const one = await board(1);
   assert.deepEqual(one.games.map((g) => g.name), ["Royals @ Tigers"]);
   assert.deepEqual([one.feed.eventsOverCap, one.feed.comparableOverCap], [3, 1], "and it says when a game on two venues is itself left off");
   const service = new OnchainVenuesService({ feed: feedOf(source(), reader(), { maxEvents: 1 }), key: KEY, log: () => {} });
   await service.cycle(NOW);
   assert.deepEqual([(service.health().catalog as { leftOffTheBoard: number }).leftOffTheBoard, (service.health().catalog as { comparableLeftOff: number }).comparableLeftOff], [3, 1]);
+  assert.equal((service.health().catalog as { boardLimit: number }).boardLimit, 1, "the limit in force is on the health check");
+
+  // games on one venue: the venues take turns, so a venue whose games start later is still on the board.
+  // An SX Bet game a day out and a Limitless game later still (its winner market in the feed carries none of the three; Limitless is tied by names)
+  const sxOnly: [SportEvent, Market[]] = [
+    { id: "s1", name: "Lakers @ Suns", competitionId: "mlb", startTime: at(24), status: "SCHEDULED" },
+    [{ id: "s1m", title: "Winner including overtime", type: "MONEYLINE", period: null, outcomes: [{ name: "Lakers", listings: [sx("0x51", "OUTCOME_ONE")] }, { name: "Suns", listings: [sx("0x51", "OUTCOME_TWO")] }] }],
+  ];
+  const limOnly: [SportEvent, Market[]] = [
+    { id: "v1", name: "Latvia vs Armenia", competitionId: "unl", startTime: at(30), status: "SCHEDULED" },
+    [{ id: "v1m", title: "Match result", type: "MONEYLINE", outcomes: [{ name: "Latvia", side: "HOME", listings: [kalshi("KL")] }, { name: "Draw", side: "DRAW", listings: [] }, { name: "Armenia", side: "AWAY", listings: [] }] }],
+  ];
+  const turns = async (maxEvents: number): Promise<Snapshot> => {
+    const feed = feedOf(
+      standIn({
+        listEvents: async (id) => (id === "mlb" ? [l1, l2, ...EVENTS.mlb, sxOnly[0]] : id === "unl" ? [...EVENTS.unl, limOnly[0]] : EVENTS[id] ?? []),
+        listEventMarkets: async (id) => (id === "l1" ? l1m : id === "l2" ? l2m : id === "s1" ? sxOnly[1] : id === "v1" ? limOnly[1] : MARKETS[id] ?? []),
+        listLimitlessMarkets: async () => ({ markets: [...LIMITLESS, { marketSlug: "lat", title: "UEFA NL, Latvia vs Armenia: Latvia", categories: ["Sports"], expiresAt: at(54), outcomes: [{ name: "Yes", tokenId: "LL" }, { name: "No", tokenId: "LLn" }] }], nextPageToken: null }),
+      }).source,
+      reader(),
+      { maxEvents },
+    );
+    await feed.discover(NOW);
+    return feed.snapshot(NOW);
+  };
+  const five = await turns(5);
+  assert.deepEqual(five.games.map((g) => g.name), ["Cubs @ Mets", "Royals @ Tigers", "Belgium vs Italy", "Lakers @ Suns", "Latvia vs Armenia"], "one game of each venue before a second of any: the second Polymarket game, though sooner, is the one left off");
+  assert.deepEqual([five.feed.eventsOverCap, five.feed.comparableOverCap, five.feed.boardCap], [1, 0, 5]);
+  assert.equal(five.feed.books.byVenue?.limitless.asked, 6, "so the Limitless-only game's book is asked for with the others");
+  assert.deepEqual((await turns(6)).games.map((g) => g.name), ["Cubs @ Mets", "Reds @ Braves", "Royals @ Tigers", "Belgium vs Italy", "Lakers @ Suns", "Latvia vs Armenia"]);
 });
 
 test("onchain feed: the cap keeps the soonest games and says how many were left off; books go out in chunks no larger than the stream allows", async () => {

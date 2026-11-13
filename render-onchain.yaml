@@ -84,6 +84,9 @@ services:
       - key: ONCHAIN_VENUES_HORIZON_HOURS
         value: "48"
       # The most games on the board. Games on two or more of the venues take their
-      # places first (those are the ones that compare), then the rest, soonest first.
+      # places first (those are the ones that compare), then games on one venue,
+      # the three venues in turn, soonest first. 240 since 13 November 2026: 159
+      # games were on two venues that day and 120 left 39 of them off. /healthz
+      # says the limit in force (catalog.boardLimit) and how many are left off.
       - key: ONCHAIN_VENUES_MAX_GAMES
-        value: "120"
+        value: "240"
