@@ -116,7 +116,10 @@
 #                                   kept per game on the same disk. Lock in
 #                                   replayed on it is NOT under this key: it is
 #                                   a page for one reader at /prospect, under
-#                                   PROSPECT_PAGE_KEY (below).
+#                                   PROSPECT_PAGE_KEY (below). The same replay on
+#                                   DraftKings' exchange, from its public daily
+#                                   files, is a page for that reader at
+#                                   /draftkings, under DRAFTKINGS_PAGE_KEY.
 #                                   docs/sports-venues-report.md
 #
 #   (no service) /pairs on          BTC pairs UI for a trader: the same
@@ -314,6 +317,11 @@ services:
       # given to a reader. Same rules as the key above, and it may not equal that key either
       # (both pages go off if they match).
       # - key: LOCK_IN_INTERNAL_KEY
+      #   sync: false
+      # The page made for DraftKings at /draftkings (Lock in replayed on the trades in DKeX's
+      # public daily files: results only, one address). It reads a record that ships with the
+      # code and calls no host. Same rules as the two keys above, and it may not equal either.
+      # - key: DRAFTKINGS_PAGE_KEY
       #   sync: false
       # - key: SPORTS_VENUES_INTERVAL_SEC
       #   value: "60"

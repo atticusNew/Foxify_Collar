@@ -278,12 +278,13 @@ play that returns the stake from 80% or less.
 ### Pages with a key of their own
 
 `audiences.ts` lists the pages that have their own address and their own key, read from the
-environment. Two entries:
+environment. Three entries:
 
 | Address | Key | For | What it serves |
 | --- | --- | --- | --- |
 | `/prospect` | `PROSPECT_PAGE_KEY` | one reader outside the company | one page: results, held back as below |
 | `/lockin` | `LOCK_IN_INTERNAL_KEY` | the company | `/lockin` every replay table and the method, `/lockin/lock` the lock card with its order, `/lockin/brief` the meeting brief, `/lockin/api` the report as JSON |
+| `/draftkings` | `DRAFTKINGS_PAGE_KEY` | DraftKings | one page: the same replay on DKeX's public daily files, held back the same way ("DraftKings' exchange, from its daily files" below) |
 
 **The meeting brief** (`/lockin/brief`, `brief.ts` and `briefHtml.ts`) is the founder's own
 preparation page and is never sent. `brief.ts` takes the retail tallies of the replay (tickets
@@ -297,7 +298,7 @@ and left out of every season total and case, and the page says so at its top. No
 own fee is printed anywhere on it.
 
 - An entry is on only when its key is set, is 16 characters or more, and is not `BTC_CURVE_TOKEN`,
-  `SPORTS_VENUES_TOKEN` or the other entry's key. Otherwise every address under it answers 404,
+  `SPORTS_VENUES_TOKEN` or another entry's key. Otherwise every address under it answers 404,
   and `/healthz` says why under `sports.audiencePages` (by position, without a name: `/healthz`
   needs no key).
 - A key opens its own entry and nothing else. The service's own key opens neither. The host
@@ -377,6 +378,65 @@ come back: the first needs the product in front of them, the second a broker's a
 large ticket would walk the book; the page's fold leaves tickets over $500 out. A broker's own
 commission is not public and is not counted.
 
+## DraftKings' exchange, from its daily files
+
+DraftKings Predictions trades on DraftKings' own exchange, DKeX (Railbird Exchange, a CFTC
+contract market). It has no public trade feed, but like every contract market it publishes
+daily files, with no key, a day after the trading day:
+
+| File | Address under `railbirdexchange.com/reports/` | What is read from it |
+| --- | --- | --- |
+| Time & Sales | `time-and-sales/manifest.json` | every trade: minute, contract, price in dollars, size. No side |
+| Daily Market | `daily-market/manifest.json` | each contract's maturity, which is the game's start plus thirty days |
+| Daily Settlement | `daily-settlement/manifest.json` | the result: $1.00 or $0.00 (a $0.50 settlement is a void and the game is left out) |
+
+`dkex.ts` reads the rows and keeps only contracts on a team to win a game (`-WIN-FG-` in the
+symbol), assembles a game from its two contracts, and turns it into the same capsule the
+Crypto.com tape replay takes, so `tapeReplay.ts` is used unchanged. `dkexRecord.ts` holds the
+fee and the record's shape. `scripts/sportsDkexBuild.ts` downloads the files (some 200 MB a day,
+streamed; the kept rows are cached at about 1 MB a day), replays every finished game and writes
+`src/sportsVenues/dkexSeed/record.json` (about 160 KB: the tallies and a few told tickets, no
+trades). **The service only reads that record.** It downloads nothing and writes nothing for
+this page, so the page does not move until the record is rebuilt and deployed:
+
+```
+npx tsx services/api/scripts/sportsDkexBuild.ts        # then commit dkexSeed/record.json
+```
+
+`/healthz` carries the record's last day as `sports.dkexThrough`.
+
+**Which way a trade went.** The files do not say whether a trade was a buy or a sale. It is read
+from the price (`sideOfPrints`): within a minute the higher of two prices a cent apart is the
+buy; otherwise the other contract of the game decides (the two sum to about $1); otherwise the
+last move in price. Two rules keep the count on the low side:
+
+- A trade read as a sale is recorded one cent lower (`DKEX_SALE_UNDER`), and a lock is only
+  priced on those. So every lock is one cent under a price that really traded.
+- A trade read as a buy is a ticket at its own price. A buy misread as a sale is not followed.
+
+Measured on the Crypto.com tapes, which do publish the side, by stripping it and reading the
+tape DKeX's way (58 finished games, 14 November 2026): a trade read as a buy is one 96% of the
+time or more; tickets counted came out 12% under the true count; the share of retail tickets
+that could take their whole stake back 3 points under (48.4% read, 51.7% true); the cash the
+lock returns to losing tickets 4 points under; the share of losing tickets that had been ahead
+at some point 2 points over (it is the one figure that reads high, and the page's notes say
+so). `tests/sportsDkex.test.ts` holds the same comparison on the 31 seed tapes as bounds.
+
+**Fees.** 2¢ a contract to buy and again on the lock, at every price (`DKEX_FEE`). DraftKings'
+own schedule is 2¢ between 30¢ and 94¢ and less outside, so this counts the most a customer
+pays.
+
+**Limits, beyond those of the tape replay.** Every member's trades are in the files, market
+makers' among them, and nothing says which are customers'. Game winners are about 9% of the
+exchange's contracts; combos are 72% and are not covered. No order book is published, so the
+page says nothing of the size behind a price. Times are to the minute.
+
+**The page** (`draftkingsHtml.ts`) is the Prospect page's twin with what applies to an exchange
+that is also the broker: the two told tickets come from DKeX's own file; the lock card is
+worked out at a price typed in (`lockAtPrice` in `lockNow.ts`), since there is no live book to
+read; section 6 counts orders and contracts on DKeX with a box for what DraftKings earns per
+contract; there is no depth line. It holds back the same things as the Prospect page.
+
 ## Storage and ops
 
 One JSONL file per UTC day under `SPORTS_VENUES_DATA_DIR`, one line per snapshot (every listing's
@@ -406,14 +466,14 @@ keeps the BTC curve's files; `docs/btc-curve-report.md` has the detail.
 Endpoints: `/` (page, auto-refresh at the interval), `/api/report` (the page's data), `/api/latest`
 (the raw snapshot), `/replay` and `/api/replay`, `/lock` and `/api/lock` (`game=<key>|away` or
 `|home`, `n=` contracts, `paid=` cents), `/healthz` (no token). With `SPORTS_VENUES_TOKEN` set, the page and JSON need
-`?k=<token>`. `/prospect` needs `?k=<PROSPECT_PAGE_KEY>`; `/lockin`, `/lockin/lock` and `/lockin/api` need `?k=<LOCK_IN_INTERNAL_KEY>`
+`?k=<token>`. `/prospect` needs `?k=<PROSPECT_PAGE_KEY>`; `/draftkings` needs `?k=<DRAFTKINGS_PAGE_KEY>`; `/lockin`, `/lockin/lock` and `/lockin/api` need `?k=<LOCK_IN_INTERNAL_KEY>`
 (`game=past:<event>|away` or `|home` with `at=<ms>` for a finished game).
 
 Env: `SPORTS_VENUES_PORT` (8870), `SPORTS_VENUES_DATA_DIR`, `SPORTS_VENUES_INTERVAL_SEC` (60),
 `SPORTS_VENUES_TOKEN`, `SPORTS_VENUES_RETAIN_DAYS` (unset: keep every day),
 `SPORTS_VENUES_DISK_BUDGET_MB` (unset: no budget), `SPORTS_VENUES_HORIZON_DAYS` (3),
 `SPORTS_VENUES_WINDOW_HOURS` (72), `SPORTS_VENUES_CRYPTOCOM_FEE` (`flat`, or `weighted`),
-`PROSPECT_PAGE_KEY` (unset: the reader's page is off), `LOCK_IN_INTERNAL_KEY` (unset: the internal pages are off),
+`PROSPECT_PAGE_KEY` (unset: the reader's page is off), `LOCK_IN_INTERNAL_KEY` (unset: the internal pages are off), `DRAFTKINGS_PAGE_KEY` (unset: DraftKings' page is off),
 `NOVIG_PUBLIC_HOST`, `PROPHETX_PUBLIC_HOST`, `CRYPTOCOM_PUBLIC_HOST`, `POLY_US_REST_BASE`, `KALSHI_REST_BASE`.
 
 The gaps table plots at most 240 points per game and venue, evenly spread over the window; the

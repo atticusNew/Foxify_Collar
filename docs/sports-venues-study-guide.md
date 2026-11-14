@@ -163,7 +163,7 @@ website uses; if the venue closes them the column goes empty and the page says s
 
 ## 10. The Lock in pages
 
-Not under the sports page's key. Two addresses, each with its own key:
+Not under the sports page's key. Three addresses, each with its own key:
 
 - `/prospect` under `PROSPECT_PAGE_KEY`: the page made for Prospect. This is the link you send.
 - `/lockin` under `LOCK_IN_INTERNAL_KEY`: every table, the method, and the lock card with the
@@ -172,6 +172,7 @@ Not under the sports page's key. Two addresses, each with its own key:
   worth to Prospect in a bear, base and bull case, what we charge, Lock in against selling out,
   integration, and the questions both ways. Read it before the meeting and again on Monday: its
   figures are worked out when the page is opened, from the same replay as Prospect's page.
+- `/draftkings` under `DRAFTKINGS_PAGE_KEY`: the page made for DraftKings. Section 11.
 
 Mechanics are in `docs/sports-venues-report.md` under "Lock in on the trade tape" and "Pages
 with a key of their own".
@@ -279,3 +280,46 @@ Crypto.com's own bid. Measured against the other US exchanges after every fee, t
 for that in well under 1% of readings. What the count supports is the opposite and is good
 news for a broker: the exchange's own book is the customer's best way out, so the lock is an
 order on that exchange.
+
+## 11. The page made for DraftKings
+
+`/draftkings?k=<DRAFTKINGS_PAGE_KEY>`. The same idea as Prospect's page, on DraftKings' own
+exchange (DKeX), from the files it publishes every day. Mechanics are in
+`docs/sports-venues-report.md` under "DraftKings' exchange, from its daily files".
+
+**What it is built on.** Every trade on a team to win a game in DKeX's files, which start in
+June: 4,389 finished games across 11 leagues, 4.7 million retail tickets. That is a much bigger
+sample than Prospect's page has, and it includes a full run of NFL, college football and MLB.
+
+**The numbers to know (through 13 November 2026).**
+
+- 54% of retail tickets finished at $0.
+- 56% of those were ahead at some point in the game.
+- 54% of all retail tickets could have taken their whole stake back in play.
+- 896,905 of those then lost. They paid $23.4 million and got $0. With the lock, $23.4 million back.
+- If 10 in 100 lock: 256,669 more orders and 12.7 million more contracts on DKeX.
+
+**Three things that are different from Prospect's page, and why.**
+
+1. DKeX does not say which way a trade went, so it is read from the price. The reading is
+   tilted to count low: checked against Crypto.com's tape, which does say, it finds 12% fewer
+   tickets and 3 points fewer locks than are really there. The one figure it reads high is
+   "ahead at some point", by 2 points. The page's notes say all of this.
+2. There is no live price to read, so the lock card works on numbers typed in. Use it in a
+   meeting: put in their ticket and the price now.
+3. DraftKings owns the broker, the exchange and a market maker. So section 6 speaks of orders
+   and volume on DKeX, and the fee box is what DraftKings earns on a contract in all.
+
+**It does not update by itself.** The page reads a record that ships with the code. To bring it
+up to date someone runs the builder and deploys (one command, in the report doc). `/healthz`
+shows the record's last day.
+
+**What to say if asked.**
+
+- "How do you know these are customers?" We do not, and the page says so. The files hold every
+  member's trades. Their own records answer it, which is the ask in section 7.
+- "How do you know a trade was a buy?" From its price, checked on a tape where the answer is
+  published. It undercounts.
+- "Why only game winners?" That is where a lock is simplest to show. Combos are most of their
+  volume and are not on this page. Do not volunteer what we can or cannot do on combos.
+- The same hold-back as Prospect's page applies: results, not how a lock is made.
