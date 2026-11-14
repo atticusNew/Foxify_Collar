@@ -1141,6 +1141,9 @@ test("onchain demo: each venue in its own colours and words, names only, and not
   assert.ok(html.includes('var STAGES=["Pricing","Executing","Confirming"];') && html.includes('class="spin"') && html.includes("@keyframes spin"));
   assert.ok(DEMO_STAGE_MS * DEMO_LOCK_STAGES.length >= 2000 && DEMO_STAGE_MS * DEMO_LOCK_STAGES.length <= 4000, "a few seconds, not a wait");
   assert.ok(html.includes("S.locked[id]=b.p") && !html.includes("S.locked[id]=JSON.parse"), "a row reads locked only when the stages have run");
+  // a locked row opens a receipt of what was done: the amounts, when it is paid, when it was locked
+  for (const text of ["function receipt(h,lk)", "Locked in", "If your pick wins", "If your pick loses", "When the game settles", "Closing on '+esc(h.name)+' paid", "Demonstration: nothing was bought."]) assert.ok(html.includes(text), text);
+  assert.ok(html.includes("(open?(lk?receipt(h,lk):details(h,p)):'')"), "the same toggle opens the receipt on a locked row");
   assert.match(html, /<meta name="robots" content="noindex">/);
 
   const words = html.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<[^>]+>/g, " ");
