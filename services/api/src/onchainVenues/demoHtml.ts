@@ -16,6 +16,10 @@
  * A tap on Lock in runs a short progress (a spinner and three words, a few seconds) before the
  * row reads locked. Nothing is priced or placed in that time: it is the wait a real lock has.
  *
+ * A locked row has the same Details toggle. It opens a receipt of what was done: the amount
+ * locked, that it is paid at settlement and is the same if the pick wins or loses, what closing
+ * paid at that moment, the difference, and when. Nothing in it says how the lock was made.
+ *
  * The founder's contact (email and Telegram) is on the page: beside the screen on a desktop,
  * under it on a phone, with a "Talk to us" link at the top of a phone that jumps to it.
  *
@@ -259,13 +263,21 @@ button{font:inherit}
   function action(p){
     var lk=S.locked[p.id],bz=S.busy[p.id];
     if(bz)return '<div class="btns"><button type="button" class="go busy" disabled aria-busy="true"><i class="spin"></i>'+STAGES[bz.i]+'\u2026</button></div><div class="sub"><span>Lock in '+usd(bz.p.lockCents)+'</span></div>';
-    if(lk)return '<div class="btns"><button type="button" class="go done" disabled>'+CHECK+'Locked '+usd(lk.lockCents)+'</button></div><div class="sub"><span>Paid when the game settles</span><a data-act="undo">Undo</a></div>';
+    if(lk)return '<div class="btns"><button type="button" class="go done" disabled>'+CHECK+'Locked '+usd(lk.lockCents)+'</button><button type="button" class="tg" data-act="details" aria-label="Details" aria-expanded="'+(S.open===p.id)+'">'+CHEV+'</button></div><div class="sub"><span>Paid when the game settles</span><a data-act="undo">Undo</a></div>';
     if(p.lockCents===null)return '<div class="btns"><button type="button" class="go off" disabled>'+SHIELD+'Lock in</button></div><div class="sub"><span>Not available right now</span></div>';
     return '<div class="btns"><button type="button" class="go" data-act="lock">'+SHIELD+'Lock in '+usd(p.lockCents)+'</button><button type="button" class="tg" data-act="details" aria-label="Details" aria-expanded="'+(S.open===p.id)+'">'+CHEV+'</button></div><div class="sub"><span class="more">'+usd(p.moreCents)+' more than closing now</span></div>';
   }
   function details(h,p){
     return '<dl class="det"><div><dt>Close now on '+esc(h.name)+'</dt><dd>'+usd(p.valueCents)+'</dd></div><div><dt>Lock in</dt><dd>'+usd(p.lockCents)+'</dd></div><div><dt>Difference</dt><dd class="up">+'+usd(p.moreCents)+'</dd></div>'+
       '<p>Lock in pays '+usd(p.lockCents)+' when the game settles, win or lose.</p><p class="pow">Powered by <b>Atticus</b></p></dl>';
+  }
+  /* what was done, for a locked row: the amounts and the time, and nothing of how */
+  function receipt(h,lk){
+    var at='';try{at=new Date(lk.lockedAt).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'})}catch(e){}
+    return '<dl class="det"><div><dt>Locked in</dt><dd>'+usd(lk.lockCents)+'</dd></div><div><dt>If your pick wins</dt><dd>'+usd(lk.lockCents)+'</dd></div><div><dt>If your pick loses</dt><dd>'+usd(lk.lockCents)+'</dd></div>'+
+      '<div><dt>Paid</dt><dd>When the game settles</dd></div><div><dt>Closing on '+esc(h.name)+' paid</dt><dd>'+usd(lk.valueCents)+'</dd></div><div><dt>Difference</dt><dd class="up">+'+usd(lk.moreCents)+'</dd></div>'+
+      (at?'<div><dt>Locked</dt><dd>'+esc(at)+'</dd></div>':'')+
+      '<p>Demonstration: nothing was bought.</p><p class="pow">Powered by <b>Atticus</b></p></dl>';
   }
   function render(){
     var h=hostOf(S.home),shell=$('shell');
@@ -287,7 +299,7 @@ button{font:inherit}
     if(!rows.length){$('total').innerHTML='';$('list').innerHTML='<div class="empty">No open positions on '+esc(h.name)+' right now.</div>';return}
     var html='',total=0;
     for(var k=0;k<rows.length;k++){
-      var p=rows[k],pl=p.valueCents-p.stakeCents,open=S.open===p.id&&!S.locked[p.id]&&!S.busy[p.id]&&p.lockCents!==null;
+      var p=rows[k],pl=p.valueCents-p.stakeCents,lk=S.locked[p.id],open=S.open===p.id&&!S.busy[p.id]&&(!!lk||p.lockCents!==null);
       total+=p.valueCents;
       html+='<div class="pos'+(open?' open':'')+'" data-id="'+esc(p.id)+'"><div class="row">'+
         '<div class="c name"><b>'+esc(p.pick)+'</b><span class="meta">'+esc(p.game)+' · '+esc(p.competition)+' · '+when(p.startsAt)+'</span></div>'+
@@ -295,7 +307,7 @@ button{font:inherit}
         '<div class="c f"><label>'+esc(h.cols[2])+'</label><b>'+usd(p.stakeCents)+'</b></div>'+
         '<div class="c f"><label>'+esc(h.cols[3])+'</label><b>'+usd(p.payoutCents)+'</b></div>'+
         '<div class="c f"><label>'+esc(h.cols[4])+'</label><b>'+usd(p.valueCents)+'</b><i class="'+(pl<0?'down':'up')+'">'+(pl<0?'':'+')+usd(pl)+'</i></div>'+
-        '<div class="c act">'+action(p)+'</div></div>'+(open?details(h,p):'')+'</div>';
+        '<div class="c act">'+action(p)+'</div></div>'+(open?(lk?receipt(h,lk):details(h,p)):'')+'</div>';
     }
     $('total').innerHTML=rows.length+' open · <b>'+usd(total)+'</b>';
     $('list').innerHTML=html;
@@ -306,7 +318,7 @@ button{font:inherit}
 
   /* the lock, in stages the button reports in words; the amount is the one that was on the button when it was tapped */
   function startLock(id,p){
-    var b={i:0,p:JSON.parse(JSON.stringify(p))};
+    var b={i:0,p:JSON.parse(JSON.stringify(p))};b.p.lockedAt=Date.now();
     S.busy[id]=b;if(S.open===id)S.open=null;
     var t=setInterval(function(){
       b.i++;
@@ -325,7 +337,7 @@ button{font:inherit}
     var id=row.getAttribute('data-id'),p=find(id),act=el.getAttribute('data-act');
     if(!p)return;
     if(act==='lock'&&p.lockCents!==null&&!S.busy[id]&&!S.locked[id]){startLock(id,p)}
-    else if(act==='undo'){delete S.locked[id]}
+    else if(act==='undo'){delete S.locked[id];if(S.open===id)S.open=null}
     else if(act==='details'){S.open=S.open===id?null:id}
     render();
   });
