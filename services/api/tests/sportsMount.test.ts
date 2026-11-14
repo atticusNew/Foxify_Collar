@@ -139,7 +139,7 @@ test("on the BTC service: /sports and its JSON answer with the BTC key and are r
     const shown = JSON.parse((await get(`/lockin/api?k=${INTERNAL}`)).text);
     assert.ok(shown.report.all.games >= 31);
     assert.ok(existsSync(join(dir, "sports", "tape", "replay.json")));
-    assert.deepEqual(JSON.parse((await get("/healthz")).text).sports.audiencePages, ["on", "on"]);
+    assert.deepEqual(JSON.parse((await get("/healthz")).text).sports.audiencePages, ["on", "on", "off: its key is not set"]);
 
     const warm = JSON.parse((await get("/healthz")).text);
     assert.equal(warm.sports.warm, true);
