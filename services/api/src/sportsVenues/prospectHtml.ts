@@ -116,7 +116,7 @@ ${end}
 <p class="more"><a href="${esc(href)}">See every choice on this ticket</a></p></div>`;
 }
 
-const READER_OPTION: Record<LockOption["id"], [string, string]> = {
+export const READER_OPTION: Record<LockOption["id"], [string, string]> = {
   back: ["Stake back", "Everything paid comes back now. What is left rides at no cost."],
   wide: [TIER_NAME.wide, "The least cash now, the most left to win."],
   balanced: [TIER_NAME.balanced, "Between the two."],

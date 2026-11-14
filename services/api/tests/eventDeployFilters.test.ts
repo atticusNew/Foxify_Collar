@@ -195,6 +195,8 @@ const READ_AT_RUNTIME: Readonly<Record<string, readonly string[]>> = {
   "services/api/src/sportsVenues/tape.ts": readdirSync(join(REPO_ROOT, "services/api/src/sportsVenues/tapeSeed"))
     .filter((name) => name.endsWith(".tape.jsonl"))
     .map((name) => `services/api/src/sportsVenues/tapeSeed/${name}`),
+  // DKeX's season replayed from its daily files, read on start-up
+  "services/api/src/sportsVenues/dkexRecord.ts": ["services/api/src/sportsVenues/dkexSeed/record.json"],
 };
 
 /** How a script finds files beside itself. A file using any of these must be in READ_AT_RUNTIME. */

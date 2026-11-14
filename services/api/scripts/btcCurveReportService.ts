@@ -48,6 +48,9 @@
  *       LOCK_IN_INTERNAL_KEY    (optional; the key of the company's own Lock in pages at /lockin:
  *                               every replay table and the lock card. Same rules; it may not
  *                               equal PROSPECT_PAGE_KEY either.)
+ *       DRAFTKINGS_PAGE_KEY     (optional; the key of the page made for DraftKings at
+ *                               /draftkings, from its exchange's public daily files. Same
+ *                               rules; it may equal no other key here.)
  *       POLY_US_EXTRA_EVENT_SLUGS  comma-separated Polymarket US event slugs to add
  *       POLY_US_REST_BASE / KALSHI_REST_BASE / DERIBIT_REST_BASE / OKX_REST_BASE (relays)
  *

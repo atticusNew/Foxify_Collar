@@ -116,7 +116,7 @@ test("a lock at a moment of a finished game: the bid that was there then, the re
 
 test("a reader's key: the page is on only with a key of its own, long enough and not one that opens something else", () => {
   const a = AUDIENCES[0];
-  assert.deepEqual(AUDIENCES.map((x) => [x.base, x.keyEnv, x.kind]), [["/prospect", "PROSPECT_PAGE_KEY", "broker"], ["/lockin", "LOCK_IN_INTERNAL_KEY", "internal"]]);
+  assert.deepEqual(AUDIENCES.map((x) => [x.base, x.keyEnv, x.kind]), [["/prospect", "PROSPECT_PAGE_KEY", "broker"], ["/lockin", "LOCK_IN_INTERNAL_KEY", "internal"], ["/draftkings", "DRAFTKINGS_PAGE_KEY", "exchange"]]);
   assert.equal(audienceState(a, undefined, []).off, "its key is not set");
   assert.equal(audienceState(a, "  ", []).off, "its key is not set");
   assert.equal(audienceState(a, "x".repeat(AUDIENCE_KEY_MIN - 1), []).off, "its key is shorter than 16 characters");
@@ -130,7 +130,8 @@ test("a reader's key: the page is on only with a key of its own, long enough and
   assert.equal(audienceOf([on], "/prospects"), null);
   // from the environment: the BTC key and the sports key are the ones it may not share
   const dir = mkdtempSync(join(tmpdir(), "sv-reader-"));
-  const states = (env: Record<string, string>) => sportsCollectorFromEnv({ SPORTS_VENUES_DATA_DIR: dir, ...env }).health().audiencePages as string[];
+  // the first two: the reader's page and the internal pages (the page made for DraftKings is the third, tests/sportsDkex.test.ts)
+  const states = (env: Record<string, string>) => (sportsCollectorFromEnv({ SPORTS_VENUES_DATA_DIR: dir, ...env }).health().audiencePages as string[]).slice(0, 2);
   const state = (env: Record<string, string>) => states(env)[0];
   assert.equal(state({}), "off: its key is not set");
   assert.equal(state({ PROSPECT_PAGE_KEY: KEY }), "on");

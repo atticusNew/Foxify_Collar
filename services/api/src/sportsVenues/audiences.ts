@@ -3,14 +3,15 @@
  * the key of one opens nothing else: not the service's own pages, not another entry's. The
  * service's own key does not open them either, and two entries may not share a key.
  *
- * Two kinds. "broker": the page made for one reader outside the company (prospectHtml.ts),
- * which shows results and holds back how they are produced. "internal": the full replay
- * tables, the method and the lock card with its order, for the company's own use; its key is
- * never given to a reader.
+ * Three kinds. "broker": the page made for one reader outside the company (prospectHtml.ts),
+ * which shows results and holds back how they are produced. "exchange": the same for a reader
+ * that owns the exchange its customers trade on (draftkingsHtml.ts), from that exchange's own
+ * public files. "internal": the full replay tables, the method and the lock card with its
+ * order, for the company's own use; its key is never given to a reader.
  *
- * A new reader is a new "broker" entry here and a key in the environment. The words of
- * prospectHtml.ts are written for a broker onto Crypto.com's exchange; a reader of another kind
- * needs its own.
+ * A new reader is a new entry here and a key in the environment. The words of prospectHtml.ts
+ * are written for a broker onto Crypto.com's exchange, those of draftkingsHtml.ts for
+ * DraftKings and DKeX; a reader of another kind needs its own.
  */
 
 import { timingSafeEqual } from "node:crypto";
@@ -25,12 +26,13 @@ export interface Audience {
   name: string;
   /** the name in running text */
   short: string;
-  kind: "broker" | "internal";
+  kind: "broker" | "exchange" | "internal";
 }
 
 export const AUDIENCES: readonly Audience[] = [
   { id: "prospect", base: "/prospect", keyEnv: "PROSPECT_PAGE_KEY", name: "Prospect Markets", short: "Prospect", kind: "broker" },
   { id: "internal", base: "/lockin", keyEnv: "LOCK_IN_INTERNAL_KEY", name: "Atticus", short: "Atticus", kind: "internal" },
+  { id: "draftkings", base: "/draftkings", keyEnv: "DRAFTKINGS_PAGE_KEY", name: "DraftKings", short: "DraftKings", kind: "exchange" },
 ];
 
 /** a key shorter than this can be guessed: the page stays off */

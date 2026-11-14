@@ -22,6 +22,8 @@ import { lockChoices, lockNow, lockPast, pastMoments, type LockChoice, type Lock
 import { caseFrom } from "./brief";
 import { renderBriefHtml } from "./briefHtml";
 import { PAST_PREFIX, bookCountOf, renderProspectHtml, type ProspectLock } from "./prospectHtml";
+import { renderDraftKingsHtml } from "./draftkingsHtml";
+import { loadDkexRecord, type DkexRecord } from "./dkexRecord";
 import { renderLockHtml, renderReplayHtml } from "./replayHtml";
 import { TapeRecord } from "./tape";
 import { SnapshotStore } from "./store";
@@ -47,6 +49,8 @@ export interface SportsCollectorOptions {
   audienceKeys?: Record<string, string | undefined>;
   /** the keys that open the host's own pages: a reader's page may not share one */
   hostKeys?: string[];
+  /** test seam: where the record of DKeX's games is read from (null for none); the one shipped with the code when not given */
+  dkexRecordPath?: string | null;
 }
 
 export class SportsCollector {
@@ -61,6 +65,8 @@ export class SportsCollector {
   private readonly holder: HolderRecord;
   private readonly tape: TapeRecord;
   private readonly audiences: AudienceState[];
+  /** DKeX's finished games, replayed from its public files when the code was built (dkexRecord.ts); null when the file is not there */
+  private readonly dkex: DkexRecord | null;
   private readonly log: (line: string) => void;
   private readonly readGames: (now: Date, health: Snapshot["health"]) => Promise<Game[]>;
   private readonly cryptocomFee: CryptocomFee;
@@ -90,6 +96,7 @@ export class SportsCollector {
     // a key two entries share opens neither: a reader's key must never open the internal pages
     const keys = AUDIENCES.map((a) => (opts.audienceKeys?.[a.id] ?? "").trim());
     this.audiences = AUDIENCES.map((a, i) => audienceState(a, keys[i], [...(opts.hostKeys ?? []), ...keys.filter((k, j) => j !== i && k)]));
+    this.dkex = opts.dkexRecordPath === null ? null : loadDkexRecord(opts.dkexRecordPath);
     this.tape = new TapeRecord({
       dir: join(opts.dataDir, "tape"),
       fee: { theta: this.cryptocomFee.theta, flat: this.cryptocomFee.flatCents },
@@ -248,6 +255,8 @@ export class SportsCollector {
       tape: this.tape.health(),
       // in order, without a name: /healthz needs no key
       audiencePages: this.audiences.map((a) => (a.key ? "on" : `off: ${a.off}`)),
+      // the last day of DKeX's public files the shipped record was built from; null with no record
+      dkexThrough: this.dkex?.lastDay ?? null,
       data: this.store.dataHealth(),
     };
   }
@@ -376,6 +385,11 @@ export class SportsCollector {
     // a reader's page is one address: no tables behind it, no JSON
     if (sub !== "/") {
       send(404, "text/plain", "not found");
+      return true;
+    }
+    if (state.kind === "exchange") {
+      const given = (name: string) => url.searchParams.get(name) || "";
+      send(200, "text/html", renderDraftKingsHtml({ audience: { name: state.name, short: state.short, base: state.base }, key: state.key, record: this.dkex, ask: { contracts: given("n"), paid: given("paid"), price: given("price") } }));
       return true;
     }
     send(

@@ -193,6 +193,26 @@ function priced(base: LockQuote, pos: Position, fee: FeeTerms): LockQuote {
   return { ...base, options, ...(opensAt === undefined ? {} : { stakeBackOpensAtCents: opensAt }), ...(from === undefined ? {} : { stakeBackFromCents: from }), ...(options.length ? {} : { note: "The exchange fee is more than this bid leaves: nothing to lock." }) };
 }
 
+/**
+ * The lock on a position at a price someone names: no game, no book. `price` is what one
+ * contract can be closed at, cents. For a page with no price of its own to read (DKeX
+ * publishes none).
+ */
+export function lockAtPrice(ask: { contracts?: string | number; paid?: string | number; price?: string | number }, fee: FeeTerms): LockQuote {
+  const qty = quantityOf(ask.contracts ?? 0) || 2000;
+  const within = (v: unknown): number => {
+    const n = Math.round(Number(v) * 100) / 100;
+    return Number.isFinite(n) && n > 0 && n < 100 ? n : 0;
+  };
+  const paidCents = within(ask.paid);
+  const pos: Position = { qty, price: priceOf(paidCents) };
+  return priced(
+    { key: "", label: "", league: "", side: "away", team: "", inPlay: true, startsAt: null, contracts: qty / 100, paidCents, paidAssumed: false, bidCents: within(ask.price), bidQty: qty / 100, askCents: 0, stakeCents: centsOf(stakeOf(pos, fee), "up"), fullWinCents: qty, options: [] },
+    pos,
+    fee,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // a moment of a finished game
 // ---------------------------------------------------------------------------
