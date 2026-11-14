@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { AggregatorApiError, streamKey, type LimitlessMarket, type Market, type MarketStream, type SportEvent, type StreamResult } from "../src/eventCollar/crossVenue/aggregatorMarkets";
 import { buildBoard } from "../src/onchainVenues/board";
 import { DEMO_MAX_PER_LEAGUE, DEMO_MAX_POSITIONS, DEMO_MIN_GAIN_CENTS, DEMO_SIZES, buildDemo, cheapestAcross, closeAtHome, leagueRank, quoteOf, type DemoMemo, type DemoPayload, type DemoPosition } from "../src/onchainVenues/demo";
-import { renderOnchainDemoHtml } from "../src/onchainVenues/demoHtml";
+import { DEMO_LOCK_STAGES, DEMO_STAGE_MS, renderOnchainDemoHtml } from "../src/onchainVenues/demoHtml";
 import { restingUsd, shareBook, sxOutcomeBook, walk } from "../src/onchainVenues/books";
 import { allInAskCents, allInBidCents } from "../src/onchainVenues/fees";
 import { notAFullSet } from "../src/onchainVenues/fullSet";
@@ -1128,7 +1128,19 @@ test("onchain demo: each venue in its own colours and words, names only, and not
   for (const colour of ['[data-host="polymarket"]{--bg:#fff', "--accent:#2e5cff", '[data-host="sx_bet"]{--bg:#12161f', "--accent:#2196f3", '[data-host="limitless"]{--bg:#fff', "--accent:#c3ff00"]) assert.ok(html.includes(colour), colour);
   // a venue is a name in text: no image of any kind, and nothing fetched from anywhere but this service
   assert.ok(!/<img\b/i.test(html) && !/url\(/i.test(html));
-  assert.ok(!/(src|href)="https?:/.test(html));
+  assert.ok(!/src="https?:/.test(html) && !/<link[^>]+href="https?:/.test(html));
+  // the only links out are the founder's contact: his email and his Telegram, beside the screen and under it
+  const links = [...html.matchAll(/<a\b[^>]*href="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(links)].sort(), ["#contact", "https://t.me/willialso", "mailto:michael@atticustrade.com?subject=Lock%20in%20on-chain%20demo"]);
+  assert.equal(links.filter((l) => l.startsWith("mailto:")).length, 2);
+  assert.equal((html.match(/id="contact"/g) ?? []).length, 1);
+  assert.match(html, /href="https:\/\/t\.me\/willialso" target="_blank" rel="noopener noreferrer"/);
+  for (const text of ["Talk to us", "michael@atticustrade.com", "@willialso"]) assert.ok(html.includes(text), text);
+  // a tap on Lock in runs a spinner and three words before the row reads locked
+  assert.deepEqual([...DEMO_LOCK_STAGES], ["Pricing", "Executing", "Confirming"]);
+  assert.ok(html.includes('var STAGES=["Pricing","Executing","Confirming"];') && html.includes('class="spin"') && html.includes("@keyframes spin"));
+  assert.ok(DEMO_STAGE_MS * DEMO_LOCK_STAGES.length >= 2000 && DEMO_STAGE_MS * DEMO_LOCK_STAGES.length <= 4000, "a few seconds, not a wait");
+  assert.ok(html.includes("S.locked[id]=b.p") && !html.includes("S.locked[id]=JSON.parse"), "a row reads locked only when the stages have run");
   assert.match(html, /<meta name="robots" content="noindex">/);
 
   const words = html.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<[^>]+>/g, " ");
